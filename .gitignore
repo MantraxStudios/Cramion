@@ -1,0 +1,22 @@
+# Directorios de compilación
+build/
+build-*/
+out/
+
+# Archivos generados por CMake
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+compile_commands.json
+
+# Ejecutables / objetos
+*.exe
+*.obj
+*.o
+*.pdb
+*.ilk
+
+# IDE
+.vs/
+.vscode/
+.cache/
