@@ -1,5 +1,8 @@
 # Cramion
 
+<img width="1919" height="1027" alt="image" src="https://github.com/user-attachments/assets/b7fa1750-d77f-4293-9c66-b843d8dfd66e" />
+
+
 Motor de render en tiempo real para Windows con **renderizador diferido en Vulkan 1.3** e iluminación física: PBR metal/rugosidad, cielo atmosférico, IBL, sombras en cascada, oclusión ambiental e iluminación global en espacio de pantalla, con post-proceso HDR (bloom, auto-exposición por histograma, rayos de luz, tonemapping).
 
 La capa de plataforma (ventana, entrada y dispositivo DirectX 12) es una librería estática propia, **CramionDM**. Todo se compila con **CMake + Clang + Ninja**.
