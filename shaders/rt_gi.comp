@@ -7,7 +7,7 @@
 // hay en pantalla ni de capturas; todo se recalcula cada frame.
 //
 //   - si el rayo choca, se suma la luz que sale del punto de impacto
-//     (hitRadiance: la de la pantalla si se ve, calculada si no),
+//     (hitRadiance, calculada ahi: independiente de la camara),
 //   - si escapa, esa fraccion del hemisferio ve el cielo (lo pone el IBL en
 //     lighting.frag).
 //
@@ -19,7 +19,9 @@ layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 
 #include "rt_common.glsl"
 
-const int kRays = 2;
+// 4 rayos: con 2, la visibilidad del cielo solo podia valer 0, 0.5 o 1 por
+// frame y en la sombra (donde casi toda la luz es del cielo) se notaba.
+const int kRays = 4;
 const float kMaxDistance = 80.0;   // metros; mas lejos cuenta como cielo
 const float kMaxLuminance = 4.0;   // tope por rayo: sin destellos de bombillas
 
@@ -63,7 +65,7 @@ void main() {
 
         RtHit hit;
         if (traceRay(origin, direction, kMaxDistance, hit)) {
-            vec3 light = hitRadiance(hit, 3.0);
+            vec3 light = hitRadiance(hit, 3.0, false);
             radiance += light * min(1.0, kMaxLuminance / max(luminance(light), 0.0001));
         } else {
             escaped += 1.0;

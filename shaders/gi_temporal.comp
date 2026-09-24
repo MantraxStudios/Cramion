@@ -42,12 +42,22 @@ layout(push_constant) uniform PushConstants {
     vec4 params;  // x = hay historia valida
 } push;
 
-const float kMinAlpha = 0.05;         // media de ~20 frames en regimen
+const float kMinAlpha = 0.03;         // media de ~33 frames en regimen
 const float kMinMomentsAlpha = 0.2;   // los momentos, algo mas reactivos (SVGF)
 const float kMaxHistory = 64.0;
 
 float luminance(vec3 c) {
     return dot(c, vec3(0.2126, 0.7152, 0.0722));
+}
+
+// Brillo que el filtro usa para medir el ruido: el del rebote MAS el de la
+// luz del cielo, que depende de la visibilidad (alfa) medida con unos pocos
+// rayos. En la sombra la luz es casi toda del cielo: si el filtro solo miraba
+// el rebote, no veia ese ruido y quedaban manchas que se movian.
+const float kSkyWeight = 0.4;  // brillo tipico del cielo (EnvironmentMap, cielo fisico)
+
+float giLuminance(vec4 gi) {
+    return luminance(gi.rgb) + gi.a * kSkyWeight;
 }
 
 float linearDepth(float depth) {
@@ -72,7 +82,7 @@ void main() {
         return;
     }
     float view_depth = linearDepth(depth);
-    float current_luminance = luminance(current.rgb);
+    float current_luminance = giLuminance(current);
 
     // --- Donde estaba este punto el frame anterior ---
     vec2 uv = (vec2(full_pixel) + 0.5) / vec2(full_size);
@@ -81,24 +91,49 @@ void main() {
     vec4 previous_clip = push.previous_view_projection * world;
     vec2 previous_uv = previous_clip.xy / previous_clip.w * 0.5 + 0.5;
 
-    bool valid = push.params.x > 0.5 && previous_clip.w > 0.0 &&
-                 all(greaterThanEqual(previous_uv, vec2(0.0))) &&
-                 all(lessThanEqual(previous_uv, vec2(1.0)));
+    // --- Historia: filtro bilineal con prueba de cada uno de los 4 texeles ---
+    // Solo cuentan los texeles de la misma superficie (su profundidad
+    // guardada coincide con la del punto visto desde la camara anterior). Con
+    // un bilineal sin prueba, en los bordes de los modelos se mezclaba la
+    // historia de otra superficie (o del cielo) y quedaban halos que se
+    // desplazaban al moverse (SVGF hace esta misma prueba por texel).
+    vec4 previous_color = vec4(0.0);
     vec4 previous_moments = vec4(0.0);
+    float history_weight = 0.0;
+    if (push.params.x > 0.5 && previous_clip.w > 0.0) {
+        vec2 texel = previous_uv * vec2(size) - 0.5;
+        ivec2 base = ivec2(floor(texel));
+        vec2 f = fract(texel);
+        const ivec2 kOffsets[4] = ivec2[](ivec2(0, 0), ivec2(1, 0), ivec2(0, 1), ivec2(1, 1));
+        float bilinear[4] = float[]((1.0 - f.x) * (1.0 - f.y), f.x * (1.0 - f.y),
+                                    (1.0 - f.x) * f.y, f.x * f.y);
+        for (int i = 0; i < 4; ++i) {
+            ivec2 p = base + kOffsets[i];
+            if (any(lessThan(p, ivec2(0))) || any(greaterThanEqual(p, size))) {
+                continue;
+            }
+            vec4 moments = texelFetch(history_moments, p, 0);
+            bool same_surface = moments.z > 0.0 &&
+                                abs(moments.w - previous_clip.w) < 0.05 * previous_clip.w + 0.05;
+            if (same_surface && bilinear[i] > 0.0) {
+                previous_color += texelFetch(history_gi, p, 0) * bilinear[i];
+                previous_moments += moments * bilinear[i];
+                history_weight += bilinear[i];
+            }
+        }
+    }
+    bool valid = history_weight > 0.01;
     if (valid) {
-        ivec2 previous_pixel = clamp(ivec2(previous_uv * vec2(size)), ivec2(0), size - 1);
-        previous_moments = texelFetch(history_moments, previous_pixel, 0);
-        // Misma superficie: la profundidad que tenia ahi coincide con la del
-        // punto visto desde la camara anterior.
-        valid = previous_moments.z > 0.0 &&
-                abs(previous_moments.w - previous_clip.w) < 0.05 * previous_clip.w + 0.05;
+        previous_color /= history_weight;
+        previous_moments /= history_weight;
+    } else {
+        previous_color = current;
     }
 
     float history_length = valid ? min(previous_moments.z + 1.0, kMaxHistory) : 1.0;
     float alpha = valid ? max(1.0 / history_length, kMinAlpha) : 1.0;
     float moments_alpha = valid ? max(1.0 / history_length, kMinMomentsAlpha) : 1.0;
 
-    vec4 previous_color = valid ? textureLod(history_gi, previous_uv, 0.0) : current;
     vec4 color = mix(previous_color, current, alpha);
 
     vec2 moments = vec2(current_luminance, current_luminance * current_luminance);
@@ -113,7 +148,7 @@ void main() {
         for (int y = -1; y <= 1; ++y) {
             for (int x = -1; x <= 1; ++x) {
                 ivec2 p = clamp(pixel + ivec2(x, y), ivec2(0), size - 1);
-                float l = luminance(texelFetch(current_gi, p, 0).rgb);
+                float l = giLuminance(texelFetch(current_gi, p, 0));
                 spatial += vec2(l, l * l);
             }
         }

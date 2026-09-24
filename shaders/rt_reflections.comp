@@ -73,7 +73,7 @@ void main() {
     if (traceRay(origin, direction, kMaxDistance, hit)) {
         // Texturas mas borrosas lejos y en superficies rugosas.
         float lod = clamp(log2(1.0 + hit.distance * (0.05 + roughness)), 0.0, 6.0);
-        color = hitRadiance(hit, lod);
+        color = hitRadiance(hit, lod, true);
     } else {
         // Cielo (y suelo lejano) del IBL, a la rugosidad de la superficie.
         color = textureLod(environment_map, direction, roughness * kEnvironmentMaxLod).rgb;

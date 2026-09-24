@@ -247,17 +247,19 @@ bool unoccluded(vec3 origin, vec3 direction, float max_distance) {
     return rayQueryGetIntersectionTypeEXT(query, true) == gl_RayQueryCommittedIntersectionNoneEXT;
 }
 
-// Luz que sale de un punto de impacto hacia el rayo.
+// Luz que sale de un punto de impacto hacia el rayo: emision + sol (con su
+// rayo de sombra) + cielo + luces locales (sin sombra), sobre el difuso del
+// material. `lod`: mip de las texturas (lejos o rugoso, mas alto).
 //
-// Si el punto esta en pantalla, se toma de la imagen del frame anterior: su
-// luz completa (sombras de todas las luces, GI y reflejos incluidos, asi los
-// rebotes se acumulan frame a frame). Si no, se calcula aqui: emision + sol
-// (con su rayo de sombra) + cielo + luces locales (sin sombra), sobre el
-// difuso del material. `lod`: mip de las texturas (lejos o rugoso, mas alto).
-vec3 hitRadiance(RtHit hit, float lod) {
+// `from_screen`: si el punto esta en pantalla, se toma de la imagen del frame
+// anterior (su luz completa, con reflejos y brillos). Solo para los reflejos,
+// que dependen de la vista igual que esa imagen. La luz rebotada NO: los
+// brillos y reflejos de esa imagen cambian con la camara, y su "rebote" se
+// movia por los modelos al moverse (ademas de realimentarse frame a frame).
+vec3 hitRadiance(RtHit hit, float lod, bool from_screen) {
     // --- En pantalla: la imagen del frame anterior ---
     vec4 clip = camera.view_projection * vec4(hit.position, 1.0);
-    if (clip.w > 0.0 && push.params.y > 0.5) {
+    if (from_screen && clip.w > 0.0 && push.params.y > 0.5) {
         vec2 uv = clip.xy / clip.w * 0.5 + 0.5;
         if (all(greaterThanEqual(uv, vec2(0.0))) && all(lessThanEqual(uv, vec2(1.0)))) {
             ivec2 size = textureSize(g_depth, 0);

@@ -42,6 +42,16 @@ float luminance(vec3 c) {
     return dot(c, vec3(0.2126, 0.7152, 0.0722));
 }
 
+// Brillo que el filtro usa para medir el ruido: el del rebote MAS el de la
+// luz del cielo, que depende de la visibilidad (alfa) medida con unos pocos
+// rayos. En la sombra la luz es casi toda del cielo: si el filtro solo miraba
+// el rebote, no veia ese ruido y quedaban manchas que se movian.
+const float kSkyWeight = 0.4;  // brillo tipico del cielo (EnvironmentMap, cielo fisico)
+
+float giLuminance(vec4 gi) {
+    return luminance(gi.rgb) + gi.a * kSkyWeight;
+}
+
 float linearDepth(float depth) {
     return camera.projection[3][2] / (depth + camera.projection[2][2]);
 }
@@ -72,7 +82,7 @@ void main() {
     }
     float center_depth = linearDepth(center_raw_depth);
     vec3 center_normal = decodeNormal(texelFetch(g_normal, min(pixel * 2, full_size - 1), 0).rg);
-    float center_luminance = luminance(center.rgb);
+    float center_luminance = giLuminance(center);
 
     // Varianza suavizada 3x3 (gaussiana) para el peso de luminancia: la de un
     // solo pixel es demasiado ruidosa (SVGF).
@@ -116,7 +126,7 @@ void main() {
                                 (kSigmaDepth * center_depth * float(push.step) + 1e-3));
             float w_normal = pow(max(dot(center_normal, sample_normal), 0.0), kSigmaNormal);
             float w_luminance =
-                exp(-abs(center_luminance - luminance(sample_color.rgb)) / luminance_scale);
+                exp(-abs(center_luminance - giLuminance(sample_color)) / luminance_scale);
             float w = kernel * w_depth * w_normal * w_luminance;
 
             color_sum += sample_color * w;
