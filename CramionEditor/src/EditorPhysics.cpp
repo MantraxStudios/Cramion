@@ -108,6 +108,12 @@ const char* queryName(int query) {
 // -----------------------------------------------------------------------------
 
 void EditorApp::loadPhysicsSettings() {
+    // Tags del proyecto (ProjectSettings/Tags.json; se crea la primera vez).
+    std::vector<std::string> tags = ecs::defaultTags();
+    const std::filesystem::path tags_file = project_.settingsFolder() / "Tags.json";
+    if (!ecs::loadTags(tags_file, tags)) ecs::saveTags(tags_file, tags);
+    ecs::setProjectTags(tags);
+
     physics_settings_ = physics::PhysicsSettings{};
     const std::filesystem::path file = project_.settingsFolder() / "Physics.json";
     if (!physics::loadPhysicsSettings(file, physics_settings_)) {
@@ -449,6 +455,42 @@ void EditorApp::drawPhysicsWindow() {
         // --- Raycast ---
         if (ImGui::BeginTabItem("Raycast")) {
             drawRaycastTester();
+            ImGui::EndTabItem();
+        }
+
+        // --- Tags ---
+        if (ImGui::BeginTabItem("Tags")) {
+            ImGui::TextDisabled("El tag de cada objeto se elige en la cabecera del Inspector (junto a la capa).");
+            static std::string new_tag;
+            ImGui::SetNextItemWidth(200.0f);
+            const bool enter = ImGui::InputTextWithHint("##new_tag", "Tag nuevo...", &new_tag,
+                                                        ImGuiInputTextFlags_EnterReturnsTrue);
+            ImGui::SameLine();
+            if ((ImGui::Button("Añadir") || enter) && ecs::addProjectTag(new_tag)) {
+                ecs::saveTags(project_.settingsFolder() / "Tags.json", ecs::projectTags());
+                new_tag.clear();
+            }
+            std::string remove;
+            for (const std::string& tag : ecs::projectTags()) {
+                ImGui::PushID(tag.c_str());
+                const bool builtin = ecs::isBuiltinTag(tag);
+                ImGui::BeginDisabled(builtin);
+                if (ImGui::SmallButton("x")) remove = tag;
+                ImGui::EndDisabled();
+                ImGui::SameLine();
+                ImGui::TextUnformatted(tag.c_str());
+                if (builtin) {
+                    ImGui::SameLine();
+                    ImGui::TextDisabled("(integrado)");
+                }
+                ImGui::PopID();
+            }
+            if (!remove.empty()) {
+                std::vector<std::string> tags = ecs::projectTags();
+                tags.erase(std::remove(tags.begin(), tags.end(), remove), tags.end());
+                ecs::setProjectTags(tags);
+                ecs::saveTags(project_.settingsFolder() / "Tags.json", ecs::projectTags());
+            }
             ImGui::EndTabItem();
         }
 

@@ -22,6 +22,15 @@ void reflectMaterial(ecs::PropertyVisitor& v, ColliderMaterial& m) {
             FloatRange{0.0f, 2.0f, 0.01f, "%.2f", true});
     v.field({"bounciness", "Rebote", "0 = no rebota, 1 = rebote perfecto (manda el mayor)"},
             m.bounciness, FloatRange{0.0f, 1.0f, 0.01f, "%.2f", true});
+    if (v.beginGroup("Anular capas", false)) {
+        v.layerMask({"include_layers", "Incluir (permitir)",
+                     "Chocar con estas capas aunque la matriz de colisiones diga que no"},
+                    m.include_layers);
+        v.layerMask({"exclude_layers", "Excluir (denegar)",
+                     "No chocar con estas capas aunque la matriz diga que si (gana a Incluir)"},
+                    m.exclude_layers);
+        v.endGroup();
+    }
 }
 
 }  // namespace
@@ -60,6 +69,15 @@ void Rigidbody::reflect(ecs::PropertyVisitor& v) {
         v.field({"continuous", "Deteccion continua (CCD)",
                  "Para objetos rapidos: no atraviesan paredes finas"},
                 continuous);
+        if (v.beginGroup("Anular capas", false)) {
+            v.layerMask({"include_layers", "Incluir (permitir)",
+                         "Todo el cuerpo choca con estas capas aunque la matriz diga que no"},
+                        include_layers);
+            v.layerMask({"exclude_layers", "Excluir (denegar)",
+                         "Todo el cuerpo ignora estas capas aunque la matriz diga que si (gana a Incluir)"},
+                        exclude_layers);
+            v.endGroup();
+        }
         v.field({"allow_sleep", "Puede dormirse",
                  "Quieto un rato deja de simularse hasta que algo lo toca"},
                 allow_sleep);

@@ -37,6 +37,11 @@ public:
     const std::string& name() const;
     void setName(std::string name);
 
+    // Tag (como el de Unity; ver Tags.h). Vacio = "Untagged".
+    const std::string& tag() const;
+    void setTag(std::string tag);
+    bool compareTag(std::string_view tag) const;
+
     bool activeSelf() const;
     bool activeInHierarchy() const;
     void setActive(bool active);
@@ -115,6 +120,9 @@ public:
 
     Entity find(const Uuid& uuid) const;
     Entity findByName(std::string_view name) const;  // la primera
+    // Por tag (como GameObject.FindWithTag): la primera activa / todas.
+    Entity findWithTag(std::string_view tag) const;
+    std::vector<Entity> findAllWithTag(std::string_view tag) const;
     Entity wrap(entt::entity handle) const {
         return Entity{handle, const_cast<World*>(this)};
     }

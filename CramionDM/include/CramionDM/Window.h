@@ -19,6 +19,7 @@ struct WindowConfig {
     uint32_t width = 1280;
     uint32_t height = 720;
     bool resizable = true;
+    bool maximized = false;  // abrir maximizada (width/height = tamano al restaurar)
 };
 
 // Ventana Win32 que traduce los mensajes del sistema a eventos de CramionDM.

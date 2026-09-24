@@ -225,16 +225,22 @@ public:
 
 class LayerPairFilter final : public JPH::ObjectLayerPairFilter {
 public:
-    explicit LayerPairFilter(const PhysicsSettings& settings) : settings_(settings) {}
+    LayerPairFilter(const PhysicsSettings& settings, const std::array<std::uint32_t, kLayerCount>& includes)
+        : settings_(settings), includes_(includes) {}
     bool ShouldCollide(JPH::ObjectLayer a, JPH::ObjectLayer b) const override {
         if ((a & kStaticFlag) != 0 && (b & kStaticFlag) != 0) {
             return false;
         }
-        return settings_.layersCollide(a & 31, b & 31);
+        // La matriz, o alguna capa anulada (Incluir) de algun cuerpo de esas
+        // capas: la decision exacta, por cuerpo, en OnContactValidate.
+        const int la = a & 31;
+        const int lb = b & 31;
+        return settings_.layersCollide(la, lb) || (includes_[static_cast<std::size_t>(la)] & layerBit(lb)) != 0;
     }
 
 private:
     const PhysicsSettings& settings_;
+    const std::array<std::uint32_t, kLayerCount>& includes_;
 };
 
 // Material de un collider (friccion y rebote por forma, no por cuerpo).
@@ -352,6 +358,7 @@ struct PhysicsSystem::Impl {
         Vec3 current_position{};
         Quat current_rotation{};
         bool interpolate = true;
+        int layer = 0;
         std::uint64_t seen = 0;  // ultima sincronizacion en que existia (las demas se borran)
     };
 
@@ -371,9 +378,11 @@ struct PhysicsSystem::Impl {
         JPH::ValidateResult OnContactValidate(const JPH::Body& body1, const JPH::Body& body2, JPH::RVec3Arg,
                                               const JPH::CollideShapeResult&) override {
             // El solido y el sensor de la misma entidad no se detectan.
-            return body1.GetUserData() == body2.GetUserData()
-                       ? JPH::ValidateResult::RejectAllContactsForThisBodyPair
-                       : JPH::ValidateResult::AcceptAllContactsForThisBodyPair;
+            if (body1.GetUserData() == body2.GetUserData()) {
+                return JPH::ValidateResult::RejectAllContactsForThisBodyPair;
+            }
+            return impl_.allowedByOverrides(body1, body2) ? JPH::ValidateResult::AcceptAllContactsForThisBodyPair
+                                                          : JPH::ValidateResult::RejectAllContactsForThisBodyPair;
         }
         void OnContactAdded(const JPH::Body& body1, const JPH::Body& body2, const JPH::ContactManifold& manifold,
                             JPH::ContactSettings& settings) override {
@@ -447,7 +456,47 @@ struct PhysicsSystem::Impl {
         Impl& impl_;
     };
 
-    Impl() : layer_filter(settings), listener(*this) {}
+    Impl() : layer_filter(settings, layer_includes), listener(*this) {}
+
+    // Capas anuladas por cuerpo (solo los que tienen alguna). Se leen desde
+    // los hilos de Jolt durante Update: solo se cambian en sync (fuera).
+    struct LayerOverride {
+        std::uint32_t include = 0;
+        std::uint32_t exclude = 0;
+    };
+    std::unordered_map<std::uint32_t, LayerOverride> layer_overrides;
+    std::array<std::uint32_t, kLayerCount> layer_includes{};  // union de Incluir por capa (simetrica)
+    bool overrides_dirty = false;
+
+    bool allowedByOverrides(const JPH::Body& body1, const JPH::Body& body2) const {
+        if (layer_overrides.empty()) return true;  // ya lo decidio la matriz
+        const int la = body1.GetObjectLayer() & 31;
+        const int lb = body2.GetObjectLayer() & 31;
+        const auto o1 = layer_overrides.find(body1.GetID().GetIndexAndSequenceNumber());
+        const auto o2 = layer_overrides.find(body2.GetID().GetIndexAndSequenceNumber());
+        const LayerOverride a = o1 != layer_overrides.end() ? o1->second : LayerOverride{};
+        const LayerOverride b = o2 != layer_overrides.end() ? o2->second : LayerOverride{};
+        if ((a.exclude & layerBit(lb)) != 0 || (b.exclude & layerBit(la)) != 0) return false;
+        if ((a.include & layerBit(lb)) != 0 || (b.include & layerBit(la)) != 0) return true;
+        return settings.layersCollide(la, lb);
+    }
+
+    void rebuildLayerIncludes() {
+        layer_includes.fill(0);
+        for (const auto& [body, o] : layer_overrides) {
+            if (o.include == 0) continue;
+            const auto it = body_entities.find(body);
+            if (it == body_entities.end()) continue;
+            const auto entry = entries.find(it->second);
+            if (entry == entries.end()) continue;
+            const int layer = entry->second.layer;
+            layer_includes[static_cast<std::size_t>(layer)] |= o.include;
+            for (int j = 0; j < kLayerCount; ++j) {
+                if ((o.include & layerBit(j)) != 0) layer_includes[static_cast<std::size_t>(j)] |= layerBit(layer);
+            }
+        }
+        overrides_dirty = false;
+    }
 
     PhysicsSettings settings;
     BroadPhaseLayers broadphase_layers;
@@ -769,8 +818,9 @@ struct PhysicsSystem::Impl {
         void push_back(float value) {
             std::uint32_t bits = 0;
             std::memcpy(&bits, &value, sizeof(bits));
-            hash = (hash ^ bits) * 1099511628211ull;
+            push_bits(bits);
         }
+        void push_bits(std::uint32_t bits) { hash = (hash ^ bits) * 1099511628211ull; }
     };
     // Los pools de EnTT de lo que mira la sincronizacion, tomados una vez:
     // registry.try_get busca el pool en un mapa en cada llamada y, con
@@ -813,6 +863,8 @@ struct PhysicsSystem::Impl {
             s.push_back(m.is_trigger ? 1.0f : 0.0f);
             s.push_back(m.friction);
             s.push_back(m.bounciness);
+            s.push_bits(m.include_layers);
+            s.push_bits(m.exclude_layers);
         };
         const auto push3 = [&](const Vec3& v) {
             s.push_back(v.x);
@@ -832,6 +884,8 @@ struct PhysicsSystem::Impl {
             push3(rb->initial_velocity);
             push3(rb->initial_angular_velocity);
             s.push_back(rb->interpolate ? 1.0f : 0.0f);
+            s.push_bits(rb->include_layers);
+            s.push_bits(rb->exclude_layers);
         } else {
             s.push_back(0.0f);
         }
@@ -872,6 +926,7 @@ struct PhysicsSystem::Impl {
             if (id->IsInvalid()) continue;
             const std::uint32_t key = id->GetIndexAndSequenceNumber();
             body_entities.erase(key);
+            if (layer_overrides.erase(key) != 0) overrides_dirty = true;
             // Las parejas de este cuerpo terminan (Exit).
             for (auto it = pairs.begin(); it != pairs.end();) {
                 if (it->second.body_a == key || it->second.body_b == key) {
@@ -926,6 +981,20 @@ struct PhysicsSystem::Impl {
 
         const int layer = entity.tryGet<ecs::EntityInfo>() != nullptr ? entity.get<ecs::EntityInfo>().layer : 0;
         const bool moving = entry.type != BodyType::Static;
+        entry.layer = std::clamp(layer, 0, kLayerCount - 1);
+        // Capas anuladas: las del Rigidbody y las de los colliders de cada cuerpo.
+        LayerOverride solid_override{rb != nullptr ? rb->include_layers : 0u, rb != nullptr ? rb->exclude_layers : 0u};
+        LayerOverride sensor_override = solid_override;
+        const auto add_override = [&](const ColliderMaterial& m) {
+            LayerOverride& o = m.is_trigger ? sensor_override : solid_override;
+            o.include |= m.include_layers;
+            o.exclude |= m.exclude_layers;
+        };
+        if (const auto* c = entity.tryGet<BoxCollider>()) add_override(c->material);
+        if (const auto* c = entity.tryGet<SphereCollider>()) add_override(c->material);
+        if (const auto* c = entity.tryGet<CapsuleCollider>()) add_override(c->material);
+        if (const auto* c = entity.tryGet<MeshCollider>()) add_override(c->material);
+        if (const auto* c = entity.tryGet<PlaneCollider>()) add_override(c->material);
 
         if (solid != nullptr) {
             JPH::EMotionType motion = entry.type == BodyType::Dynamic   ? JPH::EMotionType::Dynamic
@@ -963,6 +1032,10 @@ struct PhysicsSystem::Impl {
                 }
             });
         }
+        if (!entry.solid.IsInvalid() && (solid_override.include | solid_override.exclude) != 0) {
+            layer_overrides[entry.solid.GetIndexAndSequenceNumber()] = solid_override;
+            overrides_dirty = true;
+        }
         if (sensor != nullptr) {
             // El trigger de algo que se mueve es cinematico y lo acompana;
             // despierto siempre (dormido no detectaria nada).
@@ -970,6 +1043,10 @@ struct PhysicsSystem::Impl {
                                       moving ? JPH::EMotionType::Kinematic : JPH::EMotionType::Static,
                                       objectLayer(layer, moving), entity.handle(), true,
                                       [&](JPH::BodyCreationSettings& s) { s.mAllowSleeping = !moving; });
+            if (!entry.sensor.IsInvalid() && (sensor_override.include | sensor_override.exclude) != 0) {
+                layer_overrides[entry.sensor.GetIndexAndSequenceNumber()] = sensor_override;
+                overrides_dirty = true;
+            }
         }
     }
 
@@ -1059,6 +1136,7 @@ struct PhysicsSystem::Impl {
                 ++it;
             }
         }
+        if (overrides_dirty) rebuildLayerIncludes();
     }
 
     // Antes de cada paso: los cinematicos van hacia su Transform y los
@@ -1329,6 +1407,8 @@ void PhysicsSystem::stop() {
     }
     d.entries.clear();
     d.body_entities.clear();
+    d.layer_overrides.clear();
+    d.layer_includes.fill(0);
     d.pairs.clear();
     {
         std::lock_guard lock(d.contacts_mutex);

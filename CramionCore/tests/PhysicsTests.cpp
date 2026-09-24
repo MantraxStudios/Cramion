@@ -240,6 +240,51 @@ void testLayersAndQueries() {
     check(std::abs(ghost.worldPosition().y - 0.5f) < 0.05f, "al volver a Default choca con el suelo");
 }
 
+void testLayerOverrides() {
+    std::printf("Anular capas (incluir / excluir)\n");
+    ecs::World world;
+    PhysicsSettings settings;
+    settings.layer_names[9] = "Fantasma";
+    settings.setLayersCollide(9, 0, false);  // la matriz: Fantasma no choca con Default
+    makeFloor(world);
+    // Fantasma que incluye Default: choca con el suelo aunque la matriz diga que no.
+    ecs::Entity included = makeBox(world, "Incluida", Vec3{0.0f, 3.0f, 0.0f});
+    included.get<ecs::EntityInfo>().layer = 9;
+    included.get<Rigidbody>().include_layers = layerBit(0);
+    // Default que excluye Default: atraviesa el suelo aunque la matriz diga que si.
+    ecs::Entity excluded = makeBox(world, "Excluida", Vec3{4.0f, 3.0f, 0.0f});
+    excluded.get<Rigidbody>().exclude_layers = layerBit(0);
+    // Excluir gana a incluir.
+    ecs::Entity both = makeBox(world, "Ambas", Vec3{8.0f, 3.0f, 0.0f});
+    both.get<Rigidbody>().include_layers = layerBit(0);
+    both.get<BoxCollider>().material.exclude_layers = layerBit(0);
+    // Un trigger que excluye la capa de la caja que lo cruza no la detecta.
+    ecs::Entity zone = world.create("Zona");
+    zone.setWorldPosition(Vec3{12.0f, 1.5f, 0.0f});
+    BoxCollider& zone_box = zone.add<BoxCollider>();
+    zone_box.size = Vec3{3.0f, 1.0f, 3.0f};
+    zone_box.material.is_trigger = true;
+    zone_box.material.exclude_layers = layerBit(0);
+    makeBox(world, "Cruza", Vec3{12.0f, 4.0f, 0.0f});
+
+    PhysicsSystem physics;
+    physics.setSettings(settings);
+    physics.start(world);
+    std::map<PhysicsEventType, int> counts;
+    run(physics, world, 2.0f, &counts);
+    check(std::abs(included.worldPosition().y - 0.5f) < 0.05f, "Incluir: choca con una capa que la matriz no permite");
+    check(excluded.worldPosition().y < -2.0f, "Excluir: atraviesa una capa que la matriz permite");
+    check(both.worldPosition().y < -2.0f, "Excluir gana a Incluir");
+    check(counts[PhysicsEventType::TriggerEnter] == 0, "un trigger que excluye la capa no la detecta");
+
+    // Quitar la exclusion en marcha rehace el cuerpo y vuelve a chocar.
+    excluded.get<Rigidbody>().exclude_layers = 0;
+    excluded.setWorldPosition(Vec3{4.0f, 3.0f, 0.0f});
+    physics.setLinearVelocity(excluded, Vec3{});
+    run(physics, world, 2.0f);
+    check(std::abs(excluded.worldPosition().y - 0.5f) < 0.05f, "sin la exclusion vuelve a chocar");
+}
+
 void testKinematicAndForces() {
     std::printf("Cinematicos, fuerzas y restricciones\n");
     ecs::World world;
@@ -366,6 +411,7 @@ int main() {
     testInterpolation();
     testTriggers();
     testLayersAndQueries();
+    testLayerOverrides();
     testKinematicAndForces();
     testParticles();
     testSerialization();

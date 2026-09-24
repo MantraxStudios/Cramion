@@ -93,8 +93,13 @@ public:
     core::Vec3 point(float path_units) const;
     core::Vec3 tangent(float path_units) const;
     float roll(float path_units) const;
-    // Unidades del punto del riel mas cercano a `p`.
-    float closest(const core::Vec3& p) const;
+    // Unidades del punto del riel mas cercano a `p`. Con `hint` (la posicion
+    // del frame anterior, >= 0) se prefiere el minimo cercano a ella si es
+    // casi tan bueno como el global: la camara no salta entre dos tramos del
+    // riel que pasan a la misma distancia.
+    float closest(const core::Vec3& p, float hint = -1.0f) const;
+    // Unidades de la muestra i de samples().
+    float sampleUnits(std::size_t i) const { return i < sample_units_.size() ? sample_units_[i] : 0.0f; }
     // Tangente efectiva del punto i en el mundo (asa de salida = punto + ella).
     core::Vec3 handle(std::size_t i) const { return i < tangents_.size() ? tangents_[i] : core::Vec3{}; }
     // Tangente automatica del punto i (la que usa el modo Suave), en el mundo.
@@ -112,8 +117,13 @@ private:
     std::vector<float> rolls_;
     bool looped_ = false;
     int resolution_ = 16;
-    std::vector<core::Vec3> samples_;   // resolution_ por segmento
+    // Muestras de la curva: al menos resolution_ por segmento y mas en los
+    // largos (una cada ~25 cm), para que medir y buscar el punto mas cercano
+    // sea fino aunque el riel mida cientos de metros.
+    std::vector<core::Vec3> samples_;
+    std::vector<float> sample_units_;   // unidades de punto de cada muestra
     std::vector<float> cumulative_;     // distancia hasta cada muestra
+    float refine(const core::Vec3& p, std::size_t sample) const;
 };
 
 // --- Camaras virtuales ----------------------------------------------------------

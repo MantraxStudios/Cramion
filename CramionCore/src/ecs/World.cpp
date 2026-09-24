@@ -38,6 +38,20 @@ void Entity::setName(std::string name) {
     get<NameComponent>().name = std::move(name);
 }
 
+const std::string& Entity::tag() const {
+    static const std::string kUntaggedName = "Untagged";
+    const EntityInfo* info = tryGet<EntityInfo>();
+    return info == nullptr || info->tag.empty() ? kUntaggedName : info->tag;
+}
+
+void Entity::setTag(std::string tag) {
+    if (EntityInfo* info = tryGet<EntityInfo>()) info->tag = tag == "Untagged" ? std::string() : std::move(tag);
+}
+
+bool Entity::compareTag(std::string_view tag) const {
+    return tag == this->tag();
+}
+
 bool Entity::activeSelf() const {
     const EntityInfo* info = tryGet<EntityInfo>();
     return info == nullptr || info->active;
@@ -312,6 +326,22 @@ void World::clear() {
 Entity World::find(const Uuid& uuid) const {
     const auto it = uuid_map_.find(uuid);
     return it == uuid_map_.end() ? Entity{} : wrap(it->second);
+}
+
+Entity World::findWithTag(std::string_view tag) const {
+    Entity found;
+    forEachDepthFirst([&](Entity e) {
+        if (!found.valid() && e.activeInHierarchy() && e.compareTag(tag)) found = e;
+    });
+    return found;
+}
+
+std::vector<Entity> World::findAllWithTag(std::string_view tag) const {
+    std::vector<Entity> found;
+    forEachDepthFirst([&](Entity e) {
+        if (e.activeInHierarchy() && e.compareTag(tag)) found.push_back(e);
+    });
+    return found;
 }
 
 Entity World::findByName(std::string_view name) const {

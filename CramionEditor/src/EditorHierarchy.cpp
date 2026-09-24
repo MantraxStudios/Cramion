@@ -321,7 +321,7 @@ void EditorApp::drawHierarchyRow(const HierarchyRow& row, bool scroll_to) {
     if (renaming) {
         ImGui::TreeNodeEx(id, flags, "%s", "");
     } else {
-        ImGui::TreeNodeEx(id, flags, "      %s", entity.name().c_str());
+        ImGui::TreeNodeEx(id, flags, "    %s", entity.name().c_str());
     }
     if (scroll_to) ImGui::SetScrollHereY(0.5f);
     ImGui::PopStyleVar();
@@ -339,7 +339,7 @@ void EditorApp::drawHierarchyRow(const HierarchyRow& row, bool scroll_to) {
             const Icon icon = entityIcon(entity, tint);
             if (!entity.activeInHierarchy()) tint = (tint & 0x00FFFFFFu) | 0x70000000u;
             imgui_.drawIcon(ImGui::GetWindowDrawList(), icon,
-                            ImVec2(min.x + ImGui::GetTreeNodeToLabelSpacing() + 1.0f, min.y + 2.0f), size, tint);
+                            ImVec2(min.x + ImGui::GetTreeNodeToLabelSpacing() - 7.0f, min.y + 2.0f), size, tint);
         }
 
         // Seleccion (no al abrir con la flecha).

@@ -166,6 +166,33 @@ void testVirtualCameras() {
     d.dolly_damping = 0.0f;
     run(system, world, 0.1f);
     check(near(dolly.worldPosition(), Vec3{13, 1, 5}, 0.05f), "auto dolly: el punto del riel mas cercano al objetivo");
+
+    // Riel muy largo (400 m en 3 puntos): la camara sigue al objetivo sin
+    // temblar (sin saltos ni retrocesos entre frames).
+    ecs::Entity long_track = makeTrack(world, {Vec3{0, 3, -30}, Vec3{200, 3, -30}, Vec3{400, 3, -30}});
+    ecs::Entity runner = world.create("Corredor");
+    ecs::Entity long_cam = world.create("Larga");
+    VirtualCamera& l = long_cam.add<VirtualCamera>();
+    l.body = BodyMode::TrackedDolly;
+    l.track = long_track.uuid();
+    l.follow = runner.uuid();
+    l.look_at = runner.uuid();
+    l.dolly_damping = 0.0f;
+    l.priority = 50;
+    float previous_x = -1.0f;
+    float worst_step = 0.0f;
+    bool backwards = false;
+    for (int i = 0; i < 600; ++i) {
+        runner.setWorldPosition(Vec3{10.0f + static_cast<float>(i) * 0.5f, 0.0f, -25.0f});
+        system.update(world, 1.0f / 60.0f, true);
+        const float x = long_cam.worldPosition().x;
+        if (previous_x >= 0.0f) {
+            worst_step = std::max(worst_step, std::abs((x - previous_x) - 0.5f));
+            backwards = backwards || x < previous_x;
+        }
+        previous_x = x;
+    }
+    check(!backwards && worst_step < 0.02f, "riel de 400 m: la camara avanza suave (sin temblar)");
 }
 
 void testSequence() {

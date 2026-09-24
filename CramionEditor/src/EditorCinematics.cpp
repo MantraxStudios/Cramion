@@ -315,7 +315,7 @@ bool EditorApp::drawCinematicGizmos() {
                 const float d = std::hypot(io.MousePos.x - x, io.MousePos.y - y);
                 if (d < best) {
                     best = d;
-                    curve_units = static_cast<float>(i) / static_cast<float>(std::max(track.resolution, 2));
+                    curve_units = path.sampleUnits(i);
                 }
             }
         }

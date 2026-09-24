@@ -283,7 +283,9 @@ void CinematicSystem::updateCamera(ecs::World& world, ecs::Entity entity, Virtua
             const DollyPath path(*track, track_entity.worldMatrix());
             if (!path.valid()) break;
             float target = vcam.auto_dolly && has_follow
-                               ? path.closest(follow.worldPosition()) + vcam.auto_dolly_offset
+                               ? path.closest(follow.worldPosition(),
+                                              state.initialized ? state.dolly - vcam.auto_dolly_offset : -1.0f) +
+                                     vcam.auto_dolly_offset
                                : path.toPathUnits(vcam.path_position, vcam.path_units);
             target = path.wrap(target);
             if (smooth) {

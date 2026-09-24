@@ -34,7 +34,8 @@ int main(int argc, char** argv) {
         ImGui_ImplWin32_EnableDpiAwareness();
 
         dm::Window window;
-        if (!window.create({.title = L"Cramion Editor", .width = 1600, .height = 900})) {
+        // Maximizada desde el principio (Hub y editor).
+        if (!window.create({.title = L"Cramion Editor", .width = 1600, .height = 900, .maximized = true})) {
             std::cerr << "No se pudo crear la ventana.\n";
             return EXIT_FAILURE;
         }

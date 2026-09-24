@@ -443,6 +443,12 @@ void EditorApp::runSelfTestStep() {
             break;
         }
         case 22: {
+            // Esperar por tiempo de la cinematica (a muchos FPS 150 frames no llegan al 2.o plano).
+            if (const ecs::Entity seq = world_.find(self_test_sequence_);
+                seq.valid() && cinematics_.isPlaying(seq) && cinematics_.time(seq) < 3.5f) {
+                self_test_wait_ = 5;
+                return;
+            }
             const ecs::Entity live = cinematics_.liveCamera();
             check(live.valid() && live.name() == "Camara en riel", "segundo plano: la camara en riel", f);
             // Vista final: el riel en la Escena en modo Bezier (asas y puntos),
@@ -461,6 +467,33 @@ void EditorApp::runSelfTestStep() {
             focus_scene_ = true;
             show_cinematic_ = true;
             self_test_wait_ = 90;
+            break;
+        }
+        case 23: {
+            // Pedir las miniaturas (se decodifican en otro hilo) y esperar.
+            std::error_code error;
+            for (const auto& entry : std::filesystem::directory_iterator(project_.assetsFolder() / "Textures", error)) {
+                if (isDecalImage(entry.path())) imgui_.thumbnail(entry.path());
+            }
+            self_test_wait_ = 30;
+            break;
+        }
+        case 24: {
+            // Miniaturas del navegador: la imagen de Assets/Textures se ve de verdad.
+            bool any_image = false;
+            bool loaded = false;
+            std::error_code error;
+            for (const auto& entry : std::filesystem::directory_iterator(project_.assetsFolder() / "Textures", error)) {
+                if (!isDecalImage(entry.path())) continue;
+                any_image = true;
+                ImVec2 size{};
+                loaded = loaded || (imgui_.thumbnail(entry.path(), &size) != 0 && size.x > 0.0f);
+            }
+            check(!any_image || loaded, "miniatura de la textura en el navegador de assets", f);
+            check(imgui_.icon(Icon::FolderClosed) != 0 && imgui_.icon(Icon::Move) != 0, "iconos del editor cargados", f);
+            const ecs::Entity track = world_.findByName("Riel");
+            check(track.valid() && track.get<cinema::DollyTrack>().mode == cinema::PathMode::Bezier,
+                  "riel en modo Bezier listo para editar", f);
             break;
         }
         default:

@@ -207,15 +207,27 @@ DollyPath::DollyPath(const DollyTrack& track, const core::Mat4& world)
         const bool use_manual = track.mode == PathMode::Bezier && core::dot(manual, manual) > 1e-10f;
         tangents_[i] = use_manual ? ecs::transformDirection(world, manual) : autoTangent(i);
     }
-    const int steps = static_cast<int>(segments() * static_cast<float>(resolution_));
-    samples_.reserve(static_cast<std::size_t>(steps) + 1);
-    cumulative_.reserve(static_cast<std::size_t>(steps) + 1);
+    // Por segmento: primero se mide por encima y luego se reparte en trozos
+    // de ~25 cm (como minimo `resolution_`, como mucho 2048).
+    const int segment_count = static_cast<int>(segments() + 0.5f);
     float distance = 0.0f;
-    for (int s = 0; s <= steps; ++s) {
-        const Vec3 p = evaluate(static_cast<float>(s) / static_cast<float>(resolution_));
-        if (!samples_.empty()) distance += core::length(p - samples_.back());
-        samples_.push_back(p);
-        cumulative_.push_back(distance);
+    for (int segment = 0; segment < segment_count; ++segment) {
+        float rough = 0.0f;
+        Vec3 previous = evaluate(static_cast<float>(segment));
+        for (int k = 1; k <= 8; ++k) {
+            const Vec3 p = evaluate(static_cast<float>(segment) + static_cast<float>(k) / 8.0f);
+            rough += core::length(p - previous);
+            previous = p;
+        }
+        const int steps = std::clamp(static_cast<int>(std::ceil(rough / 0.25f)), resolution_, 2048);
+        for (int k = segment == 0 ? 0 : 1; k <= steps; ++k) {
+            const float u = static_cast<float>(segment) + static_cast<float>(k) / static_cast<float>(steps);
+            const Vec3 p = evaluate(std::min(u, segments() - (looped_ ? 1e-5f : 0.0f)));
+            if (!samples_.empty()) distance += core::length(p - samples_.back());
+            samples_.push_back(p);
+            sample_units_.push_back(u);
+            cumulative_.push_back(distance);
+        }
     }
 }
 
@@ -311,53 +323,81 @@ float DollyPath::toPathUnits(float position, PositionUnits units) const {
     }
     const auto it = std::lower_bound(cumulative_.begin(), cumulative_.end(), distance);
     const std::size_t i = static_cast<std::size_t>(std::max<std::ptrdiff_t>(it - cumulative_.begin(), 1));
+    const std::size_t j = std::min(i, cumulative_.size() - 1);
     const float d0 = cumulative_[i - 1];
-    const float d1 = cumulative_[std::min(i, cumulative_.size() - 1)];
+    const float d1 = cumulative_[j];
     const float frac = d1 > d0 ? (distance - d0) / (d1 - d0) : 0.0f;
-    return (static_cast<float>(i - 1) + frac) / static_cast<float>(resolution_);
+    return sample_units_[i - 1] + (sample_units_[j] - sample_units_[i - 1]) * frac;
 }
 
 float DollyPath::fromPathUnits(float u, PositionUnits units) const {
     if (!valid() || units == PositionUnits::PathUnits) return u;
     u = wrap(u);
-    const float s = u * static_cast<float>(resolution_);
-    const auto i = static_cast<std::size_t>(std::clamp(std::floor(s), 0.0f, static_cast<float>(cumulative_.size() - 1)));
-    const std::size_t j = std::min(i + 1, cumulative_.size() - 1);
-    const float distance = cumulative_[i] + (cumulative_[j] - cumulative_[i]) * (s - static_cast<float>(i));
+    const auto it = std::upper_bound(sample_units_.begin(), sample_units_.end(), u);
+    const std::size_t j = std::min(static_cast<std::size_t>(std::max<std::ptrdiff_t>(it - sample_units_.begin(), 1)),
+                                   sample_units_.size() - 1);
+    const std::size_t i = j - 1;
+    const float span = sample_units_[j] - sample_units_[i];
+    const float frac = span > 0.0f ? std::clamp((u - sample_units_[i]) / span, 0.0f, 1.0f) : 0.0f;
+    const float distance = cumulative_[i] + (cumulative_[j] - cumulative_[i]) * frac;
     return units == PositionUnits::Normalized ? (length() > 1e-6f ? distance / length() : 0.0f) : distance;
 }
 
-float DollyPath::closest(const Vec3& p) const {
-    if (!valid()) return 0.0f;
-    std::size_t best = 0;
-    float best_distance = 1e30f;
-    for (std::size_t i = 0; i < samples_.size(); ++i) {
-        const Vec3 d = samples_[i] - p;
-        const float dd = core::dot(d, d);
-        if (dd < best_distance) {
-            best_distance = dd;
-            best = i;
-        }
-    }
-    // Afinar entre las muestras vecinas (busqueda ternaria).
-    const float step = 1.0f / static_cast<float>(resolution_);
-    float lo = static_cast<float>(best) * step - step;
-    float hi = static_cast<float>(best) * step + step;
-    if (!looped_) {
-        lo = std::max(lo, 0.0f);
-        hi = std::min(hi, segments());
-    }
+// Afinar entre las muestras vecinas de `sample` (busqueda ternaria).
+float DollyPath::refine(const Vec3& p, std::size_t sample) const {
+    const std::size_t lo_index = sample > 0 ? sample - 1 : 0;
+    const std::size_t hi_index = std::min(sample + 1, samples_.size() - 1);
+    float lo = sample_units_[lo_index];
+    float hi = sample_units_[hi_index];
     const auto distance = [&](float u) {
         const Vec3 d = evaluate(u) - p;
         return core::dot(d, d);
     };
-    for (int k = 0; k < 24; ++k) {
+    for (int k = 0; k < 30; ++k) {
         const float a = lo + (hi - lo) / 3.0f;
         const float b = hi - (hi - lo) / 3.0f;
         if (distance(a) < distance(b)) hi = b;
         else lo = a;
     }
     return wrap((lo + hi) * 0.5f);
+}
+
+float DollyPath::closest(const Vec3& p, float hint) const {
+    if (!valid()) return 0.0f;
+    const auto squared = [&](std::size_t i) {
+        const Vec3 d = samples_[i] - p;
+        return core::dot(d, d);
+    };
+    std::size_t best = 0;
+    float best_distance = 1e30f;
+    for (std::size_t i = 0; i < samples_.size(); ++i) {
+        const float dd = squared(i);
+        if (dd < best_distance) {
+            best_distance = dd;
+            best = i;
+        }
+    }
+    // Coherencia entre frames: si cerca de la posicion anterior hay un
+    // minimo casi tan bueno (a menos de un 10 % mas de distancia), ese.
+    if (hint >= 0.0f) {
+        const float h = wrap(hint);
+        const auto it = std::lower_bound(sample_units_.begin(), sample_units_.end(), h);
+        std::size_t local = static_cast<std::size_t>(std::min<std::ptrdiff_t>(it - sample_units_.begin(),
+                                                                              static_cast<std::ptrdiff_t>(samples_.size() - 1)));
+        // Bajar la pendiente desde la muestra de la pista.
+        for (;;) {
+            const float here = squared(local);
+            if (local > 0 && squared(local - 1) < here) {
+                --local;
+            } else if (local + 1 < samples_.size() && squared(local + 1) < here) {
+                ++local;
+            } else {
+                break;
+            }
+        }
+        if (std::sqrt(squared(local)) <= std::sqrt(best_distance) * 1.1f + 0.05f) best = local;
+    }
+    return refine(p, best);
 }
 
 }  // namespace cramion::cinema

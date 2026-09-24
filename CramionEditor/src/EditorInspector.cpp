@@ -85,8 +85,39 @@ void EditorApp::drawInspector() {
         ImGui::TextDisabled("%zu objetos seleccionados (se edita el Transform de todos)",
                             selected.size());
     }
-    // Capa (fisica: con quien choca y que ven los raycast), como Unity.
+    // Tag y capa, uno al lado del otro (como Unity).
     if (ecs::EntityInfo* info = entity.tryGet<ecs::EntityInfo>()) {
+        const float half = (ImGui::GetContentRegionAvail().x - ImGui::GetStyle().ItemSpacing.x) * 0.5f;
+        ImGui::SetNextItemWidth(half);
+        const std::string current_tag = entity.tag();
+        if (ImGui::BeginCombo("##tag", ("Tag  " + current_tag).c_str(), ImGuiComboFlags_HeightLarge)) {
+            for (const std::string& tag : ecs::projectTags()) {
+                if (ImGui::Selectable(tag.c_str(), tag == current_tag)) {
+                    for (ecs::Entity e : selected) e.setTag(tag);
+                    commit();
+                }
+            }
+            ImGui::Separator();
+            static std::string new_tag;
+            ImGui::SetNextItemWidth(160.0f);
+            const bool enter = ImGui::InputTextWithHint("##add_tag", "Añadir tag...", &new_tag,
+                                                        ImGuiInputTextFlags_EnterReturnsTrue);
+            ImGui::SameLine();
+            if ((ImGui::SmallButton("+") || enter) && !new_tag.empty()) {
+                if (ecs::addProjectTag(new_tag)) {
+                    ecs::saveTags(project_.settingsFolder() / "Tags.json", ecs::projectTags());
+                }
+                for (ecs::Entity e : selected) e.setTag(new_tag);
+                commit();
+                new_tag.clear();
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::EndCombo();
+        }
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) {
+            ImGui::SetTooltip("Tag: para encontrar objetos (findWithTag) y en los eventos (compareTag)");
+        }
+        ImGui::SameLine();
         int layer = info->layer;
         ImGui::SetNextItemWidth(-1.0f);
         if (layerCombo("##layer", layer)) {

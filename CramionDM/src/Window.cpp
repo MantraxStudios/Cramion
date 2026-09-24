@@ -90,7 +90,9 @@ bool Window::create(const WindowConfig& config) {
     // Aceptar archivos arrastrados desde el explorador -> genera WM_DROPFILES.
     DragAcceptFiles(hwnd_, TRUE);
 
-    ShowWindow(hwnd_, SW_SHOW);
+    // Maximizada: WM_SIZE (dentro de ShowWindow) ya deja width_/height_ con el
+    // tamano real antes de que nadie cree la swapchain.
+    ShowWindow(hwnd_, config.maximized && config.resizable ? SW_SHOWMAXIMIZED : SW_SHOW);
     UpdateWindow(hwnd_);
     return true;
 }

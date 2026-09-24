@@ -31,6 +31,8 @@
 
 #include <CramionFX/core/Math.h>
 
+#include <cstdint>
+
 namespace cramion::ecs {
 class Entity;
 }
@@ -60,6 +62,11 @@ struct Rigidbody {
     core::Vec3 initial_angular_velocity{};  // rad/s
     bool continuous = false;   // CCD: objetos rapidos que no atraviesen paredes
     bool allow_sleep = true;   // se duerme quieto (ahorra CPU; no da eventos Stay)
+    // Anular capas (Layer Overrides de Unity), para todo el cuerpo: incluir =
+    // chocar con esas capas aunque la matriz diga que no; excluir = no chocar
+    // aunque diga que si. Excluir gana.
+    std::uint32_t include_layers = 0;
+    std::uint32_t exclude_layers = 0;
     bool interpolate = true;   // Transform suave entre pasos de fisica (a cualquier FPS)
 
     void reflect(ecs::PropertyVisitor& v);
@@ -70,6 +77,9 @@ struct ColliderMaterial {
     bool is_trigger = false;   // sensor: detecta pero no choca
     float friction = 0.6f;     // 0 = hielo, 1 = goma
     float bounciness = 0.0f;   // 0 = no rebota, 1 = rebote perfecto
+    // Anular capas de este collider (ver Rigidbody::include_layers).
+    std::uint32_t include_layers = 0;
+    std::uint32_t exclude_layers = 0;
 };
 
 struct BoxCollider {
