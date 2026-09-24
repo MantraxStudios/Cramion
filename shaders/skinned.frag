@@ -123,7 +123,13 @@ vec2 rainRipples(vec2 p, float time) {
 }
 
 void main() {
-    vec4 albedo = texture(albedo_map, v_uv) * push.base_color;
+    // El G-buffer guarda el albedo en sRGB (lighting.frag lo linealiza), pero
+    // el factor del material es lineal (glTF): se lleva a sRGB antes de
+    // multiplicar. Si no, lighting.frag lo elevaba a 2.2 otra vez y los
+    // materiales sin textura salian mas oscuros y saturados (y distintos de
+    // los mismos materiales vistos por los rayos, rt_common.glsl).
+    vec4 albedo = texture(albedo_map, v_uv) *
+                  vec4(pow(max(push.base_color.rgb, vec3(0.0)), vec3(1.0 / 2.2)), push.base_color.a);
 
     // Recorte por alfa (pelo, pestanas): un diferido no puede mezclar
     // transparencias, asi que lo que es casi transparente se descarta.

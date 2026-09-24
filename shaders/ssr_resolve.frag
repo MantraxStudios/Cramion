@@ -97,7 +97,14 @@ void main() {
         out_reflection = vec4(0.0);
         return;
     }
-    vec3 compressed = clamp(result.rgb / result.a, vec3(0.0), vec3(0.999));
-    vec3 rgb = compressed / max(1.0 - luminance(compressed), 0.001);
+    // Lo acotado por la compresion es la luminancia, no cada canal: un rojo
+    // intenso comprimido pasa de 1 en R. Recortar por canal le quitaba
+    // energia y le cambiaba el tono a los reflejos saturados.
+    vec3 compressed = max(result.rgb / result.a, vec3(0.0));
+    float compressed_luminance = luminance(compressed);
+    if (compressed_luminance > 0.999) {
+        compressed *= 0.999 / compressed_luminance;
+    }
+    vec3 rgb = compressed / (1.0 - luminance(compressed));
     out_reflection = vec4(min(rgb, vec3(kMaxRadiance)), min(result.a, 1.0));
 }

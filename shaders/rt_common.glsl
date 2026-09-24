@@ -218,11 +218,14 @@ bool traceRay(vec3 origin, vec3 direction, float max_distance, out RtHit hit) {
     RtVertex c = rt_vertices[rt_indices[triangle * 3u + 2u]];
     vec3 normal = vec3(a.nx, a.ny, a.nz) * w.x + vec3(b.nx, b.ny, b.nz) * w.y +
                   vec3(c.nx, c.ny, c.nz) * w.z;
-    mat4x3 object_to_world = rayQueryGetIntersectionObjectToWorldEXT(query, true);
+    // Las normales se transforman con la inversa traspuesta: con la matriz
+    // del objeto tal cual, una escala no uniforme las inclinaba y la luz de
+    // los impactos salia mal orientada. n * M^-1 == (M^-1)^T * n.
+    mat4x3 world_to_object = rayQueryGetIntersectionWorldToObjectEXT(query, true);
 
     hit.distance = rayQueryGetIntersectionTEXT(query, true);
     hit.position = origin + direction * hit.distance;
-    hit.normal = normalize(mat3(object_to_world) * normal);
+    hit.normal = normalize(normal * mat3(world_to_object));
     // Mallas de una cara vistas por detras: la normal mira al rayo.
     if (dot(hit.normal, direction) > 0.0) {
         hit.normal = -hit.normal;

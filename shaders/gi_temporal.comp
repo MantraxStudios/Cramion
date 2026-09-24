@@ -101,7 +101,11 @@ void main() {
     vec4 previous_moments = vec4(0.0);
     float history_weight = 0.0;
     if (push.params.x > 0.5 && previous_clip.w > 0.0) {
-        vec2 texel = previous_uv * vec2(size) - 0.5;
+        // El texel h representa al pixel completo 2h (centro 2h + 0.5): con
+        // "uv * size - 0.5" quedaba un cuarto de texel desplazado y, con la
+        // camara quieta, cada frame mezclaba un 25% de la historia del
+        // vecino: la GI se emborronaba y "resbalaba" hacia un lado.
+        vec2 texel = (previous_uv * vec2(full_size) - 0.5) * 0.5;
         ivec2 base = ivec2(floor(texel));
         vec2 f = fract(texel);
         const ivec2 kOffsets[4] = ivec2[](ivec2(0, 0), ivec2(1, 0), ivec2(0, 1), ivec2(1, 1));

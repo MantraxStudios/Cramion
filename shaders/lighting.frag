@@ -708,12 +708,20 @@ vec4 upsampledGi(float center_depth, vec3 normal) {
     // Centro de este pixel en coordenadas de texel de media resolucion: cada
     // texel pesa segun lo cerca que este (filtro en tienda). Con pesos iguales
     // en la ventana 4x4, un texel mas brillante se veia como un cuadrado.
-    vec2 center = gl_FragCoord.xy * 0.5 - 0.5;
+    //
+    // El texel h de media resolucion representa al pixel completo 2h (ver
+    // ssgi.frag / rt_gi.comp), de centro 2h + 0.5: h = (frag - 0.5) / 2. Con
+    // "- 0.5" el filtro quedaba desplazado un cuarto de texel y la GI se
+    // corria hacia arriba a la izquierda.
+    vec2 center = gl_FragCoord.xy * 0.5 - 0.25;
 
+    // center vale base o base + 0.5: la tienda (radio 2) solo tiene peso en
+    // base - 1 .. base + 2. La ventana antigua (-2..1) cortaba la tienda por
+    // un lado en los pixeles impares.
     vec4 sum = vec4(0.0);
     float weight_sum = 0.0;
-    for (int y = -2; y <= 1; ++y) {
-        for (int x = -2; x <= 1; ++x) {
+    for (int y = -1; y <= 2; ++y) {
+        for (int x = -1; x <= 2; ++x) {
             ivec2 p = clamp(base + ivec2(x, y), ivec2(0), half_size - 1);
             ivec2 source = min(p * 2, full_size - 1);
             float depth = linearDepth(texelFetch(g_depth, source, 0).r);
@@ -726,7 +734,12 @@ vec4 upsampledGi(float center_depth, vec3 normal) {
             weight_sum += w;
         }
     }
-    return weight_sum > 0.001 ? sum / weight_sum : vec4(0.0, 0.0, 0.0, 1.0);
+    // Sin vecinos de la misma superficie (bordes finos): el texel mas cercano.
+    // Devolver "todo cielo" (a = 1) encendia de luz de cielo las aristas de
+    // los interiores.
+    return weight_sum > 0.001
+               ? sum / weight_sum
+               : texelFetch(gi_map, clamp(base, ivec2(0), half_size - 1), 0);
 }
 
 // Niebla exponencial por altura integrada a lo largo del rayo camara -> punto.
