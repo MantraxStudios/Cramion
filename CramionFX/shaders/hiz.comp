@@ -5,10 +5,15 @@
 // anterior. Si lo mas cercano de un objeto queda por detras de lo mas lejano
 // que hay en su rectangulo de pantalla, esta tapado entero.
 //
-// El nivel 0 tiene la mitad de resolucion que el depth buffer y se lee de el;
-// los demas, del nivel anterior. Con tamanos impares, el ultimo texel de una
-// fila o columna cubre 3 del anterior: si no, se perderia el borde y un
-// objeto podria darse por tapado sin estarlo.
+// El nivel 0 es la potencia de dos inmediatamente menor que el depth buffer
+// (GpuCulling::resize) y se lee de el: cada texel se queda con el maximo de
+// TODOS los pixeles que toca, aunque sea en parte (conservador: nunca
+// declara tapado algo que asoma). Los demas niveles miden exactamente la
+// mitad del anterior, asi que cada texel cubre un bloque 2x2 y cull.comp
+// puede ir de uv a texel con uv * tamano del nivel.
+//
+// (Si un lado llega a 1 antes que el otro, ese lado se queda en 1: el
+// codigo de tamanos impares lo cubre.)
 
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 
@@ -30,14 +35,25 @@ void main() {
     bool from_depth = push.level == 0u;
     ivec2 source_size = from_depth ? textureSize(depth_buffer, 0) : imageSize(source_level);
 
-    ivec2 first = p * 2;
-    ivec2 last = first + ivec2(1);
-    // Borde de un tamano impar: el ultimo texel se queda tambien con el sobrante.
-    if ((source_size.x & 1) != 0 && p.x == target_size.x - 1) {
-        last.x += 1;
-    }
-    if ((source_size.y & 1) != 0 && p.y == target_size.y - 1) {
-        last.y += 1;
+    ivec2 first;
+    ivec2 last;
+    if (from_depth) {
+        // El texel p cubre en el depth [p, p + 1) * (fuente / destino), con
+        // una escala entre 1 y 2 en cada eje: todos los pixeles que toca.
+        vec2 scale = vec2(source_size) / vec2(target_size);
+        first = ivec2(floor(vec2(p) * scale));
+        last = ivec2(ceil(vec2(p + 1) * scale)) - 1;
+    } else {
+        first = p * 2;
+        last = first + ivec2(1);
+        // Un lado que ya mide 1 (o impar): el ultimo texel se queda tambien
+        // con el sobrante.
+        if ((source_size.x & 1) != 0 && p.x == target_size.x - 1) {
+            last.x += 1;
+        }
+        if ((source_size.y & 1) != 0 && p.y == target_size.y - 1) {
+            last.y += 1;
+        }
     }
     last = min(last, source_size - 1);
 

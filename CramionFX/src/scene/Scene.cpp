@@ -17,13 +17,18 @@ void Scene::initialize() {
 
 std::uint32_t Scene::overrideMaterial(std::uint32_t model, const std::string& name,
                                      float roughness, float metallic, float reflectance,
-                                     float albedo_scale) {
+                                     float albedo_scale, const Vec3& base_color) {
     std::uint32_t changed = 0;
     for (asset::MaterialData& material : models_.at(model)->materials) {
         if (material.name == name) {
             material.roughness = roughness;
             material.metallic = metallic;
             material.reflectance = reflectance;
+            if (base_color.x >= 0.0f || base_color.y >= 0.0f || base_color.z >= 0.0f) {
+                material.base_color.x = std::max(base_color.x, 0.0f);
+                material.base_color.y = std::max(base_color.y, 0.0f);
+                material.base_color.z = std::max(base_color.z, 0.0f);
+            }
             material.base_color.x *= albedo_scale;
             material.base_color.y *= albedo_scale;
             material.base_color.z *= albedo_scale;

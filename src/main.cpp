@@ -63,6 +63,8 @@ struct MaterialTweak {
     float metallic;
     float reflectance = 0.04f;  // F0 de la parte no metalica
     float albedo_scale = 1.0f;  // multiplica el color base (lineal)
+    // Color base (lineal) que sustituye al del MTL; negativo = el del MTL.
+    cramion::core::Vec3 base_color{-1.0f, -1.0f, -1.0f};
 };
 
 struct SceneEntry {
@@ -84,6 +86,9 @@ struct SceneEntry {
     // Radios 0 = sin agua.
     cramion::core::Vec2 water_center{0.0f, 0.0f};
     cramion::core::Vec2 water_radii{0.0f, 0.0f};
+    // Modelo extra estatico (relativo a assets/), p. ej. un suelo para un
+    // objeto suelto. nullptr = ninguno.
+    const char* ground = nullptr;
 };
 
 // Sibenik: el suelo de la nave es marmol pulido (en las fotos refleja las
@@ -108,6 +113,35 @@ constexpr MaterialTweak kSanMiguelTweaks[] = {
     {"material_0", 0.02f, 0.0f, 0.077f, 0.1f},  // cristal de las ventanas
 };
 
+// Coche deportivo: MTL de 3ds Max (Phong), sin texturas. En PBR:
+//   - la pintura es un dielectrico brillante con algo de metal (escamas),
+//   - los metales llevan su color en Ks y Kd casi negro: el color base de un
+//     metal ES su reflejo, asi que se fija a mano (F0 medidos: acero ~0.56,
+//     aluminio ~0.91, plata ~0.95),
+//   - los cristales (illum 4) van por la pasada de vidrio (glass.frag).
+constexpr MaterialTweak kSportsCarTweaks[] = {
+    // --- Carroceria ---
+    {"BodyMat", 0.12f, 0.25f, 0.05f},                 // pintura azul metalizada
+    {"BodyGlossBlackMat", 0.1f, 0.0f, 0.05f},         // negro brillo
+    {"BodyMat_BK", 0.3f, 0.0f},
+    {"CarbonBlack", 0.35f, 0.0f, 0.05f},              // fibra de carbono
+    {"WheelHubColor", 0.2f, 0.5f},                    // llantas anodizadas
+    {"RedMat", 0.25f, 0.0f, 0.04f, 1.0f, {0.5f, 0.02f, 0.02f}},  // pinzas de freno
+    // --- Metales ---
+    {"MirrorMat", 0.02f, 1.0f, 0.04f, 1.0f, {0.95f, 0.95f, 0.93f}},  // retrovisor (plata)
+    {"EngineSilver2", 0.3f, 1.0f, 0.04f, 1.0f, {0.56f, 0.57f, 0.58f}},
+    {"Interior_Silver", 0.35f, 1.0f, 0.04f, 1.0f, {0.6f, 0.6f, 0.6f}},
+    {"BoltSilver", 0.3f, 1.0f, 0.04f, 1.0f, {0.75f, 0.75f, 0.72f}},
+    {"PedalsSilver_mat", 0.35f, 1.0f, 0.04f, 1.0f, {0.8f, 0.8f, 0.8f}},
+    {"SusArm_Silver2", 0.4f, 1.0f, 0.04f, 1.0f, {0.55f, 0.55f, 0.55f}},
+    {"BrakeRotarySilver", 0.45f, 1.0f, 0.04f, 1.0f, {0.45f, 0.45f, 0.45f}},  // hierro
+    // --- Resto ---
+    {"TireMat", 0.85f, 0.0f},                         // goma
+    {"Chassis_Black", 0.35f, 0.0f},
+    {"Suspention_Black", 0.3f, 0.0f},
+    {"Interior_Monitor", 0.05f, 0.0f},
+};
+
 constexpr SceneEntry kScenes[] = {
     // Catedral de Sibenik (Marko Dabrovic, texturas de Morgan McGuire): en la
     // nave, cerca de la entrada, a la altura de los ojos, mirando al altar.
@@ -125,6 +159,11 @@ constexpr SceneEntry kScenes[] = {
      {-11.5f, 3.5f}, {3.2f, 2.2f}},
     {"bistro-interior", "bistro/Bistro_v5_2/BistroInterior.fbx", {0.0f, 1.7f, 0.0f},
      {1.0f, 1.7f, 0.0f}, {}, true, "bistro/Bistro_v5_2/san_giuseppe_bridge_4k.hdr"},
+    // Coche deportivo (sportsCar.zip) sobre un suelo de hormigon, con el cielo
+    // HDR de Bistro: lo ilumina y se refleja en la pintura y los cristales.
+    {"sportscar", "sportscar/sportsCar.obj", {4.8f, 1.3f, 5.2f}, {0.0f, 0.55f, 0.0f},
+     kSportsCarTweaks, false, "bistro/Bistro_v5_2/san_giuseppe_bridge_4k.hdr", 0.0f, 0.0f,
+     {0.0f, 0.0f}, {0.0f, 0.0f}, "sportscar/ground.obj"},
 };
 
 const SceneEntry& chooseScene(int argc, char** argv) {
@@ -266,10 +305,15 @@ int main(int argc, char** argv) {
         const std::uint32_t model = scene.loadModel(scene_path, /*force_static=*/true);
         for (const MaterialTweak& tweak : entry.tweaks) {
             scene.overrideMaterial(model, tweak.material, tweak.roughness, tweak.metallic,
-                                   tweak.reflectance, tweak.albedo_scale);
+                                   tweak.reflectance, tweak.albedo_scale, tweak.base_color);
         }
         scene.setDirectXNormalMaps(model, entry.directx_normals);
         scene.spawnStatic(model);
+        if (entry.ground != nullptr) {
+            const std::filesystem::path ground_path =
+                cramion::gfx::shaders::directory().parent_path() / "assets" / entry.ground;
+            scene.spawnStatic(scene.loadModel(ground_path, /*force_static=*/true));
+        }
         scene.placeCamera(entry.camera, entry.target);
         if (std::getenv("CRAMION_TMP_CAM")) scene.placeCamera(cramion::core::Vec3{-18.7f, 4.3f, 6.3f}, cramion::core::Vec3{0.0f, 1.5f, 0.0f});  // TMP
 

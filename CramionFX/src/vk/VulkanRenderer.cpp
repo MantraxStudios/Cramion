@@ -505,6 +505,9 @@ void VulkanRenderer::shutdown() {
     bloom_up_sets_.clear();
     bloom_down_sets_.clear();
     ssao_sets_.clear();
+    // Antes que su pool: si no, su destructor los libera sobre un pool (y un
+    // dispositivo) ya destruidos y el motor revienta al cerrar.
+    volumetric_sets_.clear();
     post_pool_ = nullptr;
     post_process_sets_.clear();
     lighting_sets_.clear();

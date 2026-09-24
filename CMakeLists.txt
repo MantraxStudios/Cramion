@@ -75,6 +75,25 @@ cramion_extract_scene(sibenik.zip sibenik sibenik.obj)
 # FBX con texturas DDS comprimidas.
 cramion_extract_scene(Bistro_v5_2.zip bistro Bistro_v5_2/BistroExterior.fbx)
 
+# Coche deportivo (OBJ de 3ds Max, sin texturas). No trae suelo: se genera
+# un plano de hormigon de 60 x 60 m en y = 0, donde apoyan las ruedas, para
+# que tenga sombra y reflejo (ver "sportscar" en src/main.cpp).
+cramion_extract_scene(sportsCar.zip sportscar sportsCar.obj)
+set(SPORTSCAR_DIR "${CMAKE_BINARY_DIR}/assets/sportscar")
+if(EXISTS "${SPORTSCAR_DIR}/sportsCar.obj" AND NOT EXISTS "${SPORTSCAR_DIR}/ground.obj")
+    # Ns 76 -> rugosidad ~0.4 (conversion de Phong de ObjLoader): hormigon
+    # alisado, con un reflejo suave del coche.
+    file(WRITE "${SPORTSCAR_DIR}/ground.mtl"
+        "newmtl Concrete\nKd 0.25 0.25 0.24\nKs 0.04 0.04 0.04\nNs 76\nd 1\nillum 2\n")
+    file(WRITE "${SPORTSCAR_DIR}/ground.obj"
+        "mtllib ground.mtl\n"
+        "v -30 0 -30\nv -30 0 30\nv 30 0 30\nv 30 0 -30\n"
+        "vt 0 0\nvt 0 30\nvt 30 30\nvt 30 0\n"
+        "vn 0 1 0\n"
+        "usemtl Concrete\n"
+        "f 1/1/1 2/2/1 3/3/1\nf 1/1/1 3/3/1 4/4/1\n")
+endif()
+
 # San Miguel: solo la version completa (10 M de triangulos); la "low-poly" se
 # puede anadir a PATTERNS y registrar en src/main.cpp.
 cramion_extract_scene(San_Miguel.zip san-miguel san-miguel.obj

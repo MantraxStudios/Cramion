@@ -140,10 +140,17 @@ void GpuCulling::resize(const VulkanDevice& device, const VulkanImage& depth) {
     hiz_image_ = nullptr;
     hiz_memory_ = nullptr;
 
-    // Nivel 0: la mitad del depth buffer (redondeando hacia arriba).
+    // Nivel 0: la potencia de dos inmediatamente menor que el depth buffer
+    // (1920x1009 -> 1024x512). Asi cada nivel mide exactamente la mitad del
+    // anterior y cull.comp puede pasar de uv a texel con uv * tamano en
+    // cualquier nivel. Con la mitad del depth (960x505) los niveles se
+    // redondeaban hacia abajo (505, 252, 126, 63, 31, 15...), el ultimo texel
+    // de cada fila impar cubria mas que los otros y ese mapeo leia el texel
+    // equivocado: objetos visibles se daban por tapados y desaparecian al
+    // moverse.
     const vk::Extent2D depth_extent = depth.extent();
-    hiz_extent_ = vk::Extent2D{std::max((depth_extent.width + 1) / 2, 1u),
-                               std::max((depth_extent.height + 1) / 2, 1u)};
+    hiz_extent_ = vk::Extent2D{std::bit_floor(std::max(depth_extent.width, 1u)),
+                               std::bit_floor(std::max(depth_extent.height, 1u))};
     hiz_levels_ = std::min<std::uint32_t>(
         std::bit_width(std::max(hiz_extent_.width, hiz_extent_.height)), kMaxHizLevels);
 

@@ -68,9 +68,14 @@ public:
     // `reflectance` es el F0 de la parte no metalica (0.04 por defecto).
     // `albedo_scale` multiplica el color base (lineal): el vidrio opaco de
     // una ventana casi no tiene difuso (la luz se pierde en el interior).
+    // `base_color` (lineal), si tiene alguna componente >= 0, sustituye al
+    // color base antes de escalarlo: los MTL de Phong dejan los metales con
+    // Kd casi negro (su color va en Ks) y en PBR el color de un metal ES su
+    // reflejo.
     std::uint32_t overrideMaterial(std::uint32_t model, const std::string& name, float roughness,
                                    float metallic = 0.0f, float reflectance = 0.04f,
-                                   float albedo_scale = 1.0f);
+                                   float albedo_scale = 1.0f,
+                                   const core::Vec3& base_color = core::Vec3{-1.0f, -1.0f, -1.0f});
 
     // Marca los normal maps de un modelo como de convenio DirectX (+Y hacia
     // abajo). Para los assets de Unreal o Lumberyard (Bistro), cuyo archivo
