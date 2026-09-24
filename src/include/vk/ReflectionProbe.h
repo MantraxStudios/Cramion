@@ -4,6 +4,7 @@
 #include "vk/ComputePass.h"
 #include "vk/VulkanCommon.h"
 
+#include <array>
 #include <cstdint>
 #include <vector>
 
@@ -25,6 +26,9 @@ class VulkanDevice;
 // El alfa guarda la distancia de la sonda a lo que se ve en cada direccion:
 // con ella lighting.frag corrige el paralaje (lo que se refleja depende de
 // donde esta el punto que refleja, no solo de la direccion).
+//
+// Hay dos cubos prefiltrados: cada captura nueva se escribe en el que no se
+// esta mostrando y la iluminacion funde uno con otro, sin saltos.
 class ReflectionProbe {
 public:
     static constexpr std::uint32_t kCaptureSize = 256;
@@ -34,6 +38,7 @@ public:
     static constexpr std::uint32_t kSize = 128;
     static constexpr std::uint32_t kMips = 6;
     static constexpr vk::Format kFormat = vk::Format::eR16G16B16A16Sfloat;
+    static constexpr std::uint32_t kCubeCount = 2;
 
     void create(const VulkanDevice& device);
     void destroy();
@@ -44,11 +49,11 @@ public:
     void recordFaceCopy(const vk::raii::CommandBuffer& cmd, vk::Image source,
                         const vk::Rect2D& region, std::uint32_t face) const;
 
-    // Con las seis caras copiadas: mips de la captura y prefiltrado. Al
-    // terminar el cubo queda listo para leerse en los fragment shaders.
-    void recordPrefilter(const vk::raii::CommandBuffer& cmd) const;
+    // Con las seis caras copiadas: mips de la captura y prefiltrado en el
+    // cubo `cube`. Al terminar queda listo para leerse en los fragment shaders.
+    void recordPrefilter(const vk::raii::CommandBuffer& cmd, std::uint32_t cube) const;
 
-    const vk::raii::ImageView& view() const { return probe_view_; }
+    const vk::raii::ImageView& view(std::uint32_t cube) const { return cubes_[cube].view; }
     const vk::raii::Sampler& sampler() const { return sampler_; }
 
 private:
@@ -63,15 +68,19 @@ private:
     Image capture_;
     vk::raii::ImageView capture_view_{nullptr};
 
-    // Cubo prefiltrado que lee la iluminacion.
-    Image probe_;
-    vk::raii::ImageView probe_view_{nullptr};
-    std::vector<vk::raii::ImageView> probe_mip_views_;  // array 2D por mip (escritura)
+    // Cubos prefiltrados que lee la iluminacion.
+    struct Cube {
+        Image image;
+        vk::raii::ImageView view{nullptr};
+        std::vector<vk::raii::ImageView> mip_views;  // array 2D por mip (escritura)
+        std::vector<vk::raii::DescriptorSet> prefilter_sets;  // uno por mip
+    };
+    // El pool debe sobrevivir a los sets de los cubos: se declara antes.
+    vk::raii::DescriptorPool pool_{nullptr};
+    std::array<Cube, kCubeCount> cubes_;
 
     vk::raii::Sampler sampler_{nullptr};
     ComputePass prefilter_pass_;
-    vk::raii::DescriptorPool pool_{nullptr};
-    std::vector<vk::raii::DescriptorSet> prefilter_sets_;  // uno por mip
 };
 
 }  // namespace cramion::gfx

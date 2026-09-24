@@ -223,6 +223,8 @@ private:
     void recordSsaoPass(const vk::raii::CommandBuffer& cmd, std::uint32_t frame_index);
     void recordSsgiPass(const vk::raii::CommandBuffer& cmd, std::uint32_t frame_index);
     void recordSsrPass(const vk::raii::CommandBuffer& cmd, std::uint32_t frame_index);
+    // Guarda los reflejos filtrados de este frame como historia del siguiente.
+    void recordSsrHistoryCopy(const vk::raii::CommandBuffer& cmd);
     // Escribe en `target`: la imagen HDR, o la de la captura de la sonda.
     void recordLightingPass(const vk::raii::CommandBuffer& cmd, std::uint32_t frame_index,
                             const VulkanImage& target);
@@ -249,8 +251,13 @@ private:
     VulkanImage ssao_image_{};
     // Luz rebotada (rgb) y visibilidad del cielo (a), a media resolucion.
     VulkanImage gi_image_{};
-    // Reflejos de pantalla (rgb) y su confianza (a), a resolucion completa.
+    // Reflejos de pantalla (rgb) y su confianza (a), a resolucion completa:
+    // los de este frame sin filtrar (ssr.frag), los filtrados en el tiempo
+    // (ssr_resolve.frag, los que lee la iluminacion) y la copia de estos que
+    // sirve de historia al frame siguiente.
+    VulkanImage ssr_raw_{};
     VulkanImage ssr_image_{};
+    VulkanImage ssr_history_{};
     std::array<VulkanImage, kBloomLevels> bloom_levels_{};
     // Radiancia del cielo en cada direccion (no depende de la ventana).
     VulkanImage sky_lut_{};
@@ -283,6 +290,7 @@ private:
     FullscreenPass sky_lut_pass_{};
     FullscreenPass ssgi_pass_{};
     FullscreenPass ssr_pass_{};
+    FullscreenPass ssr_resolve_pass_{};
     FullscreenPass light_shaft_pass_{};
     ComputePass histogram_pass_{};
     ComputePass exposure_average_pass_{};
@@ -311,6 +319,8 @@ private:
     // La imagen HDR contiene un frame anterior valido (no justo tras crearla).
     bool scene_history_valid_ = false;
     bool ssr_history_ready_ = false;
+    // ssr_history_ tiene los reflejos filtrados del frame anterior.
+    bool ssr_filter_history_valid_ = false;
 
     // --- Sonda de reflexion ---
     // Se esta dibujando una cara de la sonda (no un frame para la pantalla).
@@ -320,11 +330,17 @@ private:
     // Donde y con que sol se hace la captura en curso...
     core::Vec3 probe_capture_position_{};
     core::Vec3 probe_capture_sun_{0.0f, 1.0f, 0.0f};
-    // ...y los de la que se esta usando.
+    // ...y los de la ultima terminada.
     core::Vec3 probe_position_{};
     core::Vec3 probe_sun_{0.0f, 1.0f, 0.0f};
     bool probe_ready_ = false;
     bool probe_enabled_ = true;
+    // Cubo con la ultima captura y centro de cada cubo. Al terminar una
+    // captura, la iluminacion pasa del cubo anterior al nuevo en
+    // kProbeFadeSeconds (probe_fade_ de 0 a 1), sin saltos.
+    std::uint32_t probe_cube_ = 0;
+    std::array<core::Vec3, ReflectionProbe::kCubeCount> probe_centers_{};
+    float probe_fade_ = 1.0f;
     // Primer frame en el que se puede capturar otra cara (reparto del coste).
     std::uint64_t probe_next_face_frame_ = 0;
     // Posicion de la camara el frame anterior, para saber si va despacio.
@@ -374,6 +390,7 @@ private:
     std::vector<vk::raii::DescriptorSet> light_shaft_sets_;
     std::vector<vk::raii::DescriptorSet> ssgi_sets_;  // uno por frame
     std::vector<vk::raii::DescriptorSet> ssr_sets_;   // uno por frame
+    std::vector<vk::raii::DescriptorSet> ssr_resolve_sets_;  // uno por frame
     std::vector<vk::raii::DescriptorSet> histogram_sets_;
     std::vector<vk::raii::DescriptorSet> exposure_average_sets_;
 

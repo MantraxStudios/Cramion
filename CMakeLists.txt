@@ -128,6 +128,7 @@ set(SHADER_SOURCES
     "${CMAKE_CURRENT_SOURCE_DIR}/shaders/ssao.frag"
     "${CMAKE_CURRENT_SOURCE_DIR}/shaders/ssgi.frag"
     "${CMAKE_CURRENT_SOURCE_DIR}/shaders/ssr.frag"
+    "${CMAKE_CURRENT_SOURCE_DIR}/shaders/ssr_resolve.frag"
     "${CMAKE_CURRENT_SOURCE_DIR}/shaders/bloom_down.frag"
     "${CMAKE_CURRENT_SOURCE_DIR}/shaders/bloom_up.frag"
     "${CMAKE_CURRENT_SOURCE_DIR}/shaders/composite.frag"

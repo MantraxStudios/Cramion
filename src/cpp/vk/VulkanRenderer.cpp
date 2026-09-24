@@ -160,6 +160,10 @@ constexpr float kProbeFarDistance = 15.0f;
 constexpr float kProbeSlowSpeed = 1.5f;  // m/s
 constexpr float kProbeLightCos = 0.99619f;
 constexpr std::uint64_t kProbeFaceInterval = 2;
+// Fundido de la sonda anterior a la nueva.
+constexpr float kProbeFadeSeconds = 0.6f;
+// Peso de lo acumulado en el filtro temporal de los reflejos de pantalla.
+constexpr float kSsrHistoryWeight = 0.88f;
 
 // Fraccion final de cada cascada en la que se mezcla con la siguiente, para
 // que el salto de resolucion entre cascadas no se vea como una linea.
@@ -288,6 +292,12 @@ void VulkanRenderer::initialize(const EngineInfo& info, HWND window, std::uint32
         ssr.fragment_shader = "ssr.frag.spv";
         ssr_pass_.create(device_, ssr);
 
+        // Filtro temporal del SSR: camara + profundidad + reflejos de este
+        // frame + historia.
+        FullscreenPassDesc ssr_resolve = ssgi;
+        ssr_resolve.fragment_shader = "ssr_resolve.frag.spv";
+        ssr_resolve_pass_.create(device_, ssr_resolve);
+
         FullscreenPassDesc shafts{};
         shafts.fragment_shader = "light_shafts.frag.spv";
         shafts.bindings = two_textures;
@@ -345,6 +355,7 @@ void VulkanRenderer::shutdown() {
     exposure_average_sets_.clear();
     histogram_sets_.clear();
     light_shaft_sets_.clear();
+    ssr_resolve_sets_.clear();
     ssr_sets_.clear();
     ssgi_sets_.clear();
     composite_sets_.clear();
@@ -388,6 +399,7 @@ void VulkanRenderer::shutdown() {
     exposure_average_pass_.destroy();
     histogram_pass_.destroy();
     light_shaft_pass_.destroy();
+    ssr_resolve_pass_.destroy();
     ssr_pass_.destroy();
     ssgi_pass_.destroy();
     sky_lut_pass_.destroy();
@@ -406,6 +418,8 @@ void VulkanRenderer::shutdown() {
     light_shafts_.destroy();
     gi_image_.destroy();
     ssr_image_.destroy();
+    ssr_raw_.destroy();
+    ssr_history_.destroy();
     probe_capture_.destroy();
     reflection_probe_.destroy();
     ibl_probe_.destroy();
@@ -428,6 +442,7 @@ void VulkanRenderer::shutdown() {
     local_shadows_.invalidate();
     probe_face_ = -1;
     probe_ready_ = false;
+    probe_fade_ = 1.0f;
     initialized_ = false;
 
     std::cout << "[Vulkan] Recursos liberados\n";
@@ -502,8 +517,9 @@ void VulkanRenderer::createDescriptors() {
     // Destinos de color del G-buffer + profundidad + cascadas + focos +
     // puntuales + SSAO + cielo. +1 mas por frame para la imagen que lee el
     // FXAA.
-    // (+ entorno y LUT de la BRDF del IBL, + la GI, + el SSR, + la sonda.)
-    pool_sizes[1].descriptorCount = kMaxFramesInFlight * (GBuffer::kColorAttachmentCount + 12);
+    // (+ entorno y LUT de la BRDF del IBL, + la GI, + el SSR, + los dos cubos
+    // de la sonda.)
+    pool_sizes[1].descriptorCount = kMaxFramesInFlight * (GBuffer::kColorAttachmentCount + 13);
 
     vk::DescriptorPoolCreateInfo pool_info{};
     pool_info.flags = vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet;
@@ -567,16 +583,17 @@ void VulkanRenderer::createDescriptors() {
     // Texturas: SSAO (2 por frame), bloom (1 por set), composicion (3), rayos
     // de luz (2) e histograma (1). Storage: histograma (1), promedio (2) y
     // composicion (1).
-    // Y la GI y el SSR: camara + 3 texturas por frame cada uno.
+    // Y la GI, el SSR y su filtro temporal: camara + 3 texturas por frame
+    // cada uno.
     const std::array<vk::DescriptorPoolSize, 3> post_sizes = {
-        vk::DescriptorPoolSize{vk::DescriptorType::eUniformBuffer, kMaxFramesInFlight * 3},
+        vk::DescriptorPoolSize{vk::DescriptorType::eUniformBuffer, kMaxFramesInFlight * 4},
         vk::DescriptorPoolSize{vk::DescriptorType::eCombinedImageSampler,
-                               kMaxFramesInFlight * 8 + kBloomSets + 3 + 2 + 1},
+                               kMaxFramesInFlight * 11 + kBloomSets + 3 + 2 + 1},
         vk::DescriptorPoolSize{vk::DescriptorType::eStorageBuffer, 4}};
 
     vk::DescriptorPoolCreateInfo post_pool_info{};
     post_pool_info.flags = vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet;
-    post_pool_info.maxSets = kMaxFramesInFlight * 3 + kBloomSets + 4;
+    post_pool_info.maxSets = kMaxFramesInFlight * 4 + kBloomSets + 4;
     post_pool_info.setPoolSizes(post_sizes);
     post_pool_ = vk::raii::DescriptorPool(device_.handle(), post_pool_info);
 
@@ -594,6 +611,7 @@ void VulkanRenderer::createDescriptors() {
     light_shaft_sets_ = allocate(light_shaft_pass_, 1);
     ssgi_sets_ = allocate(ssgi_pass_, kMaxFramesInFlight);
     ssr_sets_ = allocate(ssr_pass_, kMaxFramesInFlight);
+    ssr_resolve_sets_ = allocate(ssr_resolve_pass_, kMaxFramesInFlight);
     histogram_sets_ = allocate(histogram_pass_, 1);
     exposure_average_sets_ = allocate(exposure_average_pass_, 1);
 
@@ -866,12 +884,14 @@ void VulkanRenderer::updateLightingDescriptors() {
         ssr_info.imageView = *ssr_image_.view();
         ssr_info.imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
 
-        vk::DescriptorImageInfo probe_info{};
-        probe_info.sampler = *reflection_probe_.sampler();
-        probe_info.imageView = *reflection_probe_.view();
-        probe_info.imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
+        std::array<vk::DescriptorImageInfo, ReflectionProbe::kCubeCount> probe_infos{};
+        for (std::uint32_t cube = 0; cube < ReflectionProbe::kCubeCount; ++cube) {
+            probe_infos[cube].sampler = *reflection_probe_.sampler();
+            probe_infos[cube].imageView = *reflection_probe_.view(cube);
+            probe_infos[cube].imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
+        }
 
-        std::array<vk::WriteDescriptorSet, 19> writes{};
+        std::array<vk::WriteDescriptorSet, 20> writes{};
 
         writes[0].dstSet = *lighting_sets_[i];
         writes[0].dstBinding = 0;
@@ -955,10 +975,13 @@ void VulkanRenderer::updateLightingDescriptors() {
         writes[17].descriptorType = vk::DescriptorType::eCombinedImageSampler;
         writes[17].setImageInfo(ssr_info);
 
-        writes[18].dstSet = *lighting_sets_[i];
-        writes[18].dstBinding = 18;
-        writes[18].descriptorType = vk::DescriptorType::eCombinedImageSampler;
-        writes[18].setImageInfo(probe_info);
+        for (std::uint32_t cube = 0; cube < ReflectionProbe::kCubeCount; ++cube) {
+            vk::WriteDescriptorSet& write = writes[18 + cube];
+            write.dstSet = *lighting_sets_[i];
+            write.dstBinding = 18 + cube;
+            write.descriptorType = vk::DescriptorType::eCombinedImageSampler;
+            write.setImageInfo(probe_infos[cube]);
+        }
 
         device_.handle().updateDescriptorSets(writes, nullptr);
     }
@@ -1033,6 +1056,15 @@ void VulkanRenderer::updatePostDescriptors() {
                       vk::ImageLayout::eDepthReadOnlyOptimal);
         write_texture(ssr_sets_[i], 2, ssr_pass_.sampler(), gbuffer_.normal(), kRead);
         write_texture(ssr_sets_[i], 3, ssr_pass_.sampler(), scene_color_, kRead);
+
+        // Filtro temporal del SSR.
+        vk::WriteDescriptorSet resolve_camera = write;
+        resolve_camera.dstSet = *ssr_resolve_sets_[i];
+        device_.handle().updateDescriptorSets(resolve_camera, nullptr);
+        write_texture(ssr_resolve_sets_[i], 1, ssr_resolve_pass_.sampler(), gbuffer_.depth(),
+                      vk::ImageLayout::eDepthReadOnlyOptimal);
+        write_texture(ssr_resolve_sets_[i], 2, ssr_resolve_pass_.sampler(), ssr_raw_, kRead);
+        write_texture(ssr_resolve_sets_[i], 3, ssr_resolve_pass_.sampler(), ssr_history_, kRead);
     }
 
     // Bloom: cada nivel de bajada lee el anterior (el primero, la imagen HDR);
@@ -1098,8 +1130,14 @@ void VulkanRenderer::createRenderTargets() {
                          vk::ImageAspectFlagBits::eColor);
 
     // Los reflejos del suelo tienen que ser nitidos: resolucion completa.
-    ssr_image_.create(device_, extent, kHdrFormat, target_usage,
+    ssr_raw_.create(device_, extent, kHdrFormat, target_usage, vk::ImageAspectFlagBits::eColor);
+    ssr_image_.create(device_, extent, kHdrFormat,
+                      target_usage | vk::ImageUsageFlagBits::eTransferSrc,
                       vk::ImageAspectFlagBits::eColor);
+    ssr_history_.create(device_, extent, kHdrFormat,
+                        vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eTransferDst,
+                        vk::ImageAspectFlagBits::eColor);
+    ssr_filter_history_valid_ = false;
 
     // La luz rebotada es de baja frecuencia: media resolucion.
     gi_image_.create(device_, bloomLevelExtent(extent, 0), kHdrFormat, target_usage,
@@ -1274,9 +1312,18 @@ void VulkanRenderer::updateUniforms(const scene::Scene& scene, const scene::Came
     light_data.spot_count = spot_count;
     light_data.ssao_enabled = ssao_enabled_ ? 1 : 0;
     light_data.gi_enabled = gi_enabled_ ? 1 : 0;
-    // La sonda no se refleja a si misma mientras se captura.
-    if (probe_enabled_ && probe_ready_ && !capturing_) {
-        light_data.probe = toVec4(probe_position_, 1.0f);
+    // Sonda de reflexion: el cubo nuevo entra fundiendose con el anterior.
+    // No se refleja a si misma mientras se captura.
+    if (!capturing_) {
+        probe_fade_ = std::min(probe_fade_ + frame_delta_seconds_ / kProbeFadeSeconds, 1.0f);
+        if (probe_enabled_ && probe_ready_) {
+            const std::uint32_t previous = 1 - probe_cube_;
+            light_data.probes[probe_cube_] = toVec4(probe_centers_[probe_cube_], probe_fade_);
+            if (probe_fade_ < 1.0f) {
+                light_data.probes[previous] =
+                    toVec4(probe_centers_[previous], 1.0f - probe_fade_);
+            }
+        }
     }
 
     // Exposicion: de noche el ojo se adapta a la oscuridad, asi que se abre.
@@ -1483,7 +1530,9 @@ bool VulkanRenderer::probeCaptureDue(const scene::Scene& scene) {
                             : 0.0f;
     probe_last_camera_ = position;
 
-    if (frame_count_ < probe_next_face_frame_) {
+    // Una cara cada pocos frames, y ninguna captura nueva hasta que la
+    // anterior termine de fundirse (se escribira en el cubo que sale).
+    if (frame_count_ < probe_next_face_frame_ || probe_fade_ < 1.0f) {
         return false;
     }
     if (probe_face_ >= 0) {
@@ -1569,9 +1618,12 @@ void VulkanRenderer::captureProbeFace(const scene::Scene& scene) {
                                       vk::AccessFlagBits2::eTransferRead));
     reflection_probe_.recordFaceCopy(cmd, *probe_capture_.handle(), square, face);
 
+    // La captura nueva va al cubo que no se esta mostrando (a la primera,
+    // al 0).
     const bool last_face = face + 1 == faces.size();
+    const std::uint32_t target_cube = probe_ready_ ? 1 - probe_cube_ : 0;
     if (last_face) {
-        reflection_probe_.recordPrefilter(cmd);
+        reflection_probe_.recordPrefilter(cmd, target_cube);
     }
 
     cmd.end();
@@ -1594,6 +1646,11 @@ void VulkanRenderer::captureProbeFace(const scene::Scene& scene) {
     probe_next_face_frame_ = frame_count_ + kProbeFaceInterval;
 
     if (last_face) {
+        // Con una captura anterior, se funde desde ella; la primera entra
+        // de golpe (antes solo habia cielo).
+        probe_fade_ = probe_ready_ ? 0.0f : 1.0f;
+        probe_cube_ = target_cube;
+        probe_centers_[target_cube] = probe_capture_position_;
         probe_ready_ = true;
         probe_position_ = probe_capture_position_;
         probe_sun_ = probe_capture_sun_;
@@ -1623,6 +1680,7 @@ void VulkanRenderer::recordCommandBuffer(const vk::raii::CommandBuffer& cmd,
     recordSsgiPass(cmd, frame_index);
     recordSsrPass(cmd, frame_index);
     recordLightingPass(cmd, frame_index, scene_color_);
+    recordSsrHistoryCopy(cmd);
     recordBloomPass(cmd);
     recordLightShaftPass(cmd);
     recordAutoExposurePass(cmd);
@@ -2015,14 +2073,75 @@ void VulkanRenderer::recordSsgiPass(const vk::raii::CommandBuffer& cmd,
 void VulkanRenderer::recordSsrPass(const vk::raii::CommandBuffer& cmd,
                                    std::uint32_t frame_index) {
     // Va despues de la GI: la imagen HDR ya esta como textura.
-    pipelineBarrier(cmd, discardToAttachment(*ssr_image_.handle()));
+    pipelineBarrier(cmd, discardToAttachment(*ssr_raw_.handle()));
 
     GpuSsgiPush push{};
     push.previous_view_projection = previous_view_projection_;
     // Sin frame anterior o con el SSR apagado, el shader no refleja nada.
     push.params = Vec4{ssr_enabled_ && ssr_history_ready_ && !capturing_ ? 1.0f : 0.0f, 1.0f,
                        0.0f, 0.0f};
-    drawFullscreen(cmd, ssr_pass_, &ssr_sets_[frame_index], ssr_image_, &push);
+    drawFullscreen(cmd, ssr_pass_, &ssr_sets_[frame_index], ssr_raw_, &push);
+
+    // --- Filtro temporal ---
+    // La historia recien creada no tiene nada: se pasa a textura para poder
+    // enlazarla y el shader no la lee.
+    std::vector<vk::ImageMemoryBarrier2> barriers = {writtenToSampled(*ssr_raw_.handle()),
+                                                     discardToAttachment(*ssr_image_.handle())};
+    if (!ssr_filter_history_valid_) {
+        barriers.push_back(colorBarrier(*ssr_history_.handle(), vk::ImageLayout::eUndefined,
+                                        vk::ImageLayout::eShaderReadOnlyOptimal,
+                                        vk::PipelineStageFlagBits2::eTopOfPipe,
+                                        vk::AccessFlagBits2::eNone,
+                                        vk::PipelineStageFlagBits2::eFragmentShader,
+                                        vk::AccessFlagBits2::eShaderSampledRead));
+    }
+    pipelineBarrier(cmd, barriers);
+
+    // Las caras de la sonda no usan la historia (es de la camara de pantalla).
+    GpuSsgiPush resolve{};
+    resolve.previous_view_projection = previous_view_projection_;
+    resolve.params = Vec4{ssr_filter_history_valid_ && ssr_enabled_ && !capturing_ ? 1.0f : 0.0f,
+                          kSsrHistoryWeight, 0.0f, 0.0f};
+    drawFullscreen(cmd, ssr_resolve_pass_, &ssr_resolve_sets_[frame_index], ssr_image_,
+                   &resolve);
+}
+
+void VulkanRenderer::recordSsrHistoryCopy(const vk::raii::CommandBuffer& cmd) {
+    // La iluminacion ya leyo los reflejos filtrados: se copian a la historia.
+    const vk::ImageLayout history_layout = vk::ImageLayout::eShaderReadOnlyOptimal;
+    pipelineBarrier(cmd, {colorBarrier(*ssr_image_.handle(), vk::ImageLayout::eShaderReadOnlyOptimal,
+                                       vk::ImageLayout::eTransferSrcOptimal,
+                                       vk::PipelineStageFlagBits2::eFragmentShader,
+                                       vk::AccessFlagBits2::eShaderSampledRead,
+                                       vk::PipelineStageFlagBits2::eCopy,
+                                       vk::AccessFlagBits2::eTransferRead),
+                          colorBarrier(*ssr_history_.handle(), history_layout,
+                                       vk::ImageLayout::eTransferDstOptimal,
+                                       vk::PipelineStageFlagBits2::eFragmentShader,
+                                       vk::AccessFlagBits2::eShaderSampledRead,
+                                       vk::PipelineStageFlagBits2::eCopy,
+                                       vk::AccessFlagBits2::eTransferWrite)});
+
+    const vk::Extent2D extent = ssr_image_.extent();
+    vk::ImageCopy region{};
+    region.srcSubresource = vk::ImageSubresourceLayers{vk::ImageAspectFlagBits::eColor, 0, 0, 1};
+    region.dstSubresource = region.srcSubresource;
+    region.extent = vk::Extent3D{extent.width, extent.height, 1};
+    cmd.copyImage(*ssr_image_.handle(), vk::ImageLayout::eTransferSrcOptimal,
+                  *ssr_history_.handle(), vk::ImageLayout::eTransferDstOptimal, region);
+
+    pipelineBarrier(cmd, {colorBarrier(*ssr_image_.handle(), vk::ImageLayout::eTransferSrcOptimal,
+                                       vk::ImageLayout::eShaderReadOnlyOptimal,
+                                       vk::PipelineStageFlagBits2::eCopy,
+                                       vk::AccessFlagBits2::eTransferRead,
+                                       vk::PipelineStageFlagBits2::eFragmentShader,
+                                       vk::AccessFlagBits2::eShaderSampledRead),
+                          colorBarrier(*ssr_history_.handle(), vk::ImageLayout::eTransferDstOptimal,
+                                       history_layout, vk::PipelineStageFlagBits2::eCopy,
+                                       vk::AccessFlagBits2::eTransferWrite,
+                                       vk::PipelineStageFlagBits2::eFragmentShader,
+                                       vk::AccessFlagBits2::eShaderSampledRead)});
+    ssr_filter_history_valid_ = true;
 }
 
 void VulkanRenderer::recordLightingPass(const vk::raii::CommandBuffer& cmd,

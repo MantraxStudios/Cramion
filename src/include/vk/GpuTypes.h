@@ -57,8 +57,9 @@ struct GpuLights {
     GpuPointLight points[scene::kMaxPointLights]{};
     GpuSpotLight spots[scene::kMaxSpotLights]{};
 
-    // Sonda de reflexion: xyz = centro, w = 1 si ya tiene una captura.
-    core::Vec4 probe{};
+    // Los dos cubos de la sonda de reflexion: xyz = centro, w = peso (0 = no
+    // se usa; los dos suman 1 mientras uno se funde con el otro).
+    core::Vec4 probes[2]{};
 };
 
 // Constante de push de los modelos con esqueleto (pasada de geometria). Son

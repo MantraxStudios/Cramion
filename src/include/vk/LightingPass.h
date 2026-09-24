@@ -29,7 +29,8 @@ class VulkanDevice;
 //   set 0, binding 15 -> IBL: irradiancia difusa en armonicos esfericos
 //   set 0, binding 16 -> iluminacion global de pantalla (SSGI)
 //   set 0, binding 17 -> reflejos de pantalla (SSR)
-//   set 0, binding 18 -> sonda de reflexion de la escena (cubo)
+//   set 0, binding 18 -> sonda de reflexion de la escena (cubo 0)
+//   set 0, binding 19 -> sonda de reflexion de la escena (cubo 1)
 //
 // Escribe HDR lineal: el tono y la gamma van en la composicion final.
 class LightingPass {

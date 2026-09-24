@@ -88,27 +88,29 @@ void ReflectionProbe::create(const VulkanDevice& device) {
         vk::ImageSubresourceRange{vk::ImageAspectFlagBits::eColor, 0, kCaptureMips, 0, 6};
     capture_view_ = vk::raii::ImageView(device.handle(), capture_view);
 
-    // --- Cubo prefiltrado ---
+    // --- Cubos prefiltrados ---
     vk::ImageCreateInfo probe_info = capture_info;
     probe_info.extent = vk::Extent3D{kSize, kSize, 1};
     probe_info.mipLevels = kMips;
     probe_info.usage = vk::ImageUsageFlagBits::eStorage | vk::ImageUsageFlagBits::eSampled |
                        vk::ImageUsageFlagBits::eTransferDst;
-    probe_ = createImage(device, probe_info);
+    for (Cube& cube : cubes_) {
+        cube.image = createImage(device, probe_info);
 
-    vk::ImageViewCreateInfo probe_view = capture_view;
-    probe_view.image = *probe_.image;
-    probe_view.subresourceRange.levelCount = kMips;
-    probe_view_ = vk::raii::ImageView(device.handle(), probe_view);
+        vk::ImageViewCreateInfo probe_view = capture_view;
+        probe_view.image = *cube.image.image;
+        probe_view.subresourceRange.levelCount = kMips;
+        cube.view = vk::raii::ImageView(device.handle(), probe_view);
 
-    for (std::uint32_t mip = 0; mip < kMips; ++mip) {
-        vk::ImageViewCreateInfo mip_view{};
-        mip_view.image = *probe_.image;
-        mip_view.viewType = vk::ImageViewType::e2DArray;
-        mip_view.format = kFormat;
-        mip_view.subresourceRange =
-            vk::ImageSubresourceRange{vk::ImageAspectFlagBits::eColor, mip, 1, 0, 6};
-        probe_mip_views_.emplace_back(device.handle(), mip_view);
+        for (std::uint32_t mip = 0; mip < kMips; ++mip) {
+            vk::ImageViewCreateInfo mip_view{};
+            mip_view.image = *cube.image.image;
+            mip_view.viewType = vk::ImageViewType::e2DArray;
+            mip_view.format = kFormat;
+            mip_view.subresourceRange =
+                vk::ImageSubresourceRange{vk::ImageAspectFlagBits::eColor, mip, 1, 0, 6};
+            cube.mip_views.emplace_back(device.handle(), mip_view);
+        }
     }
 
     // Trilineal con todos los mips: la rugosidad (iluminacion) o el angulo
@@ -133,75 +135,82 @@ void ReflectionProbe::create(const VulkanDevice& device) {
     prefilter_pass_.create(device, prefilter);
 
     const std::array<vk::DescriptorPoolSize, 2> pool_sizes = {
-        vk::DescriptorPoolSize{Type::eCombinedImageSampler, kMips},
-        vk::DescriptorPoolSize{Type::eStorageImage, kMips}};
+        vk::DescriptorPoolSize{Type::eCombinedImageSampler, kMips * kCubeCount},
+        vk::DescriptorPoolSize{Type::eStorageImage, kMips * kCubeCount}};
     vk::DescriptorPoolCreateInfo pool_info{};
     pool_info.flags = vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet;
-    pool_info.maxSets = kMips;
+    pool_info.maxSets = kMips * kCubeCount;
     pool_info.setPoolSizes(pool_sizes);
     pool_ = vk::raii::DescriptorPool(device.handle(), pool_info);
 
     const std::vector<vk::DescriptorSetLayout> layouts(kMips,
                                                        *prefilter_pass_.descriptorSetLayout());
-    vk::DescriptorSetAllocateInfo alloc{};
-    alloc.descriptorPool = *pool_;
-    alloc.setSetLayouts(layouts);
-    prefilter_sets_ = vk::raii::DescriptorSets(device.handle(), alloc);
+    for (Cube& cube : cubes_) {
+        vk::DescriptorSetAllocateInfo alloc{};
+        alloc.descriptorPool = *pool_;
+        alloc.setSetLayouts(layouts);
+        cube.prefilter_sets = vk::raii::DescriptorSets(device.handle(), alloc);
 
-    for (std::uint32_t mip = 0; mip < kMips; ++mip) {
-        vk::DescriptorImageInfo capture_image{};
-        capture_image.sampler = *sampler_;
-        capture_image.imageView = *capture_view_;
-        capture_image.imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
+        for (std::uint32_t mip = 0; mip < kMips; ++mip) {
+            vk::DescriptorImageInfo capture_image{};
+            capture_image.sampler = *sampler_;
+            capture_image.imageView = *capture_view_;
+            capture_image.imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
 
-        vk::DescriptorImageInfo storage{};
-        storage.imageView = *probe_mip_views_[mip];
-        storage.imageLayout = vk::ImageLayout::eGeneral;
+            vk::DescriptorImageInfo storage{};
+            storage.imageView = *cube.mip_views[mip];
+            storage.imageLayout = vk::ImageLayout::eGeneral;
 
-        std::array<vk::WriteDescriptorSet, 2> writes{};
-        writes[0].dstSet = *prefilter_sets_[mip];
-        writes[0].dstBinding = 0;
-        writes[0].descriptorType = Type::eCombinedImageSampler;
-        writes[0].setImageInfo(capture_image);
-        writes[1].dstSet = *prefilter_sets_[mip];
-        writes[1].dstBinding = 1;
-        writes[1].descriptorType = Type::eStorageImage;
-        writes[1].setImageInfo(storage);
-        device.handle().updateDescriptorSets(writes, nullptr);
+            std::array<vk::WriteDescriptorSet, 2> writes{};
+            writes[0].dstSet = *cube.prefilter_sets[mip];
+            writes[0].dstBinding = 0;
+            writes[0].descriptorType = Type::eCombinedImageSampler;
+            writes[0].setImageInfo(capture_image);
+            writes[1].dstSet = *cube.prefilter_sets[mip];
+            writes[1].dstBinding = 1;
+            writes[1].descriptorType = Type::eStorageImage;
+            writes[1].setImageInfo(storage);
+            device.handle().updateDescriptorSets(writes, nullptr);
+        }
     }
 
-    // El cubo se enlaza a la iluminacion desde el principio, antes de la
-    // primera captura (que no lo usara hasta estar lista): en negro y como
+    // Los cubos se enlazan a la iluminacion desde el principio, antes de la
+    // primera captura (que no los usara hasta estar listos): en negro y como
     // textura.
-    const vk::Image probe_image = *probe_.image;
     device.submitOneTime([&](const vk::raii::CommandBuffer& cmd) {
         using Stage = vk::PipelineStageFlagBits2;
         using Access = vk::AccessFlagBits2;
-        pipelineBarrier(cmd, barrier(probe_image, 0, kMips, 0, 6, vk::ImageLayout::eUndefined,
-                                     vk::ImageLayout::eTransferDstOptimal, Stage::eNone,
-                                     Access::eNone, Stage::eTransfer, Access::eTransferWrite));
-        const vk::ClearColorValue black{0.0f, 0.0f, 0.0f, 0.0f};
-        const vk::ImageSubresourceRange all{vk::ImageAspectFlagBits::eColor, 0, kMips, 0, 6};
-        cmd.clearColorImage(probe_image, vk::ImageLayout::eTransferDstOptimal, black, all);
-        pipelineBarrier(cmd, barrier(probe_image, 0, kMips, 0, 6,
-                                     vk::ImageLayout::eTransferDstOptimal,
-                                     vk::ImageLayout::eShaderReadOnlyOptimal, Stage::eTransfer,
-                                     Access::eTransferWrite, Stage::eFragmentShader,
-                                     Access::eShaderSampledRead));
+        for (const Cube& cube : cubes_) {
+            const vk::Image probe_image = *cube.image.image;
+            pipelineBarrier(cmd,
+                            barrier(probe_image, 0, kMips, 0, 6, vk::ImageLayout::eUndefined,
+                                    vk::ImageLayout::eTransferDstOptimal, Stage::eNone,
+                                    Access::eNone, Stage::eTransfer, Access::eTransferWrite));
+            const vk::ClearColorValue black{0.0f, 0.0f, 0.0f, 0.0f};
+            const vk::ImageSubresourceRange all{vk::ImageAspectFlagBits::eColor, 0, kMips, 0, 6};
+            cmd.clearColorImage(probe_image, vk::ImageLayout::eTransferDstOptimal, black, all);
+            pipelineBarrier(cmd, barrier(probe_image, 0, kMips, 0, 6,
+                                         vk::ImageLayout::eTransferDstOptimal,
+                                         vk::ImageLayout::eShaderReadOnlyOptimal,
+                                         Stage::eTransfer, Access::eTransferWrite,
+                                         Stage::eFragmentShader, Access::eShaderSampledRead));
+        }
     });
 
-    std::cout << "[Vulkan] Sonda de reflexion lista: captura de " << kCaptureSize
-              << " px, cubo de " << kSize << " px con " << kMips << " niveles\n";
+    std::cout << "[Vulkan] Sonda de reflexion lista: captura de " << kCaptureSize << " px, "
+              << kCubeCount << " cubos de " << kSize << " px con " << kMips << " niveles\n";
 }
 
 void ReflectionProbe::destroy() {
-    prefilter_sets_.clear();
+    for (Cube& cube : cubes_) {
+        cube.prefilter_sets.clear();
+        cube.mip_views.clear();
+        cube.view = nullptr;
+        cube.image = Image{};
+    }
     pool_ = nullptr;
     prefilter_pass_.destroy();
     sampler_ = nullptr;
-    probe_mip_views_.clear();
-    probe_view_ = nullptr;
-    probe_ = Image{};
     capture_view_ = nullptr;
     capture_ = Image{};
 }
@@ -237,11 +246,12 @@ void ReflectionProbe::recordFaceCopy(const vk::raii::CommandBuffer& cmd, vk::Ima
                   vk::ImageLayout::eTransferDstOptimal, blit, vk::Filter::eLinear);
 }
 
-void ReflectionProbe::recordPrefilter(const vk::raii::CommandBuffer& cmd) const {
+void ReflectionProbe::recordPrefilter(const vk::raii::CommandBuffer& cmd,
+                                      std::uint32_t cube) const {
     using Stage = vk::PipelineStageFlagBits2;
     using Access = vk::AccessFlagBits2;
     const vk::Image capture = *capture_.image;
-    const vk::Image probe = *probe_.image;
+    const vk::Image probe = *cubes_[cube].image.image;
 
     // --- Mips de la captura, cada uno a partir del anterior ---
     pipelineBarrier(cmd, barrier(capture, 0, 1, 0, 6, vk::ImageLayout::eTransferDstOptimal,
@@ -292,7 +302,7 @@ void ReflectionProbe::recordPrefilter(const vk::raii::CommandBuffer& cmd) const 
         push.face_size = size;
 
         cmd.bindDescriptorSets(vk::PipelineBindPoint::eCompute, *prefilter_pass_.layout(), 0,
-                               *prefilter_sets_[mip], nullptr);
+                               *cubes_[cube].prefilter_sets[mip], nullptr);
         cmd.pushConstants<PrefilterPush>(*prefilter_pass_.layout(),
                                          vk::ShaderStageFlagBits::eCompute, 0, push);
         cmd.dispatch((size + 7) / 8, (size + 7) / 8, 6);

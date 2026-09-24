@@ -69,7 +69,7 @@ layout(set = 0, binding = 4) uniform LightBuffer {
     ivec4 counts;                 // x = puntuales, y = focos, z = SSAO, w = GI
     PointLightGpu points[kMaxPointLights];
     SpotLightGpu spots[kMaxSpotLights];
-    vec4 probe;                    // sonda de reflexion: xyz = centro, w = 1 si esta lista
+    vec4 probes[2];                // cubos de la sonda: xyz = centro, w = peso (0 = sin usar)
 } lights;
 
 // Mapa de sombras en cascada. El muestreador compara por hardware: devuelve
@@ -123,10 +123,12 @@ layout(set = 0, binding = 16) uniform sampler2D gi_map;
 // Reflejos de pantalla (ssr.frag): rgb = color reflejado, a = confianza.
 layout(set = 0, binding = 17) uniform sampler2D ssr_map;
 
-// Sonda de reflexion (ReflectionProbe): la escena vista desde lights.probe.xyz,
+// Sonda de reflexion (ReflectionProbe): la escena vista desde lights.probes[i].xyz,
 // prefiltrada por rugosidad como environment_map. a = distancia de la sonda a
-// lo que se ve en cada direccion.
-layout(set = 0, binding = 18) uniform samplerCube reflection_probe;
+// lo que se ve en cada direccion. Dos cubos: la captura nueva se funde con la
+// anterior.
+layout(set = 0, binding = 18) uniform samplerCube reflection_probe_0;
+layout(set = 0, binding = 19) uniform samplerCube reflection_probe_1;
 
 layout(location = 0) in vec2 v_uv;
 layout(location = 0) out vec4 out_color;
@@ -621,24 +623,58 @@ vec3 geometricNormal(float depth, vec3 world_position, vec3 view_direction) {
     return dot(n, view_direction) < 0.0 ? -n : n;
 }
 
-// Direccion en la que hay que leer la sonda de reflexion para el rayo que sale
-// de `position` en la direccion `direction`. La sonda vio la escena desde su
-// centro, no desde este punto: se busca donde choca el rayo con lo que la
-// sonda ve (su distancia esta en el alfa del nivel 0) y se lee en la direccion
-// de ese punto visto desde el centro. Es una busqueda de punto fijo: a partir
-// de una distancia supuesta a lo largo del rayo, se corrige con lo que la
-// sonda dice que hay en esa direccion. Converge en pocos pasos salvo en
-// bordes muy marcados, donde el error se ve como una pequena deformacion.
-vec3 probeDirection(vec3 position, vec3 direction) {
-    vec3 offset = position - lights.probe.xyz;
-    float t = textureLod(reflection_probe, direction, 0.0).a;
-    for (int i = 0; i < 4; ++i) {
-        vec3 to_hit = offset + direction * t;
-        float hit_distance = length(to_hit);
-        float surface = textureLod(reflection_probe, to_hit / max(hit_distance, 0.0001), 0.0).a;
-        t = max(t + surface - hit_distance, 0.0);
+// Direccion en la que hay que leer una sonda de reflexion (centro `center`)
+// para el rayo que sale de `position` en la direccion `direction`. La sonda
+// vio la escena desde su centro, no desde este punto: se busca donde choca el
+// rayo con lo que la sonda ve y se lee en la direccion de ese punto visto
+// desde el centro.
+//
+// La sonda guarda en el alfa la distancia a la superficie que ve en cada
+// direccion, asi que es un "depth buffer" esferico: se avanza por el rayo
+// (pasos que crecen con la distancia) hasta que un punto queda por detras de
+// esa superficie, y el cruce se afina por biseccion. Solo cuenta el paso de
+// "delante" a "detras": el tramo inicial que la sonda no ve (el punto que
+// refleja puede estar tapado desde ella) no es un choque.
+const int kProbeSteps = 24;
+const int kProbeRefineSteps = 6;
+const float kProbeFirstStep = 0.05;  // metros
+const float kProbeMaxDistance = 150.0;
+
+vec3 probeDirection(samplerCube probe, vec3 center, vec3 position, vec3 direction) {
+    vec3 offset = position - center;
+    float growth = pow(kProbeMaxDistance / kProbeFirstStep, 1.0 / float(kProbeSteps));
+
+    float previous_t = 0.0;
+    float t = kProbeFirstStep;
+    bool seen_in_front = false;
+    for (int i = 0; i < kProbeSteps; ++i) {
+        vec3 p = offset + direction * t;
+        float p_distance = length(p);
+        float surface = textureLod(probe, p / max(p_distance, 0.0001), 0.0).a;
+        // Margen: la superficie de la sonda tiene la resolucion de un texel.
+        bool behind = p_distance > surface + 0.02 * surface + 0.03;
+        if (behind && seen_in_front) {
+            float low = previous_t;
+            float high = t;
+            for (int r = 0; r < kProbeRefineSteps; ++r) {
+                float middle = 0.5 * (low + high);
+                vec3 q = offset + direction * middle;
+                float q_distance = length(q);
+                float q_surface = textureLod(probe, q / max(q_distance, 0.0001), 0.0).a;
+                if (q_distance > q_surface) {
+                    high = middle;
+                } else {
+                    low = middle;
+                }
+            }
+            return normalize(offset + direction * high);
+        }
+        seen_in_front = seen_in_front || !behind;
+        previous_t = t;
+        t *= growth;
     }
-    return normalize(offset + direction * t);
+    // Sin choque: muy lejos (cielo), la direccion casi no cambia.
+    return normalize(offset + direction * kProbeMaxDistance);
 }
 
 // GI a resolucion completa: media de la ventana 4x4 de media resolucion (las
@@ -732,9 +768,12 @@ void main() {
         // GI: luz rebotada y cuanto cielo ve el punto a gran escala.
         vec4 gi = lights.counts.w != 0 ? upsampledGi(distance_to_camera_z, normal)
                                        : vec4(0.0, 0.0, 0.0, 1.0);
-        // La visibilidad se suaviza: el SSAO ya oscurece los contactos
-        // cercanos y aplicar ambas enteras los oscureceria dos veces.
-        float sky_visibility = mix(1.0, gi.a, 0.85);
+        // La visibilidad se suaviza un poco: el SSAO ya oscurece los contactos
+        // cercanos y aplicar ambas enteras los oscureceria dos veces. Pero
+        // poco: un suelo de 15% de cielo en todas partes llenaba los
+        // interiores de una luz azul plana; ahi la luz es sobre todo la
+        // rebotada (calida, de las zonas al sol).
+        float sky_visibility = mix(1.0, gi.a, 0.95);
 
         // Difuso: irradiancia del cielo (armonicos esfericos) en la parte que
         // ve el cielo, mas la luz rebotada. Relleno minimo de noche (luz de
@@ -756,9 +795,21 @@ void main() {
         // del IBL, que en un interior solo se ve por donde se ve el cielo
         // (visibilidad de la GI).
         vec3 fallback = prefiltered * sky_visibility;
-        if (lights.probe.w > 0.5) {
-            fallback = textureLod(reflection_probe, probeDirection(world_position, reflected),
-                                  roughness * kEnvironmentMaxLod).rgb;
+        float probe_weight = lights.probes[0].w + lights.probes[1].w;
+        if (probe_weight > 0.001) {
+            float lod = roughness * kEnvironmentMaxLod;
+            vec3 probe_light = vec3(0.0);
+            if (lights.probes[0].w > 0.001) {
+                vec3 d = probeDirection(reflection_probe_0, lights.probes[0].xyz,
+                                        world_position, reflected);
+                probe_light += textureLod(reflection_probe_0, d, lod).rgb * lights.probes[0].w;
+            }
+            if (lights.probes[1].w > 0.001) {
+                vec3 d = probeDirection(reflection_probe_1, lights.probes[1].xyz,
+                                        world_position, reflected);
+                probe_light += textureLod(reflection_probe_1, d, lod).rgb * lights.probes[1].w;
+            }
+            fallback = probe_light / probe_weight;
         }
         vec4 ssr = texelFetch(ssr_map, ivec2(gl_FragCoord.xy), 0);
         vec3 reflected_light = mix(fallback, ssr.rgb, ssr.a);
@@ -879,12 +930,17 @@ void main() {
         // --- Niebla por altura hacia el color del cielo ---
         // Mirando hacia el sol la niebla se ilumina (dispersion hacia delante),
         // lo que da la sensacion de aire entre la camara y el horizonte.
+        // El aire solo dispersa la luz que le llega: en un interior o una
+        // calle estrecha no ve el cielo ni el sol, asi que su niebla es mucho
+        // mas oscura (si no, todo queda velado de azul). Se aproxima con la
+        // visibilidad del cielo del punto que se mira.
         vec3 ray_direction = -view_direction;
         vec3 fog_color = skyColor(normalize(vec3(ray_direction.x, max(ray_direction.y, 0.0),
                                                  ray_direction.z)), false);
         float sun_alignment = max(dot(ray_direction, lights.sky_sun.xyz), 0.0);
         fog_color += toLinear(lights.sun_color_ambient.rgb) * lights.sun_direction_intensity.w *
                      pow(sun_alignment, 10.0) * 0.35 * smoothstep(-0.05, 0.1, lights.sky_sun.y);
+        fog_color *= mix(0.08, 1.0, gi.a);
         float fog = heightFog(distance_to_camera, ray_direction);
         color = mix(color, fog_color, fog);
         surface_distance = distance_to_camera;
