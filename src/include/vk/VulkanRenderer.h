@@ -2,14 +2,17 @@
 #define CRAMION_VK_VULKAN_RENDERER_H
 
 #include "vk/CloudNoise.h"
+#include "vk/EnvironmentMap.h"
 #include "vk/ComputePass.h"
 #include "vk/FullscreenPass.h"
 #include "vk/GBuffer.h"
+#include "vk/GpuCulling.h"
 #include "vk/GpuTypes.h"
 #include "vk/IblProbe.h"
 #include "vk/LightingPass.h"
 #include "vk/LocalShadowMaps.h"
 #include "vk/PostProcessPass.h"
+#include "vk/RayTracing.h"
 #include "vk/ReflectionProbe.h"
 #include "vk/ShadowMap.h"
 #include "vk/SkinnedModel.h"
@@ -27,6 +30,7 @@
 
 #include <array>
 #include <chrono>
+#include <filesystem>
 #include <cstdint>
 #include <vector>
 
@@ -48,7 +52,10 @@ namespace cramion::gfx {
 //                    foco y cada cara del cubo de las luces puntuales con
 //                    sombra, pero solo si la luz ha cambiado (cache).
 //   2. Geometria:    los modelos se escriben en el G-buffer (albedo, normal,
-//                    material, profundidad). No se evalua ninguna luz.
+//                    material, profundidad). No se evalua ninguna luz. Los
+//                    escenarios se descartan en la GPU (GpuCulling): campo de
+//                    vision y oclusion con una piramide Hi-Z en dos fases, y se
+//                    dibujan con una llamada indirecta por material.
 //   3. Cielo:        dispersion atmosferica (Rayleigh + Mie + ozono) sobre una
 //                    LUT pequena con la radiancia del cielo en cada direccion.
 //                    De ella sale el IBL (compute): cubo de entorno
@@ -138,6 +145,32 @@ public:
     void setSsrEnabled(bool enabled) { ssr_enabled_ = enabled; }
     bool ssrEnabled() const { return ssr_enabled_; }
 
+    // Trazado de rayos por hardware para la luz rebotada y los reflejos (si
+    // la GPU lo tiene). Apagado, se usan los de pantalla con la sonda.
+    void setRayTracingEnabled(bool enabled) { rt_enabled_ = enabled; }
+    bool rayTracingEnabled() const { return rt_enabled_; }
+    bool rayTracingSupported() const { return device_.rayTracingSupported(); }
+    // Se esta trazando de verdad este frame (soportado, activado y listo).
+    bool rayTracingActive() const {
+        return rt_enabled_ && device_.rayTracingSupported() && ray_tracing_.ready();
+    }
+
+    // Occlusion culling (Hi-Z) de los escenarios. Apagado queda el de campo
+    // de vision, tambien en la GPU.
+    void setOcclusionCullingEnabled(bool enabled) { occlusion_culling_enabled_ = enabled; }
+    bool occlusionCullingEnabled() const { return occlusion_culling_enabled_; }
+
+    // Mapa de entorno HDR (el cielo fotografiado de la escena, p. ej. el de
+    // Bistro). Sustituye al cielo fisico en el fondo, la niebla, el IBL y los
+    // rayos. false si no se pudo leer.
+    bool loadEnvironment(const std::filesystem::path& path);
+    void setEnvironmentEnabled(bool enabled) { environment_enabled_ = enabled; }
+    bool environmentEnabled() const { return environment_enabled_; }
+    bool environmentLoaded() const { return environment_.loaded(); }
+    bool environmentActive() const { return environment_enabled_ && environment_.loaded(); }
+    // Hacia el sol de la foto (para colocar ahi la luz direccional).
+    const core::Vec3& environmentSunDirection() const { return environment_.sunDirection(); }
+
     // Nubes volumetricas.
     void setCloudsEnabled(bool enabled) { clouds_enabled_ = enabled; }
     bool cloudsEnabled() const { return clouds_enabled_; }
@@ -184,6 +217,8 @@ public:
     std::uint32_t visibleSubmeshes() const { return visible_submeshes_; }
     std::uint32_t shadowSubmeshes() const { return shadow_submeshes_; }
     std::uint32_t totalSubmeshes() const { return total_submeshes_; }
+    // Clusteres en el campo de vision que la oclusion descarto (frame reciente).
+    std::uint32_t occludedSubmeshes() const { return occluded_submeshes_; }
 
 private:
     void createCommandObjects();
@@ -204,6 +239,10 @@ private:
 
     // Sonda de reflexion: si toca (re)capturarla, empieza o sigue la captura.
     bool probeCaptureDue(const scene::Scene& scene);
+    // Todo lo que cambia la luz que ve la sonda, salvo la direccion del sol
+    // (esa tiene su propio umbral): colores e intensidades, luces locales y
+    // los interruptores que cambian el aspecto de la escena.
+    std::vector<float> lightingSignature(const scene::Scene& scene) const;
     // Dibuja la cara que toca desde la sonda y la copia al cubo (con la sexta,
     // lo prefiltra). Se envia y se espera aparte, antes del frame normal.
     void captureProbeFace(const scene::Scene& scene);
@@ -225,6 +264,12 @@ private:
                             const core::Vec3& light_position = {}, float range = 0.0f);
     bool actorsTouch(const core::Vec3& light_position, float range) const;
     void recordGeometryPass(const vk::raii::CommandBuffer& cmd, std::uint32_t frame_index);
+    // Dentro de un pase de geometria abierto: actores animados (culling en la
+    // CPU, por su esfera) y clusteres de escenario (comandos indirectos que
+    // escribio el culling en GPU en la fase `phase`).
+    void drawCpuActors(const vk::raii::CommandBuffer& cmd, std::uint32_t frame_index);
+    void drawGpuClusters(const vk::raii::CommandBuffer& cmd, std::uint32_t frame_index,
+                         std::uint32_t phase);
     void recordSsaoPass(const vk::raii::CommandBuffer& cmd, std::uint32_t frame_index);
     void recordSsgiPass(const vk::raii::CommandBuffer& cmd, std::uint32_t frame_index);
     void recordSsrPass(const vk::raii::CommandBuffer& cmd, std::uint32_t frame_index);
@@ -257,13 +302,20 @@ private:
     VulkanImage ldr_color_{};
     // r = oclusion ambiental, g = profundidad lineal (para el desenfoque).
     VulkanImage ssao_image_{};
-    // Luz rebotada (rgb) y visibilidad del cielo (a), a media resolucion: la
-    // de este frame sin filtrar (ssgi.frag), la filtrada en el tiempo
-    // (gi_resolve.frag, la que lee la iluminacion) y su copia para el frame
-    // siguiente.
+    // Luz rebotada (rgb) y visibilidad del cielo (a), a media resolucion. La
+    // de este frame sin filtrar (rt_gi.comp o ssgi.frag) pasa por el filtro
+    // SVGF: acumulacion temporal (gi_temporal.comp) y kGiAtrousIterations
+    // pasadas espaciales (gi_atrous.comp). Salvo gi_raw_, todas viven en
+    // layout General (las escriben y leen compute shaders).
     VulkanImage gi_raw_{};
-    VulkanImage gi_image_{};
-    VulkanImage gi_history_{};
+    VulkanImage gi_temporal_{};         // acumulada
+    VulkanImage gi_variance_{};         // su varianza de luminancia
+    VulkanImage gi_moments_{};          // E[L], E[L^2], frames de historia, profundidad
+    VulkanImage gi_moments_history_{};  // los del frame anterior
+    VulkanImage gi_history_{};          // primera pasada espacial: historia del color
+    std::array<VulkanImage, 2> gi_filter_{};           // ping-pong del filtro espacial
+    std::array<VulkanImage, 2> gi_filter_variance_{};
+    VulkanImage gi_image_{};            // resultado: lo lee la iluminacion
     // Reflejos de pantalla (rgb) y su confianza (a), a resolucion completa:
     // los de este frame sin filtrar (ssr.frag), los filtrados en el tiempo
     // (ssr_resolve.frag, los que lee la iluminacion) y la copia de estos que
@@ -281,11 +333,15 @@ private:
     VulkanImage light_shafts_{};
     // Nubes volumetricas: ruido 3D y su imagen a media resolucion.
     CloudNoise cloud_noise_{};
+    // Cielo fotografiado (opcional).
+    EnvironmentMap environment_{};
     VulkanImage clouds_image_{};
     // Sonda de reflexion de la escena y la imagen HDR donde se dibuja cada
     // cara antes de copiarla al cubo (no se usa la del frame: el SSR y la GI
     // del siguiente la leen como frame anterior).
     ReflectionProbe reflection_probe_{};
+    // Trazado de rayos: estructuras de aceleracion y pases de GI y reflejos.
+    RayTracing ray_tracing_{};
     VulkanImage probe_capture_{};
 
     // Auto-exposicion: histograma (se vacia solo cada frame), estado
@@ -307,7 +363,8 @@ private:
     FullscreenPass ssgi_pass_{};
     FullscreenPass ssr_pass_{};
     FullscreenPass ssr_resolve_pass_{};
-    FullscreenPass gi_resolve_pass_{};
+    ComputePass gi_temporal_pass_{};
+    ComputePass gi_atrous_pass_{};
     FullscreenPass clouds_pass_{};
     FullscreenPass light_shaft_pass_{};
     ComputePass histogram_pass_{};
@@ -328,9 +385,18 @@ private:
         // Los animados se descartan enteros por su esfera.
         bool per_submesh = false;
         std::uint32_t first_bounds = 0;
+        // Culling en GPU (escenarios): primer grupo de dibujo y primer hueco
+        // de comando de este actor.
+        std::uint32_t first_group = 0;
+        std::uint32_t first_slot = 0;
     };
     std::vector<ActorDraw> actor_draws_;
     std::vector<core::Aabb> submesh_bounds_;
+    // Culling en GPU de los clusteres de escenario.
+    GpuCulling gpu_culling_{};
+    std::vector<GpuCluster> gpu_clusters_;
+    std::uint32_t gpu_visible_submeshes_ = 0;
+    std::uint32_t occluded_submeshes_ = 0;
     core::Mat4 camera_view_projection_ = core::Mat4::identity();
     // La del frame anterior, para reproyectar su imagen en el SSGI.
     core::Mat4 previous_view_projection_ = core::Mat4::identity();
@@ -361,6 +427,9 @@ private:
     std::uint32_t probe_cube_ = 0;
     std::array<core::Vec3, ReflectionProbe::kCubeCount> probe_centers_{};
     float probe_fade_ = 1.0f;
+    // Firma de la luz de la captura en curso y de la ultima terminada.
+    std::vector<float> probe_capture_signature_;
+    std::vector<float> probe_signature_;
     // Primer frame en el que se puede capturar otra cara (reparto del coste).
     std::uint64_t probe_next_face_frame_ = 0;
     // Posicion de la camara el frame anterior, para saber si va despacio.
@@ -411,7 +480,11 @@ private:
     std::vector<vk::raii::DescriptorSet> ssgi_sets_;  // uno por frame
     std::vector<vk::raii::DescriptorSet> ssr_sets_;   // uno por frame
     std::vector<vk::raii::DescriptorSet> ssr_resolve_sets_;  // uno por frame
-    std::vector<vk::raii::DescriptorSet> gi_resolve_sets_;   // uno por frame
+    // Filtro de la GI: pool propio. Temporal: uno por frame. A trous: [frame]
+    // [captura de la sonda o no][iteracion] (la captura no toca la historia).
+    vk::raii::DescriptorPool gi_filter_pool_{nullptr};
+    std::vector<vk::raii::DescriptorSet> gi_temporal_sets_;
+    std::vector<vk::raii::DescriptorSet> gi_atrous_sets_;
     std::vector<vk::raii::DescriptorSet> clouds_sets_;       // uno por frame
     std::vector<vk::raii::DescriptorSet> histogram_sets_;
     std::vector<vk::raii::DescriptorSet> exposure_average_sets_;
@@ -466,6 +539,9 @@ private:
     bool gi_enabled_ = true;
     bool ssr_enabled_ = true;
     bool clouds_enabled_ = true;
+    bool environment_enabled_ = true;
+    bool rt_enabled_ = true;
+    bool occlusion_culling_enabled_ = true;
     bool aces_tonemapper_ = false;
     bool auto_exposure_enabled_ = true;
     // Los mapas locales se conservan entre frames (cache), asi que solo el

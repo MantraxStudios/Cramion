@@ -1,0 +1,161 @@
+#version 450
+
+// Culling en la GPU de los clusteres de los escenarios: frustum y oclusion
+// (Hi-Z), en dos fases, como el "two-pass occlusion culling" de Nanite y
+// Frostbite:
+//
+//   Fase 0 (temprana): los clusteres que eran visibles el frame anterior y
+//     estan en el campo de vision se dibujan ya. Casi siempre son casi todos
+//     los que se ven ahora.
+//   (Con su profundidad se construye la piramide Hi-Z: hiz.comp.)
+//   Fase 1 (tardia): todos los del campo de vision se prueban contra la
+//     Hi-Z. Los que se ven y no se dibujaron en la fase 0 (recien
+//     descubiertos) se dibujan ahora: nada aparece con un frame de retraso.
+//     Y se guarda quien es visible, para la fase 0 del frame siguiente.
+//
+// Sin oclusion (push.occlusion = 0: caras de la sonda de reflexion, o
+// apagada), la fase 0 dibuja todo lo que esta en el campo de vision y no toca
+// la visibilidad guardada.
+//
+// Cada cluster visible anade un comando de dibujo indirecto al grupo de su
+// material; la CPU hace una llamada vkCmdDrawIndexedIndirectCount por grupo.
+
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) uniform CameraBuffer {
+    mat4 view;
+    mat4 projection;
+    mat4 view_projection;
+    mat4 inverse_view_projection;
+    vec4 position;
+} camera;
+
+struct Cluster {
+    vec4 bounds_min;   // caja en el mundo
+    vec4 bounds_max;
+    uint first_index;
+    uint index_count;
+    uint group;        // grupo (actor x material): su contador de comandos
+    uint first_slot;   // primer hueco de comando del grupo
+};
+
+struct DrawCommand {  // VkDrawIndexedIndirectCommand
+    uint index_count;
+    uint instance_count;
+    uint first_index;
+    int vertex_offset;
+    uint first_instance;
+};
+
+layout(std430, set = 0, binding = 1) readonly buffer Clusters { Cluster clusters[]; };
+layout(std430, set = 0, binding = 2) buffer Visibility { uint visible[]; };
+layout(std430, set = 0, binding = 3) writeonly buffer Commands { DrawCommand commands[]; };
+layout(std430, set = 0, binding = 4) buffer Counts { uint counts[]; };
+// 0 = dibujados en la fase 0, 1 = en la fase 1, 2 = tapados, 3 = fuera de vista.
+layout(std430, set = 0, binding = 5) buffer Stats { uint stats[]; };
+layout(set = 0, binding = 6) uniform sampler2D hiz;
+
+layout(push_constant) uniform PushConstants {
+    uint cluster_count;
+    uint phase;
+    uint occlusion;
+    uint pad;
+} push;
+
+vec4 matrixRow(mat4 m, int row) {
+    return vec4(m[0][row], m[1][row], m[2][row], m[3][row]);
+}
+
+bool inFrustum(vec3 low, vec3 high) {
+    mat4 m = camera.view_projection;
+    vec4 r0 = matrixRow(m, 0);
+    vec4 r1 = matrixRow(m, 1);
+    vec4 r2 = matrixRow(m, 2);
+    vec4 r3 = matrixRow(m, 3);
+    // Profundidad de Vulkan en [0, 1]: el plano cercano es z >= 0.
+    vec4 planes[6] = vec4[](r3 + r0, r3 - r0, r3 + r1, r3 - r1, r2, r3 - r2);
+    for (int i = 0; i < 6; ++i) {
+        // La esquina de la caja mas adentro del plano.
+        vec3 corner = mix(low, high, step(vec3(0.0), planes[i].xyz));
+        if (dot(planes[i].xyz, corner) + planes[i].w < 0.0) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool occluded(vec3 low, vec3 high) {
+    vec2 uv_min = vec2(1.0);
+    vec2 uv_max = vec2(0.0);
+    float nearest = 1.0;
+    for (int i = 0; i < 8; ++i) {
+        vec3 corner = vec3((i & 1) != 0 ? high.x : low.x, (i & 2) != 0 ? high.y : low.y,
+                           (i & 4) != 0 ? high.z : low.z);
+        vec4 clip = camera.view_projection * vec4(corner, 1.0);
+        // Una esquina detras de la camara: la caja la rodea o casi, visible.
+        if (clip.w <= 0.001) {
+            return false;
+        }
+        vec3 ndc = clip.xyz / clip.w;
+        vec2 uv = ndc.xy * 0.5 + 0.5;
+        uv_min = min(uv_min, uv);
+        uv_max = max(uv_max, uv);
+        nearest = min(nearest, ndc.z);
+    }
+    if (nearest <= 0.0) {
+        return false;
+    }
+    uv_min = clamp(uv_min, vec2(0.0), vec2(1.0));
+    uv_max = clamp(uv_max, vec2(0.0), vec2(1.0));
+
+    // Nivel en el que el rectangulo mide como mucho un texel: lo cubren a lo
+    // sumo 2x2 texeles.
+    vec2 size0 = vec2(textureSize(hiz, 0));
+    vec2 extent = (uv_max - uv_min) * size0;
+    int levels = textureQueryLevels(hiz);
+    int level = clamp(int(ceil(log2(max(max(extent.x, extent.y), 1.0)))), 0, levels - 1);
+
+    ivec2 level_size = textureSize(hiz, level);
+    ivec2 p0 = clamp(ivec2(uv_min * vec2(level_size)), ivec2(0), level_size - 1);
+    ivec2 p1 = clamp(ivec2(uv_max * vec2(level_size)), ivec2(0), level_size - 1);
+    float farthest = max(max(texelFetch(hiz, p0, level).r, texelFetch(hiz, ivec2(p1.x, p0.y), level).r),
+                         max(texelFetch(hiz, ivec2(p0.x, p1.y), level).r, texelFetch(hiz, p1, level).r));
+    return nearest > farthest;
+}
+
+void emit(Cluster cluster) {
+    uint index = atomicAdd(counts[cluster.group], 1u);
+    commands[cluster.first_slot + index] =
+        DrawCommand(cluster.index_count, 1u, cluster.first_index, 0, 0u);
+}
+
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    if (i >= push.cluster_count) {
+        return;
+    }
+    Cluster cluster = clusters[i];
+    bool in_view = inFrustum(cluster.bounds_min.xyz, cluster.bounds_max.xyz);
+
+    if (push.phase == 0u) {
+        if (!in_view) {
+            atomicAdd(stats[3], 1u);
+            return;
+        }
+        if (push.occlusion == 0u || visible[i] != 0u) {
+            emit(cluster);
+            atomicAdd(stats[0], 1u);
+        }
+        return;
+    }
+
+    bool now_visible = in_view && !occluded(cluster.bounds_min.xyz, cluster.bounds_max.xyz);
+    if (now_visible && visible[i] == 0u) {
+        emit(cluster);
+        atomicAdd(stats[1], 1u);
+    }
+    if (in_view && !now_visible) {
+        atomicAdd(stats[2], 1u);
+    }
+    visible[i] = now_visible ? 1u : 0u;
+}

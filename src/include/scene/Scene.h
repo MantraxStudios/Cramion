@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -85,6 +86,12 @@ public:
     // Estado de los interruptores de la demo (para mostrarlo en el titulo).
     bool dayCycleEnabled() const { return day_cycle_enabled_; }
 
+    // Sol fijo en una direccion (hacia el sol): el del cielo fotografiado de
+    // un mapa de entorno HDR. Mientras este fijado no hay ciclo de dia ni
+    // salto a la noche (la foto es de una hora concreta). nullopt lo suelta.
+    void setFixedSun(const std::optional<core::Vec3>& to_sun) { fixed_sun_ = to_sun; }
+    bool sunFixed() const { return fixed_sun_.has_value(); }
+
     // Hora del dia en [0, 24): 6 = amanecer, 12 = mediodia, 18 = ocaso.
     float timeOfDayHours() const;
 
@@ -106,6 +113,7 @@ private:
     float sun_angle_ = core::radians(55.0f);
 
     bool day_cycle_enabled_ = false;
+    std::optional<core::Vec3> fixed_sun_;
 };
 
 }  // namespace cramion::scene

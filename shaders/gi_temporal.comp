@@ -1,0 +1,127 @@
+#version 450
+
+// Acumulacion temporal de la luz rebotada, como la de SVGF (Schied et al.,
+// "Spatiotemporal Variance-Guided Filtering", HPG 2017), a media resolucion.
+//
+// Cada pixel lleva la cuenta de cuantos frames lleva visible (n) y mezcla lo
+// de este frame con lo acumulado:
+//
+//     C = alfa * C_actual + (1 - alfa) * C_anterior,   alfa = max(1/n, kMinAlpha)
+//
+// Asi los primeros frames de una zona recien descubierta convergen enseguida
+// (media exacta) y despues queda una media exponencial de ~1/kMinAlpha
+// frames. La historia solo vale si la profundidad del punto reproyectado
+// coincide con la que habia ahi el frame anterior: si no (algo lo tapaba o
+// acaba de aparecer) se empieza de cero en vez de arrastrar otra superficie.
+//
+// Tambien se acumulan los momentos de la luminancia (E[L], E[L^2]) para
+// estimar la varianza, Var = E[L^2] - E[L]^2, que guia el filtro espacial
+// (gi_atrous.comp). Con poca historia la varianza temporal no es fiable: se
+// estima en la vecindad 3x3.
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) uniform CameraBuffer {
+    mat4 view;
+    mat4 projection;
+    mat4 view_projection;
+    mat4 inverse_view_projection;
+    vec4 position;
+} camera;
+
+layout(set = 0, binding = 1) uniform sampler2D g_depth;          // resolucion completa
+layout(set = 0, binding = 2) uniform sampler2D current_gi;       // trazado de este frame
+layout(set = 0, binding = 3) uniform sampler2D history_gi;       // color acumulado anterior
+layout(set = 0, binding = 4) uniform sampler2D history_moments;  // x = E[L], y = E[L^2], z = n, w = profundidad
+layout(set = 0, binding = 5, rgba16f) uniform writeonly image2D out_color;
+layout(set = 0, binding = 6, rgba16f) uniform writeonly image2D out_moments;
+layout(set = 0, binding = 7, rgba16f) uniform writeonly image2D out_variance;
+
+layout(push_constant) uniform PushConstants {
+    mat4 previous_view_projection;
+    vec4 params;  // x = hay historia valida
+} push;
+
+const float kMinAlpha = 0.05;         // media de ~20 frames en regimen
+const float kMinMomentsAlpha = 0.2;   // los momentos, algo mas reactivos (SVGF)
+const float kMaxHistory = 64.0;
+
+float luminance(vec3 c) {
+    return dot(c, vec3(0.2126, 0.7152, 0.0722));
+}
+
+float linearDepth(float depth) {
+    return camera.projection[3][2] / (depth + camera.projection[2][2]);
+}
+
+void main() {
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = imageSize(out_color);
+    if (any(greaterThanEqual(pixel, size))) {
+        return;
+    }
+
+    ivec2 full_size = textureSize(g_depth, 0);
+    ivec2 full_pixel = min(pixel * 2, full_size - 1);
+    float depth = texelFetch(g_depth, full_pixel, 0).r;
+    vec4 current = texelFetch(current_gi, pixel, 0);
+    if (depth >= 1.0) {
+        imageStore(out_color, pixel, vec4(0.0, 0.0, 0.0, 1.0));
+        imageStore(out_moments, pixel, vec4(0.0, 0.0, 0.0, 0.0));
+        imageStore(out_variance, pixel, vec4(0.0));
+        return;
+    }
+    float view_depth = linearDepth(depth);
+    float current_luminance = luminance(current.rgb);
+
+    // --- Donde estaba este punto el frame anterior ---
+    vec2 uv = (vec2(full_pixel) + 0.5) / vec2(full_size);
+    vec4 world = camera.inverse_view_projection * vec4(uv * 2.0 - 1.0, depth, 1.0);
+    world /= world.w;
+    vec4 previous_clip = push.previous_view_projection * world;
+    vec2 previous_uv = previous_clip.xy / previous_clip.w * 0.5 + 0.5;
+
+    bool valid = push.params.x > 0.5 && previous_clip.w > 0.0 &&
+                 all(greaterThanEqual(previous_uv, vec2(0.0))) &&
+                 all(lessThanEqual(previous_uv, vec2(1.0)));
+    vec4 previous_moments = vec4(0.0);
+    if (valid) {
+        ivec2 previous_pixel = clamp(ivec2(previous_uv * vec2(size)), ivec2(0), size - 1);
+        previous_moments = texelFetch(history_moments, previous_pixel, 0);
+        // Misma superficie: la profundidad que tenia ahi coincide con la del
+        // punto visto desde la camara anterior.
+        valid = previous_moments.z > 0.0 &&
+                abs(previous_moments.w - previous_clip.w) < 0.05 * previous_clip.w + 0.05;
+    }
+
+    float history_length = valid ? min(previous_moments.z + 1.0, kMaxHistory) : 1.0;
+    float alpha = valid ? max(1.0 / history_length, kMinAlpha) : 1.0;
+    float moments_alpha = valid ? max(1.0 / history_length, kMinMomentsAlpha) : 1.0;
+
+    vec4 previous_color = valid ? textureLod(history_gi, previous_uv, 0.0) : current;
+    vec4 color = mix(previous_color, current, alpha);
+
+    vec2 moments = vec2(current_luminance, current_luminance * current_luminance);
+    if (valid) {
+        moments = mix(previous_moments.xy, moments, moments_alpha);
+    }
+    float variance = max(moments.y - moments.x * moments.x, 0.0);
+
+    // Poca historia: varianza de la vecindad 3x3 (mas prudente).
+    if (history_length < 4.0) {
+        vec2 spatial = vec2(0.0);
+        for (int y = -1; y <= 1; ++y) {
+            for (int x = -1; x <= 1; ++x) {
+                ivec2 p = clamp(pixel + ivec2(x, y), ivec2(0), size - 1);
+                float l = luminance(texelFetch(current_gi, p, 0).rgb);
+                spatial += vec2(l, l * l);
+            }
+        }
+        spatial /= 9.0;
+        variance = max(spatial.y - spatial.x * spatial.x, 0.0) * (4.0 / history_length);
+    }
+
+    imageStore(out_color, pixel, color);
+    imageStore(out_moments, pixel, vec4(moments, history_length, view_depth));
+    imageStore(out_variance, pixel, vec4(variance));
+}

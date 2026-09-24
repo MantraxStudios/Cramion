@@ -61,10 +61,10 @@ void Scene::update(const dm::Input& input, float delta_seconds) {
 
     camera_.update(input, delta_seconds);
 
-    if (input.isKeyPressed(dm::Key::T)) {
+    if (input.isKeyPressed(dm::Key::T) && !fixed_sun_) {
         day_cycle_enabled_ = !day_cycle_enabled_;
     }
-    if (input.isKeyPressed(dm::Key::N)) {
+    if (input.isKeyPressed(dm::Key::N) && !fixed_sun_) {
         sun_angle_ += core::kPi;  // Salta 12 horas: de dia a noche y viceversa.
     }
 
@@ -170,8 +170,10 @@ void Scene::updateSun(float delta_seconds) {
     // del arco: sale cuando el sol se pone.
     const float c = std::cos(sun_angle_);
     const float s = std::sin(sun_angle_);
-    const Vec3 to_sun = core::normalize(Vec3{c, s, 0.35f});
-    const Vec3 to_moon = core::normalize(Vec3{-c, -s, 0.35f});
+    // Con un cielo fotografiado, el sol esta donde esta en la foto.
+    const Vec3 to_sun = fixed_sun_ ? core::normalize(*fixed_sun_)
+                                   : core::normalize(Vec3{c, s, 0.35f});
+    const Vec3 to_moon = fixed_sun_ ? -to_sun : core::normalize(Vec3{-c, -s, 0.35f});
 
     // Cuanta luz da cada astro. El sol se apaga justo al tocar el horizonte y
     // la luna no empieza hasta que el sol esta algo por debajo: en el cambio

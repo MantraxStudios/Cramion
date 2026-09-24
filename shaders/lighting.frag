@@ -71,6 +71,7 @@ layout(set = 0, binding = 4) uniform LightBuffer {
     SpotLightGpu spots[kMaxSpotLights];
     vec4 probes[2];                // cubos de la sonda: xyz = centro, w = peso (0 = sin usar)
     vec4 clouds;                   // x = 1 si hay nubes volumetricas
+    vec4 environment;              // x = 1 si el cielo es el mapa HDR (environment_hdr)
 } lights;
 
 // Mapa de sombras en cascada. El muestreador compara por hardware: devuelve
@@ -134,6 +135,10 @@ layout(set = 0, binding = 19) uniform samplerCube reflection_probe_1;
 // Nubes volumetricas (clouds.frag), a media resolucion: rgb = luz dispersada,
 // a = transmitancia (cuanto cielo de detras se ve).
 layout(set = 0, binding = 20) uniform sampler2D clouds_map;
+
+// Mapa de entorno HDR equirectangular (EnvironmentMap), si la escena trae uno:
+// sustituye al cielo fisico. u = atan(z, x) / 2pi + 0.5, v = acos(y) / pi.
+layout(set = 0, binding = 21) uniform sampler2D environment_hdr;
 
 layout(location = 0) in vec2 v_uv;
 layout(location = 0) out vec4 out_color;
@@ -506,6 +511,15 @@ vec3 skyRadiance(vec3 direction) {
 // reflejos lo desactivan: pintan el cielo "detras" del terreno y ahi no deben
 // aparecer.
 vec3 skyColor(vec3 view_direction, bool celestial) {
+    // Cielo fotografiado: la foto ya trae el sol, las nubes y el horizonte.
+    // Para la niebla (sin astros) un mip borroso: el color del aire, no el
+    // detalle de la foto.
+    if (lights.environment.x > 0.5) {
+        vec2 uv = vec2(atan(view_direction.z, view_direction.x) / (2.0 * kPi) + 0.5,
+                       acos(clamp(view_direction.y, -1.0, 1.0)) / kPi);
+        return textureLod(environment_hdr, uv, celestial ? 0.0 : 5.0).rgb;
+    }
+
     vec3 to_sun = lights.sky_sun.xyz;
     vec3 to_moon = lights.sky_moon.xyz;
     float daylight = lights.sky_sun.w;

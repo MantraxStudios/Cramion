@@ -20,6 +20,19 @@ constexpr std::array<const char*, 1> kRequiredDeviceExtensions = {
     vk::KHRSwapchainExtensionName,
 };
 
+// Trazado de rayos (opcionales: se activan si la GPU las tiene todas).
+constexpr std::array<const char*, 3> kRayTracingExtensions = {
+    vk::KHRAccelerationStructureExtensionName,
+    vk::KHRRayQueryExtensionName,
+    vk::KHRDeferredHostOperationsExtensionName,
+};
+
+bool hasExtension(const std::vector<vk::ExtensionProperties>& available, const char* name) {
+    return std::any_of(available.begin(), available.end(), [&](const vk::ExtensionProperties& p) {
+        return std::strcmp(p.extensionName.data(), name) == 0;
+    });
+}
+
 }  // namespace
 
 void VulkanDevice::initialize(const VulkanInstance& instance, const VulkanSurface& surface) {
@@ -118,11 +131,36 @@ bool VulkanDevice::supportsRequiredExtensions(const vk::raii::PhysicalDevice& ca
 
 bool VulkanDevice::supportsRequiredFeatures(const vk::raii::PhysicalDevice& candidate) {
     const auto chain =
-        candidate.getFeatures2<vk::PhysicalDeviceFeatures2, vk::PhysicalDeviceVulkan13Features>();
+        candidate.getFeatures2<vk::PhysicalDeviceFeatures2, vk::PhysicalDeviceVulkan12Features,
+                               vk::PhysicalDeviceVulkan13Features>();
+    const auto& features = chain.template get<vk::PhysicalDeviceFeatures2>().features;
+    const auto& features12 = chain.template get<vk::PhysicalDeviceVulkan12Features>();
     const auto& features13 = chain.template get<vk::PhysicalDeviceVulkan13Features>();
 
+    // Dibujo indirecto con el numero de comandos en un buffer (culling en GPU).
     return features13.dynamicRendering && features13.synchronization2 &&
-           features13.shaderDemoteToHelperInvocation;
+           features13.shaderDemoteToHelperInvocation && features12.drawIndirectCount &&
+           features.multiDrawIndirect;
+}
+
+bool VulkanDevice::supportsRayTracing(const vk::raii::PhysicalDevice& candidate) {
+    const auto available = candidate.enumerateDeviceExtensionProperties();
+    for (const char* extension : kRayTracingExtensions) {
+        if (!hasExtension(available, extension)) {
+            return false;
+        }
+    }
+    const auto chain =
+        candidate.getFeatures2<vk::PhysicalDeviceFeatures2, vk::PhysicalDeviceVulkan12Features,
+                               vk::PhysicalDeviceAccelerationStructureFeaturesKHR,
+                               vk::PhysicalDeviceRayQueryFeaturesKHR>();
+    const auto& features12 = chain.template get<vk::PhysicalDeviceVulkan12Features>();
+    return chain.template get<vk::PhysicalDeviceAccelerationStructureFeaturesKHR>()
+               .accelerationStructure &&
+           chain.template get<vk::PhysicalDeviceRayQueryFeaturesKHR>().rayQuery &&
+           features12.bufferDeviceAddress && features12.runtimeDescriptorArray &&
+           features12.shaderSampledImageArrayNonUniformIndexing &&
+           features12.shaderStorageBufferArrayNonUniformIndexing;
 }
 
 QueueFamilyIndices VulkanDevice::findQueueFamilies(const vk::raii::PhysicalDevice& candidate,
@@ -180,12 +218,29 @@ void VulkanDevice::createLogicalDevice() {
 
     // Caracteristicas de Vulkan 1.3 encadenadas al DeviceCreateInfo.
     vk::StructureChain<vk::DeviceCreateInfo, vk::PhysicalDeviceFeatures2,
-                       vk::PhysicalDeviceVulkan13Features>
+                       vk::PhysicalDeviceVulkan12Features, vk::PhysicalDeviceVulkan13Features,
+                       vk::PhysicalDeviceAccelerationStructureFeaturesKHR,
+                       vk::PhysicalDeviceRayQueryFeaturesKHR>
         chain{};
+
+    ray_tracing_supported_ = supportsRayTracing(physical_device_);
+    std::vector<const char*> extensions(kRequiredDeviceExtensions.begin(),
+                                        kRequiredDeviceExtensions.end());
+    if (ray_tracing_supported_) {
+        extensions.insert(extensions.end(), kRayTracingExtensions.begin(),
+                          kRayTracingExtensions.end());
+        chain.get<vk::PhysicalDeviceAccelerationStructureFeaturesKHR>().accelerationStructure =
+            VK_TRUE;
+        chain.get<vk::PhysicalDeviceRayQueryFeaturesKHR>().rayQuery = VK_TRUE;
+    } else {
+        // Sin las extensiones sus estructuras no pueden ir en la cadena.
+        chain.unlink<vk::PhysicalDeviceAccelerationStructureFeaturesKHR>();
+        chain.unlink<vk::PhysicalDeviceRayQueryFeaturesKHR>();
+    }
 
     auto& create_info = chain.get<vk::DeviceCreateInfo>();
     create_info.setQueueCreateInfos(queue_infos);
-    create_info.setPEnabledExtensionNames(kRequiredDeviceExtensions);
+    create_info.setPEnabledExtensionNames(extensions);
 
     auto& features13 = chain.get<vk::PhysicalDeviceVulkan13Features>();
     features13.dynamicRendering = VK_TRUE;
@@ -193,6 +248,18 @@ void VulkanDevice::createLogicalDevice() {
     // Con --target-env=vulkan1.3, glslc traduce `discard` a
     // OpDemoteToHelperInvocation (lo usa el recorte por alfa de los modelos).
     features13.shaderDemoteToHelperInvocation = VK_TRUE;
+
+    // Culling en GPU: vkCmdDrawIndexedIndirectCount con varios comandos.
+    auto& features12 = chain.get<vk::PhysicalDeviceVulkan12Features>();
+    features12.drawIndirectCount = VK_TRUE;
+    if (ray_tracing_supported_) {
+        // Estructuras de aceleracion (direcciones de buffer) y texturas de
+        // todos los materiales indexadas desde los shaders de rayos.
+        features12.bufferDeviceAddress = VK_TRUE;
+        features12.runtimeDescriptorArray = VK_TRUE;
+        features12.shaderSampledImageArrayNonUniformIndexing = VK_TRUE;
+        features12.shaderStorageBufferArrayNonUniformIndexing = VK_TRUE;
+    }
 
     // depthClamp es opcional: si la GPU no lo tiene, la pasada de sombras
     // simplemente prescinde de el.
@@ -208,6 +275,7 @@ void VulkanDevice::createLogicalDevice() {
     features.features.depthClamp = depth_clamp_supported_ ? VK_TRUE : VK_FALSE;
     features.features.textureCompressionBC =
         texture_compression_bc_supported_ ? VK_TRUE : VK_FALSE;
+    features.features.multiDrawIndirect = VK_TRUE;
 
     device_ = vk::raii::Device(physical_device_, create_info);
 
@@ -220,6 +288,8 @@ void VulkanDevice::createLogicalDevice() {
     pool_info.queueFamilyIndex = queue_families_.graphics;
     transient_pool_ = vk::raii::CommandPool(device_, pool_info);
 
+    std::cout << "[Vulkan] Trazado de rayos por hardware: "
+              << (ray_tracing_supported_ ? "disponible" : "no disponible") << "\n";
     std::cout << "[Vulkan] Dispositivo logico creado (familia graficos = "
               << queue_families_.graphics << ", presentacion = " << queue_families_.present
               << ")\n";

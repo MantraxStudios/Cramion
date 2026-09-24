@@ -1,0 +1,53 @@
+#version 450
+
+// Piramide Hi-Z para el occlusion culling (cull.comp): cada nivel guarda, por
+// texel, la profundidad MAS LEJANA de los texeles que cubre del nivel
+// anterior. Si lo mas cercano de un objeto queda por detras de lo mas lejano
+// que hay en su rectangulo de pantalla, esta tapado entero.
+//
+// El nivel 0 tiene la mitad de resolucion que el depth buffer y se lee de el;
+// los demas, del nivel anterior. Con tamanos impares, el ultimo texel de una
+// fila o columna cubre 3 del anterior: si no, se perderia el borde y un
+// objeto podria darse por tapado sin estarlo.
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) uniform sampler2D depth_buffer;
+layout(set = 0, binding = 1, r32f) uniform readonly image2D source_level;
+layout(set = 0, binding = 2, r32f) uniform writeonly image2D target_level;
+
+layout(push_constant) uniform PushConstants {
+    uint level;
+} push;
+
+void main() {
+    ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 target_size = imageSize(target_level);
+    if (any(greaterThanEqual(p, target_size))) {
+        return;
+    }
+
+    bool from_depth = push.level == 0u;
+    ivec2 source_size = from_depth ? textureSize(depth_buffer, 0) : imageSize(source_level);
+
+    ivec2 first = p * 2;
+    ivec2 last = first + ivec2(1);
+    // Borde de un tamano impar: el ultimo texel se queda tambien con el sobrante.
+    if ((source_size.x & 1) != 0 && p.x == target_size.x - 1) {
+        last.x += 1;
+    }
+    if ((source_size.y & 1) != 0 && p.y == target_size.y - 1) {
+        last.y += 1;
+    }
+    last = min(last, source_size - 1);
+
+    float farthest = 0.0;
+    for (int y = first.y; y <= last.y; ++y) {
+        for (int x = first.x; x <= last.x; ++x) {
+            float depth = from_depth ? texelFetch(depth_buffer, ivec2(x, y), 0).r
+                                     : imageLoad(source_level, ivec2(x, y)).r;
+            farthest = max(farthest, depth);
+        }
+    }
+    imageStore(target_level, p, vec4(farthest));
+}

@@ -20,7 +20,9 @@
 //   E                  auto-exposicion    L              rayos de luz on/off
 //   I                  luz rebotada (GI)  K              tonemapper Neutral / ACES
 //   R                  reflejos (SSR)     P  sonda de reflexion on/off
-//   V                  nubes volumetricas
+//   V                  nubes volumetricas H  occlusion culling on/off
+//   Y                  trazado de rayos (RTX) on/off
+//   U                  cielo HDR de la escena / cielo fisico
 //   RePag / AvPag      compensacion de exposicion (+-0.5 EV)
 //   ESC                salir
 // -----------------------------------------------------------------------------
@@ -72,6 +74,9 @@ struct SceneEntry {
     // Normal maps de convenio DirectX (+Y hacia abajo): assets de Unreal o
     // Lumberyard. El archivo no lo indica.
     bool directx_normals = false;
+    // Cielo fotografiado (HDR equirectangular, relativo a assets/) que
+    // sustituye al cielo fisico. nullptr = cielo fisico con ciclo de dia.
+    const char* environment = nullptr;
 };
 
 // Sibenik: el suelo de la nave es marmol pulido (en las fotos refleja las
@@ -93,10 +98,11 @@ constexpr SceneEntry kScenes[] = {
     {"san-miguel", "san-miguel/san-miguel.obj", {10.5f, 1.7f, -10.5f}, {12.0f, 1.8f, 2.0f}, {}},
     // Amazon Lumberyard Bistro v5.2 (NVIDIA ORCA): la calle y el interior del
     // bistro. Texturas DDS con normal maps DirectX.
+    // Su escena original (Falcor) usa como cielo san_giuseppe_bridge_4k.hdr.
     {"bistro", "bistro/Bistro_v5_2/BistroExterior.fbx", {0.0f, 2.0f, 0.0f}, {1.0f, 2.0f, 0.0f},
-     {}, true},
+     {}, true, "bistro/Bistro_v5_2/san_giuseppe_bridge_4k.hdr"},
     {"bistro-interior", "bistro/Bistro_v5_2/BistroInterior.fbx", {0.0f, 1.7f, 0.0f},
-     {1.0f, 1.7f, 0.0f}, {}, true},
+     {1.0f, 1.7f, 0.0f}, {}, true, "bistro/Bistro_v5_2/san_giuseppe_bridge_4k.hdr"},
 };
 
 const SceneEntry& chooseScene(int argc, char** argv) {
@@ -163,7 +169,9 @@ void updateWindowTitle(Window& window, const Clock& clock, const Scene& scene,
           << L" FPS (" << std::setprecision(2) << clock.averageFrameMilliseconds() << L" ms)"
           << L"  |  " << renderer.triangleCount() / 1000 << L"k tris  |  clusteres "
           << renderer.visibleSubmeshes() << L"/" << renderer.totalSubmeshes() << L" (sombras "
-          << renderer.shadowSubmeshes() << L")" << L"  |  XYZ "
+          << renderer.shadowSubmeshes() << L")  |  oclusion "
+          << (renderer.occlusionCullingEnabled() ? L"ON" : L"OFF") << L" ("
+          << renderer.occludedSubmeshes() << L" tapados)" << L"  |  XYZ "
           << std::setprecision(1) << position.x << L" " << position.y << L" " << position.z
           << L"  |  "<< std::setprecision(0) << std::setw(2) << std::setfill(L'0')
           << static_cast<int>(scene.timeOfDayHours()) << L":" << std::setw(2)
@@ -174,9 +182,14 @@ void updateWindowTitle(Window& window, const Clock& clock, const Scene& scene,
           << (renderer.antialiasingEnabled() ? L"ON" : L"OFF") << L"  |  bloom "
           << (renderer.bloomEnabled() ? L"ON" : L"OFF") << L"  |  SSAO "
           << (renderer.ssaoEnabled() ? L"ON" : L"OFF") << L"  |  SSR "
-          << (renderer.ssrEnabled() ? L"ON" : L"OFF") << L"  |  sonda "
+          << (renderer.ssrEnabled() ? L"ON" : L"OFF") << L"  |  RTX "
+          << (!renderer.rayTracingSupported() ? L"no disponible"
+              : renderer.rayTracingActive()   ? L"ON"
+                                              : L"OFF")
+          << L"  |  sonda "
           << (renderer.reflectionProbeEnabled() ? L"ON" : L"OFF") << L"  |  nubes "
-          << (renderer.cloudsEnabled() ? L"ON" : L"OFF") << L"  |  GI "
+          << (renderer.cloudsEnabled() ? L"ON" : L"OFF") << L"  |  cielo "
+          << (renderer.environmentActive() ? L"HDR" : L"fisico") << L"  |  GI "
           << (renderer.giEnabled() ? L"ON" : L"OFF") << L"  |  "
           << (renderer.acesTonemapper() ? L"ACES" : L"Neutral") << L"  |  exposicion "
           << (renderer.autoExposureEnabled() ? L"auto " : L"manual ") << std::setprecision(2)
@@ -250,6 +263,16 @@ int main(int argc, char** argv) {
         };
 
         renderer.initialize(engine_info, window.handle(), window.width(), window.height());
+
+        // Cielo fotografiado de la escena, si trae uno: el sol se coloca donde
+        // esta en la foto.
+        if (entry.environment != nullptr) {
+            const std::filesystem::path environment_path =
+                cramion::gfx::shaders::directory().parent_path() / "assets" / entry.environment;
+            if (renderer.loadEnvironment(environment_path)) {
+                scene.setFixedSun(renderer.environmentSunDirection());
+            }
+        }
         const auto upload_start = std::chrono::steady_clock::now();
         renderer.uploadModels(scene);
         std::cout << "[Vulkan] Subida a la GPU: "
@@ -262,6 +285,8 @@ int main(int argc, char** argv) {
                      "           N dia/noche | G sombras | C cascadas | X antialiasing\n"
                      "           B bloom | O SSAO | R reflejos (SSR) | P sonda de reflexion\n"
                      "           I luz rebotada (GI) | V nubes volumetricas\n"
+                     "           H occlusion culling | Y trazado de rayos (RTX)\n"
+                     "           U cielo HDR de la escena / cielo fisico\n"
                      "           L rayos de luz\n"
                      "           K tonemapper (Neutral/ACES) | E auto-exposicion\n"
                      "           RePag/AvPag compensacion de exposicion | ESC salir\n\n";
@@ -298,6 +323,20 @@ int main(int argc, char** argv) {
             }
             if (input.isKeyPressed(Key::R)) {
                 renderer.setSsrEnabled(!renderer.ssrEnabled());
+            }
+            // Cielo fotografiado <-> cielo fisico (con su ciclo de dia).
+            if (input.isKeyPressed(Key::U) && renderer.environmentLoaded()) {
+                renderer.setEnvironmentEnabled(!renderer.environmentEnabled());
+                scene.setFixedSun(renderer.environmentEnabled()
+                                      ? std::optional<cramion::core::Vec3>(
+                                            renderer.environmentSunDirection())
+                                      : std::nullopt);
+            }
+            if (input.isKeyPressed(Key::Y)) {
+                renderer.setRayTracingEnabled(!renderer.rayTracingEnabled());
+            }
+            if (input.isKeyPressed(Key::H)) {
+                renderer.setOcclusionCullingEnabled(!renderer.occlusionCullingEnabled());
             }
             if (input.isKeyPressed(Key::V)) {
                 renderer.setCloudsEnabled(!renderer.cloudsEnabled());

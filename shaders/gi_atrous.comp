@@ -1,0 +1,130 @@
+#version 450
+
+// Filtro espacial de la luz rebotada: transformada "a trous" con bordes
+// (Dammertz et al. 2010) guiada por la varianza, como en SVGF (Schied et al.
+// 2017), a media resolucion. Se aplica kIterations veces con el nucleo 5x5
+// B-spline h = [1/16, 1/4, 3/8, 1/4, 1/16] separado por `step` = 1, 2, 4, 8
+// pixeles: cubre mucho con pocas muestras.
+//
+// Cada muestra pesa k(dx) k(dy) * w_z * w_n * w_l:
+//   w_z = exp(-|z_p - z_q| / (sigma_z * z_p * step))      misma distancia
+//   w_n = max(0, n_p . n_q)^128                           misma orientacion
+//   w_l = exp(-|L_p - L_q| / (sigma_l * sqrt(Var_p)))     el ruido se mezcla,
+//         los detalles de verdad (mas alla del ruido esperado) no
+// La varianza se filtra con los pesos al cuadrado (la de una media ponderada).
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) uniform CameraBuffer {
+    mat4 view;
+    mat4 projection;
+    mat4 view_projection;
+    mat4 inverse_view_projection;
+    vec4 position;
+} camera;
+
+layout(set = 0, binding = 1) uniform sampler2D g_depth;   // resolucion completa
+layout(set = 0, binding = 2) uniform sampler2D g_normal;  // resolucion completa
+layout(set = 0, binding = 3) uniform sampler2D in_color;
+layout(set = 0, binding = 4) uniform sampler2D in_variance;
+layout(set = 0, binding = 5, rgba16f) uniform writeonly image2D out_color;
+layout(set = 0, binding = 6, rgba16f) uniform writeonly image2D out_variance;
+
+layout(push_constant) uniform PushConstants {
+    int step;
+} push;
+
+const float kSigmaDepth = 0.03;
+const float kSigmaNormal = 128.0;
+const float kSigmaLuminance = 4.0;
+
+float luminance(vec3 c) {
+    return dot(c, vec3(0.2126, 0.7152, 0.0722));
+}
+
+float linearDepth(float depth) {
+    return camera.projection[3][2] / (depth + camera.projection[2][2]);
+}
+
+vec3 decodeNormal(vec2 e) {
+    vec3 n = vec3(e.x, 1.0 - abs(e.x) - abs(e.y), e.y);
+    float t = max(-n.y, 0.0);
+    n.x += n.x >= 0.0 ? -t : t;
+    n.z += n.z >= 0.0 ? -t : t;
+    return normalize(n);
+}
+
+void main() {
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = imageSize(out_color);
+    if (any(greaterThanEqual(pixel, size))) {
+        return;
+    }
+
+    ivec2 full_size = textureSize(g_depth, 0);
+    float center_raw_depth = texelFetch(g_depth, min(pixel * 2, full_size - 1), 0).r;
+    vec4 center = texelFetch(in_color, pixel, 0);
+    float center_variance = texelFetch(in_variance, pixel, 0).r;
+    if (center_raw_depth >= 1.0) {
+        imageStore(out_color, pixel, center);
+        imageStore(out_variance, pixel, vec4(center_variance));
+        return;
+    }
+    float center_depth = linearDepth(center_raw_depth);
+    vec3 center_normal = decodeNormal(texelFetch(g_normal, min(pixel * 2, full_size - 1), 0).rg);
+    float center_luminance = luminance(center.rgb);
+
+    // Varianza suavizada 3x3 (gaussiana) para el peso de luminancia: la de un
+    // solo pixel es demasiado ruidosa (SVGF).
+    float smoothed_variance = 0.0;
+    for (int y = -1; y <= 1; ++y) {
+        for (int x = -1; x <= 1; ++x) {
+            float k = (x == 0 ? 0.5 : 0.25) * (y == 0 ? 0.5 : 0.25);
+            ivec2 p = clamp(pixel + ivec2(x, y), ivec2(0), size - 1);
+            smoothed_variance += texelFetch(in_variance, p, 0).r * k;
+        }
+    }
+    float luminance_scale = kSigmaLuminance * sqrt(max(smoothed_variance, 0.0)) + 1e-4;
+
+    const float kKernel[3] = float[](3.0 / 8.0, 1.0 / 4.0, 1.0 / 16.0);
+    vec4 color_sum = center;
+    float weight_sum = 1.0;
+    float variance_sum = center_variance;
+
+    for (int y = -2; y <= 2; ++y) {
+        for (int x = -2; x <= 2; ++x) {
+            if (x == 0 && y == 0) {
+                continue;
+            }
+            ivec2 q = pixel + ivec2(x, y) * push.step;
+            if (any(lessThan(q, ivec2(0))) || any(greaterThanEqual(q, size))) {
+                continue;
+            }
+            ivec2 full_q = min(q * 2, full_size - 1);
+            float raw_depth = texelFetch(g_depth, full_q, 0).r;
+            if (raw_depth >= 1.0) {
+                continue;
+            }
+
+            vec4 sample_color = texelFetch(in_color, q, 0);
+            float sample_variance = texelFetch(in_variance, q, 0).r;
+            float sample_depth = linearDepth(raw_depth);
+            vec3 sample_normal = decodeNormal(texelFetch(g_normal, full_q, 0).rg);
+
+            float kernel = kKernel[abs(x)] * kKernel[abs(y)] / (kKernel[0] * kKernel[0]);
+            float w_depth = exp(-abs(center_depth - sample_depth) /
+                                (kSigmaDepth * center_depth * float(push.step) + 1e-3));
+            float w_normal = pow(max(dot(center_normal, sample_normal), 0.0), kSigmaNormal);
+            float w_luminance =
+                exp(-abs(center_luminance - luminance(sample_color.rgb)) / luminance_scale);
+            float w = kernel * w_depth * w_normal * w_luminance;
+
+            color_sum += sample_color * w;
+            weight_sum += w;
+            variance_sum += sample_variance * w * w;
+        }
+    }
+
+    imageStore(out_color, pixel, color_sum / weight_sum);
+    imageStore(out_variance, pixel, vec4(variance_sum / (weight_sum * weight_sum)));
+}

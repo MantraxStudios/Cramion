@@ -17,15 +17,23 @@ layout(set = 0, binding = 0) uniform sampler2D sky_lut;
 layout(set = 0, binding = 1) writeonly buffer Irradiance {
     vec4 coefficients[9];
 } irradiance;
+layout(set = 0, binding = 2) uniform sampler2D environment_hdr;
 
 layout(push_constant) uniform PushConstants {
     vec4 light_radiance;
     vec4 to_light;
     uint face_size;
     uint sample_count;
+    float hdr;  // 1 = el entorno es el mapa HDR, no el cielo fisico
 } push;
 
 #include "ibl_common.glsl"
+
+// Mapa de entorno HDR (EnvironmentMap), si la escena trae uno (push.hdr).
+// Convencion equirectangular: u = atan(z, x) / 2pi + 0.5, v = acos(y) / pi.
+vec2 environmentUv(vec3 d) {
+    return vec2(atan(d.z, d.x) / (2.0 * kPi) + 0.5, acos(clamp(d.y, -1.0, 1.0)) / kPi);
+}
 
 const uint kAzimuthCells = 64u;
 const uint kPolarCells = 32u;
@@ -51,7 +59,14 @@ void main() {
         float theta = (float(j) + 0.5) * d_theta;
         float sin_theta = sin(theta);
         vec3 d = vec3(sin_theta * cos(phi), cos(theta), sin_theta * sin(phi));
-        vec3 radiance = environment(d, ground) * (d_phi * d_theta * sin_theta);
+        // Con el HDR, un mip del tamano de la celda (64 x 32).
+        vec3 environment_radiance =
+            push.hdr > 0.5
+                ? textureLod(environment_hdr, environmentUv(d),
+                             log2(max(float(textureSize(environment_hdr, 0).x) / 64.0, 1.0)))
+                      .rgb
+                : environment(d, ground);
+        vec3 radiance = environment_radiance * (d_phi * d_theta * sin_theta);
 
         c[0] += radiance * 0.282095;
         c[1] += radiance * 0.488603 * d.y;

@@ -12,15 +12,32 @@ layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 
 layout(set = 0, binding = 0) uniform sampler2D sky_lut;
 layout(set = 0, binding = 1, rgba16f) uniform writeonly image2DArray env_level;
+layout(set = 0, binding = 2) uniform sampler2D environment_hdr;
 
 layout(push_constant) uniform PushConstants {
     vec4 light_radiance;  // rgb = radiancia de la luz direccional activa, a = rugosidad
     vec4 to_light;        // xyz = hacia la luz
     uint face_size;
     uint sample_count;
+    float hdr;            // 1 = el entorno es el mapa HDR, no el cielo fisico
 } push;
 
 #include "ibl_common.glsl"
+
+// Mapa de entorno HDR (EnvironmentMap), si la escena trae uno (push.hdr).
+// Convencion equirectangular: u = atan(z, x) / 2pi + 0.5, v = acos(y) / pi.
+vec2 environmentUv(vec3 d) {
+    return vec2(atan(d.z, d.x) / (2.0 * kPi) + 0.5, acos(clamp(d.y, -1.0, 1.0)) / kPi);
+}
+
+// Radiancia del entorno en una direccion: el cielo fisico o el mapa HDR (al
+// mip `lod`: con el HDR el prefiltrado usa los mips para no dejar ruido).
+vec3 environmentRadiance(vec3 direction, vec3 ground, float lod) {
+    if (push.hdr > 0.5) {
+        return textureLod(environment_hdr, environmentUv(direction), lod).rgb;
+    }
+    return environment(direction, ground);
+}
 
 // Direccion del centro de un texel (uv en [-1, 1]) de una cara del cubo, con
 // la convencion de Vulkan (+X, -X, +Y, -Y, +Z, -Z).
@@ -67,9 +84,13 @@ void main() {
     vec3 ground = groundRadiance(push.light_radiance.rgb, push.to_light.xyz);
 
     float roughness = push.light_radiance.a;
+    // Mip del HDR con el tamano de un texel de este nivel del cubo (la
+    // equirectangular tiene ~4 caras de ancho).
+    float base_lod = log2(max(float(textureSize(environment_hdr, 0).x) /
+                                  (4.0 * float(push.face_size)), 1.0));
     vec3 color;
     if (roughness <= 0.0) {
-        color = environment(n, ground);
+        color = environmentRadiance(n, ground, base_lod);
     } else {
         // V = N = R: la aproximacion habitual del split-sum.
         float alpha = roughness * roughness;
@@ -81,7 +102,7 @@ void main() {
             vec3 l = normalize(2.0 * dot(n, h) * h - n);
             float n_dot_l = dot(n, l);
             if (n_dot_l > 0.0) {
-                sum += environment(l, ground) * n_dot_l;
+                sum += environmentRadiance(l, ground, base_lod + 1.0 + roughness * 4.0) * n_dot_l;
                 weight += n_dot_l;
             }
         }

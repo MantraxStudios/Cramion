@@ -1,0 +1,74 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+
+// Luz rebotada con trazado de rayos por hardware (sustituye a ssgi.frag), a
+// media resolucion. Para cada pixel se lanzan kRays rayos en la semiesfera de
+// su normal (distribucion coseno) contra la escena REAL: no depende de lo que
+// hay en pantalla ni de capturas; todo se recalcula cada frame.
+//
+//   - si el rayo choca, se suma la luz que sale del punto de impacto
+//     (hitRadiance: la de la pantalla si se ve, calculada si no),
+//   - si escapa, esa fraccion del hemisferio ve el cielo (lo pone el IBL en
+//     lighting.frag).
+//
+// Salida (igual que ssgi.frag): rgb = luz rebotada media sobre el
+// hemisferio, a = visibilidad del cielo. Los rayos cambian cada frame y
+// el filtro SVGF (gi_temporal.comp, gi_atrous.comp) los acumula y limpia.
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+#include "rt_common.glsl"
+
+const int kRays = 2;
+const float kMaxDistance = 80.0;   // metros; mas lejos cuenta como cielo
+const float kMaxLuminance = 4.0;   // tope por rayo: sin destellos de bombillas
+
+void main() {
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = imageSize(output_image);
+    if (any(greaterThanEqual(pixel, size))) {
+        return;
+    }
+
+    // Pixel de resolucion completa que representa a este de media.
+    ivec2 full_size = textureSize(g_depth, 0);
+    ivec2 full_pixel = min(pixel * 2, full_size - 1);
+    float depth = texelFetch(g_depth, full_pixel, 0).r;
+    if (depth >= 1.0) {
+        imageStore(output_image, pixel, vec4(0.0, 0.0, 0.0, 1.0));
+        return;
+    }
+
+    vec2 uv = (vec2(full_pixel) + 0.5) / vec2(full_size);
+    vec3 position = worldFromDepth(uv, depth);
+    vec3 normal = decodeNormal(texelFetch(g_normal, full_pixel, 0).rg);
+    float distance_to_camera = length(position - camera.position.xyz);
+    vec3 origin = position + normal * (0.02 + 0.002 * distance_to_camera);
+
+    vec3 helper = abs(normal.y) < 0.99 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
+    vec3 tangent = normalize(cross(helper, normal));
+    vec3 bitangent = cross(normal, tangent);
+
+    vec3 radiance = vec3(0.0);
+    float escaped = 0.0;
+    for (int r = 0; r < kRays; ++r) {
+        // Direccion con distribucion coseno.
+        vec2 xi = sampleNoise(vec2(pixel), float(r));
+        float u1 = xi.x;
+        float u2 = xi.y;
+        float phi = 2.0 * kPi * u2;
+        float sin_theta = sqrt(u1);
+        vec3 direction = normalize(tangent * (sin_theta * cos(phi)) +
+                                   bitangent * (sin_theta * sin(phi)) + normal * sqrt(1.0 - u1));
+
+        RtHit hit;
+        if (traceRay(origin, direction, kMaxDistance, hit)) {
+            vec3 light = hitRadiance(hit, 3.0);
+            radiance += light * min(1.0, kMaxLuminance / max(luminance(light), 0.0001));
+        } else {
+            escaped += 1.0;
+        }
+    }
+
+    imageStore(output_image, pixel, vec4(radiance / float(kRays), escaped / float(kRays)));
+}

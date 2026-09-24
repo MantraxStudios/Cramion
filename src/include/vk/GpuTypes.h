@@ -63,6 +63,9 @@ struct GpuLights {
 
     // Nubes volumetricas: x = 1 si se componen sobre el cielo.
     core::Vec4 clouds{};
+
+    // Mapa de entorno HDR: x = 1 si sustituye al cielo fisico.
+    core::Vec4 environment{};
 };
 
 // Constante de push de los modelos con esqueleto (pasada de geometria). Son
@@ -123,6 +126,8 @@ struct GpuSsgiPush {
     core::Mat4 previous_view_projection = core::Mat4::identity();
     // x = hay frame anterior valido, y = intensidad.
     core::Vec4 params{0.0f, 1.0f, 0.0f, 0.0f};
+    // Solo ssgi.frag: x = numero de frame, y/z = peso de cada cubo de la sonda.
+    core::Vec4 extra{};
 };
 
 // Constante de push de las nubes volumetricas (clouds.frag).

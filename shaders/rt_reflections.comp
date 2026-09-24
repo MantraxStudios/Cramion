@@ -1,0 +1,85 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+
+// Reflejos con trazado de rayos por hardware (sustituyen al SSR y a la sonda
+// de reflexion), a resolucion completa. Un rayo por pixel contra la escena
+// real: refleja lo que hay fuera de pantalla y detras de la camara igual que
+// lo de delante, sin capturas.
+//
+// La direccion sigue el lobulo GGX de la rugosidad (muestreo de importancia,
+// distinto cada frame): con el filtro temporal (ssr_resolve.frag) la media es
+// el reflejo borroso que corresponde, lo mismo que el entorno prefiltrado del
+// IBL. En superficies muy rugosas no se traza: lo pone el IBL.
+//
+// Salida (igual que ssr.frag): rgb = luz reflejada, a = confianza.
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+#include "rt_common.glsl"
+
+const float kMaxRoughness = 0.65;
+const float kMaxDistance = 1000.0;
+const float kEnvironmentMaxLod = 5.0;  // IblProbe::kEnvironmentMips - 1
+
+vec3 importanceSampleGgx(vec2 xi, vec3 n, float alpha) {
+    float phi = 2.0 * kPi * xi.x;
+    float cos_theta = sqrt((1.0 - xi.y) / (1.0 + (alpha * alpha - 1.0) * xi.y));
+    float sin_theta = sqrt(1.0 - cos_theta * cos_theta);
+    vec3 h = vec3(sin_theta * cos(phi), sin_theta * sin(phi), cos_theta);
+    vec3 up = abs(n.y) < 0.999 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
+    vec3 tangent = normalize(cross(up, n));
+    vec3 bitangent = cross(n, tangent);
+    return normalize(tangent * h.x + bitangent * h.y + n * h.z);
+}
+
+void main() {
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = imageSize(output_image);
+    if (any(greaterThanEqual(pixel, size))) {
+        return;
+    }
+
+    float depth = texelFetch(g_depth, pixel, 0).r;
+    vec4 normal_sample = texelFetch(g_normal, pixel, 0);
+    float roughness = normal_sample.b;
+    if (depth >= 1.0 || roughness > kMaxRoughness) {
+        imageStore(output_image, pixel, vec4(0.0));
+        return;
+    }
+
+    vec2 uv = (vec2(pixel) + 0.5) / vec2(size);
+    vec3 position = worldFromDepth(uv, depth);
+    vec3 normal = decodeNormal(normal_sample.rg);
+    vec3 to_camera = camera.position.xyz - position;
+    float distance_to_camera = length(to_camera);
+    vec3 view_direction = to_camera / max(distance_to_camera, 0.0001);
+
+    // Direccion reflejada: espejo, o una muestra del lobulo GGX.
+    vec3 direction = reflect(-view_direction, normal);
+    if (roughness > 0.05) {
+        vec2 xi = sampleNoise(vec2(pixel), 0.0);
+        // Sin la cola larga del lobulo: menos ruido, apenas se nota.
+        xi.y *= 0.85;
+        vec3 halfway = importanceSampleGgx(xi, normal, roughness * roughness);
+        vec3 sampled = reflect(-view_direction, halfway);
+        if (dot(sampled, normal) > 0.0) {
+            direction = sampled;
+        }
+    }
+
+    vec3 origin = position + normal * (0.01 + 0.002 * distance_to_camera);
+    RtHit hit;
+    vec3 color;
+    if (traceRay(origin, direction, kMaxDistance, hit)) {
+        // Texturas mas borrosas lejos y en superficies rugosas.
+        float lod = clamp(log2(1.0 + hit.distance * (0.05 + roughness)), 0.0, 6.0);
+        color = hitRadiance(hit, lod);
+    } else {
+        // Cielo (y suelo lejano) del IBL, a la rugosidad de la superficie.
+        color = textureLod(environment_map, direction, roughness * kEnvironmentMaxLod).rgb;
+    }
+
+    // Entre kMaxRoughness * 0.75 y kMaxRoughness pasa suavemente al IBL.
+    float confidence = 1.0 - smoothstep(kMaxRoughness * 0.75, kMaxRoughness, roughness);
+    imageStore(output_image, pixel, vec4(min(color, vec3(kMaxRadiance)), confidence));
+}

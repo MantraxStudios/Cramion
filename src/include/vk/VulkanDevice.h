@@ -61,6 +61,11 @@ public:
     bool depthClampSupported() const { return depth_clamp_supported_; }
     bool textureCompressionBcSupported() const { return texture_compression_bc_supported_; }
 
+    // Trazado de rayos por hardware (ray queries + estructuras de
+    // aceleracion, con direcciones de buffer y texturas indexadas en los
+    // shaders). Opcional: sin el, la GI y los reflejos son de pantalla.
+    bool rayTracingSupported() const { return ray_tracing_supported_; }
+
 private:
     void pickPhysicalDevice(const VulkanInstance& instance, const VulkanSurface& surface);
     void createLogicalDevice();
@@ -72,6 +77,7 @@ private:
                                                 const vk::raii::SurfaceKHR& surface);
     static bool supportsRequiredExtensions(const vk::raii::PhysicalDevice& candidate);
     static bool supportsRequiredFeatures(const vk::raii::PhysicalDevice& candidate);
+    static bool supportsRayTracing(const vk::raii::PhysicalDevice& candidate);
 
     // Primer formato de profundidad de la lista de preferencias que la GPU
     // admita como attachment.
@@ -89,6 +95,7 @@ private:
     vk::Format depth_format_ = vk::Format::eUndefined;
     bool depth_clamp_supported_ = false;
     bool texture_compression_bc_supported_ = false;
+    bool ray_tracing_supported_ = false;
     std::string device_name_;
     std::uint32_t api_version_ = 0;
 };

@@ -129,7 +129,6 @@ set(SHADER_SOURCES
     "${CMAKE_CURRENT_SOURCE_DIR}/shaders/ssgi.frag"
     "${CMAKE_CURRENT_SOURCE_DIR}/shaders/ssr.frag"
     "${CMAKE_CURRENT_SOURCE_DIR}/shaders/ssr_resolve.frag"
-    "${CMAKE_CURRENT_SOURCE_DIR}/shaders/gi_resolve.frag"
     "${CMAKE_CURRENT_SOURCE_DIR}/shaders/clouds.frag"
     "${CMAKE_CURRENT_SOURCE_DIR}/shaders/bloom_down.frag"
     "${CMAKE_CURRENT_SOURCE_DIR}/shaders/bloom_up.frag"
@@ -143,6 +142,12 @@ set(SHADER_SOURCES
     "${CMAKE_CURRENT_SOURCE_DIR}/shaders/brdf_lut.comp"
     "${CMAKE_CURRENT_SOURCE_DIR}/shaders/probe_prefilter.comp"
     "${CMAKE_CURRENT_SOURCE_DIR}/shaders/cloud_noise.comp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/shaders/gi_temporal.comp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/shaders/gi_atrous.comp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/shaders/cull.comp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/shaders/hiz.comp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/shaders/rt_gi.comp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/shaders/rt_reflections.comp"
     "${CMAKE_CURRENT_SOURCE_DIR}/shaders/skinned.vert"
     "${CMAKE_CURRENT_SOURCE_DIR}/shaders/skinned.frag"
     "${CMAKE_CURRENT_SOURCE_DIR}/shaders/skinned_shadow.vert"
@@ -153,6 +158,7 @@ set(SHADER_SOURCES
 # Cabeceras que incluyen los shaders (#include): si cambian, se recompilan todos.
 set(SHADER_INCLUDES
     "${CMAKE_CURRENT_SOURCE_DIR}/shaders/ibl_common.glsl"
+    "${CMAKE_CURRENT_SOURCE_DIR}/shaders/rt_common.glsl"
 )
 
 set(SHADER_OUTPUT_DIR "${CMAKE_BINARY_DIR}/shaders")

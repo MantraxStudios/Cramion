@@ -14,12 +14,20 @@
 //     reflejaba en el frame ANTERIOR (imagen HDR ya iluminada, reproyectada
 //     con la view-projection anterior). Como esa imagen ya incluia la GI del
 //     frame previo, los rebotes se acumulan: un rebote por frame.
-//   - si escapa, esa fraccion del hemisferio ve el cielo: la da el IBL.
+//   - si no choca con nada en pantalla (sale de ella o no encuentra nada en
+//     kRadius metros), se pregunta a la sonda de reflexion, que ve la escena
+//     en 3D alrededor de la camara: si en esa direccion hay una superficie,
+//     su luz es rebote; si hay cielo, esa fraccion del hemisferio ve el cielo
+//     (lo da el IBL). Sin la sonda, lo que no estaba en pantalla contaba como
+//     cielo: al girar la camara el rebote de una pared soleada aparecia y
+//     desaparecia de golpe.
 //
 // Salida: rgb = luz rebotada (ya como media sobre el hemisferio, lista para
 // multiplicar por el albedo), a = fraccion de rayos que escapan (visibilidad
-// del cielo a gran escala). La rotacion de los rayos sigue un patron 4x4 que
-// la pasada de iluminacion promedia al reescalar.
+// del cielo a gran escala). Los rayos cambian de direccion cada frame; el
+// filtro SVGF (gi_temporal.comp, gi_atrous.comp) los acumula: con 6 por frame, decenas por
+// pixel. (Con un patron fijo por pixel el filtro no tenia nada que promediar y
+// los errores se deslizaban por las superficies al moverse.)
 
 layout(set = 0, binding = 0) uniform CameraBuffer {
     mat4 view;
@@ -34,9 +42,14 @@ layout(set = 0, binding = 2) uniform sampler2D g_normal;
 // Imagen HDR iluminada del frame anterior.
 layout(set = 0, binding = 3) uniform sampler2D previous_color;
 
+// Los dos cubos de la sonda de reflexion (prefiltrados; a = distancia).
+layout(set = 0, binding = 4) uniform samplerCube reflection_probe_0;
+layout(set = 0, binding = 5) uniform samplerCube reflection_probe_1;
+
 layout(push_constant) uniform PushConstants {
     mat4 previous_view_projection;
     vec4 params;  // x = hay frame anterior valido, y = intensidad
+    vec4 extra;   // x = numero de frame, y/z = peso de cada cubo de la sonda (0 = sin sonda)
 } push;
 
 layout(location = 0) in vec2 v_uv;
@@ -51,6 +64,10 @@ const float kRadius = 3.0;       // metros
 // colores al ampliar la GI a pantalla completa.
 const float kMaxLuminance = 3.0;
 const float kGoldenAngle = 2.39996323;
+// Mip de la sonda para el rebote (lobulo ancho, como un difuso).
+const float kProbeLod = 3.0;
+// Mas lejos que esto, lo que ve la sonda es cielo (lighting.frag guarda 5000).
+const float kProbeSkyDistance = 2500.0;
 const float kTwoPi = 6.28318531;
 
 float linearDepth(float depth) {
@@ -71,12 +88,19 @@ vec3 decodeNormal(vec2 e) {
     return normalize(n);
 }
 
-float bayer4(ivec2 p) {
-    const float kBayer[16] = float[](0.0, 8.0, 2.0, 10.0,
-                                     12.0, 4.0, 14.0, 6.0,
-                                     3.0, 11.0, 1.0, 9.0,
-                                     15.0, 7.0, 13.0, 5.0);
-    return (kBayer[(p.y & 3) * 4 + (p.x & 3)] + 0.5) / 16.0;
+// Ruido de gradiente entrelazado (Jimenez 2014), distinto cada frame.
+float interleavedGradientNoise(vec2 p, float frame) {
+    p += 5.588238 * frame;
+    return fract(52.9829189 * fract(dot(p, vec2(0.06711056, 0.00583715))));
+}
+
+float luminance(vec3 c) {
+    return dot(c, vec3(0.2126, 0.7152, 0.0722));
+}
+
+vec3 capLuminance(vec3 light) {
+    light = max(light, vec3(0.0));
+    return light * min(1.0, kMaxLuminance / max(luminance(light), 0.0001));
 }
 
 void main() {
@@ -102,8 +126,10 @@ void main() {
     vec3 tangent = normalize(cross(helper, normal));
     vec3 bitangent = cross(normal, tangent);
 
-    float noise = bayer4(half_pixel);
-    float rotation = noise * kTwoPi;
+    float frame = mod(push.extra.x, 64.0);
+    float noise = interleavedGradientNoise(vec2(half_pixel), frame);
+    float rotation = interleavedGradientNoise(vec2(half_pixel) + vec2(17.0, 59.0), frame) * kTwoPi;
+    float probe_weight = push.extra.y + push.extra.z;
     bool has_history = push.params.x > 0.5;
 
     // Punto de partida algo separado de la superficie: sin esto el primer
@@ -161,18 +187,37 @@ void main() {
                     vec2 previous_uv = previous_clip.xy / previous_clip.w * 0.5 + 0.5;
                     if (previous_clip.w > 0.0 && all(greaterThanEqual(previous_uv, vec2(0.0))) &&
                         all(lessThanEqual(previous_uv, vec2(1.0)))) {
-                        vec3 light = max(textureLod(previous_color, previous_uv, 0.0).rgb,
-                                         vec3(0.0));
-                        float light_luminance = dot(light, vec3(0.2126, 0.7152, 0.0722));
-                        light *= min(1.0, kMaxLuminance / max(light_luminance, 0.0001));
-                        radiance += light * facing;
+                        vec3 light = textureLod(previous_color, previous_uv, 0.0).rgb;
+                        radiance += capLuminance(light) * facing;
                     }
                 }
                 break;
             }
         }
         if (!hit) {
-            escaped += 1.0;
+            // Nada en pantalla: lo que ve la sonda en esa direccion.
+            if (probe_weight > 0.001 && has_history) {
+                vec3 world_direction = inverse_view * direction;
+                vec4 seen = vec4(0.0);
+                if (push.extra.y > 0.001) {
+                    seen += vec4(textureLod(reflection_probe_0, world_direction, kProbeLod).rgb,
+                                 textureLod(reflection_probe_0, world_direction, 0.0).a) *
+                            push.extra.y;
+                }
+                if (push.extra.z > 0.001) {
+                    seen += vec4(textureLod(reflection_probe_1, world_direction, kProbeLod).rgb,
+                                 textureLod(reflection_probe_1, world_direction, 0.0).a) *
+                            push.extra.z;
+                }
+                seen /= probe_weight;
+                if (seen.a < kProbeSkyDistance) {
+                    radiance += capLuminance(seen.rgb);
+                } else {
+                    escaped += 1.0;
+                }
+            } else {
+                escaped += 1.0;
+            }
         }
     }
 

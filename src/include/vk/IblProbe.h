@@ -41,8 +41,12 @@ public:
     // terminar, todo queda listo para leerse en los fragment shaders.
     // `light_radiance` y `to_light` son los de la luz direccional activa (sol
     // o luna), para iluminar el suelo del entorno.
+    // `hdr`: el entorno es el mapa HDR de setEnvironment(), no el cielo.
     void record(const vk::raii::CommandBuffer& cmd, const core::Vec3& light_radiance,
-                const core::Vec3& to_light);
+                const core::Vec3& to_light, bool hdr);
+
+    // Mapa de entorno HDR (equirectangular) que se usa con `hdr` = true.
+    void setEnvironment(const VulkanDevice& device, vk::ImageView view, vk::Sampler sampler);
 
     const vk::raii::ImageView& environmentView() const { return environment_view_; }
     const vk::raii::ImageView& brdfLutView() const { return brdf_view_; }

@@ -149,6 +149,10 @@ Vec4 toVec4(const Vec3& v, float w) {
 
 // Sonda de reflexion. Cada cara cuesta casi un frame entero (sombras,
 // geometria e iluminacion desde la sonda), asi que se recaptura poco:
+//   - en cuanto cambia la luz de otra forma (color o intensidad del sol, del
+//     ambiente, luces locales, sombras / GI / nubes encendidas o apagadas):
+//     un cambio relativo de mas de kProbeLightChange. La GI lee de la sonda
+//     lo que no esta en pantalla; sin esto no se enteraba hasta moverse,
 //   - cuando la luz direccional gira mas de ~5 grados (sus sombras y su color
 //     ya no cuadran; con el ciclo de dia, cada ~0.7 s),
 //   - cuando la camara se ha alejado mas de kProbeMoveDistance y va despacio
@@ -160,12 +164,38 @@ constexpr float kProbeFarDistance = 15.0f;
 constexpr float kProbeSlowSpeed = 1.5f;  // m/s
 constexpr float kProbeLightCos = 0.99619f;
 constexpr std::uint64_t kProbeFaceInterval = 2;
+constexpr float kProbeLightChange = 0.03f;
+
+// true si alguna entrada cambio mas de `tolerance` (relativo; absoluto cerca
+// de cero) o cambio el numero de entradas (se anadio o quito una luz).
+bool signatureChanged(const std::vector<float>& a, const std::vector<float>& b,
+                      float tolerance) {
+    if (a.size() != b.size()) {
+        return true;
+    }
+    for (std::size_t i = 0; i < a.size(); ++i) {
+        if (std::abs(a[i] - b[i]) > tolerance * std::max(1.0f, std::abs(b[i]))) {
+            return true;
+        }
+    }
+    return false;
+}
 // Fundido de la sonda anterior a la nueva.
-constexpr float kProbeFadeSeconds = 0.6f;
+constexpr float kProbeFadeSeconds = 0.35f;
 // Peso de lo acumulado en el filtro temporal de los reflejos de pantalla.
 constexpr float kSsrHistoryWeight = 0.88f;
-// Y en el de la luz rebotada (cambia despacio: se puede acumular mas).
-constexpr float kGiHistoryWeight = 0.92f;
+// Pasadas del filtro espacial de la luz rebotada (separacion 1, 2, 4, 8).
+constexpr std::uint32_t kGiAtrousIterations = 4;
+
+// Constantes de push del filtro de la GI (gi_temporal.comp, gi_atrous.comp).
+struct GiTemporalPush {
+    core::Mat4 previous_view_projection = core::Mat4::identity();
+    Vec4 params{};  // x = hay historia valida
+};
+struct GiAtrousPush {
+    std::int32_t step = 1;
+    std::int32_t pad[3] = {0, 0, 0};
+};
 
 // Nubes: fraccion del cielo cubierta y densidad (multiplica la extincion).
 constexpr float kCloudCoverage = 0.38f;
@@ -226,6 +256,7 @@ void VulkanRenderer::initialize(const EngineInfo& info, HWND window, std::uint32
     device_.initialize(instance_, surface_);
     swapchain_.initialize(device_, surface_, width, height);
     gbuffer_.create(device_, swapchain_.extent());
+    gpu_culling_.create(device_);
     createRenderTargets();
     shadow_map_.create(device_);
     local_shadow_maps_.create(device_);
@@ -290,7 +321,16 @@ void VulkanRenderer::initialize(const EngineInfo& info, HWND window, std::uint32
         ssgi.bindings = ssgi_bindings;
         ssgi.push_constant_size = sizeof(GpuSsgiPush);
         ssgi.color_format = kHdrFormat;
-        ssgi_pass_.create(device_, ssgi);
+
+        // La GI ademas lee los dos cubos de la sonda (lo que no esta en
+        // pantalla). Los demas pases que copian esta descripcion no.
+        const std::array<Type, 6> gi_bindings = {
+            Type::eUniformBuffer,        Type::eCombinedImageSampler,
+            Type::eCombinedImageSampler, Type::eCombinedImageSampler,
+            Type::eCombinedImageSampler, Type::eCombinedImageSampler};
+        FullscreenPassDesc gi = ssgi;
+        gi.bindings = gi_bindings;
+        ssgi_pass_.create(device_, gi);
 
         // Mismos recursos que la GI (camara, profundidad, normales e imagen
         // anterior), pero a resolucion completa.
@@ -304,10 +344,26 @@ void VulkanRenderer::initialize(const EngineInfo& info, HWND window, std::uint32
         ssr_resolve.fragment_shader = "ssr_resolve.frag.spv";
         ssr_resolve_pass_.create(device_, ssr_resolve);
 
-        // Filtro temporal de la GI: los mismos recursos, a media resolucion.
-        FullscreenPassDesc gi_resolve = ssgi;
-        gi_resolve.fragment_shader = "gi_resolve.frag.spv";
-        gi_resolve_pass_.create(device_, gi_resolve);
+        // Filtro SVGF de la GI: acumulacion temporal y a trous.
+        const std::array<Type, 8> temporal_bindings = {
+            Type::eUniformBuffer,        Type::eCombinedImageSampler, Type::eCombinedImageSampler,
+            Type::eCombinedImageSampler, Type::eCombinedImageSampler, Type::eStorageImage,
+            Type::eStorageImage,         Type::eStorageImage};
+        ComputePassDesc temporal{};
+        temporal.shader = "gi_temporal.comp.spv";
+        temporal.bindings = temporal_bindings;
+        temporal.push_constant_size = sizeof(GiTemporalPush);
+        gi_temporal_pass_.create(device_, temporal);
+
+        const std::array<Type, 7> atrous_bindings = {
+            Type::eUniformBuffer,        Type::eCombinedImageSampler, Type::eCombinedImageSampler,
+            Type::eCombinedImageSampler, Type::eCombinedImageSampler, Type::eStorageImage,
+            Type::eStorageImage};
+        ComputePassDesc atrous{};
+        atrous.shader = "gi_atrous.comp.spv";
+        atrous.bindings = atrous_bindings;
+        atrous.push_constant_size = sizeof(GiAtrousPush);
+        gi_atrous_pass_.create(device_, atrous);
 
         // Nubes: camara + ruido 3D + LUT del cielo (ambiente).
         const std::array<Type, 3> cloud_bindings = {Type::eUniformBuffer,
@@ -349,6 +405,9 @@ void VulkanRenderer::initialize(const EngineInfo& info, HWND window, std::uint32
     ibl_probe_.create(device_, sky_lut_);
     reflection_probe_.create(device_);
     cloud_noise_.create(device_);
+    if (device_.rayTracingSupported()) {
+        ray_tracing_.create(device_);
+    }
 
     createUniformBuffers();
     createDescriptors();
@@ -368,6 +427,7 @@ void VulkanRenderer::shutdown() {
 
     skinned_models_.clear();
     actor_draws_.clear();
+    gpu_culling_.destroy();
 
     render_finished_.clear();
     in_flight_fences_.clear();
@@ -379,7 +439,9 @@ void VulkanRenderer::shutdown() {
     histogram_sets_.clear();
     light_shaft_sets_.clear();
     clouds_sets_.clear();
-    gi_resolve_sets_.clear();
+    gi_atrous_sets_.clear();
+    gi_temporal_sets_.clear();
+    gi_filter_pool_ = nullptr;
     ssr_resolve_sets_.clear();
     ssr_sets_.clear();
     ssgi_sets_.clear();
@@ -425,7 +487,8 @@ void VulkanRenderer::shutdown() {
     histogram_pass_.destroy();
     light_shaft_pass_.destroy();
     clouds_pass_.destroy();
-    gi_resolve_pass_.destroy();
+    gi_atrous_pass_.destroy();
+    gi_temporal_pass_.destroy();
     ssr_resolve_pass_.destroy();
     ssr_pass_.destroy();
     ssgi_pass_.destroy();
@@ -446,10 +509,20 @@ void VulkanRenderer::shutdown() {
     gi_image_.destroy();
     gi_raw_.destroy();
     gi_history_.destroy();
+    gi_temporal_.destroy();
+    gi_variance_.destroy();
+    gi_moments_.destroy();
+    gi_moments_history_.destroy();
+    for (std::uint32_t i = 0; i < 2; ++i) {
+        gi_filter_[i].destroy();
+        gi_filter_variance_[i].destroy();
+    }
     ssr_image_.destroy();
     ssr_raw_.destroy();
     ssr_history_.destroy();
     probe_capture_.destroy();
+    ray_tracing_.destroy();
+    environment_.destroy();
     clouds_image_.destroy();
     cloud_noise_.destroy();
     reflection_probe_.destroy();
@@ -550,8 +623,8 @@ void VulkanRenderer::createDescriptors() {
     // FXAA.
     // (+ entorno y LUT de la BRDF del IBL, + la GI, + el SSR, + los dos cubos
     // de la sonda.)
-    // (+ las nubes.)
-    pool_sizes[1].descriptorCount = kMaxFramesInFlight * (GBuffer::kColorAttachmentCount + 14);
+    // (+ las nubes, + el mapa de entorno HDR.)
+    pool_sizes[1].descriptorCount = kMaxFramesInFlight * (GBuffer::kColorAttachmentCount + 15);
 
     vk::DescriptorPoolCreateInfo pool_info{};
     pool_info.flags = vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet;
@@ -622,7 +695,7 @@ void VulkanRenderer::createDescriptors() {
     // camara + 3 texturas por frame.
         vk::DescriptorPoolSize{vk::DescriptorType::eUniformBuffer, kMaxFramesInFlight * 6},
         vk::DescriptorPoolSize{vk::DescriptorType::eCombinedImageSampler,
-                               kMaxFramesInFlight * 16 + kBloomSets + 3 + 2 + 1},
+                               kMaxFramesInFlight * 18 + kBloomSets + 3 + 2 + 1},
         vk::DescriptorPoolSize{vk::DescriptorType::eStorageBuffer, 4}};
 
     vk::DescriptorPoolCreateInfo post_pool_info{};
@@ -647,7 +720,33 @@ void VulkanRenderer::createDescriptors() {
     ssr_sets_ = allocate(ssr_pass_, kMaxFramesInFlight);
     ssr_resolve_sets_ = allocate(ssr_resolve_pass_, kMaxFramesInFlight);
     clouds_sets_ = allocate(clouds_pass_, kMaxFramesInFlight);
-    gi_resolve_sets_ = allocate(gi_resolve_pass_, kMaxFramesInFlight);
+
+    // --- Filtro de la GI ---
+    {
+        constexpr std::uint32_t kTemporalSets = kMaxFramesInFlight;
+        constexpr std::uint32_t kAtrousSets = kMaxFramesInFlight * 2 * kGiAtrousIterations;
+        const std::array<vk::DescriptorPoolSize, 3> sizes = {
+            vk::DescriptorPoolSize{vk::DescriptorType::eUniformBuffer, kTemporalSets + kAtrousSets},
+            vk::DescriptorPoolSize{vk::DescriptorType::eCombinedImageSampler,
+                                   (kTemporalSets + kAtrousSets) * 4},
+            vk::DescriptorPoolSize{vk::DescriptorType::eStorageImage,
+                                   kTemporalSets * 3 + kAtrousSets * 2}};
+        vk::DescriptorPoolCreateInfo info{};
+        info.flags = vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet;
+        info.maxSets = kTemporalSets + kAtrousSets;
+        info.setPoolSizes(sizes);
+        gi_filter_pool_ = vk::raii::DescriptorPool(device_.handle(), info);
+
+        const auto allocate_gi = [&](const ComputePass& pass, std::uint32_t count) {
+            const std::vector<vk::DescriptorSetLayout> layouts(count, *pass.descriptorSetLayout());
+            vk::DescriptorSetAllocateInfo alloc{};
+            alloc.descriptorPool = *gi_filter_pool_;
+            alloc.setSetLayouts(layouts);
+            return vk::raii::DescriptorSets(device_.handle(), alloc);
+        };
+        gi_temporal_sets_ = allocate_gi(gi_temporal_pass_, kTemporalSets);
+        gi_atrous_sets_ = allocate_gi(gi_atrous_pass_, kAtrousSets);
+    }
     histogram_sets_ = allocate(histogram_pass_, 1);
     exposure_average_sets_ = allocate(exposure_average_pass_, 1);
 
@@ -692,6 +791,9 @@ void VulkanRenderer::updateActors(const scene::Scene& scene, std::uint32_t frame
     actor_draws_.clear();
     bone_staging_.clear();
     submesh_bounds_.clear();
+    gpu_clusters_.clear();
+    std::uint32_t group_count = 0;
+    std::uint32_t slot_count = 0;
 
     for (const scene::Actor& actor : scene.actors()) {
         if (actor.model >= skinned_models_.size()) {
@@ -717,10 +819,49 @@ void VulkanRenderer::updateActors(const scene::Scene& scene, std::uint32_t frame
                 submesh_bounds_.push_back(core::transformAabb(
                     to_world, core::Aabb{submesh.bounds_min, submesh.bounds_max}));
             }
+
+            // Sus clusteres los descarta la GPU: caja en el mundo, grupo de
+            // dibujo (su material) y hueco de comando.
+            draw.first_group = group_count;
+            draw.first_slot = slot_count;
+            const auto& groups = model.drawGroups();
+            for (std::uint32_t i = 0; i < model.submeshes().size(); ++i) {
+                const std::uint32_t group = model.submeshGroup(i);
+                if (group == SkinnedModel::kNoGroup) {
+                    continue;  // Transparente: no se dibuja.
+                }
+                const asset::SubMesh& submesh = model.submeshes()[i];
+                const core::Aabb& box = submesh_bounds_[draw.first_bounds + i];
+                GpuCluster cluster{};
+                cluster.bounds_min = toVec4(box.min, 0.0f);
+                cluster.bounds_max = toVec4(box.max, 0.0f);
+                cluster.first_index = submesh.first_index;
+                cluster.index_count = submesh.index_count;
+                cluster.group = group_count + group;
+                cluster.first_slot = slot_count + groups[group].first_slot;
+                gpu_clusters_.push_back(cluster);
+            }
+            group_count += static_cast<std::uint32_t>(groups.size());
+            slot_count += model.slotCount();
         }
 
         actor_draws_.push_back(draw);
         bone_staging_.insert(bone_staging_.end(), bones.begin(), bones.end());
+    }
+
+    gpu_culling_.setClusters(device_, frame_index, gpu_clusters_, group_count, slot_count,
+                             camera_buffers_);
+
+    // Los escenarios (rigidos) son las instancias de la TLAS de los rayos.
+    if (device_.rayTracingSupported()) {
+        std::vector<RayTracing::Instance> instances;
+        for (const ActorDraw& draw : actor_draws_) {
+            if (draw.per_submesh) {
+                instances.push_back(RayTracing::Instance{
+                    draw.model, draw.transform * bone_staging_[draw.bone_offset]});
+            }
+        }
+        ray_tracing_.setInstances(device_, instances);
     }
 
     if (bone_staging_.empty()) {
@@ -913,7 +1054,7 @@ void VulkanRenderer::updateLightingDescriptors() {
         vk::DescriptorImageInfo gi_info{};
         gi_info.sampler = *lighting_pass_.sampler();
         gi_info.imageView = *gi_image_.view();
-        gi_info.imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
+        gi_info.imageLayout = vk::ImageLayout::eGeneral;  // la escribe un compute
 
         vk::DescriptorImageInfo ssr_info{};
         ssr_info.sampler = *lighting_pass_.sampler();
@@ -932,7 +1073,14 @@ void VulkanRenderer::updateLightingDescriptors() {
         clouds_info.imageView = *clouds_image_.view();
         clouds_info.imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
 
-        std::array<vk::WriteDescriptorSet, 21> writes{};
+        // Sin HDR, la LUT del cielo ocupa su hueco (el shader no lo lee).
+        vk::DescriptorImageInfo environment_hdr_info = sky_info;
+        if (environment_.loaded()) {
+            environment_hdr_info.sampler = *environment_.sampler();
+            environment_hdr_info.imageView = *environment_.view();
+        }
+
+        std::array<vk::WriteDescriptorSet, 22> writes{};
 
         writes[0].dstSet = *lighting_sets_[i];
         writes[0].dstBinding = 0;
@@ -1029,6 +1177,11 @@ void VulkanRenderer::updateLightingDescriptors() {
         writes[20].descriptorType = vk::DescriptorType::eCombinedImageSampler;
         writes[20].setImageInfo(clouds_info);
 
+        writes[21].dstSet = *lighting_sets_[i];
+        writes[21].dstBinding = 21;
+        writes[21].descriptorType = vk::DescriptorType::eCombinedImageSampler;
+        writes[21].setImageInfo(environment_hdr_info);
+
         device_.handle().updateDescriptorSets(writes, nullptr);
     }
 
@@ -1093,6 +1246,18 @@ void VulkanRenderer::updatePostDescriptors() {
                       vk::ImageLayout::eDepthReadOnlyOptimal);
         write_texture(ssgi_sets_[i], 2, ssgi_pass_.sampler(), gbuffer_.normal(), kRead);
         write_texture(ssgi_sets_[i], 3, ssgi_pass_.sampler(), scene_color_, kRead);
+        for (std::uint32_t cube = 0; cube < ReflectionProbe::kCubeCount; ++cube) {
+            vk::DescriptorImageInfo probe_info{};
+            probe_info.sampler = *reflection_probe_.sampler();
+            probe_info.imageView = *reflection_probe_.view(cube);
+            probe_info.imageLayout = kRead;
+            vk::WriteDescriptorSet probe_write{};
+            probe_write.dstSet = *ssgi_sets_[i];
+            probe_write.dstBinding = 4 + cube;
+            probe_write.descriptorType = vk::DescriptorType::eCombinedImageSampler;
+            probe_write.setImageInfo(probe_info);
+            device_.handle().updateDescriptorSets(probe_write, nullptr);
+        }
 
         // SSR: los mismos recursos.
         vk::WriteDescriptorSet ssr_camera = write;
@@ -1112,14 +1277,77 @@ void VulkanRenderer::updatePostDescriptors() {
         write_texture(ssr_resolve_sets_[i], 2, ssr_resolve_pass_.sampler(), ssr_raw_, kRead);
         write_texture(ssr_resolve_sets_[i], 3, ssr_resolve_pass_.sampler(), ssr_history_, kRead);
 
-        // Filtro temporal de la GI.
-        vk::WriteDescriptorSet gi_resolve_camera = write;
-        gi_resolve_camera.dstSet = *gi_resolve_sets_[i];
-        device_.handle().updateDescriptorSets(gi_resolve_camera, nullptr);
-        write_texture(gi_resolve_sets_[i], 1, gi_resolve_pass_.sampler(), gbuffer_.depth(),
+        // Trazado de rayos: camara, luces, G-buffer, imagen anterior, salidas
+        // y entorno.
+        if (device_.rayTracingSupported()) {
+            RayTracing::FrameInputs inputs{};
+            inputs.camera = &camera_buffers_[i];
+            inputs.lights = &light_buffers_[i];
+            inputs.depth = *gbuffer_.depth().view();
+            inputs.normal = *gbuffer_.normal().view();
+            inputs.previous_color = *scene_color_.view();
+            inputs.gi_output = *gi_raw_.view();
+            inputs.reflection_output = *ssr_raw_.view();
+            inputs.environment = *ibl_probe_.environmentView();
+            inputs.sampler = *ssgi_pass_.sampler();
+            inputs.environment_sampler = *ibl_probe_.sampler();
+            ray_tracing_.updateFrameSet(device_, i, inputs);
+        }
+
+        // --- Filtro SVGF de la GI ---
+        const auto write_storage_image = [&](const vk::raii::DescriptorSet& set,
+                                             std::uint32_t binding, const VulkanImage& image) {
+            vk::DescriptorImageInfo info{};
+            info.imageView = *image.view();
+            info.imageLayout = vk::ImageLayout::eGeneral;
+            vk::WriteDescriptorSet storage_write{};
+            storage_write.dstSet = *set;
+            storage_write.dstBinding = binding;
+            storage_write.descriptorType = vk::DescriptorType::eStorageImage;
+            storage_write.setImageInfo(info);
+            device_.handle().updateDescriptorSets(storage_write, nullptr);
+        };
+        constexpr vk::ImageLayout kGeneral = vk::ImageLayout::eGeneral;
+
+        // Temporal: raw (este frame) + historia -> acumulada, momentos, varianza.
+        const vk::raii::DescriptorSet& temporal_set = gi_temporal_sets_[i];
+        vk::WriteDescriptorSet temporal_camera = write;
+        temporal_camera.dstSet = *temporal_set;
+        device_.handle().updateDescriptorSets(temporal_camera, nullptr);
+        const vk::raii::Sampler& gi_sampler = gi_temporal_pass_.sampler();
+        write_texture(temporal_set, 1, gi_sampler, gbuffer_.depth(),
                       vk::ImageLayout::eDepthReadOnlyOptimal);
-        write_texture(gi_resolve_sets_[i], 2, gi_resolve_pass_.sampler(), gi_raw_, kRead);
-        write_texture(gi_resolve_sets_[i], 3, gi_resolve_pass_.sampler(), gi_history_, kRead);
+        write_texture(temporal_set, 2, gi_sampler, gi_raw_, kRead);
+        write_texture(temporal_set, 3, gi_sampler, gi_history_, kGeneral);
+        write_texture(temporal_set, 4, gi_sampler, gi_moments_history_, kGeneral);
+        write_storage_image(temporal_set, 5, gi_temporal_);
+        write_storage_image(temporal_set, 6, gi_moments_);
+        write_storage_image(temporal_set, 7, gi_variance_);
+
+        // A trous: la primera pasada es la historia del color (como en SVGF),
+        // salvo en las caras de la sonda, que no deben tocarla.
+        for (std::uint32_t capture = 0; capture < 2; ++capture) {
+            const VulkanImage& first_output = capture ? gi_filter_[0] : gi_history_;
+            const std::array<const VulkanImage*, kGiAtrousIterations + 1> colors = {
+                &gi_temporal_, &first_output, &gi_filter_[1], &gi_filter_[0], &gi_image_};
+            const std::array<const VulkanImage*, kGiAtrousIterations + 1> variances = {
+                &gi_variance_, &gi_filter_variance_[0], &gi_filter_variance_[1],
+                &gi_filter_variance_[0], &gi_filter_variance_[1]};
+            for (std::uint32_t iteration = 0; iteration < kGiAtrousIterations; ++iteration) {
+                const vk::raii::DescriptorSet& set =
+                    gi_atrous_sets_[(i * 2 + capture) * kGiAtrousIterations + iteration];
+                vk::WriteDescriptorSet atrous_camera = write;
+                atrous_camera.dstSet = *set;
+                device_.handle().updateDescriptorSets(atrous_camera, nullptr);
+                write_texture(set, 1, gi_sampler, gbuffer_.depth(),
+                              vk::ImageLayout::eDepthReadOnlyOptimal);
+                write_texture(set, 2, gi_sampler, gbuffer_.normal(), kRead);
+                write_texture(set, 3, gi_sampler, *colors[iteration], kGeneral);
+                write_texture(set, 4, gi_sampler, *variances[iteration], kGeneral);
+                write_storage_image(set, 5, *colors[iteration + 1]);
+                write_storage_image(set, 6, *variances[iteration + 1]);
+            }
+        }
 
         // Nubes: camara + ruido 3D (con su muestreador, que repite) + cielo.
         vk::WriteDescriptorSet clouds_camera = write;
@@ -1201,7 +1429,10 @@ void VulkanRenderer::createRenderTargets() {
                          vk::ImageAspectFlagBits::eColor);
 
     // Los reflejos del suelo tienen que ser nitidos: resolucion completa.
-    ssr_raw_.create(device_, extent, kHdrFormat, target_usage, vk::ImageAspectFlagBits::eColor);
+    // (Storage: con trazado de rayos las escribe un compute shader.)
+    ssr_raw_.create(device_, extent, kHdrFormat,
+                    target_usage | vk::ImageUsageFlagBits::eStorage,
+                    vk::ImageAspectFlagBits::eColor);
     ssr_image_.create(device_, extent, kHdrFormat,
                       target_usage | vk::ImageUsageFlagBits::eTransferSrc,
                       vk::ImageAspectFlagBits::eColor);
@@ -1215,14 +1446,43 @@ void VulkanRenderer::createRenderTargets() {
                          vk::ImageAspectFlagBits::eColor);
 
     // La luz rebotada es de baja frecuencia: media resolucion.
-    gi_raw_.create(device_, bloomLevelExtent(extent, 0), kHdrFormat, target_usage,
+    gi_raw_.create(device_, bloomLevelExtent(extent, 0), kHdrFormat,
+                   target_usage | vk::ImageUsageFlagBits::eStorage,
                    vk::ImageAspectFlagBits::eColor);
-    gi_image_.create(device_, bloomLevelExtent(extent, 0), kHdrFormat,
-                     target_usage | vk::ImageUsageFlagBits::eTransferSrc,
-                     vk::ImageAspectFlagBits::eColor);
-    gi_history_.create(device_, bloomLevelExtent(extent, 0), kHdrFormat,
-                       vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eTransferDst,
-                       vk::ImageAspectFlagBits::eColor);
+    // Las del filtro SVGF: storage (compute) y copia, siempre en General.
+    {
+        const vk::ImageUsageFlags filter_usage =
+            vk::ImageUsageFlagBits::eStorage | vk::ImageUsageFlagBits::eSampled |
+            vk::ImageUsageFlagBits::eTransferSrc | vk::ImageUsageFlagBits::eTransferDst;
+        const vk::Extent2D half = bloomLevelExtent(extent, 0);
+        std::vector<VulkanImage*> filter_images = {&gi_image_,   &gi_history_, &gi_temporal_,
+                                                   &gi_variance_, &gi_moments_,
+                                                   &gi_moments_history_};
+        for (std::uint32_t i = 0; i < 2; ++i) {
+            filter_images.push_back(&gi_filter_[i]);
+            filter_images.push_back(&gi_filter_variance_[i]);
+        }
+        for (VulkanImage* image : filter_images) {
+            image->create(device_, half, kHdrFormat, filter_usage,
+                          vk::ImageAspectFlagBits::eColor);
+        }
+        device_.submitOneTime([&](const vk::raii::CommandBuffer& cmd) {
+            std::vector<vk::ImageMemoryBarrier2> to_general;
+            for (VulkanImage* image : filter_images) {
+                to_general.push_back(colorBarrier(
+                    *image->handle(), vk::ImageLayout::eUndefined, vk::ImageLayout::eGeneral,
+                    vk::PipelineStageFlagBits2::eTopOfPipe, vk::AccessFlagBits2::eNone,
+                    vk::PipelineStageFlagBits2::eTransfer, vk::AccessFlagBits2::eTransferWrite));
+            }
+            pipelineBarrier(cmd, to_general);
+            for (VulkanImage* image : filter_images) {
+                cmd.clearColorImage(*image->handle(), vk::ImageLayout::eGeneral,
+                                    vk::ClearColorValue{0.0f, 0.0f, 0.0f, 0.0f},
+                                    vk::ImageSubresourceRange{vk::ImageAspectFlagBits::eColor, 0,
+                                                              1, 0, 1});
+            }
+        });
+    }
     gi_filter_history_valid_ = false;
 
     // Caras de la sonda de reflexion: se dibujan a pantalla completa y se
@@ -1231,6 +1491,9 @@ void VulkanRenderer::createRenderTargets() {
                           vk::ImageUsageFlagBits::eColorAttachment |
                               vk::ImageUsageFlagBits::eTransferSrc,
                           vk::ImageAspectFlagBits::eColor);
+
+    // Piramide Hi-Z del culling, del tamano del depth buffer.
+    gpu_culling_.resize(device_, gbuffer_.depth());
 
     // La imagen HDR es nueva: no tiene un frame anterior que reutilizar.
     scene_history_valid_ = false;
@@ -1287,10 +1550,27 @@ void VulkanRenderer::uploadModels(const scene::Scene& scene) {
     skinned_models_.reserve(scene.models().size());
 
     triangle_count_ = 0;
+    std::vector<const asset::ModelData*> models;
     for (const auto& model : scene.models()) {
         skinned_models_.emplace_back().create(device_, *model, skinned_pass_);
         triangle_count_ += model->indices.size() / 3;
+        models.push_back(model.get());
     }
+
+    // La misma escena para los rayos (estructuras de aceleracion).
+    if (device_.rayTracingSupported()) {
+        ray_tracing_.build(device_, models, skinned_models_, ibl_probe_.irradianceBuffer());
+    }
+}
+
+bool VulkanRenderer::loadEnvironment(const std::filesystem::path& path) {
+    device_.waitIdle();
+    if (!environment_.load(device_, path)) {
+        return false;
+    }
+    ibl_probe_.setEnvironment(device_, *environment_.view(), *environment_.sampler());
+    updateLightingDescriptors();
+    return true;
 }
 
 void VulkanRenderer::onResize(std::uint32_t width, std::uint32_t height) {
@@ -1395,7 +1675,11 @@ void VulkanRenderer::updateUniforms(const scene::Scene& scene, const scene::Came
     light_data.ssao_enabled = ssao_enabled_ ? 1 : 0;
     light_data.gi_enabled = gi_enabled_ ? 1 : 0;
     // --- Nubes ---
-    light_data.clouds = Vec4{clouds_enabled_ ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f};
+    // Con el cielo fotografiado no hay nubes volumetricas: la foto trae las
+    // suyas.
+    light_data.clouds =
+        Vec4{clouds_enabled_ && !environmentActive() ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f};
+    light_data.environment = Vec4{environmentActive() ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f};
     if (!capturing_) {
         cloud_time_ += frame_delta_seconds_;
     }
@@ -1404,7 +1688,7 @@ void VulkanRenderer::updateUniforms(const scene::Scene& scene, const scene::Came
     // No se refleja a si misma mientras se captura.
     if (!capturing_) {
         probe_fade_ = std::min(probe_fade_ + frame_delta_seconds_ / kProbeFadeSeconds, 1.0f);
-        if (probe_enabled_ && probe_ready_) {
+        if (probe_enabled_ && probe_ready_ && !rayTracingActive()) {
             const std::uint32_t previous = 1 - probe_cube_;
             light_data.probes[probe_cube_] = toVec4(probe_centers_[probe_cube_], probe_fade_);
             if (probe_fade_ < 1.0f) {
@@ -1525,6 +1809,11 @@ void VulkanRenderer::drawFrame(const scene::Scene& scene) {
         throw std::runtime_error("Tiempo de espera agotado esperando la fence del frame.");
     }
 
+    // Resultado del culling en GPU de la ultima vez que se uso este hueco.
+    const GpuCulling::Stats culling = gpu_culling_.readStats(current_frame_);
+    gpu_visible_submeshes_ = culling.early + culling.late;
+    occluded_submeshes_ = culling.occluded;
+
     // Huesos de este frame (tambien los usa la captura de la sonda).
     updateActors(scene, current_frame_);
 
@@ -1613,7 +1902,9 @@ void VulkanRenderer::drawFrame(const scene::Scene& scene) {
 bool VulkanRenderer::probeCaptureDue(const scene::Scene& scene) {
     // Hacen falta los mapas de sombra locales y la imagen HDR de un frame ya
     // dibujado (se leen tal cual en la captura).
-    if (!probe_enabled_ || !scene_history_valid_ || !local_shadow_layout_ready_) {
+    // Con trazado de rayos la sonda no hace falta: nada de capturas.
+    if (!probe_enabled_ || rayTracingActive() || !scene_history_valid_ ||
+        !local_shadow_layout_ready_) {
         return false;
     }
 
@@ -1625,7 +1916,7 @@ bool VulkanRenderer::probeCaptureDue(const scene::Scene& scene) {
 
     // Una cara cada pocos frames, y ninguna captura nueva hasta que la
     // anterior termine de fundirse (se escribira en el cubo que sale).
-    if (frame_count_ < probe_next_face_frame_ || probe_fade_ < 1.0f) {
+    if (frame_count_ < probe_next_face_frame_ || (probe_face_ < 0 && probe_fade_ < 1.0f)) {
         return false;
     }
     if (probe_face_ >= 0) {
@@ -1633,8 +1924,22 @@ bool VulkanRenderer::probeCaptureDue(const scene::Scene& scene) {
     }
 
     const Vec3 to_light = -core::normalize(scene.lights().sun.direction);
+    std::vector<float> signature = lightingSignature(scene);
+
+    if (probe_face_ >= 0) {
+        // La luz cambio a mitad de captura: se empieza de nuevo, o las caras
+        // mezclarian dos iluminaciones.
+        if (signatureChanged(signature, probe_capture_signature_, kProbeLightChange)) {
+            probe_face_ = 0;
+            probe_capture_sun_ = to_light;
+            probe_capture_signature_ = std::move(signature);
+        }
+        return true;
+    }
+
     const float moved = core::length(position - probe_position_);
     const bool due = !probe_ready_ || core::dot(to_light, probe_sun_) < kProbeLightCos ||
+                     signatureChanged(signature, probe_signature_, kProbeLightChange) ||
                      moved > kProbeFarDistance ||
                      (moved > kProbeMoveDistance && speed < kProbeSlowSpeed);
     if (!due) {
@@ -1644,7 +1949,44 @@ bool VulkanRenderer::probeCaptureDue(const scene::Scene& scene) {
     probe_face_ = 0;
     probe_capture_position_ = position;
     probe_capture_sun_ = to_light;
+    probe_capture_signature_ = std::move(signature);
     return true;
+}
+
+std::vector<float> VulkanRenderer::lightingSignature(const scene::Scene& scene) const {
+    const scene::LightSet& lights = scene.lights();
+    std::vector<float> signature;
+    signature.reserve(16 + lights.points.size() * 8 + lights.spots.size() * 12);
+
+    const auto add = [&](const Vec3& v) {
+        signature.push_back(v.x);
+        signature.push_back(v.y);
+        signature.push_back(v.z);
+    };
+
+    add(lights.sun.color * lights.sun.intensity);
+    add(lights.ambient.color * lights.ambient.intensity);
+    signature.push_back(lights.sky.daylight);
+    signature.push_back(lights.sky.twilight);
+    for (const scene::PointLight& light : lights.points) {
+        add(light.position);
+        add(light.color * light.intensity);
+        signature.push_back(light.range);
+    }
+    for (const scene::SpotLight& light : lights.spots) {
+        add(light.position);
+        add(light.direction);
+        add(light.color * (light.enabled ? light.intensity : 0.0f));
+        signature.push_back(light.range);
+        signature.push_back(light.outer_angle);
+    }
+    // Interruptores que cambian lo que se ve (y por tanto lo que se refleja
+    // y rebota).
+    signature.push_back(shadows_enabled_ ? 1.0f : 0.0f);
+    signature.push_back(gi_enabled_ ? 1.0f : 0.0f);
+    signature.push_back(ssao_enabled_ ? 1.0f : 0.0f);
+    signature.push_back(clouds_enabled_ ? 1.0f : 0.0f);
+    return signature;
 }
 
 void VulkanRenderer::captureProbeFace(const scene::Scene& scene) {
@@ -1748,6 +2090,7 @@ void VulkanRenderer::captureProbeFace(const scene::Scene& scene) {
         probe_ready_ = true;
         probe_position_ = probe_capture_position_;
         probe_sun_ = probe_capture_sun_;
+        probe_signature_ = probe_capture_signature_;
         probe_face_ = -1;
     } else {
         ++probe_face_;
@@ -1758,7 +2101,9 @@ void VulkanRenderer::recordCommandBuffer(const vk::raii::CommandBuffer& cmd,
                                          std::uint32_t image_index, std::uint32_t frame_index) {
     cmd.begin(vk::CommandBufferBeginInfo{});
 
-    visible_submeshes_ = 0;
+    // Los clusteres de escenario los cuenta la GPU (frame reciente); los
+    // animados se suman al dibujarlos.
+    visible_submeshes_ = gpu_visible_submeshes_;
     shadow_submeshes_ = 0;
     total_submeshes_ = 0;
     for (const ActorDraw& draw : actor_draws_) {
@@ -1989,6 +2334,14 @@ void VulkanRenderer::recordGeometryPass(const vk::raii::CommandBuffer& cmd,
     const vk::Extent2D extent = gbuffer_.extent();
     const auto attachments = gbuffer_.colorAttachments();
 
+    // Oclusion en dos fases solo para la camara de pantalla: las caras de la
+    // sonda (y el culling de oclusion apagado) dibujan todo lo que esta en el
+    // campo de vision, sin tocar la visibilidad guardada.
+    const bool occlusion = occlusion_culling_enabled_ && !capturing_;
+
+    // --- Culling en GPU, fase temprana: lo visible el frame anterior ---
+    gpu_culling_.recordCull(cmd, frame_index, 0, occlusion);
+
     // --- Los tres destinos pasan a destino de color ---
     std::array<vk::ImageMemoryBarrier2, GBuffer::kColorAttachmentCount + 1> barriers{};
     for (std::size_t i = 0; i < attachments.size(); ++i) {
@@ -2004,7 +2357,8 @@ void VulkanRenderer::recordGeometryPass(const vk::raii::CommandBuffer& cmd,
     // El frame anterior la dejo como textura de la pasada de iluminacion.
     vk::ImageMemoryBarrier2& depth_barrier = barriers[GBuffer::kColorAttachmentCount];
     depth_barrier.srcStageMask = vk::PipelineStageFlagBits2::eLateFragmentTests |
-                                 vk::PipelineStageFlagBits2::eFragmentShader;
+                                 vk::PipelineStageFlagBits2::eFragmentShader |
+                                 vk::PipelineStageFlagBits2::eComputeShader;
     depth_barrier.srcAccessMask = vk::AccessFlagBits2::eDepthStencilAttachmentWrite |
                                   vk::AccessFlagBits2::eShaderSampledRead;
     depth_barrier.dstStageMask = vk::PipelineStageFlagBits2::eEarlyFragmentTests;
@@ -2020,83 +2374,197 @@ void VulkanRenderer::recordGeometryPass(const vk::raii::CommandBuffer& cmd,
     dependency.setImageMemoryBarriers(barriers);
     cmd.pipelineBarrier2(dependency);
 
-    // --- Pase de geometria ---
-    std::array<vk::RenderingAttachmentInfo, GBuffer::kColorAttachmentCount> color_attachments{};
-    for (std::size_t i = 0; i < attachments.size(); ++i) {
-        color_attachments[i].imageView = *attachments[i]->view();
-        color_attachments[i].imageLayout = vk::ImageLayout::eColorAttachmentOptimal;
-        color_attachments[i].loadOp = vk::AttachmentLoadOp::eClear;
-        color_attachments[i].storeOp = vk::AttachmentStoreOp::eStore;
-        // Alfa 0 en el destino de posiciones = "aqui no hay geometria", que es
-        // lo que la pasada de iluminacion interpreta como cielo.
-        color_attachments[i].clearValue =
-            vk::ClearValue{vk::ClearColorValue{0.0f, 0.0f, 0.0f, 0.0f}};
+    // Abre el pase de geometria: limpiando (fase temprana) o conservando lo
+    // ya dibujado (fase tardia).
+    const auto begin_rendering = [&](bool clear) {
+        std::array<vk::RenderingAttachmentInfo, GBuffer::kColorAttachmentCount> color_attachments{};
+        for (std::size_t i = 0; i < attachments.size(); ++i) {
+            color_attachments[i].imageView = *attachments[i]->view();
+            color_attachments[i].imageLayout = vk::ImageLayout::eColorAttachmentOptimal;
+            color_attachments[i].loadOp =
+                clear ? vk::AttachmentLoadOp::eClear : vk::AttachmentLoadOp::eLoad;
+            color_attachments[i].storeOp = vk::AttachmentStoreOp::eStore;
+            // Alfa 0 en el destino de posiciones = "aqui no hay geometria", que es
+            // lo que la pasada de iluminacion interpreta como cielo.
+            color_attachments[i].clearValue =
+                vk::ClearValue{vk::ClearColorValue{0.0f, 0.0f, 0.0f, 0.0f}};
+        }
+
+        vk::RenderingAttachmentInfo depth_attachment{};
+        depth_attachment.imageView = *gbuffer_.depth().view();
+        depth_attachment.imageLayout = vk::ImageLayout::eDepthAttachmentOptimal;
+        depth_attachment.loadOp = clear ? vk::AttachmentLoadOp::eClear : vk::AttachmentLoadOp::eLoad;
+        depth_attachment.storeOp = vk::AttachmentStoreOp::eStore;
+        depth_attachment.clearValue = vk::ClearValue{vk::ClearDepthStencilValue{1.0f, 0}};
+
+        vk::RenderingInfo rendering_info{};
+        rendering_info.renderArea = vk::Rect2D{vk::Offset2D{0, 0}, extent};
+        rendering_info.layerCount = 1;
+        rendering_info.setColorAttachments(color_attachments);
+        rendering_info.pDepthAttachment = &depth_attachment;
+
+        cmd.beginRendering(rendering_info);
+        cmd.setViewport(0, vk::Viewport{0.0f, 0.0f, static_cast<float>(extent.width),
+                                        static_cast<float>(extent.height), 0.0f, 1.0f});
+        cmd.setScissor(0, vk::Rect2D{vk::Offset2D{0, 0}, extent});
+    };
+
+    // --- Fase temprana: animados + lo que era visible ---
+    begin_rendering(/*clear=*/true);
+    drawCpuActors(cmd, frame_index);
+    drawGpuClusters(cmd, frame_index, 0);
+    cmd.endRendering();
+
+    if (!occlusion || gpu_culling_.clusterCount() == 0) {
+        return;
     }
 
-    vk::RenderingAttachmentInfo depth_attachment{};
-    depth_attachment.imageView = *gbuffer_.depth().view();
-    depth_attachment.imageLayout = vk::ImageLayout::eDepthAttachmentOptimal;
-    depth_attachment.loadOp = vk::AttachmentLoadOp::eClear;
-    depth_attachment.storeOp = vk::AttachmentStoreOp::eStore;
-    depth_attachment.clearValue = vk::ClearValue{vk::ClearDepthStencilValue{1.0f, 0}};
+    // --- Piramide Hi-Z con la profundidad de lo ya dibujado ---
+    vk::ImageMemoryBarrier2 depth_to_read{};
+    depth_to_read.srcStageMask = vk::PipelineStageFlagBits2::eLateFragmentTests;
+    depth_to_read.srcAccessMask = vk::AccessFlagBits2::eDepthStencilAttachmentWrite;
+    depth_to_read.dstStageMask = vk::PipelineStageFlagBits2::eComputeShader;
+    depth_to_read.dstAccessMask = vk::AccessFlagBits2::eShaderSampledRead;
+    depth_to_read.oldLayout = vk::ImageLayout::eDepthAttachmentOptimal;
+    depth_to_read.newLayout = vk::ImageLayout::eDepthReadOnlyOptimal;
+    depth_to_read.image = *gbuffer_.depth().handle();
+    depth_to_read.subresourceRange = depth_barrier.subresourceRange;
+    pipelineBarrier(cmd, depth_to_read);
 
-    vk::RenderingInfo rendering_info{};
-    rendering_info.renderArea = vk::Rect2D{vk::Offset2D{0, 0}, extent};
-    rendering_info.layerCount = 1;
-    rendering_info.setColorAttachments(color_attachments);
-    rendering_info.pDepthAttachment = &depth_attachment;
+    gpu_culling_.recordHiZ(cmd);
 
-    cmd.beginRendering(rendering_info);
+    // --- Fase tardia: lo recien descubierto, probado contra la Hi-Z ---
+    gpu_culling_.recordCull(cmd, frame_index, 1, true);
 
-    cmd.setViewport(0, vk::Viewport{0.0f, 0.0f, static_cast<float>(extent.width),
-                                    static_cast<float>(extent.height), 0.0f, 1.0f});
-    cmd.setScissor(0, vk::Rect2D{vk::Offset2D{0, 0}, extent});
+    vk::ImageMemoryBarrier2 depth_to_attachment = depth_to_read;
+    depth_to_attachment.srcStageMask = vk::PipelineStageFlagBits2::eComputeShader;
+    depth_to_attachment.srcAccessMask = vk::AccessFlagBits2::eShaderSampledRead;
+    depth_to_attachment.dstStageMask = vk::PipelineStageFlagBits2::eEarlyFragmentTests |
+                                       vk::PipelineStageFlagBits2::eLateFragmentTests;
+    depth_to_attachment.dstAccessMask = vk::AccessFlagBits2::eDepthStencilAttachmentRead |
+                                        vk::AccessFlagBits2::eDepthStencilAttachmentWrite;
+    depth_to_attachment.oldLayout = vk::ImageLayout::eDepthReadOnlyOptimal;
+    depth_to_attachment.newLayout = vk::ImageLayout::eDepthAttachmentOptimal;
+    pipelineBarrier(cmd, depth_to_attachment);
 
-    // --- Modelos ---
-    // Skinning con los huesos del storage buffer (los modelos estaticos
-    // tienen un hueso por nodo) y el material PBR de cada submalla.
-    if (!actor_draws_.empty()) {
-        cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *skinned_pass_.geometryPipeline());
-        cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *skinned_pass_.geometryLayout(),
-                               0, *skin_sets_[frame_index], nullptr);
+    // Los destinos de color siguen en su layout: basta con ordenar las
+    // escrituras de las dos fases.
+    vk::MemoryBarrier2 color_order{};
+    color_order.srcStageMask = vk::PipelineStageFlagBits2::eColorAttachmentOutput;
+    color_order.srcAccessMask = vk::AccessFlagBits2::eColorAttachmentWrite;
+    color_order.dstStageMask = vk::PipelineStageFlagBits2::eColorAttachmentOutput;
+    color_order.dstAccessMask =
+        vk::AccessFlagBits2::eColorAttachmentRead | vk::AccessFlagBits2::eColorAttachmentWrite;
+    vk::DependencyInfo color_dependency{};
+    color_dependency.setMemoryBarriers(color_order);
+    cmd.pipelineBarrier2(color_dependency);
 
-        const core::Frustum frustum(camera_view_projection_);
+    begin_rendering(/*clear=*/false);
+    drawGpuClusters(cmd, frame_index, 1);
+    cmd.endRendering();
+}
 
-        for (const ActorDraw& draw : actor_draws_) {
-            const SkinnedModel& model = skinned_models_[draw.model];
-            cmd.bindVertexBuffers(0, *model.vertices().handle(), {0});
-            cmd.bindIndexBuffer(*model.indices().handle(), 0, vk::IndexType::eUint32);
+void VulkanRenderer::drawCpuActors(const vk::raii::CommandBuffer& cmd,
+                                   std::uint32_t frame_index) {
+    bool bound = false;
+    const core::Frustum frustum(camera_view_projection_);
 
-            // Solo las submallas dentro del campo de vision. El material (set
-            // y push constants) se cambia solo al pasar a otro.
-            std::uint32_t bound_material = UINT32_MAX;
-            visible_submeshes_ += forEachVisibleSubmesh(draw, frustum, [&](std::uint32_t i) {
-                const asset::SubMesh& submesh = model.submeshes()[i];
-                if (submesh.material != bound_material) {
-                    const SkinnedModel::Material& material = model.materials()[submesh.material];
-                    cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics,
-                                           *skinned_pass_.geometryLayout(), 1,
-                                           *model.materialSet(submesh.material), nullptr);
+    for (const ActorDraw& draw : actor_draws_) {
+        if (draw.per_submesh) {
+            continue;  // Escenario: lo dibuja drawGpuClusters.
+        }
+        if (!bound) {
+            cmd.bindPipeline(vk::PipelineBindPoint::eGraphics,
+                             *skinned_pass_.geometryPipeline());
+            cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics,
+                                   *skinned_pass_.geometryLayout(), 0, *skin_sets_[frame_index],
+                                   nullptr);
+            bound = true;
+        }
 
-                    GpuSkinnedPush push{};
-                    push.model = draw.transform;
-                    push.base_color = material.base_color;
-                    push.emissive = material.emissive;
-                    push.material = material.params;
-                    push.bone_offset = draw.bone_offset;
-                    push.reflectance = material.reflectance;
-                    cmd.pushConstants<GpuSkinnedPush>(
-                        *skinned_pass_.geometryLayout(),
-                        vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0,
-                        push);
-                    bound_material = submesh.material;
-                }
-                cmd.drawIndexed(submesh.index_count, 1, submesh.first_index, 0, 0);
-            });
+        const SkinnedModel& model = skinned_models_[draw.model];
+        cmd.bindVertexBuffers(0, *model.vertices().handle(), {0});
+        cmd.bindIndexBuffer(*model.indices().handle(), 0, vk::IndexType::eUint32);
+
+        // Solo las submallas dentro del campo de vision. El material (set y
+        // push constants) se cambia solo al pasar a otro.
+        std::uint32_t bound_material = UINT32_MAX;
+        visible_submeshes_ += forEachVisibleSubmesh(draw, frustum, [&](std::uint32_t i) {
+            const asset::SubMesh& submesh = model.submeshes()[i];
+            if (submesh.material != bound_material) {
+                const SkinnedModel::Material& material = model.materials()[submesh.material];
+                cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics,
+                                       *skinned_pass_.geometryLayout(), 1,
+                                       *model.materialSet(submesh.material), nullptr);
+
+                GpuSkinnedPush push{};
+                push.model = draw.transform;
+                push.base_color = material.base_color;
+                push.emissive = material.emissive;
+                push.material = material.params;
+                push.bone_offset = draw.bone_offset;
+                push.reflectance = material.reflectance;
+                cmd.pushConstants<GpuSkinnedPush>(
+                    *skinned_pass_.geometryLayout(),
+                    vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0,
+                    push);
+                bound_material = submesh.material;
+            }
+            cmd.drawIndexed(submesh.index_count, 1, submesh.first_index, 0, 0);
+        });
+    }
+}
+
+void VulkanRenderer::drawGpuClusters(const vk::raii::CommandBuffer& cmd,
+                                     std::uint32_t frame_index, std::uint32_t phase) {
+    if (gpu_culling_.clusterCount() == 0) {
+        return;
+    }
+
+    cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *skinned_pass_.geometryPipeline());
+    cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *skinned_pass_.geometryLayout(), 0,
+                           *skin_sets_[frame_index], nullptr);
+
+    const vk::Buffer commands = *gpu_culling_.commands(phase).handle();
+    const vk::Buffer counts = *gpu_culling_.counts(phase).handle();
+
+    for (const ActorDraw& draw : actor_draws_) {
+        if (!draw.per_submesh) {
+            continue;
+        }
+        const SkinnedModel& model = skinned_models_[draw.model];
+        cmd.bindVertexBuffers(0, *model.vertices().handle(), {0});
+        cmd.bindIndexBuffer(*model.indices().handle(), 0, vk::IndexType::eUint32);
+
+        // Una llamada por material: la GPU decide cuantas submallas (y cuales)
+        // dibuja, leyendo el contador del grupo.
+        const auto& groups = model.drawGroups();
+        for (std::uint32_t g = 0; g < groups.size(); ++g) {
+            const SkinnedModel::DrawGroup& group = groups[g];
+            const SkinnedModel::Material& material = model.materials()[group.material];
+            cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics,
+                                   *skinned_pass_.geometryLayout(), 1,
+                                   *model.materialSet(group.material), nullptr);
+
+            GpuSkinnedPush push{};
+            push.model = draw.transform;
+            push.base_color = material.base_color;
+            push.emissive = material.emissive;
+            push.material = material.params;
+            push.bone_offset = draw.bone_offset;
+            push.reflectance = material.reflectance;
+            cmd.pushConstants<GpuSkinnedPush>(
+                *skinned_pass_.geometryLayout(),
+                vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, push);
+
+            cmd.drawIndexedIndirectCount(
+                commands,
+                static_cast<vk::DeviceSize>(draw.first_slot + group.first_slot) *
+                    GpuCulling::kCommandSize,
+                counts, static_cast<vk::DeviceSize>(draw.first_group + g) * sizeof(std::uint32_t),
+                group.capacity, GpuCulling::kCommandSize);
         }
     }
-
-    cmd.endRendering();
 }
 
 void VulkanRenderer::recordSsaoPass(const vk::raii::CommandBuffer& cmd,
@@ -2133,7 +2601,17 @@ void VulkanRenderer::recordSsaoPass(const vk::raii::CommandBuffer& cmd,
 
 void VulkanRenderer::recordSsgiPass(const vk::raii::CommandBuffer& cmd,
                                     std::uint32_t frame_index) {
-    std::vector<vk::ImageMemoryBarrier2> barriers = {discardToAttachment(*gi_raw_.handle())};
+    const bool ray_traced = rayTracingActive() && !capturing_;
+
+    // Con rayos, la imagen la escribe un compute shader (layout General).
+    std::vector<vk::ImageMemoryBarrier2> barriers = {
+        ray_traced ? colorBarrier(*gi_raw_.handle(), vk::ImageLayout::eUndefined,
+                                  vk::ImageLayout::eGeneral,
+                                  vk::PipelineStageFlagBits2::eFragmentShader,
+                                  vk::AccessFlagBits2::eShaderSampledRead,
+                                  vk::PipelineStageFlagBits2::eComputeShader,
+                                  vk::AccessFlagBits2::eShaderStorageWrite)
+                   : discardToAttachment(*gi_raw_.handle())};
 
     // La imagen HDR guarda aun el frame anterior (ya como textura). Recien
     // creada no tiene nada: se pasa a textura para poder enlazarla y el
@@ -2153,28 +2631,114 @@ void VulkanRenderer::recordSsgiPass(const vk::raii::CommandBuffer& cmd,
     GpuSsgiPush push{};
     push.previous_view_projection = previous_view_projection_;
     push.params = Vec4{scene_history_valid_ && !capturing_ ? 1.0f : 0.0f, 1.0f, 0.0f, 0.0f};
-    drawFullscreen(cmd, ssgi_pass_, &ssgi_sets_[frame_index], gi_raw_, &push);
-
-    // --- Filtro temporal ---
-    // La historia recien creada no tiene nada: se pasa a textura para poder
-    // enlazarla y el shader no la lee.
-    std::vector<vk::ImageMemoryBarrier2> resolve_barriers = {
-        writtenToSampled(*gi_raw_.handle()), discardToAttachment(*gi_image_.handle())};
-    if (!gi_filter_history_valid_) {
-        resolve_barriers.push_back(colorBarrier(
-            *gi_history_.handle(), vk::ImageLayout::eUndefined,
-            vk::ImageLayout::eShaderReadOnlyOptimal, vk::PipelineStageFlagBits2::eTopOfPipe,
-            vk::AccessFlagBits2::eNone, vk::PipelineStageFlagBits2::eFragmentShader,
-            vk::AccessFlagBits2::eShaderSampledRead));
+    // Rayos distintos cada frame, y la sonda para lo que no esta en pantalla
+    // (con el mismo fundido entre cubos que la iluminacion).
+    push.extra.x = static_cast<float>(frame_count_ % 64);
+    if (probe_enabled_ && probe_ready_ && !capturing_) {
+        const std::uint32_t previous = 1 - probe_cube_;
+        const float current_weight = probe_fade_;
+        const float previous_weight = probe_fade_ < 1.0f ? 1.0f - probe_fade_ : 0.0f;
+        (probe_cube_ == 0 ? push.extra.y : push.extra.z) = current_weight;
+        (previous == 0 ? push.extra.y : push.extra.z) = previous_weight;
     }
-    pipelineBarrier(cmd, resolve_barriers);
+
+    vk::ImageMemoryBarrier2 raw_to_sampled = writtenToSampled(*gi_raw_.handle());
+    if (ray_traced) {
+        // El compute lee el G-buffer (profundidad y normales), la imagen
+        // anterior y el entorno del IBL, que hasta aqui solo se prepararon
+        // para los fragment shaders.
+        memoryBarrier(cmd,
+                      vk::PipelineStageFlagBits2::eLateFragmentTests |
+                          vk::PipelineStageFlagBits2::eColorAttachmentOutput |
+                          vk::PipelineStageFlagBits2::eComputeShader,
+                      vk::AccessFlagBits2::eDepthStencilAttachmentWrite |
+                          vk::AccessFlagBits2::eColorAttachmentWrite |
+                          vk::AccessFlagBits2::eShaderStorageWrite,
+                      vk::PipelineStageFlagBits2::eComputeShader,
+                      vk::AccessFlagBits2::eShaderSampledRead |
+                          vk::AccessFlagBits2::eShaderStorageRead);
+
+        RayTracing::Push rt_push{};
+        rt_push.previous_view_projection = previous_view_projection_;
+        rt_push.params = Vec4{static_cast<float>(frame_count_ % 64),
+                              scene_history_valid_ ? 1.0f : 0.0f, 0.0f, 0.0f};
+        ray_tracing_.record(cmd, frame_index, RayTracing::Pass::Gi, gi_raw_.extent(), rt_push);
+
+        raw_to_sampled = colorBarrier(*gi_raw_.handle(), vk::ImageLayout::eGeneral,
+                                      vk::ImageLayout::eShaderReadOnlyOptimal,
+                                      vk::PipelineStageFlagBits2::eComputeShader,
+                                      vk::AccessFlagBits2::eShaderStorageWrite,
+                                      vk::PipelineStageFlagBits2::eComputeShader,
+                                      vk::AccessFlagBits2::eShaderSampledRead);
+    } else {
+        drawFullscreen(cmd, ssgi_pass_, &ssgi_sets_[frame_index], gi_raw_, &push);
+        raw_to_sampled.dstStageMask = vk::PipelineStageFlagBits2::eComputeShader;
+    }
+
+    // --- Filtro SVGF: acumulacion temporal + a trous (compute) ---
+    // Lo del frame anterior (la iluminacion leyo el resultado, las copias de
+    // historia) tiene que haber terminado antes de reescribirlo; y el
+    // G-buffer, estar listo para leerse desde compute.
+    pipelineBarrier(cmd, raw_to_sampled);
+    memoryBarrier(cmd,
+                  vk::PipelineStageFlagBits2::eFragmentShader |
+                      vk::PipelineStageFlagBits2::eComputeShader |
+                      vk::PipelineStageFlagBits2::eCopy |
+                      vk::PipelineStageFlagBits2::eLateFragmentTests |
+                      vk::PipelineStageFlagBits2::eColorAttachmentOutput,
+                  vk::AccessFlagBits2::eShaderRead | vk::AccessFlagBits2::eShaderWrite |
+                      vk::AccessFlagBits2::eTransferRead | vk::AccessFlagBits2::eTransferWrite |
+                      vk::AccessFlagBits2::eDepthStencilAttachmentWrite |
+                      vk::AccessFlagBits2::eColorAttachmentWrite,
+                  vk::PipelineStageFlagBits2::eComputeShader,
+                  vk::AccessFlagBits2::eShaderRead | vk::AccessFlagBits2::eShaderWrite);
+
+    const vk::Extent2D half = gi_temporal_.extent();
+    const auto dispatch = [&](const ComputePass& pass, const vk::raii::DescriptorSet& set,
+                              const auto& constants) {
+        cmd.bindPipeline(vk::PipelineBindPoint::eCompute, *pass.pipeline());
+        cmd.bindDescriptorSets(vk::PipelineBindPoint::eCompute, *pass.layout(), 0, *set,
+                               nullptr);
+        cmd.pushConstants<std::decay_t<decltype(constants)>>(
+            *pass.layout(), vk::ShaderStageFlagBits::eCompute, 0, constants);
+        cmd.dispatch((half.width + 7) / 8, (half.height + 7) / 8, 1);
+        memoryBarrier(cmd, vk::PipelineStageFlagBits2::eComputeShader,
+                      vk::AccessFlagBits2::eShaderWrite,
+                      vk::PipelineStageFlagBits2::eComputeShader |
+                          vk::PipelineStageFlagBits2::eFragmentShader |
+                          vk::PipelineStageFlagBits2::eCopy,
+                      vk::AccessFlagBits2::eShaderRead | vk::AccessFlagBits2::eShaderWrite |
+                          vk::AccessFlagBits2::eTransferRead);
+    };
 
     // Las caras de la sonda no usan la historia (es de la camara de pantalla).
-    GpuSsgiPush resolve{};
-    resolve.previous_view_projection = previous_view_projection_;
-    resolve.params = Vec4{gi_filter_history_valid_ && !capturing_ ? 1.0f : 0.0f,
-                          kGiHistoryWeight, 0.0f, 0.0f};
-    drawFullscreen(cmd, gi_resolve_pass_, &gi_resolve_sets_[frame_index], gi_image_, &resolve);
+    GiTemporalPush temporal{};
+    temporal.previous_view_projection = previous_view_projection_;
+    temporal.params = Vec4{gi_filter_history_valid_ && !capturing_ ? 1.0f : 0.0f, 0.0f, 0.0f,
+                           0.0f};
+    dispatch(gi_temporal_pass_, gi_temporal_sets_[frame_index], temporal);
+
+    const std::uint32_t chain = (frame_index * 2 + (capturing_ ? 1 : 0)) * kGiAtrousIterations;
+    for (std::uint32_t iteration = 0; iteration < kGiAtrousIterations; ++iteration) {
+        GiAtrousPush atrous{};
+        atrous.step = 1 << iteration;
+        dispatch(gi_atrous_pass_, gi_atrous_sets_[chain + iteration], atrous);
+    }
+
+    if (!capturing_) {
+        // Momentos de este frame -> los del siguiente (el color ya quedo en
+        // gi_history_ en la primera pasada espacial).
+        vk::ImageCopy region{};
+        region.srcSubresource = vk::ImageSubresourceLayers{vk::ImageAspectFlagBits::eColor, 0, 0, 1};
+        region.dstSubresource = region.srcSubresource;
+        region.extent = vk::Extent3D{half.width, half.height, 1};
+        cmd.copyImage(*gi_moments_.handle(), vk::ImageLayout::eGeneral,
+                      *gi_moments_history_.handle(), vk::ImageLayout::eGeneral, region);
+        memoryBarrier(cmd, vk::PipelineStageFlagBits2::eCopy, vk::AccessFlagBits2::eTransferWrite,
+                      vk::PipelineStageFlagBits2::eComputeShader,
+                      vk::AccessFlagBits2::eShaderRead);
+        gi_filter_history_valid_ = true;
+    }
 
     if (capturing_) {
         return;
@@ -2188,21 +2752,48 @@ void VulkanRenderer::recordSsgiPass(const vk::raii::CommandBuffer& cmd,
 
 void VulkanRenderer::recordSsrPass(const vk::raii::CommandBuffer& cmd,
                                    std::uint32_t frame_index) {
-    // Va despues de la GI: la imagen HDR ya esta como textura.
-    pipelineBarrier(cmd, discardToAttachment(*ssr_raw_.handle()));
+    // Con los reflejos apagados tampoco se trazan: el compute no corre y la
+    // imagen se deja vacia como con el SSR.
+    const bool ray_traced = rayTracingActive() && !capturing_ && ssr_enabled_;
+    vk::ImageMemoryBarrier2 raw_to_sampled = writtenToSampled(*ssr_raw_.handle());
 
-    GpuSsgiPush push{};
-    push.previous_view_projection = previous_view_projection_;
-    // Sin frame anterior o con el SSR apagado, el shader no refleja nada.
-    // z: numero de frame, para que el ruido del primer paso cambie cada frame.
-    push.params = Vec4{ssr_enabled_ && ssr_history_ready_ && !capturing_ ? 1.0f : 0.0f, 1.0f,
-                       static_cast<float>(frame_count_ % 64), 0.0f};
-    drawFullscreen(cmd, ssr_pass_, &ssr_sets_[frame_index], ssr_raw_, &push);
+    if (ray_traced) {
+        pipelineBarrier(cmd, colorBarrier(*ssr_raw_.handle(), vk::ImageLayout::eUndefined,
+                                          vk::ImageLayout::eGeneral,
+                                          vk::PipelineStageFlagBits2::eFragmentShader,
+                                          vk::AccessFlagBits2::eShaderSampledRead,
+                                          vk::PipelineStageFlagBits2::eComputeShader,
+                                          vk::AccessFlagBits2::eShaderStorageWrite));
+        RayTracing::Push rt_push{};
+        rt_push.previous_view_projection = previous_view_projection_;
+        rt_push.params = Vec4{static_cast<float>(frame_count_ % 64),
+                              ssr_history_ready_ ? 1.0f : 0.0f, 0.0f, 0.0f};
+        ray_tracing_.record(cmd, frame_index, RayTracing::Pass::Reflections, ssr_raw_.extent(),
+                            rt_push);
+        raw_to_sampled = colorBarrier(*ssr_raw_.handle(), vk::ImageLayout::eGeneral,
+                                      vk::ImageLayout::eShaderReadOnlyOptimal,
+                                      vk::PipelineStageFlagBits2::eComputeShader,
+                                      vk::AccessFlagBits2::eShaderStorageWrite,
+                                      vk::PipelineStageFlagBits2::eFragmentShader,
+                                      vk::AccessFlagBits2::eShaderSampledRead);
+    } else {
+        // Va despues de la GI: la imagen HDR ya esta como textura.
+        pipelineBarrier(cmd, discardToAttachment(*ssr_raw_.handle()));
+
+        GpuSsgiPush push{};
+        push.previous_view_projection = previous_view_projection_;
+        // Sin frame anterior o con el SSR apagado, el shader no refleja nada.
+        // z: numero de frame, para que el ruido del primer paso cambie cada
+        // frame.
+        push.params = Vec4{ssr_enabled_ && ssr_history_ready_ && !capturing_ ? 1.0f : 0.0f,
+                           1.0f, static_cast<float>(frame_count_ % 64), 0.0f};
+        drawFullscreen(cmd, ssr_pass_, &ssr_sets_[frame_index], ssr_raw_, &push);
+    }
 
     // --- Filtro temporal ---
     // La historia recien creada no tiene nada: se pasa a textura para poder
     // enlazarla y el shader no la lee.
-    std::vector<vk::ImageMemoryBarrier2> barriers = {writtenToSampled(*ssr_raw_.handle()),
+    std::vector<vk::ImageMemoryBarrier2> barriers = {raw_to_sampled,
                                                      discardToAttachment(*ssr_image_.handle())};
     if (!ssr_filter_history_valid_) {
         barriers.push_back(colorBarrier(*ssr_history_.handle(), vk::ImageLayout::eUndefined,
@@ -2227,9 +2818,9 @@ void VulkanRenderer::recordFilterHistoryCopies(const vk::raii::CommandBuffer& cm
     // La iluminacion ya leyo los reflejos y la luz rebotada filtrados: se
     // copian a sus historias. Todas quedan como textura al terminar.
     constexpr vk::ImageLayout kRead = vk::ImageLayout::eShaderReadOnlyOptimal;
-    const std::array<std::pair<const VulkanImage*, const VulkanImage*>, 2> copies = {{
+    // (La GI guarda su historia en su propio filtro: recordSsgiPass.)
+    const std::array<std::pair<const VulkanImage*, const VulkanImage*>, 1> copies = {{
         {&ssr_image_, &ssr_history_},
-        {&gi_image_, &gi_history_},
     }};
 
     std::vector<vk::ImageMemoryBarrier2> before;
@@ -2273,7 +2864,6 @@ void VulkanRenderer::recordFilterHistoryCopies(const vk::raii::CommandBuffer& cm
 
     pipelineBarrier(cmd, after);
     ssr_filter_history_valid_ = true;
-    gi_filter_history_valid_ = true;
 }
 
 void VulkanRenderer::recordLightingPass(const vk::raii::CommandBuffer& cmd,
@@ -2283,8 +2873,8 @@ void VulkanRenderer::recordLightingPass(const vk::raii::CommandBuffer& cmd,
     // El SSAO pasa a textura y el destino a destino de color: la imagen HDR
     // la dejo el frame anterior como textura del bloom y la composicion; la
     // de la sonda, como origen de la copia al cubo.
+    // (La GI la dejo lista su filtro, en compute.)
     pipelineBarrier(cmd, {writtenToSampled(*ssao_image_.handle()),
-                          writtenToSampled(*gi_image_.handle()),
                           writtenToSampled(*ssr_image_.handle()),
                           colorBarrier(*target.handle(), vk::ImageLayout::eUndefined,
                                        vk::ImageLayout::eColorAttachmentOptimal,
@@ -2383,7 +2973,7 @@ void VulkanRenderer::recordSkyLutPass(const vk::raii::CommandBuffer& cmd) {
     to_sampled.dstStageMask |= vk::PipelineStageFlagBits2::eComputeShader;
     pipelineBarrier(cmd, to_sampled);
 
-    ibl_probe_.record(cmd, ibl_light_radiance_, ibl_to_light_);
+    ibl_probe_.record(cmd, ibl_light_radiance_, ibl_to_light_, environmentActive());
 }
 
 void VulkanRenderer::recordCloudPass(const vk::raii::CommandBuffer& cmd,
@@ -2391,7 +2981,7 @@ void VulkanRenderer::recordCloudPass(const vk::raii::CommandBuffer& cmd,
     pipelineBarrier(cmd, discardToAttachment(*clouds_image_.handle()));
     // Apagadas no se dibujan (la iluminacion no las lee), pero la imagen
     // queda igualmente como textura para el descriptor.
-    if (clouds_enabled_) {
+    if (clouds_enabled_ && !environmentActive()) {
         drawFullscreen(cmd, clouds_pass_, &clouds_sets_[frame_index], clouds_image_,
                        &cloud_push_);
     }

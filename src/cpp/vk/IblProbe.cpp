@@ -17,7 +17,8 @@ struct IblPush {
     core::Vec4 to_light{};
     std::uint32_t face_size = 0;
     std::uint32_t sample_count = 0;
-    std::uint32_t pad[2] = {0, 0};
+    float hdr = 0.0f;  // 1 = el entorno es el mapa HDR
+    std::uint32_t pad = 0;
 };
 
 // Muestras GGX por texel: el cielo es suave (el disco del sol no esta en la
@@ -133,9 +134,12 @@ void IblProbe::create(const VulkanDevice& device, const VulkanImage& sky_lut) {
 
     // --- Pipelines ---
     using Type = vk::DescriptorType;
-    const std::array<Type, 2> prefilter_bindings = {Type::eCombinedImageSampler,
-                                                    Type::eStorageImage};
-    const std::array<Type, 2> sh_bindings = {Type::eCombinedImageSampler, Type::eStorageBuffer};
+    // (Binding 2: el mapa de entorno HDR, si la escena trae uno.)
+    const std::array<Type, 3> prefilter_bindings = {Type::eCombinedImageSampler,
+                                                    Type::eStorageImage,
+                                                    Type::eCombinedImageSampler};
+    const std::array<Type, 3> sh_bindings = {Type::eCombinedImageSampler, Type::eStorageBuffer,
+                                             Type::eCombinedImageSampler};
     const std::array<Type, 1> brdf_bindings = {Type::eStorageImage};
 
     ComputePassDesc prefilter{};
@@ -157,7 +161,7 @@ void IblProbe::create(const VulkanDevice& device, const VulkanImage& sky_lut) {
 
     // --- Descriptores ---
     const std::array<vk::DescriptorPoolSize, 3> pool_sizes = {
-        vk::DescriptorPoolSize{Type::eCombinedImageSampler, kEnvironmentMips + 1},
+        vk::DescriptorPoolSize{Type::eCombinedImageSampler, (kEnvironmentMips + 1) * 2},
         vk::DescriptorPoolSize{Type::eStorageImage, kEnvironmentMips + 1},
         vk::DescriptorPoolSize{Type::eStorageBuffer, 1}};
     vk::DescriptorPoolCreateInfo pool_info{};
@@ -194,6 +198,8 @@ void IblProbe::create(const VulkanDevice& device, const VulkanImage& sky_lut) {
 
     for (std::uint32_t mip = 0; mip < kEnvironmentMips; ++mip) {
         write_image(prefilter_sets_[mip], 0, Type::eCombinedImageSampler, sky_info);
+        // Hasta que haya un HDR, la LUT del cielo ocupa su hueco (no se lee).
+        write_image(prefilter_sets_[mip], 2, Type::eCombinedImageSampler, sky_info);
 
         vk::DescriptorImageInfo storage{};
         storage.imageView = *environment_mip_views_[mip];
@@ -202,6 +208,7 @@ void IblProbe::create(const VulkanDevice& device, const VulkanImage& sky_lut) {
     }
 
     write_image(sh_sets_[0], 0, Type::eCombinedImageSampler, sky_info);
+    write_image(sh_sets_[0], 2, Type::eCombinedImageSampler, sky_info);
     vk::DescriptorBufferInfo irradiance_info{};
     irradiance_info.buffer = *irradiance_.handle();
     irradiance_info.range = VK_WHOLE_SIZE;
@@ -240,8 +247,33 @@ void IblProbe::destroy() {
     brdf_ready_ = false;
 }
 
+void IblProbe::setEnvironment(const VulkanDevice& device, vk::ImageView view,
+                              vk::Sampler sampler) {
+    vk::DescriptorImageInfo info{};
+    info.sampler = sampler;
+    info.imageView = view;
+    info.imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
+
+    std::vector<vk::WriteDescriptorSet> writes;
+    for (const vk::raii::DescriptorSet& set : prefilter_sets_) {
+        vk::WriteDescriptorSet write{};
+        write.dstSet = *set;
+        write.dstBinding = 2;
+        write.descriptorType = vk::DescriptorType::eCombinedImageSampler;
+        write.setImageInfo(info);
+        writes.push_back(write);
+    }
+    vk::WriteDescriptorSet sh_write{};
+    sh_write.dstSet = *sh_sets_[0];
+    sh_write.dstBinding = 2;
+    sh_write.descriptorType = vk::DescriptorType::eCombinedImageSampler;
+    sh_write.setImageInfo(info);
+    writes.push_back(sh_write);
+    device.handle().updateDescriptorSets(writes, nullptr);
+}
+
 void IblProbe::record(const vk::raii::CommandBuffer& cmd, const core::Vec3& light_radiance,
-                      const core::Vec3& to_light) {
+                      const core::Vec3& to_light, bool hdr) {
     using Stage = vk::PipelineStageFlagBits2;
     using Access = vk::AccessFlagBits2;
 
@@ -284,6 +316,7 @@ void IblProbe::record(const vk::raii::CommandBuffer& cmd, const core::Vec3& ligh
     push.light_radiance = core::Vec4{light_radiance.x, light_radiance.y, light_radiance.z, 0.0f};
     push.to_light = core::Vec4{to_light.x, to_light.y, to_light.z, 0.0f};
     push.sample_count = kPrefilterSamples;
+    push.hdr = hdr ? 1.0f : 0.0f;
 
     cmd.bindPipeline(vk::PipelineBindPoint::eCompute, *prefilter_pass_.pipeline());
     for (std::uint32_t mip = 0; mip < kEnvironmentMips; ++mip) {

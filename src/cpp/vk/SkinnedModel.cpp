@@ -24,6 +24,27 @@ vk::Format blockFormat(asset::TextureFormat format) {
     return vk::Format::eR8G8B8A8Unorm;
 }
 
+// El color base tiene zonas recortadas por alfa (el raster las descarta con
+// alfa < 0.5). DXT1 se toma como opaco; DXT3/5 y BC7 casi siempre llevan alfa
+// cuando se eligen; RGBA8 se comprueba.
+bool hasAlpha(const asset::TextureData& texture) {
+    switch (texture.format) {
+        case asset::TextureFormat::Rgba8:
+            for (std::size_t i = 3; i < texture.pixels.size(); i += 4) {
+                if (texture.pixels[i] < 128) {
+                    return true;
+                }
+            }
+            return false;
+        case asset::TextureFormat::Bc2:
+        case asset::TextureFormat::Bc3:
+        case asset::TextureFormat::Bc7:
+            return true;
+        default:
+            return false;
+    }
+}
+
 }  // namespace
 
 void SkinnedModel::create(const VulkanDevice& device, const asset::ModelData& model,
@@ -99,7 +120,6 @@ void SkinnedModel::create(const VulkanDevice& device, const asset::ModelData& mo
                                                             : material.normal_scale};
         gpu.reflectance = material.reflectance;
         gpu.transparent = material.transparent;
-        materials_.push_back(gpu);
 
         // Sin textura emisiva, el factor multiplica al blanco: un material
         // emisivo liso (glTF sin mapa) sigue brillando.
@@ -114,6 +134,14 @@ void SkinnedModel::create(const VulkanDevice& device, const asset::ModelData& mo
             pick(material.occlusion_texture, white_index),
             pick(material.emissive_texture, emits ? white_index : black_index),
         };
+        gpu.albedo_texture = static_cast<std::uint32_t>(textures[0]);
+        gpu.metallic_roughness_texture = static_cast<std::uint32_t>(textures[1]);
+        gpu.emissive_texture = static_cast<std::uint32_t>(textures[4]);
+        if (material.albedo_texture >= 0) {
+            gpu.alpha_masked =
+                hasAlpha(model.textures[static_cast<std::size_t>(material.albedo_texture)]);
+        }
+        materials_.push_back(gpu);
 
         std::array<vk::DescriptorImageInfo, SkinnedPass::kMaterialTextureCount> infos{};
         for (std::uint32_t t = 0; t < SkinnedPass::kMaterialTextureCount; ++t) {
@@ -130,6 +158,28 @@ void SkinnedModel::create(const VulkanDevice& device, const asset::ModelData& mo
             writes[t].setImageInfo(infos[t]);
         }
         device.handle().updateDescriptorSets(writes, nullptr);
+    }
+
+    // --- Grupos de dibujo (un grupo por material con submallas opacas) ---
+    draw_groups_.clear();
+    submesh_groups_.assign(submeshes_.size(), kNoGroup);
+    std::vector<std::uint32_t> material_group(materials_.size(), kNoGroup);
+    for (std::uint32_t i = 0; i < submeshes_.size(); ++i) {
+        const std::uint32_t material = submeshes_[i].material;
+        if (materials_[material].transparent) {
+            continue;
+        }
+        if (material_group[material] == kNoGroup) {
+            material_group[material] = static_cast<std::uint32_t>(draw_groups_.size());
+            draw_groups_.push_back(DrawGroup{material, 0, 0});
+        }
+        submesh_groups_[i] = material_group[material];
+        ++draw_groups_[material_group[material]].capacity;
+    }
+    slot_count_ = 0;
+    for (DrawGroup& group : draw_groups_) {
+        group.first_slot = slot_count_;
+        slot_count_ += group.capacity;
     }
 
     std::cout << "[Vulkan] Modelo " << model.name << " subido: " << model.textures.size()
