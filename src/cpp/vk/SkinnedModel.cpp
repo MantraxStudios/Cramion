@@ -7,6 +7,24 @@
 #include <iostream>
 
 namespace cramion::gfx {
+namespace {
+
+// Formato de Vulkan de una textura comprimida del DDS. Variantes UNORM: el
+// shader linealiza el color base a mano.
+vk::Format blockFormat(asset::TextureFormat format) {
+    switch (format) {
+        case asset::TextureFormat::Bc1: return vk::Format::eBc1RgbaUnormBlock;
+        case asset::TextureFormat::Bc2: return vk::Format::eBc2UnormBlock;
+        case asset::TextureFormat::Bc3: return vk::Format::eBc3UnormBlock;
+        case asset::TextureFormat::Bc4: return vk::Format::eBc4UnormBlock;
+        case asset::TextureFormat::Bc5: return vk::Format::eBc5UnormBlock;
+        case asset::TextureFormat::Bc7: return vk::Format::eBc7UnormBlock;
+        case asset::TextureFormat::Rgba8: break;
+    }
+    return vk::Format::eR8G8B8A8Unorm;
+}
+
+}  // namespace
 
 void SkinnedModel::create(const VulkanDevice& device, const asset::ModelData& model,
                           const SkinnedPass& pass) {
@@ -25,7 +43,15 @@ void SkinnedModel::create(const VulkanDevice& device, const asset::ModelData& mo
     // --- Texturas, con los texeles por defecto al final ---
     textures_.reserve(model.textures.size() + 3);
     for (const asset::TextureData& texture : model.textures) {
-        textures_.emplace_back().create(device, texture.width, texture.height, texture.rgba.data());
+        if (texture.format == asset::TextureFormat::Rgba8) {
+            textures_.emplace_back().create(device, texture.width, texture.height,
+                                            texture.pixels.data());
+        } else {
+            textures_.emplace_back().createCompressed(
+                device, texture.width, texture.height, blockFormat(texture.format),
+                asset::blockBytes(texture.format), texture.mip_levels, texture.pixels.data(),
+                texture.pixels.size());
+        }
     }
     const auto add_texel = [&](std::uint8_t r, std::uint8_t g, std::uint8_t b) {
         const std::array<std::uint8_t, 4> texel = {r, g, b, 255};
@@ -66,8 +92,12 @@ void SkinnedModel::create(const VulkanDevice& device, const asset::ModelData& mo
         gpu.base_color = material.base_color;
         gpu.emissive = core::Vec4{material.emissive.x, material.emissive.y, material.emissive.z,
                                   0.0f};
-        gpu.params = core::Vec4{material.metallic, material.roughness,
-                                material.occlusion_strength, material.normal_scale};
+        // El signo de la escala del normal map dice su convenio (ver
+        // skinned.frag): positivo = OpenGL, negativo = DirectX.
+        gpu.params = core::Vec4{material.metallic, material.roughness, material.occlusion_strength,
+                                material.normal_map_directx ? -material.normal_scale
+                                                            : material.normal_scale};
+        gpu.reflectance = material.reflectance;
         gpu.transparent = material.transparent;
         materials_.push_back(gpu);
 

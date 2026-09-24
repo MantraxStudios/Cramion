@@ -3,6 +3,7 @@
 
 #include "core/Math.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <string>
@@ -30,15 +31,41 @@ struct SkinnedVertex {
     float weights[kMaxBoneInfluences] = {0.0f, 0.0f, 0.0f, 0.0f};
 };
 
-// Imagen del modelo. Mientras se carga guarda el archivo comprimido tal cual
-// (`encoded`, PNG/JPG); al final todas se decodifican a RGBA8 en paralelo y
-// `encoded` queda vacio. La cache del modelo guarda la version comprimida.
+// Formato de los pixeles de una textura ya decodificada. Los BC ("block
+// compression", DXT) se suben comprimidos a la GPU tal cual vienen del DDS.
+enum class TextureFormat : std::uint8_t {
+    Rgba8,  // 4 bytes por pixel; los mips los genera la GPU
+    Bc1,    // DXT1: color (+ alfa de 1 bit), 8 bytes por bloque de 4x4
+    Bc2,    // DXT3: color + alfa explicito
+    Bc3,    // DXT5: color + alfa interpolado
+    Bc4,    // un canal
+    Bc5,    // dos canales (normal maps: X e Y)
+    Bc7,    // color de alta calidad
+};
+
+// Bytes por bloque de 4x4 de un formato BC (0 para Rgba8).
+std::uint32_t blockBytes(TextureFormat format);
+// Bytes de un nivel de mip de `width` x `height`.
+std::size_t mipByteSize(TextureFormat format, std::uint32_t width, std::uint32_t height);
+
+// Imagen del modelo. Mientras se carga guarda el archivo tal cual (`encoded`,
+// PNG/JPG/TGA/DDS) o solo su ruta (`source_path`); al final todas se leen y
+// decodifican en paralelo y `encoded` queda vacio.
 struct TextureData {
     std::string name;
     std::uint32_t width = 0;
     std::uint32_t height = 0;
-    std::vector<std::uint8_t> rgba;
+    TextureFormat format = TextureFormat::Rgba8;
+    // Niveles guardados en `pixels`, seguidos (solo los BC traen mas de uno).
+    std::uint32_t mip_levels = 1;
+    std::vector<std::uint8_t> pixels;
     std::vector<std::uint8_t> encoded;
+    // Archivo del que se lee si `encoded` esta vacio. La cache del modelo
+    // guarda solo la ruta: no duplica gigas de texturas que ya estan en disco.
+    std::string source_path;
+    // Mapa de alturas en escala de grises (el "bump" de los OBJ): al
+    // decodificarlo se convierte en un normal map en espacio tangente.
+    bool height_map = false;
 };
 
 // Material PBR metal/rugosidad (el de glTF 2.0 y Unreal).
@@ -50,6 +77,13 @@ struct MaterialData {
     float roughness = 0.8f;
     float occlusion_strength = 1.0f;
     float normal_scale = 1.0f;
+    // Reflectancia a incidencia normal (F0) si no es metal: 0.04 es la de
+    // casi todos los dielectricos (piedra, madera, plastico). Mas alta, la
+    // superficie refleja mas tambien vista de frente (marmol pulido, laca).
+    float reflectance = 0.04f;
+    // Convenio del normal map: OpenGL (+Y arriba en la imagen, el de glTF) o
+    // DirectX (+Y abajo: Unreal, Lumberyard/Bistro). El archivo no lo dice.
+    bool normal_map_directx = false;
     // Vidrio, agua: materiales semitransparentes sin textura con alfa. Un
     // renderizador diferido no puede mezclarlos, asi que no se dibujan.
     bool transparent = false;
@@ -141,7 +175,11 @@ struct ModelData {
 // Carga un modelo (FBX y cualquier formato que tenga assimp activado) con su
 // esqueleto, sus animaciones y sus texturas, incrustadas o en archivos junto
 // al modelo. Lanza std::runtime_error si no se puede leer.
-ModelData loadModel(const std::filesystem::path& path);
+//
+// `force_static`: para escenarios. Hornea la jerarquia en los vertices aunque
+// el archivo traiga animaciones (se descartan), para que el frustum culling
+// trabaje por trozos. Sin el, solo se hornea si nada se anima.
+ModelData loadModel(const std::filesystem::path& path, bool force_static = false);
 
 // Calcula la caja de cada submalla a partir de sus vertices (pose de reposo).
 void computeSubmeshBounds(ModelData& model);

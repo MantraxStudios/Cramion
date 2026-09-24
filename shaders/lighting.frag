@@ -69,6 +69,7 @@ layout(set = 0, binding = 4) uniform LightBuffer {
     ivec4 counts;                 // x = puntuales, y = focos, z = SSAO, w = GI
     PointLightGpu points[kMaxPointLights];
     SpotLightGpu spots[kMaxSpotLights];
+    vec4 probe;                    // sonda de reflexion: xyz = centro, w = 1 si esta lista
 } lights;
 
 // Mapa de sombras en cascada. El muestreador compara por hardware: devuelve
@@ -119,16 +120,26 @@ layout(set = 0, binding = 15) readonly buffer Irradiance {
 // a = visibilidad del cielo.
 layout(set = 0, binding = 16) uniform sampler2D gi_map;
 
+// Reflejos de pantalla (ssr.frag): rgb = color reflejado, a = confianza.
+layout(set = 0, binding = 17) uniform sampler2D ssr_map;
+
+// Sonda de reflexion (ReflectionProbe): la escena vista desde lights.probe.xyz,
+// prefiltrada por rugosidad como environment_map. a = distancia de la sonda a
+// lo que se ve en cada direccion.
+layout(set = 0, binding = 18) uniform samplerCube reflection_probe;
+
 layout(location = 0) in vec2 v_uv;
 layout(location = 0) out vec4 out_color;
 
 const float kPi = 3.14159265;
 
-// Reflectancia a incidencia normal de los dielectricos (piedra, madera, piel).
-const float kDielectricF0 = 0.04;
-
-// Niveles de mip del cubo de entorno (IblProbe::kEnvironmentMips - 1).
+// Niveles de mip del cubo de entorno (IblProbe::kEnvironmentMips - 1). La
+// sonda de reflexion tiene los mismos (ReflectionProbe::kMips).
 const float kEnvironmentMaxLod = 5.0;
+
+// Distancia que se guarda para el cielo en la captura de la sonda: "muy
+// lejos" (la correccion de paralaje apenas lo mueve).
+const float kProbeSkyDistance = 5000.0;
 
 // Radiancia del disco solar respecto a la iluminancia del sol en la escena.
 const float kSunDiskRadiance = 900.0;
@@ -221,8 +232,10 @@ vec3 fresnelSchlick(float cosine, vec3 f0) {
 // BRDF completa para una luz. Las intensidades de las luces de la escena ya
 // llevan el factor pi incluido (el difuso es albedo * radiancia * NdotL), asi
 // que el especular se multiplica por pi para quedar en la misma escala.
+// `f0`: reflectancia a incidencia normal (la del material si es dielectrico,
+// su color si es metal).
 vec3 shade(vec3 light_direction, vec3 radiance, vec3 normal, vec3 view_direction, vec3 albedo,
-           float roughness, float metallic) {
+           float roughness, float metallic, vec3 f0) {
     float n_dot_l = max(dot(normal, light_direction), 0.0);
     if (n_dot_l <= 0.0) {
         return vec3(0.0);
@@ -233,8 +246,7 @@ vec3 shade(vec3 light_direction, vec3 radiance, vec3 normal, vec3 view_direction
     float n_dot_h = max(dot(normal, halfway), 0.0);
     float v_dot_h = max(dot(view_direction, halfway), 0.0);
 
-    // Dielectricos: F0 = 4%. Metales: F0 = su color, y nada de difuso.
-    vec3 f0 = mix(vec3(kDielectricF0), albedo, metallic);
+    // Metales: nada de difuso.
     float alpha = max(roughness * roughness, 0.002);
     vec3 fresnel = fresnelSchlick(v_dot_h, f0);
     vec3 specular = distributionGgx(n_dot_h, alpha) * visibilitySmith(n_dot_v, n_dot_l, alpha) *
@@ -609,6 +621,26 @@ vec3 geometricNormal(float depth, vec3 world_position, vec3 view_direction) {
     return dot(n, view_direction) < 0.0 ? -n : n;
 }
 
+// Direccion en la que hay que leer la sonda de reflexion para el rayo que sale
+// de `position` en la direccion `direction`. La sonda vio la escena desde su
+// centro, no desde este punto: se busca donde choca el rayo con lo que la
+// sonda ve (su distancia esta en el alfa del nivel 0) y se lee en la direccion
+// de ese punto visto desde el centro. Es una busqueda de punto fijo: a partir
+// de una distancia supuesta a lo largo del rayo, se corrige con lo que la
+// sonda dice que hay en esa direccion. Converge en pocos pasos salvo en
+// bordes muy marcados, donde el error se ve como una pequena deformacion.
+vec3 probeDirection(vec3 position, vec3 direction) {
+    vec3 offset = position - lights.probe.xyz;
+    float t = textureLod(reflection_probe, direction, 0.0).a;
+    for (int i = 0; i < 4; ++i) {
+        vec3 to_hit = offset + direction * t;
+        float hit_distance = length(to_hit);
+        float surface = textureLod(reflection_probe, to_hit / max(hit_distance, 0.0001), 0.0).a;
+        t = max(t + surface - hit_distance, 0.0);
+    }
+    return normalize(offset + direction * t);
+}
+
 // GI a resolucion completa: media de la ventana 4x4 de media resolucion (las
 // 16 rotaciones de ssgi.frag), solo con los texeles de la misma superficie
 // (profundidad y normal parecidas) para no sangrar luz entre objetos.
@@ -651,6 +683,9 @@ void main() {
     // El depth se limpia a 1.0: ese valor significa "aqui no hay geometria".
     vec3 world_position = worldFromDepth(v_uv, depth);
     vec3 color;
+    // Distancia de la camara a lo que se ve: la guarda la captura de la sonda
+    // de reflexion (en la imagen de pantalla no la lee nadie).
+    float surface_distance = kProbeSkyDistance;
 
     if (depth >= 1.0) {
         // --- Cielo ---
@@ -661,6 +696,8 @@ void main() {
 
         vec3 normal = decodeNormal(normal_sample.rg);
         float roughness = clamp(normal_sample.b, 0.04, 1.0);
+        // F0 de la parte no metalica (0.04 casi siempre; el marmol pulido, mas).
+        float reflectance = normal_sample.a;
         vec4 material_sample = texture(g_material, v_uv);
         vec3 emission = material_sample.rgb;
         float metallic = material_sample.a;
@@ -687,7 +724,7 @@ void main() {
         vec3 sun_direction = normalize(-lights.sun_direction_intensity.xyz);
 
         // --- Ambiente: IBL del entorno (cielo + suelo) ---
-        vec3 f0 = mix(vec3(kDielectricF0), albedo, metallic);
+        vec3 f0 = mix(vec3(reflectance), albedo, metallic);
         // Fresnel con rugosidad (Lagarde): en superficies rugosas el borde
         // brilla menos.
         vec3 env_fresnel = f0 + (max(vec3(1.0 - roughness), f0) - f0) * pow(1.0 - n_dot_v, 5.0);
@@ -713,15 +750,26 @@ void main() {
         vec3 prefiltered = textureLod(environment_map, reflected,
                                       roughness * kEnvironmentMaxLod).rgb;
         vec2 brdf = texture(brdf_lut, vec2(n_dot_v, roughness)).rg;
-        vec3 specular_ibl = prefiltered * (f0 * brdf.x + brdf.y);
+        // Donde el SSR encontro algo, refleja la escena. Donde no (lo que
+        // queda fuera de la pantalla o detras de la camara), la sonda de
+        // reflexion, que es la escena vista desde cerca; sin sonda, el cielo
+        // del IBL, que en un interior solo se ve por donde se ve el cielo
+        // (visibilidad de la GI).
+        vec3 fallback = prefiltered * sky_visibility;
+        if (lights.probe.w > 0.5) {
+            fallback = textureLod(reflection_probe, probeDirection(world_position, reflected),
+                                  roughness * kEnvironmentMaxLod).rgb;
+        }
+        vec4 ssr = texelFetch(ssr_map, ivec2(gl_FragCoord.xy), 0);
+        vec3 reflected_light = mix(fallback, ssr.rgb, ssr.a);
+        vec3 specular_ibl = reflected_light * (f0 * brdf.x + brdf.y);
 
         // Oclusion especular (Lagarde): el especular se ocluye mas que el
         // difuso en angulos rasantes.
         float specular_ao = clamp(pow(n_dot_v + ao, exp2(-16.0 * roughness - 1.0)) - 1.0 + ao,
                                   0.0, 1.0);
 
-        color = diffuse_ibl * multiBounceAo(ao, albedo) +
-                specular_ibl * specular_ao * mix(1.0, sky_visibility, 0.5);
+        color = diffuse_ibl * multiBounceAo(ao, albedo) + specular_ibl * specular_ao;
 
         // --- Luz direccional (sol), con sombras en cascada ---
         float sun_n_dot_l = max(dot(normal, sun_direction), 0.0);
@@ -736,7 +784,7 @@ void main() {
         }
 
         color += shade(sun_direction, sun_radiance, normal, view_direction, albedo, roughness,
-                       metallic) *
+                       metallic, f0) *
                  shadow;
 
         // --- Luces puntuales ---
@@ -769,7 +817,7 @@ void main() {
             }
 
             color += shade(light_direction, radiance, normal, view_direction, albedo, roughness,
-                           metallic) *
+                           metallic, f0) *
                      point_shadow;
         }
 
@@ -814,7 +862,7 @@ void main() {
             }
 
             color += shade(light_direction, radiance, normal, view_direction, albedo, roughness,
-                           metallic) *
+                           metallic, f0) *
                      spot_shadow;
         }
 
@@ -839,8 +887,9 @@ void main() {
                      pow(sun_alignment, 10.0) * 0.35 * smoothstep(-0.05, 0.1, lights.sky_sun.y);
         float fog = heightFog(distance_to_camera, ray_direction);
         color = mix(color, fog_color, fog);
+        surface_distance = distance_to_camera;
     }
 
     // Salida HDR lineal: composite.frag aplica exposicion, tono y gamma.
-    out_color = vec4(color, 1.0);
+    out_color = vec4(color, surface_distance);
 }

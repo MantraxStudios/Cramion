@@ -59,6 +59,7 @@ public:
     // ¿Se activo depthClamp? La pasada de sombras lo usa para no perder los
     // objetos que quedan por delante del plano cercano de una cascada.
     bool depthClampSupported() const { return depth_clamp_supported_; }
+    bool textureCompressionBcSupported() const { return texture_compression_bc_supported_; }
 
 private:
     void pickPhysicalDevice(const VulkanInstance& instance, const VulkanSurface& surface);
@@ -87,6 +88,7 @@ private:
     QueueFamilyIndices queue_families_{};
     vk::Format depth_format_ = vk::Format::eUndefined;
     bool depth_clamp_supported_ = false;
+    bool texture_compression_bc_supported_ = false;
     std::string device_name_;
     std::uint32_t api_version_ = 0;
 };

@@ -7,7 +7,9 @@ Motor de render en tiempo real para Windows con **renderizador diferido en Vulka
 
 La capa de plataforma (ventana, entrada y dispositivo DirectX 12) es una librería estática propia, **CramionDM**. Todo se compila con **CMake + Clang + Ninja**.
 
-La escena de demostración es **San Miguel** (≈10 millones de triángulos, 287 materiales y 266 texturas), iluminada por una sola luz direccional (el sol de día, la luna de noche) y su cielo.
+Incluye dos escenas de demostración, iluminadas por una sola luz direccional (el sol de día, la luna de noche) y su cielo:
+- **Catedral de Šibenik** (por defecto): 75 mil triángulos. Un interior en el que el sol entra por los ventanales.
+- **San Miguel**: ≈10 millones de triángulos, 287 materiales y 266 texturas. Un patio exterior.
 
 ---
 
@@ -46,14 +48,16 @@ Las cabeceras de Vulkan y `vulkan-1.lib` vienen en `vendor/`. **assimp** y **stb
 
 ## Compilar y ejecutar
 
-### 1. La escena San Miguel
+### 1. Las escenas
 
-El modelo no está en el repositorio: pesa ~500 MB y su licencia no permite redistribuirlo.
+Los modelos no están en el repositorio: pesan mucho y sus licencias no permiten redistribuirlos. Descárgalos de la [McGuire Computer Graphics Archive](https://casual-effects.com/data/) y deja los zips en la raíz del proyecto con estos nombres:
 
-1. Descárgalo de la [McGuire Computer Graphics Archive](https://casual-effects.com/data/) (*San Miguel*, versión 2017).
-2. Guarda el zip como **`San_Miguel.zip`** en la raíz del proyecto.
+| Escena | Zip | Se extrae en |
+|---|---|---|
+| Catedral de Šibenik | **`sibenik.zip`** (~2 MB) | `build/assets/sibenik/` |
+| San Miguel (versión 2017) | **`San_Miguel.zip`** (~510 MB) | `build/assets/san-miguel/` (solo el OBJ completo, el MTL y las texturas) |
 
-Al configurar, CMake lo extrae **una sola vez** en `build/assets/san-miguel/` (el OBJ completo, el MTL y las texturas).
+Al configurar, CMake extrae **una sola vez** cada zip que encuentre. Basta con tener uno de los dos.
 
 ### 2. Compilar
 
@@ -72,15 +76,18 @@ Los shaders GLSL de `shaders/` se compilan a SPIR-V en `build/shaders/` como par
 ### 3. Ejecutar
 
 ```powershell
-.\build\cramion.exe
+.\build\cramion.exe              # catedral de Šibenik (por defecto)
+.\build\cramion.exe san-miguel   # San Miguel
 ```
 
-- **La primera vez** importa el OBJ de 1.1 GB (~50 s) y guarda una caché binaria al lado: `san-miguel.obj.cramcache`, de ~1 GB.
-- **Las siguientes** leen la caché y llegan al primer frame en **~4 s**.
+La primera vez que se abre una escena, su OBJ se importa y se guarda una caché binaria al lado (`<modelo>.obj.cramcache`). Las siguientes veces se lee la caché:
 
-La caché se regenera sola si cambia el OBJ o el formato interno del motor.
+| Escena | Primera carga | Siguientes | FPS en Debug (1920×1040) |
+|---|---|---|---|
+| Šibenik | 0.3 s | inmediato | ~250 |
+| San Miguel | ~50 s (OBJ de 1.1 GB) | ~4 s hasta el primer frame | ~50 |
 
-En Debug, San Miguel (10 M de triángulos, 1920×1040) corre a unos 50 FPS en la GPU de prueba. En Release va bastante más rápido.
+Medido con la GPU de prueba. En Release va bastante más rápido. La caché se regenera sola si cambia el OBJ o el formato interno del motor.
 
 ## Controles
 
@@ -162,13 +169,14 @@ Mapas que se aprovechan de cada material:
 | Emisión | escalada a HDR para que el bloom la recoja |
 
 En los OBJ (que no tienen PBR):
+- **Relieve:** los `map_Bump`/`bump` que son **mapas de alturas** (Šibenik) se convierten al cargar en normal maps, con la pendiente por diferencias centrales.
 - **Rugosidad:** se deduce del exponente de Phong: `α = √(2/(Ns+2))`, rugosidad = √α, con un mínimo de 0.3.
 - **Normal maps:** los `map_Bump` con prefijo `N_` se usan como normal map.
 
 ### Luz directa
 
 - **Sol o luna:** una luz direccional que sigue un ciclo día/noche. Se vuelve rojiza al amanecer y al atardecer, y fría y tenue de noche.
-- **Luces locales:** el motor admite hasta **32 luces puntuales** y **8 focos** con sombras. La escena San Miguel no usa ninguna.
+- **Luces locales:** el motor admite hasta **32 luces puntuales** y **8 focos** con sombras. Las escenas de demostración no usan ninguna.
 
 ### Cielo físico
 
@@ -285,7 +293,7 @@ Vidrio y agua (materiales semitransparentes) se omiten: un renderizador diferido
 
 | Qué | Dónde |
 |---|---|
-| Escena que se carga, posición inicial de la cámara | `src/main.cpp` (`kSceneFile`, `kCameraStart`, `kCameraTarget`) |
+| Escenas disponibles y posición inicial de la cámara de cada una | `src/main.cpp` (`kScenes`) y `cramion_extract_scene(...)` en `CMakeLists.txt` |
 | Intensidad y color del sol/luna, ciclo día/noche | `src/cpp/scene/Scene.cpp` (`updateSun`) |
 | Brillo del cielo frente al sol | `kSunIlluminance` en `src/cpp/vk/VulkanRenderer.cpp` |
 | Dispersión atmosférica | constantes de `shaders/sky_lut.frag` |
@@ -344,6 +352,7 @@ Las luces locales se añaden a `LightSet::points` y `LightSet::spots` (`src/incl
 Cramion/
 ├── CMakeLists.txt          # Proyecto, dependencias, shaders y extracción de la escena
 ├── CMakePresets.json       # Presets Clang + Ninja (Debug / Release)
+├── sibenik.zip             # (no incluido) escena de demostración
 ├── San_Miguel.zip          # (no incluido) escena de demostración
 ├── CramionDM/              # Librería estática: ventana Win32, entrada, dispositivo DX12
 ├── shaders/                # GLSL → SPIR-V
@@ -410,7 +419,8 @@ Las teclas (`KeyCode.h`) siguen los Virtual-Key Codes de Windows. `keyName()` da
 
 ## Limitaciones conocidas
 
-- **Sin transparencias:** el renderizador es diferido, así que el vidrio y el agua se omiten (la fuente de San Miguel no tiene agua).
+- **Sin transparencias:** el renderizador es diferido, así que el vidrio y el agua se omiten. Se reconocen por `d`/`Tr`, por la transmisión `Tf` o por los modelos `illum` de vidrio. Por eso la fuente de San Miguel no tiene agua, y las vidrieras de colores de Šibenik dejan pasar la luz sin teñirla.
+- **Luz del cielo en interiores:** el IBL es la luz de un exterior. En el interior de Šibenik solo la ocluyen el SSAO y la visibilidad de cielo de la SSGI (rayos de 3 m), así que el ambiente queda más claro de lo real en las zonas lejos de las paredes.
 - **La SSGI es de pantalla:** lo que queda fuera de la vista no rebota luz, y la luz rebotada puede cambiar algo al girar la cámara.
 - **Arranque minimizado:** si el programa arranca con la ventana minimizada, se cierra (la swapchain no admite tamaño 0).
 - **Solo Windows** (Win32 + DirectX 12 en la capa de plataforma).
@@ -419,6 +429,7 @@ Las teclas (`KeyCode.h`) siguen los Virtual-Key Codes de Windows. `keyName()` da
 ## Créditos y licencias
 
 - **Código de Cramion:** licencia MIT (ver [LICENSE](LICENSE)).
+- **Catedral de Šibenik:** de Marko Dabrović ([RNA studio](http://www.rna.hr)). Huecos corregidos por Kenzie Lamar (Vicarious Visions), texturas y mapas de relieve de Morgan McGuire; publicada en [casual-effects.com](https://casual-effects.com/data/). No se redistribuye con este repositorio.
 - **San Miguel:** modelado por Guillermo M. Leal Llaguno (Evolución Visual). Versión 2017 mejorada por Morgan McGuire, Guedis Cárdenas, Michael Mara y Nicholas Hull, publicada en [casual-effects.com](https://casual-effects.com/data/). **Solo para uso educativo y de investigación, con atribución.** No se redistribuye con este repositorio.
 - **Dependencias:**
   - [assimp](https://github.com/assimp/assimp): BSD-3.

@@ -26,14 +26,24 @@ void Camera::lookAt(const Vec3& target) {
     pitch_ = std::clamp(std::asin(direction.y), -kMaxPitch, kMaxPitch);
 }
 
+void Camera::setOrientation(const Vec3& forward, const Vec3& up) {
+    free_orientation_ = true;
+    free_forward_ = core::normalize(forward);
+    free_up_ = core::normalize(up);
+}
+
 Vec3 Camera::forward() const {
+    if (free_orientation_) {
+        return free_forward_;
+    }
     const float cos_pitch = std::cos(pitch_);
     return core::normalize(
         Vec3{std::cos(yaw_) * cos_pitch, std::sin(pitch_), std::sin(yaw_) * cos_pitch});
 }
 
 Vec3 Camera::right() const {
-    return core::normalize(core::cross(forward(), Vec3{0.0f, 1.0f, 0.0f}));
+    return core::normalize(
+        core::cross(forward(), free_orientation_ ? free_up_ : Vec3{0.0f, 1.0f, 0.0f}));
 }
 
 Vec3 Camera::up() const {
@@ -73,7 +83,8 @@ void Camera::update(const dm::Input& input, float delta_seconds) {
 }
 
 Mat4 Camera::view() const {
-    return core::lookAt(position_, position_ + forward(), Vec3{0.0f, 1.0f, 0.0f});
+    return core::lookAt(position_, position_ + forward(),
+                        free_orientation_ ? free_up_ : Vec3{0.0f, 1.0f, 0.0f});
 }
 
 Mat4 Camera::projection() const {

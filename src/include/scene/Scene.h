@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <memory>
+#include <string>
 #include <vector>
 
 namespace cramion::dm {
@@ -46,7 +47,8 @@ public:
     const LightSet& lights() const { return lights_; }
 
     // Carga un modelo con assimp y devuelve su indice. Lanza si falla.
-    std::uint32_t loadModel(const std::filesystem::path& path);
+    // `force_static`: escenario, ver asset::loadModel.
+    std::uint32_t loadModel(const std::filesystem::path& path, bool force_static = false);
 
     // Coloca una instancia del modelo de pie sobre el terreno, cerca de (x, z)
     // y mirando en la direccion `yaw` (radianes, 0 = +Z). Se escala para que
@@ -57,6 +59,19 @@ public:
     // con la transformacion indicada y sin escalarlo.
     void spawnStatic(std::uint32_t model,
                      const core::Mat4& transform = core::Mat4::identity());
+
+    // Ajusta a mano los materiales llamados `name` de un modelo cargado. Los
+    // OBJ no guardan PBR y a veces el exportador pierde propiedades (el suelo
+    // de marmol pulido de Sibenik llega como "mate"). Hay que llamarlo antes
+    // de subir los modelos al renderizador. Devuelve cuantos cambio.
+    // `reflectance` es el F0 de la parte no metalica (0.04 por defecto).
+    std::uint32_t overrideMaterial(std::uint32_t model, const std::string& name, float roughness,
+                                   float metallic = 0.0f, float reflectance = 0.04f);
+
+    // Marca los normal maps de un modelo como de convenio DirectX (+Y hacia
+    // abajo). Para los assets de Unreal o Lumberyard (Bistro), cuyo archivo
+    // no lo indica. Antes de subir los modelos.
+    void setDirectXNormalMaps(std::uint32_t model, bool directx);
 
     // Situa la camara en `position` mirando hacia `target`.
     void placeCamera(const core::Vec3& position, const core::Vec3& target);

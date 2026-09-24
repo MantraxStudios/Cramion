@@ -1,4 +1,5 @@
 #include "asset/Model.h"
+#include "asset/Dds.h"
 #include "asset/ModelCache.h"
 #include "asset/ObjLoader.h"
 
@@ -68,18 +69,29 @@ bool decodeImage(const std::uint8_t* data, std::size_t size, TextureData& out) {
 
     out.width = static_cast<std::uint32_t>(width);
     out.height = static_cast<std::uint32_t>(height);
-    out.rgba.assign(pixels, pixels + static_cast<std::size_t>(width) * height * 4);
+    out.format = TextureFormat::Rgba8;
+    out.mip_levels = 1;
+    out.pixels.assign(pixels, pixels + static_cast<std::size_t>(width) * height * 4);
     stbi_image_free(pixels);
     return true;
 }
 
+// Lee el archivo entero de una vez. Leerlo byte a byte con
+// istreambuf_iterator era casi dos ordenes de magnitud mas lento: con las
+// ~1 GB de texturas de Bistro, la carga pasaba de minutos.
 bool readFile(const std::filesystem::path& path, std::vector<std::uint8_t>& bytes) {
-    std::ifstream file(path, std::ios::binary);
+    std::ifstream file(path, std::ios::binary | std::ios::ate);
     if (!file) {
         return false;
     }
-    bytes.assign(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
-    return !bytes.empty();
+    const std::streamsize size = file.tellg();
+    if (size <= 0) {
+        return false;
+    }
+    bytes.resize(static_cast<std::size_t>(size));
+    file.seekg(0);
+    file.read(reinterpret_cast<char*>(bytes.data()), size);
+    return static_cast<bool>(file);
 }
 
 // Convierte la escena de assimp al formato del motor.
@@ -283,6 +295,11 @@ private:
             data.metallic_roughness_texture =
                 loadTexture(material, {aiTextureType_GLTF_METALLIC_ROUGHNESS,
                                        aiTextureType_METALNESS, aiTextureType_DIFFUSE_ROUGHNESS});
+            bool orca_specular = false;
+            if (data.metallic_roughness_texture < 0) {
+                data.metallic_roughness_texture = loadOrcaSpecular(material);
+                orca_specular = data.metallic_roughness_texture >= 0;
+            }
             data.normal_texture = loadTexture(material, {aiTextureType_NORMALS});
             if (data.normal_texture < 0) {
                 data.normal_texture = loadNormalFromBump(material);
@@ -291,6 +308,9 @@ private:
             data.occlusion_texture =
                 loadTexture(material, {aiTextureType_LIGHTMAP, aiTextureType_AMBIENT_OCCLUSION});
             data.emissive_texture = loadTexture(material, {aiTextureType_EMISSIVE});
+            // El rojo del mapa ORCA no se usa como oclusion: en Bistro vale 0
+            // en todas las texturas, y tomarlo apagaba todo el ambiente (cielo,
+            // GI y reflejos): las zonas en sombra quedaban negras.
 
             float factor = 0.0f;
             if (material.Get(AI_MATKEY_METALLIC_FACTOR, factor) == AI_SUCCESS) {
@@ -298,6 +318,10 @@ private:
             }
             if (material.Get(AI_MATKEY_ROUGHNESS_FACTOR, factor) == AI_SUCCESS) {
                 data.roughness = factor;
+            } else if (orca_specular) {
+                // La textura manda: factores neutros.
+                data.roughness = 1.0f;
+                data.metallic = 1.0f;
             } else {
                 data.roughness = roughnessFromPhong(material);
             }
@@ -370,11 +394,37 @@ private:
             return -1;
         }
         const std::string file = std::filesystem::path(path.C_Str()).filename().string();
-        if (file.size() < 2 || std::toupper(static_cast<unsigned char>(file[0])) != 'N' ||
-            file[1] != '_') {
+        const bool prefixed = file.size() >= 2 &&
+                              std::toupper(static_cast<unsigned char>(file[0])) == 'N' &&
+                              file[1] == '_';
+        if (!prefixed && !containsNoCase(file, "normal")) {
             return -1;
         }
         return loadTexture(material, {aiTextureType_HEIGHT});
+    }
+
+    static bool containsNoCase(const std::string& text, const std::string& word) {
+        std::string lower(text);
+        std::transform(lower.begin(), lower.end(), lower.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        return lower.find(word) != std::string::npos;
+    }
+
+    // Convenio de los assets de la Open Research Content Archive (ORCA:
+    // Bistro, Sun Temple...): el mapa "_Specular" no es un especular clasico
+    // sino R = (sin uso), G = rugosidad, B = metalicidad. El mismo reparto de
+    // G y B que el metal/rugosidad de glTF.
+    std::int32_t loadOrcaSpecular(const aiMaterial& material) {
+        aiString path;
+        if (material.GetTextureCount(aiTextureType_SPECULAR) == 0 ||
+            material.GetTexture(aiTextureType_SPECULAR, 0, &path) != AI_SUCCESS) {
+            return -1;
+        }
+        const std::string file = std::filesystem::path(path.C_Str()).filename().string();
+        if (!containsNoCase(file, "_specular")) {
+            return -1;
+        }
+        return loadTexture(material, {aiTextureType_SPECULAR});
     }
 
     std::int32_t loadTexture(const aiMaterial& material,
@@ -412,14 +462,14 @@ private:
                 // Ya descomprimida, en BGRA.
                 texture.width = embedded->mWidth;
                 texture.height = embedded->mHeight;
-                texture.rgba.resize(static_cast<std::size_t>(texture.width) * texture.height * 4);
+                texture.pixels.resize(static_cast<std::size_t>(texture.width) * texture.height * 4);
                 for (std::size_t p = 0; p < static_cast<std::size_t>(texture.width) * texture.height;
                      ++p) {
                     const aiTexel& texel = embedded->pcData[p];
-                    texture.rgba[p * 4 + 0] = texel.r;
-                    texture.rgba[p * 4 + 1] = texel.g;
-                    texture.rgba[p * 4 + 2] = texel.b;
-                    texture.rgba[p * 4 + 3] = texel.a;
+                    texture.pixels[p * 4 + 0] = texel.r;
+                    texture.pixels[p * 4 + 1] = texel.g;
+                    texture.pixels[p * 4 + 2] = texel.b;
+                    texture.pixels[p * 4 + 3] = texel.a;
                 }
                 loaded = true;
             }
@@ -433,7 +483,10 @@ private:
             for (const std::filesystem::path& candidate :
                  {directory_ / relative, directory_ / relative.filename(),
                   directory_ / "textures" / relative.filename()}) {
-                if (readFile(candidate, texture.encoded)) {
+                std::error_code error;
+                if (std::filesystem::is_regular_file(candidate, error)) {
+                    // Se lee despues, en paralelo con las demas (decodeTextures).
+                    texture.source_path = candidate.string();
                     loaded = true;
                     break;
                 }
@@ -510,6 +563,110 @@ private:
     std::unordered_set<unsigned int> skinned_meshes_done_;
 };
 
+// Parte cada submalla de un modelo estatico en celdas de kClusterSize metros
+// (por el centro de cada triangulo), para que el frustum culling pueda
+// descartar trozos de un escenario. Mismo criterio que ObjLoader.
+void clusterSubmeshes(ModelData& model) {
+    constexpr float kClusterSize = 5.0f;
+    const auto cell_of = [](float value) {
+        return static_cast<std::uint64_t>(
+            static_cast<std::int64_t>(std::floor(value / kClusterSize)) + (1 << 20));
+    };
+
+    std::vector<SubMesh> clustered;
+    std::vector<std::uint32_t> indices;
+    indices.reserve(model.indices.size());
+
+    struct Triangle {
+        std::uint64_t cell;
+        std::uint32_t first;
+    };
+    std::vector<Triangle> triangles;
+
+    for (const SubMesh& submesh : model.submeshes) {
+        triangles.clear();
+        for (std::uint32_t i = 0; i + 2 < submesh.index_count; i += 3) {
+            const std::uint32_t first = submesh.first_index + i;
+            const Vec3 center = (model.vertices[model.indices[first]].position +
+                                 model.vertices[model.indices[first + 1]].position +
+                                 model.vertices[model.indices[first + 2]].position) *
+                                (1.0f / 3.0f);
+            triangles.push_back(Triangle{
+                (cell_of(center.x) << 42) | (cell_of(center.y) << 21) | cell_of(center.z), first});
+        }
+        std::stable_sort(triangles.begin(), triangles.end(),
+                         [](const Triangle& a, const Triangle& b) { return a.cell < b.cell; });
+
+        for (std::size_t t = 0; t < triangles.size(); ++t) {
+            if (t == 0 || triangles[t].cell != triangles[t - 1].cell) {
+                SubMesh cluster{};
+                cluster.first_index = static_cast<std::uint32_t>(indices.size());
+                cluster.material = submesh.material;
+                clustered.push_back(cluster);
+            }
+            for (std::uint32_t k = 0; k < 3; ++k) {
+                indices.push_back(model.indices[triangles[t].first + k]);
+            }
+            clustered.back().index_count += 3;
+        }
+    }
+
+    // Las submallas de un mismo material, seguidas: el renderizador solo
+    // cambia de material al pasar de un grupo a otro.
+    std::stable_sort(clustered.begin(), clustered.end(),
+                     [](const SubMesh& a, const SubMesh& b) { return a.material < b.material; });
+
+    model.indices = std::move(indices);
+    model.submeshes = std::move(clustered);
+}
+
+// Convierte un mapa de alturas (RGBA8, se usa la luminancia) en un normal map
+// en espacio tangente con la convencion de OpenGL (+Y hacia arriba en la
+// imagen), la misma de los normal maps de glTF que espera skinned.frag.
+// Pendiente con diferencias centrales; los bordes envuelven porque estas
+// texturas se repiten en mosaico.
+void heightToNormalMap(TextureData& texture) {
+    // Cuanto relieve da una variacion completa de altura entre texeles
+    // vecinos. Mas alto = relieve mas marcado.
+    constexpr float kStrength = 3.0f;
+
+    const std::uint32_t w = texture.width;
+    const std::uint32_t h = texture.height;
+    std::vector<float> height(static_cast<std::size_t>(w) * h);
+    for (std::size_t i = 0; i < height.size(); ++i) {
+        const std::uint8_t* p = &texture.pixels[i * 4];
+        height[i] = (0.2126f * p[0] + 0.7152f * p[1] + 0.0722f * p[2]) / 255.0f;
+    }
+
+    const auto at = [&](std::int64_t x, std::int64_t y) {
+        x = (x % w + w) % w;
+        y = (y % h + h) % h;
+        return height[static_cast<std::size_t>(y) * w + static_cast<std::size_t>(x)];
+    };
+
+    for (std::int64_t y = 0; y < h; ++y) {
+        for (std::int64_t x = 0; x < w; ++x) {
+            const float dx = (at(x + 1, y) - at(x - 1, y)) * 0.5f;
+            const float dy_down = (at(x, y + 1) - at(x, y - 1)) * 0.5f;
+            // La normal se inclina en contra de la pendiente. Las filas crecen
+            // hacia abajo, asi que "arriba en la imagen" es -dy_down.
+            float nx = -dx * kStrength;
+            float ny = dy_down * kStrength;
+            float nz = 1.0f;
+            const float inverse = 1.0f / std::sqrt(nx * nx + ny * ny + nz * nz);
+            nx *= inverse;
+            ny *= inverse;
+            nz *= inverse;
+
+            std::uint8_t* out = &texture.pixels[(static_cast<std::size_t>(y) * w + x) * 4];
+            out[0] = static_cast<std::uint8_t>(std::lround((nx * 0.5f + 0.5f) * 255.0f));
+            out[1] = static_cast<std::uint8_t>(std::lround((ny * 0.5f + 0.5f) * 255.0f));
+            out[2] = static_cast<std::uint8_t>(std::lround((nz * 0.5f + 0.5f) * 255.0f));
+            out[3] = 255;
+        }
+    }
+}
+
 // Decodifica todas las texturas comprimidas usando todos los nucleos: un
 // escenario trae cientos de PNG grandes y, uno detras de otro, tardarian
 // casi un minuto.
@@ -520,16 +677,32 @@ void decodeTextures(ModelData& model) {
     const auto worker = [&]() {
         for (std::size_t i = next++; i < model.textures.size(); i = next++) {
             TextureData& texture = model.textures[i];
+            if (texture.encoded.empty() && !texture.source_path.empty()) {
+                readFile(std::filesystem::path(texture.source_path), texture.encoded);
+            }
             if (texture.encoded.empty()) {
+                if (texture.pixels.empty()) {
+                    // Archivo que ya no existe: texel blanco.
+                    texture.width = 1;
+                    texture.height = 1;
+                    texture.pixels = {255, 255, 255, 255};
+                    ++failed;
+                }
                 continue;  // Ya venia descomprimida.
             }
-            if (!decodeImage(texture.encoded.data(), texture.encoded.size(), texture)) {
+            const bool decoded =
+                isDds(texture.encoded.data(), texture.encoded.size())
+                    ? parseDds(texture.encoded.data(), texture.encoded.size(), texture)
+                    : decodeImage(texture.encoded.data(), texture.encoded.size(), texture);
+            if (!decoded) {
                 // Imagen danada: un texel blanco para que el material siga
                 // siendo valido.
                 texture.width = 1;
                 texture.height = 1;
-                texture.rgba = {255, 255, 255, 255};
+                texture.pixels = {255, 255, 255, 255};
                 ++failed;
+            } else if (texture.height_map && texture.format == TextureFormat::Rgba8) {
+                heightToNormalMap(texture);
             }
             texture.encoded.clear();
             texture.encoded.shrink_to_fit();
@@ -552,7 +725,34 @@ void decodeTextures(ModelData& model) {
     }
 }
 
-ModelData importWithAssimp(const std::filesystem::path& path) {
+// Cronometro de las fases de una importacion (se escriben en el log).
+class StageTimer {
+public:
+    void lap(const char* stage) {
+        const auto now = std::chrono::steady_clock::now();
+        std::cout << "[Modelo]   " << stage << ": "
+                  << std::chrono::duration<float>(now - last_).count() << " s\n";
+        last_ = now;
+    }
+
+private:
+    std::chrono::steady_clock::time_point last_ = std::chrono::steady_clock::now();
+};
+
+// true si el nodo o alguno de sus descendientes lleva mallas.
+bool subtreeHasMeshes(const aiNode* node) {
+    if (node->mNumMeshes > 0) {
+        return true;
+    }
+    for (unsigned int i = 0; i < node->mNumChildren; ++i) {
+        if (subtreeHasMeshes(node->mChildren[i])) {
+            return true;
+        }
+    }
+    return false;
+}
+
+ModelData importWithAssimp(const std::filesystem::path& path, bool force_static) {
     Assimp::Importer importer;
 
     // Sin los nodos auxiliares "$AssimpFbx$" de los pivotes: las pistas de
@@ -573,16 +773,49 @@ ModelData importWithAssimp(const std::filesystem::path& path) {
                                aiProcess_FlipUVs | aiProcess_SortByPType |
                                aiProcess_ImproveCacheLocality | aiProcess_ValidateDataStructure;
 
+    StageTimer timer;
     const aiScene* scene = importer.ReadFile(utf8(path), flags);
+    timer.lap("lectura y procesado de assimp");
     if (scene == nullptr || scene->mRootNode == nullptr ||
         (scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE) != 0) {
         throw std::runtime_error("No se pudo cargar el modelo " + utf8(path) + ": " +
                                  importer.GetErrorString());
     }
 
+    // Escenario estatico (Bistro: miles de objetos, cada uno en su nodo): las
+    // transformaciones de los nodos se hornean en los vertices. Queda un solo
+    // hueso identidad y las cajas de las submallas valen tal cual para el
+    // frustum culling. Lo es si ninguna malla tiene huesos y ninguna animacion
+    // mueve un nodo con mallas (el FBX de Bistro trae una animacion, pero de
+    // camaras y luces: se descarta).
+    bool skinned = false;
+    for (unsigned int m = 0; m < scene->mNumMeshes && !skinned && !force_static; ++m) {
+        skinned = scene->mMeshes[m]->HasBones();
+    }
+    for (unsigned int a = 0; a < scene->mNumAnimations && !skinned && !force_static; ++a) {
+        const aiAnimation& animation = *scene->mAnimations[a];
+        for (unsigned int c = 0; c < animation.mNumChannels && !skinned; ++c) {
+            const aiNode* node = scene->mRootNode->FindNode(animation.mChannels[c]->mNodeName);
+            skinned = node != nullptr && subtreeHasMeshes(node);
+        }
+    }
+    if (!skinned) {
+        scene = importer.ApplyPostProcessing(aiProcess_PreTransformVertices);
+        timer.lap("horneado de nodos");
+        if (scene == nullptr) {
+            throw std::runtime_error("Fallo al hornear los nodos de " + utf8(path) + ": " +
+                                     importer.GetErrorString());
+        }
+    }
+
     ModelData model{};
     model.name = path.filename().string();
     Converter(*scene, path.parent_path(), model).run();
+    timer.lap("conversion al formato del motor");
+    if (!skinned) {
+        clusterSubmeshes(model);
+        timer.lap("clusteres");
+    }
     computeSubmeshBounds(model);
     return model;
 }
@@ -603,12 +836,16 @@ void computeSubmeshBounds(ModelData& model) {
     }
 }
 
-ModelData loadModel(const std::filesystem::path& path) {
+ModelData loadModel(const std::filesystem::path& path, bool force_static) {
     const auto start = std::chrono::steady_clock::now();
-    const std::filesystem::path cache_path = path.string() + ".cramcache";
+    // La version estatica es otro resultado: cache aparte.
+    const std::filesystem::path cache_path =
+        path.string() + (force_static ? ".static.cramcache" : ".cramcache");
 
     ModelData model{};
+    StageTimer timer;
     if (readModelCache(cache_path, path, model)) {
+        timer.lap("lectura de la cache");
         std::cout << "[Modelo] " << model.name << " leido de la cache\n";
     } else {
         std::string extension = path.extension().string();
@@ -619,7 +856,7 @@ ModelData loadModel(const std::filesystem::path& path) {
         // el resto de formatos, por assimp.
         std::cout << "[Modelo] Importando " << path.filename().string()
                   << " (solo la primera vez; despues se lee de la cache)...\n";
-        model = (extension == ".obj") ? loadObj(path) : importWithAssimp(path);
+        model = (extension == ".obj") ? loadObj(path) : importWithAssimp(path, force_static);
         try {
             writeModelCache(cache_path, path, model);
             std::cout << "[Modelo] Cache guardada en " << cache_path.string() << "\n";
@@ -629,6 +866,7 @@ ModelData loadModel(const std::filesystem::path& path) {
     }
 
     decodeTextures(model);
+    timer.lap("lectura y decodificacion de texturas");
 
     if (model.indices.empty()) {
         throw std::runtime_error("El modelo " + utf8(path) + " no tiene triangulos.");

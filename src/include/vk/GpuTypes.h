@@ -56,6 +56,9 @@ struct GpuLights {
 
     GpuPointLight points[scene::kMaxPointLights]{};
     GpuSpotLight spots[scene::kMaxSpotLights]{};
+
+    // Sonda de reflexion: xyz = centro, w = 1 si ya tiene una captura.
+    core::Vec4 probe{};
 };
 
 // Constante de push de los modelos con esqueleto (pasada de geometria). Son
@@ -65,11 +68,13 @@ struct GpuSkinnedPush {
     core::Vec4 base_color{1.0f, 1.0f, 1.0f, 1.0f};
     core::Vec4 emissive{0.0f, 0.0f, 0.0f, 0.0f};  // rgb = factor de emision
     // x = metalicidad, y = rugosidad, z = fuerza de la oclusion, w = escala
-    // del normal map.
+    // del normal map (negativa si es de convenio DirectX).
     core::Vec4 material{0.0f, 0.8f, 1.0f, 1.0f};
     // Primer hueso de esta instancia dentro del storage buffer compartido.
     std::uint32_t bone_offset = 0;
-    std::uint32_t pad[3] = {0, 0, 0};
+    // F0 de la parte no metalica (va al alfa del G-buffer de normales).
+    float reflectance = 0.04f;
+    std::uint32_t pad[2] = {0, 0};
 };
 
 // Constante de push de las sombras de los modelos con esqueleto.

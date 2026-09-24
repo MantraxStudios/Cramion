@@ -26,6 +26,8 @@ public:
         // x = metalicidad, y = rugosidad, z = fuerza de la oclusion, w = escala
         // del normal map.
         core::Vec4 params{0.0f, 0.8f, 1.0f, 1.0f};
+        // F0 de la parte no metalica.
+        float reflectance = 0.04f;
         bool transparent = false;
     };
 

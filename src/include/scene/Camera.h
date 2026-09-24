@@ -30,6 +30,12 @@ public:
 
     // Relacion de aspecto de la ventana; se aplica a la proyeccion.
     void setAspectRatio(float aspect) { aspect_ = (aspect > 0.0f) ? aspect : 1.0f; }
+    void setFovY(float radians) { fov_y_ = radians; }
+
+    // Orientacion libre, sin el limite de cabeceo del raton: mira hacia
+    // `forward` con `up` arriba. La usan las caras de la sonda de reflexion
+    // (arriba y abajo miran en vertical).
+    void setOrientation(const core::Vec3& forward, const core::Vec3& up);
 
     core::Mat4 view() const;
     core::Mat4 projection() const;
@@ -50,6 +56,11 @@ private:
 
     float yaw_ = -core::kPi * 0.5f;  // Mirando hacia -Z.
     float pitch_ = -0.25f;
+
+    // setOrientation(): sustituye a yaw y pitch.
+    bool free_orientation_ = false;
+    core::Vec3 free_forward_{0.0f, 0.0f, -1.0f};
+    core::Vec3 free_up_{0.0f, 1.0f, 0.0f};
 
     float fov_y_ = core::radians(70.0f);
     float aspect_ = 16.0f / 9.0f;

@@ -199,8 +199,15 @@ void VulkanDevice::createLogicalDevice() {
     depth_clamp_supported_ =
         physical_device_.getFeatures().depthClamp == VK_TRUE;
 
+    // Texturas comprimidas por bloques (BC1-BC7, las de los DDS): todas las
+    // GPU de escritorio las tienen.
+    texture_compression_bc_supported_ =
+        physical_device_.getFeatures().textureCompressionBC == VK_TRUE;
+
     auto& features = chain.get<vk::PhysicalDeviceFeatures2>();
     features.features.depthClamp = depth_clamp_supported_ ? VK_TRUE : VK_FALSE;
+    features.features.textureCompressionBC =
+        texture_compression_bc_supported_ ? VK_TRUE : VK_FALSE;
 
     device_ = vk::raii::Device(physical_device_, create_info);
 

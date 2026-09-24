@@ -60,6 +60,10 @@ FetchContent_MakeAvailable(assimp stb)
 # Cabeceros de assimp como SYSTEM: sus avisos no son nuestros.
 set_target_properties(assimp PROPERTIES SYSTEM TRUE)
 
+# assimp optimizado tambien en Debug: sin optimizar, importar el FBX de Bistro
+# (120 MB) tarda mas de 3 minutos. No hace falta depurar su interior.
+target_compile_options(assimp PRIVATE -O2)
+
 # -----------------------------------------------------------------------------
 # Fuentes
 # -----------------------------------------------------------------------------
@@ -123,6 +127,7 @@ set(SHADER_SOURCES
     "${CMAKE_CURRENT_SOURCE_DIR}/shaders/fxaa.frag"
     "${CMAKE_CURRENT_SOURCE_DIR}/shaders/ssao.frag"
     "${CMAKE_CURRENT_SOURCE_DIR}/shaders/ssgi.frag"
+    "${CMAKE_CURRENT_SOURCE_DIR}/shaders/ssr.frag"
     "${CMAKE_CURRENT_SOURCE_DIR}/shaders/bloom_down.frag"
     "${CMAKE_CURRENT_SOURCE_DIR}/shaders/bloom_up.frag"
     "${CMAKE_CURRENT_SOURCE_DIR}/shaders/composite.frag"
@@ -133,6 +138,7 @@ set(SHADER_SOURCES
     "${CMAKE_CURRENT_SOURCE_DIR}/shaders/ibl_prefilter.comp"
     "${CMAKE_CURRENT_SOURCE_DIR}/shaders/ibl_sh.comp"
     "${CMAKE_CURRENT_SOURCE_DIR}/shaders/brdf_lut.comp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/shaders/probe_prefilter.comp"
     "${CMAKE_CURRENT_SOURCE_DIR}/shaders/skinned.vert"
     "${CMAKE_CURRENT_SOURCE_DIR}/shaders/skinned.frag"
     "${CMAKE_CURRENT_SOURCE_DIR}/shaders/skinned_shadow.vert"
@@ -190,31 +196,51 @@ set_source_files_properties(
 )
 
 # -----------------------------------------------------------------------------
-# Escenario: San Miguel
+# Escenarios
 #
-# Se extrae de San_Miguel.zip una sola vez, al configurar, en assets/ junto al
-# ejecutable, que es donde el motor lo busca. Solo la version completa (10 M de
-# triangulos); la "low-poly" se puede anadir a PATTERNS y elegir en
-# src/main.cpp.
+# Cada zip de la raiz del proyecto se extrae una sola vez, al configurar, en
+# assets/<nombre>/ junto al ejecutable, que es donde el motor los busca. La
+# escena se elige al ejecutar (cramion.exe <nombre>; ver src/main.cpp).
 #
-# El OBJ no se lee con assimp sino con el lector propio en paralelo
+# Los OBJ no se leen con assimp sino con el lector propio en paralelo
 # (asset/ObjLoader), y la primera carga deja al lado una cache binaria
-# (san-miguel.obj.cramcache) para que las siguientes tarden segundos.
+# (<modelo>.obj.cramcache) para que las siguientes tarden segundos.
 # -----------------------------------------------------------------------------
 
-set(SAN_MIGUEL_ZIP "${CMAKE_CURRENT_SOURCE_DIR}/San_Miguel.zip")
-set(SAN_MIGUEL_DIR "${CMAKE_BINARY_DIR}/assets/san-miguel")
+# cramion_extract_scene(<zip> <carpeta> <archivo que indica que ya esta>
+#                       [PATTERNS ...])
+function(cramion_extract_scene zip_name folder marker)
+    set(zip "${CMAKE_CURRENT_SOURCE_DIR}/${zip_name}")
+    set(destination "${CMAKE_BINARY_DIR}/assets/${folder}")
+    if(EXISTS "${destination}/${marker}")
+        return()
+    endif()
+    if(NOT EXISTS "${zip}")
+        message(STATUS "Escena ${folder}: no se encontro ${zip_name} (opcional)")
+        return()
+    endif()
 
-if(EXISTS "${SAN_MIGUEL_ZIP}" AND NOT EXISTS "${SAN_MIGUEL_DIR}/san-miguel.obj")
-    message(STATUS "Extrayendo San_Miguel.zip en ${SAN_MIGUEL_DIR} (una sola vez)...")
-    file(ARCHIVE_EXTRACT
-        INPUT "${SAN_MIGUEL_ZIP}"
-        DESTINATION "${SAN_MIGUEL_DIR}"
-        PATTERNS "san-miguel.obj" "san-miguel.mtl" "textures/*" "license.txt"
-    )
-elseif(NOT EXISTS "${SAN_MIGUEL_DIR}/san-miguel.obj")
-    message(WARNING "No se encontro San_Miguel.zip ni ${SAN_MIGUEL_DIR}/san-miguel.obj")
-endif()
+    message(STATUS "Extrayendo ${zip_name} en ${destination} (una sola vez)...")
+    cmake_parse_arguments(SCENE "" "" "PATTERNS" ${ARGN})
+    if(SCENE_PATTERNS)
+        file(ARCHIVE_EXTRACT INPUT "${zip}" DESTINATION "${destination}"
+             PATTERNS ${SCENE_PATTERNS})
+    else()
+        file(ARCHIVE_EXTRACT INPUT "${zip}" DESTINATION "${destination}")
+    endif()
+endfunction()
+
+# Catedral de Sibenik: 75 mil triangulos.
+cramion_extract_scene(sibenik.zip sibenik sibenik.obj)
+
+# Amazon Lumberyard Bistro v5.2 (exterior 2.8 M de triangulos, interior 1 M):
+# FBX con texturas DDS comprimidas.
+cramion_extract_scene(Bistro_v5_2.zip bistro Bistro_v5_2/BistroExterior.fbx)
+
+# San Miguel: solo la version completa (10 M de triangulos); la "low-poly" se
+# puede anadir a PATTERNS y registrar en src/main.cpp.
+cramion_extract_scene(San_Miguel.zip san-miguel san-miguel.obj
+    PATTERNS "san-miguel.obj" "san-miguel.mtl" "textures/*" "license.txt")
 
 target_compile_definitions(cramion PRIVATE
     VK_USE_PLATFORM_WIN32_KHR

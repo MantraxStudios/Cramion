@@ -12,7 +12,7 @@ namespace cramion::asset {
 namespace {
 
 // Cambiar si cambia cualquier estructura de asset/Model.h que se guarda.
-constexpr std::uint32_t kModelCacheVersion = 2;
+constexpr std::uint32_t kModelCacheVersion = 7;
 constexpr char kMagic[4] = {'C', 'R', 'M', 'C'};
 
 // Identidad del archivo original: si cambia, la cache no vale.
@@ -123,7 +123,9 @@ void writeMaterial(Writer& out, const MaterialData& m) {
     out.pod(m.roughness);
     out.pod(m.occlusion_strength);
     out.pod(m.normal_scale);
+    out.pod(m.reflectance);
     out.pod(static_cast<std::uint8_t>(m.transparent ? 1 : 0));
+    out.pod(static_cast<std::uint8_t>(m.normal_map_directx ? 1 : 0));
     out.pod(m.albedo_texture);
     out.pod(m.metallic_roughness_texture);
     out.pod(m.normal_texture);
@@ -139,9 +141,13 @@ void readMaterial(Reader& in, MaterialData& m) {
     in.pod(m.roughness);
     in.pod(m.occlusion_strength);
     in.pod(m.normal_scale);
+    in.pod(m.reflectance);
     std::uint8_t transparent = 0;
     in.pod(transparent);
     m.transparent = transparent != 0;
+    std::uint8_t directx = 0;
+    in.pod(directx);
+    m.normal_map_directx = directx != 0;
     in.pod(m.albedo_texture);
     in.pod(m.metallic_roughness_texture);
     in.pod(m.normal_texture);
@@ -177,8 +183,17 @@ void writeModelCache(const std::filesystem::path& cache, const std::filesystem::
             out.string(texture.name);
             out.pod(texture.width);
             out.pod(texture.height);
-            out.podVector(texture.rgba);
-            out.podVector(texture.encoded);
+            out.pod(texture.format);
+            out.pod(texture.mip_levels);
+            out.podVector(texture.pixels);
+            // Las que tienen archivo en disco se releen de el: no se duplican.
+            if (texture.source_path.empty()) {
+                out.podVector(texture.encoded);
+            } else {
+                out.podVector(std::vector<std::uint8_t>{});
+            }
+            out.string(texture.source_path);
+            out.pod(static_cast<std::uint8_t>(texture.height_map ? 1 : 0));
         }
 
         out.pod(static_cast<std::uint64_t>(model.nodes.size()));
@@ -260,8 +275,14 @@ bool readModelCache(const std::filesystem::path& cache, const std::filesystem::p
             in.string(texture.name);
             in.pod(texture.width);
             in.pod(texture.height);
-            in.podVector(texture.rgba);
+            in.pod(texture.format);
+            in.pod(texture.mip_levels);
+            in.podVector(texture.pixels);
             in.podVector(texture.encoded);
+            in.string(texture.source_path);
+            std::uint8_t height_map = 0;
+            in.pod(height_map);
+            texture.height_map = height_map != 0;
         }
 
         in.pod(count);

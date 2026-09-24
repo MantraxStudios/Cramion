@@ -9,6 +9,7 @@
 #include "vk/LightingPass.h"
 #include "vk/LocalShadowMaps.h"
 #include "vk/PostProcessPass.h"
+#include "vk/ReflectionProbe.h"
 #include "vk/ShadowMap.h"
 #include "vk/SkinnedModel.h"
 #include "vk/SkinnedPass.h"
@@ -29,6 +30,7 @@
 #include <vector>
 
 namespace cramion::scene {
+class Camera;
 class Scene;
 }
 namespace cramion::gfx {
@@ -54,6 +56,10 @@ namespace cramion::gfx {
 //                    normales del G-buffer.
 //      SSGI:         luz rebotada: rayos por el depth buffer que recogen la
 //                    imagen iluminada del frame anterior (media resolucion).
+//      SSR:          reflejos de pantalla sobre las superficies poco rugosas,
+//                    con la misma imagen del frame anterior. Donde no
+//                    encuentra nada (lo que no esta en pantalla) se refleja
+//                    la sonda de reflexion.
 //   5. Iluminacion:  un triangulo a pantalla completa lee el G-buffer y acumula
 //                    el cielo, el sol (consultando las cascadas), las luces
 //                    puntuales y los focos (con sus propios mapas) con una
@@ -69,6 +75,11 @@ namespace cramion::gfx {
 //  10. Post-proceso: FXAA sobre esa imagen -> imagen de la swapchain. Sin esta
 //                    pasada todos los bordes quedan en escalera, porque un
 //                    diferido no puede usar MSAA de forma asequible.
+//
+// Sonda de reflexion: cuando la camara se aleja de la sonda o el sol se mueve,
+// durante seis frames se dibuja ademas una cara del cubo desde la sonda (pasos
+// 1 a 5, sin la luz del frame anterior) y al final se prefiltra. Mientras
+// tanto se sigue usando la captura anterior.
 class VulkanRenderer {
 public:
     // Niveles de la cadena de bloom (debe coincidir con kBloomLevels de
@@ -122,6 +133,15 @@ public:
     void setSsaoEnabled(bool enabled) { ssao_enabled_ = enabled; }
     bool ssaoEnabled() const { return ssao_enabled_; }
 
+    // Reflejos de pantalla.
+    void setSsrEnabled(bool enabled) { ssr_enabled_ = enabled; }
+    bool ssrEnabled() const { return ssr_enabled_; }
+
+    // Sonda de reflexion de la escena (si no, lo que el SSR no ve refleja el
+    // cielo).
+    void setReflectionProbeEnabled(bool enabled) { probe_enabled_ = enabled; }
+    bool reflectionProbeEnabled() const { return probe_enabled_; }
+
     // Iluminacion global de pantalla (luz rebotada).
     void setGiEnabled(bool enabled) { gi_enabled_ = enabled; }
     bool giEnabled() const { return gi_enabled_; }
@@ -173,7 +193,15 @@ private:
     void updatePostDescriptors();
     void recreateSwapchain();
 
-    void updateUniforms(const scene::Scene& scene, std::uint32_t frame_index);
+    // `camera`: la de la escena, o la de una cara de la sonda de reflexion.
+    void updateUniforms(const scene::Scene& scene, const scene::Camera& camera,
+                        std::uint32_t frame_index);
+
+    // Sonda de reflexion: si toca (re)capturarla, empieza o sigue la captura.
+    bool probeCaptureDue(const scene::Scene& scene);
+    // Dibuja la cara que toca desde la sonda y la copia al cubo (con la sexta,
+    // lo prefiltra). Se envia y se espera aparte, antes del frame normal.
+    void captureProbeFace(const scene::Scene& scene);
     void recordCommandBuffer(const vk::raii::CommandBuffer& cmd, std::uint32_t image_index,
                              std::uint32_t frame_index);
     void recordShadowPass(const vk::raii::CommandBuffer& cmd, std::uint32_t frame_index);
@@ -194,7 +222,10 @@ private:
     void recordGeometryPass(const vk::raii::CommandBuffer& cmd, std::uint32_t frame_index);
     void recordSsaoPass(const vk::raii::CommandBuffer& cmd, std::uint32_t frame_index);
     void recordSsgiPass(const vk::raii::CommandBuffer& cmd, std::uint32_t frame_index);
-    void recordLightingPass(const vk::raii::CommandBuffer& cmd, std::uint32_t frame_index);
+    void recordSsrPass(const vk::raii::CommandBuffer& cmd, std::uint32_t frame_index);
+    // Escribe en `target`: la imagen HDR, o la de la captura de la sonda.
+    void recordLightingPass(const vk::raii::CommandBuffer& cmd, std::uint32_t frame_index,
+                            const VulkanImage& target);
     void recordSkyLutPass(const vk::raii::CommandBuffer& cmd);
     void recordBloomPass(const vk::raii::CommandBuffer& cmd);
     void recordLightShaftPass(const vk::raii::CommandBuffer& cmd);
@@ -218,6 +249,8 @@ private:
     VulkanImage ssao_image_{};
     // Luz rebotada (rgb) y visibilidad del cielo (a), a media resolucion.
     VulkanImage gi_image_{};
+    // Reflejos de pantalla (rgb) y su confianza (a), a resolucion completa.
+    VulkanImage ssr_image_{};
     std::array<VulkanImage, kBloomLevels> bloom_levels_{};
     // Radiancia del cielo en cada direccion (no depende de la ventana).
     VulkanImage sky_lut_{};
@@ -226,6 +259,11 @@ private:
     IblProbe ibl_probe_{};
     // Rayos de luz, a media resolucion.
     VulkanImage light_shafts_{};
+    // Sonda de reflexion de la escena y la imagen HDR donde se dibuja cada
+    // cara antes de copiarla al cubo (no se usa la del frame: el SSR y la GI
+    // del siguiente la leen como frame anterior).
+    ReflectionProbe reflection_probe_{};
+    VulkanImage probe_capture_{};
 
     // Auto-exposicion: histograma (se vacia solo cada frame), estado
     // persistente y una copia por frame en vuelo para leerla en la CPU.
@@ -244,6 +282,7 @@ private:
     FullscreenPass composite_pass_{};
     FullscreenPass sky_lut_pass_{};
     FullscreenPass ssgi_pass_{};
+    FullscreenPass ssr_pass_{};
     FullscreenPass light_shaft_pass_{};
     ComputePass histogram_pass_{};
     ComputePass exposure_average_pass_{};
@@ -271,6 +310,25 @@ private:
     core::Mat4 previous_view_projection_ = core::Mat4::identity();
     // La imagen HDR contiene un frame anterior valido (no justo tras crearla).
     bool scene_history_valid_ = false;
+    bool ssr_history_ready_ = false;
+
+    // --- Sonda de reflexion ---
+    // Se esta dibujando una cara de la sonda (no un frame para la pantalla).
+    bool capturing_ = false;
+    // Cara que toca capturar (-1 = ninguna captura en curso).
+    int probe_face_ = -1;
+    // Donde y con que sol se hace la captura en curso...
+    core::Vec3 probe_capture_position_{};
+    core::Vec3 probe_capture_sun_{0.0f, 1.0f, 0.0f};
+    // ...y los de la que se esta usando.
+    core::Vec3 probe_position_{};
+    core::Vec3 probe_sun_{0.0f, 1.0f, 0.0f};
+    bool probe_ready_ = false;
+    bool probe_enabled_ = true;
+    // Primer frame en el que se puede capturar otra cara (reparto del coste).
+    std::uint64_t probe_next_face_frame_ = 0;
+    // Posicion de la camara el frame anterior, para saber si va despacio.
+    core::Vec3 probe_last_camera_{};
 
     // Llama a `draw(submesh_index)` con las submallas opacas del actor que
     // tocan el volumen. Devuelve cuantas.
@@ -315,6 +373,7 @@ private:
     std::vector<vk::raii::DescriptorSet> composite_sets_;
     std::vector<vk::raii::DescriptorSet> light_shaft_sets_;
     std::vector<vk::raii::DescriptorSet> ssgi_sets_;  // uno por frame
+    std::vector<vk::raii::DescriptorSet> ssr_sets_;   // uno por frame
     std::vector<vk::raii::DescriptorSet> histogram_sets_;
     std::vector<vk::raii::DescriptorSet> exposure_average_sets_;
 
@@ -363,6 +422,7 @@ private:
     bool ssao_enabled_ = true;
     bool light_shafts_enabled_ = true;
     bool gi_enabled_ = true;
+    bool ssr_enabled_ = true;
     bool aces_tonemapper_ = false;
     bool auto_exposure_enabled_ = true;
     // Los mapas locales se conservan entre frames (cache), asi que solo el

@@ -19,6 +19,7 @@
 //   B                  bloom on/off       O              SSAO on/off
 //   E                  auto-exposicion    L              rayos de luz on/off
 //   I                  luz rebotada (GI)  K              tonemapper Neutral / ACES
+//   R                  reflejos (SSR)     P  sonda de reflexion on/off
 //   RePag / AvPag      compensacion de exposicion (+-0.5 EV)
 //   ESC                salir
 // -----------------------------------------------------------------------------
@@ -31,13 +32,16 @@
 #include "vk/VulkanShader.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdlib>
 #include <exception>
 #include <filesystem>
 #include <iomanip>
 #include <iostream>
+#include <span>
 #include <sstream>
+#include <string_view>
 
 using namespace cramion::dm;
 using cramion::core::Clock;
@@ -47,17 +51,68 @@ using cramion::scene::Scene;
 
 namespace {
 
-// Escenario: San Miguel (Guillermo M. Leal Llaguno, version 2017 de Morgan
-// McGuire, casual-effects.com). CMake lo extrae de San_Miguel.zip en assets/
-// junto al ejecutable. Para la version ligera (5 millones de
-// triangulos en vez de 10) basta con cambiar a "san-miguel-low-poly.obj" y
-// extraerla tambien (ver CMakeLists.txt).
-constexpr const char* kSceneFile = "san-miguel/san-miguel.obj";
+// Escenarios disponibles. CMake extrae cada zip que encuentre en la raiz del
+// proyecto a assets/<nombre>/ junto al ejecutable. Se elige por la linea de
+// comandos (cramion.exe san-miguel); sin argumento, el primero.
+// Ajuste de un material por su nombre en el MTL: lo que el OBJ no guarda.
+struct MaterialTweak {
+    const char* material;
+    float roughness;
+    float metallic;
+    float reflectance = 0.04f;  // F0 de la parte no metalica
+};
 
-// Camara inicial: en el paso junto a la fachada sur, a la altura de los ojos,
-// mirando hacia el centro del patio.
-const cramion::core::Vec3 kCameraStart{10.5f, 1.7f, -10.5f};
-const cramion::core::Vec3 kCameraTarget{12.0f, 1.8f, 2.0f};
+struct SceneEntry {
+    const char* name;
+    const char* file;             // relativo a assets/
+    cramion::core::Vec3 camera;   // posicion inicial de la camara
+    cramion::core::Vec3 target;   // punto al que mira
+    std::span<const MaterialTweak> tweaks;
+    // Normal maps de convenio DirectX (+Y hacia abajo): assets de Unreal o
+    // Lumberyard. El archivo no lo indica.
+    bool directx_normals = false;
+};
+
+// Sibenik: el suelo de la nave es marmol pulido (en las fotos refleja las
+// columnas como un espejo), pero el MTL lo exporta mate (Ns 8, sin
+// especular). Casi liso y con mas reflectancia que la piedra comun (0.04):
+// asi refleja tambien mirando hacia abajo, no solo en angulo rasante.
+constexpr MaterialTweak kSibenikTweaks[] = {
+    {"pod", 0.05f, 0.0f, 0.12f},  // marmol pulido del suelo
+    {"pod_rub", 0.3f, 0.0f},   // cenefa de piedra del borde
+};
+
+constexpr SceneEntry kScenes[] = {
+    // Catedral de Sibenik (Marko Dabrovic, texturas de Morgan McGuire): en la
+    // nave, cerca de la entrada, a la altura de los ojos, mirando al altar.
+    {"sibenik", "sibenik/sibenik.obj", {-15.5f, -13.4f, 0.0f}, {10.0f, -11.0f, 0.0f},
+     kSibenikTweaks},
+    // San Miguel (Guillermo M. Leal Llaguno, version 2017 de Morgan McGuire):
+    // en el paso junto a la fachada sur, mirando al centro del patio.
+    {"san-miguel", "san-miguel/san-miguel.obj", {10.5f, 1.7f, -10.5f}, {12.0f, 1.8f, 2.0f}, {}},
+    // Amazon Lumberyard Bistro v5.2 (NVIDIA ORCA): la calle y el interior del
+    // bistro. Texturas DDS con normal maps DirectX.
+    {"bistro", "bistro/Bistro_v5_2/BistroExterior.fbx", {0.0f, 2.0f, 0.0f}, {1.0f, 2.0f, 0.0f},
+     {}, true},
+    {"bistro-interior", "bistro/Bistro_v5_2/BistroInterior.fbx", {0.0f, 1.7f, 0.0f},
+     {1.0f, 1.7f, 0.0f}, {}, true},
+};
+
+const SceneEntry& chooseScene(int argc, char** argv) {
+    if (argc >= 2) {
+        for (const SceneEntry& entry : kScenes) {
+            if (std::string_view(argv[1]) == entry.name) {
+                return entry;
+            }
+        }
+        std::cerr << "Escena desconocida \"" << argv[1] << "\"; opciones:";
+        for (const SceneEntry& entry : kScenes) {
+            std::cerr << " " << entry.name;
+        }
+        std::cerr << ". Se usa " << kScenes[0].name << ".\n";
+    }
+    return kScenes[0];
+}
 
 // Conecta los eventos de la ventana con el estado de entrada, el renderizador
 // y la camara.
@@ -117,7 +172,9 @@ void updateWindowTitle(Window& window, const Clock& clock, const Scene& scene,
           << (renderer.cascadeDebug() ? L" [cascadas]" : L"") << L"  |  FXAA "
           << (renderer.antialiasingEnabled() ? L"ON" : L"OFF") << L"  |  bloom "
           << (renderer.bloomEnabled() ? L"ON" : L"OFF") << L"  |  SSAO "
-          << (renderer.ssaoEnabled() ? L"ON" : L"OFF") << L"  |  GI "
+          << (renderer.ssaoEnabled() ? L"ON" : L"OFF") << L"  |  SSR "
+          << (renderer.ssrEnabled() ? L"ON" : L"OFF") << L"  |  sonda "
+          << (renderer.reflectionProbeEnabled() ? L"ON" : L"OFF") << L"  |  GI "
           << (renderer.giEnabled() ? L"ON" : L"OFF") << L"  |  "
           << (renderer.acesTonemapper() ? L"ACES" : L"Neutral") << L"  |  exposicion "
           << (renderer.autoExposureEnabled() ? L"auto " : L"manual ") << std::setprecision(2)
@@ -129,7 +186,11 @@ void updateWindowTitle(Window& window, const Clock& clock, const Scene& scene,
 
 }  // namespace
 
-int main() {
+int main(int argc, char** argv) {
+    // Cada linea del log se escribe al momento: si algo falla durante una
+    // carga larga, lo ultimo que se hizo queda a la vista.
+    std::cout << std::unitbuf;
+
     try {
         // 1) Dispositivo DirectX 12 de la capa de plataforma.
         Device device;
@@ -154,10 +215,20 @@ int main() {
         Scene scene;
         scene.initialize();
 
+        const SceneEntry& entry = chooseScene(argc, argv);
         const std::filesystem::path scene_path =
-            cramion::gfx::shaders::directory().parent_path() / "assets" / kSceneFile;
-        scene.spawnStatic(scene.loadModel(scene_path));
-        scene.placeCamera(kCameraStart, kCameraTarget);
+            cramion::gfx::shaders::directory().parent_path() / "assets" / entry.file;
+        std::cout << "Escena: " << entry.name << " (" << scene_path.string() << ")\n";
+        // Escenario: siempre estatico (culling por trozos aunque traiga
+        // animaciones de camaras u objetos).
+        const std::uint32_t model = scene.loadModel(scene_path, /*force_static=*/true);
+        for (const MaterialTweak& tweak : entry.tweaks) {
+            scene.overrideMaterial(model, tweak.material, tweak.roughness, tweak.metallic,
+                                   tweak.reflectance);
+        }
+        scene.setDirectXNormalMaps(model, entry.directx_normals);
+        scene.spawnStatic(model);
+        scene.placeCamera(entry.camera, entry.target);
 
         scene.camera().setAspectRatio(static_cast<float>(window.width()) /
                                       static_cast<float>(window.height()));
@@ -177,12 +248,19 @@ int main() {
         };
 
         renderer.initialize(engine_info, window.handle(), window.width(), window.height());
+        const auto upload_start = std::chrono::steady_clock::now();
         renderer.uploadModels(scene);
+        std::cout << "[Vulkan] Subida a la GPU: "
+                  << std::chrono::duration<float>(std::chrono::steady_clock::now() - upload_start)
+                         .count()
+                  << " s" << std::endl;
 
         std::cout << "\nControles: WASD moverse | raton derecho mirar | Espacio/Ctrl subir-bajar\n"
                      "           Shift correr | rueda velocidad | T ciclo dia\n"
                      "           N dia/noche | G sombras | C cascadas | X antialiasing\n"
-                     "           B bloom | O SSAO | I luz rebotada (GI) | L rayos de luz\n"
+                     "           B bloom | O SSAO | R reflejos (SSR) | P sonda de reflexion\n"
+                     "           I luz rebotada (GI)\n"
+                     "           L rayos de luz\n"
                      "           K tonemapper (Neutral/ACES) | E auto-exposicion\n"
                      "           RePag/AvPag compensacion de exposicion | ESC salir\n\n";
 
@@ -215,6 +293,12 @@ int main() {
             }
             if (input.isKeyPressed(Key::O)) {
                 renderer.setSsaoEnabled(!renderer.ssaoEnabled());
+            }
+            if (input.isKeyPressed(Key::R)) {
+                renderer.setSsrEnabled(!renderer.ssrEnabled());
+            }
+            if (input.isKeyPressed(Key::P)) {
+                renderer.setReflectionProbeEnabled(!renderer.reflectionProbeEnabled());
             }
             if (input.isKeyPressed(Key::I)) {
                 renderer.setGiEnabled(!renderer.giEnabled());

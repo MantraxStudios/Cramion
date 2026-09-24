@@ -15,6 +15,26 @@ void Scene::initialize() {
     createLights();
 }
 
+std::uint32_t Scene::overrideMaterial(std::uint32_t model, const std::string& name,
+                                     float roughness, float metallic, float reflectance) {
+    std::uint32_t changed = 0;
+    for (asset::MaterialData& material : models_.at(model)->materials) {
+        if (material.name == name) {
+            material.roughness = roughness;
+            material.metallic = metallic;
+            material.reflectance = reflectance;
+            ++changed;
+        }
+    }
+    return changed;
+}
+
+void Scene::setDirectXNormalMaps(std::uint32_t model, bool directx) {
+    for (asset::MaterialData& material : models_.at(model)->materials) {
+        material.normal_map_directx = directx;
+    }
+}
+
 void Scene::placeCamera(const Vec3& position, const Vec3& target) {
     camera_.setPosition(position);
     camera_.lookAt(target);
@@ -55,8 +75,8 @@ void Scene::update(const dm::Input& input, float delta_seconds) {
     }
 }
 
-std::uint32_t Scene::loadModel(const std::filesystem::path& path) {
-    models_.push_back(std::make_unique<asset::ModelData>(asset::loadModel(path)));
+std::uint32_t Scene::loadModel(const std::filesystem::path& path, bool force_static) {
+    models_.push_back(std::make_unique<asset::ModelData>(asset::loadModel(path, force_static)));
     return static_cast<std::uint32_t>(models_.size() - 1);
 }
 

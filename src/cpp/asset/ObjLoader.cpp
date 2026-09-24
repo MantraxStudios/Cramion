@@ -201,6 +201,8 @@ struct ObjMaterial {
     Vec3 emissive{0.0f, 0.0f, 0.0f};
     float shininess = 0.0f;
     float opacity = 1.0f;
+    Vec3 transmission{1.0f, 1.0f, 1.0f};  // Tf
+    int illumination = 2;                 // illum
     std::string map_diffuse;
     std::string map_bump;
     std::string map_normal;
@@ -254,6 +256,13 @@ std::vector<ObjMaterial> parseMtl(const std::filesystem::path& path) {
             m.opacity = reader.number();
         } else if (keyword == "tr") {
             m.opacity = 1.0f - reader.number();
+        } else if (keyword == "tf") {
+            const float r = reader.number();
+            const float g = reader.number();
+            const float b = reader.number();
+            m.transmission = Vec3{r, g, b};
+        } else if (keyword == "illum") {
+            m.illumination = static_cast<int>(reader.number());
         } else if (keyword == "map_kd") {
             m.map_diffuse = lastToken(reader);
         } else if (keyword == "map_bump" || keyword == "bump") {
@@ -646,29 +655,33 @@ ModelData loadObj(const std::filesystem::path& path) {
 
     // Texturas: se leen comprimidas, una vez por archivo.
     std::unordered_map<std::string, std::int32_t> texture_index;
-    const auto load_texture = [&](std::string file) -> std::int32_t {
+    const auto load_texture = [&](std::string file, bool height_map = false) -> std::int32_t {
         if (file.empty()) {
             return -1;
         }
         std::replace(file.begin(), file.end(), '\\', '/');
-        if (const auto it = texture_index.find(file); it != texture_index.end()) {
+        // Clave aparte para los mapas de alturas: el mismo archivo usado como
+        // color no debe compartir la version convertida en normal map.
+        const std::string key = height_map ? file + "#altura" : file;
+        if (const auto it = texture_index.find(key); it != texture_index.end()) {
             return it->second;
         }
         TextureData texture{};
         texture.name = std::filesystem::path(file).filename().string();
-        std::ifstream stream(directory / file, std::ios::binary);
-        if (stream) {
-            texture.encoded.assign(std::istreambuf_iterator<char>(stream),
-                                   std::istreambuf_iterator<char>());
+        texture.height_map = height_map;
+        // Solo la ruta: se lee despues, en paralelo con las demas.
+        std::error_code error;
+        if (std::filesystem::is_regular_file(directory / file, error)) {
+            texture.source_path = (directory / file).string();
         }
-        if (texture.encoded.empty()) {
+        if (texture.source_path.empty()) {
             std::cerr << "[OBJ] No se pudo leer la textura " << file << "\n";
-            texture_index.emplace(file, -1);
+            texture_index.emplace(key, -1);
             return -1;
         }
         const auto index = static_cast<std::int32_t>(model.textures.size());
         model.textures.push_back(std::move(texture));
-        texture_index.emplace(file, index);
+        texture_index.emplace(key, index);
         return index;
     };
 
@@ -691,10 +704,14 @@ ModelData loadObj(const std::filesystem::path& path) {
             }
             material.roughness = roughnessFromPhong(source);
             // Normal map: "norm", o un "map_Bump" que en realidad es un normal
-            // map (en el San Miguel llevan el prefijo "N_").
+            // map (en el San Miguel llevan el prefijo "N_"). Cualquier otro
+            // "bump" es un mapa de alturas y se convierte en normal map al
+            // decodificarlo (Sibenik).
             material.normal_texture = load_texture(source.map_normal);
-            if (material.normal_texture < 0 && startsWithNormalPrefix(source.map_bump)) {
-                material.normal_texture = load_texture(source.map_bump);
+            if (material.normal_texture < 0 && !source.map_bump.empty()) {
+                material.normal_texture = startsWithNormalPrefix(source.map_bump)
+                                              ? load_texture(source.map_bump)
+                                              : load_texture(source.map_bump, true);
             }
             material.emissive_texture = load_texture(source.map_emissive);
             material.emissive = source.emissive;
@@ -702,8 +719,14 @@ ModelData loadObj(const std::filesystem::path& path) {
                                                            material.emissive.z}) <= 0.0f) {
                 material.emissive = Vec3{1.0f, 1.0f, 1.0f};
             }
-            // Vidrio y agua: el diferido no los puede mezclar.
-            material.transparent = source.opacity < 0.99f;
+            // Vidrio y agua: el diferido no los puede mezclar. Se reconocen
+            // por la opacidad (d / Tr), por la transmision (Tf) o por los
+            // modelos de iluminacion de vidrio de MTL (4, 6, 7, 9).
+            const bool transmits = std::min({source.transmission.x, source.transmission.y,
+                                             source.transmission.z}) < 0.99f;
+            const bool glass_model = source.illumination == 4 || source.illumination == 6 ||
+                                     source.illumination == 7 || source.illumination == 9;
+            material.transparent = source.opacity < 0.99f || transmits || glass_model;
         } else {
             material.name = "Default";
         }

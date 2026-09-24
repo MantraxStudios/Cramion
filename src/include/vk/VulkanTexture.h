@@ -3,6 +3,7 @@
 
 #include "vk/VulkanCommon.h"
 
+#include <cstddef>
 #include <cstdint>
 
 namespace cramion::gfx {
@@ -28,6 +29,13 @@ public:
     // `rgba` tiene width * height * 4 bytes, empezando por la fila de arriba.
     void create(const VulkanDevice& device, std::uint32_t width, std::uint32_t height,
                 const std::uint8_t* rgba);
+
+    // Textura comprimida por bloques (BC de un DDS) con sus `mip_levels`
+    // niveles ya hechos, seguidos en `data`. Se sube tal cual: no se
+    // descomprime ni se generan mips.
+    void createCompressed(const VulkanDevice& device, std::uint32_t width, std::uint32_t height,
+                          vk::Format format, std::uint32_t block_bytes, std::uint32_t mip_levels,
+                          const std::uint8_t* data, std::size_t size);
     void destroy();
 
     const vk::raii::ImageView& view() const { return view_; }

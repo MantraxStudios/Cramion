@@ -35,3 +35,6 @@ compile_commands.json
 # (*.obj ya esta ignorado arriba: cubre tanto objetos compilados como modelos)
 *.cramcache
 assets/
+
+# Descargas del navegador a medias
+*.crdownload

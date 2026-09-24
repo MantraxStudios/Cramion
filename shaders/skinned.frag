@@ -21,7 +21,9 @@ layout(push_constant) uniform PushConstants {
     vec4 base_color;
     vec4 emissive;   // rgb = factor de emision
     vec4 material;   // x = metal, y = rugosidad, z = fuerza de la AO, w = escala normal
+                     // (negativa: normal map de convenio DirectX)
     uint bone_offset;
+    float reflectance;  // F0 de la parte no metalica
 } push;
 
 layout(location = 0) in vec3 v_normal;
@@ -29,7 +31,8 @@ layout(location = 1) in vec2 v_uv;
 layout(location = 2) in vec4 v_tangent;
 
 layout(location = 0) out vec4 out_albedo;    // rgb = albedo, a = oclusion ambiental
-layout(location = 1) out vec4 out_normal;    // rg = normal (octaedrica), b = rugosidad
+layout(location = 1) out vec4 out_normal;    // rg = normal (octaedrica), b = rugosidad,
+                                             // a = reflectancia (F0 no metalico)
 layout(location = 2) out vec4 out_material;  // rgb = emision (HDR lineal), a = metalicidad
 
 // Los materiales emisivos de un modelo (pantallas, luces del casco) se
@@ -66,12 +69,17 @@ void main() {
     if (dot(t, t) > 1e-8) {
         t = normalize(t);
         vec3 b = cross(n, t) * (v_tangent.w < 0.0 ? -1.0 : 1.0);
-        vec3 tangent_normal = texture(normal_map, v_uv).xyz * 2.0 - 1.0;
-        // assimp calcula la bitangente despues de FlipUVs, con V creciendo
-        // hacia abajo en la imagen; el +Y de los normal maps (convencion
-        // OpenGL, la de glTF) apunta hacia arriba.
-        tangent_normal.y = -tangent_normal.y;
-        tangent_normal.xy *= push.material.w;
+        // Solo X e Y: Z se reconstruye (los normal maps BC5 de los DDS no la
+        // guardan, y en los demas asi se corrige el error de compresion).
+        vec2 xy = texture(normal_map, v_uv).xy * 2.0 - 1.0;
+        vec3 tangent_normal = vec3(xy, sqrt(max(1.0 - dot(xy, xy), 0.0)));
+        // La bitangente va con V creciendo hacia abajo en la imagen (assimp
+        // la calcula despues de FlipUVs, y el lector de OBJ igual). El +Y de
+        // un normal map OpenGL (glTF) apunta hacia arriba: se invierte. El de
+        // uno DirectX (escala negativa) ya apunta hacia abajo.
+        float scale = push.material.w;
+        tangent_normal.y = scale >= 0.0 ? -tangent_normal.y : tangent_normal.y;
+        tangent_normal.xy *= abs(scale);
         normal = normalize(mat3(t, b, n) * tangent_normal);
     }
     // Caras vistas por detras (mallas de una sola cara): la normal mira a la
@@ -91,6 +99,6 @@ void main() {
                     kEmissiveIntensity;
 
     out_albedo = vec4(albedo.rgb, occlusion);
-    out_normal = vec4(encodeNormal(normal), roughness, 0.0);
+    out_normal = vec4(encodeNormal(normal), roughness, push.reflectance);
     out_material = vec4(emissive, metallic);
 }
