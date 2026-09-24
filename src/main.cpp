@@ -31,10 +31,7 @@
 
 #include <CramionDM/CramionDM.h>
 
-#include "core/Clock.h"
-#include "scene/Scene.h"
-#include "vk/VulkanRenderer.h"
-#include "vk/VulkanShader.h"
+#include <CramionFX/CramionFX.h>
 
 #include <algorithm>
 #include <chrono>
@@ -65,6 +62,7 @@ struct MaterialTweak {
     float roughness;
     float metallic;
     float reflectance = 0.04f;  // F0 de la parte no metalica
+    float albedo_scale = 1.0f;  // multiplica el color base (lineal)
 };
 
 struct SceneEntry {
@@ -97,6 +95,19 @@ constexpr MaterialTweak kSibenikTweaks[] = {
     {"pod_rub", 0.3f, 0.0f},   // cenefa de piedra del borde
 };
 
+// San Miguel: los cristales de las ventanas (material_0: Kd 0.1, Ns 4096,
+// Ks 0.5) son opacos en el MTL (d 1), asi que van al G-buffer como una
+// superficie mas. La conversion de Phong no baja de rugosidad 0.3 y los
+// dejaba como un panel gris mate. Un vidrio con el interior oscuro detras es
+// casi solo reflejo: espejo, sin difuso, y F0 de dos caras (lamina fina:
+// 2f / (1 + f) = 0.077 con f = 0.04). El reflejo lo ponen el SSR (o los
+// rayos), la sonda y el IBL, igual que en los charcos.
+// (material_041, el unico vidrio transparente, son los vasos de las mesas:
+// esos van por la pasada de vidrio, glass.frag.)
+constexpr MaterialTweak kSanMiguelTweaks[] = {
+    {"material_0", 0.02f, 0.0f, 0.077f, 0.1f},  // cristal de las ventanas
+};
+
 constexpr SceneEntry kScenes[] = {
     // Catedral de Sibenik (Marko Dabrovic, texturas de Morgan McGuire): en la
     // nave, cerca de la entrada, a la altura de los ojos, mirando al altar.
@@ -104,7 +115,8 @@ constexpr SceneEntry kScenes[] = {
      kSibenikTweaks},
     // San Miguel (Guillermo M. Leal Llaguno, version 2017 de Morgan McGuire):
     // en el paso junto a la fachada sur, mirando al centro del patio.
-    {"san-miguel", "san-miguel/san-miguel.obj", {10.5f, 1.7f, -10.5f}, {12.0f, 1.8f, 2.0f}, {}},
+    {"san-miguel", "san-miguel/san-miguel.obj", {10.5f, 1.7f, -10.5f}, {12.0f, 1.8f, 2.0f},
+     kSanMiguelTweaks},
     // Amazon Lumberyard Bistro v5.2 (NVIDIA ORCA): la calle y el interior del
     // bistro. Texturas DDS con normal maps DirectX.
     // Su escena original (Falcor) usa como cielo san_giuseppe_bridge_4k.hdr.
@@ -191,7 +203,8 @@ void updateWindowTitle(Window& window, const Clock& clock, const Scene& scene,
           << (renderer.cascadeDebug() ? L" [cascadas]" : L"") << L"  |  FXAA "
           << (renderer.antialiasingEnabled() ? L"ON" : L"OFF") << L"  |  bloom "
           << (renderer.bloomEnabled() ? L"ON" : L"OFF") << L"  |  SSAO "
-          << (renderer.ssaoEnabled() ? L"ON" : L"OFF") << L"  |  SSR "
+          << (renderer.ssaoEnabled() ? L"ON" : L"OFF") << L"  |  volumetrica "
+          << (renderer.volumetricEnabled() ? L"ON" : L"OFF") << L"  |  SSR "
           << (renderer.ssrEnabled() ? L"ON" : L"OFF") << L"  |  RTX "
           << (!renderer.rayTracingSupported() ? L"no disponible"
               : renderer.rayTracingActive()   ? L"ON"
@@ -253,7 +266,7 @@ int main(int argc, char** argv) {
         const std::uint32_t model = scene.loadModel(scene_path, /*force_static=*/true);
         for (const MaterialTweak& tweak : entry.tweaks) {
             scene.overrideMaterial(model, tweak.material, tweak.roughness, tweak.metallic,
-                                   tweak.reflectance);
+                                   tweak.reflectance, tweak.albedo_scale);
         }
         scene.setDirectXNormalMaps(model, entry.directx_normals);
         scene.spawnStatic(model);
@@ -306,6 +319,7 @@ int main(int argc, char** argv) {
                      "           H occlusion culling | Y trazado de rayos (RTX)\n"
                      "           U cielo HDR de la escena / cielo fisico | J lluvia (charcos)\n"
                      "           M agua (zona inundada)\n"
+                     "           N luz volumetrica (rayos de sol en el polvo)\n"
                      "           L rayos de luz\n"
                      "           K tonemapper (Neutral/ACES) | E auto-exposicion\n"
                      "           RePag/AvPag compensacion de exposicion | ESC salir\n\n";
@@ -356,6 +370,9 @@ int main(int argc, char** argv) {
             }
             if (input.isKeyPressed(Key::J)) {
                 renderer.setRainEnabled(!renderer.rainEnabled());
+            }
+            if (input.isKeyPressed(Key::N)) {
+                renderer.setVolumetricEnabled(!renderer.volumetricEnabled());
             }
             if (input.isKeyPressed(Key::Y)) {
                 renderer.setRayTracingEnabled(!renderer.rayTracingEnabled());

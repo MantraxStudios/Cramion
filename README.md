@@ -5,7 +5,7 @@
 
 Motor de render en tiempo real para Windows con **renderizador diferido en Vulkan 1.3** e iluminación física: PBR metal/rugosidad, cielo atmosférico, IBL, sombras en cascada, oclusión ambiental e iluminación global en espacio de pantalla, con post-proceso HDR (bloom, auto-exposición por histograma, rayos de luz, tonemapping).
 
-La capa de plataforma (ventana, entrada y dispositivo DirectX 12) es una librería estática propia, **CramionDM**. Todo se compila con **CMake + Clang + Ninja**.
+El motor son dos librerías estáticas propias: **CramionFX**, el renderizador Vulkan con todos sus shaders, y **CramionDM**, la capa de plataforma (ventana, entrada y dispositivo DirectX 12). `cramion.exe` es solo una aplicación de ejemplo que las usa. Todo se compila con **CMake + Clang + Ninja**.
 
 Incluye dos escenas de demostración, iluminadas por una sola luz direccional (el sol de día, la luna de noche) y su cielo:
 - **Catedral de Šibenik** (por defecto): 75 mil triángulos. Un interior en el que el sol entra por los ventanales.
@@ -44,7 +44,7 @@ Incluye dos escenas de demostración, iluminadas por una sola luz direccional (e
 
 Probado con una RTX 4060 Ti (8 GB), 16 GB de RAM y Clang 22.
 
-Las cabeceras de Vulkan y `vulkan-1.lib` vienen en `vendor/`. **assimp** y **stb** se descargan solas al configurar (FetchContent).
+Las cabeceras de Vulkan y `vulkan-1.lib` vienen en `CramionFX/vendor/`. **assimp** y **stb** se descargan solas al configurar (FetchContent).
 
 ## Compilar y ejecutar
 
@@ -71,7 +71,7 @@ cmake --preset clang-ninja-release
 cmake --build --preset clang-ninja-release
 ```
 
-Los shaders GLSL de `shaders/` se compilan a SPIR-V en `build/shaders/` como parte del build.
+Los shaders GLSL de `CramionFX/shaders/` se compilan a SPIR-V al construir la librería y se copian a `build/shaders/`, junto al ejecutable.
 
 ### 3. Ejecutar
 
@@ -294,26 +294,38 @@ Vidrio y agua (materiales semitransparentes) se omiten: un renderizador diferido
 | Qué | Dónde |
 |---|---|
 | Escenas disponibles y posición inicial de la cámara de cada una | `src/main.cpp` (`kScenes`) y `cramion_extract_scene(...)` en `CMakeLists.txt` |
-| Intensidad y color del sol/luna, ciclo día/noche | `src/cpp/scene/Scene.cpp` (`updateSun`) |
-| Brillo del cielo frente al sol | `kSunIlluminance` en `src/cpp/vk/VulkanRenderer.cpp` |
-| Dispersión atmosférica | constantes de `shaders/sky_lut.frag` |
-| Brillo objetivo, límites y velocidad de la auto-exposición | `shaders/exposure_average.comp` (`kTargetLuminance`, `kMin/MaxLogExposure`, `kSpeedUp/Down`) y percentiles en `GpuExposurePush` (`src/include/vk/GpuTypes.h`) |
+| Intensidad y color del sol/luna, ciclo día/noche | `CramionFX/src/scene/Scene.cpp` (`updateSun`) |
+| Brillo del cielo frente al sol | `kSunIlluminance` en `CramionFX/src/vk/VulkanRenderer.cpp` |
+| Dispersión atmosférica | constantes de `CramionFX/shaders/sky_lut.frag` |
+| Brillo objetivo, límites y velocidad de la auto-exposición | `CramionFX/shaders/exposure_average.comp` (`kTargetLuminance`, `kMin/MaxLogExposure`, `kSpeedUp/Down`) y percentiles en `GpuExposurePush` (`CramionFX/include/CramionFX/vk/GpuTypes.h`) |
 | Fuerza del bloom y de los rayos | `recordCompositePass` en `VulkanRenderer.cpp` |
-| Radio e intensidad del SSAO | `shaders/ssao.frag` |
-| Rayos, pasos y radio de la GI | `shaders/ssgi.frag` (`kRays`, `kSteps`, `kRadius`) |
-| Niebla | `shaders/lighting.frag` (`kFogDensity`, `kFogBaseHeight`, `kFogHeightFalloff`) |
-| Contraste, *vibrance*, saturación, viñeta | `shaders/composite.frag` y `GpuCompositePush` |
+| Radio e intensidad del SSAO | `CramionFX/shaders/ssao.frag` |
+| Rayos, pasos y radio de la GI | `CramionFX/shaders/ssgi.frag` (`kRays`, `kSteps`, `kRadius`) |
+| Niebla | `CramionFX/shaders/lighting.frag` (`kFogDensity`, `kFogBaseHeight`, `kFogHeightFalloff`) |
+| Luz volumétrica (rayos de sol en el polvo; tecla **N**) | densidad: `setVolumetricDensity` (0.02 por defecto); anisotropía y distancia en `recordVolumetricPass`; pasos y deriva del polvo en `CramionFX/shaders/volumetric.frag` |
+| Contraste, *vibrance*, saturación, viñeta | `CramionFX/shaders/composite.frag` y `GpuCompositePush` |
 | Resolución y distancia de las sombras | `ShadowMap::kResolution`, `ShadowCascades::shadow_distance_`, `LocalShadowMaps` |
-| Tamaño de los clústeres de culling | `kClusterSize` en `src/cpp/asset/ObjLoader.cpp` |
+| Tamaño de los clústeres de culling | `kClusterSize` en `CramionFX/src/asset/ObjLoader.cpp` |
 
 ## Usar el motor en tu código
 
-El flujo mínimo (lo que hace `src/main.cpp`):
+CramionFX es una librería: en tu proyecto CMake basta con añadir las dos carpetas, enlazar y desplegar los shaders.
+
+```cmake
+add_subdirectory(CramionDM)            # ventana y entrada (la necesita CramionFX)
+add_subdirectory(CramionFX)            # renderizador + shaders + assimp/stb
+add_executable(mi_juego main.cpp)
+target_link_libraries(mi_juego PRIVATE Cramion::FX)   # trae tambien Cramion::DM y Vulkan
+cramionfx_deploy(mi_juego)             # shaders SPIR-V en <carpeta del .exe>/shaders
+```
+
+Los shaders se compilan con la librería (`glslc` del Vulkan SDK) y `cramionfx_deploy` los copia en cada build junto al ejecutable, que es donde el motor los busca al arrancar. assimp y stb quedan privados: tu proyecto no los ve.
+
+El flujo mínimo en código (lo que hace `src/main.cpp`):
 
 ```cpp
 #include <CramionDM/CramionDM.h>
-#include "scene/Scene.h"
-#include "vk/VulkanRenderer.h"
+#include <CramionFX/CramionFX.h>
 
 using namespace cramion;
 
@@ -344,37 +356,43 @@ renderer.shutdown();
 
 Cada efecto se puede encender o apagar desde código: `setShadowsEnabled`, `setSsaoEnabled`, `setGiEnabled`, `setBloomEnabled`, `setLightShaftsEnabled`, `setAutoExposureEnabled`, `setExposureCompensation`, `setAcesTonemapper`, `setAntialiasingEnabled` y `setCascadeDebug`.
 
-Las luces locales se añaden a `LightSet::points` y `LightSet::spots` (`src/include/scene/Light.h`).
+Las luces locales se añaden a `LightSet::points` y `LightSet::spots` (`CramionFX/include/CramionFX/scene/Light.h`).
 
 ## Estructura del proyecto
 
 ```
 Cramion/
-├── CMakeLists.txt          # Proyecto, dependencias, shaders y extracción de la escena
+├── CMakeLists.txt          # Aplicacion de ejemplo y extraccion de las escenas
 ├── CMakePresets.json       # Presets Clang + Ninja (Debug / Release)
 ├── sibenik.zip             # (no incluido) escena de demostración
 ├── San_Miguel.zip          # (no incluido) escena de demostración
+├── src/main.cpp            # Aplicación de ejemplo: arranque, bucle principal y teclas
 ├── CramionDM/              # Librería estática: ventana Win32, entrada, dispositivo DX12
-├── shaders/                # GLSL → SPIR-V
-│   ├── skinned.*           # G-buffer de los modelos (PBR completo)
-│   ├── skinned_shadow.*    # Sombras con recorte por alfa
-│   ├── lighting.*          # Pasada diferida: PBR, IBL, sombras, niebla
-│   ├── sky_lut.frag        # Cielo atmosférico
-│   ├── ibl_*.comp, brdf_lut.comp, ibl_common.glsl   # IBL
-│   ├── ssao.frag, ssgi.frag                         # Oclusión y luz rebotada
-│   ├── bloom_*.frag, light_shafts.frag              # Bloom y rayos de luz
-│   ├── exposure_*.comp                              # Auto-exposición
-│   ├── composite.frag                               # Exposición, tono y gradación
-│   └── fxaa.frag
-├── src/
-│   ├── main.cpp            # Arranque, bucle principal y teclas
-│   ├── include/ , cpp/
-│   │   ├── anim/           # Animator: esqueletos y clips
-│   │   ├── asset/          # Model, ModelLoader (assimp), ObjLoader, ModelCache
-│   │   ├── core/           # Math, Frustum, Clock
-│   │   ├── scene/          # Scene, Camera, Light, ShadowCascades, LocalLightShadows
-│   │   └── vk/             # Renderizador Vulkan: dispositivo, swapchain, pasadas, IBL...
-└── vendor/                 # Cabeceras de Vulkan y vulkan-1.lib
+└── CramionFX/              # Librería estática: el renderizador (Cramion::FX)
+    ├── CMakeLists.txt      # La librería, sus dependencias, shaders y cramionfx_deploy()
+    ├── include/CramionFX/  # Cabeceras públicas; CramionFX.h las incluye todas
+    │   ├── anim/           # Animator: esqueletos y clips
+    │   ├── asset/          # Model, ModelLoader (assimp), ObjLoader, ModelCache
+    │   ├── core/           # Math, Frustum, Clock
+    │   ├── scene/          # Scene, Camera, Light, ShadowCascades, LocalLightShadows
+    │   └── vk/             # Renderizador Vulkan: dispositivo, swapchain, pasadas, IBL...
+    ├── src/                # Implementación (misma organización)
+    ├── shaders/            # GLSL → SPIR-V
+    │   ├── skinned.*           # G-buffer de los modelos (PBR completo, lluvia)
+    │   ├── skinned_shadow.*    # Sombras con recorte por alfa
+    │   ├── glass.frag          # Vidrio transparente con reflejos (forward)
+    │   ├── lighting.*          # Pasada diferida: PBR, IBL, sombras, niebla
+    │   ├── volumetric.frag     # Luz volumétrica (rayos de sol en el polvo)
+    │   ├── sky_lut.frag        # Cielo atmosférico
+    │   ├── ibl_*.comp, brdf_lut.comp, ibl_common.glsl   # IBL
+    │   ├── rain_common.glsl                             # Charcos y superficies mojadas
+    │   ├── ssao.frag, ssgi.frag, gi_*.comp              # Oclusión y luz rebotada
+    │   ├── ssr*.frag, rt_*.comp, rt_common.glsl         # Reflejos y trazado de rayos
+    │   ├── bloom_*.frag, light_shafts.frag              # Bloom y rayos de luz
+    │   ├── exposure_*.comp                              # Auto-exposición
+    │   ├── composite.frag                               # Exposición, tono y gradación
+    │   └── fxaa.frag
+    └── vendor/             # Cabeceras de Vulkan y vulkan-1.lib
 ```
 
 ## CramionDM: ventana y entrada

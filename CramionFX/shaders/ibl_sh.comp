@@ -1,0 +1,107 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+
+// IBL difuso: la irradiancia del entorno proyectada en armonicos esfericos de
+// orden 2 (9 coeficientes, Ramamoorthi y Hanrahan 2001). Es lo que usa Unreal
+// para la luz difusa del cielo: una funcion suave que se evalua por pixel con
+// unas pocas multiplicaciones.
+//
+// Un grupo de 64 hilos recorre una rejilla de 64x32 direcciones sobre toda la
+// esfera, ponderando por angulo solido. Los coeficientes se guardan ya
+// convolucionados con el coseno y divididos por pi: evaluarlos en la normal da
+// directamente lo que multiplica al albedo.
+
+layout(local_size_x = 64) in;
+
+layout(set = 0, binding = 0) uniform sampler2D sky_lut;
+layout(set = 0, binding = 1) writeonly buffer Irradiance {
+    vec4 coefficients[9];
+} irradiance;
+layout(set = 0, binding = 2) uniform sampler2D environment_hdr;
+
+layout(push_constant) uniform PushConstants {
+    vec4 light_radiance;
+    vec4 to_light;
+    uint face_size;
+    uint sample_count;
+    float hdr;  // 1 = el entorno es el mapa HDR, no el cielo fisico
+    float wet;  // fraccion del suelo cubierta de agua (0 = seco)
+} push;
+
+#include "ibl_common.glsl"
+
+// Mapa de entorno HDR (EnvironmentMap), si la escena trae uno (push.hdr).
+// Convencion equirectangular: u = atan(z, x) / 2pi + 0.5, v = acos(y) / pi.
+vec2 environmentUv(vec3 d) {
+    return vec2(atan(d.z, d.x) / (2.0 * kPi) + 0.5, acos(clamp(d.y, -1.0, 1.0)) / kPi);
+}
+
+const uint kAzimuthCells = 64u;
+const uint kPolarCells = 32u;
+
+shared vec3 partial[64][9];
+
+void main() {
+    uint thread = gl_LocalInvocationIndex;
+    vec3 ground = groundRadiance(push.light_radiance.rgb, push.to_light.xyz);
+
+    vec3 c[9];
+    for (int k = 0; k < 9; ++k) {
+        c[k] = vec3(0.0);
+    }
+
+    const float d_phi = 2.0 * kPi / float(kAzimuthCells);
+    const float d_theta = kPi / float(kPolarCells);
+
+    for (uint cell = thread; cell < kAzimuthCells * kPolarCells; cell += 64u) {
+        uint i = cell % kAzimuthCells;
+        uint j = cell / kAzimuthCells;
+        float phi = (float(i) + 0.5) * d_phi;
+        float theta = (float(j) + 0.5) * d_theta;
+        float sin_theta = sin(theta);
+        vec3 d = vec3(sin_theta * cos(phi), cos(theta), sin_theta * sin(phi));
+        // Con el HDR, un mip del tamano de la celda (64 x 32).
+        vec3 environment_radiance;
+        if (push.hdr > 0.5) {
+            float lod = log2(max(float(textureSize(environment_hdr, 0).x) / 64.0, 1.0));
+            environment_radiance = textureLod(environment_hdr, environmentUv(d), lod).rgb;
+            // Suelo mojado: tambien ilumina con el cielo que refleja.
+            if (d.y < 0.0 && push.wet > 0.0) {
+                vec3 mirrored =
+                    textureLod(environment_hdr, environmentUv(vec3(d.x, -d.y, d.z)), lod).rgb;
+                environment_radiance = wetGround(d, environment_radiance, mirrored, push.wet);
+            }
+        } else {
+            environment_radiance = environment(d, ground, push.wet);
+        }
+        vec3 radiance = environment_radiance * (d_phi * d_theta * sin_theta);
+
+        c[0] += radiance * 0.282095;
+        c[1] += radiance * 0.488603 * d.y;
+        c[2] += radiance * 0.488603 * d.z;
+        c[3] += radiance * 0.488603 * d.x;
+        c[4] += radiance * 1.092548 * d.x * d.y;
+        c[5] += radiance * 1.092548 * d.y * d.z;
+        c[6] += radiance * 0.315392 * (3.0 * d.z * d.z - 1.0);
+        c[7] += radiance * 1.092548 * d.x * d.z;
+        c[8] += radiance * 0.546274 * (d.x * d.x - d.y * d.y);
+    }
+
+    for (int k = 0; k < 9; ++k) {
+        partial[thread][k] = c[k];
+    }
+    barrier();
+
+    if (thread == 0u) {
+        // Convolucion con el coseno (A0 = pi, A1 = 2pi/3, A2 = pi/4) y / pi.
+        const float band[9] = float[](1.0, 2.0 / 3.0, 2.0 / 3.0, 2.0 / 3.0,
+                                      0.25, 0.25, 0.25, 0.25, 0.25);
+        for (int k = 0; k < 9; ++k) {
+            vec3 sum = vec3(0.0);
+            for (uint t = 0u; t < 64u; ++t) {
+                sum += partial[t][k];
+            }
+            irradiance.coefficients[k] = vec4(sum * band[k], 0.0);
+        }
+    }
+}
