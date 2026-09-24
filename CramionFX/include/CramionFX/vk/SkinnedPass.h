@@ -53,8 +53,18 @@ public:
     const vk::raii::Pipeline& geometryPipeline() const { return geometry_pipeline_; }
     const vk::raii::PipelineLayout& geometryLayout() const { return geometry_layout_; }
 
-    const vk::raii::Pipeline& shadowPipeline() const { return shadow_pipeline_; }
-    const vk::raii::Pipeline& localShadowPipeline() const { return local_shadow_pipeline_; }
+    // Sombras de las cascadas (con depth clamp) y de las luces locales. Cada
+    // una en dos versiones: con recorte por alfa (hojas, rejas: lee la
+    // textura y descarta) y de solo profundidad, sin fragment shader, para
+    // todo lo opaco. La de solo profundidad es mucho mas barata: la GPU
+    // escribe el depth sin ejecutar nada por pixel y descarta lo tapado
+    // antes (early-z), cosa que el discard impide.
+    const vk::raii::Pipeline& shadowPipeline(bool alpha_tested) const {
+        return alpha_tested ? shadow_pipeline_ : shadow_opaque_pipeline_;
+    }
+    const vk::raii::Pipeline& localShadowPipeline(bool alpha_tested) const {
+        return alpha_tested ? local_shadow_pipeline_ : local_shadow_opaque_pipeline_;
+    }
     const vk::raii::PipelineLayout& shadowLayout() const { return shadow_layout_; }
 
     // Set 2 del vidrio: 0 camara, 1 luces, 2 cascadas (datos), 3 mapa de las
@@ -63,14 +73,27 @@ public:
     static constexpr std::uint32_t kGlassBindingCount = 9;
     const vk::raii::DescriptorSetLayout& glassSetLayout() const { return glass_set_layout_; }
     const vk::raii::Pipeline& glassPipeline() const { return glass_pipeline_; }
+
+    // Mascara del contorno de seleccion (outline_mask.frag, formato
+    // kOutlineMaskFormat), con el layout de la geometria: `visible_only` =
+    // false dibuja la silueta entera en R (sin prueba de profundidad), true
+    // solo lo que se ve en G (prueba contra el depth del G-buffer, sin
+    // escribirlo).
+    static constexpr vk::Format kOutlineMaskFormat = vk::Format::eR8G8Unorm;
+    const vk::raii::Pipeline& outlineMaskPipeline(bool visible_only) const {
+        return visible_only ? outline_visible_pipeline_ : outline_silhouette_pipeline_;
+    }
     const vk::raii::PipelineLayout& glassLayout() const { return glass_layout_; }
 
 private:
     void createGeometryPipeline(const VulkanDevice& device, const GBuffer& gbuffer);
     void createGlassPipeline(const VulkanDevice& device, vk::Format color_format,
                              vk::Format depth_format);
+    vk::raii::Pipeline createOutlinePipeline(const VulkanDevice& device, vk::Format depth_format,
+                                             bool visible_only) const;
     vk::raii::Pipeline createShadowPipeline(const VulkanDevice& device, vk::Format depth_format,
-                                            bool depth_clamp, float slope_bias) const;
+                                            bool depth_clamp, float slope_bias,
+                                            bool alpha_tested) const;
 
     vk::raii::Sampler sampler_{nullptr};
     vk::raii::DescriptorSetLayout frame_set_layout_{nullptr};
@@ -82,10 +105,15 @@ private:
     vk::raii::PipelineLayout shadow_layout_{nullptr};
     vk::raii::Pipeline shadow_pipeline_{nullptr};
     vk::raii::Pipeline local_shadow_pipeline_{nullptr};
+    vk::raii::Pipeline shadow_opaque_pipeline_{nullptr};
+    vk::raii::Pipeline local_shadow_opaque_pipeline_{nullptr};
 
     vk::raii::DescriptorSetLayout glass_set_layout_{nullptr};
     vk::raii::PipelineLayout glass_layout_{nullptr};
     vk::raii::Pipeline glass_pipeline_{nullptr};
+
+    vk::raii::Pipeline outline_silhouette_pipeline_{nullptr};
+    vk::raii::Pipeline outline_visible_pipeline_{nullptr};
 };
 
 }  // namespace cramion::gfx

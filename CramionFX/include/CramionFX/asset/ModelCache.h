@@ -4,6 +4,7 @@
 #include "CramionFX/asset/Model.h"
 
 #include <filesystem>
+#include <iosfwd>
 
 namespace cramion::asset {
 
@@ -25,6 +26,13 @@ bool readModelCache(const std::filesystem::path& cache, const std::filesystem::p
 // Escribe la cache. Lanza std::runtime_error si no puede.
 void writeModelCache(const std::filesystem::path& cache, const std::filesystem::path& source,
                      const ModelData& model);
+
+// Solo el contenido del modelo (mallas, materiales, texturas, esqueleto y
+// animaciones), sin la cabecera de la cache: lo usan los .crdata de
+// CramionCore, que llevan su propia cabecera. Las texturas se guardan tal
+// como esten en el modelo (encoded + source_path).
+void writeModelPayload(std::ostream& stream, const ModelData& model);
+bool readModelPayload(std::istream& stream, ModelData& out);
 
 }  // namespace cramion::asset
 

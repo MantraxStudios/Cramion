@@ -56,7 +56,7 @@ void SkinnedPass::create(const VulkanDevice& device, const GBuffer& gbuffer,
     sampler_ = vk::raii::Sampler(device.handle(), sampler_info);
 
     // --- Set 0: camara + huesos + lluvia (mapa y parametros) ---
-    std::array<vk::DescriptorSetLayoutBinding, 4> frame_bindings{};
+    std::array<vk::DescriptorSetLayoutBinding, 5> frame_bindings{};
     frame_bindings[0].binding = 0;
     frame_bindings[0].descriptorType = vk::DescriptorType::eUniformBuffer;
     frame_bindings[0].descriptorCount = 1;
@@ -73,6 +73,11 @@ void SkinnedPass::create(const VulkanDevice& device, const GBuffer& gbuffer,
     frame_bindings[3].descriptorType = vk::DescriptorType::eUniformBuffer;
     frame_bindings[3].descriptorCount = 1;
     frame_bindings[3].stageFlags = vk::ShaderStageFlagBits::eFragment;
+    // Texturas de los decals (estampas): 8 ranuras.
+    frame_bindings[4].binding = 4;
+    frame_bindings[4].descriptorType = vk::DescriptorType::eCombinedImageSampler;
+    frame_bindings[4].descriptorCount = 8;
+    frame_bindings[4].stageFlags = vk::ShaderStageFlagBits::eFragment;
 
     vk::DescriptorSetLayoutCreateInfo frame_layout_info{};
     frame_layout_info.setBindings(frame_bindings);
@@ -105,11 +110,16 @@ void SkinnedPass::create(const VulkanDevice& device, const GBuffer& gbuffer,
     shadow_layout_info.setPushConstantRanges(shadow_push);
     shadow_layout_ = vk::raii::PipelineLayout(device.handle(), shadow_layout_info);
 
-    shadow_pipeline_ =
-        createShadowPipeline(device, shadow_format, device.depthClampSupported(), 1.1f);
-    local_shadow_pipeline_ = createShadowPipeline(device, shadow_format, false, 1.5f);
+    const bool clamp = device.depthClampSupported();
+    shadow_pipeline_ = createShadowPipeline(device, shadow_format, clamp, 1.1f, true);
+    shadow_opaque_pipeline_ = createShadowPipeline(device, shadow_format, clamp, 1.1f, false);
+    local_shadow_pipeline_ = createShadowPipeline(device, shadow_format, false, 1.5f, true);
+    local_shadow_opaque_pipeline_ =
+        createShadowPipeline(device, shadow_format, false, 1.5f, false);
 
     createGlassPipeline(device, hdr_format, gbuffer.depthFormat());
+    outline_silhouette_pipeline_ = createOutlinePipeline(device, gbuffer.depthFormat(), false);
+    outline_visible_pipeline_ = createOutlinePipeline(device, gbuffer.depthFormat(), true);
 
     std::cout << "[Vulkan] Pipelines de modelos con esqueleto creados (huesos en storage buffer)\n";
 }
@@ -306,16 +316,90 @@ void SkinnedPass::createGlassPipeline(const VulkanDevice& device, vk::Format col
     glass_pipeline_ = vk::raii::Pipeline(device.handle(), nullptr, pipeline_info);
 }
 
+vk::raii::Pipeline SkinnedPass::createOutlinePipeline(const VulkanDevice& device,
+                                                      vk::Format depth_format,
+                                                      bool visible_only) const {
+    // skinned.vert, igual que el G-buffer: la profundidad de la mascara sale
+    // identica a la del G-buffer y la prueba "menor o igual" es exacta.
+    const vk::raii::ShaderModule vertex_module = shaders::loadModule(device, "skinned.vert.spv");
+    const vk::raii::ShaderModule fragment_module =
+        shaders::loadModule(device, "outline_mask.frag.spv");
+    const std::array<vk::PipelineShaderStageCreateInfo, 2> stages = {
+        stage(vk::ShaderStageFlagBits::eVertex, vertex_module),
+        stage(vk::ShaderStageFlagBits::eFragment, fragment_module)};
+
+    const VertexLayout layout;
+    vk::PipelineVertexInputStateCreateInfo vertex_input{};
+    vertex_input.setVertexBindingDescriptions(layout.binding);
+    vertex_input.setVertexAttributeDescriptions(layout.attributes);
+
+    vk::PipelineInputAssemblyStateCreateInfo input_assembly{};
+    input_assembly.topology = vk::PrimitiveTopology::eTriangleList;
+
+    vk::PipelineViewportStateCreateInfo viewport_state{};
+    viewport_state.viewportCount = 1;
+    viewport_state.scissorCount = 1;
+
+    vk::PipelineRasterizationStateCreateInfo rasterization{};
+    rasterization.polygonMode = vk::PolygonMode::eFill;
+    rasterization.cullMode = vk::CullModeFlagBits::eNone;
+    rasterization.frontFace = vk::FrontFace::eCounterClockwise;
+    rasterization.lineWidth = 1.0f;
+
+    vk::PipelineMultisampleStateCreateInfo multisample{};
+    multisample.rasterizationSamples = vk::SampleCountFlagBits::e1;
+
+    vk::PipelineDepthStencilStateCreateInfo depth_stencil{};
+    depth_stencil.depthTestEnable = visible_only ? VK_TRUE : VK_FALSE;
+    depth_stencil.depthWriteEnable = VK_FALSE;
+    depth_stencil.depthCompareOp = vk::CompareOp::eLessOrEqual;
+
+    vk::PipelineColorBlendAttachmentState blend_attachment{};
+    blend_attachment.colorWriteMask =
+        visible_only ? vk::ColorComponentFlagBits::eG : vk::ColorComponentFlagBits::eR;
+
+    vk::PipelineColorBlendStateCreateInfo color_blend{};
+    color_blend.setAttachments(blend_attachment);
+
+    const std::array<vk::DynamicState, 2> dynamic_states = {vk::DynamicState::eViewport,
+                                                            vk::DynamicState::eScissor};
+    vk::PipelineDynamicStateCreateInfo dynamic_state{};
+    dynamic_state.setDynamicStates(dynamic_states);
+
+    const vk::Format color_format = kOutlineMaskFormat;
+    vk::PipelineRenderingCreateInfo rendering_info{};
+    rendering_info.setColorAttachmentFormats(color_format);
+    rendering_info.depthAttachmentFormat = depth_format;
+
+    vk::GraphicsPipelineCreateInfo pipeline_info{};
+    pipeline_info.pNext = &rendering_info;
+    pipeline_info.setStages(stages);
+    pipeline_info.pVertexInputState = &vertex_input;
+    pipeline_info.pInputAssemblyState = &input_assembly;
+    pipeline_info.pViewportState = &viewport_state;
+    pipeline_info.pRasterizationState = &rasterization;
+    pipeline_info.pMultisampleState = &multisample;
+    pipeline_info.pDepthStencilState = &depth_stencil;
+    pipeline_info.pColorBlendState = &color_blend;
+    pipeline_info.pDynamicState = &dynamic_state;
+    pipeline_info.layout = *geometry_layout_;
+
+    return vk::raii::Pipeline(device.handle(), nullptr, pipeline_info);
+}
+
 vk::raii::Pipeline SkinnedPass::createShadowPipeline(const VulkanDevice& device,
                                                      vk::Format depth_format, bool depth_clamp,
-                                                     float slope_bias) const {
+                                                     float slope_bias, bool alpha_tested) const {
     const vk::raii::ShaderModule vertex_module =
         shaders::loadModule(device, "skinned_shadow.vert.spv");
     const vk::raii::ShaderModule fragment_module =
         shaders::loadModule(device, "skinned_shadow.frag.spv");
-    const std::array<vk::PipelineShaderStageCreateInfo, 2> shadow_stages = {
+    const std::array<vk::PipelineShaderStageCreateInfo, 2> all_stages = {
         stage(vk::ShaderStageFlagBits::eVertex, vertex_module),
         stage(vk::ShaderStageFlagBits::eFragment, fragment_module)};
+    // Lo opaco: solo el vertex shader (la profundidad la escribe la GPU).
+    const vk::ArrayProxyNoTemporaries<const vk::PipelineShaderStageCreateInfo> shadow_stages(
+        alpha_tested ? 2u : 1u, all_stages.data());
 
     const VertexLayout layout;
     vk::PipelineVertexInputStateCreateInfo vertex_input{};
@@ -376,9 +460,13 @@ vk::raii::Pipeline SkinnedPass::createShadowPipeline(const VulkanDevice& device,
 }
 
 void SkinnedPass::destroy() {
+    outline_visible_pipeline_ = nullptr;
+    outline_silhouette_pipeline_ = nullptr;
     glass_pipeline_ = nullptr;
     glass_layout_ = nullptr;
     glass_set_layout_ = nullptr;
+    local_shadow_opaque_pipeline_ = nullptr;
+    shadow_opaque_pipeline_ = nullptr;
     local_shadow_pipeline_ = nullptr;
     shadow_pipeline_ = nullptr;
     shadow_layout_ = nullptr;

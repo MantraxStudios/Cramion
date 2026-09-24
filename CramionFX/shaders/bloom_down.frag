@@ -7,14 +7,15 @@
 // En el primer nivel las muestras se agrupan en cinco cajas y cada caja se
 // pondera por 1 / (1 + luma) (promedio de Karis): asi un solo pixel muy
 // brillante (el disco del sol, un reflejo) no se convierte en un destello que
-// parpadea.
+// parpadea. Ahi tambien se aplica el umbral, con una rodilla suave (como el
+// bloom de Unity): lo que no llega al umbral no brilla, sin un corte seco.
 
 layout(set = 0, binding = 0) uniform sampler2D source;
 
 layout(push_constant) uniform PushConstants {
     vec2 source_texel;  // 1 / resolucion de la imagen de origen
-    float first_level;  // 1 = aplicar el promedio de Karis
-    float unused;
+    float first_level;  // 1 = aplicar el promedio de Karis (y el umbral)
+    float threshold;    // luminancia desde la que brilla (0 = todo)
 } push;
 
 layout(location = 0) in vec2 v_uv;
@@ -59,6 +60,15 @@ void main() {
         float w4 = karisWeight(g4) * 0.5;
         result = (g0 * w0 + g1 * w1 + g2 * w2 + g3 * w3 + g4 * w4) /
                  max(w0 + w1 + w2 + w3 + w4, 0.0001);
+
+        if (push.threshold > 0.0) {
+            float brightness = max(result.r, max(result.g, result.b));
+            float knee = push.threshold * 0.5;
+            float soft = clamp(brightness - push.threshold + knee, 0.0, 2.0 * knee);
+            soft = soft * soft / (4.0 * knee + 1e-5);
+            float contribution = max(soft, brightness - push.threshold) / max(brightness, 1e-5);
+            result *= contribution;
+        }
     } else {
         result = e * 0.125;
         result += (a + c + g + i) * 0.03125;

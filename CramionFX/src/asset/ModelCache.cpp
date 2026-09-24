@@ -12,7 +12,7 @@ namespace cramion::asset {
 namespace {
 
 // Cambiar si cambia cualquier estructura de asset/Model.h que se guarda.
-constexpr std::uint32_t kModelCacheVersion = 9;
+constexpr std::uint32_t kModelCacheVersion = 10;  // 10: SubMesh::node
 constexpr char kMagic[4] = {'C', 'R', 'M', 'C'};
 
 // Identidad del archivo original: si cambia, la cache no vale.
@@ -33,11 +33,7 @@ SourceStamp stampOf(const std::filesystem::path& source) {
 
 class Writer {
 public:
-    explicit Writer(const std::filesystem::path& path) : file_(path, std::ios::binary) {
-        if (!file_) {
-            throw std::runtime_error("No se pudo crear la cache " + path.string());
-        }
-    }
+    explicit Writer(std::ostream& file) : file_(file) {}
 
     template <typename T>
     void pod(const T& value) {
@@ -61,16 +57,14 @@ public:
     bool ok() const { return static_cast<bool>(file_); }
 
 private:
-    std::ofstream file_;
+    std::ostream& file_;
 };
 
 // --- Lectura -----------------------------------------------------------------
 
 class Reader {
 public:
-    explicit Reader(const std::filesystem::path& path) : file_(path, std::ios::binary) {}
-
-    bool open() const { return static_cast<bool>(file_); }
+    explicit Reader(std::istream& file) : file_(file) {}
 
     template <typename T>
     void pod(T& value) {
@@ -101,11 +95,11 @@ private:
         }
         file_.read(static_cast<char*>(data), static_cast<std::streamsize>(size));
         if (!file_) {
-            throw std::runtime_error("cache truncada");
+            throw std::runtime_error("datos del modelo truncados");
         }
     }
 
-    std::ifstream file_;
+    std::istream& file_;
 };
 
 // Los tipos que se guardan como bloques de bytes.
@@ -155,6 +149,125 @@ void readMaterial(Reader& in, MaterialData& m) {
     in.pod(m.emissive_texture);
 }
 
+void writePayload(Writer& out, const ModelData& model) {
+    out.string(model.name);
+    out.podVector(model.vertices);
+    out.podVector(model.indices);
+    out.podVector(model.submeshes);
+
+    out.pod(static_cast<std::uint64_t>(model.materials.size()));
+    for (const MaterialData& material : model.materials) {
+        writeMaterial(out, material);
+    }
+
+    out.pod(static_cast<std::uint64_t>(model.textures.size()));
+    for (const TextureData& texture : model.textures) {
+        out.string(texture.name);
+        out.pod(texture.width);
+        out.pod(texture.height);
+        out.pod(texture.format);
+        out.pod(texture.mip_levels);
+        out.podVector(texture.pixels);
+        // Las que tienen archivo en disco se releen de el: no se duplican.
+        if (texture.source_path.empty()) {
+            out.podVector(texture.encoded);
+        } else {
+            out.podVector(std::vector<std::uint8_t>{});
+        }
+        out.string(texture.source_path);
+        out.pod(static_cast<std::uint8_t>(texture.height_map ? 1 : 0));
+    }
+
+    out.pod(static_cast<std::uint64_t>(model.nodes.size()));
+    for (const Node& node : model.nodes) {
+        out.string(node.name);
+        out.pod(node.parent);
+        out.pod(node.local);
+    }
+
+    out.pod(static_cast<std::uint64_t>(model.bones.size()));
+    for (const Bone& bone : model.bones) {
+        out.string(bone.name);
+        out.pod(bone.node);
+        out.pod(bone.offset);
+    }
+
+    out.pod(static_cast<std::uint64_t>(model.animations.size()));
+    for (const AnimationClip& clip : model.animations) {
+        out.string(clip.name);
+        out.pod(clip.duration);
+        out.pod(static_cast<std::uint64_t>(clip.channels.size()));
+        for (const AnimationChannel& channel : clip.channels) {
+            out.pod(channel.node);
+            out.podVector(channel.positions);
+            out.podVector(channel.rotations);
+            out.podVector(channel.scales);
+        }
+    }
+}
+
+void readPayload(Reader& in, ModelData& model) {
+    in.string(model.name);
+    in.podVector(model.vertices);
+    in.podVector(model.indices);
+    in.podVector(model.submeshes);
+
+    std::uint64_t count = 0;
+    in.pod(count);
+    model.materials.resize(static_cast<std::size_t>(count));
+    for (MaterialData& material : model.materials) {
+        readMaterial(in, material);
+    }
+
+    in.pod(count);
+    model.textures.resize(static_cast<std::size_t>(count));
+    for (TextureData& texture : model.textures) {
+        in.string(texture.name);
+        in.pod(texture.width);
+        in.pod(texture.height);
+        in.pod(texture.format);
+        in.pod(texture.mip_levels);
+        in.podVector(texture.pixels);
+        in.podVector(texture.encoded);
+        in.string(texture.source_path);
+        std::uint8_t height_map = 0;
+        in.pod(height_map);
+        texture.height_map = height_map != 0;
+    }
+
+    in.pod(count);
+    model.nodes.resize(static_cast<std::size_t>(count));
+    for (Node& node : model.nodes) {
+        in.string(node.name);
+        in.pod(node.parent);
+        in.pod(node.local);
+    }
+
+    in.pod(count);
+    model.bones.resize(static_cast<std::size_t>(count));
+    for (Bone& bone : model.bones) {
+        in.string(bone.name);
+        in.pod(bone.node);
+        in.pod(bone.offset);
+    }
+
+    in.pod(count);
+    model.animations.resize(static_cast<std::size_t>(count));
+    for (AnimationClip& clip : model.animations) {
+        in.string(clip.name);
+        in.pod(clip.duration);
+        std::uint64_t channels = 0;
+        in.pod(channels);
+        clip.channels.resize(static_cast<std::size_t>(channels));
+        for (AnimationChannel& channel : clip.channels) {
+            in.pod(channel.node);
+            in.podVector(channel.positions);
+            in.podVector(channel.rotations);
+            in.podVector(channel.scales);
+        }
+    }
+}
+
 }  // namespace
 
 void writeModelCache(const std::filesystem::path& cache, const std::filesystem::path& source,
@@ -163,65 +276,16 @@ void writeModelCache(const std::filesystem::path& cache, const std::filesystem::
     // interrumpida nunca deja una cache a medias con apariencia de valida.
     const std::filesystem::path temporary = cache.string() + ".tmp";
     {
-        Writer out(temporary);
+        std::ofstream file(temporary, std::ios::binary);
+        if (!file) {
+            throw std::runtime_error("No se pudo crear la cache " + temporary.string());
+        }
+        Writer out(file);
         out.pod(kMagic);
         out.pod(kModelCacheVersion);
         out.pod(stampOf(source));
 
-        out.string(model.name);
-        out.podVector(model.vertices);
-        out.podVector(model.indices);
-        out.podVector(model.submeshes);
-
-        out.pod(static_cast<std::uint64_t>(model.materials.size()));
-        for (const MaterialData& material : model.materials) {
-            writeMaterial(out, material);
-        }
-
-        out.pod(static_cast<std::uint64_t>(model.textures.size()));
-        for (const TextureData& texture : model.textures) {
-            out.string(texture.name);
-            out.pod(texture.width);
-            out.pod(texture.height);
-            out.pod(texture.format);
-            out.pod(texture.mip_levels);
-            out.podVector(texture.pixels);
-            // Las que tienen archivo en disco se releen de el: no se duplican.
-            if (texture.source_path.empty()) {
-                out.podVector(texture.encoded);
-            } else {
-                out.podVector(std::vector<std::uint8_t>{});
-            }
-            out.string(texture.source_path);
-            out.pod(static_cast<std::uint8_t>(texture.height_map ? 1 : 0));
-        }
-
-        out.pod(static_cast<std::uint64_t>(model.nodes.size()));
-        for (const Node& node : model.nodes) {
-            out.string(node.name);
-            out.pod(node.parent);
-            out.pod(node.local);
-        }
-
-        out.pod(static_cast<std::uint64_t>(model.bones.size()));
-        for (const Bone& bone : model.bones) {
-            out.string(bone.name);
-            out.pod(bone.node);
-            out.pod(bone.offset);
-        }
-
-        out.pod(static_cast<std::uint64_t>(model.animations.size()));
-        for (const AnimationClip& clip : model.animations) {
-            out.string(clip.name);
-            out.pod(clip.duration);
-            out.pod(static_cast<std::uint64_t>(clip.channels.size()));
-            for (const AnimationChannel& channel : clip.channels) {
-                out.pod(channel.node);
-                out.podVector(channel.positions);
-                out.podVector(channel.rotations);
-                out.podVector(channel.scales);
-            }
-        }
+        writePayload(out, model);
 
         if (!out.ok()) {
             throw std::runtime_error("Error escribiendo la cache " + temporary.string());
@@ -237,10 +301,11 @@ bool readModelCache(const std::filesystem::path& cache, const std::filesystem::p
         return false;
     }
 
-    Reader in(cache);
-    if (!in.open()) {
+    std::ifstream file(cache, std::ios::binary);
+    if (!file) {
         return false;
     }
+    Reader in(file);
 
     try {
         char magic[4] = {};
@@ -257,70 +322,31 @@ bool readModelCache(const std::filesystem::path& cache, const std::filesystem::p
         }
 
         ModelData model{};
-        in.string(model.name);
-        in.podVector(model.vertices);
-        in.podVector(model.indices);
-        in.podVector(model.submeshes);
-
-        std::uint64_t count = 0;
-        in.pod(count);
-        model.materials.resize(static_cast<std::size_t>(count));
-        for (MaterialData& material : model.materials) {
-            readMaterial(in, material);
-        }
-
-        in.pod(count);
-        model.textures.resize(static_cast<std::size_t>(count));
-        for (TextureData& texture : model.textures) {
-            in.string(texture.name);
-            in.pod(texture.width);
-            in.pod(texture.height);
-            in.pod(texture.format);
-            in.pod(texture.mip_levels);
-            in.podVector(texture.pixels);
-            in.podVector(texture.encoded);
-            in.string(texture.source_path);
-            std::uint8_t height_map = 0;
-            in.pod(height_map);
-            texture.height_map = height_map != 0;
-        }
-
-        in.pod(count);
-        model.nodes.resize(static_cast<std::size_t>(count));
-        for (Node& node : model.nodes) {
-            in.string(node.name);
-            in.pod(node.parent);
-            in.pod(node.local);
-        }
-
-        in.pod(count);
-        model.bones.resize(static_cast<std::size_t>(count));
-        for (Bone& bone : model.bones) {
-            in.string(bone.name);
-            in.pod(bone.node);
-            in.pod(bone.offset);
-        }
-
-        in.pod(count);
-        model.animations.resize(static_cast<std::size_t>(count));
-        for (AnimationClip& clip : model.animations) {
-            in.string(clip.name);
-            in.pod(clip.duration);
-            std::uint64_t channels = 0;
-            in.pod(channels);
-            clip.channels.resize(static_cast<std::size_t>(channels));
-            for (AnimationChannel& channel : clip.channels) {
-                in.pod(channel.node);
-                in.podVector(channel.positions);
-                in.podVector(channel.rotations);
-                in.podVector(channel.scales);
-            }
-        }
-
+        readPayload(in, model);
         out = std::move(model);
         return true;
     } catch (const std::exception&) {
         return false;  // Cache corrupta o truncada: se reimporta.
+    }
+}
+
+void writeModelPayload(std::ostream& stream, const ModelData& model) {
+    Writer out(stream);
+    writePayload(out, model);
+    if (!out.ok()) {
+        throw std::runtime_error("Error escribiendo los datos del modelo");
+    }
+}
+
+bool readModelPayload(std::istream& stream, ModelData& out) {
+    try {
+        Reader in(stream);
+        ModelData model{};
+        readPayload(in, model);
+        out = std::move(model);
+        return true;
+    } catch (const std::exception&) {
+        return false;
     }
 }
 

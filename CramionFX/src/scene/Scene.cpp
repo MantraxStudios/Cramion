@@ -79,14 +79,27 @@ void Scene::update(const dm::Input& input, float delta_seconds) {
 
     updateSun(delta_seconds);
 
-    for (Actor& actor : actors_) {
-        actor.animator.update(delta_seconds);
+    if (animate_actors_) {
+        for (Actor& actor : actors_) {
+            actor.animator.update(delta_seconds);
+        }
     }
 }
 
 std::uint32_t Scene::loadModel(const std::filesystem::path& path, bool force_static) {
     models_.push_back(std::make_unique<asset::ModelData>(asset::loadModel(path, force_static)));
     return static_cast<std::uint32_t>(models_.size() - 1);
+}
+
+std::uint32_t Scene::addModel(asset::ModelData model) {
+    models_.push_back(std::make_unique<asset::ModelData>(std::move(model)));
+    return static_cast<std::uint32_t>(models_.size() - 1);
+}
+
+void Scene::truncateModels(std::size_t count) {
+    if (count < models_.size()) {
+        models_.resize(count);
+    }
 }
 
 void Scene::spawnActor(std::uint32_t model_index, float x, float z, float height, float yaw) {
@@ -154,6 +167,23 @@ float smoothstep(float edge0, float edge1, float x) {
 }
 
 }  // namespace
+
+void Scene::setTimeOfDayHours(float hours) {
+    // Inversa de timeOfDayHours(): las 6:00 son el angulo 0 (amanecer).
+    sun_angle_ = (hours - 6.0f) / 24.0f * (2.0f * core::kPi);
+}
+
+void Scene::clear() {
+    actors_.clear();
+    models_.clear();
+    fixed_sun_.reset();
+}
+
+void Scene::removeActor(std::size_t index) {
+    if (index < actors_.size()) {
+        actors_.erase(actors_.begin() + static_cast<std::ptrdiff_t>(index));
+    }
+}
 
 float Scene::timeOfDayHours() const {
     const float hours = 6.0f + sun_angle_ / (2.0f * core::kPi) * 24.0f;

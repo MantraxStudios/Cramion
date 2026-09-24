@@ -37,11 +37,24 @@ layout(location = 3) in vec3 v_world_position;
 // Mapa de lluvia: profundidad de la escena vista desde arriba. Lo que tiene
 // algo encima (toldos, soportales, balcones) no se moja.
 layout(set = 0, binding = 2) uniform sampler2D rain_map;
+// Decals (GpuDecal): caja unidad proyectada a lo largo de su eje Y local.
+const int kMaxDecals = 64;
+struct Decal {
+    mat4 world_to_decal;
+    vec4 color;     // rgb = tinte (sRGB), a = opacidad
+    vec4 axis;      // xyz = eje de proyeccion (mundo), w = coseno minimo con la superficie
+    vec4 params;    // x = tipo (0 estampa, 1 charco, 2 humedad), y = textura, z = borde, w = cantidad
+    vec4 material;  // x = rugosidad, y = cuanto la sustituye, z = metalicidad
+};
+
 layout(set = 0, binding = 3) uniform WeatherBuffer {
     mat4 rain_view_projection;
     vec4 params;  // x = humedad (0..1), y = charcos (0..1), z = segundos, w = mapa listo
     vec4 flood;   // zona inundada: xy = centro (x, z), zw = radios (0 = sin agua)
+    vec4 decal_info;  // x = numero de decals
+    Decal decals[kMaxDecals];
 } weather;
+layout(set = 0, binding = 4) uniform sampler2D decal_textures[8];
 
 layout(location = 0) out vec4 out_albedo;    // rgb = albedo, a = oclusion ambiental
 layout(location = 1) out vec4 out_normal;    // rg = normal (octaedrica), b = rugosidad,
@@ -191,10 +204,69 @@ void main() {
     // Tamano del pixel en el mundo, para apagar las ondas que no caben. Las
     // derivadas se toman aqui, fuera de los if: dentro de un flujo que no es
     // uniforme en el quad no estan definidas.
-    float footprint = max(length(dFdx(v_world_position)), length(dFdy(v_world_position)));
+    vec3 dpdx = dFdx(v_world_position);
+    vec3 dpdy = dFdy(v_world_position);
+    float footprint = max(length(dpdx), length(dpdy));
     float reflectance = push.reflectance;
-    float flood = floodLevel(v_world_position.xz, weather.flood);
-    if (weather.params.x > 0.0 || weather.params.y > 0.0 || flood > 0.0) {
+
+    // --- Decals: estampas, charcos y humedad locales (como los de Unreal) ---
+    // Cada uno es una caja: lo que cae dentro recibe su textura/color, su agua
+    // o su humedad, con el borde suavizado y sin pintar las caras que no miran
+    // al eje de proyeccion. El indice de textura sale del buffer: es el mismo
+    // para todo el grupo (uniforme dinamico), se puede indexar el array.
+    float decal_water = 0.0;
+    float decal_wet = 0.0;
+    int decal_count = int(weather.decal_info.x);
+    for (int i = 0; i < decal_count; ++i) {
+        vec3 p = (weather.decals[i].world_to_decal * vec4(v_world_position, 1.0)).xyz;
+        if (any(greaterThan(abs(p), vec3(0.5)))) {
+            continue;
+        }
+        vec4 axis = weather.decals[i].axis;
+        vec4 params = weather.decals[i].params;
+        float facing = dot(n, axis.xyz);
+        if (facing < axis.w) {
+            continue;
+        }
+        // Borde suave en las cuatro caras laterales y a lo largo del eje.
+        float edge = params.z;
+        vec2 side = smoothstep(vec2(0.5), vec2(0.5 - edge), abs(p.xz));
+        float depth_fade = smoothstep(0.5, 0.5 - edge * 0.5, abs(p.y));
+        float angle_fade = smoothstep(axis.w, min(axis.w + 0.25, 1.0), facing);
+        float mask = side.x * side.y * depth_fade * angle_fade;
+
+        vec2 uv = vec2(p.x + 0.5, 0.5 - p.z);
+        mat3 to_decal = mat3(weather.decals[i].world_to_decal);
+        vec2 duvdx = (to_decal * dpdx).xz * vec2(1.0, -1.0);
+        vec2 duvdy = (to_decal * dpdy).xz * vec2(1.0, -1.0);
+        int texture_index = int(params.y);
+        vec4 texel = texture_index >= 0 ? textureGrad(decal_textures[texture_index], uv, duvdx, duvdy)
+                                        : vec4(1.0);
+        vec4 color = weather.decals[i].color;
+        int type = int(params.x + 0.5);
+        if (type == 0) {
+            // Estampa: color/textura encima del material.
+            float a = clamp(texel.a * color.a * mask, 0.0, 1.0);
+            albedo.rgb = mix(albedo.rgb, texel.rgb * color.rgb, a);
+            vec4 material = weather.decals[i].material;
+            roughness = mix(roughness, clamp(material.x, 0.04, 1.0), a * material.y);
+            metallic = mix(metallic, material.z, a * material.y);
+        } else if (type == 1) {
+            // Charco: la textura (su alfa o su luminancia) da la forma; sin
+            // textura, una mancha con la orilla irregular.
+            float shape = texture_index >= 0 ? texel.a * dot(texel.rgb, vec3(0.333))
+                                             : clamp((1.0 - length(p.xz) * 2.0 +
+                                                      (rainFbm(v_world_position.xz * 1.3 + float(i) * 7.1) - 0.5) * 0.6) /
+                                                         0.35, 0.0, 1.0);
+            decal_water = max(decal_water, shape * mask * params.w * color.a);
+        } else {
+            // Humedad: moja sin encharcar.
+            decal_wet = max(decal_wet, texel.a * mask * params.w * color.a);
+        }
+    }
+
+    float flood = max(floodLevel(v_world_position.xz, weather.flood), decal_water);
+    if (weather.params.x > 0.0 || weather.params.y > 0.0 || flood > 0.0 || decal_wet > 0.0) {
         float exposed = rainExposure(v_world_position);
 
         // El agua se queda en lo horizontal; las paredes escurren.
@@ -217,8 +289,9 @@ void main() {
 
         // Empapado: la lluvia de ahora, y del todo junto al agua (la orilla
         // de un charco esta saturada aunque el agua no la cubra).
-        float wet = max(weather.params.x * exposed * mix(0.25, 1.0, facing_up),
-                        clamp(level * 3.0, 0.0, 1.0));
+        float wet = max(max(weather.params.x * exposed * mix(0.25, 1.0, facing_up),
+                            clamp(level * 3.0, 0.0, 1.0)),
+                        decal_wet);
 
         // Material empapado (Lagarde): en lineal, no sobre el sRGB.
         vec2 wet_factors = wetFactors(roughness, metallic, wet);

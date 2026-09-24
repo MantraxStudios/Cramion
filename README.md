@@ -89,6 +89,38 @@ La primera vez que se abre una escena, su OBJ se importa y se guarda una caché 
 
 Medido con la GPU de prueba. En Release va bastante más rápido. La caché se regenera sola si cambia el OBJ o el formato interno del motor.
 
+Benchmark reproducible (cámara fija, 5 s de calentamiento y salida automática con la tabla de GPU):
+
+```powershell
+$env:CRAMION_BENCH = "20"; .\build-release\cramion.exe bistro
+```
+
+### 4. CramionEditor
+
+Editor de proyectos al estilo de Unity sobre **CramionCore** (ECS, assets con UUID, escenas `.crscene`), con la interfaz en **Dear ImGui (docking)**:
+
+```powershell
+.\build-release\CramionEditor.exe                        # Hub: proyectos recientes, crear, abrir
+.\build-release\CramionEditor.exe C:\ruta\Juego.crproj   # abre ese proyecto directamente
+```
+
+| Panel | Qué hace |
+|---|---|
+| **Hub** | Proyectos recientes, **Nuevo proyecto** (elige carpeta), abrir un `.crproj`, quitar de la lista |
+| **Escena** | Clic: seleccionar (otro clic en el mismo sitio baja por la jerarquía). Gizmos **W/E/R** (mover/rotar/escalar), **Q** sin gizmo, **X** local/mundo, snap. Botón derecho + WASD: volar; rueda: acercar; botón central: desplazar; **F**: enfocar. Iconos de luces, cámaras y decals clicables. **Gizmos de luz**: esfera de alcance (puntual), cono con asas de alcance y ángulos (foco), haz (direccional) |
+| **Estampar (T)** | Herramienta de decals: clic sobre cualquier superficie crea una **estampa** (imagen o color), un **charco** o una **mancha de humedad** orientada a esa cara. Ctrl+rueda: tamaño; Mayús+rueda: girar. Arrastrar una imagen del Proyecto a la escena la estampa |
+| **Jerarquía** | Multiselección (Ctrl/Mayús), arrastrar para emparentar o reordenar, **F2** renombrar, **Ctrl+D** duplicar, **Ctrl+C/V**, **Supr**, búsqueda, menú **Crear**. Clic derecho en un objeto animado: **Animaciones > Extraer** (diálogo de Windows) |
+| **Inspector** | Componentes por reflexión, **Add Component**, campos de asset con arrastrar y soltar, edición múltiple del Transform, deshacer/rehacer (**Ctrl+Z / Ctrl+Y**) |
+| **Proyecto** | Árbol de carpetas y rejilla. Importar (botón, menú o soltando desde el Explorador, en segundo plano); lo nuevo aparece solo. Mover, renombrar, borrar. Clic derecho: **Crear > Carpeta / Escena / Animator** |
+| **Animator** | Editor visual de **Animator Controllers** (`.cranimator`): estados (clips), transiciones con condiciones y exit time, parámetros float/int/bool/trigger. Con un objeto seleccionado que lo usa, se ve en vivo y se prueban los parámetros |
+| **Estadísticas / Consola / Ajustes de render** | FPS y GPU por pasada; registro con filtro; sombras, RTX, sonda, occlusion culling |
+
+**Animaciones.** Los modelos con animaciones (FBX, glTF) se importan como personaje con esqueleto. Un Animator nuevo creado con el personaje seleccionado trae un estado por clip. Los clips se pueden **extraer** a `.cranim` (pistas por nombre de hueso: sirven para otro modelo con el mismo esqueleto) y usarse en cualquier estado.
+
+**Decals y charcos.** Componente **Decal** (Renderizado): caja que proyecta sobre lo que tiene dentro a lo largo de su eje Y. Tipos: *Estampa* (imagen de `Assets/` o color, con opción de cambiar rugosidad/metalicidad), *Charco* (agua local con orilla irregular, se suma a los charcos de la lluvia global del componente **Clima**) y *Humedad*. Con **Solo con lluvia** aparecen y crecen con la lluvia global. Hasta 64 decals y 8 imágenes a la vez.
+
+Prueba automática de extremo a extremo: `CramionEditor.exe --selftest <carpeta> <modelo> <hdr> [imagen]`.
+
 ## Controles
 
 | Tecla | Acción |
@@ -110,6 +142,8 @@ Medido con la GPU de prueba. En Release va bastante más rápido. La caché se r
 | **RePág / AvPág** | Compensación de exposición ±0.5 EV |
 | **K** | Tonemapper: Khronos PBR Neutral / ACES |
 | **X** | Antialiasing (FXAA) on/off |
+| **Z** | Luz volumétrica on/off |
+| **F** | Tiempos de GPU por pasada en la consola |
 | **Esc** | Salir |
 
 El **título de la ventana** muestra, entre otros datos:
@@ -302,7 +336,7 @@ Vidrio y agua (materiales semitransparentes) se omiten: un renderizador diferido
 | Radio e intensidad del SSAO | `CramionFX/shaders/ssao.frag` |
 | Rayos, pasos y radio de la GI | `CramionFX/shaders/ssgi.frag` (`kRays`, `kSteps`, `kRadius`) |
 | Niebla | `CramionFX/shaders/lighting.frag` (`kFogDensity`, `kFogBaseHeight`, `kFogHeightFalloff`) |
-| Luz volumétrica (rayos de sol en el polvo; tecla **N**) | densidad: `setVolumetricDensity` (0.02 por defecto); anisotropía y distancia en `recordVolumetricPass`; pasos y deriva del polvo en `CramionFX/shaders/volumetric.frag` |
+| Luz volumétrica (rayos de sol en el polvo; tecla **Z**) | densidad: `setVolumetricDensity` (0.02 por defecto); anisotropía y distancia en `recordVolumetricPass`; pasos y deriva del polvo en `CramionFX/shaders/volumetric.frag` |
 | Contraste, *vibrance*, saturación, viñeta | `CramionFX/shaders/composite.frag` y `GpuCompositePush` |
 | Resolución y distancia de las sombras | `ShadowMap::kResolution`, `ShadowCascades::shadow_distance_`, `LocalShadowMaps` |
 | Tamaño de los clústeres de culling | `kClusterSize` en `CramionFX/src/asset/ObjLoader.cpp` |
@@ -367,6 +401,8 @@ Cramion/
 ├── sibenik.zip             # (no incluido) escena de demostración
 ├── San_Miguel.zip          # (no incluido) escena de demostración
 ├── src/main.cpp            # Aplicación de ejemplo: arranque, bucle principal y teclas
+├── src/DemoScenes.h        # Escenas de demostración (las comparten la app y el editor)
+├── CramionEditor/          # Editor de escenas (Dear ImGui docking)
 ├── CramionDM/              # Librería estática: ventana Win32, entrada, dispositivo DX12
 └── CramionFX/              # Librería estática: el renderizador (Cramion::FX)
     ├── CMakeLists.txt      # La librería, sus dependencias, shaders y cramionfx_deploy()

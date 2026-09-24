@@ -308,9 +308,13 @@ vec3 hitRadiance(RtHit hit, float lod, bool from_screen) {
         float puddle = puddleLevel(hit.position.xz, lights.rain.y);
         float flood = floodLevel(hit.position.xz, lights.flood);
         // A la intemperie: aqui no hay mapa de lluvia, se pregunta con un
-        // rayo hacia arriba (solo si llueve).
+        // rayo hacia arriba. Solo donde hay charco (que bajo techo no
+        // existe): lanzarlo en cada impacto con lluvia costaba un rayo mas
+        // en casi todos los rayos de la GI y los reflejos. Para el simple
+        // oscurecimiento por humedad de un rebote, suponer intemperie no se
+        // nota.
         float exposed = 1.0;
-        if (lights.rain.x > 0.0 || puddle > 0.0) {
+        if (puddle > 0.0 && n.y > 0.9) {
             exposed = unoccluded(origin, vec3(0.0, 1.0, 0.0), 200.0) ? 1.0 : 0.0;
         }
         float facing_up = smoothstep(0.3, 0.85, n.y);

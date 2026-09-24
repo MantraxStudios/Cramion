@@ -410,6 +410,10 @@ void RayTracing::build(const VulkanDevice& device,
     scene_pool_info.flags = vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet;
     scene_pool_info.maxSets = 1;
     scene_pool_info.setPoolSizes(scene_sizes);
+    // Al reconstruir (cada uploadModels: el editor lo llama al añadir
+    // modelos) el set viejo se libera ANTES de sustituir su pool: si no, al
+    // asignar scene_sets despues se liberaba sobre un pool ya destruido.
+    r.scene_sets.clear();
     r.scene_pool = vk::raii::DescriptorPool(device.handle(), scene_pool_info);
 
     const vk::DescriptorSetLayout scene_layout = *r.scene_layout;
@@ -486,14 +490,17 @@ void RayTracing::setInstances(const VulkanDevice& device, const std::vector<Inst
         return;
     }
     r.instances = usable;
+
+    // Puede estar en uso por un frame en vuelo: se rehace (o se destruye) con
+    // la GPU parada (solo pasa al cargar o si un escenario se mueve). Tambien
+    // al quedarse sin instancias: destruirla sin esperar era el error
+    // "vkDestroyAccelerationStructureKHR ... in use by VkCommandBuffer" al
+    // borrar el ultimo objeto o cambiar de escena en el editor.
+    device.waitIdle();
     if (usable.empty()) {
         r.tlas = AccelerationStructure{};
         return;
     }
-
-    // Puede estar en uso por un frame en vuelo: se rehace con la GPU parada
-    // (solo pasa al cargar o si un escenario se mueve).
-    device.waitIdle();
 
     std::vector<vk::AccelerationStructureInstanceKHR> gpu_instances;
     for (const Instance& instance : usable) {

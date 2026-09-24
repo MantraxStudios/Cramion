@@ -83,11 +83,14 @@ void FullscreenPass::create(const VulkanDevice& device, const FullscreenPassDesc
     depth_stencil.depthWriteEnable = VK_FALSE;
 
     vk::PipelineColorBlendAttachmentState blend_attachment{};
-    blend_attachment.blendEnable = desc.additive_blend ? VK_TRUE : VK_FALSE;
-    blend_attachment.srcColorBlendFactor = vk::BlendFactor::eOne;
-    blend_attachment.dstColorBlendFactor = vk::BlendFactor::eOne;
+    blend_attachment.blendEnable = (desc.additive_blend || desc.alpha_blend) ? VK_TRUE : VK_FALSE;
+    blend_attachment.srcColorBlendFactor =
+        desc.alpha_blend ? vk::BlendFactor::eSrcAlpha : vk::BlendFactor::eOne;
+    blend_attachment.dstColorBlendFactor =
+        desc.alpha_blend ? vk::BlendFactor::eOneMinusSrcAlpha : vk::BlendFactor::eOne;
     blend_attachment.colorBlendOp = vk::BlendOp::eAdd;
-    blend_attachment.srcAlphaBlendFactor = vk::BlendFactor::eOne;
+    blend_attachment.srcAlphaBlendFactor =
+        desc.alpha_blend ? vk::BlendFactor::eZero : vk::BlendFactor::eOne;
     blend_attachment.dstAlphaBlendFactor = vk::BlendFactor::eOne;
     blend_attachment.alphaBlendOp = vk::BlendOp::eAdd;
     blend_attachment.colorWriteMask =

@@ -6,6 +6,7 @@
 #include <windows.h>
 
 #include <cstdint>
+#include <functional>
 #include <string>
 
 #include "CramionDM/Event.h"
@@ -51,6 +52,12 @@ public:
     // Registra el callback que recibirá los eventos.
     void setEventCallback(EventCallback callback) { callback_ = std::move(callback); }
 
+    // Recibe cada mensaje de Win32 antes que la ventana (p. ej. para Dear
+    // ImGui: ImGui_ImplWin32_WndProcHandler). Si devuelve true el mensaje se
+    // da por atendido y no se procesa ni se convierte en evento.
+    using MessageHook = std::function<bool(HWND, UINT, WPARAM, LPARAM)>;
+    void setMessageHook(MessageHook hook) { message_hook_ = std::move(hook); }
+
     bool isOpen() const { return open_; }
     HWND handle() const { return hwnd_; }
     uint32_t width() const { return width_; }
@@ -73,6 +80,7 @@ private:
     HWND hwnd_ = nullptr;
     HINSTANCE hinstance_ = nullptr;
     EventCallback callback_;
+    MessageHook message_hook_;
 
     uint32_t width_ = 0;
     uint32_t height_ = 0;

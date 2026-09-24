@@ -61,6 +61,9 @@ public:
     // Sin animaciones: la pose no cambia y las cajas de las submallas valen.
     bool rigid() const { return rigid_; }
     const std::vector<Material>& materials() const { return materials_; }
+    // Editable en vivo: color, emision y parametros se leen al dibujar
+    // (push constants), asi que un cambio se ve en el frame siguiente.
+    std::vector<Material>& materials() { return materials_; }
     const vk::raii::DescriptorSet& materialSet(std::uint32_t material) const {
         return material_sets_[material];
     }

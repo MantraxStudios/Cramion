@@ -140,6 +140,10 @@ LRESULT CALLBACK Window::wndProcThunk(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
 }
 
 LRESULT Window::handleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
+    if (message_hook_ && message_hook_(hwnd_, msg, wParam, lParam)) {
+        return 1;
+    }
+
     switch (msg) {
         // ---------------- Ventana ----------------
         case WM_CLOSE: {

@@ -263,6 +263,7 @@ private:
         submesh.first_index = static_cast<std::uint32_t>(out_.indices.size());
         submesh.material = std::min(mesh.mMaterialIndex,
                                     static_cast<unsigned int>(out_.materials.size() - 1));
+        submesh.node = node;
 
         for (unsigned int f = 0; f < mesh.mNumFaces; ++f) {
             const aiFace& face = mesh.mFaces[f];
@@ -579,7 +580,7 @@ private:
 // Parte cada submalla de un modelo estatico en celdas de kClusterSize metros
 // (por el centro de cada triangulo), para que el frustum culling pueda
 // descartar trozos de un escenario. Mismo criterio que ObjLoader.
-void clusterSubmeshes(ModelData& model) {
+void clusterSubmeshesImpl(ModelData& model) {
     constexpr float kClusterSize = 5.0f;
     const auto cell_of = [](float value) {
         return static_cast<std::uint64_t>(
@@ -615,6 +616,7 @@ void clusterSubmeshes(ModelData& model) {
                 SubMesh cluster{};
                 cluster.first_index = static_cast<std::uint32_t>(indices.size());
                 cluster.material = submesh.material;
+                cluster.node = submesh.node;
                 clustered.push_back(cluster);
             }
             for (std::uint32_t k = 0; k < 3; ++k) {
@@ -765,7 +767,10 @@ bool subtreeHasMeshes(const aiNode* node) {
     return false;
 }
 
-ModelData importWithAssimp(const std::filesystem::path& path, bool force_static) {
+// `keep_hierarchy`: para el importador de assets. Sin hornear los nodos ni
+// agrupar en clusteres (se hace despues, por pieza) y sin animaciones.
+ModelData importWithAssimp(const std::filesystem::path& path, bool force_static,
+                           bool keep_hierarchy = false) {
     Assimp::Importer importer;
 
     // Sin los nodos auxiliares "$AssimpFbx$" de los pivotes: las pistas de
@@ -802,6 +807,14 @@ ModelData importWithAssimp(const std::filesystem::path& path, bool force_static)
     // mueve un nodo con mallas (el FBX de Bistro trae una animacion, pero de
     // camaras y luces: se descarta).
     bool skinned = false;
+    if (keep_hierarchy) {
+        ModelData model{};
+        model.name = path.filename().string();
+        Converter(*scene, path.parent_path(), model, /*static_scene=*/true).run();
+        timer.lap("conversion al formato del motor (con jerarquia)");
+        computeSubmeshBounds(model);
+        return model;
+    }
     for (unsigned int m = 0; m < scene->mNumMeshes && !skinned && !force_static; ++m) {
         skinned = scene->mMeshes[m]->HasBones();
     }
@@ -826,7 +839,7 @@ ModelData importWithAssimp(const std::filesystem::path& path, bool force_static)
     Converter(*scene, path.parent_path(), model, /*static_scene=*/!skinned).run();
     timer.lap("conversion al formato del motor");
     if (!skinned) {
-        clusterSubmeshes(model);
+        clusterSubmeshesImpl(model);
         timer.lap("clusteres");
     }
     computeSubmeshBounds(model);
@@ -846,6 +859,48 @@ void computeSubmeshBounds(ModelData& model) {
         }
         submesh.bounds_min = low;
         submesh.bounds_max = high;
+    }
+}
+
+ModelData importModelSource(const std::filesystem::path& path, bool force_static) {
+    std::string extension = path.extension().string();
+    std::transform(extension.begin(), extension.end(), extension.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    // Los OBJ (escenarios enormes) van por el lector propio en paralelo; el
+    // resto de formatos, por assimp.
+    return (extension == ".obj") ? loadObj(path) : importWithAssimp(path, force_static);
+}
+
+ModelData importModelHierarchy(const std::filesystem::path& path) {
+    std::string extension = path.extension().string();
+    std::transform(extension.begin(), extension.end(), extension.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return (extension == ".obj") ? loadObj(path, /*by_object=*/true)
+                                 : importWithAssimp(path, false, /*keep_hierarchy=*/true);
+}
+
+void clusterSubmeshes(ModelData& model) {
+    clusterSubmeshesImpl(model);
+    computeSubmeshBounds(model);
+}
+
+std::uint32_t embedTextures(ModelData& model) {
+    std::uint32_t missing = 0;
+    for (TextureData& texture : model.textures) {
+        if (texture.encoded.empty() && !texture.source_path.empty()) {
+            if (!readFile(std::filesystem::path(texture.source_path), texture.encoded)) {
+                ++missing;
+            }
+        }
+        texture.source_path.clear();
+    }
+    return missing;
+}
+
+void finalizeModel(ModelData& model, const std::string& label) {
+    decodeTextures(model);
+    if (model.indices.empty()) {
+        throw std::runtime_error("El modelo " + label + " no tiene triangulos.");
     }
 }
 

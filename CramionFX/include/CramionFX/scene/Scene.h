@@ -46,10 +46,23 @@ public:
     void update(const dm::Input& input, float delta_seconds);
 
     const LightSet& lights() const { return lights_; }
+    // Editable (editor): las luces puntuales y los focos se usan tal cual;
+    // el sol lo recalcula update() a partir de la hora (setTimeOfDayHours).
+    LightSet& lights() { return lights_; }
 
     // Carga un modelo con assimp y devuelve su indice. Lanza si falla.
     // `force_static`: escenario, ver asset::loadModel.
     std::uint32_t loadModel(const std::filesystem::path& path, bool force_static = false);
+    // Un modelo ya cargado (p. ej. de un .crdata de CramionCore). Devuelve su
+    // indice. La direccion del ModelData no cambia mientras siga en la escena
+    // (los Animator guardan un puntero a el).
+    std::uint32_t addModel(asset::ModelData model);
+    // Quita los ultimos modelos a partir de `count` (y nada mas: los actores
+    // que los usen deben quitarse antes).
+    void truncateModels(std::size_t count);
+    // Si es false, update() no avanza la animacion de los actores (la lleva
+    // quien los gestione, p. ej. el componente Animator de CramionCore).
+    void setAnimateActors(bool animate) { animate_actors_ = animate; }
 
     // Coloca una instancia del modelo de pie sobre el terreno, cerca de (x, z)
     // y mirando en la direccion `yaw` (radianes, 0 = +Z). Se escala para que
@@ -87,6 +100,14 @@ public:
 
     const std::vector<std::unique_ptr<asset::ModelData>>& models() const { return models_; }
     const std::vector<Actor>& actors() const { return actors_; }
+    // Editable (editor): el renderizador lee el transform de cada actor en
+    // cada frame. (La estructura de los rayos y el mapa de lluvia se
+    // construyen al subir la escena: un objeto movido no los actualiza.)
+    std::vector<Actor>& actors() { return actors_; }
+    void removeActor(std::size_t index);
+    // Quita todos los modelos y actores (las luces locales y la camara se
+    // quedan). Despues hay que volver a llamar a uploadModels().
+    void clear();
 
     Camera& camera() { return camera_; }
     const Camera& camera() const { return camera_; }
@@ -102,6 +123,9 @@ public:
 
     // Hora del dia en [0, 24): 6 = amanecer, 12 = mediodia, 18 = ocaso.
     float timeOfDayHours() const;
+    // Hora del dia (0-24) y ciclo automatico, para controlarlos desde fuera.
+    void setTimeOfDayHours(float hours);
+    void setDayCycleEnabled(bool enabled) { day_cycle_enabled_ = enabled; }
 
 private:
     void createLights();
@@ -121,6 +145,7 @@ private:
     float sun_angle_ = core::radians(55.0f);
 
     bool day_cycle_enabled_ = false;
+    bool animate_actors_ = true;
     std::optional<core::Vec3> fixed_sun_;
 };
 

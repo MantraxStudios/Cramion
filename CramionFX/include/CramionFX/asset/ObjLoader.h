@@ -19,7 +19,10 @@ namespace cramion::asset {
 // El resultado es un ModelData estatico: un solo nodo y un solo hueso, asi que
 // se dibuja con el mismo pipeline que los modelos con esqueleto. Las texturas
 // quedan comprimidas (TextureData::encoded) para decodificarlas en paralelo.
-ModelData loadObj(const std::filesystem::path& path);
+// `by_object`: agrupa ademas por objeto/grupo ("o"/"g"): cada uno es un nodo
+// (ModelData::nodes, transform identidad) y sus submallas llevan su indice en
+// SubMesh::node. Sin el, solo por material (lo mas rapido de dibujar).
+ModelData loadObj(const std::filesystem::path& path, bool by_object = false);
 
 }  // namespace cramion::asset
 

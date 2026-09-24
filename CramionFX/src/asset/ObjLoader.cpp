@@ -106,6 +106,8 @@ struct Chunk {
     std::vector<Vec3> normals;
     std::vector<Corner> corners;  // 3 por triangulo
     std::vector<MaterialSwitch> switches;
+    // Cambios de objeto/grupo ("o"/"g"): a partir de `triangle`, el nombre.
+    std::vector<MaterialSwitch> groups;
     std::vector<std::string> mtllibs;
 };
 
@@ -186,6 +188,9 @@ void parseChunk(const char* begin, const char* end, Chunk& chunk) {
                 MaterialSwitch{chunk.corners.size() / 3, std::string(reader.rest())});
         } else if (keyword == "mtllib") {
             chunk.mtllibs.emplace_back(reader.rest());
+        } else if (keyword == "o" || keyword == "g") {
+            chunk.groups.push_back(
+                MaterialSwitch{chunk.corners.size() / 3, std::string(reader.rest())});
         }
 
         line = line_end + 1;
@@ -513,7 +518,7 @@ void parallelFor(std::size_t count, Function&& function) {
 
 }  // namespace
 
-ModelData loadObj(const std::filesystem::path& path) {
+ModelData loadObj(const std::filesystem::path& path, bool by_object) {
     const std::filesystem::path directory = path.parent_path();
     std::vector<char> text = readWholeFile(path);
 
@@ -561,8 +566,48 @@ ModelData loadObj(const std::filesystem::path& path) {
     // Material por defecto para las caras sin usemtl o con uno desconocido.
     const auto default_material = static_cast<std::uint32_t>(obj_materials.size());
 
-    // Triangulos agrupados por material.
-    std::vector<std::vector<Corner>> by_material(obj_materials.size() + 1);
+    // Triangulos agrupados por material (y por objeto con `by_object`): un
+    // "cubo" por combinacion. Sin `by_object` hay exactamente un cubo por
+    // material, en el orden del MTL (lo de siempre).
+    std::vector<std::vector<Corner>> by_material;
+    std::vector<std::uint32_t> bucket_material;
+    std::vector<std::uint32_t> bucket_group;
+    std::unordered_map<std::uint64_t, std::size_t> bucket_of;
+    if (!by_object) {
+        by_material.resize(obj_materials.size() + 1);
+        for (std::uint32_t m = 0; m <= obj_materials.size(); ++m) {
+            bucket_material.push_back(m);
+            bucket_group.push_back(0);
+        }
+    }
+    // Objetos/grupos por nombre (el mismo nombre mas adelante es el mismo).
+    std::vector<std::string> group_names{"default"};
+    std::unordered_map<std::string, std::uint32_t> group_index{{"default", 0}};
+    std::uint32_t current_group = 0;
+    const auto group_for = [&](const std::string& raw) {
+        const std::string name = raw.empty() ? std::string("default") : raw;
+        const auto [it, inserted] =
+            group_index.try_emplace(name, static_cast<std::uint32_t>(group_names.size()));
+        if (inserted) {
+            group_names.push_back(name);
+        }
+        return it->second;
+    };
+    // Indice del cubo de (objeto, material). Es un indice y no una referencia:
+    // el vector de cubos crece.
+    const auto bucket_for = [&](std::uint32_t group, std::uint32_t material) -> std::size_t {
+        if (!by_object) {
+            return material;
+        }
+        const std::uint64_t key = (static_cast<std::uint64_t>(group) << 32) | material;
+        const auto [it, inserted] = bucket_of.try_emplace(key, by_material.size());
+        if (inserted) {
+            by_material.emplace_back();
+            bucket_material.push_back(material);
+            bucket_group.push_back(group);
+        }
+        return it->second;
+    };
     std::uint32_t current = default_material;
 
     for (Chunk& chunk : chunks) {
@@ -579,27 +624,43 @@ ModelData loadObj(const std::filesystem::path& path) {
         };
 
         std::size_t next_switch = 0;
+        std::size_t next_group = 0;
         const std::size_t triangles = chunk.corners.size() / 3;
+        std::size_t bucket = bucket_for(current_group, current);
         for (std::size_t t = 0; t < triangles; ++t) {
+            bool changed = false;
             while (next_switch < chunk.switches.size() &&
                    chunk.switches[next_switch].triangle == t) {
                 const auto it = material_index.find(chunk.switches[next_switch].material);
                 current = (it != material_index.end()) ? it->second : default_material;
                 ++next_switch;
+                changed = true;
+            }
+            while (next_group < chunk.groups.size() && chunk.groups[next_group].triangle == t) {
+                current_group = group_for(chunk.groups[next_group].material);
+                ++next_group;
+                changed = true;
+            }
+            if (changed) {
+                bucket = bucket_for(current_group, current);
             }
             for (std::size_t k = 0; k < 3; ++k) {
                 Corner corner = chunk.corners[t * 3 + k];
                 corner.v = resolve(corner.v, v_offset);
                 corner.vt = resolve(corner.vt, vt_offset);
                 corner.vn = resolve(corner.vn, vn_offset);
-                by_material[current].push_back(corner);
+                by_material[bucket].push_back(corner);
             }
         }
-        // Un usemtl al final del trozo afecta al siguiente.
+        // Un usemtl (o un "o"/"g") al final del trozo afecta al siguiente.
         while (next_switch < chunk.switches.size()) {
             const auto it = material_index.find(chunk.switches[next_switch].material);
             current = (it != material_index.end()) ? it->second : default_material;
             ++next_switch;
+        }
+        while (next_group < chunk.groups.size()) {
+            current_group = group_for(chunk.groups[next_group].material);
+            ++next_group;
         }
 
         positions.insert(positions.end(), chunk.positions.begin(), chunk.positions.end());
@@ -643,6 +704,12 @@ ModelData loadObj(const std::filesystem::path& path) {
     model.name = path.filename().string();
     model.nodes.push_back(Node{"root", -1, core::Mat4::identity()});
     model.bones.push_back(Bone{"root", 0, core::Mat4::identity()});
+    // Un nodo por objeto (hijos de la raiz); su indice es 1 + el del grupo.
+    if (by_object) {
+        for (const std::string& name : group_names) {
+            model.nodes.push_back(Node{name, 0, core::Mat4::identity()});
+        }
+    }
 
     std::size_t vertex_total = 0;
     std::size_t index_total = 0;
@@ -685,10 +752,18 @@ ModelData loadObj(const std::filesystem::path& path) {
         return index;
     };
 
-    for (std::size_t m = 0; m < meshes.size(); ++m) {
-        MaterialMesh& mesh = meshes[m];
+    // Material del MTL -> hueco en model.materials (se crea al usarse).
+    std::vector<std::int32_t> material_slot_of(obj_materials.size() + 1, -1);
+
+    for (std::size_t bucket = 0; bucket < meshes.size(); ++bucket) {
+        MaterialMesh& mesh = meshes[bucket];
         if (mesh.indices.empty()) {
             continue;
+        }
+        const std::size_t m = bucket_material[bucket];
+        const bool new_material = material_slot_of[m] < 0;
+        if (new_material) {
+            material_slot_of[m] = static_cast<std::int32_t>(model.materials.size());
         }
 
         MaterialData material{};
@@ -734,7 +809,7 @@ ModelData loadObj(const std::filesystem::path& path) {
         // Una submalla por cluster, todas con el mismo material (seguidas: el
         // renderizador solo cambia de material al pasar de un grupo a otro).
         const auto first_index = static_cast<std::uint32_t>(model.indices.size());
-        const auto material_slot = static_cast<std::uint32_t>(model.materials.size());
+        const auto material_slot = static_cast<std::uint32_t>(material_slot_of[m]);
         for (const Cluster& cluster : mesh.clusters) {
             SubMesh submesh{};
             submesh.first_index = first_index + cluster.first_index;
@@ -742,6 +817,7 @@ ModelData loadObj(const std::filesystem::path& path) {
             submesh.material = material_slot;
             submesh.bounds_min = cluster.bounds_min;
             submesh.bounds_max = cluster.bounds_max;
+            submesh.node = by_object ? static_cast<std::int32_t>(1 + bucket_group[bucket]) : -1;
             model.submeshes.push_back(submesh);
         }
 
@@ -752,7 +828,9 @@ ModelData loadObj(const std::filesystem::path& path) {
         }
         mesh = MaterialMesh{};
 
-        model.materials.push_back(std::move(material));
+        if (new_material) {
+            model.materials.push_back(std::move(material));
+        }
     }
 
     if (model.materials.empty()) {

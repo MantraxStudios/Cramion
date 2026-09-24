@@ -108,6 +108,11 @@ struct SubMesh {
     // Caja envolvente en el espacio del modelo (pose de reposo).
     core::Vec3 bounds_min{0.0f, 0.0f, 0.0f};
     core::Vec3 bounds_max{0.0f, 0.0f, 0.0f};
+    // De que parte del archivo viene: el nodo (ModelData::nodes) con assimp,
+    // o el objeto/grupo ("o"/"g") con los OBJ importados por objetos. -1 =
+    // sin dato. El importador de assets de CramionCore la usa para partir el
+    // modelo en piezas, como Unity (un hijo por malla).
+    std::int32_t node = -1;
 };
 
 
@@ -183,6 +188,35 @@ ModelData loadModel(const std::filesystem::path& path, bool force_static = false
 
 // Calcula la caja de cada submalla a partir de sus vertices (pose de reposo).
 void computeSubmeshBounds(ModelData& model);
+
+// --- Por pasos (el importador de assets de CramionCore) ---
+// loadModel() = importModelSource() + cache + finalizeModel().
+
+// Lee el archivo original (OBJ con el lector propio, el resto con assimp) sin
+// usar ni escribir la cache y SIN decodificar las texturas: quedan tal como
+// vienen (`encoded`) o solo con su ruta (`source_path`).
+ModelData importModelSource(const std::filesystem::path& path, bool force_static = false);
+
+// Como importModelSource(), pero conservando la jerarquia para partir el
+// modelo en piezas: sin hornear los nodos (cada malla queda en el espacio de
+// SU nodo, SubMesh::node indica cual), sin animaciones y sin clusteres. En
+// los OBJ, SubMesh::node es el indice del objeto/grupo y `nodes` trae uno por
+// objeto (transform identidad).
+ModelData importModelHierarchy(const std::filesystem::path& path);
+
+// Parte cada submalla en celdas de 5 m (por el centro de cada triangulo) para
+// el culling, conservando su material y su nodo, y recalcula las cajas.
+void clusterSubmeshes(ModelData& model);
+
+// Lee a `encoded` las texturas que solo tenian ruta y la borra: el modelo
+// queda autonomo (no depende de archivos sueltos). Devuelve cuantas no se
+// encontraron.
+std::uint32_t embedTextures(ModelData& model);
+
+// Decodifica todas las texturas (en paralelo) y comprueba que haya
+// triangulos. Lanza std::runtime_error si el modelo esta vacio. `label` es
+// para los mensajes.
+void finalizeModel(ModelData& model, const std::string& label);
 
 }  // namespace cramion::asset
 

@@ -23,6 +23,8 @@ struct FullscreenPassDesc {
     vk::Format color_format = vk::Format::eUndefined;
     // Suma el resultado a lo que ya hay en el destino (subida del bloom).
     bool additive_blend = false;
+    // Mezcla con el alfa del shader sobre lo que hay (contorno de seleccion).
+    bool alpha_blend = false;
     // Filtro del muestreador compartido por todas las texturas.
     vk::Filter filter = vk::Filter::eLinear;
 };

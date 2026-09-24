@@ -205,4 +205,12 @@ function(cramionfx_deploy target)
         VERBATIM
     )
     add_dependencies(${target} ${target}_cramionfx_shaders)
+
+    # Varios ejecutables en la misma carpeta (cramion y CramionEditor): las
+    # copias van una detras de otra, no a la vez sobre los mismos archivos.
+    get_property(previous GLOBAL PROPERTY CRAMIONFX_LAST_DEPLOY)
+    if(previous)
+        add_dependencies(${target}_cramionfx_shaders ${previous})
+    endif()
+    set_property(GLOBAL PROPERTY CRAMIONFX_LAST_DEPLOY ${target}_cramionfx_shaders)
 endfunction()

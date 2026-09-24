@@ -3,9 +3,12 @@
 #include "CramionFX/scene/Scene.h"
 #include "CramionFX/vk/GpuTypes.h"
 
+#include <stb_image.h>
+
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <iostream>
 #include <limits>
@@ -36,6 +39,28 @@ vk::ImageMemoryBarrier2 colorBarrier(vk::Image image, vk::ImageLayout old_layout
     barrier.image = image;
     barrier.subresourceRange = vk::ImageSubresourceRange{vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1};
     return barrier;
+}
+
+// Balance de blancos como el de Unity (ColorUtils.ComputeColorBalance): la
+// temperatura y el tinte (-100..100) desplazan el blanco de referencia D65 por
+// el locus del iluminante estandar, y el resultado son los factores por los
+// que se multiplica el color en espacio LMS (composite.frag). 0, 0 = (1,1,1).
+Vec3 whiteBalanceLms(float temperature, float tint) {
+    const float t1 = temperature / 65.0f;
+    const float t2 = tint / 65.0f;
+    const float x = 0.31271f - t1 * (t1 < 0.0f ? 0.1f : 0.05f);
+    const float standard_illuminant_y = 2.87f * x - 3.0f * x * x - 0.27509507f;
+    const float y = standard_illuminant_y + t2 * 0.05f;
+
+    // CIE xy (Y = 1) -> XYZ -> LMS.
+    const float big_x = x / y;
+    const float big_z = (1.0f - x - y) / y;
+    const float l = 0.7328f * big_x + 0.4296f - 0.1624f * big_z;
+    const float m = -0.7036f * big_x + 1.6975f + 0.0061f * big_z;
+    const float s = 0.0030f * big_x + 0.0136f + 0.9834f * big_z;
+
+    // El blanco D65 en LMS, dividido por el nuevo.
+    return Vec3{0.949237f / l, 1.03542f / m, 1.08728f / s};
 }
 
 // Barrera de una imagen de color que acaba de escribirse como destino y pasa a
@@ -260,6 +285,7 @@ void VulkanRenderer::initialize(const EngineInfo& info, HWND window, std::uint32
     swapchain_.initialize(device_, surface_, width, height);
     gbuffer_.create(device_, swapchain_.extent());
     gpu_culling_.create(device_);
+    gpu_profiler_.create(device_, kMaxFramesInFlight);
     createRenderTargets();
     shadow_map_.create(device_);
     local_shadow_maps_.create(device_);
@@ -314,15 +340,25 @@ void VulkanRenderer::initialize(const EngineInfo& info, HWND window, std::uint32
         bloom_up.additive_blend = true;
         bloom_up_pass_.create(device_, bloom_up);
 
-        const std::array<Type, 4> composite_bindings = {
+        // Escena, bloom, rayos de luz, exposicion y ajustes (GpuCompositeSettings).
+        const std::array<Type, 5> composite_bindings = {
             Type::eCombinedImageSampler, Type::eCombinedImageSampler,
-            Type::eCombinedImageSampler, Type::eStorageBuffer};
+            Type::eCombinedImageSampler, Type::eStorageBuffer, Type::eUniformBuffer};
         FullscreenPassDesc composite{};
         composite.fragment_shader = "composite.frag.spv";
         composite.bindings = composite_bindings;
-        composite.push_constant_size = sizeof(GpuCompositePush);
         composite.color_format = kLdrFormat;
         composite_pass_.create(device_, composite);
+
+        // Contorno de seleccion: lee la mascara y se mezcla (alfa) sobre la
+        // imagen compuesta.
+        FullscreenPassDesc outline{};
+        outline.fragment_shader = "outline.frag.spv";
+        outline.bindings = one_texture;
+        outline.color_format = kLdrFormat;
+        outline.alpha_blend = true;
+        outline.filter = vk::Filter::eNearest;
+        outline_pass_.create(device_, outline);
 
         FullscreenPassDesc sky{};
         sky.fragment_shader = "sky_lut.frag.spv";
@@ -465,6 +501,21 @@ void VulkanRenderer::initialize(const EngineInfo& info, HWND window, std::uint32
         rain_sampler_ = vk::raii::Sampler(device_.handle(), sampler_info);
     }
 
+    // Decals: textura blanca en las ranuras libres y muestreo con mips.
+    {
+        const std::uint8_t white[4] = {255, 255, 255, 255};
+        decal_white_.create(device_, 1, 1, white);
+        vk::SamplerCreateInfo sampler_info{};
+        sampler_info.magFilter = vk::Filter::eLinear;
+        sampler_info.minFilter = vk::Filter::eLinear;
+        sampler_info.mipmapMode = vk::SamplerMipmapMode::eLinear;
+        sampler_info.addressModeU = vk::SamplerAddressMode::eClampToEdge;
+        sampler_info.addressModeV = vk::SamplerAddressMode::eClampToEdge;
+        sampler_info.addressModeW = vk::SamplerAddressMode::eClampToEdge;
+        sampler_info.maxLod = VK_LOD_CLAMP_NONE;
+        decal_sampler_ = vk::raii::Sampler(device_.handle(), sampler_info);
+    }
+
     createUniformBuffers();
     createDescriptors();
     createCommandObjects();
@@ -484,6 +535,7 @@ void VulkanRenderer::shutdown() {
     skinned_models_.clear();
     actor_draws_.clear();
     gpu_culling_.destroy();
+    gpu_profiler_.destroy();
 
     render_finished_.clear();
     in_flight_fences_.clear();
@@ -494,6 +546,7 @@ void VulkanRenderer::shutdown() {
     exposure_average_sets_.clear();
     histogram_sets_.clear();
     light_shaft_sets_.clear();
+    outline_sets_.clear();
     clouds_sets_.clear();
     gi_atrous_sets_.clear();
     gi_temporal_sets_.clear();
@@ -539,6 +592,10 @@ void VulkanRenderer::shutdown() {
     for (VulkanBuffer& buffer : camera_buffers_) {
         buffer.destroy();
     }
+    for (VulkanBuffer& buffer : composite_buffers_) {
+        buffer.destroy();
+    }
+    composite_buffers_.clear();
     local_shadow_buffers_.clear();
     shadow_buffers_.clear();
     light_buffers_.clear();
@@ -555,6 +612,7 @@ void VulkanRenderer::shutdown() {
     ssgi_pass_.destroy();
     sky_lut_pass_.destroy();
     composite_pass_.destroy();
+    outline_pass_.destroy();
     bloom_up_pass_.destroy();
     bloom_down_pass_.destroy();
     ssao_pass_.destroy();
@@ -587,6 +645,13 @@ void VulkanRenderer::shutdown() {
         buffer.destroy();
     }
     weather_buffers_.clear();
+    for (VulkanTexture& texture : decal_textures_) {
+        texture.destroy();
+    }
+    decal_texture_paths_ = {};
+    decal_white_.destroy();
+    decal_sampler_ = nullptr;
+    decals_.clear();
     rain_sampler_ = nullptr;
     rain_map_.destroy();
     rain_map_ready_ = false;
@@ -600,6 +665,7 @@ void VulkanRenderer::shutdown() {
     ssao_image_.destroy();
     volumetric_image_.destroy();
     ldr_color_.destroy();
+    outline_mask_.destroy();
     glass_source_.destroy();
     scene_color_.destroy();
     gbuffer_.destroy();
@@ -625,6 +691,7 @@ void VulkanRenderer::shutdown() {
 
 void VulkanRenderer::createUniformBuffers() {
     camera_buffers_.resize(kMaxFramesInFlight);
+    composite_buffers_.resize(kMaxFramesInFlight);
     light_buffers_.resize(kMaxFramesInFlight);
     shadow_buffers_.resize(kMaxFramesInFlight);
     local_shadow_buffers_.resize(kMaxFramesInFlight);
@@ -637,6 +704,8 @@ void VulkanRenderer::createUniformBuffers() {
     for (std::uint32_t i = 0; i < kMaxFramesInFlight; ++i) {
         camera_buffers_[i].create(device_, sizeof(GpuCamera),
                                   vk::BufferUsageFlagBits::eUniformBuffer, host_visible);
+        composite_buffers_[i].create(device_, sizeof(GpuCompositeSettings),
+                                     vk::BufferUsageFlagBits::eUniformBuffer, host_visible);
         light_buffers_[i].create(device_, sizeof(GpuLights),
                                  vk::BufferUsageFlagBits::eUniformBuffer, host_visible);
         shadow_buffers_[i].create(device_, sizeof(GpuShadows),
@@ -683,6 +752,64 @@ void VulkanRenderer::createUniformBuffers() {
         buffer.create(device_, sizeof(core::Mat4) * 256, vk::BufferUsageFlagBits::eStorageBuffer,
                       host_visible);
     }
+}
+
+void VulkanRenderer::writeDecalTextureDescriptors() {
+    std::array<vk::DescriptorImageInfo, kMaxDecalTextures> infos{};
+    for (std::uint32_t slot = 0; slot < kMaxDecalTextures; ++slot) {
+        const bool loaded = !decal_texture_paths_[slot].empty();
+        infos[slot].sampler = *decal_sampler_;
+        infos[slot].imageView = loaded ? *decal_textures_[slot].view() : *decal_white_.view();
+        infos[slot].imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
+    }
+    for (std::uint32_t i = 0; i < kMaxFramesInFlight; ++i) {
+        vk::WriteDescriptorSet write{};
+        write.dstSet = *skin_sets_[i];
+        write.dstBinding = 4;
+        write.dstArrayElement = 0;
+        write.descriptorType = vk::DescriptorType::eCombinedImageSampler;
+        write.setImageInfo(infos);
+        device_.handle().updateDescriptorSets(write, nullptr);
+    }
+}
+
+int VulkanRenderer::loadDecalTexture(const std::filesystem::path& file) {
+    if (!initialized_ || file.empty()) {
+        return -1;
+    }
+    std::error_code error;
+    const std::filesystem::path key = std::filesystem::weakly_canonical(file, error);
+    for (std::uint32_t slot = 0; slot < kMaxDecalTextures; ++slot) {
+        if (decal_texture_paths_[slot] == key) return static_cast<int>(slot);
+    }
+    std::uint32_t slot = 0;
+    while (slot < kMaxDecalTextures && !decal_texture_paths_[slot].empty()) ++slot;
+    if (slot == kMaxDecalTextures) {
+        std::cerr << "[Vulkan] Sin ranuras para mas texturas de decal (maximo " << kMaxDecalTextures << ")\n";
+        return -1;
+    }
+    int width = 0;
+    int height = 0;
+    int channels = 0;
+    FILE* handle = nullptr;
+    if (_wfopen_s(&handle, file.wstring().c_str(), L"rb") != 0) handle = nullptr;
+    stbi_uc* pixels = handle ? stbi_load_from_file(handle, &width, &height, &channels, 4) : nullptr;
+    if (handle) fclose(handle);
+    if (pixels == nullptr) {
+        std::cerr << "[Vulkan] No se pudo leer la textura de decal " << file.string() << "\n";
+        return -1;
+    }
+    // La ranura puede estar en uso en un frame en vuelo: se espera a la GPU
+    // (cargar una textura es raro, no cada frame).
+    waitIdle();
+    decal_textures_[slot].destroy();
+    decal_textures_[slot].create(device_, static_cast<std::uint32_t>(width), static_cast<std::uint32_t>(height),
+                                 pixels);
+    stbi_image_free(pixels);
+    decal_texture_paths_[slot] = key;
+    writeDecalTextureDescriptors();
+    std::cout << "[Vulkan] Textura de decal " << file.filename().string() << " en la ranura " << slot << "\n";
+    return static_cast<int>(slot);
 }
 
 void VulkanRenderer::createDescriptors() {
@@ -734,7 +861,8 @@ void VulkanRenderer::createDescriptors() {
     const std::array<vk::DescriptorPoolSize, 3> skin_sizes = {
         vk::DescriptorPoolSize{vk::DescriptorType::eUniformBuffer, kMaxFramesInFlight * 2},
         vk::DescriptorPoolSize{vk::DescriptorType::eStorageBuffer, kMaxFramesInFlight},
-        vk::DescriptorPoolSize{vk::DescriptorType::eCombinedImageSampler, kMaxFramesInFlight}};
+        vk::DescriptorPoolSize{vk::DescriptorType::eCombinedImageSampler,
+                               kMaxFramesInFlight * (1 + kMaxDecalTextures)}};
 
     vk::DescriptorPoolCreateInfo skin_pool_info{};
     skin_pool_info.flags = vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet;
@@ -785,6 +913,7 @@ void VulkanRenderer::createDescriptors() {
         weather_write.setBufferInfo(weather_info);
         device_.handle().updateDescriptorSets(weather_write, nullptr);
     }
+    writeDecalTextureDescriptors();
 
     // --- Post-proceso: SSAO (por frame), bloom (por nivel) y composicion ---
     constexpr std::uint32_t kBloomSets = kBloomLevels + (kBloomLevels - 1);
@@ -797,14 +926,15 @@ void VulkanRenderer::createDescriptors() {
     // Y las nubes: camara + 2 texturas por frame. Y el filtro de la GI:
     // camara + 3 texturas por frame.
         // (+ la luz volumetrica: 4 buffers y 4 texturas por frame.)
-        vk::DescriptorPoolSize{vk::DescriptorType::eUniformBuffer, kMaxFramesInFlight * 10},
+        // (+ la composicion por frame: 3 texturas, su exposicion y sus ajustes.)
+        vk::DescriptorPoolSize{vk::DescriptorType::eUniformBuffer, kMaxFramesInFlight * 11},
         vk::DescriptorPoolSize{vk::DescriptorType::eCombinedImageSampler,
-                               kMaxFramesInFlight * 22 + kBloomSets + 3 + 2 + 1},
-        vk::DescriptorPoolSize{vk::DescriptorType::eStorageBuffer, 4}};
+                               kMaxFramesInFlight * 25 + kBloomSets + 2 + 1 + 1},
+        vk::DescriptorPoolSize{vk::DescriptorType::eStorageBuffer, 3 + kMaxFramesInFlight}};
 
     vk::DescriptorPoolCreateInfo post_pool_info{};
     post_pool_info.flags = vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet;
-    post_pool_info.maxSets = kMaxFramesInFlight * 7 + kBloomSets + 4;
+    post_pool_info.maxSets = kMaxFramesInFlight * 8 + kBloomSets + 5;
     post_pool_info.setPoolSizes(post_sizes);
     post_pool_ = vk::raii::DescriptorPool(device_.handle(), post_pool_info);
 
@@ -819,8 +949,9 @@ void VulkanRenderer::createDescriptors() {
     volumetric_sets_ = allocate(volumetric_pass_, kMaxFramesInFlight);
     bloom_down_sets_ = allocate(bloom_down_pass_, kBloomLevels);
     bloom_up_sets_ = allocate(bloom_up_pass_, kBloomLevels - 1);
-    composite_sets_ = allocate(composite_pass_, 1);
+    composite_sets_ = allocate(composite_pass_, kMaxFramesInFlight);
     light_shaft_sets_ = allocate(light_shaft_pass_, 1);
+    outline_sets_ = allocate(outline_pass_, 1);
     ssgi_sets_ = allocate(ssgi_pass_, kMaxFramesInFlight);
     ssr_sets_ = allocate(ssr_pass_, kMaxFramesInFlight);
     ssr_resolve_sets_ = allocate(ssr_resolve_pass_, kMaxFramesInFlight);
@@ -913,6 +1044,16 @@ void VulkanRenderer::ensureBoneCapacity(std::uint32_t frame_index, std::size_t b
 }
 
 void VulkanRenderer::updateActors(const scene::Scene& scene, std::uint32_t frame_index) {
+    // Lo del frame anterior, para saber que se movio.
+    previous_actor_motion_.resize(actor_draws_.size());
+    for (std::size_t i = 0; i < actor_draws_.size(); ++i) {
+        previous_actor_motion_[i] =
+            ActorMotion{actor_draws_[i].transform, actor_draws_[i].bounds_center,
+                        actor_draws_[i].bounds_radius};
+    }
+    const std::size_t previous_count = actor_draws_.size();
+    moved_spheres_.clear();
+
     actor_draws_.clear();
     bone_staging_.clear();
     submesh_bounds_.clear();
@@ -927,6 +1068,7 @@ void VulkanRenderer::updateActors(const scene::Scene& scene, std::uint32_t frame
 
         const std::vector<core::Mat4>& bones = actor.animator.boneMatrices();
         ActorDraw draw{};
+        draw.scene_actor = static_cast<std::uint32_t>(&actor - scene.actors().data());
         draw.model = actor.model;
         draw.transform = actor.transform;
         draw.bone_offset = static_cast<std::uint32_t>(bone_staging_.size());
@@ -971,6 +1113,19 @@ void VulkanRenderer::updateActors(const scene::Scene& scene, std::uint32_t frame
         }
 
         actor_draws_.push_back(draw);
+
+        // Movimiento: transform distinto del frame anterior, o animado con
+        // esqueleto (se deforma cada frame).
+        const std::size_t index = actor_draws_.size() - 1;
+        const bool animated = !draw.per_submesh;
+        if (index < previous_actor_motion_.size()) {
+            const ActorMotion& before = previous_actor_motion_[index];
+            if (animated ||
+                std::memcmp(&before.transform, &draw.transform, sizeof(core::Mat4)) != 0) {
+                moved_spheres_.push_back(toVec4(before.center, before.radius));
+                moved_spheres_.push_back(toVec4(draw.bounds_center, draw.bounds_radius));
+            }
+        }
         bone_staging_.insert(bone_staging_.end(), bones.begin(), bones.end());
     }
 
@@ -988,6 +1143,9 @@ void VulkanRenderer::updateActors(const scene::Scene& scene, std::uint32_t frame
         }
         ray_tracing_.setInstances(device_, instances);
     }
+
+    // Actores anadidos o quitados: las cascadas guardadas no valen.
+    actor_set_changed_ = actor_draws_.size() != previous_count;
 
     if (bone_staging_.empty()) {
         return;
@@ -1040,18 +1198,38 @@ std::uint32_t VulkanRenderer::forEachVisibleSubmesh(const ActorDraw& actor,
 
 void VulkanRenderer::recordActorShadows(const vk::raii::CommandBuffer& cmd,
                                         std::uint32_t frame_index,
-                                        const vk::raii::Pipeline& pipeline,
                                         const core::Mat4& light_view_projection,
                                         const Vec3& light_position, float range) {
-    bool bound = false;
-
     // Las cascadas se dibujan con depth clamp (range == 0): lo que queda entre
     // el sol y la cascada tambien proyecta sombra dentro, asi que no se
     // descarta por el plano cercano.
-    const core::Frustum frustum(light_view_projection, /*ignore_near=*/range <= 0.0f);
+    const bool local = range > 0.0f;
+    const core::Frustum frustum(light_view_projection, /*ignore_near=*/!local);
+
+    // Dos pipelines: solo profundidad para lo opaco (casi todo) y con recorte
+    // por alfa para hojas y rejas. Comparten layout, asi que al cambiar de
+    // uno a otro los sets y las push constants siguen valiendo.
+    const vk::Pipeline opaque_pipeline =
+        local ? *skinned_pass_.localShadowPipeline(false) : *skinned_pass_.shadowPipeline(false);
+    const vk::Pipeline masked_pipeline =
+        local ? *skinned_pass_.localShadowPipeline(true) : *skinned_pass_.shadowPipeline(true);
+    vk::Pipeline bound_pipeline{};
+    const auto bind = [&](vk::Pipeline pipeline) {
+        if (bound_pipeline == pipeline) {
+            return;
+        }
+        cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, pipeline);
+        if (!bound_pipeline) {
+            cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *skinned_pass_.shadowLayout(),
+                                   0, *skin_sets_[frame_index], nullptr);
+        }
+        bound_pipeline = pipeline;
+    };
+
+    std::vector<std::uint32_t>& visible = shadow_scratch_;
 
     for (const ActorDraw& draw : actor_draws_) {
-        if (range > 0.0f) {
+        if (local) {
             const float reach = range + draw.bounds_radius;
             const Vec3 offset = draw.bounds_center - light_position;
             if (core::dot(offset, offset) > reach * reach) {
@@ -1059,14 +1237,16 @@ void VulkanRenderer::recordActorShadows(const vk::raii::CommandBuffer& cmd,
             }
         }
 
-        if (!bound) {
-            cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *pipeline);
-            cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *skinned_pass_.shadowLayout(),
-                                   0, *skin_sets_[frame_index], nullptr);
-            bound = true;
+        // Submallas que tocan el volumen de la luz (una sola prueba).
+        visible.clear();
+        shadow_submeshes_ += forEachVisibleSubmesh(
+            draw, frustum, [&](std::uint32_t i) { visible.push_back(i); });
+        if (visible.empty()) {
+            continue;
         }
 
         const SkinnedModel& model = skinned_models_[draw.model];
+        bind(bound_pipeline ? bound_pipeline : opaque_pipeline);
 
         GpuSkinnedShadowPush push{};
         push.light_model_view_projection = light_view_projection * draw.transform;
@@ -1077,21 +1257,31 @@ void VulkanRenderer::recordActorShadows(const vk::raii::CommandBuffer& cmd,
         cmd.bindVertexBuffers(0, *model.vertices().handle(), {0});
         cmd.bindIndexBuffer(*model.indices().handle(), 0, vk::IndexType::eUint32);
 
-        // Por submalla: la textura del material recorta por alfa (las hojas
-        // proyectan la sombra de las hojas, no la de su rectangulo). Solo las
-        // que tocan el volumen de la luz; el material se vincula solo al
-        // cambiar (las submallas de un material van seguidas).
-        std::uint32_t bound_material = UINT32_MAX;
-        shadow_submeshes_ += forEachVisibleSubmesh(draw, frustum, [&](std::uint32_t i) {
-            const asset::SubMesh& submesh = model.submeshes()[i];
-            if (submesh.material != bound_material) {
-                cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics,
-                                       *skinned_pass_.shadowLayout(), 1,
-                                       *model.materialSet(submesh.material), nullptr);
-                bound_material = submesh.material;
+        // Primero todo lo opaco con el pipeline de solo profundidad (sin
+        // material: no lee texturas). Luego lo recortado por alfa: la textura
+        // del material decide (las hojas proyectan la sombra de las hojas, no
+        // la de su rectangulo); el material se vincula solo al cambiar.
+        for (int masked = 0; masked < 2; ++masked) {
+            bool pipeline_set = false;
+            std::uint32_t bound_material = UINT32_MAX;
+            for (const std::uint32_t i : visible) {
+                const asset::SubMesh& submesh = model.submeshes()[i];
+                if (model.materials()[submesh.material].alpha_masked != (masked != 0)) {
+                    continue;
+                }
+                if (!pipeline_set) {
+                    bind(masked != 0 ? masked_pipeline : opaque_pipeline);
+                    pipeline_set = true;
+                }
+                if (masked != 0 && submesh.material != bound_material) {
+                    cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics,
+                                           *skinned_pass_.shadowLayout(), 1,
+                                           *model.materialSet(submesh.material), nullptr);
+                    bound_material = submesh.material;
+                }
+                cmd.drawIndexed(submesh.index_count, 1, submesh.first_index, 0, 0);
             }
-            cmd.drawIndexed(submesh.index_count, 1, submesh.first_index, 0, 0);
-        });
+        }
     }
 }
 
@@ -1621,10 +1811,24 @@ void VulkanRenderer::updatePostDescriptors() {
         device_.handle().updateDescriptorSets(write, nullptr);
     };
 
-    write_texture(composite_sets_[0], 0, composite_pass_.sampler(), scene_color_, kRead);
-    write_texture(composite_sets_[0], 1, composite_pass_.sampler(), bloom_levels_[0], kRead);
-    write_texture(composite_sets_[0], 2, composite_pass_.sampler(), light_shafts_, kRead);
-    write_storage(composite_sets_[0], 3, exposure_buffer_);
+    for (std::uint32_t i = 0; i < kMaxFramesInFlight; ++i) {
+        write_texture(composite_sets_[i], 0, composite_pass_.sampler(), scene_color_, kRead);
+        write_texture(composite_sets_[i], 1, composite_pass_.sampler(), bloom_levels_[0], kRead);
+        write_texture(composite_sets_[i], 2, composite_pass_.sampler(), light_shafts_, kRead);
+        write_storage(composite_sets_[i], 3, exposure_buffer_);
+
+        vk::DescriptorBufferInfo settings_info{};
+        settings_info.buffer = *composite_buffers_[i].handle();
+        settings_info.range = sizeof(GpuCompositeSettings);
+        vk::WriteDescriptorSet settings_write{};
+        settings_write.dstSet = *composite_sets_[i];
+        settings_write.dstBinding = 4;
+        settings_write.descriptorType = vk::DescriptorType::eUniformBuffer;
+        settings_write.setBufferInfo(settings_info);
+        device_.handle().updateDescriptorSets(settings_write, nullptr);
+    }
+
+    write_texture(outline_sets_[0], 0, outline_pass_.sampler(), outline_mask_, kRead);
 
     write_texture(light_shaft_sets_[0], 0, light_shaft_pass_.sampler(), gbuffer_.depth(),
                   vk::ImageLayout::eDepthReadOnlyOptimal);
@@ -1660,6 +1864,18 @@ void VulkanRenderer::createRenderTargets() {
     });
     ldr_color_.create(device_, extent, kLdrFormat, target_usage,
                       vk::ImageAspectFlagBits::eColor);
+    // Mascara del contorno de seleccion (R = silueta, G = visible). Se deja
+    // como textura desde el principio: el set del contorno la referencia.
+    outline_mask_.create(device_, extent, SkinnedPass::kOutlineMaskFormat, target_usage,
+                         vk::ImageAspectFlagBits::eColor);
+    device_.submitOneTime([&](const vk::raii::CommandBuffer& cmd) {
+        pipelineBarrier(cmd, colorBarrier(*outline_mask_.handle(), vk::ImageLayout::eUndefined,
+                                          vk::ImageLayout::eShaderReadOnlyOptimal,
+                                          vk::PipelineStageFlagBits2::eTopOfPipe,
+                                          vk::AccessFlagBits2::eNone,
+                                          vk::PipelineStageFlagBits2::eFragmentShader,
+                                          vk::AccessFlagBits2::eShaderSampledRead));
+    });
     ssao_image_.create(device_, extent, kSsaoFormat, target_usage,
                        vk::ImageAspectFlagBits::eColor);
 
@@ -1806,6 +2022,12 @@ void VulkanRenderer::uploadModels(const scene::Scene& scene) {
     skinned_models_.clear();
     skinned_models_.reserve(scene.models().size());
 
+    // Lo que dependia de la escena anterior se rehace: el mapa de lluvia
+    // (se dibuja una vez), las cascadas guardadas y las sombras locales.
+    rain_map_ready_ = false;
+    cascades_valid_ = false;
+    local_shadows_.invalidate();
+
     triangle_count_ = 0;
     std::vector<const asset::ModelData*> models;
     for (const auto& model : scene.models()) {
@@ -1852,6 +2074,7 @@ void VulkanRenderer::recreateSwapchain() {
     createRenderTargets();
     updateLightingDescriptors();
     updatePostDescriptors();
+    ++scene_image_generation_;
 
     const vk::SemaphoreCreateInfo semaphore_info{};
     render_finished_.clear();
@@ -1929,8 +2152,8 @@ void VulkanRenderer::updateUniforms(const scene::Scene& scene, const scene::Came
         ++spot_count;
     }
     light_data.spot_count = spot_count;
-    light_data.ssao_enabled = ssao_enabled_ ? 1 : 0;
-    light_data.gi_enabled = gi_enabled_ ? 1 : 0;
+    light_data.ssao_enabled = post_.ambient_occlusion ? 1 : 0;
+    light_data.gi_enabled = post_.global_illumination ? 1 : 0;
     // --- Lluvia ---
     if (!capturing_) {
         weather_time_ += frame_delta_seconds_;
@@ -1944,6 +2167,19 @@ void VulkanRenderer::updateUniforms(const scene::Scene& scene, const scene::Came
     const bool flooded = water_enabled_ && waterAvailable();
     weather.flood = Vec4{water_center_.x, water_center_.y, flooded ? water_radii_.x : 0.0f,
                          flooded ? water_radii_.y : 0.0f};
+    // Decals (estampas, charcos y humedad locales).
+    std::uint32_t decal_count = 0;
+    for (const Decal& decal : decals_) {
+        if (decal_count >= kMaxDecals) break;
+        GpuDecal& gpu = weather.decals[decal_count++];
+        gpu.world_to_decal = decal.world_to_decal;
+        gpu.color = toVec4(decal.color, decal.opacity);
+        gpu.axis = toVec4(core::normalize(decal.axis), decal.angle_fade);
+        gpu.params = Vec4{static_cast<float>(decal.type), static_cast<float>(decal.texture),
+                          std::clamp(decal.edge_softness, 0.001f, 0.5f), decal.amount};
+        gpu.material = Vec4{decal.roughness, decal.roughness_amount, decal.metallic, 0.0f};
+    }
+    weather.decal_info = Vec4{static_cast<float>(decal_count), 0.0f, 0.0f, 0.0f};
     weather_buffers_[frame_index].write(&weather, sizeof(weather));
     light_data.rain = Vec4{weather.params.x, weather.params.y, weather.params.z, 0.0f};
     light_data.flood = weather.flood;
@@ -1956,7 +2192,7 @@ void VulkanRenderer::updateUniforms(const scene::Scene& scene, const scene::Came
     // y: luz volumetrica. No en las caras de la sonda: su imagen es de la
     // camara de pantalla.
     light_data.environment = Vec4{environmentActive() ? 1.0f : 0.0f,
-                                  volumetric_enabled_ && !capturing_ ? 1.0f : 0.0f, 0.0f, 0.0f};
+                                  post_.volumetric_light && !capturing_ ? 1.0f : 0.0f, 0.0f, 0.0f};
     if (!capturing_) {
         cloud_time_ += frame_delta_seconds_;
     }
@@ -2005,7 +2241,7 @@ void VulkanRenderer::updateUniforms(const scene::Scene& scene, const scene::Came
     light_shaft_push_.aspect =
         static_cast<float>(extent.width) / static_cast<float>(std::max(extent.height, 1u));
     const Vec4 sun_clip = camera_data.view_projection * toVec4(lights.sky.to_sun, 0.0f);
-    if (light_shafts_enabled_ && sun_clip.w > 0.0f) {
+    if (post_.light_shafts && sun_clip.w > 0.0f) {
         const float u = sun_clip.x / sun_clip.w * 0.5f + 0.5f;
         const float v = sun_clip.y / sun_clip.w * 0.5f + 0.5f;
         light_shaft_push_.sun_uv = core::Vec2{u, v};
@@ -2022,14 +2258,61 @@ void VulkanRenderer::updateUniforms(const scene::Scene& scene, const scene::Came
     // Dependen de la camara y del sol, asi que se recalculan cada frame.
     cascades_.update(camera, lights.sun, ShadowMap::kResolution);
 
+    // Actualizacion escalonada (como Unreal y Frostbite): redibujar las cuatro
+    // cascadas cada frame era casi la mitad del frame en Bistro, y las
+    // lejanas, que cubren toda la escena, apenas cambian de un frame a otro.
+    //   cascada 0: cada frame, 1: cada 2, 2 y 3: cada 4 (por turnos).
+    // Se fuerza si la camara se alejo mas del 10% del alcance de la cascada
+    // desde que se dibujo. Una cascada que no se redibuja se sigue leyendo
+    // con la matriz con la que se dibujo (el escenario no se ha movido).
+    // Las caras de la sonda dibujan todas desde su camara y ensucian el
+    // mapa: la siguiente vista de pantalla las rehace todas.
+    const bool redraw_all =
+        capturing_ || !cascades_valid_ || !shadows_enabled_ || actor_set_changed_;
+    if (!capturing_) {
+        ++cascade_frame_;
+    }
+    for (std::uint32_t i = 0; i < scene::kShadowCascadeCount; ++i) {
+        const scene::ShadowCascade& current = cascades_.cascade(i);
+        bool due = redraw_all;
+        if (!due) {
+            const std::uint64_t f = cascade_frame_;
+            due = i == 0 || (i == 1 && f % 2 == 0) || (i == 2 && f % 4 == 1) ||
+                  (i == 3 && f % 4 == 3);
+            const Vec3 moved = camera.position() - rendered_cascade_camera_[i];
+            const float limit = 0.1f * current.split_distance;
+            due = due || core::dot(moved, moved) > limit * limit;
+
+            // Algo se movio dentro de la cascada (donde estaba o donde esta):
+            // su sombra guardada ya no vale.
+            if (!due && !moved_spheres_.empty()) {
+                const core::Frustum frustum(current.light_view_projection, /*ignore_near=*/true);
+                for (const core::Vec4& sphere : moved_spheres_) {
+                    const Vec3 r{sphere.w, sphere.w, sphere.w};
+                    const Vec3 c{sphere.x, sphere.y, sphere.z};
+                    if (frustum.intersects(core::Aabb{c - r, c + r})) {
+                        due = true;
+                        break;
+                    }
+                }
+            }
+        }
+        cascade_due_[i] = due;
+        if (due) {
+            rendered_cascades_[i] = current;
+            rendered_cascade_camera_[i] = camera.position();
+        }
+    }
+    cascades_valid_ = !capturing_ && shadows_enabled_;
+
     GpuShadows shadow_data{};
     std::array<float, scene::kShadowCascadeCount> splits{};
     std::array<float, scene::kShadowCascadeCount> texels{};
 
     for (std::uint32_t i = 0; i < scene::kShadowCascadeCount; ++i) {
-        const scene::ShadowCascade& cascade = cascades_.cascade(i);
+        const scene::ShadowCascade& cascade = rendered_cascades_[i];
         shadow_data.light_view_projection[i] = cascade.light_view_projection;
-        splits[i] = cascade.split_distance;
+        splits[i] = cascades_.cascade(i).split_distance;
         texels[i] = cascade.texel_world_size;
     }
 
@@ -2071,11 +2354,16 @@ void VulkanRenderer::drawFrame(const scene::Scene& scene) {
         return;
     }
 
-    if (framebuffer_resized_ || !swapchain_.isValid()) {
-        recreateSwapchain();
-        if (!swapchain_.isValid()) {
-            return;
-        }
+    // Cambio de tamano pendiente: se recrea y este frame no se dibuja. Lo que
+    // se preparo para el (la interfaz del editor apunta a la imagen de la
+    // escena) era de las imagenes que se acaban de destruir; el siguiente
+    // frame ya se construye con las nuevas. Una herramienta puede evitarse el
+    // frame perdido llamando antes a applyPendingResize().
+    if (applyPendingResize()) {
+        return;
+    }
+    if (!swapchain_.isValid()) {
+        return;
     }
 
     const vk::raii::Device& device = device_.handle();
@@ -2088,6 +2376,7 @@ void VulkanRenderer::drawFrame(const scene::Scene& scene) {
 
     // Resultado del culling en GPU de la ultima vez que se uso este hueco.
     const GpuCulling::Stats culling = gpu_culling_.readStats(current_frame_);
+    gpu_profiler_.collect(current_frame_);
     gpu_visible_submeshes_ = culling.early + culling.late;
     occluded_submeshes_ = culling.occluded;
 
@@ -2116,7 +2405,7 @@ void VulkanRenderer::drawFrame(const scene::Scene& scene) {
     std::memcpy(&exposure_state, exposure_readback_[current_frame_].mapped(),
                 sizeof(exposure_state));
     if (exposure_state.initialized > 0.5f) {
-        displayed_exposure_ = auto_exposure_enabled_ ? exposure_state.exposure : exposure_;
+        displayed_exposure_ = post_.auto_exposure ? exposure_state.exposure : exposure_;
         displayed_luminance_ = exposure_state.average_luminance;
     }
 
@@ -2260,8 +2549,8 @@ std::vector<float> VulkanRenderer::lightingSignature(const scene::Scene& scene) 
     // Interruptores que cambian lo que se ve (y por tanto lo que se refleja
     // y rebota).
     signature.push_back(shadows_enabled_ ? 1.0f : 0.0f);
-    signature.push_back(gi_enabled_ ? 1.0f : 0.0f);
-    signature.push_back(ssao_enabled_ ? 1.0f : 0.0f);
+    signature.push_back(post_.global_illumination ? 1.0f : 0.0f);
+    signature.push_back(post_.ambient_occlusion ? 1.0f : 0.0f);
     signature.push_back(clouds_enabled_ ? 1.0f : 0.0f);
     return signature;
 }
@@ -2377,6 +2666,7 @@ void VulkanRenderer::captureProbeFace(const scene::Scene& scene) {
 void VulkanRenderer::recordCommandBuffer(const vk::raii::CommandBuffer& cmd,
                                          std::uint32_t image_index, std::uint32_t frame_index) {
     cmd.begin(vk::CommandBufferBeginInfo{});
+    gpu_profiler_.begin(cmd, frame_index);
 
     // Los clusteres de escenario los cuenta la GPU (frame reciente); los
     // animados se suman al dibujarlos.
@@ -2390,24 +2680,46 @@ void VulkanRenderer::recordCommandBuffer(const vk::raii::CommandBuffer& cmd,
 
     if (!rain_map_ready_ && (rainAvailable() || waterAvailable()) && !actor_draws_.empty()) {
         recordRainMap(cmd, frame_index);
+        gpu_profiler_.mark(cmd, frame_index, "Mapa de lluvia");
     }
     recordShadowPass(cmd, frame_index);
+    gpu_profiler_.mark(cmd, frame_index, "Sombras (cascadas)");
     recordLocalShadowPass(cmd, frame_index);
+    gpu_profiler_.mark(cmd, frame_index, "Sombras locales");
     recordSkyLutPass(cmd);
+    gpu_profiler_.mark(cmd, frame_index, "Cielo + IBL");
     recordCloudPass(cmd, frame_index);
+    gpu_profiler_.mark(cmd, frame_index, "Nubes");
     recordGeometryPass(cmd, frame_index);
+    gpu_profiler_.mark(cmd, frame_index, "Geometria + culling");
     recordSsaoPass(cmd, frame_index);
+    gpu_profiler_.mark(cmd, frame_index, "SSAO");
     recordSsgiPass(cmd, frame_index);
+    gpu_profiler_.mark(cmd, frame_index, "GI");
     recordSsrPass(cmd, frame_index);
+    gpu_profiler_.mark(cmd, frame_index, "Reflejos");
     recordVolumetricPass(cmd, frame_index);
+    gpu_profiler_.mark(cmd, frame_index, "Volumetrica");
     recordLightingPass(cmd, frame_index, scene_color_);
+    gpu_profiler_.mark(cmd, frame_index, "Iluminacion");
     recordGlassPass(cmd, frame_index);
+    gpu_profiler_.mark(cmd, frame_index, "Vidrio");
     recordFilterHistoryCopies(cmd);
+    gpu_profiler_.mark(cmd, frame_index, "Copias de historia");
     recordBloomPass(cmd);
+    gpu_profiler_.mark(cmd, frame_index, "Bloom");
     recordLightShaftPass(cmd);
+    gpu_profiler_.mark(cmd, frame_index, "Rayos de luz");
     recordAutoExposurePass(cmd);
+    gpu_profiler_.mark(cmd, frame_index, "Auto-exposicion");
     recordCompositePass(cmd, frame_index);
+    gpu_profiler_.mark(cmd, frame_index, "Composicion");
+    if (!outlined_actors_.empty()) {
+        recordOutlinePass(cmd, frame_index);
+        gpu_profiler_.mark(cmd, frame_index, "Contorno de seleccion");
+    }
     recordPostProcessPass(cmd, image_index);
+    gpu_profiler_.mark(cmd, frame_index, "FXAA + presentacion");
 
     cmd.end();
 }
@@ -2419,13 +2731,23 @@ void VulkanRenderer::recordShadowPass(const vk::raii::CommandBuffer& cmd,
                                                  scene::kShadowCascadeCount};
 
     // --- Todas las capas pasan a destino de profundidad ---
-    // El frame anterior las dejo como textura de la pasada de iluminacion.
+    // El frame anterior las dejo como textura de la pasada de iluminacion. Si
+    // alguna cascada no se redibuja, su contenido se conserva (layout
+    // anterior); si se redibujan todas, se puede descartar.
+    bool all_due = true;
+    for (bool due : cascade_due_) {
+        all_due = all_due && due;
+    }
     vk::ImageMemoryBarrier2 to_attachment{};
-    to_attachment.srcStageMask = vk::PipelineStageFlagBits2::eFragmentShader;
+    to_attachment.srcStageMask = vk::PipelineStageFlagBits2::eFragmentShader |
+                                 vk::PipelineStageFlagBits2::eComputeShader;
     to_attachment.srcAccessMask = vk::AccessFlagBits2::eShaderSampledRead;
-    to_attachment.dstStageMask = vk::PipelineStageFlagBits2::eEarlyFragmentTests;
-    to_attachment.dstAccessMask = vk::AccessFlagBits2::eDepthStencilAttachmentWrite;
-    to_attachment.oldLayout = vk::ImageLayout::eUndefined;
+    to_attachment.dstStageMask = vk::PipelineStageFlagBits2::eEarlyFragmentTests |
+                                 vk::PipelineStageFlagBits2::eLateFragmentTests;
+    to_attachment.dstAccessMask = vk::AccessFlagBits2::eDepthStencilAttachmentWrite |
+                                  vk::AccessFlagBits2::eDepthStencilAttachmentRead;
+    to_attachment.oldLayout =
+        all_due ? vk::ImageLayout::eUndefined : vk::ImageLayout::eDepthReadOnlyOptimal;
     to_attachment.newLayout = vk::ImageLayout::eDepthAttachmentOptimal;
     to_attachment.image = *shadow_map_.image().handle();
     to_attachment.subresourceRange = all_cascades;
@@ -2436,6 +2758,9 @@ void VulkanRenderer::recordShadowPass(const vk::raii::CommandBuffer& cmd,
 
     // --- Una pasada por cascada ---
     for (std::uint32_t cascade = 0; cascade < scene::kShadowCascadeCount; ++cascade) {
+        if (!cascade_due_[cascade]) {
+            continue;  // Se queda la que ya habia (ver updateUniforms).
+        }
         vk::RenderingAttachmentInfo depth_attachment{};
         depth_attachment.imageView = *shadow_map_.cascadeView(cascade);
         depth_attachment.imageLayout = vk::ImageLayout::eDepthAttachmentOptimal;
@@ -2457,8 +2782,7 @@ void VulkanRenderer::recordShadowPass(const vk::raii::CommandBuffer& cmd,
                                             static_cast<float>(extent.height), 0.0f, 1.0f});
             cmd.setScissor(0, vk::Rect2D{vk::Offset2D{0, 0}, extent});
 
-            recordActorShadows(cmd, frame_index, skinned_pass_.shadowPipeline(),
-                               cascades_.cascade(cascade).light_view_projection);
+            recordActorShadows(cmd, frame_index, rendered_cascades_[cascade].light_view_projection);
         }
 
         cmd.endRendering();
@@ -2598,8 +2922,8 @@ void VulkanRenderer::recordLocalShadowPass(const vk::raii::CommandBuffer& cmd,
                                         static_cast<float>(job.extent.height), 0.0f, 1.0f});
         cmd.setScissor(0, vk::Rect2D{vk::Offset2D{0, 0}, job.extent});
 
-        recordActorShadows(cmd, frame_index, skinned_pass_.localShadowPipeline(),
-                           job.light_view_projection, job.light_position, job.range);
+        recordActorShadows(cmd, frame_index, job.light_view_projection, job.light_position,
+                           job.range);
 
         cmd.endRendering();
     }
@@ -2885,7 +3209,7 @@ void VulkanRenderer::recordVolumetricPass(const vk::raii::CommandBuffer& cmd,
                                           std::uint32_t frame_index) {
     // Va despues del SSAO: la profundidad y las cascadas ya son texturas. Con
     // la luz volumetrica apagada no se dibuja (lighting.frag no la lee).
-    if (!volumetric_enabled_ || capturing_) {
+    if (!post_.volumetric_light || capturing_) {
         return;
     }
     pipelineBarrier(cmd, discardToAttachment(*volumetric_image_.handle()));
@@ -2893,7 +3217,7 @@ void VulkanRenderer::recordVolumetricPass(const vk::raii::CommandBuffer& cmd,
     GpuVolumetricPush push{};
     // Anisotropia 0.6: polvo y humo finos dispersan sobre todo hacia delante.
     // 60 m: mas alla el mapa de sombras ya es grueso y el efecto no aporta.
-    push.params = Vec4{volumetric_density_, 0.6f, weather_time_, 60.0f};
+    push.params = Vec4{post_.volumetric_density, post_.volumetric_anisotropy, weather_time_, 60.0f};
     drawFullscreen(cmd, volumetric_pass_, &volumetric_sets_[frame_index], volumetric_image_,
                    &push);
 
@@ -3055,7 +3379,7 @@ void VulkanRenderer::recordSsrPass(const vk::raii::CommandBuffer& cmd,
                                    std::uint32_t frame_index) {
     // Con los reflejos apagados tampoco se trazan: el compute no corre y la
     // imagen se deja vacia como con el SSR.
-    const bool ray_traced = rayTracingActive() && !capturing_ && ssr_enabled_;
+    const bool ray_traced = rayTracingActive() && !capturing_ && post_.reflections;
     vk::ImageMemoryBarrier2 raw_to_sampled = writtenToSampled(*ssr_raw_.handle());
 
     if (ray_traced) {
@@ -3086,7 +3410,7 @@ void VulkanRenderer::recordSsrPass(const vk::raii::CommandBuffer& cmd,
         // Sin frame anterior o con el SSR apagado, el shader no refleja nada.
         // z: numero de frame, para que el ruido del primer paso cambie cada
         // frame.
-        push.params = Vec4{ssr_enabled_ && ssr_history_ready_ && !capturing_ ? 1.0f : 0.0f,
+        push.params = Vec4{post_.reflections && ssr_history_ready_ && !capturing_ ? 1.0f : 0.0f,
                            1.0f, static_cast<float>(frame_count_ % 64), 0.0f};
         drawFullscreen(cmd, ssr_pass_, &ssr_sets_[frame_index], ssr_raw_, &push);
     }
@@ -3109,7 +3433,7 @@ void VulkanRenderer::recordSsrPass(const vk::raii::CommandBuffer& cmd,
     // Las caras de la sonda no usan la historia (es de la camara de pantalla).
     GpuSsgiPush resolve{};
     resolve.previous_view_projection = previous_view_projection_;
-    resolve.params = Vec4{ssr_filter_history_valid_ && ssr_enabled_ && !capturing_ ? 1.0f : 0.0f,
+    resolve.params = Vec4{ssr_filter_history_valid_ && post_.reflections && !capturing_ ? 1.0f : 0.0f,
                           kSsrHistoryWeight, 0.0f, 0.0f};
     drawFullscreen(cmd, ssr_resolve_pass_, &ssr_resolve_sets_[frame_index], ssr_image_,
                    &resolve);
@@ -3354,6 +3678,109 @@ void VulkanRenderer::recordGlassPass(const vk::raii::CommandBuffer& cmd,
     cmd.endRendering();
 }
 
+void VulkanRenderer::recordOutlinePass(const vk::raii::CommandBuffer& cmd,
+                                       std::uint32_t frame_index) {
+    if (capturing_) {
+        return;
+    }
+    std::vector<const ActorDraw*> selected;
+    for (const ActorDraw& draw : actor_draws_) {
+        if (std::find(outlined_actors_.begin(), outlined_actors_.end(), draw.scene_actor) !=
+            outlined_actors_.end()) {
+            selected.push_back(&draw);
+        }
+    }
+    if (selected.empty()) {
+        return;
+    }
+
+    // --- 1) Mascara: silueta entera (R) y parte visible (G) ---
+    // La profundidad sigue en solo lectura (la leyeron la iluminacion y el
+    // vidrio): ahora tambien la prueba de profundidad.
+    vk::ImageMemoryBarrier2 depth_barrier{};
+    depth_barrier.srcStageMask = vk::PipelineStageFlagBits2::eLateFragmentTests |
+                                 vk::PipelineStageFlagBits2::eFragmentShader |
+                                 vk::PipelineStageFlagBits2::eComputeShader;
+    depth_barrier.srcAccessMask = vk::AccessFlagBits2::eDepthStencilAttachmentWrite;
+    depth_barrier.dstStageMask = vk::PipelineStageFlagBits2::eEarlyFragmentTests |
+                                 vk::PipelineStageFlagBits2::eLateFragmentTests;
+    depth_barrier.dstAccessMask = vk::AccessFlagBits2::eDepthStencilAttachmentRead;
+    depth_barrier.oldLayout = vk::ImageLayout::eDepthReadOnlyOptimal;
+    depth_barrier.newLayout = vk::ImageLayout::eDepthReadOnlyOptimal;
+    depth_barrier.image = *gbuffer_.depth().handle();
+    depth_barrier.subresourceRange =
+        vk::ImageSubresourceRange{vk::ImageAspectFlagBits::eDepth, 0, 1, 0, 1};
+    pipelineBarrier(cmd, {discardToAttachment(*outline_mask_.handle()), depth_barrier});
+
+    const vk::Extent2D extent = outline_mask_.extent();
+    vk::RenderingAttachmentInfo mask_attachment{};
+    mask_attachment.imageView = *outline_mask_.view();
+    mask_attachment.imageLayout = vk::ImageLayout::eColorAttachmentOptimal;
+    mask_attachment.loadOp = vk::AttachmentLoadOp::eClear;
+    mask_attachment.storeOp = vk::AttachmentStoreOp::eStore;
+    mask_attachment.clearValue = vk::ClearValue{vk::ClearColorValue{0.0f, 0.0f, 0.0f, 0.0f}};
+
+    vk::RenderingAttachmentInfo depth_attachment{};
+    depth_attachment.imageView = *gbuffer_.depth().view();
+    depth_attachment.imageLayout = vk::ImageLayout::eDepthReadOnlyOptimal;
+    depth_attachment.loadOp = vk::AttachmentLoadOp::eLoad;
+    depth_attachment.storeOp = vk::AttachmentStoreOp::eNone;
+
+    vk::RenderingInfo rendering_info{};
+    rendering_info.renderArea = vk::Rect2D{vk::Offset2D{0, 0}, extent};
+    rendering_info.layerCount = 1;
+    rendering_info.setColorAttachments(mask_attachment);
+    rendering_info.pDepthAttachment = &depth_attachment;
+
+    cmd.beginRendering(rendering_info);
+    cmd.setViewport(0, vk::Viewport{0.0f, 0.0f, static_cast<float>(extent.width),
+                                    static_cast<float>(extent.height), 0.0f, 1.0f});
+    cmd.setScissor(0, vk::Rect2D{vk::Offset2D{0, 0}, extent});
+    // Solo las submallas en el campo de vision (seleccionar un escenario
+    // entero, p. ej. la ciudad de Bistro, no debe dibujarlo todo dos veces).
+    const core::Frustum frustum(camera_view_projection_);
+    for (int visible_only = 0; visible_only < 2; ++visible_only) {
+        cmd.bindPipeline(vk::PipelineBindPoint::eGraphics,
+                         *skinned_pass_.outlineMaskPipeline(visible_only != 0));
+        cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *skinned_pass_.geometryLayout(),
+                               0, *skin_sets_[frame_index], nullptr);
+        for (const ActorDraw* draw : selected) {
+            const SkinnedModel& model = skinned_models_[draw->model];
+            cmd.bindVertexBuffers(0, *model.vertices().handle(), {0});
+            cmd.bindIndexBuffer(*model.indices().handle(), 0, vk::IndexType::eUint32);
+            GpuSkinnedPush push{};
+            push.model = draw->transform;
+            push.bone_offset = draw->bone_offset;
+            cmd.pushConstants<GpuSkinnedPush>(
+                *skinned_pass_.geometryLayout(),
+                vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, push);
+            // Todas las submallas, opacas y de vidrio.
+            const auto& submeshes = model.submeshes();
+            for (std::uint32_t i = 0; i < submeshes.size(); ++i) {
+                if (draw->per_submesh &&
+                    !frustum.intersects(submesh_bounds_[draw->first_bounds + i])) {
+                    continue;
+                }
+                cmd.drawIndexed(submeshes[i].index_count, 1, submeshes[i].first_index, 0, 0);
+            }
+        }
+    }
+    cmd.endRendering();
+
+    // --- 2) Contorno sobre la imagen compuesta ---
+    pipelineBarrier(cmd, {writtenToSampled(*outline_mask_.handle()),
+                          colorBarrier(*ldr_color_.handle(), vk::ImageLayout::eShaderReadOnlyOptimal,
+                                       vk::ImageLayout::eColorAttachmentOptimal,
+                                       vk::PipelineStageFlagBits2::eFragmentShader,
+                                       vk::AccessFlagBits2::eShaderSampledRead,
+                                       vk::PipelineStageFlagBits2::eColorAttachmentOutput,
+                                       vk::AccessFlagBits2::eColorAttachmentRead |
+                                           vk::AccessFlagBits2::eColorAttachmentWrite)});
+    drawFullscreen<GpuBloomPush>(cmd, outline_pass_, &outline_sets_[0], ldr_color_, nullptr,
+                                 /*load=*/true);
+    pipelineBarrier(cmd, writtenToSampled(*ldr_color_.handle()));
+}
+
 void VulkanRenderer::recordBloomPass(const vk::raii::CommandBuffer& cmd) {
     const vk::Extent2D screen = swapchain_.extent();
 
@@ -3376,6 +3803,8 @@ void VulkanRenderer::recordBloomPass(const vk::raii::CommandBuffer& cmd) {
         GpuBloomPush push{};
         push.source_texel = inverseExtent(source_extent);
         push.first_level = (level == 0) ? 1.0f : 0.0f;
+        // En la bajada, el ultimo campo es el umbral (solo el primer nivel).
+        push.radius = std::max(post_.bloom_threshold, 0.0f);
         drawFullscreen(cmd, bloom_down_pass_, &bloom_down_sets_[level], bloom_levels_[level],
                        &push);
 
@@ -3399,7 +3828,7 @@ void VulkanRenderer::recordBloomPass(const vk::raii::CommandBuffer& cmd) {
 
         GpuBloomPush push{};
         push.source_texel = inverseExtent(bloomLevelExtent(screen, level));
-        push.radius = 1.0f;
+        push.radius = std::clamp(post_.bloom_scatter, 0.1f, 4.0f);
         drawFullscreen(cmd, bloom_up_pass_, &bloom_up_sets_[level - 1], target, &push,
                        /*load=*/true);
 
@@ -3475,7 +3904,7 @@ void VulkanRenderer::recordRainMap(const vk::raii::CommandBuffer& cmd,
     cmd.setViewport(0, vk::Viewport{0.0f, 0.0f, static_cast<float>(kRainMapSize),
                                     static_cast<float>(kRainMapSize), 0.0f, 1.0f});
     cmd.setScissor(0, vk::Rect2D{vk::Offset2D{0, 0}, extent});
-    recordActorShadows(cmd, frame_index, skinned_pass_.shadowPipeline(), rain_view_projection_);
+    recordActorShadows(cmd, frame_index, rain_view_projection_);
     cmd.endRendering();
 
     vk::ImageMemoryBarrier2 to_read = to_attachment;
@@ -3543,6 +3972,10 @@ void VulkanRenderer::recordAutoExposurePass(const vk::raii::CommandBuffer& cmd) 
     // Un frame muy largo (carga, ventana arrastrada) no debe saltar la
     // adaptacion de golpe.
     push.delta_seconds = std::min(frame_delta_seconds_, 0.1f);
+    push.min_log_exposure = std::min(post_.min_ev, post_.max_ev);
+    push.max_log_exposure = std::max(post_.min_ev, post_.max_ev);
+    push.speed_up = std::max(post_.adaptation_speed_up, 0.01f);
+    push.speed_down = std::max(post_.adaptation_speed_down, 0.01f);
     cmd.bindPipeline(vk::PipelineBindPoint::eCompute, *exposure_average_pass_.pipeline());
     cmd.bindDescriptorSets(vk::PipelineBindPoint::eCompute, *exposure_average_pass_.layout(), 0,
                            *exposure_average_sets_[0], nullptr);
@@ -3562,17 +3995,31 @@ void VulkanRenderer::recordCompositePass(const vk::raii::CommandBuffer& cmd,
                                          std::uint32_t frame_index) {
     pipelineBarrier(cmd, discardToAttachment(*ldr_color_.handle()));
 
-    GpuCompositePush push{};
-    push.exposure = exposure_;
-    push.bloom_strength = bloom_enabled_ ? 0.06f : 0.0f;
-    push.auto_exposure_enabled = auto_exposure_enabled_ ? 1.0f : 0.0f;
-    push.exposure_compensation = exposure_compensation_;
-    push.light_shaft_strength = light_shafts_enabled_ ? 0.6f : 0.0f;
-    push.tonemapper = aces_tonemapper_ ? 1.0f : 0.0f;
-    // Mas saturacion con el tonemapper neutro: conserva el color de los
-    // materiales, y un poco de viveza lo acerca a una foto de exteriores.
-    push.saturation = aces_tonemapper_ ? 1.05f : 1.12f;
-    drawFullscreen(cmd, composite_pass_, &composite_sets_[0], ldr_color_, &push);
+    // Ajustes del frame (PostProcessSettings -> GpuCompositeSettings).
+    const PostProcessSettings& p = post_;
+    const vk::Extent2D screen = ldr_color_.extent();
+    GpuCompositeSettings settings{};
+    settings.exposure = Vec4{exposure_ * p.manual_exposure, p.bloom ? p.bloom_intensity : 0.0f,
+                             p.auto_exposure ? 1.0f : 0.0f, p.exposure_compensation};
+    settings.tone = Vec4{p.light_shafts ? 0.6f * p.light_shaft_intensity : 0.0f,
+                         static_cast<float>(static_cast<std::int32_t>(p.tonemapper)),
+                         p.saturation, p.contrast};
+    settings.look = Vec4{p.vibrance, p.vignette ? p.vignette_intensity : 0.0f,
+                         p.vignette_smoothness, p.chromatic_aberration};
+    settings.film = Vec4{p.film_grain, static_cast<float>(frame_count_ % 4096),
+                         1.0f / static_cast<float>(std::max(screen.width, 1u)),
+                         1.0f / static_cast<float>(std::max(screen.height, 1u))};
+    settings.white_balance = toVec4(whiteBalanceLms(p.temperature, p.tint), 0.0f);
+    settings.color_filter = toVec4(p.color_filter, 0.0f);
+    settings.lift = toVec4(p.lift, 0.0f);
+    settings.gamma = toVec4(p.gamma, 0.0f);
+    settings.gain = toVec4(p.gain, 0.0f);
+    settings.vignette_color = toVec4(p.vignette_color, 0.0f);
+    settings.bloom_tint = toVec4(p.bloom_tint, 0.0f);
+    composite_buffers_[frame_index].write(&settings, sizeof(settings));
+
+    drawFullscreen<GpuBloomPush>(cmd, composite_pass_, &composite_sets_[frame_index], ldr_color_,
+                                 nullptr);
 
     pipelineBarrier(cmd, writtenToSampled(*ldr_color_.handle()));
 
@@ -3622,11 +4069,16 @@ void VulkanRenderer::recordPostProcessPass(const vk::raii::CommandBuffer& cmd,
     GpuPostProcessPush push{};
     push.inverse_resolution = core::Vec2{1.0f / static_cast<float>(extent.width),
                                          1.0f / static_cast<float>(extent.height)};
-    push.enabled = antialiasing_enabled_ ? 1.0f : 0.0f;
+    push.enabled = post_.fxaa ? 1.0f : 0.0f;
     cmd.pushConstants<GpuPostProcessPush>(*post_process_pass_.layout(),
                                           vk::ShaderStageFlagBits::eFragment, 0, push);
 
     cmd.draw(3, 1, 0, 0);
+
+    // Lo que dibuje la herramienta (el editor) va encima, en el mismo pase.
+    if (overlay_) {
+        overlay_(*cmd);
+    }
 
     cmd.endRendering();
 
@@ -3640,6 +4092,27 @@ void VulkanRenderer::recordPostProcessPass(const vk::raii::CommandBuffer& cmd,
     vk::DependencyInfo present_dependency{};
     present_dependency.setImageMemoryBarriers(present_barrier);
     cmd.pipelineBarrier2(present_dependency);
+}
+
+bool VulkanRenderer::applyPendingResize() {
+    if (!initialized_ || (!framebuffer_resized_ && swapchain_.isValid())) {
+        return false;
+    }
+    recreateSwapchain();
+    return true;
+}
+
+VulkanRenderer::NativeHandles VulkanRenderer::nativeHandles() const {
+    NativeHandles handles{};
+    handles.instance = *instance_.handle();
+    handles.physical_device = *device_.physicalDevice();
+    handles.device = *device_.handle();
+    handles.queue_family = device_.queueFamilies().graphics;
+    handles.queue = *device_.graphicsQueue();
+    handles.swapchain_format = static_cast<VkFormat>(swapchain_.imageFormat());
+    handles.image_count = swapchain_.imageCount();
+    handles.api_version = instance_.apiVersion();
+    return handles;
 }
 
 void VulkanRenderer::waitIdle() const {

@@ -33,6 +33,12 @@ target_compile_options(cramion PRIVATE
     -Wpedantic
 )
 
+# Capa de juego: ECS, componentes, assets y proyectos.
+add_subdirectory(CramionCore)
+
+# Editor de escenas (Dear ImGui) sobre la misma libreria.
+add_subdirectory(CramionEditor)
+
 # -----------------------------------------------------------------------------
 # Escenarios
 #
@@ -47,7 +53,13 @@ target_compile_options(cramion PRIVATE
 
 # cramion_extract_scene(<zip> <carpeta> <archivo que indica que ya esta>
 #                       [PATTERNS ...])
+# CRAMION_EXTRACT_SCENES=OFF: no extraer los zips (builds auxiliares).
+option(CRAMION_EXTRACT_SCENES "Extraer los zips de escenas en assets/" ON)
+
 function(cramion_extract_scene zip_name folder marker)
+    if(NOT CRAMION_EXTRACT_SCENES)
+        return()
+    endif()
     set(zip "${CMAKE_CURRENT_SOURCE_DIR}/${zip_name}")
     set(destination "${CMAKE_BINARY_DIR}/assets/${folder}")
     if(EXISTS "${destination}/${marker}")

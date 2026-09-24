@@ -34,6 +34,12 @@ layout(push_constant) uniform PushConstants {
     float low_percent;    // 0..1
     float high_percent;   // 0..1
     float unused;
+    // Limites del multiplicador de exposicion (log2, en EV) y velocidades de
+    // adaptacion (EV por segundo, aprox.): PostProcessSettings.
+    float min_log_exposure;  // p. ej. -2
+    float max_log_exposure;  // p. ej. 1.4 (bajo: la noche debe seguir pareciendo noche)
+    float speed_up;          // hacia una escena mas brillante
+    float speed_down;        // hacia una escena mas oscura
 } push;
 
 // Deben coincidir con exposure_histogram.comp.
@@ -43,14 +49,6 @@ const float kLogLuminanceRange = 18.0;
 // Luminancia de la escena que debe quedar como gris medio tras el tono ACES.
 const float kTargetLuminance = 0.36;
 
-// Limites del multiplicador de exposicion, en pasos (EV).
-const float kMinLogExposure = -2.0;
-// El maximo es bajo a proposito: la noche debe seguir pareciendo noche.
-const float kMaxLogExposure = 1.4;
-
-// Velocidades de adaptacion (en EV por segundo, aproximadamente).
-const float kSpeedUp = 3.0;    // hacia una escena mas brillante
-const float kSpeedDown = 1.2;  // hacia una escena mas oscura
 
 shared uint bins[256];
 
@@ -97,14 +95,15 @@ void main() {
     }
 
     float average_log = weight_total > 0.0 ? weighted_sum / weight_total : log2(kTargetLuminance);
-    float target = clamp(log2(kTargetLuminance) - average_log, kMinLogExposure, kMaxLogExposure);
+    float target = clamp(log2(kTargetLuminance) - average_log, push.min_log_exposure,
+                         push.max_log_exposure);
 
     float current = state.log_exposure;
     if (state.initialized < 0.5) {
         current = target;
     } else {
         // Exposicion que baja = la escena se ha vuelto mas brillante.
-        float speed = target < current ? kSpeedUp : kSpeedDown;
+        float speed = target < current ? push.speed_up : push.speed_down;
         current += (target - current) * (1.0 - exp(-push.delta_seconds * speed));
     }
 

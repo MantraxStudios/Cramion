@@ -7,6 +7,8 @@
 #include "CramionFX/vk/FullscreenPass.h"
 #include "CramionFX/vk/GBuffer.h"
 #include "CramionFX/vk/GpuCulling.h"
+#include "CramionFX/vk/GpuProfiler.h"
+#include "CramionFX/vk/PostProcessSettings.h"
 #include "CramionFX/vk/GpuTypes.h"
 #include "CramionFX/vk/IblProbe.h"
 #include "CramionFX/vk/LightingPass.h"
@@ -23,6 +25,7 @@
 #include "CramionFX/vk/VulkanInstance.h"
 #include "CramionFX/vk/VulkanSurface.h"
 #include "CramionFX/vk/VulkanSwapchain.h"
+#include "CramionFX/vk/VulkanTexture.h"
 
 #include "CramionFX/core/Frustum.h"
 #include "CramionFX/scene/LocalLightShadows.h"
@@ -31,6 +34,7 @@
 #include <array>
 #include <chrono>
 #include <filesystem>
+#include <functional>
 #include <cstdint>
 #include <vector>
 
@@ -117,6 +121,12 @@ public:
     void drawFrame(const scene::Scene& scene);
 
     void onResize(std::uint32_t width, std::uint32_t height);
+
+    // Recrea ya la swapchain y las imagenes si la ventana cambio de tamano
+    // (si no, lo hace drawFrame, que entonces se salta ese frame). Una UI que
+    // muestra sceneImageView() debe llamarlo ANTES de construir su frame,
+    // para no apuntar a una imagen que se va a destruir. true = se recreo.
+    bool applyPendingResize();
     void waitIdle() const;
 
     // --- Ajustes de sombras ---
@@ -130,26 +140,43 @@ public:
 
     scene::ShadowCascades& shadowCascades() { return cascades_; }
 
+    // --- Post-proceso (como el Volume de Unity) ---
+    // PostProcessSettings es la unica fuente de verdad: setPostProcess() lo
+    // cambia entero y los setters sueltos de abajo cambian un campo. Todo se
+    // aplica en el frame siguiente.
+    void setPostProcess(const PostProcessSettings& settings) { post_ = settings; }
+    const PostProcessSettings& postProcess() const { return post_; }
+
+    // Contorno de seleccion (naranja, como Unity) alrededor de estos actores
+    // (indices en scene.actors()): mas intenso donde se ven, tenue donde algo
+    // los tapa. Vacio = sin contorno (y sin coste).
+    void setOutlinedActors(std::vector<std::uint32_t> actor_indices) {
+        outlined_actors_ = std::move(actor_indices);
+    }
+    const std::vector<std::uint32_t>& outlinedActors() const { return outlined_actors_; }
+
     // Antialiasing de la imagen final.
-    void setAntialiasingEnabled(bool enabled) { antialiasing_enabled_ = enabled; }
-    bool antialiasingEnabled() const { return antialiasing_enabled_; }
+    void setAntialiasingEnabled(bool enabled) { post_.fxaa = enabled; }
+    bool antialiasingEnabled() const { return post_.fxaa; }
 
-    // --- Post-proceso ---
-    void setBloomEnabled(bool enabled) { bloom_enabled_ = enabled; }
-    bool bloomEnabled() const { return bloom_enabled_; }
+    void setBloomEnabled(bool enabled) { post_.bloom = enabled; }
+    bool bloomEnabled() const { return post_.bloom; }
 
-    void setSsaoEnabled(bool enabled) { ssao_enabled_ = enabled; }
+    void setSsaoEnabled(bool enabled) { post_.ambient_occlusion = enabled; }
     // Luz volumetrica: rayos de sol visibles en el polvo del aire al entrar
     // por ventanas y huecos. `density` en 1/m (0.01-0.05 es aire con polvo).
-    void setVolumetricEnabled(bool enabled) { volumetric_enabled_ = enabled; }
-    bool volumetricEnabled() const { return volumetric_enabled_; }
-    void setVolumetricDensity(float density) { volumetric_density_ = density; }
-    float volumetricDensity() const { return volumetric_density_; }
-    bool ssaoEnabled() const { return ssao_enabled_; }
+    void setVolumetricEnabled(bool enabled) { post_.volumetric_light = enabled; }
+    bool volumetricEnabled() const { return post_.volumetric_light; }
+    void setVolumetricDensity(float density) { post_.volumetric_density = density; }
+    float volumetricDensity() const { return post_.volumetric_density; }
+    bool ssaoEnabled() const { return post_.ambient_occlusion; }
+
+    // Milisegundos de GPU de cada pasada (medias de ~1 s).
+    const GpuProfiler& gpuProfiler() const { return gpu_profiler_; }
 
     // Reflejos de pantalla.
-    void setSsrEnabled(bool enabled) { ssr_enabled_ = enabled; }
-    bool ssrEnabled() const { return ssr_enabled_; }
+    void setSsrEnabled(bool enabled) { post_.reflections = enabled; }
+    bool ssrEnabled() const { return post_.reflections; }
 
     // Trazado de rayos por hardware para la luz rebotada y los reflejos (si
     // la GPU lo tiene). Apagado, se usan los de pantalla con la sonda.
@@ -198,6 +225,31 @@ public:
     bool waterEnabled() const { return water_enabled_; }
     bool waterAvailable() const { return water_radii_.x > 0.0f && water_radii_.y > 0.0f; }
 
+    // Decals: estampas (textura o color), charcos locales y manchas de
+    // humedad proyectados sobre lo que haya dentro de su caja, como los
+    // Decal Actors de Unreal. Los charcos se suman a los de la lluvia global.
+    // Hasta kMaxDecals por frame (el resto se ignora).
+    struct Decal {
+        core::Mat4 world_to_decal = core::Mat4::identity();  // mundo -> caja [-0.5, 0.5]^3
+        core::Vec3 axis{0.0f, 1.0f, 0.0f};  // eje Y de la caja en el mundo (se proyecta a lo largo)
+        core::Vec3 color{1.0f, 1.0f, 1.0f};
+        float opacity = 1.0f;
+        int type = 0;         // 0 estampa, 1 charco, 2 humedad
+        int texture = -1;     // ranura de loadDecalTexture (-1 = sin textura)
+        float edge_softness = 0.1f;
+        float angle_fade = 0.2f;  // coseno minimo entre la superficie y el eje
+        float roughness = 0.5f;
+        float roughness_amount = 0.0f;
+        float metallic = 0.0f;
+        float amount = 1.0f;  // charco: nivel del agua; humedad: cuanto moja
+    };
+    void setDecals(std::vector<Decal> decals) { decals_ = std::move(decals); }
+    const std::vector<Decal>& decals() const { return decals_; }
+    // Carga una imagen (PNG, JPG, TGA...) para los decals y devuelve su
+    // ranura (0..kMaxDecalTextures-1); la misma ruta devuelve la misma
+    // ranura. -1 si no se pudo leer o no quedan ranuras.
+    int loadDecalTexture(const std::filesystem::path& file);
+
     // Nubes volumetricas.
     void setCloudsEnabled(bool enabled) { clouds_enabled_ = enabled; }
     bool cloudsEnabled() const { return clouds_enabled_; }
@@ -208,23 +260,25 @@ public:
     bool reflectionProbeEnabled() const { return probe_enabled_; }
 
     // Iluminacion global de pantalla (luz rebotada).
-    void setGiEnabled(bool enabled) { gi_enabled_ = enabled; }
-    bool giEnabled() const { return gi_enabled_; }
+    void setGiEnabled(bool enabled) { post_.global_illumination = enabled; }
+    bool giEnabled() const { return post_.global_illumination; }
 
     // Tonemapper: false = Khronos PBR Neutral (colores fieles), true = ACES.
-    void setAcesTonemapper(bool aces) { aces_tonemapper_ = aces; }
-    bool acesTonemapper() const { return aces_tonemapper_; }
+    void setAcesTonemapper(bool aces) {
+        post_.tonemapper = aces ? Tonemapper::Aces : Tonemapper::Neutral;
+    }
+    bool acesTonemapper() const { return post_.tonemapper == Tonemapper::Aces; }
 
-    void setLightShaftsEnabled(bool enabled) { light_shafts_enabled_ = enabled; }
-    bool lightShaftsEnabled() const { return light_shafts_enabled_; }
+    void setLightShaftsEnabled(bool enabled) { post_.light_shafts = enabled; }
+    bool lightShaftsEnabled() const { return post_.light_shafts; }
 
     // --- Exposicion (como el "Exposure" de un Post Process Volume) ---
-    void setAutoExposureEnabled(bool enabled) { auto_exposure_enabled_ = enabled; }
-    bool autoExposureEnabled() const { return auto_exposure_enabled_; }
+    void setAutoExposureEnabled(bool enabled) { post_.auto_exposure = enabled; }
+    bool autoExposureEnabled() const { return post_.auto_exposure; }
 
     // Compensacion en EV: +1 = el doble de brillo, -1 = la mitad.
-    void setExposureCompensation(float ev) { exposure_compensation_ = ev; }
-    float exposureCompensation() const { return exposure_compensation_; }
+    void setExposureCompensation(float ev) { post_.exposure_compensation = ev; }
+    float exposureCompensation() const { return post_.exposure_compensation; }
 
     // Exposicion aplicada y luminancia media medida (leidas de la GPU con un
     // par de frames de retraso; solo para mostrarlas).
@@ -232,6 +286,38 @@ public:
     float measuredLuminance() const { return displayed_luminance_; }
 
     bool isInitialized() const { return initialized_; }
+
+    // --- Integracion con herramientas (CramionEditor) ---
+    // Lo que necesita una UI dibujada con Vulkan (Dear ImGui) para compartir
+    // el dispositivo y la swapchain del renderizador.
+    struct NativeHandles {
+        VkInstance instance = VK_NULL_HANDLE;
+        VkPhysicalDevice physical_device = VK_NULL_HANDLE;
+        VkDevice device = VK_NULL_HANDLE;
+        std::uint32_t queue_family = 0;
+        VkQueue queue = VK_NULL_HANDLE;
+        VkFormat swapchain_format = VK_FORMAT_UNDEFINED;
+        std::uint32_t image_count = 0;
+        std::uint32_t api_version = 0;
+    };
+    NativeHandles nativeHandles() const;
+
+    // Se llama cada frame dentro del ultimo pase (sobre la imagen de la
+    // swapchain, ya con el FXAA): lo que se dibuje ahi queda encima de todo.
+    using OverlayCallback = std::function<void(VkCommandBuffer)>;
+    void setOverlayCallback(OverlayCallback callback) { overlay_ = std::move(callback); }
+
+    // La imagen final de la escena (tono y gamma aplicados, antes del FXAA),
+    // legible como textura (SHADER_READ_ONLY_OPTIMAL) durante el overlay.
+    // Cambia al redimensionar: sceneImageGeneration() avisa de ello.
+    VkImageView sceneImageView() const { return *ldr_color_.view(); }
+    vk::Extent2D sceneExtent() const { return ldr_color_.extent(); }
+    std::uint64_t sceneImageGeneration() const { return scene_image_generation_; }
+
+    // Materiales ya subidos de un modelo, editables en vivo.
+    std::vector<SkinnedModel::Material>* materials(std::uint32_t model) {
+        return model < skinned_models_.size() ? &skinned_models_[model].materials() : nullptr;
+    }
     const VulkanDevice& device() const { return device_; }
     const VulkanSwapchain& swapchain() const { return swapchain_; }
 
@@ -284,9 +370,9 @@ private:
     void writeBoneDescriptor(std::uint32_t frame_index);
 
     // Dibuja los actores en un mapa de sombras ya abierto. Con `range` > 0
-    // solo los que tocan la esfera de la luz.
+    // (luz local) solo los que tocan la esfera de la luz y con los pipelines
+    // de las luces locales; con 0, los de las cascadas (depth clamp).
     void recordActorShadows(const vk::raii::CommandBuffer& cmd, std::uint32_t frame_index,
-                            const vk::raii::Pipeline& pipeline,
                             const core::Mat4& light_view_projection,
                             const core::Vec3& light_position = {}, float range = 0.0f);
     bool actorsTouch(const core::Vec3& light_position, float range) const;
@@ -321,6 +407,8 @@ private:
     void recordLightShaftPass(const vk::raii::CommandBuffer& cmd);
     void recordAutoExposurePass(const vk::raii::CommandBuffer& cmd);
     void recordCompositePass(const vk::raii::CommandBuffer& cmd, std::uint32_t frame_index);
+    // Contorno de seleccion sobre la imagen compuesta (si hay seleccion).
+    void recordOutlinePass(const vk::raii::CommandBuffer& cmd, std::uint32_t frame_index);
     void recordPostProcessPass(const vk::raii::CommandBuffer& cmd, std::uint32_t image_index);
 
     // Subsistemas, declarados en orden de creacion (se destruyen al reves).
@@ -382,6 +470,12 @@ private:
     core::Mat4 rain_view_projection_ = core::Mat4::identity();
     bool rain_map_ready_ = false;
     std::vector<VulkanBuffer> weather_buffers_;
+    std::vector<Decal> decals_;
+    std::array<VulkanTexture, 8> decal_textures_;
+    std::array<std::filesystem::path, 8> decal_texture_paths_;
+    VulkanTexture decal_white_;
+    vk::raii::Sampler decal_sampler_{nullptr};
+    void writeDecalTextureDescriptors();
     float wetness_ = 0.0f;
     float puddles_ = 0.0f;
     float weather_time_ = 0.0f;
@@ -446,11 +540,39 @@ private:
         // de comando de este actor.
         std::uint32_t first_group = 0;
         std::uint32_t first_slot = 0;
+        // Indice del actor en scene.actors() (para el contorno de seleccion).
+        std::uint32_t scene_actor = 0;
     };
     std::vector<ActorDraw> actor_draws_;
+    // Deteccion de movimiento (updateActors): transform y esfera de cada
+    // actor el frame anterior, y las esferas (antes y despues) de lo que se
+    // movio. Una cascada guardada que contiene algo que se movio se redibuja
+    // ya: si no, el objeto se sombreaba a si mismo con su sombra vieja.
+    struct ActorMotion {
+        core::Mat4 transform = core::Mat4::identity();
+        core::Vec3 center{};
+        float radius = 0.0f;
+    };
+    std::vector<ActorMotion> previous_actor_motion_;
+    std::vector<core::Vec4> moved_spheres_;  // xyz = centro, w = radio
+    bool actor_set_changed_ = true;
     std::vector<core::Aabb> submesh_bounds_;
     // Culling en GPU de los clusteres de escenario.
     GpuCulling gpu_culling_{};
+    GpuProfiler gpu_profiler_{};
+    OverlayCallback overlay_;
+    // Post-proceso y efectos de pantalla (unica fuente de verdad).
+    PostProcessSettings post_{};
+    // Contorno de seleccion: actores (de la escena) y sus recursos.
+    std::vector<std::uint32_t> outlined_actors_;
+    VulkanImage outline_mask_{};  // R = silueta entera, G = parte visible
+    FullscreenPass outline_pass_{};
+    std::vector<vk::raii::DescriptorSet> outline_sets_;
+    // Uniform buffers de la composicion (GpuCompositeSettings), uno por frame.
+    std::vector<VulkanBuffer> composite_buffers_;
+    std::uint64_t scene_image_generation_ = 0;
+    // Submallas visibles de un actor al dibujar sombras (se reutiliza).
+    std::vector<std::uint32_t> shadow_scratch_;
     std::vector<GpuCluster> gpu_clusters_;
     std::uint32_t gpu_visible_submeshes_ = 0;
     std::uint32_t occluded_submeshes_ = 0;
@@ -522,6 +644,14 @@ private:
 
     // Reparto del frustum entre cascadas; se recalcula cada frame.
     scene::ShadowCascades cascades_{};
+    // Actualizacion escalonada de las cascadas (ver updateUniforms): la que
+    // tiene cada capa del mapa, con que camara se dibujo, y cuales se
+    // redibujan este frame.
+    std::array<scene::ShadowCascade, scene::kShadowCascadeCount> rendered_cascades_{};
+    std::array<core::Vec3, scene::kShadowCascadeCount> rendered_cascade_camera_{};
+    std::array<bool, scene::kShadowCascadeCount> cascade_due_{};
+    bool cascades_valid_ = false;
+    std::uint64_t cascade_frame_ = 0;
     // Matrices, huecos y cache de las sombras de focos y luces puntuales.
     scene::LocalLightShadows local_shadows_{};
 
@@ -553,7 +683,6 @@ private:
     // Exposicion manual (con la auto-exposicion apagada); sigue a la luz de
     // dia.
     float exposure_ = 1.0f;
-    float exposure_compensation_ = 0.0f;
     float displayed_exposure_ = 1.0f;
     float displayed_luminance_ = 0.0f;
 
@@ -592,21 +721,11 @@ private:
     bool framebuffer_resized_ = false;
     bool initialized_ = false;
     bool shadows_enabled_ = true;
-    bool antialiasing_enabled_ = true;
     bool cascade_debug_ = false;
-    bool bloom_enabled_ = true;
-    bool ssao_enabled_ = true;
-    bool volumetric_enabled_ = true;
-    float volumetric_density_ = 0.02f;
-    bool light_shafts_enabled_ = true;
-    bool gi_enabled_ = true;
-    bool ssr_enabled_ = true;
     bool clouds_enabled_ = true;
     bool environment_enabled_ = true;
     bool rt_enabled_ = true;
     bool occlusion_culling_enabled_ = true;
-    bool aces_tonemapper_ = false;
-    bool auto_exposure_enabled_ = true;
     // Los mapas locales se conservan entre frames (cache), asi que solo el
     // primero parte de un layout indefinido.
     bool local_shadow_layout_ready_ = false;

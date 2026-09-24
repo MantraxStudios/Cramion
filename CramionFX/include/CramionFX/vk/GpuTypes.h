@@ -114,16 +114,29 @@ struct GpuBloomPush {
     float radius = 1.0f;        // subida: separacion del filtro de tienda
 };
 
-// Constante de push de la composicion final (composite.frag).
-struct GpuCompositePush {
-    float exposure = 1.0f;  // exposicion manual (auto-exposicion apagada)
-    float bloom_strength = 0.05f;
-    float vignette = 0.35f;
-    float saturation = 1.05f;
-    float auto_exposure_enabled = 1.0f;
-    float exposure_compensation = 0.0f;  // en EV
-    float light_shaft_strength = 1.0f;
-    float tonemapper = 0.0f;  // 0 = Khronos PBR Neutral, 1 = ACES
+// Ajustes de la composicion final (composite.frag), un uniform buffer por
+// frame en vuelo: no caben en los 128 bytes garantizados de push constants.
+// Salen de PostProcessSettings (VulkanRenderer::setPostProcess).
+struct GpuCompositeSettings {
+    // x = exposicion manual, y = intensidad del bloom, z = 1 auto-exposicion,
+    // w = compensacion (EV)
+    core::Vec4 exposure{1.0f, 0.06f, 1.0f, 0.0f};
+    // x = rayos de luz, y = tonemapper (0 Neutral, 1 ACES, 2 ninguno),
+    // z = saturacion, w = contraste
+    core::Vec4 tone{0.6f, 0.0f, 1.12f, 1.08f};
+    // x = viveza, y = vineta (intensidad), z = vineta (suavidad),
+    // w = aberracion cromatica
+    core::Vec4 look{0.25f, 0.35f, 0.5f, 0.0f};
+    // x = grano, y = frame (para animar el grano), z/w = 1 / resolucion
+    core::Vec4 film{0.0f, 0.0f, 0.0f, 0.0f};
+    // rgb = balance de blancos (factores en espacio LMS), a = sin uso
+    core::Vec4 white_balance{1.0f, 1.0f, 1.0f, 0.0f};
+    core::Vec4 color_filter{1.0f, 1.0f, 1.0f, 0.0f};
+    core::Vec4 lift{0.0f, 0.0f, 0.0f, 0.0f};
+    core::Vec4 gamma{1.0f, 1.0f, 1.0f, 0.0f};
+    core::Vec4 gain{1.0f, 1.0f, 1.0f, 0.0f};
+    core::Vec4 vignette_color{0.0f, 0.0f, 0.0f, 0.0f};
+    core::Vec4 bloom_tint{1.0f, 1.0f, 1.0f, 0.0f};
 };
 
 // Constante de push de la iluminacion global de pantalla (ssgi.frag).
@@ -135,6 +148,23 @@ struct GpuSsgiPush {
     core::Vec4 extra{};
 };
 
+// Decal (estampa, charco o mancha de humedad) proyectado sobre el G-buffer
+// en la pasada de geometria. Caja unidad [-0.5, 0.5]^3 en su espacio; se
+// proyecta a lo largo de su eje Y local.
+inline constexpr std::uint32_t kMaxDecals = 64;
+inline constexpr std::uint32_t kMaxDecalTextures = 8;
+
+struct GpuDecal {
+    core::Mat4 world_to_decal = core::Mat4::identity();
+    core::Vec4 color{1.0f, 1.0f, 1.0f, 1.0f};  // rgb = tinte (sRGB), a = opacidad
+    core::Vec4 axis{0.0f, 1.0f, 0.0f, 0.2f};   // xyz = eje de proyeccion (mundo), w = coseno minimo
+    // x = tipo (0 estampa, 1 charco, 2 humedad), y = textura (-1 = ninguna),
+    // z = suavidad del borde (0..0.5), w = cantidad (nivel del agua / humedad)
+    core::Vec4 params{0.0f, -1.0f, 0.1f, 1.0f};
+    // x = rugosidad, y = cuanto la sustituye (0..1), z = metalicidad, w = normal (0 = conservar)
+    core::Vec4 material{0.5f, 0.0f, 0.0f, 0.0f};
+};
+
 // Lluvia de la pasada de geometria (skinned.frag): mapa de lluvia y estado.
 struct GpuWeather {
     core::Mat4 rain_view_projection = core::Mat4::identity();
@@ -142,6 +172,9 @@ struct GpuWeather {
     core::Vec4 params{};
     // Zona inundada: xy = centro (x, z), zw = radios (x, z); 0 = sin agua.
     core::Vec4 flood{};
+    // x = numero de decals.
+    core::Vec4 decal_info{};
+    GpuDecal decals[kMaxDecals]{};
 };
 
 // Constante de push de las nubes volumetricas (clouds.frag).
@@ -177,6 +210,12 @@ struct GpuExposurePush {
     float low_percent = 0.5f;
     float high_percent = 0.92f;
     float unused = 0.0f;
+    // Limites del ajuste de la exposicion (log2) y velocidades de adaptacion
+    // (PostProcessSettings: min_ev, max_ev, adaptation_speed_up/down).
+    float min_log_exposure = -2.0f;
+    float max_log_exposure = 1.4f;
+    float speed_up = 3.0f;
+    float speed_down = 1.2f;
 };
 
 // Estado de la auto-exposicion en la GPU (exposure_average.comp). Persiste
@@ -188,7 +227,9 @@ struct GpuExposureState {
     float initialized = 0.0f;
 };
 
-static_assert(sizeof(GpuCompositePush) == 32, "GpuCompositePush debe coincidir con composite.frag");
+static_assert(sizeof(GpuCompositeSettings) == 11 * 16,
+              "GpuCompositeSettings debe coincidir con composite.frag (std140)");
+static_assert(sizeof(GpuExposurePush) == 32, "GpuExposurePush debe coincidir con exposure_average.comp");
 
 // Datos de las cascadas para el shader de iluminacion.
 struct GpuShadows {
