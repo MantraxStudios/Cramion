@@ -33,8 +33,19 @@ layout(push_constant) uniform PushConstants {
 layout(location = 0) in vec2 v_uv;
 layout(location = 0) out vec4 out_reflection;
 
+const float kMinConfidence = 0.02;
+const float kMaxRadiance = 30.0;  // igual que en ssr.frag
+
+float luminance(vec3 c) {
+    return dot(c, vec3(0.2126, 0.7152, 0.0722));
+}
+
+// El filtro trabaja con el color comprimido (c / (1 + luminancia), reversible)
+// y premultiplicado por la confianza: asi un pixel HDR extremo no domina la
+// vecindad ni la mezcla con la historia.
 vec4 premultiply(vec4 reflection) {
-    return vec4(reflection.rgb * reflection.a, reflection.a);
+    vec3 rgb = min(max(reflection.rgb, vec3(0.0)), vec3(kMaxRadiance));
+    return vec4(rgb / (1.0 + luminance(rgb)) * reflection.a, reflection.a);
 }
 
 void main() {
@@ -44,7 +55,8 @@ void main() {
     float depth = texelFetch(g_depth, pixel, 0).r;
     vec4 current = premultiply(texelFetch(current_reflection, pixel, 0));
     if (depth >= 1.0 || push.params.x < 0.5) {
-        out_reflection = texelFetch(current_reflection, pixel, 0);
+        vec4 raw = texelFetch(current_reflection, pixel, 0);
+        out_reflection = vec4(min(raw.rgb, vec3(kMaxRadiance)), raw.a);
         return;
     }
 
@@ -77,5 +89,15 @@ void main() {
         result = mix(current, previous, push.params.y);
     }
 
-    out_reflection = result.a > 0.0001 ? vec4(result.rgb / result.a, result.a) : vec4(0.0);
+    // Volver a color sin premultiplicar. Con muy poca confianza el cociente
+    // se dispara (el color y la confianza se recortan por separado): esos
+    // pixeles salian como puntos sueltos muy brillantes. Por debajo de un
+    // minimo no hay reflejo, y el brillo se limita como en ssr.frag.
+    if (result.a < kMinConfidence || any(isnan(result)) || any(isinf(result))) {
+        out_reflection = vec4(0.0);
+        return;
+    }
+    vec3 compressed = clamp(result.rgb / result.a, vec3(0.0), vec3(0.999));
+    vec3 rgb = compressed / max(1.0 - luminance(compressed), 0.001);
+    out_reflection = vec4(min(rgb, vec3(kMaxRadiance)), min(result.a, 1.0));
 }

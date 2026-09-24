@@ -1,6 +1,7 @@
 #ifndef CRAMION_VK_VULKAN_RENDERER_H
 #define CRAMION_VK_VULKAN_RENDERER_H
 
+#include "vk/CloudNoise.h"
 #include "vk/ComputePass.h"
 #include "vk/FullscreenPass.h"
 #include "vk/GBuffer.h"
@@ -137,6 +138,10 @@ public:
     void setSsrEnabled(bool enabled) { ssr_enabled_ = enabled; }
     bool ssrEnabled() const { return ssr_enabled_; }
 
+    // Nubes volumetricas.
+    void setCloudsEnabled(bool enabled) { clouds_enabled_ = enabled; }
+    bool cloudsEnabled() const { return clouds_enabled_; }
+
     // Sonda de reflexion de la escena (si no, lo que el SSR no ve refleja el
     // cielo).
     void setReflectionProbeEnabled(bool enabled) { probe_enabled_ = enabled; }
@@ -223,12 +228,15 @@ private:
     void recordSsaoPass(const vk::raii::CommandBuffer& cmd, std::uint32_t frame_index);
     void recordSsgiPass(const vk::raii::CommandBuffer& cmd, std::uint32_t frame_index);
     void recordSsrPass(const vk::raii::CommandBuffer& cmd, std::uint32_t frame_index);
-    // Guarda los reflejos filtrados de este frame como historia del siguiente.
-    void recordSsrHistoryCopy(const vk::raii::CommandBuffer& cmd);
+    // Guarda los reflejos y la luz rebotada filtrados de este frame como
+    // historia del siguiente.
+    void recordFilterHistoryCopies(const vk::raii::CommandBuffer& cmd);
     // Escribe en `target`: la imagen HDR, o la de la captura de la sonda.
     void recordLightingPass(const vk::raii::CommandBuffer& cmd, std::uint32_t frame_index,
                             const VulkanImage& target);
     void recordSkyLutPass(const vk::raii::CommandBuffer& cmd);
+    // Nubes volumetricas (lee la LUT del cielo: va despues de ella).
+    void recordCloudPass(const vk::raii::CommandBuffer& cmd, std::uint32_t frame_index);
     void recordBloomPass(const vk::raii::CommandBuffer& cmd);
     void recordLightShaftPass(const vk::raii::CommandBuffer& cmd);
     void recordAutoExposurePass(const vk::raii::CommandBuffer& cmd);
@@ -249,8 +257,13 @@ private:
     VulkanImage ldr_color_{};
     // r = oclusion ambiental, g = profundidad lineal (para el desenfoque).
     VulkanImage ssao_image_{};
-    // Luz rebotada (rgb) y visibilidad del cielo (a), a media resolucion.
+    // Luz rebotada (rgb) y visibilidad del cielo (a), a media resolucion: la
+    // de este frame sin filtrar (ssgi.frag), la filtrada en el tiempo
+    // (gi_resolve.frag, la que lee la iluminacion) y su copia para el frame
+    // siguiente.
+    VulkanImage gi_raw_{};
     VulkanImage gi_image_{};
+    VulkanImage gi_history_{};
     // Reflejos de pantalla (rgb) y su confianza (a), a resolucion completa:
     // los de este frame sin filtrar (ssr.frag), los filtrados en el tiempo
     // (ssr_resolve.frag, los que lee la iluminacion) y la copia de estos que
@@ -266,6 +279,9 @@ private:
     IblProbe ibl_probe_{};
     // Rayos de luz, a media resolucion.
     VulkanImage light_shafts_{};
+    // Nubes volumetricas: ruido 3D y su imagen a media resolucion.
+    CloudNoise cloud_noise_{};
+    VulkanImage clouds_image_{};
     // Sonda de reflexion de la escena y la imagen HDR donde se dibuja cada
     // cara antes de copiarla al cubo (no se usa la del frame: el SSR y la GI
     // del siguiente la leen como frame anterior).
@@ -291,6 +307,8 @@ private:
     FullscreenPass ssgi_pass_{};
     FullscreenPass ssr_pass_{};
     FullscreenPass ssr_resolve_pass_{};
+    FullscreenPass gi_resolve_pass_{};
+    FullscreenPass clouds_pass_{};
     FullscreenPass light_shaft_pass_{};
     ComputePass histogram_pass_{};
     ComputePass exposure_average_pass_{};
@@ -321,6 +339,8 @@ private:
     bool ssr_history_ready_ = false;
     // ssr_history_ tiene los reflejos filtrados del frame anterior.
     bool ssr_filter_history_valid_ = false;
+    // gi_history_ tiene la luz rebotada filtrada del frame anterior.
+    bool gi_filter_history_valid_ = false;
 
     // --- Sonda de reflexion ---
     // Se esta dibujando una cara de la sonda (no un frame para la pantalla).
@@ -391,6 +411,8 @@ private:
     std::vector<vk::raii::DescriptorSet> ssgi_sets_;  // uno por frame
     std::vector<vk::raii::DescriptorSet> ssr_sets_;   // uno por frame
     std::vector<vk::raii::DescriptorSet> ssr_resolve_sets_;  // uno por frame
+    std::vector<vk::raii::DescriptorSet> gi_resolve_sets_;   // uno por frame
+    std::vector<vk::raii::DescriptorSet> clouds_sets_;       // uno por frame
     std::vector<vk::raii::DescriptorSet> histogram_sets_;
     std::vector<vk::raii::DescriptorSet> exposure_average_sets_;
 
@@ -406,6 +428,9 @@ private:
     core::Vec3 ibl_light_radiance_{};
     core::Vec3 ibl_to_light_{0.0f, 1.0f, 0.0f};
     GpuLightShaftPush light_shaft_push_{};
+    GpuCloudPush cloud_push_{};
+    // Tiempo que llevan moviendose las nubes con el viento.
+    float cloud_time_ = 0.0f;
 
     // Tiempo entre frames para la adaptacion de la exposicion.
     std::chrono::steady_clock::time_point last_frame_time_{};
@@ -440,6 +465,7 @@ private:
     bool light_shafts_enabled_ = true;
     bool gi_enabled_ = true;
     bool ssr_enabled_ = true;
+    bool clouds_enabled_ = true;
     bool aces_tonemapper_ = false;
     bool auto_exposure_enabled_ = true;
     // Los mapas locales se conservan entre frames (cache), asi que solo el

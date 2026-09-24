@@ -20,6 +20,7 @@
 //   E                  auto-exposicion    L              rayos de luz on/off
 //   I                  luz rebotada (GI)  K              tonemapper Neutral / ACES
 //   R                  reflejos (SSR)     P  sonda de reflexion on/off
+//   V                  nubes volumetricas
 //   RePag / AvPag      compensacion de exposicion (+-0.5 EV)
 //   ESC                salir
 // -----------------------------------------------------------------------------
@@ -174,7 +175,8 @@ void updateWindowTitle(Window& window, const Clock& clock, const Scene& scene,
           << (renderer.bloomEnabled() ? L"ON" : L"OFF") << L"  |  SSAO "
           << (renderer.ssaoEnabled() ? L"ON" : L"OFF") << L"  |  SSR "
           << (renderer.ssrEnabled() ? L"ON" : L"OFF") << L"  |  sonda "
-          << (renderer.reflectionProbeEnabled() ? L"ON" : L"OFF") << L"  |  GI "
+          << (renderer.reflectionProbeEnabled() ? L"ON" : L"OFF") << L"  |  nubes "
+          << (renderer.cloudsEnabled() ? L"ON" : L"OFF") << L"  |  GI "
           << (renderer.giEnabled() ? L"ON" : L"OFF") << L"  |  "
           << (renderer.acesTonemapper() ? L"ACES" : L"Neutral") << L"  |  exposicion "
           << (renderer.autoExposureEnabled() ? L"auto " : L"manual ") << std::setprecision(2)
@@ -259,7 +261,7 @@ int main(int argc, char** argv) {
                      "           Shift correr | rueda velocidad | T ciclo dia\n"
                      "           N dia/noche | G sombras | C cascadas | X antialiasing\n"
                      "           B bloom | O SSAO | R reflejos (SSR) | P sonda de reflexion\n"
-                     "           I luz rebotada (GI)\n"
+                     "           I luz rebotada (GI) | V nubes volumetricas\n"
                      "           L rayos de luz\n"
                      "           K tonemapper (Neutral/ACES) | E auto-exposicion\n"
                      "           RePag/AvPag compensacion de exposicion | ESC salir\n\n";
@@ -296,6 +298,9 @@ int main(int argc, char** argv) {
             }
             if (input.isKeyPressed(Key::R)) {
                 renderer.setSsrEnabled(!renderer.ssrEnabled());
+            }
+            if (input.isKeyPressed(Key::V)) {
+                renderer.setCloudsEnabled(!renderer.cloudsEnabled());
             }
             if (input.isKeyPressed(Key::P)) {
                 renderer.setReflectionProbeEnabled(!renderer.reflectionProbeEnabled());

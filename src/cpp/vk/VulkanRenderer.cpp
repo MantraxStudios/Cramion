@@ -164,6 +164,12 @@ constexpr std::uint64_t kProbeFaceInterval = 2;
 constexpr float kProbeFadeSeconds = 0.6f;
 // Peso de lo acumulado en el filtro temporal de los reflejos de pantalla.
 constexpr float kSsrHistoryWeight = 0.88f;
+// Y en el de la luz rebotada (cambia despacio: se puede acumular mas).
+constexpr float kGiHistoryWeight = 0.92f;
+
+// Nubes: fraccion del cielo cubierta y densidad (multiplica la extincion).
+constexpr float kCloudCoverage = 0.38f;
+constexpr float kCloudDensity = 1.0f;
 
 // Fraccion final de cada cascada en la que se mezcla con la siguiente, para
 // que el salto de resolucion entre cascadas no se vea como una linea.
@@ -298,6 +304,22 @@ void VulkanRenderer::initialize(const EngineInfo& info, HWND window, std::uint32
         ssr_resolve.fragment_shader = "ssr_resolve.frag.spv";
         ssr_resolve_pass_.create(device_, ssr_resolve);
 
+        // Filtro temporal de la GI: los mismos recursos, a media resolucion.
+        FullscreenPassDesc gi_resolve = ssgi;
+        gi_resolve.fragment_shader = "gi_resolve.frag.spv";
+        gi_resolve_pass_.create(device_, gi_resolve);
+
+        // Nubes: camara + ruido 3D + LUT del cielo (ambiente).
+        const std::array<Type, 3> cloud_bindings = {Type::eUniformBuffer,
+                                                    Type::eCombinedImageSampler,
+                                                    Type::eCombinedImageSampler};
+        FullscreenPassDesc clouds{};
+        clouds.fragment_shader = "clouds.frag.spv";
+        clouds.bindings = cloud_bindings;
+        clouds.push_constant_size = sizeof(GpuCloudPush);
+        clouds.color_format = kHdrFormat;
+        clouds_pass_.create(device_, clouds);
+
         FullscreenPassDesc shafts{};
         shafts.fragment_shader = "light_shafts.frag.spv";
         shafts.bindings = two_textures;
@@ -326,6 +348,7 @@ void VulkanRenderer::initialize(const EngineInfo& info, HWND window, std::uint32
                     vk::ImageAspectFlagBits::eColor);
     ibl_probe_.create(device_, sky_lut_);
     reflection_probe_.create(device_);
+    cloud_noise_.create(device_);
 
     createUniformBuffers();
     createDescriptors();
@@ -355,6 +378,8 @@ void VulkanRenderer::shutdown() {
     exposure_average_sets_.clear();
     histogram_sets_.clear();
     light_shaft_sets_.clear();
+    clouds_sets_.clear();
+    gi_resolve_sets_.clear();
     ssr_resolve_sets_.clear();
     ssr_sets_.clear();
     ssgi_sets_.clear();
@@ -399,6 +424,8 @@ void VulkanRenderer::shutdown() {
     exposure_average_pass_.destroy();
     histogram_pass_.destroy();
     light_shaft_pass_.destroy();
+    clouds_pass_.destroy();
+    gi_resolve_pass_.destroy();
     ssr_resolve_pass_.destroy();
     ssr_pass_.destroy();
     ssgi_pass_.destroy();
@@ -417,10 +444,14 @@ void VulkanRenderer::shutdown() {
     }
     light_shafts_.destroy();
     gi_image_.destroy();
+    gi_raw_.destroy();
+    gi_history_.destroy();
     ssr_image_.destroy();
     ssr_raw_.destroy();
     ssr_history_.destroy();
     probe_capture_.destroy();
+    clouds_image_.destroy();
+    cloud_noise_.destroy();
     reflection_probe_.destroy();
     ibl_probe_.destroy();
     sky_lut_.destroy();
@@ -519,7 +550,8 @@ void VulkanRenderer::createDescriptors() {
     // FXAA.
     // (+ entorno y LUT de la BRDF del IBL, + la GI, + el SSR, + los dos cubos
     // de la sonda.)
-    pool_sizes[1].descriptorCount = kMaxFramesInFlight * (GBuffer::kColorAttachmentCount + 13);
+    // (+ las nubes.)
+    pool_sizes[1].descriptorCount = kMaxFramesInFlight * (GBuffer::kColorAttachmentCount + 14);
 
     vk::DescriptorPoolCreateInfo pool_info{};
     pool_info.flags = vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet;
@@ -586,14 +618,16 @@ void VulkanRenderer::createDescriptors() {
     // Y la GI, el SSR y su filtro temporal: camara + 3 texturas por frame
     // cada uno.
     const std::array<vk::DescriptorPoolSize, 3> post_sizes = {
-        vk::DescriptorPoolSize{vk::DescriptorType::eUniformBuffer, kMaxFramesInFlight * 4},
+    // Y las nubes: camara + 2 texturas por frame. Y el filtro de la GI:
+    // camara + 3 texturas por frame.
+        vk::DescriptorPoolSize{vk::DescriptorType::eUniformBuffer, kMaxFramesInFlight * 6},
         vk::DescriptorPoolSize{vk::DescriptorType::eCombinedImageSampler,
-                               kMaxFramesInFlight * 11 + kBloomSets + 3 + 2 + 1},
+                               kMaxFramesInFlight * 16 + kBloomSets + 3 + 2 + 1},
         vk::DescriptorPoolSize{vk::DescriptorType::eStorageBuffer, 4}};
 
     vk::DescriptorPoolCreateInfo post_pool_info{};
     post_pool_info.flags = vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet;
-    post_pool_info.maxSets = kMaxFramesInFlight * 4 + kBloomSets + 4;
+    post_pool_info.maxSets = kMaxFramesInFlight * 6 + kBloomSets + 4;
     post_pool_info.setPoolSizes(post_sizes);
     post_pool_ = vk::raii::DescriptorPool(device_.handle(), post_pool_info);
 
@@ -612,6 +646,8 @@ void VulkanRenderer::createDescriptors() {
     ssgi_sets_ = allocate(ssgi_pass_, kMaxFramesInFlight);
     ssr_sets_ = allocate(ssr_pass_, kMaxFramesInFlight);
     ssr_resolve_sets_ = allocate(ssr_resolve_pass_, kMaxFramesInFlight);
+    clouds_sets_ = allocate(clouds_pass_, kMaxFramesInFlight);
+    gi_resolve_sets_ = allocate(gi_resolve_pass_, kMaxFramesInFlight);
     histogram_sets_ = allocate(histogram_pass_, 1);
     exposure_average_sets_ = allocate(exposure_average_pass_, 1);
 
@@ -891,7 +927,12 @@ void VulkanRenderer::updateLightingDescriptors() {
             probe_infos[cube].imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
         }
 
-        std::array<vk::WriteDescriptorSet, 20> writes{};
+        vk::DescriptorImageInfo clouds_info{};
+        clouds_info.sampler = *lighting_pass_.sampler();
+        clouds_info.imageView = *clouds_image_.view();
+        clouds_info.imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
+
+        std::array<vk::WriteDescriptorSet, 21> writes{};
 
         writes[0].dstSet = *lighting_sets_[i];
         writes[0].dstBinding = 0;
@@ -983,6 +1024,11 @@ void VulkanRenderer::updateLightingDescriptors() {
             write.setImageInfo(probe_infos[cube]);
         }
 
+        writes[20].dstSet = *lighting_sets_[i];
+        writes[20].dstBinding = 20;
+        writes[20].descriptorType = vk::DescriptorType::eCombinedImageSampler;
+        writes[20].setImageInfo(clouds_info);
+
         device_.handle().updateDescriptorSets(writes, nullptr);
     }
 
@@ -1065,6 +1111,31 @@ void VulkanRenderer::updatePostDescriptors() {
                       vk::ImageLayout::eDepthReadOnlyOptimal);
         write_texture(ssr_resolve_sets_[i], 2, ssr_resolve_pass_.sampler(), ssr_raw_, kRead);
         write_texture(ssr_resolve_sets_[i], 3, ssr_resolve_pass_.sampler(), ssr_history_, kRead);
+
+        // Filtro temporal de la GI.
+        vk::WriteDescriptorSet gi_resolve_camera = write;
+        gi_resolve_camera.dstSet = *gi_resolve_sets_[i];
+        device_.handle().updateDescriptorSets(gi_resolve_camera, nullptr);
+        write_texture(gi_resolve_sets_[i], 1, gi_resolve_pass_.sampler(), gbuffer_.depth(),
+                      vk::ImageLayout::eDepthReadOnlyOptimal);
+        write_texture(gi_resolve_sets_[i], 2, gi_resolve_pass_.sampler(), gi_raw_, kRead);
+        write_texture(gi_resolve_sets_[i], 3, gi_resolve_pass_.sampler(), gi_history_, kRead);
+
+        // Nubes: camara + ruido 3D (con su muestreador, que repite) + cielo.
+        vk::WriteDescriptorSet clouds_camera = write;
+        clouds_camera.dstSet = *clouds_sets_[i];
+        device_.handle().updateDescriptorSets(clouds_camera, nullptr);
+        vk::DescriptorImageInfo noise_info{};
+        noise_info.sampler = *cloud_noise_.sampler();
+        noise_info.imageView = *cloud_noise_.view();
+        noise_info.imageLayout = kRead;
+        vk::WriteDescriptorSet noise_write{};
+        noise_write.dstSet = *clouds_sets_[i];
+        noise_write.dstBinding = 1;
+        noise_write.descriptorType = vk::DescriptorType::eCombinedImageSampler;
+        noise_write.setImageInfo(noise_info);
+        device_.handle().updateDescriptorSets(noise_write, nullptr);
+        write_texture(clouds_sets_[i], 2, clouds_pass_.sampler(), sky_lut_, kRead);
     }
 
     // Bloom: cada nivel de bajada lee el anterior (el primero, la imagen HDR);
@@ -1139,9 +1210,20 @@ void VulkanRenderer::createRenderTargets() {
                         vk::ImageAspectFlagBits::eColor);
     ssr_filter_history_valid_ = false;
 
+    // Las nubes son suaves: media resolucion.
+    clouds_image_.create(device_, bloomLevelExtent(extent, 0), kHdrFormat, target_usage,
+                         vk::ImageAspectFlagBits::eColor);
+
     // La luz rebotada es de baja frecuencia: media resolucion.
-    gi_image_.create(device_, bloomLevelExtent(extent, 0), kHdrFormat, target_usage,
+    gi_raw_.create(device_, bloomLevelExtent(extent, 0), kHdrFormat, target_usage,
+                   vk::ImageAspectFlagBits::eColor);
+    gi_image_.create(device_, bloomLevelExtent(extent, 0), kHdrFormat,
+                     target_usage | vk::ImageUsageFlagBits::eTransferSrc,
                      vk::ImageAspectFlagBits::eColor);
+    gi_history_.create(device_, bloomLevelExtent(extent, 0), kHdrFormat,
+                       vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eTransferDst,
+                       vk::ImageAspectFlagBits::eColor);
+    gi_filter_history_valid_ = false;
 
     // Caras de la sonda de reflexion: se dibujan a pantalla completa y se
     // copia el cuadrado central.
@@ -1312,6 +1394,12 @@ void VulkanRenderer::updateUniforms(const scene::Scene& scene, const scene::Came
     light_data.spot_count = spot_count;
     light_data.ssao_enabled = ssao_enabled_ ? 1 : 0;
     light_data.gi_enabled = gi_enabled_ ? 1 : 0;
+    // --- Nubes ---
+    light_data.clouds = Vec4{clouds_enabled_ ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f};
+    if (!capturing_) {
+        cloud_time_ += frame_delta_seconds_;
+    }
+
     // Sonda de reflexion: el cubo nuevo entra fundiendose con el anterior.
     // No se refleja a si misma mientras se captura.
     if (!capturing_) {
@@ -1343,6 +1431,11 @@ void VulkanRenderer::updateUniforms(const scene::Scene& scene, const scene::Came
                           lights.sun.intensity;
     ibl_to_light_ = -core::normalize(lights.sun.direction);
     sky_push_.moon = toVec4(lights.sky.to_moon, kMoonIlluminance);
+
+    cloud_push_.to_light_time = toVec4(ibl_to_light_, cloud_time_);
+    cloud_push_.light_coverage = toVec4(ibl_light_radiance_, kCloudCoverage);
+    cloud_push_.params =
+        Vec4{static_cast<float>(frame_count_ % 64), kCloudDensity, 0.0f, 0.0f};
 
     // --- Rayos de luz: el sol proyectado en pantalla ---
     // Con w = 0 se proyecta la direccion (un punto en el infinito).
@@ -1603,6 +1696,7 @@ void VulkanRenderer::captureProbeFace(const scene::Scene& scene) {
 
     recordShadowPass(cmd, current_frame_);
     recordSkyLutPass(cmd);
+    recordCloudPass(cmd, current_frame_);
     recordGeometryPass(cmd, current_frame_);
     recordSsaoPass(cmd, current_frame_);
     recordSsgiPass(cmd, current_frame_);
@@ -1675,12 +1769,13 @@ void VulkanRenderer::recordCommandBuffer(const vk::raii::CommandBuffer& cmd,
     recordShadowPass(cmd, frame_index);
     recordLocalShadowPass(cmd, frame_index);
     recordSkyLutPass(cmd);
+    recordCloudPass(cmd, frame_index);
     recordGeometryPass(cmd, frame_index);
     recordSsaoPass(cmd, frame_index);
     recordSsgiPass(cmd, frame_index);
     recordSsrPass(cmd, frame_index);
     recordLightingPass(cmd, frame_index, scene_color_);
-    recordSsrHistoryCopy(cmd);
+    recordFilterHistoryCopies(cmd);
     recordBloomPass(cmd);
     recordLightShaftPass(cmd);
     recordAutoExposurePass(cmd);
@@ -2038,7 +2133,7 @@ void VulkanRenderer::recordSsaoPass(const vk::raii::CommandBuffer& cmd,
 
 void VulkanRenderer::recordSsgiPass(const vk::raii::CommandBuffer& cmd,
                                     std::uint32_t frame_index) {
-    std::vector<vk::ImageMemoryBarrier2> barriers = {discardToAttachment(*gi_image_.handle())};
+    std::vector<vk::ImageMemoryBarrier2> barriers = {discardToAttachment(*gi_raw_.handle())};
 
     // La imagen HDR guarda aun el frame anterior (ya como textura). Recien
     // creada no tiene nada: se pasa a textura para poder enlazarla y el
@@ -2058,7 +2153,28 @@ void VulkanRenderer::recordSsgiPass(const vk::raii::CommandBuffer& cmd,
     GpuSsgiPush push{};
     push.previous_view_projection = previous_view_projection_;
     push.params = Vec4{scene_history_valid_ && !capturing_ ? 1.0f : 0.0f, 1.0f, 0.0f, 0.0f};
-    drawFullscreen(cmd, ssgi_pass_, &ssgi_sets_[frame_index], gi_image_, &push);
+    drawFullscreen(cmd, ssgi_pass_, &ssgi_sets_[frame_index], gi_raw_, &push);
+
+    // --- Filtro temporal ---
+    // La historia recien creada no tiene nada: se pasa a textura para poder
+    // enlazarla y el shader no la lee.
+    std::vector<vk::ImageMemoryBarrier2> resolve_barriers = {
+        writtenToSampled(*gi_raw_.handle()), discardToAttachment(*gi_image_.handle())};
+    if (!gi_filter_history_valid_) {
+        resolve_barriers.push_back(colorBarrier(
+            *gi_history_.handle(), vk::ImageLayout::eUndefined,
+            vk::ImageLayout::eShaderReadOnlyOptimal, vk::PipelineStageFlagBits2::eTopOfPipe,
+            vk::AccessFlagBits2::eNone, vk::PipelineStageFlagBits2::eFragmentShader,
+            vk::AccessFlagBits2::eShaderSampledRead));
+    }
+    pipelineBarrier(cmd, resolve_barriers);
+
+    // Las caras de la sonda no usan la historia (es de la camara de pantalla).
+    GpuSsgiPush resolve{};
+    resolve.previous_view_projection = previous_view_projection_;
+    resolve.params = Vec4{gi_filter_history_valid_ && !capturing_ ? 1.0f : 0.0f,
+                          kGiHistoryWeight, 0.0f, 0.0f};
+    drawFullscreen(cmd, gi_resolve_pass_, &gi_resolve_sets_[frame_index], gi_image_, &resolve);
 
     if (capturing_) {
         return;
@@ -2078,8 +2194,9 @@ void VulkanRenderer::recordSsrPass(const vk::raii::CommandBuffer& cmd,
     GpuSsgiPush push{};
     push.previous_view_projection = previous_view_projection_;
     // Sin frame anterior o con el SSR apagado, el shader no refleja nada.
+    // z: numero de frame, para que el ruido del primer paso cambie cada frame.
     push.params = Vec4{ssr_enabled_ && ssr_history_ready_ && !capturing_ ? 1.0f : 0.0f, 1.0f,
-                       0.0f, 0.0f};
+                       static_cast<float>(frame_count_ % 64), 0.0f};
     drawFullscreen(cmd, ssr_pass_, &ssr_sets_[frame_index], ssr_raw_, &push);
 
     // --- Filtro temporal ---
@@ -2106,42 +2223,57 @@ void VulkanRenderer::recordSsrPass(const vk::raii::CommandBuffer& cmd,
                    &resolve);
 }
 
-void VulkanRenderer::recordSsrHistoryCopy(const vk::raii::CommandBuffer& cmd) {
-    // La iluminacion ya leyo los reflejos filtrados: se copian a la historia.
-    const vk::ImageLayout history_layout = vk::ImageLayout::eShaderReadOnlyOptimal;
-    pipelineBarrier(cmd, {colorBarrier(*ssr_image_.handle(), vk::ImageLayout::eShaderReadOnlyOptimal,
-                                       vk::ImageLayout::eTransferSrcOptimal,
-                                       vk::PipelineStageFlagBits2::eFragmentShader,
-                                       vk::AccessFlagBits2::eShaderSampledRead,
-                                       vk::PipelineStageFlagBits2::eCopy,
-                                       vk::AccessFlagBits2::eTransferRead),
-                          colorBarrier(*ssr_history_.handle(), history_layout,
-                                       vk::ImageLayout::eTransferDstOptimal,
-                                       vk::PipelineStageFlagBits2::eFragmentShader,
-                                       vk::AccessFlagBits2::eShaderSampledRead,
-                                       vk::PipelineStageFlagBits2::eCopy,
-                                       vk::AccessFlagBits2::eTransferWrite)});
+void VulkanRenderer::recordFilterHistoryCopies(const vk::raii::CommandBuffer& cmd) {
+    // La iluminacion ya leyo los reflejos y la luz rebotada filtrados: se
+    // copian a sus historias. Todas quedan como textura al terminar.
+    constexpr vk::ImageLayout kRead = vk::ImageLayout::eShaderReadOnlyOptimal;
+    const std::array<std::pair<const VulkanImage*, const VulkanImage*>, 2> copies = {{
+        {&ssr_image_, &ssr_history_},
+        {&gi_image_, &gi_history_},
+    }};
 
-    const vk::Extent2D extent = ssr_image_.extent();
-    vk::ImageCopy region{};
-    region.srcSubresource = vk::ImageSubresourceLayers{vk::ImageAspectFlagBits::eColor, 0, 0, 1};
-    region.dstSubresource = region.srcSubresource;
-    region.extent = vk::Extent3D{extent.width, extent.height, 1};
-    cmd.copyImage(*ssr_image_.handle(), vk::ImageLayout::eTransferSrcOptimal,
-                  *ssr_history_.handle(), vk::ImageLayout::eTransferDstOptimal, region);
+    std::vector<vk::ImageMemoryBarrier2> before;
+    std::vector<vk::ImageMemoryBarrier2> after;
+    for (const auto& [source, history] : copies) {
+        before.push_back(colorBarrier(*source->handle(), kRead,
+                                      vk::ImageLayout::eTransferSrcOptimal,
+                                      vk::PipelineStageFlagBits2::eFragmentShader,
+                                      vk::AccessFlagBits2::eShaderSampledRead,
+                                      vk::PipelineStageFlagBits2::eCopy,
+                                      vk::AccessFlagBits2::eTransferRead));
+        before.push_back(colorBarrier(*history->handle(), kRead,
+                                      vk::ImageLayout::eTransferDstOptimal,
+                                      vk::PipelineStageFlagBits2::eFragmentShader,
+                                      vk::AccessFlagBits2::eShaderSampledRead,
+                                      vk::PipelineStageFlagBits2::eCopy,
+                                      vk::AccessFlagBits2::eTransferWrite));
+        after.push_back(colorBarrier(*source->handle(), vk::ImageLayout::eTransferSrcOptimal,
+                                     kRead, vk::PipelineStageFlagBits2::eCopy,
+                                     vk::AccessFlagBits2::eTransferRead,
+                                     vk::PipelineStageFlagBits2::eFragmentShader,
+                                     vk::AccessFlagBits2::eShaderSampledRead));
+        after.push_back(colorBarrier(*history->handle(), vk::ImageLayout::eTransferDstOptimal,
+                                     kRead, vk::PipelineStageFlagBits2::eCopy,
+                                     vk::AccessFlagBits2::eTransferWrite,
+                                     vk::PipelineStageFlagBits2::eFragmentShader,
+                                     vk::AccessFlagBits2::eShaderSampledRead));
+    }
+    pipelineBarrier(cmd, before);
 
-    pipelineBarrier(cmd, {colorBarrier(*ssr_image_.handle(), vk::ImageLayout::eTransferSrcOptimal,
-                                       vk::ImageLayout::eShaderReadOnlyOptimal,
-                                       vk::PipelineStageFlagBits2::eCopy,
-                                       vk::AccessFlagBits2::eTransferRead,
-                                       vk::PipelineStageFlagBits2::eFragmentShader,
-                                       vk::AccessFlagBits2::eShaderSampledRead),
-                          colorBarrier(*ssr_history_.handle(), vk::ImageLayout::eTransferDstOptimal,
-                                       history_layout, vk::PipelineStageFlagBits2::eCopy,
-                                       vk::AccessFlagBits2::eTransferWrite,
-                                       vk::PipelineStageFlagBits2::eFragmentShader,
-                                       vk::AccessFlagBits2::eShaderSampledRead)});
+    for (const auto& [source, history] : copies) {
+        const vk::Extent2D extent = source->extent();
+        vk::ImageCopy region{};
+        region.srcSubresource =
+            vk::ImageSubresourceLayers{vk::ImageAspectFlagBits::eColor, 0, 0, 1};
+        region.dstSubresource = region.srcSubresource;
+        region.extent = vk::Extent3D{extent.width, extent.height, 1};
+        cmd.copyImage(*source->handle(), vk::ImageLayout::eTransferSrcOptimal,
+                      *history->handle(), vk::ImageLayout::eTransferDstOptimal, region);
+    }
+
+    pipelineBarrier(cmd, after);
     ssr_filter_history_valid_ = true;
+    gi_filter_history_valid_ = true;
 }
 
 void VulkanRenderer::recordLightingPass(const vk::raii::CommandBuffer& cmd,
@@ -2252,6 +2384,18 @@ void VulkanRenderer::recordSkyLutPass(const vk::raii::CommandBuffer& cmd) {
     pipelineBarrier(cmd, to_sampled);
 
     ibl_probe_.record(cmd, ibl_light_radiance_, ibl_to_light_);
+}
+
+void VulkanRenderer::recordCloudPass(const vk::raii::CommandBuffer& cmd,
+                                     std::uint32_t frame_index) {
+    pipelineBarrier(cmd, discardToAttachment(*clouds_image_.handle()));
+    // Apagadas no se dibujan (la iluminacion no las lee), pero la imagen
+    // queda igualmente como textura para el descriptor.
+    if (clouds_enabled_) {
+        drawFullscreen(cmd, clouds_pass_, &clouds_sets_[frame_index], clouds_image_,
+                       &cloud_push_);
+    }
+    pipelineBarrier(cmd, writtenToSampled(*clouds_image_.handle()));
 }
 
 void VulkanRenderer::recordLightShaftPass(const vk::raii::CommandBuffer& cmd) {

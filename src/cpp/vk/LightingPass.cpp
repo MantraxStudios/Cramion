@@ -27,7 +27,7 @@ void LightingPass::create(const VulkanDevice& device, vk::Format color_format) {
     sampler_ = vk::raii::Sampler(device.handle(), sampler_info);
 
     // --- Descriptores ---
-    std::array<vk::DescriptorSetLayoutBinding, 20> bindings{};
+    std::array<vk::DescriptorSetLayoutBinding, 21> bindings{};
 
     bindings[0].binding = 0;
     bindings[0].descriptorType = vk::DescriptorType::eUniformBuffer;
@@ -114,7 +114,8 @@ void LightingPass::create(const VulkanDevice& device, vk::Format color_format) {
     bindings[17].stageFlags = vk::ShaderStageFlagBits::eFragment;
 
     // Bindings 18 y 19: los dos cubos de la sonda de reflexion de la escena.
-    for (std::uint32_t binding = 18; binding <= 19; ++binding) {
+    // Binding 20: nubes volumetricas (media resolucion).
+    for (std::uint32_t binding = 18; binding <= 20; ++binding) {
         bindings[binding].binding = binding;
         bindings[binding].descriptorType = vk::DescriptorType::eCombinedImageSampler;
         bindings[binding].descriptorCount = 1;

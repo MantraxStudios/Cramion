@@ -12,7 +12,7 @@ namespace cramion::asset {
 namespace {
 
 // Cambiar si cambia cualquier estructura de asset/Model.h que se guarda.
-constexpr std::uint32_t kModelCacheVersion = 7;
+constexpr std::uint32_t kModelCacheVersion = 9;
 constexpr char kMagic[4] = {'C', 'R', 'M', 'C'};
 
 // Identidad del archivo original: si cambia, la cache no vale.

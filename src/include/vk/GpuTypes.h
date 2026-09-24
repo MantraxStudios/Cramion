@@ -60,6 +60,9 @@ struct GpuLights {
     // Los dos cubos de la sonda de reflexion: xyz = centro, w = peso (0 = no
     // se usa; los dos suman 1 mientras uno se funde con el otro).
     core::Vec4 probes[2]{};
+
+    // Nubes volumetricas: x = 1 si se componen sobre el cielo.
+    core::Vec4 clouds{};
 };
 
 // Constante de push de los modelos con esqueleto (pasada de geometria). Son
@@ -120,6 +123,13 @@ struct GpuSsgiPush {
     core::Mat4 previous_view_projection = core::Mat4::identity();
     // x = hay frame anterior valido, y = intensidad.
     core::Vec4 params{0.0f, 1.0f, 0.0f, 0.0f};
+};
+
+// Constante de push de las nubes volumetricas (clouds.frag).
+struct GpuCloudPush {
+    core::Vec4 to_light_time{};   // xyz = hacia la luz direccional, w = segundos
+    core::Vec4 light_coverage{};  // rgb = su radiancia, a = cobertura (0..1)
+    core::Vec4 params{};          // x = numero de frame, y = densidad
 };
 
 // Constante de push de la LUT del cielo (sky_lut.frag).

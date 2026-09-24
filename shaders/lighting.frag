@@ -70,6 +70,7 @@ layout(set = 0, binding = 4) uniform LightBuffer {
     PointLightGpu points[kMaxPointLights];
     SpotLightGpu spots[kMaxSpotLights];
     vec4 probes[2];                // cubos de la sonda: xyz = centro, w = peso (0 = sin usar)
+    vec4 clouds;                   // x = 1 si hay nubes volumetricas
 } lights;
 
 // Mapa de sombras en cascada. El muestreador compara por hardware: devuelve
@@ -129,6 +130,10 @@ layout(set = 0, binding = 17) uniform sampler2D ssr_map;
 // anterior.
 layout(set = 0, binding = 18) uniform samplerCube reflection_probe_0;
 layout(set = 0, binding = 19) uniform samplerCube reflection_probe_1;
+
+// Nubes volumetricas (clouds.frag), a media resolucion: rgb = luz dispersada,
+// a = transmitancia (cuanto cielo de detras se ve).
+layout(set = 0, binding = 20) uniform sampler2D clouds_map;
 
 layout(location = 0) in vec2 v_uv;
 layout(location = 0) out vec4 out_color;
@@ -686,6 +691,11 @@ vec4 upsampledGi(float center_depth, vec3 normal) {
     ivec2 base = ivec2(gl_FragCoord.xy) / 2;
     float tolerance = center_depth * 0.08 + 0.05;
 
+    // Centro de este pixel en coordenadas de texel de media resolucion: cada
+    // texel pesa segun lo cerca que este (filtro en tienda). Con pesos iguales
+    // en la ventana 4x4, un texel mas brillante se veia como un cuadrado.
+    vec2 center = gl_FragCoord.xy * 0.5 - 0.5;
+
     vec4 sum = vec4(0.0);
     float weight_sum = 0.0;
     for (int y = -2; y <= 1; ++y) {
@@ -694,8 +704,10 @@ vec4 upsampledGi(float center_depth, vec3 normal) {
             ivec2 source = min(p * 2, full_size - 1);
             float depth = linearDepth(texelFetch(g_depth, source, 0).r);
             vec3 n = decodeNormal(texelFetch(g_normal, source, 0).rg);
+            vec2 offset = abs(vec2(base + ivec2(x, y)) - center);
+            float tent = max(1.0 - offset.x * 0.5, 0.0) * max(1.0 - offset.y * 0.5, 0.0);
             float w = (abs(depth - center_depth) < tolerance ? 1.0 : 0.0) *
-                      max(dot(n, normal), 0.0);
+                      max(dot(n, normal), 0.0) * tent;
             sum += texelFetch(gi_map, p, 0) * w;
             weight_sum += w;
         }
@@ -726,6 +738,11 @@ void main() {
     if (depth >= 1.0) {
         // --- Cielo ---
         color = skyColor(normalize(world_position - camera.position.xyz), true);
+        // Las nubes tapan el cielo (y el disco del sol) y anaden su luz.
+        if (lights.clouds.x > 0.5) {
+            vec4 clouds = texture(clouds_map, v_uv);
+            color = color * clouds.a + clouds.rgb;
+        }
     } else {
         vec4 normal_sample = texture(g_normal, v_uv);
         vec4 albedo_sample = texture(g_albedo, v_uv);

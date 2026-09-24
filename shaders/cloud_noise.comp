@@ -1,0 +1,93 @@
+#version 450
+
+// Ruido 3D de las nubes volumetricas (clouds.frag), como el de Horizon Zero
+// Dawn (Schneider, "The real-time volumetric cloudscapes of Horizon", 2015):
+//
+//   r = Perlin-Worley: ruido de gradiente "hinchado" con celdas de Worley. Da
+//       la forma de los cumulos (masas redondeadas con huecos).
+//   g, b, a = Worley (celdas invertidas) a 3 frecuencias crecientes. Erosionan
+//       los bordes: el aspecto de coliflor y las hilachas.
+//
+// Todo es periodico (se repite exactamente en cada eje), asi la textura se
+// puede repetir por el cielo sin costuras. Se genera una vez al arrancar.
+
+layout(local_size_x = 4, local_size_y = 4, local_size_z = 4) in;
+
+layout(set = 0, binding = 0, rgba8) uniform writeonly image3D noise;
+
+const int kSize = 128;
+
+vec3 hash33(vec3 p) {
+    p = fract(p * vec3(0.1031, 0.1030, 0.0973));
+    p += dot(p, p.yxz + 33.33);
+    return fract((p.xxy + p.yxx) * p.zyx);
+}
+
+// Worley periodico: 1 cerca de un punto de celda, 0 lejos.
+float worley(vec3 uvw, float period) {
+    vec3 p = uvw * period;
+    vec3 cell = floor(p);
+    vec3 f = fract(p);
+    float nearest = 1e9;
+    for (int z = -1; z <= 1; ++z) {
+        for (int y = -1; y <= 1; ++y) {
+            for (int x = -1; x <= 1; ++x) {
+                vec3 offset = vec3(x, y, z);
+                vec3 point = offset + hash33(mod(cell + offset, period));
+                vec3 d = f - point;
+                nearest = min(nearest, dot(d, d));
+            }
+        }
+    }
+    return clamp(1.0 - sqrt(nearest), 0.0, 1.0);
+}
+
+// Ruido de gradiente (Perlin) periodico, en [-1, 1] aprox.
+float gradientNoise(vec3 uvw, float period) {
+    vec3 p = uvw * period;
+    vec3 cell = floor(p);
+    vec3 f = fract(p);
+    vec3 u = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
+
+    float corners[8];
+    for (int i = 0; i < 8; ++i) {
+        vec3 corner = vec3(i & 1, (i >> 1) & 1, (i >> 2) & 1);
+        vec3 gradient = normalize(hash33(mod(cell + corner, period)) * 2.0 - 1.0);
+        corners[i] = dot(gradient, f - corner);
+    }
+    float x00 = mix(corners[0], corners[1], u.x);
+    float x10 = mix(corners[2], corners[3], u.x);
+    float x01 = mix(corners[4], corners[5], u.x);
+    float x11 = mix(corners[6], corners[7], u.x);
+    return mix(mix(x00, x10, u.y), mix(x01, x11, u.y), u.z) * 1.6;
+}
+
+float worleyFbm(vec3 uvw, float period) {
+    return worley(uvw, period) * 0.625 + worley(uvw, period * 2.0) * 0.25 +
+           worley(uvw, period * 4.0) * 0.125;
+}
+
+float remap(float value, float low, float high, float new_low, float new_high) {
+    return new_low + (value - low) / (high - low) * (new_high - new_low);
+}
+
+void main() {
+    ivec3 id = ivec3(gl_GlobalInvocationID);
+    if (any(greaterThanEqual(id, ivec3(kSize)))) {
+        return;
+    }
+    vec3 uvw = (vec3(id) + 0.5) / float(kSize);
+
+    // Perlin fbm en [0, 1].
+    float perlin = gradientNoise(uvw, 4.0) * 0.5 + gradientNoise(uvw, 8.0) * 0.25 +
+                   gradientNoise(uvw, 16.0) * 0.125;
+    perlin = clamp(perlin * 0.5 + 0.5, 0.0, 1.0);
+
+    float cells = worleyFbm(uvw, 4.0);
+    // Perlin-Worley: el Perlin "empujado" por las celdas.
+    float perlin_worley = clamp(remap(perlin, cells - 1.0, 1.0, 0.0, 1.0), 0.0, 1.0);
+
+    vec4 value = vec4(perlin_worley, worleyFbm(uvw, 4.0), worleyFbm(uvw, 8.0),
+                      worleyFbm(uvw, 16.0));
+    imageStore(noise, id, value);
+}

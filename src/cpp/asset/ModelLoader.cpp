@@ -97,14 +97,23 @@ bool readFile(const std::filesystem::path& path, std::vector<std::uint8_t>& byte
 // Convierte la escena de assimp al formato del motor.
 class Converter {
 public:
-    Converter(const aiScene& scene, std::filesystem::path directory, ModelData& out)
-        : scene_(scene), directory_(std::move(directory)), out_(out) {}
+    // `static_scene`: los nodos ya estan horneados en los vertices
+    // (PreTransformVertices). Los huesos de las mallas se ignoran: todo queda
+    // en un unico hueso identidad, y el renderizador puede descartar cada
+    // submalla por separado. (Algunos FBX de escenarios, como Bistro, traen
+    // mallas con huesos aunque nada se anime.)
+    Converter(const aiScene& scene, std::filesystem::path directory, ModelData& out,
+              bool static_scene)
+        : scene_(scene), directory_(std::move(directory)), out_(out),
+          static_scene_(static_scene) {}
 
     void run() {
         addNode(scene_.mRootNode, -1);
         addMaterials();
         addMeshes(scene_.mRootNode);
-        addAnimations();
+        if (!static_scene_) {
+            addAnimations();
+        }
     }
 
 private:
@@ -181,12 +190,15 @@ private:
         }
         // Una malla con esqueleto no depende del nodo que la referencia; si
         // aparece en varios nodos se dibujaria dos veces en el mismo sitio.
-        if (mesh.HasBones() && !skinned_meshes_done_.insert(mesh_index).second) {
+        const bool skinned = mesh.HasBones() && !static_scene_;
+        if (skinned && !skinned_meshes_done_.insert(mesh_index).second) {
             return;
         }
 
         const auto base_vertex = static_cast<std::uint32_t>(out_.vertices.size());
-        const std::uint32_t fallback_bone = nodeBone(node);
+        // Escenario horneado: las transformaciones ya estan en los vertices,
+        // asi que todas las mallas van al hueso de la raiz (uno solo).
+        const std::uint32_t fallback_bone = nodeBone(static_scene_ ? 0 : node);
 
         // --- Vertices ---
         for (unsigned int v = 0; v < mesh.mNumVertices; ++v) {
@@ -212,7 +224,7 @@ private:
         // --- Influencias ---
         // Se quedan las cuatro de mas peso (LimitBoneWeights ya lo garantiza,
         // pero no cuesta nada ser robusto) y se normalizan a suma 1.
-        if (mesh.HasBones()) {
+        if (skinned) {
             for (unsigned int b = 0; b < mesh.mNumBones; ++b) {
                 const aiBone& bone = *mesh.mBones[b];
                 const std::uint32_t bone_index = boneFor(bone);
@@ -561,6 +573,7 @@ private:
     std::unordered_map<std::int32_t, std::uint32_t> node_bone_index_;
     std::unordered_map<std::string, std::int32_t> texture_index_;
     std::unordered_set<unsigned int> skinned_meshes_done_;
+    bool static_scene_ = false;
 };
 
 // Parte cada submalla de un modelo estatico en celdas de kClusterSize metros
@@ -810,7 +823,7 @@ ModelData importWithAssimp(const std::filesystem::path& path, bool force_static)
 
     ModelData model{};
     model.name = path.filename().string();
-    Converter(*scene, path.parent_path(), model).run();
+    Converter(*scene, path.parent_path(), model, /*static_scene=*/!skinned).run();
     timer.lap("conversion al formato del motor");
     if (!skinned) {
         clusterSubmeshes(model);

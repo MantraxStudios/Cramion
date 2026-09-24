@@ -45,7 +45,11 @@ layout(location = 0) out vec4 out_gi;
 const int kRays = 6;
 const int kSteps = 10;
 const float kRadius = 3.0;       // metros
-const float kMaxRadiance = 12.0; // tope por muestra: sin destellos del sol
+// Tope de luminancia por muestra, del orden de una pared blanca al sol. Mas
+// alto, un rayo que acierta en algo diminuto y muy brillante (una bombilla
+// emisiva, el reflejo del sol) iluminaba el pixel entero: cuadrados de
+// colores al ampliar la GI a pantalla completa.
+const float kMaxLuminance = 3.0;
 const float kGoldenAngle = 2.39996323;
 const float kTwoPi = 6.28318531;
 
@@ -157,8 +161,11 @@ void main() {
                     vec2 previous_uv = previous_clip.xy / previous_clip.w * 0.5 + 0.5;
                     if (previous_clip.w > 0.0 && all(greaterThanEqual(previous_uv, vec2(0.0))) &&
                         all(lessThanEqual(previous_uv, vec2(1.0)))) {
-                        vec3 light = textureLod(previous_color, previous_uv, 0.0).rgb;
-                        radiance += min(light, vec3(kMaxRadiance)) * facing;
+                        vec3 light = max(textureLod(previous_color, previous_uv, 0.0).rgb,
+                                         vec3(0.0));
+                        float light_luminance = dot(light, vec3(0.2126, 0.7152, 0.0722));
+                        light *= min(1.0, kMaxLuminance / max(light_luminance, 0.0001));
+                        radiance += light * facing;
                     }
                 }
                 break;

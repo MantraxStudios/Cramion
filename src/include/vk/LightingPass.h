@@ -31,6 +31,7 @@ class VulkanDevice;
 //   set 0, binding 17 -> reflejos de pantalla (SSR)
 //   set 0, binding 18 -> sonda de reflexion de la escena (cubo 0)
 //   set 0, binding 19 -> sonda de reflexion de la escena (cubo 1)
+//   set 0, binding 20 -> nubes volumetricas
 //
 // Escribe HDR lineal: el tono y la gamma van en la composicion final.
 class LightingPass {

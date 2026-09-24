@@ -28,7 +28,7 @@ layout(set = 0, binding = 3) uniform sampler2D previous_color;
 
 layout(push_constant) uniform PushConstants {
     mat4 previous_view_projection;
-    vec4 params;  // x = hay frame anterior valido
+    vec4 params;  // x = hay frame anterior valido, z = numero de frame (para el ruido)
 } push;
 
 layout(location = 0) in vec2 v_uv;
@@ -101,9 +101,15 @@ void main() {
     vec3 origin = position + normal * (0.01 + 0.002 * -position.z);
 
     // --- Marcha con pasos que crecen de forma geometrica ---
+    // El primer paso se desplaza un poco al azar en cada pixel y cada frame
+    // (ruido de gradiente entrelazado, Jimenez 2014): los escalones de un
+    // paso fijo se ven como bandas; asi se convierten en ruido fino, que el
+    // filtro temporal (ssr_resolve.frag) promedia.
     float growth = pow(kMaxDistance / kFirstStep, 1.0 / float(kSteps));
+    vec2 noise_pixel = vec2(pixel) + 5.588238 * mod(push.params.z, 64.0);
+    float jitter = fract(52.9829189 * fract(dot(noise_pixel, vec2(0.06711056, 0.00583715))));
     float previous_distance = 0.0;
-    float distance_along = kFirstStep;
+    float distance_along = kFirstStep * mix(1.0, growth, jitter);
     bool hit = false;
     vec2 hit_uv = vec2(0.0);
 
@@ -137,9 +143,19 @@ void main() {
                     low = middle;
                 }
             }
-            project(origin + ray * high, hit_uv);
-            hit = insideScreen(hit_uv);
-            break;
+            // El cruce solo es un choque si el rayo acaba pegado a la
+            // superficie. Si tras afinar sigue lejos de ella, el rayo paso
+            // por detras de algo (el borde de una columna, una baranda) y lo
+            // que se veria ahi es un trozo de otra cosa: esos eran los
+            // fragmentos sueltos en el reflejo. Se sigue avanzando.
+            vec3 refined = origin + ray * high;
+            project(refined, hit_uv);
+            ivec2 refined_texel = clamp(ivec2(hit_uv * vec2(size)), ivec2(0), size - 1);
+            float gap = -refined.z - linearDepth(texelFetch(g_depth, refined_texel, 0).r);
+            if (insideScreen(hit_uv) && abs(gap) < 0.04 + 0.01 * -refined.z) {
+                hit = true;
+                break;
+            }
         }
 
         previous_distance = distance_along;
@@ -170,15 +186,25 @@ void main() {
     }
 
     // Reflejo algo borroso segun la rugosidad y la distancia recorrida: cinco
-    // muestras en cruz (sin mips en la imagen HDR).
+    // muestras en cruz (sin mips en la imagen HDR). Media de Karis (cada
+    // muestra pesa 1 / (1 + luminancia)): un pixel suelto muchisimo mas
+    // brillante que su entorno (una bombilla emisiva, el brillo del sol en
+    // una superficie pulida) no se lleva el promedio. Sin ella esos pixeles
+    // salian como puntos que aparecen y desaparecen al moverse.
     vec2 texel_size = 1.0 / vec2(textureSize(previous_color, 0));
     float blur = roughness * roughness * 40.0 * clamp(distance_along * 0.1, 0.2, 1.0);
-    vec3 color = textureLod(previous_color, previous_uv, 0.0).rgb * 2.0;
-    color += textureLod(previous_color, previous_uv + vec2(blur, 0.0) * texel_size, 0.0).rgb;
-    color += textureLod(previous_color, previous_uv - vec2(blur, 0.0) * texel_size, 0.0).rgb;
-    color += textureLod(previous_color, previous_uv + vec2(0.0, blur) * texel_size, 0.0).rgb;
-    color += textureLod(previous_color, previous_uv - vec2(0.0, blur) * texel_size, 0.0).rgb;
-    color = min(color / 6.0, vec3(kMaxRadiance));
+    const vec2 kOffsets[5] = vec2[](vec2(0.0), vec2(1.0, 0.0), vec2(-1.0, 0.0), vec2(0.0, 1.0),
+                                    vec2(0.0, -1.0));
+    vec3 color = vec3(0.0);
+    float color_weight = 0.0;
+    for (int i = 0; i < 5; ++i) {
+        vec3 tap = min(textureLod(previous_color, previous_uv + kOffsets[i] * blur * texel_size,
+                                  0.0).rgb, vec3(kMaxRadiance));
+        float w = (i == 0 ? 2.0 : 1.0) / (1.0 + dot(tap, vec3(0.2126, 0.7152, 0.0722)));
+        color += tap * w;
+        color_weight += w;
+    }
+    color /= color_weight;
 
     // --- Confianza ---
     vec2 edge = min(hit_uv, 1.0 - hit_uv);

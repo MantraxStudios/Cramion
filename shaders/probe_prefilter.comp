@@ -107,8 +107,13 @@ void main() {
             float sample_solid_angle = 1.0 / (float(push.sample_count) * pdf + 0.0001);
             float lod = max(0.5 * log2(sample_solid_angle / texel_solid_angle) + 1.0, 0.0);
 
-            sum += textureLod(capture, l, lod).rgb * n_dot_l;
-            weight += n_dot_l;
+            // Media de Karis: las fuentes diminutas y muy brillantes
+            // (bombillas emisivas, el sol reflejado) no dejan manchas en los
+            // niveles rugosos.
+            vec3 radiance = textureLod(capture, l, lod).rgb;
+            float w = n_dot_l / (1.0 + dot(radiance, vec3(0.2126, 0.7152, 0.0722)));
+            sum += radiance * w;
+            weight += w;
         }
         color = sum / max(weight, 0.0001);
     }
