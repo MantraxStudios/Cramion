@@ -55,8 +55,8 @@ void SkinnedPass::create(const VulkanDevice& device, const GBuffer& gbuffer,
     sampler_info.maxLod = VK_LOD_CLAMP_NONE;
     sampler_ = vk::raii::Sampler(device.handle(), sampler_info);
 
-    // --- Set 0: camara + huesos ---
-    std::array<vk::DescriptorSetLayoutBinding, 2> frame_bindings{};
+    // --- Set 0: camara + huesos + lluvia (mapa y parametros) ---
+    std::array<vk::DescriptorSetLayoutBinding, 4> frame_bindings{};
     frame_bindings[0].binding = 0;
     frame_bindings[0].descriptorType = vk::DescriptorType::eUniformBuffer;
     frame_bindings[0].descriptorCount = 1;
@@ -65,6 +65,14 @@ void SkinnedPass::create(const VulkanDevice& device, const GBuffer& gbuffer,
     frame_bindings[1].descriptorType = vk::DescriptorType::eStorageBuffer;
     frame_bindings[1].descriptorCount = 1;
     frame_bindings[1].stageFlags = vk::ShaderStageFlagBits::eVertex;
+    frame_bindings[2].binding = 2;
+    frame_bindings[2].descriptorType = vk::DescriptorType::eCombinedImageSampler;
+    frame_bindings[2].descriptorCount = 1;
+    frame_bindings[2].stageFlags = vk::ShaderStageFlagBits::eFragment;
+    frame_bindings[3].binding = 3;
+    frame_bindings[3].descriptorType = vk::DescriptorType::eUniformBuffer;
+    frame_bindings[3].descriptorCount = 1;
+    frame_bindings[3].stageFlags = vk::ShaderStageFlagBits::eFragment;
 
     vk::DescriptorSetLayoutCreateInfo frame_layout_info{};
     frame_layout_info.setBindings(frame_bindings);

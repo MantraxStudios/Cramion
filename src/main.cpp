@@ -23,6 +23,8 @@
 //   V                  nubes volumetricas H  occlusion culling on/off
 //   Y                  trazado de rayos (RTX) on/off
 //   U                  cielo HDR de la escena / cielo fisico
+//   J                  lluvia: calle mojada y charcos on/off
+//   M                  agua: zona inundada on/off
 //   RePag / AvPag      compensacion de exposicion (+-0.5 EV)
 //   ESC                salir
 // -----------------------------------------------------------------------------
@@ -77,6 +79,13 @@ struct SceneEntry {
     // Cielo fotografiado (HDR equirectangular, relativo a assets/) que
     // sustituye al cielo fisico. nullptr = cielo fisico con ciclo de dia.
     const char* environment = nullptr;
+    // Recien llovido: humedad y charcos (0 = seco).
+    float wetness = 0.0f;
+    float puddles = 0.0f;
+    // Zona inundada: centro (x, z) y radios (x, z) de la elipse de agua.
+    // Radios 0 = sin agua.
+    cramion::core::Vec2 water_center{0.0f, 0.0f};
+    cramion::core::Vec2 water_radii{0.0f, 0.0f};
 };
 
 // Sibenik: el suelo de la nave es marmol pulido (en las fotos refleja las
@@ -100,7 +109,8 @@ constexpr SceneEntry kScenes[] = {
     // bistro. Texturas DDS con normal maps DirectX.
     // Su escena original (Falcor) usa como cielo san_giuseppe_bridge_4k.hdr.
     {"bistro", "bistro/Bistro_v5_2/BistroExterior.fbx", {0.0f, 2.0f, 0.0f}, {1.0f, 2.0f, 0.0f},
-     {}, true, "bistro/Bistro_v5_2/san_giuseppe_bridge_4k.hdr"},
+     {}, true, "bistro/Bistro_v5_2/san_giuseppe_bridge_4k.hdr", 1.0f, 1.0f,
+     {-11.5f, 3.5f}, {3.2f, 2.2f}},
     {"bistro-interior", "bistro/Bistro_v5_2/BistroInterior.fbx", {0.0f, 1.7f, 0.0f},
      {1.0f, 1.7f, 0.0f}, {}, true, "bistro/Bistro_v5_2/san_giuseppe_bridge_4k.hdr"},
 };
@@ -189,7 +199,11 @@ void updateWindowTitle(Window& window, const Clock& clock, const Scene& scene,
           << L"  |  sonda "
           << (renderer.reflectionProbeEnabled() ? L"ON" : L"OFF") << L"  |  nubes "
           << (renderer.cloudsEnabled() ? L"ON" : L"OFF") << L"  |  cielo "
-          << (renderer.environmentActive() ? L"HDR" : L"fisico") << L"  |  GI "
+          << (renderer.environmentActive() ? L"HDR" : L"fisico") << L"  |  lluvia "
+          << (!renderer.rainAvailable() ? L"-" : renderer.rainEnabled() ? L"ON" : L"OFF")
+          << L"  |  agua "
+          << (!renderer.waterAvailable() ? L"-" : renderer.waterEnabled() ? L"ON" : L"OFF")
+          << L"  |  GI "
           << (renderer.giEnabled() ? L"ON" : L"OFF") << L"  |  "
           << (renderer.acesTonemapper() ? L"ACES" : L"Neutral") << L"  |  exposicion "
           << (renderer.autoExposureEnabled() ? L"auto " : L"manual ") << std::setprecision(2)
@@ -244,6 +258,7 @@ int main(int argc, char** argv) {
         scene.setDirectXNormalMaps(model, entry.directx_normals);
         scene.spawnStatic(model);
         scene.placeCamera(entry.camera, entry.target);
+        if (std::getenv("CRAMION_TMP_CAM")) scene.placeCamera(cramion::core::Vec3{-18.7f, 4.3f, 6.3f}, cramion::core::Vec3{0.0f, 1.5f, 0.0f});  // TMP
 
         scene.camera().setAspectRatio(static_cast<float>(window.width()) /
                                       static_cast<float>(window.height()));
@@ -263,6 +278,9 @@ int main(int argc, char** argv) {
         };
 
         renderer.initialize(engine_info, window.handle(), window.width(), window.height());
+
+        renderer.setWeather(entry.wetness, entry.puddles);
+        renderer.setWater(entry.water_center, entry.water_radii);
 
         // Cielo fotografiado de la escena, si trae uno: el sol se coloca donde
         // esta en la foto.
@@ -286,7 +304,8 @@ int main(int argc, char** argv) {
                      "           B bloom | O SSAO | R reflejos (SSR) | P sonda de reflexion\n"
                      "           I luz rebotada (GI) | V nubes volumetricas\n"
                      "           H occlusion culling | Y trazado de rayos (RTX)\n"
-                     "           U cielo HDR de la escena / cielo fisico\n"
+                     "           U cielo HDR de la escena / cielo fisico | J lluvia (charcos)\n"
+                     "           M agua (zona inundada)\n"
                      "           L rayos de luz\n"
                      "           K tonemapper (Neutral/ACES) | E auto-exposicion\n"
                      "           RePag/AvPag compensacion de exposicion | ESC salir\n\n";
@@ -331,6 +350,12 @@ int main(int argc, char** argv) {
                                       ? std::optional<cramion::core::Vec3>(
                                             renderer.environmentSunDirection())
                                       : std::nullopt);
+            }
+            if (input.isKeyPressed(Key::M)) {
+                renderer.setWaterEnabled(!renderer.waterEnabled());
+            }
+            if (input.isKeyPressed(Key::J)) {
+                renderer.setRainEnabled(!renderer.rainEnabled());
             }
             if (input.isKeyPressed(Key::Y)) {
                 renderer.setRayTracingEnabled(!renderer.rayTracingEnabled());

@@ -130,10 +130,10 @@ struct RayTracing::Resources {
     vk::raii::DescriptorSetLayout scene_layout{nullptr};
     vk::raii::DescriptorPool frame_pool{nullptr};
     vk::raii::DescriptorPool scene_pool{nullptr};
-    std::vector<vk::raii::DescriptorSet> frame_sets;  // [frame * 2 + pase]
+    std::vector<vk::raii::DescriptorSet> frame_sets;  // [frame * kPassCount + pase]
     std::vector<vk::raii::DescriptorSet> scene_sets;  // uno
     vk::raii::PipelineLayout pipeline_layout{nullptr};
-    std::array<vk::raii::Pipeline, 2> pipelines{nullptr, nullptr};
+    std::array<vk::raii::Pipeline, kPassCount> pipelines{nullptr, nullptr};
 
     // Construye una estructura de aceleracion (y espera a que termine).
     AccelerationStructure buildStructure(
@@ -213,7 +213,7 @@ void RayTracing::create(const VulkanDevice& device) {
     frame_layout_info.setBindings(frame_bindings);
     r.frame_layout = vk::raii::DescriptorSetLayout(device.handle(), frame_layout_info);
 
-    constexpr std::uint32_t kFrameSets = kMaxFramesInFlight * 2;
+    constexpr std::uint32_t kFrameSets = kMaxFramesInFlight * kPassCount;
     const std::array<vk::DescriptorPoolSize, 3> frame_sizes = {
         vk::DescriptorPoolSize{Type::eUniformBuffer, kFrameSets * 2},
         vk::DescriptorPoolSize{Type::eCombinedImageSampler, kFrameSets * 4},
@@ -446,7 +446,8 @@ void RayTracing::build(const VulkanDevice& device,
     layout_info.setPushConstantRanges(push_range);
     r.pipeline_layout = vk::raii::PipelineLayout(device.handle(), layout_info);
 
-    const std::array<const char*, 2> shaders = {"rt_gi.comp.spv", "rt_reflections.comp.spv"};
+    const std::array<const char*, kPassCount> shaders = {"rt_gi.comp.spv",
+                                                         "rt_reflections.comp.spv"};
     for (std::size_t i = 0; i < shaders.size(); ++i) {
         const vk::raii::ShaderModule module = shaders::loadModule(device, shaders[i]);
         vk::ComputePipelineCreateInfo pipeline_info{};
@@ -545,8 +546,8 @@ void RayTracing::setInstances(const VulkanDevice& device, const std::vector<Inst
 void RayTracing::updateFrameSet(const VulkanDevice& device, std::uint32_t frame_index,
                                 const FrameInputs& inputs) {
     Resources& r = *resources_;
-    for (std::uint32_t pass = 0; pass < 2; ++pass) {
-        const vk::DescriptorSet set = *r.frame_sets[frame_index * 2 + pass];
+    for (std::uint32_t pass = 0; pass < kPassCount; ++pass) {
+        const vk::DescriptorSet set = *r.frame_sets[frame_index * kPassCount + pass];
 
         const vk::DescriptorBufferInfo camera{*inputs.camera->handle(), 0, VK_WHOLE_SIZE};
         const vk::DescriptorBufferInfo lights{*inputs.lights->handle(), 0, VK_WHOLE_SIZE};
@@ -596,7 +597,7 @@ void RayTracing::record(const vk::raii::CommandBuffer& cmd, std::uint32_t frame_
     const Resources& r = *resources_;
     const auto index = static_cast<std::uint32_t>(pass);
     cmd.bindPipeline(vk::PipelineBindPoint::eCompute, *r.pipelines[index]);
-    const std::array<vk::DescriptorSet, 2> sets = {*r.frame_sets[frame_index * 2 + index],
+    const std::array<vk::DescriptorSet, 2> sets = {*r.frame_sets[frame_index * kPassCount + index],
                                                    *r.scene_sets[0]};
     cmd.bindDescriptorSets(vk::PipelineBindPoint::eCompute, *r.pipeline_layout, 0, sets, nullptr);
     cmd.pushConstants<Push>(*r.pipeline_layout, vk::ShaderStageFlagBits::eCompute, 0, push);

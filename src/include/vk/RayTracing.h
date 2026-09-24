@@ -58,6 +58,7 @@ public:
     };
 
     enum class Pass : std::uint32_t { Gi = 0, Reflections = 1 };
+    static constexpr std::uint32_t kPassCount = 2;
 
     RayTracing();
     ~RayTracing();

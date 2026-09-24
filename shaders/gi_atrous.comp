@@ -7,8 +7,11 @@
 // pixeles: cubre mucho con pocas muestras.
 //
 // Cada muestra pesa k(dx) k(dy) * w_z * w_n * w_l:
-//   w_z = exp(-|z_p - z_q| / (sigma_z * z_p * step))      misma distancia
-//   w_n = max(0, n_p . n_q)^128                           misma orientacion
+//   w_z = exp(-|z_p - z_q| / (sigma_z * |grad z| * |q - p| + eps))
+//         misma superficie: la diferencia de profundidad se compara con la
+//         que cabe esperar por la pendiente local (un suelo visto de lejos y
+//         en rasante cambia mucho de un pixel al siguiente sin ser un borde)
+//   w_n = max(0, n_p . n_q)^32                            misma orientacion
 //   w_l = exp(-|L_p - L_q| / (sigma_l * sqrt(Var_p)))     el ruido se mezcla,
 //         los detalles de verdad (mas alla del ruido esperado) no
 // La varianza se filtra con los pesos al cuadrado (la de una media ponderada).
@@ -34,8 +37,10 @@ layout(push_constant) uniform PushConstants {
     int step;
 } push;
 
-const float kSigmaDepth = 0.03;
-const float kSigmaNormal = 128.0;
+const float kSigmaDepth = 1.0;
+// Mas suave que el 128 de SVGF: las normales llevan el normal map, y de lejos
+// las de los adoquines cambian mucho entre pixeles vecinos (la luz difusa no).
+const float kSigmaNormal = 32.0;
 const float kSigmaLuminance = 4.0;
 
 float luminance(vec3 c) {
@@ -84,6 +89,22 @@ void main() {
     vec3 center_normal = decodeNormal(texelFetch(g_normal, min(pixel * 2, full_size - 1), 0).rg);
     float center_luminance = giLuminance(center);
 
+    // Pendiente de la profundidad: la mayor diferencia con los vecinos
+    // inmediatos (de la misma superficie cuanto menor).
+    float depth_gradient = 1e-3;
+    for (int i = 0; i < 4; ++i) {
+        ivec2 offset = ivec2(i == 0 ? 1 : (i == 1 ? -1 : 0), i == 2 ? 1 : (i == 3 ? -1 : 0));
+        ivec2 q = clamp(pixel + offset, ivec2(0), size - 1);
+        float raw = texelFetch(g_depth, min(q * 2, full_size - 1), 0).r;
+        if (raw < 1.0) {
+            float difference = abs(linearDepth(raw) - center_depth);
+            // Un borde de verdad no cuenta como pendiente.
+            if (difference < 0.2 * center_depth) {
+                depth_gradient = max(depth_gradient, difference);
+            }
+        }
+    }
+
     // Varianza suavizada 3x3 (gaussiana) para el peso de luminancia: la de un
     // solo pixel es demasiado ruidosa (SVGF).
     float smoothed_variance = 0.0;
@@ -123,7 +144,8 @@ void main() {
 
             float kernel = kKernel[abs(x)] * kKernel[abs(y)] / (kKernel[0] * kKernel[0]);
             float w_depth = exp(-abs(center_depth - sample_depth) /
-                                (kSigmaDepth * center_depth * float(push.step) + 1e-3));
+                                (kSigmaDepth * depth_gradient * length(vec2(x, y)) *
+                                     float(push.step) + 1e-3));
             float w_normal = pow(max(dot(center_normal, sample_normal), 0.0), kSigmaNormal);
             float w_luminance =
                 exp(-abs(center_luminance - giLuminance(sample_color)) / luminance_scale);

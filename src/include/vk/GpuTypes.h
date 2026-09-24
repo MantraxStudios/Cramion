@@ -130,6 +130,15 @@ struct GpuSsgiPush {
     core::Vec4 extra{};
 };
 
+// Lluvia de la pasada de geometria (skinned.frag): mapa de lluvia y estado.
+struct GpuWeather {
+    core::Mat4 rain_view_projection = core::Mat4::identity();
+    // x = humedad (0..1), y = charcos (0..1), z = segundos, w = mapa listo.
+    core::Vec4 params{};
+    // Zona inundada: xy = centro (x, z), zw = radios (x, z); 0 = sin agua.
+    core::Vec4 flood{};
+};
+
 // Constante de push de las nubes volumetricas (clouds.frag).
 struct GpuCloudPush {
     core::Vec4 to_light_time{};   // xyz = hacia la luz direccional, w = segundos

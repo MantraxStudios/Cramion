@@ -184,8 +184,8 @@ bool signatureChanged(const std::vector<float>& a, const std::vector<float>& b,
 constexpr float kProbeFadeSeconds = 0.35f;
 // Peso de lo acumulado en el filtro temporal de los reflejos de pantalla.
 constexpr float kSsrHistoryWeight = 0.88f;
-// Pasadas del filtro espacial de la luz rebotada (separacion 1, 2, 4, 8).
-constexpr std::uint32_t kGiAtrousIterations = 4;
+// Pasadas del filtro espacial de la luz rebotada (separacion 1, 2, 4, 8, 16).
+constexpr std::uint32_t kGiAtrousIterations = 5;
 
 // Constantes de push del filtro de la GI (gi_temporal.comp, gi_atrous.comp).
 struct GiTemporalPush {
@@ -196,6 +196,9 @@ struct GiAtrousPush {
     std::int32_t step = 1;
     std::int32_t pad[3] = {0, 0, 0};
 };
+
+// Mapa de lluvia: resolucion (con ~180 m de escenario, texeles de ~9 cm).
+constexpr std::uint32_t kRainMapSize = 2048;
 
 // Nubes: fraccion del cielo cubierta y densidad (multiplica la extincion).
 constexpr float kCloudCoverage = 0.38f;
@@ -409,6 +412,45 @@ void VulkanRenderer::initialize(const EngineInfo& info, HWND window, std::uint32
         ray_tracing_.create(device_);
     }
 
+    // --- Mapa de lluvia (mismo formato que las sombras: lo dibuja su pipeline) ---
+    rain_map_.create(device_, vk::Extent2D{kRainMapSize, kRainMapSize}, shadow_map_.format(),
+                     vk::ImageUsageFlagBits::eDepthStencilAttachment |
+                         vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eTransferDst,
+                     vk::ImageAspectFlagBits::eDepth);
+    {
+        // Hasta dibujarlo: vacio (profundidad maxima) y ya como textura.
+        const vk::Image image = *rain_map_.handle();
+        device_.submitOneTime([&](const vk::raii::CommandBuffer& cmd) {
+            const vk::ImageSubresourceRange range{vk::ImageAspectFlagBits::eDepth, 0, 1, 0, 1};
+            vk::ImageMemoryBarrier2 barrier{};
+            barrier.dstStageMask = vk::PipelineStageFlagBits2::eTransfer;
+            barrier.dstAccessMask = vk::AccessFlagBits2::eTransferWrite;
+            barrier.oldLayout = vk::ImageLayout::eUndefined;
+            barrier.newLayout = vk::ImageLayout::eTransferDstOptimal;
+            barrier.image = image;
+            barrier.subresourceRange = range;
+            pipelineBarrier(cmd, barrier);
+            cmd.clearDepthStencilImage(image, vk::ImageLayout::eTransferDstOptimal,
+                                       vk::ClearDepthStencilValue{1.0f, 0}, range);
+            barrier.srcStageMask = vk::PipelineStageFlagBits2::eTransfer;
+            barrier.srcAccessMask = vk::AccessFlagBits2::eTransferWrite;
+            barrier.dstStageMask = vk::PipelineStageFlagBits2::eFragmentShader;
+            barrier.dstAccessMask = vk::AccessFlagBits2::eShaderSampledRead;
+            barrier.oldLayout = vk::ImageLayout::eTransferDstOptimal;
+            barrier.newLayout = vk::ImageLayout::eDepthReadOnlyOptimal;
+            pipelineBarrier(cmd, barrier);
+        });
+
+        vk::SamplerCreateInfo sampler_info{};
+        sampler_info.magFilter = vk::Filter::eNearest;
+        sampler_info.minFilter = vk::Filter::eNearest;
+        sampler_info.mipmapMode = vk::SamplerMipmapMode::eNearest;
+        sampler_info.addressModeU = vk::SamplerAddressMode::eClampToEdge;
+        sampler_info.addressModeV = vk::SamplerAddressMode::eClampToEdge;
+        sampler_info.addressModeW = vk::SamplerAddressMode::eClampToEdge;
+        rain_sampler_ = vk::raii::Sampler(device_.handle(), sampler_info);
+    }
+
     createUniformBuffers();
     createDescriptors();
     createCommandObjects();
@@ -521,6 +563,13 @@ void VulkanRenderer::shutdown() {
     ssr_raw_.destroy();
     ssr_history_.destroy();
     probe_capture_.destroy();
+    for (VulkanBuffer& buffer : weather_buffers_) {
+        buffer.destroy();
+    }
+    weather_buffers_.clear();
+    rain_sampler_ = nullptr;
+    rain_map_.destroy();
+    rain_map_ready_ = false;
     ray_tracing_.destroy();
     environment_.destroy();
     clouds_image_.destroy();
@@ -572,6 +621,13 @@ void VulkanRenderer::createUniformBuffers() {
                                   vk::BufferUsageFlagBits::eUniformBuffer, host_visible);
         local_shadow_buffers_[i].create(device_, sizeof(GpuLocalShadows),
                                         vk::BufferUsageFlagBits::eUniformBuffer, host_visible);
+    }
+    weather_buffers_.resize(kMaxFramesInFlight);
+    for (VulkanBuffer& buffer : weather_buffers_) {
+        buffer.create(device_, sizeof(GpuWeather), vk::BufferUsageFlagBits::eUniformBuffer,
+                      host_visible);
+        const GpuWeather dry{};
+        buffer.write(&dry, sizeof(dry));
     }
 
     // --- Auto-exposicion ---
@@ -651,9 +707,11 @@ void VulkanRenderer::createDescriptors() {
 
     // --- Modelos con esqueleto: camara + storage buffer de huesos ---
     // Pool propio: el set de huesos se reescribe cuando su buffer crece.
-    const std::array<vk::DescriptorPoolSize, 2> skin_sizes = {
-        vk::DescriptorPoolSize{vk::DescriptorType::eUniformBuffer, kMaxFramesInFlight},
-        vk::DescriptorPoolSize{vk::DescriptorType::eStorageBuffer, kMaxFramesInFlight}};
+    // (+ la lluvia: mapa y parametros.)
+    const std::array<vk::DescriptorPoolSize, 3> skin_sizes = {
+        vk::DescriptorPoolSize{vk::DescriptorType::eUniformBuffer, kMaxFramesInFlight * 2},
+        vk::DescriptorPoolSize{vk::DescriptorType::eStorageBuffer, kMaxFramesInFlight},
+        vk::DescriptorPoolSize{vk::DescriptorType::eCombinedImageSampler, kMaxFramesInFlight}};
 
     vk::DescriptorPoolCreateInfo skin_pool_info{};
     skin_pool_info.flags = vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet;
@@ -681,6 +739,28 @@ void VulkanRenderer::createDescriptors() {
         device_.handle().updateDescriptorSets(write, nullptr);
 
         writeBoneDescriptor(i);
+
+        // Lluvia: mapa desde arriba + parametros.
+        vk::DescriptorImageInfo rain_info{};
+        rain_info.sampler = *rain_sampler_;
+        rain_info.imageView = *rain_map_.view();
+        rain_info.imageLayout = vk::ImageLayout::eDepthReadOnlyOptimal;
+        vk::WriteDescriptorSet rain_write{};
+        rain_write.dstSet = *skin_sets_[i];
+        rain_write.dstBinding = 2;
+        rain_write.descriptorType = vk::DescriptorType::eCombinedImageSampler;
+        rain_write.setImageInfo(rain_info);
+        device_.handle().updateDescriptorSets(rain_write, nullptr);
+
+        vk::DescriptorBufferInfo weather_info{};
+        weather_info.buffer = *weather_buffers_[i].handle();
+        weather_info.range = sizeof(GpuWeather);
+        vk::WriteDescriptorSet weather_write{};
+        weather_write.dstSet = *skin_sets_[i];
+        weather_write.dstBinding = 3;
+        weather_write.descriptorType = vk::DescriptorType::eUniformBuffer;
+        weather_write.setBufferInfo(weather_info);
+        device_.handle().updateDescriptorSets(weather_write, nullptr);
     }
 
     // --- Post-proceso: SSAO (por frame), bloom (por nivel) y composicion ---
@@ -1327,12 +1407,18 @@ void VulkanRenderer::updatePostDescriptors() {
         // A trous: la primera pasada es la historia del color (como en SVGF),
         // salvo en las caras de la sonda, que no deben tocarla.
         for (std::uint32_t capture = 0; capture < 2; ++capture) {
+            // Entrada de cada pasada = salida de la anterior: acumulada ->
+            // primera salida -> ping-pong entre gi_filter_[1] y [0] -> resultado.
             const VulkanImage& first_output = capture ? gi_filter_[0] : gi_history_;
-            const std::array<const VulkanImage*, kGiAtrousIterations + 1> colors = {
-                &gi_temporal_, &first_output, &gi_filter_[1], &gi_filter_[0], &gi_image_};
-            const std::array<const VulkanImage*, kGiAtrousIterations + 1> variances = {
-                &gi_variance_, &gi_filter_variance_[0], &gi_filter_variance_[1],
-                &gi_filter_variance_[0], &gi_filter_variance_[1]};
+            std::array<const VulkanImage*, kGiAtrousIterations + 1> colors{};
+            std::array<const VulkanImage*, kGiAtrousIterations + 1> variances{};
+            for (std::uint32_t k = 0; k <= kGiAtrousIterations; ++k) {
+                colors[k] = k == 0                     ? &gi_temporal_
+                            : k == 1                   ? &first_output
+                            : k == kGiAtrousIterations ? &gi_image_
+                                                       : &gi_filter_[k % 2 == 0 ? 1 : 0];
+                variances[k] = k == 0 ? &gi_variance_ : &gi_filter_variance_[k % 2 == 1 ? 0 : 1];
+            }
             for (std::uint32_t iteration = 0; iteration < kGiAtrousIterations; ++iteration) {
                 const vk::raii::DescriptorSet& set =
                     gi_atrous_sets_[(i * 2 + capture) * kGiAtrousIterations + iteration];
@@ -1674,6 +1760,21 @@ void VulkanRenderer::updateUniforms(const scene::Scene& scene, const scene::Came
     light_data.spot_count = spot_count;
     light_data.ssao_enabled = ssao_enabled_ ? 1 : 0;
     light_data.gi_enabled = gi_enabled_ ? 1 : 0;
+    // --- Lluvia ---
+    if (!capturing_) {
+        weather_time_ += frame_delta_seconds_;
+    }
+    GpuWeather weather{};
+    weather.rain_view_projection = rain_view_projection_;
+    const bool raining = rain_enabled_ && rainAvailable();
+    weather.params = Vec4{raining ? wetness_ : 0.0f, raining ? puddles_ : 0.0f, weather_time_,
+                          rain_map_ready_ ? 1.0f : 0.0f};
+    // La zona inundada no depende de que llueva ahora (el agua sigue ahi).
+    const bool flooded = water_enabled_ && waterAvailable();
+    weather.flood = Vec4{water_center_.x, water_center_.y, flooded ? water_radii_.x : 0.0f,
+                         flooded ? water_radii_.y : 0.0f};
+    weather_buffers_[frame_index].write(&weather, sizeof(weather));
+
     // --- Nubes ---
     // Con el cielo fotografiado no hay nubes volumetricas: la foto trae las
     // suyas.
@@ -2111,6 +2212,9 @@ void VulkanRenderer::recordCommandBuffer(const vk::raii::CommandBuffer& cmd,
             static_cast<std::uint32_t>(skinned_models_[draw.model].submeshes().size());
     }
 
+    if (!rain_map_ready_ && (rainAvailable() || waterAvailable()) && !actor_draws_.empty()) {
+        recordRainMap(cmd, frame_index);
+    }
     recordShadowPass(cmd, frame_index);
     recordLocalShadowPass(cmd, frame_index);
     recordSkyLutPass(cmd);
@@ -2974,6 +3078,74 @@ void VulkanRenderer::recordSkyLutPass(const vk::raii::CommandBuffer& cmd) {
     pipelineBarrier(cmd, to_sampled);
 
     ibl_probe_.record(cmd, ibl_light_radiance_, ibl_to_light_, environmentActive());
+}
+
+void VulkanRenderer::recordRainMap(const vk::raii::CommandBuffer& cmd,
+                                   std::uint32_t frame_index) {
+    // --- Caja del escenario y proyeccion desde arriba ---
+    Vec3 low{1e30f, 1e30f, 1e30f};
+    Vec3 high{-1e30f, -1e30f, -1e30f};
+    for (const core::Aabb& box : submesh_bounds_) {
+        low = Vec3{std::min(low.x, box.min.x), std::min(low.y, box.min.y), std::min(low.z, box.min.z)};
+        high = Vec3{std::max(high.x, box.max.x), std::max(high.y, box.max.y),
+                    std::max(high.z, box.max.z)};
+    }
+    if (submesh_bounds_.empty()) {
+        return;  // Solo actores animados: nada que cubra.
+    }
+    const Vec3 center = (low + high) * 0.5f;
+    const float half = std::max(high.x - low.x, high.z - low.z) * 0.5f + 1.0f;
+    const float height = high.y - low.y + 20.0f;
+    const Vec3 eye{center.x, high.y + 10.0f, center.z};
+    const core::Mat4 view = core::lookAt(eye, Vec3{center.x, low.y, center.z},
+                                         Vec3{0.0f, 0.0f, -1.0f});
+    rain_view_projection_ = core::orthographic(-half, half, -half, half, 0.0f, height) * view;
+
+    // --- Dibujo: solo profundidad, con el pipeline de las sombras ---
+    const vk::ImageSubresourceRange range{vk::ImageAspectFlagBits::eDepth, 0, 1, 0, 1};
+    vk::ImageMemoryBarrier2 to_attachment{};
+    to_attachment.srcStageMask = vk::PipelineStageFlagBits2::eFragmentShader;
+    to_attachment.srcAccessMask = vk::AccessFlagBits2::eShaderSampledRead;
+    to_attachment.dstStageMask = vk::PipelineStageFlagBits2::eEarlyFragmentTests |
+                                 vk::PipelineStageFlagBits2::eLateFragmentTests;
+    to_attachment.dstAccessMask = vk::AccessFlagBits2::eDepthStencilAttachmentRead |
+                                  vk::AccessFlagBits2::eDepthStencilAttachmentWrite;
+    to_attachment.oldLayout = vk::ImageLayout::eUndefined;
+    to_attachment.newLayout = vk::ImageLayout::eDepthAttachmentOptimal;
+    to_attachment.image = *rain_map_.handle();
+    to_attachment.subresourceRange = range;
+    pipelineBarrier(cmd, to_attachment);
+
+    vk::RenderingAttachmentInfo depth_attachment{};
+    depth_attachment.imageView = *rain_map_.view();
+    depth_attachment.imageLayout = vk::ImageLayout::eDepthAttachmentOptimal;
+    depth_attachment.loadOp = vk::AttachmentLoadOp::eClear;
+    depth_attachment.storeOp = vk::AttachmentStoreOp::eStore;
+    depth_attachment.clearValue = vk::ClearValue{vk::ClearDepthStencilValue{1.0f, 0}};
+    const vk::Extent2D extent{kRainMapSize, kRainMapSize};
+    vk::RenderingInfo rendering_info{};
+    rendering_info.renderArea = vk::Rect2D{vk::Offset2D{0, 0}, extent};
+    rendering_info.layerCount = 1;
+    rendering_info.pDepthAttachment = &depth_attachment;
+    cmd.beginRendering(rendering_info);
+    cmd.setViewport(0, vk::Viewport{0.0f, 0.0f, static_cast<float>(kRainMapSize),
+                                    static_cast<float>(kRainMapSize), 0.0f, 1.0f});
+    cmd.setScissor(0, vk::Rect2D{vk::Offset2D{0, 0}, extent});
+    recordActorShadows(cmd, frame_index, skinned_pass_.shadowPipeline(), rain_view_projection_);
+    cmd.endRendering();
+
+    vk::ImageMemoryBarrier2 to_read = to_attachment;
+    to_read.srcStageMask = vk::PipelineStageFlagBits2::eLateFragmentTests;
+    to_read.srcAccessMask = vk::AccessFlagBits2::eDepthStencilAttachmentWrite;
+    to_read.dstStageMask = vk::PipelineStageFlagBits2::eFragmentShader;
+    to_read.dstAccessMask = vk::AccessFlagBits2::eShaderSampledRead;
+    to_read.oldLayout = vk::ImageLayout::eDepthAttachmentOptimal;
+    to_read.newLayout = vk::ImageLayout::eDepthReadOnlyOptimal;
+    pipelineBarrier(cmd, to_read);
+
+    rain_map_ready_ = true;
+    std::cout << "[Vulkan] Mapa de lluvia listo: " << kRainMapSize << "^2 sobre "
+              << 2.0f * half << " m\n";
 }
 
 void VulkanRenderer::recordCloudPass(const vk::raii::CommandBuffer& cmd,

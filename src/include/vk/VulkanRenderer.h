@@ -171,6 +171,27 @@ public:
     // Hacia el sol de la foto (para colocar ahi la luz direccional).
     const core::Vec3& environmentSunDirection() const { return environment_.sunDirection(); }
 
+    // Lluvia reciente: superficies a la intemperie mojadas (`wetness`, 0..1)
+    // y charcos (`puddles`, 0..1) con las ondas de las gotas. 0 = seco.
+    void setWeather(float wetness, float puddles) {
+        wetness_ = wetness;
+        puddles_ = puddles;
+    }
+    void setRainEnabled(bool enabled) { rain_enabled_ = enabled; }
+    bool rainEnabled() const { return rain_enabled_; }
+    bool rainAvailable() const { return wetness_ > 0.0f || puddles_ > 0.0f; }
+
+    // Zona inundada: una lamina de agua sobre el suelo (como los charcos, pero
+    // grande), en una elipse de radios `radii` (x, z) centrada en `center`
+    // (x, z) con la orilla irregular. Radios 0 = sin agua.
+    void setWater(const core::Vec2& center, const core::Vec2& radii) {
+        water_center_ = center;
+        water_radii_ = radii;
+    }
+    void setWaterEnabled(bool enabled) { water_enabled_ = enabled; }
+    bool waterEnabled() const { return water_enabled_; }
+    bool waterAvailable() const { return water_radii_.x > 0.0f && water_radii_.y > 0.0f; }
+
     // Nubes volumetricas.
     void setCloudsEnabled(bool enabled) { clouds_enabled_ = enabled; }
     bool cloudsEnabled() const { return clouds_enabled_; }
@@ -280,6 +301,9 @@ private:
     void recordLightingPass(const vk::raii::CommandBuffer& cmd, std::uint32_t frame_index,
                             const VulkanImage& target);
     void recordSkyLutPass(const vk::raii::CommandBuffer& cmd);
+    // Mapa de lluvia (la escena vista desde arriba). Una vez: el escenario no
+    // se mueve.
+    void recordRainMap(const vk::raii::CommandBuffer& cmd, std::uint32_t frame_index);
     // Nubes volumetricas (lee la LUT del cielo: va despues de ella).
     void recordCloudPass(const vk::raii::CommandBuffer& cmd, std::uint32_t frame_index);
     void recordBloomPass(const vk::raii::CommandBuffer& cmd);
@@ -331,6 +355,22 @@ private:
     IblProbe ibl_probe_{};
     // Rayos de luz, a media resolucion.
     VulkanImage light_shafts_{};
+    // Mapa de lluvia: profundidad de la escena desde arriba (lo que tiene algo
+    // encima no se moja) y su muestreador (sin comparacion).
+    VulkanImage rain_map_{};
+    // Zona inundada (la pinta skinned.frag con la lluvia).
+    core::Vec2 water_center_{};
+    core::Vec2 water_radii_{};
+    bool water_enabled_ = true;
+    vk::raii::Sampler rain_sampler_{nullptr};
+    core::Mat4 rain_view_projection_ = core::Mat4::identity();
+    bool rain_map_ready_ = false;
+    std::vector<VulkanBuffer> weather_buffers_;
+    float wetness_ = 0.0f;
+    float puddles_ = 0.0f;
+    float weather_time_ = 0.0f;
+    bool rain_enabled_ = true;
+
     // Nubes volumetricas: ruido 3D y su imagen a media resolucion.
     CloudNoise cloud_noise_{};
     // Cielo fotografiado (opcional).

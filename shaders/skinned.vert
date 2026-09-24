@@ -38,6 +38,7 @@ layout(location = 5) in vec4 in_tangent;
 layout(location = 0) out vec3 v_normal;
 layout(location = 1) out vec2 v_uv;
 layout(location = 2) out vec4 v_tangent;
+layout(location = 3) out vec3 v_world_position;  // para la lluvia (skinned.frag)
 
 void main() {
     uint base = push.bone_offset;
@@ -55,6 +56,7 @@ void main() {
     v_normal = to_world * in_normal;
     v_tangent = vec4(to_world * in_tangent.xyz, in_tangent.w);
     v_uv = in_uv;
+    v_world_position = world_position.xyz;
 
     gl_Position = camera.view_projection * world_position;
 }
