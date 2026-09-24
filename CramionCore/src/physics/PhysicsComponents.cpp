@@ -1,0 +1,143 @@
+#include "CramionCore/physics/PhysicsComponents.h"
+
+#include "CramionCore/asset/AssetTypes.h"
+#include "CramionCore/ecs/World.h"
+#include "CramionCore/physics/Particles.h"
+
+#include <array>
+
+namespace cramion::physics {
+
+using ecs::FloatRange;
+using ecs::Vec3Kind;
+
+namespace {
+
+void reflectMaterial(ecs::PropertyVisitor& v, ColliderMaterial& m) {
+    v.field({"is_trigger", "Es trigger",
+             "Detecta a los que entran y salen (eventos Trigger) pero no choca: zonas, "
+             "puertas, recogibles..."},
+            m.is_trigger);
+    v.field({"friction", "Friccion", "0 = hielo, 1 = goma (se promedia con la del otro)"}, m.friction,
+            FloatRange{0.0f, 2.0f, 0.01f, "%.2f", true});
+    v.field({"bounciness", "Rebote", "0 = no rebota, 1 = rebote perfecto (manda el mayor)"},
+            m.bounciness, FloatRange{0.0f, 1.0f, 0.01f, "%.2f", true});
+}
+
+}  // namespace
+
+void Rigidbody::reflect(ecs::PropertyVisitor& v) {
+    static constexpr std::array<const char*, 3> kTypes = {"Estatico", "Dinamico", "Cinematico"};
+    ecs::enumField(v, {"type", "Tipo",
+                       "Dinamico: lo mueve la fisica. Cinematico: lo mueve su Transform y empuja "
+                       "a los demas. Estatico: no se mueve"},
+                   type, kTypes);
+    const bool all = v.wantsAllFields();
+    if (all || type == BodyType::Dynamic) {
+        v.field({"mass", "Masa"}, mass, FloatRange{0.001f, 100000.0f, 0.05f, "%.3f kg"});
+        v.field({"linear_damping", "Amortiguamiento lineal"}, linear_damping,
+                FloatRange{0.0f, 10.0f, 0.01f, "%.2f"});
+        v.field({"angular_damping", "Amortiguamiento angular"}, angular_damping,
+                FloatRange{0.0f, 10.0f, 0.01f, "%.2f"});
+        v.field({"use_gravity", "Usar gravedad"}, use_gravity);
+        if (all || use_gravity) {
+            v.field({"gravity_scale", "Escala de gravedad"}, gravity_scale,
+                    FloatRange{-10.0f, 10.0f, 0.01f, "%.2f"});
+        }
+        if (v.beginGroup("Restricciones", false)) {
+            v.field({"freeze_pos_x", "Congelar posicion X"}, lock_position_x);
+            v.field({"freeze_pos_y", "Congelar posicion Y"}, lock_position_y);
+            v.field({"freeze_pos_z", "Congelar posicion Z"}, lock_position_z);
+            v.field({"freeze_rot_x", "Congelar rotacion X"}, lock_rotation_x);
+            v.field({"freeze_rot_y", "Congelar rotacion Y"}, lock_rotation_y);
+            v.field({"freeze_rot_z", "Congelar rotacion Z"}, lock_rotation_z);
+            v.endGroup();
+        }
+        v.field({"initial_velocity", "Velocidad inicial", "m/s al entrar en Play"},
+                initial_velocity, Vec3Kind::Position);
+        v.field({"initial_angular_velocity", "Velocidad angular inicial", "rad/s"},
+                initial_angular_velocity, Vec3Kind::Position);
+        v.field({"continuous", "Deteccion continua (CCD)",
+                 "Para objetos rapidos: no atraviesan paredes finas"},
+                continuous);
+        v.field({"allow_sleep", "Puede dormirse",
+                 "Quieto un rato deja de simularse hasta que algo lo toca"},
+                allow_sleep);
+        v.field({"interpolate", "Interpolar",
+                 "Mueve el Transform suave entre pasos de fisica (la fisica va a paso fijo y "
+                 "se dibuja a mas FPS). Sin interpolar se ve a saltos"},
+                interpolate);
+    }
+}
+
+void BoxCollider::reflect(ecs::PropertyVisitor& v) {
+    reflectMaterial(v, material);
+    v.field({"size", "Tamano"}, size, Vec3Kind::Scale);
+    v.field({"center", "Centro"}, center, Vec3Kind::Position);
+}
+
+void SphereCollider::reflect(ecs::PropertyVisitor& v) {
+    reflectMaterial(v, material);
+    v.field({"radius", "Radio"}, radius, FloatRange{0.001f, 10000.0f, 0.01f, "%.3f m"});
+    v.field({"center", "Centro"}, center, Vec3Kind::Position);
+}
+
+void CapsuleCollider::reflect(ecs::PropertyVisitor& v) {
+    static constexpr std::array<const char*, 3> kAxes = {"X", "Y", "Z"};
+    reflectMaterial(v, material);
+    v.field({"radius", "Radio"}, radius, FloatRange{0.001f, 10000.0f, 0.01f, "%.3f m"});
+    v.field({"height", "Altura", "Total, incluidas las semiesferas"}, height,
+            FloatRange{0.001f, 10000.0f, 0.01f, "%.3f m"});
+    ecs::enumField(v, {"axis", "Eje"}, axis, kAxes);
+    v.field({"center", "Centro"}, center, Vec3Kind::Position);
+}
+
+void MeshCollider::reflect(ecs::PropertyVisitor& v) {
+    reflectMaterial(v, material);
+    v.field({"convex", "Convexo",
+             "Obligatorio para cuerpos dinamicos y triggers: usa la envolvente convexa de la malla"},
+            convex);
+}
+
+void PlaneCollider::reflect(ecs::PropertyVisitor& v) {
+    reflectMaterial(v, material);
+}
+
+void registerPhysicsComponents() {
+    ecs::ComponentRegistry& registry = ecs::ComponentRegistry::instance();
+    registry.registerComponent<Rigidbody>("Rigidbody", "Rigidbody", "Fisica");
+    registry.registerComponent<BoxCollider>("BoxCollider", "Box Collider", "Fisica");
+    registry.registerComponent<SphereCollider>("SphereCollider", "Sphere Collider", "Fisica");
+    registry.registerComponent<CapsuleCollider>("CapsuleCollider", "Capsule Collider", "Fisica");
+    registry.registerComponent<MeshCollider>("MeshCollider", "Mesh Collider", "Fisica");
+    registry.registerComponent<PlaneCollider>("PlaneCollider", "Plane Collider", "Fisica");
+    registry.registerComponent<ParticleSystem>("ParticleSystem", "Particle System", "Efectos");
+}
+
+bool hasCollider(const ecs::Entity& entity) {
+    return entity.has<BoxCollider>() || entity.has<SphereCollider>() || entity.has<CapsuleCollider>() ||
+           entity.has<MeshCollider>() || entity.has<PlaneCollider>();
+}
+
+void addDefaultCollider(ecs::Entity entity) {
+    if (!entity.valid() || hasCollider(entity)) {
+        return;
+    }
+    const ecs::MeshRenderer* renderer = entity.tryGet<ecs::MeshRenderer>();
+    if (renderer == nullptr) {
+        return;
+    }
+    const Uuid& model = renderer->model.uuid;
+    if (model == assets::builtin::kCube) {
+        entity.add<BoxCollider>();
+    } else if (model == assets::builtin::kSphere) {
+        entity.add<SphereCollider>();
+    } else if (model == assets::builtin::kCapsule || model == assets::builtin::kCylinder) {
+        entity.add<CapsuleCollider>();
+    } else {
+        // Plano y modelos importados: su propia malla.
+        entity.add<MeshCollider>();
+    }
+}
+
+}  // namespace cramion::physics

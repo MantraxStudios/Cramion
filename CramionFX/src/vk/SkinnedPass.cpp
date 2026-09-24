@@ -120,6 +120,7 @@ void SkinnedPass::create(const VulkanDevice& device, const GBuffer& gbuffer,
     createGlassPipeline(device, hdr_format, gbuffer.depthFormat());
     outline_silhouette_pipeline_ = createOutlinePipeline(device, gbuffer.depthFormat(), false);
     outline_visible_pipeline_ = createOutlinePipeline(device, gbuffer.depthFormat(), true);
+    pick_pipeline_ = createOutlinePipeline(device, gbuffer.depthFormat(), true, /*pick=*/true);
 
     std::cout << "[Vulkan] Pipelines de modelos con esqueleto creados (huesos en storage buffer)\n";
 }
@@ -318,12 +319,13 @@ void SkinnedPass::createGlassPipeline(const VulkanDevice& device, vk::Format col
 
 vk::raii::Pipeline SkinnedPass::createOutlinePipeline(const VulkanDevice& device,
                                                       vk::Format depth_format,
-                                                      bool visible_only) const {
+                                                      bool visible_only, bool pick) const {
     // skinned.vert, igual que el G-buffer: la profundidad de la mascara sale
     // identica a la del G-buffer y la prueba "menor o igual" es exacta.
     const vk::raii::ShaderModule vertex_module = shaders::loadModule(device, "skinned.vert.spv");
+    // (El picking usa el mismo pipeline con pick.frag y una imagen de IDs.)
     const vk::raii::ShaderModule fragment_module =
-        shaders::loadModule(device, "outline_mask.frag.spv");
+        shaders::loadModule(device, pick ? "pick.frag.spv" : "outline_mask.frag.spv");
     const std::array<vk::PipelineShaderStageCreateInfo, 2> stages = {
         stage(vk::ShaderStageFlagBits::eVertex, vertex_module),
         stage(vk::ShaderStageFlagBits::eFragment, fragment_module)};
@@ -356,7 +358,7 @@ vk::raii::Pipeline SkinnedPass::createOutlinePipeline(const VulkanDevice& device
 
     vk::PipelineColorBlendAttachmentState blend_attachment{};
     blend_attachment.colorWriteMask =
-        visible_only ? vk::ColorComponentFlagBits::eG : vk::ColorComponentFlagBits::eR;
+        visible_only && !pick ? vk::ColorComponentFlagBits::eG : vk::ColorComponentFlagBits::eR;
 
     vk::PipelineColorBlendStateCreateInfo color_blend{};
     color_blend.setAttachments(blend_attachment);
@@ -366,7 +368,7 @@ vk::raii::Pipeline SkinnedPass::createOutlinePipeline(const VulkanDevice& device
     vk::PipelineDynamicStateCreateInfo dynamic_state{};
     dynamic_state.setDynamicStates(dynamic_states);
 
-    const vk::Format color_format = kOutlineMaskFormat;
+    const vk::Format color_format = pick ? kPickFormat : kOutlineMaskFormat;
     vk::PipelineRenderingCreateInfo rendering_info{};
     rendering_info.setColorAttachmentFormats(color_format);
     rendering_info.depthAttachmentFormat = depth_format;
@@ -461,6 +463,7 @@ vk::raii::Pipeline SkinnedPass::createShadowPipeline(const VulkanDevice& device,
 
 void SkinnedPass::destroy() {
     outline_visible_pipeline_ = nullptr;
+    pick_pipeline_ = nullptr;
     outline_silhouette_pipeline_ = nullptr;
     glass_pipeline_ = nullptr;
     glass_layout_ = nullptr;

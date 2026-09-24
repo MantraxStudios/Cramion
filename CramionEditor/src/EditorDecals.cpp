@@ -368,30 +368,17 @@ void EditorApp::drawDecalGizmos() {
         const ImU32 color = d->type == ecs::DecalType::Puddle
                                 ? IM_COL32(90, 170, 255, 230)
                                 : (d->type == ecs::DecalType::Wet ? IM_COL32(120, 200, 230, 230) : IM_COL32(255, 170, 60, 230));
-        Vec3 c[8];
-        for (int i = 0; i < 8; ++i) {
-            c[i] = transformPoint(m, Vec3{(i & 1) ? 0.5f : -0.5f, (i & 2) ? 0.5f : -0.5f, (i & 4) ? 0.5f : -0.5f});
-        }
-        static constexpr int kEdges[12][2] = {{0, 1}, {2, 3}, {4, 5}, {6, 7}, {0, 2}, {1, 3},
-                                              {4, 6}, {5, 7}, {0, 4}, {1, 5}, {2, 6}, {3, 7}};
-        for (const auto& edge : kEdges) {
-            float ax = 0.0f, ay = 0.0f, bx = 0.0f, by = 0.0f;
-            if (worldToScreen(c[edge[0]], ax, ay) && worldToScreen(c[edge[1]], bx, by)) {
-                draw->AddLine(ImVec2(ax, ay), ImVec2(bx, by), color, 1.5f);
-            }
-        }
+        // Caja y flecha en 3D con profundidad: se ve por donde la caja corta
+        // la superficie sobre la que proyecta.
+        overlayBoxEdges(m, color);
         // Flecha: proyecta desde la cara de arriba (+Y) hacia abajo.
         const Vec3 top = transformPoint(m, Vec3{0.0f, 0.5f, 0.0f});
         const Vec3 bottom = transformPoint(m, Vec3{0.0f, -0.5f, 0.0f});
-        float tx = 0.0f, ty = 0.0f, bx = 0.0f, by = 0.0f;
-        if (worldToScreen(top, tx, ty) && worldToScreen(bottom, bx, by)) {
-            draw->AddLine(ImVec2(tx, ty), ImVec2(bx, by), color, 2.5f);
-            const float dx = bx - tx;
-            const float dy = by - ty;
-            const float len = std::max(std::sqrt(dx * dx + dy * dy), 1.0f);
-            const ImVec2 dir(dx / len * 9.0f, dy / len * 9.0f);
-            draw->AddTriangleFilled(ImVec2(bx, by), ImVec2(bx - dir.x + dir.y * 0.6f, by - dir.y - dir.x * 0.6f),
-                                    ImVec2(bx - dir.x - dir.y * 0.6f, by - dir.y + dir.x * 0.6f), color);
+        const Vec3 down = bottom - top;
+        const float span = core::length(down);
+        if (span > 1e-5f) {
+            overlayLine(top, bottom - down * 0.15f, color);
+            overlayCone(bottom - down * 0.15f, down, span * 0.15f, span * 0.05f, color);
         }
     }
     draw->PopClipRect();

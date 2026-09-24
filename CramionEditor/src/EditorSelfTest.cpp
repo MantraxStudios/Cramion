@@ -7,6 +7,9 @@
 
 #include "Dialogs.h"
 
+#include <imgui.h>
+
+#include <chrono>
 #include <cmath>
 #include <iostream>
 
@@ -15,6 +18,8 @@ namespace cramion::editor {
 using core::Vec3;
 
 namespace {
+
+constexpr int kStressObjects = 300;
 
 void check(bool ok, const char* what, int& failures) {
     std::cout << "[SelfTest] " << (ok ? "OK    " : "FALLO ") << what << std::endl;
@@ -31,7 +36,19 @@ void EditorApp::startSelfTest(const std::filesystem::path& folder, const std::fi
     self_test_environment_ = environment;
     self_test_step_ = 1;
     self_test_wait_ = 0;
+    focus_scene_ = true;  // la prueba trabaja en la Escena (aunque el .ini dejara el Juego delante)
     self_test_failures_ = 0;
+}
+
+void EditorApp::printCpuTimings(const char* when) {
+    static constexpr const char* kNames[kCpuSectionCount] = {"interfaz", "jerarquia", "inspector", "escena",
+                                                             "paneles", "fisica", "sync", "render"};
+    std::cout << "[SelfTest] CPU (" << when << "):";
+    for (int i = 0; i < kCpuSectionCount; ++i) {
+        std::cout << " " << kNames[i] << " " << cpu_ms_[static_cast<std::size_t>(i)] << " ms";
+    }
+    std::cout << "  | PhysicsSystem " << physics_.stats().step_milliseconds << " ms | " << ImGui::GetIO().Framerate
+              << " FPS" << std::endl;
 }
 
 void EditorApp::runSelfTestStep() {
@@ -64,6 +81,7 @@ void EditorApp::runSelfTestStep() {
             break;
         }
         case 2: {  // Importar (sincrono en la prueba).
+            focus_scene_ = true;  // ya con el acoplado creado
             const assets::ImportResult model = assets::importAny(self_test_model_, project_.assetsFolder());
             check(model.ok, "importar modelo a .crdata", f);
             const assets::ImportResult sky = assets::importAny(self_test_environment_, project_.assetsFolder());
@@ -261,6 +279,188 @@ void EditorApp::runSelfTestStep() {
             show_animator_ = false;
             scene_.placeCamera(Vec3{0.0f, 7.5f, 7.0f}, Vec3{0.0f, 0.0f, 0.5f});
             self_test_wait_ = 60;
+            break;
+        }
+        case 13: {  // Fisica: suelo (MeshCollider del plano), caja, esfera, trigger y particulas.
+            physics_settings_.layer_names[8] = "Jugador";
+            applyPhysicsSettings();
+            savePhysicsSettings();
+            ecs::Entity cube = createEntity(13, {});
+            cube.setWorldPosition(Vec3{2.0f, 4.0f, 1.5f});
+            cube.setLocalEulerDegrees(Vec3{20.0f, 30.0f, 10.0f});
+            cube.get<ecs::EntityInfo>().layer = 8;
+            self_test_cube_ = cube.uuid();
+            ecs::Entity ball = createEntity(14, {});
+            ball.setWorldPosition(Vec3{-2.2f, 6.0f, 1.5f});
+            ball.setLocalScale(Vec3{0.6f, 0.6f, 0.6f});
+            ball.get<physics::Rigidbody>().initial_velocity = Vec3{0.0f, 0.0f, -0.5f};
+            ecs::Entity zone = createEntity(15, {});
+            zone.setWorldPosition(Vec3{-2.2f, 1.6f, 1.2f});
+            self_test_zone_ = zone.uuid();
+            ecs::Entity sparks = createEntity(16, {});
+            sparks.setWorldPosition(Vec3{0.3f, 2.8f, -1.6f});
+            physics::ParticleSystem& ps = sparks.get<physics::ParticleSystem>();
+            ps.rate = 220.0f;
+            ps.cone_angle = 35.0f;
+            ps.speed_min = 2.0f;
+            ps.speed_max = 4.0f;
+            ps.bounce = 0.45f;
+            check(cube.has<physics::BoxCollider>() && ball.has<physics::SphereCollider>(),
+                  "las primitivas nuevas llevan su collider (como Unity)", f);
+            const ecs::Entity ground = world_.findByName("Plano");
+            check(ground.valid() && ground.has<physics::MeshCollider>(), "el plano tiene Mesh Collider", f);
+            commit();
+            enterPlay();
+            check(playing(), "entrar en Play", f);
+            self_test_wait_ = 180;
+            break;
+        }
+        case 14: {
+            const ecs::Entity cube = world_.find(self_test_cube_);
+            const auto count = [&](physics::PhysicsEventType t) { return event_counts_[static_cast<std::size_t>(t)]; };
+            check(cube.valid() && std::abs(cube.worldPosition().y - 0.5f) < 0.08f,
+                  "la caja cae y reposa sobre el Mesh Collider del suelo", f);
+            check(count(physics::PhysicsEventType::CollisionEnter) > 0 && count(physics::PhysicsEventType::CollisionStay) > 0,
+                  "eventos CollisionEnter / CollisionStay", f);
+            check(count(physics::PhysicsEventType::TriggerEnter) > 0, "la esfera dispara TriggerEnter en la zona", f);
+            check(count(physics::PhysicsEventType::ParticleCollision) > 0 && particles_.particleCount() > 0,
+                  "las particulas chocan con el suelo (ParticleCollision)", f);
+            check(!renderer_.particles().empty(), "las particulas llegan al renderizador", f);
+            // Raycast desde arriba con y sin la capa de la caja.
+            physics::RaycastHit hit;
+            physics::QueryFilter with_player;
+            with_player.layer_mask = physics::kDefaultRaycastLayers;
+            with_player.triggers = physics::QueryTriggers::Ignore;
+            const Vec3 above = cube.worldPosition() + Vec3{0.0f, 5.0f, 0.0f};
+            check(physics_.raycast(above, Vec3{0.0f, -1.0f, 0.0f}, 20.0f, hit, with_player) && hit.entity == cube,
+                  "raycast toca la caja (capa Jugador en la mascara)", f);
+            physics::QueryFilter without_player = with_player;
+            without_player.layer_mask &= ~physics::layerBit(8);
+            check(physics_.raycast(above, Vec3{0.0f, -1.0f, 0.0f}, 20.0f, hit, without_player) && !(hit.entity == cube) &&
+                      std::abs(hit.point.y) < 0.02f,
+                  "sin la capa Jugador el rayo la atraviesa y toca el suelo", f);
+            exitPlay();
+            const ecs::Entity restored = world_.find(self_test_cube_);
+            check(!playing() && restored.valid() && std::abs(restored.worldPosition().y - 4.0f) < 1e-3f,
+                  "al parar se restaura la escena", f);
+            self_test_wait_ = 10;
+            break;
+        }
+        case 15: {  // Estado final en Play para la captura: gizmos, particulas y rayo.
+            enterPlay();
+            focus_game_ = false;  // (al dar Play se ve el Juego; aqui interesa la Escena)
+            focus_scene_ = true;
+            selectOnly(self_test_cube_);
+            gizmo_all_colliders_ = true;
+            raycast_ = RaycastTester{};
+            raycast_.enabled = true;
+            raycast_.origin = 2;
+            raycast_.query = 0;
+            // Rayo hacia abajo sobre donde cae la caja (toca la caja o el suelo).
+            raycast_.manual_origin = Vec3{2.0f, 6.0f, 1.5f};
+            raycast_.manual_direction = Vec3{0.0f, -1.0f, 0.0f};
+            scene_.placeCamera(Vec3{0.5f, 4.5f, 9.0f}, Vec3{0.0f, 0.8f, 0.0f});
+            self_test_wait_ = 120;
+            break;
+        }
+        case 16: {
+            check(playing() && !raycast_.hits.empty(), "el probador de raycast toca algo en Play", f);
+            // Picking por GPU: clic donde se ve el cubo.
+            clearSelection();
+            raycast_.enabled = false;
+            float sx = 0.0f;
+            float sy = 0.0f;
+            const ecs::Entity cube = world_.find(self_test_cube_);
+            check(cube.valid() && worldToScreen(cube.worldPosition(), sx, sy), "el cubo se ve en la vista", f);
+            pickAt(sx, sy);
+            self_test_wait_ = 8;  // la GPU tarda unos frames en devolverlo
+            break;
+        }
+        case 17: {
+            check(isSelected(self_test_cube_), "picking por GPU: el clic selecciona el cubo", f);
+            // Estres: muchos objetos con fisica creados como lo haria el usuario.
+            exitPlay();
+            raycast_.enabled = false;
+            gizmo_all_colliders_ = false;
+            const auto start = std::chrono::steady_clock::now();
+            for (int i = 0; i < kStressObjects; ++i) {
+                ecs::Entity e = createEntity(13, {});
+                e.setWorldPosition(Vec3{static_cast<float>(i % 10) * 1.2f - 6.0f, 1.0f + static_cast<float>(i / 100) * 1.2f,
+                                        static_cast<float>((i / 10) % 10) * 1.2f - 6.0f});
+            }
+            const float total = std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - start).count();
+            std::cout << "[SelfTest] Estres: " << kStressObjects << " objetos creados en " << total << " ms ("
+                      << total / kStressObjects << " ms cada uno), " << world_.entityCount() << " entidades" << std::endl;
+            commit();
+            self_test_wait_ = 120;
+            break;
+        }
+        case 18:
+            printCpuTimings("edicion, con la seleccion");
+            enterPlay();
+            self_test_wait_ = 240;
+            break;
+        case 19:
+            printCpuTimings("Play");
+            check(physics_.stats().bodies >= static_cast<std::uint32_t>(kStressObjects), "todos los cuerpos en la fisica", f);
+            break;
+        case 20: {  // Cinematicas: camara que sigue al cubo, camara en riel y una secuencia.
+            exitPlay();
+            selectOnly(self_test_cube_);
+            scene_.placeCamera(Vec3{-6.0f, 4.0f, 9.0f}, Vec3{0.0f, 1.0f, 0.0f});
+            const ecs::Entity follow_cam = createCinematic(1);
+            selectOnly(self_test_cube_);
+            const ecs::Entity dolly_cam = createCinematic(3);
+            const ecs::Entity sequence = createCinematic(5);
+            check(follow_cam.valid() && follow_cam.get<cinema::VirtualCamera>().follow == self_test_cube_,
+                  "camara virtual que sigue a la seleccion", f);
+            check(dolly_cam.valid() && dolly_cam.get<cinema::VirtualCamera>().body == cinema::BodyMode::TrackedDolly &&
+                      world_.find(dolly_cam.get<cinema::VirtualCamera>().track).valid(),
+                  "camara en riel con su riel", f);
+            check(ensureCameraBrain().has<cinema::CameraBrain>(), "la camara real tiene Camera Brain", f);
+            cinema::CinematicSequence& seq = sequence.get<cinema::CinematicSequence>();
+            // Solo las dos camaras nuevas, 2 s cada una con mezcla de 1 s.
+            seq.shots.clear();
+            seq.shots.push_back(cinema::CinematicShot{follow_cam.uuid(), 0.0f, 2.0f, 0.0f, cinema::BlendCurve::Cut});
+            seq.shots.push_back(cinema::CinematicShot{dolly_cam.uuid(), 2.0f, 30.0f, 1.0f, cinema::BlendCurve::EaseInOut});
+            self_test_sequence_ = sequence.uuid();
+            commit();
+            show_game_ = true;
+            enterPlay();
+            self_test_wait_ = 60;
+            break;
+        }
+        case 21: {
+            const ecs::Entity sequence = world_.find(self_test_sequence_);
+            const ecs::Entity live = cinematics_.liveCamera();
+            check(sequence.valid() && cinematics_.isPlaying(sequence), "la secuencia suena al dar Play", f);
+            check(live.valid() && live.name() == "Camara de seguimiento", "primer plano: la camara de seguimiento", f);
+            check(render_view_ == kGameSlot && game_view_visible_, "en Play se dibuja la vista Juego", f);
+            const ecs::Entity brain = cinematics_.brain();
+            check(brain.valid() && live.valid() && core::length(brain.worldPosition() - live.worldPosition()) < 0.05f,
+                  "la camara real esta donde la virtual activa", f);
+            self_test_wait_ = 150;  // pasa al segundo plano y mezcla
+            break;
+        }
+        case 22: {
+            const ecs::Entity live = cinematics_.liveCamera();
+            check(live.valid() && live.name() == "Camara en riel", "segundo plano: la camara en riel", f);
+            // Vista final: el riel en la Escena en modo Bezier (asas y puntos),
+            // la ventana Cinematica y las miniaturas de Assets/Textures.
+            exitPlay();
+            if (ecs::Entity track = world_.findByName("Riel"); track.valid()) {
+                cinema::DollyTrack& t = track.get<cinema::DollyTrack>();
+                t.mode = cinema::PathMode::Bezier;
+                t.waypoints[1].tangent = Vec3{2.5f, 1.5f, 0.0f};
+                selectOnly(track.uuid());
+                waypoint_track_ = track.uuid();
+                selected_waypoint_ = 1;
+                scene_.placeCamera(track.worldPosition() + Vec3{0.0f, 6.0f, 9.0f}, track.worldPosition());
+            }
+            current_folder_ = project_.assetsFolder() / "Textures";
+            focus_scene_ = true;
+            show_cinematic_ = true;
+            self_test_wait_ = 90;
             break;
         }
         default:

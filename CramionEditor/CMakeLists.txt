@@ -58,6 +58,15 @@ target_include_directories(CramionEditor PRIVATE "${CMAKE_SOURCE_DIR}/src")
 set_target_properties(CramionEditor PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
 cramionfx_deploy(CramionEditor)
 
+# Iconos del editor (assets/gizmos) junto al ejecutable, en editor_icons/.
+# Si faltan alli, el editor los busca en la carpeta del codigo.
+target_compile_definitions(CramionEditor PRIVATE
+    CRAMION_EDITOR_ICON_SOURCE="${CMAKE_CURRENT_SOURCE_DIR}/assets/gizmos")
+add_custom_command(TARGET CramionEditor POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+            "${CMAKE_CURRENT_SOURCE_DIR}/assets/gizmos" "${CMAKE_BINARY_DIR}/editor_icons"
+    COMMENT "Copiando los iconos del editor")
+
 target_compile_options(CramionEditor PRIVATE
     -Wall
     -Wextra

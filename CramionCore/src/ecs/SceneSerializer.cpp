@@ -28,54 +28,73 @@ bool readFloat(const json& j, float& out) {
 // Escribe cada propiedad en un objeto JSON por su clave.
 class JsonWriter final : public PropertyVisitor {
 public:
-    explicit JsonWriter(json& out) : out_(out) {}
+    explicit JsonWriter(json& out) : stack_{&out} {}
 
     bool field(const Meta& m, float& v, const FloatRange&) override {
-        out_[m.key] = v;
+        top()[m.key] = v;
         return false;
     }
     bool field(const Meta& m, int& v, int, int) override {
-        out_[m.key] = v;
+        top()[m.key] = v;
         return false;
     }
     bool field(const Meta& m, bool& v) override {
-        out_[m.key] = v;
+        top()[m.key] = v;
         return false;
     }
     bool field(const Meta& m, std::string& v) override {
-        out_[m.key] = v;
+        top()[m.key] = v;
         return false;
     }
     bool field(const Meta& m, core::Vec3& v, Vec3Kind) override {
-        out_[m.key] = vec3(v);
+        top()[m.key] = vec3(v);
         return false;
     }
     bool field(const Meta& m, core::Vec2& v, float) override {
-        out_[m.key] = json::array({v.x, v.y});
+        top()[m.key] = json::array({v.x, v.y});
         return false;
     }
     bool enumeration(const Meta& m, int& v, std::span<const char* const> names) override {
         // Por nombre: reordenar el enum no cambia el significado del archivo.
         if (v >= 0 && v < static_cast<int>(names.size())) {
-            out_[m.key] = names[static_cast<std::size_t>(v)];
+            top()[m.key] = names[static_cast<std::size_t>(v)];
         } else {
-            out_[m.key] = v;
+            top()[m.key] = v;
         }
         return false;
     }
     bool asset(const Meta& m, assets::AssetRef& ref, assets::AssetType) override {
-        out_[m.key] = ref.valid() ? json(ref.uuid.toString()) : json(nullptr);
+        top()[m.key] = ref.valid() ? json(ref.uuid.toString()) : json(nullptr);
         return false;
     }
 
+    bool beginList(const Meta& m, std::size_t& count) override {
+        json& list = top()[m.key];
+        list = json::array();
+        for (std::size_t i = 0; i < count; ++i) list.push_back(json::object());
+        lists_.push_back(&list);
+        return true;
+    }
+    bool beginListItem(std::size_t index) override {
+        stack_.push_back(&(*lists_.back())[index]);
+        return true;
+    }
+    void endListItem() override { stack_.pop_back(); }
+    int endList() override {
+        lists_.pop_back();
+        return -1;
+    }
+
 private:
-    json& out_;
+    json& top() { return *stack_.back(); }
+    std::vector<json*> stack_;
+    std::vector<json*> lists_;
 };
 
 // Lee las propiedades que esten; las que falten no se tocan.
 class JsonReader final : public PropertyVisitor {
 public:
-    explicit JsonReader(const json& in) : in_(in) {}
+    explicit JsonReader(const json& in) : stack_{&in} {}
 
     bool field(const Meta& m, float& v, const FloatRange&) override {
         const json* j = find(m);
@@ -160,12 +179,34 @@ public:
         return true;
     }
 
+    bool beginList(const Meta& m, std::size_t& count) override {
+        const json* list = find(m);
+        if (list == nullptr || !list->is_array()) {
+            return false;  // falta: la lista se queda como esta
+        }
+        count = list->size();
+        lists_.push_back(list);
+        return true;
+    }
+    bool beginListItem(std::size_t index) override {
+        stack_.push_back(&(*lists_.back())[index]);
+        return true;
+    }
+    void endListItem() override { stack_.pop_back(); }
+    int endList() override {
+        lists_.pop_back();
+        return -1;
+    }
+
 private:
     const json* find(const Meta& m) const {
-        const auto it = in_.find(m.key);
-        return it == in_.end() ? nullptr : &*it;
+        const json& in = *stack_.back();
+        if (!in.is_object()) return nullptr;
+        const auto it = in.find(m.key);
+        return it == in.end() ? nullptr : &*it;
     }
-    const json& in_;
+    std::vector<const json*> stack_;
+    std::vector<const json*> lists_;
 };
 
 json entityRecord(World& world, Entity e, bool is_root_of_copy) {

@@ -16,18 +16,6 @@ namespace cramion::editor {
 
 namespace {
 
-constexpr const char* kEntityPayload = "CRAMION_ENTITY";
-
-// Color del icono por lo que hace la entidad.
-ImU32 entityColor(const ecs::Entity& e) {
-    if (e.has<ecs::Light>()) return IM_COL32(255, 205, 80, 255);
-    if (e.has<ecs::Camera>()) return IM_COL32(120, 220, 140, 255);
-    if (e.has<ecs::MeshRenderer>()) return IM_COL32(110, 170, 255, 255);
-    if (e.has<ecs::Sky>() || e.has<ecs::PostProcessing>() || e.has<ecs::Weather>()) {
-        return IM_COL32(120, 220, 230, 255);
-    }
-    return IM_COL32(170, 170, 175, 255);
-}
 
 std::string lower(std::string text) {
     std::transform(text.begin(), text.end(), text.begin(),
@@ -48,6 +36,61 @@ DropZone dropZone() {
 }
 
 }  // namespace
+
+Icon EditorApp::entityIcon(const ecs::Entity& e, ImU32& tint) const {
+    tint = IM_COL32(200, 200, 205, 255);
+    if (const ecs::Light* light = e.tryGet<ecs::Light>()) {
+        tint = IM_COL32(255, 205, 80, 255);
+        return light->type == ecs::LightType::Directional ? Icon::DirectionalLight
+               : light->type == ecs::LightType::Spot      ? Icon::SpotLight
+                                                          : Icon::PointLight;
+    }
+    if (e.has<ecs::Camera>()) {
+        tint = IM_COL32(120, 220, 140, 255);
+        return Icon::Camera;
+    }
+    if (e.has<cinema::VirtualCamera>()) {
+        tint = IM_COL32(120, 190, 255, 255);
+        return Icon::Camera;
+    }
+    if (e.has<cinema::DollyTrack>() || e.has<cinema::DollyCart>()) {
+        tint = IM_COL32(255, 196, 64, 255);
+        return Icon::Waypoint;
+    }
+    if (e.has<cinema::CinematicSequence>()) {
+        tint = IM_COL32(255, 120, 120, 255);
+        return Icon::Camera;
+    }
+    if (e.has<physics::ParticleSystem>()) {
+        tint = IM_COL32(255, 160, 90, 255);
+        return Icon::ParticleSystem;
+    }
+    if (e.has<ecs::Decal>()) {
+        tint = IM_COL32(255, 170, 60, 255);
+        return Icon::Decal;
+    }
+    if (e.has<physics::Rigidbody>()) {
+        tint = IM_COL32(145, 244, 139, 255);
+        return Icon::Rigidbody;
+    }
+    if (const physics::BoxCollider* box = e.tryGet<physics::BoxCollider>(); box != nullptr && !e.has<ecs::MeshRenderer>()) {
+        tint = box->material.is_trigger ? IM_COL32(110, 190, 255, 255) : IM_COL32(145, 244, 139, 255);
+        return box->material.is_trigger ? Icon::TriggerVolume : Icon::ColliderBox;
+    }
+    if (e.has<ecs::Animator>()) {
+        tint = IM_COL32(110, 170, 255, 255);
+        return Icon::SkinnedMesh;
+    }
+    if (e.has<ecs::MeshRenderer>()) {
+        tint = IM_COL32(110, 170, 255, 255);
+        return Icon::MeshRenderer;
+    }
+    if (e.has<ecs::Sky>() || e.has<ecs::PostProcessing>() || e.has<ecs::Weather>()) {
+        tint = IM_COL32(120, 220, 230, 255);
+        return Icon::AmbientLight;
+    }
+    return e.childCount() > 0 ? Icon::FolderClosed : Icon::AssetBrowser;
+}
 
 void EditorApp::drawHierarchy() {
     if (!ImGui::Begin("Jerarquía", &show_hierarchy_)) {
@@ -87,7 +130,6 @@ void EditorApp::drawHierarchy() {
     ImGui::Separator();
 
     ImGui::BeginChild("tree", ImVec2(0.0f, 0.0f), ImGuiChildFlags_None);
-    visible_order_.clear();
 
     // Revelar: abrir los padres de la entidad elegida en la vista.
     if (reveal_.valid()) {
@@ -95,26 +137,48 @@ void EditorApp::drawHierarchy() {
         if (!target.valid()) reveal_ = {};
     }
 
+    // Solo se dibujan las filas que se ven (ImGuiListClipper): con miles de
+    // objetos el coste es el de las ~40 filas de la ventana, no el del mundo.
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(4.0f, 1.0f));
+    buildHierarchyRows();
     if (!hierarchy_filter_.empty()) {
         // Busqueda: lista plana de coincidencias (como Unity).
-        const std::string needle = lower(hierarchy_filter_);
-        world_.forEachDepthFirst([&](ecs::Entity e) {
-            if (lower(e.name()).find(needle) == std::string::npos) return;
-            const Uuid uuid = e.uuid();
-            visible_order_.push_back(uuid);
-            ImGui::PushID(static_cast<int>(entt::to_integral(e.handle())));
-            if (ImGui::Selectable(e.name().c_str(), isSelected(uuid))) {
-                if (ImGui::GetIO().KeyCtrl) toggleSelection(uuid);
-                else selectOnly(uuid);
+        ImGuiListClipper clipper;
+        clipper.Begin(static_cast<int>(hierarchy_rows_.size()));
+        while (clipper.Step()) {
+            for (int i = clipper.DisplayStart; i < clipper.DisplayEnd; ++i) {
+                const entt::entity handle = hierarchy_rows_[static_cast<std::size_t>(i)].entity;
+                if (!world_.valid(handle)) continue;
+                const ecs::Entity e = world_.wrap(handle);
+                const Uuid uuid = e.uuid();
+                ImGui::PushID(static_cast<int>(entt::to_integral(handle)));
+                if (ImGui::Selectable(e.name().c_str(), isSelected(uuid))) {
+                    if (ImGui::GetIO().KeyCtrl) toggleSelection(uuid);
+                    else selectOnly(uuid);
+                }
+                ImGui::PopID();
             }
-            ImGui::PopID();
-        });
+        }
     } else {
-        const std::vector<entt::entity> roots = world_.roots();  // copia: se puede reordenar
-        for (const entt::entity root : roots) {
-            if (world_.valid(root)) {
-                drawHierarchyNode(world_.wrap(root));
+        // La fila que se renombra se dibuja siempre (su campo de texto) y la
+        // que se revela se lleva a la vista.
+        const auto row_of = [&](const Uuid& uuid) {
+            const ecs::Entity target = uuid.valid() ? world_.find(uuid) : ecs::Entity{};
+            for (std::size_t i = 0; target.valid() && i < hierarchy_rows_.size(); ++i) {
+                if (hierarchy_rows_[i].entity == target.handle()) return static_cast<int>(i);
+            }
+            return -1;
+        };
+        const int renaming_row = row_of(renaming_);
+        const int reveal_row = row_of(reveal_);
+        const std::vector<HierarchyRow> rows = hierarchy_rows_;  // copia: una fila puede cambiar el mundo
+        ImGuiListClipper clipper;
+        clipper.Begin(static_cast<int>(rows.size()));
+        if (renaming_row >= 0) clipper.IncludeItemByIndex(renaming_row);
+        if (reveal_row >= 0) clipper.IncludeItemByIndex(reveal_row);
+        while (clipper.Step()) {
+            for (int i = clipper.DisplayStart; i < clipper.DisplayEnd; ++i) {
+                drawHierarchyRow(rows[static_cast<std::size_t>(i)], i == reveal_row);
             }
         }
     }
@@ -181,22 +245,64 @@ void EditorApp::drawHierarchy() {
     ImGui::End();
 }
 
-void EditorApp::drawHierarchyNode(ecs::Entity entity) {
-    const Uuid uuid = entity.uuid();
-    visible_order_.push_back(uuid);
-    // ID numerico del handle: nada de cadenas por fila y por frame.
-    const void* id = reinterpret_cast<const void*>(static_cast<std::uintptr_t>(entt::to_integral(entity.handle())) + 1);
-
-    // Revelar: si la entidad elegida esta debajo, abrir este nodo.
-    if (reveal_.valid()) {
-        const ecs::Entity target = world_.find(reveal_);
-        if (target.valid() && entity.isAncestorOf(target)) {
-            ImGui::SetNextItemOpen(true);
+// Filas del arbol en orden (padre antes que hijos) bajando solo por los
+// nodos abiertos. El estado abierto lo guarda ImGui por el ID de la fila.
+void EditorApp::buildHierarchyRows() {
+    hierarchy_rows_.clear();
+    if (!hierarchy_filter_.empty()) {
+        const std::string needle = lower(hierarchy_filter_);
+        world_.forEachDepthFirst([&](ecs::Entity e) {
+            if (lower(e.name()).find(needle) != std::string::npos) {
+                hierarchy_rows_.push_back(HierarchyRow{e.handle(), 0});
+            }
+        });
+        return;
+    }
+    const ecs::Entity reveal_target = reveal_.valid() ? world_.find(reveal_) : ecs::Entity{};
+    ImGuiStorage* storage = ImGui::GetStateStorage();
+    std::vector<HierarchyRow> stack;
+    const std::vector<entt::entity>& roots = world_.roots();
+    for (auto it = roots.rbegin(); it != roots.rend(); ++it) stack.push_back(HierarchyRow{*it, 0});
+    while (!stack.empty()) {
+        const HierarchyRow row = stack.back();
+        stack.pop_back();
+        if (!world_.valid(row.entity)) continue;
+        hierarchy_rows_.push_back(row);
+        const ecs::Entity e = world_.wrap(row.entity);
+        const std::vector<entt::entity>& children = e.children();
+        if (children.empty()) continue;
+        const ImGuiID id = ImGui::GetID(hierarchyRowId(row.entity));
+        if (reveal_target.valid() && e.isAncestorOf(reveal_target)) storage->SetInt(id, 1);
+        if (storage->GetInt(id, 0) == 0) continue;
+        for (auto it = children.rbegin(); it != children.rend(); ++it) {
+            stack.push_back(HierarchyRow{*it, row.depth + 1});
         }
     }
+}
 
+const void* EditorApp::hierarchyRowId(entt::entity entity) {
+    // ID numerico del handle: nada de cadenas por fila y por frame.
+    return reinterpret_cast<const void*>(static_cast<std::uintptr_t>(entt::to_integral(entity)) + 1);
+}
+
+void EditorApp::drawHierarchyRow(const HierarchyRow& row, bool scroll_to) {
+    if (!world_.valid(row.entity)) return;  // borrada por una fila anterior
+    ecs::Entity entity = world_.wrap(row.entity);
+    const Uuid uuid = entity.uuid();
+    const void* id = hierarchyRowId(row.entity);
+    const float indent = static_cast<float>(row.depth) * ImGui::GetStyle().IndentSpacing;
+    if (indent > 0.0f) ImGui::Indent(indent);
+    struct Unindent {
+        float amount;
+        ~Unindent() {
+            if (amount > 0.0f) ImGui::Unindent(amount);
+        }
+    } unindent{indent};
+
+    // Sin TreePush: la sangria la pone la profundidad de la fila.
     ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_OpenOnDoubleClick |
-                               ImGuiTreeNodeFlags_SpanFullWidth | ImGuiTreeNodeFlags_FramePadding;
+                               ImGuiTreeNodeFlags_SpanFullWidth | ImGuiTreeNodeFlags_FramePadding |
+                               ImGuiTreeNodeFlags_NoTreePushOnOpen;
     if (entity.childCount() == 0) {
         flags |= ImGuiTreeNodeFlags_Leaf;
     }
@@ -212,23 +318,28 @@ void EditorApp::drawHierarchyNode(ecs::Entity entity) {
     const bool renaming = renaming_ == uuid;
     // Hueco para el icono delante del nombre.
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(4.0f, 2.0f));
-    const bool open = renaming ? ImGui::TreeNodeEx(id, flags, "%s", "")
-                               : ImGui::TreeNodeEx(id, flags, "      %s", entity.name().c_str());
+    if (renaming) {
+        ImGui::TreeNodeEx(id, flags, "%s", "");
+    } else {
+        ImGui::TreeNodeEx(id, flags, "      %s", entity.name().c_str());
+    }
+    if (scroll_to) ImGui::SetScrollHereY(0.5f);
     ImGui::PopStyleVar();
     if (!active) {
         ImGui::PopStyleColor();
     }
 
-    // Filas fuera de la vista (arboles grandes): solo cuenta su altura.
-    if (ImGui::IsItemVisible() || renaming) {
-        // Icono.
+    {
+        // Icono de lo que es (luz, camara, malla, fisica...).
         {
             const ImVec2 min = ImGui::GetItemRectMin();
             const float h = ImGui::GetItemRectSize().y;
-            const float x = min.x + ImGui::GetTreeNodeToLabelSpacing() + 6.0f;
-            ImGui::GetWindowDrawList()->AddRectFilled(ImVec2(x - 4.0f, min.y + h * 0.5f - 4.0f),
-                                                      ImVec2(x + 4.0f, min.y + h * 0.5f + 4.0f),
-                                                      entityColor(entity), 2.0f);
+            const float size = h - 4.0f;
+            ImU32 tint = IM_COL32_WHITE;
+            const Icon icon = entityIcon(entity, tint);
+            if (!entity.activeInHierarchy()) tint = (tint & 0x00FFFFFFu) | 0x70000000u;
+            imgui_.drawIcon(ImGui::GetWindowDrawList(), icon,
+                            ImVec2(min.x + ImGui::GetTreeNodeToLabelSpacing() + 1.0f, min.y + 2.0f), size, tint);
         }
 
         // Seleccion (no al abrir con la flecha).
@@ -237,13 +348,20 @@ void EditorApp::drawHierarchyNode(ecs::Entity entity) {
             if (io.KeyCtrl) {
                 toggleSelection(uuid);
             } else if (io.KeyShift && active_.valid()) {
-                // Rango en el orden visible (el nodo actual ya esta en la lista;
-                // si el activo esta mas abajo, se completa al terminar el frame:
-                // se toma lo que haya).
-                const auto a = findUuid(visible_order_, active_);
-                const auto b = findUuid(visible_order_, uuid);
-                if (a != visible_order_.end() && b != visible_order_.end()) {
-                    selection_.assign(std::min(a, b), std::max(a, b) + 1);
+                // Rango en el orden de las filas del arbol.
+                const ecs::Entity anchor = world_.find(active_);
+                std::ptrdiff_t a = -1;
+                std::ptrdiff_t b = -1;
+                for (std::size_t i = 0; i < hierarchy_rows_.size(); ++i) {
+                    if (anchor.valid() && hierarchy_rows_[i].entity == anchor.handle()) a = static_cast<std::ptrdiff_t>(i);
+                    if (hierarchy_rows_[i].entity == row.entity) b = static_cast<std::ptrdiff_t>(i);
+                }
+                if (a >= 0 && b >= 0) {
+                    selection_.clear();
+                    for (std::ptrdiff_t i = std::min(a, b); i <= std::max(a, b); ++i) {
+                        const entt::entity h = hierarchy_rows_[static_cast<std::size_t>(i)].entity;
+                        if (world_.valid(h)) selection_.push_back(world_.wrap(h).uuid());
+                    }
                 } else {
                     toggleSelection(uuid);
                 }
@@ -294,7 +412,7 @@ void EditorApp::drawHierarchyNode(ecs::Entity entity) {
                             m.setParent(parent, true, index);
                         }
                     }
-                    if (zone == DropZone::Inside) ImGui::SetNextItemOpen(true);
+                    if (zone == DropZone::Inside) ImGui::GetStateStorage()->SetInt(ImGui::GetID(id), 1);
                     commit();
                 }
             }
@@ -344,7 +462,6 @@ void EditorApp::drawHierarchyNode(ecs::Entity entity) {
             }
             if (ImGui::MenuItem("Borrar", "Supr")) {
                 ImGui::EndPopup();
-                if (open) ImGui::TreePop();
                 deleteSelection();
                 return;
             }
@@ -370,16 +487,6 @@ void EditorApp::drawHierarchyNode(ecs::Entity entity) {
                 renaming_ = {};
             }
         }
-    }
-
-    if (open) {
-        const std::vector<entt::entity> children = entity.children();  // copia
-        for (const entt::entity child : children) {
-            if (world_.valid(child)) {
-                drawHierarchyNode(world_.wrap(child));
-            }
-        }
-        ImGui::TreePop();
     }
 }
 

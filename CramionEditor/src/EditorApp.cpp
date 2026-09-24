@@ -25,6 +25,12 @@ namespace {
 constexpr std::size_t kUndoMemoryLimit = 256ull * 1024 * 1024;
 constexpr std::size_t kUndoMaxSteps = 200;
 
+using CpuClock = std::chrono::steady_clock;
+
+float millisecondsSince(CpuClock::time_point start) {
+    return std::chrono::duration<float, std::milli>(CpuClock::now() - start).count();
+}
+
 std::wstring widen(const std::string& text) {
     return dialogs::fromUtf8(text).wstring();
 }
@@ -34,6 +40,10 @@ std::wstring widen(const std::string& text) {
 EditorApp::EditorApp(dm::Window& window, gfx::VulkanRenderer& renderer, scene::Scene& scene,
                      ImGuiLayer& imgui)
     : window_(window), renderer_(renderer), scene_(scene), imgui_(imgui) {
+    // Los componentes de fisica tienen que existir antes de leer escenas.
+    physics::registerPhysicsComponents();
+    cinema::registerCinematicComponents();
+    physics_.addListener([this](const physics::PhysicsEvent& event) { onPhysicsEvent(event); });
     const std::filesystem::path documents = dialogs::documentsFolder();
     new_project_folder_ = dialogs::utf8(documents.empty() ? std::filesystem::current_path()
                                                           : documents / "Cramion Projects");
@@ -70,6 +80,13 @@ bool EditorApp::openProject(const std::filesystem::path& path) {
     sync_ = std::make_unique<ecs::RenderSync>(*asset_manager_);
     sync_->reset(scene_);
     has_project_ = true;
+    // Fisica: ajustes del proyecto y el mundo fisico (en modo edicion).
+    loadPhysicsSettings();
+    physics_.setAssetManager(asset_manager_.get());
+    physics_.setMeshProvider([this](ecs::Entity entity) -> const asset::ModelData* {
+        return sync_ ? sync_->actorModelData(entity, scene_) : nullptr;
+    });
+    physics_.start(world_);
     current_folder_ = project_.assetsFolder();
     project::addRecentProject(project_);
     std::cout << "[Editor] Proyecto abierto: " << project_.name << " ("
@@ -92,6 +109,12 @@ void EditorApp::closeProject() {
     if (!has_project_) {
         return;
     }
+    if (playing()) exitPlay();
+    physics_.stop();
+    physics_.setMeshProvider({});
+    physics_.setAssetManager(nullptr);
+    particles_.clear();
+    renderer_.setParticles({});
     if (animator_dirty_) saveAnimatorEditor();
     animator_uuid_ = {};
     animator_path_.clear();
@@ -153,6 +176,11 @@ bool EditorApp::openScene(const std::filesystem::path& path) {
 }
 
 bool EditorApp::saveScene() {
+    flushCommit();
+    if (playing()) {
+        std::cerr << "[Editor] Sal del modo Play para guardar (lo que cambia en Play no se guarda)\n";
+        return false;
+    }
     if (scene_path_.empty()) {
         return saveSceneAs();
     }
@@ -183,6 +211,7 @@ bool EditorApp::saveSceneAs() {
 }
 
 void EditorApp::runOrAskToSave(PendingAction action, const std::filesystem::path& scene) {
+    if (playing()) exitPlay();
     pending_ = action;
     pending_scene_ = scene;
     if (dirty_ && has_project_) {
@@ -234,12 +263,31 @@ void EditorApp::updateTitle() {
 // -----------------------------------------------------------------------------
 
 void EditorApp::resetUndo() {
+    commit_pending_ = false;
     undo_.clear();
     redo_.clear();
     current_state_ = ecs::serializeWorld(world_);
 }
 
 void EditorApp::commit() {
+    // En Play los cambios son temporales: sin deshacer (se restaura al parar).
+    if (playing()) {
+        return;
+    }
+    // La instantanea (serializar el mundo entero) se hace una vez al final
+    // del frame: varias acciones seguidas (pegar, duplicar, crear en serie)
+    // cuestan una sola y quedan en un solo paso de deshacer.
+    commit_pending_ = true;
+}
+
+void EditorApp::flushCommit() {
+    if (!commit_pending_) {
+        return;
+    }
+    commit_pending_ = false;
+    if (playing()) {
+        return;
+    }
     std::string state = ecs::serializeWorld(world_);
     if (state == current_state_) {
         return;
@@ -261,7 +309,8 @@ void EditorApp::commit() {
 }
 
 void EditorApp::undo() {
-    if (undo_.empty()) {
+    flushCommit();
+    if (undo_.empty() || playing()) {
         return;
     }
     redo_.push_back(std::move(current_state_));
@@ -273,7 +322,8 @@ void EditorApp::undo() {
 }
 
 void EditorApp::redo() {
-    if (redo_.empty()) {
+    flushCommit();
+    if (redo_.empty() || playing()) {
         return;
     }
     undo_.push_back(std::move(current_state_));
@@ -353,7 +403,8 @@ void EditorApp::revealInHierarchy(const Uuid& uuid) {
 // -----------------------------------------------------------------------------
 
 // 0 vacio, 1 cubo, 2 esfera, 3 plano, 4 cilindro, 5 capsula, 6 luz
-// direccional, 7 puntual, 8 foco, 9 camara.
+// direccional, 7 puntual, 8 foco, 9 camara, 10-12 decals, 13 cubo con
+// Rigidbody, 14 esfera con Rigidbody, 15 zona trigger, 16 particulas.
 ecs::Entity EditorApp::createEntity(int kind, ecs::Entity parent) {
     ecs::Entity created;
     switch (kind) {
@@ -369,10 +420,35 @@ ecs::Entity EditorApp::createEntity(int kind, ecs::Entity parent) {
         case 10:
         case 11:
         case 12: created = createDecal(kind - 10, parent); break;
+        case 13:
+            created = ecs::createPrimitive(world_, assets::builtin::kCube, "Cubo fisico", parent);
+            created.add<physics::Rigidbody>();
+            break;
+        case 14:
+            created = ecs::createPrimitive(world_, assets::builtin::kSphere, "Esfera fisica", parent);
+            created.add<physics::Rigidbody>();
+            break;
+        case 15: {
+            created = ecs::createEmpty(world_, parent);
+            created.setName("Zona trigger");
+            physics::BoxCollider& box = created.add<physics::BoxCollider>();
+            box.size = Vec3{3.0f, 2.0f, 3.0f};
+            box.material.is_trigger = true;
+            break;
+        }
+        case 16:
+            created = ecs::createEmpty(world_, parent);
+            created.setName("Particulas");
+            created.add<physics::ParticleSystem>();
+            break;
         default: created = ecs::createEmpty(world_, parent); break;
     }
+    // Objetos 3D con su collider, como Unity.
+    if (created.valid() && ((kind >= 1 && kind <= 5) || kind == 13 || kind == 14)) {
+        physics::addDefaultCollider(created);
+    }
     // Sin padre: delante de la camara del editor, como Unity.
-    if (created.valid() && !parent.valid() && kind != 6 && kind < 10) {
+    if (created.valid() && !parent.valid() && kind != 6 && (kind < 10 || kind >= 13)) {
         const scene::Camera& camera = scene_.camera();
         created.setWorldPosition(camera.position() + camera.forward() * 6.0f);
     }
@@ -525,7 +601,9 @@ void EditorApp::focusSelection() {
 // -----------------------------------------------------------------------------
 
 void EditorApp::drawUi(float delta_seconds) {
+    const CpuClock::time_point ui_start = CpuClock::now();
     ImGuizmo::BeginFrame();
+    imgui_.updateThumbnails();
     pollImports();
     watchAssets();
     runSelfTestStep();
@@ -537,6 +615,17 @@ void EditorApp::drawUi(float delta_seconds) {
         return;
     }
 
+    // La fisica va ANTES que la interfaz: los gizmos, el Inspector y el
+    // render ven los objetos donde estan en este frame (si fuera despues, los
+    // gizmos irian un frame por detras de lo que se mueve).
+    {
+        const CpuClock::time_point physics_start = CpuClock::now();
+        updatePhysics(delta_seconds);
+        // Camaras de cine despues de la fisica (pueden seguir a un cuerpo).
+        updateCinematics(delta_seconds);
+        addCpuSample(kCpuPhysics, millisecondsSince(physics_start));
+    }
+
     drawMenuBar();
     const ImGuiViewport* viewport = ImGui::GetMainViewport();
     const ImGuiID dockspace_id = ImGui::GetID("CramionDockspace");
@@ -546,15 +635,26 @@ void EditorApp::drawUi(float delta_seconds) {
     }
     ImGui::DockSpaceOverViewport(dockspace_id, viewport);
 
+    CpuClock::time_point t = CpuClock::now();
     drawSceneView();
+    drawGameView();
+    addCpuSample(kCpuScene, millisecondsSince(t));
+    t = CpuClock::now();
     if (show_hierarchy_) drawHierarchy();
+    addCpuSample(kCpuHierarchy, millisecondsSince(t));
+    t = CpuClock::now();
     if (show_inspector_) drawInspector();
+    addCpuSample(kCpuInspector, millisecondsSince(t));
+    t = CpuClock::now();
     if (show_project_) drawProject();
     if (show_statistics_) drawStatistics(delta_seconds);
     if (show_console_) drawConsole();
     if (show_render_settings_) drawRenderSettings();
     if (show_animator_) drawAnimatorEditor();
+    if (show_physics_) drawPhysicsWindow();
+    if (show_cinematic_) drawCinematicWindow();
     drawModals();
+    addCpuSample(kCpuPanels, millisecondsSince(t));
 
     // Atajos globales (no mientras se escribe ni se vuela).
     ImGuiIO& io = ImGui::GetIO();
@@ -569,15 +669,49 @@ void EditorApp::drawUi(float delta_seconds) {
         if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Z)) undo();
         if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Y)) redo();
         if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_N, false)) runOrAskToSave(PendingAction::NewScene);
+        // Play (Ctrl+P) y pausa (Ctrl+Mayus+P), como Unity.
+        if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_P, false)) {
+            if (io.KeyShift) {
+                togglePause();
+            } else if (playing()) {
+                exitPlay();
+            } else {
+                enterPlay();
+            }
+        }
     }
+    flushCommit();
+    chooseRenderView();
+    addCpuSample(kCpuUi, millisecondsSince(ui_start));
 }
 
 void EditorApp::syncWorld(float delta_seconds) {
     if (!has_project_ || !sync_) {
         return;
     }
-    sync_->sync(world_, scene_, renderer_, delta_seconds);
+    // (La fisica ya se simulo al empezar el frame, en drawUi.)
+    // La vista que se dibuja: Escena (camara del editor, con contorno y
+    // gizmos) o Juego (camara real, sin ayudas). Al cambiar de vista o en un
+    // corte de camara, sin historias temporales (no se mezclan dos camaras).
+    const bool game = render_view_ == kGameSlot;
+    renderer_.setViewSlot(render_view_);
+    if (render_view_ != last_render_view_ || (game && cinematics_.cutThisFrame())) {
+        renderer_.invalidateHistory();
+    }
+    last_render_view_ = render_view_;
+    if (game) saved_camera_ = scene_.camera();  // afterRender la devuelve
 
+    const CpuClock::time_point t = CpuClock::now();
+    ecs::RenderSync::Options options;
+    options.apply_main_camera = game;
+    sync_->sync(world_, scene_, renderer_, delta_seconds, options);
+    addCpuSample(kCpuSync, millisecondsSince(t));
+
+    if (game) {
+        renderer_.setOutlinedActors({});
+        renderer_.setOverlayGeometry({});
+        return;
+    }
     // Contorno de la seleccion (la entidad y sus hijos).
     std::vector<std::uint32_t> outlined;
     for (ecs::Entity e : topLevelSelection()) {
@@ -606,7 +740,10 @@ void EditorApp::buildDefaultLayout(unsigned int dockspace_id) {
     ImGui::DockBuilderDockWindow("Proyecto", bottom);
     ImGui::DockBuilderDockWindow("Consola", bottom);
     ImGui::DockBuilderDockWindow("Estadísticas", bottom);
+    ImGui::DockBuilderDockWindow("Física", bottom);
     ImGui::DockBuilderDockWindow("Escena", center);
+    ImGui::DockBuilderDockWindow("Juego", center);
+    ImGui::DockBuilderDockWindow("Cinemática", bottom);
     ImGui::DockBuilderDockWindow("Animator", center);
     ImGui::DockBuilderFinish(dockspace_id);
 }
@@ -686,6 +823,27 @@ void EditorApp::drawMenuBar() {
         item("Decal (estampa)", 10);
         item("Charco", 11);
         item("Humedad", 12);
+        ImGui::Separator();
+        if (ImGui::BeginMenu("Física")) {
+            item("Cubo con Rigidbody", 13);
+            item("Esfera con Rigidbody", 14);
+            item("Zona trigger", 15);
+            ImGui::EndMenu();
+        }
+        if (ImGui::BeginMenu("Efectos")) {
+            item("Sistema de partículas", 16);
+            ImGui::EndMenu();
+        }
+        if (ImGui::BeginMenu("Cinemática")) {
+            if (ImGui::MenuItem("Cámara virtual (desde la vista)")) createCinematic(0);
+            if (ImGui::MenuItem("Cámara que sigue a la selección")) createCinematic(1);
+            if (ImGui::MenuItem("Riel (Dolly Track)")) createCinematic(2);
+            if (ImGui::MenuItem("Cámara en riel (Dolly)")) createCinematic(3);
+            if (ImGui::MenuItem("Carro en riel (Dolly Cart)")) createCinematic(4);
+            ImGui::Separator();
+            if (ImGui::MenuItem("Secuencia cinemática (Timeline)")) createCinematic(5);
+            ImGui::EndMenu();
+        }
         ImGui::EndMenu();
     }
     if (ImGui::BeginMenu("Ventana")) {
@@ -696,14 +854,19 @@ void EditorApp::drawMenuBar() {
         ImGui::MenuItem("Consola", nullptr, &show_console_);
         ImGui::MenuItem("Ajustes de render", nullptr, &show_render_settings_);
         ImGui::MenuItem("Animator", nullptr, &show_animator_);
+        ImGui::MenuItem("Física", nullptr, &show_physics_);
+        ImGui::MenuItem("Juego", nullptr, &show_game_);
+        ImGui::MenuItem("Cinemática", nullptr, &show_cinematic_);
         ImGui::Separator();
         if (ImGui::MenuItem("Restablecer diseño")) {
             reset_layout_ = true;
             show_hierarchy_ = show_inspector_ = show_project_ = show_statistics_ = show_console_ =
-                show_render_settings_ = true;
+                show_render_settings_ = show_physics_ = show_game_ = show_cinematic_ = true;
         }
         ImGui::EndMenu();
     }
+
+    drawPlayControls();
 
     char status[200];
     std::snprintf(status, sizeof(status), "%s   |   %.0f FPS   |   GPU %.2f ms",
@@ -952,6 +1115,23 @@ void EditorApp::drawStatistics(float delta_seconds) {
                 static_cast<unsigned long long>(renderer_.triangleCount()),
                 renderer_.visibleSubmeshes(), renderer_.totalSubmeshes(),
                 renderer_.occludedSubmeshes(), renderer_.shadowSubmeshes());
+    // CPU por partes (media movil): donde se va el frame.
+    static constexpr const char* kCpuNames[kCpuSectionCount] = {
+        "Interfaz (total)", "  Jerarquía", "  Inspector", "  Escena + gizmos", "  Otros paneles",
+        "Física + partículas", "Sync del mundo", "Render (CPU)"};
+    if (ImGui::BeginTable("cpu", 2, ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp)) {
+        ImGui::TableSetupColumn("CPU", ImGuiTableColumnFlags_WidthStretch, 1.2f);
+        ImGui::TableSetupColumn("ms", ImGuiTableColumnFlags_WidthFixed, 56.0f);
+        ImGui::TableHeadersRow();
+        for (int i = 0; i < kCpuSectionCount; ++i) {
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn();
+            ImGui::TextUnformatted(kCpuNames[i]);
+            ImGui::TableNextColumn();
+            ImGui::Text("%.2f", cpu_ms_[static_cast<std::size_t>(i)]);
+        }
+        ImGui::EndTable();
+    }
     if (profiler.supported() &&
         ImGui::BeginTable("gpu", 3, ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp)) {
         ImGui::TableSetupColumn("Pasada de GPU", ImGuiTableColumnFlags_WidthStretch, 1.2f);
@@ -979,6 +1159,7 @@ void EditorApp::drawConsole() {
         ImGui::End();
         return;
     }
+    console_dock_id_ = ImGui::GetWindowDockID();
     EditorLog& log = EditorLog::instance();
     if (ImGui::Button("Limpiar")) log.clear();
     ImGui::SameLine();

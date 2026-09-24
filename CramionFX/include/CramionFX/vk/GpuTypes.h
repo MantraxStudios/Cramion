@@ -86,7 +86,9 @@ struct GpuSkinnedPush {
     std::uint32_t bone_offset = 0;
     // F0 de la parte no metalica (va al alfa del G-buffer de normales).
     float reflectance = 0.04f;
-    std::uint32_t pad[2] = {0, 0};
+    // Picking por ID (pick.frag): indice del actor + 1 (0 = nada).
+    std::uint32_t pick_id = 0;
+    std::uint32_t pad = 0;
 };
 
 // Constante de push de las sombras de los modelos con esqueleto.

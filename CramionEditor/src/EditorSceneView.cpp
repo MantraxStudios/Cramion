@@ -25,29 +25,6 @@ using core::Vec4;
 
 namespace {
 
-// Rayo contra caja alineada (placas). Distancia de entrada o < 0.
-float rayBox(const Vec3& origin, const Vec3& direction, const core::Aabb& box) {
-    float t_min = 0.0f;
-    float t_max = std::numeric_limits<float>::max();
-    const float o[3] = {origin.x, origin.y, origin.z};
-    const float d[3] = {direction.x, direction.y, direction.z};
-    const float lo[3] = {box.min.x, box.min.y, box.min.z};
-    const float hi[3] = {box.max.x, box.max.y, box.max.z};
-    for (int i = 0; i < 3; ++i) {
-        if (std::abs(d[i]) < 1e-9f) {
-            if (o[i] < lo[i] || o[i] > hi[i]) return -1.0f;
-            continue;
-        }
-        float t0 = (lo[i] - o[i]) / d[i];
-        float t1 = (hi[i] - o[i]) / d[i];
-        if (t0 > t1) std::swap(t0, t1);
-        t_min = std::max(t_min, t0);
-        t_max = std::min(t_max, t1);
-        if (t_min > t_max) return -1.0f;
-    }
-    return t_min;
-}
-
 // Boton de la barra que se queda "pulsado" cuando esta activo.
 bool toolButton(const char* label, bool active, const char* tooltip) {
     if (active) ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_Header));
@@ -62,13 +39,27 @@ bool toolButton(const char* label, bool active, const char* tooltip) {
 void EditorApp::drawToolbar() {
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(4.0f, 4.0f));
     ImGui::SetCursorPos(ImVec2(6.0f, ImGui::GetCursorPosY() + 4.0f));
-    if (toolButton("Q Ninguno", gizmo_ == GizmoOperation::None, "Sin gizmo (Q)")) gizmo_ = GizmoOperation::None;
+    if (toolButton("Q", gizmo_ == GizmoOperation::None, "Sin gizmo (Q)")) gizmo_ = GizmoOperation::None;
     ImGui::SameLine();
-    if (toolButton("W Mover", gizmo_ == GizmoOperation::Translate, "Mover (W)")) gizmo_ = GizmoOperation::Translate;
+    const auto icon_button = [&](const char* id, Icon icon, bool active, const char* tooltip) {
+        if (active) ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_Header));
+        const float size = ImGui::GetFrameHeight() - ImGui::GetStyle().FramePadding.y * 2.0f;
+        bool pressed = false;
+        if (imgui_.icon(icon) != 0) {
+            pressed = ImGui::ImageButton(id, imgui_.icon(icon), ImVec2(size, size), ImVec2(0, 0), ImVec2(1, 1),
+                                         ImVec4(0, 0, 0, 0), ImVec4(1, 1, 1, active ? 1.0f : 0.75f));
+        } else {
+            pressed = ImGui::Button(id);
+        }
+        if (active) ImGui::PopStyleColor();
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) ImGui::SetTooltip("%s", tooltip);
+        return pressed;
+    };
+    if (icon_button("W##move", Icon::Move, gizmo_ == GizmoOperation::Translate, "Mover (W)")) gizmo_ = GizmoOperation::Translate;
     ImGui::SameLine();
-    if (toolButton("E Rotar", gizmo_ == GizmoOperation::Rotate, "Rotar (E)")) gizmo_ = GizmoOperation::Rotate;
+    if (icon_button("E##rotate", Icon::Rotate, gizmo_ == GizmoOperation::Rotate, "Rotar (E)")) gizmo_ = GizmoOperation::Rotate;
     ImGui::SameLine();
-    if (toolButton("R Escalar", gizmo_ == GizmoOperation::Scale, "Escalar (R)")) gizmo_ = GizmoOperation::Scale;
+    if (icon_button("R##scale", Icon::Scale, gizmo_ == GizmoOperation::Scale, "Escalar (R)")) gizmo_ = GizmoOperation::Scale;
     drawStampToolbar();
     ImGui::SameLine();
     ImGui::TextDisabled("|");
@@ -97,17 +88,28 @@ void EditorApp::drawToolbar() {
 }
 
 void EditorApp::drawSceneView() {
+    if (focus_scene_) {
+        ImGui::SetNextWindowFocus();
+        focus_scene_ = false;
+        preferred_view_ = kSceneSlot;
+    }
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
     const bool open = ImGui::Begin("Escena", nullptr,
                                    ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
     ImGui::PopStyleVar();
     scene_dock_id_ = ImGui::GetWindowDockID();
+    scene_view_visible_ = open;
+    overlay_.clear();
     if (!open) {
         flying_ = false;
+        flushOverlay();  // vista oculta: sin gizmos
         ImGui::End();
         return;
     }
     view_focused_ = ImGui::IsWindowFocused();
+    if (view_focused_ || (ImGui::IsWindowHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Left))) {
+        preferred_view_ = kSceneSlot;
+    }
     drawToolbar();
 
     // La imagen, entera y sin deformar.
@@ -122,12 +124,17 @@ void EditorApp::drawSceneView() {
     const ImVec2 cursor = ImGui::GetCursorScreenPos();
     const ImVec2 origin{cursor.x + (avail.x - size.x) * 0.5f, cursor.y + (avail.y - size.y) * 0.5f};
     ImGui::SetCursorScreenPos(origin);
-    ImGui::Image(imgui_.sceneTexture(), size);
+    ImGui::Image(imgui_.viewTexture(kSceneSlot), size);
     view_x_ = origin.x;
     view_y_ = origin.y;
     view_w_ = size.x;
     view_h_ = size.y;
     view_hovered_ = ImGui::IsItemHovered();
+    // En Play (o en pausa) un marco de color, como el tinte de Unity.
+    if (playing()) {
+        const ImU32 frame = play_state_ == PlayState::Paused ? IM_COL32(255, 190, 60, 220) : IM_COL32(80, 170, 255, 220);
+        ImGui::GetWindowDrawList()->AddRect(origin, ImVec2(origin.x + size.x, origin.y + size.y), frame, 0.0f, 0, 3.0f);
+    }
 
     // Soltar assets en la escena: en el punto del suelo (y = 0) bajo el
     // raton, o delante de la camara.
@@ -177,13 +184,35 @@ void EditorApp::drawSceneView() {
     drawSceneOverlays();
     const bool light_handle = drawLightGizmos();
     drawDecalGizmos();
+    drawPhysicsGizmos();
+    const bool waypoint_handle = drawCinematicGizmos();
+    const bool collider_handle = drawColliderHandles() || waypoint_handle;
     const bool stamping = drawStampTool();
-    if (!stamping) drawGizmo();
+    if (!stamping && collider_handle_drag_ == 0) drawGizmo();
     handleCameraControls();
 
-    // Seleccionar: clic izquierdo sin arrastrar, fuera del gizmo.
+    // Alt + clic: raycast de fisica desde el raton (probador de la ventana
+    // Fisica), sin cambiar la seleccion.
     ImGuiIO& io = ImGui::GetIO();
-    if (view_hovered_ && !light_handle && !stamping && ImGui::IsMouseReleased(ImGuiMouseButton_Left) && !ImGuizmo::IsUsing() &&
+    if (view_hovered_ && io.KeyAlt && raycast_.click_from_mouse && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+        Vec3 ray_origin{};
+        Vec3 ray_direction{};
+        if (mouseRay(io.MousePos.x, io.MousePos.y, ray_origin, ray_direction)) {
+            raycast_.mouse_origin = ray_origin;
+            raycast_.mouse_direction = ray_direction;
+            raycast_.has_mouse_ray = true;
+            raycast_.origin = 3;
+            raycast_.enabled = true;
+            runRaycastTester();
+        }
+    }
+    // Resultado del picking por GPU pedido en un clic anterior.
+    if (std::optional<gfx::VulkanRenderer::PickResult> result = renderer_.takePickResult()) {
+        finishPick(*result);
+    }
+    // Seleccionar: clic izquierdo sin arrastrar, fuera del gizmo.
+    if (view_hovered_ && !io.KeyAlt && !light_handle && !collider_handle && !stamping &&
+        ImGui::IsMouseReleased(ImGuiMouseButton_Left) && !ImGuizmo::IsUsing() &&
         !ImGuizmo::IsOver() && ImGui::GetMouseDragDelta(ImGuiMouseButton_Left, 2.0f).x == 0.0f &&
         ImGui::GetMouseDragDelta(ImGuiMouseButton_Left, 2.0f).y == 0.0f) {
         pickAt(io.MousePos.x, io.MousePos.y);
@@ -198,17 +227,26 @@ void EditorApp::drawSceneView() {
         if (ImGui::IsKeyPressed(ImGuiKey_X, false)) gizmo_local_ = !gizmo_local_;
         if (ImGui::IsKeyPressed(ImGuiKey_T, false)) stamp_mode_ = !stamp_mode_;
         if (ImGui::IsKeyPressed(ImGuiKey_F, false)) focusSelection();
-        if (ImGui::IsKeyPressed(ImGuiKey_Delete)) deleteSelection();
+        // Supr con un punto de riel elegido borra el punto, no el objeto.
+        if (ImGui::IsKeyPressed(ImGuiKey_Delete) && !deleteSelectedWaypoint()) deleteSelection();
         if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_D, false)) duplicateSelection();
         if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_C, false)) copySelection();
         if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_V, false)) pasteClipboard();
     }
 
+    // Si se ven Escena y Juego a la vez solo se dibuja una por frame.
+    if (render_view_ != kSceneSlot) {
+        ImDrawList* note = ImGui::GetWindowDrawList();
+        note->AddRectFilled(origin, ImVec2(origin.x + size.x, origin.y + 24.0f), IM_COL32(0, 0, 0, 150));
+        note->AddText(ImVec2(origin.x + 8.0f, origin.y + 4.0f), IM_COL32(255, 220, 140, 255),
+                      "En pausa: se esta dibujando el Juego (clic aqui para ver la Escena)");
+    }
     // Ayuda discreta.
     ImGui::SetCursorScreenPos(ImVec2(origin.x + 10.0f, origin.y + size.y - 24.0f));
     ImGui::TextColored(ImVec4(1.0f, 1.0f, 1.0f, 0.5f),
                        "Clic: seleccionar  |  Botón derecho + WASD: volar  |  Rueda: acercar  |  "
-                       "Botón central: desplazar  |  F: enfocar");
+                       "Botón central: desplazar  |  F: enfocar  |  Alt+clic: raycast");
+    flushOverlay();
     ImGui::End();
 }
 
@@ -278,10 +316,13 @@ void EditorApp::pickAt(float x, float y) {
     Uuid icon_hit{};
     world_.forEachDepthFirst([&](ecs::Entity e) {
         if (icon_hit.valid() || !e.activeInHierarchy()) return;
-        if (!e.has<ecs::Light>() && !e.has<ecs::Camera>() && !e.has<ecs::Decal>()) return;
+        if (!e.has<ecs::Light>() && !e.has<ecs::Camera>() && !e.has<ecs::Decal>() && !e.has<physics::ParticleSystem>() &&
+            !e.has<cinema::VirtualCamera>() && !e.has<cinema::DollyTrack>() && !e.has<cinema::CinematicSequence>()) {
+            return;
+        }
         float sx = 0.0f;
         float sy = 0.0f;
-        if (worldToScreen(e.worldPosition(), sx, sy) && std::hypot(sx - x, sy - y) < 12.0f) {
+        if (worldToScreen(e.worldPosition(), sx, sy) && std::hypot(sx - x, sy - y) < 15.0f) {
             icon_hit = e.uuid();
         }
     });
@@ -290,24 +331,31 @@ void EditorApp::pickAt(float x, float y) {
         return;
     }
 
-    Vec3 origin{};
-    Vec3 direction{};
-    if (!mouseRay(x, y, origin, direction) || !sync_) return;
-    float best = std::numeric_limits<float>::max();
-    ecs::Entity hit;
-    for (std::uint32_t i = 0; i < scene_.actors().size(); ++i) {
-        const ecs::Entity owner = sync_->entityForActor(world_, i);
-        if (!owner.valid() || !owner.activeInHierarchy()) continue;
-        Vec3 mn{};
-        Vec3 mx{};
-        if (!sync_->actorLocalBounds(i, mn, mx)) continue;
-        const core::Aabb box = core::transformAabb(owner.worldMatrix(), core::Aabb{mn, mx});
-        const float t = rayBox(origin, direction, box);
-        if (t >= 0.0f && t < best) {
-            best = t;
-            hit = owner;
-        }
-    }
+    // Lo demas: picking por ID en la GPU. El renderizador dibuja los objetos
+    // en el pixel del raton y devuelve cual se ve (con su forma real y lo que
+    // tapa a lo que); llega unos frames despues (finishPick).
+    const vk::Extent2D extent = renderer_.sceneExtent();
+    const float u = (x - view_x_) / view_w_;
+    const float v = (y - view_y_) / view_h_;
+    if (u < 0.0f || u >= 1.0f || v < 0.0f || v >= 1.0f || extent.width == 0 || extent.height == 0) return;
+    renderer_.requestPick(static_cast<std::uint32_t>(u * static_cast<float>(extent.width)),
+                          static_cast<std::uint32_t>(v * static_cast<float>(extent.height)));
+    pending_pick_ = PendingPick{true, x, y, additive};
+}
+
+// El resultado del picking por GPU: el objeto bajo el pixel del clic.
+void EditorApp::finishPick(const gfx::VulkanRenderer::PickResult& result) {
+    if (!pending_pick_.active) return;
+    pending_pick_.active = false;
+    const float x = pending_pick_.x;
+    const float y = pending_pick_.y;
+    const bool additive = pending_pick_.additive;
+    const auto choose = [&](const Uuid& uuid) {
+        if (additive) toggleSelection(uuid);
+        else selectOnly(uuid);
+        revealInHierarchy(uuid);
+    };
+    const ecs::Entity hit = result.hit && sync_ ? sync_->entityForActor(world_, result.actor) : ecs::Entity{};
     if (!hit.valid()) {
         if (!additive) clearSelection();
         last_pick_x_ = last_pick_y_ = -1.0f;
@@ -332,57 +380,47 @@ void EditorApp::pickAt(float x, float y) {
     choose(chain[level].uuid());
 }
 
-// Iconos de luces y camaras (y la direccion de la seleccionada).
+// Iconos de lo que no tiene malla (luces, camaras, decals, particulas,
+// camaras virtuales, rieles), como los gizmos de Unity, y la direccion de las
+// luces y camaras seleccionadas.
 void EditorApp::drawSceneOverlays() {
     ImDrawList* draw = ImGui::GetWindowDrawList();
     draw->PushClipRect(ImVec2(view_x_, view_y_), ImVec2(view_x_ + view_w_, view_y_ + view_h_), true);
-    // Solo las entidades con luz o camara (vistas de EnTT), no todo el mundo.
     const auto overlay = [&](ecs::Entity e) {
         if (!e.activeInHierarchy()) return;
-        const ecs::Light* light = e.tryGet<ecs::Light>();
-        const bool camera = e.has<ecs::Camera>();
-        if (light == nullptr && !camera) return;
         float x = 0.0f;
         float y = 0.0f;
         if (!worldToScreen(e.worldPosition(), x, y)) return;
         const bool selected = isSelected(e.uuid());
-        const ImU32 color = camera ? IM_COL32(120, 220, 140, 235)
-                                   : IM_COL32(static_cast<int>(std::min(light->color.x, 1.0f) * 200 + 55),
-                                              static_cast<int>(std::min(light->color.y, 1.0f) * 200 + 55),
-                                              static_cast<int>(std::min(light->color.z, 1.0f) * 200 + 55), 235);
-        if (camera) {
-            draw->AddRectFilled(ImVec2(x - 7, y - 5), ImVec2(x + 5, y + 5), color, 2.0f);
-            draw->AddTriangleFilled(ImVec2(x + 5, y), ImVec2(x + 9, y - 4), ImVec2(x + 9, y + 4), color);
-        } else {
-            draw->AddCircleFilled(ImVec2(x, y), selected ? 7.0f : 5.5f, color);
+        ImU32 tint = IM_COL32_WHITE;
+        const Icon icon = entityIcon(e, tint);
+        // Las luces, del color de su luz.
+        if (const ecs::Light* light = e.tryGet<ecs::Light>()) {
+            tint = IM_COL32(static_cast<int>(std::min(light->color.x, 1.0f) * 200 + 55),
+                            static_cast<int>(std::min(light->color.y, 1.0f) * 200 + 55),
+                            static_cast<int>(std::min(light->color.z, 1.0f) * 200 + 55), 255);
         }
-        draw->AddCircle(ImVec2(x, y), selected ? 10.0f : 8.0f, IM_COL32(0, 0, 0, 170), 0, 1.5f);
+        const float size = selected ? 30.0f : 24.0f;
+        draw->AddCircleFilled(ImVec2(x, y), size * 0.62f, IM_COL32(0, 0, 0, selected ? 150 : 95));
+        if (selected) draw->AddCircle(ImVec2(x, y), size * 0.62f, IM_COL32(255, 160, 40, 255), 0, 2.0f);
+        imgui_.drawIcon(draw, icon, ImVec2(x - size * 0.5f, y - size * 0.5f), size, tint);
         // Direccion de focos, direccionales y camaras seleccionados.
+        const ecs::Light* light = e.tryGet<ecs::Light>();
+        const bool camera = e.has<ecs::Camera>() || e.has<cinema::VirtualCamera>();
         if (selected && (camera || (light != nullptr && light->type != ecs::LightType::Point))) {
             float x1 = 0.0f;
             float y1 = 0.0f;
             if (worldToScreen(e.worldPosition() + e.forward() * 1.5f, x1, y1)) {
-                draw->AddLine(ImVec2(x, y), ImVec2(x1, y1), color, 2.0f);
+                draw->AddLine(ImVec2(x, y), ImVec2(x1, y1), tint, 2.0f);
             }
         }
     };
-    for (const entt::entity handle : world_.registry().view<ecs::Decal>()) {
-        const ecs::Entity e = world_.wrap(handle);
-        if (!e.activeInHierarchy()) continue;
-        float x = 0.0f;
-        float y = 0.0f;
-        if (!worldToScreen(e.worldPosition(), x, y)) continue;
-        const bool selected = isSelected(e.uuid());
-        const ImU32 color = IM_COL32(255, 170, 60, 235);
-        const float s = selected ? 7.0f : 5.5f;
-        draw->AddQuadFilled(ImVec2(x, y - s), ImVec2(x + s, y), ImVec2(x, y + s), ImVec2(x - s, y), color);
-        draw->AddQuad(ImVec2(x, y - s - 2), ImVec2(x + s + 2, y), ImVec2(x, y + s + 2), ImVec2(x - s - 2, y),
-                      IM_COL32(0, 0, 0, 170), 1.5f);
-    }
-    for (const entt::entity handle : world_.registry().view<ecs::Light>()) overlay(world_.wrap(handle));
-    for (const entt::entity handle : world_.registry().view<ecs::Camera>()) {
-        if (!world_.registry().all_of<ecs::Light>(handle)) overlay(world_.wrap(handle));
-    }
+    world_.forEachDepthFirst([&](ecs::Entity e) {
+        if (e.has<ecs::Light>() || e.has<ecs::Camera>() || e.has<ecs::Decal>() || e.has<physics::ParticleSystem>() ||
+            e.has<cinema::VirtualCamera>() || e.has<cinema::DollyTrack>() || e.has<cinema::CinematicSequence>()) {
+            overlay(e);
+        }
+    });
     draw->PopClipRect();
 }
 
@@ -419,28 +457,12 @@ bool EditorApp::drawLightGizmos() {
     const Vec3 right = core::normalize(e.right());
     const Vec3 up = core::normalize(e.up());
 
-    // Polilinea 3D (solo los tramos que quedan delante de la camara).
+    // Alcance, conos y rayos en 3D con profundidad (se ve por donde la esfera
+    // o el cono atraviesan los objetos). Las asas siguen en 2D: son botones.
     const auto circle = [&](const Vec3& c, const Vec3& u, const Vec3& v, float radius, ImU32 color) {
-        constexpr int kSegments = 64;
-        float px = 0.0f, py = 0.0f;
-        bool prev = false;
-        for (int i = 0; i <= kSegments; ++i) {
-            const float a = static_cast<float>(i) / kSegments * 2.0f * core::kPi;
-            const Vec3 p = c + u * (std::cos(a) * radius) + v * (std::sin(a) * radius);
-            float x = 0.0f, y = 0.0f;
-            const bool ok = worldToScreen(p, x, y);
-            if (ok && prev) draw->AddLine(ImVec2(px, py), ImVec2(x, y), color, 1.5f);
-            px = x;
-            py = y;
-            prev = ok;
-        }
+        overlayCircle(c, u, v, radius, color, false, 64);
     };
-    const auto line = [&](const Vec3& a, const Vec3& b, ImU32 color, float thickness) {
-        float ax = 0.0f, ay = 0.0f, bx = 0.0f, by = 0.0f;
-        if (worldToScreen(a, ax, ay) && worldToScreen(b, bx, by)) {
-            draw->AddLine(ImVec2(ax, ay), ImVec2(bx, by), color, thickness);
-        }
-    };
+    const auto line = [&](const Vec3& a, const Vec3& b, ImU32 color, float) { overlayLine(a, b, color); };
 
     // Asas: cuadraditos que se arrastran; devuelve si el raton esta encima.
     ImGuiIO& io = ImGui::GetIO();
@@ -541,6 +563,18 @@ void EditorApp::drawGizmo() {
         gizmo_was_using_ = false;
         return;
     }
+    // ImGuizmo solo para la interaccion: sus colores, transparentes (ImGui no
+    // dibuja las primitivas de alfa 0), y los ejes sin invertirse, para que
+    // la geometria 3D (drawGizmoGeometry) coincida con lo que se agarra.
+    static bool invisible_style = false;
+    if (!invisible_style) {
+        ImGuizmo::Style& style = ImGuizmo::GetStyle();
+        for (ImVec4& color : style.Colors) {
+            color.w = 0.0f;
+        }
+        ImGuizmo::AllowAxisFlip(false);
+        invisible_style = true;
+    }
     ImGuizmo::SetOrthographic(false);
     ImGuizmo::SetDrawlist(ImGui::GetWindowDrawList());
     ImGuizmo::SetRect(view_x_, view_y_, view_w_, view_h_);
@@ -550,6 +584,9 @@ void EditorApp::drawGizmo() {
     const Mat4 view = scene_.camera().view();
     Mat4 projection = scene_.camera().projection();
     projection.m[1][1] = -projection.m[1][1];
+
+    // Un punto de un riel seleccionado: el gizmo mueve el punto.
+    if (drawWaypointGizmo(view, projection)) return;
 
     ImGuizmo::OPERATION operation = ImGuizmo::TRANSLATE;
     float snap[3] = {snap_translate_, snap_translate_, snap_translate_};
@@ -578,6 +615,10 @@ void EditorApp::drawGizmo() {
         }
         dirty_ = true;
     }
+    // El gizmo en 3D (con profundidad) donde esta el objeto ahora.
+    drawGizmoGeometry(target.worldMatrix(), mode == ImGuizmo::LOCAL,
+                      gizmo_ == GizmoOperation::Translate ? 0 : (gizmo_ == GizmoOperation::Rotate ? 1 : 2));
+
     const bool using_now = ImGuizmo::IsUsing();
     if (gizmo_was_using_ && !using_now) {
         commit();  // se solto el gizmo: un paso de deshacer

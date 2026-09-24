@@ -15,6 +15,7 @@
 
 #include <imgui_impl_win32.h>
 
+#include <chrono>
 #include <cstdlib>
 #include <exception>
 #include <filesystem>
@@ -121,7 +122,12 @@ int main(int argc, char** argv) {
 
             scene.update(app.sceneWantsInput() ? input : idle_input, delta_seconds);
             app.syncWorld(delta_seconds);
+            const auto render_start = std::chrono::steady_clock::now();
             renderer.drawFrame(scene);
+            app.afterRender();
+            app.setRenderCpuTime(std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() -
+                                                                            render_start)
+                                     .count());
             input.newFrame();
         }
 

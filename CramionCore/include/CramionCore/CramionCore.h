@@ -15,6 +15,7 @@
 
 #include "CramionCore/Uuid.h"
 #include "CramionCore/asset/AssetDatabase.h"
+#include "CramionCore/cinematics/Cinematics.h"
 #include "CramionCore/asset/AssetManager.h"
 #include "CramionCore/asset/AssetTypes.h"
 #include "CramionCore/asset/Importer.h"
@@ -25,4 +26,8 @@
 #include "CramionCore/ecs/RenderSync.h"
 #include "CramionCore/ecs/SceneSerializer.h"
 #include "CramionCore/ecs/World.h"
+#include "CramionCore/physics/Particles.h"
+#include "CramionCore/physics/PhysicsComponents.h"
+#include "CramionCore/physics/PhysicsSettings.h"
+#include "CramionCore/physics/PhysicsSystem.h"
 #include "CramionCore/project/Project.h"

@@ -257,6 +257,21 @@ void ComponentRegistry::registerComponent(std::string name, std::string label,
                 bool field(const Meta& m, core::Vec2& v, float s) override { return mark(inner.field(m, v, s)); }
                 bool enumeration(const Meta& m, int& v, std::span<const char* const> n) override { return mark(inner.enumeration(m, v, n)); }
                 bool asset(const Meta& m, assets::AssetRef& r, assets::AssetType t) override { return mark(inner.asset(m, r, t)); }
+                bool layerMask(const Meta& m, std::uint32_t& v) override { return mark(inner.layerMask(m, v)); }
+                bool entity(const Meta& m, Uuid& r) override { return mark(inner.entity(m, r)); }
+                bool beginList(const Meta& m, std::size_t& n) override {
+                    const std::size_t before = n;
+                    const bool open = inner.beginList(m, n);
+                    mark(n != before);
+                    return open;
+                }
+                bool beginListItem(std::size_t i) override { return inner.beginListItem(i); }
+                void endListItem() override { inner.endListItem(); }
+                int endList() override {
+                    const int remove = inner.endList();
+                    mark(remove >= 0);
+                    return remove;
+                }
             } counting(visitor);
             component->reflect(counting);
             return counting.changed;

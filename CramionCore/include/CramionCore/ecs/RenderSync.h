@@ -86,6 +86,8 @@ private:
         int clip = -2;  // el que esta sonando (-2 = sin elegir aun)
         bool loop = true;
         int controller_state = -1;  // estado del controlador que sono por ultima vez
+        std::uint64_t seen = 0;     // ultimo frame en que se dibujo
+        bool animated = false;      // el frame anterior se animaba (hay que copiar su pose)
     };
     struct ClipKey {
         std::uint32_t model = 0;
@@ -122,6 +124,8 @@ private:
     std::unordered_map<ClipKey, int, ClipKeyHash> external_clips_;
     std::unordered_map<std::string, int> decal_textures_;  // ruta -> ranura del renderizador
     std::vector<entt::entity> actor_entities_;
+    std::vector<entt::entity> previous_entities_;  // los del frame anterior (reutilizar actores)
+    std::uint64_t frame_ = 0;
     std::vector<std::uint32_t> actor_models_;  // modelo de cada actor
     std::unordered_map<entt::entity, std::uint32_t> entity_actor_;
 

@@ -8,6 +8,7 @@
 //   - cargarla (visitante que lee JSON),
 // como los campos serializados de Unity. Anadir una propiedad es una linea.
 
+#include "CramionCore/Uuid.h"
 #include "CramionCore/asset/AssetTypes.h"
 
 #include <CramionFX/core/Math.h>
@@ -77,6 +78,39 @@ public:
     virtual bool enumeration(const Meta& meta, int& value, std::span<const char* const> names) = 0;
     // Referencia a un asset (el Inspector acepta arrastrar desde el navegador).
     virtual bool asset(const Meta& meta, assets::AssetRef& ref, assets::AssetType type) = 0;
+    // Mascara de capas de fisica (bit i = capa i), como el LayerMask de
+    // Unity. Por defecto se guarda como entero; el Inspector la muestra como
+    // una lista desplegable con los nombres de las capas.
+    // Referencia a otra entidad del mundo por su UUID (el objetivo de una
+    // camara, el riel de un carro...). Invalida = ninguna. Por defecto se
+    // guarda como texto; el Inspector acepta arrastrarla desde la Jerarquia.
+    virtual bool entity(const Meta& meta, Uuid& ref) {
+        std::string text = ref.valid() ? ref.toString() : std::string();
+        const bool changed = field(meta, text);
+        if (changed) {
+            ref = text.empty() ? Uuid{} : Uuid::parse(text);
+        }
+        return changed;
+    }
+
+    // Lista de elementos con sus propias propiedades (puntos de un riel,
+    // planos de una secuencia). Uso: listField() de abajo. El visitante puede
+    // cambiar `count` (el lector JSON, el boton Anadir del Inspector);
+    // endList() devuelve el indice de un elemento a quitar, o -1. Los
+    // visitantes que no saben de listas las saltan.
+    virtual bool beginList(const Meta& /*meta*/, std::size_t& /*count*/) { return false; }
+    virtual bool beginListItem(std::size_t /*index*/) { return true; }
+    virtual void endListItem() {}
+    virtual int endList() { return -1; }
+
+    virtual bool layerMask(const Meta& meta, std::uint32_t& mask) {
+        int value = static_cast<int>(mask);
+        const bool changed = field(meta, value);
+        if (changed) {
+            mask = static_cast<std::uint32_t>(value);
+        }
+        return changed;
+    }
 };
 
 // Enum tipado sobre enumeration().
@@ -86,6 +120,32 @@ bool enumField(PropertyVisitor& v, const Meta& meta, E& value, std::span<const c
     const bool changed = v.enumeration(meta, index, names);
     if (changed) {
         value = static_cast<E>(index);
+    }
+    return changed;
+}
+
+// Lista de structs: `reflect_item(T&, PropertyVisitor&)` describe cada uno.
+template <typename T, typename Fn>
+bool listField(PropertyVisitor& v, const Meta& meta, std::vector<T>& items, Fn&& reflect_item) {
+    std::size_t count = items.size();
+    if (!v.beginList(meta, count)) {
+        return false;
+    }
+    bool changed = false;
+    if (count != items.size()) {
+        items.resize(count);
+        changed = true;
+    }
+    for (std::size_t i = 0; i < items.size(); ++i) {
+        if (v.beginListItem(i)) {
+            reflect_item(items[i], v);
+            v.endListItem();
+        }
+    }
+    const int remove = v.endList();
+    if (remove >= 0 && static_cast<std::size_t>(remove) < items.size()) {
+        items.erase(items.begin() + remove);
+        changed = true;
     }
     return changed;
 }

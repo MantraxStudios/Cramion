@@ -9,6 +9,9 @@
 #include "CramionFX/vk/GpuCulling.h"
 #include "CramionFX/vk/GpuProfiler.h"
 #include "CramionFX/vk/PostProcessSettings.h"
+#include "CramionFX/vk/OverlayGeometry.h"
+#include "CramionFX/vk/OverlayPass.h"
+#include "CramionFX/vk/ParticlePass.h"
 #include "CramionFX/vk/GpuTypes.h"
 #include "CramionFX/vk/IblProbe.h"
 #include "CramionFX/vk/LightingPass.h"
@@ -36,6 +39,8 @@
 #include <filesystem>
 #include <functional>
 #include <cstdint>
+#include <optional>
+#include <unordered_map>
 #include <vector>
 
 namespace cramion::scene {
@@ -146,6 +151,32 @@ public:
     // aplica en el frame siguiente.
     void setPostProcess(const PostProcessSettings& settings) { post_ = settings; }
     const PostProcessSettings& postProcess() const { return post_; }
+
+    // --- Picking por ID en la GPU (el clic del editor) ---
+    // Pide que objeto se ve en el pixel (x, y) de la imagen de la escena: en
+    // el siguiente frame se dibujan los actores en una imagen de IDs solo en
+    // ese pixel (con la profundidad del G-buffer: exacto, con la forma real
+    // del objeto y lo que tapa a lo que). El resultado llega unos frames
+    // despues (cuando la GPU termina): takePickResult() lo devuelve una vez.
+    struct PickResult {
+        bool hit = false;
+        std::uint32_t actor = 0;  // indice en scene.actors()
+        std::uint32_t x = 0;
+        std::uint32_t y = 0;
+    };
+    void requestPick(std::uint32_t x, std::uint32_t y);
+    std::optional<PickResult> takePickResult();
+    bool pickPending() const;
+
+    // Gizmos y ayudas en 3D con prueba de profundidad (OverlayGeometry.h). Se
+    // dibujan en el frame siguiente a la llamada; se sustituyen enteras.
+    void setOverlayGeometry(OverlayGeometry geometry) { overlay_geometry_ = std::move(geometry); }
+    const OverlayGeometry& overlayGeometry() const { return overlay_geometry_; }
+
+    // Particulas (ParticleGeometry.h): discos suaves sobre la imagen HDR,
+    // con profundidad. Se dibujan en el frame siguiente; se sustituyen enteras.
+    void setParticles(ParticleDrawList particles) { particles_ = std::move(particles); }
+    const ParticleDrawList& particles() const { return particles_; }
 
     // Contorno de seleccion (naranja, como Unity) alrededor de estos actores
     // (indices en scene.actors()): mas intenso donde se ven, tenue donde algo
@@ -311,6 +342,27 @@ public:
     // legible como textura (SHADER_READ_ONLY_OPTIMAL) durante el overlay.
     // Cambia al redimensionar: sceneImageGeneration() avisa de ello.
     VkImageView sceneImageView() const { return *ldr_color_.view(); }
+
+    // --- Texturas de la interfaz (iconos, miniaturas del editor) ---
+    // RGBA8 con mipmaps (se ven bien pequenas). Devuelve un identificador
+    // (0 = error); su vista se registra en ImGui. destroyUiTexture espera a
+    // la GPU: quitar varias de golpe, no una por frame.
+    std::uint32_t createUiTexture(const std::uint8_t* rgba, std::uint32_t width, std::uint32_t height);
+    VkImageView uiTextureView(std::uint32_t id) const;
+    void destroyUiTextures(const std::vector<std::uint32_t>& ids);
+
+    // --- Vistas del editor (Escena y Juego) ---
+    // Cada frame se dibuja con la camara de la escena y, al terminar, se copia
+    // a la imagen de la vista `slot` (la que muestra el editor). Las demas
+    // vistas conservan su ultimo frame. Cambian con el tamano, como la
+    // imagen de la escena (sceneImageGeneration).
+    static constexpr std::uint32_t kViewSlots = 2;
+    void setViewSlot(std::uint32_t slot) { view_slot_ = slot < kViewSlots ? slot : 0; }
+    std::uint32_t viewSlot() const { return view_slot_; }
+    VkImageView viewImageView(std::uint32_t slot) const { return *view_images_[slot < kViewSlots ? slot : 0].view(); }
+    // Corte de camara (otra vista, un corte de una cinematica): las pasadas
+    // temporales (GI, reflejos) no reutilizan el frame anterior.
+    void invalidateHistory();
     vk::Extent2D sceneExtent() const { return ldr_color_.extent(); }
     std::uint64_t sceneImageGeneration() const { return scene_image_generation_; }
 
@@ -409,6 +461,12 @@ private:
     void recordCompositePass(const vk::raii::CommandBuffer& cmd, std::uint32_t frame_index);
     // Contorno de seleccion sobre la imagen compuesta (si hay seleccion).
     void recordOutlinePass(const vk::raii::CommandBuffer& cmd, std::uint32_t frame_index);
+    // Particulas sobre la imagen HDR (despues del vidrio, antes del bloom).
+    void recordParticlePass(const vk::raii::CommandBuffer& cmd, std::uint32_t frame_index);
+    // Picking: los actores bajo el pixel pedido en la imagen de IDs.
+    void recordPickPass(const vk::raii::CommandBuffer& cmd, std::uint32_t frame_index);
+    // Gizmos 3D (overlay_geometry_) sobre la imagen compuesta, con profundidad.
+    void recordOverlayPass(const vk::raii::CommandBuffer& cmd, std::uint32_t frame_index);
     void recordPostProcessPass(const vk::raii::CommandBuffer& cmd, std::uint32_t image_index);
 
     // Subsistemas, declarados en orden de creacion (se destruyen al reves).
@@ -561,6 +619,26 @@ private:
     GpuCulling gpu_culling_{};
     GpuProfiler gpu_profiler_{};
     OverlayCallback overlay_;
+    OverlayGeometry overlay_geometry_;
+    OverlayPass overlay_pass_{};
+    // Texturas de la interfaz.
+    std::unordered_map<std::uint32_t, VulkanTexture> ui_textures_;
+    std::uint32_t next_ui_texture_ = 1;
+    // Imagenes de las vistas del editor (copias del resultado de cada frame).
+    std::array<VulkanImage, kViewSlots> view_images_{};
+    std::uint32_t view_slot_ = 0;
+    void recordViewCopy(const vk::raii::CommandBuffer& cmd);
+    // Picking por ID.
+    VulkanImage pick_ids_{};
+    std::vector<VulkanBuffer> pick_buffers_;  // 4 bytes por frame en vuelo (lectura en la CPU)
+    std::array<bool, kMaxFramesInFlight> pick_in_flight_{};
+    std::array<PickResult, kMaxFramesInFlight> pick_requests_{};
+    bool pick_requested_ = false;
+    PickResult pick_request_{};
+    std::optional<PickResult> pick_result_;
+    ParticleDrawList particles_;
+    ParticlePass particle_pass_{};
+    core::Mat4 camera_view_ = core::Mat4::identity();
     // Post-proceso y efectos de pantalla (unica fuente de verdad).
     PostProcessSettings post_{};
     // Contorno de seleccion: actores (de la escena) y sus recursos.

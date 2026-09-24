@@ -1,5 +1,11 @@
 #include "ImGuiLayer.h"
 
+#include <CramionFX/asset/ImageFile.h>
+
+#include <cstdlib>
+
+#include <chrono>
+
 #include <imgui_impl_vulkan.h>
 #include <imgui_impl_win32.h>
 
@@ -77,7 +83,8 @@ void ImGuiLayer::initialize(HWND hwnd, gfx::VulkanRenderer& renderer) {
     info.QueueFamily = handles.queue_family;
     info.Queue = handles.queue;
     // El backend crea su propio pool: fuente + la imagen de la escena.
-    info.DescriptorPoolSize = 64;
+    // (+ iconos y miniaturas del navegador de proyecto.)
+    info.DescriptorPoolSize = 1024;
     info.MinImageCount = std::max(2u, handles.image_count);
     info.ImageCount = std::max(2u, handles.image_count);
     info.UseDynamicRendering = true;
@@ -90,6 +97,8 @@ void ImGuiLayer::initialize(HWND hwnd, gfx::VulkanRenderer& renderer) {
     if (!ImGui_ImplVulkan_Init(&info)) {
         throw std::runtime_error("No se pudo iniciar el backend de Vulkan de Dear ImGui.");
     }
+
+    loadIcons();
 
     // ImGui dibuja dentro del ultimo pase del renderizador, encima de todo.
     renderer.setOverlayCallback([](VkCommandBuffer cmd) {
@@ -107,10 +116,25 @@ void ImGuiLayer::shutdown() {
     }
     renderer_->waitIdle();
     renderer_->setOverlayCallback(nullptr);
-    if (scene_set_ != VK_NULL_HANDLE) {
-        ImGui_ImplVulkan_RemoveTexture(scene_set_);
-        scene_set_ = VK_NULL_HANDLE;
+    for (VkDescriptorSet& set : view_sets_) {
+        if (set != VK_NULL_HANDLE) {
+            ImGui_ImplVulkan_RemoveTexture(set);
+            set = VK_NULL_HANDLE;
+        }
     }
+    // Miniaturas e iconos (la GPU ya esta parada).
+    std::vector<std::uint32_t> textures = icon_textures_;
+    for (ImTextureID& id : icons_) {
+        if (id != 0) ImGui_ImplVulkan_RemoveTexture(reinterpret_cast<VkDescriptorSet>(static_cast<std::uintptr_t>(id)));
+        id = 0;
+    }
+    for (auto& [path, thumb] : thumbnails_) {
+        if (thumb.decoding.valid()) thumb.decoding.wait();
+        if (thumb.set != VK_NULL_HANDLE) ImGui_ImplVulkan_RemoveTexture(thumb.set);
+        if (thumb.texture != 0) textures.push_back(thumb.texture);
+    }
+    thumbnails_.clear();
+    renderer_->destroyUiTextures(textures);
     ImGui_ImplVulkan_Shutdown();
     ImGui_ImplWin32_Shutdown();
     ImGui::DestroyContext();
@@ -127,17 +151,165 @@ void ImGuiLayer::endFrame() {
     ImGui::Render();
 }
 
-ImTextureID ImGuiLayer::sceneTexture() {
-    const std::uint64_t generation = renderer_->sceneImageGeneration();
-    if (generation != scene_generation_ || scene_set_ == VK_NULL_HANDLE) {
-        // La imagen anterior ya no existe: nada en vuelo puede usar su set.
-        if (scene_set_ != VK_NULL_HANDLE) {
-            renderer_->waitIdle();
-            ImGui_ImplVulkan_RemoveTexture(scene_set_);
+// -----------------------------------------------------------------------------
+// Iconos
+// -----------------------------------------------------------------------------
+
+void ImGuiLayer::loadIcons() {
+    // Los copia CMake junto al ejecutable (editor_icons/); si no, se prueba
+    // la carpeta del codigo.
+    std::vector<std::filesystem::path> folders = {gfx::shaders::directory().parent_path() / "editor_icons"};
+#ifdef CRAMION_EDITOR_ICON_SOURCE
+    folders.emplace_back(CRAMION_EDITOR_ICON_SOURCE);
+#endif
+    std::filesystem::path folder;
+    for (const std::filesystem::path& f : folders) {
+        std::error_code error;
+        if (std::filesystem::is_directory(f, error)) {
+            folder = f;
+            break;
         }
-        scene_set_ = ImGui_ImplVulkan_AddTexture(renderer_->sceneImageView(),
-                                                 VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-        scene_generation_ = generation;
+    }
+    if (folder.empty()) {
+        std::cerr << "[Editor] No se encontraron los iconos (editor_icons/)\n";
+        return;
+    }
+    // Los archivos van numerados: NN_nombre.png, en el orden de Icon.
+    std::vector<std::filesystem::path> files;
+    std::error_code error;
+    for (const auto& entry : std::filesystem::directory_iterator(folder, error)) {
+        if (entry.path().extension() == ".png") files.push_back(entry.path());
+    }
+    std::sort(files.begin(), files.end());
+    int loaded = 0;
+    for (const std::filesystem::path& file : files) {
+        const std::string stem = file.stem().string();
+        const int number = std::atoi(stem.c_str());
+        if (number < 1 || number > static_cast<int>(Icon::Count)) continue;
+        asset::ImageRgba8 image;
+        if (!asset::loadImageRgba8(file, image, 128)) continue;
+        const std::uint32_t texture = renderer_->createUiTexture(image.pixels.data(), image.width, image.height);
+        if (texture == 0) continue;
+        icon_textures_.push_back(texture);
+        const VkDescriptorSet set =
+            ImGui_ImplVulkan_AddTexture(renderer_->uiTextureView(texture), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        icons_[static_cast<std::size_t>(number - 1)] = static_cast<ImTextureID>(reinterpret_cast<std::uintptr_t>(set));
+        ++loaded;
+    }
+    std::cout << "[Editor] " << loaded << " iconos cargados de " << folder.string() << "\n";
+}
+
+void ImGuiLayer::drawIcon(ImDrawList* draw, Icon id, ImVec2 min, float size, ImU32 tint) const {
+    const ImTextureID texture = icon(id);
+    if (texture == 0) {
+        draw->AddRectFilled(min, ImVec2(min.x + size, min.y + size), tint, size * 0.2f);
+        return;
+    }
+    draw->AddImage(texture, min, ImVec2(min.x + size, min.y + size), ImVec2(0, 0), ImVec2(1, 1), tint);
+}
+
+void ImGuiLayer::image(Icon id, float size, ImU32 tint) const {
+    const ImTextureID texture = icon(id);
+    if (texture == 0) {
+        ImGui::Dummy(ImVec2(size, size));
+        return;
+    }
+    ImGui::ImageWithBg(texture, ImVec2(size, size), ImVec2(0, 0), ImVec2(1, 1), ImVec4(0, 0, 0, 0),
+                       ImGui::ColorConvertU32ToFloat4(tint));
+}
+
+// -----------------------------------------------------------------------------
+// Miniaturas
+// -----------------------------------------------------------------------------
+
+ImTextureID ImGuiLayer::thumbnail(const std::filesystem::path& file, ImVec2* size) {
+    std::error_code error;
+    const std::filesystem::file_time_type stamp = std::filesystem::last_write_time(file, error);
+    Thumbnail& thumb = thumbnails_[file.wstring()];
+    thumb.last_used = frame_;
+    // Nuevo o cambiado en disco: decodificar en otro hilo.
+    if ((!thumb.decoding.valid() && thumb.set == VK_NULL_HANDLE && !thumb.failed) || (!error && stamp != thumb.stamp)) {
+        if (thumb.decoding.valid()) return 0;  // aun decodificando la version anterior
+        thumb.stamp = stamp;
+        thumb.failed = false;
+        auto pixels = std::make_shared<Thumbnail::Pixels>();
+        thumb.pixels = pixels;
+        thumb.decoding = std::async(std::launch::async, [file, pixels]() {
+            asset::ImageRgba8 image;
+            if (!asset::loadImageRgba8(file, image, 128)) return false;
+            pixels->width = image.width;
+            pixels->height = image.height;
+            pixels->rgba = std::move(image.pixels);
+            return true;
+        });
+    }
+    if (size != nullptr) *size = thumb.size;
+    return thumb.set != VK_NULL_HANDLE ? static_cast<ImTextureID>(reinterpret_cast<std::uintptr_t>(thumb.set)) : 0;
+}
+
+void ImGuiLayer::updateThumbnails() {
+    ++frame_;
+    // Subir las que terminaron (como mucho unas pocas por frame).
+    int uploads = 0;
+    std::vector<std::uint32_t> replaced;
+    std::vector<VkDescriptorSet> replaced_sets;
+    for (auto& [path, thumb] : thumbnails_) {
+        if (uploads >= 6) break;
+        if (!thumb.decoding.valid() ||
+            thumb.decoding.wait_for(std::chrono::seconds(0)) != std::future_status::ready) {
+            continue;
+        }
+        const bool ok = thumb.decoding.get();
+        if (!ok || thumb.pixels == nullptr || thumb.pixels->rgba.empty()) {
+            thumb.failed = true;
+            continue;
+        }
+        if (thumb.set != VK_NULL_HANDLE) {
+            replaced_sets.push_back(thumb.set);
+            replaced.push_back(thumb.texture);
+        }
+        thumb.texture = renderer_->createUiTexture(thumb.pixels->rgba.data(), thumb.pixels->width, thumb.pixels->height);
+        thumb.size = ImVec2(static_cast<float>(thumb.pixels->width), static_cast<float>(thumb.pixels->height));
+        thumb.set = thumb.texture != 0 ? ImGui_ImplVulkan_AddTexture(renderer_->uiTextureView(thumb.texture),
+                                                                     VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
+                                       : VK_NULL_HANDLE;
+        thumb.pixels.reset();
+        ++uploads;
+    }
+    // Las que llevan mas de ~10 s sin verse (otra carpeta), fuera: de una vez.
+    if (frame_ % 120 == 0 || !replaced.empty()) {
+        for (auto it = thumbnails_.begin(); it != thumbnails_.end();) {
+            Thumbnail& thumb = it->second;
+            if (frame_ - thumb.last_used > 600 && !thumb.decoding.valid()) {
+                if (thumb.set != VK_NULL_HANDLE) {
+                    replaced_sets.push_back(thumb.set);
+                    replaced.push_back(thumb.texture);
+                }
+                it = thumbnails_.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
+    if (!replaced.empty()) {
+        renderer_->waitIdle();
+        for (VkDescriptorSet set : replaced_sets) ImGui_ImplVulkan_RemoveTexture(set);
+        renderer_->destroyUiTextures(replaced);
+    }
+}
+
+ImTextureID ImGuiLayer::viewTexture(std::uint32_t slot) {
+    slot = slot < view_sets_.size() ? slot : 0;
+    const std::uint64_t generation = renderer_->sceneImageGeneration() + 1;  // 0 = sin registrar
+    VkDescriptorSet& set = view_sets_[slot];
+    if (generation != view_generations_[slot] || set == VK_NULL_HANDLE) {
+        // La imagen anterior ya no existe: nada en vuelo puede usar su set.
+        if (set != VK_NULL_HANDLE) {
+            renderer_->waitIdle();
+            ImGui_ImplVulkan_RemoveTexture(set);
+        }
+        set = ImGui_ImplVulkan_AddTexture(renderer_->viewImageView(slot), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        view_generations_[slot] = generation;
 
         // La swapchain nueva puede tener otro numero de imagenes.
         const std::uint32_t image_count = renderer_->nativeHandles().image_count;
@@ -146,7 +318,7 @@ ImTextureID ImGuiLayer::sceneTexture() {
             image_count_ = image_count;
         }
     }
-    return static_cast<ImTextureID>(reinterpret_cast<std::uintptr_t>(scene_set_));
+    return static_cast<ImTextureID>(reinterpret_cast<std::uintptr_t>(set));
 }
 
 // Tema oscuro sobrio, en la linea del editor de Unity: grises neutros, acento

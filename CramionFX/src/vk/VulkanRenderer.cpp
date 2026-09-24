@@ -359,6 +359,10 @@ void VulkanRenderer::initialize(const EngineInfo& info, HWND window, std::uint32
         outline.alpha_blend = true;
         outline.filter = vk::Filter::eNearest;
         outline_pass_.create(device_, outline);
+        // Gizmos del editor en 3D, con prueba contra el depth de la escena.
+        overlay_pass_.create(device_, kLdrFormat, gbuffer_.depthFormat(), kMaxFramesInFlight);
+        // Particulas: sobre la imagen HDR, antes del bloom.
+        particle_pass_.create(device_, kHdrFormat, gbuffer_.depthFormat(), kMaxFramesInFlight);
 
         FullscreenPassDesc sky{};
         sky.fragment_shader = "sky_lut.frag.spv";
@@ -613,6 +617,8 @@ void VulkanRenderer::shutdown() {
     sky_lut_pass_.destroy();
     composite_pass_.destroy();
     outline_pass_.destroy();
+    overlay_pass_.destroy();
+    particle_pass_.destroy();
     bloom_up_pass_.destroy();
     bloom_down_pass_.destroy();
     ssao_pass_.destroy();
@@ -666,6 +672,11 @@ void VulkanRenderer::shutdown() {
     volumetric_image_.destroy();
     ldr_color_.destroy();
     outline_mask_.destroy();
+    pick_ids_.destroy();
+    ui_textures_.clear();
+    for (VulkanImage& image : view_images_) image.destroy();
+    for (VulkanBuffer& buffer : pick_buffers_) buffer.destroy();
+    pick_buffers_.clear();
     glass_source_.destroy();
     scene_color_.destroy();
     gbuffer_.destroy();
@@ -1862,7 +1873,7 @@ void VulkanRenderer::createRenderTargets() {
                                           vk::PipelineStageFlagBits2::eFragmentShader,
                                           vk::AccessFlagBits2::eShaderSampledRead));
     });
-    ldr_color_.create(device_, extent, kLdrFormat, target_usage,
+    ldr_color_.create(device_, extent, kLdrFormat, target_usage | vk::ImageUsageFlagBits::eTransferSrc,
                       vk::ImageAspectFlagBits::eColor);
     // Mascara del contorno de seleccion (R = silueta, G = visible). Se deja
     // como textura desde el principio: el set del contorno la referencia.
@@ -1878,6 +1889,32 @@ void VulkanRenderer::createRenderTargets() {
     });
     ssao_image_.create(device_, extent, kSsaoFormat, target_usage,
                        vk::ImageAspectFlagBits::eColor);
+    // Vistas del editor: copias del resultado (texturas de ImGui). Se dejan
+    // como textura desde el principio (una vista que aun no se dibujo).
+    for (VulkanImage& image : view_images_) {
+        image.create(device_, extent, kLdrFormat,
+                     vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eTransferDst,
+                     vk::ImageAspectFlagBits::eColor);
+        device_.submitOneTime([&](const vk::raii::CommandBuffer& cmd) {
+            pipelineBarrier(cmd, colorBarrier(*image.handle(), vk::ImageLayout::eUndefined,
+                                              vk::ImageLayout::eShaderReadOnlyOptimal,
+                                              vk::PipelineStageFlagBits2::eTopOfPipe, vk::AccessFlagBits2::eNone,
+                                              vk::PipelineStageFlagBits2::eFragmentShader,
+                                              vk::AccessFlagBits2::eShaderSampledRead));
+        });
+    }
+    // Picking por ID: se dibuja un pixel y se copia a un buffer de lectura.
+    pick_ids_.create(device_, extent, SkinnedPass::kPickFormat,
+                     vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eTransferSrc,
+                     vk::ImageAspectFlagBits::eColor);
+    if (pick_buffers_.empty()) {
+        pick_buffers_.resize(kMaxFramesInFlight);
+        for (VulkanBuffer& buffer : pick_buffers_) {
+            buffer.create(device_, sizeof(std::uint32_t), vk::BufferUsageFlagBits::eTransferDst,
+                          vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent);
+        }
+    }
+    pick_in_flight_.fill(false);  // tamano nuevo: los picks en vuelo ya no valen
 
     for (std::uint32_t level = 0; level < kBloomLevels; ++level) {
         bloom_levels_[level].create(device_, bloomLevelExtent(extent, level), kHdrFormat,
@@ -2096,6 +2133,7 @@ void VulkanRenderer::updateUniforms(const scene::Scene& scene, const scene::Came
     camera_data.view_projection = camera_data.projection * camera_data.view;
     previous_view_projection_ = camera_view_projection_;
     camera_view_projection_ = camera_data.view_projection;
+    camera_view_ = camera_data.view;
     // Se invierte una vez aqui para que el shader de iluminacion no tenga que
     // hacerlo por pixel al reconstruir la posicion del mundo.
     camera_data.inverse_view_projection = core::inverse(camera_data.view_projection);
@@ -2372,6 +2410,17 @@ void VulkanRenderer::drawFrame(const scene::Scene& scene) {
     if (device.waitForFences(*fence, VK_TRUE, std::numeric_limits<std::uint64_t>::max()) !=
         vk::Result::eSuccess) {
         throw std::runtime_error("Tiempo de espera agotado esperando la fence del frame.");
+    }
+
+    // Picking que se grabo la ultima vez que se uso este hueco: ya termino.
+    if (pick_in_flight_[current_frame_]) {
+        pick_in_flight_[current_frame_] = false;
+        std::uint32_t id = 0;
+        std::memcpy(&id, pick_buffers_[current_frame_].mapped(), sizeof(id));
+        PickResult result = pick_requests_[current_frame_];
+        result.hit = id != 0;
+        result.actor = id != 0 ? id - 1 : 0;
+        pick_result_ = result;
     }
 
     // Resultado del culling en GPU de la ultima vez que se uso este hueco.
@@ -2704,6 +2753,10 @@ void VulkanRenderer::recordCommandBuffer(const vk::raii::CommandBuffer& cmd,
     gpu_profiler_.mark(cmd, frame_index, "Iluminacion");
     recordGlassPass(cmd, frame_index);
     gpu_profiler_.mark(cmd, frame_index, "Vidrio");
+    if (!particles_.empty() && !capturing_) {
+        recordParticlePass(cmd, frame_index);
+        gpu_profiler_.mark(cmd, frame_index, "Particulas");
+    }
     recordFilterHistoryCopies(cmd);
     gpu_profiler_.mark(cmd, frame_index, "Copias de historia");
     recordBloomPass(cmd);
@@ -2718,6 +2771,15 @@ void VulkanRenderer::recordCommandBuffer(const vk::raii::CommandBuffer& cmd,
         recordOutlinePass(cmd, frame_index);
         gpu_profiler_.mark(cmd, frame_index, "Contorno de seleccion");
     }
+    if (pick_requested_ && !capturing_) {
+        recordPickPass(cmd, frame_index);
+        gpu_profiler_.mark(cmd, frame_index, "Picking");
+    }
+    if (!overlay_geometry_.empty() && !capturing_) {
+        recordOverlayPass(cmd, frame_index);
+        gpu_profiler_.mark(cmd, frame_index, "Gizmos 3D");
+    }
+    recordViewCopy(cmd);
     recordPostProcessPass(cmd, image_index);
     gpu_profiler_.mark(cmd, frame_index, "FXAA + presentacion");
 
@@ -3778,6 +3840,334 @@ void VulkanRenderer::recordOutlinePass(const vk::raii::CommandBuffer& cmd,
                                            vk::AccessFlagBits2::eColorAttachmentWrite)});
     drawFullscreen<GpuBloomPush>(cmd, outline_pass_, &outline_sets_[0], ldr_color_, nullptr,
                                  /*load=*/true);
+    pipelineBarrier(cmd, writtenToSampled(*ldr_color_.handle()));
+}
+
+std::uint32_t VulkanRenderer::createUiTexture(const std::uint8_t* rgba, std::uint32_t width, std::uint32_t height) {
+    if (!initialized_ || rgba == nullptr || width == 0 || height == 0) return 0;
+    const std::uint32_t id = next_ui_texture_++;
+    VulkanTexture& texture = ui_textures_[id];
+    texture.create(device_, width, height, rgba);
+    return id;
+}
+
+VkImageView VulkanRenderer::uiTextureView(std::uint32_t id) const {
+    const auto it = ui_textures_.find(id);
+    return it != ui_textures_.end() ? *it->second.view() : VK_NULL_HANDLE;
+}
+
+void VulkanRenderer::destroyUiTextures(const std::vector<std::uint32_t>& ids) {
+    if (ids.empty()) return;
+    waitIdle();  // algun frame en vuelo puede estar dibujandolas
+    for (const std::uint32_t id : ids) ui_textures_.erase(id);
+}
+
+void VulkanRenderer::invalidateHistory() {
+    scene_history_valid_ = false;
+    ssr_history_ready_ = false;
+    ssr_filter_history_valid_ = false;
+    gi_filter_history_valid_ = false;
+}
+
+// El resultado del frame (imagen compuesta con contorno y gizmos) a la imagen
+// de la vista activa. Las dos terminan como textura.
+void VulkanRenderer::recordViewCopy(const vk::raii::CommandBuffer& cmd) {
+    VulkanImage& target = view_images_[view_slot_];
+    constexpr vk::ImageLayout kRead = vk::ImageLayout::eShaderReadOnlyOptimal;
+    pipelineBarrier(cmd, {colorBarrier(*ldr_color_.handle(), kRead, vk::ImageLayout::eTransferSrcOptimal,
+                                       vk::PipelineStageFlagBits2::eColorAttachmentOutput |
+                                           vk::PipelineStageFlagBits2::eFragmentShader,
+                                       vk::AccessFlagBits2::eColorAttachmentWrite | vk::AccessFlagBits2::eShaderSampledRead,
+                                       vk::PipelineStageFlagBits2::eCopy, vk::AccessFlagBits2::eTransferRead),
+                          colorBarrier(*target.handle(), kRead, vk::ImageLayout::eTransferDstOptimal,
+                                       vk::PipelineStageFlagBits2::eFragmentShader,
+                                       vk::AccessFlagBits2::eShaderSampledRead, vk::PipelineStageFlagBits2::eCopy,
+                                       vk::AccessFlagBits2::eTransferWrite)});
+    const vk::Extent2D extent = ldr_color_.extent();
+    vk::ImageCopy region{};
+    region.srcSubresource = vk::ImageSubresourceLayers{vk::ImageAspectFlagBits::eColor, 0, 0, 1};
+    region.dstSubresource = region.srcSubresource;
+    region.extent = vk::Extent3D{extent.width, extent.height, 1};
+    cmd.copyImage(*ldr_color_.handle(), vk::ImageLayout::eTransferSrcOptimal, *target.handle(),
+                  vk::ImageLayout::eTransferDstOptimal, region);
+    pipelineBarrier(cmd, {colorBarrier(*ldr_color_.handle(), vk::ImageLayout::eTransferSrcOptimal, kRead,
+                                       vk::PipelineStageFlagBits2::eCopy, vk::AccessFlagBits2::eTransferRead,
+                                       vk::PipelineStageFlagBits2::eFragmentShader,
+                                       vk::AccessFlagBits2::eShaderSampledRead),
+                          colorBarrier(*target.handle(), vk::ImageLayout::eTransferDstOptimal, kRead,
+                                       vk::PipelineStageFlagBits2::eCopy, vk::AccessFlagBits2::eTransferWrite,
+                                       vk::PipelineStageFlagBits2::eFragmentShader,
+                                       vk::AccessFlagBits2::eShaderSampledRead)});
+}
+
+void VulkanRenderer::requestPick(std::uint32_t x, std::uint32_t y) {
+    pick_requested_ = true;
+    pick_request_ = PickResult{};
+    pick_request_.x = x;
+    pick_request_.y = y;
+    pick_result_.reset();
+}
+
+std::optional<VulkanRenderer::PickResult> VulkanRenderer::takePickResult() {
+    std::optional<PickResult> result = pick_result_;
+    pick_result_.reset();
+    return result;
+}
+
+bool VulkanRenderer::pickPending() const {
+    if (pick_requested_) return true;
+    for (bool in_flight : pick_in_flight_) {
+        if (in_flight) return true;
+    }
+    return false;
+}
+
+void VulkanRenderer::recordPickPass(const vk::raii::CommandBuffer& cmd, std::uint32_t frame_index) {
+    pick_requested_ = false;
+    const vk::Extent2D extent = pick_ids_.extent();
+    if (pick_request_.x >= extent.width || pick_request_.y >= extent.height || pick_buffers_.empty()) {
+        pick_result_ = pick_request_;  // fuera de la imagen: nada
+        return;
+    }
+    const vk::Offset2D pixel{static_cast<std::int32_t>(pick_request_.x), static_cast<std::int32_t>(pick_request_.y)};
+    const vk::Rect2D area{pixel, vk::Extent2D{1, 1}};
+
+    // Rayo del pixel (en el mundo) para no mandar a la GPU lo que no puede
+    // estar debajo: solo los actores y submallas cuya caja toca el rayo.
+    const core::Mat4 inverse = core::inverse(camera_view_projection_);
+    const float nx = (static_cast<float>(pick_request_.x) + 0.5f) / static_cast<float>(extent.width) * 2.0f - 1.0f;
+    const float ny = (static_cast<float>(pick_request_.y) + 0.5f) / static_cast<float>(extent.height) * 2.0f - 1.0f;
+    const core::Vec4 near_h = inverse * core::Vec4{nx, ny, 0.0f, 1.0f};
+    const core::Vec4 far_h = inverse * core::Vec4{nx, ny, 1.0f, 1.0f};
+    const core::Vec3 origin{near_h.x / near_h.w, near_h.y / near_h.w, near_h.z / near_h.w};
+    const core::Vec3 far_point{far_h.x / far_h.w, far_h.y / far_h.w, far_h.z / far_h.w};
+    const core::Vec3 direction = core::normalize(far_point - origin);
+    const auto hits_sphere = [&](const core::Vec3& center, float radius) {
+        const core::Vec3 to_center = center - origin;
+        const float along = core::dot(to_center, direction);
+        const core::Vec3 closest = origin + direction * std::max(along, 0.0f);
+        const core::Vec3 d = center - closest;
+        return core::dot(d, d) <= radius * radius;
+    };
+    const auto hits_box = [&](const core::Aabb& box) {
+        float t_min = 0.0f;
+        float t_max = 1e30f;
+        const float o[3] = {origin.x, origin.y, origin.z};
+        const float dir[3] = {direction.x, direction.y, direction.z};
+        const float lo[3] = {box.min.x, box.min.y, box.min.z};
+        const float hi[3] = {box.max.x, box.max.y, box.max.z};
+        for (int i = 0; i < 3; ++i) {
+            if (std::abs(dir[i]) < 1e-9f) {
+                if (o[i] < lo[i] || o[i] > hi[i]) return false;
+                continue;
+            }
+            float t0 = (lo[i] - o[i]) / dir[i];
+            float t1 = (hi[i] - o[i]) / dir[i];
+            if (t0 > t1) std::swap(t0, t1);
+            t_min = std::max(t_min, t0);
+            t_max = std::min(t_max, t1);
+            if (t_min > t_max) return false;
+        }
+        return true;
+    };
+
+    // Imagen de IDs como destino (solo se limpia y dibuja el pixel); el
+    // depth del G-buffer en solo lectura, como el contorno.
+    vk::ImageMemoryBarrier2 depth_barrier{};
+    depth_barrier.srcStageMask = vk::PipelineStageFlagBits2::eLateFragmentTests |
+                                 vk::PipelineStageFlagBits2::eFragmentShader |
+                                 vk::PipelineStageFlagBits2::eComputeShader;
+    depth_barrier.srcAccessMask = vk::AccessFlagBits2::eDepthStencilAttachmentWrite;
+    depth_barrier.dstStageMask = vk::PipelineStageFlagBits2::eEarlyFragmentTests |
+                                 vk::PipelineStageFlagBits2::eLateFragmentTests;
+    depth_barrier.dstAccessMask = vk::AccessFlagBits2::eDepthStencilAttachmentRead;
+    depth_barrier.oldLayout = vk::ImageLayout::eDepthReadOnlyOptimal;
+    depth_barrier.newLayout = vk::ImageLayout::eDepthReadOnlyOptimal;
+    depth_barrier.image = *gbuffer_.depth().handle();
+    depth_barrier.subresourceRange = vk::ImageSubresourceRange{vk::ImageAspectFlagBits::eDepth, 0, 1, 0, 1};
+    pipelineBarrier(cmd, {colorBarrier(*pick_ids_.handle(), vk::ImageLayout::eUndefined,
+                                       vk::ImageLayout::eColorAttachmentOptimal,
+                                       vk::PipelineStageFlagBits2::eTransfer, vk::AccessFlagBits2::eTransferRead,
+                                       vk::PipelineStageFlagBits2::eColorAttachmentOutput,
+                                       vk::AccessFlagBits2::eColorAttachmentWrite),
+                          depth_barrier});
+
+    vk::RenderingAttachmentInfo id_attachment{};
+    id_attachment.imageView = *pick_ids_.view();
+    id_attachment.imageLayout = vk::ImageLayout::eColorAttachmentOptimal;
+    id_attachment.loadOp = vk::AttachmentLoadOp::eClear;
+    id_attachment.storeOp = vk::AttachmentStoreOp::eStore;
+    id_attachment.clearValue = vk::ClearValue{vk::ClearColorValue{std::array<std::uint32_t, 4>{0, 0, 0, 0}}};
+
+    vk::RenderingAttachmentInfo depth_attachment{};
+    depth_attachment.imageView = *gbuffer_.depth().view();
+    depth_attachment.imageLayout = vk::ImageLayout::eDepthReadOnlyOptimal;
+    depth_attachment.loadOp = vk::AttachmentLoadOp::eLoad;
+    depth_attachment.storeOp = vk::AttachmentStoreOp::eNone;
+
+    vk::RenderingInfo rendering_info{};
+    rendering_info.renderArea = area;
+    rendering_info.layerCount = 1;
+    rendering_info.setColorAttachments(id_attachment);
+    rendering_info.pDepthAttachment = &depth_attachment;
+
+    cmd.beginRendering(rendering_info);
+    cmd.setViewport(0, vk::Viewport{0.0f, 0.0f, static_cast<float>(extent.width), static_cast<float>(extent.height),
+                                    0.0f, 1.0f});
+    cmd.setScissor(0, area);
+    cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *skinned_pass_.pickPipeline());
+    cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *skinned_pass_.geometryLayout(), 0,
+                           *skin_sets_[frame_index], nullptr);
+    for (const ActorDraw& draw : actor_draws_) {
+        if (!hits_sphere(draw.bounds_center, draw.bounds_radius * 1.01f + 1e-3f)) continue;
+        const SkinnedModel& model = skinned_models_[draw.model];
+        cmd.bindVertexBuffers(0, *model.vertices().handle(), {0});
+        cmd.bindIndexBuffer(*model.indices().handle(), 0, vk::IndexType::eUint32);
+        GpuSkinnedPush push{};
+        push.model = draw.transform;
+        push.bone_offset = draw.bone_offset;
+        push.pick_id = draw.scene_actor + 1;
+        cmd.pushConstants<GpuSkinnedPush>(*skinned_pass_.geometryLayout(),
+                                          vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0,
+                                          push);
+        const auto& submeshes = model.submeshes();
+        for (std::uint32_t i = 0; i < submeshes.size(); ++i) {
+            if (draw.per_submesh && !hits_box(submesh_bounds_[draw.first_bounds + i])) continue;
+            cmd.drawIndexed(submeshes[i].index_count, 1, submeshes[i].first_index, 0, 0);
+        }
+    }
+    cmd.endRendering();
+
+    // El pixel al buffer que lee la CPU cuando la GPU termine este frame.
+    pipelineBarrier(cmd, colorBarrier(*pick_ids_.handle(), vk::ImageLayout::eColorAttachmentOptimal,
+                                      vk::ImageLayout::eTransferSrcOptimal,
+                                      vk::PipelineStageFlagBits2::eColorAttachmentOutput,
+                                      vk::AccessFlagBits2::eColorAttachmentWrite, vk::PipelineStageFlagBits2::eTransfer,
+                                      vk::AccessFlagBits2::eTransferRead));
+    vk::BufferImageCopy region{};
+    region.imageSubresource = vk::ImageSubresourceLayers{vk::ImageAspectFlagBits::eColor, 0, 0, 1};
+    region.imageOffset = vk::Offset3D{pixel.x, pixel.y, 0};
+    region.imageExtent = vk::Extent3D{1, 1, 1};
+    cmd.copyImageToBuffer(*pick_ids_.handle(), vk::ImageLayout::eTransferSrcOptimal,
+                          *pick_buffers_[frame_index].handle(), region);
+    vk::MemoryBarrier2 to_host{};
+    to_host.srcStageMask = vk::PipelineStageFlagBits2::eTransfer;
+    to_host.srcAccessMask = vk::AccessFlagBits2::eTransferWrite;
+    to_host.dstStageMask = vk::PipelineStageFlagBits2::eHost;
+    to_host.dstAccessMask = vk::AccessFlagBits2::eHostRead;
+    vk::DependencyInfo dependency{};
+    dependency.setMemoryBarriers(to_host);
+    cmd.pipelineBarrier2(dependency);
+
+    pick_requests_[frame_index] = pick_request_;
+    pick_in_flight_[frame_index] = true;
+}
+
+void VulkanRenderer::recordParticlePass(const vk::raii::CommandBuffer& cmd,
+                                        std::uint32_t frame_index) {
+    const vk::Extent2D extent = scene_color_.extent();
+    if (!particle_pass_.prepare(device_, frame_index, particles_, camera_view_,
+                                camera_view_projection_)) {
+        return;
+    }
+
+    // La imagen HDR sigue como destino de color (iluminacion y vidrio): solo
+    // hay que ordenar las escrituras. El depth, en solo lectura.
+    vk::ImageMemoryBarrier2 color_barrier = colorBarrier(
+        *scene_color_.handle(), vk::ImageLayout::eColorAttachmentOptimal,
+        vk::ImageLayout::eColorAttachmentOptimal, vk::PipelineStageFlagBits2::eColorAttachmentOutput,
+        vk::AccessFlagBits2::eColorAttachmentWrite, vk::PipelineStageFlagBits2::eColorAttachmentOutput,
+        vk::AccessFlagBits2::eColorAttachmentRead | vk::AccessFlagBits2::eColorAttachmentWrite);
+    vk::ImageMemoryBarrier2 depth_barrier{};
+    depth_barrier.srcStageMask = vk::PipelineStageFlagBits2::eLateFragmentTests |
+                                 vk::PipelineStageFlagBits2::eFragmentShader;
+    depth_barrier.srcAccessMask = vk::AccessFlagBits2::eDepthStencilAttachmentWrite;
+    depth_barrier.dstStageMask = vk::PipelineStageFlagBits2::eEarlyFragmentTests |
+                                 vk::PipelineStageFlagBits2::eLateFragmentTests;
+    depth_barrier.dstAccessMask = vk::AccessFlagBits2::eDepthStencilAttachmentRead;
+    depth_barrier.oldLayout = vk::ImageLayout::eDepthReadOnlyOptimal;
+    depth_barrier.newLayout = vk::ImageLayout::eDepthReadOnlyOptimal;
+    depth_barrier.image = *gbuffer_.depth().handle();
+    depth_barrier.subresourceRange =
+        vk::ImageSubresourceRange{vk::ImageAspectFlagBits::eDepth, 0, 1, 0, 1};
+    pipelineBarrier(cmd, {color_barrier, depth_barrier});
+
+    vk::RenderingAttachmentInfo color_attachment{};
+    color_attachment.imageView = *scene_color_.view();
+    color_attachment.imageLayout = vk::ImageLayout::eColorAttachmentOptimal;
+    color_attachment.loadOp = vk::AttachmentLoadOp::eLoad;
+    color_attachment.storeOp = vk::AttachmentStoreOp::eStore;
+
+    vk::RenderingAttachmentInfo depth_attachment{};
+    depth_attachment.imageView = *gbuffer_.depth().view();
+    depth_attachment.imageLayout = vk::ImageLayout::eDepthReadOnlyOptimal;
+    depth_attachment.loadOp = vk::AttachmentLoadOp::eLoad;
+    depth_attachment.storeOp = vk::AttachmentStoreOp::eNone;
+
+    vk::RenderingInfo rendering_info{};
+    rendering_info.renderArea = vk::Rect2D{vk::Offset2D{0, 0}, extent};
+    rendering_info.layerCount = 1;
+    rendering_info.setColorAttachments(color_attachment);
+    rendering_info.pDepthAttachment = &depth_attachment;
+
+    cmd.beginRendering(rendering_info);
+    particle_pass_.record(cmd, frame_index, extent);
+    cmd.endRendering();
+}
+
+void VulkanRenderer::recordOverlayPass(const vk::raii::CommandBuffer& cmd,
+                                       std::uint32_t frame_index) {
+    const vk::Extent2D extent = ldr_color_.extent();
+    if (!overlay_pass_.prepare(device_, frame_index, overlay_geometry_, camera_view_projection_,
+                               extent)) {
+        return;
+    }
+
+    // La imagen compuesta vuelve a ser destino de color; el depth de la
+    // escena se prueba en solo lectura (como el contorno).
+    vk::ImageMemoryBarrier2 depth_barrier{};
+    depth_barrier.srcStageMask = vk::PipelineStageFlagBits2::eLateFragmentTests |
+                                 vk::PipelineStageFlagBits2::eFragmentShader |
+                                 vk::PipelineStageFlagBits2::eComputeShader;
+    depth_barrier.srcAccessMask = vk::AccessFlagBits2::eDepthStencilAttachmentWrite;
+    depth_barrier.dstStageMask = vk::PipelineStageFlagBits2::eEarlyFragmentTests |
+                                 vk::PipelineStageFlagBits2::eLateFragmentTests;
+    depth_barrier.dstAccessMask = vk::AccessFlagBits2::eDepthStencilAttachmentRead;
+    depth_barrier.oldLayout = vk::ImageLayout::eDepthReadOnlyOptimal;
+    depth_barrier.newLayout = vk::ImageLayout::eDepthReadOnlyOptimal;
+    depth_barrier.image = *gbuffer_.depth().handle();
+    depth_barrier.subresourceRange =
+        vk::ImageSubresourceRange{vk::ImageAspectFlagBits::eDepth, 0, 1, 0, 1};
+    pipelineBarrier(cmd, {colorBarrier(*ldr_color_.handle(), vk::ImageLayout::eShaderReadOnlyOptimal,
+                                       vk::ImageLayout::eColorAttachmentOptimal,
+                                       vk::PipelineStageFlagBits2::eFragmentShader,
+                                       vk::AccessFlagBits2::eShaderSampledRead,
+                                       vk::PipelineStageFlagBits2::eColorAttachmentOutput,
+                                       vk::AccessFlagBits2::eColorAttachmentRead |
+                                           vk::AccessFlagBits2::eColorAttachmentWrite),
+                          depth_barrier});
+
+    vk::RenderingAttachmentInfo color_attachment{};
+    color_attachment.imageView = *ldr_color_.view();
+    color_attachment.imageLayout = vk::ImageLayout::eColorAttachmentOptimal;
+    color_attachment.loadOp = vk::AttachmentLoadOp::eLoad;
+    color_attachment.storeOp = vk::AttachmentStoreOp::eStore;
+
+    vk::RenderingAttachmentInfo depth_attachment{};
+    depth_attachment.imageView = *gbuffer_.depth().view();
+    depth_attachment.imageLayout = vk::ImageLayout::eDepthReadOnlyOptimal;
+    depth_attachment.loadOp = vk::AttachmentLoadOp::eLoad;
+    depth_attachment.storeOp = vk::AttachmentStoreOp::eNone;
+
+    vk::RenderingInfo rendering_info{};
+    rendering_info.renderArea = vk::Rect2D{vk::Offset2D{0, 0}, extent};
+    rendering_info.layerCount = 1;
+    rendering_info.setColorAttachments(color_attachment);
+    rendering_info.pDepthAttachment = &depth_attachment;
+
+    cmd.beginRendering(rendering_info);
+    overlay_pass_.record(cmd, frame_index, extent, overlay_geometry_);
+    cmd.endRendering();
     pipelineBarrier(cmd, writtenToSampled(*ldr_color_.handle()));
 }
 

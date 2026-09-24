@@ -85,12 +85,18 @@ public:
     }
     const vk::raii::PipelineLayout& glassLayout() const { return glass_layout_; }
 
+    // Picking por ID (pick.frag): escribe GpuSkinnedPush::pick_id en una
+    // imagen kPickFormat donde el objeto es lo que se ve (prueba "menor o
+    // igual" contra el depth del G-buffer, con la misma cuenta de vertices).
+    static constexpr vk::Format kPickFormat = vk::Format::eR32Uint;
+    const vk::raii::Pipeline& pickPipeline() const { return pick_pipeline_; }
+
 private:
     void createGeometryPipeline(const VulkanDevice& device, const GBuffer& gbuffer);
     void createGlassPipeline(const VulkanDevice& device, vk::Format color_format,
                              vk::Format depth_format);
     vk::raii::Pipeline createOutlinePipeline(const VulkanDevice& device, vk::Format depth_format,
-                                             bool visible_only) const;
+                                             bool visible_only, bool pick = false) const;
     vk::raii::Pipeline createShadowPipeline(const VulkanDevice& device, vk::Format depth_format,
                                             bool depth_clamp, float slope_bias,
                                             bool alpha_tested) const;
@@ -114,6 +120,7 @@ private:
 
     vk::raii::Pipeline outline_silhouette_pipeline_{nullptr};
     vk::raii::Pipeline outline_visible_pipeline_{nullptr};
+    vk::raii::Pipeline pick_pipeline_{nullptr};
 };
 
 }  // namespace cramion::gfx

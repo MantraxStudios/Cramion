@@ -19,6 +19,28 @@ using core::Vec3;
 
 namespace {
 
+// Icono de cada tipo de componente (cabeceras del Inspector).
+std::optional<Icon> componentIcon(const std::string& name) {
+    if (name == "Transform") return Icon::Move;
+    if (name == "MeshRenderer") return Icon::MeshRenderer;
+    if (name == "Animator") return Icon::SkinnedMesh;
+    if (name == "Light") return Icon::PointLight;
+    if (name == "Camera" || name == "VirtualCamera" || name == "CameraBrain") return Icon::Camera;
+    if (name == "Sky") return Icon::AmbientLight;
+    if (name == "Weather") return Icon::FogVolume;
+    if (name == "PostProcessing") return Icon::ReflectionProbe;
+    if (name == "Decal") return Icon::Decal;
+    if (name == "Rigidbody") return Icon::Rigidbody;
+    if (name == "BoxCollider") return Icon::ColliderBox;
+    if (name == "SphereCollider") return Icon::ColliderSphere;
+    if (name == "CapsuleCollider") return Icon::ColliderCapsule;
+    if (name == "MeshCollider" || name == "PlaneCollider") return Icon::ColliderMesh;
+    if (name == "ParticleSystem") return Icon::ParticleSystem;
+    if (name == "DollyTrack" || name == "DollyCart") return Icon::Waypoint;
+    if (name == "CinematicSequence") return Icon::Camera;
+    return std::nullopt;
+}
+
 std::string lower(std::string text) {
     std::transform(text.begin(), text.end(), text.begin(),
                    [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
@@ -63,11 +85,26 @@ void EditorApp::drawInspector() {
         ImGui::TextDisabled("%zu objetos seleccionados (se edita el Transform de todos)",
                             selected.size());
     }
+    // Capa (fisica: con quien choca y que ven los raycast), como Unity.
+    if (ecs::EntityInfo* info = entity.tryGet<ecs::EntityInfo>()) {
+        int layer = info->layer;
+        ImGui::SetNextItemWidth(-1.0f);
+        if (layerCombo("##layer", layer)) {
+            for (ecs::Entity e : selected) {
+                if (ecs::EntityInfo* other = e.tryGet<ecs::EntityInfo>()) other->layer = layer;
+            }
+            dirty_ = true;
+            commit();
+        }
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) {
+            ImGui::SetTooltip("Capa: decide con quien choca (matriz en la ventana Física) y la ven las mascaras");
+        }
+    }
     ImGui::TextDisabled("UUID %s", entity.uuid().toString().c_str());
     ImGui::Separator();
 
     // --- Componentes ---
-    ImGuiPropertyVisitor visitor(database_.get());
+    ImGuiPropertyVisitor visitor(database_.get(), &world_);
     const ecs::ComponentRegistry& registry = ecs::ComponentRegistry::instance();
     const ecs::ComponentType* to_remove = nullptr;
     for (const ecs::ComponentType& type : registry.types()) {
@@ -75,9 +112,21 @@ void EditorApp::drawInspector() {
             continue;
         }
         ImGui::PushID(type.name.c_str());
-        const bool open = ImGui::CollapsingHeader(type.label.c_str(),
+        // Hueco para el icono del componente delante del nombre.
+        const std::string header = "      " + type.label;
+        const bool open = ImGui::CollapsingHeader(header.c_str(),
                                                   ImGuiTreeNodeFlags_DefaultOpen |
                                                       ImGuiTreeNodeFlags_AllowOverlap);
+        {
+            const std::optional<Icon> icon = componentIcon(type.name);
+            if (icon) {
+                const ImVec2 min = ImGui::GetItemRectMin();
+                const float h = ImGui::GetItemRectSize().y;
+                imgui_.drawIcon(ImGui::GetWindowDrawList(), *icon,
+                                ImVec2(min.x + ImGui::GetTreeNodeToLabelSpacing(), min.y + 2.0f), h - 4.0f,
+                                IM_COL32(225, 225, 230, 255));
+            }
+        }
         if (ImGui::BeginPopupContextItem("component_menu")) {
             if (ImGui::MenuItem("Quitar componente", nullptr, false, type.removable)) {
                 to_remove = &type;
@@ -154,6 +203,44 @@ void EditorApp::drawInspector() {
                     }
                 }
             }
+            // Colliders: editar su forma con asas en la vista (como Unity).
+            if (type.category == "Fisica" && type.name.find("Collider") != std::string::npos &&
+                type.name != "MeshCollider" && type.name != "PlaneCollider") {
+                if (ImGui::Button(edit_collider_ ? "Terminar de editar collider" : "Editar collider",
+                                  ImVec2(-1.0f, 0.0f))) {
+                    edit_collider_ = !edit_collider_;
+                }
+            }
+            // Rigidbody en Play: su estado real en la simulacion.
+            if (type.name == "Rigidbody" && playing() && physics_.hasBody(entity)) {
+                const Vec3 v = physics_.linearVelocity(entity);
+                const Vec3 w = physics_.angularVelocity(entity);
+                ImGui::TextDisabled("Velocidad  %.2f  %.2f  %.2f  (%.2f m/s)", v.x, v.y, v.z, core::length(v));
+                ImGui::TextDisabled("Giro       %.2f  %.2f  %.2f rad/s", w.x, w.y, w.z);
+                ImGui::TextDisabled("%s", physics_.isSleeping(entity) ? "Dormido" : "Despierto");
+                const float third = (ImGui::GetContentRegionAvail().x - 8.0f) / 3.0f;
+                if (ImGui::Button("Impulso arriba", ImVec2(third, 0.0f))) {
+                    physics_.addForce(entity, Vec3{0.0f, 6.0f, 0.0f}, physics::ForceMode::VelocityChange);
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Parar", ImVec2(third, 0.0f))) {
+                    physics_.setLinearVelocity(entity, Vec3{});
+                    physics_.setAngularVelocity(entity, Vec3{});
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Despertar", ImVec2(third, 0.0f))) physics_.wakeUp(entity);
+            }
+            // Particulas: reproducir, parar y cuantas hay.
+            if (type.name == "ParticleSystem") {
+                const float half = (ImGui::GetContentRegionAvail().x - 4.0f) * 0.5f;
+                if (ImGui::Button("Reiniciar", ImVec2(half, 0.0f))) particles_.play(entity);
+                ImGui::SameLine();
+                if (ImGui::Button("Parar", ImVec2(half, 0.0f))) particles_.stop(entity, true);
+                ImGui::TextDisabled("%zu partículas vivas%s", particles_.particleCount(entity),
+                                    playing() ? "" : " (vista previa)");
+            }
+            // Cinematicas: solo, alinear, puntos del riel, secuencia...
+            if (type.category == "Cinematicas") drawCinematicInspector(type.name, entity);
             // Animator con controlador: abrirlo en la ventana Animator.
             if (type.name == "Animator") {
                 if (const ecs::Animator* animator = entity.tryGet<ecs::Animator>(); animator != nullptr) {

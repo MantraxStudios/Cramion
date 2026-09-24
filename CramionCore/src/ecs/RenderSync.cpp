@@ -93,6 +93,7 @@ void RenderSync::reset(scene::Scene& scene) {
     external_clips_.clear();
     decal_textures_.clear();
     actor_entities_.clear();
+    previous_entities_.clear();
     actor_models_.clear();
     entity_actor_.clear();
     loaded_environment_ = {};
@@ -158,11 +159,15 @@ void RenderSync::sync(World& world, scene::Scene& scene, gfx::VulkanRenderer& re
 void RenderSync::syncActors(World& world, scene::Scene& scene, gfx::VulkanRenderer& renderer,
                             float delta_seconds) {
     bool added = false;
-    std::vector<scene::Actor> actors;
+    // Los actores se rellenan en su sitio (sin reconstruir el vector ni copiar
+    // el animador de lo que no se anima): con cientos de objetos, rehacerlo
+    // todo cada frame eran miles de reservas de memoria.
+    std::vector<scene::Actor>& actors = scene.actors();
+    previous_entities_.swap(actor_entities_);
     actor_entities_.clear();
     actor_models_.clear();
-    entity_actor_.clear();
-    std::unordered_set<entt::entity> alive;
+    std::size_t count = 0;
+    ++frame_;
 
     // En profundidad: el orden de los actores sigue al de la Jerarquia (estable
     // entre frames, lo que agradecen las cascadas de sombra).
@@ -188,9 +193,11 @@ void RenderSync::syncActors(World& world, scene::Scene& scene, gfx::VulkanRender
             state.clip = -1;
             state.animator.play(-1);
         }
-        alive.insert(e.handle());
+        state.seen = frame_;
 
+        bool animating = false;
         if (Animator* animator = e.tryGet<Animator>(); animator != nullptr && !data.animations.empty()) {
+            animating = true;
             int clip = animator->clip;
             bool loop = animator->loop;
             float speed = animator->speed;
@@ -253,27 +260,40 @@ void RenderSync::syncActors(World& world, scene::Scene& scene, gfx::VulkanRender
         }
 
         const Mat4& world_matrix = e.worldMatrix();
-        scene::Actor actor{};
+        if (count >= actors.size()) actors.emplace_back();
+        scene::Actor& actor = actors[count];
+        // El mismo objeto en la misma posicion de la lista y sin animar: su
+        // animador (pose de reposo) ya esta; no se copia.
+        const bool same_slot = count < previous_entities_.size() && previous_entities_[count] == e.handle() &&
+                               actor.model == *model;
         actor.model = *model;
         actor.transform = world_matrix;
-        actor.animator = state.animator;
+        if (!same_slot || animating || state.animated) actor.animator = state.animator;
+        state.animated = animating;
         const anim::Aabb& box = model_bounds_[*model];
         const Vec3 center = (box.min + box.max) * 0.5f;
         actor.bounds_center = transformPoint(world_matrix, center);
         actor.bounds_radius = core::length(box.max - box.min) * 0.5f * maxAxisScale(world_matrix);
 
-        entity_actor_[e.handle()] = static_cast<std::uint32_t>(actors.size());
         actor_entities_.push_back(e.handle());
         actor_models_.push_back(*model);
-        actors.push_back(std::move(actor));
+        ++count;
     });
+    actors.resize(count);
+
+    // El indice entidad -> actor solo se rehace si la lista cambio.
+    if (actor_entities_ != previous_entities_) {
+        entity_actor_.clear();
+        for (std::size_t i = 0; i < actor_entities_.size(); ++i) {
+            entity_actor_[actor_entities_[i]] = static_cast<std::uint32_t>(i);
+        }
+    }
 
     // Olvida los animadores de lo que ya no se dibuja.
     for (auto it = animations_.begin(); it != animations_.end();) {
-        it = alive.contains(it->first) ? std::next(it) : animations_.erase(it);
+        it = it->second.seen == frame_ ? std::next(it) : animations_.erase(it);
     }
 
-    scene.actors() = std::move(actors);
     if (added) {
         // Piezas nuevas: el renderizador sube la escena entera (mallas,
         // texturas y la estructura de los rayos).

@@ -44,34 +44,46 @@ ImU32 assetColor(assets::AssetType type) {
     }
 }
 
-const char* assetGlyph(assets::AssetType type) {
+Icon assetIcon(assets::AssetType type) {
     switch (type) {
-        case assets::AssetType::Model: return "3D";
-        case assets::AssetType::Environment: return "HDR";
-        case assets::AssetType::Scene: return "ESC";
-        case assets::AssetType::AnimatorController: return "ANIM";
-        case assets::AssetType::AnimationClip: return "CLIP";
-        default: return "?";
+        case assets::AssetType::Model: return Icon::MeshRenderer;
+        case assets::AssetType::Environment: return Icon::ReflectionProbe;
+        case assets::AssetType::Scene: return Icon::AssetBrowser;
+        case assets::AssetType::AnimatorController: return Icon::SkinnedMesh;
+        case assets::AssetType::AnimationClip: return Icon::SkinnedMesh;
+        default: return Icon::AssetBrowser;
     }
 }
 
-// Icono dibujado a mano: tarjeta de color con la sigla del tipo.
-void drawAssetIcon(ImDrawList* draw, ImVec2 min, float size, ImU32 color, const char* glyph) {
+// Tarjeta del asset: fondo oscuro y el icono de su tipo en su color.
+void drawAssetTile(ImDrawList* draw, const ImGuiLayer& imgui, ImVec2 min, float size, Icon icon, ImU32 color) {
     const ImVec2 max{min.x + size, min.y + size};
-    draw->AddRectFilled(min, max, color, size * 0.12f);
-    draw->AddRectFilled(ImVec2(min.x, max.y - size * 0.22f), max, IM_COL32(0, 0, 0, 60), size * 0.12f,
-                        ImDrawFlags_RoundCornersBottom);
-    const ImVec2 text = ImGui::CalcTextSize(glyph);
-    draw->AddText(ImVec2(min.x + (size - text.x) * 0.5f, min.y + (size * 0.8f - text.y) * 0.5f),
-                  IM_COL32(255, 255, 255, 235), glyph);
+    draw->AddRectFilled(min, max, IM_COL32(44, 44, 50, 255), size * 0.1f);
+    draw->AddRect(min, max, (color & 0x00FFFFFFu) | 0x90000000u, size * 0.1f, 0, 1.5f);
+    const float inner = size * 0.62f;
+    imgui.drawIcon(draw, icon, ImVec2(min.x + (size - inner) * 0.5f, min.y + (size - inner) * 0.5f), inner, color);
 }
 
-void drawFolderIcon(ImDrawList* draw, ImVec2 min, float size) {
-    const ImU32 color = IM_COL32(225, 190, 90, 255);
-    draw->AddRectFilled(ImVec2(min.x, min.y + size * 0.12f), ImVec2(min.x + size * 0.45f, min.y + size * 0.28f),
-                        color, 3.0f);
-    draw->AddRectFilled(ImVec2(min.x, min.y + size * 0.22f), ImVec2(min.x + size, min.y + size * 0.88f),
-                        color, size * 0.08f);
+// Imagen (miniatura) encajada en un cuadrado sin deformarla, sobre un
+// damero (se ven las transparencias).
+void drawThumbnailTile(ImDrawList* draw, ImTextureID texture, ImVec2 image_size, ImVec2 min, float size) {
+    const ImVec2 max{min.x + size, min.y + size};
+    const float cell = std::max(size / 8.0f, 4.0f);
+    draw->AddRectFilled(min, max, IM_COL32(70, 70, 76, 255), size * 0.06f);
+    for (float y = 0.0f; y < size; y += cell) {
+        for (float x = ((static_cast<int>(y / cell) % 2) != 0 ? cell : 0.0f); x < size; x += cell * 2.0f) {
+            draw->AddRectFilled(ImVec2(min.x + x, min.y + y),
+                                ImVec2(std::min(min.x + x + cell, max.x), std::min(min.y + y + cell, max.y)),
+                                IM_COL32(90, 90, 98, 255));
+        }
+    }
+    const float aspect = image_size.y > 0.0f ? image_size.x / image_size.y : 1.0f;
+    ImVec2 fit(size, size);
+    if (aspect > 1.0f) fit.y = size / aspect;
+    else fit.x = size * aspect;
+    const ImVec2 a{min.x + (size - fit.x) * 0.5f, min.y + (size - fit.y) * 0.5f};
+    draw->AddImage(texture, a, ImVec2(a.x + fit.x, a.y + fit.y));
+    draw->AddRect(min, max, IM_COL32(0, 0, 0, 120), size * 0.06f);
 }
 
 }  // namespace
@@ -178,7 +190,16 @@ void EditorApp::drawFolderNode(std::size_t index) {
     if (node.children.empty()) flags |= ImGuiTreeNodeFlags_Leaf;
     if (node.path == current_folder_) flags |= ImGuiTreeNodeFlags_Selected;
     if (index == 0) flags |= ImGuiTreeNodeFlags_DefaultOpen;
-    const bool open = ImGui::TreeNodeEx(reinterpret_cast<void*>(index + 1), flags, "%s", node.name.c_str());
+    const bool open = ImGui::TreeNodeEx(reinterpret_cast<void*>(index + 1), flags, "      %s", node.name.c_str());
+    {
+        // Icono de carpeta (abierta si esta desplegada) delante del nombre.
+        const ImVec2 min = ImGui::GetItemRectMin();
+        const float h = ImGui::GetItemRectSize().y;
+        const float icon = h - 2.0f;
+        imgui_.drawIcon(ImGui::GetWindowDrawList(), open && !node.children.empty() ? Icon::FolderOpen : Icon::FolderClosed,
+                        ImVec2(min.x + ImGui::GetTreeNodeToLabelSpacing() - 2.0f, min.y + 1.0f), icon,
+                        IM_COL32(232, 194, 96, 255));
+    }
     if (ImGui::IsItemClicked() && !ImGui::IsItemToggledOpen()) {
         current_folder_ = node.path;
     }
@@ -320,7 +341,9 @@ void EditorApp::drawProject() {
                 ImGui::EndPopup();
             }
             if (hovered) draw->AddRectFilled(pos, ImVec2(pos.x + cell - 8.0f, pos.y + icon_size_), IM_COL32(255, 255, 255, 18), 4.0f);
-            drawFolderIcon(draw, ImVec2(pos.x + (cell - 8.0f - icon_size_) * 0.5f, pos.y), icon_size_);
+            imgui_.drawIcon(draw, hovered ? Icon::FolderOpen : Icon::FolderClosed,
+                            ImVec2(pos.x + (cell - 8.0f - icon_size_) * 0.5f, pos.y), icon_size_,
+                            IM_COL32(232, 194, 96, 255));
             ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + cell - 8.0f);
             ImGui::TextWrapped("%s", dialogs::utf8(folder.filename()).c_str());
             ImGui::PopTextWrapPos();
@@ -397,8 +420,19 @@ void EditorApp::drawProject() {
             ImGui::EndPopup();
         }
         const float icon = icon_size_ * 0.82f;
-        drawAssetIcon(draw, ImVec2(pos.x + (cell - 8.0f - icon) * 0.5f, pos.y + (icon_size_ - icon) * 0.5f),
-                      icon, assetColor(info.type), assetGlyph(info.type));
+        const ImVec2 icon_pos(pos.x + (cell - 8.0f - icon) * 0.5f, pos.y + (icon_size_ - icon) * 0.5f);
+        // Cielos: la miniatura de su HDR de origen si sigue en disco.
+        ImVec2 thumb_size{};
+        std::error_code source_error;
+        const ImTextureID preview = info.type == assets::AssetType::Environment && !info.source.empty() &&
+                                            std::filesystem::exists(info.source, source_error)
+                                        ? imgui_.thumbnail(info.source, &thumb_size)
+                                        : 0;
+        if (preview != 0) {
+            drawThumbnailTile(draw, preview, thumb_size, icon_pos, icon);
+        } else {
+            drawAssetTile(draw, imgui_, icon_pos, icon, assetIcon(info.type), assetColor(info.type));
+        }
 
         if (renaming_asset_ == info.uuid) {
             ImGui::SetNextItemWidth(cell - 8.0f);
@@ -470,9 +504,15 @@ void EditorApp::drawProject() {
                 }
                 ImGui::EndPopup();
             }
+            // La imagen de verdad (se decodifica en otro hilo; mientras, su icono).
             const float icon = icon_size_ * 0.82f;
-            drawAssetIcon(draw, ImVec2(pos.x + (cell - 8.0f - icon) * 0.5f, pos.y + (icon_size_ - icon) * 0.5f), icon,
-                          IM_COL32(200, 80, 140, 255), "IMG");
+            const ImVec2 icon_pos(pos.x + (cell - 8.0f - icon) * 0.5f, pos.y + (icon_size_ - icon) * 0.5f);
+            ImVec2 thumb_size{};
+            if (const ImTextureID preview = imgui_.thumbnail(image, &thumb_size); preview != 0) {
+                drawThumbnailTile(draw, preview, thumb_size, icon_pos, icon);
+            } else {
+                drawAssetTile(draw, imgui_, icon_pos, icon, Icon::Decal, IM_COL32(200, 80, 140, 255));
+            }
             ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + cell - 8.0f);
             ImGui::TextWrapped("%s", name.c_str());
             ImGui::PopTextWrapPos();
