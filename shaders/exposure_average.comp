@@ -1,0 +1,115 @@
+#version 450
+
+// Auto-exposicion, paso 2: del histograma a una exposicion, con adaptacion
+// temporal. Replica los parametros de Unreal (Post Process Volume ->
+// Exposure):
+//
+//   Low / High Percent   se ignora el 50% mas oscuro y el 8% mas brillante.
+//                        Asi un cielo con el sol o unas pocas antorchas no
+//                        hunden la exposicion, y las sombras de un rincon no
+//                        la disparan.
+//   Speed Up / Down      el ojo se adapta rapido a la luz (salir de una cueva
+//                        deslumbra un momento) y despacio a la oscuridad.
+//   Min / Max EV         limites: de noche la escena queda oscura en vez de
+//                        convertirse en dia gris y ruidoso.
+//
+// Un solo grupo de 256 hilos: carga el histograma, lo deja a cero para el
+// frame siguiente y el hilo 0 hace el recorrido de percentiles.
+
+layout(local_size_x = 256) in;
+
+layout(set = 0, binding = 0) buffer Histogram {
+    uint bins[256];
+} histogram;
+
+layout(set = 0, binding = 1) buffer Exposure {
+    float exposure;          // multiplicador que aplica la composicion
+    float log_exposure;      // log2(exposure) adaptado (estado entre frames)
+    float average_luminance; // luminancia media medida este frame
+    float initialized;       // 0 = primer frame: sin transicion
+} state;
+
+layout(push_constant) uniform PushConstants {
+    float delta_seconds;
+    float low_percent;    // 0..1
+    float high_percent;   // 0..1
+    float unused;
+} push;
+
+// Deben coincidir con exposure_histogram.comp.
+const float kMinLogLuminance = -12.0;
+const float kLogLuminanceRange = 18.0;
+
+// Luminancia de la escena que debe quedar como gris medio tras el tono ACES.
+const float kTargetLuminance = 0.36;
+
+// Limites del multiplicador de exposicion, en pasos (EV).
+const float kMinLogExposure = -2.0;
+// El maximo es bajo a proposito: la noche debe seguir pareciendo noche.
+const float kMaxLogExposure = 1.4;
+
+// Velocidades de adaptacion (en EV por segundo, aproximadamente).
+const float kSpeedUp = 3.0;    // hacia una escena mas brillante
+const float kSpeedDown = 1.2;  // hacia una escena mas oscura
+
+shared uint bins[256];
+
+void main() {
+    uint index = gl_LocalInvocationIndex;
+    bins[index] = histogram.bins[index];
+    histogram.bins[index] = 0u;
+    barrier();
+
+    if (index != 0u) {
+        return;
+    }
+
+    // Total sin el cubo del negro puro.
+    float total = 0.0;
+    for (int i = 1; i < 256; ++i) {
+        total += float(bins[i]);
+    }
+    if (total <= 0.0) {
+        return;
+    }
+
+    float low = total * push.low_percent;
+    float high = total * push.high_percent;
+
+    // Media de log2(luminancia) solo con la parte del histograma entre los dos
+    // percentiles: cada cubo aporta la fraccion de sus pixeles que cae dentro.
+    float accumulated = 0.0;
+    float weighted_sum = 0.0;
+    float weight_total = 0.0;
+    for (int i = 1; i < 256; ++i) {
+        float count = float(bins[i]);
+        float start = accumulated;
+        float end = accumulated + count;
+        accumulated = end;
+
+        float inside = max(min(end, high) - max(start, low), 0.0);
+        if (inside > 0.0) {
+            float log_luminance = kMinLogLuminance +
+                                  (float(i) - 0.5) / 254.0 * kLogLuminanceRange;
+            weighted_sum += log_luminance * inside;
+            weight_total += inside;
+        }
+    }
+
+    float average_log = weight_total > 0.0 ? weighted_sum / weight_total : log2(kTargetLuminance);
+    float target = clamp(log2(kTargetLuminance) - average_log, kMinLogExposure, kMaxLogExposure);
+
+    float current = state.log_exposure;
+    if (state.initialized < 0.5) {
+        current = target;
+    } else {
+        // Exposicion que baja = la escena se ha vuelto mas brillante.
+        float speed = target < current ? kSpeedUp : kSpeedDown;
+        current += (target - current) * (1.0 - exp(-push.delta_seconds * speed));
+    }
+
+    state.log_exposure = current;
+    state.exposure = exp2(current);
+    state.average_luminance = exp2(average_log);
+    state.initialized = 1.0;
+}

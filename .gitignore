@@ -20,3 +20,18 @@ compile_commands.json
 .vs/
 .vscode/
 .cache/
+
+# Archivos pesados: modelos, escenas y comprimidos. GitHub no admite archivos
+# de mas de 100 MB y el repositorio debe quedarse ligero; la escena San Miguel
+# ademas no se puede redistribuir (ver README).
+*.zip
+*.7z
+*.rar
+*.fbx
+*.glb
+*.gltf
+*.blend
+*.mtl
+# (*.obj ya esta ignorado arriba: cubre tanto objetos compilados como modelos)
+*.cramcache
+assets/

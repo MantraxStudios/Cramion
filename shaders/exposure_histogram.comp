@@ -1,0 +1,59 @@
+#version 450
+
+// Auto-exposicion, paso 1: histograma de luminancia de la imagen HDR, como la
+// "Auto Exposure Histogram" de Unreal.
+//
+// Cada pixel cae en uno de 256 cubos segun log2(luminancia), entre
+// kMinLogLuminance y kMinLogLuminance + kLogLuminanceRange. Cada grupo de
+// 16x16 hilos acumula primero en memoria compartida (atomicos baratos) y
+// solo al final suma sus 256 cubos al histograma global.
+//
+// Medicion ponderada al centro: los pixeles del centro de la pantalla cuentan
+// hasta 3 veces mas que los del borde, como el "Metering Mode: Center
+// Weighted" de Unreal. Lo que miras manda sobre lo que queda en la periferia.
+
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(set = 0, binding = 0) uniform sampler2D scene_color;
+layout(set = 0, binding = 1) buffer Histogram {
+    uint bins[256];
+} histogram;
+
+// Deben coincidir con exposure_average.comp.
+const float kMinLogLuminance = -12.0;
+const float kLogLuminanceRange = 18.0;
+
+shared uint local_bins[256];
+
+uint binFor(float luminance) {
+    // Cubo 0 reservado para el negro puro (se ignora al promediar).
+    if (luminance < exp2(kMinLogLuminance)) {
+        return 0u;
+    }
+    float t = clamp((log2(luminance) - kMinLogLuminance) / kLogLuminanceRange, 0.0, 1.0);
+    return uint(t * 254.0 + 1.0);
+}
+
+void main() {
+    local_bins[gl_LocalInvocationIndex] = 0u;
+    barrier();
+
+    ivec2 size = textureSize(scene_color, 0);
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    if (all(lessThan(pixel, size))) {
+        vec3 color = texelFetch(scene_color, pixel, 0).rgb;
+        float luminance = dot(color, vec3(0.2126, 0.7152, 0.0722));
+
+        vec2 centered = (vec2(pixel) + 0.5) / vec2(size) - 0.5;
+        centered.x *= float(size.x) / float(size.y);
+        uint weight = 1u + uint(2.0 * exp(-dot(centered, centered) * 6.0) + 0.5);
+
+        atomicAdd(local_bins[binFor(luminance)], weight);
+    }
+    barrier();
+
+    uint count = local_bins[gl_LocalInvocationIndex];
+    if (count > 0u) {
+        atomicAdd(histogram.bins[gl_LocalInvocationIndex], count);
+    }
+}
