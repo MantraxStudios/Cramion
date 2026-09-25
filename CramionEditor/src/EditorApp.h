@@ -27,6 +27,8 @@
 // La fuente de verdad es el ecs::World; scene::Scene es solo lo que se le da
 // al renderizador (RenderSync la rellena cada frame).
 
+#include "Dialogs.h"
+#include <CramionCore/project/Pack.h>
 #include "ImGuiLayer.h"
 #include "LuaCompletion.h"
 #include "ModelPreviews.h"
@@ -38,6 +40,9 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
+#include <mutex>
+#include <thread>
 #include <deque>
 #include <filesystem>
 #include <future>
@@ -287,8 +292,42 @@ private:
     std::vector<std::filesystem::path> current_scripts_;  // .lua de la carpeta
     std::vector<std::filesystem::path> current_audio_;    // audios de la carpeta
 
-    // --- Exportar el juego (EditorExport.cpp) ---
-    std::filesystem::path exportGame(bool run_after);
+    // --- Exportar el juego (EditorExport.cpp): copia en otro hilo con progreso ---
+    struct ExportJob {
+        struct Copy {
+            std::filesystem::path from;
+            std::filesystem::path to;
+        };
+        std::vector<Copy> files;
+        // Assets, ProjectSettings y el .crproj: comprimidos en Game/<Juego>.crpack.
+        std::vector<project::PackInput> pack;
+        std::filesystem::path pack_file;
+        std::thread thread;
+        std::atomic<std::uint64_t> done{0};
+        std::atomic<std::uint64_t> total{0};
+        std::atomic<bool> cancel{false};
+        std::atomic<bool> finished{false};
+        std::mutex mutex;
+        std::string current;
+        std::string error;
+        std::filesystem::path target;
+        std::filesystem::path exe;
+        std::filesystem::path game_folder;
+        std::string game_ini;
+        std::string scene_name;
+        bool run_after = false;
+    };
+    void exportGame(bool run_after);
+    void drawExportProgress();
+    void cancelExport();
+    void startExport(const std::filesystem::path& parent);
+    std::unique_ptr<ExportJob> export_job_;
+    std::string export_message_;
+    // Ventana previa: carpeta de destino (escrita o con Examinar) y ejecutar al terminar.
+    bool export_setup_ = false;
+    bool export_run_after_ = false;
+    std::string export_folder_;
+    std::shared_ptr<dialogs::AsyncFolderPick> export_pick_;
 
     // --- Interfaz del juego (EditorUI.cpp) ---
     void drawGameUi(ImVec2 origin, ImVec2 size);
@@ -474,6 +513,11 @@ private:
 
     // Seleccion (por UUID: sobrevive a deshacer, que recrea las entidades).
     std::vector<Uuid> selection_;
+    // Clic sin Ctrl/Mayus sobre una fila ya seleccionada con varias: se
+    // deja solo esa al soltar (si no se arrastro), como Unity; asi se puede
+    // arrastrar toda la seleccion.
+    Uuid pending_select_only_{};
+    bool quit_play_requested_ = false;
     Uuid active_{};
     Uuid reveal_{};
     std::vector<HierarchyRow> hierarchy_rows_;  // filas de la jerarquia este frame (Shift+clic)

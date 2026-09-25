@@ -9,7 +9,9 @@
 #endif
 #include <windows.h>
 
+#include <atomic>
 #include <filesystem>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -25,6 +27,17 @@ std::filesystem::path saveFile(HWND owner, const wchar_t* filter, const wchar_t*
                                const std::wstring& default_name = {});
 // Selector de carpetas moderno (IFileDialog con FOS_PICKFOLDERS).
 std::filesystem::path pickFolder(HWND owner, const std::filesystem::path& initial_folder = {});
+
+// El mismo selector en otro hilo: el editor sigue dibujando aunque la ventana
+// de Windows tarde o se quede colgada (pasa con carpetas de OneDrive o con
+// programas que se inyectan en el proceso). `done` pasa a true al cerrarla;
+// `result` vacio si se cancelo. Si nadie espera el resultado, el hilo termina
+// solo.
+struct AsyncFolderPick {
+    std::atomic<bool> done{false};
+    std::filesystem::path result;
+};
+std::shared_ptr<AsyncFolderPick> pickFolderAsync(const std::filesystem::path& initial_folder = {});
 
 // Ruta a texto UTF-8 (para ImGui) y al reves.
 std::string utf8(const std::filesystem::path& path);

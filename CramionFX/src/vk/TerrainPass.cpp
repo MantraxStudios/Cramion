@@ -242,7 +242,7 @@ void TerrainPass::createPipelines(const VulkanDevice& device, std::array<vk::For
         info.pColorBlendState = &blend;
         info.pDynamicState = &dynamic;
         info.layout = *layout_;
-        gbuffer_pipeline_ = vk::raii::Pipeline(device.handle(), nullptr, info);
+        gbuffer_pipeline_ = vk::raii::Pipeline(device.handle(), device.pipelineCache(), info);
     }
     // --- Sombras (solo profundidad) ---
     {
@@ -274,7 +274,7 @@ void TerrainPass::createPipelines(const VulkanDevice& device, std::array<vk::For
         info.pColorBlendState = &blend;
         info.pDynamicState = &dynamic;
         info.layout = *layout_;
-        shadow_pipeline_ = vk::raii::Pipeline(device.handle(), nullptr, info);
+        shadow_pipeline_ = vk::raii::Pipeline(device.handle(), device.pipelineCache(), info);
     }
 }
 

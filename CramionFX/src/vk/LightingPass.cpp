@@ -201,7 +201,7 @@ void LightingPass::create(const VulkanDevice& device, vk::Format color_format) {
     pipeline_info.pDynamicState = &dynamic_state;
     pipeline_info.layout = *pipeline_layout_;
 
-    pipeline_ = vk::raii::Pipeline(device.handle(), nullptr, pipeline_info);
+    pipeline_ = vk::raii::Pipeline(device.handle(), device.pipelineCache(), pipeline_info);
 
     std::cout << "[Vulkan] Pipeline de iluminacion creado\n";
 }

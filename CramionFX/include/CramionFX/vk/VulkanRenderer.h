@@ -123,6 +123,10 @@ public:
                     std::uint32_t height);
     void shutdown();
 
+    // Progreso de initialize() (0..1 y que se esta haciendo): para la pantalla
+    // de carga mientras se compilan los shaders. Se llama desde initialize().
+    void setLoadingCallback(std::function<void(float, const char*)> callback) { loading_callback_ = std::move(callback); }
+
     // Sube a la GPU los modelos con esqueleto de la escena (mallas, texturas y
     // materiales). Sus instancias (Scene::actors) se dibujan cada frame.
     void uploadModels(const scene::Scene& scene);
@@ -878,9 +882,18 @@ private:
     std::uint32_t window_height_ = 0;
     bool framebuffer_resized_ = false;
     bool initialized_ = false;
+    std::function<void(float, const char*)> loading_callback_;
     bool shadows_enabled_ = true;
     bool editor_helpers_ = true;
     bool presenting_ = true;
+    // Segunda vista del editor (drawFrame sin presentar): como las caras de la
+    // sonda, no toca las historias temporales (GI, reflejos, TAA, exposicion,
+    // vectores de movimiento) de la vista principal.
+    bool secondary_view_ = false;
+    bool isolated() const { return capturing_ || secondary_view_; }
+    // Cambio de ajustes graficos: se aplica al empezar el frame siguiente
+    // (applyPendingResize), no a mitad (la interfaz ya apunta a las imagenes).
+    bool settings_dirty_ = false;
     GraphicsSettings graphics_{};
     vk::Extent2D render_extent_{0, 0};
     bool upscaling_ = false;  // hay pasada de escalado (TAA o FSR)

@@ -110,6 +110,22 @@ add_library(cramion_miniaudio STATIC "${CMAKE_CURRENT_SOURCE_DIR}/src/audio/mini
 target_include_directories(cramion_miniaudio PUBLIC "${miniaudio_SOURCE_DIR}")
 target_compile_options(cramion_miniaudio PRIVATE -O2 -w)
 
+# zstd: compresion de los paquetes .crpack del juego exportado. Solo la
+# biblioteca estatica (su CMake esta en build/cmake).
+set(ZSTD_BUILD_PROGRAMS OFF CACHE BOOL "" FORCE)
+set(ZSTD_BUILD_SHARED OFF CACHE BOOL "" FORCE)
+set(ZSTD_BUILD_STATIC ON CACHE BOOL "" FORCE)
+set(ZSTD_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(ZSTD_LEGACY_SUPPORT OFF CACHE BOOL "" FORCE)
+set(ZSTD_MULTITHREAD_SUPPORT OFF CACHE BOOL "" FORCE)
+FetchContent_Declare(zstd
+    URL https://github.com/facebook/zstd/releases/download/v1.5.7/zstd-1.5.7.tar.gz
+    DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+    SOURCE_SUBDIR build/cmake
+)
+FetchContent_MakeAvailable(zstd)
+target_compile_options(libzstd_static PRIVATE -O2 -w)
+
 # --- CramionAssets -----------------------------------------------------------
 
 file(GLOB_RECURSE CRAMION_ASSETS_SOURCES CONFIGURE_DEPENDS
@@ -121,8 +137,9 @@ add_library(Cramion::Assets ALIAS CramionAssets)
 target_include_directories(CramionAssets PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
 target_link_libraries(CramionAssets
     PUBLIC Cramion::FX
-    PRIVATE nlohmann_json::nlohmann_json shell32 ole32 assimp
+    PRIVATE nlohmann_json::nlohmann_json shell32 ole32 assimp libzstd_static
 )
+target_include_directories(CramionAssets PRIVATE "${zstd_SOURCE_DIR}/lib")
 target_compile_options(CramionAssets PRIVATE -Wall -Wextra)
 
 # Herramienta de consola de los assets: crea un proyecto temporal, importa
@@ -223,3 +240,15 @@ target_compile_options(CramionScriptingTests PRIVATE -Wall -Wextra)
 # --- Pruebas de la interfaz del juego (consola) ---
 add_executable(CramionUiTests "${CMAKE_CURRENT_SOURCE_DIR}/tests/UiTests.cpp")
 target_link_libraries(CramionUiTests PRIVATE Cramion::Core)
+
+# --- Pruebas de los vehiculos (consola) ---
+add_executable(CramionPackTests "${CMAKE_CURRENT_SOURCE_DIR}/tests/PackTests.cpp")
+target_link_libraries(CramionPackTests PRIVATE Cramion::Core)
+
+add_executable(CramionVehicleTests "${CMAKE_CURRENT_SOURCE_DIR}/tests/VehicleTests.cpp")
+target_link_libraries(CramionVehicleTests PRIVATE Cramion::Core)
+
+# Demo MiniGolf (kit de Kenney): crea el proyecto con sus escenas y lo prueba
+# sin ventana (cramion_minigolf <kit> tools/minigolf <destino> --probar).
+add_executable(cramion_minigolf "${CMAKE_CURRENT_SOURCE_DIR}/tools/MiniGolfDemo.cpp")
+target_link_libraries(cramion_minigolf PRIVATE Cramion::Core)

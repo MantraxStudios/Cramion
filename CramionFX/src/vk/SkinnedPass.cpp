@@ -207,7 +207,7 @@ void SkinnedPass::createGeometryPipeline(const VulkanDevice& device, const GBuff
     pipeline_info.pDynamicState = &dynamic_state;
     pipeline_info.layout = *geometry_layout_;
 
-    geometry_pipeline_ = vk::raii::Pipeline(device.handle(), nullptr, pipeline_info);
+    geometry_pipeline_ = vk::raii::Pipeline(device.handle(), device.pipelineCache(), pipeline_info);
 }
 
 void SkinnedPass::createGlassPipeline(const VulkanDevice& device, vk::Format color_format,
@@ -314,7 +314,7 @@ void SkinnedPass::createGlassPipeline(const VulkanDevice& device, vk::Format col
     pipeline_info.pDynamicState = &dynamic_state;
     pipeline_info.layout = *glass_layout_;
 
-    glass_pipeline_ = vk::raii::Pipeline(device.handle(), nullptr, pipeline_info);
+    glass_pipeline_ = vk::raii::Pipeline(device.handle(), device.pipelineCache(), pipeline_info);
 }
 
 vk::raii::Pipeline SkinnedPass::createOutlinePipeline(const VulkanDevice& device,
@@ -386,7 +386,7 @@ vk::raii::Pipeline SkinnedPass::createOutlinePipeline(const VulkanDevice& device
     pipeline_info.pDynamicState = &dynamic_state;
     pipeline_info.layout = *geometry_layout_;
 
-    return vk::raii::Pipeline(device.handle(), nullptr, pipeline_info);
+    return vk::raii::Pipeline(device.handle(), device.pipelineCache(), pipeline_info);
 }
 
 vk::raii::Pipeline SkinnedPass::createShadowPipeline(const VulkanDevice& device,
@@ -458,7 +458,7 @@ vk::raii::Pipeline SkinnedPass::createShadowPipeline(const VulkanDevice& device,
     pipeline_info.pDynamicState = &dynamic_state;
     pipeline_info.layout = *shadow_layout_;
 
-    return vk::raii::Pipeline(device.handle(), nullptr, pipeline_info);
+    return vk::raii::Pipeline(device.handle(), device.pipelineCache(), pipeline_info);
 }
 
 void SkinnedPass::destroy() {

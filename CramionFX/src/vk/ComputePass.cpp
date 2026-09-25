@@ -53,7 +53,7 @@ void ComputePass::create(const VulkanDevice& device, const ComputePassDesc& desc
     pipeline_info.stage.pName = "main";
     pipeline_info.layout = *pipeline_layout_;
 
-    pipeline_ = vk::raii::Pipeline(device.handle(), nullptr, pipeline_info);
+    pipeline_ = vk::raii::Pipeline(device.handle(), device.pipelineCache(), pipeline_info);
 }
 
 void ComputePass::destroy() {

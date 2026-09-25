@@ -4,6 +4,8 @@
 #include <shlobj.h>
 #include <shobjidl.h>
 
+#include <thread>
+
 namespace cramion::editor::dialogs {
 
 namespace {
@@ -111,6 +113,17 @@ std::filesystem::path pickFolder(HWND owner, const std::filesystem::path& initia
         CoUninitialize();
     }
     return result;
+}
+
+std::shared_ptr<AsyncFolderPick> pickFolderAsync(const std::filesystem::path& initial_folder) {
+    auto pick = std::make_shared<AsyncFolderPick>();
+    // Sin ventana duena: una duena de otro hilo quedaria deshabilitada (y el
+    // editor tambien) si el dialogo se cuelga.
+    std::thread([pick, initial_folder] {
+        pick->result = pickFolder(nullptr, initial_folder);
+        pick->done = true;
+    }).detach();
+    return pick;
 }
 
 std::string utf8(const std::filesystem::path& path) {

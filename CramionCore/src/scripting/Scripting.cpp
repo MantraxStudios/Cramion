@@ -15,6 +15,7 @@
 #include <cmath>
 #include <fstream>
 #include <iostream>
+#include <map>
 #include <sstream>
 #include <unordered_map>
 
@@ -154,6 +155,43 @@ struct ScriptSystem::Impl {
     std::unordered_map<std::string, DescribeCache> described;
 
     std::unordered_map<std::string, dm::Key> keys;
+
+    // Cambio de escena y salida pedidos desde Lua; datos guardados (Prefs).
+    std::filesystem::path scene_request;
+    bool quit_request = false;
+    std::string scene_name;
+    std::map<std::string, std::string> prefs;
+    std::filesystem::path prefs_file;
+
+    void savePrefs() const {
+        if (prefs_file.empty()) return;
+        std::error_code e;
+        std::filesystem::create_directories(prefs_file.parent_path(), e);
+        std::ofstream out(prefs_file, std::ios::trunc);
+        for (const auto& [key, value] : prefs) {
+            if (key.find_first_of("=\n") != std::string::npos || value.find('\n') != std::string::npos) continue;
+            out << key << '=' << value << '\n';
+        }
+    }
+
+    // "Nivel2" o "Escenas/Nivel2.crscene" -> ruta del .crscene en Assets.
+    std::filesystem::path findScene(const std::string& name) const {
+        if (name.empty() || root.empty()) return {};
+        std::filesystem::path direct = root / std::filesystem::path(std::u8string(name.begin(), name.end()));
+        if (direct.extension() != ".crscene") direct += ".crscene";
+        std::error_code e;
+        if (std::filesystem::is_regular_file(direct, e)) return direct;
+        std::string wanted = std::filesystem::path(std::u8string(name.begin(), name.end())).stem().string();
+        std::transform(wanted.begin(), wanted.end(), wanted.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        for (std::filesystem::recursive_directory_iterator it(root, std::filesystem::directory_options::skip_permission_denied, e);
+             !e && it != std::filesystem::recursive_directory_iterator(); it.increment(e)) {
+            if (it->path().extension() != ".crscene") continue;
+            std::string stem = it->path().stem().string();
+            std::transform(stem.begin(), stem.end(), stem.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            if (stem == wanted) return it->path();
+        }
+        return {};
+    }
 
     // --- Mensajes y errores ---
     void write(int level, const std::string& message) {
@@ -363,6 +401,9 @@ struct ScriptSystem::Impl {
             "velocity", sol::property(
                 [this](const LuaEntity& e) { const ecs::Entity x = e.get(); return x.valid() && physics != nullptr ? physics->linearVelocity(x) : Vec3{}; },
                 [this](LuaEntity& e, const Vec3& v) { if (auto x = e.get(); x.valid() && physics != nullptr) physics->setLinearVelocity(x, v); }),
+            "angularVelocity", sol::property(
+                [this](const LuaEntity& e) { const ecs::Entity x = e.get(); return x.valid() && physics != nullptr ? physics->angularVelocity(x) : Vec3{}; },
+                [this](LuaEntity& e, const Vec3& v) { if (auto x = e.get(); x.valid() && physics != nullptr) physics->setAngularVelocity(x, v); }),
             "translate", [](LuaEntity& e, const Vec3& d) { if (auto x = e.get(); x.valid()) x.setWorldPosition(x.worldPosition() + d); },
             "translateLocal", [](LuaEntity& e, const Vec3& d) {
                 if (auto x = e.get(); x.valid()) x.setWorldPosition(x.worldPosition() + x.right() * d.x + x.up() * d.y - x.forward() * d.z);
@@ -396,6 +437,24 @@ struct ScriptSystem::Impl {
             },
             "addImpulse", [this](LuaEntity& e, const Vec3& f) { if (auto x = e.get(); x.valid() && physics != nullptr) physics->addImpulse(x, f); },
             "addTorque", [this](LuaEntity& e, const Vec3& t) { if (auto x = e.get(); x.valid() && physics != nullptr) physics->addTorque(x, t, physics::ForceMode::Force); },
+            // Vehiculos (Vehicle + WheelCollider): acelerador -1..1, direccion -1..1, frenos 0..1.
+            "setVehicleInput", [this](LuaEntity& e, float throttle, float steering, sol::optional<float> brake, sol::optional<float> handbrake) {
+                if (auto x = e.get(); x.valid() && physics != nullptr) {
+                    physics->setVehicleInput(x, throttle, steering, brake.value_or(0.0f), handbrake.value_or(0.0f));
+                }
+            },
+            "speed", sol::property([this](const LuaEntity& e) {
+                const ecs::Entity x = e.get();
+                return x.valid() && physics != nullptr ? physics->vehicleState(x).speed_kmh : 0.0f;
+            }),
+            "rpm", sol::property([this](const LuaEntity& e) {
+                const ecs::Entity x = e.get();
+                return x.valid() && physics != nullptr ? physics->vehicleState(x).rpm : 0.0f;
+            }),
+            "gear", sol::property([this](const LuaEntity& e) {
+                const ecs::Entity x = e.get();
+                return x.valid() && physics != nullptr ? physics->vehicleState(x).gear : 0;
+            }),
             "playSound", [this](LuaEntity& e) { if (auto x = e.get(); x.valid() && audio != nullptr) audio->play(x); },
             "stopSound", [this](LuaEntity& e) { if (auto x = e.get(); x.valid() && audio != nullptr) audio->stop(x); },
             "isPlayingSound", [this](const LuaEntity& e) { const ecs::Entity x = e.get(); return x.valid() && audio != nullptr && audio->isPlaying(x); },
@@ -475,6 +534,42 @@ struct ScriptSystem::Impl {
             return sol::make_object(*lua, LuaEntity{copy.handle(), world});
         };
         scene["destroy"] = [this](const LuaEntity& e) { if (e.valid()) pending_destroy.push_back(e.handle); };
+        // Cambiar de escena al terminar el frame (como SceneManager.LoadScene).
+        scene["load"] = [this](const std::string& name) {
+            const std::filesystem::path path = findScene(name);
+            if (path.empty()) {
+                write(2, "Scene.load: no existe la escena \"" + name + "\"");
+                return false;
+            }
+            scene_request = path;
+            return true;
+        };
+        scene["name"] = [this]() { return scene_name; };
+
+        // Prefs (PlayerPrefs): numeros y textos que sobreviven al cambiar de
+        // escena y se guardan en disco.
+        sol::table prefs_table = L.create_named_table("Prefs");
+        prefs_table["setInt"] = [this](const std::string& k, int v) { prefs[k] = std::to_string(v); savePrefs(); };
+        prefs_table["getInt"] = [this](const std::string& k, sol::optional<int> fallback) {
+            const auto it = prefs.find(k);
+            return it != prefs.end() ? std::atoi(it->second.c_str()) : fallback.value_or(0);
+        };
+        prefs_table["setFloat"] = [this](const std::string& k, float v) { prefs[k] = std::to_string(v); savePrefs(); };
+        prefs_table["getFloat"] = [this](const std::string& k, sol::optional<float> fallback) {
+            const auto it = prefs.find(k);
+            return it != prefs.end() ? std::strtof(it->second.c_str(), nullptr) : fallback.value_or(0.0f);
+        };
+        prefs_table["setString"] = [this](const std::string& k, const std::string& v) { prefs[k] = v; savePrefs(); };
+        prefs_table["getString"] = [this](const std::string& k, sol::optional<std::string> fallback) {
+            const auto it = prefs.find(k);
+            return it != prefs.end() ? it->second : fallback.value_or(std::string());
+        };
+        prefs_table["hasKey"] = [this](const std::string& k) { return prefs.count(k) != 0; };
+        prefs_table["deleteKey"] = [this](const std::string& k) { prefs.erase(k); savePrefs(); };
+        prefs_table["deleteAll"] = [this]() { prefs.clear(); savePrefs(); };
+
+        sol::table game = L.create_named_table("Game");
+        game["quit"] = [this]() { quit_request = true; };
 
         // Input
         sol::table in = L.create_named_table("Input");
@@ -716,6 +811,32 @@ void ScriptSystem::setInput(const dm::Input* input) { impl_->input = input; }
 void ScriptSystem::setPhysics(physics::PhysicsSystem* physics) { impl_->physics = physics; }
 void ScriptSystem::setAudio(audio::AudioSystem* audio) { impl_->audio = audio; }
 void ScriptSystem::setLog(LogCallback log) { impl_->log = std::move(log); }
+
+std::filesystem::path ScriptSystem::takeSceneRequest() {
+    std::filesystem::path path = std::move(impl_->scene_request);
+    impl_->scene_request.clear();
+    return path;
+}
+
+bool ScriptSystem::takeQuitRequest() {
+    const bool quit = impl_->quit_request;
+    impl_->quit_request = false;
+    return quit;
+}
+
+void ScriptSystem::setSceneName(const std::string& name) { impl_->scene_name = name; }
+
+void ScriptSystem::setPrefsFile(const std::filesystem::path& file) {
+    Impl& d = *impl_;
+    d.prefs_file = file;
+    d.prefs.clear();
+    std::ifstream in(file);
+    std::string line;
+    while (std::getline(in, line)) {
+        const std::size_t eq = line.find('=');
+        if (eq != std::string::npos && eq > 0) d.prefs[line.substr(0, eq)] = line.substr(eq + 1);
+    }
+}
 bool ScriptSystem::running() const { return impl_->running; }
 const std::vector<ScriptError>& ScriptSystem::errors() const { return impl_->errors; }
 void ScriptSystem::clearErrors() { impl_->errors.clear(); }

@@ -113,7 +113,7 @@ vk::raii::Pipeline ParticlePass::createPipeline(const VulkanDevice& device, vk::
     info.pColorBlendState = &color_blend;
     info.pDynamicState = &dynamic_state;
     info.layout = *layout_;
-    return vk::raii::Pipeline(device.handle(), nullptr, info);
+    return vk::raii::Pipeline(device.handle(), device.pipelineCache(), info);
 }
 
 bool ParticlePass::prepare(const VulkanDevice& device, std::uint32_t frame,

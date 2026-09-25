@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <array>
 #include <cstring>
+#include <fstream>
 #include <iostream>
 #include <map>
 #include <set>
@@ -382,8 +383,81 @@ void VulkanDevice::waitIdle() const {
     }
 }
 
+// -----------------------------------------------------------------------------
+// Cache de pipelines
+// -----------------------------------------------------------------------------
+
+void VulkanDevice::loadPipelineCache(const std::filesystem::path& file) {
+    pipeline_cache_file_ = file;
+    std::vector<char> data;
+    {
+        std::ifstream in(file, std::ios::binary | std::ios::ate);
+        if (in) {
+            data.resize(static_cast<std::size_t>(in.tellg()));
+            in.seekg(0);
+            in.read(data.data(), static_cast<std::streamsize>(data.size()));
+            if (!in) data.clear();
+        }
+    }
+    // Solo si la cabecera es de esta GPU y este driver (algunos drivers no
+    // toleran datos de otra).
+    const vk::PhysicalDeviceProperties properties = physical_device_.getProperties();
+    struct Header {
+        std::uint32_t length, version, vendor, device;
+        std::uint8_t uuid[VK_UUID_SIZE];
+    };
+    bool valid = data.size() > sizeof(Header);
+    if (valid) {
+        Header h{};
+        std::memcpy(&h, data.data(), sizeof(Header));
+        valid = h.length >= sizeof(Header) && h.version == static_cast<std::uint32_t>(vk::PipelineCacheHeaderVersion::eOne) &&
+                h.vendor == properties.vendorID && h.device == properties.deviceID &&
+                std::memcmp(h.uuid, properties.pipelineCacheUUID.data(), VK_UUID_SIZE) == 0;
+    }
+    vk::PipelineCacheCreateInfo info{};
+    if (valid) {
+        info.initialDataSize = data.size();
+        info.pInitialData = data.data();
+    }
+    try {
+        pipeline_cache_ = vk::raii::PipelineCache(device_, info);
+    } catch (const std::exception&) {
+        pipeline_cache_ = vk::raii::PipelineCache(device_, vk::PipelineCacheCreateInfo{});
+        valid = false;
+    }
+    std::cout << "[Vulkan] Cache de pipelines: " << (valid ? "cargada" : "nueva (se compilan los shaders)") << '\n';
+}
+
+void VulkanDevice::savePipelineCache() const {
+    if (pipeline_cache_file_.empty() || !*pipeline_cache_) return;
+    try {
+        const std::vector<std::uint8_t> data = pipeline_cache_.getData();
+        std::error_code error;
+        std::filesystem::create_directories(pipeline_cache_file_.parent_path(), error);
+        // Primero a un temporal: si se corta, la cache anterior sigue sana.
+        std::filesystem::path temp = pipeline_cache_file_;
+        temp += ".tmp";
+        {
+            std::ofstream out(temp, std::ios::binary | std::ios::trunc);
+            out.write(reinterpret_cast<const char*>(data.data()), static_cast<std::streamsize>(data.size()));
+            if (!out) return;
+        }
+        std::filesystem::rename(temp, pipeline_cache_file_, error);
+    } catch (const std::exception& e) {
+        std::cerr << "[Vulkan] No se pudo guardar la cache de pipelines: " << e.what() << '\n';
+    }
+}
+
+const vk::raii::PipelineCache& VulkanDevice::pipelineCache() const {
+    ++pipelines_created_;
+    if (pipeline_callback_) pipeline_callback_(pipelines_created_);
+    return pipeline_cache_;
+}
+
 void VulkanDevice::shutdown() {
     waitIdle();
+    savePipelineCache();
+    pipeline_cache_ = nullptr;
 
     transient_pool_ = nullptr;
     present_queue_ = nullptr;

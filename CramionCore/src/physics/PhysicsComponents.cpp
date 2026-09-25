@@ -121,6 +121,32 @@ void PlaneCollider::reflect(ecs::PropertyVisitor& v) {
     reflectMaterial(v, material);
 }
 
+void Vehicle::reflect(ecs::PropertyVisitor& v) {
+    v.field({"engine_torque", "Par del motor"}, engine_torque, ecs::FloatRange{10.0f, 10000.0f, 5.0f, "%.0f Nm"});
+    v.field({"min_rpm", "RPM minimas"}, min_rpm, ecs::FloatRange{100.0f, 5000.0f, 10.0f, "%.0f"});
+    v.field({"max_rpm", "RPM maximas"}, max_rpm, ecs::FloatRange{1000.0f, 20000.0f, 10.0f, "%.0f"});
+    v.field({"automatic", "Cambio automatico"}, automatic);
+    v.field({"max_pitch_roll", "Inclinacion maxima", "Grados antes de volcar (180 = libre)"}, max_pitch_roll,
+            ecs::FloatRange{5.0f, 180.0f, 1.0f, "%.0f°", true});
+    v.field({"keyboard", "Conducir con teclado", "W/S, A/D y Espacio (freno de mano). Sin: por script"}, keyboard);
+}
+
+void WheelCollider::reflect(ecs::PropertyVisitor& v) {
+    v.field({"radius", "Radio"}, radius, ecs::FloatRange{0.05f, 5.0f, 0.01f, "%.2f m"});
+    v.field({"width", "Ancho"}, width, ecs::FloatRange{0.02f, 3.0f, 0.01f, "%.2f m"});
+    v.field({"suspension_min", "Suspension min"}, suspension_min, ecs::FloatRange{0.0f, 3.0f, 0.01f, "%.2f m"});
+    v.field({"suspension_max", "Suspension max"}, suspension_max, ecs::FloatRange{0.01f, 3.0f, 0.01f, "%.2f m"});
+    v.field({"spring_frequency", "Dureza (Hz)"}, spring_frequency, ecs::FloatRange{0.1f, 10.0f, 0.05f, "%.2f"});
+    v.field({"damping", "Amortiguacion"}, damping, ecs::FloatRange{0.0f, 1.0f, 0.01f, "%.2f", true});
+    v.field({"max_steer_angle", "Giro maximo", "Grados; 0 = no gira (ruedas traseras)"}, max_steer_angle,
+            ecs::FloatRange{0.0f, 80.0f, 0.5f, "%.1f°", true});
+    v.field({"drive", "Traccion", "Recibe el par del motor"}, drive);
+    v.field({"max_brake_torque", "Freno"}, max_brake_torque, ecs::FloatRange{0.0f, 20000.0f, 10.0f, "%.0f Nm"});
+    v.field({"max_handbrake_torque", "Freno de mano"}, max_handbrake_torque, ecs::FloatRange{0.0f, 20000.0f, 10.0f, "%.0f Nm"});
+    v.field({"grip", "Agarre"}, grip, ecs::FloatRange{0.05f, 3.0f, 0.01f, "%.2f"});
+    v.entity({"visual", "Rueda visible", "Objeto que gira con la rueda (eje X local)"}, visual);
+}
+
 void registerPhysicsComponents() {
     ecs::ComponentRegistry& registry = ecs::ComponentRegistry::instance();
     registry.registerComponent<Rigidbody>("Rigidbody", "Rigidbody", "Fisica");
@@ -129,6 +155,8 @@ void registerPhysicsComponents() {
     registry.registerComponent<CapsuleCollider>("CapsuleCollider", "Capsule Collider", "Fisica");
     registry.registerComponent<MeshCollider>("MeshCollider", "Mesh Collider", "Fisica");
     registry.registerComponent<PlaneCollider>("PlaneCollider", "Plane Collider", "Fisica");
+    registry.registerComponent<Vehicle>("Vehicle", "Vehiculo", "Fisica");
+    registry.registerComponent<WheelCollider>("WheelCollider", "Wheel Collider", "Fisica");
     registry.registerComponent<ParticleSystem>("ParticleSystem", "Particle System", "Efectos");
 }
 

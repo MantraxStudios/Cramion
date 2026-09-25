@@ -138,7 +138,7 @@ void WaterPass::create(const VulkanDevice& device, const vk::raii::DescriptorSet
     info.pColorBlendState = &blend;
     info.pDynamicState = &dynamic;
     info.layout = *layout_;
-    pipeline_ = vk::raii::Pipeline(device.handle(), nullptr, info);
+    pipeline_ = vk::raii::Pipeline(device.handle(), device.pipelineCache(), info);
 
     // --- Bajo el agua: triangulo a pantalla completa, sin profundidad ---
     {
@@ -160,7 +160,7 @@ void WaterPass::create(const VulkanDevice& device, const vk::raii::DescriptorSet
         under_info.pVertexInputState = &no_input;
         under_info.pDepthStencilState = &no_depth;
         under_info.pColorBlendState = &under_blend;
-        underwater_pipeline_ = vk::raii::Pipeline(device.handle(), nullptr, under_info);
+        underwater_pipeline_ = vk::raii::Pipeline(device.handle(), device.pipelineCache(), under_info);
     }
 
     createMeshes(device);

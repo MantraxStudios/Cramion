@@ -14,6 +14,8 @@
 
 #include "EditorApp.h"
 
+#include <CramionDM/Input.h>
+
 #include <imgui.h>
 #include <imgui_stdlib.h>
 
@@ -154,6 +156,10 @@ void EditorApp::enterPlay() {
     // Audio y scripts (despues de la fisica: los scripts la usan en Awake).
     audio_.start(world_);
     scripts_.clearErrors();
+    {
+        const std::u8string stem = scene_path_.stem().u8string();
+        scripts_.setSceneName(std::string(stem.begin(), stem.end()));
+    }
     scripts_.start(world_);
     cinematics_.reset();
     cinematics_.clearPreview();
@@ -197,9 +203,40 @@ void EditorApp::exitPlay() {
 // Scripts (con la entrada solo si no se esta escribiendo en la interfaz) y
 // el audio (oyente: el AudioListener o la camara principal).
 void EditorApp::updateScriptsAndAudio(float delta_seconds, int physics_steps) {
-    scripts_.setInput(ImGui::GetIO().WantTextInput || ui_.typing() ? nullptr : input_);
+    const bool typing = ImGui::GetIO().WantTextInput || ui_.typing();
+    scripts_.setInput(typing ? nullptr : input_);
+    // Vehiculos con "Teclado": WASD / flechas y Espacio (freno de mano).
+    if (input_ != nullptr && !typing) {
+        const auto down = [&](dm::Key a, dm::Key b) { return input_->isKeyDown(a) || input_->isKeyDown(b); };
+        physics_.driveVehiclesWithKeyboard(world_, down(dm::Key::W, dm::Key::Up), down(dm::Key::S, dm::Key::Down),
+                                           down(dm::Key::A, dm::Key::Left), down(dm::Key::D, dm::Key::Right),
+                                           input_->isKeyDown(dm::Key::Space));
+    }
     scripts_.fixedUpdate(world_, physics_settings_.fixed_step, physics_steps);
     scripts_.update(world_, delta_seconds);
+    // Scene.load(...) en Play: se carga en el mundo de Play (al parar vuelve
+    // la escena que estaba abierta). Game.quit() sale de Play.
+    if (const std::filesystem::path next = scripts_.takeSceneRequest(); !next.empty()) {
+        scripts_.stop();
+        audio_.stop();
+        ui_.reset();
+        physics_.stop();
+        particles_.clear();
+        renderer_.setParticles({});
+        std::string error;
+        if (!ecs::loadScene(world_, next, &error)) {
+            std::cerr << "[Scene.load] " << next.string() << ": " << error << "\n";
+        }
+        renderer_.invalidateHistory();
+        clearSelection();
+        const std::u8string stem = next.stem().u8string();
+        scripts_.setSceneName(std::string(stem.begin(), stem.end()));
+        physics_.start(world_);
+        audio_.start(world_);
+        scripts_.start(world_);
+        std::cout << "[Scene.load] " << dialogs::utf8(next.filename()) << std::endl;
+    }
+    if (scripts_.takeQuitRequest()) quit_play_requested_ = true;
     Vec3 position = scene_.camera().position();
     Vec3 forward = scene_.camera().forward();
     world_.forEachDepthFirst([&](ecs::Entity e) {
@@ -913,6 +950,33 @@ void EditorApp::drawPhysicsGizmos() {
     }
     for (const ecs::Entity e : selected) {
         if (e.activeInHierarchy()) drawParticleEmitterGizmo(e);
+    }
+
+    // --- Wheel Colliders: la rueda (en su posicion de reposo, o la de Jolt en
+    // Play) y el recorrido de la suspension. Con su coche o ella seleccionados.
+    for (const entt::entity h : world_.registry().view<physics::WheelCollider>()) {
+        const ecs::Entity wheel = world_.wrap(h);
+        if (!wheel.activeInHierarchy()) continue;
+        const ecs::Entity car = wheel.parent();
+        const bool chosen = isSelected(wheel.uuid()) || (car.valid() && isSelected(car.uuid()));
+        if (!chosen && !gizmo_all_colliders_) continue;
+        const physics::WheelCollider& collider = wheel.get<physics::WheelCollider>();
+        const Mat4& m = wheel.worldMatrix();
+        const Frame f = frameOf(m);
+        const Mat4& car_matrix = car.valid() ? car.worldMatrix() : m;
+        const Vec3 up = frameOf(car_matrix).axes[1];
+        const Vec3 forward = frameOf(car_matrix).axes[2];
+        const Vec3 axle = frameOf(car_matrix).axes[0];
+        const Vec3 attach = f.origin;
+        const Vec3 top = attach - up * collider.suspension_min;
+        const Vec3 rest = attach - up * collider.suspension_max;
+        const ImU32 color = fade(kColliderColor, chosen ? 1.0f : 0.7f);
+        overlayLine(top, rest, fade(color, 0.6f));
+        overlayLine(top - forward * 0.08f, top + forward * 0.08f, color);
+        overlayLine(rest - forward * 0.08f, rest + forward * 0.08f, color);
+        overlayCircle(rest, up, forward, collider.radius, color);
+        overlayCircle(rest + axle * (collider.width * 0.5f), up, forward, collider.radius, fade(color, 0.5f));
+        overlayCircle(rest - axle * (collider.width * 0.5f), up, forward, collider.radius, fade(color, 0.5f));
     }
 
     // --- Contactos y velocidades (Play) ---

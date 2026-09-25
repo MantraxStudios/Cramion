@@ -6,6 +6,9 @@
 #include <stb_image.h>
 
 #include <algorithm>
+#include <filesystem>
+#include <cstdlib>
+#include <fstream>
 #include <array>
 #include <cmath>
 #include <cstdio>
@@ -17,6 +20,27 @@
 #include <vector>
 
 namespace cramion::gfx {
+
+namespace {
+
+// %LOCALAPPDATA%/Cramion/ShaderCache/<aplicacion>.bin (una por programa: el
+// editor y cada juego exportado).
+std::filesystem::path pipelineCacheFile(const char* app_name) {
+    std::filesystem::path base;
+    if (const char* local = std::getenv("LOCALAPPDATA"); local != nullptr && *local != '\0') {
+        base = std::filesystem::path(local);
+    } else {
+        std::error_code error;
+        base = std::filesystem::temp_directory_path(error);
+    }
+    std::string name = app_name != nullptr && *app_name != '\0' ? app_name : "Cramion";
+    for (char& c : name) {
+        if (c == '<' || c == '>' || c == ':' || c == '"' || c == '/' || c == '\\' || c == '|' || c == '?' || c == '*') c = '_';
+    }
+    return base / "Cramion" / "ShaderCache" / std::filesystem::path(std::u8string(name.begin(), name.end())).concat(".bin");
+}
+
+}  // namespace
 namespace {
 
 using core::Vec3;
@@ -279,9 +303,32 @@ void VulkanRenderer::initialize(const EngineInfo& info, HWND window, std::uint32
     window_width_ = width;
     window_height_ = height;
 
+    const auto report = [&](float fraction, const char* what) {
+        if (loading_callback_) loading_callback_(fraction, what);
+    };
+    report(0.0f, "Iniciando Vulkan");
     instance_.initialize(info);
     surface_.initialize(instance_, window);
     device_.initialize(instance_, surface_);
+
+    // Shaders compilados para esta GPU (cache en disco) y cuantos pipelines
+    // hubo la ultima vez (para el porcentaje).
+    const std::filesystem::path cache_file = pipelineCacheFile(info.app_name);
+    std::filesystem::path count_file = cache_file;
+    count_file += ".count";
+    std::uint32_t expected = 0;
+    {
+        std::ifstream in(count_file);
+        in >> expected;
+    }
+    if (expected == 0) expected = 64;
+    device_.loadPipelineCache(cache_file);
+    const std::uint32_t first = device_.pipelinesCreated();
+    device_.setPipelineCallback([&](std::uint32_t created) {
+        const float done = std::min(static_cast<float>(created - first) / static_cast<float>(expected), 1.0f);
+        report(0.05f + 0.93f * done, "Compilando shaders");
+    });
+    report(0.05f, "Compilando shaders");
     swapchain_.initialize(device_, surface_, width, height);
     computeRenderExtent();
     gbuffer_.create(device_, render_extent_);
@@ -554,6 +601,13 @@ void VulkanRenderer::initialize(const EngineInfo& info, HWND window, std::uint32
     createDescriptors();
     createCommandObjects();
     createSyncObjects();
+
+    // Los pipelines de este arranque quedan en disco para el siguiente.
+    device_.setPipelineCallback(nullptr);
+    std::ofstream(count_file) << std::max<std::uint32_t>(device_.pipelinesCreated() - first, 1);
+    device_.savePipelineCache();
+    report(1.0f, "Listo");
+    loading_callback_ = nullptr;
 
     initialized_ = true;
     std::cout << "[Vulkan] Renderizador diferido listo\n";
@@ -2001,8 +2055,8 @@ void VulkanRenderer::setGraphicsSettings(const GraphicsSettings& settings) {
     taa_history_valid_ = false;
     jitter_index_ = 0;
     // Destinos de otro tamano (o el post-proceso lee otra imagen): se rehacen
-    // al final del frame, como al cambiar el tamano de la ventana.
-    if (rebuild) framebuffer_resized_ = true;
+    // al empezar el frame siguiente (applyPendingResize).
+    if (rebuild) settings_dirty_ = true;
 }
 
 void VulkanRenderer::createRenderTargets() {
@@ -2326,7 +2380,7 @@ void VulkanRenderer::updateUniforms(const scene::Scene& scene, const scene::Came
 
     // Jitter del TAA / escalado temporal: una fraccion de pixel distinta cada
     // frame (Halton 2,3), con mas fases cuanto mas se escala (como DLSS/FSR).
-    const bool temporal = upscaling_ && graphics_.upscaler != Upscaler::Fsr1 && !capturing_;
+    const bool temporal = upscaling_ && graphics_.upscaler != Upscaler::Fsr1 && !isolated();
     Vec2 jitter_pixels{};
     if (temporal && render_extent_.width > 0) {
         const float ratio = static_cast<float>(swapchain_.extent().width) / static_cast<float>(render_extent_.width);
@@ -2352,10 +2406,10 @@ void VulkanRenderer::updateUniforms(const scene::Scene& scene, const scene::Came
     // Vectores de movimiento: sin jitter, este frame y el anterior (las caras
     // de la sonda no cuentan).
     camera_data.unjittered_view_projection = unjittered;
-    camera_data.previous_view_projection = capturing_ ? unjittered : motion_view_projection_;
+    camera_data.previous_view_projection = isolated() ? unjittered : motion_view_projection_;
     camera_data.jitter = Vec4{jitter_ndc.x, jitter_ndc.y, 0.0f, 0.0f};
     camera_data.motion[0] = motion_offset_;
-    if (!capturing_) {
+    if (!isolated()) {
         jitter_ndc_ = jitter_ndc;
         taa_reproject_ = motion_view_projection_ * core::inverse(unjittered);
         motion_view_projection_ = unjittered;
@@ -2378,7 +2432,7 @@ void VulkanRenderer::updateUniforms(const scene::Scene& scene, const scene::Came
     // Con las sombras apagadas no se toca la cache: al volver a encenderlas
     // solo se redibuja lo que haya cambiado entretanto. Las caras de la sonda
     // usan los mapas tal como estan: su camara no debe decidir los huecos.
-    if (shadows_enabled_ && !capturing_) {
+    if (shadows_enabled_ && !isolated()) {
         local_shadows_.update(camera, lights, LocalShadowMaps::kSpotResolution,
                               LocalShadowMaps::kPointResolution);
     }
@@ -2423,7 +2477,7 @@ void VulkanRenderer::updateUniforms(const scene::Scene& scene, const scene::Came
     light_data.ssao_enabled = post_.ambient_occlusion ? 1 : 0;
     light_data.gi_enabled = post_.global_illumination ? 1 : 0;
     // --- Lluvia ---
-    if (!capturing_) {
+    if (!isolated()) {
         weather_time_ += frame_delta_seconds_;
     }
     GpuWeather weather{};
@@ -2461,13 +2515,13 @@ void VulkanRenderer::updateUniforms(const scene::Scene& scene, const scene::Came
     // camara de pantalla.
     light_data.environment = Vec4{environmentActive() ? 1.0f : 0.0f,
                                   post_.volumetric_light && !capturing_ ? 1.0f : 0.0f, 0.0f, 0.0f};
-    if (!capturing_) {
+    if (!isolated()) {
         cloud_time_ += frame_delta_seconds_;
     }
 
     // Sonda de reflexion: el cubo nuevo entra fundiendose con el anterior.
     // No se refleja a si misma mientras se captura.
-    if (!capturing_) {
+    if (!isolated()) {
         probe_fade_ = std::min(probe_fade_ + frame_delta_seconds_ / kProbeFadeSeconds, 1.0f);
         if (probe_enabled_ && probe_ready_ && !rayTracingActive()) {
             const std::uint32_t previous = 1 - probe_cube_;
@@ -2536,8 +2590,8 @@ void VulkanRenderer::updateUniforms(const scene::Scene& scene, const scene::Came
     // Las caras de la sonda dibujan todas desde su camara y ensucian el
     // mapa: la siguiente vista de pantalla las rehace todas.
     const bool redraw_all =
-        capturing_ || !cascades_valid_ || !sunShadows() || actor_set_changed_;
-    if (!capturing_) {
+        isolated() || !cascades_valid_ || !sunShadows() || actor_set_changed_;
+    if (!isolated()) {
         ++cascade_frame_;
     }
     for (std::uint32_t i = 0; i < scene::kShadowCascadeCount; ++i) {
@@ -2571,7 +2625,7 @@ void VulkanRenderer::updateUniforms(const scene::Scene& scene, const scene::Came
             rendered_cascade_camera_[i] = camera.position();
         }
     }
-    cascades_valid_ = !capturing_ && sunShadows();
+    cascades_valid_ = !isolated() && sunShadows();
 
     GpuShadows shadow_data{};
     std::array<float, scene::kShadowCascadeCount> splits{};
@@ -2627,7 +2681,7 @@ void VulkanRenderer::drawFrame(const scene::Scene& scene, bool present) {
     // escena) era de las imagenes que se acaban de destruir; el siguiente
     // frame ya se construye con las nuevas. Una herramienta puede evitarse el
     // frame perdido llamando antes a applyPendingResize().
-    if (applyPendingResize()) {
+    if (framebuffer_resized_ && applyPendingResize()) {
         return;
     }
     if (!swapchain_.isValid()) {
@@ -2700,6 +2754,11 @@ void VulkanRenderer::drawFrame(const scene::Scene& scene, bool present) {
     last_frame_time_ = now;
 
     // Los uniform buffers de este frame no estan en uso: la fence lo garantiza.
+    const core::Mat4 saved_view_projection = camera_view_projection_;
+    const core::Mat4 saved_previous_view_projection = previous_view_projection_;
+    const core::Mat4 saved_view = camera_view_;
+    const Vec3 saved_camera_position = camera_position_;
+    secondary_view_ = !present;
     updateUniforms(scene, scene.camera(), current_frame_);
 
     device.resetFences(*fence);
@@ -2709,6 +2768,14 @@ void VulkanRenderer::drawFrame(const scene::Scene& scene, bool present) {
     presenting_ = present;
     recordCommandBuffer(cmd, image_index, current_frame_);
     presenting_ = true;
+    if (!present) {
+        // La vista principal sigue con su camara del frame anterior.
+        camera_view_projection_ = saved_view_projection;
+        previous_view_projection_ = saved_previous_view_projection;
+        camera_view_ = saved_view;
+        camera_position_ = saved_camera_position;
+        secondary_view_ = false;
+    }
 
     if (!present) {
         vk::SubmitInfo view_submit{};
@@ -3028,7 +3095,7 @@ void VulkanRenderer::recordCommandBuffer(const vk::raii::CommandBuffer& cmd,
     gpu_profiler_.mark(cmd, frame_index, "Bloom");
     recordLightShaftPass(cmd);
     gpu_profiler_.mark(cmd, frame_index, "Rayos de luz");
-    recordAutoExposurePass(cmd);
+    if (!secondary_view_) recordAutoExposurePass(cmd);  // la exposicion es de la vista principal
     gpu_profiler_.mark(cmd, frame_index, "Auto-exposicion");
     recordCompositePass(cmd, frame_index);
     gpu_profiler_.mark(cmd, frame_index, "Composicion");
@@ -3272,7 +3339,7 @@ void VulkanRenderer::recordGeometryPass(const vk::raii::CommandBuffer& cmd,
     // Oclusion en dos fases solo para la camara de pantalla: las caras de la
     // sonda (y el culling de oclusion apagado) dibujan todo lo que esta en el
     // campo de vision, sin tocar la visibilidad guardada.
-    const bool occlusion = occlusion_culling_enabled_ && !capturing_;
+    const bool occlusion = occlusion_culling_enabled_ && !isolated();
 
     // --- Culling en GPU, fase temprana: lo visible el frame anterior ---
     gpu_culling_.recordCull(cmd, frame_index, 0, occlusion);
@@ -3553,7 +3620,7 @@ void VulkanRenderer::recordVolumetricPass(const vk::raii::CommandBuffer& cmd,
 
 void VulkanRenderer::recordSsgiPass(const vk::raii::CommandBuffer& cmd,
                                     std::uint32_t frame_index) {
-    const bool ray_traced = rayTracingActive() && !capturing_;
+    const bool ray_traced = rayTracingActive() && !isolated();
 
     // Con rayos, la imagen la escribe un compute shader (layout General).
     std::vector<vk::ImageMemoryBarrier2> barriers = {
@@ -3568,7 +3635,7 @@ void VulkanRenderer::recordSsgiPass(const vk::raii::CommandBuffer& cmd,
     // La imagen HDR guarda aun el frame anterior (ya como textura). Recien
     // creada no tiene nada: se pasa a textura para poder enlazarla y el
     // shader no la lee.
-    if (!scene_history_valid_ && !capturing_) {
+    if (!scene_history_valid_ && !isolated()) {
         barriers.push_back(colorBarrier(*scene_color_.handle(), vk::ImageLayout::eUndefined,
                                         vk::ImageLayout::eShaderReadOnlyOptimal,
                                         vk::PipelineStageFlagBits2::eTopOfPipe,
@@ -3582,7 +3649,7 @@ void VulkanRenderer::recordSsgiPass(const vk::raii::CommandBuffer& cmd,
     // la pantalla): solo la visibilidad del cielo, sin luz rebotada.
     GpuSsgiPush push{};
     push.previous_view_projection = previous_view_projection_;
-    push.params = Vec4{scene_history_valid_ && !capturing_ ? 1.0f : 0.0f, 1.0f, 0.0f, 0.0f};
+    push.params = Vec4{scene_history_valid_ && !isolated() ? 1.0f : 0.0f, 1.0f, 0.0f, 0.0f};
     // Rayos distintos cada frame, y la sonda para lo que no esta en pantalla
     // (con el mismo fundido entre cubos que la iluminacion).
     push.extra.x = static_cast<float>(frame_count_ % 64);
@@ -3666,18 +3733,18 @@ void VulkanRenderer::recordSsgiPass(const vk::raii::CommandBuffer& cmd,
     // Las caras de la sonda no usan la historia (es de la camara de pantalla).
     GiTemporalPush temporal{};
     temporal.previous_view_projection = previous_view_projection_;
-    temporal.params = Vec4{gi_filter_history_valid_ && !capturing_ ? 1.0f : 0.0f, 0.0f, 0.0f,
+    temporal.params = Vec4{gi_filter_history_valid_ && !isolated() ? 1.0f : 0.0f, 0.0f, 0.0f,
                            0.0f};
     dispatch(gi_temporal_pass_, gi_temporal_sets_[frame_index], temporal);
 
-    const std::uint32_t chain = (frame_index * 2 + (capturing_ ? 1 : 0)) * kGiAtrousIterations;
+    const std::uint32_t chain = (frame_index * 2 + (isolated() ? 1 : 0)) * kGiAtrousIterations;
     for (std::uint32_t iteration = 0; iteration < kGiAtrousIterations; ++iteration) {
         GiAtrousPush atrous{};
         atrous.step = 1 << iteration;
         dispatch(gi_atrous_pass_, gi_atrous_sets_[chain + iteration], atrous);
     }
 
-    if (!capturing_) {
+    if (!isolated()) {
         // Momentos de este frame -> los del siguiente (el color ya quedo en
         // gi_history_ en la primera pasada espacial).
         vk::ImageCopy region{};
@@ -3692,7 +3759,7 @@ void VulkanRenderer::recordSsgiPass(const vk::raii::CommandBuffer& cmd,
         gi_filter_history_valid_ = true;
     }
 
-    if (capturing_) {
+    if (isolated()) {
         return;
     }
 
@@ -3706,7 +3773,7 @@ void VulkanRenderer::recordSsrPass(const vk::raii::CommandBuffer& cmd,
                                    std::uint32_t frame_index) {
     // Con los reflejos apagados tampoco se trazan: el compute no corre y la
     // imagen se deja vacia como con el SSR.
-    const bool ray_traced = rayTracingActive() && !capturing_ && post_.reflections;
+    const bool ray_traced = rayTracingActive() && !isolated() && post_.reflections;
     vk::ImageMemoryBarrier2 raw_to_sampled = writtenToSampled(*ssr_raw_.handle());
 
     if (ray_traced) {
@@ -3737,7 +3804,7 @@ void VulkanRenderer::recordSsrPass(const vk::raii::CommandBuffer& cmd,
         // Sin frame anterior o con el SSR apagado, el shader no refleja nada.
         // z: numero de frame, para que el ruido del primer paso cambie cada
         // frame.
-        push.params = Vec4{post_.reflections && ssr_history_ready_ && !capturing_ ? 1.0f : 0.0f,
+        push.params = Vec4{post_.reflections && ssr_history_ready_ && !isolated() ? 1.0f : 0.0f,
                            1.0f, static_cast<float>(frame_count_ % 64), 0.0f};
         drawFullscreen(cmd, ssr_pass_, &ssr_sets_[frame_index], ssr_raw_, &push);
     }
@@ -3760,13 +3827,14 @@ void VulkanRenderer::recordSsrPass(const vk::raii::CommandBuffer& cmd,
     // Las caras de la sonda no usan la historia (es de la camara de pantalla).
     GpuSsgiPush resolve{};
     resolve.previous_view_projection = previous_view_projection_;
-    resolve.params = Vec4{ssr_filter_history_valid_ && post_.reflections && !capturing_ ? 1.0f : 0.0f,
+    resolve.params = Vec4{ssr_filter_history_valid_ && post_.reflections && !isolated() ? 1.0f : 0.0f,
                           kSsrHistoryWeight, 0.0f, 0.0f};
     drawFullscreen(cmd, ssr_resolve_pass_, &ssr_resolve_sets_[frame_index], ssr_image_,
                    &resolve);
 }
 
 void VulkanRenderer::recordFilterHistoryCopies(const vk::raii::CommandBuffer& cmd) {
+    if (isolated()) return;  // la segunda vista no escribe las historias
     // La iluminacion ya leyo los reflejos y la luz rebotada filtrados: se
     // copian a sus historias. Todas quedan como textura al terminar.
     constexpr vk::ImageLayout kRead = vk::ImageLayout::eShaderReadOnlyOptimal;
@@ -4636,9 +4704,12 @@ void VulkanRenderer::recordUpscalePass(const vk::raii::CommandBuffer& cmd) {
                                 1.0f / static_cast<float>(render.width), 1.0f / static_cast<float>(render.height)};
         push.output_size = Vec4{static_cast<float>(output.width), static_cast<float>(output.height),
                                 1.0f / static_cast<float>(output.width), 1.0f / static_cast<float>(output.height)};
-        push.jitter = Vec4{jitter_ndc_.x * 0.5f, jitter_ndc_.y * 0.5f, taa_history_valid_ ? 1.0f : 0.0f, 0.0f};
+        push.jitter = isolated() ? Vec4{} : Vec4{jitter_ndc_.x * 0.5f, jitter_ndc_.y * 0.5f, taa_history_valid_ ? 1.0f : 0.0f, 0.0f};
         push.reproject = taa_reproject_;
         drawFullscreen(cmd, taa_pass_, &taa_sets_[0], upscale_target_, &push);
+        if (isolated()) {
+            pipelineBarrier(cmd, writtenToSampled(*upscale_target_.handle()));
+        } else {
 
         // Historia del frame siguiente (antes de la nitidez).
         pipelineBarrier(cmd, {colorBarrier(*upscale_target_.handle(), vk::ImageLayout::eColorAttachmentOptimal,
@@ -4668,6 +4739,7 @@ void VulkanRenderer::recordUpscalePass(const vk::raii::CommandBuffer& cmd) {
                                            vk::PipelineStageFlagBits2::eFragmentShader,
                                            vk::AccessFlagBits2::eShaderSampledRead)});
         taa_history_valid_ = true;
+        }
     }
 
     // Nitidez (RCAS): 0 = sin tocar, 1 = la maxima de FSR.
@@ -4994,9 +5066,10 @@ void VulkanRenderer::recordPostProcessPass(const vk::raii::CommandBuffer& cmd,
 }
 
 bool VulkanRenderer::applyPendingResize() {
-    if (!initialized_ || (!framebuffer_resized_ && swapchain_.isValid())) {
+    if (!initialized_ || (!framebuffer_resized_ && !settings_dirty_ && swapchain_.isValid())) {
         return false;
     }
+    settings_dirty_ = false;
     recreateSwapchain();
     return true;
 }

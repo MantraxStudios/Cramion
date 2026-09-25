@@ -121,7 +121,7 @@ void FullscreenPass::create(const VulkanDevice& device, const FullscreenPassDesc
     pipeline_info.pDynamicState = &dynamic_state;
     pipeline_info.layout = *pipeline_layout_;
 
-    pipeline_ = vk::raii::Pipeline(device.handle(), nullptr, pipeline_info);
+    pipeline_ = vk::raii::Pipeline(device.handle(), device.pipelineCache(), pipeline_info);
 }
 
 void FullscreenPass::destroy() {

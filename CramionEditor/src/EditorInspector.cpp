@@ -1,6 +1,8 @@
 // Inspector (como el de Unity): cabecera con activo y nombre, un bloque por
 // componente dibujado con su reflect(), "Add Component" con busqueda por
-// categorias y edicion multiple del Transform.
+// categorias y edicion multiple: con varios objetos solo salen los
+// componentes que tienen todos, los valores distintos se ven con "—" y lo que
+// se edita se aplica a todos.
 
 #include "EditorApp.h"
 
@@ -82,18 +84,25 @@ void EditorApp::drawInspector() {
         commit();
     }
     ImGui::SameLine();
-    std::string name = entity.name();
+    const bool multi = selected.size() > 1;
+    const bool names_differ = multi && std::any_of(selected.begin(), selected.end(),
+                                                   [&](const ecs::Entity& e) { return e.name() != entity.name(); });
+    // Nombres distintos: "—" y lo que se escriba se pone a todos.
+    std::string name = names_differ ? std::string() : entity.name();
     ImGui::SetNextItemWidth(-1.0f);
-    if (ImGui::InputText("##name", &name, ImGuiInputTextFlags_EnterReturnsTrue) ||
-        (ImGui::IsItemDeactivatedAfterEdit() && name != entity.name())) {
+    if (ImGui::InputTextWithHint("##name", names_differ ? "\xe2\x80\x94" : "", &name, ImGuiInputTextFlags_EnterReturnsTrue) ||
+        (ImGui::IsItemDeactivatedAfterEdit() && !name.empty() && name != entity.name())) {
         if (!name.empty()) {
-            entity.setName(name);
+            if (multi) {
+                for (ecs::Entity e : selected) e.setName(name);
+            } else {
+                entity.setName(name);
+            }
             commit();
         }
     }
-    if (selected.size() > 1) {
-        ImGui::TextDisabled("%zu objetos seleccionados (se edita el Transform de todos)",
-                            selected.size());
+    if (multi) {
+        ImGui::TextDisabled("%zu objetos seleccionados (componentes en comun)", selected.size());
     }
     // Tag y capa, uno al lado del otro (como Unity).
     if (ecs::EntityInfo* info = entity.tryGet<ecs::EntityInfo>()) {
@@ -152,6 +161,11 @@ void EditorApp::drawInspector() {
         if (!type.has(world_, entity.handle())) {
             continue;
         }
+        // Varios objetos: solo lo que tienen todos (como Unity).
+        if (multi && !std::all_of(selected.begin(), selected.end(),
+                                  [&](const ecs::Entity& e) { return type.has(world_, e.handle()); })) {
+            continue;
+        }
         ImGui::PushID(type.name.c_str());
         // Hueco para el icono del componente delante del nombre.
         const std::string header = "      " + type.label;
@@ -173,8 +187,10 @@ void EditorApp::drawInspector() {
                 to_remove = &type;
             }
             if (ImGui::MenuItem("Restablecer valores")) {
-                type.remove(world_, entity.handle());
-                type.add(world_, entity.handle());
+                for (ecs::Entity e : multi ? selected : std::vector<ecs::Entity>{entity}) {
+                    type.remove(world_, e.handle());
+                    type.add(world_, e.handle());
+                }
                 commit();
             }
             ImGui::EndPopup();
@@ -192,8 +208,34 @@ void EditorApp::drawInspector() {
                 old_euler = entity.localEulerDegrees();
                 old_scale = entity.localScale();
             }
+            // Valores distintos entre los seleccionados (se muestran con "—").
+            MixedFields mixed;
+            if (multi) {
+                std::vector<FieldValues> values;
+                values.reserve(selected.size());
+                values.emplace_back();
+                CollectFieldsVisitor collect_active(values.back());
+                type.reflect(world_, entity.handle(), collect_active);
+                for (ecs::Entity other : selected) {
+                    if (other == entity) continue;
+                    values.emplace_back();
+                    CollectFieldsVisitor collect(values.back());
+                    type.reflect(world_, other.handle(), collect);
+                }
+                mixed = mixedFields(values);
+            }
+            visitor.beginComponent(multi ? &mixed : nullptr);
             if (type.reflect(world_, entity.handle(), visitor)) {
                 dirty_ = true;
+                // El campo editado, a los demas (solo ese campo).
+                if (multi && !is_transform && visitor.lastChange()) {
+                    const auto& [path, value] = *visitor.lastChange();
+                    for (ecs::Entity other : selected) {
+                        if (other == entity) continue;
+                        ApplyFieldVisitor apply(path, value);
+                        type.reflect(world_, other.handle(), apply);
+                    }
+                }
                 if (is_transform && selected.size() > 1) {
                     const Vec3 dp = entity.localPosition() - old_position;
                     const Vec3 de = entity.localEulerDegrees() - old_euler;
@@ -306,7 +348,9 @@ void EditorApp::drawInspector() {
         ImGui::PopID();
     }
     if (to_remove != nullptr) {
-        to_remove->remove(world_, entity.handle());
+        for (ecs::Entity e : multi ? selected : std::vector<ecs::Entity>{entity}) {
+            if (to_remove->has(world_, e.handle())) to_remove->remove(world_, e.handle());
+        }
         commit();
     }
     if (visitor.editFinished()) {
@@ -341,7 +385,13 @@ void EditorApp::drawAddComponent(ecs::Entity entity) {
     std::map<std::string, std::vector<const ecs::ComponentType*>> by_category;
     const std::string needle = lower(search);
     for (const ecs::ComponentType& type : ecs::ComponentRegistry::instance().types()) {
-        if (!type.addable || type.has(world_, entity.handle())) continue;
+        // Con varios objetos: lo que no tienen todos.
+        const std::vector<ecs::Entity> targets = selectedEntities();
+        const bool all_have = targets.empty()
+                                  ? type.has(world_, entity.handle())
+                                  : std::all_of(targets.begin(), targets.end(),
+                                                [&](const ecs::Entity& e) { return type.has(world_, e.handle()); });
+        if (!type.addable || all_have) continue;
         if (!needle.empty() && lower(type.label).find(needle) == std::string::npos &&
             lower(type.name).find(needle) == std::string::npos) {
             continue;
@@ -356,7 +406,7 @@ void EditorApp::drawAddComponent(ecs::Entity entity) {
         for (const ecs::ComponentType* type : types) {
             if (ImGui::Selectable(type->label.c_str())) {
                 for (ecs::Entity e : selectedEntities()) {
-                    type->add(world_, e.handle());
+                    if (!type->has(world_, e.handle())) type->add(world_, e.handle());
                 }
                 commit();
                 ImGui::CloseCurrentPopup();

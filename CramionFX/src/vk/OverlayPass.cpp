@@ -137,7 +137,7 @@ vk::raii::Pipeline OverlayPass::createPipeline(const VulkanDevice& device, vk::F
     info.pColorBlendState = &color_blend;
     info.pDynamicState = &dynamic_state;
     info.layout = *layout_;
-    return vk::raii::Pipeline(device.handle(), nullptr, info);
+    return vk::raii::Pipeline(device.handle(), device.pipelineCache(), info);
 }
 
 bool OverlayPass::prepare(const VulkanDevice& device, std::uint32_t frame,

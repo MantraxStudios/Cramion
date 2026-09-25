@@ -130,6 +130,38 @@ struct PlaneCollider {
 
 // Registra los componentes de fisica y de particulas en ComponentRegistry
 // (idempotente).
+// Vehiculo (como el Wheel Collider de Unity, con el vehiculo de Jolt): en el
+// objeto con Rigidbody dinamico; sus ruedas son los WheelCollider de los
+// hijos. Motor, cambio automatico y diferenciales entre las ruedas motrices.
+struct Vehicle {
+    float engine_torque = 500.0f;  // Nm
+    float min_rpm = 1000.0f;
+    float max_rpm = 6000.0f;
+    bool automatic = true;         // cambio automatico
+    float max_pitch_roll = 60.0f;  // grados antes de dejar de volcar (180 = libre)
+    bool keyboard = true;          // W/S acelerar/atras, A/D girar, Espacio freno de mano
+    void reflect(ecs::PropertyVisitor& v);
+};
+
+// Una rueda (su posicion es la del objeto): suspension por raycast, direccion,
+// traccion y frenos. `visual`: el objeto que se mueve y gira con la rueda (su
+// eje de giro es su X local).
+struct WheelCollider {
+    float radius = 0.38f;
+    float width = 0.25f;
+    float suspension_min = 0.05f;  // m desde el anclaje (subida maxima)
+    float suspension_max = 0.35f;  // m (bajada maxima)
+    float spring_frequency = 1.6f;  // Hz (mas = mas dura)
+    float damping = 0.5f;           // 0..1
+    float max_steer_angle = 0.0f;   // grados (0 = no gira)
+    bool drive = true;              // recibe el par del motor
+    float max_brake_torque = 1500.0f;
+    float max_handbrake_torque = 0.0f;
+    float grip = 1.0f;              // friccion del neumatico
+    Uuid visual{};
+    void reflect(ecs::PropertyVisitor& v);
+};
+
 void registerPhysicsComponents();
 
 // Collider por defecto para una primitiva integrada (cubo -> caja, esfera ->

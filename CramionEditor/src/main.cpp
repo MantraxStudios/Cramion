@@ -9,6 +9,7 @@
 #include "EditorApp.h"
 #include "EditorLog.h"
 #include "ImGuiLayer.h"
+#include "LoadingScreen.h"
 
 #include <CramionDM/CramionDM.h>
 #include <CramionFX/CramionFX.h>
@@ -28,6 +29,7 @@ extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hwnd, UINT msg
 int main(int argc, char** argv) {
     using namespace cramion;
     editor::EditorLog::instance().install();
+    editor::installCrashHandler("CramionEditor");
 
     try {
         // Nitidez en pantallas con escalado (antes de crear la ventana).
@@ -58,7 +60,15 @@ int main(int argc, char** argv) {
             .enable_validation = true,
 #endif
         };
-        renderer.initialize(engine_info, window.handle(), window.width(), window.height());
+        {
+            // Logo y % de shaders compilados mientras arranca Vulkan.
+            wchar_t exe[MAX_PATH] = {};
+            GetModuleFileNameW(nullptr, exe, MAX_PATH);
+            editor::LoadingScreen loading(window.handle(),
+                                          std::filesystem::path(exe).parent_path() / "editor_icons" / "logo.png");
+            renderer.setLoadingCallback([&](float fraction, const char* what) { loading.show(fraction, what); });
+            renderer.initialize(engine_info, window.handle(), window.width(), window.height());
+        }
 
         editor::ImGuiLayer imgui;
         imgui.initialize(window.handle(), renderer);

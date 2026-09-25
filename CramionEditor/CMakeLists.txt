@@ -52,7 +52,7 @@ file(GLOB CRAMION_EDITOR_SOURCES CONFIGURE_DEPENDS
 )
 
 add_executable(CramionEditor ${CRAMION_EDITOR_SOURCES} "${CRAMION_ICON_RC}")
-target_link_libraries(CramionEditor PRIVATE Cramion::Core cramion_imgui comdlg32 shell32 ole32)
+target_link_libraries(CramionEditor PRIVATE Cramion::Core cramion_imgui comdlg32 shell32 ole32 gdiplus dbghelp)
 # Las escenas de demostracion (src/DemoScenes.h) las comparte con cramion.exe.
 target_include_directories(CramionEditor PRIVATE "${CMAKE_SOURCE_DIR}/src")
 set_target_properties(CramionEditor PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
@@ -84,6 +84,12 @@ target_link_libraries(CramionPreviewTests PRIVATE Cramion::Core)
 add_executable(CramionCompletionTests "${CMAKE_CURRENT_SOURCE_DIR}/tests/CompletionTests.cpp"
                                       "${CMAKE_CURRENT_SOURCE_DIR}/src/LuaCompletion.cpp")
 
+# Prueba de la edicion multiple del Inspector (consola).
+add_executable(CramionMultiEditTests "${CMAKE_CURRENT_SOURCE_DIR}/tests/MultiEditTests.cpp"
+                                     "${CMAKE_CURRENT_SOURCE_DIR}/src/PropertyInspector.cpp")
+target_include_directories(CramionMultiEditTests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+target_link_libraries(CramionMultiEditTests PRIVATE Cramion::Core cramion_imgui)
+
 # --- CramionPlayer: el juego exportado (Archivo > Exportar juego) ---
 # Banner del motor al abrir, la escena inicial y todos los sistemas del
 # juego (sin el editor). Sin consola.
@@ -91,9 +97,10 @@ add_executable(CramionPlayer
     "${CMAKE_CURRENT_SOURCE_DIR}/player/PlayerMain.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/ImGuiLayer.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/UiRenderer.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/LoadingScreen.cpp"
     "${CRAMION_ICON_RC}")
 target_include_directories(CramionPlayer PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
-target_link_libraries(CramionPlayer PRIVATE Cramion::Core cramion_imgui shell32 ole32)
+target_link_libraries(CramionPlayer PRIVATE Cramion::Core cramion_imgui shell32 ole32 gdiplus dbghelp)
 set_target_properties(CramionPlayer PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}" WIN32_EXECUTABLE TRUE)
 target_link_options(CramionPlayer PRIVATE "-Xlinker" "/entry:mainCRTStartup")
 target_compile_definitions(CramionPlayer PRIVATE

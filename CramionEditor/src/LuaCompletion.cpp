@@ -39,6 +39,8 @@ const List& globals() {
         LuaCompletion{"Physics", "Physics", "consultas de fisica (raycast)", 1},
         LuaCompletion{"Audio", "Audio", "sonidos sueltos (playOneShot)", 1},
         LuaCompletion{"Debug", "Debug", "mensajes en la Consola", 1},
+        LuaCompletion{"Prefs", "Prefs", "datos guardados (como PlayerPrefs)", 1},
+        LuaCompletion{"Game", "Game", "el juego (quit)", 1},
         LuaCompletion{"Mathf", "Mathf", "lerp, clamp, smoothstep...", 1},
         LuaCompletion{"math", "math", "biblioteca math de Lua", 1},
         LuaCompletion{"string", "string", "biblioteca string de Lua", 1},
@@ -69,7 +71,15 @@ const std::unordered_map<std::string, List>& tables() {
           fn("findAllWithTag", "\"tag\"", "lista de objetos con ese tag"),
           fn("create", "\"nombre\", posicion", "objeto vacio nuevo"),
           fn("instantiate", "entity, posicion", "copia de un objeto (con hijos y componentes)"),
-          fn("destroy", "entity", "lo destruye al final del frame")}},
+          fn("destroy", "entity", "lo destruye al final del frame"),
+          fn("load", "\"Nivel2\"", "cambia de escena al terminar el frame (nombre o ruta del .crscene)"),
+          fn("name", "", "nombre de la escena actual")}},
+        {"Prefs",
+         {fn("setInt", "\"clave\", 3", "guarda un entero"), fn("getInt", "\"clave\", 0", "lee un entero (o el valor por defecto)"),
+          fn("setFloat", "\"clave\", 0.5", "guarda un numero"), fn("getFloat", "\"clave\", 0.0", "lee un numero"),
+          fn("setString", "\"clave\", \"texto\"", "guarda un texto"), fn("getString", "\"clave\", \"\"", "lee un texto"),
+          fn("hasKey", "\"clave\"", "existe?"), fn("deleteKey", "\"clave\"", "la borra"), fn("deleteAll", "", "borra todo")}},
+        {"Game", {fn("quit", "", "cierra el juego (en el editor, sale de Play)")}},
         {"Time",
          {prop("deltaTime", "segundos desde el frame anterior"), prop("time", "segundos desde el Play"),
           prop("frameCount", "frames desde el Play"), prop("fixedDeltaTime", "paso fijo de la fisica")}},
@@ -107,7 +117,8 @@ const List& entityProperties() {
         prop("position", "Vec3 en el mundo"), prop("localPosition", "Vec3 respecto al padre"),
         prop("rotation", "Vec3 en grados"), prop("scale", "Vec3"), prop("forward", "Vec3 hacia delante"),
         prop("right", "Vec3 a la derecha"), prop("up", "Vec3 hacia arriba"), prop("parent", "el padre (o nil)"),
-        prop("velocity", "Vec3 de su Rigidbody")};
+        prop("velocity", "Vec3 de su Rigidbody"), prop("angularVelocity", "Vec3 de giro (rad/s)"), prop("speed", "km/h de su Vehicle"),
+        prop("rpm", "rpm del motor del Vehicle"), prop("gear", "marcha del Vehicle")};
     return list;
 }
 const List& entityMethods() {
@@ -117,6 +128,7 @@ const List& entityMethods() {
         fn("distanceTo", "otra", "distancia a otro objeto"), fn("destroy", "", "lo destruye"),
         fn("addForce", "Vec3, \"impulse\"", "fuerza (force, impulse, acceleration, velocity)"),
         fn("addImpulse", "Vec3", "impulso"), fn("addTorque", "Vec3", "par de giro"),
+        fn("setVehicleInput", "acelerador, direccion, freno, freno de mano", "conduce su Vehicle"),
         fn("playSound", "", "su Audio Source"), fn("stopSound", "", "para su sonido"),
         fn("isPlayingSound", "", "suena?"), fn("playAnimation", "\"Correr\", true", "clip del Animator"),
         fn("setAnimatorFloat", "\"velocidad\", 1.0", "parametro del Animator Controller"),

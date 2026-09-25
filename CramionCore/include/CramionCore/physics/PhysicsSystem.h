@@ -216,6 +216,21 @@ public:
 
     // --- Rigidbody (dinamicos; en los demas no hacen nada) ---
     core::Vec3 linearVelocity(ecs::Entity entity) const;
+
+    // --- Vehiculos (componentes Vehicle + WheelCollider) ---
+    // Acelerador -1..1 (negativo = marcha atras), direccion -1..1 (derecha +),
+    // freno y freno de mano 0..1. Hasta que se vuelva a llamar.
+    void setVehicleInput(ecs::Entity vehicle, float throttle, float steering, float brake, float handbrake);
+    // Los que tienen "Conducir con teclado" (W/S, A/D, Espacio).
+    void driveVehiclesWithKeyboard(ecs::World& world, bool forward, bool back, bool left, bool right, bool handbrake);
+    struct VehicleState {
+        bool valid = false;
+        float speed_kmh = 0.0f;
+        float rpm = 0.0f;
+        int gear = 0;
+        int wheels_on_ground = 0;
+    };
+    VehicleState vehicleState(ecs::Entity vehicle) const;
     void setLinearVelocity(ecs::Entity entity, const core::Vec3& velocity);
     core::Vec3 angularVelocity(ecs::Entity entity) const;
     void setAngularVelocity(ecs::Entity entity, const core::Vec3& velocity);

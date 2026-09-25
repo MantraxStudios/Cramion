@@ -3,6 +3,7 @@
 
 #include "CramionFX/vk/VulkanCommon.h"
 
+#include <filesystem>
 #include <functional>
 #include <string>
 #include <vector>
@@ -66,6 +67,15 @@ public:
     // shaders). Opcional: sin el, la GI y los reflejos son de pantalla.
     bool rayTracingSupported() const { return ray_tracing_supported_; }
 
+    // Cache de pipelines en disco: el primer arranque compila los shaders para
+    // esta GPU y los siguientes los leen ya compilados. Todos los pipelines se
+    // crean con pipelineCache(), que ademas los cuenta (progreso de la carga).
+    void loadPipelineCache(const std::filesystem::path& file);
+    void savePipelineCache() const;
+    const vk::raii::PipelineCache& pipelineCache() const;
+    std::uint32_t pipelinesCreated() const { return pipelines_created_; }
+    void setPipelineCallback(std::function<void(std::uint32_t)> callback) { pipeline_callback_ = std::move(callback); }
+
 private:
     void pickPhysicalDevice(const VulkanInstance& instance, const VulkanSurface& surface);
     void createLogicalDevice();
@@ -98,6 +108,11 @@ private:
     bool ray_tracing_supported_ = false;
     std::string device_name_;
     std::uint32_t api_version_ = 0;
+
+    vk::raii::PipelineCache pipeline_cache_{nullptr};
+    std::filesystem::path pipeline_cache_file_;
+    mutable std::uint32_t pipelines_created_ = 0;
+    std::function<void(std::uint32_t)> pipeline_callback_;
 };
 
 }  // namespace cramion::gfx

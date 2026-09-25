@@ -459,7 +459,7 @@ void RayTracing::build(const VulkanDevice& device,
         pipeline_info.stage.module = *module;
         pipeline_info.stage.pName = "main";
         pipeline_info.layout = *r.pipeline_layout;
-        r.pipelines[i] = vk::raii::Pipeline(device.handle(), nullptr, pipeline_info);
+        r.pipelines[i] = vk::raii::Pipeline(device.handle(), device.pipelineCache(), pipeline_info);
     }
 
     std::cout << "[Vulkan] Trazado de rayos listo: " << indices.size() / 3 << " triangulos, "

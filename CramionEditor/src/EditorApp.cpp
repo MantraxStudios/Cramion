@@ -59,6 +59,7 @@ EditorApp::EditorApp(dm::Window& window, gfx::VulkanRenderer& renderer, scene::S
 }
 
 EditorApp::~EditorApp() {
+    cancelExport();
     // Las importaciones en curso terminan antes de destruir nada.
     for (ImportJob& job : imports_) {
         if (job.result.valid()) {
@@ -87,6 +88,7 @@ bool EditorApp::openProject(const std::filesystem::path& path) {
     asset_manager_->setCacheFolder(project_.libraryFolder() / "Cache");
     model_previews_.start(project_.libraryFolder() / "Thumbnails");
     scripts_.setAssetsRoot(project_.assetsFolder());
+    scripts_.setPrefsFile(project_.libraryFolder() / "Prefs.txt");  // Prefs en Play
     scripts_.setPhysics(&physics_);
     scripts_.setAudio(&audio_);
     audio_.setAssetsRoot(project_.assetsFolder());
@@ -517,6 +519,38 @@ ecs::Entity EditorApp::createEntity(int kind, ecs::Entity parent) {
             created.setName("Particulas");
             created.add<physics::ParticleSystem>();
             break;
+        case 17: {
+            // Coche como el WheelCollider de Unity: cuerpo con Rigidbody +
+            // Vehicle y 4 hijos WheelCollider (el frente es -Z).
+            created = ecs::createEmpty(world_, parent);
+            created.setName("Vehiculo");
+            created.add<physics::BoxCollider>().size = Vec3{1.8f, 0.6f, 4.2f};
+            created.add<physics::Rigidbody>().mass = 1200.0f;
+            created.add<physics::Vehicle>();
+            ecs::Entity body = ecs::createPrimitive(world_, assets::builtin::kCube, "Carroceria", created);
+            body.setLocalScale(Vec3{1.8f, 0.6f, 4.2f});
+            ecs::Entity cabin = ecs::createPrimitive(world_, assets::builtin::kCube, "Cabina", created);
+            cabin.setLocalPosition(Vec3{0.0f, 0.55f, 0.3f});
+            cabin.setLocalScale(Vec3{1.6f, 0.5f, 2.0f});
+            static constexpr const char* kWheelNames[] = {"Rueda DI", "Rueda DD", "Rueda TI", "Rueda TD"};
+            for (int i = 0; i < 4; ++i) {
+                const bool front = i < 2;
+                ecs::Entity wheel = ecs::createEmpty(world_, created);
+                wheel.setName(kWheelNames[i]);
+                wheel.setLocalPosition(Vec3{(i % 2 == 0) ? -0.95f : 0.95f, -0.25f, front ? -1.35f : 1.35f});
+                physics::WheelCollider& collider = wheel.add<physics::WheelCollider>();
+                collider.max_steer_angle = front ? 35.0f : 0.0f;
+                collider.max_handbrake_torque = front ? 0.0f : 4000.0f;
+                // Visual: el eje de la rueda es X; el cilindro (eje Y) va girado dentro.
+                ecs::Entity visual = ecs::createEmpty(world_, wheel);
+                visual.setName("Visual");
+                ecs::Entity tire = ecs::createPrimitive(world_, assets::builtin::kCylinder, "Neumatico", visual);
+                tire.setLocalEulerDegrees(Vec3{0.0f, 0.0f, 90.0f});
+                tire.setLocalScale(Vec3{collider.radius * 2.0f, collider.width * 0.5f, collider.radius * 2.0f});
+                collider.visual = visual.uuid();
+            }
+            break;
+        }
         default: created = ecs::createEmpty(world_, parent); break;
     }
     // Objetos 3D con su collider, como Unity.
@@ -698,6 +732,10 @@ void EditorApp::drawUi(float delta_seconds) {
     {
         const CpuClock::time_point physics_start = CpuClock::now();
         updatePhysics(delta_seconds);
+        if (quit_play_requested_) {  // Game.quit() en Play
+            quit_play_requested_ = false;
+            exitPlay();
+        }
         // Camaras de cine despues de la fisica (pueden seguir a un cuerpo).
         updateCinematics(delta_seconds);
         addCpuSample(kCpuPhysics, millisecondsSince(physics_start));
@@ -729,6 +767,7 @@ void EditorApp::drawUi(float delta_seconds) {
     if (show_render_settings_) drawRenderSettings();
     if (show_animator_) drawAnimatorEditor();
     if (show_script_editor_) drawScriptEditor();
+    drawExportProgress();
     if (show_physics_) drawPhysicsWindow();
     if (show_cinematic_) drawCinematicWindow();
     drawModals();
@@ -775,10 +814,10 @@ void EditorApp::syncWorld(float delta_seconds, bool secondary) {
     const bool game = view == kGameSlot;
     renderer_.setViewSlot(view);
     renderer_.setEditorHelpersEnabled(!game);
-    if (view != last_render_view_ || (game && cinematics_.cutThisFrame())) {
+    if (!secondary && (view != last_render_view_ || (game && cinematics_.cutThisFrame()))) {
         renderer_.invalidateHistory();
     }
-    last_render_view_ = view;
+    if (!secondary) last_render_view_ = view;
     if (game) saved_camera_ = scene_.camera();  // afterRender la devuelve
 
     const CpuClock::time_point t = CpuClock::now();
@@ -915,6 +954,7 @@ void EditorApp::drawMenuBar() {
             item("Cubo con Rigidbody", 13);
             item("Esfera con Rigidbody", 14);
             item("Zona trigger", 15);
+            item("Vehículo (4 ruedas)", 17);
             ImGui::EndMenu();
         }
         if (ImGui::BeginMenu("Efectos")) {

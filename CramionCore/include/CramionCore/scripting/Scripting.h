@@ -21,8 +21,9 @@
 //
 // API: Vec3, Entity (posicion, giro, escala, translate, rotate, lookAt,
 // fisica, sonido, animacion, destroy...), Scene (find, findWithTag,
-// instantiate, create), Input (getKey, getKeyDown, getAxis, raton), Time,
-// Physics.raycast, Audio.playOneShot, Debug.log, Mathf.
+// instantiate, create, load), Input (getKey, getKeyDown, getAxis, raton),
+// Time, Physics.raycast, Audio.playOneShot, Prefs (datos guardados, como el
+// PlayerPrefs de Unity), Game.quit, Debug.log, Mathf.
 
 #include "CramionCore/ecs/Reflection.h"
 #include "CramionCore/ecs/World.h"
@@ -113,6 +114,19 @@ public:
 
     // Ejecuta codigo suelto (consola). Devuelve false si hay error.
     bool run(const std::string& code, std::string* output = nullptr);
+
+    // Scene.load("Nivel2"): la escena pedida (ruta del .crscene) o vacio. El
+    // programa (editor en Play o juego) la carga al terminar el frame:
+    // parar los sistemas, cargar, volver a empezar. takeSceneRequest la
+    // devuelve una vez.
+    std::filesystem::path takeSceneRequest();
+    // Game.quit(): el juego quiere cerrarse (en el editor, salir de Play).
+    bool takeQuitRequest();
+    // Nombre de la escena actual (Scene.name en Lua).
+    void setSceneName(const std::string& name);
+
+    // Prefs: se conservan al cambiar de escena y, con archivo, entre partidas.
+    void setPrefsFile(const std::filesystem::path& file);
 
 private:
     struct Impl;

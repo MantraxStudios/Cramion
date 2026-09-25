@@ -136,6 +136,7 @@ void EditorApp::drawHierarchy() {
         item("Charco", 11);
         item("Humedad", 12);
         ImGui::Separator();
+        item("Vehículo (4 ruedas)", 17);
         if (ImGui::MenuItem("Terreno")) createTerrainEntity();
         if (ImGui::BeginMenu("Agua")) {
             if (ImGui::MenuItem("Océano / playa")) createWaterEntity(0);
@@ -243,6 +244,7 @@ void EditorApp::drawHierarchy() {
         item("Charco", 11);
         item("Humedad", 12);
         ImGui::Separator();
+        item("Vehículo (4 ruedas)", 17);
         if (ImGui::MenuItem("Terreno")) createTerrainEntity();
         if (ImGui::BeginMenu("Agua")) {
             if (ImGui::MenuItem("Océano / playa")) createWaterEntity(0);
@@ -393,6 +395,8 @@ void EditorApp::drawHierarchyRow(const HierarchyRow& row, bool scroll_to) {
                 } else {
                     toggleSelection(uuid);
                 }
+            } else if (selected && selection_.size() > 1) {
+                pending_select_only_ = uuid;  // al soltar, si no se arrastra
             } else {
                 selectOnly(uuid);
             }
@@ -411,6 +415,14 @@ void EditorApp::drawHierarchyRow(const HierarchyRow& row, bool scroll_to) {
                         selection_.size() > 1 ? (" (+" + std::to_string(selection_.size() - 1) + ")").c_str()
                                               : "");
             ImGui::EndDragDropSource();
+        }
+        if (pending_select_only_ == uuid) {
+            if (ImGui::IsDragDropActive()) {
+                pending_select_only_ = {};  // se arrastra toda la seleccion
+            } else if (ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
+                if (ImGui::IsItemHovered()) selectOnly(uuid);
+                pending_select_only_ = {};
+            }
         }
         // Soltar: antes / dentro / despues de esta fila (linea de insercion).
         if (ImGui::BeginDragDropTarget()) {
@@ -491,6 +503,7 @@ void EditorApp::drawHierarchyRow(const HierarchyRow& row, bool scroll_to) {
         item("Charco", 11);
         item("Humedad", 12);
         ImGui::Separator();
+        item("Vehículo (4 ruedas)", 17);
         if (ImGui::MenuItem("Terreno")) createTerrainEntity();
         if (ImGui::BeginMenu("Agua")) {
             if (ImGui::MenuItem("Océano / playa")) createWaterEntity(0);
