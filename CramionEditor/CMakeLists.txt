@@ -90,6 +90,12 @@ add_executable(CramionMultiEditTests "${CMAKE_CURRENT_SOURCE_DIR}/tests/MultiEdi
 target_include_directories(CramionMultiEditTests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
 target_link_libraries(CramionMultiEditTests PRIVATE Cramion::Core cramion_imgui)
 
+# Prueba de las plantillas de proyecto (consola): crea, abre y juega cada una.
+add_executable(CramionTemplateTests "${CMAKE_CURRENT_SOURCE_DIR}/tests/TemplateTests.cpp"
+                                    "${CMAKE_CURRENT_SOURCE_DIR}/src/ProjectTemplates.cpp")
+target_include_directories(CramionTemplateTests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+target_link_libraries(CramionTemplateTests PRIVATE Cramion::Core)
+
 # --- CramionPlayer: el juego exportado (Archivo > Exportar juego) ---
 # Banner del motor al abrir, la escena inicial y todos los sistemas del
 # juego (sin el editor). Sin consola.

@@ -95,6 +95,32 @@ FetchContent_Declare(miniaudio
 )
 FetchContent_MakeAvailable(lua sol2 miniaudio)
 
+# Recast/Detour: la navegacion (la misma biblioteca que usa Unreal). Recast
+# genera la malla, Detour la consulta y DetourCrowd mueve a los agentes.
+# Referencias de 64 bits: mundos grandes con muchas baldosas.
+set(RECASTNAVIGATION_DEMO OFF CACHE BOOL "" FORCE)
+set(RECASTNAVIGATION_TESTS OFF CACHE BOOL "" FORCE)
+set(RECASTNAVIGATION_EXAMPLES OFF CACHE BOOL "" FORCE)
+set(RECASTNAVIGATION_DT_POLYREF64 ON CACHE BOOL "" FORCE)
+FetchContent_Declare(recastnavigation
+    GIT_REPOSITORY https://github.com/recastnavigation/recastnavigation.git
+    GIT_TAG v1.6.0
+    GIT_SHALLOW TRUE
+)
+# Su CMakeLists pide cmake_minimum_required(3.0), que CMake 4 ya no acepta.
+set(CRAMION_SAVED_POLICY_MINIMUM "${CMAKE_POLICY_VERSION_MINIMUM}")
+set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
+FetchContent_MakeAvailable(recastnavigation)
+set(CMAKE_POLICY_VERSION_MINIMUM "${CRAMION_SAVED_POLICY_MINIMUM}")
+foreach(target Recast Detour DetourCrowd DetourTileCache DebugUtils)
+    if(TARGET ${target})
+        set_target_properties(${target} PROPERTIES SYSTEM TRUE)
+        # Optimizado tambien en Debug (como Jolt): generar baldosas sin
+        # optimizar es muchas veces mas lento.
+        target_compile_options(${target} PRIVATE -O2 -w)
+    endif()
+endforeach()
+
 set(CRAMION_LUA_FILES lapi lauxlib lbaselib lcode lcorolib lctype ldblib ldebug ldo ldump lfunc lgc linit
     liolib llex lmathlib lmem loadlib lobject lopcodes loslib lparser lstate lstring lstrlib ltable ltablib
     ltm lundump lutf8lib lvm lzio)
@@ -158,7 +184,8 @@ list(FILTER CRAMION_CORE_SOURCES EXCLUDE REGEX "/src/(asset|project)/")
 add_library(CramionCoreObjects OBJECT ${CRAMION_CORE_SOURCES})
 target_include_directories(CramionCoreObjects PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
 target_link_libraries(CramionCoreObjects PUBLIC Cramion::FX EnTT::EnTT nlohmann_json::nlohmann_json
-    PRIVATE Jolt cramion_lua cramion_miniaudio)
+    PRIVATE Jolt cramion_lua cramion_miniaudio RecastNavigation::Recast RecastNavigation::Detour
+            RecastNavigation::DetourCrowd)
 target_include_directories(CramionCoreObjects PRIVATE "${sol2_SOURCE_DIR}/include")
 target_compile_options(CramionCoreObjects PRIVATE -Wall -Wextra)
 
@@ -176,6 +203,7 @@ if(CRAMION_FAST_DEBUG)
         "${CMAKE_CURRENT_SOURCE_DIR}/src/ecs/MathUtil.cpp"
         "${CMAKE_CURRENT_SOURCE_DIR}/src/physics/PhysicsSystem.cpp"
         "${CMAKE_CURRENT_SOURCE_DIR}/src/physics/Particles.cpp"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/navigation/NavigationSystem.cpp"
         TARGET_DIRECTORY CramionCoreObjects
         PROPERTIES COMPILE_OPTIONS "$<$<CONFIG:Debug>:-O2>"
     )
@@ -186,7 +214,8 @@ add_library(Cramion::Core ALIAS CramionCore)
 target_include_directories(CramionCore PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
 target_link_libraries(CramionCore
     PUBLIC Cramion::Assets Cramion::FX EnTT::EnTT nlohmann_json::nlohmann_json
-    PRIVATE Jolt cramion_lua cramion_miniaudio
+    PRIVATE Jolt cramion_lua cramion_miniaudio RecastNavigation::Recast RecastNavigation::Detour
+            RecastNavigation::DetourCrowd
 )
 
 # --- Pruebas del ECS (consola) ---
@@ -247,6 +276,13 @@ target_link_libraries(CramionPackTests PRIVATE Cramion::Core)
 
 add_executable(CramionVehicleTests "${CMAKE_CURRENT_SOURCE_DIR}/tests/VehicleTests.cpp")
 target_link_libraries(CramionVehicleTests PRIVATE Cramion::Core)
+
+# --- Pruebas de la navegacion (consola) ---
+# Recast/Detour: malla dentro del volumen, caminos que rodean obstaculos,
+# regeneracion al mover un collider, modificadores y agentes que llegan.
+add_executable(CramionNavigationTests "${CMAKE_CURRENT_SOURCE_DIR}/tests/NavigationTests.cpp")
+target_link_libraries(CramionNavigationTests PRIVATE Cramion::Core)
+target_compile_options(CramionNavigationTests PRIVATE -Wall -Wextra)
 
 # Demo MiniGolf (kit de Kenney): crea el proyecto con sus escenas y lo prueba
 # sin ventana (cramion_minigolf <kit> tools/minigolf <destino> --probar).

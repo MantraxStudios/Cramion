@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(Cramion
-    VERSION 0.1.0
+    VERSION 0.2.0
     DESCRIPTION "Motor con capa de plataforma DirectX 12 (CramionDM) y renderizador Vulkan (CramionFX)"
     LANGUAGES CXX
 )
@@ -116,3 +116,18 @@ endif()
 # puede anadir a PATTERNS y registrar en src/main.cpp.
 cramion_extract_scene(San_Miguel.zip san-miguel san-miguel.obj
     PATTERNS "san-miguel.obj" "san-miguel.mtl" "textures/*" "license.txt")
+
+# -----------------------------------------------------------------------------
+# Paquete descargable: cmake --build --preset clang-ninja-release --target cramion_package
+# Deja <build>/Cramion-win64.zip con los ejecutables, shaders, iconos y el
+# runtime de C++ (sin las escenas de demostracion). Ver cmake/PackageRelease.cmake.
+# -----------------------------------------------------------------------------
+add_custom_target(cramion_package
+    COMMAND ${CMAKE_COMMAND}
+            -DBIN_DIR=${CMAKE_BINARY_DIR}
+            -DSOURCE_DIR=${CMAKE_SOURCE_DIR}
+            -DVERSION=${PROJECT_VERSION}
+            -P "${CMAKE_SOURCE_DIR}/cmake/PackageRelease.cmake"
+    COMMENT "Empaquetando Cramion ${PROJECT_VERSION} (Cramion-win64.zip)"
+    VERBATIM)
+add_dependencies(cramion_package cramion CramionEditor CramionPlayer)

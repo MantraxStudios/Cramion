@@ -84,6 +84,12 @@ void EditorApp::drawToolbar() {
     ImGui::SetNextItemWidth(52.0f);
     ImGui::DragFloat("##snap_s", &snap_scale_, 0.005f, 0.01f, 10.0f, "%.2f");
     ImGui::SetItemTooltip("Paso al escalar");
+    ImGui::SameLine();
+    ImGui::TextDisabled("|");
+    ImGui::SameLine();
+    if (toolButton("Nav", show_navigation_, "Mostrar la navegación (P), como en Unreal")) {
+        show_navigation_ = !show_navigation_;
+    }
     ImGui::PopStyleVar();
 }
 
@@ -224,6 +230,7 @@ void EditorApp::drawSceneView() {
     const bool light_handle = drawLightGizmos();
     drawDecalGizmos();
     drawPhysicsGizmos();
+    drawNavigationGizmos();
     const bool cinematic_handle = drawCinematicGizmos();
     const bool water_handle = drawWaterGizmos();
     const bool waypoint_handle = cinematic_handle || water_handle;

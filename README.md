@@ -69,6 +69,10 @@ cmake --build --preset clang-ninja
 # Release (recomendado para jugar con la escena: mucho más rápido)
 cmake --preset clang-ninja-release
 cmake --build --preset clang-ninja-release
+
+# Paquete descargable (build-release/Cramion-win64.zip): ejecutables, shaders,
+# iconos y runtime de C++, sin las escenas de demostración
+cmake --build --preset clang-ninja-release --target cramion_package
 ```
 
 Los shaders GLSL de `CramionFX/shaders/` se compilan a SPIR-V al construir la librería y se copian a `build/shaders/`, junto al ejecutable.

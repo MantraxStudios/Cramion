@@ -38,6 +38,7 @@ const List& globals() {
         LuaCompletion{"Time", "Time", "deltaTime, time, frameCount", 1},
         LuaCompletion{"Physics", "Physics", "consultas de fisica (raycast)", 1},
         LuaCompletion{"Audio", "Audio", "sonidos sueltos (playOneShot)", 1},
+        LuaCompletion{"Navigation", "Navigation", "la malla de navegacion (findPath, randomPoint...)", 1},
         LuaCompletion{"Debug", "Debug", "mensajes en la Consola", 1},
         LuaCompletion{"Prefs", "Prefs", "datos guardados (como PlayerPrefs)", 1},
         LuaCompletion{"Game", "Game", "el juego (quit)", 1},
@@ -85,6 +86,11 @@ const std::unordered_map<std::string, List>& tables() {
           prop("frameCount", "frames desde el Play"), prop("fixedDeltaTime", "paso fijo de la fisica")}},
         {"Physics", {fn("raycast", "origen, direccion, distancia", "nil o {entity, point, normal, distance}")}},
         {"Audio", {fn("playOneShot", "\"Audio/golpe.wav\", posicion, volumen", "sonido suelto (sin posicion = 2D)")}},
+        {"Navigation",
+         {fn("findPath", "desde, hasta", "nil o lista de Vec3 (los giros del camino)"),
+          fn("projectPoint", "Vec3, radio", "nil o el punto de la malla mas cercano"),
+          fn("randomPoint", "centro, radio", "nil o un punto al azar de la malla"),
+          fn("raycast", "desde, hasta", "llega?, punto del choque"), fn("isReady", "", "hay malla?")}},
         {"Debug",
          {fn("log", "...", "mensaje en la Consola"), fn("warn", "...", "aviso"), fn("error", "...", "error")}},
         {"Mathf",
@@ -118,7 +124,9 @@ const List& entityProperties() {
         prop("rotation", "Vec3 en grados"), prop("scale", "Vec3"), prop("forward", "Vec3 hacia delante"),
         prop("right", "Vec3 a la derecha"), prop("up", "Vec3 hacia arriba"), prop("parent", "el padre (o nil)"),
         prop("velocity", "Vec3 de su Rigidbody"), prop("angularVelocity", "Vec3 de giro (rad/s)"), prop("speed", "km/h de su Vehicle"),
-        prop("rpm", "rpm del motor del Vehicle"), prop("gear", "marcha del Vehicle")};
+        prop("rpm", "rpm del motor del Vehicle"), prop("gear", "marcha del Vehicle"),
+        prop("isMoving", "su NavAgent va hacia un destino"), prop("remainingDistance", "metros que le quedan"),
+        prop("navVelocity", "Vec3 de su NavAgent")};
     return list;
 }
 const List& entityMethods() {
@@ -134,7 +142,8 @@ const List& entityMethods() {
         fn("setAnimatorFloat", "\"velocidad\", 1.0", "parametro del Animator Controller"),
         fn("setAnimatorBool", "\"saltando\", true", ""), fn("setAnimatorTrigger", "\"atacar\"", ""),
         fn("hasComponent", "\"Rigidbody\"", "tiene ese componente?"), fn("getScript", "", "la instancia de su script"),
-        fn("find", "\"hijo\"", "un hijo por nombre"), fn("valid", "", "sigue existiendo?")};
+        fn("find", "\"hijo\"", "un hijo por nombre"), fn("valid", "", "sigue existiendo?"),
+        fn("moveTo", "Vec3", "su NavAgent camina hasta alli por la malla"), fn("stopMoving", "", "se para")};
     return list;
 }
 const List& vectorMembers(char accessor) {

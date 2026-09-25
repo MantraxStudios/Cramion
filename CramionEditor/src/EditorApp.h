@@ -33,6 +33,7 @@
 #include "LuaCompletion.h"
 #include "ModelPreviews.h"
 #include "PropertyInspector.h"
+#include "ProjectTemplates.h"
 
 #include <CramionCore/CramionCore.h>
 #include <CramionDM/CramionDM.h>
@@ -177,6 +178,13 @@ private:
 
     // --- Paneles ---
     void drawHub();
+    // Hub (EditorHub.cpp).
+    void drawHubSidebar();
+    void drawHubProjects();
+    void drawHubNewProject();
+    void drawTemplateArt(ImDrawList* draw, ImVec2 a, ImVec2 b, const ProjectTemplate& t);
+    void createProjectFromHub();
+    void drawSaveTemplateDialog();
     void drawMenuBar();
     void drawToolbar();
     void drawHierarchy();
@@ -233,6 +241,18 @@ private:
     bool playing() const { return play_state_ != PlayState::Edit; }
     void updatePhysics(float delta_seconds);
     void onPhysicsEvent(const physics::PhysicsEvent& event);
+    // Navegacion (EditorNavigation.cpp).
+    void loadNavigationSettings();
+    void saveNavigationSettings();
+    void updateNavigation(float delta_seconds);
+    void drawNavigationGizmos();
+    void drawNavigationWindow();
+    void drawNavigationStats();
+    void drawNavMeshBoundsInspector(ecs::Entity entity);
+    void drawNavigationCreateMenu();
+    ecs::Entity createNavigationEntity(int kind);  // 0 volumen, 1 modificador
+    bool navigationSceneBounds(core::Vec3& lo, core::Vec3& hi) const;
+    void fitNavBoundsToScene(ecs::Entity volume);
     void drawPlayControls();
     void drawPhysicsWindow();
     void drawPhysicsGizmos();
@@ -693,6 +713,14 @@ private:
     float play_time_ = 0.0f;
     bool show_physics_ = true;
     bool physics_settings_dirty_ = false;
+    // Navegacion.
+    navigation::NavigationSystem nav_;
+    navigation::NavigationSettings nav_settings_;
+    bool show_navigation_ = true;          // la malla en la escena (P)
+    bool show_navigation_window_ = false;
+    std::uint64_t nav_draw_version_ = ~0ull;
+    std::vector<gfx::OverlayVertex> nav_draw_triangles_;
+    std::vector<gfx::OverlayVertex> nav_draw_edges_;
     // Gizmos de fisica.
     bool gizmo_all_colliders_ = false;
     bool gizmo_contacts_ = true;
@@ -747,6 +775,18 @@ private:
     std::string new_project_name_ = "Mi proyecto";
     std::string new_project_folder_;
     std::string hub_error_;
+    int hub_page_ = 0;      // 0 proyectos, 1 nuevo proyecto
+    int hub_category_ = 0;  // 0 todas, 1 integradas, 2 del usuario
+    int hub_template_ = 0;
+    std::string hub_search_;
+    std::vector<ProjectTemplate> hub_templates_;
+    bool hub_templates_loaded_ = false;
+    std::shared_ptr<dialogs::AsyncFolderPick> hub_open_pick_;
+    std::shared_ptr<dialogs::AsyncFolderPick> hub_folder_pick_;
+    bool show_save_template_ = false;
+    std::string template_name_;
+    std::string template_description_;
+    std::string template_error_;
 
     // Paneles visibles y acciones pendientes.
     bool show_hierarchy_ = true;
@@ -776,6 +816,9 @@ private:
     std::filesystem::path self_test_environment_;
     std::filesystem::path self_test_image_;  // imagen para probar los decals (opcional)
     Uuid self_test_car_{};
+    Uuid self_test_agent_{};
+    core::Vec3 self_test_nav_start_{};
+    core::Vec3 self_test_nav_target_{};
     Uuid self_test_cube_{};
     Uuid self_test_zone_{};
     Uuid self_test_sequence_{};

@@ -591,6 +591,57 @@ void EditorApp::runSelfTestStep() {
             self_test_wait_ = 60;
             break;
         }
+        case 29: {  // Navegacion: volumen ajustado a la escena y un agente sobre la loma.
+            const ecs::Entity volume = createNavigationEntity(0);
+            check(volume.valid() && volume.has<navigation::NavMeshBounds>() &&
+                      volume.get<navigation::NavMeshBounds>().size.x > 50.0f,
+                  "Crear > Navegacion > Volumen se ajusta a la escena", f);
+            ecs::Entity agent = world_.create("Agente de prueba");
+            agent.setWorldPosition(Vec3{0.0f, 8.0f, 0.0f});
+            agent.add<navigation::NavAgent>().speed = 5.0f;
+            self_test_agent_ = agent.uuid();
+            show_navigation_ = true;
+            commit();
+            self_test_wait_ = 30;
+            break;
+        }
+        case 30: {
+            if (nav_.building()) {  // las baldosas se generan en otros hilos
+                self_test_wait_ = 10;
+                return;
+            }
+            const navigation::NavStats stats = nav_.stats();
+            std::cout << "[SelfTest] Navegacion: " << stats.tiles << " baldosas, " << stats.polygons << " poligonos"
+                      << std::endl;
+            check(nav_.ready() && !nav_.debugMesh().triangles.empty(), "la malla de navegacion se genera y se ve", f);
+            // Tiempo real: mover el cubo de la loma rehace solo sus baldosas.
+            ecs::Entity cube = world_.find(self_test_cube_);
+            if (cube.valid()) cube.setWorldPosition(cube.worldPosition() + Vec3{3.0f, 0.0f, 0.0f});
+            updateNavigation(0.016f);
+            const int pending = nav_.stats().pending_tiles;
+            check(pending > 0 && pending < std::max(stats.tiles, 1), "mover un objeto rehace solo sus baldosas", f);
+            // Play: el agente camina hacia un punto de la malla.
+            enterPlay();
+            const ecs::Entity a = world_.find(self_test_agent_);
+            Vec3 target{};
+            check(nav_.randomPoint(a.worldPosition(), 12.0f, target), "punto al azar de la malla", f);
+            self_test_nav_start_ = a.worldPosition();
+            self_test_nav_target_ = target;
+            nav_.moveTo(a, target);
+            self_test_wait_ = 240;
+            break;
+        }
+        case 31: {
+            const ecs::Entity a = world_.find(self_test_agent_);
+            const float before = core::length(self_test_nav_target_ - self_test_nav_start_);
+            const float after = core::length(self_test_nav_target_ - a.worldPosition());
+            std::cout << "[SelfTest] Agente: " << before << " m -> " << after << " m del destino" << std::endl;
+            check(a.valid() && (after < 0.8f || after < before * 0.5f), "el agente camina por la malla en Play", f);
+            exitPlay();
+            check(nav_.ready(), "al salir de Play la malla sigue (sin regenerarla)", f);
+            self_test_wait_ = 30;
+            break;
+        }
         default:
             std::cout << "[SelfTest] " << (self_test_failures_ == 0 ? "TODO OK" : "HAY FALLOS: ")
                       << (self_test_failures_ == 0 ? std::string() : std::to_string(self_test_failures_))

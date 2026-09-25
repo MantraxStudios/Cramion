@@ -26,8 +26,10 @@ const float kLogLuminanceRange = 18.0;
 shared uint local_bins[256];
 
 uint binFor(float luminance) {
-    // Cubo 0 reservado para el negro puro (se ignora al promediar).
-    if (luminance < exp2(kMinLogLuminance)) {
+    // Cubo 0 reservado para el negro puro (se ignora al promediar). Con NaN
+    // la comparacion es falsa: tambien va al 0 (uint(NaN) no esta definido y
+    // se saldria de los 256 cubos).
+    if (!(luminance >= exp2(kMinLogLuminance))) {
         return 0u;
     }
     float t = clamp((log2(luminance) - kMinLogLuminance) / kLogLuminanceRange, 0.0, 1.0);

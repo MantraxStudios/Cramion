@@ -1031,5 +1031,9 @@ void main() {
     }
 
     // Salida HDR lineal: composite.frag aplica exposicion, tono y gamma.
+    // El destino es half float: por encima de 65504 se guarda +inf (el disco
+    // del sol con el sol alto lo supera) y los filtros que lo leen (FSR, bloom)
+    // lo convertian en NaN. Se limita aqui, en el origen.
+    color = min(mix(color, vec3(0.0), isnan(color)), vec3(65504.0));
     out_color = vec4(color, surface_distance);
 }

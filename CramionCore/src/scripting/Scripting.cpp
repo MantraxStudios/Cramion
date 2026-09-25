@@ -2,6 +2,7 @@
 
 #include "CramionCore/audio/Audio.h"
 #include "CramionCore/ecs/Components.h"
+#include "CramionCore/navigation/Navigation.h"
 #include "CramionCore/physics/PhysicsSystem.h"
 #include "CramionCore/ui/UI.h"
 
@@ -125,6 +126,7 @@ struct ScriptSystem::Impl {
     const dm::Input* input = nullptr;
     physics::PhysicsSystem* physics = nullptr;
     audio::AudioSystem* audio = nullptr;
+    navigation::NavigationSystem* navigation = nullptr;
     LogCallback log;
     std::vector<ScriptError> errors;
 
@@ -498,7 +500,27 @@ struct ScriptSystem::Impl {
             },
             sol::meta_function::equal_to, [](const LuaEntity& a, const LuaEntity& b) { return a.handle == b.handle; },
             sol::meta_function::to_string, [](const LuaEntity& e) { const ecs::Entity x = e.get(); return "Entity(" + (x.valid() ? x.name() : std::string("destruida")) + ")"; });
-        (void)entity;
+
+        // Navegacion (NavAgent): como el MoveTo del AIController de Unreal.
+        entity["moveTo"] = [this](LuaEntity& e, const Vec3& target) {
+            const ecs::Entity x = e.get();
+            return x.valid() && navigation != nullptr && navigation->moveTo(x, target);
+        };
+        entity["stopMoving"] = [this](LuaEntity& e) {
+            if (auto x = e.get(); x.valid() && navigation != nullptr) navigation->stop(x);
+        };
+        entity["isMoving"] = sol::property([this](const LuaEntity& e) {
+            const ecs::Entity x = e.get();
+            return x.valid() && navigation != nullptr && navigation->isMoving(x);
+        });
+        entity["remainingDistance"] = sol::property([this](const LuaEntity& e) {
+            const ecs::Entity x = e.get();
+            return x.valid() && navigation != nullptr ? navigation->remainingDistance(x) : 0.0f;
+        });
+        entity["navVelocity"] = sol::property([this](const LuaEntity& e) {
+            const ecs::Entity x = e.get();
+            return x.valid() && navigation != nullptr ? navigation->agentVelocity(x) : Vec3{};
+        });
 
         // Scene
         sol::table scene = L.create_named_table("Scene");
@@ -609,6 +631,33 @@ struct ScriptSystem::Impl {
             result["normal"] = hit.normal;
             result["distance"] = hit.distance;
             return result;
+        };
+
+        // Navigation: consultas de la malla.
+        sol::table nav = L.create_named_table("Navigation");
+        nav["isReady"] = [this]() { return navigation != nullptr && navigation->ready(); };
+        nav["findPath"] = [this](const Vec3& from, const Vec3& to) -> sol::object {
+            std::vector<Vec3> path;
+            if (navigation == nullptr || !navigation->findPath(from, to, path)) return sol::lua_nil;
+            sol::table out = lua->create_table();
+            for (std::size_t i = 0; i < path.size(); ++i) out[i + 1] = path[i];
+            return out;
+        };
+        nav["projectPoint"] = [this](const Vec3& point, sol::optional<float> extent) -> sol::object {
+            Vec3 result{};
+            if (navigation == nullptr || !navigation->projectPoint(point, result, extent.value_or(2.0f))) return sol::lua_nil;
+            return sol::make_object(*lua, result);
+        };
+        nav["randomPoint"] = [this](const Vec3& center, float radius) -> sol::object {
+            Vec3 result{};
+            if (navigation == nullptr || !navigation->randomPoint(center, radius, result)) return sol::lua_nil;
+            return sol::make_object(*lua, result);
+        };
+        // true si la linea recta por la malla llega; si no, false y el punto del choque.
+        nav["raycast"] = [this](const Vec3& from, const Vec3& to) {
+            Vec3 hit = to;
+            const bool clear = navigation != nullptr && navigation->raycast(from, to, &hit);
+            return std::make_tuple(clear, hit);
         };
 
         // Audio
@@ -810,6 +859,7 @@ void ScriptSystem::setAssetsRoot(const std::filesystem::path& root) { impl_->roo
 void ScriptSystem::setInput(const dm::Input* input) { impl_->input = input; }
 void ScriptSystem::setPhysics(physics::PhysicsSystem* physics) { impl_->physics = physics; }
 void ScriptSystem::setAudio(audio::AudioSystem* audio) { impl_->audio = audio; }
+void ScriptSystem::setNavigation(navigation::NavigationSystem* navigation) { impl_->navigation = navigation; }
 void ScriptSystem::setLog(LogCallback log) { impl_->log = std::move(log); }
 
 std::filesystem::path ScriptSystem::takeSceneRequest() {

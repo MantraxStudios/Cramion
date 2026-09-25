@@ -23,7 +23,9 @@
 // fisica, sonido, animacion, destroy...), Scene (find, findWithTag,
 // instantiate, create, load), Input (getKey, getKeyDown, getAxis, raton),
 // Time, Physics.raycast, Audio.playOneShot, Prefs (datos guardados, como el
-// PlayerPrefs de Unity), Game.quit, Debug.log, Mathf.
+// PlayerPrefs de Unity), Game.quit, Debug.log, Mathf. Navegacion:
+// entity:moveTo(destino), stopMoving, isMoving, remainingDistance y la tabla
+// Navigation (findPath, projectPoint, randomPoint, raycast, isReady).
 
 #include "CramionCore/ecs/Reflection.h"
 #include "CramionCore/ecs/World.h"
@@ -42,6 +44,9 @@ class PhysicsSystem;
 }
 namespace cramion::audio {
 class AudioSystem;
+}
+namespace cramion::navigation {
+class NavigationSystem;
 }
 
 namespace cramion::scripting {
@@ -79,6 +84,8 @@ public:
     void setInput(const dm::Input* input);
     void setPhysics(physics::PhysicsSystem* physics);
     void setAudio(audio::AudioSystem* audio);
+    // entity:moveTo, isMoving... y la tabla Navigation (NavAgent y la malla).
+    void setNavigation(navigation::NavigationSystem* navigation);
     // Mensajes de Debug.log / print (por defecto std::cout y std::cerr).
     using LogCallback = std::function<void(int level, const std::string& message)>;  // 0 info, 1 aviso, 2 error
     void setLog(LogCallback log);

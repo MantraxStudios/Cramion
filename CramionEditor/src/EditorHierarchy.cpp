@@ -144,6 +144,7 @@ void EditorApp::drawHierarchy() {
             if (ImGui::MenuItem("Río")) createWaterEntity(2);
             ImGui::EndMenu();
         }
+        drawNavigationCreateMenu();
         drawUiCreateMenu();
         ImGui::EndPopup();
     }
@@ -252,6 +253,7 @@ void EditorApp::drawHierarchy() {
             if (ImGui::MenuItem("Río")) createWaterEntity(2);
             ImGui::EndMenu();
         }
+        drawNavigationCreateMenu();
         drawUiCreateMenu();
         if (!clipboard_.empty() && ImGui::MenuItem("Pegar")) pasteClipboard();
         ImGui::EndPopup();
@@ -511,6 +513,7 @@ void EditorApp::drawHierarchyRow(const HierarchyRow& row, bool scroll_to) {
             if (ImGui::MenuItem("Río")) createWaterEntity(2);
             ImGui::EndMenu();
         }
+        drawNavigationCreateMenu();
         drawUiCreateMenu();
                 ImGui::EndMenu();
             }

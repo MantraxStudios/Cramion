@@ -48,6 +48,7 @@ EditorApp::EditorApp(dm::Window& window, gfx::VulkanRenderer& renderer, scene::S
     cinema::registerCinematicComponents();
     terrain::registerTerrainComponents();
     water::registerWaterComponents();
+    navigation::registerNavigationComponents();
     audio::registerAudioComponents();
     scripting::registerScriptComponents();
     ui::registerUiComponents();
@@ -91,6 +92,7 @@ bool EditorApp::openProject(const std::filesystem::path& path) {
     scripts_.setPrefsFile(project_.libraryFolder() / "Prefs.txt");  // Prefs en Play
     scripts_.setPhysics(&physics_);
     scripts_.setAudio(&audio_);
+    scripts_.setNavigation(&nav_);
     audio_.setAssetsRoot(project_.assetsFolder());
     loadGraphicsSettings();
     sync_ = std::make_unique<ecs::RenderSync>(*asset_manager_);
@@ -111,6 +113,17 @@ bool EditorApp::openProject(const std::filesystem::path& path) {
         return sync_ ? sync_->actorModelData(entity, scene_) : nullptr;
     });
     physics_.start(world_);
+    // Navegacion: la misma geometria de colision que la fisica.
+    nav_.clear();
+    nav_.setMeshProvider([this](ecs::Entity entity) -> const asset::ModelData* {
+        return sync_ ? sync_->actorModelData(entity, scene_) : nullptr;
+    });
+    nav_.setTerrainProvider([this](ecs::Entity entity) -> std::shared_ptr<const terrain::TerrainData> {
+        const terrain::Terrain* comp = entity.tryGet<terrain::Terrain>();
+        return comp != nullptr ? terrain_store_.get(*comp) : nullptr;
+    });
+    nav_.setPhysics(&physics_);
+    loadNavigationSettings();
     current_folder_ = project_.assetsFolder();
     project::addRecentProject(project_);
     std::cout << "[Editor] Proyecto abierto: " << project_.name << " ("
@@ -138,6 +151,9 @@ void EditorApp::closeProject() {
     physics_.setMeshProvider({});
     physics_.setAssetManager(nullptr);
     physics_.setTerrainProvider({});
+    nav_.clear();
+    nav_.setMeshProvider({});
+    nav_.setTerrainProvider({});
     model_previews_.stop();
     clip_source_.reset();
     clip_source_uuid_ = {};
@@ -176,6 +192,7 @@ void EditorApp::closeProject() {
 }
 
 void EditorApp::newScene() {
+    nav_.clear();
     world_.clear();
     world_.setSceneUuid(Uuid::generate());
     world_.setSceneName("Nueva escena");
@@ -190,6 +207,7 @@ void EditorApp::newScene() {
 
 bool EditorApp::openScene(const std::filesystem::path& path) {
     std::string error;
+    nav_.clear();
     if (!ecs::loadScene(world_, path, &error)) {
         std::cerr << "[Editor] No se pudo abrir la escena " << dialogs::utf8(path) << ": " << error
                   << "\n";
@@ -732,6 +750,7 @@ void EditorApp::drawUi(float delta_seconds) {
     {
         const CpuClock::time_point physics_start = CpuClock::now();
         updatePhysics(delta_seconds);
+        updateNavigation(delta_seconds);
         if (quit_play_requested_) {  // Game.quit() en Play
             quit_play_requested_ = false;
             exitPlay();
@@ -769,6 +788,7 @@ void EditorApp::drawUi(float delta_seconds) {
     if (show_script_editor_) drawScriptEditor();
     drawExportProgress();
     if (show_physics_) drawPhysicsWindow();
+    if (show_navigation_window_) drawNavigationWindow();
     if (show_cinematic_) drawCinematicWindow();
     drawModals();
     addCpuSample(kCpuPanels, millisecondsSince(t));
@@ -905,6 +925,7 @@ void EditorApp::drawMenuBar() {
         if (ImGui::MenuItem("Exportar juego...")) exportGame(false);
         if (ImGui::MenuItem("Exportar y jugar...")) exportGame(true);
         ImGui::Separator();
+        if (ImGui::MenuItem("Guardar proyecto como plantilla...")) show_save_template_ = true;
         if (ImGui::MenuItem("Abrir proyecto (Hub)...")) runOrAskToSave(PendingAction::BackToHub);
         ImGui::Separator();
         if (ImGui::MenuItem("Salir")) requestQuit();
@@ -968,6 +989,7 @@ void EditorApp::drawMenuBar() {
             if (ImGui::MenuItem("Río")) createWaterEntity(2);
             ImGui::EndMenu();
         }
+        drawNavigationCreateMenu();
         drawUiCreateMenu();
         if (ImGui::BeginMenu("Cinemática")) {
             if (ImGui::MenuItem("Cámara virtual (desde la vista)")) createCinematic(0);
@@ -991,6 +1013,7 @@ void EditorApp::drawMenuBar() {
         ImGui::MenuItem("Animator", nullptr, &show_animator_);
         ImGui::MenuItem("Scripts (Lua)", nullptr, &show_script_editor_);
         ImGui::MenuItem("Física", nullptr, &show_physics_);
+        ImGui::MenuItem("Navegación", nullptr, &show_navigation_window_);
         ImGui::MenuItem("Juego", nullptr, &show_game_);
         ImGui::MenuItem("Cinemática", nullptr, &show_cinematic_);
         ImGui::Separator();
@@ -1118,176 +1141,11 @@ void EditorApp::drawHubTitleBar() {
 }
 
 // -----------------------------------------------------------------------------
-// Hub
-// -----------------------------------------------------------------------------
-
-void EditorApp::drawHub() {
-    drawHubTitleBar();
-    const ImGuiViewport* viewport = ImGui::GetMainViewport();
-    ImGui::SetNextWindowPos(viewport->WorkPos);
-    ImGui::SetNextWindowSize(viewport->WorkSize);
-    ImGui::Begin("Cramion Hub", nullptr,
-                 ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
-                     ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoBringToFrontOnFocus);
-
-    // Columna izquierda: marca y acciones.
-    ImGui::BeginChild("hub_side", ImVec2(260.0f, 0.0f), ImGuiChildFlags_Borders);
-    if (const ImTextureID logo = imgui_.logo(); logo != 0) {
-        const float size = 96.0f;
-        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (ImGui::GetContentRegionAvail().x - size) * 0.5f);
-        ImGui::Image(logo, ImVec2(size, size));
-    }
-    ImGui::SetWindowFontScale(1.6f);
-    ImGui::TextUnformatted("Cramion");
-    ImGui::SetWindowFontScale(1.0f);
-    ImGui::TextDisabled("Hub de proyectos");
-    ImGui::Spacing();
-    ImGui::Separator();
-    ImGui::Spacing();
-    if (ImGui::Button("Nuevo proyecto", ImVec2(-1.0f, 34.0f))) {
-        show_new_project_ = true;
-        hub_error_.clear();
-    }
-    ImGui::Spacing();
-    if (ImGui::Button("Abrir proyecto...", ImVec2(-1.0f, 34.0f))) {
-        const std::filesystem::path path = dialogs::openFile(
-            window_.handle(), L"Proyecto de Cramion (*.crproj)\0*.crproj\0");
-        if (!path.empty()) {
-            openProject(path);
-        }
-    }
-    ImGui::Spacing();
-    if (ImGui::Button("Salir", ImVec2(-1.0f, 28.0f))) {
-        quit_ = true;
-    }
-    ImGui::EndChild();
-
-    ImGui::SameLine();
-    ImGui::BeginChild("hub_main", ImVec2(0.0f, 0.0f), ImGuiChildFlags_None);
-    ImGui::SetWindowFontScale(1.25f);
-    ImGui::TextUnformatted("Proyectos");
-    ImGui::SetWindowFontScale(1.0f);
-    ImGui::Spacing();
-    if (!hub_error_.empty()) {
-        ImGui::TextColored(ImVec4(1.0f, 0.45f, 0.4f, 1.0f), "%s", hub_error_.c_str());
-    }
-
-    const std::vector<project::RecentProject> recent = project::recentProjects();
-    if (recent.empty()) {
-        ImGui::TextDisabled("Todavía no hay proyectos. Crea uno nuevo o abre uno existente.");
-    } else if (ImGui::BeginTable("recent", 4,
-                                 ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH |
-                                     ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_PadOuterX)) {
-        ImGui::TableSetupColumn("Nombre", ImGuiTableColumnFlags_WidthStretch, 1.0f);
-        ImGui::TableSetupColumn("Ruta", ImGuiTableColumnFlags_WidthStretch, 2.2f);
-        ImGui::TableSetupColumn("Última apertura", ImGuiTableColumnFlags_WidthFixed, 150.0f);
-        ImGui::TableSetupColumn("##acciones", ImGuiTableColumnFlags_WidthFixed, 150.0f);
-        ImGui::TableHeadersRow();
-        std::optional<std::filesystem::path> to_open;
-        std::optional<std::filesystem::path> to_remove;
-        for (const project::RecentProject& p : recent) {
-            ImGui::PushID(dialogs::utf8(p.file).c_str());
-            ImGui::TableNextRow(0, 36.0f);
-            ImGui::TableNextColumn();
-            ImGui::AlignTextToFramePadding();
-            if (ImGui::Selectable(p.name.c_str(), false,
-                                  ImGuiSelectableFlags_SpanAllColumns |
-                                      ImGuiSelectableFlags_AllowOverlap,
-                                  ImVec2(0.0f, 30.0f)) &&
-                ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
-                to_open = p.file;
-            }
-            ImGui::TableNextColumn();
-            const bool exists = std::filesystem::exists(p.file);
-            ImGui::AlignTextToFramePadding();
-            ImGui::TextDisabled("%s%s", dialogs::utf8(p.file.parent_path()).c_str(),
-                                exists ? "" : "  (no encontrado)");
-            ImGui::TableNextColumn();
-            char date[64] = "-";
-            if (p.last_opened > 0) {
-                const std::time_t t = static_cast<std::time_t>(p.last_opened);
-                std::tm local{};
-                localtime_s(&local, &t);
-                std::strftime(date, sizeof(date), "%d/%m/%Y %H:%M", &local);
-            }
-            ImGui::AlignTextToFramePadding();
-            ImGui::TextUnformatted(date);
-            ImGui::TableNextColumn();
-            ImGui::BeginDisabled(!exists);
-            if (ImGui::Button("Abrir")) to_open = p.file;
-            ImGui::EndDisabled();
-            ImGui::SameLine();
-            if (ImGui::Button("Quitar")) to_remove = p.file;
-            ImGui::PopID();
-        }
-        ImGui::EndTable();
-        if (to_remove) project::removeRecentProject(*to_remove);
-        if (to_open) openProject(*to_open);
-    }
-    ImGui::EndChild();
-    ImGui::End();
-
-    // --- Nuevo proyecto ---
-    if (show_new_project_) {
-        ImGui::OpenPopup("Nuevo proyecto");
-        show_new_project_ = false;
-    }
-    ImGui::SetNextWindowSize(ImVec2(560.0f, 0.0f), ImGuiCond_Appearing);
-    if (ImGui::BeginPopupModal("Nuevo proyecto", nullptr, ImGuiWindowFlags_NoResize)) {
-        ImGui::TextUnformatted("Nombre");
-        ImGui::SetNextItemWidth(-1.0f);
-        ImGui::InputText("##name", &new_project_name_);
-        ImGui::TextUnformatted("Ubicación");
-        ImGui::SetNextItemWidth(-40.0f);
-        ImGui::InputText("##folder", &new_project_folder_);
-        ImGui::SameLine();
-        if (ImGui::Button("...", ImVec2(32.0f, 0.0f))) {
-            const std::filesystem::path folder =
-                dialogs::pickFolder(window_.handle(), dialogs::fromUtf8(new_project_folder_));
-            if (!folder.empty()) new_project_folder_ = dialogs::utf8(folder);
-        }
-        ImGui::TextDisabled("Se creará: %s",
-                            dialogs::utf8(dialogs::fromUtf8(new_project_folder_) /
-                                          dialogs::fromUtf8(new_project_name_))
-                                .c_str());
-        if (!hub_error_.empty()) {
-            ImGui::TextColored(ImVec4(1.0f, 0.45f, 0.4f, 1.0f), "%s", hub_error_.c_str());
-        }
-        ImGui::Spacing();
-        if (ImGui::Button("Crear", ImVec2(120.0f, 0.0f)) && !new_project_name_.empty()) {
-            try {
-                std::filesystem::create_directories(dialogs::fromUtf8(new_project_folder_));
-                project::ProjectInfo info = project::createProject(
-                    dialogs::fromUtf8(new_project_folder_), new_project_name_);
-                // Escena por defecto guardada como inicial.
-                ecs::World world;
-                world.setSceneName("Main");
-                ecs::populateDefaultScene(world);
-                const std::filesystem::path scene = info.assetsFolder() / "Scenes" / "Main.crscene";
-                std::filesystem::create_directories(scene.parent_path());
-                ecs::saveScene(world, scene);
-                info.startup_scene = world.sceneUuid();
-                project::saveProject(info);
-                ImGui::CloseCurrentPopup();
-                hub_error_.clear();
-                openProject(info.file);
-            } catch (const std::exception& error) {
-                hub_error_ = error.what();
-            }
-        }
-        ImGui::SameLine();
-        if (ImGui::Button("Cancelar", ImVec2(120.0f, 0.0f))) {
-            ImGui::CloseCurrentPopup();
-        }
-        ImGui::EndPopup();
-    }
-}
-
-// -----------------------------------------------------------------------------
 // Dialogos modales
 // -----------------------------------------------------------------------------
 
 void EditorApp::drawModals() {
+    drawSaveTemplateDialog();
     if (ask_save_) {
         ImGui::OpenPopup("¿Guardar cambios?");
         ask_save_ = false;

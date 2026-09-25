@@ -195,6 +195,7 @@ int main() {
         // --- Sistemas del juego ---
         terrain::registerTerrainComponents();
         water::registerWaterComponents();
+        navigation::registerNavigationComponents();
         audio::registerAudioComponents();
         scripting::registerScriptComponents();
         ui::registerUiComponents();
@@ -230,6 +231,18 @@ int main() {
         scripts.setAssetsRoot(project->assetsFolder());
         scripts.setPhysics(&physics);
         scripts.setAudio(&audio);
+        // Navegacion: ajustes del proyecto y la misma geometria que la fisica.
+        navigation::NavigationSettings nav_settings;
+        navigation::loadNavigationSettings(project->settingsFolder() / "Navigation.json", nav_settings);
+        navigation::NavigationSystem nav;
+        nav.setSettings(nav_settings);
+        nav.setMeshProvider([&](ecs::Entity entity) -> const asset::ModelData* { return sync.actorModelData(entity, scene); });
+        nav.setTerrainProvider([&](ecs::Entity entity) -> std::shared_ptr<const terrain::TerrainData> {
+            const terrain::Terrain* comp = entity.tryGet<terrain::Terrain>();
+            return comp != nullptr ? terrains.get(*comp) : nullptr;
+        });
+        nav.setPhysics(&physics);
+        scripts.setNavigation(&nav);
         cinema::CinematicSystem cinematics;
         physics::ParticleWorld particles;
         ui::UiSystem game_ui;
@@ -253,6 +266,7 @@ int main() {
             game_ui.reset();
             physics.stop();
             particles.clear();
+            nav.clear();
             std::string error;
             if (file.empty() || !ecs::loadScene(world, file, &error)) {
                 std::cerr << "[Juego] No se pudo abrir la escena " << file.string() << " " << error << "\n";
@@ -261,6 +275,8 @@ int main() {
             const std::u8string stem = file.stem().u8string();
             scripts.setSceneName(std::string(stem.begin(), stem.end()));
             physics.start(world);
+            // La malla lista antes de que empiecen los scripts (mientras se ve el banner).
+            nav.waitForBuild(world, 20.0f);
             audio.start(world);
             scripts.start(world);
         };
@@ -314,6 +330,7 @@ int main() {
             if (running) {
                 const int steps = physics.update(world, dt, true);
                 particles.update(world, dt, &physics);
+                nav.update(world, dt, true, nav_settings.runtime_generation);
                 scripts.setInput(game_ui.typing() ? nullptr : &input);
                 if (!game_ui.typing()) {
                     const auto down = [&](dm::Key a, dm::Key b) { return input.isKeyDown(a) || input.isKeyDown(b); };

@@ -1,0 +1,301 @@
+<!doctype html>
+<html lang="es" class="scroll-smooth">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Cramion Engine</title>
+  <meta name="description" content="Cramion: motor de juegos para Windows con renderizador diferido en Vulkan 1.3, editor de escenas, física, terreno, agua y scripting en Lua.">
+  <link rel="icon" href="img/icon.png">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/lua.min.js"></script>
+  <style type="text/tailwindcss">
+    @theme {
+      --color-ink: #0c0e12;
+      --color-panel: #13161d;
+      --color-line: #232834;
+      --color-brand: #0ab0ff;
+      --color-brand-dim: #0784c2;
+      --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+      --font-mono: "JetBrains Mono", ui-monospace, monospace;
+    }
+    body { background: var(--color-ink); }
+    .hljs { background: transparent !important; padding: 0 !important; }
+    .glow { background: radial-gradient(60% 50% at 50% 0%, rgb(10 176 255 / .18), transparent 70%); }
+    .grid-bg {
+      background-image: linear-gradient(to right, rgb(255 255 255 / .04) 1px, transparent 1px),
+                        linear-gradient(to bottom, rgb(255 255 255 / .04) 1px, transparent 1px);
+      background-size: 48px 48px;
+      mask-image: radial-gradient(ellipse at top, black 30%, transparent 75%);
+    }
+  </style>
+</head>
+<body class="font-sans text-slate-300 antialiased">
+
+  <!-- Navegación -->
+  <header class="sticky top-0 z-40 border-b border-line/70 bg-ink/80 backdrop-blur">
+    <nav class="mx-auto flex max-w-6xl items-center justify-between px-4 py-3 sm:px-6">
+      <a href="#" class="flex items-center gap-2.5">
+        <img src="img/icon.png" alt="" class="h-8 w-8">
+        <span class="text-lg font-bold tracking-wide text-white">CRAMION</span>
+      </a>
+      <div class="hidden items-center gap-7 text-sm md:flex">
+        <a href="#render" class="hover:text-white">Render</a>
+        <a href="#motor" class="hover:text-white">Motor</a>
+        <a href="#scripting" class="hover:text-white">Scripting</a>
+        <a href="#descargar" class="hover:text-white">Descargar</a>
+        <a href="scripting.html" class="hover:text-white">Documentación</a>
+      </div>
+      <a href="#descargar" class="rounded-lg bg-brand px-4 py-2 text-sm font-semibold text-ink hover:bg-white">Descargar</a>
+    </nav>
+  </header>
+
+  <!-- Hero -->
+  <section class="relative overflow-hidden">
+    <div class="glow absolute inset-0"></div>
+    <div class="grid-bg absolute inset-0"></div>
+    <div class="relative mx-auto max-w-6xl px-4 pb-20 pt-20 text-center sm:px-6 sm:pt-28">
+      <img src="img/icon.png" alt="Logo de Cramion" class="mx-auto mb-8 h-24 w-24 drop-shadow-[0_0_40px_rgba(10,176,255,.35)]">
+      <p class="mb-4 inline-flex items-center gap-2 rounded-full border border-line bg-panel px-3 py-1 text-xs font-medium text-slate-400">
+        <span class="h-1.5 w-1.5 rounded-full bg-brand"></span> v0.2 · Vulkan 1.3 · Windows x64
+      </p>
+      <h1 class="mx-auto max-w-4xl text-4xl font-extrabold leading-tight tracking-tight text-white sm:text-6xl">
+        Luz física en tiempo real.<br><span class="text-brand">Un motor hecho a mano.</span>
+      </h1>
+      <p class="mx-auto mt-6 max-w-2xl text-lg text-slate-400">
+        Cramion es un motor de juegos con renderizador diferido en Vulkan, editor de escenas,
+        física, terreno, agua, audio y scripting en Lua. Construido en C++20 con CMake, Clang y Ninja.
+      </p>
+      <div class="mt-10 flex flex-col justify-center gap-3 sm:flex-row">
+        <a href="https://github.com/MantraxStudios/Cramion/releases/latest/download/Cramion-win64.zip" class="rounded-lg bg-brand px-6 py-3 font-semibold text-ink hover:bg-white">Descargar para Windows</a>
+        <a href="scripting.html" class="rounded-lg border border-line bg-panel px-6 py-3 font-semibold text-white hover:border-brand">Leer la documentación →</a>
+      </div>
+
+      <dl class="mx-auto mt-16 grid max-w-3xl grid-cols-2 gap-px overflow-hidden rounded-xl border border-line bg-line sm:grid-cols-4">
+        <div class="bg-panel p-5"><dt class="text-xs uppercase tracking-wider text-slate-500">Render</dt><dd class="mt-1 text-xl font-bold text-white">Vulkan 1.3</dd></div>
+        <div class="bg-panel p-5"><dt class="text-xs uppercase tracking-wider text-slate-500">Escena demo</dt><dd class="mt-1 text-xl font-bold text-white">≈10 M tris</dd></div>
+        <div class="bg-panel p-5"><dt class="text-xs uppercase tracking-wider text-slate-500">Scripting</dt><dd class="mt-1 text-xl font-bold text-white">Lua 5.4</dd></div>
+        <div class="bg-panel p-5"><dt class="text-xs uppercase tracking-wider text-slate-500">Lenguaje</dt><dd class="mt-1 text-xl font-bold text-white">C++20</dd></div>
+      </dl>
+    </div>
+  </section>
+
+  <!-- Render -->
+  <section id="render" class="border-t border-line/70 py-24">
+    <div class="mx-auto max-w-6xl px-4 sm:px-6">
+      <p class="text-sm font-semibold uppercase tracking-widest text-brand">CramionFX</p>
+      <h2 class="mt-2 text-3xl font-bold text-white sm:text-4xl">Un renderizador diferido completo</h2>
+      <p class="mt-4 max-w-2xl text-slate-400">
+        Cada frame pasa por un G-buffer, una pasada de iluminación PBR y una cadena de post-proceso HDR.
+        Cada efecto se enciende o se apaga desde código o desde el editor.
+      </p>
+
+      <div class="mt-12 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        <article class="rounded-xl border border-line bg-panel p-6 hover:border-brand/60">
+          <h3 class="font-semibold text-white">PBR metal/rugosidad</h3>
+          <p class="mt-2 text-sm text-slate-400">Albedo, normales, rugosidad, metal, emisión y oclusión, con materiales editables desde el editor.</p>
+        </article>
+        <article class="rounded-xl border border-line bg-panel p-6 hover:border-brand/60">
+          <h3 class="font-semibold text-white">Cielo atmosférico e IBL</h3>
+          <p class="mt-2 text-sm text-slate-400">Cielo físico con ciclo de día y noche; la luz ambiente y los reflejos salen del propio cielo.</p>
+        </article>
+        <article class="rounded-xl border border-line bg-panel p-6 hover:border-brand/60">
+          <h3 class="font-semibold text-white">Sombras en cascada</h3>
+          <p class="mt-2 text-sm text-slate-400">CSM para el sol y mapas de sombra para luces puntuales y focos, con recorte por alfa.</p>
+        </article>
+        <article class="rounded-xl border border-line bg-panel p-6 hover:border-brand/60">
+          <h3 class="font-semibold text-white">SSAO y SSGI</h3>
+          <p class="mt-2 text-sm text-slate-400">Oclusión ambiental e iluminación global en espacio de pantalla: la luz rebota en las paredes.</p>
+        </article>
+        <article class="rounded-xl border border-line bg-panel p-6 hover:border-brand/60">
+          <h3 class="font-semibold text-white">Post-proceso HDR</h3>
+          <p class="mt-2 text-sm text-slate-400">Bloom, auto-exposición por histograma, rayos de luz volumétricos, tonemapping ACES y FXAA.</p>
+        </article>
+        <article class="rounded-xl border border-line bg-panel p-6 hover:border-brand/60">
+          <h3 class="font-semibold text-white">Escenas enormes</h3>
+          <p class="mt-2 text-sm text-slate-400">Lector de OBJ en paralelo, caché binaria y frustum culling por clústeres: San Miguel carga en segundos.</p>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <!-- Motor -->
+  <section id="motor" class="border-t border-line/70 bg-panel/40 py-24">
+    <div class="mx-auto max-w-6xl px-4 sm:px-6">
+      <p class="text-sm font-semibold uppercase tracking-widest text-brand">CramionCore + CramionEditor</p>
+      <h2 class="mt-2 text-3xl font-bold text-white sm:text-4xl">Todo lo que necesita un juego</h2>
+
+      <div class="mt-12 grid gap-10 lg:grid-cols-2">
+        <ul class="space-y-5">
+          <li class="flex gap-4">
+            <span class="mt-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-brand/15 font-mono text-sm text-brand">01</span>
+            <div><h3 class="font-semibold text-white">ECS y escenas</h3><p class="text-sm text-slate-400">Entidades con jerarquía, etiquetas y componentes reflejados; escenas serializadas en <code class="font-mono text-slate-300">.crscene</code>.</p></div>
+          </li>
+          <li class="flex gap-4">
+            <span class="mt-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-brand/15 font-mono text-sm text-brand">02</span>
+            <div><h3 class="font-semibold text-white">Física</h3><p class="text-sm text-slate-400">Cuerpos rígidos, colisionadores, triggers, raycasts y vehículos con ruedas, motor y marchas.</p></div>
+          </li>
+          <li class="flex gap-4">
+            <span class="mt-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-brand/15 font-mono text-sm text-brand">03</span>
+            <div><h3 class="font-semibold text-white">Terreno, agua y navegación</h3><p class="text-sm text-slate-400">Esculpido y pintura de terreno, superficies de agua y NavMesh al estilo Unreal (Recast/Detour) que se regenera en tiempo real, con agentes que se esquivan.</p></div>
+          </li>
+          <li class="flex gap-4">
+            <span class="mt-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-brand/15 font-mono text-sm text-brand">04</span>
+            <div><h3 class="font-semibold text-white">Animación y cinemáticas</h3><p class="text-sm text-slate-400">Esqueletos, clips y un Animator con parámetros; línea de tiempo para cinemáticas.</p></div>
+          </li>
+          <li class="flex gap-4">
+            <span class="mt-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-brand/15 font-mono text-sm text-brand">05</span>
+            <div><h3 class="font-semibold text-white">Audio, partículas e interfaz</h3><p class="text-sm text-slate-400">Sonido 3D, sistemas de partículas y una UI de juego con botones, sliders, campos de texto y casillas.</p></div>
+          </li>
+          <li class="flex gap-4">
+            <span class="mt-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-brand/15 font-mono text-sm text-brand">06</span>
+            <div><h3 class="font-semibold text-white">Editor y exportación</h3><p class="text-sm text-slate-400">Editor con paneles acoplables, inspector, modo Play y exportación del juego con <code class="font-mono text-slate-300">CramionPlayer.exe</code>.</p></div>
+          </li>
+        </ul>
+
+        <div class="rounded-xl border border-line bg-ink p-6 font-mono text-sm">
+          <p class="mb-4 text-xs uppercase tracking-wider text-slate-500">Arquitectura</p>
+          <div class="space-y-3">
+            <div class="rounded-lg border border-brand/50 bg-brand/10 p-3"><span class="text-brand">CramionEditor</span> <span class="text-slate-500">· CramionPlayer</span><p class="mt-1 font-sans text-xs text-slate-400">Editor de escenas (Dear ImGui) y ejecutable del juego exportado</p></div>
+            <div class="rounded-lg border border-line bg-panel p-3"><span class="text-white">CramionCore</span><p class="mt-1 font-sans text-xs text-slate-400">ECS, assets, física, scripting Lua, audio, terreno, agua, UI, cinemáticas</p></div>
+            <div class="rounded-lg border border-line bg-panel p-3"><span class="text-white">CramionFX</span><p class="mt-1 font-sans text-xs text-slate-400">Renderizador Vulkan 1.3 y sus shaders GLSL → SPIR-V</p></div>
+            <div class="rounded-lg border border-line bg-panel p-3"><span class="text-white">CramionDM</span><p class="mt-1 font-sans text-xs text-slate-400">Plataforma: ventana Win32, entrada, dispositivo DirectX 12</p></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Scripting -->
+  <section id="scripting" class="border-t border-line/70 py-24">
+    <div class="mx-auto grid max-w-6xl items-center gap-12 px-4 sm:px-6 lg:grid-cols-2">
+      <div>
+        <p class="text-sm font-semibold uppercase tracking-widest text-brand">Scripting en Lua</p>
+        <h2 class="mt-2 text-3xl font-bold text-white sm:text-4xl">Escribe gameplay como en Unity</h2>
+        <p class="mt-4 text-slate-400">
+          Cada script es una tabla con métodos <code class="font-mono text-slate-300">Start</code>, <code class="font-mono text-slate-300">Update</code>,
+          <code class="font-mono text-slate-300">OnCollisionEnter</code>… Las <code class="font-mono text-slate-300">properties</code> aparecen en el Inspector,
+          y al guardar el archivo en modo Play se recarga sin perder el estado.
+        </p>
+        <ul class="mt-6 space-y-2 text-sm">
+          <li class="flex gap-2"><span class="text-brand">✓</span> Vec3, Entity, Scene, Input, Time, Physics, Navigation, Audio, Prefs, Mathf</li>
+          <li class="flex gap-2"><span class="text-brand">✓</span> Recarga en caliente y consola Lua en el editor</li>
+          <li class="flex gap-2"><span class="text-brand">✓</span> Eventos de interfaz conectados a métodos del script</li>
+          <li class="flex gap-2"><span class="text-brand">✓</span> Entorno aislado: sin acceso al sistema de archivos</li>
+        </ul>
+        <a href="scripting.html" class="mt-8 inline-block font-semibold text-brand hover:text-white">Ver la referencia y los ejemplos →</a>
+      </div>
+      <div class="overflow-hidden rounded-xl border border-line bg-panel shadow-2xl shadow-brand/5">
+        <div class="flex items-center gap-2 border-b border-line px-4 py-3">
+          <span class="h-3 w-3 rounded-full bg-slate-700"></span><span class="h-3 w-3 rounded-full bg-slate-700"></span><span class="h-3 w-3 rounded-full bg-slate-700"></span>
+          <span class="ml-3 font-mono text-xs text-slate-500">Assets/Scripts/Jugador.lua</span>
+        </div>
+        <pre class="overflow-x-auto p-5 text-sm leading-relaxed"><code class="language-lua">local Jugador = {
+    properties = { velocidad = 5.0, salto = 6.0 }
+}
+
+function Jugador:Update(dt)
+    local mover = Vec3(Input.getAxis("Horizontal"), 0,
+                       -Input.getAxis("Vertical"))
+    self.entity:translate(mover * self.velocidad * dt)
+
+    if Input.getKeyDown("space") then
+        self.entity:addImpulse(Vec3.up * self.salto)
+    end
+end
+
+function Jugador:OnTriggerEnter(other)
+    if other.tag == "Moneda" then
+        Audio.playOneShot("Audio/moneda.wav")
+        other:destroy()
+    end
+end
+
+return Jugador</code></pre>
+      </div>
+    </div>
+  </section>
+
+  <!-- Descargar -->
+  <section id="descargar" class="border-t border-line/70 py-24">
+    <div class="mx-auto max-w-6xl px-4 sm:px-6">
+      <div class="relative overflow-hidden rounded-2xl border border-brand/40 bg-panel p-8 sm:p-12">
+        <div class="glow absolute inset-0"></div>
+        <div class="relative grid items-center gap-10 lg:grid-cols-2">
+          <div>
+            <p class="text-sm font-semibold uppercase tracking-widest text-brand">Descargar</p>
+            <h2 class="mt-2 text-3xl font-bold text-white sm:text-4xl">Cramion 0.2 para Windows</h2>
+            <p class="mt-4 text-slate-400">
+              Build Release listo para usar: descomprime y abre <code class="font-mono text-slate-300">CramionEditor.exe</code>.
+              Incluye el editor, el player para exportar juegos y el runtime de C++.
+            </p>
+            <div class="mt-8 flex flex-col gap-3 sm:flex-row">
+              <a href="https://github.com/MantraxStudios/Cramion/releases/latest/download/Cramion-win64.zip" class="inline-flex items-center justify-center gap-2 rounded-lg bg-brand px-6 py-3 font-semibold text-ink hover:bg-white">
+                <svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12m0 0l-5-5m5 5l5-5M4 21h16"/></svg>
+                Descargar .zip (≈10 MB)
+              </a>
+              <a href="https://github.com/MantraxStudios/Cramion/releases" class="inline-flex items-center justify-center rounded-lg border border-line bg-ink px-6 py-3 font-semibold text-white hover:border-brand">Todas las versiones</a>
+            </div>
+          </div>
+          <ul class="space-y-3 rounded-xl border border-line bg-ink p-6 font-mono text-sm">
+            <li class="flex justify-between gap-4"><span class="text-white">CramionEditor.exe</span><span class="text-slate-500">editor de escenas</span></li>
+            <li class="flex justify-between gap-4"><span class="text-white">CramionPlayer.exe</span><span class="text-slate-500">juegos exportados</span></li>
+            <li class="flex justify-between gap-4"><span class="text-white">cramion.exe</span><span class="text-slate-500">demo de render</span></li>
+            <li class="flex justify-between gap-4"><span class="text-white">shaders/</span><span class="text-slate-500">SPIR-V</span></li>
+            <li class="border-t border-line pt-3 font-sans text-xs text-slate-500">
+              Requiere Windows 10/11 x64 y una GPU con Vulkan 1.3. Las escenas de demostración no se incluyen (ver README).
+            </li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Empezar -->
+  <section id="empezar" class="border-t border-line/70 bg-panel/40 py-24">
+    <div class="mx-auto max-w-6xl px-4 sm:px-6">
+      <p class="text-sm font-semibold uppercase tracking-widest text-brand">Empezar</p>
+      <h2 class="mt-2 text-3xl font-bold text-white sm:text-4xl">O compílalo tú mismo</h2>
+
+      <div class="mt-12 grid gap-6 lg:grid-cols-3">
+        <div class="rounded-xl border border-line bg-ink p-6">
+          <p class="font-mono text-sm text-brand">1 · Requisitos</p>
+          <ul class="mt-3 space-y-1.5 text-sm text-slate-400">
+            <li>Windows 10/11 x64 con Windows SDK</li>
+            <li>GPU con Vulkan 1.3</li>
+            <li>Vulkan SDK (<code class="font-mono">VULKAN_SDK</code>)</li>
+            <li>CMake ≥ 3.21, Clang (LLVM) y Ninja</li>
+          </ul>
+        </div>
+        <div class="rounded-xl border border-line bg-ink p-6 lg:col-span-2">
+          <p class="font-mono text-sm text-brand">2 · Compilar en Release</p>
+          <pre class="mt-3 overflow-x-auto rounded-lg bg-panel p-4 font-mono text-sm text-slate-200">cmake --preset clang-ninja-release
+cmake --build --preset clang-ninja-release
+cmake --build --preset clang-ninja-release --target cramion_package  # zip</pre>
+          <p class="mt-4 font-mono text-sm text-brand">3 · Ejecutar</p>
+          <pre class="mt-3 overflow-x-auto rounded-lg bg-panel p-4 font-mono text-sm text-slate-200">.\build-release\CramionEditor.exe     # editor de escenas
+.\build-release\cramion.exe san-miguel  # demo de render</pre>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <footer class="border-t border-line/70 py-10">
+    <div class="mx-auto flex max-w-6xl flex-col items-center justify-between gap-4 px-4 text-sm text-slate-500 sm:flex-row sm:px-6">
+      <div class="flex items-center gap-2"><img src="img/icon.png" alt="" class="h-6 w-6"> Cramion Engine</div>
+      <div class="flex gap-6">
+        <a href="scripting.html" class="hover:text-white">Documentación</a>
+        <a href="#render" class="hover:text-white">Características</a>
+        <a href="#descargar" class="hover:text-white">Descargar</a>
+        <a href="#empezar" class="hover:text-white">Compilar</a>
+      </div>
+    </div>
+  </footer>
+
+  <script>hljs.highlightAll();</script>
+</body>
+</html>

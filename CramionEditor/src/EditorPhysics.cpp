@@ -153,6 +153,7 @@ void EditorApp::enterPlay() {
     physics_.stop();
     particles_.clear();
     physics_.start(world_);
+    nav_.resetAgents();
     // Audio y scripts (despues de la fisica: los scripts la usan en Awake).
     audio_.start(world_);
     scripts_.clearErrors();
@@ -186,6 +187,7 @@ void EditorApp::exitPlay() {
     physics_.stop();
     particles_.clear();
     renderer_.setParticles({});
+    nav_.resetAgents();  // la malla se queda (el mundo vuelve con los mismos UUID)
     play_state_ = PlayState::Edit;
     collider_handle_drag_ = 0;
     // El mundo vuelve a como estaba al darle a Play (la seleccion va por UUID).
@@ -224,6 +226,7 @@ void EditorApp::updateScriptsAndAudio(float delta_seconds, int physics_steps) {
         particles_.clear();
         renderer_.setParticles({});
         std::string error;
+        nav_.clear();  // otro nivel: otra malla
         if (!ecs::loadScene(world_, next, &error)) {
             std::cerr << "[Scene.load] " << next.string() << ": " << error << "\n";
         }
