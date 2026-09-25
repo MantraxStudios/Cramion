@@ -18,6 +18,7 @@
 #include "CramionCore/ecs/AnimatorController.h"
 #include "CramionCore/ecs/World.h"
 #include "CramionCore/terrain/Terrain.h"
+#include "CramionCore/water/Water.h"
 
 #include <CramionFX/CramionFX.h>
 
@@ -136,6 +137,16 @@ private:
                                   gfx::VulkanRenderer& renderer);
     void syncCamera(World& world, scene::Scene& scene);
     void syncTerrains(World& world, gfx::VulkanRenderer& renderer);
+    void syncWater(World& world, gfx::VulkanRenderer& renderer, float delta_seconds,
+                   const core::Vec3& camera_position);
+    struct RiverMesh {
+        std::uint64_t hash = 0;
+        std::uint64_t version = 0;
+        std::vector<gfx::WaterVertex> vertices;
+        std::vector<std::uint32_t> indices;
+    };
+    std::unordered_map<entt::entity, RiverMesh> rivers_;
+    std::uint64_t river_version_ = 0;
     void destroyTerrains();
 
     struct TerrainGpu {

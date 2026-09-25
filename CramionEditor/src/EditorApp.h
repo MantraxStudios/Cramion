@@ -28,6 +28,7 @@
 // al renderizador (RenderSync la rellena cada frame).
 
 #include "ImGuiLayer.h"
+#include "LuaCompletion.h"
 #include "ModelPreviews.h"
 #include "PropertyInspector.h"
 
@@ -58,6 +59,8 @@ inline std::vector<Uuid>::iterator findUuid(std::vector<Uuid>& list, const Uuid&
 
 // Imagen de Assets/ arrastrada desde el Proyecto (ruta UTF-8 terminada en 0).
 inline constexpr const char* kImagePayload = "CRAMION_IMAGE";
+inline constexpr const char* kScriptPayload = "CRAMION_SCRIPT";  // ruta (utf8) de un .lua
+inline constexpr const char* kAudioPayload = "CRAMION_AUDIO";    // ruta (utf8) de un audio
 
 class EditorApp {
 public:
@@ -72,7 +75,10 @@ public:
     void drawUi(float delta_seconds);
     // Lleva el mundo al renderizador (despues de scene.update, antes de
     // drawFrame).
-    void syncWorld(float delta_seconds);
+    // `secondary`: la otra vista (Escena y Juego visibles a la vez: se dibujan
+    // las dos cada frame, tambien en Play).
+    void syncWorld(float delta_seconds, bool secondary = false);
+    bool wantsSecondaryView() const { return has_project_ && scene_view_visible_ && game_view_visible_; }
 
     // La camara del editor solo recibe la entrada mientras se vuela.
     bool sceneWantsInput() const { return flying_; }
@@ -239,6 +245,97 @@ private:
     bool drawTerrainTool(float delta_seconds);
     void drawTerrainInspector(ecs::Entity entity);
 
+    // --- Scripting y audio (EditorScripting.cpp) ---
+public:
+    void setInput(const dm::Input* input) { input_ = input; }
+private:
+    struct ScriptTab {
+        std::filesystem::path path;
+        std::string relative;  // dentro de Assets
+        std::string text;
+        std::string saved;
+        bool select = false;
+        bool focus = false;
+        int goto_line = -1;
+        int cursor = 0;
+        int line = 1;
+        int column = 1;
+        // Autocompletado.
+        bool completion_open = false;
+        int completion_selected = 0;
+        std::vector<LuaCompletion> completions;
+        LuaCompletionContext completion_context;
+        bool was_active = false;
+    };
+    std::string assetRelative(const std::filesystem::path& file) const;
+    void createScriptAsset(const std::filesystem::path& folder, ecs::Entity attach_to);
+    void openScript(const std::filesystem::path& file);
+    bool saveScript(ScriptTab& tab);
+    void drawScriptEditor();
+    void drawCodeEditor(ScriptTab& tab);
+    void drawScriptInspector(ecs::Entity entity);
+    void drawAudioInspector(ecs::Entity entity);
+    void updateScriptsAndAudio(float delta_seconds, int physics_steps);
+    const dm::Input* input_ = nullptr;
+    scripting::ScriptSystem scripts_;
+    audio::AudioSystem audio_;
+    std::vector<ScriptTab> script_tabs_;
+    int active_script_tab_ = -1;
+    bool show_script_editor_ = false;
+    bool focus_script_editor_ = false;
+    std::string lua_console_;
+    std::vector<std::filesystem::path> current_scripts_;  // .lua de la carpeta
+    std::vector<std::filesystem::path> current_audio_;    // audios de la carpeta
+
+    // --- Exportar el juego (EditorExport.cpp) ---
+    std::filesystem::path exportGame(bool run_after);
+
+    // --- Interfaz del juego (EditorUI.cpp) ---
+    void drawGameUi(ImVec2 origin, ImVec2 size);
+    ecs::Entity uiParentForNewElement();
+    ecs::Entity createUiElement(int kind);  // 0 Canvas, 1 panel, 2 imagen, 3 texto, 4 boton, 5 slider, 6 campo, 7 casilla
+    void drawUiCreateMenu();
+    void drawRectTransformInspector(ecs::Entity entity);
+    ui::UiSystem ui_;
+    struct UiDrag {
+        bool active = false;
+        Uuid entity{};
+        int mode = 0;  // 0 mover, 1..4 esquinas
+        ImVec2 start_mouse{};
+        core::Vec2 start_position{};
+        core::Vec2 start_size{};
+        float scale = 1.0f;
+    } ui_drag_;
+
+    // --- Agua (EditorWater.cpp) ---
+    ecs::Entity createWaterEntity(int kind);  // 0 oceano, 1 lago, 2 rio
+    void drawWaterInspector(ecs::Entity entity);
+    bool drawWaterGizmos();  // true si el raton esta sobre un asa
+    bool groundHeightAt(float x, float z, float& height) const;
+    void snapRiverToTerrain(ecs::Entity entity);
+    struct WaterDrag {
+        bool active = false;
+        Uuid entity{};
+        int point = -1;
+        float plane_y = 0.0f;
+    } water_drag_;
+
+    // --- Configuracion grafica (ProjectSettings/Graphics.ini) ---
+    void loadGraphicsSettings();
+    void saveGraphicsSettings() const;
+    void drawGraphicsSettings();
+
+    // --- Barra de titulo propia (sin la de Windows) ---
+public:
+    // Zona de arrastre de la ventana (la consulta dm::Window en WM_NCHITTEST).
+    bool isCaptionDragArea(int x, int y) const;
+private:
+    void drawWindowControls();
+    void drawHubTitleBar();
+    void drawCaptionLogo();
+    float caption_height_ = 0.0f;
+    std::vector<ImVec4> caption_blockers_;  // min x, min y, max x, max y (no arrastran)
+
     // --- Materiales (EditorMaterials.cpp) ---
     void drawMaterialBall(ImDrawList* draw, ImVec2 center, float radius, const Uuid& material);
     // `image` (ruta en Assets): material a partir de esa textura y sus
@@ -310,6 +407,7 @@ private:
         float y = 0.0f;
         bool additive = false;
         Uuid material{};  // soltar un material: se pone en el hueco bajo el raton
+        std::string script;  // soltar un script: se engancha al objeto bajo el raton
     } pending_pick_;
     void handleCameraControls();
 

@@ -1,0 +1,290 @@
+#include "LuaCompletion.h"
+
+#include <algorithm>
+#include <cctype>
+#include <regex>
+#include <set>
+#include <unordered_map>
+
+namespace cramion::editor {
+
+namespace {
+
+using List = std::vector<LuaCompletion>;
+
+LuaCompletion fn(const char* name, const char* args, const char* doc) {
+    return LuaCompletion{name, std::string(name) + "(", std::string(name) + "(" + args + ")  -  " + doc, 2};
+}
+LuaCompletion prop(const char* name, const char* doc) { return LuaCompletion{name, name, doc, 3}; }
+
+const List& keywords() {
+    static const List list = [] {
+        List l;
+        for (const char* k : {"and", "break", "do", "else", "elseif", "end", "false", "for", "function", "if", "in",
+                              "local", "nil", "not", "or", "repeat", "return", "then", "true", "until", "while"}) {
+            l.push_back(LuaCompletion{k, k, "palabra clave", 0});
+        }
+        return l;
+    }();
+    return list;
+}
+
+const List& globals() {
+    static const List list = {
+        LuaCompletion{"self", "self", "la instancia del script (self.entity = su objeto)", 1},
+        LuaCompletion{"Vec3", "Vec3", "vector 3D: Vec3(x, y, z), Vec3.up, a + b, v * 2, v:length()", 1},
+        LuaCompletion{"Scene", "Scene", "buscar, crear y destruir objetos", 1},
+        LuaCompletion{"Input", "Input", "teclado y raton", 1},
+        LuaCompletion{"Time", "Time", "deltaTime, time, frameCount", 1},
+        LuaCompletion{"Physics", "Physics", "consultas de fisica (raycast)", 1},
+        LuaCompletion{"Audio", "Audio", "sonidos sueltos (playOneShot)", 1},
+        LuaCompletion{"Debug", "Debug", "mensajes en la Consola", 1},
+        LuaCompletion{"Mathf", "Mathf", "lerp, clamp, smoothstep...", 1},
+        LuaCompletion{"math", "math", "biblioteca math de Lua", 1},
+        LuaCompletion{"string", "string", "biblioteca string de Lua", 1},
+        LuaCompletion{"table", "table", "biblioteca table de Lua", 1},
+        fn("print", "...", "escribe en la Consola"),
+        fn("pairs", "t", "recorre una tabla (clave, valor)"),
+        fn("ipairs", "t", "recorre una lista (indice, valor)"),
+        fn("tostring", "v", "a texto"),
+        fn("tonumber", "v", "a numero"),
+        fn("type", "v", "tipo del valor"),
+        fn("setmetatable", "t, meta", "metatabla"),
+    };
+    return list;
+}
+
+const std::unordered_map<std::string, List>& tables() {
+    static const std::unordered_map<std::string, List> map = {
+        {"Input",
+         {fn("getKey", "\"W\"", "tecla mantenida"), fn("getKeyDown", "\"Space\"", "tecla pulsada este frame"),
+          fn("getKeyUp", "\"E\"", "tecla soltada este frame"),
+          fn("getAxis", "\"Horizontal\"", "-1..1: Horizontal (A/D), Vertical (W/S), Mouse X, Mouse Y"),
+          fn("getMouseButton", "0", "boton del raton mantenido (0 izq, 1 der, 2 medio)"),
+          fn("getMouseButtonDown", "0", "boton pulsado este frame"), fn("getMouseButtonUp", "0", "boton soltado"),
+          fn("mousePosition", "", "Vec3 con la posicion del raton"), fn("mouseDelta", "", "Vec3 con el movimiento")}},
+        {"Scene",
+         {fn("find", "\"nombre\"", "el primer objeto con ese nombre (o nil)"),
+          fn("findWithTag", "\"tag\"", "el primer objeto con ese tag"),
+          fn("findAllWithTag", "\"tag\"", "lista de objetos con ese tag"),
+          fn("create", "\"nombre\", posicion", "objeto vacio nuevo"),
+          fn("instantiate", "entity, posicion", "copia de un objeto (con hijos y componentes)"),
+          fn("destroy", "entity", "lo destruye al final del frame")}},
+        {"Time",
+         {prop("deltaTime", "segundos desde el frame anterior"), prop("time", "segundos desde el Play"),
+          prop("frameCount", "frames desde el Play"), prop("fixedDeltaTime", "paso fijo de la fisica")}},
+        {"Physics", {fn("raycast", "origen, direccion, distancia", "nil o {entity, point, normal, distance}")}},
+        {"Audio", {fn("playOneShot", "\"Audio/golpe.wav\", posicion, volumen", "sonido suelto (sin posicion = 2D)")}},
+        {"Debug",
+         {fn("log", "...", "mensaje en la Consola"), fn("warn", "...", "aviso"), fn("error", "...", "error")}},
+        {"Mathf",
+         {fn("lerp", "a, b, t", "interpola"), fn("clamp", "v, min, max", "limita"), fn("clamp01", "v", "0..1"),
+          fn("smoothstep", "a, b, v", "suave 0..1"), fn("moveTowards", "actual, objetivo, paso", "se acerca"),
+          fn("random", "min, max", "aleatorio"), prop("pi", "3.14159"), prop("deg2rad", "grados a radianes"),
+          prop("rad2deg", "radianes a grados")}},
+        {"Vec3",
+         {prop("zero", "Vec3(0, 0, 0)"), prop("one", "Vec3(1, 1, 1)"), prop("up", "Vec3(0, 1, 0)"),
+          prop("down", "Vec3(0, -1, 0)"), prop("right", "Vec3(1, 0, 0)"), prop("left", "Vec3(-1, 0, 0)"),
+          prop("forward", "Vec3(0, 0, -1)"), prop("back", "Vec3(0, 0, 1)"),
+          fn("lerp", "a, b, t", "interpola dos vectores")}},
+        {"math",
+         {fn("abs", "x", ""), fn("floor", "x", ""), fn("ceil", "x", ""), fn("sqrt", "x", ""), fn("sin", "x", ""),
+          fn("cos", "x", ""), fn("atan", "y, x", ""), fn("min", "a, b", ""), fn("max", "a, b", ""),
+          fn("random", "m, n", ""), prop("pi", ""), prop("huge", "")}},
+        {"string",
+         {fn("format", "\"%d\", ...", ""), fn("sub", "s, i, j", ""), fn("len", "s", ""), fn("upper", "s", ""),
+          fn("lower", "s", ""), fn("find", "s, patron", ""), fn("rep", "s, n", "")}},
+        {"table",
+         {fn("insert", "t, v", ""), fn("remove", "t, i", ""), fn("concat", "t, sep", ""), fn("sort", "t, cmp", "")}},
+    };
+    return map;
+}
+
+// Miembros de un objeto: con '.' (propiedades) o ':' (metodos).
+const List& entityProperties() {
+    static const List list = {
+        prop("name", "nombre"), prop("tag", "tag"), prop("active", "activo (true/false)"),
+        prop("position", "Vec3 en el mundo"), prop("localPosition", "Vec3 respecto al padre"),
+        prop("rotation", "Vec3 en grados"), prop("scale", "Vec3"), prop("forward", "Vec3 hacia delante"),
+        prop("right", "Vec3 a la derecha"), prop("up", "Vec3 hacia arriba"), prop("parent", "el padre (o nil)"),
+        prop("velocity", "Vec3 de su Rigidbody")};
+    return list;
+}
+const List& entityMethods() {
+    static const List list = {
+        fn("translate", "Vec3", "mueve en el mundo"), fn("translateLocal", "Vec3", "mueve en sus ejes"),
+        fn("rotate", "Vec3 grados", "gira"), fn("lookAt", "Vec3", "mira hacia un punto"),
+        fn("distanceTo", "otra", "distancia a otro objeto"), fn("destroy", "", "lo destruye"),
+        fn("addForce", "Vec3, \"impulse\"", "fuerza (force, impulse, acceleration, velocity)"),
+        fn("addImpulse", "Vec3", "impulso"), fn("addTorque", "Vec3", "par de giro"),
+        fn("playSound", "", "su Audio Source"), fn("stopSound", "", "para su sonido"),
+        fn("isPlayingSound", "", "suena?"), fn("playAnimation", "\"Correr\", true", "clip del Animator"),
+        fn("setAnimatorFloat", "\"velocidad\", 1.0", "parametro del Animator Controller"),
+        fn("setAnimatorBool", "\"saltando\", true", ""), fn("setAnimatorTrigger", "\"atacar\"", ""),
+        fn("hasComponent", "\"Rigidbody\"", "tiene ese componente?"), fn("getScript", "", "la instancia de su script"),
+        fn("find", "\"hijo\"", "un hijo por nombre"), fn("valid", "", "sigue existiendo?")};
+    return list;
+}
+const List& vectorMembers(char accessor) {
+    static const List fields = {prop("x", ""), prop("y", ""), prop("z", "")};
+    static const List methods = {fn("length", "", "longitud"), fn("normalized", "", "de longitud 1"),
+                                 fn("dot", "otro", "producto escalar"), fn("cross", "otro", "producto vectorial"),
+                                 fn("distance", "otro", "distancia"), fn("lerp", "otro, t", "interpola")};
+    return accessor == ':' ? methods : fields;
+}
+const List& engineCallbacks() {
+    static const List list = {
+        LuaCompletion{"Awake", "Awake()", "al crearse (antes de Start)", 5},
+        LuaCompletion{"Start", "Start()", "una vez, antes del primer Update", 5},
+        LuaCompletion{"Update", "Update(dt)", "cada frame", 5},
+        LuaCompletion{"LateUpdate", "LateUpdate(dt)", "cada frame, tras todos los Update", 5},
+        LuaCompletion{"FixedUpdate", "FixedUpdate(dt)", "cada paso de la fisica", 5},
+        LuaCompletion{"OnCollisionEnter", "OnCollisionEnter(other, contact)", "empieza un choque", 5},
+        LuaCompletion{"OnCollisionStay", "OnCollisionStay(other, contact)", "sigue el choque", 5},
+        LuaCompletion{"OnCollisionExit", "OnCollisionExit(other, contact)", "termina el choque", 5},
+        LuaCompletion{"OnTriggerEnter", "OnTriggerEnter(other)", "entra en un trigger", 5},
+        LuaCompletion{"OnTriggerStay", "OnTriggerStay(other)", "sigue dentro", 5},
+        LuaCompletion{"OnTriggerExit", "OnTriggerExit(other)", "sale del trigger", 5},
+        LuaCompletion{"OnDestroy", "OnDestroy()", "al destruirse o parar el Play", 5}};
+    return list;
+}
+
+bool identChar(char c) { return std::isalnum(static_cast<unsigned char>(c)) || c == '_'; }
+
+std::string lower(std::string s) {
+    std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return s;
+}
+
+// Nombres del archivo: locales, funciones, propiedades y campos de self.
+void fileSymbols(const std::string& text, List& locals, List& self_fields, List& self_methods) {
+    std::set<std::string> seen;
+    const auto add = [&](List& to, const std::string& name, const char* detail, int kind) {
+        if (name.empty() || !seen.insert(std::to_string(kind) + name).second) return;
+        to.push_back(LuaCompletion{name, name, detail, kind});
+    };
+    static const std::regex local_re(R"(local\s+(?:function\s+)?([A-Za-z_]\w*))");
+    static const std::regex function_re(R"(function\s+[A-Za-z_]\w*[:.]([A-Za-z_]\w*))");
+    static const std::regex self_re(R"(self\.([A-Za-z_]\w*)\s*=)");
+    for (std::sregex_iterator it(text.begin(), text.end(), local_re), end; it != end; ++it) add(locals, (*it)[1], "local", 4);
+    for (std::sregex_iterator it(text.begin(), text.end(), function_re), end; it != end; ++it) {
+        add(self_methods, (*it)[1], "metodo del script", 2);
+    }
+    for (std::sregex_iterator it(text.begin(), text.end(), self_re), end; it != end; ++it) {
+        add(self_fields, (*it)[1], "campo de self", 3);
+    }
+    // properties = { nombre = valor, ... }
+    const std::size_t at = text.find("properties");
+    if (at != std::string::npos) {
+        const std::size_t open = text.find('{', at);
+        if (open != std::string::npos) {
+            int depth = 0;
+            std::size_t close = open;
+            for (; close < text.size(); ++close) {
+                if (text[close] == '{') ++depth;
+                if (text[close] == '}' && --depth == 0) break;
+            }
+            const std::string body = text.substr(open + 1, close - open - 1);
+            static const std::regex prop_re(R"(([A-Za-z_]\w*)\s*=)");
+            for (std::sregex_iterator it(body.begin(), body.end(), prop_re), end; it != end; ++it) {
+                add(self_fields, (*it)[1], "propiedad (Inspector)", 3);
+            }
+        }
+    }
+    add(self_fields, "entity", "su objeto (Entity)", 3);
+}
+
+}  // namespace
+
+bool luaCompletionContext(const std::string& text, std::size_t cursor, LuaCompletionContext& context) {
+    cursor = std::min(cursor, text.size());
+    // Dentro de un comentario o un texto no se completa.
+    std::size_t line_start = text.rfind('\n', cursor == 0 ? 0 : cursor - 1);
+    line_start = line_start == std::string::npos ? 0 : line_start + 1;
+    const std::string line = text.substr(line_start, cursor - line_start);
+    if (line.find("--") != std::string::npos) return false;
+    if (std::count(line.begin(), line.end(), '"') % 2 == 1 || std::count(line.begin(), line.end(), '\'') % 2 == 1) {
+        return false;
+    }
+    std::size_t start = cursor;
+    while (start > 0 && identChar(text[start - 1])) --start;
+    context = LuaCompletionContext{};
+    context.prefix_start = start;
+    context.prefix = text.substr(start, cursor - start);
+    if (!context.prefix.empty() && std::isdigit(static_cast<unsigned char>(context.prefix[0]))) return false;
+    if (start > 0 && (text[start - 1] == '.' || text[start - 1] == ':')) {
+        context.accessor = text[start - 1];
+        // Receptor: la cadena a.b.c antes del punto.
+        std::size_t r = start - 1;
+        while (r > 0 && (identChar(text[r - 1]) || text[r - 1] == '.')) --r;
+        context.receiver = text.substr(r, start - 1 - r);
+        // "function Clase:" -> metodos del motor.
+        const std::string before = text.substr(line_start, r - line_start);
+        std::string trimmed = before;
+        while (!trimmed.empty() && std::isspace(static_cast<unsigned char>(trimmed.back()))) trimmed.pop_back();
+        context.after_function = trimmed.size() >= 8 && trimmed.compare(trimmed.size() - 8, 8, "function") == 0;
+        return true;
+    }
+    return !context.prefix.empty();
+}
+
+std::vector<LuaCompletion> luaCompletions(const std::string& text, const LuaCompletionContext& context) {
+    List candidates;
+    List locals;
+    List self_fields;
+    List self_methods;
+    fileSymbols(text, locals, self_fields, self_methods);
+    const auto append = [&](const List& list) { candidates.insert(candidates.end(), list.begin(), list.end()); };
+
+    if (context.accessor != 0) {
+        const std::string& r = context.receiver;
+        const auto table = tables().find(r);
+        if (context.after_function) {
+            append(engineCallbacks());
+        } else if (table != tables().end()) {
+            append(table->second);
+        } else if (r == "self") {
+            append(context.accessor == ':' ? self_methods : self_fields);
+            if (context.accessor == ':') append(engineCallbacks());
+        } else {
+            // Entidad (self.entity, other, lo que devuelve Scene.find...) o Vec3.
+            const std::string low = lower(r);
+            const bool looks_vector = low.find("pos") != std::string::npos || low.find("dir") != std::string::npos ||
+                                      low.find("vel") != std::string::npos || low.find("vec") != std::string::npos ||
+                                      low == "v" || low.find("point") != std::string::npos ||
+                                      low.find("normal") != std::string::npos;
+            if (looks_vector) {
+                append(vectorMembers(context.accessor));
+            } else {
+                append(context.accessor == ':' ? entityMethods() : entityProperties());
+                append(vectorMembers(context.accessor));
+            }
+        }
+    } else {
+        append(locals);
+        append(globals());
+        append(keywords());
+    }
+
+    // Filtro: empieza igual (primero) o contiene el texto; sin repetir.
+    const std::string needle = lower(context.prefix);
+    List starts;
+    List contains;
+    std::set<std::string> seen;
+    for (const LuaCompletion& c : candidates) {
+        const std::string label = lower(c.label);
+        if (label == needle && context.accessor == 0) continue;  // ya esta escrito entero
+        if (!seen.insert(c.label).second) continue;
+        if (label.rfind(needle, 0) == 0) {
+            starts.push_back(c);
+        } else if (needle.size() >= 2 && label.find(needle) != std::string::npos) {
+            contains.push_back(c);
+        }
+    }
+    const auto by_label = [](const LuaCompletion& a, const LuaCompletion& b) { return a.label < b.label; };
+    if (context.accessor == 0) std::stable_sort(starts.begin(), starts.end(), by_label);
+    starts.insert(starts.end(), contains.begin(), contains.end());
+    return starts;
+}
+
+}  // namespace cramion::editor

@@ -33,6 +33,15 @@ layout(location = 0) out vec4 out_albedo;    // rgb = albedo, a = oclusion ambie
 layout(location = 1) out vec4 out_normal;    // rg = normal (octaedrica), b = rugosidad,
                                              // a = reflectancia (F0 no metalico)
 layout(location = 2) out vec4 out_material;  // rgb = emision (HDR lineal), a = metalicidad
+layout(location = 3) out vec2 out_velocity;  // UV actual - UV anterior (sin jitter)
+
+// Movimiento en pantalla de este pixel, de las posiciones de recorte (sin
+// jitter) de este frame y del anterior.
+void writeVelocity(vec4 current_clip, vec4 previous_clip) {
+    vec2 current = current_clip.xy / max(current_clip.w, 1e-6);
+    vec2 previous = previous_clip.xy / max(previous_clip.w, 1e-6);
+    out_velocity = (current - previous) * 0.5;
+}
 
 #include "rain_common.glsl"
 

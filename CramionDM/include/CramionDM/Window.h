@@ -20,6 +20,10 @@ struct WindowConfig {
     uint32_t height = 720;
     bool resizable = true;
     bool maximized = false;  // abrir maximizada (width/height = tamano al restaurar)
+    // Sin la barra de titulo de Windows: la dibuja la aplicacion (ver
+    // setCaptionHitTest). Se conservan el borde para redimensionar, el snap,
+    // las animaciones y el menu de sistema.
+    bool custom_title_bar = false;
 };
 
 // Ventana Win32 que traduce los mensajes del sistema a eventos de CramionDM.
@@ -67,6 +71,20 @@ public:
     // Cambia el título de la ventana.
     void setTitle(const std::wstring& title);
 
+    // --- Barra de titulo propia (custom_title_bar) ---
+    // Devuelve true si el punto (pixeles del area cliente) es zona de
+    // arrastre de la barra: mover la ventana, doble clic = maximizar.
+    using CaptionHitTest = std::function<bool(int x, int y)>;
+    void setCaptionHitTest(CaptionHitTest test) { caption_test_ = std::move(test); }
+    bool customTitleBar() const { return custom_title_bar_; }
+    void minimize();
+    void toggleMaximize();
+    bool isMaximized() const;
+    // Como pulsar la X: llega el evento WindowClose.
+    void requestClose();
+    // Menu de sistema de Windows (Alt+Espacio) en ese punto de la pantalla.
+    void showSystemMenu(int screen_x, int screen_y);
+
 private:
     // WndProc estático que redirige al método de instancia.
     static LRESULT CALLBACK wndProcThunk(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
@@ -82,6 +100,9 @@ private:
     HINSTANCE hinstance_ = nullptr;
     EventCallback callback_;
     MessageHook message_hook_;
+    CaptionHitTest caption_test_;
+    bool custom_title_bar_ = false;
+    LRESULT hitTest(LPARAM lParam) const;
 
     uint32_t width_ = 0;
     uint32_t height_ = 0;

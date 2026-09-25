@@ -18,6 +18,8 @@ class VulkanDevice;
 //   albedo    RGBA8      rgb = color base,  a = oclusion ambiental
 //   normal    RGBA16F    rg = normal (octaedro), b = rugosidad, a = libre
 //   material  RGBA16F    rgb = emision (radiancia HDR lineal), a = metalicidad
+//   velocity  RG16F      movimiento en pantalla (UV actual - UV anterior),
+//                        para el TAA y los escaladores (FSR, DLSS)
 //   depth     D32        profundidad; la pasada de iluminacion la muestrea y
 //                        reconstruye con ella la posicion del mundo
 //
@@ -31,11 +33,12 @@ class VulkanDevice;
 class GBuffer {
 public:
     // Numero de destinos de color (sin contar la profundidad).
-    static constexpr std::size_t kColorAttachmentCount = 3;
+    static constexpr std::size_t kColorAttachmentCount = 4;
 
     static constexpr vk::Format kAlbedoFormat = vk::Format::eR8G8B8A8Unorm;
     static constexpr vk::Format kNormalFormat = vk::Format::eR16G16B16A16Sfloat;
     static constexpr vk::Format kMaterialFormat = vk::Format::eR16G16B16A16Sfloat;
+    static constexpr vk::Format kVelocityFormat = vk::Format::eR16G16Sfloat;
 
     void create(const VulkanDevice& device, vk::Extent2D extent);
     void destroy();
@@ -43,15 +46,16 @@ public:
     const VulkanImage& albedo() const { return albedo_; }
     const VulkanImage& normal() const { return normal_; }
     const VulkanImage& material() const { return material_; }
+    const VulkanImage& velocity() const { return velocity_; }
     const VulkanImage& depth() const { return depth_; }
 
     // Los destinos de color en el orden en que los declara el shader.
     std::array<const VulkanImage*, kColorAttachmentCount> colorAttachments() const {
-        return {&albedo_, &normal_, &material_};
+        return {&albedo_, &normal_, &material_, &velocity_};
     }
 
     std::array<vk::Format, kColorAttachmentCount> colorFormats() const {
-        return {kAlbedoFormat, kNormalFormat, kMaterialFormat};
+        return {kAlbedoFormat, kNormalFormat, kMaterialFormat, kVelocityFormat};
     }
 
     vk::Format depthFormat() const { return depth_.format(); }
@@ -62,6 +66,7 @@ private:
     VulkanImage albedo_;
     VulkanImage normal_;
     VulkanImage material_;
+    VulkanImage velocity_;
     VulkanImage depth_;
 
     vk::Extent2D extent_{0, 0};

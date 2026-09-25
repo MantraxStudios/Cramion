@@ -11,6 +11,10 @@ layout(set = 0, binding = 0) uniform CameraBuffer {
     mat4 view_projection;
     mat4 inverse_view_projection;
     vec4 position;
+    mat4 unjittered_view_projection;
+    mat4 previous_view_projection;
+    vec4 jitter;
+    uvec4 motion;  // x = primer hueso del frame anterior
 } camera;
 
 layout(set = 1, binding = 0) uniform sampler2D heightmap;
@@ -32,6 +36,8 @@ layout(location = 0) in vec3 in_grid;  // xy = 0..1 dentro del trozo, z = 1 en e
 
 layout(location = 0) out vec3 v_world_position;
 layout(location = 1) out vec2 v_uv;  // 0..1 en todo el terreno
+layout(location = 2) out vec4 v_current_clip;   // el terreno no se mueve: solo la camara
+layout(location = 3) out vec4 v_previous_clip;
 
 // Altura en uv (0..1): los texeles de la textura son los vertices del mapa.
 float heightAt(vec2 uv) {
@@ -47,6 +53,8 @@ void main() {
     world.y -= in_grid.z * push.chunk.w;
     v_world_position = world;
     v_uv = uv;
+    v_current_clip = camera.unjittered_view_projection * vec4(world, 1.0);
+    v_previous_clip = camera.previous_view_projection * vec4(world, 1.0);
     gl_Position = push.shadow != 0u ? push.light_view_projection * vec4(world, 1.0)
                                     : camera.view_projection * vec4(world, 1.0);
 }

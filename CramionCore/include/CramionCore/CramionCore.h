@@ -34,3 +34,7 @@
 #include "CramionCore/project/Project.h"
 #include "CramionCore/terrain/Terrain.h"
 #include "CramionCore/terrain/TerrainTools.h"
+#include "CramionCore/water/Water.h"
+#include "CramionCore/audio/Audio.h"
+#include "CramionCore/scripting/Scripting.h"
+#include "CramionCore/ui/UI.h"

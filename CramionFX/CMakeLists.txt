@@ -64,6 +64,16 @@ FetchContent_Declare(stb
 
 FetchContent_MakeAvailable(assimp stb)
 
+# AMD FidelityFX Super Resolution 1 (MIT): solo las cabeceras de shader
+# (ffx_a.h, ffx_fsr1.h), que incluyen fsr_easu.frag y fsr_rcas.frag.
+FetchContent_Declare(fidelityfx_fsr1
+    GIT_REPOSITORY https://github.com/GPUOpen-Effects/FidelityFX-FSR.git
+    GIT_TAG master
+    GIT_SHALLOW TRUE
+    SOURCE_SUBDIR ffx-fsr
+)
+FetchContent_MakeAvailable(fidelityfx_fsr1)
+
 # Cabeceros de assimp como SYSTEM: sus avisos no son nuestros.
 set_target_properties(assimp PROPERTIES SYSTEM TRUE)
 
@@ -175,6 +185,7 @@ foreach(SHADER_SOURCE IN LISTS CRAMIONFX_SHADER_SOURCES)
         OUTPUT "${SHADER_BINARY}"
         COMMAND "${CMAKE_COMMAND}" -E make_directory "${CRAMIONFX_SHADER_DIR}"
         COMMAND "${GLSLC_EXECUTABLE}" --target-env=vulkan1.3 -O
+                -I "${fidelityfx_fsr1_SOURCE_DIR}/ffx-fsr"
                 "${SHADER_SOURCE}" -o "${SHADER_BINARY}"
         DEPENDS "${SHADER_SOURCE}" ${CRAMIONFX_SHADER_INCLUDES}
         COMMENT "CramionFX: compilando shader ${SHADER_NAME}"

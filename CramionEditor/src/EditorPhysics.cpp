@@ -151,6 +151,10 @@ void EditorApp::enterPlay() {
     physics_.stop();
     particles_.clear();
     physics_.start(world_);
+    // Audio y scripts (despues de la fisica: los scripts la usan en Awake).
+    audio_.start(world_);
+    scripts_.clearErrors();
+    scripts_.start(world_);
     cinematics_.reset();
     cinematics_.clearPreview();
     timeline_playing_ = false;
@@ -170,6 +174,9 @@ void EditorApp::enterPlay() {
 void EditorApp::exitPlay() {
     if (!playing()) return;
     const std::uint64_t steps = physics_.stats().steps;
+    scripts_.stop();
+    audio_.stop();
+    ui_.reset();
     physics_.stop();
     particles_.clear();
     renderer_.setParticles({});
@@ -185,6 +192,23 @@ void EditorApp::exitPlay() {
     std::cout << "[Fisica] Stop (" << steps << " pasos, "
               << event_counts_[static_cast<int>(PhysicsEventType::CollisionEnter)] << " colisiones, "
               << event_counts_[static_cast<int>(PhysicsEventType::TriggerEnter)] << " triggers)" << std::endl;
+}
+
+// Scripts (con la entrada solo si no se esta escribiendo en la interfaz) y
+// el audio (oyente: el AudioListener o la camara principal).
+void EditorApp::updateScriptsAndAudio(float delta_seconds, int physics_steps) {
+    scripts_.setInput(ImGui::GetIO().WantTextInput || ui_.typing() ? nullptr : input_);
+    scripts_.fixedUpdate(world_, physics_settings_.fixed_step, physics_steps);
+    scripts_.update(world_, delta_seconds);
+    Vec3 position = scene_.camera().position();
+    Vec3 forward = scene_.camera().forward();
+    world_.forEachDepthFirst([&](ecs::Entity e) {
+        if (const ecs::Camera* camera = e.tryGet<ecs::Camera>(); camera != nullptr && camera->is_main && e.activeInHierarchy()) {
+            position = e.worldPosition();
+            forward = e.forward();
+        }
+    });
+    audio_.update(world_, delta_seconds, position, forward);
 }
 
 void EditorApp::togglePause() {
@@ -205,17 +229,20 @@ void EditorApp::updatePhysics(float delta_seconds) {
     physics_.setRecordQueries(gizmo_queries_);
     const float fixed = physics_settings_.fixed_step;
     switch (play_state_) {
-        case PlayState::Playing:
+        case PlayState::Playing: {
             play_time_ += delta_seconds;
-            physics_.update(world_, delta_seconds, true);
+            const int steps = physics_.update(world_, delta_seconds, true);
             particles_.update(world_, delta_seconds, &physics_);
+            updateScriptsAndAudio(delta_seconds, steps);
             break;
+        }
         case PlayState::Paused:
             if (step_requests_ > 0) {
                 --step_requests_;
                 play_time_ += fixed;
                 physics_.singleStep(world_);
                 particles_.update(world_, fixed, &physics_);
+                updateScriptsAndAudio(fixed, 1);
             } else {
                 physics_.update(world_, 0.0f, false);
             }

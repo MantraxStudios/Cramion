@@ -1,4 +1,5 @@
 #include "CramionFX/vk/TerrainPass.h"
+#include "CramionFX/vk/GBuffer.h"
 
 #include "CramionFX/asset/ImageFile.h"
 #include "CramionFX/core/Frustum.h"
@@ -101,7 +102,7 @@ std::vector<std::uint8_t> solidLayer(std::uint8_t r, std::uint8_t g, std::uint8_
 // -----------------------------------------------------------------------------
 
 void TerrainPass::create(const VulkanDevice& device, const vk::raii::DescriptorSetLayout& frame_layout,
-                         std::array<vk::Format, 3> gbuffer_formats, vk::Format depth_format,
+                         std::array<vk::Format, 4> gbuffer_formats, vk::Format depth_format,
                          vk::Format shadow_format, std::uint32_t frames_in_flight) {
     destroy();
     device_ = &device;
@@ -184,7 +185,7 @@ void TerrainPass::destroy() {
     device_ = nullptr;
 }
 
-void TerrainPass::createPipelines(const VulkanDevice& device, std::array<vk::Format, 3> gbuffer_formats,
+void TerrainPass::createPipelines(const VulkanDevice& device, std::array<vk::Format, 4> gbuffer_formats,
                                   vk::Format depth_format, vk::Format shadow_format) {
     const vk::raii::ShaderModule vertex = shaders::loadModule(device, "terrain.vert.spv");
     const vk::raii::ShaderModule fragment = shaders::loadModule(device, "terrain.frag.spv");
@@ -219,7 +220,7 @@ void TerrainPass::createPipelines(const VulkanDevice& device, std::array<vk::For
         depth.depthTestEnable = VK_TRUE;
         depth.depthWriteEnable = VK_TRUE;
         depth.depthCompareOp = vk::CompareOp::eLessOrEqual;
-        std::array<vk::PipelineColorBlendAttachmentState, 3> blends{};
+        std::array<vk::PipelineColorBlendAttachmentState, GBuffer::kColorAttachmentCount> blends{};
         for (auto& b : blends) {
             b.colorWriteMask = vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG |
                                vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA;

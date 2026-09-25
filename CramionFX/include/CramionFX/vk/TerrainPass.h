@@ -61,7 +61,7 @@ public:
     // `frame_layout`: el set 0 de la geometria (camara, lluvia, clima,
     // decals), que el terreno comparte con los modelos.
     void create(const VulkanDevice& device, const vk::raii::DescriptorSetLayout& frame_layout,
-                std::array<vk::Format, 3> gbuffer_formats, vk::Format depth_format, vk::Format shadow_format,
+                std::array<vk::Format, 4> gbuffer_formats, vk::Format depth_format, vk::Format shadow_format,
                 std::uint32_t frames_in_flight);
     void destroy();
 
@@ -128,7 +128,7 @@ private:
         std::vector<Chunk> chunks;
     };
 
-    void createPipelines(const VulkanDevice& device, std::array<vk::Format, 3> gbuffer_formats,
+    void createPipelines(const VulkanDevice& device, std::array<vk::Format, 4> gbuffer_formats,
                          vk::Format depth_format, vk::Format shadow_format);
     void createPatchMesh(const VulkanDevice& device);
     void loadLayerTextures(Terrain& terrain);

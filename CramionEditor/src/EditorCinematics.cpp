@@ -195,11 +195,8 @@ void EditorApp::drawGameView() {
         const ImU32 frame = play_state_ == PlayState::Paused ? IM_COL32(255, 190, 60, 220) : IM_COL32(80, 170, 255, 220);
         draw->AddRect(origin, ImVec2(origin.x + size.x, origin.y + size.y), frame, 0.0f, 0, 3.0f);
     }
-    if (render_view_ != kGameSlot) {
-        draw->AddRectFilled(origin, ImVec2(origin.x + size.x, origin.y + 24.0f), IM_COL32(0, 0, 0, 150));
-        draw->AddText(ImVec2(origin.x + 8.0f, origin.y + 4.0f), IM_COL32(255, 220, 140, 255),
-                      "En pausa: se esta dibujando la Escena (clic aqui para ver el Juego)");
-    }
+    // Interfaz del juego (Canvas) encima, y su editor fuera de Play.
+    drawGameUi(origin, size);
     ImGui::End();
 }
 

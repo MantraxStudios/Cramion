@@ -153,6 +153,8 @@ void EditorApp::rebuildBrowserCache() {
     current_subfolders_.clear();
     current_assets_.clear();
     current_images_.clear();
+    current_scripts_.clear();
+    current_audio_.clear();
     if (current_folder_.empty()) {
         for (const assets::AssetInfo& info : database_->all()) {
             if (info.path.empty()) current_assets_.push_back(info);
@@ -164,9 +166,16 @@ void EditorApp::rebuildBrowserCache() {
         std::sort(current_subfolders_.begin(), current_subfolders_.end());
         current_assets_ = database_->inFolder(current_folder_);
         for (const auto& entry : std::filesystem::directory_iterator(current_folder_, error)) {
-            if (entry.is_regular_file(error) && isDecalImage(entry.path())) current_images_.push_back(entry.path());
+            if (!entry.is_regular_file(error)) continue;
+            if (isDecalImage(entry.path())) current_images_.push_back(entry.path());
+            std::string ext = entry.path().extension().string();
+            std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            if (ext == ".lua") current_scripts_.push_back(entry.path());
+            if (audio::isAudioFile(entry.path())) current_audio_.push_back(entry.path());
         }
         std::sort(current_images_.begin(), current_images_.end());
+        std::sort(current_scripts_.begin(), current_scripts_.end());
+        std::sort(current_audio_.begin(), current_audio_.end());
     }
 }
 
@@ -603,6 +612,78 @@ void EditorApp::drawProject() {
             ImGui::PopID();
             next_cell();
         }
+        // Scripts (.lua) y audios: arrastrarlos a un objeto los engancha.
+        const auto loose_tile = [&](const std::filesystem::path& file, bool is_script) {
+            ImGui::PushID(id++);
+            ImGui::BeginGroup();
+            const ImVec2 pos = ImGui::GetCursorScreenPos();
+            ImGui::InvisibleButton("##loose", ImVec2(cell - 8.0f, icon_size_));
+            const bool hovered = ImGui::IsItemHovered();
+            const std::string name = dialogs::utf8(file.filename());
+            if (hovered) {
+                ImGui::SetItemTooltip(is_script ? "%s\nScript Lua: arrastralo a un objeto\nDoble clic: editar"
+                                                : "%s\nAudio: arrastralo a un objeto (Audio Source) o a la escena\nDoble clic: escuchar",
+                                      name.c_str());
+                draw->AddRectFilled(pos, ImVec2(pos.x + cell - 8.0f, pos.y + icon_size_), IM_COL32(255, 255, 255, 18), 4.0f);
+            }
+            if (hovered && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+                if (is_script) {
+                    openScript(file);
+                } else if (audio_.previewing()) {
+                    audio_.stopPreview();
+                } else {
+                    audio_.preview(file);
+                }
+            }
+            if (ImGui::BeginDragDropSource()) {
+                const std::string path = dialogs::utf8(file);
+                ImGui::SetDragDropPayload(is_script ? kScriptPayload : kAudioPayload, path.c_str(), path.size() + 1);
+                ImGui::Text("%s (%s)", name.c_str(), is_script ? "script" : "audio");
+                ImGui::EndDragDropSource();
+            }
+            if (ImGui::BeginPopupContextItem("loose_menu")) {
+                if (is_script && ImGui::MenuItem("Editar")) openScript(file);
+                if (!is_script && ImGui::MenuItem(audio_.previewing() ? "Parar" : "Escuchar")) {
+                    if (audio_.previewing()) audio_.stopPreview();
+                    else audio_.preview(file);
+                }
+                if (ImGui::MenuItem("Asignar a la seleccion", nullptr, false, !selection_.empty())) {
+                    for (ecs::Entity e : selectedEntities()) {
+                        if (is_script) {
+                            scripting::Script& s = e.has<scripting::Script>() ? e.get<scripting::Script>() : e.add<scripting::Script>();
+                            s.file = assetRelative(file);
+                        } else {
+                            audio::AudioSource& a = e.has<audio::AudioSource>() ? e.get<audio::AudioSource>() : e.add<audio::AudioSource>();
+                            a.clip = assetRelative(file);
+                        }
+                    }
+                    commit();
+                }
+                if (ImGui::MenuItem("Mostrar en el Explorador")) {
+                    const std::wstring args = L"/select,\"" + file.wstring() + L"\"";
+                    ShellExecuteW(nullptr, L"open", L"explorer.exe", args.c_str(), nullptr, SW_SHOWNORMAL);
+                }
+                ImGui::EndPopup();
+            }
+            const float icon = icon_size_ * 0.82f;
+            const ImVec2 icon_pos(pos.x + (cell - 8.0f - icon) * 0.5f, pos.y + (icon_size_ - icon) * 0.5f);
+            if (is_script) {
+                drawAssetTile(draw, imgui_, icon_pos, icon, Icon::AssetBrowser, IM_COL32(90, 170, 250, 255));
+                draw->AddText(ImVec2(icon_pos.x + icon * 0.34f, icon_pos.y + icon * 0.68f), IM_COL32(90, 170, 250, 255), "LUA");
+            } else {
+                drawAssetTile(draw, imgui_, icon_pos, icon, Icon::AudioSource, IM_COL32(240, 170, 60, 255));
+            }
+            ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + cell - 8.0f);
+            ImGui::TextWrapped("%s", name.c_str());
+            ImGui::PopTextWrapPos();
+            ImGui::EndGroup();
+            ImGui::PopID();
+            next_cell();
+        };
+        const std::vector<std::filesystem::path> scripts = current_scripts_;
+        for (const std::filesystem::path& file : scripts) loose_tile(file, true);
+        const std::vector<std::filesystem::path> sounds = current_audio_;
+        for (const std::filesystem::path& file : sounds) loose_tile(file, false);
     }
     if (items.empty() && (current_folder_.empty() || !needle.empty())) {
         ImGui::TextDisabled("Sin assets.");
@@ -622,6 +703,7 @@ void EditorApp::drawProject() {
             if (ImGui::MenuItem("Escena")) createSceneAsset(current_folder_);
             if (ImGui::MenuItem("Animator")) createAnimatorAsset(current_folder_);
             if (ImGui::MenuItem("Material")) createMaterialAsset(current_folder_);
+            if (ImGui::MenuItem("Script Lua")) createScriptAsset(current_folder_, {});
             ImGui::EndMenu();
         }
         ImGui::Separator();

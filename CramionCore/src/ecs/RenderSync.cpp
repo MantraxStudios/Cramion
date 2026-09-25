@@ -5,6 +5,8 @@
 #include <CramionFX/asset/ImageFile.h>
 
 #include <algorithm>
+#include <cmath>
+#include <cstring>
 #include <fstream>
 #include <iostream>
 #include <string>
@@ -360,6 +362,7 @@ void RenderSync::reset(scene::Scene& scene) {
     failed_controllers_.clear();
     external_clips_.clear();
     decal_textures_.clear();
+    rivers_.clear();
     actor_entities_.clear();
     previous_entities_.clear();
     destroyTerrains();
@@ -414,6 +417,93 @@ std::optional<std::uint32_t> RenderSync::resolveModel(const assets::AssetRef& re
     return index;
 }
 
+// Agua: los cuerpos de este frame al renderizador (parametros de sus olas y
+// color) y la cinta de cada rio, que solo se rehace si cambian sus puntos.
+void RenderSync::syncWater(World& world, gfx::VulkanRenderer& renderer, float delta_seconds,
+                           const core::Vec3& camera_position) {
+    water::advanceWaterTime(delta_seconds);
+    std::vector<gfx::WaterBodyDesc> bodies;
+    std::unordered_map<entt::entity, RiverMesh> seen;
+    int underwater = -1;
+    world.forEachDepthFirst([&](Entity e) {
+        const water::WaterBody* body = e.tryGet<water::WaterBody>();
+        if (body == nullptr || !e.activeInHierarchy() || bodies.size() >= gfx::kMaxWaterBodies) return;
+        const Mat4& m = e.worldMatrix();
+        const Vec3 origin = e.worldPosition();
+        constexpr float kRad = kDegToRad;
+        gfx::WaterBodyDesc desc;
+        gfx::GpuWaterBody& p = desc.params;
+        p.origin = core::Vec4{origin.x, origin.y, origin.z, std::atan2(-m.m[0][2], m.m[0][0])};
+        p.extent = core::Vec4{body->size.x * 0.5f, body->size.y * 0.5f, static_cast<float>(body->type), 0.0f};
+        p.shallow = core::Vec4{body->shallow_color.x, body->shallow_color.y, body->shallow_color.z, body->clarity};
+        p.deep = core::Vec4{body->deep_color.x, body->deep_color.y, body->deep_color.z, body->foam};
+        p.waves = core::Vec4{body->wave_height, body->wavelength, body->wave_speed, body->steepness};
+        p.wind = core::Vec4{body->wind_direction * kRad, body->wind_spread * kRad, body->flow_speed, body->detail};
+        p.look = core::Vec4{body->roughness, body->refraction, body->caustics, body->shore_foam};
+        p.extra = core::Vec4{body->shore_waves, body->scattering, 0.0f, 0.0f};
+
+        // Camara cerca o bajo la superficie (oceano y lagos): el shader decide
+        // por pixel con la misma ola.
+        if (underwater < 0 && body->type != water::WaterType::River) {
+            const water::WaterSample at_camera = water::sampleWater(*body, m, camera_position, water::waterTime());
+            if (at_camera.inside && camera_position.y < at_camera.height + body->wave_height + 0.5f) {
+                underwater = static_cast<int>(bodies.size());
+            }
+        }
+        if (body->type == water::WaterType::River) {
+            // Firma de lo que da forma a la cinta: puntos, anchos y la matriz.
+            std::uint64_t hash = 1469598103934665603ull;
+            const auto mix = [&](float f) {
+                std::uint32_t bits = 0;
+                std::memcpy(&bits, &f, sizeof(bits));
+                hash = (hash ^ bits) * 1099511628211ull;
+            };
+            for (const water::RiverPoint& point : body->points) {
+                mix(point.position.x);
+                mix(point.position.y);
+                mix(point.position.z);
+                mix(point.width);
+            }
+            for (int c = 0; c < 4; ++c) {
+                for (int r = 0; r < 4; ++r) mix(m.m[c][r]);
+            }
+            RiverMesh mesh;
+            if (const auto it = rivers_.find(e.handle()); it != rivers_.end() && it->second.hash == hash) {
+                mesh = std::move(it->second);
+            } else {
+                mesh.hash = hash;
+                mesh.version = ++river_version_;
+                const std::vector<water::RiverSample> line = water::riverCenterline(*body, m, 1.5f);
+                constexpr std::uint32_t kAcross = 8;
+                for (const water::RiverSample& sample : line) {
+                    const Vec3 side{-sample.tangent.z, 0.0f, sample.tangent.x};
+                    for (std::uint32_t j = 0; j < kAcross; ++j) {
+                        const float a = static_cast<float>(j) / static_cast<float>(kAcross - 1);
+                        const Vec3 pos = sample.position + side * ((a - 0.5f) * sample.width);
+                        mesh.vertices.push_back(gfx::WaterVertex{{pos.x, pos.y, pos.z},
+                                                                 {a, sample.distance},
+                                                                 {sample.tangent.x, sample.tangent.z}});
+                    }
+                }
+                for (std::uint32_t i = 0; i + 1 < line.size(); ++i) {
+                    for (std::uint32_t j = 0; j + 1 < kAcross; ++j) {
+                        const std::uint32_t a = i * kAcross + j;
+                        const std::uint32_t b = a + kAcross;
+                        mesh.indices.insert(mesh.indices.end(), {a, b, a + 1, a + 1, b, b + 1});
+                    }
+                }
+            }
+            desc.vertices = mesh.vertices;
+            desc.indices = mesh.indices;
+            desc.mesh_version = mesh.version;
+            seen[e.handle()] = std::move(mesh);
+        }
+        bodies.push_back(std::move(desc));
+    });
+    rivers_ = std::move(seen);
+    renderer.setWaterBodies(bodies, water::waterTime(), underwater);
+}
+
 void RenderSync::sync(World& world, scene::Scene& scene, gfx::VulkanRenderer& renderer,
                       float delta_seconds, const Options& options) {
     // La animacion la lleva el componente Animator, no scene.update().
@@ -424,6 +514,8 @@ void RenderSync::sync(World& world, scene::Scene& scene, gfx::VulkanRenderer& re
     if (options.apply_main_camera) {
         syncCamera(world, scene);
     }
+    // Despues de la camara: el agua mira si la camara esta sumergida.
+    syncWater(world, renderer, delta_seconds, scene.camera().position());
 }
 
 RenderSync::~RenderSync() {

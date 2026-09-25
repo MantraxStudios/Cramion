@@ -90,6 +90,8 @@ public:
     // se rehace.
     // `size` (opcional) recibe su tamano en pixeles (para no deformarla).
     ImTextureID thumbnail(const std::filesystem::path& file, ImVec2* size = nullptr);
+    // La imagen a su tamano (hasta 4096): la interfaz del juego y el banner.
+    ImTextureID image(const std::filesystem::path& file, ImVec2* size = nullptr);
     // Una vez por frame: sube las miniaturas decodificadas y libera las que
     // hace tiempo que no se usan.
     void updateThumbnails();
@@ -123,7 +125,9 @@ private:
         ImVec2 size{1.0f, 1.0f};
         bool failed = false;
         std::uint64_t last_used = 0;
+        std::uint32_t max_size = 128;
     };
+    ImTextureID loadTexture(const std::filesystem::path& file, ImVec2* size, std::uint32_t max_size);
     std::unordered_map<std::wstring, Thumbnail> thumbnails_;
     std::uint64_t frame_ = 0;
     std::string ini_path_;

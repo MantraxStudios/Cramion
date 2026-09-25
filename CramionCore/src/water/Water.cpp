@@ -1,0 +1,286 @@
+#include "CramionCore/water/Water.h"
+
+#include "CramionCore/ecs/World.h"
+
+#include <algorithm>
+#include <array>
+#include <cmath>
+
+namespace cramion::water {
+
+using core::Vec2;
+using core::Vec3;
+using ecs::FloatRange;
+using ecs::Vec3Kind;
+
+namespace {
+
+constexpr float kPi = 3.14159265358979f;
+constexpr float kGravity = 9.81f;
+
+// Las 8 ondas: MISMOS valores que water.vert (kWaveAngles, kWaveLength,
+// kWaveAmplitude, kWavePhase).
+constexpr int kWaves = 8;
+constexpr std::array<float, kWaves> kWaveAngles = {0.0f, 0.83f, -0.61f, 1.37f, -1.19f, 0.29f, -0.93f, 1.71f};
+constexpr float kWaveLength = 0.64f;     // cada onda, esta fraccion de la anterior
+constexpr float kWaveAmplitude = 0.60f;  // idem para la amplitud
+constexpr float kWavePhase = 1.7f;
+
+float g_time = 0.0f;
+
+Vec3 transformPoint(const core::Mat4& m, const Vec3& p) {
+    const core::Vec4 r = m * core::Vec4{p.x, p.y, p.z, 1.0f};
+    return Vec3{r.x, r.y, r.z};
+}
+
+}  // namespace
+
+void WaterBody::reflect(ecs::PropertyVisitor& v) {
+    static constexpr std::array<const char*, 3> kTypes = {"Oceano / playa", "Lago", "Rio"};
+    ecs::enumField(v, {"type", "Tipo"}, type, kTypes);
+    const bool all = v.wantsAllFields();
+    if (all || type == WaterType::Lake) {
+        v.field({"size", "Tamano", "Ancho y largo (m); la orilla la pone el terreno"}, size, 0.5f);
+    }
+    if (all || v.beginGroup("Oleaje")) {
+        v.field({"wave_height", "Altura de ola"}, wave_height, FloatRange{0.0f, 12.0f, 0.01f, "%.2f m"});
+        v.field({"wavelength", "Longitud de onda"}, wavelength, FloatRange{0.5f, 300.0f, 0.1f, "%.1f m"});
+        v.field({"wave_speed", "Velocidad"}, wave_speed, FloatRange{0.0f, 4.0f, 0.01f, "%.2f"});
+        v.field({"steepness", "Crestas", "0 = redondeadas, 1 = afiladas"}, steepness,
+                FloatRange{0.0f, 1.0f, 0.01f, "%.2f", true});
+        v.field({"wind_direction", "Direccion del viento"}, wind_direction,
+                FloatRange{-180.0f, 180.0f, 1.0f, "%.0f°", true});
+        v.field({"wind_spread", "Dispersion"}, wind_spread, FloatRange{0.0f, 90.0f, 1.0f, "%.0f°", true});
+        if (all || type == WaterType::River) {
+            v.field({"flow_speed", "Corriente"}, flow_speed, FloatRange{0.0f, 10.0f, 0.05f, "%.2f m/s"});
+        }
+        if (!all) v.endGroup();
+    }
+    if (all || v.beginGroup("Aspecto")) {
+        v.field({"shallow_color", "Color (dispersion)"}, shallow_color, Vec3Kind::Color);
+        v.field({"deep_color", "Color profundo"}, deep_color, Vec3Kind::Color);
+        v.field({"clarity", "Transparencia", "Metros hasta que el fondo casi no se ve"}, clarity,
+                FloatRange{0.1f, 60.0f, 0.05f, "%.2f m"});
+        v.field({"roughness", "Rugosidad"}, roughness, FloatRange{0.0f, 0.5f, 0.005f, "%.3f", true});
+        v.field({"refraction", "Refraccion"}, refraction, FloatRange{0.0f, 2.0f, 0.01f, "%.2f", true});
+        v.field({"detail", "Ondulacion fina"}, detail, FloatRange{0.0f, 3.0f, 0.01f, "%.2f", true});
+        v.field({"foam", "Espuma"}, foam, FloatRange{0.0f, 3.0f, 0.01f, "%.2f", true});
+        v.field({"shore_foam", "Espuma de orilla"}, shore_foam, FloatRange{0.0f, 10.0f, 0.05f, "%.2f m"});
+        if (all || type == WaterType::Ocean) {
+            v.field({"shore_waves", "Olas en la playa"}, shore_waves, FloatRange{0.0f, 3.0f, 0.01f, "%.2f", true});
+        }
+        v.field({"caustics", "Causticas"}, caustics, FloatRange{0.0f, 3.0f, 0.01f, "%.2f", true});
+        v.field({"scattering", "Luz en las crestas"}, scattering, FloatRange{0.0f, 3.0f, 0.01f, "%.2f", true});
+        if (!all) v.endGroup();
+    }
+    if (all || v.beginGroup("Fisica")) {
+        v.field({"buoyancy", "Flotacion", "Los Rigidbody que entran flotan (Jolt)"}, buoyancy);
+        v.field({"density", "Empuje", "1 = agua; mas, flota mas"}, density, FloatRange{0.0f, 4.0f, 0.01f, "%.2f"});
+        v.field({"drag", "Frenado"}, drag, FloatRange{0.0f, 5.0f, 0.01f, "%.2f"});
+        if (!all) v.endGroup();
+    }
+    if (all || type == WaterType::River) {
+        ecs::listField(v, {"points", "Puntos del rio", "Locales a la entidad"}, points,
+                       [](RiverPoint& p, ecs::PropertyVisitor& item) {
+                           item.field({"position", "Posicion"}, p.position, Vec3Kind::Position);
+                           item.field({"width", "Ancho"}, p.width, FloatRange{0.5f, 500.0f, 0.1f, "%.1f m"});
+                       });
+    }
+}
+
+WaterBody oceanPreset() {
+    WaterBody b;
+    b.type = WaterType::Ocean;
+    b.wave_height = 1.1f;
+    b.wavelength = 42.0f;
+    b.steepness = 0.62f;
+    b.wind_spread = 40.0f;
+    b.shallow_color = Vec3{0.06f, 0.42f, 0.44f};
+    b.deep_color = Vec3{0.004f, 0.030f, 0.062f};
+    b.clarity = 7.0f;
+    b.roughness = 0.06f;
+    b.shore_foam = 3.0f;
+    b.shore_waves = 1.0f;
+    b.scattering = 1.2f;
+    return b;
+}
+
+WaterBody lakePreset() {
+    WaterBody b;
+    b.type = WaterType::Lake;
+    b.wave_height = 0.12f;
+    b.wavelength = 6.0f;
+    b.steepness = 0.35f;
+    b.shallow_color = Vec3{0.12f, 0.36f, 0.30f};
+    b.deep_color = Vec3{0.010f, 0.045f, 0.045f};
+    b.clarity = 3.5f;
+    b.roughness = 0.03f;
+    b.shore_foam = 0.6f;
+    b.shore_waves = 0.0f;
+    b.foam = 0.5f;
+    return b;
+}
+
+WaterBody riverPreset() {
+    WaterBody b;
+    b.type = WaterType::River;
+    b.wave_height = 0.04f;
+    b.wavelength = 2.5f;
+    b.steepness = 0.3f;
+    b.flow_speed = 2.0f;
+    b.shallow_color = Vec3{0.20f, 0.36f, 0.26f};
+    b.deep_color = Vec3{0.030f, 0.050f, 0.030f};
+    b.clarity = 1.8f;
+    b.roughness = 0.05f;
+    b.shore_foam = 0.8f;
+    b.shore_waves = 0.0f;
+    b.foam = 1.2f;
+    b.detail = 1.4f;
+    // Un meandro de ejemplo (locales): se editan en el Inspector.
+    b.points = {RiverPoint{Vec3{-40.0f, 0.0f, 0.0f}, 9.0f}, RiverPoint{Vec3{-15.0f, 0.0f, 10.0f}, 10.0f},
+                RiverPoint{Vec3{10.0f, 0.0f, -6.0f}, 12.0f}, RiverPoint{Vec3{40.0f, 0.0f, 4.0f}, 10.0f}};
+    return b;
+}
+
+Vec3 gerstner(const WaterBody& body, float x, float z, float time, Vec3* normal, float* jacobian) {
+    Vec3 offset{};
+    Vec3 n{0.0f, 1.0f, 0.0f};
+    float j = 1.0f;
+    const float wind = body.wind_direction * kPi / 180.0f;
+    const float spread = body.wind_spread * kPi / 180.0f;
+    const float steep = std::clamp(body.steepness, 0.0f, 1.0f);
+    float length = std::max(body.wavelength, 0.05f);
+    float amplitude = body.wave_height * 0.5f;
+    for (int i = 0; i < kWaves; ++i) {
+        const float angle = wind + kWaveAngles[i] * spread;
+        const float dx = std::cos(angle);
+        const float dz = std::sin(angle);
+        const float k = 2.0f * kPi / length;
+        const float omega = std::sqrt(kGravity * k) * body.wave_speed;
+        const float q = amplitude > 1e-6f ? steep / (k * amplitude * kWaves) : 0.0f;
+        const float theta = k * (dx * x + dz * z) - omega * time + kWavePhase * static_cast<float>(i);
+        const float c = std::cos(theta);
+        const float s = std::sin(theta);
+        offset.x += q * amplitude * dx * c;
+        offset.z += q * amplitude * dz * c;
+        offset.y += amplitude * s;
+        n.x -= dx * k * amplitude * c;
+        n.z -= dz * k * amplitude * c;
+        n.y -= q * k * amplitude * s;
+        j -= q * k * amplitude * s;
+        length *= kWaveLength;
+        amplitude *= kWaveAmplitude;
+    }
+    if (normal != nullptr) *normal = core::normalize(n);
+    if (jacobian != nullptr) *jacobian = j;
+    return offset;
+}
+
+std::vector<RiverSample> riverCenterline(const WaterBody& body, const core::Mat4& world, float step) {
+    std::vector<RiverSample> out;
+    const std::size_t count = body.points.size();
+    if (count < 2) return out;
+    std::vector<Vec3> p(count);
+    for (std::size_t i = 0; i < count; ++i) p[i] = transformPoint(world, body.points[i].position);
+    const auto at = [&](std::ptrdiff_t i) { return p[static_cast<std::size_t>(std::clamp<std::ptrdiff_t>(i, 0, count - 1))]; };
+    float distance = 0.0f;
+    for (std::size_t seg = 0; seg + 1 < count; ++seg) {
+        const Vec3 p0 = at(static_cast<std::ptrdiff_t>(seg) - 1);
+        const Vec3 p1 = at(static_cast<std::ptrdiff_t>(seg));
+        const Vec3 p2 = at(static_cast<std::ptrdiff_t>(seg) + 1);
+        const Vec3 p3 = at(static_cast<std::ptrdiff_t>(seg) + 2);
+        const float len = core::length(p2 - p1);
+        const int steps = std::max(1, static_cast<int>(std::ceil(len / std::max(step, 0.1f))));
+        const bool last = seg + 2 == count;
+        for (int s = 0; s < steps + (last ? 1 : 0); ++s) {
+            const float t = static_cast<float>(s) / static_cast<float>(steps);
+            const float t2 = t * t;
+            const float t3 = t2 * t;
+            // Catmull-Rom uniforme y su derivada.
+            const Vec3 pos = (p1 * 2.0f + (p2 - p0) * t + (p0 * 2.0f - p1 * 5.0f + p2 * 4.0f - p3) * t2 +
+                              (p1 * 3.0f - p0 - p2 * 3.0f + p3) * t3) *
+                             0.5f;
+            const Vec3 der = ((p2 - p0) + (p0 * 2.0f - p1 * 5.0f + p2 * 4.0f - p3) * (2.0f * t) +
+                              (p1 * 3.0f - p0 - p2 * 3.0f + p3) * (3.0f * t2)) *
+                             0.5f;
+            RiverSample sample;
+            sample.position = pos;
+            sample.width = body.points[seg].width + (body.points[seg + 1].width - body.points[seg].width) * t;
+            const Vec3 flat{der.x, 0.0f, der.z};
+            sample.tangent = core::length(flat) > 1e-5f ? core::normalize(flat) : Vec3{1.0f, 0.0f, 0.0f};
+            if (!out.empty()) distance += core::length(pos - out.back().position);
+            sample.distance = distance;
+            out.push_back(sample);
+        }
+    }
+    return out;
+}
+
+WaterSample sampleWater(const WaterBody& body, const core::Mat4& world, const Vec3& position, float time) {
+    WaterSample result;
+    const Vec3 origin = transformPoint(world, Vec3{});
+    if (body.type == WaterType::River) {
+        const std::vector<RiverSample> line = riverCenterline(body, world, 1.0f);
+        float best = 1e30f;
+        const RiverSample* nearest = nullptr;
+        for (const RiverSample& s : line) {
+            const float dx = position.x - s.position.x;
+            const float dz = position.z - s.position.z;
+            const float d = dx * dx + dz * dz;
+            if (d < best) {
+                best = d;
+                nearest = &s;
+            }
+        }
+        if (nearest == nullptr || std::sqrt(best) > nearest->width * 0.5f) return result;
+        Vec3 n{};
+        const Vec3 wave = gerstner(body, position.x, position.z, time, &n);
+        result.inside = true;
+        result.height = nearest->position.y + wave.y;
+        result.normal = n;
+        result.velocity = nearest->tangent * body.flow_speed;
+        return result;
+    }
+    if (body.type == WaterType::Lake) {
+        // Rectangulo girado con la entidad (solo el giro en Y cuenta).
+        const Vec3 axis_x = core::normalize(Vec3{world.m[0][0], 0.0f, world.m[0][2]});
+        const Vec3 local{position.x - origin.x, 0.0f, position.z - origin.z};
+        const float u = core::dot(local, axis_x);
+        const float v = core::dot(local, Vec3{-axis_x.z, 0.0f, axis_x.x});
+        if (std::abs(u) > body.size.x * 0.5f || std::abs(v) > body.size.y * 0.5f) return result;
+    }
+    // La ola desplaza en horizontal: se busca el punto de la cuadricula que
+    // acaba bajo `position` (unas iteraciones de punto fijo).
+    float x0 = position.x;
+    float z0 = position.z;
+    for (int i = 0; i < 4; ++i) {
+        const Vec3 d = gerstner(body, x0, z0, time);
+        x0 = position.x - d.x;
+        z0 = position.z - d.z;
+    }
+    Vec3 n{};
+    const Vec3 d = gerstner(body, x0, z0, time, &n);
+    const Vec3 ahead = gerstner(body, x0, z0, time + 0.05f);
+    result.inside = true;
+    result.height = origin.y + d.y;
+    result.normal = n;
+    result.velocity = (ahead - d) * (1.0f / 0.05f);
+    return result;
+}
+
+float waterTime() { return g_time; }
+
+void advanceWaterTime(float delta_seconds) {
+    g_time += std::clamp(delta_seconds, 0.0f, 0.25f);
+    // Sin perder precision tras horas abiertas (las ondas se repiten mucho antes).
+    if (g_time > 36000.0f) g_time -= 36000.0f;
+}
+
+void registerWaterComponents() {
+    ecs::ComponentRegistry& registry = ecs::ComponentRegistry::instance();
+    if (registry.find("WaterBody") == nullptr) {
+        registry.registerComponent<WaterBody>("WaterBody", "Agua", "Entorno");
+    }
+}
+
+}  // namespace cramion::water

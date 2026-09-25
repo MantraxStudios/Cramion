@@ -174,6 +174,33 @@ void EditorApp::drawSceneView() {
                 }
             }
         }
+        if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(kScriptPayload)) {
+            const vk::Extent2D extent = renderer_.sceneExtent();
+            const ImVec2 mouse = ImGui::GetMousePos();
+            const float u = (mouse.x - view_x_) / view_w_;
+            const float v = (mouse.y - view_y_) / view_h_;
+            if (u >= 0.0f && u < 1.0f && v >= 0.0f && v < 1.0f && extent.width > 0 && extent.height > 0) {
+                renderer_.requestPick(static_cast<std::uint32_t>(u * static_cast<float>(extent.width)),
+                                      static_cast<std::uint32_t>(v * static_cast<float>(extent.height)));
+                pending_pick_ = PendingPick{true, mouse.x, mouse.y, false, {},
+                                            assetRelative(dialogs::fromUtf8(static_cast<const char*>(payload->Data)))};
+            }
+        }
+        if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(kAudioPayload)) {
+            // Un objeto nuevo con el sonido donde se suelta (suelo o delante).
+            Vec3 point{};
+            Vec3 normal{};
+            if (!surfaceHit(ImGui::GetMousePos().x, ImGui::GetMousePos().y, point, normal)) {
+                point = scene_.camera().position() + scene_.camera().forward() * 5.0f;
+            }
+            const std::filesystem::path file = dialogs::fromUtf8(static_cast<const char*>(payload->Data));
+            ecs::Entity e = world_.create(dialogs::utf8(file.stem()));
+            e.setWorldPosition(point + Vec3{0.0f, 0.5f, 0.0f});
+            e.add<audio::AudioSource>().clip = assetRelative(file);
+            selectOnly(e.uuid());
+            revealInHierarchy(e.uuid());
+            commit();
+        }
         // Imagen: se estampa donde se suelta (como arrastrar un material de
         // decal en Unreal).
         if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(kImagePayload)) {
@@ -197,7 +224,9 @@ void EditorApp::drawSceneView() {
     const bool light_handle = drawLightGizmos();
     drawDecalGizmos();
     drawPhysicsGizmos();
-    const bool waypoint_handle = drawCinematicGizmos();
+    const bool cinematic_handle = drawCinematicGizmos();
+    const bool water_handle = drawWaterGizmos();
+    const bool waypoint_handle = cinematic_handle || water_handle;
     // Herramienta de terreno: se queda con el raton mientras pinta.
     const bool terrain_tool = drawTerrainTool(frame_delta_);
     const bool collider_handle = drawColliderHandles() || waypoint_handle || terrain_tool;
@@ -248,13 +277,6 @@ void EditorApp::drawSceneView() {
         if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_V, false)) pasteClipboard();
     }
 
-    // Si se ven Escena y Juego a la vez solo se dibuja una por frame.
-    if (render_view_ != kSceneSlot) {
-        ImDrawList* note = ImGui::GetWindowDrawList();
-        note->AddRectFilled(origin, ImVec2(origin.x + size.x, origin.y + 24.0f), IM_COL32(0, 0, 0, 150));
-        note->AddText(ImVec2(origin.x + 8.0f, origin.y + 4.0f), IM_COL32(255, 220, 140, 255),
-                      "En pausa: se esta dibujando el Juego (clic aqui para ver la Escena)");
-    }
     // Ayuda discreta.
     ImGui::SetCursorScreenPos(ImVec2(origin.x + 10.0f, origin.y + size.y - 24.0f));
     ImGui::TextColored(ImVec4(1.0f, 1.0f, 1.0f, 0.5f),
@@ -331,6 +353,7 @@ void EditorApp::pickAt(float x, float y) {
     world_.forEachDepthFirst([&](ecs::Entity e) {
         if (icon_hit.valid() || !e.activeInHierarchy()) return;
         if (!e.has<ecs::Light>() && !e.has<ecs::Camera>() && !e.has<ecs::Decal>() && !e.has<physics::ParticleSystem>() &&
+            !e.has<water::WaterBody>() &&
             !e.has<cinema::VirtualCamera>() && !e.has<cinema::DollyTrack>() && !e.has<cinema::CinematicSequence>()) {
             return;
         }
@@ -361,6 +384,21 @@ void EditorApp::pickAt(float x, float y) {
 void EditorApp::finishPick(const gfx::VulkanRenderer::PickResult& result) {
     if (!pending_pick_.active) return;
     pending_pick_.active = false;
+    if (!pending_pick_.script.empty()) {
+        const std::string file = pending_pick_.script;
+        pending_pick_.script.clear();
+        ecs::Entity target = result.hit && sync_ ? sync_->entityForActor(world_, result.actor) : ecs::Entity{};
+        // El script va a la raiz del objeto tocado (el modelo entero, como Unity).
+        while (target.valid() && target.parent().valid()) target = target.parent();
+        if (target.valid()) {
+            scripting::Script& s = target.has<scripting::Script>() ? target.get<scripting::Script>() : target.add<scripting::Script>();
+            s.file = file;
+            selectOnly(target.uuid());
+            revealInHierarchy(target.uuid());
+            commit();
+        }
+        return;
+    }
     if (pending_pick_.material.valid()) {
         const Uuid material = pending_pick_.material;
         pending_pick_.material = {};
@@ -445,7 +483,8 @@ void EditorApp::drawSceneOverlays() {
     };
     world_.forEachDepthFirst([&](ecs::Entity e) {
         if (e.has<ecs::Light>() || e.has<ecs::Camera>() || e.has<ecs::Decal>() || e.has<physics::ParticleSystem>() ||
-            e.has<cinema::VirtualCamera>() || e.has<cinema::DollyTrack>() || e.has<cinema::CinematicSequence>()) {
+            e.has<cinema::VirtualCamera>() || e.has<cinema::DollyTrack>() || e.has<cinema::CinematicSequence>() ||
+            e.has<water::WaterBody>()) {
             overlay(e);
         }
     });

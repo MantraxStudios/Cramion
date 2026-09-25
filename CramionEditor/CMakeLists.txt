@@ -79,3 +79,30 @@ target_compile_options(CramionEditor PRIVATE
 add_executable(CramionPreviewTests "${CMAKE_CURRENT_SOURCE_DIR}/tests/PreviewTests.cpp"
                                    "${CMAKE_CURRENT_SOURCE_DIR}/src/ModelPreviews.cpp")
 target_link_libraries(CramionPreviewTests PRIVATE Cramion::Core)
+
+# Prueba del autocompletado de Lua (consola).
+add_executable(CramionCompletionTests "${CMAKE_CURRENT_SOURCE_DIR}/tests/CompletionTests.cpp"
+                                      "${CMAKE_CURRENT_SOURCE_DIR}/src/LuaCompletion.cpp")
+
+# --- CramionPlayer: el juego exportado (Archivo > Exportar juego) ---
+# Banner del motor al abrir, la escena inicial y todos los sistemas del
+# juego (sin el editor). Sin consola.
+add_executable(CramionPlayer
+    "${CMAKE_CURRENT_SOURCE_DIR}/player/PlayerMain.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/ImGuiLayer.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/UiRenderer.cpp"
+    "${CRAMION_ICON_RC}")
+target_include_directories(CramionPlayer PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+target_link_libraries(CramionPlayer PRIVATE Cramion::Core cramion_imgui shell32 ole32)
+set_target_properties(CramionPlayer PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}" WIN32_EXECUTABLE TRUE)
+target_link_options(CramionPlayer PRIVATE "-Xlinker" "/entry:mainCRTStartup")
+target_compile_definitions(CramionPlayer PRIVATE
+    CRAMION_EDITOR_ICON_SOURCE="${CMAKE_CURRENT_SOURCE_DIR}/assets/gizmos"
+    CRAMION_EDITOR_LOGO_SOURCE="${CMAKE_SOURCE_DIR}/assets/icon.png")
+cramionfx_deploy(CramionPlayer)
+# El banner del motor junto a los ejecutables (lo copia la exportacion).
+add_custom_command(TARGET CramionPlayer POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${CMAKE_SOURCE_DIR}/assets/bannerintro.png" "${CMAKE_BINARY_DIR}/player_banner.png"
+    COMMENT "Banner del juego exportado")
+add_dependencies(CramionEditor CramionPlayer)

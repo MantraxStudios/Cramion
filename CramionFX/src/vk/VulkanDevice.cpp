@@ -276,6 +276,8 @@ void VulkanDevice::createLogicalDevice() {
     features.features.textureCompressionBC =
         texture_compression_bc_supported_ ? VK_TRUE : VK_FALSE;
     features.features.multiDrawIndirect = VK_TRUE;
+    // Filtro anisotropico (texturas del terreno), si la GPU lo tiene.
+    features.features.samplerAnisotropy = physical_device_.getFeatures().samplerAnisotropy;
     // Instancias en los comandos indirectos (batching por material).
     features.features.drawIndirectFirstInstance = VK_TRUE;
 

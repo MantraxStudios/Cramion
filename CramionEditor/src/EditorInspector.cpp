@@ -283,6 +283,10 @@ void EditorApp::drawInspector() {
             // Cinematicas: solo, alinear, puntos del riel, secuencia...
             if (type.category == "Cinematicas") drawCinematicInspector(type.name, entity);
             if (type.name == "Terrain") drawTerrainInspector(entity);
+            if (type.name == "WaterBody") drawWaterInspector(entity);
+            if (type.name == "Script") drawScriptInspector(entity);
+            if (type.name == "RectTransform") drawRectTransformInspector(entity);
+            if (type.name == "AudioSource") drawAudioInspector(entity);
             if (type.name == "MeshRenderer") drawMeshMaterials(entity);
             // Animator con controlador: abrirlo en la ventana Animator.
             if (type.name == "Animator") {

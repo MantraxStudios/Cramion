@@ -240,9 +240,18 @@ void ImGuiLayer::image(Icon id, float size, ImU32 tint) const {
 // -----------------------------------------------------------------------------
 
 ImTextureID ImGuiLayer::thumbnail(const std::filesystem::path& file, ImVec2* size) {
+    return loadTexture(file, size, 128);
+}
+
+ImTextureID ImGuiLayer::image(const std::filesystem::path& file, ImVec2* size) {
+    return loadTexture(file, size, 4096);
+}
+
+ImTextureID ImGuiLayer::loadTexture(const std::filesystem::path& file, ImVec2* size, std::uint32_t max_size) {
     std::error_code error;
     const std::filesystem::file_time_type stamp = std::filesystem::last_write_time(file, error);
-    Thumbnail& thumb = thumbnails_[file.wstring()];
+    Thumbnail& thumb = thumbnails_[file.wstring() + L"|" + std::to_wstring(max_size)];
+    thumb.max_size = max_size;
     thumb.last_used = frame_;
     // Nuevo o cambiado en disco: decodificar en otro hilo.
     if ((!thumb.decoding.valid() && thumb.set == VK_NULL_HANDLE && !thumb.failed) || (!error && stamp != thumb.stamp)) {
@@ -251,9 +260,9 @@ ImTextureID ImGuiLayer::thumbnail(const std::filesystem::path& file, ImVec2* siz
         thumb.failed = false;
         auto pixels = std::make_shared<Thumbnail::Pixels>();
         thumb.pixels = pixels;
-        thumb.decoding = std::async(std::launch::async, [file, pixels]() {
+        thumb.decoding = std::async(std::launch::async, [file, pixels, max_size]() {
             asset::ImageRgba8 image;
-            if (!asset::loadImageRgba8(file, image, 128)) return false;
+            if (!asset::loadImageRgba8(file, image, max_size)) return false;
             pixels->width = image.width;
             pixels->height = image.height;
             pixels->rgba = std::move(image.pixels);

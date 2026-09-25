@@ -35,7 +35,7 @@ int main(int argc, char** argv) {
 
         dm::Window window;
         // Maximizada desde el principio (Hub y editor).
-        if (!window.create({.title = L"Cramion Editor", .width = 1600, .height = 900, .maximized = true})) {
+        if (!window.create({.title = L"Cramion Editor", .width = 1600, .height = 900, .maximized = true, .custom_title_bar = true})) {
             std::cerr << "No se pudo crear la ventana.\n";
             return EXIT_FAILURE;
         }
@@ -63,6 +63,9 @@ int main(int argc, char** argv) {
         editor::ImGuiLayer imgui;
         imgui.initialize(window.handle(), renderer);
         editor::EditorApp app(window, renderer, scene, imgui);
+        // Barra de titulo propia: el editor dice que parte de su barra arrastra.
+        window.setCaptionHitTest([&app](int x, int y) { return app.isCaptionDragArea(x, y); });
+        app.setInput(&input);  // la entrada del juego (scripts) en Play
 
         if (argc >= 5 && std::string_view(argv[1]) == "--selftest") {
             app.startSelfTest(argv[2], argv[3], argv[4], argc >= 6 ? std::filesystem::path(argv[5]) : std::filesystem::path{});
@@ -122,8 +125,15 @@ int main(int argc, char** argv) {
             imgui.endFrame();
 
             scene.update(app.sceneWantsInput() ? input : idle_input, delta_seconds);
-            app.syncWorld(delta_seconds);
             const auto render_start = std::chrono::steady_clock::now();
+            // Escena y Juego visibles a la vez: las dos se dibujan cada frame
+            // (la otra primero, sin presentar), tambien en Play.
+            if (app.wantsSecondaryView()) {
+                app.syncWorld(delta_seconds, /*secondary=*/true);
+                renderer.drawFrame(scene, /*present=*/false);
+                app.afterRender();
+            }
+            app.syncWorld(delta_seconds);
             renderer.drawFrame(scene);
             app.afterRender();
             app.setRenderCpuTime(std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() -

@@ -31,6 +31,8 @@ layout(location = 0) in vec3 v_normal;
 layout(location = 1) in vec2 v_uv;
 layout(location = 2) in vec4 v_tangent;
 layout(location = 3) in vec3 v_world_position;
+layout(location = 4) in vec4 v_current_clip;
+layout(location = 5) in vec4 v_previous_clip;
 
 
 // Los materiales emisivos de un modelo (pantallas, luces del casco) se
@@ -103,4 +105,5 @@ void main() {
 
     writeSurface(albedo, n, normal, tangent_normal, aa_normal, metallic, roughness, occlusion, emissive,
                  push.reflectance, v_world_position);
+    writeVelocity(v_current_clip, v_previous_clip);
 }

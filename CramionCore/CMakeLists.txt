@@ -71,6 +71,45 @@ set_target_properties(Jolt PROPERTIES SYSTEM TRUE)
 # muy lenta y no hace falta depurar su interior.
 target_compile_options(Jolt PRIVATE -O2 -w)
 
+# --- Scripting (Lua 5.4 + sol2) y audio (miniaudio) ---------------------------
+# Lua: el interprete compilado como biblioteca C (sin el lua.exe). sol2: solo
+# cabeceras (el enlace C++ <-> Lua). miniaudio: audio 2D/3D (WAV, MP3, FLAC y
+# OGG con stb_vorbis). Sin sus CMakeLists (SOURCE_SUBDIR inexistente).
+FetchContent_Declare(lua
+    GIT_REPOSITORY https://github.com/lua/lua.git
+    GIT_TAG v5.4.8
+    GIT_SHALLOW TRUE
+    SOURCE_SUBDIR _sin_cmake
+)
+FetchContent_Declare(sol2
+    GIT_REPOSITORY https://github.com/ThePhD/sol2.git
+    GIT_TAG v3.5.0
+    GIT_SHALLOW TRUE
+    SOURCE_SUBDIR _sin_cmake
+)
+FetchContent_Declare(miniaudio
+    GIT_REPOSITORY https://github.com/mackron/miniaudio.git
+    GIT_TAG 0.11.25
+    GIT_SHALLOW TRUE
+    SOURCE_SUBDIR _sin_cmake
+)
+FetchContent_MakeAvailable(lua sol2 miniaudio)
+
+set(CRAMION_LUA_FILES lapi lauxlib lbaselib lcode lcorolib lctype ldblib ldebug ldo ldump lfunc lgc linit
+    liolib llex lmathlib lmem loadlib lobject lopcodes loslib lparser lstate lstring lstrlib ltable ltablib
+    ltm lundump lutf8lib lvm lzio)
+set(CRAMION_LUA_SOURCES "")
+foreach(name IN LISTS CRAMION_LUA_FILES)
+    list(APPEND CRAMION_LUA_SOURCES "${lua_SOURCE_DIR}/${name}.c")
+endforeach()
+add_library(cramion_lua STATIC ${CRAMION_LUA_SOURCES})
+target_include_directories(cramion_lua PUBLIC "${lua_SOURCE_DIR}")
+target_compile_options(cramion_lua PRIVATE -O2 -w)
+
+add_library(cramion_miniaudio STATIC "${CMAKE_CURRENT_SOURCE_DIR}/src/audio/miniaudio_impl.c")
+target_include_directories(cramion_miniaudio PUBLIC "${miniaudio_SOURCE_DIR}")
+target_compile_options(cramion_miniaudio PRIVATE -O2 -w)
+
 # --- CramionAssets -----------------------------------------------------------
 
 file(GLOB_RECURSE CRAMION_ASSETS_SOURCES CONFIGURE_DEPENDS
@@ -102,7 +141,8 @@ list(FILTER CRAMION_CORE_SOURCES EXCLUDE REGEX "/src/(asset|project)/")
 add_library(CramionCoreObjects OBJECT ${CRAMION_CORE_SOURCES})
 target_include_directories(CramionCoreObjects PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
 target_link_libraries(CramionCoreObjects PUBLIC Cramion::FX EnTT::EnTT nlohmann_json::nlohmann_json
-    PRIVATE Jolt)
+    PRIVATE Jolt cramion_lua cramion_miniaudio)
+target_include_directories(CramionCoreObjects PRIVATE "${sol2_SOURCE_DIR}/include")
 target_compile_options(CramionCoreObjects PRIVATE -Wall -Wextra)
 
 # Debug agil: lo que se ejecuta en cada frame con muchos objetos (sync del
@@ -129,7 +169,7 @@ add_library(Cramion::Core ALIAS CramionCore)
 target_include_directories(CramionCore PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
 target_link_libraries(CramionCore
     PUBLIC Cramion::Assets Cramion::FX EnTT::EnTT nlohmann_json::nlohmann_json
-    PRIVATE Jolt
+    PRIVATE Jolt cramion_lua cramion_miniaudio
 )
 
 # --- Pruebas del ECS (consola) ---
@@ -169,3 +209,17 @@ target_compile_options(CramionTerrainTests PRIVATE -Wall -Wextra)
 add_executable(CramionMaterialTests "${CMAKE_CURRENT_SOURCE_DIR}/tests/MaterialTests.cpp")
 target_link_libraries(CramionMaterialTests PRIVATE Cramion::Core)
 target_compile_options(CramionMaterialTests PRIVATE -Wall -Wextra)
+
+# --- Pruebas del agua (consola) ---
+add_executable(CramionWaterTests "${CMAKE_CURRENT_SOURCE_DIR}/tests/WaterTests.cpp")
+target_link_libraries(CramionWaterTests PRIVATE Cramion::Core)
+target_compile_options(CramionWaterTests PRIVATE -Wall -Wextra)
+
+# --- Pruebas del scripting (Lua) y del audio (consola) ---
+add_executable(CramionScriptingTests "${CMAKE_CURRENT_SOURCE_DIR}/tests/ScriptingTests.cpp")
+target_link_libraries(CramionScriptingTests PRIVATE Cramion::Core)
+target_compile_options(CramionScriptingTests PRIVATE -Wall -Wextra)
+
+# --- Pruebas de la interfaz del juego (consola) ---
+add_executable(CramionUiTests "${CMAKE_CURRENT_SOURCE_DIR}/tests/UiTests.cpp")
+target_link_libraries(CramionUiTests PRIVATE Cramion::Core)

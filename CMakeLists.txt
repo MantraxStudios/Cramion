@@ -8,6 +8,8 @@ project(Cramion
 
 # Recursos de Windows (el icono de los .exe: assets/icon.ico).
 enable_language(RC)
+# C: Lua y miniaudio (scripting y audio de CramionCore).
+enable_language(C)
 set(CRAMION_ICON_RC "${CMAKE_CURRENT_SOURCE_DIR}/assets/cramion.rc")
 
 set(CMAKE_CXX_STANDARD 20)

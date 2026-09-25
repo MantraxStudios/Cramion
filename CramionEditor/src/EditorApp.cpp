@@ -10,6 +10,7 @@
 #include <ImGuizmo.h>
 
 #include <algorithm>
+#include <fstream>
 #include <array>
 #include <cctype>
 #include <chrono>
@@ -46,6 +47,10 @@ EditorApp::EditorApp(dm::Window& window, gfx::VulkanRenderer& renderer, scene::S
     physics::registerPhysicsComponents();
     cinema::registerCinematicComponents();
     terrain::registerTerrainComponents();
+    water::registerWaterComponents();
+    audio::registerAudioComponents();
+    scripting::registerScriptComponents();
+    ui::registerUiComponents();
     physics_.addListener([this](const physics::PhysicsEvent& event) { onPhysicsEvent(event); });
     const std::filesystem::path documents = dialogs::documentsFolder();
     new_project_folder_ = dialogs::utf8(documents.empty() ? std::filesystem::current_path()
@@ -81,6 +86,11 @@ bool EditorApp::openProject(const std::filesystem::path& path) {
     asset_manager_ = std::make_unique<assets::AssetManager>(*database_);
     asset_manager_->setCacheFolder(project_.libraryFolder() / "Cache");
     model_previews_.start(project_.libraryFolder() / "Thumbnails");
+    scripts_.setAssetsRoot(project_.assetsFolder());
+    scripts_.setPhysics(&physics_);
+    scripts_.setAudio(&audio_);
+    audio_.setAssetsRoot(project_.assetsFolder());
+    loadGraphicsSettings();
     sync_ = std::make_unique<ecs::RenderSync>(*asset_manager_);
     sync_->reset(scene_);
     // Terrenos: datos en Assets (compartidos por el render y la fisica).
@@ -718,6 +728,7 @@ void EditorApp::drawUi(float delta_seconds) {
     if (show_console_) drawConsole();
     if (show_render_settings_) drawRenderSettings();
     if (show_animator_) drawAnimatorEditor();
+    if (show_script_editor_) drawScriptEditor();
     if (show_physics_) drawPhysicsWindow();
     if (show_cinematic_) drawCinematicWindow();
     drawModals();
@@ -752,33 +763,32 @@ void EditorApp::drawUi(float delta_seconds) {
     addCpuSample(kCpuUi, millisecondsSince(ui_start));
 }
 
-void EditorApp::syncWorld(float delta_seconds) {
+void EditorApp::syncWorld(float delta_seconds, bool secondary) {
     if (!has_project_ || !sync_) {
         return;
     }
+    const std::uint32_t view = secondary ? (render_view_ == kGameSlot ? kSceneSlot : kGameSlot) : render_view_;
     // (La fisica ya se simulo al empezar el frame, en drawUi.)
     // La vista que se dibuja: Escena (camara del editor, con contorno y
     // gizmos) o Juego (camara real, sin ayudas). Al cambiar de vista o en un
     // corte de camara, sin historias temporales (no se mezclan dos camaras).
-    const bool game = render_view_ == kGameSlot;
-    renderer_.setViewSlot(render_view_);
-    if (render_view_ != last_render_view_ || (game && cinematics_.cutThisFrame())) {
+    const bool game = view == kGameSlot;
+    renderer_.setViewSlot(view);
+    renderer_.setEditorHelpersEnabled(!game);
+    if (view != last_render_view_ || (game && cinematics_.cutThisFrame())) {
         renderer_.invalidateHistory();
     }
-    last_render_view_ = render_view_;
+    last_render_view_ = view;
     if (game) saved_camera_ = scene_.camera();  // afterRender la devuelve
 
     const CpuClock::time_point t = CpuClock::now();
     ecs::RenderSync::Options options;
     options.apply_main_camera = game;
-    sync_->sync(world_, scene_, renderer_, delta_seconds, options);
+    // La segunda vista no avanza animaciones ni agua (ya lo hace la principal).
+    sync_->sync(world_, scene_, renderer_, secondary ? 0.0f : delta_seconds, options);
     addCpuSample(kCpuSync, millisecondsSince(t));
 
-    if (game) {
-        renderer_.setOutlinedActors({});
-        renderer_.setOverlayGeometry({});
-        return;
-    }
+    if (game) return;  // sin contorno ni gizmos (setEditorHelpersEnabled)
     // Contorno de la seleccion (la entidad y sus hijos).
     std::vector<std::uint32_t> outlined;
     for (ecs::Entity e : topLevelSelection()) {
@@ -820,16 +830,15 @@ void EditorApp::buildDefaultLayout(unsigned int dockspace_id) {
 // -----------------------------------------------------------------------------
 
 void EditorApp::drawMenuBar() {
+    // La barra de menus es tambien la barra de titulo: algo mas alta.
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(ImGui::GetStyle().FramePadding.x, 7.0f));
     if (!ImGui::BeginMainMenuBar()) {
+        ImGui::PopStyleVar();
         return;
     }
-    // Logo del motor al principio de la barra (como Unity/Unreal).
-    if (const ImTextureID logo = imgui_.logo(); logo != 0) {
-        const float size = ImGui::GetFrameHeight() - 2.0f;
-        ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 1.0f);
-        ImGui::Image(logo, ImVec2(size, size));
-        ImGui::SetItemTooltip("Cramion Engine");
-    }
+    caption_blockers_.clear();
+    caption_height_ = ImGui::GetWindowHeight();
+    drawCaptionLogo();
     if (ImGui::BeginMenu("Archivo")) {
         if (ImGui::MenuItem("Nueva escena", "Ctrl+N")) runOrAskToSave(PendingAction::NewScene);
         if (ImGui::MenuItem("Abrir escena...")) {
@@ -853,6 +862,10 @@ void EditorApp::drawMenuBar() {
             project::saveProject(project_);
             std::cout << "[Editor] Escena inicial del proyecto: " << world_.sceneName() << "\n";
         }
+        ImGui::Separator();
+        if (ImGui::MenuItem("Exportar juego...")) exportGame(false);
+        if (ImGui::MenuItem("Exportar y jugar...")) exportGame(true);
+        ImGui::Separator();
         if (ImGui::MenuItem("Abrir proyecto (Hub)...")) runOrAskToSave(PendingAction::BackToHub);
         ImGui::Separator();
         if (ImGui::MenuItem("Salir")) requestQuit();
@@ -909,6 +922,13 @@ void EditorApp::drawMenuBar() {
             ImGui::EndMenu();
         }
         if (ImGui::MenuItem("Terreno")) createTerrainEntity();
+        if (ImGui::BeginMenu("Agua")) {
+            if (ImGui::MenuItem("Océano / playa")) createWaterEntity(0);
+            if (ImGui::MenuItem("Lago")) createWaterEntity(1);
+            if (ImGui::MenuItem("Río")) createWaterEntity(2);
+            ImGui::EndMenu();
+        }
+        drawUiCreateMenu();
         if (ImGui::BeginMenu("Cinemática")) {
             if (ImGui::MenuItem("Cámara virtual (desde la vista)")) createCinematic(0);
             if (ImGui::MenuItem("Cámara que sigue a la selección")) createCinematic(1);
@@ -927,8 +947,9 @@ void EditorApp::drawMenuBar() {
         ImGui::MenuItem("Proyecto", nullptr, &show_project_);
         ImGui::MenuItem("Estadísticas", nullptr, &show_statistics_);
         ImGui::MenuItem("Consola", nullptr, &show_console_);
-        ImGui::MenuItem("Ajustes de render", nullptr, &show_render_settings_);
+        ImGui::MenuItem("Configuración gráfica", nullptr, &show_render_settings_);
         ImGui::MenuItem("Animator", nullptr, &show_animator_);
+        ImGui::MenuItem("Scripts (Lua)", nullptr, &show_script_editor_);
         ImGui::MenuItem("Física", nullptr, &show_physics_);
         ImGui::MenuItem("Juego", nullptr, &show_game_);
         ImGui::MenuItem("Cinemática", nullptr, &show_cinematic_);
@@ -941,15 +962,119 @@ void EditorApp::drawMenuBar() {
         ImGui::EndMenu();
     }
 
-    drawPlayControls();
+    // Hasta aqui (logo y menus) no se arrastra la ventana.
+    caption_blockers_.push_back(ImVec4(0.0f, 0.0f, ImGui::GetCursorScreenPos().x, caption_height_));
 
-    char status[200];
-    std::snprintf(status, sizeof(status), "%s   |   %.0f FPS   |   GPU %.2f ms",
-                  project_.name.c_str(), ImGui::GetIO().Framerate,
+    ImGui::BeginGroup();
+    drawPlayControls();
+    ImGui::EndGroup();
+    caption_blockers_.push_back(ImVec4(ImGui::GetItemRectMin().x, 0.0f, ImGui::GetItemRectMax().x, caption_height_));
+
+    char status[260];
+    std::snprintf(status, sizeof(status), "%s - %s%s   |   %.0f FPS   |   GPU %.2f ms", project_.name.c_str(),
+                  world_.sceneName().c_str(), dirty_ ? " *" : "", ImGui::GetIO().Framerate,
                   renderer_.gpuProfiler().totalMilliseconds());
-    ImGui::SameLine(ImGui::GetWindowWidth() - ImGui::CalcTextSize(status).x - 16.0f);
+    const float controls = 46.0f * 3.0f;
+    ImGui::SameLine(ImGui::GetWindowWidth() - controls - ImGui::CalcTextSize(status).x - 16.0f);
     ImGui::TextDisabled("%s", status);
+    drawWindowControls();
     ImGui::EndMainMenuBar();
+    ImGui::PopStyleVar();
+}
+
+// Logo del motor al principio de la barra (como Unity/Unreal). Clic: el menu
+// de la ventana de Windows (mover, tamano, cerrar).
+void EditorApp::drawCaptionLogo() {
+    const ImTextureID logo = imgui_.logo();
+    if (logo == 0) return;
+    const float size = ImGui::GetFrameHeight() - 6.0f;
+    ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 3.0f);
+    ImGui::Image(logo, ImVec2(size, size));
+    if (ImGui::IsItemClicked()) {
+        POINT p{static_cast<LONG>(ImGui::GetItemRectMin().x), static_cast<LONG>(ImGui::GetItemRectMax().y)};
+        ClientToScreen(window_.handle(), &p);
+        window_.showSystemMenu(p.x, p.y);
+    }
+    ImGui::SetItemTooltip("Cramion Engine");
+    caption_blockers_.push_back(ImVec4(ImGui::GetItemRectMin().x, 0.0f, ImGui::GetItemRectMax().x, caption_height_));
+}
+
+// Minimizar, maximizar/restaurar y cerrar, dibujados como los de Windows 11.
+void EditorApp::drawWindowControls() {
+    const float width = 46.0f;
+    const float height = ImGui::GetWindowHeight();
+    const ImVec2 window_pos = ImGui::GetWindowPos();
+    const float x0 = window_pos.x + ImGui::GetWindowWidth() - width * 3.0f;
+    ImDrawList* draw = ImGui::GetWindowDrawList();
+    draw->PushClipRect(ImVec2(x0, window_pos.y), ImVec2(x0 + width * 3.0f, window_pos.y + height), false);
+    const ImU32 glyph = IM_COL32(225, 225, 230, 255);
+    const float g = std::round(height * 0.17f);
+    for (int i = 0; i < 3; ++i) {
+        const ImVec2 min(x0 + width * static_cast<float>(i), window_pos.y);
+        const ImVec2 max(min.x + width, min.y + height);
+        ImGui::SetCursorScreenPos(min);
+        ImGui::PushID(i);
+        const bool pressed = ImGui::InvisibleButton("##window_control", ImVec2(width, height));
+        const bool hovered = ImGui::IsItemHovered();
+        const bool held = ImGui::IsItemActive();
+        ImGui::PopID();
+        if (hovered || held) {
+            const ImU32 bg = i == 2 ? (held ? IM_COL32(200, 30, 40, 255) : IM_COL32(232, 17, 35, 255))
+                                    : (held ? IM_COL32(255, 255, 255, 45) : IM_COL32(255, 255, 255, 28));
+            draw->AddRectFilled(min, max, bg);
+        }
+        const ImVec2 c(std::round((min.x + max.x) * 0.5f) + 0.5f, std::round((min.y + max.y) * 0.5f) + 0.5f);
+        if (i == 0) {
+            draw->AddLine(ImVec2(c.x - g, c.y), ImVec2(c.x + g, c.y), glyph, 1.0f);
+            ImGui::SetItemTooltip("Minimizar");
+        } else if (i == 1) {
+            if (window_.isMaximized()) {
+                draw->AddRect(ImVec2(c.x - g, c.y - g + 2.0f), ImVec2(c.x + g - 2.0f, c.y + g), glyph, 0.0f, 0, 1.0f);
+                draw->AddLine(ImVec2(c.x - g + 2.0f, c.y - g), ImVec2(c.x + g, c.y - g), glyph, 1.0f);
+                draw->AddLine(ImVec2(c.x + g, c.y - g), ImVec2(c.x + g, c.y + g - 2.0f), glyph, 1.0f);
+            } else {
+                draw->AddRect(ImVec2(c.x - g, c.y - g), ImVec2(c.x + g, c.y + g), glyph, 0.0f, 0, 1.0f);
+            }
+            ImGui::SetItemTooltip(window_.isMaximized() ? "Restaurar" : "Maximizar");
+        } else {
+            draw->AddLine(ImVec2(c.x - g, c.y - g), ImVec2(c.x + g, c.y + g), glyph, 1.0f);
+            draw->AddLine(ImVec2(c.x + g, c.y - g), ImVec2(c.x - g, c.y + g), glyph, 1.0f);
+            ImGui::SetItemTooltip("Cerrar");
+        }
+        if (pressed) {
+            if (i == 0) window_.minimize();
+            if (i == 1) window_.toggleMaximize();
+            if (i == 2) requestQuit();
+        }
+    }
+    draw->PopClipRect();
+    caption_blockers_.push_back(ImVec4(x0, 0.0f, x0 + width * 3.0f, height));
+}
+
+bool EditorApp::isCaptionDragArea(int x, int y) const {
+    const float fx = static_cast<float>(x);
+    const float fy = static_cast<float>(y);
+    if (fy < 0.0f || fy >= caption_height_) return false;
+    for (const ImVec4& r : caption_blockers_) {
+        if (fx >= r.x && fx < r.z && fy >= r.y && fy < r.w) return false;
+    }
+    return true;
+}
+
+// En el Hub (sin menus): logo, titulo y los botones de la ventana.
+void EditorApp::drawHubTitleBar() {
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(ImGui::GetStyle().FramePadding.x, 7.0f));
+    if (!ImGui::BeginMainMenuBar()) {
+        ImGui::PopStyleVar();
+        return;
+    }
+    caption_blockers_.clear();
+    caption_height_ = ImGui::GetWindowHeight();
+    drawCaptionLogo();
+    ImGui::TextUnformatted("Cramion Hub");
+    drawWindowControls();
+    ImGui::EndMainMenuBar();
+    ImGui::PopStyleVar();
 }
 
 // -----------------------------------------------------------------------------
@@ -957,6 +1082,7 @@ void EditorApp::drawMenuBar() {
 // -----------------------------------------------------------------------------
 
 void EditorApp::drawHub() {
+    drawHubTitleBar();
     const ImGuiViewport* viewport = ImGui::GetMainViewport();
     ImGui::SetNextWindowPos(viewport->WorkPos);
     ImGui::SetNextWindowSize(viewport->WorkSize);
@@ -1290,9 +1416,13 @@ void EditorApp::drawRenderSettings() {
         return;
     }
     gfx::VulkanRenderer& r = renderer_;
+    drawGraphicsSettings();
     const auto toggle = [&](const char* label, bool value, void (gfx::VulkanRenderer::*setter)(bool)) {
         bool v = value;
-        if (ImGui::Checkbox(label, &v)) (r.*setter)(v);
+        if (ImGui::Checkbox(label, &v)) {
+            (r.*setter)(v);
+            saveGraphicsSettings();
+        }
     };
     ImGui::SeparatorText("Sombras");
     toggle("Sombras", r.shadowsEnabled(), &gfx::VulkanRenderer::setShadowsEnabled);
@@ -1314,6 +1444,135 @@ void EditorApp::drawRenderSettings() {
     ImGui::End();
 }
 
+// Escalado (TAA, FSR, DLSS), calidad, nitidez, vsync y calidades rapidas.
+void EditorApp::drawGraphicsSettings() {
+    gfx::VulkanRenderer& r = renderer_;
+    gfx::GraphicsSettings g = r.graphicsSettings();
+    bool changed = false;
+
+    ImGui::SeparatorText("Calidad rápida");
+    static constexpr const char* kPresets[] = {"Baja", "Media", "Alta", "Ultra"};
+    const float preset_width = (ImGui::GetContentRegionAvail().x - ImGui::GetStyle().ItemSpacing.x * 3.0f) / 4.0f;
+    for (int i = 0; i < 4; ++i) {
+        if (i > 0) ImGui::SameLine();
+        if (ImGui::Button(kPresets[i], ImVec2(preset_width, 0.0f))) {
+            // Baja/Media: escalado a menos resolucion; Alta/Ultra: nativa con TAA.
+            static constexpr gfx::UpscaleQuality kQuality[] = {gfx::UpscaleQuality::Performance,
+                                                               gfx::UpscaleQuality::Balanced,
+                                                               gfx::UpscaleQuality::Quality,
+                                                               gfx::UpscaleQuality::Native};
+            if (g.upscaler == gfx::Upscaler::Off) g.upscaler = gfx::Upscaler::Taa;
+            g.quality = kQuality[i];
+            g.sharpness = i < 2 ? 0.45f : 0.25f;
+            r.setShadowsEnabled(true);
+            r.setReflectionProbeEnabled(i >= 1);
+            r.setOcclusionCullingEnabled(true);
+            if (r.rayTracingSupported()) r.setRayTracingEnabled(i == 3);
+            changed = true;
+        }
+    }
+
+    ImGui::SeparatorText("Escalado y antialiasing");
+    static constexpr const char* kUpscalers[] = {"Desactivado (nativa + FXAA)", "TAA (temporal, escala como TAAU)",
+                                                 "AMD FSR 1", "AMD FSR 3 (fase 2)", "NVIDIA DLSS (fase 2)"};
+    ImGui::SetNextItemWidth(-1.0f);
+    if (ImGui::BeginCombo("##upscaler", kUpscalers[static_cast<int>(g.upscaler)])) {
+        for (int i = 0; i < 5; ++i) {
+            // FSR 3 y DLSS llegan con sus SDK (siguiente fase).
+            const bool available = i <= 2;
+            if (ImGui::Selectable(kUpscalers[i], static_cast<int>(g.upscaler) == i,
+                                  available ? 0 : ImGuiSelectableFlags_Disabled)) {
+                g.upscaler = static_cast<gfx::Upscaler>(i);
+                changed = true;
+            }
+        }
+        ImGui::EndCombo();
+    }
+    ImGui::BeginDisabled(g.upscaler == gfx::Upscaler::Off);
+    static constexpr const char* kQualities[] = {"Nativa (100 %, DLAA)", "Calidad (67 %)", "Equilibrado (58 %)",
+                                                 "Rendimiento (50 %)", "Ultra rendimiento (33 %)", "Personalizada"};
+    int quality = static_cast<int>(g.quality);
+    ImGui::SetNextItemWidth(-90.0f);
+    if (ImGui::Combo("Resolución", &quality, kQualities, 6)) {
+        g.quality = static_cast<gfx::UpscaleQuality>(quality);
+        changed = true;
+    }
+    if (g.quality == gfx::UpscaleQuality::Custom) {
+        float percent = g.custom_scale * 100.0f;
+        ImGui::SetNextItemWidth(-90.0f);
+        if (ImGui::SliderFloat("Escala", &percent, 25.0f, 100.0f, "%.0f %%")) {
+            g.custom_scale = percent / 100.0f;
+        }
+        if (ImGui::IsItemDeactivatedAfterEdit()) changed = true;
+    }
+    float sharpness = g.sharpness;
+    ImGui::SetNextItemWidth(-90.0f);
+    if (ImGui::SliderFloat("Nitidez", &sharpness, 0.0f, 1.0f, "%.2f")) {
+        g.sharpness = sharpness;
+        changed = true;
+    }
+    ImGui::SetItemTooltip("AMD RCAS tras el escalado (0 = sin nitidez).");
+    ImGui::EndDisabled();
+    const vk::Extent2D render = r.renderExtent();
+    const vk::Extent2D output = r.sceneExtent();
+    ImGui::TextDisabled("Interna %ux%u  ->  pantalla %ux%u", render.width, render.height, output.width, output.height);
+
+    ImGui::BeginDisabled(true);
+    bool frame_generation = g.frame_generation;
+    ImGui::Checkbox("Generación de frames (DLSS 3 / FSR 3, fase 3)", &frame_generation);
+    ImGui::EndDisabled();
+
+    ImGui::SeparatorText("Presentación");
+    if (ImGui::Checkbox("VSync", &g.vsync)) changed = true;
+    ImGui::SetItemTooltip("Sin VSync: mailbox (sin cortes de imagen, sin tope de FPS).");
+    ImGui::TextDisabled("FXAA: componente PostProcessing (con TAA/FSR sobra).");
+
+    if (changed) {
+        r.setGraphicsSettings(g);
+        saveGraphicsSettings();
+    }
+}
+
+// Formato: clave=valor por linea (sin dependencias).
+void EditorApp::saveGraphicsSettings() const {
+    if (!has_project_) return;
+    const gfx::GraphicsSettings& g = renderer_.graphicsSettings();
+    std::ofstream out(project_.settingsFolder() / "Graphics.ini", std::ios::trunc);
+    if (!out) return;
+    out << "upscaler=" << static_cast<int>(g.upscaler) << "\n";
+    out << "quality=" << static_cast<int>(g.quality) << "\n";
+    out << "custom_scale=" << g.custom_scale << "\n";
+    out << "sharpness=" << g.sharpness << "\n";
+    out << "vsync=" << (g.vsync ? 1 : 0) << "\n";
+    out << "shadows=" << (renderer_.shadowsEnabled() ? 1 : 0) << "\n";
+    out << "ray_tracing=" << (renderer_.rayTracingEnabled() ? 1 : 0) << "\n";
+    out << "reflection_probe=" << (renderer_.reflectionProbeEnabled() ? 1 : 0) << "\n";
+    out << "occlusion_culling=" << (renderer_.occlusionCullingEnabled() ? 1 : 0) << "\n";
+}
+
+void EditorApp::loadGraphicsSettings() {
+    std::ifstream in(project_.settingsFolder() / "Graphics.ini");
+    if (!in) return;
+    gfx::GraphicsSettings g = renderer_.graphicsSettings();
+    std::string line;
+    while (std::getline(in, line)) {
+        const std::size_t eq = line.find('=');
+        if (eq == std::string::npos) continue;
+        const std::string key = line.substr(0, eq);
+        const float value = std::strtof(line.c_str() + eq + 1, nullptr);
+        if (key == "upscaler") g.upscaler = static_cast<gfx::Upscaler>(std::clamp(static_cast<int>(value), 0, 2));
+        if (key == "quality") g.quality = static_cast<gfx::UpscaleQuality>(std::clamp(static_cast<int>(value), 0, 5));
+        if (key == "custom_scale") g.custom_scale = std::clamp(value, 0.25f, 1.0f);
+        if (key == "sharpness") g.sharpness = std::clamp(value, 0.0f, 1.0f);
+        if (key == "vsync") g.vsync = value != 0.0f;
+        if (key == "shadows") renderer_.setShadowsEnabled(value != 0.0f);
+        if (key == "ray_tracing" && renderer_.rayTracingSupported()) renderer_.setRayTracingEnabled(value != 0.0f);
+        if (key == "reflection_probe") renderer_.setReflectionProbeEnabled(value != 0.0f);
+        if (key == "occlusion_culling") renderer_.setOcclusionCullingEnabled(value != 0.0f);
+    }
+    renderer_.setGraphicsSettings(g);
+}
+
 // -----------------------------------------------------------------------------
 // Importacion en segundo plano: el importador puede tardar (un FBX grande,
 // casi un minuto); la interfaz sigue viva y el asset aparece al terminar.
@@ -1332,7 +1591,10 @@ void EditorApp::startImport(const std::vector<std::filesystem::path>& files,
             continue;
         }
         // Imagenes (texturas de decals): se copian tal cual a Assets/.
-        if (isDecalImage(file)) {
+        std::string import_ext = file.extension().string();
+        std::transform(import_ext.begin(), import_ext.end(), import_ext.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        if (isDecalImage(file) || import_ext == ".lua" || audio::isAudioFile(file)) {
             std::error_code error;
             std::filesystem::path target = folder / file.filename();
             if (!std::filesystem::exists(target)) std::filesystem::copy_file(file, target, error);

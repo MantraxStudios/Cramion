@@ -4,6 +4,8 @@
 
 #include "EditorApp.h"
 
+#include "Dialogs.h"
+
 #include <imgui.h>
 #include <imgui_internal.h>
 #include <imgui_stdlib.h>
@@ -52,6 +54,10 @@ Icon EditorApp::entityIcon(const ecs::Entity& e, ImU32& tint) const {
     if (e.has<terrain::Terrain>()) {
         tint = IM_COL32(140, 200, 110, 255);
         return Icon::Terrain;
+    }
+    if (e.has<water::WaterBody>()) {
+        tint = IM_COL32(80, 180, 255, 255);
+        return Icon::FogVolume;
     }
     if (e.has<cinema::VirtualCamera>()) {
         tint = IM_COL32(120, 190, 255, 255);
@@ -131,6 +137,13 @@ void EditorApp::drawHierarchy() {
         item("Humedad", 12);
         ImGui::Separator();
         if (ImGui::MenuItem("Terreno")) createTerrainEntity();
+        if (ImGui::BeginMenu("Agua")) {
+            if (ImGui::MenuItem("Océano / playa")) createWaterEntity(0);
+            if (ImGui::MenuItem("Lago")) createWaterEntity(1);
+            if (ImGui::MenuItem("Río")) createWaterEntity(2);
+            ImGui::EndMenu();
+        }
+        drawUiCreateMenu();
         ImGui::EndPopup();
     }
     ImGui::Separator();
@@ -231,6 +244,13 @@ void EditorApp::drawHierarchy() {
         item("Humedad", 12);
         ImGui::Separator();
         if (ImGui::MenuItem("Terreno")) createTerrainEntity();
+        if (ImGui::BeginMenu("Agua")) {
+            if (ImGui::MenuItem("Océano / playa")) createWaterEntity(0);
+            if (ImGui::MenuItem("Lago")) createWaterEntity(1);
+            if (ImGui::MenuItem("Río")) createWaterEntity(2);
+            ImGui::EndMenu();
+        }
+        drawUiCreateMenu();
         if (!clipboard_.empty() && ImGui::MenuItem("Pegar")) pasteClipboard();
         ImGui::EndPopup();
     }
@@ -435,6 +455,20 @@ void EditorApp::drawHierarchyRow(const HierarchyRow& row, bool scroll_to) {
                     commit();
                 }
             }
+            if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(kScriptPayload)) {
+                scripting::Script& s = entity.has<scripting::Script>() ? entity.get<scripting::Script>()
+                                                                       : entity.add<scripting::Script>();
+                s.file = assetRelative(dialogs::fromUtf8(static_cast<const char*>(payload->Data)));
+                selectOnly(entity.uuid());
+                commit();
+            }
+            if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(kAudioPayload)) {
+                audio::AudioSource& a = entity.has<audio::AudioSource>() ? entity.get<audio::AudioSource>()
+                                                                         : entity.add<audio::AudioSource>();
+                a.clip = assetRelative(dialogs::fromUtf8(static_cast<const char*>(payload->Data)));
+                selectOnly(entity.uuid());
+                commit();
+            }
             ImGui::EndDragDropTarget();
         }
 
@@ -458,6 +492,13 @@ void EditorApp::drawHierarchyRow(const HierarchyRow& row, bool scroll_to) {
         item("Humedad", 12);
         ImGui::Separator();
         if (ImGui::MenuItem("Terreno")) createTerrainEntity();
+        if (ImGui::BeginMenu("Agua")) {
+            if (ImGui::MenuItem("Océano / playa")) createWaterEntity(0);
+            if (ImGui::MenuItem("Lago")) createWaterEntity(1);
+            if (ImGui::MenuItem("Río")) createWaterEntity(2);
+            ImGui::EndMenu();
+        }
+        drawUiCreateMenu();
                 ImGui::EndMenu();
             }
             if (ImGui::MenuItem("Renombrar", "F2")) {

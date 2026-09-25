@@ -13,7 +13,9 @@
 #include "CramionFX/vk/OverlayPass.h"
 #include "CramionFX/vk/ParticlePass.h"
 #include "CramionFX/vk/TerrainPass.h"
+#include "CramionFX/vk/WaterPass.h"
 #include "CramionFX/vk/GpuTypes.h"
+#include "CramionFX/vk/GraphicsSettings.h"
 #include "CramionFX/vk/IblProbe.h"
 #include "CramionFX/vk/LightingPass.h"
 #include "CramionFX/vk/LocalShadowMaps.h"
@@ -126,7 +128,11 @@ public:
     void uploadModels(const scene::Scene& scene);
 
     // Dibuja un frame de la escena indicada.
-    void drawFrame(const scene::Scene& scene);
+    // `present` = false: dibuja la vista (a su imagen de vista) sin
+    // presentarla ni la interfaz: el editor la usa para la segunda vista.
+    void drawFrame(const scene::Scene& scene, bool present = true);
+    // Ayudas del editor (contorno, gizmos, picking): solo en la vista Escena.
+    void setEditorHelpersEnabled(bool enabled) { editor_helpers_ = enabled; }
 
     void onResize(std::uint32_t width, std::uint32_t height);
 
@@ -139,6 +145,13 @@ public:
 
     // --- Ajustes de sombras ---
     void setShadowsEnabled(bool enabled) { shadows_enabled_ = enabled; }
+    // Configuracion grafica: escalador (TAA, FSR, DLSS), resolucion interna,
+    // nitidez y vsync. Si cambia la resolucion se rehacen los destinos al
+    // final del frame.
+    void setGraphicsSettings(const GraphicsSettings& settings);
+    const GraphicsSettings& graphicsSettings() const { return graphics_; }
+    // Resolucion a la que se dibuja la escena (la de pantalla por la escala).
+    vk::Extent2D renderExtent() const { return render_extent_; }
     bool shadowsEnabled() const { return shadows_enabled_; }
     // Sombras del sol/luna (la luz direccional con "Proyecta sombras").
     void setSunShadowsEnabled(bool enabled) { sun_shadows_ = enabled; }
@@ -360,6 +373,10 @@ public:
     std::uint32_t createTerrain(std::uint32_t resolution, std::uint32_t splat_resolution);
     void destroyTerrain(std::uint32_t id);
     void setTerrainDesc(std::uint32_t id, const TerrainDesc& desc) { terrain_pass_.setDesc(id, desc); }
+    // Agua (oceano, lagos, rios): los cuerpos de este frame y el reloj de sus olas.
+    void setWaterBodies(const std::vector<WaterBodyDesc>& bodies, float time, int underwater = -1) {
+        water_pass_.setBodies(bodies, time, underwater);
+    }
     // Una region de los datos completos (se sube en el siguiente frame).
     void updateTerrainHeights(std::uint32_t id, const float* heights, std::uint32_t x, std::uint32_t y,
                               std::uint32_t w, std::uint32_t h);
@@ -474,6 +491,10 @@ private:
     // Vidrio (ventanas) sobre la imagen HDR ya iluminada, con reflejos
     // (glass.frag). Va justo despues de la iluminacion.
     void recordGlassPass(const vk::raii::CommandBuffer& cmd, std::uint32_t frame_index);
+    void recordWaterPass(const vk::raii::CommandBuffer& cmd, std::uint32_t frame_index);
+    // Copia la imagen HDR (lo que hay detras) a glass_source_ y deja la
+    // profundidad lista para probarse: la leen el vidrio y el agua.
+    void copySceneForTransparency(const vk::raii::CommandBuffer& cmd);
     void updateGlassDescriptors();
     void recordSkyLutPass(const vk::raii::CommandBuffer& cmd);
     // Mapa de lluvia (la escena vista desde arriba). Una vez: el escenario no
@@ -543,6 +564,14 @@ private:
     IblProbe ibl_probe_{};
     // Rayos de luz, a media resolucion.
     VulkanImage light_shafts_{};
+    // Escalado (resolucion de pantalla): resultado del TAA/EASU, historia del
+    // TAA, imagen final (tras la nitidez) y la profundidad escalada para los
+    // gizmos.
+    VulkanImage upscale_target_{};
+    VulkanImage taa_history_{};
+    VulkanImage upscaled_color_{};
+    VulkanImage output_depth_{};
+    bool output_depth_blit_ = false;
     // Mapa de lluvia: profundidad de la escena desde arriba (lo que tiene algo
     // encima no se moja) y su muestreador (sin comparacion).
     VulkanImage rain_map_{};
@@ -602,6 +631,10 @@ private:
     ComputePass gi_atrous_pass_{};
     FullscreenPass clouds_pass_{};
     FullscreenPass light_shaft_pass_{};
+    // Escalado: TAA/TAAU, FSR 1 (EASU) y la nitidez (RCAS).
+    FullscreenPass taa_pass_{};
+    FullscreenPass easu_pass_{};
+    FullscreenPass rcas_pass_{};
     ComputePass histogram_pass_{};
     ComputePass exposure_average_pass_{};
 
@@ -624,6 +657,8 @@ private:
         std::uint32_t scene_actor = 0;
         bool cast_shadows = true;
         bool shadows_only = false;
+        // Matrices en el buffer de huesos (huesos + la instancia, si hay).
+        std::uint32_t bone_entries = 0;
     };
     std::vector<ActorDraw> actor_draws_;
     // Material batching: los escenarios del mismo modelo y material (de
@@ -676,6 +711,7 @@ private:
     PickResult pick_request_{};
     std::optional<PickResult> pick_result_;
     TerrainPass terrain_pass_{};
+    WaterPass water_pass_{};
     core::Vec3 camera_position_{};
     ParticleDrawList particles_;
     ParticlePass particle_pass_{};
@@ -787,6 +823,9 @@ private:
     std::vector<vk::raii::DescriptorSet> bloom_up_sets_;
     std::vector<vk::raii::DescriptorSet> composite_sets_;
     std::vector<vk::raii::DescriptorSet> light_shaft_sets_;
+    std::vector<vk::raii::DescriptorSet> taa_sets_;
+    std::vector<vk::raii::DescriptorSet> easu_sets_;
+    std::vector<vk::raii::DescriptorSet> rcas_sets_;
     std::vector<vk::raii::DescriptorSet> ssgi_sets_;  // uno por frame
     std::vector<vk::raii::DescriptorSet> ssr_sets_;   // uno por frame
     std::vector<vk::raii::DescriptorSet> ssr_resolve_sets_;  // uno por frame
@@ -840,6 +879,32 @@ private:
     bool framebuffer_resized_ = false;
     bool initialized_ = false;
     bool shadows_enabled_ = true;
+    bool editor_helpers_ = true;
+    bool presenting_ = true;
+    GraphicsSettings graphics_{};
+    vk::Extent2D render_extent_{0, 0};
+    bool upscaling_ = false;  // hay pasada de escalado (TAA o FSR)
+    bool taa_history_valid_ = false;
+    std::uint32_t jitter_index_ = 0;
+    core::Vec2 jitter_ndc_{};
+    core::Mat4 motion_view_projection_ = core::Mat4::identity();  // sin jitter, frame anterior
+    core::Mat4 taa_reproject_ = core::Mat4::identity();
+    // Matrices del frame anterior (en el mundo) de cada actor, para los
+    // vectores de movimiento: van tras las de este frame en el buffer.
+    struct BoneRange {
+        std::uint32_t model = 0;
+        std::uint32_t start = 0;
+        std::uint32_t count = 0;
+    };
+    std::vector<core::Mat4> last_world_bones_;
+    std::vector<BoneRange> last_bone_ranges_;
+    std::uint32_t motion_offset_ = 0;
+    // La imagen que lee el post-proceso: la escalada o la de la escena.
+    const VulkanImage& postSource() const { return upscaling_ ? upscaled_color_ : scene_color_; }
+    void computeRenderExtent();
+    void recordUpscalePass(const vk::raii::CommandBuffer& cmd);
+    void recordOutputDepth(const vk::raii::CommandBuffer& cmd);
+    bool output_depth_ready_ = false;
     bool sun_shadows_ = true;
     bool sunShadows() const { return shadows_enabled_ && sun_shadows_; }
     bool cascade_debug_ = false;

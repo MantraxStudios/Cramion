@@ -30,6 +30,8 @@ public:
     // anterior. Devuelve false si la ventana esta minimizada (area cero), caso
     // en el que no hay nada que crear.
     bool recreate(std::uint32_t width, std::uint32_t height);
+    // Sincronia vertical (FIFO) o mailbox; se aplica al recrearla.
+    void setVsync(bool vsync) { vsync_ = vsync; }
 
     void shutdown();
 
@@ -50,7 +52,8 @@ private:
 
     static vk::SurfaceFormatKHR chooseSurfaceFormat(
         const std::vector<vk::SurfaceFormatKHR>& available);
-    static vk::PresentModeKHR choosePresentMode(const std::vector<vk::PresentModeKHR>& available);
+    vk::PresentModeKHR choosePresentMode(const std::vector<vk::PresentModeKHR>& available) const;
+    bool vsync_ = false;
     static vk::Extent2D chooseExtent(const vk::SurfaceCapabilitiesKHR& capabilities,
                                      std::uint32_t width, std::uint32_t height);
 

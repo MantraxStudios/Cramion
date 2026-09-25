@@ -18,6 +18,7 @@
 #include "CramionCore/asset/AssetManager.h"
 #include "CramionCore/ecs/MathUtil.h"
 #include "CramionCore/terrain/Terrain.h"
+#include "CramionCore/water/Water.h"
 
 #include <Jolt/Jolt.h>
 
@@ -1359,9 +1360,51 @@ struct PhysicsSystem::Impl {
         }
     }
 
+    // Flotacion (componente WaterBody): cada cuerpo dinamico que toca el agua
+    // recibe el empuje de Jolt, con la altura, la normal y la corriente del
+    // agua en su centro (la misma ola que se dibuja).
+    void applyBuoyancy(ecs::World& w, float dt) {
+        auto view = w.registry().view<water::WaterBody>();
+        if (view.begin() == view.end()) return;
+        struct Water {
+            const water::WaterBody* body;
+            core::Mat4 matrix;
+        };
+        std::vector<Water> waters;
+        for (const entt::entity handle : view) {
+            const ecs::Entity e = w.wrap(handle);
+            const water::WaterBody& body = view.get<water::WaterBody>(handle);
+            if (body.buoyancy && e.activeInHierarchy()) waters.push_back(Water{&body, e.worldMatrix()});
+        }
+        if (waters.empty()) return;
+        const float time = water::waterTime();
+        JPH::BodyInterface& bodies = system->GetBodyInterface();
+        for (const auto& [handle, entry] : entries) {
+            if (entry.type != BodyType::Dynamic || entry.solid.IsInvalid()) continue;
+            JPH::AABox box;
+            {
+                JPH::BodyLockRead lock(system->GetBodyLockInterface(), entry.solid);
+                if (!lock.Succeeded()) continue;
+                box = lock.GetBody().GetWorldSpaceBounds();
+            }
+            const JPH::Vec3 center = box.GetCenter();
+            for (const Water& water_body : waters) {
+                const water::WaterSample sample = water::sampleWater(
+                    *water_body.body, water_body.matrix, Vec3{center.GetX(), center.GetY(), center.GetZ()}, time);
+                if (!sample.inside || box.mMin.GetY() >= sample.height) continue;
+                bodies.ApplyBuoyancyImpulse(entry.solid, JPH::RVec3(center.GetX(), sample.height, center.GetZ()),
+                                            toJolt(sample.normal), water_body.body->density * 1.4f,
+                                            water_body.body->drag, water_body.body->drag * 0.5f,
+                                            toJolt(sample.velocity), system->GetGravity(), dt);
+                break;
+            }
+        }
+    }
+
     void stepOnce(ecs::World& w) {
         const float dt = settings.fixed_step;
         moveKinematics(dt);
+        applyBuoyancy(w, dt);
         system->Update(dt, std::max(settings.collision_steps, 1), temp_allocator.get(), job_system.get());
         ++steps;
         capturePoses();

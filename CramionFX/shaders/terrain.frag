@@ -22,6 +22,8 @@ layout(set = 1, binding = 5) uniform sampler2DArray layer_normal;
 
 layout(location = 0) in vec3 v_world_position;
 layout(location = 1) in vec2 v_uv;
+layout(location = 2) in vec4 v_current_clip;
+layout(location = 3) in vec4 v_previous_clip;
 
 #include "gbuffer_surface.glsl"
 
@@ -108,4 +110,5 @@ void main() {
 
     writeSurface(vec4(clamp(albedo, 0.0, 1.0), 1.0), n, normal, tangent_normal, n, clamp(metallic, 0.0, 1.0),
                  clamp(roughness, 0.04, 1.0), 1.0, vec3(0.0), 0.04, v_world_position);
+    writeVelocity(v_current_clip, v_previous_clip);
 }

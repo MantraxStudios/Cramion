@@ -26,6 +26,14 @@ struct GpuCamera {
     // para el cielo. Se invierte una vez por frame en la CPU.
     core::Mat4 inverse_view_projection = core::Mat4::identity();
     core::Vec4 position{};
+    // Vectores de movimiento (TAA, FSR, DLSS): vista-proyeccion sin jitter de
+    // este frame y la del anterior.
+    core::Mat4 unjittered_view_projection = core::Mat4::identity();
+    core::Mat4 previous_view_projection = core::Mat4::identity();
+    core::Vec4 jitter{};  // xy = desplazamiento de este frame en NDC
+    // x = donde empiezan, en el buffer de huesos, las matrices del frame
+    // anterior (en el mundo) de cada hueso/instancia.
+    std::uint32_t motion[4] = {0, 0, 0, 0};
 };
 
 struct GpuPointLight {
@@ -90,6 +98,25 @@ struct GpuSkinnedPush {
     std::uint32_t pick_id = 0;
     // Bit 0: dibujo instanciado (skinned.vert lee la matriz con gl_InstanceIndex).
     std::uint32_t flags = 0;
+};
+
+// Escalado temporal / TAA (taa.frag).
+struct GpuTaaPush {
+    core::Vec4 render_size{};  // ancho, alto, 1/ancho, 1/alto (interna)
+    core::Vec4 output_size{};  // igual, en pantalla
+    core::Vec4 jitter{};       // xy = jitter en UV, z = historia valida
+    core::Mat4 reproject = core::Mat4::identity();  // NDC actual -> recorte anterior
+};
+static_assert(sizeof(GpuTaaPush) == 112, "GpuTaaPush debe coincidir con taa.frag");
+
+// FSR 1 (fsr_easu.frag y fsr_rcas.frag): constantes de FsrEasuCon/FsrRcasCon.
+struct GpuEasuPush {
+    std::uint32_t con[16] = {};
+};
+struct GpuRcasPush {
+    std::uint32_t con[4] = {};
+    std::uint32_t bypass = 0;
+    std::uint32_t pad[3] = {0, 0, 0};
 };
 
 // Constante de push de las sombras de los modelos con esqueleto.
@@ -268,7 +295,7 @@ struct GpuLocalShadows {
 static_assert(scene::kShadowCascadeCount == 4,
               "El shader de iluminacion espera exactamente 4 cascadas");
 
-static_assert(sizeof(GpuCamera) == 4 * 64 + 16, "GpuCamera debe seguir el layout std140");
+static_assert(sizeof(GpuCamera) == 6 * 64 + 16 + 16 + 16, "GpuCamera debe seguir el layout std140");
 static_assert(sizeof(GpuPointLight) == 48, "GpuPointLight debe seguir el layout std140");
 static_assert(sizeof(GpuSpotLight) == 64, "GpuSpotLight debe seguir el layout std140");
 

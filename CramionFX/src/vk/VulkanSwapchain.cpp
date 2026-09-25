@@ -134,8 +134,10 @@ vk::SurfaceFormatKHR VulkanSwapchain::chooseSurfaceFormat(
 }
 
 vk::PresentModeKHR VulkanSwapchain::choosePresentMode(
-    const std::vector<vk::PresentModeKHR>& available) {
-    // Mailbox = triple buffer sin tearing; FIFO siempre esta garantizado.
+    const std::vector<vk::PresentModeKHR>& available) const {
+    // VSync: FIFO (siempre esta garantizado).
+    if (vsync_) return vk::PresentModeKHR::eFifo;
+    // Mailbox = triple buffer sin tearing.
     const bool has_mailbox = std::find(available.begin(), available.end(),
                                        vk::PresentModeKHR::eMailbox) != available.end();
 
