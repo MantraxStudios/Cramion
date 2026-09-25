@@ -197,6 +197,23 @@ void ImGuiLayer::loadIcons() {
         ++loaded;
     }
     std::cout << "[Editor] " << loaded << " iconos cargados de " << folder.string() << "\n";
+
+    // Logo del motor (copiado como editor_icons/logo.png).
+    std::vector<std::filesystem::path> logos = {folder / "logo.png"};
+#ifdef CRAMION_EDITOR_LOGO_SOURCE
+    logos.emplace_back(CRAMION_EDITOR_LOGO_SOURCE);
+#endif
+    for (const std::filesystem::path& file : logos) {
+        asset::ImageRgba8 image;
+        if (!asset::loadImageRgba8(file, image, 256)) continue;
+        const std::uint32_t texture = renderer_->createUiTexture(image.pixels.data(), image.width, image.height);
+        if (texture == 0) continue;
+        icon_textures_.push_back(texture);
+        const VkDescriptorSet set =
+            ImGui_ImplVulkan_AddTexture(renderer_->uiTextureView(texture), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        logo_ = static_cast<ImTextureID>(reinterpret_cast<std::uintptr_t>(set));
+        break;
+    }
 }
 
 void ImGuiLayer::drawIcon(ImDrawList* draw, Icon id, ImVec2 min, float size, ImU32 tint) const {

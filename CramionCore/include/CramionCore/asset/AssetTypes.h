@@ -20,6 +20,7 @@ namespace cramion::assets {
 //   AnimatorController .cranimator maquina de estados de animacion (JSON)
 //   AnimationClip      .cranim     clip extraido de un modelo (pistas por
 //                                  nombre de nodo; 1a linea = cabecera)
+//   Material           .crmat      material (JSON, ver MaterialAsset.h)
 // Los archivos originales (FBX, OBJ, glTF, HDR) no se copian al proyecto: el
 // importador los convierte a .crdata.
 enum class AssetType : std::uint32_t {
@@ -29,6 +30,7 @@ enum class AssetType : std::uint32_t {
     Scene = 3,
     AnimatorController = 4,
     AnimationClip = 5,
+    Material = 6,
 };
 
 inline const char* assetTypeName(AssetType type) {
@@ -38,6 +40,7 @@ inline const char* assetTypeName(AssetType type) {
         case AssetType::Scene: return "Escena";
         case AssetType::AnimatorController: return "Animator";
         case AssetType::AnimationClip: return "Clip de animacion";
+        case AssetType::Material: return "Material";
         default: return "Desconocido";
     }
 }

@@ -66,7 +66,7 @@ void LocalLightShadows::updateSpots(const LightSet& lights, std::uint32_t map_si
     std::uint32_t slot = 0;
     for (std::size_t i = 0; i < lights.spots.size() && slot < kMaxShadowedSpotLights; ++i) {
         const SpotLight& light = lights.spots[i];
-        if (!light.enabled) {
+        if (!light.enabled || !light.cast_shadows) {
             continue;
         }
 
@@ -100,6 +100,9 @@ void LocalLightShadows::updateSpots(const LightSet& lights, std::uint32_t map_si
     for (; slot < kMaxShadowedSpotLights; ++slot) {
         spots_[slot].active = false;
         spots_[slot].dirty = false;
+        // Lo que se mueva mientras esta libre no lo redibuja nadie: al volver
+        // a usarse (p. ej. al reactivar "Proyecta sombras") se rehace.
+        spot_rendered_[slot] = Signature{};
     }
 }
 
@@ -119,7 +122,7 @@ void LocalLightShadows::updatePoints(const Camera& camera, const LightSet& light
 
     for (std::size_t i = 0; i < lights.points.size(); ++i) {
         const PointLight& light = lights.points[i];
-        if (light.range <= 0.0f || light.intensity <= 0.0f) {
+        if (light.range <= 0.0f || light.intensity <= 0.0f || !light.cast_shadows) {
             continue;
         }
         const float distance = core::length(light.position - camera.position());
@@ -179,6 +182,7 @@ void LocalLightShadows::updatePoints(const Camera& camera, const LightSet& light
         } else {
             points_[slot].light_index = -1;
             points_[slot].dirty = false;
+            point_rendered_[slot] = Signature{};
         }
     }
 

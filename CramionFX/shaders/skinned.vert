@@ -26,6 +26,9 @@ layout(push_constant) uniform PushConstants {
     vec4 emissive;
     vec4 material;
     uint bone_offset;
+    float reflectance;
+    uint pick_id;
+    uint flags;  // bit 0: instanciado (lotes por material del culling en GPU)
 } push;
 
 layout(location = 0) in vec3 in_position;
@@ -41,7 +44,9 @@ layout(location = 2) out vec4 v_tangent;
 layout(location = 3) out vec3 v_world_position;  // para la lluvia (skinned.frag)
 
 void main() {
-    uint base = push.bone_offset;
+    // Instanciado: push.model es la identidad y la matriz de mundo del actor
+    // (modelo rigido de un hueso, ya multiplicada) esta en bones[instancia].
+    uint base = (push.flags & 1u) != 0u ? uint(gl_InstanceIndex) : push.bone_offset;
     mat4 skin = in_weights.x * bones[base + in_joints.x] +
                 in_weights.y * bones[base + in_joints.y] +
                 in_weights.z * bones[base + in_joints.z] +

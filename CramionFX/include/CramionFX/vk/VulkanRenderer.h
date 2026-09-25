@@ -12,6 +12,7 @@
 #include "CramionFX/vk/OverlayGeometry.h"
 #include "CramionFX/vk/OverlayPass.h"
 #include "CramionFX/vk/ParticlePass.h"
+#include "CramionFX/vk/TerrainPass.h"
 #include "CramionFX/vk/GpuTypes.h"
 #include "CramionFX/vk/IblProbe.h"
 #include "CramionFX/vk/LightingPass.h"
@@ -31,6 +32,8 @@
 #include "CramionFX/vk/VulkanTexture.h"
 
 #include "CramionFX/core/Frustum.h"
+
+#include <unordered_map>
 #include "CramionFX/scene/LocalLightShadows.h"
 #include "CramionFX/scene/ShadowCascades.h"
 
@@ -137,6 +140,9 @@ public:
     // --- Ajustes de sombras ---
     void setShadowsEnabled(bool enabled) { shadows_enabled_ = enabled; }
     bool shadowsEnabled() const { return shadows_enabled_; }
+    // Sombras del sol/luna (la luz direccional con "Proyecta sombras").
+    void setSunShadowsEnabled(bool enabled) { sun_shadows_ = enabled; }
+    bool sunShadowsEnabled() const { return sun_shadows_; }
 
     // Pinta cada cascada de un color, como el visualizador de cascadas de
     // Unreal: sirve para comprobar el reparto del frustum.
@@ -161,10 +167,15 @@ public:
     struct PickResult {
         bool hit = false;
         std::uint32_t actor = 0;  // indice en scene.actors()
+        std::uint32_t material = 0;  // hueco de material (del modelo) bajo el pixel
         std::uint32_t x = 0;
         std::uint32_t y = 0;
     };
     void requestPick(std::uint32_t x, std::uint32_t y);
+    // Cambia en vivo los factores (color, metal, rugosidad, emision) de un
+    // material ya subido; texturas, tiling y transparencia necesitan volver
+    // a subir el modelo (uploadModels).
+    void updateModelMaterial(std::uint32_t model, std::uint32_t material, const asset::MaterialData& data);
     std::optional<PickResult> takePickResult();
     bool pickPending() const;
 
@@ -342,6 +353,21 @@ public:
     // legible como textura (SHADER_READ_ONLY_OPTIMAL) durante el overlay.
     // Cambia al redimensionar: sceneImageGeneration() avisa de ello.
     VkImageView sceneImageView() const { return *ldr_color_.view(); }
+
+    // --- Terrenos (TerrainPass.h) ---
+    // Mapa de alturas `resolution` x `resolution` (0..1) y pesos de las capas
+    // `splat_resolution`^2 (dos RGBA8). Devuelve un identificador (0 = error).
+    std::uint32_t createTerrain(std::uint32_t resolution, std::uint32_t splat_resolution);
+    void destroyTerrain(std::uint32_t id);
+    void setTerrainDesc(std::uint32_t id, const TerrainDesc& desc) { terrain_pass_.setDesc(id, desc); }
+    // Una region de los datos completos (se sube en el siguiente frame).
+    void updateTerrainHeights(std::uint32_t id, const float* heights, std::uint32_t x, std::uint32_t y,
+                              std::uint32_t w, std::uint32_t h);
+    void updateTerrainSplat(std::uint32_t id, const std::uint8_t* splat0, const std::uint8_t* splat1, std::uint32_t x,
+                            std::uint32_t y, std::uint32_t w, std::uint32_t h) {
+        terrain_pass_.updateSplat(id, splat0, splat1, x, y, w, h);
+    }
+    std::uint32_t terrainChunkCount() const { return terrain_pass_.chunkCount(); }
 
     // --- Texturas de la interfaz (iconos, miniaturas del editor) ---
     // RGBA8 con mipmaps (se ven bien pequenas). Devuelve un identificador
@@ -594,14 +620,26 @@ private:
         // Los animados se descartan enteros por su esfera.
         bool per_submesh = false;
         std::uint32_t first_bounds = 0;
-        // Culling en GPU (escenarios): primer grupo de dibujo y primer hueco
-        // de comando de este actor.
-        std::uint32_t first_group = 0;
-        std::uint32_t first_slot = 0;
         // Indice del actor en scene.actors() (para el contorno de seleccion).
         std::uint32_t scene_actor = 0;
+        bool cast_shadows = true;
+        bool shadows_only = false;
     };
     std::vector<ActorDraw> actor_draws_;
+    // Material batching: los escenarios del mismo modelo y material (de
+    // todos los actores) son UN lote, una sola llamada indirecta instanciada.
+    struct DrawBatch {
+        std::uint32_t model = 0;
+        std::uint32_t group = 0;  // grupo de dibujo del modelo (su material)
+        std::uint32_t first_slot = 0;
+        std::uint32_t capacity = 0;
+    };
+    std::vector<DrawBatch> draw_batches_;
+    std::unordered_map<std::uint64_t, std::uint32_t> batch_lookup_;
+public:
+    // Llamadas de dibujo de los escenarios (lotes) y clusteres que agrupan.
+    std::uint32_t batchCount() const { return static_cast<std::uint32_t>(draw_batches_.size()); }
+private:
     // Deteccion de movimiento (updateActors): transform y esfera de cada
     // actor el frame anterior, y las esferas (antes y despues) de lo que se
     // movio. Una cascada guardada que contiene algo que se movio se redibuja
@@ -610,6 +648,7 @@ private:
         core::Mat4 transform = core::Mat4::identity();
         core::Vec3 center{};
         float radius = 0.0f;
+        bool cast_shadows = true;
     };
     std::vector<ActorMotion> previous_actor_motion_;
     std::vector<core::Vec4> moved_spheres_;  // xyz = centro, w = radio
@@ -636,6 +675,8 @@ private:
     bool pick_requested_ = false;
     PickResult pick_request_{};
     std::optional<PickResult> pick_result_;
+    TerrainPass terrain_pass_{};
+    core::Vec3 camera_position_{};
     ParticleDrawList particles_;
     ParticlePass particle_pass_{};
     core::Mat4 camera_view_ = core::Mat4::identity();
@@ -799,6 +840,8 @@ private:
     bool framebuffer_resized_ = false;
     bool initialized_ = false;
     bool shadows_enabled_ = true;
+    bool sun_shadows_ = true;
+    bool sunShadows() const { return shadows_enabled_ && sun_shadows_; }
     bool cascade_debug_ = false;
     bool clouds_enabled_ = true;
     bool environment_enabled_ = true;

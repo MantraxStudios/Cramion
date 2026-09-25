@@ -51,6 +51,7 @@ Icon assetIcon(assets::AssetType type) {
         case assets::AssetType::Scene: return Icon::AssetBrowser;
         case assets::AssetType::AnimatorController: return Icon::SkinnedMesh;
         case assets::AssetType::AnimationClip: return Icon::SkinnedMesh;
+        case assets::AssetType::Material: return Icon::MeshRenderer;
         default: return Icon::AssetBrowser;
     }
 }
@@ -93,6 +94,9 @@ void EditorApp::refreshDatabase() {
         database_->refresh();
     }
     ++database_version_;  // la cache del navegador se rehara
+    model_previews_.invalidate();  // reimportados: se vuelve a mirar su fecha
+    clip_source_.reset();
+    clip_source_uuid_ = {};
 }
 
 // Sin recorrer el disco: Windows senala el HANDLE cuando cambia algo dentro
@@ -192,6 +196,11 @@ void EditorApp::drawFolderNode(std::size_t index) {
     if (index == 0) flags |= ImGuiTreeNodeFlags_DefaultOpen;
     const bool open = ImGui::TreeNodeEx(reinterpret_cast<void*>(index + 1), flags, "      %s", node.name.c_str());
     {
+        const ImVec2 a = ImGui::GetItemRectMin();
+        const ImVec2 b = ImGui::GetItemRectMax();
+        if (ImGui::IsItemVisible()) folder_drop_zones_.push_back(FolderDropZone{a.x, a.y, b.x, b.y, node.path});
+    }
+    {
         // Icono de carpeta (abierta si esta desplegada) delante del nombre.
         const ImVec2 min = ImGui::GetItemRectMin();
         const float h = ImGui::GetItemRectSize().y;
@@ -232,6 +241,7 @@ void EditorApp::drawProject() {
     if (cached_version_ != database_version_ || cached_folder_ != current_folder_) {
         rebuildBrowserCache();
     }
+    folder_drop_zones_.clear();
     // --- Barra ---
     if (ImGui::Button("Importar...")) {
         const auto files = dialogs::openFiles(
@@ -240,14 +250,12 @@ void EditorApp::drawProject() {
         startImport(files, current_folder_.empty() ? project_.assetsFolder() : current_folder_);
     }
     ImGui::SameLine();
-    if (ImGui::Button("Nueva carpeta") && !current_folder_.empty()) {
-        std::filesystem::path folder = current_folder_ / "Nueva carpeta";
-        for (int i = 2; std::filesystem::exists(folder); ++i) {
-            folder = current_folder_ / ("Nueva carpeta " + std::to_string(i));
-        }
-        std::filesystem::create_directories(folder);
-        refreshDatabase();
+    if (ImGui::Button("+ Carpeta")) {
+        // En "Integrados" no se puede escribir: la carpeta va a Assets.
+        if (current_folder_.empty()) current_folder_ = project_.assetsFolder();
+        createFolderIn(current_folder_);
     }
+    ImGui::SetItemTooltip("Carpeta nueva aqui (tambien: arrastrar carpetas desde el Explorador)");
     ImGui::SameLine();
     ImGui::SetNextItemWidth(160.0f);
     ImGui::InputTextWithHint("##buscar", "Buscar...", &project_filter_);
@@ -316,6 +324,10 @@ void EditorApp::drawProject() {
             const ImVec2 pos = ImGui::GetCursorScreenPos();
             ImGui::InvisibleButton("##folder", ImVec2(cell - 8.0f, icon_size_));
             const bool hovered = ImGui::IsItemHovered();
+            if (ImGui::IsItemVisible()) {
+                folder_drop_zones_.push_back(
+                    FolderDropZone{pos.x, pos.y, pos.x + cell - 8.0f, pos.y + icon_size_, folder});
+            }
             if (hovered && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) current_folder_ = folder;
             if (ImGui::BeginDragDropTarget()) {
                 if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(kAssetPayload)) {
@@ -330,6 +342,11 @@ void EditorApp::drawProject() {
             }
             if (ImGui::BeginPopupContextItem("folder_menu")) {
                 if (ImGui::MenuItem("Abrir")) current_folder_ = folder;
+                if (ImGui::MenuItem("Renombrar")) {
+                    renaming_folder_ = folder;
+                    folder_rename_buffer_ = dialogs::utf8(folder.filename());
+                }
+                if (ImGui::MenuItem("Nueva carpeta dentro")) createFolderIn(folder);
                 if (ImGui::MenuItem("Mostrar en el Explorador")) {
                     ShellExecuteW(nullptr, L"open", folder.wstring().c_str(), nullptr, nullptr, SW_SHOWNORMAL);
                 }
@@ -344,9 +361,28 @@ void EditorApp::drawProject() {
             imgui_.drawIcon(draw, hovered ? Icon::FolderOpen : Icon::FolderClosed,
                             ImVec2(pos.x + (cell - 8.0f - icon_size_) * 0.5f, pos.y), icon_size_,
                             IM_COL32(232, 194, 96, 255));
-            ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + cell - 8.0f);
-            ImGui::TextWrapped("%s", dialogs::utf8(folder.filename()).c_str());
-            ImGui::PopTextWrapPos();
+            if (renaming_folder_ == folder) {
+                // Renombrar en el sitio (carpeta recien creada o menu Renombrar).
+                ImGui::SetNextItemWidth(cell - 8.0f);
+                if (!ImGui::IsAnyItemActive()) ImGui::SetKeyboardFocusHere();
+                const bool done = ImGui::InputText("##rename_folder", &folder_rename_buffer_,
+                                                   ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_AutoSelectAll);
+                if (done || ImGui::IsItemDeactivated()) {
+                    const std::filesystem::path renamed = folder.parent_path() / dialogs::fromUtf8(folder_rename_buffer_);
+                    std::error_code rename_error;
+                    if (!folder_rename_buffer_.empty() && renamed != folder && !std::filesystem::exists(renamed)) {
+                        // Los .crdata llevan su UUID dentro: moverlos no rompe referencias.
+                        std::filesystem::rename(folder, renamed, rename_error);
+                        if (rename_error) std::cerr << "[Editor] No se pudo renombrar la carpeta\n";
+                        refreshDatabase();
+                    }
+                    renaming_folder_.clear();
+                }
+            } else {
+                ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + cell - 8.0f);
+                ImGui::TextWrapped("%s", dialogs::utf8(folder.filename()).c_str());
+                ImGui::PopTextWrapPos();
+            }
             ImGui::EndGroup();
             ImGui::PopID();
             next_cell();
@@ -370,6 +406,13 @@ void EditorApp::drawProject() {
         const ImVec2 pos = ImGui::GetCursorScreenPos();
         ImGui::InvisibleButton("##asset", ImVec2(cell - 8.0f, icon_size_));
         const bool hovered = ImGui::IsItemHovered();
+        // Un material se ve y se edita en el Inspector al elegirlo.
+        if (info.type == assets::AssetType::Material && ImGui::IsItemClicked(ImGuiMouseButton_Left)) {
+            inspected_material_ = info.uuid;
+        }
+        if (info.type == assets::AssetType::Material && inspected_material_ == info.uuid) {
+            draw->AddRectFilled(pos, ImVec2(pos.x + cell - 8.0f, pos.y + icon_size_), IM_COL32(255, 160, 40, 40), 4.0f);
+        }
         if (hovered) {
             ImGui::SetItemTooltip("%s\n%s\n%s%.1f MB", info.name.c_str(), assets::assetTypeName(info.type),
                                   info.source.empty() ? "" : ("Origen: " + dialogs::utf8(info.source) + "\n").c_str(),
@@ -396,8 +439,33 @@ void EditorApp::drawProject() {
             if (info.type == assets::AssetType::Model && ImGui::MenuItem("Poner en la escena")) {
                 instantiateAsset(info.uuid, {}, std::nullopt);
             }
+            if (info.type == assets::AssetType::Model && ImGui::BeginMenu("Animaciones")) {
+                drawModelAssetAnimationsMenu(info);
+                ImGui::EndMenu();
+            }
             if (info.type == assets::AssetType::Environment && ImGui::MenuItem("Usar como cielo")) {
                 assignEnvironment(info.uuid);
+            }
+            if (info.type == assets::AssetType::Material) {
+                if (ImGui::MenuItem("Editar")) inspected_material_ = info.uuid;
+                if (ImGui::MenuItem("Asignar a la selección", nullptr, false, !selection_.empty())) {
+                    bool any = false;
+                    for (ecs::Entity e : selectedEntities()) any = applyMaterial(e, info.uuid, -1) || any;
+                    if (any) commit();
+                }
+                if (ImGui::MenuItem("Duplicar")) {
+                    assets::MaterialAsset copy;
+                    if (assets::loadMaterial(info.path, copy)) {
+                        copy.uuid = {};
+                        std::filesystem::path target = info.path.parent_path() /
+                                                       (info.path.stem().wstring() + L" copia.crmat");
+                        for (int i = 2; std::filesystem::exists(target); ++i) {
+                            target = info.path.parent_path() /
+                                     (info.path.stem().wstring() + L" copia " + std::to_wstring(i) + L".crmat");
+                        }
+                        if (assets::saveMaterial(copy, target)) refreshDatabase();
+                    }
+                }
             }
             if (info.type == assets::AssetType::AnimatorController) {
                 if (ImGui::MenuItem("Abrir en el editor Animator")) openAnimatorEditor(info.uuid);
@@ -424,11 +492,21 @@ void EditorApp::drawProject() {
         // Cielos: la miniatura de su HDR de origen si sigue en disco.
         ImVec2 thumb_size{};
         std::error_code source_error;
-        const ImTextureID preview = info.type == assets::AssetType::Environment && !info.source.empty() &&
-                                            std::filesystem::exists(info.source, source_error)
-                                        ? imgui_.thumbnail(info.source, &thumb_size)
-                                        : 0;
-        if (preview != 0) {
+        ImTextureID preview = info.type == assets::AssetType::Environment && !info.source.empty() &&
+                                      std::filesystem::exists(info.source, source_error)
+                                  ? imgui_.thumbnail(info.source, &thumb_size)
+                                  : 0;
+        // Modelos: su miniatura dibujada (en cache en Library/Thumbnails).
+        if (info.type == assets::AssetType::Model) {
+            if (const auto png = model_previews_.preview(info.uuid, info.path, info.name)) {
+                preview = imgui_.thumbnail(*png, &thumb_size);
+            }
+        }
+        if (info.type == assets::AssetType::Material) {
+            draw->AddRectFilled(icon_pos, ImVec2(icon_pos.x + icon, icon_pos.y + icon), IM_COL32(44, 44, 50, 255),
+                                icon * 0.1f);
+            drawMaterialBall(draw, ImVec2(icon_pos.x + icon * 0.5f, icon_pos.y + icon * 0.5f), icon * 0.4f, info.uuid);
+        } else if (preview != 0) {
             drawThumbnailTile(draw, preview, thumb_size, icon_pos, icon);
         } else {
             drawAssetTile(draw, imgui_, icon_pos, icon, assetIcon(info.type), assetColor(info.type));
@@ -484,6 +562,11 @@ void EditorApp::drawProject() {
                 ImGui::EndDragDropSource();
             }
             if (ImGui::BeginPopupContextItem("image_menu")) {
+                if (ImGui::MenuItem("Crear material")) {
+                    // Con sus companeras (_normal, _rough, _ao...) si las hay.
+                    const std::string relative = decalImageInAssets(image);
+                    if (!relative.empty()) createMaterialAsset(image.parent_path(), relative);
+                }
                 if (ImGui::MenuItem("Estampar con esta imagen")) {
                     stamp_brush_.texture = decalImageInAssets(image);
                     stamp_brush_.type = 0;
@@ -535,16 +618,10 @@ void EditorApp::drawProject() {
             startImport(files, current_folder_);
         }
         if (ImGui::BeginMenu("Crear")) {
-            if (ImGui::MenuItem("Carpeta")) {
-                std::filesystem::path folder = current_folder_ / "Nueva carpeta";
-                for (int i = 2; std::filesystem::exists(folder); ++i) {
-                    folder = current_folder_ / ("Nueva carpeta " + std::to_string(i));
-                }
-                std::filesystem::create_directories(folder);
-                refreshDatabase();
-            }
+            if (ImGui::MenuItem("Carpeta")) createFolderIn(current_folder_);
             if (ImGui::MenuItem("Escena")) createSceneAsset(current_folder_);
             if (ImGui::MenuItem("Animator")) createAnimatorAsset(current_folder_);
+            if (ImGui::MenuItem("Material")) createMaterialAsset(current_folder_);
             ImGui::EndMenu();
         }
         ImGui::Separator();

@@ -51,7 +51,7 @@ file(GLOB CRAMION_EDITOR_SOURCES CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/src/*.h"
 )
 
-add_executable(CramionEditor ${CRAMION_EDITOR_SOURCES})
+add_executable(CramionEditor ${CRAMION_EDITOR_SOURCES} "${CRAMION_ICON_RC}")
 target_link_libraries(CramionEditor PRIVATE Cramion::Core cramion_imgui comdlg32 shell32 ole32)
 # Las escenas de demostracion (src/DemoScenes.h) las comparte con cramion.exe.
 target_include_directories(CramionEditor PRIVATE "${CMAKE_SOURCE_DIR}/src")
@@ -61,13 +61,21 @@ cramionfx_deploy(CramionEditor)
 # Iconos del editor (assets/gizmos) junto al ejecutable, en editor_icons/.
 # Si faltan alli, el editor los busca en la carpeta del codigo.
 target_compile_definitions(CramionEditor PRIVATE
-    CRAMION_EDITOR_ICON_SOURCE="${CMAKE_CURRENT_SOURCE_DIR}/assets/gizmos")
+    CRAMION_EDITOR_ICON_SOURCE="${CMAKE_CURRENT_SOURCE_DIR}/assets/gizmos"
+    CRAMION_EDITOR_LOGO_SOURCE="${CMAKE_SOURCE_DIR}/assets/icon.png")
 add_custom_command(TARGET CramionEditor POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_directory
             "${CMAKE_CURRENT_SOURCE_DIR}/assets/gizmos" "${CMAKE_BINARY_DIR}/editor_icons"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${CMAKE_SOURCE_DIR}/assets/icon.png" "${CMAKE_BINARY_DIR}/editor_icons/logo.png"
     COMMENT "Copiando los iconos del editor")
 
 target_compile_options(CramionEditor PRIVATE
     -Wall
     -Wextra
 )
+
+# Prueba de las miniaturas de modelos (consola, sin GPU).
+add_executable(CramionPreviewTests "${CMAKE_CURRENT_SOURCE_DIR}/tests/PreviewTests.cpp"
+                                   "${CMAKE_CURRENT_SOURCE_DIR}/src/ModelPreviews.cpp")
+target_link_libraries(CramionPreviewTests PRIVATE Cramion::Core)

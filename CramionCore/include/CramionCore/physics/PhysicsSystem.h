@@ -54,6 +54,9 @@
 namespace cramion::assets {
 class AssetManager;
 }
+namespace cramion::terrain {
+class TerrainData;
+}
 
 namespace cramion::physics {
 
@@ -172,6 +175,10 @@ public:
     using MeshProvider = std::function<const asset::ModelData*(ecs::Entity)>;
     void setMeshProvider(MeshProvider provider);
     void setAssetManager(assets::AssetManager* manager);
+    // Datos de los terrenos (componente Terrain con colision): su collider es
+    // un campo de alturas. Se rehace cuando sube TerrainData::collisionVersion.
+    using TerrainProvider = std::function<std::shared_ptr<const terrain::TerrainData>(ecs::Entity)>;
+    void setTerrainProvider(TerrainProvider provider);
 
     // Crea el mundo fisico y los cuerpos. stop() lo destruye todo.
     void start(ecs::World& world);

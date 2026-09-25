@@ -14,8 +14,10 @@
 //   renderer.drawFrame(scene);
 
 #include "CramionCore/asset/AssetManager.h"
+#include "CramionCore/asset/MaterialAsset.h"
 #include "CramionCore/ecs/AnimatorController.h"
 #include "CramionCore/ecs/World.h"
+#include "CramionCore/terrain/Terrain.h"
 
 #include <CramionFX/CramionFX.h>
 
@@ -37,6 +39,12 @@ public:
     };
 
     explicit RenderSync(assets::AssetManager& assets) : assets_(assets) {}
+    ~RenderSync();
+    RenderSync(const RenderSync&) = delete;
+    RenderSync& operator=(const RenderSync&) = delete;
+
+    // Datos de los terrenos (el editor o el juego los comparte con la fisica).
+    void setTerrainStore(terrain::TerrainStore* store) { terrain_store_ = store; }
 
     void sync(World& world, scene::Scene& scene, gfx::VulkanRenderer& renderer, float delta_seconds,
               const Options& options);
@@ -63,6 +71,17 @@ public:
     // llama a reload... al guardarlos para que el cambio se vea al momento.
     std::shared_ptr<const AnimatorController> animatorController(const Uuid& uuid);
     void reloadAnimatorController(const Uuid& uuid);
+
+    // Materiales (.crmat) en uso: se leen una vez. El editor llama a
+    // reloadMaterial() al guardarlos: los colores y factores cambian en vivo;
+    // texturas, tiling o modo rehacen los modelos que lo usan.
+    std::shared_ptr<const assets::MaterialAsset> material(const Uuid& uuid);
+    void reloadMaterial(const Uuid& uuid);
+    // Igual, con los datos ya en memoria (el editor mientras se edita).
+    void updateMaterial(const Uuid& uuid, const assets::MaterialAsset& data);
+    // Modelos distintos que se dibujan (las variantes con materiales tambien):
+    // los objetos que comparten uno se agrupan en las mismas llamadas.
+    std::size_t variantCount() const { return variants_.size(); }
 
     // El asset de un modelo ya cargado (nodos, nombres de animaciones).
     std::shared_ptr<const assets::ModelAsset> modelAsset(const Uuid& uuid) const;
@@ -105,11 +124,29 @@ private:
 
     std::optional<std::uint32_t> resolveModel(const assets::AssetRef& ref, int part,
                                               scene::Scene& scene, bool& added);
+    // El modelo `base` con los materiales de `overrides` (una variante por
+    // combinacion, compartida por todos los objetos que la usan).
+    std::uint32_t resolveVariant(std::uint32_t base, const std::vector<assets::AssetRef>& overrides,
+                                 scene::Scene& scene, bool& added);
+    asset::ModelData buildVariant(const asset::ModelData& base, const std::vector<Uuid>& overrides);
+    void applyMaterialChanges(scene::Scene& scene, gfx::VulkanRenderer& renderer, bool& added);
     void syncActors(World& world, scene::Scene& scene, gfx::VulkanRenderer& renderer,
                     float delta_seconds);
     void syncLightsAndEnvironment(World& world, scene::Scene& scene,
                                   gfx::VulkanRenderer& renderer);
     void syncCamera(World& world, scene::Scene& scene);
+    void syncTerrains(World& world, gfx::VulkanRenderer& renderer);
+    void destroyTerrains();
+
+    struct TerrainGpu {
+        std::uint32_t id = 0;
+        std::shared_ptr<terrain::TerrainData> data;
+        std::uint32_t resolution = 0;
+        std::uint32_t splat_resolution = 0;
+    };
+    terrain::TerrainStore* terrain_store_ = nullptr;
+    gfx::VulkanRenderer* renderer_ = nullptr;
+    std::unordered_map<entt::entity, TerrainGpu> terrains_;
 
     assets::AssetManager& assets_;
 
@@ -128,6 +165,22 @@ private:
     std::uint64_t frame_ = 0;
     std::vector<std::uint32_t> actor_models_;  // modelo de cada actor
     std::unordered_map<entt::entity, std::uint32_t> entity_actor_;
+
+    struct MaterialEntry {
+        std::shared_ptr<assets::MaterialAsset> data;
+        std::uint64_t structure = 0;
+    };
+    std::unordered_map<Uuid, MaterialEntry> materials_;
+    std::unordered_set<Uuid> failed_materials_;
+    struct Variant {
+        std::uint32_t base = 0;
+        std::uint32_t index = 0;  // en scene.models()
+        std::vector<Uuid> overrides;
+    };
+    std::vector<Variant> variants_;
+    std::unordered_map<std::string, std::uint32_t> variant_lookup_;  // clave -> variants_
+    std::unordered_set<Uuid> rebuild_materials_;  // cambio de texturas/tiling/modo
+    std::unordered_set<Uuid> live_materials_;     // solo factores
 
     Uuid loaded_environment_{};
     Uuid failed_environment_{};

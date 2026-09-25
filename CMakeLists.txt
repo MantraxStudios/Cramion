@@ -6,6 +6,10 @@ project(Cramion
     LANGUAGES CXX
 )
 
+# Recursos de Windows (el icono de los .exe: assets/icon.ico).
+enable_language(RC)
+set(CRAMION_ICON_RC "${CMAKE_CURRENT_SOURCE_DIR}/assets/cramion.rc")
+
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -22,7 +26,7 @@ add_subdirectory(CramionFX)
 # Aplicacion de ejemplo: carga un escenario y lo recorre con la camara.
 # -----------------------------------------------------------------------------
 
-add_executable(cramion src/main.cpp)
+add_executable(cramion src/main.cpp "${CRAMION_ICON_RC}")
 target_link_libraries(cramion PRIVATE Cramion::FX)
 # Shaders SPIR-V en build/shaders, junto a cramion.exe.
 cramionfx_deploy(cramion)

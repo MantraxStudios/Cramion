@@ -49,6 +49,10 @@ Icon EditorApp::entityIcon(const ecs::Entity& e, ImU32& tint) const {
         tint = IM_COL32(120, 220, 140, 255);
         return Icon::Camera;
     }
+    if (e.has<terrain::Terrain>()) {
+        tint = IM_COL32(140, 200, 110, 255);
+        return Icon::Terrain;
+    }
     if (e.has<cinema::VirtualCamera>()) {
         tint = IM_COL32(120, 190, 255, 255);
         return Icon::Camera;
@@ -125,6 +129,8 @@ void EditorApp::drawHierarchy() {
         item("Decal (estampa)", 10);
         item("Charco", 11);
         item("Humedad", 12);
+        ImGui::Separator();
+        if (ImGui::MenuItem("Terreno")) createTerrainEntity();
         ImGui::EndPopup();
     }
     ImGui::Separator();
@@ -223,6 +229,8 @@ void EditorApp::drawHierarchy() {
         item("Decal (estampa)", 10);
         item("Charco", 11);
         item("Humedad", 12);
+        ImGui::Separator();
+        if (ImGui::MenuItem("Terreno")) createTerrainEntity();
         if (!clipboard_.empty() && ImGui::MenuItem("Pegar")) pasteClipboard();
         ImGui::EndPopup();
     }
@@ -421,6 +429,11 @@ void EditorApp::drawHierarchyRow(const HierarchyRow& row, bool scroll_to) {
                 std::memcpy(&asset, payload->Data, sizeof(asset));
                 if (asset.type == assets::AssetType::Model) instantiateAsset(asset.uuid, entity, std::nullopt);
                 if (asset.type == assets::AssetType::Environment) assignEnvironment(asset.uuid);
+                // Material: a todos sus huecos (y a los de sus hijos si no tiene malla).
+                if (asset.type == assets::AssetType::Material && applyMaterial(entity, asset.uuid, -1)) {
+                    inline_material_ = asset.uuid;
+                    commit();
+                }
             }
             ImGui::EndDragDropTarget();
         }
@@ -443,6 +456,8 @@ void EditorApp::drawHierarchyRow(const HierarchyRow& row, bool scroll_to) {
         item("Decal (estampa)", 10);
         item("Charco", 11);
         item("Humedad", 12);
+        ImGui::Separator();
+        if (ImGui::MenuItem("Terreno")) createTerrainEntity();
                 ImGui::EndMenu();
             }
             if (ImGui::MenuItem("Renombrar", "F2")) {

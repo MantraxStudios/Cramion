@@ -28,6 +28,7 @@
 // al renderizador (RenderSync la rellena cada frame).
 
 #include "ImGuiLayer.h"
+#include "ModelPreviews.h"
 #include "PropertyInspector.h"
 
 #include <CramionCore/CramionCore.h>
@@ -82,8 +83,11 @@ public:
     // Cerrar la ventana: pregunta si hay cambios sin guardar.
     void requestQuit();
 
-    // Archivos soltados sobre la ventana desde el Explorador: se importan.
-    void onFilesDropped(const std::vector<std::filesystem::path>& files);
+    // Archivos y carpetas soltados sobre la ventana desde el Explorador: se
+    // importan (las carpetas con toda su estructura). `x`, `y` = donde se
+    // soltaron (coordenadas de la ventana): encima de una carpeta del
+    // navegador, van dentro de ella.
+    void onFilesDropped(const std::vector<std::filesystem::path>& files, float x = -1.0f, float y = -1.0f);
 
     // Prueba automatica de extremo a extremo (CramionEditor.exe --selftest
     // <carpeta> <modelo> <hdr>): crea un proyecto, importa, instancia,
@@ -229,6 +233,35 @@ private:
     bool layerCombo(const char* label, int& layer);
     bool layerMaskCombo(const char* label, std::uint32_t& mask);
 
+    // --- Terreno (EditorTerrain.cpp) ---
+    ecs::Entity createTerrainEntity();
+    ecs::Entity terrainUnderMouse(float x, float y, core::Vec3* point = nullptr) const;
+    bool drawTerrainTool(float delta_seconds);
+    void drawTerrainInspector(ecs::Entity entity);
+
+    // --- Materiales (EditorMaterials.cpp) ---
+    void drawMaterialBall(ImDrawList* draw, ImVec2 center, float radius, const Uuid& material);
+    // `image` (ruta en Assets): material a partir de esa textura y sus
+    // companeras; `from`: con los valores de un material del modelo.
+    void createMaterialAsset(const std::filesystem::path& folder, const std::string& image = {},
+                             const asset::MaterialData* from = nullptr);
+    int materialSlotCount(ecs::Entity entity) const;
+    bool applyMaterial(ecs::Entity entity, const Uuid& material, int slot);
+    bool materialTextureSlot(const char* label, std::string& path);
+    void flushMaterialEdit(bool force_structure);
+    void drawMaterialEditor(const Uuid& uuid);
+    void drawMeshMaterials(ecs::Entity entity);
+    Uuid inspected_material_{};     // material elegido en el Proyecto (el Inspector lo muestra)
+    Uuid inline_material_{};        // el que se edita al pie del Mesh Renderer
+    Uuid last_created_material_{};
+    assets::MaterialAsset material_edit_{};
+    Uuid material_edit_uuid_{};
+    std::filesystem::path material_edit_path_;
+    bool material_unsaved_ = false;
+    std::uint64_t material_pushed_structure_ = 0;
+    void pushTerrainUndo(const std::string& path, std::shared_ptr<terrain::TerrainData> before);
+    void applyTerrainSnapshot(const std::string& path, const terrain::TerrainData& snapshot);
+
     // --- Vista Juego y cinematicas (EditorCinematics.cpp) ---
     static constexpr std::uint32_t kSceneSlot = 0;
     static constexpr std::uint32_t kGameSlot = 1;
@@ -276,6 +309,7 @@ private:
         float x = 0.0f;
         float y = 0.0f;
         bool additive = false;
+        Uuid material{};  // soltar un material: se pone en el hueco bajo el raton
     } pending_pick_;
     void handleCameraControls();
 
@@ -290,6 +324,18 @@ private:
     // fuera) y refresca la base de datos sola.
     void watchAssets();
     void createSceneAsset(const std::filesystem::path& folder);
+    // Copia/importa una carpeta del disco (y sus subcarpetas) dentro de Assets.
+    void importFolder(const std::filesystem::path& source, const std::filesystem::path& target);
+    std::filesystem::path createFolderIn(const std::filesystem::path& parent);
+    // Carpetas dibujadas en el navegador (rectangulo en pantalla -> ruta),
+    // para saber sobre cual se suelta algo desde el Explorador.
+    struct FolderDropZone {
+        float x0, y0, x1, y1;
+        std::filesystem::path path;
+    };
+    std::vector<FolderDropZone> folder_drop_zones_;
+    std::filesystem::path renaming_folder_;
+    std::string folder_rename_buffer_;
 
     // --- Animator (EditorAnimator.cpp) ---
     void createAnimatorAsset(const std::filesystem::path& folder);
@@ -305,6 +351,13 @@ private:
     ecs::Entity animatedEntityIn(ecs::Entity entity);
     void drawExtractAnimationsMenu(ecs::Entity entity);
     void extractAnimations(ecs::Entity entity, int clip);  // -1 = todas
+    void extractClips(const asset::ModelData& data, int clip);
+    // Menu del asset de modelo en el Proyecto: extraer sus clips a .cranim
+    // (se lee el modelo la primera vez que se abre el menu).
+    void drawModelAssetAnimationsMenu(const assets::AssetInfo& info);
+    std::shared_ptr<const assets::ModelAsset> clip_source_;
+    Uuid clip_source_uuid_{};
+    ModelPreviews model_previews_;
 
     dm::Window& window_;
     gfx::VulkanRenderer& renderer_;
@@ -420,6 +473,40 @@ private:
     bool animator_focus_ = false;
     unsigned int scene_dock_id_ = 0;  // nodo de la Escena (para acoplar el Animator)
     unsigned int console_dock_id_ = 0;  // nodo de la Consola (para acoplar la ventana Fisica)
+
+    // Terreno.
+    terrain::TerrainStore terrain_store_;
+    terrain::TerrainBrush terrain_brush_;
+    bool terrain_edit_ = false;
+    bool terrain_stroke_ = false;
+    std::shared_ptr<terrain::TerrainData> terrain_stroke_before_;
+    bool terrain_ramp_started_ = false;
+    core::Vec3 terrain_ramp_start_{};
+    struct {
+        int seed = 1337;
+        float frequency = 3.0f;
+        float roughness = 0.5f;
+        float ridges = 0.35f;
+        float base = 0.1f;
+    } terrain_generate_;
+    struct {
+        int layer = 2;
+        float min_slope = 35.0f;
+        float max_slope = 90.0f;
+        float min_height = 0.0f;
+        float max_height = 1.0f;
+    } terrain_rules_;
+    // Deshacer mezclado: 'W' = instantanea del mundo, 'T' = trazo de terreno.
+    struct TerrainUndo {
+        std::string path;
+        std::shared_ptr<terrain::TerrainData> before;
+        std::shared_ptr<terrain::TerrainData> after;
+    };
+    std::deque<TerrainUndo> terrain_undo_;
+    std::deque<TerrainUndo> terrain_redo_;
+    std::deque<char> undo_kinds_;
+    std::deque<char> redo_kinds_;
+    float frame_delta_ = 0.0f;
 
     // Vistas y cinematicas.
     cinema::CinematicSystem cinematics_;
@@ -550,6 +637,7 @@ private:
     Uuid self_test_cube_{};
     Uuid self_test_zone_{};
     Uuid self_test_sequence_{};
+    Uuid self_test_terrain_{};
     std::size_t self_test_entities_ = 0;
 };
 

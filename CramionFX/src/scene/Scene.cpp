@@ -96,6 +96,12 @@ std::uint32_t Scene::addModel(asset::ModelData model) {
     return static_cast<std::uint32_t>(models_.size() - 1);
 }
 
+void Scene::replaceModel(std::uint32_t index, asset::ModelData model) {
+    if (index < models_.size()) {
+        *models_[index] = std::move(model);
+    }
+}
+
 void Scene::truncateModels(std::size_t count) {
     if (count < models_.size()) {
         models_.resize(count);

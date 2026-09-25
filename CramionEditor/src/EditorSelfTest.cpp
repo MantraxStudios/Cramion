@@ -11,6 +11,7 @@
 
 #include <chrono>
 #include <cmath>
+#include <fstream>
 #include <iostream>
 
 namespace cramion::editor {
@@ -494,6 +495,100 @@ void EditorApp::runSelfTestStep() {
             const ecs::Entity track = world_.findByName("Riel");
             check(track.valid() && track.get<cinema::DollyTrack>().mode == cinema::PathMode::Bezier,
                   "riel en modo Bezier listo para editar", f);
+            break;
+        }
+        case 25: {
+            // Soltar una carpeta del Explorador: se copia con su estructura.
+            std::error_code error;
+            const std::filesystem::path source = self_test_folder_ / "CarpetaSoltada";
+            std::filesystem::remove_all(source, error);
+            std::filesystem::create_directories(source / "Texturas", error);
+            if (!self_test_image_.empty()) {
+                std::filesystem::copy_file(self_test_image_, source / "Texturas" / self_test_image_.filename(), error);
+            }
+            {
+                std::ofstream obj(source / "Rampa.obj");
+                obj << "v 0 0 0\nv 1 0 0\nv 1 1 1\nv 0 1 1\nvn 0 0.7 -0.7\nf 1//1 2//1 3//1\nf 1//1 3//1 4//1\n";
+            }
+            current_folder_ = project_.assetsFolder();
+            onFilesDropped({source});
+            self_test_wait_ = 60;  // el .obj se importa en otro hilo
+            break;
+        }
+        case 26: {
+            if (!imports_.empty()) {  // aun importando
+                self_test_wait_ = 10;
+                return;
+            }
+            const std::filesystem::path dropped = project_.assetsFolder() / "CarpetaSoltada";
+            check(std::filesystem::is_directory(dropped / "Texturas"), "soltar una carpeta crea su estructura en Assets", f);
+            check(self_test_image_.empty() || std::filesystem::exists(dropped / "Texturas" / self_test_image_.filename()),
+                  "y copia sus archivos", f);
+            bool model = false;
+            for (const assets::AssetInfo& info : database_->inFolder(dropped)) {
+                model = model || info.type == assets::AssetType::Model;
+            }
+            check(model, "y los modelos de dentro se importan", f);
+            break;
+        }
+        case 27: {
+            // Terreno: crear, generar relieve, esculpir una loma y pintar.
+            ecs::Entity ground = world_.findByName("Plano");
+            if (ground.valid()) ground.setActive(false);  // que no tape el terreno
+            const ecs::Entity t = createTerrainEntity();
+            check(t.valid() && t.has<terrain::Terrain>(), "crear un terreno", f);
+            terrain::Terrain& comp = t.get<terrain::Terrain>();
+            const std::shared_ptr<terrain::TerrainData> data = terrain_store_.get(comp);
+            check(data != nullptr && std::filesystem::exists(project_.assetsFolder() / dialogs::fromUtf8(comp.data)),
+                  "sus datos en Assets/Terrains", f);
+            if (data) {
+                terrain::generateRelief(*data, 11, 3.0f, 0.5f, 0.3f, 0.12f);
+                terrain_brush_ = terrain::TerrainBrush{};
+                terrain_brush_.tool = terrain::TerrainTool::Flatten;
+                terrain_brush_.radius = 14.0f;
+                terrain_brush_.target_height = 8.0f;
+                auto before = std::make_shared<terrain::TerrainData>(*data);
+                for (int i = 0; i < 120; ++i) {
+                    terrain::applyBrush(*data, comp, t.worldPosition(), Vec3{0.0f, 0.0f, 0.0f}, terrain_brush_, 1.0f / 30.0f);
+                }
+                data->commitCollision();
+                pushTerrainUndo(comp.data, std::move(before));
+                terrain::paintByRules(*data, comp, 2, 30.0f, 90.0f, 0.0f, 1.0f);
+                terrain::paintByRules(*data, comp, 1, 0.0f, 90.0f, 0.0f, 0.15f);
+            }
+            // Un cubo fisico encima de la loma.
+            ecs::Entity cube = createEntity(13, {});
+            cube.setWorldPosition(Vec3{0.0f, 20.0f, 0.0f});
+            self_test_cube_ = cube.uuid();
+            self_test_terrain_ = t.uuid();
+            selectOnly(t.uuid());
+            terrain_edit_ = true;
+            scene_.placeCamera(Vec3{45.0f, 35.0f, 60.0f}, Vec3{0.0f, 5.0f, 0.0f});
+            focus_scene_ = true;
+            enterPlay();
+            focus_game_ = false;
+            focus_scene_ = true;
+            self_test_wait_ = 150;
+            break;
+        }
+        case 28: {
+            check(renderer_.terrainChunkCount() > 0, "el terreno se dibuja (trozos con LOD)", f);
+            const ecs::Entity cube = world_.find(self_test_cube_);
+            check(cube.valid() && std::abs(cube.worldPosition().y - 8.5f) < 0.3f,
+                  "un cubo fisico cae y se queda sobre la loma esculpida (8 m)", f);
+            exitPlay();
+            // Deshacer el trazo: la loma vuelve al relieve generado.
+            const ecs::Entity t = world_.find(self_test_terrain_);
+            const terrain::Terrain& comp = t.get<terrain::Terrain>();
+            const auto data = terrain_store_.get(comp);
+            const float sculpted = terrain::heightAt(*data, comp, t.worldPosition(), 0.0f, 0.0f);
+            undo();
+            const float undone = terrain::heightAt(*data, comp, t.worldPosition(), 0.0f, 0.0f);
+            check(std::abs(sculpted - 8.0f) < 0.2f && std::abs(undone - 8.0f) > 0.3f, "Ctrl+Z deshace el trazo de terreno", f);
+            redo();
+            check(std::abs(terrain::heightAt(*data, comp, t.worldPosition(), 0.0f, 0.0f) - 8.0f) < 0.2f, "y Ctrl+Y lo rehace", f);
+            selectOnly(self_test_terrain_);
+            self_test_wait_ = 60;
             break;
         }
         default:

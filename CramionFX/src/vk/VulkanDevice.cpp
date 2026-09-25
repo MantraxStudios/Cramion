@@ -140,7 +140,7 @@ bool VulkanDevice::supportsRequiredFeatures(const vk::raii::PhysicalDevice& cand
     // Dibujo indirecto con el numero de comandos en un buffer (culling en GPU).
     return features13.dynamicRendering && features13.synchronization2 &&
            features13.shaderDemoteToHelperInvocation && features12.drawIndirectCount &&
-           features.multiDrawIndirect;
+           features.multiDrawIndirect && features.drawIndirectFirstInstance;
 }
 
 bool VulkanDevice::supportsRayTracing(const vk::raii::PhysicalDevice& candidate) {
@@ -276,6 +276,8 @@ void VulkanDevice::createLogicalDevice() {
     features.features.textureCompressionBC =
         texture_compression_bc_supported_ ? VK_TRUE : VK_FALSE;
     features.features.multiDrawIndirect = VK_TRUE;
+    // Instancias en los comandos indirectos (batching por material).
+    features.features.drawIndirectFirstInstance = VK_TRUE;
 
     device_ = vk::raii::Device(physical_device_, create_info);
 

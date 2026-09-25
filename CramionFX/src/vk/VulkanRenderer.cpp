@@ -295,6 +295,9 @@ void VulkanRenderer::initialize(const EngineInfo& info, HWND window, std::uint32
     lighting_pass_.create(device_, kHdrFormat);
     post_process_pass_.create(device_, swapchain_.imageFormat());
     skinned_pass_.create(device_, gbuffer_, shadow_map_.format(), kHdrFormat);
+    // Terrenos: comparten el set 0 de la geometria (camara, lluvia, decals).
+    terrain_pass_.create(device_, skinned_pass_.frameSetLayout(), gbuffer_.colorFormats(), gbuffer_.depthFormat(),
+                         shadow_map_.format(), kMaxFramesInFlight);
 
     {
         using Type = vk::DescriptorType;
@@ -623,6 +626,7 @@ void VulkanRenderer::shutdown() {
     bloom_down_pass_.destroy();
     ssao_pass_.destroy();
     volumetric_pass_.destroy();
+    terrain_pass_.destroy();
     skinned_pass_.destroy();
     post_process_pass_.destroy();
     lighting_pass_.destroy();
@@ -1060,7 +1064,7 @@ void VulkanRenderer::updateActors(const scene::Scene& scene, std::uint32_t frame
     for (std::size_t i = 0; i < actor_draws_.size(); ++i) {
         previous_actor_motion_[i] =
             ActorMotion{actor_draws_[i].transform, actor_draws_[i].bounds_center,
-                        actor_draws_[i].bounds_radius};
+                        actor_draws_[i].bounds_radius, actor_draws_[i].cast_shadows};
     }
     const std::size_t previous_count = actor_draws_.size();
     moved_spheres_.clear();
@@ -1069,8 +1073,8 @@ void VulkanRenderer::updateActors(const scene::Scene& scene, std::uint32_t frame
     bone_staging_.clear();
     submesh_bounds_.clear();
     gpu_clusters_.clear();
-    std::uint32_t group_count = 0;
-    std::uint32_t slot_count = 0;
+    draw_batches_.clear();
+    batch_lookup_.clear();
 
     for (const scene::Actor& actor : scene.actors()) {
         if (actor.model >= skinned_models_.size()) {
@@ -1085,6 +1089,8 @@ void VulkanRenderer::updateActors(const scene::Scene& scene, std::uint32_t frame
         draw.bone_offset = static_cast<std::uint32_t>(bone_staging_.size());
         draw.bounds_center = actor.bounds_center;
         draw.bounds_radius = actor.bounds_radius;
+        draw.cast_shadows = actor.cast_shadows;
+        draw.shadows_only = actor.shadows_only;
 
         // Con un solo hueso todo el modelo se mueve con el: la caja de cada
         // submalla en el mundo es la de reposo por (actor x hueso).
@@ -1098,15 +1104,14 @@ void VulkanRenderer::updateActors(const scene::Scene& scene, std::uint32_t frame
                     to_world, core::Aabb{submesh.bounds_min, submesh.bounds_max}));
             }
 
-            // Sus clusteres los descarta la GPU: caja en el mundo, grupo de
-            // dibujo (su material) y hueco de comando.
-            draw.first_group = group_count;
-            draw.first_slot = slot_count;
-            const auto& groups = model.drawGroups();
+            // Sus clusteres los descarta la GPU: caja en el mundo y lote
+            // (modelo x material, compartido con los demas actores). La
+            // matriz de mundo va detras de sus huesos.
+            const std::uint32_t instance = draw.bone_offset + static_cast<std::uint32_t>(bones.size());
             for (std::uint32_t i = 0; i < model.submeshes().size(); ++i) {
                 const std::uint32_t group = model.submeshGroup(i);
-                if (group == SkinnedModel::kNoGroup) {
-                    continue;  // Transparente: no se dibuja.
+                if (group == SkinnedModel::kNoGroup || draw.shadows_only) {
+                    continue;  // Transparente o solo sombras: la camara no lo ve.
                 }
                 const asset::SubMesh& submesh = model.submeshes()[i];
                 const core::Aabb& box = submesh_bounds_[draw.first_bounds + i];
@@ -1115,12 +1120,17 @@ void VulkanRenderer::updateActors(const scene::Scene& scene, std::uint32_t frame
                 cluster.bounds_max = toVec4(box.max, 0.0f);
                 cluster.first_index = submesh.first_index;
                 cluster.index_count = submesh.index_count;
-                cluster.group = group_count + group;
-                cluster.first_slot = slot_count + groups[group].first_slot;
+                const std::uint64_t key = (static_cast<std::uint64_t>(actor.model) << 32) | group;
+                const auto [it, inserted] =
+                    batch_lookup_.try_emplace(key, static_cast<std::uint32_t>(draw_batches_.size()));
+                if (inserted) {
+                    draw_batches_.push_back(DrawBatch{actor.model, group, 0, 0});
+                }
+                ++draw_batches_[it->second].capacity;
+                cluster.group = it->second;
+                cluster.instance = instance;
                 gpu_clusters_.push_back(cluster);
             }
-            group_count += static_cast<std::uint32_t>(groups.size());
-            slot_count += model.slotCount();
         }
 
         actor_draws_.push_back(draw);
@@ -1131,14 +1141,44 @@ void VulkanRenderer::updateActors(const scene::Scene& scene, std::uint32_t frame
         const bool animated = !draw.per_submesh;
         if (index < previous_actor_motion_.size()) {
             const ActorMotion& before = previous_actor_motion_[index];
-            if (animated ||
+            if (animated || before.cast_shadows != draw.cast_shadows ||
                 std::memcmp(&before.transform, &draw.transform, sizeof(core::Mat4)) != 0) {
                 moved_spheres_.push_back(toVec4(before.center, before.radius));
                 moved_spheres_.push_back(toVec4(draw.bounds_center, draw.bounds_radius));
             }
         }
         bone_staging_.insert(bone_staging_.end(), bones.begin(), bones.end());
+        if (draw.per_submesh) {
+            bone_staging_.push_back(actor.transform * bones[0]);  // la instancia
+        }
     }
+
+    // Lotes ordenados por modelo (y material): menos cambios de buffers de
+    // vertices al dibujarlos. Luego sus huecos de comando, seguidos.
+    std::vector<std::uint32_t> order(draw_batches_.size());
+    for (std::uint32_t i = 0; i < order.size(); ++i) order[i] = i;
+    std::sort(order.begin(), order.end(), [&](std::uint32_t a, std::uint32_t b) {
+        const DrawBatch& x = draw_batches_[a];
+        const DrawBatch& y = draw_batches_[b];
+        return x.model != y.model ? x.model < y.model : x.group < y.group;
+    });
+    std::vector<std::uint32_t> remap(draw_batches_.size());
+    std::vector<DrawBatch> sorted;
+    sorted.reserve(draw_batches_.size());
+    std::uint32_t slot_count = 0;
+    for (std::uint32_t i = 0; i < order.size(); ++i) {
+        remap[order[i]] = i;
+        DrawBatch batch = draw_batches_[order[i]];
+        batch.first_slot = slot_count;
+        slot_count += batch.capacity;
+        sorted.push_back(batch);
+    }
+    draw_batches_.swap(sorted);
+    for (GpuCluster& cluster : gpu_clusters_) {
+        cluster.group = remap[cluster.group];
+        cluster.first_slot = draw_batches_[cluster.group].first_slot;
+    }
+    const auto group_count = static_cast<std::uint32_t>(draw_batches_.size());
 
     gpu_culling_.setClusters(device_, frame_index, gpu_clusters_, group_count, slot_count,
                              camera_buffers_);
@@ -1157,6 +1197,10 @@ void VulkanRenderer::updateActors(const scene::Scene& scene, std::uint32_t frame
 
     // Actores anadidos o quitados: las cascadas guardadas no valen.
     actor_set_changed_ = actor_draws_.size() != previous_count;
+    for (std::size_t i = 0; !actor_set_changed_ && i < actor_draws_.size(); ++i) {
+        // Quien proyecta sombra tambien cambia las cascadas guardadas.
+        actor_set_changed_ = previous_actor_motion_[i].cast_shadows != actor_draws_[i].cast_shadows;
+    }
 
     if (bone_staging_.empty()) {
         return;
@@ -1240,6 +1284,9 @@ void VulkanRenderer::recordActorShadows(const vk::raii::CommandBuffer& cmd,
     std::vector<std::uint32_t>& visible = shadow_scratch_;
 
     for (const ActorDraw& draw : actor_draws_) {
+        if (!draw.cast_shadows) {
+            continue;  // MeshRenderer con "Proyecta sombras" apagado.
+        }
         if (local) {
             const float reach = range + draw.bounds_radius;
             const Vec3 offset = draw.bounds_center - light_position;
@@ -2138,6 +2185,7 @@ void VulkanRenderer::updateUniforms(const scene::Scene& scene, const scene::Came
     // hacerlo por pixel al reconstruir la posicion del mundo.
     camera_data.inverse_view_projection = core::inverse(camera_data.view_projection);
     camera_data.position = toVec4(camera.position(), 1.0f);
+    camera_position_ = camera.position();
 
     camera_buffers_[frame_index].write(&camera_data, sizeof(camera_data));
 
@@ -2306,7 +2354,7 @@ void VulkanRenderer::updateUniforms(const scene::Scene& scene, const scene::Came
     // Las caras de la sonda dibujan todas desde su camara y ensucian el
     // mapa: la siguiente vista de pantalla las rehace todas.
     const bool redraw_all =
-        capturing_ || !cascades_valid_ || !shadows_enabled_ || actor_set_changed_;
+        capturing_ || !cascades_valid_ || !sunShadows() || actor_set_changed_;
     if (!capturing_) {
         ++cascade_frame_;
     }
@@ -2341,7 +2389,7 @@ void VulkanRenderer::updateUniforms(const scene::Scene& scene, const scene::Came
             rendered_cascade_camera_[i] = camera.position();
         }
     }
-    cascades_valid_ = !capturing_ && shadows_enabled_;
+    cascades_valid_ = !capturing_ && sunShadows();
 
     GpuShadows shadow_data{};
     std::array<float, scene::kShadowCascadeCount> splits{};
@@ -2357,7 +2405,7 @@ void VulkanRenderer::updateUniforms(const scene::Scene& scene, const scene::Came
     shadow_data.split_distances = Vec4{splits[0], splits[1], splits[2], splits[3]};
     shadow_data.texel_world_sizes = Vec4{texels[0], texels[1], texels[2], texels[3]};
     shadow_data.params = Vec4{static_cast<float>(ShadowMap::kResolution),
-                              shadows_enabled_ ? 1.0f : 0.0f, cascade_debug_ ? 1.0f : 0.0f,
+                              sunShadows() ? 1.0f : 0.0f, cascade_debug_ ? 1.0f : 0.0f,
                               kCascadeBlendBand};
 
     shadow_buffers_[frame_index].write(&shadow_data, sizeof(shadow_data));
@@ -2418,8 +2466,11 @@ void VulkanRenderer::drawFrame(const scene::Scene& scene) {
         std::uint32_t id = 0;
         std::memcpy(&id, pick_buffers_[current_frame_].mapped(), sizeof(id));
         PickResult result = pick_requests_[current_frame_];
-        result.hit = id != 0;
-        result.actor = id != 0 ? id - 1 : 0;
+        // Actor + 1 en los 20 bits bajos, hueco de material en los altos.
+        const std::uint32_t actor_id = id & 0xFFFFFu;
+        result.hit = actor_id != 0;
+        result.actor = actor_id != 0 ? actor_id - 1 : 0;
+        result.material = id >> 20;
         pick_result_ = result;
     }
 
@@ -2598,6 +2649,7 @@ std::vector<float> VulkanRenderer::lightingSignature(const scene::Scene& scene) 
     // Interruptores que cambian lo que se ve (y por tanto lo que se refleja
     // y rebota).
     signature.push_back(shadows_enabled_ ? 1.0f : 0.0f);
+    signature.push_back(sun_shadows_ ? 1.0f : 0.0f);
     signature.push_back(post_.global_illumination ? 1.0f : 0.0f);
     signature.push_back(post_.ambient_occlusion ? 1.0f : 0.0f);
     signature.push_back(clouds_enabled_ ? 1.0f : 0.0f);
@@ -2727,6 +2779,11 @@ void VulkanRenderer::recordCommandBuffer(const vk::raii::CommandBuffer& cmd,
             static_cast<std::uint32_t>(skinned_models_[draw.model].submeshes().size());
     }
 
+    // Terrenos: lo esculpido/pintado desde el frame anterior, y sus trozos
+    // (LOD) para este frame (antes de las sombras, que tambien los dibujan).
+    terrain_pass_.recordUploads(cmd, frame_index);
+    terrain_pass_.prepare(frame_index, camera_position_, camera_view_projection_);
+
     if (!rain_map_ready_ && (rainAvailable() || waterAvailable()) && !actor_draws_.empty()) {
         recordRainMap(cmd, frame_index);
         gpu_profiler_.mark(cmd, frame_index, "Mapa de lluvia");
@@ -2839,12 +2896,14 @@ void VulkanRenderer::recordShadowPass(const vk::raii::CommandBuffer& cmd,
 
         // Con las sombras apagadas basta con dejar el mapa limpio: todo queda
         // a profundidad maxima, o sea, sin nada que ocluya.
-        if (shadows_enabled_) {
+        if (sunShadows()) {
             cmd.setViewport(0, vk::Viewport{0.0f, 0.0f, static_cast<float>(extent.width),
                                             static_cast<float>(extent.height), 0.0f, 1.0f});
             cmd.setScissor(0, vk::Rect2D{vk::Offset2D{0, 0}, extent});
 
             recordActorShadows(cmd, frame_index, rendered_cascades_[cascade].light_view_projection);
+            terrain_pass_.recordShadow(cmd, frame_index, skin_sets_[frame_index],
+                                       rendered_cascades_[cascade].light_view_projection);
         }
 
         cmd.endRendering();
@@ -3080,6 +3139,8 @@ void VulkanRenderer::recordGeometryPass(const vk::raii::CommandBuffer& cmd,
     // --- Fase temprana: animados + lo que era visible ---
     begin_rendering(/*clear=*/true);
     drawCpuActors(cmd, frame_index);
+    // El terreno, pronto: tapa mucho y entra en la piramide Hi-Z.
+    terrain_pass_.recordGBuffer(cmd, frame_index, skin_sets_[frame_index]);
     drawGpuClusters(cmd, frame_index, 0);
     cmd.endRendering();
 
@@ -3138,8 +3199,8 @@ void VulkanRenderer::drawCpuActors(const vk::raii::CommandBuffer& cmd,
     const core::Frustum frustum(camera_view_projection_);
 
     for (const ActorDraw& draw : actor_draws_) {
-        if (draw.per_submesh) {
-            continue;  // Escenario: lo dibuja drawGpuClusters.
+        if (draw.per_submesh || draw.shadows_only) {
+            continue;  // Escenario (lo dibuja drawGpuClusters) o solo sombras.
         }
         if (!bound) {
             cmd.bindPipeline(vk::PipelineBindPoint::eGraphics,
@@ -3196,42 +3257,38 @@ void VulkanRenderer::drawGpuClusters(const vk::raii::CommandBuffer& cmd,
     const vk::Buffer commands = *gpu_culling_.commands(phase).handle();
     const vk::Buffer counts = *gpu_culling_.counts(phase).handle();
 
-    for (const ActorDraw& draw : actor_draws_) {
-        if (!draw.per_submesh) {
-            continue;
+    // Una llamada por lote (modelo x material, todos los actores juntos):
+    // la GPU decide cuantas submallas (y de quien) dibuja, leyendo el
+    // contador del lote; cada comando lleva la matriz de su actor.
+    std::uint32_t bound_model = UINT32_MAX;
+    for (std::uint32_t b = 0; b < draw_batches_.size(); ++b) {
+        const DrawBatch& batch = draw_batches_[b];
+        const SkinnedModel& model = skinned_models_[batch.model];
+        if (batch.model != bound_model) {
+            cmd.bindVertexBuffers(0, *model.vertices().handle(), {0});
+            cmd.bindIndexBuffer(*model.indices().handle(), 0, vk::IndexType::eUint32);
+            bound_model = batch.model;
         }
-        const SkinnedModel& model = skinned_models_[draw.model];
-        cmd.bindVertexBuffers(0, *model.vertices().handle(), {0});
-        cmd.bindIndexBuffer(*model.indices().handle(), 0, vk::IndexType::eUint32);
+        const SkinnedModel::DrawGroup& group = model.drawGroups()[batch.group];
+        const SkinnedModel::Material& material = model.materials()[group.material];
+        cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *skinned_pass_.geometryLayout(), 1,
+                               *model.materialSet(group.material), nullptr);
 
-        // Una llamada por material: la GPU decide cuantas submallas (y cuales)
-        // dibuja, leyendo el contador del grupo.
-        const auto& groups = model.drawGroups();
-        for (std::uint32_t g = 0; g < groups.size(); ++g) {
-            const SkinnedModel::DrawGroup& group = groups[g];
-            const SkinnedModel::Material& material = model.materials()[group.material];
-            cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics,
-                                   *skinned_pass_.geometryLayout(), 1,
-                                   *model.materialSet(group.material), nullptr);
+        GpuSkinnedPush push{};
+        push.model = core::Mat4::identity();
+        push.base_color = material.base_color;
+        push.emissive = material.emissive;
+        push.material = material.params;
+        push.reflectance = material.reflectance;
+        push.flags = 1u;
+        cmd.pushConstants<GpuSkinnedPush>(
+            *skinned_pass_.geometryLayout(),
+            vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, push);
 
-            GpuSkinnedPush push{};
-            push.model = draw.transform;
-            push.base_color = material.base_color;
-            push.emissive = material.emissive;
-            push.material = material.params;
-            push.bone_offset = draw.bone_offset;
-            push.reflectance = material.reflectance;
-            cmd.pushConstants<GpuSkinnedPush>(
-                *skinned_pass_.geometryLayout(),
-                vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, push);
-
-            cmd.drawIndexedIndirectCount(
-                commands,
-                static_cast<vk::DeviceSize>(draw.first_slot + group.first_slot) *
-                    GpuCulling::kCommandSize,
-                counts, static_cast<vk::DeviceSize>(draw.first_group + g) * sizeof(std::uint32_t),
-                group.capacity, GpuCulling::kCommandSize);
-        }
+        cmd.drawIndexedIndirectCount(
+            commands, static_cast<vk::DeviceSize>(batch.first_slot) * GpuCulling::kCommandSize, counts,
+            static_cast<vk::DeviceSize>(b) * sizeof(std::uint32_t), batch.capacity,
+            GpuCulling::kCommandSize);
     }
 }
 
@@ -3609,6 +3666,9 @@ void VulkanRenderer::recordGlassPass(const vk::raii::CommandBuffer& cmd,
     };
     std::vector<GlassDraw> visible;
     for (const ActorDraw& draw : actor_draws_) {
+        if (draw.shadows_only) {
+            continue;
+        }
         const SkinnedModel& model = skinned_models_[draw.model];
         const auto& submeshes = model.submeshes();
         for (std::uint32_t i = 0; i < submeshes.size(); ++i) {
@@ -3862,6 +3922,24 @@ void VulkanRenderer::destroyUiTextures(const std::vector<std::uint32_t>& ids) {
     for (const std::uint32_t id : ids) ui_textures_.erase(id);
 }
 
+std::uint32_t VulkanRenderer::createTerrain(std::uint32_t resolution, std::uint32_t splat_resolution) {
+    if (!initialized_) return 0;
+    const std::uint32_t id = terrain_pass_.createTerrain(resolution, splat_resolution);
+    cascades_valid_ = false;
+    return id;
+}
+
+void VulkanRenderer::destroyTerrain(std::uint32_t id) {
+    terrain_pass_.destroyTerrain(id);
+    cascades_valid_ = false;
+}
+
+void VulkanRenderer::updateTerrainHeights(std::uint32_t id, const float* heights, std::uint32_t x, std::uint32_t y,
+                                          std::uint32_t w, std::uint32_t h) {
+    terrain_pass_.updateHeights(id, heights, x, y, w, h);
+    cascades_valid_ = false;  // las sombras cacheadas ya no valen
+}
+
 void VulkanRenderer::invalidateHistory() {
     scene_history_valid_ = false;
     ssr_history_ready_ = false;
@@ -3906,6 +3984,19 @@ void VulkanRenderer::requestPick(std::uint32_t x, std::uint32_t y) {
     pick_request_.x = x;
     pick_request_.y = y;
     pick_result_.reset();
+}
+
+void VulkanRenderer::updateModelMaterial(std::uint32_t model, std::uint32_t material,
+                                         const asset::MaterialData& data) {
+    if (model >= skinned_models_.size() || material >= skinned_models_[model].materials().size()) {
+        return;
+    }
+    SkinnedModel::Material& gpu = skinned_models_[model].materials()[material];
+    gpu.base_color = data.base_color;
+    gpu.emissive = core::Vec4{data.emissive.x, data.emissive.y, data.emissive.z, 0.0f};
+    gpu.params = core::Vec4{data.metallic, data.roughness, data.occlusion_strength,
+                            data.normal_map_directx ? -data.normal_scale : data.normal_scale};
+    gpu.reflectance = data.reflectance;
 }
 
 std::optional<VulkanRenderer::PickResult> VulkanRenderer::takePickResult() {
@@ -4019,7 +4110,7 @@ void VulkanRenderer::recordPickPass(const vk::raii::CommandBuffer& cmd, std::uin
     cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *skinned_pass_.geometryLayout(), 0,
                            *skin_sets_[frame_index], nullptr);
     for (const ActorDraw& draw : actor_draws_) {
-        if (!hits_sphere(draw.bounds_center, draw.bounds_radius * 1.01f + 1e-3f)) continue;
+        if (draw.shadows_only || !hits_sphere(draw.bounds_center, draw.bounds_radius * 1.01f + 1e-3f)) continue;
         const SkinnedModel& model = skinned_models_[draw.model];
         cmd.bindVertexBuffers(0, *model.vertices().handle(), {0});
         cmd.bindIndexBuffer(*model.indices().handle(), 0, vk::IndexType::eUint32);
@@ -4031,8 +4122,18 @@ void VulkanRenderer::recordPickPass(const vk::raii::CommandBuffer& cmd, std::uin
                                           vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0,
                                           push);
         const auto& submeshes = model.submeshes();
+        std::uint32_t pushed_material = UINT32_MAX;
         for (std::uint32_t i = 0; i < submeshes.size(); ++i) {
             if (draw.per_submesh && !hits_box(submesh_bounds_[draw.first_bounds + i])) continue;
+            if (submeshes[i].material != pushed_material) {
+                // Tambien el hueco de material: soltar un material en la escena
+                // lo pone en la parte que hay bajo el raton.
+                pushed_material = submeshes[i].material;
+                const std::uint32_t id = (draw.scene_actor + 1) | (std::min(pushed_material, 4095u) << 20);
+                cmd.pushConstants<std::uint32_t>(*skinned_pass_.geometryLayout(),
+                                                 vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment,
+                                                 offsetof(GpuSkinnedPush, pick_id), id);
+            }
             cmd.drawIndexed(submeshes[i].index_count, 1, submeshes[i].first_index, 0, 0);
         }
     }

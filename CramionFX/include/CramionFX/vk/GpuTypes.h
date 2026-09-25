@@ -88,7 +88,8 @@ struct GpuSkinnedPush {
     float reflectance = 0.04f;
     // Picking por ID (pick.frag): indice del actor + 1 (0 = nada).
     std::uint32_t pick_id = 0;
-    std::uint32_t pad = 0;
+    // Bit 0: dibujo instanciado (skinned.vert lee la matriz con gl_InstanceIndex).
+    std::uint32_t flags = 0;
 };
 
 // Constante de push de las sombras de los modelos con esqueleto.

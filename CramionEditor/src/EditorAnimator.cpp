@@ -238,6 +238,44 @@ void EditorApp::drawExtractAnimationsMenu(ecs::Entity entity) {
 void EditorApp::extractAnimations(ecs::Entity entity, int clip) {
     const asset::ModelData* data = sync_->actorModelData(entity, scene_);
     if (data == nullptr || data->animations.empty()) return;
+    extractClips(*data, clip);
+}
+
+void EditorApp::drawModelAssetAnimationsMenu(const assets::AssetInfo& info) {
+    if (clip_source_uuid_ != info.uuid) {
+        // Se lee aparte (sin tocar lo que usa la escena).
+        clip_source_ = assets::AssetManager::readModel(info.uuid, info.path, info.name);
+        clip_source_uuid_ = info.uuid;
+    }
+    const asset::ModelData* animated = nullptr;
+    if (clip_source_) {
+        for (const auto& part : clip_source_->parts) {
+            if (part && !part->animations.empty()) {
+                animated = part.get();
+                break;
+            }
+        }
+    }
+    if (animated == nullptr) {
+        ImGui::TextDisabled(clip_source_ ? "El modelo no tiene animaciones" : "No se pudo leer el modelo");
+        return;
+    }
+    if (ImGui::MenuItem("Extraer todas...")) extractClips(*animated, -1);
+    ImGui::Separator();
+    for (std::size_t i = 0; i < animated->animations.size(); ++i) {
+        ImGui::PushID(static_cast<int>(i));
+        char label[256];
+        std::snprintf(label, sizeof(label), "Extraer \"%s\" (%.1f s)...", animated->animations[i].name.c_str(),
+                      static_cast<double>(animated->animations[i].duration));
+        if (ImGui::MenuItem(label)) extractClips(*animated, static_cast<int>(i));
+        ImGui::PopID();
+    }
+    ImGui::Separator();
+    ImGui::TextDisabled("Los .cranim se usan en los estados del Animator.");
+}
+
+void EditorApp::extractClips(const asset::ModelData& model, int clip) {
+    const asset::ModelData* data = &model;
     const std::filesystem::path initial = current_folder_.empty() ? project_.assetsFolder() : current_folder_;
 
     std::vector<std::pair<int, std::filesystem::path>> jobs;

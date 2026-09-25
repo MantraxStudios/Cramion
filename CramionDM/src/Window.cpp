@@ -56,6 +56,11 @@ bool Window::create(const WindowConfig& config) {
     wc.lpfnWndProc = &Window::wndProcThunk;
     wc.hInstance = hinstance_;
     wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
+    // Icono del ejecutable (recurso 1, assets/cramion.rc); sin el, el de Windows.
+    wc.hIcon = static_cast<HICON>(LoadImageW(hinstance_, MAKEINTRESOURCEW(1), IMAGE_ICON,
+                                             GetSystemMetrics(SM_CXICON), GetSystemMetrics(SM_CYICON), 0));
+    wc.hIconSm = static_cast<HICON>(LoadImageW(hinstance_, MAKEINTRESOURCEW(1), IMAGE_ICON,
+                                               GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), 0));
     wc.hbrBackground = nullptr;  // No borrar el fondo: lo pinta el renderizador.
     wc.lpszClassName = kWindowClassName;
 

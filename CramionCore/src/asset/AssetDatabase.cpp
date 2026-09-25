@@ -117,6 +117,11 @@ void AssetDatabase::refresh() {
             if (!info) {
                 std::cerr << "[Assets] Animacion sin UUID o danada: " << crdata::utf8(file.filename()) << "\n";
             }
+        } else if (extension == ".crmat") {
+            info = sceneInfo(file, AssetType::Material);
+            if (!info) {
+                std::cerr << "[Assets] Material sin UUID o danado: " << crdata::utf8(file.filename()) << "\n";
+            }
         }
         if (!info) {
             continue;

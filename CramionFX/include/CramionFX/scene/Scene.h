@@ -30,6 +30,11 @@ struct Actor {
     // saber que sombras de luces locales hay que redibujar cuando se mueve.
     core::Vec3 bounds_center{};
     float bounds_radius = 0.0f;
+
+    // Sombras (MeshRenderer): proyecta sombra, y "solo sombras" (invisible
+    // para la camara, pero su sombra se ve).
+    bool cast_shadows = true;
+    bool shadows_only = false;
 };
 
 // Escena: los modelos cargados, la camara y una unica luz direccional (el
@@ -99,6 +104,13 @@ public:
     void placeCamera(const core::Vec3& position, const core::Vec3& target);
 
     const std::vector<std::unique_ptr<asset::ModelData>>& models() const { return models_; }
+    // Cambia los datos de un modelo ya anadido (mismo indice: los actores que
+    // lo usan siguen valiendo). Hay que volver a subir los modelos.
+    void replaceModel(std::uint32_t index, asset::ModelData model);
+    // Los materiales de un modelo, para cambiar sus factores en vivo.
+    asset::ModelData* modelData(std::uint32_t index) {
+        return index < models_.size() ? models_[index].get() : nullptr;
+    }
     const std::vector<Actor>& actors() const { return actors_; }
     // Editable (editor): el renderizador lee el transform de cada actor en
     // cada frame. (La estructura de los rayos y el mapa de lluvia se

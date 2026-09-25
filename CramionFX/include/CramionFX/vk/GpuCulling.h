@@ -21,10 +21,14 @@ struct GpuCluster {
     core::Vec4 bounds_max{};
     std::uint32_t first_index = 0;
     std::uint32_t index_count = 0;
-    std::uint32_t group = 0;       // grupo (actor x material)
-    std::uint32_t first_slot = 0;  // primer hueco de comando del grupo
+    std::uint32_t group = 0;       // lote (modelo x material)
+    std::uint32_t first_slot = 0;  // primer hueco de comando del lote
+    // Matriz de mundo del actor en el buffer de huesos: va al first_instance
+    // del comando y skinned.vert la lee con gl_InstanceIndex.
+    std::uint32_t instance = 0;
+    std::uint32_t pad[3] = {0, 0, 0};
 };
-static_assert(sizeof(GpuCluster) == 48, "GpuCluster debe coincidir con cull.comp");
+static_assert(sizeof(GpuCluster) == 64, "GpuCluster debe coincidir con cull.comp");
 
 // Culling de los clusteres en la GPU: frustum + oclusion con una piramide
 // Hi-Z, en dos fases (ver cull.comp). El resultado son comandos de dibujo

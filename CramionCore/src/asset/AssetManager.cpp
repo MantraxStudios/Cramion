@@ -9,6 +9,49 @@
 
 namespace cramion::assets {
 
+std::shared_ptr<ModelAsset> AssetManager::readModel(const Uuid& uuid, const std::filesystem::path& file,
+                                                   const std::string& name) {
+    if (primitives::isBuiltin(uuid)) {
+        return primitives::make(uuid);
+    }
+    const auto start = std::chrono::steady_clock::now();
+    crdata::Header header{};
+    crdata::ModelContent content{};
+    if (!crdata::readModel(file, header, content)) {
+        std::cerr << "[Assets] No se pudo leer " << crdata::utf8(file)
+                  << " (danado o de otra version)\n";
+        return nullptr;
+    }
+
+    const float read_seconds =
+        std::chrono::duration<float>(std::chrono::steady_clock::now() - start).count();
+
+    auto asset = std::make_shared<ModelAsset>();
+    asset->uuid = uuid;
+    asset->name = name;
+    asset->nodes = std::move(content.nodes);
+    asset->animated = content.animated;
+    asset->animation_names = std::move(content.animation_names);
+    asset->parts.reserve(content.parts.size());
+    try {
+        for (asset::ModelData& part : content.parts) {
+            // Texturas incrustadas: se decodifican aqui (en paralelo).
+            asset::finalizeModel(part, name + "/" + part.name);
+            asset->parts.push_back(std::make_shared<asset::ModelData>(std::move(part)));
+        }
+    } catch (const std::exception& error) {
+        std::cerr << "[Assets] " << error.what() << "\n";
+        return nullptr;
+    }
+
+    const float seconds =
+        std::chrono::duration<float>(std::chrono::steady_clock::now() - start).count();
+    std::cout << "[Assets] Cargado " << name << ": " << asset->parts.size() << " piezas, "
+              << asset->nodes.size() << " nodos, " << seconds << " s (lectura " << read_seconds
+              << " s)\n";
+    return asset;
+}
+
 std::shared_ptr<const ModelAsset> AssetManager::loadModel(const Uuid& uuid) {
     if (const auto it = models_.find(uuid); it != models_.end()) {
         return it->second;
@@ -26,41 +69,8 @@ std::shared_ptr<const ModelAsset> AssetManager::loadModel(const Uuid& uuid) {
         return nullptr;
     }
 
-    const auto start = std::chrono::steady_clock::now();
-    crdata::Header header{};
-    crdata::ModelContent content{};
-    if (!crdata::readModel(info->path, header, content)) {
-        std::cerr << "[Assets] No se pudo leer " << crdata::utf8(info->path)
-                  << " (danado o de otra version)\n";
-        return nullptr;
-    }
-
-    const float read_seconds =
-        std::chrono::duration<float>(std::chrono::steady_clock::now() - start).count();
-
-    auto asset = std::make_shared<ModelAsset>();
-    asset->uuid = uuid;
-    asset->name = info->name;
-    asset->nodes = std::move(content.nodes);
-    asset->animated = content.animated;
-    asset->animation_names = std::move(content.animation_names);
-    asset->parts.reserve(content.parts.size());
-    try {
-        for (asset::ModelData& part : content.parts) {
-            // Texturas incrustadas: se decodifican aqui (en paralelo).
-            asset::finalizeModel(part, info->name + "/" + part.name);
-            asset->parts.push_back(std::make_shared<asset::ModelData>(std::move(part)));
-        }
-    } catch (const std::exception& error) {
-        std::cerr << "[Assets] " << error.what() << "\n";
-        return nullptr;
-    }
-
-    const float seconds =
-        std::chrono::duration<float>(std::chrono::steady_clock::now() - start).count();
-    std::cout << "[Assets] Cargado " << info->name << ": " << asset->parts.size() << " piezas, "
-              << asset->nodes.size() << " nodos, " << seconds << " s (lectura " << read_seconds
-              << " s)\n";
+    std::shared_ptr<ModelAsset> asset = readModel(uuid, info->path, info->name);
+    if (!asset) return nullptr;
     models_.emplace(uuid, asset);
     return asset;
 }

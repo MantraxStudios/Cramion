@@ -37,6 +37,7 @@ std::optional<Icon> componentIcon(const std::string& name) {
     if (name == "MeshCollider" || name == "PlaneCollider") return Icon::ColliderMesh;
     if (name == "ParticleSystem") return Icon::ParticleSystem;
     if (name == "DollyTrack" || name == "DollyCart") return Icon::Waypoint;
+    if (name == "Terrain") return Icon::Terrain;
     if (name == "CinematicSequence") return Icon::Camera;
     return std::nullopt;
 }
@@ -53,6 +54,15 @@ void EditorApp::drawInspector() {
     if (!ImGui::Begin("Inspector", &show_inspector_)) {
         ImGui::End();
         return;
+    }
+    // Un material elegido en el Proyecto: su editor (como Unity).
+    if (inspected_material_.valid()) {
+        if (database_->find(inspected_material_)) {
+            drawMaterialEditor(inspected_material_);
+            ImGui::End();
+            return;
+        }
+        inspected_material_ = {};
     }
     const std::vector<ecs::Entity> selected = selectedEntities();
     ecs::Entity entity = world_.find(active_);
@@ -272,6 +282,8 @@ void EditorApp::drawInspector() {
             }
             // Cinematicas: solo, alinear, puntos del riel, secuencia...
             if (type.category == "Cinematicas") drawCinematicInspector(type.name, entity);
+            if (type.name == "Terrain") drawTerrainInspector(entity);
+            if (type.name == "MeshRenderer") drawMeshMaterials(entity);
             // Animator con controlador: abrirlo en la ventana Animator.
             if (type.name == "Animator") {
                 if (const ecs::Animator* animator = entity.tryGet<ecs::Animator>(); animator != nullptr) {

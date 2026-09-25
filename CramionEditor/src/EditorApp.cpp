@@ -10,6 +10,8 @@
 #include <ImGuizmo.h>
 
 #include <algorithm>
+#include <array>
+#include <cctype>
 #include <chrono>
 #include <cstdio>
 #include <ctime>
@@ -43,6 +45,7 @@ EditorApp::EditorApp(dm::Window& window, gfx::VulkanRenderer& renderer, scene::S
     // Los componentes de fisica tienen que existir antes de leer escenas.
     physics::registerPhysicsComponents();
     cinema::registerCinematicComponents();
+    terrain::registerTerrainComponents();
     physics_.addListener([this](const physics::PhysicsEvent& event) { onPhysicsEvent(event); });
     const std::filesystem::path documents = dialogs::documentsFolder();
     new_project_folder_ = dialogs::utf8(documents.empty() ? std::filesystem::current_path()
@@ -77,8 +80,17 @@ bool EditorApp::openProject(const std::filesystem::path& path) {
     database_->open(project_.assetsFolder());
     asset_manager_ = std::make_unique<assets::AssetManager>(*database_);
     asset_manager_->setCacheFolder(project_.libraryFolder() / "Cache");
+    model_previews_.start(project_.libraryFolder() / "Thumbnails");
     sync_ = std::make_unique<ecs::RenderSync>(*asset_manager_);
     sync_->reset(scene_);
+    // Terrenos: datos en Assets (compartidos por el render y la fisica).
+    terrain_store_.clear();
+    terrain_store_.setRoot(project_.assetsFolder());
+    sync_->setTerrainStore(&terrain_store_);
+    physics_.setTerrainProvider([this](ecs::Entity entity) -> std::shared_ptr<const terrain::TerrainData> {
+        const terrain::Terrain* comp = entity.tryGet<terrain::Terrain>();
+        return comp != nullptr ? terrain_store_.get(*comp) : nullptr;
+    });
     has_project_ = true;
     // Fisica: ajustes del proyecto y el mundo fisico (en modo edicion).
     loadPhysicsSettings();
@@ -113,6 +125,10 @@ void EditorApp::closeProject() {
     physics_.stop();
     physics_.setMeshProvider({});
     physics_.setAssetManager(nullptr);
+    physics_.setTerrainProvider({});
+    model_previews_.stop();
+    clip_source_.reset();
+    clip_source_uuid_ = {};
     particles_.clear();
     renderer_.setParticles({});
     if (animator_dirty_) saveAnimatorEditor();
@@ -134,6 +150,7 @@ void EditorApp::closeProject() {
         assets_watch_ = nullptr;
     }
     refresh_at_ = -1.0;
+    terrain_store_.clear();
     folder_nodes_.clear();
     current_subfolders_.clear();
     current_assets_.clear();
@@ -185,6 +202,10 @@ bool EditorApp::saveScene() {
         return saveSceneAs();
     }
     std::string error;
+    // Los terrenos guardan sus datos aparte (Assets/Terrains/*.crterrain).
+    if (const int terrains = terrain_store_.saveAll(); terrains > 0) {
+        std::cout << "[Editor] " << terrains << " terreno(s) guardado(s)\n";
+    }
     if (!ecs::saveScene(world_, scene_path_, &error)) {
         std::cerr << "[Editor] No se pudo guardar: " << error << "\n";
         return false;
@@ -266,6 +287,10 @@ void EditorApp::resetUndo() {
     commit_pending_ = false;
     undo_.clear();
     redo_.clear();
+    undo_kinds_.clear();
+    redo_kinds_.clear();
+    terrain_undo_.clear();
+    terrain_redo_.clear();
     current_state_ = ecs::serializeWorld(world_);
 }
 
@@ -295,6 +320,9 @@ void EditorApp::flushCommit() {
     undo_.push_back(std::move(current_state_));
     current_state_ = std::move(state);
     redo_.clear();
+    undo_kinds_.push_back('W');
+    redo_kinds_.clear();
+    terrain_redo_.clear();
 
     std::size_t memory = current_state_.size();
     for (const std::string& s : undo_) {
@@ -303,6 +331,8 @@ void EditorApp::flushCommit() {
     while (!undo_.empty() && (undo_.size() > kUndoMaxSteps || memory > kUndoMemoryLimit)) {
         memory -= undo_.front().size();
         undo_.pop_front();
+        const auto it = std::find(undo_kinds_.begin(), undo_kinds_.end(), 'W');
+        if (it != undo_kinds_.end()) undo_kinds_.erase(it);
     }
     dirty_ = true;
     updateTitle();
@@ -310,9 +340,26 @@ void EditorApp::flushCommit() {
 
 void EditorApp::undo() {
     flushCommit();
-    if (undo_.empty() || playing()) {
+    if (playing()) {
         return;
     }
+    // Lo ultimo fue un trazo de terreno: se deshace el trazo.
+    if (!undo_kinds_.empty() && undo_kinds_.back() == 'T' && !terrain_undo_.empty()) {
+        TerrainUndo step = std::move(terrain_undo_.back());
+        terrain_undo_.pop_back();
+        undo_kinds_.pop_back();
+        applyTerrainSnapshot(step.path, *step.before);
+        terrain_redo_.push_back(std::move(step));
+        redo_kinds_.push_back('T');
+        dirty_ = true;
+        updateTitle();
+        return;
+    }
+    if (undo_.empty()) {
+        return;
+    }
+    if (!undo_kinds_.empty()) undo_kinds_.pop_back();
+    redo_kinds_.push_back('W');
     redo_.push_back(std::move(current_state_));
     current_state_ = std::move(undo_.back());
     undo_.pop_back();
@@ -323,9 +370,25 @@ void EditorApp::undo() {
 
 void EditorApp::redo() {
     flushCommit();
-    if (redo_.empty() || playing()) {
+    if (playing()) {
         return;
     }
+    if (!redo_kinds_.empty() && redo_kinds_.back() == 'T' && !terrain_redo_.empty()) {
+        TerrainUndo step = std::move(terrain_redo_.back());
+        terrain_redo_.pop_back();
+        redo_kinds_.pop_back();
+        applyTerrainSnapshot(step.path, *step.after);
+        terrain_undo_.push_back(std::move(step));
+        undo_kinds_.push_back('T');
+        dirty_ = true;
+        updateTitle();
+        return;
+    }
+    if (redo_.empty()) {
+        return;
+    }
+    if (!redo_kinds_.empty()) redo_kinds_.pop_back();
+    undo_kinds_.push_back('W');
     undo_.push_back(std::move(current_state_));
     current_state_ = std::move(redo_.back());
     redo_.pop_back();
@@ -343,6 +406,7 @@ bool EditorApp::isSelected(const Uuid& uuid) const {
 }
 
 void EditorApp::selectOnly(const Uuid& uuid) {
+    inspected_material_ = {};
     selection_.clear();
     if (uuid.valid()) {
         selection_.push_back(uuid);
@@ -351,6 +415,7 @@ void EditorApp::selectOnly(const Uuid& uuid) {
 }
 
 void EditorApp::toggleSelection(const Uuid& uuid) {
+    inspected_material_ = {};
     const auto it = findUuid(selection_, uuid);
     if (it != selection_.end()) {
         selection_.erase(it);
@@ -364,6 +429,7 @@ void EditorApp::toggleSelection(const Uuid& uuid) {
 }
 
 void EditorApp::clearSelection() {
+    inspected_material_ = {};
     selection_.clear();
     active_ = {};
     renaming_ = {};
@@ -602,6 +668,7 @@ void EditorApp::focusSelection() {
 
 void EditorApp::drawUi(float delta_seconds) {
     const CpuClock::time_point ui_start = CpuClock::now();
+    frame_delta_ = delta_seconds;
     ImGuizmo::BeginFrame();
     imgui_.updateThumbnails();
     pollImports();
@@ -756,6 +823,13 @@ void EditorApp::drawMenuBar() {
     if (!ImGui::BeginMainMenuBar()) {
         return;
     }
+    // Logo del motor al principio de la barra (como Unity/Unreal).
+    if (const ImTextureID logo = imgui_.logo(); logo != 0) {
+        const float size = ImGui::GetFrameHeight() - 2.0f;
+        ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 1.0f);
+        ImGui::Image(logo, ImVec2(size, size));
+        ImGui::SetItemTooltip("Cramion Engine");
+    }
     if (ImGui::BeginMenu("Archivo")) {
         if (ImGui::MenuItem("Nueva escena", "Ctrl+N")) runOrAskToSave(PendingAction::NewScene);
         if (ImGui::MenuItem("Abrir escena...")) {
@@ -834,6 +908,7 @@ void EditorApp::drawMenuBar() {
             item("Sistema de partículas", 16);
             ImGui::EndMenu();
         }
+        if (ImGui::MenuItem("Terreno")) createTerrainEntity();
         if (ImGui::BeginMenu("Cinemática")) {
             if (ImGui::MenuItem("Cámara virtual (desde la vista)")) createCinematic(0);
             if (ImGui::MenuItem("Cámara que sigue a la selección")) createCinematic(1);
@@ -891,6 +966,11 @@ void EditorApp::drawHub() {
 
     // Columna izquierda: marca y acciones.
     ImGui::BeginChild("hub_side", ImVec2(260.0f, 0.0f), ImGuiChildFlags_Borders);
+    if (const ImTextureID logo = imgui_.logo(); logo != 0) {
+        const float size = 96.0f;
+        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (ImGui::GetContentRegionAvail().x - size) * 0.5f);
+        ImGui::Image(logo, ImVec2(size, size));
+    }
     ImGui::SetWindowFontScale(1.6f);
     ImGui::TextUnformatted("Cramion");
     ImGui::SetWindowFontScale(1.0f);
@@ -1115,6 +1195,8 @@ void EditorApp::drawStatistics(float delta_seconds) {
                 static_cast<unsigned long long>(renderer_.triangleCount()),
                 renderer_.visibleSubmeshes(), renderer_.totalSubmeshes(),
                 renderer_.occludedSubmeshes(), renderer_.shadowSubmeshes());
+    ImGui::Text("Lotes de material (llamadas de escenario) %u  |  modelos con materiales propios %zu",
+                renderer_.batchCount(), sync_ ? sync_->variantCount() : std::size_t{0});
     // CPU por partes (media movil): donde se va el frame.
     static constexpr const char* kCpuNames[kCpuSectionCount] = {
         "Interfaz (total)", "  Jerarquía", "  Inspector", "  Escena + gizmos", "  Otros paneles",
@@ -1243,6 +1325,12 @@ void EditorApp::startImport(const std::vector<std::filesystem::path>& files,
         return;
     }
     for (const std::filesystem::path& file : files) {
+        // Carpeta: toda su estructura, con lo que tenga dentro.
+        std::error_code dir_error;
+        if (std::filesystem::is_directory(file, dir_error)) {
+            importFolder(file, folder / file.filename());
+            continue;
+        }
         // Imagenes (texturas de decals): se copian tal cual a Assets/.
         if (isDecalImage(file)) {
             std::error_code error;
@@ -1283,9 +1371,66 @@ void EditorApp::pollImports() {
     }
 }
 
-void EditorApp::onFilesDropped(const std::vector<std::filesystem::path>& files) {
+void EditorApp::importFolder(const std::filesystem::path& source, const std::filesystem::path& target) {
+    std::error_code error;
+    // No meter Assets dentro de si mismo.
+    const std::filesystem::path assets = std::filesystem::weakly_canonical(project_.assetsFolder(), error);
+    const std::filesystem::path from = std::filesystem::weakly_canonical(source, error);
+    if (!error && std::mismatch(from.begin(), from.end(), assets.begin(), assets.end()).first == from.end()) {
+        std::cerr << "[Editor] No se puede importar una carpeta que contiene Assets\n";
+        return;
+    }
+    std::filesystem::create_directories(target, error);
+    std::cout << "[Editor] Importando la carpeta " << dialogs::utf8(source.filename()) << "...\n";
+    static const std::array<std::string, 6> kImportable = {".obj", ".fbx", ".gltf", ".glb", ".dae", ".hdr"};
+    std::size_t copied = 0;
+    for (auto it = std::filesystem::recursive_directory_iterator(
+             source, std::filesystem::directory_options::skip_permission_denied, error);
+         !error && it != std::filesystem::recursive_directory_iterator(); it.increment(error)) {
+        const std::filesystem::path relative = std::filesystem::relative(it->path(), source, error);
+        const std::filesystem::path destination = target / relative;
+        if (it->is_directory(error)) {
+            std::filesystem::create_directories(destination, error);
+            continue;
+        }
+        if (!it->is_regular_file(error)) continue;
+        std::string ext = dialogs::utf8(it->path().extension());
+        std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        if (std::find(kImportable.begin(), kImportable.end(), ext) != kImportable.end()) {
+            startImport({it->path()}, destination.parent_path());
+        } else if (!std::filesystem::exists(destination)) {
+            // Lo demas (imagenes, materiales, sonidos...) se copia tal cual.
+            std::filesystem::copy_file(it->path(), destination, error);
+            if (!error) ++copied;
+            error.clear();
+        }
+    }
+    if (copied > 0) std::cout << "[Editor] " << copied << " archivo(s) copiados\n";
+    refreshDatabase();
+}
+
+std::filesystem::path EditorApp::createFolderIn(const std::filesystem::path& parent) {
+    std::filesystem::path folder = parent / "Nueva carpeta";
+    for (int i = 2; std::filesystem::exists(folder); ++i) {
+        folder = parent / ("Nueva carpeta " + std::to_string(i));
+    }
+    std::error_code error;
+    std::filesystem::create_directories(folder, error);
+    refreshDatabase();
+    // Directamente a ponerle nombre (como Unity).
+    renaming_folder_ = folder;
+    folder_rename_buffer_ = dialogs::utf8(folder.filename());
+    return folder;
+}
+
+void EditorApp::onFilesDropped(const std::vector<std::filesystem::path>& files, float x, float y) {
     if (has_project_) {
-        startImport(files, current_folder_);
+        // Encima de una carpeta del navegador: dentro de ella.
+        std::filesystem::path target = current_folder_.empty() ? project_.assetsFolder() : current_folder_;
+        for (const FolderDropZone& zone : folder_drop_zones_) {
+            if (x >= zone.x0 && x <= zone.x1 && y >= zone.y0 && y <= zone.y1) target = zone.path;
+        }
+        startImport(files, target);
     } else {
         // En el Hub: un .crproj soltado se abre.
         for (const std::filesystem::path& file : files) {

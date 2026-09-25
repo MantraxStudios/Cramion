@@ -90,7 +90,8 @@ public:
     void recordGBuffer(const vk::raii::CommandBuffer& cmd, std::uint32_t frame,
                        const vk::raii::DescriptorSet& frame_set) const;
     // Dentro de una cascada de sombra.
-    void recordShadow(const vk::raii::CommandBuffer& cmd, const core::Mat4& light_view_projection) const;
+    void recordShadow(const vk::raii::CommandBuffer& cmd, std::uint32_t frame, const vk::raii::DescriptorSet& frame_set,
+                      const core::Mat4& light_view_projection) const;
 
     std::uint32_t chunkCount() const;
 
@@ -104,6 +105,12 @@ private:
     struct Chunk {
         float u = 0.0f, v = 0.0f, size = 1.0f, skirt = 1.0f;
     };
+    // Array 2D de texturas con mipmaps (las capas).
+    struct ArrayTexture {
+        vk::raii::DeviceMemory memory{nullptr};
+        vk::raii::Image image{nullptr};
+        vk::raii::ImageView view{nullptr};
+    };
     struct Terrain {
         std::uint32_t resolution = 0;
         std::uint32_t splat_resolution = 0;
@@ -111,8 +118,8 @@ private:
         VulkanImage heights;
         VulkanImage splat0;
         VulkanImage splat1;
-        VulkanImage albedo_array;
-        VulkanImage normal_array;
+        ArrayTexture albedo_array;
+        ArrayTexture normal_array;
         std::array<std::filesystem::path, kMaxTerrainLayers> albedo_paths{};
         std::array<std::filesystem::path, kMaxTerrainLayers> normal_paths{};
         bool arrays_ready = false;
@@ -125,6 +132,7 @@ private:
                          vk::Format depth_format, vk::Format shadow_format);
     void createPatchMesh(const VulkanDevice& device);
     void loadLayerTextures(Terrain& terrain);
+    void createArrayTexture(ArrayTexture& texture, const std::vector<std::vector<std::uint8_t>>& layers);
     void writeDescriptors(Terrain& terrain);
     void selectChunks(Terrain& terrain, const core::Vec3& camera, const core::Mat4& view_projection);
 

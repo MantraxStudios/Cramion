@@ -50,6 +50,10 @@ public:
     // nullptr si no existe o no se pudo leer (el error va a std::cerr). Las
     // primitivas integradas (builtin::k...) se generan por codigo.
     std::shared_ptr<const ModelAsset> loadModel(const Uuid& uuid);
+    // Lee un modelo sin cache ni base de datos (se puede llamar desde otro
+    // hilo: miniaturas, extraer clips). `file` vacio para las primitivas.
+    static std::shared_ptr<ModelAsset> readModel(const Uuid& uuid, const std::filesystem::path& file,
+                                                 const std::string& name);
 
     // Ruta de un .hdr en disco para el renderizador
     // (VulkanRenderer::loadEnvironment): el HDR incrustado en el .crdata se

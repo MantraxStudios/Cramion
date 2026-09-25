@@ -26,6 +26,7 @@ struct PointLight {
     core::Vec3 color{1.0f, 0.75f, 0.35f};
     float intensity = 12.0f;
     float range = 18.0f;
+    bool cast_shadows = true;
 };
 
 // Foco: luz puntual limitada a un cono. Entre el angulo interior y el exterior
@@ -39,6 +40,7 @@ struct SpotLight {
     float inner_angle = core::radians(14.0f);
     float outer_angle = core::radians(24.0f);
     bool enabled = true;
+    bool cast_shadows = true;
 };
 
 // Iluminacion ambiental de relleno (cielo).

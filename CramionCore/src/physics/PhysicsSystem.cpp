@@ -17,6 +17,7 @@
 
 #include "CramionCore/asset/AssetManager.h"
 #include "CramionCore/ecs/MathUtil.h"
+#include "CramionCore/terrain/Terrain.h"
 
 #include <Jolt/Jolt.h>
 
@@ -41,6 +42,7 @@
 #include <Jolt/Physics/Collision/Shape/BoxShape.h>
 #include <Jolt/Physics/Collision/Shape/CapsuleShape.h>
 #include <Jolt/Physics/Collision/Shape/ConvexHullShape.h>
+#include <Jolt/Physics/Collision/Shape/HeightFieldShape.h>
 #include <Jolt/Physics/Collision/Shape/MeshShape.h>
 #include <Jolt/Physics/Collision/Shape/PlaneShape.h>
 #include <Jolt/Physics/Collision/Shape/RotatedTranslatedShape.h>
@@ -346,6 +348,7 @@ struct PhysicsSystem::Impl {
         JPH::BodyID sensor{};
         BodyType type = BodyType::Static;
         std::uint64_t signature = 0;
+        std::uint64_t terrain_key = 0;
         const void* mesh = nullptr;
         // Pose que tiene la entidad (la ultima que se leyo o se escribio).
         Vec3 position{};
@@ -510,6 +513,7 @@ struct PhysicsSystem::Impl {
     std::unique_ptr<JPH::PhysicsSystem> system;
 
     MeshProvider mesh_provider;
+    TerrainProvider terrain_provider;
     assets::AssetManager* asset_manager = nullptr;
 
     std::unordered_map<entt::entity, BodyEntry> entries;
@@ -753,6 +757,34 @@ struct PhysicsSystem::Impl {
                 mesh_used = data;
             }
         }
+        if (const terrain::Terrain* t = entity.tryGet<terrain::Terrain>(); t != nullptr && t->collision && terrain_provider) {
+            if (type == BodyType::Dynamic) {
+                warnOnce(entity.handle(), name, "un terreno no puede ser dinamico (se ignora su colision)");
+            } else if (const std::shared_ptr<const terrain::TerrainData> data = terrain_provider(entity);
+                       data && data->resolution() >= 3) {
+                // Jolt quiere 2^n muestras: se remuestrea (res - 1) cubriendo todo el terreno.
+                const std::uint32_t samples = std::max<std::uint32_t>(data->resolution() - 1, 4);
+                std::vector<float> heights(static_cast<std::size_t>(samples) * samples);
+                for (std::uint32_t y = 0; y < samples; ++y) {
+                    for (std::uint32_t x = 0; x < samples; ++x) {
+                        heights[static_cast<std::size_t>(y) * samples + x] =
+                            data->sample(static_cast<float>(x) / static_cast<float>(samples - 1),
+                                         static_cast<float>(y) / static_cast<float>(samples - 1)) * t->height;
+                    }
+                }
+                const float cell = t->size / static_cast<float>(samples - 1);
+                ColliderMaterial material;
+                material.friction = t->friction;
+                JPH::HeightFieldShapeSettings settings(heights.data(), JPH::Vec3::sZero(), JPH::Vec3(cell, 1.0f, cell), samples);
+                settings.mMaterials.push_back(materialFor(material));
+                const auto result = settings.Create();
+                if (result.HasError()) {
+                    std::cerr << "[Fisica] " << name << ": terreno no valido (" << result.GetError().c_str() << ")\n";
+                } else {
+                    solid.push_back(ShapePart{result.Get(), Vec3{}, Quat{}});
+                }
+            }
+        }
         if (const PlaneCollider* plane = entity.tryGet<PlaneCollider>()) {
             if (type == BodyType::Dynamic) {
                 warnOnce(entity.handle(), name, "un Plane Collider no puede ser dinamico (se ignora)");
@@ -834,7 +866,8 @@ struct PhysicsSystem::Impl {
               sphere(r.storage<SphereCollider>()),
               capsule(r.storage<CapsuleCollider>()),
               mesh(r.storage<MeshCollider>()),
-              plane(r.storage<PlaneCollider>()) {}
+              plane(r.storage<PlaneCollider>()),
+              terrain(r.storage<terrain::Terrain>()) {}
         template <typename Storage>
         static auto* find(Storage& storage, entt::entity e) {
             return storage.contains(e) ? &storage.get(e) : nullptr;
@@ -855,6 +888,7 @@ struct PhysicsSystem::Impl {
         entt::storage_for_t<CapsuleCollider>& capsule;
         entt::storage_for_t<MeshCollider>& mesh;
         entt::storage_for_t<PlaneCollider>& plane;
+        entt::storage_for_t<terrain::Terrain>& terrain;
     };
 
     static std::uint64_t signatureOf(Pools& pools, entt::entity entity, int layer) {
@@ -917,6 +951,12 @@ struct PhysicsSystem::Impl {
         if (const PlaneCollider* c = Pools::find(pools.plane, entity)) {
             s.push_back(14.0f);
             push_material(c->material);
+        }
+        if (const terrain::Terrain* t = Pools::find(pools.terrain, entity); t != nullptr && t->collision) {
+            s.push_back(15.0f);
+            s.push_back(t->size);
+            s.push_back(t->height);
+            s.push_back(t->friction);
         }
         return s.hash;
     }
@@ -1063,6 +1103,7 @@ struct PhysicsSystem::Impl {
         gather(registry.view<CapsuleCollider>());
         gather(registry.view<MeshCollider>());
         gather(registry.view<PlaneCollider>());
+        gather(registry.view<terrain::Terrain>());
         std::sort(candidates.begin(), candidates.end());
         candidates.erase(std::unique(candidates.begin(), candidates.end()), candidates.end());
 
@@ -1077,9 +1118,24 @@ struct PhysicsSystem::Impl {
             auto it = entries.find(handle);
             if (it != entries.end()) it->second.seen = sync_generation;
             const bool has_mesh = pools.mesh.contains(handle);
+            // Terreno: sus datos (y su version de colision) tambien cuentan.
+            const terrain::Terrain* terrain_comp = Pools::find(pools.terrain, handle);
+            const bool is_terrain = terrain_comp != nullptr;
+            if (is_terrain && !terrain_comp->collision && !has_mesh && !pools.box.contains(handle) &&
+                !pools.sphere.contains(handle) && !pools.capsule.contains(handle) && !pools.plane.contains(handle)) {
+                if (it != entries.end()) it->second.seen = 0;  // si tenia cuerpo, se borra
+                continue;  // terreno sin colision y sin otros colliders: sin cuerpo
+            }
+            std::shared_ptr<const terrain::TerrainData> terrain_data =
+                is_terrain && terrain_provider ? terrain_provider(entity) : nullptr;
+            const std::uint64_t terrain_key =
+                terrain_data ? (terrain_data->collisionVersion() * 1000003ull ^
+                                reinterpret_cast<std::uintptr_t>(terrain_data.get()))
+                             : 0ull;
             const void* mesh_now = it != entries.end() && has_mesh ? meshOf(entity) : nullptr;
             const bool same_shape = it != entries.end() && it->second.signature == signature &&
-                                    (!has_mesh || mesh_now == it->second.mesh);
+                                    (!has_mesh || mesh_now == it->second.mesh) &&
+                                    it->second.terrain_key == terrain_key;
             // Lo normal: nada cambio (ni forma ni matriz). Sin descomponer nada.
             if (same_shape && std::memcmp(&it->second.matrix, &world_matrix, sizeof(core::Mat4)) == 0) continue;
 
@@ -1088,6 +1144,11 @@ struct PhysicsSystem::Impl {
             Vec3 scale{};
             ecs::decomposeMatrix(world_matrix, position, rotation, scale);
             rotation = core::normalize(rotation);
+            if (is_terrain) {
+                // El terreno no gira ni escala: solo su esquina cuenta.
+                rotation = Quat{};
+                scale = Vec3{1.0f, 1.0f, 1.0f};
+            }
             const bool rebuild = !same_shape || !sameScale(it->second.scale, scale);
             if (rebuild) {
                 if (it != entries.end()) {
@@ -1099,6 +1160,7 @@ struct PhysicsSystem::Impl {
                 entry.seen = sync_generation;
                 entry.entity = handle;
                 entry.signature = signature;
+                entry.terrain_key = terrain_key;
                 entry.matrix = world_matrix;
                 entry.position = position;
                 entry.rotation = rotation;
@@ -1366,6 +1428,10 @@ const PhysicsSettings& PhysicsSystem::settings() const {
 
 void PhysicsSystem::setMeshProvider(MeshProvider provider) {
     impl_->mesh_provider = std::move(provider);
+}
+
+void PhysicsSystem::setTerrainProvider(TerrainProvider provider) {
+    impl_->terrain_provider = std::move(provider);
 }
 
 void PhysicsSystem::setAssetManager(assets::AssetManager* manager) {

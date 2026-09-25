@@ -2,8 +2,12 @@
 
 #include "CramionCore/ecs/MathUtil.h"
 
+#include <CramionFX/asset/ImageFile.h>
+
 #include <algorithm>
+#include <fstream>
 #include <iostream>
+#include <string>
 
 namespace cramion::ecs {
 
@@ -12,7 +16,265 @@ using core::Vec3;
 
 namespace {
 constexpr float kDegToRad = core::kPi / 180.0f;
+
+std::filesystem::path fromUtf8(const std::string& text) {
+    return std::filesystem::path(std::u8string(text.begin(), text.end()));
+}
+
+bool readBytes(const std::filesystem::path& file, std::vector<std::uint8_t>& out) {
+    std::ifstream in(file, std::ios::binary | std::ios::ate);
+    if (!in) return false;
+    const std::streamsize size = in.tellg();
+    in.seekg(0);
+    out.resize(static_cast<std::size_t>(std::max<std::streamsize>(size, 0)));
+    return static_cast<bool>(in.read(reinterpret_cast<char*>(out.data()), size));
+}
+
+// Solo los factores de `from` (las texturas de `to` se quedan).
+void copyFactors(asset::MaterialData& to, const asset::MaterialData& from) {
+    to.base_color = from.base_color;
+    to.emissive = from.emissive;
+    to.metallic = from.metallic;
+    to.roughness = from.roughness;
+    to.occlusion_strength = from.occlusion_strength;
+    to.normal_scale = from.normal_scale;
+    to.normal_map_directx = from.normal_map_directx;
+    to.reflectance = from.reflectance;
+}
 }  // namespace
+
+std::shared_ptr<const assets::MaterialAsset> RenderSync::material(const Uuid& uuid) {
+    if (const auto it = materials_.find(uuid); it != materials_.end()) return it->second.data;
+    if (failed_materials_.contains(uuid)) return nullptr;
+    const auto info = assets_.database().find(uuid);
+    auto data = std::make_shared<assets::MaterialAsset>();
+    std::string error;
+    if (!info || info->type != assets::AssetType::Material || !assets::loadMaterial(info->path, *data, &error)) {
+        failed_materials_.insert(uuid);
+        std::cerr << "[RenderSync] No se pudo leer el material " << uuid.toString() << " " << error << "\n";
+        return nullptr;
+    }
+    data->uuid = uuid;
+    materials_[uuid] = MaterialEntry{data, assets::materialStructureHash(*data)};
+    return data;
+}
+
+void RenderSync::reloadMaterial(const Uuid& uuid) {
+    failed_materials_.erase(uuid);
+    const auto it = materials_.find(uuid);
+    if (it == materials_.end()) return;  // nadie lo usa aun: se leera al usarlo
+    const std::uint64_t old_structure = it->second.structure;
+    materials_.erase(it);
+    if (!material(uuid)) return;
+    if (materials_[uuid].structure != old_structure) {
+        rebuild_materials_.insert(uuid);
+    } else {
+        live_materials_.insert(uuid);
+    }
+}
+
+void RenderSync::updateMaterial(const Uuid& uuid, const assets::MaterialAsset& data) {
+    failed_materials_.erase(uuid);
+    auto shared = std::make_shared<assets::MaterialAsset>(data);
+    shared->uuid = uuid;
+    const std::uint64_t structure = assets::materialStructureHash(*shared);
+    const auto it = materials_.find(uuid);
+    const bool known = it != materials_.end();
+    const std::uint64_t old_structure = known ? it->second.structure : 0;
+    materials_[uuid] = MaterialEntry{shared, structure};
+    if (!known) return;
+    if (structure != old_structure) {
+        rebuild_materials_.insert(uuid);
+    } else {
+        live_materials_.insert(uuid);
+    }
+}
+
+asset::ModelData RenderSync::buildVariant(const asset::ModelData& base, const std::vector<Uuid>& overrides) {
+    asset::ModelData v;
+    v.name = base.name;
+    v.vertices = base.vertices;
+    v.indices = base.indices;
+    v.submeshes = base.submeshes;
+    v.nodes = base.nodes;
+    v.bones = base.bones;
+    v.animations = base.animations;
+
+    // Texturas del modelo que siguen usandose (las de los huecos sustituidos
+    // no se copian) y las de los materiales, una vez por archivo.
+    std::vector<std::int32_t> kept(base.textures.size(), -1);
+    const auto keep = [&](std::int32_t t) -> std::int32_t {
+        if (t < 0 || static_cast<std::size_t>(t) >= base.textures.size()) return -1;
+        if (kept[t] < 0) {
+            kept[t] = static_cast<std::int32_t>(v.textures.size());
+            v.textures.push_back(base.textures[t]);
+        }
+        return kept[t];
+    };
+    const std::filesystem::path& root = assets_.database().root();
+    std::unordered_map<std::string, std::int32_t> files;
+    const auto file = [&](const std::string& relative) -> std::int32_t {
+        if (relative.empty()) return -1;
+        if (const auto it = files.find(relative); it != files.end()) return it->second;
+        asset::TextureData texture;
+        texture.name = relative;
+        if (!readBytes(root / fromUtf8(relative), texture.encoded)) {
+            std::cerr << "[RenderSync] Falta la textura " << relative << "\n";
+            files[relative] = -1;
+            return -1;
+        }
+        const auto index = static_cast<std::int32_t>(v.textures.size());
+        v.textures.push_back(std::move(texture));
+        files[relative] = index;
+        return index;
+    };
+    // Metal y rugosidad en mapas sueltos: se juntan en uno (G = rugosidad,
+    // B = metal, como glTF).
+    const auto packed = [&](const std::string& metal, const std::string& rough) -> std::int32_t {
+        if (metal.empty() && rough.empty()) return -1;
+        const std::string key = "mr:" + metal + "|" + rough;
+        if (const auto it = files.find(key); it != files.end()) return it->second;
+        asset::ImageRgba8 m;
+        asset::ImageRgba8 r;
+        const bool has_m = !metal.empty() && asset::loadImageRgba8(root / fromUtf8(metal), m);
+        const bool has_r = !rough.empty() && asset::loadImageRgba8(root / fromUtf8(rough), r);
+        if (!has_m && !has_r) {
+            files[key] = -1;
+            return -1;
+        }
+        const asset::ImageRgba8& size = has_r ? r : m;
+        asset::TextureData texture;
+        texture.name = key;
+        texture.width = size.width;
+        texture.height = size.height;
+        texture.pixels.resize(static_cast<std::size_t>(size.width) * size.height * 4);
+        const auto at = [](const asset::ImageRgba8& img, std::uint32_t x, std::uint32_t y, std::uint32_t w,
+                           std::uint32_t h) {
+            const std::uint32_t sx = static_cast<std::uint32_t>(static_cast<std::uint64_t>(x) * img.width / w);
+            const std::uint32_t sy = static_cast<std::uint32_t>(static_cast<std::uint64_t>(y) * img.height / h);
+            return img.pixels[(static_cast<std::size_t>(sy) * img.width + sx) * 4];
+        };
+        for (std::uint32_t y = 0; y < size.height; ++y) {
+            for (std::uint32_t x = 0; x < size.width; ++x) {
+                std::uint8_t* p = &texture.pixels[(static_cast<std::size_t>(y) * size.width + x) * 4];
+                p[0] = 255;
+                p[1] = has_r ? at(r, x, y, size.width, size.height) : 255;
+                p[2] = has_m ? at(m, x, y, size.width, size.height) : 255;
+                p[3] = 255;
+            }
+        }
+        const auto index = static_cast<std::int32_t>(v.textures.size());
+        v.textures.push_back(std::move(texture));
+        files[key] = index;
+        return index;
+    };
+
+    std::vector<std::uint8_t> transformed(v.vertices.size(), 0);
+    for (std::size_t m = 0; m < base.materials.size(); ++m) {
+        const asset::MaterialData& original = base.materials[m];
+        std::shared_ptr<const assets::MaterialAsset> mat =
+            m < overrides.size() && overrides[m].valid() ? material(overrides[m]) : nullptr;
+        if (!mat) {
+            asset::MaterialData copy = original;
+            copy.albedo_texture = keep(original.albedo_texture);
+            copy.metallic_roughness_texture = keep(original.metallic_roughness_texture);
+            copy.normal_texture = keep(original.normal_texture);
+            copy.occlusion_texture = keep(original.occlusion_texture);
+            copy.emissive_texture = keep(original.emissive_texture);
+            v.materials.push_back(copy);
+            continue;
+        }
+        asset::MaterialData d = assets::toMaterialData(*mat, original.name);
+        d.albedo_texture = file(mat->albedo);
+        d.normal_texture = file(mat->normal);
+        d.occlusion_texture = file(mat->occlusion);
+        d.emissive_texture = file(mat->emissive_map);
+        d.metallic_roughness_texture = packed(mat->metallic_map, mat->roughness_map);
+        v.materials.push_back(d);
+
+        // Tiling y desplazamiento: se hornean en las UV de sus submallas.
+        const bool identity = mat->tiling.x == 1.0f && mat->tiling.y == 1.0f && mat->offset.x == 0.0f &&
+                              mat->offset.y == 0.0f;
+        if (identity) continue;
+        for (const asset::SubMesh& submesh : v.submeshes) {
+            if (submesh.material != m) continue;
+            for (std::uint32_t i = 0; i < submesh.index_count; ++i) {
+                const std::uint32_t vertex = v.indices[submesh.first_index + i];
+                if (vertex >= v.vertices.size() || transformed[vertex]) continue;
+                transformed[vertex] = 1;
+                core::Vec2& uv = v.vertices[vertex].uv;
+                uv = core::Vec2{uv.x * mat->tiling.x + mat->offset.x, uv.y * mat->tiling.y + mat->offset.y};
+            }
+        }
+    }
+    asset::finalizeModel(v, v.name);
+    return v;
+}
+
+std::uint32_t RenderSync::resolveVariant(std::uint32_t base, const std::vector<assets::AssetRef>& overrides,
+                                         scene::Scene& scene, bool& added) {
+    const asset::ModelData& data = *scene.models()[base];
+    std::vector<Uuid> slots(std::min(overrides.size(), data.materials.size()));
+    bool any = false;
+    std::string key = std::to_string(base);
+    for (std::size_t i = 0; i < slots.size(); ++i) {
+        if (overrides[i].valid() && material(overrides[i].uuid)) {
+            slots[i] = overrides[i].uuid;
+            any = true;
+        }
+        key += ':';
+        key += slots[i].valid() ? slots[i].toString() : std::string{};
+    }
+    if (!any) return base;
+    if (const auto it = variant_lookup_.find(key); it != variant_lookup_.end()) {
+        return variants_[it->second].index;
+    }
+
+    asset::ModelData variant;
+    try {
+        variant = buildVariant(data, slots);
+    } catch (const std::exception& e) {
+        std::cerr << "[RenderSync] Material: " << e.what() << "\n";
+        return base;
+    }
+    const std::uint32_t index = scene.addModel(std::move(variant));
+    if (model_bounds_.size() <= index) model_bounds_.resize(index + 1);
+    model_bounds_[index] = model_bounds_[base];
+    variant_lookup_[key] = static_cast<std::uint32_t>(variants_.size());
+    variants_.push_back(Variant{base, index, std::move(slots)});
+    added = true;
+    return index;
+}
+
+void RenderSync::applyMaterialChanges(scene::Scene& scene, gfx::VulkanRenderer& renderer, bool& added) {
+    if (rebuild_materials_.empty() && live_materials_.empty()) return;
+    for (const Variant& variant : variants_) {
+        bool rebuild = false;
+        for (const Uuid& uuid : variant.overrides) {
+            rebuild = rebuild || (uuid.valid() && rebuild_materials_.contains(uuid));
+        }
+        if (rebuild) {
+            try {
+                scene.replaceModel(variant.index, buildVariant(*scene.models()[variant.base], variant.overrides));
+                added = true;
+            } catch (const std::exception& e) {
+                std::cerr << "[RenderSync] Material: " << e.what() << "\n";
+            }
+            continue;
+        }
+        asset::ModelData* data = scene.modelData(variant.index);
+        for (std::size_t slot = 0; data != nullptr && slot < variant.overrides.size(); ++slot) {
+            const Uuid& uuid = variant.overrides[slot];
+            if (!uuid.valid() || !live_materials_.contains(uuid)) continue;
+            const std::shared_ptr<const assets::MaterialAsset> mat = material(uuid);
+            if (!mat || slot >= data->materials.size()) continue;
+            copyFactors(data->materials[slot], assets::toMaterialData(*mat, data->materials[slot].name));
+            renderer.updateModelMaterial(variant.index, static_cast<std::uint32_t>(slot), data->materials[slot]);
+        }
+    }
+    rebuild_materials_.clear();
+    live_materials_.clear();
+}
 
 std::shared_ptr<const AnimatorController> RenderSync::animatorController(const Uuid& uuid) {
     if (const auto it = controllers_.find(uuid); it != controllers_.end()) {
@@ -86,6 +348,12 @@ void RenderSync::reset(scene::Scene& scene) {
     models_.clear();
     loaded_.clear();
     failed_.clear();
+    materials_.clear();
+    failed_materials_.clear();
+    variants_.clear();
+    variant_lookup_.clear();
+    rebuild_materials_.clear();
+    live_materials_.clear();
     model_bounds_.clear();
     animations_.clear();
     controllers_.clear();
@@ -94,6 +362,7 @@ void RenderSync::reset(scene::Scene& scene) {
     decal_textures_.clear();
     actor_entities_.clear();
     previous_entities_.clear();
+    destroyTerrains();
     actor_models_.clear();
     entity_actor_.clear();
     loaded_environment_ = {};
@@ -151,14 +420,94 @@ void RenderSync::sync(World& world, scene::Scene& scene, gfx::VulkanRenderer& re
     scene.setAnimateActors(false);
     syncActors(world, scene, renderer, delta_seconds);
     syncLightsAndEnvironment(world, scene, renderer);
+    syncTerrains(world, renderer);
     if (options.apply_main_camera) {
         syncCamera(world, scene);
+    }
+}
+
+RenderSync::~RenderSync() {
+    destroyTerrains();
+}
+
+void RenderSync::destroyTerrains() {
+    if (renderer_ != nullptr) {
+        for (auto& [entity, gpu] : terrains_) renderer_->destroyTerrain(gpu.id);
+    }
+    terrains_.clear();
+}
+
+// Terrenos: se crean en el renderizador la primera vez, se suben las regiones
+// que cambiaron (esculpir/pintar) y su descripcion (posicion, capas) cada frame.
+void RenderSync::syncTerrains(World& world, gfx::VulkanRenderer& renderer) {
+    renderer_ = &renderer;
+    std::unordered_set<entt::entity> alive;
+    if (terrain_store_ != nullptr) {
+        for (const entt::entity handle : world.registry().view<terrain::Terrain>()) {
+            const Entity e = world.wrap(handle);
+            if (!e.activeInHierarchy()) continue;
+            const terrain::Terrain& comp = e.get<terrain::Terrain>();
+            const std::shared_ptr<terrain::TerrainData> data = terrain_store_->get(comp);
+            if (!data) continue;
+            alive.insert(handle);
+            TerrainGpu& gpu = terrains_[handle];
+            if (gpu.id == 0 || gpu.data != data || gpu.resolution != data->resolution() ||
+                gpu.splat_resolution != data->splatResolution()) {
+                if (gpu.id != 0) renderer.destroyTerrain(gpu.id);
+                gpu.id = renderer.createTerrain(data->resolution(), data->splatResolution());
+                gpu.data = data;
+                gpu.resolution = data->resolution();
+                gpu.splat_resolution = data->splatResolution();
+                data->markAll();
+            }
+            if (gpu.id == 0) continue;
+            if (const terrain::DirtyRegion r = data->takeDirtyHeights(); r.valid()) {
+                renderer.updateTerrainHeights(gpu.id, data->heights().data(), static_cast<std::uint32_t>(r.x0),
+                                              static_cast<std::uint32_t>(r.y0), static_cast<std::uint32_t>(r.x1 - r.x0 + 1),
+                                              static_cast<std::uint32_t>(r.y1 - r.y0 + 1));
+            }
+            if (const terrain::DirtyRegion r = data->takeDirtySplat(); r.valid()) {
+                renderer.updateTerrainSplat(gpu.id, data->splat0().data(), data->splat1().data(),
+                                            static_cast<std::uint32_t>(r.x0), static_cast<std::uint32_t>(r.y0),
+                                            static_cast<std::uint32_t>(r.x1 - r.x0 + 1),
+                                            static_cast<std::uint32_t>(r.y1 - r.y0 + 1));
+            }
+            gfx::TerrainDesc desc;
+            desc.origin = e.worldPosition();
+            desc.size = std::max(comp.size, 1.0f);
+            desc.max_height = std::max(comp.height, 0.01f);
+            desc.cast_shadows = comp.cast_shadows;
+            desc.lod_distance = comp.lod_distance;
+            for (const terrain::TerrainLayer& layer : comp.layers) {
+                if (desc.layers.size() >= gfx::kMaxTerrainLayers) break;
+                gfx::TerrainLayerDesc l;
+                if (!layer.albedo.empty()) l.albedo = assets_.database().root() / std::filesystem::path(layer.albedo);
+                if (!layer.normal.empty()) l.normal = assets_.database().root() / std::filesystem::path(layer.normal);
+                l.tiling = layer.tiling;
+                l.roughness = layer.roughness;
+                l.metallic = layer.metallic;
+                l.normal_strength = layer.normal_strength;
+                l.tint = layer.tint;
+                desc.layers.push_back(std::move(l));
+            }
+            renderer.setTerrainDesc(gpu.id, desc);
+        }
+    }
+    for (auto it = terrains_.begin(); it != terrains_.end();) {
+        if (alive.count(it->first) == 0) {
+            renderer.destroyTerrain(it->second.id);
+            it = terrains_.erase(it);
+        } else {
+            ++it;
+        }
     }
 }
 
 void RenderSync::syncActors(World& world, scene::Scene& scene, gfx::VulkanRenderer& renderer,
                             float delta_seconds) {
     bool added = false;
+    // Materiales guardados desde el editor: factores en vivo o variantes rehechas.
+    applyMaterialChanges(scene, renderer, added);
     // Los actores se rellenan en su sitio (sin reconstruir el vector ni copiar
     // el animador de lo que no se anima): con cientos de objetos, rehacerlo
     // todo cada frame eran miles de reservas de memoria.
@@ -177,10 +526,13 @@ void RenderSync::syncActors(World& world, scene::Scene& scene, gfx::VulkanRender
             !e.activeInHierarchy()) {
             return;
         }
-        const std::optional<std::uint32_t> model =
+        std::optional<std::uint32_t> model =
             resolveModel(renderer_component->model, renderer_component->part, scene, added);
         if (!model) {
             return;
+        }
+        if (!renderer_component->materials.empty()) {
+            model = resolveVariant(*model, renderer_component->materials, scene, added);
         }
         const asset::ModelData& data = *scene.models()[*model];
 
@@ -274,6 +626,8 @@ void RenderSync::syncActors(World& world, scene::Scene& scene, gfx::VulkanRender
         const Vec3 center = (box.min + box.max) * 0.5f;
         actor.bounds_center = transformPoint(world_matrix, center);
         actor.bounds_radius = core::length(box.max - box.min) * 0.5f * maxAxisScale(world_matrix);
+        actor.cast_shadows = renderer_component->cast_shadows != ShadowCasting::Off;
+        actor.shadows_only = renderer_component->cast_shadows == ShadowCasting::ShadowsOnly;
 
         actor_entities_.push_back(e.handle());
         actor_models_.push_back(*model);
@@ -330,6 +684,7 @@ void RenderSync::syncLightsAndEnvironment(World& world, scene::Scene& scene,
                         p.color = light->color;
                         p.intensity = light->intensity;
                         p.range = light->range;
+                        p.cast_shadows = light->cast_shadows;
                         lights.points.push_back(p);
                     }
                     break;
@@ -345,6 +700,7 @@ void RenderSync::syncLightsAndEnvironment(World& world, scene::Scene& scene,
                         s.inner_angle = std::max(inner, 0.5f) * kDegToRad;
                         s.outer_angle = light->outer_angle * kDegToRad;
                         s.enabled = true;
+                        s.cast_shadows = light->cast_shadows;
                         lights.spots.push_back(s);
                     }
                     break;
@@ -391,9 +747,12 @@ void RenderSync::syncLightsAndEnvironment(World& world, scene::Scene& scene,
         // lo tiñe y lo escala.
         lights.sun.color = lights.sun.color * light.color;
         lights.sun.intensity *= light.intensity;
+        renderer.setSunShadowsEnabled(light.cast_shadows);
     } else if (hdr_active) {
+        renderer.setSunShadowsEnabled(true);
         scene.setFixedSun(renderer.environmentSunDirection());
     } else {
+        renderer.setSunShadowsEnabled(true);
         scene.setFixedSun(std::nullopt);
         if (sky != nullptr) {
             scene.setDayCycleEnabled(sky->day_cycle);

@@ -133,6 +133,20 @@ bool EditorApp::surfaceHit(float x, float y, Vec3& point, Vec3& normal) const {
             found = true;
         }
     }
+    // Los terrenos (antes que el plano y = 0).
+    Vec3 terrain_point{};
+    if (const ecs::Entity t = terrainUnderMouse(x, y, &terrain_point); t.valid()) {
+        const float distance = core::length(terrain_point - origin);
+        if (distance < best) {
+            const terrain::Terrain& comp = t.get<terrain::Terrain>();
+            if (const auto data = terrain_store_.find(comp)) {
+                best = distance;
+                point = terrain_point;
+                normal = terrain::normalAt(*data, comp, t.worldPosition(), terrain_point.x, terrain_point.z);
+                found = true;
+            }
+        }
+    }
     // Sin nada debajo: el plano y = 0.
     if (!found && direction.y < -1e-3f) {
         const float t = -origin.y / direction.y;

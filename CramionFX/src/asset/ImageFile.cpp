@@ -1,10 +1,12 @@
 #include "CramionFX/asset/ImageFile.h"
 
 #include <stb_image.h>
+#include <stb_image_write.h>
 
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <fstream>
 
 namespace cramion::asset {
 
@@ -92,6 +94,34 @@ bool loadImageRgba8(const std::filesystem::path& file, ImageRgba8& image, std::u
     }
     downscale(image, max_size);
     return true;
+}
+
+bool saveImagePng(const std::filesystem::path& file, const ImageRgba8& image) {
+    if (image.width == 0 || image.height == 0 || image.pixels.size() < static_cast<std::size_t>(image.width) * image.height * 4) {
+        return false;
+    }
+    // A memoria y luego al archivo: rutas con acentos (UTF-16 en Windows).
+    std::vector<std::uint8_t> png;
+    const auto write = [](void* context, void* data, int size) {
+        auto* out = static_cast<std::vector<std::uint8_t>*>(context);
+        out->insert(out->end(), static_cast<std::uint8_t*>(data), static_cast<std::uint8_t*>(data) + size);
+    };
+    if (stbi_write_png_to_func(write, &png, static_cast<int>(image.width), static_cast<int>(image.height), 4,
+                               image.pixels.data(), static_cast<int>(image.width) * 4) == 0) {
+        return false;
+    }
+    std::error_code error;
+    std::filesystem::create_directories(file.parent_path(), error);
+    const std::filesystem::path temp = file.wstring() + L".tmp";
+    {
+        std::ofstream out(temp, std::ios::binary | std::ios::trunc);
+        if (!out) return false;
+        out.write(reinterpret_cast<const char*>(png.data()), static_cast<std::streamsize>(png.size()));
+        if (!out) return false;
+    }
+    // Se escribe aparte y se renombra: nadie lee un PNG a medias.
+    std::filesystem::rename(temp, file, error);
+    return !error;
 }
 
 }  // namespace cramion::asset

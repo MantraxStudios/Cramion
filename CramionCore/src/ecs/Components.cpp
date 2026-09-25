@@ -32,6 +32,16 @@ void MeshRenderer::reflect(PropertyVisitor& v) {
     v.asset({"model", "Modelo"}, model, assets::AssetType::Model);
     v.field({"part", "Pieza", "Indice de la pieza del modelo (cada malla importada)"}, part, 0, 4096);
     v.field({"visible", "Visible"}, visible);
+    static constexpr std::array<const char*, 3> kShadows = {"No", "Si", "Solo sombras"};
+    enumField(v, {"cast_shadows", "Proyecta sombras",
+                  "Solo sombras: la camara no lo ve, pero su sombra si"},
+              cast_shadows, kShadows);
+    // El Inspector los dibuja aparte (con el nombre de cada hueco).
+    if (v.wantsAllFields()) {
+        listField(v, {"materials", "Materiales"}, materials, [](assets::AssetRef& ref, PropertyVisitor& item) {
+            item.asset({"material", "Material"}, ref, assets::AssetType::Material);
+        });
+    }
 }
 
 void Animator::reflect(PropertyVisitor& v) {

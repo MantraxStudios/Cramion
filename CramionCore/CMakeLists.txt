@@ -159,3 +159,13 @@ target_compile_options(CramionPhysicsTests PRIVATE -Wall -Wextra)
 add_executable(CramionCinematicsTests "${CMAKE_CURRENT_SOURCE_DIR}/tests/CinematicsTests.cpp")
 target_link_libraries(CramionCinematicsTests PRIVATE Cramion::Core)
 target_compile_options(CramionCinematicsTests PRIVATE -Wall -Wextra)
+
+# --- Pruebas del terreno (consola) ---
+add_executable(CramionTerrainTests "${CMAKE_CURRENT_SOURCE_DIR}/tests/TerrainTests.cpp")
+target_link_libraries(CramionTerrainTests PRIVATE Cramion::Core)
+target_compile_options(CramionTerrainTests PRIVATE -Wall -Wextra)
+
+# --- Pruebas de los materiales (consola) ---
+add_executable(CramionMaterialTests "${CMAKE_CURRENT_SOURCE_DIR}/tests/MaterialTests.cpp")
+target_link_libraries(CramionMaterialTests PRIVATE Cramion::Core)
+target_compile_options(CramionMaterialTests PRIVATE -Wall -Wextra)

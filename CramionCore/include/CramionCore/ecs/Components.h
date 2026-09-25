@@ -75,10 +75,17 @@ struct Transform {
 // --- Renderizado ------------------------------------------------------------
 
 // Dibuja una pieza de un modelo importado (o una primitiva integrada).
+// Como el "Cast Shadows" de Unity: Off, On o Shadows Only.
+enum class ShadowCasting : int { Off = 0, On = 1, ShadowsOnly = 2 };
+
 struct MeshRenderer {
     assets::AssetRef model{{}, assets::AssetType::Model};
     int part = 0;  // indice en ModelAsset::parts
     bool visible = true;
+    ShadowCasting cast_shadows = ShadowCasting::On;
+    // Materiales (.crmat) que sustituyen a los del modelo, por hueco (el
+    // indice es el del material en el modelo). Vacio o invalido = el suyo.
+    std::vector<assets::AssetRef> materials;
 
     void reflect(PropertyVisitor& v);
 };

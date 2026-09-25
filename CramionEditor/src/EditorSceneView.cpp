@@ -156,6 +156,18 @@ void EditorApp::drawSceneView() {
                 instantiateAsset(asset.uuid, {}, place);
             } else if (asset.type == assets::AssetType::Environment) {
                 assignEnvironment(asset.uuid);
+            } else if (asset.type == assets::AssetType::Material) {
+                // Al objeto (y la parte) bajo el raton: picking por GPU; se
+                // aplica al llegar el resultado (finishPick).
+                const vk::Extent2D extent = renderer_.sceneExtent();
+                const ImVec2 mouse = ImGui::GetMousePos();
+                const float u = (mouse.x - view_x_) / view_w_;
+                const float v = (mouse.y - view_y_) / view_h_;
+                if (u >= 0.0f && u < 1.0f && v >= 0.0f && v < 1.0f && extent.width > 0 && extent.height > 0) {
+                    renderer_.requestPick(static_cast<std::uint32_t>(u * static_cast<float>(extent.width)),
+                                          static_cast<std::uint32_t>(v * static_cast<float>(extent.height)));
+                    pending_pick_ = PendingPick{true, mouse.x, mouse.y, false, asset.uuid};
+                }
             } else if (asset.type == assets::AssetType::Scene) {
                 if (const auto info = database_->find(asset.uuid)) {
                     runOrAskToSave(PendingAction::OpenScene, info->path);
@@ -186,9 +198,11 @@ void EditorApp::drawSceneView() {
     drawDecalGizmos();
     drawPhysicsGizmos();
     const bool waypoint_handle = drawCinematicGizmos();
-    const bool collider_handle = drawColliderHandles() || waypoint_handle;
+    // Herramienta de terreno: se queda con el raton mientras pinta.
+    const bool terrain_tool = drawTerrainTool(frame_delta_);
+    const bool collider_handle = drawColliderHandles() || waypoint_handle || terrain_tool;
     const bool stamping = drawStampTool();
-    if (!stamping && collider_handle_drag_ == 0) drawGizmo();
+    if (!stamping && collider_handle_drag_ == 0 && !(terrain_edit_ && terrain_tool)) drawGizmo();
     handleCameraControls();
 
     // Alt + clic: raycast de fisica desde el raton (probador de la ventana
@@ -347,6 +361,18 @@ void EditorApp::pickAt(float x, float y) {
 void EditorApp::finishPick(const gfx::VulkanRenderer::PickResult& result) {
     if (!pending_pick_.active) return;
     pending_pick_.active = false;
+    if (pending_pick_.material.valid()) {
+        const Uuid material = pending_pick_.material;
+        pending_pick_.material = {};
+        const ecs::Entity target = result.hit && sync_ ? sync_->entityForActor(world_, result.actor) : ecs::Entity{};
+        if (target.valid() && applyMaterial(target, material, static_cast<int>(result.material))) {
+            selectOnly(target.uuid());
+            revealInHierarchy(target.uuid());
+            inline_material_ = material;
+            commit();
+        }
+        return;
+    }
     const float x = pending_pick_.x;
     const float y = pending_pick_.y;
     const bool additive = pending_pick_.additive;
@@ -355,7 +381,9 @@ void EditorApp::finishPick(const gfx::VulkanRenderer::PickResult& result) {
         else selectOnly(uuid);
         revealInHierarchy(uuid);
     };
-    const ecs::Entity hit = result.hit && sync_ ? sync_->entityForActor(world_, result.actor) : ecs::Entity{};
+    ecs::Entity hit = result.hit && sync_ ? sync_->entityForActor(world_, result.actor) : ecs::Entity{};
+    // El terreno no es un actor: si no hay nada, se prueba contra los terrenos.
+    if (!hit.valid()) hit = terrainUnderMouse(x, y);
     if (!hit.valid()) {
         if (!additive) clearSelection();
         last_pick_x_ = last_pick_y_ = -1.0f;

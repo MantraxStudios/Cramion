@@ -32,3 +32,5 @@
 #include "CramionCore/physics/PhysicsSettings.h"
 #include "CramionCore/physics/PhysicsSystem.h"
 #include "CramionCore/project/Project.h"
+#include "CramionCore/terrain/Terrain.h"
+#include "CramionCore/terrain/TerrainTools.h"

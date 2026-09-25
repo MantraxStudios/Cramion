@@ -99,7 +99,7 @@ int main(int argc, char** argv) {
                 case dm::EventType::FileDropped: {
                     std::vector<std::filesystem::path> files;
                     for (const std::wstring& path : e.paths) files.emplace_back(path);
-                    app.onFilesDropped(files);
+                    app.onFilesDropped(files, e.mouseX, e.mouseY);
                     break;
                 }
                 default:

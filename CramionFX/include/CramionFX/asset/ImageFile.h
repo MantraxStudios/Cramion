@@ -21,6 +21,9 @@ struct ImageRgba8 {
 // false si no se pudo leer.
 bool loadImageRgba8(const std::filesystem::path& file, ImageRgba8& image, std::uint32_t max_size = 0);
 
+// Guarda la imagen como PNG (miniaturas en cache). false si no se pudo.
+bool saveImagePng(const std::filesystem::path& file, const ImageRgba8& image);
+
 }  // namespace cramion::asset
 
 #endif  // CRAMION_ASSET_IMAGE_FILE_H
