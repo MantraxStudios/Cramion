@@ -13,6 +13,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <functional>
 #include <map>
 
 namespace cramion::editor {
@@ -31,6 +32,7 @@ std::optional<Icon> componentIcon(const std::string& name) {
     if (name == "Sky") return Icon::AmbientLight;
     if (name == "Weather") return Icon::FogVolume;
     if (name == "PostProcessing") return Icon::ReflectionProbe;
+    if (name == "Profiler") return Icon::ReflectionProbe;
     if (name == "Decal") return Icon::Decal;
     if (name == "Rigidbody") return Icon::Rigidbody;
     if (name == "BoxCollider") return Icon::ColliderBox;
@@ -89,7 +91,10 @@ void EditorApp::drawInspector() {
                                                    [&](const ecs::Entity& e) { return e.name() != entity.name(); });
     // Nombres distintos: "—" y lo que se escriba se pone a todos.
     std::string name = names_differ ? std::string() : entity.name();
-    ImGui::SetNextItemWidth(-1.0f);
+    // Hueco a la derecha para la casilla Static (como Unity).
+    const float static_width = ImGui::GetFrameHeight() + ImGui::GetStyle().ItemInnerSpacing.x +
+                               ImGui::CalcTextSize("Static").x + ImGui::GetStyle().ItemSpacing.x;
+    ImGui::SetNextItemWidth(-static_width);
     if (ImGui::InputTextWithHint("##name", names_differ ? "\xe2\x80\x94" : "", &name, ImGuiInputTextFlags_EnterReturnsTrue) ||
         (ImGui::IsItemDeactivatedAfterEdit() && !name.empty() && name != entity.name())) {
         if (!name.empty()) {
@@ -99,6 +104,43 @@ void EditorApp::drawInspector() {
                 entity.setName(name);
             }
             commit();
+        }
+    }
+    ImGui::SameLine();
+    {
+        const ecs::EntityInfo* info = entity.tryGet<ecs::EntityInfo>();
+        bool is_static = info != nullptr && info->is_static;
+        if (ImGui::Checkbox("Static", &is_static)) {
+            for (ecs::Entity e : selected) {
+                if (ecs::EntityInfo* other = e.tryGet<ecs::EntityInfo>()) other->is_static = is_static;
+            }
+            commit();
+            // Con hijos se pregunta si tambien a ellos (como Unity).
+            if (std::any_of(selected.begin(), selected.end(), [](const ecs::Entity& e) { return e.childCount() > 0; })) {
+                static_children_value_ = is_static;
+                ImGui::OpenPopup("static_children");
+            }
+        }
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) {
+            ImGui::SetTooltip("Static: el objeto no se mueve en el juego.\n"
+                              "Al exportar, las mallas Static se combinan en un lote por escena\n"
+                              "(static batching): una llamada de dibujo por material.\n"
+                              "No lo marques en lo que muevas, ocultes o cambies por script.");
+        }
+        if (ImGui::BeginPopup("static_children")) {
+            ImGui::Text("%s Static tambien a los hijos?", static_children_value_ ? "Marcar" : "Quitar");
+            if (ImGui::Button("Si, a los hijos tambien")) {
+                const std::function<void(ecs::Entity)> apply = [&](ecs::Entity e) {
+                    if (ecs::EntityInfo* other = e.tryGet<ecs::EntityInfo>()) other->is_static = static_children_value_;
+                    for (std::size_t i = 0; i < e.childCount(); ++i) apply(e.child(i));
+                };
+                for (ecs::Entity e : selected) apply(e);
+                commit();
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Solo este objeto")) ImGui::CloseCurrentPopup();
+            ImGui::EndPopup();
         }
     }
     if (multi) {
@@ -151,6 +193,18 @@ void EditorApp::drawInspector() {
         }
     }
     ImGui::TextDisabled("UUID %s", entity.uuid().toString().c_str());
+    // Origen flotante: las posiciones del Inspector son relativas al origen
+    // actual; la real (doble precision) se ensena aparte.
+    if (world_.origin() != ecs::DVec3{}) {
+        const ecs::DVec3 real = world_.absolute(entity.worldPosition());
+        ImGui::TextDisabled("Posicion real %.3f  %.3f  %.3f", real.x, real.y, real.z);
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) {
+            const ecs::DVec3& o = world_.origin();
+            ImGui::SetTooltip("Mundo grande: el origen se desplazo a (%.0f, %.0f, %.0f) para no perder precision.\n"
+                              "Las posiciones del Transform son relativas a ese origen.",
+                              o.x, o.y, o.z);
+        }
+    }
     if (!multi) drawPrefabInspectorBar(entity);
     ImGui::Separator();
 

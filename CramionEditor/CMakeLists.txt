@@ -104,6 +104,7 @@ add_executable(CramionPlayer
     "${CMAKE_CURRENT_SOURCE_DIR}/src/ImGuiLayer.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/UiRenderer.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/LoadingScreen.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/ProfilerOverlay.cpp"
     "${CRAMION_ICON_RC}")
 target_include_directories(CramionPlayer PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
 target_link_libraries(CramionPlayer PRIVATE Cramion::Core cramion_imgui shell32 ole32 gdiplus dbghelp)

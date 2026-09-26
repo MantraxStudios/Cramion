@@ -105,6 +105,11 @@ bool readChunkFile(const std::filesystem::path& file, ChunkData& chunk) {
 // ================================================================================
 
 struct VoxelSystem::Impl {
+    // Origen flotante: los bloques y los chunks van en coordenadas absolutas
+    // (enteras, las de los archivos de guardado); la API publica y lo que se
+    // manda al renderizador y a la fisica, en las locales del mundo. Los
+    // desplazamientos son multiplos de 1024: la conversion es exacta.
+    int ox = 0, oy = 0, oz = 0;
     // --- Estado ---
     bool active = false;
     VoxelWorld settings;
@@ -826,7 +831,7 @@ struct VoxelSystem::Impl {
             const BlockDef& above = blockDef(getBlock(x, y + 1, z));
             if (above.shape == BlockShape::Cross && !blockDef(id).solid) setBlockInternal(x, y + 1, z, block::Air, false);
         }
-        if (listener) listener(BlockPos{x, y, z}, before, id);
+        if (listener) listener(BlockPos{x - ox, y - oy, z - oz}, before, id);
         return true;
     }
 
@@ -962,8 +967,9 @@ struct VoxelSystem::Impl {
                 chunk.has_collider[s] = false;
             } else {
                 physics->setStaticMesh(key,
-                                       Vec3{static_cast<float>(chunk.data.cx * kChunkSize), static_cast<float>(c.sy * kChunkSize),
-                                            static_cast<float>(chunk.data.cz * kChunkSize)},
+                                       Vec3{static_cast<float>(chunk.data.cx * kChunkSize - ox),
+                                            static_cast<float>(c.sy * kChunkSize - oy),
+                                            static_cast<float>(chunk.data.cz * kChunkSize - oz)},
                                        triangles);
                 chunk.has_collider[s] = true;
             }
@@ -1034,6 +1040,10 @@ void VoxelSystem::start(ecs::World& world) {
         break;
     }
     if (!d.active) return;
+    // La escena puede venir ya desplazada (se guardo lejos del origen).
+    d.ox = static_cast<int>(std::llround(world.origin().x));
+    d.oy = static_cast<int>(std::llround(world.origin().y));
+    d.oz = static_cast<int>(std::llround(world.origin().z));
     d.world_name.clear();
     d.meta_values.clear();
     d.resetWorld(d.settings.seed);
@@ -1041,8 +1051,8 @@ void VoxelSystem::start(ecs::World& world) {
     Impl* impl = &d;
     water::setUnderwaterOverride([impl](const Vec3& camera) {
         if (!impl->active) return -1;
-        const int x = static_cast<int>(std::floor(camera.x)), y = static_cast<int>(std::floor(camera.y)),
-                  z = static_cast<int>(std::floor(camera.z));
+        const int x = static_cast<int>(std::floor(camera.x)) + impl->ox, y = static_cast<int>(std::floor(camera.y)) + impl->oy,
+                  z = static_cast<int>(std::floor(camera.z)) + impl->oz;
         if (impl->chunkOf(x, z) == nullptr) return -1;
         return impl->getBlock(x, y, z) == block::Water ? 1 : 0;
     });
@@ -1066,9 +1076,9 @@ void VoxelSystem::update(float delta_seconds, const Vec3& viewer) {
     Impl& d = *impl_;
     if (!d.active) return;
     d.time += delta_seconds;
-    d.viewer = viewer;
-    d.viewer_cx = floorDiv(static_cast<int>(std::floor(viewer.x)), kChunkSize);
-    d.viewer_cz = floorDiv(static_cast<int>(std::floor(viewer.z)), kChunkSize);
+    d.viewer = viewer + Vec3{static_cast<float>(d.ox), static_cast<float>(d.oy), static_cast<float>(d.oz)};
+    d.viewer_cx = floorDiv(static_cast<int>(std::floor(viewer.x)) + d.ox, kChunkSize);
+    d.viewer_cz = floorDiv(static_cast<int>(std::floor(viewer.z)) + d.oz, kChunkSize);
     d.has_viewer = true;
     d.collect(6.0);
     d.flowWater(64);
@@ -1113,7 +1123,9 @@ void VoxelSystem::syncRenderer(gfx::VulkanRenderer& renderer) {
         if (u.vertices.empty()) {
             renderer.removeVoxelSection(u.key);
         } else {
-            renderer.setVoxelSection(u.key, u.origin, u.vertices.data(), static_cast<std::uint32_t>(u.vertices.size() / 2));
+            // Del chunk (absoluto) al mundo local.
+            const Vec3 origin = u.origin - Vec3{static_cast<float>(d.ox), static_cast<float>(d.oy), static_cast<float>(d.oz)};
+            renderer.setVoxelSection(u.key, origin, u.vertices.data(), static_cast<std::uint32_t>(u.vertices.size() / 2));
         }
     }
     d.section_updates.clear();
@@ -1124,8 +1136,8 @@ void VoxelSystem::waitUntilReady(const Vec3& center, int radius_chunks, float ti
     Impl& d = *impl_;
     if (!d.active) return;
     const auto start = Clock::now();
-    const int cx = floorDiv(static_cast<int>(std::floor(center.x)), kChunkSize);
-    const int cz = floorDiv(static_cast<int>(std::floor(center.z)), kChunkSize);
+    const int cx = floorDiv(static_cast<int>(std::floor(center.x)) + d.ox, kChunkSize);
+    const int cz = floorDiv(static_cast<int>(std::floor(center.z)) + d.oz, kChunkSize);
     // Un circulo, como el que se carga (y nunca mas alla de lo que se malla).
     const int radius = std::min(radius_chunks, d.renderRadius());
     for (;;) {
@@ -1234,20 +1246,40 @@ std::string VoxelSystem::meta(const std::string& key, const std::string& fallbac
 
 // --- Bloques -------------------------------------------------------------------------
 
-BlockId VoxelSystem::getBlock(int x, int y, int z) const { return impl_->getBlock(x, y, z); }
+// La API publica va en coordenadas locales (las del mundo desplazado).
+BlockId VoxelSystem::getBlock(int x, int y, int z) const {
+    const Impl& d = *impl_;
+    return d.getBlock(x + d.ox, y + d.oy, z + d.oz);
+}
 bool VoxelSystem::setBlock(int x, int y, int z, BlockId id) {
     if (id >= block::Count) return false;
-    return impl_->setBlockInternal(x, y, z, id, true);
+    Impl& d = *impl_;
+    return d.setBlockInternal(x + d.ox, y + d.oy, z + d.oz, id, true);
 }
-int VoxelSystem::skyLight(int x, int y, int z) const { return impl_->getLight(x, y, z) >> 4; }
-int VoxelSystem::blockLight(int x, int y, int z) const { return impl_->getLight(x, y, z) & 15; }
-bool VoxelSystem::isLoaded(int x, int z) const { return impl_->chunkOf(x, z) != nullptr; }
+int VoxelSystem::skyLight(int x, int y, int z) const {
+    const Impl& d = *impl_;
+    return d.getLight(x + d.ox, y + d.oy, z + d.oz) >> 4;
+}
+int VoxelSystem::blockLight(int x, int y, int z) const {
+    const Impl& d = *impl_;
+    return d.getLight(x + d.ox, y + d.oy, z + d.oz) & 15;
+}
+bool VoxelSystem::isLoaded(int x, int z) const { return impl_->chunkOf(x + impl_->ox, z + impl_->oz) != nullptr; }
 bool VoxelSystem::isReady(int x, int z) const {
-    const Impl::Chunk* c = impl_->chunkOf(x, z);
+    const Impl::Chunk* c = impl_->chunkOf(x + impl_->ox, z + impl_->oz);
     return c != nullptr && c->ever_meshed;
 }
 int VoxelSystem::surfaceHeight(int x, int z) const {
-    return impl_->generator ? impl_->generator->terrainHeight(x, z) : 64;
+    const Impl& d = *impl_;
+    return (d.generator ? d.generator->terrainHeight(x + d.ox, z + d.oz) : 64) - d.oy;
+}
+void VoxelSystem::shiftOrigin(const Vec3& offset) {
+    Impl& d = *impl_;
+    d.ox += static_cast<int>(std::lround(offset.x));
+    d.oy += static_cast<int>(std::lround(offset.y));
+    d.oz += static_cast<int>(std::lround(offset.z));
+    // Los chunks ya subidos los mueve el renderizador (shiftOrigin) y sus
+    // colisiones la fisica; lo que este en cola se convierte al mandarlo.
 }
 bool VoxelSystem::inWater(const Vec3& p) const {
     return getBlock(static_cast<int>(std::floor(p.x)), static_cast<int>(std::floor(p.y)), static_cast<int>(std::floor(p.z))) ==
@@ -1312,7 +1344,7 @@ bool VoxelSystem::boxCollides(const Vec3& c, const Vec3& h) const {
     for (int y = y0; y <= y1; ++y) {
         for (int z = z0; z <= z1; ++z) {
             for (int x = x0; x <= x1; ++x) {
-                if (!isLoaded(x, z) && y >= 0 && y < kWorldHeight) return true;  // sin cargar: pared
+                if (!isLoaded(x, z) && y + impl_->oy >= 0 && y + impl_->oy < kWorldHeight) return true;  // sin cargar: pared
                 if (blockDef(getBlock(x, y, z)).solid) return true;
             }
         }

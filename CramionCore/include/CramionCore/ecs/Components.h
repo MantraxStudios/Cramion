@@ -44,6 +44,14 @@ struct EntityInfo {
     bool active = true;  // activeSelf: activa en la jerarquia solo si sus padres tambien
     std::string tag;
     int layer = 0;
+    // "Static" de Unity: el objeto no se mueve, no se oculta ni cambia de
+    // malla en el juego. Al exportar, las mallas estaticas se combinan en un
+    // lote por escena (static batching, ver StaticBatching.h).
+    bool is_static = false;
+    // Su MeshRenderer ya lo dibuja el lote estatico de la escena: RenderSync
+    // no lo dibuja aparte (la fisica y los scripts lo siguen viendo). Solo lo
+    // pone la exportacion, en la copia de la escena que va al juego.
+    bool static_batched = false;
 };
 
 // Jerarquia: padre e hijos EN ORDEN (el de la ventana Jerarquia).
@@ -189,6 +197,25 @@ struct Decal {
     float roughness = 0.5f;       // estampa
     float roughness_amount = 0.0f;
     float metallic = 0.0f;
+
+    void reflect(PropertyVisitor& v);
+};
+
+// Profiler (como el "stat fps / stat unit" de Unreal): muestra en una esquina
+// de la pantalla del juego los FPS, el uso de CPU y de GPU y la memoria, con
+// una grafica del tiempo de cada frame. Lo dibuja el juego exportado y la
+// vista Juego del editor (ProfilerOverlay); basta uno en la escena.
+enum class ProfilerCorner : int { TopRight = 0, TopLeft = 1, BottomRight = 2, BottomLeft = 3 };
+
+struct Profiler {
+    bool show_fps = true;
+    bool show_cpu = true;
+    bool show_gpu = true;
+    bool show_memory = true;
+    bool show_graph = true;
+    ProfilerCorner corner = ProfilerCorner::TopRight;
+    float scale = 1.0f;     // tamano del texto
+    float opacity = 0.75f;  // del fondo
 
     void reflect(PropertyVisitor& v);
 };

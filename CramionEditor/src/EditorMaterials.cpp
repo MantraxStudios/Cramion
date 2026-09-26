@@ -414,7 +414,14 @@ void EditorApp::drawMeshMaterials(ecs::Entity entity) {
                 AssetPayload dropped{};
                 std::memcpy(&dropped, payload->Data, sizeof(dropped));
                 if (dropped.type == assets::AssetType::Material) {
-                    applyMaterial(entity, dropped.uuid, i);
+                    // Varios objetos seleccionados: a todos (en el mismo hueco).
+                    bool applied_active = false;
+                    for (ecs::Entity e : selectedEntities()) {
+                        if (!e.has<ecs::MeshRenderer>()) continue;
+                        applyMaterial(e, dropped.uuid, i);
+                        applied_active = applied_active || e == entity;
+                    }
+                    if (!applied_active) applyMaterial(entity, dropped.uuid, i);
                     inline_material_ = dropped.uuid;
                     edited = true;
                 }

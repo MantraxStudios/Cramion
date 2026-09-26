@@ -113,6 +113,11 @@ public:
     void update(ecs::World& world, float delta_seconds);
     // Tantas veces como pasos dio la fisica este frame.
     void fixedUpdate(ecs::World& world, float step, int steps);
+    // Origen flotante (ecs/FloatingOrigin.h): el mundo se desplazo -offset.
+    // Llama a OnOriginShift(offset) en todos los scripts: los que guardan
+    // posiciones del mundo en variables (un destino, un punto de spawn) les
+    // restan `offset`. Las posiciones que se leen cada frame ya vienen bien.
+    void shiftOrigin(const core::Vec3& offset);
     void stop();
     bool running() const;
 

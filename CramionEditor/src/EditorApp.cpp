@@ -128,6 +128,7 @@ bool EditorApp::openProject(const std::filesystem::path& path) {
         return comp != nullptr ? terrain_store_.get(*comp) : nullptr;
     });
     has_project_ = true;
+    thumbnail_countdown_ = 240;  // ~4 s: la escena ya dibujada para la miniatura del Hub
     // Fisica: ajustes del proyecto y el mundo fisico (en modo edicion).
     loadPhysicsSettings();
     physics_.setAssetManager(asset_manager_.get());
@@ -218,7 +219,9 @@ void EditorApp::closeProject() {
 void EditorApp::newScene() {
     nav_.clear();
     stopVoxels();
+    const ecs::DVec3 origin_before = world_.origin();
     world_.clear();
+    alignOriginAfterLoad(origin_before);
     world_.setSceneUuid(Uuid::generate());
     world_.setSceneName("Nueva escena");
     ecs::populateDefaultScene(world_);
@@ -234,11 +237,13 @@ bool EditorApp::openScene(const std::filesystem::path& path) {
     std::string error;
     nav_.clear();
     stopVoxels();
+    const ecs::DVec3 origin_before = world_.origin();
     if (!ecs::loadScene(world_, path, &error)) {
         std::cerr << "[Editor] No se pudo abrir la escena " << dialogs::utf8(path) << ": " << error
                   << "\n";
         return false;
     }
+    alignOriginAfterLoad(origin_before);
     scene_path_ = path;
     clearSelection();
     syncPrefabInstances();  // prefabs que cambiaron con la escena cerrada
@@ -269,6 +274,7 @@ bool EditorApp::saveScene() {
     }
     dirty_ = false;
     refreshDatabase();
+    saveProjectThumbnail();  // el Hub ensena el proyecto como se guardo
     std::cout << "[Editor] Escena guardada: " << dialogs::utf8(scene_path_.filename()) << "\n";
     updateTitle();
     return true;
@@ -421,7 +427,9 @@ void EditorApp::undo() {
     redo_.push_back(std::move(current_state_));
     current_state_ = std::move(undo_.back());
     undo_.pop_back();
+    const ecs::DVec3 origin_before = world_.origin();
     ecs::deserializeWorld(world_, current_state_);
+    alignOriginAfterLoad(origin_before);
     dirty_ = true;
     updateTitle();
 }
@@ -450,7 +458,9 @@ void EditorApp::redo() {
     undo_.push_back(std::move(current_state_));
     current_state_ = std::move(redo_.back());
     redo_.pop_back();
+    const ecs::DVec3 origin_before = world_.origin();
     ecs::deserializeWorld(world_, current_state_);
+    alignOriginAfterLoad(origin_before);
     dirty_ = true;
     updateTitle();
 }
@@ -764,6 +774,18 @@ void EditorApp::drawUi(float delta_seconds) {
     ImGuizmo::BeginFrame();
     imgui_.updateThumbnails();
     pollImports();
+    if (has_project_ && thumbnail_countdown_ > 0 && --thumbnail_countdown_ == 0) saveProjectThumbnail();
+    updateFloatingOrigin();
+    // Material pulsado en el navegador: al Inspector solo si se solto sin
+    // arrastrar (arrastrarlo a la Jerarquia o al Inspector no cambia nada).
+    if (pending_inspect_material_.valid() && ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
+        const ImGuiIO& io = ImGui::GetIO();
+        if (io.MouseDragMaxDistanceSqr[ImGuiMouseButton_Left] < io.MouseDragThreshold * io.MouseDragThreshold) {
+            inspected_material_ = pending_inspect_material_;
+        }
+        pending_inspect_material_ = {};
+    }
+    profiler_overlay_.update(delta_seconds, renderer_);
     watchAssets();
     pollMcp();
     runSelfTestStep();
@@ -1310,8 +1332,11 @@ void EditorApp::drawStatistics(float delta_seconds) {
                 static_cast<unsigned long long>(renderer_.triangleCount()),
                 renderer_.visibleSubmeshes(), renderer_.totalSubmeshes(),
                 renderer_.occludedSubmeshes(), renderer_.shadowSubmeshes());
-    ImGui::Text("Lotes de material (llamadas de escenario) %u  |  modelos con materiales propios %zu",
-                renderer_.batchCount(), sync_ ? sync_->variantCount() : std::size_t{0});
+    ImGui::Text("Con LOD: %llu triángulos de escenarios  |  %u objetos simplificados",
+                static_cast<unsigned long long>(renderer_.lodTriangles()), renderer_.lodActors());
+    ImGui::Text("Lotes de material (llamadas de escenario) %u  |  llamadas de sombras %u  |  modelos con materiales propios %zu",
+                renderer_.batchCount(), renderer_.shadowDrawCalls(),
+                sync_ ? sync_->variantCount() : std::size_t{0});
     // CPU por partes (media movil): donde se va el frame.
     static constexpr const char* kCpuNames[kCpuSectionCount] = {
         "Interfaz (total)", "  Jerarquía", "  Inspector", "  Escena + gizmos", "  Otros paneles",
@@ -1606,7 +1631,10 @@ void EditorApp::pollImports() {
             ++it;  // en cola
         } else if (it->result.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
             const assets::ImportResult result = it->result.get();
-            if (result.ok) {
+            if (it->reimport.valid()) {
+                finishReimport(*it, result);
+                if (!result.ok) ++imports_failed_;
+            } else if (result.ok) {
                 std::cout << "[Editor] Importado: " << result.info.name << " ("
                           << assets::assetTypeName(result.info.type) << ")\n";
             } else {
@@ -1632,10 +1660,18 @@ void EditorApp::pollImports() {
         if (running >= kMaxParallelImports) break;
         if (job.result.valid()) continue;
         std::cout << "[Editor] Importando " << dialogs::utf8(job.source.filename()) << "...\n";
-        job.result = std::async(std::launch::async, [file = job.source, folder = job.folder,
-                                                     progress = job.progress] {
-            return assets::importAny(file, folder, progress.get());
-        });
+        if (job.reimport.valid()) {
+            const std::optional<assets::AssetInfo> info = database_ ? database_->find(job.reimport) : std::nullopt;
+            job.result = std::async(std::launch::async, [info, progress = job.progress] {
+                if (!info) return assets::ImportResult{false, {}, "[Assets] El modelo ya no existe"};
+                return assets::reimportModel(*info, assets::modelImportSettings(info->path), progress.get());
+            });
+        } else {
+            job.result = std::async(std::launch::async, [file = job.source, folder = job.folder,
+                                                         progress = job.progress] {
+                return assets::importAny(file, folder, progress.get());
+            });
+        }
         ++running;
     }
     if (imports_.empty()) {

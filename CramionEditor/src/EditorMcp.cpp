@@ -138,6 +138,10 @@ const std::vector<ToolDef>& toolDefs() {
                       {"tiling", prop("array", "Repeticion UV [x, y]")}}, {"name"}});
         d.push_back({"assign_material", "Asigna un material a una entidad (y sus hijos si no tiene malla).",
                      {{"entity", entity}, {"material", prop("string", "Ruta, nombre o UUID del .crmat")}, {"slot", prop("integer", "Hueco de material (-1 = todos)")}}, {"entity", "material"}});
+        d.push_back({"reimport_model", "Reimporta un modelo desde su archivo original combinando sus piezas por material (una palmera con cada hoja suelta pasa a tronco + hojas) y rehace sus instancias en la escena. En segundo plano: mira get_console.",
+                     {{"asset", prop("string", "Ruta, nombre o UUID del modelo")}}, {"asset"}});
+        d.push_back({"performance_stats", "Rendimiento del ultimo frame: FPS, ms de CPU y GPU, tiempo de GPU por pase, actores, triangulos, lotes y llamadas de sombras.",
+                     json::object(), {}});
         d.push_back({"import_file", "Importa un archivo del disco al proyecto (modelo .fbx/.obj/.gltf/.glb, cielo .hdr).",
                      {{"path", prop("string", "Ruta absoluta del archivo")}, {"folder", prop("string", "Subcarpeta de Assets (por defecto Models)")}}, {"path"}});
         d.push_back({"create_model", "Crea un modelo 3D a partir de texto OBJ (y opcionalmente MTL) y lo importa como asset.",
@@ -715,6 +719,31 @@ json McpTools::call(const std::string& name, const json& args, bool& image, std:
         a.commit();
         return json{{"entity", e.name()}, {"material", info->name}};
     }
+    if (name == "reimport_model") {
+        const auto info = findAsset(arg(args, "asset"));
+        if (!info || info->type != assets::AssetType::Model) throw ToolError("no existe el modelo " + arg(args, "asset"));
+        if (!a.startReimport(info->uuid)) throw ToolError("no se pudo empezar (ya se esta reimportando o no hay proyecto)");
+        return json{{"started", true}, {"model", info->name}};
+    }
+    if (name == "performance_stats") {
+        json passes = json::array();
+        for (const gfx::GpuTiming& t : a.renderer_.gpuProfiler().timings()) {
+            passes.push_back(json{{"pass", t.name}, {"ms", t.milliseconds}});
+        }
+        return json{{"fps", a.profiler_overlay_.fps()},
+                    {"cpu_ms", a.profiler_overlay_.cpuMilliseconds()},
+                    {"gpu_ms", a.renderer_.gpuProfiler().totalMilliseconds()},
+                    {"gpu_passes", passes},
+                    {"actors", a.scene_.actors().size()},
+                    {"models", a.scene_.models().size()},
+                    {"entities", a.world_.entityCount()},
+                    {"triangles", a.renderer_.triangleCount()},
+                    {"visible_submeshes", a.renderer_.visibleSubmeshes()},
+                    {"material_batches", a.renderer_.batchCount()},
+                    {"shadow_draw_calls", a.renderer_.shadowDrawCalls()},
+                    {"lod_triangles", a.renderer_.lodTriangles()},
+                    {"lod_actors", a.renderer_.lodActors()}};
+    }
     if (name == "import_file") {
         const std::filesystem::path source = dialogs::fromUtf8(arg(args, "path"));
         std::error_code ec;
@@ -902,7 +931,7 @@ std::string EditorApp::handleMcp(const std::string& body) {
             return json{{"jsonrpc", "2.0"}, {"id", id},
                         {"result", {{"protocolVersion", version},
                                     {"capabilities", {{"tools", {{"listChanged", false}}}}},
-                                    {"serverInfo", {{"name", "cramion-editor"}, {"version", "0.4.0"}}},
+                                    {"serverInfo", {{"name", "cramion-editor"}, {"version", "0.5.0"}}},
                                     {"instructions", "Editor del motor Cramion. Llama a la herramienta 'help' para la guia y a "
                                                      "'editor_state' para ver que hay abierto."}}}};
         }

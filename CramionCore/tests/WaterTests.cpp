@@ -50,6 +50,26 @@ void testWaves() {
     check(std::abs(s.height - d.y) < 0.02f, "la altura consultada coincide con la malla desplazada");
     check(s.normal.y > 0.5f, "la normal apunta hacia arriba");
 
+    // Espectro JONSWAP: 4 x desviacion tipica de la superficie = altura
+    // significativa (la definicion de los oceanografos).
+    {
+        double sum = 0.0;
+        double sum2 = 0.0;
+        int count = 0;
+        for (int i = 0; i < 120; ++i) {
+            for (int j = 0; j < 120; ++j) {
+                const float h = gerstner(ocean, static_cast<float>(i) * 1.37f, static_cast<float>(j) * 1.91f, 7.0f).y;
+                sum += h;
+                sum2 += static_cast<double>(h) * h;
+                ++count;
+            }
+        }
+        const double mean = sum / count;
+        const double hs = 4.0 * std::sqrt(std::max(sum2 / count - mean * mean, 0.0));
+        std::printf("  altura significativa medida %.2f m (pedida %.2f m)\n", hs, ocean.wave_height);
+        check(std::abs(hs - ocean.wave_height) < ocean.wave_height * 0.25, "la altura significativa es wave_height");
+    }
+
     WaterBody calm = ocean;
     calm.wave_height = 0.0f;
     check(std::abs(sampleWater(calm, at_origin, Vec3{3, 0, 3}, 1.0f).height) < 1e-5f, "sin olas, plano");

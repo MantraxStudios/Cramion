@@ -155,6 +155,25 @@
   <a href="random.html">Random</a> (aleatorios con semilla), <a href="vec3.html">Vec3</a> y <a href="quat.html">Quat</a> (rotaciones).
 </p>
 <p>También están disponibles las librerías estándar de Lua <code>math</code>, <code>string</code>, <code>table</code>, <code>utf8</code> y <code>coroutine</code>.</p>
+      <h2 id="profiler">Componente Profiler</h2>
+      <p>
+        Añade <strong>Profiler</strong> (Add Component &gt; Depuración) a cualquier objeto y el juego muestra arriba a la
+        derecha los <strong>FPS</strong> (media y el peor frame del último medio segundo), la <strong>CPU</strong> (ms de
+        trabajo por frame y % del procesador que usa el juego), la <strong>GPU</strong> (ms medidos en la propia GPU, %
+        del frame que estuvo ocupada y su nombre), la <strong>RAM</strong> y una gráfica del tiempo de cada frame con la
+        línea de 60 FPS. Verde va bien, amarillo por debajo de 60 FPS y rojo por debajo de 30. Se ve en el juego exportado y
+        en la vista Juego del editor; desde el Inspector eliges qué mostrar, la esquina, el tamaño y la opacidad.
+      </p>
+      <div class="note">
+        Si la CPU tiene muchos más ms que la GPU, el cuello de botella son los scripts, la física o el número de objetos; si
+        es la GPU, la resolución, las sombras o los efectos.
+      </div>
+      <h2 id="sin-camara">Escena sin cámara</h2>
+      <p>
+        Si la escena no tiene ninguna <code>Camera</code> activa, el juego exportado no se queda mirando al vacío: crea una
+        vista orbital que encuadra todo lo que se dibuja y gira sola (como la cámara por defecto de Unreal). Arrastra con el
+        ratón para girarla y usa la rueda para acercarte. En cuanto un script crea una cámara, manda esa.
+      </p>
       </div>
       <div class="mt-16 grid gap-4 border-t border-line pt-8 sm:grid-cols-2">
         <a href="prefs.html" class="group rounded-xl border border-line p-4 transition hover:border-brand/60 hover:bg-panel">

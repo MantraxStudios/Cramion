@@ -90,6 +90,11 @@ void EditorApp::drawToolbar() {
     if (toolButton("Nav", show_navigation_, "Mostrar la navegación (P), como en Unreal")) {
         show_navigation_ = !show_navigation_;
     }
+    ImGui::SameLine();
+    if (toolButton("Gizmos", show_gizmos_,
+                   "Mostrar los iconos y ayudas de la escena: luces, cámaras, decals, física, cinemáticas y agua (G)")) {
+        show_gizmos_ = !show_gizmos_;
+    }
     ImGui::PopStyleVar();
 }
 
@@ -230,17 +235,33 @@ void EditorApp::drawSceneView() {
         ImGui::EndDragDropTarget();
     }
 
-    drawSceneOverlays();
-    const bool light_handle = drawLightGizmos();
-    drawDecalGizmos();
-    drawPhysicsGizmos();
+    // Con los gizmos apagados solo quedan la navegacion (su propio boton), las
+    // herramientas (terreno, estampar) y el gizmo de transformar.
+    bool light_handle = false;
+    bool waypoint_handle = false;
+    bool collider_handle = false;
+    if (show_gizmos_) {
+        drawSceneOverlays();
+        light_handle = drawLightGizmos();
+        drawDecalGizmos();
+        drawPhysicsGizmos();
+    } else {
+        // Un arrastre de asa a medias no puede quedarse enganchado.
+        if (light_handle_drag_ != 0 || collider_handle_drag_ != 0) commit();
+        light_handle_drag_ = 0;
+        collider_handle_drag_ = 0;
+        waypoint_drag_ = 0;
+    }
     drawNavigationGizmos();
-    const bool cinematic_handle = drawCinematicGizmos();
-    const bool water_handle = drawWaterGizmos();
-    const bool waypoint_handle = cinematic_handle || water_handle;
+    if (show_gizmos_) {
+        const bool cinematic_handle = drawCinematicGizmos();
+        const bool water_handle = drawWaterGizmos();
+        waypoint_handle = cinematic_handle || water_handle;
+        collider_handle = drawColliderHandles();
+    }
     // Herramienta de terreno: se queda con el raton mientras pinta.
     const bool terrain_tool = drawTerrainTool(frame_delta_);
-    const bool collider_handle = drawColliderHandles() || waypoint_handle || terrain_tool;
+    collider_handle = collider_handle || waypoint_handle || terrain_tool;
     const bool stamping = drawStampTool();
     if (!stamping && collider_handle_drag_ == 0 && !(terrain_edit_ && terrain_tool)) drawGizmo();
     handleCameraControls();
@@ -279,6 +300,7 @@ void EditorApp::drawSceneView() {
         if (ImGui::IsKeyPressed(ImGuiKey_E, false)) gizmo_ = GizmoOperation::Rotate;
         if (ImGui::IsKeyPressed(ImGuiKey_R, false)) gizmo_ = GizmoOperation::Scale;
         if (ImGui::IsKeyPressed(ImGuiKey_X, false)) gizmo_local_ = !gizmo_local_;
+        if (!io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_G, false)) show_gizmos_ = !show_gizmos_;
         if (ImGui::IsKeyPressed(ImGuiKey_T, false)) stamp_mode_ = !stamp_mode_;
         if (ImGui::IsKeyPressed(ImGuiKey_F, false)) focusSelection();
         // Supr con un punto de riel elegido borra el punto, no el objeto.
@@ -362,7 +384,7 @@ void EditorApp::pickAt(float x, float y) {
     // Iconos.
     Uuid icon_hit{};
     world_.forEachDepthFirst([&](ecs::Entity e) {
-        if (icon_hit.valid() || !e.activeInHierarchy()) return;
+        if (!show_gizmos_ || icon_hit.valid() || !e.activeInHierarchy()) return;
         if (!e.has<ecs::Light>() && !e.has<ecs::Camera>() && !e.has<ecs::Decal>() && !e.has<physics::ParticleSystem>() &&
             !e.has<water::WaterBody>() &&
             !e.has<cinema::VirtualCamera>() && !e.has<cinema::DollyTrack>() && !e.has<cinema::CinematicSequence>()) {

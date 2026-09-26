@@ -202,6 +202,20 @@ void AudioSystem::update(ecs::World& world, float delta_seconds, const Vec3& cam
     }
 }
 
+void AudioSystem::shiftOrigin(const core::Vec3& offset) {
+    Impl& d = *impl_;
+    d.listener_last = d.listener_last - offset;
+    for (auto& [handle, voice] : d.voices) {
+        if (voice) voice->last_position = voice->last_position - offset;
+    }
+    // Los sonidos sueltos se colocaron una vez: se mueven con el mundo.
+    for (auto& shot : d.one_shots) {
+        if (!shot || !shot->loaded) continue;
+        const ma_vec3f p = ma_sound_get_position(&shot->sound);
+        ma_sound_set_position(&shot->sound, p.x - offset.x, p.y - offset.y, p.z - offset.z);
+    }
+}
+
 void AudioSystem::stop() {
     impl_->voices.clear();
     impl_->one_shots.clear();

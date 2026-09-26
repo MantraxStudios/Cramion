@@ -64,6 +64,9 @@ public:
     // del Inspector. Sin AudioListener, el oyente es la camara dada.
     void update(ecs::World& world, float delta_seconds, const core::Vec3& camera_position,
                 const core::Vec3& camera_forward);
+    // Origen flotante (ecs/FloatingOrigin.h): el mundo se desplazo -offset;
+    // la ultima posicion de cada fuente y del oyente (si no, el efecto Doppler veria un salto de un kilometro).
+    void shiftOrigin(const core::Vec3& offset);
     // Fin del Play: silencio.
     void stop();
     bool running() const;

@@ -234,7 +234,7 @@ void splitByMaterial(const ModelData& source, bool hierarchy_space, crdata::Mode
 // Piezas por nodo (assimp) u objeto (OBJ). Devuelve false si conviene agrupar
 // por material (demasiadas piezas o texturas muy repetidas).
 bool splitByNode(const ModelData& source, bool is_obj, crdata::ModelContent& out,
-                 std::string& reason) {
+                 std::string& reason, std::size_t combine_above) {
     std::vector<std::vector<std::size_t>> by_node(source.nodes.size());
     for (std::size_t s = 0; s < source.submeshes.size(); ++s) {
         const std::int32_t node = source.submeshes[s].node;
@@ -251,7 +251,7 @@ bool splitByNode(const ModelData& source, bool is_obj, crdata::ModelContent& out
     }
     // El tope se puede subir con CRAMION_IMPORT_MAX_PARTS (jerarquia completa
     // aunque cueste mas memoria y llamadas de dibujo).
-    std::size_t max_parts = kMaxNodeParts;
+    std::size_t max_parts = std::min(kMaxNodeParts, combine_above);
     const std::string env = environmentVariable("CRAMION_IMPORT_MAX_PARTS");
     if (!env.empty()) {
         max_parts = static_cast<std::size_t>(std::max(1, std::atoi(env.c_str())));
@@ -349,6 +349,8 @@ std::string settingsJson(const ModelImportSettings& settings) {
     j["animated"] = settings.animated;
     j["scale"] = settings.scale;
     j["directx_normals"] = settings.directx_normals;
+    j["combine_meshes"] = settings.combine_meshes;
+    j["combine_above_parts"] = settings.combine_above_parts;
     return j.dump();
 }
 
@@ -371,9 +373,12 @@ std::size_t countTriangles(const crdata::ModelContent& content) {
 
 }  // namespace
 
-ImportResult importModel(const std::filesystem::path& source,
-                         const std::filesystem::path& destination_folder,
-                         const ModelImportSettings& settings, ImportProgress* progress) {
+// Importa `source` a `target` (vacio = un nombre libre en `destination_folder`)
+// con `uuid` (invalido = uno nuevo).
+static ImportResult importModelTo(const std::filesystem::path& source,
+                                  const std::filesystem::path& destination_folder,
+                                  const std::filesystem::path& target, const Uuid& uuid,
+                                  const ModelImportSettings& settings, ImportProgress* progress) {
     ImportResult result{};
     const auto start = std::chrono::steady_clock::now();
     try {
@@ -409,7 +414,10 @@ ImportResult importModel(const std::filesystem::path& source,
             report(progress, kReadShare, "Partiendo en piezas y agrupando");
             model.name = stem;
             std::string reason;
-            if (splitByNode(model, is_obj, content, reason)) {
+            const std::size_t combine_above =
+                settings.combine_meshes ? static_cast<std::size_t>(std::max(settings.combine_above_parts, 1))
+                                        : kMaxNodeParts;
+            if (splitByNode(model, is_obj, content, reason, combine_above)) {
                 how = std::to_string(content.parts.size()) + " piezas por " +
                       (is_obj ? "objeto" : "nodo");
             } else {
@@ -443,13 +451,13 @@ ImportResult importModel(const std::filesystem::path& source,
 
         crdata::Header header{};
         header.type = AssetType::Model;
-        header.uuid = Uuid::generate();
+        header.uuid = uuid.valid() ? uuid : Uuid::generate();
         header.name = stem;
         header.source = crdata::utf8(std::filesystem::absolute(source));
         header.settings_json = settingsJson(settings);
 
         const std::filesystem::path file =
-            crdata::uniquePath(destination_folder, stem, crdata::kExtension);
+            target.empty() ? crdata::uniquePath(destination_folder, stem, crdata::kExtension) : target;
         report(progress, 0.85f, "Escribiendo " + crdata::utf8(file.filename()));
         crdata::writeModel(file, header, content);
         report(progress, 1.0f, "Terminado");
@@ -479,6 +487,65 @@ ImportResult importModel(const std::filesystem::path& source,
         result.message = "[Assets] No se pudo importar " + crdata::utf8(source) + ": " + error.what();
         std::cerr << result.message << "\n";
     }
+    return result;
+}
+
+ImportResult importModel(const std::filesystem::path& source,
+                         const std::filesystem::path& destination_folder,
+                         const ModelImportSettings& settings, ImportProgress* progress) {
+    return importModelTo(source, destination_folder, {}, {}, settings, progress);
+}
+
+ModelImportSettings modelImportSettings(const std::filesystem::path& file) {
+    ModelImportSettings settings;
+    const auto header = crdata::readHeader(file);
+    if (!header) return settings;
+    const nlohmann::json j = nlohmann::json::parse(header->settings_json, nullptr, false);
+    if (!j.is_object()) return settings;
+    settings.animated = j.value("animated", settings.animated);
+    settings.scale = j.value("scale", settings.scale);
+    settings.directx_normals = j.value("directx_normals", settings.directx_normals);
+    // Los importados antes de existir el ajuste: se combinan al reimportar.
+    settings.combine_meshes = j.value("combine_meshes", true);
+    settings.combine_above_parts = j.value("combine_above_parts", settings.combine_above_parts);
+    return settings;
+}
+
+ImportResult reimportModel(const AssetInfo& info, const ModelImportSettings& settings, ImportProgress* progress) {
+    ImportResult result{};
+    const auto header = crdata::readHeader(info.path);
+    if (!header || header->type != AssetType::Model) {
+        result.message = "[Assets] " + crdata::utf8(info.path.filename()) + " no es un modelo importado";
+        return result;
+    }
+    const std::filesystem::path source = crdata::fromUtf8(header->source);
+    if (header->source.empty() || !std::filesystem::is_regular_file(source)) {
+        result.message = "[Assets] No se puede reimportar " + info.name + ": ya no esta el original (" +
+                         header->source + ")";
+        std::cerr << result.message << "\n";
+        return result;
+    }
+    // Se escribe a un temporal y se reemplaza al final: si falla, el
+    // modelo de antes sigue intacto.
+    std::filesystem::path temporary = info.path;
+    temporary += ".reimport";
+    result = importModelTo(source, info.path.parent_path(), temporary, header->uuid, settings, progress);
+    if (!result.ok) {
+        std::error_code e;
+        std::filesystem::remove(temporary, e);
+        return result;
+    }
+    std::error_code e;
+    std::filesystem::rename(temporary, info.path, e);
+    if (e) {
+        result.ok = false;
+        result.message = "[Assets] No se pudo reemplazar " + crdata::utf8(info.path) + ": " + e.message();
+        std::filesystem::remove(temporary, e);
+        return result;
+    }
+    result.info.path = info.path;
+    result.info.name = info.name;
+    result.info.size_bytes = std::filesystem::file_size(info.path, e);
     return result;
 }
 
@@ -540,6 +607,27 @@ ImportResult importEnvironment(const std::filesystem::path& source,
         std::cerr << result.message << "\n";
     }
     return result;
+}
+
+bool writeGeneratedModel(const std::filesystem::path& file, const Uuid& uuid, const std::string& name,
+                         const std::vector<ModelNode>& nodes, const std::vector<asset::ModelData>& parts,
+                         std::string* error) {
+    try {
+        std::filesystem::create_directories(file.parent_path());
+        crdata::Header header{};
+        header.type = AssetType::Model;
+        header.uuid = uuid;
+        header.name = name;
+        header.settings_json = "{\"generated\":true}";
+        crdata::ModelContent content{};
+        content.nodes = nodes;
+        content.parts = parts;
+        crdata::writeModel(file, header, content);
+        return true;
+    } catch (const std::exception& e) {
+        if (error != nullptr) *error = "No se pudo escribir " + crdata::utf8(file) + ": " + e.what();
+        return false;
+    }
 }
 
 // Si el archivo trae animaciones (un personaje) se importa como una pieza

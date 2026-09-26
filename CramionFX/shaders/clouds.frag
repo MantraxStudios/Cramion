@@ -32,7 +32,7 @@ layout(set = 0, binding = 2) uniform sampler2D sky_lut;
 layout(push_constant) uniform PushConstants {
     vec4 to_light_time;     // xyz = hacia la luz direccional activa, w = segundos
     vec4 light_coverage;    // rgb = su radiancia, a = cobertura (0..1)
-    vec4 params;            // x = numero de frame (ruido), y = densidad
+    vec4 params;            // x = numero de frame (ruido), y = densidad, zw = origen del mundo xz
 } push;
 
 layout(location = 0) in vec2 v_uv;
@@ -73,7 +73,8 @@ float heightFraction(vec3 planet_position) {
 float cloudDensity(vec3 planet_position, bool detailed) {
     float h = heightFraction(planet_position);
     vec3 world = vec3(planet_position.x, length(planet_position) - kEarthRadius,
-                      planet_position.z) + kWind * push.to_light_time.w;
+                      planet_position.z) + kWind * push.to_light_time.w +
+                 vec3(push.params.z, 0.0, push.params.w);  // origen flotante
 
     vec4 shape = textureLod(cloud_noise, world * kShapeScale, 0.0);
     float cells = shape.g * 0.625 + shape.b * 0.25 + shape.a * 0.125;

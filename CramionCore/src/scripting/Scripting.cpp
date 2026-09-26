@@ -699,6 +699,24 @@ struct ScriptSystem::Impl {
             return true;
         };
         scene["name"] = [this]() { return scene_name; };
+        // Origen flotante: la posicion real (doble precision; los numeros de
+        // Lua son double) del (0,0,0) del mundo, y conversiones. Para guardar
+        // posiciones en una partida: Scene.toAbsolute al guardar y
+        // Scene.toLocal al cargar (el origen puede ser otro).
+        scene["origin"] = [this]() -> std::tuple<double, double, double> {
+            if (world == nullptr) return {0.0, 0.0, 0.0};
+            const ecs::DVec3& o = world->origin();
+            return {o.x, o.y, o.z};
+        };
+        scene["toAbsolute"] = [this](const Vec3& local) -> std::tuple<double, double, double> {
+            if (world == nullptr) return {local.x, local.y, local.z};
+            const ecs::DVec3 a = world->absolute(local);
+            return {a.x, a.y, a.z};
+        };
+        scene["toLocal"] = [this](double x, double y, double z) -> Vec3 {
+            if (world == nullptr) return Vec3{static_cast<float>(x), static_cast<float>(y), static_cast<float>(z)};
+            return world->local(ecs::DVec3{x, y, z});
+        };
 
         // Prefs (PlayerPrefs): numeros y textos que sobreviven al cambiar de
         // escena y se guardan en disco.
@@ -1522,6 +1540,11 @@ std::vector<ScriptProperty> ScriptSystem::describe(const std::string& file, std:
     auto result = cache.properties;
     d.described[file] = std::move(cache);
     return result;
+}
+
+void ScriptSystem::shiftOrigin(const core::Vec3& offset) {
+    Impl& d = *impl_;
+    for (auto& [handle, inst] : d.instances) d.call(inst, "OnOriginShift", offset);
 }
 
 void ScriptSystem::callMethod(ecs::Entity target, const std::string& method, ecs::Entity source) {

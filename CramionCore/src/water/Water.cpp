@@ -18,13 +18,19 @@ namespace {
 constexpr float kPi = 3.14159265358979f;
 constexpr float kGravity = 9.81f;
 
-// Las 8 ondas: MISMOS valores que water.vert (kWaveAngles, kWaveLength,
-// kWaveAmplitude, kWavePhase).
-constexpr int kWaves = 8;
-constexpr std::array<float, kWaves> kWaveAngles = {0.0f, 0.83f, -0.61f, 1.37f, -1.19f, 0.29f, -0.93f, 1.71f};
-constexpr float kWaveLength = 0.64f;     // cada onda, esta fraccion de la anterior
-constexpr float kWaveAmplitude = 0.60f;  // idem para la amplitud
-constexpr float kWavePhase = 1.7f;
+// Oleaje: espectro JONSWAP (el del mar real, medido en el Mar del Norte)
+// muestreado en 24 ondas de Gerstner. Longitudes de 2 a 0.06 veces la
+// principal; la amplitud de cada una sale del espectro (el pico, cerca de la
+// principal) y esta normalizada para que la altura sea la ALTURA SIGNIFICATIVA
+// (la media del tercio mas alto de las olas, la que usan los oceanografos).
+// Direcciones repartidas alrededor del viento (mas abiertas cuanto mas corta
+// la onda) y fases pseudoaleatorias: sin el patron regular de pocas ondas.
+// MISMAS tablas en CramionFX/shaders/water_common.glsl (lo que se dibuja).
+constexpr int kWaves = 24;
+constexpr std::array<float, kWaves> kWaveLengths = {2.000000f, 1.717188f, 1.474368f, 1.265883f, 1.086880f, 0.933189f, 0.801230f, 0.687931f, 0.590654f, 0.507132f, 0.435420f, 0.373849f, 0.320985f, 0.275596f, 0.236625f, 0.203165f, 0.174436f, 0.149770f, 0.128591f, 0.110408f, 0.094795f, 0.081391f, 0.069882f, 0.060000f};
+constexpr std::array<float, kWaves> kWaveAmplitudes = {0.029095f, 0.048279f, 0.068845f, 0.097571f, 0.152326f, 0.166827f, 0.122764f, 0.094758f, 0.084349f, 0.076526f, 0.068538f, 0.060708f, 0.053334f, 0.046573f, 0.040490f, 0.035085f, 0.030329f, 0.026171f, 0.022553f, 0.019417f, 0.016704f, 0.014363f, 0.012346f, 0.010609f};
+constexpr std::array<float, kWaves> kWaveDirections = {-0.083431f, 0.569487f, 0.071680f, -0.290316f, 0.415380f, -0.021591f, -0.618493f, 0.222443f, -0.215726f, 0.735936f, 0.037831f, -0.551784f, 0.467343f, -0.104373f, -1.029364f, 0.192298f, -0.424478f, 0.817133f, -0.002207f, -0.904800f, 0.451188f, -0.257296f, 1.281280f, 0.120902f};
+constexpr std::array<float, kWaves> kWavePhases = {1.193805f, 5.936841f, 4.396692f, 2.856543f, 1.316394f, 6.059431f, 4.519282f, 2.979132f, 1.438983f, 6.182020f, 4.641871f, 3.101722f, 1.561573f, 0.021424f, 4.764460f, 3.224311f, 1.684162f, 0.144013f, 4.887049f, 3.346900f, 1.806751f, 0.266602f, 5.009638f, 3.469489f};
 
 float g_time = 0.0f;
 
@@ -43,7 +49,9 @@ void WaterBody::reflect(ecs::PropertyVisitor& v) {
         v.field({"size", "Tamano", "Ancho y largo (m); la orilla la pone el terreno"}, size, 0.5f);
     }
     if (all || v.beginGroup("Oleaje")) {
-        v.field({"wave_height", "Altura de ola"}, wave_height, FloatRange{0.0f, 12.0f, 0.01f, "%.2f m"});
+        v.field({"wave_height", "Altura de ola",
+                 "Altura significativa: la media del tercio mas alto de las olas (espectro JONSWAP)"},
+                wave_height, FloatRange{0.0f, 12.0f, 0.01f, "%.2f m"});
         v.field({"wavelength", "Longitud de onda"}, wavelength, FloatRange{0.5f, 300.0f, 0.1f, "%.1f m"});
         v.field({"wave_speed", "Velocidad"}, wave_speed, FloatRange{0.0f, 4.0f, 0.01f, "%.2f"});
         v.field({"steepness", "Crestas", "0 = redondeadas, 1 = afiladas"}, steepness,
@@ -149,16 +157,17 @@ Vec3 gerstner(const WaterBody& body, float x, float z, float time, Vec3* normal,
     const float wind = body.wind_direction * kPi / 180.0f;
     const float spread = body.wind_spread * kPi / 180.0f;
     const float steep = std::clamp(body.steepness, 0.0f, 1.0f);
-    float length = std::max(body.wavelength, 0.05f);
-    float amplitude = body.wave_height * 0.5f;
+    const float peak = std::max(body.wavelength, 0.05f);
     for (int i = 0; i < kWaves; ++i) {
-        const float angle = wind + kWaveAngles[i] * spread;
+        const float length = peak * kWaveLengths[i];
+        const float amplitude = body.wave_height * kWaveAmplitudes[i];
+        const float angle = wind + kWaveDirections[i] * spread;
         const float dx = std::cos(angle);
         const float dz = std::sin(angle);
         const float k = 2.0f * kPi / length;
         const float omega = std::sqrt(kGravity * k) * body.wave_speed;
         const float q = amplitude > 1e-6f ? steep / (k * amplitude * kWaves) : 0.0f;
-        const float theta = k * (dx * x + dz * z) - omega * time + kWavePhase * static_cast<float>(i);
+        const float theta = k * (dx * x + dz * z) - omega * time + kWavePhases[i];
         const float c = std::cos(theta);
         const float s = std::sin(theta);
         offset.x += q * amplitude * dx * c;
@@ -168,8 +177,6 @@ Vec3 gerstner(const WaterBody& body, float x, float z, float time, Vec3* normal,
         n.z -= dz * k * amplitude * c;
         n.y -= q * k * amplitude * s;
         j -= q * k * amplitude * s;
-        length *= kWaveLength;
-        amplitude *= kWaveAmplitude;
     }
     if (normal != nullptr) *normal = core::normalize(n);
     if (jacobian != nullptr) *jacobian = j;
@@ -234,7 +241,7 @@ WaterSample sampleWater(const WaterBody& body, const core::Mat4& world, const Ve
         }
         if (nearest == nullptr || std::sqrt(best) > nearest->width * 0.5f) return result;
         Vec3 n{};
-        const Vec3 wave = gerstner(body, position.x, position.z, time, &n);
+        const Vec3 wave = gerstner(body, position.x - origin.x, position.z - origin.z, time, &n);
         result.inside = true;
         result.height = nearest->position.y + wave.y;
         result.normal = n;
@@ -251,12 +258,16 @@ WaterSample sampleWater(const WaterBody& body, const core::Mat4& world, const Ve
     }
     // La ola desplaza en horizontal: se busca el punto de la cuadricula que
     // acaba bajo `position` (unas iteraciones de punto fijo).
-    float x0 = position.x;
-    float z0 = position.z;
+    // Relativo al origen del cuerpo de agua, como water_common.glsl (asi las
+    // olas no saltan con el origen flotante).
+    const float px = position.x - origin.x;
+    const float pz = position.z - origin.z;
+    float x0 = px;
+    float z0 = pz;
     for (int i = 0; i < 4; ++i) {
         const Vec3 d = gerstner(body, x0, z0, time);
-        x0 = position.x - d.x;
-        z0 = position.z - d.z;
+        x0 = px - d.x;
+        z0 = pz - d.z;
     }
     Vec3 n{};
     const Vec3 d = gerstner(body, x0, z0, time, &n);

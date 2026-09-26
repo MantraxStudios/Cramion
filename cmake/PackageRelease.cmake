@@ -5,7 +5,7 @@
 #     shaders/ (con source/ de los .crshader), editor_icons/, player_banner.png
 #     shaderc_shared.dll                  (compila los shaders propios)
 #     msvcp140.dll, vcruntime140*.dll   (runtime de C++, si se encuentra)
-#     LICENSE, README.md, LEEME.txt, docs/ (web y referencia de scripting)
+#     LICENSE, README.md, CHANGELOG.md, LEEME.txt, docs/ (web y referencia de scripting)
 #
 # Lo llama el target cramion_package:
 #   cmake -DBIN_DIR=... -DSOURCE_DIR=... -DVERSION=... -P PackageRelease.cmake
@@ -42,6 +42,9 @@ else()
     message(WARNING "Falta shaderc_shared.dll: los shaders propios no compilaran en el paquete.")
 endif()
 file(COPY "${SOURCE_DIR}/LICENSE" "${SOURCE_DIR}/README.md" DESTINATION "${stage}")
+if(EXISTS "${SOURCE_DIR}/CHANGELOG.md")
+    file(COPY "${SOURCE_DIR}/CHANGELOG.md" DESTINATION "${stage}")
+endif()
 # La documentacion viaja con el motor (se abre sin conexion salvo el estilo).
 file(COPY "${SOURCE_DIR}/docs" DESTINATION "${stage}"
      PATTERN "*.mp4" EXCLUDE)  # el video de fondo de la web no hace falta en el zip

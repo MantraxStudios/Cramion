@@ -243,6 +243,10 @@ public:
     void update(ecs::World& world, float delta_seconds, bool playing);
     // Olvida el estado (al entrar o salir de Play).
     void reset();
+    // Origen flotante (ecs/FloatingOrigin.h): el mundo se desplazo -offset;
+    // las posiciones amortiguadas de las camaras y lo que guarda en coordenadas del mundo se mueve igual.
+    void shiftOrigin(const core::Vec3& offset);
+
 
     // --- Secuencias ---
     void play(ecs::Entity sequence, float from = 0.0f);

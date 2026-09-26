@@ -606,7 +606,8 @@ std::uint64_t spreadBits(std::uint64_t v) {
     return v;
 }
 
-void clusterSubmeshesImpl(ModelData& model) {
+void clusterRanges(const std::vector<SkinnedVertex>& vertices, std::vector<std::uint32_t>& source_indices,
+                   std::vector<SubMesh>& submeshes) {
     // Grupos (material, nodo) en el orden en que aparecen.
     struct Group {
         std::uint32_t material;
@@ -616,8 +617,8 @@ void clusterSubmeshesImpl(ModelData& model) {
     std::vector<Group> groups;
     {
         std::unordered_map<std::uint64_t, std::size_t> group_of;
-        for (std::size_t s = 0; s < model.submeshes.size(); ++s) {
-            const SubMesh& submesh = model.submeshes[s];
+        for (std::size_t s = 0; s < submeshes.size(); ++s) {
+            const SubMesh& submesh = submeshes[s];
             const std::uint64_t key = (static_cast<std::uint64_t>(submesh.material) << 32) |
                                       static_cast<std::uint32_t>(submesh.node);
             const auto [it, inserted] = group_of.try_emplace(key, groups.size());
@@ -630,7 +631,7 @@ void clusterSubmeshesImpl(ModelData& model) {
 
     std::vector<SubMesh> clustered;
     std::vector<std::uint32_t> indices;
-    indices.reserve(model.indices.size());
+    indices.reserve(source_indices.size());
 
     struct Triangle {
         std::uint64_t cell;
@@ -644,12 +645,12 @@ void clusterSubmeshesImpl(ModelData& model) {
         Vec3 low{1e30f, 1e30f, 1e30f};
         Vec3 high{-1e30f, -1e30f, -1e30f};
         for (const std::size_t s : group.submeshes) {
-            const SubMesh& submesh = model.submeshes[s];
+            const SubMesh& submesh = submeshes[s];
             for (std::uint32_t i = 0; i + 2 < submesh.index_count; i += 3) {
                 const std::uint32_t first = submesh.first_index + i;
-                const Vec3 center = (model.vertices[model.indices[first]].position +
-                                     model.vertices[model.indices[first + 1]].position +
-                                     model.vertices[model.indices[first + 2]].position) *
+                const Vec3 center = (vertices[source_indices[first]].position +
+                                     vertices[source_indices[first + 1]].position +
+                                     vertices[source_indices[first + 2]].position) *
                                     (1.0f / 3.0f);
                 low = Vec3{std::min(low.x, center.x), std::min(low.y, center.y),
                            std::min(low.z, center.z)};
@@ -694,7 +695,7 @@ void clusterSubmeshesImpl(ModelData& model) {
                 in_cluster = 0;
             }
             for (std::uint32_t k = 0; k < 3; ++k) {
-                indices.push_back(model.indices[triangles[t].first + k]);
+                indices.push_back(source_indices[triangles[t].first + k]);
             }
             clustered.back().index_count += 3;
             ++in_cluster;
@@ -715,8 +716,12 @@ void clusterSubmeshesImpl(ModelData& model) {
     std::stable_sort(clustered.begin(), clustered.end(),
                      [](const SubMesh& a, const SubMesh& b) { return a.material < b.material; });
 
-    model.indices = std::move(indices);
-    model.submeshes = std::move(clustered);
+    source_indices = std::move(indices);
+    submeshes = std::move(clustered);
+}
+
+void clusterSubmeshesImpl(ModelData& model) {
+    clusterRanges(model.vertices, model.indices, model.submeshes);
 }
 
 // Convierte un mapa de alturas (RGBA8, se usa la luminancia) en un normal map
@@ -987,6 +992,22 @@ ModelData importModelHierarchy(const std::filesystem::path& path,
 void clusterSubmeshes(ModelData& model) {
     clusterSubmeshesImpl(model);
     computeSubmeshBounds(model);
+}
+
+void clusterIndexRanges(const std::vector<SkinnedVertex>& vertices, std::vector<std::uint32_t>& indices,
+                        std::vector<SubMesh>& submeshes) {
+    clusterRanges(vertices, indices, submeshes);
+    for (SubMesh& submesh : submeshes) {
+        Vec3 low{1e30f, 1e30f, 1e30f};
+        Vec3 high{-1e30f, -1e30f, -1e30f};
+        for (std::uint32_t i = 0; i < submesh.index_count; ++i) {
+            const Vec3& p = vertices[indices[submesh.first_index + i]].position;
+            low = Vec3{std::min(low.x, p.x), std::min(low.y, p.y), std::min(low.z, p.z)};
+            high = Vec3{std::max(high.x, p.x), std::max(high.y, p.y), std::max(high.z, p.z)};
+        }
+        submesh.bounds_min = low;
+        submesh.bounds_max = high;
+    }
 }
 
 bool isOverClustered(const ModelData& model) {

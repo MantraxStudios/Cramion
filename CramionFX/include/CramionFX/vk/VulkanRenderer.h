@@ -215,6 +215,10 @@ public:
         // Tiempo de CPU de grabar cada pase (nombre de la marca de la GPU).
         std::vector<std::pair<std::string, float>> passes;
     };
+    // Milisegundos esperando a la GPU desde el principio (solo crece): el
+    // componente Profiler resta la diferencia entre frames al tiempo del
+    // frame para saber cuanto trabajo la CPU.
+    double fenceWaitTotalMs() const { return fence_wait_total_ms_; }
     FrameTimings takeFrameTimings() {
         FrameTimings t = frame_timings_;
         frame_timings_ = {};
@@ -469,6 +473,14 @@ public:
     // Corte de camara (otra vista, un corte de una cinematica): las pasadas
     // temporales (GI, reflejos) no reutilizan el frame anterior.
     void invalidateHistory();
+    // Origen flotante: todo el mundo se desplazo -offset (ver
+    // CramionCore/ecs/FloatingOrigin.h). Mueve lo que el renderizador guarda
+    // en coordenadas del mundo (secciones de bloques, sonda de reflexion) y
+    // descarta lo que no se puede mover (historias de TAA/SSR/GI, sombras
+    // guardadas, mapa de lluvia). setWorldOrigin fija el origen absoluto al
+    // cargar una escena guardada lejos (las nubes lo usan para no saltar).
+    void shiftOrigin(const core::Vec3& offset);
+    void setWorldOrigin(double x, double y, double z) { world_origin_ = {x, y, z}; }
     vk::Extent2D sceneExtent() const { return ldr_color_.extent(); }
     std::uint64_t sceneImageGeneration() const { return scene_image_generation_; }
 
@@ -741,6 +753,10 @@ private:
         bool shadows_only = false;
         // Matrices en el buffer de huesos (huesos + la instancia, si hay).
         std::uint32_t bone_entries = 0;
+        // LOD elegido este frame (0 = la malla original) y, si no es 0, las
+        // cajas en el mundo de sus submallas en lod_bounds_.
+        std::uint32_t lod = 0;
+        std::uint32_t first_lod_bounds = 0;
     };
     std::vector<ActorDraw> actor_draws_;
     // Material batching: los escenarios del mismo modelo y material (de
@@ -756,6 +772,13 @@ private:
 public:
     // Llamadas de dibujo de los escenarios (lotes) y clusteres que agrupan.
     std::uint32_t batchCount() const { return static_cast<std::uint32_t>(draw_batches_.size()); }
+    // Llamadas de dibujo de las sombras del ultimo frame (tras juntar los
+    // tramos seguidos).
+    std::uint32_t shadowDrawCalls() const { return last_shadow_draw_calls_; }
+    // LODs: triangulos de los escenarios con el LOD de cada uno (antes del
+    // culling) y cuantos actores se dibujan con un LOD simplificado.
+    std::uint64_t lodTriangles() const { return lod_triangles_; }
+    std::uint32_t lodActors() const { return lod_actors_; }
 private:
     // Deteccion de movimiento (updateActors): transform y esfera de cada
     // actor el frame anterior, y las esferas (antes y despues) de lo que se
@@ -766,14 +789,28 @@ private:
         core::Vec3 center{};
         float radius = 0.0f;
         bool cast_shadows = true;
+        std::uint32_t lod = 0;
     };
     std::vector<ActorMotion> previous_actor_motion_;
+    std::vector<core::Aabb> lod_bounds_;
+    // Estadisticas de LOD del ultimo frame: triangulos de los escenarios con
+    // el LOD elegido (sin culling) y cuantos actores usan un LOD > 0.
+    std::uint64_t lod_triangles_ = 0;
+    std::uint32_t lod_actors_ = 0;
+    // Nivel para un actor rigido: el mas simple cuyo error proyectado no pasa
+    // de post_.lod_pixel_error pixeles.
+    std::uint32_t chooseLod(const SkinnedModel& model, const core::Mat4& to_world, const core::Vec3& center,
+                            float radius, const core::Vec3& camera_position, float pixels_per_unit) const;
     std::vector<core::Vec4> moved_spheres_;  // xyz = centro, w = radio
     bool actor_set_changed_ = true;
     std::vector<core::Aabb> submesh_bounds_;
     // Culling en GPU de los clusteres de escenario.
     GpuCulling gpu_culling_{};
     GpuProfiler gpu_profiler_{};
+    double fence_wait_total_ms_ = 0.0;
+    std::uint32_t shadow_draw_calls_ = 0;
+    std::uint32_t last_shadow_draw_calls_ = 0;
+    std::array<double, 3> world_origin_{0.0, 0.0, 0.0};
     OverlayCallback overlay_;
     OverlayGeometry overlay_geometry_;
     OverlayPass overlay_pass_{};

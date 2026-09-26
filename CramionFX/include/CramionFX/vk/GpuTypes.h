@@ -218,7 +218,7 @@ struct GpuVolumetricPush {
 struct GpuCloudPush {
     core::Vec4 to_light_time{};   // xyz = hacia la luz direccional, w = segundos
     core::Vec4 light_coverage{};  // rgb = su radiancia, a = cobertura (0..1)
-    core::Vec4 params{};          // x = numero de frame, y = densidad
+    core::Vec4 params{};          // x = numero de frame, y = densidad, zw = origen del mundo xz (mod 168 km)
 };
 
 // Constante de push de la LUT del cielo (sky_lut.frag).

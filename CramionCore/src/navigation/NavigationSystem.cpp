@@ -474,6 +474,21 @@ float frand() {
 
 struct NavigationSystem::Impl {
     NavigationSettings settings;
+
+    // Origen flotante: la malla vive en su propio espacio ("nav") y no se
+    // rehace cuando el mundo se desplaza. nav = local + nav_offset (la suma
+    // de los desplazamientos). Se convierte al entrar y al salir: posiciones
+    // de las entidades, destinos y resultados de las consultas.
+    Vec3 nav_offset{};
+    Vec3 toNav(const Vec3& p) const { return p + nav_offset; }
+    Vec3 fromNav(const Vec3& p) const { return p - nav_offset; }
+    Mat4 navWorld(ecs::Entity e) const {
+        Mat4 m = e.worldMatrix();
+        m.m[3][0] += nav_offset.x;
+        m.m[3][1] += nav_offset.y;
+        m.m[3][2] += nav_offset.z;
+        return m;
+    }
     MeshProvider mesh_provider;
     TerrainProvider terrain_provider;
     physics::PhysicsSystem* physics = nullptr;
@@ -685,7 +700,7 @@ struct NavigationSystem::Impl {
                               std::shared_ptr<const terrain::TerrainData>& terrain_data) {
         Hasher h;
         bool any = false;
-        const Mat4& world = e.worldMatrix();
+        const Mat4 world = navWorld(e);
         h.add(world);
         if (const auto* c = e.tryGet<physics::BoxCollider>(); c && !c->material.is_trigger) {
             h.add(1);
@@ -737,7 +752,7 @@ struct NavigationSystem::Impl {
 
     void buildSource(ecs::Entity e, Source& src, const asset::ModelData* mesh,
                      const std::shared_ptr<const terrain::TerrainData>& terrain_data) {
-        const Mat4& world = e.worldMatrix();
+        const Mat4 world = navWorld(e);
         src.verts.clear();
         src.tris.clear();
         src.buckets.clear();
@@ -963,7 +978,7 @@ struct NavigationSystem::Impl {
             if (!e.activeInHierarchy()) continue;
             const NavMeshBounds& b = e.get<NavMeshBounds>();
             Aabb box;
-            const Mat4& m = e.worldMatrix();
+            const Mat4 m = navWorld(e);
             for (int i = 0; i < 8; ++i) {
                 box.add(transformPoint(m, Vec3{((i & 1) ? 0.5f : -0.5f) * std::abs(b.size.x),
                                                ((i & 2) ? 0.5f : -0.5f) * std::abs(b.size.y),
@@ -1027,7 +1042,7 @@ struct NavigationSystem::Impl {
             if (!e.activeInHierarchy()) continue;
             const NavModifier& m = e.get<NavModifier>();
             Hasher h;
-            h.add(e.worldMatrix());
+            h.add(navWorld(e));
             h.add(m.size);
             h.add(m.area);
             seen.insert(e.uuid());
@@ -1038,7 +1053,7 @@ struct NavigationSystem::Impl {
             mod.area = m.area;
             mod.bounds = Aabb{};
             std::vector<std::pair<float, float>> xz;
-            const Mat4& w = e.worldMatrix();
+            const Mat4 w = navWorld(e);
             for (int i = 0; i < 8; ++i) {
                 const Vec3 p = transformPoint(w, Vec3{((i & 1) ? 0.5f : -0.5f) * std::abs(m.size.x),
                                                       ((i & 2) ? 0.5f : -0.5f) * std::abs(m.size.y),
@@ -1356,7 +1371,7 @@ struct NavigationSystem::Impl {
             seen.insert(handle);
             Agent& agent = agents[handle];
             const NavAgent& comp = e.get<NavAgent>();
-            const Vec3 feet = e.worldPosition() - Vec3{0.0f, comp.base_offset, 0.0f};
+            const Vec3 feet = toNav(e.worldPosition() - Vec3{0.0f, comp.base_offset, 0.0f});
             if (crowd == nullptr) continue;
             if (agent.index < 0) {
                 dtPolyRef ref = 0;
@@ -1447,9 +1462,9 @@ struct NavigationSystem::Impl {
             if (body) {
                 const Vec3 current = physics->linearVelocity(e);
                 physics->setLinearVelocity(e, Vec3{vel.x, current.y, vel.z});
-                agent.written = e.worldPosition() - Vec3{0.0f, comp.base_offset, 0.0f};
+                agent.written = toNav(e.worldPosition() - Vec3{0.0f, comp.base_offset, 0.0f});
             } else {
-                e.setWorldPosition(pos + Vec3{0.0f, comp.base_offset, 0.0f});
+                e.setWorldPosition(fromNav(pos) + Vec3{0.0f, comp.base_offset, 0.0f});
                 agent.written = pos;
             }
             agent.written_valid = true;
@@ -1634,7 +1649,7 @@ bool NavigationSystem::findPath(const Vec3& from, const Vec3& to, std::vector<Ve
     if (partial != nullptr) *partial = false;
     dtPolyRef start_ref = 0, end_ref = 0;
     float start[3], end[3];
-    if (!d.nearest(from, start_ref, start) || !d.nearest(to, end_ref, end)) return false;
+    if (!d.nearest(d.toNav(from), start_ref, start) || !d.nearest(d.toNav(to), end_ref, end)) return false;
     constexpr int kMaxPolys = 1024;
     std::vector<dtPolyRef> polys(kMaxPolys);
     int count = 0;
@@ -1652,8 +1667,8 @@ bool NavigationSystem::findPath(const Vec3& from, const Vec3& to, std::vector<Ve
     int npoints = 0;
     d.query->findStraightPath(start, target, polys.data(), count, points.data(), nullptr, nullptr, &npoints, kMaxPoints);
     for (int i = 0; i < npoints; ++i) {
-        path.push_back(Vec3{points[static_cast<std::size_t>(i) * 3], points[static_cast<std::size_t>(i) * 3 + 1],
-                            points[static_cast<std::size_t>(i) * 3 + 2]});
+        path.push_back(d.fromNav(Vec3{points[static_cast<std::size_t>(i) * 3], points[static_cast<std::size_t>(i) * 3 + 1],
+                                      points[static_cast<std::size_t>(i) * 3 + 2]}));
     }
     return !path.empty();
 }
@@ -1661,8 +1676,8 @@ bool NavigationSystem::findPath(const Vec3& from, const Vec3& to, std::vector<Ve
 bool NavigationSystem::projectPoint(const Vec3& point, Vec3& result, float extent) const {
     dtPolyRef ref = 0;
     float out[3];
-    if (!impl_->nearest(point, ref, out, extent, extent)) return false;
-    result = Vec3{out[0], out[1], out[2]};
+    if (!impl_->nearest(impl_->toNav(point), ref, out, extent, extent)) return false;
+    result = impl_->fromNav(Vec3{out[0], out[1], out[2]});
     return true;
 }
 
@@ -1670,7 +1685,7 @@ bool NavigationSystem::randomPoint(const Vec3& center, float radius, Vec3& resul
     const Impl& d = *impl_;
     dtPolyRef ref = 0;
     float start[3];
-    if (!d.nearest(center, ref, start, std::max(radius, 2.0f), 4.0f)) return false;
+    if (!d.nearest(d.toNav(center), ref, start, std::max(radius, 2.0f), 4.0f)) return false;
     // Detour elige un poligono que toca el circulo y un punto cualquiera de
     // el: puede caer fuera del radio. Se repite hasta que cae dentro.
     const float r = std::max(radius, 0.01f);
@@ -1682,11 +1697,11 @@ bool NavigationSystem::randomPoint(const Vec3& center, float radius, Vec3& resul
         }
         const float dx = point[0] - start[0], dz = point[2] - start[2];
         if (dx * dx + dz * dz <= r * r) {
-            result = Vec3{point[0], point[1], point[2]};
+            result = d.fromNav(Vec3{point[0], point[1], point[2]});
             return true;
         }
     }
-    result = Vec3{start[0], start[1], start[2]};
+    result = d.fromNav(Vec3{start[0], start[1], start[2]});
     return true;
 }
 
@@ -1694,11 +1709,12 @@ bool NavigationSystem::raycast(const Vec3& from, const Vec3& to, Vec3* hit) cons
     const Impl& d = *impl_;
     dtPolyRef ref = 0;
     float start[3];
-    if (!d.nearest(from, ref, start)) {
+    if (!d.nearest(d.toNav(from), ref, start)) {
         if (hit != nullptr) *hit = from;
         return false;
     }
-    const float end[3] = {to.x, to.y, to.z};
+    const Vec3 to_nav = d.toNav(to);
+    const float end[3] = {to_nav.x, to_nav.y, to_nav.z};
     float t = 0.0f;
     float normal[3];
     dtPolyRef path[256];
@@ -1706,8 +1722,8 @@ bool NavigationSystem::raycast(const Vec3& from, const Vec3& to, Vec3* hit) cons
     d.query->raycast(ref, start, end, &d.filter, &t, normal, path, &count, 256);
     if (t > 1.0f) return true;  // FLT_MAX: llega sin chocar
     if (hit != nullptr) {
-        *hit = Vec3{start[0] + (end[0] - start[0]) * t, start[1] + (end[1] - start[1]) * t,
-                    start[2] + (end[2] - start[2]) * t};
+        *hit = d.fromNav(Vec3{start[0] + (end[0] - start[0]) * t, start[1] + (end[1] - start[1]) * t,
+                              start[2] + (end[2] - start[2]) * t});
     }
     return false;
 }
@@ -1717,7 +1733,7 @@ bool NavigationSystem::moveTo(ecs::Entity agent_entity, const Vec3& target) {
     if (!agent_entity.valid() || !agent_entity.has<NavAgent>()) return false;
     Impl::Agent& agent = d.agents[agent_entity.handle()];
     agent.has_target = true;
-    agent.target = target;
+    agent.target = d.toNav(target);
     agent.target_sent = false;
     if (d.crowd != nullptr && agent.index >= 0) {
         d.sendTarget(agent);
@@ -1727,7 +1743,7 @@ bool NavigationSystem::moveTo(ecs::Entity agent_entity, const Vec3& target) {
     if (d.query != nullptr && ready() && !building()) {
         dtPolyRef ref = 0;
         float pos[3];
-        return d.nearest(target, ref, pos);
+        return d.nearest(d.toNav(target), ref, pos);
     }
     return true;
 }
@@ -1749,7 +1765,7 @@ float NavigationSystem::remainingDistance(ecs::Entity agent_entity) const {
     const auto it = impl_->agents.find(agent_entity.handle());
     if (it == impl_->agents.end() || !it->second.has_target) return 0.0f;
     const std::vector<Vec3> corners = impl_->cornersOf(it->second, 64);
-    if (corners.size() < 2) return core::length(it->second.target - agent_entity.worldPosition());
+    if (corners.size() < 2) return core::length(impl_->fromNav(it->second.target) - agent_entity.worldPosition());
     float total = 0.0f;
     for (std::size_t i = 1; i < corners.size(); ++i) total += core::length(corners[i] - corners[i - 1]);
     return total;
@@ -1766,7 +1782,16 @@ Vec3 NavigationSystem::agentVelocity(ecs::Entity agent_entity) const {
 std::vector<Vec3> NavigationSystem::agentPath(ecs::Entity agent_entity) const {
     const auto it = impl_->agents.find(agent_entity.handle());
     if (it == impl_->agents.end() || !it->second.has_target) return {};
-    return impl_->cornersOf(it->second, 64);
+    std::vector<Vec3> corners = impl_->cornersOf(it->second, 64);
+    for (Vec3& c : corners) c = impl_->fromNav(c);
+    return corners;
 }
+
+void NavigationSystem::shiftOrigin(const Vec3& offset) {
+    // La malla y los agentes siguen en espacio nav: solo cambia la conversion.
+    impl_->nav_offset = impl_->nav_offset + offset;
+}
+
+Vec3 NavigationSystem::navToLocal() const { return Vec3{} - impl_->nav_offset; }
 
 }  // namespace cramion::navigation

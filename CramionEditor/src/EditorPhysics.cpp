@@ -193,7 +193,9 @@ void EditorApp::exitPlay() {
     play_state_ = PlayState::Edit;
     collider_handle_drag_ = 0;
     // El mundo vuelve a como estaba al darle a Play (la seleccion va por UUID).
+    const ecs::DVec3 origin_before = world_.origin();
     ecs::deserializeWorld(world_, play_snapshot_);
+    alignOriginAfterLoad(origin_before);
     play_snapshot_.clear();
     dirty_ = play_dirty_before_;
     physics_.start(world_);
@@ -230,9 +232,11 @@ void EditorApp::updateScriptsAndAudio(float delta_seconds, int physics_steps) {
         std::string error;
         nav_.clear();  // otro nivel: otra malla
         stopVoxels();
+        const ecs::DVec3 origin_before = world_.origin();
         if (!ecs::loadScene(world_, next, &error)) {
             std::cerr << "[Scene.load] " << next.string() << ": " << error << "\n";
         }
+        alignOriginAfterLoad(origin_before);
         ecs::syncOutdatedInstances(world_, [&](const Uuid& id) { return prefabText(id); });
         renderer_.invalidateHistory();
         clearSelection();

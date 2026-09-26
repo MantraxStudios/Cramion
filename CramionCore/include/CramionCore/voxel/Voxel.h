@@ -179,6 +179,11 @@ public:
     void start(ecs::World& world);
     void stop();
     bool active() const;
+    // Origen flotante (ecs/FloatingOrigin.h): el mundo se desplazo -offset
+    // (multiplo entero de metros). Los bloques y las partidas guardadas
+    // siguen en coordenadas absolutas; la API (getBlock, raycast, moveBox...)
+    // trabaja en las locales del mundo, las mismas que los Transform.
+    void shiftOrigin(const core::Vec3& offset);
     const VoxelWorld& settings() const;
 
     // Cada frame: carga/descarga chunks alrededor de `viewer`, recoge lo que

@@ -185,6 +185,13 @@ public:
     // --- Consultas (mundo) ---
     // Camino por la malla (puntos de giro, del inicio al final). false si no
     // hay. `partial`: si el destino no se alcanza, hasta lo mas cerca.
+    // Origen flotante (ecs/FloatingOrigin.h): el mundo se desplazo -offset.
+    // La malla no se rehace: vive en su propio espacio y las consultas
+    // convierten al entrar y al salir.
+    void shiftOrigin(const core::Vec3& offset);
+    // Lo que hay que sumar a debugMesh() para llevarlo al espacio del mundo.
+    core::Vec3 navToLocal() const;
+
     bool findPath(const core::Vec3& from, const core::Vec3& to, std::vector<core::Vec3>& path,
                   bool* partial = nullptr) const;
     // Punto de la malla mas cercano (buscando `extent` m alrededor).

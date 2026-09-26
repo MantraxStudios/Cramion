@@ -90,6 +90,10 @@ public:
 
     VoxelStats stats() const;
     bool empty() const { return sections_.empty(); }
+    // Origen flotante: las secciones ya subidas, -offset.
+    void shiftOrigin(const core::Vec3& offset) {
+        for (auto& [key, section] : sections_) section.origin = section.origin - offset;
+    }
 
 private:
     struct Allocation {

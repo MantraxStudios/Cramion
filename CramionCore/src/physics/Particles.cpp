@@ -281,6 +281,16 @@ void ParticleWorld::update(ecs::World& world, float delta_seconds, PhysicsSystem
     }
 }
 
+void ParticleWorld::shiftOrigin(const core::Vec3& offset) {
+    for (auto& [handle, emitter] : emitters_) {
+        emitter.matrix.m[3][0] -= offset.x;
+        emitter.matrix.m[3][1] -= offset.y;
+        emitter.matrix.m[3][2] -= offset.z;
+        if (!emitter.world_space) continue;  // en local: siguen al emisor
+        for (Particle& p : emitter.particles) p.position = p.position - offset;
+    }
+}
+
 void ParticleWorld::clear() {
     emitters_.clear();
 }

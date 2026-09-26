@@ -1917,6 +1917,33 @@ void PhysicsSystem::removeStaticMesh(std::uint64_t key) {
     d.static_meshes.erase(it);
 }
 
+void PhysicsSystem::shiftOrigin(const core::Vec3& offset) {
+    Impl& d = *impl_;
+    const auto shift_matrix = [&](core::Mat4& m) {
+        m.m[3][0] -= offset.x;
+        m.m[3][1] -= offset.y;
+        m.m[3][2] -= offset.z;
+    };
+    for (auto& [handle, entry] : d.entries) {
+        entry.position = entry.position - offset;
+        entry.previous_position = entry.previous_position - offset;
+        entry.current_position = entry.current_position - offset;
+        shift_matrix(entry.matrix);
+    }
+    for (auto& [key, mesh] : d.static_meshes) mesh.origin = mesh.origin - offset;
+    d.queries.clear();
+    if (d.system == nullptr) return;
+    // Todos los cuerpos (tambien los de las mallas estaticas y las ruedas):
+    // SetPosition conserva la velocidad y no los despierta.
+    JPH::BodyIDVector ids;
+    d.system->GetBodies(ids);
+    JPH::BodyInterface& bodies = d.bodies();
+    const JPH::Vec3 delta = toJolt(offset);
+    for (const JPH::BodyID& id : ids) {
+        bodies.SetPosition(id, bodies.GetPosition(id) - JPH::RVec3(delta), JPH::EActivation::DontActivate);
+    }
+}
+
 void PhysicsSystem::clearStaticMeshes() {
     Impl& d = *impl_;
     for (auto& [key, mesh] : d.static_meshes) d.destroyStaticBody(mesh);

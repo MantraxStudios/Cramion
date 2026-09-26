@@ -64,6 +64,18 @@ FetchContent_Declare(stb
 
 FetchContent_MakeAvailable(assimp stb)
 
+# meshoptimizer (MIT): simplificacion de mallas para los LODs automaticos.
+FetchContent_Declare(meshoptimizer
+    GIT_REPOSITORY https://github.com/zeux/meshoptimizer.git
+    GIT_TAG v1.3
+    GIT_SHALLOW TRUE
+)
+FetchContent_MakeAvailable(meshoptimizer)
+set_target_properties(meshoptimizer PROPERTIES SYSTEM TRUE)
+# Optimizado tambien en Debug: simplificar un escaneo de 2 M de triangulos sin
+# optimizar tarda decenas de segundos.
+target_compile_options(meshoptimizer PRIVATE -O2)
+
 # AMD FidelityFX Super Resolution 1 (MIT): solo las cabeceras de shader
 # (ffx_a.h, ffx_fsr1.h), que incluyen fsr_easu.frag y fsr_rcas.frag.
 FetchContent_Declare(fidelityfx_fsr1
@@ -116,6 +128,7 @@ target_link_libraries(CramionFX
         "${CMAKE_CURRENT_SOURCE_DIR}/vendor/lib/vulkan-1.lib"
     PRIVATE
         assimp::assimp
+        meshoptimizer
 )
 
 target_compile_definitions(CramionFX PUBLIC

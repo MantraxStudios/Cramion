@@ -61,7 +61,7 @@ void main() {
     vec3 near_point = worldFromDepth(v_uv, 0.0);
     vec3 normal;
     float jacobian;
-    vec3 wave = gerstnerWaves(b, near_point.xz, t, 0.0, normal, jacobian);
+    vec3 wave = gerstnerWaves(b, near_point.xz - b.origin.xz, t, 0.0, normal, jacobian);
     if (near_point.y > b.origin.y + wave.y) discard;
 
     ivec2 pixel = ivec2(gl_FragCoord.xy);

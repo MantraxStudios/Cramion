@@ -75,8 +75,19 @@ struct PostProcessSettings {
     bool global_illumination = true;
     bool reflections = true;
     bool volumetric_light = true;
+    // Sombras de contacto del sol (rayo corto en pantalla): sombras pequenas
+    // que las cascadas no resuelven. Largo del rayo en metros.
+    bool contact_shadows = true;
+    float contact_shadow_length = 0.5f;
     float volumetric_density = 0.02f;
     float volumetric_anisotropy = 0.6f;
+
+    // --- Rendimiento ---
+    // LODs automaticos: cada objeto estatico se dibuja (tambien en las
+    // sombras) con el nivel mas simple cuyo error en pantalla no pasa de
+    // `lod_pixel_error` pixeles. Mas alto = mas rapido y menos detalle lejos.
+    bool lods = true;
+    float lod_pixel_error = 1.0f;
 };
 
 }  // namespace cramion::gfx

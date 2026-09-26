@@ -215,7 +215,7 @@ void recordOverrides(World& world, Entity root, const std::string& text) {
         const Entity e = it->second;
         const bool is_root = e == root;
         const json mine = entityRecord(world, e, true);
-        for (const char* key : {"name", "active", "tag", "layer"}) {
+        for (const char* key : {"name", "active", "tag", "layer", "static"}) {
             if (is_root && std::string(key) == "name") continue;  // el nombre de la raiz es de la instancia
             if (mine.value(key, json()) != record.value(key, json())) overrides.insert(source + "|#" + key);
         }
@@ -273,6 +273,7 @@ void syncInstance(World& world, Entity root, const std::string& text) {
         if (!overridden(source + "|#active")) info.active = record.value("active", info.active);
         if (!overridden(source + "|#tag")) info.tag = record.value("tag", info.tag);
         if (!overridden(source + "|#layer")) info.layer = record.value("layer", info.layer);
+        if (!overridden(source + "|#static")) info.is_static = record.value("static", false);
         if (!is_root) {
             const auto parent = resolved.find(parent_source);
             if (parent != resolved.end() && e.parent() != parent->second) e.setParent(parent->second, false);

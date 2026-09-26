@@ -129,18 +129,23 @@ void EditorApp::drawNavigationGizmos() {
 
     // --- La malla (cache: solo se rehace cuando cambia) ---
     const navigation::NavDebugMesh& mesh = nav_.debugMesh();
-    if (mesh.version != nav_draw_version_) {
+    // La malla vive en su propio espacio (origen flotante): se lleva al del mundo.
+    const Vec3 nav_to_local = nav_.navToLocal();
+    const bool moved = nav_to_local.x != nav_draw_offset_.x || nav_to_local.y != nav_draw_offset_.y ||
+                       nav_to_local.z != nav_draw_offset_.z;
+    if (mesh.version != nav_draw_version_ || moved) {
         nav_draw_version_ = mesh.version;
+        nav_draw_offset_ = nav_to_local;
         nav_draw_triangles_.clear();
         nav_draw_edges_.clear();
         nav_draw_triangles_.reserve(mesh.triangles.size());
         for (std::size_t i = 0; i < mesh.triangles.size(); ++i) {
             const std::size_t triangle = i / 3;
             const bool avoid = triangle < mesh.triangle_area.size() && mesh.triangle_area[triangle] == 1;
-            nav_draw_triangles_.push_back({mesh.triangles[i], avoid ? kNavAvoidFill : kNavFill});
+            nav_draw_triangles_.push_back({mesh.triangles[i] + nav_to_local, avoid ? kNavAvoidFill : kNavFill});
         }
         nav_draw_edges_.reserve(mesh.edges.size());
-        for (const Vec3& p : mesh.edges) nav_draw_edges_.push_back({p, kNavEdge});
+        for (const Vec3& p : mesh.edges) nav_draw_edges_.push_back({p + nav_to_local, kNavEdge});
     }
     overlay_.triangles.insert(overlay_.triangles.end(), nav_draw_triangles_.begin(), nav_draw_triangles_.end());
     overlay_.lines.insert(overlay_.lines.end(), nav_draw_edges_.begin(), nav_draw_edges_.end());

@@ -6,6 +6,11 @@
 
 #include "CramionCore/ecs/Components.h"
 #include "CramionCore/ecs/RuntimeMesh.h"
+#include "CramionCore/ecs/SceneSerializer.h"
+#include "CramionCore/ecs/StaticBatching.h"
+#include "CramionCore/ecs/FloatingOrigin.h"
+#include "CramionCore/asset/AssetDatabase.h"
+#include "CramionCore/asset/AssetManager.h"
 #include "CramionCore/ecs/World.h"
 #include "CramionCore/physics/PhysicsComponents.h"
 #include "CramionCore/physics/PhysicsSystem.h"
@@ -19,7 +24,9 @@
 
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <filesystem>
+#include <string>
 #include <fstream>
 
 using namespace cramion;
@@ -401,15 +408,271 @@ void testImportProgress() {
     std::filesystem::remove_all(root, ec);
 }
 
+// Static batching (exportar): cubos Static en un lote, un espejo sigue con
+// las caras hacia fuera, lo que se mueve o no es Static no entra.
+void testStaticBatching() {
+    std::printf("\n[Static batching]\n");
+    physics::registerPhysicsComponents();
+    std::error_code ec;
+    const std::filesystem::path root = std::filesystem::temp_directory_path() / "CramionStaticBatchTest";
+    std::filesystem::remove_all(root, ec);
+    std::filesystem::create_directories(root / "Assets", ec);
+    assets::AssetDatabase database;
+    database.open(root / "Assets");
+
+    ecs::World world;
+    const auto cube = [&](const char* name, const Vec3& position, const Vec3& scale, bool is_static) {
+        ecs::Entity e = world.create(name);
+        e.setLocalPosition(position);
+        e.setLocalScale(scale);
+        e.get<ecs::EntityInfo>().is_static = is_static;
+        e.add<ecs::MeshRenderer>().model = assets::AssetRef{assets::builtin::kCube, assets::AssetType::Model};
+        return e;
+    };
+    ecs::Entity a = cube("A", Vec3{0.0f, 0.0f, 0.0f}, Vec3{1.0f, 1.0f, 1.0f}, true);
+    ecs::Entity b = cube("B", Vec3{5.0f, 0.0f, 0.0f}, Vec3{2.0f, 1.0f, 1.0f}, true);
+    ecs::Entity mirror = cube("Espejo", Vec3{0.0f, 0.0f, 5.0f}, Vec3{-1.0f, 1.0f, 1.0f}, true);
+    ecs::Entity loose = cube("NoStatic", Vec3{9.0f, 0.0f, 0.0f}, Vec3{1.0f, 1.0f, 1.0f}, false);
+    ecs::Entity falling = cube("ConRigidbody", Vec3{0.0f, 5.0f, 0.0f}, Vec3{1.0f, 1.0f, 1.0f}, true);
+    falling.add<physics::Rigidbody>();
+
+    const std::filesystem::path file = root / "Assets" / "batch.crdata";
+    ecs::StaticBatchReport report;
+    const bool ok = ecs::buildStaticBatch(world, database, file, ecs::StaticBatchOptions{}, report);
+    std::printf("  %s\n", report.message.c_str());
+    check(ok && std::filesystem::exists(file), "escribe el lote");
+    check(report.combined == 3 && report.kept_movable == 1, "combina los 3 Static quietos, no el del Rigidbody");
+    check(report.draws_before == 1 && report.draws_after == 1, "mismo material: una llamada");
+    check(a.get<ecs::EntityInfo>().static_batched && b.get<ecs::EntityInfo>().static_batched &&
+              mirror.get<ecs::EntityInfo>().static_batched,
+          "marca los originales");
+    check(!loose.get<ecs::EntityInfo>().static_batched && !falling.get<ecs::EntityInfo>().static_batched,
+          "no toca los que no entran");
+    const ecs::Entity batch = world.findByName("Static Batch");
+    check(batch.valid() && batch.has<ecs::MeshRenderer>(), "anade la entidad del lote");
+
+    database.refresh();
+    const auto info = database.find(batch.get<ecs::MeshRenderer>().model.uuid);
+    const auto model = info ? assets::AssetManager::readModel(info->uuid, info->path, info->name) : nullptr;
+    check(model && model->parts.size() == 1, "el lote se lee como un modelo");
+    if (model && !model->parts.empty()) {
+        const asset::ModelData& part = *model->parts[0];
+        check(part.indices.size() / 3 == 3 * 12, "36 triangulos (3 cubos)");
+        bool faces = true;
+        float max_x = -1e9f;
+        for (std::size_t i = 0; i + 2 < part.indices.size(); i += 3) {
+            const auto& va = part.vertices[part.indices[i]];
+            const auto& vb = part.vertices[part.indices[i + 1]];
+            const auto& vc = part.vertices[part.indices[i + 2]];
+            const Vec3 face = core::cross(vb.position - va.position, vc.position - va.position);
+            if (core::dot(face, va.normal + vb.normal + vc.normal) <= 0.0f) faces = false;
+            max_x = std::max({max_x, va.position.x, vb.position.x, vc.position.x});
+        }
+        check(faces, "caras hacia fuera (tambien el espejo)");
+        check(std::abs(max_x - 6.0f) < 1e-4f, "vertices en el mundo (B llega a x = 6)");
+    }
+
+    // El marcador sobrevive a guardar y abrir la escena.
+    ecs::World copy;
+    ecs::deserializeWorld(copy, ecs::serializeWorld(world));
+    const ecs::Entity a2 = copy.findByName("A");
+    check(a2.valid() && a2.get<ecs::EntityInfo>().is_static && a2.get<ecs::EntityInfo>().static_batched,
+          "Static y static_batched se guardan en la escena");
+
+    // Repetida y "grande" (copias x vertices por encima del tope): se queda
+    // instanciada, no se copia.
+    {
+        ecs::World repeated;
+        for (int i = 0; i < 2; ++i) {
+            ecs::Entity e = repeated.create("Copia");
+            e.setLocalPosition(Vec3{static_cast<float>(i) * 3.0f, 0.0f, 0.0f});
+            e.get<ecs::EntityInfo>().is_static = true;
+            e.add<ecs::MeshRenderer>().model = assets::AssetRef{assets::builtin::kCube, assets::AssetType::Model};
+        }
+        ecs::StaticBatchOptions tight;
+        tight.max_copied_vertices = 40;  // 2 cubos x 24 vertices = 48
+        ecs::StaticBatchReport r;
+        check(!ecs::buildStaticBatch(repeated, database, root / "Assets" / "rep.crdata", tight, r) &&
+                  r.kept_instanced == 2,
+              "malla repetida y grande: se queda instanciada");
+    }
+
+    ecs::StaticBatchReport again;
+    check(!ecs::buildStaticBatch(copy, database, root / "Assets" / "otra.crdata", ecs::StaticBatchOptions{}, again) &&
+              !std::filesystem::exists(root / "Assets" / "otra.crdata"),
+          "no se combina dos veces");
+    std::filesystem::remove_all(root, ec);
+}
+
+// Origen flotante: el mundo se desplaza sin que nada cambie de sitio de
+// verdad (entidades, escena guardada, cuerpos de la fisica).
+void testFloatingOrigin() {
+    std::printf("\n[Origen flotante]\n");
+    ecs::World world;
+    ecs::Entity far_entity = world.create("Lejos");
+    far_entity.setLocalPosition(Vec3{5000.0f, 10.0f, -3000.0f});
+    ecs::Entity child = world.create("Hijo", far_entity);
+    child.setLocalPosition(Vec3{1.0f, 0.0f, 0.0f});
+
+    check(!ecs::updateFloatingOrigin(world, Vec3{100.0f, 0.0f, 0.0f}), "cerca del origen no se desplaza");
+    const std::optional<Vec3> offset = ecs::updateFloatingOrigin(world, Vec3{5000.0f, 10.0f, -3000.0f});
+    check(offset && offset->x == 5120.0f && offset->y == 0.0f && offset->z == -3072.0f,
+          "se desplaza en pasos de 1024 m");
+    const Vec3 local = far_entity.localPosition();
+    check(local.x == -120.0f && local.y == 10.0f && local.z == 72.0f, "la raiz queda cerca del origen");
+    const ecs::DVec3 real = world.absolute(far_entity.worldPosition());
+    check(real.x == 5000.0 && real.y == 10.0 && real.z == -3000.0, "misma posicion real (doble precision)");
+    check(child.localPosition().x == 1.0f, "los hijos no cambian (son relativos al padre)");
+
+    ecs::World copy;
+    ecs::deserializeWorld(copy, ecs::serializeWorld(world));
+    const ecs::Entity far_copy = copy.findByName("Lejos");
+    check(copy.origin() == world.origin() && far_copy.valid() && far_copy.localPosition().x == -120.0f,
+          "la escena guarda el origen y las posiciones relativas");
+
+    // Un cuerpo dinamico que cae: sigue su camino al desplazar el mundo.
+    physics::registerPhysicsComponents();
+    ecs::World pw;
+    ecs::Entity box = pw.create("Caja");
+    box.setLocalPosition(Vec3{3000.0f, 50.0f, 0.0f});
+    box.add<physics::Rigidbody>();
+    box.add<physics::BoxCollider>();
+    physics::PhysicsSystem physics;
+    physics.start(pw);
+    for (int i = 0; i < 30; ++i) physics.update(pw, 1.0f / 60.0f);
+    const ecs::DVec3 before = pw.absolute(box.worldPosition());
+    const float speed_before = physics.linearVelocity(box).y;
+    const std::optional<Vec3> shift = ecs::updateFloatingOrigin(pw, box.worldPosition());
+    if (shift) physics.shiftOrigin(*shift);
+    physics.update(pw, 1.0f / 60.0f);
+    const ecs::DVec3 after = pw.absolute(box.worldPosition());
+    check(shift.has_value() && std::abs(box.worldPosition().x) < 1024.0f, "la caja queda cerca del origen");
+    check(std::abs(after.x - before.x) < 0.01 && after.y < before.y && before.y - after.y < 0.2,
+          "la fisica sigue igual (misma posicion real, sigue cayendo)");
+    check(std::abs(physics.linearVelocity(box).y - speed_before) < 0.5f, "conserva la velocidad");
+    physics.stop();
+}
+
 }  // namespace
 
+// LODs automaticos: un terreno ondulado (malla cerrada) mas cientos de
+// briznas sueltas, como un modelo de hierba.
+void testLods() {
+    std::printf("\nLODs automaticos\n");
+    asset::ModelData model{};
+    model.name = "lod_test";
+    model.bones.resize(1);
+    model.materials.resize(2);
+    constexpr int kGrid = 160;
+    for (int z = 0; z <= kGrid; ++z) {
+        for (int x = 0; x <= kGrid; ++x) {
+            asset::SkinnedVertex v{};
+            v.position = Vec3{static_cast<float>(x) * 0.1f, std::sin(x * 0.07f) * std::cos(z * 0.05f),
+                              static_cast<float>(z) * 0.1f};
+            v.normal = Vec3{0, 1, 0};
+            v.weights[0] = 1.0f;
+            model.vertices.push_back(v);
+        }
+    }
+    for (int z = 0; z < kGrid; ++z) {
+        for (int x = 0; x < kGrid; ++x) {
+            const auto a = static_cast<std::uint32_t>(z * (kGrid + 1) + x);
+            const std::uint32_t b = a + 1;
+            const auto c = static_cast<std::uint32_t>(a + kGrid + 1);
+            const std::uint32_t d = c + 1;
+            for (const std::uint32_t i : {a, c, b, b, c, d}) model.indices.push_back(i);
+        }
+    }
+    const auto terrain_indices = static_cast<std::uint32_t>(model.indices.size());
+    // Briznas: 2 triangulos cada una, sin compartir vertices.
+    for (int blade = 0; blade < 3000; ++blade) {
+        const float bx = static_cast<float>(blade % 60) * 0.26f;
+        const float bz = static_cast<float>(blade / 60) * 0.31f;
+        const auto base = static_cast<std::uint32_t>(model.vertices.size());
+        for (int k = 0; k < 4; ++k) {
+            asset::SkinnedVertex v{};
+            v.position = Vec3{bx + (k & 1 ? 0.02f : 0.0f), 2.0f + (k & 2 ? 0.3f : 0.0f), bz};
+            v.normal = Vec3{0, 0, 1};
+            v.weights[0] = 1.0f;
+            model.vertices.push_back(v);
+        }
+        for (const std::uint32_t i : {0u, 2u, 1u, 1u, 2u, 3u}) model.indices.push_back(base + i);
+    }
+    asset::SubMesh terrain{};
+    terrain.index_count = terrain_indices;
+    asset::SubMesh grass{};
+    grass.first_index = terrain_indices;
+    grass.index_count = static_cast<std::uint32_t>(model.indices.size()) - terrain_indices;
+    grass.material = 1;
+    model.submeshes = {terrain, grass};
+    asset::clusterSubmeshes(model);
+
+    const std::size_t levels = asset::generateLods(model);
+    check(levels >= 3, "genera al menos 3 niveles");
+    std::size_t previous = model.indices.size() / 3;
+    bool decreasing = true;
+    bool in_range = true;
+    bool errors_grow = true;
+    bool bounds_ok = true;
+    bool both_materials = true;
+    float previous_error = 0.0f;
+    for (const asset::MeshLod& lod : model.lods) {
+        std::size_t triangles = 0;
+        bool has[2] = {false, false};
+        for (const asset::SubMesh& submesh : lod.submeshes) {
+            triangles += submesh.index_count / 3;
+            if (submesh.material < 2) has[submesh.material] = true;
+            if (submesh.first_index + submesh.index_count > model.lod_indices.size()) in_range = false;
+            if (submesh.bounds_min.x > submesh.bounds_max.x) bounds_ok = false;
+            for (std::uint32_t i = 0; in_range && i < submesh.index_count; ++i) {
+                if (model.lod_indices[submesh.first_index + i] >= model.vertices.size()) in_range = false;
+            }
+        }
+        decreasing = decreasing && triangles < previous;
+        errors_grow = errors_grow && lod.error >= previous_error;
+        both_materials = both_materials && has[0];
+        std::printf("    LOD: %zu triangulos, error %.4f\n", triangles, lod.error);
+        previous = triangles;
+        previous_error = lod.error;
+    }
+    check(decreasing, "cada nivel tiene menos triangulos que el anterior");
+    check(in_range, "los indices de los LODs estan dentro del buffer y de los vertices");
+    check(errors_grow, "el error crece con el nivel");
+    check(bounds_ok && both_materials, "cada nivel conserva el terreno con sus cajas");
+    check(model.lods.empty() || model.lods[0].submeshes.size() >= 2, "el LOD1 sigue partido en clusteres");
+
+    // Un modelo animado (o pequeno) no tiene LODs.
+    asset::ModelData small{};
+    small.vertices.resize(3);
+    small.indices = {0, 1, 2};
+    small.submeshes = {asset::SubMesh{0, 3, 0}};
+    check(asset::generateLods(small) == 0 && small.lods.empty(), "un modelo pequeno no genera LODs");
+
+    // Modelos reales (opcional): CRAMION_LOD_FILES="a.crdata;b.crdata".
+    if (const char* files = std::getenv("CRAMION_LOD_FILES")) {
+        std::string list(files);
+        std::size_t start = 0;
+        while (start < list.size()) {
+            std::size_t end = list.find(';', start);
+            if (end == std::string::npos) end = list.size();
+            const std::filesystem::path file = list.substr(start, end - start);
+            start = end + 1;
+            const auto loaded = assets::AssetManager::readModel(Uuid{}, file, file.stem().string(), false);
+            check(loaded != nullptr, "carga el modelo real");
+        }
+    }
+}
+
 int main() {
+    testLods();
     testPrimitives();
     testEditing();
     testLuaAndPhysics();
     testMaterials();
     testClusters();
     testImportProgress();
+    testStaticBatching();
+    testFloatingOrigin();
     std::printf("\n%d comprobaciones, %d fallos\n", checks, failures);
     return failures == 0 ? 0 : 1;
 }

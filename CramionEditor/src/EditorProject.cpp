@@ -489,9 +489,11 @@ void EditorApp::browserClick(const BrowserItem& item, std::size_t index) {
     } else {
         browser_selection_ = {key};
     }
-    // Un material elegido se ve y se edita en el Inspector.
+    // Un material elegido se ve y se edita en el Inspector, pero al SOLTAR
+    // sin arrastrar (como Unity): si se arrastra a los objetos seleccionados
+    // en la Jerarquia, el Inspector no debe cambiar ni perder esa seleccion.
     if (item.kind == Kind::Asset && item.info.type == assets::AssetType::Material && !io.KeyCtrl && !io.KeyShift) {
-        inspected_material_ = item.info.uuid;
+        pending_inspect_material_ = item.info.uuid;
     }
 }
 
@@ -664,6 +666,11 @@ void EditorApp::browserItemMenu(const BrowserItem& item) {
                     break;
                 case assets::AssetType::Model:
                     if (ImGui::MenuItem("Poner en la escena")) instantiateAsset(info.uuid, {}, std::nullopt);
+                    if (ImGui::MenuItem("Reimportar (combinar mallas)")) startReimport(info.uuid);
+                    ImGui::SetItemTooltip("Lo vuelve a importar desde el archivo original. Si tiene muchas piezas\n"
+                                          "(una palmera con cada hoja suelta) las junta por material: muchos\n"
+                                          "menos objetos y mucho menos coste de CPU. Rehace sus instancias\n"
+                                          "en la escena conservando posicion, materiales y Static.");
                     if (ImGui::BeginMenu("Animaciones")) {
                         drawModelAssetAnimationsMenu(info);
                         ImGui::EndMenu();

@@ -194,6 +194,10 @@ public:
     void start(ecs::World& world);
     void stop();
     bool running() const;
+    // Origen flotante (ecs/FloatingOrigin.h): el mundo se desplazo -offset;
+    // todos los cuerpos de Jolt (con su velocidad) y lo que guarda en coordenadas del mundo se mueve igual.
+    void shiftOrigin(const core::Vec3& offset);
+
 
     // Lleva el mundo fisico al World y, si `simulate`, avanza `delta_seconds`
     // en pasos fijos (acumulador) y vuelca los resultados en los Transform.

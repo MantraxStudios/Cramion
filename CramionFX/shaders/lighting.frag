@@ -71,7 +71,7 @@ layout(set = 0, binding = 4) uniform LightBuffer {
     SpotLightGpu spots[kMaxSpotLights];
     vec4 probes[2];                // cubos de la sonda: xyz = centro, w = peso (0 = sin usar)
     vec4 clouds;                   // x = 1 si hay nubes volumetricas
-    vec4 environment;              // x = 1 si el cielo es el mapa HDR (environment_hdr),
+    vec4 environment;              // z = largo de las sombras de contacto (m, 0 = no); x = 1 si el cielo es el mapa HDR (environment_hdr),
                                    // y = 1 si hay luz volumetrica (volumetric_map)
 } lights;
 
@@ -251,8 +251,13 @@ vec3 fresnelSchlick(float cosine, vec3 f0) {
 // que el especular se multiplica por pi para quedar en la misma escala.
 // `f0`: reflectancia a incidencia normal (la del material si es dielectrico,
 // su color si es metal).
+// `energy`: compensacion de dispersion multiple (ver energyCompensation).
+// `light_size`: tangente del radio angular de la luz (el sol: 0.0047). Una
+// luz con tamano no hace un brillo infinitamente pequeno en una superficie
+// pulida: se ensancha la distribucion y se normaliza (Karis 2013), sin
+// puntos blancos que parpadean.
 vec3 shade(vec3 light_direction, vec3 radiance, vec3 normal, vec3 view_direction, vec3 albedo,
-           float roughness, float metallic, vec3 f0) {
+           float roughness, float metallic, vec3 f0, vec3 energy, float light_size) {
     float n_dot_l = max(dot(normal, light_direction), 0.0);
     if (n_dot_l <= 0.0) {
         return vec3(0.0);
@@ -265,9 +270,11 @@ vec3 shade(vec3 light_direction, vec3 radiance, vec3 normal, vec3 view_direction
 
     // Metales: nada de difuso.
     float alpha = max(roughness * roughness, 0.002);
+    float alpha_light = min(alpha + light_size * 0.5, 1.0);
+    float size_normalization = (alpha / alpha_light) * (alpha / alpha_light);
     vec3 fresnel = fresnelSchlick(v_dot_h, f0);
-    vec3 specular = distributionGgx(n_dot_h, alpha) * visibilitySmith(n_dot_v, n_dot_l, alpha) *
-                    fresnel * kPi;
+    vec3 specular = distributionGgx(n_dot_h, alpha_light) * size_normalization *
+                    visibilitySmith(n_dot_v, n_dot_l, alpha) * fresnel * kPi * energy;
 
     // Lo que refleja el especular no entra en el difuso (conservacion).
     vec3 diffuse = albedo * (1.0 - fresnel) * (1.0 - metallic);
@@ -786,6 +793,58 @@ float heightFog(float distance_to_point, vec3 ray_direction) {
     return clamp(1.0 - exp(-density * integral), 0.0, 1.0);
 }
 
+// Compensacion de energia por dispersion multiple (Kulla-Conty; forma de
+// Fdez-Aguera como en Filament/Unreal). GGX con un solo rebote pierde la luz
+// que rebota varias veces entre microfacetas: en superficies rugosas (sobre
+// todo metales) se veian mas oscuras de lo que son. La LUT de la BRDF da la
+// energia que si refleja (A + B) y se devuelve el resto, tenido del color.
+vec3 energyCompensation(vec2 brdf, vec3 f0) {
+    return 1.0 + f0 * (1.0 / max(brdf.x + brdf.y, 0.001) - 1.0);
+}
+
+// Ruido de gradiente entrelazado (Jimenez 2014): desplaza el inicio de los
+// rayos por pixel; el TAA lo promedia.
+float interleavedGradientNoise(vec2 pixel) {
+    return fract(52.9829189 * fract(dot(pixel, vec2(0.06711056, 0.00583715))));
+}
+
+// Sombras de contacto en pantalla (las "contact shadows" de Unreal): un rayo
+// corto hacia el sol sobre el depth buffer. Las cascadas no tienen detalle
+// para las sombras pequenas (los pies en el suelo, piedras, huecos entre
+// objetos): esto las anade donde la camara esta cerca. 12 pasos, solo para
+// el sol, solo a menos de 60 m y solo si la cascada no lo ha oscurecido ya.
+// Devuelve 1 = iluminado. El rayo crece con la distancia para verse igual
+// en pantalla; la sombra se aclara hacia el final del rayo (penumbra).
+float contactShadow(vec3 world_position, vec3 to_light, float view_distance) {
+    float ray_length = lights.environment.z;
+    if (ray_length <= 0.0 || view_distance > 60.0) return 1.0;
+    ray_length *= 1.0 + view_distance * 0.03;
+    const int kSteps = 12;
+    float step_length = ray_length / float(kSteps);
+    float jitter = interleavedGradientNoise(gl_FragCoord.xy);
+    // Grosor supuesto de lo que tapa: sin el, todo lo que esta detras de un
+    // objeto (mas lejos en la pantalla) haria sombra.
+    float thickness = clamp(ray_length * 0.6, 0.05, 0.8);
+    for (int i = 0; i < kSteps; ++i) {
+        float t = (float(i) + jitter) * step_length + step_length * 0.5;
+        vec4 clip = camera.view_projection * vec4(world_position + to_light * t, 1.0);
+        if (clip.w <= 0.0) break;
+        vec2 uv = clip.xy / clip.w * 0.5 + 0.5;
+        if (any(lessThan(uv, vec2(0.0))) || any(greaterThan(uv, vec2(1.0)))) break;
+        float scene = linearDepth(textureLod(g_depth, uv, 0.0).r);
+        float difference = clip.w - scene;
+        // Sesgo que crece con la distancia (precision del depth).
+        if (difference > 0.01 + clip.w * 0.002 && difference < thickness) {
+            float along = t / ray_length;
+            // Suave en los bordes de la pantalla y hacia el final del rayo.
+            vec2 edge = min(uv, 1.0 - uv);
+            float edge_fade = clamp(min(edge.x, edge.y) * 20.0, 0.0, 1.0);
+            return mix(1.0, along * along, edge_fade);
+        }
+    }
+    return 1.0;
+}
+
 void main() {
     float depth = texture(g_depth, v_uv).r;
 
@@ -867,6 +926,7 @@ void main() {
         vec3 prefiltered = textureLod(environment_map, reflected,
                                       roughness * kEnvironmentMaxLod).rgb;
         vec2 brdf = texture(brdf_lut, vec2(n_dot_v, roughness)).rg;
+        vec3 energy = energyCompensation(brdf, f0);
         // Donde el SSR encontro algo, refleja la escena. Donde no (lo que
         // queda fuera de la pantalla o detras de la camara), la sonda de
         // reflexion, que es la escena vista desde cerca; sin sonda, el cielo
@@ -891,7 +951,11 @@ void main() {
         }
         vec4 ssr = texelFetch(ssr_map, ivec2(gl_FragCoord.xy), 0);
         vec3 reflected_light = mix(fallback, ssr.rgb, ssr.a);
-        vec3 specular_ibl = reflected_light * (f0 * brdf.x + brdf.y);
+        vec3 specular_ibl = reflected_light * (f0 * brdf.x + brdf.y) * energy;
+        // Oclusion del horizonte: con normal maps, el reflejo puede apuntar por
+        // debajo de la superficie real y traer luz que alli no llega.
+        float horizon = min(1.0 + dot(reflected, geometric_normal), 1.0);
+        specular_ibl *= horizon * horizon;
 
         // Oclusion especular (Lagarde): el especular se ocluye mas que el
         // difuso en angulos rasantes.
@@ -909,11 +973,17 @@ void main() {
             float geometric_n_dot_l = max(dot(geometric_normal, sun_direction), 0.0);
             shadow = shadowFactor(world_position, geometric_normal, geometric_n_dot_l,
                                   cascade_index);
+            // Detalle cercano que la cascada no resuelve.
+            if (shadow > 0.02) {
+                shadow *= contactShadow(world_position, sun_direction, distance_to_camera_z);
+            }
             shadow = mix(1.0, shadow, shadows.params.y);
         }
 
+        // El sol mide 0.53 grados: tangente de su radio angular.
+        const float kSunSize = 0.00465;
         color += shade(sun_direction, sun_radiance, normal, view_direction, albedo, roughness,
-                       metallic, f0) *
+                       metallic, f0, energy, kSunSize) *
                  shadow;
 
         // --- Luces puntuales ---
@@ -946,7 +1016,7 @@ void main() {
             }
 
             color += shade(light_direction, radiance, normal, view_direction, albedo, roughness,
-                           metallic, f0) *
+                           metallic, f0, energy, 0.0) *
                      point_shadow;
         }
 
@@ -991,7 +1061,7 @@ void main() {
             }
 
             color += shade(light_direction, radiance, normal, view_direction, albedo, roughness,
-                           metallic, f0) *
+                           metallic, f0, energy, 0.0) *
                      spot_shadow;
         }
 

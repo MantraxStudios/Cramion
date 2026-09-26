@@ -320,7 +320,20 @@ void World::clear() {
     registry_.clear();
     roots_.clear();
     uuid_map_.clear();
+    origin_ = DVec3{};
     ++structure_version_;
+}
+
+void World::shiftOrigin(const core::Vec3& offset) {
+    if (offset.x == 0.0f && offset.y == 0.0f && offset.z == 0.0f) return;
+    // Solo las raices: los hijos son relativos a su padre.
+    for (const entt::entity root : roots_) {
+        Entity e = wrap(root);
+        e.setLocalPosition(e.localPosition() - offset);
+    }
+    origin_.x += offset.x;
+    origin_.y += offset.y;
+    origin_.z += offset.z;
 }
 
 Entity World::find(const Uuid& uuid) const {

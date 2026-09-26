@@ -70,6 +70,15 @@ Quat worldRotation(ecs::Entity entity) {
 
 }  // namespace
 
+void CinematicSystem::shiftOrigin(const core::Vec3& offset) {
+    for (auto& [handle, state] : vcams_) {
+        state.position = state.position - offset;
+        state.output.position = state.output.position - offset;
+    }
+    blend_from_.position = blend_from_.position - offset;
+    output_.position = output_.position - offset;
+}
+
 void CinematicSystem::reset() {
     vcams_.clear();
     sequences_.clear();

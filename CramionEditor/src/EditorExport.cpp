@@ -15,9 +15,14 @@
 
 #include "Dialogs.h"
 
+#include <CramionCore/ecs/SceneSerializer.h>
+#include <CramionCore/ecs/StaticBatching.h>
+
 #include <imgui.h>
 #include <imgui_stdlib.h>
 
+#include <algorithm>
+#include <cctype>
 #include <fstream>
 #include <iostream>
 
@@ -165,6 +170,9 @@ void EditorApp::startExport(const std::filesystem::path& parent) {
     job->game_ini = "scene=" + assetRelative(first_scene) + "\n";
     job->game_folder = game;
     job->scene_name = dialogs::utf8(first_scene.filename());
+    job->static_batching = export_static_batching_;
+    job->assets_root = project_.assetsFolder();
+    job->batch_cache = project_.libraryFolder() / "ExportCache" / "StaticBatches";
 
     // --- El hilo que copia ---
     ExportJob* j = job.get();
@@ -204,6 +212,52 @@ void EditorApp::startExport(const std::filesystem::path& parent) {
                 std::lock_guard lock(j->mutex);
                 j->error = "No se pudo escribir " + dialogs::utf8(copy.to) + " (disco lleno?)";
                 break;
+            }
+        }
+        // Static batching: cada escena con objetos Static va al paquete como
+        // una copia con sus mallas combinadas (el proyecto no se toca).
+        if (j->static_batching && !j->cancel && j->error.empty()) {
+            assets::AssetDatabase database;
+            database.open(j->assets_root);
+            std::error_code e;
+            std::filesystem::remove_all(j->batch_cache, e);
+            std::filesystem::create_directories(j->batch_cache, e);
+            const std::size_t count = j->pack.size();
+            for (std::size_t i = 0; i < count && !j->cancel; ++i) {
+                std::string extension = dialogs::utf8(j->pack[i].source.extension());
+                std::transform(extension.begin(), extension.end(), extension.begin(),
+                               [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+                if (extension != ".crscene") continue;
+                const std::string scene_name = dialogs::utf8(j->pack[i].source.stem());
+                {
+                    std::lock_guard lock(j->mutex);
+                    j->current = "Combinando mallas estaticas: " + scene_name;
+                }
+                ecs::World world;
+                std::string error;
+                if (!ecs::loadScene(world, j->pack[i].source, &error)) {
+                    std::cerr << "[Exportar] No se pudo abrir " << scene_name << " para combinar: " << error << '\n';
+                    continue;
+                }
+                const std::string id = std::to_string(i) + "_" + safeFolderName(scene_name);
+                const std::filesystem::path model = j->batch_cache / dialogs::fromUtf8(id + ".crdata");
+                ecs::StaticBatchReport report;
+                if (!ecs::buildStaticBatch(world, database, model, ecs::StaticBatchOptions{}, report)) {
+                    std::cout << "[Exportar] " << scene_name << ": " << report.message << '\n';
+                    continue;
+                }
+                const std::filesystem::path scene = j->batch_cache / dialogs::fromUtf8(id + ".crscene");
+                if (!ecs::saveScene(world, scene, &error)) {
+                    std::cerr << "[Exportar] No se pudo guardar la escena combinada " << scene_name << ": " << error
+                              << '\n';
+                    std::filesystem::remove(model, e);
+                    continue;
+                }
+                j->total += std::filesystem::file_size(model, e);
+                j->pack[i].source = scene;
+                j->pack.push_back(project::PackInput{model, "Assets/_StaticBatches/" + id + ".crdata"});
+                std::cout << "[Exportar] Static batching en " << scene_name << ": " << report.message << '\n';
+                j->batch_summary += "\n" + scene_name + ": " + report.message;
             }
         }
         // Los assets al paquete (siempre se rehace: es rapido y asi nunca queda viejo).
@@ -271,6 +325,7 @@ void EditorApp::drawExportProgress() {
                 export_message_ = j.error;
             } else {
                 export_message_ = "Juego exportado en " + dialogs::utf8(j.target) + " (escena inicial: " + j.scene_name + ")";
+                if (!j.batch_summary.empty()) export_message_ += "\n\nStatic batching:" + j.batch_summary;
                 if (j.run_after) {
                     ShellExecuteW(nullptr, L"open", j.exe.wstring().c_str(), nullptr, j.target.wstring().c_str(), SW_SHOWNORMAL);
                 } else {
@@ -302,6 +357,12 @@ void EditorApp::drawExportProgress() {
         const std::filesystem::path parent = dialogs::fromUtf8(export_folder_);
         ImGui::TextDisabled("Se creara: %s", dialogs::utf8(parent / dialogs::fromUtf8(safeFolderName(project_.name))).c_str());
         ImGui::Checkbox("Ejecutar el juego al terminar", &export_run_after_);
+        ImGui::Checkbox("Combinar mallas estaticas (static batching)", &export_static_batching_);
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) {
+            ImGui::SetTooltip("Las mallas de los objetos marcados Static se combinan en un lote por escena:\n"
+                              "una llamada de dibujo por material, con el culling por zonas intacto.\n"
+                              "El proyecto no cambia: solo la copia que va al juego.");
+        }
         ImGui::Spacing();
         const float w = (ImGui::GetContentRegionAvail().x - ImGui::GetStyle().ItemSpacing.x) * 0.5f;
         ImGui::BeginDisabled(export_folder_.empty() || !parent.is_absolute());

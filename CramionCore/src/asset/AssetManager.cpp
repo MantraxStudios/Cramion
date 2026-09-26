@@ -10,7 +10,7 @@
 namespace cramion::assets {
 
 std::shared_ptr<ModelAsset> AssetManager::readModel(const Uuid& uuid, const std::filesystem::path& file,
-                                                   const std::string& name) {
+                                                   const std::string& name, bool decode_textures) {
     if (primitives::isBuiltin(uuid)) {
         return primitives::make(uuid);
     }
@@ -54,8 +54,11 @@ std::shared_ptr<ModelAsset> AssetManager::readModel(const Uuid& uuid, const std:
                       << " submallas). Reimporta el modelo para guardarlo asi.\n";
         }
         for (asset::ModelData& part : content.parts) {
+            // LODs automaticos (solo en memoria): los estaticos pesados se
+            // dibujan simplificados cuando la diferencia no se ve.
+            asset::generateLods(part);
             // Texturas incrustadas: se decodifican aqui (en paralelo).
-            asset::finalizeModel(part, name + "/" + part.name);
+            if (decode_textures) asset::finalizeModel(part, name + "/" + part.name);
             asset->parts.push_back(std::make_shared<asset::ModelData>(std::move(part)));
         }
     } catch (const std::exception& error) {

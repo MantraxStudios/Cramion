@@ -172,6 +172,16 @@ struct AnimationClip {
     std::vector<AnimationChannel> channels;
 };
 
+// Nivel de detalle simplificado (LOD1, LOD2...) de un modelo estatico. Usa los
+// mismos vertices; sus submallas (clusteres por material, con su caja) apuntan
+// a ModelData::lod_indices. `error`: cuanto se desvia como mucho de la malla
+// original, en unidades del modelo; el renderizador lo pasa a pixeles para
+// elegir el nivel.
+struct MeshLod {
+    std::vector<SubMesh> submeshes;
+    float error = 0.0f;
+};
+
 // Modelo completo en CPU, listo para subir a la GPU y animar.
 struct ModelData {
     std::string name;
@@ -186,7 +196,23 @@ struct ModelData {
     std::vector<Node> nodes;
     std::vector<Bone> bones;
     std::vector<AnimationClip> animations;
+
+    // LODs automaticos (generateLods): se crean al cargar, no se guardan en
+    // la cache ni en el .crdata. LOD0 son `indices`/`submeshes`.
+    std::vector<std::uint32_t> lod_indices;
+    std::vector<MeshLod> lods;
 };
+
+// Genera los LODs de un modelo estatico (sin animaciones, un hueso) con
+// meshoptimizer: cada nivel con ~la mitad de triangulos que el anterior,
+// quitando las piezas sueltas que ya no se ven (hojas, briznas). No hace nada
+// con modelos animados o de pocos triangulos. Devuelve los niveles creados.
+std::size_t generateLods(ModelData& model);
+
+// Parte en clusteres unas submallas cualesquiera (como clusterSubmeshes) y
+// calcula sus cajas. Para los LODs, que tienen sus propios indices.
+void clusterIndexRanges(const std::vector<SkinnedVertex>& vertices, std::vector<std::uint32_t>& indices,
+                        std::vector<SubMesh>& submeshes);
 
 // Carga un modelo (FBX y cualquier formato que tenga assimp activado) con su
 // esqueleto, sus animaciones y sus texturas, incrustadas o en archivos junto

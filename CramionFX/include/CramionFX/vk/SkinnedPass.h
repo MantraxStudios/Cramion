@@ -85,7 +85,7 @@ public:
     // Set 2 del vidrio: 0 camara, 1 luces, 2 cascadas (datos), 3 mapa de las
     // cascadas, 4 profundidad, 5 imagen HDR sin vidrio, 6 entorno IBL,
     // 7 y 8 cubos de la sonda de reflexion.
-    static constexpr std::uint32_t kGlassBindingCount = 9;
+    static constexpr std::uint32_t kGlassBindingCount = 10;  // 9 = luz volumetrica (la usa el agua)
     const vk::raii::DescriptorSetLayout& glassSetLayout() const { return glass_set_layout_; }
     const vk::raii::Pipeline& glassPipeline() const { return glass_pipeline_; }
 

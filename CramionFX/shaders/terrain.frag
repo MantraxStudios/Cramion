@@ -48,6 +48,9 @@ float valueNoise(vec2 p) {
 }
 
 void main() {
+    // Texturas y ruido relativos a la esquina del terreno: no saltan cuando el
+    // mundo se desplaza (origen flotante).
+    vec2 pattern_xz = v_world_position.xz - terrain.origin_size.xz;
     // --- Normal del terreno (diferencias centrales en la textura) ---
     float res = terrain.info.y;
     float step_uv = 1.0 / (res - 1.0);
@@ -81,17 +84,17 @@ void main() {
         float w = weights[i] / total;
         if (w < 0.002 || i >= layers) continue;
         vec4 p = terrain.layer_params[i];
-        vec2 uv = v_world_position.xz / p.x;
+        vec2 uv = pattern_xz / p.x;
         vec3 color;
         if (terrain.layer_tint[i].a > 0.5) {
             // Dos escalas mezcladas: la repeticion de la textura no se nota.
             vec3 near_color = texture(layer_albedo, vec3(uv, float(i))).rgb;
             vec3 far_color = texture(layer_albedo, vec3(uv * 0.23 + 0.37, float(i))).rgb;
-            float mix_amount = smoothstep(0.3, 0.7, valueNoise(v_world_position.xz * 0.05 + float(i) * 13.0));
+            float mix_amount = smoothstep(0.3, 0.7, valueNoise(pattern_xz * 0.05 + float(i) * 13.0));
             color = mix(near_color, far_color, mix_amount * 0.45);
         } else {
             // Sin textura: su color con una variacion suave (manchas).
-            float variation = valueNoise(v_world_position.xz * 0.35) * 0.6 + valueNoise(v_world_position.xz * 2.1) * 0.4;
+            float variation = valueNoise(pattern_xz * 0.35) * 0.6 + valueNoise(pattern_xz * 2.1) * 0.4;
             color = vec3(0.85 + 0.3 * variation);
         }
         albedo += color * terrain.layer_tint[i].rgb * w;

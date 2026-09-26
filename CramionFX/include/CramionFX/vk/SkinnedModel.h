@@ -63,6 +63,22 @@ public:
 
     const std::vector<asset::SubMesh>& submeshes() const { return submeshes_; }
 
+    // LODs automaticos (asset::generateLods): nivel 0 = submeshes(). Sus
+    // indices van en el mismo buffer, detras de los de LOD0.
+    struct Lod {
+        std::vector<asset::SubMesh> submeshes;
+        std::vector<std::uint32_t> groups;  // grupo de dibujo de cada una (kNoGroup: transparente)
+        float error = 0.0f;                 // unidades del modelo
+    };
+    std::uint32_t lodCount() const { return static_cast<std::uint32_t>(lods_.size()) + 1; }
+    const std::vector<Lod>& lods() const { return lods_; }
+    const std::vector<asset::SubMesh>& lodSubmeshes(std::uint32_t lod) const {
+        return lod == 0 ? submeshes_ : lods_[lod - 1].submeshes;
+    }
+    std::uint32_t lodSubmeshGroup(std::uint32_t lod, std::uint32_t submesh) const {
+        return lod == 0 ? submesh_groups_[submesh] : lods_[lod - 1].groups[submesh];
+    }
+
     // Sin animaciones: la pose no cambia y las cajas de las submallas valen.
     bool rigid() const { return rigid_; }
     const std::vector<Material>& materials() const { return materials_; }
@@ -88,6 +104,7 @@ private:
     bool rigid_ = false;
 
     std::vector<asset::SubMesh> submeshes_;
+    std::vector<Lod> lods_;
     std::vector<Material> materials_;
     std::vector<DrawGroup> draw_groups_;
     std::vector<std::uint32_t> submesh_groups_;

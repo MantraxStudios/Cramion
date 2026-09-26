@@ -12,9 +12,11 @@
 
 #include "ImGuiLayer.h"
 #include "LoadingScreen.h"
+#include "ProfilerOverlay.h"
 #include "UiRenderer.h"
 
 #include <CramionCore/CramionCore.h>
+#include <CramionCore/ecs/FloatingOrigin.h>
 #include <CramionCore/project/Pack.h>
 #include <CramionDM/CramionDM.h>
 #include <CramionFX/CramionFX.h>
@@ -23,15 +25,21 @@
 #include <imgui_impl_win32.h>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstdlib>
 #include <exception>
 #include <filesystem>
 #include <fstream>
+#include <future>
 #include <iostream>
 #include <memory>
+#include <mutex>
+#include <optional>
 #include <stdexcept>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam);
@@ -279,39 +287,248 @@ int main() {
             });
         };
 
-        // Cambiar de escena: parar todo, cargar y volver a empezar.
-        const auto load_scene = [&](const std::filesystem::path& file) {
-            scripts.stop();
-            audio.stop();
-            game_ui.reset();
-            physics.stop();
-            particles.clear();
-            nav.clear();
-            voxels.stop();
-            std::string error;
-            if (file.empty() || !ecs::loadScene(world, file, &error)) {
-                std::cerr << "[Juego] No se pudo abrir la escena " << file.string() << " " << error << "\n";
+        struct OrbitView {
+            bool fitted = false;
+            core::Vec3 target{};
+            float distance = 10.0f;
+            float min_distance = 1.0f;
+            float max_distance = 1000.0f;
+            float yaw = 0.6f;     // radianes
+            float pitch = 0.45f;  // radianes, por encima del horizonte
+            float idle = 0.0f;    // segundos desde que el jugador la movio
+            float hint = 0.0f;    // segundos que lleva activa (el aviso se desvanece)
+        };
+        OrbitView orbit;
+        editor::ProfilerOverlay profiler_overlay;
+
+        // --- Carga de escenas por etapas ---
+        // La ventana sigue viva (cada frame se dibuja la pantalla de carga con
+        // la etapa y el porcentaje) y lo pesado, leer los modelos y
+        // descomprimir sus texturas, va en otro hilo. Etapas:
+        //   Scene    leer el .crscene (rapido) y lanzar el hilo de los modelos
+        //   Models   el hilo lee cada modelo que se va a dibujar
+        //   Upload   subirlos a la GPU (un frame con el texto antes: bloquea)
+        //   Systems  fisica, navegacion, bloques, audio y scripts
+        struct SceneLoad {
+            enum class Stage { Idle, Scene, Models, Upload, Systems, Done };
+            Stage stage = Stage::Idle;
+            std::filesystem::path file;
+            std::vector<Uuid> models;
+            std::future<void> worker;
+            std::atomic<std::size_t> models_done{0};
+            std::mutex mutex;
+            std::string current;  // modelo que se esta leyendo
+            int frames = 0;       // frames en la etapa (para dibujar su texto antes de bloquear)
+        };
+        SceneLoad load;
+        const auto begin_load = [&](const std::filesystem::path& file) {
+            load.stage = SceneLoad::Stage::Scene;
+            load.file = file;
+            load.models.clear();
+            load.models_done = 0;
+            load.frames = 0;
+            orbit.fitted = false;
+        };
+        const auto scene_loading = [&] { return load.stage != SceneLoad::Stage::Idle && load.stage != SceneLoad::Stage::Done; };
+        ecs::RenderSync::Options sync_options;
+        sync_options.apply_main_camera = true;
+
+        // Un paso por frame. Devuelve la fraccion y el texto para la pantalla.
+        const auto step_load = [&](float& fraction, std::string& text) {
+            using Stage = SceneLoad::Stage;
+            switch (load.stage) {
+                case Stage::Idle:
+                case Stage::Done: break;
+                case Stage::Scene: {
+                    scripts.stop();
+                    audio.stop();
+                    game_ui.reset();
+                    physics.stop();
+                    particles.clear();
+                    nav.clear();
+                    voxels.stop();
+                    std::string error;
+                    if (load.file.empty() || !ecs::loadScene(world, load.file, &error)) {
+                        std::cerr << "[Juego] No se pudo abrir la escena " << load.file.string() << " " << error << "\n";
+                    }
+                    // Instancias de prefab guardadas con una revision vieja: al dia.
+                    ecs::syncOutdatedInstances(world, [&](const Uuid& id) {
+                        const auto info = database.find(id);
+                        return info && info->type == assets::AssetType::Prefab ? ecs::readPrefabFile(info->path) : std::string{};
+                    });
+                    renderer.invalidateHistory();
+                    // La escena puede estar guardada lejos del origen.
+                    renderer.setWorldOrigin(world.origin().x, world.origin().y, world.origin().z);
+                    const std::u8string stem = load.file.stem().u8string();
+                    scripts.setSceneName(std::string(stem.begin(), stem.end()));
+                    // Los modelos que se van a dibujar, una vez cada uno.
+                    std::unordered_set<Uuid> seen;
+                    world.forEachDepthFirst([&](ecs::Entity e) {
+                        const ecs::MeshRenderer* r = e.tryGet<ecs::MeshRenderer>();
+                        if (r == nullptr || r->mesh || !r->model.valid() || !e.activeInHierarchy()) return;
+                        if (const ecs::EntityInfo* info = e.tryGet<ecs::EntityInfo>(); info != nullptr && info->static_batched) return;
+                        if (seen.insert(r->model.uuid).second) load.models.push_back(r->model.uuid);
+                    });
+                    std::cout << "[Juego] Cargando " << std::string(stem.begin(), stem.end()) << ": " << load.models.size()
+                              << " modelos\n";
+                    // Mientras el hilo lee, nadie mas toca el AssetManager: la
+                    // fisica y los scripts estan parados y no se sincroniza el render.
+                    load.worker = std::async(std::launch::async, [&] {
+                        for (const Uuid& id : load.models) {
+                            {
+                                const auto info = database.find(id);
+                                std::lock_guard lock(load.mutex);
+                                load.current = info ? info->name : std::string{};
+                            }
+                            asset_manager.loadModel(id);
+                            ++load.models_done;
+                        }
+                    });
+                    load.stage = Stage::Models;
+                    break;
+                }
+                case Stage::Models:
+                    if (load.worker.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+                        load.worker.get();  // relanza si el hilo fallo
+                        load.stage = Stage::Upload;
+                        load.frames = 0;
+                    }
+                    break;
+                case Stage::Upload:
+                    // Primero un frame con "Subiendo a la GPU" en pantalla.
+                    if (load.frames++ == 0) break;
+                    sync.sync(world, scene, renderer, 0.0f, sync_options);
+                    load.stage = Stage::Systems;
+                    load.frames = 0;
+                    break;
+                case Stage::Systems: {
+                    if (load.frames++ == 0) break;
+                    physics.start(world);
+                    // La malla lista antes de que empiecen los scripts.
+                    nav.waitForBuild(world, 20.0f);
+                    // Los bloques de alrededor listos antes de empezar (no se cae del mundo).
+                    voxels.start(world);
+                    if (voxels.active()) {
+                        core::Vec3 position, forward;
+                        main_camera(position, forward);
+                        voxels.waitUntilReady(position, 2, 20.0f);
+                    }
+                    audio.start(world);
+                    scripts.start(world);
+                    load.stage = Stage::Done;
+                    std::cout << "[Juego] Escena lista\n";
+                    break;
+                }
             }
-            // Instancias de prefab guardadas con una revision vieja: al dia.
-            ecs::syncOutdatedInstances(world, [&](const Uuid& id) {
-                const auto info = database.find(id);
-                return info && info->type == assets::AssetType::Prefab ? ecs::readPrefabFile(info->path) : std::string{};
+            switch (load.stage) {
+                case Stage::Scene: fraction = 0.02f; text = "Leyendo la escena"; break;
+                case Stage::Models: {
+                    const std::size_t total = std::max<std::size_t>(load.models.size(), 1);
+                    const std::size_t done = std::min(load.models_done.load(), total);
+                    fraction = 0.05f + 0.7f * static_cast<float>(done) / static_cast<float>(total);
+                    std::lock_guard lock(load.mutex);
+                    text = "Cargando modelos (" + std::to_string(std::min(done + 1, total)) + "/" + std::to_string(total) + ")";
+                    if (!load.current.empty()) text += ": " + load.current;
+                    break;
+                }
+                case Stage::Upload: fraction = 0.8f; text = "Subiendo modelos y texturas a la GPU"; break;
+                case Stage::Systems: fraction = 0.9f; text = "Preparando fisica, navegacion y scripts"; break;
+                default: fraction = 1.0f; text.clear(); break;
+            }
+        };
+
+        // Pantalla de carga (encima de todo).
+        const auto draw_loading = [&](const ImVec2& display, float fraction, const std::string& text) {
+            ImDrawList* fg = ImGui::GetForegroundDrawList();
+            fg->AddRectFilled(ImVec2(0, 0), display, IM_COL32(13, 15, 20, 255));
+            const std::string title = project->name;
+            ImGui::PushFont(nullptr, ImGui::GetStyle().FontSizeBase * 2.0f);
+            const ImVec2 title_size = ImGui::CalcTextSize(title.c_str());
+            fg->AddText(ImVec2((display.x - title_size.x) * 0.5f, display.y * 0.5f - 70.0f), IM_COL32(235, 238, 245, 255),
+                        title.c_str());
+            ImGui::PopFont();
+            const float width = std::min(520.0f, display.x - 64.0f);
+            const ImVec2 a{(display.x - width) * 0.5f, display.y * 0.5f};
+            const ImVec2 b{a.x + width, a.y + 8.0f};
+            fg->AddRectFilled(a, b, IM_COL32(40, 44, 54, 255), 4.0f);
+            fg->AddRectFilled(a, ImVec2(a.x + width * std::clamp(fraction, 0.0f, 1.0f), b.y), IM_COL32(90, 150, 255, 255), 4.0f);
+            char percent[16];
+            std::snprintf(percent, sizeof(percent), "%.0f %%", fraction * 100.0f);
+            const ImVec2 percent_size = ImGui::CalcTextSize(percent);
+            fg->AddText(ImVec2(b.x - percent_size.x, b.y + 10.0f), IM_COL32(150, 160, 180, 255), percent);
+            fg->AddText(ImVec2(a.x, b.y + 10.0f), IM_COL32(150, 160, 180, 255), text.c_str());
+        };
+
+        // --- Camara orbital por defecto (como el DefaultPawn de Unreal) ---
+        // Si la escena no tiene ninguna Camera activa, el juego no se queda
+        // mirando al vacio desde el origen: una vista orbita alrededor de todo
+        // lo que se dibuja. Gira sola; arrastrar con el raton la mueve (y la
+        // deja quieta un rato) y la rueda acerca. En cuanto un script crea una
+        // Camera, manda esa.
+        const auto has_camera = [&] {
+            bool found = false;
+            world.forEachDepthFirst([&](ecs::Entity e) {
+                if (!found && e.has<ecs::Camera>() && e.activeInHierarchy()) found = true;
             });
-            renderer.invalidateHistory();
-            const std::u8string stem = file.stem().u8string();
-            scripts.setSceneName(std::string(stem.begin(), stem.end()));
-            physics.start(world);
-            // La malla lista antes de que empiecen los scripts (mientras se ve el banner).
-            nav.waitForBuild(world, 20.0f);
-            // Los bloques de alrededor listos antes de empezar (no se cae del mundo).
-            voxels.start(world);
-            if (voxels.active()) {
-                core::Vec3 position, forward;
-                main_camera(position, forward);
-                voxels.waitUntilReady(position, 2, 20.0f);
+            return found;
+        };
+        // Encuadra lo que se dibuja: caja de las esferas de los actores.
+        const auto fit_orbit = [&] {
+            core::Vec3 low{1e30f, 1e30f, 1e30f};
+            core::Vec3 high{-1e30f, -1e30f, -1e30f};
+            for (const scene::Actor& actor : scene.actors()) {
+                if (actor.shadows_only || actor.bounds_radius <= 0.0f || !std::isfinite(actor.bounds_radius)) continue;
+                const core::Vec3& c = actor.bounds_center;
+                const float r = actor.bounds_radius;
+                low = core::Vec3{std::min(low.x, c.x - r), std::min(low.y, c.y - r), std::min(low.z, c.z - r)};
+                high = core::Vec3{std::max(high.x, c.x + r), std::max(high.y, c.y + r), std::max(high.z, c.z + r)};
             }
-            audio.start(world);
-            scripts.start(world);
+            float radius = 5.0f;
+            orbit.target = core::Vec3{0.0f, 0.0f, 0.0f};
+            if (low.x <= high.x) {
+                orbit.target = (low + high) * 0.5f;
+                radius = std::max(core::length(high - low) * 0.5f, 0.5f);
+            }
+            const float half_fov = std::max(scene.camera().fovY() * 0.5f, 0.2f);
+            orbit.distance = std::clamp(radius / std::sin(half_fov) * 1.05f, 1.5f, 20000.0f);
+            orbit.min_distance = std::max(radius * 0.05f, 0.3f);
+            orbit.max_distance = orbit.distance * 4.0f;
+            orbit.idle = 1e9f;
+            orbit.hint = 0.0f;
+            orbit.fitted = true;
+        };
+        const auto update_orbit = [&](float dt, const ImVec2& display) {
+            if (!orbit.fitted) fit_orbit();
+            const ImGuiIO& io = ImGui::GetIO();
+            const bool mouse_free = !io.WantCaptureMouse;
+            orbit.idle += dt;
+            orbit.hint += dt;
+            if (mouse_free && (ImGui::IsMouseDown(ImGuiMouseButton_Left) || ImGui::IsMouseDown(ImGuiMouseButton_Right))) {
+                orbit.yaw -= io.MouseDelta.x * 0.006f;
+                orbit.pitch = std::clamp(orbit.pitch + io.MouseDelta.y * 0.006f, -1.2f, 1.45f);
+                if (io.MouseDelta.x != 0.0f || io.MouseDelta.y != 0.0f) orbit.idle = 0.0f;
+            }
+            if (mouse_free && io.MouseWheel != 0.0f) {
+                orbit.distance = std::clamp(orbit.distance * std::pow(0.88f, io.MouseWheel), orbit.min_distance, orbit.max_distance);
+                orbit.idle = 0.0f;
+            }
+            // Gira sola si nadie la toca (arranca suave tras soltarla).
+            if (orbit.idle > 3.0f) orbit.yaw += dt * 0.25f * std::clamp(orbit.idle - 3.0f, 0.0f, 1.0f);
+            const float c = std::cos(orbit.pitch);
+            const core::Vec3 offset{std::sin(orbit.yaw) * c, std::sin(orbit.pitch), std::cos(orbit.yaw) * c};
+            scene.placeCamera(orbit.target + offset * orbit.distance, orbit.target);
+
+            // Aviso los primeros segundos.
+            if (orbit.hint < 6.0f) {
+                const float alpha = std::clamp(6.0f - orbit.hint, 0.0f, 1.0f);
+                const char* hint = "Escena sin camara: vista orbital (arrastra para girar, rueda para acercar)";
+                const ImVec2 size = ImGui::CalcTextSize(hint);
+                const ImVec2 at{(display.x - size.x) * 0.5f, display.y - size.y - 24.0f};
+                ImDrawList* bg = ImGui::GetForegroundDrawList();
+                bg->AddRectFilled(ImVec2(at.x - 12.0f, at.y - 6.0f), ImVec2(at.x + size.x + 12.0f, at.y + size.y + 6.0f),
+                                  IM_COL32(13, 15, 20, static_cast<int>(170 * alpha)), 6.0f);
+                bg->AddText(at, IM_COL32(220, 225, 235, static_cast<int>(255 * alpha)), hint);
+            }
         };
 
         // --- Banner mientras carga ---
@@ -323,7 +540,8 @@ int main() {
         const dm::Input idle_input;
         core::Clock clock;
         while (!quit) {
-            const float dt = std::min(clock.tick(), 0.1f);
+            const float clock_dt = clock.tick();  // sin recortar (el Profiler mide los frames reales)
+            const float dt = std::min(clock_dt, 0.1f);
             window.pumpEvents();
             renderer.applyPendingResize();
             imgui.beginFrame();
@@ -354,12 +572,16 @@ int main() {
                                  IM_COL32(255, 255, 255, static_cast<int>(alpha * 255.0f)));
                 }
             }
-            // Se carga con el banner ya en pantalla (segundo frame).
+            // Se empieza a cargar con el banner ya en pantalla (segundo frame).
             if (!loaded && banner_time > 0.05f) {
                 loaded = true;
-                load_scene(scene_file);
+                begin_load(scene_file);
             }
-            const bool running = loaded && !showing_banner;
+            float load_fraction = 1.0f;
+            std::string load_text;
+            if (scene_loading()) step_load(load_fraction, load_text);
+            if (scene_loading() && !showing_banner) draw_loading(display, load_fraction, load_text);
+            const bool running = loaded && !scene_loading() && !showing_banner;
             if (running) {
                 const int steps = physics.update(world, dt, true);
                 particles.update(world, dt, &physics);
@@ -374,6 +596,25 @@ int main() {
                 scripts.fixedUpdate(world, physics_settings.fixed_step, steps);
                 scripts.update(world, dt);
                 cinematics.update(world, dt, true);
+                // Origen flotante: si la camara se alejo mucho del (0,0,0), todo
+                // se desplaza para que vuelva cerca (nada tiembla a 100 km).
+                {
+                    core::Vec3 focus, look;
+                    main_camera(focus, look);
+                    if (const std::optional<core::Vec3> offset = ecs::updateFloatingOrigin(world, focus)) {
+                        physics.shiftOrigin(*offset);
+                        particles.shiftOrigin(*offset);
+                        nav.shiftOrigin(*offset);
+                        voxels.shiftOrigin(*offset);
+                        cinematics.shiftOrigin(*offset);
+                        audio.shiftOrigin(*offset);
+                        scripts.shiftOrigin(*offset);
+                        renderer.shiftOrigin(*offset);
+                        orbit.target = orbit.target - *offset;
+                        std::cout << "[Juego] Origen del mundo desplazado; origen = (" << world.origin().x << ", "
+                                  << world.origin().y << ", " << world.origin().z << ")\n";
+                    }
+                }
                 // Oyente: AudioListener o la camara principal.
                 core::Vec3 position, forward;
                 main_camera(position, forward);
@@ -391,23 +632,33 @@ int main() {
                     }
                 }
                 editor::drawUiList(ImGui::GetBackgroundDrawList(), ImVec2(0, 0), game_ui.drawList(), imgui, project->assetsFolder());
+                // Sin Camera en la escena: vista orbital por defecto.
+                if (!has_camera()) update_orbit(dt, display);
+                // Componente Profiler: FPS, CPU, GPU y memoria en una esquina.
+                profiler_overlay.update(clock_dt, renderer);
+                if (const ecs::Profiler* p = editor::findProfiler(world)) {
+                    profiler_overlay.draw(ImGui::GetForegroundDrawList(), ImVec2(0, 0), display, *p,
+                                          renderer.device().name());
+                }
                 // Scene.load(...) y Game.quit() desde Lua.
-                if (const std::filesystem::path next = scripts.takeSceneRequest(); !next.empty()) load_scene(next);
+                if (const std::filesystem::path next = scripts.takeSceneRequest(); !next.empty()) begin_load(next);
                 if (scripts.takeQuitRequest()) quit = true;
             }
             imgui.endFrame();
 
             scene.update(idle_input, dt);
-            if (loaded) {
-                ecs::RenderSync::Options options;
-                options.apply_main_camera = true;
-                sync.sync(world, scene, renderer, running ? dt : 0.0f, options);
+            // Mientras carga no se sincroniza (el hilo usa el AssetManager):
+            // se sigue viendo lo anterior, tapado por la pantalla de carga.
+            if (loaded && !scene_loading()) {
+                sync.sync(world, scene, renderer, running ? dt : 0.0f, sync_options);
                 renderer.setParticles(particles.drawList(scene.camera().position()));
                 voxels.syncRenderer(renderer);
             }
             renderer.drawFrame(scene);
             input.newFrame();
         }
+        // Cerrado a media carga: el hilo de los modelos termina antes de nada.
+        if (load.worker.valid()) load.worker.wait();
         scripts.stop();
         audio.stop();
         physics.stop();
@@ -417,7 +668,16 @@ int main() {
         imgui.shutdown();
         renderer.shutdown();
     } catch (const std::exception& e) {
-        MessageBoxA(nullptr, e.what(), "Cramion", MB_ICONERROR);
+        std::string message = e.what();
+        std::cerr << "[Juego] Error: " << message << "\n";
+        // Sin memoria de video: se explica en vez del codigo de Vulkan.
+        if (message.find("OutOfDeviceMemory") != std::string::npos || message.find("OutOfHostMemory") != std::string::npos) {
+            message = "La tarjeta grafica se quedo sin memoria de video al cargar la escena.\n\n"
+                      "La escena tiene demasiados modelos o texturas para esta GPU. Prueba a bajar la resolucion "
+                      "de las texturas, usar menos modelos de alta resolucion (escaneos) o partir la escena.\n\n"
+                      "Detalle: " + std::string(e.what());
+        }
+        MessageBoxA(nullptr, message.c_str(), "Cramion", MB_ICONERROR);
         return EXIT_FAILURE;
     }
     return EXIT_SUCCESS;

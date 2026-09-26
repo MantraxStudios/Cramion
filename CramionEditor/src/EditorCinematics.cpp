@@ -201,6 +201,10 @@ void EditorApp::drawGameView() {
     }
     // Interfaz del juego (Canvas) encima, y su editor fuera de Play.
     drawGameUi(origin, size);
+    // Componente Profiler: FPS, CPU, GPU y memoria en su esquina.
+    if (const ecs::Profiler* profiler = findProfiler(world_)) {
+        profiler_overlay_.draw(draw, origin, size, *profiler, renderer_.device().name());
+    }
     ImGui::End();
 }
 

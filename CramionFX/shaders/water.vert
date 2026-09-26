@@ -48,14 +48,16 @@ void main() {
     vec3 normal;
     float jacobian;
     float distance_to_camera = length(camera.position.xz - base.xz);
-    vec3 offset = gerstnerWaves(b, base.xz, t, max(distance_to_camera, 1.0), normal, jacobian);
+    // Olas relativas al origen del cuerpo de agua: no saltan cuando el mundo
+    // se desplaza (origen flotante) y coinciden con water::gerstner (fisica).
+    vec3 offset = gerstnerWaves(b, base.xz - b.origin.xz, t, max(distance_to_camera, 1.0), normal, jacobian);
     vec3 world = base + offset;
 
     v_world_position = world;
     v_normal = normal;
     v_uv = in_uv;
     v_flow = in_flow;
-    v_grid = base.xz;
+    v_grid = base.xz - b.origin.xz;  // espacio de las olas (ver arriba)
     v_jacobian = jacobian;
     v_height = offset.y;
     gl_Position = camera.view_projection * vec4(world, 1.0);

@@ -248,7 +248,8 @@ void SkinnedPass::createGlassPipeline(const VulkanDevice& device, vk::Format col
     constexpr std::array<Type, kGlassBindingCount> kTypes = {
         Type::eUniformBuffer,        Type::eUniformBuffer,        Type::eUniformBuffer,
         Type::eCombinedImageSampler, Type::eCombinedImageSampler, Type::eCombinedImageSampler,
-        Type::eCombinedImageSampler, Type::eCombinedImageSampler, Type::eCombinedImageSampler};
+        Type::eCombinedImageSampler, Type::eCombinedImageSampler, Type::eCombinedImageSampler,
+        Type::eCombinedImageSampler};
     std::array<vk::DescriptorSetLayoutBinding, kGlassBindingCount> glass_bindings{};
     for (std::uint32_t i = 0; i < kGlassBindingCount; ++i) {
         glass_bindings[i].binding = i;

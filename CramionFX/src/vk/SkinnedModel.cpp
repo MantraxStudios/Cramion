@@ -54,11 +54,29 @@ void SkinnedModel::create(const VulkanDevice& device, const asset::ModelData& mo
     vertices_ = VulkanBuffer::createDeviceLocal(
         device, model.vertices.data(), sizeof(asset::SkinnedVertex) * model.vertices.size(),
         vk::BufferUsageFlagBits::eVertexBuffer);
-    indices_ = VulkanBuffer::createDeviceLocal(device, model.indices.data(),
-                                               sizeof(std::uint32_t) * model.indices.size(),
-                                               vk::BufferUsageFlagBits::eIndexBuffer);
+    // Indices de LOD0 y detras los de los LODs (sus submallas se desplazan).
+    if (model.lod_indices.empty()) {
+        indices_ = VulkanBuffer::createDeviceLocal(device, model.indices.data(),
+                                                   sizeof(std::uint32_t) * model.indices.size(),
+                                                   vk::BufferUsageFlagBits::eIndexBuffer);
+    } else {
+        std::vector<std::uint32_t> all;
+        all.reserve(model.indices.size() + model.lod_indices.size());
+        all.insert(all.end(), model.indices.begin(), model.indices.end());
+        all.insert(all.end(), model.lod_indices.begin(), model.lod_indices.end());
+        indices_ = VulkanBuffer::createDeviceLocal(device, all.data(), sizeof(std::uint32_t) * all.size(),
+                                                   vk::BufferUsageFlagBits::eIndexBuffer);
+    }
     index_count_ = static_cast<std::uint32_t>(model.indices.size());
     submeshes_ = model.submeshes;
+    lods_.clear();
+    for (const asset::MeshLod& lod : model.lods) {
+        Lod gpu{};
+        gpu.submeshes = lod.submeshes;
+        for (asset::SubMesh& submesh : gpu.submeshes) submesh.first_index += index_count_;
+        gpu.error = lod.error;
+        lods_.push_back(std::move(gpu));
+    }
     rigid_ = model.animations.empty();
 
     // --- Texturas, con los texeles por defecto al final ---
@@ -183,6 +201,15 @@ void SkinnedModel::create(const VulkanDevice& device, const asset::ModelData& mo
         submesh_groups_[i] = material_group[material];
         ++draw_groups_[material_group[material]].capacity;
     }
+    // Las submallas de los LODs, al grupo de su material (un material que
+    // solo aparece en un LOD no pasa: generateLods no crea materiales).
+    for (Lod& lod : lods_) {
+        lod.groups.resize(lod.submeshes.size());
+        for (std::size_t i = 0; i < lod.submeshes.size(); ++i) {
+            const std::uint32_t material = lod.submeshes[i].material;
+            lod.groups[i] = material < material_group.size() ? material_group[material] : kNoGroup;
+        }
+    }
     slot_count_ = 0;
     for (DrawGroup& group : draw_groups_) {
         group.first_slot = slot_count_;
@@ -199,6 +226,7 @@ void SkinnedModel::destroy() {
     textures_.clear();
     materials_.clear();
     submeshes_.clear();
+    lods_.clear();
     indices_.destroy();
     vertices_.destroy();
     index_count_ = 0;

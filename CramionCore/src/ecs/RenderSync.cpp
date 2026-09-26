@@ -818,6 +818,10 @@ void RenderSync::syncActors(World& world, scene::Scene& scene, gfx::VulkanRender
             !e.activeInHierarchy()) {
             return;
         }
+        // Ya va dentro del lote estatico de la escena (juego exportado).
+        if (const EntityInfo* info = e.tryGet<EntityInfo>(); info != nullptr && info->static_batched) {
+            return;
+        }
         // Una malla creada por codigo manda sobre el modelo del asset.
         std::optional<std::uint32_t> model =
             renderer_component->mesh

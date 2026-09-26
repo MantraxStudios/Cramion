@@ -453,13 +453,41 @@ void EditorApp::drawHubProjects() {
         const ImVec2 ca(a.x, a.y - lift), cb(b.x, b.y - lift);
         draw->AddRectFilled(ImVec2(ca.x + 2, ca.y + 5), ImVec2(cb.x + 2, cb.y + 5), IM_COL32(0, 0, 0, hovered ? 90 : 55), 10.0f);
         draw->AddRectFilled(ca, cb, hovered ? kCardHover : kCard, 10.0f);
-        const ImU32 color = exists ? colorFor(p.name) : IM_COL32(70, 72, 78, 255);
-        draw->AddRectFilledMultiColor(ca, ImVec2(cb.x, ca.y + banner_h), color, color, scaled(color, 0.45f),
-                                      scaled(color, 0.45f));
-        // Esquinas redondeadas del banner: se tapan las de abajo con la tarjeta.
-        draw->AddRect(ca, cb, hovered ? kAccent : kCardBorder, 10.0f, 0, hovered ? 1.5f : 1.0f);
-        centeredText(draw, 44.0f, ImVec2((ca.x + cb.x) * 0.5f, ca.y + banner_h * 0.5f), IM_COL32(255, 255, 255, 230),
-                     initials(p.name).c_str());
+        // Banner: la miniatura del proyecto (captura de su escena, en
+        // Library/thumbnail.png) recortada para llenarlo; sin ella, las iniciales.
+        ImVec2 image_size{};
+        const std::filesystem::path thumbnail = p.file.parent_path() / "Library" / "thumbnail.png";
+        const ImTextureID texture =
+            exists && std::filesystem::exists(thumbnail) ? imgui_.image(thumbnail, &image_size) : ImTextureID{};
+        const ImVec2 banner_b(cb.x, ca.y + banner_h);
+        if (texture != 0 && image_size.x > 0.0f && image_size.y > 0.0f) {
+            // Recorte centrado con la proporcion del banner.
+            const float banner_aspect = (banner_b.x - ca.x) / banner_h;
+            const float image_aspect = image_size.x / image_size.y;
+            ImVec2 uv0(0.0f, 0.0f), uv1(1.0f, 1.0f);
+            if (image_aspect > banner_aspect) {
+                const float keep = banner_aspect / image_aspect;
+                uv0.x = (1.0f - keep) * 0.5f;
+                uv1.x = 1.0f - uv0.x;
+            } else {
+                const float keep = image_aspect / banner_aspect;
+                uv0.y = (1.0f - keep) * 0.5f;
+                uv1.y = 1.0f - uv0.y;
+            }
+            draw->AddImageRounded(texture, ca, banner_b, uv0, uv1, IM_COL32(255, 255, 255, hovered ? 255 : 235), 10.0f,
+                                  ImDrawFlags_RoundCornersTop);
+            // Sombra suave abajo para separar la imagen de los datos.
+            draw->AddRectFilledMultiColor(ImVec2(ca.x, banner_b.y - 26.0f), banner_b, IM_COL32(0, 0, 0, 0),
+                                          IM_COL32(0, 0, 0, 0), IM_COL32(0, 0, 0, 90), IM_COL32(0, 0, 0, 90));
+            draw->AddRect(ca, cb, hovered ? kAccent : kCardBorder, 10.0f, 0, hovered ? 1.5f : 1.0f);
+        } else {
+            const ImU32 color = exists ? colorFor(p.name) : IM_COL32(70, 72, 78, 255);
+            draw->AddRectFilledMultiColor(ca, banner_b, color, color, scaled(color, 0.45f), scaled(color, 0.45f));
+            // Esquinas redondeadas del banner: se tapan las de abajo con la tarjeta.
+            draw->AddRect(ca, cb, hovered ? kAccent : kCardBorder, 10.0f, 0, hovered ? 1.5f : 1.0f);
+            centeredText(draw, 44.0f, ImVec2((ca.x + cb.x) * 0.5f, ca.y + banner_h * 0.5f), IM_COL32(255, 255, 255, 230),
+                         initials(p.name).c_str());
+        }
         const float tx = ca.x + 14.0f;
         const float ty = ca.y + banner_h + 12.0f;
         draw->AddText(ImGui::GetFont(), 18.0f, ImVec2(tx, ty), IM_COL32(240, 242, 246, 255),

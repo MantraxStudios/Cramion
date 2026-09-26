@@ -44,6 +44,8 @@ layout(set = 2, binding = 1) uniform LightBuffer {
     PointLightGpu points[32];
     SpotLightGpu spots[8];
     vec4 probes[2];
+    vec4 clouds;
+    vec4 environment;  // y = 1 si hay luz volumetrica
 } lights;
 
 const int kShadowCascadeCount = 4;
@@ -59,6 +61,16 @@ layout(set = 2, binding = 5) uniform sampler2D scene_color;
 layout(set = 2, binding = 6) uniform samplerCube environment_map;
 layout(set = 2, binding = 7) uniform samplerCube reflection_probe_0;
 layout(set = 2, binding = 8) uniform samplerCube reflection_probe_1;
+// Luz volumetrica (volumetric.frag, media resolucion): rgb = luz dispersada,
+// a = transmitancia, integradas hasta lo opaco (o 60 m).
+layout(set = 2, binding = 9) uniform sampler2D volumetric_map;
+
+// Niebla por altura: MISMOS valores que lighting.frag, para que el agua quede
+// dentro de la niebla como todo lo demas (no "por encima").
+const float kFogDensity = 0.0018;
+const float kFogBaseHeight = 0.0;
+const float kFogHeightFalloff = 0.08;
+const float kVolumetricDistance = 60.0;  // push.params.w de volumetric.frag
 
 #include "water_common.glsl"
 
@@ -117,43 +129,19 @@ float fbm(vec2 p, float footprint) {
 }
 float fbm(vec2 p) { return fbm(p, 0.0); }
 
-// Voronoi: distancia al punto mas cercano (x) y al segundo (y).
-vec2 worley(vec2 p, float t) {
-    vec2 cell = floor(p);
-    ivec2 i = ivec2(cell);
-    vec2 f = p - cell;
-    vec2 d = vec2(8.0);
-    for (int y = -1; y <= 1; ++y) {
-        for (int x = -1; x <= 1; ++x) {
-            ivec2 o = ivec2(x, y);
-            vec2 h = hash2(i + o);
-            // Las burbujas se mueven un poco (espuma viva, no una textura fija).
-            vec2 point = vec2(o) + 0.5 + 0.4 * sin(t * (0.6 + h * 0.8) + h * 6.2831);
-            float dist = length(point - f);
-            if (dist < d.x) {
-                d.y = d.x;
-                d.x = dist;
-            } else if (dist < d.y) {
-                d.y = dist;
-            }
-        }
-    }
-    return d;
-}
-
-// Espuma: "encaje" de burbujas (bordes entre celdas de Voronoi) a dos
-// escalas sobre manchas de ruido. Devuelve la densidad 0..1; la cobertura
-// decide cuanta se ve. `footprint` = metros por pixel.
+// Espuma: vetas y burbujas de ruido deformado (domain warping), como la
+// espuma de verdad, que se estira con el agua. Antes eran celdas de Voronoi y
+// se veian poligonos. Devuelve la densidad 0..1; la cobertura decide cuanta
+// se ve. `footprint` = metros por pixel.
 float foamDensity(vec2 p, float t, float footprint) {
-    vec2 a = worley(p * 1.3 + vec2(t * 0.04, -t * 0.03), t * 0.5);
-    vec2 b = worley(p * 3.7 - vec2(t * 0.07, t * 0.05), t * 0.8);
-    float lace_a = 1.0 - smoothstep(0.02, 0.28 + 1.3 * footprint, a.y - a.x);
-    float lace_b = 1.0 - smoothstep(0.02, 0.24 + 3.7 * footprint, b.y - b.x);
-    // Burbujas pequenas: se apagan (a su media) cuando no caben en el pixel.
-    float fine = 1.0 - smoothstep(0.15, 0.4, 3.7 * footprint);
-    lace_b = mix(0.3, lace_b, fine);
-    float blobs = fbm(p * 0.45 + t * 0.03, footprint * 0.45);
-    return clamp(blobs * 0.9 + lace_a * 0.45 + lace_b * 0.3 - 0.25, 0.0, 1.0);
+    vec2 q = p * 0.35;
+    vec2 warp = vec2(fbm(q + vec2(t * 0.020, 0.0), footprint * 0.35),
+                     fbm(q + vec2(5.2, 1.3) - vec2(0.0, t * 0.015), footprint * 0.35)) - 0.5;
+    float streaks = fbm(p * 0.9 + warp * 3.0 + t * 0.03, footprint * 0.9);
+    float bubbles = fbm(p * 4.2 + warp * 1.5 - t * 0.05, footprint * 4.2);
+    // Huecos redondeados en la espuma (se deshace en agujeros, no en celdas).
+    float holes = smoothstep(0.35, 0.65, fbm(p * 2.1 - warp * 2.0 + t * 0.02, footprint * 2.1));
+    return clamp(streaks * 0.85 + bubbles * 0.35 - holes * 0.25 - 0.05, 0.0, 1.0);
 }
 
 // Filtro de una onda de longitud `wavelength` para un pixel de `footprint` m:
@@ -166,29 +154,40 @@ float waveKeep(float wavelength, float footprint) {
 // normal y el jacobiano interpolados de los vertices salian en triangulos.
 // Las ondas mas finas que el pixel se quitan y su pendiente pasa a
 // `lost_variance` (rugosidad): lejos el agua se ve mate, no centellea.
+// `jacobian` solo cuenta las olas largas (hasta ~0.27 veces la principal):
+// las ondas cortas comprimen la superficie a menudo, pero no rompen; si
+// contaran, habria espuma por todas partes.
 vec3 gerstnerNormal(WaterBody b, vec2 p, float t, float footprint, out float jacobian, out float lost_variance) {
     vec3 n = vec3(0.0, 1.0, 0.0);
     jacobian = 1.0;
     lost_variance = 0.0;
-    float len = max(b.waves.y, 0.05);
-    float amplitude = b.waves.x * 0.5;
+    float peak = max(b.waves.y, 0.05);
     float steep = clamp(b.waves.w, 0.0, 1.0);
-    for (int i = 0; i < 8; ++i) {
+    for (int i = 0; i < kWaveCount; ++i) {
+        float len = peak * kWaveLengths[i];
+        float amplitude = b.waves.x * kWaveAmplitudes[i];
         float keep = waveKeep(len, footprint);
-        float angle = b.wind.x + kWaveAngles[i] * b.wind.y;
+        // Mas fina que el pixel: solo cuenta como rugosidad (sin senos ni
+        // cosenos). Lejos, casi todas las ondas acaban aqui.
+        if (keep <= 0.0) {
+            float lost_slope = 2.0 * kWaterPi / len * amplitude;
+            lost_variance += 0.5 * lost_slope * lost_slope;
+            continue;
+        }
+        float angle = b.wind.x + kWaveDirections[i] * b.wind.y;
         vec2 d = vec2(cos(angle), sin(angle));
         float k = 2.0 * kWaterPi / len;
         float omega = sqrt(9.81 * k) * b.waves.z;
-        float q = amplitude > 1e-6 ? steep / (k * amplitude * 8.0) : 0.0;
-        float theta = k * dot(d, p) - omega * t + 1.7 * float(i);
+        float q = amplitude > 1e-6 ? steep / (k * amplitude * float(kWaveCount)) : 0.0;
+        float theta = k * dot(d, p) - omega * t + kWavePhases[i];
         float a = amplitude * keep;
-        n.xz -= d * k * a * cos(theta);
-        n.y -= q * k * a * sin(theta);
-        jacobian -= q * k * a * sin(theta);
+        float c = cos(theta);
+        float s = sin(theta);
+        n.xz -= d * k * a * c;
+        n.y -= q * k * a * s;
+        if (i < 14) jacobian -= q * k * amplitude * s;
         float slope = k * amplitude;
         lost_variance += 0.5 * slope * slope * (1.0 - keep * keep);
-        len *= 0.64;
-        amplitude *= 0.60;
     }
     return normalize(n);
 }
@@ -212,6 +211,20 @@ bool project(vec3 view_position, out vec2 uv) {
     return true;
 }
 bool insideScreen(vec2 uv) { return all(greaterThanEqual(uv, vec2(0.0))) && all(lessThanEqual(uv, vec2(1.0))); }
+
+// El cielo que se ve en pantalla en una direccion (un punto en el infinito):
+// asi el reflejo lleva las nubes volumetricas y el color real del cielo,
+// que el cubo de entorno no tiene. a = confianza (0 si esa parte del cielo
+// no esta en pantalla o la tapa algo).
+vec4 screenSky(vec3 direction) {
+    vec4 clip = camera.view_projection * vec4(direction, 0.0);
+    if (clip.w <= 1e-4) return vec4(0.0);
+    vec2 uv = clip.xy / clip.w * 0.5 + 0.5;
+    if (!insideScreen(uv)) return vec4(0.0);
+    if (textureLod(g_depth, uv, 0.0).r < 1.0) return vec4(0.0);  // tapado: no es cielo
+    vec2 edge = min(uv, 1.0 - uv);
+    return vec4(min(textureLod(scene_color, uv, 0.0).rgb, vec3(kMaxRadiance)), smoothstep(0.0, 0.08, min(edge.x, edge.y)));
+}
 
 // Reflejo en pantalla (como el vidrio): rgb = color, a = confianza.
 vec4 traceScreen(vec3 origin, vec3 ray) {
@@ -267,29 +280,46 @@ float distributionGgx(float n_dot_h, float alpha) {
     return alpha2 / (kWaterPi * d * d);
 }
 
-// Ondulacion fina: ondas cortas en varias direcciones (y con la corriente),
-// filtradas por el tamano del pixel (lo que se pierde va a `lost_variance`).
-vec2 detailSlope(vec2 p, float t, vec2 flow, float strength, float footprint, inout float lost_variance) {
-    const vec2 dirs[6] = vec2[](vec2(0.94, 0.34), vec2(-0.57, 0.82), vec2(0.21, -0.98), vec2(-0.99, -0.12),
-                                vec2(0.71, 0.70), vec2(-0.30, -0.95));
-    const float lengths[6] = float[](1.9, 1.31, 0.83, 0.61, 0.37, 0.23);
+// Visibilidad de Smith-GGX con correlacion de altura (/ 4 NdotL NdotV), la
+// misma que lighting.frag.
+float visibilitySmith(float n_dot_v, float n_dot_l, float alpha) {
+    float alpha2 = alpha * alpha;
+    float ggx_v = n_dot_l * sqrt(n_dot_v * n_dot_v * (1.0 - alpha2) + alpha2);
+    float ggx_l = n_dot_v * sqrt(n_dot_l * n_dot_l * (1.0 - alpha2) + alpha2);
+    return 0.5 / max(ggx_v + ggx_l, 1e-5);
+}
+
+// Ondulacion fina (el rizado del viento): 10 ondas cortas con direcciones
+// repartidas alrededor del viento (angulo aureo) y fases distintas, en vez
+// de 6 direcciones fijas (se veia un patron de chapa ondulada en todo el mar).
+// Filtradas por el tamano del pixel (lo que se pierde va a `lost_variance`).
+vec2 detailSlope(vec2 p, float t, vec2 flow, float wind, float strength, float footprint, inout float lost_variance) {
     vec2 slope = vec2(0.0);
-    for (int i = 0; i < 6; ++i) {
-        float k = 2.0 * kWaterPi / lengths[i];
+    float len = 1.8;
+    for (int i = 0; i < 10; ++i) {
+        float angle = wind + (fract(float(i) * 0.618034 + 0.3) - 0.5) * 3.4;
+        vec2 dir = vec2(cos(angle), sin(angle));
+        float k = 2.0 * kWaterPi / len;
         float omega = sqrt(9.81 * k);
         vec2 q = p - flow * t;
-        float theta = k * dot(dirs[i], q) - omega * t * 0.6 + float(i) * 2.1;
-        float keep = waveKeep(lengths[i], footprint);
-        float s = 0.011 * lengths[i] * k * strength;
-        slope += dirs[i] * cos(theta) * s * keep;
+        float keep = waveKeep(len, footprint);
+        float s = 0.006 * len * k * strength;
+        if (keep <= 0.0) {
+            lost_variance += 0.5 * s * s;
+            len *= 0.76;
+            continue;
+        }
+        float theta = k * dot(dir, q) - omega * t * 0.6 + fract(float(i) * 0.754878) * 6.2831;
+        slope += dir * cos(theta) * s * keep;
         lost_variance += 0.5 * s * s * (1.0 - keep * keep);
+        len *= 0.76;
     }
     // Rizado irregular (que no se vea el patron de ondas).
     vec2 q = (p - flow * t) * 1.7;
     float e = 0.15;
     float fp = footprint * 1.7;
     float n0 = fbm(q + t * 0.35, fp);
-    slope += vec2(fbm(q + vec2(e, 0.0) + t * 0.35, fp) - n0, fbm(q + vec2(0.0, e) + t * 0.35, fp) - n0) / e * 0.035 *
+    slope += vec2(fbm(q + vec2(e, 0.0) + t * 0.35, fp) - n0, fbm(q + vec2(0.0, e) + t * 0.35, fp) - n0) / e * 0.03 *
              strength;
     return slope;
 }
@@ -325,7 +355,7 @@ void main() {
     float jacobian;
     float lost_variance;
     vec3 wave_normal = gerstnerNormal(b, v_grid, t, footprint, jacobian, lost_variance);
-    vec2 slope = detailSlope(v_grid, t, flow, b.wind.w, footprint, lost_variance);
+    vec2 slope = detailSlope(v_grid, t, flow, b.wind.x, b.wind.w, footprint, lost_variance);
     vec3 normal = normalize(vec3(wave_normal.x - slope.x, wave_normal.y, wave_normal.z - slope.y));
     if (below) normal = -normal;
     float facing = dot(normal, view_direction);
@@ -370,16 +400,23 @@ void main() {
     // Causticas en el fondo poco profundo.
     if (refract_depth < 1.0 && b.look.z > 0.0) {
         float floor_depth = max(v_world_position.y - refract_floor.y, 0.0);
-        float c = caustic(refract_floor.xz - flow * t, t * 1.3) * b.look.z * shadow * sun_height *
+        float c = caustic(refract_floor.xz - b.origin.xz - flow * t, t * 1.3) * b.look.z * shadow * sun_height *
                   smoothstep(0.0, 0.4, floor_depth) * exp(-floor_depth * 0.35);
         refracted *= 1.0 + c;
     }
     vec3 water_color = refracted * transmittance + in_scatter * (vec3(1.0) - transmittance);
 
-    // Luz a traves de las crestas mirando hacia el sol.
+    // Dispersion subsuperficial (modelo de Atlas, GDC 2019; el de Crest): la
+    // luz del sol atraviesa las olas y sale tenida del color del agua. Fuerte
+    // en las crestas a contraluz (mirando hacia el sol, en la cara de la ola
+    // que no le da el sol) y un poco en las caras que miran a la camara.
     float crest = clamp(v_height / max(b.waves.x, 0.05), 0.0, 1.0);
     float toward_sun = pow(max(dot(-view_direction, sun_direction) * 0.5 + 0.5, 0.0), 6.0);
-    water_color += b.shallow.rgb * sun_radiance * shadow * toward_sun * crest * b.extra.y * 0.12;
+    float backlit = pow(max(dot(-view_direction, sun_direction), 0.0), 4.0) *
+                    pow(clamp(0.5 - 0.5 * dot(sun_direction, normal), 0.0, 1.0), 3.0);
+    float facing_camera = pow(max(dot(view_direction, normal), 0.0), 2.0);
+    float sss = crest * backlit * 2.2 + (0.5 + crest) * facing_camera * 0.03 + toward_sun * crest * 0.06;
+    water_color += b.shallow.rgb * sun_radiance * shadow * sun_height * sss * b.extra.y;
     // Las crestas, mas finas, dejan pasar mas luz del cielo: mas claras y verdes.
     water_color += b.shallow.rgb * ambient * crest * crest * b.extra.y * 0.25;
 
@@ -397,13 +434,21 @@ void main() {
                                                    : vec4(0.0);
     screen.a *= 1.0 - toward_camera;
     float lod = roughness * 6.0;
-    vec3 fallback = textureLod(environment_map, reflected, lod).rgb;
+    // El cubo filtrado mezcla el suelo de debajo del horizonte (marron) en
+    // los reflejos rugosos: la direccion se sube con la rugosidad.
+    vec3 env_direction = normalize(vec3(reflected.x, max(reflected.y, 0.02 + roughness * 0.4), reflected.z));
+    vec3 fallback = textureLod(environment_map, env_direction, lod).rgb;
     float probe_weight = lights.probes[0].w + lights.probes[1].w;
     if (probe_weight > 0.001) {
         vec3 probe = vec3(0.0);
         if (lights.probes[0].w > 0.001) probe += textureLod(reflection_probe_0, reflected, lod).rgb * lights.probes[0].w;
         if (lights.probes[1].w > 0.001) probe += textureLod(reflection_probe_1, reflected, lod).rgb * lights.probes[1].w;
         fallback = mix(fallback, probe / probe_weight, 0.7);
+    }
+    // El cielo de verdad (con nubes) si esa parte se ve en pantalla.
+    if (!below) {
+        vec4 sky = screenSky(reflected);
+        fallback = mix(fallback, sky.rgb, sky.a * (1.0 - smoothstep(0.1, 0.4, roughness)));
     }
     vec3 reflection = mix(min(fallback, vec3(kMaxRadiance)), screen.rgb, screen.a);
     float fresnel = 0.02 + 0.98 * pow(1.0 - n_dot_v, 5.0);
@@ -417,10 +462,17 @@ void main() {
     float n_dot_l = dot(normal, sun_direction);
     if (n_dot_l > 0.0 && !below) {
         vec3 halfway = normalize(sun_direction + view_direction);
-        // Minimo: el tamano del disco del sol (un brillo, no un punto).
-        float alpha = max(roughness * roughness, 0.004);
-        float d = distributionGgx(max(dot(normal, halfway), 0.0), alpha);
-        specular = sun_radiance * min(d * fresnel * n_dot_l * 0.25 / n_dot_v, kSunDiskRadiance * 0.05) * shadow;
+        // GGX completo (como lighting.frag): Smith y Fresnel en el angulo de
+        // la media. El sol mide 0.53 grados: la distribucion se ensancha a su
+        // tamano y se normaliza (un disco de brillo, no un punto que parpadea).
+        float alpha = max(roughness * roughness, 0.002);
+        const float kSunSize = 0.00465;
+        float alpha_sun = min(alpha + kSunSize * 0.5, 1.0);
+        float d = distributionGgx(max(dot(normal, halfway), 0.0), alpha_sun) * (alpha / alpha_sun) * (alpha / alpha_sun);
+        float v_dot_h = max(dot(view_direction, halfway), 0.0);
+        float sun_fresnel = 0.02 + 0.98 * pow(1.0 - v_dot_h, 5.0);
+        float brdf = d * visibilitySmith(n_dot_v, n_dot_l, alpha) * sun_fresnel;
+        specular = sun_radiance * min(brdf * n_dot_l, kSunDiskRadiance * 0.015) * shadow;
     }
 
     vec3 color = water_color * (1.0 - fresnel) + reflection * fresnel + specular;
@@ -448,7 +500,7 @@ void main() {
         float phase = vertical_depth * 2.2 - t * 1.4 + fbm(v_grid * 0.15, footprint * 0.15) * 3.0;
         bands = smoothstep(0.55, 1.0, sin(phase)) * (1.0 - smoothstep(0.0, shore_width * 3.0, vertical_depth)) * b.extra.x;
     }
-    float crest_foam = smoothstep(0.6, 0.1, jacobian) * smoothstep(0.1, 0.7, crest);
+    float crest_foam = smoothstep(0.35, -0.1, jacobian) * smoothstep(0.35, 0.8, crest);
     float river_foam = 0.0;
     if (river) {
         float bank = smoothstep(0.32, 0.5, abs(v_uv.x - 0.5));
@@ -477,9 +529,34 @@ void main() {
     vec3 foam_color = vec3(0.9, 0.93, 0.95) * (sun_radiance * foam_diffuse * shadow + ambient * 1.1);
     color = mix(color, foam_color, clamp(foam, 0.0, 1.0));
 
-    // Bruma a lo lejos (como el cielo en el horizonte).
-    float haze = 1.0 - exp(-surface_distance * 0.00012);
-    color = mix(color, textureLod(environment_map, normalize(vec3(-view_direction.x, 0.02, -view_direction.z)), 3.0).rgb, haze);
+    // --- Niebla por altura (la misma formula que lighting.frag) ---
+    // El color: el horizonte del cielo y, mirando hacia el sol, la luz que la
+    // niebla dispersa hacia delante.
+    vec3 ray_direction = -view_direction;
+    float fog_density = kFogDensity * exp(-(camera.position.y - kFogBaseHeight) * kFogHeightFalloff);
+    float fog_b = kFogHeightFalloff * ray_direction.y;
+    float fog_integral = abs(fog_b) > 0.0001 ? (1.0 - exp(-surface_distance * fog_b)) / fog_b : surface_distance;
+    float fog = clamp(1.0 - exp(-fog_density * fog_integral), 0.0, 1.0);
+    vec3 fog_color = textureLod(environment_map, normalize(vec3(ray_direction.x, max(ray_direction.y, 0.02), ray_direction.z)), 3.0).rgb;
+    float sun_alignment = max(dot(ray_direction, sun_direction), 0.0);
+    fog_color += sun_radiance * pow(sun_alignment, 10.0) * 0.35 * smoothstep(-0.05, 0.1, sun_direction.y);
+    // Muy lejos, el agua se funde con el horizonte (bruma del aire).
+    fog = max(fog, 1.0 - exp(-surface_distance * 0.00012));
+    color = mix(color, fog_color, fog);
+
+    // --- Luz volumetrica hasta la superficie ---
+    // El mapa esta integrado hasta el fondo que hay detras del agua: se usa
+    // solo el tramo camara -> superficie (transmitancia elevada a la fraccion
+    // del recorrido; la luz dispersada, en proporcion).
+    if (lights.environment.y > 0.5 && !below) {
+        vec4 volume = textureLod(volumetric_map, screen_uv, 0.0);
+        float behind = sky_behind ? kVolumetricDistance : min(length(floor_position - camera.position.xyz), kVolumetricDistance);
+        float fraction = clamp(min(surface_distance, kVolumetricDistance) / max(behind, 0.001), 0.0, 1.0);
+        float transmittance_part = pow(clamp(volume.a, 1e-4, 1.0), fraction);
+        vec3 scattered = volume.a < 0.999 ? volume.rgb * (1.0 - transmittance_part) / (1.0 - volume.a)
+                                          : volume.rgb * fraction;
+        color = color * transmittance_part + scattered;
+    }
 
     // Borde suave donde el agua toca el suelo.
     float alpha = (sky_behind || below) ? 1.0 : clamp(vertical_depth / 0.06, 0.0, 1.0);

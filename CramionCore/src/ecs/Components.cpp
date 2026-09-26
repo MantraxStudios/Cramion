@@ -130,6 +130,19 @@ void Decal::reflect(PropertyVisitor& v) {
             FloatRange{1.0f, 90.0f, 0.5f, "%.0f grados", true});
 }
 
+void Profiler::reflect(PropertyVisitor& v) {
+    v.field({"show_fps", "FPS", "Fotogramas por segundo (media y el peor del ultimo medio segundo)"}, show_fps);
+    v.field({"show_cpu", "CPU", "Milisegundos de trabajo de la CPU por frame y % de CPU del proceso"}, show_cpu);
+    v.field({"show_gpu", "GPU", "Milisegundos de la GPU por frame (medidos en la GPU) y % ocupada"}, show_gpu);
+    v.field({"show_memory", "Memoria", "RAM que usa el juego"}, show_memory);
+    v.field({"show_graph", "Grafica", "Tiempo de cada frame (la linea es 60 FPS)"}, show_graph);
+    static constexpr std::array<const char*, 4> kCorners = {"Arriba derecha", "Arriba izquierda", "Abajo derecha",
+                                                            "Abajo izquierda"};
+    enumField(v, {"corner", "Esquina"}, corner, kCorners);
+    v.field({"scale", "Tamano"}, scale, FloatRange{0.5f, 3.0f, 0.05f, "%.2f"});
+    v.field({"opacity", "Opacidad del fondo"}, opacity, FloatRange{0.0f, 1.0f, 0.01f, "%.2f"});
+}
+
 void PostProcessing::reflect(PropertyVisitor& v) {
     gfx::PostProcessSettings& s = settings;
     v.field({"priority", "Prioridad", "Con varios activos, manda el de mayor prioridad"},
@@ -228,6 +241,13 @@ void PostProcessing::reflect(PropertyVisitor& v) {
         v.field({"ambient_occlusion", "Oclusion ambiental (SSAO)"}, s.ambient_occlusion);
         v.field({"global_illumination", "Luz rebotada (GI)"}, s.global_illumination);
         v.field({"reflections", "Reflejos"}, s.reflections);
+        v.field({"contact_shadows", "Sombras de contacto",
+                 "Sombras pequenas del sol (pies en el suelo, piedras, huecos) que las cascadas no ven"},
+                s.contact_shadows);
+        if (all || s.contact_shadows) {
+            v.field({"contact_shadow_length", "Largo (m)"}, s.contact_shadow_length,
+                    FloatRange{0.05f, 3.0f, 0.01f, "%.2f m", true});
+        }
         v.field({"volumetric_light", "Luz volumetrica"}, s.volumetric_light);
         if (all || s.volumetric_light) {
             v.field({"volumetric_density", "Densidad del polvo"}, s.volumetric_density,
@@ -235,6 +255,20 @@ void PostProcessing::reflect(PropertyVisitor& v) {
             v.field({"volumetric_anisotropy", "Anisotropia", "0 = igual en todas direcciones, "
                                                              "cerca de 1 = hacia delante"},
                     s.volumetric_anisotropy, FloatRange{-0.9f, 0.95f, 0.01f, "%.2f", true});
+        }
+        v.endGroup();
+    }
+
+    if (v.beginGroup("Rendimiento")) {
+        v.field({"lods", "LODs automaticos",
+                 "Los modelos estaticos pesados se dibujan simplificados (tambien en las sombras) "
+                 "cuando la diferencia no se ve en pantalla"},
+                s.lods);
+        if (all || s.lods) {
+            v.field({"lod_pixel_error", "Error maximo (px)",
+                     "Cuantos pixeles puede desviarse la malla simplificada. Mas alto = mas FPS y menos "
+                     "detalle a lo lejos"},
+                    s.lod_pixel_error, FloatRange{0.25f, 8.0f, 0.05f, "%.2f px", true});
         }
         v.endGroup();
     }
@@ -255,6 +289,7 @@ void registerBuiltinComponents(ComponentRegistry& registry) {
     registry.registerComponent<Weather>("Weather", "Clima", "Entorno");
     registry.registerComponent<PostProcessing>("PostProcessing", "Post-procesado", "Renderizado");
     registry.registerComponent<Decal>("Decal", "Decal", "Renderizado");
+    registry.registerComponent<Profiler>("Profiler", "Profiler", "Depuracion");
 }
 
 }  // namespace cramion::ecs

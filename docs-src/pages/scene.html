@@ -11,3 +11,34 @@
           <tr><td><code>Scene.name()</code></td><td>Nombre de la escena actual.</td></tr>
         </tbody>
       </table>
+      <h2 id="origen-flotante">Mundos grandes: origen flotante</h2>
+      <p>
+        Los números de las posiciones (float) solo tienen unas 7 cifras: lejos del centro todo tiembla. Cramion lo evita
+        solo: cuando la cámara se aleja más de 2 km del origen, <strong>el mundo entero se desplaza</strong> (en pasos de
+        1024 m) para que vuelva a estar cerca, y guarda en doble precisión dónde está de verdad ese origen. Las mallas, la
+        luz, las sombras, la física, los bloques, la navegación y el sonido siguen igual; tú no tienes que hacer nada si lees
+        las posiciones cada frame (<code>self.entity.position</code>).
+      </p>
+      <table>
+        <thead><tr><th>Función</th><th>Qué hace</th></tr></thead>
+        <tbody>
+          <tr><td><code>Scene.origin()</code></td><td>x, y, z (doble precisión) del origen actual del mundo.</td></tr>
+          <tr><td><code>Scene.toAbsolute(pos)</code></td><td>x, y, z reales de una posición: úsalo para <strong>guardar</strong> posiciones en una partida.</td></tr>
+          <tr><td><code>Scene.toLocal(x, y, z)</code></td><td>Vec3 local de una posición real guardada (al <strong>cargar</strong>).</td></tr>
+          <tr><td><code>function Script:OnOriginShift(offset)</code></td><td>Se llama cuando el mundo se desplaza <code>-offset</code>: resta <code>offset</code> a las posiciones que tengas guardadas en variables (un destino, un punto de aparición).</td></tr>
+        </tbody>
+      </table>
+      <pre><code class="language-lua">function Script:Start()
+    self.destino = Vec3(5000, 0, 200)
+end
+
+-- El mundo se desplazo: el destino guardado tambien.
+function Script:OnOriginShift(offset)
+    self.destino = self.destino - offset
+end
+
+-- Guardar y cargar la posicion del jugador sin perder precision
+function Script:guardar()
+    local x, y, z = Scene.toAbsolute(self.entity.position)
+    Prefs.setString("jugador", x .. "," .. y .. "," .. z)
+end</code></pre>

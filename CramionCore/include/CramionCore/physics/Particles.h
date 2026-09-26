@@ -94,6 +94,10 @@ public:
     // salir de Play).
     void clear();
 
+    // Origen flotante (ecs/FloatingOrigin.h): el mundo se desplazo -offset;
+    // lo que guarda en coordenadas del mundo se mueve igual.
+    void shiftOrigin(const core::Vec3& offset);
+
     // Reinicia / para / reanuda un emisor.
     void play(ecs::Entity entity);
     void stop(ecs::Entity entity, bool clear_particles = false);

@@ -26,6 +26,9 @@ json entityRecord(World& world, Entity e, bool is_root_of_copy) {
     record["active"] = info.active;
     record["tag"] = info.tag;
     record["layer"] = info.layer;
+    // Solo si estan puestos: las escenas de siempre no cambian.
+    if (info.is_static) record["static"] = true;
+    if (info.static_batched) record["static_batched"] = true;
     json components = json::object();
     for (const ComponentType& type : ComponentRegistry::instance().types()) {
         if (!type.has(world, e.handle())) {
@@ -76,6 +79,8 @@ Entity buildEntities(World& world, const json& entities, bool remap, Entity root
         info.active = record.value("active", true);
         info.tag = record.value("tag", std::string{});
         info.layer = record.value("layer", 0);
+        info.is_static = record.value("static", false);
+        info.static_batched = record.value("static_batched", false);
         by_uuid[uuid_text] = e;
         if (created != nullptr) created->push_back(e);
         if (!first.valid()) {
@@ -112,6 +117,10 @@ std::string serializeWorld(const World& const_world) {
     root["version"] = kSceneFormatVersion;
     root["uuid"] = world.sceneUuid().toString();
     root["name"] = world.sceneName();
+    // Origen flotante: las posiciones son relativas a el (sin perder precision).
+    if (world.origin() != DVec3{}) {
+        root["origin"] = json::array({world.origin().x, world.origin().y, world.origin().z});
+    }
     json entities = json::array();
     for (const entt::entity r : world.roots()) {
         collectSubtree(world, world.wrap(r), entities);
@@ -141,6 +150,9 @@ bool deserializeWorld(World& world, const std::string& text, std::string* error)
     const Uuid uuid = Uuid::parse(root.value("uuid", std::string{}));
     world.setSceneUuid(uuid.valid() ? uuid : Uuid::generate());
     world.setSceneName(root.value("name", std::string{"Escena"}));
+    if (const auto it = root.find("origin"); it != root.end() && it->is_array() && it->size() == 3) {
+        world.setOrigin(DVec3{(*it)[0].get<double>(), (*it)[1].get<double>(), (*it)[2].get<double>()});
+    }
     if (const auto it = root.find("entities"); it != root.end() && it->is_array()) {
         buildEntities(world, *it, /*remap=*/false, Entity{});
     }

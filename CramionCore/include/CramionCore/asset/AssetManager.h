@@ -52,8 +52,10 @@ public:
     std::shared_ptr<const ModelAsset> loadModel(const Uuid& uuid);
     // Lee un modelo sin cache ni base de datos (se puede llamar desde otro
     // hilo: miniaturas, extraer clips). `file` vacio para las primitivas.
+    // `decode_textures` = false: las texturas quedan comprimidas tal como
+    // estan en el .crdata (para reescribirlas, p. ej. el lote estatico).
     static std::shared_ptr<ModelAsset> readModel(const Uuid& uuid, const std::filesystem::path& file,
-                                                 const std::string& name);
+                                                 const std::string& name, bool decode_textures = true);
 
     // Ruta de un .hdr en disco para el renderizador
     // (VulkanRenderer::loadEnvironment): el HDR incrustado en el .crdata se

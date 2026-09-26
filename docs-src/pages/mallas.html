@@ -61,3 +61,17 @@ m.triangles = { 0, 1, 2 }
 m:recalculateNormals()
 m:setMaterial(0, { color = Vec3(1, 0.5, 0.1), roughness = 0.4 })
 self.entity.mesh = m</code></pre>
+      <h2 id="static">Objetos Static y static batching</h2>
+      <p>
+        La casilla <strong>Static</strong> del Inspector (junto al nombre) dice que el objeto no se mueve en el juego.
+        Al exportar con <em>Combinar mallas estáticas</em> activado, las mallas de todos los objetos Static de cada escena
+        se combinan en un lote: los materiales iguales (mismos valores y mismas texturas, aunque vengan de modelos distintos)
+        se dibujan en <strong>una sola llamada</strong>. El lote se sigue partiendo por zonas, así que la GPU descarta lo que
+        queda fuera de cámara o tapado. Solo cambia la copia de la escena que va al juego; el proyecto no se toca.
+      </p>
+      <div class="note">
+        No marques Static lo que un script vaya a mover, ocultar o cambiar de malla o material: su malla va dentro del lote y
+        esos cambios no se verían. Las colisiones y los scripts siguen encontrando el objeto. No se combinan los objetos con
+        Animator, Script o un Rigidbody que no sea estático (en él o en un padre), las mallas creadas por código, ni las mallas
+        repetidas más de 32 veces (esas ya se dibujan instanciadas, una llamada por material, sin gastar memoria de más).
+      </div>

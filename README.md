@@ -13,10 +13,40 @@ Incluye dos escenas de demostración, iluminadas por una sola luz direccional (e
 - **Catedral de Šibenik** (por defecto): 75 mil triángulos. Un interior en el que el sol entra por los ventanales.
 - **San Miguel**: ≈10 millones de triángulos, 287 materiales y 266 texturas. Un patio exterior.
 
+**Descarga:** el zip listo para usar (editor, player y documentación) está en [Releases](../../releases/latest). La lista completa de cambios de cada versión, en [CHANGELOG.md](CHANGELOG.md).
+
+---
+
+## Novedades de la 0.5
+
+**Rendimiento**
+- **Static batching al exportar** (como Unity): los objetos marcados **Static** en el Inspector se combinan en un lote por escena. Los materiales iguales (mismos valores y texturas, aunque vengan de modelos distintos) se dibujan en **una sola llamada**, y el culling en GPU por zonas se mantiene. Las mallas repetidas y grandes se quedan instanciadas para no gastar memoria de vídeo. Se activa en *Exportar juego → Combinar mallas estáticas*.
+- **Batching en las sombras**: las piezas visibles que están seguidas en memoria se dibujan en una sola llamada por luz y cascada (antes, una por pieza). También en el pase de cámara, por material. Las *Estadísticas* muestran las llamadas de sombras.
+- **Agrupado de mallas independiente de la escala**: un FBX en centímetros ya no se parte en miles de submallas (miles de llamadas de dibujo). Los modelos ya importados se reagrupan solos al cargarlos.
+- **Agua más barata a lo lejos**: las olas más finas que un píxel se saltan (solo cuentan como rugosidad).
+
+**Iluminación y agua**
+- **Sombras de contacto** del sol (*Post-procesado → Efectos*): las sombras pequeñas que las cascadas no ven (pies en el suelo, piedras, huecos).
+- **Compensación de energía por dispersión múltiple**: los metales y materiales rugosos ya no se ven más oscuros de lo real.
+- **El sol con tamaño real** (0,53°) en los brillos y oclusión del horizonte en los reflejos.
+- **Oleaje con espectro JONSWAP** (el del mar real, 24 ondas): sin patrones repetidos. "Altura de ola" es ahora la altura significativa. La flotación usa las mismas olas.
+- **El agua refleja el cielo real** (con las nubes volumétricas), la luz atraviesa las crestas (modelo de Atlas/Crest), espuma orgánica sin polígonos y ahora recibe la **niebla y la luz volumétrica** como el resto de la escena.
+
+**Mundos grandes**
+- **Origen flotante** (el *World Origin Rebasing* de Unreal): a más de 2 km del centro el mundo se desplaza solo para que nada tiemble (mallas, luz y sombras, física, gizmos). Funciona en el editor y en el juego, con física, navegación, bloques, partículas, audio y cinemáticas. La escena guarda el origen sin perder precisión. En Lua: `Scene.origin()`, `Scene.toAbsolute()`, `Scene.toLocal()` y el evento `OnOriginShift(offset)`.
+
+**Editor y juego exportado**
+- **Componente Profiler**: FPS, CPU, GPU (medida en la propia GPU), RAM y la gráfica del frame arriba a la derecha, en el juego y en la vista Juego.
+- **Importación con barra de progreso**: archivo, etapa (leyendo, partiendo en piezas, texturas, escribiendo) y porcentaje real. Las carpetas se importan en cola (2 a la vez) para no agotar la RAM.
+- **Carga de escenas por etapas en el juego** con pantalla de carga (modelos en otro hilo) y un mensaje claro si la GPU se queda sin memoria de vídeo.
+- **Escena sin cámara**: el juego crea una cámara orbital que encuadra la escena (arrastrar para girar, rueda para acercar).
+- Arrastrar un material del Proyecto con varios objetos seleccionados ya no cambia el Inspector y lo aplica a todos.
+
 ---
 
 ## Índice
 
+- [Novedades de la 0.5](#novedades-de-la-05)
 - [Requisitos](#requisitos)
 - [Compilar y ejecutar](#compilar-y-ejecutar)
 - [Controles](#controles)

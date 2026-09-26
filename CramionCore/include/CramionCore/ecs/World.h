@@ -101,6 +101,14 @@ private:
     World* world_ = nullptr;
 };
 
+// Posicion en doble precision (el origen flotante del mundo).
+struct DVec3 {
+    double x = 0.0;
+    double y = 0.0;
+    double z = 0.0;
+    friend bool operator==(const DVec3&, const DVec3&) = default;
+};
+
 class World {
 public:
     World();
@@ -139,6 +147,29 @@ public:
     void markTransformDirty(entt::entity entity);
     const core::Mat4& worldMatrix(entt::entity entity) const;
 
+    // --- Origen flotante (mundos grandes) ---
+    // Los float de 32 bits solo tienen ~7 cifras: lejos del (0,0,0) las
+    // posiciones se redondean y todo tiembla (mallas, sombras, fisica). Por
+    // eso el mundo se guarda cerca del origen y `origin()` dice donde esta,
+    // en doble precision, ese (0,0,0) local: posicion real = origin + local.
+    // shiftOrigin() lo mueve (FloatingOrigin.h decide cuando): las raices se
+    // desplazan -offset y cada sistema que guarda posiciones del mundo
+    // (fisica, particulas, navegacion, bloques...) hace lo mismo con su
+    // shiftOrigin(offset). La escena guarda el origen y las posiciones
+    // relativas a el, asi que no se pierde precision al guardar.
+    const DVec3& origin() const { return origin_; }
+    void setOrigin(const DVec3& origin) { origin_ = origin; }
+    void shiftOrigin(const core::Vec3& offset);
+    // Posicion absoluta (doble precision) de un punto local.
+    DVec3 absolute(const core::Vec3& local) const {
+        return DVec3{origin_.x + local.x, origin_.y + local.y, origin_.z + local.z};
+    }
+    // Punto local de una posicion absoluta.
+    core::Vec3 local(const DVec3& absolute) const {
+        return core::Vec3{static_cast<float>(absolute.x - origin_.x), static_cast<float>(absolute.y - origin_.y),
+                          static_cast<float>(absolute.z - origin_.z)};
+    }
+
     // --- Escena ---
     const Uuid& sceneUuid() const { return scene_uuid_; }
     void setSceneUuid(const Uuid& uuid) { scene_uuid_ = uuid; }
@@ -168,6 +199,7 @@ private:
     Uuid scene_uuid_ = Uuid::generate();
     std::string scene_name_ = "Escena";
     std::uint64_t structure_version_ = 0;
+    DVec3 origin_{};
 };
 
 // --- Plantillas ---------------------------------------------------------------

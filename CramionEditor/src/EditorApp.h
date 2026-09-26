@@ -33,6 +33,9 @@
 #include "LuaCompletion.h"
 #include "McpServer.h"
 #include "ModelPreviews.h"
+#include "ProfilerOverlay.h"
+
+#include <CramionCore/ecs/FloatingOrigin.h>
 #include "PropertyInspector.h"
 #include "ProjectTemplates.h"
 
@@ -394,6 +397,12 @@ private:
         std::string game_ini;
         std::string scene_name;
         bool run_after = false;
+        // Static batching: cada .crscene del paquete se combina en el hilo
+        // (copia de la escena + su lote en Library/ExportCache/StaticBatches).
+        bool static_batching = true;
+        std::filesystem::path assets_root;
+        std::filesystem::path batch_cache;
+        std::string batch_summary;
     };
     void exportGame(bool run_after);
     void drawExportProgress();
@@ -404,6 +413,11 @@ private:
     // Ventana previa: carpeta de destino (escrita o con Examinar) y ejecutar al terminar.
     bool export_setup_ = false;
     bool export_run_after_ = false;
+    bool export_static_batching_ = true;
+    // Componente Profiler: medidas por frame y su dibujo en la vista Juego.
+    ProfilerOverlay profiler_overlay_;
+    // Casilla Static del Inspector: valor a aplicar a los hijos si se acepta.
+    bool static_children_value_ = false;
     std::string export_folder_;
     std::shared_ptr<dialogs::AsyncFolderPick> export_pick_;
 
@@ -427,6 +441,15 @@ private:
     // --- Mundo de bloques (EditorVoxel.cpp) ---
     ecs::Entity createVoxelWorldEntity();
     void updateVoxels(float delta_seconds);
+    // --- Origen flotante (EditorOrigin.cpp) ---
+    // Cada frame: si la camara se alejo, el mundo se desplaza.
+    void updateFloatingOrigin();
+    // Los sistemas y la camara del editor, -offset (y el mundo si move_world).
+    void applyOriginShift(const core::Vec3& offset, bool move_world);
+    // Tras cargar/deshacer/salir de Play: si el origen cambio, se alinea lo
+    // demas (las entidades ya vienen en el origen nuevo).
+    void alignOriginAfterLoad(const ecs::DVec3& before);
+    ecs::FloatingOriginSettings floating_origin_{};
     void startVoxels();
     void stopVoxels();
     core::Vec3 voxelViewer();
@@ -473,6 +496,8 @@ private:
     void drawMaterialEditor(const Uuid& uuid);
     void drawMeshMaterials(ecs::Entity entity);
     Uuid inspected_material_{};     // material elegido en el Proyecto (el Inspector lo muestra)
+    // Clic en un material del navegador: se abre al soltar si no se arrastro.
+    Uuid pending_inspect_material_{};
     Uuid inline_material_{};        // el que se edita al pie del Mesh Renderer
     Uuid last_created_material_{};
     assets::MaterialAsset material_edit_{};
@@ -544,6 +569,22 @@ private:
     void pollImports();
     // Ventana flotante con la barra de cada importacion (archivo y etapa).
     void drawImportProgress();
+    // Miniatura del proyecto para el Hub (EditorThumbnail.cpp): captura de la
+    // vista Escena en Library/thumbnail.png. Se hace al guardar la escena y
+    // unos frames despues de abrir el proyecto (`thumbnail_countdown_`).
+    void saveProjectThumbnail();
+    int thumbnail_countdown_ = 0;
+    struct ImportJob;  // mas abajo
+    // --- Reimportar modelos (EditorReimport.cpp) ---
+    // Vuelve a importar un modelo desde su archivo original, combinando sus
+    // piezas por material si tiene muchas, y al terminar rehace sus
+    // instancias en la escena abierta. Devuelve false si no se puede.
+    bool startReimport(const Uuid& model);
+    void finishReimport(const ImportJob& job, const assets::ImportResult& result);
+    // Cambia la jerarquia de cada instancia del modelo por la nueva (conserva
+    // la raiz: su Transform, nombre, padre, componentes, Static y los .crmat
+    // por nombre de material). Devuelve cuantas instancias rehizo.
+    int rebuildModelInstances(const Uuid& model, const std::vector<std::vector<std::string>>& old_materials);
     // Vigila Assets/ (archivos nuevos, copiados, borrados o movidos desde
     // fuera) y refresca la base de datos sola.
     void watchAssets();
@@ -633,6 +674,9 @@ private:
     GizmoOperation gizmo_ = GizmoOperation::Translate;
     bool gizmo_local_ = false;
     bool gizmo_was_using_ = false;
+    // Iconos y ayudas de la vista (luces, camaras, fisica...); el gizmo de
+    // mover/rotar/escalar se queda siempre, como el boton Gizmos de Unity.
+    bool show_gizmos_ = true;
     bool snap_enabled_ = false;
     float snap_translate_ = 0.25f;
     float snap_rotate_ = 15.0f;
@@ -671,6 +715,11 @@ private:
         std::shared_ptr<assets::ImportProgress> progress;
         // Vacio mientras espera en la cola.
         std::future<assets::ImportResult> result;
+        // Reimportar un modelo (combinando sus piezas) en vez de importar un
+        // archivo: su UUID y el nombre de los materiales de cada pieza de
+        // antes (para conservar los .crmat asignados en la escena).
+        Uuid reimport{};
+        std::vector<std::vector<std::string>> old_materials;
     };
     // En cola y en curso, en orden de llegada. Solo kMaxParallelImports a la
     // vez: una carpeta con muchos FBX grandes agotaria la RAM.
@@ -844,6 +893,7 @@ private:
     bool show_navigation_ = true;          // la malla en la escena (P)
     bool show_navigation_window_ = false;
     std::uint64_t nav_draw_version_ = ~0ull;
+    core::Vec3 nav_draw_offset_{};
     std::vector<gfx::OverlayVertex> nav_draw_triangles_;
     std::vector<gfx::OverlayVertex> nav_draw_edges_;
     // Gizmos de fisica.
