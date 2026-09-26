@@ -4,6 +4,10 @@
 // Unity y Unreal. Antes se dibujaba en 2D con ImGui, encima de todo: cuando un
 // gizmo atravesaba un objeto no se sabia por donde entraba.
 //
+// El gizmo de mover/rotar/escalar se dibuja aparte, SIN prueba de
+// profundidad y opaco (siempre encima, como en Unity y Unreal): casi siempre
+// esta dentro del objeto seleccionado y en rayos X apenas se veia.
+//
 // El gizmo de mover/rotar/escalar sigue siendo ImGuizmo para la interaccion
 // (zonas de agarre y matematica), pero con sus colores transparentes: ImGui
 // descarta las primitivas de alfa 0, asi que no dibuja nada. La geometria de
@@ -59,14 +63,26 @@ void orthonormalBasis(const Vec3& n, Vec3& u, Vec3& v) {
 // -----------------------------------------------------------------------------
 
 void EditorApp::overlayLine(const Vec3& a, const Vec3& b, std::uint32_t color) {
-    overlay_.lines.push_back({a, color});
-    overlay_.lines.push_back({b, color});
+    auto& lines = overlay_on_top_ ? overlay_.top_lines : overlay_.lines;
+    lines.push_back({a, color});
+    lines.push_back({b, color});
 }
 
 void EditorApp::overlayTriangle(const Vec3& a, const Vec3& b, const Vec3& c, std::uint32_t color) {
-    overlay_.triangles.push_back({a, color});
-    overlay_.triangles.push_back({b, color});
-    overlay_.triangles.push_back({c, color});
+    auto& triangles = overlay_on_top_ ? overlay_.top_triangles : overlay_.triangles;
+    triangles.push_back({a, color});
+    triangles.push_back({b, color});
+    triangles.push_back({c, color});
+}
+
+// Cara de un solido convexo (conos, cubos): se descarta si mira hacia atras
+// (sin prueba de profundidad las de atras taparian a las de delante). Color
+// plano, sin iluminacion, como los gizmos de Unreal.
+void EditorApp::overlaySolidFace(const Vec3& a, const Vec3& b, const Vec3& c, const Vec3& outward,
+                                 std::uint32_t color) {
+    const Vec3 center = (a + b + c) * (1.0f / 3.0f);
+    if (core::dot(outward, scene_.camera().position() - center) <= 0.0f) return;
+    overlayTriangle(a, b, c, color);
 }
 
 void EditorApp::overlayQuad(const Vec3& a, const Vec3& b, const Vec3& c, const Vec3& d,
@@ -103,14 +119,18 @@ void EditorApp::overlayCone(const Vec3& base, const Vec3& direction, float lengt
     const Vec3 axis = core::normalize(direction);
     orthonormalBasis(axis, u, v);
     const Vec3 tip = base + axis * length;
-    constexpr int kSides = 16;
+    constexpr int kSides = 20;
     for (int i = 0; i < kSides; ++i) {
         const float a0 = static_cast<float>(i) / kSides * kTwoPi;
         const float a1 = static_cast<float>(i + 1) / kSides * kTwoPi;
-        const Vec3 p0 = base + (u * std::cos(a0) + v * std::sin(a0)) * radius;
-        const Vec3 p1 = base + (u * std::cos(a1) + v * std::sin(a1)) * radius;
-        overlayTriangle(tip, p0, p1, color);
-        overlayTriangle(base, p1, p0, color);
+        const Vec3 r0 = u * std::cos(a0) + v * std::sin(a0);
+        const Vec3 r1 = u * std::cos(a1) + v * std::sin(a1);
+        const Vec3 p0 = base + r0 * radius;
+        const Vec3 p1 = base + r1 * radius;
+        // Normal del lateral: la radial inclinada hacia la punta.
+        const Vec3 radial = core::normalize(r0 + r1);
+        overlaySolidFace(tip, p0, p1, radial * length + axis * radius, color);
+        overlaySolidFace(base, p1, p0, axis * -1.0f, color);
     }
 }
 
@@ -126,7 +146,10 @@ void EditorApp::overlayCube(const Vec3& center, const Vec3& x, const Vec3& y, co
     static constexpr int kFaces[6][4] = {{0, 2, 3, 1}, {4, 5, 7, 6}, {0, 1, 5, 4},
                                          {2, 6, 7, 3}, {0, 4, 6, 2}, {1, 3, 7, 5}};
     for (const auto& f : kFaces) {
-        overlayQuad(c[f[0]], c[f[1]], c[f[2]], c[f[3]], color);
+        const Vec3 face_center = (c[f[0]] + c[f[1]] + c[f[2]] + c[f[3]]) * 0.25f;
+        const Vec3 outward = face_center - center;
+        overlaySolidFace(c[f[0]], c[f[1]], c[f[2]], outward, color);
+        overlaySolidFace(c[f[0]], c[f[2]], c[f[3]], outward, color);
     }
 }
 
@@ -159,7 +182,7 @@ void EditorApp::overlayScreenDisc(const Vec3& center, float radius, std::uint32_
 }
 
 // Tamano en el mundo del gizmo en `origin`, igual que el mScreenFactor de
-// ImGuizmo: 0.1 de espacio de clip medido sobre el vector derecho de la
+// ImGuizmo: kGizmoClipSize de espacio de clip medido sobre el vector derecho de la
 // camara (con la correccion de aspecto de ImGuizmo).
 float EditorApp::gizmoWorldSize(const Vec3& origin) const {
     const Mat4 view = scene_.camera().view();
@@ -180,7 +203,7 @@ float EditorApp::gizmoWorldSize(const Vec3& origin) const {
         dy /= ratio;
     }
     const float length = std::sqrt(dx * dx + dy * dy);
-    return length > 1e-6f ? 0.1f / length : 1.0f;
+    return length > 1e-6f ? kGizmoClipSize / length : 1.0f;
 }
 
 // -----------------------------------------------------------------------------
@@ -188,6 +211,7 @@ float EditorApp::gizmoWorldSize(const Vec3& origin) const {
 // -----------------------------------------------------------------------------
 
 void EditorApp::drawGizmoGeometry(const Mat4& matrix, bool local, int operation) {
+    overlay_on_top_ = true;
     const Vec3 origin = column(matrix, 3);
     Vec3 axes[3] = {Vec3{1, 0, 0}, Vec3{0, 1, 0}, Vec3{0, 0, 1}};
     if (local) {
@@ -214,7 +238,7 @@ void EditorApp::drawGizmoGeometry(const Mat4& matrix, bool local, int operation)
             if (visible(axis_type)) {
                 const ImU32 color = state(axis_type) ? kHighlight : kAxisColors[i];
                 overlayLine(origin + axes[i] * (0.1f * size), origin + axes[i] * size, color);
-                overlayCone(origin + axes[i] * size, axes[i], 0.2f * size, 0.06f * size, color);
+                overlayCone(origin + axes[i] * size, axes[i], 0.22f * size, 0.075f * size, color);
             }
             // Plano perpendicular al eje i (YZ, ZX, XY), del 0.5 al 0.8.
             const auto plane_type = static_cast<ImGuizmo::MOVETYPE>(ImGuizmo::MT_MOVE_YZ + i);
@@ -235,7 +259,7 @@ void EditorApp::drawGizmoGeometry(const Mat4& matrix, bool local, int operation)
             }
         }
         if (visible(ImGuizmo::MT_MOVE_SCREEN)) {
-            overlayScreenDisc(origin, 0.05f * size,
+            overlayScreenDisc(origin, 0.06f * size,
                               state(ImGuizmo::MT_MOVE_SCREEN) ? kHighlight : kCenterColor);
         }
     } else if (operation == 1) {  // --- Rotar ---
@@ -247,23 +271,16 @@ void EditorApp::drawGizmoGeometry(const Mat4& matrix, bool local, int operation)
             overlayCircle(origin, axes[(i + 1) % 3], axes[(i + 2) % 3], 1.2f * size,
                           state(type) ? kHighlight : kAxisColors[i], /*front_only=*/!using_gizmo, 96);
         }
-        if (visible(ImGuizmo::MT_ROTATE_SCREEN)) {
-            // Circulo de la vista: radio de pantalla fijo (0.06 del alto, el
-            // de ImGuizmo), en el plano de la camara.
+        // Bola central: giro libre (como una bola de raton), ver drawFreeRotateHandle.
+        if (!using_gizmo) {
+            const bool lit = free_rotate_drag_ || free_rotate_hover_;
+            overlayScreenDisc(origin, kFreeRotateRadius * size,
+                              withAlpha(lit ? kHighlight : kCenterColor, lit ? 0.55f : 0.28f));
             const Mat4 view = scene_.camera().view();
             const Vec3 right = core::normalize(Vec3{view.m[0][0], view.m[1][0], view.m[2][0]});
             const Vec3 up = core::normalize(Vec3{view.m[0][1], view.m[1][1], view.m[2][1]});
-            float x0 = 0.0f, y0 = 0.0f, x1 = 0.0f, y1 = 0.0f;
-            float radius = 1.35f * size;
-            if (worldToScreen(origin, x0, y0) && worldToScreen(origin + right * size, x1, y1)) {
-                const float pixels_per_unit = std::hypot(x1 - x0, y1 - y0) / size;
-                if (pixels_per_unit > 1e-4f) {
-                    radius = 0.06f * view_h_ / pixels_per_unit;
-                }
-            }
-            overlayCircle(origin, right, up, radius,
-                          state(ImGuizmo::MT_ROTATE_SCREEN) ? kHighlight : IM_COL32(230, 230, 230, 255),
-                          false, 64);
+            overlayCircle(origin, right, up, kFreeRotateRadius * size,
+                          withAlpha(lit ? kHighlight : kCenterColor, 0.8f), false, 48);
         }
     } else {  // --- Escalar ---
         for (int i = 0; i < 3; ++i) {
@@ -271,13 +288,14 @@ void EditorApp::drawGizmoGeometry(const Mat4& matrix, bool local, int operation)
             if (!visible(type)) continue;
             const ImU32 color = state(type) ? kHighlight : kAxisColors[i];
             overlayLine(origin + axes[i] * (0.1f * size), origin + axes[i] * size, color);
-            overlayCube(origin + axes[i] * size, axes[0], axes[1], axes[2], 0.055f * size, color);
+            overlayCube(origin + axes[i] * size, axes[0], axes[1], axes[2], 0.07f * size, color);
         }
         if (visible(ImGuizmo::MT_SCALE_XYZ)) {
-            overlayCube(origin, axes[0], axes[1], axes[2], 0.07f * size,
+            overlayCube(origin, axes[0], axes[1], axes[2], 0.08f * size,
                         state(ImGuizmo::MT_SCALE_XYZ) ? kHighlight : kCenterColor);
         }
     }
+    overlay_on_top_ = false;
 }
 
 // Deja la geometria del frame al renderizador (se dibuja en el siguiente

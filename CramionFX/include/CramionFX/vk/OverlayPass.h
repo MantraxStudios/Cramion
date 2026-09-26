@@ -19,6 +19,9 @@ class VulkanDevice;
 //   1. lo visible (depth <= escena): con la opacidad de su color,
 //   2. lo tapado  (depth >  escena): con occluded_alpha ("rayos X").
 //
+// y al final la parte "top" (top_lines / top_triangles) sin prueba de
+// profundidad: el gizmo de transformar, siempre encima.
+//
 // Las lineas se expanden en la CPU a quads de grosor constante en pixeles,
 // directamente en espacio de recorte (recortadas antes contra el plano
 // cercano): la GPU solo rasteriza. Un buffer de vertices por frame en vuelo,
@@ -46,14 +49,20 @@ private:
         float edge;  // pixeles desde el eje (antialias)
     };
 
+    // compare = eAlways: sin prueba de profundidad (la parte "top").
     vk::raii::Pipeline createPipeline(const VulkanDevice& device, vk::Format color_format,
                                       vk::Format depth_format, vk::CompareOp compare) const;
+    void appendTriangles(const std::vector<OverlayVertex>& triangles, const core::Mat4& view_projection);
+    void appendLines(const std::vector<OverlayVertex>& lines, const core::Mat4& view_projection,
+                     float half_width, vk::Extent2D viewport);
 
     vk::raii::PipelineLayout layout_{nullptr};
     vk::raii::Pipeline visible_pipeline_{nullptr};
     vk::raii::Pipeline occluded_pipeline_{nullptr};
+    vk::raii::Pipeline top_pipeline_{nullptr};
     std::vector<VulkanBuffer> buffers_;
     std::vector<std::uint32_t> vertex_counts_;
+    std::vector<std::uint32_t> tested_counts_;  // vertices con prueba de profundidad (los primeros)
     std::vector<Vertex> scratch_;
 };
 

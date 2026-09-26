@@ -286,7 +286,7 @@ void EditorApp::drawSceneView() {
         finishPick(*result);
     }
     // Seleccionar: clic izquierdo sin arrastrar, fuera del gizmo.
-    if (view_hovered_ && !io.KeyAlt && !light_handle && !collider_handle && !stamping &&
+    if (view_hovered_ && !io.KeyAlt && !light_handle && !collider_handle && !stamping && !free_rotate_hover_ &&
         ImGui::IsMouseReleased(ImGuiMouseButton_Left) && !ImGuizmo::IsUsing() &&
         !ImGuizmo::IsOver() && ImGui::GetMouseDragDelta(ImGuiMouseButton_Left, 2.0f).x == 0.0f &&
         ImGui::GetMouseDragDelta(ImGuiMouseButton_Left, 2.0f).y == 0.0f) {
@@ -657,6 +657,7 @@ bool EditorApp::drawLightGizmos() {
 // Gizmo de mover/rotar/escalar sobre la seleccion activa; el cambio se
 // aplica tambien al resto de la seleccion (misma transformacion en el mundo).
 void EditorApp::drawGizmo() {
+    if (gizmo_ != GizmoOperation::Rotate) free_rotate_hover_ = free_rotate_drag_ = false;
     ecs::Entity target = world_.find(active_);
     if (!target.valid() || gizmo_ == GizmoOperation::None || flying_) {
         if (gizmo_was_using_) commit();
@@ -673,6 +674,7 @@ void EditorApp::drawGizmo() {
             color.w = 0.0f;
         }
         ImGuizmo::AllowAxisFlip(false);
+        ImGuizmo::SetGizmoSizeClipSpace(kGizmoClipSize);
         invisible_style = true;
     }
     ImGuizmo::SetOrthographic(false);
@@ -691,7 +693,10 @@ void EditorApp::drawGizmo() {
     ImGuizmo::OPERATION operation = ImGuizmo::TRANSLATE;
     float snap[3] = {snap_translate_, snap_translate_, snap_translate_};
     if (gizmo_ == GizmoOperation::Rotate) {
-        operation = ImGuizmo::ROTATE;
+        // Solo los tres anillos: sin el circulo blanco de la vista, que
+        // estorbaba. El giro libre es la bola central (drawFreeRotateHandle).
+        operation = static_cast<ImGuizmo::OPERATION>(ImGuizmo::ROTATE_X | ImGuizmo::ROTATE_Y |
+                                                     ImGuizmo::ROTATE_Z);
         snap[0] = snap[1] = snap[2] = snap_rotate_;
     } else if (gizmo_ == GizmoOperation::Scale) {
         operation = ImGuizmo::SCALE;
@@ -701,6 +706,13 @@ void EditorApp::drawGizmo() {
     const ImGuizmo::MODE mode =
         (gizmo_local_ || gizmo_ == GizmoOperation::Scale) ? ImGuizmo::LOCAL : ImGuizmo::WORLD;
     const bool snapping = snap_enabled_ != ImGui::GetIO().KeyCtrl;
+
+    // Giro libre con la bola central (antes que ImGuizmo: si se agarra la
+    // bola, los anillos no reciben el clic).
+    if (gizmo_ == GizmoOperation::Rotate && drawFreeRotateHandle(target)) {
+        drawGizmoGeometry(target.worldMatrix(), mode == ImGuizmo::LOCAL, 1);
+        return;
+    }
 
     const Mat4 before = target.worldMatrix();
     Mat4 matrix = before;
@@ -724,6 +736,67 @@ void EditorApp::drawGizmo() {
         commit();  // se solto el gizmo: un paso de deshacer
     }
     gizmo_was_using_ = using_now;
+}
+
+// Bola central del gizmo de rotar: arrastrarla gira el objeto libremente
+// alrededor de su centro, en ejes de la camara (horizontal = eje arriba de
+// la vista, vertical = eje derecho), como la bola de Blender / Maya. true
+// mientras se arrastra (entonces ImGuizmo no recibe el raton).
+bool EditorApp::drawFreeRotateHandle(ecs::Entity target) {
+    const ImGuiIO& io = ImGui::GetIO();
+    const Mat4 start = target.worldMatrix();
+    const Vec3 origin{start.m[3][0], start.m[3][1], start.m[3][2]};
+    free_rotate_hover_ = false;
+
+    float cx = 0.0f, cy = 0.0f, ex = 0.0f, ey = 0.0f;
+    const Mat4 view = scene_.camera().view();
+    const Vec3 right = core::normalize(Vec3{view.m[0][0], view.m[1][0], view.m[2][0]});
+    const Vec3 up = core::normalize(Vec3{view.m[0][1], view.m[1][1], view.m[2][1]});
+    const float size = gizmoWorldSize(origin);
+    if (!worldToScreen(origin, cx, cy) || !worldToScreen(origin + right * (kFreeRotateRadius * size), ex, ey)) {
+        free_rotate_drag_ = false;
+        return false;
+    }
+    const float radius_px = std::hypot(ex - cx, ey - cy);
+    const float mouse_d = std::hypot(io.MousePos.x - cx, io.MousePos.y - cy);
+
+    if (!free_rotate_drag_) {
+        // Solo si ImGuizmo no tiene ya un anillo bajo el raton.
+        const bool inside = mouse_d <= radius_px && view_hovered_ && !ImGuizmo::IsOver() &&
+                            !ImGuizmo::IsUsing();
+        free_rotate_hover_ = inside;
+        if (inside && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+            free_rotate_drag_ = true;
+        } else {
+            return false;
+        }
+    }
+    if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+        free_rotate_drag_ = false;
+        free_rotate_hover_ = true;  // que soltar la bola no seleccione lo de debajo
+        commit();  // un paso de deshacer por arrastre
+        return false;
+    }
+
+    const float dx = io.MouseDelta.x;
+    const float dy = io.MouseDelta.y;
+    if (dx != 0.0f || dy != 0.0f) {
+        constexpr float kDegreesPerPixel = 0.5f;
+        const auto axisAngle = [](const Vec3& axis, float degrees) {
+            const float half = core::radians(degrees) * 0.5f;
+            const Vec3 a = axis * std::sin(half);
+            return core::composeTrs(Vec3{}, core::Quat{a.x, a.y, a.z, std::cos(half)}, Vec3{1.0f, 1.0f, 1.0f});
+        };
+        const Mat4 rotation = axisAngle(up, dx * kDegreesPerPixel) * axisAngle(right, dy * kDegreesPerPixel);
+        const Mat4 delta = core::translate(origin) * rotation * core::translate(origin * -1.0f);
+        target.setWorldMatrix(delta * start);
+        for (ecs::Entity other : topLevelSelection()) {
+            if (other == target || other.isAncestorOf(target) || target.isAncestorOf(other)) continue;
+            other.setWorldMatrix(delta * other.worldMatrix());
+        }
+        dirty_ = true;
+    }
+    return true;
 }
 
 }  // namespace cramion::editor

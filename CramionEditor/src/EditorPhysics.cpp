@@ -24,6 +24,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <iostream>
 
 namespace cramion::editor {
@@ -872,14 +873,30 @@ void EditorApp::drawColliderGizmo(ecs::Entity e, bool selected) {
         arc(bottom, v, dir * -1.0f, r, 0.0f, core::kPi, color);
     }
     if (const physics::MeshCollider* mesh = e.tryGet<physics::MeshCollider>()) {
-        // La forma que usa Jolt de verdad (malla o envolvente convexa).
-        std::vector<Vec3> triangles;
-        if (physics_.bodyTriangles(e, triangles, selected ? 12000 : 3000)) {
+        // La forma que usa Jolt de verdad (malla o envolvente convexa), toda:
+        // se guarda por entidad y se rehace si el objeto se mueve o cada
+        // medio segundo (el cuerpo pudo reconstruirse).
+        ColliderWire& wire = collider_wire_cache_[static_cast<std::uint32_t>(e.handle())];
+        const int frame = ImGui::GetFrameCount();
+        if (wire.triangles.empty() || frame - wire.frame > 30 ||
+            std::memcmp(&wire.matrix, &m, sizeof(Mat4)) != 0) {
+            wire.triangles.clear();
+            physics_.bodyTriangles(e, wire.triangles, std::size_t{4} << 20);
+            wire.matrix = m;
+            wire.frame = frame;
+        }
+        const std::size_t count = wire.triangles.size() / 3;
+        if (count > 0) {
             const ImU32 color = fade(colorFor(mesh->material), 0.8f);
-            for (std::size_t i = 0; i + 2 < triangles.size(); i += 3) {
-                overlayLine(triangles[i], triangles[i + 1], color);
-                overlayLine(triangles[i + 1], triangles[i + 2], color);
-                overlayLine(triangles[i + 2], triangles[i], color);
+            // Si hay demasiados, uno de cada `step` repartidos por toda la
+            // malla (antes se cortaba y faltaba un trozo).
+            const std::size_t budget = selected ? 60000 : 15000;
+            const std::size_t step = (count + budget - 1) / budget;
+            for (std::size_t t = 0; t < count; t += step) {
+                const Vec3* v = &wire.triangles[t * 3];
+                overlayLine(v[0], v[1], color);
+                overlayLine(v[1], v[2], color);
+                overlayLine(v[2], v[0], color);
             }
         }
     }

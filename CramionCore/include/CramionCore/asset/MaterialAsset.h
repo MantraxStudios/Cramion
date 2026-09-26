@@ -39,6 +39,10 @@ struct MaterialAsset {
     float emissive_intensity = 1.0f;
     core::Vec2 tiling{1.0f, 1.0f};
     core::Vec2 offset{0.0f, 0.0f};
+    // Relieve del mapa de alturas (parallax occlusion mapping) en metros:
+    // lo que hay del negro al blanco del mapa (0.03 = 3 cm).
+    float height_scale = 0.03f;
+    float cavity_strength = 1.0f;  // cuanto oscurecen las grietas (mapa de cavidad)
 
     // Texturas: rutas dentro de Assets (vacias = solo el factor).
     std::string albedo;
@@ -47,6 +51,12 @@ struct MaterialAsset {
     std::string roughness_map;  // gris: rugosidad
     std::string occlusion;
     std::string emissive_map;
+    // Mapas de los packs de escaneos (Megascans, Poly Haven...):
+    std::string height_map;    // gris: altura / displacement (blanco = alto) -> parallax
+    std::string cavity_map;    // gris: grietas (negro = hueco): quita brillo y luz
+    std::string specular_map;  // gris: reflectancia (0.5 = F0 0.04, como Unreal)
+    std::string gloss_map;     // gris: brillo = 1 - rugosidad (si no hay rugosidad)
+    std::string bump_map;      // gris: relieve fino; se usa como normal si no hay normal map
 
     // Shader de superficie propio (.crshader dentro de Assets; vacio = el
     // estandar) y los valores de sus propiedades por nombre (las que falten

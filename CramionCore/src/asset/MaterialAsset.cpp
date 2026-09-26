@@ -115,6 +115,13 @@ bool loadMaterial(const std::filesystem::path& path, MaterialAsset& out, std::st
     m.roughness_map = text(j, "roughness_map");
     m.occlusion = text(j, "occlusion");
     m.emissive_map = text(j, "emissive_map");
+    m.height_map = text(j, "height_map");
+    m.cavity_map = text(j, "cavity_map");
+    m.specular_map = text(j, "specular_map");
+    m.gloss_map = text(j, "gloss_map");
+    m.bump_map = text(j, "bump_map");
+    m.height_scale = number(j, "height_scale", m.height_scale);
+    m.cavity_strength = number(j, "cavity_strength", m.cavity_strength);
     out = std::move(m);
     return true;
 }
@@ -143,6 +150,13 @@ bool saveMaterial(MaterialAsset& m, const std::filesystem::path& path, std::stri
     j["roughness_map"] = m.roughness_map;
     j["occlusion"] = m.occlusion;
     j["emissive_map"] = m.emissive_map;
+    j["height_map"] = m.height_map;
+    j["cavity_map"] = m.cavity_map;
+    j["specular_map"] = m.specular_map;
+    j["gloss_map"] = m.gloss_map;
+    j["bump_map"] = m.bump_map;
+    j["height_scale"] = m.height_scale;
+    j["cavity_strength"] = m.cavity_strength;
     if (!m.shader.empty()) {
         j["shader"] = m.shader;
         json values = json::object();
@@ -167,9 +181,12 @@ bool saveMaterial(MaterialAsset& m, const std::filesystem::path& path, std::stri
 std::uint64_t materialStructureHash(const MaterialAsset& m) {
     std::uint64_t h = 1469598103934665603ull;
     h = mix(h, static_cast<std::uint64_t>(m.mode));
-    for (const std::string* s : {&m.albedo, &m.normal, &m.metallic_map, &m.roughness_map, &m.occlusion, &m.emissive_map}) {
+    for (const std::string* s : {&m.albedo, &m.normal, &m.metallic_map, &m.roughness_map, &m.occlusion, &m.emissive_map,
+                                 &m.height_map, &m.cavity_map, &m.specular_map, &m.gloss_map, &m.bump_map}) {
         h = mixText(h, *s);
     }
+    // La cavidad se hornea en la textura con su fuerza.
+    h = mixFloat(h, m.cavity_map.empty() ? 0.0f : m.cavity_strength);
     h = mixFloat(h, m.tiling.x);
     h = mixFloat(h, m.tiling.y);
     h = mixFloat(h, m.offset.x);
@@ -198,6 +215,8 @@ asset::MaterialData toMaterialData(const MaterialAsset& m, const std::string& na
     d.normal_map_directx = m.normal_directx;
     d.reflectance = m.reflectance;
     d.transparent = m.mode == MaterialMode::Transparent;
+    d.height_scale = m.height_map.empty() ? 0.0f : std::max(m.height_scale, 0.0f);
+    d.specular_map = !m.specular_map.empty();
     return d;
 }
 
@@ -227,6 +246,11 @@ MaterialAsset materialFromImage(const std::filesystem::path& assets_root, const 
         {&m.metallic_map, {"_metallic", "_metalness", "_metal", "_met", "_m"}},
         {&m.occlusion, {"_ao", "_occlusion", "_ambientocclusion", "_ambient_occlusion"}},
         {&m.emissive_map, {"_emissive", "_emission", "_emit", "_e"}},
+        {&m.height_map, {"_displacement", "_height", "_disp", "_heightmap", "_parallax", "_h"}},
+        {&m.cavity_map, {"_cavity", "_cav"}},
+        {&m.specular_map, {"_specular", "_spec", "_specularlevel"}},
+        {&m.gloss_map, {"_gloss", "_glossiness", "_smoothness"}},
+        {&m.bump_map, {"_bump", "_bumpmap"}},
     };
     std::error_code ec;
     for (std::filesystem::directory_iterator it(folder, ec), end; !ec && it != end; it.increment(ec)) {
@@ -248,9 +272,11 @@ MaterialAsset materialFromImage(const std::filesystem::path& assets_root, const 
             m.normal_directx = true;
         }
     }
-    for (std::string* path : {&m.albedo, &m.normal, &m.roughness_map, &m.metallic_map, &m.occlusion, &m.emissive_map}) {
+    for (std::string* path : {&m.albedo, &m.normal, &m.roughness_map, &m.metallic_map, &m.occlusion, &m.emissive_map,
+                              &m.height_map, &m.cavity_map, &m.specular_map, &m.gloss_map, &m.bump_map}) {
         std::replace(path->begin(), path->end(), '\\', '/');
     }
+    if (!m.gloss_map.empty() && m.roughness_map.empty()) m.roughness = 1.0f;
     // Con mapa, el factor es el maximo (el mapa decide).
     if (!m.roughness_map.empty()) m.roughness = 1.0f;
     if (!m.metallic_map.empty()) m.metallic = 1.0f;

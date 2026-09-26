@@ -194,12 +194,12 @@
     <tr><td><code>create_entity</code>, <code>modify_entity</code>, <code>delete_entity</code>, <code>duplicate_entity</code></td><td>Crear primitivas, luces, cámaras, terreno, agua, vehículos, mundos de bloques; mover, girar, emparentar.</td></tr>
     <tr><td><code>list_component_types</code>, <code>set_component</code>, <code>remove_component</code></td><td>Cualquier componente del motor y cualquiera de sus campos.</td></tr>
     <tr><td><code>create_script</code>, <code>create_shader</code>, <code>read_file</code>, <code>write_file</code></td><td>Escribir scripts Lua y shaders (con los errores de compilación de vuelta).</td></tr>
-    <tr><td><code>create_material</code>, <code>assign_material</code></td><td>Materiales PBR o con shader propio.</td></tr>
+    <tr><td><code>create_material</code>, <code>assign_material</code></td><td>Materiales PBR o con shader propio. Con <code>from_image</code> (la imagen de color de un pack de escaneos) encuentra sola las demás: normal, rugosidad o gloss, AO, displacement (parallax, <code>height_scale</code> en metros), cavidad, specular y bump.</td></tr>
     <tr><td><code>create_model</code>, <code>import_file</code>, <code>instantiate</code>, <code>create_prefab</code></td><td>Modelos desde OBJ o archivos, ponerlos en la escena, prefabs.</td></tr>
     <tr><td><code>new_scene</code>, <code>open_scene</code>, <code>save_scene</code>, <code>list_scenes</code></td><td>Escenas.</td></tr>
     <tr><td><code>play</code>, <code>stop</code>, <code>pause</code>, <code>run_lua</code></td><td>Probar el juego y consultar su estado desde Lua.</td></tr>
     <tr><td><code>get_console</code>, <code>screenshot</code></td><td>Ver errores y el resultado en imagen.</td></tr>
-    <tr><td><code>select</code>, <code>set_camera</code>, <code>undo</code>, <code>redo</code></td><td>Enseñarte algo en el editor y deshacer.</td></tr>
+    <tr><td><code>select</code>, <code>set_camera</code>, <code>set_gizmo</code>, <code>undo</code>, <code>redo</code></td><td>Enseñarte algo en el editor y deshacer.</td></tr>
   </tbody>
 </table>
 

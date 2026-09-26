@@ -86,6 +86,12 @@ struct MaterialData {
     // Convenio del normal map: OpenGL (+Y arriba en la imagen, el de glTF) o
     // DirectX (+Y abajo: Unreal, Lumberyard/Bistro). El archivo no lo dice.
     bool normal_map_directx = false;
+    // Parallax occlusion mapping: altura en el canal G de occlusion_texture
+    // (R = oclusion); 0 = sin relieve. En metros.
+    float height_scale = 0.0f;
+    // R de metallic_roughness_texture = reflectancia (0.5 -> F0 0.04). El
+    // alfa de esa textura es siempre la cavidad (1 = sin grietas).
+    bool specular_map = false;
     // Vidrio, agua: materiales semitransparentes sin textura con alfa. Un
     // renderizador diferido no puede mezclarlos, asi que no se dibujan.
     bool transparent = false;

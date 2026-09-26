@@ -1,5 +1,27 @@
 # Cambios
 
+## 0.5.1
+
+### Gizmos
+- **El gizmo de mover, rotar y escalar se dibuja siempre encima y opaco**, como en Unreal. Antes se probaba contra la profundidad de la escena y, dentro del objeto seleccionado (casi siempre), se veía al 22 % y desteñido.
+- **Más grueso y más grande**: líneas de 5 px, flechas y cubos más gordos, un 30 % más grande en pantalla. Color plano, sin iluminación.
+- **Rotar**: sin el círculo blanco de la vista, que estorbaba. Nueva **bola central de giro libre**: al arrastrarla el objeto gira alrededor de su centro siguiendo el ratón (horizontal = eje arriba de la vista, vertical = eje derecho), como en Blender o Maya. Un paso de deshacer por arrastre.
+- **Mesh Collider completo**: antes solo se dibujaban sus primeros 12.000 triángulos y faltaba un trozo. Ahora, si hay demasiados, se reparten por toda la malla. Los triángulos se guardan por objeto en vez de pedirlos a Jolt en cada frame.
+
+### Materiales
+- **Nuevos mapas en el `.crmat`**, los de los packs de escaneos (Megascans, Poly Haven…):
+  - **Altura / Displacement** con *parallax occlusion mapping*: piedras y grietas con profundidad real al mirarlas de lado. *Relieve → Profundidad (m)*, en metros (0,03 = 3 cm), igual para un suelo que se repite que para un escaneo con toda la malla en una sola UV. Desplazamiento limitado en ángulos rasantes (sin estirones) y se apaga solo a más de 30 m.
+  - **Cavidad**: las grietas pierden reflejo y luz ambiental (con *Fuerza cavidad*).
+  - **Specular**: reflectancia por píxel (0,5 = la del material), como el Specular de Unreal.
+  - **Gloss**: brillo = 1 − rugosidad, si no hay mapa de rugosidad.
+  - **Bump**: relieve fino convertido en normal map, si no hay normal map.
+- **Crear material desde una imagen** encuentra solas sus compañeras por el sufijo: `_Normal`, `_Roughness`, `_AO`, `_Displacement`, `_Cavity`, `_Specular`, `_Gloss`, `_Bump`… Un pack de Megascans queda completo arrastrando su BaseColor.
+- Los mapas nuevos se empaquetan en las texturas que ya existían (sin más memoria de descriptores ni pasadas).
+
+### MCP
+- Nueva herramienta `set_gizmo` (mover, rotar, escalar o ninguno; ejes locales o del mundo).
+- `create_material` acepta `from_image` (busca las compañeras de un pack) y los mapas nuevos: `height_texture` y `height_scale`, `roughness_texture`, `occlusion_texture`, `cavity_texture`, `specular_texture` y `gloss_texture`.
+
 ## 0.5.0
 
 ### Rendimiento

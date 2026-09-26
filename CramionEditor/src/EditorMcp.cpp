@@ -148,6 +148,8 @@ const std::vector<ToolDef>& toolDefs() {
                      {{"entity", entity}, {"component", prop("string", "Nombre del tipo, p. ej. Light, Rigidbody, BoxCollider, Script, Camera")}, {"values", prop("object", "Campos a cambiar")}}, {"entity", "component"}});
         d.push_back({"remove_component", "Quita un componente de una entidad.", {{"entity", entity}, {"component", prop("string", "Nombre del tipo")}}, {"entity", "component"}});
         d.push_back({"select", "Selecciona una entidad en el editor y opcionalmente centra la camara en ella.", {{"entity", entity}, {"focus", prop("boolean", "Centrar la camara")}}, {"entity"}});
+        d.push_back({"set_gizmo", "Cambia el gizmo de la vista de escena: none, move, rotate o scale, y si va en ejes locales.",
+                     {{"mode", prop("string", "none | move | rotate | scale")}, {"local", prop("boolean", "Ejes locales (false = mundo)")}}, {"mode"}});
         d.push_back({"set_camera", "Coloca la camara del editor.", {{"position", vec3Prop("Posicion")}, {"target", vec3Prop("Punto al que mira")}}, {"position", "target"}});
         d.push_back({"list_assets", "Assets del proyecto (modelos, materiales, escenas, prefabs, cielos...) y archivos sueltos (scripts .lua, shaders .crshader, imagenes, audio).",
                      {{"folder", prop("string", "Subcarpeta de Assets (opcional)")}, {"type", prop("string", "Filtro: Model, Material, Scene, Prefab, Environment...")}}, {}});
@@ -163,7 +165,12 @@ const std::vector<ToolDef>& toolDefs() {
                      {{"name", prop("string", "Nombre (sera Materials/<name>.crmat)")}, {"color", prop("array", "Color RGBA lineal 0..1")},
                       {"metallic", prop("number", "0..1")}, {"roughness", prop("number", "0..1")}, {"emissive", vec3Prop("Color de emision")},
                       {"emissive_intensity", prop("number", "Intensidad de la emision")}, {"albedo_texture", prop("string", "Imagen de Assets para el color")},
-                      {"normal_texture", prop("string", "Imagen de Assets para el normal map")}, {"transparent", prop("boolean", "Modo transparente (vidrio)")},
+                      {"normal_texture", prop("string", "Imagen de Assets para el normal map")},
+                      {"from_image", prop("string", "Imagen de color de Assets: busca sus companeras por sufijo (_Normal, _Roughness, _AO, _Displacement, _Cavity, _Specular, _Gloss, _Bump) como un pack de Megascans")},
+                      {"height_texture", prop("string", "Mapa de alturas / displacement (parallax)")}, {"height_scale", prop("number", "Profundidad del relieve en metros (0.03 por defecto)")},
+                      {"roughness_texture", prop("string", "Mapa de rugosidad")}, {"occlusion_texture", prop("string", "Mapa de oclusion (AO)")},
+                      {"cavity_texture", prop("string", "Mapa de cavidad")}, {"specular_texture", prop("string", "Mapa specular")}, {"gloss_texture", prop("string", "Mapa de brillo (gloss)")},
+                      {"transparent", prop("boolean", "Modo transparente (vidrio)")},
                       {"shader", prop("string", "Ruta del .crshader en Assets")}, {"shader_values", prop("object", "{propiedad: numero o [x,y,z]}")},
                       {"tiling", prop("array", "Repeticion UV [x, y]")}}, {"name"}});
         d.push_back({"assign_material", "Asigna un material a una entidad (y sus hijos si no tiene malla).",
@@ -595,6 +602,16 @@ json McpTools::call(const std::string& name, const json& args, bool& image, std:
         if (args.value("focus", true)) a.focusSelection();
         return summary(e);
     }
+    if (name == "set_gizmo") {
+        const std::string mode = args.value("mode", std::string("move"));
+        if (mode == "none") a.gizmo_ = EditorApp::GizmoOperation::None;
+        else if (mode == "move") a.gizmo_ = EditorApp::GizmoOperation::Translate;
+        else if (mode == "rotate") a.gizmo_ = EditorApp::GizmoOperation::Rotate;
+        else if (mode == "scale") a.gizmo_ = EditorApp::GizmoOperation::Scale;
+        else throw ToolError("mode debe ser none, move, rotate o scale");
+        if (args.contains("local")) a.gizmo_local_ = args.value("local", false);
+        return json{{"ok", true}};
+    }
     if (name == "set_camera") {
         a.scene_.placeCamera(readVec(args, "position", {}), readVec(args, "target", {}));
         return json{{"ok", true}};
@@ -706,6 +723,9 @@ json McpTools::call(const std::string& name, const json& args, bool& image, std:
     }
     if (name == "create_material") {
         assets::MaterialAsset m;
+        if (const std::string image = arg(args, "from_image"); !image.empty()) {
+            m = assets::materialFromImage(a.project_.assetsFolder(), image.rfind("Assets/", 0) == 0 ? image.substr(7) : image);
+        }
         if (args.contains("color") && args["color"].is_array() && args["color"].size() >= 3) {
             const json& c = args["color"];
             m.base_color = core::Vec4{c[0].get<float>(), c[1].get<float>(), c[2].get<float>(), c.size() > 3 ? c[3].get<float>() : 1.0f};
@@ -714,8 +734,22 @@ json McpTools::call(const std::string& name, const json& args, bool& image, std:
         m.roughness = args.value("roughness", m.roughness);
         if (args.contains("emissive")) m.emissive = readVec(args, "emissive", {});
         m.emissive_intensity = args.value("emissive_intensity", m.emissive_intensity);
-        m.albedo = arg(args, "albedo_texture");
-        m.normal = arg(args, "normal_texture");
+        const auto texture = [&](const char* key, std::string& target) {
+            if (std::string path = arg(args, key); !path.empty()) {
+                if (path.rfind("Assets/", 0) == 0) path = path.substr(7);
+                target = path;
+            }
+        };
+        texture("albedo_texture", m.albedo);
+        texture("normal_texture", m.normal);
+        texture("roughness_texture", m.roughness_map);
+        texture("occlusion_texture", m.occlusion);
+        texture("height_texture", m.height_map);
+        texture("cavity_texture", m.cavity_map);
+        texture("specular_texture", m.specular_map);
+        texture("gloss_texture", m.gloss_map);
+        m.height_scale = args.value("height_scale", m.height_scale);
+        if ((!m.roughness_map.empty() || !m.gloss_map.empty()) && !args.contains("roughness")) m.roughness = 1.0f;
         if (args.value("transparent", false)) m.mode = assets::MaterialMode::Transparent;
         if (args.contains("tiling") && args["tiling"].is_array() && args["tiling"].size() >= 2) {
             m.tiling = core::Vec2{args["tiling"][0].get<float>(), args["tiling"][1].get<float>()};
@@ -985,7 +1019,7 @@ std::string EditorApp::handleMcp(const std::string& body) {
             return json{{"jsonrpc", "2.0"}, {"id", id},
                         {"result", {{"protocolVersion", version},
                                     {"capabilities", {{"tools", {{"listChanged", false}}}}},
-                                    {"serverInfo", {{"name", "cramion-editor"}, {"version", "0.5.0"}}},
+                                    {"serverInfo", {{"name", "cramion-editor"}, {"version", "0.5.1"}}},
                                     {"instructions", "Editor del motor Cramion. Llama a la herramienta 'help' para la guia y a "
                                                      "'editor_state' para ver que hay abierto."}}}};
         }

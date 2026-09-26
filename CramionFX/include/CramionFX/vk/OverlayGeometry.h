@@ -28,13 +28,23 @@ struct OverlayGeometry {
     std::vector<OverlayVertex> lines;
     // Triangulos rellenos (puntas de flecha, cubos de escala, planos).
     std::vector<OverlayVertex> triangles;
+    // Lo mismo pero SIN prueba de profundidad, siempre encima y opaco: el
+    // gizmo de mover/rotar/escalar (como Unity y Unreal), que casi siempre
+    // queda dentro del objeto seleccionado. Se dibuja despues de lo anterior.
+    std::vector<OverlayVertex> top_lines;
+    std::vector<OverlayVertex> top_triangles;
     float line_width = 2.5f;        // pixeles
+    float top_line_width = 5.0f;    // pixeles de las lineas "top" (gizmo, gruesas como Unreal)
     float occluded_alpha = 0.25f;   // opacidad de lo que queda tapado (0 = oculto)
 
-    bool empty() const { return lines.empty() && triangles.empty(); }
+    bool empty() const {
+        return lines.empty() && triangles.empty() && top_lines.empty() && top_triangles.empty();
+    }
     void clear() {
         lines.clear();
         triangles.clear();
+        top_lines.clear();
+        top_triangles.clear();
     }
 };
 

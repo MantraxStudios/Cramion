@@ -3866,6 +3866,7 @@ void VulkanRenderer::drawCpuActors(const vk::raii::CommandBuffer& cmd,
                 push.material = material.params;
                 push.bone_offset = draw.bone_offset;
                 push.reflectance = material.reflectance;
+                push.flags = material.shader_flags;
                 bindMaterialPipeline(cmd, frame_index, material, bound_shader, push);
                 cmd.pushConstants<GpuSkinnedPush>(
                     *skinned_pass_.geometryLayout(),
@@ -3922,7 +3923,7 @@ void VulkanRenderer::drawGpuClusters(const vk::raii::CommandBuffer& cmd,
         push.emissive = material.emissive;
         push.material = material.params;
         push.reflectance = material.reflectance;
-        push.flags = 1u;
+        push.flags = 1u | material.shader_flags;
         bindMaterialPipeline(cmd, frame_index, material, bound_shader, push);
         cmd.pushConstants<GpuSkinnedPush>(
             *skinned_pass_.geometryLayout(),
@@ -4705,7 +4706,11 @@ void VulkanRenderer::updateModelMaterial(std::uint32_t model, std::uint32_t mate
     }
     SkinnedModel::Material& gpu = skinned_models_[model].materials()[material];
     gpu.base_color = data.base_color;
-    gpu.emissive = core::Vec4{data.emissive.x, data.emissive.y, data.emissive.z, 0.0f};
+    // El relieve del parallax solo si el material ya tiene mapa de alturas
+    // (ponerlo o quitarlo rehace el modelo).
+    const bool parallax = (gpu.shader_flags & GpuSkinnedPush::kFlagHeightMap) != 0;
+    gpu.emissive = core::Vec4{data.emissive.x, data.emissive.y, data.emissive.z,
+                              parallax ? std::max(data.height_scale, 0.0f) : 0.0f};
     gpu.params = core::Vec4{data.metallic, data.roughness, data.occlusion_strength,
                             data.normal_map_directx ? -data.normal_scale : data.normal_scale};
     gpu.reflectance = data.reflectance;

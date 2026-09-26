@@ -23,7 +23,10 @@ class SkinnedModel {
 public:
     struct Material {
         core::Vec4 base_color{1.0f, 1.0f, 1.0f, 1.0f};
+        // rgb = emision; w = relieve del parallax (0 = sin mapa de alturas).
         core::Vec4 emissive{0.0f, 0.0f, 0.0f, 0.0f};
+        // Bits de GpuSkinnedPush::flags del material (kFlagSpecularMap...).
+        std::uint32_t shader_flags = 0;
         // x = metalicidad, y = rugosidad, z = fuerza de la oclusion, w = escala
         // del normal map.
         core::Vec4 params{0.0f, 0.8f, 1.0f, 1.0f};

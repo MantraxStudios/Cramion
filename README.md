@@ -17,6 +17,21 @@ Incluye dos escenas de demostración, iluminadas por una sola luz direccional (e
 
 ---
 
+## Novedades de la 0.5.1
+
+**Gizmos que se ven y se usan como en Unreal**
+- El gizmo de **mover, rotar y escalar** se dibuja **siempre encima, opaco y sin iluminación**. Antes, dentro del objeto seleccionado, se veía desteñido.
+- **Más grueso y más grande**, fácil de agarrar.
+- **Rotar**: sin el círculo blanco que estorbaba y con una **bola central de giro libre**: arrástrala y el objeto gira siguiendo el ratón.
+- El **Mesh Collider** se dibuja completo, aunque la malla tenga cientos de miles de triángulos.
+
+**Materiales de escaneo completos**
+- Nuevos mapas: **Displacement** (*parallax occlusion mapping*: relieve real al mirar de lado, profundidad en metros), **Cavidad**, **Specular**, **Gloss** y **Bump**, además de color, normal, rugosidad, metal, AO y emisión.
+- **Arrastra el BaseColor de un pack de Megascans** y el material encuentra solo los otros 8 mapas por su nombre.
+
+**MCP**
+- `set_gizmo` y `create_material` con `from_image` y los mapas nuevos.
+
 ## Novedades de la 0.5
 
 **Rendimiento**
@@ -46,6 +61,7 @@ Incluye dos escenas de demostración, iluminadas por una sola luz direccional (e
 
 ## Índice
 
+- [Novedades de la 0.5.1](#novedades-de-la-051)
 - [Novedades de la 0.5](#novedades-de-la-05)
 - [Requisitos](#requisitos)
 - [Compilar y ejecutar](#compilar-y-ejecutar)

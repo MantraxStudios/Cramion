@@ -5,6 +5,7 @@
 #include <CramionFX/asset/ImageFile.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstring>
 #include <fstream>
@@ -42,6 +43,7 @@ void copyFactors(asset::MaterialData& to, const asset::MaterialData& from) {
     to.normal_scale = from.normal_scale;
     to.normal_map_directx = from.normal_map_directx;
     to.reflectance = from.reflectance;
+    to.height_scale = from.height_scale;
 }
 }  // namespace
 
@@ -212,40 +214,101 @@ asset::ModelData RenderSync::buildVariant(const asset::ModelData& base, const st
         files[relative] = index;
         return index;
     };
-    // Metal y rugosidad en mapas sueltos: se juntan en uno (G = rugosidad,
-    // B = metal, como glTF).
-    const auto packed = [&](const std::string& metal, const std::string& rough) -> std::int32_t {
-        if (metal.empty() && rough.empty()) return -1;
-        const std::string key = "mr:" + metal + "|" + rough;
+    // Mapas grises sueltos juntados en una textura RGBA8 (cada canal de un
+    // archivo, remuestreado al tamano del mayor). Canal sin archivo = `fill`.
+    struct Channel {
+        const std::string* path = nullptr;
+        std::uint8_t fill = 255;
+        bool invert = false;     // brillo -> rugosidad
+        float strength = 1.0f;   // mezcla con `fill` (fuerza de la cavidad)
+    };
+    const auto pack = [&](const std::string& key, const std::array<Channel, 4>& channels) -> std::int32_t {
         if (const auto it = files.find(key); it != files.end()) return it->second;
-        asset::ImageRgba8 m;
-        asset::ImageRgba8 r;
-        const bool has_m = !metal.empty() && asset::loadImageRgba8(root / fromUtf8(metal), m);
-        const bool has_r = !rough.empty() && asset::loadImageRgba8(root / fromUtf8(rough), r);
-        if (!has_m && !has_r) {
+        std::array<asset::ImageRgba8, 4> images;
+        std::array<bool, 4> loaded{};
+        std::uint32_t width = 0;
+        std::uint32_t height = 0;
+        for (std::size_t c = 0; c < 4; ++c) {
+            const std::string* path = channels[c].path;
+            if (path == nullptr || path->empty()) continue;
+            // El mismo archivo en dos canales se lee una vez.
+            for (std::size_t p = 0; p < c && !loaded[c]; ++p) {
+                if (loaded[p] && *channels[p].path == *path) {
+                    images[c] = images[p];
+                    loaded[c] = true;
+                }
+            }
+            if (!loaded[c]) {
+                loaded[c] = asset::loadImageRgba8(root / fromUtf8(*path), images[c]);
+                if (!loaded[c]) std::cerr << "[RenderSync] Falta la textura " << *path << "\n";
+            }
+            if (loaded[c] && images[c].width * images[c].height > width * height) {
+                width = images[c].width;
+                height = images[c].height;
+            }
+        }
+        if (width == 0) {
             files[key] = -1;
             return -1;
         }
-        const asset::ImageRgba8& size = has_r ? r : m;
         asset::TextureData texture;
         texture.name = key;
-        texture.width = size.width;
-        texture.height = size.height;
-        texture.pixels.resize(static_cast<std::size_t>(size.width) * size.height * 4);
-        const auto at = [](const asset::ImageRgba8& img, std::uint32_t x, std::uint32_t y, std::uint32_t w,
-                           std::uint32_t h) {
-            const std::uint32_t sx = static_cast<std::uint32_t>(static_cast<std::uint64_t>(x) * img.width / w);
-            const std::uint32_t sy = static_cast<std::uint32_t>(static_cast<std::uint64_t>(y) * img.height / h);
-            return img.pixels[(static_cast<std::size_t>(sy) * img.width + sx) * 4];
-        };
-        for (std::uint32_t y = 0; y < size.height; ++y) {
-            for (std::uint32_t x = 0; x < size.width; ++x) {
-                std::uint8_t* p = &texture.pixels[(static_cast<std::size_t>(y) * size.width + x) * 4];
-                p[0] = 255;
-                p[1] = has_r ? at(r, x, y, size.width, size.height) : 255;
-                p[2] = has_m ? at(m, x, y, size.width, size.height) : 255;
-                p[3] = 255;
+        texture.width = width;
+        texture.height = height;
+        texture.pixels.resize(static_cast<std::size_t>(width) * height * 4);
+        for (std::size_t c = 0; c < 4; ++c) {
+            const Channel& channel = channels[c];
+            const asset::ImageRgba8& img = images[c];
+            const float strength = std::clamp(channel.strength, 0.0f, 1.0f);
+            for (std::uint32_t y = 0; y < height; ++y) {
+                const std::uint32_t sy = loaded[c] ? static_cast<std::uint32_t>(static_cast<std::uint64_t>(y) * img.height / height) : 0;
+                for (std::uint32_t x = 0; x < width; ++x) {
+                    std::uint8_t value = channel.fill;
+                    if (loaded[c]) {
+                        const std::uint32_t sx = static_cast<std::uint32_t>(static_cast<std::uint64_t>(x) * img.width / width);
+                        std::uint8_t g = img.pixels[(static_cast<std::size_t>(sy) * img.width + sx) * 4];
+                        if (channel.invert) g = static_cast<std::uint8_t>(255 - g);
+                        value = static_cast<std::uint8_t>(channel.fill + (static_cast<float>(g) - channel.fill) * strength + 0.5f);
+                    }
+                    texture.pixels[(static_cast<std::size_t>(y) * width + x) * 4 + c] = value;
+                }
             }
+        }
+        const auto index = static_cast<std::int32_t>(v.textures.size());
+        v.textures.push_back(std::move(texture));
+        files[key] = index;
+        return index;
+    };
+    // R = reflectancia (specular), G = rugosidad (o 1 - brillo), B = metal
+    // (como glTF) y A = cavidad.
+    const auto packedSurface = [&](const assets::MaterialAsset& mat) -> std::int32_t {
+        const std::string& rough = mat.roughness_map.empty() ? mat.gloss_map : mat.roughness_map;
+        if (mat.metallic_map.empty() && rough.empty() && mat.specular_map.empty() && mat.cavity_map.empty()) return -1;
+        const std::string key = "mr:" + mat.metallic_map + "|" + rough + "|" + mat.specular_map + "|" + mat.cavity_map +
+                                "|" + std::to_string(mat.cavity_strength);
+        return pack(key, {Channel{&mat.specular_map, 128},
+                          Channel{&rough, 255, mat.roughness_map.empty()},
+                          Channel{&mat.metallic_map, 255},
+                          Channel{&mat.cavity_map, 255, false, mat.cavity_strength}});
+    };
+    // R = oclusion, G = altura (parallax). Sin altura, la oclusion tal cual.
+    const auto packedOcclusion = [&](const assets::MaterialAsset& mat) -> std::int32_t {
+        if (mat.height_map.empty()) return file(mat.occlusion);
+        return pack("ao:" + mat.occlusion + "|" + mat.height_map,
+                    {Channel{&mat.occlusion, 255}, Channel{&mat.height_map, 255}, Channel{}, Channel{}});
+    };
+    // Bump (gris) como normal map si no hay uno de verdad: se convierte al
+    // decodificarlo (TextureData::height_map).
+    const auto bumpAsNormal = [&](const std::string& relative) -> std::int32_t {
+        if (relative.empty()) return -1;
+        const std::string key = relative + "#bump";
+        if (const auto it = files.find(key); it != files.end()) return it->second;
+        asset::TextureData texture;
+        texture.name = relative;
+        texture.height_map = true;
+        if (!readBytes(root / fromUtf8(relative), texture.encoded)) {
+            files[key] = -1;
+            return -1;
         }
         const auto index = static_cast<std::int32_t>(v.textures.size());
         v.textures.push_back(std::move(texture));
@@ -270,10 +333,12 @@ asset::ModelData RenderSync::buildVariant(const asset::ModelData& base, const st
         }
         asset::MaterialData d = assets::toMaterialData(*mat, original.name);
         d.albedo_texture = file(mat->albedo);
-        d.normal_texture = file(mat->normal);
-        d.occlusion_texture = file(mat->occlusion);
+        d.normal_texture = !mat->normal.empty() ? file(mat->normal) : bumpAsNormal(mat->bump_map);
+        if (mat->normal.empty() && !mat->bump_map.empty()) d.normal_map_directx = false;
+        d.occlusion_texture = packedOcclusion(*mat);
         d.emissive_texture = file(mat->emissive_map);
-        d.metallic_roughness_texture = packed(mat->metallic_map, mat->roughness_map);
+        d.metallic_roughness_texture = packedSurface(*mat);
+        if (d.occlusion_texture < 0) d.height_scale = 0.0f;
         const std::function<std::int32_t(const std::string&)> texture = [&](const std::string& path) { return file(path); };
         applySurface(d, *mat, &texture);
         v.materials.push_back(d);

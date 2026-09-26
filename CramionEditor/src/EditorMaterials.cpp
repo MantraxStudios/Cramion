@@ -315,16 +315,47 @@ void EditorApp::drawMaterialEditor(const Uuid& uuid) {
     ImGui::SetNextItemWidth(-90.0f);
     changed |= ImGui::SliderFloat("Metálico", &m.metallic, 0.0f, 1.0f, "%.2f");
     if (materialTextureSlot("Rugosidad (mapa)", m.roughness_map)) changed = structural = true;
+    if (m.roughness_map.empty()) {
+        if (materialTextureSlot("Brillo / Gloss (mapa)", m.gloss_map)) changed = structural = true;
+        ImGui::SetItemTooltip("Brillo = 1 - rugosidad (packs antiguos y de escaneos). Solo si no hay mapa de rugosidad.");
+    }
     ImGui::SetNextItemWidth(-90.0f);
     changed |= ImGui::SliderFloat("Rugosidad", &m.roughness, 0.0f, 1.0f, "%.2f");
     ImGui::SetItemTooltip("0 = espejo, 1 = mate. Con mapa, lo multiplica.");
     ImGui::SetNextItemWidth(-90.0f);
     changed |= ImGui::SliderFloat("Reflectancia", &m.reflectance, 0.0f, 0.16f, "%.3f");
     ImGui::SetItemTooltip("Brillo de frente de lo no metálico (0.04 casi todo; más: mármol, laca).");
+    if (materialTextureSlot("Specular (mapa)", m.specular_map)) changed = structural = true;
+    ImGui::SetItemTooltip("Gris: reflectancia por píxel (0.5 = la de arriba), como el Specular de Unreal.");
+    if (materialTextureSlot("Cavidad (mapa)", m.cavity_map)) changed = structural = true;
+    ImGui::SetItemTooltip("Gris: grietas y huecos (negro) sin reflejos ni tanta luz ambiental.");
+    if (!m.cavity_map.empty()) {
+        ImGui::SetNextItemWidth(-90.0f);
+        if (ImGui::SliderFloat("Fuerza cavidad", &m.cavity_strength, 0.0f, 1.0f, "%.2f")) {
+            changed = true;
+        }
+        if (ImGui::IsItemDeactivatedAfterEdit()) structural = true;  // se hornea en la textura
+    }
     if (materialTextureSlot("Oclusión (AO)", m.occlusion)) changed = structural = true;
     if (!m.occlusion.empty()) {
         ImGui::SetNextItemWidth(-90.0f);
         changed |= ImGui::SliderFloat("Fuerza AO", &m.occlusion_strength, 0.0f, 1.0f, "%.2f");
+    }
+
+    // --- Relieve ---
+    ImGui::SeparatorText("Relieve");
+    if (materialTextureSlot("Altura / Displacement", m.height_map)) changed = structural = true;
+    ImGui::SetItemTooltip("Gris: blanco = alto. Parallax occlusion mapping: las piedras y grietas\n"
+                          "tienen profundidad real al mirarlas de lado (hasta ~30 m de la cámara).");
+    if (!m.height_map.empty()) {
+        ImGui::SetNextItemWidth(-90.0f);
+        changed |= ImGui::SliderFloat("Profundidad (m)", &m.height_scale, 0.0f, 0.15f, "%.3f");
+        ImGui::SetItemTooltip("Metros del negro al blanco del mapa de alturas (0.03 = 3 cm).\n"
+                              "Si la textura se estira o \"nada\", bájalo.");
+    }
+    if (m.normal.empty()) {
+        if (materialTextureSlot("Bump (mapa)", m.bump_map)) changed = structural = true;
+        ImGui::SetItemTooltip("Gris de relieve fino: se convierte en normal map (solo si no hay normal map).");
     }
 
     // --- Emision ---

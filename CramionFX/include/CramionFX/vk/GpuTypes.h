@@ -97,7 +97,13 @@ struct GpuSkinnedPush {
     // Picking por ID (pick.frag): indice del actor + 1 (0 = nada).
     std::uint32_t pick_id = 0;
     // Bit 0: dibujo instanciado (skinned.vert lee la matriz con gl_InstanceIndex).
+    // Bit 1: camara sin jitter. Bits 2 y 3: del material (ver abajo).
     std::uint32_t flags = 0;
+
+    // R de metallic_roughness_map = reflectancia (mapa specular).
+    static constexpr std::uint32_t kFlagSpecularMap = 1u << 2;
+    // G de occlusion_map = altura (parallax occlusion mapping, emissive.w).
+    static constexpr std::uint32_t kFlagHeightMap = 1u << 3;
 };
 
 // Escalado temporal / TAA (taa.frag).

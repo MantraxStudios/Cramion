@@ -42,9 +42,11 @@ void OverlayPass::create(const VulkanDevice& device, vk::Format color_format,
     visible_pipeline_ =
         createPipeline(device, color_format, depth_format, vk::CompareOp::eLessOrEqual);
     occluded_pipeline_ = createPipeline(device, color_format, depth_format, vk::CompareOp::eGreater);
+    top_pipeline_ = createPipeline(device, color_format, depth_format, vk::CompareOp::eAlways);
 
     buffers_.resize(frames_in_flight);
     vertex_counts_.assign(frames_in_flight, 0);
+    tested_counts_.assign(frames_in_flight, 0);
 }
 
 void OverlayPass::destroy() {
@@ -53,6 +55,8 @@ void OverlayPass::destroy() {
     }
     buffers_.clear();
     vertex_counts_.clear();
+    tested_counts_.clear();
+    top_pipeline_ = nullptr;
     occluded_pipeline_ = nullptr;
     visible_pipeline_ = nullptr;
     layout_ = nullptr;
@@ -99,7 +103,7 @@ vk::raii::Pipeline OverlayPass::createPipeline(const VulkanDevice& device, vk::F
 
     // Prueba contra la escena sin escribir: el depth sigue siendo el suyo.
     vk::PipelineDepthStencilStateCreateInfo depth_stencil{};
-    depth_stencil.depthTestEnable = VK_TRUE;
+    depth_stencil.depthTestEnable = compare == vk::CompareOp::eAlways ? VK_FALSE : VK_TRUE;
     depth_stencil.depthWriteEnable = VK_FALSE;
     depth_stencil.depthCompareOp = compare;
 
@@ -140,40 +144,31 @@ vk::raii::Pipeline OverlayPass::createPipeline(const VulkanDevice& device, vk::F
     return vk::raii::Pipeline(device.handle(), device.pipelineCache(), info);
 }
 
-bool OverlayPass::prepare(const VulkanDevice& device, std::uint32_t frame,
-                          const OverlayGeometry& geometry, const core::Mat4& view_projection,
-                          vk::Extent2D viewport) {
-    if (frame >= buffers_.size()) {
-        return false;
+void OverlayPass::appendTriangles(const std::vector<OverlayVertex>& triangles,
+                                  const core::Mat4& view_projection) {
+    // En espacio de recorte; la GPU los recorta sola.
+    const std::size_t count = triangles.size() - triangles.size() % 3;
+    for (std::size_t i = 0; i < count; ++i) {
+        const core::Vec4 clip = toClip(view_projection, triangles[i].position);
+        scratch_.push_back(Vertex{{clip.x, clip.y, clip.z, clip.w}, triangles[i].color, 0.0f});
     }
-    vertex_counts_[frame] = 0;
-    if (geometry.empty() || viewport.width == 0 || viewport.height == 0) {
-        return false;
-    }
+}
 
-    scratch_.clear();
-    scratch_.reserve(geometry.triangles.size() + geometry.lines.size() * 3);
+// Recorte contra el plano cercano (z >= 0 en Vulkan) y expansion de cada
+// segmento a un quad de grosor constante en pixeles.
+void OverlayPass::appendLines(const std::vector<OverlayVertex>& lines,
+                              const core::Mat4& view_projection, float half_width,
+                              vk::Extent2D viewport) {
     const auto push = [&](const core::Vec4& clip, std::uint32_t color, float edge) {
         scratch_.push_back(Vertex{{clip.x, clip.y, clip.z, clip.w}, color, edge});
     };
-
-    // --- Triangulos: en espacio de recorte; la GPU los recorta sola ---
-    const std::size_t triangle_vertices = geometry.triangles.size() - geometry.triangles.size() % 3;
-    for (std::size_t i = 0; i < triangle_vertices; ++i) {
-        const OverlayVertex& v = geometry.triangles[i];
-        push(toClip(view_projection, v.position), v.color, 0.0f);
-    }
-
-    // --- Lineas: recorte contra el plano cercano (z >= 0 en Vulkan) y
-    // expansion a un quad de grosor constante en pixeles ---
-    const float half_width = std::max(geometry.line_width * 0.5f, 0.5f);
     const float extent = half_width + 1.0f;  // medio pixel de mas para el antialias
     const float sx = static_cast<float>(viewport.width) * 0.5f;
     const float sy = static_cast<float>(viewport.height) * 0.5f;
     constexpr float kMinW = 1e-5f;
-    for (std::size_t i = 0; i + 1 < geometry.lines.size(); i += 2) {
-        const OverlayVertex& a = geometry.lines[i];
-        const OverlayVertex& b = geometry.lines[i + 1];
+    for (std::size_t i = 0; i + 1 < lines.size(); i += 2) {
+        const OverlayVertex& a = lines[i];
+        const OverlayVertex& b = lines[i + 1];
         core::Vec4 ca = toClip(view_projection, a.position);
         core::Vec4 cb = toClip(view_projection, b.position);
         if (ca.z < 0.0f && cb.z < 0.0f) {
@@ -222,6 +217,31 @@ bool OverlayPass::prepare(const VulkanDevice& device, std::uint32_t frame,
         push(a1, a.color, -extent);
         push(b1, b.color, -extent);
     }
+}
+
+bool OverlayPass::prepare(const VulkanDevice& device, std::uint32_t frame,
+                          const OverlayGeometry& geometry, const core::Mat4& view_projection,
+                          vk::Extent2D viewport) {
+    if (frame >= buffers_.size()) {
+        return false;
+    }
+    vertex_counts_[frame] = 0;
+    tested_counts_[frame] = 0;
+    if (geometry.empty() || viewport.width == 0 || viewport.height == 0) {
+        return false;
+    }
+
+    scratch_.clear();
+    scratch_.reserve(geometry.triangles.size() + geometry.top_triangles.size() +
+                     (geometry.lines.size() + geometry.top_lines.size()) * 3);
+    const float half_width = std::max(geometry.line_width * 0.5f, 0.5f);
+    // Primero lo que se prueba contra la escena y detras lo de encima.
+    appendTriangles(geometry.triangles, view_projection);
+    appendLines(geometry.lines, view_projection, half_width, viewport);
+    tested_counts_[frame] = static_cast<std::uint32_t>(scratch_.size());
+    appendTriangles(geometry.top_triangles, view_projection);
+    appendLines(geometry.top_lines, view_projection, std::max(geometry.top_line_width * 0.5f, 0.5f),
+                viewport);
 
     if (scratch_.empty()) {
         return false;
@@ -256,16 +276,27 @@ void OverlayPass::record(const vk::raii::CommandBuffer& cmd, std::uint32_t frame
     push.half_width = std::max(geometry.line_width * 0.5f, 0.5f);
 
     // Primero lo tapado (atenuado) y luego lo visible encima.
-    if (geometry.occluded_alpha > 0.0f) {
-        push.alpha_scale = geometry.occluded_alpha;
-        cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *occluded_pipeline_);
+    const std::uint32_t tested = tested_counts_[frame];
+    if (tested > 0) {
+        if (geometry.occluded_alpha > 0.0f) {
+            push.alpha_scale = geometry.occluded_alpha;
+            cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *occluded_pipeline_);
+            cmd.pushConstants<OverlayPush>(*layout_, vk::ShaderStageFlagBits::eFragment, 0, push);
+            cmd.draw(tested, 1, 0, 0);
+        }
+        push.alpha_scale = 1.0f;
+        cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *visible_pipeline_);
         cmd.pushConstants<OverlayPush>(*layout_, vk::ShaderStageFlagBits::eFragment, 0, push);
-        cmd.draw(vertex_counts_[frame], 1, 0, 0);
+        cmd.draw(tested, 1, 0, 0);
     }
-    push.alpha_scale = 1.0f;
-    cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *visible_pipeline_);
-    cmd.pushConstants<OverlayPush>(*layout_, vk::ShaderStageFlagBits::eFragment, 0, push);
-    cmd.draw(vertex_counts_[frame], 1, 0, 0);
+    // El gizmo de transformar, siempre encima (con su grosor).
+    if (vertex_counts_[frame] > tested) {
+        push.alpha_scale = 1.0f;
+        push.half_width = std::max(geometry.top_line_width * 0.5f, 0.5f);
+        cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *top_pipeline_);
+        cmd.pushConstants<OverlayPush>(*layout_, vk::ShaderStageFlagBits::eFragment, 0, push);
+        cmd.draw(vertex_counts_[frame] - tested, 1, tested, 0);
+    }
 }
 
 }  // namespace cramion::gfx

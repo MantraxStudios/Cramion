@@ -265,6 +265,8 @@ private:
                      std::uint32_t color);
     void overlayCircle(const core::Vec3& center, const core::Vec3& u, const core::Vec3& v, float radius,
                        std::uint32_t color, bool front_only = false, int segments = 64);
+    void overlaySolidFace(const core::Vec3& a, const core::Vec3& b, const core::Vec3& c,
+                          const core::Vec3& outward, std::uint32_t color);
     void overlayCone(const core::Vec3& base, const core::Vec3& direction, float length, float radius,
                      std::uint32_t color);
     void overlayCube(const core::Vec3& center, const core::Vec3& x, const core::Vec3& y, const core::Vec3& z,
@@ -683,6 +685,24 @@ private:
     float snap_scale_ = 0.1f;
     float last_pick_x_ = -1.0f;
     gfx::OverlayGeometry overlay_;
+    // true mientras se dibuja el gizmo de transformar: va a la parte "top"
+    // del overlay (sin prueba de profundidad, siempre encima).
+    bool overlay_on_top_ = false;
+    // Tamano del gizmo en espacio de clip (ImGuizmo::SetGizmoSizeClipSpace).
+    static constexpr float kGizmoClipSize = 0.13f;
+    // Giro libre con la bola central del gizmo de rotar (radio en tamanos de gizmo).
+    static constexpr float kFreeRotateRadius = 0.45f;
+    bool free_rotate_hover_ = false;
+    bool free_rotate_drag_ = false;
+    bool drawFreeRotateHandle(ecs::Entity target);
+    // Triangulos de los Mesh Collider (caros de sacar de Jolt): se guardan
+    // por entidad y se rehacen si se mueve o cada cierto tiempo.
+    struct ColliderWire {
+        core::Mat4 matrix{};
+        int frame = 0;
+        std::vector<core::Vec3> triangles;
+    };
+    std::unordered_map<std::uint32_t, ColliderWire> collider_wire_cache_;
     int light_handle_drag_ = 0;  // 0 nada, 1 alcance, 2 angulo exterior, 3 angulo interior
     // Herramienta de estampar decals.
     bool stamp_mode_ = false;

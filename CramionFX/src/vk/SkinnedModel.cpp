@@ -1,5 +1,6 @@
 #include "CramionFX/vk/SkinnedModel.h"
 
+#include "CramionFX/vk/GpuTypes.h"
 #include "CramionFX/vk/SkinnedPass.h"
 #include "CramionFX/vk/VulkanDevice.h"
 
@@ -129,8 +130,13 @@ void SkinnedModel::create(const VulkanDevice& device, const asset::ModelData& mo
 
         Material gpu{};
         gpu.base_color = material.base_color;
+        const bool parallax = material.height_scale > 0.0f && material.occlusion_texture >= 0;
         gpu.emissive = core::Vec4{material.emissive.x, material.emissive.y, material.emissive.z,
-                                  0.0f};
+                                  parallax ? material.height_scale : 0.0f};
+        gpu.shader_flags = (parallax ? GpuSkinnedPush::kFlagHeightMap : 0u) |
+                           (material.specular_map && material.metallic_roughness_texture >= 0
+                                ? GpuSkinnedPush::kFlagSpecularMap
+                                : 0u);
         // El signo de la escala del normal map dice su convenio (ver
         // skinned.frag): positivo = OpenGL, negativo = DirectX.
         gpu.params = core::Vec4{material.metallic, material.roughness, material.occlusion_strength,
