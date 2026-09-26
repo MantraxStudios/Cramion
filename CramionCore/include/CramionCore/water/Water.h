@@ -17,6 +17,7 @@
 #include <CramionFX/core/Math.h>
 
 #include <cstdint>
+#include <functional>
 #include <vector>
 
 namespace cramion::water {
@@ -95,6 +96,14 @@ std::vector<RiverSample> riverCenterline(const WaterBody& body, const core::Mat4
 
 float waterTime();
 void advanceWaterTime(float delta_seconds);
+
+// Quien sabe mejor si la camara esta bajo el agua (un mundo de bloques: una
+// cueva bajo el nivel del mar no esta sumergida aunque el oceano sea un
+// plano infinito). Devuelve 1 = bajo el agua, 0 = fuera, -1 = no sabe (se
+// decide con el oleaje, como siempre). Vacio = sin nadie.
+using UnderwaterOverride = std::function<int(const core::Vec3& camera)>;
+void setUnderwaterOverride(UnderwaterOverride test);
+int underwaterOverride(const core::Vec3& camera);
 
 void registerWaterComponents();
 

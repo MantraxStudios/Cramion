@@ -13,6 +13,7 @@
 #include "CramionFX/vk/OverlayPass.h"
 #include "CramionFX/vk/ParticlePass.h"
 #include "CramionFX/vk/TerrainPass.h"
+#include "CramionFX/vk/VoxelPass.h"
 #include "CramionFX/vk/WaterPass.h"
 #include "CramionFX/vk/GpuTypes.h"
 #include "CramionFX/vk/GraphicsSettings.h"
@@ -130,6 +131,10 @@ public:
     // Sube a la GPU los modelos con esqueleto de la escena (mallas, texturas y
     // materiales). Sus instancias (Scene::actors) se dibujan cada frame.
     void uploadModels(const scene::Scene& scene);
+    // Solo el modelo `index` de la escena (nuevo al final o cambiado): sin
+    // parar la GPU ni resubir lo demas. Para las mallas creadas por codigo
+    // (el trazado de rayos no las ve hasta la siguiente uploadModels).
+    void uploadModel(const scene::Scene& scene, std::uint32_t index);
 
     // Dibuja un frame de la escena indicada.
     // `present` = false: dibuja la vista (a su imagen de vista) sin
@@ -193,6 +198,38 @@ public:
     // material ya subido; texturas, tiling y transparencia necesitan volver
     // a subir el modelo (uploadModels).
     void updateModelMaterial(std::uint32_t model, std::uint32_t material, const asset::MaterialData& data);
+
+    // Tiempo de CPU de cada fase de drawFrame (sumado si se dibuja mas de una
+    // vista en el frame). takeFrameTimings() lo devuelve y lo pone a cero: el
+    // editor lo usa para explicar los frames lentos.
+    struct FrameTimings {
+        float fence_wait_ms = 0.0f;  // esperando a que la GPU acabe el frame anterior
+        float actors_ms = 0.0f;      // updateActors: actores, huesos, clusteres, TLAS
+        float probe_ms = 0.0f;       // captura de la sonda de reflexion
+        float acquire_ms = 0.0f;     // imagen de la swapchain
+        float uniforms_ms = 0.0f;
+        float record_ms = 0.0f;      // grabar los comandos
+        float submit_ms = 0.0f;      // enviar y presentar
+        float upload_ms = 0.0f;      // uploadModels / uploadModel (subir mallas y texturas)
+        int uploads = 0;
+        // Tiempo de CPU de grabar cada pase (nombre de la marca de la GPU).
+        std::vector<std::pair<std::string, float>> passes;
+    };
+    FrameTimings takeFrameTimings() {
+        FrameTimings t = frame_timings_;
+        frame_timings_ = {};
+        return t;
+    }
+
+    // Shaders de superficie del usuario (.crshader): SPIR-V de surface.vert y
+    // surface.frag con su codigo (ver shaders::compile). Devuelve el id que se
+    // pone en MaterialData::surface_shader (-1 si la pipeline no se pudo crear).
+    std::int32_t createSurfaceShader(const std::vector<std::uint32_t>& vertex_spirv,
+                                     const std::vector<std::uint32_t>& fragment_spirv, std::string* error = nullptr);
+    // Cambia el codigo de uno ya creado (recarga en caliente al guardar el
+    // .crshader): los materiales que lo usan lo ven en el frame siguiente.
+    bool updateSurfaceShader(std::int32_t id, const std::vector<std::uint32_t>& vertex_spirv,
+                             const std::vector<std::uint32_t>& fragment_spirv, std::string* error = nullptr);
     std::optional<PickResult> takePickResult();
     bool pickPending() const;
 
@@ -390,6 +427,28 @@ public:
     }
     std::uint32_t terrainChunkCount() const { return terrain_pass_.chunkCount(); }
 
+    // --- Voxeles (VoxelPass.h): mundos de bloques ---
+    void setVoxelTextures(std::uint32_t size, const std::vector<VoxelTextureLayer>& layers) {
+        voxel_pass_.setTextures(size, layers);
+        staticGeometryChanged();
+    }
+    bool hasVoxelTextures() const { return voxel_pass_.hasTextures(); }
+    void setVoxelSection(std::uint64_t key, const core::Vec3& origin, const std::uint32_t* vertices,
+                         std::uint32_t vertex_count) {
+        voxel_pass_.setSection(key, origin, vertices, vertex_count);
+    }
+    void removeVoxelSection(std::uint64_t key) {
+        voxel_pass_.removeSection(key);
+        staticGeometryChanged();
+    }
+    void clearVoxelSections() {
+        voxel_pass_.clearSections();
+        staticGeometryChanged();
+    }
+    void setVoxelTime(float seconds) { voxel_pass_.setTime(seconds); }
+    void setVoxelsVisible(bool visible) { voxel_pass_.setVisible(visible); }
+    VoxelStats voxelStats() const { return voxel_pass_.stats(); }
+
     // --- Texturas de la interfaz (iconos, miniaturas del editor) ---
     // RGBA8 con mipmaps (se ven bien pequenas). Devuelve un identificador
     // (0 = error); su vista se registra en ImGui. destroyUiTexture espera a
@@ -480,6 +539,12 @@ private:
     // CPU, por su esfera) y clusteres de escenario (comandos indirectos que
     // escribio el culling en GPU en la fase `phase`).
     void drawCpuActors(const vk::raii::CommandBuffer& cmd, std::uint32_t frame_index);
+    // Deja lista la pipeline del material (la estandar o la de su shader de
+    // superficie) y rellena lo que el push constant lleva de ese shader.
+    void bindMaterialPipeline(const vk::raii::CommandBuffer& cmd, std::uint32_t frame_index,
+                              const SkinnedModel::Material& material, std::int32_t& bound_shader,
+                              GpuSkinnedPush& push);
+    std::uint32_t pushSurfaceParams(std::uint32_t frame_index, const std::array<core::Vec4, 8>& params);
     void drawGpuClusters(const vk::raii::CommandBuffer& cmd, std::uint32_t frame_index,
                          std::uint32_t phase);
     void recordSsaoPass(const vk::raii::CommandBuffer& cmd, std::uint32_t frame_index);
@@ -644,6 +709,19 @@ private:
 
     // Modelos con esqueleto en la GPU, en el mismo orden que Scene::models().
     std::vector<SkinnedModel> skinned_models_;
+    // Modelos reemplazados por uploadModel: se destruyen cuando ya ningun
+    // frame en vuelo puede usarlos.
+    struct RetiredModel {
+        SkinnedModel model;
+        std::uint32_t frames_left = 0;
+    };
+    std::vector<RetiredModel> retired_models_;
+    // Los que conoce el trazado de rayos (sus descriptores apuntan a sus
+    // texturas y buffers): si uploadModel los reemplaza, siguen vivos hasta la
+    // siguiente uploadModels (los rayos ven la version anterior).
+    std::uint32_t ray_traced_models_ = 0;
+    std::vector<bool> ray_pinned_;
+    std::vector<SkinnedModel> ray_pinned_models_;
 
     // Lo que se dibuja de cada actor este frame.
     struct ActorDraw {
@@ -715,6 +793,7 @@ private:
     PickResult pick_request_{};
     std::optional<PickResult> pick_result_;
     TerrainPass terrain_pass_{};
+    VoxelPass voxel_pass_{};
     WaterPass water_pass_{};
     core::Vec3 camera_position_{};
     ParticleDrawList particles_;
@@ -789,6 +868,18 @@ private:
     // Storage buffers de huesos, uno por frame en vuelo. Crecen segun haga
     // falta: no hay un maximo de huesos fijado de antemano.
     std::vector<VulkanBuffer> bone_buffers_;
+    FrameTimings frame_timings_{};
+    // Marca del perfilador de GPU que ademas apunta el tiempo de CPU del pase.
+    void markPass(const vk::raii::CommandBuffer& cmd, std::uint32_t frame_index, const char* name);
+    std::chrono::steady_clock::time_point pass_start_{};
+    // Propiedades de los materiales con shader propio: 8 vec4 por material
+    // dibujado, por frame en vuelo (set 0, binding 5). Se vacia al esperar la
+    // fence del frame.
+    static constexpr std::uint32_t kMaxSurfaceParamBlocks = 2048;
+    std::vector<VulkanBuffer> surface_param_buffers_;
+    std::vector<std::uint32_t> surface_param_used_;
+    // Pipelines de los shaders de superficie del usuario (por id).
+    std::vector<vk::raii::Pipeline> surface_pipelines_;
     vk::raii::DescriptorPool skin_pool_{nullptr};
     std::vector<vk::raii::DescriptorSet> skin_sets_;
     // Set 2 del vidrio, por frame (SkinnedPass::glassSetLayout).
@@ -810,6 +901,13 @@ private:
     std::array<core::Vec3, scene::kShadowCascadeCount> rendered_cascade_camera_{};
     std::array<bool, scene::kShadowCascadeCount> cascade_due_{};
     bool cascades_valid_ = false;
+    // El terreno o los voxeles cambiaron: los mapas de las luces locales se
+    // redibujan (su cache solo vigila a los actores).
+    bool local_static_dirty_ = true;
+    void staticGeometryChanged() {
+        cascades_valid_ = false;
+        local_static_dirty_ = true;
+    }
     std::uint64_t cascade_frame_ = 0;
     // Matrices, huecos y cache de las sombras de focos y luces puntuales.
     scene::LocalLightShadows local_shadows_{};

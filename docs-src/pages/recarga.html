@@ -1,0 +1,6 @@
+<ul>
+        <li>Si guardas un <code>.lua</code> durante el modo Play, se vuelve a leer: las instancias conservan sus datos (<code>self.*</code>) y usan las funciones nuevas.</li>
+        <li>Los errores se muestran en la consola del editor con el archivo y la línea; un script con errores no detiene al resto.</li>
+        <li>La consola del editor ejecuta Lua suelto, por ejemplo <code>Scene.find("Jugador").position = Vec3(0, 5, 0)</code>.</li>
+        <li>Por seguridad, los scripts no pueden usar <code>dofile</code>, <code>loadfile</code>, <code>io</code> ni <code>os.execute</code>/<code>os.remove</code>. Para guardar datos usa <a href="prefs.html" class="text-brand">Prefs</a>.</li>
+      </ul>

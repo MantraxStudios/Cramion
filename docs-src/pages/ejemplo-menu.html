@@ -1,0 +1,31 @@
+<p class="file">Menu.lua</p>
+      <pre><code class="language-lua">local Menu = { properties = { primerNivel = "Nivel1" } }
+
+function Menu:Start()
+    local record = Prefs.getInt("record", 0)
+    local texto = Scene.find("Menu_Record")
+    if texto then
+        texto.text = record > 0 and ("Récord: " .. record) or "¡Juega tu primera partida!"
+    end
+    local slider = Scene.find("Menu_Volumen")
+    if slider then slider.value = Prefs.getFloat("volumen", 1.0) end
+end
+
+function Menu:OnJugar(boton)
+    Audio.playOneShot("Audio/click.wav")
+    Scene.load(self.primerNivel)
+end
+
+function Menu:OnVolumen(valor)
+    Prefs.setFloat("volumen", valor)
+end
+
+function Menu:OnSalir(boton)
+    Game.quit()
+end
+
+function Menu:Update(dt)
+    if Input.getKeyDown("enter") then self:OnJugar(nil) end
+end
+
+return Menu</code></pre>

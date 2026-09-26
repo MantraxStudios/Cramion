@@ -3,9 +3,11 @@
 
 #include "CramionFX/core/Math.h"
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -95,6 +97,15 @@ struct MaterialData {
     std::int32_t normal_texture = -1;
     std::int32_t occlusion_texture = -1;
     std::int32_t emissive_texture = -1;
+
+    // Shader de superficie del usuario (.crshader), ya registrado en el
+    // renderizador (VulkanRenderer::createSurfaceShader); -1 = el estandar. Sus
+    // propiedades (8 vec4) y hasta 4 texturas propias (indices en
+    // ModelData::textures; -1 = blanca). No se guardan en la cache del modelo:
+    // los pone RenderSync al aplicar un .crmat.
+    std::int32_t surface_shader = -1;
+    std::array<core::Vec4, 8> surface_params{};
+    std::array<std::int32_t, 4> surface_textures{-1, -1, -1, -1};
 };
 
 // Tramo del buffer de indices que se dibuja con un material. Los escenarios
@@ -195,18 +206,30 @@ void computeSubmeshBounds(ModelData& model);
 // Lee el archivo original (OBJ con el lector propio, el resto con assimp) sin
 // usar ni escribir la cache y SIN decodificar las texturas: quedan tal como
 // vienen (`encoded`) o solo con su ruta (`source_path`).
-ModelData importModelSource(const std::filesystem::path& path, bool force_static = false);
+// Avance de la lectura (0..1), llamado desde el hilo que importa. Con OBJ
+// no se llama (el lector propio no informa).
+using ImportProgressCallback = std::function<void(float)>;
+
+ModelData importModelSource(const std::filesystem::path& path, bool force_static = false,
+                            const ImportProgressCallback& on_progress = {});
 
 // Como importModelSource(), pero conservando la jerarquia para partir el
 // modelo en piezas: sin hornear los nodos (cada malla queda en el espacio de
 // SU nodo, SubMesh::node indica cual), sin animaciones y sin clusteres. En
 // los OBJ, SubMesh::node es el indice del objeto/grupo y `nodes` trae uno por
 // objeto (transform identidad).
-ModelData importModelHierarchy(const std::filesystem::path& path);
+ModelData importModelHierarchy(const std::filesystem::path& path,
+                               const ImportProgressCallback& on_progress = {});
 
-// Parte cada submalla en celdas de 5 m (por el centro de cada triangulo) para
-// el culling, conservando su material y su nodo, y recalcula las cajas.
+// Junta las submallas del mismo material y nodo y las parte en clusteres
+// para el culling (rejilla relativa a su caja, con un minimo de triangulos
+// por cluster: no depende de la unidad del archivo), y recalcula las cajas.
 void clusterSubmeshes(ModelData& model);
+
+// true si un modelo estatico tiene muchas mas submallas de las que daria
+// clusterSubmeshes() (p. ej. un .crdata importado en centimetros con las
+// celdas fijas de 5 unidades de versiones anteriores): conviene reagrupar.
+bool isOverClustered(const ModelData& model);
 
 // Lee a `encoded` las texturas que solo tenian ruta y la borra: el modelo
 // queda autonomo (no depende de archivos sueltos). Devuelve cuantas no se

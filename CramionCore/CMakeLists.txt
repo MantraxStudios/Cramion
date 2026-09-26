@@ -204,6 +204,10 @@ if(CRAMION_FAST_DEBUG)
         "${CMAKE_CURRENT_SOURCE_DIR}/src/physics/PhysicsSystem.cpp"
         "${CMAKE_CURRENT_SOURCE_DIR}/src/physics/Particles.cpp"
         "${CMAKE_CURRENT_SOURCE_DIR}/src/navigation/NavigationSystem.cpp"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/voxel/Generator.cpp"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/voxel/Mesher.cpp"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/voxel/VoxelSystem.cpp"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/voxel/TextureGen.cpp"
         TARGET_DIRECTORY CramionCoreObjects
         PROPERTIES COMPILE_OPTIONS "$<$<CONFIG:Debug>:-O2>"
     )
@@ -283,6 +287,32 @@ target_link_libraries(CramionVehicleTests PRIVATE Cramion::Core)
 add_executable(CramionNavigationTests "${CMAKE_CURRENT_SOURCE_DIR}/tests/NavigationTests.cpp")
 target_link_libraries(CramionNavigationTests PRIVATE Cramion::Core)
 target_compile_options(CramionNavigationTests PRIVATE -Wall -Wextra)
+
+# --- Pruebas de los shaders de superficie del usuario (consola; shaderc) ---
+add_executable(CramionShaderTests "${CMAKE_CURRENT_SOURCE_DIR}/tests/ShaderTests.cpp")
+target_link_libraries(CramionShaderTests PRIVATE Cramion::Core)
+target_compile_options(CramionShaderTests PRIVATE -Wall -Wextra)
+cramionfx_deploy(CramionShaderTests)
+
+# --- Pruebas de la libreria matematica de Lua (consola) ---
+add_executable(CramionLuaMathTests "${CMAKE_CURRENT_SOURCE_DIR}/tests/LuaMathTests.cpp")
+target_link_libraries(CramionLuaMathTests PRIVATE Cramion::Core)
+target_compile_options(CramionLuaMathTests PRIVATE -Wall -Wextra)
+
+# --- Pruebas de los prefabs (consola) ---
+add_executable(CramionPrefabTests "${CMAKE_CURRENT_SOURCE_DIR}/tests/PrefabTests.cpp")
+target_link_libraries(CramionPrefabTests PRIVATE Cramion::Core)
+target_compile_options(CramionPrefabTests PRIVATE -Wall -Wextra)
+
+# --- Pruebas de las mallas creadas por codigo (consola) ---
+add_executable(CramionMeshTests "${CMAKE_CURRENT_SOURCE_DIR}/tests/MeshTests.cpp")
+target_link_libraries(CramionMeshTests PRIVATE Cramion::Core)
+target_compile_options(CramionMeshTests PRIVATE -Wall -Wextra)
+
+# --- Pruebas del mundo de bloques (consola) ---
+add_executable(CramionVoxelTests "${CMAKE_CURRENT_SOURCE_DIR}/tests/VoxelTests.cpp")
+target_link_libraries(CramionVoxelTests PRIVATE Cramion::Core)
+target_compile_options(CramionVoxelTests PRIVATE -Wall -Wextra)
 
 # Demo MiniGolf (kit de Kenney): crea el proyecto con sus escenas y lo prueba
 # sin ventana (cramion_minigolf <kit> tools/minigolf <destino> --probar).

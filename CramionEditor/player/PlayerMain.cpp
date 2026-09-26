@@ -193,9 +193,11 @@ int main() {
         });
 
         // --- Sistemas del juego ---
+        ecs::registerPrefabComponents();
         terrain::registerTerrainComponents();
         water::registerWaterComponents();
         navigation::registerNavigationComponents();
+        voxel::registerVoxelComponents();
         audio::registerAudioComponents();
         scripting::registerScriptComponents();
         ui::registerUiComponents();
@@ -243,6 +245,13 @@ int main() {
         });
         nav.setPhysics(&physics);
         scripts.setNavigation(&nav);
+        scripts.setCursorLock([&](bool locked) { window.setCursorCaptured(locked); });
+        // Mundos de bloques: texturas del juego y partidas en Saves/<juego>/Worlds.
+        voxel::VoxelSystem voxels;
+        voxels.setAssetsRoot(project->assetsFolder());
+        voxels.setSaveRoot(editor::localDataFolder("Saves") / std::filesystem::path(exe_stem) / "Worlds");
+        scripts.setVoxels(&voxels);
+        voxels.setPhysics(&physics);
         cinema::CinematicSystem cinematics;
         physics::ParticleWorld particles;
         ui::UiSystem game_ui;
@@ -259,6 +268,17 @@ int main() {
         // Datos guardados de los scripts (Prefs), por juego.
         scripts.setPrefsFile(editor::localDataFolder("Saves") / std::filesystem::path(exe_stem).concat(".prefs"));
 
+        const auto main_camera = [&](core::Vec3& position, core::Vec3& forward) {
+            position = scene.camera().position();
+            forward = scene.camera().forward();
+            world.forEachDepthFirst([&](ecs::Entity e) {
+                if (const ecs::Camera* c = e.tryGet<ecs::Camera>(); c != nullptr && c->is_main && e.activeInHierarchy()) {
+                    position = e.worldPosition();
+                    forward = e.forward();
+                }
+            });
+        };
+
         // Cambiar de escena: parar todo, cargar y volver a empezar.
         const auto load_scene = [&](const std::filesystem::path& file) {
             scripts.stop();
@@ -267,16 +287,29 @@ int main() {
             physics.stop();
             particles.clear();
             nav.clear();
+            voxels.stop();
             std::string error;
             if (file.empty() || !ecs::loadScene(world, file, &error)) {
                 std::cerr << "[Juego] No se pudo abrir la escena " << file.string() << " " << error << "\n";
             }
+            // Instancias de prefab guardadas con una revision vieja: al dia.
+            ecs::syncOutdatedInstances(world, [&](const Uuid& id) {
+                const auto info = database.find(id);
+                return info && info->type == assets::AssetType::Prefab ? ecs::readPrefabFile(info->path) : std::string{};
+            });
             renderer.invalidateHistory();
             const std::u8string stem = file.stem().u8string();
             scripts.setSceneName(std::string(stem.begin(), stem.end()));
             physics.start(world);
             // La malla lista antes de que empiecen los scripts (mientras se ve el banner).
             nav.waitForBuild(world, 20.0f);
+            // Los bloques de alrededor listos antes de empezar (no se cae del mundo).
+            voxels.start(world);
+            if (voxels.active()) {
+                core::Vec3 position, forward;
+                main_camera(position, forward);
+                voxels.waitUntilReady(position, 2, 20.0f);
+            }
             audio.start(world);
             scripts.start(world);
         };
@@ -342,15 +375,10 @@ int main() {
                 scripts.update(world, dt);
                 cinematics.update(world, dt, true);
                 // Oyente: AudioListener o la camara principal.
-                core::Vec3 position = scene.camera().position();
-                core::Vec3 forward = scene.camera().forward();
-                world.forEachDepthFirst([&](ecs::Entity e) {
-                    if (const ecs::Camera* c = e.tryGet<ecs::Camera>(); c != nullptr && c->is_main && e.activeInHierarchy()) {
-                        position = e.worldPosition();
-                        forward = e.forward();
-                    }
-                });
+                core::Vec3 position, forward;
+                main_camera(position, forward);
                 audio.update(world, dt, position, forward);
+                voxels.update(dt, position);
                 // Interfaz: toda la ventana.
                 const ui::UiInput ui_input = editor::uiInputFromImGui(ImVec2(0, 0), display, true, game_ui.typing());
                 game_ui.update(world, display.x, display.y, ui_input, true, static_cast<float>(ImGui::GetTime()));
@@ -375,6 +403,7 @@ int main() {
                 options.apply_main_camera = true;
                 sync.sync(world, scene, renderer, running ? dt : 0.0f, options);
                 renderer.setParticles(particles.drawList(scene.camera().position()));
+                voxels.syncRenderer(renderer);
             }
             renderer.drawFrame(scene);
             input.newFrame();
@@ -382,6 +411,7 @@ int main() {
         scripts.stop();
         audio.stop();
         physics.stop();
+        voxels.stop();  // guarda el mundo con nombre
         renderer.waitIdle();
         sync.reset(scene);
         imgui.shutdown();

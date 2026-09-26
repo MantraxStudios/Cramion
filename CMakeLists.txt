@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(Cramion
-    VERSION 0.2.0
+    VERSION 0.4.0
     DESCRIPTION "Motor con capa de plataforma DirectX 12 (CramionDM) y renderizador Vulkan (CramionFX)"
     LANGUAGES CXX
 )
@@ -17,6 +17,28 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
+# Compilaciones a la vez segun la RAM: Ninja lanza una por nucleo + 2 y los
+# archivos pesados (sol2 en Scripting.cpp) llegan a ~1,5 GB cada uno; con 16
+# nucleos y 16 GB eso agota la memoria y congela el PC. Se reservan 4 GB para
+# el sistema y se cuentan 1,5 GB por compilacion. -DCRAMION_COMPILE_JOBS=N lo fija
+# a mano; enlazar va de 2 en 2 (el editor y el player enlazan a la vez).
+if(CMAKE_GENERATOR MATCHES "Ninja")
+    cmake_host_system_information(RESULT _cramion_ram_mb QUERY TOTAL_PHYSICAL_MEMORY)
+    cmake_host_system_information(RESULT _cramion_cores QUERY NUMBER_OF_LOGICAL_CORES)
+    math(EXPR _cramion_jobs "(${_cramion_ram_mb} - 4096) / 1536")
+    if(_cramion_jobs LESS 1)
+        set(_cramion_jobs 1)
+    endif()
+    if(_cramion_jobs GREATER _cramion_cores)
+        set(_cramion_jobs ${_cramion_cores})
+    endif()
+    set(CRAMION_COMPILE_JOBS ${_cramion_jobs} CACHE STRING "Compilaciones en paralelo (por defecto, segun la RAM)")
+    set_property(GLOBAL PROPERTY JOB_POOLS cramion_compile=${CRAMION_COMPILE_JOBS} cramion_link=2)
+    set(CMAKE_JOB_POOL_COMPILE cramion_compile)
+    set(CMAKE_JOB_POOL_LINK cramion_link)
+    message(STATUS "Cramion: ${CRAMION_COMPILE_JOBS} compilaciones a la vez (${_cramion_ram_mb} MB de RAM, ${_cramion_cores} nucleos)")
+endif()
 
 # Capa de plataforma (ventana, entrada, dispositivo DX12).
 add_subdirectory(CramionDM)

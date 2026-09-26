@@ -1,0 +1,72 @@
+<p>Una entidad de la escena. La del script es <code>self.entity</code>; otras se obtienen con <a href="scene.html" class="text-brand">Scene</a> o en los eventos de física.</p>
+
+      <h3 id="transformacion">Transformación</h3>
+      <table>
+        <tbody>
+          <tr><td><code>position</code></td><td>Posición en el mundo (lectura y escritura).</td></tr>
+          <tr><td><code>localPosition</code></td><td>Posición relativa al padre.</td></tr>
+          <tr><td><code>rotation</code></td><td>Giro local en grados (Euler X, Y, Z).</td></tr>
+          <tr><td><code>quaternion</code></td><td>El mismo giro local como <a href="quat.html"><code>Quat</code></a> (sin saltos al interpolar o acumular giros).</td></tr>
+          <tr><td><code>scale</code></td><td>Escala local.</td></tr>
+          <tr><td><code>forward</code>, <code>right</code>, <code>up</code></td><td>Ejes de la entidad en el mundo (solo lectura).</td></tr>
+          <tr><td><code>:translate(d)</code></td><td>Mueve <code>d</code> en coordenadas del mundo.</td></tr>
+          <tr><td><code>:translateLocal(d)</code></td><td>Mueve en sus propios ejes: <code>x</code> derecha, <code>y</code> arriba, <code>z</code> atrás.</td></tr>
+          <tr><td><code>:rotate(grados)</code></td><td>Suma un giro en grados.</td></tr>
+          <tr><td><code>:lookAt(punto)</code></td><td>Orienta la entidad hacia un punto.</td></tr>
+          <tr><td><code>:distanceTo(otra)</code></td><td>Distancia a otra entidad.</td></tr>
+        </tbody>
+      </table>
+
+      <h3 id="identidad-y-jerarquia">Identidad y jerarquía</h3>
+      <table>
+        <tbody>
+          <tr><td><code>name</code>, <code>tag</code></td><td>Nombre y etiqueta (lectura y escritura).</td></tr>
+          <tr><td><code>active</code></td><td>Activa o desactiva la entidad.</td></tr>
+          <tr><td><code>parent</code></td><td>La entidad padre o <code>nil</code>.</td></tr>
+          <tr><td><code>:find(nombre)</code></td><td>Busca entre sus descendientes.</td></tr>
+          <tr><td><code>:valid()</code></td><td>Si la entidad todavía existe.</td></tr>
+          <tr><td><code>:hasComponent(nombre)</code></td><td>Por ejemplo <code>"Rigidbody"</code>, <code>"Light"</code>, <code>"AudioSource"</code>, <code>"UIButton"</code>.</td></tr>
+          <tr><td><code>:addComponent(nombre)</code></td><td>Añade un componente por su nombre (<code>"MeshCollider"</code>, <code>"Rigidbody"</code>, <code>"BoxCollider"</code>, <code>"Light"</code>…). Devuelve <code>false</code> si no existe.</td></tr>
+          <tr><td><code>:removeComponent(nombre)</code></td><td>Lo quita.</td></tr>
+          <tr><td><code>:setMaterial(hueco, "Materials/X.crmat")</code></td><td>Pone un material <code>.crmat</code> en un hueco (submalla) del <code>MeshRenderer</code>; <code>nil</code> vuelve al suyo. Así una malla tiene varios materiales con sus efectos.</td></tr>
+          <tr><td><code>castShadows</code></td><td>Si su <code>MeshRenderer</code> proyecta sombra (lectura y escritura).</td></tr>
+          <tr><td><code>mesh</code></td><td>La <a href="mallas.html" class="text-brand">malla creada por código</a> que dibuja (lectura y escritura). Asignarla añade un <code>MeshRenderer</code> si no hay; <code>nil</code> vuelve a su modelo.</td></tr>
+          <tr><td><code>:getScript()</code></td><td>La instancia del script de otra entidad (su <code>self</code>).</td></tr>
+          <tr><td><code>:destroy()</code></td><td>La destruye al final del frame.</td></tr>
+        </tbody>
+      </table>
+
+      <h3 id="fisica">Física</h3>
+      <p>Requieren un componente <code>Rigidbody</code> en la entidad.</p>
+      <table>
+        <tbody>
+          <tr><td><code>velocity</code>, <code>angularVelocity</code></td><td>Velocidad lineal (m/s) y angular (lectura y escritura).</td></tr>
+          <tr><td><code>:addForce(f, modo)</code></td><td><code>modo</code>: <code>"force"</code> (por defecto), <code>"impulse"</code>, <code>"acceleration"</code> o <code>"velocityChange"</code>.</td></tr>
+          <tr><td><code>:addImpulse(f)</code></td><td>Impulso instantáneo.</td></tr>
+          <tr><td><code>:addTorque(t)</code></td><td>Par de giro.</td></tr>
+          <tr><td><code>:setVehicleInput(acel, giro, freno, freno_mano)</code></td><td>Vehículos (<code>Vehicle</code> + <code>WheelCollider</code>): acelerador y dirección de −1 a 1, frenos de 0 a 1.</td></tr>
+          <tr><td><code>speed</code>, <code>rpm</code>, <code>gear</code></td><td>Estado del vehículo: km/h, revoluciones y marcha.</td></tr>
+        </tbody>
+      </table>
+
+      <h3 id="sonido-y-animacion">Sonido y animación</h3>
+      <table>
+        <tbody>
+          <tr><td><code>:playSound()</code>, <code>:stopSound()</code>, <code>:isPlayingSound()</code></td><td>Controlan el <code>AudioSource</code> de la entidad.</td></tr>
+          <tr><td><code>:playAnimation(clip, bucle)</code></td><td>Reproduce un clip del <code>Animator</code> (<code>bucle</code> es <code>true</code> por defecto).</td></tr>
+          <tr><td><code>:setAnimatorFloat(n, v)</code>, <code>:setAnimatorBool(n, v)</code>, <code>:setAnimatorTrigger(n)</code></td><td>Parámetros del controlador de animación.</td></tr>
+        </tbody>
+      </table>
+
+      <h3 id="interfaz">Interfaz</h3>
+      <table>
+        <tbody>
+          <tr><td><code>text</code></td><td>Texto de un <code>UIText</code> o <code>UIInputField</code>.</td></tr>
+          <tr><td><code>value</code></td><td>Valor de un <code>UISlider</code>, o 1/0 de un <code>UIToggle</code>.</td></tr>
+          <tr><td><code>color</code></td><td>Color (<code>Vec3</code> de 0 a 1) de un <code>UIImage</code> o <code>UIText</code>.</td></tr>
+          <tr><td><code>interactable</code></td><td>Si el control responde al jugador.</td></tr>
+          <tr><td><code>texture</code></td><td>Imagen de un <code>UIImage</code> (ruta en Assets; iconos de inventario, barras…).</td></tr>
+          <tr><td><code>alpha</code></td><td>Transparencia de un <code>UIImage</code> o <code>UIText</code> (0 a 1): fundidos, avisos.</td></tr>
+          <tr><td><code>uiPosition</code>, <code>uiSize</code></td><td>Posición (desde su ancla) y tamaño del <code>RectTransform</code> en <code>Vec3</code> (x, y): mover un marco, una barra de vida que se acorta…</td></tr>
+        </tbody>
+      </table>

@@ -16,11 +16,13 @@
 #include "CramionCore/ecs/AnimatorController.h"
 #include "CramionCore/Uuid.h"
 #include "CramionCore/ecs/Reflection.h"
+#include "CramionCore/ecs/RuntimeMesh.h"
 
 #include <CramionFX/vk/PostProcessSettings.h>
 
 #include <entt/entity/entity.hpp>
 
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -86,6 +88,9 @@ struct MeshRenderer {
     // Materiales (.crmat) que sustituyen a los del modelo, por hueco (el
     // indice es el del material en el modelo). Vacio o invalido = el suyo.
     std::vector<assets::AssetRef> materials;
+    // Malla creada por codigo (RuntimeMesh.h; como MeshFilter.mesh de Unity):
+    // si hay, se dibuja en lugar de `model`. No se guarda en la escena.
+    std::shared_ptr<Mesh> mesh;
 
     void reflect(PropertyVisitor& v);
 };

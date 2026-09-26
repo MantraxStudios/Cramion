@@ -56,11 +56,14 @@ void SkinnedPass::create(const VulkanDevice& device, const GBuffer& gbuffer,
     sampler_ = vk::raii::Sampler(device.handle(), sampler_info);
 
     // --- Set 0: camara + huesos + lluvia (mapa y parametros) ---
-    std::array<vk::DescriptorSetLayoutBinding, 5> frame_bindings{};
+    // Camara y clima tambien en fragmentos y vertices: los shaders de
+    // superficie del usuario leen la posicion de la camara y los segundos.
+    const vk::ShaderStageFlags both = vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment;
+    std::array<vk::DescriptorSetLayoutBinding, 6> frame_bindings{};
     frame_bindings[0].binding = 0;
     frame_bindings[0].descriptorType = vk::DescriptorType::eUniformBuffer;
     frame_bindings[0].descriptorCount = 1;
-    frame_bindings[0].stageFlags = vk::ShaderStageFlagBits::eVertex;
+    frame_bindings[0].stageFlags = both;
     frame_bindings[1].binding = 1;
     frame_bindings[1].descriptorType = vk::DescriptorType::eStorageBuffer;
     frame_bindings[1].descriptorCount = 1;
@@ -72,24 +75,31 @@ void SkinnedPass::create(const VulkanDevice& device, const GBuffer& gbuffer,
     frame_bindings[3].binding = 3;
     frame_bindings[3].descriptorType = vk::DescriptorType::eUniformBuffer;
     frame_bindings[3].descriptorCount = 1;
-    frame_bindings[3].stageFlags = vk::ShaderStageFlagBits::eFragment;
+    frame_bindings[3].stageFlags = both;
     // Texturas de los decals (estampas): 8 ranuras.
     frame_bindings[4].binding = 4;
     frame_bindings[4].descriptorType = vk::DescriptorType::eCombinedImageSampler;
     frame_bindings[4].descriptorCount = 8;
     frame_bindings[4].stageFlags = vk::ShaderStageFlagBits::eFragment;
+    // Propiedades de los materiales con shader propio (8 vec4 cada uno).
+    frame_bindings[5].binding = 5;
+    frame_bindings[5].descriptorType = vk::DescriptorType::eStorageBuffer;
+    frame_bindings[5].descriptorCount = 1;
+    frame_bindings[5].stageFlags = both;
 
     vk::DescriptorSetLayoutCreateInfo frame_layout_info{};
     frame_layout_info.setBindings(frame_bindings);
     frame_set_layout_ = vk::raii::DescriptorSetLayout(device.handle(), frame_layout_info);
 
     // --- Set 1: las texturas PBR del material ---
-    std::array<vk::DescriptorSetLayoutBinding, kMaterialTextureCount> material_bindings{};
-    for (std::uint32_t i = 0; i < kMaterialTextureCount; ++i) {
+    // Las 4 ultimas son de los shaders del usuario (tambien en vertices).
+    std::array<vk::DescriptorSetLayoutBinding, kMaterialBindingCount> material_bindings{};
+    for (std::uint32_t i = 0; i < kMaterialBindingCount; ++i) {
         material_bindings[i].binding = i;
         material_bindings[i].descriptorType = vk::DescriptorType::eCombinedImageSampler;
         material_bindings[i].descriptorCount = 1;
-        material_bindings[i].stageFlags = vk::ShaderStageFlagBits::eFragment;
+        material_bindings[i].stageFlags = i < kMaterialTextureCount ? vk::ShaderStageFlags(vk::ShaderStageFlagBits::eFragment)
+                                                                    : both;
     }
 
     vk::DescriptorSetLayoutCreateInfo material_layout_info{};
@@ -137,8 +147,30 @@ void SkinnedPass::createGeometryPipeline(const VulkanDevice& device, const GBuff
     layout_info.setPushConstantRanges(push_range);
     geometry_layout_ = vk::raii::PipelineLayout(device.handle(), layout_info);
 
+    const auto formats = gbuffer.colorFormats();
+    gbuffer_color_formats_.assign(formats.begin(), formats.end());
+    gbuffer_depth_format_ = gbuffer.depthFormat();
+
     const vk::raii::ShaderModule vertex_module = shaders::loadModule(device, "skinned.vert.spv");
     const vk::raii::ShaderModule fragment_module = shaders::loadModule(device, "skinned.frag.spv");
+    geometry_pipeline_ = buildGeometryPipeline(device, vertex_module, fragment_module);
+}
+
+vk::raii::Pipeline SkinnedPass::createSurfacePipeline(const VulkanDevice& device,
+                                                      const std::vector<std::uint32_t>& vertex_spirv,
+                                                      const std::vector<std::uint32_t>& fragment_spirv) const {
+    vk::ShaderModuleCreateInfo vertex_info{};
+    vertex_info.setCode(vertex_spirv);
+    const vk::raii::ShaderModule vertex_module(device.handle(), vertex_info);
+    vk::ShaderModuleCreateInfo fragment_info{};
+    fragment_info.setCode(fragment_spirv);
+    const vk::raii::ShaderModule fragment_module(device.handle(), fragment_info);
+    return buildGeometryPipeline(device, vertex_module, fragment_module);
+}
+
+vk::raii::Pipeline SkinnedPass::buildGeometryPipeline(const VulkanDevice& device,
+                                                      const vk::raii::ShaderModule& vertex_module,
+                                                      const vk::raii::ShaderModule& fragment_module) const {
     const std::array<vk::PipelineShaderStageCreateInfo, 2> stages = {
         stage(vk::ShaderStageFlagBits::eVertex, vertex_module),
         stage(vk::ShaderStageFlagBits::eFragment, fragment_module)};
@@ -189,10 +221,9 @@ void SkinnedPass::createGeometryPipeline(const VulkanDevice& device, const GBuff
     vk::PipelineDynamicStateCreateInfo dynamic_state{};
     dynamic_state.setDynamicStates(dynamic_states);
 
-    const auto color_formats = gbuffer.colorFormats();
     vk::PipelineRenderingCreateInfo rendering_info{};
-    rendering_info.setColorAttachmentFormats(color_formats);
-    rendering_info.depthAttachmentFormat = gbuffer.depthFormat();
+    rendering_info.setColorAttachmentFormats(gbuffer_color_formats_);
+    rendering_info.depthAttachmentFormat = gbuffer_depth_format_;
 
     vk::GraphicsPipelineCreateInfo pipeline_info{};
     pipeline_info.pNext = &rendering_info;
@@ -207,7 +238,7 @@ void SkinnedPass::createGeometryPipeline(const VulkanDevice& device, const GBuff
     pipeline_info.pDynamicState = &dynamic_state;
     pipeline_info.layout = *geometry_layout_;
 
-    geometry_pipeline_ = vk::raii::Pipeline(device.handle(), device.pipelineCache(), pipeline_info);
+    return vk::raii::Pipeline(device.handle(), device.pipelineCache(), pipeline_info);
 }
 
 void SkinnedPass::createGlassPipeline(const VulkanDevice& device, vk::Format color_format,

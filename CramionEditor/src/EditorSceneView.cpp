@@ -148,7 +148,7 @@ void EditorApp::drawSceneView() {
         if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(kAssetPayload)) {
             AssetPayload asset{};
             std::memcpy(&asset, payload->Data, sizeof(asset));
-            if (asset.type == assets::AssetType::Model) {
+            if (asset.type == assets::AssetType::Model || asset.type == assets::AssetType::Prefab) {
                 Vec3 ray_origin{};
                 Vec3 ray_direction{};
                 std::optional<Vec3> place;
@@ -159,7 +159,11 @@ void EditorApp::drawSceneView() {
                     }
                     if (!place) place = ray_origin + ray_direction * 6.0f;
                 }
-                instantiateAsset(asset.uuid, {}, place);
+                if (asset.type == assets::AssetType::Prefab) {
+                    instantiatePrefabAsset(asset.uuid, {}, place);
+                } else {
+                    instantiateAsset(asset.uuid, {}, place);
+                }
             } else if (asset.type == assets::AssetType::Environment) {
                 assignEnvironment(asset.uuid);
             } else if (asset.type == assets::AssetType::Material) {

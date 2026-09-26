@@ -195,6 +195,36 @@ foreach(SHADER_SOURCE IN LISTS CRAMIONFX_SHADER_SOURCES)
     list(APPEND CRAMIONFX_SHADER_BINARIES "${SHADER_BINARY}")
 endforeach()
 
+# Fuentes de los shaders de superficie del usuario (.crshader): el motor
+# junta en tiempo de ejecucion surface.vert/.frag con el codigo del usuario y
+# sus includes (shaders/source), y los compila con shaderc_shared.dll.
+set(CRAMIONFX_SURFACE_SOURCES
+    "${CMAKE_CURRENT_SOURCE_DIR}/shaders/surface.vert"
+    "${CMAKE_CURRENT_SOURCE_DIR}/shaders/surface.frag"
+    ${CRAMIONFX_SHADER_INCLUDES})
+set(CRAMIONFX_SURFACE_STAMP "${CRAMIONFX_SHADER_DIR}/source/.copiado")
+add_custom_command(
+    OUTPUT "${CRAMIONFX_SURFACE_STAMP}"
+    COMMAND "${CMAKE_COMMAND}" -E make_directory "${CRAMIONFX_SHADER_DIR}/source"
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different ${CRAMIONFX_SURFACE_SOURCES} "${CRAMIONFX_SHADER_DIR}/source"
+    COMMAND "${CMAKE_COMMAND}" -E touch "${CRAMIONFX_SURFACE_STAMP}"
+    DEPENDS ${CRAMIONFX_SURFACE_SOURCES}
+    COMMENT "CramionFX: fuentes de los shaders de superficie"
+    VERBATIM
+)
+list(APPEND CRAMIONFX_SHADER_BINARIES "${CRAMIONFX_SURFACE_STAMP}")
+
+# El compilador de GLSL en tiempo de ejecucion (Vulkan SDK). Se copia junto a
+# cada ejecutable que usa cramionfx_deploy() y viaja con el paquete y los
+# juegos exportados.
+find_file(CRAMIONFX_SHADERC_DLL shaderc_shared.dll
+    HINTS "$ENV{VULKAN_SDK}/Bin" "$ENV{VULKAN_SDK}/bin"
+    DOC "shaderc_shared.dll del Vulkan SDK (shaders de superficie del usuario)")
+if(NOT CRAMIONFX_SHADERC_DLL)
+    message(WARNING "No se encontro shaderc_shared.dll: los shaders propios (.crshader) no compilaran")
+endif()
+set_property(GLOBAL PROPERTY CRAMIONFX_SHADERC_DLL "${CRAMIONFX_SHADERC_DLL}")
+
 add_custom_target(CramionFX_shaders DEPENDS ${CRAMIONFX_SHADER_BINARIES})
 add_dependencies(CramionFX CramionFX_shaders)
 
@@ -216,6 +246,13 @@ function(cramionfx_deploy target)
         VERBATIM
     )
     add_dependencies(${target} ${target}_cramionfx_shaders)
+
+    get_property(shaderc_dll GLOBAL PROPERTY CRAMIONFX_SHADERC_DLL)
+    if(shaderc_dll)
+        add_custom_command(TARGET ${target} POST_BUILD
+            COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${shaderc_dll}" "$<TARGET_FILE_DIR:${target}>"
+            VERBATIM)
+    endif()
 
     # Varios ejecutables en la misma carpeta (cramion y CramionEditor): las
     # copias van una detras de otra, no a la vez sobre los mismos archivos.

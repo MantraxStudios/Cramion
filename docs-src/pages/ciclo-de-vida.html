@@ -1,0 +1,24 @@
+<p>Todos los métodos son opcionales. El motor solo llama a los que existen.</p>
+      <table>
+        <thead><tr><th>Método</th><th>Cuándo se llama</th></tr></thead>
+        <tbody>
+          <tr><td><code>Awake()</code></td><td>Al crear la instancia, al entrar en Play o al instanciar la entidad.</td></tr>
+          <tr><td><code>Start()</code></td><td>Una vez, antes del primer <code>Update</code> de la instancia.</td></tr>
+          <tr><td><code>Update(dt)</code></td><td>Cada frame, después de la física. <code>dt</code> son los segundos del frame.</td></tr>
+          <tr><td><code>LateUpdate(dt)</code></td><td>Cada frame, después de todos los <code>Update</code>. Útil para cámaras.</td></tr>
+          <tr><td><code>FixedUpdate(step)</code></td><td>Una vez por cada paso de física del frame (paso fijo, 1/60 s por defecto).</td></tr>
+          <tr><td><code>OnCollisionEnter(other, contact)</code></td><td>Empieza un choque con otra entidad. También <code>OnCollisionStay</code> y <code>OnCollisionExit</code>.</td></tr>
+          <tr><td><code>OnTriggerEnter(other, contact)</code></td><td>Otra entidad entra en un collider marcado como trigger. También <code>OnTriggerStay</code> y <code>OnTriggerExit</code>.</td></tr>
+          <tr><td><code>OnDestroy()</code></td><td>Antes de destruir la entidad, o al salir de Play.</td></tr>
+        </tbody>
+      </table>
+      <p>
+        En los eventos de física, <code>other</code> es la otra <a href="entity.html" class="text-brand">Entity</a>
+        y <code>contact</code> una tabla con <code>point</code>, <code>normal</code> y <code>relativeVelocity</code> (todos <code>Vec3</code>).
+      </p>
+      <pre><code class="language-lua">function Caja:OnCollisionEnter(other, contact)
+    local golpe = contact.relativeVelocity:length()
+    if golpe > 4 then
+        Audio.playOneShot("Audio/golpe.wav", contact.point, math.min(1, golpe / 10))
+    end
+end</code></pre>

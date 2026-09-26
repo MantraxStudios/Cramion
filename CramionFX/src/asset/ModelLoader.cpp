@@ -4,6 +4,7 @@
 #include "CramionFX/asset/ObjLoader.h"
 
 #include <assimp/Importer.hpp>
+#include <assimp/ProgressHandler.hpp>
 #include <assimp/config.h>
 #include <assimp/postprocess.h>
 #include <assimp/scene.h>
@@ -577,15 +578,55 @@ private:
     bool static_scene_ = false;
 };
 
-// Parte cada submalla de un modelo estatico en celdas de kClusterSize metros
-// (por el centro de cada triangulo), para que el frustum culling pueda
-// descartar trozos de un escenario. Mismo criterio que ObjLoader.
+// Parte las submallas de un modelo estatico en clusteres (por el centro de
+// cada triangulo) para que el frustum culling pueda descartar trozos de un
+// escenario.
+//
+// Independiente de la escala: antes las celdas median 5 unidades fijas y un
+// FBX en centimetros (vertices en cm, la escala 0.01 va en el nodo) acababa
+// en celdas de 5 cm: miles de submallas, y por tanto miles de llamadas de
+// dibujo y cambios de material, en un solo objeto. Ahora:
+//   - las submallas del mismo material y nodo se juntan primero;
+//   - la rejilla es relativa a la caja del grupo (kCellsPerAxis por lado);
+//   - un cluster no se cierra hasta tener kMinClusterTriangles, recorriendo
+//     las celdas en orden de Morton para que los que se juntan sean vecinos.
+// Asi el numero de clusteres queda acotado por triangulos / minimo, sea cual
+// sea la unidad del archivo.
+constexpr std::uint32_t kCellsPerAxis = 32;
+constexpr std::uint32_t kMinClusterTriangles = 1024;
+
+std::uint64_t spreadBits(std::uint64_t v) {
+    // 21 bits -> cada bit separado por dos ceros (Morton 3D).
+    v &= 0x1FFFFF;
+    v = (v | (v << 32)) & 0x1F00000000FFFFull;
+    v = (v | (v << 16)) & 0x1F0000FF0000FFull;
+    v = (v | (v << 8)) & 0x100F00F00F00F00Full;
+    v = (v | (v << 4)) & 0x10C30C30C30C30C3ull;
+    v = (v | (v << 2)) & 0x1249249249249249ull;
+    return v;
+}
+
 void clusterSubmeshesImpl(ModelData& model) {
-    constexpr float kClusterSize = 5.0f;
-    const auto cell_of = [](float value) {
-        return static_cast<std::uint64_t>(
-            static_cast<std::int64_t>(std::floor(value / kClusterSize)) + (1 << 20));
+    // Grupos (material, nodo) en el orden en que aparecen.
+    struct Group {
+        std::uint32_t material;
+        std::int32_t node;
+        std::vector<std::size_t> submeshes;
     };
+    std::vector<Group> groups;
+    {
+        std::unordered_map<std::uint64_t, std::size_t> group_of;
+        for (std::size_t s = 0; s < model.submeshes.size(); ++s) {
+            const SubMesh& submesh = model.submeshes[s];
+            const std::uint64_t key = (static_cast<std::uint64_t>(submesh.material) << 32) |
+                                      static_cast<std::uint32_t>(submesh.node);
+            const auto [it, inserted] = group_of.try_emplace(key, groups.size());
+            if (inserted) {
+                groups.push_back(Group{submesh.material, submesh.node, {}});
+            }
+            groups[it->second].submeshes.push_back(s);
+        }
+    }
 
     std::vector<SubMesh> clustered;
     std::vector<std::uint32_t> indices;
@@ -594,35 +635,78 @@ void clusterSubmeshesImpl(ModelData& model) {
     struct Triangle {
         std::uint64_t cell;
         std::uint32_t first;
+        Vec3 center;
     };
     std::vector<Triangle> triangles;
 
-    for (const SubMesh& submesh : model.submeshes) {
+    for (const Group& group : groups) {
         triangles.clear();
-        for (std::uint32_t i = 0; i + 2 < submesh.index_count; i += 3) {
-            const std::uint32_t first = submesh.first_index + i;
-            const Vec3 center = (model.vertices[model.indices[first]].position +
-                                 model.vertices[model.indices[first + 1]].position +
-                                 model.vertices[model.indices[first + 2]].position) *
-                                (1.0f / 3.0f);
-            triangles.push_back(Triangle{
-                (cell_of(center.x) << 42) | (cell_of(center.y) << 21) | cell_of(center.z), first});
+        Vec3 low{1e30f, 1e30f, 1e30f};
+        Vec3 high{-1e30f, -1e30f, -1e30f};
+        for (const std::size_t s : group.submeshes) {
+            const SubMesh& submesh = model.submeshes[s];
+            for (std::uint32_t i = 0; i + 2 < submesh.index_count; i += 3) {
+                const std::uint32_t first = submesh.first_index + i;
+                const Vec3 center = (model.vertices[model.indices[first]].position +
+                                     model.vertices[model.indices[first + 1]].position +
+                                     model.vertices[model.indices[first + 2]].position) *
+                                    (1.0f / 3.0f);
+                low = Vec3{std::min(low.x, center.x), std::min(low.y, center.y),
+                           std::min(low.z, center.z)};
+                high = Vec3{std::max(high.x, center.x), std::max(high.y, center.y),
+                            std::max(high.z, center.z)};
+                triangles.push_back(Triangle{0, first, center});
+            }
         }
-        std::stable_sort(triangles.begin(), triangles.end(),
-                         [](const Triangle& a, const Triangle& b) { return a.cell < b.cell; });
+        if (triangles.empty()) {
+            continue;
+        }
 
+        // Pocos triangulos: no merece la pena partir (una sola llamada).
+        const bool split = triangles.size() >= 2 * kMinClusterTriangles;
+        if (split) {
+            const float extent =
+                std::max({high.x - low.x, high.y - low.y, high.z - low.z, 1e-6f});
+            const float cell_size = extent / static_cast<float>(kCellsPerAxis);
+            const auto cell_of = [&](float value, float origin) {
+                const auto c = static_cast<std::int64_t>((value - origin) / cell_size);
+                return static_cast<std::uint64_t>(
+                    std::clamp<std::int64_t>(c, 0, kCellsPerAxis - 1));
+            };
+            for (Triangle& t : triangles) {
+                t.cell = (spreadBits(cell_of(t.center.x, low.x)) << 2) |
+                         (spreadBits(cell_of(t.center.y, low.y)) << 1) |
+                         spreadBits(cell_of(t.center.z, low.z));
+            }
+            std::stable_sort(triangles.begin(), triangles.end(),
+                             [](const Triangle& a, const Triangle& b) { return a.cell < b.cell; });
+        }
+
+        std::uint32_t in_cluster = 0;
         for (std::size_t t = 0; t < triangles.size(); ++t) {
-            if (t == 0 || triangles[t].cell != triangles[t - 1].cell) {
+            const bool new_cell = t == 0 || triangles[t].cell != triangles[t - 1].cell;
+            if (t == 0 || (split && new_cell && in_cluster >= kMinClusterTriangles)) {
                 SubMesh cluster{};
                 cluster.first_index = static_cast<std::uint32_t>(indices.size());
-                cluster.material = submesh.material;
-                cluster.node = submesh.node;
+                cluster.material = group.material;
+                cluster.node = group.node;
                 clustered.push_back(cluster);
+                in_cluster = 0;
             }
             for (std::uint32_t k = 0; k < 3; ++k) {
                 indices.push_back(model.indices[triangles[t].first + k]);
             }
             clustered.back().index_count += 3;
+            ++in_cluster;
+        }
+        // El ultimo cluster se queda con pocos triangulos: al anterior.
+        if (split && clustered.size() >= 2 && in_cluster < kMinClusterTriangles / 2) {
+            SubMesh& previous = clustered[clustered.size() - 2];
+            if (previous.material == group.material && previous.node == group.node &&
+                previous.first_index + previous.index_count == clustered.back().first_index) {
+                previous.index_count += clustered.back().index_count;
+                clustered.pop_back();
+            }
         }
     }
 
@@ -769,9 +853,27 @@ bool subtreeHasMeshes(const aiNode* node) {
 
 // `keep_hierarchy`: para el importador de assets. Sin hornear los nodos ni
 // agrupar en clusteres (se hace despues, por pieza) y sin animaciones.
+// Pasa el avance de assimp (lectura 0..0.5, post-proceso 0.5..1) al editor.
+class ProgressForwarder : public Assimp::ProgressHandler {
+public:
+    explicit ProgressForwarder(ImportProgressCallback callback) : callback_(std::move(callback)) {}
+    bool Update(float percentage) override {
+        if (percentage >= 0.0f) callback_(std::min(percentage, 1.0f));
+        return true;  // nunca se cancela
+    }
+
+private:
+    ImportProgressCallback callback_;
+};
+
 ModelData importWithAssimp(const std::filesystem::path& path, bool force_static,
-                           bool keep_hierarchy = false) {
+                           bool keep_hierarchy = false,
+                           const ImportProgressCallback& on_progress = {}) {
     Assimp::Importer importer;
+    if (on_progress) {
+        // El Importer se queda con el handler y lo borra.
+        importer.SetProgressHandler(new ProgressForwarder(on_progress));
+    }
 
     // Sin los nodos auxiliares "$AssimpFbx$" de los pivotes: las pistas de
     // animacion apuntan directamente a los huesos.
@@ -862,26 +964,47 @@ void computeSubmeshBounds(ModelData& model) {
     }
 }
 
-ModelData importModelSource(const std::filesystem::path& path, bool force_static) {
+ModelData importModelSource(const std::filesystem::path& path, bool force_static,
+                            const ImportProgressCallback& on_progress) {
     std::string extension = path.extension().string();
     std::transform(extension.begin(), extension.end(), extension.begin(),
                    [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
     // Los OBJ (escenarios enormes) van por el lector propio en paralelo; el
     // resto de formatos, por assimp.
-    return (extension == ".obj") ? loadObj(path) : importWithAssimp(path, force_static);
+    return (extension == ".obj") ? loadObj(path)
+                                 : importWithAssimp(path, force_static, false, on_progress);
 }
 
-ModelData importModelHierarchy(const std::filesystem::path& path) {
+ModelData importModelHierarchy(const std::filesystem::path& path,
+                               const ImportProgressCallback& on_progress) {
     std::string extension = path.extension().string();
     std::transform(extension.begin(), extension.end(), extension.begin(),
                    [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
     return (extension == ".obj") ? loadObj(path, /*by_object=*/true)
-                                 : importWithAssimp(path, false, /*keep_hierarchy=*/true);
+                                 : importWithAssimp(path, false, /*keep_hierarchy=*/true, on_progress);
 }
 
 void clusterSubmeshes(ModelData& model) {
     clusterSubmeshesImpl(model);
     computeSubmeshBounds(model);
+}
+
+bool isOverClustered(const ModelData& model) {
+    // Solo modelos estaticos (un hueso, sin animaciones): los animados no se
+    // agrupan en clusteres.
+    if (model.bones.size() > 1 || !model.animations.empty() || model.submeshes.size() <= 64) {
+        return false;
+    }
+    const std::size_t triangles = model.indices.size() / 3;
+    // Tope que da clusterSubmeshes(): uno por cada kMinClusterTriangles mas
+    // uno por grupo (material, nodo).
+    std::unordered_set<std::uint64_t> groups;
+    for (const SubMesh& submesh : model.submeshes) {
+        groups.insert((static_cast<std::uint64_t>(submesh.material) << 32) |
+                      static_cast<std::uint32_t>(submesh.node));
+    }
+    const std::size_t expected = triangles / kMinClusterTriangles + groups.size();
+    return model.submeshes.size() > 2 * expected;
 }
 
 std::uint32_t embedTextures(ModelData& model) {

@@ -154,6 +154,7 @@ void EditorApp::enterPlay() {
     particles_.clear();
     physics_.start(world_);
     nav_.resetAgents();
+    startVoxels();  // antes de los scripts (Voxel.* en Awake)
     // Audio y scripts (despues de la fisica: los scripts la usan en Awake).
     audio_.start(world_);
     scripts_.clearErrors();
@@ -188,6 +189,7 @@ void EditorApp::exitPlay() {
     particles_.clear();
     renderer_.setParticles({});
     nav_.resetAgents();  // la malla se queda (el mundo vuelve con los mismos UUID)
+    stopVoxels();        // guarda el mundo con nombre; editando vuelve la vista previa
     play_state_ = PlayState::Edit;
     collider_handle_drag_ = 0;
     // El mundo vuelve a como estaba al darle a Play (la seleccion va por UUID).
@@ -227,14 +229,17 @@ void EditorApp::updateScriptsAndAudio(float delta_seconds, int physics_steps) {
         renderer_.setParticles({});
         std::string error;
         nav_.clear();  // otro nivel: otra malla
+        stopVoxels();
         if (!ecs::loadScene(world_, next, &error)) {
             std::cerr << "[Scene.load] " << next.string() << ": " << error << "\n";
         }
+        ecs::syncOutdatedInstances(world_, [&](const Uuid& id) { return prefabText(id); });
         renderer_.invalidateHistory();
         clearSelection();
         const std::u8string stem = next.stem().u8string();
         scripts_.setSceneName(std::string(stem.begin(), stem.end()));
         physics_.start(world_);
+        startVoxels();
         audio_.start(world_);
         scripts_.start(world_);
         std::cout << "[Scene.load] " << dialogs::utf8(next.filename()) << std::endl;

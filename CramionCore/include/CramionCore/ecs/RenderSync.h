@@ -13,6 +13,7 @@
 //   sync.sync(world, scene, renderer, dt);
 //   renderer.drawFrame(scene);
 
+#include "CramionCore/asset/SurfaceShader.h"
 #include "CramionCore/asset/AssetManager.h"
 #include "CramionCore/asset/MaterialAsset.h"
 #include "CramionCore/ecs/AnimatorController.h"
@@ -20,6 +21,7 @@
 #include "CramionCore/terrain/Terrain.h"
 #include "CramionCore/water/Water.h"
 
+#include <functional>
 #include <CramionFX/CramionFX.h>
 
 #include <memory>
@@ -80,6 +82,18 @@ public:
     void reloadMaterial(const Uuid& uuid);
     // Igual, con los datos ya en memoria (el editor mientras se edita).
     void updateMaterial(const Uuid& uuid, const assets::MaterialAsset& data);
+
+    // Shaders de superficie del usuario (.crshader, ruta dentro de Assets): se
+    // compilan la primera vez que un material los usa. Devuelve su id en el
+    // renderizador (-1 si no compila: el material usa el shader estandar).
+    std::int32_t surfaceShader(const std::string& path);
+    // Recompila los .crshader que cambiaron en disco (al guardarlos) y rehace
+    // los materiales que los usan. Devuelve cuantos cambiaron.
+    int reloadSurfaceShaders();
+    // El shader leido (sus propiedades, para el editor de materiales) y su
+    // ultimo error (vacio si compila).
+    const assets::SurfaceShaderSource* surfaceShaderSource(const std::string& path);
+    std::string surfaceShaderError(const std::string& path) const;
     // Modelos distintos que se dibujan (las variantes con materiales tambien):
     // los objetos que comparten uno se agrupan en las mismas llamadas.
     std::size_t variantCount() const { return variants_.size(); }
@@ -130,6 +144,12 @@ private:
     std::uint32_t resolveVariant(std::uint32_t base, const std::vector<assets::AssetRef>& overrides,
                                  scene::Scene& scene, bool& added);
     asset::ModelData buildVariant(const asset::ModelData& base, const std::vector<Uuid>& overrides);
+    // Mallas creadas por codigo (MeshRenderer::mesh): su modelo en la escena,
+    // rehecho (y subido solo el) cuando cambia su version.
+    std::optional<std::uint32_t> resolveRuntimeMesh(const std::shared_ptr<Mesh>& mesh, scene::Scene& scene,
+                                                    gfx::VulkanRenderer& renderer, bool full_upload_pending);
+    void forgetVariantsOf(std::uint32_t base);
+    void releaseRuntimeMeshes();
     void applyMaterialChanges(scene::Scene& scene, gfx::VulkanRenderer& renderer, bool& added);
     void syncActors(World& world, scene::Scene& scene, gfx::VulkanRenderer& renderer,
                     float delta_seconds);
@@ -189,8 +209,31 @@ private:
         std::vector<Uuid> overrides;
     };
     std::vector<Variant> variants_;
+    struct RuntimeSlot {
+        std::weak_ptr<Mesh> mesh;
+        std::uint64_t version = 0;
+        std::uint64_t material_version = 0;
+        std::string material_layout;  // texturas y repeticion (si cambian, se resube)
+        std::uint32_t index = 0;  // en scene.models()
+    };
+    std::unordered_map<const Mesh*, RuntimeSlot> runtime_meshes_;
+    std::vector<std::uint32_t> free_runtime_models_;  // huecos de mallas destruidas
+    std::unordered_set<const Mesh*> warned_meshes_;
     std::unordered_map<std::string, std::uint32_t> variant_lookup_;  // clave -> variants_
     std::unordered_set<Uuid> rebuild_materials_;  // cambio de texturas/tiling/modo
+    struct SurfaceShaderEntry {
+        std::int32_t id = -1;  // en el renderizador
+        std::filesystem::file_time_type time{};
+        assets::SurfaceShaderSource source;
+        bool parsed = false;
+        std::string error;
+    };
+    std::unordered_map<std::string, SurfaceShaderEntry> surface_shaders_;
+    void compileSurfaceShader(const std::string& path, SurfaceShaderEntry& entry);
+    // Shader y propiedades del .crmat en el material del renderizador; con
+    // `texture`, tambien sus texturas (indice en el modelo).
+    void applySurface(asset::MaterialData& data, const assets::MaterialAsset& material,
+                      const std::function<std::int32_t(const std::string&)>* texture);
     std::unordered_set<Uuid> live_materials_;     // solo factores
 
     Uuid loaded_environment_{};

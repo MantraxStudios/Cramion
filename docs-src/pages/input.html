@@ -1,0 +1,28 @@
+<table>
+        <tbody>
+          <tr><td><code>Input.getKey(tecla)</code></td><td>La tecla está pulsada.</td></tr>
+          <tr><td><code>Input.getKeyDown(tecla)</code></td><td>Se pulsó en este frame.</td></tr>
+          <tr><td><code>Input.getKeyUp(tecla)</code></td><td>Se soltó en este frame.</td></tr>
+          <tr><td><code>Input.getMouseButton(b)</code>, <code>…Down(b)</code>, <code>…Up(b)</code></td><td>Botones: 0 izquierdo, 1 derecho, 2 central, 3 y 4 laterales.</td></tr>
+          <tr><td><code>Input.mousePosition()</code></td><td>Posición del ratón en píxeles (<code>x</code>, <code>y</code>).</td></tr>
+          <tr><td><code>Input.mouseDelta()</code></td><td>Movimiento del ratón en este frame.</td></tr>
+          <tr><td><code>Input.getAxis(eje)</code></td><td>Ejes virtuales (ver abajo).</td></tr>
+          <tr><td><code>Input.lockCursor(activo)</code></td><td>Captura el ratón (primera persona): lo oculta, no sale de la ventana (en el editor, de la vista Juego) y <code>mouseDelta()</code> no se para en los bordes. <code>false</code> lo suelta. En el editor, <kbd>Escape</kbd> lo suelta siempre; al parar el juego se suelta solo.</td></tr>
+          <tr><td><code>Input.isCursorLocked()</code></td><td>Si está capturado.</td></tr>
+        </tbody>
+      </table>
+      <p>
+        Las teclas se nombran sin distinguir mayúsculas: letras <code>"a"</code>–<code>"z"</code>, números <code>"0"</code>–<code>"9"</code>,
+        <code>"f1"</code>–<code>"f12"</code>, <code>"space"</code>, <code>"enter"</code>, <code>"escape"</code>, <code>"tab"</code>,
+        <code>"shift"</code>, <code>"ctrl"</code>, <code>"alt"</code>, <code>"up"</code>, <code>"down"</code>, <code>"left"</code>,
+        <code>"right"</code>, <code>"backspace"</code> y <code>"delete"</code>.
+      </p>
+      <table>
+        <thead><tr><th>Eje</th><th>Valor</th></tr></thead>
+        <tbody>
+          <tr><td><code>"Horizontal"</code></td><td>−1 a 1 con A/D o ←/→.</td></tr>
+          <tr><td><code>"Vertical"</code></td><td>−1 a 1 con S/W o ↓/↑.</td></tr>
+          <tr><td><code>"Mouse X"</code>, <code>"Mouse Y"</code></td><td>Movimiento del ratón (Y positivo hacia arriba).</td></tr>
+          <tr><td><code>"Mouse ScrollWheel"</code></td><td>Rueda del ratón.</td></tr>
+        </tbody>
+      </table>

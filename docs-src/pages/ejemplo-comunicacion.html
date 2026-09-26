@@ -1,0 +1,33 @@
+<p class="file">Puerta.lua</p>
+      <pre><code class="language-lua">local Puerta = { properties = { altura = 3.0, velocidad = 2.0 } }
+
+function Puerta:Start()
+    self.cerrada = self.entity.position
+    self.abierta = self.cerrada + Vec3(0, self.altura, 0)
+    self.abriendo = false
+end
+
+function Puerta:Abrir()
+    if not self.abriendo then Audio.playOneShot("Audio/puerta.wav", self.cerrada) end
+    self.abriendo = true
+end
+
+function Puerta:Update(dt)
+    local destino = self.abriendo and self.abierta or self.cerrada
+    local p = self.entity.position
+    p.y = Mathf.moveTowards(p.y, destino.y, self.velocidad * dt)
+    self.entity.position = p
+end
+
+return Puerta</code></pre>
+      <p class="file">Palanca.lua (en un trigger junto a la puerta)</p>
+      <pre><code class="language-lua">local Palanca = { properties = { puerta = "Puerta" } }
+
+function Palanca:OnTriggerStay(other)
+    if other.name == "Jugador" and Input.getKeyDown("e") then
+        local puerta = Scene.find(self.puerta)
+        if puerta then puerta:getScript():Abrir() end
+    end
+end
+
+return Palanca</code></pre>

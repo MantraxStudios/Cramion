@@ -1,0 +1,24 @@
+<p>
+        Los scripts viven en la carpeta <code>Assets</code> del proyecto (por convención, <code>Assets/Scripts/</code>).
+        Desde el editor, crea uno con el menú de assets: se genera con los métodos habituales.
+        Después añade el componente <code>Script</code> a una entidad y elige el archivo.
+      </p>
+      <p class="file">Assets/Scripts/Hola.lua</p>
+      <pre><code class="language-lua">local Hola = {
+    properties = {
+        mensaje = "¡Hola, Cramion!",
+    }
+}
+
+function Hola:Start()
+    Debug.log(self.mensaje, "desde", self.entity.name)
+end
+
+function Hola:Update(dt)
+end
+
+return Hola   -- obligatorio: el script debe devolver su tabla</code></pre>
+      <div class="note">
+        <strong class="text-white">Importante:</strong> el archivo tiene que terminar con <code>return &lt;tabla&gt;</code>.
+        Si no, la consola mostrará <em>"el script debe terminar con 'return &lt;su tabla&gt;'"</em>.
+      </div>

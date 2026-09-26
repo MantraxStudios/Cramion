@@ -352,6 +352,15 @@ std::string settingsJson(const ModelImportSettings& settings) {
     return j.dump();
 }
 
+// Avance opcional (nullptr = nadie mira).
+void report(ImportProgress* progress, float fraction, std::string stage) {
+    if (progress != nullptr) progress->report(fraction, std::move(stage));
+}
+
+// La lectura (assimp) ocupa esta parte de la barra; el resto es partir,
+// incrustar texturas y escribir.
+constexpr float kReadShare = 0.6f;
+
 std::size_t countTriangles(const crdata::ModelContent& content) {
     std::size_t triangles = 0;
     for (const ModelData& part : content.parts) {
@@ -364,7 +373,7 @@ std::size_t countTriangles(const crdata::ModelContent& content) {
 
 ImportResult importModel(const std::filesystem::path& source,
                          const std::filesystem::path& destination_folder,
-                         const ModelImportSettings& settings) {
+                         const ModelImportSettings& settings, ImportProgress* progress) {
     ImportResult result{};
     const auto start = std::chrono::steady_clock::now();
     try {
@@ -375,11 +384,18 @@ ImportResult importModel(const std::filesystem::path& source,
         const bool is_obj = lower(source.extension().string()) == ".obj";
         const std::string stem = crdata::utf8(source.stem());
 
+        report(progress, 0.0f, "Leyendo " + crdata::utf8(source.filename()));
+        asset::ImportProgressCallback on_read;
+        if (progress != nullptr) {
+            on_read = [progress](float f) { progress->report(f * kReadShare); };
+        }
+
         crdata::ModelContent content{};
         std::string how;
         if (settings.animated) {
             // Personaje: una sola pieza con esqueleto y animaciones.
-            ModelData model = asset::importModelSource(source, /*force_static=*/false);
+            ModelData model = asset::importModelSource(source, /*force_static=*/false, on_read);
+            report(progress, kReadShare, "Preparando el esqueleto y las animaciones");
             content.animated = !model.animations.empty() || model.bones.size() > 1;
             for (const asset::AnimationClip& clip : model.animations) {
                 content.animation_names.push_back(clip.name);
@@ -389,7 +405,8 @@ ImportResult importModel(const std::filesystem::path& source,
             content.parts.push_back(std::move(model));
             how = "una pieza animada";
         } else {
-            ModelData model = asset::importModelHierarchy(source);
+            ModelData model = asset::importModelHierarchy(source, on_read);
+            report(progress, kReadShare, "Partiendo en piezas y agrupando");
             model.name = stem;
             std::string reason;
             if (splitByNode(model, is_obj, content, reason)) {
@@ -410,7 +427,13 @@ ImportResult importModel(const std::filesystem::path& source,
                 content.nodes[0].local;
         }
         std::uint32_t missing = 0;
+        std::size_t parts_done = 0;
         for (ModelData& part : content.parts) {
+            report(progress,
+                   0.7f + 0.15f * static_cast<float>(parts_done++) /
+                              static_cast<float>(std::max<std::size_t>(content.parts.size(), 1)),
+                   "Incrustando texturas (" + std::to_string(parts_done) + "/" +
+                       std::to_string(content.parts.size()) + ")");
             for (asset::MaterialData& material : part.materials) {
                 material.normal_map_directx = material.normal_map_directx || settings.directx_normals;
             }
@@ -427,7 +450,9 @@ ImportResult importModel(const std::filesystem::path& source,
 
         const std::filesystem::path file =
             crdata::uniquePath(destination_folder, stem, crdata::kExtension);
+        report(progress, 0.85f, "Escribiendo " + crdata::utf8(file.filename()));
         crdata::writeModel(file, header, content);
+        report(progress, 1.0f, "Terminado");
 
         result.ok = true;
         result.info.uuid = header.uuid;
@@ -458,9 +483,11 @@ ImportResult importModel(const std::filesystem::path& source,
 }
 
 ImportResult importEnvironment(const std::filesystem::path& source,
-                               const std::filesystem::path& destination_folder) {
+                               const std::filesystem::path& destination_folder,
+                               ImportProgress* progress) {
     ImportResult result{};
     try {
+        report(progress, 0.0f, "Leyendo " + crdata::utf8(source.filename()));
         std::ifstream in(source, std::ios::binary | std::ios::ate);
         if (!in) {
             throw std::runtime_error("no se pudo abrir");
@@ -491,7 +518,9 @@ ImportResult importEnvironment(const std::filesystem::path& source,
 
         const std::filesystem::path file =
             crdata::uniquePath(destination_folder, stem, crdata::kExtension);
+        report(progress, 0.5f, "Escribiendo " + crdata::utf8(file.filename()));
         crdata::writeEnvironment(file, header, lower(source.extension().string()), bytes);
+        report(progress, 1.0f, "Terminado");
 
         result.ok = true;
         result.info.uuid = header.uuid;
@@ -523,16 +552,18 @@ static bool sourceHasAnimations(const std::filesystem::path& source) {
 }
 
 ImportResult importAny(const std::filesystem::path& source,
-                       const std::filesystem::path& destination_folder) {
+                       const std::filesystem::path& destination_folder,
+                       ImportProgress* progress) {
     const std::string extension = lower(source.extension().string());
     if (extension == ".hdr") {
-        return importEnvironment(source, destination_folder);
+        return importEnvironment(source, destination_folder, progress);
     }
     if (extension == ".obj" || extension == ".fbx" || extension == ".gltf" || extension == ".glb" ||
         extension == ".dae") {
         ModelImportSettings settings;
+        report(progress, 0.0f, "Analizando " + crdata::utf8(source.filename()));
         settings.animated = extension != ".obj" && sourceHasAnimations(source);
-        return importModel(source, destination_folder, settings);
+        return importModel(source, destination_folder, settings, progress);
     }
     ImportResult result{};
     result.message = "[Assets] Formato no soportado: " + crdata::utf8(source.filename());

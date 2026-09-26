@@ -1,0 +1,34 @@
+<p class="file">Disparo.lua</p>
+      <pre><code class="language-lua">local Disparo = {
+    properties = {
+        alcance = 100.0,
+        fuerza = 12.0,
+        cadencia = 0.15,   -- segundos entre disparos
+    }
+}
+
+function Disparo:Start()
+    self.espera = 0
+end
+
+function Disparo:Update(dt)
+    self.espera = self.espera - dt
+    if not Input.getMouseButton(0) or self.espera > 0 then return end
+    self.espera = self.cadencia
+
+    local origen = self.entity.position
+    local dir = self.entity.forward
+    Audio.playOneShot("Audio/disparo.wav", origen, 0.7)
+
+    local hit = Physics.raycast(origen, dir, self.alcance)
+    if hit then
+        Debug.log("Impacto en", hit.entity.name, "a", string.format("%.1f m", hit.distance))
+        if hit.entity:hasComponent("Rigidbody") then
+            hit.entity:addForce(dir * self.fuerza, "impulse")
+        end
+        local objetivo = hit.entity:getScript()
+        if objetivo and objetivo.Dano then objetivo:Dano(25) end
+    end
+end
+
+return Disparo</code></pre>

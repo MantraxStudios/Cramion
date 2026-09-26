@@ -1,0 +1,59 @@
+<p>
+  Un <strong class="text-white">prefab</strong> es un objeto con sus hijos y componentes guardado como asset
+  (<code>.crprefab</code>) para reutilizarlo: enemigos, farolas, puertas, monedas... Cada copia en una escena es una
+  <em>instancia</em> enlazada a su prefab: si cambias el prefab, cambian todas.
+</p>
+
+<h3 id="crear">Crear un prefab</h3>
+<ul>
+  <li><strong class="text-white">Arrastra un objeto de la Jerarquía al panel Proyecto</strong> (al fondo o a una carpeta).</li>
+  <li>O clic derecho en la Jerarquía &gt; <strong class="text-white">Prefab &gt; Crear prefab</strong>: se guarda en <code>Assets/Prefabs</code>.</li>
+</ul>
+<p>El objeto pasa a ser la primera instancia del prefab y se ve en <span class="text-sky-400">azul</span> en la Jerarquía.</p>
+
+<h3 id="usar">Poner copias en la escena</h3>
+<p>
+  Arrastra el <code>.crprefab</code> a la Escena (cae en el suelo bajo el ratón), a la Jerarquía (como hijo del objeto
+  donde lo sueltes) o haz doble clic en él.
+</p>
+
+<h3 id="cambios">Aplicar, revertir y cambios propios</h3>
+<p>Al elegir una instancia, el Inspector muestra la barra del prefab:</p>
+<table>
+  <thead><tr><th>Botón</th><th>Qué hace</th></tr></thead>
+  <tbody>
+    <tr><td><code>Aplicar</code></td><td>Guarda esta instancia como la nueva versión del prefab y actualiza todas las demás.</td></tr>
+    <tr><td><code>Revertir</code></td><td>Olvida los cambios propios: queda igual que el prefab.</td></tr>
+    <tr><td><code>... &gt; Desempaquetar</code></td><td>Quita el enlace: quedan objetos normales.</td></tr>
+    <tr><td><code>... &gt; Seleccionar todas</code></td><td>Selecciona todas las instancias de ese prefab en la escena.</td></tr>
+  </tbody>
+</table>
+<p>
+  Lo que cambias en una instancia (un valor, un componente añadido o quitado, un hijo borrado) queda como
+  <strong class="text-white">cambio propio</strong> y se respeta cuando el prefab se actualiza. La posición, el giro y el
+  nombre de la raíz son siempre de cada instancia. Pasa el ratón por "N cambios propios" para ver la lista.
+</p>
+<div class="note">
+  Si cambias un prefab con una escena cerrada, sus instancias se ponen al día al abrirla (también en el juego
+  exportado). Si borras el <code>.crprefab</code>, sus instancias siguen funcionando y salen en rojo en la Jerarquía.
+</div>
+
+<h3 id="lua">Desde Lua</h3>
+<p>Crea instancias en el juego por la ruta del prefab dentro de <code>Assets</code>:</p>
+<pre><code class="language-lua">local Generador = { properties = { cada = 2.0 } }
+
+function Generador:Start()
+    self.t = 0
+end
+
+function Generador:Update(dt)
+    self.t = self.t + dt
+    if self.t &gt;= self.cada then
+        self.t = 0
+        -- ruta dentro de Assets, con o sin .crprefab; posicion y giro (grados) opcionales
+        local enemigo = Scene.instantiate("Prefabs/Enemigo", self.entity.position, Vec3(0, 180, 0))
+        if enemigo == nil then Debug.log("No existe Prefabs/Enemigo") end
+    end
+end
+
+return Generador</code></pre>

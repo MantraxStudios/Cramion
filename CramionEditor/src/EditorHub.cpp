@@ -220,6 +220,28 @@ void EditorApp::drawTemplateArt(ImDrawList* draw, ImVec2 a, ImVec2 b, const Proj
                                 ImVec2(goal.x - r, goal.y), IM_COL32(80, 255, 120, 255));
             break;
         }
+        case TemplateArt::Voxel: {
+            // Un monton de bloques (cesped y tierra) en perspectiva isometrica.
+            draw->AddCircleFilled(P(0.82f, 0.2f), h * 0.08f, IM_COL32(255, 230, 150, 230), 24);
+            const float s = h * 0.13f;
+            const auto block = [&](float gx, float gy, float gz, ImU32 top, ImU32 left, ImU32 right) {
+                const ImVec2 c(a.x + w * 0.46f + (gx - gz) * s * 0.87f, a.y + h * 0.62f + (gx + gz) * s * 0.5f - gy * s);
+                const ImVec2 t0(c.x, c.y - s), t1(c.x + s * 0.87f, c.y - s * 0.5f), t2(c.x, c.y), t3(c.x - s * 0.87f, c.y - s * 0.5f);
+                draw->AddQuadFilled(t0, t1, t2, t3, top);
+                draw->AddQuadFilled(t3, t2, ImVec2(t2.x, t2.y + s), ImVec2(t3.x, t3.y + s), left);
+                draw->AddQuadFilled(t2, t1, ImVec2(t1.x, t1.y + s), ImVec2(t2.x, t2.y + s), right);
+            };
+            const ImU32 grass = IM_COL32(110, 190, 70, 255), dirt_l = IM_COL32(120, 84, 52, 255), dirt_r = IM_COL32(96, 66, 40, 255);
+            const ImU32 stone = IM_COL32(150, 150, 155, 255), stone_l = IM_COL32(118, 118, 124, 255), stone_r = IM_COL32(98, 98, 104, 255);
+            for (int gz = -2; gz <= 1; ++gz) {
+                for (int gx = -2; gx <= 1; ++gx) {
+                    const bool hill = gx == 0 && gz == -1;
+                    block(static_cast<float>(gx), 0.0f, static_cast<float>(gz), grass, dirt_l, dirt_r);
+                    if (hill) block(static_cast<float>(gx), 1.0f, static_cast<float>(gz), stone, stone_l, stone_r);
+                }
+            }
+            break;
+        }
         case TemplateArt::User: {
             perspectiveGrid(draw, a, b, horizon, scaled(accent, 1.1f, 70));
             draw->AddRectFilled(P(0.36f, 0.26f), P(0.5f, 0.34f), scaled(accent, 1.3f), 4.0f);

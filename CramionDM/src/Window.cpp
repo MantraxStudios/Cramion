@@ -112,6 +112,7 @@ bool Window::create(const WindowConfig& config) {
 
 void Window::destroy() {
     if (hwnd_) {
+        if (cursor_captured_) setCursorCaptured(false);
         DestroyWindow(hwnd_);
         hwnd_ = nullptr;
     }
@@ -192,6 +193,56 @@ void Window::dispatch(Event& event) {
     if (callback_) {
         callback_(event);
     }
+}
+
+// -----------------------------------------------------------------------------
+// Cursor capturado
+// -----------------------------------------------------------------------------
+
+void Window::setCursorCaptured(bool captured, const RECT* client_region) {
+    if (hwnd_ == nullptr) return;
+    has_capture_rect_ = client_region != nullptr;
+    if (client_region != nullptr) capture_rect_ = *client_region;
+    if (captured && !raw_input_registered_) {
+        RAWINPUTDEVICE device{};
+        device.usUsagePage = 0x01;  // escritorio generico
+        device.usUsage = 0x02;      // raton
+        device.dwFlags = 0;
+        device.hwndTarget = hwnd_;
+        raw_input_registered_ = RegisterRawInputDevices(&device, 1, sizeof(device)) != FALSE;
+    }
+    cursor_captured_ = captured;
+    if (captured) {
+        applyCursorClip();
+        if (!cursor_hidden_) {
+            while (ShowCursor(FALSE) >= 0) {
+            }
+            cursor_hidden_ = true;
+        }
+    } else {
+        ClipCursor(nullptr);
+        if (cursor_hidden_) {
+            while (ShowCursor(TRUE) < 0) {
+            }
+            cursor_hidden_ = false;
+        }
+    }
+}
+
+void Window::applyCursorClip() {
+    RECT client{};
+    GetClientRect(hwnd_, &client);
+    RECT area = has_capture_rect_ ? capture_rect_ : client;
+    POINT corners[2] = {{area.left, area.top}, {area.right, area.bottom}};
+    ClientToScreen(hwnd_, &corners[0]);
+    ClientToScreen(hwnd_, &corners[1]);
+    // Un rectangulo pequeno en el centro: el cursor oculto no puede salir a
+    // otra ventana ni pulsar fuera (el movimiento real llega por raw input).
+    const LONG cx = (corners[0].x + corners[1].x) / 2;
+    const LONG cy = (corners[0].y + corners[1].y) / 2;
+    const RECT clip{cx - 2, cy - 2, cx + 2, cy + 2};
+    SetCursorPos(cx, cy);
+    ClipCursor(&clip);
 }
 
 LRESULT CALLBACK Window::wndProcThunk(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
@@ -297,6 +348,7 @@ LRESULT Window::handleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
             return 0;
         }
         case WM_SETFOCUS: {
+            if (cursor_captured_) applyCursorClip();
             Event e;
             e.type = EventType::WindowFocus;
             e.category = EventCategory::Window;
@@ -305,6 +357,7 @@ LRESULT Window::handleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
             return 0;
         }
         case WM_KILLFOCUS: {
+            if (cursor_captured_) ClipCursor(nullptr);  // sin foco, el raton es del sistema
             Event e;
             e.type = EventType::WindowLostFocus;
             e.category = EventCategory::Window;
@@ -438,6 +491,25 @@ LRESULT Window::handleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
             return (msg == WM_XBUTTONUP) ? TRUE : 0;
         }
 
+        // ---------------- Ratón: movimiento en bruto (capturado) ----------------
+        case WM_INPUT: {
+            if (cursor_captured_ && GetFocus() == hwnd_) {
+                RAWINPUT raw{};
+                UINT size = sizeof(raw);
+                if (GetRawInputData(reinterpret_cast<HRAWINPUT>(lParam), RID_INPUT, &raw, &size,
+                                    sizeof(RAWINPUTHEADER)) != static_cast<UINT>(-1) &&
+                    raw.header.dwType == RIM_TYPEMOUSE && (raw.data.mouse.usFlags & MOUSE_MOVE_ABSOLUTE) == 0) {
+                    Event e;
+                    e.type = EventType::MouseRawMoved;
+                    e.category = EventCategory::Mouse | EventCategory::Input;
+                    e.deltaX = static_cast<float>(raw.data.mouse.lLastX);
+                    e.deltaY = static_cast<float>(raw.data.mouse.lLastY);
+                    if (e.deltaX != 0.0f || e.deltaY != 0.0f) dispatch(e);
+                }
+            }
+            return DefWindowProcW(hwnd_, msg, wParam, lParam);
+        }
+
         // ---------------- Ratón: movimiento ----------------
         case WM_MOUSEMOVE: {
             const float x = static_cast<float>(GET_X_LPARAM(lParam));
@@ -463,7 +535,8 @@ LRESULT Window::handleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
             e.category = EventCategory::Mouse | EventCategory::Input;
             e.mouseX = x;
             e.mouseY = y;
-            if (haveLastMouse_) {
+            // Capturado: el movimiento llega por WM_INPUT (no se cuenta dos veces).
+            if (haveLastMouse_ && !cursor_captured_) {
                 e.deltaX = x - lastMouseX_;
                 e.deltaY = y - lastMouseY_;
             }

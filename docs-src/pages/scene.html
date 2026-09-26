@@ -1,0 +1,13 @@
+<table>
+        <tbody>
+          <tr><td><code>Scene.find(nombre)</code></td><td>Primera entidad con ese nombre, o <code>nil</code>.</td></tr>
+          <tr><td><code>Scene.findWithTag(tag)</code></td><td>Primera entidad con esa etiqueta.</td></tr>
+          <tr><td><code>Scene.findAllWithTag(tag)</code></td><td>Tabla con todas las entidades con esa etiqueta.</td></tr>
+          <tr><td><code>Scene.create(nombre, posición)</code></td><td>Entidad vacía nueva.</td></tr>
+          <tr><td><code>Scene.instantiate(entidad, posición, giro)</code></td><td>Copia una entidad con sus hijos y componentes (incluidos los scripts). <code>posición</code> y <code>giro</code> (grados) son opcionales.</td></tr>
+          <tr><td><code>Scene.instantiate("Prefabs/Enemigo", posición, giro)</code></td><td>Crea una instancia de un prefab por su ruta dentro de Assets (con o sin <code>.crprefab</code>). Devuelve <code>nil</code> si no existe. Los prefabs se crean en el editor arrastrando un objeto de la Jerarquía al panel Proyecto.</td></tr>
+          <tr><td><code>Scene.destroy(entidad)</code></td><td>Igual que <code>entidad:destroy()</code>.</td></tr>
+          <tr><td><code>Scene.load(nombre)</code></td><td>Cambia de escena al terminar el frame (<code>"Nivel2"</code> busca <code>Nivel2.crscene</code>).</td></tr>
+          <tr><td><code>Scene.name()</code></td><td>Nombre de la escena actual.</td></tr>
+        </tbody>
+      </table>

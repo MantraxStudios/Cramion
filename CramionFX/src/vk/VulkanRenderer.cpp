@@ -348,6 +348,8 @@ void VulkanRenderer::initialize(const EngineInfo& info, HWND window, std::uint32
                        gbuffer_.depthFormat(), kMaxFramesInFlight);
     terrain_pass_.create(device_, skinned_pass_.frameSetLayout(), gbuffer_.colorFormats(), gbuffer_.depthFormat(),
                          shadow_map_.format(), kMaxFramesInFlight);
+    voxel_pass_.create(device_, skinned_pass_.frameSetLayout(), gbuffer_.colorFormats(), gbuffer_.depthFormat(),
+                       shadow_map_.format(), kMaxFramesInFlight);
 
     {
         using Type = vk::DescriptorType;
@@ -621,6 +623,8 @@ void VulkanRenderer::shutdown() {
     device_.waitIdle();
 
     skinned_models_.clear();
+    retired_models_.clear();
+    ray_pinned_models_.clear();
     actor_draws_.clear();
     gpu_culling_.destroy();
     gpu_profiler_.destroy();
@@ -665,6 +669,10 @@ void VulkanRenderer::shutdown() {
         buffer.destroy();
     }
     bone_buffers_.clear();
+    for (VulkanBuffer& buffer : surface_param_buffers_) {
+        buffer.destroy();
+    }
+    surface_param_buffers_.clear();
     for (VulkanBuffer& buffer : exposure_readback_) {
         buffer.destroy();
     }
@@ -714,7 +722,9 @@ void VulkanRenderer::shutdown() {
     ssao_pass_.destroy();
     volumetric_pass_.destroy();
     terrain_pass_.destroy();
+    voxel_pass_.destroy();
     water_pass_.destroy();
+    surface_pipelines_.clear();
     skinned_pass_.destroy();
     post_process_pass_.destroy();
     lighting_pass_.destroy();
@@ -859,6 +869,12 @@ void VulkanRenderer::createUniformBuffers() {
         buffer.create(device_, sizeof(core::Mat4) * 256, vk::BufferUsageFlagBits::eStorageBuffer,
                       host_visible);
     }
+    surface_param_buffers_.resize(kMaxFramesInFlight);
+    surface_param_used_.assign(kMaxFramesInFlight, 0);
+    for (VulkanBuffer& buffer : surface_param_buffers_) {
+        buffer.create(device_, sizeof(core::Vec4) * SkinnedPass::kSurfaceParamCount * kMaxSurfaceParamBlocks,
+                      vk::BufferUsageFlagBits::eStorageBuffer, host_visible);
+    }
 }
 
 void VulkanRenderer::writeDecalTextureDescriptors() {
@@ -967,7 +983,7 @@ void VulkanRenderer::createDescriptors() {
     // (+ la lluvia: mapa y parametros.)
     const std::array<vk::DescriptorPoolSize, 3> skin_sizes = {
         vk::DescriptorPoolSize{vk::DescriptorType::eUniformBuffer, kMaxFramesInFlight * 2},
-        vk::DescriptorPoolSize{vk::DescriptorType::eStorageBuffer, kMaxFramesInFlight},
+        vk::DescriptorPoolSize{vk::DescriptorType::eStorageBuffer, kMaxFramesInFlight * 2},
         vk::DescriptorPoolSize{vk::DescriptorType::eCombinedImageSampler,
                                kMaxFramesInFlight * (1 + kMaxDecalTextures)}};
 
@@ -1019,6 +1035,17 @@ void VulkanRenderer::createDescriptors() {
         weather_write.descriptorType = vk::DescriptorType::eUniformBuffer;
         weather_write.setBufferInfo(weather_info);
         device_.handle().updateDescriptorSets(weather_write, nullptr);
+
+        // Propiedades de los shaders de superficie del usuario.
+        vk::DescriptorBufferInfo surface_info{};
+        surface_info.buffer = *surface_param_buffers_[i].handle();
+        surface_info.range = VK_WHOLE_SIZE;
+        vk::WriteDescriptorSet surface_write{};
+        surface_write.dstSet = *skin_sets_[i];
+        surface_write.dstBinding = 5;
+        surface_write.descriptorType = vk::DescriptorType::eStorageBuffer;
+        surface_write.setBufferInfo(surface_info);
+        device_.handle().updateDescriptorSets(surface_write, nullptr);
     }
     writeDecalTextureDescriptors();
 
@@ -2299,9 +2326,13 @@ void VulkanRenderer::uploadModels(const scene::Scene& scene) {
     if (!initialized_) {
         throw std::runtime_error("uploadModels() antes de inicializar el renderizador.");
     }
+    const auto upload_start = std::chrono::steady_clock::now();
+    ++frame_timings_.uploads;
 
     device_.waitIdle();
     skinned_models_.clear();
+    retired_models_.clear();
+    ray_pinned_models_.clear();
     skinned_models_.reserve(scene.models().size());
 
     // Lo que dependia de la escena anterior se rehace: el mapa de lluvia
@@ -2322,6 +2353,40 @@ void VulkanRenderer::uploadModels(const scene::Scene& scene) {
     if (device_.rayTracingSupported()) {
         ray_tracing_.build(device_, models, skinned_models_, ibl_probe_.irradianceBuffer());
     }
+    ray_traced_models_ = static_cast<std::uint32_t>(skinned_models_.size());
+    ray_pinned_.assign(skinned_models_.size(), false);
+    frame_timings_.upload_ms +=
+        std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - upload_start).count();
+}
+
+void VulkanRenderer::uploadModel(const scene::Scene& scene, std::uint32_t index) {
+    if (!initialized_ || index >= scene.models().size()) return;
+    // Faltan otros antes que el, o lo subido es de otra escena (se vacio y
+    // se empezo otra): todo de nuevo.
+    if (index > skinned_models_.size() || skinned_models_.size() > scene.models().size()) {
+        uploadModels(scene);
+        return;
+    }
+    const auto upload_start = std::chrono::steady_clock::now();
+    ++frame_timings_.uploads;
+    SkinnedModel fresh;
+    fresh.create(device_, *scene.models()[index], skinned_pass_);
+    if (index == skinned_models_.size()) {
+        skinned_models_.push_back(std::move(fresh));
+    } else {
+        if (index < ray_traced_models_ && index < ray_pinned_.size() && !ray_pinned_[index]) {
+            ray_pinned_[index] = true;
+            ray_pinned_models_.push_back(std::move(skinned_models_[index]));
+        } else {
+            retired_models_.push_back(RetiredModel{std::move(skinned_models_[index]), kMaxFramesInFlight + 1});
+        }
+        skinned_models_[index] = std::move(fresh);
+    }
+    triangle_count_ = 0;
+    for (const auto& model : scene.models()) triangle_count_ += model->indices.size() / 3;
+    staticGeometryChanged();  // sombras cacheadas
+    frame_timings_.upload_ms +=
+        std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - upload_start).count();
 }
 
 bool VulkanRenderer::loadEnvironment(const std::filesystem::path& path) {
@@ -2691,10 +2756,23 @@ void VulkanRenderer::drawFrame(const scene::Scene& scene, bool present) {
     const vk::raii::Device& device = device_.handle();
     const vk::raii::Fence& fence = in_flight_fences_[current_frame_];
 
+    using TimingClock = std::chrono::steady_clock;
+    const auto since = [](TimingClock::time_point t) {
+        return std::chrono::duration<float, std::milli>(TimingClock::now() - t).count();
+    };
+    TimingClock::time_point stage = TimingClock::now();
     if (device.waitForFences(*fence, VK_TRUE, std::numeric_limits<std::uint64_t>::max()) !=
         vk::Result::eSuccess) {
         throw std::runtime_error("Tiempo de espera agotado esperando la fence del frame.");
     }
+    frame_timings_.fence_wait_ms += since(stage);
+    // La GPU ya no lee las propiedades de este hueco.
+    if (current_frame_ < surface_param_used_.size()) surface_param_used_[current_frame_] = 0;
+    // Modelos reemplazados que ya no usa ningun frame en vuelo.
+    for (RetiredModel& retired : retired_models_) {
+        if (retired.frames_left > 0) --retired.frames_left;
+    }
+    std::erase_if(retired_models_, [](const RetiredModel& r) { return r.frames_left == 0; });
 
     // Picking que se grabo la ultima vez que se uso este hueco: ya termino.
     if (pick_in_flight_[current_frame_]) {
@@ -2717,11 +2795,16 @@ void VulkanRenderer::drawFrame(const scene::Scene& scene, bool present) {
     occluded_submeshes_ = culling.occluded;
 
     // Huesos de este frame (tambien los usa la captura de la sonda).
+    stage = TimingClock::now();
     updateActors(scene, current_frame_);
+    frame_timings_.actors_ms += since(stage);
 
     if (probeCaptureDue(scene)) {
+        stage = TimingClock::now();
         captureProbeFace(scene);
+        frame_timings_.probe_ms += since(stage);
     }
+    stage = TimingClock::now();
 
     // Sin presentar (segunda vista del editor): sin imagen de la swapchain.
     const auto [acquire_result, image_index] =
@@ -2729,6 +2812,7 @@ void VulkanRenderer::drawFrame(const scene::Scene& scene, bool present) {
                                                        *image_available_[current_frame_], nullptr)
                 : vk::ResultValue<std::uint32_t>(vk::Result::eSuccess, 0u);
 
+    frame_timings_.acquire_ms += since(stage);
     if (acquire_result == vk::Result::eErrorOutOfDateKHR) {
         recreateSwapchain();
         return;
@@ -2759,14 +2843,19 @@ void VulkanRenderer::drawFrame(const scene::Scene& scene, bool present) {
     const core::Mat4 saved_view = camera_view_;
     const Vec3 saved_camera_position = camera_position_;
     secondary_view_ = !present;
+    stage = TimingClock::now();
     updateUniforms(scene, scene.camera(), current_frame_);
+    frame_timings_.uniforms_ms += since(stage);
 
     device.resetFences(*fence);
 
     const vk::raii::CommandBuffer& cmd = command_buffers_[current_frame_];
     cmd.reset();
     presenting_ = present;
+    stage = TimingClock::now();
     recordCommandBuffer(cmd, image_index, current_frame_);
+    frame_timings_.record_ms += since(stage);
+    stage = TimingClock::now();
     presenting_ = true;
     if (!present) {
         // La vista principal sigue con su camara del frame anterior.
@@ -2783,6 +2872,7 @@ void VulkanRenderer::drawFrame(const scene::Scene& scene, bool present) {
         view_submit.commandBufferCount = 1;
         view_submit.pCommandBuffers = &view_command;
         device_.graphicsQueue().submit(view_submit, *fence);
+        frame_timings_.submit_ms += since(stage);
         current_frame_ = (current_frame_ + 1) % kMaxFramesInFlight;
         ++frame_count_;
         return;
@@ -2821,6 +2911,7 @@ void VulkanRenderer::drawFrame(const scene::Scene& scene, bool present) {
     } else if (present_result != vk::Result::eSuccess) {
         throw std::runtime_error("Fallo al presentar la imagen: " + vk::to_string(present_result));
     }
+    frame_timings_.submit_ms += since(stage);
 
     current_frame_ = (current_frame_ + 1) % kMaxFramesInFlight;
     ++frame_count_;
@@ -3029,10 +3120,26 @@ void VulkanRenderer::captureProbeFace(const scene::Scene& scene) {
     }
 }
 
+void VulkanRenderer::markPass(const vk::raii::CommandBuffer& cmd, std::uint32_t frame_index, const char* name) {
+    const auto now = std::chrono::steady_clock::now();
+    const float ms = std::chrono::duration<float, std::milli>(now - pass_start_).count();
+    pass_start_ = now;
+    bool found = false;
+    for (auto& [pass, total] : frame_timings_.passes) {
+        if (pass == name) {
+            total += ms;
+            found = true;
+        }
+    }
+    if (!found) frame_timings_.passes.emplace_back(name, ms);
+    gpu_profiler_.mark(cmd, frame_index, name);
+}
+
 void VulkanRenderer::recordCommandBuffer(const vk::raii::CommandBuffer& cmd,
                                          std::uint32_t image_index, std::uint32_t frame_index) {
     cmd.begin(vk::CommandBufferBeginInfo{});
     gpu_profiler_.begin(cmd, frame_index);
+    pass_start_ = std::chrono::steady_clock::now();
     output_depth_ready_ = false;
 
     // Los clusteres de escenario los cuenta la GPU (frame reciente); los
@@ -3047,73 +3154,76 @@ void VulkanRenderer::recordCommandBuffer(const vk::raii::CommandBuffer& cmd,
 
     // Terrenos: lo esculpido/pintado desde el frame anterior, y sus trozos
     // (LOD) para este frame (antes de las sombras, que tambien los dibujan).
-    terrain_pass_.recordUploads(cmd, frame_index);
+    if (terrain_pass_.recordUploads(cmd, frame_index)) local_static_dirty_ = true;
     terrain_pass_.prepare(frame_index, camera_position_, camera_view_projection_);
+    // Voxeles: secciones rehechas (romper/poner bloques) y las visibles.
+    if (voxel_pass_.recordUploads(cmd, frame_index)) staticGeometryChanged();
+    voxel_pass_.prepare(frame_index, camera_position_, camera_view_projection_);
     water_pass_.prepare(frame_index);
 
     if (!rain_map_ready_ && (rainAvailable() || waterAvailable()) && !actor_draws_.empty()) {
         recordRainMap(cmd, frame_index);
-        gpu_profiler_.mark(cmd, frame_index, "Mapa de lluvia");
+        markPass(cmd, frame_index, "Mapa de lluvia");
     }
     recordShadowPass(cmd, frame_index);
-    gpu_profiler_.mark(cmd, frame_index, "Sombras (cascadas)");
+    markPass(cmd, frame_index, "Sombras (cascadas)");
     recordLocalShadowPass(cmd, frame_index);
-    gpu_profiler_.mark(cmd, frame_index, "Sombras locales");
+    markPass(cmd, frame_index, "Sombras locales");
     recordSkyLutPass(cmd);
-    gpu_profiler_.mark(cmd, frame_index, "Cielo + IBL");
+    markPass(cmd, frame_index, "Cielo + IBL");
     recordCloudPass(cmd, frame_index);
-    gpu_profiler_.mark(cmd, frame_index, "Nubes");
+    markPass(cmd, frame_index, "Nubes");
     recordGeometryPass(cmd, frame_index);
-    gpu_profiler_.mark(cmd, frame_index, "Geometria + culling");
+    markPass(cmd, frame_index, "Geometria + culling");
     recordSsaoPass(cmd, frame_index);
-    gpu_profiler_.mark(cmd, frame_index, "SSAO");
+    markPass(cmd, frame_index, "SSAO");
     recordSsgiPass(cmd, frame_index);
-    gpu_profiler_.mark(cmd, frame_index, "GI");
+    markPass(cmd, frame_index, "GI");
     recordSsrPass(cmd, frame_index);
-    gpu_profiler_.mark(cmd, frame_index, "Reflejos");
+    markPass(cmd, frame_index, "Reflejos");
     recordVolumetricPass(cmd, frame_index);
-    gpu_profiler_.mark(cmd, frame_index, "Volumetrica");
+    markPass(cmd, frame_index, "Volumetrica");
     recordLightingPass(cmd, frame_index, scene_color_);
-    gpu_profiler_.mark(cmd, frame_index, "Iluminacion");
+    markPass(cmd, frame_index, "Iluminacion");
     recordGlassPass(cmd, frame_index);
     if (!water_pass_.empty() && !capturing_) {
         recordWaterPass(cmd, frame_index);
-        gpu_profiler_.mark(cmd, frame_index, "Agua");
+        markPass(cmd, frame_index, "Agua");
     }
-    gpu_profiler_.mark(cmd, frame_index, "Vidrio");
+    markPass(cmd, frame_index, "Vidrio");
     if (!particles_.empty() && !capturing_) {
         recordParticlePass(cmd, frame_index);
-        gpu_profiler_.mark(cmd, frame_index, "Particulas");
+        markPass(cmd, frame_index, "Particulas");
     }
     recordFilterHistoryCopies(cmd);
-    gpu_profiler_.mark(cmd, frame_index, "Copias de historia");
+    markPass(cmd, frame_index, "Copias de historia");
     if (upscaling_) {
         recordUpscalePass(cmd);
-        gpu_profiler_.mark(cmd, frame_index, graphics_.upscaler == Upscaler::Fsr1 ? "FSR 1" : "TAA / escalado");
+        markPass(cmd, frame_index, graphics_.upscaler == Upscaler::Fsr1 ? "FSR 1" : "TAA / escalado");
     }
     recordBloomPass(cmd);
-    gpu_profiler_.mark(cmd, frame_index, "Bloom");
+    markPass(cmd, frame_index, "Bloom");
     recordLightShaftPass(cmd);
-    gpu_profiler_.mark(cmd, frame_index, "Rayos de luz");
+    markPass(cmd, frame_index, "Rayos de luz");
     if (!secondary_view_) recordAutoExposurePass(cmd);  // la exposicion es de la vista principal
-    gpu_profiler_.mark(cmd, frame_index, "Auto-exposicion");
+    markPass(cmd, frame_index, "Auto-exposicion");
     recordCompositePass(cmd, frame_index);
-    gpu_profiler_.mark(cmd, frame_index, "Composicion");
+    markPass(cmd, frame_index, "Composicion");
     if (!outlined_actors_.empty() && editor_helpers_) {
         recordOutlinePass(cmd, frame_index);
-        gpu_profiler_.mark(cmd, frame_index, "Contorno de seleccion");
+        markPass(cmd, frame_index, "Contorno de seleccion");
     }
     if (pick_requested_ && !capturing_ && editor_helpers_) {
         recordPickPass(cmd, frame_index);
-        gpu_profiler_.mark(cmd, frame_index, "Picking");
+        markPass(cmd, frame_index, "Picking");
     }
     if (!overlay_geometry_.empty() && !capturing_ && editor_helpers_) {
         recordOverlayPass(cmd, frame_index);
-        gpu_profiler_.mark(cmd, frame_index, "Gizmos 3D");
+        markPass(cmd, frame_index, "Gizmos 3D");
     }
     recordViewCopy(cmd);
     if (presenting_) recordPostProcessPass(cmd, image_index);
-    gpu_profiler_.mark(cmd, frame_index, "FXAA + presentacion");
+    markPass(cmd, frame_index, "FXAA + presentacion");
 
     cmd.end();
 }
@@ -3179,6 +3289,8 @@ void VulkanRenderer::recordShadowPass(const vk::raii::CommandBuffer& cmd,
             recordActorShadows(cmd, frame_index, rendered_cascades_[cascade].light_view_projection);
             terrain_pass_.recordShadow(cmd, frame_index, skin_sets_[frame_index],
                                        rendered_cascades_[cascade].light_view_projection);
+            voxel_pass_.recordShadow(cmd, frame_index, skin_sets_[frame_index],
+                                     rendered_cascades_[cascade].light_view_projection);
         }
 
         cmd.endRendering();
@@ -3223,16 +3335,18 @@ void VulkanRenderer::recordLocalShadowPass(const vk::raii::CommandBuffer& cmd,
     // La cache solo vale para lo estatico: si un actor animado esta al alcance
     // de la luz, su mapa se redibuja cada frame (y uno mas cuando se va, para
     // borrar su silueta).
-    const auto needs_render = [this](bool active, bool dirty, const Vec3& position, float range,
-                                     bool& had_actor) {
+    const bool static_dirty = local_static_dirty_;
+    const auto needs_render = [this, static_dirty](bool active, bool dirty, const Vec3& position, float range,
+                                                   bool& had_actor) {
         const bool touches = active && actorsTouch(position, range);
-        const bool render = active && (dirty || touches || had_actor);
+        const bool render = active && (dirty || static_dirty || touches || had_actor);
         had_actor = touches;
         return render;
     };
 
     std::vector<ShadowJob> jobs;
     if (shadows_enabled_) {
+        local_static_dirty_ = false;
         for (std::uint32_t slot = 0; slot < scene::kMaxShadowedSpotLights; ++slot) {
             const scene::SpotShadow& spot = local_shadows_.spots()[slot];
             if (!needs_render(spot.active, spot.dirty, spot.position, spot.range,
@@ -3320,6 +3434,10 @@ void VulkanRenderer::recordLocalShadowPass(const vk::raii::CommandBuffer& cmd,
 
         recordActorShadows(cmd, frame_index, job.light_view_projection, job.light_position,
                            job.range);
+        // El terreno y los bloques tambien tapan la luz de antorchas y focos.
+        terrain_pass_.recordShadow(cmd, frame_index, skin_sets_[frame_index], job.light_view_projection,
+                                   /*local=*/true);
+        voxel_pass_.recordShadow(cmd, frame_index, skin_sets_[frame_index], job.light_view_projection);
 
         cmd.endRendering();
     }
@@ -3416,6 +3534,8 @@ void VulkanRenderer::recordGeometryPass(const vk::raii::CommandBuffer& cmd,
     drawCpuActors(cmd, frame_index);
     // El terreno, pronto: tapa mucho y entra en la piramide Hi-Z.
     terrain_pass_.recordGBuffer(cmd, frame_index, skin_sets_[frame_index]);
+    // Los voxeles tambien tapan mucho: pronto, de cerca a lejos.
+    voxel_pass_.recordGBuffer(cmd, frame_index, skin_sets_[frame_index]);
     drawGpuClusters(cmd, frame_index, 0);
     cmd.endRendering();
 
@@ -3471,6 +3591,7 @@ void VulkanRenderer::recordGeometryPass(const vk::raii::CommandBuffer& cmd,
 void VulkanRenderer::drawCpuActors(const vk::raii::CommandBuffer& cmd,
                                    std::uint32_t frame_index) {
     bool bound = false;
+    std::int32_t bound_shader = -1;
     const core::Frustum frustum(camera_view_projection_);
 
     for (const ActorDraw& draw : actor_draws_) {
@@ -3508,6 +3629,7 @@ void VulkanRenderer::drawCpuActors(const vk::raii::CommandBuffer& cmd,
                 push.material = material.params;
                 push.bone_offset = draw.bone_offset;
                 push.reflectance = material.reflectance;
+                bindMaterialPipeline(cmd, frame_index, material, bound_shader, push);
                 cmd.pushConstants<GpuSkinnedPush>(
                     *skinned_pass_.geometryLayout(),
                     vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0,
@@ -3536,6 +3658,7 @@ void VulkanRenderer::drawGpuClusters(const vk::raii::CommandBuffer& cmd,
     // la GPU decide cuantas submallas (y de quien) dibuja, leyendo el
     // contador del lote; cada comando lleva la matriz de su actor.
     std::uint32_t bound_model = UINT32_MAX;
+    std::int32_t bound_shader = -1;
     for (std::uint32_t b = 0; b < draw_batches_.size(); ++b) {
         const DrawBatch& batch = draw_batches_[b];
         const SkinnedModel& model = skinned_models_[batch.model];
@@ -3556,6 +3679,7 @@ void VulkanRenderer::drawGpuClusters(const vk::raii::CommandBuffer& cmd,
         push.material = material.params;
         push.reflectance = material.reflectance;
         push.flags = 1u;
+        bindMaterialPipeline(cmd, frame_index, material, bound_shader, push);
         cmd.pushConstants<GpuSkinnedPush>(
             *skinned_pass_.geometryLayout(),
             vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, push);
@@ -4321,6 +4445,69 @@ void VulkanRenderer::updateModelMaterial(std::uint32_t model, std::uint32_t mate
     gpu.params = core::Vec4{data.metallic, data.roughness, data.occlusion_strength,
                             data.normal_map_directx ? -data.normal_scale : data.normal_scale};
     gpu.reflectance = data.reflectance;
+    gpu.surface_shader = data.surface_shader;
+    gpu.surface_params = data.surface_params;
+}
+
+std::int32_t VulkanRenderer::createSurfaceShader(const std::vector<std::uint32_t>& vertex_spirv,
+                                                 const std::vector<std::uint32_t>& fragment_spirv,
+                                                 std::string* error) {
+    try {
+        surface_pipelines_.push_back(skinned_pass_.createSurfacePipeline(device_, vertex_spirv, fragment_spirv));
+    } catch (const std::exception& e) {
+        if (error) *error = e.what();
+        return -1;
+    }
+    return static_cast<std::int32_t>(surface_pipelines_.size()) - 1;
+}
+
+bool VulkanRenderer::updateSurfaceShader(std::int32_t id, const std::vector<std::uint32_t>& vertex_spirv,
+                                         const std::vector<std::uint32_t>& fragment_spirv, std::string* error) {
+    if (id < 0 || static_cast<std::size_t>(id) >= surface_pipelines_.size()) {
+        if (error) *error = "shader de superficie desconocido";
+        return false;
+    }
+    try {
+        vk::raii::Pipeline pipeline = skinned_pass_.createSurfacePipeline(device_, vertex_spirv, fragment_spirv);
+        // La anterior puede estar en un frame en vuelo: se espera a la GPU (solo
+        // pasa al guardar un .crshader).
+        device_.handle().waitIdle();
+        surface_pipelines_[static_cast<std::size_t>(id)] = std::move(pipeline);
+    } catch (const std::exception& e) {
+        if (error) *error = e.what();
+        return false;
+    }
+    return true;
+}
+
+std::uint32_t VulkanRenderer::pushSurfaceParams(std::uint32_t frame_index, const std::array<core::Vec4, 8>& params) {
+    if (frame_index >= surface_param_buffers_.size()) return 0;
+    std::uint32_t& used = surface_param_used_[frame_index];
+    // Lleno (mas de 2048 materiales con shader propio en un frame): se
+    // reutiliza el ultimo bloque.
+    const std::uint32_t block = std::min(used, kMaxSurfaceParamBlocks - 1);
+    if (used < kMaxSurfaceParamBlocks) ++used;
+    surface_param_buffers_[frame_index].write(params.data(), sizeof(core::Vec4) * params.size(),
+                                              sizeof(core::Vec4) * SkinnedPass::kSurfaceParamCount * block);
+    return block;
+}
+
+void VulkanRenderer::bindMaterialPipeline(const vk::raii::CommandBuffer& cmd, std::uint32_t frame_index,
+                                          const SkinnedModel::Material& material, std::int32_t& bound_shader,
+                                          GpuSkinnedPush& push) {
+    std::int32_t shader = material.surface_shader;
+    if (shader >= 0 && (static_cast<std::size_t>(shader) >= surface_pipelines_.size() ||
+                        !*surface_pipelines_[static_cast<std::size_t>(shader)])) {
+        shader = -1;  // sin pipeline (fallo al compilar): el estandar
+    }
+    if (shader != bound_shader) {
+        cmd.bindPipeline(vk::PipelineBindPoint::eGraphics,
+                         shader >= 0 ? *surface_pipelines_[static_cast<std::size_t>(shader)]
+                                     : *skinned_pass_.geometryPipeline());
+        bound_shader = shader;
+    }
+    // En la geometria pick_id no se usa: dice el bloque de propiedades.
+    if (shader >= 0) push.pick_id = pushSurfaceParams(frame_index, material.surface_params);
 }
 
 std::optional<VulkanRenderer::PickResult> VulkanRenderer::takePickResult() {

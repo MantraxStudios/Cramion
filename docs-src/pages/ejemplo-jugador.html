@@ -1,0 +1,41 @@
+<p class="file">Jugador.lua</p>
+      <pre><code class="language-lua">local Jugador = {
+    properties = {
+        velocidad = 6.0,
+        correr = 1.6,        -- multiplicador con Shift
+        salto = 5.5,         -- m/s hacia arriba
+        altura = 1.0,        -- del centro a los pies
+    }
+}
+
+function Jugador:enSuelo()
+    -- El rayo empieza justo fuera de la cápsula para no detectarla
+    local pies = self.entity.position + Vec3.down * (self.altura + 0.02)
+    return Physics.raycast(pies, Vec3.down, 0.15) ~= nil
+end
+
+function Jugador:Update(dt)
+    -- Dirección de entrada en el plano (W = hacia -Z, el "forward" del motor)
+    local entrada = Vec3(Input.getAxis("Horizontal"), 0, -Input.getAxis("Vertical"))
+    if entrada:length() > 1 then entrada = entrada:normalized() end
+
+    local rapidez = self.velocidad
+    if Input.getKey("shift") then rapidez = rapidez * self.correr end
+
+    local v = self.entity.velocity
+    v.x = entrada.x * rapidez
+    v.z = entrada.z * rapidez
+
+    if Input.getKeyDown("space") and self:enSuelo() then
+        v.y = self.salto
+        Audio.playOneShot("Audio/salto.wav")
+    end
+    self.entity.velocity = v
+
+    -- Mirar hacia donde camina
+    if entrada:length() > 0.1 then
+        self.entity:lookAt(self.entity.position + entrada)
+    end
+end
+
+return Jugador</code></pre>

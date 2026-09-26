@@ -1,0 +1,58 @@
+<p class="file">Generador.lua</p>
+      <pre><code class="language-lua">local Generador = {
+    properties = {
+        plantilla = "EnemigoPlantilla",
+        intervalo = 2.0,
+        radio = 10.0,
+        maximo = 12,
+    }
+}
+
+function Generador:Start()
+    self.molde = Scene.find(self.plantilla)
+    self.reloj = 0
+end
+
+function Generador:Update(dt)
+    if not self.molde then return end
+    self.reloj = self.reloj + dt
+    if self.reloj &lt; self.intervalo then return end
+    self.reloj = 0
+
+    if #Scene.findAllWithTag("Enemigo") >= self.maximo then return end
+
+    local angulo = Mathf.random(0, 2 * Mathf.pi)
+    local punto = self.entity.position + Vec3(math.cos(angulo), 0, math.sin(angulo)) * self.radio
+    local enemigo = Scene.instantiate(self.molde, punto)
+    enemigo.name = "Enemigo"
+    enemigo.tag = "Enemigo"
+    enemigo.active = true
+end
+
+return Generador</code></pre>
+      <p class="file">Enemigo.lua</p>
+      <pre><code class="language-lua">local Enemigo = { properties = { velocidad = 2.5, vida = 50 } }
+
+function Enemigo:Start()
+    self.jugador = Scene.find("Jugador")
+end
+
+function Enemigo:Update(dt)
+    if not self.jugador then return end
+    local hacia = self.jugador.position - self.entity.position
+    hacia.y = 0
+    if hacia:length() > 1.2 then
+        self.entity:translate(hacia:normalized() * self.velocidad * dt)
+        self.entity:lookAt(self.jugador.position)
+    end
+end
+
+function Enemigo:Dano(cantidad)   -- lo llama Disparo.lua
+    self.vida = self.vida - cantidad
+    if self.vida &lt;= 0 then
+        Audio.playOneShot("Audio/explosion.wav", self.entity.position)
+        self.entity:destroy()
+    end
+end
+
+return Enemigo</code></pre>

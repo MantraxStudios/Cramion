@@ -1,0 +1,35 @@
+<p>
+        Como en Unreal: crea un <strong class="text-white">Volumen de NavMesh</strong> (Crear &gt; Navegación) y dentro se genera sola
+        la malla de navegación a partir de la geometría de colisión. Se ve en verde en la escena (tecla <code>P</code>) y se
+        actualiza en tiempo real al mover, crear o borrar colliders. Lo que tenga que moverse lleva el componente
+        <code>NavAgent</code> (Agente de navegación).
+      </p>
+      <h3 id="agente-entity">Agente (Entity)</h3>
+      <table>
+        <tbody>
+          <tr><td><code>:moveTo(destino)</code></td><td>Camina hasta el punto por la malla, esquivando obstáculos y a otros agentes. Devuelve <code>false</code> si el destino no está en la malla.</td></tr>
+          <tr><td><code>:stopMoving()</code></td><td>Se para.</td></tr>
+          <tr><td><code>isMoving</code></td><td>Si va hacia un destino (pasa a <code>false</code> al llegar).</td></tr>
+          <tr><td><code>remainingDistance</code></td><td>Metros que le quedan por el camino.</td></tr>
+          <tr><td><code>navVelocity</code></td><td>Su velocidad actual (<code>Vec3</code>).</td></tr>
+        </tbody>
+      </table>
+      <p>
+        Sin <code>Rigidbody</code> se mueve por su Transform, pegado a la malla. Con un <code>Rigidbody</code> dinámico se mueve
+        por velocidad (la física sigue actuando). La velocidad, la aceleración, el radio y el giro se ajustan en el Inspector.
+      </p>
+      <h3 id="navigation">Navigation</h3>
+      <table>
+        <tbody>
+          <tr><td><code>Navigation.findPath(desde, hasta)</code></td><td>Lista de <code>Vec3</code> con los puntos de giro del camino, o <code>nil</code>.</td></tr>
+          <tr><td><code>Navigation.projectPoint(punto, radio)</code></td><td>El punto de la malla más cercano, o <code>nil</code>.</td></tr>
+          <tr><td><code>Navigation.randomPoint(centro, radio)</code></td><td>Un punto al azar de la malla dentro del radio, o <code>nil</code>.</td></tr>
+          <tr><td><code>Navigation.raycast(desde, hasta)</code></td><td>Devuelve <code>llega, punto</code>: si la línea recta por la malla llega sin salirse, y dónde choca si no.</td></tr>
+          <tr><td><code>Navigation.isReady()</code></td><td>Si ya hay malla.</td></tr>
+        </tbody>
+      </table>
+      <div class="note">
+        La malla sale de los <strong class="text-white">colliders</strong> (caja, esfera, cápsula, malla y plano) y de los terrenos con colisión,
+        no de lo que se dibuja. No cuentan los triggers, los Rigidbody dinámicos ni los propios agentes. Un
+        <code>NavModifier</code> bloquea una zona o la encarece (los caminos la rodean si pueden).
+      </div>

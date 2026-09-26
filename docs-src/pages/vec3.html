@@ -1,0 +1,120 @@
+<p>
+  Vector de tres componentes para posiciones, direcciones, velocidades, giros en grados, escalas y colores.
+  Las funciones se pueden llamar de dos formas equivalentes: <code>a:distance(b)</code> o <code>Vec3.distance(a, b)</code>.
+</p>
+<pre><code class="language-lua">local a = Vec3(1, 2, 3)
+local b = Vec3()               -- (0, 0, 0)
+local c = a + b * 2 - Vec3.up  -- suma, resta y escala
+local d = a * Vec3(1, 0, 1)    -- producto por componentes
+print(a.x, a.y, a.z, a)        -- los campos se leen y escriben
+print("posicion: " .. a)       -- se concatena con texto: posicion: (1.000, 2.000, 3.000)
+
+local largo = a:length()
+local dir   = (b - a):normalized()
+local cerca = a:distance(b) &lt; 2
+local medio = Vec3.lerp(a, b, 0.5)</code></pre>
+
+<h3 id="crear">Crear y copiar</h3>
+<table>
+  <thead><tr><th>Miembro</th><th>Descripción</th></tr></thead>
+  <tbody>
+    <tr><td><code>Vec3(x, y, z)</code>, <code>Vec3()</code></td><td>Vector nuevo (sin argumentos: cero).</td></tr>
+    <tr><td><code>Vec3(x, y)</code></td><td>Con <code>z = 0</code>.</td></tr>
+    <tr><td><code>Vec3(v)</code>, <code>v:copy()</code></td><td>Copia independiente de otro vector.</td></tr>
+    <tr><td><code>x, y, z</code></td><td>Componentes (lectura y escritura).</td></tr>
+    <tr><td><code>v:set(x, y, z)</code></td><td>Cambia los tres componentes de golpe.</td></tr>
+    <tr><td><code>v:unpack()</code></td><td>Devuelve <code>x, y, z</code>: <code>local x, y, z = v:unpack()</code>.</td></tr>
+    <tr><td><code>Vec3.zero</code>, <code>one</code>, <code>up</code>, <code>down</code>, <code>left</code>, <code>right</code>, <code>forward</code>, <code>back</code></td><td>Constantes. <code>forward</code> es <code>(0, 0, -1)</code>: en Cramion "adelante" es -Z.</td></tr>
+  </tbody>
+</table>
+
+<h3 id="operadores">Operadores</h3>
+<table>
+  <thead><tr><th>Operación</th><th>Resultado</th></tr></thead>
+  <tbody>
+    <tr><td><code>a + b</code>, <code>a - b</code>, <code>-a</code></td><td>Suma, resta y opuesto.</td></tr>
+    <tr><td><code>v * 2</code>, <code>2 * v</code>, <code>v / 2</code></td><td>Escala por un número.</td></tr>
+    <tr><td><code>a * b</code>, <code>a / b</code></td><td>Multiplica o divide por componentes.</td></tr>
+    <tr><td><code>a == b</code></td><td>Iguales exactamente (para "casi iguales" usa <code>approximately</code>).</td></tr>
+    <tr><td><code>tostring(v)</code>, <code>"texto" .. v</code></td><td>Texto <code>(1.000, 2.000, 3.000)</code>.</td></tr>
+  </tbody>
+</table>
+
+<h3 id="longitud">Longitud, distancia y ángulos</h3>
+<table>
+  <thead><tr><th>Función</th><th>Descripción</th></tr></thead>
+  <tbody>
+    <tr><td><code>v:length()</code>, <code>v:sqrLength()</code></td><td>Longitud y longitud al cuadrado (más rápida para comparar).</td></tr>
+    <tr><td><code>v:normalized()</code></td><td>Mismo sentido, longitud 1 (o cero si <code>v</code> es cero).</td></tr>
+    <tr><td><code>v:clampLength(max)</code></td><td>Lo acorta si es más largo que <code>max</code> (limitar una velocidad).</td></tr>
+    <tr><td><code>Vec3.distance(a, b)</code>, <code>Vec3.sqrDistance(a, b)</code></td><td>Distancia entre dos puntos (y al cuadrado).</td></tr>
+    <tr><td><code>Vec3.dot(a, b)</code></td><td>Producto escalar: positivo si miran hacia el mismo lado.</td></tr>
+    <tr><td><code>Vec3.cross(a, b)</code></td><td>Producto vectorial: perpendicular a los dos.</td></tr>
+    <tr><td><code>Vec3.angle(a, b)</code></td><td>Ángulo entre dos direcciones, en grados (0 a 180).</td></tr>
+    <tr><td><code>Vec3.signedAngle(a, b, eje)</code></td><td>Ángulo con signo alrededor de <code>eje</code> (-180 a 180): a qué lado queda <code>b</code>.</td></tr>
+  </tbody>
+</table>
+
+<h3 id="interpolar">Interpolar y mover</h3>
+<table>
+  <thead><tr><th>Función</th><th>Descripción</th></tr></thead>
+  <tbody>
+    <tr><td><code>Vec3.lerp(a, b, t)</code></td><td>Punto entre <code>a</code> y <code>b</code> (<code>t</code> se limita a 0..1).</td></tr>
+    <tr><td><code>Vec3.lerpUnclamped(a, b, t)</code></td><td>Igual, sin limitar <code>t</code> (extrapola).</td></tr>
+    <tr><td><code>Vec3.slerp(a, b, t)</code></td><td>Gira la dirección de <code>a</code> hacia <code>b</code> y mezcla su longitud.</td></tr>
+    <tr><td><code>Vec3.moveTowards(actual, objetivo, paso)</code></td><td>Avanza hacia el objetivo como mucho <code>paso</code> sin pasarse.</td></tr>
+    <tr><td><code>Vec3.smoothDamp(actual, objetivo, vel, tiempo, dt [, maxVel])</code></td><td>Seguimiento suave, como un muelle sin rebote. Devuelve <strong class="text-white">dos valores</strong>: la posición nueva y la velocidad (guárdala para el siguiente frame).</td></tr>
+  </tbody>
+</table>
+
+<h3 id="proyectar">Proyectar y reflejar</h3>
+<table>
+  <thead><tr><th>Función</th><th>Descripción</th></tr></thead>
+  <tbody>
+    <tr><td><code>Vec3.project(v, sobre)</code></td><td>La parte de <code>v</code> en la dirección <code>sobre</code>.</td></tr>
+    <tr><td><code>Vec3.projectOnPlane(v, normal)</code></td><td>Aplasta <code>v</code> sobre un plano: por ejemplo, moverse por una rampa.</td></tr>
+    <tr><td><code>Vec3.reflect(dir, normal)</code></td><td>Rebote de una dirección contra una superficie.</td></tr>
+  </tbody>
+</table>
+
+<h3 id="componentes">Por componentes</h3>
+<table>
+  <thead><tr><th>Función</th><th>Descripción</th></tr></thead>
+  <tbody>
+    <tr><td><code>Vec3.scale(a, b)</code></td><td>Multiplica componente a componente (como <code>a * b</code>).</td></tr>
+    <tr><td><code>Vec3.min(a, b)</code>, <code>Vec3.max(a, b)</code></td><td>El menor o el mayor de cada componente.</td></tr>
+    <tr><td><code>v:abs()</code>, <code>v:floor()</code>, <code>v:ceil()</code>, <code>v:round()</code></td><td>Valor absoluto y redondeos de cada componente (útil para rejillas).</td></tr>
+    <tr><td><code>Vec3.approximately(a, b [, margen])</code></td><td>Casi iguales (distancia menor que <code>margen</code>, 0.0001 por defecto).</td></tr>
+  </tbody>
+</table>
+
+<h3 id="ejemplos-vec3">Ejemplos</h3>
+<p class="file">Seguir con suavidad (smoothDamp)</p>
+<pre><code class="language-lua">local Seguir = { properties = { objetivo = "Jugador", suavidad = 0.25 } }
+
+function Seguir:Start()
+    self.meta = Scene.find(self.objetivo)
+    self.vel = Vec3.zero:copy()
+end
+
+function Seguir:LateUpdate(dt)
+    if not self.meta then return end
+    local destino = self.meta.position + Vec3(0, 3, 6)
+    local pos
+    pos, self.vel = Vec3.smoothDamp(self.entity.position, destino, self.vel, self.suavidad, dt)
+    self.entity.position = pos
+end
+
+return Seguir</code></pre>
+<p class="file">¿Está delante de mí? ¿A qué lado?</p>
+<pre><code class="language-lua">local haciaEl = (enemigo.position - self.entity.position):normalized()
+local delante = Vec3.dot(self.entity.forward, haciaEl) &gt; 0.5          -- dentro de un cono de ~60 grados
+local lado = Vec3.signedAngle(self.entity.forward, haciaEl, Vec3.up)  -- &gt; 0: a la izquierda, &lt; 0: a la derecha</code></pre>
+
+<div class="note">
+  <strong class="text-white">Copias:</strong> las propiedades de una entidad devuelven una copia, así que
+  <code>self.entity.position.y = 3</code> no la mueve. Lee, modifica y vuelve a asignar:
+  <code>local p = self.entity.position; p.y = 3; self.entity.position = p</code>.
+  En cambio, <code>local b = a</code> no copia: las dos variables son el mismo vector (como una tabla). Usa
+  <code>a:copy()</code> si vas a modificar uno sin tocar el otro, y no modifiques las constantes como <code>Vec3.zero</code>.
+</div>

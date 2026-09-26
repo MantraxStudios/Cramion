@@ -1,0 +1,469 @@
+<!doctype html>
+<html lang="es" class="scroll-smooth">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Shaders propios · Manual de Cramion</title>
+  <meta name="description" content="Escribe en GLSL cómo se ve una superficie: brillos, hologramas, disolver, agua que se mueve.">
+  <link rel="icon" href="../img/icon.png">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/lua.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/glsl.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/json.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/bash.min.js"></script>
+  <script src="search.js"></script>
+  <style type="text/tailwindcss">
+    @theme {
+      --color-ink: #0c0e12;
+      --color-panel: #13161d;
+      --color-line: #232834;
+      --color-brand: #0ab0ff;
+      --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+      --font-mono: "JetBrains Mono", ui-monospace, monospace;
+    }
+    body { background: var(--color-ink); }
+    .hljs { background: transparent !important; padding: 0 !important; }
+
+    .doc h3 { @apply mt-12 scroll-mt-24 border-b border-line pb-2 text-xl font-semibold text-white first:mt-0; }
+    .doc p  { @apply mt-4 leading-7 text-slate-400; }
+    .doc ul { @apply mt-4 list-disc space-y-1.5 pl-5 text-slate-400; }
+    .doc :not(pre) > code { @apply rounded bg-panel px-1.5 py-0.5 font-mono text-[0.85em] text-sky-300; }
+    .doc pre { @apply relative mt-4 overflow-x-auto rounded-xl border border-line bg-panel p-5 text-sm leading-relaxed; }
+    .doc table { @apply mt-4 w-full border-collapse text-left text-sm; }
+    .doc th { @apply border-b border-line py-2 pr-4 font-semibold text-slate-200; }
+    .doc td { @apply border-b border-line/60 py-2.5 pr-4 align-top text-slate-400; }
+    .doc td:first-child { @apply whitespace-nowrap; }
+    .doc .table-wrap { @apply mt-4 overflow-x-auto rounded-xl border border-line px-4; }
+    .doc .table-wrap table { @apply mt-0; }
+    .doc .table-wrap tr:last-child td { @apply border-b-0; }
+    .note { @apply mt-5 rounded-xl border border-brand/40 bg-brand/10 p-4 text-sm leading-6 text-slate-300; }
+    .file { @apply !mb-0 !mt-6 flex items-center gap-2 font-mono text-xs !text-slate-500; }
+    .file + pre { @apply !mt-2; }
+
+    .side a { @apply block rounded-md px-3 py-1.5 text-sm text-slate-400 transition hover:bg-panel hover:text-white; }
+    .side a.active { @apply bg-brand/10 font-medium text-brand; }
+    .onpage a { @apply block border-l border-line py-1 pl-3 text-[13px] text-slate-500 transition hover:text-white; }
+    .onpage a.active { @apply border-brand text-brand; }
+    .copy { @apply absolute right-3 top-3 rounded-md border border-line bg-ink/80 px-2 py-1 font-sans text-xs text-slate-400 opacity-0 transition hover:text-white; }
+    pre:hover .copy { @apply opacity-100; }
+  </style>
+</head>
+<body class="font-sans text-slate-300 antialiased">
+
+  <header class="sticky top-0 z-40 border-b border-line/70 bg-ink/85 backdrop-blur">
+    <nav class="mx-auto flex max-w-[88rem] items-center gap-4 px-4 py-3 sm:px-6">
+      <button id="menu-btn" class="rounded-md p-1.5 text-slate-400 hover:bg-panel hover:text-white lg:hidden" aria-label="Menú">
+        <svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
+      </button>
+      <a href="index.html" class="flex shrink-0 items-center gap-2.5">
+        <img src="../img/icon.png" alt="" class="h-8 w-8">
+        <span class="hidden text-lg font-bold tracking-wide text-white sm:inline">CRAMION</span>
+        <span class="ml-1 hidden rounded border border-line px-2 py-0.5 text-xs text-slate-400 sm:inline">Manual</span>
+      </a>
+      <div class="relative mx-auto min-w-0 max-w-md flex-1">
+        <input id="search" type="search" autocomplete="off" placeholder="Buscar en el manual..."
+               class="w-full rounded-lg border border-line bg-panel py-2 pl-9 pr-10 text-sm text-white placeholder:text-slate-500 focus:border-brand focus:outline-none">
+        <svg class="pointer-events-none absolute left-3 top-2.5 h-4 w-4 text-slate-500" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+        <kbd class="pointer-events-none absolute right-2.5 top-2 hidden rounded border border-line px-1.5 font-mono text-[11px] text-slate-500 sm:block">/</kbd>
+        <div id="results" class="absolute inset-x-0 top-full mt-2 hidden max-h-[70vh] overflow-y-auto rounded-xl border border-line bg-panel p-2 shadow-2xl shadow-black/60"></div>
+      </div>
+      <div class="hidden shrink-0 items-center gap-5 text-sm md:flex">
+        <a href="../index.html" class="hover:text-white">Inicio</a>
+        <a href="https://discord.gg/zG7rSsUGEz" target="_blank" rel="noopener" class="hover:text-white">Discord</a>
+        <a href="https://github.com/MantraxStudios/Cramion" target="_blank" rel="noopener" class="hover:text-white">GitHub</a>
+      </div>
+    </nav>
+  </header>
+
+  <div id="shade" class="fixed inset-0 z-30 hidden bg-black/60 lg:hidden"></div>
+  <div class="mx-auto flex max-w-[88rem] gap-10 px-4 sm:px-6">
+    <aside id="side" class="side fixed inset-y-0 left-0 z-40 w-72 -translate-x-full overflow-y-auto border-r border-line bg-ink px-3 py-6 transition-transform lg:sticky lg:top-16 lg:z-0 lg:h-[calc(100vh-4rem)] lg:w-60 lg:shrink-0 lg:translate-x-0 lg:border-0 lg:px-0 lg:py-10">
+      <nav>
+        <a href="index.html" class="">Inicio del manual</a>
+        <p class="mb-1 mt-7 flex items-center gap-2 px-3 text-xs font-semibold uppercase tracking-wider text-slate-500"><svg class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5a2 2 0 0 1 2-2h13v16H6a2 2 0 0 0-2 2V5Z"/><path d="M4 19a2 2 0 0 1 2-2h13"/></svg>Primeros pasos</p>
+        <a href="primer-script.html">Tu primer script</a>
+        <a href="ciclo-de-vida.html">Ciclo de vida</a>
+        <a href="propiedades.html">Propiedades</a>
+        <a href="recarga.html">Recarga en caliente</a>
+        <a href="prefabs.html">Prefabs</a>
+        <a href="mcp.html">Conectar una IA (MCP)</a>
+        <p class="mb-1 mt-7 flex items-center gap-2 px-3 text-xs font-semibold uppercase tracking-wider text-slate-500"><svg class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m8 8-4 4 4 4"/><path d="m16 8 4 4-4 4"/><path d="m14 4-4 16"/></svg>Referencia de la API</p>
+        <a href="vec3.html">Vec3</a>
+        <a href="quat.html">Quat (rotaciones)</a>
+        <a href="mathf.html">Mathf</a>
+        <a href="random.html">Random</a>
+        <a href="entity.html">Entity</a>
+        <a href="scene.html">Scene</a>
+        <a href="input.html">Input</a>
+        <a href="time.html">Time</a>
+        <a href="physics.html">Physics</a>
+        <a href="navegacion.html">Navegación</a>
+        <a href="mallas.html">Mallas por código</a>
+        <a href="voxel.html">Mundo de bloques</a>
+        <a href="audio.html">Audio</a>
+        <a href="ui.html">Interfaz (UI)</a>
+        <a href="prefs.html">Prefs y Game</a>
+        <a href="debug.html">Debug</a>
+        <p class="mb-1 mt-7 flex items-center gap-2 px-3 text-xs font-semibold uppercase tracking-wider text-slate-500"><svg class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a9 9 0 1 0 0 18c1.1 0 1.5-.8 1.5-1.5 0-.9-.7-1.2-.7-2 0-.8.6-1.5 1.5-1.5H16a5 5 0 0 0 5-5c0-4.4-4-8-9-8Z"/><circle cx="7.5" cy="11" r="1"/><circle cx="10" cy="7" r="1"/><circle cx="15" cy="7.5" r="1"/></svg>Gráficos</p>
+        <a href="shaders.html" class="active">Shaders propios</a>
+        <p class="mb-1 mt-7 flex items-center gap-2 px-3 text-xs font-semibold uppercase tracking-wider text-slate-500"><svg class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v4M12 17v4M3 12h4M17 12h4M6 6l2.5 2.5M15.5 15.5 18 18M6 18l2.5-2.5M15.5 8.5 18 6"/></svg>Ejemplos</p>
+        <a href="ejemplo-girar.html">Girar un objeto</a>
+        <a href="ejemplo-camara.html">Cámara que sigue al jugador</a>
+        <a href="ejemplo-jugador.html">Jugador con física</a>
+        <a href="ejemplo-disparo.html">Disparo con raycast</a>
+        <a href="ejemplo-monedas.html">Monedas y puntuación</a>
+        <a href="ejemplo-spawner.html">Generador de enemigos</a>
+        <a href="ejemplo-vehiculo.html">Conducir un vehículo</a>
+        <a href="ejemplo-menu.html">Menú, opciones y récord</a>
+        <a href="ejemplo-animacion.html">Animación de un personaje</a>
+        <a href="ejemplo-comunicacion.html">Scripts que se hablan</a>
+        <a href="ejemplo-ia.html">IA: patrullar y perseguir</a>
+        <a href="ejemplo-terreno.html">Terreno procedural con colisión</a>
+        <a href="ejemplo-efectos.html">Varios materiales y efectos</a>
+        <a href="ejemplo-olas.html">Olas: cambiar la malla cada frame</a>
+      </nav>
+    </aside>
+
+    <main class="doc min-w-0 flex-1 overflow-x-hidden py-10 lg:max-w-3xl">
+      <div class="flex items-center gap-2 text-sm text-slate-500">
+        <a href="index.html" class="hover:text-white">Manual</a><span>/</span>
+        <span class="flex items-center gap-1.5 text-brand"><svg class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a9 9 0 1 0 0 18c1.1 0 1.5-.8 1.5-1.5 0-.9-.7-1.2-.7-2 0-.8.6-1.5 1.5-1.5H16a5 5 0 0 0 5-5c0-4.4-4-8-9-8Z"/><circle cx="7.5" cy="11" r="1"/><circle cx="10" cy="7" r="1"/><circle cx="15" cy="7.5" r="1"/></svg>Gráficos</span>
+      </div>
+      <h1 class="mt-3 text-4xl font-extrabold tracking-tight text-white">Shaders propios</h1>
+      <p class="!mt-3 text-lg !text-slate-400">Escribe en GLSL cómo se ve una superficie: brillos, hologramas, disolver, agua que se mueve.</p>
+      <div class="mt-10">
+<p>
+  Un <strong class="text-white">shader de superficie</strong> (<code>.crshader</code>) decide cómo se ve un material: su color,
+  su brillo, su relieve, si emite luz o si se mueve. Se escribe en <strong class="text-white">GLSL</strong> (el lenguaje de
+  shaders de Vulkan/OpenGL), pero solo la parte que importa: el motor se encarga de la luz, las sombras, los reflejos, la
+  niebla y la lluvia, así que tu superficie queda integrada en la escena como cualquier otro material (igual que los
+  <em>surface shaders</em> de Unity).
+</p>
+
+<h3 id="crear">Crear y usar un shader</h3>
+<ul>
+  <li>Panel <strong class="text-white">Proyecto</strong> &gt; clic derecho &gt; <strong class="text-white">Crear &gt; Shader (GLSL)</strong>. Se abre en el editor de scripts con una plantilla que ya funciona.</li>
+  <li>Elige un material (<code>.crmat</code>) y en su Inspector, <strong class="text-white">Shader</strong> &gt; tu archivo. O clic derecho sobre el <code>.crshader</code> &gt; <em>Crear material con este shader</em>.</li>
+  <li>Arrastra el material a un objeto. Cada vez que guardes el shader (<code>Ctrl+S</code>) se recompila y se ve al momento, también en Play.</li>
+</ul>
+<div class="note">
+  Si hay un error, la línea se marca en rojo en el editor, el mensaje sale en la Consola y en el material, y mientras
+  tanto el objeto se ve con el shader estándar. El icono del shader en el Proyecto se pone rojo.
+</div>
+
+<h3 id="estructura">Cómo es un .crshader</h3>
+<p class="file">Assets/Shaders/Pulso.crshader</p>
+<pre><code class="language-glsl">// Propiedades: se editan en el material y se leen aqui por su nombre.
+property color tinte = 1.0, 0.4, 0.1
+property range brillo = 2.0 (0, 10)
+property float velocidad = 3.0
+
+// Obligatoria: recibe la superficie ya calculada (texturas y valores del
+// material) y la cambia.
+void surface(inout Surface s) {
+    float pulso = 0.5 + 0.5 * sin(TIME * velocidad);
+    s.albedo *= tinte;
+    s.emission = tinte * brillo * pulso;
+}
+
+// Opcional: mover los vertices antes de dibujarlos.
+void vertex(inout Vertex v) {
+    v.position += v.normal * 0.02 * sin(TIME * velocidad);
+}</code></pre>
+<p>
+  Puedes escribir más funciones tuyas (fuera de <code>surface</code> y <code>vertex</code>) y usar todo GLSL:
+  <code>vec2</code>, <code>vec3</code>, <code>mix</code>, <code>smoothstep</code>, <code>sin</code>, <code>texture</code>...
+</p>
+
+<h3 id="propiedades">Propiedades</h3>
+<p>Una línea por propiedad, en cualquier parte del archivo. En el material aparecen con el control que les toca.</p>
+<table>
+  <thead><tr><th>Línea</th><th>En el código</th><th>En el material</th></tr></thead>
+  <tbody>
+    <tr><td><code>property float fuerza = 1.5</code></td><td><code>float</code></td><td>Número.</td></tr>
+    <tr><td><code>property range brillo = 2 (0, 10)</code></td><td><code>float</code></td><td>Deslizador entre 0 y 10.</td></tr>
+    <tr><td><code>property color tinte = 1, 0.5, 0.2</code></td><td><code>vec3</code></td><td>Selector de color.</td></tr>
+    <tr><td><code>property vector viento = 1, 0, 0</code></td><td><code>vec3</code></td><td>Tres números.</td></tr>
+    <tr><td><code>property texture ruido</code></td><td><code>sampler2D</code></td><td>Hueco para una imagen de Assets (blanca si está vacío).</td></tr>
+  </tbody>
+</table>
+<p>
+  Como mucho 8 propiedades de números (float, range, color, vector) y 4 texturas. Los valores se cambian en vivo desde el
+  material sin recompilar nada. Clic derecho sobre una propiedad: <em>Valor por defecto</em>.
+</p>
+
+<h3 id="surface">La superficie (Surface)</h3>
+<table>
+  <thead><tr><th>Campo</th><th>Descripción</th></tr></thead>
+  <tbody>
+    <tr><td><code>s.albedo</code> (<code>vec3</code>)</td><td>Color base, como se ve (el mismo espacio que las texturas).</td></tr>
+    <tr><td><code>s.alpha</code> (<code>float</code>)</td><td>Por debajo de 0.5 el píxel no se dibuja (recortes, agujeros, disolver).</td></tr>
+    <tr><td><code>s.normal</code> (<code>vec3</code>)</td><td>Normal en el mundo, ya con el normal map del material.</td></tr>
+    <tr><td><code>s.metallic</code>, <code>s.roughness</code></td><td>Metálico y rugosidad (0..1): 0 de rugosidad es un espejo.</td></tr>
+    <tr><td><code>s.occlusion</code></td><td>Sombra ambiental (1 = ninguna).</td></tr>
+    <tr><td><code>s.emission</code> (<code>vec3</code>)</td><td>Luz propia. 1 equivale a la emisión 1 de un material; valores altos dan bloom.</td></tr>
+    <tr><td><code>s.uv</code></td><td>Coordenadas de textura (solo lectura).</td></tr>
+    <tr><td><code>s.worldPosition</code></td><td>Posición del píxel en el mundo (solo lectura).</td></tr>
+    <tr><td><code>s.vertexNormal</code></td><td>Normal de la malla, sin normal map (solo lectura).</td></tr>
+    <tr><td><code>s.viewDirection</code></td><td>Dirección del píxel hacia la cámara (solo lectura).</td></tr>
+  </tbody>
+</table>
+<p>
+  <code>surface()</code> recibe ya calculado lo que pone el material (su color y su textura de color, su normal map,
+  su metálico, su rugosidad...), así que puedes combinar las dos cosas: texturas en el material y el efecto en el shader.
+</p>
+
+<h3 id="vertex">Mover vértices (Vertex)</h3>
+<table>
+  <thead><tr><th>Campo</th><th>Descripción</th></tr></thead>
+  <tbody>
+    <tr><td><code>v.position</code></td><td>Posición en el mundo (ya animada si el modelo tiene esqueleto).</td></tr>
+    <tr><td><code>v.normal</code></td><td>Normal en el mundo.</td></tr>
+    <tr><td><code>v.uv</code></td><td>Coordenadas de textura.</td></tr>
+  </tbody>
+</table>
+
+<h3 id="globales">Lo que tienes a mano</h3>
+<table>
+  <thead><tr><th>Nombre</th><th>Descripción</th></tr></thead>
+  <tbody>
+    <tr><td><code>TIME</code></td><td>Segundos desde que empezó (para animar).</td></tr>
+    <tr><td><code>CAMERA_POSITION</code></td><td>Posición de la cámara en el mundo.</td></tr>
+    <tr><td><code>noise(vec2)</code>, <code>noise(vec3)</code></td><td>Ruido suave de 0 a 1.</td></tr>
+    <tr><td><code>fbm(vec2)</code></td><td>Ruido en varias capas (nubes, manchas, mármol).</td></tr>
+    <tr><td><code>hash(vec2)</code>, <code>hash(vec3)</code></td><td>Número pseudoaleatorio de 0 a 1 por posición.</td></tr>
+    <tr><td><code>fresnel(s, potencia)</code></td><td>0 de frente y 1 en el contorno (bordes brillantes).</td></tr>
+    <tr><td><code>remap(v, a, b, c, d)</code></td><td>Pasa <code>v</code> del rango a..b al c..d.</td></tr>
+  </tbody>
+</table>
+
+<h3 id="ej-holograma">Ejemplo: holograma</h3>
+<p>Líneas que suben, borde brillante y parpadeo. Queda muy bien con un material oscuro.</p>
+<p class="file">Holograma.crshader</p>
+<pre><code class="language-glsl">property color tinte = 0.2, 0.8, 1.0
+property range lineas = 40 (5, 120)
+property range velocidad = 2 (0, 10)
+
+void surface(inout Surface s) {
+    float linea = step(0.5, fract(s.worldPosition.y * lineas * 0.1 - TIME * velocidad));
+    float borde = fresnel(s, 2.5);
+    float parpadeo = 0.85 + 0.15 * sin(TIME * 30.0);
+    s.albedo = vec3(0.02);
+    s.roughness = 0.3;
+    s.emission = tinte * (0.3 + linea * 0.7 + borde * 2.0) * parpadeo;
+}</code></pre>
+
+<h3 id="ej-disolver">Ejemplo: disolver</h3>
+<p>El objeto se deshace con un borde incandescente. Anima <code>cantidad</code> desde un script para hacerlo desaparecer.</p>
+<p class="file">Disolver.crshader</p>
+<pre><code class="language-glsl">property range cantidad = 0.3 (0, 1)
+property color borde = 1.0, 0.45, 0.05
+property float escala = 4
+property texture ruido   // opcional: una textura de ruido; sin ella se usa fbm()
+
+void surface(inout Surface s) {
+    float n = fbm(s.uv * escala) * texture(ruido, s.uv).r;
+    if (n &lt; cantidad) s.alpha = 0.0;                 // hueco
+    float filo = 1.0 - smoothstep(0.0, 0.06, n - cantidad);
+    s.emission += borde * filo * 4.0;               // borde al rojo
+}</code></pre>
+
+<h3 id="ej-lava">Ejemplo: lava</h3>
+<p class="file">Lava.crshader</p>
+<pre><code class="language-glsl">property color frio = 0.08, 0.02, 0.01
+property color caliente = 1.0, 0.35, 0.02
+property range velocidad = 0.15 (0, 1)
+
+void surface(inout Surface s) {
+    vec2 p = s.worldPosition.xz * 0.35;
+    float n = fbm(p + vec2(TIME * velocidad, TIME * velocidad * 0.7));
+    float grietas = smoothstep(0.45, 0.75, n);
+    s.albedo = mix(frio, caliente, grietas);
+    s.roughness = mix(0.9, 0.4, grietas);
+    s.emission = caliente * grietas * grietas * 3.0;
+}</code></pre>
+
+<h3 id="ej-olas">Ejemplo: agua que se mueve (vértices)</h3>
+<p>Para un plano con bastantes vértices (por ejemplo, una malla creada por código). Mueve los vértices y recalcula la normal.</p>
+<p class="file">Olas.crshader</p>
+<pre><code class="language-glsl">property range altura = 0.25 (0, 2)
+property range frecuencia = 1.2 (0.1, 5)
+property color color = 0.05, 0.25, 0.35
+
+float ola(vec2 p) {
+    return sin(p.x * frecuencia + TIME * 1.7) * 0.6 + sin((p.x + p.y) * frecuencia * 0.7 + TIME * 1.1) * 0.4;
+}
+
+void vertex(inout Vertex v) {
+    float h = ola(v.position.xz) * altura;
+    // Pendiente por diferencias: la normal de la ola.
+    float hx = ola(v.position.xz + vec2(0.1, 0.0)) * altura;
+    float hz = ola(v.position.xz + vec2(0.0, 0.1)) * altura;
+    v.position.y += h;
+    v.normal = normalize(vec3(h - hx, 0.1, h - hz));
+}
+
+void surface(inout Surface s) {
+    s.albedo = color;
+    s.roughness = 0.05;
+    s.metallic = 0.0;
+}</code></pre>
+
+<h3 id="ej-viento">Ejemplo: vegetación con viento</h3>
+<p>Mueve más lo que está más alto (la copa) que la base. Úsalo con el material de las hojas.</p>
+<p class="file">Viento.crshader</p>
+<pre><code class="language-glsl">property vector direccion = 1, 0, 0.3
+property range fuerza = 0.15 (0, 1)
+property float alturaBase = 0
+
+void vertex(inout Vertex v) {
+    float alto = max(v.position.y - alturaBase, 0.0);
+    float rafaga = sin(TIME * 2.0 + v.position.x * 0.5) + 0.5 * sin(TIME * 5.3 + v.position.z);
+    v.position += normalize(direccion) * rafaga * fuerza * alto * 0.3;
+}
+
+void surface(inout Surface s) {
+}</code></pre>
+
+<h3 id="limites">Límites</h3>
+<ul>
+  <li>Las <strong class="text-white">sombras</strong> y la selección con el ratón usan la forma original: lo que muevas en <code>vertex()</code> no cambia la sombra.</li>
+  <li>Materiales opacos (con recortes por <code>s.alpha</code>). El modo <em>Transparente</em> del material no usa el shader propio.</li>
+  <li>8 propiedades de números y 4 texturas por shader.</li>
+  <li>El shader se compila al usarse la primera vez (unas décimas de segundo). El juego exportado lleva el compilador (<code>shaderc_shared.dll</code>) y los compila igual.</li>
+</ul>
+<div class="note">
+  ¿Qué es cada cosa en GLSL? <code>vec3(1.0, 0.5, 0.0)</code> es un color o una posición; <code>mix(a, b, t)</code> mezcla;
+  <code>smoothstep(a, b, x)</code> pasa suave de 0 a 1; <code>fract(x)</code> es la parte decimal (repite);
+  <code>step(a, x)</code> es 0 o 1. Los decimales llevan punto: <code>1.0</code>, no <code>1</code>, cuando se mezclan con <code>float</code>.
+</div>
+      </div>
+      <div class="mt-16 grid gap-4 border-t border-line pt-8 sm:grid-cols-2">
+        <a href="debug.html" class="group rounded-xl border border-line p-4 transition hover:border-brand/60 hover:bg-panel">
+          <span class="text-xs text-slate-500">← Anterior</span>
+          <span class="mt-1 block font-semibold text-white group-hover:text-brand">Debug</span>
+        </a>
+        <a href="ejemplo-girar.html" class="group rounded-xl border border-line p-4 text-right transition hover:border-brand/60 hover:bg-panel">
+          <span class="text-xs text-slate-500">Siguiente →</span>
+          <span class="mt-1 block font-semibold text-white group-hover:text-brand">Girar un objeto</span>
+        </a></div>
+      <p class="mt-10 text-sm text-slate-500">¿Algo no queda claro o falta algo? Pregunta en el
+        <a href="https://discord.gg/zG7rSsUGEz" target="_blank" rel="noopener" class="text-brand hover:text-white">Discord</a>.</p>
+    </main>
+    <aside class="sticky top-16 hidden h-[calc(100vh-4rem)] w-52 shrink-0 overflow-y-auto py-10 xl:block">
+      <p class="mb-3 text-xs font-semibold uppercase tracking-wider text-slate-500">En esta página</p>
+      <nav id="onpage" class="onpage"></nav>
+    </aside>
+  </div>
+
+  <script>
+    hljs.highlightAll();
+
+    // Menu lateral en el movil.
+    const side = document.getElementById("side");
+    const shade = document.getElementById("shade");
+    const toggle = open => {
+      side.classList.toggle("-translate-x-full", !open);
+      shade.classList.toggle("hidden", !open);
+    };
+    document.getElementById("menu-btn").addEventListener("click", () => toggle(side.classList.contains("-translate-x-full")));
+    shade.addEventListener("click", () => toggle(false));
+    // El enlace activo a la vista dentro del menu (sin mover la pagina).
+    const current = side.querySelector("a.active");
+    if (current) side.scrollTop = current.offsetTop - side.clientHeight / 2;
+
+    // Boton de copiar en cada bloque de codigo.
+    document.querySelectorAll(".doc pre").forEach(pre => {
+      const b = document.createElement("button");
+      b.className = "copy";
+      b.textContent = "Copiar";
+      b.addEventListener("click", async () => {
+        try {
+          await navigator.clipboard.writeText(pre.querySelector("code")?.innerText ?? pre.innerText);
+          b.textContent = "Copiado";
+        } catch { b.textContent = "No se pudo"; }
+        setTimeout(() => (b.textContent = "Copiar"), 1400);
+      });
+      pre.appendChild(b);
+    });
+
+    // Tablas anchas: se desplazan dentro de su marco.
+    document.querySelectorAll(".doc table").forEach(t => {
+      const w = document.createElement("div");
+      w.className = "table-wrap";
+      t.replaceWith(w);
+      w.appendChild(t);
+    });
+
+    // "En esta pagina": los h3 con resaltado de la seccion visible.
+    const onpage = document.getElementById("onpage");
+    if (onpage) {
+      const heads = [...document.querySelectorAll(".doc h3[id]")];
+      if (heads.length < 2) {
+        onpage.closest("aside").classList.add("xl:invisible");
+      } else {
+        onpage.innerHTML = heads.map(h => `<a href="#${h.id}">${h.textContent}</a>`).join("");
+        const links = [...onpage.querySelectorAll("a")];
+        const obs = new IntersectionObserver(entries => {
+          for (const e of entries) {
+            if (e.isIntersecting) links.forEach(a => a.classList.toggle("active", a.getAttribute("href") === "#" + e.target.id));
+          }
+        }, { rootMargin: "-80px 0px -70% 0px" });
+        heads.forEach(h => obs.observe(h));
+      }
+    }
+
+    // Buscador: titulos, secciones y nombres de la API.
+    const input = document.getElementById("search");
+    const box = document.getElementById("results");
+    const norm = s => s.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+    const esc = s => s.replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+    let hits = [], sel = 0;
+    const render = () => {
+      if (!hits.length) {
+        box.innerHTML = input.value.trim() ? '<p class="px-3 py-2 text-sm text-slate-500">Sin resultados.</p>' : "";
+        box.classList.toggle("hidden", !input.value.trim());
+        return;
+      }
+      box.innerHTML = hits.map((h, i) => `
+        <a href="${h.u}" class="block rounded-lg px-3 py-2 ${i === sel ? "bg-brand/15" : "hover:bg-ink"}">
+          <span class="${h.c ? "font-mono text-sky-300" : "font-medium text-white"} text-sm">${esc(h.t)}</span>
+          <span class="ml-2 text-xs text-slate-500">${esc(h.g)}</span>
+          ${h.d ? `<span class="mt-0.5 block text-xs text-slate-400">${esc(h.d)}</span>` : ""}
+        </a>`).join("");
+      box.classList.remove("hidden");
+    };
+    input.addEventListener("input", () => {
+      const q = norm(input.value.trim());
+      sel = 0;
+      if (!q) { hits = []; render(); return; }
+      const words = q.split(/\s+/);
+      hits = window.CRAMION_SEARCH
+        .map(e => {
+          const t = norm(e.t), all = t + " " + norm(e.g) + " " + norm(e.d || "");
+          if (!words.every(w => all.includes(w))) return null;
+          const score = (t.startsWith(q) ? 0 : t.includes(q) ? 1 : 2) + (e.c ? 0.5 : 0) - (e.d ? 0.3 : 0);
+          return { e, score };
+        })
+        .filter(Boolean).sort((a, b) => a.score - b.score).slice(0, 12).map(x => x.e);
+      render();
+    });
+    input.addEventListener("keydown", ev => {
+      if (ev.key === "ArrowDown") { sel = Math.min(sel + 1, hits.length - 1); render(); ev.preventDefault(); }
+      if (ev.key === "ArrowUp") { sel = Math.max(sel - 1, 0); render(); ev.preventDefault(); }
+      if (ev.key === "Enter" && hits[sel]) location.href = hits[sel].u;
+      if (ev.key === "Escape") { input.value = ""; hits = []; render(); input.blur(); }
+    });
+    document.addEventListener("keydown", ev => {
+      if (ev.key === "/" && document.activeElement !== input) { ev.preventDefault(); input.focus(); }
+    });
+    document.addEventListener("click", ev => { if (!ev.target.closest("#results, #search")) box.classList.add("hidden"); });
+    input.addEventListener("focus", () => { if (input.value.trim()) render(); });
+  </script>
+</body>
+</html>

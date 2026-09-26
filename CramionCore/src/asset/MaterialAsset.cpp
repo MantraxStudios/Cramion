@@ -94,6 +94,23 @@ bool loadMaterial(const std::filesystem::path& path, MaterialAsset& out, std::st
     m.offset = core::Vec2{offset[0], offset[1]};
     m.albedo = text(j, "albedo");
     m.normal = text(j, "normal");
+    m.shader = text(j, "shader");
+    if (const auto values = j.find("shader_values"); values != j.end() && values->is_object()) {
+        for (const auto& [name, v] : values->items()) {
+            if (!v.is_array()) continue;
+            core::Vec4 value{};
+            float* out = &value.x;
+            for (std::size_t i = 0; i < v.size() && i < 4; ++i) {
+                if (v[i].is_number()) out[i] = v[i].get<float>();
+            }
+            m.shader_values[name] = value;
+        }
+    }
+    if (const auto textures = j.find("shader_textures"); textures != j.end() && textures->is_object()) {
+        for (const auto& [name, v] : textures->items()) {
+            if (v.is_string()) m.shader_textures[name] = v.get<std::string>();
+        }
+    }
     m.metallic_map = text(j, "metallic_map");
     m.roughness_map = text(j, "roughness_map");
     m.occlusion = text(j, "occlusion");
@@ -126,6 +143,15 @@ bool saveMaterial(MaterialAsset& m, const std::filesystem::path& path, std::stri
     j["roughness_map"] = m.roughness_map;
     j["occlusion"] = m.occlusion;
     j["emissive_map"] = m.emissive_map;
+    if (!m.shader.empty()) {
+        j["shader"] = m.shader;
+        json values = json::object();
+        for (const auto& [name, v] : m.shader_values) values[name] = vec(v);
+        j["shader_values"] = values;
+        json textures = json::object();
+        for (const auto& [name, path] : m.shader_textures) textures[name] = path;
+        j["shader_textures"] = textures;
+    }
 
     std::error_code ec;
     std::filesystem::create_directories(path.parent_path(), ec);
@@ -151,6 +177,12 @@ std::uint64_t materialStructureHash(const MaterialAsset& m) {
     // Emision sin mapa: el shader usa blanco o negro segun si emite.
     const bool emits = m.emissive.x > 0.0f || m.emissive.y > 0.0f || m.emissive.z > 0.0f;
     h = mix(h, emits ? 1u : 0u);
+    // Shader propio y sus texturas (los valores se cambian en vivo).
+    h = mixText(h, m.shader);
+    for (const auto& [name, path] : m.shader_textures) {
+        h = mixText(h, name);
+        h = mixText(h, path);
+    }
     return h;
 }
 

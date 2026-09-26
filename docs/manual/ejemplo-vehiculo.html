@@ -1,0 +1,296 @@
+<!doctype html>
+<html lang="es" class="scroll-smooth">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Conducir un vehículo · Manual de Cramion</title>
+  <meta name="description" content="En una entidad con Rigidbody, Vehicle y ruedas con WheelCollider.
+        Muestra la velocidad en un UIText llamado Velocimetro.">
+  <link rel="icon" href="../img/icon.png">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/lua.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/glsl.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/json.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/bash.min.js"></script>
+  <script src="search.js"></script>
+  <style type="text/tailwindcss">
+    @theme {
+      --color-ink: #0c0e12;
+      --color-panel: #13161d;
+      --color-line: #232834;
+      --color-brand: #0ab0ff;
+      --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+      --font-mono: "JetBrains Mono", ui-monospace, monospace;
+    }
+    body { background: var(--color-ink); }
+    .hljs { background: transparent !important; padding: 0 !important; }
+
+    .doc h3 { @apply mt-12 scroll-mt-24 border-b border-line pb-2 text-xl font-semibold text-white first:mt-0; }
+    .doc p  { @apply mt-4 leading-7 text-slate-400; }
+    .doc ul { @apply mt-4 list-disc space-y-1.5 pl-5 text-slate-400; }
+    .doc :not(pre) > code { @apply rounded bg-panel px-1.5 py-0.5 font-mono text-[0.85em] text-sky-300; }
+    .doc pre { @apply relative mt-4 overflow-x-auto rounded-xl border border-line bg-panel p-5 text-sm leading-relaxed; }
+    .doc table { @apply mt-4 w-full border-collapse text-left text-sm; }
+    .doc th { @apply border-b border-line py-2 pr-4 font-semibold text-slate-200; }
+    .doc td { @apply border-b border-line/60 py-2.5 pr-4 align-top text-slate-400; }
+    .doc td:first-child { @apply whitespace-nowrap; }
+    .doc .table-wrap { @apply mt-4 overflow-x-auto rounded-xl border border-line px-4; }
+    .doc .table-wrap table { @apply mt-0; }
+    .doc .table-wrap tr:last-child td { @apply border-b-0; }
+    .note { @apply mt-5 rounded-xl border border-brand/40 bg-brand/10 p-4 text-sm leading-6 text-slate-300; }
+    .file { @apply !mb-0 !mt-6 flex items-center gap-2 font-mono text-xs !text-slate-500; }
+    .file + pre { @apply !mt-2; }
+
+    .side a { @apply block rounded-md px-3 py-1.5 text-sm text-slate-400 transition hover:bg-panel hover:text-white; }
+    .side a.active { @apply bg-brand/10 font-medium text-brand; }
+    .onpage a { @apply block border-l border-line py-1 pl-3 text-[13px] text-slate-500 transition hover:text-white; }
+    .onpage a.active { @apply border-brand text-brand; }
+    .copy { @apply absolute right-3 top-3 rounded-md border border-line bg-ink/80 px-2 py-1 font-sans text-xs text-slate-400 opacity-0 transition hover:text-white; }
+    pre:hover .copy { @apply opacity-100; }
+  </style>
+</head>
+<body class="font-sans text-slate-300 antialiased">
+
+  <header class="sticky top-0 z-40 border-b border-line/70 bg-ink/85 backdrop-blur">
+    <nav class="mx-auto flex max-w-[88rem] items-center gap-4 px-4 py-3 sm:px-6">
+      <button id="menu-btn" class="rounded-md p-1.5 text-slate-400 hover:bg-panel hover:text-white lg:hidden" aria-label="Menú">
+        <svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
+      </button>
+      <a href="index.html" class="flex shrink-0 items-center gap-2.5">
+        <img src="../img/icon.png" alt="" class="h-8 w-8">
+        <span class="hidden text-lg font-bold tracking-wide text-white sm:inline">CRAMION</span>
+        <span class="ml-1 hidden rounded border border-line px-2 py-0.5 text-xs text-slate-400 sm:inline">Manual</span>
+      </a>
+      <div class="relative mx-auto min-w-0 max-w-md flex-1">
+        <input id="search" type="search" autocomplete="off" placeholder="Buscar en el manual..."
+               class="w-full rounded-lg border border-line bg-panel py-2 pl-9 pr-10 text-sm text-white placeholder:text-slate-500 focus:border-brand focus:outline-none">
+        <svg class="pointer-events-none absolute left-3 top-2.5 h-4 w-4 text-slate-500" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+        <kbd class="pointer-events-none absolute right-2.5 top-2 hidden rounded border border-line px-1.5 font-mono text-[11px] text-slate-500 sm:block">/</kbd>
+        <div id="results" class="absolute inset-x-0 top-full mt-2 hidden max-h-[70vh] overflow-y-auto rounded-xl border border-line bg-panel p-2 shadow-2xl shadow-black/60"></div>
+      </div>
+      <div class="hidden shrink-0 items-center gap-5 text-sm md:flex">
+        <a href="../index.html" class="hover:text-white">Inicio</a>
+        <a href="https://discord.gg/zG7rSsUGEz" target="_blank" rel="noopener" class="hover:text-white">Discord</a>
+        <a href="https://github.com/MantraxStudios/Cramion" target="_blank" rel="noopener" class="hover:text-white">GitHub</a>
+      </div>
+    </nav>
+  </header>
+
+  <div id="shade" class="fixed inset-0 z-30 hidden bg-black/60 lg:hidden"></div>
+  <div class="mx-auto flex max-w-[88rem] gap-10 px-4 sm:px-6">
+    <aside id="side" class="side fixed inset-y-0 left-0 z-40 w-72 -translate-x-full overflow-y-auto border-r border-line bg-ink px-3 py-6 transition-transform lg:sticky lg:top-16 lg:z-0 lg:h-[calc(100vh-4rem)] lg:w-60 lg:shrink-0 lg:translate-x-0 lg:border-0 lg:px-0 lg:py-10">
+      <nav>
+        <a href="index.html" class="">Inicio del manual</a>
+        <p class="mb-1 mt-7 flex items-center gap-2 px-3 text-xs font-semibold uppercase tracking-wider text-slate-500"><svg class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5a2 2 0 0 1 2-2h13v16H6a2 2 0 0 0-2 2V5Z"/><path d="M4 19a2 2 0 0 1 2-2h13"/></svg>Primeros pasos</p>
+        <a href="primer-script.html">Tu primer script</a>
+        <a href="ciclo-de-vida.html">Ciclo de vida</a>
+        <a href="propiedades.html">Propiedades</a>
+        <a href="recarga.html">Recarga en caliente</a>
+        <a href="prefabs.html">Prefabs</a>
+        <a href="mcp.html">Conectar una IA (MCP)</a>
+        <p class="mb-1 mt-7 flex items-center gap-2 px-3 text-xs font-semibold uppercase tracking-wider text-slate-500"><svg class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m8 8-4 4 4 4"/><path d="m16 8 4 4-4 4"/><path d="m14 4-4 16"/></svg>Referencia de la API</p>
+        <a href="vec3.html">Vec3</a>
+        <a href="quat.html">Quat (rotaciones)</a>
+        <a href="mathf.html">Mathf</a>
+        <a href="random.html">Random</a>
+        <a href="entity.html">Entity</a>
+        <a href="scene.html">Scene</a>
+        <a href="input.html">Input</a>
+        <a href="time.html">Time</a>
+        <a href="physics.html">Physics</a>
+        <a href="navegacion.html">Navegación</a>
+        <a href="mallas.html">Mallas por código</a>
+        <a href="voxel.html">Mundo de bloques</a>
+        <a href="audio.html">Audio</a>
+        <a href="ui.html">Interfaz (UI)</a>
+        <a href="prefs.html">Prefs y Game</a>
+        <a href="debug.html">Debug</a>
+        <p class="mb-1 mt-7 flex items-center gap-2 px-3 text-xs font-semibold uppercase tracking-wider text-slate-500"><svg class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a9 9 0 1 0 0 18c1.1 0 1.5-.8 1.5-1.5 0-.9-.7-1.2-.7-2 0-.8.6-1.5 1.5-1.5H16a5 5 0 0 0 5-5c0-4.4-4-8-9-8Z"/><circle cx="7.5" cy="11" r="1"/><circle cx="10" cy="7" r="1"/><circle cx="15" cy="7.5" r="1"/></svg>Gráficos</p>
+        <a href="shaders.html">Shaders propios</a>
+        <p class="mb-1 mt-7 flex items-center gap-2 px-3 text-xs font-semibold uppercase tracking-wider text-slate-500"><svg class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v4M12 17v4M3 12h4M17 12h4M6 6l2.5 2.5M15.5 15.5 18 18M6 18l2.5-2.5M15.5 8.5 18 6"/></svg>Ejemplos</p>
+        <a href="ejemplo-girar.html">Girar un objeto</a>
+        <a href="ejemplo-camara.html">Cámara que sigue al jugador</a>
+        <a href="ejemplo-jugador.html">Jugador con física</a>
+        <a href="ejemplo-disparo.html">Disparo con raycast</a>
+        <a href="ejemplo-monedas.html">Monedas y puntuación</a>
+        <a href="ejemplo-spawner.html">Generador de enemigos</a>
+        <a href="ejemplo-vehiculo.html" class="active">Conducir un vehículo</a>
+        <a href="ejemplo-menu.html">Menú, opciones y récord</a>
+        <a href="ejemplo-animacion.html">Animación de un personaje</a>
+        <a href="ejemplo-comunicacion.html">Scripts que se hablan</a>
+        <a href="ejemplo-ia.html">IA: patrullar y perseguir</a>
+        <a href="ejemplo-terreno.html">Terreno procedural con colisión</a>
+        <a href="ejemplo-efectos.html">Varios materiales y efectos</a>
+        <a href="ejemplo-olas.html">Olas: cambiar la malla cada frame</a>
+      </nav>
+    </aside>
+
+    <main class="doc min-w-0 flex-1 overflow-x-hidden py-10 lg:max-w-3xl">
+      <div class="flex items-center gap-2 text-sm text-slate-500">
+        <a href="index.html" class="hover:text-white">Manual</a><span>/</span>
+        <span class="flex items-center gap-1.5 text-brand"><svg class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v4M12 17v4M3 12h4M17 12h4M6 6l2.5 2.5M15.5 15.5 18 18M6 18l2.5-2.5M15.5 8.5 18 6"/></svg>Ejemplos</span>
+      </div>
+      <h1 class="mt-3 text-4xl font-extrabold tracking-tight text-white">Conducir un vehículo</h1>
+      <p class="!mt-3 text-lg !text-slate-400">En una entidad con Rigidbody, Vehicle y ruedas con WheelCollider.
+        Muestra la velocidad en un UIText llamado Velocimetro.</p>
+      <div class="mt-10">
+<p class="file">Coche.lua</p>
+      <pre><code class="language-lua">local Coche = { properties = { respuesta = 3.0 } }
+
+function Coche:Start()
+    self.giro = 0
+    self.hud = Scene.find("Velocimetro")
+end
+
+function Coche:Update(dt)
+    local acelerador = Input.getAxis("Vertical")
+    local objetivo = Input.getAxis("Horizontal")
+    -- Volante progresivo: no gira de golpe
+    self.giro = Mathf.moveTowards(self.giro, objetivo, self.respuesta * dt)
+
+    local freno = Input.getKey("s") and self.entity.speed > 5 and 1 or 0
+    local mano = Input.getKey("space") and 1 or 0
+    self.entity:setVehicleInput(acelerador, self.giro, freno, mano)
+
+    if self.hud then
+        self.hud.text = string.format("%3d km/h   %4d rpm   marcha %d",
+            math.floor(self.entity.speed), math.floor(self.entity.rpm), self.entity.gear)
+    end
+
+    if Input.getKeyDown("r") then   -- enderezar
+        self.entity.rotation = Vec3(0, self.entity.rotation.y, 0)
+        self.entity.position = self.entity.position + Vec3(0, 1, 0)
+    end
+end
+
+return Coche</code></pre>
+      </div>
+      <div class="mt-16 grid gap-4 border-t border-line pt-8 sm:grid-cols-2">
+        <a href="ejemplo-spawner.html" class="group rounded-xl border border-line p-4 transition hover:border-brand/60 hover:bg-panel">
+          <span class="text-xs text-slate-500">← Anterior</span>
+          <span class="mt-1 block font-semibold text-white group-hover:text-brand">Generador de enemigos</span>
+        </a>
+        <a href="ejemplo-menu.html" class="group rounded-xl border border-line p-4 text-right transition hover:border-brand/60 hover:bg-panel">
+          <span class="text-xs text-slate-500">Siguiente →</span>
+          <span class="mt-1 block font-semibold text-white group-hover:text-brand">Menú, opciones y récord</span>
+        </a></div>
+      <p class="mt-10 text-sm text-slate-500">¿Algo no queda claro o falta algo? Pregunta en el
+        <a href="https://discord.gg/zG7rSsUGEz" target="_blank" rel="noopener" class="text-brand hover:text-white">Discord</a>.</p>
+    </main>
+    <aside class="sticky top-16 hidden h-[calc(100vh-4rem)] w-52 shrink-0 overflow-y-auto py-10 xl:block">
+      <p class="mb-3 text-xs font-semibold uppercase tracking-wider text-slate-500">En esta página</p>
+      <nav id="onpage" class="onpage"></nav>
+    </aside>
+  </div>
+
+  <script>
+    hljs.highlightAll();
+
+    // Menu lateral en el movil.
+    const side = document.getElementById("side");
+    const shade = document.getElementById("shade");
+    const toggle = open => {
+      side.classList.toggle("-translate-x-full", !open);
+      shade.classList.toggle("hidden", !open);
+    };
+    document.getElementById("menu-btn").addEventListener("click", () => toggle(side.classList.contains("-translate-x-full")));
+    shade.addEventListener("click", () => toggle(false));
+    // El enlace activo a la vista dentro del menu (sin mover la pagina).
+    const current = side.querySelector("a.active");
+    if (current) side.scrollTop = current.offsetTop - side.clientHeight / 2;
+
+    // Boton de copiar en cada bloque de codigo.
+    document.querySelectorAll(".doc pre").forEach(pre => {
+      const b = document.createElement("button");
+      b.className = "copy";
+      b.textContent = "Copiar";
+      b.addEventListener("click", async () => {
+        try {
+          await navigator.clipboard.writeText(pre.querySelector("code")?.innerText ?? pre.innerText);
+          b.textContent = "Copiado";
+        } catch { b.textContent = "No se pudo"; }
+        setTimeout(() => (b.textContent = "Copiar"), 1400);
+      });
+      pre.appendChild(b);
+    });
+
+    // Tablas anchas: se desplazan dentro de su marco.
+    document.querySelectorAll(".doc table").forEach(t => {
+      const w = document.createElement("div");
+      w.className = "table-wrap";
+      t.replaceWith(w);
+      w.appendChild(t);
+    });
+
+    // "En esta pagina": los h3 con resaltado de la seccion visible.
+    const onpage = document.getElementById("onpage");
+    if (onpage) {
+      const heads = [...document.querySelectorAll(".doc h3[id]")];
+      if (heads.length < 2) {
+        onpage.closest("aside").classList.add("xl:invisible");
+      } else {
+        onpage.innerHTML = heads.map(h => `<a href="#${h.id}">${h.textContent}</a>`).join("");
+        const links = [...onpage.querySelectorAll("a")];
+        const obs = new IntersectionObserver(entries => {
+          for (const e of entries) {
+            if (e.isIntersecting) links.forEach(a => a.classList.toggle("active", a.getAttribute("href") === "#" + e.target.id));
+          }
+        }, { rootMargin: "-80px 0px -70% 0px" });
+        heads.forEach(h => obs.observe(h));
+      }
+    }
+
+    // Buscador: titulos, secciones y nombres de la API.
+    const input = document.getElementById("search");
+    const box = document.getElementById("results");
+    const norm = s => s.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+    const esc = s => s.replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+    let hits = [], sel = 0;
+    const render = () => {
+      if (!hits.length) {
+        box.innerHTML = input.value.trim() ? '<p class="px-3 py-2 text-sm text-slate-500">Sin resultados.</p>' : "";
+        box.classList.toggle("hidden", !input.value.trim());
+        return;
+      }
+      box.innerHTML = hits.map((h, i) => `
+        <a href="${h.u}" class="block rounded-lg px-3 py-2 ${i === sel ? "bg-brand/15" : "hover:bg-ink"}">
+          <span class="${h.c ? "font-mono text-sky-300" : "font-medium text-white"} text-sm">${esc(h.t)}</span>
+          <span class="ml-2 text-xs text-slate-500">${esc(h.g)}</span>
+          ${h.d ? `<span class="mt-0.5 block text-xs text-slate-400">${esc(h.d)}</span>` : ""}
+        </a>`).join("");
+      box.classList.remove("hidden");
+    };
+    input.addEventListener("input", () => {
+      const q = norm(input.value.trim());
+      sel = 0;
+      if (!q) { hits = []; render(); return; }
+      const words = q.split(/\s+/);
+      hits = window.CRAMION_SEARCH
+        .map(e => {
+          const t = norm(e.t), all = t + " " + norm(e.g) + " " + norm(e.d || "");
+          if (!words.every(w => all.includes(w))) return null;
+          const score = (t.startsWith(q) ? 0 : t.includes(q) ? 1 : 2) + (e.c ? 0.5 : 0) - (e.d ? 0.3 : 0);
+          return { e, score };
+        })
+        .filter(Boolean).sort((a, b) => a.score - b.score).slice(0, 12).map(x => x.e);
+      render();
+    });
+    input.addEventListener("keydown", ev => {
+      if (ev.key === "ArrowDown") { sel = Math.min(sel + 1, hits.length - 1); render(); ev.preventDefault(); }
+      if (ev.key === "ArrowUp") { sel = Math.max(sel - 1, 0); render(); ev.preventDefault(); }
+      if (ev.key === "Enter" && hits[sel]) location.href = hits[sel].u;
+      if (ev.key === "Escape") { input.value = ""; hits = []; render(); input.blur(); }
+    });
+    document.addEventListener("keydown", ev => {
+      if (ev.key === "/" && document.activeElement !== input) { ev.preventDefault(); input.focus(); }
+    });
+    document.addEventListener("click", ev => { if (!ev.target.closest("#results, #search")) box.classList.add("hidden"); });
+    input.addEventListener("focus", () => { if (input.value.trim()) render(); });
+  </script>
+</body>
+</html>

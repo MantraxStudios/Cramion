@@ -289,6 +289,9 @@ void EditorApp::drawMaterialEditor(const Uuid& uuid) {
     ImGui::EndGroup();
     ImGui::Separator();
 
+    // --- Shader (estandar o uno propio .crshader) ---
+    drawMaterialShaderSection(m, changed, structural);
+
     // --- Color ---
     if (materialTextureSlot("Color (albedo)", m.albedo)) changed = structural = true;
     float color[4] = {toSrgb(m.base_color.x), toSrgb(m.base_color.y), toSrgb(m.base_color.z), m.base_color.w};

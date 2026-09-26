@@ -1,0 +1,211 @@
+{
+  "intro": "<p>\n        La lógica de juego de Cramion se escribe en Lua, con un modelo de componentes sencillo:\n        cada script es una tabla, cada entidad con un componente <code>Script</code> recibe su propia instancia\n        (<code>self</code>) y el motor llama a sus métodos durante el modo Play.\n      </p>",
+  "examples_intro": "Scripts completos listos para copiar a <code>Assets/Scripts/</code>.",
+  "groups": [
+    {
+      "group": "Primeros pasos",
+      "pages": [
+        {
+          "slug": "primer-script",
+          "title": "Tu primer script",
+          "desc": "Crea un script Lua, engánchalo a un objeto y dale a Play."
+        },
+        {
+          "slug": "ciclo-de-vida",
+          "title": "Ciclo de vida",
+          "desc": "Start, Update, colisiones... qué llama el motor y cuándo."
+        },
+        {
+          "slug": "propiedades",
+          "title": "Propiedades",
+          "desc": "Valores que se editan en el Inspector sin tocar el código."
+        },
+        {
+          "slug": "recarga",
+          "title": "Recarga en caliente",
+          "desc": "Guarda en Play sin perder el estado y usa la consola de Lua."
+        },
+        {
+          "slug": "prefabs",
+          "title": "Prefabs",
+          "desc": "Objetos reutilizables: crear, instanciar, aplicar y usarlos desde Lua."
+        },
+        {
+          "slug": "mcp",
+          "title": "Conectar una IA (MCP)",
+          "desc": "Claude, Cursor o Copilot trabajando dentro del editor: escenas, scripts, shaders y modelos."
+        }
+      ]
+    },
+    {
+      "group": "Referencia de la API",
+      "pages": [
+        {
+          "slug": "vec3",
+          "title": "Vec3",
+          "desc": "Vectores 3D: operaciones, ángulos, interpolación, suavizado y proyecciones."
+        },
+        {
+          "slug": "quat",
+          "title": "Quat (rotaciones)",
+          "desc": "Rotaciones sin bloqueo de cardán: mirar hacia, girar con velocidad fija, interpolar."
+        },
+        {
+          "slug": "mathf",
+          "title": "Mathf",
+          "desc": "Limitar, interpolar, suavizar, ángulos, trigonometría y ruido Perlin."
+        },
+        {
+          "slug": "random",
+          "title": "Random",
+          "desc": "Aleatorios con semilla: rangos, probabilidades, direcciones, listas."
+        },
+        {
+          "slug": "entity",
+          "title": "Entity",
+          "desc": "Transformación, jerarquía, física, sonido, animación e interfaz de un objeto."
+        },
+        {
+          "slug": "scene",
+          "title": "Scene",
+          "desc": "Buscar, crear, instanciar y destruir objetos; cambiar de escena."
+        },
+        {
+          "slug": "input",
+          "title": "Input",
+          "desc": "Teclado, ratón, ejes y mando."
+        },
+        {
+          "slug": "time",
+          "title": "Time",
+          "desc": "Tiempo del frame, tiempo total y escala de tiempo."
+        },
+        {
+          "slug": "physics",
+          "title": "Physics",
+          "desc": "Raycasts y consultas a la física."
+        },
+        {
+          "slug": "navegacion",
+          "title": "Navegación",
+          "desc": "NavMesh: agentes que buscan el camino."
+        },
+        {
+          "slug": "mallas",
+          "title": "Mallas por código",
+          "desc": "Crea y modifica mallas con varios materiales desde Lua."
+        },
+        {
+          "slug": "voxel",
+          "title": "Mundo de bloques",
+          "desc": "Leer y cambiar bloques de un mundo voxel."
+        },
+        {
+          "slug": "audio",
+          "title": "Audio",
+          "desc": "Sonidos sueltos y fuentes de audio."
+        },
+        {
+          "slug": "ui",
+          "title": "Interfaz (UI)",
+          "desc": "Textos, botones e imágenes en pantalla."
+        },
+        {
+          "slug": "prefs",
+          "title": "Prefs y Game",
+          "desc": "Datos guardados entre partidas y salir del juego."
+        },
+        {
+          "slug": "debug",
+          "title": "Debug",
+          "desc": "Mensajes, avisos y errores en la consola del editor."
+        }
+      ]
+    },
+    {
+      "group": "Gráficos",
+      "pages": [
+        {
+          "slug": "shaders",
+          "title": "Shaders propios",
+          "desc": "Escribe en GLSL cómo se ve una superficie: brillos, hologramas, disolver, agua que se mueve."
+        }
+      ]
+    },
+    {
+      "group": "Ejemplos",
+      "pages": [
+        {
+          "slug": "ejemplo-girar",
+          "title": "Girar un objeto",
+          "desc": "Aspas de molino, monedas, plataformas… El eje y la velocidad se ajustan en el Inspector."
+        },
+        {
+          "slug": "ejemplo-camara",
+          "title": "Cámara que sigue al jugador",
+          "desc": "Se ejecuta en LateUpdate para moverse después de que el jugador ya se movió en su Update."
+        },
+        {
+          "slug": "ejemplo-jugador",
+          "title": "Jugador con física",
+          "desc": "Movimiento con WASD y salto con Espacio sobre un Rigidbody con CapsuleCollider.\n        Detecta el suelo con un raycast y fija la velocidad horizontal para que el control sea preciso."
+        },
+        {
+          "slug": "ejemplo-disparo",
+          "title": "Disparo con raycast",
+          "desc": "Al hacer clic, lanza un rayo desde la cámara hacia delante y empuja lo que toque."
+        },
+        {
+          "slug": "ejemplo-monedas",
+          "title": "Monedas y puntuación",
+          "desc": "Cada moneda tiene un SphereCollider marcado como trigger y la etiqueta Moneda.\n        El marcador es una entidad con un UIText llamada Marcador."
+        },
+        {
+          "slug": "ejemplo-spawner",
+          "title": "Generador de enemigos",
+          "desc": "Usa una entidad desactivada como plantilla (un \"prefab\" dentro de la escena) y la copia con\n        Scene.instantiate cada cierto tiempo en un punto aleatorio."
+        },
+        {
+          "slug": "ejemplo-vehiculo",
+          "title": "Conducir un vehículo",
+          "desc": "En una entidad con Rigidbody, Vehicle y ruedas con WheelCollider.\n        Muestra la velocidad en un UIText llamado Velocimetro."
+        },
+        {
+          "slug": "ejemplo-menu",
+          "title": "Menú, opciones y récord",
+          "desc": "El método OnJugar se conecta al UIButton \"Jugar\", OnVolumen a un UISlider\n        y OnSalir al botón \"Salir\". El volumen y el récord se guardan con Prefs."
+        },
+        {
+          "slug": "ejemplo-animacion",
+          "title": "Animación de un personaje",
+          "desc": "Alimenta los parámetros del controlador de animación a partir de la velocidad del Rigidbody."
+        },
+        {
+          "slug": "ejemplo-comunicacion",
+          "title": "Scripts que se hablan",
+          "desc": "entity:getScript() devuelve la instancia del script de otra entidad: puedes leer sus datos y llamar a sus métodos.\n        Así, un gestor de nivel puede coordinar a los demás."
+        },
+        {
+          "slug": "ejemplo-ia",
+          "title": "IA: patrullar y perseguir",
+          "desc": "Un guardia con NavAgent que patrulla por puntos al azar y persigue al jugador cuando lo ve\n        (el raycast de la malla comprueba que no haya una pared en medio). Si lo pierde, vuelve a patrullar."
+        },
+        {
+          "slug": "ejemplo-terreno",
+          "title": "Terreno procedural con colisión",
+          "desc": "Script completo listo para copiar."
+        },
+        {
+          "slug": "ejemplo-efectos",
+          "title": "Varios materiales y efectos",
+          "desc": "Script completo listo para copiar."
+        },
+        {
+          "slug": "ejemplo-olas",
+          "title": "Olas: cambiar la malla cada frame",
+          "desc": "Script completo listo para copiar."
+        }
+      ]
+    }
+  ]
+}

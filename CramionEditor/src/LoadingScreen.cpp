@@ -186,6 +186,40 @@ LONG WINAPI onCrash(EXCEPTION_POINTERS* info) {
         CloseHandle(file);
     }
     const std::filesystem::path module_name = std::filesystem::path(module_path).filename();
+    // Pila de llamadas: modulo + desplazamiento por marco (llvm-symbolizer con el
+    // .pdb da las lineas: --obj=CramionEditor.exe 0x140000000+desplazamiento).
+    std::string stack;
+    {
+        CONTEXT context = *info->ContextRecord;
+        STACKFRAME64 frame{};
+        frame.AddrPC.Offset = context.Rip;
+        frame.AddrPC.Mode = AddrModeFlat;
+        frame.AddrFrame.Offset = context.Rbp;
+        frame.AddrFrame.Mode = AddrModeFlat;
+        frame.AddrStack.Offset = context.Rsp;
+        frame.AddrStack.Mode = AddrModeFlat;
+        const HANDLE process = GetCurrentProcess();
+        SymInitialize(process, nullptr, TRUE);
+        for (int i = 0; i < 40; ++i) {
+            if (!StackWalk64(IMAGE_FILE_MACHINE_AMD64, process, GetCurrentThread(), &frame, &context, nullptr,
+                             SymFunctionTableAccess64, SymGetModuleBase64, nullptr) ||
+                frame.AddrPC.Offset == 0) {
+                break;
+            }
+            HMODULE frame_module = nullptr;
+            wchar_t frame_path[MAX_PATH] = L"?";
+            std::uintptr_t frame_offset = frame.AddrPC.Offset;
+            if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                                   reinterpret_cast<LPCWSTR>(frame.AddrPC.Offset), &frame_module)) {
+                GetModuleFileNameW(frame_module, frame_path, MAX_PATH);
+                frame_offset -= reinterpret_cast<std::uintptr_t>(frame_module);
+            }
+            char line[512];
+            std::snprintf(line, sizeof(line), "  #%d %s + 0x%llx\n", i, std::filesystem::path(frame_path).filename().string().c_str(),
+                          static_cast<unsigned long long>(frame_offset));
+            stack += line;
+        }
+    }
     std::filesystem::path report = base;
     report += ".txt";
     {
@@ -193,9 +227,11 @@ LONG WINAPI onCrash(EXCEPTION_POINTERS* info) {
         out << g_app_name << " se cerro por un error\n"
             << "Codigo: 0x" << std::hex << code << "\n"
             << "Modulo: " << module_name.string() << " + 0x" << offset << std::dec << "\n"
-            << "Minidump: " << dump.string() << "\n";
+            << "Minidump: " << dump.string() << "\n"
+            << "Pila:\n" << stack;
     }
     std::cerr << "[Crash] 0x" << std::hex << code << " en " << module_name.string() << " + 0x" << offset << std::dec << '\n';
+    std::cerr << stack;
     std::cerr.flush();
 
     wchar_t message[1024];

@@ -1,0 +1,23 @@
+<p class="file">CamaraSeguir.lua</p>
+      <pre><code class="language-lua">local CamaraSeguir = {
+    properties = {
+        objetivo = "Jugador",
+        distancia = Vec3(0, 4, 8),  -- detrás y por encima
+        suavizado = 6.0,
+    }
+}
+
+function CamaraSeguir:Start()
+    self.target = Scene.find(self.objetivo)
+    if not self.target then Debug.warn("No hay ninguna entidad llamada", self.objetivo) end
+end
+
+function CamaraSeguir:LateUpdate(dt)
+    if not (self.target and self.target:valid()) then return end
+    local destino = self.target.position + self.distancia
+    local t = Mathf.clamp01(self.suavizado * dt)
+    self.entity.position = self.entity.position:lerp(destino, t)
+    self.entity:lookAt(self.target.position + Vec3(0, 1, 0))
+end
+
+return CamaraSeguir</code></pre>

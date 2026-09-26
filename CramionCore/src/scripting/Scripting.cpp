@@ -1,12 +1,18 @@
 #include "CramionCore/scripting/Scripting.h"
 
+#include "CramionCore/asset/AssetTypes.h"
+#include "CramionCore/asset/MaterialAsset.h"
 #include "CramionCore/audio/Audio.h"
 #include "CramionCore/ecs/Components.h"
+#include "CramionCore/ecs/Prefab.h"
 #include "CramionCore/navigation/Navigation.h"
 #include "CramionCore/physics/PhysicsSystem.h"
 #include "CramionCore/ui/UI.h"
+#include "CramionCore/voxel/Voxel.h"
 
 #include <CramionDM/Input.h>
+
+#include "LuaMath.h"
 
 #define SOL_ALL_SAFETIES_ON 1
 #include <sol/sol.hpp>
@@ -127,6 +133,9 @@ struct ScriptSystem::Impl {
     physics::PhysicsSystem* physics = nullptr;
     audio::AudioSystem* audio = nullptr;
     navigation::NavigationSystem* navigation = nullptr;
+    voxel::VoxelSystem* voxels = nullptr;
+    CursorLockCallback cursor_lock;
+    bool cursor_locked = false;
     LogCallback log;
     std::vector<ScriptError> errors;
 
@@ -193,6 +202,24 @@ struct ScriptSystem::Impl {
             if (stem == wanted) return it->path();
         }
         return {};
+    }
+
+    // Prefabs leidos (se relee si el archivo cambia).
+    struct PrefabFile {
+        std::filesystem::file_time_type stamp{};
+        std::string text;
+    };
+    std::unordered_map<std::string, PrefabFile> prefabs;
+    std::string prefab_cache(const std::filesystem::path& file) {
+        std::error_code ec;
+        const auto stamp = std::filesystem::last_write_time(file, ec);
+        if (ec) return {};
+        PrefabFile& entry = prefabs[file.string()];
+        if (entry.text.empty() || entry.stamp != stamp) {
+            entry.text = ecs::readPrefabFile(file);
+            entry.stamp = stamp;
+        }
+        return entry.text;
     }
 
     // --- Mensajes y errores ---
@@ -284,34 +311,8 @@ struct ScriptSystem::Impl {
         L["dofile"] = sol::lua_nil;
         L["loadfile"] = sol::lua_nil;
 
-        // Vec3
-        auto vec = L.new_usertype<Vec3>(
-            "Vec3", sol::call_constructor,
-            sol::factories([]() { return Vec3{}; }, [](float x, float y, float z) { return Vec3{x, y, z}; }),
-            "x", &Vec3::x, "y", &Vec3::y, "z", &Vec3::z,
-            sol::meta_function::addition, [](const Vec3& a, const Vec3& b) { return a + b; },
-            sol::meta_function::subtraction, [](const Vec3& a, const Vec3& b) { return a - b; },
-            sol::meta_function::multiplication,
-            sol::overload([](const Vec3& a, float s) { return a * s; }, [](float s, const Vec3& a) { return a * s; },
-                          [](const Vec3& a, const Vec3& b) { return Vec3{a.x * b.x, a.y * b.y, a.z * b.z}; }),
-            sol::meta_function::division, [](const Vec3& a, float s) { return a * (1.0f / s); },
-            sol::meta_function::unary_minus, [](const Vec3& a) { return a * -1.0f; },
-            sol::meta_function::equal_to, [](const Vec3& a, const Vec3& b) { return a.x == b.x && a.y == b.y && a.z == b.z; },
-            sol::meta_function::to_string, [](const Vec3& v) { return vecString(v); },
-            "length", [](const Vec3& v) { return core::length(v); },
-            "normalized", [](const Vec3& v) { return core::length(v) > 1e-6f ? core::normalize(v) : Vec3{}; },
-            "dot", [](const Vec3& a, const Vec3& b) { return core::dot(a, b); },
-            "cross", [](const Vec3& a, const Vec3& b) { return core::cross(a, b); },
-            "distance", [](const Vec3& a, const Vec3& b) { return core::length(a - b); },
-            "lerp", [](const Vec3& a, const Vec3& b, float t) { return a + (b - a) * t; });
-        vec["zero"] = sol::var(Vec3{0.0f, 0.0f, 0.0f});
-        vec["one"] = sol::var(Vec3{1.0f, 1.0f, 1.0f});
-        vec["up"] = sol::var(Vec3{0.0f, 1.0f, 0.0f});
-        vec["down"] = sol::var(Vec3{0.0f, -1.0f, 0.0f});
-        vec["right"] = sol::var(Vec3{1.0f, 0.0f, 0.0f});
-        vec["left"] = sol::var(Vec3{-1.0f, 0.0f, 0.0f});
-        vec["forward"] = sol::var(Vec3{0.0f, 0.0f, -1.0f});
-        vec["back"] = sol::var(Vec3{0.0f, 0.0f, 1.0f});
+        // Vec3, Quat, Mathf y Random (LuaMath.cpp)
+        bindMath(L);
 
         // Entity
         auto entity = L.new_usertype<LuaEntity>(
@@ -410,6 +411,8 @@ struct ScriptSystem::Impl {
             "translateLocal", [](LuaEntity& e, const Vec3& d) {
                 if (auto x = e.get(); x.valid()) x.setWorldPosition(x.worldPosition() + x.right() * d.x + x.up() * d.y - x.forward() * d.z);
             },
+            "quaternion", sol::property([](const LuaEntity& e) { const ecs::Entity x = e.get(); return x.valid() ? x.localRotation() : core::Quat{}; },
+                                        [](LuaEntity& e, const core::Quat& q) { if (auto x = e.get(); x.valid()) x.setLocalRotation(q); }),
             "rotate", [](LuaEntity& e, const Vec3& degrees) { if (auto x = e.get(); x.valid()) x.setLocalEulerDegrees(x.localEulerDegrees() + degrees); },
             "lookAt", [](LuaEntity& e, const Vec3& target) {
                 ecs::Entity x = e.get();
@@ -501,6 +504,116 @@ struct ScriptSystem::Impl {
             sol::meta_function::equal_to, [](const LuaEntity& a, const LuaEntity& b) { return a.handle == b.handle; },
             sol::meta_function::to_string, [](const LuaEntity& e) { const ecs::Entity x = e.get(); return "Entity(" + (x.valid() ? x.name() : std::string("destruida")) + ")"; });
 
+        // La malla creada por codigo del MeshRenderer (lo anade si no hay).
+        entity["mesh"] = sol::property(
+            [](const LuaEntity& e) -> std::shared_ptr<ecs::Mesh> {
+                const ecs::Entity x = e.get();
+                const ecs::MeshRenderer* r = x.valid() ? x.tryGet<ecs::MeshRenderer>() : nullptr;
+                return r != nullptr ? r->mesh : nullptr;
+            },
+            [](LuaEntity& e, sol::optional<std::shared_ptr<ecs::Mesh>> m) {
+                ecs::Entity x = e.get();
+                if (!x.valid()) return;
+                ecs::MeshRenderer* r = x.tryGet<ecs::MeshRenderer>();
+                if (r == nullptr) {
+                    if (!m || !*m) return;
+                    r = &x.add<ecs::MeshRenderer>();
+                }
+                r->mesh = m ? *m : nullptr;
+            });
+        // Material .crmat de un hueco del MeshRenderer (submalla), o nil para el suyo.
+        entity["setMaterial"] = [this](LuaEntity& e, int slot, sol::optional<std::string> path) {
+            ecs::Entity x = e.get();
+            ecs::MeshRenderer* r = x.valid() ? x.tryGet<ecs::MeshRenderer>() : nullptr;
+            if (r == nullptr || slot < 0) return false;
+            assets::AssetRef ref{{}, assets::AssetType::Material};
+            if (path && !path->empty()) {
+                assets::MaterialAsset m;
+                std::filesystem::path file = root / fromUtf8(*path);
+                if (file.extension() != ".crmat") file += ".crmat";
+                if (!assets::loadMaterial(file, m)) {
+                    write(2, "setMaterial: no se puede leer el material \"" + *path + "\"");
+                    return false;
+                }
+                ref.uuid = m.uuid;
+            }
+            if (r->materials.size() <= static_cast<std::size_t>(slot)) r->materials.resize(static_cast<std::size_t>(slot) + 1);
+            r->materials[static_cast<std::size_t>(slot)] = ref;
+            return true;
+        };
+        entity["castShadows"] = sol::property(
+            [](const LuaEntity& e) {
+                const ecs::Entity x = e.get();
+                const ecs::MeshRenderer* r = x.valid() ? x.tryGet<ecs::MeshRenderer>() : nullptr;
+                return r != nullptr && r->cast_shadows != ecs::ShadowCasting::Off;
+            },
+            [](LuaEntity& e, bool on) {
+                ecs::Entity x = e.get();
+                if (ecs::MeshRenderer* r = x.valid() ? x.tryGet<ecs::MeshRenderer>() : nullptr) {
+                    r->cast_shadows = on ? ecs::ShadowCasting::On : ecs::ShadowCasting::Off;
+                }
+            });
+        // Interfaz: la imagen de un UIImage, la transparencia y el rectangulo.
+        entity["texture"] = sol::property(
+            [](const LuaEntity& e) -> std::string {
+                const ecs::Entity x = e.get();
+                const ui::Image* i = x.valid() ? x.tryGet<ui::Image>() : nullptr;
+                return i != nullptr ? i->texture : std::string();
+            },
+            [](LuaEntity& e, const std::string& path) {
+                ecs::Entity x = e.get();
+                if (ui::Image* i = x.valid() ? x.tryGet<ui::Image>() : nullptr) i->texture = path;
+            });
+        entity["alpha"] = sol::property(
+            [](const LuaEntity& e) -> float {
+                const ecs::Entity x = e.get();
+                if (!x.valid()) return 1.0f;
+                if (const auto* i = x.tryGet<ui::Image>()) return i->alpha;
+                if (const auto* t = x.tryGet<ui::Text>()) return t->alpha;
+                return 1.0f;
+            },
+            [](LuaEntity& e, float a) {
+                ecs::Entity x = e.get();
+                if (!x.valid()) return;
+                if (auto* i = x.tryGet<ui::Image>()) i->alpha = a;
+                if (auto* t = x.tryGet<ui::Text>()) t->alpha = a;
+            });
+        entity["uiPosition"] = sol::property(
+            [](const LuaEntity& e) {
+                const ecs::Entity x = e.get();
+                const ui::RectTransform* r = x.valid() ? x.tryGet<ui::RectTransform>() : nullptr;
+                return r != nullptr ? Vec3{r->position.x, r->position.y, 0.0f} : Vec3{};
+            },
+            [](LuaEntity& e, const Vec3& p) {
+                ecs::Entity x = e.get();
+                if (ui::RectTransform* r = x.valid() ? x.tryGet<ui::RectTransform>() : nullptr) r->position = core::Vec2{p.x, p.y};
+            });
+        entity["uiSize"] = sol::property(
+            [](const LuaEntity& e) {
+                const ecs::Entity x = e.get();
+                const ui::RectTransform* r = x.valid() ? x.tryGet<ui::RectTransform>() : nullptr;
+                return r != nullptr ? Vec3{r->size.x, r->size.y, 0.0f} : Vec3{};
+            },
+            [](LuaEntity& e, const Vec3& s) {
+                ecs::Entity x = e.get();
+                if (ui::RectTransform* r = x.valid() ? x.tryGet<ui::RectTransform>() : nullptr) r->size = core::Vec2{s.x, s.y};
+            });
+        // Componentes por su nombre ("MeshCollider", "Rigidbody", "Light"...).
+        entity["addComponent"] = [](LuaEntity& e, const std::string& name) {
+            ecs::Entity x = e.get();
+            const ecs::ComponentType* type = ecs::ComponentRegistry::instance().find(name);
+            if (!x.valid() || type == nullptr || e.world == nullptr) return false;
+            if (!type->has(*e.world, x.handle())) type->add(*e.world, x.handle());
+            return true;
+        };
+        entity["removeComponent"] = [](LuaEntity& e, const std::string& name) {
+            ecs::Entity x = e.get();
+            const ecs::ComponentType* type = ecs::ComponentRegistry::instance().find(name);
+            if (!x.valid() || type == nullptr || e.world == nullptr || !type->has(*e.world, x.handle())) return false;
+            type->remove(*e.world, x.handle());
+            return true;
+        };
+
         // Navegacion (NavAgent): como el MoveTo del AIController de Unreal.
         entity["moveTo"] = [this](LuaEntity& e, const Vec3& target) {
             const ecs::Entity x = e.get();
@@ -548,11 +661,30 @@ struct ScriptSystem::Impl {
             if (position) e.setWorldPosition(*position);
             return sol::make_object(*lua, LuaEntity{e.handle(), world});
         };
-        scene["instantiate"] = [this](const LuaEntity& original, sol::optional<Vec3> position) -> sol::object {
-            const ecs::Entity source = original.get();
-            if (world == nullptr || !source.valid()) return sol::lua_nil;
-            ecs::Entity copy = world->duplicate(source);
+        // Copia de una entidad, o una instancia de un prefab por su ruta en
+        // Assets ("Prefabs/Enemigo" o "Prefabs/Enemigo.crprefab").
+        scene["instantiate"] = [this](sol::object original, sol::optional<Vec3> position,
+                                      sol::optional<Vec3> rotation) -> sol::object {
+            if (world == nullptr) return sol::lua_nil;
+            ecs::Entity copy;
+            if (original.get_type() == sol::type::string) {
+                std::filesystem::path file = root / fromUtf8(original.as<std::string>());
+                if (file.extension() != ecs::kPrefabExtension) file += ecs::kPrefabExtension;
+                const std::string text = prefab_cache(file);
+                if (text.empty()) {
+                    write(2, "Scene.instantiate: no existe el prefab \"" + original.as<std::string>() + "\"");
+                    return sol::lua_nil;
+                }
+                copy = ecs::instantiatePrefab(*world, text);
+            } else if (original.is<LuaEntity>()) {
+                const ecs::Entity source = original.as<LuaEntity>().get();
+                if (!source.valid()) return sol::lua_nil;
+                copy = world->duplicate(source);
+                ecs::detachCopiedLinks(*world, copy);
+            }
+            if (!copy.valid()) return sol::lua_nil;
             if (position) copy.setWorldPosition(*position);
+            if (rotation) copy.setLocalEulerDegrees(*rotation);
             return sol::make_object(*lua, LuaEntity{copy.handle(), world});
         };
         scene["destroy"] = [this](const LuaEntity& e) { if (e.valid()) pending_destroy.push_back(e.handle); };
@@ -611,6 +743,10 @@ struct ScriptSystem::Impl {
         in["mousePosition"] = [this]() { return input != nullptr ? Vec3{input->mouseX(), input->mouseY(), 0.0f} : Vec3{}; };
         in["mouseDelta"] = [this]() { return input != nullptr ? Vec3{input->mouseDeltaX(), input->mouseDeltaY(), 0.0f} : Vec3{}; };
         in["getAxis"] = [this](const std::string& name) { return axis(name); };
+        // Raton capturado (primera persona): oculto, sin salir de la ventana y
+        // mouseDelta sin tope en los bordes.
+        in["lockCursor"] = [this](sol::optional<bool> on) { lockCursor(on.value_or(true)); };
+        in["isCursorLocked"] = [this]() { return cursor_locked; };
 
         // Time (se actualiza cada frame)
         sol::table t = L.create_named_table("Time");
@@ -660,6 +796,9 @@ struct ScriptSystem::Impl {
             return std::make_tuple(clear, hit);
         };
 
+        bindVoxel(L);
+        bindMesh(L);
+
         // Audio
         sol::table au = L.create_named_table("Audio");
         au["playOneShot"] = [this](const std::string& clip, sol::optional<Vec3> position, sol::optional<float> volume) {
@@ -683,25 +822,323 @@ struct ScriptSystem::Impl {
         dbg["warn"] = [this, joined](sol::variadic_args a, sol::this_state s) { write(1, joined(a, s)); };
         dbg["error"] = [this, joined](sol::variadic_args a, sol::this_state s) { write(2, joined(a, s)); };
         L["print"] = [this, joined](sol::variadic_args a, sol::this_state s) { write(0, joined(a, s)); };
+    }
 
-        // Mathf
-        sol::table m = L.create_named_table("Mathf");
-        m["pi"] = 3.14159265358979;
-        m["deg2rad"] = 3.14159265358979 / 180.0;
-        m["rad2deg"] = 180.0 / 3.14159265358979;
-        m["lerp"] = [](float a, float b, float t) { return a + (b - a) * t; };
-        m["clamp"] = [](float v, float lo, float hi) { return std::clamp(v, lo, hi); };
-        m["clamp01"] = [](float v) { return std::clamp(v, 0.0f, 1.0f); };
-        m["smoothstep"] = [](float a, float b, float v) {
-            const float t = std::clamp((v - a) / (b - a), 0.0f, 1.0f);
-            return t * t * (3.0f - 2.0f * t);
+    void lockCursor(bool on) {
+        if (on == cursor_locked) return;
+        cursor_locked = on;
+        if (cursor_lock) cursor_lock(on);
+    }
+
+    // Voxel: el mundo de bloques. Los bloques se nombran por su id (numero) o
+    // por su nombre ("stone", "Piedra").
+    void bindVoxel(sol::state& L) {
+        sol::table vx = L.create_named_table("Voxel");
+        sol::state* S = &L;  // las funciones viven en este estado
+        const auto idOf = [](const sol::object& block) -> int {
+            if (block.get_type() == sol::type::number) return block.as<int>();
+            if (block.get_type() == sol::type::string) return voxel::blockId(block.as<std::string>());
+            return voxel::block::Air;
         };
-        m["moveTowards"] = [](float current, float target, float step) {
-            return std::abs(target - current) <= step ? target : current + (target > current ? step : -step);
+        // Coordenadas de bloque: cualquier numero (las de un Vec3 son flotantes), hacia abajo.
+        const auto cell = [](double v) { return static_cast<int>(std::floor(v)); };
+        vx["isActive"] = [this]() { return voxels != nullptr && voxels->active(); };
+        vx["getBlock"] = [this, cell](double x, double y, double z) {
+            return voxels != nullptr ? static_cast<int>(voxels->getBlock(cell(x), cell(y), cell(z))) : 0;
         };
-        m["random"] = [](float lo, float hi) {
-            return lo + (hi - lo) * (static_cast<float>(std::rand()) / static_cast<float>(RAND_MAX));
+        vx["getBlockAt"] = [this, cell](const Vec3& p) {
+            return voxels != nullptr ? static_cast<int>(voxels->getBlock(cell(p.x), cell(p.y), cell(p.z))) : 0;
         };
+        vx["setBlock"] = [this, idOf, cell](double x, double y, double z, sol::object block) {
+            const int id = idOf(block);
+            return voxels != nullptr && id >= 0 && id < voxel::block::Count && voxels->setBlock(cell(x), cell(y), cell(z), static_cast<voxel::BlockId>(id));
+        };
+        vx["blockId"] = [](const std::string& name) { return static_cast<int>(voxel::blockId(name)); };
+        vx["blockCount"] = []() { return static_cast<int>(voxel::block::Count); };
+        // Datos de un bloque: name, label, solid, placeable, hardness, drop, light.
+        vx["blockInfo"] = [S, idOf](sol::object block) -> sol::object {
+            const int id = idOf(block);
+            if (id < 0 || id >= voxel::block::Count) return sol::lua_nil;
+            const voxel::BlockDef& def = voxel::blockDef(static_cast<voxel::BlockId>(id));
+            sol::table t = S->create_table();
+            t["id"] = id;
+            t["name"] = def.name;
+            t["label"] = def.label;
+            t["solid"] = def.solid;
+            t["placeable"] = def.placeable;
+            t["replaceable"] = def.replaceable;
+            t["hardness"] = def.hardness;
+            t["drop"] = def.drop != 0 ? static_cast<int>(def.drop) : id;
+            t["light"] = static_cast<int>(def.light);
+            return t;
+        };
+        vx["blockColor"] = [this, idOf](sol::object block) {
+            const int id = idOf(block);
+            return voxels != nullptr && id >= 0 && id < voxel::block::Count ? voxels->blockColor(static_cast<voxel::BlockId>(id))
+                                                                             : Vec3{1.0f, 1.0f, 1.0f};
+        };
+        vx["surfaceHeight"] = [this, cell](double x, double z) { return voxels != nullptr ? voxels->surfaceHeight(cell(x), cell(z)) : 0; };
+        vx["isReady"] = [this, cell](const Vec3& p) { return voxels != nullptr && voxels->isReady(cell(p.x), cell(p.z)); };
+        vx["inWater"] = [this](const Vec3& p) { return voxels != nullptr && voxels->inWater(p); };
+        vx["skyLight"] = [this, cell](double x, double y, double z) { return voxels != nullptr ? voxels->skyLight(cell(x), cell(y), cell(z)) : 15; };
+        vx["blockLight"] = [this, cell](double x, double y, double z) { return voxels != nullptr ? voxels->blockLight(cell(x), cell(y), cell(z)) : 0; };
+        // El primer bloque que toca: {block = Vec3, normal = Vec3, id, point, distance}.
+        vx["raycast"] = [this, S](const Vec3& origin, const Vec3& direction, sol::optional<float> distance) -> sol::object {
+            if (voxels == nullptr) return sol::lua_nil;
+            const voxel::VoxelHit hit = voxels->raycast(origin, direction, distance.value_or(8.0f));
+            if (!hit.hit) return sol::lua_nil;
+            sol::table t = S->create_table();
+            t["block"] = Vec3{static_cast<float>(hit.block.x), static_cast<float>(hit.block.y), static_cast<float>(hit.block.z)};
+            t["normal"] = Vec3{static_cast<float>(hit.normal.x), static_cast<float>(hit.normal.y), static_cast<float>(hit.normal.z)};
+            t["id"] = static_cast<int>(hit.id);
+            t["point"] = hit.point;
+            t["distance"] = hit.distance;
+            return t;
+        };
+        // Mueve una caja (centro, semiejes) contra los bloques: posicion, enSuelo, techo, pared.
+        vx["moveBox"] = [this](const Vec3& center, const Vec3& half, const Vec3& delta) {
+            if (voxels == nullptr) return std::make_tuple(center + delta, false, false, false);
+            const voxel::VoxelSystem::MoveResult r = voxels->moveBox(center, half, delta);
+            return std::make_tuple(r.position, r.on_ground, r.hit_ceiling, r.hit_wall);
+        };
+        vx["boxCollides"] = [this](const Vec3& center, const Vec3& half) { return voxels != nullptr && voxels->boxCollides(center, half); };
+        // Mundos guardados (partidas).
+        vx["newWorld"] = [this](const std::string& name, sol::optional<int> seed) {
+            return voxels != nullptr && voxels->newWorld(name, seed.value_or(static_cast<int>(std::rand())));
+        };
+        vx["loadWorld"] = [this](const std::string& name) { return voxels != nullptr && voxels->loadWorld(name); };
+        vx["saveWorld"] = [this]() { return voxels != nullptr && voxels->saveWorld(); };
+        vx["deleteWorld"] = [this](const std::string& name) { return voxels != nullptr && voxels->deleteWorld(name); };
+        vx["listWorlds"] = [this, S]() {
+            sol::table out = S->create_table();
+            if (voxels == nullptr) return out;
+            int i = 1;
+            for (const voxel::WorldInfo& w : voxels->listWorlds()) {
+                sol::table t = S->create_table();
+                t["name"] = w.name;
+                t["seed"] = w.seed;
+                t["lastPlayed"] = static_cast<double>(w.last_played);
+                t["mode"] = w.mode;
+                out[i++] = t;
+            }
+            return out;
+        };
+        vx["worldName"] = [this]() { return voxels != nullptr ? voxels->worldName() : std::string(); };
+        vx["seed"] = [this]() { return voxels != nullptr ? voxels->seed() : 0; };
+        vx["setMeta"] = [this](const std::string& k, const std::string& v) { if (voxels != nullptr) voxels->setMeta(k, v); };
+        vx["getMeta"] = [this](const std::string& k, sol::optional<std::string> fallback) {
+            return voxels != nullptr ? voxels->meta(k, fallback.value_or(std::string())) : fallback.value_or(std::string());
+        };
+    }
+
+    // Mesh: mallas creadas por codigo, como el Mesh de Unity. Los triangulos
+    // usan indices de vertice desde 0 (como Unity): el vertice 0 es
+    // mesh.vertices[1] en Lua. Las UV van en Vec3 (x, y). Cambiar una lista
+    // entera (mesh.vertices = {...}) o llamar a mesh:apply() la sube a la GPU
+    // en el siguiente frame.
+    void bindMesh(sol::state& L) {
+        using MeshPtr = std::shared_ptr<ecs::Mesh>;
+        sol::state* S = &L;
+        const auto vec3List = [S](const std::vector<Vec3>& in) {
+            sol::table t = S->create_table(static_cast<int>(in.size()), 0);
+            for (std::size_t i = 0; i < in.size(); ++i) t[i + 1] = in[i];
+            return t;
+        };
+        const auto readVec3 = [](const sol::table& t) {
+            std::vector<Vec3> out;
+            out.reserve(t.size());
+            for (std::size_t i = 1; i <= t.size(); ++i) out.push_back(t.get<Vec3>(i));
+            return out;
+        };
+        const auto readIndices = [](const sol::table& t) {
+            std::vector<std::uint32_t> out;
+            out.reserve(t.size());
+            for (std::size_t i = 1; i <= t.size(); ++i) {
+                const double v = t.get<double>(i);
+                out.push_back(v < 0.0 ? 0xFFFFFFFFu : static_cast<std::uint32_t>(v));
+            }
+            return out;
+        };
+        auto mesh = L.new_usertype<ecs::Mesh>(
+            "Mesh", sol::no_constructor,
+            "name", &ecs::Mesh::name,
+            "vertexCount", sol::property([](const ecs::Mesh& m) { return static_cast<int>(m.vertices.size()); }),
+            "triangleCount", sol::property([](const ecs::Mesh& m) { return static_cast<int>(m.triangleCount()); }),
+            "subMeshCount", sol::property(&ecs::Mesh::subMeshCount, &ecs::Mesh::setSubMeshCount),
+            "vertices", sol::property([vec3List](const ecs::Mesh& m) { return vec3List(m.vertices); },
+                                      [readVec3](ecs::Mesh& m, const sol::table& t) {
+                                          m.vertices = readVec3(t);
+                                          m.markModified();
+                                      }),
+            "normals", sol::property([vec3List](const ecs::Mesh& m) { return vec3List(m.normals); },
+                                     [readVec3](ecs::Mesh& m, const sol::table& t) {
+                                         m.normals = readVec3(t);
+                                         m.markModified();
+                                     }),
+            "uv", sol::property(
+                      [S](const ecs::Mesh& m) {
+                          sol::table t = S->create_table(static_cast<int>(m.uv.size()), 0);
+                          for (std::size_t i = 0; i < m.uv.size(); ++i) t[i + 1] = Vec3{m.uv[i].x, m.uv[i].y, 0.0f};
+                          return t;
+                      },
+                      [readVec3](ecs::Mesh& m, const sol::table& t) {
+                          m.uv.clear();
+                          for (const Vec3& v : readVec3(t)) m.uv.push_back(core::Vec2{v.x, v.y});
+                          m.markModified();
+                      }),
+            // Tangentes: Vec3 (+U); el signo de la bitangente, +1.
+            "tangents", sol::property(
+                            [S](const ecs::Mesh& m) {
+                                sol::table t = S->create_table(static_cast<int>(m.tangents.size()), 0);
+                                for (std::size_t i = 0; i < m.tangents.size(); ++i) {
+                                    t[i + 1] = Vec3{m.tangents[i].x, m.tangents[i].y, m.tangents[i].z};
+                                }
+                                return t;
+                            },
+                            [readVec3](ecs::Mesh& m, const sol::table& t) {
+                                m.tangents.clear();
+                                for (const Vec3& v : readVec3(t)) m.tangents.push_back(core::Vec4{v.x, v.y, v.z, 1.0f});
+                                m.markModified();
+                            }),
+            // Los de la submalla 0 (como mesh.triangles de Unity).
+            "triangles", sol::property(
+                             [S](const ecs::Mesh& m) {
+                                 const std::vector<std::uint32_t>& tris = m.triangles(0);
+                                 sol::table t = S->create_table(static_cast<int>(tris.size()), 0);
+                                 for (std::size_t i = 0; i < tris.size(); ++i) t[i + 1] = tris[i];
+                                 return t;
+                             },
+                             [readIndices](ecs::Mesh& m, const sol::table& t) {
+                                 m.setTriangles(readIndices(t), 0);
+                                 m.markModified();
+                             }),
+            "setTriangles", [readIndices](ecs::Mesh& m, const sol::table& t, sol::optional<int> submesh) {
+                m.setTriangles(readIndices(t), submesh.value_or(0));
+                m.markModified();
+            },
+            "getTriangles", [S](const ecs::Mesh& m, sol::optional<int> submesh) {
+                const std::vector<std::uint32_t>& tris = m.triangles(submesh.value_or(0));
+                sol::table t = S->create_table(static_cast<int>(tris.size()), 0);
+                for (std::size_t i = 0; i < tris.size(); ++i) t[i + 1] = tris[i];
+                return t;
+            },
+            // Un vertice suelto (indice desde 0): despues, mesh:apply().
+            "setVertex", [](ecs::Mesh& m, int index, const Vec3& p) {
+                if (index >= 0 && static_cast<std::size_t>(index) < m.vertices.size()) m.vertices[static_cast<std::size_t>(index)] = p;
+            },
+            "getVertex", [](const ecs::Mesh& m, int index) {
+                return index >= 0 && static_cast<std::size_t>(index) < m.vertices.size() ? m.vertices[static_cast<std::size_t>(index)] : Vec3{};
+            },
+            // Material de una submalla (sin .crmat): {color, alpha, metallic,
+            // roughness, emission, emissionIntensity}.
+            "setMaterial", [](ecs::Mesh& m, int submesh, const sol::table& t) {
+                if (submesh < 0) return;
+                bool layout = false;  // texturas o huecos nuevos: hay que volver a subirla
+                if (m.materials.size() <= static_cast<std::size_t>(submesh)) {
+                    m.materials.resize(static_cast<std::size_t>(submesh) + 1);
+                    layout = true;
+                }
+                ecs::MeshMaterial& mat = m.materials[static_cast<std::size_t>(submesh)];
+                if (sol::optional<Vec3> c = t["color"]) mat.color = core::Vec4{c->x, c->y, c->z, mat.color.w};
+                if (sol::optional<float> a = t["alpha"]) mat.color.w = *a;
+                if (sol::optional<float> v = t["metallic"]) mat.metallic = *v;
+                if (sol::optional<float> v = t["roughness"]) mat.roughness = *v;
+                if (sol::optional<Vec3> e = t["emission"]) mat.emission = *e;
+                if (sol::optional<float> v = t["emissionIntensity"]) mat.emission_intensity = *v;
+                if (sol::optional<float> v = t["normalStrength"]) mat.normal_strength = *v;
+                const auto text = [&](const char* key, std::string& field) {
+                    sol::object o = t[key];
+                    if (o.get_type() == sol::type::string && o.as<std::string>() != field) {
+                        field = o.as<std::string>();
+                        layout = true;
+                    } else if (o.get_type() == sol::type::boolean && !o.as<bool>() && !field.empty()) {
+                        field.clear();  // false = quitarla
+                        layout = true;
+                    }
+                };
+                text("texture", mat.texture);
+                text("normalMap", mat.normal_map);
+                text("emissionMap", mat.emission_map);
+                if (sol::optional<Vec3> v = t["tiling"]) {
+                    mat.tiling = core::Vec2{v->x, v->y};
+                    layout = true;
+                }
+                if (sol::optional<Vec3> v = t["offset"]) {
+                    mat.offset = core::Vec2{v->x, v->y};
+                    layout = true;
+                }
+                if (layout) m.markModified();
+                else m.markMaterialsModified();  // efectos por frame: sin volver a subir la malla
+            },
+            "getMaterial", [S](const ecs::Mesh& m, int submesh) -> sol::object {
+                if (submesh < 0) return sol::lua_nil;
+                const ecs::MeshMaterial mat = static_cast<std::size_t>(submesh) < m.materials.size() ? m.materials[static_cast<std::size_t>(submesh)]
+                                                                                                   : ecs::MeshMaterial{};
+                sol::table t = S->create_table();
+                t["color"] = Vec3{mat.color.x, mat.color.y, mat.color.z};
+                t["alpha"] = mat.color.w;
+                t["metallic"] = mat.metallic;
+                t["roughness"] = mat.roughness;
+                t["emission"] = mat.emission;
+                t["emissionIntensity"] = mat.emission_intensity;
+                t["normalStrength"] = mat.normal_strength;
+                t["texture"] = mat.texture;
+                t["normalMap"] = mat.normal_map;
+                t["emissionMap"] = mat.emission_map;
+                t["tiling"] = Vec3{mat.tiling.x, mat.tiling.y, 0.0f};
+                t["offset"] = Vec3{mat.offset.x, mat.offset.y, 0.0f};
+                return t;
+            },
+            "recalculateNormals", [](ecs::Mesh& m) { m.recalculateNormals(); m.markModified(); },
+            "recalculateTangents", [](ecs::Mesh& m) { m.recalculateTangents(); m.markModified(); },
+            "recalculateBounds", [](ecs::Mesh& m) { m.recalculateBounds(); },
+            "boundsMin", sol::property([](const ecs::Mesh& m) { return m.boundsMin(); }),
+            "boundsMax", sol::property([](const ecs::Mesh& m) { return m.boundsMax(); }),
+            "apply", [](ecs::Mesh& m) { m.markModified(); },
+            "clear", [](ecs::Mesh& m) { m.clear(); },
+            // "" si se puede dibujar; si no, que le pasa.
+            "validate", [](const ecs::Mesh& m) { return m.validate(); },
+            "clone", [](const ecs::Mesh& m) {
+                auto copy = std::make_shared<ecs::Mesh>(m);
+                copy->markModified();
+                return copy;
+            },
+            sol::meta_function::to_string, [](const ecs::Mesh& m) {
+                return "Mesh(" + m.name + ", " + std::to_string(m.vertices.size()) + " vertices, " +
+                       std::to_string(m.triangleCount()) + " triangulos)";
+            });
+        mesh["new"] = [](sol::optional<std::string> name) {
+            auto m = std::make_shared<ecs::Mesh>();
+            if (name) m->name = *name;
+            return m;
+        };
+        mesh["cube"] = [](sol::object size) {
+            Vec3 s{1.0f, 1.0f, 1.0f};
+            if (size.is<Vec3>()) s = size.as<Vec3>();
+            else if (size.get_type() == sol::type::number) s = Vec3{1.0f, 1.0f, 1.0f} * size.as<float>();
+            return ecs::Mesh::cube(s);
+        };
+        mesh["quad"] = [](sol::optional<float> w, sol::optional<float> h) { return ecs::Mesh::quad(w.value_or(1.0f), h.value_or(w.value_or(1.0f))); };
+        mesh["plane"] = [](sol::optional<float> w, sol::optional<float> d, sol::optional<int> sx, sol::optional<int> sz) {
+            return ecs::Mesh::plane(w.value_or(10.0f), d.value_or(w.value_or(10.0f)), sx.value_or(10), sz.value_or(sx.value_or(10)));
+        };
+        mesh["sphere"] = [](sol::optional<float> r, sol::optional<int> seg, sol::optional<int> rings) {
+            return ecs::Mesh::sphere(r.value_or(0.5f), seg.value_or(32), rings.value_or(16));
+        };
+        mesh["cylinder"] = [](sol::optional<float> r, sol::optional<float> h, sol::optional<int> seg) {
+            return ecs::Mesh::cylinder(r.value_or(0.5f), h.value_or(2.0f), seg.value_or(32));
+        };
+        mesh["wireCube"] = [](sol::object size, sol::optional<float> thickness) {
+            Vec3 s{1.0f, 1.0f, 1.0f};
+            if (size.is<Vec3>()) s = size.as<Vec3>();
+            else if (size.get_type() == sol::type::number) s = Vec3{1.0f, 1.0f, 1.0f} * size.as<float>();
+            return ecs::Mesh::wireCube(s, thickness.value_or(0.02f));
+        };
+        mesh["capsule"] = [](sol::optional<float> r, sol::optional<float> h, sol::optional<int> seg) {
+            return ecs::Mesh::capsule(r.value_or(0.5f), h.value_or(2.0f), seg.value_or(24));
+        };
+        (void)S;
+        (void)sizeof(MeshPtr);
     }
 
     // --- Clases e instancias ---
@@ -860,6 +1297,10 @@ void ScriptSystem::setInput(const dm::Input* input) { impl_->input = input; }
 void ScriptSystem::setPhysics(physics::PhysicsSystem* physics) { impl_->physics = physics; }
 void ScriptSystem::setAudio(audio::AudioSystem* audio) { impl_->audio = audio; }
 void ScriptSystem::setNavigation(navigation::NavigationSystem* navigation) { impl_->navigation = navigation; }
+void ScriptSystem::setVoxels(voxel::VoxelSystem* voxels) { impl_->voxels = voxels; }
+void ScriptSystem::setCursorLock(CursorLockCallback callback) { impl_->cursor_lock = std::move(callback); }
+bool ScriptSystem::cursorLocked() const { return impl_->cursor_locked; }
+void ScriptSystem::releaseCursor() { impl_->lockCursor(false); }
 void ScriptSystem::setLog(LogCallback log) { impl_->log = std::move(log); }
 
 std::filesystem::path ScriptSystem::takeSceneRequest() {
@@ -991,6 +1432,7 @@ void ScriptSystem::stop() {
     d.pending_destroy.clear();
     d.lua.reset();
     d.running = false;
+    d.lockCursor(false);  // el raton vuelve al sistema
 }
 
 void ScriptSystem::reloadFile(const std::string& file) {

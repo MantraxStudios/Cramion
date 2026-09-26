@@ -7,6 +7,8 @@ Motor de render en tiempo real para Windows con **renderizador diferido en Vulka
 
 El motor son dos librerías estáticas propias: **CramionFX**, el renderizador Vulkan con todos sus shaders, y **CramionDM**, la capa de plataforma (ventana, entrada y dispositivo DirectX 12). `cramion.exe` es solo una aplicación de ejemplo que las usa. Todo se compila con **CMake + Clang + Ninja**.
 
+**Comunidad:** dudas, ideas y lo que estés creando con Cramion, en el [Discord](https://discord.gg/zG7rSsUGEz).
+
 Incluye dos escenas de demostración, iluminadas por una sola luz direccional (el sol de día, la luna de noche) y su cielo:
 - **Catedral de Šibenik** (por defecto): 75 mil triángulos. Un interior en el que el sol entra por los ventanales.
 - **San Miguel**: ≈10 millones de triángulos, 287 materiales y 266 texturas. Un patio exterior.
@@ -40,11 +42,46 @@ Incluye dos escenas de demostración, iluminadas por una sola luz direccional (e
 | GPU | Compatible con **Vulkan 1.3** (`dynamicRendering`, `synchronization2`), con una cola que haga gráficos y cómputo |
 | Vulkan SDK | Instalado, con la variable `VULKAN_SDK` definida: el build usa su `glslc` para compilar los shaders |
 | Herramientas | CMake ≥ 3.21, Clang/Clang++ (LLVM), Ninja |
-| Memoria | San Miguel usa ~2 GB de RAM y ~2 GB de VRAM. La primera importación llega a unos 3.5 GB de RAM |
+| RAM para compilar | **Mínimo 8 GB, recomendado 16 GB.** Cada compilación en paralelo usa hasta ~1,5 GB (la más pesada es `Scripting.cpp`, por sol2) |
+| Disco | **~10 GB libres** para compilar solo Release; **~16 GB** si también compilas Debug. Mejor en un **SSD** (en un disco duro mecánico compila mucho más lento) |
+| Memoria al ejecutar | San Miguel usa ~2 GB de RAM y ~2 GB de VRAM. La primera importación llega a unos 3.5 GB de RAM |
 
-Probado con una RTX 4060 Ti (8 GB), 16 GB de RAM y Clang 22.
+Probado con una RTX 4060 Ti (8 GB), 16 GB de RAM, 16 núcleos y Clang 22.
 
-Las cabeceras de Vulkan y `vulkan-1.lib` vienen en `CramionFX/vendor/`. **assimp** y **stb** se descargan solas al configurar (FetchContent).
+Cuánto disco ocupa cada cosa (medido):
+
+| | Tamaño |
+|---|---|
+| Código del repositorio | ~0,7 GB |
+| LLVM (Clang) | ~2,9 GB |
+| Vulkan SDK | ~1,7 GB |
+| Carpeta `build-release/` (Release) | ~3,1 GB (de ellos ~2,8 GB son las dependencias descargadas en `_deps/`) |
+| Carpeta `build/` (Debug) | ~6 GB, más las escenas de demostración si las extraes (~5 GB con Bistro y San Miguel) |
+
+Las cabeceras de Vulkan y `vulkan-1.lib` vienen en `CramionFX/vendor/`. Las demás dependencias (assimp, stb, Jolt, Lua, sol2, EnTT, Recast, miniaudio, zstd, Dear ImGui...) se descargan solas la primera vez que configuras (FetchContent): hace falta **conexión a internet** en ese primer paso.
+
+### Si el PC se congela al compilar
+
+Ninja lanza por defecto una compilación por núcleo (+2). Con muchos núcleos y poca RAM eso agota la memoria y Windows se queda congelado. Por eso **CMake calcula solo cuántas compilaciones lanzar a la vez según tu RAM**: reserva 4 GB para el sistema y cuenta 1,5 GB por compilación (el enlazado va de 2 en 2). Al configurar lo verás en la salida:
+
+```
+-- Cramion: 7 compilaciones a la vez (16310 MB de RAM, 16 nucleos)
+```
+
+| RAM | Compilaciones a la vez |
+|---|---|
+| 8 GB | 2 |
+| 16 GB | 7 |
+| 32 GB | 18 (o uno por núcleo, si tienes menos núcleos) |
+
+Si aun así se congela (por ejemplo, con el navegador o un juego abiertos), bájalo a mano y vuelve a compilar:
+
+```powershell
+cmake --preset clang-ninja-release -DCRAMION_COMPILE_JOBS=3
+cmake --build --preset clang-ninja-release
+```
+
+La primera compilación completa es la que tarda (varios minutos, según el procesador); después solo se recompila lo que cambias.
 
 ## Compilar y ejecutar
 
@@ -137,13 +174,19 @@ Editor de proyectos al estilo de Unity sobre **CramionCore** (ECS, assets con UU
 
 **Terreno.** Menú **GameObject > Terreno** (datos en `Assets/Terrains/*.crterrain`), como el Landscape de Unreal: pinceles **Subir/Bajar** (Mayús invierte), **Suavizar**, **Aplanar** (Ctrl+clic toma la altura), **Rampa** (dos clics), **Ruido**, **Erosión** térmica e **hidráulica**, **Terrazas** y **Pintar** hasta 8 capas de textura (color + normal, tiling, rugosidad); **[ ]** cambia el radio. **Generar relieve** y **Pintar por reglas** (altura y pendiente). Se dibuja con LOD por trozos desde un mapa de alturas en la GPU, proyecta sombras y tiene colisión de Jolt (campo de alturas) que se rehace al terminar cada trazo; todo con deshacer.
 
-**Scripting en Lua.** Componente **Script (Lua)** con un `.lua` de Assets (Proyecto > Crear > **Script Lua**, o **Nuevo script** en el Inspector; arrastrar un `.lua` a un objeto de la Jerarquía o de la Escena lo engancha). Como los MonoBehaviour de Unity: el script devuelve su tabla con `properties` (se editan en el Inspector: número, true/false, texto o `Vec3`) y los métodos `Awake`, `Start`, `Update(dt)`, `LateUpdate`, `FixedUpdate`, `OnCollisionEnter/Stay/Exit(other, contact)`, `OnTriggerEnter/Stay/Exit(other)` y `OnDestroy`; `self.entity` es su objeto. API: `Vec3` (operaciones, `length`, `normalized`, `dot`, `cross`, `lerp`, `Vec3.up`...), `Entity` (`position`, `rotation`, `scale`, `forward`, `translate`, `rotate`, `lookAt`, `velocity`, `addForce`, `playSound`, `playAnimation`, `setAnimatorFloat/Bool/Trigger`, `getScript`, `find`, `destroy`...), `Scene` (`find`, `findWithTag`, `create`, `instantiate`, `destroy`, **`load("Nivel2")`** para cambiar de escena y `name()`), `Input` (`getKey`, `getKeyDown`, `getAxis("Horizontal")`, ratón), `Time`, `Physics.raycast`, `Audio.playOneShot`, **`Prefs`** (`setInt/getInt`, `setFloat/getFloat`, `setString/getString`, `hasKey`, `deleteKey`: como el PlayerPrefs de Unity, sobreviven al cambio de escena y se guardan en disco), **`Game.quit()`**, `Debug.log` y `Mathf`. `Scene.load` funciona en Play dentro del editor (al parar vuelve la escena abierta) y en el juego exportado. **Ventana > Scripts (Lua)**: editor integrado con pestañas, resaltado de sintaxis, números de línea, sangría automática y **Ctrl+S**, que en Play **recarga el script en caliente** sin perder el estado; los errores muestran archivo y línea (marcada en rojo) y abajo hay una consola de Lua. Lua 5.4 y sol2.
+**Scripting en Lua** (referencia completa con ejemplos: [`docs/manual/`](docs/manual/index.html); se genera con `python docs-src/build_manual.py` a partir de `docs-src/pages.json` y `docs-src/pages/*.html`). Componente **Script (Lua)** con un `.lua` de Assets (Proyecto > Crear > **Script Lua**, o **Nuevo script** en el Inspector; arrastrar un `.lua` a un objeto de la Jerarquía o de la Escena lo engancha). Como los MonoBehaviour de Unity: el script devuelve su tabla con `properties` (se editan en el Inspector: número, true/false, texto o `Vec3`) y los métodos `Awake`, `Start`, `Update(dt)`, `LateUpdate`, `FixedUpdate`, `OnCollisionEnter/Stay/Exit(other, contact)`, `OnTriggerEnter/Stay/Exit(other)` y `OnDestroy`; `self.entity` es su objeto. API: `Vec3` (operaciones, `length`, `normalized`, `dot`, `cross`, `lerp`, `Vec3.up`...), `Entity` (`position`, `rotation`, `scale`, `forward`, `translate`, `rotate`, `lookAt`, `velocity`, `addForce`, `playSound`, `playAnimation`, `setAnimatorFloat/Bool/Trigger`, `getScript`, `find`, `destroy`...), `Scene` (`find`, `findWithTag`, `create`, `instantiate`, `destroy`, **`load("Nivel2")`** para cambiar de escena y `name()`), `Input` (`getKey`, `getKeyDown`, `getAxis("Horizontal")`, ratón), `Time`, `Physics.raycast`, `Audio.playOneShot`, **`Prefs`** (`setInt/getInt`, `setFloat/getFloat`, `setString/getString`, `hasKey`, `deleteKey`: como el PlayerPrefs de Unity, sobreviven al cambio de escena y se guardan en disco), **`Game.quit()`**, `Debug.log` y la librería matemática: `Vec3` (ángulos, `slerp`, `smoothDamp`, `project`, `reflect`...), **`Quat`** (rotaciones: `Quat.euler`, `lookRotation`, `rotateTowards`, `q * v`; `entity.quaternion`), **`Mathf`** (`inverseLerp`, `remap`, `smoothDamp`, `deltaAngle`, `pingPong`, trigonometría, ruido Perlin y fractal) y **`Random`** (con semilla: `range`, `int`, `chance`, `pick`, `shuffle`, `onUnitSphere`...). `Scene.load` funciona en Play dentro del editor (al parar vuelve la escena abierta) y en el juego exportado. **Ventana > Scripts (Lua)**: editor integrado con pestañas, resaltado de sintaxis, números de línea, sangría automática y **Ctrl+S**, que en Play **recarga el script en caliente** sin perder el estado; los errores muestran archivo y línea (marcada en rojo) y abajo hay una consola de Lua. Lua 5.4 y sol2.
 
 **Autocompletado de Lua.** Mientras se escribe: globales y palabras clave, miembros según lo que hay antes del punto (`Input.`, `Scene.`, `Vec3.`, `self.` con las propiedades del script, `self.entity:` con los métodos de Entity) y los métodos del motor tras `function Clase:`, con su firma y descripción. Flechas para elegir, Enter/Tab para completar, Esc para cerrar y **Ctrl+Espacio** para abrirlo.
 
 **Interfaz del juego (UI).** Como UMG: **Canvas** (resolución de referencia y escalado con la pantalla), **Rect Transform** con **anclas** (predefinidas en el Inspector: esquinas, centro, estirar), pivote, posición y tamaño, y los controles **Imagen**, **Texto**, **Botón**, **Slider**, **Campo de texto** y **Casilla** (menú GameObject > UI). Se diseña en la vista **Juego**: clic selecciona, arrastrar mueve, las esquinas cambian el tamaño. Los eventos llaman a un método del script del objeto elegido (`function Menu:OnJugar(boton)`, `OnVolumen(valor)`, `OnEnviar(texto)`); desde Lua: `entity.text`, `entity.value`, `entity.interactable`, `entity.color`.
 
 **Demo: MiniGolf.** `cramion_minigolf <kit/Models/FBX format> CramionCore/tools/minigolf <carpeta> [--probar]` crea un proyecto completo con el [Minigolf Kit de Kenney](https://kenney.nl/assets/minigolf-kit) (CC0): menú de inicio, **5 hoyos** (recta, curva, túnel, castillo con colina y molino con aspas que giran), tarjeta de resultados con récord guardado, música chiptune y efectos (`tools/minigolf/golf_audio.py` los genera). Las piezas llevan Mesh Collider (la pelota cae de verdad en el hoyo), la pelota se apunta con A/D o el clic derecho y se carga manteniendo Espacio o el clic; el HUD usa el sistema de UI y los niveles pasan con `Scene.load`. Con `--probar` juega cada hoyo sin ventana con un piloto automático (física + scripts) y comprueba que se llega al hoyo y a la escena siguiente.
+
+**Prefabs.** Un objeto con sus hijos se guarda como asset reutilizable (`.crprefab`) **arrastrándolo de la Jerarquía al panel Proyecto** (o con clic derecho > **Prefab > Crear prefab**, que lo deja en `Assets/Prefabs`); el objeto pasa a ser su primera instancia. Para poner más copias, arrastra el `.crprefab` a la escena o a la Jerarquía (o doble clic). Las instancias salen en **azul** en la Jerarquía (en rojo si su asset se borró) y el Inspector muestra su barra: **Aplicar** guarda la instancia como la nueva versión del prefab y actualiza todas las demás, **Revertir** la deja igual que el prefab, y **...** permite **Desempaquetar** (quitar el enlace) o seleccionar todas las instancias. Lo que cambias en una instancia (un valor, un componente añadido o quitado, un hijo borrado) queda como **cambio propio** y se respeta al actualizarla; la posición, el giro y el nombre de la raíz siempre son de cada instancia. Las escenas guardadas con una versión vieja se ponen al día al abrirlas (también en el juego exportado). Desde Lua: `Scene.instantiate("Prefabs/Enemigo", posicion, giro)`.
+
+**Shaders propios.** Un `.crshader` (Proyecto > Crear > **Shader (GLSL)**) es un *surface shader* como los de Unity: una función `surface(inout Surface s)` cambia el color, la normal, el metálico, la rugosidad, la emisión o recorta por alfa, y una `vertex(inout Vertex v)` opcional mueve los vértices; con propiedades (`property color/range/float/vector/texture`) que se editan en el material. El motor lo mete en su shader del G-buffer (`CramionFX/shaders/surface.vert/.frag`), así recibe luz, sombras, reflejos y lluvia. Se compila en tiempo de ejecución con `shaderc_shared.dll` (va junto al editor y en los juegos exportados); al guardarlo se recompila en caliente y los errores marcan su línea. Manual: [`docs/manual/shaders.html`](docs/manual/shaders.html).
+
+**IA conectada (MCP).** El editor abre un servidor [MCP](https://modelcontextprotocol.io) en `http://127.0.0.1:7777/mcp` (solo este PC; **Ventana > MCP (IA)**) con 40 herramientas: escenas, entidades, cualquier componente y sus campos, scripts, shaders, materiales, modelos desde OBJ, importar, prefabs, Play/Stop, Lua, consola y capturas, todo con deshacer. Claude Code: `claude mcp add --transport http cramion http://127.0.0.1:7777/mcp`; Cursor/VS Code: `{"mcpServers":{"cramion":{"url":"http://127.0.0.1:7777/mcp"}}}`; Claude Desktop y otros por stdio: `CramionMcp.exe --port 7777`. Manual: [`docs/manual/mcp.html`](docs/manual/mcp.html).
 
 **Exportar el juego.** **Archivo > Exportar juego** (o **Exportar y jugar**) abre una ventana con la carpeta de destino (se escribe o se elige con **Examinar**, que no bloquea el editor) y copia en segundo plano, con barra de progreso y **Cancelar**: `<Proyecto>.exe` (CramionPlayer), los shaders, `Game/banner.png`, `Game/game.ini` y **`Game/<Proyecto>.crpack`**, un solo archivo binario con los Assets, ProjectSettings y el `.crproj` comprimidos con zstd (con checksum por archivo; `CramionPackTests`). Al abrir el juego sale el banner del motor con su porcentaje: la primera vez descomprime el paquete en `%LOCALAPPDATA%\Cramion\Games\<Proyecto>` (las siguientes lo reutiliza si no cambió) y compila los shaders; después carga la escena inicial y se juega con todo: render, física, scripts, audio, cinemáticas, partículas e interfaz.
 
@@ -163,7 +206,15 @@ Editor de proyectos al estilo de Unity sobre **CramionCore** (ECS, assets con UU
 
 **Partículas.** Componente **Particle System** (Efectos): emisión continua y ráfagas, formas cono/esfera/caja/punto, vida, velocidad, gravedad, rozamiento, tamaño y color a lo largo de la vida (HDR: brillan con el bloom), mezcla transparente o aditiva y módulo de **Colisión**: chocan con los colliders filtrando por máscara de capas, rebotan, pierden velocidad o vida y envían eventos **ParticleCollision**. Con el emisor seleccionado se ve una vista previa sin darle a Play.
 
-Prueba automática de extremo a extremo: `CramionEditor.exe --selftest <carpeta> <modelo> <hdr> [imagen]` (incluye un escenario de física en Play). Pruebas sin GPU: `build\CramionCore\CramionPhysicsTests.exe`, `CramionTerrainTests.exe`, `CramionMaterialTests.exe`, `CramionWaterTests.exe`, `CramionScriptingTests.exe`, `CramionUiTests.exe`, `CramionCinematicsTests.exe`, `CramionCoreTests.exe`.
+**Plantillas del Hub.** Al crear un proyecto se elige plantilla, como en Unreal y Unity: **Vacío**, **Tercera persona** (personaje con Rigidbody, cámara orbital, plataformas y monedas), **IA y navegación** (guardias con NavAgent que patrullan y persiguen) y **Mundo de bloques** (el juego de supervivencia de abajo). Todas se pueden jugar con Play nada más crearlas. **Archivo > Guardar proyecto como plantilla** crea las tuyas (`%LOCALAPPDATA%\Cramion\Templates`).
+
+**Navegación (NavMesh).** Como en Unreal: **GameObject > Navegación > Volumen de NavMesh** y dentro se genera sola la malla de navegación (Recast/Detour) a partir de los colliders y terrenos; se ve en verde (tecla **P**) y se rehace en tiempo real por baldosas al mover, crear o borrar colliders. **NavAgent** camina por ella esquivando a otros agentes; **NavModifier** bloquea o encarece zonas. Lua: `entity:moveTo(p)`, `stopMoving`, `isMoving`, `remainingDistance` y `Navigation.findPath/projectPoint/randomPoint/raycast`.
+
+**Mundo de bloques (voxeles).** **GameObject > Mundo de bloques** (componente **VoxelWorld**): un mundo infinito como Minecraft generado en hilos de fondo alrededor de la cámara, con biomas (llanura, bosque, desierto, nieve, montaña, playa, océano), cuevas, menas, árboles y plantas; el mar es el océano del motor. Luz de cielo y de antorchas por bloques (0–15), 36 tipos de bloque con texturas PBR (se generan por código o se leen de `Assets/Voxel/Textures`), sombras del sol y de las luces locales, y **colisión con Jolt**: cada sección cercana es una malla estática con las caras expuestas fusionadas, que se rehace al romper o poner bloques. Mundos con nombre que se guardan en disco (solo los trozos cambiados y los datos del juego). Lua: tabla `Voxel` (`getBlock`, `setBlock`, `raycast`, `moveBox` para el jugador, `newWorld/loadWorld/saveWorld`, `setMeta/getMeta`, `blockColor`…) e `Input.lockCursor(true)` para mirar en primera persona. La plantilla **Mundo de bloques** trae un juego de supervivencia completo: vida, hambre y aire, daño por caída, muerte y reaparición, inventario de 36 huecos con iconos, 13 recetas de crafteo (algunas piden mesa de trabajo), picos, objetos que caen y se recogen, contorno del bloque apuntado, grietas al romper, pausa y guardado. Pruebas: `CramionVoxelTests`, `CramionTemplateTests`.
+
+**Mallas creadas por código.** Como el `Mesh` de Unity: vértices, normales, UV, tangentes y triángulos por submalla, `recalculateNormals/Tangents/Bounds`, validación con mensajes claros y primitivas (cubo, quad, plano, esfera, cilindro, cápsula, contorno de caja). `entity.mesh = malla` las dibuja con todo el render (sombras, luces, postproceso) y un **MeshCollider** choca con ellas y se rehace al cambiarlas. Cada submalla tiene su **material** (color, metal, rugosidad, emisión, texturas de color —el alfa recorta—, normal y emisión, repetición) o un `.crmat` (`entity:setMaterial(hueco, ruta)`). Cambiar una malla sube solo esa malla; cambiar solo factores de material (un brillo que late) no la vuelve a subir. Desde C++: `ecs::Mesh` y `MeshRenderer::mesh`; desde Lua: `Mesh.new/cube/plane/sphere/...`. Pruebas: `CramionMeshTests`.
+
+Prueba automática de extremo a extremo: `CramionEditor.exe --selftest <carpeta> <modelo> <hdr> [imagen]` (física en Play, terreno, navegación, sombras de luces locales con capturas, mundo de bloques, mallas por código y la plantilla Mundo de bloques jugada en el editor; `CRAMION_SELFTEST_FROM=N` empieza en el paso N). Pruebas sin GPU: `build\CramionCore\CramionPhysicsTests.exe`, `CramionTerrainTests.exe`, `CramionMaterialTests.exe`, `CramionWaterTests.exe`, `CramionScriptingTests.exe`, `CramionUiTests.exe`, `CramionCinematicsTests.exe`, `CramionCoreTests.exe`, `CramionNavigationTests.exe`, `CramionVoxelTests.exe`, `CramionMeshTests.exe`, `CramionPrefabTests.exe`, `CramionShaderTests.exe`, `CramionLuaMathTests.exe` (con archivos `.lua` como argumentos comprueba que compilan) y `build\CramionEditor\CramionTemplateTests.exe`.
 
 ## Controles
 
@@ -318,6 +369,7 @@ Encima se pintan:
 - **Focos:** un mapa de 2048² por foco, en perspectiva.
 - **Puntuales:** un cubo de 6 caras de 1024², con banda de guarda para el PCF.
 - **Caché:** los mapas de una luz que no se ha movido no se redibujan.
+- **Qué proyecta:** los modelos, el terreno y los mundos de bloques (una antorcha en una cueva hace sombra de verdad); los mapas se redibujan cuando cambia el terreno o un bloque.
 - **Luces puntuales con sombra:** las 8 más cercanas a la cámara. Su sombra **se funde** antes de ceder el hueco a otra, para que no salte.
 
 ### Todas las sombras

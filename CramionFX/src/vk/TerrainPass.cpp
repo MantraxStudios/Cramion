@@ -711,8 +711,10 @@ void TerrainPass::recordGBuffer(const vk::raii::CommandBuffer& cmd, std::uint32_
 }
 
 void TerrainPass::recordShadow(const vk::raii::CommandBuffer& cmd, std::uint32_t frame,
-                               const vk::raii::DescriptorSet& frame_set, const core::Mat4& light_view_projection) const {
+                               const vk::raii::DescriptorSet& frame_set, const core::Mat4& light_view_projection,
+                               bool local) const {
     bool bound = false;
+    const core::Frustum light_frustum(light_view_projection, /*ignore_near=*/!local);
     for (const auto& [id, terrain] : terrains_) {
         if (terrain->chunks.empty() || !terrain->desc.cast_shadows || frame >= terrain->sets.size()) continue;
         if (!bound) {
@@ -723,7 +725,13 @@ void TerrainPass::recordShadow(const vk::raii::CommandBuffer& cmd, std::uint32_t
             bound = true;
         }
         cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *layout_, 1, *terrain->sets[frame], nullptr);
+        const TerrainDesc& d = terrain->desc;
         for (const Chunk& chunk : terrain->chunks) {
+            if (local) {
+                const core::Vec3 lo{d.origin.x + chunk.u * d.size, d.origin.y - chunk.skirt, d.origin.z + chunk.v * d.size};
+                const core::Vec3 hi{lo.x + chunk.size * d.size, d.origin.y + d.max_height, lo.z + chunk.size * d.size};
+                if (!light_frustum.intersects(core::Aabb{lo, hi})) continue;
+            }
             GpuTerrainPush push{};
             push.chunk = core::Vec4{chunk.u, chunk.v, chunk.size, chunk.skirt};
             push.light_view_projection = light_view_projection;

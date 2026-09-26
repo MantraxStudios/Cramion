@@ -1,0 +1,12 @@
+<p>
+        <code>Physics.raycast(origen, dirección, distancia)</code> lanza un rayo (distancia por defecto: 1000 m).
+        Devuelve <code>nil</code> o una tabla con <code>entity</code>, <code>point</code>, <code>normal</code> y <code>distance</code>.
+      </p>
+      <pre><code class="language-lua">-- Suelo bajo los pies (el centro está a 1 m del suelo)
+local pies = self.entity.position + Vec3.down * 1.02
+local hit = Physics.raycast(pies, Vec3.down, 0.15)
+local enSuelo = hit ~= nil</code></pre>
+      <div class="note">
+        Un rayo que empieza dentro de un collider lo detecta a distancia 0. Para no chocar con tu propio cuerpo,
+        lanza el rayo desde fuera de él (por ejemplo, justo debajo de los pies).
+      </div>

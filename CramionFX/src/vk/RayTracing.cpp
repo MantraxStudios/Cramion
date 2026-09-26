@@ -120,6 +120,9 @@ struct RayTracing::Resources {
     AccelerationStructure tlas;
     DeviceBuffer instance_buffer;
     std::vector<Instance> instances;
+    // El set de la escena actual ya tiene la TLAS escrita (al volver a subir la
+    // escena el set es nuevo y hay que escribirla aunque las instancias no cambien).
+    bool tlas_written = false;
     std::uint32_t texture_count = 0;
     vk::DeviceSize scratch_alignment = 0;
 
@@ -421,6 +424,7 @@ void RayTracing::build(const VulkanDevice& device,
     alloc.descriptorPool = *r.scene_pool;
     alloc.setSetLayouts(scene_layout);
     r.scene_sets = vk::raii::DescriptorSets(device.handle(), alloc);
+    r.tlas_written = false;
 
     const std::array<vk::DescriptorBufferInfo, 6> buffers = {
         vk::DescriptorBufferInfo{*r.vertices.buffer, 0, VK_WHOLE_SIZE},
@@ -486,7 +490,7 @@ void RayTracing::setInstances(const VulkanDevice& device, const std::vector<Inst
                        return a.model == b.model &&
                               std::memcmp(&a.transform, &b.transform, sizeof(core::Mat4)) == 0;
                    });
-    if (same && *r.tlas.handle != nullptr) {
+    if (same && *r.tlas.handle != nullptr && r.tlas_written) {
         return;
     }
     r.instances = usable;
@@ -546,6 +550,7 @@ void RayTracing::setInstances(const VulkanDevice& device, const std::vector<Inst
     write.descriptorCount = 1;
     write.descriptorType = vk::DescriptorType::eAccelerationStructureKHR;
     device.handle().updateDescriptorSets(write, nullptr);
+    r.tlas_written = true;
 
     std::cout << "[Vulkan] TLAS construida: " << gpu_instances.size() << " instancia(s)\n";
 }
@@ -596,7 +601,8 @@ void RayTracing::updateFrameSet(const VulkanDevice& device, std::uint32_t frame_
 
 bool RayTracing::ready() const {
     return resources_ != nullptr && !resources_->scene_sets.empty() &&
-           *resources_->tlas.handle != nullptr && *resources_->pipelines[0] != nullptr;
+           *resources_->tlas.handle != nullptr && resources_->tlas_written &&
+           *resources_->pipelines[0] != nullptr;
 }
 
 void RayTracing::record(const vk::raii::CommandBuffer& cmd, std::uint32_t frame_index, Pass pass,

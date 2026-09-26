@@ -7,6 +7,7 @@
 
 #include "Dialogs.h"
 
+#include <CramionFX/asset/ImageFile.h>
 #include <imgui.h>
 
 #include <chrono>
@@ -25,6 +26,57 @@ constexpr int kStressObjects = 300;
 void check(bool ok, const char* what, int& failures) {
     std::cout << "[SelfTest] " << (ok ? "OK    " : "FALLO ") << what << std::endl;
     if (!ok) ++failures;
+}
+
+// La ventana tal como se ve (PrintWindow con el contenido de Vulkan), en
+// RGBA8 y guardada como PNG para mirarla. Vacio si no se pudo.
+std::vector<std::uint8_t> captureWindow(HWND hwnd, const std::filesystem::path& png) {
+    RECT client{};
+    GetClientRect(hwnd, &client);
+    const int w = client.right - client.left, h = client.bottom - client.top;
+    if (w <= 0 || h <= 0) return {};
+    HDC window_dc = GetDC(hwnd);
+    HDC memory_dc = CreateCompatibleDC(window_dc);
+    BITMAPINFO info{};
+    info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    info.bmiHeader.biWidth = w;
+    info.bmiHeader.biHeight = -h;  // de arriba abajo
+    info.bmiHeader.biPlanes = 1;
+    info.bmiHeader.biBitCount = 32;
+    info.bmiHeader.biCompression = BI_RGB;
+    void* bits = nullptr;
+    HBITMAP bitmap = CreateDIBSection(window_dc, &info, DIB_RGB_COLORS, &bits, nullptr, 0);
+    HGDIOBJ old = SelectObject(memory_dc, bitmap);
+    const bool ok = PrintWindow(hwnd, memory_dc, PW_CLIENTONLY | 0x2 /* PW_RENDERFULLCONTENT */) != FALSE;
+    asset::ImageRgba8 image;
+    if (ok && bits != nullptr) {
+        image.width = static_cast<std::uint32_t>(w);
+        image.height = static_cast<std::uint32_t>(h);
+        image.pixels.resize(static_cast<std::size_t>(w) * static_cast<std::size_t>(h) * 4);
+        const auto* bgra = static_cast<const std::uint8_t*>(bits);
+        for (std::size_t i = 0; i < image.pixels.size(); i += 4) {
+            image.pixels[i] = bgra[i + 2];
+            image.pixels[i + 1] = bgra[i + 1];
+            image.pixels[i + 2] = bgra[i];
+            image.pixels[i + 3] = 255;
+        }
+    }
+    SelectObject(memory_dc, old);
+    DeleteObject(bitmap);
+    DeleteDC(memory_dc);
+    ReleaseDC(hwnd, window_dc);
+    if (!png.empty() && !image.pixels.empty()) asset::saveImagePng(png, image);
+    return std::move(image.pixels);
+}
+
+// Diferencia media por canal (0..255) entre dos capturas del mismo tamano.
+float captureDifference(const std::vector<std::uint8_t>& a, const std::vector<std::uint8_t>& b) {
+    if (a.empty() || a.size() != b.size()) return -1.0f;
+    double sum = 0.0;
+    for (std::size_t i = 0; i < a.size(); i += 4) {
+        for (int c = 0; c < 3; ++c) sum += std::abs(static_cast<int>(a[i + c]) - static_cast<int>(b[i + c]));
+    }
+    return static_cast<float>(sum / (static_cast<double>(a.size() / 4) * 3.0));
 }
 
 }  // namespace
@@ -99,6 +151,13 @@ void EditorApp::runSelfTestStep() {
             break;
         }
         case 3: {  // Seleccion, outline y foco.
+            // CRAMION_SELFTEST_FROM=N: con el proyecto ya abierto, salta al paso N
+            // (para repetir solo una parte de la prueba).
+            if (const char* from = std::getenv("CRAMION_SELFTEST_FROM"); from != nullptr && std::atoi(from) > 3) {
+                self_test_step_ = std::atoi(from);
+                std::cout << "[SelfTest] Saltando al paso " << self_test_step_ << std::endl;
+                return;
+            }
             ecs::Entity car = world_.find(self_test_car_);
             selectOnly(self_test_car_);
             focusSelection();
@@ -541,6 +600,13 @@ void EditorApp::runSelfTestStep() {
             const std::shared_ptr<terrain::TerrainData> data = terrain_store_.get(comp);
             check(data != nullptr && std::filesystem::exists(project_.assetsFolder() / dialogs::fromUtf8(comp.data)),
                   "sus datos en Assets/Terrains", f);
+            // Un cubo fisico encima de la loma. Se crea (y se vuelca al historial
+            // con el terreno) antes del trazo: asi el trazo es lo ultimo que se
+            // deshace en el paso siguiente.
+            ecs::Entity cube = createEntity(13, {});
+            cube.setWorldPosition(Vec3{0.0f, 20.0f, 0.0f});
+            self_test_cube_ = cube.uuid();
+            flushCommit();
             if (data) {
                 terrain::generateRelief(*data, 11, 3.0f, 0.5f, 0.3f, 0.12f);
                 terrain_brush_ = terrain::TerrainBrush{};
@@ -556,10 +622,6 @@ void EditorApp::runSelfTestStep() {
                 terrain::paintByRules(*data, comp, 2, 30.0f, 90.0f, 0.0f, 1.0f);
                 terrain::paintByRules(*data, comp, 1, 0.0f, 90.0f, 0.0f, 0.15f);
             }
-            // Un cubo fisico encima de la loma.
-            ecs::Entity cube = createEntity(13, {});
-            cube.setWorldPosition(Vec3{0.0f, 20.0f, 0.0f});
-            self_test_cube_ = cube.uuid();
             self_test_terrain_ = t.uuid();
             selectOnly(t.uuid());
             terrain_edit_ = true;
@@ -583,10 +645,13 @@ void EditorApp::runSelfTestStep() {
             const auto data = terrain_store_.get(comp);
             const float sculpted = terrain::heightAt(*data, comp, t.worldPosition(), 0.0f, 0.0f);
             undo();
-            const float undone = terrain::heightAt(*data, comp, t.worldPosition(), 0.0f, 0.0f);
+            const ecs::Entity t_undone = world_.find(self_test_terrain_);
+            const float undone = terrain::heightAt(*data, t_undone.get<terrain::Terrain>(), t_undone.worldPosition(), 0.0f, 0.0f);
             check(std::abs(sculpted - 8.0f) < 0.2f && std::abs(undone - 8.0f) > 0.3f, "Ctrl+Z deshace el trazo de terreno", f);
             redo();
-            check(std::abs(terrain::heightAt(*data, comp, t.worldPosition(), 0.0f, 0.0f) - 8.0f) < 0.2f, "y Ctrl+Y lo rehace", f);
+            const ecs::Entity t_redone = world_.find(self_test_terrain_);
+            check(std::abs(terrain::heightAt(*data, t_redone.get<terrain::Terrain>(), t_redone.worldPosition(), 0.0f, 0.0f) - 8.0f) < 0.2f,
+                  "y Ctrl+Y lo rehace", f);
             selectOnly(self_test_terrain_);
             self_test_wait_ = 60;
             break;
@@ -642,6 +707,385 @@ void EditorApp::runSelfTestStep() {
             self_test_wait_ = 30;
             break;
         }
+        case 32: {  // Mundo de bloques: se crea con su mar y se genera alrededor de la camara.
+            const ecs::Entity voxel_world = createVoxelWorldEntity();
+            bool has_sea = false;
+            for (const entt::entity child : voxel_world.children()) has_sea = has_sea || world_.wrap(child).has<water::WaterBody>();
+            check(voxel_world.has<voxel::VoxelWorld>() && has_sea && voxels_.active(),
+                  "Crear > Mundo de bloques (con su mar) arranca la vista previa", f);
+            self_test_wait_ = 30;
+            break;
+        }
+        case 33: {
+            // Chunks en hilos y texturas generadas por codigo: hasta ~20 s.
+            static int tries = 0;
+            const gfx::VoxelStats gpu = renderer_.voxelStats();
+            if ((voxels_.stats().pending_meshes > 0 || !renderer_.hasVoxelTextures() || gpu.sections == 0) && ++tries < 200) {
+                self_test_wait_ = 6;
+                return;
+            }
+            const voxel::VoxelStats st = voxels_.stats();
+            std::cout << "[SelfTest] Voxeles: " << st.chunks << " chunks, " << gpu.sections << " secciones en la GPU ("
+                      << gpu.visible << " visibles, " << gpu.quads << " caras, " << (gpu.memory_bytes >> 20) << " MB)"
+                      << std::endl;
+            check(renderer_.hasVoxelTextures() && gpu.sections > 0 && gpu.visible > 0, "los bloques se mallan y se dibujan", f);
+            // Play: un mundo nuevo; al parar vuelve la vista previa.
+            enterPlay();
+            check(voxels_.active(), "en Play hay mundo de bloques", f);
+            exitPlay();
+            updateVoxels(0.016f);
+            check(voxels_.active(), "al salir de Play vuelve la vista previa", f);
+            self_test_wait_ = 60;
+            break;
+        }
+        case 34: {  // Sombras de luces locales: suelo, cubo y una luz puntual, sin sol.
+            for (const entt::entity h : world_.registry().view<voxel::VoxelWorld>()) world_.destroy(world_.wrap(h));
+            updateVoxels(0.0f);
+            world_.forEachDepthFirst([&](ecs::Entity e) {
+                const ecs::Light* l = e.tryGet<ecs::Light>();
+                if (l != nullptr && l->type == ecs::LightType::Directional && e.activeSelf() && !self_test_sun_.valid()) {
+                    self_test_sun_ = e.uuid();
+                    e.setActive(false);
+                }
+            });
+            const Vec3 base{400.0f, 0.0f, 400.0f};
+            ecs::Entity floor = ecs::createPrimitive(world_, assets::builtin::kCube, "Suelo sombras");
+            floor.setWorldPosition(base + Vec3{0.0f, -0.5f, 0.0f});
+            floor.setLocalScale(Vec3{30.0f, 1.0f, 30.0f});
+            ecs::Entity cube = ecs::createPrimitive(world_, assets::builtin::kCube, "Cubo sombras");
+            cube.setWorldPosition(base + Vec3{0.0f, 1.0f, 0.0f});
+            cube.setLocalScale(Vec3{2.0f, 2.0f, 2.0f});
+            ecs::Entity light = ecs::createLight(world_, ecs::LightType::Point);
+            light.setWorldPosition(base + Vec3{-3.0f, 4.0f, 0.0f});
+            ecs::Light& l = light.get<ecs::Light>();
+            l.intensity = 80.0f;
+            l.range = 25.0f;
+            l.color = Vec3{1.0f, 1.0f, 1.0f};
+            self_test_light_ = light.uuid();
+            clearSelection();
+            preferred_view_ = kSceneSlot;
+            focus_scene_ = true;
+            scene_.placeCamera(base + Vec3{0.0f, 14.0f, 9.0f}, base);
+            // Y la camara del juego igual (la vista Juego puede ser la que se dibuja).
+            if (ecs::Entity cam = world_.findByName("Main Camera"); cam.valid()) {
+                const Vec3 eye = base + Vec3{0.0f, 14.0f, 9.0f};
+                const Vec3 d = core::normalize(base - eye);
+                constexpr float kDeg = 57.2957795f;
+                cam.setWorldPosition(eye);
+                cam.setLocalEulerDegrees(Vec3{std::asin(d.y) * kDeg, std::atan2(-d.x, -d.z) * kDeg, 0.0f});
+            }
+            self_test_wait_ = 120;
+            break;
+        }
+        case 35:
+        case 37: {  // Captura con sombra; se apaga "Proyecta sombras".
+            const bool spot = self_test_step_ == 37;
+            const std::filesystem::path png = std::filesystem::temp_directory_path() /
+                                              (spot ? "cramion_selftest_spot_on.png" : "cramion_selftest_point_on.png");
+            self_test_capture_ = captureWindow(window_.handle(), png);
+            std::cout << "[SelfTest] Captura: " << dialogs::utf8(png) << std::endl;
+            ecs::Entity light = world_.find(self_test_light_);
+            if (light.valid()) light.get<ecs::Light>().cast_shadows = false;
+            self_test_wait_ = 30;
+            break;
+        }
+        case 36:
+        case 38: {
+            const bool spot = self_test_step_ == 38;
+            const std::filesystem::path png = std::filesystem::temp_directory_path() /
+                                              (spot ? "cramion_selftest_spot_off.png" : "cramion_selftest_point_off.png");
+            const std::vector<std::uint8_t> without = captureWindow(window_.handle(), png);
+            const float difference = captureDifference(self_test_capture_, without);
+            std::cout << "[SelfTest] " << (spot ? "Foco" : "Luz puntual") << ": diferencia con/sin sombra " << difference
+                      << std::endl;
+            check(difference > 0.5f, spot ? "el foco proyecta sombra" : "la luz puntual proyecta sombra", f);
+            ecs::Entity light = world_.find(self_test_light_);
+            if (!spot && light.valid()) {
+                // Ahora un foco desde el mismo sitio, mirando al cubo.
+                ecs::Light& l = light.get<ecs::Light>();
+                l.cast_shadows = true;
+                l.type = ecs::LightType::Spot;
+                l.outer_angle = 50.0f;
+                l.inner_angle = 35.0f;
+                const Vec3 base{400.0f, 0.0f, 400.0f};
+                const Vec3 d = core::normalize(base - light.worldPosition());
+                constexpr float kDeg = 57.2957795f;
+                light.setLocalEulerDegrees(Vec3{std::asin(d.y) * kDeg, std::atan2(-d.x, -d.z) * kDeg, 0.0f});
+            } else {
+                // Fuera la escena de cubos (el sol sigue apagado para la de bloques).
+                for (const char* name : {"Suelo sombras", "Cubo sombras"}) {
+                    if (ecs::Entity e = world_.findByName(name); e.valid()) world_.destroy(e);
+                }
+                if (light.valid()) world_.destroy(light);
+            }
+            self_test_wait_ = spot ? 30 : 60;
+            break;
+        }
+        case 39: {  // Sombras locales de los bloques: un mundo de bloques.
+            createVoxelWorldEntity();
+            self_test_wait_ = 30;
+            break;
+        }
+        case 40: {
+            static int tries = 0;
+            if ((voxels_.stats().pending_meshes > 0 || !renderer_.hasVoxelTextures()) && ++tries < 200) {
+                self_test_wait_ = 6;
+                return;
+            }
+            // Una columna de piedra y una luz puntual a su lado.
+            const int h = voxels_.surfaceHeight(8, 8);
+            for (int y = h + 1; y <= h + 12; ++y) {
+                for (int x = 2; x <= 14; ++x) {
+                    for (int z = 2; z <= 14; ++z) voxels_.setBlock(x, y, z, voxel::block::Air);
+                }
+            }
+            for (int y = h + 1; y <= h + 3; ++y) voxels_.setBlock(8, y, 8, voxel::block::Stone);
+            for (int x = 2; x <= 14; ++x) {
+                for (int z = 2; z <= 14; ++z) voxels_.setBlock(x, h, z, voxel::block::Stone);
+            }
+            const float top = static_cast<float>(h) + 1.0f;
+            ecs::Entity light = ecs::createLight(world_, ecs::LightType::Point);
+            light.setWorldPosition(Vec3{5.5f, top + 4.0f, 8.5f});
+            ecs::Light& l = light.get<ecs::Light>();
+            l.intensity = 80.0f;
+            l.range = 20.0f;
+            l.color = Vec3{1.0f, 1.0f, 1.0f};
+            self_test_light_ = light.uuid();
+            const Vec3 target{8.5f, top, 8.5f};
+            scene_.placeCamera(target + Vec3{0.0f, 12.0f, 7.0f}, target);
+            focus_scene_ = true;
+            preferred_view_ = kSceneSlot;
+            self_test_wait_ = 90;
+            break;
+        }
+        case 41: {
+            self_test_capture_ = captureWindow(window_.handle(), std::filesystem::temp_directory_path() / "cramion_selftest_voxel_on.png");
+            if (ecs::Entity light = world_.find(self_test_light_); light.valid()) light.get<ecs::Light>().cast_shadows = false;
+            self_test_wait_ = 30;
+            break;
+        }
+        case 42: {
+            const std::vector<std::uint8_t> without =
+                captureWindow(window_.handle(), std::filesystem::temp_directory_path() / "cramion_selftest_voxel_off.png");
+            const float difference = captureDifference(self_test_capture_, without);
+            std::cout << "[SelfTest] Bloques con luz puntual: diferencia con/sin sombra " << difference << std::endl;
+            check(difference > 0.3f, "los bloques proyectan sombra de una luz puntual", f);
+            // Fin: fuera la luz y el mundo de bloques; vuelve el sol.
+            if (ecs::Entity light = world_.find(self_test_light_); light.valid()) world_.destroy(light);
+            for (const entt::entity h : world_.registry().view<voxel::VoxelWorld>()) world_.destroy(world_.wrap(h));
+            if (ecs::Entity sun = world_.find(self_test_sun_); sun.valid()) sun.setActive(true);
+            self_test_wait_ = 30;
+            break;
+        }
+        case 43: {  // Mallas creadas por codigo (como el Mesh de Unity).
+            ecs::Entity e = world_.create("Malla por codigo");
+            e.setWorldPosition(Vec3{600.0f, 1.0f, 600.0f});
+            auto mesh = ecs::Mesh::sphere(1.0f, 32, 16);
+            ecs::MeshMaterial red;
+            red.color = core::Vec4{0.9f, 0.3f, 0.2f, 1.0f};
+            red.roughness = 0.4f;
+            mesh->materials.push_back(red);
+            e.add<ecs::MeshRenderer>().mesh = mesh;
+            ecs::Entity floor = world_.create("Suelo por codigo");
+            floor.setWorldPosition(Vec3{600.0f, 0.0f, 600.0f});
+            floor.add<ecs::MeshRenderer>().mesh = ecs::Mesh::plane(12.0f, 12.0f, 4, 4);
+            self_test_light_ = e.uuid();
+            scene_.placeCamera(Vec3{600.0f, 4.0f, 606.0f}, Vec3{600.0f, 1.0f, 600.0f});
+            focus_scene_ = true;
+            preferred_view_ = kSceneSlot;
+            self_test_wait_ = 30;
+            break;
+        }
+        case 44: {
+            const ecs::Entity e = world_.find(self_test_light_);
+            const std::size_t triangles = renderer_.triangleCount();
+            check(e.valid() && !sync_->actorIndicesInSubtree(e).empty(), "una malla creada por codigo se dibuja", f);
+            // Cambiarla: el mismo hueco, sin volver a subir la escena.
+            ecs::Mesh& mesh = *e.get<ecs::MeshRenderer>().mesh;
+            const ecs::Mesh cube = *ecs::Mesh::cube(Vec3{1.5f, 1.5f, 1.5f});
+            mesh.vertices = cube.vertices;
+            mesh.normals = cube.normals;
+            mesh.uv = cube.uv;
+            mesh.tangents = cube.tangents;
+            mesh.setTriangles(cube.triangles(0));
+            mesh.markModified();
+            std::cout << "[SelfTest] Malla por codigo: " << triangles << " triangulos en la escena" << std::endl;
+            self_test_wait_ = 30;
+            break;
+        }
+        case 45: {
+            const ecs::Entity e = world_.find(self_test_light_);
+            captureWindow(window_.handle(), std::filesystem::temp_directory_path() / "cramion_selftest_mesh.png");
+            check(e.valid() && !sync_->actorIndicesInSubtree(e).empty(), "al cambiarla se sigue dibujando (el cubo nuevo)", f);
+            for (const char* name : {"Malla por codigo", "Suelo por codigo"}) {
+                if (ecs::Entity x = world_.findByName(name); x.valid()) world_.destroy(x);
+            }
+            self_test_wait_ = 30;
+            break;
+        }
+        case 46: {  // La plantilla "Mundo de bloques": crearla desde el Hub y jugarla.
+            ProjectTemplate voxel_template;
+            for (const ProjectTemplate& t : availableTemplates()) {
+                if (t.id == "voxel") voxel_template = t;
+            }
+            std::error_code error;
+            std::filesystem::remove_all(self_test_folder_ / "Bloques", error);
+            const project::ProjectInfo created = createProjectFromTemplate(voxel_template, self_test_folder_, "Bloques");
+            check(openProject(created.folder), "crear y abrir un proyecto con la plantilla Mundo de bloques", f);
+            show_game_ = true;
+            enterPlay();
+            self_test_wait_ = 600;  // el mundo se genera y las texturas de los bloques se crean
+            break;
+        }
+        case 47: {
+            // Un inventario y un estado para ver la interfaz completa (sin mover el raton real).
+            std::string out;
+            const bool ok = scripts_.run(R"(
+                local J = Scene.find('Main Camera'):getScript()
+                J:dar('oak_log', 12); J:dar('cobblestone', 30); J:dar('pico_madera', 1); J:dar('torch', 16)
+                J:dar('manzana', 3); J:dar('glass', 8); J:dar('palo', 5)
+                J.vida = 13; J.hambre = 15; J.relojNombre = 2
+                J:pintarTodo()
+            )", &out);
+            check(ok && scripts_.errors().empty(), "el juego de la plantilla corre en el editor sin errores", f);
+            self_test_wait_ = 60;
+            break;
+        }
+        case 48: {
+            captureWindow(window_.handle(), std::filesystem::temp_directory_path() / "cramion_selftest_bloques_hud.png");
+            std::string out;
+            scripts_.run("local J = Scene.find('Main Camera'):getScript(); J.ui.inventario.active = true; J.mesaCerca = true; J:pintarTodo()",
+                         &out);
+            self_test_wait_ = 30;
+            break;
+        }
+        case 49: {
+            captureWindow(window_.handle(), std::filesystem::temp_directory_path() / "cramion_selftest_bloques_inventario.png");
+            // Contorno, grietas, chispas y un objeto suelto sobre el bloque que se mira.
+            std::string out;
+            const bool ok = scripts_.run(R"(
+                local J = Scene.find('Main Camera'):getScript()
+                J.ui.inventario.active = false
+                J.muerto = true  -- sin logica de juego: la escena se queda quieta para la foto
+                J.pitch = -50
+                J:colocarCamara()
+                local g = Voxel.raycast(J.entity.position, J.entity.forward, 6)
+                if not g then return "sin bloque" end
+                J.contorno.position = g.block + Vec3(0.5, 0.5, 0.5); J.contorno.active = true
+                J.grietas.mesh = J.etapas[6]; J.grietas.position = g.block + Vec3(0.5, 0.5, 0.5); J.grietas.active = true
+                J:chispear(g.block + Vec3(1, 0, 0), Voxel.blockInfo(g.id))
+                J:soltarObjeto('cobblestone', 1, g.block + Vec3(-0.5, 1.2, 0.5))
+                return "ok"
+            )", &out);
+            check(ok && out == "ok", "contorno, grietas y chispas sobre un bloque", f);
+            self_test_wait_ = 6;
+            break;
+        }
+        case 50: {
+            captureWindow(window_.handle(), std::filesystem::temp_directory_path() / "cramion_selftest_bloques_romper.png");
+            exitPlay();
+            self_test_wait_ = 30;
+            break;
+        }
+        case 51: {  // Shader de superficie propio (.crshader) en un material.
+            const std::filesystem::path shader = project_.assetsFolder() / "Shaders" / "SelfTest.crshader";
+            std::error_code error;
+            std::filesystem::create_directories(shader.parent_path(), error);
+            std::ofstream(shader, std::ios::binary) << R"(property color tinte = 0.2, 0.8, 1.0
+property range lineas = 30 (5, 120)
+void surface(inout Surface s) {
+    float linea = step(0.5, fract(s.worldPosition.y * lineas * 0.1 - TIME * 2.0));
+    s.albedo = vec3(0.05);
+    s.emission = tinte * (0.3 + linea * 0.7 + fresnel(s, 2.5) * 2.0);
+}
+void vertex(inout Vertex v) {
+    v.position += v.normal * 0.05 * sin(TIME * 4.0);
+}
+)";
+            assets::MaterialAsset material;
+            material.shader = "Shaders/SelfTest.crshader";
+            material.shader_values["tinte"] = core::Vec4{1.0f, 0.3f, 0.9f, 0.0f};
+            const std::filesystem::path material_path = project_.assetsFolder() / "Materials" / "SelfTestShader.crmat";
+            std::filesystem::create_directories(material_path.parent_path(), error);
+            check(assets::saveMaterial(material, material_path), "material con shader propio", f);
+            refreshDatabase();
+            ecs::Entity cube = createEntity(1, {});
+            cube.setWorldPosition(Vec3{0.0f, 160.0f, 0.0f});
+            cube.setLocalScale(Vec3{2.0f, 2.0f, 2.0f});
+            check(applyMaterial(cube, material.uuid, -1), "asignar el material al cubo", f);
+            self_test_light_ = cube.uuid();
+            scene_.placeCamera(Vec3{0.0f, 161.5f, 6.0f}, Vec3{0.0f, 160.0f, 0.0f});
+            focus_scene_ = true;
+            preferred_view_ = kSceneSlot;
+            self_test_wait_ = 90;
+            break;
+        }
+        case 52: {
+            const ecs::Entity cube = world_.find(self_test_light_);
+            captureWindow(window_.handle(), std::filesystem::temp_directory_path() / "cramion_selftest_shader.png");
+            const std::string error = sync_->surfaceShaderError("Shaders/SelfTest.crshader");
+            if (!error.empty()) std::cout << "[SelfTest] Error del shader: " << error << std::endl;
+            check(error.empty() && sync_->surfaceShader("Shaders/SelfTest.crshader") >= 0, "el .crshader compila y tiene pipeline", f);
+            check(cube.valid() && !sync_->actorIndicesInSubtree(cube).empty(), "el cubo con shader propio se dibuja", f);
+            // Un error: se detecta con su linea y el material sigue dibujandose.
+            const std::filesystem::path shader = project_.assetsFolder() / "Shaders" / "SelfTest.crshader";
+            std::ofstream(shader, std::ios::binary) << "void surface(inout Surface s) {\n    s.albedo = noExiste;\n}\n";
+            std::filesystem::last_write_time(shader, std::filesystem::file_time_type::clock::now() + std::chrono::seconds(2));
+            sync_->reloadSurfaceShaders();
+            const std::string broken = sync_->surfaceShaderError("Shaders/SelfTest.crshader");
+            check(broken.find("SelfTest.crshader:2:") != std::string::npos, "un error del shader dice su linea", f);
+            // Arreglarlo: recompila en caliente.
+            std::ofstream(shader, std::ios::binary) << "property color tinte = 1, 1, 1\nvoid surface(inout Surface s) {\n    s.emission = vec3(1.0, 0.4, 0.0) * 2.0;\n}\n";
+            std::filesystem::last_write_time(shader, std::filesystem::file_time_type::clock::now() + std::chrono::seconds(4));
+            sync_->reloadSurfaceShaders();
+            check(sync_->surfaceShaderError("Shaders/SelfTest.crshader").empty(), "al arreglarlo se recompila en caliente", f);
+            self_test_wait_ = 60;
+            break;
+        }
+        case 53: {
+            captureWindow(window_.handle(), std::filesystem::temp_directory_path() / "cramion_selftest_shader_recompilado.png");
+            const ecs::Entity cube = world_.find(self_test_light_);
+            check(cube.valid() && !sync_->actorIndicesInSubtree(cube).empty(), "y se sigue dibujando", f);
+            self_test_wait_ = 10;
+            break;
+        }
+        case 54: {  // Navegador de contenido: carpetas y assets de cada tipo.
+            const std::filesystem::path assets = project_.assetsFolder();
+            std::error_code error;
+            for (const char* folder : {"Personajes", "Niveles", "Texturas"}) std::filesystem::create_directories(assets / folder, error);
+            createMaterialAsset(assets);
+            std::ofstream(assets / "Scripts" / "Jugador.lua") << scripting::scriptTemplate("Jugador");
+            std::filesystem::create_directories(assets / "Shaders", error);
+            std::ofstream(assets / "Shaders" / "Brillo.crshader") << assets::surfaceShaderTemplate("Brillo");
+            refreshDatabase();
+            current_folder_ = assets;
+            show_project_ = true;
+            browser_list_view_ = false;
+            icon_size_ = 96.0f;
+            ImGui::SetWindowFocus("Proyecto");
+            self_test_wait_ = 60;
+            break;
+        }
+        case 55: {
+            captureWindow(window_.handle(), std::filesystem::temp_directory_path() / "cramion_selftest_browser.png");
+            check(!browser_items_.empty(), "el navegador muestra la carpeta Assets", f);
+            browser_list_view_ = true;
+            self_test_wait_ = 20;
+            break;
+        }
+        case 56: {
+            captureWindow(window_.handle(), std::filesystem::temp_directory_path() / "cramion_selftest_browser_lista.png");
+            browser_list_view_ = false;
+            project_filter_ = "mat";
+            self_test_wait_ = 20;
+            break;
+        }
+        case 57: {
+            captureWindow(window_.handle(), std::filesystem::temp_directory_path() / "cramion_selftest_browser_busqueda.png");
+            project_filter_.clear();
+            self_test_wait_ = 10;
+            break;
+        }
         default:
             std::cout << "[SelfTest] " << (self_test_failures_ == 0 ? "TODO OK" : "HAY FALLOS: ")
                       << (self_test_failures_ == 0 ? std::string() : std::to_string(self_test_failures_))
@@ -650,6 +1094,11 @@ void EditorApp::runSelfTestStep() {
             return;
     }
     ++self_test_step_;
+}
+
+// Para el MCP (captura de pantalla para la IA).
+std::vector<std::uint8_t> captureEditorWindow(HWND hwnd, const std::filesystem::path& png) {
+    return captureWindow(hwnd, png);
 }
 
 }  // namespace cramion::editor

@@ -25,6 +25,8 @@ compile_commands.json
 # de mas de 100 MB y el repositorio debe quedarse ligero; la escena San Miguel
 # ademas no se puede redistribuir (ver README).
 *.zip
+# El video original de la web (541 MB): se publica bg-web.mp4, la version comprimida.
+docs/bg.mp4
 *.7z
 *.rar
 *.fbx

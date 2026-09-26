@@ -52,7 +52,7 @@ file(GLOB CRAMION_EDITOR_SOURCES CONFIGURE_DEPENDS
 )
 
 add_executable(CramionEditor ${CRAMION_EDITOR_SOURCES} "${CRAMION_ICON_RC}")
-target_link_libraries(CramionEditor PRIVATE Cramion::Core cramion_imgui comdlg32 shell32 ole32 gdiplus dbghelp)
+target_link_libraries(CramionEditor PRIVATE Cramion::Core cramion_imgui comdlg32 shell32 ole32 gdiplus dbghelp ws2_32)
 # Las escenas de demostracion (src/DemoScenes.h) las comparte con cramion.exe.
 target_include_directories(CramionEditor PRIVATE "${CMAKE_SOURCE_DIR}/src")
 set_target_properties(CramionEditor PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
@@ -119,3 +119,10 @@ add_custom_command(TARGET CramionPlayer POST_BUILD
             "${CMAKE_SOURCE_DIR}/assets/bannerintro.png" "${CMAKE_BINARY_DIR}/player_banner.png"
     COMMENT "Banner del juego exportado")
 add_dependencies(CramionEditor CramionPlayer)
+
+# --- CramionMcp.exe: puente MCP por stdio (Claude Desktop y otros) hacia el ---
+# servidor MCP del editor (http://127.0.0.1:7777/mcp).
+add_executable(CramionMcp "${CMAKE_CURRENT_SOURCE_DIR}/mcp/McpBridge.cpp")
+target_link_libraries(CramionMcp PRIVATE ws2_32)
+set_target_properties(CramionMcp PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
+add_dependencies(CramionEditor CramionMcp)

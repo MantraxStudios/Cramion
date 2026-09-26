@@ -270,6 +270,13 @@ WaterSample sampleWater(const WaterBody& body, const core::Mat4& world, const Ve
 
 float waterTime() { return g_time; }
 
+namespace {
+UnderwaterOverride g_underwater;
+}
+
+void setUnderwaterOverride(UnderwaterOverride test) { g_underwater = std::move(test); }
+int underwaterOverride(const core::Vec3& camera) { return g_underwater ? g_underwater(camera) : -1; }
+
 void advanceWaterTime(float delta_seconds) {
     g_time += std::clamp(delta_seconds, 0.0f, 0.25f);
     // Sin perder precision tras horas abiertas (las ondas se repiten mucho antes).

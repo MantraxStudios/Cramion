@@ -48,7 +48,8 @@
         <a href="#motor" class="hover:text-white">Motor</a>
         <a href="#scripting" class="hover:text-white">Scripting</a>
         <a href="#descargar" class="hover:text-white">Descargar</a>
-        <a href="scripting.html" class="hover:text-white">Documentación</a>
+        <a href="manual/index.html" class="hover:text-white">Documentación</a>
+        <a href="https://discord.gg/zG7rSsUGEz" target="_blank" rel="noopener" class="hover:text-white">Discord</a>
       </div>
       <a href="#descargar" class="rounded-lg bg-brand px-4 py-2 text-sm font-semibold text-ink hover:bg-white">Descargar</a>
     </nav>
@@ -56,23 +57,30 @@
 
   <!-- Hero -->
   <section class="relative overflow-hidden">
+    <!-- Video de fondo con parallax (se mueve mas lento que la pagina al bajar). -->
+    <div id="hero-video" class="pointer-events-none absolute inset-x-0 -top-[15%] h-[130%] will-change-transform" aria-hidden="true">
+      <video class="h-full w-full object-cover opacity-60" autoplay muted loop playsinline preload="auto" poster="img/bg-poster.jpg">
+        <source src="bg-web.mp4" type="video/mp4">
+      </video>
+      <div class="absolute inset-0 bg-gradient-to-b from-ink/70 via-ink/55 to-ink"></div>
+    </div>
     <div class="glow absolute inset-0"></div>
     <div class="grid-bg absolute inset-0"></div>
     <div class="relative mx-auto max-w-6xl px-4 pb-20 pt-20 text-center sm:px-6 sm:pt-28">
       <img src="img/icon.png" alt="Logo de Cramion" class="mx-auto mb-8 h-24 w-24 drop-shadow-[0_0_40px_rgba(10,176,255,.35)]">
       <p class="mb-4 inline-flex items-center gap-2 rounded-full border border-line bg-panel px-3 py-1 text-xs font-medium text-slate-400">
-        <span class="h-1.5 w-1.5 rounded-full bg-brand"></span> v0.2 · Vulkan 1.3 · Windows x64
+        <span class="h-1.5 w-1.5 rounded-full bg-brand"></span> v0.4 · Vulkan 1.3 · Windows x64
       </p>
       <h1 class="mx-auto max-w-4xl text-4xl font-extrabold leading-tight tracking-tight text-white sm:text-6xl">
-        Luz física en tiempo real.<br><span class="text-brand">Un motor hecho a mano.</span>
+        Crea juegos 3D para Windows.<br><span class="text-brand">Editor, física y Lua en un solo motor.</span>
       </h1>
       <p class="mx-auto mt-6 max-w-2xl text-lg text-slate-400">
-        Cramion es un motor de juegos con renderizador diferido en Vulkan, editor de escenas,
-        física, terreno, agua, audio y scripting en Lua. Construido en C++20 con CMake, Clang y Ninja.
+        Diseña tus escenas en el editor, programa el juego en Lua y dale a Play: gráficos en Vulkan con luz y sombras
+        en tiempo real, física, terreno, agua, navegación, mundos de bloques y exportación a un .exe. Gratis y de código abierto.
       </p>
       <div class="mt-10 flex flex-col justify-center gap-3 sm:flex-row">
         <a href="https://github.com/MantraxStudios/Cramion/releases/latest/download/Cramion-win64.zip" class="rounded-lg bg-brand px-6 py-3 font-semibold text-ink hover:bg-white">Descargar para Windows</a>
-        <a href="scripting.html" class="rounded-lg border border-line bg-panel px-6 py-3 font-semibold text-white hover:border-brand">Leer la documentación →</a>
+        <a href="manual/index.html" class="rounded-lg border border-line bg-panel px-6 py-3 font-semibold text-white hover:border-brand">Leer la documentación →</a>
       </div>
 
       <dl class="mx-auto mt-16 grid max-w-3xl grid-cols-2 gap-px overflow-hidden rounded-xl border border-line bg-line sm:grid-cols-4">
@@ -155,6 +163,26 @@
             <span class="mt-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-brand/15 font-mono text-sm text-brand">06</span>
             <div><h3 class="font-semibold text-white">Editor y exportación</h3><p class="text-sm text-slate-400">Editor con paneles acoplables, inspector, modo Play y exportación del juego con <code class="font-mono text-slate-300">CramionPlayer.exe</code>.</p></div>
           </li>
+          <li class="flex gap-4">
+            <span class="mt-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-brand/15 font-mono text-sm text-brand">07</span>
+            <div><h3 class="font-semibold text-white">Mundos de bloques</h3><p class="text-sm text-slate-400">Mundos infinitos como Minecraft: biomas, cuevas, luz de antorchas, colisión con la física y guardado. Plantilla de supervivencia con inventario, crafteo, vida y hambre.</p></div>
+          </li>
+          <li class="flex gap-4">
+            <span class="mt-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-brand/15 font-mono text-sm text-brand">08</span>
+            <div><h3 class="font-semibold text-white">Mallas por código</h3><p class="text-sm text-slate-400">Crea y cambia geometría en tiempo real desde tus scripts: UV, submallas con varios materiales y efectos, y colisión que se rehace sola.</p></div>
+          </li>
+          <li class="flex gap-4">
+            <span class="mt-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-brand/15 font-mono text-sm text-brand">09</span>
+            <div><h3 class="font-semibold text-white">Shaders propios</h3><p class="text-sm text-slate-400">Escribe en GLSL cómo se ve una superficie (hologramas, lava, disolver, agua que se mueve) y se recompila al guardar, con la luz y las sombras del motor.</p></div>
+          </li>
+          <li class="flex gap-4">
+            <span class="mt-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-brand/15 font-mono text-sm text-brand">10</span>
+            <div><h3 class="font-semibold text-white">Prefabs</h3><p class="text-sm text-slate-400">Objetos reutilizables con instancias enlazadas: aplicar, revertir y cambios propios por instancia, como en Unity.</p></div>
+          </li>
+          <li class="flex gap-4">
+            <span class="mt-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-brand/15 font-mono text-sm text-brand">11</span>
+            <div><h3 class="font-semibold text-white">Conecta una IA (MCP)</h3><p class="text-sm text-slate-400">Claude, Cursor o Copilot trabajan dentro del editor: crean escenas, scripts, shaders y modelos, prueban en Play y miran capturas.</p></div>
+          </li>
         </ul>
 
         <div class="rounded-xl border border-line bg-ink p-6 font-mono text-sm">
@@ -175,7 +203,7 @@
     <div class="mx-auto grid max-w-6xl items-center gap-12 px-4 sm:px-6 lg:grid-cols-2">
       <div>
         <p class="text-sm font-semibold uppercase tracking-widest text-brand">Scripting en Lua</p>
-        <h2 class="mt-2 text-3xl font-bold text-white sm:text-4xl">Escribe gameplay como en Unity</h2>
+        <h2 class="mt-2 text-3xl font-bold text-white sm:text-4xl">Escribe gameplay en minutos</h2>
         <p class="mt-4 text-slate-400">
           Cada script es una tabla con métodos <code class="font-mono text-slate-300">Start</code>, <code class="font-mono text-slate-300">Update</code>,
           <code class="font-mono text-slate-300">OnCollisionEnter</code>… Las <code class="font-mono text-slate-300">properties</code> aparecen en el Inspector,
@@ -187,7 +215,7 @@
           <li class="flex gap-2"><span class="text-brand">✓</span> Eventos de interfaz conectados a métodos del script</li>
           <li class="flex gap-2"><span class="text-brand">✓</span> Entorno aislado: sin acceso al sistema de archivos</li>
         </ul>
-        <a href="scripting.html" class="mt-8 inline-block font-semibold text-brand hover:text-white">Ver la referencia y los ejemplos →</a>
+        <a href="manual/index.html" class="mt-8 inline-block font-semibold text-brand hover:text-white">Ver la referencia y los ejemplos →</a>
       </div>
       <div class="overflow-hidden rounded-xl border border-line bg-panel shadow-2xl shadow-brand/5">
         <div class="flex items-center gap-2 border-b border-line px-4 py-3">
@@ -228,7 +256,7 @@ return Jugador</code></pre>
         <div class="relative grid items-center gap-10 lg:grid-cols-2">
           <div>
             <p class="text-sm font-semibold uppercase tracking-widest text-brand">Descargar</p>
-            <h2 class="mt-2 text-3xl font-bold text-white sm:text-4xl">Cramion 0.2 para Windows</h2>
+            <h2 class="mt-2 text-3xl font-bold text-white sm:text-4xl">Cramion 0.4 para Windows</h2>
             <p class="mt-4 text-slate-400">
               Build Release listo para usar: descomprime y abre <code class="font-mono text-slate-300">CramionEditor.exe</code>.
               Incluye el editor, el player para exportar juegos y el runtime de C++.
@@ -236,9 +264,10 @@ return Jugador</code></pre>
             <div class="mt-8 flex flex-col gap-3 sm:flex-row">
               <a href="https://github.com/MantraxStudios/Cramion/releases/latest/download/Cramion-win64.zip" class="inline-flex items-center justify-center gap-2 rounded-lg bg-brand px-6 py-3 font-semibold text-ink hover:bg-white">
                 <svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12m0 0l-5-5m5 5l5-5M4 21h16"/></svg>
-                Descargar .zip (≈10 MB)
+                Descargar .zip (≈13 MB)
               </a>
               <a href="https://github.com/MantraxStudios/Cramion/releases" class="inline-flex items-center justify-center rounded-lg border border-line bg-ink px-6 py-3 font-semibold text-white hover:border-brand">Todas las versiones</a>
+              <a href="https://discord.gg/zG7rSsUGEz" target="_blank" rel="noopener" class="inline-flex items-center justify-center rounded-lg border border-[#5865F2]/60 bg-[#5865F2]/15 px-6 py-3 font-semibold text-white hover:bg-[#5865F2]/30">Únete al Discord</a>
             </div>
           </div>
           <ul class="space-y-3 rounded-xl border border-line bg-ink p-6 font-mono text-sm">
@@ -269,7 +298,16 @@ return Jugador</code></pre>
             <li>GPU con Vulkan 1.3</li>
             <li>Vulkan SDK (<code class="font-mono">VULKAN_SDK</code>)</li>
             <li>CMake ≥ 3.21, Clang (LLVM) y Ninja</li>
+            <li><span class="text-white">RAM:</span> mínimo 8 GB, recomendado 16 GB</li>
+            <li><span class="text-white">Disco:</span> ~10 GB libres (Release), ~16 GB con Debug; mejor en SSD</li>
+            <li>Internet la primera vez (se descargan las dependencias)</li>
           </ul>
+          <p class="mt-4 font-mono text-sm text-brand">¿Se congela el PC?</p>
+          <p class="mt-2 text-sm text-slate-400">
+            Cada compilación usa hasta ~1,5 GB. CMake ya limita cuántas van a la vez según tu RAM
+            (7 con 16 GB). Si aun así se congela, bájalo:
+          </p>
+          <pre class="mt-2 overflow-x-auto rounded-lg bg-panel p-3 font-mono text-xs text-slate-200">cmake --preset clang-ninja-release -DCRAMION_COMPILE_JOBS=3</pre>
         </div>
         <div class="rounded-xl border border-line bg-ink p-6 lg:col-span-2">
           <p class="font-mono text-sm text-brand">2 · Compilar en Release</p>
@@ -279,6 +317,10 @@ cmake --build --preset clang-ninja-release --target cramion_package  # zip</pre>
           <p class="mt-4 font-mono text-sm text-brand">3 · Ejecutar</p>
           <pre class="mt-3 overflow-x-auto rounded-lg bg-panel p-4 font-mono text-sm text-slate-200">.\build-release\CramionEditor.exe     # editor de escenas
 .\build-release\cramion.exe san-miguel  # demo de render</pre>
+          <p class="mt-4 text-sm text-slate-400">
+            Tamaños medidos: LLVM ~2,9 GB, Vulkan SDK ~1,7 GB, código ~0,7 GB y la carpeta <code class="font-mono text-slate-300">build-release</code> ~3,1 GB
+            (casi todo son las dependencias). La primera compilación tarda varios minutos; después solo se recompila lo que cambias.
+          </p>
         </div>
       </div>
     </div>
@@ -288,14 +330,41 @@ cmake --build --preset clang-ninja-release --target cramion_package  # zip</pre>
     <div class="mx-auto flex max-w-6xl flex-col items-center justify-between gap-4 px-4 text-sm text-slate-500 sm:flex-row sm:px-6">
       <div class="flex items-center gap-2"><img src="img/icon.png" alt="" class="h-6 w-6"> Cramion Engine</div>
       <div class="flex gap-6">
-        <a href="scripting.html" class="hover:text-white">Documentación</a>
+        <a href="manual/index.html" class="hover:text-white">Documentación</a>
         <a href="#render" class="hover:text-white">Características</a>
         <a href="#descargar" class="hover:text-white">Descargar</a>
         <a href="#empezar" class="hover:text-white">Compilar</a>
+        <a href="https://discord.gg/zG7rSsUGEz" target="_blank" rel="noopener" class="hover:text-white">Discord</a>
       </div>
     </div>
   </footer>
 
   <script>hljs.highlightAll();</script>
+  <script>
+    // Parallax del video del inicio. Con "reducir movimiento" del sistema: quieto y en pausa.
+    (() => {
+      const layer = document.getElementById("hero-video");
+      if (!layer) return;
+      const video = layer.querySelector("video");
+      if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+        video.removeAttribute("autoplay");
+        video.pause();
+        return;
+      }
+      let pending = false;
+      const update = () => {
+        pending = false;
+        const y = window.scrollY;
+        if (y < window.innerHeight * 1.5) layer.style.transform = `translate3d(0, ${y * 0.4}px, 0)`;
+      };
+      window.addEventListener("scroll", () => {
+        if (!pending) {
+          pending = true;
+          requestAnimationFrame(update);
+        }
+      }, { passive: true });
+      update();
+    })();
+  </script>
 </body>
 </html>

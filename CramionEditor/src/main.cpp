@@ -122,19 +122,31 @@ int main(int argc, char** argv) {
 
         const dm::Input idle_input;  // lo que recibe la camara si no se vuela
         core::Clock clock;
+        using FrameClock = std::chrono::steady_clock;
+        const auto msSince = [](FrameClock::time_point t) {
+            return std::chrono::duration<float, std::milli>(FrameClock::now() - t).count();
+        };
         while (!app.quitRequested()) {
+            const auto frame_start = FrameClock::now();
             const float delta_seconds = clock.tick();
             window.pumpEvents();
 
             // Si la ventana cambio de tamano, las imagenes nuevas se crean
             // ANTES de construir la interfaz (la vista apunta a la del render).
             renderer.applyPendingResize();
+            const float window_ms = msSince(frame_start);
 
+            auto t = FrameClock::now();
             imgui.beginFrame();
+            float imgui_ms = msSince(t);
             app.drawUi(delta_seconds);
+            t = FrameClock::now();
             imgui.endFrame();
+            imgui_ms += msSince(t);
 
+            t = FrameClock::now();
             scene.update(app.sceneWantsInput() ? input : idle_input, delta_seconds);
+            const float scene_ms = msSince(t);
             const auto render_start = std::chrono::steady_clock::now();
             // Escena y Juego visibles a la vez: las dos se dibujan cada frame
             // (la otra primero, sin presentar), tambien en Play.
@@ -150,6 +162,7 @@ int main(int argc, char** argv) {
                                                                             render_start)
                                      .count());
             input.newFrame();
+            app.reportFrame(msSince(frame_start), window_ms, imgui_ms, scene_ms);
         }
 
         renderer.waitIdle();

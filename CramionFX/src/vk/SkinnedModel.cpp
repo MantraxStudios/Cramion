@@ -88,7 +88,7 @@ void SkinnedModel::create(const VulkanDevice& device, const asset::ModelData& mo
     const auto material_count = static_cast<std::uint32_t>(model.materials.size());
 
     vk::DescriptorPoolSize pool_size{vk::DescriptorType::eCombinedImageSampler,
-                                     material_count * SkinnedPass::kMaterialTextureCount};
+                                     material_count * SkinnedPass::kMaterialBindingCount};
     vk::DescriptorPoolCreateInfo pool_info{};
     pool_info.flags = vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet;
     pool_info.maxSets = material_count;
@@ -120,6 +120,8 @@ void SkinnedModel::create(const VulkanDevice& device, const asset::ModelData& mo
                                                             : material.normal_scale};
         gpu.reflectance = material.reflectance;
         gpu.transparent = material.transparent;
+        gpu.surface_shader = material.surface_shader;
+        gpu.surface_params = material.surface_params;
 
         // Sin textura emisiva, el factor multiplica al blanco: un material
         // emisivo liso (glTF sin mapa) sigue brillando.
@@ -127,12 +129,17 @@ void SkinnedModel::create(const VulkanDevice& device, const asset::ModelData& mo
             material.emissive.x > 0.0f || material.emissive.y > 0.0f || material.emissive.z > 0.0f;
 
         // Mismo orden que los bindings del set 1 (ver SkinnedPass).
-        const std::array<std::size_t, SkinnedPass::kMaterialTextureCount> textures = {
+        // (+ las 4 del shader de superficie del usuario, blancas si no hay.)
+        const std::array<std::size_t, SkinnedPass::kMaterialBindingCount> textures = {
             pick(material.albedo_texture, white_index),
             pick(material.metallic_roughness_texture, white_index),
             pick(material.normal_texture, flat_normal_index),
             pick(material.occlusion_texture, white_index),
             pick(material.emissive_texture, emits ? white_index : black_index),
+            pick(material.surface_textures[0], white_index),
+            pick(material.surface_textures[1], white_index),
+            pick(material.surface_textures[2], white_index),
+            pick(material.surface_textures[3], white_index),
         };
         gpu.albedo_texture = static_cast<std::uint32_t>(textures[0]);
         gpu.metallic_roughness_texture = static_cast<std::uint32_t>(textures[1]);
@@ -143,15 +150,15 @@ void SkinnedModel::create(const VulkanDevice& device, const asset::ModelData& mo
         }
         materials_.push_back(gpu);
 
-        std::array<vk::DescriptorImageInfo, SkinnedPass::kMaterialTextureCount> infos{};
-        for (std::uint32_t t = 0; t < SkinnedPass::kMaterialTextureCount; ++t) {
+        std::array<vk::DescriptorImageInfo, SkinnedPass::kMaterialBindingCount> infos{};
+        for (std::uint32_t t = 0; t < SkinnedPass::kMaterialBindingCount; ++t) {
             infos[t].sampler = *pass.sampler();
             infos[t].imageView = *textures_[textures[t]].view();
             infos[t].imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
         }
 
-        std::array<vk::WriteDescriptorSet, SkinnedPass::kMaterialTextureCount> writes{};
-        for (std::uint32_t t = 0; t < SkinnedPass::kMaterialTextureCount; ++t) {
+        std::array<vk::WriteDescriptorSet, SkinnedPass::kMaterialBindingCount> writes{};
+        for (std::uint32_t t = 0; t < SkinnedPass::kMaterialBindingCount; ++t) {
             writes[t].dstSet = *material_sets_[m];
             writes[t].dstBinding = t;
             writes[t].descriptorType = vk::DescriptorType::eCombinedImageSampler;

@@ -1,0 +1,24 @@
+<pre><code class="language-lua">local Cristal = { properties = {} }
+
+function Cristal:Start()
+    self.malla = Mesh.cube(1)
+    -- Dos submallas: las caras de arriba y abajo brillan, el resto es piedra con textura.
+    local tris = self.malla.triangles
+    local lados, tapas = {}, {}
+    for i = 1, #tris, 3 do
+        local destino = (i > 12 and i <= 24) and tapas or lados   -- caras 3 y 4 del cubo: +Y y -Y
+        table.insert(destino, tris[i]); table.insert(destino, tris[i + 1]); table.insert(destino, tris[i + 2])
+    end
+    self.malla:setTriangles(lados, 0)
+    self.malla:setTriangles(tapas, 1)
+    self.malla:setMaterial(0, { texture = "Textures/piedra.png", normalMap = "Textures/piedra_n.png", tiling = Vec3(2, 2, 0) })
+    self.malla:setMaterial(1, { color = Vec3(0.2, 0.6, 1), emission = Vec3(0.2, 0.6, 1), emissionIntensity = 4 })
+    self.entity.mesh = self.malla
+end
+
+function Cristal:Update(dt)
+    -- El brillo late: solo factores, no se vuelve a subir la malla.
+    self.malla:setMaterial(1, { emissionIntensity = 3 + math.sin(Time.time * 4) * 2 })
+end
+
+return Cristal</code></pre>

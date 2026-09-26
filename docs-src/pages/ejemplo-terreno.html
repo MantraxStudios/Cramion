@@ -1,0 +1,19 @@
+<pre><code class="language-lua">local Terreno = { properties = { tamano = 60.0, altura = 4.0 } }
+
+function Terreno:Start()
+    self.malla = Mesh.plane(self.tamano, self.tamano, 80, 80)
+    local v = self.malla.vertices
+    for i = 1, #v do
+        local p = v[i]
+        p.y = (math.sin(p.x * 0.15) + math.cos(p.z * 0.12)) * self.altura * 0.5
+        v[i] = p
+    end
+    self.malla.vertices = v            -- sube la malla
+    self.malla:recalculateNormals()
+    self.malla:recalculateTangents()
+    self.malla:setMaterial(0, { color = Vec3(0.35, 0.6, 0.25), roughness = 0.9 })
+    self.entity.mesh = self.malla
+    self.entity:addComponent("MeshCollider")   -- los Rigidbody chocan con ella
+end
+
+return Terreno</code></pre>

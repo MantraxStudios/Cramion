@@ -1,0 +1,46 @@
+<p class="file">Moneda.lua</p>
+      <pre><code class="language-lua">local Moneda = { properties = { valor = 1 } }
+
+function Moneda:Start()
+    self.base = self.entity.position
+end
+
+function Moneda:Update(dt)
+    -- Flota y gira
+    self.entity:rotate(Vec3(0, 180 * dt, 0))
+    self.entity.position = self.base + Vec3(0, math.sin(Time.time * 3) * 0.15, 0)
+end
+
+function Moneda:OnTriggerEnter(other)
+    if other.name ~= "Jugador" then return end
+    local marcador = Scene.find("Marcador")
+    if marcador then marcador:getScript():Sumar(self.valor) end
+    Audio.playOneShot("Audio/moneda.wav", self.entity.position)
+    self.entity:destroy()
+end
+
+return Moneda</code></pre>
+      <p class="file">Marcador.lua</p>
+      <pre><code class="language-lua">local Marcador = { properties = {} }
+
+function Marcador:Start()
+    self.puntos = 0
+    self.total = #Scene.findAllWithTag("Moneda")
+    self:pintar()
+end
+
+function Marcador:pintar()
+    self.entity.text = string.format("Monedas: %d / %d", self.puntos, self.total)
+end
+
+function Marcador:Sumar(n)
+    self.puntos = self.puntos + n
+    self:pintar()
+    if self.puntos >= self.total then
+        self.entity.color = Vec3(1, 0.85, 0.2)
+        Prefs.setInt("record", math.max(Prefs.getInt("record", 0), self.puntos))
+        Scene.load("Victoria")
+    end
+end
+
+return Marcador</code></pre>

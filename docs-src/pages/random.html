@@ -1,0 +1,72 @@
+<p>
+  Números aleatorios para botines, apariciones, daño crítico o partículas. Con <code>Random.seed(n)</code> la secuencia
+  se repite exactamente igual: útil para niveles generados que tienen que salir siempre iguales.
+</p>
+<pre><code class="language-lua">local dano = Random.int(8, 12)              -- 8, 9, 10, 11 o 12
+if Random.chance(0.1) then dano = dano * 2 end  -- 10 % de critico
+local premio = Random.pick({ "espada", "escudo", "pocion" })
+local punto = self.entity.position + Random.insideUnitCircle() * 5   -- en un circulo de 5 m en el suelo</code></pre>
+
+<h3 id="numeros">Números</h3>
+<table>
+  <thead><tr><th>Función</th><th>Descripción</th></tr></thead>
+  <tbody>
+    <tr><td><code>Random.value()</code></td><td>Decimal de 0 a 1.</td></tr>
+    <tr><td><code>Random.range(min, max)</code></td><td>Decimal entre <code>min</code> y <code>max</code>.</td></tr>
+    <tr><td><code>Random.int(min, max)</code></td><td>Entero entre <code>min</code> y <code>max</code>, <strong class="text-white">los dos incluidos</strong>.</td></tr>
+    <tr><td><code>Random.chance(probabilidad)</code></td><td><code>true</code> con esa probabilidad (0.25 = 25 %).</td></tr>
+    <tr><td><code>Random.sign()</code></td><td>-1 o 1.</td></tr>
+    <tr><td><code>Random.seed(n)</code></td><td>Fija la semilla: la misma semilla da la misma secuencia.</td></tr>
+  </tbody>
+</table>
+
+<h3 id="vectores">Direcciones, puntos y giros</h3>
+<table>
+  <thead><tr><th>Función</th><th>Descripción</th></tr></thead>
+  <tbody>
+    <tr><td><code>Random.onUnitSphere()</code></td><td>Una dirección al azar (longitud 1).</td></tr>
+    <tr><td><code>Random.insideUnitSphere()</code></td><td>Un punto al azar dentro de una esfera de radio 1.</td></tr>
+    <tr><td><code>Random.insideUnitCircle()</code></td><td>Un punto al azar dentro de un círculo de radio 1 <strong class="text-white">en el suelo</strong> (<code>y = 0</code>).</td></tr>
+    <tr><td><code>Random.rotation()</code></td><td>Un <a href="quat.html"><code>Quat</code></a> al azar (todas las orientaciones igual de probables).</td></tr>
+  </tbody>
+</table>
+
+<h3 id="listas">Listas</h3>
+<table>
+  <thead><tr><th>Función</th><th>Descripción</th></tr></thead>
+  <tbody>
+    <tr><td><code>Random.pick(lista)</code></td><td>Un elemento al azar (<code>nil</code> si está vacía).</td></tr>
+    <tr><td><code>Random.shuffle(lista)</code></td><td>Baraja la lista (la cambia y la devuelve).</td></tr>
+  </tbody>
+</table>
+
+<h3 id="ejemplo-botin">Ejemplo: botín con pesos</h3>
+<p class="file">Cofre.lua</p>
+<pre><code class="language-lua">local Cofre = {}
+
+-- Cuanto mas peso, mas probable.
+local tabla = {
+    { cosa = "monedas", peso = 60 },
+    { cosa = "pocion", peso = 30 },
+    { cosa = "espada legendaria", peso = 1 },
+}
+
+local function sortear()
+    local total = 0
+    for _, e in ipairs(tabla) do total = total + e.peso end
+    local r = Random.range(0, total)
+    for _, e in ipairs(tabla) do
+        r = r - e.peso
+        if r &lt;= 0 then return e.cosa end
+    end
+    return tabla[#tabla].cosa
+end
+
+function Cofre:OnTriggerEnter(otro)
+    if otro.tag == "Player" then
+        Debug.log("Has encontrado:", sortear())
+        self.entity:destroy()
+    end
+end
+
+return Cofre</code></pre>

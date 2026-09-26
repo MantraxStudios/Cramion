@@ -1476,7 +1476,8 @@ struct NavigationSystem::Impl {
         std::vector<dtPolyRef> refs(static_cast<std::size_t>(max_corners));
         // findCorners no es const: copia del pasillo.
         dtPathCorridor corridor;
-        corridor.init(std::max(ag->corridor.getPathCount(), 1));
+        // setCorridor exige npath < capacidad (estricto): un hueco de mas.
+        corridor.init(ag->corridor.getPathCount() + 1);
         corridor.reset(ag->corridor.getFirstPoly(), ag->npos);
         corridor.setCorridor(ag->corridor.getTarget(), ag->corridor.getPath(), ag->corridor.getPathCount());
         const int n = corridor.findCorners(verts.data(), flags.data(), refs.data(), max_corners, query, &filter);

@@ -34,6 +34,25 @@ std::shared_ptr<ModelAsset> AssetManager::readModel(const Uuid& uuid, const std:
     asset->animation_names = std::move(content.animation_names);
     asset->parts.reserve(content.parts.size());
     try {
+        std::size_t reclustered = 0;
+        std::size_t before = 0;
+        std::size_t after = 0;
+        for (asset::ModelData& part : content.parts) {
+            // .crdata de versiones anteriores con clusteres de 5 unidades
+            // fijas: en un FBX en centimetros eran miles de submallas (y de
+            // llamadas de dibujo) por objeto. Se reagrupan en memoria.
+            if (asset::isOverClustered(part)) {
+                before += part.submeshes.size();
+                asset::clusterSubmeshes(part);
+                after += part.submeshes.size();
+                ++reclustered;
+            }
+        }
+        if (reclustered > 0) {
+            std::cout << "[Assets] " << name << ": reagrupadas " << reclustered << " piezas ("
+                      << before << " -> " << after
+                      << " submallas). Reimporta el modelo para guardarlo asi.\n";
+        }
         for (asset::ModelData& part : content.parts) {
             // Texturas incrustadas: se decodifican aqui (en paralelo).
             asset::finalizeModel(part, name + "/" + part.name);

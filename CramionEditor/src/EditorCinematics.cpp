@@ -182,6 +182,10 @@ void EditorApp::drawGameView() {
     const ImVec2 origin{cursor.x + (avail.x - size.x) * 0.5f, cursor.y + (avail.y - size.y) * 0.5f};
     ImGui::SetCursorScreenPos(origin);
     ImGui::Image(imgui_.viewTexture(kGameSlot), size);
+    game_image_rect_[0] = origin.x;  // Input.lockCursor encierra el raton aqui
+    game_image_rect_[1] = origin.y;
+    game_image_rect_[2] = size.x;
+    game_image_rect_[3] = size.y;
     ImDrawList* draw = ImGui::GetWindowDrawList();
     if (game_guides_) {
         for (int i = 1; i <= 2; ++i) {

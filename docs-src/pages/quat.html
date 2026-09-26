@@ -1,0 +1,89 @@
+<p>
+  Un <code>Quat</code> (cuaternión) guarda una rotación sin los problemas de los ángulos de Euler (bloqueo de cardán,
+  saltos al pasar de 359 a 0 grados). Es lo que usa el motor por dentro. No hace falta entender sus números:
+  se crean con las funciones de abajo y se combinan con <code>*</code>.
+</p>
+<pre><code class="language-lua">local q = Quat.euler(0, 90, 0)          -- 90 grados sobre Y
+local dir = q * Vec3.forward             -- girar un vector: (-1, 0, 0)
+local dos = q * Quat.angleAxis(30, Vec3.right)  -- primero 30 sobre X, luego q
+
+self.entity.quaternion = Quat.lookRotation(objetivo - self.entity.position)
+print(self.entity.quaternion:toEuler())  -- en grados, como entity.rotation</code></pre>
+
+<h3 id="crear">Crear rotaciones</h3>
+<table>
+  <thead><tr><th>Función</th><th>Descripción</th></tr></thead>
+  <tbody>
+    <tr><td><code>Quat.identity</code>, <code>Quat()</code></td><td>Sin giro.</td></tr>
+    <tr><td><code>Quat.euler(x, y, z)</code>, <code>Quat.euler(Vec3)</code></td><td>Desde grados, en el mismo orden que <code>entity.rotation</code> (Z, luego X, luego Y, como Unity).</td></tr>
+    <tr><td><code>Quat.angleAxis(grados, eje)</code></td><td>Un giro de tantos grados alrededor de un eje.</td></tr>
+    <tr><td><code>Quat.lookRotation(dirección [, arriba])</code></td><td>La rotación que mira hacia <code>dirección</code> (su <code>forward</code> apunta allí). <code>arriba</code> es <code>Vec3.up</code> si no se da.</td></tr>
+    <tr><td><code>Quat.fromToRotation(desde, hasta)</code></td><td>El giro más corto que lleva una dirección a otra (por ejemplo, alinear con la normal del suelo).</td></tr>
+    <tr><td><code>Quat(x, y, z, w)</code></td><td>Con sus cuatro números (casi nunca hace falta).</td></tr>
+  </tbody>
+</table>
+
+<h3 id="usar">Combinar y girar vectores</h3>
+<table>
+  <thead><tr><th>Operación</th><th>Descripción</th></tr></thead>
+  <tbody>
+    <tr><td><code>q * v</code></td><td>Gira el vector <code>v</code>.</td></tr>
+    <tr><td><code>q1 * q2</code></td><td>Una rotación tras otra: primero <code>q2</code> y después <code>q1</code>.</td></tr>
+    <tr><td><code>q:inverse()</code></td><td>La rotación contraria (<code>q:inverse() * q</code> = sin giro).</td></tr>
+    <tr><td><code>q:forward()</code>, <code>q:right()</code>, <code>q:up()</code></td><td>Los ejes de esa rotación.</td></tr>
+    <tr><td><code>q:toEuler()</code></td><td>Grados (<code>Vec3</code>), como <code>entity.rotation</code>.</td></tr>
+    <tr><td><code>q:normalized()</code>, <code>q:copy()</code></td><td>Normalizada y copia independiente.</td></tr>
+    <tr><td><code>a == b</code>, <code>tostring(q)</code></td><td>Misma rotación (con un margen pequeño) y texto.</td></tr>
+  </tbody>
+</table>
+
+<h3 id="interpolar">Interpolar y medir</h3>
+<table>
+  <thead><tr><th>Función</th><th>Descripción</th></tr></thead>
+  <tbody>
+    <tr><td><code>Quat.slerp(a, b, t)</code></td><td>Rotación intermedia a velocidad constante (<code>t</code> de 0 a 1).</td></tr>
+    <tr><td><code>Quat.lerp(a, b, t)</code></td><td>Parecido y más rápido; para ángulos pequeños no se nota la diferencia.</td></tr>
+    <tr><td><code>Quat.rotateTowards(desde, hasta, grados)</code></td><td>Gira hacia <code>hasta</code> como mucho <code>grados</code>: una velocidad de giro fija.</td></tr>
+    <tr><td><code>Quat.angle(a, b)</code></td><td>Grados que separan dos rotaciones.</td></tr>
+    <tr><td><code>Quat.dot(a, b)</code></td><td>Producto escalar (1 o -1: la misma rotación).</td></tr>
+  </tbody>
+</table>
+
+<h3 id="entidad">En una entidad</h3>
+<p>
+  <code>entity.quaternion</code> es el giro local de la entidad como <code>Quat</code> (lectura y escritura). Es lo mismo
+  que <code>entity.rotation</code>, pero sin pasar por grados: úsalo para interpolar o acumular giros sin saltos.
+</p>
+<pre><code class="language-lua">-- Girar 90 grados por segundo sobre su propio eje Y (acumulando sin errores)
+function Molino:Update(dt)
+    self.entity.quaternion = self.entity.quaternion * Quat.angleAxis(90 * dt, Vec3.up)
+end</code></pre>
+
+<h3 id="torreta">Ejemplo: torreta que apunta</h3>
+<p>Gira hacia el jugador con una velocidad máxima y dispara cuando lo tiene casi delante.</p>
+<p class="file">Torreta.lua</p>
+<pre><code class="language-lua">local Torreta = { properties = { velocidadGiro = 120.0, alcance = 25.0 } }
+
+function Torreta:Start()
+    self.jugador = Scene.find("Jugador")
+end
+
+function Torreta:Update(dt)
+    if not self.jugador then return end
+    local hacia = self.jugador.position - self.entity.position
+    if hacia:length() &gt; self.alcance then return end
+
+    local objetivo = Quat.lookRotation(hacia)
+    self.entity.quaternion = Quat.rotateTowards(self.entity.quaternion, objetivo, self.velocidadGiro * dt)
+
+    if Quat.angle(self.entity.quaternion, objetivo) &lt; 3 then
+        Debug.log("¡Fuego!")
+    end
+end
+
+return Torreta</code></pre>
+<div class="note">
+  La torreta debe estar en la raíz de la escena (o su padre sin girar): <code>quaternion</code> es el giro local.
+  Todos los ángulos de la API van en <strong class="text-white">grados</strong>; solo <code>Mathf.sin</code>,
+  <code>Mathf.cos</code>... usan radianes, como en <code>math</code>.
+</div>

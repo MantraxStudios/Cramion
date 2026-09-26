@@ -3,6 +3,8 @@
 #include "Dialogs.h"
 #include "EditorLog.h"
 
+#include <shellapi.h>
+
 #include <imgui.h>
 #include <imgui_internal.h>
 #include <imgui_stdlib.h>
@@ -45,13 +47,16 @@ EditorApp::EditorApp(dm::Window& window, gfx::VulkanRenderer& renderer, scene::S
     : window_(window), renderer_(renderer), scene_(scene), imgui_(imgui) {
     // Los componentes de fisica tienen que existir antes de leer escenas.
     physics::registerPhysicsComponents();
+    ecs::registerPrefabComponents();
     cinema::registerCinematicComponents();
     terrain::registerTerrainComponents();
     water::registerWaterComponents();
     navigation::registerNavigationComponents();
+    voxel::registerVoxelComponents();
     audio::registerAudioComponents();
     scripting::registerScriptComponents();
     ui::registerUiComponents();
+    startMcp();  // servidor MCP para IA (solo este PC)
     physics_.addListener([this](const physics::PhysicsEvent& event) { onPhysicsEvent(event); });
     const std::filesystem::path documents = dialogs::documentsFolder();
     new_project_folder_ = dialogs::utf8(documents.empty() ? std::filesystem::current_path()
@@ -60,6 +65,11 @@ EditorApp::EditorApp(dm::Window& window, gfx::VulkanRenderer& renderer, scene::S
 }
 
 EditorApp::~EditorApp() {
+    // Cerrar en Play: los scripts terminan (OnDestroy) mientras todo lo que usan
+    // sigue vivo (el mundo de bloques se destruye antes que ellos).
+    scripts_.stop();
+    scripts_.setVoxels(nullptr);
+    voxels_.stop();
     cancelExport();
     // Las importaciones en curso terminan antes de destruir nada.
     for (ImportJob& job : imports_) {
@@ -93,7 +103,19 @@ bool EditorApp::openProject(const std::filesystem::path& path) {
     scripts_.setPhysics(&physics_);
     scripts_.setAudio(&audio_);
     scripts_.setNavigation(&nav_);
+    scripts_.setVoxels(&voxels_);
+    // Input.lockCursor: el raton encerrado en la vista Juego (Escape lo suelta).
+    scripts_.setCursorLock([this](bool locked) {
+        const RECT area{static_cast<LONG>(game_image_rect_[0]), static_cast<LONG>(game_image_rect_[1]),
+                        static_cast<LONG>(game_image_rect_[0] + game_image_rect_[2]),
+                        static_cast<LONG>(game_image_rect_[1] + game_image_rect_[3])};
+        window_.setCursorCaptured(locked, game_image_rect_[2] > 0.0f ? &area : nullptr);
+    });
     audio_.setAssetsRoot(project_.assetsFolder());
+    // Mundos de bloques: texturas en Assets, partidas guardadas en Library.
+    voxels_.setAssetsRoot(project_.assetsFolder());
+    voxels_.setSaveRoot(project_.libraryFolder() / "Worlds");
+    voxels_.setPhysics(&physics_);  // los Rigidbody chocan con los bloques
     loadGraphicsSettings();
     sync_ = std::make_unique<ecs::RenderSync>(*asset_manager_);
     sync_->reset(scene_);
@@ -154,6 +176,8 @@ void EditorApp::closeProject() {
     nav_.clear();
     nav_.setMeshProvider({});
     nav_.setTerrainProvider({});
+    stopVoxels();
+    voxels_.syncRenderer(renderer_);  // quita sus secciones del renderizador
     model_previews_.stop();
     clip_source_.reset();
     clip_source_uuid_ = {};
@@ -193,6 +217,7 @@ void EditorApp::closeProject() {
 
 void EditorApp::newScene() {
     nav_.clear();
+    stopVoxels();
     world_.clear();
     world_.setSceneUuid(Uuid::generate());
     world_.setSceneName("Nueva escena");
@@ -208,6 +233,7 @@ void EditorApp::newScene() {
 bool EditorApp::openScene(const std::filesystem::path& path) {
     std::string error;
     nav_.clear();
+    stopVoxels();
     if (!ecs::loadScene(world_, path, &error)) {
         std::cerr << "[Editor] No se pudo abrir la escena " << dialogs::utf8(path) << ": " << error
                   << "\n";
@@ -215,6 +241,7 @@ bool EditorApp::openScene(const std::filesystem::path& path) {
     }
     scene_path_ = path;
     clearSelection();
+    syncPrefabInstances();  // prefabs que cambiaron con la escena cerrada
     resetUndo();
     dirty_ = false;
     std::cout << "[Editor] Escena abierta: " << dialogs::utf8(path.filename()) << "\n";
@@ -343,6 +370,7 @@ void EditorApp::flushCommit() {
     if (playing()) {
         return;
     }
+    recordPrefabOverrides();
     std::string state = ecs::serializeWorld(world_);
     if (state == current_state_) {
         return;
@@ -606,6 +634,7 @@ void EditorApp::duplicateSelection() {
     selection_.clear();
     for (ecs::Entity e : targets) {
         const ecs::Entity copy = world_.duplicate(e);
+        ecs::detachCopiedLinks(world_, copy);
         if (copy.valid()) {
             selection_.push_back(copy.uuid());
             active_ = copy.uuid();
@@ -633,6 +662,7 @@ void EditorApp::pasteClipboard() {
     selection_.clear();
     for (const std::string& json : clipboard_) {
         const ecs::Entity pasted = ecs::pasteEntities(world_, json, parent);
+        ecs::detachCopiedLinks(world_, pasted);
         if (pasted.valid()) {
             selection_.push_back(pasted.uuid());
             active_ = pasted.uuid();
@@ -735,7 +765,9 @@ void EditorApp::drawUi(float delta_seconds) {
     imgui_.updateThumbnails();
     pollImports();
     watchAssets();
+    pollMcp();
     runSelfTestStep();
+    frame_tasks_ms_ += millisecondsSince(ui_start);
 
     if (!has_project_) {
         flying_ = false;
@@ -751,6 +783,8 @@ void EditorApp::drawUi(float delta_seconds) {
         const CpuClock::time_point physics_start = CpuClock::now();
         updatePhysics(delta_seconds);
         updateNavigation(delta_seconds);
+        updateVoxels(delta_seconds);
+        if (scripts_.cursorLocked() && ImGui::IsKeyPressed(ImGuiKey_Escape, false)) scripts_.releaseCursor();
         if (quit_play_requested_) {  // Game.quit() en Play
             quit_play_requested_ = false;
             exitPlay();
@@ -785,8 +819,10 @@ void EditorApp::drawUi(float delta_seconds) {
     if (show_console_) drawConsole();
     if (show_render_settings_) drawRenderSettings();
     if (show_animator_) drawAnimatorEditor();
-    if (show_script_editor_) drawScriptEditor();
+    if (show_script_editor_ || !script_tabs_.empty()) drawScriptEditor();
+    drawMcpWindow();
     drawExportProgress();
+    drawImportProgress();
     if (show_physics_) drawPhysicsWindow();
     if (show_navigation_window_) drawNavigationWindow();
     if (show_cinematic_) drawCinematicWindow();
@@ -822,6 +858,42 @@ void EditorApp::drawUi(float delta_seconds) {
     addCpuSample(kCpuUi, millisecondsSince(ui_start));
 }
 
+void EditorApp::reportFrame(float total_ms, float window_ms, float imgui_ms, float scene_update_ms) {
+    const gfx::VulkanRenderer::FrameTimings r = renderer_.takeFrameTimings();
+    const double now = ImGui::GetTime();
+    // Frame lento (menos de ~7 FPS): se explica en la consola, como mucho una
+    // vez por segundo, con lo que costo cada parte en ESE frame.
+    if (total_ms > 150.0f && has_project_ && now - last_slow_report_ > 1.0) {
+        last_slow_report_ = now;
+        const auto ms = [](float v) { return std::to_string(static_cast<int>(v + 0.5f)); };
+        const auto s = [&](int section) { return ms(frame_ms_[static_cast<std::size_t>(section)]); };
+        std::string line = "[Rendimiento] Frame lento de " + ms(total_ms) + " ms: ";
+        line += "tareas " + ms(frame_tasks_ms_);
+        if (frame_refreshes_ > 0) line += " (refrescar Assets x" + std::to_string(frame_refreshes_) + " " + ms(frame_refresh_ms_) + ")";
+        line += ", fisica " + s(kCpuPhysics) + ", vista escena " + s(kCpuScene) + ", jerarquia " + s(kCpuHierarchy) +
+                ", inspector " + s(kCpuInspector) + ", paneles " + s(kCpuPanels) + ", sync " + s(kCpuSync);
+        line += ", render " + s(kCpuRender) + " (espera GPU " + ms(r.fence_wait_ms) + ", actores " + ms(r.actors_ms) +
+                ", sonda " + ms(r.probe_ms) + ", swapchain " + ms(r.acquire_ms) + ", uniformes " + ms(r.uniforms_ms) +
+                ", comandos " + ms(r.record_ms) + ", envio " + ms(r.submit_ms);
+        if (r.uploads > 0) line += ", SUBIR MODELOS x" + std::to_string(r.uploads) + " " + ms(r.upload_ms);
+        // Los pases que mas tardaron en grabarse.
+        std::vector<std::pair<std::string, float>> passes = r.passes;
+        std::sort(passes.begin(), passes.end(), [](const auto& a, const auto& b) { return a.second > b.second; });
+        for (std::size_t i = 0; i < passes.size() && i < 3; ++i) {
+            if (passes[i].second >= 1.0f) line += std::string(i == 0 ? "; pases: " : ", ") + passes[i].first + " " + ms(passes[i].second);
+        }
+        line += "), ventana " + ms(window_ms) + ", imgui " + ms(imgui_ms) + ", camara " + ms(scene_update_ms);
+        line += " | GPU " + ms(renderer_.gpuProfiler().totalMilliseconds()) + " ms, " +
+                std::to_string(scene_.actors().size()) + " actores, " + std::to_string(renderer_.triangleCount()) +
+                " triangulos";
+        std::cerr << line << std::endl;
+    }
+    frame_ms_.fill(0.0f);
+    frame_tasks_ms_ = 0.0f;
+    frame_refresh_ms_ = 0.0f;
+    frame_refreshes_ = 0;
+}
+
 void EditorApp::syncWorld(float delta_seconds, bool secondary) {
     if (!has_project_ || !sync_) {
         return;
@@ -845,6 +917,7 @@ void EditorApp::syncWorld(float delta_seconds, bool secondary) {
     options.apply_main_camera = game;
     // La segunda vista no avanza animaciones ni agua (ya lo hace la principal).
     sync_->sync(world_, scene_, renderer_, secondary ? 0.0f : delta_seconds, options);
+    if (!secondary) voxels_.syncRenderer(renderer_);
     addCpuSample(kCpuSync, millisecondsSince(t));
 
     if (game) return;  // sin contorno ni gizmos (setEditorHelpersEnabled)
@@ -983,6 +1056,7 @@ void EditorApp::drawMenuBar() {
             ImGui::EndMenu();
         }
         if (ImGui::MenuItem("Terreno")) createTerrainEntity();
+        if (ImGui::MenuItem("Mundo de bloques")) createVoxelWorldEntity();
         if (ImGui::BeginMenu("Agua")) {
             if (ImGui::MenuItem("Océano / playa")) createWaterEntity(0);
             if (ImGui::MenuItem("Lago")) createWaterEntity(1);
@@ -1012,6 +1086,7 @@ void EditorApp::drawMenuBar() {
         ImGui::MenuItem("Configuración gráfica", nullptr, &show_render_settings_);
         ImGui::MenuItem("Animator", nullptr, &show_animator_);
         ImGui::MenuItem("Scripts (Lua)", nullptr, &show_script_editor_);
+        ImGui::MenuItem("MCP (IA)", nullptr, &show_mcp_);
         ImGui::MenuItem("Física", nullptr, &show_physics_);
         ImGui::MenuItem("Navegación", nullptr, &show_navigation_window_);
         ImGui::MenuItem("Juego", nullptr, &show_game_);
@@ -1023,6 +1098,22 @@ void EditorApp::drawMenuBar() {
                 show_render_settings_ = show_physics_ = show_game_ = show_cinematic_ = true;
         }
         ImGui::EndMenu();
+    }
+    // Ayuda: el manual y la comunidad en el navegador.
+    if (ImGui::BeginMenu("Ayuda")) {
+        const auto open = [](const wchar_t* url) { ShellExecuteW(nullptr, L"open", url, nullptr, nullptr, SW_SHOWNORMAL); };
+        if (ImGui::MenuItem("Documentación", "F1")) open(L"https://cramion.mantraxtools.store/manual/index.html");
+        if (ImGui::MenuItem("Scripting en Lua")) open(L"https://cramion.mantraxtools.store/manual/primer-script.html");
+        if (ImGui::MenuItem("Shaders propios")) open(L"https://cramion.mantraxtools.store/manual/shaders.html");
+        ImGui::Separator();
+        if (ImGui::MenuItem("Web de Cramion")) open(L"https://cramion.mantraxtools.store");
+        if (ImGui::MenuItem("Discord")) open(L"https://discord.gg/zG7rSsUGEz");
+        ImGui::Separator();
+        ImGui::MenuItem("Conectar una IA (MCP)...", nullptr, &show_mcp_);
+        ImGui::EndMenu();
+    }
+    if (ImGui::IsKeyPressed(ImGuiKey_F1, false) && !ImGui::GetIO().WantTextInput) {
+        ShellExecuteW(nullptr, L"open", L"https://cramion.mantraxtools.store/manual/index.html", nullptr, nullptr, SW_SHOWNORMAL);
     }
 
     // Hasta aqui (logo y menus) no se arrastra la ventana.
@@ -1501,17 +1592,19 @@ void EditorApp::startImport(const std::vector<std::filesystem::path>& files,
             refreshDatabase();
             continue;
         }
-        std::cout << "[Editor] Importando " << dialogs::utf8(file.filename()) << "...\n";
-        imports_.push_back(ImportJob{file, std::async(std::launch::async, [file, folder] {
-                                         return assets::importAny(file, folder);
-                                     })});
+        std::cout << "[Editor] En cola para importar: " << dialogs::utf8(file.filename()) << "\n";
+        imports_.push_back(ImportJob{file, folder, std::make_shared<assets::ImportProgress>(), {}});
+        ++imports_total_;
     }
+    pollImports();  // arranca los primeros sin esperar al siguiente frame
 }
 
 void EditorApp::pollImports() {
     bool finished = false;
     for (auto it = imports_.begin(); it != imports_.end();) {
-        if (it->result.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+        if (!it->result.valid()) {
+            ++it;  // en cola
+        } else if (it->result.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
             const assets::ImportResult result = it->result.get();
             if (result.ok) {
                 std::cout << "[Editor] Importado: " << result.info.name << " ("
@@ -1519,7 +1612,9 @@ void EditorApp::pollImports() {
             } else {
                 std::cerr << "[Editor] Error al importar " << dialogs::utf8(it->source.filename())
                           << ": " << result.message << "\n";
+                ++imports_failed_;
             }
+            ++imports_done_;
             it = imports_.erase(it);
             finished = true;
         } else {
@@ -1529,6 +1624,95 @@ void EditorApp::pollImports() {
     if (finished && database_) {
         refreshDatabase();
     }
+
+    // Arranca los que esperan en la cola, en orden, hasta el tope.
+    std::size_t running = 0;
+    for (const ImportJob& job : imports_) running += job.result.valid() ? 1 : 0;
+    for (ImportJob& job : imports_) {
+        if (running >= kMaxParallelImports) break;
+        if (job.result.valid()) continue;
+        std::cout << "[Editor] Importando " << dialogs::utf8(job.source.filename()) << "...\n";
+        job.result = std::async(std::launch::async, [file = job.source, folder = job.folder,
+                                                     progress = job.progress] {
+            return assets::importAny(file, folder, progress.get());
+        });
+        ++running;
+    }
+    if (imports_.empty()) {
+        if (imports_failed_ > 0) {
+            std::cerr << "[Editor] Importacion terminada: " << imports_failed_ << " de " << imports_total_
+                      << " archivo(s) fallaron\n";
+        }
+        imports_total_ = imports_done_ = imports_failed_ = 0;
+    }
+}
+
+float EditorApp::importFraction() const {
+    float in_flight = 0.0f;
+    for (const ImportJob& job : imports_) {
+        if (job.result.valid()) in_flight += job.progress->fraction();
+    }
+    const float total = static_cast<float>(std::max<std::size_t>(imports_total_, 1));
+    return std::min((static_cast<float>(imports_done_) + in_flight) / total, 1.0f);
+}
+
+void EditorApp::drawImportProgress() {
+    if (imports_.empty()) return;
+    const ImGuiViewport* viewport = ImGui::GetMainViewport();
+    const float margin = 16.0f;
+    ImGui::SetNextWindowPos(ImVec2(viewport->WorkPos.x + viewport->WorkSize.x - margin,
+                                   viewport->WorkPos.y + viewport->WorkSize.y - margin),
+                            ImGuiCond_Always, ImVec2(1.0f, 1.0f));
+    ImGui::SetNextWindowSize(ImVec2(420.0f, 0.0f), ImGuiCond_Always);
+    ImGui::SetNextWindowBgAlpha(0.94f);
+    const ImGuiWindowFlags flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
+                                   ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing |
+                                   ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoNav;
+    if (!ImGui::Begin("##import_progress", nullptr, flags)) {
+        ImGui::End();
+        return;
+    }
+
+    const float overall = importFraction();
+    const std::size_t current = std::min(imports_done_ + 1, imports_total_);
+    ImGui::TextColored(ImVec4(0.55f, 0.75f, 1.0f, 1.0f), "Importando archivo %zu de %zu", current, imports_total_);
+    char overlay[48];
+    std::snprintf(overlay, sizeof(overlay), "%.0f %%", overall * 100.0f);
+    ImGui::ProgressBar(overall, ImVec2(-1.0f, 0.0f), overlay);
+
+    std::size_t queued = 0;
+    for (const ImportJob& job : imports_) {
+        if (!job.result.valid()) {
+            ++queued;  // los de la cola van resumidos abajo
+            continue;
+        }
+        ImGui::Separator();
+        const std::string name = dialogs::utf8(job.source.filename());
+        ImGui::TextUnformatted(name.c_str());
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", dialogs::utf8(job.source).c_str());
+        const float fraction = job.progress->fraction();
+        std::snprintf(overlay, sizeof(overlay), "%.0f %%", fraction * 100.0f);
+        ImGui::ProgressBar(fraction, ImVec2(-1.0f, ImGui::GetTextLineHeight() + 4.0f), overlay);
+        ImGui::TextDisabled("%s", job.progress->stage().c_str());
+    }
+    if (queued > 0) {
+        ImGui::Separator();
+        ImGui::TextDisabled("%zu en cola:", queued);
+        std::size_t shown = 0;
+        for (const ImportJob& job : imports_) {
+            if (job.result.valid()) continue;
+            if (shown == 4) {
+                ImGui::TextDisabled("  ... y %zu mas", queued - shown);
+                break;
+            }
+            ImGui::TextDisabled("  %s", dialogs::utf8(job.source.filename()).c_str());
+            ++shown;
+        }
+    }
+    if (imports_failed_ > 0) {
+        ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.4f, 1.0f), "%zu fallaron (ver consola)", imports_failed_);
+    }
+    ImGui::End();
 }
 
 void EditorApp::importFolder(const std::filesystem::path& source, const std::filesystem::path& target) {

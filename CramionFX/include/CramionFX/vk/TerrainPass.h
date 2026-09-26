@@ -89,9 +89,10 @@ public:
     // Dentro del pase de geometria (G-buffer abierto, set 0 del frame).
     void recordGBuffer(const vk::raii::CommandBuffer& cmd, std::uint32_t frame,
                        const vk::raii::DescriptorSet& frame_set) const;
-    // Dentro de una cascada de sombra.
+    // Dentro de una cascada de sombra, o del mapa de una luz puntual/foco
+    // (`local`: se descartan los trozos fuera del volumen de la luz).
     void recordShadow(const vk::raii::CommandBuffer& cmd, std::uint32_t frame, const vk::raii::DescriptorSet& frame_set,
-                      const core::Mat4& light_view_projection) const;
+                      const core::Mat4& light_view_projection, bool local = false) const;
 
     std::uint32_t chunkCount() const;
 

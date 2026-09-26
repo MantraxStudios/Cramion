@@ -1,0 +1,18 @@
+<pre><code class="language-lua">local Olas = { properties = {} }
+
+function Olas:Start()
+    self.malla = Mesh.plane(20, 20, 60, 60)
+    self.base = self.malla.vertices
+    self.entity.mesh = self.malla
+end
+
+function Olas:Update(dt)
+    local v = {}
+    for i, p in ipairs(self.base) do
+        v[i] = Vec3(p.x, math.sin(p.x * 0.8 + Time.time * 2) * 0.3, p.z)
+    end
+    self.malla.vertices = v
+    self.malla:recalculateNormals()
+end
+
+return Olas</code></pre>

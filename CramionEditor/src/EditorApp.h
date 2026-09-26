@@ -31,6 +31,7 @@
 #include <CramionCore/project/Pack.h>
 #include "ImGuiLayer.h"
 #include "LuaCompletion.h"
+#include "McpServer.h"
 #include "ModelPreviews.h"
 #include "PropertyInspector.h"
 #include "ProjectTemplates.h"
@@ -50,6 +51,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace cramion::editor {
@@ -130,8 +132,20 @@ private:
     void addCpuSample(int section, float milliseconds) {
         float& value = cpu_ms_[static_cast<std::size_t>(section)];
         value = value * 0.9f + milliseconds * 0.1f;
+        frame_ms_[static_cast<std::size_t>(section)] += milliseconds;
     }
     std::array<float, kCpuSectionCount> cpu_ms_{};
+    // Lo mismo sin suavizar, solo de este frame (para el informe de frames lentos).
+    std::array<float, kCpuSectionCount> frame_ms_{};
+    float frame_tasks_ms_ = 0.0f;    // importaciones, vigilar Assets, miniaturas, MCP
+    float frame_refresh_ms_ = 0.0f;  // refrescos de la base de datos de assets
+    int frame_refreshes_ = 0;
+    double last_slow_report_ = -10.0;
+public:
+    // Al final de cada frame (main.cpp): si fue lento, escribe en la consola
+    // en que se fue el tiempo, parte por parte.
+    void reportFrame(float total_ms, float window_ms, float imgui_ms, float scene_update_ms);
+private:
 
     enum class GizmoOperation { None, Translate, Rotate, Scale };
     enum class PendingAction { None, NewScene, OpenScene, BackToHub, Quit };
@@ -175,6 +189,40 @@ private:
     ecs::Entity instantiateAsset(const Uuid& uuid, ecs::Entity parent,
                                  const std::optional<core::Vec3>& world_position);
     void assignEnvironment(const Uuid& uuid);
+
+    // --- MCP (EditorMcp.cpp): IA conectadas al editor ---
+    friend class McpTools;
+    void startMcp();
+    void pollMcp();
+    void drawMcpWindow();
+    std::string handleMcp(const std::string& body);
+    void mcpLog(const std::string& text);
+    McpServer mcp_;
+    bool show_mcp_ = false;
+    std::string mcp_error_;
+    std::deque<std::string> mcp_log_;
+
+    // --- Prefabs (EditorPrefabs.cpp) ---
+    // El texto de un .crprefab por su UUID (cache; se vacia al refrescar la base).
+    const std::string& prefabText(const Uuid& uuid);
+    std::filesystem::path prefabPath(const Uuid& uuid) const;
+    // Guarda cada objeto de arriba de la seleccion como prefab en `folder`
+    // (Assets/Prefabs si esta vacia); los objetos pasan a ser sus instancias.
+    void createPrefabsFromSelection(const std::filesystem::path& folder = {});
+    ecs::Entity instantiatePrefabAsset(const Uuid& uuid, ecs::Entity parent,
+                                       const std::optional<core::Vec3>& world_position);
+    void applyPrefab(ecs::Entity root);
+    void revertPrefab(ecs::Entity root);
+    void unpackPrefab(ecs::Entity root);
+    void selectPrefabInstances(const Uuid& prefab);
+    // Instancias que se quedaron en una revision vieja (al abrir la escena o
+    // si cambio el .crprefab): se ponen al dia.
+    void syncPrefabInstances();
+    // Apunta en cada instancia lo que difiere de su prefab (antes de cada
+    // instantanea de deshacer).
+    void recordPrefabOverrides();
+    void drawPrefabInspectorBar(ecs::Entity entity);
+    void drawPrefabHierarchyMenu(ecs::Entity entity);
 
     // --- Paneles ---
     void drawHub();
@@ -294,6 +342,12 @@ private:
     };
     std::string assetRelative(const std::filesystem::path& file) const;
     void createScriptAsset(const std::filesystem::path& folder, ecs::Entity attach_to);
+    // --- Shaders de superficie (EditorShaders.cpp) ---
+    std::filesystem::path createShaderAsset(const std::filesystem::path& folder);
+    const std::vector<std::string>& projectShaderFiles();
+    void drawMaterialShaderSection(assets::MaterialAsset& m, bool& changed, bool& structural);
+    std::vector<std::string> shader_files_;  // .crshader de Assets (se rehace con la base de datos)
+    std::uint64_t shader_files_version_ = ~0ull;
     void openScript(const std::filesystem::path& file);
     bool saveScript(ScriptTab& tab);
     void drawScriptEditor();
@@ -308,8 +362,12 @@ private:
     int active_script_tab_ = -1;
     bool show_script_editor_ = false;
     bool focus_script_editor_ = false;
+    unsigned int script_dock_id_ = 0;  // donde se acoplan los scripts nuevos (junto a los abiertos)
+    void drawScriptToolbar(ScriptTab* tab);
+    void drawLuaConsole();
     std::string lua_console_;
     std::vector<std::filesystem::path> current_scripts_;  // .lua de la carpeta
+    std::vector<std::filesystem::path> current_shaders_;  // .crshader de la carpeta
     std::vector<std::filesystem::path> current_audio_;    // audios de la carpeta
 
     // --- Exportar el juego (EditorExport.cpp): copia en otro hilo con progreso ---
@@ -365,6 +423,13 @@ private:
         core::Vec2 start_size{};
         float scale = 1.0f;
     } ui_drag_;
+
+    // --- Mundo de bloques (EditorVoxel.cpp) ---
+    ecs::Entity createVoxelWorldEntity();
+    void updateVoxels(float delta_seconds);
+    void startVoxels();
+    void stopVoxels();
+    core::Vec3 voxelViewer();
 
     // --- Agua (EditorWater.cpp) ---
     ecs::Entity createWaterEntity(int kind);  // 0 oceano, 1 lago, 2 rio
@@ -477,6 +542,8 @@ private:
     void startImport(const std::vector<std::filesystem::path>& files,
                      const std::filesystem::path& folder);
     void pollImports();
+    // Ventana flotante con la barra de cada importacion (archivo y etapa).
+    void drawImportProgress();
     // Vigila Assets/ (archivos nuevos, copiados, borrados o movidos desde
     // fuera) y refresca la base de datos sola.
     void watchAssets();
@@ -546,6 +613,9 @@ private:
     bool rename_focus_ = false;
     std::string hierarchy_filter_;
     std::vector<std::string> clipboard_;
+    // Prefabs: texto de cada .crprefab leido (se vacia con database_version_).
+    std::unordered_map<std::string, std::string> prefab_texts_;
+    std::uint64_t prefab_texts_version_ = ~0ull;
 
     // Deshacer: instantaneas del mundo en JSON.
     std::deque<std::string> undo_;
@@ -595,9 +665,23 @@ private:
     Uuid pending_delete_asset_{};
     struct ImportJob {
         std::filesystem::path source;
+        std::filesystem::path folder;
+        // Compartido con el hilo que importa (lo sigue escribiendo aunque
+        // el trabajo ya no este en la lista).
+        std::shared_ptr<assets::ImportProgress> progress;
+        // Vacio mientras espera en la cola.
         std::future<assets::ImportResult> result;
     };
+    // En cola y en curso, en orden de llegada. Solo kMaxParallelImports a la
+    // vez: una carpeta con muchos FBX grandes agotaria la RAM.
     std::vector<ImportJob> imports_;
+    static constexpr std::size_t kMaxParallelImports = 2;
+    // Para "archivo N de M": se ponen a cero cuando la cola se vacia.
+    std::size_t imports_total_ = 0;
+    std::size_t imports_done_ = 0;
+    std::size_t imports_failed_ = 0;
+    // Fraccion total de la cola (terminados + parte de los que estan en curso).
+    float importFraction() const;
     // Vigilancia de Assets/ por notificacion del sistema (sin recorrer el
     // disco cada frame): HANDLE de FindFirstChangeNotificationW.
     void* assets_watch_ = nullptr;
@@ -619,6 +703,43 @@ private:
     void refreshDatabase();
     void rebuildBrowserCache();
     void drawFolderNode(std::size_t index);
+
+    // Navegador de contenido (EditorProject.cpp), como el Content Browser de
+    // Unreal: carpetas, assets y archivos sueltos en una sola lista, con
+    // tarjetas o lista, filtros por tipo, busqueda en todo el proyecto,
+    // historial, favoritos y seleccion multiple.
+public:
+    struct BrowserItem {
+        enum class Kind { Folder, Asset, Image, Script, Audio, Shader } kind = Kind::Asset;
+        std::filesystem::path path;
+        std::string name;
+        std::string type;
+        assets::AssetInfo info;  // Kind::Asset
+        std::uint64_t size = 0;
+        std::string key() const { return kind == Kind::Asset && info.uuid.valid() ? info.uuid.toString() : path.string(); }
+    };
+private:
+    std::vector<BrowserItem> browser_items_;      // lo que se ve (carpeta o busqueda)
+    std::vector<BrowserItem> browser_all_loose_;  // archivos sueltos de todo Assets (para buscar)
+    std::uint32_t browser_filter_ = 0;            // tipos marcados (0 = todos)
+    bool browser_list_view_ = false;
+    std::vector<std::string> browser_selection_;  // BrowserItem::key()
+    std::vector<std::filesystem::path> browser_back_;
+    std::vector<std::filesystem::path> browser_forward_;
+    std::vector<std::filesystem::path> browser_favorites_;
+    std::string browser_cached_filter_;
+    std::uint32_t browser_cached_bits_ = ~0u;
+    std::filesystem::path renaming_file_;         // archivo suelto que se renombra
+    void navigateTo(const std::filesystem::path& folder);
+    void buildBrowserItems();
+    void openBrowserItem(const BrowserItem& item);
+    void browserItemMenu(const BrowserItem& item);
+    void browserDragSource(const BrowserItem& item);
+    void browserDropTarget(const BrowserItem& item);
+    bool browserSelected(const BrowserItem& item) const;
+    void browserClick(const BrowserItem& item, std::size_t index);
+    void loadBrowserFavorites();
+    void saveBrowserFavorites();
 
     // Ventana Animator.
     bool show_animator_ = false;
@@ -676,6 +797,7 @@ private:
     bool show_cinematic_ = true;
     bool scene_view_visible_ = true;
     bool game_view_visible_ = false;
+    float game_image_rect_[4] = {0.0f, 0.0f, 0.0f, 0.0f};  // x, y, ancho, alto (pixeles de la ventana)
     std::uint32_t render_view_ = kSceneSlot;       // la vista que se dibuja este frame
     std::uint32_t last_render_view_ = kSceneSlot;
     std::uint32_t preferred_view_ = kSceneSlot;    // la ultima con la que se interactuo
@@ -713,6 +835,9 @@ private:
     float play_time_ = 0.0f;
     bool show_physics_ = true;
     bool physics_settings_dirty_ = false;
+    // Mundo de bloques (vista previa editando, un mundo nuevo en Play).
+    voxel::VoxelSystem voxels_;
+    std::string voxel_signature_;
     // Navegacion.
     navigation::NavigationSystem nav_;
     navigation::NavigationSettings nav_settings_;
@@ -823,6 +948,10 @@ private:
     Uuid self_test_zone_{};
     Uuid self_test_sequence_{};
     Uuid self_test_terrain_{};
+    // Sombras de luces locales: la luz, el sol apagado mientras y la captura con sombra.
+    Uuid self_test_light_{};
+    Uuid self_test_sun_{};
+    std::vector<std::uint8_t> self_test_capture_;
     std::size_t self_test_entities_ = 0;
 };
 

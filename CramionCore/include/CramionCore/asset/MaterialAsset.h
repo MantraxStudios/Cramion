@@ -14,6 +14,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <map>
 #include <string>
 
 namespace cramion::assets {
@@ -46,6 +47,13 @@ struct MaterialAsset {
     std::string roughness_map;  // gris: rugosidad
     std::string occlusion;
     std::string emissive_map;
+
+    // Shader de superficie propio (.crshader dentro de Assets; vacio = el
+    // estandar) y los valores de sus propiedades por nombre (las que falten
+    // usan el valor por defecto del shader). Las texturas son imagenes de Assets.
+    std::string shader;
+    std::map<std::string, core::Vec4> shader_values;
+    std::map<std::string, std::string> shader_textures;
 };
 
 bool loadMaterial(const std::filesystem::path& path, MaterialAsset& out, std::string* error = nullptr);

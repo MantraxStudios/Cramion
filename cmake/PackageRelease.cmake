@@ -1,10 +1,11 @@
 # Empaqueta el motor compilado en un zip listo para descargar:
 #
 #   Cramion-<version>-win64/
-#     CramionEditor.exe, CramionPlayer.exe, cramion.exe
-#     shaders/, editor_icons/, player_banner.png
+#     CramionEditor.exe, CramionPlayer.exe, cramion.exe, CramionMcp.exe (puente MCP)
+#     shaders/ (con source/ de los .crshader), editor_icons/, player_banner.png
+#     shaderc_shared.dll                  (compila los shaders propios)
 #     msvcp140.dll, vcruntime140*.dll   (runtime de C++, si se encuentra)
-#     LICENSE, README.md, LEEME.txt
+#     LICENSE, README.md, LEEME.txt, docs/ (web y referencia de scripting)
 #
 # Lo llama el target cramion_package:
 #   cmake -DBIN_DIR=... -DSOURCE_DIR=... -DVERSION=... -P PackageRelease.cmake
@@ -27,14 +28,23 @@ set(zip "${BIN_DIR}/Cramion-win64.zip")
 file(REMOVE_RECURSE "${BIN_DIR}/package")
 file(MAKE_DIRECTORY "${stage}")
 
-foreach(exe CramionEditor.exe CramionPlayer.exe cramion.exe)
+foreach(exe CramionEditor.exe CramionPlayer.exe cramion.exe CramionMcp.exe)
     if(NOT EXISTS "${BIN_DIR}/${exe}")
         message(FATAL_ERROR "Falta ${BIN_DIR}/${exe}: compila antes el proyecto.")
     endif()
     file(COPY "${BIN_DIR}/${exe}" DESTINATION "${stage}")
 endforeach()
 file(COPY "${BIN_DIR}/shaders" "${BIN_DIR}/editor_icons" "${BIN_DIR}/player_banner.png" DESTINATION "${stage}")
+# Compilador de los shaders de superficie del usuario (.crshader).
+if(EXISTS "${BIN_DIR}/shaderc_shared.dll")
+    file(COPY "${BIN_DIR}/shaderc_shared.dll" DESTINATION "${stage}")
+else()
+    message(WARNING "Falta shaderc_shared.dll: los shaders propios no compilaran en el paquete.")
+endif()
 file(COPY "${SOURCE_DIR}/LICENSE" "${SOURCE_DIR}/README.md" DESTINATION "${stage}")
+# La documentacion viaja con el motor (se abre sin conexion salvo el estilo).
+file(COPY "${SOURCE_DIR}/docs" DESTINATION "${stage}"
+     PATTERN "*.mp4" EXCLUDE)  # el video de fondo de la web no hace falta en el zip
 
 # Runtime de Visual C++ junto a los .exe (despliegue local, permitido por la
 # licencia del redistribuible). El editor copia los .dll de su carpeta en cada
@@ -74,7 +84,10 @@ Requisitos
 
 No separes los .exe de las carpetas shaders/ y editor_icons/.
 
-Documentacion de scripting: docs/scripting.html en el repositorio.
+Documentacion: docs/manual/index.html (como programar en Lua: API completa y
+ejemplos) y docs/index.html. Para empezar, crea un proyecto desde el Hub con
+una plantilla (Tercera persona, IA y navegacion o Mundo de bloques) y dale a
+Play.
 ")
 
 file(REMOVE "${zip}")

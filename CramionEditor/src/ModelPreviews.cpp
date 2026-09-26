@@ -102,6 +102,7 @@ void ModelPreviews::run() {
             queue_.pop_front();
         }
         bool ok = false;
+        const auto start = std::chrono::steady_clock::now();
         try {
             const std::shared_ptr<assets::ModelAsset> model = assets::AssetManager::readModel(job.uuid, job.file, job.name);
             asset::ImageRgba8 image;
@@ -109,6 +110,8 @@ void ModelPreviews::run() {
         } catch (const std::exception& e) {
             std::cerr << "[Editor] Miniatura de " << job.name << ": " << e.what() << "\n";
         }
+        const float seconds = std::chrono::duration<float>(std::chrono::steady_clock::now() - start).count();
+        if (seconds > 0.5f) std::cout << "[Editor] Miniatura de " << job.name << ": " << seconds << " s\n";
         std::lock_guard lock(mutex_);
         queued_.erase(job.uuid);
         if (ok) {

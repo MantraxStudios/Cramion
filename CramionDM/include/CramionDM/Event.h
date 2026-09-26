@@ -39,6 +39,10 @@ enum class EventType : uint8_t {
     MouseScrolled,
     MouseEnter,
     MouseLeave,
+    // Movimiento "en bruto" del raton (raw input) con el cursor capturado
+    // (Window::setCursorCaptured): deltaX/deltaY sin limite de pantalla, para
+    // mirar en primera persona.
+    MouseRawMoved,
 };
 
 // Categorías (máscara de bits) para poder filtrar eventos por grupo.

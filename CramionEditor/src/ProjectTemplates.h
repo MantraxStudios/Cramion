@@ -4,7 +4,8 @@
 // Plantillas de proyecto del Hub (como las de Unreal y Unity):
 //
 //   - Integradas: se generan por codigo (escena, materiales, scripts de Lua,
-//     interfaz y ajustes). Vacia, Tercera persona e IA con navegacion.
+//     interfaz y ajustes). Vacia, Tercera persona, IA con navegacion y
+//     Mundo de bloques (primera persona, romper y construir).
 //   - Del usuario: carpetas en %LOCALAPPDATA%/Cramion/Templates/<nombre>/
 //     con template.json, Assets/ y ProjectSettings/ (se copian tal cual al
 //     proyecto nuevo). Se crean desde el editor con Archivo > Guardar
@@ -19,7 +20,7 @@
 
 namespace cramion::editor {
 
-enum class TemplateArt : int { Blank = 0, ThirdPerson = 1, Navigation = 2, User = 3 };
+enum class TemplateArt : int { Blank = 0, ThirdPerson = 1, Navigation = 2, User = 3, Voxel = 4 };
 
 struct ProjectTemplate {
     std::string id;           // "blank", "third_person"... o la carpeta del usuario

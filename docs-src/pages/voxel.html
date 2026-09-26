@@ -1,0 +1,41 @@
+<p>
+        Con un <code>VoxelWorld</code> en la escena (Crear &gt; Mundo de bloques, o la plantilla <strong class="text-white">Mundo de bloques</strong>
+        del Hub) hay un mundo infinito de bloques como Minecraft: biomas, cuevas, árboles, mar, luz de antorchas y colisión
+        con la física. La tabla <code>Voxel</code> lo controla. Los bloques se nombran por su número o por su nombre
+        (<code>"stone"</code>, <code>"Piedra"</code>); las coordenadas pueden ser cualquier número (se redondean hacia abajo).
+      </p>
+      <table>
+        <tbody>
+          <tr><td><code>Voxel.getBlock(x, y, z)</code>, <code>Voxel.getBlockAt(pos)</code></td><td>Número del bloque (0 = aire).</td></tr>
+          <tr><td><code>Voxel.setBlock(x, y, z, bloque)</code></td><td>Pone o quita (<code>"air"</code>) un bloque; la luz, la malla y la colisión se rehacen solas.</td></tr>
+          <tr><td><code>Voxel.blockInfo(bloque)</code></td><td><code>{ id, name, label, solid, placeable, replaceable, hardness, drop, light }</code>.</td></tr>
+          <tr><td><code>Voxel.blockId(nombre)</code>, <code>Voxel.blockCount()</code></td><td>Número de un bloque y cuántos hay.</td></tr>
+          <tr><td><code>Voxel.blockColor(bloque)</code></td><td>Color medio de su textura (<code>Vec3</code>): partículas y objetos del color del bloque.</td></tr>
+          <tr><td><code>Voxel.raycast(origen, dirección, distancia)</code></td><td>Primer bloque que toca: <code>{ block, normal, id, point, distance }</code> o <code>nil</code>. Un bloque nuevo iría en <code>block + normal</code>.</td></tr>
+          <tr><td><code>Voxel.moveBox(centro, semiejes, delta)</code></td><td>Mueve una caja contra los bloques (el jugador). Devuelve <code>posición, enSuelo, techo, pared</code>.</td></tr>
+          <tr><td><code>Voxel.boxCollides(centro, semiejes)</code></td><td>Si la caja toca algún bloque sólido.</td></tr>
+          <tr><td><code>Voxel.surfaceHeight(x, z)</code></td><td>Altura del terreno generado (aunque no esté cargado).</td></tr>
+          <tr><td><code>Voxel.isReady(pos)</code>, <code>Voxel.inWater(pos)</code></td><td>Si el trozo ya está generado; si ese punto está en el agua.</td></tr>
+          <tr><td><code>Voxel.skyLight(x, y, z)</code>, <code>Voxel.blockLight(x, y, z)</code></td><td>Luz del cielo y de antorchas (0–15).</td></tr>
+          <tr><td><code>Voxel.newWorld(nombre, semilla)</code>, <code>Voxel.loadWorld(nombre)</code></td><td>Mundo con nombre (se guarda). <code>loadWorld</code> devuelve <code>false</code> si no existe.</td></tr>
+          <tr><td><code>Voxel.saveWorld()</code>, <code>Voxel.listWorlds()</code>, <code>Voxel.deleteWorld(nombre)</code></td><td>Guardar (también al parar), la lista <code>{ name, seed, lastPlayed, mode }</code> y borrar.</td></tr>
+          <tr><td><code>Voxel.setMeta(clave, texto)</code>, <code>Voxel.getMeta(clave, porDefecto)</code></td><td>Datos del juego guardados con el mundo (posición del jugador, modo…).</td></tr>
+          <tr><td><code>Voxel.worldName()</code>, <code>Voxel.seed()</code>, <code>Voxel.isActive()</code></td><td>Mundo actual.</td></tr>
+        </tbody>
+      </table>
+      <pre><code class="language-lua">-- Poner una antorcha donde mira la cámara (clic derecho)
+if Input.getMouseButtonDown(1) then
+    local golpe = Voxel.raycast(self.entity.position, self.entity.forward, 6)
+    if golpe then
+        local p = golpe.block + golpe.normal
+        Voxel.setBlock(p.x, p.y, p.z, "torch")
+    end
+end</code></pre>
+      <div class="note">
+        La plantilla <strong class="text-white">Mundo de bloques</strong> trae un juego de supervivencia completo en primera persona
+        (<code>Scripts/JugadorBloques.lua</code>): vida, hambre y aire (daño por caída y al ahogarse, muerte y reaparición),
+        inventario de 36 huecos con iconos (<code>Assets/Voxel/Iconos</code>), 13 recetas de crafteo (algunas piden mesa de trabajo),
+        picos para la piedra y las menas, objetos que caen y se recogen, contorno del bloque apuntado, grietas al romper
+        (<code>Assets/Voxel/Grietas</code>) y trocitos del color del bloque, pausa y guardado de todo. La propiedad
+        <code>creativo</code> lo cambia a modo creativo (romper al instante, volar, bloques sin fin).
+      </div>

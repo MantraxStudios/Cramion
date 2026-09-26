@@ -35,6 +35,14 @@ bool loadScene(World& world, const std::filesystem::path& path, std::string* err
 // Una entidad y sus hijos (copiar/pegar, prefabs). pasteEntities crea copias
 // con UUIDs nuevos bajo `parent` y devuelve la raiz.
 std::string serializeEntity(const World& world, Entity entity);
+
+// Un componente de una entidad como objeto JSON ({"campo": valor}), por su
+// nombre del registro ("Light", "Transform"...). Vacio si no lo tiene.
+std::string componentToJson(World& world, Entity entity, const std::string& component);
+// Aplica campos JSON a un componente (lo anade si no lo tiene; los campos que
+// no vengan no cambian). Para herramientas externas como el MCP del editor.
+bool componentFromJson(World& world, Entity entity, const std::string& component, const std::string& fields,
+                       std::string* error = nullptr);
 Entity pasteEntities(World& world, const std::string& json, Entity parent = {});
 
 // Lee solo el UUID de un .crscene (para la base de datos de assets).

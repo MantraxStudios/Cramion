@@ -7,6 +7,7 @@
 #include "CramionFX/vk/VulkanCommon.h"
 #include "CramionFX/vk/VulkanTexture.h"
 
+#include <array>
 #include <cstdint>
 #include <vector>
 
@@ -37,6 +38,10 @@ public:
         // El color base tiene alfa: recortado por alfa (follaje, rejas). Los
         // rayos tienen que probarlo en cada candidato.
         bool alpha_masked = false;
+        // Shader de superficie del usuario (-1 = el estandar) y sus
+        // propiedades; editables en vivo como el color.
+        std::int32_t surface_shader = -1;
+        std::array<core::Vec4, 8> surface_params{};
     };
 
     // Submallas opacas de un mismo material: el culling en GPU escribe sus

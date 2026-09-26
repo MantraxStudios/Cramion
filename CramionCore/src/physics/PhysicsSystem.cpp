@@ -16,6 +16,7 @@
 #include "CramionCore/physics/PhysicsSystem.h"
 
 #include "CramionCore/asset/AssetManager.h"
+#include "CramionCore/ecs/Components.h"
 #include "CramionCore/ecs/MathUtil.h"
 #include "CramionCore/terrain/Terrain.h"
 #include "CramionCore/water/Water.h"
@@ -518,11 +519,31 @@ struct PhysicsSystem::Impl {
 
     MeshProvider mesh_provider;
     TerrainProvider terrain_provider;
+    // Geometria estatica sin entidad (setStaticMesh): los datos se quedan
+    // entre mundos fisicos; el cuerpo solo existe con el mundo creado.
+    struct StaticMesh {
+        Vec3 origin{};
+        std::vector<Vec3> triangles;
+        int layer = 0;
+        JPH::BodyID body;
+    };
+    std::unordered_map<std::uint64_t, StaticMesh> static_meshes;
     assets::AssetManager* asset_manager = nullptr;
 
     std::unordered_map<entt::entity, BodyEntry> entries;
     std::unordered_map<std::uint32_t, entt::entity> body_entities;
     std::map<MeshKey, JPH::RefConst<JPH::Shape>> mesh_shapes;
+    // Mallas creadas por codigo (MeshRenderer::mesh): por malla y version.
+    struct RuntimeShapeKey {
+        const ecs::Mesh* mesh = nullptr;
+        std::uint64_t version = 0;
+        bool convex = false;
+        const JPH::PhysicsMaterial* material = nullptr;
+        bool operator<(const RuntimeShapeKey& o) const {
+            return std::tie(mesh, version, convex, material) < std::tie(o.mesh, o.version, o.convex, o.material);
+        }
+    };
+    std::map<RuntimeShapeKey, JPH::RefConst<JPH::Shape>> runtime_shapes;
     std::map<std::pair<int, int>, JPH::RefConst<JPH::PhysicsMaterial>> materials;
     std::unordered_set<entt::entity> warned;
 
@@ -626,6 +647,54 @@ struct PhysicsSystem::Impl {
         Vec3 position{};
         Quat rotation{};
     };
+
+    // La malla creada por codigo del MeshRenderer de la entidad, si tiene.
+    static const ecs::Mesh* runtimeMeshOf(ecs::Entity entity) {
+        const ecs::MeshRenderer* renderer = entity.tryGet<ecs::MeshRenderer>();
+        return renderer != nullptr ? renderer->mesh.get() : nullptr;
+    }
+    // Lo que identifica la malla del MeshCollider (si cambia, se rehace).
+    const void* meshIdentity(ecs::Entity entity) const {
+        if (const ecs::Mesh* runtime = runtimeMeshOf(entity)) return runtime;
+        return meshOf(entity);
+    }
+
+    JPH::RefConst<JPH::Shape> runtimeMeshShape(const ecs::Mesh& mesh, bool convex, const JPH::PhysicsMaterial* material,
+                                               const std::string& name) {
+        // Las versiones viejas de esta malla ya no sirven.
+        for (auto it = runtime_shapes.begin(); it != runtime_shapes.end();) {
+            it = it->first.mesh == &mesh && it->first.version != mesh.version() ? runtime_shapes.erase(it) : std::next(it);
+        }
+        auto& slot = runtime_shapes[RuntimeShapeKey{&mesh, mesh.version(), convex, material}];
+        if (slot != nullptr) return slot;
+        if (!mesh.validate().empty()) return nullptr;
+        if (!convex) {
+            JPH::VertexList vertices;
+            vertices.reserve(mesh.vertices.size());
+            for (const Vec3& p : mesh.vertices) vertices.push_back(JPH::Float3(p.x, p.y, p.z));
+            JPH::IndexedTriangleList triangles;
+            const std::vector<std::uint32_t> all = mesh.allTriangles();
+            triangles.reserve(all.size() / 3);
+            for (std::size_t i = 0; i + 2 < all.size(); i += 3) triangles.push_back(JPH::IndexedTriangle(all[i], all[i + 1], all[i + 2], 0));
+            JPH::PhysicsMaterialList materials_list;
+            materials_list.push_back(material);
+            JPH::MeshShapeSettings settings(std::move(vertices), std::move(triangles), std::move(materials_list));
+            const JPH::ShapeSettings::ShapeResult result = settings.Create();
+            if (!result.HasError()) {
+                slot = result.Get();
+                return slot;
+            }
+            std::cerr << "[Fisica] " << name << ": malla no valida (" << result.GetError().c_str()
+                      << "), se usa su envolvente convexa\n";
+        }
+        JPH::Array<JPH::Vec3> points;
+        const std::size_t stride = std::max<std::size_t>(1, mesh.vertices.size() / 4000);
+        for (std::size_t i = 0; i < mesh.vertices.size(); i += stride) points.push_back(toJolt(mesh.vertices[i]));
+        JPH::ConvexHullShapeSettings hull(points, JPH::cDefaultConvexRadius, material);
+        const JPH::ShapeSettings::ShapeResult result = hull.Create();
+        if (!result.HasError()) slot = result.Get();
+        return slot;
+    }
 
     const asset::ModelData* meshOf(ecs::Entity entity) const {
         const ecs::MeshRenderer* renderer = entity.tryGet<ecs::MeshRenderer>();
@@ -746,7 +815,16 @@ struct PhysicsSystem::Impl {
             }
             add(capsule->material, shape, capsule->center, rotation);
         }
-        if (const MeshCollider* mesh = entity.tryGet<MeshCollider>()) {
+        if (const MeshCollider* mesh = entity.tryGet<MeshCollider>(); mesh != nullptr && runtimeMeshOf(entity) != nullptr) {
+            // Malla creada por codigo: sus vertices y triangulos tal cual.
+            const ecs::Mesh& runtime = *runtimeMeshOf(entity);
+            bool convex = mesh->convex || (type == BodyType::Dynamic) || (mesh->material.is_trigger && type != BodyType::Static);
+            if (!mesh->convex && type == BodyType::Dynamic) {
+                warnOnce(entity.handle(), name, "un Mesh Collider no convexo no puede ser dinamico: se usa su envolvente convexa");
+            }
+            add(mesh->material, runtimeMeshShape(runtime, convex, materialFor(mesh->material), name), Vec3{}, Quat{});
+            mesh_used = &runtime;
+        } else if (const MeshCollider* mesh = entity.tryGet<MeshCollider>()) {
             if (const asset::ModelData* data = meshOf(entity)) {
                 bool convex = mesh->convex;
                 if (!convex && type == BodyType::Dynamic) {
@@ -871,7 +949,8 @@ struct PhysicsSystem::Impl {
               capsule(r.storage<CapsuleCollider>()),
               mesh(r.storage<MeshCollider>()),
               plane(r.storage<PlaneCollider>()),
-              terrain(r.storage<terrain::Terrain>()) {}
+              terrain(r.storage<terrain::Terrain>()),
+              renderer(r.storage<ecs::MeshRenderer>()) {}
         template <typename Storage>
         static auto* find(Storage& storage, entt::entity e) {
             return storage.contains(e) ? &storage.get(e) : nullptr;
@@ -893,6 +972,7 @@ struct PhysicsSystem::Impl {
         entt::storage_for_t<MeshCollider>& mesh;
         entt::storage_for_t<PlaneCollider>& plane;
         entt::storage_for_t<terrain::Terrain>& terrain;
+        entt::storage_for_t<ecs::MeshRenderer>& renderer;
     };
 
     static std::uint64_t signatureOf(Pools& pools, entt::entity entity, int layer) {
@@ -951,6 +1031,10 @@ struct PhysicsSystem::Impl {
             s.push_back(13.0f);
             push_material(c->material);
             s.push_back(c->convex ? 1.0f : 0.0f);
+            if (const ecs::MeshRenderer* r = Pools::find(pools.renderer, entity); r != nullptr && r->mesh) {
+                s.push_bits(static_cast<std::uint32_t>(r->mesh->version()));
+                s.push_bits(static_cast<std::uint32_t>(r->mesh->version() >> 32));
+            }
         }
         if (const PlaneCollider* c = Pools::find(pools.plane, entity)) {
             s.push_back(14.0f);
@@ -1207,6 +1291,11 @@ struct PhysicsSystem::Impl {
                     ++it;
                 }
             }
+            // Lo que dormia encima o al lado se despierta: si el collider cambia
+            // (otra malla, otro tamano) o desaparece, no se queda flotando.
+            JPH::AABox bounds = bodies().GetTransformedShape(*id).GetWorldSpaceBounds();
+            bounds.ExpandBy(JPH::Vec3::sReplicate(0.25f));
+            bodies().ActivateBodiesInAABox(bounds, JPH::BroadPhaseLayerFilter(), JPH::ObjectLayerFilter());
             bodies().RemoveBody(*id);
             bodies().DestroyBody(*id);
             *id = JPH::BodyID();
@@ -1233,6 +1322,40 @@ struct PhysicsSystem::Impl {
         bodies().AddBody(id, activate ? JPH::EActivation::Activate : JPH::EActivation::DontActivate);
         body_entities[id.GetIndexAndSequenceNumber()] = entity;
         return id;
+    }
+
+    void destroyStaticBody(StaticMesh& mesh) {
+        if (!system || mesh.body.IsInvalid()) return;
+        // Lo que dormia encima se despierta (si no, flotaria donde estaba el suelo).
+        JPH::AABox bounds = bodies().GetTransformedShape(mesh.body).GetWorldSpaceBounds();
+        bounds.ExpandBy(JPH::Vec3::sReplicate(0.5f));
+        bodies().ActivateBodiesInAABox(bounds, JPH::BroadPhaseLayerFilter(), JPH::ObjectLayerFilter());
+        bodies().RemoveBody(mesh.body);
+        bodies().DestroyBody(mesh.body);
+        mesh.body = JPH::BodyID();
+    }
+
+    void createStaticBody(StaticMesh& mesh) {
+        destroyStaticBody(mesh);
+        if (!system || mesh.triangles.size() < 3) return;
+        JPH::TriangleList triangles;
+        triangles.reserve(mesh.triangles.size() / 3);
+        for (std::size_t i = 0; i + 2 < mesh.triangles.size(); i += 3) {
+            const Vec3& a = mesh.triangles[i];
+            const Vec3& b = mesh.triangles[i + 1];
+            const Vec3& c = mesh.triangles[i + 2];
+            triangles.push_back(JPH::Triangle(JPH::Float3(a.x, a.y, a.z), JPH::Float3(b.x, b.y, b.z), JPH::Float3(c.x, c.y, c.z)));
+        }
+        JPH::MeshShapeSettings settings(triangles);
+        const JPH::ShapeSettings::ShapeResult result = settings.Create();
+        if (result.HasError()) {
+            std::cerr << "[Fisica] Malla estatica no valida: " << result.GetError().c_str() << "\n";
+            return;
+        }
+        mesh.body = createBody(result.Get(), mesh.origin, Quat{0.0f, 0.0f, 0.0f, 1.0f}, JPH::EMotionType::Static,
+                               objectLayer(mesh.layer, false), entt::null, false, {});
+        // Sin entidad: no da eventos de colision ni sale en las consultas de entidades.
+        if (!mesh.body.IsInvalid()) body_entities.erase(mesh.body.GetIndexAndSequenceNumber());
     }
 
     void buildEntry(ecs::Entity entity, BodyEntry& entry, bool simulate) {
@@ -1363,7 +1486,7 @@ struct PhysicsSystem::Impl {
                 terrain_data ? (terrain_data->collisionVersion() * 1000003ull ^
                                 reinterpret_cast<std::uintptr_t>(terrain_data.get()))
                              : 0ull;
-            const void* mesh_now = it != entries.end() && has_mesh ? meshOf(entity) : nullptr;
+            const void* mesh_now = it != entries.end() && has_mesh ? meshIdentity(entity) : nullptr;
             const bool same_shape = it != entries.end() && it->second.signature == signature &&
                                     (!has_mesh || mesh_now == it->second.mesh) &&
                                     it->second.terrain_key == terrain_key;
@@ -1735,6 +1858,10 @@ void PhysicsSystem::start(ecs::World& world) {
     d.contact_points.clear();
     d.pairs.clear();
     d.warned.clear();
+    for (auto& [key, mesh] : d.static_meshes) {
+        mesh.body = JPH::BodyID();
+        d.createStaticBody(mesh);
+    }
 }
 
 void PhysicsSystem::stop() {
@@ -1750,6 +1877,7 @@ void PhysicsSystem::stop() {
         }
     }
     d.entries.clear();
+    for (auto& [key, mesh] : d.static_meshes) d.destroyStaticBody(mesh);  // los datos se quedan
     d.body_entities.clear();
     d.layer_overrides.clear();
     d.layer_includes.fill(0);
@@ -1762,10 +1890,40 @@ void PhysicsSystem::stop() {
     d.job_system.reset();
     d.temp_allocator.reset();
     d.mesh_shapes.clear();
+    d.runtime_shapes.clear();
     d.contact_points.clear();
     d.queries.clear();
     d.world = nullptr;
 }
+
+void PhysicsSystem::setStaticMesh(std::uint64_t key, const Vec3& origin, std::vector<Vec3> triangles, int layer) {
+    Impl& d = *impl_;
+    if (triangles.size() < 3) {
+        removeStaticMesh(key);
+        return;
+    }
+    Impl::StaticMesh& mesh = d.static_meshes[key];
+    mesh.origin = origin;
+    mesh.triangles = std::move(triangles);
+    mesh.layer = layer;
+    d.createStaticBody(mesh);
+}
+
+void PhysicsSystem::removeStaticMesh(std::uint64_t key) {
+    Impl& d = *impl_;
+    const auto it = d.static_meshes.find(key);
+    if (it == d.static_meshes.end()) return;
+    d.destroyStaticBody(it->second);
+    d.static_meshes.erase(it);
+}
+
+void PhysicsSystem::clearStaticMeshes() {
+    Impl& d = *impl_;
+    for (auto& [key, mesh] : d.static_meshes) d.destroyStaticBody(mesh);
+    d.static_meshes.clear();
+}
+
+std::size_t PhysicsSystem::staticMeshCount() const { return impl_->static_meshes.size(); }
 
 bool PhysicsSystem::running() const {
     return impl_->system != nullptr;

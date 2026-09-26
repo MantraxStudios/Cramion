@@ -23,6 +23,7 @@ const char* eventTypeName(EventType type) {
         case EventType::MouseScrolled: return "MouseScrolled";
         case EventType::MouseEnter: return "MouseEnter";
         case EventType::MouseLeave: return "MouseLeave";
+        case EventType::MouseRawMoved: return "MouseRawMoved";
         default: return "None";
     }
 }

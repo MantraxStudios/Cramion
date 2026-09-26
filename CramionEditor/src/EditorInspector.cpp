@@ -151,6 +151,7 @@ void EditorApp::drawInspector() {
         }
     }
     ImGui::TextDisabled("UUID %s", entity.uuid().toString().c_str());
+    if (!multi) drawPrefabInspectorBar(entity);
     ImGui::Separator();
 
     // --- Componentes ---
@@ -161,6 +162,8 @@ void EditorApp::drawInspector() {
         if (!type.has(world_, entity.handle())) {
             continue;
         }
+        // El enlace con el prefab se ve en su barra, no como componente.
+        if (type.name == "PrefabInstance" || type.name == "PrefabLink") continue;
         // Varios objetos: solo lo que tienen todos (como Unity).
         if (multi && !std::all_of(selected.begin(), selected.end(),
                                   [&](const ecs::Entity& e) { return type.has(world_, e.handle()); })) {

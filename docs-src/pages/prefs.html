@@ -1,0 +1,13 @@
+<p>
+        <code>Prefs</code> guarda números y textos que sobreviven al cambiar de escena y entre partidas.
+      </p>
+      <pre><code class="language-lua">Prefs.setInt("nivel", 3)
+Prefs.setFloat("volumen", 0.8)
+Prefs.setString("jugador", "Ana")
+
+local nivel = Prefs.getInt("nivel", 1)       -- segundo argumento: valor por defecto
+if Prefs.hasKey("jugador") then Debug.log(Prefs.getString("jugador")) end
+Prefs.deleteKey("nivel")
+Prefs.deleteAll()
+
+Game.quit()   -- cierra el juego (en el editor, sale de Play)</code></pre>

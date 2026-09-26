@@ -61,9 +61,33 @@ bool isApi(std::string_view w) {
     return false;
 }
 
+// --- Resaltado de GLSL (shaders de superficie, .crshader) ---
+bool isGlslKeyword(std::string_view w) {
+    static constexpr const char* kWords[] = {
+        "void", "float", "int", "uint", "bool", "vec2", "vec3", "vec4", "ivec2", "ivec3", "ivec4", "mat2", "mat3",
+        "mat4", "sampler2D", "if", "else", "for", "while", "do", "return", "break", "continue", "discard", "in",
+        "out", "inout", "const", "struct", "true", "false", "property", "range", "color", "vector", "texture2D"};
+    for (const char* k : kWords) {
+        if (w == k) return true;
+    }
+    return false;
+}
+
+bool isGlslApi(std::string_view w) {
+    static constexpr const char* kNames[] = {
+        "Surface", "Vertex", "TIME", "CAMERA_POSITION", "texture", "mix", "clamp", "smoothstep", "step", "sin", "cos",
+        "tan", "pow", "exp", "sqrt", "abs", "min", "max", "floor", "fract", "mod", "dot", "cross", "normalize",
+        "length", "distance", "reflect", "noise", "fbm", "hash", "fresnel", "remap", "dFdx", "dFdy", "saturate"};
+    for (const char* k : kNames) {
+        if (w == k) return true;
+    }
+    return false;
+}
+
 // Tokens de una linea. `in_block_comment` sigue de una linea a la siguiente.
+// `glsl`: comentarios // y /* */ y las palabras de GLSL.
 void tokenizeLine(std::string_view line, bool& in_block_comment,
-                  std::vector<std::pair<std::string_view, Token>>& out) {
+                  std::vector<std::pair<std::string_view, Token>>& out, bool glsl = false) {
     out.clear();
     std::size_t i = 0;
     const auto push = [&](std::size_t from, std::size_t to, Token t) {
@@ -72,7 +96,7 @@ void tokenizeLine(std::string_view line, bool& in_block_comment,
     bool after_function = false;
     while (i < line.size()) {
         if (in_block_comment) {
-            const std::size_t end = line.find("]]", i);
+            const std::size_t end = line.find(glsl ? "*/" : "]]", i);
             const std::size_t stop = end == std::string_view::npos ? line.size() : end + 2;
             push(i, stop, Token::Comment);
             if (end != std::string_view::npos) in_block_comment = false;
@@ -80,7 +104,15 @@ void tokenizeLine(std::string_view line, bool& in_block_comment,
             continue;
         }
         const char c = line[i];
-        if (c == '-' && i + 1 < line.size() && line[i + 1] == '-') {
+        if (glsl && c == '/' && i + 1 < line.size() && (line[i + 1] == '/' || line[i + 1] == '*')) {
+            if (line[i + 1] == '*') {
+                in_block_comment = true;
+                continue;
+            }
+            push(i, line.size(), Token::Comment);
+            break;
+        }
+        if (!glsl && c == '-' && i + 1 < line.size() && line[i + 1] == '-') {
             if (line.substr(i, 4) == "--[[") {
                 in_block_comment = true;
                 continue;
@@ -108,11 +140,13 @@ void tokenizeLine(std::string_view line, bool& in_block_comment,
             while (j < line.size() && (std::isalnum(static_cast<unsigned char>(line[j])) || line[j] == '_')) ++j;
             const std::string_view word = line.substr(i, j - i);
             Token t = Token::Text;
-            if (isKeyword(word)) {
+            if (glsl ? isGlslKeyword(word) : isKeyword(word)) {
                 t = Token::Keyword;
+            } else if (glsl && isGlslApi(word)) {
+                t = Token::Api;
             } else if (after_function || (j < line.size() && line[j] == '(')) {
                 t = Token::Function;
-            } else if (isApi(word)) {
+            } else if (!glsl && isApi(word)) {
                 t = Token::Api;
             }
             after_function = word == "function" || (after_function && (line.substr(j, 1) == ":" || line.substr(j, 1) == "."));
@@ -122,7 +156,7 @@ void tokenizeLine(std::string_view line, bool& in_block_comment,
         }
         std::size_t j = i + 1;
         while (j < line.size() && !std::isalnum(static_cast<unsigned char>(line[j])) && line[j] != '_' &&
-               line[j] != '"' && line[j] != '\'' && line[j] != '-') {
+               line[j] != '"' && line[j] != '\'' && line[j] != (glsl ? '/' : '-')) {
             ++j;
         }
         push(i, j, Token::Text);
@@ -273,6 +307,12 @@ bool EditorApp::saveScript(ScriptTab& tab) {
     out << tab.text;
     out.close();
     tab.saved = tab.text;
+    // Shader de superficie: se recompila y los materiales que lo usan lo ven ya.
+    if (tab.path.extension() == assets::kSurfaceShaderExtension) {
+        std::cout << "[Editor] Shader guardado: " << tab.relative << "\n";
+        if (sync_) sync_->reloadSurfaceShaders();
+        return true;
+    }
     scripts_.clearErrors();
     // En Play: recarga en caliente (las instancias conservan sus datos).
     scripts_.reloadFile(tab.relative);
@@ -311,6 +351,19 @@ void EditorApp::drawCodeEditor(ScriptTab& tab) {
         if (error.file == tab.relative) {
             error_line = error.line;
             error_message = error.message;
+        }
+    }
+    // Shader de superficie: el ultimo error al compilarlo ("Nombre.crshader:12: error: ...").
+    const bool glsl = tab.path.extension() == assets::kSurfaceShaderExtension;
+    if (glsl && sync_) {
+        const std::string message = sync_->surfaceShaderError(tab.relative);
+        const std::string name = dialogs::utf8(tab.path.filename()) + ":";
+        if (const std::size_t at = message.find(name); at != std::string::npos) {
+            error_line = std::atoi(message.c_str() + at + name.size());
+            const std::size_t end = message.find('\n', at);
+            error_message = message.substr(at, end == std::string::npos ? std::string::npos : end - at);
+        } else if (!message.empty()) {
+            error_message = message.substr(0, message.find('\n'));
         }
     }
 
@@ -387,7 +440,7 @@ void EditorApp::drawCodeEditor(ScriptTab& tab) {
                                   state.last_char == '.' || state.last_char == ':');
         const bool forced = io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Space, false);
         const bool edited_while_open = tab.completion_open && state.cursor != tab.cursor;
-        if (typed_ident || forced || edited_while_open) {
+        if (!glsl && (typed_ident || forced || edited_while_open)) {
             LuaCompletionContext context;
             if (luaCompletionContext(tab.text, static_cast<std::size_t>(state.cursor), context) &&
                 (forced || !context.prefix.empty() || context.accessor != 0)) {
@@ -418,7 +471,7 @@ void EditorApp::drawCodeEditor(ScriptTab& tab) {
     bool block_comment = false;
     std::vector<std::pair<std::string_view, Token>> tokens;
     for (int i = 0; i < static_cast<int>(lines.size()); ++i) {
-        tokenizeLine(lines[i], block_comment, tokens);  // (las anteriores cuentan para --[[ ]])
+        tokenizeLine(lines[i], block_comment, tokens, glsl);  // (las anteriores cuentan para --[[ ]] y /* */)
         if (i < first_visible || i >= last_visible) continue;
         float x = text_origin.x;
         const float y = text_origin.y + static_cast<float>(i) * line_height;
@@ -513,64 +566,27 @@ void EditorApp::drawCodeEditor(ScriptTab& tab) {
     if (active && io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_S, false)) saveScript(tab);
 }
 
-void EditorApp::drawScriptEditor() {
-    if (focus_script_editor_) {
-        ImGui::SetNextWindowFocus();
-        focus_script_editor_ = false;
-    }
-    if (scene_dock_id_ != 0) ImGui::SetNextWindowDockID(scene_dock_id_, ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowSize(ImVec2(900.0f, 600.0f), ImGuiCond_FirstUseEver);
-    if (!ImGui::Begin("Scripts", &show_script_editor_)) {
-        ImGui::End();
-        return;
-    }
+// Cada script abierto es su propia ventana (como las pestanas de un IDE): se
+// abren acopladas juntas, y arrastrandolas se ven varias lado a lado o se
+// sacan a otro monitor. Sin scripts abiertos queda la ventana "Scripts" con
+// Nuevo y la consola.
+void EditorApp::drawScriptToolbar(ScriptTab* tab) {
     if (ImGui::Button("Nuevo")) createScriptAsset(current_folder_.empty() ? std::filesystem::path{} : current_folder_, {});
     ImGui::SameLine();
-    const bool has_tab = active_script_tab_ >= 0 && active_script_tab_ < static_cast<int>(script_tabs_.size());
-    ImGui::BeginDisabled(!has_tab);
-    if (ImGui::Button("Guardar (Ctrl+S)") && has_tab) saveScript(script_tabs_[active_script_tab_]);
+    ImGui::BeginDisabled(tab == nullptr);
+    if (ImGui::Button("Guardar (Ctrl+S)") && tab != nullptr) saveScript(*tab);
     ImGui::SameLine();
-    if (ImGui::Button("Descartar cambios") && has_tab) {
-        ScriptTab& tab = script_tabs_[active_script_tab_];
-        tab.text = readAll(tab.path);
-        tab.saved = tab.text;
+    if (ImGui::Button("Descartar cambios") && tab != nullptr) {
+        tab->text = readAll(tab->path);
+        tab->saved = tab->text;
     }
     ImGui::EndDisabled();
     ImGui::SameLine();
     ImGui::TextDisabled(playing() ? "En Play: guardar recarga el script sin perder el estado" : "");
+}
 
-    if (script_tabs_.empty()) {
-        ImGui::Spacing();
-        ImGui::TextDisabled("Sin scripts abiertos. Doble clic en un .lua del Proyecto, o Nuevo.");
-    } else if (ImGui::BeginTabBar("##script_tabs", ImGuiTabBarFlags_Reorderable | ImGuiTabBarFlags_AutoSelectNewTabs)) {
-        int close = -1;
-        for (int i = 0; i < static_cast<int>(script_tabs_.size()); ++i) {
-            ScriptTab& tab = script_tabs_[i];
-            bool open = true;
-            const std::string label = dialogs::utf8(tab.path.filename()) + (tab.text != tab.saved ? " *" : "") + "###" +
-                                      tab.relative;
-            ImGuiTabItemFlags flags = tab.text != tab.saved ? ImGuiTabItemFlags_UnsavedDocument : 0;
-            if (tab.select) {
-                flags |= ImGuiTabItemFlags_SetSelected;
-                tab.select = false;
-            }
-            if (ImGui::BeginTabItem(label.c_str(), &open, flags)) {
-                active_script_tab_ = i;
-                drawCodeEditor(tab);
-                ImGui::EndTabItem();
-            }
-            if (!open) close = i;
-        }
-        ImGui::EndTabBar();
-        if (close >= 0) {
-            // Cerrar con cambios: se guardan (como el resto del editor, sin perder nada).
-            if (script_tabs_[close].text != script_tabs_[close].saved) saveScript(script_tabs_[close]);
-            script_tabs_.erase(script_tabs_.begin() + close);
-            active_script_tab_ = std::min(active_script_tab_, static_cast<int>(script_tabs_.size()) - 1);
-        }
-    }
-
-    // Consola de Lua: una linea que se ejecuta (en Play, dentro del juego).
+// Consola de Lua: una linea que se ejecuta (en Play, dentro del juego).
+void EditorApp::drawLuaConsole() {
     ImGui::SetNextItemWidth(-1.0f);
     if (ImGui::InputTextWithHint("##lua_console", "Lua> (Enter ejecuta; en Play, dentro del juego)", &lua_console_,
                                  ImGuiInputTextFlags_EnterReturnsTrue)) {
@@ -580,7 +596,62 @@ void EditorApp::drawScriptEditor() {
         lua_console_.clear();
         ImGui::SetKeyboardFocusHere(-1);
     }
-    ImGui::End();
+}
+
+void EditorApp::drawScriptEditor() {
+    const ImGuiID default_dock = script_dock_id_ != 0 ? script_dock_id_ : scene_dock_id_;
+    if (script_tabs_.empty()) {
+        if (focus_script_editor_) {
+            ImGui::SetNextWindowFocus();
+            focus_script_editor_ = false;
+        }
+        if (default_dock != 0) ImGui::SetNextWindowDockID(default_dock, ImGuiCond_FirstUseEver);
+        ImGui::SetNextWindowSize(ImVec2(900.0f, 600.0f), ImGuiCond_FirstUseEver);
+        if (ImGui::Begin("Scripts", &show_script_editor_)) {
+            drawScriptToolbar(nullptr);
+            ImGui::Spacing();
+            ImGui::TextDisabled("Sin scripts abiertos. Doble clic en un .lua del Proyecto, o Nuevo.");
+            ImGui::TextDisabled("Cada script se abre en su ventana: arrastra su pestana para ver varios a la vez.");
+            drawLuaConsole();
+        }
+        ImGui::End();
+        return;
+    }
+    focus_script_editor_ = false;
+
+    int close = -1;
+    for (int i = 0; i < static_cast<int>(script_tabs_.size()); ++i) {
+        ScriptTab& tab = script_tabs_[i];
+        // El titulo cambia (el * de sin guardar); el ID (### ruta) no.
+        const std::string title = dialogs::utf8(tab.path.filename()) + (tab.text != tab.saved ? " *" : "") +
+                                  "###script:" + tab.relative;
+        if (tab.select) {
+            // Recien abierto (o pedido otra vez): al frente, junto a los demas scripts.
+            if (default_dock != 0) ImGui::SetNextWindowDockID(default_dock, ImGuiCond_Once);
+            ImGui::SetNextWindowFocus();
+            tab.select = false;
+        }
+        ImGui::SetNextWindowSize(ImVec2(900.0f, 600.0f), ImGuiCond_FirstUseEver);
+        bool open = true;
+        const ImGuiWindowFlags flags = tab.text != tab.saved ? ImGuiWindowFlags_UnsavedDocument : 0;
+        const bool visible = ImGui::Begin(title.c_str(), &open, flags);
+        if (ImGui::GetWindowDockID() != 0) script_dock_id_ = ImGui::GetWindowDockID();
+        if (visible) {
+            if (ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows)) active_script_tab_ = i;
+            drawScriptToolbar(&tab);
+            drawCodeEditor(tab);  // deja sitio debajo para la consola
+            drawLuaConsole();
+        }
+        ImGui::End();
+        if (!open) close = i;
+    }
+    if (close >= 0) {
+        // Cerrar con cambios: se guardan (como el resto del editor, sin perder nada).
+        if (script_tabs_[close].text != script_tabs_[close].saved) saveScript(script_tabs_[close]);
+        script_tabs_.erase(script_tabs_.begin() + close);
+        active_script_tab_ = std::min(active_script_tab_, static_cast<int>(script_tabs_.size()) - 1);
+        if (script_tabs_.empty()) show_script_editor_ = false;
+    }
 }
 
 // Inspector del componente Script: el archivo (soltar un .lua), editar, crear

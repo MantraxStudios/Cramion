@@ -1,0 +1,15 @@
+<p class="file">AnimarPersonaje.lua</p>
+      <pre><code class="language-lua">local AnimarPersonaje = { properties = {} }
+
+function AnimarPersonaje:Update(dt)
+    local v = self.entity.velocity
+    local plano = Vec3(v.x, 0, v.z):length()
+    self.entity:setAnimatorFloat("Velocidad", plano)
+    self.entity:setAnimatorBool("EnAire", math.abs(v.y) > 0.5)
+    if Input.getKeyDown("e") then
+        self.entity:setAnimatorTrigger("Saludar")
+    end
+end
+
+return AnimarPersonaje</code></pre>
+      <p>Sin controlador, también puedes reproducir un clip directamente: <code>self.entity:playAnimation("Correr", true)</code>.</p>

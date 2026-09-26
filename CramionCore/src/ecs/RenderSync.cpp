@@ -92,6 +92,88 @@ void RenderSync::updateMaterial(const Uuid& uuid, const assets::MaterialAsset& d
     }
 }
 
+void RenderSync::compileSurfaceShader(const std::string& path, SurfaceShaderEntry& entry) {
+    const std::filesystem::path file = assets_.database().root() / fromUtf8(path);
+    std::error_code ec;
+    entry.time = std::filesystem::last_write_time(file, ec);
+    std::string error;
+    entry.parsed = assets::loadSurfaceShader(file, entry.source, &error);
+    std::vector<std::uint32_t> vertex, fragment;
+    if (entry.parsed && renderer_ != nullptr &&
+        assets::compileSurfaceShader(entry.source, assets::surfaceTemplateDirectory(), vertex, fragment, &error)) {
+        const bool ok = entry.id >= 0 ? renderer_->updateSurfaceShader(entry.id, vertex, fragment, &error)
+                                      : (entry.id = renderer_->createSurfaceShader(vertex, fragment, &error)) >= 0;
+        if (ok) {
+            entry.error.clear();
+            std::cout << "[Shader] " << path << " compilado\n";
+            return;
+        }
+    }
+    if (renderer_ == nullptr && error.empty()) error = "sin renderizador";
+    entry.error = error;
+    std::cerr << "[Shader] " << error << "\n";
+}
+
+std::int32_t RenderSync::surfaceShader(const std::string& path) {
+    if (path.empty()) return -1;
+    auto it = surface_shaders_.find(path);
+    if (it == surface_shaders_.end()) {
+        it = surface_shaders_.emplace(path, SurfaceShaderEntry{}).first;
+        compileSurfaceShader(path, it->second);
+    }
+    return it->second.id;
+}
+
+const assets::SurfaceShaderSource* RenderSync::surfaceShaderSource(const std::string& path) {
+    if (path.empty()) return nullptr;
+    surfaceShader(path);
+    const auto it = surface_shaders_.find(path);
+    return it != surface_shaders_.end() && it->second.parsed ? &it->second.source : nullptr;
+}
+
+std::string RenderSync::surfaceShaderError(const std::string& path) const {
+    const auto it = surface_shaders_.find(path);
+    return it != surface_shaders_.end() ? it->second.error : std::string{};
+}
+
+int RenderSync::reloadSurfaceShaders() {
+    int changed = 0;
+    for (auto& [path, entry] : surface_shaders_) {
+        std::error_code ec;
+        const auto time = std::filesystem::last_write_time(assets_.database().root() / fromUtf8(path), ec);
+        if (ec || time == entry.time) continue;
+        compileSurfaceShader(path, entry);
+        ++changed;
+        // Las propiedades pueden haber cambiado de hueco: se rehacen sus materiales.
+        for (const auto& [uuid, material] : materials_) {
+            if (material.data && material.data->shader == path) rebuild_materials_.insert(uuid);
+        }
+    }
+    return changed;
+}
+
+void RenderSync::applySurface(asset::MaterialData& data, const assets::MaterialAsset& material,
+                              const std::function<std::int32_t(const std::string&)>* texture) {
+    data.surface_shader = material.shader.empty() ? -1 : surfaceShader(material.shader);
+    const assets::SurfaceShaderSource* source = data.surface_shader >= 0 ? surfaceShaderSource(material.shader) : nullptr;
+    if (source == nullptr) {
+        data.surface_shader = -1;
+        return;
+    }
+    for (const assets::ShaderProperty& p : source->properties) {
+        if (p.type == assets::ShaderPropertyType::Texture) {
+            if (texture == nullptr || p.slot < 0 || p.slot >= assets::kMaxShaderTextures) continue;
+            const auto it = material.shader_textures.find(p.name);
+            data.surface_textures[static_cast<std::size_t>(p.slot)] =
+                it != material.shader_textures.end() && !it->second.empty() ? (*texture)(it->second) : -1;
+            continue;
+        }
+        if (p.slot < 0 || p.slot >= assets::kMaxShaderValues) continue;
+        const auto it = material.shader_values.find(p.name);
+        data.surface_params[static_cast<std::size_t>(p.slot)] = it != material.shader_values.end() ? it->second : p.value;
+    }
+}
+
 asset::ModelData RenderSync::buildVariant(const asset::ModelData& base, const std::vector<Uuid>& overrides) {
     asset::ModelData v;
     v.name = base.name;
@@ -192,6 +274,8 @@ asset::ModelData RenderSync::buildVariant(const asset::ModelData& base, const st
         d.occlusion_texture = file(mat->occlusion);
         d.emissive_texture = file(mat->emissive_map);
         d.metallic_roughness_texture = packed(mat->metallic_map, mat->roughness_map);
+        const std::function<std::int32_t(const std::string&)> texture = [&](const std::string& path) { return file(path); };
+        applySurface(d, *mat, &texture);
         v.materials.push_back(d);
 
         // Tiling y desplazamiento: se hornean en las UV de sus submallas.
@@ -248,9 +332,115 @@ std::uint32_t RenderSync::resolveVariant(std::uint32_t base, const std::vector<a
     return index;
 }
 
+std::optional<std::uint32_t> RenderSync::resolveRuntimeMesh(const std::shared_ptr<Mesh>& mesh, scene::Scene& scene,
+                                                           gfx::VulkanRenderer& renderer, bool full_upload_pending) {
+    auto it = runtime_meshes_.find(mesh.get());
+    if (it != runtime_meshes_.end() && it->second.mesh.lock() != mesh) {
+        // Otra malla en la misma direccion (la anterior se destruyo): su hueco se reutiliza.
+        free_runtime_models_.push_back(it->second.index);
+        forgetVariantsOf(it->second.index);
+        runtime_meshes_.erase(it);
+        it = runtime_meshes_.end();
+    }
+    if (it != runtime_meshes_.end() && it->second.version == mesh->version()) {
+        RuntimeSlot& slot = it->second;
+        if (slot.material_version == mesh->materialVersion()) return slot.index;
+        if (slot.material_layout == mesh->materialLayout()) {
+            // Solo factores (color, brillo...): al momento, sin volver a subir la malla.
+            slot.material_version = mesh->materialVersion();
+            if (asset::ModelData* data = scene.modelData(slot.index)) {
+                for (std::size_t i = 0; i < data->materials.size(); ++i) {
+                    Mesh::applyFactors(i < mesh->materials.size() ? mesh->materials[i] : MeshMaterial{}, &data->materials[i]);
+                    renderer.updateModelMaterial(slot.index, static_cast<std::uint32_t>(i), data->materials[i]);
+                }
+            }
+            return slot.index;
+        }
+        // Otras texturas o repeticion: se rehace entera (abajo).
+    }
+    const std::string problem = mesh->validate();
+    if (!problem.empty()) {
+        if (warned_meshes_.insert(mesh.get()).second) {
+            std::cerr << "[RenderSync] Malla \"" << mesh->name << "\": " << problem << "\n";
+        }
+        // Se sigue viendo la ultima version buena (si la hubo).
+        return it != runtime_meshes_.end() ? std::optional<std::uint32_t>(it->second.index) : std::nullopt;
+    }
+    warned_meshes_.erase(mesh.get());
+    asset::ModelData data = mesh->toModelData(assets_.database().root());
+    try {
+        asset::finalizeModel(data, mesh->name);  // lee y decodifica sus texturas
+    } catch (const std::exception& e) {
+        std::cerr << "[RenderSync] Malla \"" << mesh->name << "\": " << e.what() << "\n";
+        return it != runtime_meshes_.end() ? std::optional<std::uint32_t>(it->second.index) : std::nullopt;
+    }
+    std::uint32_t index = 0;
+    if (it != runtime_meshes_.end()) {
+        index = it->second.index;
+        scene.replaceModel(index, std::move(data));
+        it->second.version = mesh->version();
+        it->second.material_version = mesh->materialVersion();
+        it->second.material_layout = mesh->materialLayout();
+    } else {
+        if (!free_runtime_models_.empty()) {
+            index = free_runtime_models_.back();
+            free_runtime_models_.pop_back();
+            scene.replaceModel(index, std::move(data));
+        } else {
+            index = scene.addModel(std::move(data));
+        }
+        runtime_meshes_[mesh.get()] = RuntimeSlot{mesh, mesh->version(), mesh->materialVersion(), mesh->materialLayout(), index};
+    }
+    const asset::ModelData& stored = *scene.models()[index];
+    anim::Animator bind(stored);
+    bind.play(-1);
+    if (model_bounds_.size() <= index) model_bounds_.resize(index + 1);
+    model_bounds_[index] = anim::skinnedBounds(stored, bind.boneMatrices());
+    // Solo este modelo a la GPU (si no se va a subir la escena entera ya).
+    if (!full_upload_pending) renderer.uploadModel(scene, index);
+    // Sus variantes de material (.crmat del MeshRenderer) con la malla nueva.
+    for (const Variant& variant : variants_) {
+        if (variant.base != index) continue;
+        try {
+            scene.replaceModel(variant.index, buildVariant(stored, variant.overrides));
+            if (model_bounds_.size() <= variant.index) model_bounds_.resize(variant.index + 1);
+            model_bounds_[variant.index] = model_bounds_[index];
+            if (!full_upload_pending) renderer.uploadModel(scene, variant.index);
+        } catch (const std::exception& e) {
+            std::cerr << "[RenderSync] Material: " << e.what() << "\n";
+        }
+    }
+    return index;
+}
+
+void RenderSync::forgetVariantsOf(std::uint32_t base) {
+    for (auto it = variant_lookup_.begin(); it != variant_lookup_.end();) {
+        if (variants_[it->second].base == base) {
+            variants_[it->second].base = UINT32_MAX;  // ya no se rehace
+            it = variant_lookup_.erase(it);
+        } else {
+            ++it;
+        }
+    }
+}
+
+void RenderSync::releaseRuntimeMeshes() {
+    for (auto it = runtime_meshes_.begin(); it != runtime_meshes_.end();) {
+        if (it->second.mesh.expired()) {
+            free_runtime_models_.push_back(it->second.index);
+            forgetVariantsOf(it->second.index);
+            warned_meshes_.erase(it->first);
+            it = runtime_meshes_.erase(it);
+        } else {
+            ++it;
+        }
+    }
+}
+
 void RenderSync::applyMaterialChanges(scene::Scene& scene, gfx::VulkanRenderer& renderer, bool& added) {
     if (rebuild_materials_.empty() && live_materials_.empty()) return;
     for (const Variant& variant : variants_) {
+        if (variant.base >= scene.models().size()) continue;  // de una malla ya destruida
         bool rebuild = false;
         for (const Uuid& uuid : variant.overrides) {
             rebuild = rebuild || (uuid.valid() && rebuild_materials_.contains(uuid));
@@ -271,6 +461,7 @@ void RenderSync::applyMaterialChanges(scene::Scene& scene, gfx::VulkanRenderer& 
             const std::shared_ptr<const assets::MaterialAsset> mat = material(uuid);
             if (!mat || slot >= data->materials.size()) continue;
             copyFactors(data->materials[slot], assets::toMaterialData(*mat, data->materials[slot].name));
+            applySurface(data->materials[slot], *mat, nullptr);
             renderer.updateModelMaterial(variant.index, static_cast<std::uint32_t>(slot), data->materials[slot]);
         }
     }
@@ -354,6 +545,9 @@ void RenderSync::reset(scene::Scene& scene) {
     failed_materials_.clear();
     variants_.clear();
     variant_lookup_.clear();
+    runtime_meshes_.clear();
+    free_runtime_models_.clear();
+    warned_meshes_.clear();
     rebuild_materials_.clear();
     live_materials_.clear();
     model_bounds_.clear();
@@ -445,9 +639,14 @@ void RenderSync::syncWater(World& world, gfx::VulkanRenderer& renderer, float de
         // Camara cerca o bajo la superficie (oceano y lagos): el shader decide
         // por pixel con la misma ola.
         if (underwater < 0 && body->type != water::WaterType::River) {
-            const water::WaterSample at_camera = water::sampleWater(*body, m, camera_position, water::waterTime());
-            if (at_camera.inside && camera_position.y < at_camera.height + body->wave_height + 0.5f) {
+            const int forced = water::underwaterOverride(camera_position);
+            if (forced == 1) {
                 underwater = static_cast<int>(bodies.size());
+            } else if (forced < 0) {
+                const water::WaterSample at_camera = water::sampleWater(*body, m, camera_position, water::waterTime());
+                if (at_camera.inside && camera_position.y < at_camera.height + body->wave_height + 0.5f) {
+                    underwater = static_cast<int>(bodies.size());
+                }
             }
         }
         if (body->type == water::WaterType::River) {
@@ -506,6 +705,7 @@ void RenderSync::syncWater(World& world, gfx::VulkanRenderer& renderer, float de
 
 void RenderSync::sync(World& world, scene::Scene& scene, gfx::VulkanRenderer& renderer,
                       float delta_seconds, const Options& options) {
+    renderer_ = &renderer;  // los .crshader se compilan al construir variantes
     // La animacion la lleva el componente Animator, no scene.update().
     scene.setAnimateActors(false);
     syncActors(world, scene, renderer, delta_seconds);
@@ -618,8 +818,11 @@ void RenderSync::syncActors(World& world, scene::Scene& scene, gfx::VulkanRender
             !e.activeInHierarchy()) {
             return;
         }
+        // Una malla creada por codigo manda sobre el modelo del asset.
         std::optional<std::uint32_t> model =
-            resolveModel(renderer_component->model, renderer_component->part, scene, added);
+            renderer_component->mesh
+                ? resolveRuntimeMesh(renderer_component->mesh, scene, renderer, added)
+                : resolveModel(renderer_component->model, renderer_component->part, scene, added);
         if (!model) {
             return;
         }
@@ -734,6 +937,9 @@ void RenderSync::syncActors(World& world, scene::Scene& scene, gfx::VulkanRender
             entity_actor_[actor_entities_[i]] = static_cast<std::uint32_t>(i);
         }
     }
+
+    // Las mallas de codigo que ya no existen dejan su hueco libre.
+    releaseRuntimeMeshes();
 
     // Olvida los animadores de lo que ya no se dibuja.
     for (auto it = animations_.begin(); it != animations_.end();) {

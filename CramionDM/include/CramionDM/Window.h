@@ -85,6 +85,14 @@ public:
     // Menu de sistema de Windows (Alt+Espacio) en ese punto de la pantalla.
     void showSystemMenu(int screen_x, int screen_y);
 
+    // --- Cursor capturado (juegos en primera persona) ---
+    // Oculta el cursor, lo encierra en la ventana (o en `client_region`, en
+    // pixeles del area cliente: la vista Juego del editor) y manda el
+    // movimiento como MouseRawMoved (raw input, sin tope en los bordes).
+    // Al perder el foco se suelta solo y al recuperarlo se vuelve a encerrar.
+    void setCursorCaptured(bool captured, const RECT* client_region = nullptr);
+    bool cursorCaptured() const { return cursor_captured_; }
+
 private:
     // WndProc estático que redirige al método de instancia.
     static LRESULT CALLBACK wndProcThunk(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
@@ -112,6 +120,13 @@ private:
     float lastMouseX_ = 0.0f;
     float lastMouseY_ = 0.0f;
     bool haveLastMouse_ = false;
+
+    void applyCursorClip();
+    bool cursor_captured_ = false;
+    bool cursor_hidden_ = false;
+    bool raw_input_registered_ = false;
+    bool has_capture_rect_ = false;
+    RECT capture_rect_{};
 };
 
 }  // namespace cramion::dm

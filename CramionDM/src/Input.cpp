@@ -62,6 +62,11 @@ void Input::onEvent(const Event& event) {
             mouseDeltaY_ += event.deltaY;
             break;
         }
+        case EventType::MouseRawMoved: {
+            mouseDeltaX_ += event.deltaX;
+            mouseDeltaY_ += event.deltaY;
+            break;
+        }
         case EventType::MouseScrolled: {
             scrollX_ += event.scrollX;
             scrollY_ += event.scrollY;

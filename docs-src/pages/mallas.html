@@ -1,0 +1,63 @@
+<p>
+        Crea o cambia geometría mientras se juega (terrenos procedurales, cuerdas,
+        trazos, agua con olas, objetos generados…). Se asigna con <code>entity.mesh = malla</code> y el
+        <code>MeshRenderer</code> la dibuja en lugar de su modelo, con sombras, luces y postproceso como cualquier objeto.
+        Si la entidad tiene un <code>MeshCollider</code>, choca con ella (y se rehace al cambiarla).
+      </p>
+      <h3 id="crear">Crear</h3>
+      <table>
+        <tbody>
+          <tr><td><code>Mesh.new(nombre)</code></td><td>Malla vacía.</td></tr>
+          <tr><td><code>Mesh.cube(tamaño)</code></td><td>Cubo (<code>tamaño</code> número o <code>Vec3</code>, 1 por defecto) con aristas duras.</td></tr>
+          <tr><td><code>Mesh.quad(ancho, alto)</code></td><td>Cuadrado en XY mirando a +Z.</td></tr>
+          <tr><td><code>Mesh.plane(ancho, fondo, segX, segZ)</code></td><td>Plano horizontal subdividido (10 × 10 m y 10 × 10 por defecto).</td></tr>
+          <tr><td><code>Mesh.sphere(radio, segmentos, anillos)</code></td><td>Esfera UV.</td></tr>
+          <tr><td><code>Mesh.cylinder(radio, alto, segmentos)</code></td><td>Cilindro con tapas.</td></tr>
+          <tr><td><code>Mesh.capsule(radio, alto, segmentos)</code></td><td>Cápsula (<code>alto</code> total, con las semiesferas).</td></tr>
+          <tr><td><code>Mesh.wireCube(tamaño, grosor)</code></td><td>Las 12 aristas de una caja como barras (contornos de selección).</td></tr>
+          <tr><td><code>malla:clone()</code></td><td>Copia independiente.</td></tr>
+        </tbody>
+      </table>
+      <h3 id="datos">Datos</h3>
+      <table>
+        <tbody>
+          <tr><td><code>vertices</code></td><td>Lista de <code>Vec3</code> (posiciones locales).</td></tr>
+          <tr><td><code>normals</code></td><td>Lista de <code>Vec3</code>. Si falta, se calcula sola al dibujarla.</td></tr>
+          <tr><td><code>uv</code></td><td>Coordenadas de textura en <code>Vec3</code> (se usan <code>x</code> e <code>y</code>).</td></tr>
+          <tr><td><code>tangents</code></td><td>Lista de <code>Vec3</code> (para normal maps). Mejor <code>recalculateTangents()</code>.</td></tr>
+          <tr><td><code>triangles</code></td><td>Índices de la submalla 0, tres por triángulo, en sentido <strong class="text-white">antihorario</strong> visto desde fuera. Empiezan en <strong class="text-white">0</strong>: el vértice 0 es <code>vertices[1]</code>.</td></tr>
+          <tr><td><code>:setTriangles(lista, submalla)</code>, <code>:getTriangles(submalla)</code></td><td>Triángulos de cada submalla. Cada submalla es un hueco de material.</td></tr>
+          <tr><td><code>subMeshCount</code></td><td>Número de submallas (lectura y escritura).</td></tr>
+          <tr><td><code>:setVertex(i, p)</code>, <code>:getVertex(i)</code></td><td>Un vértice suelto (índice desde 0). Después llama a <code>:apply()</code>.</td></tr>
+          <tr><td><code>vertexCount</code>, <code>triangleCount</code></td><td>Cuántos hay.</td></tr>
+          <tr><td><code>boundsMin</code>, <code>boundsMax</code></td><td>Caja envolvente.</td></tr>
+          <tr><td><code>name</code></td><td>Nombre (para los mensajes).</td></tr>
+        </tbody>
+      </table>
+      <h3 id="metodos">Métodos</h3>
+      <table>
+        <tbody>
+          <tr><td><code>:recalculateNormals()</code></td><td>Normales suaves por vértice (media de sus caras, por área). Para aristas duras, usa vértices separados en cada cara.</td></tr>
+          <tr><td><code>:recalculateTangents()</code></td><td>Tangentes a partir de las UV (para que se vean los normal maps).</td></tr>
+          <tr><td><code>:recalculateBounds()</code></td><td>Recalcula la caja envolvente.</td></tr>
+          <tr><td><code>:setMaterial(submalla, t)</code></td><td>Material de una submalla. Campos: <code>color</code> (<code>Vec3</code>), <code>alpha</code>, <code>metallic</code>, <code>roughness</code>, <code>emission</code> (<code>Vec3</code>), <code>emissionIntensity</code>, y las texturas <code>texture</code>, <code>normalMap</code>, <code>emissionMap</code> (rutas en Assets; <code>false</code> la quita), <code>normalStrength</code>, <code>tiling</code> y <code>offset</code> (<code>Vec3</code> x, y). El alfa de <code>texture</code> recorta (hojas, rejas, grietas). Solo se cambian los campos que pases. Un <code>.crmat</code> puesto con <code>entity:setMaterial</code> manda sobre él.</td></tr>
+          <tr><td><code>:getMaterial(submalla)</code></td><td>Tabla con esos mismos campos.</td></tr>
+          <tr><td><code>:apply()</code></td><td>Sube los cambios a la GPU en el siguiente frame. Asignar una lista entera (<code>malla.vertices = {...}</code>) ya lo hace.</td></tr>
+          <tr><td><code>:validate()</code></td><td><code>""</code> si se puede dibujar; si no, qué falla (índice fuera de rango, listas de distinto tamaño…). Una malla no válida no se dibuja y se avisa en la consola.</td></tr>
+          <tr><td><code>:clear()</code></td><td>La vacía.</td></tr>
+        </tbody>
+      </table>
+      <div class="note">
+        Cambiar una malla sube solo esa malla (no se para la GPU ni se vuelve a subir la escena), así que se puede cambiar
+        cada frame. Cambiar solo el color, el metal, la rugosidad o la emisión de un material ni siquiera la vuelve a subir:
+        se actualiza al momento (efectos por frame). Cambiar texturas o repetición sí la vuelve a subir. Varias entidades pueden compartir la misma malla. Las mallas por código no se guardan en la escena:
+        se crean al empezar el juego. No tienen color por vértice; usa submallas con materiales distintos.
+      </div>
+      <pre><code class="language-lua">-- Un triángulo a mano
+local m = Mesh.new("Triángulo")
+m.vertices = { Vec3(0, 0, 0), Vec3(1, 0, 0), Vec3(0, 1, 0) }
+m.uv = { Vec3(0, 1, 0), Vec3(1, 1, 0), Vec3(0, 0, 0) }
+m.triangles = { 0, 1, 2 }
+m:recalculateNormals()
+m:setMaterial(0, { color = Vec3(1, 0.5, 0.1), roughness = 0.4 })
+self.entity.mesh = m</code></pre>

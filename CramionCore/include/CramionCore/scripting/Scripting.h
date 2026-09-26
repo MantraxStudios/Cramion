@@ -26,6 +26,10 @@
 // PlayerPrefs de Unity), Game.quit, Debug.log, Mathf. Navegacion:
 // entity:moveTo(destino), stopMoving, isMoving, remainingDistance y la tabla
 // Navigation (findPath, projectPoint, randomPoint, raycast, isReady).
+// Mundos de bloques: la tabla Voxel (bloques, rayo, colision de una caja,
+// mundos guardados). Input.lockCursor(true) captura el raton (primera persona).
+// Mallas por codigo: Mesh.new/cube/plane/sphere..., entity.mesh y
+// entity:addComponent("MeshCollider") (como el Mesh de Unity).
 
 #include "CramionCore/ecs/Reflection.h"
 #include "CramionCore/ecs/World.h"
@@ -47,6 +51,9 @@ class AudioSystem;
 }
 namespace cramion::navigation {
 class NavigationSystem;
+}
+namespace cramion::voxel {
+class VoxelSystem;
 }
 
 namespace cramion::scripting {
@@ -86,6 +93,15 @@ public:
     void setAudio(audio::AudioSystem* audio);
     // entity:moveTo, isMoving... y la tabla Navigation (NavAgent y la malla).
     void setNavigation(navigation::NavigationSystem* navigation);
+    // La tabla Voxel (el mundo de bloques de la escena).
+    void setVoxels(voxel::VoxelSystem* voxels);
+    // Input.lockCursor(on): quien tiene la ventana captura o suelta el raton.
+    // Al parar los scripts se suelta solo.
+    using CursorLockCallback = std::function<void(bool locked)>;
+    void setCursorLock(CursorLockCallback callback);
+    bool cursorLocked() const;
+    // El programa solto el raton por su cuenta (Escape en el editor, perder el foco).
+    void releaseCursor();
     // Mensajes de Debug.log / print (por defecto std::cout y std::cerr).
     using LogCallback = std::function<void(int level, const std::string& message)>;  // 0 info, 1 aviso, 2 error
     void setLog(LogCallback log);

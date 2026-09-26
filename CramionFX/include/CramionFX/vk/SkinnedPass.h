@@ -3,6 +3,10 @@
 
 #include "CramionFX/vk/VulkanCommon.h"
 
+#include <array>
+#include <cstdint>
+#include <vector>
+
 namespace cramion::gfx {
 
 class GBuffer;
@@ -28,6 +32,8 @@ class VulkanDevice;
 //   set 1, binding 2 -> normal map (espacio tangente)
 //   set 1, binding 3 -> oclusion ambiental
 //   set 1, binding 4 -> emision
+//   set 1, 5..8      -> texturas propias de los shaders de superficie (blancas si no)
+//   set 0, binding 5 -> propiedades de los shaders de superficie (storage, por frame)
 //   push constant    -> modelo, color base y primer hueso de la instancia
 //
 // Hay tres pipelines: la de G-buffer y dos de sombras, una para las cascadas
@@ -44,13 +50,22 @@ public:
     void destroy();
 
     const vk::raii::DescriptorSetLayout& frameSetLayout() const { return frame_set_layout_; }
-    // Texturas por material, en el orden de los bindings del set 1.
+    // Texturas por material, en el orden de los bindings del set 1: las 5 del
+    // PBR y 4 mas para los shaders de superficie del usuario.
     static constexpr std::uint32_t kMaterialTextureCount = 5;
+    static constexpr std::uint32_t kCustomTextureCount = 4;
+    static constexpr std::uint32_t kMaterialBindingCount = kMaterialTextureCount + kCustomTextureCount;
+    // Propiedades (vec4) de un material con shader propio.
+    static constexpr std::uint32_t kSurfaceParamCount = 8;
 
     const vk::raii::DescriptorSetLayout& materialSetLayout() const { return material_set_layout_; }
     const vk::raii::Sampler& sampler() const { return sampler_; }
 
     const vk::raii::Pipeline& geometryPipeline() const { return geometry_pipeline_; }
+    // Pipeline de un shader de superficie del usuario (surface.vert/.frag con
+    // su codigo, ya en SPIR-V): el mismo layout y estado que la geometria.
+    vk::raii::Pipeline createSurfacePipeline(const VulkanDevice& device, const std::vector<std::uint32_t>& vertex_spirv,
+                                             const std::vector<std::uint32_t>& fragment_spirv) const;
     const vk::raii::PipelineLayout& geometryLayout() const { return geometry_layout_; }
 
     // Sombras de las cascadas (con depth clamp) y de las luces locales. Cada
@@ -93,6 +108,8 @@ public:
 
 private:
     void createGeometryPipeline(const VulkanDevice& device, const GBuffer& gbuffer);
+    vk::raii::Pipeline buildGeometryPipeline(const VulkanDevice& device, const vk::raii::ShaderModule& vertex_module,
+                                             const vk::raii::ShaderModule& fragment_module) const;
     void createGlassPipeline(const VulkanDevice& device, vk::Format color_format,
                              vk::Format depth_format);
     vk::raii::Pipeline createOutlinePipeline(const VulkanDevice& device, vk::Format depth_format,
@@ -107,6 +124,9 @@ private:
 
     vk::raii::PipelineLayout geometry_layout_{nullptr};
     vk::raii::Pipeline geometry_pipeline_{nullptr};
+    // Formatos del G-buffer (para las pipelines de los shaders del usuario).
+    std::vector<vk::Format> gbuffer_color_formats_;
+    vk::Format gbuffer_depth_format_ = vk::Format::eUndefined;
 
     vk::raii::PipelineLayout shadow_layout_{nullptr};
     vk::raii::Pipeline shadow_pipeline_{nullptr};

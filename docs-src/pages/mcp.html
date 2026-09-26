@@ -1,0 +1,77 @@
+<p>
+  Cramion Editor trae un <strong class="text-white">servidor MCP</strong> (<em>Model Context Protocol</em>, el estándar abierto
+  para conectar IA con herramientas). Con él, una IA como Claude, Cursor o Copilot trabaja <em>dentro</em> del motor:
+  crea escenas y objetos, escribe scripts Lua y shaders, hace materiales y modelos, le da a Play, lee la consola y mira
+  capturas para comprobar el resultado. Tú ves cada cambio en el editor al momento y puedes deshacerlo con
+  <code>Ctrl+Z</code>.
+</p>
+
+<h3 id="activar">Activarlo</h3>
+<p>
+  El servidor arranca solo al abrir el editor, en <code>http://127.0.0.1:7777/mcp</code>. Lo ves en
+  <strong class="text-white">Ventana &gt; MCP (IA)</strong> (o <strong class="text-white">Ayuda &gt; Conectar una IA</strong>):
+  estado, dirección, botones para copiar la configuración de cada cliente y la actividad de la IA.
+</p>
+<div class="note">
+  Solo acepta conexiones de tu propio PC y rechaza las que vienen de páginas web. Si el puerto 7777 está ocupado (otro
+  editor abierto) usa el siguiente libre; la ventana del MCP muestra cuál. Con la variable de entorno
+  <code>CRAMION_MCP_PORT</code> eliges otro.
+</div>
+
+<h3 id="claude-code">Claude Code</h3>
+<p>En una terminal (con el editor abierto):</p>
+<pre><code class="language-bash">claude mcp add --transport http cramion http://127.0.0.1:7777/mcp</code></pre>
+
+<h3 id="cursor">Cursor, VS Code, Windsurf</h3>
+<p>En su archivo de servidores MCP (<code>.cursor/mcp.json</code>, <code>.vscode/mcp.json</code>...):</p>
+<pre><code class="language-json">{
+  "mcpServers": {
+    "cramion": { "url": "http://127.0.0.1:7777/mcp" }
+  }
+}</code></pre>
+
+<h3 id="claude-desktop">Claude Desktop (y clientes por stdio)</h3>
+<p>
+  Los clientes que lanzan un programa usan <code>CramionMcp.exe</code>, que viene junto al editor y hace de puente. En
+  <code>claude_desktop_config.json</code> (la ruta exacta la copia el botón de la ventana MCP):
+</p>
+<pre><code class="language-json">{
+  "mcpServers": {
+    "cramion": {
+      "command": "C:\\Cramion\\CramionMcp.exe",
+      "args": ["--port", "7777"]
+    }
+  }
+}</code></pre>
+<p>Si el editor está cerrado, el puente contesta a la IA que lo abras.</p>
+
+<h3 id="herramientas">Qué puede hacer la IA</h3>
+<table>
+  <thead><tr><th>Herramientas</th><th>Para qué</th></tr></thead>
+  <tbody>
+    <tr><td><code>help</code>, <code>editor_state</code></td><td>Guía del motor para la IA y qué hay abierto.</td></tr>
+    <tr><td><code>list_projects</code>, <code>open_project</code>, <code>create_project</code></td><td>Proyectos y plantillas.</td></tr>
+    <tr><td><code>list_entities</code>, <code>get_entity</code></td><td>Ver la escena y cada objeto con todos sus componentes.</td></tr>
+    <tr><td><code>create_entity</code>, <code>modify_entity</code>, <code>delete_entity</code>, <code>duplicate_entity</code></td><td>Crear primitivas, luces, cámaras, terreno, agua, vehículos, mundos de bloques; mover, girar, emparentar.</td></tr>
+    <tr><td><code>list_component_types</code>, <code>set_component</code>, <code>remove_component</code></td><td>Cualquier componente del motor y cualquiera de sus campos.</td></tr>
+    <tr><td><code>create_script</code>, <code>create_shader</code>, <code>read_file</code>, <code>write_file</code></td><td>Escribir scripts Lua y shaders (con los errores de compilación de vuelta).</td></tr>
+    <tr><td><code>create_material</code>, <code>assign_material</code></td><td>Materiales PBR o con shader propio.</td></tr>
+    <tr><td><code>create_model</code>, <code>import_file</code>, <code>instantiate</code>, <code>create_prefab</code></td><td>Modelos desde OBJ o archivos, ponerlos en la escena, prefabs.</td></tr>
+    <tr><td><code>new_scene</code>, <code>open_scene</code>, <code>save_scene</code>, <code>list_scenes</code></td><td>Escenas.</td></tr>
+    <tr><td><code>play</code>, <code>stop</code>, <code>pause</code>, <code>run_lua</code></td><td>Probar el juego y consultar su estado desde Lua.</td></tr>
+    <tr><td><code>get_console</code>, <code>screenshot</code></td><td>Ver errores y el resultado en imagen.</td></tr>
+    <tr><td><code>select</code>, <code>set_camera</code>, <code>undo</code>, <code>redo</code></td><td>Enseñarte algo en el editor y deshacer.</td></tr>
+  </tbody>
+</table>
+
+<h3 id="ejemplos">Qué pedirle</h3>
+<ul>
+  <li>"Crea un nivel de plataformas con 10 plataformas a distintas alturas, monedas que giran y un jugador con cámara en tercera persona."</li>
+  <li>"Haz un shader de lava para el suelo y un material con él; pruébalo y mándame una captura."</li>
+  <li>"El jugador atraviesa las paredes: mira la escena y los scripts y arréglalo."</li>
+  <li>"Convierte este enemigo en un prefab y pon 5 copias que patrullen con el NavMesh."</li>
+</ul>
+<div class="note">
+  Consejo: pídele que llame primero a <code>help</code> y a <code>editor_state</code>. Todo lo que hace la IA pasa por el
+  deshacer del editor, pero guarda tu escena antes de pedirle cambios grandes.
+</div>

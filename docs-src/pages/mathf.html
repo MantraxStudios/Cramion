@@ -1,0 +1,106 @@
+<p>
+  Funciones de números para juegos: limitar, interpolar, suavizar, ángulos que dan la vuelta y ruido. Complementa la
+  librería <code>math</code> de Lua, que también está disponible.
+</p>
+<pre><code class="language-lua">local vida = Mathf.clamp(vida - dano, 0, 100)
+local t = Mathf.inverseLerp(0, 100, vida)                 -- 0..1
+local color = Vec3.lerp(Vec3(1, 0, 0), Vec3(0, 1, 0), t)  -- de rojo a verde
+local altura = 2 + Mathf.sin(Time.time * 3) * 0.25        -- flotar arriba y abajo</code></pre>
+
+<h3 id="constantes">Constantes</h3>
+<table>
+  <thead><tr><th>Nombre</th><th>Valor</th></tr></thead>
+  <tbody>
+    <tr><td><code>Mathf.pi</code>, <code>Mathf.tau</code></td><td>3.14159... y 2π (una vuelta en radianes).</td></tr>
+    <tr><td><code>Mathf.deg2rad</code>, <code>Mathf.rad2deg</code></td><td>Multiplica para pasar de grados a radianes y al revés.</td></tr>
+    <tr><td><code>Mathf.infinity</code>, <code>Mathf.negativeInfinity</code></td><td>Infinito (para empezar a buscar un mínimo o un máximo).</td></tr>
+    <tr><td><code>Mathf.epsilon</code></td><td>Un número muy pequeño (0.000001).</td></tr>
+  </tbody>
+</table>
+
+<h3 id="basicas">Básicas</h3>
+<table>
+  <thead><tr><th>Función</th><th>Descripción</th></tr></thead>
+  <tbody>
+    <tr><td><code>Mathf.abs(v)</code>, <code>Mathf.sign(v)</code></td><td>Valor absoluto y signo (-1 o 1; el 0 da 1).</td></tr>
+    <tr><td><code>Mathf.min(a, b, ...)</code>, <code>Mathf.max(a, b, ...)</code></td><td>El menor o el mayor de dos o más números.</td></tr>
+    <tr><td><code>Mathf.floor(v)</code>, <code>Mathf.ceil(v)</code></td><td>Redondea hacia abajo o hacia arriba.</td></tr>
+    <tr><td><code>Mathf.round(v [, decimales])</code></td><td>Redondea al más cercano: <code>Mathf.round(3.14159, 2)</code> = 3.14.</td></tr>
+    <tr><td><code>Mathf.sqrt(v)</code>, <code>Mathf.pow(a, b)</code>, <code>Mathf.exp(v)</code></td><td>Raíz cuadrada, potencia y exponencial.</td></tr>
+    <tr><td><code>Mathf.log(v [, base])</code>, <code>Mathf.log10(v)</code></td><td>Logaritmo (natural o en esa base) y en base 10.</td></tr>
+  </tbody>
+</table>
+
+<h3 id="trigonometria">Trigonometría</h3>
+<table>
+  <thead><tr><th>Función</th><th>Descripción</th></tr></thead>
+  <tbody>
+    <tr><td><code>Mathf.sin(r)</code>, <code>Mathf.cos(r)</code>, <code>Mathf.tan(r)</code></td><td>En <strong class="text-white">radianes</strong> (usa <code>grados * Mathf.deg2rad</code>).</td></tr>
+    <tr><td><code>Mathf.asin(v)</code>, <code>Mathf.acos(v)</code>, <code>Mathf.atan(v)</code></td><td>Inversas (devuelven radianes; <code>asin</code> y <code>acos</code> no fallan fuera de -1..1).</td></tr>
+    <tr><td><code>Mathf.atan2(y, x)</code></td><td>Ángulo de un vector 2D, en radianes (de -π a π).</td></tr>
+  </tbody>
+</table>
+
+<h3 id="rangos">Rangos e interpolación</h3>
+<table>
+  <thead><tr><th>Función</th><th>Descripción</th></tr></thead>
+  <tbody>
+    <tr><td><code>Mathf.clamp(v, min, max)</code>, <code>Mathf.clamp01(v)</code></td><td>Limita un valor a un rango (o a 0..1).</td></tr>
+    <tr><td><code>Mathf.lerp(a, b, t)</code></td><td>Valor entre <code>a</code> y <code>b</code>; <code>t</code> se limita a 0..1.</td></tr>
+    <tr><td><code>Mathf.lerpUnclamped(a, b, t)</code></td><td>Igual, sin limitar <code>t</code>.</td></tr>
+    <tr><td><code>Mathf.inverseLerp(a, b, v)</code></td><td>Lo contrario de <code>lerp</code>: qué <code>t</code> (0..1) le toca a <code>v</code> entre <code>a</code> y <code>b</code>.</td></tr>
+    <tr><td><code>Mathf.remap(v, desde1, hasta1, desde2, hasta2)</code></td><td>Pasa un valor de un rango a otro: <code>Mathf.remap(velocidad, 0, 30, 60, 90)</code> para el campo de visión.</td></tr>
+    <tr><td><code>Mathf.smoothstep(a, b, v)</code>, <code>Mathf.smootherstep(a, b, v)</code></td><td>De 0 a 1 cuando <code>v</code> va de <code>a</code> a <code>b</code>, con arranque y final suaves.</td></tr>
+    <tr><td><code>Mathf.approximately(a, b [, margen])</code></td><td>Casi iguales (para comparar decimales: <code>0.1 + 0.2 ~= 0.3</code>).</td></tr>
+  </tbody>
+</table>
+
+<h3 id="movimiento">Movimiento y suavizado</h3>
+<table>
+  <thead><tr><th>Función</th><th>Descripción</th></tr></thead>
+  <tbody>
+    <tr><td><code>Mathf.moveTowards(actual, objetivo, paso)</code></td><td>Se acerca como mucho <code>paso</code> sin pasarse.</td></tr>
+    <tr><td><code>Mathf.smoothDamp(actual, objetivo, vel, tiempo, dt [, maxVel])</code></td><td>Seguimiento suave sin rebote; devuelve <strong class="text-white">el valor y la velocidad</strong> (guarda la velocidad para el frame siguiente).</td></tr>
+    <tr><td><code>Mathf.wrap(t, largo)</code></td><td>Da la vuelta dentro de 0..largo (el <code>Repeat</code> de Unity). <code>repeat</code> es palabra reservada de Lua; si la necesitas: <code>Mathf["repeat"]</code>.</td></tr>
+    <tr><td><code>Mathf.pingPong(t, largo)</code></td><td>Va de 0 a <code>largo</code> y vuelve, una y otra vez.</td></tr>
+  </tbody>
+</table>
+
+<h3 id="angulos">Ángulos (en grados)</h3>
+<table>
+  <thead><tr><th>Función</th><th>Descripción</th></tr></thead>
+  <tbody>
+    <tr><td><code>Mathf.deltaAngle(a, b)</code></td><td>El giro más corto de <code>a</code> a <code>b</code> (-180..180): de 350 a 10 son 20 grados, no -340.</td></tr>
+    <tr><td><code>Mathf.lerpAngle(a, b, t)</code></td><td>Interpola ángulos por el camino corto.</td></tr>
+    <tr><td><code>Mathf.moveTowardsAngle(a, b, paso)</code></td><td>Gira hacia <code>b</code> como mucho <code>paso</code> grados.</td></tr>
+  </tbody>
+</table>
+
+<h3 id="ruido">Ruido Perlin</h3>
+<p>
+  Números "aleatorios" pero continuos: puntos cercanos dan valores parecidos. Sirve para terrenos, nubes, temblores de
+  cámara o movimientos naturales. Siempre dan lo mismo para las mismas coordenadas.
+</p>
+<table>
+  <thead><tr><th>Función</th><th>Descripción</th></tr></thead>
+  <tbody>
+    <tr><td><code>Mathf.perlinNoise(x, y)</code></td><td>Ruido 2D de 0 a 1.</td></tr>
+    <tr><td><code>Mathf.perlinNoise3(x, y, z)</code></td><td>Ruido 3D de -1 a 1 (usa <code>z = Time.time</code> para que cambie con el tiempo).</td></tr>
+    <tr><td><code>Mathf.fractalNoise(x, y [, octavas, persistencia, lacunaridad])</code></td><td>Varias capas de ruido (4 por defecto) para relieve con detalle; de 0 a 1.</td></tr>
+  </tbody>
+</table>
+<pre><code class="language-lua">-- Temblor de camara natural (no salta como math.random)
+local t = Time.time * 12
+local temblor = Vec3(Mathf.perlinNoise3(t, 0, 0), Mathf.perlinNoise3(0, t, 0), 0) * 0.15 * fuerza
+
+-- Altura de un terreno
+local h = Mathf.fractalNoise(x * 0.02, z * 0.02, 5) * 30</code></pre>
+
+<h3 id="otras">Otras</h3>
+<table>
+  <thead><tr><th>Función</th><th>Descripción</th></tr></thead>
+  <tbody>
+    <tr><td><code>Mathf.isPowerOfTwo(n)</code>, <code>Mathf.nextPowerOfTwo(n)</code></td><td>Potencias de dos (tamaños de texturas y rejillas).</td></tr>
+    <tr><td><code>Mathf.random(min, max)</code></td><td>Decimal aleatorio (lo mismo que <code>Random.range</code>; ver <a href="random.html">Random</a>).</td></tr>
+  </tbody>
+</table>

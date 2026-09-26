@@ -180,6 +180,16 @@ public:
     using TerrainProvider = std::function<std::shared_ptr<const terrain::TerrainData>(ecs::Entity)>;
     void setTerrainProvider(TerrainProvider provider);
 
+    // Geometria estatica sin entidad (los mundos de bloques): una malla por
+    // clave, `triangles` = lista de triangulos (3 puntos, antihorarios vistos
+    // desde fuera) relativos a `origin`. Sobrevive a stop()/start(): se crea
+    // de nuevo en cada mundo fisico. Choca como el suelo (sin eventos) y los
+    // rayos la tocan (hit.entity vacia).
+    void setStaticMesh(std::uint64_t key, const core::Vec3& origin, std::vector<core::Vec3> triangles, int layer = 0);
+    void removeStaticMesh(std::uint64_t key);
+    void clearStaticMeshes();
+    std::size_t staticMeshCount() const;
+
     // Crea el mundo fisico y los cuerpos. stop() lo destruye todo.
     void start(ecs::World& world);
     void stop();

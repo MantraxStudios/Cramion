@@ -41,6 +41,10 @@ DropZone dropZone() {
 
 Icon EditorApp::entityIcon(const ecs::Entity& e, ImU32& tint) const {
     tint = IM_COL32(200, 200, 205, 255);
+    if (e.has<ecs::PrefabInstance>()) {
+        tint = IM_COL32(95, 170, 255, 255);
+        return Icon::ColliderBox;  // cubo azul: raiz de una instancia de prefab
+    }
     if (const ecs::Light* light = e.tryGet<ecs::Light>()) {
         tint = IM_COL32(255, 205, 80, 255);
         return light->type == ecs::LightType::Directional ? Icon::DirectionalLight
@@ -138,6 +142,7 @@ void EditorApp::drawHierarchy() {
         ImGui::Separator();
         item("Vehículo (4 ruedas)", 17);
         if (ImGui::MenuItem("Terreno")) createTerrainEntity();
+        if (ImGui::MenuItem("Mundo de bloques")) createVoxelWorldEntity();
         if (ImGui::BeginMenu("Agua")) {
             if (ImGui::MenuItem("Océano / playa")) createWaterEntity(0);
             if (ImGui::MenuItem("Lago")) createWaterEntity(1);
@@ -225,6 +230,7 @@ void EditorApp::drawHierarchy() {
             AssetPayload asset{};
             std::memcpy(&asset, payload->Data, sizeof(asset));
             if (asset.type == assets::AssetType::Model) instantiateAsset(asset.uuid, {}, std::nullopt);
+            if (asset.type == assets::AssetType::Prefab) instantiatePrefabAsset(asset.uuid, {}, std::nullopt);
             if (asset.type == assets::AssetType::Environment) assignEnvironment(asset.uuid);
         }
         ImGui::EndDragDropTarget();
@@ -247,6 +253,7 @@ void EditorApp::drawHierarchy() {
         ImGui::Separator();
         item("Vehículo (4 ruedas)", 17);
         if (ImGui::MenuItem("Terreno")) createTerrainEntity();
+        if (ImGui::MenuItem("Mundo de bloques")) createVoxelWorldEntity();
         if (ImGui::BeginMenu("Agua")) {
             if (ImGui::MenuItem("Océano / playa")) createWaterEntity(0);
             if (ImGui::MenuItem("Lago")) createWaterEntity(1);
@@ -344,34 +351,52 @@ void EditorApp::drawHierarchyRow(const HierarchyRow& row, bool scroll_to) {
     }
 
     const bool active = entity.activeInHierarchy();
-    if (!active) {
+    // Instancias de prefab en azul (como Unity); rojo si su asset ya no existe.
+    const bool prefab = entity.has<ecs::PrefabInstance>() || entity.has<ecs::PrefabLink>();
+    if (prefab) {
+        const ecs::Entity root = ecs::prefabRoot(entity);
+        const bool missing = root.valid() && prefabPath(root.get<ecs::PrefabInstance>().prefab.uuid).empty();
+        ImVec4 color = missing ? ImVec4(0.92f, 0.40f, 0.40f, 1.0f) : ImVec4(0.45f, 0.70f, 1.0f, 1.0f);
+        if (!active) color.w = 0.5f;
+        ImGui::PushStyleColor(ImGuiCol_Text, color);
+    } else if (!active) {
         ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
     }
     const bool renaming = renaming_ == uuid;
-    // Hueco para el icono delante del nombre.
+    // El nodo sin texto: el icono y el nombre se dibujan despues en su sitio
+    // exacto. Con SpanFullWidth el rectangulo del item empieza en el borde
+    // de la ventana (sin la sangria), asi que la posicion de la flecha se
+    // toma del cursor antes del nodo.
+    const float row_x = ImGui::GetCursorScreenPos().x;
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(4.0f, 2.0f));
-    if (renaming) {
-        ImGui::TreeNodeEx(id, flags, "%s", "");
-    } else {
-        ImGui::TreeNodeEx(id, flags, "    %s", entity.name().c_str());
-    }
+    const float label_x = row_x + ImGui::GetTreeNodeToLabelSpacing();  // justo despues de la flecha
+    ImGui::TreeNodeEx(id, flags, "%s", "");
     if (scroll_to) ImGui::SetScrollHereY(0.5f);
     ImGui::PopStyleVar();
-    if (!active) {
+    const ImU32 text_color = ImGui::GetColorU32(ImGuiCol_Text);
+    if (prefab || !active) {
         ImGui::PopStyleColor();
     }
 
     {
-        // Icono de lo que es (luz, camara, malla, fisica...).
+        // Icono de lo que es (luz, camara, malla, fisica...) y el nombre.
+        const ImVec2 row_min = ImGui::GetItemRectMin();
+        const ImVec2 row_max = ImGui::GetItemRectMax();
+        const float row_h = row_max.y - row_min.y;
+        const float icon_size = std::max(row_h - 4.0f, 8.0f);
+        const float name_x = label_x + icon_size + 4.0f;
         {
-            const ImVec2 min = ImGui::GetItemRectMin();
-            const float h = ImGui::GetItemRectSize().y;
-            const float size = h - 4.0f;
+            ImDrawList* draw = ImGui::GetWindowDrawList();
             ImU32 tint = IM_COL32_WHITE;
             const Icon icon = entityIcon(entity, tint);
             if (!entity.activeInHierarchy()) tint = (tint & 0x00FFFFFFu) | 0x70000000u;
-            imgui_.drawIcon(ImGui::GetWindowDrawList(), icon,
-                            ImVec2(min.x + ImGui::GetTreeNodeToLabelSpacing() - 7.0f, min.y + 2.0f), size, tint);
+            imgui_.drawIcon(draw, icon, ImVec2(label_x, row_min.y + (row_h - icon_size) * 0.5f), icon_size, tint);
+            if (!renaming) {
+                const std::string& label = entity.name();
+                const ImVec2 text_pos(name_x, row_min.y + (row_h - ImGui::GetTextLineHeight()) * 0.5f);
+                const ImVec4 clip(row_min.x, row_min.y, row_max.x - 2.0f, row_max.y);
+                draw->AddText(nullptr, 0.0f, text_pos, text_color, label.c_str(), label.c_str() + label.size(), 0.0f, &clip);
+            }
         }
 
         // Seleccion (no al abrir con la flecha).
@@ -462,6 +487,7 @@ void EditorApp::drawHierarchyRow(const HierarchyRow& row, bool scroll_to) {
                 AssetPayload asset{};
                 std::memcpy(&asset, payload->Data, sizeof(asset));
                 if (asset.type == assets::AssetType::Model) instantiateAsset(asset.uuid, entity, std::nullopt);
+                if (asset.type == assets::AssetType::Prefab) instantiatePrefabAsset(asset.uuid, entity, std::nullopt);
                 if (asset.type == assets::AssetType::Environment) assignEnvironment(asset.uuid);
                 // Material: a todos sus huecos (y a los de sus hijos si no tiene malla).
                 if (asset.type == assets::AssetType::Material && applyMaterial(entity, asset.uuid, -1)) {
@@ -507,6 +533,7 @@ void EditorApp::drawHierarchyRow(const HierarchyRow& row, bool scroll_to) {
         ImGui::Separator();
         item("Vehículo (4 ruedas)", 17);
         if (ImGui::MenuItem("Terreno")) createTerrainEntity();
+        if (ImGui::MenuItem("Mundo de bloques")) createVoxelWorldEntity();
         if (ImGui::BeginMenu("Agua")) {
             if (ImGui::MenuItem("Océano / playa")) createWaterEntity(0);
             if (ImGui::MenuItem("Lago")) createWaterEntity(1);
@@ -527,6 +554,7 @@ void EditorApp::drawHierarchyRow(const HierarchyRow& row, bool scroll_to) {
             if (ImGui::MenuItem("Pegar", "Ctrl+V", false, !clipboard_.empty())) pasteClipboard();
             if (ImGui::MenuItem("Enfocar", "F")) focusSelection();
             drawExtractAnimationsMenu(entity);
+            drawPrefabHierarchyMenu(entity);
             ImGui::Separator();
             if (ImGui::MenuItem(entity.activeSelf() ? "Desactivar" : "Activar")) {
                 entity.setActive(!entity.activeSelf());
@@ -543,6 +571,7 @@ void EditorApp::drawHierarchyRow(const HierarchyRow& row, bool scroll_to) {
         // Renombrar en el sitio.
         if (renaming) {
             ImGui::SameLine();
+            ImGui::SetCursorScreenPos(ImVec2(name_x, row_min.y));
             if (rename_focus_) {
                 ImGui::SetKeyboardFocusHere();
                 rename_focus_ = false;

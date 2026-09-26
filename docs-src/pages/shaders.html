@@ -1,0 +1,205 @@
+<p>
+  Un <strong class="text-white">shader de superficie</strong> (<code>.crshader</code>) decide cómo se ve un material: su color,
+  su brillo, su relieve, si emite luz o si se mueve. Se escribe en <strong class="text-white">GLSL</strong> (el lenguaje de
+  shaders de Vulkan/OpenGL), pero solo la parte que importa: el motor se encarga de la luz, las sombras, los reflejos, la
+  niebla y la lluvia, así que tu superficie queda integrada en la escena como cualquier otro material (igual que los
+  <em>surface shaders</em> de Unity).
+</p>
+
+<h3 id="crear">Crear y usar un shader</h3>
+<ul>
+  <li>Panel <strong class="text-white">Proyecto</strong> &gt; clic derecho &gt; <strong class="text-white">Crear &gt; Shader (GLSL)</strong>. Se abre en el editor de scripts con una plantilla que ya funciona.</li>
+  <li>Elige un material (<code>.crmat</code>) y en su Inspector, <strong class="text-white">Shader</strong> &gt; tu archivo. O clic derecho sobre el <code>.crshader</code> &gt; <em>Crear material con este shader</em>.</li>
+  <li>Arrastra el material a un objeto. Cada vez que guardes el shader (<code>Ctrl+S</code>) se recompila y se ve al momento, también en Play.</li>
+</ul>
+<div class="note">
+  Si hay un error, la línea se marca en rojo en el editor, el mensaje sale en la Consola y en el material, y mientras
+  tanto el objeto se ve con el shader estándar. El icono del shader en el Proyecto se pone rojo.
+</div>
+
+<h3 id="estructura">Cómo es un .crshader</h3>
+<p class="file">Assets/Shaders/Pulso.crshader</p>
+<pre><code class="language-glsl">// Propiedades: se editan en el material y se leen aqui por su nombre.
+property color tinte = 1.0, 0.4, 0.1
+property range brillo = 2.0 (0, 10)
+property float velocidad = 3.0
+
+// Obligatoria: recibe la superficie ya calculada (texturas y valores del
+// material) y la cambia.
+void surface(inout Surface s) {
+    float pulso = 0.5 + 0.5 * sin(TIME * velocidad);
+    s.albedo *= tinte;
+    s.emission = tinte * brillo * pulso;
+}
+
+// Opcional: mover los vertices antes de dibujarlos.
+void vertex(inout Vertex v) {
+    v.position += v.normal * 0.02 * sin(TIME * velocidad);
+}</code></pre>
+<p>
+  Puedes escribir más funciones tuyas (fuera de <code>surface</code> y <code>vertex</code>) y usar todo GLSL:
+  <code>vec2</code>, <code>vec3</code>, <code>mix</code>, <code>smoothstep</code>, <code>sin</code>, <code>texture</code>...
+</p>
+
+<h3 id="propiedades">Propiedades</h3>
+<p>Una línea por propiedad, en cualquier parte del archivo. En el material aparecen con el control que les toca.</p>
+<table>
+  <thead><tr><th>Línea</th><th>En el código</th><th>En el material</th></tr></thead>
+  <tbody>
+    <tr><td><code>property float fuerza = 1.5</code></td><td><code>float</code></td><td>Número.</td></tr>
+    <tr><td><code>property range brillo = 2 (0, 10)</code></td><td><code>float</code></td><td>Deslizador entre 0 y 10.</td></tr>
+    <tr><td><code>property color tinte = 1, 0.5, 0.2</code></td><td><code>vec3</code></td><td>Selector de color.</td></tr>
+    <tr><td><code>property vector viento = 1, 0, 0</code></td><td><code>vec3</code></td><td>Tres números.</td></tr>
+    <tr><td><code>property texture ruido</code></td><td><code>sampler2D</code></td><td>Hueco para una imagen de Assets (blanca si está vacío).</td></tr>
+  </tbody>
+</table>
+<p>
+  Como mucho 8 propiedades de números (float, range, color, vector) y 4 texturas. Los valores se cambian en vivo desde el
+  material sin recompilar nada. Clic derecho sobre una propiedad: <em>Valor por defecto</em>.
+</p>
+
+<h3 id="surface">La superficie (Surface)</h3>
+<table>
+  <thead><tr><th>Campo</th><th>Descripción</th></tr></thead>
+  <tbody>
+    <tr><td><code>s.albedo</code> (<code>vec3</code>)</td><td>Color base, como se ve (el mismo espacio que las texturas).</td></tr>
+    <tr><td><code>s.alpha</code> (<code>float</code>)</td><td>Por debajo de 0.5 el píxel no se dibuja (recortes, agujeros, disolver).</td></tr>
+    <tr><td><code>s.normal</code> (<code>vec3</code>)</td><td>Normal en el mundo, ya con el normal map del material.</td></tr>
+    <tr><td><code>s.metallic</code>, <code>s.roughness</code></td><td>Metálico y rugosidad (0..1): 0 de rugosidad es un espejo.</td></tr>
+    <tr><td><code>s.occlusion</code></td><td>Sombra ambiental (1 = ninguna).</td></tr>
+    <tr><td><code>s.emission</code> (<code>vec3</code>)</td><td>Luz propia. 1 equivale a la emisión 1 de un material; valores altos dan bloom.</td></tr>
+    <tr><td><code>s.uv</code></td><td>Coordenadas de textura (solo lectura).</td></tr>
+    <tr><td><code>s.worldPosition</code></td><td>Posición del píxel en el mundo (solo lectura).</td></tr>
+    <tr><td><code>s.vertexNormal</code></td><td>Normal de la malla, sin normal map (solo lectura).</td></tr>
+    <tr><td><code>s.viewDirection</code></td><td>Dirección del píxel hacia la cámara (solo lectura).</td></tr>
+  </tbody>
+</table>
+<p>
+  <code>surface()</code> recibe ya calculado lo que pone el material (su color y su textura de color, su normal map,
+  su metálico, su rugosidad...), así que puedes combinar las dos cosas: texturas en el material y el efecto en el shader.
+</p>
+
+<h3 id="vertex">Mover vértices (Vertex)</h3>
+<table>
+  <thead><tr><th>Campo</th><th>Descripción</th></tr></thead>
+  <tbody>
+    <tr><td><code>v.position</code></td><td>Posición en el mundo (ya animada si el modelo tiene esqueleto).</td></tr>
+    <tr><td><code>v.normal</code></td><td>Normal en el mundo.</td></tr>
+    <tr><td><code>v.uv</code></td><td>Coordenadas de textura.</td></tr>
+  </tbody>
+</table>
+
+<h3 id="globales">Lo que tienes a mano</h3>
+<table>
+  <thead><tr><th>Nombre</th><th>Descripción</th></tr></thead>
+  <tbody>
+    <tr><td><code>TIME</code></td><td>Segundos desde que empezó (para animar).</td></tr>
+    <tr><td><code>CAMERA_POSITION</code></td><td>Posición de la cámara en el mundo.</td></tr>
+    <tr><td><code>noise(vec2)</code>, <code>noise(vec3)</code></td><td>Ruido suave de 0 a 1.</td></tr>
+    <tr><td><code>fbm(vec2)</code></td><td>Ruido en varias capas (nubes, manchas, mármol).</td></tr>
+    <tr><td><code>hash(vec2)</code>, <code>hash(vec3)</code></td><td>Número pseudoaleatorio de 0 a 1 por posición.</td></tr>
+    <tr><td><code>fresnel(s, potencia)</code></td><td>0 de frente y 1 en el contorno (bordes brillantes).</td></tr>
+    <tr><td><code>remap(v, a, b, c, d)</code></td><td>Pasa <code>v</code> del rango a..b al c..d.</td></tr>
+  </tbody>
+</table>
+
+<h3 id="ej-holograma">Ejemplo: holograma</h3>
+<p>Líneas que suben, borde brillante y parpadeo. Queda muy bien con un material oscuro.</p>
+<p class="file">Holograma.crshader</p>
+<pre><code class="language-glsl">property color tinte = 0.2, 0.8, 1.0
+property range lineas = 40 (5, 120)
+property range velocidad = 2 (0, 10)
+
+void surface(inout Surface s) {
+    float linea = step(0.5, fract(s.worldPosition.y * lineas * 0.1 - TIME * velocidad));
+    float borde = fresnel(s, 2.5);
+    float parpadeo = 0.85 + 0.15 * sin(TIME * 30.0);
+    s.albedo = vec3(0.02);
+    s.roughness = 0.3;
+    s.emission = tinte * (0.3 + linea * 0.7 + borde * 2.0) * parpadeo;
+}</code></pre>
+
+<h3 id="ej-disolver">Ejemplo: disolver</h3>
+<p>El objeto se deshace con un borde incandescente. Anima <code>cantidad</code> desde un script para hacerlo desaparecer.</p>
+<p class="file">Disolver.crshader</p>
+<pre><code class="language-glsl">property range cantidad = 0.3 (0, 1)
+property color borde = 1.0, 0.45, 0.05
+property float escala = 4
+property texture ruido   // opcional: una textura de ruido; sin ella se usa fbm()
+
+void surface(inout Surface s) {
+    float n = fbm(s.uv * escala) * texture(ruido, s.uv).r;
+    if (n &lt; cantidad) s.alpha = 0.0;                 // hueco
+    float filo = 1.0 - smoothstep(0.0, 0.06, n - cantidad);
+    s.emission += borde * filo * 4.0;               // borde al rojo
+}</code></pre>
+
+<h3 id="ej-lava">Ejemplo: lava</h3>
+<p class="file">Lava.crshader</p>
+<pre><code class="language-glsl">property color frio = 0.08, 0.02, 0.01
+property color caliente = 1.0, 0.35, 0.02
+property range velocidad = 0.15 (0, 1)
+
+void surface(inout Surface s) {
+    vec2 p = s.worldPosition.xz * 0.35;
+    float n = fbm(p + vec2(TIME * velocidad, TIME * velocidad * 0.7));
+    float grietas = smoothstep(0.45, 0.75, n);
+    s.albedo = mix(frio, caliente, grietas);
+    s.roughness = mix(0.9, 0.4, grietas);
+    s.emission = caliente * grietas * grietas * 3.0;
+}</code></pre>
+
+<h3 id="ej-olas">Ejemplo: agua que se mueve (vértices)</h3>
+<p>Para un plano con bastantes vértices (por ejemplo, una malla creada por código). Mueve los vértices y recalcula la normal.</p>
+<p class="file">Olas.crshader</p>
+<pre><code class="language-glsl">property range altura = 0.25 (0, 2)
+property range frecuencia = 1.2 (0.1, 5)
+property color color = 0.05, 0.25, 0.35
+
+float ola(vec2 p) {
+    return sin(p.x * frecuencia + TIME * 1.7) * 0.6 + sin((p.x + p.y) * frecuencia * 0.7 + TIME * 1.1) * 0.4;
+}
+
+void vertex(inout Vertex v) {
+    float h = ola(v.position.xz) * altura;
+    // Pendiente por diferencias: la normal de la ola.
+    float hx = ola(v.position.xz + vec2(0.1, 0.0)) * altura;
+    float hz = ola(v.position.xz + vec2(0.0, 0.1)) * altura;
+    v.position.y += h;
+    v.normal = normalize(vec3(h - hx, 0.1, h - hz));
+}
+
+void surface(inout Surface s) {
+    s.albedo = color;
+    s.roughness = 0.05;
+    s.metallic = 0.0;
+}</code></pre>
+
+<h3 id="ej-viento">Ejemplo: vegetación con viento</h3>
+<p>Mueve más lo que está más alto (la copa) que la base. Úsalo con el material de las hojas.</p>
+<p class="file">Viento.crshader</p>
+<pre><code class="language-glsl">property vector direccion = 1, 0, 0.3
+property range fuerza = 0.15 (0, 1)
+property float alturaBase = 0
+
+void vertex(inout Vertex v) {
+    float alto = max(v.position.y - alturaBase, 0.0);
+    float rafaga = sin(TIME * 2.0 + v.position.x * 0.5) + 0.5 * sin(TIME * 5.3 + v.position.z);
+    v.position += normalize(direccion) * rafaga * fuerza * alto * 0.3;
+}
+
+void surface(inout Surface s) {
+}</code></pre>
+
+<h3 id="limites">Límites</h3>
+<ul>
+  <li>Las <strong class="text-white">sombras</strong> y la selección con el ratón usan la forma original: lo que muevas en <code>vertex()</code> no cambia la sombra.</li>
+  <li>Materiales opacos (con recortes por <code>s.alpha</code>). El modo <em>Transparente</em> del material no usa el shader propio.</li>
+  <li>8 propiedades de números y 4 texturas por shader.</li>
+  <li>El shader se compila al usarse la primera vez (unas décimas de segundo). El juego exportado lleva el compilador (<code>shaderc_shared.dll</code>) y los compila igual.</li>
+</ul>
+<div class="note">
+  ¿Qué es cada cosa en GLSL? <code>vec3(1.0, 0.5, 0.0)</code> es un color o una posición; <code>mix(a, b, t)</code> mezcla;
+  <code>smoothstep(a, b, x)</code> pasa suave de 0 a 1; <code>fract(x)</code> es la parte decimal (repite);
+  <code>step(a, x)</code> es 0 o 1. Los decimales llevan punto: <code>1.0</code>, no <code>1</code>, cuando se mezclan con <code>float</code>.
+</div>

@@ -1,0 +1,30 @@
+<p class="file">Coche.lua</p>
+      <pre><code class="language-lua">local Coche = { properties = { respuesta = 3.0 } }
+
+function Coche:Start()
+    self.giro = 0
+    self.hud = Scene.find("Velocimetro")
+end
+
+function Coche:Update(dt)
+    local acelerador = Input.getAxis("Vertical")
+    local objetivo = Input.getAxis("Horizontal")
+    -- Volante progresivo: no gira de golpe
+    self.giro = Mathf.moveTowards(self.giro, objetivo, self.respuesta * dt)
+
+    local freno = Input.getKey("s") and self.entity.speed > 5 and 1 or 0
+    local mano = Input.getKey("space") and 1 or 0
+    self.entity:setVehicleInput(acelerador, self.giro, freno, mano)
+
+    if self.hud then
+        self.hud.text = string.format("%3d km/h   %4d rpm   marcha %d",
+            math.floor(self.entity.speed), math.floor(self.entity.rpm), self.entity.gear)
+    end
+
+    if Input.getKeyDown("r") then   -- enderezar
+        self.entity.rotation = Vec3(0, self.entity.rotation.y, 0)
+        self.entity.position = self.entity.position + Vec3(0, 1, 0)
+    end
+end
+
+return Coche</code></pre>
