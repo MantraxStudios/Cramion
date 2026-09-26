@@ -91,6 +91,24 @@ layout(std430, set = 1, binding = 5) readonly buffer RtModels { uvec4 rt_models[
 layout(std430, set = 1, binding = 6) readonly buffer Irradiance { vec4 coefficients[9]; } irradiance_sh;
 layout(set = 1, binding = 7) uniform sampler2D rt_textures[];
 
+// --- Cache de radiancia en el mundo (ver "Cache de radiancia" mas abajo) ---
+// Tabla hash: clave de la celda (0 = libre), lo sumado este frame (rgb en
+// punto fijo, numero de muestras, edad) y lo resuelto (rgb = irradiancia / pi,
+// w = frames acumulados). Deben coincidir con RayTracing.cpp.
+struct CacheEntry {
+    uint r;
+    uint g;
+    uint b;
+    uint count;
+    uint age;
+    uint pad0;
+    uint pad1;
+    uint pad2;
+};
+layout(std430, set = 1, binding = 8) buffer CacheKeys { uint cache_keys[]; };
+layout(std430, set = 1, binding = 9) buffer CacheAccum { CacheEntry cache_accum[]; };
+layout(std430, set = 1, binding = 10) buffer CacheResolved { vec4 cache_resolved[]; };
+
 #include "rain_common.glsl"
 
 const float kPi = 3.14159265;
@@ -265,6 +283,91 @@ bool unoccluded(vec3 origin, vec3 direction, float max_distance) {
 // que dependen de la vista igual que esa imagen. La luz rebotada NO: los
 // brillos y reflejos de esa imagen cambian con la camara, y su "rebote" se
 // movia por los modelos al moverse (ademas de realimentarse frame a frame).
+// -----------------------------------------------------------------------------
+// Cache de radiancia en el mundo (como SHaRC de NVIDIA o la surface cache de
+// Lumen, en una tabla hash).
+//
+// El mundo se parte en celdas (mas grandes lejos de la camara) y cada celda,
+// por cada una de las 6 orientaciones de la normal, guarda la irradiancia que
+// llega a esa superficie: cielo que ve de verdad + luz rebotada. La llenan
+// los pixeles de la GI (lo que miden sus rayos) y, para lo que no esta en
+// pantalla, rayos secundarios desde los puntos de impacto. Al chocar un rayo
+// con una superficie se lee su celda en vez de suponer medio cielo: los
+// rebotes se encadenan frame a frame (rebotes infinitos), los interiores no
+// reciben cielo que no ven y el resultado es estable (la media vive en el
+// mundo, no en los pixeles).
+
+const uint kCacheSize = 1u << 19;   // entradas (potencia de dos)
+const uint kCacheProbes = 8u;       // huecos que se prueban por clave
+const float kCacheFixed = 256.0;    // punto fijo de la suma (atomicAdd en uint)
+
+uint cacheHash(uint x) {
+    // PCG (Jarzynski y Olano 2020).
+    uint state = x * 747796405u + 2891336453u;
+    uint word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
+    return (word >> 22u) ^ word;
+}
+
+// Hueco inicial y comprobacion (nunca 0) de la celda de un punto.
+void cacheCell(vec3 position, vec3 normal, out uint slot, out uint check) {
+    // Celdas de 25 cm hasta 8 m de la camara; el doble cada vez que se
+    // dobla la distancia (una celda ocupa mas o menos lo mismo en pantalla).
+    float distance_to_camera = length(position - camera.position.xyz);
+    float level = clamp(floor(log2(max(distance_to_camera, 8.0) / 8.0)), 0.0, 12.0);
+    float cell_size = 0.25 * exp2(level);
+    ivec3 q = ivec3(floor(position / cell_size));
+    // Orientacion: el eje dominante de la normal y su signo (6 caras).
+    vec3 a = abs(normal);
+    uint face = a.x > a.y && a.x > a.z ? (normal.x > 0.0 ? 0u : 1u)
+              : (a.y > a.z ? (normal.y > 0.0 ? 2u : 3u) : (normal.z > 0.0 ? 4u : 5u));
+    uint h = cacheHash(uint(q.x) + cacheHash(uint(q.y) + cacheHash(uint(q.z) + cacheHash(uint(level) * 6u + face))));
+    slot = h & (kCacheSize - 1u);
+    check = cacheHash(h ^ 0x9E3779B9u) | 1u;
+}
+
+// Suma una estimacion de irradiancia (/ pi) a la celda del punto.
+void cacheAdd(vec3 position, vec3 normal, vec3 irradiance) {
+    if (any(isnan(irradiance)) || any(isinf(irradiance))) {
+        return;
+    }
+    uint slot;
+    uint check;
+    cacheCell(position, normal, slot, check);
+    uvec3 value = uvec3(min(irradiance, vec3(kMaxRadiance)) * kCacheFixed + 0.5);
+    for (uint i = 0u; i < kCacheProbes; ++i) {
+        uint index = (slot + i) & (kCacheSize - 1u);
+        uint previous = atomicCompSwap(cache_keys[index], 0u, check);
+        if (previous == 0u || previous == check) {
+            atomicAdd(cache_accum[index].r, value.r);
+            atomicAdd(cache_accum[index].g, value.g);
+            atomicAdd(cache_accum[index].b, value.b);
+            atomicAdd(cache_accum[index].count, 1u);
+            return;
+        }
+    }
+}
+
+// Irradiancia (/ pi) guardada en la celda del punto; false si aun no hay.
+bool cacheLookup(vec3 position, vec3 normal, out vec3 irradiance) {
+    uint slot;
+    uint check;
+    cacheCell(position, normal, slot, check);
+    for (uint i = 0u; i < kCacheProbes; ++i) {
+        uint index = (slot + i) & (kCacheSize - 1u);
+        uint key = cache_keys[index];
+        if (key == check) {
+            vec4 resolved = cache_resolved[index];
+            irradiance = resolved.rgb;
+            return resolved.w > 0.0;
+        }
+        if (key == 0u) {
+            break;
+        }
+    }
+    irradiance = vec3(0.0);
+    return false;
+}
+
 vec3 hitRadiance(RtHit hit, float lod, bool from_screen) {
     // --- En pantalla: la imagen del frame anterior ---
     vec4 clip = camera.view_projection * vec4(hit.position, 1.0);
@@ -358,10 +461,14 @@ vec3 hitRadiance(RtHit hit, float lod, bool from_screen) {
         radiance += diffuse * sun * n_dot_l;
     }
 
-    // Cielo, y el relleno minimo de noche de lighting.frag.
-    radiance += diffuse * (irradianceSh(n) * kHitSkyVisibility +
-                           toLinear(lights.ambient_color.rgb) * lights.sun_color_ambient.a *
-                               (1.0 - lights.sky_sun.w) * 0.25);
+    // Cielo y luz rebotada que llegan a este punto: de la cache de radiancia
+    // (lo medido ahi: el cielo que ve de verdad y los rebotes anteriores). Sin
+    // dato aun, la aproximacion de antes: medio cielo visible.
+    vec3 cached;
+    vec3 ambient = cacheLookup(hit.position, n, cached) ? cached : irradianceSh(n) * kHitSkyVisibility;
+    // Y el relleno minimo de noche de lighting.frag.
+    radiance += diffuse * (ambient + toLinear(lights.ambient_color.rgb) * lights.sun_color_ambient.a *
+                                         (1.0 - lights.sky_sun.w) * 0.25);
 
     // Luces locales, sin sombra.
     for (int i = 0; i < min(lights.counts.x, kMaxPointLights); ++i) {

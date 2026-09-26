@@ -57,8 +57,13 @@ public:
         core::Vec4 params{};  // x = numero de frame, y = hay frame anterior valido
     };
 
-    enum class Pass : std::uint32_t { Gi = 0, Reflections = 1 };
-    static constexpr std::uint32_t kPassCount = 2;
+    // CacheResolve: la cache de radiancia en el mundo (rt_cache_resolve.comp),
+    // despues de la GI; se lanza con cacheResolveExtent().
+    enum class Pass : std::uint32_t { Gi = 0, Reflections = 1, CacheResolve = 2 };
+    static constexpr std::uint32_t kPassCount = 3;
+    // Entradas de la cache (debe coincidir con kCacheSize de rt_common.glsl).
+    static constexpr std::uint32_t kCacheEntries = 1u << 19;
+    static vk::Extent2D cacheResolveExtent() { return vk::Extent2D{1024, kCacheEntries / 1024}; }
 
     RayTracing();
     ~RayTracing();
@@ -81,6 +86,10 @@ public:
 
     // Todo listo para trazar (escena subida y al menos una instancia).
     bool ready() const;
+
+    // Vacia la cache de radiancia en la siguiente resolucion (el origen
+    // flotante se movio: sus celdas estan en las coordenadas viejas).
+    void resetCache();
 
     void record(const vk::raii::CommandBuffer& cmd, std::uint32_t frame_index, Pass pass,
                 vk::Extent2D extent, const Push& push) const;

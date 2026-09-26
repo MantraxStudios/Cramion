@@ -86,6 +86,10 @@ gfx::GraphicsSettings loadGraphics(const std::filesystem::path& file, gfx::Vulka
         if (key == "custom_scale") g.custom_scale = std::clamp(value, 0.25f, 1.0f);
         if (key == "sharpness") g.sharpness = std::clamp(value, 0.0f, 1.0f);
         if (key == "vsync") g.vsync = value != 0.0f;
+        if (key == "adaptive") g.adaptive = value != 0.0f;
+        if (key == "target_fps") g.target_fps = std::clamp(value, 15.0f, 360.0f);
+        if (key == "shadow_resolution") g.shadow_resolution = std::clamp(static_cast<int>(value), 0, 8192);
+        if (key == "texture_max_size") g.texture_max_size = std::clamp(static_cast<int>(value), 0, 16384);
         if (key == "shadows") renderer.setShadowsEnabled(value != 0.0f);
         if (key == "ray_tracing" && renderer.rayTracingSupported()) renderer.setRayTracingEnabled(value != 0.0f);
         if (key == "reflection_probe") renderer.setReflectionProbeEnabled(value != 0.0f);
@@ -539,6 +543,8 @@ int main() {
         bool loaded = false;
         const dm::Input idle_input;
         core::Clock clock;
+        float perf_seconds = 0.0f;
+        int perf_frames = 0;
         while (!quit) {
             const float clock_dt = clock.tick();  // sin recortar (el Profiler mide los frames reales)
             const float dt = std::min(clock_dt, 0.1f);
@@ -656,6 +662,45 @@ int main() {
             }
             renderer.drawFrame(scene);
             input.newFrame();
+
+            // Cada 5 s una linea de rendimiento en el log (se vuelca ya: si el
+            // juego se cierra mal, queda escrita). Sirve para ver en que se va
+            // el frame en el PC de un jugador.
+            if (loaded && !scene_loading()) {
+                perf_seconds += clock_dt;
+                ++perf_frames;
+                if (perf_seconds >= 5.0f) {
+                    const gfx::FrameBudget& budget = renderer.frameBudget();
+                    const vk::Extent2D internal = renderer.renderExtent();
+                    const vk::Extent2D output = renderer.sceneExtent();
+                    std::cout << "[Rendimiento] " << static_cast<int>(std::lround(perf_frames / perf_seconds))
+                              << " FPS | GPU " << renderer.gpuProfiler().totalMilliseconds() << " ms (media "
+                              << budget.smoothedGpuMs() << ", objetivo " << budget.targetMilliseconds() << ") | "
+                              << internal.width << "x" << internal.height << " -> " << output.width << "x"
+                              << output.height << " | " << scene.actors().size() << " actores, "
+                              << renderer.lodActors() << " con LOD, " << renderer.culledSmallActors()
+                              << " diminutos | sombras " << renderer.shadowResolution() << " (" << renderer.shadowDrawCalls()
+                              << " llamadas)";
+                    std::uint64_t vram_used = 0;
+                    std::uint64_t vram_budget = 0;
+                    if (renderer.device().videoMemory(vram_used, vram_budget)) {
+                        std::cout << " | VRAM " << (vram_used >> 20) << " / " << (vram_budget >> 20) << " MB";
+                    }
+                    std::cout << " | pases:";
+                    for (const gfx::GpuTiming& t : renderer.gpuProfiler().timings()) {
+                        if (t.milliseconds >= 0.3f) std::cout << " " << t.name << " " << t.milliseconds;
+                    }
+                    if (budget.enabled()) {
+                        std::cout << " | palancas:";
+                        for (std::size_t i = 0; i < gfx::kLeverCount; ++i) {
+                            std::cout << " " << static_cast<int>(budget.level(static_cast<gfx::Lever>(i)));
+                        }
+                    }
+                    std::cout << std::endl;
+                    perf_seconds = 0.0f;
+                    perf_frames = 0;
+                }
+            }
         }
         // Cerrado a media carga: el hilo de los modelos termina antes de nada.
         if (load.worker.valid()) load.worker.wait();

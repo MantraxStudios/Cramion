@@ -1,0 +1,55 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+
+// Resolucion de la cache de radiancia (rt_common.glsl), una vez por frame
+// despues de la GI: cada entrada pasa lo sumado este frame a su media
+// temporal y deja la suma a cero. Media exacta los primeros frames y despues
+// una media exponencial de ~kMaxFrames: se adapta si cambia la luz (sol,
+// puertas, luces) sin ruido. Las entradas que llevan kMaxAge frames sin
+// muestras se liberan (la camara se fue, o cambio el tamano de su celda).
+//
+// push.params.z > 0.5: vaciar la cache entera (origen flotante desplazado,
+// escena nueva).
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+#include "rt_common.glsl"
+
+const float kMaxFrames = 24.0;
+const uint kMaxAge = 240u;  // ~4 s a 60 FPS
+const uint kWidth = 1024u;  // la entrada = y * kWidth + x (dispatch de 1024 x 512)
+
+void main() {
+    uint index = gl_GlobalInvocationID.y * kWidth + gl_GlobalInvocationID.x;
+    if (index >= kCacheSize) {
+        return;
+    }
+    if (push.params.z > 0.5) {
+        cache_keys[index] = 0u;
+        cache_accum[index] = CacheEntry(0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u);
+        cache_resolved[index] = vec4(0.0);
+        return;
+    }
+    if (cache_keys[index] == 0u) {
+        return;
+    }
+
+    CacheEntry entry = cache_accum[index];
+    vec4 resolved = cache_resolved[index];
+    if (entry.count > 0u) {
+        vec3 mean = vec3(entry.r, entry.g, entry.b) / (kCacheFixed * float(entry.count));
+        float frames = min(resolved.w + 1.0, kMaxFrames);
+        resolved.rgb = mix(resolved.rgb, mean, 1.0 / frames);
+        resolved.w = frames;
+        cache_resolved[index] = resolved;
+        cache_accum[index] = CacheEntry(0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u);
+        return;
+    }
+    uint age = entry.age + 1u;
+    if (age > kMaxAge) {
+        cache_keys[index] = 0u;
+        cache_resolved[index] = vec4(0.0);
+        age = 0u;
+    }
+    cache_accum[index].age = age;
+}

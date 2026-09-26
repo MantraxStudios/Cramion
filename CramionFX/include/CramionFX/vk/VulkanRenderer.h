@@ -3,6 +3,7 @@
 
 #include "CramionFX/vk/CloudNoise.h"
 #include "CramionFX/vk/EnvironmentMap.h"
+#include "CramionFX/vk/FrameBudget.h"
 #include "CramionFX/vk/ComputePass.h"
 #include "CramionFX/vk/FullscreenPass.h"
 #include "CramionFX/vk/GBuffer.h"
@@ -158,7 +159,20 @@ public:
     // nitidez y vsync. Si cambia la resolucion se rehacen los destinos al
     // final del frame.
     void setGraphicsSettings(const GraphicsSettings& settings);
-    const GraphicsSettings& graphicsSettings() const { return graphics_; }
+    // Los del usuario (los que se guardan). Los que se usan de verdad pueden
+    // llevar la resolucion bajada por el presupuesto adaptativo.
+    const GraphicsSettings& graphicsSettings() const { return user_graphics_; }
+    const GraphicsSettings& effectiveGraphicsSettings() const { return graphics_; }
+
+    // --- Presupuesto adaptativo (FrameBudget.h) ---
+    const HardwareProfile& hardwareProfile() const { return hardware_; }
+    const FrameBudget& frameBudget() const { return budget_; }
+    // Resolucion del mapa de sombras del sol en uso (por cascada).
+    std::uint32_t shadowResolution() const { return shadow_map_.resolution(); }
+    // Lado maximo de las texturas de los modelos en uso (0 = sin limite).
+    std::uint32_t textureSizeLimit() const { return desiredTextureSize(); }
+    // Objetos de menos de un pixel que no se dibujaron el ultimo frame.
+    std::uint32_t culledSmallActors() const { return culled_small_; }
     // Resolucion a la que se dibuja la escena (la de pantalla por la escala).
     vk::Extent2D renderExtent() const { return render_extent_; }
     bool shadowsEnabled() const { return shadows_enabled_; }
@@ -177,7 +191,10 @@ public:
     // PostProcessSettings es la unica fuente de verdad: setPostProcess() lo
     // cambia entero y los setters sueltos de abajo cambian un campo. Todo se
     // aplica en el frame siguiente.
-    void setPostProcess(const PostProcessSettings& settings) { post_ = settings; }
+    void setPostProcess(const PostProcessSettings& settings) {
+        user_post_ = settings;
+        post_ = budget_.apply(settings);
+    }
     const PostProcessSettings& postProcess() const { return post_; }
 
     // --- Picking por ID en la GPU (el clic del editor) ---
@@ -544,7 +561,14 @@ private:
     // de las luces locales; con 0, los de las cascadas (depth clamp).
     void recordActorShadows(const vk::raii::CommandBuffer& cmd, std::uint32_t frame_index,
                             const core::Mat4& light_view_projection,
-                            const core::Vec3& light_position = {}, float range = 0.0f);
+                            const core::Vec3& light_position = {}, float range = 0.0f,
+                            float texel_world_size = 0.0f);
+    // LOD para las sombras de una cascada: el mas simple cuyo error no pasa
+    // de `allowed` unidades del mundo (lo que mide un texel, por el factor
+    // del presupuesto). No depende de la camara.
+    std::uint32_t shadowLod(const SkinnedModel& model, float max_scale, float allowed) const;
+    // Detalle de sombras con el que se dibujaron las cascadas guardadas.
+    std::uint32_t cascade_detail_key_ = 0;
     bool actorsTouch(const core::Vec3& light_position, float range) const;
     void recordGeometryPass(const vk::raii::CommandBuffer& cmd, std::uint32_t frame_index);
     // Dentro de un pase de geometria abierto: actores animados (culling en la
@@ -757,6 +781,9 @@ private:
         // cajas en el mundo de sus submallas en lod_bounds_.
         std::uint32_t lod = 0;
         std::uint32_t first_lod_bounds = 0;
+        // Escala mayor del objeto (el error de los LODs va en unidades del
+        // modelo).
+        float max_scale = 1.0f;
     };
     std::vector<ActorDraw> actor_draws_;
     // Material batching: los escenarios del mismo modelo y material (de
@@ -1029,7 +1056,18 @@ private:
     // Cambio de ajustes graficos: se aplica al empezar el frame siguiente
     // (applyPendingResize), no a mitad (la interfaz ya apunta a las imagenes).
     bool settings_dirty_ = false;
-    GraphicsSettings graphics_{};
+    GraphicsSettings graphics_{};       // en uso (con la escala del presupuesto)
+    GraphicsSettings user_graphics_{};  // los del usuario
+    void applyEffectiveGraphics();
+    std::uint32_t desiredShadowResolution() const;
+    std::uint32_t desiredTextureSize() const;
+    HardwareProfile hardware_{};
+    FrameBudget budget_{};
+    PostProcessSettings user_post_{};
+    float applied_budget_scale_ = 1.0f;
+    bool shadow_map_dirty_ = false;
+    std::uint32_t culled_small_ = 0;
+    std::chrono::steady_clock::time_point last_budget_time_{};
     vk::Extent2D render_extent_{0, 0};
     bool upscaling_ = false;  // hay pasada de escalado (TAA o FSR)
     bool taa_history_valid_ = false;

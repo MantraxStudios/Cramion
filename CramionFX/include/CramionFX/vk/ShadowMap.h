@@ -20,13 +20,15 @@ class VulkanDevice;
 // A diferencia del G-buffer, su resolucion no depende de la ventana.
 class ShadowMap {
 public:
-    // Resolucion por cascada (4 cascadas x 6144^2 x 4 bytes = 576 MB). En un
-    // mundo de bloques de un metro los bordes de sombra se notan mucho: con
-    // 2048 las cascadas lejanas tenian texeles de 6-14 cm y los contornos
-    // salian borrosos o en escalera. Con 6144 quedan en 0.5-4.7 cm.
-    static constexpr std::uint32_t kResolution = 6144;
+    // Resolucion por cascada: la elige el perfil de hardware (FrameBudget.h:
+    // 1536 en un PC de gama baja = 36 MB; 6144 en Ultra = 4 x 6144^2 x 4 bytes
+    // = 576 MB) o el usuario. En un mundo de bloques de un metro los bordes se
+    // notan: con 2048 las cascadas lejanas tienen texeles de 6-14 cm, con
+    // 6144 de 0.5-4.7 cm.
+    static constexpr std::uint32_t kDefaultResolution = 4096;
 
-    void create(const VulkanDevice& device);
+    void create(const VulkanDevice& device, std::uint32_t resolution = kDefaultResolution);
+    std::uint32_t resolution() const { return resolution_; }
     void destroy();
 
     const VulkanImage& image() const { return depth_; }
@@ -38,10 +40,11 @@ public:
     }
 
     vk::Format format() const { return depth_.format(); }
-    vk::Extent2D extent() const { return vk::Extent2D{kResolution, kResolution}; }
+    vk::Extent2D extent() const { return vk::Extent2D{resolution_, resolution_}; }
     bool isValid() const { return depth_.isValid(); }
 
 private:
+    std::uint32_t resolution_ = kDefaultResolution;
     VulkanImage depth_;
     vk::raii::Sampler sampler_{nullptr};
 };

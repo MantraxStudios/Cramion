@@ -67,6 +67,12 @@ public:
     // shaders). Opcional: sin el, la GI y los reflejos son de pantalla.
     bool rayTracingSupported() const { return ray_tracing_supported_; }
 
+    // Memoria de video real (VK_EXT_memory_budget): lo que usa este proceso
+    // y lo que el sistema le deja usar ahora mismo (baja si otras apps, como
+    // el editor abierto a la vez, ocupan la GPU). false si el driver no lo
+    // informa.
+    bool videoMemory(std::uint64_t& used_bytes, std::uint64_t& budget_bytes) const;
+
     // Cache de pipelines en disco: el primer arranque compila los shaders para
     // esta GPU y los siguientes los leen ya compilados. Todos los pipelines se
     // crean con pipelineCache(), que ademas los cuenta (progreso de la carga).
@@ -106,6 +112,7 @@ private:
     bool depth_clamp_supported_ = false;
     bool texture_compression_bc_supported_ = false;
     bool ray_tracing_supported_ = false;
+    bool memory_budget_supported_ = false;
     std::string device_name_;
     std::uint32_t api_version_ = 0;
 

@@ -21,6 +21,7 @@
 
 #include <CramionFX/asset/ImageFile.h>
 #include <CramionFX/asset/Model.h>
+#include <CramionFX/vk/FrameBudget.h>
 
 #include <cmath>
 #include <cstdio>
@@ -641,6 +642,39 @@ void testLods() {
     check(bounds_ok && both_materials, "cada nivel conserva el terreno con sus cajas");
     check(model.lods.empty() || model.lods[0].submeshes.size() >= 2, "el LOD1 sigue partido en clusteres");
 
+    // Calidad de texturas: una imagen de 256 con el limite en 64 se reduce al
+    // decodificar (y sin limite queda igual).
+    {
+        asset::ImageRgba8 image{};
+        image.width = image.height = 256;
+        image.pixels.assign(256u * 256u * 4u, 0);
+        for (std::size_t i = 0; i < image.pixels.size(); i += 4) {
+            image.pixels[i] = static_cast<std::uint8_t>((i / 4) % 256);
+            image.pixels[i + 3] = 255;
+        }
+        const std::filesystem::path png = std::filesystem::temp_directory_path() / "cramion_texture_limit.png";
+        check(asset::saveImagePng(png, image), "escribe la imagen de prueba");
+        const auto decode = [&](std::uint32_t limit) {
+            asset::ModelData textured{};
+            textured.indices = {0, 1, 2};
+            textured.vertices.resize(3);
+            asset::TextureData texture{};
+            texture.name = "prueba";
+            texture.source_path = png.string();
+            textured.textures.push_back(texture);
+            asset::setMaxTextureSize(limit);
+            asset::finalizeModel(textured, "prueba");
+            asset::setMaxTextureSize(0);
+            return textured.textures[0];
+        };
+        const asset::TextureData limited = decode(64);
+        const asset::TextureData full = decode(0);
+        check(limited.width == 64 && limited.height == 64 && limited.pixels.size() == 64u * 64u * 4u,
+              "con limite 64 la textura de 256 queda en 64x64");
+        check(full.width == 256, "sin limite queda en 256");
+        std::filesystem::remove(png);
+    }
+
     // Un modelo animado (o pequeno) no tiene LODs.
     asset::ModelData small{};
     small.vertices.resize(3);
@@ -663,7 +697,118 @@ void testLods() {
     }
 }
 
+// Presupuesto adaptativo con una GPU simulada: cada pasada cuesta segun las
+// palancas, como en el motor.
+void testFrameBudget() {
+    std::printf("\nPresupuesto adaptativo\n");
+    using gfx::Lever;
+    gfx::FrameBudget budget;
+    budget.setStartLevels(gfx::HardwareTier::High);
+    budget.setTargetFps(60.0f);  // 16.7 ms
+    float load = 1.0f;           // lo pesada que es la escena
+    const auto simulate = [&](std::vector<gfx::GpuTiming>& passes) {
+        const float res = budget.renderScale() * budget.renderScale();
+        const float lod = 1.0f / (1.0f + 0.5f * budget.level(Lever::Lod));
+        const float shadow = 1.0f / (1.0f + 0.6f * budget.level(Lever::ShadowDetail));
+        passes = {
+            {"Sombras (cascadas)", 8.0f * load * shadow * (0.6f + 0.4f * lod)},
+            {"Geometria + culling", 5.0f * load * lod * (0.5f + 0.5f * res)},
+            {"GI", budget.level(Lever::Gi) > 0 ? 0.0f : 3.4f * res},
+            {"Reflejos", budget.level(Lever::Reflections) > 0 ? 0.0f : 0.9f * res},
+            {"SSAO", budget.level(Lever::Ssao) > 0 ? 0.0f : 0.3f * res},
+            {"Iluminacion", 0.6f * res},
+            {"Volumetrica", budget.level(Lever::Volumetric) > 0 ? 0.0f : 0.4f * res},
+        };
+        float total = 0.4f;
+        for (const gfx::GpuTiming& t : passes) total += t.milliseconds;
+        return total;
+    };
+    std::vector<gfx::GpuTiming> passes;
+    float gpu = 0.0f;
+    const float dt = 1.0f / 60.0f;
+    float reached = -1.0f;
+    int changes_late = 0;
+    std::string last;
+    for (int frame = 0; frame < 60 * 30; ++frame) {
+        gpu = simulate(passes);
+        budget.update(dt, gpu, passes);
+        const float t = frame * dt;
+        if (reached < 0.0f && budget.smoothedGpuMs() <= budget.targetMilliseconds()) reached = t;
+        if (t > 20.0f && budget.lastAction() != last) ++changes_late;
+        last = budget.lastAction();
+    }
+    std::printf("    GPU %.2f ms (objetivo %.2f), en objetivo a los %.1f s; LOD %u, sombras %u, GI %u, escala %.2f\n", gpu,
+                budget.targetMilliseconds(), reached, budget.level(Lever::Lod), budget.level(Lever::ShadowDetail),
+                budget.level(Lever::Gi), budget.renderScale());
+    check(reached >= 0.0f && reached < 6.0f, "llega al objetivo en menos de 6 s");
+    check(gpu <= budget.targetMilliseconds() * 1.02f, "se queda dentro del presupuesto");
+    check(changes_late <= 1, "no oscila (casi sin cambios en los ultimos 10 s)");
+    check(budget.level(Lever::Lod) + budget.level(Lever::ShadowDetail) > 0 && budget.level(Lever::Gi) == 0,
+          "baja primero lo que mas ahorra y menos se nota (sombras/LOD antes que la GI)");
+    std::printf("    ahorro medido del primer paso de LOD: %.2f ms\n", budget.learnedSaving(Lever::Lod, 0));
+    check(budget.learnedSaving(Lever::Lod, 0) > 0.5f, "mide y recuerda lo que ahorro el paso que dio");
+
+    // La escena se aligera: vuelve a subir la calidad sin pasarse.
+    load = 0.3f;
+    for (int frame = 0; frame < 60 * 40; ++frame) {
+        gpu = simulate(passes);
+        budget.update(dt, gpu, passes);
+    }
+    std::printf("    escena ligera: GPU %.2f ms; LOD %u, sombras %u, escala %.2f\n", gpu, budget.level(Lever::Lod),
+                budget.level(Lever::ShadowDetail), budget.renderScale());
+    check(budget.level(Lever::ShadowDetail) == 0 && budget.level(Lever::Lod) == 0, "con margen recupera la calidad");
+    check(gpu <= budget.targetMilliseconds(), "y sigue dentro del presupuesto");
+
+    // GPU de gama baja (3 veces mas lenta): tiene que bajar hondo, sin oscilar.
+    {
+        gfx::FrameBudget weak;
+        weak.setStartLevels(gfx::HardwareTier::Low);
+        weak.setTargetFps(60.0f);
+        std::vector<gfx::GpuTiming> p;
+        float ms = 0.0f;
+        float in_target = -1.0f;
+        int late_changes = 0;
+        std::string previous;
+        for (int frame = 0; frame < 60 * 60; ++frame) {
+            const float res = weak.renderScale() * weak.renderScale();
+            const float lod = 1.0f / (1.0f + 0.5f * weak.level(Lever::Lod));
+            const float shadow = 1.0f / (1.0f + 0.6f * weak.level(Lever::ShadowDetail));
+            p = {{"Sombras (cascadas)", 24.0f * shadow * (0.6f + 0.4f * lod)},
+                 {"Geometria + culling", 15.0f * lod * (0.5f + 0.5f * res)},
+                 {"GI", weak.level(Lever::Gi) > 0 ? 0.0f : 10.0f * res},
+                 {"Reflejos", weak.level(Lever::Reflections) > 0 ? 0.0f : 2.7f * res},
+                 {"SSAO", weak.level(Lever::Ssao) > 0 ? 0.0f : 1.0f * res},
+                 {"Iluminacion", 1.8f * res},
+                 {"Volumetrica", weak.level(Lever::Volumetric) > 0 ? 0.0f : 1.2f * res}};
+            ms = 1.2f * res;
+            for (const gfx::GpuTiming& t : p) ms += t.milliseconds;
+            weak.update(dt, ms, p);
+            if (in_target < 0.0f && weak.smoothedGpuMs() <= weak.targetMilliseconds()) in_target = frame * dt;
+            if (frame * dt > 45.0f && weak.lastAction() != previous) ++late_changes;
+            previous = weak.lastAction();
+        }
+        std::printf("    gama baja: GPU %.2f ms, en objetivo a los %.1f s; LOD %u, sombras %u, GI %u, escala %.2f\n", ms,
+                    in_target, weak.level(Lever::Lod), weak.level(Lever::ShadowDetail), weak.level(Lever::Gi),
+                    weak.renderScale());
+        check(in_target >= 0.0f && in_target < 15.0f && ms <= weak.targetMilliseconds() * 1.02f,
+              "gama baja: llega a 60 FPS en menos de 15 s");
+        check(late_changes <= 1, "gama baja: estable al final");
+    }
+
+    // Apagado: nada cambia.
+    budget.setEnabled(false);
+    gfx::PostProcessSettings user{};
+    const gfx::PostProcessSettings applied = budget.apply(user);
+    check(applied.global_illumination == user.global_illumination && applied.lod_pixel_error == user.lod_pixel_error &&
+              budget.renderScale() == 1.0f,
+          "apagado no toca nada");
+    check(gfx::tierFor(2048, false) == gfx::HardwareTier::Low && gfx::tierFor(8192, false) == gfx::HardwareTier::High &&
+              gfx::tierFor(16384, true) == gfx::HardwareTier::Low && gfx::shadowResolutionFor(gfx::HardwareTier::Low) == 1536,
+          "perfiles de hardware y resolucion de sombras");
+}
+
 int main() {
+    testFrameBudget();
     testLods();
     testPrimitives();
     testEditing();

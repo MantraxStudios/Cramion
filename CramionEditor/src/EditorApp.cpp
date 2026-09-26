@@ -1536,6 +1536,130 @@ void EditorApp::drawGraphicsSettings() {
     ImGui::Checkbox("Generación de frames (DLSS 3 / FSR 3, fase 3)", &frame_generation);
     ImGui::EndDisabled();
 
+    ImGui::SeparatorText("Presupuesto adaptativo");
+    {
+        const gfx::HardwareProfile& hw = r.hardwareProfile();
+        ImGui::TextDisabled("Perfil: %s  |  %s, %llu MB de VRAM%s", gfx::tierName(hw.tier), hw.gpu_name.c_str(),
+                            static_cast<unsigned long long>(hw.vram_mb), hw.integrated ? " (integrada)" : "");
+        if (ImGui::Checkbox("Optimización adaptativa", &g.adaptive)) changed = true;
+        ImGui::SetItemTooltip(
+            "Mide cuánto tarda cada pasada de la GPU y, si no llega a los FPS objetivo, baja solo lo que más\n"
+            "ahorra y menos se nota (LODs, detalle de sombras, efectos, resolución con FSR 1). Aprende lo que\n"
+            "cuesta cada cosa en este PC y vuelve a subir la calidad cuando sobra tiempo.");
+        ImGui::BeginDisabled(!g.adaptive);
+        static constexpr int kTargets[] = {30, 45, 60, 75, 90, 120, 144, 165, 240};
+        char preview[16];
+        std::snprintf(preview, sizeof(preview), "%.0f FPS", g.target_fps);
+        ImGui::SetNextItemWidth(-90.0f);
+        if (ImGui::BeginCombo("Objetivo", preview)) {
+            for (const int fps : kTargets) {
+                char label[16];
+                std::snprintf(label, sizeof(label), "%d FPS", fps);
+                if (ImGui::Selectable(label, static_cast<int>(g.target_fps) == fps)) {
+                    g.target_fps = static_cast<float>(fps);
+                    changed = true;
+                }
+            }
+            ImGui::EndCombo();
+        }
+        ImGui::EndDisabled();
+
+        static constexpr int kShadowSizes[] = {0, 1024, 1536, 2048, 3072, 4096, 6144};
+        char shadow_preview[48];
+        if (g.shadow_resolution <= 0) {
+            std::snprintf(shadow_preview, sizeof(shadow_preview), "Auto (%u)", gfx::shadowResolutionFor(hw.tier));
+        } else {
+            std::snprintf(shadow_preview, sizeof(shadow_preview), "%d", g.shadow_resolution);
+        }
+        ImGui::SetNextItemWidth(-90.0f);
+        if (ImGui::BeginCombo("Sombras", shadow_preview)) {
+            for (const int size : kShadowSizes) {
+                char label[48];
+                if (size == 0) {
+                    std::snprintf(label, sizeof(label), "Auto (%u, según el perfil)", gfx::shadowResolutionFor(hw.tier));
+                } else {
+                    std::snprintf(label, sizeof(label), "%d  (%.0f MB)", size,
+                                  4.0 * size * size * 4.0 / (1024.0 * 1024.0));
+                }
+                if (ImGui::Selectable(label, g.shadow_resolution == size)) {
+                    g.shadow_resolution = size;
+                    changed = true;
+                }
+            }
+            ImGui::EndCombo();
+        }
+        ImGui::SetItemTooltip("Resolución por cascada del mapa de sombras del sol (4 cascadas).");
+
+        static constexpr int kTextureSizes[] = {0, 1024, 2048, 4096, 8192, 16384};
+        const std::uint32_t auto_textures = gfx::textureSizeFor(hw.tier);
+        char texture_preview[48];
+        if (g.texture_max_size <= 0) {
+            if (auto_textures == 0) std::snprintf(texture_preview, sizeof(texture_preview), "Auto (sin límite)");
+            else std::snprintf(texture_preview, sizeof(texture_preview), "Auto (%u)", auto_textures);
+        } else {
+            std::snprintf(texture_preview, sizeof(texture_preview), "%d", g.texture_max_size);
+        }
+        ImGui::SetNextItemWidth(-90.0f);
+        if (ImGui::BeginCombo("Texturas", texture_preview)) {
+            for (const int size : kTextureSizes) {
+                char label[64];
+                if (size == 0) std::snprintf(label, sizeof(label), "Auto (según el perfil)");
+                else std::snprintf(label, sizeof(label), "Máximo %d  (%.0f MB por textura)", size,
+                                   size * static_cast<double>(size) * 4.0 * 1.33 / (1024.0 * 1024.0));
+                if (ImGui::Selectable(label, g.texture_max_size == size)) {
+                    g.texture_max_size = size;
+                    changed = true;
+                }
+            }
+            ImGui::EndCombo();
+        }
+        ImGui::SetItemTooltip("Lado máximo de las texturas de los modelos. Una de 16K sin comprimir ocupa 1,3 GB de VRAM.\n"
+                              "Se aplica a los modelos que se cargan después (reabre la escena).");
+        std::uint64_t vram_used = 0;
+        std::uint64_t vram_budget = 0;
+        if (r.device().videoMemory(vram_used, vram_budget)) {
+            const float fraction = static_cast<float>(vram_used) / static_cast<float>(std::max<std::uint64_t>(vram_budget, 1));
+            char vram_text[64];
+            std::snprintf(vram_text, sizeof(vram_text), "VRAM %.2f / %.2f GB", vram_used / 1073741824.0,
+                          vram_budget / 1073741824.0);
+            if (fraction > 0.9f) ImGui::PushStyleColor(ImGuiCol_PlotHistogram, ImVec4(0.9f, 0.3f, 0.25f, 1.0f));
+            ImGui::ProgressBar(std::min(fraction, 1.0f), ImVec2(-1.0f, 0.0f), vram_text);
+            if (fraction > 0.9f) {
+                ImGui::PopStyleColor();
+                ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.4f, 1.0f),
+                                   "Casi sin VRAM: la GPU usará la RAM y habrá caídas de FPS. Baja las texturas.");
+            }
+        }
+
+        const gfx::FrameBudget& budget = r.frameBudget();
+        if (g.adaptive) {
+            const float gpu = budget.smoothedGpuMs();
+            const float target = budget.targetMilliseconds();
+            char overlay[64];
+            std::snprintf(overlay, sizeof(overlay), "GPU %.1f ms / %.1f ms", gpu, target);
+            ImGui::ProgressBar(std::min(gpu / std::max(target, 0.1f), 1.0f), ImVec2(-1.0f, 0.0f), overlay);
+            if (ImGui::BeginTable("levers", 2, ImGuiTableFlags_SizingStretchProp)) {
+                for (std::size_t i = 0; i < gfx::kLeverCount; ++i) {
+                    const auto lever = static_cast<gfx::Lever>(i);
+                    const int level = budget.level(lever);
+                    const int max = budget.maxLevel(lever);
+                    ImGui::TableNextRow();
+                    ImGui::TableNextColumn();
+                    ImGui::TextUnformatted(gfx::FrameBudget::leverName(lever));
+                    ImGui::TableNextColumn();
+                    if (level == 0) {
+                        ImGui::TextColored(ImVec4(0.45f, 0.85f, 0.45f, 1.0f), "máxima");
+                    } else {
+                        ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.3f, 1.0f), "-%d de %d", level, max);
+                    }
+                }
+                ImGui::EndTable();
+            }
+            if (!budget.lastAction().empty()) ImGui::TextDisabled("Último cambio: %s", budget.lastAction().c_str());
+        }
+        ImGui::TextDisabled("Mapa de sombras en uso: %u x %u x 4 cascadas", r.shadowResolution(), r.shadowResolution());
+    }
+
     ImGui::SeparatorText("Presentación");
     if (ImGui::Checkbox("VSync", &g.vsync)) changed = true;
     ImGui::SetItemTooltip("Sin VSync: mailbox (sin cortes de imagen, sin tope de FPS).");
@@ -1558,6 +1682,10 @@ void EditorApp::saveGraphicsSettings() const {
     out << "custom_scale=" << g.custom_scale << "\n";
     out << "sharpness=" << g.sharpness << "\n";
     out << "vsync=" << (g.vsync ? 1 : 0) << "\n";
+    out << "adaptive=" << (g.adaptive ? 1 : 0) << "\n";
+    out << "target_fps=" << g.target_fps << "\n";
+    out << "shadow_resolution=" << g.shadow_resolution << "\n";
+    out << "texture_max_size=" << g.texture_max_size << "\n";
     out << "shadows=" << (renderer_.shadowsEnabled() ? 1 : 0) << "\n";
     out << "ray_tracing=" << (renderer_.rayTracingEnabled() ? 1 : 0) << "\n";
     out << "reflection_probe=" << (renderer_.reflectionProbeEnabled() ? 1 : 0) << "\n";
@@ -1579,6 +1707,10 @@ void EditorApp::loadGraphicsSettings() {
         if (key == "custom_scale") g.custom_scale = std::clamp(value, 0.25f, 1.0f);
         if (key == "sharpness") g.sharpness = std::clamp(value, 0.0f, 1.0f);
         if (key == "vsync") g.vsync = value != 0.0f;
+        if (key == "adaptive") g.adaptive = value != 0.0f;
+        if (key == "target_fps") g.target_fps = std::clamp(value, 15.0f, 360.0f);
+        if (key == "shadow_resolution") g.shadow_resolution = std::clamp(static_cast<int>(value), 0, 8192);
+        if (key == "texture_max_size") g.texture_max_size = std::clamp(static_cast<int>(value), 0, 16384);
         if (key == "shadows") renderer_.setShadowsEnabled(value != 0.0f);
         if (key == "ray_tracing" && renderer_.rayTracingSupported()) renderer_.setRayTracingEnabled(value != 0.0f);
         if (key == "reflection_probe") renderer_.setReflectionProbeEnabled(value != 0.0f);

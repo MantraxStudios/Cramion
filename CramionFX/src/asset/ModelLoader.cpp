@@ -12,6 +12,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <mutex>
 #include <cctype>
 #include <chrono>
 #include <cmath>
@@ -774,9 +775,52 @@ void heightToNormalMap(TextureData& texture) {
 // Decodifica todas las texturas comprimidas usando todos los nucleos: un
 // escenario trae cientos de PNG grandes y, uno detras de otro, tardarian
 // casi un minuto.
+std::atomic<std::uint32_t> g_max_texture_size{0};
+
+// Reduce una textura hasta que su lado mayor no pase de `max_size`: RGBA8 a
+// la mitad con media de 2x2 (varias veces si hace falta); las comprimidas con
+// mips, quitando los niveles mas grandes. Devuelve si cambio.
+bool limitTextureSize(TextureData& texture, std::uint32_t max_size) {
+    if (max_size == 0 || std::max(texture.width, texture.height) <= max_size) return false;
+    if (texture.format != TextureFormat::Rgba8) {
+        std::size_t offset = 0;
+        while (texture.mip_levels > 1 && std::max(texture.width, texture.height) > max_size) {
+            offset += mipByteSize(texture.format, texture.width, texture.height);
+            texture.width = std::max(texture.width / 2, 1u);
+            texture.height = std::max(texture.height / 2, 1u);
+            --texture.mip_levels;
+        }
+        if (offset == 0 || offset >= texture.pixels.size()) return false;
+        texture.pixels.erase(texture.pixels.begin(), texture.pixels.begin() + static_cast<std::ptrdiff_t>(offset));
+        texture.pixels.shrink_to_fit();
+        return true;
+    }
+    while (std::max(texture.width, texture.height) > max_size && texture.width > 1 && texture.height > 1) {
+        const std::uint32_t w = texture.width / 2;
+        const std::uint32_t h = texture.height / 2;
+        std::vector<std::uint8_t> out(static_cast<std::size_t>(w) * h * 4);
+        for (std::uint32_t y = 0; y < h; ++y) {
+            const std::uint8_t* row0 = texture.pixels.data() + static_cast<std::size_t>(y) * 2 * texture.width * 4;
+            const std::uint8_t* row1 = row0 + static_cast<std::size_t>(texture.width) * 4;
+            std::uint8_t* dst = out.data() + static_cast<std::size_t>(y) * w * 4;
+            for (std::uint32_t x = 0; x < w; ++x) {
+                for (int c = 0; c < 4; ++c) {
+                    const unsigned sum = row0[x * 8 + c] + row0[x * 8 + 4 + c] + row1[x * 8 + c] + row1[x * 8 + 4 + c];
+                    dst[x * 4 + c] = static_cast<std::uint8_t>((sum + 2) / 4);
+                }
+            }
+        }
+        texture.pixels = std::move(out);
+        texture.width = w;
+        texture.height = h;
+    }
+    return true;
+}
+
 void decodeTextures(ModelData& model) {
     std::atomic<std::size_t> next{0};
     std::atomic<std::uint32_t> failed{0};
+    std::mutex log_mutex;
 
     const auto worker = [&]() {
         for (std::size_t i = next++; i < model.textures.size(); i = next++) {
@@ -807,6 +851,14 @@ void decodeTextures(ModelData& model) {
                 ++failed;
             } else if (texture.height_map && texture.format == TextureFormat::Rgba8) {
                 heightToNormalMap(texture);
+            }
+            // Calidad de texturas (perfil de hardware): una de 16K sin
+            // comprimir son 1.3 GB de VRAM con sus mips.
+            const std::uint32_t before = std::max(texture.width, texture.height);
+            if (limitTextureSize(texture, g_max_texture_size.load())) {
+                const std::lock_guard<std::mutex> lock(log_mutex);
+                std::cout << "[Modelo] Textura " << texture.name << " reducida de " << before << " a "
+                          << std::max(texture.width, texture.height) << " (calidad de texturas)\n";
             }
             texture.encoded.clear();
             texture.encoded.shrink_to_fit();
@@ -1040,6 +1092,9 @@ std::uint32_t embedTextures(ModelData& model) {
     }
     return missing;
 }
+
+void setMaxTextureSize(std::uint32_t size) { g_max_texture_size.store(size); }
+std::uint32_t maxTextureSize() { return g_max_texture_size.load(); }
 
 void finalizeModel(ModelData& model, const std::string& label) {
     decodeTextures(model);

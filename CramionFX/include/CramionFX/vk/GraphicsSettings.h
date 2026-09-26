@@ -36,6 +36,15 @@ struct GraphicsSettings {
     float sharpness = 0.25f;     // 0..1 (RCAS)
     bool vsync = false;          // FIFO; sin el, mailbox (sin tearing, sin tope)
     bool frame_generation = false;
+    // Presupuesto adaptativo (FrameBudget.h): baja solo la calidad necesaria
+    // para llegar a `target_fps`.
+    bool adaptive = true;
+    float target_fps = 60.0f;
+    // Mapa de sombras del sol por cascada; 0 = segun el perfil de hardware.
+    std::int32_t shadow_resolution = 0;
+    // Lado maximo de las texturas de los modelos; 0 = segun el perfil de
+    // hardware. Se aplica a lo que se carga despues (reabrir la escena).
+    std::int32_t texture_max_size = 0;
 
     friend bool operator==(const GraphicsSettings&, const GraphicsSettings&) = default;
 };

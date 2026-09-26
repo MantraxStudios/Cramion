@@ -262,6 +262,14 @@ bool isOverClustered(const ModelData& model);
 // encontraron.
 std::uint32_t embedTextures(ModelData& model);
 
+// Lado maximo de las texturas de los modelos al decodificarlas (0 = sin
+// limite). Las mayores se reducen a la mitad las veces necesarias (media de
+// 2x2), y las comprimidas (DDS) pierden sus mips mas grandes: ocupan menos RAM
+// y VRAM. Lo pone el renderizador segun el perfil de hardware (calidad de
+// texturas); afecta a lo que se carga despues.
+void setMaxTextureSize(std::uint32_t size);
+std::uint32_t maxTextureSize();
+
 // Decodifica todas las texturas (en paralelo) y comprueba que haya
 // triangulos. Lanza std::runtime_error si el modelo esta vacio. `label` es
 // para los mensajes.

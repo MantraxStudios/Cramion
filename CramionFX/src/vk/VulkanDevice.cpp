@@ -8,6 +8,7 @@
 #include <cstring>
 #include <fstream>
 #include <iostream>
+#include <string_view>
 #include <map>
 #include <set>
 #include <stdexcept>
@@ -237,6 +238,15 @@ void VulkanDevice::createLogicalDevice() {
         // Sin las extensiones sus estructuras no pueden ir en la cadena.
         chain.unlink<vk::PhysicalDeviceAccelerationStructureFeaturesKHR>();
         chain.unlink<vk::PhysicalDeviceRayQueryFeaturesKHR>();
+    }
+
+    // Opcional: cuanta VRAM se usa de verdad (diagnostico y presupuesto).
+    for (const vk::ExtensionProperties& extension : physical_device_.enumerateDeviceExtensionProperties()) {
+        if (std::string_view(extension.extensionName.data()) == VK_EXT_MEMORY_BUDGET_EXTENSION_NAME) {
+            memory_budget_supported_ = true;
+            extensions.push_back(VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);
+            break;
+        }
     }
 
     auto& create_info = chain.get<vk::DeviceCreateInfo>();
@@ -469,6 +479,24 @@ void VulkanDevice::shutdown() {
     depth_format_ = vk::Format::eUndefined;
     depth_clamp_supported_ = false;
     api_version_ = 0;
+}
+
+bool VulkanDevice::videoMemory(std::uint64_t& used_bytes, std::uint64_t& budget_bytes) const {
+    used_bytes = 0;
+    budget_bytes = 0;
+    if (!memory_budget_supported_) return false;
+    const auto chain = physical_device_.getMemoryProperties2<vk::PhysicalDeviceMemoryProperties2,
+                                                             vk::PhysicalDeviceMemoryBudgetPropertiesEXT>();
+    const vk::PhysicalDeviceMemoryProperties& properties =
+        chain.get<vk::PhysicalDeviceMemoryProperties2>().memoryProperties;
+    const auto& budget = chain.get<vk::PhysicalDeviceMemoryBudgetPropertiesEXT>();
+    for (std::uint32_t i = 0; i < properties.memoryHeapCount; ++i) {
+        if (properties.memoryHeaps[i].flags & vk::MemoryHeapFlagBits::eDeviceLocal) {
+            used_bytes += budget.heapUsage[i];
+            budget_bytes += budget.heapBudget[i];
+        }
+    }
+    return budget_bytes > 0;
 }
 
 }  // namespace cramion::gfx

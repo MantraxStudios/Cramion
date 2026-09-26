@@ -2,12 +2,14 @@
 
 #include "CramionFX/vk/VulkanDevice.h"
 
+#include <algorithm>
 #include <iostream>
 
 namespace cramion::gfx {
 
-void ShadowMap::create(const VulkanDevice& device) {
+void ShadowMap::create(const VulkanDevice& device, std::uint32_t resolution) {
     destroy();
+    resolution_ = std::max(resolution, 256u);
 
     depth_.create(device, extent(), device.depthFormat(),
                   vk::ImageUsageFlagBits::eDepthStencilAttachment |
@@ -33,7 +35,7 @@ void ShadowMap::create(const VulkanDevice& device) {
     sampler_ = vk::raii::Sampler(device.handle(), sampler_info);
 
     std::cout << "[Vulkan] Mapa de sombras creado: " << scene::kShadowCascadeCount
-              << " cascadas de " << kResolution << "x" << kResolution << " ("
+              << " cascadas de " << resolution_ << "x" << resolution_ << " ("
               << vk::to_string(depth_.format()) << ")\n";
 }
 

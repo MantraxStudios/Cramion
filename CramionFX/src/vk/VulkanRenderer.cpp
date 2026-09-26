@@ -335,7 +335,28 @@ void VulkanRenderer::initialize(const EngineInfo& info, HWND window, std::uint32
     gpu_culling_.create(device_);
     gpu_profiler_.create(device_, kMaxFramesInFlight);
     createRenderTargets();
-    shadow_map_.create(device_);
+    // Perfil de hardware: VRAM (el heap local mas grande) y tipo de GPU.
+    {
+        const vk::PhysicalDeviceProperties properties = device_.physicalDevice().getProperties();
+        const vk::PhysicalDeviceMemoryProperties memory = device_.physicalDevice().getMemoryProperties();
+        std::uint64_t vram = 0;
+        for (std::uint32_t i = 0; i < memory.memoryHeapCount; ++i) {
+            if (memory.memoryHeaps[i].flags & vk::MemoryHeapFlagBits::eDeviceLocal) {
+                vram = std::max<std::uint64_t>(vram, memory.memoryHeaps[i].size);
+            }
+        }
+        hardware_.gpu_name = device_.name();
+        hardware_.vram_mb = vram >> 20;
+        hardware_.integrated = properties.deviceType == vk::PhysicalDeviceType::eIntegratedGpu;
+        hardware_.ray_tracing = device_.rayTracingSupported();
+        hardware_.tier = tierFor(hardware_.vram_mb, hardware_.integrated);
+        budget_.setStartLevels(hardware_.tier);
+        asset::setMaxTextureSize(desiredTextureSize());
+        std::cout << "[Rendimiento] Perfil de hardware: " << tierName(hardware_.tier) << " (" << hardware_.gpu_name
+                  << ", " << hardware_.vram_mb << " MB de VRAM" << (hardware_.integrated ? ", integrada" : "")
+                  << ")\n";
+    }
+    shadow_map_.create(device_, desiredShadowResolution());
     local_shadow_maps_.create(device_);
 
     // La iluminacion escribe en HDR; la composicion lo lleva a 8 bits y el
@@ -1197,13 +1218,17 @@ void VulkanRenderer::updateActors(const scene::Scene& scene, std::uint32_t frame
     lod_bounds_.clear();
     lod_triangles_ = 0;
     lod_actors_ = 0;
+    culled_small_ = 0;
     gpu_clusters_.clear();
 
     // Para los LODs: pixeles de pantalla por unidad del mundo a distancia 1
     // (la proyeccion de Vulkan lleva la Y invertida en m[1][1]).
     const core::Vec3 camera_position = scene.camera().position();
+    // Con la resolucion interna: si el presupuesto la baja, los LODs tambien
+    // pueden ser mas simples (hay menos pixeles que llenar).
     const float pixels_per_unit = std::abs(scene.camera().projection().m[1][1]) * 0.5f *
-                                  static_cast<float>(std::max(sceneExtent().height, 1u));
+                                  static_cast<float>(std::max(render_extent_.height, 1u));
+    const float cull_pixels = budget_.cullPixels();
     draw_batches_.clear();
     batch_lookup_.clear();
 
@@ -1235,9 +1260,18 @@ void VulkanRenderer::updateActors(const scene::Scene& scene, std::uint32_t frame
                     to_world, core::Aabb{submesh.bounds_min, submesh.bounds_max}));
             }
 
-            // LOD: el mismo para la camara y las sombras.
+            draw.max_scale = std::max({core::length(Vec3{to_world.m[0][0], to_world.m[0][1], to_world.m[0][2]}),
+                                       core::length(Vec3{to_world.m[1][0], to_world.m[1][1], to_world.m[1][2]}),
+                                       core::length(Vec3{to_world.m[2][0], to_world.m[2][1], to_world.m[2][2]})});
+            // LOD de la camara (las cascadas eligen el suyo por texel).
             draw.lod = chooseLod(model, to_world, draw.bounds_center, draw.bounds_radius, camera_position,
                                  pixels_per_unit);
+            // Mas pequeno que un pixel (o lo que diga el presupuesto): la
+            // camara no lo dibuja; su sombra sigue.
+            const float camera_distance = core::length(draw.bounds_center - camera_position);
+            const bool tiny = camera_distance > draw.bounds_radius &&
+                              draw.bounds_radius * pixels_per_unit / camera_distance < cull_pixels;
+            if (tiny) ++culled_small_;
             const std::vector<asset::SubMesh>& lod_submeshes = model.lodSubmeshes(draw.lod);
             if (draw.lod > 0) {
                 ++lod_actors_;
@@ -1255,8 +1289,8 @@ void VulkanRenderer::updateActors(const scene::Scene& scene, std::uint32_t frame
             const std::uint32_t instance = draw.bone_offset + static_cast<std::uint32_t>(bones.size());
             for (std::uint32_t i = 0; i < lod_submeshes.size(); ++i) {
                 const std::uint32_t group = model.lodSubmeshGroup(draw.lod, i);
-                if (group == SkinnedModel::kNoGroup || draw.shadows_only) {
-                    continue;  // Transparente o solo sombras: la camara no lo ve.
+                if (group == SkinnedModel::kNoGroup || draw.shadows_only || tiny) {
+                    continue;  // Transparente, solo sombras o diminuto: la camara no lo ve.
                 }
                 const asset::SubMesh& submesh = lod_submeshes[i];
                 const core::Aabb& box = draw.lod > 0 ? lod_bounds_[draw.first_lod_bounds + i]
@@ -1287,8 +1321,7 @@ void VulkanRenderer::updateActors(const scene::Scene& scene, std::uint32_t frame
         const bool animated = !draw.per_submesh;
         if (index < previous_actor_motion_.size()) {
             const ActorMotion& before = previous_actor_motion_[index];
-            // Otro LOD tambien cambia la sombra guardada (poco, pero se nota).
-            if (animated || before.cast_shadows != draw.cast_shadows || before.lod != draw.lod ||
+            if (animated || before.cast_shadows != draw.cast_shadows ||
                 std::memcmp(&before.transform, &draw.transform, sizeof(core::Mat4)) != 0) {
                 moved_spheres_.push_back(toVec4(before.center, before.radius));
                 moved_spheres_.push_back(toVec4(draw.bounds_center, draw.bounds_radius));
@@ -1464,10 +1497,20 @@ std::uint32_t VulkanRenderer::forEachVisibleSubmesh(const ActorDraw& actor,
     return drawn;
 }
 
+std::uint32_t VulkanRenderer::shadowLod(const SkinnedModel& model, float max_scale, float allowed) const {
+    if (!post_.lods) return 0;
+    const auto& lods = model.lods();
+    for (std::size_t level = lods.size(); level > 0; --level) {
+        if (lods[level - 1].error * max_scale <= allowed) return static_cast<std::uint32_t>(level);
+    }
+    return 0;
+}
+
 void VulkanRenderer::recordActorShadows(const vk::raii::CommandBuffer& cmd,
                                         std::uint32_t frame_index,
                                         const core::Mat4& light_view_projection,
-                                        const Vec3& light_position, float range) {
+                                        const Vec3& light_position, float range,
+                                        float texel_world_size) {
     // Las cascadas se dibujan con depth clamp (range == 0): lo que queda entre
     // el sol y la cascada tambien proyecta sombra dentro, asi que no se
     // descarta por el plano cercano.
@@ -1508,15 +1551,45 @@ void VulkanRenderer::recordActorShadows(const vk::raii::CommandBuffer& cmd,
             }
         }
 
+        const SkinnedModel& model = skinned_models_[draw.model];
+
+        // Cascadas: el detalle lo decide el texel, no la camara. Un objeto
+        // de menos de medio texel no deja una sombra que se vea, y el LOD
+        // puede desviarse hasta lo que mide un texel (el mapa no ve mas).
+        std::uint32_t lod = draw.lod;
+        if (texel_world_size > 0.0f && draw.per_submesh) {
+            if (draw.bounds_radius < texel_world_size * budget_.shadowMinTexels()) {
+                continue;
+            }
+            lod = shadowLod(model, draw.max_scale, texel_world_size * budget_.shadowTexelFactor());
+        }
+
         // Submallas que tocan el volumen de la luz (una sola prueba).
         visible.clear();
-        shadow_submeshes_ += forEachVisibleSubmesh(
-            draw, frustum, [&](std::uint32_t i) { visible.push_back(i); });
+        if (lod == draw.lod) {
+            shadow_submeshes_ += forEachVisibleSubmesh(
+                draw, frustum, [&](std::uint32_t i) { visible.push_back(i); });
+        } else if (lod == 0) {
+            ActorDraw full = draw;
+            full.lod = 0;
+            shadow_submeshes_ += forEachVisibleSubmesh(
+                full, frustum, [&](std::uint32_t i) { visible.push_back(i); });
+        } else {
+            // Otro LOD que el de la camara: sin cajas por cluster, la esfera
+            // del actor (los LODs lejanos tienen pocos clusteres).
+            const Vec3 r{draw.bounds_radius, draw.bounds_radius, draw.bounds_radius};
+            if (frustum.intersects(core::Aabb{draw.bounds_center - r, draw.bounds_center + r})) {
+                const auto& submeshes = model.lodSubmeshes(lod);
+                for (std::uint32_t i = 0; i < submeshes.size(); ++i) {
+                    if (!model.materials()[submeshes[i].material].transparent) visible.push_back(i);
+                }
+                shadow_submeshes_ += static_cast<std::uint32_t>(visible.size());
+            }
+        }
         if (visible.empty()) {
             continue;
         }
 
-        const SkinnedModel& model = skinned_models_[draw.model];
         bind(bound_pipeline ? bound_pipeline : opaque_pipeline);
 
         GpuSkinnedShadowPush push{};
@@ -1549,7 +1622,7 @@ void VulkanRenderer::recordActorShadows(const vk::raii::CommandBuffer& cmd,
                 run_count = 0;
             };
             for (const std::uint32_t i : visible) {
-                const asset::SubMesh& submesh = model.lodSubmeshes(draw.lod)[i];
+                const asset::SubMesh& submesh = model.lodSubmeshes(lod)[i];
                 if (model.materials()[submesh.material].alpha_masked != (masked != 0)) {
                     continue;
                 }
@@ -2154,7 +2227,45 @@ void VulkanRenderer::computeRenderExtent() {
     upscaling_ = graphics_.upscaler != Upscaler::Off;
 }
 
+std::uint32_t VulkanRenderer::desiredShadowResolution() const {
+    if (user_graphics_.shadow_resolution > 0) {
+        return static_cast<std::uint32_t>(std::clamp(user_graphics_.shadow_resolution, 512, 8192));
+    }
+    return shadowResolutionFor(hardware_.tier);
+}
+
+std::uint32_t VulkanRenderer::desiredTextureSize() const {
+    if (user_graphics_.texture_max_size > 0) {
+        return static_cast<std::uint32_t>(std::clamp(user_graphics_.texture_max_size, 256, 16384));
+    }
+    return textureSizeFor(hardware_.tier);
+}
+
 void VulkanRenderer::setGraphicsSettings(const GraphicsSettings& settings) {
+    user_graphics_ = settings;
+    asset::setMaxTextureSize(desiredTextureSize());
+    budget_.setEnabled(settings.adaptive);
+    budget_.setTargetFps(settings.target_fps);
+    // Otro mapa de sombras: se rehace con los destinos (applyPendingResize).
+    if (initialized_ && desiredShadowResolution() != shadow_map_.resolution()) {
+        shadow_map_dirty_ = true;
+        settings_dirty_ = true;
+    }
+    applyEffectiveGraphics();
+}
+
+// Los ajustes en uso: los del usuario con la resolucion interna que pida el
+// presupuesto (con FSR 1 si el usuario no tenia escalador).
+void VulkanRenderer::applyEffectiveGraphics() {
+    GraphicsSettings settings = user_graphics_;
+    const float budget_scale = budget_.renderScale();
+    applied_budget_scale_ = budget_scale;
+    if (budget_scale < 0.999f) {
+        const float scale = renderScale(user_graphics_) * budget_scale;
+        if (settings.upscaler == Upscaler::Off) settings.upscaler = Upscaler::Fsr1;
+        settings.quality = UpscaleQuality::Custom;
+        settings.custom_scale = std::clamp(scale, 0.25f, 1.0f);
+    }
     if (settings == graphics_) return;
     const bool rebuild = renderScale(settings) != renderScale(graphics_) || settings.vsync != graphics_.vsync ||
                          (settings.upscaler == Upscaler::Off) != (graphics_.upscaler == Upscaler::Off);
@@ -2499,6 +2610,12 @@ void VulkanRenderer::recreateSwapchain() {
     // El G-buffer tiene el tamano de la swapchain: se rehace con ella, y los
     // descriptores de la pasada de iluminacion apuntan a las nuevas vistas.
     computeRenderExtent();
+    if (shadow_map_dirty_) {
+        device_.waitIdle();
+        shadow_map_.create(device_, desiredShadowResolution());
+        shadow_map_dirty_ = false;
+        cascades_valid_ = false;  // el mapa nuevo esta vacio
+    }
     gbuffer_.create(device_, render_extent_);
     createRenderTargets();
     updateLightingDescriptors();
@@ -2732,7 +2849,7 @@ void VulkanRenderer::updateUniforms(const scene::Scene& scene, const scene::Came
 
     // --- Cascadas de sombra ---
     // Dependen de la camara y del sol, asi que se recalculan cada frame.
-    cascades_.update(camera, lights.sun, ShadowMap::kResolution);
+    cascades_.update(camera, lights.sun, shadow_map_.resolution());
 
     // Actualizacion escalonada (como Unreal y Frostbite): redibujar las cuatro
     // cascadas cada frame era casi la mitad del frame en Bistro, y las
@@ -2743,8 +2860,15 @@ void VulkanRenderer::updateUniforms(const scene::Scene& scene, const scene::Came
     // con la matriz con la que se dibujo (el escenario no se ha movido).
     // Las caras de la sonda dibujan todas desde su camara y ensucian el
     // mapa: la siguiente vista de pantalla las rehace todas.
+    // Detalle de sombras (LODs y palanca del presupuesto): si cambia, las
+    // cascadas guardadas ya no son las de ahora.
+    const std::uint32_t detail_key = (post_.lods ? 1u : 0u) | (static_cast<std::uint32_t>(
+                                                                    budget_.level(Lever::ShadowDetail)) << 1);
+    const bool detail_changed = detail_key != cascade_detail_key_;
+    if (!isolated()) cascade_detail_key_ = detail_key;
     const bool redraw_all =
-        isolated() || !cascades_valid_ || !sunShadows() || actor_set_changed_;
+        isolated() || !cascades_valid_ || !sunShadows() || actor_set_changed_ || detail_changed;
+    const std::uint64_t far_period = 4ull * budget_.farCascadeInterval();
     if (!isolated()) {
         ++cascade_frame_;
     }
@@ -2753,8 +2877,8 @@ void VulkanRenderer::updateUniforms(const scene::Scene& scene, const scene::Came
         bool due = redraw_all;
         if (!due) {
             const std::uint64_t f = cascade_frame_;
-            due = i == 0 || (i == 1 && f % 2 == 0) || (i == 2 && f % 4 == 1) ||
-                  (i == 3 && f % 4 == 3);
+            due = i == 0 || (i == 1 && f % 2 == 0) || (i == 2 && f % far_period == 1) ||
+                  (i == 3 && f % far_period == 3);
             const Vec3 moved = camera.position() - rendered_cascade_camera_[i];
             const float limit = 0.1f * current.split_distance;
             due = due || core::dot(moved, moved) > limit * limit;
@@ -2794,7 +2918,7 @@ void VulkanRenderer::updateUniforms(const scene::Scene& scene, const scene::Came
 
     shadow_data.split_distances = Vec4{splits[0], splits[1], splits[2], splits[3]};
     shadow_data.texel_world_sizes = Vec4{texels[0], texels[1], texels[2], texels[3]};
-    shadow_data.params = Vec4{static_cast<float>(ShadowMap::kResolution),
+    shadow_data.params = Vec4{static_cast<float>(shadow_map_.resolution()),
                               sunShadows() ? 1.0f : 0.0f, cascade_debug_ ? 1.0f : 0.0f,
                               kCascadeBlendBand};
 
@@ -2882,6 +3006,16 @@ void VulkanRenderer::drawFrame(const scene::Scene& scene, bool present) {
     // Resultado del culling en GPU de la ultima vez que se uso este hueco.
     const GpuCulling::Stats culling = gpu_culling_.readStats(current_frame_);
     gpu_profiler_.collect(current_frame_);
+    {
+        const auto now = std::chrono::steady_clock::now();
+        const float dt = last_budget_time_.time_since_epoch().count() == 0
+                             ? 0.0f
+                             : std::chrono::duration<float>(now - last_budget_time_).count();
+        last_budget_time_ = now;
+        budget_.update(std::min(dt, 0.5f), gpu_profiler_.totalMilliseconds(), gpu_profiler_.timings());
+        post_ = budget_.apply(user_post_);
+        if (budget_.renderScale() != applied_budget_scale_) applyEffectiveGraphics();
+    }
     gpu_visible_submeshes_ = culling.early + culling.late;
     occluded_submeshes_ = culling.occluded;
 
@@ -3379,7 +3513,8 @@ void VulkanRenderer::recordShadowPass(const vk::raii::CommandBuffer& cmd,
                                             static_cast<float>(extent.height), 0.0f, 1.0f});
             cmd.setScissor(0, vk::Rect2D{vk::Offset2D{0, 0}, extent});
 
-            recordActorShadows(cmd, frame_index, rendered_cascades_[cascade].light_view_projection);
+            recordActorShadows(cmd, frame_index, rendered_cascades_[cascade].light_view_projection, {}, 0.0f,
+                               rendered_cascades_[cascade].texel_world_size);
             terrain_pass_.recordShadow(cmd, frame_index, skin_sets_[frame_index],
                                        rendered_cascades_[cascade].light_view_projection);
             voxel_pass_.recordShadow(cmd, frame_index, skin_sets_[frame_index],
@@ -3915,6 +4050,10 @@ void VulkanRenderer::recordSsgiPass(const vk::raii::CommandBuffer& cmd,
         rt_push.params = Vec4{static_cast<float>(frame_count_ % 64),
                               scene_history_valid_ ? 1.0f : 0.0f, 0.0f, 0.0f};
         ray_tracing_.record(cmd, frame_index, RayTracing::Pass::Gi, gi_raw_.extent(), rt_push);
+        // La cache de radiancia en el mundo: las muestras de este frame a su
+        // media (la leen los rayos de los reflejos y la GI del siguiente).
+        ray_tracing_.record(cmd, frame_index, RayTracing::Pass::CacheResolve, RayTracing::cacheResolveExtent(),
+                            rt_push);
 
         raw_to_sampled = colorBarrier(*gi_raw_.handle(), vk::ImageLayout::eGeneral,
                                       vk::ImageLayout::eShaderReadOnlyOptimal,
@@ -4503,6 +4642,7 @@ void VulkanRenderer::shiftOrigin(const core::Vec3& offset) {
     local_shadows_.invalidate();
     rain_map_ready_ = false;
     previous_actor_motion_.clear();
+    ray_tracing_.resetCache();  // sus celdas estan en las coordenadas viejas
 }
 
 void VulkanRenderer::invalidateHistory() {

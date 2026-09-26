@@ -53,6 +53,36 @@ std::string base64(const std::vector<std::uint8_t>& data) {
 
 json vec(const Vec3& v) { return json::array({v.x, v.y, v.z}); }
 
+std::uint64_t vramMb(const gfx::VulkanRenderer& renderer, bool used) {
+    std::uint64_t u = 0;
+    std::uint64_t b = 0;
+    if (!renderer.device().videoMemory(u, b)) return 0;
+    return (used ? u : b) >> 20;
+}
+
+// Estado del presupuesto adaptativo (performance_stats, graphics_settings).
+json budgetJson(const gfx::VulkanRenderer& renderer) {
+    const gfx::FrameBudget& budget = renderer.frameBudget();
+    const gfx::HardwareProfile& hw = renderer.hardwareProfile();
+    json levers = json::object();
+    for (std::size_t i = 0; i < gfx::kLeverCount; ++i) {
+        const auto lever = static_cast<gfx::Lever>(i);
+        levers[gfx::FrameBudget::leverName(lever)] =
+            std::to_string(budget.level(lever)) + "/" + std::to_string(budget.maxLevel(lever));
+    }
+    return json{{"enabled", budget.enabled()},
+                {"target_fps", budget.targetFps()},
+                {"smoothed_gpu_ms", budget.smoothedGpuMs()},
+                {"hardware_tier", gfx::tierName(hw.tier)},
+                {"gpu", hw.gpu_name},
+                {"vram_mb", hw.vram_mb},
+                {"levers", levers},
+                {"last_action", budget.lastAction()},
+                {"texture_size_limit", renderer.textureSizeLimit()},
+                {"vram_used_mb", vramMb(renderer, true)},
+                {"vram_budget_mb", vramMb(renderer, false)}};
+}
+
 Vec3 readVec(const json& j, const char* key, const Vec3& fallback) {
     const auto it = j.find(key);
     if (it == j.end() || !it->is_array() || it->size() < 3) return fallback;
@@ -140,6 +170,10 @@ const std::vector<ToolDef>& toolDefs() {
                      {{"entity", entity}, {"material", prop("string", "Ruta, nombre o UUID del .crmat")}, {"slot", prop("integer", "Hueco de material (-1 = todos)")}}, {"entity", "material"}});
         d.push_back({"reimport_model", "Reimporta un modelo desde su archivo original combinando sus piezas por material (una palmera con cada hoja suelta pasa a tronco + hojas) y rehace sus instancias en la escena. En segundo plano: mira get_console.",
                      {{"asset", prop("string", "Ruta, nombre o UUID del modelo")}}, {"asset"}});
+        d.push_back({"graphics_settings", "Lee o cambia la configuracion grafica: presupuesto adaptativo (adaptive, target_fps) y resolucion del mapa de sombras (0 = segun el hardware). Devuelve el estado del presupuesto.",
+                     {{"adaptive", prop("boolean", "Optimizacion adaptativa")}, {"target_fps", prop("number", "FPS objetivo")},
+                      {"shadow_resolution", prop("number", "Resolucion por cascada (0 = auto)")},
+                      {"texture_max_size", prop("number", "Lado maximo de las texturas (0 = auto)")}}, {}});
         d.push_back({"performance_stats", "Rendimiento del ultimo frame: FPS, ms de CPU y GPU, tiempo de GPU por pase, actores, triangulos, lotes y llamadas de sombras.",
                      json::object(), {}});
         d.push_back({"import_file", "Importa un archivo del disco al proyecto (modelo .fbx/.obj/.gltf/.glb, cielo .hdr).",
@@ -725,6 +759,22 @@ json McpTools::call(const std::string& name, const json& args, bool& image, std:
         if (!a.startReimport(info->uuid)) throw ToolError("no se pudo empezar (ya se esta reimportando o no hay proyecto)");
         return json{{"started", true}, {"model", info->name}};
     }
+    if (name == "graphics_settings") {
+        gfx::GraphicsSettings g = a.renderer_.graphicsSettings();
+        bool changed = false;
+        if (args.contains("adaptive")) { g.adaptive = args["adaptive"].get<bool>(); changed = true; }
+        if (args.contains("target_fps")) { g.target_fps = args["target_fps"].get<float>(); changed = true; }
+        if (args.contains("shadow_resolution")) { g.shadow_resolution = args["shadow_resolution"].get<int>(); changed = true; }
+        if (args.contains("texture_max_size")) { g.texture_max_size = args["texture_max_size"].get<int>(); changed = true; }
+        if (changed) {
+            a.renderer_.setGraphicsSettings(g);
+            a.saveGraphicsSettings();
+        }
+        json j = budgetJson(a.renderer_);
+        j["shadow_resolution"] = a.renderer_.shadowResolution();
+        j["shadow_resolution_setting"] = g.shadow_resolution;
+        return j;
+    }
     if (name == "performance_stats") {
         json passes = json::array();
         for (const gfx::GpuTiming& t : a.renderer_.gpuProfiler().timings()) {
@@ -742,7 +792,11 @@ json McpTools::call(const std::string& name, const json& args, bool& image, std:
                     {"material_batches", a.renderer_.batchCount()},
                     {"shadow_draw_calls", a.renderer_.shadowDrawCalls()},
                     {"lod_triangles", a.renderer_.lodTriangles()},
-                    {"lod_actors", a.renderer_.lodActors()}};
+                    {"lod_actors", a.renderer_.lodActors()},
+                    {"culled_small_actors", a.renderer_.culledSmallActors()},
+                    {"shadow_resolution", a.renderer_.shadowResolution()},
+                    {"render_extent", json::array({a.renderer_.renderExtent().width, a.renderer_.renderExtent().height})},
+                    {"budget", budgetJson(a.renderer_)}};
     }
     if (name == "import_file") {
         const std::filesystem::path source = dialogs::fromUtf8(arg(args, "path"));
