@@ -11,6 +11,7 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#include <bcrypt.h>
 #include <shellapi.h>
 #include <shlobj.h>
 #include <tlhelp32.h>
@@ -444,11 +445,51 @@ Version Version::parse(std::string_view text) {
         }
     }
     v.valid = parsed >= 2;
+    // Sufijo de version previa: "-beta.1" (hasta un espacio).
+    if (v.valid && i < text.size() && text[i] == '-') {
+        std::size_t end = i + 1;
+        while (end < text.size() && !std::isspace(static_cast<unsigned char>(text[end]))) ++end;
+        v.pre = std::string(text.substr(i + 1, end - i - 1));
+    }
     return v;
 }
 
 std::string Version::str() const {
-    return std::to_string(major) + "." + std::to_string(minor) + "." + std::to_string(patch);
+    std::string s = std::to_string(major) + "." + std::to_string(minor) + "." + std::to_string(patch);
+    if (!pre.empty()) s += "-" + pre;
+    return s;
+}
+
+std::strong_ordering Version::operator<=>(const Version& other) const {
+    if (major != other.major) return major <=> other.major;
+    if (minor != other.minor) return minor <=> other.minor;
+    if (patch != other.patch) return patch <=> other.patch;
+    // La estable va despues de sus previas.
+    if (pre.empty() || other.pre.empty()) return pre.empty() <=> other.pre.empty();
+    // Partes separadas por '.': numeros como numeros, texto como texto.
+    std::size_t a = 0, b = 0;
+    while (a <= pre.size() && b <= other.pre.size()) {
+        const std::size_t ea = std::min(pre.find('.', a), pre.size());
+        const std::size_t eb = std::min(other.pre.find('.', b), other.pre.size());
+        const std::string pa = pre.substr(a, ea - a), pb = other.pre.substr(b, eb - b);
+        const bool na = !pa.empty() && std::all_of(pa.begin(), pa.end(), [](char c) { return std::isdigit(static_cast<unsigned char>(c)); });
+        const bool nb = !pb.empty() && std::all_of(pb.begin(), pb.end(), [](char c) { return std::isdigit(static_cast<unsigned char>(c)); });
+        std::strong_ordering order = std::strong_ordering::equal;
+        if (na && nb) {
+            order = std::stoll(pa) <=> std::stoll(pb);
+        } else if (na != nb) {
+            order = na ? std::strong_ordering::less : std::strong_ordering::greater;
+        } else {
+            const int c = pa.compare(pb);
+            order = c < 0 ? std::strong_ordering::less : c > 0 ? std::strong_ordering::greater : std::strong_ordering::equal;
+        }
+        if (order != 0) return order;
+        const bool end_a = ea >= pre.size(), end_b = eb >= other.pre.size();
+        if (end_a || end_b) return end_b <=> end_a;  // mas partes = mas alta
+        a = ea + 1;
+        b = eb + 1;
+    }
+    return std::strong_ordering::equal;
 }
 
 Version currentVersion() {
@@ -462,21 +503,26 @@ std::string feedUrl() {
     wchar_t env[2048] = {};
     if (GetEnvironmentVariableW(L"CRAMION_UPDATE_FEED", env, 2048) > 0) return narrow(env);
     const Settings s = loadSettings();
-    return s.feed.empty() ? std::string(kDefaultFeed) : s.feed;
+    if (!s.feed.empty()) return s.feed;
+    return s.channel == "beta" ? std::string(kBetaFeed) : std::string(kDefaultFeed);
 }
 
-bool parseRelease(const std::string& text, Release& out, std::string* error, const std::string& feed_url) {
+bool betaChannel() { return loadSettings().channel == "beta"; }
+
+bool parseRelease(const std::string& text, Release& out, std::string* error, const std::string& feed_url,
+                  bool allow_prerelease) {
     json doc = json::parse(text, nullptr, false);
     if (doc.is_discarded()) {
         setError(error, "La respuesta del servidor no es JSON");
         return false;
     }
-    // Lista de releases: la version mas alta que no sea borrador ni previa.
+    // Lista de releases: la version mas alta que no sea borrador (ni previa,
+    // salvo en el canal beta).
     if (doc.is_array()) {
         json best;
         Version best_version;
         for (const json& r : doc) {
-            if (!r.is_object() || r.value("draft", false) || r.value("prerelease", false)) continue;
+            if (!r.is_object() || r.value("draft", false) || (!allow_prerelease && r.value("prerelease", false))) continue;
             const Version v = Version::parse(r.value("tag_name", r.value("version", std::string{})));
             if (v.valid && (!best_version.valid || v > best_version)) {
                 best = r;
@@ -510,6 +556,17 @@ bool parseRelease(const std::string& text, Release& out, std::string* error, con
     if (body.is_string()) r.notes = body.get<std::string>();
     r.page_url = doc.value("html_url", std::string(kReleasesPage));
     r.published_at = doc.value("published_at", std::string{});
+    r.prerelease = doc.value("prerelease", !r.version.pre.empty());
+    const auto hexOf = [](std::string text) {
+        // "sha256:abc..." o "abc...  Cramion-win64.zip": los 64 hex.
+        if (text.starts_with("sha256:")) text = text.substr(7);
+        std::string hex;
+        for (const char c : text) {
+            if (!std::isxdigit(static_cast<unsigned char>(c))) break;
+            hex += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        }
+        return hex.size() == 64 ? hex : std::string{};
+    };
     if (doc.contains("assets") && doc["assets"].is_array()) {
         const json* pick = nullptr;
         for (const json& a : doc["assets"]) {
@@ -524,28 +581,136 @@ bool parseRelease(const std::string& text, Release& out, std::string* error, con
         if (pick != nullptr) {
             r.zip_url = pick->value("browser_download_url", pick->value("url", std::string{}));
             r.zip_size = pick->value("size", std::uint64_t{0});
+            if (pick->contains("digest") && (*pick)["digest"].is_string()) r.sha256 = hexOf((*pick)["digest"].get<std::string>());
+            const std::string sidecar = pick->value("name", std::string{}) + ".sha256";
+            for (const json& a : doc["assets"]) {
+                if (a.value("name", std::string{}) == sidecar) {
+                    r.sha256_url = a.value("browser_download_url", a.value("url", std::string{}));
+                }
+            }
         }
     } else if (doc.contains("zip_url")) {
         r.zip_url = doc.value("zip_url", std::string{});
         r.zip_size = doc.value("zip_size", std::uint64_t{0});
     }
-    // Zip con ruta relativa (feeds locales de prueba): junto al feed.
-    if (!r.zip_url.empty() && r.zip_url.find("://") == std::string::npos && !fs::path(widen(r.zip_url)).is_absolute() &&
-        !feed_url.empty()) {
+    if (r.sha256.empty() && doc.contains("sha256") && doc["sha256"].is_string()) r.sha256 = hexOf(doc["sha256"].get<std::string>());
+    // Zip (y su .sha256) con ruta relativa (feeds locales de prueba): junto al feed.
+    const auto resolve = [&](std::string& url) {
+        if (url.empty() || url.find("://") != std::string::npos || fs::path(widen(url)).is_absolute() || feed_url.empty()) return;
         if (const fs::path feed_file = localPath(feed_url); !feed_file.empty()) {
-            r.zip_url = narrow((feed_file.parent_path() / widen(r.zip_url)).wstring());
+            url = narrow((feed_file.parent_path() / widen(url)).wstring());
         } else if (const std::size_t slash = feed_url.rfind('/'); slash != std::string::npos) {
-            r.zip_url = feed_url.substr(0, slash + 1) + r.zip_url;
+            url = feed_url.substr(0, slash + 1) + url;
         }
-    }
+    };
+    resolve(r.zip_url);
+    resolve(r.sha256_url);
     out = std::move(r);
     return true;
 }
 
-bool fetchLatest(const std::string& feed, Release& out, std::string* error) {
+bool fetchLatest(const std::string& feed, Release& out, std::string* error, bool allow_prerelease) {
     std::string body;
     if (!httpGet(feed, body, error)) return false;
-    return parseRelease(body, out, error, feed);
+    return parseRelease(body, out, error, feed, allow_prerelease);
+}
+
+// --- SHA-256 (BCrypt de Windows) --------------------------------------------------------
+
+namespace {
+
+class Sha256 {
+public:
+    Sha256() {
+        if (BCryptOpenAlgorithmProvider(&algorithm_, BCRYPT_SHA256_ALGORITHM, nullptr, 0) == 0) {
+            BCryptCreateHash(algorithm_, &hash_, nullptr, 0, nullptr, 0, 0);
+        }
+    }
+    ~Sha256() {
+        if (hash_ != nullptr) BCryptDestroyHash(hash_);
+        if (algorithm_ != nullptr) BCryptCloseAlgorithmProvider(algorithm_, 0);
+    }
+    Sha256(const Sha256&) = delete;
+    Sha256& operator=(const Sha256&) = delete;
+    bool ok() const { return hash_ != nullptr; }
+    void add(const void* data, std::size_t size) {
+        const auto* p = static_cast<const unsigned char*>(data);
+        while (size > 0) {
+            const ULONG chunk = static_cast<ULONG>(std::min<std::size_t>(size, 1u << 30));
+            BCryptHashData(hash_, const_cast<PUCHAR>(p), chunk, 0);
+            p += chunk;
+            size -= chunk;
+        }
+    }
+    std::string hex() {
+        unsigned char digest[32] = {};
+        BCryptFinishHash(hash_, digest, sizeof(digest), 0);
+        static constexpr char kHex[] = "0123456789abcdef";
+        std::string out;
+        for (const unsigned char b : digest) {
+            out += kHex[b >> 4];
+            out += kHex[b & 15];
+        }
+        return out;
+    }
+
+private:
+    BCRYPT_ALG_HANDLE algorithm_ = nullptr;
+    BCRYPT_HASH_HANDLE hash_ = nullptr;
+};
+
+}  // namespace
+
+std::string sha256Hex(const void* data, std::size_t size) {
+    Sha256 sha;
+    if (!sha.ok()) return {};
+    sha.add(data, size);
+    return sha.hex();
+}
+
+std::string sha256File(const fs::path& file, std::string* error) {
+    std::ifstream in(file, std::ios::binary);
+    Sha256 sha;
+    if (!in || !sha.ok()) {
+        setError(error, "No se puede leer " + narrow(file.wstring()));
+        return {};
+    }
+    std::vector<char> buffer(1 << 20);
+    while (in) {
+        in.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
+        if (in.gcount() > 0) sha.add(buffer.data(), static_cast<std::size_t>(in.gcount()));
+    }
+    return sha.hex();
+}
+
+bool verifyPackage(const Release& release, const fs::path& zip, bool* verified, std::string* error) {
+    if (verified != nullptr) *verified = false;
+    std::string expected = release.sha256;
+    if (expected.empty() && !release.sha256_url.empty()) {
+        std::string text;
+        if (!httpGet(release.sha256_url, text, error)) {
+            setError(error, "No se pudo descargar el SHA-256 del paquete: " + (error != nullptr ? *error : std::string{}));
+            return false;
+        }
+        for (const char c : text) {
+            if (!std::isxdigit(static_cast<unsigned char>(c))) break;
+            expected += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        }
+        if (expected.size() != 64) {
+            setError(error, "El archivo .sha256 publicado no es valido");
+            return false;
+        }
+    }
+    if (expected.empty()) return true;  // la release no publica SHA-256
+    const std::string actual = sha256File(zip, error);
+    if (actual.empty()) return false;
+    if (actual != expected) {
+        setError(error, "El paquete descargado no coincide con su SHA-256 publicado (esperado " + expected.substr(0, 12) +
+                            "..., llego " + actual.substr(0, 12) + "...). Se ha borrado; no se instala nada.");
+        return false;
+    }
+    if (verified != nullptr) *verified = true;
+    return true;
 }
 
 std::vector<NoteLine> parseNotes(const std::string& markdown) {
@@ -945,6 +1110,8 @@ Settings loadSettings() {
     s.feed = doc.value("feed", std::string{});
     s.last_check = doc.value("last_check", std::int64_t{0});
     s.last_seen_version = doc.value("last_seen_version", std::string{});
+    s.channel = doc.value("channel", std::string("estable"));
+    if (s.channel != "beta") s.channel = "estable";
     return s;
 }
 
@@ -955,6 +1122,7 @@ void saveSettings(const Settings& s) {
     doc["feed"] = s.feed;
     doc["last_check"] = s.last_check;
     doc["last_seen_version"] = s.last_seen_version;
+    doc["channel"] = s.channel;
     writeTextFile(dataFolder() / "update.json", doc.dump(2));
 }
 
@@ -1115,10 +1283,11 @@ bool openUrl(const std::string& url) {
 std::shared_ptr<CheckJob> startCheck(const std::string& feed) {
     auto job = std::make_shared<CheckJob>();
     const std::string url = feed.empty() ? feedUrl() : feed;
-    std::thread([job, url] {
+    const bool beta = betaChannel();
+    std::thread([job, url, beta] {
         Release release;
         std::string error;
-        if (fetchLatest(url, release, &error)) {
+        if (fetchLatest(url, release, &error, beta)) {
             Settings s = loadSettings();
             s.last_check = static_cast<std::int64_t>(std::time(nullptr));
             s.last_seen_version = release.version.str();

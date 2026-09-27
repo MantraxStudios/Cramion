@@ -45,6 +45,9 @@ const List& globals() {
         LuaCompletion{"Prefs", "Prefs", "datos guardados (como PlayerPrefs)", 1},
         LuaCompletion{"Game", "Game", "el juego (quit)", 1},
         LuaCompletion{"Graphics", "Graphics", "configuracion grafica: calidad, resolucion, sombras, texturas, ventana, post", 1},
+        LuaCompletion{"Network", "Network", "multijugador: host, connect, send/on, spawn de objetos de red", 1},
+        LuaCompletion{"Http", "Http", "peticiones HTTPS a servidores y webs (get, post, request)", 1},
+        LuaCompletion{"Json", "Json", "texto JSON <-> tablas (encode, decode)", 1},
         LuaCompletion{"Mathf", "Mathf", "lerp, clamp, smoothDamp, angulos, ruido...", 1},
         LuaCompletion{"Quat", "Quat", "rotaciones: Quat.euler, Quat.lookRotation, q * v", 1},
         LuaCompletion{"Random", "Random", "aleatorios con semilla: range, int, pick, onUnitSphere...", 1},
@@ -114,7 +117,55 @@ const std::unordered_map<std::string, List>& tables() {
           prop("window_mode", "maximized, fullscreen o windowed"), prop("window_width", "ancho (windowed)"),
           prop("window_height", "alto (windowed)"), prop("gpu", "nombre de la GPU (lectura)"),
           prop("vram_mb", "VRAM (lectura)"), prop("screen_width", "ancho de salida (lectura)"),
-          prop("screen_height", "alto de salida (lectura)")}},
+          prop("screen_height", "alto de salida (lectura)"),
+          prop("render_width", "ancho interno de render (lectura)"), prop("render_height", "alto interno de render (lectura)"),
+          prop("gpu_ms", "ms de GPU por frame (lectura)"), prop("hardware_tier", "gama del equipo (lectura)"),
+          prop("vram_used_mb", "VRAM usada (lectura)"), prop("ray_tracing_supported", "la GPU tiene trazado de rayos (lectura)"),
+          prop("cascade_debug", "colorea las cascadas de sombra (depuracion)"),
+          prop("foliage_trees", "arboles de la vegetacion en la GPU (lectura)"),
+          prop("foliage_visible", "arboles dibujados el ultimo frame (lectura)"),
+          prop("foliage_near", "arboles con todo el detalle (lectura)"),
+          prop("foliage_triangles", "triangulos de la vegetacion (lectura)")}},
+        // Tablas que llegan a funciones (por el nombre habitual del parametro).
+        {"contact",
+         {prop("point", "Vec3 punto del choque"), prop("normal", "Vec3 normal del choque"),
+          prop("relativeVelocity", "Vec3 velocidad relativa del choque")}},
+        {"res",
+         {prop("ok", "true si el estado es 2xx"), prop("status", "estado HTTP (0 = sin respuesta)"),
+          prop("body", "cuerpo como texto"), prop("data", "el JSON ya decodificado (tablas)"),
+          prop("headers", "cabeceras (nombres en minusculas)"), prop("error", "por que fallo"),
+          prop("time", "segundos que tardo")}},
+        {"Network",
+         {fn("host", "7777, 8", "crea la partida (eres el servidor y juegas); devuelve ok, error"),
+          fn("connect", "\"127.0.0.1\", 7777", "se une a una partida (llega onConnected u onDisconnected)"),
+          fn("disconnect", "", "sale de la partida (o la cierra si eres el servidor)"),
+          fn("isServer", "", "eres el servidor?"), fn("isClient", "", "eres un cliente?"),
+          fn("isConnected", "", "en partida (servidor abierto o cliente dentro)"),
+          fn("isConnecting", "", "cliente esperando respuesta"), fn("isActive", "", "hay sesion de red"),
+          fn("myId", "", "tu id de jugador (el servidor es 1)"), fn("players", "", "lista de ids de jugadores"),
+          fn("playerCount", "", "cuantos jugadores"), fn("ping", "id", "ida y vuelta en ms"),
+          fn("stats", "", "{sent, received, objects}"),
+          fn("send", "\"chat\", datos, destino", "mensaje (destino: nil = todos, \"server\" o un id)"),
+          fn("on", "\"chat\", function(datos, de) end", "recibe un mensaje"), fn("off", "\"chat\"", "deja de recibirlo"),
+          fn("onPlayerJoined", "function(id) end", "entra un jugador"), fn("onPlayerLeft", "function(id) end", "sale un jugador"),
+          fn("onConnected", "function(id) end", "cliente: ya estas dentro"),
+          fn("onDisconnected", "function(motivo) end", "fuera de la partida"),
+          fn("spawn", "\"Prefabs/Jugador\", posicion, dueno", "crea un objeto de red en todos (solo el servidor)"),
+          fn("destroy", "entity", "lo borra en todos (solo el servidor)"),
+          fn("objects", "", "todas las entidades de red"), fn("find", "netId", "entidad por su id de red"),
+          fn("loadScene", "\"Nivel2\"", "todos cargan la escena (solo el servidor)"),
+          prop("SERVER", "id del servidor (1)")}},
+        {"Http",
+         {fn("get", "\"https://...\", function(res) end, cabeceras", "GET; res = {ok, status, body, data, headers, error}"),
+          fn("post", "\"https://...\", datos, function(res) end, cabeceras", "POST; datos texto o tabla (se manda como JSON)"),
+          fn("request", "{ url = \"https://...\", method = \"PUT\", headers = {}, body = {}, timeout = 20 }, function(res) end",
+             "cualquier metodo, con tiempo maximo y tamano maximo (maxSize)"),
+          fn("urlEncode", "\"hola mundo\"", "texto seguro para una URL"),
+          fn("query", "{ q = \"hola\", page = 2 }", "\"page=2&q=hola\" (codificado)"),
+          fn("pending", "", "peticiones sin terminar"), fn("cancelAll", "", "cancela todas")}},
+        {"Json",
+         {fn("encode", "tabla, bonito", "tabla -> texto JSON (nil + error si no se puede)"),
+          fn("decode", "texto", "texto JSON -> tabla (nil + error si no es JSON)")}},
         {"Time",
          {prop("deltaTime", "segundos desde el frame anterior"), prop("time", "segundos desde el Play"),
           prop("frameCount", "frames desde el Play"), prop("fixedDeltaTime", "paso fijo de la fisica")}},
@@ -137,7 +188,7 @@ const std::unordered_map<std::string, List>& tables() {
         {"Voxel",
          {fn("getBlock", "x, y, z", "numero del bloque (0 = aire)"), fn("setBlock", "x, y, z, \"stone\"", "pone o quita un bloque"),
           fn("getBlockAt", "Vec3", "bloque en ese punto"), fn("blockInfo", "\"stone\"", "{name, label, solid, hardness...}"),
-          fn("blockId", "\"stone\"", "numero de un bloque"), fn("blockColor", "\"stone\"", "color medio del bloque (Vec3)"), fn("raycast", "origen, direccion, distancia", "nil o {block, normal, id, point, distance}"),
+          fn("blockId", "\"stone\"", "numero de un bloque"), fn("blockCount", "", "cuantos tipos de bloque hay"), fn("blockColor", "\"stone\"", "color medio del bloque (Vec3)"), fn("raycast", "origen, direccion, distancia", "nil o {block, normal, id, point, distance}"),
           fn("moveBox", "centro, semiejes, delta", "posicion, enSuelo, techo, pared"), fn("boxCollides", "centro, semiejes", "toca bloques?"),
           fn("surfaceHeight", "x, z", "altura del terreno"), fn("isReady", "Vec3", "ya esta generado?"), fn("inWater", "Vec3", "esta en el agua?"),
           fn("skyLight", "x, y, z", "luz del cielo 0..15"), fn("blockLight", "x, y, z", "luz de antorchas 0..15"),
@@ -215,7 +266,10 @@ const List& entityProperties() {
         prop("navVelocity", "Vec3 de su NavAgent"), prop("mesh", "malla creada por codigo de su MeshRenderer"),
         prop("castShadows", "su MeshRenderer proyecta sombra"), prop("texture", "imagen de su UIImage"),
         prop("alpha", "transparencia de su UIImage/UIText"), prop("uiPosition", "Vec3 posicion de su RectTransform"),
-        prop("uiSize", "Vec3 tamano de su RectTransform")};
+        prop("uiSize", "Vec3 tamano de su RectTransform"), prop("text", "texto de su UIText o campo de texto"),
+        prop("value", "valor de su Slider o Casilla"), prop("color", "Vec3 color de su UIImage/UIText"),
+        prop("interactable", "su boton/slider/campo responde"),
+        prop("ragdoll", "ragdoll activado (true/false)")};
     return list;
 }
 const List& entityMethods() {
@@ -232,13 +286,34 @@ const List& entityMethods() {
         prop("soundOcclusion", "paredes que tapan su sonido ahora (-1 = no suena)"),
         prop("audioOcclusion", "oclusion de su Audio Listener (true/false)"), fn("playAnimation", "\"Correr\", true", "clip del Animator"),
         fn("setAnimatorFloat", "\"velocidad\", 1.0", "parametro del Animator Controller"),
+        fn("isMine", "", "red: este objeto lo controlas tu (sin red, siempre)"),
+        prop("netId", "red: id del objeto (0 = no es de red)"), prop("netOwner", "red: id del jugador dueno"),
+        fn("setNetVar", "\"vida\", 100", "red: variable sincronizada (dueno o servidor)"),
+        fn("getNetVar", "\"vida\"", "red: lee una variable sincronizada"),
         fn("setAnimatorBool", "\"saltando\", true", ""), fn("setAnimatorTrigger", "\"atacar\"", ""),
         fn("hasComponent", "\"Rigidbody\"", "tiene ese componente?"), fn("getScript", "", "la instancia de su script"),
         fn("find", "\"hijo\"", "un hijo por nombre"), fn("valid", "", "sigue existiendo?"),
         fn("moveTo", "Vec3", "su NavAgent camina hasta alli por la malla"), fn("stopMoving", "", "se para"),
         fn("addComponent", "\"MeshCollider\"", "anade un componente por su nombre"),
         fn("removeComponent", "\"MeshCollider\"", "quita un componente"),
-        fn("setMaterial", "0, \"Materials/Brillo.crmat\"", "material .crmat de un hueco de su MeshRenderer")};
+        fn("setMaterial", "0, \"Materials/Brillo.crmat\"", "material .crmat de un hueco de su MeshRenderer"),
+        fn("getField", "\"Light\", \"intensity\"", "campo de cualquier componente"),
+        fn("setField", "\"Light\", \"intensity\", 2", "cambia un campo (listas: \"chains[1].pull\")"),
+        fn("getFields", "\"Ragdoll\"", "todos los campos de un componente"),
+        fn("getBones", "", "nombres de los huesos"), fn("getBonePosition", "\"Head\"", "Vec3 del hueso en el mundo"),
+        fn("getBoneRotation", "\"Head\"", "Quat del hueso"),
+        fn("setBoneRotation", "\"Head\", Vec3 grados", "gira el hueso encima de la animacion"),
+        fn("setBoneOffset", "\"Hips\", Vec3", "desplaza el hueso"), fn("setBoneScale", "\"Head\", 1.2", "escala el hueso"),
+        fn("resetBone", "\"Head\"", "quita los cambios del hueso"), fn("resetBones", "", "quita los de todos"),
+        fn("showBones", "true", "dibuja los huesos en la Escena"),
+        fn("setIKTarget", "\"PieIzq\", objetivo", "objetivo de una cadena IK (entidad, Vec3 o nil)"),
+        fn("setIKHint", "\"PieIzq\", objetivo", "pole (hacia donde dobla)"), fn("setIKWeight", "\"PieIzq\", 1", "peso 0..1"),
+        fn("setLookAt", "objetivo, peso", "mirar con cabeza y cuello"), fn("setFootGrounding", "true", "patas al suelo"),
+        fn("setupCreatureIK", "", "configura el IK solo (patas, cuello, cola)"),
+        fn("setupRagdoll", "", "genera los huesos del ragdoll"), fn("setupPhysBones", "", "detecta pelo, colas, orejas..."),
+        fn("addRagdollForce", "Vec3, \"Spine\"", "empujon al ragdoll (en un hueso)"),
+        fn("attachToBone", "modelo, \"RightHand\", offset, giro", "sigue a un hueso (Bone Socket)"),
+        fn("detachFromBone", "", "deja de seguir al hueso")};
     return list;
 }
 const List& vectorMembers(char accessor) {
@@ -251,6 +326,22 @@ const List& vectorMembers(char accessor) {
                                  fn("abs", "", ""), fn("floor", "", ""), fn("round", "", ""),
                                  fn("copy", "", "copia independiente"), fn("unpack", "", "x, y, z"),
                                  fn("set", "x, y, z", "cambia sus valores")};
+    return accessor == ':' ? methods : fields;
+}
+const List& meshMembers(char accessor) {
+    static const List fields = {
+        prop("name", "nombre"), prop("vertexCount", "vertices"), prop("triangleCount", "triangulos"),
+        prop("subMeshCount", "submallas (materiales)"), prop("vertices", "lista de Vec3"), prop("normals", "lista de Vec3"),
+        prop("uv", "lista de {x, y}"), prop("tangents", "lista de Vec3"), prop("triangles", "indices (submalla 0)"),
+        prop("boundsMin", "Vec3 esquina minima"), prop("boundsMax", "Vec3 esquina maxima")};
+    static const List methods = {
+        fn("setTriangles", "indices, submalla", "triangulos de una submalla"), fn("getTriangles", "submalla", "sus indices"),
+        fn("setVertex", "i, Vec3", "mueve un vertice (luego apply)"), fn("getVertex", "i", "Vec3 de un vertice"),
+        fn("setMaterial", "submalla, {color, metallic, roughness...}", "material de una submalla"),
+        fn("getMaterial", "submalla", "su material"), fn("recalculateNormals", "", "normales suaves"),
+        fn("recalculateTangents", "", "tangentes"), fn("recalculateBounds", "", "caja"),
+        fn("apply", "", "sube los cambios a la GPU"), fn("clear", "", "la vacia"),
+        fn("validate", "", "\"\" si se puede dibujar; si no, el motivo"), fn("clone", "", "copia")};
     return accessor == ':' ? methods : fields;
 }
 const List& engineCallbacks() {
@@ -267,7 +358,8 @@ const List& engineCallbacks() {
         LuaCompletion{"OnTriggerEnter", "OnTriggerEnter(other)", "entra en un trigger", 5},
         LuaCompletion{"OnTriggerStay", "OnTriggerStay(other)", "sigue dentro", 5},
         LuaCompletion{"OnTriggerExit", "OnTriggerExit(other)", "sale del trigger", 5},
-        LuaCompletion{"OnDestroy", "OnDestroy()", "al destruirse o parar el Play", 5}};
+        LuaCompletion{"OnDestroy", "OnDestroy()", "al destruirse o parar el Play", 5},
+        LuaCompletion{"OnNetVar", "OnNetVar(clave, valor)", "red: cambio una variable sincronizada (setNetVar)", 5}};
     return list;
 }
 
@@ -375,7 +467,10 @@ std::vector<LuaCompletion> luaCompletions(const std::string& text, const LuaComp
                                       low.find("vel") != std::string::npos || low.find("vec") != std::string::npos ||
                                       low == "v" || low.find("point") != std::string::npos ||
                                       low.find("normal") != std::string::npos;
-            if (looks_vector) {
+            const bool looks_mesh = low.find("mesh") != std::string::npos || low.find("malla") != std::string::npos;
+            if (looks_mesh) {
+                append(meshMembers(context.accessor));
+            } else if (looks_vector) {
                 append(vectorMembers(context.accessor));
             } else {
                 append(context.accessor == ':' ? entityMethods() : entityProperties());

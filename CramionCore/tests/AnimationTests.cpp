@@ -771,6 +771,111 @@ void testGroundTiltAndLook() {
     check(core::length(up_neck) > 0.199f && core::length(up_neck) < 0.201f, "el cuello no se estira");
 }
 
+// Blend Trees: pesos 1D y 2D, mezcla de poses, fundido y guardado.
+void testBlendTrees() {
+    std::printf("\nBlend Trees\n");
+    using ecs::AnimatorMotion;
+    ecs::AnimatorState walk;
+    walk.motion = AnimatorMotion::BlendTree1D;
+    walk.children.resize(3);
+    walk.children[0].threshold = 0.0f;  // quieto
+    walk.children[1].threshold = 2.0f;  // andar
+    walk.children[2].threshold = 6.0f;  // correr
+    auto w = ecs::blendTreeWeights(walk, 1.0f);
+    check(std::abs(w[0] - 0.5f) < 1e-5f && std::abs(w[1] - 0.5f) < 1e-5f && w[2] == 0.0f, "1D: a medio camino entre quieto y andar");
+    w = ecs::blendTreeWeights(walk, 5.0f);
+    check(w[0] == 0.0f && std::abs(w[1] - 0.25f) < 1e-5f && std::abs(w[2] - 0.75f) < 1e-5f, "1D: entre andar y correr");
+    w = ecs::blendTreeWeights(walk, -3.0f);
+    check(w[0] == 1.0f, "1D: por debajo, el primero");
+    w = ecs::blendTreeWeights(walk, 9.0f);
+    check(w[2] == 1.0f, "1D: por encima, el ultimo");
+    std::swap(walk.children[0], walk.children[2]);  // el orden de la lista no importa
+    w = ecs::blendTreeWeights(walk, 5.0f);
+    check(std::abs(w[0] - 0.75f) < 1e-5f && std::abs(w[1] - 0.25f) < 1e-5f, "1D: se ordenan por umbral");
+
+    ecs::AnimatorState move;
+    move.motion = AnimatorMotion::BlendTree2D;
+    const core::Vec2 points[] = {{0, 0}, {0, 1}, {0, -1}, {1, 0}, {-1, 0}};
+    for (const core::Vec2& pt : points) {
+        ecs::BlendTreeChild child;
+        child.position = pt;
+        move.children.push_back(child);
+    }
+    w = ecs::blendTreeWeights(move, 0.0f, 1.0f);
+    check(std::abs(w[1] - 1.0f) < 1e-4f, "2D: en un punto suena solo ese clip");
+    w = ecs::blendTreeWeights(move, 0.0f, 0.0f);
+    check(std::abs(w[0] - 1.0f) < 1e-4f, "2D: en el centro, quieto");
+    w = ecs::blendTreeWeights(move, 0.5f, 0.5f);
+    float sum = 0.0f;
+    for (const float x : w) sum += x;
+    check(std::abs(sum - 1.0f) < 1e-4f && w[1] > 0.1f && w[3] > 0.1f && std::abs(w[1] - w[3]) < 1e-4f && w[2] < 1e-4f && w[4] < 1e-4f,
+          "2D: en diagonal mezcla adelante y derecha a partes iguales");
+
+    // Mezcla de poses: un nodo que en un clip esta en x=0 y en el otro en x=2 girado 90 grados.
+    asset::ModelData model;
+    model.nodes.push_back({"raiz", -1, Mat4::identity()});
+    model.nodes.push_back({"hueso", 0, Mat4::identity()});
+    const float h = std::sqrt(0.5f);
+    for (int k = 0; k < 2; ++k) {
+        asset::AnimationClip clip;
+        clip.name = k == 0 ? "a" : "b";
+        clip.duration = 1.0f;
+        asset::AnimationChannel channel;
+        channel.node = 1;
+        channel.positions.push_back({0.0f, Vec3{k == 0 ? 0.0f : 2.0f, 0.0f, 0.0f}});
+        channel.rotations.push_back({0.0f, k == 0 ? Quat{} : Quat{0.0f, h, 0.0f, h}});
+        clip.channels.push_back(channel);
+        model.animations.push_back(clip);
+    }
+    anim::Animator animator(model);
+    animator.evaluateBlend({{0, 0.0f, 0.5f}, {1, 0.0f, 0.5f}});
+    const Mat4& local = animator.locals()[1];
+    check(std::abs(local.m[3][0] - 1.0f) < 1e-4f, "mezcla 50/50: la posicion a medio camino");
+    const float angle = std::atan2(-local.m[0][2], local.m[0][0]) * 57.2957795f;
+    check(std::abs(std::abs(angle) - 45.0f) < 0.5f, "mezcla 50/50: el giro a medio camino (45 grados)");
+    animator.evaluateBlend({{1, 0.0f, 3.0f}});
+    check(std::abs(animator.locals()[1].m[3][0] - 2.0f) < 1e-4f, "un solo clip con cualquier peso = ese clip");
+    animator.evaluateBlend({});
+    check(std::abs(animator.locals()[1].m[3][0]) < 1e-6f, "sin muestras: pose de reposo");
+    animator.evaluateBlend({{0, 0.0f, 0.25f}, {-1, 0.0f, 0.75f}});
+    check(std::abs(animator.locals()[1].m[3][0]) < 1e-6f, "el reposo tambien se puede mezclar");
+
+    // Transicion con fundido y guardado del Blend Tree.
+    ecs::AnimatorController controller;
+    controller.parameters.push_back({"velocidad", ecs::AnimatorParameterType::Float, 0.0f});
+    controller.parameters.push_back({"saltar", ecs::AnimatorParameterType::Trigger, 0.0f});
+    ecs::AnimatorState locomotion = walk;
+    locomotion.name = "Moverse";
+    locomotion.blend_parameter = "velocidad";
+    locomotion.children[0].clip_name = "correr";
+    controller.states.push_back(locomotion);
+    ecs::AnimatorState jump;
+    jump.name = "Saltar";
+    jump.clip_name = "salto";
+    controller.states.push_back(jump);
+    ecs::AnimatorTransition t;
+    t.from = 0;
+    t.to = 1;
+    t.duration = 0.2f;
+    t.conditions.push_back({"saltar", ecs::AnimatorConditionMode::If, 0.0f});
+    controller.transitions.push_back(t);
+    ecs::AnimatorRuntime runtime;
+    ecs::stepAnimatorController(controller, runtime, 1.0f);
+    runtime.values["saltar"] = 1.0f;
+    check(ecs::stepAnimatorController(controller, runtime, 1.0f) && runtime.state == 1 && runtime.last_transition == 0,
+          "la maquina dice por que transicion cambio (para su fundido)");
+
+    const std::filesystem::path file = std::filesystem::temp_directory_path() / "cramion_blend_test.cranimator";
+    check(ecs::saveAnimatorController(controller, file), "guardar el controlador con Blend Tree");
+    ecs::AnimatorController loaded;
+    check(ecs::loadAnimatorController(file, loaded) && loaded.states.size() == 2 &&
+              loaded.states[0].motion == AnimatorMotion::BlendTree1D && loaded.states[0].blend_parameter == "velocidad" &&
+              loaded.states[0].children.size() == 3 && loaded.states[0].children[0].clip_name == "correr" &&
+              std::abs(loaded.transitions[0].duration - 0.2f) < 1e-6f && !loaded.states[1].isBlendTree(),
+          "cargarlo: el arbol, sus clips, umbrales y el fundido");
+    std::filesystem::remove(file);
+}
+
 int main(int argc, char** argv) {
     if (argc == 3 && std::string(argv[1]) == "--dump") return dumpModel(argv[2]);
     testDetection();
@@ -782,6 +887,7 @@ int main(int argc, char** argv) {
     testPhysBones();
     testRagdollPhysics();
     testGroundTiltAndLook();
+    testBlendTrees();
     std::printf("\n%d comprobaciones, %d fallos\n", checks, failures);
     return failures == 0 ? 0 : 1;
 }

@@ -338,6 +338,13 @@ std::vector<GraphicsOption> RendererGraphicsHost::options() const {
     }
     add("ray_tracing_supported", renderer_.rayTracingSupported(), "La GPU admite trazado de rayos", {}, false);
     add("gpu_ms", number(renderer_.frameBudget().smoothedGpuMs()), "Milisegundos de GPU por frame (suavizado)", {}, false);
+    // Vegetacion instanciada (componente Foliage): para medir el rendimiento.
+    const gfx::FoliageStats fs = renderer_.foliageStats();
+    add("foliage_trees", number(static_cast<double>(fs.instances)), "Arboles de la vegetacion en la GPU", {}, false);
+    add("foliage_visible", number(static_cast<double>(fs.visible[0] + fs.visible[1] + fs.visible[2])),
+        "Arboles dibujados el ultimo frame", {}, false);
+    add("foliage_near", number(static_cast<double>(fs.visible[0])), "Arboles con todo el detalle (cerca)", {}, false);
+    add("foliage_triangles", number(static_cast<double>(fs.triangles)), "Triangulos de la vegetacion el ultimo frame", {}, false);
     return o;
 }
 

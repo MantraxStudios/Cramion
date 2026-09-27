@@ -196,6 +196,10 @@ const std::map<std::string, std::string>& intros() {
         {"WaterBody", "Agua procedural: <strong>Oceano</strong> (plano infinito con oleaje Gerstner), <strong>Lago</strong> "
                       "(rectangulo con olas suaves) o <strong>Rio</strong> (cinta que sigue sus puntos, con corriente). Los "
                       "Rigidbody flotan, la camara bajo el agua ve niebla y causticas y los cuerpos que se mueven dejan ondas."},
+        {"Foliage", "Bosques de <strong>millones de arboles</strong> (pinos, robles y abedules) sembrados en segundo plano "
+                    "sobre el terreno, evitando el agua, las pendientes y los <em>claros</em>. La GPU los recorta y elige su "
+                    "nivel de detalle (3 LODs), con sombras cercanas y viento. Ver "
+                    "<a href=\"editor-herramientas.html#vegetacion\">Vegetacion</a>."},
         {"VoxelWorld", "Un mundo de bloques infinito como Minecraft: biomas, cuevas, minerales, arboles, agua y luz por bloques. "
                        "Se genera y se malla en hilos de fondo; en el editor, con <em>Vista previa</em>. Ver "
                        "<a href=\"voxel.html\">Mundo de bloques</a> para la API de Lua."},
@@ -275,6 +279,10 @@ const std::map<std::string, std::string>& intros() {
                      "velocidad, aceleracion y esquivar a los demas agentes. Ver <a href=\"navegacion.html\">Navegacion</a>."},
         {"Script", "Un script de Lua (<code>.lua</code> en Assets) y los valores de sus <code>properties</code> para esta "
                    "entidad. Ver <a href=\"primer-script.html\">Tu primer script</a>."},
+        {"NetworkObject", "Un objeto que existe en todos los jugadores de una partida en red (lo crea "
+                          "<code>Network.spawn</code>). Su dueno manda la posicion y el giro; los demas lo siguen suavizado. "
+                          "En un prefab ajusta la frecuencia y el suavizado; si no lo lleva, se anade solo. Ver "
+                          "<a href=\"red.html#objetos\">Network</a>."},
         {"UICanvas", "La raiz de una interfaz: todo lo que cuelga de el se dibuja encima del juego. <em>Referencia</em> es la "
                      "resolucion de diseno (1920x1080) y se escala con la pantalla."},
         {"RectTransform", "Rectangulo de un elemento de interfaz: anclas (0..1 del padre), pivote, posicion desde el ancla y "
@@ -373,6 +381,7 @@ int main(int argc, char** argv) {
     cinema::registerCinematicComponents();
     terrain::registerTerrainComponents();
     water::registerWaterComponents();
+    foliage::registerFoliageComponents();
     navigation::registerNavigationComponents();
     voxel::registerVoxelComponents();
     audio::registerAudioComponents();

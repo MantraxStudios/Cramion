@@ -143,6 +143,7 @@ void EditorApp::drawHierarchy() {
         ImGui::Separator();
         item("Vehículo (4 ruedas)", 17);
         if (ImGui::MenuItem("Terreno")) createTerrainEntity();
+        if (ImGui::MenuItem("Vegetación (bosque)")) createFoliageEntity();
         if (ImGui::MenuItem("Mundo de bloques")) createVoxelWorldEntity();
         if (ImGui::BeginMenu("Agua")) {
             if (ImGui::MenuItem("Océano / playa")) createWaterEntity(0);
@@ -254,6 +255,7 @@ void EditorApp::drawHierarchy() {
         ImGui::Separator();
         item("Vehículo (4 ruedas)", 17);
         if (ImGui::MenuItem("Terreno")) createTerrainEntity();
+        if (ImGui::MenuItem("Vegetación (bosque)")) createFoliageEntity();
         if (ImGui::MenuItem("Mundo de bloques")) createVoxelWorldEntity();
         if (ImGui::BeginMenu("Agua")) {
             if (ImGui::MenuItem("Océano / playa")) createWaterEntity(0);

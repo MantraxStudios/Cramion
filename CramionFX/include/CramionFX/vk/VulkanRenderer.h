@@ -15,6 +15,7 @@
 #include "CramionFX/vk/ParticlePass.h"
 #include "CramionFX/vk/TerrainPass.h"
 #include "CramionFX/vk/VoxelPass.h"
+#include "CramionFX/vk/FoliagePass.h"
 #include "CramionFX/vk/WaterPass.h"
 #include "CramionFX/vk/GpuTypes.h"
 #include "CramionFX/vk/GraphicsSettings.h"
@@ -474,6 +475,23 @@ public:
     void setVoxelsVisible(bool visible) { voxel_pass_.setVisible(visible); }
     VoxelStats voxelStats() const { return voxel_pass_.stats(); }
 
+    // --- Vegetacion instanciada (FoliagePass.h): millones de arboles ---
+    void setFoliage(const std::vector<FoliageInstance>& instances) {
+        foliage_pass_.setInstances(instances);
+        staticGeometryChanged();
+    }
+    void clearFoliage() {
+        if (!foliage_pass_.empty()) {
+            foliage_pass_.clear();
+            staticGeometryChanged();
+        }
+    }
+    void setFoliageSettings(const FoliageSettings& settings) { foliage_pass_.setSettings(settings); }
+    // Origen del mundo (origen flotante): las instancias van en coordenadas absolutas.
+    void setFoliageOrigin(const core::Vec3& origin) { foliage_pass_.setOrigin(origin); }
+    const FoliageSettings& foliageSettings() const { return foliage_pass_.settings(); }
+    FoliageStats foliageStats() const { return foliage_pass_.stats(); }
+
     // --- Texturas de la interfaz (iconos, miniaturas del editor) ---
     // RGBA8 con mipmaps (se ven bien pequenas). Devuelve un identificador
     // (0 = error); su vista se registra en ImGui. destroyUiTexture espera a
@@ -862,6 +880,7 @@ private:
     std::optional<PickResult> pick_result_;
     TerrainPass terrain_pass_{};
     VoxelPass voxel_pass_{};
+    FoliagePass foliage_pass_{};
     WaterPass water_pass_{};
     core::Vec3 camera_position_{};
     ParticleDrawList particles_;

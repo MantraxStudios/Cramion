@@ -135,6 +135,8 @@
         <a href="ui.html">Interfaz (UI)</a>
         <a href="esqueletos.html">Esqueletos: IK, ragdoll y phys bones</a>
         <a href="graphics.html">Graphics</a>
+        <a href="red.html">Network (multijugador)</a>
+        <a href="http.html">Http y Json</a>
         <a href="prefs.html">Prefs y Game</a>
         <a href="debug.html">Debug</a>
         <p class="mb-1 mt-7 flex items-center gap-2 px-3 text-xs font-semibold uppercase tracking-wider text-slate-500"><svg class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a9 9 0 1 0 0 18c1.1 0 1.5-.8 1.5-1.5 0-.9-.7-1.2-.7-2 0-.8.6-1.5 1.5-1.5H16a5 5 0 0 0 5-5c0-4.4-4-8-9-8Z"/><circle cx="7.5" cy="11" r="1"/><circle cx="10" cy="7" r="1"/><circle cx="15" cy="7.5" r="1"/></svg>Gráficos</p>
@@ -283,6 +285,8 @@
     <tr><td>Luz volumetrica<br><code>volumetric_light</code></td><td>si/no</td><td>si</td><td></td><td></td></tr>
     <tr><td>Densidad del polvo<br><code>volumetric_density</code></td><td>numero</td><td>0,02</td><td>0 a 0,2</td><td>Cuanto polvo hay en el aire (hasta 60 m de la camara). Lo ilumina el sol, las luces y tambien el cielo, asi que se ve en todas direcciones</td></tr>
     <tr><td>Anisotropia<br><code>volumetric_anisotropy</code></td><td>numero</td><td>0,6</td><td>-0,9 a 0,95</td><td>0 = igual en todas direcciones, cerca de 1 = hacia delante</td></tr>
+    <tr><td>Niebla<br><code>fog_density</code></td><td>numero</td><td>0,0018</td><td>0 a 0,05</td><td>Densidad de la niebla por altura a nivel 0 (1/m). 0.0018 = bruma de un escenario pequeno; 0.0002 = mundo abierto (se ve a kilometros); 0 = sin niebla</td></tr>
+    <tr><td>Niebla: caida con la altura<br><code>fog_height_falloff</code></td><td>numero</td><td>0,08</td><td>0,0001 a 1</td><td>Lo rapido que se aclara al subir (1/m): mas = solo a ras de suelo</td></tr>
     <tr><td colspan="5"><strong class="text-white">Rendimiento</strong></td></tr>
     <tr><td>Sobrescribir<br><code>override_performance</code></td><td>si/no</td><td>no</td><td></td><td>Este volumen cambia esta seccion; si no, sale de los globales</td></tr>
     <tr><td>LODs automaticos<br><code>lods</code></td><td>si/no</td><td>si</td><td></td><td>Los modelos estaticos pesados se dibujan simplificados (tambien en las sombras) cuando la diferencia no se ve en pantalla</td></tr>

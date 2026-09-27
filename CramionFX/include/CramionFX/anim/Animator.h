@@ -9,6 +9,13 @@
 
 namespace cramion::anim {
 
+// Un clip en una mezcla (Blend Trees y fundidos entre estados del Animator).
+struct ClipSample {
+    std::int32_t clip = -1;  // -1 = pose de reposo
+    float time = 0.0f;       // segundos dentro del clip
+    float weight = 0.0f;
+};
+
 // Caja alineada con los ejes.
 struct Aabb {
     core::Vec3 min{};
@@ -44,6 +51,12 @@ public:
     // Recalcula la pose en el instante actual sin avanzar el tiempo.
     void evaluate();
 
+    // Pose mezclando varios clips con sus pesos (se normalizan): posicion y
+    // escala promediadas, rotacion por nlerp en el mismo hemisferio. Los nodos
+    // sin pista en un clip aportan su pose de reposo. Sin muestras (o peso 0),
+    // la pose de reposo. No toca el clip ni el tiempo de play().
+    void evaluateBlend(const std::vector<ClipSample>& samples);
+
     // Una matriz por hueso de asset::ModelData::bones, en espacio del modelo.
     const std::vector<core::Mat4>& boneMatrices() const { return bone_matrices_; }
 
@@ -71,6 +84,13 @@ private:
 
     // Pista del clip actual para cada nodo (-1 = sin animar).
     std::vector<std::int32_t> node_channel_;
+    // Para evaluateBlend: pista de cada clip por nodo (se rellena al usarlo;
+    // el modelo puede ganar clips .cranim despues) y la pose de reposo
+    // descompuesta.
+    std::vector<std::vector<std::int32_t>> clip_channels_;
+    std::vector<core::Vec3> rest_translation_;
+    std::vector<core::Quat> rest_rotation_;
+    std::vector<core::Vec3> rest_scale_;
 
     std::vector<core::Mat4> local_;
     std::vector<core::Mat4> global_;

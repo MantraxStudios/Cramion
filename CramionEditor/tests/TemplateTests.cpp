@@ -10,14 +10,17 @@
 #include <CramionCore/anim/Creature.h>
 #include <CramionCore/anim/Humanoid.h>
 #include <CramionCore/ecs/Rigging.h>
+#include <CramionCore/net/NetworkObject.h>
 
 #include <CramionCore/CramionCore.h>
 #include <CramionDM/Input.h>
 
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
+#include <thread>
 
 using namespace cramion;
 using core::Vec3;
@@ -59,6 +62,13 @@ void play(const project::ProjectInfo& created, float seconds, Played& out,
         return;
     }
     physics::PhysicsSystem physics;
+    // Terrenos de la escena (el de la isla del mundo abierto): colision.
+    terrain::TerrainStore terrains;
+    terrains.setRoot(info->assetsFolder());
+    physics.setTerrainProvider([&](ecs::Entity entity) -> std::shared_ptr<const terrain::TerrainData> {
+        const terrain::Terrain* comp = entity.tryGet<terrain::Terrain>();
+        return comp != nullptr ? terrains.get(*comp) : nullptr;
+    });
     navigation::NavigationSystem nav;
     nav.setPhysics(&physics);
     scripting::ScriptSystem scripts;
@@ -95,6 +105,7 @@ int main() {
     physics::registerPhysicsComponents();
     terrain::registerTerrainComponents();
     water::registerWaterComponents();
+    foliage::registerFoliageComponents();
     navigation::registerNavigationComponents();
     audio::registerAudioComponents();
     scripting::registerScriptComponents();
@@ -110,9 +121,10 @@ int main() {
 
     const std::vector<editor::ProjectTemplate> list = editor::availableTemplates();
     std::printf("Plantillas integradas\n");
-    check(list.size() == 6 && find(list, "blank") && find(list, "third_person") && find(list, "navigation") &&
-              find(list, "voxel") && find(list, "mmo") && find(list, "creatures"),
-          "hay 6 plantillas integradas");
+    check(list.size() == 8 && find(list, "blank") && find(list, "third_person") && find(list, "navigation") &&
+              find(list, "voxel") && find(list, "mmo") && find(list, "creatures") && find(list, "online") &&
+              find(list, "open_world"),
+          "hay 8 plantillas integradas");
 
     // --- Criaturas: modelos con esqueleto generados, IK, phys bones, ragdoll ---
     {
@@ -602,6 +614,225 @@ int main() {
         }
     }
 
+    // --- Mundo abierto (rendimiento) ---
+    {
+        std::printf("Mundo abierto\n");
+        const auto t0 = std::chrono::steady_clock::now();
+        const project::ProjectInfo p = editor::createProjectFromTemplate(*find(list, "open_world"), root, "Isla");
+        std::printf("    creada en %.1f s\n", std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count());
+        check(std::filesystem::exists(p.assetsFolder() / "Terrains" / "Isla.crterrain"), "guarda el terreno de la isla (.crterrain)");
+        ecs::World w;
+        std::string error;
+        check(ecs::loadScene(w, p.assetsFolder() / "Scenes" / "Main.crscene", &error), "la escena se abre");
+        const ecs::Entity island = w.findByName("Isla");
+        const ecs::Entity forest = w.findByName("Vegetacion");
+        const ecs::Entity ocean = w.findByName("Oceano");
+        check(island.valid() && island.has<terrain::Terrain>() && island.get<terrain::Terrain>().size == 8192.0f,
+              "terreno de 8 km");
+        check(ocean.valid() && ocean.has<water::WaterBody>() && ocean.get<water::WaterBody>().type == water::WaterType::Ocean,
+              "oceano");
+        check(forest.valid() && forest.has<foliage::Foliage>(), "vegetacion (componente Foliage)");
+
+        // Sembrar el bosque tal como lo hara el motor.
+        terrain::TerrainStore store;
+        store.setRoot(p.assetsFolder());
+        const terrain::Terrain& tc = island.get<terrain::Terrain>();
+        std::shared_ptr<terrain::TerrainData> data = store.get(tc);
+        std::vector<foliage::FoliageGround> ground{{data, tc, island.worldPosition()}};
+        const auto t1 = std::chrono::steady_clock::now();
+        const foliage::FoliageResult trees = foliage::generateFoliage(forest.get<foliage::Foliage>(), forest.worldPosition(), ground);
+        std::printf("    %zu arboles sembrados en %.2f s (de %llu celdas)\n", trees.instances.size(),
+                    std::chrono::duration<double>(std::chrono::steady_clock::now() - t1).count(),
+                    static_cast<unsigned long long>(trees.candidates));
+        check(trees.instances.size() > 1500000, "mas de 1,5 millones de arboles en la isla");
+        bool above_sea = true;
+        for (std::size_t i = 0; i < trees.instances.size(); i += 1009) above_sea = above_sea && trees.instances[i].y > 3.0f;
+        check(above_sea, "ninguno en el mar ni en la playa");
+
+        // Jugar: el jugador cae sobre el terreno y el HUD mide sin errores.
+        Played r;
+        float lowest = 1e9f;
+        play(p, 3.0f, r, [&](ecs::World& world, navigation::NavigationSystem&, float) {
+            const ecs::Entity pl = world.findByName("Jugador");
+            if (pl.valid()) lowest = std::min(lowest, pl.worldPosition().y);
+        });
+        const ecs::Entity pl = r.world.findByName("Jugador");
+        const float ground_y = terrain::heightAt(*data, tc, island.worldPosition(), pl.worldPosition().x, pl.worldPosition().z);
+        std::printf("    jugador a %.2f m, suelo a %.2f m\n", pl.worldPosition().y, ground_y);
+        check(r.loaded && r.script_errors == 0, "la escena se juega y los scripts corren sin errores");
+        check(ground_y > 5.0f, "el jugador aparece en tierra, no en el mar");
+        check(std::abs(pl.worldPosition().y - ground_y - 1.4f) < 0.8f, "y se queda de pie sobre el terreno (colision)");
+        const ecs::Entity hud = r.world.findByName("UI_Rendimiento");
+        check(hud.valid() && hud.get<ui::Text>().text.find("FPS") != std::string::npos, "el HUD de rendimiento mide");
+    }
+
+    // --- Online: un servidor y un cliente en el mismo proceso ---
+    {
+        std::printf("Online\n");
+        const project::ProjectInfo p = editor::createProjectFromTemplate(*find(list, "online"), root, "Arena");
+        check(std::filesystem::exists(p.assetsFolder() / "Prefabs" / "Jugador.crprefab") &&
+                  std::filesystem::exists(p.assetsFolder() / "Prefabs" / "Balon.crprefab") &&
+                  std::filesystem::exists(p.assetsFolder() / "Scripts" / "Red.lua"),
+              "prefabs de red y scripts");
+        struct Game {
+            ecs::World world;
+            physics::PhysicsSystem physics;
+            scripting::ScriptSystem scripts;
+            std::vector<std::string> errors;
+        };
+        Game host, guest;
+        const auto open = [&](Game& g) {
+            std::string error;
+            const bool ok = ecs::loadScene(g.world, p.assetsFolder() / "Scenes" / "Main.crscene", &error);
+            g.scripts.setAssetsRoot(p.assetsFolder());
+            g.scripts.setPhysics(&g.physics);
+            g.scripts.setPrefsFile(root / ("prefs_" + std::to_string(reinterpret_cast<std::uintptr_t>(&g)) + ".txt"));
+            g.scripts.setLog([&g](int level, const std::string& m) {
+                if (level == 2) {
+                    g.errors.push_back(m);
+                    std::printf("  [Lua] %s\n", m.c_str());
+                }
+            });
+            g.physics.start(g.world);
+            g.scripts.start(g.world);
+            return ok;
+        };
+        check(open(host) && open(guest), "la escena se abre dos veces (servidor y cliente)");
+        const auto frames = [&](int n) {
+            for (int i = 0; i < n; ++i) {
+                for (Game* g : {&host, &guest}) {
+                    const int steps = g->physics.update(g->world, 1.0f / 60.0f, true);
+                    g->scripts.fixedUpdate(g->world, 1.0f / 60.0f, steps);
+                    g->scripts.update(g->world, 1.0f / 60.0f);
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(2));
+            }
+        };
+        const auto lua = [&](Game& g, const std::string& code) {
+            std::string out;
+            if (!g.scripts.run("local R = Scene.find('Red'):getScript()\n" + code, &out)) std::printf("  (lua: %s)\n", out.c_str());
+            return out;
+        };
+        const auto text_of = [](Game& g, const char* name) {
+            const ecs::Entity e = g.world.findByName(name);
+            return e.valid() && e.has<ui::Text>() ? e.get<ui::Text>().text : std::string();
+        };
+        const auto count = [](Game& g, const std::string& name) {
+            int n = 0;
+            for (const auto h : g.world.registry().view<net::NetworkObject>()) {
+                if (g.world.wrap(h).name() == name) ++n;
+            }
+            return n;
+        };
+        frames(5);
+        check(host.world.findByName("UI_Menu").activeSelf() && !host.world.findByName("UI_Juego").activeSelf(), "empieza en el menu");
+        lua(host, "R.puerto = 27790; R.campoNombre.text = 'Ana'; R:OnCrear()");
+        frames(5);
+        check(lua(host, "return tostring(Network.isServer())") == "true" && !host.world.findByName("UI_Menu").activeSelf(),
+              "Crear partida: servidor y a jugar");
+        check(count(host, "Jugador") == 1 && count(host, "Balon") == 1 && count(host, "Caja") == 4 && count(host, "Moneda") == 8,
+              "el servidor crea su jugador, el balon, 4 cajas y 8 monedas");
+        lua(guest, "R.puerto = 27790; R.campoNombre.text = 'Luis'; R.campoIP.text = '127.0.0.1'; R:OnUnirse()");
+        for (int i = 0; i < 200 && count(guest, "Jugador") < 2; ++i) frames(1);
+        frames(30);
+        check(lua(guest, "return tostring(Network.myId())") == "2", "Unirse: el cliente es el jugador 2");
+        check(count(guest, "Jugador") == 2 && count(guest, "Balon") == 1 && count(guest, "Moneda") >= 8,
+              "el cliente recibe los dos jugadores, el balon y las monedas");
+        check(count(host, "Jugador") == 2, "el servidor ve al nuevo jugador");
+        check(text_of(host, "UI_Chat").find("Luis se ha unido") != std::string::npos &&
+                  text_of(guest, "UI_Chat").find("Luis se ha unido") != std::string::npos,
+              "el chat anuncia la llegada en los dos");
+        check(text_of(guest, "UI_Marcador").find("Ana") != std::string::npos && text_of(guest, "UI_Marcador").find("Luis") != std::string::npos,
+              "el marcador del cliente tiene a los dos");
+
+        // Chat del cliente: pasa por el servidor, que pone el nombre.
+        lua(guest, "R:OnChat('hola desde el cliente')");
+        frames(20);
+        check(text_of(host, "UI_Chat").find("Luis: hola desde el cliente") != std::string::npos &&
+                  text_of(guest, "UI_Chat").find("Luis: hola desde el cliente") != std::string::npos,
+              "chat: el mensaje del cliente llega a todos con su nombre");
+
+        // El cliente mueve su jugador: el servidor lo ve moverse.
+        const std::string mine = "local mio; for _, j in ipairs(Network.objects()) do if j.name == 'Jugador' and j:isMine() then mio = j end end\n";
+        lua(guest, mine + "mio.position = Vec3(10, 1.2, 10)");
+        frames(40);
+        check(lua(host, "local e = Network.find(" + lua(guest, mine + "return tostring(mio.netId)") + "); return tostring(math.floor(e.position.x + 0.5))") == "10",
+              "el jugador del cliente se mueve tambien en el servidor");
+
+        // Monedas: el servidor da el punto al que pasa cerca.
+        lua(host, "local m = R.monedasVivas[1]; local j = R.jugadores[2].avatar; m.position = j.position");
+        frames(20);
+        check(text_of(guest, "UI_Marcador").find("Luis  1 pts") != std::string::npos, "recoger una moneda: 1 punto (lo decide el servidor)");
+
+        // Patear el balon (F en el cliente -> el servidor aplica el golpe).
+        lua(host, "local b = R.objetos[1].entidad; local j = R.jugadores[2].avatar; b.position = j.position + Vec3(1.2, 0, 0); b.velocity = Vec3.zero");
+        frames(10);
+        const std::string before = lua(host, "return tostring(R.objetos[1].entidad.position.x)");
+        lua(guest, "Network.send('patear', {}, 'server')");
+        frames(40);
+        const std::string after = lua(host, "return tostring(R.objetos[1].entidad.position.x)");
+        check(std::atof(after.c_str()) > std::atof(before.c_str()) + 0.5f, "patear: el balon sale disparado en el servidor");
+        check(lua(guest, "local b = Scene.find('Balon'); return tostring(b.position.x > " + before + ")") == "true",
+              "y el cliente lo ve moverse");
+
+        // Empujar el balon caminando (sin F): el jugador del cliente lo mueve
+        // tambien en el servidor, no solo el del servidor.
+        lua(host, "local b = R.objetos[1].entidad; local j = R.jugadores[2].avatar; b.position = j.position + Vec3(2.2, -0.6, 0); "
+                  "b.velocity = Vec3.zero; b.angularVelocity = Vec3.zero");
+        frames(40);
+        const std::string rest = lua(host, "return tostring(R.objetos[1].entidad.position.x)");
+        lua(guest, mine + "mio:getScript().Update = function() end");
+        for (int i = 0; i < 70; ++i) {
+            lua(guest, mine + "local v = mio.velocity; mio.velocity = Vec3(5, v.y, 0)");
+            frames(1);
+        }
+        frames(20);
+        const std::string pushed = lua(host, "return tostring(R.objetos[1].entidad.position.x)");
+        std::printf("  balon empujado: %s -> %s\n", rest.c_str(), pushed.c_str());
+        check(std::atof(pushed.c_str()) > std::atof(rest.c_str()) + 1.5f, "empujar: el jugador del cliente mueve el balon en el servidor");
+        check(lua(guest, "local b = Scene.find('Balon'); return tostring(b.position.x > " + rest + " + 1.0)") == "true",
+              "y en el cliente el balon tambien avanza");
+        // Esperar a que el balon se pare de verdad en el servidor (rueda y
+        // rebota unos segundos; en marcha el cliente va un poco por detras).
+        for (int k = 0; k < 40; ++k) {
+            frames(30);
+            if (lua(host, "return tostring(R.objetos[1].entidad.velocity:length() < 0.05)") == "true") break;
+        }
+        frames(60);
+        const std::string server_ball = lua(host, "local p = R.objetos[1].entidad.position; return string.format('Vec3(%f,%f,%f)', p.x, p.y, p.z)");
+        const std::string gap = lua(guest, "return tostring((Scene.find('Balon').position - " + server_ball + "):length())");
+        std::printf("  diferencia cliente/servidor en reposo: %s m\n", gap.c_str());
+        check(std::atof(gap.c_str()) < 0.25f, "al pararse, el balon del cliente coincide con el del servidor");
+
+        // Gol: +5 al ultimo que lo toco (al empujar pudo coger alguna moneda:
+        // se cuenta desde lo que tenia).
+        const int points = std::atoi(lua(host, "return tostring(R.jugadores[2].puntos)").c_str());
+        lua(host, "local b = R.objetos[1]; b.ultimo = 2; b.entidad.position = Vec3(27.5, 1, 0)");
+        frames(20);
+        check(text_of(guest, "UI_Aviso").find("GOL de Luis") != std::string::npos, "gol: aviso a todos");
+        check(text_of(guest, "UI_Marcador").find("Luis  " + std::to_string(points + 5) + " pts") != std::string::npos,
+              "y +5 puntos");
+
+        // Evento: lluvia de monedas.
+        lua(host, "R.eventoTiempo = 0; math.randomseed(1)");
+        frames(5);
+        check(!text_of(guest, "UI_Aviso").empty(), "un evento se anuncia en todos");
+
+        // El cliente sale: su jugador desaparece en el servidor.
+        lua(guest, "R:OnSalir()");
+        frames(40);
+        check(guest.world.findByName("UI_Menu").activeSelf() && count(guest, "Jugador") == 0, "salir: el cliente vuelve al menu sin objetos de red");
+        check(count(host, "Jugador") == 1 && text_of(host, "UI_Chat").find("Luis ha salido") != std::string::npos,
+              "el servidor quita su jugador y lo anuncia");
+        check(host.errors.empty() && guest.errors.empty(), "los scripts se ejecutan sin errores");
+        host.scripts.shutdownNetwork();
+        guest.scripts.shutdownNetwork();
+        host.scripts.stop();
+        guest.scripts.stop();
+        host.physics.stop();
+        guest.physics.stop();
+    }
+
     // --- Del usuario ---
     {
         std::printf("Plantillas del usuario\n");
@@ -610,7 +841,7 @@ int main() {
               "guardar un proyecto como plantilla");
         const std::vector<editor::ProjectTemplate> again = editor::availableTemplates();
         const editor::ProjectTemplate* mine = find(again, "user:Mi plataformas");
-        check(again.size() == 7 && mine != nullptr && mine->category == "Mis plantillas" && mine->description == "Prueba",
+        check(again.size() == 9 && mine != nullptr && mine->category == "Mis plantillas" && mine->description == "Prueba",
               "aparece en la lista con su descripcion");
         if (mine != nullptr) {
             const project::ProjectInfo p = editor::createProjectFromTemplate(*mine, root, "Copia");

@@ -81,6 +81,11 @@ struct PostProcessSettings {
     float contact_shadow_length = 0.5f;
     float volumetric_density = 0.02f;
     float volumetric_anisotropy = 0.6f;
+    // Niebla por altura: densidad a la altura 0 (1/m) y lo rapido que se
+    // aclara al subir (1/m). La de siempre es fina para escenarios pequenos;
+    // un mundo abierto de kilometros necesita mucha menos.
+    float fog_density = 0.0018f;
+    float fog_height_falloff = 0.08f;
     // Tramos por rayo del polvo (volumetric.frag). El presupuesto adaptativo
     // lo baja a la mitad en vez de apagar el polvo: si lo apagaba, solo
     // volvia cuando el frame se abarataba (mirando al cielo o al sol).

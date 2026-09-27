@@ -29,6 +29,7 @@
 #include <functional>
 #include <CramionFX/CramionFX.h>
 
+#include <future>
 #include <memory>
 #include <optional>
 #include <unordered_map>
@@ -152,6 +153,13 @@ private:
         int clip = -2;  // el que esta sonando (-2 = sin elegir aun)
         bool loop = true;
         int controller_state = -1;  // estado del controlador que sono por ultima vez
+        // Con controlador: fase (0..1) del estado actual; y el anterior mientras
+        // dura el fundido de la transicion.
+        float phase = 0.0f;
+        int fade_state = -1;
+        float fade_phase = 0.0f;
+        float fade_time = 0.0f;
+        float fade_duration = 0.0f;
         std::uint64_t seen = 0;     // ultimo frame en que se dibujo
         bool animated = false;      // el frame anterior se animaba (hay que copiar su pose)
     };
@@ -284,6 +292,23 @@ private:
                        const std::vector<std::pair<const water::WaterBody*, core::Mat4>>& bodies);
     std::uint64_t river_version_ = 0;
     void destroyTerrains();
+
+    // Vegetacion (foliage::Foliage): se siembra en otro hilo cuando cambia
+    // algo (el componente, su posicion o el terreno al terminar un trazo) y
+    // se sube entera al renderizador al terminar.
+    void syncFoliage(World& world, gfx::VulkanRenderer& renderer);
+    std::future<std::vector<gfx::FoliageInstance>> foliage_job_;
+    std::uint64_t foliage_signature_ = 0;      // lo que hay en la GPU
+    std::uint64_t foliage_job_signature_ = 0;  // lo que se esta sembrando
+    bool foliage_uploaded_ = false;
+    std::uint64_t foliage_count_ = 0;
+
+public:
+    // Arboles de la vegetacion en la GPU (0 si no hay o aun se siembran).
+    std::uint64_t foliageCount() const { return foliage_count_; }
+    bool foliageGenerating() const { return foliage_job_.valid(); }
+
+private:
 
     struct TerrainGpu {
         std::uint32_t id = 0;

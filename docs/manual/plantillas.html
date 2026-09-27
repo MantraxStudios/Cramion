@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Plantillas · Manual de Cramion</title>
-  <meta name="description" content="Vacío, Tercera persona, IA, Mundo de bloques, MMO RPG y las tuyas.">
+  <meta name="description" content="Vacío, Tercera persona, IA, Mundo de bloques, MMO RPG, Criaturas, Online, Mundo abierto y las tuyas.">
   <link rel="icon" href="../img/icon.png">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -135,6 +135,8 @@
         <a href="ui.html">Interfaz (UI)</a>
         <a href="esqueletos.html">Esqueletos: IK, ragdoll y phys bones</a>
         <a href="graphics.html">Graphics</a>
+        <a href="red.html">Network (multijugador)</a>
+        <a href="http.html">Http y Json</a>
         <a href="prefs.html">Prefs y Game</a>
         <a href="debug.html">Debug</a>
         <p class="mb-1 mt-7 flex items-center gap-2 px-3 text-xs font-semibold uppercase tracking-wider text-slate-500"><svg class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a9 9 0 1 0 0 18c1.1 0 1.5-.8 1.5-1.5 0-.9-.7-1.2-.7-2 0-.8.6-1.5 1.5-1.5H16a5 5 0 0 0 5-5c0-4.4-4-8-9-8Z"/><circle cx="7.5" cy="11" r="1"/><circle cx="10" cy="7" r="1"/><circle cx="15" cy="7.5" r="1"/></svg>Gráficos</p>
@@ -163,7 +165,7 @@
         <span class="flex items-center gap-1.5 text-brand"><svg class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M9 9v11"/></svg>El editor</span>
       </div>
       <h1 class="mt-3 text-4xl font-extrabold tracking-tight text-white">Plantillas</h1>
-      <p class="!mt-3 text-lg !text-slate-400">Vacío, Tercera persona, IA, Mundo de bloques, MMO RPG y las tuyas.</p>
+      <p class="!mt-3 text-lg !text-slate-400">Vacío, Tercera persona, IA, Mundo de bloques, MMO RPG, Criaturas, Online, Mundo abierto y las tuyas.</p>
       <div class="mt-10">
 <p>
   Al crear un proyecto en el Hub se elige una <strong class="text-white">plantilla</strong>. Todas crean su escena, sus
@@ -180,6 +182,8 @@
     <tr><td><code>Mundo de bloques</code></td><td>Supervivencia como Minecraft: mundo infinito con biomas, cuevas, árboles y mar; romper, recoger, inventario de 36 huecos, 13 recetas, vida, hambre, aire, muerte y guardado.</td></tr>
     <tr><td><code>MMO RPG</code></td><td>Un rol online en miniatura. Ver abajo.</td></tr>
     <tr><td><code>Criaturas</code></td><td>IK de animales, Phys Bones y ragdoll con un perro y un maniquí. Ver abajo.</td></tr>
+    <tr><td><code>Online (multijugador)</code></td><td>Una arena por red: crear partida o unirse por IP, chat, marcador, monedas, balón con porterías y eventos. Ver abajo.</td></tr>
+    <tr><td><code>Mundo abierto (rendimiento)</code></td><td>Isla de 8 × 8 km con océano y unos 2 millones de árboles para medir el rendimiento. Ver abajo.</td></tr>
   </tbody>
 </table>
 
@@ -230,6 +234,52 @@
   </tbody>
 </table>
 <p>Scripts: <code>Perro.lua</code>, <code>Maniqui.lua</code>, <code>Pelota.lua</code> y <code>Controles.lua</code>.</p>
+
+<h3 id="online">Online (multijugador)</h3>
+<p>
+  Un juego multijugador completo, <strong>todo en Lua</strong> con la API <a href="red.html">Network</a>. Al darle a Play sale
+  un menú: escribe tu nombre y pulsa <em>Crear partida</em> (eres el servidor y también juegas) o escribe la IP de quien la
+  creó y pulsa <em>Unirse</em>. Para probarlo en un solo PC: crea la partida en el editor y únete a <code>127.0.0.1</code>
+  desde el juego exportado o desde otro editor.
+</p>
+<ul>
+  <li><strong>Jugadores sincronizados</strong>: el servidor crea el personaje de cada uno con <code>Network.spawn</code> y un color propio; cada uno mueve el suyo (<code>isMine</code>) y ve a los demás moverse suavizados. Quien entra tarde ve todo como está.</li>
+  <li><strong>Chat</strong> (escribe en el campo del chat y pulsa Enter) con el nombre de cada jugador y avisos de quién entra y sale.</li>
+  <li><strong>Marcador</strong> con puntos y ping; gana la ronda quien llega antes a los puntos para ganar y empieza otra.</li>
+  <li><strong>Objetos del servidor</strong>: monedas, un balón y cajas con física que simula el servidor. <code>F</code> patea lo que tengas cerca; meter el balón en una portería da puntos.</li>
+  <li><strong>Eventos</strong> cada cierto tiempo: lluvia de monedas o monedas dobles.</li>
+  <li>El servidor decide los puntos: un cliente no puede dárselos a sí mismo.</li>
+</ul>
+<table>
+  <thead><tr><th>Script</th><th>Contiene</th></tr></thead>
+  <tbody>
+    <tr><td><code>Red.lua</code></td><td>El juego: menú, partida, jugadores, chat, marcador, monedas, balón, goles y eventos. Sus propiedades (puerto, jugadores máximos, puntos para ganar, monedas, segundos entre eventos) se cambian en el Inspector.</td></tr>
+    <tr><td><code>JugadorRed.lua</code></td><td>El personaje: lo mueve su dueño (<code>WASD</code>, <code>Shift</code>, <code>Espacio</code>) y la cámara le sigue.</td></tr>
+    <tr><td><code>MonedaRed.lua</code></td><td>Las monedas: giran en cada pantalla y el servidor decide quién las coge.</td></tr>
+  </tbody>
+</table>
+
+<h3 id="mundo-abierto">Mundo abierto (rendimiento)</h3>
+<p>
+  Una <strong>isla de 8 × 8 km</strong> con relieve, playas, rocas y nieve en las cumbres, rodeada de <strong>océano</strong>
+  con oleaje, y unos <strong>2 millones de árboles</strong> (pinos, robles y abedules) con el componente
+  <a href="editor-herramientas.html#vegetacion">Vegetación</a>. Se recorre con un personaje en tercera persona
+  (<code>WASD</code>, <code>Shift</code>, <code>Espacio</code>, clic derecho para girar la cámara). Sirve para medir el
+  motor en tu equipo: el panel de arriba dice los FPS (media, mínimo y máximo), los ms de CPU y GPU, los árboles dibujados y
+  los triángulos.
+</p>
+<table>
+  <thead><tr><th>Tecla</th><th>Qué hace</th></tr></thead>
+  <tbody>
+    <tr><td><code>1</code> - <code>4</code></td><td>Calidad Baja, Media, Alta o Ultra.</td></tr>
+    <tr><td><code>N</code> / <code>M</code></td><td>La mitad o el doble de árboles (se vuelven a sembrar en segundo plano).</td></tr>
+    <tr><td><code>J</code> / <code>L</code></td><td>Menos o más distancia de dibujo de los árboles.</td></tr>
+    <tr><td><code>K</code>, <code>V</code></td><td>Sombras de los árboles sí/no; viento sí/no.</td></tr>
+    <tr><td><code>T</code></td><td>Subir alto para ver el bosque entero, o volver al suelo.</td></tr>
+    <tr><td><code>H</code></td><td>Ocultar o mostrar el panel.</td></tr>
+  </tbody>
+</table>
+<p>Scripts: <code>Jugador.lua</code>, <code>CamaraTercera.lua</code> y <code>Rendimiento.lua</code>. La niebla de la escena es la de mundo abierto (ver <a href="render.html#mundo-abierto">Render</a>).</p>
 
 <h3 id="usuario">Tus plantillas</h3>
 <p>

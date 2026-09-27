@@ -135,6 +135,8 @@
         <a href="ui.html">Interfaz (UI)</a>
         <a href="esqueletos.html">Esqueletos: IK, ragdoll y phys bones</a>
         <a href="graphics.html">Graphics</a>
+        <a href="red.html">Network (multijugador)</a>
+        <a href="http.html">Http y Json</a>
         <a href="prefs.html">Prefs y Game</a>
         <a href="debug.html">Debug</a>
         <p class="mb-1 mt-7 flex items-center gap-2 px-3 text-xs font-semibold uppercase tracking-wider text-slate-500"><svg class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a9 9 0 1 0 0 18c1.1 0 1.5-.8 1.5-1.5 0-.9-.7-1.2-.7-2 0-.8.6-1.5 1.5-1.5H16a5 5 0 0 0 5-5c0-4.4-4-8-9-8Z"/><circle cx="7.5" cy="11" r="1"/><circle cx="10" cy="7" r="1"/><circle cx="15" cy="7.5" r="1"/></svg>Gráficos</p>
@@ -238,6 +240,18 @@
 <p>
   Los <strong>rayos de sol</strong> (<em>Light Shafts</em>) son otro efecto, de pantalla: salen del disco del sol cuando se ve
   en la imagen y se apagan poco a poco al salir de ella. Para haces que se vean en cualquier dirección usa la luz volumétrica.
+</p>
+
+<h3 id="mundo-abierto">Mundos abiertos: niebla y vegetación</h3>
+<p>
+  La <strong>niebla por altura</strong> se ajusta en el <a href="componentes-basicos.html#PostProcessing">post-procesado</a>:
+  <em>Niebla</em> (densidad a nivel 0; 0,0018 por defecto, pensada para escenarios pequeños) y <em>Caída con la
+  altura</em> (más = solo a ras de suelo). En un mundo de kilómetros baja la densidad a unos 0,0002 para ver lejos; con 0
+  no hay niebla. Afecta también al agua. Desde Lua: <code>Graphics.post.fog_density = 0.0002</code>.
+</p>
+<p>
+  Para bosques enteros usa la <a href="editor-herramientas.html#vegetacion">Vegetación</a> en lugar de prefabs sueltos: los
+  árboles se recortan y eligen su detalle en la GPU. Si la GPU va justa, baja su distancia máxima y la de sombras.
 </p>
 
 <h3 id="lods">LODs automáticos</h3>

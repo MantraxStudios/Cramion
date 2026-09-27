@@ -329,6 +329,42 @@ void EditorApp::drawTemplateArt(ImDrawList* draw, ImVec2 a, ImVec2 b, const Proj
             draw->AddLine(head, P(0.88f, 0.16f), IM_COL32(255, 120, 200, 160), t * 0.6f);
             break;
         }
+        case TemplateArt::OpenWorld: {
+            // Isla en el mar con un bosque de pinos y montanas.
+            draw->AddRectFilledMultiColor(ImVec2(a.x, horizon), b, IM_COL32(20, 70, 110, 255), IM_COL32(20, 70, 110, 255),
+                                          IM_COL32(10, 40, 70, 255), IM_COL32(10, 40, 70, 255));
+            draw->AddTriangleFilled(P(0.30f, 0.46f), P(0.52f, 0.12f), P(0.74f, 0.46f), IM_COL32(120, 120, 125, 255));
+            draw->AddTriangleFilled(P(0.45f, 0.22f), P(0.52f, 0.12f), P(0.59f, 0.22f), IM_COL32(240, 240, 245, 255));
+            draw->AddRectFilled(P(0.08f, 0.44f), P(0.92f, 0.52f), IM_COL32(200, 185, 130, 255), h * 0.04f);
+            for (int i = 0; i < 16; ++i) {
+                const float x = 0.12f + 0.05f * static_cast<float>(i);
+                const float s2 = 0.05f + 0.02f * static_cast<float>((i * 7) % 3);
+                draw->AddTriangleFilled(P(x - s2 * 0.5f, 0.46f), P(x, 0.46f - s2 * 2.2f), P(x + s2 * 0.5f, 0.46f),
+                                        IM_COL32(30, 90 + (i * 13) % 50, 45, 255));
+            }
+            break;
+        }
+        case TemplateArt::Online: {
+            // Tres jugadores unidos por lineas de red alrededor de un balon.
+            perspectiveGrid(draw, a, b, horizon, scaled(accent, 1.1f, 70));
+            const ImVec2 nodes[] = {P(0.22f, 0.40f), P(0.78f, 0.36f), P(0.50f, 0.78f)};
+            const ImU32 colors[] = {IM_COL32(40, 128, 235, 255), IM_COL32(230, 50, 45, 255), IM_COL32(60, 200, 90, 255)};
+            for (int i = 0; i < 3; ++i) {
+                for (int j = i + 1; j < 3; ++j) draw->AddLine(nodes[i], nodes[j], IM_COL32(120, 200, 255, 150), 2.0f);
+            }
+            for (int i = 0; i < 3; ++i) {
+                draw->AddCircleFilled(nodes[i], h * 0.13f, IM_COL32(0, 0, 0, 60), 24);
+                draw->AddRectFilled(ImVec2(nodes[i].x - h * 0.05f, nodes[i].y - h * 0.11f), ImVec2(nodes[i].x + h * 0.05f, nodes[i].y + h * 0.09f),
+                                    colors[i], h * 0.05f);
+            }
+            draw->AddCircleFilled(P(0.52f, 0.52f), h * 0.05f, IM_COL32(245, 245, 245, 255), 20);
+            // Globo de chat.
+            draw->AddRectFilled(P(0.62f, 0.10f), P(0.92f, 0.24f), IM_COL32(255, 255, 255, 220), 6.0f);
+            for (int k = 0; k < 3; ++k) {
+                draw->AddCircleFilled(P(0.70f + 0.07f * static_cast<float>(k), 0.17f), h * 0.018f, scaled(accent, 0.8f));
+            }
+            break;
+        }
         case TemplateArt::User: {
             perspectiveGrid(draw, a, b, horizon, scaled(accent, 1.1f, 70));
             draw->AddRectFilled(P(0.36f, 0.26f), P(0.5f, 0.34f), scaled(accent, 1.3f), 4.0f);
@@ -958,8 +994,12 @@ void EditorApp::drawHubUpdates() {
         ImGui::TextUnformatted("Buscando la última versión...");
     } else if (fresh) {
         ImGui::PushFont(nullptr, ImGui::GetFontSize() * 1.2f);
-        ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(kAccent), "Cramion %s está disponible", update_release_.version.str().c_str());
+        ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(kAccent), "Cramion %s%s está disponible", update_release_.version.str().c_str(),
+                           update_release_.prerelease ? " (beta)" : "");
         ImGui::PopFont();
+        if (update_release_.prerelease) {
+            ImGui::TextColored(ImVec4(0.95f, 0.67f, 0.16f, 1.0f), "Versión beta: trae lo último pero puede tener fallos.");
+        }
         ImGui::TextDisabled("Al actualizar se cierra el Hub, el actualizador descarga e instala la versión nueva y vuelve a "
                             "abrir el Hub. Tus proyectos no se tocan.");
         if (update_release_.zip_url.empty()) {
@@ -1014,6 +1054,21 @@ void EditorApp::drawHubUpdates() {
         update::Settings s = update::loadSettings();
         s.check_on_startup = update_settings_.check_on_startup;
         update::saveSettings(s);
+    }
+    ImGui::SameLine(0.0f, 30.0f);
+    {
+        // Canal: estable o beta (el canal beta tambien recibe las versiones previas).
+        int channel = update_settings_.channel == "beta" ? 1 : 0;
+        ImGui::SetNextItemWidth(150.0f);
+        if (ImGui::Combo("##canal", &channel, "Canal estable\0Canal beta\0")) {
+            update::Settings s = update::loadSettings();
+            s.channel = channel == 1 ? "beta" : "estable";
+            update::saveSettings(s);
+            update_settings_.channel = s.channel;
+            update_known_ = false;
+            startUpdateCheck(true);
+        }
+        ImGui::SetItemTooltip("Beta: recibe también las versiones previas (salen antes, pueden tener fallos)");
     }
     if (!update_settings_.skipped_version.empty()) {
         ImGui::SameLine(0.0f, 30.0f);

@@ -153,7 +153,21 @@ int main(int argc, char** argv) {
         check(Version::parse("1.0.0") > Version::parse("0.99.99"), "1.0.0 > 0.99.99");
         check(!Version::parse("sin numero").valid, "texto sin version no vale");
         check(update::currentVersion() == Version::parse(CRAMION_VERSION_STRING), "version actual = la del proyecto");
+
+        // Versiones previas (canal beta), como semver.
+        const Version b1 = Version::parse("v0.7.0-beta.1"), b2 = Version::parse("v0.7.0-beta.2"),
+                      b10 = Version::parse("0.7.0-beta.10"), final7 = Version::parse("0.7.0"), a1 = Version::parse("0.7.0-alpha.3");
+        check(b1.pre == "beta.1" && b1.str() == "0.7.0-beta.1", "v0.7.0-beta.1 se lee con su sufijo");
+        check(b1 < b2 && b2 < b10, "beta.1 < beta.2 < beta.10 (numerico)");
+        check(b10 < final7, "la beta va antes que la estable 0.7.0");
+        check(a1 < b1, "alpha < beta");
+        check(Version::parse("0.6.2") < b1, "0.6.2 < 0.7.0-beta.1");
+        check(Version::parse("Cramion 0.7.0 para Windows").pre.empty(), "texto despues de un espacio no es sufijo");
     }
+
+    std::cout << "SHA-256\n";
+    check(update::sha256Hex("abc", 3) == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", "SHA-256 de \"abc\"");
+    check(update::sha256Hex("", 0) == "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "SHA-256 vacio");
 
     std::cout << "Feed (formato de GitHub)\n";
     {
@@ -193,6 +207,24 @@ int main(int argc, char** argv) {
                   error.find("rate limit") != std::string::npos,
               "mensaje de error de GitHub");
         check(!update::parseRelease("<html>", r, &error), "respuesta que no es JSON");
+
+        // Canal beta: la lista con la previa mas nueva.
+        const std::string betas = R"([
+            {"tag_name": "v0.9.0", "draft": true},
+            {"tag_name": "v0.8.0-beta.2", "prerelease": true, "assets": [
+                {"name": "Cramion-win64.zip", "browser_download_url": "https://x/b.zip", "size": 10,
+                 "digest": "sha256:BA7816BF8F01CFEA414140DE5DAE2223B00361A396177A9CB410FF61F20015AD"}]},
+            {"tag_name": "v0.7.1"}])";
+        check(update::parseRelease(betas, r, &error, {}, true) && r.version == update::Version::parse("0.8.0-beta.2") && r.prerelease,
+              "canal beta: elige la 0.8.0-beta.2");
+        check(r.sha256 == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", "lee el digest de GitHub (en minusculas)");
+        check(update::parseRelease(betas, r, &error) && r.version == update::Version::parse("0.7.1") && !r.prerelease,
+              "canal estable: se salta la beta");
+        const std::string sidecar = R"({"tag_name": "v1.0.0", "assets": [
+            {"name": "Cramion-win64.zip", "browser_download_url": "https://x/Cramion-win64.zip"},
+            {"name": "Cramion-win64.zip.sha256", "browser_download_url": "https://x/Cramion-win64.zip.sha256"}]})";
+        check(update::parseRelease(sidecar, r, &error) && r.sha256.empty() && r.sha256_url == "https://x/Cramion-win64.zip.sha256",
+              "encuentra el Cramion-win64.zip.sha256 publicado al lado");
     }
 
     std::cout << "Formatos\n";
@@ -227,6 +259,23 @@ int main(int argc, char** argv) {
           "descarga: " + error);
     check(calls > 0 && last_done == zip_size && fs::file_size(zip) == zip_size, "progreso hasta el final");
     check(!fs::exists(zip.wstring() + L".part"), "sin .part al terminar");
+    {
+        const std::string real = update::sha256File(zip);
+        bool verified = false;
+        update::Release r = release;
+        check(update::verifyPackage(r, zip, &verified, &error) && !verified, "sin SHA-256 publicado: se instala, sin verificar");
+        r.sha256 = real;
+        check(update::verifyPackage(r, zip, &verified, &error) && verified, "SHA-256 correcto: verificado");
+        r.sha256 = std::string(64, '0');
+        check(!update::verifyPackage(r, zip, &verified, &error) && error.find("no coincide") != std::string::npos,
+              "SHA-256 distinto: se rechaza");
+        writeAll(feed_dir / "Cramion-win64.zip.sha256", real + "  Cramion-win64.zip\n");
+        r.sha256.clear();
+        r.sha256_url = update::narrow((feed_dir / "Cramion-win64.zip.sha256").wstring());
+        check(update::verifyPackage(r, zip, &verified, &error) && verified, "comprueba con el .sha256 de al lado");
+        writeAll(feed_dir / "Cramion-win64.zip.sha256", std::string(64, 'f') + "\n");
+        check(!update::verifyPackage(r, zip, &verified, &error), ".sha256 de al lado que no coincide: se rechaza");
+    }
     check(!update::downloadFile(release.zip_url, root / "downloads" / "cancelada.zip",
                                 [](std::uint64_t, std::uint64_t) { return false; }, &error) &&
               !fs::exists(root / "downloads" / "cancelada.zip") && !fs::exists(root / "downloads" / "cancelada.zip.part"),
@@ -306,7 +355,12 @@ int main(int argc, char** argv) {
         update::saveSettings(s);
         const update::Settings t = update::loadSettings();
         check(!t.check_on_startup && t.skipped_version == "9.9.9", "ajustes guardados");
-        check(update::feedUrl() == update::kDefaultFeed, "feed por defecto: GitHub");
+        check(update::feedUrl() == update::kDefaultFeed && !update::betaChannel(), "feed por defecto: GitHub, canal estable");
+        s.channel = "beta";
+        update::saveSettings(s);
+        check(update::betaChannel() && update::feedUrl() == update::kBetaFeed, "canal beta: la lista de releases");
+        s.channel = "estable";
+        update::saveSettings(s);
         SetEnvironmentVariableW(L"CRAMION_UPDATE_FEED", L"file:///C:/feed.json");
         check(update::feedUrl() == "file:///C:/feed.json", "CRAMION_UPDATE_FEED manda");
         SetEnvironmentVariableW(L"CRAMION_UPDATE_FEED", nullptr);

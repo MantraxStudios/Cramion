@@ -69,7 +69,7 @@
     <div class="relative mx-auto max-w-6xl px-4 pb-20 pt-20 text-center sm:px-6 sm:pt-28">
       <img src="img/icon.png" alt="Logo de Cramion" class="mx-auto mb-8 h-24 w-24 drop-shadow-[0_0_40px_rgba(10,176,255,.35)]">
       <p class="mb-4 inline-flex items-center gap-2 rounded-full border border-line bg-panel px-3 py-1 text-xs font-medium text-slate-400">
-        <span class="h-1.5 w-1.5 rounded-full bg-brand"></span> v0.6.2 · Vulkan 1.3 · Windows x64
+        <span class="h-1.5 w-1.5 rounded-full bg-brand"></span> v0.7.0 · Vulkan 1.3 · Windows x64
       </p>
       <h1 class="mx-auto max-w-4xl text-4xl font-extrabold leading-tight tracking-tight text-white sm:text-6xl">
         Crea juegos 3D para Windows.<br><span class="text-brand">Editor, física y Lua en un solo motor.</span>
@@ -165,7 +165,7 @@
           </li>
           <li class="flex gap-4">
             <span class="mt-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-brand/15 font-mono text-sm text-brand">04</span>
-            <div><h3 class="font-semibold text-white">Animación y cinemáticas</h3><p class="text-sm text-slate-400">Animator con parámetros, IK de humanos y animales (patas al suelo, cuellos, colas), ragdoll con Jolt, Phys Bones como los de VRChat, huesos que se ven y se mueven, sockets y retargeting de humanoides; línea de tiempo para cinemáticas.</p></div>
+            <div><h3 class="font-semibold text-white">Animación y cinemáticas</h3><p class="text-sm text-slate-400">Animator con parámetros, Blend Trees 1D y 2D y fundidos, IK de humanos y animales (patas al suelo, cuellos, colas), ragdoll con Jolt, Phys Bones como los de VRChat, huesos que se ven y se mueven, sockets y retargeting de humanoides; línea de tiempo para cinemáticas.</p></div>
           </li>
           <li class="flex gap-4">
             <span class="mt-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-brand/15 font-mono text-sm text-brand">05</span>
@@ -173,7 +173,7 @@
           </li>
           <li class="flex gap-4">
             <span class="mt-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-brand/15 font-mono text-sm text-brand">06</span>
-            <div><h3 class="font-semibold text-white">Editor y exportación</h3><p class="text-sm text-slate-400">Editor con paneles acoplables, pestañas para editar prefabs y scripts, modo Play y exportación con configuraciones de compilación (nombre, icono dentro del .exe, ventana) y <code class="font-mono text-slate-300">CramionPlayer.exe</code>. Hub con plantillas y actualizador propio: avisa de las versiones nuevas y las instala guardando antes tu trabajo.</p></div>
+            <div><h3 class="font-semibold text-white">Editor y exportación</h3><p class="text-sm text-slate-400">Editor con paneles acoplables, pestañas para editar prefabs y scripts, modo Play y exportación con configuraciones de compilación (nombre, icono dentro del .exe, ventana) y <code class="font-mono text-slate-300">CramionPlayer.exe</code>. Hub con plantillas y actualizador propio: avisa de las versiones nuevas y las instala guardando antes tu trabajo, comprobando la descarga con SHA-256; canal beta opcional.</p></div>
           </li>
           <li class="flex gap-4">
             <span class="mt-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-brand/15 font-mono text-sm text-brand">07</span>
@@ -201,7 +201,15 @@
           </li>
           <li class="flex gap-4">
             <span class="mt-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-brand/15 font-mono text-sm text-brand">13</span>
-            <div><h3 class="font-semibold text-white">Plantillas de juego</h3><p class="text-sm text-slate-400">Empieza desde un MMO RPG con todo el juego en Lua (combate, misiones, inventario, tienda, jefe y bots), un survival de bloques o las Criaturas (perro con IK y ragdoll), y cámbialo a tu gusto.</p></div>
+            <div><h3 class="font-semibold text-white">Plantillas de juego</h3><p class="text-sm text-slate-400">Empieza desde un MMO RPG con todo el juego en Lua (combate, misiones, inventario, tienda, jefe y bots), un juego Online con chat, marcador y objetos sincronizados, un mundo abierto con 2 millones de árboles, un survival de bloques o las Criaturas (perro con IK y ragdoll), y cámbialo a tu gusto.</p></div>
+          </li>
+          <li class="flex gap-4">
+            <span class="mt-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-brand/15 font-mono text-sm text-brand">14</span>
+            <div><h3 class="font-semibold text-white">Multijugador y HTTPS</h3><p class="text-sm text-slate-400">Partidas por red desde Lua: crear y unirse por IP, mensajes, objetos y variables sincronizados, jugadores que entran tarde y cambio de escena para todos. Y peticiones HTTPS seguras con JSON para hablar con tu servidor o cualquier web.</p></div>
+          </li>
+          <li class="flex gap-4">
+            <span class="mt-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-brand/15 font-mono text-sm text-brand">15</span>
+            <div><h3 class="font-semibold text-white">Bosques de millones de árboles</h3><p class="text-sm text-slate-400">Vegetación sembrada sobre el terreno y dibujada en la GPU: recorte, 3 niveles de detalle, sombras y viento. Niebla ajustable para ver a kilómetros.</p></div>
           </li>
         </ul>
 
@@ -209,7 +217,7 @@
           <p class="mb-4 text-xs uppercase tracking-wider text-slate-500">Arquitectura</p>
           <div class="space-y-3">
             <div class="rounded-lg border border-brand/50 bg-brand/10 p-3"><span class="text-brand">CramionEditor</span> <span class="text-slate-500">· CramionPlayer</span><p class="mt-1 font-sans text-xs text-slate-400">Editor de escenas (Dear ImGui) y ejecutable del juego exportado</p></div>
-            <div class="rounded-lg border border-line bg-panel p-3"><span class="text-white">CramionCore</span><p class="mt-1 font-sans text-xs text-slate-400">ECS, assets, física, scripting Lua, audio, terreno, agua, UI, cinemáticas</p></div>
+            <div class="rounded-lg border border-line bg-panel p-3"><span class="text-white">CramionCore</span><p class="mt-1 font-sans text-xs text-slate-400">ECS, assets, física, scripting Lua, audio, terreno, agua, vegetación, UI, cinemáticas, red (ENet) y HTTPS</p></div>
             <div class="rounded-lg border border-line bg-panel p-3"><span class="text-white">CramionFX</span><p class="mt-1 font-sans text-xs text-slate-400">Renderizador Vulkan 1.3 y sus shaders GLSL → SPIR-V</p></div>
             <div class="rounded-lg border border-line bg-panel p-3"><span class="text-white">CramionDM</span><p class="mt-1 font-sans text-xs text-slate-400">Plataforma: ventana Win32, entrada, dispositivo DirectX 12</p></div>
           </div>
@@ -231,6 +239,8 @@
         </p>
         <ul class="mt-6 space-y-2 text-sm">
           <li class="flex gap-2"><span class="text-brand">✓</span> Vec3, Entity, Scene, Input, Time, Physics, Navigation, Audio, Graphics, Prefs, Mathf</li>
+          <li class="flex gap-2"><span class="text-brand">✓</span> <a href="manual/red.html" class="hover:text-white"><code class="font-mono text-slate-300">Network</code></a> para multijugador y <a href="manual/http.html" class="hover:text-white"><code class="font-mono text-slate-300">Http</code> + <code class="font-mono text-slate-300">Json</code></a> para hablar con servidores por HTTPS</li>
+          <li class="flex gap-2"><span class="text-brand">✓</span> Autocompletado de toda la API en el editor de scripts</li>
           <li class="flex gap-2"><span class="text-brand">✓</span> Recarga en caliente y consola Lua en el editor</li>
           <li class="flex gap-2"><span class="text-brand">✓</span> Eventos de interfaz conectados a métodos del script</li>
           <li class="flex gap-2"><span class="text-brand">✓</span> Entorno aislado: sin acceso al sistema de archivos</li>
@@ -276,7 +286,7 @@ return Jugador</code></pre>
         <div class="relative grid items-center gap-10 lg:grid-cols-2">
           <div>
             <p class="text-sm font-semibold uppercase tracking-widest text-brand">Descargar</p>
-            <h2 class="mt-2 text-3xl font-bold text-white sm:text-4xl">Cramion 0.6.2 para Windows</h2>
+            <h2 class="mt-2 text-3xl font-bold text-white sm:text-4xl">Cramion 0.7.0 para Windows</h2>
             <p class="mt-4 text-slate-400">
               Build Release listo para usar: descomprime y abre <code class="font-mono text-slate-300">CramionEditor.exe</code>.
               Incluye el editor, el player para exportar juegos, el actualizador y el runtime de C++. Desde la 0.6.2, Cramion avisa y se actualiza solo.

@@ -63,6 +63,22 @@
   bajo el agua ve niebla y cáusticas y lo que se mueve deja ondas.
 </p>
 
+<h3 id="vegetacion">Vegetación (bosques)</h3>
+<p>
+  <em>GameObject &gt; Vegetación (bosque)</em> crea un bosque sobre el primer terreno (centrado en él y de su tamaño). El
+  componente <a href="componentes-entorno.html#Foliage">Vegetación</a> siembra <strong>millones de árboles</strong> (pinos,
+  robles y abedules, con su mezcla) en segundo plano: los apoya en el terreno y evita el agua (altura mínima), las pendientes
+  fuertes y los <strong>claros</strong> (círculos sin árboles para poblados, caminos o el punto de partida). Se elige la
+  densidad (árboles por hectárea), la semilla, el tamaño y el tope de árboles.
+</p>
+<p>
+  Se dibujan en la GPU sin coste por árbol en la CPU: un <em>compute shader</em> descarta los que no se ven y elige para cada
+  uno entre tres niveles de detalle según la distancia (<em>LOD 1</em>, <em>LOD 2</em> y distancia máxima), y proyectan
+  sombra hasta la <em>distancia de sombras</em>. El viento mueve las copas. Cuántos se dibujan sale en
+  <a href="graphics.html">Graphics</a> (<code>foliage_visible</code>). Ejemplo: la plantilla
+  <a href="plantillas.html#mundo-abierto">Mundo abierto</a>.
+</p>
+
 <h3 id="postvolumenes">Volúmenes de post-procesado</h3>
 <p>
   <em>GameObject &gt; Volumen de post-procesado &gt; Global / Caja / Esfera</em>. Uno local cambia el aspecto con la cámara

@@ -135,6 +135,8 @@
         <a href="ui.html">Interfaz (UI)</a>
         <a href="esqueletos.html">Esqueletos: IK, ragdoll y phys bones</a>
         <a href="graphics.html">Graphics</a>
+        <a href="red.html">Network (multijugador)</a>
+        <a href="http.html">Http y Json</a>
         <a href="prefs.html">Prefs y Game</a>
         <a href="debug.html">Debug</a>
         <p class="mb-1 mt-7 flex items-center gap-2 px-3 text-xs font-semibold uppercase tracking-wider text-slate-500"><svg class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a9 9 0 1 0 0 18c1.1 0 1.5-.8 1.5-1.5 0-.9-.7-1.2-.7-2 0-.8.6-1.5 1.5-1.5H16a5 5 0 0 0 5-5c0-4.4-4-8-9-8Z"/><circle cx="7.5" cy="11" r="1"/><circle cx="10" cy="7" r="1"/><circle cx="15" cy="7.5" r="1"/></svg>Gráficos</p>
@@ -247,6 +249,35 @@
     <tr><td colspan="5"><strong class="text-white">Puntos del rio (lista)</strong> <code>points</code> — Locales a la entidad</td></tr>
     <tr><td>&nbsp;&nbsp;&nbsp;Posicion<br><code>position</code></td><td>Vec3 (metros)</td><td>(0; 0; 0)</td><td></td><td></td></tr>
     <tr><td>&nbsp;&nbsp;&nbsp;Ancho<br><code>width</code></td><td>numero</td><td>8</td><td>0,5 a 500</td><td></td></tr>
+  </tbody>
+</table>
+<h3 id="Foliage">Vegetacion (bosque instanciado) <code>Foliage</code></h3>
+<p>Bosques de <strong>millones de arboles</strong> (pinos, robles y abedules) sembrados en segundo plano sobre el terreno, evitando el agua, las pendientes y los <em>claros</em>. La GPU los recorta y elige su nivel de detalle (3 LODs), con sombras cercanas y viento. Ver <a href="editor-herramientas.html#vegetacion">Vegetacion</a>.</p>
+<table>
+  <thead><tr><th>Propiedad</th><th>Tipo</th><th>Por defecto</th><th>Valores</th><th>Descripcion</th></tr></thead>
+  <tbody>
+    <tr><td>Area (m)<br><code>area</code></td><td>numero</td><td>2000</td><td>10 a 64000</td><td>Lado del cuadrado sembrado, centrado en el objeto</td></tr>
+    <tr><td>Densidad<br><code>density</code></td><td>numero</td><td>60</td><td>0,1 a 2000</td><td>Arboles por hectarea (100 x 100 m). 60 = bosque; 300 = muy denso</td></tr>
+    <tr><td>Semilla<br><code>seed</code></td><td>entero</td><td>1</td><td>0 a 1000000</td><td>Otra semilla, otro bosque (la misma, el mismo)</td></tr>
+    <tr><td>Pinos<br><code>pine</code></td><td>numero</td><td>0,5</td><td>0 a 1</td><td>Peso de los pinos en la mezcla</td></tr>
+    <tr><td>Robles<br><code>oak</code></td><td>numero</td><td>0,3</td><td>0 a 1</td><td>Peso de los robles en la mezcla</td></tr>
+    <tr><td>Abedules<br><code>birch</code></td><td>numero</td><td>0,2</td><td>0 a 1</td><td>Peso de los abedules en la mezcla</td></tr>
+    <tr><td>Escala minima<br><code>min_scale</code></td><td>numero</td><td>0,8</td><td>0,25 a 4</td><td></td></tr>
+    <tr><td>Escala maxima<br><code>max_scale</code></td><td>numero</td><td>1,35</td><td>0,25 a 4</td><td></td></tr>
+    <tr><td>Sobre el terreno<br><code>on_terrain</code></td><td>si/no</td><td>si</td><td></td><td>Apoyarlos en el terreno de debajo (si no, a la altura del objeto)</td></tr>
+    <tr><td>Altura minima<br><code>min_height</code></td><td>numero</td><td>1,5</td><td>-10000 a 10000</td><td>No por debajo de esta altura del mundo (el mar, la playa)</td></tr>
+    <tr><td>Altura maxima<br><code>max_height</code></td><td>numero</td><td>100000</td><td>-10000 a 100000</td><td>No por encima (cumbres sin arboles)</td></tr>
+    <tr><td>Pendiente maxima<br><code>max_slope</code></td><td>numero</td><td>32</td><td>0 a 90</td><td></td></tr>
+    <tr><td colspan="5"><strong class="text-white">Claros (lista)</strong> <code>clearings</code> — Zonas sin arboles: poblados, caminos, el punto de partida</td></tr>
+    <tr><td>&nbsp;&nbsp;&nbsp;Centro<br><code>center</code></td><td>Vec3 (metros)</td><td>(0; 0; 0)</td><td></td><td>En el mundo (solo cuentan x y z)</td></tr>
+    <tr><td>&nbsp;&nbsp;&nbsp;Radio<br><code>radius</code></td><td>numero</td><td>20</td><td>0 a 10000</td><td></td></tr>
+    <tr><td>Maximo de arboles<br><code>max_instances</code></td><td>entero</td><td>4000000</td><td>1 a 8000000</td><td>Tope de seguridad (memoria de la GPU: ~40 bytes por arbol)</td></tr>
+    <tr><td>Detalle medio desde<br><code>lod1_distance</code></td><td>numero</td><td>120</td><td>5 a 5000</td><td>Distancia (m) a la que pasan a la malla media</td></tr>
+    <tr><td>Detalle bajo desde<br><code>lod2_distance</code></td><td>numero</td><td>450</td><td>10 a 20000</td><td>Distancia (m) a la que pasan a la malla lejana</td></tr>
+    <tr><td>Distancia maxima<br><code>max_distance</code></td><td>numero</td><td>3000</td><td>50 a 50000</td><td>Mas lejos no se dibujan</td></tr>
+    <tr><td>Sombras hasta<br><code>shadow_distance</code></td><td>numero</td><td>140</td><td>0 a 2000</td><td>Los arboles mas cerca que esto proyectan sombra</td></tr>
+    <tr><td>Proyectan sombra<br><code>cast_shadows</code></td><td>si/no</td><td>si</td><td></td><td></td></tr>
+    <tr><td>Viento<br><code>wind</code></td><td>numero</td><td>1</td><td>0 a 5</td><td>Cuanto se mecen las copas (0 = quietos)</td></tr>
   </tbody>
 </table>
 <h3 id="VoxelWorld">Mundo de bloques <code>VoxelWorld</code></h3>

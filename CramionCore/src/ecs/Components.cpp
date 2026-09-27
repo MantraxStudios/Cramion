@@ -242,6 +242,8 @@ void blendPostProcess(gfx::PostProcessSettings& o, const gfx::PostProcessSetting
         o.volumetric_density = lerpf(from, to, t);
         o.volumetric_light = o.volumetric_density > 0.0f;
         f(o.volumetric_anisotropy, v.volumetric_anisotropy);
+        f(o.fog_density, v.fog_density);
+        f(o.fog_height_falloff, v.fog_height_falloff);
     }
     if (mask & kPostPerformance) {
         b(o.lods, v.lods);
@@ -608,6 +610,12 @@ void PostProcessing::reflect(PropertyVisitor& v) {
                                                              "cerca de 1 = hacia delante"},
                     s.volumetric_anisotropy, FloatRange{-0.9f, 0.95f, 0.01f, "%.2f", true});
         }
+        v.field({"fog_density", "Niebla", "Densidad de la niebla por altura a nivel 0 (1/m). 0.0018 = bruma de un "
+                                          "escenario pequeno; 0.0002 = mundo abierto (se ve a kilometros); 0 = sin niebla"},
+                s.fog_density, FloatRange{0.0f, 0.05f, 0.0001f, "%.4f /m"});
+        v.field({"fog_height_falloff", "Niebla: caida con la altura", "Lo rapido que se aclara al subir (1/m): mas = "
+                                                                     "solo a ras de suelo"},
+                s.fog_height_falloff, FloatRange{0.0001f, 1.0f, 0.001f, "%.3f /m"});
         v.endGroup();
     }
 

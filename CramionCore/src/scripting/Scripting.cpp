@@ -7,6 +7,9 @@
 #include "CramionCore/ecs/Prefab.h"
 #include "CramionCore/ecs/MathUtil.h"
 #include "CramionCore/ecs/Rigging.h"
+#include "CramionCore/net/Http.h"
+#include "CramionCore/net/Network.h"
+#include "CramionCore/net/NetworkObject.h"
 #include "CramionCore/physics/Ragdoll.h"
 #include "CramionCore/navigation/Navigation.h"
 #include "CramionCore/physics/PhysicsSystem.h"
@@ -19,6 +22,7 @@
 
 #define SOL_ALL_SAFETIES_ON 1
 #include <sol/sol.hpp>
+#include <nlohmann/json.hpp>
 
 #include <algorithm>
 #include <cctype>
@@ -360,6 +364,7 @@ void registerScriptComponents() {
     if (registry.find("Script") == nullptr) {
         registry.registerComponent<Script>("Script", "Script (Lua)", "Scripting");
     }
+    net::registerNetworkComponents();
 }
 
 // -----------------------------------------------------------------------------
@@ -388,6 +393,19 @@ struct ScriptSystem::Impl {
     int listener = -1;
     std::vector<physics::PhysicsEvent> events;
     std::vector<entt::entity> pending_destroy;
+
+    // --- Multijugador ---
+    // La sesion sobrevive a stop() (cambios de escena); los manejadores de Lua no.
+    std::unique_ptr<net::NetworkSession> network;
+    std::unordered_map<std::uint32_t, entt::entity> net_entities;
+    std::unordered_map<std::string, sol::protected_function> net_handlers;
+    sol::protected_function on_player_joined, on_player_left, on_connected, on_disconnected;
+
+    // --- HTTPS (tabla Http): peticiones en hilos aparte; las respuestas se
+    // entregan en update(). Se cancelan al parar (sus funciones son del Lua
+    // que se va).
+    std::unique_ptr<net::HttpClient> http;
+    std::unordered_map<std::uint32_t, sol::protected_function> http_callbacks;
 
     struct Instance {
         std::string file;
@@ -538,6 +556,712 @@ struct ScriptSystem::Impl {
         if (n == "mouse y") return -input->mouseDeltaY() * 0.1f;
         if (n == "mouse scrollwheel") return input->scrollY();
         return 0.0f;
+    }
+
+    // --- Multijugador ---
+    net::NetValue toNet(const sol::object& o, int depth = 0) {
+        switch (o.get_type()) {
+            case sol::type::boolean: return net::NetValue::boolean(o.as<bool>());
+            case sol::type::number: return net::NetValue::num(o.as<double>());
+            case sol::type::string: return net::NetValue::str(o.as<std::string>());
+            case sol::type::userdata:
+                if (o.is<Vec3>()) return net::NetValue::vec3(o.as<Vec3>());
+                if (o.is<LuaEntity>()) {
+                    // Una entidad viaja como su id de red (0 si no es de red).
+                    const net::NetworkObject* n = netObject(o.as<LuaEntity>());
+                    return net::NetValue::num(n != nullptr ? n->net_id : 0);
+                }
+                return {};
+            case sol::type::table: {
+                net::NetValue t;
+                t.type = net::NetValue::Type::Table;
+                if (depth > 12) return t;
+                for (const auto& [k, v] : o.as<sol::table>()) {
+                    t.entries.emplace_back(toNet(k, depth + 1), toNet(v, depth + 1));
+                }
+                return t;
+            }
+            default: return {};
+        }
+    }
+
+    sol::object fromNet(sol::state_view L, const net::NetValue& v) {
+        switch (v.type) {
+            case net::NetValue::Type::Nil: return sol::lua_nil;
+            case net::NetValue::Type::Bool: return sol::make_object(L, v.flag);
+            case net::NetValue::Type::Number:
+                // Enteros como enteros (Lua 5.4 distingue 2 de 2.0).
+                if (v.number == std::floor(v.number) && std::abs(v.number) < 9.0e15) {
+                    return sol::make_object(L, static_cast<lua_Integer>(v.number));
+                }
+                return sol::make_object(L, v.number);
+            case net::NetValue::Type::String: return sol::make_object(L, v.text);
+            case net::NetValue::Type::Vec3: return sol::make_object(L, v.vector);
+            case net::NetValue::Type::Table: {
+                sol::table t = L.create_table();
+                for (const auto& [k, value] : v.entries) {
+                    sol::object key = fromNet(L, k);
+                    if (key.get_type() != sol::type::lua_nil) t.raw_set(key, fromNet(L, value));
+                }
+                return t;
+            }
+        }
+        return sol::lua_nil;
+    }
+
+    net::NetworkObject* netObject(const LuaEntity& e) {
+        const ecs::Entity x = e.get();
+        return x.valid() ? x.tryGet<net::NetworkObject>() : nullptr;
+    }
+
+    net::NetworkSession& session() {
+        if (!network) network = std::make_unique<net::NetworkSession>();
+        return *network;
+    }
+
+    template <typename... Args>
+    void callNet(sol::protected_function& fn, Args&&... args) {
+        if (!fn.valid()) return;
+        sol::protected_function_result r = fn(std::forward<Args>(args)...);
+        if (!r.valid()) {
+            sol::error e = r;
+            fail("Network", e.what());
+        }
+    }
+
+    // Al salir de la partida, los objetos de red desaparecen de la escena.
+    void destroyNetEntities() {
+        for (const auto& [id, handle] : net_entities) {
+            if (world != nullptr && world->registry().valid(handle)) pending_destroy.push_back(handle);
+        }
+        net_entities.clear();
+    }
+
+    ecs::Entity netEntity(std::uint32_t net_id) const {
+        const auto it = net_entities.find(net_id);
+        if (it == net_entities.end() || world == nullptr || !world->registry().valid(it->second)) return {};
+        return world->wrap(it->second);
+    }
+
+    // Prefab de red: la misma ruta en todos (dentro de Assets, con o sin .crprefab).
+    ecs::Entity instantiateNetPrefab(const std::string& prefab) {
+        if (world == nullptr) return {};
+        std::filesystem::path file = root / fromUtf8(prefab);
+        if (file.extension() != ecs::kPrefabExtension) file += ecs::kPrefabExtension;
+        const std::string text = prefab_cache(file);
+        if (text.empty()) {
+            write(2, "Network: no existe el prefab \"" + prefab + "\"");
+            return {};
+        }
+        return ecs::instantiatePrefab(*world, text);
+    }
+
+    ecs::Entity attachNet(ecs::Entity e, std::uint32_t net_id, std::uint32_t owner, const Vec3& position,
+                          const core::Quat& rotation) {
+        if (!e.valid()) return e;
+        e.setWorldPosition(position);
+        e.setLocalRotation(rotation);
+        net::NetworkObject& n = e.has<net::NetworkObject>() ? e.get<net::NetworkObject>() : e.add<net::NetworkObject>();
+        n.net_id = net_id;
+        n.owner = owner;
+        n.has_target = false;
+        n.target_position = position;
+        n.target_rotation = rotation;
+        n.target_velocity = Vec3{};
+        n.target_age = 0.0f;
+        n.last_position = position;
+        n.last_rotation = rotation;
+        n.predicted = false;
+        // La copia de otro la mueve la red: su Rigidbody dinamico pasa a
+        // cinematico (sigue la posicion recibida y empuja a los demas), salvo
+        // con fisica local: sigue dinamico aqui (se puede empujar) y la red lo
+        // corrige.
+        if (network && owner != network->localId()) {
+            if (physics::Rigidbody* rb = e.tryGet<physics::Rigidbody>(); rb != nullptr && rb->type == physics::BodyType::Dynamic) {
+                if (n.local_physics) n.predicted = true;
+                else rb->type = physics::BodyType::Kinematic;
+            }
+        }
+        net_entities[net_id] = e.handle();
+        return e;
+    }
+
+    // Eventos de la red (antes de crear las instancias nuevas del frame: los
+    // objetos que llegan ya tienen su Start este mismo frame).
+    void pollNetwork(float dt) {
+        if (!network || network->role() == net::NetRole::None) return;
+        network->update();
+        sol::state_view L = *lua;
+        for (net::NetEvent& ev : network->takeEvents()) {
+            switch (ev.type) {
+                case net::NetEvent::Type::Connected: callNet(on_connected, static_cast<lua_Integer>(ev.peer)); break;
+                case net::NetEvent::Type::Disconnected:
+                    destroyNetEntities();
+                    callNet(on_disconnected, ev.text);
+                    break;
+                case net::NetEvent::Type::PlayerJoined: callNet(on_player_joined, static_cast<lua_Integer>(ev.peer)); break;
+                case net::NetEvent::Type::PlayerLeft: callNet(on_player_left, static_cast<lua_Integer>(ev.peer)); break;
+                case net::NetEvent::Type::Message: {
+                    const auto it = net_handlers.find(ev.text);
+                    if (it != net_handlers.end()) callNet(it->second, fromNet(L, ev.value), static_cast<lua_Integer>(ev.peer));
+                    break;
+                }
+                case net::NetEvent::Type::Spawn: {
+                    if (netEntity(ev.net_id).valid()) break;
+                    const ecs::Entity e = instantiateNetPrefab(ev.text);
+                    attachNet(e, ev.net_id, ev.owner, ev.position, ev.rotation);
+                    break;
+                }
+                case net::NetEvent::Type::Despawn: {
+                    if (const ecs::Entity e = netEntity(ev.net_id); e.valid()) pending_destroy.push_back(e.handle());
+                    net_entities.erase(ev.net_id);
+                    break;
+                }
+                case net::NetEvent::Type::Transform: {
+                    const ecs::Entity e = netEntity(ev.net_id);
+                    if (net::NetworkObject* n = e.valid() ? e.tryGet<net::NetworkObject>() : nullptr) {
+                        // Velocidad del dueno entre las dos ultimas posiciones
+                        // (la prediccion sigue rodando entre envios).
+                        if (n->has_target) {
+                            const float gap = std::max(n->target_age, 1.0f / 60.0f);
+                            Vec3 v = (ev.position - n->target_position) * (1.0f / gap);
+                            if (core::length(v) > 50.0f || n->target_age > 0.5f) v = Vec3{};
+                            n->target_velocity = v;
+                        }
+                        n->target_age = 0.0f;
+                        n->target_position = ev.position;
+                        n->target_rotation = ev.rotation;
+                        n->has_target = true;
+                    }
+                    break;
+                }
+                case net::NetEvent::Type::Var: {
+                    const ecs::Entity e = netEntity(ev.net_id);
+                    if (!e.valid()) break;
+                    if (const auto it = instances.find(e.handle()); it != instances.end()) {
+                        call(it->second, "OnNetVar", ev.text, fromNet(L, ev.value));
+                    }
+                    break;
+                }
+                case net::NetEvent::Type::Scene:
+                    net_entities.clear();
+                    scene_request = findScene(ev.text);
+                    if (scene_request.empty()) write(2, "Network.loadScene: no existe la escena \"" + ev.text + "\"");
+                    break;
+            }
+        }
+        // Los objetos de otros siguen la ultima posicion recibida, suavizando
+        // (y saltan si esta muy lejos: teletransporte o recien llegado).
+        for (const auto& [id, handle] : net_entities) {
+            if (world == nullptr || !world->registry().valid(handle)) continue;
+            ecs::Entity e = world->wrap(handle);
+            net::NetworkObject* n = e.tryGet<net::NetworkObject>();
+            if (n == nullptr || !n->has_target || n->owner == network->localId()) continue;
+            n->target_age += dt;
+            if (n->predicted) {
+                followPredicted(e, *n, dt);
+                continue;
+            }
+            const Vec3 current = e.worldPosition();
+            const Vec3 delta = n->target_position - current;
+            const float t = 1.0f - std::exp(-std::max(n->smoothing, 0.1f) * dt);
+            if (core::length(delta) > 10.0f) {
+                e.setWorldPosition(n->target_position);
+                e.setLocalRotation(n->target_rotation);
+            } else {
+                e.setWorldPosition(current + delta * t);
+                e.setLocalRotation(core::slerp(e.localRotation(), n->target_rotation, t));
+            }
+        }
+    }
+
+    // Copia con fisica local: se simula aqui y se corrige hacia donde esta en
+    // el dueno (su ultima posicion, adelantada con su velocidad lo que tarda
+    // el siguiente envio). La correccion es mas suave que el seguimiento de
+    // los cinematicos para que un empujon local se note antes de que el
+    // dueno lo confirme; los errores pequenos no se tocan (reposo).
+    void followPredicted(ecs::Entity e, net::NetworkObject& n, float dt) {
+        const Vec3 goal = n.target_position + n.target_velocity * std::min(n.target_age, 0.25f);
+        const Vec3 current = e.worldPosition();
+        const Vec3 error = goal - current;
+        const float distance = core::length(error);
+        if (distance > 4.0f) {
+            e.setWorldPosition(goal);
+            e.setLocalRotation(n.target_rotation);
+            if (physics != nullptr) physics->setLinearVelocity(e, n.target_velocity);
+            return;
+        }
+        const float t = 1.0f - std::exp(-std::max(n.smoothing, 0.1f) * 0.4f * dt);
+        if (distance > 0.02f) e.setWorldPosition(current + error * t);
+        e.setLocalRotation(core::slerp(e.localRotation(), n.target_rotation, t));
+        if (physics != nullptr) {
+            const Vec3 v = physics->linearVelocity(e);
+            physics->setLinearVelocity(e, v + (n.target_velocity - v) * t);
+        }
+    }
+
+    // Lo mio que se movio sale a la red (a su frecuencia).
+    void sendNetworkTransforms(float dt) {
+        if (!network || !network->connected()) return;
+        for (const auto& [id, handle] : net_entities) {
+            if (world == nullptr || !world->registry().valid(handle)) continue;
+            ecs::Entity e = world->wrap(handle);
+            net::NetworkObject* n = e.tryGet<net::NetworkObject>();
+            if (n == nullptr || !n->sync_transform || n->owner != network->localId()) continue;
+            n->send_timer += dt;
+            n->since_sent += dt;
+            if (n->send_timer < 1.0f / std::max(n->send_rate, 1.0f)) continue;
+            n->send_timer = 0.0f;
+            const Vec3 p = e.worldPosition();
+            const core::Quat q = e.localRotation();
+            const float dq = std::abs(q.x * n->last_rotation.x + q.y * n->last_rotation.y + q.z * n->last_rotation.z +
+                                      q.w * n->last_rotation.w);
+            const bool moved = core::length(p - n->last_position) > 0.001f || dq < 0.99999f;
+            // Quieto: uno por segundo igualmente (por si se perdio el ultimo).
+            if (!moved && n->since_sent < 1.0f) continue;
+            network->sendTransform(n->net_id, p, q);
+            n->last_position = p;
+            n->last_rotation = q;
+            n->since_sent = 0.0f;
+        }
+    }
+
+    // --- HTTPS y JSON ---
+    // Lua -> JSON. Tablas con claves 1..n seguidas = lista; el resto, objeto
+    // (claves numericas como texto). Vec3 = {x, y, z}.
+    bool luaToJson(const sol::object& v, nlohmann::json& out, std::string& error, int depth = 0) {
+        if (depth > 64) {
+            error = "demasiados niveles (tablas dentro de tablas)";
+            return false;
+        }
+        switch (v.get_type()) {
+            case sol::type::lua_nil:
+            case sol::type::none: out = nullptr; return true;
+            case sol::type::boolean: out = v.as<bool>(); return true;
+            case sol::type::number: {
+                const double d = v.as<double>();
+                if (!std::isfinite(d)) {
+                    out = nullptr;
+                } else if (std::floor(d) == d && std::abs(d) < 9007199254740992.0) {
+                    out = static_cast<std::int64_t>(d);
+                } else {
+                    out = d;
+                }
+                return true;
+            }
+            case sol::type::string: out = v.as<std::string>(); return true;
+            case sol::type::userdata:
+                if (v.is<Vec3>()) {
+                    const Vec3 p = v.as<Vec3>();
+                    out = nlohmann::json{{"x", p.x}, {"y", p.y}, {"z", p.z}};
+                    return true;
+                }
+                error = "no se puede pasar a JSON un userdata";
+                return false;
+            case sol::type::table: {
+                const sol::table t = v.as<sol::table>();
+                std::size_t count = 0;
+                bool list = true;
+                for (const auto& kv : t) {
+                    ++count;
+                    if (kv.first.get_type() != sol::type::number) list = false;
+                }
+                if (count == 0) {
+                    out = nlohmann::json::object();
+                    return true;
+                }
+                if (list) {
+                    for (std::size_t i = 1; i <= count; ++i) {
+                        if (t[i].get_type() == sol::type::lua_nil) {
+                            list = false;
+                            break;
+                        }
+                    }
+                }
+                if (list) {
+                    out = nlohmann::json::array();
+                    for (std::size_t i = 1; i <= count; ++i) {
+                        nlohmann::json item;
+                        if (!luaToJson(t[i], item, error, depth + 1)) return false;
+                        out.push_back(std::move(item));
+                    }
+                    return true;
+                }
+                out = nlohmann::json::object();
+                for (const auto& kv : t) {
+                    std::string key;
+                    if (kv.first.get_type() == sol::type::string) {
+                        key = kv.first.as<std::string>();
+                    } else if (kv.first.get_type() == sol::type::number) {
+                        const double d = kv.first.as<double>();
+                        key = std::floor(d) == d ? std::to_string(static_cast<long long>(d)) : std::to_string(d);
+                    } else {
+                        error = "las claves de una tabla JSON deben ser texto o numeros";
+                        return false;
+                    }
+                    nlohmann::json item;
+                    if (!luaToJson(kv.second, item, error, depth + 1)) return false;
+                    out[key] = std::move(item);
+                }
+                return true;
+            }
+            default: error = "no se puede pasar a JSON un valor de tipo " + std::string(sol::type_name(v.lua_state(), v.get_type())); return false;
+        }
+    }
+
+    // JSON -> Lua (null = nil; listas desde 1).
+    sol::object jsonToLua(sol::state_view L, const nlohmann::json& j) {
+        switch (j.type()) {
+            case nlohmann::json::value_t::boolean: return sol::make_object(L, j.get<bool>());
+            case nlohmann::json::value_t::number_integer: return sol::make_object(L, static_cast<lua_Integer>(j.get<std::int64_t>()));
+            case nlohmann::json::value_t::number_unsigned: return sol::make_object(L, static_cast<lua_Integer>(j.get<std::uint64_t>()));
+            case nlohmann::json::value_t::number_float: return sol::make_object(L, j.get<double>());
+            case nlohmann::json::value_t::string: return sol::make_object(L, j.get_ref<const std::string&>());
+            case nlohmann::json::value_t::array: {
+                sol::table t = L.create_table(static_cast<int>(j.size()), 0);
+                int i = 1;
+                for (const auto& item : j) t[i++] = jsonToLua(L, item);
+                return t;
+            }
+            case nlohmann::json::value_t::object: {
+                sol::table t = L.create_table(0, static_cast<int>(j.size()));
+                for (const auto& [key, item] : j.items()) t[key] = jsonToLua(L, item);
+                return t;
+            }
+            default: return sol::lua_nil;
+        }
+    }
+
+    // Respuesta para el callback: {ok, status, body, headers, error, time, data}.
+    sol::table httpResponseTable(sol::state_view L, const net::HttpResponse& r) {
+        sol::table t = L.create_table();
+        t["ok"] = r.ok;
+        t["status"] = r.status;
+        t["body"] = r.body;
+        t["time"] = r.seconds;
+        if (!r.error.empty()) t["error"] = r.error;
+        else if (!r.ok) t["error"] = "El servidor respondio " + std::to_string(r.status);
+        sol::table headers = L.create_table();
+        std::string content_type;
+        for (const auto& [name, value] : r.headers) {
+            headers[name] = value;
+            if (name == "content-type") content_type = value;
+        }
+        t["headers"] = headers;
+        // JSON: ya decodificado en `data`.
+        if (content_type.find("json") != std::string::npos && !r.body.empty()) {
+            const nlohmann::json j = nlohmann::json::parse(r.body, nullptr, false);
+            if (!j.is_discarded()) t["data"] = jsonToLua(L, j);
+        }
+        return t;
+    }
+
+    // Opciones de Lua -> HttpRequest. false + motivo si algo no vale.
+    bool buildHttpRequest(const std::string& method, const std::string& url, sol::object body, sol::object headers,
+                          net::HttpRequest& req, std::string& error) {
+        req.method = method;
+        req.url = url;
+        if (!net::checkUrl(url, &error)) return false;
+        bool has_type = false;
+        if (headers.valid() && headers.get_type() == sol::type::table) {
+            for (const auto& kv : headers.as<sol::table>()) {
+                if (kv.first.get_type() != sol::type::string) continue;
+                const std::string name = kv.first.as<std::string>();
+                const std::string value = kv.second.get_type() == sol::type::string ? kv.second.as<std::string>()
+                                          : kv.second.get_type() == sol::type::number
+                                              ? std::to_string(kv.second.as<long long>())
+                                              : std::string();
+                if (!net::validHeader(name, value)) {
+                    error = "cabecera no valida: " + name;
+                    return false;
+                }
+                std::string lower_name = name;
+                for (char& c : lower_name) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+                if (lower_name == "content-type") has_type = true;
+                req.headers.emplace_back(name, value);
+            }
+        }
+        const sol::type body_type = body.valid() ? body.get_type() : sol::type::lua_nil;
+        if (body_type == sol::type::string) {
+            req.body = body.as<std::string>();
+            if (!has_type) req.headers.emplace_back("Content-Type", "text/plain; charset=utf-8");
+        } else if (body_type == sol::type::table) {
+            nlohmann::json j;
+            if (!luaToJson(body, j, error)) return false;
+            req.body = j.dump();
+            if (!has_type) req.headers.emplace_back("Content-Type", "application/json");
+        } else if (body_type != sol::type::lua_nil && body_type != sol::type::none) {
+            error = "el cuerpo debe ser texto o una tabla (se manda como JSON)";
+            return false;
+        }
+        return true;
+    }
+
+    // Devuelve el id de la peticion, o nil + motivo.
+    sol::variadic_results startHttp(sol::this_state s, net::HttpRequest req, sol::protected_function callback) {
+        sol::variadic_results out;
+        if (!http) http = std::make_unique<net::HttpClient>();
+        const std::uint32_t id = http->send(std::move(req));
+        if (callback.valid()) http_callbacks[id] = callback;
+        out.push_back(sol::make_object(s, static_cast<lua_Integer>(id)));
+        return out;
+    }
+
+    sol::variadic_results httpError(sol::this_state s, const std::string& where, const std::string& error) {
+        write(2, where + ": " + error);
+        sol::variadic_results out;
+        out.push_back(sol::make_object(s, sol::lua_nil));
+        out.push_back(sol::make_object(s, error));
+        return out;
+    }
+
+    void bindHttp(sol::state& L) {
+        sol::table h = L.create_named_table("Http");
+        // Http.get(url, function(res) end[, cabeceras])
+        h["get"] = [this](sol::this_state s, const std::string& url, sol::object callback, sol::object headers) {
+            net::HttpRequest req;
+            std::string error;
+            if (!buildHttpRequest("GET", url, sol::lua_nil, headers, req, error)) return httpError(s, "Http.get", error);
+            return startHttp(s, std::move(req), callback.is<sol::protected_function>() ? callback.as<sol::protected_function>()
+                                                                                        : sol::protected_function{});
+        };
+        // Http.post(url, cuerpo, function(res) end[, cabeceras]): cuerpo texto o tabla (JSON).
+        h["post"] = [this](sol::this_state s, const std::string& url, sol::object body, sol::object callback,
+                           sol::object headers) {
+            net::HttpRequest req;
+            std::string error;
+            if (!buildHttpRequest("POST", url, body, headers, req, error)) return httpError(s, "Http.post", error);
+            return startHttp(s, std::move(req), callback.is<sol::protected_function>() ? callback.as<sol::protected_function>()
+                                                                                        : sol::protected_function{});
+        };
+        // Http.request{ url=, method=, headers=, body=, timeout= (s), maxSize= (bytes) }, function(res) end
+        h["request"] = [this](sol::this_state s, sol::table options, sol::object callback) {
+            net::HttpRequest req;
+            std::string error;
+            std::string method = options.get_or<std::string>("method", "GET");
+            for (char& c : method) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+            if (!buildHttpRequest(method, options.get_or<std::string>("url", ""), options.get<sol::object>("body"), options.get<sol::object>("headers"), req,
+                                  error)) {
+                return httpError(s, "Http.request", error);
+            }
+            req.timeout_ms = static_cast<int>(options.get_or("timeout", 20.0) * 1000.0);
+            const double max_size = options.get_or("maxSize", 32.0 * 1024.0 * 1024.0);
+            req.max_response_bytes = static_cast<std::size_t>(std::clamp(max_size, 1024.0, 512.0 * 1024.0 * 1024.0));
+            return startHttp(s, std::move(req), callback.is<sol::protected_function>() ? callback.as<sol::protected_function>()
+                                                                                        : sol::protected_function{});
+        };
+        h["cancelAll"] = [this]() {
+            if (http) http->cancelAll();
+            http_callbacks.clear();
+        };
+        h["pending"] = [this]() { return http ? http->pending() : 0; };
+        h["urlEncode"] = [](const std::string& text) { return net::urlEncode(text); };
+        // Http.query{ q = "hola mundo", page = 2 } -> "page=2&q=hola%20mundo" (claves en orden).
+        h["query"] = [](sol::table params) {
+            std::map<std::string, std::string> sorted;
+            for (const auto& kv : params) {
+                if (kv.first.get_type() != sol::type::string) continue;
+                std::string value;
+                if (kv.second.get_type() == sol::type::string) value = kv.second.as<std::string>();
+                else if (kv.second.get_type() == sol::type::boolean) value = kv.second.as<bool>() ? "true" : "false";
+                else if (kv.second.get_type() == sol::type::number) {
+                    const double d = kv.second.as<double>();
+                    std::ostringstream o;
+                    o << d;
+                    value = o.str();
+                } else continue;
+                sorted[kv.first.as<std::string>()] = value;
+            }
+            std::string out;
+            for (const auto& [k, v] : sorted) {
+                if (!out.empty()) out += '&';
+                out += net::urlEncode(k) + "=" + net::urlEncode(v);
+            }
+            return out;
+        };
+
+        sol::table js = L.create_named_table("Json");
+        js["encode"] = [this](sol::this_state s, sol::object value, sol::optional<bool> pretty) {
+            sol::variadic_results out;
+            nlohmann::json j;
+            std::string error;
+            if (!luaToJson(value, j, error)) {
+                out.push_back(sol::make_object(s, sol::lua_nil));
+                out.push_back(sol::make_object(s, "Json.encode: " + error));
+                return out;
+            }
+            out.push_back(sol::make_object(s, j.dump(pretty.value_or(false) ? 2 : -1, ' ', false,
+                                                     nlohmann::json::error_handler_t::replace)));
+            return out;
+        };
+        js["decode"] = [this](sol::this_state s, const std::string& text) {
+            sol::variadic_results out;
+            const nlohmann::json j = nlohmann::json::parse(text, nullptr, false);
+            if (j.is_discarded()) {
+                out.push_back(sol::make_object(s, sol::lua_nil));
+                out.push_back(sol::make_object(s, std::string("Json.decode: el texto no es JSON valido")));
+                return out;
+            }
+            out.push_back(jsonToLua(sol::state_view(s), j));
+            return out;
+        };
+    }
+
+    // Respuestas que llegaron: se llama a su funcion (en el hilo del juego).
+    void pollHttp() {
+        if (!http) return;
+        for (auto& [id, response] : http->poll()) {
+            const auto it = http_callbacks.find(id);
+            if (it == http_callbacks.end()) continue;
+            sol::protected_function fn = std::move(it->second);
+            http_callbacks.erase(it);
+            sol::protected_function_result r = fn(httpResponseTable(*lua, response));
+            if (!r.valid()) {
+                sol::error e = r;
+                fail("Http", e.what());
+            }
+        }
+    }
+
+    void bindNetwork(sol::state& L, sol::usertype<LuaEntity>& entity) {
+        sol::table nw = L.create_named_table("Network");
+        nw["SERVER"] = static_cast<lua_Integer>(net::kServerId);
+        nw["host"] = [this](sol::optional<int> port, sol::optional<int> max_players) {
+            std::string error;
+            const bool ok = session().host(static_cast<std::uint16_t>(port.value_or(net::kDefaultPort)), max_players.value_or(16), &error);
+            if (!ok) write(2, "Network.host: " + error);
+            net_entities.clear();
+            return std::make_tuple(ok, error);
+        };
+        nw["connect"] = [this](sol::optional<std::string> address, sol::optional<int> port) {
+            std::string error;
+            const bool ok = session().connect(address.value_or("127.0.0.1"), static_cast<std::uint16_t>(port.value_or(net::kDefaultPort)), &error);
+            if (!ok) write(2, "Network.connect: " + error);
+            net_entities.clear();
+            return std::make_tuple(ok, error);
+        };
+        nw["disconnect"] = [this]() {
+            if (network) network->close();
+            destroyNetEntities();
+        };
+        nw["isServer"] = [this]() { return network && network->isServer(); };
+        nw["isClient"] = [this]() { return network && network->isClient(); };
+        nw["isConnected"] = [this]() { return network && network->connected(); };
+        nw["isConnecting"] = [this]() { return network && network->connecting(); };
+        nw["isActive"] = [this]() { return network && network->role() != net::NetRole::None; };
+        nw["myId"] = [this]() { return network ? static_cast<lua_Integer>(network->localId()) : lua_Integer{0}; };
+        nw["players"] = [this](sol::this_state s) {
+            sol::state_view view(s);
+            sol::table t = view.create_table();
+            if (network) {
+                int i = 1;
+                for (const std::uint32_t id : network->players()) t[i++] = static_cast<lua_Integer>(id);
+            }
+            return t;
+        };
+        nw["playerCount"] = [this]() { return network ? static_cast<int>(network->players().size()) : 0; };
+        nw["ping"] = [this](sol::optional<double> player) {
+            return network ? network->ping(static_cast<std::uint32_t>(player.value_or(net::kServerId))) : 0;
+        };
+        nw["stats"] = [this](sol::this_state s) {
+            sol::state_view view(s);
+            sol::table t = view.create_table();
+            t["sent"] = network ? static_cast<double>(network->bytesSent()) : 0.0;
+            t["received"] = network ? static_cast<double>(network->bytesReceived()) : 0.0;
+            t["objects"] = network ? static_cast<int>(network->objects().size()) : 0;
+            return t;
+        };
+        // Mensajes: Network.send("chat", datos[, destino]) y Network.on("chat", function(datos, de) end).
+        nw["send"] = [this](const std::string& name, sol::object data, sol::object target) {
+            if (!network || !network->connected()) return false;
+            std::uint32_t to = net::kEveryone;
+            if (target.get_type() == sol::type::number) to = static_cast<std::uint32_t>(target.as<double>());
+            else if (target.get_type() == sol::type::string && target.as<std::string>() == "server") to = net::kServerId;
+            network->send(name, toNet(data), to);
+            return true;
+        };
+        nw["on"] = [this](const std::string& name, sol::protected_function fn) { net_handlers[name] = fn; };
+        nw["off"] = [this](const std::string& name) { net_handlers.erase(name); };
+        nw["onPlayerJoined"] = [this](sol::protected_function fn) { on_player_joined = fn; };
+        nw["onPlayerLeft"] = [this](sol::protected_function fn) { on_player_left = fn; };
+        nw["onConnected"] = [this](sol::protected_function fn) { on_connected = fn; };
+        nw["onDisconnected"] = [this](sol::protected_function fn) { on_disconnected = fn; };
+        // Objetos: solo el servidor los crea y los borra.
+        nw["spawn"] = [this](const std::string& prefab, sol::optional<Vec3> position, sol::optional<double> owner,
+                             sol::optional<Vec3> rotation) -> sol::object {
+            if (!network || !network->isServer()) {
+                write(2, "Network.spawn: solo el servidor crea objetos de red (un cliente se lo pide con Network.send)");
+                return sol::lua_nil;
+            }
+            const Vec3 p = position.value_or(Vec3{});
+            const core::Quat q = rotation ? ecs::quatFromEulerDegrees(*rotation) : core::Quat{};
+            ecs::Entity e = instantiateNetPrefab(prefab);
+            if (!e.valid()) return sol::lua_nil;
+            const std::uint32_t id = network->spawn(prefab, p, q, static_cast<std::uint32_t>(owner.value_or(net::kServerId)));
+            attachNet(e, id, static_cast<std::uint32_t>(owner.value_or(net::kServerId)), p, q);
+            return sol::make_object(*lua, LuaEntity{e.handle(), world});
+        };
+        nw["destroy"] = [this](const LuaEntity& e) {
+            net::NetworkObject* n = netObject(e);
+            if (network && network->isServer() && n != nullptr && n->net_id != 0) {
+                network->despawn(n->net_id);
+                net_entities.erase(n->net_id);
+            }
+            if (e.valid()) pending_destroy.push_back(e.handle);
+        };
+        // Todos los objetos de red de la escena (entidades).
+        nw["objects"] = [this](sol::this_state s) {
+            sol::state_view view(s);
+            sol::table t = view.create_table();
+            int i = 1;
+            for (const auto& [id, handle] : net_entities) {
+                if (world != nullptr && world->registry().valid(handle)) t[i++] = LuaEntity{handle, world};
+            }
+            return t;
+        };
+        nw["find"] = [this](double net_id) -> sol::object {
+            const ecs::Entity e = netEntity(static_cast<std::uint32_t>(net_id));
+            return e.valid() ? sol::make_object(*lua, LuaEntity{e.handle(), world}) : sol::object(sol::lua_nil);
+        };
+        // Todos cargan la escena (solo el servidor).
+        nw["loadScene"] = [this](const std::string& name) {
+            if (!network || !network->isServer()) {
+                write(2, "Network.loadScene: solo el servidor cambia la escena de todos");
+                return;
+            }
+            network->loadScene(name);
+            net_entities.clear();
+            scene_request = findScene(name);
+            if (scene_request.empty()) write(2, "Network.loadScene: no existe la escena \"" + name + "\"");
+        };
+
+        // En las entidades.
+        entity["isMine"] = [this](const LuaEntity& e) {
+            const net::NetworkObject* n = netObject(e);
+            if (n == nullptr || n->net_id == 0 || !network || !network->connected()) return true;  // sin red: todo es mio
+            return n->owner == network->localId();
+        };
+        entity["netId"] = sol::property([this](const LuaEntity& e) {
+            const net::NetworkObject* n = netObject(e);
+            return n != nullptr ? static_cast<lua_Integer>(n->net_id) : lua_Integer{0};
+        });
+        entity["netOwner"] = sol::property([this](const LuaEntity& e) {
+            const net::NetworkObject* n = netObject(e);
+            return n != nullptr ? static_cast<lua_Integer>(n->owner) : lua_Integer{0};
+        });
+        entity["setNetVar"] = [this](const LuaEntity& e, const std::string& key, sol::object value) {
+            const net::NetworkObject* n = netObject(e);
+            if (n == nullptr || n->net_id == 0 || !network) return;
+            network->setVar(n->net_id, key, toNet(value));
+        };
+        entity["getNetVar"] = [this](const LuaEntity& e, const std::string& key, sol::this_state s) -> sol::object {
+            const net::NetworkObject* n = netObject(e);
+            if (n == nullptr || n->net_id == 0 || !network) return sol::lua_nil;
+            const net::NetObject* o = network->object(n->net_id);
+            if (o == nullptr) return sol::lua_nil;
+            const auto it = o->vars.find(key);
+            return it != o->vars.end() ? fromNet(s, it->second) : sol::object(sol::lua_nil);
+        };
     }
 
     // --- API de Lua ---
@@ -1326,6 +2050,9 @@ struct ScriptSystem::Impl {
 
         sol::table game = L.create_named_table("Game");
         game["quit"] = [this]() { quit_request = true; };
+
+        bindNetwork(L, entity);
+        bindHttp(L);
 
         // Input
         sol::table in = L.create_named_table("Input");
@@ -2291,6 +3018,10 @@ void ScriptSystem::update(ecs::World& world, float delta_seconds) {
     time["time"] = d.time;
     time["frameCount"] = d.frame;
 
+    // Red: lo que llego (objetos nuevos, posiciones, mensajes...).
+    d.pollNetwork(delta_seconds);
+    d.pollHttp();
+
     // Objetos con Script nuevos (creados en Play) y los que ya no estan.
     for (const entt::entity handle : world.registry().view<Script>()) {
         if (d.instances.contains(handle)) continue;
@@ -2329,6 +3060,7 @@ void ScriptSystem::update(ecs::World& world, float delta_seconds) {
         if (!e.get<Script>().enabled || !e.activeInHierarchy()) continue;
         d.call(it->second, "LateUpdate", delta_seconds);
     }
+    d.sendNetworkTransforms(delta_seconds);
     d.flushDestroys();
 }
 
@@ -2359,9 +3091,30 @@ void ScriptSystem::stop() {
     d.failed_classes.clear();
     d.events.clear();
     d.pending_destroy.clear();
+    // Los manejadores de red son del estado de Lua que se va (la sesion sigue).
+    d.net_handlers.clear();
+    d.on_player_joined = d.on_player_left = d.on_connected = d.on_disconnected = sol::protected_function{};
+    d.net_entities.clear();
+    if (d.http) d.http->cancelAll();
+    d.http_callbacks.clear();
     d.lua.reset();
     d.running = false;
     d.lockCursor(false);  // el raton vuelve al sistema
+}
+
+void ScriptSystem::shutdownNetwork() {
+    Impl& d = *impl_;
+    if (d.network) d.network->close();
+    d.network.reset();
+    d.net_entities.clear();
+}
+
+std::string ScriptSystem::networkStatus() const {
+    const Impl& d = *impl_;
+    if (!d.network || d.network->role() == net::NetRole::None) return {};
+    if (d.network->isServer()) return "Servidor: " + std::to_string(d.network->players().size()) + " jugador(es)";
+    if (d.network->connecting()) return "Cliente: conectando...";
+    return "Cliente " + std::to_string(d.network->localId()) + " (ping " + std::to_string(d.network->ping(net::kServerId)) + " ms)";
 }
 
 void ScriptSystem::reloadFile(const std::string& file) {

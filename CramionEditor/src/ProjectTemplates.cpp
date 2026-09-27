@@ -7,9 +7,12 @@
 #include "ProjectTemplates.h"
 #include "TemplateMmoScripts.h"
 #include "TemplateCreatureScripts.h"
+#include "TemplateOnlineScripts.h"
+#include "TemplateOpenWorldScripts.h"
 #include "CreatureModels.h"
 
 #include <CramionCore/ecs/Rigging.h>
+#include <CramionCore/net/NetworkObject.h>
 
 #include <CramionCore/CramionCore.h>
 
@@ -2415,6 +2418,417 @@ void buildCreatures(project::ProjectInfo& project) {
     b.save("Main");
 }
 
+// Online: todo el juego en Lua (Red.lua). Arena con porterias, balon, cajas
+// y monedas (del servidor), jugadores sincronizados, chat, marcador y eventos.
+void buildOnline(project::ProjectInfo& project) {
+    Builder b(project);
+    b.world.setSceneUuid(Uuid::generate());
+    ecs::populateDefaultScene(b.world);
+    b.script("Red.lua", online::kNetGameScript);
+    b.script("JugadorRed.lua", online::kNetPlayerScript);
+    b.script("MonedaRed.lua", online::kNetCoinScript);
+    b.script("CamaraTercera.lua", kCameraScript);
+
+    const assets::AssetRef grass = b.material("Cesped", Vec3{0.30f, 0.55f, 0.28f}, 0.95f);
+    const assets::AssetRef line = b.material("Linea", Vec3{0.95f, 0.95f, 0.95f}, 0.8f);
+    const assets::AssetRef wall = b.material("Muro", Vec3{0.62f, 0.64f, 0.68f}, 0.85f);
+    const assets::AssetRef post = b.material("Porteria", Vec3{0.95f, 0.95f, 0.97f}, 0.4f, 0.2f);
+    const assets::AssetRef net_blue = b.material("Red azul", Vec3{0.15f, 0.35f, 0.85f}, 0.9f);
+    const assets::AssetRef net_red = b.material("Red roja", Vec3{0.85f, 0.18f, 0.15f}, 0.9f);
+    const assets::AssetRef wood = b.material("Madera", Vec3{0.55f, 0.38f, 0.22f}, 0.85f);
+    const assets::AssetRef ball = b.material("Balon", Vec3{0.96f, 0.96f, 0.96f}, 0.45f);
+    const assets::AssetRef gold = b.material("Oro", Vec3{1.0f, 0.78f, 0.25f}, 0.25f, 1.0f, Vec3{1.0f, 0.7f, 0.2f}, 0.6f);
+    const assets::AssetRef visor = b.material("Visor", Vec3{0.05f, 0.06f, 0.08f}, 0.15f, 0.6f);
+    // Un color por jugador (JugadorRed.lua elige el suyo por su id).
+    const std::pair<const char*, Vec3> kColors[] = {
+        {"Azul", {0.10f, 0.45f, 0.95f}},  {"Rojo", {0.90f, 0.15f, 0.12f}},    {"Verde", {0.20f, 0.75f, 0.25f}},
+        {"Amarillo", {0.98f, 0.82f, 0.10f}}, {"Morado", {0.55f, 0.25f, 0.85f}}, {"Naranja", {0.98f, 0.50f, 0.10f}},
+        {"Cian", {0.10f, 0.80f, 0.85f}},  {"Rosa", {0.95f, 0.40f, 0.70f}},
+    };
+    assets::AssetRef first_color{};
+    for (const auto& [name, color] : kColors) {
+        const assets::AssetRef m = b.material(std::string("Jugador ") + name, color, 0.35f);
+        if (!first_color.valid()) first_color = m;
+    }
+
+    // --- Arena: 52 x 52 m con muros y una porteria a cada lado (x = +-26) ---
+    constexpr float kHalf = 26.0f;
+    constexpr float kGoal = 4.0f;  // media anchura de la porteria
+    b.box("Suelo", Vec3{0.0f, -0.5f, 0.0f}, Vec3{kHalf * 2.0f + 8.0f, 1.0f, kHalf * 2.0f}, grass);
+    const auto flat = [&](const std::string& name, const Vec3& p, const Vec3& s) {
+        ecs::Entity e = b.box(name, p, s, line);
+        e.remove<physics::BoxCollider>();
+        return e;
+    };
+    flat("Linea central", Vec3{0.0f, 0.005f, 0.0f}, Vec3{0.25f, 0.01f, kHalf * 2.0f});
+    flat("Area azul", Vec3{-kHalf + 3.0f, 0.005f, 0.0f}, Vec3{0.25f, 0.01f, kGoal * 2.0f + 4.0f});
+    flat("Area roja", Vec3{kHalf - 3.0f, 0.005f, 0.0f}, Vec3{0.25f, 0.01f, kGoal * 2.0f + 4.0f});
+    b.box("Muro Norte", Vec3{0.0f, 1.0f, -kHalf}, Vec3{kHalf * 2.0f + 0.6f, 2.0f, 0.6f}, wall);
+    b.box("Muro Sur", Vec3{0.0f, 1.0f, kHalf}, Vec3{kHalf * 2.0f + 0.6f, 2.0f, 0.6f}, wall);
+    const float side = (kHalf - kGoal);
+    for (const float sx : {-1.0f, 1.0f}) {
+        const std::string tag = sx < 0.0f ? " Oeste" : " Este";
+        const assets::AssetRef net = sx < 0.0f ? net_blue : net_red;
+        // Muro con el hueco de la porteria.
+        b.box("Muro" + tag + " 1", Vec3{sx * kHalf, 1.0f, -(kGoal + side * 0.5f)}, Vec3{0.6f, 2.0f, side}, wall);
+        b.box("Muro" + tag + " 2", Vec3{sx * kHalf, 1.0f, kGoal + side * 0.5f}, Vec3{0.6f, 2.0f, side}, wall);
+        // Porteria: fondo, lados, larguero y postes.
+        b.box("Porteria" + tag + " fondo", Vec3{sx * (kHalf + 3.0f), 1.25f, 0.0f}, Vec3{0.3f, 2.5f, kGoal * 2.0f}, net);
+        b.box("Porteria" + tag + " lado 1", Vec3{sx * (kHalf + 1.5f), 1.25f, -kGoal}, Vec3{3.0f, 2.5f, 0.2f}, net);
+        b.box("Porteria" + tag + " lado 2", Vec3{sx * (kHalf + 1.5f), 1.25f, kGoal}, Vec3{3.0f, 2.5f, 0.2f}, net);
+        b.box("Porteria" + tag + " techo", Vec3{sx * (kHalf + 1.5f), 2.55f, 0.0f}, Vec3{3.0f, 0.1f, kGoal * 2.0f}, net);
+        b.box("Larguero" + tag, Vec3{sx * kHalf, 2.5f, 0.0f}, Vec3{0.3f, 0.3f, kGoal * 2.0f + 0.3f}, post);
+        b.box("Poste" + tag + " 1", Vec3{sx * kHalf, 1.25f, -kGoal}, Vec3{0.3f, 2.5f, 0.3f}, post);
+        b.box("Poste" + tag + " 2", Vec3{sx * kHalf, 1.25f, kGoal}, Vec3{0.3f, 2.5f, 0.3f}, post);
+    }
+    // Rampas y plataformas en las esquinas (para saltar y esconder monedas).
+    b.box("Rampa 1", Vec3{-15.0f, 0.9f, -17.0f}, Vec3{4.0f, 0.4f, 8.0f}, wall, Vec3{-13.0f, 0.0f, 0.0f});
+    b.box("Plataforma 1", Vec3{-15.0f, 1.8f, -22.5f}, Vec3{6.0f, 0.4f, 4.0f}, wall);
+    b.box("Rampa 2", Vec3{15.0f, 0.9f, 17.0f}, Vec3{4.0f, 0.4f, 8.0f}, wall, Vec3{13.0f, 0.0f, 0.0f});
+    b.box("Plataforma 2", Vec3{15.0f, 1.8f, 22.5f}, Vec3{6.0f, 0.4f, 4.0f}, wall);
+
+    // Camara: vista general en el menu; en la partida sigue a tu jugador.
+    ecs::Entity cam = b.world.findByName("Main Camera");
+    cam.setWorldPosition(Vec3{0.0f, 30.0f, 40.0f});
+    cam.setLocalEulerDegrees(Vec3{-36.0f, 0.0f, 0.0f});
+    Builder::attach(cam, "CamaraTercera.lua",
+                    {{"objetivo", scripting::PropertyType::Text, ""},
+                     {"distancia", scripting::PropertyType::Number, "9"},
+                     {"inclinacion", scripting::PropertyType::Number, "22"}});
+
+    // El juego.
+    ecs::Entity game = b.world.create("Red");
+    Builder::attach(game, "Red.lua");
+    const Uuid game_id = game.uuid();
+
+    // --- Prefabs de red (se crean en otro mundo: no van en la escena) ---
+    {
+        ecs::World pw;
+        const std::filesystem::path folder = project.assetsFolder() / "Prefabs";
+        std::filesystem::create_directories(folder);
+        const auto make = [&](ecs::Entity root, const char* file) {
+            std::string error;
+            if (!ecs::createPrefab(pw, root, folder / file, &error)) throw std::runtime_error(std::string(file) + ": " + error);
+        };
+        const auto mesh = [&](const Uuid& shape, const std::string& name, ecs::Entity parent, const Vec3& p, const Vec3& s,
+                              const assets::AssetRef& m, const Vec3& euler = Vec3{}) {
+            ecs::Entity e = ecs::createPrimitive(pw, shape, name, parent);
+            e.setLocalPosition(p);
+            e.setLocalScale(s);
+            e.setLocalEulerDegrees(euler);
+            e.get<ecs::MeshRenderer>().materials = {m};
+            return e;
+        };
+
+        // Jugador: capsula con Rigidbody (como la plantilla Tercera persona) y su script.
+        ecs::Entity player = pw.create("Jugador");
+        physics::CapsuleCollider& capsule = player.add<physics::CapsuleCollider>();
+        capsule.radius = 0.45f;
+        capsule.height = 1.9f;
+        capsule.material.friction = 0.0f;
+        physics::Rigidbody& rb = player.add<physics::Rigidbody>();
+        rb.mass = 70.0f;
+        rb.lock_rotation_x = rb.lock_rotation_y = rb.lock_rotation_z = true;
+        rb.continuous = true;
+        net::NetworkObject& pn = player.add<net::NetworkObject>();
+        pn.send_rate = 20.0f;
+        pn.smoothing = 14.0f;
+        Builder::attach(player, "JugadorRed.lua");
+        ecs::Entity model = pw.create("Modelo", player);
+        mesh(assets::builtin::kCapsule, "Cuerpo", model, Vec3{}, Vec3{0.9f, 0.95f, 0.9f}, first_color);
+        mesh(assets::builtin::kCube, "Visor", model, Vec3{0.0f, 0.45f, -0.36f}, Vec3{0.62f, 0.22f, 0.22f}, visor);
+        make(player, "Jugador.crprefab");
+
+        // Moneda: no manda su posicion (esta quieta; cada uno la gira en su pantalla).
+        ecs::Entity coin = pw.create("Moneda");
+        mesh(assets::builtin::kCylinder, "Disco", coin, Vec3{}, Vec3{0.8f, 0.08f, 0.8f}, gold, Vec3{90.0f, 0.0f, 0.0f});
+        coin.add<net::NetworkObject>().sync_transform = false;
+        Builder::attach(coin, "MonedaRed.lua");
+        make(coin, "Moneda.crprefab");
+
+        // Balon y caja: los simula el servidor y, con fisica local, tambien
+        // cada cliente (asi cualquiera los empuja al pasar; el servidor corrige).
+        ecs::Entity ball_e = mesh(assets::builtin::kSphere, "Balon", {}, Vec3{}, Vec3{0.7f, 0.7f, 0.7f}, ball);
+        physics::SphereCollider& sphere = ball_e.add<physics::SphereCollider>();
+        sphere.material.bounciness = 0.55f;
+        sphere.material.friction = 0.4f;
+        physics::Rigidbody& brb = ball_e.add<physics::Rigidbody>();
+        brb.mass = 0.8f;
+        brb.linear_damping = 0.25f;
+        brb.angular_damping = 0.4f;
+        brb.continuous = true;
+        net::NetworkObject& bn = ball_e.add<net::NetworkObject>();
+        bn.send_rate = 30.0f;
+        bn.smoothing = 18.0f;
+        bn.local_physics = true;
+        make(ball_e, "Balon.crprefab");
+
+        ecs::Entity crate = mesh(assets::builtin::kCube, "Caja", {}, Vec3{}, Vec3{1.3f, 1.3f, 1.3f}, wood);
+        crate.add<physics::BoxCollider>();
+        crate.add<physics::Rigidbody>().mass = 8.0f;
+        net::NetworkObject& cn = crate.add<net::NetworkObject>();
+        cn.send_rate = 20.0f;
+        cn.local_physics = true;
+        make(crate, "Caja.crprefab");
+    }
+
+    // --- Interfaz ---
+    ecs::Entity canvas = b.world.create("HUD");
+    canvas.add<ui::Canvas>();
+    const auto rect = [&](ecs::Entity e, Vec2 anchor, Vec2 pivot, Vec2 position, Vec2 size) {
+        ui::RectTransform& rt = e.add<ui::RectTransform>();
+        rt.anchor_min = anchor;
+        rt.anchor_max = anchor;
+        rt.pivot = pivot;
+        rt.position = position;
+        rt.size = size;
+        return e;
+    };
+    const auto stretch = [&](ecs::Entity e, float margin = 0.0f) {
+        ui::RectTransform& rt = e.add<ui::RectTransform>();
+        rt.anchor_min = Vec2{0.0f, 0.0f};
+        rt.anchor_max = Vec2{1.0f, 1.0f};
+        rt.size = Vec2{-2.0f * margin, -2.0f * margin};
+        return e;
+    };
+    const auto image = [&](ecs::Entity e, Vec3 color, float alpha, float radius = 0.0f) {
+        ui::Image& im = e.add<ui::Image>();
+        im.color = color;
+        im.alpha = alpha;
+        im.corner_radius = radius;
+        return e;
+    };
+    const auto text = [&](ecs::Entity e, const std::string& value, float font, ui::HAlign align, Vec3 color = Vec3{1, 1, 1},
+                          ui::VAlign valign = ui::VAlign::Middle, bool wrap = false) {
+        ui::Text& t = e.add<ui::Text>();
+        t.text = value;
+        t.font_size = font;
+        t.h_align = align;
+        t.v_align = valign;
+        t.color = color;
+        t.shadow = true;
+        t.wrap = wrap;
+        return e;
+    };
+    const auto button = [&](ecs::Entity e, const std::string& label, const std::string& method, Vec3 color) {
+        ui::Button& bt = e.add<ui::Button>();
+        bt.normal = color;
+        bt.hover = color * 1.3f;
+        bt.pressed = color * 0.7f;
+        bt.corner_radius = 8.0f;
+        bt.target = game_id;
+        bt.on_click = method;
+        ecs::Entity t = b.world.create("Texto", e);
+        ui::RectTransform& rt = t.add<ui::RectTransform>();
+        rt.anchor_min = Vec2{0.0f, 0.0f};
+        rt.anchor_max = Vec2{1.0f, 1.0f};
+        ui::Text& tx = t.add<ui::Text>();
+        tx.text = label;
+        tx.font_size = 26.0f;
+        tx.h_align = ui::HAlign::Center;
+        tx.shadow = true;
+        return e;
+    };
+    const auto field = [&](ecs::Entity e, const std::string& value, const std::string& placeholder, int max_length,
+                           const std::string& on_submit = {}) {
+        ui::InputField& f = e.add<ui::InputField>();
+        f.text = value;
+        f.placeholder = placeholder;
+        f.font_size = 24.0f;
+        f.max_length = max_length;
+        f.target = game_id;
+        f.on_submit = on_submit;
+        return e;
+    };
+    const auto child = [&](const std::string& name, ecs::Entity parent) { return b.world.create(name, parent); };
+    const Vec2 top_left{0.0f, 0.0f}, top_right{1.0f, 0.0f}, top{0.5f, 0.0f}, bottom_left{0.0f, 1.0f}, center{0.5f, 0.5f};
+    const Vec3 panel{0.06f, 0.07f, 0.09f};
+
+    // Menu: nombre, IP y crear / unirse.
+    ecs::Entity menu = image(rect(child("UI_Menu", canvas), center, center, Vec2{0, 0}, Vec2{620, 470}), panel, 0.88f, 14.0f);
+    text(rect(child("Titulo", menu), top_left, top_left, Vec2{30, 22}, Vec2{560, 50}), "Cramion Online", 44.0f, ui::HAlign::Left,
+         Vec3{0.45f, 0.75f, 1.0f});
+    text(rect(child("Sub", menu), top_left, top_left, Vec2{30, 74}, Vec2{560, 30}), "Arena con balon, monedas, chat y eventos", 20.0f,
+         ui::HAlign::Left, Vec3{0.7f, 0.72f, 0.78f});
+    text(rect(child("Etiqueta nombre", menu), top_left, top_left, Vec2{30, 118}, Vec2{250, 30}), "Tu nombre", 22.0f, ui::HAlign::Left);
+    field(rect(child("UI_Nombre", menu), top_left, top_left, Vec2{30, 150}, Vec2{560, 46}), "Jugador", "Tu nombre", 16);
+    text(rect(child("Etiqueta IP", menu), top_left, top_left, Vec2{30, 206}, Vec2{560, 30}), "IP del servidor (para unirse)", 22.0f,
+         ui::HAlign::Left);
+    field(rect(child("UI_IP", menu), top_left, top_left, Vec2{30, 238}, Vec2{560, 46}), "127.0.0.1", "127.0.0.1", 64);
+    button(rect(child("Crear", menu), top_left, top_left, Vec2{30, 304}, Vec2{270, 58}), "Crear partida", "OnCrear",
+           Vec3{0.10f, 0.45f, 0.85f});
+    button(rect(child("Unirse", menu), top_left, top_left, Vec2{320, 304}, Vec2{270, 58}), "Unirse", "OnUnirse",
+           Vec3{0.15f, 0.55f, 0.30f});
+    text(rect(child("UI_Estado", menu), top_left, top_left, Vec2{30, 376}, Vec2{560, 80}), "", 19.0f, ui::HAlign::Left,
+         Vec3{1.0f, 0.88f, 0.55f}, ui::VAlign::Top, true);
+
+    // En partida: chat, marcador, avisos, informacion y salir.
+    ecs::Entity hud = stretch(child("UI_Juego", canvas));
+    ecs::Entity chat = image(rect(child("Chat", hud), bottom_left, bottom_left, Vec2{24, -84}, Vec2{620, 250}), panel, 0.55f, 10.0f);
+    text(stretch(child("UI_Chat", chat), 12.0f), "", 19.0f, ui::HAlign::Left, Vec3{0.93f, 0.94f, 0.97f}, ui::VAlign::Bottom, true);
+    field(rect(child("UI_EscribirChat", hud), bottom_left, bottom_left, Vec2{24, -24}, Vec2{620, 50}), "",
+          "Clic aqui, escribe y pulsa Enter...", 120, "OnChat");
+    image(rect(child("Marcador fondo", hud), top_right, top_right, Vec2{-24, 24}, Vec2{520, 290}), panel, 0.55f, 10.0f);
+    text(rect(child("UI_Marcador", hud), top_right, top_right, Vec2{-36, 34}, Vec2{496, 270}), "", 20.0f, ui::HAlign::Left,
+         Vec3{1, 1, 1}, ui::VAlign::Top, true);
+    ecs::Entity notice = text(rect(child("UI_Aviso", hud), top, top, Vec2{0, 150}, Vec2{1300, 70}), "", 46.0f, ui::HAlign::Center,
+                              Vec3{1.0f, 0.85f, 0.3f});
+    notice.get<ui::Text>().alpha = 0.0f;
+    text(rect(child("UI_Info", hud), top_left, top_left, Vec2{150, 24}, Vec2{1100, 64}), "", 18.0f, ui::HAlign::Left,
+         Vec3{0.85f, 0.88f, 0.92f}, ui::VAlign::Top, true);
+    button(rect(child("Salir", hud), top_left, top_left, Vec2{24, 24}, Vec2{110, 46}), "Salir", "OnSalir", Vec3{0.55f, 0.16f, 0.16f});
+
+    b.save("Main");
+}
+
+// Mundo abierto: una isla de 8 x 8 km con relieve, playas, rocas y nieve,
+// rodeada de oceano, con unos 2 millones de arboles instanciados (componente
+// Vegetacion) y un jugador en tercera persona. Prueba de rendimiento: el HUD
+// dice los FPS, los ms de CPU y GPU y cuantos arboles se dibujan.
+void buildOpenWorld(project::ProjectInfo& project) {
+    Builder b(project);
+    b.world.setSceneUuid(Uuid::generate());
+    ecs::populateDefaultScene(b.world);
+    b.script("Jugador.lua", kPlayerScript);
+    b.script("CamaraTercera.lua", kCameraScript);
+    b.script("Rendimiento.lua", openworld::kPerformanceScript);
+
+    // --- Terreno: relieve fBm con una mascara de isla ---
+    constexpr float kSize = 8192.0f;
+    constexpr float kHeight = 450.0f;
+    constexpr float kSea = 0.15f;  // el mar (y = 0) a este 0..1 del terreno
+    terrain::Terrain comp;
+    comp.data = "Terrains/Isla.crterrain";
+    comp.size = kSize;
+    comp.height = kHeight;
+    comp.resolution = 1025;
+    comp.splat_resolution = 1024;
+    comp.lod_distance = 2.0f;
+    terrain::TerrainData data;
+    data.create(1025, 1024, 0.0f);
+    terrain::generateRelief(data, 2027, 3.2f, 0.52f, 0.45f, 0.0f);
+    {
+        const auto res = static_cast<int>(data.resolution());
+        std::vector<float>& h = data.heights();
+        for (int y = 0; y < res; ++y) {
+            for (int x = 0; x < res; ++x) {
+                const float u = static_cast<float>(x) / static_cast<float>(res - 1) * 2.0f - 1.0f;
+                const float v = static_cast<float>(y) / static_cast<float>(res - 1) * 2.0f - 1.0f;
+                // Costa algo irregular: la distancia al centro deformada.
+                const float angle = std::atan2(v, u);
+                const float d = std::sqrt(u * u + v * v) * (1.0f + 0.08f * std::sin(angle * 5.0f) + 0.05f * std::cos(angle * 3.0f));
+                const float t = std::clamp((0.92f - d) / 0.42f, 0.0f, 1.0f);
+                const float mask = t * t * (3.0f - 2.0f * t);
+                float& value = h[static_cast<std::size_t>(y) * static_cast<std::size_t>(res) + static_cast<std::size_t>(x)];
+                const float land = kSea + 0.02f + value * 0.78f;
+                value = 0.02f + (land - 0.02f) * mask;
+            }
+        }
+    }
+    // Capas: hierba (0) de base, arena (3) en la costa, roca (2) en los taludes y
+    // tierra (1) en lo mas alto.
+    terrain::paintByRules(data, comp, 3, 0.0f, 90.0f, 0.0f, kSea + 5.0f / kHeight);
+    terrain::paintByRules(data, comp, 2, 34.0f, 90.0f, 0.0f, 1.0f);
+    terrain::paintByRules(data, comp, 1, 0.0f, 90.0f, 0.72f, 1.0f);
+    {
+        const std::filesystem::path path = project.assetsFolder() / "Terrains" / "Isla.crterrain";
+        std::filesystem::create_directories(path.parent_path());
+        if (!data.save(path)) throw std::runtime_error("no se pudo guardar el terreno");
+    }
+    const Vec3 origin{-kSize * 0.5f, -kSea * kHeight, -kSize * 0.5f};
+    ecs::Entity island = b.world.create("Isla");
+    island.setWorldPosition(origin);
+    island.add<terrain::Terrain>() = comp;
+
+    // Niebla de mundo abierto: fina y alta (se ve la isla entera desde lo alto).
+    if (ecs::Entity env = b.world.findByName("Entorno"); env.valid() && env.has<ecs::PostProcessing>()) {
+        env.get<ecs::PostProcessing>().settings.fog_density = 0.00022f;
+        env.get<ecs::PostProcessing>().settings.fog_height_falloff = 0.0035f;
+    }
+
+    // --- Oceano ---
+    ecs::Entity ocean = b.world.create("Oceano");
+    ocean.setWorldPosition(Vec3{0.0f, 0.0f, 0.0f});
+    ocean.add<water::WaterBody>() = water::oceanPreset();
+
+    // --- Bosque: ~2 millones de arboles en la isla ---
+    ecs::Entity forest = b.world.create("Vegetacion");
+    forest.setWorldPosition(Vec3{0.0f, 0.0f, 0.0f});
+    foliage::Foliage& f = forest.add<foliage::Foliage>();
+    f.area = kSize;
+    f.density = 700.0f;
+    f.seed = 7;
+    f.pine = 0.55f;
+    f.oak = 0.3f;
+    f.birch = 0.15f;
+    f.min_height = 4.0f;                          // sobre la playa
+    f.max_height = 0.7f * kHeight - kSea * kHeight;  // sin arboles en las cumbres
+    f.max_slope = 30.0f;
+    f.max_instances = 6000000;
+    f.lod1_distance = 110.0f;
+    f.lod2_distance = 520.0f;
+    f.max_distance = 3000.0f;
+    f.shadow_distance = 130.0f;
+
+    // --- Jugador en un claro cerca de la costa sur ---
+    const auto ground_at = [&](float x, float z) { return terrain::heightAt(data, comp, origin, x, z); };
+    Vec3 spawn{0.0f, 40.0f, 0.0f};
+    for (float z = kSize * 0.35f; z > -kSize * 0.35f; z -= 16.0f) {
+        const float y = ground_at(0.0f, z);
+        const Vec3 n = terrain::normalAt(data, comp, origin, 0.0f, z);
+        if (y > 12.0f && y < 60.0f && n.y > 0.95f) {
+            spawn = Vec3{0.0f, y + 2.0f, z};
+            break;
+        }
+    }
+    // Un claro donde empieza el jugador (sin arboles encima).
+    forest.get<foliage::Foliage>().clearings.push_back({spawn, 30.0f});
+    const assets::AssetRef body = b.material("Jugador", Vec3{0.95f, 0.45f, 0.10f}, 0.4f);
+    const assets::AssetRef visor = b.material("Visor", Vec3{0.05f, 0.06f, 0.08f}, 0.15f, 0.6f);
+    ecs::Entity player = b.player(spawn, body, visor);
+    // Mas rapido: la isla es grande.
+    player.get<scripting::Script>().properties = {{"velocidad", scripting::PropertyType::Number, "9"},
+                                                  {"correr", scripting::PropertyType::Number, "2.6"}};
+    ecs::Entity cam = b.world.findByName("Main Camera");
+    cam.setWorldPosition(spawn + Vec3{0.0f, 4.0f, 9.0f});
+    Builder::attach(cam, "CamaraTercera.lua",
+                    {{"distancia", scripting::PropertyType::Number, "8"}, {"inclinacion", scripting::PropertyType::Number, "14"}});
+
+    // --- HUD de rendimiento ---
+    ecs::Entity canvas = b.world.create("HUD");
+    canvas.add<ui::Canvas>();
+    ecs::Entity panel = b.world.create("UI_Panel", canvas);
+    {
+        ui::RectTransform& rt = panel.add<ui::RectTransform>();
+        rt.anchor_min = rt.anchor_max = Vec2{0.0f, 0.0f};
+        rt.pivot = Vec2{0.0f, 0.0f};
+        rt.position = Vec2{20.0f, 20.0f};
+        rt.size = Vec2{980.0f, 196.0f};
+        ui::Image& im = panel.add<ui::Image>();
+        im.color = Vec3{0.05f, 0.06f, 0.08f};
+        im.alpha = 0.62f;
+        im.corner_radius = 10.0f;
+    }
+    ecs::Entity text = b.world.create("UI_Rendimiento", panel);
+    {
+        ui::RectTransform& rt = text.add<ui::RectTransform>();
+        rt.anchor_min = Vec2{0.0f, 0.0f};
+        rt.anchor_max = Vec2{1.0f, 1.0f};
+        rt.size = Vec2{-28.0f, -24.0f};
+        ui::Text& t = text.add<ui::Text>();
+        t.text = "Midiendo...";
+        t.font_size = 22.0f;
+        t.h_align = ui::HAlign::Left;
+        t.v_align = ui::VAlign::Top;
+        t.shadow = true;
+        t.wrap = true;
+    }
+    ecs::Entity perf = b.world.create("Rendimiento");
+    Builder::attach(perf, "Rendimiento.lua");
+
+    b.save("Main");
+}
+
 void copyFolder(const std::filesystem::path& from, const std::filesystem::path& to) {
     std::error_code error;
     if (!std::filesystem::is_directory(from, error)) return;
@@ -2498,6 +2912,21 @@ std::vector<ProjectTemplate> availableTemplates() {
          "Ragdoll con Jolt (R y F) que hereda la velocidad y vuelve a la animacion",
          "Esqueleto visible (B), Bone Sockets y los dos modelos con esqueleto generados"},
         rgba(230, 120, 90), TemplateArt::Creatures, {}});
+    list.push_back(ProjectTemplate{
+        "online", "Online (multijugador)", "Integradas",
+        "Una arena multijugador por red: crea una partida o unete con la IP de un amigo. Jugadores sincronizados, chat, "
+        "marcador, monedas, un balon con porterias, cajas que se patean y eventos. Todo el juego en Lua (Red.lua).",
+        {"Crear partida o unirse por IP (servidor que tambien juega)", "Jugadores sincronizados con Network.spawn y isMine",
+         "Chat con nombres, avisos y marcador con puntos y ping", "Balon, cajas y monedas del servidor; goles y eventos"},
+        rgba(80, 170, 255), TemplateArt::Online, {}});
+    list.push_back(ProjectTemplate{
+        "open_world", "Mundo abierto (rendimiento)", "Integradas",
+        "Una isla de 8 x 8 km con relieve, playas y montanas, rodeada de oceano y con unos 2 millones de arboles "
+        "instanciados. Recorrela en tercera persona y mide el rendimiento: FPS, ms de GPU y arboles dibujados.",
+        {"Terreno de 8 km (1025 x 1025) con capas por altura y pendiente", "Oceano con oleaje y playas",
+         "~2 millones de arboles (Vegetacion): recorte y niveles de detalle en la GPU",
+         "HUD de rendimiento y teclas para forzar el motor (calidad, densidad, distancia, sombras)"},
+        rgba(70, 180, 120), TemplateArt::OpenWorld, {}});
 
     // Del usuario.
     std::error_code error;
@@ -2549,6 +2978,10 @@ project::ProjectInfo createProjectFromTemplate(const ProjectTemplate& t, const s
             buildVoxel(info);
         } else if (t.id == "mmo") {
             buildMmo(info);
+        } else if (t.id == "open_world") {
+            buildOpenWorld(info);
+        } else if (t.id == "online") {
+            buildOnline(info);
         } else if (t.id == "creatures") {
             buildCreatures(info);
         } else {

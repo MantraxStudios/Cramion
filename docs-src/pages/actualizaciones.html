@@ -41,7 +41,7 @@
   <thead><tr><th>Paso</th><th>Detalle</th></tr></thead>
   <tbody>
     <tr><td><code>Descargar</code></td><td>El paquete <code>Cramion-win64.zip</code> de la versión, con progreso y velocidad. Si ya se descargó entero, no se baja otra vez.</td></tr>
-    <tr><td><code>Comprobar</code></td><td>Se descomprime aparte y se comprueba cada archivo (CRC). Un paquete dañado no se instala.</td></tr>
+    <tr><td><code>Comprobar</code></td><td>Se comprueba el <strong>SHA-256</strong> del zip con el que publica la release (si no coincide, no se instala: descarga dañada o cambiada) y, al descomprimirlo aparte, cada archivo (CRC). Un paquete dañado no se instala.</td></tr>
     <tr><td><code>Guardar y cerrar Cramion</code></td><td>Espera a que los editores guarden y se cierren.</td></tr>
     <tr><td><code>Instalar</code></td><td>Reemplaza los archivos del motor. Si algo falla, <strong>todo vuelve a como estaba</strong>. Lo que no viene en el paquete (escenas de demostración, etc.) no se borra.</td></tr>
     <tr><td><code>Listo</code></td><td>Vuelve a abrir tus proyectos o el Hub.</td></tr>
@@ -58,6 +58,7 @@
 <h3 id="opciones">Opciones</h3>
 <ul>
   <li><strong class="text-white">Buscar actualizaciones al abrir Cramion</strong>: se puede desactivar en el Hub o en el actualizador.</li>
+  <li><strong class="text-white">Canal</strong>: <em>Estable</em> (por defecto) o <em>Beta</em>, que avisa también de las versiones previas (<code>0.7.0-beta.1</code>...) para probar lo nuevo antes. Se elige en el Hub (<em>Actualizaciones</em>) o arriba en el actualizador; las betas llevan la marca <em>Beta</em>. Se guarda como <code>"channel": "beta"</code> en <code>update.json</code>.</li>
   <li><strong class="text-white">Omitir esta versión</strong>: no se avisa más de esa versión (sí de las siguientes). <em>Dejar de omitir</em> en el Hub lo deshace.</li>
   <li>Los ajustes se guardan en <code>%LOCALAPPDATA%\Cramion\update.json</code>.</li>
 </ul>

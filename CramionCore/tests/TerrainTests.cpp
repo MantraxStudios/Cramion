@@ -2,12 +2,14 @@
 // pintura, guardar/leer, consultas y colision con Jolt. Devuelve 0 si todo va.
 
 #include "CramionCore/ecs/SceneSerializer.h"
+#include "CramionCore/foliage/Foliage.h"
 #include "CramionCore/ecs/World.h"
 #include "CramionCore/physics/PhysicsComponents.h"
 #include "CramionCore/physics/PhysicsSystem.h"
 #include "CramionCore/terrain/Terrain.h"
 #include "CramionCore/terrain/TerrainTools.h"
 
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
@@ -202,7 +204,74 @@ void testPhysics() {
 
 }  // namespace
 
+// Vegetacion: siembra en paralelo, repetible, sobre el terreno y con filtros.
+void testFoliage() {
+    std::printf("\nVegetacion\n");
+    foliage::Foliage f;
+    f.area = 1000.0f;
+    f.density = 100.0f;  // celda de 10 m -> 100 x 100
+    f.on_terrain = false;
+    f.min_height = -1000.0f;
+    foliage::FoliageResult flat = foliage::generateFoliage(f, Vec3{0, 2, 0}, {});
+    check(flat.instances.size() == 10000 && std::abs(flat.cell - 10.0f) < 1e-3f, "100 arboles/ha en 1 km2 = 10.000");
+    bool inside = true;
+    for (const auto& i : flat.instances) inside = inside && std::abs(i.x) <= 500.0f && std::abs(i.z) <= 500.0f;
+    check(inside, "todos dentro del cuadrado");
+    foliage::FoliageResult again = foliage::generateFoliage(f, Vec3{0, 2, 0}, {});
+    bool same = again.instances.size() == flat.instances.size();
+    for (std::size_t i = 0; same && i < flat.instances.size(); ++i) {
+        same = flat.instances[i].x == again.instances[i].x && flat.instances[i].packed == again.instances[i].packed;
+    }
+    check(same, "misma semilla, mismo bosque (aunque se siembre en varios hilos)");
+    f.seed = 2;
+    check(foliage::generateFoliage(f, Vec3{0, 2, 0}, {}).instances[0].x != flat.instances[0].x, "otra semilla, otro bosque");
+    int species[3] = {0, 0, 0};
+    for (const auto& i : flat.instances) ++species[(i.packed >> 18) & 3u];
+    check(std::abs(species[0] / 10000.0f - 0.5f) < 0.03f && std::abs(species[1] / 10000.0f - 0.3f) < 0.03f,
+          "la mezcla de especies (50% pinos, 30% robles, 20% abedules)");
+
+    // Sobre un terreno con relieve: la altura del terreno, sin el mar ni las laderas empinadas.
+    auto data = std::make_shared<TerrainData>();
+    data->create(257, 64, 0.0f);
+    generateRelief(*data, 11, 3.0f, 0.5f, 0.4f, 0.0f);
+    Terrain t;
+    t.size = 1000.0f;
+    t.height = 120.0f;
+    std::vector<foliage::FoliageGround> ground{{data, t, Vec3{-500.0f, -30.0f, -500.0f}}};
+    f.on_terrain = true;
+    f.min_height = 0.0f;  // el mar esta a 0
+    f.max_slope = 30.0f;
+    foliage::FoliageResult hills = foliage::generateFoliage(f, Vec3{0, 0, 0}, ground);
+    bool on_ground = !hills.instances.empty();
+    bool dry = true;
+    for (std::size_t i = 0; i < hills.instances.size(); i += 97) {
+        const auto& in = hills.instances[i];
+        const float h = heightAt(*data, t, ground[0].origin, in.x, in.z);
+        on_ground = on_ground && std::abs(in.y - h) < 0.7f;
+        dry = dry && h >= 0.0f;
+    }
+    std::printf("    en el terreno: %zu de %llu (descartados %llu por el mar o la pendiente)\n", hills.instances.size(),
+                static_cast<unsigned long long>(hills.candidates), static_cast<unsigned long long>(hills.rejected));
+    check(on_ground, "apoyados en el terreno");
+    check(dry && hills.rejected > 0, "ninguno bajo el mar ni en laderas empinadas");
+
+    // Millones: 12,65 km x 12,65 km (16.000 ha) a 250/ha = 4 millones.
+    foliage::Foliage big;
+    big.area = 12650.0f;
+    big.density = 250.0f;
+    big.on_terrain = false;
+    big.min_height = -1000.0f;
+    const auto start = std::chrono::steady_clock::now();
+    foliage::FoliageResult millions = foliage::generateFoliage(big, Vec3{}, {});
+    const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+    std::printf("    12,65 km x 12,65 km a 250/ha: %zu arboles en %.0f ms\n", millions.instances.size(), ms);
+    check(millions.instances.size() >= 3990000, "4 millones de arboles");
+    big.max_instances = 1000000;
+    check(foliage::generateFoliage(big, Vec3{}, {}).instances.size() <= 1000000, "el tope de arboles se respeta (celdas mayores)");
+}
+
 int main() {
+    testFoliage();
     testTools();
     testSaveLoad();
     testPhysics();

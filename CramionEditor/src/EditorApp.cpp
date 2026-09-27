@@ -52,6 +52,7 @@ EditorApp::EditorApp(dm::Window& window, gfx::VulkanRenderer& renderer, scene::S
     cinema::registerCinematicComponents();
     terrain::registerTerrainComponents();
     water::registerWaterComponents();
+    foliage::registerFoliageComponents();
     navigation::registerNavigationComponents();
     voxel::registerVoxelComponents();
     audio::registerAudioComponents();
@@ -1192,6 +1193,7 @@ void EditorApp::drawMenuBar() {
             ImGui::EndMenu();
         }
         if (ImGui::MenuItem("Terreno")) createTerrainEntity();
+        if (ImGui::MenuItem("Vegetación (bosque)")) createFoliageEntity();
         if (ImGui::MenuItem("Mundo de bloques")) createVoxelWorldEntity();
         if (ImGui::BeginMenu("Agua")) {
             if (ImGui::MenuItem("Océano / playa")) createWaterEntity(0);
@@ -1450,6 +1452,13 @@ void EditorApp::drawStatistics(float delta_seconds) {
     std::snprintf(overlay, sizeof(overlay), "%.2f ms", 1000.0f / std::max(io.Framerate, 1.0f));
     ImGui::PlotLines("##frames", frame_history_.data(), static_cast<int>(frame_history_.size()),
                      static_cast<int>(frame_history_head_), overlay, 0.0f, 33.3f, ImVec2(-1.0f, 50.0f));
+    if (const gfx::FoliageStats fs = renderer_.foliageStats(); fs.instances > 0) {
+        ImGui::Text("Vegetación: %llu árboles | visibles %u cerca, %u medio, %u lejos | sombras %u | %.1f M triángulos | %.0f MB",
+                    static_cast<unsigned long long>(fs.instances), fs.visible[0], fs.visible[1], fs.visible[2], fs.shadow_casters,
+                    static_cast<double>(fs.triangles) / 1.0e6, static_cast<double>(fs.memory_bytes) / (1024.0 * 1024.0));
+    } else if (sync_ && sync_->foliageGenerating()) {
+        ImGui::TextDisabled("Vegetación: sembrando...");
+    }
     ImGui::Text("Triángulos %llu  |  submallas visibles %u / %u (tapadas %u, en sombras %u)",
                 static_cast<unsigned long long>(renderer_.triangleCount()),
                 renderer_.visibleSubmeshes(), renderer_.totalSubmeshes(),

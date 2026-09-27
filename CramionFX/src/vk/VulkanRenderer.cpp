@@ -371,6 +371,8 @@ void VulkanRenderer::initialize(const EngineInfo& info, HWND window, std::uint32
                          shadow_map_.format(), kMaxFramesInFlight);
     voxel_pass_.create(device_, skinned_pass_.frameSetLayout(), gbuffer_.colorFormats(), gbuffer_.depthFormat(),
                        shadow_map_.format(), kMaxFramesInFlight);
+    foliage_pass_.create(device_, skinned_pass_.frameSetLayout(), gbuffer_.colorFormats(), gbuffer_.depthFormat(),
+                         shadow_map_.format(), kMaxFramesInFlight);
 
     {
         using Type = vk::DescriptorType;
@@ -746,6 +748,7 @@ void VulkanRenderer::shutdown() {
     volumetric_pass_.destroy();
     terrain_pass_.destroy();
     voxel_pass_.destroy();
+    foliage_pass_.destroy();
     water_pass_.destroy();
     surface_pipelines_.clear();
     skinned_pass_.destroy();
@@ -2782,8 +2785,9 @@ void VulkanRenderer::updateUniforms(const scene::Scene& scene, const scene::Came
     // --- Nubes ---
     // Con el cielo fotografiado no hay nubes volumetricas: la foto trae las
     // suyas.
-    light_data.clouds =
-        Vec4{clouds_enabled_ && !environmentActive() ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f};
+    // x: nubes; y, z: niebla por altura (densidad y caida con la altura).
+    light_data.clouds = Vec4{clouds_enabled_ && !environmentActive() ? 1.0f : 0.0f, std::max(post_.fog_density, 0.0f),
+                             std::max(post_.fog_height_falloff, 0.0001f), 0.0f};
     // y: luz volumetrica. No en las caras de la sonda: su imagen es de la
     // camara de pantalla.
     // z: sombras de contacto (largo del rayo); no en la sonda (su depth es otro).
@@ -3399,6 +3403,8 @@ void VulkanRenderer::recordCommandBuffer(const vk::raii::CommandBuffer& cmd,
     // Voxeles: secciones rehechas (romper/poner bloques) y las visibles.
     if (voxel_pass_.recordUploads(cmd, frame_index)) staticGeometryChanged();
     voxel_pass_.prepare(frame_index, camera_position_, camera_view_projection_);
+    // Vegetacion: recorte y niveles de detalle en la GPU (antes de las sombras).
+    foliage_pass_.recordCull(cmd, frame_index, camera_position_, camera_view_projection_, frame_delta_seconds_);
     water_pass_.prepare(frame_index);
 
     if (!rain_map_ready_ && (rainAvailable() || waterAvailable()) && !actor_draws_.empty()) {
@@ -3532,6 +3538,8 @@ void VulkanRenderer::recordShadowPass(const vk::raii::CommandBuffer& cmd,
                                        rendered_cascades_[cascade].light_view_projection);
             voxel_pass_.recordShadow(cmd, frame_index, skin_sets_[frame_index],
                                      rendered_cascades_[cascade].light_view_projection);
+            foliage_pass_.recordShadow(cmd, frame_index, skin_sets_[frame_index],
+                                       rendered_cascades_[cascade].light_view_projection);
         }
 
         cmd.endRendering();
@@ -3777,6 +3785,8 @@ void VulkanRenderer::recordGeometryPass(const vk::raii::CommandBuffer& cmd,
     terrain_pass_.recordGBuffer(cmd, frame_index, skin_sets_[frame_index]);
     // Los voxeles tambien tapan mucho: pronto, de cerca a lejos.
     voxel_pass_.recordGBuffer(cmd, frame_index, skin_sets_[frame_index]);
+    // Vegetacion: una llamada indirecta por especie (sus 3 niveles).
+    foliage_pass_.recordGBuffer(cmd, frame_index, skin_sets_[frame_index]);
     drawGpuClusters(cmd, frame_index, 0);
     cmd.endRendering();
 

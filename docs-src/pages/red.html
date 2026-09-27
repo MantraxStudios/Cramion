@@ -1,0 +1,122 @@
+<p>
+  <code>Network</code> hace juegos <strong>multijugador por red</strong> (UDP con ENet) desde Lua. Un jugador
+  <strong>crea la partida</strong> (es el servidor y además juega) y los demás <strong>se unen</strong> con su IP. Todo pasa
+  por el servidor: un cliente manda al servidor y este lo reenvía a los demás, así que el servidor puede comprobar lo que
+  llega (por ejemplo, que nadie se dé puntos a sí mismo). La plantilla <a href="plantillas.html#online">Online</a> es un
+  juego completo hecho así.
+</p>
+
+<pre><code class="language-lua">-- Servidor (también juega: es el jugador 1)
+local ok, err = Network.host(7777, 8)       -- puerto, jugadores como máximo
+
+-- Cliente
+Network.connect("192.168.1.20", 7777)
+Network.onConnected(function(miId) print("dentro como", miId) end)
+Network.onDisconnected(function(motivo) print("fuera:", motivo) end)</code></pre>
+
+<h3 id="sesion">Partida</h3>
+<table>
+  <thead><tr><th>Función</th><th>Qué hace</th></tr></thead>
+  <tbody>
+    <tr><td><code>Network.host(puerto, max)</code></td><td>Crea la partida en <code>puerto</code> (7777 por defecto) para <code>max</code> jugadores contándote (16). Devuelve <code>ok, error</code>.</td></tr>
+    <tr><td><code>Network.connect(ip, puerto)</code></td><td>Se une a una partida (<code>"127.0.0.1"</code> y 7777 por defecto). Conecta en segundo plano: llega <code>onConnected</code> o, si nadie responde en 6 s, <code>onDisconnected</code>.</td></tr>
+    <tr><td><code>Network.disconnect()</code></td><td>Sale de la partida avisando a los demás (el servidor la cierra para todos). Los objetos de red recibidos se borran de la escena. Salir de Play o cerrar el juego también la cierra.</td></tr>
+    <tr><td><code>Network.isServer()</code>, <code>isClient()</code></td><td>Qué papel tienes.</td></tr>
+    <tr><td><code>Network.isConnected()</code>, <code>isConnecting()</code>, <code>isActive()</code></td><td>En partida (servidor abierto o cliente dentro), cliente esperando respuesta, hay alguna sesión.</td></tr>
+    <tr><td><code>Network.myId()</code></td><td>Tu id de jugador: el servidor es <code>1</code> (<code>Network.SERVER</code>) y los clientes 2, 3...</td></tr>
+    <tr><td><code>Network.players()</code>, <code>playerCount()</code></td><td>Lista de ids de todos los jugadores (tú incluido) y cuántos son.</td></tr>
+    <tr><td><code>Network.ping(id)</code></td><td>Ida y vuelta en milisegundos con ese jugador (un cliente solo conoce la del servidor).</td></tr>
+    <tr><td><code>Network.stats()</code></td><td><code>{ sent, received, objects }</code>: bytes enviados y recibidos y objetos de red.</td></tr>
+  </tbody>
+</table>
+
+<h3 id="eventos">Jugadores que entran y salen</h3>
+<table>
+  <thead><tr><th>Función</th><th>Cuándo se llama</th></tr></thead>
+  <tbody>
+    <tr><td><code>Network.onConnected(function(id) end)</code></td><td>Cliente: ya estás dentro, con tu id.</td></tr>
+    <tr><td><code>Network.onDisconnected(function(motivo) end)</code></td><td>Fuera de la partida: el servidor la cerró, se perdió la conexión o no respondió.</td></tr>
+    <tr><td><code>Network.onPlayerJoined(function(id) end)</code></td><td>Entra un jugador (en todos).</td></tr>
+    <tr><td><code>Network.onPlayerLeft(function(id) end)</code></td><td>Sale un jugador. Sus objetos de red desaparecen solos en todos.</td></tr>
+  </tbody>
+</table>
+
+<h3 id="mensajes">Mensajes</h3>
+<p>
+  Un mensaje tiene un nombre y un valor de Lua: <code>nil</code>, booleano, número, texto, <code>Vec3</code> o una tabla
+  de ellos (también tablas dentro de tablas). Llegan <strong>siempre y en orden</strong>.
+</p>
+<pre><code class="language-lua">-- Todos reciben el chat; la función recibe los datos y quién lo mandó.
+Network.on("chat", function(datos, de)
+    print(de, datos.texto)
+end)
+
+Network.send("chat", { texto = "hola" })            -- a todos (menos a mí)
+Network.send("decir", { texto = "hola" }, "server") -- solo al servidor
+Network.send("privado", { texto = "psst" }, 3)      -- solo al jugador 3</code></pre>
+<table>
+  <thead><tr><th>Función</th><th>Qué hace</th></tr></thead>
+  <tbody>
+    <tr><td><code>Network.send(nombre, datos, destino)</code></td><td>Destino: <code>nil</code> = todos menos tú, <code>"server"</code> (o <code>Network.SERVER</code>) = el servidor, o el id de un jugador. Un cliente lo manda al servidor y este lo reenvía.</td></tr>
+    <tr><td><code>Network.on(nombre, function(datos, de) end)</code></td><td>Recibe los mensajes con ese nombre. <code>de</code> es el id de quien lo mandó.</td></tr>
+    <tr><td><code>Network.off(nombre)</code></td><td>Deja de recibirlos.</td></tr>
+  </tbody>
+</table>
+<p>
+  Patrón habitual: el cliente <strong>pide</strong> al servidor (<code>"decir"</code>, <code>"patear"</code>) y el servidor
+  <strong>decide</strong> y reparte el resultado a todos (<code>"chat"</code>, <code>"tabla"</code>).
+</p>
+
+<h3 id="objetos">Objetos de red</h3>
+<p>
+  <code>Network.spawn</code> crea un <a href="prefabs.html">prefab</a> en <strong>todos</strong> los jugadores con el mismo
+  id de red y un <strong>dueño</strong>. Solo el dueño lo mueve: su posición y su giro se mandan solos (20 veces por segundo
+  si se movió) y los demás lo siguen suavizado; su <code>Rigidbody</code> pasa a cinemático en los demás para que no
+  simulen su propia física. Quien entra tarde recibe todos los objetos con su última posición y sus variables. Si el dueño
+  sale, sus objetos desaparecen.
+</p>
+<pre><code class="language-lua">-- Servidor: un personaje para cada jugador que entra, controlado por él.
+Network.onPlayerJoined(function(id)
+    Network.spawn("Prefabs/Jugador", Vec3(0, 1, 0), id)
+end)
+
+-- En el script del prefab: solo el dueño lee el teclado.
+function Jugador:Update(dt)
+    if not self.entity:isMine() then return end
+    -- mover con Input...
+end</code></pre>
+<table>
+  <thead><tr><th>Función</th><th>Qué hace</th></tr></thead>
+  <tbody>
+    <tr><td><code>Network.spawn(prefab, posicion, dueño, giro)</code></td><td>Solo el servidor. Dueño: el id de un jugador o <code>Network.SERVER</code> (por defecto). Giro en grados (<code>Vec3</code>). Devuelve la entidad.</td></tr>
+    <tr><td><code>Network.destroy(entity)</code></td><td>Solo el servidor: lo borra en todos.</td></tr>
+    <tr><td><code>Network.objects()</code></td><td>Lista de todas las entidades de red de la escena.</td></tr>
+    <tr><td><code>Network.find(netId)</code></td><td>La entidad con ese id de red (o <code>nil</code>).</td></tr>
+    <tr><td><code>Network.loadScene(nombre)</code></td><td>Solo el servidor: todos cargan esa escena. La partida sigue abierta; los objetos de red se olvidan.</td></tr>
+    <tr><td><code>entity:isMine()</code></td><td>Lo controlas tú. Sin red, o en un objeto que no es de red, siempre <code>true</code>: el mismo script sirve para jugar solo.</td></tr>
+    <tr><td><code>entity.netId</code>, <code>entity.netOwner</code></td><td>Id de red (0 = no es de red) e id del jugador dueño.</td></tr>
+    <tr><td><code>entity:setNetVar(clave, valor)</code></td><td>Variable sincronizada (vida, nombre, color...). La puede cambiar el dueño o el servidor; llega a todos y a los que entren más tarde.</td></tr>
+    <tr><td><code>entity:getNetVar(clave)</code></td><td>Su último valor (o <code>nil</code>).</td></tr>
+    <tr><td><code>function Script:OnNetVar(clave, valor)</code></td><td>En los scripts del objeto: se llama en los demás jugadores cuando llega un cambio de una de sus variables (por ejemplo, para cambiar el color o la barra de vida).</td></tr>
+  </tbody>
+</table>
+<p>
+  El componente <a href="componentes-scripting.html#NetworkObject">Objeto de red</a> (<code>NetworkObject</code>) en el
+  prefab ajusta cuántas veces por segundo se manda la posición y el suavizado; si no lo lleva, <code>Network.spawn</code>
+  lo añade con los valores por defecto.
+</p>
+<p>
+  <strong>Objetos con física que todos pueden empujar</strong> (un balón, cajas): que el dueño sea el servidor y activa
+  <em>Física local en los demás</em> en su <code>NetworkObject</code>. Así cada jugador también lo simula en su pantalla
+  (su personaje lo empuja al pasar, sin esperar a la red) y lo que manda el servidor lo va corrigiendo. Sin esa opción, en
+  los demás el objeto solo sigue la posición recibida: para ellos es como una pared y solo lo mueve quien lo simula. Para
+  los personajes déjala apagada.
+</p>
+
+<h3 id="probar">Probar en un solo PC</h3>
+<ul>
+  <li>Dale a Play en el editor y crea la partida; abre el juego exportado (o un segundo editor con el mismo proyecto) y únete a <code>127.0.0.1</code>.</li>
+  <li>Durante el Play, la barra de la vista Escena dice <em>Red: servidor</em> o <em>cliente</em> y cuántos jugadores hay.</li>
+  <li>Para jugar por Internet, quien crea la partida tiene que abrir el puerto UDP (7777) en su router, o usar una red virtual (Radmin VPN, ZeroTier, Tailscale). En la misma casa basta la IP local (<code>ipconfig</code>).</li>
+  <li>El Firewall de Windows pregunta la primera vez si el editor o el juego pueden usar la red: acéptalo.</li>
+</ul>

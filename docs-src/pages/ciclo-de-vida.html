@@ -10,6 +10,8 @@
           <tr><td><code>OnCollisionEnter(other, contact)</code></td><td>Empieza un choque con otra entidad. También <code>OnCollisionStay</code> y <code>OnCollisionExit</code>.</td></tr>
           <tr><td><code>OnTriggerEnter(other, contact)</code></td><td>Otra entidad entra en un collider marcado como trigger. También <code>OnTriggerStay</code> y <code>OnTriggerExit</code>.</td></tr>
           <tr><td><code>OnDestroy()</code></td><td>Antes de destruir la entidad, o al salir de Play.</td></tr>
+          <tr><td><code>OnNetVar(clave, valor)</code></td><td>En un <a href="red.html#objetos">objeto de red</a>: llegó un cambio de una variable sincronizada (<code>setNetVar</code> del dueño o del servidor).</td></tr>
+          <tr><td><code>OnOriginShift(offset)</code></td><td>En mundos grandes el motor recoloca el origen: todo se movió <code>-offset</code>. Resta <code>offset</code> a las posiciones del mundo que tengas guardadas.</td></tr>
         </tbody>
       </table>
       <p>

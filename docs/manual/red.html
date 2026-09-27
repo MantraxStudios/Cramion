@@ -1,0 +1,416 @@
+<!doctype html>
+<html lang="es" class="scroll-smooth">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Network (multijugador) · Manual de Cramion</title>
+  <meta name="description" content="Partidas por red: crear y unirse, mensajes, objetos y variables sincronizados.">
+  <link rel="icon" href="../img/icon.png">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/lua.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/glsl.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/json.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/bash.min.js"></script>
+  <script src="search.js"></script>
+  <style type="text/tailwindcss">
+    @theme {
+      --color-ink: #0c0e12;
+      --color-panel: #13161d;
+      --color-line: #232834;
+      --color-brand: #0ab0ff;
+      --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+      --font-mono: "JetBrains Mono", ui-monospace, monospace;
+    }
+    body { background: var(--color-ink); }
+    .hljs { background: transparent !important; padding: 0 !important; }
+
+    .doc h3 { @apply mt-12 scroll-mt-24 border-b border-line pb-2 text-xl font-semibold text-white first:mt-0; }
+    .doc p  { @apply mt-4 leading-7 text-slate-400; }
+    .doc ul { @apply mt-4 list-disc space-y-1.5 pl-5 text-slate-400; }
+    .doc :not(pre) > code { @apply rounded bg-panel px-1.5 py-0.5 font-mono text-[0.85em] text-sky-300; }
+    .doc pre { @apply relative mt-4 overflow-x-auto rounded-xl border border-line bg-panel p-5 text-sm leading-relaxed; }
+    .doc table { @apply mt-4 w-full border-collapse text-left text-sm; }
+    .doc th { @apply border-b border-line py-2 pr-4 font-semibold text-slate-200; }
+    .doc td { @apply border-b border-line/60 py-2.5 pr-4 align-top text-slate-400; }
+    .doc td:first-child { @apply whitespace-nowrap; }
+    .doc .table-wrap { @apply mt-4 overflow-x-auto rounded-xl border border-line px-4; }
+    .doc .table-wrap table { @apply mt-0; }
+    .doc .table-wrap tr:last-child td { @apply border-b-0; }
+    .note { @apply mt-5 rounded-xl border border-brand/40 bg-brand/10 p-4 text-sm leading-6 text-slate-300; }
+    .file { @apply !mb-0 !mt-6 flex items-center gap-2 font-mono text-xs !text-slate-500; }
+    .file + pre { @apply !mt-2; }
+
+    .side a { @apply block rounded-md px-3 py-1.5 text-sm text-slate-400 transition hover:bg-panel hover:text-white; }
+    .side a.active { @apply bg-brand/10 font-medium text-brand; }
+    .onpage a { @apply block border-l border-line py-1 pl-3 text-[13px] text-slate-500 transition hover:text-white; }
+    .onpage a.active { @apply border-brand text-brand; }
+    .copy { @apply absolute right-3 top-3 rounded-md border border-line bg-ink/80 px-2 py-1 font-sans text-xs text-slate-400 opacity-0 transition hover:text-white; }
+    pre:hover .copy { @apply opacity-100; }
+  </style>
+</head>
+<body class="font-sans text-slate-300 antialiased">
+
+  <header class="sticky top-0 z-40 border-b border-line/70 bg-ink/85 backdrop-blur">
+    <nav class="mx-auto flex max-w-[88rem] items-center gap-4 px-4 py-3 sm:px-6">
+      <button id="menu-btn" class="rounded-md p-1.5 text-slate-400 hover:bg-panel hover:text-white lg:hidden" aria-label="Menú">
+        <svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
+      </button>
+      <a href="index.html" class="flex shrink-0 items-center gap-2.5">
+        <img src="../img/icon.png" alt="" class="h-8 w-8">
+        <span class="hidden text-lg font-bold tracking-wide text-white sm:inline">CRAMION</span>
+        <span class="ml-1 hidden rounded border border-line px-2 py-0.5 text-xs text-slate-400 sm:inline">Manual</span>
+      </a>
+      <div class="relative mx-auto min-w-0 max-w-md flex-1">
+        <input id="search" type="search" autocomplete="off" placeholder="Buscar en el manual..."
+               class="w-full rounded-lg border border-line bg-panel py-2 pl-9 pr-10 text-sm text-white placeholder:text-slate-500 focus:border-brand focus:outline-none">
+        <svg class="pointer-events-none absolute left-3 top-2.5 h-4 w-4 text-slate-500" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+        <kbd class="pointer-events-none absolute right-2.5 top-2 hidden rounded border border-line px-1.5 font-mono text-[11px] text-slate-500 sm:block">/</kbd>
+        <div id="results" class="absolute inset-x-0 top-full mt-2 hidden max-h-[70vh] overflow-y-auto rounded-xl border border-line bg-panel p-2 shadow-2xl shadow-black/60"></div>
+      </div>
+      <div class="hidden shrink-0 items-center gap-5 text-sm md:flex">
+        <a href="../index.html" class="hover:text-white">Inicio</a>
+        <a href="https://discord.gg/zG7rSsUGEz" target="_blank" rel="noopener" class="hover:text-white">Discord</a>
+        <a href="https://github.com/MantraxStudios/Cramion" target="_blank" rel="noopener" class="hover:text-white">GitHub</a>
+      </div>
+    </nav>
+  </header>
+
+  <div id="shade" class="fixed inset-0 z-30 hidden bg-black/60 lg:hidden"></div>
+  <div class="mx-auto flex max-w-[88rem] gap-10 px-4 sm:px-6">
+    <aside id="side" class="side fixed inset-y-0 left-0 z-40 w-72 -translate-x-full overflow-y-auto border-r border-line bg-ink px-3 py-6 transition-transform lg:sticky lg:top-16 lg:z-0 lg:h-[calc(100vh-4rem)] lg:w-60 lg:shrink-0 lg:translate-x-0 lg:border-0 lg:px-0 lg:py-10">
+      <nav>
+        <a href="index.html" class="">Inicio del manual</a>
+        <p class="mb-1 mt-7 flex items-center gap-2 px-3 text-xs font-semibold uppercase tracking-wider text-slate-500"><svg class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5a2 2 0 0 1 2-2h13v16H6a2 2 0 0 0-2 2V5Z"/><path d="M4 19a2 2 0 0 1 2-2h13"/></svg>Primeros pasos</p>
+        <a href="primer-script.html">Tu primer script</a>
+        <a href="ciclo-de-vida.html">Ciclo de vida</a>
+        <a href="propiedades.html">Propiedades</a>
+        <a href="recarga.html">Recarga en caliente</a>
+        <a href="prefabs.html">Prefabs</a>
+        <a href="mcp.html">Conectar una IA (MCP)</a>
+        <p class="mb-1 mt-7 flex items-center gap-2 px-3 text-xs font-semibold uppercase tracking-wider text-slate-500"><svg class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M9 9v11"/></svg>El editor</p>
+        <a href="editor-interfaz.html">Interfaz y pestañas</a>
+        <a href="editor-escena.html">Vista Escena y gizmos</a>
+        <a href="editor-jerarquia.html">Jerarquía e Inspector</a>
+        <a href="editor-proyecto.html">Proyecto e importación</a>
+        <a href="editor-play.html">Play, deshacer y escenas</a>
+        <a href="editor-herramientas.html">Herramientas de mundo</a>
+        <a href="editor-ventanas.html">Ventanas de herramientas</a>
+        <a href="materiales.html">Materiales</a>
+        <a href="render.html">Render y rendimiento</a>
+        <a href="exportar.html">Exportar y compilación</a>
+        <a href="plantillas.html">Plantillas</a>
+        <a href="atajos.html">Atajos de teclado</a>
+        <a href="actualizaciones.html">Actualizaciones</a>
+        <p class="mb-1 mt-7 flex items-center gap-2 px-3 text-xs font-semibold uppercase tracking-wider text-slate-500"><svg class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m12 3 8 4.5v9L12 21l-8-4.5v-9L12 3Z"/><path d="m4 7.5 8 4.5 8-4.5M12 12v9"/></svg>Componentes</p>
+        <a href="componentes.html">Todos los componentes</a>
+        <a href="componentes-basicos.html">Transform y renderizado</a>
+        <a href="componentes-entorno.html">Entorno</a>
+        <a href="componentes-fisica.html">Física</a>
+        <a href="componentes-efectos.html">Partículas y depuración</a>
+        <a href="componentes-animacion.html">Animación</a>
+        <a href="componentes-audio.html">Audio</a>
+        <a href="componentes-cinematicas.html">Cámaras y cinemáticas</a>
+        <a href="componentes-navegacion.html">Navegación</a>
+        <a href="componentes-ui.html">Interfaz (UI)</a>
+        <a href="componentes-scripting.html">Scripts y prefabs</a>
+        <p class="mb-1 mt-7 flex items-center gap-2 px-3 text-xs font-semibold uppercase tracking-wider text-slate-500"><svg class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m8 8-4 4 4 4"/><path d="m16 8 4 4-4 4"/><path d="m14 4-4 16"/></svg>Referencia de la API</p>
+        <a href="vec3.html">Vec3</a>
+        <a href="quat.html">Quat (rotaciones)</a>
+        <a href="mathf.html">Mathf</a>
+        <a href="random.html">Random</a>
+        <a href="entity.html">Entity</a>
+        <a href="scene.html">Scene</a>
+        <a href="input.html">Input</a>
+        <a href="time.html">Time</a>
+        <a href="physics.html">Physics</a>
+        <a href="navegacion.html">Navegación</a>
+        <a href="mallas.html">Mallas por código</a>
+        <a href="voxel.html">Mundo de bloques</a>
+        <a href="audio.html">Audio</a>
+        <a href="ui.html">Interfaz (UI)</a>
+        <a href="esqueletos.html">Esqueletos: IK, ragdoll y phys bones</a>
+        <a href="graphics.html">Graphics</a>
+        <a href="red.html" class="active">Network (multijugador)</a>
+        <a href="http.html">Http y Json</a>
+        <a href="prefs.html">Prefs y Game</a>
+        <a href="debug.html">Debug</a>
+        <p class="mb-1 mt-7 flex items-center gap-2 px-3 text-xs font-semibold uppercase tracking-wider text-slate-500"><svg class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a9 9 0 1 0 0 18c1.1 0 1.5-.8 1.5-1.5 0-.9-.7-1.2-.7-2 0-.8.6-1.5 1.5-1.5H16a5 5 0 0 0 5-5c0-4.4-4-8-9-8Z"/><circle cx="7.5" cy="11" r="1"/><circle cx="10" cy="7" r="1"/><circle cx="15" cy="7.5" r="1"/></svg>Gráficos</p>
+        <a href="shaders.html">Shaders propios</a>
+        <p class="mb-1 mt-7 flex items-center gap-2 px-3 text-xs font-semibold uppercase tracking-wider text-slate-500"><svg class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v4M12 17v4M3 12h4M17 12h4M6 6l2.5 2.5M15.5 15.5 18 18M6 18l2.5-2.5M15.5 8.5 18 6"/></svg>Ejemplos</p>
+        <a href="ejemplo-girar.html">Girar un objeto</a>
+        <a href="ejemplo-camara.html">Cámara que sigue al jugador</a>
+        <a href="ejemplo-jugador.html">Jugador con física</a>
+        <a href="ejemplo-disparo.html">Disparo con raycast</a>
+        <a href="ejemplo-monedas.html">Monedas y puntuación</a>
+        <a href="ejemplo-spawner.html">Generador de enemigos</a>
+        <a href="ejemplo-vehiculo.html">Conducir un vehículo</a>
+        <a href="ejemplo-menu.html">Menú, opciones y récord</a>
+        <a href="ejemplo-animacion.html">Animación de un personaje</a>
+        <a href="ejemplo-comunicacion.html">Scripts que se hablan</a>
+        <a href="ejemplo-ia.html">IA: patrullar y perseguir</a>
+        <a href="ejemplo-terreno.html">Terreno procedural con colisión</a>
+        <a href="ejemplo-efectos.html">Varios materiales y efectos</a>
+        <a href="ejemplo-olas.html">Olas: cambiar la malla cada frame</a>
+      </nav>
+    </aside>
+
+    <main class="doc min-w-0 flex-1 overflow-x-hidden py-10 lg:max-w-3xl">
+      <div class="flex items-center gap-2 text-sm text-slate-500">
+        <a href="index.html" class="hover:text-white">Manual</a><span>/</span>
+        <span class="flex items-center gap-1.5 text-brand"><svg class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m8 8-4 4 4 4"/><path d="m16 8 4 4-4 4"/><path d="m14 4-4 16"/></svg>Referencia de la API</span>
+      </div>
+      <h1 class="mt-3 text-4xl font-extrabold tracking-tight text-white">Network (multijugador)</h1>
+      <p class="!mt-3 text-lg !text-slate-400">Partidas por red: crear y unirse, mensajes, objetos y variables sincronizados.</p>
+      <div class="mt-10">
+<p>
+  <code>Network</code> hace juegos <strong>multijugador por red</strong> (UDP con ENet) desde Lua. Un jugador
+  <strong>crea la partida</strong> (es el servidor y además juega) y los demás <strong>se unen</strong> con su IP. Todo pasa
+  por el servidor: un cliente manda al servidor y este lo reenvía a los demás, así que el servidor puede comprobar lo que
+  llega (por ejemplo, que nadie se dé puntos a sí mismo). La plantilla <a href="plantillas.html#online">Online</a> es un
+  juego completo hecho así.
+</p>
+
+<pre><code class="language-lua">-- Servidor (también juega: es el jugador 1)
+local ok, err = Network.host(7777, 8)       -- puerto, jugadores como máximo
+
+-- Cliente
+Network.connect("192.168.1.20", 7777)
+Network.onConnected(function(miId) print("dentro como", miId) end)
+Network.onDisconnected(function(motivo) print("fuera:", motivo) end)</code></pre>
+
+<h3 id="sesion">Partida</h3>
+<table>
+  <thead><tr><th>Función</th><th>Qué hace</th></tr></thead>
+  <tbody>
+    <tr><td><code>Network.host(puerto, max)</code></td><td>Crea la partida en <code>puerto</code> (7777 por defecto) para <code>max</code> jugadores contándote (16). Devuelve <code>ok, error</code>.</td></tr>
+    <tr><td><code>Network.connect(ip, puerto)</code></td><td>Se une a una partida (<code>"127.0.0.1"</code> y 7777 por defecto). Conecta en segundo plano: llega <code>onConnected</code> o, si nadie responde en 6 s, <code>onDisconnected</code>.</td></tr>
+    <tr><td><code>Network.disconnect()</code></td><td>Sale de la partida avisando a los demás (el servidor la cierra para todos). Los objetos de red recibidos se borran de la escena. Salir de Play o cerrar el juego también la cierra.</td></tr>
+    <tr><td><code>Network.isServer()</code>, <code>isClient()</code></td><td>Qué papel tienes.</td></tr>
+    <tr><td><code>Network.isConnected()</code>, <code>isConnecting()</code>, <code>isActive()</code></td><td>En partida (servidor abierto o cliente dentro), cliente esperando respuesta, hay alguna sesión.</td></tr>
+    <tr><td><code>Network.myId()</code></td><td>Tu id de jugador: el servidor es <code>1</code> (<code>Network.SERVER</code>) y los clientes 2, 3...</td></tr>
+    <tr><td><code>Network.players()</code>, <code>playerCount()</code></td><td>Lista de ids de todos los jugadores (tú incluido) y cuántos son.</td></tr>
+    <tr><td><code>Network.ping(id)</code></td><td>Ida y vuelta en milisegundos con ese jugador (un cliente solo conoce la del servidor).</td></tr>
+    <tr><td><code>Network.stats()</code></td><td><code>{ sent, received, objects }</code>: bytes enviados y recibidos y objetos de red.</td></tr>
+  </tbody>
+</table>
+
+<h3 id="eventos">Jugadores que entran y salen</h3>
+<table>
+  <thead><tr><th>Función</th><th>Cuándo se llama</th></tr></thead>
+  <tbody>
+    <tr><td><code>Network.onConnected(function(id) end)</code></td><td>Cliente: ya estás dentro, con tu id.</td></tr>
+    <tr><td><code>Network.onDisconnected(function(motivo) end)</code></td><td>Fuera de la partida: el servidor la cerró, se perdió la conexión o no respondió.</td></tr>
+    <tr><td><code>Network.onPlayerJoined(function(id) end)</code></td><td>Entra un jugador (en todos).</td></tr>
+    <tr><td><code>Network.onPlayerLeft(function(id) end)</code></td><td>Sale un jugador. Sus objetos de red desaparecen solos en todos.</td></tr>
+  </tbody>
+</table>
+
+<h3 id="mensajes">Mensajes</h3>
+<p>
+  Un mensaje tiene un nombre y un valor de Lua: <code>nil</code>, booleano, número, texto, <code>Vec3</code> o una tabla
+  de ellos (también tablas dentro de tablas). Llegan <strong>siempre y en orden</strong>.
+</p>
+<pre><code class="language-lua">-- Todos reciben el chat; la función recibe los datos y quién lo mandó.
+Network.on("chat", function(datos, de)
+    print(de, datos.texto)
+end)
+
+Network.send("chat", { texto = "hola" })            -- a todos (menos a mí)
+Network.send("decir", { texto = "hola" }, "server") -- solo al servidor
+Network.send("privado", { texto = "psst" }, 3)      -- solo al jugador 3</code></pre>
+<table>
+  <thead><tr><th>Función</th><th>Qué hace</th></tr></thead>
+  <tbody>
+    <tr><td><code>Network.send(nombre, datos, destino)</code></td><td>Destino: <code>nil</code> = todos menos tú, <code>"server"</code> (o <code>Network.SERVER</code>) = el servidor, o el id de un jugador. Un cliente lo manda al servidor y este lo reenvía.</td></tr>
+    <tr><td><code>Network.on(nombre, function(datos, de) end)</code></td><td>Recibe los mensajes con ese nombre. <code>de</code> es el id de quien lo mandó.</td></tr>
+    <tr><td><code>Network.off(nombre)</code></td><td>Deja de recibirlos.</td></tr>
+  </tbody>
+</table>
+<p>
+  Patrón habitual: el cliente <strong>pide</strong> al servidor (<code>"decir"</code>, <code>"patear"</code>) y el servidor
+  <strong>decide</strong> y reparte el resultado a todos (<code>"chat"</code>, <code>"tabla"</code>).
+</p>
+
+<h3 id="objetos">Objetos de red</h3>
+<p>
+  <code>Network.spawn</code> crea un <a href="prefabs.html">prefab</a> en <strong>todos</strong> los jugadores con el mismo
+  id de red y un <strong>dueño</strong>. Solo el dueño lo mueve: su posición y su giro se mandan solos (20 veces por segundo
+  si se movió) y los demás lo siguen suavizado; su <code>Rigidbody</code> pasa a cinemático en los demás para que no
+  simulen su propia física. Quien entra tarde recibe todos los objetos con su última posición y sus variables. Si el dueño
+  sale, sus objetos desaparecen.
+</p>
+<pre><code class="language-lua">-- Servidor: un personaje para cada jugador que entra, controlado por él.
+Network.onPlayerJoined(function(id)
+    Network.spawn("Prefabs/Jugador", Vec3(0, 1, 0), id)
+end)
+
+-- En el script del prefab: solo el dueño lee el teclado.
+function Jugador:Update(dt)
+    if not self.entity:isMine() then return end
+    -- mover con Input...
+end</code></pre>
+<table>
+  <thead><tr><th>Función</th><th>Qué hace</th></tr></thead>
+  <tbody>
+    <tr><td><code>Network.spawn(prefab, posicion, dueño, giro)</code></td><td>Solo el servidor. Dueño: el id de un jugador o <code>Network.SERVER</code> (por defecto). Giro en grados (<code>Vec3</code>). Devuelve la entidad.</td></tr>
+    <tr><td><code>Network.destroy(entity)</code></td><td>Solo el servidor: lo borra en todos.</td></tr>
+    <tr><td><code>Network.objects()</code></td><td>Lista de todas las entidades de red de la escena.</td></tr>
+    <tr><td><code>Network.find(netId)</code></td><td>La entidad con ese id de red (o <code>nil</code>).</td></tr>
+    <tr><td><code>Network.loadScene(nombre)</code></td><td>Solo el servidor: todos cargan esa escena. La partida sigue abierta; los objetos de red se olvidan.</td></tr>
+    <tr><td><code>entity:isMine()</code></td><td>Lo controlas tú. Sin red, o en un objeto que no es de red, siempre <code>true</code>: el mismo script sirve para jugar solo.</td></tr>
+    <tr><td><code>entity.netId</code>, <code>entity.netOwner</code></td><td>Id de red (0 = no es de red) e id del jugador dueño.</td></tr>
+    <tr><td><code>entity:setNetVar(clave, valor)</code></td><td>Variable sincronizada (vida, nombre, color...). La puede cambiar el dueño o el servidor; llega a todos y a los que entren más tarde.</td></tr>
+    <tr><td><code>entity:getNetVar(clave)</code></td><td>Su último valor (o <code>nil</code>).</td></tr>
+    <tr><td><code>function Script:OnNetVar(clave, valor)</code></td><td>En los scripts del objeto: se llama en los demás jugadores cuando llega un cambio de una de sus variables (por ejemplo, para cambiar el color o la barra de vida).</td></tr>
+  </tbody>
+</table>
+<p>
+  El componente <a href="componentes-scripting.html#NetworkObject">Objeto de red</a> (<code>NetworkObject</code>) en el
+  prefab ajusta cuántas veces por segundo se manda la posición y el suavizado; si no lo lleva, <code>Network.spawn</code>
+  lo añade con los valores por defecto.
+</p>
+<p>
+  <strong>Objetos con física que todos pueden empujar</strong> (un balón, cajas): que el dueño sea el servidor y activa
+  <em>Física local en los demás</em> en su <code>NetworkObject</code>. Así cada jugador también lo simula en su pantalla
+  (su personaje lo empuja al pasar, sin esperar a la red) y lo que manda el servidor lo va corrigiendo. Sin esa opción, en
+  los demás el objeto solo sigue la posición recibida: para ellos es como una pared y solo lo mueve quien lo simula. Para
+  los personajes déjala apagada.
+</p>
+
+<h3 id="probar">Probar en un solo PC</h3>
+<ul>
+  <li>Dale a Play en el editor y crea la partida; abre el juego exportado (o un segundo editor con el mismo proyecto) y únete a <code>127.0.0.1</code>.</li>
+  <li>Durante el Play, la barra de la vista Escena dice <em>Red: servidor</em> o <em>cliente</em> y cuántos jugadores hay.</li>
+  <li>Para jugar por Internet, quien crea la partida tiene que abrir el puerto UDP (7777) en su router, o usar una red virtual (Radmin VPN, ZeroTier, Tailscale). En la misma casa basta la IP local (<code>ipconfig</code>).</li>
+  <li>El Firewall de Windows pregunta la primera vez si el editor o el juego pueden usar la red: acéptalo.</li>
+</ul>
+      </div>
+      <div class="mt-16 grid gap-4 border-t border-line pt-8 sm:grid-cols-2">
+        <a href="graphics.html" class="group rounded-xl border border-line p-4 transition hover:border-brand/60 hover:bg-panel">
+          <span class="text-xs text-slate-500">← Anterior</span>
+          <span class="mt-1 block font-semibold text-white group-hover:text-brand">Graphics</span>
+        </a>
+        <a href="http.html" class="group rounded-xl border border-line p-4 text-right transition hover:border-brand/60 hover:bg-panel">
+          <span class="text-xs text-slate-500">Siguiente →</span>
+          <span class="mt-1 block font-semibold text-white group-hover:text-brand">Http y Json</span>
+        </a></div>
+      <p class="mt-10 text-sm text-slate-500">¿Algo no queda claro o falta algo? Pregunta en el
+        <a href="https://discord.gg/zG7rSsUGEz" target="_blank" rel="noopener" class="text-brand hover:text-white">Discord</a>.</p>
+    </main>
+    <aside class="sticky top-16 hidden h-[calc(100vh-4rem)] w-52 shrink-0 overflow-y-auto py-10 xl:block">
+      <p class="mb-3 text-xs font-semibold uppercase tracking-wider text-slate-500">En esta página</p>
+      <nav id="onpage" class="onpage"></nav>
+    </aside>
+  </div>
+
+  <script>
+    hljs.highlightAll();
+
+    // Menu lateral en el movil.
+    const side = document.getElementById("side");
+    const shade = document.getElementById("shade");
+    const toggle = open => {
+      side.classList.toggle("-translate-x-full", !open);
+      shade.classList.toggle("hidden", !open);
+    };
+    document.getElementById("menu-btn").addEventListener("click", () => toggle(side.classList.contains("-translate-x-full")));
+    shade.addEventListener("click", () => toggle(false));
+    // El enlace activo a la vista dentro del menu (sin mover la pagina).
+    const current = side.querySelector("a.active");
+    if (current) side.scrollTop = current.offsetTop - side.clientHeight / 2;
+
+    // Boton de copiar en cada bloque de codigo.
+    document.querySelectorAll(".doc pre").forEach(pre => {
+      const b = document.createElement("button");
+      b.className = "copy";
+      b.textContent = "Copiar";
+      b.addEventListener("click", async () => {
+        try {
+          await navigator.clipboard.writeText(pre.querySelector("code")?.innerText ?? pre.innerText);
+          b.textContent = "Copiado";
+        } catch { b.textContent = "No se pudo"; }
+        setTimeout(() => (b.textContent = "Copiar"), 1400);
+      });
+      pre.appendChild(b);
+    });
+
+    // Tablas anchas: se desplazan dentro de su marco.
+    document.querySelectorAll(".doc table").forEach(t => {
+      const w = document.createElement("div");
+      w.className = "table-wrap";
+      t.replaceWith(w);
+      w.appendChild(t);
+    });
+
+    // "En esta pagina": los h3 con resaltado de la seccion visible.
+    const onpage = document.getElementById("onpage");
+    if (onpage) {
+      const heads = [...document.querySelectorAll(".doc h3[id]")];
+      if (heads.length < 2) {
+        onpage.closest("aside").classList.add("xl:invisible");
+      } else {
+        onpage.innerHTML = heads.map(h => `<a href="#${h.id}">${h.textContent}</a>`).join("");
+        const links = [...onpage.querySelectorAll("a")];
+        const obs = new IntersectionObserver(entries => {
+          for (const e of entries) {
+            if (e.isIntersecting) links.forEach(a => a.classList.toggle("active", a.getAttribute("href") === "#" + e.target.id));
+          }
+        }, { rootMargin: "-80px 0px -70% 0px" });
+        heads.forEach(h => obs.observe(h));
+      }
+    }
+
+    // Buscador: titulos, secciones y nombres de la API.
+    const input = document.getElementById("search");
+    const box = document.getElementById("results");
+    const norm = s => s.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+    const esc = s => s.replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+    let hits = [], sel = 0;
+    const render = () => {
+      if (!hits.length) {
+        box.innerHTML = input.value.trim() ? '<p class="px-3 py-2 text-sm text-slate-500">Sin resultados.</p>' : "";
+        box.classList.toggle("hidden", !input.value.trim());
+        return;
+      }
+      box.innerHTML = hits.map((h, i) => `
+        <a href="${h.u}" class="block rounded-lg px-3 py-2 ${i === sel ? "bg-brand/15" : "hover:bg-ink"}">
+          <span class="${h.c ? "font-mono text-sky-300" : "font-medium text-white"} text-sm">${esc(h.t)}</span>
+          <span class="ml-2 text-xs text-slate-500">${esc(h.g)}</span>
+          ${h.d ? `<span class="mt-0.5 block text-xs text-slate-400">${esc(h.d)}</span>` : ""}
+        </a>`).join("");
+      box.classList.remove("hidden");
+    };
+    input.addEventListener("input", () => {
+      const q = norm(input.value.trim());
+      sel = 0;
+      if (!q) { hits = []; render(); return; }
+      const words = q.split(/\s+/);
+      hits = window.CRAMION_SEARCH
+        .map(e => {
+          const t = norm(e.t), all = t + " " + norm(e.g) + " " + norm(e.d || "");
+          if (!words.every(w => all.includes(w))) return null;
+          const score = (t.startsWith(q) ? 0 : t.includes(q) ? 1 : 2) + (e.c ? 0.5 : 0) - (e.d ? 0.3 : 0);
+          return { e, score };
+        })
+        .filter(Boolean).sort((a, b) => a.score - b.score).slice(0, 12).map(x => x.e);
+      render();
+    });
+    input.addEventListener("keydown", ev => {
+      if (ev.key === "ArrowDown") { sel = Math.min(sel + 1, hits.length - 1); render(); ev.preventDefault(); }
+      if (ev.key === "ArrowUp") { sel = Math.max(sel - 1, 0); render(); ev.preventDefault(); }
+      if (ev.key === "Enter" && hits[sel]) location.href = hits[sel].u;
+      if (ev.key === "Escape") { input.value = ""; hits = []; render(); input.blur(); }
+    });
+    document.addEventListener("keydown", ev => {
+      if (ev.key === "/" && document.activeElement !== input) { ev.preventDefault(); input.focus(); }
+    });
+    document.addEventListener("click", ev => { if (!ev.target.closest("#results, #search")) box.classList.add("hidden"); });
+    input.addEventListener("focus", () => { if (input.value.trim()) render(); });
+  </script>
+</body>
+</html>

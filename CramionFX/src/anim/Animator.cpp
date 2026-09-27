@@ -89,7 +89,89 @@ Animator::Animator(const asset::ModelData& model) : model_(&model) {
     global_.resize(model.nodes.size(), Mat4::identity());
     bone_matrices_.resize(model.bones.size(), Mat4::identity());
     node_channel_.assign(model.nodes.size(), -1);
+    rest_translation_.resize(model.nodes.size());
+    rest_rotation_.resize(model.nodes.size());
+    rest_scale_.resize(model.nodes.size());
+    for (std::size_t i = 0; i < model.nodes.size(); ++i) {
+        decompose(model.nodes[i].local, rest_translation_[i], rest_rotation_[i], rest_scale_[i]);
+    }
     evaluate();
+}
+
+void Animator::evaluateBlend(const std::vector<ClipSample>& samples) {
+    if (model_ == nullptr) {
+        return;
+    }
+    const std::size_t node_count = model_->nodes.size();
+    if (clip_channels_.size() < model_->animations.size()) {
+        clip_channels_.resize(model_->animations.size());
+    }
+    // Solo las muestras que cuentan (clip valido o reposo, peso > 0).
+    struct Active {
+        const asset::AnimationClip* clip;
+        const std::vector<std::int32_t>* channels;
+        float time;
+        float weight;
+    };
+    std::vector<Active> active;
+    float total = 0.0f;
+    for (const ClipSample& s : samples) {
+        if (!(s.weight > 1e-5f)) continue;
+        Active a{nullptr, nullptr, s.time, s.weight};
+        if (s.clip >= 0 && static_cast<std::size_t>(s.clip) < model_->animations.size()) {
+            const asset::AnimationClip& clip = model_->animations[static_cast<std::size_t>(s.clip)];
+            std::vector<std::int32_t>& map = clip_channels_[static_cast<std::size_t>(s.clip)];
+            if (map.size() != node_count) {
+                map.assign(node_count, -1);
+                for (std::size_t c = 0; c < clip.channels.size(); ++c) {
+                    const std::int32_t node = clip.channels[c].node;
+                    if (node >= 0 && static_cast<std::size_t>(node) < node_count) map[static_cast<std::size_t>(node)] = static_cast<std::int32_t>(c);
+                }
+            }
+            a.clip = &clip;
+            a.channels = &map;
+        }
+        active.push_back(a);
+        total += s.weight;
+    }
+    for (std::size_t i = 0; i < node_count; ++i) {
+        const asset::Node& node = model_->nodes[i];
+        if (active.empty()) {
+            local_[i] = node.local;
+        } else {
+            Vec3 translation{};
+            Vec3 scaling{};
+            Quat rotation{0.0f, 0.0f, 0.0f, 0.0f};
+            Quat first{};
+            bool have_first = false;
+            for (const Active& a : active) {
+                Vec3 t = rest_translation_[i];
+                Quat r = rest_rotation_[i];
+                Vec3 sc = rest_scale_[i];
+                const std::int32_t channel_index = a.channels != nullptr ? (*a.channels)[i] : -1;
+                if (channel_index >= 0) {
+                    const asset::AnimationChannel& channel = a.clip->channels[static_cast<std::size_t>(channel_index)];
+                    if (!channel.positions.empty()) t = sampleVector(channel.positions, a.time);
+                    if (!channel.rotations.empty()) r = sampleRotation(channel.rotations, a.time);
+                    if (!channel.scales.empty()) sc = sampleVector(channel.scales, a.time);
+                }
+                const float w = a.weight / total;
+                translation = translation + t * w;
+                scaling = scaling + sc * w;
+                // Mismo hemisferio que la primera: si no, la mezcla da la vuelta larga.
+                if (!have_first) {
+                    first = r;
+                    have_first = true;
+                } else if (first.x * r.x + first.y * r.y + first.z * r.z + first.w * r.w < 0.0f) {
+                    r = Quat{-r.x, -r.y, -r.z, -r.w};
+                }
+                rotation = Quat{rotation.x + r.x * w, rotation.y + r.y * w, rotation.z + r.z * w, rotation.w + r.w * w};
+            }
+            local_[i] = core::composeTrs(translation, core::normalize(rotation), scaling);
+        }
+        global_[i] = (node.parent >= 0) ? global_[static_cast<std::size_t>(node.parent)] * local_[i] : local_[i];
+    }
+    updateBones();
 }
 
 void Animator::play(std::int32_t clip, bool loop) {

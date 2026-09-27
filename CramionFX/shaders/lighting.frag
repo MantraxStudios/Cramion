@@ -70,7 +70,7 @@ layout(set = 0, binding = 4) uniform LightBuffer {
     PointLightGpu points[kMaxPointLights];
     SpotLightGpu spots[kMaxSpotLights];
     vec4 probes[2];                // cubos de la sonda: xyz = centro, w = peso (0 = sin usar)
-    vec4 clouds;                   // x = 1 si hay nubes volumetricas
+    vec4 clouds;                   // x = 1 si hay nubes volumetricas; y, z = niebla (densidad, caida)
     vec4 environment;              // z = largo de las sombras de contacto (m, 0 = no); x = 1 si el cielo es el mapa HDR (environment_hdr),
                                    // y = 1 si hay luz volumetrica (volumetric_map)
 } lights;
@@ -785,9 +785,10 @@ vec4 upsampledVolume(float center_depth) {
 
 // Niebla exponencial por altura integrada a lo largo del rayo camara -> punto.
 float heightFog(float distance_to_point, vec3 ray_direction) {
-    float density = kFogDensity *
-                    exp(-(camera.position.y - kFogBaseHeight) * kFogHeightFalloff);
-    float b = kFogHeightFalloff * ray_direction.y;
+    // Densidad y caida del post-procesado (0.0018 y 0.08 por defecto).
+    float falloff = lights.clouds.z > 0.0 ? lights.clouds.z : kFogHeightFalloff;
+    float density = lights.clouds.y * exp(-(camera.position.y - kFogBaseHeight) * falloff);
+    float b = falloff * ray_direction.y;
     float integral = abs(b) > 0.0001 ? (1.0 - exp(-distance_to_point * b)) / b
                                      : distance_to_point;
     return clamp(1.0 - exp(-density * integral), 0.0, 1.0);

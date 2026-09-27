@@ -31,7 +31,15 @@
   <li><strong>Estados</strong>: cada uno con su clip (<code>.cranim</code> o el del modelo), velocidad y bucle. Clic derecho en el
     fondo: crear estado (vacío o con clip) o crear transición; <em>Hacer estado por defecto</em> marca el de entrada
     (<em>Entry</em>). <em>Cualquier estado</em> permite transiciones desde donde sea.</li>
-  <li><strong>Transiciones</strong>: una flecha de un estado a otro con <em>Exit time</em> (salir al llegar a una parte del clip) y
+  <li><strong>Blend Trees</strong>: un estado puede mezclar varios clips según parámetros Float en vez de tener uno solo.
+    <em>Blend Tree 1D</em> mezcla por un parámetro con un <em>umbral</em> por clip (andar en 1, trotar en 3, correr en 6
+    con <code>Velocidad</code>); <em>Blend Tree 2D</em> mezcla por dos (<code>MoverX</code> y <code>MoverY</code>) con una
+    <em>posición</em> por clip, para moverse en 8 direcciones (<em>Plantilla 8 direcciones</em> las crea). Los pasos de los
+    clips van sincronizados para que los pies no patinen. El gráfico del Inspector muestra el valor actual (naranja) y el peso
+    de cada clip. Clic derecho en el fondo: <em>Crear Blend Tree 1D / 2D</em>. Desde Lua se mueven con
+    <code>setAnimatorFloat</code>.</li>
+  <li><strong>Transiciones</strong>: una flecha de un estado a otro con <em>Exit time</em> (salir al llegar a una parte del clip),
+    <strong>Fundido</strong> (segundos en que la pose pasa del estado viejo al nuevo; 0 = cambio seco) y
     <strong>condiciones</strong> sobre parámetros (todas deben cumplirse).</li>
   <li><strong>Parámetros</strong>: Float, Int, Bool y Trigger. Desde Lua: <code>setAnimatorFloat</code>, <code>setAnimatorBool</code>,
     <code>setAnimatorTrigger</code>.</li>

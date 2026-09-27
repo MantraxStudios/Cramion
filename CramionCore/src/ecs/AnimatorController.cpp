@@ -18,6 +18,7 @@ namespace {
 
 constexpr const char* kParameterTypes[] = {"float", "int", "bool", "trigger"};
 constexpr const char* kConditionModes[] = {"if", "if_not", "greater", "less", "equals", "not_equals"};
+constexpr const char* kMotions[] = {"clip", "blend_1d", "blend_2d"};
 
 template <std::size_t N>
 int indexOf(const char* const (&names)[N], const std::string& text, int fallback) {
@@ -106,12 +107,27 @@ bool saveAnimatorController(const AnimatorController& c, const std::filesystem::
     }
     json& states = root["states"] = json::array();
     for (const AnimatorState& s : c.states) {
-        states.push_back({{"name", s.name},
-                          {"clip_name", s.clip_name},
-                          {"clip", s.clip.valid() ? s.clip.uuid.toString() : std::string{}},
-                          {"speed", s.speed},
-                          {"loop", s.loop},
-                          {"position", vec2(s.position)}});
+        json state = {{"name", s.name},
+                      {"clip_name", s.clip_name},
+                      {"clip", s.clip.valid() ? s.clip.uuid.toString() : std::string{}},
+                      {"speed", s.speed},
+                      {"loop", s.loop},
+                      {"position", vec2(s.position)}};
+        if (s.isBlendTree()) {
+            state["motion"] = kMotions[static_cast<int>(s.motion)];
+            state["blend_parameter"] = s.blend_parameter;
+            state["blend_parameter_y"] = s.blend_parameter_y;
+            json children = json::array();
+            for (const BlendTreeChild& child : s.children) {
+                children.push_back({{"clip_name", child.clip_name},
+                                    {"clip", child.clip.valid() ? child.clip.uuid.toString() : std::string{}},
+                                    {"threshold", child.threshold},
+                                    {"position", vec2(child.position)},
+                                    {"speed", child.speed}});
+            }
+            state["children"] = std::move(children);
+        }
+        states.push_back(std::move(state));
     }
     json& transitions = root["transitions"] = json::array();
     for (const AnimatorTransition& t : c.transitions) {
@@ -125,6 +141,7 @@ bool saveAnimatorController(const AnimatorController& c, const std::filesystem::
                                {"to", t.to},
                                {"has_exit_time", t.has_exit_time},
                                {"exit_time", t.exit_time},
+                               {"duration", t.duration},
                                {"conditions", std::move(conditions)}});
     }
     return writeText(path, root.dump(2), error);
@@ -169,6 +186,21 @@ bool loadAnimatorController(const std::filesystem::path& path, AnimatorControlle
             s.speed = j.value("speed", 1.0f);
             s.loop = j.value("loop", true);
             if (const auto p = j.find("position"); p != j.end()) s.position = readVec2(*p, s.position);
+            s.motion = static_cast<AnimatorMotion>(indexOf(kMotions, j.value("motion", std::string{"clip"}), 0));
+            s.blend_parameter = j.value("blend_parameter", std::string{});
+            s.blend_parameter_y = j.value("blend_parameter_y", std::string{});
+            if (const auto k = j.find("children"); k != j.end() && k->is_array()) {
+                for (const json& jc : *k) {
+                    if (!jc.is_object()) continue;
+                    BlendTreeChild child;
+                    child.clip_name = jc.value("clip_name", std::string{});
+                    child.clip.uuid = Uuid::parse(jc.value("clip", std::string{}));
+                    child.threshold = jc.value("threshold", 0.0f);
+                    if (const auto p = jc.find("position"); p != jc.end()) child.position = readVec2(*p, child.position);
+                    child.speed = jc.value("speed", 1.0f);
+                    s.children.push_back(std::move(child));
+                }
+            }
             c.states.push_back(std::move(s));
         }
     }
@@ -182,6 +214,7 @@ bool loadAnimatorController(const std::filesystem::path& path, AnimatorControlle
             if (t.to < 0 || t.to >= count || t.from < kAnyState || t.from >= count) continue;
             t.has_exit_time = j.value("has_exit_time", false);
             t.exit_time = j.value("exit_time", 1.0f);
+            t.duration = std::max(0.0f, j.value("duration", 0.0f));
             if (const auto k = j.find("conditions"); k != j.end() && k->is_array()) {
                 for (const json& jc : *k) {
                     if (!jc.is_object()) continue;
@@ -222,11 +255,13 @@ bool stepAnimatorController(const AnimatorController& controller, AnimatorRuntim
     if (runtime.state < 0 || runtime.state >= count) {
         runtime.state = std::clamp(controller.default_state, 0, count - 1);
         runtime.state_time = 0.0f;
+        runtime.last_transition = -1;
         return true;
     }
     const float normalized = clip_duration > 0.0f ? runtime.state_time / clip_duration : 1.0f;
 
-    for (const AnimatorTransition& t : controller.transitions) {
+    for (std::size_t ti = 0; ti < controller.transitions.size(); ++ti) {
+        const AnimatorTransition& t = controller.transitions[ti];
         if (t.from != runtime.state && t.from != kAnyState) continue;
         if (t.from == kAnyState && t.to == runtime.state) continue;  // no reentra en bucle
         if (t.to < 0 || t.to >= count) continue;
@@ -259,9 +294,82 @@ bool stepAnimatorController(const AnimatorController& controller, AnimatorRuntim
         }
         runtime.state = t.to;
         runtime.state_time = 0.0f;
+        runtime.last_transition = static_cast<int>(ti);
         return true;
     }
     return false;
+}
+
+// --- Blend Trees -----------------------------------------------------------------
+
+std::vector<float> blendTreeWeights(const AnimatorState& state, float x, float y) {
+    const std::size_t n = state.children.size();
+    std::vector<float> weights(n, 0.0f);
+    if (n == 0) return weights;
+    if (n == 1) {
+        weights[0] = 1.0f;
+        return weights;
+    }
+    if (state.motion == AnimatorMotion::BlendTree2D) {
+        // Gradient Band: w_i = min_j (1 - dot(p - p_i, p_j - p_i) / |p_j - p_i|^2), recortado a [0, 1].
+        float total = 0.0f;
+        for (std::size_t i = 0; i < n; ++i) {
+            const core::Vec2 pi = state.children[i].position;
+            float w = 1.0f;
+            for (std::size_t j = 0; j < n && w > 0.0f; ++j) {
+                if (j == i) continue;
+                const core::Vec2 pj = state.children[j].position;
+                const float ex = pj.x - pi.x, ey = pj.y - pi.y;
+                const float len2 = ex * ex + ey * ey;
+                if (len2 < 1e-8f) continue;  // dos en el mismo punto: se reparten
+                const float h = 1.0f - ((x - pi.x) * ex + (y - pi.y) * ey) / len2;
+                w = std::min(w, std::clamp(h, 0.0f, 1.0f));
+            }
+            weights[i] = w;
+            total += w;
+        }
+        if (total <= 1e-6f) {
+            // Fuera de todo (no deberia pasar): el mas cercano.
+            std::size_t best = 0;
+            float best_d = 1e30f;
+            for (std::size_t i = 0; i < n; ++i) {
+                const float dx = x - state.children[i].position.x, dy = y - state.children[i].position.y;
+                if (dx * dx + dy * dy < best_d) {
+                    best_d = dx * dx + dy * dy;
+                    best = i;
+                }
+            }
+            std::fill(weights.begin(), weights.end(), 0.0f);
+            weights[best] = 1.0f;
+            return weights;
+        }
+        for (float& w : weights) w /= total;
+        return weights;
+    }
+    // 1D: orden por umbral; entre los dos vecinos, lineal.
+    std::vector<std::size_t> order(n);
+    for (std::size_t i = 0; i < n; ++i) order[i] = i;
+    std::stable_sort(order.begin(), order.end(),
+                     [&](std::size_t a, std::size_t b) { return state.children[a].threshold < state.children[b].threshold; });
+    if (x <= state.children[order.front()].threshold) {
+        weights[order.front()] = 1.0f;
+        return weights;
+    }
+    if (x >= state.children[order.back()].threshold) {
+        weights[order.back()] = 1.0f;
+        return weights;
+    }
+    for (std::size_t k = 0; k + 1 < n; ++k) {
+        const float a = state.children[order[k]].threshold;
+        const float b = state.children[order[k + 1]].threshold;
+        if (x >= a && x <= b) {
+            const float t = b - a > 1e-6f ? (x - a) / (b - a) : 0.0f;
+            weights[order[k]] = 1.0f - t;
+            weights[order[k + 1]] = t;
+            break;
+        }
+    }
+    return weights;
 }
 
 // --- .cranim -------------------------------------------------------------------

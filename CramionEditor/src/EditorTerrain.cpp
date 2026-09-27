@@ -60,6 +60,24 @@ ecs::Entity EditorApp::createTerrainEntity() {
     return entity;
 }
 
+ecs::Entity EditorApp::createFoliageEntity() {
+    ecs::Entity entity = world_.create("Vegetacion");
+    foliage::Foliage& f = entity.add<foliage::Foliage>();
+    // Sobre el primer terreno: centrada en el y de su tamano.
+    for (const entt::entity h : world_.registry().view<terrain::Terrain>()) {
+        const ecs::Entity t = world_.wrap(h);
+        const terrain::Terrain& comp = t.get<terrain::Terrain>();
+        entity.setWorldPosition(t.worldPosition() + Vec3{comp.size * 0.5f, 0.0f, comp.size * 0.5f});
+        f.area = comp.size;
+        f.min_height = t.worldPosition().y + 0.5f;
+        break;
+    }
+    selectOnly(entity.uuid());
+    revealInHierarchy(entity.uuid());
+    commit();
+    return entity;
+}
+
 // Terreno bajo el raton (el mas cercano), o Entity{}.
 ecs::Entity EditorApp::terrainUnderMouse(float x, float y, Vec3* point) const {
     Vec3 origin{};

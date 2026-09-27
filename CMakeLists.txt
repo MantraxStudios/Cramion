@@ -1,10 +1,18 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(Cramion
-    VERSION 0.6.2
+    VERSION 0.7.0
     DESCRIPTION "Motor con capa de plataforma DirectX 12 (CramionDM) y renderizador Vulkan (CramionFX)"
     LANGUAGES CXX
 )
+
+# Version previa (canal beta del actualizador): -DCRAMION_VERSION_SUFFIX=beta.1
+# da "0.7.0-beta.1". Vacio en las versiones estables.
+set(CRAMION_VERSION_SUFFIX "" CACHE STRING "Sufijo de version previa (beta.1); vacio = estable")
+set(CRAMION_VERSION_FULL "${PROJECT_VERSION}")
+if(CRAMION_VERSION_SUFFIX)
+    string(APPEND CRAMION_VERSION_FULL "-${CRAMION_VERSION_SUFFIX}")
+endif()
 
 # Recursos de Windows (el icono de los .exe: assets/icon.ico).
 enable_language(RC)
@@ -51,6 +59,11 @@ add_subdirectory(CramionFX)
 # -----------------------------------------------------------------------------
 
 add_executable(cramion src/main.cpp "${CRAMION_ICON_RC}")
+# En Release, sin consola (como el editor y el player).
+if(CMAKE_BUILD_TYPE STREQUAL "Release")
+    set_target_properties(cramion PROPERTIES WIN32_EXECUTABLE TRUE)
+    target_link_options(cramion PRIVATE "-Xlinker" "/entry:mainCRTStartup")
+endif()
 target_link_libraries(cramion PRIVATE Cramion::FX)
 # Shaders SPIR-V en build/shaders, junto a cramion.exe.
 cramionfx_deploy(cramion)
@@ -151,8 +164,8 @@ add_custom_target(cramion_package
     COMMAND ${CMAKE_COMMAND}
             -DBIN_DIR=${CMAKE_BINARY_DIR}
             -DSOURCE_DIR=${CMAKE_SOURCE_DIR}
-            -DVERSION=${PROJECT_VERSION}
+            -DVERSION=${CRAMION_VERSION_FULL}
             -P "${CMAKE_SOURCE_DIR}/cmake/PackageRelease.cmake"
-    COMMENT "Empaquetando Cramion ${PROJECT_VERSION} (Cramion-win64.zip)"
+    COMMENT "Empaquetando Cramion ${CRAMION_VERSION_FULL} (Cramion-win64.zip)"
     VERBATIM)
 add_dependencies(cramion_package cramion CramionEditor CramionPlayer CramionUpdater)

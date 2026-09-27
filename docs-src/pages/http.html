@@ -1,0 +1,106 @@
+<p>
+  <code>Http</code> manda y recibe datos de <strong>servidores y webs por HTTPS</strong>: tu propia API, un marcador de
+  puntuaciones online, cuentas de jugador, noticias del juego o telemetría. Las peticiones van en <strong>segundo
+  plano</strong> (el juego no se para) y la respuesta llega a una función que se llama en el hilo del juego, como un
+  <code>Update</code> más. <code>Json</code> convierte entre tablas de Lua y texto JSON.
+</p>
+
+<pre><code class="language-lua">-- Leer
+Http.get("https://api.mijuego.com/noticias", function(res)
+    if not res.ok then
+        print("No se pudo: " .. res.error)
+        return
+    end
+    for _, n in ipairs(res.data.noticias) do print(n.titulo) end   -- res.data = JSON ya decodificado
+end)
+
+-- Enviar una tabla (va como JSON)
+Http.post("https://api.mijuego.com/puntos", { jugador = "Ana", puntos = 1200 }, function(res)
+    print(res.status)          -- 201
+end, { Authorization = "Bearer " .. token })</code></pre>
+
+<h3 id="seguridad">Seguridad</h3>
+<ul>
+  <li><strong>Solo <code>https://</code></strong>, con TLS 1.2 o 1.3. Windows comprueba el certificado del servidor: si está caducado, es de otro dominio o no es de una autoridad de confianza, la petición falla y no se envía nada.</li>
+  <li><code>http://</code> sin cifrar solo se permite a <code>localhost</code> / <code>127.0.0.1</code>, para probar con un servidor en tu PC.</li>
+  <li>Las redirecciones nunca pasan de <code>https</code> a <code>http</code>.</li>
+  <li>Las cabeceras no pueden llevar saltos de línea (no se pueden colar otras cabeceras).</li>
+  <li>Cada petición tiene un <strong>tiempo máximo</strong> (20 s por defecto) y un <strong>tamaño máximo</strong> de respuesta (32 MB): un servidor que no contesta o que manda datos sin fin no bloquea ni llena la memoria.</li>
+  <li>Al salir de Play (o al cambiar de escena) lo que queda pendiente se cancela.</li>
+</ul>
+<p>
+  <strong>No pongas claves secretas en los scripts</strong> (la de tu base de datos, la de administrador de una API):
+  los scripts van dentro del juego exportado y cualquiera puede sacarlas. El juego debe hablar con <em>tu</em> servidor, que
+  es quien guarda las claves y comprueba lo que llega (que nadie mande 99999 puntos). Para identificar a un jugador usa
+  un token que le dé tu servidor al iniciar sesión.
+</p>
+
+<h3 id="funciones">Funciones</h3>
+<table>
+  <thead><tr><th>Función</th><th>Qué hace</th></tr></thead>
+  <tbody>
+    <tr><td><code>Http.get(url, funcion, cabeceras)</code></td><td>Petición GET. <code>cabeceras</code> (opcional) es una tabla <code>{ Nombre = "valor" }</code>. Devuelve el id de la petición, o <code>nil, motivo</code> si la dirección no vale (por ejemplo <code>http://</code> a Internet).</td></tr>
+    <tr><td><code>Http.post(url, datos, funcion, cabeceras)</code></td><td>Petición POST. <code>datos</code>: un texto (se manda tal cual, <code>text/plain</code>) o una tabla (se manda como JSON, <code>application/json</code>). Una <code>Content-Type</code> propia en las cabeceras manda sobre esas.</td></tr>
+    <tr><td><code>Http.request(opciones, funcion)</code></td><td>Cualquier método: <code>{ url, method = "PUT"/"PATCH"/"DELETE"..., headers, body, timeout = 20 (segundos), maxSize = bytes }</code>.</td></tr>
+    <tr><td><code>Http.pending()</code></td><td>Peticiones sin terminar.</td></tr>
+    <tr><td><code>Http.cancelAll()</code></td><td>Cancela todas (sus funciones ya no se llaman).</td></tr>
+    <tr><td><code>Http.urlEncode(texto)</code></td><td>Texto seguro para meterlo en una URL: <code>"hola mundo"</code> → <code>"hola%20mundo"</code>.</td></tr>
+    <tr><td><code>Http.query(tabla)</code></td><td>Parámetros de consulta: <code>Http.query{ q = "ana", page = 2 }</code> → <code>"page=2&amp;q=ana"</code>.</td></tr>
+    <tr><td><code>Json.encode(valor, bonito)</code></td><td>Tabla → texto JSON. Una tabla con claves 1..n es una lista; si no, un objeto. <code>Vec3</code> sale como <code>{x, y, z}</code>. <code>bonito = true</code> lo sangra. Devuelve <code>nil, motivo</code> si hay algo que no se puede pasar (funciones).</td></tr>
+    <tr><td><code>Json.decode(texto)</code></td><td>Texto JSON → tabla (las listas desde 1; <code>null</code> pasa a <code>nil</code>). <code>nil, motivo</code> si no es JSON.</td></tr>
+  </tbody>
+</table>
+
+<h3 id="respuesta">La respuesta</h3>
+<table>
+  <thead><tr><th>Campo</th><th>Qué es</th></tr></thead>
+  <tbody>
+    <tr><td><code>res.ok</code></td><td><code>true</code> si llegó respuesta con estado 2xx.</td></tr>
+    <tr><td><code>res.status</code></td><td>Estado HTTP (200, 201, 404, 500...). <code>0</code> si no hubo respuesta (sin Internet, certificado malo, tiempo agotado).</td></tr>
+    <tr><td><code>res.body</code></td><td>El cuerpo como texto.</td></tr>
+    <tr><td><code>res.data</code></td><td>Si la respuesta es JSON, ya decodificada en tablas.</td></tr>
+    <tr><td><code>res.headers</code></td><td>Cabeceras de la respuesta, con el nombre en minúsculas: <code>res.headers["content-type"]</code>.</td></tr>
+    <tr><td><code>res.error</code></td><td>Por qué falló (texto), si no es <code>ok</code>.</td></tr>
+    <tr><td><code>res.time</code></td><td>Segundos que tardó.</td></tr>
+  </tbody>
+</table>
+
+<h3 id="ejemplo">Ejemplo: marcador online</h3>
+<pre><code class="language-lua">local Marcador = {
+    properties = { servidor = "https://api.mijuego.com" }
+}
+
+function Marcador:Start()
+    self.texto = Scene.find("UI_Marcador")
+    self:cargar()
+end
+
+function Marcador:cargar()
+    local url = self.servidor .. "/puntos?" .. Http.query{ nivel = 1, limite = 10 }
+    Http.get(url, function(res)
+        if not res.ok then
+            self.texto.text = "Sin conexion (" .. res.error .. ")"
+            return
+        end
+        local lineas = {}
+        for i, fila in ipairs(res.data) do
+            lineas[#lineas + 1] = i .. ". " .. fila.nombre .. "  " .. fila.puntos
+        end
+        self.texto.text = table.concat(lineas, "\n")
+    end)
+end
+
+function Marcador:enviar(nombre, puntos)
+    Http.post(self.servidor .. "/puntos", { nombre = nombre, puntos = puntos }, function(res)
+        if res.ok then self:cargar() end
+    end, { Authorization = "Bearer " .. Prefs.getString("token", "") })
+end
+
+return Marcador</code></pre>
+
+<h3 id="probar">Probar con un servidor en tu PC</h3>
+<p>
+  Mientras lo desarrollas, cualquier servidor local sirve con <code>http://localhost:puerto</code> (por ejemplo
+  <code>python -m http.server 8000</code> para leer archivos, o tu API con Node, Python o PHP). Para publicar el juego,
+  pon el servidor con HTTPS (Let's Encrypt lo da gratis) y cambia la dirección.
+</p>

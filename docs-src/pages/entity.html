@@ -48,6 +48,17 @@
         <code>:setupRagdoll()</code> y <code>:setupPhysBones()</code>: ver <a href="esqueletos.html#lua">Esqueletos</a>.
       </p>
 
+      <h3 id="red">Red (multijugador)</h3>
+      <table>
+        <tbody>
+          <tr><td><code>:isMine()</code></td><td>Este objeto lo controlas tú. Sin red, o si no es un objeto de red, siempre <code>true</code>.</td></tr>
+          <tr><td><code>netId</code>, <code>netOwner</code></td><td>Id de red (0 = no es de red) e id del jugador dueño.</td></tr>
+          <tr><td><code>:setNetVar(clave, valor)</code></td><td>Variable sincronizada con todos (la cambia el dueño o el servidor). Los demás reciben <code>OnNetVar(clave, valor)</code> en sus scripts.</td></tr>
+          <tr><td><code>:getNetVar(clave)</code></td><td>Su último valor.</td></tr>
+        </tbody>
+      </table>
+      <p>Ver <a href="red.html">Network</a>.</p>
+
       <h3 id="fisica">Física</h3>
       <p>Requieren un componente <code>Rigidbody</code> en la entidad.</p>
       <table>

@@ -56,6 +56,12 @@ target_link_libraries(CramionEditor PRIVATE Cramion::Core cramion_imgui cramion_
 # Las escenas de demostracion (src/DemoScenes.h) las comparte con cramion.exe.
 target_include_directories(CramionEditor PRIVATE "${CMAKE_SOURCE_DIR}/src")
 set_target_properties(CramionEditor PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
+# En Release, aplicacion de ventana: sin la consola negra detras (los mensajes
+# siguen en el panel Consola). En Debug se deja la consola para desarrollar.
+if(CMAKE_BUILD_TYPE STREQUAL "Release")
+    set_target_properties(CramionEditor PROPERTIES WIN32_EXECUTABLE TRUE)
+    target_link_options(CramionEditor PRIVATE "-Xlinker" "/entry:mainCRTStartup")
+endif()
 cramionfx_deploy(CramionEditor)
 
 # Iconos del editor (assets/gizmos) junto al ejecutable, en editor_icons/.
@@ -63,7 +69,7 @@ cramionfx_deploy(CramionEditor)
 target_compile_definitions(CramionEditor PRIVATE
     CRAMION_EDITOR_ICON_SOURCE="${CMAKE_CURRENT_SOURCE_DIR}/assets/gizmos"
     CRAMION_EDITOR_LOGO_SOURCE="${CMAKE_SOURCE_DIR}/assets/icon.png"
-    CRAMION_VERSION_STRING="${PROJECT_VERSION}")
+    CRAMION_VERSION_STRING="${CRAMION_VERSION_FULL}")
 add_custom_command(TARGET CramionEditor POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_directory
             "${CMAKE_CURRENT_SOURCE_DIR}/assets/gizmos" "${CMAKE_BINARY_DIR}/editor_icons"

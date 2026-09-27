@@ -73,6 +73,18 @@
   en la imagen y se apagan poco a poco al salir de ella. Para haces que se vean en cualquier dirección usa la luz volumétrica.
 </p>
 
+<h3 id="mundo-abierto">Mundos abiertos: niebla y vegetación</h3>
+<p>
+  La <strong>niebla por altura</strong> se ajusta en el <a href="componentes-basicos.html#PostProcessing">post-procesado</a>:
+  <em>Niebla</em> (densidad a nivel 0; 0,0018 por defecto, pensada para escenarios pequeños) y <em>Caída con la
+  altura</em> (más = solo a ras de suelo). En un mundo de kilómetros baja la densidad a unos 0,0002 para ver lejos; con 0
+  no hay niebla. Afecta también al agua. Desde Lua: <code>Graphics.post.fog_density = 0.0002</code>.
+</p>
+<p>
+  Para bosques enteros usa la <a href="editor-herramientas.html#vegetacion">Vegetación</a> en lugar de prefabs sueltos: los
+  árboles se recortan y eligen su detalle en la GPU. Si la GPU va justa, baja su distancia máxima y la de sombras.
+</p>
+
 <h3 id="lods">LODs automáticos</h3>
 <p>
   Al cargar un modelo, el motor crea versiones simplificadas de sus mallas (en memoria, sin tocar el archivo) y elige cada

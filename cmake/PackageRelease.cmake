@@ -11,6 +11,9 @@
 # Lo llama el target cramion_package:
 #   cmake -DBIN_DIR=... -DSOURCE_DIR=... -DVERSION=... -P PackageRelease.cmake
 #
+# Al lado, Cramion-win64.zip.sha256 (subelo tambien a la release: el
+# actualizador comprueba el zip con el antes de instalar).
+#
 # El zip queda en <BIN_DIR>/Cramion-win64.zip: nombre sin version para que el
 # enlace de descarga de la web (releases/latest/download/...) no cambie.
 # Las escenas de demostracion no se incluyen: pesan mucho y sus licencias no
@@ -105,6 +108,11 @@ execute_process(
 if(NOT result EQUAL 0)
     message(FATAL_ERROR "No se pudo crear ${zip}")
 endif()
+# SHA-256 del zip: se sube a la release junto a el (Cramion-win64.zip.sha256)
+# y el actualizador lo comprueba antes de instalar.
+file(SHA256 "${zip}" zip_hash)
+file(WRITE "${zip}.sha256" "${zip_hash}  Cramion-win64.zip\n")
+message(STATUS "SHA-256: ${zip_hash}")
 file(SIZE "${zip}" size)
 math(EXPR size_mb "${size} / 1048576")
 message(STATUS "Paquete listo: ${zip} (${size_mb} MB)")

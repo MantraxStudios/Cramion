@@ -152,6 +152,16 @@ FetchContent_Declare(zstd
 FetchContent_MakeAvailable(zstd)
 target_compile_options(libzstd_static PRIVATE -O2 -w)
 
+# ENet: red por UDP (mensajes fiables y no fiables, conexiones, ping) para el
+# multijugador (net/Network). Libreria estatica pequena en C.
+FetchContent_Declare(enet
+    GIT_REPOSITORY https://github.com/lsalzman/enet.git
+    GIT_TAG v1.3.18
+    GIT_SHALLOW TRUE
+)
+FetchContent_MakeAvailable(enet)
+target_compile_options(enet PRIVATE -O2 -w)
+
 # --- CramionAssets -----------------------------------------------------------
 
 file(GLOB_RECURSE CRAMION_ASSETS_SOURCES CONFIGURE_DEPENDS
@@ -186,7 +196,7 @@ target_include_directories(CramionCoreObjects PUBLIC "${CMAKE_CURRENT_SOURCE_DIR
 target_link_libraries(CramionCoreObjects PUBLIC Cramion::FX EnTT::EnTT nlohmann_json::nlohmann_json
     PRIVATE Jolt cramion_lua cramion_miniaudio RecastNavigation::Recast RecastNavigation::Detour
             RecastNavigation::DetourCrowd)
-target_include_directories(CramionCoreObjects PRIVATE "${sol2_SOURCE_DIR}/include")
+target_include_directories(CramionCoreObjects PRIVATE "${sol2_SOURCE_DIR}/include" "${enet_SOURCE_DIR}/include")
 target_compile_options(CramionCoreObjects PRIVATE -Wall -Wextra)
 
 # Debug agil: lo que se ejecuta en cada frame con muchos objetos (sync del
@@ -208,6 +218,7 @@ if(CRAMION_FAST_DEBUG)
         "${CMAKE_CURRENT_SOURCE_DIR}/src/voxel/Mesher.cpp"
         "${CMAKE_CURRENT_SOURCE_DIR}/src/voxel/VoxelSystem.cpp"
         "${CMAKE_CURRENT_SOURCE_DIR}/src/voxel/TextureGen.cpp"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/foliage/Foliage.cpp"
         TARGET_DIRECTORY CramionCoreObjects
         PROPERTIES COMPILE_OPTIONS "$<$<CONFIG:Debug>:-O2>"
     )
@@ -219,7 +230,7 @@ target_include_directories(CramionCore PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/inclu
 target_link_libraries(CramionCore
     PUBLIC Cramion::Assets Cramion::FX EnTT::EnTT nlohmann_json::nlohmann_json
     PRIVATE Jolt cramion_lua cramion_miniaudio RecastNavigation::Recast RecastNavigation::Detour
-            RecastNavigation::DetourCrowd
+            RecastNavigation::DetourCrowd enet ws2_32 winmm winhttp
 )
 
 # --- Pruebas del ECS (consola) ---
@@ -266,6 +277,15 @@ target_link_libraries(CramionWaterTests PRIVATE Cramion::Core)
 target_compile_options(CramionWaterTests PRIVATE -Wall -Wextra)
 
 # --- Pruebas del scripting (Lua) y del audio (consola) ---
+# Multijugador: servidor y clientes en el mismo proceso por 127.0.0.1.
+add_executable(CramionNetworkTests "${CMAKE_CURRENT_SOURCE_DIR}/tests/NetworkTests.cpp")
+target_link_libraries(CramionNetworkTests PRIVATE Cramion::Core)
+target_compile_options(CramionNetworkTests PRIVATE -Wall -Wextra)
+
+add_executable(CramionHttpTests "${CMAKE_CURRENT_SOURCE_DIR}/tests/HttpTests.cpp")
+target_link_libraries(CramionHttpTests PRIVATE Cramion::Core ws2_32)
+target_compile_options(CramionHttpTests PRIVATE -Wall -Wextra)
+
 add_executable(CramionScriptingTests "${CMAKE_CURRENT_SOURCE_DIR}/tests/ScriptingTests.cpp")
 target_link_libraries(CramionScriptingTests PRIVATE Cramion::Core)
 target_compile_options(CramionScriptingTests PRIVATE -Wall -Wextra)

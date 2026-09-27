@@ -1,5 +1,7 @@
 #include "CramionCore/ecs/RenderSync.h"
 
+#include "CramionCore/foliage/Foliage.h"
+
 #include "CramionCore/ecs/Rigging.h"
 
 #include "CramionCore/anim/IK.h"
@@ -10,6 +12,7 @@
 #include <CramionFX/asset/ImageFile.h>
 
 #include <algorithm>
+#include <chrono>
 #include <array>
 #include <cmath>
 #include <cstring>
@@ -1385,6 +1388,7 @@ void RenderSync::sync(World& world, scene::Scene& scene, gfx::VulkanRenderer& re
     syncActors(world, scene, renderer, delta_seconds);
     syncLightsAndEnvironment(world, scene, renderer);
     syncTerrains(world, renderer);
+    syncFoliage(world, renderer);
     if (options.apply_main_camera) {
         syncCamera(world, scene);
     }
@@ -1401,6 +1405,94 @@ void RenderSync::destroyTerrains() {
         for (auto& [entity, gpu] : terrains_) renderer_->destroyTerrain(gpu.id);
     }
     terrains_.clear();
+}
+
+// Vegetacion: firma de todo lo que influye en la siembra; si cambia, se
+// siembra de nuevo en otro hilo (el editor no se para) y al terminar se sube.
+void RenderSync::syncFoliage(World& world, gfx::VulkanRenderer& renderer) {
+    std::uint64_t signature = 1469598103934665603ull;
+    const auto hash_bytes = [&](const void* data, std::size_t size) {
+        const auto* p = static_cast<const unsigned char*>(data);
+        for (std::size_t i = 0; i < size; ++i) signature = (signature ^ p[i]) * 1099511628211ull;
+    };
+    struct Job {
+        foliage::Foliage params;
+        core::Vec3 center;
+    };
+    std::vector<Job> jobs;
+    const foliage::Foliage* first = nullptr;
+    // Coordenadas absolutas (sin el origen flotante): desplazar el mundo no
+    // cambia la firma ni obliga a sembrar otra vez.
+    const core::Vec3 world_origin{static_cast<float>(world.origin().x), static_cast<float>(world.origin().y),
+                                  static_cast<float>(world.origin().z)};
+    renderer.setFoliageOrigin(world_origin);
+    for (const entt::entity handle : world.registry().view<foliage::Foliage>()) {
+        const Entity e = world.wrap(handle);
+        if (!e.activeInHierarchy()) continue;
+        const foliage::Foliage& f = e.get<foliage::Foliage>();
+        if (first == nullptr) first = &f;
+        const core::Vec3 p = e.worldPosition() + world_origin;
+        // Solo lo que cambia la siembra (no las distancias de dibujo).
+        const float values[] = {f.area, f.density, f.pine, f.oak, f.birch, f.min_scale, f.max_scale, f.min_height,
+                                f.max_height, f.max_slope, p.x, p.y, p.z};
+        hash_bytes(values, sizeof(values));
+        const int ints[] = {f.seed, f.max_instances, f.on_terrain ? 1 : 0};
+        hash_bytes(ints, sizeof(ints));
+        for (const foliage::FoliageClearing& c : f.clearings) {
+            const float cv[] = {c.center.x, c.center.z, c.radius};
+            hash_bytes(cv, sizeof(cv));
+        }
+        jobs.push_back({f, p});
+        for (foliage::FoliageClearing& c : jobs.back().params.clearings) c.center = c.center + world_origin;
+    }
+    std::vector<foliage::FoliageGround> ground;
+    if (!jobs.empty() && terrain_store_ != nullptr) {
+        for (const entt::entity handle : world.registry().view<terrain::Terrain>()) {
+            const Entity e = world.wrap(handle);
+            if (!e.activeInHierarchy()) continue;
+            const terrain::Terrain& t = e.get<terrain::Terrain>();
+            std::shared_ptr<terrain::TerrainData> data = terrain_store_->get(t);
+            if (!data) continue;
+            const core::Vec3 origin = e.worldPosition() + world_origin;
+            // El terreno cuenta al terminar cada trazo (no en cada toque del pincel).
+            const std::uint64_t version = data->collisionVersion();
+            const float values[] = {t.size, t.height, origin.x, origin.y, origin.z};
+            hash_bytes(values, sizeof(values));
+            hash_bytes(&version, sizeof(version));
+            ground.push_back({data, t, origin});
+        }
+    }
+    if (first != nullptr) renderer.setFoliageSettings(first->settings());
+
+    // Termino una siembra: a la GPU.
+    if (foliage_job_.valid() && foliage_job_.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+        std::vector<gfx::FoliageInstance> instances = foliage_job_.get();
+        foliage_count_ = instances.size();
+        renderer.setFoliage(instances);
+        foliage_signature_ = foliage_job_signature_;
+        foliage_uploaded_ = true;
+    }
+    if (jobs.empty()) {
+        if (foliage_uploaded_) {
+            renderer.clearFoliage();
+            foliage_uploaded_ = false;
+            foliage_count_ = 0;
+        }
+        foliage_signature_ = 0;
+        return;
+    }
+    if (signature != foliage_signature_ && !foliage_job_.valid()) {
+        foliage_job_signature_ = signature;
+        foliage_job_ = std::async(std::launch::async, [jobs = std::move(jobs), ground = std::move(ground)]() {
+            std::vector<gfx::FoliageInstance> all;
+            for (const Job& job : jobs) {
+                foliage::FoliageResult r = foliage::generateFoliage(job.params, job.center, ground);
+                all.insert(all.end(), r.instances.begin(), r.instances.end());
+                if (all.size() >= gfx::FoliagePass::kMaxInstances) break;
+            }
+            return all;
+        });
+    }
 }
 
 // Terrenos: se crean en el renderizador la primera vez, se suben las regiones
@@ -1528,34 +1620,112 @@ void RenderSync::syncActors(World& world, scene::Scene& scene, gfx::VulkanRender
             bool loop = animator->loop;
             float speed = animator->speed;
             bool restart = false;
+            bool controlled = false;  // la pose ya la hizo el controlador
 
             // Con controlador: la maquina de estados elige el clip.
             const std::shared_ptr<const AnimatorController> controller =
                 animator->controller.valid() ? animatorController(animator->controller.uuid) : nullptr;
             if (controller && !controller->states.empty()) {
+                // La maquina de estados elige que suena: un clip o un Blend
+                // Tree (varios clips con pesos y el ciclo sincronizado), con
+                // fundido entre el estado viejo y el nuevo.
                 AnimatorRuntime& runtime = animator->runtime;
-                const auto clipOf = [&](int index) {
-                    if (index < 0 || index >= static_cast<int>(controller->states.size())) return -1;
-                    const AnimatorState& st = controller->states[index];
-                    if (st.clip.valid()) return externalClip(*model, st.clip.uuid, scene);
+                const auto resolveClip = [&](const std::string& name, const assets::AssetRef& ref) {
+                    if (ref.valid()) return externalClip(*model, ref.uuid, scene);
                     for (std::size_t i = 0; i < data.animations.size(); ++i) {
-                        if (data.animations[i].name == st.clip_name) return static_cast<int>(i);
+                        if (data.animations[i].name == name) return static_cast<int>(i);
                     }
                     return -1;
                 };
-                const int current = clipOf(runtime.state);
-                const float duration = current >= 0 ? data.animations[current].duration : 0.0f;
-                stepAnimatorController(*controller, runtime, duration);
-                const AnimatorState& st = controller->states[runtime.state];
-                clip = clipOf(runtime.state);
-                loop = st.loop;
-                speed = animator->speed * st.speed;
+                // Muestras de un estado en su fase (0..1) con un peso; devuelve la
+                // duracion del ciclo (la media de sus clips segun sus pesos).
+                const auto stateSamples = [&](int index, float phase, float weight, std::vector<anim::ClipSample>* out) {
+                    if (index < 0 || index >= static_cast<int>(controller->states.size())) return 0.0f;
+                    const AnimatorState& st = controller->states[static_cast<std::size_t>(index)];
+                    if (!st.isBlendTree()) {
+                        const int c = resolveClip(st.clip_name, st.clip);
+                        const float d = c >= 0 ? data.animations[static_cast<std::size_t>(c)].duration : 0.0f;
+                        if (out != nullptr) out->push_back({c, phase * d, weight});
+                        return d;
+                    }
+                    const float px = animatorParameterValue(*controller, runtime, st.blend_parameter);
+                    const float py = animatorParameterValue(*controller, runtime, st.blend_parameter_y);
+                    const std::vector<float> weights = blendTreeWeights(st, px, py);
+                    float cycle = 0.0f, used = 0.0f;
+                    const std::size_t first = out != nullptr ? out->size() : 0;
+                    for (std::size_t k = 0; k < st.children.size(); ++k) {
+                        if (weights[k] <= 1e-4f) continue;
+                        const BlendTreeChild& child = st.children[k];
+                        const int c = resolveClip(child.clip_name, child.clip);
+                        if (c < 0) continue;  // sin clip: no cuenta (se reparte entre los demas)
+                        const float d = data.animations[static_cast<std::size_t>(c)].duration /
+                                        std::max(std::abs(child.speed), 0.01f);
+                        cycle += weights[k] * d;
+                        used += weights[k];
+                        if (out != nullptr) {
+                            out->push_back({c, phase * data.animations[static_cast<std::size_t>(c)].duration, weights[k]});
+                        }
+                    }
+                    if (out != nullptr && used > 1e-6f) {
+                        for (std::size_t k = first; k < out->size(); ++k) (*out)[k].weight *= weight / used;
+                    }
+                    return used > 1e-6f ? cycle / used : 0.0f;
+                };
+                const auto advance = [&](int index, float& phase, float dt) {
+                    const float cycle = stateSamples(index, phase, 0.0f, nullptr);
+                    if (cycle <= 0.0f) return;
+                    const AnimatorState& st = controller->states[static_cast<std::size_t>(index)];
+                    phase += dt * animator->speed * st.speed / cycle;
+                    phase = st.loop ? phase - std::floor(phase) : std::clamp(phase, 0.0f, 1.0f);
+                };
+
+                stepAnimatorController(*controller, runtime, stateSamples(runtime.state, state.phase, 0.0f, nullptr));
                 if (runtime.state != state.controller_state) {
+                    // Fundido desde el estado que sonaba (si la transicion lo pide).
+                    const float fade =
+                        state.controller_state >= 0 && runtime.last_transition >= 0 &&
+                                runtime.last_transition < static_cast<int>(controller->transitions.size())
+                            ? controller->transitions[static_cast<std::size_t>(runtime.last_transition)].duration
+                            : 0.0f;
+                    if (fade > 0.0f) {
+                        state.fade_state = state.controller_state;
+                        state.fade_phase = state.phase;
+                        state.fade_time = 0.0f;
+                        state.fade_duration = fade;
+                    } else {
+                        state.fade_state = -1;
+                    }
                     state.controller_state = runtime.state;
+                    state.phase = 0.0f;
                     animator->time = 0.0f;
-                    restart = true;
                 }
-                if (animator->playing) runtime.state_time += delta_seconds * std::abs(speed);
+                const AnimatorState& st = controller->states[static_cast<std::size_t>(runtime.state)];
+                const float cycle = stateSamples(runtime.state, state.phase, 0.0f, nullptr);
+                if (animator->playing) {
+                    runtime.state_time += delta_seconds * std::abs(animator->speed * st.speed);
+                    advance(runtime.state, state.phase, delta_seconds);
+                    if (state.fade_state >= 0) {
+                        advance(state.fade_state, state.fade_phase, delta_seconds);
+                        state.fade_time += delta_seconds;
+                        if (state.fade_time >= state.fade_duration) state.fade_state = -1;
+                    }
+                    animator->time = state.phase * cycle;
+                } else if (cycle > 0.0f) {
+                    // Pausado: el tiempo del Inspector manda (arrastrarlo = scrub).
+                    state.phase = std::clamp(animator->time / cycle, 0.0f, 1.0f);
+                }
+                std::vector<anim::ClipSample> samples;
+                float fresh = 1.0f;
+                if (state.fade_state >= 0 && state.fade_duration > 0.0f) {
+                    const float t = std::clamp(state.fade_time / state.fade_duration, 0.0f, 1.0f);
+                    fresh = t * t * (3.0f - 2.0f * t);
+                    stateSamples(state.fade_state, state.fade_phase, 1.0f - fresh, &samples);
+                }
+                stateSamples(runtime.state, state.phase, fresh, &samples);
+                state.animator.evaluateBlend(samples);
+                state.clip = -3;  // sin controlador otra vez: vuelve a elegir clip
+                posed = true;
+                controlled = true;
             } else {
                 state.controller_state = -1;
                 if (!animator->clip_name.empty()) {
@@ -1568,22 +1738,25 @@ void RenderSync::syncActors(World& world, scene::Scene& scene, gfx::VulkanRender
                 }
             }
             clip = std::clamp(clip, -1, static_cast<int>(data.animations.size()) - 1);
-            if (restart || clip != state.clip || loop != state.loop) {
-                state.animator.play(clip, loop);
-                state.animator.setTime(animator->time);
-                state.clip = clip;
-                state.loop = loop;
-            }
-            state.animator.setSpeed(speed);
-            if (animator->playing) {
-                state.animator.update(delta_seconds);
-                animator->time = state.animator.time();
-                posed = true;
-            } else if (std::abs(state.animator.time() - animator->time) > 1e-5f) {
-                // Pausado: el tiempo del Inspector manda (arrastrarlo = scrub).
-                state.animator.setTime(animator->time);
-                state.animator.evaluate();
-                posed = true;
+            // Sin controlador: un clip (con controlador la pose ya esta hecha).
+            if (!controlled) {
+                if (restart || clip != state.clip || loop != state.loop) {
+                    state.animator.play(clip, loop);
+                    state.animator.setTime(animator->time);
+                    state.clip = clip;
+                    state.loop = loop;
+                }
+                state.animator.setSpeed(speed);
+                if (animator->playing) {
+                    state.animator.update(delta_seconds);
+                    animator->time = state.animator.time();
+                    posed = true;
+                } else if (std::abs(state.animator.time() - animator->time) > 1e-5f) {
+                    // Pausado: el tiempo del Inspector manda (arrastrarlo = scrub).
+                    state.animator.setTime(animator->time);
+                    state.animator.evaluate();
+                    posed = true;
+                }
             }
         }
         // Esqueleto sobre la pose de este frame (sin animar o en pausa se

@@ -33,6 +33,7 @@
 #include "CramionCore/physics/PhysicsSystem.h"
 #include "CramionCore/project/Project.h"
 #include "CramionCore/terrain/Terrain.h"
+#include "CramionCore/foliage/Foliage.h"
 #include "CramionCore/terrain/TerrainTools.h"
 #include "CramionCore/water/Water.h"
 #include "CramionCore/ecs/Prefab.h"

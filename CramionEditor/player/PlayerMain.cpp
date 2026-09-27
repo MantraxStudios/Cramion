@@ -219,6 +219,7 @@ int main() {
         ecs::registerPrefabComponents();
         terrain::registerTerrainComponents();
         water::registerWaterComponents();
+        foliage::registerFoliageComponents();
         navigation::registerNavigationComponents();
         voxel::registerVoxelComponents();
         audio::registerAudioComponents();
@@ -768,6 +769,7 @@ int main() {
         // Cerrado a media carga: el hilo de los modelos termina antes de nada.
         if (load.worker.valid()) load.worker.wait();
         scripts.stop();
+        scripts.shutdownNetwork();  // avisa a los demas jugadores
         audio.stop();
         physics.stop();
         voxels.stop();  // guarda el mundo con nombre

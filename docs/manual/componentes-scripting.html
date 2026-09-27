@@ -135,6 +135,8 @@
         <a href="ui.html">Interfaz (UI)</a>
         <a href="esqueletos.html">Esqueletos: IK, ragdoll y phys bones</a>
         <a href="graphics.html">Graphics</a>
+        <a href="red.html">Network (multijugador)</a>
+        <a href="http.html">Http y Json</a>
         <a href="prefs.html">Prefs y Game</a>
         <a href="debug.html">Debug</a>
         <p class="mb-1 mt-7 flex items-center gap-2 px-3 text-xs font-semibold uppercase tracking-wider text-slate-500"><svg class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a9 9 0 1 0 0 18c1.1 0 1.5-.8 1.5-1.5 0-.9-.7-1.2-.7-2 0-.8.6-1.5 1.5-1.5H16a5 5 0 0 0 5-5c0-4.4-4-8-9-8Z"/><circle cx="7.5" cy="11" r="1"/><circle cx="10" cy="7" r="1"/><circle cx="15" cy="7.5" r="1"/></svg>Gráficos</p>
@@ -177,6 +179,17 @@
     <tr><td>&nbsp;&nbsp;&nbsp;Nombre<br><code>name</code></td><td>texto</td><td>(vacio)</td><td></td><td></td></tr>
     <tr><td>&nbsp;&nbsp;&nbsp;Tipo<br><code>type</code></td><td>entero</td><td>0</td><td>0 a 3</td><td></td></tr>
     <tr><td>&nbsp;&nbsp;&nbsp;Valor<br><code>value</code></td><td>texto</td><td>(vacio)</td><td></td><td></td></tr>
+  </tbody>
+</table>
+<h3 id="NetworkObject">Objeto de red <code>NetworkObject</code></h3>
+<p>Un objeto que existe en todos los jugadores de una partida en red (lo crea <code>Network.spawn</code>). Su dueno manda la posicion y el giro; los demas lo siguen suavizado. En un prefab ajusta la frecuencia y el suavizado; si no lo lleva, se anade solo. Ver <a href="red.html#objetos">Network</a>.</p>
+<table>
+  <thead><tr><th>Propiedad</th><th>Tipo</th><th>Por defecto</th><th>Valores</th><th>Descripcion</th></tr></thead>
+  <tbody>
+    <tr><td>Sincronizar posición<br><code>sync_transform</code></td><td>si/no</td><td>si</td><td></td><td>El dueño manda su posición y giro a los demás</td></tr>
+    <tr><td>Envíos por segundo<br><code>send_rate</code></td><td>numero</td><td>20</td><td>1 a 60</td><td>Cuántas veces por segundo se manda (solo si se movió)</td></tr>
+    <tr><td>Suavizado<br><code>smoothing</code></td><td>numero</td><td>15</td><td>1 a 60</td><td>Lo rápido que los demás alcanzan la posición recibida (más = más pegado, menos = más suave)</td></tr>
+    <tr><td>Física local en los demás<br><code>local_physics</code></td><td>si/no</td><td>no</td><td></td><td>Con Rigidbody dinámico: los demás jugadores también lo simulan y lo que manda el dueño lo corrige, así cualquiera lo puede empujar (balones, cajas). Apagado: en los demás solo sigue la posición recibida (personajes)</td></tr>
   </tbody>
 </table>
 <h3 id="PrefabInstance">Instancia de prefab <code>PrefabInstance</code></h3>

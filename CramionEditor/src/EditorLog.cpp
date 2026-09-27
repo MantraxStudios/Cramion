@@ -82,7 +82,11 @@ std::streamsize EditorLog::TeeBuffer::xsputn(const char* s, std::streamsize n) {
 }
 
 int EditorLog::TeeBuffer::sync() {
-    return original_->pubsync();
+    // Sin consola (el editor de Release es una aplicacion de ventana) la salida
+    // original falla; si se devolviera ese error, std::cout quedaria roto y el
+    // panel Consola dejaria de recibir mensajes.
+    original_->pubsync();
+    return 0;
 }
 
 void EditorLog::TeeBuffer::flushLine() {

@@ -135,6 +135,8 @@
         <a href="ui.html">Interfaz (UI)</a>
         <a href="esqueletos.html">Esqueletos: IK, ragdoll y phys bones</a>
         <a href="graphics.html">Graphics</a>
+        <a href="red.html">Network (multijugador)</a>
+        <a href="http.html">Http y Json</a>
         <a href="prefs.html">Prefs y Game</a>
         <a href="debug.html">Debug</a>
         <p class="mb-1 mt-7 flex items-center gap-2 px-3 text-xs font-semibold uppercase tracking-wider text-slate-500"><svg class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a9 9 0 1 0 0 18c1.1 0 1.5-.8 1.5-1.5 0-.9-.7-1.2-.7-2 0-.8.6-1.5 1.5-1.5H16a5 5 0 0 0 5-5c0-4.4-4-8-9-8Z"/><circle cx="7.5" cy="11" r="1"/><circle cx="10" cy="7" r="1"/><circle cx="15" cy="7.5" r="1"/></svg>Gráficos</p>
@@ -228,6 +230,22 @@
   <strong>Lago</strong> (rectángulo) o <strong>Río</strong>. Un río sigue sus puntos: se editan en la vista con asas
   (clic en un punto para moverlo, <em>Añadir punto</em>) y el agua corre a lo largo de ellos. Los Rigidbody flotan, la cámara
   bajo el agua ve niebla y cáusticas y lo que se mueve deja ondas.
+</p>
+
+<h3 id="vegetacion">Vegetación (bosques)</h3>
+<p>
+  <em>GameObject &gt; Vegetación (bosque)</em> crea un bosque sobre el primer terreno (centrado en él y de su tamaño). El
+  componente <a href="componentes-entorno.html#Foliage">Vegetación</a> siembra <strong>millones de árboles</strong> (pinos,
+  robles y abedules, con su mezcla) en segundo plano: los apoya en el terreno y evita el agua (altura mínima), las pendientes
+  fuertes y los <strong>claros</strong> (círculos sin árboles para poblados, caminos o el punto de partida). Se elige la
+  densidad (árboles por hectárea), la semilla, el tamaño y el tope de árboles.
+</p>
+<p>
+  Se dibujan en la GPU sin coste por árbol en la CPU: un <em>compute shader</em> descarta los que no se ven y elige para cada
+  uno entre tres niveles de detalle según la distancia (<em>LOD 1</em>, <em>LOD 2</em> y distancia máxima), y proyectan
+  sombra hasta la <em>distancia de sombras</em>. El viento mueve las copas. Cuántos se dibujan sale en
+  <a href="graphics.html">Graphics</a> (<code>foliage_visible</code>). Ejemplo: la plantilla
+  <a href="plantillas.html#mundo-abierto">Mundo abierto</a>.
 </p>
 
 <h3 id="postvolumenes">Volúmenes de post-procesado</h3>

@@ -96,6 +96,14 @@ void EditorApp::drawToolbar() {
                    "Mostrar los iconos y ayudas de la escena: luces, cámaras, decals, física, cinemáticas y agua (G)")) {
         show_gizmos_ = !show_gizmos_;
     }
+    // En Play con red: servidor o cliente y cuantos jugadores.
+    if (const std::string net = scripts_.networkStatus(); !net.empty()) {
+        ImGui::SameLine();
+        ImGui::TextDisabled("|");
+        ImGui::SameLine();
+        ImGui::TextColored(ImVec4(0.35f, 0.85f, 0.55f, 1.0f), "Red: %s", net.c_str());
+        ImGui::SetItemTooltip("Partida en red de los scripts (tabla Network). Salir de Play la cierra.");
+    }
     ImGui::PopStyleVar();
 }
 

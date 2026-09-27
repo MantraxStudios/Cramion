@@ -135,6 +135,8 @@
         <a href="ui.html">Interfaz (UI)</a>
         <a href="esqueletos.html">Esqueletos: IK, ragdoll y phys bones</a>
         <a href="graphics.html" class="active">Graphics</a>
+        <a href="red.html">Network (multijugador)</a>
+        <a href="http.html">Http y Json</a>
         <a href="prefs.html">Prefs y Game</a>
         <a href="debug.html">Debug</a>
         <p class="mb-1 mt-7 flex items-center gap-2 px-3 text-xs font-semibold uppercase tracking-wider text-slate-500"><svg class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a9 9 0 1 0 0 18c1.1 0 1.5-.8 1.5-1.5 0-.9-.7-1.2-.7-2 0-.8.6-1.5 1.5-1.5H16a5 5 0 0 0 5-5c0-4.4-4-8-9-8Z"/><circle cx="7.5" cy="11" r="1"/><circle cx="10" cy="7" r="1"/><circle cx="15" cy="7.5" r="1"/></svg>Gráficos</p>
@@ -223,7 +225,9 @@ Graphics.save()                        -- el juego lo recuerda la próxima vez</
 </table>
 <p>De solo lectura: <code>gpu</code>, <code>hardware_tier</code>, <code>vram_mb</code>, <code>vram_used_mb</code>, <code>ray_tracing_supported</code>,
   <code>render_width</code>/<code>render_height</code> (resolución interna), <code>screen_width</code>/<code>screen_height</code> (salida) y
-  <code>gpu_ms</code> (milisegundos de GPU por frame).</p>
+  <code>gpu_ms</code> (milisegundos de GPU por frame). De la <a href="editor-herramientas.html#vegetacion">vegetación</a>:
+  <code>foliage_trees</code> (árboles en la GPU), <code>foliage_visible</code> (dibujados el último frame),
+  <code>foliage_near</code> (con todo el detalle) y <code>foliage_triangles</code>.</p>
 
 <div class="note">
   <strong>Texturas:</strong> <code>texture_quality</code> se aplica a los modelos que se cargan después. En un menú de
@@ -287,9 +291,9 @@ return Opciones</code></pre>
           <span class="text-xs text-slate-500">← Anterior</span>
           <span class="mt-1 block font-semibold text-white group-hover:text-brand">Esqueletos: IK, ragdoll y phys bones</span>
         </a>
-        <a href="prefs.html" class="group rounded-xl border border-line p-4 text-right transition hover:border-brand/60 hover:bg-panel">
+        <a href="red.html" class="group rounded-xl border border-line p-4 text-right transition hover:border-brand/60 hover:bg-panel">
           <span class="text-xs text-slate-500">Siguiente →</span>
-          <span class="mt-1 block font-semibold text-white group-hover:text-brand">Prefs y Game</span>
+          <span class="mt-1 block font-semibold text-white group-hover:text-brand">Network (multijugador)</span>
         </a></div>
       <p class="mt-10 text-sm text-slate-500">¿Algo no queda claro o falta algo? Pregunta en el
         <a href="https://discord.gg/zG7rSsUGEz" target="_blank" rel="noopener" class="text-brand hover:text-white">Discord</a>.</p>

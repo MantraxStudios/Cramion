@@ -6,11 +6,15 @@
 // .cranimator (JSON con UUID) y se edita en la ventana Animator del editor.
 //
 //   Parametros  float / int / bool / trigger (los cambia el juego o el editor)
-//   Estados     un clip cada uno (por nombre del modelo o un .cranim), con
-//               velocidad y bucle
+//   Estados     un clip (por nombre del modelo o un .cranim) o un Blend Tree,
+//               con velocidad y bucle
+//   Blend Trees mezclan varios clips segun parametros float: 1D (andar ->
+//               trotar -> correr con "velocidad") o 2D libre (moverse en 8
+//               direcciones con "x" e "y"), con los ciclos sincronizados
 //   Transiciones de un estado (o de "Cualquier estado") a otro cuando se
 //               cumplen TODAS sus condiciones y, si se pide, al llegar a un
-//               punto del clip (exit time, normalizado 0..1)
+//               punto del clip (exit time, normalizado 0..1); con fundido
+//               (duracion en segundos) entre la pose vieja y la nueva
 //
 // Los clips extraidos de un modelo se guardan como .cranim (AnimationClip):
 // sus pistas van por NOMBRE de nodo, asi sirven para cualquier modelo con el
@@ -52,6 +56,22 @@ struct AnimatorCondition {
     float threshold = 0.0f;
 };
 
+// Que suena en un estado.
+enum class AnimatorMotion : int {
+    Clip = 0,         // un clip
+    BlendTree1D = 1,  // mezcla por un parametro (umbral de cada clip)
+    BlendTree2D = 2,  // mezcla por dos parametros (posicion de cada clip), libre cartesiano
+};
+
+// Un clip de un Blend Tree.
+struct BlendTreeChild {
+    std::string clip_name;  // clip del modelo por nombre
+    assets::AssetRef clip{{}, assets::AssetType::AnimationClip};  // o un .cranim (manda si es valido)
+    float threshold = 0.0f;  // 1D: valor del parametro en que suena solo este
+    core::Vec2 position{};   // 2D: punto (x, y) en que suena solo este
+    float speed = 1.0f;      // multiplica la velocidad de este clip
+};
+
 struct AnimatorState {
     std::string name = "Estado";
     std::string clip_name;           // clip del modelo por nombre
@@ -59,7 +79,21 @@ struct AnimatorState {
     float speed = 1.0f;
     bool loop = true;
     core::Vec2 position{};           // en el grafo del editor
+    // Blend Tree (motion != Clip): los clips de `children` en vez de `clip`.
+    AnimatorMotion motion = AnimatorMotion::Clip;
+    std::string blend_parameter;     // 1D, y la X del 2D
+    std::string blend_parameter_y;   // la Y del 2D
+    std::vector<BlendTreeChild> children;
+
+    bool isBlendTree() const { return motion != AnimatorMotion::Clip; }
 };
+
+// Peso de cada hijo de un Blend Tree para los valores (x, y) de sus
+// parametros (y solo en 2D). Suman 1; vacio si no tiene hijos.
+//   1D: entre los dos umbrales vecinos, lineal; fuera, el extremo.
+//   2D libre cartesiano (Gradient Band, como Unity): cada hijo pesa segun lo
+//       cerca que esta el punto de el respecto a cada uno de los demas.
+std::vector<float> blendTreeWeights(const AnimatorState& state, float x, float y = 0.0f);
 
 // Origen de una transicion desde "Cualquier estado".
 inline constexpr int kAnyState = -1;
@@ -69,6 +103,9 @@ struct AnimatorTransition {
     int to = 0;
     bool has_exit_time = false;
     float exit_time = 1.0f;  // normalizado (1 = al terminar el clip)
+    // Fundido: segundos en que la pose pasa del estado viejo al nuevo (0 =
+    // corte seco, como antes de la 0.7).
+    float duration = 0.0f;
     std::vector<AnimatorCondition> conditions;
 };
 
@@ -99,11 +136,13 @@ struct AnimatorRuntime {
     int state = -1;               // -1 = aun no entro (ira al de defecto)
     float state_time = 0.0f;      // segundos en el estado actual
     std::unordered_map<std::string, float> values;  // parametros actuales
+    int last_transition = -1;     // la que causo el ultimo cambio (-1 = entrada)
 };
 
 // Avanza la maquina: aplica la primera transicion que se cumpla (consume los
 // triggers de sus condiciones). `clip_duration` es la del clip del estado
-// actual (0 si no tiene). Devuelve true si cambio de estado.
+// actual (0 si no tiene; en un Blend Tree, la de la mezcla). Devuelve true si
+// cambio de estado (runtime.last_transition dice por cual).
 bool stepAnimatorController(const AnimatorController& controller, AnimatorRuntime& runtime,
                             float clip_duration);
 

@@ -17,6 +17,23 @@ Incluye dos escenas de demostración, iluminadas por una sola luz direccional (e
 
 ---
 
+## Novedades de la 0.7.0
+
+**Multijugador**
+- API **`Network`** en Lua (UDP con ENet): `Network.host()` crea la partida y `Network.connect(ip)` se une. **Mensajes** con cualquier valor de Lua, **objetos de red** creados en todos con `Network.spawn` (los mueve su dueño y los demás los ven suavizados), **variables sincronizadas**, avisos de entrada y salida, ping y cambio de escena para todos.
+- Plantilla **Online** con todo el juego en Lua: crear partida o unirse por IP, jugadores sincronizados, chat, marcador, monedas, balón y cajas con física del servidor, goles y eventos.
+
+**HTTPS**: API **`Http`** para enviar y recibir datos de servidores y webs de forma segura (`Http.get`, `Http.post`, `Http.request`), solo por HTTPS con el certificado comprobado, tiempo y tamaño máximos, y **`Json`** para pasar entre tablas y JSON. Para marcadores online, cuentas, noticias o tu propia API.
+
+**Mundo abierto**
+- Componente **Vegetación**: millones de árboles sembrados sobre el terreno, recortados en la GPU con 3 niveles de detalle, sombras y viento.
+- Plantilla **Mundo abierto (rendimiento)**: isla de 8 × 8 km con océano y unos 2 millones de árboles, personaje en tercera persona y panel de FPS, CPU y GPU.
+- **Niebla ajustable** (densidad y caída con la altura) para ver a kilómetros.
+
+**Animación**: **Blend Trees 1D y 2D** (andar/correr por velocidad, 8 direcciones) y **fundido** en las transiciones del Animator.
+
+**Actualizaciones**: el paquete se comprueba con **SHA-256** antes de instalarlo y hay **canal beta** para recibir las versiones previas.
+
 ## Novedades de la 0.6.2
 
 **Actualizaciones**
@@ -117,6 +134,7 @@ Incluye dos escenas de demostración, iluminadas por una sola luz direccional (e
 
 ## Índice
 
+- [Novedades de la 0.7.0](#novedades-de-la-070)
 - [Novedades de la 0.6.2](#novedades-de-la-062)
 - [Novedades de la 0.6.1](#novedades-de-la-061)
 - [Novedades de la 0.6](#novedades-de-la-06)

@@ -194,6 +194,7 @@ void EditorApp::exitPlay() {
     if (!playing()) return;
     const std::uint64_t steps = physics_.stats().steps;
     scripts_.stop();
+    scripts_.shutdownNetwork();  // salir de Play cierra la partida en red
     audio_.stop();
     ui_.reset();
     physics_.stop();

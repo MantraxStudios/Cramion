@@ -21,8 +21,8 @@ add_library(cramion_update STATIC
 target_include_directories(cramion_update PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
 target_include_directories(cramion_update PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
 target_include_directories(cramion_update SYSTEM PRIVATE "${stb_SOURCE_DIR}")
-target_link_libraries(cramion_update PUBLIC nlohmann_json::nlohmann_json winhttp shell32 ole32)
-target_compile_definitions(cramion_update PRIVATE CRAMION_VERSION_STRING="${PROJECT_VERSION}")
+target_link_libraries(cramion_update PUBLIC nlohmann_json::nlohmann_json winhttp bcrypt shell32 ole32)
+target_compile_definitions(cramion_update PRIVATE CRAMION_VERSION_STRING="${CRAMION_VERSION_FULL}")
 target_compile_options(cramion_update PRIVATE -Wall -Wextra)
 # stb (Inflate.cpp) sin avisos.
 set_source_files_properties("${CMAKE_CURRENT_SOURCE_DIR}/src/Inflate.cpp" PROPERTIES COMPILE_OPTIONS "-w")
@@ -65,4 +65,4 @@ add_executable(CramionUpdateTests "${CMAKE_CURRENT_SOURCE_DIR}/tests/UpdateTests
 target_link_libraries(CramionUpdateTests PRIVATE cramion_update)
 target_compile_definitions(CramionUpdateTests PRIVATE
     CRAMION_UPDATE_FIXTURE="${_update_fixture}"
-    CRAMION_VERSION_STRING="${PROJECT_VERSION}")
+    CRAMION_VERSION_STRING="${CRAMION_VERSION_FULL}")

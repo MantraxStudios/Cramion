@@ -33,6 +33,17 @@ int main() {
     check(has(at("local C = {}\nfunction C:"), "OnCollisionEnter"), "function C: -> metodos del motor");
     check(at(head + "-- Inp").empty(), "nada dentro de un comentario");
     check(has(at(head + "fu"), "function"), "palabras clave");
+    // Lo de la 0.6.1 y la 0.7.
+    check(has(at(head + "Network."), "spawn") && has(at(head + "Network.on"), "onPlayerJoined"), "Network. -> spawn, onPlayerJoined");
+    check(has(at(head + "Http."), "post") && has(at(head + "Json."), "decode"), "Http. y Json.");
+    check(has(at(head + "res."), "data") && has(at(head + "contact."), "relativeVelocity"), "res. (Http) y contact.");
+    check(has(at(head + "self.entity:"), "setIKTarget") && has(at(head + "self.entity:"), "isMine") &&
+              has(at(head + "self.entity:"), "getField") && has(at(head + "self.entity."), "ragdoll"),
+          "entidad: IK, red, getField y ragdoll");
+    check(has(at(head + "self.entity.mesh:"), "apply") && has(at(head + "local malla = Mesh.new('a')\nmalla."), "vertices"),
+          "mallas: mesh:apply, malla.vertices");
+    check(has(at("local C = {}\nfunction C:"), "OnNetVar"), "function C: -> OnNetVar");
+    check(has(at(head + "Graphics."), "foliage_visible") && has(at(head + "Voxel."), "blockCount"), "Graphics.foliage_*, Voxel.blockCount");
     const auto list = at(head + "Scene.f");
     check(!list.empty() && list[0].label.rfind("f", 0) == 0, "primero lo que empieza igual");
     std::printf("\n%d fallos\n", failures);

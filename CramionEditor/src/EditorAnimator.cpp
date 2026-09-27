@@ -451,9 +451,28 @@ void EditorApp::drawAnimatorSidePanel(ecs::Entity preview) {
         ImGui::InputText("Nombre", &st.name);
         if (ImGui::IsItemDeactivatedAfterEdit()) animator_dirty_ = true;
 
+        // Que suena: un clip o un Blend Tree.
+        static constexpr const char* kMotionNames[] = {"Clip", "Blend Tree 1D", "Blend Tree 2D"};
+        int motion = static_cast<int>(st.motion);
+        if (ImGui::Combo("Movimiento", &motion, kMotionNames, 3)) {
+            st.motion = static_cast<ecs::AnimatorMotion>(motion);
+            // Al convertir un estado con clip, el clip pasa a ser el primero del arbol.
+            if (st.isBlendTree() && st.children.empty() && (!st.clip_name.empty() || st.clip.valid())) {
+                ecs::BlendTreeChild child;
+                child.clip_name = st.clip_name;
+                child.clip = st.clip;
+                st.children.push_back(child);
+            }
+            animator_dirty_ = true;
+        }
+        ImGui::SetItemTooltip("Blend Tree: mezcla varios clips según parámetros (andar/correr por velocidad,\n"
+                              "moverse en 8 direcciones con X e Y), con los pasos sincronizados.");
+
         // Clips del modelo (de la entidad en vivo); si no hay, el nombre a mano.
         const asset::ModelData* data = preview.valid() ? sync_->actorModelData(preview, scene_) : nullptr;
-        if (data != nullptr && !data->animations.empty()) {
+        if (st.isBlendTree()) {
+            drawBlendTreeEditor(st, data, live);
+        } else if (data != nullptr && !data->animations.empty()) {
             if (ImGui::BeginCombo("Clip", st.clip_name.empty() ? "(ninguno)" : st.clip_name.c_str())) {
                 for (const asset::AnimationClip& clip : data->animations) {
                     if (ImGui::Selectable(clip.name.c_str(), clip.name == st.clip_name)) {
@@ -469,10 +488,12 @@ void EditorApp::drawAnimatorSidePanel(ecs::Entity preview) {
             if (ImGui::IsItemDeactivatedAfterEdit()) animator_dirty_ = true;
         }
         // O un clip suelto (.cranim) arrastrado desde el Proyecto.
-        ImGuiPropertyVisitor visitor(database_.get());
-        if (visitor.asset({"clip_asset", "Clip (.cranim)", "Si se asigna, manda sobre el clip del modelo"}, st.clip,
-                          assets::AssetType::AnimationClip)) {
-            animator_dirty_ = true;
+        if (!st.isBlendTree()) {
+            ImGuiPropertyVisitor visitor(database_.get());
+            if (visitor.asset({"clip_asset", "Clip (.cranim)", "Si se asigna, manda sobre el clip del modelo"}, st.clip,
+                              assets::AssetType::AnimationClip)) {
+                animator_dirty_ = true;
+            }
         }
         if (ImGui::DragFloat("Velocidad", &st.speed, 0.01f, -4.0f, 4.0f, "%.2f")) {}
         if (ImGui::IsItemDeactivatedAfterEdit()) animator_dirty_ = true;
@@ -502,6 +523,9 @@ void EditorApp::drawAnimatorSidePanel(ecs::Entity preview) {
             ImGui::DragFloat("Salir en", &t.exit_time, 0.01f, 0.0f, 10.0f, "%.2f (clip)");
             if (ImGui::IsItemDeactivatedAfterEdit()) animator_dirty_ = true;
         }
+        ImGui::DragFloat("Fundido", &t.duration, 0.01f, 0.0f, 3.0f, t.duration > 0.0f ? "%.2f s" : "corte seco");
+        if (ImGui::IsItemDeactivatedAfterEdit()) animator_dirty_ = true;
+        ImGui::SetItemTooltip("Segundos en que la pose pasa del estado viejo al nuevo (0 = cambio instantáneo)");
         ImGui::TextDisabled("Condiciones (todas deben cumplirse)");
         int remove_condition = -1;
         for (std::size_t i = 0; i < t.conditions.size(); ++i) {
@@ -689,7 +713,10 @@ void EditorApp::drawAnimatorGraph(ecs::Entity preview) {
     for (int i = 0; i < state_count; ++i) {
         ImU32 fill = i == c.default_state ? IM_COL32(190, 110, 40, 255) : IM_COL32(75, 75, 82, 255);
         if (live != nullptr && live->runtime.state == i) fill = IM_COL32(45, 95, 170, 255);
-        drawNode(i, c.states[i].name.c_str(), fill);
+        const std::string label = c.states[i].isBlendTree()
+                                      ? c.states[i].name + (c.states[i].motion == ecs::AnimatorMotion::BlendTree1D ? "\n(Blend 1D)" : "\n(Blend 2D)")
+                                      : c.states[i].name;
+        drawNode(i, label.c_str(), fill);
     }
 
     // --- Entrada ---
@@ -704,6 +731,7 @@ void EditorApp::drawAnimatorGraph(ecs::Entity preview) {
                 t.from = animator_link_from_;
                 t.to = hovered_node;
                 t.has_exit_time = animator_link_from_ >= 0 && c.parameters.empty();  // sin parametros: al acabar
+                t.duration = 0.25f;  // fundido corto por defecto (como Unity)
                 c.transitions.push_back(std::move(t));
                 animator_selected_transition_ = static_cast<int>(c.transitions.size()) - 1;
                 animator_selected_state_ = -1;
@@ -789,6 +817,21 @@ void EditorApp::drawAnimatorGraph(ecs::Entity preview) {
             animator_dirty_ = true;
         };
         if (ImGui::MenuItem("Crear estado vacío")) addState("Estado", "");
+        if (ImGui::MenuItem("Crear Blend Tree 1D")) {
+            addState("Blend Tree", "");
+            ecs::AnimatorState& st = c.states.back();
+            st.motion = ecs::AnimatorMotion::BlendTree1D;
+            for (const ecs::AnimatorParameter& p : c.parameters) {
+                if (p.type == ecs::AnimatorParameterType::Float) {
+                    st.blend_parameter = p.name;
+                    break;
+                }
+            }
+        }
+        if (ImGui::MenuItem("Crear Blend Tree 2D")) {
+            addState("Blend Tree 2D", "");
+            c.states.back().motion = ecs::AnimatorMotion::BlendTree2D;
+        }
         if (live_data != nullptr && !live_data->animations.empty() && ImGui::BeginMenu("Crear estado con clip")) {
             for (const asset::AnimationClip& clip : live_data->animations) {
                 if (ImGui::MenuItem(clip.name.c_str())) addState(clip.name, clip.name);
@@ -840,6 +883,176 @@ void EditorApp::drawAnimatorGraph(ecs::Entity preview) {
                   IM_COL32(255, 255, 255, 110), hint);
     draw->PopClipRect();
     ImGui::EndChild();
+}
+
+// Blend Tree de un estado: parametros, clips con su umbral (1D) o su punto
+// (2D) y un grafico con el valor actual y el peso de cada clip (en vivo, el de
+// la entidad seleccionada).
+void EditorApp::drawBlendTreeEditor(ecs::AnimatorState& st, const asset::ModelData* data, ecs::Animator* live) {
+    ecs::AnimatorController& c = animator_;
+    const bool two_d = st.motion == ecs::AnimatorMotion::BlendTree2D;
+    const auto parameterCombo = [&](const char* label, std::string& name) {
+        if (ImGui::BeginCombo(label, name.empty() ? "(parámetro float)" : name.c_str())) {
+            for (const ecs::AnimatorParameter& p : c.parameters) {
+                if (p.type != ecs::AnimatorParameterType::Float) continue;
+                if (ImGui::Selectable(p.name.c_str(), p.name == name)) {
+                    name = p.name;
+                    animator_dirty_ = true;
+                }
+            }
+            ImGui::Separator();
+            if (ImGui::Selectable("+ Crear parámetro nuevo")) {
+                std::string fresh = two_d ? (label[0] == 'Y' ? "MoverY" : "MoverX") : "Velocidad";
+                for (int i = 2; c.findParameter(fresh) != nullptr; ++i) fresh = (two_d ? (label[0] == 'Y' ? "MoverY" : "MoverX") : "Velocidad") + std::to_string(i);
+                c.parameters.push_back({fresh, ecs::AnimatorParameterType::Float, 0.0f});
+                name = fresh;
+                animator_dirty_ = true;
+            }
+            ImGui::EndCombo();
+        }
+    };
+    parameterCombo(two_d ? "X" : "Parámetro", st.blend_parameter);
+    if (two_d) parameterCombo("Y", st.blend_parameter_y);
+
+    const float px = live != nullptr ? ecs::animatorParameterValue(c, live->runtime, st.blend_parameter)
+                                     : (c.findParameter(st.blend_parameter) ? c.findParameter(st.blend_parameter)->default_value : 0.0f);
+    const float py = live != nullptr ? ecs::animatorParameterValue(c, live->runtime, st.blend_parameter_y)
+                                     : (c.findParameter(st.blend_parameter_y) ? c.findParameter(st.blend_parameter_y)->default_value : 0.0f);
+    const std::vector<float> weights = ecs::blendTreeWeights(st, px, py);
+
+    // --- Grafico ---
+    ImDrawList* draw = ImGui::GetWindowDrawList();
+    const float w = ImGui::GetContentRegionAvail().x;
+    const ImVec2 a = ImGui::GetCursorScreenPos();
+    const float h = two_d ? std::min(w, 200.0f) : 46.0f;
+    const ImVec2 b(a.x + w, a.y + h);
+    draw->AddRectFilled(a, b, IM_COL32(24, 25, 30, 255), 6.0f);
+    draw->AddRect(a, b, IM_COL32(60, 62, 70, 255), 6.0f);
+    if (!st.children.empty()) {
+        if (!two_d) {
+            float lo = st.children[0].threshold, hi = lo;
+            for (const ecs::BlendTreeChild& ch : st.children) {
+                lo = std::min(lo, ch.threshold);
+                hi = std::max(hi, ch.threshold);
+            }
+            if (hi - lo < 1e-4f) hi = lo + 1.0f;
+            const auto toX = [&](float v) { return a.x + 12.0f + (w - 24.0f) * (v - lo) / (hi - lo); };
+            const float mid = a.y + h * 0.5f;
+            draw->AddLine(ImVec2(a.x + 12.0f, mid), ImVec2(b.x - 12.0f, mid), IM_COL32(90, 92, 100, 255), 2.0f);
+            for (std::size_t k = 0; k < st.children.size(); ++k) {
+                const float x = toX(st.children[k].threshold);
+                const float r = 4.0f + 7.0f * weights[k];
+                draw->AddCircleFilled(ImVec2(x, mid), r, IM_COL32(90, 170, 255, static_cast<int>(90 + 165 * weights[k])));
+                const std::string tag = std::to_string(k + 1);
+                draw->AddText(ImVec2(x - 3.0f, a.y + 3.0f), IM_COL32(200, 204, 212, 255), tag.c_str());
+            }
+            const float cx = toX(std::clamp(px, lo, hi));
+            draw->AddLine(ImVec2(cx, a.y + 4.0f), ImVec2(cx, b.y - 4.0f), IM_COL32(255, 170, 60, 255), 2.0f);
+        } else {
+            float extent = 1.0f;
+            for (const ecs::BlendTreeChild& ch : st.children) {
+                extent = std::max({extent, std::abs(ch.position.x), std::abs(ch.position.y)});
+            }
+            extent *= 1.15f;
+            const ImVec2 center((a.x + b.x) * 0.5f, (a.y + b.y) * 0.5f);
+            const float half = std::min(w, h) * 0.5f - 10.0f;
+            const auto toScreen = [&](core::Vec2 p) {
+                return ImVec2(center.x + p.x / extent * half, center.y - p.y / extent * half);
+            };
+            draw->AddLine(ImVec2(center.x - half, center.y), ImVec2(center.x + half, center.y), IM_COL32(60, 62, 70, 255));
+            draw->AddLine(ImVec2(center.x, center.y - half), ImVec2(center.x, center.y + half), IM_COL32(60, 62, 70, 255));
+            for (std::size_t k = 0; k < st.children.size(); ++k) {
+                const ImVec2 p = toScreen(st.children[k].position);
+                draw->AddCircleFilled(p, 4.0f + 9.0f * weights[k], IM_COL32(90, 170, 255, static_cast<int>(90 + 165 * weights[k])));
+                const std::string tag = std::to_string(k + 1);
+                draw->AddText(ImVec2(p.x + 6.0f, p.y - 16.0f), IM_COL32(200, 204, 212, 255), tag.c_str());
+            }
+            const ImVec2 cur = toScreen(core::Vec2{std::clamp(px, -extent, extent), std::clamp(py, -extent, extent)});
+            draw->AddCircle(cur, 6.0f, IM_COL32(255, 170, 60, 255), 16, 2.0f);
+            draw->AddCircleFilled(cur, 2.5f, IM_COL32(255, 170, 60, 255));
+        }
+    }
+    ImGui::Dummy(ImVec2(w, h + 4.0f));
+    ImGui::TextDisabled(live != nullptr ? "En vivo: el naranja es el valor actual; el tamaño, el peso." : "Naranja: valor inicial del parámetro; tamaño: peso de cada clip.");
+
+    // --- Clips ---
+    int remove = -1;
+    for (std::size_t k = 0; k < st.children.size(); ++k) {
+        ecs::BlendTreeChild& ch = st.children[k];
+        ImGui::PushID(static_cast<int>(k) + 5000);
+        ImGui::Separator();
+        ImGui::Text("%zu", k + 1);
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - 60.0f);
+        if (data != nullptr && !data->animations.empty() && !ch.clip.valid()) {
+            if (ImGui::BeginCombo("##clip", ch.clip_name.empty() ? "(clip)" : ch.clip_name.c_str())) {
+                for (const asset::AnimationClip& clip : data->animations) {
+                    if (ImGui::Selectable(clip.name.c_str(), clip.name == ch.clip_name)) {
+                        ch.clip_name = clip.name;
+                        animator_dirty_ = true;
+                    }
+                }
+                ImGui::EndCombo();
+            }
+        } else {
+            ImGui::InputTextWithHint("##clip", "nombre del clip", &ch.clip_name);
+            if (ImGui::IsItemDeactivatedAfterEdit()) animator_dirty_ = true;
+        }
+        ImGui::SameLine();
+        ImGui::Text("%3.0f%%", weights[k] * 100.0f);
+        ImGui::SameLine();
+        if (ImGui::SmallButton("x")) remove = static_cast<int>(k);
+        if (two_d) {
+            float pos[2] = {ch.position.x, ch.position.y};
+            ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x * 0.6f);
+            if (ImGui::DragFloat2("Posición", pos, 0.01f)) ch.position = core::Vec2{pos[0], pos[1]};
+            if (ImGui::IsItemDeactivatedAfterEdit()) animator_dirty_ = true;
+        } else {
+            ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x * 0.35f);
+            ImGui::DragFloat("Umbral", &ch.threshold, 0.01f);
+            if (ImGui::IsItemDeactivatedAfterEdit()) animator_dirty_ = true;
+        }
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(70.0f);
+        ImGui::DragFloat("Vel.", &ch.speed, 0.01f, -4.0f, 4.0f, "%.2f");
+        if (ImGui::IsItemDeactivatedAfterEdit()) animator_dirty_ = true;
+        ImGuiPropertyVisitor visitor(database_.get());
+        if (visitor.asset({"child_clip", "o un .cranim", "Si se asigna, manda sobre el clip del modelo"}, ch.clip,
+                          assets::AssetType::AnimationClip)) {
+            animator_dirty_ = true;
+        }
+        ImGui::PopID();
+    }
+    if (remove >= 0) {
+        st.children.erase(st.children.begin() + remove);
+        animator_dirty_ = true;
+    }
+    if (ImGui::Button("+ Clip")) {
+        ecs::BlendTreeChild ch;
+        if (!st.children.empty()) {
+            ch.threshold = st.children.back().threshold + 1.0f;
+        }
+        st.children.push_back(ch);
+        animator_dirty_ = true;
+    }
+    if (!two_d) {
+        ImGui::SameLine();
+        if (ImGui::Button("Umbrales 0, 1, 2...")) {
+            for (std::size_t k = 0; k < st.children.size(); ++k) st.children[k].threshold = static_cast<float>(k);
+            animator_dirty_ = true;
+        }
+    } else {
+        ImGui::SameLine();
+        if (ImGui::Button("Plantilla 8 direcciones")) {
+            // Quieto en el centro y 8 direcciones alrededor (los clips se eligen despues).
+            static const core::Vec2 kDirs[] = {{0, 0}, {0, 1}, {0.7071f, 0.7071f}, {1, 0}, {0.7071f, -0.7071f},
+                                               {0, -1}, {-0.7071f, -0.7071f}, {-1, 0}, {-0.7071f, 0.7071f}};
+            st.children.resize(9);
+            for (std::size_t k = 0; k < 9; ++k) st.children[k].position = kDirs[k];
+            animator_dirty_ = true;
+        }
+        ImGui::SetItemTooltip("1 quieto (0,0), 2 adelante, 3 adelante-derecha, 4 derecha... en el sentido de las agujas");
+    }
 }
 
 }  // namespace cramion::editor

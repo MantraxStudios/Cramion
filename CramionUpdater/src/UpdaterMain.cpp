@@ -200,7 +200,7 @@ struct Options {
     fs::path dir;
 };
 
-enum class Screen { Checking, UpToDate, Available, NoPackage, Downloading, Extracting, WaitingApps, Installing, Done, Error };
+enum class Screen { Checking, UpToDate, Available, NoPackage, Downloading, Verifying, Extracting, WaitingApps, Installing, Done, Error };
 
 const char* screenName(Screen s) {
     switch (s) {
@@ -209,6 +209,7 @@ const char* screenName(Screen s) {
         case Screen::Available: return "available";
         case Screen::NoPackage: return "nopackage";
         case Screen::Downloading: return "downloading";
+        case Screen::Verifying: return "verifying";
         case Screen::Extracting: return "extracting";
         case Screen::WaitingApps: return "waiting";
         case Screen::Installing: return "installing";
@@ -335,6 +336,15 @@ private:
                 }
                 return;
             }
+            // SHA-256: el zip tiene que ser exactamente el publicado.
+            screen_ = Screen::Verifying;
+            bool verified = false;
+            if (!update::verifyPackage(release_, zip, &verified, &error)) {
+                fs::remove(zip, ec);
+                fail("El paquete descargado no es válido", error);
+                return;
+            }
+            verified_ = verified;
             screen_ = Screen::Extracting;
             done_bytes_ = 0;
             total_bytes_ = 0;
@@ -457,6 +467,7 @@ private:
     std::atomic<std::uint64_t> done_bytes_{0};
     std::atomic<std::uint64_t> total_bytes_{0};
     std::atomic<bool> cancel_{false};
+    std::atomic<bool> verified_{false};  // el zip coincidia con su SHA-256 publicado
     std::thread worker_;
     fs::path staged_;
     std::vector<update::RunningApp> apps_;
@@ -528,6 +539,27 @@ void Updater::drawCaption(HWND hwnd) {
                "Cramion");
     d->AddText(regular_, 15.0f * g_dpi, ImVec2(p.x + 112.0f * g_dpi, p.y + h * 0.5f - 9.0f * g_dpi), kTextDim,
                "Actualizador");
+
+    // Canal: estable o beta (las betas salen antes y pueden fallar).
+    {
+        const bool busy_now = screen_ == Screen::Downloading || screen_ == Screen::Verifying || screen_ == Screen::Extracting ||
+                              screen_ == Screen::WaitingApps || screen_ == Screen::Installing;
+        int channel = settings_.channel == "beta" ? 1 : 0;
+        const float cw = 150.0f * g_dpi;
+        ImGui::SetCursorScreenPos(ImVec2(p.x + w - 46.0f * g_dpi * 2.0f - cw - 10.0f * g_dpi, p.y + (h - ImGui::GetFrameHeight()) * 0.5f));
+        ImGui::SetNextItemWidth(cw);
+        ImGui::BeginDisabled(busy_now);
+        if (ImGui::Combo("##canal", &channel, "Canal estable\0Canal beta\0")) {
+            update::Settings s = update::loadSettings();
+            s.channel = channel == 1 ? "beta" : "estable";
+            update::saveSettings(s);
+            settings_.channel = s.channel;
+            opt_.feed = update::feedUrl();
+            startCheck();
+        }
+        ImGui::EndDisabled();
+        ImGui::SetItemTooltip("Beta: recibe también las versiones previas (salen antes, pueden tener fallos)");
+    }
 
     // Minimizar y cerrar.
     const float bw = 46.0f * g_dpi;
@@ -754,7 +786,11 @@ void Updater::frame(HWND hwnd) {
             if (release_.zip_size > 0) sub += "Descarga de " + update::formatBytes(release_.zip_size);
             if (!release_.published_at.empty()) sub += ", publicada el " + update::formatDate(release_.published_at);
             sub += ". Cramion guardará la escena y todo lo abierto antes de cerrarse.";
-            drawHeader(kAccent, 2, "Cramion " + latest + " está disponible", sub);
+            drawHeader(kAccent, 2, "Cramion " + latest + (release_.prerelease ? " (beta)" : "") + " está disponible", sub);
+            if (release_.prerelease) {
+                ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(kAmber),
+                                   "Versión beta: trae lo último pero puede tener fallos. Haz copia de tus proyectos.");
+            }
             if (sourceBuild()) {
                 ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(kAmber),
                                    "Esta carpeta es una compilación del código (build.ninja): actualízala con git pull.");
@@ -770,11 +806,14 @@ void Updater::frame(HWND hwnd) {
             break;
         }
         case Screen::Downloading:
+        case Screen::Verifying:
         case Screen::Extracting: {
             drawHeader(kAccent, 2, "Descargando Cramion " + latest,
                        "Puedes seguir trabajando: Cramion solo se cierra (guardando todo) cuando la descarga esté lista.");
             drawSteps(0);
-            drawProgress(screen == Screen::Downloading ? "Descargando el paquete" : "Descomprimiendo y comprobando",
+            drawProgress(screen == Screen::Downloading ? "Descargando el paquete"
+                         : screen == Screen::Verifying ? "Comprobando el SHA-256 del paquete"
+                                                       : "Descomprimiendo y comprobando cada archivo",
                          screen == Screen::Downloading);
             break;
         }
@@ -819,7 +858,8 @@ void Updater::frame(HWND hwnd) {
         }
         case Screen::Done: {
             drawHeader(kGreen, 1, "Cramion " + latest + " instalado",
-                       opt_.relaunch ? "Abriendo Cramion con tus proyectos..." : "Todo listo. Tus proyectos no se han tocado.");
+                       std::string(opt_.relaunch ? "Abriendo Cramion con tus proyectos..." : "Todo listo. Tus proyectos no se han tocado.") +
+                           (verified_ ? " Paquete verificado con SHA-256." : " (La versión no publica SHA-256: no se pudo verificar.)"));
             drawSteps(4);
             drawNotesPanel("Novedades", std::max(60.0f * g_dpi, ImGui::GetContentRegionAvail().y));
             break;
@@ -873,6 +913,7 @@ void Updater::frame(HWND hwnd) {
             if (primaryButton("Buscar de nuevo", 130.0f)) startCheck();
             break;
         case Screen::Downloading:
+        case Screen::Verifying:
         case Screen::Extracting:
             footer(120.0f);
             if (secondaryButton("Cancelar", 120.0f)) cancel_ = true;
@@ -933,7 +974,8 @@ LRESULT WINAPI windowProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
             ScreenToClient(hwnd, &pt);
             RECT rc;
             GetClientRect(hwnd, &rc);
-            if (pt.y >= 0 && pt.y < static_cast<LONG>(46.0f * g_dpi) && pt.x < rc.right - static_cast<LONG>(92.0f * g_dpi)) {
+            // (menos los botones y el selector de canal de la derecha)
+            if (pt.y >= 0 && pt.y < static_cast<LONG>(46.0f * g_dpi) && pt.x < rc.right - static_cast<LONG>(262.0f * g_dpi)) {
                 return HTCAPTION;
             }
             return HTCLIENT;

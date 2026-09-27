@@ -1,5 +1,41 @@
 # Cambios
 
+## 0.7.0
+
+### Multijugador
+- **Red** nueva (UDP con ENet) y API **`Network`** en Lua: `Network.host(puerto)` crea la partida (el servidor tambien juega) y `Network.connect(ip)` se une. Todo pasa por el servidor, que reenvia a los demas y puede comprobar lo que llega.
+- **Mensajes** con cualquier valor de Lua (numeros, textos, `Vec3`, tablas): `Network.send("chat", datos[, destino])` y `Network.on("chat", function(datos, de) end)`, fiables y en orden. Avisos al entrar y salir jugadores (`onPlayerJoined`, `onPlayerLeft`, `onConnected`, `onDisconnected`), ping y estadisticas.
+- **Objetos de red**: `Network.spawn(prefab, posicion, dueno)` crea un prefab en todos; su dueno lo mueve (`entity:isMine()`) y los demas lo ven suavizado, con su Rigidbody cinematico. **Variables sincronizadas** (`setNetVar` / `getNetVar`). Quien entra tarde recibe todo como esta; si alguien se va, sus objetos desaparecen. `Network.loadScene` cambia la escena de todos. Componente **Objeto de red** para ajustar frecuencia y suavizado, y **Fisica local en los demas**: los objetos con fisica del servidor (balones, cajas) se simulan tambien en cada cliente y se corrigen con lo que llega, asi cualquier jugador los empuja al pasar y no solo el que crea la partida.
+- La barra de la Escena muestra la red durante el Play (servidor o cliente y jugadores). Salir de Play o cerrar el juego cierra la partida.
+
+### HTTPS: servidores y webs
+- API **`Http`** en Lua para mandar y recibir datos de servidores y webs de forma segura: `Http.get(url, funcion)`, `Http.post(url, datos, funcion)` (una tabla se manda como JSON) y `Http.request{...}` para cualquier metodo, con cabeceras propias (tokens). La respuesta llega a la funcion con `ok`, `status`, `body`, `headers`, `error` y **`data`** (el JSON ya decodificado). Van en segundo plano: el juego no se para.
+- **Seguridad**: solo `https://` con TLS 1.2/1.3 y el certificado comprobado por Windows (caducado, de otro dominio o autofirmado = rechazado); `http://` solo a `localhost` para pruebas; nunca redirige de https a http; cabeceras sin saltos de linea; tiempo maximo (20 s) y tamano maximo de la respuesta (32 MB). Al salir de Play se cancela lo pendiente.
+- **`Json`**: `Json.encode(tabla)` y `Json.decode(texto)`. Tambien `Http.urlEncode`, `Http.query`, `Http.pending` y `Http.cancelAll`.
+
+### Plantilla Online (todo en Lua)
+- Nueva plantilla en el Hub: menu para **crear partida o unirse por IP**, **jugadores sincronizados** con su color, **chat** con nombres, **marcador** con puntos y ping, **monedas, un balon y cajas** con fisica del servidor (F patea), **porterias y goles**, rondas y **eventos** (lluvia de monedas, monedas dobles). El servidor decide los puntos. Scripts `Red.lua`, `JugadorRed.lua` y `MonedaRed.lua`.
+
+### Mundo abierto y vegetacion
+- Componente **Vegetacion** (*GameObject > Vegetacion (bosque)*): **millones de arboles** (pinos, robles y abedules) sembrados en segundo plano sobre el terreno, sin agua, pendientes fuertes ni **claros**. Se dibujan en la GPU: un compute shader los recorta y elige entre **3 niveles de detalle**, con sombras cercanas y viento.
+- Plantilla **Mundo abierto (rendimiento)**: una **isla de 8 x 8 km** con relieve, playas y nieve, **oceano** alrededor y unos **2 millones de arboles**, con un personaje en tercera persona y un **panel de rendimiento** (FPS, ms de CPU y GPU, arboles y triangulos). Teclas para cambiar calidad, densidad, distancia, sombras y viento. En una RTX 4060 Ti: unos 400.000 arboles dibujados a mas de 100 FPS.
+- **Niebla ajustable** en el post-procesado (densidad y caida con la altura), tambien en el agua. La de siempre era demasiado espesa para mundos de kilometros.
+- `Graphics.get` da las cifras de la vegetacion (`foliage_trees`, `foliage_visible`, `foliage_triangles`).
+
+### Animacion: Blend Trees
+- Un estado del Animator puede ser un **Blend Tree 1D** (andar, trotar y correr segun `Velocidad`) o **2D** (moverse en 8 direcciones con dos parametros), con los pasos de los clips sincronizados. Grafico en el Inspector con el valor actual y el peso de cada clip; *Plantilla 8 direcciones*.
+- **Fundido** en las transiciones: la pose pasa del estado viejo al nuevo en los segundos que elijas (antes el cambio era seco).
+
+### Actualizaciones
+- **SHA-256**: el paquete se publica con su `Cramion-win64.zip.sha256` y el actualizador no instala una descarga que no coincida.
+- **Canal beta**: opcion *Estable / Beta* en el Hub y en el actualizador para recibir tambien las versiones previas (`0.7.0-beta.1`), marcadas como *Beta*.
+
+### Lua
+- **Autocompletado** completo en el editor de scripts: `Network`, `Http`, `Json`, la respuesta de Http (`res.`) y los contactos de choque (`contact.`), los metodos de red de las entidades, `OnNetVar`, las claves nuevas de `Graphics` y lo que faltaba de la 0.6.1: huesos, IK, ragdoll, sockets, `getField`/`setField`, las propiedades de interfaz (`text`, `value`, `color`, `interactable`) y los metodos de las mallas por codigo (`mesh:apply()`, `mesh.vertices`...).
+
+### Manual
+- Paginas nuevas **Network (multijugador)** y **Http y Json**; plantillas Online y Mundo abierto; Vegetacion en *Herramientas de mundo*; Blend Trees y fundido en el Animator; niebla en *Render*; SHA-256 y canal beta en *Actualizaciones*. 65 paginas y 774 entradas en el buscador. `OnNetVar` y `OnOriginShift` en *Ciclo de vida*; seccion Red en *Entity*.
+
 ## 0.6.2
 
 ### Actualizaciones
@@ -12,6 +48,7 @@
 - Rediseno: barra lateral con iconos y secciones, tarjeta de la version (al dia / version nueva), **Actualizaciones** (instalada y publicada, novedades, actualizar, opciones) y **Aprender** (manual, Lua, shaders, Discord, GitHub). Proyectos en **tarjetas o lista** y ordenados por fecha o nombre.
 
 ### Corregido
+- **Sin consola**: `CramionEditor.exe` y `cramion.exe` abrian una ventana de consola negra detras. Ahora son aplicaciones de ventana, como el player (los mensajes siguen en el panel *Consola* del editor).
 - **Camara de la Escena**: al volar con el boton derecho, el raton chocaba con el borde de la vista o de la pantalla y la camara dejaba de girar hasta soltar y volver al centro. Ahora el cursor se oculta y se queda fijo mientras se vuela (el giro llega en bruto, sin tope) y al soltar vuelve donde estaba.
 - **Polvo (luz volumetrica)**: con el presupuesto adaptativo activado, el polvo se apagaba cuando el frame iba justo y solo volvia al mirar al cielo o al sol (el frame se abarataba). Ahora el presupuesto solo lo abarata (la mitad de tramos por rayo y sin rayos en pantalla); nunca lo quita.
 - **IK de animales**: la inclinacion del cuerpo con la pendiente iba al reves (al bajar un escalon levantaba el morro y se torcia) y ahora gira alrededor del centro entre caderas y hombros. **Mirar** con el cuello ya no puede pasar del angulo maximo: el giro total se calcula una vez y se reparte entre los huesos (antes, con el objetivo detras, el cuello se retorcia).

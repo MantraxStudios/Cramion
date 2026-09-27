@@ -32,6 +32,8 @@
 namespace cramion::update {
 
 inline constexpr const char* kDefaultFeed = "https://api.github.com/repos/MantraxStudios/Cramion/releases/latest";
+// Canal beta: la lista de releases (incluye las previas; "latest" no las da).
+inline constexpr const char* kBetaFeed = "https://api.github.com/repos/MantraxStudios/Cramion/releases?per_page=30";
 inline constexpr const char* kReleasesPage = "https://github.com/MantraxStudios/Cramion/releases";
 inline constexpr const char* kPackageAsset = "Cramion-win64.zip";
 inline constexpr const wchar_t* kUpdaterExe = L"CramionUpdater.exe";
@@ -49,15 +51,14 @@ struct Version {
     int minor = 0;
     int patch = 0;
     bool valid = false;
+    // Version previa: "beta.1" en "0.7.0-beta.1" (vacio = estable). Como en
+    // semver, 0.7.0-beta.1 < 0.7.0-beta.2 < 0.7.0.
+    std::string pre;
 
-    // "0.6.1", "v0.6.1", "Cramion 0.6.1-beta" (lo que no es numero se ignora).
+    // "0.6.1", "v0.6.1", "Cramion 0.6.1", "v0.7.0-beta.1".
     static Version parse(std::string_view text);
     std::string str() const;
-    auto operator<=>(const Version& other) const {
-        if (major != other.major) return major <=> other.major;
-        if (minor != other.minor) return minor <=> other.minor;
-        return patch <=> other.patch;
-    }
+    std::strong_ordering operator<=>(const Version& other) const;
     bool operator==(const Version& other) const { return (*this <=> other) == 0; }
 };
 
@@ -75,14 +76,35 @@ struct Release {
     std::string published_at;  // ISO 8601
     std::string zip_url;       // vacio: la release aun no tiene paquete
     std::uint64_t zip_size = 0;
+    bool prerelease = false;   // version beta (canal beta)
+    // SHA-256 del zip (hex en minusculas): el "digest" que da GitHub para cada
+    // archivo, el campo "sha256" de otros feeds o el Cramion-win64.zip.sha256
+    // publicado al lado (sha256_url, se descarga al comprobar).
+    std::string sha256;
+    std::string sha256_url;
 };
 
-// El feed: CRAMION_UPDATE_FEED > update.json ("feed") > GitHub.
+// El feed: CRAMION_UPDATE_FEED > update.json ("feed") > GitHub (la ultima
+// estable, o la lista de releases con el canal beta).
 std::string feedUrl();
+// El canal beta esta activado (update.json "channel": "beta").
+bool betaChannel();
 // JSON de GitHub (releases/latest) o una lista de releases (la mas nueva que
-// no sea borrador). `feed_url` resuelve las rutas relativas del zip.
-bool parseRelease(const std::string& json, Release& out, std::string* error, const std::string& feed_url = {});
-bool fetchLatest(const std::string& feed, Release& out, std::string* error);
+// no sea borrador; las previas solo con `allow_prerelease`). `feed_url`
+// resuelve las rutas relativas del zip.
+bool parseRelease(const std::string& json, Release& out, std::string* error, const std::string& feed_url = {},
+                  bool allow_prerelease = false);
+bool fetchLatest(const std::string& feed, Release& out, std::string* error, bool allow_prerelease = false);
+
+// --- SHA-256 ---------------------------------------------------------------------
+
+std::string sha256Hex(const void* data, std::size_t size);
+// Vacio si no se puede leer.
+std::string sha256File(const std::filesystem::path& file, std::string* error = nullptr);
+// Comprueba el zip con el SHA-256 de la release (lo descarga si hace falta).
+// false = no coincide o no se pudo comprobar. `verified` = habia SHA-256
+// publicado y coincide (sin SHA-256 publicado devuelve true y verified=false).
+bool verifyPackage(const Release& release, const std::filesystem::path& zip, bool* verified, std::string* error);
 
 // Notas en Markdown sencillo para dibujarlas (titulos, vinetas, texto).
 struct NoteLine {
@@ -140,6 +162,7 @@ struct Settings {
     bool check_on_startup = true;
     std::string skipped_version;  // "0.6.2": no avisar de esa
     std::string feed;             // vacio = GitHub
+    std::string channel = "estable";  // "estable" o "beta"
     std::int64_t last_check = 0;  // segundos desde 1970
     std::string last_seen_version;
 };

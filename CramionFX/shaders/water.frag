@@ -545,8 +545,9 @@ void main() {
     // El color: el horizonte del cielo y, mirando hacia el sol, la luz que la
     // niebla dispersa hacia delante.
     vec3 ray_direction = -view_direction;
-    float fog_density = kFogDensity * exp(-(camera.position.y - kFogBaseHeight) * kFogHeightFalloff);
-    float fog_b = kFogHeightFalloff * ray_direction.y;
+    float fog_falloff = lights.clouds.z > 0.0 ? lights.clouds.z : kFogHeightFalloff;
+    float fog_density = lights.clouds.y * exp(-(camera.position.y - kFogBaseHeight) * fog_falloff);
+    float fog_b = fog_falloff * ray_direction.y;
     float fog_integral = abs(fog_b) > 0.0001 ? (1.0 - exp(-surface_distance * fog_b)) / fog_b : surface_distance;
     float fog = clamp(1.0 - exp(-fog_density * fog_integral), 0.0, 1.0);
     vec3 fog_color = textureLod(environment_map, normalize(vec3(ray_direction.x, max(ray_direction.y, 0.02), ray_direction.z)), 3.0).rgb;

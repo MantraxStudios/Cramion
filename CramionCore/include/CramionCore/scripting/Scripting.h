@@ -37,6 +37,9 @@
 // Configuracion grafica: la tabla Graphics (calidad, escalado, resolucion,
 // sombras, texturas, VSync, ventana, efectos de render y el post-procesado
 // global en Graphics.post), como QualitySettings + Screen de Unity.
+// Multijugador: la tabla Network (host, connect, send/on, spawn de prefabs
+// replicados, jugadores, cambiar de escena todos a la vez) y en las entidades
+// isMine, netId, netOwner, setNetVar/getNetVar y el metodo OnNetVar.
 
 #include "CramionCore/ecs/Reflection.h"
 #include "CramionCore/ecs/World.h"
@@ -177,6 +180,12 @@ public:
     void shiftOrigin(const core::Vec3& offset);
     void stop();
     bool running() const;
+    // La sesion de red sobrevive a stop()/start() (Scene.load y
+    // Network.loadScene cambian de escena sin desconectar). Se cierra aqui:
+    // al salir de Play en el editor o al cerrar el juego.
+    void shutdownNetwork();
+    // Estado de la red para el editor ("Servidor: 3 jugadores", "Cliente 2"...).
+    std::string networkStatus() const;
 
     // Vuelve a leer un script (ruta en Assets): en Play, las instancias siguen
     // con sus datos y las funciones nuevas.

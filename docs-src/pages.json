@@ -93,7 +93,7 @@
         {
           "slug": "plantillas",
           "title": "Plantillas",
-          "desc": "Vacío, Tercera persona, IA, Mundo de bloques, MMO RPG y las tuyas."
+          "desc": "Vacío, Tercera persona, IA, Mundo de bloques, MMO RPG, Criaturas, Online, Mundo abierto y las tuyas."
         },
         {
           "slug": "atajos",
@@ -249,6 +249,16 @@
           "slug": "graphics",
           "title": "Graphics",
           "desc": "Configuración gráfica y post-procesado desde Lua: calidad, resolución, sombras, texturas, ventana."
+        },
+        {
+          "slug": "red",
+          "title": "Network (multijugador)",
+          "desc": "Partidas por red: crear y unirse, mensajes, objetos y variables sincronizados."
+        },
+        {
+          "slug": "http",
+          "title": "Http y Json",
+          "desc": "Enviar y recibir datos de servidores y webs por HTTPS, de forma segura; JSON a tablas."
         },
         {
           "slug": "prefs",

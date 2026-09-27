@@ -394,6 +394,9 @@ private:
 
     // --- Terreno (EditorTerrain.cpp) ---
     ecs::Entity createTerrainEntity();
+    // Vegetacion (foliage::Foliage): un bosque sobre el terreno que haya
+    // (su mismo cuadrado) o de 2 km alrededor del origen.
+    ecs::Entity createFoliageEntity();
     ecs::Entity terrainUnderMouse(float x, float y, core::Vec3* point = nullptr) const;
     bool drawTerrainTool(float delta_seconds);
     void drawTerrainInspector(ecs::Entity entity);
@@ -698,6 +701,8 @@ private:
     void createAnimatorAsset(const std::filesystem::path& folder);
     void openAnimatorEditor(const Uuid& uuid);
     void saveAnimatorEditor();
+    // Blend Tree del estado seleccionado (EditorAnimator.cpp).
+    void drawBlendTreeEditor(ecs::AnimatorState& state, const asset::ModelData* data, ecs::Animator* live);
     void assignAnimatorToSelection(const Uuid& uuid);
     void drawAnimatorEditor();
     void drawAnimatorGraph(ecs::Entity preview);
