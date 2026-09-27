@@ -30,6 +30,9 @@
 // mundos guardados). Input.lockCursor(true) captura el raton (primera persona).
 // Mallas por codigo: Mesh.new/cube/plane/sphere..., entity.mesh y
 // entity:addComponent("MeshCollider") (como el Mesh de Unity).
+// Configuracion grafica: la tabla Graphics (calidad, escalado, resolucion,
+// sombras, texturas, VSync, ventana, efectos de render y el post-procesado
+// global en Graphics.post), como QualitySettings + Screen de Unity.
 
 #include "CramionCore/ecs/Reflection.h"
 #include "CramionCore/ecs/World.h"
@@ -38,6 +41,8 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include <utility>
+#include <variant>
 #include <vector>
 
 namespace cramion::dm {
@@ -74,6 +79,38 @@ struct Script {
     void reflect(ecs::PropertyVisitor& v);
 };
 
+// --- Graphics (Lua) ---
+// La configuracion grafica es del programa que ejecuta los scripts (el
+// editor en Play o el juego exportado), no del motor de scripts: este solo ve
+// opciones por clave y el host las aplica al renderizador y a la ventana.
+using GraphicsValue = std::variant<bool, double, std::string>;
+
+struct GraphicsOption {
+    std::string key;
+    GraphicsValue value;
+    bool writable = true;
+    std::string description;
+    std::vector<std::string> choices;  // valores validos de las de texto
+};
+
+class GraphicsHost {
+public:
+    virtual ~GraphicsHost() = default;
+    // Todas las opciones con su valor actual.
+    virtual std::vector<GraphicsOption> options() const = 0;
+    // false + `error` si la clave no existe, es de solo lectura o el valor no vale.
+    virtual bool set(const std::string& key, const GraphicsValue& value, std::string& error) = 0;
+    // Calidades rapidas ("Baja", "Media", "Alta", "Ultra").
+    virtual std::vector<std::string> qualityLevels() const = 0;
+    virtual bool setQuality(const std::string& level, std::string& error) = 0;
+    // La ultima calidad rapida aplicada, o "Personalizada" si se toco algo despues.
+    virtual std::string quality() const = 0;
+    // Resoluciones del monitor (ancho, alto), de mayor a menor.
+    virtual std::vector<std::pair<int, int>> resolutions() const = 0;
+    // Guarda la configuracion (el juego la recupera al volver a abrirse).
+    virtual bool save(std::string& error) = 0;
+};
+
 struct ScriptError {
     std::string file;
     int line = 0;
@@ -95,6 +132,9 @@ public:
     void setNavigation(navigation::NavigationSystem* navigation);
     // La tabla Voxel (el mundo de bloques de la escena).
     void setVoxels(voxel::VoxelSystem* voxels);
+    // La tabla Graphics (nullptr: sus funciones avisan y no hacen nada; el
+    // post-procesado, Graphics.post, funciona siempre: es de la escena).
+    void setGraphics(GraphicsHost* graphics);
     // Input.lockCursor(on): quien tiene la ventana captura o suelta el raton.
     // Al parar los scripts se suelta solo.
     using CursorLockCallback = std::function<void(bool locked)>;

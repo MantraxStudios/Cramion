@@ -517,12 +517,30 @@ void EditorApp::openBrowserItem(const BrowserItem& item) {
     switch (info.type) {
         case assets::AssetType::Scene: runOrAskToSave(PendingAction::OpenScene, info.path); break;
         case assets::AssetType::Model: instantiateAsset(info.uuid, {}, std::nullopt); break;
-        case assets::AssetType::Prefab: instantiatePrefabAsset(info.uuid, {}, std::nullopt); break;
+        case assets::AssetType::Prefab: openPrefabWorkspace(info.uuid); break;  // como Unity: modo prefab
         case assets::AssetType::Environment: assignEnvironment(info.uuid); break;
         case assets::AssetType::AnimatorController: openAnimatorEditor(info.uuid); break;
         case assets::AssetType::Material: inspected_material_ = info.uuid; break;
         default: break;
     }
+}
+
+// Modelo con esqueleto humanoide (lo sabe su miniatura) o clip (.cranim)
+// extraido de un humanoide (su cabecera).
+bool EditorApp::browserItemHumanoid(const BrowserItem& item) {
+    if (item.kind != Kind::Asset) return false;
+    if (item.info.type == assets::AssetType::Model) return model_previews_.isHumanoid(item.info.uuid);
+    if (item.info.type != assets::AssetType::AnimationClip) return false;
+    std::error_code ec;
+    const auto stamp = std::filesystem::last_write_time(item.info.path, ec);
+    const std::string key = dialogs::utf8(item.info.path) + "|" + std::to_string(stamp.time_since_epoch().count());
+    if (const auto it = clip_humanoid_.find(key); it != clip_humanoid_.end()) return it->second;
+    std::ifstream in(item.info.path, std::ios::binary);
+    std::string header;
+    std::getline(in, header);
+    const bool human = header.find("\"humanoid\":true") != std::string::npos;
+    clip_humanoid_[key] = human;
+    return human;
 }
 
 void EditorApp::browserDragSource(const BrowserItem& item) {
@@ -677,6 +695,7 @@ void EditorApp::browserItemMenu(const BrowserItem& item) {
                     }
                     break;
                 case assets::AssetType::Prefab: {
+                    if (ImGui::MenuItem("Abrir (editar)", nullptr, false, !playing())) openPrefabWorkspace(info.uuid);
                     if (ImGui::MenuItem("Poner en la escena")) instantiatePrefabAsset(info.uuid, {}, std::nullopt);
                     const std::size_t count = ecs::prefabInstances(world_, info.uuid).size();
                     if (ImGui::MenuItem(("Seleccionar instancias (" + std::to_string(count) + ")").c_str(), nullptr, false, count > 0)) {
@@ -743,7 +762,7 @@ void EditorApp::browserItemMenu(const BrowserItem& item) {
 }
 
 void EditorApp::drawProject() {
-    if (!ImGui::Begin("Proyecto", &show_project_)) {
+    if (!ImGui::Begin(panelTitle("Proyecto").c_str(), &show_project_)) {
         ImGui::End();
         return;
     }
@@ -1037,6 +1056,17 @@ void EditorApp::drawProject() {
         // Shader con error: marca roja.
         if (item.kind == Kind::Shader && sync_ && !sync_->surfaceShaderError(assetRelative(item.path)).empty()) {
             draw->AddCircleFilled(ImVec2(pos.x + size - 8.0f, pos.y + 8.0f), 5.0f, IM_COL32(255, 80, 80, 255));
+        }
+        // Humanoide (modelo o clip): insignia con el icono de SkinnedMesh
+        // abajo a la derecha; sus animaciones sirven a cualquier humanoide.
+        if (browserItemHumanoid(item)) {
+            const float r = std::max(7.0f, size * 0.13f);
+            const ImVec2 c(pos.x + size - r - 3.0f, pos.y + size - r - 3.0f);
+            draw->AddCircleFilled(c, r + 1.5f, IM_COL32(12, 14, 18, 235), 24);
+            draw->AddCircle(c, r + 1.0f, IM_COL32(0, 168, 255, 255), 24, 1.5f);
+            const float icon = r * 1.35f;
+            imgui_.drawIcon(draw, Icon::SkinnedMesh, ImVec2(c.x - icon * 0.5f, c.y - icon * 0.5f), icon,
+                            IM_COL32(235, 240, 250, 255));
         }
     };
 

@@ -70,6 +70,9 @@ void EditorApp::exportGame(bool run_after) {
         export_message_ = "Sal del modo Play antes de exportar.";
         return;
     }
+    returnToSceneWorkspace();  // se exporta la escena (no un prefab abierto)
+    ensureBuildConfigs();
+    export_static_batching_ = build_configs_.current().static_batching;
     export_run_after_ = run_after;
     export_setup_ = true;
     if (export_folder_.empty()) {
@@ -96,7 +99,10 @@ void EditorApp::startExport(const std::filesystem::path& parent) {
         std::ofstream(exportFolderMemory(project_)) << dialogs::utf8(parent);
     }
     const bool run_after = export_run_after_;
-    const std::filesystem::path target = parent / dialogs::fromUtf8(safeFolderName(project_.name));
+    ensureBuildConfigs();
+    const BuildConfig config = build_configs_.current();
+    const std::string game_name = safeFolderName(buildGameName());
+    const std::filesystem::path target = parent / dialogs::fromUtf8(game_name);
     if (isInside(target, project_.folder)) {
         export_message_ = "Elige una carpeta fuera del proyecto (el juego se copiaria dentro de si mismo).";
         std::cerr << "[Exportar] " << export_message_ << '\n';
@@ -112,7 +118,14 @@ void EditorApp::startExport(const std::filesystem::path& parent) {
     // Lista de copias (se decide aqui, se copia en el otro hilo).
     auto job = std::make_unique<ExportJob>();
     job->target = target;
-    job->exe = target / dialogs::fromUtf8(safeFolderName(project_.name) + ".exe");
+    job->exe = target / dialogs::fromUtf8(game_name + ".exe");
+    if (const std::filesystem::path icon = buildIconPath(config); !icon.empty()) {
+        if (std::filesystem::exists(icon) && isIconSource(icon)) {
+            job->icon = icon;
+        } else {
+            std::cerr << "[Exportar] El icono " << dialogs::utf8(icon) << " no existe o no es una imagen: se usa el del motor\n";
+        }
+    }
     job->run_after = run_after;
     std::error_code error;
     const auto add_file = [&](const std::filesystem::path& from, const std::filesystem::path& to) {
@@ -141,7 +154,7 @@ void EditorApp::startExport(const std::filesystem::path& parent) {
     add_file(source / "player_banner.png", game / "banner.png");
 
     // Los assets del juego, comprimidos en un solo archivo .crpack.
-    job->pack_file = game / dialogs::fromUtf8(safeFolderName(project_.name) + ".crpack");
+    job->pack_file = game / dialogs::fromUtf8(game_name + ".crpack");
     const auto pack_file = [&](const std::filesystem::path& from, const std::filesystem::path& inside) {
         std::error_code e;
         const auto size = std::filesystem::file_size(from, e);
@@ -167,7 +180,11 @@ void EditorApp::startExport(const std::filesystem::path& parent) {
     if (project_.startup_scene.valid()) {
         if (const auto info = database_->find(project_.startup_scene)) first_scene = info->path;
     }
-    job->game_ini = "scene=" + assetRelative(first_scene) + "\n";
+    // La configuracion puede elegir otra.
+    if (const Uuid chosen = Uuid::parse(config.startup_scene); chosen.valid()) {
+        if (const auto info = database_->find(chosen)) first_scene = info->path;
+    }
+    job->game_ini = "scene=" + assetRelative(first_scene) + "\n" + buildConfigIni(config, buildGameName());
     job->game_folder = game;
     job->scene_name = dialogs::utf8(first_scene.filename());
     job->static_batching = export_static_batching_;
@@ -212,6 +229,21 @@ void EditorApp::startExport(const std::filesystem::path& parent) {
                 std::lock_guard lock(j->mutex);
                 j->error = "No se pudo escribir " + dialogs::utf8(copy.to) + " (disco lleno?)";
                 break;
+            }
+        }
+        // El icono de la configuracion, dentro del .exe (siempre: la copia
+        // puede haberse saltado y traer el icono de la exportacion anterior).
+        if (!j->cancel && j->error.empty() && !j->icon.empty()) {
+            {
+                std::lock_guard lock(j->mutex);
+                j->current = "Icono del juego";
+            }
+            std::string icon_error;
+            if (setExeIcon(j->exe, j->icon, &icon_error)) {
+                std::cout << "[Exportar] Icono: " << dialogs::utf8(j->icon.filename()) << '\n';
+            } else {
+                std::cerr << "[Exportar] No se pudo poner el icono: " << icon_error << '\n';
+                j->batch_summary += "\nIcono: " + icon_error;
             }
         }
         // Static batching: cada escena con objetos Static va al paquete como
@@ -282,9 +314,14 @@ void EditorApp::startExport(const std::filesystem::path& parent) {
             std::error_code e;
             std::filesystem::remove_all(j->game_folder / "Assets", e);
             std::filesystem::remove_all(j->game_folder / "ProjectSettings", e);
+            std::vector<std::filesystem::path> stale;
             for (std::filesystem::directory_iterator it(j->game_folder, e); !e && it != std::filesystem::directory_iterator(); it.increment(e)) {
-                if (it->path().extension() == ".crproj") std::filesystem::remove(it->path(), e);
+                if (it->path().extension() == ".crproj") stale.push_back(it->path());
+                // Paquete de otro nombre (se cambio el nombre del juego): el
+                // juego cogeria cualquiera.
+                if (it->path().extension() == ".crpack" && it->path() != j->pack_file) stale.push_back(it->path());
             }
+            for (const std::filesystem::path& file : stale) std::filesystem::remove(file, e);
             std::ofstream(j->game_folder / "game.ini") << j->game_ini;
         }
         j->finished = true;
@@ -355,9 +392,32 @@ void EditorApp::drawExportProgress() {
             ImGui::TextDisabled("Elige la carpeta en la ventana de Windows (o escribe la ruta arriba).");
         }
         const std::filesystem::path parent = dialogs::fromUtf8(export_folder_);
-        ImGui::TextDisabled("Se creara: %s", dialogs::utf8(parent / dialogs::fromUtf8(safeFolderName(project_.name))).c_str());
+        // Configuracion de compilacion (nombre, icono, ventana...).
+        ensureBuildConfigs();
+        ImGui::TextUnformatted("Configuracion");
+        ImGui::SetNextItemWidth(-110.0f);
+        if (ImGui::BeginCombo("##build_config", build_configs_.current().name.c_str())) {
+            for (int i = 0; i < static_cast<int>(build_configs_.configs.size()); ++i) {
+                if (ImGui::Selectable(build_configs_.configs[static_cast<std::size_t>(i)].name.c_str(), i == build_configs_.active)) {
+                    build_configs_.active = i;
+                    export_static_batching_ = build_configs_.current().static_batching;
+                    saveBuildConfigsNow();
+                }
+            }
+            ImGui::EndCombo();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Editar...", ImVec2(-1.0f, 0.0f))) {
+            build_config_selected_ = build_configs_.active;
+            show_build_configs_ = true;
+        }
+        const std::string game_name = safeFolderName(buildGameName());
+        ImGui::TextDisabled("Se creara: %s", dialogs::utf8(parent / dialogs::fromUtf8(game_name) / dialogs::fromUtf8(game_name + ".exe")).c_str());
         ImGui::Checkbox("Ejecutar el juego al terminar", &export_run_after_);
-        ImGui::Checkbox("Combinar mallas estaticas (static batching)", &export_static_batching_);
+        if (ImGui::Checkbox("Combinar mallas estaticas (static batching)", &export_static_batching_)) {
+            build_configs_.current().static_batching = export_static_batching_;
+            saveBuildConfigsNow();
+        }
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) {
             ImGui::SetTooltip("Las mallas de los objetos marcados Static se combinan en un lote por escena:\n"
                               "una llamada de dibujo por material, con el culling por zonas intacto.\n"

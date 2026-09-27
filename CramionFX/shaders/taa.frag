@@ -31,7 +31,10 @@ layout(location = 0) out vec4 out_color;
 
 float luma(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
 vec3 compress(vec3 c) { return c / (1.0 + luma(c)); }
-vec3 expand(vec3 c) { return c / max(1.0 - luma(c), 1e-4); }
+// Deshace compress(). La historia recortada (caja de 1,25 sigmas en YCoCg)
+// puede quedar con luma >= 1 en el espacio comprimido; dividir por casi cero
+// daba pixeles blancos de un frame (fireflies). Se limita la luma.
+vec3 expand(vec3 c) { return c / (1.0 - min(luma(c), 0.99)); }
 
 vec3 toYCoCg(vec3 c) {
     return vec3(0.25 * c.r + 0.5 * c.g + 0.25 * c.b, 0.5 * c.r - 0.5 * c.b, -0.25 * c.r + 0.5 * c.g - 0.25 * c.b);

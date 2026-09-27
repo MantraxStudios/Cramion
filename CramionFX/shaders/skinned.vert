@@ -64,7 +64,15 @@ void main() {
     // parte 3x3 sirve para la normal y la tangente (se normalizan en el
     // fragment shader).
     mat3 to_world = mat3(push.model) * mat3(skin);
-    v_normal = to_world * in_normal;
+    // Las normales con la inversa traspuesta del modelo: con escala no
+    // uniforme (una caja estirada, una esfera achatada, algo girado y
+    // escalado) la matriz tal cual las inclinaba hacia el eje estirado y la
+    // luz caia mal. Los huesos son rigidos (su inversa traspuesta es ellos
+    // mismos). La tangente si va con la matriz directa.
+    mat3 model3 = mat3(push.model);
+    // Escala 0 en un eje (algo aplanado a proposito): sin inversa, la directa.
+    mat3 normal_to_world = (abs(determinant(model3)) > 1e-12 ? transpose(inverse(model3)) : model3) * mat3(skin);
+    v_normal = normal_to_world * in_normal;
     v_tangent = vec4(to_world * in_tangent.xyz, in_tangent.w);
     v_uv = in_uv;
     v_world_position = world_position.xyz;

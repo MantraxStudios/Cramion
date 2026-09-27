@@ -6,6 +6,7 @@
 #include "CramionCore/ecs/World.h"
 #include "CramionCore/physics/PhysicsComponents.h"
 #include "CramionCore/physics/PhysicsSystem.h"
+#include "CramionCore/water/Ripples.h"
 #include "CramionCore/water/Water.h"
 
 #include <cmath>
@@ -157,6 +158,69 @@ void testBuoyancy() {
     check(log.worldPosition().x > -14.0f, "la corriente del rio lo arrastra");
 }
 
+void testRipples() {
+    std::printf("Olas interactivas\n");
+    RippleSimulation sim;
+    const Vec3 camera{0.0f, 5.0f, 0.0f};
+    sim.update(camera, 0.0f, {});
+    check(!sim.active(), "sin nada que las mueva, agua en calma");
+    // Algo cae al agua en (0, 0) durante 0.1 s.
+    const std::vector<RippleSource> splash = {RippleSource{Vec3{0.0f, 0.0f, 0.0f}, 0.5f, 4.0f}};
+    for (int i = 0; i < 6; ++i) sim.update(camera, 1.0f / 60.0f, splash);
+    check(sim.active() && sim.heightAt(0.0f, 0.0f) < -0.05f, "la salpicadura hunde el agua donde cae");
+    // La onda se propaga: a 3 m, pasado un rato, el agua se mueve.
+    float moved = 0.0f;
+    for (int i = 0; i < 90; ++i) {
+        sim.update(camera, 1.0f / 60.0f, {});
+        moved = std::max(moved, std::abs(sim.heightAt(3.0f, 0.0f)));
+    }
+    check(moved > 0.003f, "la onda llega a 3 m");
+    // Simetrica: igual a 3 m en x y en z.
+    const float hx = sim.heightAt(2.0f, 0.0f);
+    const float hz = sim.heightAt(0.0f, 2.0f);
+    check(std::abs(hx - hz) < 0.002f + std::abs(hx) * 0.1f, "se propaga igual en todas direcciones");
+    // La camara se mueve 1 m: las ondas se quedan quietas en el mundo.
+    const float before = sim.heightAt(1.0f, 1.0f);
+    RippleSimulation copy = sim;
+    copy.update(Vec3{1.0f, 5.0f, 0.0f}, 0.0f, {});
+    check(std::abs(copy.heightAt(1.0f, 1.0f) - before) < 1e-5f, "al moverse la rejilla, las olas no se mueven");
+    // Se apagan solas.
+    for (int i = 0; i < 60 * 30; ++i) sim.update(camera, 1.0f / 60.0f, {});
+    check(!sim.active(), "pasado un rato vuelve la calma");
+}
+
+// Un muro quieto que atraviesa el agua: detras casi no llegan las ondas y
+// delante rebotan (mas agua moviendose que sin el).
+void testRippleObstacles() {
+    std::printf("Olas contra obstaculos\n");
+    const Vec3 camera{0.0f, 5.0f, 0.0f};
+    const std::vector<RippleSource> splash = {RippleSource{Vec3{0.0f, 0.0f, 0.0f}, 0.5f, 4.0f}};
+    RippleObstacle wall;
+    wall.x = 2.0f;
+    wall.half_u = 0.25f;  // eje x: grosor
+    wall.half_v = 8.0f;   // a lo largo de z
+    const auto run = [&](bool with_wall, float probe_x, int from_step = 20) {
+        RippleSimulation sim;
+        const std::vector<RippleObstacle> obstacles = with_wall ? std::vector<RippleObstacle>{wall}
+                                                                : std::vector<RippleObstacle>{};
+        float peak = 0.0f;
+        for (int i = 0; i < 150; ++i) {
+            sim.update(camera, 1.0f / 60.0f, i < 6 ? splash : std::vector<RippleSource>{}, obstacles);
+            if (i > from_step) peak = std::max(peak, std::abs(sim.heightAt(probe_x, 0.0f)));
+        }
+        return peak;
+    };
+    const float behind_open = run(false, 4.0f);
+    const float behind_wall = run(true, 4.0f);
+    std::printf("  (detras: sin muro %.4f, con muro %.4f)\n", behind_open, behind_wall);
+    check(behind_wall < behind_open * 0.3f, "el muro frena las ondas");
+    // Delante: pasada la primera onda (~0.5 s), llega la que rebota (~1.4 s).
+    const float front_open = run(false, 1.0f, 70);
+    const float front_wall = run(true, 1.0f, 70);
+    std::printf("  (delante, tras la primera onda: sin muro %.4f, con muro %.4f)\n", front_open, front_wall);
+    check(front_wall > front_open * 1.25f, "delante del muro rebotan");
+}
+
 }  // namespace
 
 int main() {
@@ -164,6 +228,8 @@ int main() {
     testLakeAndRiver();
     testScene();
     testBuoyancy();
+    testRipples();
+    testRippleObstacles();
     std::printf("\n%d comprobaciones, %d fallos\n", checks, failures);
     return failures == 0 ? 0 : 1;
 }

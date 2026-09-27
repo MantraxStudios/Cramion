@@ -27,6 +27,7 @@
 // La fuente de verdad es el ecs::World; scene::Scene es solo lo que se le da
 // al renderizador (RenderSync la rellena cada frame).
 
+#include "BuildConfig.h"
 #include "Dialogs.h"
 #include <CramionCore/project/Pack.h>
 #include "ImGuiLayer.h"
@@ -46,6 +47,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <mutex>
 #include <thread>
 #include <deque>
@@ -53,11 +55,14 @@
 #include <future>
 #include <memory>
 #include <optional>
+#include <random>
 #include <string>
 #include <unordered_map>
 #include <vector>
 
 namespace cramion::editor {
+
+class RendererGraphicsHost;
 
 // std::find sobre Uuid: la STL de MSVC intenta vectorizar la comparacion de
 // 16 bytes y con clang falla una static_assert; find_if la evita.
@@ -80,7 +85,15 @@ public:
     ~EditorApp();
 
     // Abre un proyecto (.crproj o su carpeta). false si no es valido.
-    bool openProject(const std::filesystem::path& path);
+    // open_scene = false: sin la escena inicial (la abre la carga por
+    // etapas, beginOpenProject).
+    bool openProject(const std::filesystem::path& path, bool open_scene = true);
+    // Abre el proyecto por etapas con el dialogo de carga (Hub): la ventana
+    // no se congela y los modelos se leen en otro hilo.
+    void beginOpenProject(const std::filesystem::path& path);
+    bool projectLoading() const {
+        return project_load_.stage != ProjectLoad::Stage::Idle && project_load_.stage != ProjectLoad::Stage::Done;
+    }
 
     // La interfaz de un frame (entre ImGuiLayer::beginFrame y endFrame).
     void drawUi(float delta_seconds);
@@ -226,6 +239,59 @@ private:
     void recordPrefabOverrides();
     void drawPrefabInspectorBar(ecs::Entity entity);
     void drawPrefabHierarchyMenu(ecs::Entity entity);
+
+    // --- Espacios de trabajo (EditorWorkspaces.cpp) ---
+    // Pestanas debajo del menu, como los editores de assets de Unreal: la
+    // Escena (todo lo de siempre) y una pestana por cada prefab o script
+    // abierto. Un prefab se edita en su propio escenario (Jerarquia a la
+    // izquierda, vista en el centro, componentes a la derecha); al guardarlo
+    // se actualizan todas sus instancias de la escena. Solo hay un ecs::World:
+    // al cambiar de pestana el mundo que no se ve se guarda en JSON (con su
+    // deshacer, seleccion y camara) y se carga el otro.
+    enum class WorkspaceKind { Scene, Prefab, Script };
+    WorkspaceKind activeWorkspaceKind() const;
+    // Titulo de un panel: en la Escena tal cual (el diseno de siempre); en
+    // otro espacio con un ID propio para acoplarse en su dockspace.
+    std::string panelTitle(const char* name) const;
+    void openPrefabWorkspace(const Uuid& prefab);
+    void openScriptWorkspace(const std::filesystem::path& file);
+    bool savePrefabWorkspace();
+    void requestWorkspace(int id);
+    void applyPendingWorkspace();
+    void activateWorkspace(int id);
+    void loadWorkspaceWorld(int id);
+    void closeWorkspace(int id, bool save);
+    void resetWorkspaces();
+    // Deja la Escena delante (antes de abrir/crear escenas, salir, Play).
+    void returnToSceneWorkspace();
+    void syncScriptWorkspaces();
+    void drawWorkspaceBar();
+    void drawWorkspacePanels(float delta_seconds);
+    void buildPrefabLayout(unsigned int dockspace_id);
+    // Pestana de script: el codigo en el centro y a la derecha el arbol de
+    // carpetas y assets (clic en un script lo abre).
+    void buildScriptLayout(unsigned int dockspace_id);
+    void drawScriptFileTree();
+    struct FileTreeNode {
+        std::filesystem::path path;
+        std::string name;
+        bool folder = false;
+        std::vector<FileTreeNode> children;
+    };
+    void rebuildFileTree(FileTreeNode& node, int depth);
+    bool drawFileTreeNode(const FileTreeNode& node, const std::filesystem::path& active, const std::string& filter);
+    FileTreeNode file_tree_;
+    std::uint64_t file_tree_version_ = ~0ull;
+    double file_tree_time_ = -10.0;
+    std::string file_tree_filter_;
+    // Banda azul del escenario: que prefab se edita, Guardar y Volver.
+    void drawPrefabStageBanner();
+    // La raiz del prefab en el escenario activo (vacia fuera de un prefab).
+    ecs::Entity prefabStageRoot();
+    // Luz y cielo del escenario: no salen en la Jerarquia ni se seleccionan.
+    bool isStageHelper(const Uuid& uuid) const;
+    // Asset de la pestana de script activa (vacio si no es un script).
+    std::filesystem::path activeScriptWorkspace() const;
 
     // --- Paneles ---
     void drawHub();
@@ -405,6 +471,7 @@ private:
         std::filesystem::path assets_root;
         std::filesystem::path batch_cache;
         std::string batch_summary;
+        std::filesystem::path icon;  // imagen o .ico de la configuracion (vacia = el del motor)
     };
     void exportGame(bool run_after);
     void drawExportProgress();
@@ -422,6 +489,20 @@ private:
     bool static_children_value_ = false;
     std::string export_folder_;
     std::shared_ptr<dialogs::AsyncFolderPick> export_pick_;
+    // --- Configuraciones de compilacion (EditorBuildConfigs.cpp) ---
+    // Perfiles de exportacion: nombre del juego, version, icono del .exe,
+    // escena inicial, ventana. ProjectSettings/BuildConfigs.json.
+    void ensureBuildConfigs();
+    void saveBuildConfigsNow();
+    void drawBuildConfigsWindow();
+    // Nombre del juego de la configuracion activa (o el del proyecto).
+    std::string buildGameName();
+    // Ruta absoluta del icono de una configuracion (vacia = el del motor).
+    std::filesystem::path buildIconPath(const BuildConfig& config) const;
+    BuildConfigs build_configs_;
+    std::filesystem::path build_configs_file_;  // de que proyecto son
+    bool show_build_configs_ = false;
+    int build_config_selected_ = 0;
 
     // --- Interfaz del juego (EditorUI.cpp) ---
     void drawGameUi(ImVec2 origin, ImVec2 size);
@@ -704,6 +785,98 @@ private:
     };
     std::unordered_map<std::uint32_t, ColliderWire> collider_wire_cache_;
     int light_handle_drag_ = 0;  // 0 nada, 1 alcance, 2 angulo exterior, 3 angulo interior
+    // Navegador: modelo o clip humanoide (insignia) y su cache.
+    std::unordered_map<std::string, bool> clip_humanoid_;
+    // --- Carga del proyecto por etapas (EditorProjectLoad.cpp) ---
+    struct ProjectLoad {
+        enum class Stage { Idle, Open, Scene, Models, Upload, Physics, Done };
+        Stage stage = Stage::Idle;
+        std::filesystem::path path;
+        std::string project_name;
+        std::vector<Uuid> models;
+        std::future<void> worker;
+        std::atomic<std::size_t> models_done{0};
+        std::mutex mutex;
+        std::string current;  // modelo que lee el hilo
+        int frames = 0;       // frames en la etapa (el texto se ve antes de bloquear)
+        float shown = 0.0f;   // progreso dibujado (va suave hacia el real)
+        float time = 0.0f;
+        int captured_stage = -1;  // pruebas (CRAMION_CAPTURE_LOADING)
+        std::chrono::steady_clock::time_point started{};
+        void reset() {
+            if (worker.valid()) worker.wait();
+            stage = Stage::Idle;
+            path.clear();
+            project_name.clear();
+            models.clear();
+            worker = {};
+            models_done = 0;
+            current.clear();
+            frames = 0;
+            shown = 0.0f;
+            time = 0.0f;
+            captured_stage = -1;
+        }
+    };
+    ProjectLoad project_load_;
+    void openStartupScene();
+    void stepProjectLoad();
+    void projectLoadProgress(float& fraction, std::string& text);
+    void drawProjectLoading(float delta_seconds);
+    // --- Volumenes de post-proceso (EditorPostVolumes.cpp) ---
+    ecs::Entity createPostVolume(int shape, ecs::Entity parent);  // 0 global, 1 caja, 2 esfera
+    void drawPostVolumeGizmos();
+    // Audio (EditorAudio.cpp): alcance, zonas de reverberacion y oclusion en Play.
+    void drawAudioGizmos();
+    // --- Pintar prefabs (EditorPrefabPaint.cpp) ---
+    struct PaintItem {
+        Uuid prefab;
+        bool enabled = true;
+        float weight = 1.0f;      // cuantos salen de este frente a los demas
+        float scale_min = 0.9f;   // escala aleatoria (multiplica la del prefab)
+        float scale_max = 1.1f;
+        float align = 0.0f;       // 0 = vertical, 1 = sigue la normal del suelo
+        bool random_yaw = true;
+        float sink = 0.0f;        // metros hundido en el suelo
+    };
+    struct PaintGroup {
+        std::string name;
+        std::filesystem::path file;  // .crpaint
+        std::vector<PaintItem> items;
+    };
+    struct PaintBrush {
+        float radius = 5.0f;
+        float density = 8.0f;    // objetos por 100 m2
+        float spacing = 1.5f;    // separacion minima (m)
+        float max_slope = 40.0f; // grados
+        bool erase = false;
+        bool only_selected = false;
+        bool group_under_parent = true;
+    };
+    bool paint_mode_ = false;
+    bool show_paint_window_ = false;
+    PaintGroup paint_group_;
+    int paint_selected_ = -1;
+    PaintBrush paint_brush_;
+    bool paint_stroke_ = false;
+    core::Vec3 paint_last_{};
+    std::mt19937 paint_rng_{20260926u};
+    std::vector<std::filesystem::path> paintGroupFiles() const;
+    bool loadPaintGroup(const std::filesystem::path& file);
+    void savePaintGroup();
+    void newPaintGroup();
+    void addPaintItem(const Uuid& prefab);
+    std::vector<int> activePaintItems() const;
+    std::vector<ecs::Entity> paintedInstances(bool active_only) const;
+    bool isPaintedEntity(ecs::Entity e) const;
+    ecs::Entity paintContainer();
+    bool paintRaycast(const core::Vec3& origin, const core::Vec3& direction, float max_distance, core::Vec3& point,
+                      core::Vec3& normal) const;
+    int paintStamp(const core::Vec3& center, const core::Vec3& normal, bool erase);
+    std::string paintItemName(const PaintItem& item);
+    void drawPaintToolbar();
+    bool drawPrefabPaintTool();
+    void drawPaintWindow();
     // Herramienta de estampar decals.
     bool stamp_mode_ = false;
     struct StampBrush {
@@ -804,6 +977,7 @@ private:
     void openBrowserItem(const BrowserItem& item);
     void browserItemMenu(const BrowserItem& item);
     void browserDragSource(const BrowserItem& item);
+    bool browserItemHumanoid(const BrowserItem& item);
     void browserDropTarget(const BrowserItem& item);
     bool browserSelected(const BrowserItem& item) const;
     void browserClick(const BrowserItem& item, std::size_t index);
@@ -858,6 +1032,43 @@ private:
     std::deque<TerrainUndo> terrain_redo_;
     std::deque<char> undo_kinds_;
     std::deque<char> redo_kinds_;
+    // Espacios de trabajo (EditorWorkspaces.cpp).
+    struct Workspace {
+        int id = 0;
+        WorkspaceKind kind = WorkspaceKind::Scene;
+        std::string name;
+        Uuid prefab{};               // Prefab: el asset
+        std::filesystem::path path;  // Script: el archivo
+        Uuid root{};                 // Prefab: raiz de la instancia en el escenario
+        std::vector<Uuid> helpers;   // Prefab: luz y cielo del escenario
+        bool built = false;          // Prefab: escenario creado
+        // El mundo mientras no esta cargado.
+        bool stashed = false;
+        std::string world;
+        std::filesystem::path scene_path;
+        bool dirty = false;
+        std::deque<std::string> undo;
+        std::deque<std::string> redo;
+        std::string current_state;
+        std::deque<char> undo_kinds;
+        std::deque<char> redo_kinds;
+        std::deque<TerrainUndo> terrain_undo;
+        std::deque<TerrainUndo> terrain_redo;
+        std::vector<Uuid> selection;
+        Uuid active{};
+        std::optional<scene::Camera> camera;
+    };
+    std::vector<Workspace> workspaces_;
+    int next_workspace_id_ = 1;
+    int active_workspace_ = 0;  // id; 0 = la Escena
+    int world_workspace_ = 0;   // id del espacio cuyo mundo esta en world_
+    int pending_workspace_ = -1;
+    bool pending_play_ = false;
+    int workspace_close_ask_ = -1;       // prefab con cambios: preguntar al cerrar
+    int workspace_focus_frames_ = 0;     // enfocar el prefab cuando ya tiene actores
+    unsigned int script_workspace_dock_ = 0;  // dockspace de las pestanas de script
+    Workspace* findWorkspace(int id);
+    const Workspace* findWorkspace(int id) const;
     float frame_delta_ = 0.0f;
 
     // Vistas y cinematicas.
@@ -900,6 +1111,17 @@ private:
     PlayState play_state_ = PlayState::Edit;
     std::string play_snapshot_;     // el mundo al darle a Play
     bool play_dirty_before_ = false;
+    // Graphics (Lua) y lo grafico al darle a Play (se restaura al parar).
+    std::unique_ptr<RendererGraphicsHost> graphics_host_;
+    struct PlayGraphics {
+        gfx::GraphicsSettings settings;
+        bool shadows = true;
+        bool ray_tracing = false;
+        bool reflection_probe = true;
+        bool occlusion_culling = true;
+        bool cascade_debug = false;
+    };
+    std::optional<PlayGraphics> play_graphics_;
     int step_requests_ = 0;         // "Paso" en pausa
     float play_time_ = 0.0f;
     bool show_physics_ = true;
@@ -1020,6 +1242,7 @@ private:
     Uuid self_test_terrain_{};
     // Sombras de luces locales: la luz, el sol apagado mientras y la captura con sombra.
     Uuid self_test_light_{};
+    Uuid self_test_prefab_{};  // prefab de la prueba de espacios de trabajo
     Uuid self_test_sun_{};
     std::vector<std::uint8_t> self_test_capture_;
     std::size_t self_test_entities_ = 0;

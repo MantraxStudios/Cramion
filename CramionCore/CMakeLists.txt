@@ -295,6 +295,10 @@ target_compile_options(CramionShaderTests PRIVATE -Wall -Wextra)
 cramionfx_deploy(CramionShaderTests)
 
 # --- Pruebas de la libreria matematica de Lua (consola) ---
+add_executable(CramionAnimationTests "${CMAKE_CURRENT_SOURCE_DIR}/tests/AnimationTests.cpp")
+target_link_libraries(CramionAnimationTests PRIVATE Cramion::Core)
+target_compile_options(CramionAnimationTests PRIVATE -Wall -Wextra)
+
 add_executable(CramionLuaMathTests "${CMAKE_CURRENT_SOURCE_DIR}/tests/LuaMathTests.cpp")
 target_link_libraries(CramionLuaMathTests PRIVATE Cramion::Core)
 target_compile_options(CramionLuaMathTests PRIVATE -Wall -Wextra)
@@ -318,3 +322,8 @@ target_compile_options(CramionVoxelTests PRIVATE -Wall -Wextra)
 # sin ventana (cramion_minigolf <kit> tools/minigolf <destino> --probar).
 add_executable(cramion_minigolf "${CMAKE_CURRENT_SOURCE_DIR}/tools/MiniGolfDemo.cpp")
 target_link_libraries(cramion_minigolf PRIVATE Cramion::Core)
+
+# Referencia de componentes del manual (docs-src/pages/componentes-*.html),
+# generada desde la reflexion: cramion_docgen <carpeta docs-src/pages>.
+add_executable(cramion_docgen "${CMAKE_CURRENT_SOURCE_DIR}/tools/DocGen.cpp")
+target_link_libraries(cramion_docgen PRIVATE Cramion::Core)

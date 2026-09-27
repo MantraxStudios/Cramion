@@ -12,8 +12,12 @@ namespace {
 
 struct GpuWaterUniform {
     core::Vec4 time_count{};  // x = tiempo, y = cuerpos
+    core::Vec4 ripple{};      // olas interactivas: x, z de la esquina, celda (m), lado (0 = no hay)
     GpuWaterBody bodies[kMaxWaterBodies];
 };
+
+// La rejilla de olas mas grande que se sube (water::RippleSimulation::kSize).
+constexpr std::uint32_t kMaxRippleSize = 256;
 
 struct GpuWaterPush {
     std::uint32_t body = 0;
@@ -36,9 +40,12 @@ void WaterPass::create(const VulkanDevice& device, const vk::raii::DescriptorSet
     frames_ = frames_in_flight;
 
     const auto stages = vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment;
-    const vk::DescriptorSetLayoutBinding binding{0, vk::DescriptorType::eUniformBuffer, 1, stages};
+    const std::array<vk::DescriptorSetLayoutBinding, 2> bindings = {{
+        {0, vk::DescriptorType::eUniformBuffer, 1, stages},
+        {1, vk::DescriptorType::eStorageBuffer, 1, stages},  // alturas de las olas interactivas
+    }};
     vk::DescriptorSetLayoutCreateInfo set_info{};
-    set_info.setBindings(binding);
+    set_info.setBindings(bindings);
     set_layout_ = vk::raii::DescriptorSetLayout(device.handle(), set_info);
 
     const std::array<vk::DescriptorSetLayout, 3> set_layouts = {*frame_layout, *set_layout_, *scene_layout};
@@ -50,11 +57,14 @@ void WaterPass::create(const VulkanDevice& device, const vk::raii::DescriptorSet
     layout_info.setPushConstantRanges(push);
     layout_ = vk::raii::PipelineLayout(device.handle(), layout_info);
 
-    const vk::DescriptorPoolSize size{vk::DescriptorType::eUniformBuffer, frames_in_flight};
+    const std::array<vk::DescriptorPoolSize, 2> sizes = {{
+        {vk::DescriptorType::eUniformBuffer, frames_in_flight},
+        {vk::DescriptorType::eStorageBuffer, frames_in_flight},
+    }};
     vk::DescriptorPoolCreateInfo pool_info{};
     pool_info.flags = vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet;
     pool_info.maxSets = frames_in_flight;
-    pool_info.setPoolSizes(size);
+    pool_info.setPoolSizes(sizes);
     pool_ = vk::raii::DescriptorPool(device.handle(), pool_info);
     const std::vector<vk::DescriptorSetLayout> layouts(frames_in_flight, *set_layout_);
     vk::DescriptorSetAllocateInfo alloc{};
@@ -63,7 +73,20 @@ void WaterPass::create(const VulkanDevice& device, const vk::raii::DescriptorSet
     sets_ = vk::raii::DescriptorSets(device.handle(), alloc);
 
     uniforms_.resize(frames_in_flight);
+    ripple_buffers_.resize(frames_in_flight);
     for (std::uint32_t i = 0; i < frames_in_flight; ++i) {
+        ripple_buffers_[i].create(device, sizeof(float) * kMaxRippleSize * kMaxRippleSize,
+                                  vk::BufferUsageFlagBits::eStorageBuffer,
+                                  vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent);
+        vk::DescriptorBufferInfo ripple_info{};
+        ripple_info.buffer = *ripple_buffers_[i].handle();
+        ripple_info.range = VK_WHOLE_SIZE;
+        vk::WriteDescriptorSet ripple_write{};
+        ripple_write.dstSet = *sets_[i];
+        ripple_write.dstBinding = 1;
+        ripple_write.descriptorType = vk::DescriptorType::eStorageBuffer;
+        ripple_write.setBufferInfo(ripple_info);
+        device.handle().updateDescriptorSets(ripple_write, nullptr);
         uniforms_[i].create(device, sizeof(GpuWaterUniform), vk::BufferUsageFlagBits::eUniformBuffer,
                             vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent);
         vk::DescriptorBufferInfo info{};
@@ -167,6 +190,7 @@ void WaterPass::create(const VulkanDevice& device, const vk::raii::DescriptorSet
 }
 
 void WaterPass::destroy() {
+    ripple_buffers_.clear();
     bodies_.clear();
     garbage_.clear();
     for (Mesh& river : rivers_) river = Mesh{};
@@ -250,6 +274,18 @@ void WaterPass::setBodies(const std::vector<WaterBodyDesc>& bodies, float time, 
     bodies_.assign(bodies.begin(), bodies.begin() + std::min<std::size_t>(bodies.size(), kMaxWaterBodies));
 }
 
+void WaterPass::setRipples(const std::vector<float>& heights, std::uint32_t size, float origin_x, float origin_z,
+                           float cell) {
+    if (heights.empty() || size == 0 || size > kMaxRippleSize || heights.size() < static_cast<std::size_t>(size) * size) {
+        ripple_params_ = core::Vec4{};
+        ripple_size_ = 0;
+        return;
+    }
+    ripples_ = heights;
+    ripple_size_ = size;
+    ripple_params_ = core::Vec4{origin_x, origin_z, cell, static_cast<float>(size)};
+}
+
 void WaterPass::prepare(std::uint32_t frame) {
     if (device_ == nullptr || frame >= uniforms_.size()) return;
     // Mallas viejas de rios: se liberan cuando ningun frame en vuelo las usa.
@@ -263,6 +299,10 @@ void WaterPass::prepare(std::uint32_t frame) {
     }
     GpuWaterUniform data{};
     data.time_count = core::Vec4{time_, static_cast<float>(bodies_.size()), 0.0f, 0.0f};
+    data.ripple = ripple_params_;
+    if (ripple_size_ > 0 && frame < ripple_buffers_.size()) {
+        ripple_buffers_[frame].write(ripples_.data(), sizeof(float) * ripple_size_ * ripple_size_);
+    }
     for (std::size_t i = 0; i < bodies_.size(); ++i) {
         const WaterBodyDesc& body = bodies_[i];
         data.bodies[i] = body.params;

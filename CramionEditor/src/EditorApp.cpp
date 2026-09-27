@@ -1,4 +1,5 @@
 #include "EditorApp.h"
+#include "GraphicsConfig.h"
 
 #include "Dialogs.h"
 #include "EditorLog.h"
@@ -83,7 +84,7 @@ EditorApp::~EditorApp() {
 // Proyecto
 // -----------------------------------------------------------------------------
 
-bool EditorApp::openProject(const std::filesystem::path& path) {
+bool EditorApp::openProject(const std::filesystem::path& path, bool open_scene) {
     const std::optional<project::ProjectInfo> info = project::openProject(path);
     if (!info) {
         hub_error_ = "No es un proyecto de Cramion valido: " + dialogs::utf8(path);
@@ -112,17 +113,47 @@ bool EditorApp::openProject(const std::filesystem::path& path) {
         window_.setCursorCaptured(locked, game_image_rect_[2] > 0.0f ? &area : nullptr);
     });
     audio_.setAssetsRoot(project_.assetsFolder());
+    // Oclusion: paredes (colliders) entre el sonido y el oyente.
+    audio_.setOcclusionQuery(audio::physicsOcclusionQuery(physics_));
     // Mundos de bloques: texturas en Assets, partidas guardadas en Library.
     voxels_.setAssetsRoot(project_.assetsFolder());
     voxels_.setSaveRoot(project_.libraryFolder() / "Worlds");
     voxels_.setPhysics(&physics_);  // los Rigidbody chocan con los bloques
     loadGraphicsSettings();
+    // Graphics (Lua): el editor no cambia su ventana ni guarda desde Play;
+    // lo que cambien los scripts se deshace al parar (exitPlay).
+    if (!graphics_host_) {
+        graphics_host_ = std::make_unique<RendererGraphicsHost>(renderer_, nullptr, [](std::string& error) {
+            error = "en el editor no se guarda (el juego exportado si, para el jugador)";
+            return false;
+        });
+    }
+    scripts_.setGraphics(graphics_host_.get());
     sync_ = std::make_unique<ecs::RenderSync>(*asset_manager_);
     sync_->reset(scene_);
     // Terrenos: datos en Assets (compartidos por el render y la fisica).
     terrain_store_.clear();
     terrain_store_.setRoot(project_.assetsFolder());
     sync_->setTerrainStore(&terrain_store_);
+    sync_->setGroundQuery([this](const core::Vec3& origin, const core::Vec3& direction, float max_distance, core::Vec3& point,
+                            core::Vec3& normal, ecs::Entity self) {
+        // Suelo para el IK de los pies: el impacto mas cercano que no sea el
+        // propio personaje (su capsula, su modelo, sus armas...).
+        physics::QueryFilter filter;
+        filter.triggers = physics::QueryTriggers::Ignore;
+        filter.record = false;
+        float best = max_distance + 1.0f;
+        for (const physics::RaycastHit& hit : physics_.raycastAll(origin, direction, max_distance, filter)) {
+            if (hit.trigger || hit.distance >= best) continue;
+            if (hit.entity.valid() && (hit.entity == self || self.isAncestorOf(hit.entity) || hit.entity.isAncestorOf(self))) {
+                continue;
+            }
+            best = hit.distance;
+            point = hit.point;
+            normal = hit.normal;
+        }
+        return best <= max_distance;
+    });
     physics_.setTerrainProvider([this](ecs::Entity entity) -> std::shared_ptr<const terrain::TerrainData> {
         const terrain::Terrain* comp = entity.tryGet<terrain::Terrain>();
         return comp != nullptr ? terrain_store_.get(*comp) : nullptr;
@@ -152,7 +183,12 @@ bool EditorApp::openProject(const std::filesystem::path& path) {
     std::cout << "[Editor] Proyecto abierto: " << project_.name << " ("
               << dialogs::utf8(project_.folder) << ")\n";
 
-    // La escena inicial, o una nueva si no hay.
+    if (open_scene) openStartupScene();
+    return true;
+}
+
+// La escena inicial del proyecto, o una nueva si no hay.
+void EditorApp::openStartupScene() {
     bool opened = false;
     if (project_.startup_scene.valid()) {
         if (const auto scene_info = database_->find(project_.startup_scene)) {
@@ -162,7 +198,6 @@ bool EditorApp::openProject(const std::filesystem::path& path) {
     if (!opened) {
         newScene();
     }
-    return true;
 }
 
 void EditorApp::closeProject() {
@@ -210,6 +245,7 @@ void EditorApp::closeProject() {
     ++database_version_;
     has_project_ = false;
     scene_path_.clear();
+    resetWorkspaces();
     clearSelection();
     resetUndo();
     dirty_ = false;
@@ -217,6 +253,7 @@ void EditorApp::closeProject() {
 }
 
 void EditorApp::newScene() {
+    if (world_workspace_ != 0) returnToSceneWorkspace();
     nav_.clear();
     stopVoxels();
     const ecs::DVec3 origin_before = world_.origin();
@@ -234,6 +271,7 @@ void EditorApp::newScene() {
 }
 
 bool EditorApp::openScene(const std::filesystem::path& path) {
+    if (world_workspace_ != 0) returnToSceneWorkspace();
     std::string error;
     nav_.clear();
     stopVoxels();
@@ -255,6 +293,10 @@ bool EditorApp::openScene(const std::filesystem::path& path) {
 }
 
 bool EditorApp::saveScene() {
+    if (prefabStageRoot().valid() || (findWorkspace(world_workspace_) != nullptr &&
+                                      findWorkspace(world_workspace_)->kind == WorkspaceKind::Prefab)) {
+        return savePrefabWorkspace();  // en un prefab, Guardar guarda el prefab
+    }
     flushCommit();
     if (playing()) {
         std::cerr << "[Editor] Sal del modo Play para guardar (lo que cambia en Play no se guarda)\n";
@@ -281,6 +323,7 @@ bool EditorApp::saveScene() {
 }
 
 bool EditorApp::saveSceneAs() {
+    if (world_workspace_ != 0) return saveScene();
     const std::filesystem::path folder = project_.assetsFolder() / "Scenes";
     std::filesystem::create_directories(folder);
     const std::filesystem::path path =
@@ -296,6 +339,22 @@ bool EditorApp::saveSceneAs() {
 
 void EditorApp::runOrAskToSave(PendingAction action, const std::filesystem::path& scene) {
     if (playing()) exitPlay();
+    if (has_project_) {
+        // Al salir, los prefabs abiertos con cambios se guardan (como los
+        // scripts: no se pierde nada).
+        if (action == PendingAction::Quit || action == PendingAction::BackToHub) {
+            std::vector<int> dirty;
+            for (const Workspace& ws : workspaces_) {
+                if (ws.kind == WorkspaceKind::Prefab && (ws.id == world_workspace_ ? dirty_ : ws.dirty)) dirty.push_back(ws.id);
+            }
+            for (const int id : dirty) {
+                loadWorkspaceWorld(id);
+                savePrefabWorkspace();
+            }
+        }
+        // Las escenas se abren, crean y guardan en la pestana Escena.
+        returnToSceneWorkspace();
+    }
     pending_ = action;
     pending_scene_ = scene;
     if (dirty_ && has_project_) {
@@ -474,6 +533,7 @@ bool EditorApp::isSelected(const Uuid& uuid) const {
 }
 
 void EditorApp::selectOnly(const Uuid& uuid) {
+    if (isStageHelper(uuid)) return;  // luz y cielo del escenario de un prefab
     inspected_material_ = {};
     selection_.clear();
     if (uuid.valid()) {
@@ -483,6 +543,7 @@ void EditorApp::selectOnly(const Uuid& uuid) {
 }
 
 void EditorApp::toggleSelection(const Uuid& uuid) {
+    if (isStageHelper(uuid)) return;
     inspected_material_ = {};
     const auto it = findUuid(selection_, uuid);
     if (it != selection_.end()) {
@@ -540,6 +601,7 @@ void EditorApp::revealInHierarchy(const Uuid& uuid) {
 // direccional, 7 puntual, 8 foco, 9 camara, 10-12 decals, 13 cubo con
 // Rigidbody, 14 esfera con Rigidbody, 15 zona trigger, 16 particulas.
 ecs::Entity EditorApp::createEntity(int kind, ecs::Entity parent) {
+    if (!parent.valid()) parent = prefabStageRoot();  // en un prefab, todo dentro de su raiz
     ecs::Entity created;
     switch (kind) {
         case 1: created = ecs::createPrimitive(world_, assets::builtin::kCube, "Cubo", parent); break;
@@ -683,6 +745,7 @@ void EditorApp::pasteClipboard() {
 
 ecs::Entity EditorApp::instantiateAsset(const Uuid& uuid, ecs::Entity parent,
                                         const std::optional<Vec3>& world_position) {
+    if (!parent.valid()) parent = prefabStageRoot();
     const std::shared_ptr<const assets::ModelAsset> model = asset_manager_->loadModel(uuid);
     if (!model) {
         std::cerr << "[Editor] No se pudo cargar el modelo\n";
@@ -785,6 +848,15 @@ void EditorApp::drawUi(float delta_seconds) {
         }
         pending_inspect_material_ = {};
     }
+    if (projectLoading()) {
+        stepProjectLoad();
+        if (projectLoading() || project_load_.stage == ProjectLoad::Stage::Done) {
+            drawProjectLoading(delta_seconds);
+            if (project_load_.stage == ProjectLoad::Stage::Done) project_load_.stage = ProjectLoad::Stage::Idle;
+            return;
+        }
+        // Fallo al abrir: vuelve el Hub con el error.
+    }
     profiler_overlay_.update(delta_seconds, renderer_);
     watchAssets();
     pollMcp();
@@ -797,6 +869,9 @@ void EditorApp::drawUi(float delta_seconds) {
         drawModals();
         return;
     }
+
+    // Pestana pedida el frame anterior (cambia el mundo: antes de todo).
+    applyPendingWorkspace();
 
     // La fisica va ANTES que la interfaz: los gizmos, el Inspector y el
     // render ven los objetos donde estan en este frame (si fuera despues, los
@@ -817,43 +892,54 @@ void EditorApp::drawUi(float delta_seconds) {
     }
 
     drawMenuBar();
-    const ImGuiViewport* viewport = ImGui::GetMainViewport();
-    const ImGuiID dockspace_id = ImGui::GetID("CramionDockspace");
-    if (reset_layout_ || ImGui::DockBuilderGetNode(dockspace_id) == nullptr) {
-        buildDefaultLayout(dockspace_id);
-        reset_layout_ = false;
+    drawWorkspaceBar();
+    const WorkspaceKind workspace = activeWorkspaceKind();
+    if (workspace != WorkspaceKind::Scene) {
+        const CpuClock::time_point t = CpuClock::now();
+        drawWorkspacePanels(delta_seconds);
+        addCpuSample(kCpuPanels, millisecondsSince(t));
+    } else {
+        const ImGuiViewport* viewport = ImGui::GetMainViewport();
+        const ImGuiID dockspace_id = ImGui::GetID("CramionDockspace");
+        if (reset_layout_ || ImGui::DockBuilderGetNode(dockspace_id) == nullptr) {
+            buildDefaultLayout(dockspace_id);
+            reset_layout_ = false;
+        }
+        ImGui::DockSpaceOverViewport(dockspace_id, viewport);
+
+        CpuClock::time_point t = CpuClock::now();
+        drawSceneView();
+        drawGameView();
+        addCpuSample(kCpuScene, millisecondsSince(t));
+        t = CpuClock::now();
+        if (show_hierarchy_) drawHierarchy();
+        addCpuSample(kCpuHierarchy, millisecondsSince(t));
+        t = CpuClock::now();
+        if (show_inspector_) drawInspector();
+        addCpuSample(kCpuInspector, millisecondsSince(t));
+        t = CpuClock::now();
+        if (show_project_) drawProject();
+        if (show_statistics_) drawStatistics(delta_seconds);
+        if (show_console_) drawConsole();
+        if (show_render_settings_) drawRenderSettings();
+        if (show_animator_) drawAnimatorEditor();
+        if (show_script_editor_ && script_tabs_.empty()) drawScriptEditor();  // los abiertos: su pestana
+        drawMcpWindow();
+        drawBuildConfigsWindow();
+        drawExportProgress();
+        drawImportProgress();
+        if (show_physics_) drawPhysicsWindow();
+        if (show_navigation_window_) drawNavigationWindow();
+        drawPaintWindow();
+        if (show_cinematic_) drawCinematicWindow();
+        drawModals();
+        addCpuSample(kCpuPanels, millisecondsSince(t));
     }
-    ImGui::DockSpaceOverViewport(dockspace_id, viewport);
 
-    CpuClock::time_point t = CpuClock::now();
-    drawSceneView();
-    drawGameView();
-    addCpuSample(kCpuScene, millisecondsSince(t));
-    t = CpuClock::now();
-    if (show_hierarchy_) drawHierarchy();
-    addCpuSample(kCpuHierarchy, millisecondsSince(t));
-    t = CpuClock::now();
-    if (show_inspector_) drawInspector();
-    addCpuSample(kCpuInspector, millisecondsSince(t));
-    t = CpuClock::now();
-    if (show_project_) drawProject();
-    if (show_statistics_) drawStatistics(delta_seconds);
-    if (show_console_) drawConsole();
-    if (show_render_settings_) drawRenderSettings();
-    if (show_animator_) drawAnimatorEditor();
-    if (show_script_editor_ || !script_tabs_.empty()) drawScriptEditor();
-    drawMcpWindow();
-    drawExportProgress();
-    drawImportProgress();
-    if (show_physics_) drawPhysicsWindow();
-    if (show_navigation_window_) drawNavigationWindow();
-    if (show_cinematic_) drawCinematicWindow();
-    drawModals();
-    addCpuSample(kCpuPanels, millisecondsSince(t));
-
-    // Atajos globales (no mientras se escribe ni se vuela).
+    // Atajos globales (no mientras se escribe ni se vuela; en un script, el
+    // editor de codigo tiene los suyos).
     ImGuiIO& io = ImGui::GetIO();
-    if (!io.WantTextInput && !flying_) {
+    if (!io.WantTextInput && !flying_ && workspace != WorkspaceKind::Script) {
         if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_S, false)) {
             if (io.KeyShift) {
                 saveSceneAs();
@@ -917,7 +1003,7 @@ void EditorApp::reportFrame(float total_ms, float window_ms, float imgui_ms, flo
 }
 
 void EditorApp::syncWorld(float delta_seconds, bool secondary) {
-    if (!has_project_ || !sync_) {
+    if (!has_project_ || !sync_ || projectLoading()) {
         return;
     }
     const std::uint32_t view = secondary ? (render_view_ == kGameSlot ? kSceneSlot : kGameSlot) : render_view_;
@@ -1017,6 +1103,11 @@ void EditorApp::drawMenuBar() {
             std::cout << "[Editor] Escena inicial del proyecto: " << world_.sceneName() << "\n";
         }
         ImGui::Separator();
+        if (ImGui::MenuItem("Configuraciones de compilación...")) {
+            ensureBuildConfigs();
+            build_config_selected_ = build_configs_.active;
+            show_build_configs_ = true;
+        }
         if (ImGui::MenuItem("Exportar juego...")) exportGame(false);
         if (ImGui::MenuItem("Exportar y jugar...")) exportGame(true);
         ImGui::Separator();
@@ -1066,6 +1157,13 @@ void EditorApp::drawMenuBar() {
         item("Charco", 11);
         item("Humedad", 12);
         ImGui::Separator();
+        if (ImGui::BeginMenu("Volumen de post-procesado")) {
+            if (ImGui::MenuItem("Global")) createPostVolume(0, {});
+            if (ImGui::MenuItem("Caja")) createPostVolume(1, {});
+            if (ImGui::MenuItem("Esfera")) createPostVolume(2, {});
+            ImGui::EndMenu();
+        }
+        ImGui::Separator();
         if (ImGui::BeginMenu("Física")) {
             item("Cubo con Rigidbody", 13);
             item("Esfera con Rigidbody", 14);
@@ -1111,6 +1209,7 @@ void EditorApp::drawMenuBar() {
         ImGui::MenuItem("MCP (IA)", nullptr, &show_mcp_);
         ImGui::MenuItem("Física", nullptr, &show_physics_);
         ImGui::MenuItem("Navegación", nullptr, &show_navigation_window_);
+        ImGui::MenuItem("Pintar prefabs", nullptr, &show_paint_window_);
         ImGui::MenuItem("Juego", nullptr, &show_game_);
         ImGui::MenuItem("Cinemática", nullptr, &show_cinematic_);
         ImGui::Separator();
@@ -1377,11 +1476,11 @@ void EditorApp::drawStatistics(float delta_seconds) {
 }
 
 void EditorApp::drawConsole() {
-    if (!ImGui::Begin("Consola", &show_console_)) {
+    if (!ImGui::Begin(panelTitle("Consola").c_str(), &show_console_)) {
         ImGui::End();
         return;
     }
-    console_dock_id_ = ImGui::GetWindowDockID();
+    if (activeWorkspaceKind() == WorkspaceKind::Scene) console_dock_id_ = ImGui::GetWindowDockID();
     EditorLog& log = EditorLog::instance();
     if (ImGui::Button("Limpiar")) log.clear();
     ImGui::SameLine();
@@ -1470,18 +1569,8 @@ void EditorApp::drawGraphicsSettings() {
     for (int i = 0; i < 4; ++i) {
         if (i > 0) ImGui::SameLine();
         if (ImGui::Button(kPresets[i], ImVec2(preset_width, 0.0f))) {
-            // Baja/Media: escalado a menos resolucion; Alta/Ultra: nativa con TAA.
-            static constexpr gfx::UpscaleQuality kQuality[] = {gfx::UpscaleQuality::Performance,
-                                                               gfx::UpscaleQuality::Balanced,
-                                                               gfx::UpscaleQuality::Quality,
-                                                               gfx::UpscaleQuality::Native};
-            if (g.upscaler == gfx::Upscaler::Off) g.upscaler = gfx::Upscaler::Taa;
-            g.quality = kQuality[i];
-            g.sharpness = i < 2 ? 0.45f : 0.25f;
-            r.setShadowsEnabled(true);
-            r.setReflectionProbeEnabled(i >= 1);
-            r.setOcclusionCullingEnabled(true);
-            if (r.rayTracingSupported()) r.setRayTracingEnabled(i == 3);
+            applyQualityPreset(r, i);
+            g = r.graphicsSettings();
             changed = true;
         }
     }
@@ -1671,53 +1760,13 @@ void EditorApp::drawGraphicsSettings() {
     }
 }
 
-// Formato: clave=valor por linea (sin dependencias).
+// ProjectSettings/Graphics.ini (GraphicsConfig.h; tambien lo lee el juego).
 void EditorApp::saveGraphicsSettings() const {
     if (!has_project_) return;
-    const gfx::GraphicsSettings& g = renderer_.graphicsSettings();
-    std::ofstream out(project_.settingsFolder() / "Graphics.ini", std::ios::trunc);
-    if (!out) return;
-    out << "upscaler=" << static_cast<int>(g.upscaler) << "\n";
-    out << "quality=" << static_cast<int>(g.quality) << "\n";
-    out << "custom_scale=" << g.custom_scale << "\n";
-    out << "sharpness=" << g.sharpness << "\n";
-    out << "vsync=" << (g.vsync ? 1 : 0) << "\n";
-    out << "adaptive=" << (g.adaptive ? 1 : 0) << "\n";
-    out << "target_fps=" << g.target_fps << "\n";
-    out << "shadow_resolution=" << g.shadow_resolution << "\n";
-    out << "texture_max_size=" << g.texture_max_size << "\n";
-    out << "shadows=" << (renderer_.shadowsEnabled() ? 1 : 0) << "\n";
-    out << "ray_tracing=" << (renderer_.rayTracingEnabled() ? 1 : 0) << "\n";
-    out << "reflection_probe=" << (renderer_.reflectionProbeEnabled() ? 1 : 0) << "\n";
-    out << "occlusion_culling=" << (renderer_.occlusionCullingEnabled() ? 1 : 0) << "\n";
+    saveGraphicsIni(project_.settingsFolder() / "Graphics.ini", renderer_);
 }
 
-void EditorApp::loadGraphicsSettings() {
-    std::ifstream in(project_.settingsFolder() / "Graphics.ini");
-    if (!in) return;
-    gfx::GraphicsSettings g = renderer_.graphicsSettings();
-    std::string line;
-    while (std::getline(in, line)) {
-        const std::size_t eq = line.find('=');
-        if (eq == std::string::npos) continue;
-        const std::string key = line.substr(0, eq);
-        const float value = std::strtof(line.c_str() + eq + 1, nullptr);
-        if (key == "upscaler") g.upscaler = static_cast<gfx::Upscaler>(std::clamp(static_cast<int>(value), 0, 2));
-        if (key == "quality") g.quality = static_cast<gfx::UpscaleQuality>(std::clamp(static_cast<int>(value), 0, 5));
-        if (key == "custom_scale") g.custom_scale = std::clamp(value, 0.25f, 1.0f);
-        if (key == "sharpness") g.sharpness = std::clamp(value, 0.0f, 1.0f);
-        if (key == "vsync") g.vsync = value != 0.0f;
-        if (key == "adaptive") g.adaptive = value != 0.0f;
-        if (key == "target_fps") g.target_fps = std::clamp(value, 15.0f, 360.0f);
-        if (key == "shadow_resolution") g.shadow_resolution = std::clamp(static_cast<int>(value), 0, 8192);
-        if (key == "texture_max_size") g.texture_max_size = std::clamp(static_cast<int>(value), 0, 16384);
-        if (key == "shadows") renderer_.setShadowsEnabled(value != 0.0f);
-        if (key == "ray_tracing" && renderer_.rayTracingSupported()) renderer_.setRayTracingEnabled(value != 0.0f);
-        if (key == "reflection_probe") renderer_.setReflectionProbeEnabled(value != 0.0f);
-        if (key == "occlusion_culling") renderer_.setOcclusionCullingEnabled(value != 0.0f);
-    }
-    renderer_.setGraphicsSettings(g);
-}
+void EditorApp::loadGraphicsSettings() { loadGraphicsIni(project_.settingsFolder() / "Graphics.ini", renderer_); }
 
 // -----------------------------------------------------------------------------
 // Importacion en segundo plano: el importador puede tardar (un FBX grande,

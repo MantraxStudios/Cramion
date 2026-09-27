@@ -214,6 +214,20 @@ void ImGuiLayer::loadIcons() {
         logo_ = static_cast<ImTextureID>(reinterpret_cast<std::uintptr_t>(set));
         break;
     }
+
+    // Banner del motor (junto al ejecutable): el dialogo de carga del proyecto.
+    {
+        asset::ImageRgba8 image;
+        if (asset::loadImageRgba8(folder.parent_path() / "player_banner.png", image, 1920)) {
+            const std::uint32_t texture = renderer_->createUiTexture(image.pixels.data(), image.width, image.height);
+            if (texture != 0) {
+                icon_textures_.push_back(texture);
+                const VkDescriptorSet set = ImGui_ImplVulkan_AddTexture(renderer_->uiTextureView(texture),
+                                                                        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+                banner_ = static_cast<ImTextureID>(reinterpret_cast<std::uintptr_t>(set));
+            }
+        }
+    }
 }
 
 void ImGuiLayer::drawIcon(ImDrawList* draw, Icon id, ImVec2 min, float size, ImU32 tint) const {

@@ -105,9 +105,9 @@ int main() {
 
     const std::vector<editor::ProjectTemplate> list = editor::availableTemplates();
     std::printf("Plantillas integradas\n");
-    check(list.size() == 4 && find(list, "blank") && find(list, "third_person") && find(list, "navigation") &&
-              find(list, "voxel"),
-          "hay 4 plantillas integradas");
+    check(list.size() == 5 && find(list, "blank") && find(list, "third_person") && find(list, "navigation") &&
+              find(list, "voxel") && find(list, "mmo"),
+          "hay 5 plantillas integradas");
 
     // --- Vacia ---
     {
@@ -369,6 +369,182 @@ int main() {
         }
     }
 
+    // --- MMO RPG (todo el juego en Lua) ---
+    {
+        std::printf("MMO RPG\n");
+        const project::ProjectInfo p = editor::createProjectFromTemplate(*find(list, "mmo"), root, "Reinos");
+        const auto info = project::openProject(p.file);
+        ecs::World world;
+        std::string error;
+        const bool loaded = info && ecs::loadScene(world, info->assetsFolder() / "Scenes" / "Main.crscene", &error);
+        check(loaded && world.findAllWithTag("Enemigo").size() == 19 && world.findAllWithTag("NPC").size() == 3 &&
+                  world.findAllWithTag("Bot").size() == 4,
+              "la escena: 19 enemigos, 3 personajes y 4 jugadores simulados");
+        check(std::filesystem::exists(p.assetsFolder() / "Scripts" / "Heroe.lua") &&
+                  std::filesystem::exists(p.assetsFolder() / "Scripts" / "Enemigo.lua") &&
+                  std::filesystem::exists(p.assetsFolder() / "Scripts" / "Bot.lua") &&
+                  std::filesystem::exists(p.assetsFolder() / "Scripts" / "NPC.lua"),
+              "los sistemas estan en scripts de Lua");
+        if (loaded) {
+            physics::PhysicsSystem physics;
+            navigation::NavigationSystem nav;
+            nav.setPhysics(&physics);
+            physics.start(world);
+            nav.waitForBuild(world);
+            dm::Input input;
+            scripting::ScriptSystem scripts;
+            scripts.setAssetsRoot(info->assetsFolder());
+            scripts.setPhysics(&physics);
+            scripts.setNavigation(&nav);
+            scripts.setInput(&input);
+            scripts.setPrefsFile(root / "mmo.prefs");
+            scripts.setLog([&](int level, const std::string& message) {
+                if (level == 2) std::printf("  [Lua] %s\n", message.c_str());
+            });
+            scripts.start(world);
+            const auto frame = [&](float dt) {
+                const int steps = physics.update(world, dt, true);
+                nav.update(world, dt, true);
+                scripts.fixedUpdate(world, dt, steps);
+                scripts.update(world, dt);
+                input.newFrame();
+            };
+            const auto frames = [&](int n) {
+                for (int i = 0; i < n; ++i) frame(1.0f / 60.0f);
+            };
+            const auto press = [&](dm::Key key) {
+                dm::Event e;
+                e.type = dm::EventType::KeyPressed;
+                e.key = key;
+                input.onEvent(e);
+                frame(1.0f / 60.0f);
+                e.type = dm::EventType::KeyReleased;
+                input.onEvent(e);
+                frame(1.0f / 60.0f);
+            };
+            const auto lua = [&](const std::string& code) {
+                std::string out;
+                const bool ok = scripts.run("local H = Scene.find('Jugador'):getScript()\n" + code, &out);
+                if (!ok) std::printf("  (lua: %s)\n", out.c_str());
+                return out;
+            };
+            const auto text_of = [&](const char* name) {
+                const ecs::Entity e = world.findByName(name);
+                return e.valid() && e.has<ui::Text>() ? e.get<ui::Text>().text : std::string();
+            };
+
+            frames(120);
+            check(nav.ready(), "genera la malla de navegacion de todo el mapa");
+            check(text_of("UI_Chat").find("Bienvenido") != std::string::npos, "el chat da la bienvenida");
+            check(lua("return tostring(H.nivel) .. '|' .. H.vida .. '|' .. H:cuenta('pocion_vida')") == "1|100|3",
+                  "empieza a nivel 1, con 100 de vida y 3 pociones");
+            check(lua("return tostring(Scene.find('Capitana Elena'):find('Marca').active)") == "true",
+                  "la capitana muestra la marca de mision nueva");
+
+            // Teclado: Tab elige el enemigo mas cercano; I abre el inventario.
+            lua("local w = Scene.find('Lobo 1'); H.entity.position = w.position + Vec3(2, 0.6, 0)");
+            frames(2);
+            press(dm::Key::Tab);
+            check(lua("return H.objetivo and H.objetivo.name or 'nada'").find("Lobo") != std::string::npos, "Tab elige el lobo de al lado");
+            press(dm::Key::I);
+            check(world.findByName("UI_Inventario").activeSelf(), "I abre el inventario");
+            press(dm::Key::Escape);
+            check(!world.findByName("UI_Inventario").activeSelf(), "Escape lo cierra");
+
+            // Hablar (E) con la capitana y aceptar la mision de los lobos.
+            lua("local c = Scene.find('Capitana Elena'); H.entity.position = c.position + Vec3(0, 0, 2)");
+            frames(2);
+            press(dm::Key::E);
+            check(world.findByName("UI_Dialogo").activeSelf() && lua("return H.opciones[1].texto") == "Mision: Lobos hambrientos",
+                  "E abre el dialogo con la mision");
+            lua("local d = Scene.find('UI_Dialogo'); H:OnOpcion(d:find('Opcion 1')); H:OnOpcion(d:find('Opcion 1'))");
+            check(lua("return H.misiones[1] and H.misiones[1].estado or 'no'") == "activa", "se acepta la mision");
+
+            // Cazar 5 lobos con Golpe (1) y la bola de fuego.
+            const std::string hunt = lua(R"(
+                local muertos = 0
+                for _, e in ipairs(Scene.findAllWithTag('Enemigo')) do
+                    local s = e:getScript()
+                    if muertos < 5 and s.tipo == 'lobo' and s:EstaVivo() then
+                        H.entity.position = e.position + Vec3(1.6, 0.6, 0)
+                        H.objetivo = e
+                        for i = 1, 60 do
+                            if not s:EstaVivo() then break end
+                            H.gcd = 0; H.mana = H.manaMax
+                            H:usarHabilidad(i % 3 == 0 and 2 or 1)
+                            if H.lanzando then H.lanzando.t = H.lanzando.dur; H:lanzar(0) end
+                        end
+                        if not s:EstaVivo() then muertos = muertos + 1 end
+                    end
+                end
+                return muertos .. '|' .. H.misiones[1].progreso .. '|' .. H.misiones[1].estado .. '|' .. H.nivel
+            )");
+            std::printf("  (caza: %s)\n", hunt.c_str());
+            check(hunt.rfind("5|5|lista|", 0) == 0, "5 lobos muertos: mision lista");
+            check(lua("return tostring(H.nivel >= 2)") == "true", "sube de nivel con la experiencia");
+            // Botin: pasar por encima de las bolsas.
+            const int gold_before = std::atoi(lua("return tostring(H.oro)").c_str());
+            const int bags = std::atoi(lua("return tostring(#H.botines)").c_str());
+            for (int i = 1; i <= bags; ++i) {
+                lua("local b = H.botines[1]; if b then H.entity.position = b.e.position + Vec3(0, 1, 0) end");
+                frames(3);
+            }
+            const int gold_after = std::atoi(lua("return tostring(H.oro)").c_str());
+            std::printf("  (%d bolsas de botin, oro %d -> %d)\n", bags, gold_before, gold_after);
+            check(bags > 0 && gold_after > gold_before, "los enemigos sueltan botin y se recoge al pasar");
+
+            // Entregar, equipar el premio y comprar en la tienda.
+            check(lua("return tostring(H:entregarMision(1))") == "true" && lua("return H.misiones[1].estado") == "hecha",
+                  "se entrega la mision");
+            check(lua("return tostring(H:equipar('espada_hierro')) .. '|' .. H.equipo.arma") == "true|espada_hierro",
+                  "se equipa la espada de la recompensa (sube el ataque)");
+            const std::string shop = lua(R"(
+                local antes, pociones = H.oro, H:cuenta('pocion_vida')
+                H:abrirTienda(Scene.find('Mercader Tomas'))
+                H:comprar('pocion_vida')
+                return (antes - H.oro) .. '|' .. (H:cuenta('pocion_vida') - pociones)
+            )");
+            check(shop == "8|1", "la tienda vende pociones por oro");
+            check(lua("H:usarHabilidad(5); return tostring(H.enfriamientos[5] > 0)") == "true", "5 usa una pocion (con enfriamiento)");
+
+            // Un goblin ataca al heroe si se acerca.
+            lua("H.vida = H.vidaMax; local g = Scene.find('Goblin 9'); H.entity.position = g.position + Vec3(2, 0.3, 0)");
+            frames(240);
+            check(lua("return tostring(H.vida < H.vidaMax or H.muerto)") == "true", "los goblins atacan al heroe cercano");
+
+            // Morir y reaparecer.
+            lua("H:RecibirDano(99999, nil, 'Prueba')");
+            check(world.findByName("UI_Muerte").activeSelf(), "al morir sale la pantalla de muerte");
+            lua("H:OnReaparecer()");
+            check(!world.findByName("UI_Muerte").activeSelf() && lua("return tostring(H.muerto)") == "false", "reaparece en el pueblo");
+
+            // Los otros jugadores se mueven por el mundo.
+            std::vector<Vec3> start;
+            for (const ecs::Entity& b : world.findAllWithTag("Bot")) start.push_back(b.worldPosition());
+            frames(900);
+            float moved = 0.0f;
+            std::size_t i = 0;
+            for (const ecs::Entity& b : world.findAllWithTag("Bot")) {
+                if (i < start.size()) moved = std::max(moved, core::length(b.worldPosition() - start[i]));
+                ++i;
+            }
+            std::printf("  (un jugador simulado se movio %.1f m)\n", static_cast<double>(moved));
+            check(moved > 3.0f, "los jugadores simulados se mueven por el mundo");
+
+            // Guardar: la partida va a Prefs.
+            lua("H:guardar()");
+            const std::string saved = lua("return Prefs.getString('mmo_partida', '')");
+            check(saved.rfind("1|", 0) == 0 && saved.find("espada_hierro") != std::string::npos && saved.find("1:hecha") != std::string::npos,
+                  "la partida se guarda (nivel, inventario, equipo y misiones)");
+            check(scripts.errors().empty(), "los scripts se ejecutan sin errores");
+            for (const scripting::ScriptError& e : scripts.errors()) {
+                std::printf("  [error] %s:%d %s\n", e.file.c_str(), e.line, e.message.c_str());
+            }
+            scripts.stop();
+            physics.stop();
+        }
+    }
+
     // --- Del usuario ---
     {
         std::printf("Plantillas del usuario\n");
@@ -377,7 +553,7 @@ int main() {
               "guardar un proyecto como plantilla");
         const std::vector<editor::ProjectTemplate> again = editor::availableTemplates();
         const editor::ProjectTemplate* mine = find(again, "user:Mi plataformas");
-        check(again.size() == 5 && mine != nullptr && mine->category == "Mis plantillas" && mine->description == "Prueba",
+        check(again.size() == 6 && mine != nullptr && mine->category == "Mis plantillas" && mine->description == "Prueba",
               "aparece en la lista con su descripcion");
         if (mine != nullptr) {
             const project::ProjectInfo p = editor::createProjectFromTemplate(*mine, root, "Copia");

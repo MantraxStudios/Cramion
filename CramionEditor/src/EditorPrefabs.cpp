@@ -112,6 +112,7 @@ void EditorApp::createPrefabsFromSelection(const std::filesystem::path& target_f
 
 ecs::Entity EditorApp::instantiatePrefabAsset(const Uuid& uuid, ecs::Entity parent,
                                               const std::optional<core::Vec3>& world_position) {
+    if (!parent.valid()) parent = prefabStageRoot();
     const std::string text = prefabText(uuid);
     if (text.empty()) {
         std::cerr << "[Prefab] No se pudo leer el prefab\n";
@@ -212,6 +213,11 @@ void EditorApp::recordPrefabOverrides() {
 void EditorApp::drawPrefabInspectorBar(ecs::Entity entity) {
     const ecs::Entity root = ecs::prefabRoot(entity);
     if (!root.valid()) return;
+    // La raiz del escenario de un prefab: se edita el prefab mismo.
+    if (root == prefabStageRoot()) {
+        drawPrefabStageBanner();
+        return;
+    }
     const ecs::PrefabInstance& instance = root.get<ecs::PrefabInstance>();
     const Uuid prefab = instance.prefab.uuid;
     const std::filesystem::path path = prefabPath(prefab);
@@ -247,6 +253,11 @@ void EditorApp::drawPrefabInspectorBar(ecs::Entity entity) {
         selectOnly(root.uuid());
     }
     ImGui::SetItemTooltip("Selecciona la raiz de la instancia y muestra el asset en el Proyecto");
+    ImGui::SameLine();
+    ImGui::BeginDisabled(missing || playing());
+    if (ImGui::SmallButton("Abrir")) openPrefabWorkspace(prefab);
+    ImGui::EndDisabled();
+    ImGui::SetItemTooltip("Edita el prefab en su pestana (Jerarquia, vista y componentes);\nal guardar se actualizan todas sus instancias");
     ImGui::SameLine();
     ImGui::BeginDisabled(missing || playing());
     if (ImGui::SmallButton("Revertir")) revertPrefab(root);
@@ -301,6 +312,9 @@ void EditorApp::drawPrefabHierarchyMenu(ecs::Entity entity) {
     if (ImGui::MenuItem("Crear prefab", nullptr, false, has_project_ && !playing())) createPrefabsFromSelection();
     ImGui::SetItemTooltip("Guarda el objeto (con sus hijos) en Assets/Prefabs.\nTambien: arrastrarlo al panel Proyecto.");
     ImGui::Separator();
+    if (ImGui::MenuItem("Abrir prefab", nullptr, false, linked && !missing && !playing())) {
+        openPrefabWorkspace(root.get<ecs::PrefabInstance>().prefab.uuid);
+    }
     if (ImGui::MenuItem("Aplicar al prefab", nullptr, false, linked && !missing && !playing())) applyPrefab(root);
     if (ImGui::MenuItem("Revertir", nullptr, false, linked && !missing && !playing())) revertPrefab(root);
     if (ImGui::MenuItem("Desempaquetar", nullptr, false, linked)) unpackPrefab(root);

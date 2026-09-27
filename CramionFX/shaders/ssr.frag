@@ -63,6 +63,7 @@ vec3 decodeNormal(vec2 e) {
 bool project(vec3 view_position, out vec2 uv) {
     vec4 clip = camera.projection * vec4(view_position, 1.0);
     if (clip.w <= 0.0) {
+        uv = vec2(-1.0);  // fuera de pantalla (el refinamiento no mira el resultado)
         return false;
     }
     uv = clip.xy / clip.w * 0.5 + 0.5;

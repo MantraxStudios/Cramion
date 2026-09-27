@@ -19,7 +19,7 @@ GITHUB = "https://github.com/MantraxStudios/Cramion"
 data = json.load(open(os.path.join(HERE, "pages.json"), encoding="utf-8"))
 intro_html = data["intro"]
 examples_intro = data["examples_intro"]
-GROUP_ICONS = {"Primeros pasos": "book", "Referencia de la API": "code", "Gráficos": "paint", "Ejemplos": "spark"}
+GROUP_ICONS = {"Primeros pasos": "book", "El editor": "window", "Componentes": "cube", "Referencia de la API": "code", "Gráficos": "paint", "Ejemplos": "spark"}
 GROUPS = []
 for g in data["groups"]:
     GROUPS.append((g["group"], GROUP_ICONS.get(g["group"], "book"), g["pages"]))
@@ -29,6 +29,8 @@ ICONS = {
     "paint": '<path d="M12 3a9 9 0 1 0 0 18c1.1 0 1.5-.8 1.5-1.5 0-.9-.7-1.2-.7-2 0-.8.6-1.5 1.5-1.5H16a5 5 0 0 0 5-5c0-4.4-4-8-9-8Z"/><circle cx="7.5" cy="11" r="1"/><circle cx="10" cy="7" r="1"/><circle cx="15" cy="7.5" r="1"/>',
     "book": '<path d="M4 5a2 2 0 0 1 2-2h13v16H6a2 2 0 0 0-2 2V5Z"/><path d="M4 19a2 2 0 0 1 2-2h13"/>',
     "code": '<path d="m8 8-4 4 4 4"/><path d="m16 8 4 4-4 4"/><path d="m14 4-4 16"/>',
+    "window": '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M9 9v11"/>',
+    "cube": '<path d="m12 3 8 4.5v9L12 21l-8-4.5v-9L12 3Z"/><path d="m4 7.5 8 4.5 8-4.5M12 12v9"/>',
     "spark": '<path d="M12 3v4M12 17v4M3 12h4M17 12h4M6 6l2.5 2.5M15.5 15.5 18 18M6 18l2.5-2.5M15.5 8.5 18 6"/>',
 }
 

@@ -1,0 +1,47 @@
+<p>
+  Un <strong class="text-white">material</strong> (<code>.crmat</code>) dice cómo se ve una superficie con iluminación física
+  (PBR metálico/rugoso, como Unreal y Unity). Se crean en el Proyecto (<em>Crear &gt; Material</em>, o <em>Nuevo</em> en un
+  hueco del Mesh Renderer) y se editan en el Inspector al elegirlos. Los modelos importados traen los suyos.
+</p>
+
+<h3 id="asignar">Asignar un material</h3>
+<ul>
+  <li>Arrastra el <code>.crmat</code> a una pieza en la vista Escena, a un objeto de la Jerarquía o a un hueco del Mesh Renderer.</li>
+  <li>Menú del material &gt; <em>Asignar a la selección</em>.</li>
+  <li>Desde Lua: <code>entity:setMaterial(0, "Materials/Metal")</code>.</li>
+</ul>
+
+<h3 id="propiedades">Propiedades</h3>
+<table>
+  <thead><tr><th>Propiedad</th><th>Qué hace</th></tr></thead>
+  <tbody>
+    <tr><td><code>Modo</code></td><td><strong>Opaco</strong> (con recorte si el color tiene alfa: hojas, rejas) o <strong>Transparente</strong> (vidrio, agua).</td></tr>
+    <tr><td><code>Color base</code></td><td>Color (y opacidad) y su textura (albedo).</td></tr>
+    <tr><td><code>Metálico</code></td><td>0 = no metal, 1 = metal. Con mapa en gris que lo multiplica.</td></tr>
+    <tr><td><code>Rugosidad</code></td><td>0 = espejo, 1 = mate. Con mapa en gris.</td></tr>
+    <tr><td><code>Reflectancia</code></td><td>Brillo especular de los no metales (0,04 por defecto).</td></tr>
+    <tr><td><code>Normal</code></td><td>Mapa de normales y su fuerza. <em>DirectX</em> para mapas de Unreal (+Y abajo).</td></tr>
+    <tr><td><code>Oclusión</code></td><td>Mapa de oclusión ambiental horneada y su fuerza.</td></tr>
+    <tr><td><code>Emisión</code></td><td>Color que brilla solo (luces, pantallas) con su intensidad y mapa. Con bloom se ve el resplandor.</td></tr>
+    <tr><td><code>Tiling</code> / <code>Offset</code></td><td>Repetición y desplazamiento de las texturas.</td></tr>
+  </tbody>
+</table>
+
+<h3 id="escaneos">Mapas de escaneos (Megascans, Poly Haven...)</h3>
+<table>
+  <thead><tr><th>Mapa</th><th>Uso</th></tr></thead>
+  <tbody>
+    <tr><td><code>Altura</code></td><td>Relieve con <em>parallax occlusion mapping</em>. <em>Profundidad</em> en metros: lo que hay del negro al blanco (0,03 = 3 cm).</td></tr>
+    <tr><td><code>Cavidad</code></td><td>Grietas (negro = hueco): quita brillo y luz. Con su fuerza.</td></tr>
+    <tr><td><code>Especular</code></td><td>Reflectancia por píxel (0,5 = 0,04, como Unreal).</td></tr>
+    <tr><td><code>Brillo (gloss)</code></td><td>Rugosidad invertida, si el pack no trae rugosidad.</td></tr>
+    <tr><td><code>Bump</code></td><td>Relieve fino en gris; se usa como normal si no hay mapa de normales.</td></tr>
+  </tbody>
+</table>
+<p>Arrastra las imágenes del Proyecto a cada hueco del editor de materiales (clic derecho: quitar).</p>
+
+<h3 id="shader">Shader propio</h3>
+<p>
+  Un material puede usar un <strong>shader de superficie</strong> propio (<code>.crshader</code>) en lugar del estándar: sus
+  propiedades salen en el Inspector y se editan por material. Ver <a href="shaders.html">Shaders propios</a>.
+</p>

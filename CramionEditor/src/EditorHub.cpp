@@ -242,6 +242,27 @@ void EditorApp::drawTemplateArt(ImDrawList* draw, ImVec2 a, ImVec2 b, const Proj
             }
             break;
         }
+        case TemplateArt::Mmo: {
+            // Barras de vida y mana, la barra de habilidades y un enemigo con su marca.
+            perspectiveGrid(draw, a, b, horizon, scaled(accent, 1.1f, 70));
+            draw->AddRectFilled(P(0.05f, 0.08f), P(0.38f, 0.14f), IM_COL32(40, 12, 12, 220), 3.0f);
+            draw->AddRectFilled(P(0.05f, 0.08f), P(0.30f, 0.14f), IM_COL32(220, 50, 45, 255), 3.0f);
+            draw->AddRectFilled(P(0.05f, 0.16f), P(0.38f, 0.21f), IM_COL32(12, 18, 45, 220), 3.0f);
+            draw->AddRectFilled(P(0.05f, 0.16f), P(0.24f, 0.21f), IM_COL32(60, 110, 240, 255), 3.0f);
+            for (int i = 0; i < 5; ++i) {
+                const float x = 0.26f + 0.1f * static_cast<float>(i);
+                draw->AddRectFilled(P(x, 0.84f), P(x + 0.085f, 0.95f), IM_COL32(28, 30, 38, 235), 3.0f);
+                draw->AddRectFilled(P(x + 0.01f, 0.855f), P(x + 0.075f, 0.935f),
+                                    i == 1 ? IM_COL32(240, 120, 40, 255) : scaled(accent, 1.2f), 2.0f);
+            }
+            // Heroe y enemigo con su barra.
+            draw->AddRectFilled(P(0.30f, 0.44f), P(0.37f, 0.76f), IM_COL32(26, 184, 242, 255), w * 0.035f);
+            draw->AddRectFilled(P(0.62f, 0.52f), P(0.72f, 0.76f), IM_COL32(90, 160, 60, 255), w * 0.04f);
+            draw->AddRectFilled(P(0.61f, 0.45f), P(0.73f, 0.48f), IM_COL32(40, 12, 12, 230));
+            draw->AddRectFilled(P(0.61f, 0.45f), P(0.69f, 0.48f), IM_COL32(230, 45, 40, 255));
+            centeredText(draw, h * 0.16f, P(0.84f, 0.36f), IM_COL32(255, 215, 60, 255), "!");
+            break;
+        }
         case TemplateArt::User: {
             perspectiveGrid(draw, a, b, horizon, scaled(accent, 1.1f, 70));
             draw->AddRectFilled(P(0.36f, 0.26f), P(0.5f, 0.34f), scaled(accent, 1.3f), 4.0f);
@@ -272,9 +293,7 @@ void EditorApp::drawHub() {
     if (hub_open_pick_ && hub_open_pick_->done) {
         const std::filesystem::path folder = hub_open_pick_->result;
         hub_open_pick_.reset();
-        if (!folder.empty() && !openProject(folder)) {
-            hub_error_ = "No es un proyecto de Cramion: " + dialogs::utf8(folder);
-        }
+        if (!folder.empty()) beginOpenProject(folder);
     }
     if (hub_folder_pick_ && hub_folder_pick_->done) {
         if (!hub_folder_pick_->result.empty()) new_project_folder_ = dialogs::utf8(hub_folder_pick_->result);
@@ -509,7 +528,7 @@ void EditorApp::drawHubProjects() {
     }
     ImGui::EndChild();
     if (to_remove) project::removeRecentProject(*to_remove);
-    if (to_open && !openProject(*to_open)) hub_error_ = "No se pudo abrir " + dialogs::utf8(*to_open);
+    if (to_open) beginOpenProject(*to_open);
 }
 
 // --- Nuevo proyecto ----------------------------------------------------------------
@@ -675,7 +694,7 @@ void EditorApp::createProjectFromHub() {
         std::cout << "[Hub] Proyecto \"" << info.name << "\" creado con la plantilla " << t.name << "\n";
         hub_error_.clear();
         hub_page_ = 0;
-        if (!openProject(info.file)) hub_error_ = "El proyecto se creó pero no se pudo abrir.";
+        beginOpenProject(info.file);
     } catch (const std::exception& e) {
         hub_error_ = e.what();
     }

@@ -42,7 +42,7 @@ static_assert(sizeof(GpuWaterBody) == 128, "GpuWaterBody debe coincidir con wate
 struct WaterVertex {
     float position[3];  // oceano/lago: rejilla; rio: el mundo
     float uv[2];        // rio: (a traves 0..1, a lo largo en m)
-    float flow[2];      // rio: direccion de la corriente (xz)
+    float flow[2];      // rio: direccion de la corriente (xz) por el ancho del rio (m)
 };
 
 struct WaterBodyDesc {
@@ -63,6 +63,9 @@ public:
     // `underwater` = cuerpo en el que esta la camara (-1 = ninguno): se tine
     // lo que se ve bajo su superficie.
     void setBodies(const std::vector<WaterBodyDesc>& bodies, float time, int underwater = -1);
+    // Olas interactivas (water::RippleSimulation): `size` x `size` alturas
+    // desde la esquina (origin_x, origin_z) cada `cell` metros. Vacio = calma.
+    void setRipples(const std::vector<float>& heights, std::uint32_t size, float origin_x, float origin_z, float cell);
     bool empty() const { return bodies_.empty(); }
 
     // Cada frame (sus buffers ya no los usa la GPU): parametros y mallas.
@@ -98,6 +101,10 @@ private:
     vk::raii::DescriptorPool pool_{nullptr};
     std::vector<vk::raii::DescriptorSet> sets_;
     std::vector<VulkanBuffer> uniforms_;
+    std::vector<VulkanBuffer> ripple_buffers_;  // por frame en vuelo
+    std::vector<float> ripples_;
+    std::uint32_t ripple_size_ = 0;
+    core::Vec4 ripple_params_{};  // x, z de la esquina, celda, lado (0 = sin olas)
 
     Mesh grid_;   // lago
     Mesh ocean_;  // disco radial

@@ -76,7 +76,7 @@ void main() {
     // Recorte con borde nitido a cualquier distancia (las hojas no se
     // deshacen con los mipmaps).
     float coverage = (albedo.a - 0.5) / max(length(vec2(dFdx(albedo.a), dFdy(albedo.a))), 1e-4) + 0.5;
-    if (coverage < 0.5) discard;
+    bool cut_out = coverage < 0.5;
     albedo.rgb *= v_tint;
 
     vec4 nt = textureGrad(normal_map, vec3(uv, layer), duv_dx, duv_dy);
@@ -103,4 +103,9 @@ void main() {
     writeSurface(vec4(clamp(albedo.rgb, 0.0, 1.0), 1.0), n, normal, tangent_normal, n, material.g,
                  clamp(material.r, 0.04, 1.0), occlusion, emissive, material.a * 0.08, v_world_position);
     writeVelocity(v_current_clip, v_previous_clip);
+    // El recorte se hace al final: un discard antes dejaba sin definir las
+    // derivadas (dFdx/dFdy, texturas con mipmap) de los vecinos del cuadro 2x2
+    // en los bordes recortados, y writeSurface las usa (antialiasing
+    // especular, decals).
+    if (cut_out) discard;
 }

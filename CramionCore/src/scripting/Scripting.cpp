@@ -25,6 +25,7 @@
 #include <map>
 #include <sstream>
 #include <unordered_map>
+#include <variant>
 
 namespace cramion::scripting {
 
@@ -66,6 +67,175 @@ std::string vecString(const Vec3& v) {
     std::snprintf(buffer, sizeof(buffer), "(%.3f, %.3f, %.3f)", v.x, v.y, v.z);
     return buffer;
 }
+
+// --- Graphics.post: los campos del post-procesado por su clave ---
+// Recorre la reflexion del componente PostProcessing (la misma del
+// Inspector y de los .crscene) para leer o cambiar un campo por su clave
+// ("bloom", "bloom_intensity", "tonemapper"...). Sin las opciones del
+// volumen (forma, prioridad...) ni las casillas de sobrescribir: Graphics.post
+// es el aspecto de la escena, no el volumen.
+struct PostValue {
+    enum class Type { None, Bool, Number, Text, Vector } type = Type::None;
+    bool flag = false;
+    double number = 0.0;
+    std::string text;
+    Vec3 vector{};
+    std::vector<std::string> choices;  // enumeraciones
+};
+
+class PostFieldVisitor final : public ecs::PropertyVisitor {
+public:
+    enum class Mode { Collect, Get, Set };
+
+    PostFieldVisitor(Mode mode, std::string key = {}, PostValue value = {})
+        : mode_(mode), key_(std::move(key)), value_(std::move(value)) {}
+
+    bool beginGroup(const char* label, bool) override {
+        skipping_ = std::string(label) == "Volumen";
+        return true;
+    }
+    void endGroup() override { skipping_ = false; }
+
+    bool field(const ecs::Meta& meta, float& v, const ecs::FloatRange& range) override {
+        PostValue current;
+        current.type = PostValue::Type::Number;
+        current.number = v;
+        if (!visit(meta, current)) return false;
+        float next = static_cast<float>(value_.number);
+        if (range.min != range.max) next = std::clamp(next, range.min, range.max);
+        if (next == v) return false;
+        v = next;
+        return true;
+    }
+    bool field(const ecs::Meta& meta, int& v, int min, int max) override {
+        PostValue current;
+        current.type = PostValue::Type::Number;
+        current.number = v;
+        if (!visit(meta, current)) return false;
+        int next = static_cast<int>(std::lround(value_.number));
+        if (min != max) next = std::clamp(next, min, max);
+        if (next == v) return false;
+        v = next;
+        return true;
+    }
+    bool field(const ecs::Meta& meta, bool& v) override {
+        PostValue current;
+        current.type = PostValue::Type::Bool;
+        current.flag = v;
+        if (!visit(meta, current) || value_.flag == v) return false;
+        v = value_.flag;
+        return true;
+    }
+    bool field(const ecs::Meta& meta, std::string& v) override {
+        PostValue current;
+        current.type = PostValue::Type::Text;
+        current.text = v;
+        if (!visit(meta, current) || value_.text == v) return false;
+        v = value_.text;
+        return true;
+    }
+    bool field(const ecs::Meta& meta, Vec3& v, ecs::Vec3Kind) override {
+        PostValue current;
+        current.type = PostValue::Type::Vector;
+        current.vector = v;
+        if (!visit(meta, current)) return false;
+        v = value_.vector;
+        return true;
+    }
+    bool field(const ecs::Meta& meta, core::Vec2& v, float) override {
+        PostValue current;
+        current.type = PostValue::Type::Vector;
+        current.vector = Vec3{v.x, v.y, 0.0f};
+        if (!visit(meta, current)) return false;
+        v = core::Vec2{value_.vector.x, value_.vector.y};
+        return true;
+    }
+    bool enumeration(const ecs::Meta& meta, int& v, std::span<const char* const> names) override {
+        PostValue current;
+        current.type = PostValue::Type::Text;
+        current.text = v >= 0 && v < static_cast<int>(names.size()) ? names[static_cast<std::size_t>(v)] : "";
+        for (const char* name : names) current.choices.emplace_back(name);
+        if (!visit(meta, current)) return false;
+        for (std::size_t i = 0; i < names.size(); ++i) {
+            if (lower(names[i]) == lower(value_.text)) {
+                if (static_cast<int>(i) == v) return false;
+                v = static_cast<int>(i);
+                return true;
+            }
+        }
+        error_ = "'" + value_.text + "' no es un valor de " + key_;
+        return false;
+    }
+    bool asset(const ecs::Meta&, assets::AssetRef&, assets::AssetType) override { return false; }
+
+    // Collect: clave -> valor de todos los campos, en orden.
+    const std::vector<std::pair<std::string, PostValue>>& fields() const { return fields_; }
+    bool found() const { return found_; }
+    const PostValue& value() const { return value_; }
+    const std::string& error() const { return error_; }
+
+private:
+    // true si hay que escribir `value_` en el campo (modo Set y es su clave).
+    bool visit(const ecs::Meta& meta, PostValue& current) {
+        if (skipping_ || meta.key == nullptr) return false;
+        const std::string key = meta.key;
+        if (key.rfind("override_", 0) == 0) return false;
+        switch (mode_) {
+            case Mode::Collect:
+                fields_.emplace_back(key, current);
+                return false;
+            case Mode::Get:
+                if (key == key_) {
+                    found_ = true;
+                    value_ = current;
+                }
+                return false;
+            case Mode::Set:
+                if (key != key_) return false;
+                found_ = true;
+                if (!convert(current)) return false;
+                return true;
+        }
+        return false;
+    }
+
+    // Adapta el valor de Lua al tipo del campo (un numero vale para una
+    // casilla, true/false para un numero...).
+    bool convert(const PostValue& target) {
+        using T = PostValue::Type;
+        if (target.type == value_.type) return true;
+        if (target.type == T::Bool && value_.type == T::Number) {
+            value_.flag = value_.number != 0.0;
+            return true;
+        }
+        if (target.type == T::Number && value_.type == T::Bool) {
+            value_.number = value_.flag ? 1.0 : 0.0;
+            return true;
+        }
+        if (target.type == T::Vector && value_.type == T::Number) {
+            const float n = static_cast<float>(value_.number);
+            value_.vector = Vec3{n, n, n};
+            return true;
+        }
+        if (target.type == T::Text && value_.type == T::Number && !target.choices.empty()) {
+            const int index = static_cast<int>(value_.number);
+            if (index >= 0 && index < static_cast<int>(target.choices.size())) {
+                value_.text = target.choices[static_cast<std::size_t>(index)];
+                return true;
+            }
+        }
+        error_ = "tipo de valor equivocado para " + key_;
+        return false;
+    }
+
+    Mode mode_;
+    std::string key_;
+    PostValue value_;
+    bool skipping_ = false;
+    bool found_ = false;
+    std::string error_;
+    std::vector<std::pair<std::string, PostValue>> fields_;
+};
 
 }  // namespace
 
@@ -134,6 +304,7 @@ struct ScriptSystem::Impl {
     audio::AudioSystem* audio = nullptr;
     navigation::NavigationSystem* navigation = nullptr;
     voxel::VoxelSystem* voxels = nullptr;
+    GraphicsHost* graphics = nullptr;
     CursorLockCallback cursor_lock;
     bool cursor_locked = false;
     LogCallback log;
@@ -463,6 +634,46 @@ struct ScriptSystem::Impl {
             "playSound", [this](LuaEntity& e) { if (auto x = e.get(); x.valid() && audio != nullptr) audio->play(x); },
             "stopSound", [this](LuaEntity& e) { if (auto x = e.get(); x.valid() && audio != nullptr) audio->stop(x); },
             "isPlayingSound", [this](const LuaEntity& e) { const ecs::Entity x = e.get(); return x.valid() && audio != nullptr && audio->isPlaying(x); },
+            // Efectos del AudioSource: e:setSoundEffect("lowpass"|"highpass"|"echo"|"reverb"|"occlusion", activo, valor)
+            "setSoundEffect", [](LuaEntity& e, const std::string& name, bool enabled, sol::optional<float> value) {
+                ecs::Entity x = e.get();
+                audio::AudioSource* a = x.valid() ? x.tryGet<audio::AudioSource>() : nullptr;
+                if (a == nullptr) return false;
+                const std::string n = lower(name);
+                if (n == "lowpass") {
+                    a->low_pass = enabled;
+                    if (value) a->low_pass_cutoff = *value;
+                } else if (n == "highpass") {
+                    a->high_pass = enabled;
+                    if (value) a->high_pass_cutoff = *value;
+                } else if (n == "echo") {
+                    a->echo = enabled;
+                    if (value) a->echo_delay = *value;
+                } else if (n == "reverb") {
+                    a->reverb_send = enabled ? value.value_or(1.0f) : 0.0f;
+                } else if (n == "occlusion") {
+                    a->occlusion = enabled;
+                } else {
+                    return false;
+                }
+                return true;
+            },
+            // Paredes que tapan ahora este sonido (-1 si no suena).
+            "soundOcclusion", sol::property([this](const LuaEntity& e) {
+                const ecs::Entity x = e.get();
+                return x.valid() && audio != nullptr ? audio->occlusionOf(x) : -1.0f;
+            }),
+            // La oclusion del AudioListener de esta entidad (camara): on/off.
+            "audioOcclusion", sol::property(
+                [](const LuaEntity& e) {
+                    const ecs::Entity x = e.get();
+                    const audio::AudioListener* l = x.valid() ? x.tryGet<audio::AudioListener>() : nullptr;
+                    return l != nullptr && l->occlusion;
+                },
+                [](LuaEntity& e, bool on) {
+                    ecs::Entity x = e.get();
+                    if (audio::AudioListener* l = x.valid() ? x.tryGet<audio::AudioListener>() : nullptr) l->occlusion = on;
+                }),
             "playAnimation", [](LuaEntity& e, const std::string& clip, sol::optional<bool> loop) {
                 ecs::Entity x = e.get();
                 if (!x.valid()) return;
@@ -816,12 +1027,36 @@ struct ScriptSystem::Impl {
 
         bindVoxel(L);
         bindMesh(L);
+        bindGraphics(L);
 
         // Audio
         sol::table au = L.create_named_table("Audio");
         au["playOneShot"] = [this](const std::string& clip, sol::optional<Vec3> position, sol::optional<float> volume) {
             if (audio != nullptr) audio->playOneShot(clip, position.value_or(Vec3{}), volume.value_or(1.0f), position.has_value());
         };
+        // Oclusion y paso bajo general de los AudioListener de la escena.
+        au["setOcclusion"] = [this](bool on) {
+            if (world == nullptr) return;
+            for (const entt::entity h : world->registry().view<audio::AudioListener>()) {
+                world->registry().get<audio::AudioListener>(h).occlusion = on;
+            }
+        };
+        au["occlusion"] = [this]() {
+            if (world == nullptr) return false;
+            for (const entt::entity h : world->registry().view<audio::AudioListener>()) {
+                return world->registry().get<audio::AudioListener>(h).occlusion;
+            }
+            return false;
+        };
+        au["setLowPass"] = [this](bool on, sol::optional<float> cutoff) {
+            if (world == nullptr) return;
+            for (const entt::entity h : world->registry().view<audio::AudioListener>()) {
+                audio::AudioListener& l = world->registry().get<audio::AudioListener>(h);
+                l.low_pass = on;
+                if (cutoff) l.low_pass_cutoff = *cutoff;
+            }
+        };
+        au["reverbLevel"] = [this]() { return audio != nullptr ? audio->reverbLevel() : 0.0f; };
 
         // Debug / print
         const auto joined = [](sol::variadic_args args, sol::this_state s) {
@@ -846,6 +1081,296 @@ struct ScriptSystem::Impl {
         if (on == cursor_locked) return;
         cursor_locked = on;
         if (cursor_lock) cursor_lock(on);
+    }
+
+    // --- Graphics: la configuracion grafica (QualitySettings + Screen de Unity) ---
+    //   Graphics.setQuality("Baja")          calidades rapidas
+    //   Graphics.vsync = true                 cualquier opcion por su clave
+    //   Graphics.set{ textures = 2048, shadows = true }
+    //   Graphics.post.bloom = false           post-procesado global de la escena
+    //   Graphics.save()                       el juego la recupera al abrirse
+    // Las opciones las da el host (setGraphics); sin host las funciones
+    // avisan y no hacen nada.
+
+    // Volumen de post-procesado global que manda (el de mayor prioridad).
+    // Si la escena no tiene, se crea uno al cambiar algo.
+    ecs::Entity globalPostVolume(bool create) {
+        if (world == nullptr) return {};
+        ecs::Entity best;
+        int best_priority = 0;
+        for (const entt::entity h : world->registry().view<ecs::PostProcessing>()) {
+            const ecs::PostProcessing& p = world->registry().get<ecs::PostProcessing>(h);
+            if (!p.isGlobal()) continue;
+            if (!best.valid() || p.priority > best_priority) {
+                best = world->wrap(h);
+                best_priority = p.priority;
+            }
+        }
+        if (!best.valid() && create) {
+            best = world->create("Post-procesado global");
+            best.add<ecs::PostProcessing>();
+        }
+        return best;
+    }
+
+    bool reflectPost(ecs::Entity e, PostFieldVisitor& visitor) {
+        const ecs::ComponentType* type = ecs::ComponentRegistry::instance().find("PostProcessing");
+        if (type == nullptr || !e.valid() || world == nullptr) return false;
+        return type->reflect(*world, e.handle(), visitor);
+    }
+
+    // 2048 y no 2048.0 al imprimirlo (Lua 5.4 distingue enteros).
+    static sol::object numberToLua(sol::state_view L, double n) {
+        if (std::floor(n) == n && std::abs(n) < 9.0e15) return sol::make_object(L, static_cast<long long>(n));
+        return sol::make_object(L, n);
+    }
+
+    static sol::object postToLua(sol::state_view L, const PostValue& v) {
+        switch (v.type) {
+            case PostValue::Type::Bool: return sol::make_object(L, v.flag);
+            case PostValue::Type::Number: return numberToLua(L, v.number);
+            case PostValue::Type::Text: return sol::make_object(L, v.text);
+            case PostValue::Type::Vector: return sol::make_object(L, v.vector);
+            case PostValue::Type::None: break;
+        }
+        return sol::lua_nil;
+    }
+
+    static bool postFromLua(const sol::object& o, PostValue& out) {
+        switch (o.get_type()) {
+            case sol::type::boolean: out.type = PostValue::Type::Bool; out.flag = o.as<bool>(); return true;
+            case sol::type::number: out.type = PostValue::Type::Number; out.number = o.as<double>(); return true;
+            case sol::type::string: out.type = PostValue::Type::Text; out.text = o.as<std::string>(); return true;
+            default:
+                if (o.is<Vec3>()) {
+                    out.type = PostValue::Type::Vector;
+                    out.vector = o.as<Vec3>();
+                    return true;
+                }
+                return false;
+        }
+    }
+
+    static sol::object graphicsToLua(sol::state_view L, const GraphicsValue& v) {
+        if (const bool* b = std::get_if<bool>(&v)) return sol::make_object(L, *b);
+        if (const double* d = std::get_if<double>(&v)) return numberToLua(L, *d);
+        return sol::make_object(L, std::get<std::string>(v));
+    }
+
+    static bool graphicsFromLua(const sol::object& o, GraphicsValue& out) {
+        switch (o.get_type()) {
+            case sol::type::boolean: out = o.as<bool>(); return true;
+            case sol::type::number: out = o.as<double>(); return true;
+            case sol::type::string: out = o.as<std::string>(); return true;
+            default: return false;
+        }
+    }
+
+    // Graphics.set / Graphics.<clave> = valor. Devuelve si se aplico.
+    bool setGraphicsOption(const std::string& key, const sol::object& value) {
+        if (graphics == nullptr) {
+            write(1, "Graphics: este programa no permite cambiar la configuracion grafica");
+            return false;
+        }
+        GraphicsValue v;
+        if (!graphicsFromLua(value, v)) {
+            write(1, "Graphics." + key + ": el valor debe ser true/false, un numero o un texto");
+            return false;
+        }
+        std::string error;
+        if (!graphics->set(key, v, error)) {
+            write(1, "Graphics." + key + ": " + error);
+            return false;
+        }
+        return true;
+    }
+
+    sol::object getGraphicsOption(sol::state_view L, const std::string& key) {
+        if (graphics == nullptr) return sol::lua_nil;
+        for (const GraphicsOption& o : graphics->options()) {
+            if (o.key == key) return graphicsToLua(L, o.value);
+        }
+        return sol::lua_nil;
+    }
+
+    bool setPostField(const std::string& key, const sol::object& value) {
+        PostValue v;
+        if (!postFromLua(value, v)) {
+            write(1, "Graphics.post." + key + ": valor no valido");
+            return false;
+        }
+        ecs::Entity volume = globalPostVolume(true);
+        if (!volume.valid()) return false;
+        PostFieldVisitor visitor(PostFieldVisitor::Mode::Set, key, v);
+        reflectPost(volume, visitor);
+        if (!visitor.found()) {
+            write(1, "Graphics.post: no existe '" + key + "' (mira Graphics.postKeys())");
+            return false;
+        }
+        if (!visitor.error().empty()) {
+            write(1, "Graphics.post." + key + ": " + visitor.error());
+            return false;
+        }
+        return true;
+    }
+
+    sol::object getPostField(sol::state_view L, const std::string& key) {
+        ecs::Entity volume = globalPostVolume(false);
+        if (!volume.valid()) {
+            // Sin volumen: los valores por defecto del motor.
+            ecs::World scratch;
+            ecs::Entity temp = scratch.create("temp");
+            temp.add<ecs::PostProcessing>();
+            PostFieldVisitor visitor(PostFieldVisitor::Mode::Get, key);
+            const ecs::ComponentType* type = ecs::ComponentRegistry::instance().find("PostProcessing");
+            if (type != nullptr) type->reflect(scratch, temp.handle(), visitor);
+            return visitor.found() ? postToLua(L, visitor.value()) : sol::object(sol::lua_nil);
+        }
+        PostFieldVisitor visitor(PostFieldVisitor::Mode::Get, key);
+        reflectPost(volume, visitor);
+        return visitor.found() ? postToLua(L, visitor.value()) : sol::object(sol::lua_nil);
+    }
+
+    void bindGraphics(sol::state& L) {
+        sol::table g = L.create_named_table("Graphics");
+        sol::state* S = &L;
+
+        g["get"] = [this, S](const std::string& key) { return getGraphicsOption(*S, key); };
+        // Graphics.set("vsync", true) o Graphics.set{ vsync = true, textures = 2048 }.
+        g["set"] = [this](sol::object first, sol::optional<sol::object> second) {
+            if (first.get_type() == sol::type::table) {
+                bool all = true;
+                for (const auto& [k, v] : first.as<sol::table>()) {
+                    if (k.get_type() == sol::type::string) all = setGraphicsOption(k.as<std::string>(), v) && all;
+                }
+                return all;
+            }
+            if (first.get_type() != sol::type::string || !second) {
+                write(1, "Graphics.set: usa Graphics.set(\"clave\", valor) o Graphics.set{ clave = valor }");
+                return false;
+            }
+            return setGraphicsOption(first.as<std::string>(), *second);
+        };
+        g["getAll"] = [this, S]() {
+            sol::table t = S->create_table();
+            if (graphics != nullptr) {
+                for (const GraphicsOption& o : graphics->options()) t[o.key] = graphicsToLua(*S, o.value);
+            }
+            return t;
+        };
+        // Lista para montar un menu de opciones: clave, valor, si se puede
+        // cambiar, descripcion y valores posibles.
+        g["options"] = [this, S]() {
+            sol::table list = S->create_table();
+            if (graphics == nullptr) return list;
+            int i = 1;
+            for (const GraphicsOption& o : graphics->options()) {
+                sol::table item = S->create_table();
+                item["key"] = o.key;
+                item["value"] = graphicsToLua(*S, o.value);
+                item["writable"] = o.writable;
+                item["description"] = o.description;
+                if (!o.choices.empty()) {
+                    sol::table choices = S->create_table();
+                    for (std::size_t c = 0; c < o.choices.size(); ++c) choices[c + 1] = o.choices[c];
+                    item["choices"] = choices;
+                }
+                list[i++] = item;
+            }
+            return list;
+        };
+        g["setQuality"] = [this](sol::object level) {
+            if (graphics == nullptr) {
+                write(1, "Graphics: este programa no permite cambiar la configuracion grafica");
+                return false;
+            }
+            std::string name;
+            if (level.get_type() == sol::type::number) {
+                // 0..3 como el QualitySettings.SetQualityLevel de Unity.
+                const std::vector<std::string> levels = graphics->qualityLevels();
+                const int index = level.as<int>();
+                if (index >= 0 && index < static_cast<int>(levels.size())) name = levels[static_cast<std::size_t>(index)];
+            } else if (level.get_type() == sol::type::string) {
+                name = level.as<std::string>();
+            }
+            std::string error;
+            if (name.empty() || !graphics->setQuality(name, error)) {
+                write(1, "Graphics.setQuality: " + (error.empty() ? std::string("calidad desconocida") : error));
+                return false;
+            }
+            return true;
+        };
+        g["getQuality"] = [this]() { return graphics != nullptr ? graphics->quality() : std::string(); };
+        g["qualityLevels"] = [this, S]() {
+            sol::table t = S->create_table();
+            if (graphics != nullptr) {
+                int i = 1;
+                for (const std::string& level : graphics->qualityLevels()) t[i++] = level;
+            }
+            return t;
+        };
+        g["resolutions"] = [this, S]() {
+            sol::table t = S->create_table();
+            if (graphics != nullptr) {
+                int i = 1;
+                for (const auto& [w, h] : graphics->resolutions()) {
+                    sol::table r = S->create_table();
+                    r["width"] = w;
+                    r["height"] = h;
+                    t[i++] = r;
+                }
+            }
+            return t;
+        };
+        g["save"] = [this]() {
+            if (graphics == nullptr) return false;
+            std::string error;
+            if (!graphics->save(error)) {
+                if (!error.empty()) write(1, "Graphics.save: " + error);
+                return false;
+            }
+            return true;
+        };
+
+        // Post-procesado global: Graphics.post.bloom = false,
+        // Graphics.getPost("exposure_compensation"), Graphics.postKeys().
+        g["getPost"] = [this, S](const std::string& key) { return getPostField(*S, key); };
+        g["setPost"] = [this](const std::string& key, sol::object value) { return setPostField(key, value); };
+        g["postKeys"] = [S]() {
+            // Las claves son las mismas en todos los volumenes: las de uno nuevo.
+            ecs::World scratch;
+            ecs::Entity temp = scratch.create("temp");
+            temp.add<ecs::PostProcessing>();
+            PostFieldVisitor visitor(PostFieldVisitor::Mode::Collect);
+            if (const ecs::ComponentType* type = ecs::ComponentRegistry::instance().find("PostProcessing")) {
+                type->reflect(scratch, temp.handle(), visitor);
+            }
+            sol::table t = S->create_table();
+            int i = 1;
+            for (const auto& field : visitor.fields()) t[i++] = field.first;
+            return t;
+        };
+        sol::table post = S->create_table();
+        sol::table post_meta = S->create_table();
+        post_meta[sol::meta_function::index] = [this, S](sol::table, const std::string& key) {
+            return getPostField(*S, key);
+        };
+        post_meta[sol::meta_function::new_index] = [this](sol::table, const std::string& key, sol::object value) {
+            setPostField(key, value);
+        };
+        post[sol::metatable_key] = post_meta;
+        g["post"] = post;
+
+        // Graphics.vsync, Graphics.textures = 2048...: las claves que no son
+        // funciones van a las opciones.
+        sol::table meta = S->create_table();
+        meta[sol::meta_function::index] = [this, S](sol::table, const std::string& key) {
+            return getGraphicsOption(*S, key);
+        };
+        meta[sol::meta_function::new_index] = [this](sol::table, const std::string& key, sol::object value) {
+            setGraphicsOption(key, value);
+        };
+        g[sol::metatable_key] = meta;
     }
 
     // Voxel: el mundo de bloques. Los bloques se nombran por su id (numero) o
@@ -1316,6 +1841,7 @@ void ScriptSystem::setPhysics(physics::PhysicsSystem* physics) { impl_->physics 
 void ScriptSystem::setAudio(audio::AudioSystem* audio) { impl_->audio = audio; }
 void ScriptSystem::setNavigation(navigation::NavigationSystem* navigation) { impl_->navigation = navigation; }
 void ScriptSystem::setVoxels(voxel::VoxelSystem* voxels) { impl_->voxels = voxels; }
+void ScriptSystem::setGraphics(GraphicsHost* graphics) { impl_->graphics = graphics; }
 void ScriptSystem::setCursorLock(CursorLockCallback callback) { impl_->cursor_lock = std::move(callback); }
 bool ScriptSystem::cursorLocked() const { return impl_->cursor_locked; }
 void ScriptSystem::releaseCursor() { impl_->lockCursor(false); }

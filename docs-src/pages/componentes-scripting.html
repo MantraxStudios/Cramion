@@ -1,0 +1,33 @@
+<p>El componente Script y los que usan los prefabs. Referencia completa generada desde el motor.</p>
+<h3 id="Script">Script (Lua) <code>Script</code></h3>
+<p>Un script de Lua (<code>.lua</code> en Assets) y los valores de sus <code>properties</code> para esta entidad. Ver <a href="primer-script.html">Tu primer script</a>.</p>
+<table>
+  <thead><tr><th>Propiedad</th><th>Tipo</th><th>Por defecto</th><th>Valores</th><th>Descripcion</th></tr></thead>
+  <tbody>
+    <tr><td>Script<br><code>file</code></td><td>texto</td><td>(vacio)</td><td></td><td>Archivo .lua en Assets</td></tr>
+    <tr><td>Activo<br><code>enabled</code></td><td>si/no</td><td>si</td><td></td><td></td></tr>
+    <tr><td colspan="5"><strong class="text-white">Propiedades (lista)</strong> <code>properties</code></td></tr>
+    <tr><td>&nbsp;&nbsp;&nbsp;Nombre<br><code>name</code></td><td>texto</td><td>(vacio)</td><td></td><td></td></tr>
+    <tr><td>&nbsp;&nbsp;&nbsp;Tipo<br><code>type</code></td><td>entero</td><td>0</td><td>0 a 3</td><td></td></tr>
+    <tr><td>&nbsp;&nbsp;&nbsp;Valor<br><code>value</code></td><td>texto</td><td>(vacio)</td><td></td><td></td></tr>
+  </tbody>
+</table>
+<h3 id="PrefabInstance">Instancia de prefab <code>PrefabInstance</code></h3>
+<p>Lo pone el editor en la raiz de cada instancia de un prefab: que prefab, en que revision y sus cambios propios. No se anade a mano. Ver <a href="prefabs.html">Prefabs</a>.</p>
+<table>
+  <thead><tr><th>Propiedad</th><th>Tipo</th><th>Por defecto</th><th>Valores</th><th>Descripcion</th></tr></thead>
+  <tbody>
+    <tr><td>Prefab<br><code>prefab</code></td><td>asset (Prefab)</td><td>(ninguno)</td><td>arrastrar desde el Proyecto</td><td>El asset .crprefab de esta instancia</td></tr>
+    <tr><td>Revision<br><code>revision</code></td><td>entero</td><td>0</td><td>0 a 1073741824</td><td></td></tr>
+    <tr><td colspan="5"><strong class="text-white">Cambios propios (lista)</strong> <code>overrides</code></td></tr>
+    <tr><td>&nbsp;&nbsp;&nbsp;Clave<br><code>key</code></td><td>texto</td><td>(vacio)</td><td></td><td></td></tr>
+  </tbody>
+</table>
+<h3 id="PrefabLink">Enlace de prefab <code>PrefabLink</code></h3>
+<p>Lo pone el editor en cada entidad de una instancia: a que entidad del prefab corresponde.</p>
+<table>
+  <thead><tr><th>Propiedad</th><th>Tipo</th><th>Por defecto</th><th>Valores</th><th>Descripcion</th></tr></thead>
+  <tbody>
+    <tr><td>Entidad del prefab<br><code>source</code></td><td>texto</td><td>(vacio)</td><td></td><td></td></tr>
+  </tbody>
+</table>

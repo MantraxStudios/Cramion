@@ -17,6 +17,31 @@ Incluye dos escenas de demostración, iluminadas por una sola luz direccional (e
 
 ---
 
+## Novedades de la 0.6
+
+**Editor**
+- **Pestañas de trabajo** bajo el menú (como Unreal): la Escena, y una pestaña por cada **prefab** (se edita aislado y al guardar se actualizan todas sus instancias) o **script** abierto.
+- **Pintar prefabs** (tecla **B**): árboles, rocas o cofres con su script y collider, con grupos `.crpaint`, pesos, escala y giro aleatorios, densidad, separación y pendiente máxima.
+- **Volúmenes de post-procesado** como los de Unity: global, caja o esfera, con mezcla, peso, prioridad y secciones que se sobrescriben.
+- **Configuraciones de compilación** (Build Profiles): nombre del juego, versión, **icono dentro del .exe**, escena inicial y modo de ventana.
+- Abrir un proyecto ya no congela la ventana (barra de progreso, modelos cargados en otro hilo) y un Add Component nuevo en rejilla.
+
+**Animación**
+- **IK**: manos y pies a un objetivo, mirar, **pies en el suelo** y cadenas para esqueletos no humanos.
+- **Animación procedural**: huesos con muelle (pelo, colas, capas), **patas procedurales** de araña o robot, respirar e inclinarse.
+- **Humanoides y retargeting** como el Avatar de Unity: un clip de un humanoide sirve para otro aunque sus huesos se llamen distinto.
+
+**Audio**
+- **Oclusión** por paredes, efectos por fuente (paso bajo y alto, eco), **Audio Reverb Zone** y paso bajo general.
+
+**Agua y render**
+- **Olas interactivas**: todo lo que cruza el agua la empuja, salpica y deja estela; lo quieto hace rebotar las ondas. Cáusticas también bajo el agua.
+- **Sombras de contacto** rehechas: sin escalones ni deformación al mover la cámara, solo el detalle que las cascadas no ven.
+- **El polvo volumétrico** ahora recibe también la luz del cielo: se ve en todas direcciones, no solo mirando al sol.
+- Revisión de todos los shaders (recorte alfa, terreno, normales con escala no uniforme, TAA, SSR).
+
+**Plantilla MMO RPG** con todo el juego en Lua (combate, misiones, inventario, tienda, jefe, bots, minimapa) y un **manual completo**: guía del editor y la referencia de los 46 componentes generada desde el motor (60 páginas).
+
 ## Novedades de la 0.5.1
 
 **Gizmos que se ven y se usan como en Unreal**
@@ -61,6 +86,7 @@ Incluye dos escenas de demostración, iluminadas por una sola luz direccional (e
 
 ## Índice
 
+- [Novedades de la 0.6](#novedades-de-la-06)
 - [Novedades de la 0.5.1](#novedades-de-la-051)
 - [Novedades de la 0.5](#novedades-de-la-05)
 - [Requisitos](#requisitos)

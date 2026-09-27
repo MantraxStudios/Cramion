@@ -80,16 +80,24 @@ void main() {
     float roughness = 0.0;
     float metallic = 0.0;
     int layers = int(terrain.info.w);
+    // Derivadas del patron FUERA del bucle: dentro, las capas que se saltan
+    // (peso casi 0) dejan a los vecinos del cuadro 2x2 sin derivadas y el mip
+    // de texture() salia indefinido justo en la mezcla entre capas (brillos y
+    // costuras). Cada capa usa textureGrad con estas derivadas a su escala.
+    vec2 pattern_dx = dFdx(pattern_xz);
+    vec2 pattern_dy = dFdy(pattern_xz);
     for (int i = 0; i < 8; ++i) {
         float w = weights[i] / total;
         if (w < 0.002 || i >= layers) continue;
         vec4 p = terrain.layer_params[i];
         vec2 uv = pattern_xz / p.x;
+        vec2 uv_dx = pattern_dx / p.x;
+        vec2 uv_dy = pattern_dy / p.x;
         vec3 color;
         if (terrain.layer_tint[i].a > 0.5) {
             // Dos escalas mezcladas: la repeticion de la textura no se nota.
-            vec3 near_color = texture(layer_albedo, vec3(uv, float(i))).rgb;
-            vec3 far_color = texture(layer_albedo, vec3(uv * 0.23 + 0.37, float(i))).rgb;
+            vec3 near_color = textureGrad(layer_albedo, vec3(uv, float(i)), uv_dx, uv_dy).rgb;
+            vec3 far_color = textureGrad(layer_albedo, vec3(uv * 0.23 + 0.37, float(i)), uv_dx * 0.23, uv_dy * 0.23).rgb;
             float mix_amount = smoothstep(0.3, 0.7, valueNoise(pattern_xz * 0.05 + float(i) * 13.0));
             color = mix(near_color, far_color, mix_amount * 0.45);
         } else {
@@ -100,7 +108,7 @@ void main() {
         albedo += color * terrain.layer_tint[i].rgb * w;
         vec3 tn = vec3(0.0, 0.0, 1.0);
         if (terrain.layer_extra[i].x > 0.5) {
-            vec2 xy = texture(layer_normal, vec3(uv, float(i))).xy * 2.0 - 1.0;
+            vec2 xy = textureGrad(layer_normal, vec3(uv, float(i)), uv_dx, uv_dy).xy * 2.0 - 1.0;
             xy *= p.w;
             tn = vec3(xy, sqrt(max(1.0 - dot(xy, xy), 0.0)));
         }

@@ -1,10 +1,13 @@
 #include "CramionCore/ecs/AnimatorController.h"
 
+#include "CramionCore/anim/Humanoid.h"
+
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
 #include <cmath>
 #include <fstream>
+#include <iostream>
 #include <sstream>
 
 namespace cramion::ecs {
@@ -272,6 +275,8 @@ bool saveAnimationClip(const asset::ModelData& model, const asset::AnimationClip
     header["name"] = clip.name;
     header["duration"] = clip.duration;
     header["channels"] = clip.channels.size();
+    // Humanoide: se puede usar en otro humanoide (se convierte al cargarlo).
+    header["humanoid"] = humanoid::isHumanoid(model.nodes);
 
     json channels = json::array();
     for (const asset::AnimationChannel& channel : clip.channels) {
@@ -289,6 +294,17 @@ bool saveAnimationClip(const asset::ModelData& model, const asset::AnimationClip
     }
     json body;
     body["channels"] = std::move(channels);
+    // El esqueleto de origen (nombres, jerarquia y reposo): hace falta para
+    // pasar el clip a otro esqueleto humanoide con otros nombres.
+    json skeleton = json::array();
+    for (const asset::Node& node : model.nodes) {
+        json m = json::array();
+        for (int c = 0; c < 4; ++c) {
+            for (int r = 0; r < 4; ++r) m.push_back(node.local.m[c][r]);
+        }
+        skeleton.push_back({{"n", node.name}, {"p", node.parent}, {"m", std::move(m)}});
+    }
+    body["skeleton"] = std::move(skeleton);
     // Linea 1: cabecera (la lee la base de datos); linea 2: las pistas.
     return writeText(path, header.dump() + "\n" + body.dump() + "\n", error);
 }
@@ -310,6 +326,59 @@ bool loadAnimationClip(const std::filesystem::path& path, const asset::ModelData
     }
     std::unordered_map<std::string, int> nodes;
     for (std::size_t i = 0; i < model.nodes.size(); ++i) nodes.emplace(model.nodes[i].name, static_cast<int>(i));
+
+    // Humanoide con otros nombres de huesos: se convierte (retargeting).
+    std::size_t matched = 0;
+    for (const json& j : body["channels"]) {
+        if (nodes.contains(j.value("node", std::string{}))) ++matched;
+    }
+    const std::size_t total = body["channels"].size();
+    if (total > 0 && matched * 10 < total * 8 && body.contains("skeleton") && body["skeleton"].is_array()) {
+        std::vector<asset::Node> source;
+        std::unordered_map<std::string, int> source_index;
+        for (const json& n : body["skeleton"]) {
+            asset::Node node;
+            node.name = n.value("n", std::string{});
+            node.parent = n.value("p", -1);
+            if (const auto m = n.find("m"); m != n.end() && m->is_array() && m->size() == 16) {
+                for (int c = 0; c < 4; ++c) {
+                    for (int r = 0; r < 4; ++r) node.local.m[c][r] = (*m)[static_cast<std::size_t>(c * 4 + r)].get<float>();
+                }
+            }
+            source_index.emplace(node.name, static_cast<int>(source.size()));
+            source.push_back(std::move(node));
+        }
+        asset::AnimationClip source_clip;
+        source_clip.name = header.value("name", std::string{});
+        source_clip.duration = header.value("duration", 0.0f);
+        for (const json& j : body["channels"]) {
+            const auto node = source_index.find(j.value("node", std::string{}));
+            if (node == source_index.end()) continue;
+            asset::AnimationChannel channel;
+            channel.node = node->second;
+            for (const json& k : j.value("p", json::array())) {
+                if (k.size() == 4) channel.positions.push_back({k[0].get<float>(), {k[1].get<float>(), k[2].get<float>(), k[3].get<float>()}});
+            }
+            for (const json& k : j.value("r", json::array())) {
+                if (k.size() == 5) {
+                    channel.rotations.push_back(
+                        {k[0].get<float>(), {k[1].get<float>(), k[2].get<float>(), k[3].get<float>(), k[4].get<float>()}});
+                }
+            }
+            for (const json& k : j.value("s", json::array())) {
+                if (k.size() == 4) channel.scales.push_back({k[0].get<float>(), {k[1].get<float>(), k[2].get<float>(), k[3].get<float>()}});
+            }
+            source_clip.channels.push_back(std::move(channel));
+        }
+        std::string why;
+        if (humanoid::retargetClip(source, source_clip, model.nodes, out, &why)) {
+            std::cout << "[Animacion] " << source_clip.name << ": convertido de otro humanoide ("
+                      << out.channels.size() << " huesos)\n";
+            return true;
+        }
+        // No son humanoides: sigue con lo que coincida por nombre.
+        if (error) *error = why;
+    }
 
     asset::AnimationClip clip;
     clip.name = header.value("name", std::string{});

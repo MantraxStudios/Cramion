@@ -47,6 +47,14 @@ public:
     // Una matriz por hueso de asset::ModelData::bones, en espacio del modelo.
     const std::vector<core::Mat4>& boneMatrices() const { return bone_matrices_; }
 
+    // Pose de cada nodo (espacio del padre y del modelo) tras evaluate(): la
+    // cinematica inversa la retoca y luego rehace las matrices con
+    // updateBones().
+    std::vector<core::Mat4>& locals() { return local_; }
+    std::vector<core::Mat4>& globals() { return global_; }
+    const asset::ModelData* model() const { return model_; }
+    void updateBones();
+
     float time() const { return time_; }
     void setTime(float seconds);
     void setSpeed(float speed) { speed_ = speed; }

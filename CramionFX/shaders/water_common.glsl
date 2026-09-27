@@ -13,8 +13,43 @@ struct WaterBody {
 
 layout(set = 1, binding = 0) uniform WaterBuffer {
     vec4 time_count;  // x = tiempo
+    vec4 ripple;      // olas interactivas: xy = esquina (x, z), z = celda (m), w = lado (0 = no hay)
     WaterBody bodies[16];
 } water;
+
+// Olas interactivas (water::RippleSimulation): alturas por filas (z).
+layout(std430, set = 1, binding = 1) readonly buffer RippleBuffer {
+    float ripple_heights[];
+};
+
+float rippleCell(ivec2 c, int n) {
+    c = clamp(c, ivec2(0), ivec2(n - 1));
+    return ripple_heights[c.y * n + c.x];
+}
+
+// Altura de las olas interactivas en (x, z) del mundo, interpolada y
+// apagada en el borde de la rejilla.
+float rippleHeight(vec2 xz) {
+    int n = int(water.ripple.w);
+    if (n < 2) return 0.0;
+    vec2 g = (xz - water.ripple.xy) / water.ripple.z;
+    if (any(lessThan(g, vec2(0.0))) || any(greaterThanEqual(g, vec2(float(n - 1))))) return 0.0;
+    ivec2 i = ivec2(floor(g));
+    vec2 f = g - vec2(i);
+    float a = mix(rippleCell(i, n), rippleCell(i + ivec2(1, 0), n), f.x);
+    float b = mix(rippleCell(i + ivec2(0, 1), n), rippleCell(i + ivec2(1, 1), n), f.x);
+    vec2 edge = min(g, vec2(float(n - 1)) - g);
+    float fade = smoothstep(0.0, 10.0, min(edge.x, edge.y));
+    return mix(a, b, f.y) * fade;
+}
+
+// Pendiente (dh/dx, dh/dz) de las olas interactivas.
+vec2 rippleSlope(vec2 xz) {
+    if (water.ripple.w < 2.0) return vec2(0.0);
+    float e = water.ripple.z;
+    return vec2(rippleHeight(xz + vec2(e, 0.0)) - rippleHeight(xz - vec2(e, 0.0)),
+                rippleHeight(xz + vec2(0.0, e)) - rippleHeight(xz - vec2(0.0, e))) / (2.0 * e);
+}
 
 layout(push_constant) uniform PushConstants {
     uint body;
@@ -23,6 +58,22 @@ layout(push_constant) uniform PushConstants {
 } push;
 
 const float kWaterPi = 3.14159265358979;
+
+// Causticas: la luz del sol que las olas concentran en el fondo (0 .. ~4).
+// Las usan water.frag (el fondo visto a traves de la superficie) y
+// water_under.frag (lo que hay bajo el agua visto desde dentro).
+float caustic(vec2 p, float t) {
+    vec2 q = p * 0.7;
+    float c = 0.0;
+    float s = 1.0;
+    for (int i = 0; i < 3; ++i) {
+        q += vec2(sin(q.y * 1.7 + t * 0.9), cos(q.x * 1.3 - t * 0.7)) * 0.55;
+        c += abs(sin(q.x) * cos(q.y)) * s;
+        s *= 0.6;
+        q *= 1.9;
+    }
+    return pow(clamp(1.0 - c * 0.55, 0.0, 1.0), 5.0) * 4.0;
+}
 
 // Oleaje: espectro JONSWAP (el del mar real, medido en el Mar del Norte)
 // muestreado en 24 ondas de Gerstner. Longitudes de 2 a 0.06 veces la

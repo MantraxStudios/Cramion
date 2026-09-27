@@ -61,6 +61,7 @@ void EditorApp::drawToolbar() {
     ImGui::SameLine();
     if (icon_button("R##scale", Icon::Scale, gizmo_ == GizmoOperation::Scale, "Escalar (R)")) gizmo_ = GizmoOperation::Scale;
     drawStampToolbar();
+    drawPaintToolbar();
     ImGui::SameLine();
     ImGui::TextDisabled("|");
     ImGui::SameLine();
@@ -105,10 +106,10 @@ void EditorApp::drawSceneView() {
         preferred_view_ = kSceneSlot;
     }
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
-    const bool open = ImGui::Begin("Escena", nullptr,
+    const bool open = ImGui::Begin(panelTitle("Escena").c_str(), nullptr,
                                    ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
     ImGui::PopStyleVar();
-    scene_dock_id_ = ImGui::GetWindowDockID();
+    if (activeWorkspaceKind() == WorkspaceKind::Scene) scene_dock_id_ = ImGui::GetWindowDockID();
     scene_view_visible_ = open;
     overlay_.clear();
     if (!open) {
@@ -244,6 +245,8 @@ void EditorApp::drawSceneView() {
         drawSceneOverlays();
         light_handle = drawLightGizmos();
         drawDecalGizmos();
+        drawPostVolumeGizmos();
+        drawAudioGizmos();
         drawPhysicsGizmos();
     } else {
         // Un arrastre de asa a medias no puede quedarse enganchado.
@@ -252,7 +255,7 @@ void EditorApp::drawSceneView() {
         collider_handle_drag_ = 0;
         waypoint_drag_ = 0;
     }
-    drawNavigationGizmos();
+    if (activeWorkspaceKind() == WorkspaceKind::Scene) drawNavigationGizmos();
     if (show_gizmos_) {
         const bool cinematic_handle = drawCinematicGizmos();
         const bool water_handle = drawWaterGizmos();
@@ -262,7 +265,7 @@ void EditorApp::drawSceneView() {
     // Herramienta de terreno: se queda con el raton mientras pinta.
     const bool terrain_tool = drawTerrainTool(frame_delta_);
     collider_handle = collider_handle || waypoint_handle || terrain_tool;
-    const bool stamping = drawStampTool();
+    const bool stamping = drawStampTool() || drawPrefabPaintTool();
     if (!stamping && collider_handle_drag_ == 0 && !(terrain_edit_ && terrain_tool)) drawGizmo();
     handleCameraControls();
 
@@ -301,7 +304,17 @@ void EditorApp::drawSceneView() {
         if (ImGui::IsKeyPressed(ImGuiKey_R, false)) gizmo_ = GizmoOperation::Scale;
         if (ImGui::IsKeyPressed(ImGuiKey_X, false)) gizmo_local_ = !gizmo_local_;
         if (!io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_G, false)) show_gizmos_ = !show_gizmos_;
-        if (ImGui::IsKeyPressed(ImGuiKey_T, false)) stamp_mode_ = !stamp_mode_;
+        if (ImGui::IsKeyPressed(ImGuiKey_T, false)) {
+            stamp_mode_ = !stamp_mode_;
+            if (stamp_mode_) paint_mode_ = false;
+        }
+        if (!io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_B, false)) {
+            paint_mode_ = !paint_mode_;
+            if (paint_mode_) {
+                stamp_mode_ = false;
+                show_paint_window_ = true;
+            }
+        }
         if (ImGui::IsKeyPressed(ImGuiKey_F, false)) focusSelection();
         // Supr con un punto de riel elegido borra el punto, no el objeto.
         if (ImGui::IsKeyPressed(ImGuiKey_Delete) && !deleteSelectedWaypoint()) deleteSelection();
@@ -336,7 +349,7 @@ void EditorApp::handleCameraControls() {
     }
     scene::Camera& camera = scene_.camera();
     // Con la herramienta de estampar, Ctrl/Mayus + rueda son del pincel.
-    if (view_hovered_ && io.MouseWheel != 0.0f && !(stamp_mode_ && (io.KeyCtrl || io.KeyShift))) {
+    if (view_hovered_ && io.MouseWheel != 0.0f && !(stamp_mode_ && (io.KeyCtrl || io.KeyShift)) && !(paint_mode_ && io.KeyCtrl)) {
         const float step = std::max(camera.moveSpeed() * 0.08f, 0.2f) * (io.KeyShift ? 4.0f : 1.0f);
         camera.setPosition(camera.position() + camera.forward() * (io.MouseWheel * step));
     }

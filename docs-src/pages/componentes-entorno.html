@@ -1,0 +1,98 @@
+<p>Cielo, clima, terreno, agua y mundos de bloques. Referencia completa generada desde el motor.</p>
+<h3 id="Sky">Cielo <code>Sky</code></h3>
+<p>Cielo: un mapa HDR importado o el cielo fisico con hora del dia, nubes volumetricas y ciclo dia/noche. La luz direccional de la escena hace de sol.</p>
+<table>
+  <thead><tr><th>Propiedad</th><th>Tipo</th><th>Por defecto</th><th>Valores</th><th>Descripcion</th></tr></thead>
+  <tbody>
+    <tr><td>Cielo HDR<br><code>environment</code></td><td>asset (Cielo HDR)</td><td>(ninguno)</td><td>arrastrar desde el Proyecto</td><td></td></tr>
+    <tr><td>Usar el HDR<br><code>use_hdr</code></td><td>si/no</td><td>si</td><td></td><td>Si no, cielo fisico (dispersion atmosferica)</td></tr>
+    <tr><td>Nubes volumetricas<br><code>clouds</code></td><td>si/no</td><td>si</td><td></td><td></td></tr>
+    <tr><td>Hora del dia<br><code>time_of_day</code></td><td>numero</td><td>10</td><td>0 a 24</td><td>Sin luz direccional ni HDR: posicion del sol</td></tr>
+    <tr><td>Ciclo de dia<br><code>day_cycle</code></td><td>si/no</td><td>no</td><td></td><td></td></tr>
+  </tbody>
+</table>
+<h3 id="Weather">Clima <code>Weather</code></h3>
+<p>Lluvia, suelo mojado, charcos y una zona inundada. Los <code>Decal</code> de tipo Charco se suman a los charcos de la lluvia.</p>
+<table>
+  <thead><tr><th>Propiedad</th><th>Tipo</th><th>Por defecto</th><th>Valores</th><th>Descripcion</th></tr></thead>
+  <tbody>
+    <tr><td>Lluvia<br><code>rain</code></td><td>si/no</td><td>si</td><td></td><td></td></tr>
+    <tr><td>Humedad<br><code>wetness</code></td><td>numero</td><td>0,5</td><td>0 a 1</td><td></td></tr>
+    <tr><td>Charcos<br><code>puddles</code></td><td>numero</td><td>0,5</td><td>0 a 1</td><td></td></tr>
+    <tr><td>Zona inundada<br><code>flood</code></td><td>si/no</td><td>no</td><td></td><td></td></tr>
+    <tr><td>Centro (x, z)<br><code>flood_center</code></td><td>Vec2</td><td>(0; 0)</td><td></td><td></td></tr>
+    <tr><td>Radios (x, z)<br><code>flood_radii</code></td><td>Vec2</td><td>(3; 2)</td><td></td><td></td></tr>
+  </tbody>
+</table>
+<h3 id="Terrain">Terreno <code>Terrain</code></h3>
+<p>Terreno de mapa de alturas (como el Landscape de Unreal): tamano, altura maxima, hasta 8 capas de textura y su archivo de datos (<code>.crterrain</code> en Assets). La entidad marca la esquina (x, z minimas) y la altura 0; no gira ni escala. Herramientas del Inspector: esculpir, suavizar, aplanar, rampa, ruido, erosion, terrazas, pintar capas y generar un relieve.</p>
+<table>
+  <thead><tr><th>Propiedad</th><th>Tipo</th><th>Por defecto</th><th>Valores</th><th>Descripcion</th></tr></thead>
+  <tbody>
+    <tr><td>Datos<br><code>data</code></td><td>texto</td><td>(vacio)</td><td></td><td>Archivo .crterrain dentro de Assets (alturas y pintura)</td></tr>
+    <tr><td>Tamano<br><code>size</code></td><td>numero</td><td>256</td><td>1 a 16384</td><td>Metros en X y en Z</td></tr>
+    <tr><td>Altura maxima<br><code>height</code></td><td>numero</td><td>80</td><td>0,1 a 8192</td><td></td></tr>
+    <tr><td>Alturas<br><code>resolution</code></td><td>entero</td><td>257</td><td>33 a 4097</td><td>Vertices por lado (129, 257, 513, 1025)</td></tr>
+    <tr><td>Pintura<br><code>splat_resolution</code></td><td>entero</td><td>512</td><td>16 a 4096</td><td>Texeles de los pesos de las capas por lado</td></tr>
+    <tr><td>Proyecta sombras<br><code>cast_shadows</code></td><td>si/no</td><td>si</td><td></td><td></td></tr>
+    <tr><td>Colision (fisica)<br><code>collision</code></td><td>si/no</td><td>si</td><td></td><td></td></tr>
+    <tr><td>Friccion<br><code>friction</code></td><td>numero</td><td>0,8</td><td>0 a 2</td><td></td></tr>
+    <tr><td>Detalle a distancia<br><code>lod_distance</code></td><td>numero</td><td>2</td><td>0,5 a 8</td><td>Mas = mas triangulos lejos</td></tr>
+    <tr><td colspan="5"><strong class="text-white">Capas (lista)</strong> <code>layers</code></td></tr>
+    <tr><td>&nbsp;&nbsp;&nbsp;Nombre<br><code>name</code></td><td>texto</td><td>&quot;Hierba&quot;</td><td></td><td></td></tr>
+    <tr><td>&nbsp;&nbsp;&nbsp;Color<br><code>tint</code></td><td>Color</td><td>(0,36; 0,47; 0,22)</td><td></td><td></td></tr>
+    <tr><td>&nbsp;&nbsp;&nbsp;Textura<br><code>albedo</code></td><td>texto</td><td>(vacio)</td><td></td><td>Imagen de Assets (se arrastra desde el Proyecto)</td></tr>
+    <tr><td>&nbsp;&nbsp;&nbsp;Normal map<br><code>normal</code></td><td>texto</td><td>(vacio)</td><td></td><td></td></tr>
+    <tr><td>&nbsp;&nbsp;&nbsp;Repeticion<br><code>tiling</code></td><td>numero</td><td>8</td><td>0,05 a 1000</td><td>Metros que ocupa la textura</td></tr>
+    <tr><td>&nbsp;&nbsp;&nbsp;Rugosidad<br><code>roughness</code></td><td>numero</td><td>0,9</td><td>0,04 a 1</td><td></td></tr>
+    <tr><td>&nbsp;&nbsp;&nbsp;Metal<br><code>metallic</code></td><td>numero</td><td>0</td><td>0 a 1</td><td></td></tr>
+    <tr><td>&nbsp;&nbsp;&nbsp;Fuerza del relieve<br><code>normal_strength</code></td><td>numero</td><td>1</td><td>0 a 4</td><td></td></tr>
+  </tbody>
+</table>
+<h3 id="WaterBody">Agua <code>WaterBody</code></h3>
+<p>Agua procedural: <strong>Oceano</strong> (plano infinito con oleaje Gerstner), <strong>Lago</strong> (rectangulo con olas suaves) o <strong>Rio</strong> (cinta que sigue sus puntos, con corriente). Los Rigidbody flotan, la camara bajo el agua ve niebla y causticas y los cuerpos que se mueven dejan ondas.</p>
+<table>
+  <thead><tr><th>Propiedad</th><th>Tipo</th><th>Por defecto</th><th>Valores</th><th>Descripcion</th></tr></thead>
+  <tbody>
+    <tr><td>Tipo<br><code>type</code></td><td>opcion</td><td>Lago</td><td>Oceano / playa, Lago, Rio</td><td></td></tr>
+    <tr><td>Tamano<br><code>size</code></td><td>Vec2</td><td>(80; 80)</td><td></td><td>Ancho y largo (m); la orilla la pone el terreno</td></tr>
+    <tr><td>Altura de ola<br><code>wave_height</code></td><td>numero</td><td>0,25</td><td>0 a 12</td><td>Altura significativa: la media del tercio mas alto de las olas (espectro JONSWAP)</td></tr>
+    <tr><td>Longitud de onda<br><code>wavelength</code></td><td>numero</td><td>10</td><td>0,5 a 300</td><td></td></tr>
+    <tr><td>Velocidad<br><code>wave_speed</code></td><td>numero</td><td>1</td><td>0 a 4</td><td></td></tr>
+    <tr><td>Crestas<br><code>steepness</code></td><td>numero</td><td>0,45</td><td>0 a 1</td><td>0 = redondeadas, 1 = afiladas</td></tr>
+    <tr><td>Direccion del viento<br><code>wind_direction</code></td><td>numero</td><td>30</td><td>-180 a 180</td><td></td></tr>
+    <tr><td>Dispersion<br><code>wind_spread</code></td><td>numero</td><td>35</td><td>0 a 90</td><td></td></tr>
+    <tr><td>Corriente<br><code>flow_speed</code></td><td>numero</td><td>1,5</td><td>0 a 10</td><td></td></tr>
+    <tr><td>Color (dispersion)<br><code>shallow_color</code></td><td>Color</td><td>(0,1; 0,42; 0,38)</td><td></td><td></td></tr>
+    <tr><td>Color profundo<br><code>deep_color</code></td><td>Color</td><td>(0,012; 0,055; 0,075)</td><td></td><td></td></tr>
+    <tr><td>Transparencia<br><code>clarity</code></td><td>numero</td><td>4</td><td>0,1 a 60</td><td>Metros hasta que el fondo casi no se ve</td></tr>
+    <tr><td>Rugosidad<br><code>roughness</code></td><td>numero</td><td>0,05</td><td>0 a 0,5</td><td></td></tr>
+    <tr><td>Refraccion<br><code>refraction</code></td><td>numero</td><td>0,5</td><td>0 a 2</td><td></td></tr>
+    <tr><td>Ondulacion fina<br><code>detail</code></td><td>numero</td><td>1</td><td>0 a 3</td><td></td></tr>
+    <tr><td>Espuma<br><code>foam</code></td><td>numero</td><td>1</td><td>0 a 3</td><td></td></tr>
+    <tr><td>Espuma de orilla<br><code>shore_foam</code></td><td>numero</td><td>1,5</td><td>0 a 10</td><td></td></tr>
+    <tr><td>Olas en la playa<br><code>shore_waves</code></td><td>numero</td><td>1</td><td>0 a 3</td><td></td></tr>
+    <tr><td>Causticas<br><code>caustics</code></td><td>numero</td><td>1</td><td>0 a 3</td><td></td></tr>
+    <tr><td>Luz en las crestas<br><code>scattering</code></td><td>numero</td><td>1</td><td>0 a 3</td><td></td></tr>
+    <tr><td>Flotacion<br><code>buoyancy</code></td><td>si/no</td><td>si</td><td></td><td>Los Rigidbody que entran flotan (Jolt)</td></tr>
+    <tr><td>Empuje<br><code>density</code></td><td>numero</td><td>1</td><td>0 a 4</td><td>1 = agua; mas, flota mas</td></tr>
+    <tr><td>Frenado<br><code>drag</code></td><td>numero</td><td>0,5</td><td>0 a 5</td><td></td></tr>
+    <tr><td colspan="5"><strong class="text-white">Puntos del rio (lista)</strong> <code>points</code> — Locales a la entidad</td></tr>
+    <tr><td>&nbsp;&nbsp;&nbsp;Posicion<br><code>position</code></td><td>Vec3 (metros)</td><td>(0; 0; 0)</td><td></td><td></td></tr>
+    <tr><td>&nbsp;&nbsp;&nbsp;Ancho<br><code>width</code></td><td>numero</td><td>8</td><td>0,5 a 500</td><td></td></tr>
+  </tbody>
+</table>
+<h3 id="VoxelWorld">Mundo de bloques <code>VoxelWorld</code></h3>
+<p>Un mundo de bloques infinito como Minecraft: biomas, cuevas, minerales, arboles, agua y luz por bloques. Se genera y se malla en hilos de fondo; en el editor, con <em>Vista previa</em>. Ver <a href="voxel.html">Mundo de bloques</a> para la API de Lua.</p>
+<table>
+  <thead><tr><th>Propiedad</th><th>Tipo</th><th>Por defecto</th><th>Valores</th><th>Descripcion</th></tr></thead>
+  <tbody>
+    <tr><td>Semilla<br><code>seed</code></td><td>entero</td><td>20260925</td><td></td><td>La misma semilla da el mismo mundo</td></tr>
+    <tr><td>Distancia de dibujado<br><code>render_distance</code></td><td>entero</td><td>10</td><td>2 a 32</td><td>Chunks (16 m) alrededor de la camara</td></tr>
+    <tr><td>Nivel del mar<br><code>sea_level</code></td><td>numero</td><td>62</td><td>1 a 250</td><td></td></tr>
+    <tr><td>Carpeta de texturas<br><code>textures</code></td><td>texto</td><td>&quot;Voxel/Textures&quot;</td><td></td><td>En Assets: &lt;bloque&gt;.png, _n.png (normal) y _m.png (material)</td></tr>
+    <tr><td>Resolucion de textura<br><code>texture_size</code></td><td>entero</td><td>256</td><td>16 a 1024</td><td></td></tr>
+    <tr><td>Vista previa en el editor<br><code>preview_in_editor</code></td><td>si/no</td><td>si</td><td></td><td></td></tr>
+    <tr><td>Distancia de colision<br><code>collision_distance</code></td><td>entero</td><td>4</td><td>1 a 16</td><td>Chunks con colision fisica (Rigidbody) alrededor de la camara</td></tr>
+  </tbody>
+</table>

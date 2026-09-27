@@ -79,6 +79,8 @@ public:
     ImTextureID icon(Icon id) const { return icons_[static_cast<std::size_t>(id)]; }
     // Logo del motor (assets/icon.png): barra de menus y Hub. 0 si falta.
     ImTextureID logo() const { return logo_; }
+    // Banner del motor (player_banner.png, 1920x1080): dialogo de carga. 0 si falta.
+    ImTextureID banner() const { return banner_; }
     // Dibuja un icono en una lista de dibujo (tenido con `tint`).
     void drawIcon(ImDrawList* draw, Icon id, ImVec2 min, float size, ImU32 tint) const;
     // Widget: el icono como imagen (tamano en pixeles).
@@ -109,6 +111,7 @@ private:
     void loadIcons();
     std::array<ImTextureID, static_cast<std::size_t>(Icon::Count)> icons_{};
     ImTextureID logo_ = 0;
+    ImTextureID banner_ = 0;
     std::vector<std::uint32_t> icon_textures_;
 
     struct Thumbnail {

@@ -1,0 +1,50 @@
+<p>
+  <em>Archivo &gt; Exportar juego...</em> crea una carpeta con el juego listo para copiar a otro PC y jugar, como el Build
+  de Unity. <em>Exportar y jugar...</em> además lo abre al terminar.
+</p>
+
+<h3 id="ventana">La ventana de exportar</h3>
+<ul>
+  <li><strong>Configuración</strong>: la <a href="#configuraciones">configuración de compilación</a> que se usa (con <em>Editar...</em>).</li>
+  <li><strong>Carpeta de destino</strong> (escribirla o <em>Examinar...</em>): se crea dentro <code>&lt;Juego&gt;/&lt;Juego&gt;.exe</code>. Tiene que estar fuera del proyecto.</li>
+  <li><strong>Ejecutar el juego al terminar</strong> y <strong>Combinar mallas estáticas</strong> (static batching de los objetos <em>Static</em>, por escena; el proyecto no cambia).</li>
+</ul>
+<p>
+  La copia va en segundo plano con su barra de progreso y se puede cancelar. Al volver a exportar, lo que no cambió no se
+  copia otra vez. Antes de exportar se guarda la escena si tiene cambios.
+</p>
+
+<h3 id="carpeta">Qué contiene</h3>
+<pre><code>MiJuego/
+  MiJuego.exe        el reproductor (con el icono de la configuración)
+  shaders/           los shaders del motor
+  *.dll              las bibliotecas que necesita
+  Game/
+    MiJuego.crpack   todos los assets comprimidos en un archivo
+    game.ini         escena inicial, título, ventana...
+    banner.png       el banner del motor al abrir</code></pre>
+<p>
+  La primera vez que se abre, el juego descomprime los assets en <code>%LOCALAPPDATA%/Cramion/Games/&lt;Juego&gt;</code> (y
+  solo vuelve a hacerlo si cambian). Los guardados de <code>Prefs</code> van a <code>%LOCALAPPDATA%/Cramion/Saves</code> y el
+  registro y los informes de fallos a <code>%LOCALAPPDATA%/Cramion/Logs</code>.
+</p>
+
+<h3 id="configuraciones">Configuraciones de compilación</h3>
+<p>
+  <em>Archivo &gt; Configuraciones de compilación...</em>: perfiles de exportación como los Build Profiles de Unity. Se
+  guardan en <code>ProjectSettings/BuildConfigs.json</code> (viajan con el proyecto). A la izquierda la lista (<em>Nueva</em>,
+  <em>Duplicar</em>, <em>Borrar</em>; doble clic o <em>Usar esta configuración</em> la hace activa) y a la derecha sus ajustes:
+</p>
+<table>
+  <thead><tr><th>Ajuste</th><th>Qué hace</th></tr></thead>
+  <tbody>
+    <tr><td><code>Nombre del juego</code></td><td>El nombre del <code>.exe</code>, de la carpeta, del título de la ventana y de la pantalla de carga. Vacío = el del proyecto.</td></tr>
+    <tr><td><code>Versión</code></td><td>Se guarda en <code>game.ini</code>; con <em>Versión en el título</em> sale en la ventana.</td></tr>
+    <tr><td><code>Icono de la app</code></td><td>Una imagen del Proyecto (PNG, JPG, TGA, BMP; mejor cuadrada y de 256 px o más) o un <code>.ico</code>. Se escribe <strong>dentro del .exe</strong> en tamaños de 16 a 256 px: Explorador, barra de tareas y ventana. Vacío = el del motor.</td></tr>
+    <tr><td><code>Escena inicial</code></td><td>La escena con la que empieza el juego (por defecto, la escena inicial del proyecto).</td></tr>
+    <tr><td><code>Ventana</code></td><td>Maximizada, pantalla completa sin bordes o ventana del tamaño indicado.</td></tr>
+    <tr><td><code>Static batching</code></td><td>Combinar las mallas estáticas al exportar.</td></tr>
+    <tr><td><code>Mostrar FPS</code></td><td>Para versiones de desarrollo: FPS, CPU, GPU y memoria en una esquina (como el componente Profiler).</td></tr>
+  </tbody>
+</table>
+<div class="note">Por ejemplo, una configuración <em>Desarrollo</em> (ventana, con FPS) y otra <em>Final</em> (pantalla completa, con icono y versión).</div>

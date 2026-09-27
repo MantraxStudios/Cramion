@@ -6,6 +6,10 @@
 // absorcion y luz dispersada que el agua vista desde arriba). Se decide por
 // pixel con la ola en el plano cercano: si la linea del agua cruza la
 // pantalla, cada mitad se ve como toca.
+//
+// Lo que hay bajo la superficie (fondo, rocas, el jugador) recibe las
+// causticas del sol, con su sombra: desde fuera ya las pinta water.frag al
+// mirar a traves del agua, pero desde dentro se ve directamente.
 
 layout(set = 2, binding = 0) uniform CameraBuffer {
     mat4 view;
@@ -37,6 +41,14 @@ layout(set = 2, binding = 1) uniform LightBuffer {
     SpotLightGpu spots[8];
     vec4 probes[2];
 } lights;
+const int kShadowCascadeCount = 4;
+layout(set = 2, binding = 2) uniform ShadowBuffer {
+    mat4 light_view_projection[kShadowCascadeCount];
+    vec4 split_distances;
+    vec4 texel_world_sizes;
+    vec4 params;
+} shadows;
+layout(set = 2, binding = 3) uniform sampler2DArrayShadow shadow_map;
 layout(set = 2, binding = 4) uniform sampler2D g_depth;
 layout(set = 2, binding = 5) uniform sampler2D scene_color;
 layout(set = 2, binding = 6) uniform samplerCube environment_map;
@@ -53,8 +65,33 @@ vec3 worldFromDepth(vec2 uv, float depth) {
     return world.xyz / world.w;
 }
 
+// Sombra del sol en un punto (la misma que water.frag).
+float sunShadow(vec3 world_position) {
+    float view_depth = -(camera.view * vec4(world_position, 1.0)).z;
+    int cascade = kShadowCascadeCount - 1;
+    for (int i = 0; i < kShadowCascadeCount; ++i) {
+        if (view_depth < shadows.split_distances[i]) {
+            cascade = i;
+            break;
+        }
+    }
+    vec4 light_clip = shadows.light_view_projection[cascade] * vec4(world_position, 1.0);
+    vec3 projected = light_clip.xyz / light_clip.w;
+    vec2 uv = projected.xy * 0.5 + 0.5;
+    if (projected.z > 1.0 || projected.z < 0.0 || any(lessThan(uv, vec2(0.0))) || any(greaterThan(uv, vec2(1.0)))) {
+        return 1.0;
+    }
+    float lit = texture(shadow_map, vec4(uv, float(cascade), projected.z - 0.0015));
+    return mix(1.0, lit, shadows.params.y);
+}
+
 void main() {
     WaterBody b = water.bodies[push.body];
+    // El punto de la escena en este pixel y su normal (por las derivadas de
+    // la posicion): antes del discard, despues no estan definidas.
+    vec3 surface_point = worldFromDepth(v_uv, texelFetch(g_depth, ivec2(gl_FragCoord.xy), 0).r);
+    vec3 surface_normal = normalize(cross(dFdx(surface_point), dFdy(surface_point)));
+    if (dot(surface_normal, camera.position.xyz - surface_point) < 0.0) surface_normal = -surface_normal;
     float t = water.time_count.x;
 
     // Punto del plano cercano en este pixel: esta bajo la ola?
@@ -67,9 +104,27 @@ void main() {
     ivec2 pixel = ivec2(gl_FragCoord.xy);
     float depth = texelFetch(g_depth, pixel, 0).r;
     vec3 scene = texelFetch(scene_color, pixel, 0).rgb;
-    float distance = depth >= 1.0 ? 300.0 : length(worldFromDepth(v_uv, depth) - camera.position.xyz);
+    float distance = depth >= 1.0 ? 300.0 : length(surface_point - camera.position.xyz);
 
     vec3 sun_direction = normalize(-lights.sun_direction_intensity.xyz);
+
+    // --- Causticas sobre lo que hay bajo el agua ---
+    if (depth < 1.0 && b.look.z > 0.0 && sun_direction.y > 0.0) {
+        vec3 n_unused;
+        float j_unused;
+        vec3 wave_here = gerstnerWaves(b, surface_point.xz - b.origin.xz, t, 0.0, n_unused, j_unused);
+        float water_above = b.origin.y + wave_here.y - surface_point.y;  // metros de agua encima
+        if (water_above > 0.0) {
+            // Proyectadas desde el sol hasta la superficie (se mueven con el
+            // punto de entrada de la luz, no con la camara).
+            vec2 entry = surface_point.xz + sun_direction.xz / max(sun_direction.y, 0.2) * water_above;
+            float facing = smoothstep(-0.1, 0.6, dot(surface_normal, sun_direction));
+            float c = caustic(entry - b.origin.xz, t * 1.3) * b.look.z * sunShadow(surface_point) *
+                      clamp(sun_direction.y, 0.0, 1.0) * facing *
+                      smoothstep(0.0, 0.4, water_above) * exp(-water_above * 0.35);
+            scene *= 1.0 + c;
+        }
+    }
     vec3 sun_radiance = toLinear(lights.sun_color_ambient.rgb) * lights.sun_direction_intensity.w;
     vec3 ambient = textureLod(environment_map, vec3(0.0, 1.0, 0.0), 6.0).rgb +
                    toLinear(lights.ambient_color.rgb) * lights.sun_color_ambient.a;

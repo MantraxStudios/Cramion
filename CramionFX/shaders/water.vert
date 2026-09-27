@@ -52,6 +52,8 @@ void main() {
     // se desplaza (origen flotante) y coinciden con water::gerstner (fisica).
     vec3 offset = gerstnerWaves(b, base.xz - b.origin.xz, t, max(distance_to_camera, 1.0), normal, jacobian);
     vec3 world = base + offset;
+    // Olas de lo que cae o se mueve por el agua.
+    world.y += rippleHeight(base.xz);
 
     v_world_position = world;
     v_normal = normal;

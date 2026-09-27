@@ -195,6 +195,62 @@ void testModelInstantiation() {
     check(approx(wheel.worldPosition(), {1.0f, 0.5f, 0.0f}), "transforms de los nodos");
 }
 
+void testPostVolumes() {
+    std::printf("Volumenes de post-proceso\n");
+    World world;
+    Entity global = world.create("Global");
+    PostProcessing& g = global.add<PostProcessing>();
+    g.settings.saturation = 1.0f;
+    g.settings.vignette_intensity = 0.2f;
+
+    Entity box = world.create("Caja");
+    box.setWorldPosition(core::Vec3{10.0f, 0.0f, 0.0f});
+    box.setLocalScale(core::Vec3{2.0f, 2.0f, 2.0f});  // caja de 4 x 4 x 4 m
+    PostProcessing& b = box.add<PostProcessing>();
+    b.shape = PostVolumeShape::Box;
+    b.size = core::Vec3{2.0f, 2.0f, 2.0f};
+    b.blend_distance = 2.0f;
+    b.priority = 1;
+    b.overrides = kPostColor;
+    b.settings.saturation = 0.0f;
+    b.settings.vignette_intensity = 1.0f;  // no la sobrescribe
+
+    const core::Mat4& m = box.worldMatrix();
+    check(std::abs(b.influence(m, core::Vec3{10.0f, 0.0f, 0.0f}) - 1.0f) < 1e-4f, "dentro de la caja: 1");
+    check(std::abs(b.influence(m, core::Vec3{11.9f, 0.0f, 0.0f}) - 1.0f) < 1e-4f, "caja escalada: el borde a 2 m");
+    const float half = b.influence(m, core::Vec3{13.0f, 0.0f, 0.0f});
+    check(half > 0.4f && half < 0.6f, "a mitad de la mezcla: ~0.5");
+    check(b.influence(m, core::Vec3{14.5f, 0.0f, 0.0f}) == 0.0f, "fuera de la mezcla: 0");
+
+    Entity sphere = world.create("Esfera");
+    PostProcessing& sp = sphere.add<PostProcessing>();
+    sp.shape = PostVolumeShape::Sphere;
+    sp.radius = 3.0f;
+    sp.blend_distance = 0.0f;
+    check(sp.influence(sphere.worldMatrix(), core::Vec3{0.0f, 2.9f, 0.0f}) == 1.0f &&
+              sp.influence(sphere.worldMatrix(), core::Vec3{0.0f, 3.1f, 0.0f}) == 0.0f,
+          "esfera sin mezcla: de golpe");
+
+    // Mezcla: el global lo pone todo; la caja solo el color.
+    gfx::PostProcessSettings out{};
+    blendPostProcess(out, g.settings, 1.0f, kPostAll);
+    blendPostProcess(out, b.settings, 0.5f, b.overrides);
+    check(std::abs(out.saturation - 0.5f) < 1e-4f, "saturacion a medias entre global y caja");
+    check(std::abs(out.vignette_intensity - 0.2f) < 1e-4f, "lo no sobrescrito sale del global");
+
+    // Se guarda y se lee con la escena.
+    const std::string text = serializeWorld(world);
+    World loaded;
+    check(deserializeWorld(loaded, text), "escena con volumenes");
+    const Entity again = loaded.findByName("Caja");
+    const PostProcessing* read = again.valid() ? again.tryGet<PostProcessing>() : nullptr;
+    check(read != nullptr && read->shape == PostVolumeShape::Box && read->overrides == kPostColor &&
+              std::abs(read->blend_distance - 2.0f) < 1e-4f,
+          "forma, mezcla y sobrescrituras guardadas");
+    const Entity old = loaded.findByName("Global");
+    check(old.valid() && old.get<PostProcessing>().isGlobal(), "el global sigue global");
+}
+
 }  // namespace
 
 int main() {
@@ -202,6 +258,7 @@ int main() {
     testDuplicateAndReflection();
     testSerialization();
     testModelInstantiation();
+    testPostVolumes();
     std::printf("%d comprobaciones, %d fallos\n", checks, failures);
     return failures == 0 ? 0 : 1;
 }

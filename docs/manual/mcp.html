@@ -92,6 +92,31 @@
         <a href="recarga.html">Recarga en caliente</a>
         <a href="prefabs.html">Prefabs</a>
         <a href="mcp.html" class="active">Conectar una IA (MCP)</a>
+        <p class="mb-1 mt-7 flex items-center gap-2 px-3 text-xs font-semibold uppercase tracking-wider text-slate-500"><svg class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M9 9v11"/></svg>El editor</p>
+        <a href="editor-interfaz.html">Interfaz y pestañas</a>
+        <a href="editor-escena.html">Vista Escena y gizmos</a>
+        <a href="editor-jerarquia.html">Jerarquía e Inspector</a>
+        <a href="editor-proyecto.html">Proyecto e importación</a>
+        <a href="editor-play.html">Play, deshacer y escenas</a>
+        <a href="editor-herramientas.html">Herramientas de mundo</a>
+        <a href="editor-ventanas.html">Ventanas de herramientas</a>
+        <a href="materiales.html">Materiales</a>
+        <a href="render.html">Render y rendimiento</a>
+        <a href="exportar.html">Exportar y compilación</a>
+        <a href="plantillas.html">Plantillas</a>
+        <a href="atajos.html">Atajos de teclado</a>
+        <p class="mb-1 mt-7 flex items-center gap-2 px-3 text-xs font-semibold uppercase tracking-wider text-slate-500"><svg class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m12 3 8 4.5v9L12 21l-8-4.5v-9L12 3Z"/><path d="m4 7.5 8 4.5 8-4.5M12 12v9"/></svg>Componentes</p>
+        <a href="componentes.html">Todos los componentes</a>
+        <a href="componentes-basicos.html">Transform y renderizado</a>
+        <a href="componentes-entorno.html">Entorno</a>
+        <a href="componentes-fisica.html">Física</a>
+        <a href="componentes-efectos.html">Partículas y depuración</a>
+        <a href="componentes-animacion.html">Animación</a>
+        <a href="componentes-audio.html">Audio</a>
+        <a href="componentes-cinematicas.html">Cámaras y cinemáticas</a>
+        <a href="componentes-navegacion.html">Navegación</a>
+        <a href="componentes-ui.html">Interfaz (UI)</a>
+        <a href="componentes-scripting.html">Scripts y prefabs</a>
         <p class="mb-1 mt-7 flex items-center gap-2 px-3 text-xs font-semibold uppercase tracking-wider text-slate-500"><svg class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m8 8-4 4 4 4"/><path d="m16 8 4 4-4 4"/><path d="m14 4-4 16"/></svg>Referencia de la API</p>
         <a href="vec3.html">Vec3</a>
         <a href="quat.html">Quat (rotaciones)</a>
@@ -194,6 +219,7 @@
     <tr><td><code>create_entity</code>, <code>modify_entity</code>, <code>delete_entity</code>, <code>duplicate_entity</code></td><td>Crear primitivas, luces, cámaras, terreno, agua, vehículos, mundos de bloques; mover, girar, emparentar.</td></tr>
     <tr><td><code>list_component_types</code>, <code>set_component</code>, <code>remove_component</code></td><td>Cualquier componente del motor y cualquiera de sus campos.</td></tr>
     <tr><td><code>create_script</code>, <code>create_shader</code>, <code>read_file</code>, <code>write_file</code></td><td>Escribir scripts Lua y shaders (con los errores de compilación de vuelta).</td></tr>
+    <tr><td><code>paint_prefabs</code></td><td>Pinta prefabs (árboles, rocas…) alrededor de un punto con densidad, separación y pendiente máxima, o los borra.</td></tr>
     <tr><td><code>create_material</code>, <code>assign_material</code></td><td>Materiales PBR o con shader propio. Con <code>from_image</code> (la imagen de color de un pack de escaneos) encuentra sola las demás: normal, rugosidad o gloss, AO, displacement (parallax, <code>height_scale</code> en metros), cavidad, specular y bump.</td></tr>
     <tr><td><code>create_model</code>, <code>import_file</code>, <code>instantiate</code>, <code>create_prefab</code></td><td>Modelos desde OBJ o archivos, ponerlos en la escena, prefabs.</td></tr>
     <tr><td><code>new_scene</code>, <code>open_scene</code>, <code>save_scene</code>, <code>list_scenes</code></td><td>Escenas.</td></tr>
@@ -220,9 +246,9 @@
           <span class="text-xs text-slate-500">← Anterior</span>
           <span class="mt-1 block font-semibold text-white group-hover:text-brand">Prefabs</span>
         </a>
-        <a href="vec3.html" class="group rounded-xl border border-line p-4 text-right transition hover:border-brand/60 hover:bg-panel">
+        <a href="editor-interfaz.html" class="group rounded-xl border border-line p-4 text-right transition hover:border-brand/60 hover:bg-panel">
           <span class="text-xs text-slate-500">Siguiente →</span>
-          <span class="mt-1 block font-semibold text-white group-hover:text-brand">Vec3</span>
+          <span class="mt-1 block font-semibold text-white group-hover:text-brand">Interfaz y pestañas</span>
         </a></div>
       <p class="mt-10 text-sm text-slate-500">¿Algo no queda claro o falta algo? Pregunta en el
         <a href="https://discord.gg/zG7rSsUGEz" target="_blank" rel="noopener" class="text-brand hover:text-white">Discord</a>.</p>

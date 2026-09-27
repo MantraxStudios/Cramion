@@ -78,7 +78,7 @@ void EditorApp::saveNavigationSettings() {
 }
 
 void EditorApp::updateNavigation(float delta_seconds) {
-    if (!has_project_) return;
+    if (!has_project_ || world_workspace_ != 0) return;  // la malla es de la escena, no del prefab
     switch (play_state_) {
         case PlayState::Edit:
             nav_.update(world_, delta_seconds, false, true);

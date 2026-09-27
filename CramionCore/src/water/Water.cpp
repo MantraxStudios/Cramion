@@ -189,36 +189,56 @@ std::vector<RiverSample> riverCenterline(const WaterBody& body, const core::Mat4
     if (count < 2) return out;
     std::vector<Vec3> p(count);
     for (std::size_t i = 0; i < count; ++i) p[i] = transformPoint(world, body.points[i].position);
-    const auto at = [&](std::ptrdiff_t i) { return p[static_cast<std::size_t>(std::clamp<std::ptrdiff_t>(i, 0, count - 1))]; };
-    float distance = 0.0f;
+    // Extremos: puntos fantasma prolongando el primer y el ultimo tramo (con
+    // el punto repetido, el centripeto dividiria por cero).
+    const auto at = [&](std::ptrdiff_t i) -> Vec3 {
+        const auto n = static_cast<std::ptrdiff_t>(count);
+        if (i < 0) return p[0] * 2.0f - p[1];
+        if (i >= n) return p[count - 1] * 2.0f - p[count - 2];
+        return p[static_cast<std::size_t>(i)];
+    };
+    // Catmull-Rom centripeto (alfa 0.5, Barry-Goldman): a diferencia del
+    // uniforme, no hace bucles ni se sale de los puntos cuando estan a
+    // distancias muy distintas (lo normal al colocarlos a mano).
+    const auto knot = [](const Vec3& a, const Vec3& b) {
+        return std::max(std::sqrt(core::length(b - a)), 1e-3f);
+    };
     for (std::size_t seg = 0; seg + 1 < count; ++seg) {
         const Vec3 p0 = at(static_cast<std::ptrdiff_t>(seg) - 1);
         const Vec3 p1 = at(static_cast<std::ptrdiff_t>(seg));
         const Vec3 p2 = at(static_cast<std::ptrdiff_t>(seg) + 1);
         const Vec3 p3 = at(static_cast<std::ptrdiff_t>(seg) + 2);
+        const float t0 = 0.0f;
+        const float t1 = t0 + knot(p0, p1);
+        const float t2 = t1 + knot(p1, p2);
+        const float t3 = t2 + knot(p2, p3);
         const float len = core::length(p2 - p1);
         const int steps = std::max(1, static_cast<int>(std::ceil(len / std::max(step, 0.1f))));
         const bool last = seg + 2 == count;
         for (int s = 0; s < steps + (last ? 1 : 0); ++s) {
-            const float t = static_cast<float>(s) / static_cast<float>(steps);
-            const float t2 = t * t;
-            const float t3 = t2 * t;
-            // Catmull-Rom uniforme y su derivada.
-            const Vec3 pos = (p1 * 2.0f + (p2 - p0) * t + (p0 * 2.0f - p1 * 5.0f + p2 * 4.0f - p3) * t2 +
-                              (p1 * 3.0f - p0 - p2 * 3.0f + p3) * t3) *
-                             0.5f;
-            const Vec3 der = ((p2 - p0) + (p0 * 2.0f - p1 * 5.0f + p2 * 4.0f - p3) * (2.0f * t) +
-                              (p1 * 3.0f - p0 - p2 * 3.0f + p3) * (3.0f * t2)) *
-                             0.5f;
+            const float u = static_cast<float>(s) / static_cast<float>(steps);
+            const float t = t1 + (t2 - t1) * u;
+            const Vec3 a1 = p0 * ((t1 - t) / (t1 - t0)) + p1 * ((t - t0) / (t1 - t0));
+            const Vec3 a2 = p1 * ((t2 - t) / (t2 - t1)) + p2 * ((t - t1) / (t2 - t1));
+            const Vec3 a3 = p2 * ((t3 - t) / (t3 - t2)) + p3 * ((t - t2) / (t3 - t2));
+            const Vec3 b1 = a1 * ((t2 - t) / (t2 - t0)) + a2 * ((t - t0) / (t2 - t0));
+            const Vec3 b2 = a2 * ((t3 - t) / (t3 - t1)) + a3 * ((t - t1) / (t3 - t1));
             RiverSample sample;
-            sample.position = pos;
-            sample.width = body.points[seg].width + (body.points[seg + 1].width - body.points[seg].width) * t;
-            const Vec3 flat{der.x, 0.0f, der.z};
-            sample.tangent = core::length(flat) > 1e-5f ? core::normalize(flat) : Vec3{1.0f, 0.0f, 0.0f};
-            if (!out.empty()) distance += core::length(pos - out.back().position);
-            sample.distance = distance;
+            sample.position = b1 * ((t2 - t) / (t2 - t1)) + b2 * ((t - t1) / (t2 - t1));
+            sample.width = body.points[seg].width + (body.points[seg + 1].width - body.points[seg].width) * u;
             out.push_back(sample);
         }
+    }
+    // Tangente (horizontal) de las muestras vecinas y distancia a lo largo.
+    float distance = 0.0f;
+    for (std::size_t i = 0; i < out.size(); ++i) {
+        const Vec3 prev = out[i > 0 ? i - 1 : i].position;
+        const Vec3 next = out[i + 1 < out.size() ? i + 1 : i].position;
+        const Vec3 flat{next.x - prev.x, 0.0f, next.z - prev.z};
+        out[i].tangent = core::length(flat) > 1e-5f ? core::normalize(flat)
+                                                    : (i > 0 ? out[i - 1].tangent : Vec3{1.0f, 0.0f, 0.0f});
+        if (i > 0) distance += core::length(out[i].position - out[i - 1].position);
+        out[i].distance = distance;
     }
     return out;
 }

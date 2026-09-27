@@ -233,7 +233,11 @@ vec4 traceScreen(vec3 origin, vec3 ray) {
     const float kFirstStep = 0.08;
     ivec2 size = textureSize(g_depth, 0);
     float growth = pow(kMaxDistance / kFirstStep, 1.0 / float(kSteps));
-    float jitter = fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));
+    // Ruido que cambia cada frame (con el reloj del agua): uno fijo por pixel
+    // dejaba un patron quieto de puntos en los bordes del reflejo, que el TAA
+    // no puede promediar.
+    vec2 noise_pixel = gl_FragCoord.xy + 5.588238 * mod(floor(water.time_count.x * 60.0), 64.0);
+    float jitter = fract(52.9829189 * fract(dot(noise_pixel, vec2(0.06711056, 0.00583715))));
     float previous_distance = 0.0;
     float distance_along = kFirstStep * mix(1.0, growth, jitter);
     for (int i = 0; i < kSteps; ++i) {
@@ -324,19 +328,6 @@ vec2 detailSlope(vec2 p, float t, vec2 flow, float wind, float strength, float f
     return slope;
 }
 
-float caustic(vec2 p, float t) {
-    vec2 q = p * 0.7;
-    float c = 0.0;
-    float s = 1.0;
-    for (int i = 0; i < 3; ++i) {
-        q += vec2(sin(q.y * 1.7 + t * 0.9), cos(q.x * 1.3 - t * 0.7)) * 0.55;
-        c += abs(sin(q.x) * cos(q.y)) * s;
-        s *= 0.6;
-        q *= 1.9;
-    }
-    return pow(clamp(1.0 - c * 0.55, 0.0, 1.0), 5.0) * 4.0;
-}
-
 void main() {
     WaterBody b = water.bodies[push.body];
     float t = water.time_count.x;
@@ -350,12 +341,30 @@ void main() {
     bool below = camera.position.y < v_world_position.y - v_height - 0.05;
 
     // --- Normal (por pixel, filtrada por su tamano en el suelo) ---
-    vec2 flow = river ? v_flow * b.wind.z : vec2(0.0);
+    // Rio: todo lo que se mueve con la corriente va en coordenadas del rio
+    // (x = metros a traves, y = metros a lo largo): asi sigue las curvas de
+    // los puntos. En el mundo, con la direccion de cada sitio y el tiempo
+    // total, las zonas con direcciones distintas se separaban cada vez mas y
+    // el agua se deformaba (y mas cuantos mas puntos, mas curvas).
+    float river_width = river ? max(length(v_flow), 0.01) : 1.0;
+    vec2 river_dir = river ? v_flow / river_width : vec2(1.0, 0.0);
+    vec2 river_side = vec2(-river_dir.y, river_dir.x);
+    vec2 river_uv = vec2((v_uv.x - 0.5) * river_width, v_uv.y);
+    vec2 flow = river ? river_dir * b.wind.z : vec2(0.0);               // en el mundo (m/s)
+    vec2 river_flow = vec2(0.0, b.wind.z);                                  // en coordenadas del rio
+    vec2 ripple_space = river ? river_uv : v_grid;
     float footprint = max(max(length(dFdx(v_grid)), length(dFdy(v_grid))), 1e-4);  // metros por pixel
     float jacobian;
     float lost_variance;
     vec3 wave_normal = gerstnerNormal(b, v_grid, t, footprint, jacobian, lost_variance);
-    vec2 slope = detailSlope(v_grid, t, flow, b.wind.x, b.wind.w, footprint, lost_variance);
+    // En el rio el rizado corre a lo largo (angulo 90 grados = +y del rio) y
+    // su pendiente vuelve al mundo con los ejes del rio en ese punto.
+    vec2 slope = detailSlope(ripple_space, t, river ? river_flow : flow, river ? 1.5707963 : b.wind.x, b.wind.w,
+                             footprint, lost_variance);
+    if (river) slope = river_side * slope.x + river_dir * slope.y;
+    // Olas interactivas (salpicaduras y estelas).
+    vec2 ripple_slope = rippleSlope(v_world_position.xz);
+    slope += ripple_slope;
     vec3 normal = normalize(vec3(wave_normal.x - slope.x, wave_normal.y, wave_normal.z - slope.y));
     if (below) normal = -normal;
     float facing = dot(normal, view_direction);
@@ -400,7 +409,8 @@ void main() {
     // Causticas en el fondo poco profundo.
     if (refract_depth < 1.0 && b.look.z > 0.0) {
         float floor_depth = max(v_world_position.y - refract_floor.y, 0.0);
-        float c = caustic(refract_floor.xz - b.origin.xz - flow * t, t * 1.3) * b.look.z * shadow * sun_height *
+        vec2 caustic_uv = river ? river_uv - river_flow * t : refract_floor.xz - b.origin.xz;
+        float c = caustic(caustic_uv, t * 1.3) * b.look.z * shadow * sun_height *
                   smoothstep(0.0, 0.4, floor_depth) * exp(-floor_depth * 0.35);
         refracted *= 1.0 + c;
     }
@@ -491,7 +501,7 @@ void main() {
     // Cobertura (donde hay espuma y cuanta) por un lado y su textura (encaje
     // de burbujas) por otro: con poca cobertura solo asoman las partes mas
     // densas, que es como se deshace la espuma de verdad.
-    vec2 foam_uv = v_grid - flow * t;
+    vec2 foam_uv = river ? river_uv - river_flow * t : v_grid;
     float shore_width = max(b.look.w, 0.01);
     float shore = 1.0 - smoothstep(0.0, shore_width, vertical_depth);
     // Olas que llegan a la playa: bandas que avanzan hacia la orilla.
@@ -506,7 +516,9 @@ void main() {
         float bank = smoothstep(0.32, 0.5, abs(v_uv.x - 0.5));
         river_foam = bank * 0.6 + smoothstep(0.62, 0.85, fbm(foam_uv * 0.8, footprint * 0.8)) * clamp(b.wind.z * 0.25, 0.0, 1.0);
     }
-    float coverage = clamp((shore * 0.9 + bands + crest_foam + river_foam) * b.deep.w, 0.0, 1.2);
+    // Espuma en las crestas fuertes de las olas interactivas (salpicaduras).
+    float splash_foam = smoothstep(0.35, 1.2, length(ripple_slope)) * smoothstep(0.01, 0.06, rippleHeight(v_world_position.xz));
+    float coverage = clamp((shore * 0.9 + bands + crest_foam + river_foam + splash_foam) * b.deep.w, 0.0, 1.2);
     float foam = 0.0;
     if (coverage > 0.001) {
         float density = foamDensity(foam_uv, t, footprint);

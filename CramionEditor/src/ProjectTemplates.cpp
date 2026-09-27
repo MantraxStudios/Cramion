@@ -5,6 +5,7 @@
 // crearlo.
 
 #include "ProjectTemplates.h"
+#include "TemplateMmoScripts.h"
 
 #include <CramionCore/CramionCore.h>
 
@@ -1726,6 +1727,561 @@ void buildVoxel(project::ProjectInfo& project) {
     b.save("Main");
 }
 
+// --- Plantilla MMO RPG ----------------------------------------------------------
+// El motor solo coloca el mundo (pueblo, bosque, campamento, guarida), los
+// personajes y la interfaz; todo lo que pasa lo hacen los scripts de Lua
+// (TemplateMmoScripts.h).
+
+// Numeros al azar repetibles (el mismo mundo en cada proyecto nuevo).
+struct Lcg {
+    std::uint32_t state;
+    float next() {
+        state = state * 1664525u + 1013904223u;
+        return static_cast<float>((state >> 8) & 0xFFFFFF) / 16777216.0f;
+    }
+    float range(float lo, float hi) { return lo + (hi - lo) * next(); }
+};
+
+void buildMmo(project::ProjectInfo& project) {
+    Builder b(project);
+    b.world.setSceneUuid(Uuid::generate());
+    ecs::populateDefaultScene(b.world);
+    b.script("Heroe.lua", mmo::kHeroScript);
+    b.script("Enemigo.lua", mmo::kEnemyScript);
+    b.script("Bot.lua", mmo::kBotScript);
+    b.script("NPC.lua", mmo::kNpcScript);
+    b.script("CamaraTercera.lua", kCameraScript);
+
+    const assets::AssetRef grass = b.material("Hierba", Vec3{0.36f, 0.52f, 0.27f}, 0.95f);
+    const assets::AssetRef road = b.material("Camino", Vec3{0.55f, 0.46f, 0.34f}, 0.95f);
+    const assets::AssetRef stone = b.material("Piedra", Vec3{0.58f, 0.57f, 0.55f}, 0.85f);
+    const assets::AssetRef plaster = b.material("Pared", Vec3{0.86f, 0.80f, 0.68f}, 0.9f);
+    const assets::AssetRef roof = b.material("Tejado", Vec3{0.62f, 0.24f, 0.17f}, 0.8f);
+    const assets::AssetRef wood = b.material("Madera", Vec3{0.45f, 0.31f, 0.19f}, 0.85f);
+    const assets::AssetRef dark_wood = b.material("Madera oscura", Vec3{0.25f, 0.17f, 0.11f}, 0.85f);
+    const assets::AssetRef leaves = b.material("Hojas", Vec3{0.20f, 0.42f, 0.18f}, 0.9f);
+    const assets::AssetRef rock = b.material("Roca", Vec3{0.34f, 0.33f, 0.32f}, 0.9f);
+    const assets::AssetRef tent = b.material("Lona", Vec3{0.52f, 0.44f, 0.30f}, 0.95f);
+    const assets::AssetRef fire = b.material("Fuego", Vec3{1.0f, 0.5f, 0.1f}, 0.5f, 0.0f, Vec3{1.0f, 0.45f, 0.1f}, 6.0f);
+    const assets::AssetRef body = b.material("Jugador", Vec3{0.10f, 0.55f, 0.95f}, 0.35f);
+    const assets::AssetRef visor = b.material("Visor", Vec3{0.05f, 0.06f, 0.08f}, 0.15f, 0.6f);
+    const assets::AssetRef wolf = b.material("Lobo", Vec3{0.42f, 0.42f, 0.45f}, 0.8f);
+    const assets::AssetRef goblin = b.material("Goblin", Vec3{0.35f, 0.62f, 0.25f}, 0.7f);
+    const assets::AssetRef shaman = b.material("Chaman", Vec3{0.50f, 0.28f, 0.65f}, 0.6f);
+    const assets::AssetRef king = b.material("Rey Goblin", Vec3{0.22f, 0.40f, 0.16f}, 0.6f);
+    const assets::AssetRef gold = b.material("Oro", Vec3{1.0f, 0.78f, 0.25f}, 0.25f, 1.0f);
+    const assets::AssetRef eye = b.material("Ojos", Vec3{1.0f, 0.2f, 0.1f}, 0.3f, 0.0f, Vec3{1.0f, 0.2f, 0.1f}, 4.0f);
+    const assets::AssetRef bar_back = b.material("Barra fondo", Vec3{0.08f, 0.05f, 0.05f}, 0.9f);
+    const assets::AssetRef bar_fill = b.material("Barra vida", Vec3{0.9f, 0.12f, 0.1f}, 0.5f, 0.0f, Vec3{0.9f, 0.1f, 0.08f}, 1.5f);
+    b.material("Marca mision", Vec3{1.0f, 0.82f, 0.1f}, 0.3f, 0.0f, Vec3{1.0f, 0.78f, 0.1f}, 5.0f);
+    b.material("Marca entregar", Vec3{0.3f, 0.65f, 1.0f}, 0.3f, 0.0f, Vec3{0.3f, 0.6f, 1.0f}, 5.0f);
+    const assets::AssetRef quest_mark = assets::AssetRef{};  // lo pone NPC.lua
+
+    // Una caja sin collider (decoracion plana: caminos, plaza).
+    const auto flat = [&](const std::string& name, const Vec3& p, const Vec3& s, const assets::AssetRef& m, float yaw = 0.0f) {
+        ecs::Entity e = b.box(name, p, s, m, Vec3{0.0f, yaw, 0.0f});
+        e.remove<physics::BoxCollider>();
+        return e;
+    };
+    const auto primitive = [&](const Uuid& mesh, const std::string& name, ecs::Entity parent, const Vec3& p, const Vec3& s,
+                               const assets::AssetRef& m, const Vec3& euler = Vec3{}) {
+        ecs::Entity e = ecs::createPrimitive(b.world, mesh, name, parent);
+        e.setLocalPosition(p);
+        e.setLocalScale(s);
+        e.setLocalEulerDegrees(euler);
+        e.get<ecs::MeshRenderer>().materials = {m};
+        return e;
+    };
+    const auto point_light = [&](const std::string& name, const Vec3& p, const Vec3& color, float intensity, float range) {
+        ecs::Entity l = ecs::createLight(b.world, ecs::LightType::Point);
+        l.setName(name);
+        l.setWorldPosition(p);
+        if (auto* light = l.tryGet<ecs::Light>()) {
+            light->color = color;
+            light->intensity = intensity;
+            light->range = range;
+            light->cast_shadows = false;
+        }
+        return l;
+    };
+    // Casa: paredes, tejado a dos aguas (una caja girada 45 grados) y puerta.
+    const auto house = [&](const std::string& name, const Vec3& p, const Vec3& size, float yaw) {
+        ecs::Entity h = b.box(name, p + Vec3{0.0f, size.y * 0.5f, 0.0f}, size, plaster, Vec3{0.0f, yaw, 0.0f});
+        const float r = size.z * 0.72f;
+        ecs::Entity t = primitive(assets::builtin::kCube, "Tejado", h, Vec3{0.0f, 0.5f, 0.0f},
+                                  Vec3{1.08f, r / size.y, r / size.z}, roof, Vec3{45.0f, 0.0f, 0.0f});
+        (void)t;
+        primitive(assets::builtin::kCube, "Puerta", h, Vec3{0.0f, -0.5f + 1.1f / size.y, 0.505f},
+                  Vec3{1.4f / size.x, 2.2f / size.y, 0.02f}, dark_wood);
+        return h;
+    };
+
+    // --- Terreno y caminos ---
+    b.box("Suelo", Vec3{0.0f, -0.5f, 0.0f}, Vec3{280.0f, 1.0f, 280.0f}, grass);
+    b.ring(138.0f, 5.0f, 3.0f, rock);
+    flat("Plaza", Vec3{0.0f, 0.01f, 0.0f}, Vec3{34.0f, 0.04f, 34.0f}, stone);
+    flat("Camino oeste", Vec3{-38.0f, 0.02f, -20.0f}, Vec3{5.0f, 0.04f, 48.0f}, road, 62.0f);
+    flat("Camino este", Vec3{38.0f, 0.02f, -32.0f}, Vec3{5.0f, 0.04f, 62.0f}, road, -48.0f);
+    flat("Camino norte", Vec3{0.0f, 0.02f, -60.0f}, Vec3{5.0f, 0.04f, 88.0f}, road);
+
+    // --- Villa Alba (el pueblo) ---
+    ecs::Entity zone_town = b.world.create("Zona Pueblo");
+    zone_town.setWorldPosition(Vec3{0.0f, 0.0f, 0.0f});
+    house("Casa 1", Vec3{-22.0f, 0.0f, -14.0f}, Vec3{8.0f, 5.0f, 7.0f}, 90.0f);
+    house("Casa 2", Vec3{-22.0f, 0.0f, 6.0f}, Vec3{8.0f, 5.0f, 7.0f}, 90.0f);
+    house("Casa 3", Vec3{22.0f, 0.0f, -14.0f}, Vec3{8.0f, 5.0f, 7.0f}, -90.0f);
+    house("Casa 4", Vec3{22.0f, 0.0f, 10.0f}, Vec3{9.0f, 5.5f, 7.0f}, -90.0f);
+    house("Casa 5", Vec3{-8.0f, 0.0f, 24.0f}, Vec3{9.0f, 5.0f, 7.0f}, 180.0f);
+    house("Posada", Vec3{10.0f, 0.0f, 25.0f}, Vec3{12.0f, 6.5f, 8.0f}, 180.0f);
+    ecs::Entity chapel = house("Capilla", Vec3{-30.0f, 0.0f, 28.0f}, Vec3{10.0f, 7.0f, 14.0f}, 135.0f);
+    primitive(assets::builtin::kCube, "Torre", chapel, Vec3{0.0f, 0.9f, -0.3f}, Vec3{0.3f, 0.9f, 0.22f}, plaster);
+    b.box("Pozo", Vec3{0.0f, 0.5f, 0.0f}, Vec3{2.2f, 1.0f, 2.2f}, stone);
+    primitive(assets::builtin::kCylinder, "Tejadillo del pozo", b.world.findByName("Pozo"), Vec3{0.0f, 2.2f, 0.0f},
+              Vec3{0.8f, 0.08f, 0.8f}, wood);
+    // Puestos del mercado.
+    for (int i = 0; i < 3; ++i) {
+        const float x = 7.0f + static_cast<float>(i) * 4.0f;
+        b.box("Puesto " + std::to_string(i + 1), Vec3{x, 0.5f, 8.0f}, Vec3{3.0f, 1.0f, 1.4f}, wood);
+        flat("Toldo " + std::to_string(i + 1), Vec3{x, 2.4f, 8.0f}, Vec3{3.4f, 0.1f, 2.0f}, i % 2 == 0 ? roof : tent);
+    }
+    // Farolas.
+    const Vec3 lamps[] = {{-12, 0, -12}, {12, 0, -12}, {-12, 0, 12}, {12, 0, 12}};
+    int lamp = 0;
+    for (const Vec3& p : lamps) {
+        ++lamp;
+        b.box("Farola " + std::to_string(lamp), p + Vec3{0.0f, 1.6f, 0.0f}, Vec3{0.25f, 3.2f, 0.25f}, dark_wood);
+        point_light("Luz farola " + std::to_string(lamp), p + Vec3{0.0f, 3.5f, 0.0f}, Vec3{1.0f, 0.78f, 0.45f}, 6.0f, 12.0f);
+    }
+    ecs::Entity spawn = b.world.create("Punto de reaparicion");
+    spawn.setWorldPosition(Vec3{0.0f, 1.2f, 8.0f});
+
+    // --- Bosque Gris (oeste): arboles y lobos ---
+    const Vec3 forest{-68.0f, 0.0f, -40.0f};
+    ecs::Entity zone_forest = b.world.create("Zona Bosque");
+    zone_forest.setWorldPosition(forest);
+    Lcg rng{12345u};
+    for (int i = 0; i < 46; ++i) {
+        const float angle = rng.range(0.0f, 6.2832f);
+        const float dist = rng.range(4.0f, 36.0f);
+        const Vec3 p = forest + Vec3{std::cos(angle) * dist, 0.0f, std::sin(angle) * dist};
+        const float height = rng.range(4.0f, 7.0f);
+        ecs::Entity tree = b.world.create("Arbol " + std::to_string(i + 1));
+        tree.setWorldPosition(p);
+        ecs::Entity trunk = primitive(assets::builtin::kCylinder, "Tronco", tree, Vec3{0.0f, height * 0.5f, 0.0f},
+                                      Vec3{0.5f, height * 0.5f, 0.5f}, wood);
+        trunk.add<physics::BoxCollider>();
+        const float crown = rng.range(2.6f, 4.0f);
+        primitive(assets::builtin::kSphere, "Copa", tree, Vec3{0.0f, height + crown * 0.3f, 0.0f},
+                  Vec3{crown, crown * 1.1f, crown}, leaves);
+    }
+
+    // --- Campamento goblin (este): empalizada, tiendas y hoguera ---
+    const Vec3 camp{66.0f, 0.0f, -66.0f};
+    ecs::Entity zone_camp = b.world.create("Zona Campamento");
+    zone_camp.setWorldPosition(camp);
+    b.box("Empalizada N", camp + Vec3{0.0f, 1.5f, -22.0f}, Vec3{44.0f, 3.0f, 0.6f}, dark_wood);
+    b.box("Empalizada S1", camp + Vec3{-14.0f, 1.5f, 22.0f}, Vec3{16.0f, 3.0f, 0.6f}, dark_wood);
+    b.box("Empalizada S2", camp + Vec3{14.0f, 1.5f, 22.0f}, Vec3{16.0f, 3.0f, 0.6f}, dark_wood);
+    b.box("Empalizada E", camp + Vec3{22.0f, 1.5f, 0.0f}, Vec3{0.6f, 3.0f, 44.0f}, dark_wood);
+    b.box("Empalizada O1", camp + Vec3{-22.0f, 1.5f, -12.0f}, Vec3{0.6f, 3.0f, 20.0f}, dark_wood);
+    b.box("Empalizada O2", camp + Vec3{-22.0f, 1.5f, 15.0f}, Vec3{0.6f, 3.0f, 14.0f}, dark_wood);
+    const Vec3 tents[] = {{-12, 0, -12}, {10, 0, -14}, {12, 0, 8}, {-10, 0, 10}};
+    int tent_n = 0;
+    for (const Vec3& t : tents) {
+        ++tent_n;
+        ecs::Entity e = b.box("Tienda " + std::to_string(tent_n), camp + t + Vec3{0.0f, 1.2f, 0.0f}, Vec3{4.0f, 2.8f, 2.8f}, tent,
+                              Vec3{45.0f, static_cast<float>(tent_n) * 40.0f, 0.0f});
+        (void)e;
+    }
+    b.box("Hoguera", camp + Vec3{0.0f, 0.2f, 0.0f}, Vec3{1.6f, 0.4f, 1.6f}, rock);
+    primitive(assets::builtin::kSphere, "Llamas", b.world.findByName("Hoguera"), Vec3{0.0f, 1.2f, 0.0f}, Vec3{0.5f, 1.4f, 0.5f}, fire);
+    point_light("Luz hoguera", camp + Vec3{0.0f, 1.6f, 0.0f}, Vec3{1.0f, 0.55f, 0.2f}, 10.0f, 16.0f);
+
+    // --- Guarida del Rey (norte): circulo de rocas y trono ---
+    const Vec3 lair{0.0f, 0.0f, -118.0f};
+    ecs::Entity zone_lair = b.world.create("Zona Guarida");
+    zone_lair.setWorldPosition(lair);
+    for (int i = 0; i < 12; ++i) {
+        if (i == 3) continue;  // la entrada (hacia el camino, al sur)
+        const float angle = static_cast<float>(i) * 0.5236f + 0.26f;
+        const Vec3 p = lair + Vec3{std::cos(angle) * 17.0f, 2.2f, std::sin(angle) * 17.0f};
+        b.box("Roca " + std::to_string(i + 1), p, Vec3{5.0f, 4.4f + static_cast<float>(i % 3), 3.5f}, rock,
+              Vec3{static_cast<float>(i * 7 % 15), static_cast<float>(i * 37), 0.0f});
+    }
+    b.box("Trono", lair + Vec3{0.0f, 1.2f, -9.0f}, Vec3{3.0f, 2.4f, 2.0f}, gold);
+    point_light("Luz guarida", lair + Vec3{0.0f, 4.0f, -6.0f}, Vec3{0.6f, 1.0f, 0.4f}, 8.0f, 20.0f);
+
+    // Navegacion: todo el mapa.
+    ecs::Entity volume = b.world.create("NavMeshBoundsVolume");
+    volume.setWorldPosition(Vec3{0.0f, 4.0f, 0.0f});
+    volume.add<navigation::NavMeshBounds>().size = Vec3{276.0f, 14.0f, 276.0f};
+
+    // --- Jugador y camara ---
+    ecs::Entity player = b.player(Vec3{0.0f, 1.1f, 8.0f}, body, visor);
+    player.get<scripting::Script>().file = "Scripts/Heroe.lua";
+    player.get<scripting::Script>().properties = {{"nombre", scripting::PropertyType::Text, "Heroe"}};
+    b.camera(9.0f, 24.0f);
+    const Uuid hero = player.uuid();
+
+    // --- Personajes del pueblo ---
+    const auto npc = [&](const std::string& name, const Vec3& p, const Vec3& color, const std::string& greeting, bool merchant) {
+        ecs::Entity n = b.world.create(name);
+        n.setWorldPosition(p + Vec3{0.0f, 1.0f, 0.0f});
+        n.setTag("NPC");
+        physics::CapsuleCollider& c = n.add<physics::CapsuleCollider>();
+        c.radius = 0.45f;
+        c.height = 1.9f;
+        Builder::attach(n, "NPC.lua",
+                        {{"nombre", scripting::PropertyType::Text, name},
+                         {"saludo", scripting::PropertyType::Text, greeting},
+                         {"comerciante", scripting::PropertyType::Bool, merchant ? "true" : "false"}});
+        const assets::AssetRef cloth = b.material("NPC " + name, color, 0.6f);
+        ecs::Entity model = b.world.create("Modelo", n);
+        primitive(assets::builtin::kCapsule, "Cuerpo", model, Vec3{}, Vec3{0.9f, 0.95f, 0.9f}, cloth);
+        primitive(assets::builtin::kCube, "Cara", model, Vec3{0.0f, 0.45f, -0.36f}, Vec3{0.5f, 0.2f, 0.2f}, plaster);
+        primitive(assets::builtin::kCube, "Marca", n, Vec3{0.0f, 1.75f, 0.0f}, Vec3{0.32f, 0.32f, 0.32f}, gold,
+                  Vec3{45.0f, 0.0f, 45.0f});
+        return n;
+    };
+    npc("Capitana Elena", Vec3{-6.0f, 0.0f, -8.0f}, Vec3{0.75f, 0.2f, 0.2f},
+        "Soy la capitana de la guardia de Villa Alba. Estos dias no damos abasto: lobos al oeste, goblins al este...", false);
+    npc("Mercader Tomas", Vec3{11.0f, 0.0f, 6.2f}, Vec3{0.3f, 0.55f, 0.3f},
+        "¡Bienvenido! Pociones, armas y armaduras al mejor precio de toda la comarca.", true);
+    npc("Hermano Anselmo", Vec3{-24.0f, 0.0f, 20.0f}, Vec3{0.85f, 0.85f, 0.8f},
+        "Que la luz te guie. Algo oscuro se mueve en la guarida del norte...", false);
+    (void)quest_mark;
+
+    // --- Enemigos ---
+    int enemy_n = 0;
+    const auto health_bar = [&](ecs::Entity e, float height) {
+        ecs::Entity bar = b.world.create("Barra", e);
+        bar.setLocalPosition(Vec3{0.0f, height, 0.0f});
+        bar.setLocalScale(Vec3{1.2f, 0.14f, 0.14f});
+        primitive(assets::builtin::kCube, "Fondo", bar, Vec3{}, Vec3{1.0f, 0.8f, 0.8f}, bar_back).get<ecs::MeshRenderer>().cast_shadows =
+            ecs::ShadowCasting::Off;
+        primitive(assets::builtin::kCube, "Relleno", bar, Vec3{}, Vec3{1.0f, 1.0f, 1.0f}, bar_fill).get<ecs::MeshRenderer>().cast_shadows =
+            ecs::ShadowCasting::Off;
+        bar.setActive(false);
+    };
+    const auto enemy = [&](const std::string& type, int level, const Vec3& p) {
+        ++enemy_n;
+        const bool is_wolf = type == "lobo";
+        const bool is_king = type == "rey";
+        const std::string label = is_wolf ? "Lobo" : is_king ? "Rey Goblin" : type == "chaman" ? "Chaman" : "Goblin";
+        const float half = is_wolf ? 0.45f : is_king ? 1.6f : 0.7f;  // del suelo al pivote
+        ecs::Entity e = b.world.create(label + " " + std::to_string(enemy_n));
+        e.setWorldPosition(p + Vec3{0.0f, half, 0.0f});
+        e.setTag("Enemigo");
+        navigation::NavAgent& agent = e.add<navigation::NavAgent>();
+        agent.speed = is_wolf ? 4.8f : is_king ? 4.0f : 3.8f;
+        agent.base_offset = half;
+        agent.radius = is_king ? 0.9f : 0.45f;
+        agent.height = half * 2.0f;
+        Builder::attach(e, "Enemigo.lua",
+                        {{"tipo", scripting::PropertyType::Text, type},
+                         {"nivel", scripting::PropertyType::Number, std::to_string(level)}});
+        ecs::Entity model = b.world.create("Modelo", e);
+        if (is_wolf) {
+            primitive(assets::builtin::kCube, "Cuerpo", model, Vec3{0.0f, 0.0f, 0.0f}, Vec3{0.55f, 0.55f, 1.3f}, wolf);
+            primitive(assets::builtin::kCube, "Cabeza", model, Vec3{0.0f, 0.2f, -0.8f}, Vec3{0.4f, 0.4f, 0.5f}, wolf);
+            primitive(assets::builtin::kCube, "Ojos", model, Vec3{0.0f, 0.28f, -1.06f}, Vec3{0.3f, 0.08f, 0.02f}, eye);
+            primitive(assets::builtin::kCube, "Cola", model, Vec3{0.0f, 0.15f, 0.8f}, Vec3{0.14f, 0.14f, 0.5f}, wolf,
+                      Vec3{-30.0f, 0.0f, 0.0f});
+        } else {
+            const assets::AssetRef skin = is_king ? king : type == "chaman" ? shaman : goblin;
+            const float s = half / 1.0f;
+            primitive(assets::builtin::kCapsule, "Cuerpo", model, Vec3{}, Vec3{s, s, s}, skin);
+            primitive(assets::builtin::kCube, "Ojos", model, Vec3{0.0f, 0.45f * s, -0.42f * s}, Vec3{0.45f * s, 0.1f * s, 0.05f}, eye);
+            if (is_king) {
+                primitive(assets::builtin::kCylinder, "Corona", model, Vec3{0.0f, 1.05f * s, 0.0f}, Vec3{0.6f, 0.25f, 0.6f}, gold);
+                primitive(assets::builtin::kCube, "Maza", model, Vec3{0.9f, 0.1f, -0.3f}, Vec3{0.3f, 1.6f, 0.3f}, dark_wood);
+            } else if (type == "chaman") {
+                primitive(assets::builtin::kCylinder, "Baston", model, Vec3{0.55f, 0.1f, 0.0f}, Vec3{0.08f, 0.9f, 0.08f}, dark_wood);
+                primitive(assets::builtin::kSphere, "Orbe", model, Vec3{0.55f, 1.05f, 0.0f}, Vec3{0.22f, 0.22f, 0.22f}, fire);
+            } else {
+                primitive(assets::builtin::kCube, "Garrote", model, Vec3{0.55f, 0.0f, -0.2f}, Vec3{0.14f, 0.9f, 0.14f}, wood,
+                          Vec3{20.0f, 0.0f, 0.0f});
+            }
+        }
+        health_bar(e, is_wolf ? 0.9f : half + 0.55f);
+        return e;
+    };
+    Lcg spots{777u};
+    for (int i = 0; i < 8; ++i) {
+        const float a = spots.range(0.0f, 6.2832f);
+        const float d = spots.range(6.0f, 26.0f);
+        enemy("lobo", i < 5 ? 1 : 2, forest + Vec3{std::cos(a) * d, 0.0f, std::sin(a) * d});
+    }
+    for (int i = 0; i < 8; ++i) {
+        const float a = spots.range(0.0f, 6.2832f);
+        const float d = spots.range(4.0f, 16.0f);
+        enemy(i >= 6 ? "chaman" : "goblin", i < 4 ? 3 : 4, camp + Vec3{std::cos(a) * d, 0.0f, std::sin(a) * d});
+    }
+    enemy("rey", 6, lair + Vec3{0.0f, 0.0f, -4.0f});
+    enemy("goblin", 5, lair + Vec3{-5.0f, 0.0f, 0.0f});
+    enemy("goblin", 5, lair + Vec3{5.0f, 0.0f, 0.0f});
+
+    // --- Otros jugadores (simulados) ---
+    const struct {
+        const char* name;
+        const char* role;
+        int level;
+        Vec3 color;
+        Vec3 pos;
+    } bots[] = {{"Aria_Luz", "mago", 4, {0.8f, 0.3f, 0.9f}, {4.0f, 0.0f, -4.0f}},
+                {"Kraven", "guerrero", 5, {0.85f, 0.45f, 0.1f}, {-4.0f, 0.0f, 4.0f}},
+                {"Nube42", "mago", 3, {0.9f, 0.9f, 0.95f}, {6.0f, 0.0f, 3.0f}},
+                {"Torvald", "guerrero", 4, {0.35f, 0.35f, 0.4f}, {-6.0f, 0.0f, -3.0f}}};
+    for (const auto& info : bots) {
+        ecs::Entity bot = b.world.create(info.name);
+        bot.setWorldPosition(info.pos + Vec3{0.0f, 1.0f, 0.0f});
+        bot.setTag("Bot");
+        navigation::NavAgent& agent = bot.add<navigation::NavAgent>();
+        agent.speed = 4.6f;
+        agent.base_offset = 1.0f;
+        Builder::attach(bot, "Bot.lua",
+                        {{"nombre", scripting::PropertyType::Text, info.name},
+                         {"clase", scripting::PropertyType::Text, info.role},
+                         {"nivel", scripting::PropertyType::Number, std::to_string(info.level)}});
+        ecs::Entity model = b.world.create("Modelo", bot);
+        const assets::AssetRef cloth = b.material(std::string("Bot ") + info.name, info.color, 0.45f);
+        primitive(assets::builtin::kCapsule, "Cuerpo", model, Vec3{}, Vec3{0.9f, 0.95f, 0.9f}, cloth);
+        primitive(assets::builtin::kCube, "Visor", model, Vec3{0.0f, 0.45f, -0.36f}, Vec3{0.62f, 0.22f, 0.22f}, visor);
+        const bool mage = std::string(info.role) == "mago";
+        primitive(assets::builtin::kCube, mage ? "Baston" : "Espada", model, Vec3{0.55f, 0.1f, -0.2f},
+                  mage ? Vec3{0.08f, 1.6f, 0.08f} : Vec3{0.1f, 1.1f, 0.2f}, mage ? dark_wood : stone);
+    }
+
+    // Bolsa de botin: Heroe.lua hace copias donde muere un enemigo.
+    ecs::Entity loot = primitive(assets::builtin::kCube, "Plantilla Botin", {}, Vec3{0.0f, -20.0f, 0.0f}, Vec3{0.6f, 0.45f, 0.45f}, gold);
+    primitive(assets::builtin::kCube, "Tapa", loot, Vec3{0.0f, 0.6f, 0.0f}, Vec3{1.05f, 0.25f, 1.05f}, wood);
+    loot.setActive(false);
+
+    // --- Interfaz ---
+    ecs::Entity canvas = b.world.create("HUD");
+    canvas.add<ui::Canvas>();
+    const auto rect = [&](ecs::Entity e, Vec2 anchor, Vec2 pivot, Vec2 position, Vec2 size) {
+        ui::RectTransform& rt = e.add<ui::RectTransform>();
+        rt.anchor_min = anchor;
+        rt.anchor_max = anchor;
+        rt.pivot = pivot;
+        rt.position = position;
+        rt.size = size;
+        return e;
+    };
+    const auto stretch = [&](ecs::Entity e, float margin = 0.0f) {
+        ui::RectTransform& rt = e.add<ui::RectTransform>();
+        rt.anchor_min = Vec2{0.0f, 0.0f};
+        rt.anchor_max = Vec2{1.0f, 1.0f};
+        rt.size = Vec2{-2.0f * margin, -2.0f * margin};
+        return e;
+    };
+    const auto image = [&](ecs::Entity e, Vec3 color, float alpha, float radius = 0.0f) {
+        ui::Image& im = e.add<ui::Image>();
+        im.color = color;
+        im.alpha = alpha;
+        im.corner_radius = radius;
+        return e;
+    };
+    const auto text = [&](ecs::Entity e, const std::string& value, float font, ui::HAlign align, Vec3 color = Vec3{1, 1, 1},
+                          ui::VAlign valign = ui::VAlign::Middle, bool wrap = false) {
+        ui::Text& t = e.add<ui::Text>();
+        t.text = value;
+        t.font_size = font;
+        t.h_align = align;
+        t.v_align = valign;
+        t.color = color;
+        t.shadow = true;
+        t.wrap = wrap;
+        return e;
+    };
+    const auto button = [&](ecs::Entity e, const std::string& method, Vec3 color) {
+        ui::Button& bt = e.add<ui::Button>();
+        bt.normal = color;
+        bt.hover = color * 1.35f;
+        bt.pressed = color * 0.7f;
+        bt.disabled = Vec3{0.16f, 0.16f, 0.17f};
+        bt.corner_radius = 6.0f;
+        bt.target = hero;
+        bt.on_click = method;
+        return e;
+    };
+    const auto child = [&](const std::string& name, ecs::Entity parent) { return b.world.create(name, parent); };
+    const Vec2 top_left{0.0f, 0.0f};
+    const Vec2 top_right{1.0f, 0.0f};
+    const Vec2 top{0.5f, 0.0f};
+    const Vec2 bottom{0.5f, 1.0f};
+    const Vec2 bottom_left{0.0f, 1.0f};
+    const Vec2 center{0.5f, 0.5f};
+    // Barra con fondo, relleno (se acorta desde Lua) y texto.
+    const auto bar = [&](ecs::Entity parent, const std::string& prefix, Vec2 position, Vec2 size, Vec3 back, Vec3 fill, float font) {
+        image(rect(child(prefix + "Fondo", parent), top_left, top_left, position, size), back, 0.9f, 4.0f);
+        image(rect(child(prefix + "Barra", parent), top_left, top_left, position, size), fill, 1.0f, 4.0f);
+        text(rect(child(prefix + "Texto", parent), top_left, top_left, position, size), "", font, ui::HAlign::Center);
+    };
+    const Vec3 panel_color{0.06f, 0.07f, 0.09f};
+    const auto close_button = [&](ecs::Entity panel) {
+        ecs::Entity c = rect(child("Cerrar", panel), top_right, top_right, Vec2{-12.0f, 12.0f}, Vec2{40.0f, 36.0f});
+        button(c, "OnCerrar", Vec3{0.45f, 0.14f, 0.14f});
+        text(stretch(child("Texto", c)), "X", 22.0f, ui::HAlign::Center);
+    };
+
+    // Marco del jugador (arriba a la izquierda) y del objetivo (arriba al centro).
+    ecs::Entity frame = image(rect(child("UI_Jugador", canvas), top_left, top_left, Vec2{24, 24}, Vec2{360, 112}), panel_color, 0.65f, 10.0f);
+    text(rect(child("Nombre", frame), top_left, top_left, Vec2{20, 8}, Vec2{330, 32}), "", 24.0f, ui::HAlign::Left);
+    bar(frame, "Vida", Vec2{20, 46}, Vec2{320, 26}, Vec3{0.25f, 0.04f, 0.04f}, Vec3{0.85f, 0.15f, 0.12f}, 18.0f);
+    bar(frame, "Mana", Vec2{20, 78}, Vec2{320, 22}, Vec3{0.04f, 0.07f, 0.25f}, Vec3{0.2f, 0.4f, 0.95f}, 16.0f);
+    ecs::Entity target = image(rect(child("UI_Objetivo", canvas), top, top, Vec2{0, 24}, Vec2{360, 84}), panel_color, 0.65f, 10.0f);
+    text(rect(child("Nombre", target), top_left, top_left, Vec2{20, 8}, Vec2{330, 32}), "", 24.0f, ui::HAlign::Left);
+    bar(target, "Vida", Vec2{20, 46}, Vec2{320, 26}, Vec3{0.25f, 0.04f, 0.04f}, Vec3{0.85f, 0.15f, 0.12f}, 18.0f);
+    target.setActive(false);
+
+    // Experiencia (abajo del todo).
+    image(rect(child("UI_XPFondo", canvas), bottom, bottom, Vec2{0, -8}, Vec2{900, 14}), Vec3{0.08f, 0.05f, 0.12f}, 0.85f, 4.0f);
+    image(rect(child("UI_XPBarra", canvas), bottom, Vec2{0.0f, 1.0f}, Vec2{-450, -8}, Vec2{900, 14}), Vec3{0.62f, 0.3f, 0.95f}, 1.0f, 4.0f);
+    text(rect(child("UI_XPTexto", canvas), bottom, bottom, Vec2{0, -24}, Vec2{900, 24}), "", 17.0f, ui::HAlign::Center);
+
+    // Barra de habilidades (1-6).
+    static const char* kAbilities[] = {"Golpe", "Bola de fuego", "Curar", "Torbellino", "Vida", "Mana"};
+    static const Vec3 kAbilityColors[] = {{0.45f, 0.3f, 0.2f}, {0.7f, 0.28f, 0.08f}, {0.2f, 0.55f, 0.25f},
+                                          {0.5f, 0.2f, 0.45f}, {0.55f, 0.12f, 0.12f}, {0.14f, 0.25f, 0.6f}};
+    for (int i = 0; i < 6; ++i) {
+        ecs::Entity slot = rect(child("UI_Hab " + std::to_string(i + 1), canvas), bottom, bottom,
+                                Vec2{(static_cast<float>(i) - 2.5f) * 86.0f, -44.0f}, Vec2{78, 72});
+        button(slot, "OnHabilidad", kAbilityColors[i]);
+        text(rect(child("Nombre", slot), center, center, Vec2{0, 6}, Vec2{74, 44}), kAbilities[i], 14.0f, ui::HAlign::Center,
+             Vec3{1, 1, 1}, ui::VAlign::Middle, true);
+        image(rect(child("Enfriamiento", slot), bottom, bottom, Vec2{0, 0}, Vec2{78, 0}), Vec3{0, 0, 0}, 0.62f, 6.0f);
+        text(rect(child("Tecla", slot), top_left, top_left, Vec2{6, 2}, Vec2{20, 20}), std::to_string(i + 1), 16.0f, ui::HAlign::Left,
+             Vec3{1.0f, 0.9f, 0.5f});
+        text(rect(child("Tiempo", slot), center, center, Vec2{0, 0}, Vec2{74, 34}), "", 26.0f, ui::HAlign::Center);
+    }
+    // Barra de lanzamiento.
+    ecs::Entity cast = image(rect(child("UI_Lanzamiento", canvas), bottom, bottom, Vec2{0, -150}, Vec2{404, 30}), panel_color, 0.8f, 6.0f);
+    image(rect(child("Barra", cast), top_left, top_left, Vec2{2, 2}, Vec2{400, 26}), Vec3{0.95f, 0.6f, 0.15f}, 1.0f, 5.0f);
+    text(stretch(child("Texto", cast)), "", 18.0f, ui::HAlign::Center);
+    cast.setActive(false);
+
+    // Chat (abajo a la izquierda), misiones (derecha) y minimapa (arriba a la derecha).
+    ecs::Entity chat = image(rect(child("UI_ChatFondo", canvas), bottom_left, bottom_left, Vec2{24, -24}, Vec2{660, 250}), panel_color,
+                             0.4f, 8.0f);
+    text(stretch(child("UI_Chat", chat), 12.0f), "", 17.0f, ui::HAlign::Left, Vec3{0.92f, 0.92f, 0.95f}, ui::VAlign::Bottom, true);
+    text(rect(child("UI_Seguimiento", canvas), top_right, top_right, Vec2{-24, 300}, Vec2{430, 260}), "", 19.0f, ui::HAlign::Left,
+         Vec3{1.0f, 0.93f, 0.7f}, ui::VAlign::Top, true);
+    ecs::Entity map = image(rect(child("UI_Mapa", canvas), top_right, top_right, Vec2{-24, 24}, Vec2{230, 230}), Vec3{0.1f, 0.14f, 0.1f},
+                            0.7f, 115.0f);
+    for (int i = 1; i <= 40; ++i) {
+        ecs::Entity dot = image(rect(child("Punto " + std::to_string(i), map), center, center, Vec2{0, 0}, Vec2{7, 7}), Vec3{1, 0, 0},
+                                1.0f, 4.0f);
+        dot.setActive(false);
+    }
+    image(rect(child("Yo", map), center, center, Vec2{0, 0}, Vec2{11, 11}), Vec3{1, 1, 1}, 1.0f, 6.0f);
+    text(rect(child("Norte", map), top, top, Vec2{0, 4}, Vec2{30, 24}), "N", 18.0f, ui::HAlign::Center);
+    text(rect(child("UI_Zona", canvas), top_right, top_right, Vec2{-24, 258}, Vec2{230, 30}), "", 19.0f, ui::HAlign::Center,
+         Vec3{0.85f, 1.0f, 0.8f});
+
+    // Avisos grandes y numeros flotantes.
+    ecs::Entity notice = text(rect(child("UI_Aviso", canvas), top, top, Vec2{0, 130}, Vec2{1300, 50}), "", 34.0f, ui::HAlign::Center);
+    notice.get<ui::Text>().alpha = 0.0f;
+    for (int i = 1; i <= 8; ++i) {
+        ecs::Entity f = text(rect(child("UI_Flotante " + std::to_string(i), canvas), center, center, Vec2{0, -120}, Vec2{300, 50}), "",
+                             36.0f, ui::HAlign::Center);
+        f.get<ui::Text>().alpha = 0.0f;
+    }
+
+    // Inventario (I): 20 ranuras.
+    ecs::Entity inventory = image(rect(child("UI_Inventario", canvas), center, center, Vec2{-430, -10}, Vec2{530, 600}), panel_color,
+                                  0.94f, 12.0f);
+    text(rect(child("Titulo", inventory), top_left, top_left, Vec2{22, 14}, Vec2{400, 40}), "Inventario (I)", 30.0f, ui::HAlign::Left);
+    text(rect(child("Oro", inventory), top_left, top_left, Vec2{22, 56}, Vec2{400, 30}), "", 21.0f, ui::HAlign::Left,
+         Vec3{1.0f, 0.85f, 0.35f});
+    for (int i = 0; i < 20; ++i) {
+        ecs::Entity s = rect(child("Ranura " + std::to_string(i + 1), inventory), top_left, top_left,
+                             Vec2{22.0f + static_cast<float>(i % 4) * 124.0f, 96.0f + static_cast<float>(i / 4) * 96.0f}, Vec2{116, 88});
+        button(s, "OnRanura", Vec3{0.15f, 0.16f, 0.2f});
+        image(rect(child("Color", s), top_left, top_left, Vec2{6, 6}, Vec2{16, 16}), Vec3{1, 1, 1}, 0.0f, 3.0f);
+        text(rect(child("Nombre", s), center, center, Vec2{0, 4}, Vec2{108, 58}), "", 15.0f, ui::HAlign::Center, Vec3{1, 1, 1},
+             ui::VAlign::Middle, true);
+        text(rect(child("Cantidad", s), Vec2{1.0f, 1.0f}, Vec2{1.0f, 1.0f}, Vec2{-6, -2}, Vec2{60, 24}), "", 16.0f, ui::HAlign::Right);
+    }
+    text(rect(child("Pista", inventory), bottom_left, bottom_left, Vec2{22, -14}, Vec2{480, 28}), "", 17.0f, ui::HAlign::Left,
+         Vec3{0.7f, 0.72f, 0.78f});
+    close_button(inventory);
+    inventory.setActive(false);
+
+    // Personaje (C): estadisticas y equipo.
+    ecs::Entity sheet = image(rect(child("UI_Personaje", canvas), center, center, Vec2{430, -10}, Vec2{470, 560}), panel_color, 0.94f, 12.0f);
+    text(rect(child("Titulo", sheet), top_left, top_left, Vec2{22, 14}, Vec2{400, 40}), "Personaje (C)", 30.0f, ui::HAlign::Left);
+    text(rect(child("Stats", sheet), top_left, top_left, Vec2{22, 64}, Vec2{420, 330}), "", 20.0f, ui::HAlign::Left, Vec3{1, 1, 1},
+         ui::VAlign::Top, true);
+    for (int i = 0; i < 2; ++i) {
+        ecs::Entity slot = rect(child(i == 0 ? "Arma" : "Armadura", sheet), top_left, top_left, Vec2{22.0f, 410.0f + 62.0f * static_cast<float>(i)},
+                                Vec2{426, 52});
+        button(slot, "OnDesequipar", Vec3{0.2f, 0.22f, 0.3f});
+        text(stretch(child("Texto", slot), 10.0f), "", 18.0f, ui::HAlign::Left);
+    }
+    close_button(sheet);
+    sheet.setActive(false);
+
+    // Diario de misiones (L).
+    ecs::Entity journal = image(rect(child("UI_Diario", canvas), center, center, Vec2{0, -10}, Vec2{980, 640}), panel_color, 0.95f, 12.0f);
+    text(rect(child("Titulo", journal), top_left, top_left, Vec2{24, 14}, Vec2{600, 40}), "Diario de misiones (L)", 30.0f, ui::HAlign::Left);
+    text(rect(child("Texto", journal), top_left, top_left, Vec2{24, 70}, Vec2{930, 550}), "", 19.0f, ui::HAlign::Left, Vec3{1, 1, 1},
+         ui::VAlign::Top, true);
+    close_button(journal);
+    journal.setActive(false);
+
+    // Dialogo con un NPC (misiones y tienda).
+    ecs::Entity dialog = image(rect(child("UI_Dialogo", canvas), center, center, Vec2{320, -10}, Vec2{640, 640}), panel_color, 0.95f, 12.0f);
+    text(rect(child("Titulo", dialog), top_left, top_left, Vec2{24, 16}, Vec2{540, 44}), "", 30.0f, ui::HAlign::Left,
+         Vec3{1.0f, 0.85f, 0.4f});
+    text(rect(child("Cuerpo", dialog), top_left, top_left, Vec2{24, 70}, Vec2{592, 250}), "", 20.0f, ui::HAlign::Left, Vec3{1, 1, 1},
+         ui::VAlign::Top, true);
+    for (int i = 0; i < 6; ++i) {
+        ecs::Entity o = rect(child("Opcion " + std::to_string(i + 1), dialog), top_left, top_left,
+                             Vec2{24.0f, 336.0f + 48.0f * static_cast<float>(i)}, Vec2{592, 42});
+        button(o, "OnOpcion", Vec3{0.16f, 0.3f, 0.5f});
+        text(stretch(child("Texto", o), 8.0f), "", 19.0f, ui::HAlign::Left);
+    }
+    close_button(dialog);
+    dialog.setActive(false);
+
+    // Muerte y ayuda.
+    ecs::Entity death = image(stretch(child("UI_Muerte", canvas)), Vec3{0.35f, 0.02f, 0.02f}, 0.55f);
+    text(rect(child("Titulo", death), center, center, Vec2{0, -100}, Vec2{900, 90}), "Has muerto", 72.0f, ui::HAlign::Center);
+    text(rect(child("Causa", death), center, center, Vec2{0, -20}, Vec2{900, 50}), "", 30.0f, ui::HAlign::Center, Vec3{1.0f, 0.8f, 0.8f});
+    ecs::Entity respawn = rect(child("Reaparecer", death), center, center, Vec2{0, 80}, Vec2{380, 66});
+    button(respawn, "OnReaparecer", Vec3{0.5f, 0.12f, 0.12f});
+    text(stretch(child("Texto", respawn)), "Reaparecer en el pueblo", 26.0f, ui::HAlign::Center);
+    death.setActive(false);
+
+    ecs::Entity help = image(rect(child("UI_Ayuda", canvas), center, center, Vec2{0, -20}, Vec2{820, 560}), panel_color, 0.95f, 12.0f);
+    text(rect(child("Titulo", help), top_left, top_left, Vec2{24, 14}, Vec2{600, 40}), "Controles (H)", 30.0f, ui::HAlign::Left);
+    text(rect(child("Texto", help), top_left, top_left, Vec2{24, 70}, Vec2{770, 470}),
+         "WASD  moverse          Shift  correr          Espacio  saltar\n"
+         "Clic derecho + raton  girar la camara          Rueda  acercar\n\n"
+         "Tab  siguiente enemigo          Clic izquierdo  el enemigo al que miras\n"
+         "1  Golpe (cuerpo a cuerpo)          2  Bola de fuego (a distancia)\n"
+         "3  Curar (nivel 2)          4  Torbellino en area (nivel 3)\n"
+         "5 / 6  pociones de vida y de mana\n\n"
+         "E  hablar con un personaje (! = mision nueva, azul = para entregar)\n"
+         "I  inventario (clic: usar, equipar o vender)          C  personaje\n"
+         "L  diario de misiones          Escape  cerrar / quitar objetivo\n"
+         "F9  borrar la partida guardada\n\n"
+         "La partida se guarda sola. Los otros jugadores del mundo tambien cazan.",
+         20.0f, ui::HAlign::Left, Vec3{1, 1, 1}, ui::VAlign::Top, true);
+    close_button(help);
+    help.setActive(false);
+
+    b.save("Main");
+
+    std::vector<std::string> tags = ecs::defaultTags();
+    for (const char* t : {"Enemigo", "NPC", "Bot"}) tags.push_back(t);
+    ecs::saveTags(project.settingsFolder() / "Tags.json", tags);
+    navigation::NavigationSettings nav;
+    navigation::saveNavigationSettings(project.settingsFolder() / "Navigation.json", nav);
+}
+
 void copyFolder(const std::filesystem::path& from, const std::filesystem::path& to) {
     std::error_code error;
     if (!std::filesystem::is_directory(from, error)) return;
@@ -1791,6 +2347,15 @@ std::vector<ProjectTemplate> availableTemplates() {
         {"Mundo infinito con biomas, cuevas, arboles y mar", "Inventario de 36 huecos con iconos y 13 recetas de crafteo",
          "Vida, hambre, aire, dano por caida, muerte y reaparicion", "Contorno del bloque, grietas al romper y objetos que se recogen"},
         rgba(110, 190, 70), TemplateArt::Voxel, {}});
+    list.push_back(ProjectTemplate{
+        "mmo", "MMO RPG", "Integradas",
+        "Un mundo de rol online en miniatura: pueblo con misiones y tienda, bosque de lobos, campamento goblin y un jefe. "
+        "Otros jugadores cazan a tu lado. Todo el juego esta en Lua (Heroe, Enemigo, Bot, NPC).",
+        {"Combate con objetivo (Tab), 4 habilidades con mana, enfriamientos y pociones",
+         "5 misiones, dialogos, tienda, inventario de 20 huecos y equipo",
+         "Enemigos con IA (aggro, leash, reaparicion), botin y un jefe con ataque en area",
+         "Interfaz completa: marcos, barra de habilidades, chat, minimapa y niveles"},
+        rgba(210, 160, 60), TemplateArt::Mmo, {}});
 
     // Del usuario.
     std::error_code error;
@@ -1840,6 +2405,8 @@ project::ProjectInfo createProjectFromTemplate(const ProjectTemplate& t, const s
             buildNavigation(info);
         } else if (t.id == "voxel") {
             buildVoxel(info);
+        } else if (t.id == "mmo") {
+            buildMmo(info);
         } else {
             buildBlank(info);
         }

@@ -13,6 +13,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cfloat>
 #include <functional>
 #include <map>
 
@@ -43,7 +44,35 @@ std::optional<Icon> componentIcon(const std::string& name) {
     if (name == "DollyTrack" || name == "DollyCart") return Icon::Waypoint;
     if (name == "Terrain") return Icon::Terrain;
     if (name == "CinematicSequence") return Icon::Camera;
+    if (name == "AudioSource") return Icon::AudioSource;
+    if (name == "AudioListener") return Icon::AudioListener;
+    if (name == "AudioReverbZone") return Icon::AudioSource;
+    if (name == "NavAgent") return Icon::NavMeshAgent;
+    if (name == "NavModifier") return Icon::NavMeshObstacle;
+    if (name == "NavMeshBounds") return Icon::TriggerVolume;
+    if (name == "Vehicle") return Icon::Rigidbody;
+    if (name == "WheelCollider") return Icon::ColliderCapsule;
+    if (name == "WaterBody") return Icon::FogVolume;
+    if (name == "VoxelWorld") return Icon::Terrain;
     return std::nullopt;
+}
+
+// Color de cada categoria (la barra de las fichas de Add Component).
+ImU32 categoryColor(const std::string& category) {
+    if (category == "Renderizado") return IM_COL32(90, 170, 255, 255);
+    if (category == "Fisica") return IM_COL32(120, 220, 110, 255);
+    if (category == "Entorno") return IM_COL32(80, 210, 200, 255);
+    if (category == "Audio") return IM_COL32(240, 170, 70, 255);
+    if (category == "Scripting") return IM_COL32(200, 130, 255, 255);
+    if (category == "Navegacion") return IM_COL32(250, 220, 90, 255);
+    if (category == "Efectos") return IM_COL32(255, 110, 140, 255);
+    if (category == "Animacion") return IM_COL32(255, 150, 100, 255);
+    if (category == "Cinematicas") return IM_COL32(170, 150, 255, 255);
+    if (category == "UI") return IM_COL32(150, 200, 255, 255);
+    // Otras: un color estable por su nombre.
+    std::uint32_t h = 2166136261u;
+    for (const char c : category) h = (h ^ static_cast<unsigned char>(c)) * 16777619u;
+    return IM_COL32(120 + (h & 0x7F), 120 + ((h >> 8) & 0x7F), 120 + ((h >> 16) & 0x7F), 255);
 }
 
 std::string lower(std::string text) {
@@ -55,7 +84,7 @@ std::string lower(std::string text) {
 }  // namespace
 
 void EditorApp::drawInspector() {
-    if (!ImGui::Begin("Inspector", &show_inspector_)) {
+    if (!ImGui::Begin(panelTitle("Inspector").c_str(), &show_inspector_)) {
         ImGui::End();
         return;
     }
@@ -422,12 +451,24 @@ void EditorApp::drawInspector() {
     if (ImGui::Button("Add Component", ImVec2(width, 28.0f))) {
         ImGui::OpenPopup("add_component");
     }
+    // El desplegable, centrado en la ventana del editor (como el de Unreal).
+    {
+        const ImGuiViewport* viewport = ImGui::GetMainViewport();
+        const float popup_width = std::clamp(viewport->WorkSize.x * 0.6f, 560.0f, 1100.0f);
+        const float popup_height = std::clamp(viewport->WorkSize.y * 0.72f, 420.0f, 860.0f);
+        ImGui::SetNextWindowPos(ImVec2(viewport->WorkPos.x + viewport->WorkSize.x * 0.5f,
+                                       viewport->WorkPos.y + viewport->WorkSize.y * 0.5f),
+                                ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+        ImGui::SetNextWindowSize(ImVec2(popup_width, popup_height), ImGuiCond_Appearing);
+        ImGui::SetNextWindowSizeConstraints(ImVec2(300.0f, 240.0f), ImVec2(1200.0f, 1000.0f));
+    }
     drawAddComponent(entity);
     ImGui::End();
 }
 
 void EditorApp::drawAddComponent(ecs::Entity entity) {
     static std::string search;
+    static std::string category_filter;  // vacio = todas
     if (!ImGui::BeginPopup("add_component")) {
         return;
     }
@@ -435,41 +476,146 @@ void EditorApp::drawAddComponent(ecs::Entity entity) {
         search.clear();
         ImGui::SetKeyboardFocusHere();
     }
-    ImGui::SetNextItemWidth(240.0f);
-    ImGui::InputTextWithHint("##search", "Buscar componente...", &search);
-    ImGui::Separator();
 
-    // Por categoria (Renderizado, Iluminacion, Entorno...).
-    std::map<std::string, std::vector<const ecs::ComponentType*>> by_category;
+    // Lo que se puede anadir (con varios objetos: lo que no tienen todos).
+    const std::vector<ecs::Entity> targets = selectedEntities();
     const std::string needle = lower(search);
+    std::map<std::string, std::vector<const ecs::ComponentType*>> by_category;
+    std::map<std::string, int> category_counts;
     for (const ecs::ComponentType& type : ecs::ComponentRegistry::instance().types()) {
-        // Con varios objetos: lo que no tienen todos.
-        const std::vector<ecs::Entity> targets = selectedEntities();
         const bool all_have = targets.empty()
                                   ? type.has(world_, entity.handle())
                                   : std::all_of(targets.begin(), targets.end(),
                                                 [&](const ecs::Entity& e) { return type.has(world_, e.handle()); });
         if (!type.addable || all_have) continue;
         if (!needle.empty() && lower(type.label).find(needle) == std::string::npos &&
-            lower(type.name).find(needle) == std::string::npos) {
+            lower(type.name).find(needle) == std::string::npos && lower(type.category).find(needle) == std::string::npos) {
             continue;
         }
+        ++category_counts[type.category];
+        if (!category_filter.empty() && type.category != category_filter) continue;
         by_category[type.category].push_back(&type);
     }
-    if (by_category.empty()) {
-        ImGui::TextDisabled("Nada que añadir");
-    }
-    for (const auto& [category, types] : by_category) {
-        ImGui::SeparatorText(category.c_str());
-        for (const ecs::ComponentType* type : types) {
-            if (ImGui::Selectable(type->label.c_str())) {
-                for (ecs::Entity e : selectedEntities()) {
-                    if (!type->has(world_, e.handle())) type->add(world_, e.handle());
-                }
-                commit();
-                ImGui::CloseCurrentPopup();
+
+    // --- Busqueda y, a su derecha, el filtro de categoria ---
+    int total = 0;
+    for (const auto& [name, count] : category_counts) total += count;
+    if (!category_filter.empty() && !category_counts.contains(category_filter)) category_filter.clear();
+    constexpr float kFilterWidth = 190.0f;
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(10.0f, 7.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 6.0f);
+    ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - kFilterWidth - ImGui::GetStyle().ItemSpacing.x);
+    const bool enter = ImGui::InputTextWithHint("##search", "Buscar componente...", &search,
+                                                ImGuiInputTextFlags_EnterReturnsTrue);
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(kFilterWidth);
+    const std::string preview = category_filter.empty() ? "Todas (" + std::to_string(total) + ")"
+                                                        : category_filter + " (" +
+                                                              std::to_string(category_counts[category_filter]) + ")";
+    if (ImGui::BeginCombo("##category", preview.c_str(), ImGuiComboFlags_HeightLarge)) {
+        if (ImGui::Selectable(("Todas (" + std::to_string(total) + ")").c_str(), category_filter.empty())) {
+            category_filter.clear();
+        }
+        ImGui::Separator();
+        for (const auto& [name, count] : category_counts) {
+            // Punto del color de la categoria delante del nombre.
+            const ImVec2 p = ImGui::GetCursorScreenPos();
+            const float h = ImGui::GetTextLineHeight();
+            ImGui::GetWindowDrawList()->AddCircleFilled(ImVec2(p.x + 6.0f, p.y + h * 0.5f), 4.5f, categoryColor(name));
+            ImGui::SetCursorPosX(ImGui::GetCursorPosX() + 16.0f);
+            if (ImGui::Selectable((name + " (" + std::to_string(count) + ")").c_str(), category_filter == name)) {
+                category_filter = name;
             }
         }
+        ImGui::EndCombo();
+    }
+    ImGui::PopStyleVar(2);
+    ImGui::Spacing();
+    ImGui::Separator();
+
+    // --- Rejilla de fichas ---
+    const ecs::ComponentType* chosen = nullptr;
+    ImGui::BeginChild("##component_grid", ImVec2(0.0f, 0.0f), ImGuiChildFlags_None);
+    if (by_category.empty()) {
+        ImGui::Spacing();
+        ImGui::TextDisabled(search.empty() ? "Nada que añadir" : "Ningún componente coincide");
+    }
+    constexpr float kTileW = 104.0f;
+    constexpr float kTileH = 92.0f;
+    constexpr float kGap = 8.0f;
+    const float avail = ImGui::GetContentRegionAvail().x;
+    const int columns = std::max(1, static_cast<int>((avail + kGap) / (kTileW + kGap)));
+    // Las fichas se estiran para llenar el ancho (rejilla sin hueco a la derecha).
+    const float tile_w = std::floor((avail - kGap * static_cast<float>(columns - 1)) / static_cast<float>(columns));
+    ImDrawList* draw = ImGui::GetWindowDrawList();
+    for (const auto& [category, types] : by_category) {
+        const ImU32 accent = categoryColor(category);
+        if (category_filter.empty()) {
+            ImGui::Spacing();
+            ImGui::PushStyleColor(ImGuiCol_Text, ImGui::ColorConvertU32ToFloat4(accent));
+            ImGui::TextUnformatted(category.c_str());
+            ImGui::PopStyleColor();
+        }
+        for (std::size_t i = 0; i < types.size(); ++i) {
+            const ecs::ComponentType* type = types[i];
+            if (chosen == nullptr && enter) chosen = type;  // Enter: el primero
+            if (i % static_cast<std::size_t>(columns) != 0) ImGui::SameLine(0.0f, kGap);
+            ImGui::PushID(type->name.c_str());
+            const ImVec2 p0 = ImGui::GetCursorScreenPos();
+            if (ImGui::InvisibleButton("##tile", ImVec2(tile_w, kTileH))) chosen = type;
+            const bool hovered = ImGui::IsItemHovered();
+            const bool held = ImGui::IsItemActive();
+            const ImVec2 p1(p0.x + tile_w, p0.y + kTileH);
+            // Fondo, borde y la barra de color de la categoria.
+            draw->AddRectFilled(p0, p1, held ? IM_COL32(58, 64, 78, 255) : (hovered ? IM_COL32(48, 53, 64, 255)
+                                                                                    : IM_COL32(34, 36, 42, 255)),
+                                7.0f);
+            draw->AddRect(p0, p1, hovered ? accent : IM_COL32(58, 61, 70, 255), 7.0f, 0, hovered ? 1.5f : 1.0f);
+            draw->AddRectFilled(ImVec2(p0.x + 10.0f, p0.y + 1.0f), ImVec2(p1.x - 10.0f, p0.y + 3.5f), accent, 2.0f);
+            // Icono (o la inicial en un circulo).
+            constexpr float kIcon = 34.0f;
+            const ImVec2 icon_min(p0.x + (tile_w - kIcon) * 0.5f, p0.y + 14.0f);
+            if (const std::optional<Icon> icon = componentIcon(type->name)) {
+                imgui_.drawIcon(draw, *icon, icon_min, kIcon, hovered ? IM_COL32(255, 255, 255, 255)
+                                                                       : IM_COL32(215, 218, 226, 255));
+            } else {
+                const ImVec2 c(icon_min.x + kIcon * 0.5f, icon_min.y + kIcon * 0.5f);
+                draw->AddCircleFilled(c, kIcon * 0.5f, (accent & 0x00FFFFFFu) | 0x50000000u, 24);
+                draw->AddCircle(c, kIcon * 0.5f, accent, 24, 1.5f);
+                const char initial[2] = {type->label.empty() ? '?' : type->label[0], 0};
+                ImFont* font = ImGui::GetFont();
+                const float size = ImGui::GetFontSize() * 1.35f;
+                const ImVec2 ts = font->CalcTextSizeA(size, FLT_MAX, 0.0f, initial);
+                draw->AddText(font, size, ImVec2(c.x - ts.x * 0.5f, c.y - ts.y * 0.5f), IM_COL32(240, 240, 245, 255), initial);
+            }
+            // Nombre centrado, en dos lineas como mucho.
+            const float text_w = tile_w - 10.0f;
+            const char* label = type->label.c_str();
+            const ImVec2 ts = ImGui::CalcTextSize(label, nullptr, false, text_w);
+            const float tx = p0.x + (tile_w - std::min(ts.x, text_w)) * 0.5f;
+            const float ty = p0.y + 56.0f;
+            draw->PushClipRect(ImVec2(p0.x + 4.0f, ty), ImVec2(p1.x - 4.0f, p1.y - 4.0f), true);
+            if (ts.x <= text_w) {
+                draw->AddText(ImVec2(tx, ty), IM_COL32(230, 232, 238, 255), label);
+            } else {
+                draw->AddText(ImGui::GetFont(), ImGui::GetFontSize(), ImVec2(p0.x + 5.0f, ty),
+                              IM_COL32(230, 232, 238, 255), label, nullptr, text_w);
+            }
+            draw->PopClipRect();
+            if (hovered) {
+                ImGui::SetTooltip("%s\n%s  ·  %s", type->label.c_str(), type->category.c_str(), type->name.c_str());
+            }
+            ImGui::PopID();
+        }
+    }
+    ImGui::EndChild();
+
+    if (chosen != nullptr) {
+        for (ecs::Entity e : targets.empty() ? std::vector<ecs::Entity>{entity} : targets) {
+            if (!chosen->has(world_, e.handle())) chosen->add(world_, e.handle());
+        }
+        commit();
+        ImGui::CloseCurrentPopup();
     }
     ImGui::EndPopup();
 }

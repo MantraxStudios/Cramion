@@ -1,0 +1,66 @@
+<p>
+  El editor de Cramion se parece a Unity y a Unreal: una <strong class="text-white">vista 3D</strong> en el centro, la
+  <strong class="text-white">Jerarquía</strong> a la izquierda, el <strong class="text-white">Inspector</strong> a la derecha
+  y el <strong class="text-white">Proyecto</strong> y la <strong class="text-white">Consola</strong> abajo. Todos los paneles
+  se pueden arrastrar por su pestaña, acoplar donde quieras o sacar a otro monitor.
+</p>
+
+<h3 id="hub">El Hub</h3>
+<p>
+  Al abrir el editor sin proyecto aparece el Hub: <strong class="text-white">Proyectos</strong> (recientes, con su
+  miniatura, abrir uno de disco) y <strong class="text-white">Nuevo proyecto</strong> (nombre, carpeta y
+  <a href="plantillas.html">plantilla</a>). Al abrir un proyecto se ve una pantalla de carga por etapas (base de datos
+  de assets, escena, modelos, texturas, física y navegación).
+</p>
+
+<h3 id="paneles">Paneles</h3>
+<table>
+  <thead><tr><th>Panel</th><th>Para qué</th></tr></thead>
+  <tbody>
+    <tr><td><code>Escena</code></td><td>La vista del mundo con la cámara del editor, gizmos y herramientas. Ver <a href="editor-escena.html">Vista Escena</a>.</td></tr>
+    <tr><td><code>Juego</code></td><td>Lo que ve la cámara real (componente Camera), como en el juego exportado. En Play se pone delante sola. Botón <em>Tercios</em>: guías de composición.</td></tr>
+    <tr><td><code>Jerarquía</code></td><td>Las entidades de la escena en árbol. Ver <a href="editor-jerarquia.html">Jerarquía e Inspector</a>.</td></tr>
+    <tr><td><code>Inspector</code></td><td>Los componentes del objeto elegido (o de varios a la vez) y el editor de materiales.</td></tr>
+    <tr><td><code>Proyecto</code></td><td>Las carpetas y assets de <code>Assets/</code>. Ver <a href="editor-proyecto.html">Proyecto e importación</a>.</td></tr>
+    <tr><td><code>Consola</code></td><td>Mensajes del motor y de los scripts (<code>print</code>, <code>Debug.log</code>), con filtro, errores en rojo y auto-desplazamiento.</td></tr>
+    <tr><td><code>Estadísticas</code></td><td>FPS, tiempos de CPU por parte (física, scripts, render...), GPU por pasada, triángulos, actores y VRAM.</td></tr>
+    <tr><td><code>Ajustes de render</code> / <code>Configuración gráfica</code></td><td>Sombras, GI, trazado de rayos, escalado, calidad y el presupuesto adaptativo. Ver <a href="render.html">Render y rendimiento</a>.</td></tr>
+    <tr><td><code>Física</code>, <code>Navegación</code>, <code>Animator</code>, <code>Cinemática</code>, <code>Pintar prefabs</code>, <code>MCP (IA)</code></td><td>Ventanas de herramientas, en el menú <em>Ventana</em>. Ver <a href="editor-ventanas.html">Ventanas de herramientas</a>.</td></tr>
+  </tbody>
+</table>
+<p><em>Ventana &gt; Restablecer diseño</em> vuelve a colocar todos los paneles como al principio.</p>
+
+<h3 id="pestanas">Pestañas de trabajo (Escena, Prefab, Script)</h3>
+<p>
+  Debajo del menú hay una fila de pestañas, como los editores de assets de Unreal:
+</p>
+<ul>
+  <li><strong class="text-white">Escena</strong>: el editor completo con la escena abierta. Siempre está.</li>
+  <li><strong class="text-white">Prefab</strong> (azul): al abrir un prefab (doble clic en el <code>.crprefab</code>, <em>Abrir (editar)</em>
+    en su menú, botón <em>Abrir</em> de la barra del Inspector o <em>Prefab &gt; Abrir prefab</em> en la Jerarquía) se edita solo,
+    en su propio escenario: Jerarquía a la izquierda, vista en el centro, Inspector a la derecha y Proyecto y Consola abajo. Todo
+    lo que crees o sueltes entra dentro de su raíz y tiene su propio deshacer. <strong class="text-white">Guardar</strong>
+    (Ctrl+S o el botón de la banda azul) escribe el prefab y, al volver a la Escena, <strong class="text-white">todas sus
+    instancias se actualizan</strong> respetando sus cambios propios.</li>
+  <li><strong class="text-white">Script</strong> (verde): cada <code>.lua</code> o <code>.crshader</code> abierto tiene su pestaña con el
+    código a toda la ventana y, a la derecha, el <strong class="text-white">árbol de Archivos</strong> (carpetas y assets, con buscador:
+    clic en un script lo abre, doble clic en un prefab o una escena la abre, menú con <em>Nuevo script aquí</em>, <em>Copiar ruta</em> y
+    <em>Mostrar en el Proyecto</em>).</li>
+</ul>
+<p>
+  La ✕ de una pestaña la cierra: un script se guarda solo; un prefab con cambios pregunta <em>Guardar / Descartar /
+  Cancelar</em>. Play, abrir o crear una escena y Exportar vuelven antes a la pestaña Escena.
+</p>
+
+<h3 id="menus">Menús</h3>
+<table>
+  <thead><tr><th>Menú</th><th>Contenido</th></tr></thead>
+  <tbody>
+    <tr><td><code>Archivo</code></td><td>Nueva escena, abrir, guardar (Ctrl+S), guardar como, importar assets, usar como escena inicial, <a href="exportar.html">configuraciones de compilación, exportar juego</a>, guardar el proyecto como plantilla, volver al Hub, salir.</td></tr>
+    <tr><td><code>Editar</code></td><td>Deshacer (Ctrl+Z), rehacer (Ctrl+Y), copiar, pegar, duplicar, borrar, enfocar la selección.</td></tr>
+    <tr><td><code>GameObject</code></td><td>Crear: vacío, objetos 3D, luces, volúmenes de post-procesado (global, caja, esfera), física, efectos, terreno, mundo de bloques, agua (océano, lago, río), navegación, cámaras de cine, riel, secuencia, interfaz.</td></tr>
+    <tr><td><code>Ventana</code></td><td>Mostrar u ocultar cada panel y restablecer el diseño.</td></tr>
+    <tr><td><code>Ayuda</code></td><td>Este manual (F1), la web, Discord y <a href="mcp.html">Conectar una IA (MCP)</a>.</td></tr>
+  </tbody>
+</table>
+<div class="note">La barra del menú es también la barra de título: arrástrala para mover la ventana y haz doble clic para maximizarla.</div>

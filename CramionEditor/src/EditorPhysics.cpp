@@ -145,11 +145,21 @@ void EditorApp::applyPhysicsSettings() {
 
 void EditorApp::enterPlay() {
     if (!has_project_ || playing()) return;
+    // Se juega la escena: primero se vuelve a su pestana (el frame que viene).
+    if (active_workspace_ != 0 || world_workspace_ != 0) {
+        pending_workspace_ = 0;
+        pending_play_ = true;
+        return;
+    }
     if (collider_handle_drag_ != 0 || light_handle_drag_ != 0) commit();
     flushCommit();
     collider_handle_drag_ = 0;
     play_snapshot_ = ecs::serializeWorld(world_);
     play_dirty_before_ = dirty_;
+    // Lo que cambien los scripts con Graphics se deshace al parar.
+    play_graphics_ = PlayGraphics{renderer_.graphicsSettings(), renderer_.shadowsEnabled(),
+                                  renderer_.rayTracingEnabled(), renderer_.reflectionProbeEnabled(),
+                                  renderer_.occlusionCullingEnabled(), renderer_.cascadeDebug()};
     // Mundo fisico nuevo: velocidades iniciales, sin contactos viejos.
     physics_.stop();
     particles_.clear();
@@ -199,6 +209,15 @@ void EditorApp::exitPlay() {
     alignOriginAfterLoad(origin_before);
     play_snapshot_.clear();
     dirty_ = play_dirty_before_;
+    if (play_graphics_) {
+        renderer_.setGraphicsSettings(play_graphics_->settings);
+        renderer_.setShadowsEnabled(play_graphics_->shadows);
+        if (renderer_.rayTracingSupported()) renderer_.setRayTracingEnabled(play_graphics_->ray_tracing);
+        renderer_.setReflectionProbeEnabled(play_graphics_->reflection_probe);
+        renderer_.setOcclusionCullingEnabled(play_graphics_->occlusion_culling);
+        renderer_.setCascadeDebug(play_graphics_->cascade_debug);
+        play_graphics_.reset();
+    }
     physics_.start(world_);
     cinematics_.reset();
     updateTitle();

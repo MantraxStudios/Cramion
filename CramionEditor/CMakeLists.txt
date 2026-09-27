@@ -62,7 +62,8 @@ cramionfx_deploy(CramionEditor)
 # Si faltan alli, el editor los busca en la carpeta del codigo.
 target_compile_definitions(CramionEditor PRIVATE
     CRAMION_EDITOR_ICON_SOURCE="${CMAKE_CURRENT_SOURCE_DIR}/assets/gizmos"
-    CRAMION_EDITOR_LOGO_SOURCE="${CMAKE_SOURCE_DIR}/assets/icon.png")
+    CRAMION_EDITOR_LOGO_SOURCE="${CMAKE_SOURCE_DIR}/assets/icon.png"
+    CRAMION_VERSION_STRING="${PROJECT_VERSION}")
 add_custom_command(TARGET CramionEditor POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_directory
             "${CMAKE_CURRENT_SOURCE_DIR}/assets/gizmos" "${CMAKE_BINARY_DIR}/editor_icons"
@@ -96,11 +97,19 @@ add_executable(CramionTemplateTests "${CMAKE_CURRENT_SOURCE_DIR}/tests/TemplateT
 target_include_directories(CramionTemplateTests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
 target_link_libraries(CramionTemplateTests PRIVATE Cramion::Core)
 
+# Prueba de las configuraciones de compilacion (consola): perfiles, game.ini
+# y el icono escrito dentro de una copia del reproductor.
+add_executable(CramionBuildConfigTests "${CMAKE_CURRENT_SOURCE_DIR}/tests/BuildConfigTests.cpp"
+                                       "${CMAKE_CURRENT_SOURCE_DIR}/src/BuildConfig.cpp")
+target_include_directories(CramionBuildConfigTests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+target_link_libraries(CramionBuildConfigTests PRIVATE Cramion::Core shell32)
+
 # --- CramionPlayer: el juego exportado (Archivo > Exportar juego) ---
 # Banner del motor al abrir, la escena inicial y todos los sistemas del
 # juego (sin el editor). Sin consola.
 add_executable(CramionPlayer
     "${CMAKE_CURRENT_SOURCE_DIR}/player/PlayerMain.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/GraphicsConfig.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/ImGuiLayer.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/UiRenderer.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/LoadingScreen.cpp"

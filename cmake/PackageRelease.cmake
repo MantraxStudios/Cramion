@@ -47,7 +47,8 @@ if(EXISTS "${SOURCE_DIR}/CHANGELOG.md")
 endif()
 # La documentacion viaja con el motor (se abre sin conexion salvo el estilo).
 file(COPY "${SOURCE_DIR}/docs" DESTINATION "${stage}"
-     PATTERN "*.mp4" EXCLUDE)  # el video de fondo de la web no hace falta en el zip
+     PATTERN "*.mp4" EXCLUDE   # el video de fondo de la web no hace falta en el zip
+     PATTERN "docs.zip" EXCLUDE)  # paquete para subir la web (lleva el video)
 
 # Runtime de Visual C++ junto a los .exe (despliegue local, permitido por la
 # licencia del redistribuible). El editor copia los .dll de su carpeta en cada

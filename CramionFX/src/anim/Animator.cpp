@@ -177,6 +177,11 @@ void Animator::evaluate() {
                                         : local_[i];
     }
 
+    updateBones();
+}
+
+void Animator::updateBones() {
+    if (model_ == nullptr) return;
     // --- 3) Matriz final de cada hueso ---
     for (std::size_t b = 0; b < model_->bones.size(); ++b) {
         const asset::Bone& bone = model_->bones[b];

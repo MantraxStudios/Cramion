@@ -1,0 +1,85 @@
+<p>
+  Cramion dibuja con Vulkan un render diferido con iluminación física: sombras en cascada del sol y sombras de luces
+  locales, iluminación global (GI), reflejos, oclusión ambiental, niebla y luz volumétrica, nubes volumétricas, agua,
+  decals y post-procesado. La calidad se ajusta en dos ventanas del menú <em>Ventana</em>; el aspecto de cada escena
+  (exposición, bloom, color...) está en el componente <a href="componentes-basicos.html#PostProcessing">PostProcessing</a>.
+</p>
+
+<h3 id="ajustes">Ajustes de render</h3>
+<table>
+  <thead><tr><th>Ajuste</th><th>Qué hace</th></tr></thead>
+  <tbody>
+    <tr><td><code>Sombras</code></td><td>Activa las sombras. <em>Ver cascadas</em> colorea cada cascada del sol para depurar.</td></tr>
+    <tr><td><code>Iluminación global</code></td><td>Luz rebotada (el color de las paredes tiñe lo de alrededor).</td></tr>
+    <tr><td><code>Trazado de rayos (RTX)</code></td><td>GI y reflejos con trazado de rayos por hardware (solo en GPU que lo admiten).</td></tr>
+    <tr><td><code>Sonda de reflexión</code></td><td>Captura del entorno para los reflejos de las superficies.</td></tr>
+    <tr><td><code>Occlusion culling (GPU)</code></td><td>No dibuja lo que queda tapado por otros objetos.</td></tr>
+  </tbody>
+</table>
+
+<h3 id="grafica">Configuración gráfica</h3>
+<p>Se guarda en <code>ProjectSettings/Graphics.ini</code> y la usa también el juego exportado.</p>
+<table>
+  <thead><tr><th>Ajuste</th><th>Qué hace</th></tr></thead>
+  <tbody>
+    <tr><td><code>Calidad rápida</code></td><td>Baja, Media, Alta o Ultra: ajusta todo a la vez.</td></tr>
+    <tr><td><code>Escalado y antialiasing</code></td><td><strong>Desactivado</strong> (resolución nativa + FXAA), <strong>TAA</strong> (temporal, también escala como TAAU) o <strong>AMD FSR 1</strong>. FSR 3 y DLSS aparecen en la lista pero están en preparación.</td></tr>
+    <tr><td><code>Resolución</code></td><td>Nativa (100 %), Calidad (67 %), Equilibrado (58 %), Rendimiento (50 %), Ultra rendimiento (33 %) o una escala personalizada. Se muestra la resolución interna y la de pantalla.</td></tr>
+    <tr><td><code>Nitidez</code></td><td>AMD RCAS después del escalado (0 = sin nitidez).</td></tr>
+    <tr><td><code>Presupuesto adaptativo</code></td><td>Mide cuánto tarda cada pasada de la GPU y, si no se llega a los FPS <em>objetivo</em>, baja solo lo que más ahorra y menos se nota (LODs, detalle de sombras, efectos, resolución con FSR 1). Aprende lo que cuesta cada cosa en este PC y vuelve a subir la calidad cuando sobra tiempo.</td></tr>
+    <tr><td><code>Sombras</code></td><td>Resolución por cascada del mapa de sombras del sol (4 cascadas); <em>Auto</em> según el perfil del PC.</td></tr>
+    <tr><td><code>Texturas</code></td><td>Lado máximo de las texturas de los modelos (una de 16K sin comprimir ocupa 1,3 GB de VRAM). Se aplica a los modelos que se cargan después. Avisa si queda poca VRAM.</td></tr>
+    <tr><td><code>VSync</code></td><td>Sincroniza con la pantalla. Sin VSync usa <em>mailbox</em> (sin cortes de imagen y sin tope de FPS).</td></tr>
+  </tbody>
+</table>
+
+<h3 id="sombras">Sombras del sol: cascadas y sombras de contacto</h3>
+<p>
+  El sol usa <strong>4 cascadas</strong>: mapas de sombra cada vez más grandes según se alejan de la cámara (su resolución
+  se elige en <a href="#grafica">Configuración gráfica</a>). Están estabilizadas: el área que cubre cada una no depende de hacia dónde mires y se
+  ajusta a la rejilla de texels, así que los bordes no tiemblan al mover la cámara. El borde se suaviza con un filtro PCF.
+</p>
+<p>
+  Las <strong>sombras de contacto</strong> (<a href="componentes-basicos.html#PostProcessing">PostProcessing → Efectos</a>)
+  añaden lo que una cascada no puede resolver: el oscurecimiento justo donde algo toca el suelo (pies, piedras, patas de
+  una mesa). Se calculan en pantalla recorriendo la profundidad píxel a píxel hacia el sol, como las <em>contact shadows</em>
+  de Unreal y HDRP:
+</p>
+<ul>
+  <li>El rayo solo cubre la escala que la cascada no ve (unos 10 texels de su mapa: pocos centímetros cerca, más lejos).
+    <em>Largo máximo</em> es solo un tope. El resto de la sombra la dan las cascadas, así que no se ven dos sombras
+    superpuestas ni cambia de forma al girar la cámara.</li>
+  <li>No usa ruido sin filtro temporal: con <em>Escalado y antialiasing</em> en <em>Desactivado</em> la sombra es estable.
+    Con <strong>TAA</strong> el inicio del rayo varía cada frame y el TAA lo convierte en una penumbra más suave.</li>
+  <li>Con el sol rasante se desvanecen (ahí manda la cascada) y no se aplican a más de 60 m.</li>
+</ul>
+
+<h3 id="volumetrica">Luz volumétrica (polvo) y rayos de sol</h3>
+<p>
+  La <strong>luz volumétrica</strong> simula polvo en el aire hasta 60 m de la cámara: se ven los haces del sol que entran
+  por una ventana, el cono de un foco o el halo de una farola, cada uno con su sombra. El polvo recibe la luz del
+  <strong>sol</strong> (sobre todo mirando hacia él: <em>Anisotropía</em>), de las <strong>luces locales</strong> y del
+  <strong>cielo</strong> desde todas direcciones, así que también se nota de espaldas al sol como una neblina del color del
+  cielo (más tenue a la sombra y en interiores). <em>Densidad del polvo</em> controla cuánto hay: 0,02 es una neblina
+  ligera; por encima de 0,05 el horizonte queda velado.
+</p>
+<p>
+  Los <strong>rayos de sol</strong> (<em>Light Shafts</em>) son otro efecto, de pantalla: salen del disco del sol cuando se ve
+  en la imagen y se apagan poco a poco al salir de ella. Para haces que se vean en cualquier dirección usa la luz volumétrica.
+</p>
+
+<h3 id="lods">LODs automáticos</h3>
+<p>
+  Al cargar un modelo, el motor crea versiones simplificadas de sus mallas (en memoria, sin tocar el archivo) y elige cada
+  frame la que basta según lo grande que se ve en pantalla; las sombras lejanas usan versiones aún más simples y los objetos
+  diminutos se dejan de dibujar. Las <a href="editor-interfaz.html#paneles">Estadísticas</a> muestran cuántos triángulos y
+  objetos se ahorran.
+</p>
+
+<h3 id="optimizar">Consejos de rendimiento</h3>
+<ul>
+  <li>Marca <strong>Static</strong> lo que no se mueve: al exportar se combinan sus mallas (static batching).</li>
+  <li>Modelos con cientos de piezas sueltas: <em>Reimportar (combinar mallas)</em> en el Proyecto.</li>
+  <li>Luces locales con sombra: pocas. Las que se mueven, mejor sin sombras.</li>
+  <li>Usa el <strong>Profiler</strong> (componente) en el juego y las <strong>Estadísticas</strong> en el editor para ver qué pasada cuesta más.</li>
+</ul>

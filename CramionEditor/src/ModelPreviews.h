@@ -45,6 +45,10 @@ public:
     std::optional<std::filesystem::path> preview(const Uuid& uuid, const std::filesystem::path& file,
                                                  const std::string& name);
 
+    // Tiene un esqueleto humanoide (se sabe al hacer su miniatura; se guarda
+    // en Library/Thumbnails/<uuid>.meta). false mientras no se sepa.
+    bool isHumanoid(const Uuid& uuid);
+
     // El dibujo en si (tambien para las pruebas): `size` x `size` RGBA.
     static bool render(const assets::ModelAsset& model, std::uint32_t size, asset::ImageRgba8& out);
 
@@ -56,6 +60,7 @@ private:
     };
     void run();
     std::filesystem::path pngFor(const Uuid& uuid) const;
+    std::filesystem::path metaFor(const Uuid& uuid) const;
 
     std::filesystem::path cache_;
     std::mutex mutex_;
@@ -64,6 +69,7 @@ private:
     std::unordered_set<Uuid> queued_;
     std::unordered_set<Uuid> failed_;
     std::unordered_map<Uuid, bool> ready_;  // comprobado en disco: al dia
+    std::unordered_map<Uuid, bool> humanoid_;
     bool quit_ = false;
     std::thread thread_;
 };

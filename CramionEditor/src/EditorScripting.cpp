@@ -296,6 +296,7 @@ void EditorApp::openScript(const std::filesystem::path& file) {
     tab.select = true;
     script_tabs_.push_back(std::move(tab));
     active_script_tab_ = static_cast<int>(script_tabs_.size()) - 1;
+    openScriptWorkspace(file);  // su pestana arriba
 }
 
 bool EditorApp::saveScript(ScriptTab& tab) {
@@ -620,8 +621,12 @@ void EditorApp::drawScriptEditor() {
     focus_script_editor_ = false;
 
     int close = -1;
+    // En su pestana de espacio de trabajo: solo ese script, a toda la ventana.
+    const std::filesystem::path only = activeScriptWorkspace();
     for (int i = 0; i < static_cast<int>(script_tabs_.size()); ++i) {
         ScriptTab& tab = script_tabs_[i];
+        if (!only.empty() && tab.path != only) continue;
+        if (!only.empty() && script_workspace_dock_ != 0) ImGui::SetNextWindowDockID(script_workspace_dock_, ImGuiCond_Always);
         // El titulo cambia (el * de sin guardar); el ID (### ruta) no.
         const std::string title = dialogs::utf8(tab.path.filename()) + (tab.text != tab.saved ? " *" : "") +
                                   "###script:" + tab.relative;
@@ -779,6 +784,14 @@ void EditorApp::drawAudioInspector(ecs::Entity entity) {
     }
     ImGui::EndDisabled();
     if (!audio_.available()) ImGui::TextDisabled("Sin dispositivo de audio.");
+    // En Play: si una pared lo tapa ahora (oclusion del Audio Listener).
+    if (const float walls = audio_.occlusionOf(entity); walls >= 0.0f) {
+        if (walls > 0.05f) {
+            ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.4f, 1.0f), "Tapado: %.1f pared(es)", walls);
+        } else {
+            ImGui::TextDisabled("Se oye directo (sin paredes en medio)");
+        }
+    }
 }
 
 }  // namespace cramion::editor

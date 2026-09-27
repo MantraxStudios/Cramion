@@ -10,6 +10,7 @@
 // despues juega: render, fisica (Jolt), scripts Lua, audio, cinematicas,
 // particulas e interfaz (Canvas).
 
+#include "GraphicsConfig.h"
 #include "ImGuiLayer.h"
 #include "LoadingScreen.h"
 #include "ProfilerOverlay.h"
@@ -72,31 +73,6 @@ std::wstring widen(const std::string& text) {
     return out;
 }
 
-gfx::GraphicsSettings loadGraphics(const std::filesystem::path& file, gfx::VulkanRenderer& renderer) {
-    gfx::GraphicsSettings g = renderer.graphicsSettings();
-    std::ifstream in(file);
-    std::string line;
-    while (std::getline(in, line)) {
-        const std::size_t eq = line.find('=');
-        if (eq == std::string::npos) continue;
-        const std::string key = line.substr(0, eq);
-        const float value = std::strtof(line.c_str() + eq + 1, nullptr);
-        if (key == "upscaler") g.upscaler = static_cast<gfx::Upscaler>(std::clamp(static_cast<int>(value), 0, 2));
-        if (key == "quality") g.quality = static_cast<gfx::UpscaleQuality>(std::clamp(static_cast<int>(value), 0, 5));
-        if (key == "custom_scale") g.custom_scale = std::clamp(value, 0.25f, 1.0f);
-        if (key == "sharpness") g.sharpness = std::clamp(value, 0.0f, 1.0f);
-        if (key == "vsync") g.vsync = value != 0.0f;
-        if (key == "adaptive") g.adaptive = value != 0.0f;
-        if (key == "target_fps") g.target_fps = std::clamp(value, 15.0f, 360.0f);
-        if (key == "shadow_resolution") g.shadow_resolution = std::clamp(static_cast<int>(value), 0, 8192);
-        if (key == "texture_max_size") g.texture_max_size = std::clamp(static_cast<int>(value), 0, 16384);
-        if (key == "shadows") renderer.setShadowsEnabled(value != 0.0f);
-        if (key == "ray_tracing" && renderer.rayTracingSupported()) renderer.setRayTracingEnabled(value != 0.0f);
-        if (key == "reflection_probe") renderer.setReflectionProbeEnabled(value != 0.0f);
-    }
-    return g;
-}
-
 }  // namespace
 
 int main() {
@@ -119,10 +95,44 @@ int main() {
             std::cerr.rdbuf(log_file.rdbuf());
         }
 
+        // Configuracion de compilacion (game.ini): titulo, ventana y FPS.
+        const std::filesystem::path ini = game / "game.ini";
+        std::string title = readIniValue(ini, "title");
+        if (title.empty()) title = game_name;
+        const std::string window_setting = readIniValue(ini, "window");
+        int window_mode = window_setting.empty() ? 0 : std::clamp(std::atoi(window_setting.c_str()), 0, 2);
+        int window_width = std::clamp(std::atoi(readIniValue(ini, "width").c_str()), 0, 16384);
+        int window_height = std::clamp(std::atoi(readIniValue(ini, "height").c_str()), 0, 16384);
+        // Lo que el jugador eligio y guardo desde el juego (Graphics.save()
+        // en Lua) manda sobre la configuracion de compilacion.
+        const std::filesystem::path player_graphics =
+            editor::localDataFolder("Saves") / std::filesystem::path(exe_stem).concat(".graphics.ini");
+        {
+            editor::WindowMode saved_mode = static_cast<editor::WindowMode>(window_mode);
+            if (editor::readWindowSettings(player_graphics, saved_mode, window_width, window_height)) {
+                window_mode = static_cast<int>(saved_mode);
+            }
+        }
+        const bool show_fps = readIniValue(ini, "show_fps") == "1";
+
         dm::Window window;
-        if (!window.create({.title = exe_stem.wstring(), .width = 1600, .height = 900, .maximized = true})) {
+        if (!window.create({.title = widen(title),
+                            .width = static_cast<std::uint32_t>(window_width >= 320 ? window_width : 1600),
+                            .height = static_cast<std::uint32_t>(window_height >= 240 ? window_height : 900),
+                            .maximized = window_mode == 0})) {
             MessageBoxW(nullptr, L"No se pudo crear la ventana.", L"Cramion", MB_ICONERROR);
             return EXIT_FAILURE;
+        }
+        if (window_mode == 1) {
+            // Pantalla completa sin bordes: la ventana ocupa todo el monitor.
+            HWND hwnd = window.handle();
+            MONITORINFO monitor{};
+            monitor.cbSize = sizeof(monitor);
+            GetMonitorInfoW(MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST), &monitor);
+            SetWindowLongPtrW(hwnd, GWL_STYLE, WS_POPUP | WS_VISIBLE);
+            const RECT& r = monitor.rcMonitor;
+            SetWindowPos(hwnd, HWND_TOP, r.left, r.top, r.right - r.left, r.bottom - r.top, SWP_FRAMECHANGED | SWP_SHOWWINDOW);
+            window.pumpEvents();
         }
         // El banner del motor desde el primer momento: descomprimir los
         // assets y compilar los shaders llevan su porcentaje.
@@ -168,7 +178,7 @@ int main() {
             MessageBoxW(nullptr, L"No se encontro el juego (carpeta Game).", L"Cramion", MB_ICONERROR);
             return EXIT_FAILURE;
         }
-        SetWindowTextW(window.handle(), widen(project->name).c_str());
+        SetWindowTextW(window.handle(), widen(title).c_str());
 
         dm::Input input;
         scene::Scene scene;
@@ -180,7 +190,8 @@ int main() {
         renderer.setLoadingCallback([&](float fraction, const char* what) { loading->show(fraction, what); });
         renderer.initialize(engine_info, window.handle(), window.width(), window.height());
         loading.reset();
-        renderer.setGraphicsSettings(loadGraphics(project->settingsFolder() / "Graphics.ini", renderer));
+        editor::loadGraphicsIni(project->settingsFolder() / "Graphics.ini", renderer);
+        editor::loadGraphicsIni(player_graphics, renderer);  // la del jugador, encima
         renderer.setEditorHelpersEnabled(false);
 
         editor::ImGuiLayer imgui;
@@ -238,9 +249,29 @@ int main() {
             return comp != nullptr ? terrains.get(*comp) : nullptr;
         });
         physics.setMeshProvider([&](ecs::Entity entity) -> const asset::ModelData* { return sync.actorModelData(entity, scene); });
+        // Suelo para el IK de los pies (el propio personaje no cuenta).
+        sync.setGroundQuery([&](const core::Vec3& origin, const core::Vec3& direction, float max_distance, core::Vec3& point,
+                                core::Vec3& normal, ecs::Entity self) {
+            physics::QueryFilter filter;
+            filter.triggers = physics::QueryTriggers::Ignore;
+            filter.record = false;
+            float best = max_distance + 1.0f;
+            for (const physics::RaycastHit& hit : physics.raycastAll(origin, direction, max_distance, filter)) {
+                if (hit.trigger || hit.distance >= best) continue;
+                if (hit.entity.valid() &&
+                    (hit.entity == self || self.isAncestorOf(hit.entity) || hit.entity.isAncestorOf(self))) {
+                    continue;
+                }
+                best = hit.distance;
+                point = hit.point;
+                normal = hit.normal;
+            }
+            return best <= max_distance;
+        });
 
         audio::AudioSystem audio;
         audio.setAssetsRoot(project->assetsFolder());
+        audio.setOcclusionQuery(audio::physicsOcclusionQuery(physics));
         scripting::ScriptSystem scripts;
         scripts.setAssetsRoot(project->assetsFolder());
         scripts.setPhysics(&physics);
@@ -263,6 +294,22 @@ int main() {
         voxels.setAssetsRoot(project->assetsFolder());
         voxels.setSaveRoot(editor::localDataFolder("Saves") / std::filesystem::path(exe_stem) / "Worlds");
         scripts.setVoxels(&voxels);
+        // Graphics (Lua): menu de opciones del juego. Graphics.save() lo
+        // guarda para el jugador (se lee al volver a abrir el juego).
+        editor::RendererGraphicsHost graphics_host(renderer, window.handle(), nullptr);
+        graphics_host.setWindowState(static_cast<editor::WindowMode>(window_mode), window_width, window_height);
+        graphics_host.setSaver([&](std::string& error) {
+            if (!editor::saveGraphicsIni(player_graphics, renderer)) {
+                error = "no se pudo escribir " + player_graphics.string();
+                return false;
+            }
+            std::ofstream out(player_graphics, std::ios::app);
+            out << "window_mode=" << static_cast<int>(graphics_host.windowMode()) << "\n";
+            out << "window_width=" << graphics_host.windowWidth() << "\n";
+            out << "window_height=" << graphics_host.windowHeight() << "\n";
+            return static_cast<bool>(out);
+        });
+        scripts.setGraphics(&graphics_host);
         voxels.setPhysics(&physics);
         cinema::CinematicSystem cinematics;
         physics::ParticleWorld particles;
@@ -445,7 +492,6 @@ int main() {
         const auto draw_loading = [&](const ImVec2& display, float fraction, const std::string& text) {
             ImDrawList* fg = ImGui::GetForegroundDrawList();
             fg->AddRectFilled(ImVec2(0, 0), display, IM_COL32(13, 15, 20, 255));
-            const std::string title = project->name;
             ImGui::PushFont(nullptr, ImGui::GetStyle().FontSizeBase * 2.0f);
             const ImVec2 title_size = ImGui::CalcTextSize(title.c_str());
             fg->AddText(ImVec2((display.x - title_size.x) * 0.5f, display.y * 0.5f - 70.0f), IM_COL32(235, 238, 245, 255),
@@ -642,7 +688,10 @@ int main() {
                 if (!has_camera()) update_orbit(dt, display);
                 // Componente Profiler: FPS, CPU, GPU y memoria en una esquina.
                 profiler_overlay.update(clock_dt, renderer);
-                if (const ecs::Profiler* p = editor::findProfiler(world)) {
+                static const ecs::Profiler kDevelopmentProfiler{};  // "Mostrar FPS" de la configuracion
+                const ecs::Profiler* p = editor::findProfiler(world);
+                if (p == nullptr && show_fps) p = &kDevelopmentProfiler;
+                if (p != nullptr) {
                     profiler_overlay.draw(ImGui::GetForegroundDrawList(), ImVec2(0, 0), display, *p,
                                           renderer.device().name());
                 }

@@ -808,41 +808,111 @@ float interleavedGradientNoise(vec2 pixel) {
     return fract(52.9829189 * fract(dot(pixel, vec2(0.06711056, 0.00583715))));
 }
 
-// Sombras de contacto en pantalla (las "contact shadows" de Unreal): un rayo
-// corto hacia el sol sobre el depth buffer. Las cascadas no tienen detalle
-// para las sombras pequenas (los pies en el suelo, piedras, huecos entre
-// objetos): esto las anade donde la camara esta cerca. 12 pasos, solo para
-// el sol, solo a menos de 60 m y solo si la cascada no lo ha oscurecido ya.
-// Devuelve 1 = iluminado. El rayo crece con la distancia para verse igual
-// en pantalla; la sombra se aclara hacia el final del rayo (penumbra).
-float contactShadow(vec3 world_position, vec3 to_light, float view_distance) {
+// Sombras de contacto en pantalla (las "contact shadows" de Unreal/HDRP): un
+// rayo corto hacia el sol marchado en ESPACIO DE VISTA sobre el depth buffer.
+// Las cascadas no tienen detalle para las sombras pequenas (los pies en el
+// suelo, piedras, huecos entre objetos). Solo para el sol, a menos de 60 m y
+// si la cascada no lo ha oscurecido ya. Devuelve 1 = iluminado.
+//
+// Como la referencia (HDRP; h3r2tic, "depth buffer raymarching"):
+//   - todo en profundidad lineal de vista: el sesgo es RELATIVO a la
+//     profundidad (la precision del depth buffer cae con la distancia) mas
+//     el tamano de un pixel (con abs: en Vulkan projection[1][1] es
+//     negativo y sin abs salian sesgos negativos y todo negro);
+//   - el rayo sale un poco separado de la superficie por su normal
+//     geometrica (sin tocarse a si misma: nada de acne en cilindros);
+//   - choque solo si el rayo se mete detras de lo que se ve MENOS que un
+//     grosor (si no, lo que esta lejos detras de un objeto haria sombra);
+//   - la sombra se suaviza con cuanto penetra el rayo y con la distancia
+//     recorrida (penumbra); con el sol rasante se desvanece (ahi manda la
+//     cascada).
+// Recorrido EN PANTALLA, un depth por pixel (como las "screen space shadows"
+// de Bend Studio en Days Gone): con pasos fijos en metros el rayo se saltaba
+// lo fino (piernas, dedos) y el borde salia en escalones ("peine" alrededor de
+// lo que toca el suelo) cuando no hay TAA, que es lo normal (Upscaler::Off).
+// Pixel a pixel no quedan huecos: el borde es tan fino como la pantalla.
+// La profundidad del rayo se interpola en 1/z (correcta en perspectiva) y el
+// depth se lee con texelFetch: filtrado mezclaria el personaje con el fondo en
+// su silueta y saldrian falsos choques (ruido alrededor del personaje).
+// Con TAA (lights.environment.w >= 0) el inicio se desplaza con ruido
+// distinto cada frame, que el TAA promedia; sin TAA, sin ruido.
+//
+// LARGO: solo lo que la cascada no resuelve (~10 texeles de su mapa, lo que
+// abarca su PCF), no el largo entero del ajuste. El depth buffer solo tiene
+// la cara que ve la camara: con un rayo de medio metro la sombra de todo el
+// personaje salia de la pantalla, duplicaba la de la cascada con otra forma
+// (escalones en el borde) y cambiaba al mover la camara (lo que hay detras
+// del personaje se adivina con el grosor). Como Unreal/HDRP: la sombra de
+// contacto es solo el ultimo tramo, pegado al suelo.
+float contactShadow(vec3 view_position, vec3 view_normal, vec3 view_to_light, float geometric_n_dot_l,
+                    float cascade_texel) {
     float ray_length = lights.environment.z;
-    if (ray_length <= 0.0 || view_distance > 60.0) return 1.0;
-    ray_length *= 1.0 + view_distance * 0.03;
-    const int kSteps = 12;
-    float step_length = ray_length / float(kSteps);
-    float jitter = interleavedGradientNoise(gl_FragCoord.xy);
-    // Grosor supuesto de lo que tapa: sin el, todo lo que esta detras de un
-    // objeto (mas lejos en la pantalla) haria sombra.
-    float thickness = clamp(ray_length * 0.6, 0.05, 0.8);
-    for (int i = 0; i < kSteps; ++i) {
-        float t = (float(i) + jitter) * step_length + step_length * 0.5;
-        vec4 clip = camera.view_projection * vec4(world_position + to_light * t, 1.0);
-        if (clip.w <= 0.0) break;
-        vec2 uv = clip.xy / clip.w * 0.5 + 0.5;
-        if (any(lessThan(uv, vec2(0.0))) || any(greaterThan(uv, vec2(1.0)))) break;
-        float scene = linearDepth(textureLod(g_depth, uv, 0.0).r);
-        float difference = clip.w - scene;
-        // Sesgo que crece con la distancia (precision del depth).
-        if (difference > 0.01 + clip.w * 0.002 && difference < thickness) {
-            float along = t / ray_length;
-            // Suave en los bordes de la pantalla y hacia el final del rayo.
+    float view_depth = -view_position.z;
+    if (ray_length <= 0.0 || view_depth > 60.0) return 1.0;
+    float grazing_fade = smoothstep(0.08, 0.3, geometric_n_dot_l);
+    if (grazing_fade <= 0.0) return 1.0;
+
+    ray_length = min(ray_length, max(cascade_texel * 10.0, 0.05));
+    ivec2 size = textureSize(g_depth, 0);
+    // Tamano de un pixel en metros a esa distancia (projection[1][1] es
+    // negativo en Vulkan: abs).
+    float pixel_size = 2.0 * view_depth / (abs(camera.projection[1][1]) * float(size.y));
+    vec3 origin = view_position + view_normal * max(pixel_size * 1.5, view_depth * 0.001);
+    // Hacia la camara el rayo no puede cruzar el plano cercano.
+    if (view_to_light.z > 0.0) {
+        ray_length = min(ray_length, (-origin.z - 0.05) / view_to_light.z);
+        if (ray_length <= pixel_size) return 1.0;
+    }
+    vec3 target = origin + view_to_light * ray_length;
+
+    vec4 clip0 = camera.projection * vec4(origin, 1.0);
+    vec4 clip1 = camera.projection * vec4(target, 1.0);
+    vec2 pixel0 = (clip0.xy / clip0.w * 0.5 + 0.5) * vec2(size);
+    vec2 pixel1 = (clip1.xy / clip1.w * 0.5 + 0.5) * vec2(size);
+    float inv_depth0 = 1.0 / -origin.z;
+    float inv_depth1 = 1.0 / -target.z;
+
+    // Un paso por pixel (hasta 48; si el rayo es mas largo en pantalla se
+    // estira el paso). Los primeros 1.5 pixeles son la propia superficie.
+    float pixel_count = length(pixel1 - pixel0);
+    if (pixel_count < 1.5) return 1.0;
+    const int kMaxSteps = 48;
+    int steps = int(min(ceil(pixel_count), float(kMaxSteps)));
+    float ds = 1.0 / float(steps);
+    float s0 = min(1.5 / pixel_count, 1.0);
+
+    // El grosor supuesto de lo que tapa, y el sesgo: relativo a la
+    // profundidad (precision del depth) + medio pixel de pendiente.
+    float thickness = clamp(ray_length * 1.5, 0.05, 0.5);
+    float frame = lights.environment.w;
+    float jitter = frame >= 0.0 ? interleavedGradientNoise(gl_FragCoord.xy + 5.588238 * frame) : 0.0;
+
+    float occlusion = 0.0;
+    for (int i = 0; i < kMaxSteps; ++i) {
+        if (i >= steps) break;
+        float s = s0 + (float(i) + jitter) * ds * (1.0 - s0);
+        if (s > 1.0) break;
+        vec2 pixel = mix(pixel0, pixel1, s);
+        ivec2 texel = ivec2(floor(pixel));
+        if (any(lessThan(texel, ivec2(0))) || any(greaterThanEqual(texel, size))) break;
+        float ray_depth = 1.0 / mix(inv_depth0, inv_depth1, s);
+        float scene_depth = linearDepth(texelFetch(g_depth, texel, 0).r);
+        float bias = scene_depth * 0.003 + pixel_size * (scene_depth / view_depth);
+        // Cuanto esta el rayo por detras de lo que se ve.
+        float penetration = ray_depth - scene_depth - bias;
+        if (penetration > 0.0 && penetration < thickness) {
+            vec2 uv = pixel / vec2(size);
             vec2 edge = min(uv, 1.0 - uv);
             float edge_fade = clamp(min(edge.x, edge.y) * 20.0, 0.0, 1.0);
-            return mix(1.0, along * along, edge_fade);
+            // Entra suave (sin corte duro en el sesgo) y sale suave al
+            // acercarse al grosor; lejos del origen, mas debil (penumbra).
+            float soft = smoothstep(0.0, bias + pixel_size, penetration) *
+                         smoothstep(1.0, 0.5, penetration / thickness);
+            occlusion = max(occlusion, soft * (1.0 - s * s) * edge_fade);
+            if (occlusion > 0.98) break;
         }
     }
-    return 1.0;
+    return 1.0 - occlusion * grazing_fade;
 }
 
 void main() {
@@ -975,7 +1045,9 @@ void main() {
                                   cascade_index);
             // Detalle cercano que la cascada no resuelve.
             if (shadow > 0.02) {
-                shadow *= contactShadow(world_position, sun_direction, distance_to_camera_z);
+                shadow *= contactShadow(viewFromDepth(v_uv, depth), mat3(camera.view) * geometric_normal,
+                                        mat3(camera.view) * sun_direction, geometric_n_dot_l,
+                                        shadows.texel_world_sizes[cascade_index]);
             }
             shadow = mix(1.0, shadow, shadows.params.y);
         }

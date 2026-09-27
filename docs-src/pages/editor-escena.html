@@ -1,0 +1,73 @@
+<p>
+  La vista <strong class="text-white">Escena</strong> muestra el mundo con la cámara del editor (independiente de la cámara
+  del juego), con el render completo: sombras, GI, reflejos, agua, niebla y post-procesado.
+</p>
+
+<h3 id="camara">Moverse por la escena</h3>
+<table>
+  <thead><tr><th>Acción</th><th>Cómo</th></tr></thead>
+  <tbody>
+    <tr><td>Volar</td><td>Mantén el <strong>botón derecho</strong> y usa <code>W A S D</code>; <code>Espacio</code> sube y <code>Ctrl</code> baja; <code>Mayús</code> va 4 veces más rápido y la rueda cambia la velocidad.</td></tr>
+    <tr><td>Acercar / alejar</td><td>Rueda del ratón (con <code>Mayús</code>, pasos más largos).</td></tr>
+    <tr><td>Desplazar</td><td>Botón central y arrastrar.</td></tr>
+    <tr><td>Enfocar</td><td><code>F</code>: encuadra la selección.</td></tr>
+    <tr><td>Raycast de prueba</td><td><code>Alt</code> + clic: lanza un rayo de física y lo dibuja (con lo que toca).</td></tr>
+  </tbody>
+</table>
+
+<h3 id="seleccion">Seleccionar</h3>
+<p>
+  Clic sobre un objeto lo selecciona (por GPU: exacto al píxel). Otro clic en el mismo sitio baja por la jerarquía
+  (del modelo a su pieza). <code>Ctrl</code> + clic añade o quita de la selección. La selección se
+  ve con un contorno.
+</p>
+
+<h3 id="gizmos">Gizmos: mover, rotar, escalar</h3>
+<table>
+  <thead><tr><th>Tecla</th><th>Herramienta</th></tr></thead>
+  <tbody>
+    <tr><td><code>Q</code></td><td>Sin gizmo (solo seleccionar).</td></tr>
+    <tr><td><code>W</code></td><td>Mover (flechas por eje y cuadrados por plano).</td></tr>
+    <tr><td><code>E</code></td><td>Rotar (anillos por eje; la bola central gira libremente).</td></tr>
+    <tr><td><code>R</code></td><td>Escalar.</td></tr>
+    <tr><td><code>X</code></td><td>Alterna ejes del <em>Mundo</em> o <em>Locales</em>.</td></tr>
+    <tr><td><code>G</code></td><td>Muestra u oculta los iconos y ayudas (luces, cámaras, colliders...). El gizmo de transformar se queda.</td></tr>
+  </tbody>
+</table>
+<p>
+  La barra de la vista tiene el <strong class="text-white">Snap</strong> (activarlo y sus pasos: 0,25 m, 15°, 0,1 de
+  escala). Mover o rotar varios objetos a la vez funciona igual. Cada arrastre es un paso de deshacer.
+</p>
+<p>
+  Asas propias de algunos componentes: alcance y ángulos de las luces, tamaño de los colliders (<em>Editar collider</em>
+  en el Inspector), puntos de los rieles y de los ríos, cajas de los volúmenes y de los decals.
+</p>
+
+<h3 id="soltar">Arrastrar assets a la escena</h3>
+<ul>
+  <li>Un <strong>modelo</strong> o un <strong>prefab</strong> del Proyecto cae en el suelo bajo el ratón.</li>
+  <li>Un <strong>material</strong> se pone en la pieza que hay bajo el ratón.</li>
+  <li>Un <strong>script</strong> se engancha al objeto bajo el ratón.</li>
+  <li>Un <strong>audio</strong> crea un objeto con Audio Source.</li>
+  <li>Una <strong>imagen</strong> activa la herramienta de estampar con ella.</li>
+  <li>Archivos desde el Explorador de Windows se importan al Proyecto.</li>
+</ul>
+
+<h3 id="herramientas">Herramientas de la vista</h3>
+<table>
+  <thead><tr><th>Tecla</th><th>Herramienta</th></tr></thead>
+  <tbody>
+    <tr><td><code>T</code></td><td><strong>Estampar</strong> decals, charcos o humedad sobre cualquier superficie (tamaño, profundidad, giro aleatorio, color, opacidad, textura). Ctrl+rueda: tamaño; Mayús+rueda: girar; Esc: salir.</td></tr>
+    <tr><td><code>B</code></td><td><strong>Pintar prefabs</strong> (árboles, rocas...) con un pincel. Ver <a href="editor-herramientas.html#pintar">Pintar prefabs</a>.</td></tr>
+    <tr><td><code>P</code></td><td>Muestra u oculta la malla de navegación.</td></tr>
+    <tr><td><code>Supr</code>, <code>Ctrl+D</code>, <code>Ctrl+C</code>, <code>Ctrl+V</code></td><td>Borrar, duplicar, copiar y pegar la selección.</td></tr>
+  </tbody>
+</table>
+<p>Con un terreno seleccionado, la vista pinta con sus herramientas (ver <a href="editor-herramientas.html#terreno">Terreno</a>).</p>
+
+<h3 id="origen">Mundos grandes</h3>
+<p>
+  El editor usa un <strong class="text-white">origen flotante</strong>: cuando la cámara se aleja mucho, todo el mundo se
+  desplaza para que los números sigan siendo precisos (sin temblores a kilómetros del centro). Los scripts pueden pedir la
+  posición real con <code>Scene.toAbsolute</code>.
+</p>

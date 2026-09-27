@@ -129,7 +129,7 @@ const std::vector<ToolDef>& toolDefs() {
         d.push_back({"help", "Guia rapida del motor Cramion para la IA: convenciones, formatos (.lua, .crshader, .crmat) y flujo de trabajo recomendado. Llamala primero.", json::object(), {}});
         d.push_back({"editor_state", "Estado del editor: proyecto abierto, escena, si hay cambios sin guardar, modo Play, seleccion y camara.", json::object(), {}});
         d.push_back({"list_projects", "Proyectos recientes y plantillas disponibles para crear uno.", json::object(), {}});
-        d.push_back({"open_project", "Abre un proyecto (.crproj o su carpeta).", {{"path", prop("string", "Ruta del .crproj o de la carpeta del proyecto")}, {"force", prop("boolean", "Descartar cambios sin guardar")}}, {"path"}});
+        d.push_back({"open_project", "Abre un proyecto (.crproj o su carpeta).", {{"path", prop("string", "Ruta del .crproj o de la carpeta del proyecto")}, {"force", prop("boolean", "Descartar cambios sin guardar")}, {"show_loading", prop("boolean", "Abrir como el Hub, con el dialogo de carga (vuelve enseguida)")}}, {"path"}});
         d.push_back({"create_project", "Crea un proyecto nuevo desde una plantilla y lo abre.", {{"name", prop("string", "Nombre del proyecto")}, {"folder", prop("string", "Carpeta donde crearlo (por defecto Documentos/Cramion Projects)")}, {"template", prop("string", "Id de la plantilla (ver list_projects); por defecto 'blank'")}}, {"name"}});
         d.push_back({"list_entities", "Arbol de la escena: cada entidad con su UUID, nombre, componentes e hijos.", {{"root", entity}, {"depth", prop("integer", "Profundidad maxima (por defecto 12)")}}, {}});
         d.push_back({"get_entity", "Todo de una entidad: transformacion y cada componente con sus campos (JSON).", {{"entity", entity}}, {"entity"}});
@@ -150,6 +150,13 @@ const std::vector<ToolDef>& toolDefs() {
         d.push_back({"select", "Selecciona una entidad en el editor y opcionalmente centra la camara en ella.", {{"entity", entity}, {"focus", prop("boolean", "Centrar la camara")}}, {"entity"}});
         d.push_back({"set_gizmo", "Cambia el gizmo de la vista de escena: none, move, rotate o scale, y si va en ejes locales.",
                      {{"mode", prop("string", "none | move | rotate | scale")}, {"local", prop("boolean", "Ejes locales (false = mundo)")}}, {"mode"}});
+        d.push_back({"paint_prefabs", "Pinta prefabs con el pincel del editor (arboles, rocas... como el Foliage de Unreal) sobre el suelo alrededor de un punto, o los borra. Usa un grupo .crpaint o una lista de prefabs (misma probabilidad).",
+                     {{"center", vec3Prop("Centro del pincel (se busca el suelo debajo)")}, {"radius", prop("number", "Radio en metros (5)")},
+                      {"density", prop("number", "Objetos por 100 m2 (8)")}, {"spacing", prop("number", "Separacion minima en metros (1.5)")},
+                      {"max_slope", prop("number", "Pendiente maxima en grados (40)")}, {"group", prop("string", "Grupo .crpaint de Assets")},
+                      {"prefabs", prop("array", "Nombres, rutas o UUID de prefabs (si no hay grupo)")}, {"align", prop("number", "0 vertical .. 1 sigue el suelo")},
+                      {"scale_min", prop("number", "Escala minima (0.9)")}, {"scale_max", prop("number", "Escala maxima (1.1)")},
+                      {"erase", prop("boolean", "Borrar en vez de pintar")}}, {"center"}});
         d.push_back({"set_camera", "Coloca la camara del editor.", {{"position", vec3Prop("Posicion")}, {"target", vec3Prop("Punto al que mira")}}, {"position", "target"}});
         d.push_back({"list_assets", "Assets del proyecto (modelos, materiales, escenas, prefabs, cielos...) y archivos sueltos (scripts .lua, shaders .crshader, imagenes, audio).",
                      {{"folder", prop("string", "Subcarpeta de Assets (opcional)")}, {"type", prop("string", "Filtro: Model, Material, Scene, Prefab, Environment...")}}, {}});
@@ -465,6 +472,11 @@ json McpTools::call(const std::string& name, const json& args, bool& image, std:
     }
     if (name == "open_project") {
         if (a.has_project_ && unsavedBlocks(args)) throw ToolError("hay cambios sin guardar: save_scene o force=true");
+        if (args.value("show_loading", false)) {
+            // Como el Hub: por etapas con el dialogo de carga (vuelve enseguida).
+            a.beginOpenProject(dialogs::fromUtf8(arg(args, "path")));
+            return json{{"loading", true}};
+        }
         if (!a.openProject(dialogs::fromUtf8(arg(args, "path")))) throw ToolError("no se pudo abrir el proyecto");
         return json{{"opened", a.project_.name}};
     }
@@ -611,6 +623,44 @@ json McpTools::call(const std::string& name, const json& args, bool& image, std:
         else throw ToolError("mode debe ser none, move, rotate o scale");
         if (args.contains("local")) a.gizmo_local_ = args.value("local", false);
         return json{{"ok", true}};
+    }
+    if (name == "paint_prefabs") {
+        if (arg(args, "group").empty() && !args.contains("prefabs")) throw ToolError("pasa group o prefabs");
+        if (const std::string group = arg(args, "group"); !group.empty()) {
+            if (!a.loadPaintGroup(assetPath(group))) throw ToolError("no se pudo leer el grupo " + group);
+        } else {
+            EditorApp::PaintGroup temp;
+            temp.name = args.value("name", std::string("MCP"));
+            for (const json& p : args["prefabs"]) {
+                const auto info = findAsset(p.is_string() ? p.get<std::string>() : std::string{});
+                if (!info || info->type != assets::AssetType::Prefab) throw ToolError("no es un prefab: " + p.dump());
+                EditorApp::PaintItem item;
+                item.prefab = info->uuid;
+                item.align = args.value("align", item.align);
+                item.scale_min = args.value("scale_min", item.scale_min);
+                item.scale_max = args.value("scale_max", item.scale_max);
+                temp.items.push_back(item);
+            }
+            a.paint_group_ = std::move(temp);
+            a.paint_selected_ = 0;
+        }
+        EditorApp::PaintBrush& b = a.paint_brush_;
+        b.radius = args.value("radius", b.radius);
+        b.density = args.value("density", b.density);
+        b.spacing = args.value("spacing", b.spacing);
+        b.max_slope = args.value("max_slope", b.max_slope);
+        b.only_selected = false;
+        const Vec3 center = readVec(args, "center", {});
+        Vec3 point{};
+        Vec3 normal{};
+        if (!a.paintRaycast(center + Vec3{0.0f, 200.0f, 0.0f}, Vec3{0.0f, -1.0f, 0.0f}, 400.0f, point, normal)) {
+            throw ToolError("no hay suelo con collider (o terreno) debajo del centro");
+        }
+        const int count = a.paintStamp(point, normal, args.value("erase", false));
+        a.commit();
+        return json{{args.value("erase", false) ? "removed" : "added", count},
+                    {"total", static_cast<int>(a.paintedInstances(false).size())},
+                    {"ground", {point.x, point.y, point.z}}};
     }
     if (name == "set_camera") {
         a.scene_.placeCamera(readVec(args, "position", {}), readVec(args, "target", {}));
@@ -1019,7 +1069,7 @@ std::string EditorApp::handleMcp(const std::string& body) {
             return json{{"jsonrpc", "2.0"}, {"id", id},
                         {"result", {{"protocolVersion", version},
                                     {"capabilities", {{"tools", {{"listChanged", false}}}}},
-                                    {"serverInfo", {{"name", "cramion-editor"}, {"version", "0.5.1"}}},
+                                    {"serverInfo", {{"name", "cramion-editor"}, {"version", "0.6.0"}}},
                                     {"instructions", "Editor del motor Cramion. Llama a la herramienta 'help' para la guia y a "
                                                      "'editor_state' para ver que hay abierto."}}}};
         }

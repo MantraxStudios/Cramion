@@ -1,0 +1,41 @@
+<h3 id="play">Play, Pausa y Paso</h3>
+<p>
+  Los botones del centro de la barra de título (o <code>Ctrl+P</code>) ponen el juego en marcha dentro del editor, como en
+  Unity: física, scripts, audio, navegación, partículas, cinemáticas e interfaz. La vista <strong>Juego</strong> se pone
+  delante y enseña lo que ve la cámara del juego.
+</p>
+<table>
+  <thead><tr><th>Botón</th><th>Atajo</th><th>Qué hace</th></tr></thead>
+  <tbody>
+    <tr><td><code>Play</code> / <code>Stop</code></td><td><code>Ctrl+P</code></td><td>Empieza el juego. Al parar, la escena vuelve exactamente a como estaba antes de Play.</td></tr>
+    <tr><td><code>Pausa</code></td><td><code>Ctrl+Mayús+P</code></td><td>Congela la simulación (puedes mirar y cambiar cosas en el Inspector).</td></tr>
+    <tr><td><code>Paso</code></td><td></td><td>Avanza un paso fijo de física con el juego en pausa.</td></tr>
+  </tbody>
+</table>
+<div class="note">
+  Lo que cambias durante Play <strong>no se guarda</strong> (se descarta al parar). Guardar un script en Play lo recarga en
+  caliente sin perder el estado (ver <a href="recarga.html">Recarga en caliente</a>).
+</div>
+<p>
+  Si el juego captura el ratón (<code>Input.lockCursor()</code>), <code>Escape</code> lo suelta. Los errores de Lua salen en
+  la Consola con el archivo y la línea.
+</p>
+
+<h3 id="deshacer">Deshacer y rehacer</h3>
+<p>
+  <code>Ctrl+Z</code> deshace y <code>Ctrl+Y</code> rehace cualquier cambio de la escena: crear, borrar, mover, cambiar
+  componentes, emparentar, trazos de terreno, pintar prefabs... Cada acción completa (un arrastre, un trazo) es un solo
+  paso. Cada <a href="editor-interfaz.html#pestanas">pestaña de prefab</a> tiene su propio historial.
+</p>
+
+<h3 id="escenas">Escenas</h3>
+<ul>
+  <li><strong>Guardar</strong>: <code>Ctrl+S</code> (<code>Ctrl+Mayús+S</code> guardar como). Las escenas son <code>.crscene</code> (JSON) en <code>Assets/Scenes</code>. El título de la ventana lleva un <code>*</code> si hay cambios sin guardar.</li>
+  <li><strong>Nueva</strong>: <code>Ctrl+N</code> (cámara, luz y entorno). <strong>Abrir</strong>: doble clic en el Proyecto o <em>Archivo &gt; Abrir escena</em>. Si hay cambios sin guardar, pregunta.</li>
+  <li><strong>Escena inicial</strong>: <em>Archivo &gt; Usar como escena inicial</em>. Es la que abre el proyecto y la que empieza el juego exportado.</li>
+  <li>Los scripts cambian de escena con <code>Scene.load("Nivel2")</code> (ver <a href="scene.html">Scene</a>).</li>
+</ul>
+<p>
+  Los terrenos guardan sus alturas aparte (<code>.crterrain</code>) al guardar la escena. Al guardar, el editor también
+  captura la miniatura del proyecto para el Hub.
+</p>

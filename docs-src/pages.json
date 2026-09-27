@@ -1,5 +1,5 @@
 {
-  "intro": "<p>\n        La lógica de juego de Cramion se escribe en Lua, con un modelo de componentes sencillo:\n        cada script es una tabla, cada entidad con un componente <code>Script</code> recibe su propia instancia\n        (<code>self</code>) y el motor llama a sus métodos durante el modo Play.\n      </p>",
+  "intro": "<p>\n        El manual de Cramion: cómo se usa el <strong class=\"text-white\">editor</strong> (paneles, herramientas, materiales, render y exportar), la referencia de <strong class=\"text-white\">todos los componentes</strong> con cada propiedad, y la <strong class=\"text-white\">API de Lua</strong> para programar el juego: cada script es una tabla, cada entidad con un componente <code>Script</code> recibe su propia instancia (<code>self</code>) y el motor llama a sus métodos durante el modo Play.\n      </p>",
   "examples_intro": "Scripts completos listos para copiar a <code>Assets/Scripts/</code>.",
   "groups": [
     {
@@ -34,6 +34,131 @@
           "slug": "mcp",
           "title": "Conectar una IA (MCP)",
           "desc": "Claude, Cursor o Copilot trabajando dentro del editor: escenas, scripts, shaders y modelos."
+        }
+      ]
+    },
+    {
+      "group": "El editor",
+      "pages": [
+        {
+          "slug": "editor-interfaz",
+          "title": "Interfaz y pestañas",
+          "desc": "El Hub, los paneles, los menús y las pestañas de Escena, Prefab y Script."
+        },
+        {
+          "slug": "editor-escena",
+          "title": "Vista Escena y gizmos",
+          "desc": "Moverse, seleccionar, mover/rotar/escalar, snap y soltar assets."
+        },
+        {
+          "slug": "editor-jerarquia",
+          "title": "Jerarquía e Inspector",
+          "desc": "Emparentar, multiselección, Static, tags, capas y editar varios a la vez."
+        },
+        {
+          "slug": "editor-proyecto",
+          "title": "Proyecto e importación",
+          "desc": "Assets, formatos que se importan, reimportar y la estructura del proyecto."
+        },
+        {
+          "slug": "editor-play",
+          "title": "Play, deshacer y escenas",
+          "desc": "Jugar dentro del editor, deshacer, guardar y la escena inicial."
+        },
+        {
+          "slug": "editor-herramientas",
+          "title": "Herramientas de mundo",
+          "desc": "Terreno, estampar decals, pintar prefabs, agua y volúmenes."
+        },
+        {
+          "slug": "editor-ventanas",
+          "title": "Ventanas de herramientas",
+          "desc": "Física, Navegación, Animator, Cinemática, Consola y Estadísticas."
+        },
+        {
+          "slug": "materiales",
+          "title": "Materiales",
+          "desc": "PBR, mapas de escaneos, transparencia y shaders propios."
+        },
+        {
+          "slug": "render",
+          "title": "Render y rendimiento",
+          "desc": "Sombras, GI, trazado de rayos, escalado, presupuesto adaptativo y LODs."
+        },
+        {
+          "slug": "exportar",
+          "title": "Exportar y compilación",
+          "desc": "Crear el juego, configuraciones de compilación, nombre e icono."
+        },
+        {
+          "slug": "plantillas",
+          "title": "Plantillas",
+          "desc": "Vacío, Tercera persona, IA, Mundo de bloques, MMO RPG y las tuyas."
+        },
+        {
+          "slug": "atajos",
+          "title": "Atajos de teclado",
+          "desc": "Todos los atajos del editor."
+        }
+      ]
+    },
+    {
+      "group": "Componentes",
+      "pages": [
+        {
+          "slug": "componentes",
+          "title": "Todos los componentes",
+          "desc": "Índice de los 46 componentes con enlace a su referencia."
+        },
+        {
+          "slug": "componentes-basicos",
+          "title": "Transform y renderizado",
+          "desc": "Transform, Mesh Renderer, Luz, Cámara, Decal y Post-procesado."
+        },
+        {
+          "slug": "componentes-entorno",
+          "title": "Entorno",
+          "desc": "Cielo, clima, terreno, agua y mundo de bloques."
+        },
+        {
+          "slug": "componentes-fisica",
+          "title": "Física",
+          "desc": "Rigidbody, colliders, vehículos y ruedas."
+        },
+        {
+          "slug": "componentes-efectos",
+          "title": "Partículas y depuración",
+          "desc": "Particle System y Profiler."
+        },
+        {
+          "slug": "componentes-animacion",
+          "title": "Animación",
+          "desc": "Animator, IK y animación procedural."
+        },
+        {
+          "slug": "componentes-audio",
+          "title": "Audio",
+          "desc": "Audio Source, Audio Listener y Audio Reverb Zone."
+        },
+        {
+          "slug": "componentes-cinematicas",
+          "title": "Cámaras y cinemáticas",
+          "desc": "Cámaras virtuales, rieles, carros y secuencias."
+        },
+        {
+          "slug": "componentes-navegacion",
+          "title": "Navegación",
+          "desc": "Volumen de NavMesh, modificadores y agentes."
+        },
+        {
+          "slug": "componentes-ui",
+          "title": "Interfaz (UI)",
+          "desc": "Canvas, Rect Transform, imagen, texto, botón, slider, casilla y campo."
+        },
+        {
+          "slug": "componentes-scripting",
+          "title": "Scripts y prefabs",
+          "desc": "El componente Script y los de los prefabs."
         }
       ]
     },
@@ -103,7 +228,7 @@
         {
           "slug": "audio",
           "title": "Audio",
-          "desc": "Sonidos sueltos y fuentes de audio."
+          "desc": "Sonidos, efectos, oclusion por paredes y zonas de reverberacion."
         },
         {
           "slug": "ui",

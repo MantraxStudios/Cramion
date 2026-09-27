@@ -97,9 +97,7 @@ void main() {
 
     surface(s);
 
-    if (s.alpha < 0.5) {
-        discard;
-    }
+    bool cut_out = s.alpha < 0.5;
     vec3 final_normal = normalize(s.normal);
     // Normal en espacio tangente (para el agua de la lluvia).
     vec3 tangent_normal = has_tangent ? normalize(transpose(tbn) * final_normal) : vec3(0.0, 0.0, 1.0);
@@ -108,4 +106,9 @@ void main() {
                  clamp(s.metallic, 0.0, 1.0), clamp(s.roughness, 0.04, 1.0), clamp(s.occlusion, 0.0, 1.0),
                  max(s.emission, vec3(0.0)) * kEmissiveIntensity, push.reflectance, v_world_position);
     writeVelocity(v_current_clip, v_previous_clip);
+    // El recorte se hace al final: un discard antes dejaba sin definir las
+    // derivadas (dFdx/dFdy, texturas con mipmap) de los vecinos del cuadro 2x2
+    // en los bordes recortados, y writeSurface las usa (antialiasing
+    // especular, decals).
+    if (cut_out) discard;
 }

@@ -1,0 +1,78 @@
+<p>Herramientas para construir el mundo directamente en la vista Escena.</p>
+
+<h3 id="terreno">Terreno</h3>
+<p>
+  <em>GameObject &gt; Terreno</em> crea un terreno con su archivo de alturas. Con él seleccionado, el Inspector muestra las
+  <strong class="text-white">herramientas</strong> y la vista pinta con el pincel (clic y arrastrar; <code>[</code> y
+  <code>]</code> cambian el radio):
+</p>
+<table>
+  <thead><tr><th>Herramienta</th><th>Qué hace</th></tr></thead>
+  <tbody>
+    <tr><td>Subir / Bajar</td><td>Sube o baja el terreno (con <code>Mayús</code>, lo contrario). Radio, fuerza y caída del borde.</td></tr>
+    <tr><td>Suavizar</td><td>Redondea los picos y los escalones.</td></tr>
+    <tr><td>Aplanar</td><td>Lleva el terreno a una altura (<code>Ctrl</code>+clic toma la altura del punto).</td></tr>
+    <tr><td>Rampa</td><td>Clic en el punto inicial y en el final: una rampa con su ancho y caída (Esc cancela).</td></tr>
+    <tr><td>Ruido</td><td>Añade relieve irregular (escala y semilla).</td></tr>
+    <tr><td>Erosión</td><td>Térmica: se desmoronan las pendientes fuertes.</td></tr>
+    <tr><td>Erosión por agua</td><td>Hidráulica: cauces y sedimentos.</td></tr>
+    <tr><td>Terrazas</td><td>Escalones como bancales (paso y filo).</td></tr>
+    <tr><td>Pintar</td><td>Pinta la capa elegida (hasta 8 capas, cada una con su textura y su normal); con <code>Mayús</code> la borra.</td></tr>
+  </tbody>
+</table>
+<p>
+  <strong>Generar relieve</strong> crea montañas y valles de golpe (frecuencia, rugosidad, crestas y altura base) y
+  <strong>Pintar por reglas</strong> pinta una capa según la pendiente y la altura (por ejemplo, roca en pendientes de 35 a
+  90° y nieve por encima de 0,8). Cada trazo es un paso de deshacer.
+</p>
+
+<h3 id="estampar">Estampar decals (T)</h3>
+<p>
+  <code>T</code> o el botón <strong>T Estampar</strong> de la barra de la vista: cada clic pone un <em>Decal</em> sobre la
+  superficie bajo el ratón, orientado a ella. Tipos: <strong>Estampa</strong> (imagen o color: grafitis, suciedad, logos),
+  <strong>Charco</strong> y <strong>Humedad</strong>. El pincel tiene tamaño, profundidad, giro aleatorio, color, opacidad y
+  textura (arrastra una imagen del Proyecto). <code>Ctrl</code>+rueda cambia el tamaño, <code>Mayús</code>+rueda gira y
+  <code>Esc</code> sale.
+</p>
+
+<h3 id="pintar">Pintar prefabs (B)</h3>
+<p>
+  Como el Foliage de Unreal pero con prefabs de verdad (con sus scripts y colliders). <code>B</code> o
+  <em>Ventana &gt; Pintar prefabs</em>:
+</p>
+<ol>
+  <li>Crea prefabs de tus árboles, rocas o arbustos (arrastrándolos de la Jerarquía al Proyecto).</li>
+  <li>Crea un <strong>grupo</strong> (<code>.crpaint</code>, en <code>Assets/PaintGroups</code>) y arrastra los prefabs a la ventana.
+    Cada uno tiene su <strong>peso</strong> (cuántos salen frente a los demás), escala mínima y máxima, alinear al suelo
+    (0 = vertical como un árbol, 1 = sigue la pendiente como una roca), giro aleatorio y hundir.</li>
+  <li>Pinta con clic y arrastrar sobre el suelo. <code>Mayús</code>+arrastrar borra. <code>Ctrl</code>+rueda o
+    <code>[</code> <code>]</code> cambian el radio.</li>
+</ol>
+<p>
+  El pincel tiene <strong>densidad</strong> (objetos por cada 100 m²: repasar no amontona, rellena hasta esa densidad),
+  <strong>separación</strong> mínima y <strong>pendiente máxima</strong>. Se apoya en los colliders y en los terrenos; lo ya
+  pintado no cuenta como suelo. Lo pintado queda bajo <em>Pintado - &lt;grupo&gt;</em> en la Jerarquía, como instancias
+  normales de sus prefabs; cada trazo es un paso de deshacer.
+</p>
+
+<h3 id="agua">Agua</h3>
+<p>
+  <em>GameObject &gt; Agua</em>: <strong>Océano / playa</strong> (plano infinito con oleaje a la altura de la entidad),
+  <strong>Lago</strong> (rectángulo) o <strong>Río</strong>. Un río sigue sus puntos: se editan en la vista con asas
+  (clic en un punto para moverlo, <em>Añadir punto</em>) y el agua corre a lo largo de ellos. Los Rigidbody flotan, la cámara
+  bajo el agua ve niebla y cáusticas y lo que se mueve deja ondas.
+</p>
+
+<h3 id="postvolumenes">Volúmenes de post-procesado</h3>
+<p>
+  <em>GameObject &gt; Volumen de post-procesado &gt; Global / Caja / Esfera</em>. Uno local cambia el aspecto con la cámara
+  dentro (una cueva más oscura, un interior cálido) y se mezcla con la distancia de mezcla. Solo cambia las secciones marcadas
+  <em>Sobrescribir</em>; el resto sale del global. En la vista se ven su forma y la zona de transición.
+</p>
+
+<h3 id="rieles">Rieles y cámaras de cine</h3>
+<p>
+  <em>GameObject &gt; Cinemática</em> crea cámaras virtuales (desde la vista actual o siguiendo a la selección), rieles
+  (Dolly Track), cámaras y carros en riel y secuencias. Los puntos de un riel se mueven en la vista con sus asas. Ver
+  <a href="editor-ventanas.html#cinematica">Cinemática</a>.
+</p>

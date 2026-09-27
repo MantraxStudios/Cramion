@@ -391,11 +391,13 @@ void VulkanRenderer::initialize(const EngineInfo& info, HWND window, std::uint32
         ssao_pass_.create(device_, ssao);
 
         // Luz volumetrica: camara, luces, cascadas + su mapa, la profundidad,
-        // y las sombras de focos y puntuales + sus matrices.
-        const std::array<Type, 8> volumetric_bindings = {
+        // las sombras de focos y puntuales + sus matrices, y la irradiancia
+        // del cielo (armonicos esfericos: la luz del cielo que dispersa el
+        // polvo en todas direcciones).
+        const std::array<Type, 9> volumetric_bindings = {
             Type::eUniformBuffer,        Type::eUniformBuffer,        Type::eUniformBuffer,
             Type::eCombinedImageSampler, Type::eCombinedImageSampler, Type::eCombinedImageSampler,
-            Type::eCombinedImageSampler, Type::eUniformBuffer};
+            Type::eCombinedImageSampler, Type::eUniformBuffer,        Type::eStorageBuffer};
         FullscreenPassDesc volumetric{};
         volumetric.fragment_shader = "volumetric.frag.spv";
         volumetric.bindings = volumetric_bindings;
@@ -1085,7 +1087,7 @@ void VulkanRenderer::createDescriptors() {
         vk::DescriptorPoolSize{vk::DescriptorType::eUniformBuffer, kMaxFramesInFlight * 11},
         vk::DescriptorPoolSize{vk::DescriptorType::eCombinedImageSampler,
                                kMaxFramesInFlight * 25 + kBloomSets + 2 + 1 + 1 + 6},
-        vk::DescriptorPoolSize{vk::DescriptorType::eStorageBuffer, 3 + kMaxFramesInFlight}};
+        vk::DescriptorPoolSize{vk::DescriptorType::eStorageBuffer, 3 + kMaxFramesInFlight * 2}};
 
     vk::DescriptorPoolCreateInfo post_pool_info{};
     post_pool_info.flags = vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet;
@@ -2019,6 +2021,14 @@ void VulkanRenderer::updatePostDescriptors() {
             local_write.descriptorType = vk::DescriptorType::eUniformBuffer;
             local_write.setBufferInfo(local_info);
             device_.handle().updateDescriptorSets(local_write, nullptr);
+
+            vk::DescriptorBufferInfo sky_info{*ibl_probe_.irradianceBuffer().handle(), 0, VK_WHOLE_SIZE};
+            vk::WriteDescriptorSet sky_write{};
+            sky_write.dstSet = *volumetric_sets_[i];
+            sky_write.dstBinding = 8;
+            sky_write.descriptorType = vk::DescriptorType::eStorageBuffer;
+            sky_write.setBufferInfo(sky_info);
+            device_.handle().updateDescriptorSets(sky_write, nullptr);
         }
 
         // SSGI: camara + profundidad + normales + imagen del frame anterior.
@@ -2777,10 +2787,13 @@ void VulkanRenderer::updateUniforms(const scene::Scene& scene, const scene::Came
     // y: luz volumetrica. No en las caras de la sonda: su imagen es de la
     // camara de pantalla.
     // z: sombras de contacto (largo del rayo); no en la sonda (su depth es otro).
+    // w: numero de frame (0..63) para el ruido que el TAA promedia (sombras de
+    // contacto); -1 sin filtro temporal (entonces el shader no usa ruido).
+    const bool temporal_filter = upscaling_ && graphics_.upscaler != Upscaler::Fsr1 && !isolated();
     light_data.environment = Vec4{environmentActive() ? 1.0f : 0.0f,
                                   post_.volumetric_light && !capturing_ ? 1.0f : 0.0f,
                                   post_.contact_shadows && !capturing_ ? std::max(post_.contact_shadow_length, 0.0f) : 0.0f,
-                                  0.0f};
+                                  temporal_filter ? static_cast<float>(frame_count_ % 64u) : -1.0f};
     if (!isolated()) {
         cloud_time_ += frame_delta_seconds_;
     }

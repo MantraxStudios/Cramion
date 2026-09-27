@@ -1,5 +1,99 @@
 # Cambios
 
+## 0.6.0
+
+### Espacios de trabajo (pestañas)
+- **Pestañas debajo del menú**, como los editores de assets de Unreal: **Escena** (todo el editor, como siempre) y una pestaña por cada **prefab** o **script** abierto. Clic para cambiar; la ✕ cierra.
+- **Editar un prefab en su pestaña**: doble clic en el `.crprefab` del Proyecto, *Abrir (editar)* en su menú, el botón **Abrir** de la barra azul del Inspector o *Prefab → Abrir prefab* en la Jerarquía.
+  - Escenario propio con el prefab solo: **Jerarquía a la izquierda, vista en el centro, componentes (Inspector) a la derecha**, Proyecto y Consola abajo. Con el cielo de la escena y una luz (que no salen en la Jerarquía).
+  - Todo lo que se crea o se suelta va dentro de la raíz del prefab. Deshacer/rehacer propio de la pestaña.
+  - **Guardar** (Ctrl+S o el botón de la banda azul) escribe el `.crprefab` y **todas sus instancias de la escena se actualizan** al volver, respetando sus cambios propios.
+  - Cerrar con cambios pregunta *Guardar / Descartar / Cancelar*. Al salir del editor se guardan solos.
+  - Play, abrir o crear escena y Exportar vuelven antes a la pestaña Escena.
+- **Scripts en su pestaña**, a toda la ventana, con el **árbol de carpetas y assets a la derecha** (buscar, clic en un `.lua`/`.crshader` lo abre, doble clic en un prefab o escena lo abre, menú: nuevo script, copiar ruta, mostrar en el Proyecto).
+
+### Plantilla MMO RPG (todo el juego en Lua)
+- Nueva plantilla en el Hub: **MMO RPG**. El motor solo pone el mundo y la interfaz; **todos los sistemas son scripts de Lua** (`Heroe.lua`, `Enemigo.lua`, `Bot.lua`, `NPC.lua`) que se pueden leer y cambiar.
+  - Mundo: pueblo (Villa Alba) con casas, plaza, mercado y capilla; Bosque Gris con lobos; campamento goblin con empalizada y chamanes; guarida del **Rey Goblin** (jefe con pisotón en área que avisa antes).
+  - Combate: objetivo con **Tab** o clic mirando al enemigo, **Golpe**, **Bola de fuego** (con barra de lanzamiento que se interrumpe al moverse), **Curar** (nivel 2), **Torbellino** en área (nivel 3), pociones, maná, enfriamientos y enfriamiento global, críticos, ataque automático, números flotantes.
+  - Progresión: experiencia y 10 niveles, estadísticas, **equipo** (arma y armadura), **inventario** de 20 huecos, **tienda** (comprar y vender), **5 misiones** (matar y recoger) con diálogos y marcas `!` sobre los personajes.
+  - Enemigos con IA: patrulla, aggro, *leash* (vuelven a casa curándose), bolsas de **botín** y reaparición.
+  - **Otros jugadores simulados** que cazan, mueren, reaparecen y hablan por el chat.
+  - Interfaz: marcos de jugador y objetivo, barra de habilidades con enfriamientos, experiencia, chat, seguimiento de misiones, **minimapa**, inventario, personaje, diario, diálogos, muerte y ayuda (H).
+  - La partida se guarda sola (Prefs); F9 la borra.
+
+### Manual
+- Manual completado: nuevo grupo **El editor** (interfaz y pestañas, vista Escena y gizmos, Jerarquía e Inspector, Proyecto e importación, Play y deshacer, herramientas de mundo, ventanas de herramientas, materiales, render y rendimiento, exportar y compilación, plantillas y atajos de teclado).
+- Nuevo grupo **Componentes**: la referencia de los 46 componentes con **todas sus propiedades** (nombre, clave, tipo, valor por defecto, rango u opciones y ayuda), generada desde el propio motor con `cramion_docgen` para que no se quede atrás.
+- 60 páginas y 616 entradas en el buscador.
+
+### Corregido
+- **Sombras de contacto** rehechas: recorren la profundidad **píxel a píxel** en pantalla (como las *screen space shadows* de Days Gone) y su rayo solo cubre lo que la cascada no resuelve (unos 10 texels de su mapa; *Largo máximo* es solo un tope). Antes el rayo de 0,5 m sacaba de la pantalla la sombra entera del personaje: se veía en **escalones**, duplicaba la de la cascada y **se deformaba al mover la cámara**. Sin TAA ya no usan ruido; con TAA la penumbra se suaviza con un ruido distinto cada frame. Se acabaron también los puntitos negros, el *acné* en troncos y cilindros y el negro de lejos.
+- **Luz volumétrica (polvo)**: ahora también la ilumina el **cielo** desde todas direcciones (como el *Sky Light* de la niebla volumétrica de Unreal). Antes solo se veía mirando hacia el sol: de espaldas el polvo solo oscurecía.
+- **Revisión de todos los shaders** (8.200 líneas):
+  - Recorte alfa (`surface`, `skinned`, `voxel`): el `discard` iba antes de calcular derivadas (antialiasing especular, decals, mips); en los bordes de hojas y rejas salían valores indefinidos. Ahora se descarta al final.
+  - Terreno: las capas se leían con mip automático dentro de una rama; en la mezcla entre capas salían brillos y costuras. Ahora con `textureGrad`.
+  - Modelos con parallax: las texturas eligen el mip con la UV original (menos aliasing en los escalones del relieve).
+  - Normales con **escala no uniforme** (cajas estiradas, esferas achatadas): se transformaban con la matriz del modelo tal cual y la luz caía mal; ahora con su inversa traspuesta (como ya hacía el trazado de rayos).
+  - TAA: evitados píxeles blancos de un frame (*fireflies*) al deshacer la compresión de la historia.
+  - Reflejos del agua: el ruido del trazado cambia cada frame (antes un patrón quieto). SSR: coordenada sin inicializar al salir de pantalla.
+
+### Audio: efectos, oclusión y reverberación
+- **Oclusión** en el **Audio Listener** (activar/desactivar con su casilla, `Audio.setOcclusion(on)` o `camara.audioOcclusion = false`): un sonido 3D con colliders en medio (paredes, una puerta cerrada, el techo de una casa) se oye **tapado**, más bajo y sin agudos, con fundido al abrir o cerrar. Ajustes: agudos tras una pared, volumen por pared, paredes como mucho, rapidez. No cuentan triggers, el propio sonido ni el cuerpo del jugador.
+- **Efectos por Audio Source**: paso bajo, paso alto, eco (retardo, repetición, mezcla) y envío a reverberación; `entidad:setSoundEffect("lowpass", true, 800)`.
+- **Audio Reverb Zone** (componente nuevo): esfera con tipo Habitación, Baño, Sala grande, Cueva, Estadio, Bosque, Bajo el agua o personalizado.
+- **Paso bajo general** en el Audio Listener (bajo el agua, pausa): `Audio.setLowPass(true, 600)`.
+- En Play, el Inspector del sonido dice cuántas paredes lo tapan y la Escena dibuja la línea al oyente (roja si está tapado), además del alcance y las zonas.
+
+### Configuraciones de compilación
+- *Archivo → Configuraciones de compilación…*: perfiles de exportación como los Build Profiles de Unity (`ProjectSettings/BuildConfigs.json`, viajan con el proyecto). Nueva, Duplicar, Borrar; doble clic o *Usar esta configuración* la hace activa.
+  - **Nombre del juego**: el `.exe`, la carpeta exportada, el título de la ventana y la pantalla de carga.
+  - **Versión** (opcional en el título de la ventana).
+  - **Icono de la app**: suelta una imagen del Proyecto (PNG, JPG, TGA, BMP) o elige un `.ico`. Se escribe **dentro del .exe** (16 a 256 px): Explorador, barra de tareas y ventana.
+  - **Escena inicial**, **ventana** (maximizada, pantalla completa sin bordes o ventana con tamaño), **static batching** y **Mostrar FPS** de desarrollo.
+- La ventana *Exportar juego* elige la configuración y muestra el `.exe` que va a salir.
+
+### Pintar prefabs
+- **Herramienta de pintado de prefabs** (botón **B Pintar** en la vista Escena, tecla **B**, o *Ventana → Pintar prefabs*), como el Foliage de Unreal pero con prefabs de verdad: árboles con su script, rocas con su collider, cofres…
+  - **Grupos de pintado** (`.crpaint` en `Assets/PaintGroups`): arrastra prefabs del Proyecto a la ventana. Cada uno con su **peso** (cuántos salen frente a los demás), **escala aleatoria**, **alinear al suelo** (0 = vertical como un árbol, 1 = sigue la pendiente como una roca), **giro aleatorio** y **hundir** en el suelo.
+  - Se pinta **todo el grupo** o **solo el prefab elegido**.
+  - **Pincel**: radio (Ctrl + rueda o `[` `]`), **densidad** por 100 m² (repasar no amontona: rellena hasta esa densidad), **separación mínima** entre objetos y **pendiente máxima**. **Mayús + arrastrar borra.**
+  - Apoya en los colliders (también Mesh Collider) y en los terrenos; lo ya pintado no cuenta como suelo.
+  - Cada trazo es un paso de deshacer. Lo pintado queda bajo *Pintado - &lt;grupo&gt;* en la Jerarquía, como instancias normales de su prefab. *Seleccionarlos* y *Borrar todos* en la ventana.
+- MCP: herramienta `paint_prefabs`.
+
+### Volúmenes de post-procesado
+- El componente **Post-procesado** es ahora un **Volume como el de Unity**: forma **Global**, **Caja** o **Esfera** (con la posición, el giro y la escala de la entidad).
+  - Con la cámara dentro de una caja o esfera se usa ese volumen; fuera, el global. La **distancia de mezcla** hace la transición suave al acercarse; **peso** y **prioridad** deciden cómo se combinan varios.
+  - Un volumen local **solo cambia las secciones que marca como Sobrescribir** (exposición, bloom, color, viñeta, lente, efectos…); el resto sale del global.
+  - *GameObject → Volumen de post-procesado → Global / Caja / Esfera*. Uno nuevo empieza con el aspecto del global actual.
+  - En la Escena se ven la forma y, más tenue, la zona de transición.
+- Las escenas antiguas siguen igual: su post-procesado es global.
+
+### Agua
+- **Olas interactivas** (como en Red Dead Redemption): **todo lo que tiene collider** (Box, Sphere, Capsule, Mesh, Wheel), Rigidbody o es un agente de navegación y cruza la superficie empuja el agua, se mueva por física, por script, por animación o con el gizmo del editor. Lo que está **quieto** y atraviesa el agua (postes, rocas, pilares; hasta 10 m) es un **obstáculo: las ondas chocan y rebotan**. Al caer, **salpicadura con espuma** según la velocidad; al moverse, **estela**. Las ondas se propagan, se cruzan, rebotan y se apagan solas. Simulación de la ecuación de onda en 48 × 48 m alrededor de la cámara (celdas de 25 cm, 60 Hz), en el océano, los lagos y los ríos.
+- **Ríos**: la corriente sigue el camino de los puntos. Antes el rizado y la espuma se movían en el mundo con la dirección de cada sitio y se deformaban cada vez más (y más cuantos más puntos). La curva es ahora un Catmull-Rom centrípeto: sin bucles ni panzas con puntos a distancias desiguales.
+- **Cáusticas bajo el agua**: con la cámara dentro del agua, el fondo y los objetos sumergidos reciben las cáusticas del sol (con su sombra). Antes solo se veían desde fuera.
+
+### Animación
+- **Cinemática inversa (IK)**: componente **IK** (*Animación*) sobre la pose animada de cualquier modelo con esqueleto.
+  - **Manos y pies** a una entidad objetivo (IK de dos huesos analítico, exacto), con **codo/rodilla hacia** otra entidad (pole), peso y *copiar giro*.
+  - **Mirar**: la cabeza (y un poco el cuello) sigue a una entidad, con ángulo máximo.
+  - **Pies en el suelo**: cada pie se apoya en lo que tiene debajo (escaleras, pendientes, rocas), la cadera baja para que la pierna llegue y el pie se inclina con el suelo. No cuenta el propio personaje.
+  - **Cadenas** de dos huesos por nombre para esqueletos no humanos (colas, brazos robóticos).
+  - Los objetivos son entidades normales: se mueven a mano, por script o con física.
+- **Animación procedural**: componente **Animación procedural** (*Animación*), encima de la animación o sin ella.
+  - **Huesos con muelle** (pelo, colas, capas, antenas, pendientes): cada cadena se mueve con inercia, gravedad, rigidez y amortiguación, sin estirarse, y **choca con el cuerpo** (cabeza, pecho, cadera). Al mover el personaje se quedan atrás y rebotan.
+  - **Patas procedurales** (arañas, cangrejos, robots, dragones): cada pie se queda clavado en el suelo y **da un paso en arco** cuando el cuerpo se aleja; los grupos se turnan (diagonales, trípode), el pie se adelanta según la velocidad y el cuerpo sube, baja y se inclina con el suelo que pisan.
+  - **Capas**: **respirar** (el pecho sube y baja), **inclinarse** al acelerar, frenar o girar, y **ruido** suave en huesos sueltos (antenas, colas en reposo).
+  - Orden por frame: animación → capas y patas → IK → huesos con muelle.
+- **Humanoides y retargeting** (como el Avatar de Unity): los esqueletos humanos se reconocen solos por los nombres de sus huesos (Mixamo, Unreal, Blender/Rigify, 3ds Max Biped y nombres sueltos). Un clip `.cranim` de un humanoide **se usa en otro humanoide** aunque sus huesos se llamen distinto, tengan otros ejes, otras proporciones, otra escala (cm/m), otro "arriba" (Z o Y) o esté en pose A en vez de T: se convierte al cargarlo, hueso a hueso en el espacio del personaje, y la cadera se desplaza escalada por la altura. Los `.cranim` guardan ahora su esqueleto (vuelve a extraer los antiguos para convertirlos).
+- **Navegador**: los modelos y clips humanoides llevan una **insignia** (círculo con el icono de SkinnedMesh) abajo a la derecha de su miniatura.
+
+### Editor
+- **Abrir un proyecto no congela la ventana**: el Hub se cierra y sale un diálogo con el logo del motor y una **barra de progreso** (como Unity): abrir el proyecto, leer la escena, cargar los modelos **en otro hilo** (con el nombre de cada uno), subirlos a la GPU y preparar la física.
+- **Add Component rediseñado**: ventana grande centrada en la pantalla, buscador con el **filtro de categorías en un desplegable** a su derecha y los componentes en una **rejilla de fichas** con icono, nombre y el color de su categoría (como Unreal). Enter añade el primero.
+
 ## 0.5.1
 
 ### Gizmos

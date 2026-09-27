@@ -138,14 +138,17 @@ void main() {
     // multiplicar. Si no, lighting.frag lo elevaba a 2.2 otra vez y los
     // materiales sin textura salian mas oscuros y saturados (y distintos de
     // los mismos materiales vistos por los rayos, rt_common.glsl).
-    vec4 albedo = texture(albedo_map, uv) *
+    vec4 albedo = textureGrad(albedo_map, uv, uv_dx, uv_dy) *
                   vec4(pow(max(push.base_color.rgb, vec3(0.0)), vec3(1.0 / 2.2)), push.base_color.a);
 
     // Recorte por alfa (pelo, pestanas): un diferido no puede mezclar
     // transparencias, asi que lo que es casi transparente se descarta.
-    if (albedo.a < 0.5) {
-        discard;
-    }
+    bool cut_out = albedo.a < 0.5;
+
+    // Todas las texturas con las derivadas de la UV original (textureGrad):
+    // con parallax la UV desplazada salta entre pixeles y texture() elegia un
+    // mip equivocado en cada escalon (aliasing); y el normal map va dentro de
+    // un if, donde las derivadas implicitas no estan definidas.
 
     // --- Normal map ---
     vec3 normal = n;
@@ -155,7 +158,7 @@ void main() {
     if (has_tangent) {
         // Solo X e Y: Z se reconstruye (los normal maps BC5 de los DDS no la
         // guardan, y en los demas asi se corrige el error de compresion).
-        vec2 xy = texture(normal_map, uv).xy * 2.0 - 1.0;
+        vec2 xy = textureGrad(normal_map, uv, uv_dx, uv_dy).xy * 2.0 - 1.0;
         tangent_normal = vec3(xy, sqrt(max(1.0 - dot(xy, xy), 0.0)));
         // La bitangente va con V creciendo hacia abajo en la imagen (assimp
         // la calcula despues de FlipUVs, y el lector de OBJ igual). El +Y de
@@ -178,10 +181,10 @@ void main() {
     vec3 aa_normal = n;
 
     // --- Metal / rugosidad / specular / cavidad / oclusion ---
-    vec4 metallic_roughness = texture(metallic_roughness_map, uv);
+    vec4 metallic_roughness = textureGrad(metallic_roughness_map, uv, uv_dx, uv_dy);
     float metallic = clamp(push.material.x * metallic_roughness.b, 0.0, 1.0);
     float roughness = clamp(push.material.y * metallic_roughness.g, 0.04, 1.0);
-    float occlusion = mix(1.0, texture(occlusion_map, uv).r, push.material.z);
+    float occlusion = mix(1.0, textureGrad(occlusion_map, uv, uv_dx, uv_dy).r, push.material.z);
     // Mapa specular (el de Unreal): 0.5 = la reflectancia del material.
     float reflectance = push.reflectance;
     if ((push.flags & kFlagSpecularMap) != 0u) {
@@ -193,10 +196,15 @@ void main() {
     occlusion *= mix(1.0, cavity, 0.6);
 
     // --- Emision ---
-    vec3 emissive = toLinear(texture(emissive_map, uv).rgb) * push.emissive.rgb *
+    vec3 emissive = toLinear(textureGrad(emissive_map, uv, uv_dx, uv_dy).rgb) * push.emissive.rgb *
                     kEmissiveIntensity;
 
     writeSurface(albedo, n, normal, tangent_normal, aa_normal, metallic, roughness, occlusion, emissive,
                  reflectance, v_world_position);
     writeVelocity(v_current_clip, v_previous_clip);
+    // El recorte se hace al final: un discard antes dejaba sin definir las
+    // derivadas (dFdx/dFdy, texturas con mipmap) de los vecinos del cuadro 2x2
+    // en los bordes recortados, y writeSurface las usa (antialiasing
+    // especular, decals).
+    if (cut_out) discard;
 }

@@ -68,7 +68,15 @@ void main() {
 
     vec4 world_position = push.model * (skin * vec4(in_position, 1.0));
     mat3 to_world = mat3(push.model) * mat3(skin);
-    vec3 normal = to_world * in_normal;
+    // Las normales con la inversa traspuesta del modelo: con escala no
+    // uniforme (una caja estirada, una esfera achatada, algo girado y
+    // escalado) la matriz tal cual las inclinaba hacia el eje estirado y la
+    // luz caia mal. Los huesos son rigidos (su inversa traspuesta es ellos
+    // mismos). La tangente si va con la matriz directa.
+    mat3 model3 = mat3(push.model);
+    // Escala 0 en un eje (algo aplanado a proposito): sin inversa, la directa.
+    mat3 normal_to_world = (abs(determinant(model3)) > 1e-12 ? transpose(inverse(model3)) : model3) * mat3(skin);
+    vec3 normal = normal_to_world * in_normal;
     vec2 uv = in_uv;
     vec3 offset = vec3(0.0);
 

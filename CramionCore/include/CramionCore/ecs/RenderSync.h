@@ -19,6 +19,9 @@
 #include "CramionCore/ecs/AnimatorController.h"
 #include "CramionCore/ecs/World.h"
 #include "CramionCore/terrain/Terrain.h"
+#include "CramionCore/anim/Humanoid.h"
+#include "CramionCore/anim/Procedural.h"
+#include "CramionCore/water/Ripples.h"
 #include "CramionCore/water/Water.h"
 
 #include <functional>
@@ -68,6 +71,12 @@ public:
     std::vector<std::uint32_t> actorIndicesInSubtree(Entity entity) const;
 
     // Datos de la pieza que dibuja la entidad (esqueleto y clips), o nullptr.
+    // Suelo bajo un punto (IK de pies): rayo en el mundo que no cuenta a `self`
+    // ni a su jerarquia. La pone el editor/el juego con su fisica.
+    using GroundQuery = std::function<bool(const core::Vec3& origin, const core::Vec3& direction, float max_distance,
+                                           core::Vec3& point, core::Vec3& normal, Entity self)>;
+    void setGroundQuery(GroundQuery query) { ground_query_ = std::move(query); }
+
     const asset::ModelData* actorModelData(Entity entity, const scene::Scene& scene) const;
 
     // Animator Controllers (.cranimator) en uso: se leen una vez; el editor
@@ -166,6 +175,44 @@ private:
         std::vector<std::uint32_t> indices;
     };
     std::unordered_map<entt::entity, RiverMesh> rivers_;
+    // Cinematica inversa: humanoide de cada modelo (sus huesos y ejes).
+    struct HumanoidInfo {
+        humanoid::Map map;
+        std::vector<core::Mat4> rest;
+        core::Vec3 up{0.0f, 1.0f, 0.0f};
+        core::Vec3 forward{0.0f, 0.0f, 1.0f};
+    };
+    std::unordered_map<std::uint32_t, HumanoidInfo> humanoids_;
+    // Animacion procedural: lo que se simula por entidad (muelles, pies) y
+    // su movimiento (velocidad y aceleracion para inclinarse).
+    struct ProceduralState {
+        std::uint64_t signature = 0;
+        std::uint32_t model = 0;
+        std::vector<procedural::SpringChain> springs;
+        std::vector<procedural::Leg> legs;
+        int body = -1;
+        core::Vec3 last_position{};
+        core::Vec3 velocity{};
+        core::Vec3 acceleration{};
+        float time = 0.0f;
+        bool has_last = false;
+    };
+    std::unordered_map<entt::entity, ProceduralState> procedural_;
+    void applyProceduralBefore(World& world, Entity entity, const ProceduralAnimation& proc, anim::Animator& animator,
+                               const asset::ModelData& data, std::uint32_t model, float delta_seconds);
+    void applyProceduralSprings(Entity entity, const ProceduralAnimation& proc, anim::Animator& animator,
+                                const asset::ModelData& data, std::uint32_t model, float delta_seconds);
+    GroundQuery ground_query_;
+    const HumanoidInfo& humanoidInfo(std::uint32_t model, const asset::ModelData& data);
+    void applyInverseKinematics(World& world, Entity entity, const InverseKinematics& ik, anim::Animator& animator,
+                                const asset::ModelData& data, std::uint32_t model);
+    // Olas interactivas: la simulacion y donde estaba cada cuerpo el frame
+    // anterior (su velocidad).
+    water::RippleSimulation ripples_;
+    std::unordered_map<entt::entity, core::Vec3> ripple_previous_;
+    void updateRipples(World& world, gfx::VulkanRenderer& renderer, float delta_seconds,
+                       const core::Vec3& camera_position,
+                       const std::vector<std::pair<const water::WaterBody*, core::Mat4>>& bodies);
     std::uint64_t river_version_ = 0;
     void destroyTerrains();
 

@@ -1,9 +1,11 @@
 #include "ModelPreviews.h"
 
+#include <CramionCore/anim/Humanoid.h>
 #include <CramionCore/asset/AssetManager.h>
 #include <CramionFX/asset/ImageFile.h>
 
 #include <algorithm>
+#include <fstream>
 #include <cmath>
 #include <iostream>
 #include <limits>
@@ -68,6 +70,16 @@ std::filesystem::path ModelPreviews::pngFor(const Uuid& uuid) const {
     return cache_ / (uuid.toString() + ".png");
 }
 
+std::filesystem::path ModelPreviews::metaFor(const Uuid& uuid) const {
+    return cache_ / (uuid.toString() + ".meta");
+}
+
+bool ModelPreviews::isHumanoid(const Uuid& uuid) {
+    std::lock_guard lock(mutex_);
+    const auto it = humanoid_.find(uuid);
+    return it != humanoid_.end() && it->second;
+}
+
 std::optional<std::filesystem::path> ModelPreviews::preview(const Uuid& uuid, const std::filesystem::path& file,
                                                             const std::string& name) {
     if (cache_.empty()) return std::nullopt;
@@ -76,12 +88,18 @@ std::optional<std::filesystem::path> ModelPreviews::preview(const Uuid& uuid, co
     if (const auto it = ready_.find(uuid); it != ready_.end() && it->second) return png;
     if (failed_.contains(uuid) || queued_.contains(uuid)) return std::nullopt;
     // Primera vez en esta sesion: mirar si el PNG de la cache sigue valiendo.
+    // (Sin su .meta, de antes de guardar si es humanoide: se rehace.)
     std::error_code error;
-    if (std::filesystem::exists(png, error)) {
+    const std::filesystem::path meta = metaFor(uuid);
+    if (std::filesystem::exists(png, error) && std::filesystem::exists(meta, error)) {
         const bool fresh = file.empty() ||
                            std::filesystem::last_write_time(png, error) >= std::filesystem::last_write_time(file, error);
         if (fresh) {
             ready_[uuid] = true;
+            std::ifstream in(meta);
+            std::string line;
+            std::getline(in, line);
+            humanoid_[uuid] = line.find("humanoid=1") != std::string::npos;
             return png;
         }
     }
@@ -107,6 +125,15 @@ void ModelPreviews::run() {
             const std::shared_ptr<assets::ModelAsset> model = assets::AssetManager::readModel(job.uuid, job.file, job.name);
             asset::ImageRgba8 image;
             ok = model && render(*model, 128, image) && asset::saveImagePng(pngFor(job.uuid), image);
+            if (ok) {
+                // Humanoide: alguna pieza con esqueleto de persona (su insignia
+                // en el navegador; sus animaciones sirven a otros humanoides).
+                bool human = false;
+                for (const auto& part : model->parts) human = human || (part && humanoid::isHumanoid(part->nodes));
+                std::ofstream(metaFor(job.uuid)) << "humanoid=" << (human ? 1 : 0) << "\n";
+                std::lock_guard lock(mutex_);
+                humanoid_[job.uuid] = human;
+            }
         } catch (const std::exception& e) {
             std::cerr << "[Editor] Miniatura de " << job.name << ": " << e.what() << "\n";
         }

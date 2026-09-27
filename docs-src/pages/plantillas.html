@@ -1,0 +1,51 @@
+<p>
+  Al crear un proyecto en el Hub se elige una <strong class="text-white">plantilla</strong>. Todas crean su escena, sus
+  materiales y sus scripts; el juego de cada una está en Lua, así que se puede leer y cambiar.
+</p>
+
+<h3 id="integradas">Plantillas integradas</h3>
+<table>
+  <thead><tr><th>Plantilla</th><th>Qué trae</th></tr></thead>
+  <tbody>
+    <tr><td><code>Vacío</code></td><td>Cielo físico, sol, cámara, un suelo con collider y post-procesado global.</td></tr>
+    <tr><td><code>Tercera persona</code></td><td>Un personaje con Rigidbody que corre (Shift) y salta (Espacio), cámara orbital (clic derecho y rueda), plataformas, rampas y monedas con marcador.</td></tr>
+    <tr><td><code>IA y navegación</code></td><td>Un laberinto con NavMesh y guardias con NavAgent que patrullan y persiguen si te ven; llegar a la meta gana.</td></tr>
+    <tr><td><code>Mundo de bloques</code></td><td>Supervivencia como Minecraft: mundo infinito con biomas, cuevas, árboles y mar; romper, recoger, inventario de 36 huecos, 13 recetas, vida, hambre, aire, muerte y guardado.</td></tr>
+    <tr><td><code>MMO RPG</code></td><td>Un rol online en miniatura. Ver abajo.</td></tr>
+  </tbody>
+</table>
+
+<h3 id="mmo">MMO RPG</h3>
+<p>
+  Un pueblo (Villa Alba) con misiones y tienda, el Bosque Gris con lobos, un campamento goblin con chamanes y la guarida
+  del <strong>Rey Goblin</strong>. <strong>Todos los sistemas son scripts de Lua</strong> en <code>Assets/Scripts</code>:
+</p>
+<table>
+  <thead><tr><th>Script</th><th>Contiene</th></tr></thead>
+  <tbody>
+    <tr><td><code>Heroe.lua</code></td><td>Movimiento, estadísticas y 10 niveles, objetivo, habilidades, inventario, equipo, tienda, 5 misiones con diálogos, botín, chat, minimapa, muerte y guardado. Las tablas <code>ITEMS</code>, <code>MISIONES</code> y <code>HABILIDADES</code> del principio son los datos del juego: añade objetos, misiones o habilidades ahí.</td></tr>
+    <tr><td><code>Enemigo.lua</code></td><td>La IA (patrulla, aggro, leash, ataque a distancia del chamán, pisotón en área del jefe), muerte, botín y reaparición. Tabla <code>TIPOS</code> con sus estadísticas.</td></tr>
+    <tr><td><code>Bot.lua</code></td><td>Otros "jugadores" simulados: pasean, cazan, mueren, reaparecen y hablan por el chat.</td></tr>
+    <tr><td><code>NPC.lua</code></td><td>Personajes del pueblo: miran al jugador y muestran su marca (amarilla = misión nueva, azul = para entregar).</td></tr>
+  </tbody>
+</table>
+<table>
+  <thead><tr><th>Control</th><th>Acción</th></tr></thead>
+  <tbody>
+    <tr><td><code>WASD</code>, <code>Shift</code>, <code>Espacio</code></td><td>Moverse, correr, saltar.</td></tr>
+    <tr><td>Clic derecho + ratón, rueda</td><td>Girar y acercar la cámara.</td></tr>
+    <tr><td><code>Tab</code> / clic izquierdo</td><td>Siguiente enemigo / el enemigo al que miras.</td></tr>
+    <tr><td><code>1</code> - <code>6</code></td><td>Golpe, Bola de fuego (se lanza en 1,4 s; moverse la interrumpe), Curar (nivel 2), Torbellino en área (nivel 3), poción de vida y de maná.</td></tr>
+    <tr><td><code>E</code></td><td>Hablar con un personaje (misiones, entregar, comerciar).</td></tr>
+    <tr><td><code>I</code>, <code>C</code>, <code>L</code>, <code>H</code></td><td>Inventario (clic: usar, equipar o vender), personaje, diario de misiones, ayuda.</td></tr>
+    <tr><td><code>Escape</code>, <code>F9</code></td><td>Cerrar paneles o quitar el objetivo; borrar la partida guardada.</td></tr>
+  </tbody>
+</table>
+<p>La partida (nivel, experiencia, oro, inventario, equipo y misiones) se guarda sola en <code>Prefs</code>.</p>
+
+<h3 id="usuario">Tus plantillas</h3>
+<p>
+  <em>Archivo &gt; Guardar proyecto como plantilla...</em> copia <code>Assets</code> y <code>ProjectSettings</code> del
+  proyecto a <code>%LOCALAPPDATA%/Cramion/Templates/&lt;nombre&gt;</code> con su descripción. Sale en el Hub en
+  <em>Mis plantillas</em> para crear proyectos nuevos desde ella.
+</p>

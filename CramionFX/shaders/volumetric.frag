@@ -21,6 +21,14 @@
 // los rayos se ven mucho mas mirando hacia la luz) mezclada con algo de
 // isotropa para que tambien se intuyan de espaldas a ella.
 //
+// Ademas del sol y las luces, el polvo recibe la luz del CIELO desde todas
+// direcciones (el "Sky Light" de la niebla volumetrica de Unreal). Sin ella
+// el polvo solo existia mirando hacia el sol (la fase HG con g = 0.6 da ~25
+// veces mas luz de frente que de espaldas) y de espaldas el aire quedaba
+// perfectamente limpio. Es la radiancia media del cielo (termino constante
+// de sus armonicos esfericos); a la sombra del sol se atenua (interiores,
+// bajo los arboles: ahi el cielo se ve poco).
+//
 // Las luces locales solo se evaluan en el tramo del rayo que cruza su esfera
 // de alcance: una farola al fondo no cuesta nada en los pixeles cuyo rayo no
 // pasa cerca.
@@ -96,6 +104,12 @@ layout(set = 0, binding = 7) uniform LocalShadowBuffer {
     vec4 params;  // z = intensidad de la sombra
 } local_shadows;
 
+// Irradiancia del cielo en armonicos esfericos, ya dividida por pi (la de
+// lighting.frag): el coeficiente 0 da la radiancia media.
+layout(set = 0, binding = 8) readonly buffer Irradiance {
+    vec4 coefficients[9];
+} irradiance_sh;
+
 layout(push_constant) uniform PushConstants {
     // x = densidad del polvo (1/m), y = anisotropia (g de Henyey-Greenstein),
     // z = segundos (deriva del polvo), w = distancia maxima (m)
@@ -109,6 +123,9 @@ const float kPi = 3.14159265;
 const int kSteps = 32;
 // Fraccion isotropa de la fase.
 const float kIsotropicMix = 0.25;
+// Cuanto de la luz del cielo dispersa el polvo (1 = todo; menos porque el
+// suelo y los objetos tapan parte del cielo).
+const float kSkyScatter = 0.6;
 
 vec3 toLinear(vec3 color) {
     return pow(color, vec3(2.2));
@@ -313,7 +330,11 @@ void main() {
                                          lights.spots[i].position_range.w, march_distance);
         any_local = any_local || spot_segments[i].x < spot_segments[i].y;
     }
-    if (!has_sun && !any_local) {
+    // Luz del cielo dispersada: radiancia media L de todas direcciones por
+    // la fase isotropa 1/(4 pi) integrada en la esfera (4 pi) = L.
+    vec3 sky_source = max(irradiance_sh.coefficients[0].rgb * 0.282095, vec3(0.0)) * kSkyScatter;
+    bool has_sky = dot(sky_source, sky_source) > 0.0;
+    if (!has_sun && !any_local && !has_sky) {
         out_volume = vec4(0.0, 0.0, 0.0, 1.0);
         return;
     }
@@ -333,7 +354,9 @@ void main() {
         float step_transmittance = exp(-sigma * dt);
 
         // Luz que llega a este punto del aire, ya por su fase hacia la camara.
-        vec3 incoming = has_sun ? sun_source * sunVisibility(p) : vec3(0.0);
+        float sun_visible = has_sun ? sunVisibility(p) : 1.0;
+        vec3 incoming = has_sun ? sun_source * sun_visible : vec3(0.0);
+        incoming += sky_source * mix(0.35, 1.0, sun_visible);
 
         for (int l = 0; l < point_count; ++l) {
             if (t < point_segments[l].x || t > point_segments[l].y) {

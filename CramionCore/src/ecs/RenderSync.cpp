@@ -1,6 +1,9 @@
 #include "CramionCore/ecs/RenderSync.h"
 
+#include "CramionCore/anim/IK.h"
 #include "CramionCore/ecs/MathUtil.h"
+#include "CramionCore/navigation/Navigation.h"
+#include "CramionCore/physics/PhysicsComponents.h"
 
 #include <CramionFX/asset/ImageFile.h>
 
@@ -11,10 +14,12 @@
 #include <fstream>
 #include <iostream>
 #include <string>
+#include <unordered_set>
 
 namespace cramion::ecs {
 
 using core::Mat4;
+using core::Quat;
 using core::Vec3;
 
 namespace {
@@ -676,6 +681,310 @@ std::optional<std::uint32_t> RenderSync::resolveModel(const assets::AssetRef& re
     return index;
 }
 
+// --- Cinematica inversa --------------------------------------------------------
+
+const RenderSync::HumanoidInfo& RenderSync::humanoidInfo(std::uint32_t model, const asset::ModelData& data) {
+    auto it = humanoids_.find(model);
+    if (it != humanoids_.end() && it->second.rest.size() == data.nodes.size()) return it->second;
+    HumanoidInfo info;
+    info.map = humanoid::detect(data.nodes);
+    info.rest = humanoid::restGlobals(data.nodes);
+    if (info.map.valid) {
+        Vec3 right{};
+        humanoid::characterAxes(info.map, info.rest, right, info.up, info.forward);
+    }
+    return humanoids_[model] = std::move(info);
+}
+
+void RenderSync::applyInverseKinematics(World& world, Entity entity, const InverseKinematics& ik,
+                                        anim::Animator& animator, const asset::ModelData& data, std::uint32_t model) {
+    if (animator.locals().size() != data.nodes.size()) return;
+    ik::Pose pose{&data.nodes, &animator.locals(), &animator.globals()};
+    const Mat4& world_matrix = entity.worldMatrix();
+    const Mat4 to_model = core::inverse(world_matrix);
+    const auto point_to_model = [&](const Vec3& p) { return transformPoint(to_model, p); };
+    const auto dir_to_model = [&](const Vec3& d) { return core::normalize(transformDirection(to_model, d)); };
+    // Posicion (y giro) de una entidad objetivo en el espacio del modelo.
+    const auto target_of = [&](const Uuid& id, Vec3& position, Quat* rotation) {
+        if (!id.valid()) return false;
+        const Entity t = world.find(id);
+        if (!t.valid() || !t.activeInHierarchy()) return false;
+        const Mat4 m = to_model * t.worldMatrix();
+        Vec3 s{};
+        Quat r{};
+        decomposeMatrix(m, position, r, s);
+        if (rotation != nullptr) *rotation = r;
+        return true;
+    };
+    const HumanoidInfo& human = humanoidInfo(model, data);
+    const humanoid::Map& map = human.map;
+    using humanoid::Bone;
+    const auto node = [&](Bone b) { return map.valid ? map[b] : -1; };
+
+    // --- Pies en el suelo ---
+    if (ik.foot_grounding && map.valid && ground_query_ && ik.grounding_weight > 0.0f) {
+        const Vec3 up_world{0.0f, 1.0f, 0.0f};
+        const float base_y = world_matrix.m[3][1];  // los pies del personaje, en la animacion
+        struct Foot {
+            Bone upper, lower, foot;
+            bool hit = false;
+            Vec3 world{};
+            float delta = 0.0f;
+            Vec3 normal{0.0f, 1.0f, 0.0f};
+        };
+        Foot feet[2] = {{Bone::LeftUpperLeg, Bone::LeftLowerLeg, Bone::LeftFoot},
+                        {Bone::RightUpperLeg, Bone::RightLowerLeg, Bone::RightFoot}};
+        float lowest = 0.0f;
+        for (Foot& f : feet) {
+            f.world = transformPoint(world_matrix, ik::nodePosition(pose, node(f.foot)));
+            const float lift = f.world.y - base_y;  // cuanto levanta el pie la animacion
+            Vec3 ground{};
+            Vec3 normal{};
+            const Vec3 origin{f.world.x, base_y + ik.max_step + 0.05f, f.world.z};
+            if (!ground_query_(origin, up_world * -1.0f, ik.max_step * 2.0f + 0.1f, ground, normal, entity)) continue;
+            f.hit = true;
+            f.normal = normal;
+            f.delta = std::clamp(ground.y + lift - f.world.y, -ik.max_step, ik.max_step);
+            lowest = std::min(lowest, f.delta);
+        }
+        // La cadera baja lo que baje el pie mas bajo (si no, esa pierna no llega).
+        if (lowest < 0.0f) {
+            const Vec3 offset = transformDirection(to_model, up_world * (lowest * ik.grounding_weight));
+            ik::translateGlobal(pose, node(Bone::Hips), offset);
+        }
+        for (const Foot& f : feet) {
+            if (!f.hit) continue;
+            const Vec3 target = point_to_model(Vec3{f.world.x, f.world.y + f.delta, f.world.z});
+            ik::twoBone(pose, node(f.upper), node(f.lower), node(f.foot), target, nullptr, ik.grounding_weight);
+            if (ik.align_feet) {
+                const Quat tilt = ik::rotationBetween(dir_to_model(up_world), dir_to_model(f.normal));
+                ik::rotateGlobal(pose, node(f.foot), core::slerp(Quat{}, tilt, ik.grounding_weight));
+            }
+        }
+    }
+
+    // --- Manos y pies a sus objetivos ---
+    const auto limb = [&](const IKLimb& l, Bone upper, Bone lower, Bone end) {
+        Vec3 target{};
+        Quat rotation{};
+        if (!map.valid || l.weight <= 0.0f || !target_of(l.target, target, &rotation)) return;
+        Vec3 hint{};
+        const bool has_hint = target_of(l.hint, hint, nullptr);
+        ik::twoBone(pose, node(upper), node(lower), node(end), target, has_hint ? &hint : nullptr, l.weight);
+        if (l.match_rotation) {
+            // Objetivo sin girar = el giro de reposo de la mano/el pie.
+            const Quat rest = [&] {
+                Vec3 t{};
+                Quat r{};
+                Vec3 s{};
+                decomposeMatrix(human.rest[static_cast<std::size_t>(node(end))], t, r, s);
+                return r;
+            }();
+            const Quat wanted = quatMultiply(rotation, rest);
+            ik::setGlobalRotation(pose, node(end), core::slerp(ik::nodeRotation(pose, node(end)), wanted, l.weight));
+        }
+    };
+    limb(ik.left_hand, Bone::LeftUpperArm, Bone::LeftLowerArm, Bone::LeftHand);
+    limb(ik.right_hand, Bone::RightUpperArm, Bone::RightLowerArm, Bone::RightHand);
+    limb(ik.left_foot, Bone::LeftUpperLeg, Bone::LeftLowerLeg, Bone::LeftFoot);
+    limb(ik.right_foot, Bone::RightUpperLeg, Bone::RightLowerLeg, Bone::RightFoot);
+
+    // --- Mirar: el cuello gira un poco y la cabeza el resto ---
+    Vec3 look{};
+    if (map.valid && ik.look_weight > 0.0f && target_of(ik.look_at, look, nullptr)) {
+        // Hacia donde mira ahora un hueso: el "delante" del personaje llevado
+        // por lo que ese hueso ha girado desde su reposo.
+        const auto facing = [&](int bone) {
+            Vec3 t{};
+            Quat rest{};
+            Vec3 s{};
+            decomposeMatrix(human.rest[static_cast<std::size_t>(bone)], t, rest, s);
+            const Quat delta = quatMultiply(ik::nodeRotation(pose, bone), quatConjugate(rest));
+            return quatRotate(delta, human.forward);
+        };
+        const int neck = node(Bone::Neck);
+        const int head = node(Bone::Head);
+        if (neck >= 0 && neck != head) {
+            ik::lookAt(pose, neck, facing(neck), look, ik.look_weight * 0.35f, ik.look_max_angle * 0.35f);
+        }
+        ik::lookAt(pose, head, facing(head), look, ik.look_weight, ik.look_max_angle);
+    }
+
+    // --- Cadenas sueltas (cualquier esqueleto) ---
+    for (const IKChain& chain : ik.chains) {
+        Vec3 target{};
+        if (chain.bone.empty() || chain.weight <= 0.0f || !target_of(chain.target, target, nullptr)) continue;
+        int end = -1;
+        for (std::size_t i = 0; i < data.nodes.size(); ++i) {
+            if (data.nodes[i].name == chain.bone) {
+                end = static_cast<int>(i);
+                break;
+            }
+        }
+        const int mid = end >= 0 ? data.nodes[static_cast<std::size_t>(end)].parent : -1;
+        const int upper = mid >= 0 ? data.nodes[static_cast<std::size_t>(mid)].parent : -1;
+        Vec3 hint{};
+        const bool has_hint = target_of(chain.hint, hint, nullptr);
+        ik::twoBone(pose, upper, mid, end, target, has_hint ? &hint : nullptr, chain.weight);
+    }
+    animator.updateBones();
+}
+
+// --- Animacion procedural -------------------------------------------------------
+
+namespace {
+int nodeByName(const asset::ModelData& data, const std::string& name) {
+    if (name.empty()) return -1;
+    for (std::size_t i = 0; i < data.nodes.size(); ++i) {
+        if (data.nodes[i].name == name) return static_cast<int>(i);
+    }
+    // Sin el prefijo del programa ("mixamorig:Head" vale como "Head").
+    for (std::size_t i = 0; i < data.nodes.size(); ++i) {
+        const std::string& n = data.nodes[i].name;
+        const auto cut = n.find_last_of(":|");
+        if (cut != std::string::npos && n.compare(cut + 1, std::string::npos, name) == 0) return static_cast<int>(i);
+    }
+    return -1;
+}
+}  // namespace
+
+void RenderSync::applyProceduralBefore(World& world, Entity entity, const ProceduralAnimation& proc,
+                                       anim::Animator& animator, const asset::ModelData& data, std::uint32_t model,
+                                       float delta_seconds) {
+    (void)world;
+    if (animator.locals().size() != data.nodes.size()) return;
+    ik::Pose pose{&data.nodes, &animator.locals(), &animator.globals()};
+    ProceduralState& state = procedural_[entity.handle()];
+    const Mat4& world_matrix = entity.worldMatrix();
+    const Vec3 position{world_matrix.m[3][0], world_matrix.m[3][1], world_matrix.m[3][2]};
+
+    // Rehacer cadenas y patas si cambio lo que hay que simular.
+    std::uint64_t signature = 1469598103934665603ull ^ model;
+    const auto mix = [&](const std::string& text) {
+        for (const char c : text) signature = (signature ^ static_cast<unsigned char>(c)) * 1099511628211ull;
+        signature = (signature ^ 0xFFu) * 1099511628211ull;
+    };
+    for (const SpringBoneChain& s : proc.springs) mix(s.bone);
+    for (const ProceduralLeg& l : proc.legs) mix(l.bone + "#" + std::to_string(l.group));
+    if (signature != state.signature || state.model != model) {
+        state = ProceduralState{};
+        state.signature = signature;
+        state.model = model;
+        for (const SpringBoneChain& s : proc.springs) {
+            state.springs.push_back(procedural::makeSpringChain(data.nodes, nodeByName(data, s.bone)));
+        }
+        bool automatic = std::all_of(proc.legs.begin(), proc.legs.end(), [](const ProceduralLeg& l) { return l.group < 0; });
+        std::vector<int> uppers;
+        for (std::size_t i = 0; i < proc.legs.size(); ++i) {
+            procedural::Leg leg;
+            leg.end = nodeByName(data, proc.legs[i].bone);
+            leg.mid = leg.end >= 0 ? data.nodes[static_cast<std::size_t>(leg.end)].parent : -1;
+            leg.upper = leg.mid >= 0 ? data.nodes[static_cast<std::size_t>(leg.mid)].parent : -1;
+            leg.group = automatic ? static_cast<int>(i % 2) : std::max(proc.legs[i].group, 0);
+            if (leg.upper < 0) continue;
+            uppers.push_back(leg.upper);
+            state.legs.push_back(leg);
+        }
+        state.body = procedural::commonAncestor(data.nodes, uppers);
+    }
+
+    // Movimiento del personaje (suavizado): para inclinarse y adelantar pasos.
+    if (delta_seconds > 0.0f) {
+        state.time += delta_seconds;
+        if (state.has_last && core::length(position - state.last_position) < 5.0f) {
+            const Vec3 velocity = (position - state.last_position) * (1.0f / delta_seconds);
+            const float blend = 1.0f - std::exp(-delta_seconds * 10.0f);
+            const Vec3 acceleration = (velocity - state.velocity) * (1.0f / delta_seconds);
+            state.acceleration = state.acceleration + (acceleration - state.acceleration) * (1.0f - std::exp(-delta_seconds * 6.0f));
+            state.velocity = state.velocity + (velocity - state.velocity) * blend;
+        }
+        state.last_position = position;
+        state.has_last = true;
+    }
+
+    // --- Capas (humanoides) ---
+    const HumanoidInfo& human = humanoidInfo(model, data);
+    if (human.map.valid) {
+        using humanoid::Bone;
+        const Vec3 right = core::cross(human.forward, human.up);
+        if (proc.breathing && proc.breath_amount > 0.0f) {
+            const float breath = std::sin(state.time * proc.breath_rate / 60.0f * 2.0f * core::kPi) * proc.breath_amount;
+            procedural::rotateBone(pose, human.map[Bone::Chest], right, -breath * 0.6f);
+            procedural::rotateBone(pose, human.map[Bone::UpperChest], right, -breath * 0.4f);
+        }
+        if (proc.lean && proc.lean_amount > 0.0f) {
+            // Aceleracion hacia delante y hacia la derecha del personaje.
+            const Vec3 forward_world = core::normalize(transformDirection(world_matrix, human.forward));
+            const Vec3 right_world = core::normalize(transformDirection(world_matrix, right));
+            const float per_unit = proc.lean_amount / 6.0f;  // del todo a 6 m/s²
+            const float pitch = std::clamp(-core::dot(state.acceleration, forward_world) * per_unit, -proc.lean_amount,
+                                           proc.lean_amount);
+            const float roll = std::clamp(core::dot(state.acceleration, right_world) * per_unit, -proc.lean_amount,
+                                          proc.lean_amount);
+            procedural::rotateBone(pose, human.map[Bone::Spine], right, pitch * 0.6f);
+            procedural::rotateBone(pose, human.map[Bone::Chest], right, pitch * 0.4f);
+            procedural::rotateBone(pose, human.map[Bone::Spine], human.forward, roll * 0.6f);
+            procedural::rotateBone(pose, human.map[Bone::Chest], human.forward, roll * 0.4f);
+        }
+    }
+    for (std::size_t i = 0; i < proc.noise.size(); ++i) {
+        const ProceduralNoise& n = proc.noise[i];
+        const int bone = nodeByName(data, n.bone);
+        if (bone < 0 || n.amplitude <= 0.0f) continue;
+        const float seed = static_cast<float>(i) * 12.9898f + static_cast<float>(bone) * 4.1414f;
+        procedural::rotateBone(pose, bone, Vec3{1, 0, 0}, procedural::smoothNoise(state.time, n.frequency, seed) * n.amplitude);
+        procedural::rotateBone(pose, bone, Vec3{0, 1, 0}, procedural::smoothNoise(state.time, n.frequency, seed + 3.1f) * n.amplitude);
+        procedural::rotateBone(pose, bone, Vec3{0, 0, 1}, procedural::smoothNoise(state.time, n.frequency, seed + 7.3f) * n.amplitude);
+    }
+
+    // --- Patas ---
+    if (!state.legs.empty()) {
+        procedural::LegSettings settings;
+        settings.step_distance = proc.step_distance;
+        settings.step_height = proc.step_height;
+        settings.step_duration = proc.step_duration;
+        settings.overshoot = proc.step_overshoot;
+        settings.adjust_body = proc.adjust_body;
+        settings.body_weight = proc.body_weight;
+        procedural::GroundQuery ground;
+        if (ground_query_) {
+            ground = [&](const Vec3& o, const Vec3& d, float max, Vec3& p, Vec3& n) {
+                return ground_query_(o, d, max, p, n, entity);
+            };
+        }
+        procedural::updateLegs(pose, world_matrix, state.legs, state.body, settings, ground, state.velocity, delta_seconds);
+    }
+}
+
+void RenderSync::applyProceduralSprings(Entity entity, const ProceduralAnimation& proc, anim::Animator& animator,
+                                        const asset::ModelData& data, std::uint32_t model, float delta_seconds) {
+    const auto it = procedural_.find(entity.handle());
+    if (it == procedural_.end() || it->second.springs.empty() || animator.locals().size() != data.nodes.size()) return;
+    ik::Pose pose{&data.nodes, &animator.locals(), &animator.globals()};
+    const Mat4& world_matrix = entity.worldMatrix();
+    // Esferas del cuerpo (humanoides): cabeza, pecho y cadera.
+    std::vector<procedural::Sphere> colliders;
+    const HumanoidInfo& human = humanoidInfo(model, data);
+    if (proc.body_colliders && human.map.valid) {
+        using humanoid::Bone;
+        const auto at = [&](Bone b) { return transformPoint(world_matrix, ik::nodePosition(pose, human.map[b])); };
+        const float size = core::length(at(Bone::Head) - at(Bone::Hips));  // cadera a cabeza
+        colliders.push_back({at(Bone::Head) + (at(Bone::Head) - at(Bone::Neck)) * 0.5f, size * 0.16f});
+        const Bone chest = human.map[Bone::UpperChest] >= 0 ? Bone::UpperChest : Bone::Chest;
+        colliders.push_back({at(chest), size * 0.24f});
+        colliders.push_back({at(Bone::Hips), size * 0.24f});
+    }
+    for (std::size_t i = 0; i < it->second.springs.size() && i < proc.springs.size(); ++i) {
+        const SpringBoneChain& s = proc.springs[i];
+        procedural::SpringSettings settings;
+        settings.stiffness = s.stiffness;
+        settings.damping = s.damping;
+        settings.gravity = s.gravity;
+        settings.radius = s.radius;
+        procedural::updateSprings(pose, world_matrix, it->second.springs[i], settings, colliders, delta_seconds);
+    }
+}
+
 // Agua: los cuerpos de este frame al renderizador (parametros de sus olas y
 // color) y la cinta de cada rio, que solo se rehace si cambian sus puntos.
 void RenderSync::syncWater(World& world, gfx::VulkanRenderer& renderer, float delta_seconds,
@@ -683,12 +992,14 @@ void RenderSync::syncWater(World& world, gfx::VulkanRenderer& renderer, float de
     water::advanceWaterTime(delta_seconds);
     std::vector<gfx::WaterBodyDesc> bodies;
     std::unordered_map<entt::entity, RiverMesh> seen;
+    std::vector<std::pair<const water::WaterBody*, Mat4>> water_bodies;
     int underwater = -1;
     world.forEachDepthFirst([&](Entity e) {
         const water::WaterBody* body = e.tryGet<water::WaterBody>();
         if (body == nullptr || !e.activeInHierarchy() || bodies.size() >= gfx::kMaxWaterBodies) return;
         const Mat4& m = e.worldMatrix();
         const Vec3 origin = e.worldPosition();
+        water_bodies.emplace_back(body, m);
         constexpr float kRad = kDegToRad;
         gfx::WaterBodyDesc desc;
         gfx::GpuWaterBody& p = desc.params;
@@ -744,9 +1055,12 @@ void RenderSync::syncWater(World& world, gfx::VulkanRenderer& renderer, float de
                     for (std::uint32_t j = 0; j < kAcross; ++j) {
                         const float a = static_cast<float>(j) / static_cast<float>(kAcross - 1);
                         const Vec3 pos = sample.position + side * ((a - 0.5f) * sample.width);
+                        // flow = direccion * ancho: el shader saca de ahi las
+                        // coordenadas del rio en metros (a traves, a lo largo).
+                        const float width = std::max(sample.width, 0.01f);
                         mesh.vertices.push_back(gfx::WaterVertex{{pos.x, pos.y, pos.z},
                                                                  {a, sample.distance},
-                                                                 {sample.tangent.x, sample.tangent.z}});
+                                                                 {sample.tangent.x * width, sample.tangent.z * width}});
                     }
                 }
                 for (std::uint32_t i = 0; i + 1 < line.size(); ++i) {
@@ -766,6 +1080,171 @@ void RenderSync::syncWater(World& world, gfx::VulkanRenderer& renderer, float de
     });
     rivers_ = std::move(seen);
     renderer.setWaterBodies(bodies, water::waterTime(), underwater);
+    updateRipples(world, renderer, delta_seconds, camera_position, water_bodies);
+}
+
+// Olas interactivas: todo lo que tiene collider (o Rigidbody, o es un agente
+// de navegacion) y cruza la superficie:
+//   - si se mueve, empuja el agua: al caer, segun su velocidad hacia abajo
+//     (salpicadura); al avanzar, segun su velocidad (estela). Da igual como
+//     se mueva: fisica, script, animacion o el gizmo del editor.
+//   - si esta quieto y no es enorme (poste, roca, pilar, una caja flotando),
+//     es un obstaculo: las ondas chocan con el y rebotan.
+void RenderSync::updateRipples(World& world, gfx::VulkanRenderer& renderer, float delta_seconds,
+                               const Vec3& camera_position,
+                               const std::vector<std::pair<const water::WaterBody*, Mat4>>& bodies) {
+    if (bodies.empty()) {
+        if (ripples_.active()) ripples_.clear();
+        ripple_previous_.clear();
+        renderer.setWaterRipples({}, 0, 0.0f, 0.0f, 0.0f);
+        return;
+    }
+    if (delta_seconds <= 0.0f) return;  // la segunda vista del editor: ya se hizo
+    std::vector<water::RippleSource> sources;
+    std::vector<water::RippleObstacle> obstacles;
+    std::unordered_map<entt::entity, Vec3> positions;
+    const float half_extent = water::RippleSimulation::kSize * water::RippleSimulation::kCellSize * 0.5f;
+    constexpr float kMaxObstacle = 5.0f;  // medio lado maximo de un obstaculo (m)
+
+    // Caja local (en el espacio de la entidad) de su forma de colision.
+    const auto local_shape = [&](Entity e, Vec3& mn, Vec3& mx, bool& round) {
+        round = false;
+        if (const auto* box = e.tryGet<physics::BoxCollider>()) {
+            mn = box->center - box->size * 0.5f;
+            mx = box->center + box->size * 0.5f;
+            return;
+        }
+        if (const auto* sphere = e.tryGet<physics::SphereCollider>()) {
+            const Vec3 r{sphere->radius, sphere->radius, sphere->radius};
+            mn = sphere->center - r;
+            mx = sphere->center + r;
+            round = true;
+            return;
+        }
+        if (const auto* capsule = e.tryGet<physics::CapsuleCollider>()) {
+            Vec3 half{capsule->radius, capsule->radius, capsule->radius};
+            (&half.x)[static_cast<int>(capsule->axis)] = std::max(capsule->height * 0.5f, capsule->radius);
+            mn = capsule->center - half;
+            mx = capsule->center + half;
+            round = capsule->axis == physics::CapsuleAxis::Y;
+            return;
+        }
+        if (const auto* wheel = e.tryGet<physics::WheelCollider>()) {
+            const Vec3 half{wheel->width * 0.5f, wheel->radius, wheel->radius};
+            mn = half * -1.0f;
+            mx = half;
+            return;
+        }
+        if (const auto* agent = e.tryGet<navigation::NavAgent>()) {
+            mn = Vec3{-agent->radius, 0.0f, -agent->radius};
+            mx = Vec3{agent->radius, agent->height, agent->radius};
+            round = true;
+            return;
+        }
+        // Mesh Collider (y lo demas): la caja de su modelo.
+        const int actor = actorIndex(e);
+        if (actor >= 0 && actorLocalBounds(static_cast<std::uint32_t>(actor), mn, mx)) return;
+        mn = Vec3{-0.5f, -0.5f, -0.5f};
+        mx = Vec3{0.5f, 0.5f, 0.5f};
+    };
+
+    const auto consider = [&](Entity e) {
+        if (!e.activeInHierarchy()) return;
+        const Mat4& m = e.worldMatrix();
+        Vec3 mn{};
+        Vec3 mx{};
+        bool round = false;
+        local_shape(e, mn, mx, round);
+        // Centro y extension en el mundo (las 8 esquinas).
+        const Vec3 local_center = (mn + mx) * 0.5f;
+        const Vec3 center = transformPoint(m, local_center);
+        positions[e.handle()] = center;
+        if (std::abs(center.x - camera_position.x) > half_extent + kMaxObstacle ||
+            std::abs(center.z - camera_position.z) > half_extent + kMaxObstacle) {
+            return;
+        }
+        // Eje u: el X de la entidad en el plano xz.
+        Vec3 axis{m.m[0][0], 0.0f, m.m[0][2]};
+        axis = core::length(axis) > 1e-5f ? core::normalize(axis) : Vec3{1.0f, 0.0f, 0.0f};
+        const Vec3 side{-axis.z, 0.0f, axis.x};
+        float bottom = 1e30f;
+        float top = -1e30f;
+        float half_u = 0.0f;
+        float half_v = 0.0f;
+        for (int c = 0; c < 8; ++c) {
+            const Vec3 corner = transformPoint(m, Vec3{(c & 1) ? mx.x : mn.x, (c & 2) ? mx.y : mn.y, (c & 4) ? mx.z : mn.z});
+            bottom = std::min(bottom, corner.y);
+            top = std::max(top, corner.y);
+            const Vec3 d = corner - center;
+            half_u = std::max(half_u, std::abs(core::dot(d, axis)));
+            half_v = std::max(half_v, std::abs(core::dot(d, side)));
+        }
+        // Velocidad por el frame anterior.
+        const auto previous = ripple_previous_.find(e.handle());
+        Vec3 velocity{};
+        if (previous != ripple_previous_.end()) velocity = (center - previous->second) * (1.0f / delta_seconds);
+        const float speed = core::length(velocity);
+        if (speed > 30.0f) return;  // teletransporte, no movimiento
+        const bool moving = speed > 0.08f;
+        // Quieto y enorme (un suelo, la orilla): ni empuja ni hace de obstaculo.
+        if (!moving && std::max(half_u, half_v) > kMaxObstacle) return;
+
+        // La superficie del agua en su centro.
+        for (const auto& [body, bm] : bodies) {
+            const water::WaterSample surface = water::sampleWater(*body, bm, center, water::waterTime());
+            if (!surface.inside) continue;
+            const float radius = std::clamp(std::max(half_u, half_v), 0.15f, 6.0f);
+            if (moving) {
+                // Cruza la superficie o va justo por debajo.
+                if (bottom > surface.height + 0.1f || top < surface.height - radius) return;
+                const float fall = std::max(-velocity.y, 0.0f);
+                const float rise = std::max(velocity.y, 0.0f);
+                const float along = std::sqrt(velocity.x * velocity.x + velocity.z * velocity.z);
+                // Salpicadura (caer) + estela (avanzar); al salir tira un poco hacia arriba.
+                // Tope: algo muy rapido (una bala, un teletransporte corto) no
+                // rompe la superficie en picos.
+                const float push = std::clamp(fall * 0.9f + along * 0.35f - rise * 0.3f, -2.0f, 5.0f);
+                if (std::abs(push) < 0.01f) return;
+                sources.push_back(water::RippleSource{center, radius, push * std::min(radius, 1.5f)});
+            } else if (bottom < surface.height - 0.02f && top > surface.height + 0.02f) {
+                // Atraviesa la superficie: obstaculo.
+                water::RippleObstacle o;
+                o.x = center.x;
+                o.z = center.z;
+                o.axis_x = axis.x;
+                o.axis_z = axis.z;
+                o.half_u = half_u;
+                o.half_v = half_v;
+                o.round = round;
+                obstacles.push_back(o);
+            }
+            return;
+        }
+    };
+    // Cada entidad una vez, tenga los componentes que tenga.
+    std::unordered_set<entt::entity> done;
+    const auto each = [&](auto view) {
+        for (const entt::entity h : view) {
+            if (done.insert(h).second) consider(world.wrap(h));
+        }
+    };
+    entt::registry& registry = world.registry();
+    each(registry.view<physics::Rigidbody>());
+    each(registry.view<physics::BoxCollider>());
+    each(registry.view<physics::SphereCollider>());
+    each(registry.view<physics::CapsuleCollider>());
+    each(registry.view<physics::MeshCollider>());
+    each(registry.view<physics::WheelCollider>());
+    each(registry.view<navigation::NavAgent>());
+    ripple_previous_ = std::move(positions);
+
+    ripples_.update(camera_position, delta_seconds, sources, obstacles);
+    if (ripples_.active()) {
+        renderer.setWaterRipples(ripples_.heights(), water::RippleSimulation::kSize, ripples_.originX(), ripples_.originZ(),
+                                 water::RippleSimulation::kCellSize);
+    } else {
+        renderer.setWaterRipples({}, 0, 0.0f, 0.0f, 0.0f);
+    }
 }
 
 void RenderSync::sync(World& world, scene::Scene& scene, gfx::VulkanRenderer& renderer,
@@ -912,6 +1391,7 @@ void RenderSync::syncActors(World& world, scene::Scene& scene, gfx::VulkanRender
         state.seen = frame_;
 
         bool animating = false;
+        bool posed = false;  // la pose de este frame ya se evaluo
         if (Animator* animator = e.tryGet<Animator>(); animator != nullptr && !data.animations.empty()) {
             animating = true;
             int clip = animator->clip;
@@ -968,11 +1448,31 @@ void RenderSync::syncActors(World& world, scene::Scene& scene, gfx::VulkanRender
             if (animator->playing) {
                 state.animator.update(delta_seconds);
                 animator->time = state.animator.time();
+                posed = true;
             } else if (std::abs(state.animator.time() - animator->time) > 1e-5f) {
                 // Pausado: el tiempo del Inspector manda (arrastrarlo = scrub).
                 state.animator.setTime(animator->time);
                 state.animator.evaluate();
+                posed = true;
             }
+        }
+        // Cinematica inversa sobre la pose de este frame (sin animar o en
+        // pausa se parte de la pose limpia: el IK no se acumula).
+        // Orden: animacion -> procedural (capas y patas) -> IK -> muelles
+        // (siguen a la pose final).
+        const InverseKinematics* ik = e.tryGet<InverseKinematics>();
+        const ProceduralAnimation* proc = e.tryGet<ProceduralAnimation>();
+        const bool use_ik = ik != nullptr && ik->enabled;
+        const bool use_proc = proc != nullptr && proc->enabled;
+        if ((use_ik || use_proc) && !data.nodes.empty() && !data.bones.empty()) {
+            if (!posed) state.animator.evaluate();
+            if (use_proc) applyProceduralBefore(world, e, *proc, state.animator, data, *model, delta_seconds);
+            if (use_ik) applyInverseKinematics(world, e, *ik, state.animator, data, *model);
+            if (use_proc) applyProceduralSprings(e, *proc, state.animator, data, *model, delta_seconds);
+            state.animator.updateBones();
+            animating = true;
+        } else if (proc == nullptr) {
+            procedural_.erase(e.handle());
         }
 
         const Mat4& world_matrix = e.worldMatrix();
@@ -1031,7 +1531,11 @@ void RenderSync::syncLightsAndEnvironment(World& world, scene::Scene& scene,
     Entity directional;
     Entity sky_entity;
     Entity weather_entity;
-    const PostProcessing* post = nullptr;
+    struct Volume {
+        const PostProcessing* post;
+        Entity entity;
+    };
+    std::vector<Volume> volumes;
 
     world.forEachDepthFirst([&](Entity e) {
         if (!e.activeInHierarchy()) {
@@ -1080,9 +1584,7 @@ void RenderSync::syncLightsAndEnvironment(World& world, scene::Scene& scene,
             weather_entity = e;
         }
         if (const PostProcessing* p = e.tryGet<PostProcessing>()) {
-            if (post == nullptr || p->priority > post->priority) {
-                post = p;
-            }
+            volumes.push_back(Volume{p, e});
         }
     });
 
@@ -1181,7 +1683,20 @@ void RenderSync::syncLightsAndEnvironment(World& world, scene::Scene& scene,
     renderer.setDecals(std::move(decals));
 
     // --- Post-proceso ---
-    renderer.setPostProcess(post != nullptr ? post->settings : gfx::PostProcessSettings{});
+    // Volumenes como en Unity: de menor a mayor prioridad (a igual
+    // prioridad, los globales primero), cada uno lleva el resultado hacia
+    // sus valores segun su peso y lo cerca que esta la camara.
+    std::stable_sort(volumes.begin(), volumes.end(), [](const Volume& a, const Volume& b) {
+        if (a.post->priority != b.post->priority) return a.post->priority < b.post->priority;
+        return a.post->isGlobal() && !b.post->isGlobal();
+    });
+    gfx::PostProcessSettings blended{};
+    const core::Vec3 eye = scene.camera().position();
+    for (const Volume& v : volumes) {
+        const float t = v.post->influence(v.entity.worldMatrix(), eye);
+        blendPostProcess(blended, v.post->settings, t, v.post->isGlobal() ? kPostAll : v.post->overrides);
+    }
+    renderer.setPostProcess(blended);
 }
 
 void RenderSync::syncCamera(World& world, scene::Scene& scene) {

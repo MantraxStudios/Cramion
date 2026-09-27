@@ -439,6 +439,10 @@ public:
     void setWaterBodies(const std::vector<WaterBodyDesc>& bodies, float time, int underwater = -1) {
         water_pass_.setBodies(bodies, time, underwater);
     }
+    void setWaterRipples(const std::vector<float>& heights, std::uint32_t size, float origin_x, float origin_z,
+                         float cell) {
+        water_pass_.setRipples(heights, size, origin_x, origin_z, cell);
+    }
     // Una region de los datos completos (se sube en el siguiente frame).
     void updateTerrainHeights(std::uint32_t id, const float* heights, std::uint32_t x, std::uint32_t y,
                               std::uint32_t w, std::uint32_t h);

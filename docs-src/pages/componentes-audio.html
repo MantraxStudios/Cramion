@@ -1,0 +1,58 @@
+<p>Fuentes de sonido, oyente y zonas de reverberacion. Referencia completa generada desde el motor.</p>
+<h3 id="AudioSource">Audio Source <code>AudioSource</code></h3>
+<p>Un sonido en una entidad: clip (WAV, MP3, FLAC, OGG), volumen, tono, bucle, 2D o 3D con atenuacion y Doppler, y efectos: paso bajo, paso alto, eco y envio a reverberacion. Ver <a href="audio.html">Audio</a>.</p>
+<table>
+  <thead><tr><th>Propiedad</th><th>Tipo</th><th>Por defecto</th><th>Valores</th><th>Descripcion</th></tr></thead>
+  <tbody>
+    <tr><td>Clip<br><code>clip</code></td><td>texto</td><td>(vacio)</td><td></td><td>Archivo de audio en Assets (WAV, MP3, FLAC, OGG)</td></tr>
+    <tr><td>Volumen<br><code>volume</code></td><td>numero</td><td>1</td><td>0 a 2</td><td></td></tr>
+    <tr><td>Tono<br><code>pitch</code></td><td>numero</td><td>1</td><td>0,1 a 3</td><td></td></tr>
+    <tr><td>Bucle<br><code>loop</code></td><td>si/no</td><td>no</td><td></td><td></td></tr>
+    <tr><td>Sonar al empezar<br><code>play_on_awake</code></td><td>si/no</td><td>si</td><td></td><td></td></tr>
+    <tr><td>Silencio<br><code>mute</code></td><td>si/no</td><td>no</td><td></td><td></td></tr>
+    <tr><td>3D<br><code>spatial</code></td><td>si/no</td><td>si</td><td></td><td>Con posicion (se atenua y se situa); sin, 2D (musica, interfaz)</td></tr>
+    <tr><td>Panorama<br><code>pan</code></td><td>numero</td><td>0</td><td>-1 a 1</td><td></td></tr>
+    <tr><td>Distancia minima<br><code>min_distance</code></td><td>numero</td><td>1</td><td>0,01 a 1000</td><td></td></tr>
+    <tr><td>Distancia maxima<br><code>max_distance</code></td><td>numero</td><td>50</td><td>0,1 a 10000</td><td></td></tr>
+    <tr><td>Atenuacion<br><code>rolloff</code></td><td>opcion</td><td>Logaritmica</td><td>Logaritmica, Lineal</td><td></td></tr>
+    <tr><td>Doppler<br><code>doppler</code></td><td>numero</td><td>1</td><td>0 a 5</td><td></td></tr>
+    <tr><td>Oclusion<br><code>occlusion</code></td><td>si/no</td><td>si</td><td></td><td>Con paredes (colliders) entre el sonido y el oyente se oye tapado.<br>La oclusion se activa en el Audio Listener.</td></tr>
+    <tr><td>Paso bajo<br><code>low_pass</code></td><td>si/no</td><td>no</td><td></td><td>Quita los agudos: sonido lejano, apagado, por radio</td></tr>
+    <tr><td>Corte paso bajo<br><code>low_pass_cutoff</code></td><td>numero</td><td>5000</td><td>20 a 22000</td><td></td></tr>
+    <tr><td>Paso alto<br><code>high_pass</code></td><td>si/no</td><td>no</td><td></td><td>Quita los graves: altavoz pequeno, telefono</td></tr>
+    <tr><td>Corte paso alto<br><code>high_pass_cutoff</code></td><td>numero</td><td>300</td><td>10 a 10000</td><td></td></tr>
+    <tr><td>Eco<br><code>echo</code></td><td>si/no</td><td>no</td><td></td><td></td></tr>
+    <tr><td>Retardo<br><code>echo_delay</code></td><td>numero</td><td>0,35</td><td>0,01 a 2</td><td></td></tr>
+    <tr><td>Repeticion<br><code>echo_decay</code></td><td>numero</td><td>0,45</td><td>0 a 0,95</td><td></td></tr>
+    <tr><td>Mezcla del eco<br><code>echo_wet</code></td><td>numero</td><td>0,5</td><td>0 a 1</td><td></td></tr>
+    <tr><td>Envio a reverberacion<br><code>reverb_send</code></td><td>numero</td><td>1</td><td>0 a 1</td><td>Cuanto reverbera en las Audio Reverb Zone (0 = nada)</td></tr>
+  </tbody>
+</table>
+<h3 id="AudioListener">Audio Listener <code>AudioListener</code></h3>
+<p>Los oidos (normalmente en la camara). Activa la <strong>oclusion</strong>: sonidos con paredes en medio se oyen tapados. Tambien un paso bajo general y el volumen general.</p>
+<table>
+  <thead><tr><th>Propiedad</th><th>Tipo</th><th>Por defecto</th><th>Valores</th><th>Descripcion</th></tr></thead>
+  <tbody>
+    <tr><td>Volumen general<br><code>volume</code></td><td>numero</td><td>1</td><td>0 a 2</td><td></td></tr>
+    <tr><td>Oclusion<br><code>occlusion</code></td><td>si/no</td><td>si</td><td></td><td>Los sonidos con paredes (colliders) en medio se oyen tapados:<br>detras de una puerta cerrada, dentro de una casa. Desde un script:<br>entidad.audioOcclusion = false / Audio.setOcclusion(true)</td></tr>
+    <tr><td>Agudos tras una pared<br><code>occlusion_cutoff</code></td><td>numero</td><td>900</td><td>100 a 8000</td><td></td></tr>
+    <tr><td>Volumen por pared<br><code>occlusion_volume</code></td><td>numero</td><td>0,45</td><td>0 a 1</td><td></td></tr>
+    <tr><td>Paredes como mucho<br><code>occlusion_max_walls</code></td><td>entero</td><td>3</td><td>1 a 8</td><td></td></tr>
+    <tr><td>Rapidez del cambio<br><code>occlusion_speed</code></td><td>numero</td><td>8</td><td>0,5 a 30</td><td></td></tr>
+    <tr><td>Paso bajo general<br><code>low_pass</code></td><td>si/no</td><td>no</td><td></td><td>Todo se oye apagado (bajo el agua, menu de pausa)</td></tr>
+    <tr><td>Corte<br><code>low_pass_cutoff</code></td><td>numero</td><td>800</td><td>50 a 22000</td><td></td></tr>
+  </tbody>
+</table>
+<h3 id="AudioReverbZone">Audio Reverb Zone <code>AudioReverbZone</code></h3>
+<p>Esfera de reverberacion (habitacion, bano, sala, cueva, estadio, bosque, bajo el agua): con el oyente dentro, los sonidos reverberan.</p>
+<table>
+  <thead><tr><th>Propiedad</th><th>Tipo</th><th>Por defecto</th><th>Valores</th><th>Descripcion</th></tr></thead>
+  <tbody>
+    <tr><td>Distancia minima<br><code>min_distance</code></td><td>numero</td><td>5</td><td>0 a 1000</td><td>Hasta aqui, reverberacion completa</td></tr>
+    <tr><td>Distancia maxima<br><code>max_distance</code></td><td>numero</td><td>12</td><td>0,1 a 2000</td><td>Desde aqui, nada</td></tr>
+    <tr><td>Tipo<br><code>preset</code></td><td>opcion</td><td>Habitacion</td><td>Personalizado, Habitacion, Bano, Sala grande, Cueva, Estadio, Bosque, Bajo el agua</td><td></td></tr>
+    <tr><td>Tamano<br><code>room_size</code></td><td>numero</td><td>0,6</td><td>0 a 1</td><td></td></tr>
+    <tr><td>Amortiguacion<br><code>damping</code></td><td>numero</td><td>0,5</td><td>0 a 1</td><td></td></tr>
+    <tr><td>Nivel<br><code>level</code></td><td>numero</td><td>0,5</td><td>0 a 1</td><td></td></tr>
+  </tbody>
+</table>

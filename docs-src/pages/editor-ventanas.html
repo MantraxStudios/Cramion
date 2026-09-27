@@ -1,0 +1,76 @@
+<p>Ventanas que se abren desde el menú <em>Ventana</em> (se acoplan como el resto de paneles).</p>
+
+<h3 id="fisica">Física</h3>
+<table>
+  <thead><tr><th>Pestaña</th><th>Contenido</th></tr></thead>
+  <tbody>
+    <tr><td><code>Ajustes</code></td><td>Gravedad, pasos por segundo (el <em>Fixed Timestep</em>), pasos máximos por frame, subpasos de colisión, umbral para dormir y si los raycast tocan triggers. Se guardan en <code>ProjectSettings/Physics.json</code>.</td></tr>
+    <tr><td><code>Capas</code></td><td>Los nombres de las 32 capas y la <strong>matriz de colisiones</strong> (qué capa choca con cuál). La capa de cada objeto se elige en la cabecera del Inspector.</td></tr>
+    <tr><td><code>Tags</code></td><td>Crear y borrar tags (<code>ProjectSettings/Tags.json</code>).</td></tr>
+    <tr><td><code>Eventos</code></td><td>Registro de colisiones, triggers y choques de partículas con el tiempo, los dos objetos y el punto; se pueden filtrar por tipo y mandar a la Consola.</td></tr>
+    <tr><td><code>Raycast</code></td><td>Probador de consultas: Raycast, RaycastAll, SphereCast, OverlapSphere y OverlapBox desde la cámara, la selección, un punto manual o el ratón (<code>Alt</code>+clic en la escena), con capas y triggers. Se dibuja el resultado.</td></tr>
+    <tr><td><code>Estadísticas</code></td><td>Cuerpos (activos), contactos, partículas, pasos y CPU de la física. Gizmos: colliders de todo, puntos de contacto y velocidades.</td></tr>
+  </tbody>
+</table>
+
+<h3 id="navegacion">Navegación</h3>
+<p>
+  Ajustes de la malla de navegación (<code>ProjectSettings/Navigation.json</code>): el <strong>agente</strong> (radio, altura,
+  escalón máximo, pendiente máxima), la <strong>malla</strong> (tamaño y altura de celda, celdas por baldosa, área mínima,
+  detalle de altura) y la <strong>ejecución</strong> (coste de las zonas Evitar, agentes máximos, generación en tiempo real en
+  el juego, hilos). <em>Mostrar en la escena (P)</em> y <em>Reconstruir todo</em>. La malla sale de los colliders; ver
+  <a href="navegacion.html">Navegación</a> para usarla desde Lua.
+</p>
+
+<h3 id="animator">Animator</h3>
+<p>
+  Editor visual de <strong>Animator Controllers</strong> (<code>.cranimator</code>), como el de Unity. Se abre con doble
+  clic en el asset o <em>Proyecto &gt; Crear &gt; Animator</em>.
+</p>
+<ul>
+  <li><strong>Estados</strong>: cada uno con su clip (<code>.cranim</code> o el del modelo), velocidad y bucle. Clic derecho en el
+    fondo: crear estado (vacío o con clip) o crear transición; <em>Hacer estado por defecto</em> marca el de entrada
+    (<em>Entry</em>). <em>Cualquier estado</em> permite transiciones desde donde sea.</li>
+  <li><strong>Transiciones</strong>: una flecha de un estado a otro con <em>Exit time</em> (salir al llegar a una parte del clip) y
+    <strong>condiciones</strong> sobre parámetros (todas deben cumplirse).</li>
+  <li><strong>Parámetros</strong>: Float, Int, Bool y Trigger. Desde Lua: <code>setAnimatorFloat</code>, <code>setAnimatorBool</code>,
+    <code>setAnimatorTrigger</code>.</li>
+  <li><strong>En vivo</strong>: con un objeto seleccionado que usa este Animator, se ve el estado activo y se pueden cambiar los parámetros
+    (y disparar triggers) para probarlo.</li>
+</ul>
+<p>
+  En el Proyecto, el menú de un modelo tiene <em>Animaciones &gt; Extraer</em> (sus clips a <code>.cranim</code>) y
+  <em>Crear Animator con sus clips</em>. Los modelos y clips humanoides llevan una insignia y se pueden usar con cualquier
+  otro humanoide (reasignación automática de huesos).
+</p>
+
+<h3 id="cinematica">Cinemática</h3>
+<p>
+  La línea de tiempo de la <strong>Cinematic Sequence</strong> de la escena (como Timeline): pistas de <strong>Cámaras</strong>
+  (planos con su cámara virtual, inicio, duración y mezcla de entrada: <em>Añadir plano con...</em>, duplicar, borrar) y de
+  <strong>Objetos activos</strong> (tramos en los que un objeto está activo). <em>Reproducir</em>, <em>Pausa</em> e
+  <em>Inicio</em>; con <em>Vista previa</em>, fuera de Play la secuencia mueve la cámara real (se ve en la vista Juego).
+  <em>Crear una cinemática con las cámaras virtuales</em> monta una con las que haya en la escena.
+</p>
+<p>
+  Cada cámara virtual tiene en el Inspector <em>Alinear con la vista</em>, <em>Solo (ver en el Juego)</em> para encuadrar y el
+  indicador <em>EN VIVO</em> cuando la cámara real la usa.
+</p>
+
+<h3 id="consola">Consola</h3>
+<p>
+  Todo lo que escriben el motor y los scripts: <code>print</code>, <code>Debug.log</code>, <code>Debug.warn</code>,
+  <code>Debug.error</code> y los errores de Lua (con el archivo y la línea; en la pestaña del script, clic en el error va a la línea). Filtro de texto, <em>Limpiar</em> y
+  <em>Auto-desplazar</em>. En la pestaña de un script hay además una <strong>consola de Lua</strong>: una línea que se ejecuta
+  (en Play, dentro del juego).
+</p>
+
+<h3 id="estadisticas">Estadísticas</h3>
+<p>
+  FPS y tiempo de frame, CPU por parte (física, vista, jerarquía, inspector, paneles, sincronización, render), GPU por
+  pasada, triángulos, actores y VRAM. Los frames muy lentos se explican solos en la Consola (<em>[Rendimiento] Frame
+  lento...</em>) con lo que costó cada parte.
+</p>
+
+<h3 id="mcp">MCP (IA)</h3>
+<p>Conecta Claude, Cursor, VS Code u otra IA al editor. Ver <a href="mcp.html">Conectar una IA (MCP)</a>.</p>

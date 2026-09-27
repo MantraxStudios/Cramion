@@ -1,0 +1,49 @@
+<h3 id="jerarquia">Jerarquía</h3>
+<p>
+  Todas las entidades de la escena en árbol: un hijo se mueve, gira y escala con su padre. El botón
+  <code>+</code> crea objetos (los mismos que el menú <em>GameObject</em>) y el buscador filtra por nombre.
+</p>
+<table>
+  <thead><tr><th>Acción</th><th>Cómo</th></tr></thead>
+  <tbody>
+    <tr><td>Emparentar</td><td>Arrastra un objeto sobre otro. Entre dos filas lo reordena; al fondo lo saca a la raíz.</td></tr>
+    <tr><td>Multiselección</td><td><code>Ctrl</code>+clic suelta; <code>Mayús</code>+clic un rango.</td></tr>
+    <tr><td>Renombrar</td><td><code>F2</code> o clic derecho &gt; <em>Renombrar</em>.</td></tr>
+    <tr><td>Duplicar / copiar / pegar / borrar</td><td><code>Ctrl+D</code>, <code>Ctrl+C</code>, <code>Ctrl+V</code>, <code>Supr</code> (también en el menú contextual).</td></tr>
+    <tr><td>Enfocar</td><td><code>F</code>, o doble clic en un objeto sin hijos.</td></tr>
+    <tr><td>Crear un prefab</td><td>Arrastra el objeto al panel Proyecto, o clic derecho &gt; <em>Prefab &gt; Crear prefab</em>.</td></tr>
+    <tr><td>Soltar assets</td><td>Un modelo o prefab sobre una fila lo crea como hijo; un audio o un script se engancha a ese objeto.</td></tr>
+  </tbody>
+</table>
+<p>
+  Los objetos inactivos salen en gris y las instancias de prefab en <span class="text-sky-400">azul</span> (en rojo si su
+  prefab ya no existe). Cada fila lleva el icono de su componente principal.
+</p>
+
+<h3 id="inspector">Inspector</h3>
+<p>La cabecera del objeto elegido tiene:</p>
+<ul>
+  <li>La casilla de <strong>activo</strong> y el <strong>nombre</strong>.</li>
+  <li><strong>Static</strong>: el objeto no se mueve en el juego (static batching al exportar, sondas de reflexión y GI). Pregunta si se aplica también a los hijos.</li>
+  <li><strong>Tag</strong> (se buscan con <code>Scene.findWithTag</code>) y <strong>Capa</strong> de física (la matriz de colisiones está en la ventana Física).</li>
+  <li>El <strong>UUID</strong>: el identificador estable del objeto.</li>
+  <li>Si es parte de un prefab, la <a href="prefabs.html">barra azul del prefab</a> (Abrir, Revertir, Aplicar...).</li>
+</ul>
+<p>
+  Debajo, cada componente con su cabecera plegable (clic derecho: <em>Quitar componente</em> y <em>Restablecer valores</em>) y todas sus
+  propiedades. <strong class="text-white">Add Component</strong> abre una rejilla con todos los componentes por categoría y un
+  buscador. La referencia completa de cada uno está en <a href="componentes.html">Componentes</a>.
+</p>
+
+<h3 id="multiedicion">Editar varios a la vez</h3>
+<p>
+  Con varios objetos seleccionados, el Inspector muestra los componentes que tienen todos. Los valores iguales se ven
+  normales y los distintos con un guion (—); cambiar un valor lo aplica a todos (en un Vec3, solo el eje que tocas).
+</p>
+
+<h3 id="materiales">Materiales en el Inspector</h3>
+<p>
+  Al elegir un material en el Proyecto, el Inspector se convierte en su editor (ver <a href="materiales.html">Materiales</a>).
+  En el Mesh Renderer, cada hueco de material acepta arrastrar un <code>.crmat</code>, tiene <em>Nuevo</em> (crea uno con el
+  aspecto actual) y <em>Del modelo</em> (vuelve al material importado).
+</p>

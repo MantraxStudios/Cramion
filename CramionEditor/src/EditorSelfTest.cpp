@@ -1086,6 +1086,197 @@ void vertex(inout Vertex v) {
             self_test_wait_ = 10;
             break;
         }
+        // --- Espacios de trabajo: editar un prefab en su pestana ---
+        case 58: {
+            returnToSceneWorkspace();
+            ecs::Entity cube = createEntity(1, {});
+            cube.setName("Caja prefab");
+            selectOnly(cube.uuid());
+            createPrefabsFromSelection();
+            cube = world_.find(cube.uuid());
+            const bool linked = cube.valid() && cube.has<ecs::PrefabInstance>();
+            check(linked, "la caja pasa a ser un prefab", f);
+            if (linked) {
+                self_test_prefab_ = cube.get<ecs::PrefabInstance>().prefab.uuid;
+                ecs::Entity second = instantiatePrefabAsset(self_test_prefab_, {}, Vec3{3.0f, 0.5f, 0.0f});
+                check(second.valid(), "segunda instancia en la escena", f);
+                flushCommit();
+                openPrefabWorkspace(self_test_prefab_);
+            }
+            self_test_wait_ = 12;
+            break;
+        }
+        case 59: {
+            check(activeWorkspaceKind() == WorkspaceKind::Prefab, "se abre la pestana del prefab", f);
+            const ecs::Entity root = prefabStageRoot();
+            check(root.valid() && root.name() == "Caja prefab", "el escenario tiene la raiz del prefab", f);
+            check(ecs::prefabInstances(world_, self_test_prefab_).size() == 1, "sin las instancias de la escena", f);
+            bool helpers_hidden = true;
+            for (const HierarchyRow& row : hierarchy_rows_) helpers_hidden &= !isStageHelper(world_.wrap(row.entity).uuid());
+            check(helpers_hidden && !hierarchy_rows_.empty(), "la luz y el cielo del escenario no salen en la Jerarquia", f);
+            ecs::Entity sphere = createEntity(2, {});  // sin padre: dentro de la raiz
+            sphere.setName("Esfera nueva");
+            check(sphere.valid() && sphere.parent() == root, "lo creado va dentro de la raiz del prefab", f);
+            commit();
+            self_test_wait_ = 10;
+            break;
+        }
+        case 60: {
+            captureWindow(window_.handle(), std::filesystem::temp_directory_path() / "cramion_selftest_prefab_pestana.png");
+            check(dirty_, "el prefab queda con cambios sin guardar", f);
+            check(savePrefabWorkspace(), "Guardar escribe el .crprefab", f);
+            check(!dirty_, "y ya no tiene cambios", f);
+            requestWorkspace(0);
+            self_test_wait_ = 12;
+            break;
+        }
+        case 61: {
+            check(activeWorkspaceKind() == WorkspaceKind::Scene, "se vuelve a la Escena", f);
+            const std::vector<ecs::Entity> instances = ecs::prefabInstances(world_, self_test_prefab_);
+            int updated = 0;
+            for (const ecs::Entity e : instances) {
+                for (const entt::entity child : e.children()) updated += world_.wrap(child).name() == "Esfera nueva" ? 1 : 0;
+            }
+            check(instances.size() == 2 && updated == 2, "las dos instancias de la escena tienen la esfera nueva", f);
+            captureWindow(window_.handle(), std::filesystem::temp_directory_path() / "cramion_selftest_prefab_escena.png");
+            // Un script: su propia pestana.
+            const std::filesystem::path script = project_.assetsFolder() / "Scripts" / "Pestana.lua";
+            std::error_code error;
+            std::filesystem::create_directories(script.parent_path(), error);
+            std::ofstream(script) << scripting::scriptTemplate("Pestana");
+            openScript(script);
+            check(activeWorkspaceKind() == WorkspaceKind::Script, "un script abre su pestana", f);
+            self_test_wait_ = 12;
+            break;
+        }
+        case 62: {
+            captureWindow(window_.handle(), std::filesystem::temp_directory_path() / "cramion_selftest_script_pestana.png");
+            const auto has_script = [&](const auto& self, const FileTreeNode& n) -> bool {
+                if (n.name == "Pestana.lua") return true;
+                return std::any_of(n.children.begin(), n.children.end(), [&](const FileTreeNode& c) { return self(self, c); });
+            };
+            check(has_script(has_script, file_tree_), "el arbol de Archivos muestra las carpetas y el script", f);
+            const std::filesystem::path script = activeScriptWorkspace();
+            for (const Workspace& ws : workspaces_) {
+                if (ws.kind == WorkspaceKind::Script && ws.path == script) {
+                    closeWorkspace(ws.id, false);
+                    break;
+                }
+            }
+            check(activeWorkspaceKind() == WorkspaceKind::Scene && script_tabs_.empty(), "cerrar la pestana del script", f);
+            self_test_wait_ = 20;
+            break;
+        }
+        case 63: {
+            // Unos frames despues: sigue en la Escena (sin saltar de pestana
+            // sola) y el prefab guardado no tiene cambios pendientes.
+            bool prefab_clean = false;
+            for (const Workspace& ws : workspaces_) {
+                if (ws.kind == WorkspaceKind::Prefab && ws.prefab == self_test_prefab_) prefab_clean = !ws.dirty && ws.stashed;
+            }
+            check(active_workspace_ == 0 && world_workspace_ == 0, "la Escena se queda delante", f);
+            check(prefab_clean, "la pestana del prefab guardado no queda con cambios", f);
+            closeWorkspace(workspaces_.back().id, false);
+            check(workspaces_.size() == 1, "cerrar la pestana del prefab", f);
+            self_test_wait_ = 5;
+            break;
+        }
+        // --- Plantilla MMO RPG: crearla, jugarla y capturar su interfaz ---
+        case 64: {
+            ProjectTemplate mmo_template;
+            for (const ProjectTemplate& t : availableTemplates()) {
+                if (t.id == "mmo") mmo_template = t;
+            }
+            std::error_code error;
+            std::filesystem::remove_all(self_test_folder_ / "Reinos", error);
+            const project::ProjectInfo created = createProjectFromTemplate(mmo_template, self_test_folder_, "Reinos");
+            check(openProject(created.folder), "crear y abrir un proyecto con la plantilla MMO RPG", f);
+            show_game_ = true;
+            enterPlay();
+            self_test_wait_ = 400;  // la malla de navegacion de todo el mapa
+            break;
+        }
+        case 65: {
+            std::string out;
+            const bool ok = scripts_.run(R"(
+                local H = Scene.find('Jugador'):getScript()
+                local w = Scene.find('Lobo 2')
+                H.entity.position = w.position + Vec3(3, 0.6, 2)
+                H.objetivo = w
+                H:aceptarMision(1); H:aceptarMision(2)
+                H:dar('piel_lobo', 2); H:dar('espada_hierro', 1)
+                H:Chat('[General] Kraven: ¿alguien para el Rey Goblin?')
+                H:usarHabilidad(1)
+            )", &out);
+            check(ok && scripts_.errors().empty(), "el MMO corre en el editor sin errores", f);
+            self_test_wait_ = 90;
+            break;
+        }
+        case 66: {
+            captureWindow(window_.handle(), std::filesystem::temp_directory_path() / "cramion_selftest_mmo_combate.png");
+            std::string out;
+            scripts_.run(R"(
+                local H = Scene.find('Jugador'):getScript()
+                H:abrirTienda(Scene.find('Mercader Tomas'))
+            )", &out);
+            self_test_wait_ = 20;
+            break;
+        }
+        case 67: {
+            captureWindow(window_.handle(), std::filesystem::temp_directory_path() / "cramion_selftest_mmo_tienda.png");
+            check(scripts_.errors().empty(), "sin errores de Lua con la tienda y el inventario", f);
+            exitPlay();
+            self_test_wait_ = 5;
+            break;
+        }
+        // --- Sombras de contacto: con y sin, de lejos y de cerca ---
+        // Solo anaden detalle: si oscurecen media imagen (un sesgo mal
+        // calculado a partir de cierta distancia lo ponia todo negro) la
+        // diferencia se dispara.
+        case 68:
+        case 71: {
+            const bool far_view = self_test_step_ == 68;
+            const Vec3 target{-68.0f, 1.0f, -40.0f};  // el Bosque Gris de la plantilla MMO
+            scene_.placeCamera(target + (far_view ? Vec3{0.0f, 22.0f, 34.0f} : Vec3{0.0f, 3.0f, 5.0f}), target);
+            focus_scene_ = true;
+            preferred_view_ = kSceneSlot;
+            for (const entt::entity h : world_.registry().view<ecs::PostProcessing>()) {
+                world_.wrap(h).get<ecs::PostProcessing>().settings.contact_shadows = true;
+            }
+            self_test_wait_ = 60;
+            break;
+        }
+        case 69:
+        case 72: {
+            const bool far_view = self_test_step_ == 69;
+            self_test_capture_ = captureWindow(window_.handle(), std::filesystem::temp_directory_path() /
+                                                                     (far_view ? "cramion_selftest_contacto_lejos.png"
+                                                                               : "cramion_selftest_contacto_cerca.png"));
+            for (const entt::entity h : world_.registry().view<ecs::PostProcessing>()) {
+                world_.wrap(h).get<ecs::PostProcessing>().settings.contact_shadows = false;
+            }
+            self_test_wait_ = 40;
+            break;
+        }
+        case 70:
+        case 73: {
+            const bool far_view = self_test_step_ == 70;
+            const std::vector<std::uint8_t> without = captureWindow(
+                window_.handle(), std::filesystem::temp_directory_path() /
+                                      (far_view ? "cramion_selftest_contacto_lejos_sin.png" : "cramion_selftest_contacto_cerca_sin.png"));
+            const float difference = captureDifference(self_test_capture_, without);
+            std::cout << "[SelfTest] Sombras de contacto " << (far_view ? "de lejos" : "de cerca")
+                      << ": diferencia con/sin " << difference << std::endl;
+            check(difference >= 0.0f && difference < 4.0f,
+                  far_view ? "las sombras de contacto de lejos solo anaden detalle (no oscurecen la imagen)"
+                           : "las sombras de contacto de cerca solo anaden detalle",
+                  f);
+            for (const entt::entity h : world_.registry().view<ecs::PostProcessing>()) {
+                world_.wrap(h).get<ecs::PostProcessing>().settings.contact_shadows = true;
+            }
+            self_test_wait_ = 10;
+            break;
+        }
         default:
             std::cout << "[SelfTest] " << (self_test_failures_ == 0 ? "TODO OK" : "HAY FALLOS: ")
                       << (self_test_failures_ == 0 ? std::string() : std::to_string(self_test_failures_))

@@ -1,0 +1,52 @@
+<p>
+  El panel <strong class="text-white">Proyecto</strong> muestra la carpeta <code>Assets/</code> del proyecto: el árbol de
+  carpetas a la izquierda (con favoritos) y el contenido a la derecha, en cuadrícula con miniaturas o en lista. El
+  buscador y los filtros (modelos, materiales, prefabs, escenas, scripts, audio, imágenes...) buscan en todo el proyecto.
+</p>
+
+<h3 id="importar">Importar</h3>
+<p>
+  Arrastra archivos o carpetas desde el Explorador de Windows al panel (a la carpeta que quieras), o
+  <em>Archivo &gt; Importar assets...</em>. Cada importación va en segundo plano con su barra de progreso.
+</p>
+<table>
+  <thead><tr><th>Tipo</th><th>Formatos</th><th>Qué se crea</th></tr></thead>
+  <tbody>
+    <tr><td>Modelos</td><td><code>.fbx .gltf .glb .obj .dae</code></td><td>Un <code>.crdata</code> con mallas, materiales, texturas, esqueleto y animaciones. La miniatura muestra una insignia si es humanoide.</td></tr>
+    <tr><td>Cielos</td><td><code>.hdr</code></td><td>Un cielo HDR (entorno) con su iluminación preparada. <em>Usar como cielo</em> lo pone en la escena.</td></tr>
+    <tr><td>Imágenes</td><td><code>.png .jpg .tga .bmp</code></td><td>Se usan tal cual en materiales, decals, terrenos e interfaz.</td></tr>
+    <tr><td>Audio</td><td><code>.wav .mp3 .ogg .flac</code></td><td>Doble clic lo escucha; arrastrarlo crea un Audio Source.</td></tr>
+    <tr><td>Scripts y shaders</td><td><code>.lua .crshader</code></td><td>Se editan en su <a href="editor-interfaz.html#pestanas">pestaña</a>.</td></tr>
+  </tbody>
+</table>
+<p>
+  El editor vigila <code>Assets/</code>: lo que copies, borres o muevas desde fuera aparece solo. Cada asset tiene un UUID
+  estable: moverlo o renombrarlo en el panel no rompe las escenas que lo usan.
+</p>
+
+<h3 id="crear">Crear assets</h3>
+<p>Clic derecho en el fondo &gt; <em>Crear</em>: carpeta, escena, material, script Lua, shader (GLSL), Animator Controller y prefab desde la selección.</p>
+
+<h3 id="acciones">Acciones sobre un asset</h3>
+<table>
+  <thead><tr><th>Asset</th><th>Doble clic / menú</th></tr></thead>
+  <tbody>
+    <tr><td>Escena</td><td>Abrirla (pregunta si guardar la actual).</td></tr>
+    <tr><td>Modelo</td><td>Ponerlo en la escena. <em>Reimportar (combinar mallas)</em>: lo vuelve a importar juntando las piezas por material (mucho menos coste de CPU) y rehace sus instancias. <em>Animaciones</em>: extraer sus clips a <code>.cranim</code>.</td></tr>
+    <tr><td>Prefab</td><td>Abrirlo en su <a href="editor-interfaz.html#pestanas">pestaña</a> para editarlo; <em>Poner en la escena</em>; seleccionar sus instancias.</td></tr>
+    <tr><td>Material</td><td>Editarlo en el Inspector; asignarlo a la selección; duplicarlo.</td></tr>
+    <tr><td>Cielo HDR</td><td>Usarlo como cielo de la escena.</td></tr>
+    <tr><td>Animator</td><td>Abrirlo en la ventana Animator; asignarlo a la selección.</td></tr>
+    <tr><td>Imagen</td><td>Estampar con ella; asignarla a los decals seleccionados.</td></tr>
+    <tr><td>Script / shader</td><td>Abrirlo; <em>Crear material con este shader</em>.</td></tr>
+    <tr><td>Audio</td><td>Escucharlo.</td></tr>
+  </tbody>
+</table>
+<p>Para todos: renombrar (<code>F2</code>), borrar (<code>Supr</code>), copiar ruta o UUID, mostrar en el Explorador. <code>Retroceso</code> sube de carpeta, <code>Alt+←</code> vuelve atrás y <code>Ctrl+A</code> selecciona todo.</p>
+
+<h3 id="estructura">Estructura de un proyecto</h3>
+<pre><code>MiJuego/
+  MiJuego.crproj        nombre, versión del motor y escena inicial
+  Assets/               todo lo tuyo (escenas, modelos, scripts...)
+  ProjectSettings/      física, navegación, tags, gráficos, configuraciones de compilación
+  Library/              cachés (se pueden borrar: se rehacen)</code></pre>

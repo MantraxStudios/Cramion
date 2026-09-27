@@ -107,10 +107,11 @@ Icon EditorApp::entityIcon(const ecs::Entity& e, ImU32& tint) const {
 }
 
 void EditorApp::drawHierarchy() {
-    if (!ImGui::Begin("Jerarquía", &show_hierarchy_)) {
+    if (!ImGui::Begin(panelTitle("Jerarquía").c_str(), &show_hierarchy_)) {
         ImGui::End();
         return;
     }
+    drawPrefabStageBanner();  // solo en la pestana de un prefab
 
     // Barra: crear y buscar.
     if (ImGui::Button("+")) {
@@ -291,6 +292,7 @@ void EditorApp::buildHierarchyRows() {
     if (!hierarchy_filter_.empty()) {
         const std::string needle = lower(hierarchy_filter_);
         world_.forEachDepthFirst([&](ecs::Entity e) {
+            if (isStageHelper(e.uuid())) return;
             if (lower(e.name()).find(needle) != std::string::npos) {
                 hierarchy_rows_.push_back(HierarchyRow{e.handle(), 0});
             }
@@ -301,7 +303,9 @@ void EditorApp::buildHierarchyRows() {
     ImGuiStorage* storage = ImGui::GetStateStorage();
     std::vector<HierarchyRow> stack;
     const std::vector<entt::entity>& roots = world_.roots();
-    for (auto it = roots.rbegin(); it != roots.rend(); ++it) stack.push_back(HierarchyRow{*it, 0});
+    for (auto it = roots.rbegin(); it != roots.rend(); ++it) {
+        if (!isStageHelper(world_.wrap(*it).uuid())) stack.push_back(HierarchyRow{*it, 0});
+    }
     while (!stack.empty()) {
         const HierarchyRow row = stack.back();
         stack.pop_back();

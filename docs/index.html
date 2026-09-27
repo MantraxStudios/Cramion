@@ -69,7 +69,7 @@
     <div class="relative mx-auto max-w-6xl px-4 pb-20 pt-20 text-center sm:px-6 sm:pt-28">
       <img src="img/icon.png" alt="Logo de Cramion" class="mx-auto mb-8 h-24 w-24 drop-shadow-[0_0_40px_rgba(10,176,255,.35)]">
       <p class="mb-4 inline-flex items-center gap-2 rounded-full border border-line bg-panel px-3 py-1 text-xs font-medium text-slate-400">
-        <span class="h-1.5 w-1.5 rounded-full bg-brand"></span> v0.5 · Vulkan 1.3 · Windows x64
+        <span class="h-1.5 w-1.5 rounded-full bg-brand"></span> v0.6 · Vulkan 1.3 · Windows x64
       </p>
       <h1 class="mx-auto max-w-4xl text-4xl font-extrabold leading-tight tracking-tight text-white sm:text-6xl">
         Crea juegos 3D para Windows.<br><span class="text-brand">Editor, física y Lua en un solo motor.</span>
@@ -113,7 +113,7 @@
         </article>
         <article class="rounded-xl border border-line bg-panel p-6 hover:border-brand/60">
           <h3 class="font-semibold text-white">Sombras en cascada</h3>
-          <p class="mt-2 text-sm text-slate-400">CSM para el sol y mapas de sombra para luces puntuales y focos, con recorte por alfa.</p>
+          <p class="mt-2 text-sm text-slate-400">CSM estabilizadas para el sol, sombras de contacto donde algo toca el suelo y mapas de sombra para luces puntuales y focos.</p>
         </article>
         <article class="rounded-xl border border-line bg-panel p-6 hover:border-brand/60">
           <h3 class="font-semibold text-white">SSAO y SSGI</h3>
@@ -121,11 +121,23 @@
         </article>
         <article class="rounded-xl border border-line bg-panel p-6 hover:border-brand/60">
           <h3 class="font-semibold text-white">Post-proceso HDR</h3>
-          <p class="mt-2 text-sm text-slate-400">Bloom, auto-exposición por histograma, rayos de luz volumétricos, tonemapping ACES y FXAA.</p>
+          <p class="mt-2 text-sm text-slate-400">Bloom, auto-exposición por histograma, TAA y AMD FSR 1, tonemapping y volúmenes de post-procesado globales o por zonas, como en Unity.</p>
         </article>
         <article class="rounded-xl border border-line bg-panel p-6 hover:border-brand/60">
           <h3 class="font-semibold text-white">Escenas enormes</h3>
           <p class="mt-2 text-sm text-slate-400">Lector de OBJ en paralelo, caché binaria y frustum culling por clústeres: San Miguel carga en segundos.</p>
+        </article>
+        <article class="rounded-xl border border-line bg-panel p-6 hover:border-brand/60">
+          <h3 class="font-semibold text-white">Luz volumétrica y nubes</h3>
+          <p class="mt-2 text-sm text-slate-400">Polvo en el aire iluminado por el sol, las luces y el cielo, con sombras: haces por las ventanas y halos de farolas. Nubes volumétricas y niebla por altura.</p>
+        </article>
+        <article class="rounded-xl border border-line bg-panel p-6 hover:border-brand/60">
+          <h3 class="font-semibold text-white">Materiales de escaneo</h3>
+          <p class="mt-2 text-sm text-slate-400">Parallax occlusion mapping, cavidad, specular y gloss: arrastra el color de un pack de Megascans y encuentra solo los demás mapas.</p>
+        </article>
+        <article class="rounded-xl border border-line bg-panel p-6 hover:border-brand/60">
+          <h3 class="font-semibold text-white">Rinde solo</h3>
+          <p class="mt-2 text-sm text-slate-400">LODs automáticos, static batching, occlusion culling en GPU y un presupuesto adaptativo que baja lo que menos se nota para llegar a tus FPS.</p>
         </article>
       </div>
     </div>
@@ -149,19 +161,19 @@
           </li>
           <li class="flex gap-4">
             <span class="mt-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-brand/15 font-mono text-sm text-brand">03</span>
-            <div><h3 class="font-semibold text-white">Terreno, agua y navegación</h3><p class="text-sm text-slate-400">Esculpido y pintura de terreno, superficies de agua y NavMesh al estilo Unreal (Recast/Detour) que se regenera en tiempo real, con agentes que se esquivan.</p></div>
+            <div><h3 class="font-semibold text-white">Terreno, agua y navegación</h3><p class="text-sm text-slate-400">Esculpido y pintura de terreno, océano, lagos y ríos con olas interactivas (salpicaduras, estelas, ondas que rebotan) y NavMesh al estilo Unreal (Recast/Detour) que se regenera en tiempo real, con agentes que se esquivan.</p></div>
           </li>
           <li class="flex gap-4">
             <span class="mt-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-brand/15 font-mono text-sm text-brand">04</span>
-            <div><h3 class="font-semibold text-white">Animación y cinemáticas</h3><p class="text-sm text-slate-400">Esqueletos, clips y un Animator con parámetros; línea de tiempo para cinemáticas.</p></div>
+            <div><h3 class="font-semibold text-white">Animación y cinemáticas</h3><p class="text-sm text-slate-400">Animator con parámetros, IK (manos, mirar, pies en el suelo), huesos con muelle, patas procedurales y retargeting de humanoides como el Avatar de Unity; línea de tiempo para cinemáticas.</p></div>
           </li>
           <li class="flex gap-4">
             <span class="mt-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-brand/15 font-mono text-sm text-brand">05</span>
-            <div><h3 class="font-semibold text-white">Audio, partículas e interfaz</h3><p class="text-sm text-slate-400">Sonido 3D, sistemas de partículas y una UI de juego con botones, sliders, campos de texto y casillas.</p></div>
+            <div><h3 class="font-semibold text-white">Audio, partículas e interfaz</h3><p class="text-sm text-slate-400">Sonido 3D con oclusión por paredes, eco, filtros y zonas de reverberación, sistemas de partículas y una UI de juego con botones, sliders, campos de texto y casillas.</p></div>
           </li>
           <li class="flex gap-4">
             <span class="mt-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-brand/15 font-mono text-sm text-brand">06</span>
-            <div><h3 class="font-semibold text-white">Editor y exportación</h3><p class="text-sm text-slate-400">Editor con paneles acoplables, inspector, modo Play y exportación del juego con <code class="font-mono text-slate-300">CramionPlayer.exe</code>.</p></div>
+            <div><h3 class="font-semibold text-white">Editor y exportación</h3><p class="text-sm text-slate-400">Editor con paneles acoplables, pestañas para editar prefabs y scripts, modo Play y exportación con configuraciones de compilación (nombre, icono dentro del .exe, ventana) y <code class="font-mono text-slate-300">CramionPlayer.exe</code>.</p></div>
           </li>
           <li class="flex gap-4">
             <span class="mt-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-brand/15 font-mono text-sm text-brand">07</span>
@@ -182,6 +194,14 @@
           <li class="flex gap-4">
             <span class="mt-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-brand/15 font-mono text-sm text-brand">11</span>
             <div><h3 class="font-semibold text-white">Conecta una IA (MCP)</h3><p class="text-sm text-slate-400">Claude, Cursor o Copilot trabajan dentro del editor: crean escenas, scripts, shaders y modelos, prueban en Play y miran capturas.</p></div>
+          </li>
+          <li class="flex gap-4">
+            <span class="mt-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-brand/15 font-mono text-sm text-brand">12</span>
+            <div><h3 class="font-semibold text-white">Pintar prefabs</h3><p class="text-sm text-slate-400">Pinta bosques, rocas o cofres con su script y su collider, como el Foliage de Unreal: grupos con pesos, densidad, separación y pendiente máxima.</p></div>
+          </li>
+          <li class="flex gap-4">
+            <span class="mt-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-brand/15 font-mono text-sm text-brand">13</span>
+            <div><h3 class="font-semibold text-white">Plantillas de juego</h3><p class="text-sm text-slate-400">Empieza desde un MMO RPG con todo el juego en Lua (combate, misiones, inventario, tienda, jefe y bots) o un survival de bloques, y cámbialo a tu gusto.</p></div>
           </li>
         </ul>
 
@@ -256,7 +276,7 @@ return Jugador</code></pre>
         <div class="relative grid items-center gap-10 lg:grid-cols-2">
           <div>
             <p class="text-sm font-semibold uppercase tracking-widest text-brand">Descargar</p>
-            <h2 class="mt-2 text-3xl font-bold text-white sm:text-4xl">Cramion 0.4 para Windows</h2>
+            <h2 class="mt-2 text-3xl font-bold text-white sm:text-4xl">Cramion 0.6 para Windows</h2>
             <p class="mt-4 text-slate-400">
               Build Release listo para usar: descomprime y abre <code class="font-mono text-slate-300">CramionEditor.exe</code>.
               Incluye el editor, el player para exportar juegos y el runtime de C++.
@@ -264,7 +284,7 @@ return Jugador</code></pre>
             <div class="mt-8 flex flex-col gap-3 sm:flex-row">
               <a href="https://github.com/MantraxStudios/Cramion/releases/latest/download/Cramion-win64.zip" class="inline-flex items-center justify-center gap-2 rounded-lg bg-brand px-6 py-3 font-semibold text-ink hover:bg-white">
                 <svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12m0 0l-5-5m5 5l5-5M4 21h16"/></svg>
-                Descargar .zip (≈13 MB)
+                Descargar .zip (≈16 MB)
               </a>
               <a href="https://github.com/MantraxStudios/Cramion/releases" class="inline-flex items-center justify-center rounded-lg border border-line bg-ink px-6 py-3 font-semibold text-white hover:border-brand">Todas las versiones</a>
               <a href="https://discord.gg/zG7rSsUGEz" target="_blank" rel="noopener" class="inline-flex items-center justify-center rounded-lg border border-[#5865F2]/60 bg-[#5865F2]/15 px-6 py-3 font-semibold text-white hover:bg-[#5865F2]/30">Únete al Discord</a>

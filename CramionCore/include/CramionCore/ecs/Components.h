@@ -128,6 +128,88 @@ struct Animator {
     void reflect(PropertyVisitor& v);
 };
 
+// Cinematica inversa (IK) sobre la pose animada de un modelo con esqueleto
+// (va en la entidad del MeshRenderer, junto al Animator). Los objetivos son
+// otras entidades de la escena: moverlas (a mano, por script, con fisica)
+// mueve la mano, el pie o la mirada.
+struct IKLimb {
+    Uuid target;          // a donde llega la mano o el pie (vacio = no se usa)
+    Uuid hint;            // hacia donde apunta el codo o la rodilla (opcional)
+    float weight = 1.0f;  // 0 = la animacion, 1 = el objetivo
+    bool match_rotation = false;  // la mano/el pie copia el giro del objetivo
+};
+// Cadena de dos huesos de cualquier esqueleto (no humanoides: una cola, un
+// brazo robotico): `bone` es el ultimo; se usan su padre y su abuelo.
+struct IKChain {
+    std::string bone;
+    Uuid target;
+    Uuid hint;
+    float weight = 1.0f;
+};
+struct InverseKinematics {
+    bool enabled = true;
+    // Humanoide (los huesos se encuentran solos).
+    IKLimb left_hand;
+    IKLimb right_hand;
+    IKLimb left_foot;
+    IKLimb right_foot;
+    Uuid look_at;               // la cabeza (y un poco el cuello) mira aqui
+    float look_weight = 1.0f;
+    float look_max_angle = 70.0f;
+    // Pies en el suelo: cada pie se apoya donde hay suelo (escaleras,
+    // pendientes, rocas) y la cadera baja si hace falta para llegar.
+    bool foot_grounding = false;
+    float grounding_weight = 1.0f;
+    float max_step = 0.5f;      // cuanto puede subir o bajar un pie (m)
+    bool align_feet = true;     // el pie sigue la inclinacion del suelo
+    std::vector<IKChain> chains;
+
+    void reflect(PropertyVisitor& v);
+};
+
+// Animacion procedural (va con el MeshRenderer de un modelo con esqueleto,
+// con o sin Animator): huesos con muelle (pelo, colas, capas), patas que dan
+// pasos solas (arañas, robots) y capas de respirar, inclinarse y ruido.
+struct SpringBoneChain {
+    std::string bone;          // la raiz: se simulan ella y todos sus hijos
+    float stiffness = 40.0f;   // vuelta a la pose (mas = mas rigido)
+    float damping = 0.2f;      // mas = rebota menos
+    float gravity = 4.0f;      // m/s²
+    float radius = 0.03f;      // grosor para chocar (m)
+};
+struct ProceduralLeg {
+    std::string bone;  // el pie (se usan su padre y su abuelo como en el IK)
+    int group = -1;    // se turnan por grupos; -1 = alterna solo (0, 1, 0, 1...)
+};
+struct ProceduralNoise {
+    std::string bone;
+    float amplitude = 4.0f;   // grados
+    float frequency = 0.4f;   // Hz
+};
+struct ProceduralAnimation {
+    bool enabled = true;
+    // Huesos con muelle.
+    std::vector<SpringBoneChain> springs;
+    bool body_colliders = true;  // chocan con la cabeza, el pecho y la cadera (humanoides)
+    // Patas.
+    std::vector<ProceduralLeg> legs;
+    float step_distance = 0.35f;
+    float step_height = 0.12f;
+    float step_duration = 0.22f;
+    float step_overshoot = 0.5f;
+    bool adjust_body = true;
+    float body_weight = 1.0f;
+    // Capas (humanoides).
+    bool breathing = false;
+    float breath_rate = 14.0f;    // respiraciones por minuto
+    float breath_amount = 2.5f;   // grados
+    bool lean = false;
+    float lean_amount = 10.0f;    // grados como mucho
+    std::vector<ProceduralNoise> noise;
+
+    void reflect(PropertyVisitor& v);
+};
+
 enum class LightType : int { Directional = 0, Point = 1, Spot = 2 };
 
 // Luz. La direccional fija el sol (su eje forward es la direccion de los
@@ -220,14 +302,57 @@ struct Profiler {
     void reflect(PropertyVisitor& v);
 };
 
-// Post-proceso y efectos de pantalla (como el Volume global de Unity). Si
-// hay varios activos, manda el de mayor prioridad.
+// Post-proceso y efectos de pantalla como el Volume de Unity:
+//
+//   - Global: vale en toda la escena.
+//   - Caja / Esfera: solo cuando la camara esta dentro (con la posicion, el
+//     giro y la escala de la entidad), con una transicion suave de
+//     `blend_distance` metros al acercarse desde fuera.
+//
+// Se mezclan de menor a mayor prioridad (a igual prioridad, los globales
+// antes): cada volumen lleva el resultado hacia sus valores segun su peso y
+// lo cerca que esta la camara. Un volumen local solo cambia las secciones
+// que sobrescribe (el resto sale de los globales); uno global, todas.
+enum class PostVolumeShape : int { Global = 0, Box = 1, Sphere = 2 };
+
+// Secciones del post-proceso que puede sobrescribir un volumen local.
+enum PostOverride : std::uint32_t {
+    kPostExposure = 1u << 0,
+    kPostTonemapping = 1u << 1,
+    kPostBloom = 1u << 2,
+    kPostColor = 1u << 3,
+    kPostVignette = 1u << 4,
+    kPostLens = 1u << 5,
+    kPostLightShafts = 1u << 6,
+    kPostAntialiasing = 1u << 7,
+    kPostEffects = 1u << 8,
+    kPostPerformance = 1u << 9,
+    kPostAll = (1u << 10) - 1u,
+};
+
 struct PostProcessing {
     int priority = 0;
+    PostVolumeShape shape = PostVolumeShape::Global;
+    core::Vec3 size{10.0f, 10.0f, 10.0f};  // caja, en el espacio de la entidad
+    float radius = 5.0f;                    // esfera (por la escala mayor)
+    float blend_distance = 2.0f;            // metros de transicion desde fuera
+    float weight = 1.0f;                    // 0..1
+    std::uint32_t overrides = 0;            // PostOverride (solo los locales)
     gfx::PostProcessSettings settings{};
+
+    bool isGlobal() const { return shape == PostVolumeShape::Global; }
+    // Cuanto cuenta en `point` (0..1): peso por cercania. `world` es la
+    // matriz de su entidad.
+    float influence(const core::Mat4& world, const core::Vec3& point) const;
 
     void reflect(PropertyVisitor& v);
 };
+
+// Lleva `out` hacia los valores de `volume` en las secciones de `mask` (t =
+// 0..1). Los numeros y colores se interpolan; los interruptores y el modo de
+// tonemapping cambian a la mitad.
+void blendPostProcess(gfx::PostProcessSettings& out, const gfx::PostProcessSettings& volume, float t,
+                      std::uint32_t mask);
 
 }  // namespace cramion::ecs
 
