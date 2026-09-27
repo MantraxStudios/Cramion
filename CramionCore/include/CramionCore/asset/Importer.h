@@ -92,9 +92,11 @@ ModelImportSettings modelImportSettings(const std::filesystem::path& file);
 // el lote de mallas estaticas de una escena al exportar. `nodes` y `parts`
 // como en ModelAsset; las texturas de las piezas deben ir comprimidas
 // (`encoded`) o sin decodificar. Devuelve false y rellena `error` si falla.
+// `animated`: un personaje (una pieza con esqueleto y clips), como los
+// modelos importados con animaciones.
 bool writeGeneratedModel(const std::filesystem::path& file, const Uuid& uuid, const std::string& name,
                          const std::vector<ModelNode>& nodes, const std::vector<asset::ModelData>& parts,
-                         std::string* error = nullptr);
+                         std::string* error = nullptr, bool animated = false);
 
 // Segun la extension: .obj .fbx .gltf .glb .dae -> modelo, .hdr -> cielo.
 ImportResult importAny(const std::filesystem::path& source,

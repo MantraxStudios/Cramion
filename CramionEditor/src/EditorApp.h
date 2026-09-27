@@ -828,6 +828,10 @@ private:
     void drawPostVolumeGizmos();
     // Audio (EditorAudio.cpp): alcance, zonas de reverberacion y oclusion en Play.
     void drawAudioGizmos();
+    // Esqueletos, IK de animales, ragdoll y phys bones (EditorRigging.cpp).
+    bool rigPose(ecs::Entity entity, ecs::RenderSync::SkeletonPose& pose, bool search_up);
+    void drawRigInspector(const std::string& type, ecs::Entity entity);
+    bool drawRigGizmos();  // true si el raton esta sobre una articulacion
     // --- Pintar prefabs (EditorPrefabPaint.cpp) ---
     struct PaintItem {
         Uuid prefab;

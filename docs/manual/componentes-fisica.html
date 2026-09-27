@@ -132,6 +132,8 @@
         <a href="voxel.html">Mundo de bloques</a>
         <a href="audio.html">Audio</a>
         <a href="ui.html">Interfaz (UI)</a>
+        <a href="esqueletos.html">Esqueletos: IK, ragdoll y phys bones</a>
+        <a href="graphics.html">Graphics</a>
         <a href="prefs.html">Prefs y Game</a>
         <a href="debug.html">Debug</a>
         <p class="mb-1 mt-7 flex items-center gap-2 px-3 text-xs font-semibold uppercase tracking-wider text-slate-500"><svg class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a9 9 0 1 0 0 18c1.1 0 1.5-.8 1.5-1.5 0-.9-.7-1.2-.7-2 0-.8.6-1.5 1.5-1.5H16a5 5 0 0 0 5-5c0-4.4-4-8-9-8Z"/><circle cx="7.5" cy="11" r="1"/><circle cx="10" cy="7" r="1"/><circle cx="15" cy="7.5" r="1"/></svg>Gráficos</p>
@@ -163,6 +165,29 @@
       <p class="!mt-3 text-lg !text-slate-400">Rigidbody, colliders, vehículos y ruedas.</p>
       <div class="mt-10">
 <p>Cuerpos, colliders y vehiculos (Jolt). Las capas y la matriz de colisiones estan en la ventana Fisica. Referencia completa generada desde el motor.</p>
+<h3 id="Ragdoll">Ragdoll <code>Ragdoll</code></h3>
+<p>Muneco de trapo con la fisica (Jolt): una capsula por hueso unidas por articulaciones con limites de giro. Apagado sigue a la animacion; al activarlo (<code>entity.ragdoll = true</code>) cae con la velocidad que llevaba y al apagarlo vuelve a la animacion mezclando. Sin huesos en la lista se eligen solos para humanos y animales; "Generar huesos" los rellena para ajustarlos.</p>
+<table>
+  <thead><tr><th>Propiedad</th><th>Tipo</th><th>Por defecto</th><th>Valores</th><th>Descripcion</th></tr></thead>
+  <tbody>
+    <tr><td>Activo<br><code>active</code></td><td>si/no</td><td>no</td><td></td><td>Simulando: cae con la fisica (Lua: entity.ragdoll = true)</td></tr>
+    <tr><td>Masa total<br><code>mass</code></td><td>numero</td><td>70</td><td>0,1 a 100000</td><td></td></tr>
+    <tr><td>Peso<br><code>blend</code></td><td>numero</td><td>1</td><td>0 a 1</td><td>Cuanto manda la fisica mientras esta activo</td></tr>
+    <tr><td>Volver a la animacion<br><code>blend_out</code></td><td>numero</td><td>0,35</td><td>0 a 5</td><td>Segundos de mezcla al apagarlo</td></tr>
+    <tr><td>Friccion<br><code>friction</code></td><td>numero</td><td>0,7</td><td>0 a 2</td><td></td></tr>
+    <tr><td>Frenado<br><code>damping</code></td><td>numero</td><td>0,05</td><td>0 a 2</td><td>Resistencia del aire</td></tr>
+    <tr><td>Rigidez de las articulaciones<br><code>joint_friction</code></td><td>numero</td><td>1</td><td>0 a 20</td><td></td></tr>
+    <tr><td>Mover la entidad<br><code>follow_entity</code></td><td>si/no</td><td>si</td><td></td><td>La entidad va con el cuerpo (camaras y scripts que la siguen)</td></tr>
+    <tr><td>Heredar velocidad<br><code>inherit_velocity</code></td><td>si/no</td><td>si</td><td></td><td>Cae con la velocidad que llevaba la animacion</td></tr>
+    <tr><td colspan="5"><strong class="text-white">Huesos (lista)</strong> <code>bones</code> — Vacio = automatico (humanoides y animales). Generar en el Inspector los rellena</td></tr>
+    <tr><td>&nbsp;&nbsp;&nbsp;Hueso<br><code>bone</code></td><td>texto</td><td>(vacio)</td><td></td><td></td></tr>
+    <tr><td>&nbsp;&nbsp;&nbsp;Radio<br><code>radius</code></td><td>numero</td><td>0</td><td>0 a 5</td><td>0 = automatico</td></tr>
+    <tr><td>&nbsp;&nbsp;&nbsp;Largo<br><code>length</code></td><td>numero</td><td>0</td><td>0 a 10</td><td>0 = hasta el siguiente hueso</td></tr>
+    <tr><td>&nbsp;&nbsp;&nbsp;Masa<br><code>mass</code></td><td>numero</td><td>0</td><td>0 a 10000</td><td>0 = reparto automatico</td></tr>
+    <tr><td>&nbsp;&nbsp;&nbsp;Doblar<br><code>swing</code></td><td>numero</td><td>40</td><td>0 a 180</td><td>Grados que se puede doblar</td></tr>
+    <tr><td>&nbsp;&nbsp;&nbsp;Girar<br><code>twist</code></td><td>numero</td><td>20</td><td>0 a 180</td><td>Grados que puede girar sobre si mismo</td></tr>
+  </tbody>
+</table>
 <h3 id="Rigidbody">Rigidbody <code>Rigidbody</code></h3>
 <p>Cuerpo de fisica (Jolt): <strong>Dinamico</strong> (cae, choca, se empuja), <strong>Cinematico</strong> (lo mueves tu y empuja a los demas) o <strong>Estatico</strong>. Necesita al menos un collider en la entidad o en sus hijos. Desde Lua: <code>velocity</code>, <code>addForce</code>, <code>addImpulse</code>...</p>
 <table>

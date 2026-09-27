@@ -248,6 +248,7 @@ void EditorApp::drawSceneView() {
         drawPostVolumeGizmos();
         drawAudioGizmos();
         drawPhysicsGizmos();
+        light_handle = drawRigGizmos() || light_handle;
     } else {
         // Un arrastre de asa a medias no puede quedarse enganchado.
         if (light_handle_drag_ != 0 || collider_handle_drag_ != 0) commit();

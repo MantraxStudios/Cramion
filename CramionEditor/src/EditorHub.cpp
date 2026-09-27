@@ -263,6 +263,34 @@ void EditorApp::drawTemplateArt(ImDrawList* draw, ImVec2 a, ImVec2 b, const Proj
             centeredText(draw, h * 0.16f, P(0.84f, 0.36f), IM_COL32(255, 215, 60, 255), "!");
             break;
         }
+        case TemplateArt::Creatures: {
+            // Un perro de huesos (lineas y articulaciones) sobre un escalon,
+            // la cola curvada y la pelota que mira.
+            perspectiveGrid(draw, a, b, horizon, scaled(accent, 1.1f, 70));
+            draw->AddRectFilled(P(0.52f, 0.70f), P(0.80f, 0.80f), IM_COL32(150, 105, 60, 255), 2.0f);
+            const ImU32 bone = IM_COL32(235, 225, 210, 255);
+            const ImU32 joint = scaled(accent, 1.3f);
+            const float t = w * 0.012f;
+            const ImVec2 hip = P(0.36f, 0.46f), chest = P(0.62f, 0.44f), neck = P(0.70f, 0.32f), head = P(0.78f, 0.28f);
+            const ImVec2 legs[4][3] = {{hip, P(0.33f, 0.60f), P(0.34f, 0.80f)},
+                                       {P(0.40f, 0.47f), P(0.43f, 0.62f), P(0.41f, 0.80f)},
+                                       {chest, P(0.62f, 0.58f), P(0.62f, 0.70f)},
+                                       {P(0.66f, 0.45f), P(0.69f, 0.58f), P(0.70f, 0.70f)}};
+            draw->AddLine(hip, chest, bone, t * 1.4f);
+            draw->AddLine(chest, neck, bone, t);
+            draw->AddLine(neck, head, bone, t);
+            for (const auto& leg : legs) {
+                draw->AddLine(leg[0], leg[1], bone, t);
+                draw->AddLine(leg[1], leg[2], bone, t);
+                draw->AddCircleFilled(leg[1], t * 1.2f, joint);
+                draw->AddCircleFilled(leg[2], t * 1.2f, joint);
+            }
+            draw->AddBezierCubic(hip, P(0.26f, 0.40f), P(0.22f, 0.30f), P(0.25f, 0.24f), IM_COL32(120, 255, 150, 255), t);
+            for (const ImVec2& p : {hip, chest, neck, head}) draw->AddCircleFilled(p, t * 1.5f, joint);
+            draw->AddCircleFilled(P(0.88f, 0.16f), h * 0.05f, IM_COL32(255, 205, 50, 255));
+            draw->AddLine(head, P(0.88f, 0.16f), IM_COL32(255, 120, 200, 160), t * 0.6f);
+            break;
+        }
         case TemplateArt::User: {
             perspectiveGrid(draw, a, b, horizon, scaled(accent, 1.1f, 70));
             draw->AddRectFilled(P(0.36f, 0.26f), P(0.5f, 0.34f), scaled(accent, 1.3f), 4.0f);

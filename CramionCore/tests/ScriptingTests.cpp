@@ -460,12 +460,67 @@ void testGraphics() {
     scripts2.stop();
 }
 
+// Esqueletos desde Lua: campos de cualquier componente, IK, ragdoll y huesos.
+void testRigLua() {
+    std::printf("Lua: huesos, IK, ragdoll y campos de componentes\n");
+    ecs::World world;
+    ecs::Entity dog = world.create("Perro");
+    ecs::Entity ball = world.create("Pelota");
+    ball.setLocalPosition(Vec3{1.0f, 0.0f, 2.0f});
+    scripting::ScriptSystem scripts;
+    scripts.setAssetsRoot(kRoot);
+    // Un "esqueleto" de mentira: la pose de un hueso y sus nombres.
+    scripting::ScriptSystem::SkeletonHost host;
+    host.bone_world = [](ecs::Entity, const std::string& bone, core::Mat4& m) {
+        if (bone != "Head") return false;
+        m = core::translate(Vec3{0.0f, 1.7f, 0.9f});
+        return true;
+    };
+    host.bone_names = [](ecs::Entity) { return std::vector<std::string>{"Body", "Head", "Tail1"}; };
+    scripts.setSkeletonHost(host);
+    scripts.start(world);
+    std::string out;
+    const bool ok = scripts.run(R"(
+        local dog = Scene.find('Perro')
+        local ball = Scene.find('Pelota')
+        dog:setField('PhysBones', 'chains[1].bone', 'Tail1')
+        dog:setField('PhysBones', 'chains[1].gravity', 0.5)
+        dog:setField('PhysBones', 'chains[2].bone', 'Ear_L')
+        dog:setIKTarget('FrontFoot_L', ball, 3)
+        dog:setIKTarget('left_hand', Vec3(1, 2, 3))
+        dog:setLookAt(ball, 0.8)
+        dog:setBoneRotation('Head', Vec3(0, 30, 0))
+        dog.ragdoll = true
+        local head = dog:getBonePosition('Head')
+        return dog:getField('PhysBones', 'chains#') .. '|' .. dog:getField('PhysBones', 'chains[1].gravity') .. '|' ..
+               tostring(dog.ragdoll) .. '|' .. #dog:getBones() .. '|' .. string.format('%.1f', head.y) .. '|' ..
+               tostring(dog:getBonePosition('Nada')) .. '|' .. dog:getField('InverseKinematics', 'chains[1].length') .. '|' ..
+               tostring(dog:setField('Light', 'no_existe', 1))
+    )", &out);
+    std::printf("    %s\n", out.c_str());
+    check(ok, "sin errores de Lua");
+    check(out == "2|0.5|true|3|1.7|nil|3|false",
+          "setField/getField con listas, ragdoll, getBones, getBonePosition y claves que no existen");
+    const ecs::PhysBones* pb = dog.tryGet<ecs::PhysBones>();
+    check(pb != nullptr && pb->chains.size() == 2 && pb->chains[0].bone == "Tail1" && std::abs(pb->chains[0].gravity - 0.5f) < 1e-5f,
+          "setField anade el componente y los elementos de la lista");
+    const ecs::InverseKinematics* ik = dog.tryGet<ecs::InverseKinematics>();
+    check(ik != nullptr && ik->chains.size() == 1 && ik->chains[0].target == ball.uuid() && ik->chains[0].length == 3 &&
+              ik->left_hand.use_position && ik->look_at == ball.uuid() && std::abs(ik->look_weight - 0.8f) < 1e-5f,
+          "setIKTarget (entidad o punto), longitud de la cadena y setLookAt");
+    const ecs::Skeleton* sk = dog.tryGet<ecs::Skeleton>();
+    check(sk != nullptr && sk->bones.size() == 1 && std::abs(sk->bones[0].rotation.y - 30.0f) < 1e-4f, "setBoneRotation");
+    check(dog.has<ecs::Ragdoll>() && dog.get<ecs::Ragdoll>().active, "entity.ragdoll = true");
+    scripts.stop();
+}
+
 int main() {
     testScripts();
     testAudio();
     testAudioOcclusion();
     testAudioRendered();
     testGraphics();
+    testRigLua();
     std::filesystem::remove_all(kRoot);
     std::printf("\n%d comprobaciones, %d fallos\n", checks, failures);
     return failures == 0 ? 0 : 1;

@@ -45,6 +45,19 @@ core::Quat nodeRotation(const Pose& pose, int node);
 bool twoBone(const Pose& pose, int upper, int mid, int end, const core::Vec3& target, const core::Vec3* pole,
              float weight);
 
+// Cadena de varios huesos (patas de animal de 3 segmentos, cuellos, colas,
+// tentaculos): `joints` va del de arriba al extremo, cada uno hijo del
+// anterior. FABRIK (Aristidou 2011): mueve las articulaciones hacia el
+// objetivo sin cambiar los largos y luego gira cada hueso hacia la nueva.
+// Con `pole`, las articulaciones de en medio se doblan hacia el. Con 3
+// articulaciones es lo mismo que twoBone. false si no es una cadena valida.
+bool chain(const Pose& pose, const std::vector<int>& joints, const core::Vec3& target, const core::Vec3* pole,
+           float weight, int iterations = 12);
+
+// La cadena de `bones` huesos que acaba en `end`: sus `bones` antepasados
+// mas el (de arriba abajo). Vacia si no hay tantos antepasados.
+std::vector<int> chainTo(const std::vector<asset::Node>& nodes, int end, int bones);
+
 // `forward`: hacia donde mira ahora el hueso (espacio del modelo, unitario).
 void lookAt(const Pose& pose, int bone, const core::Vec3& forward, const core::Vec3& target, float weight,
             float max_angle_degrees);

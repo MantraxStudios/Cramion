@@ -28,6 +28,9 @@
           <tr><td><code>:hasComponent(nombre)</code></td><td>Por ejemplo <code>"Rigidbody"</code>, <code>"Light"</code>, <code>"AudioSource"</code>, <code>"UIButton"</code>.</td></tr>
           <tr><td><code>:addComponent(nombre)</code></td><td>Añade un componente por su nombre (<code>"MeshCollider"</code>, <code>"Rigidbody"</code>, <code>"BoxCollider"</code>, <code>"Light"</code>…). Devuelve <code>false</code> si no existe.</td></tr>
           <tr><td><code>:removeComponent(nombre)</code></td><td>Lo quita.</td></tr>
+          <tr><td><code>:getField(componente, clave)</code></td><td>Cualquier campo de cualquier componente por su clave (las de la <a href="componentes.html">referencia</a>): <code>e:getField("Light", "intensity")</code>. Listas: <code>"chains[1].pull"</code>; <code>"chains#"</code> = cuántos elementos.</td></tr>
+          <tr><td><code>:setField(componente, clave, valor)</code></td><td>Lo cambia (añade el componente si falta; <code>[n+1]</code> añade un elemento a una lista). Devuelve si se aplicó.</td></tr>
+          <tr><td><code>:getFields(componente)</code></td><td>Tabla clave → valor con todos sus campos.</td></tr>
           <tr><td><code>:setMaterial(hueco, "Materials/X.crmat")</code></td><td>Pone un material <code>.crmat</code> en un hueco (submalla) del <code>MeshRenderer</code>; <code>nil</code> vuelve al suyo. Así una malla tiene varios materiales con sus efectos.</td></tr>
           <tr><td><code>castShadows</code></td><td>Si su <code>MeshRenderer</code> proyecta sombra (lectura y escritura).</td></tr>
           <tr><td><code>mesh</code></td><td>La <a href="mallas.html" class="text-brand">malla creada por código</a> que dibuja (lectura y escritura). Asignarla añade un <code>MeshRenderer</code> si no hay; <code>nil</code> vuelve a su modelo.</td></tr>
@@ -35,6 +38,15 @@
           <tr><td><code>:destroy()</code></td><td>La destruye al final del frame.</td></tr>
         </tbody>
       </table>
+
+      <h3 id="huesos">Huesos, IK, ragdoll y sockets</h3>
+      <p>
+        <code>:getBones()</code>, <code>:getBonePosition(hueso)</code>, <code>:getBoneRotation(hueso)</code>,
+        <code>:setBoneRotation</code>/<code>:setBoneOffset</code>/<code>:setBoneScale</code>, <code>:showBones(on)</code>,
+        <code>:attachToBone(modelo, hueso)</code>, <code>:setIKTarget(nombre, objetivo)</code>, <code>:setLookAt(objetivo)</code>,
+        <code>:setupCreatureIK()</code>, <code>ragdoll</code> (true/false), <code>:addRagdollForce(impulso, hueso)</code>,
+        <code>:setupRagdoll()</code> y <code>:setupPhysBones()</code>: ver <a href="esqueletos.html#lua">Esqueletos</a>.
+      </p>
 
       <h3 id="fisica">Física</h3>
       <p>Requieren un componente <code>Rigidbody</code> en la entidad.</p>

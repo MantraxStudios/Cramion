@@ -236,6 +236,16 @@
           "desc": "Textos, botones e imágenes en pantalla."
         },
         {
+          "slug": "esqueletos",
+          "title": "Esqueletos: IK, ragdoll y phys bones",
+          "desc": "Ver y mover huesos, sockets, IK de humanos y animales, Phys Bones, ragdoll y campos de componentes desde Lua."
+        },
+        {
+          "slug": "graphics",
+          "title": "Graphics",
+          "desc": "Configuración gráfica y post-procesado desde Lua: calidad, resolución, sombras, texturas, ventana."
+        },
+        {
           "slug": "prefs",
           "title": "Prefs y Game",
           "desc": "Datos guardados entre partidas y salir del juego."

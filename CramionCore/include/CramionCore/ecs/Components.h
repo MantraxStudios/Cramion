@@ -137,14 +137,26 @@ struct IKLimb {
     Uuid hint;            // hacia donde apunta el codo o la rodilla (opcional)
     float weight = 1.0f;  // 0 = la animacion, 1 = el objetivo
     bool match_rotation = false;  // la mano/el pie copia el giro del objetivo
+    // Objetivo como un punto del mundo en vez de una entidad (Lua:
+    // entity:setIKTarget("left_hand", Vec3(...))).
+    bool use_position = false;
+    core::Vec3 position{};
 };
-// Cadena de dos huesos de cualquier esqueleto (no humanoides: una cola, un
-// brazo robotico): `bone` es el ultimo; se usan su padre y su abuelo.
+// Cadena de cualquier esqueleto (animales, colas, brazos roboticos,
+// tentaculos): `bone` es el ultimo y `length` cuantos huesos por encima se
+// doblan (2 = muslo y espinilla; 3 = las patas de un perro o un caballo; mas
+// = cuellos y colas). Con `ground` el objetivo es el suelo bajo ese pie: pies
+// de animales que se apoyan en escaleras y pendientes.
 struct IKChain {
     std::string bone;
+    int length = 2;
     Uuid target;
     Uuid hint;
     float weight = 1.0f;
+    bool ground = false;
+    bool match_rotation = false;
+    bool use_position = false;  // objetivo = `position` (mundo)
+    core::Vec3 position{};
 };
 struct InverseKinematics {
     bool enabled = true;
@@ -156,12 +168,23 @@ struct InverseKinematics {
     Uuid look_at;               // la cabeza (y un poco el cuello) mira aqui
     float look_weight = 1.0f;
     float look_max_angle = 70.0f;
+    // Cualquier esqueleto: el hueso que mira (vacio = la cabeza del humanoide
+    // o la que se detecta en un animal) y cuantos huesos hacia arriba
+    // reparten el giro (cuellos largos: jirafa, dinosaurio, serpiente).
+    std::string look_bone;
+    int look_chain = 2;
+    bool look_use_position = false;
+    core::Vec3 look_position{};
     // Pies en el suelo: cada pie se apoya donde hay suelo (escaleras,
     // pendientes, rocas) y la cadera baja si hace falta para llegar.
     bool foot_grounding = false;
     float grounding_weight = 1.0f;
     float max_step = 0.5f;      // cuanto puede subir o bajar un pie (m)
     bool align_feet = true;     // el pie sigue la inclinacion del suelo
+    // Animales: el cuerpo se inclina con el suelo bajo sus patas (cuesta
+    // arriba, de lado) ademas de bajar la cadera. Usa las cadenas con suelo.
+    bool align_body = true;
+    float body_align_weight = 1.0f;
     std::vector<IKChain> chains;
 
     void reflect(PropertyVisitor& v);
@@ -206,6 +229,121 @@ struct ProceduralAnimation {
     bool lean = false;
     float lean_amount = 10.0f;    // grados como mucho
     std::vector<ProceduralNoise> noise;
+
+    void reflect(PropertyVisitor& v);
+};
+
+// --- Esqueleto: ver y mover los huesos -------------------------------------
+// Va en la entidad del modelo (o en su raiz). En la Escena dibuja los huesos;
+// en el Inspector se ven todos y cada uno se puede girar, mover o escalar
+// encima de la animacion (como el "Transform (Modify) Bone" de Unreal).
+struct BoneOverride {
+    std::string bone;
+    core::Vec3 rotation{};                  // grados, en los ejes del hueso (se suma a la animacion)
+    core::Vec3 position{};                  // desplazamiento en los ejes del padre (unidades del modelo)
+    core::Vec3 scale{1.0f, 1.0f, 1.0f};
+    float weight = 1.0f;
+};
+struct Skeleton {
+    bool show_bones = true;    // dibujar los huesos en la Escena (y en Play)
+    bool show_names = false;
+    float bone_size = 1.0f;    // grosor del dibujo
+    std::string selected;      // hueso resaltado (el Inspector)
+    std::vector<BoneOverride> bones;
+
+    void reflect(PropertyVisitor& v);
+};
+
+// Engancha una entidad a un hueso del modelo de un antepasado (o hermano):
+// Seguir = la entidad va con el hueso (una espada en la mano, un sombrero, un
+// collider en la cabeza); Mover el hueso = el hueso sigue a la entidad
+// (posar a mano con el gizmo, objetivos de animacion).
+enum class SocketMode : int { Follow = 0, Drive = 1 };
+struct BoneSocket {
+    std::string bone;
+    SocketMode mode = SocketMode::Follow;
+    core::Vec3 position{};  // desplazamiento en los ejes del hueso (metros)
+    core::Vec3 rotation{};  // grados
+    bool drive_position = false;  // Mover el hueso: tambien su posicion (si no, solo el giro)
+    float weight = 1.0f;
+
+    void reflect(PropertyVisitor& v);
+};
+
+// --- Phys Bones (como los de VRChat): pelo, colas, orejas, faldas, capas ---
+struct PhysBoneChain {
+    std::string bone;           // la raiz: se simulan sus hijos
+    std::string ignore;         // huesos que no (separados por comas)
+    float pull = 0.2f;          // vuelve a la pose animada
+    float spring = 0.2f;        // rebote (conserva la velocidad)
+    float stiffness = 0.2f;     // rigidez directa
+    float gravity = 0.0f;       // 0..1 de la gravedad
+    float gravity_falloff = 0.0f;  // menos peso si ya cuelga
+    float immobile = 0.0f;      // 1 = se mueve rigido con el personaje
+    float max_angle = 0.0f;     // grados (0 = libre)
+    float radius = 0.02f;       // metros, para chocar
+    float radius_tip = -1.0f;   // en la punta (< 0 = igual)
+    float end_length = 0.0f;    // punta extra (fraccion del ultimo hueso)
+    bool collide = true;
+};
+struct PhysBones {
+    bool enabled = true;
+    std::vector<PhysBoneChain> chains;
+    // Colliders que usan (entidades con PhysBoneCollider). Vacio = todos los
+    // de la escena.
+    std::vector<Uuid> colliders;
+
+    void reflect(PropertyVisitor& v);
+};
+
+enum class PhysBoneColliderShape : int { Sphere = 0, Capsule = 1, Plane = 2 };
+// Forma con la que chocan los Phys Bones (la cabeza, el cuerpo, el suelo).
+// Ponla en una entidad con un Bone Socket para que siga a un hueso.
+struct PhysBoneCollider {
+    PhysBoneColliderShape shape = PhysBoneColliderShape::Sphere;
+    float radius = 0.1f;
+    float height = 0.3f;     // capsula: alto total en el eje Y de la entidad
+    core::Vec3 offset{};     // centro (ejes de la entidad)
+    bool inside = false;     // mantener dentro en vez de fuera
+
+    void reflect(PropertyVisitor& v);
+};
+
+// --- Ragdoll ---------------------------------------------------------------
+// Muneco de trapo con la fisica (Jolt): una capsula por hueso unidas por
+// articulaciones con limites. Apagado sigue a la animacion; al activarlo
+// (Lua: entity.ragdoll = true, al morir) cae con la velocidad que llevaba.
+// Sin huesos en la lista se eligen solos (humanoides y animales).
+struct RagdollRuntime;  // physics/Ragdoll.h
+struct RagdollRuntimeRef {
+    std::shared_ptr<RagdollRuntime> ptr;
+    RagdollRuntimeRef() = default;
+    // Copiar la entidad (duplicar, prefabs) no comparte la simulacion.
+    RagdollRuntimeRef(const RagdollRuntimeRef&) {}
+    RagdollRuntimeRef& operator=(const RagdollRuntimeRef&) { return *this; }
+    RagdollRuntimeRef(RagdollRuntimeRef&&) noexcept = default;
+    RagdollRuntimeRef& operator=(RagdollRuntimeRef&&) noexcept = default;
+};
+struct RagdollBoneSetting {
+    std::string bone;
+    float radius = 0.0f;   // metros (0 = automatico)
+    float length = 0.0f;   // metros (0 = automatico)
+    float mass = 0.0f;     // kg (0 = reparto automatico de la masa total)
+    float swing = 40.0f;   // grados que se puede doblar
+    float twist = 20.0f;   // grados que puede girar sobre si mismo
+};
+struct Ragdoll {
+    bool active = false;           // simulando (true = cae)
+    float mass = 70.0f;            // kg en total
+    float blend = 1.0f;            // cuanto manda la fisica activo (0..1)
+    float blend_out = 0.35f;       // segundos para volver a la animacion al apagarlo
+    float friction = 0.7f;
+    float damping = 0.05f;         // frenado del aire
+    float joint_friction = 1.0f;   // rigidez de las articulaciones
+    bool follow_entity = true;     // la entidad va con el cuerpo (camaras que la siguen)
+    bool inherit_velocity = true;  // cae con la velocidad de la animacion
+    std::vector<RagdollBoneSetting> bones;
+    RagdollRuntimeRef runtime;     // no se guarda
 
     void reflect(PropertyVisitor& v);
 };

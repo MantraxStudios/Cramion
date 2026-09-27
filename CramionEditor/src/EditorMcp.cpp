@@ -239,7 +239,7 @@ function Jugador:OnCollisionEnter(other, contact) end
 return Jugador   -- obligatorio
 API: Vec3, Quat, Mathf, Random, Entity (position, rotation, scale, forward, velocity, addForce,
 lookAt, find, getScript, destroy...), Scene (find, create, instantiate("Prefabs/X"), load), Input,
-Time, Physics.raycast, Audio, UI, Prefs, Game, Debug.log, Navigation, Mesh, Voxel.
+Time, Physics.raycast, Audio, UI, Prefs, Game, Debug.log, Navigation, Mesh, Voxel, Graphics (calidad, resolucion, sombras, texturas, ventana y Graphics.post para el post-procesado).
 Manual completo: https://cramion.mantraxtools.store/manual/index.html
 
 ## Shaders de superficie (Assets/Shaders/*.crshader, GLSL)
@@ -995,7 +995,7 @@ json McpTools::call(const std::string& name, const json& args, bool& image, std:
     }
     if (name == "run_lua") {
         std::string out;
-        const bool ok = a.scripts_.run(arg(args, "code"), &out);
+        const bool ok = a.scripts_.run(arg(args, "code"), &out, &a.world_);
         if (!ok) throw ToolError("error de Lua: " + out);
         return json{{"result", out}};
     }

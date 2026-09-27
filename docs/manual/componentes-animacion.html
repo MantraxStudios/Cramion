@@ -132,6 +132,8 @@
         <a href="voxel.html">Mundo de bloques</a>
         <a href="audio.html">Audio</a>
         <a href="ui.html">Interfaz (UI)</a>
+        <a href="esqueletos.html">Esqueletos: IK, ragdoll y phys bones</a>
+        <a href="graphics.html">Graphics</a>
         <a href="prefs.html">Prefs y Game</a>
         <a href="debug.html">Debug</a>
         <p class="mb-1 mt-7 flex items-center gap-2 px-3 text-xs font-semibold uppercase tracking-wider text-slate-500"><svg class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a9 9 0 1 0 0 18c1.1 0 1.5-.8 1.5-1.5 0-.9-.7-1.2-.7-2 0-.8.6-1.5 1.5-1.5H16a5 5 0 0 0 5-5c0-4.4-4-8-9-8Z"/><circle cx="7.5" cy="11" r="1"/><circle cx="10" cy="7" r="1"/><circle cx="15" cy="7.5" r="1"/></svg>Gráficos</p>
@@ -178,7 +180,7 @@
   </tbody>
 </table>
 <h3 id="InverseKinematics">IK (cinematica inversa) <code>InverseKinematics</code></h3>
-<p>Cinematica inversa sobre la pose animada: manos y pies que llegan a un objetivo (otra entidad), la cabeza que mira a algo, pies que se apoyan en el suelo (escaleras, pendientes) y cadenas de dos huesos para esqueletos no humanoides. Va junto al Animator.</p>
+<p>Cinematica inversa sobre la pose animada de humanos y animales: manos y pies que llegan a un objetivo (una entidad o un punto), la cabeza que mira a algo repartiendo el giro por el cuello, pies que se apoyan en el suelo (escaleras, pendientes) y cadenas de 1 a 16 huesos para cualquier esqueleto: patas de 3 huesos de perros y caballos con "Al suelo", cuellos, colas. El cuerpo baja y se inclina con la pendiente. "Configurar automaticamente" en el Inspector detecta patas, cabeza y cuello. Puede ir en el modelo o en su raiz. Ver <a href="esqueletos.html">Esqueletos</a>.</p>
 <table>
   <thead><tr><th>Propiedad</th><th>Tipo</th><th>Por defecto</th><th>Valores</th><th>Descripcion</th></tr></thead>
   <tbody>
@@ -188,35 +190,54 @@
     <tr><td>Codo / rodilla hacia<br><code>left_hand_hint</code></td><td>entidad</td><td>(ninguna)</td><td>arrastrar desde la Jerarquia</td><td>Entidad hacia la que se dobla (opcional)</td></tr>
     <tr><td>Peso<br><code>left_hand_weight</code></td><td>numero</td><td>1</td><td>0 a 1</td><td></td></tr>
     <tr><td>Copiar giro<br><code>left_hand_rotation</code></td><td>si/no</td><td>no</td><td></td><td>La mano o el pie gira como el objetivo</td></tr>
+    <tr><td>Usar un punto<br><code>left_hand_use_position</code></td><td>si/no</td><td>no</td><td></td><td>El objetivo es un punto del mundo (Lua: setIKTarget con un Vec3)</td></tr>
+    <tr><td>Punto<br><code>left_hand_position</code></td><td>Vec3 (metros)</td><td>(0; 0; 0)</td><td></td><td></td></tr>
     <tr><td colspan="5"><strong class="text-white">Mano derecha</strong></td></tr>
     <tr><td>Objetivo<br><code>right_hand_target</code></td><td>entidad</td><td>(ninguna)</td><td>arrastrar desde la Jerarquia</td><td>Entidad a la que llega (arrastrala desde la Jerarquia)</td></tr>
     <tr><td>Codo / rodilla hacia<br><code>right_hand_hint</code></td><td>entidad</td><td>(ninguna)</td><td>arrastrar desde la Jerarquia</td><td>Entidad hacia la que se dobla (opcional)</td></tr>
     <tr><td>Peso<br><code>right_hand_weight</code></td><td>numero</td><td>1</td><td>0 a 1</td><td></td></tr>
     <tr><td>Copiar giro<br><code>right_hand_rotation</code></td><td>si/no</td><td>no</td><td></td><td>La mano o el pie gira como el objetivo</td></tr>
+    <tr><td>Usar un punto<br><code>right_hand_use_position</code></td><td>si/no</td><td>no</td><td></td><td>El objetivo es un punto del mundo (Lua: setIKTarget con un Vec3)</td></tr>
+    <tr><td>Punto<br><code>right_hand_position</code></td><td>Vec3 (metros)</td><td>(0; 0; 0)</td><td></td><td></td></tr>
     <tr><td colspan="5"><strong class="text-white">Pie izquierdo</strong></td></tr>
     <tr><td>Objetivo<br><code>left_foot_target</code></td><td>entidad</td><td>(ninguna)</td><td>arrastrar desde la Jerarquia</td><td>Entidad a la que llega (arrastrala desde la Jerarquia)</td></tr>
     <tr><td>Codo / rodilla hacia<br><code>left_foot_hint</code></td><td>entidad</td><td>(ninguna)</td><td>arrastrar desde la Jerarquia</td><td>Entidad hacia la que se dobla (opcional)</td></tr>
     <tr><td>Peso<br><code>left_foot_weight</code></td><td>numero</td><td>1</td><td>0 a 1</td><td></td></tr>
     <tr><td>Copiar giro<br><code>left_foot_rotation</code></td><td>si/no</td><td>no</td><td></td><td>La mano o el pie gira como el objetivo</td></tr>
+    <tr><td>Usar un punto<br><code>left_foot_use_position</code></td><td>si/no</td><td>no</td><td></td><td>El objetivo es un punto del mundo (Lua: setIKTarget con un Vec3)</td></tr>
+    <tr><td>Punto<br><code>left_foot_position</code></td><td>Vec3 (metros)</td><td>(0; 0; 0)</td><td></td><td></td></tr>
     <tr><td colspan="5"><strong class="text-white">Pie derecho</strong></td></tr>
     <tr><td>Objetivo<br><code>right_foot_target</code></td><td>entidad</td><td>(ninguna)</td><td>arrastrar desde la Jerarquia</td><td>Entidad a la que llega (arrastrala desde la Jerarquia)</td></tr>
     <tr><td>Codo / rodilla hacia<br><code>right_foot_hint</code></td><td>entidad</td><td>(ninguna)</td><td>arrastrar desde la Jerarquia</td><td>Entidad hacia la que se dobla (opcional)</td></tr>
     <tr><td>Peso<br><code>right_foot_weight</code></td><td>numero</td><td>1</td><td>0 a 1</td><td></td></tr>
     <tr><td>Copiar giro<br><code>right_foot_rotation</code></td><td>si/no</td><td>no</td><td></td><td>La mano o el pie gira como el objetivo</td></tr>
+    <tr><td>Usar un punto<br><code>right_foot_use_position</code></td><td>si/no</td><td>no</td><td></td><td>El objetivo es un punto del mundo (Lua: setIKTarget con un Vec3)</td></tr>
+    <tr><td>Punto<br><code>right_foot_position</code></td><td>Vec3 (metros)</td><td>(0; 0; 0)</td><td></td><td></td></tr>
     <tr><td colspan="5"><strong class="text-white">Mirar</strong></td></tr>
     <tr><td>Mirar a<br><code>look_at</code></td><td>entidad</td><td>(ninguna)</td><td>arrastrar desde la Jerarquia</td><td>La cabeza sigue a esta entidad</td></tr>
     <tr><td>Peso<br><code>look_weight</code></td><td>numero</td><td>1</td><td>0 a 1</td><td></td></tr>
     <tr><td>Angulo maximo<br><code>look_max_angle</code></td><td>numero</td><td>70</td><td>0 a 180</td><td></td></tr>
+    <tr><td>Hueso que mira<br><code>look_bone</code></td><td>texto</td><td>(vacio)</td><td></td><td>Vacio = la cabeza (humanoide o animal detectado)</td></tr>
+    <tr><td>Huesos del cuello<br><code>look_chain</code></td><td>entero</td><td>2</td><td>1 a 12</td><td>Cuantos huesos hacia arriba reparten el giro (cuellos largos)</td></tr>
+    <tr><td>Mirar a un punto<br><code>look_use_position</code></td><td>si/no</td><td>no</td><td></td><td></td></tr>
+    <tr><td>Punto<br><code>look_position</code></td><td>Vec3 (metros)</td><td>(0; 0; 0)</td><td></td><td></td></tr>
     <tr><td colspan="5"><strong class="text-white">Pies en el suelo</strong></td></tr>
     <tr><td>Activado<br><code>foot_grounding</code></td><td>si/no</td><td>no</td><td></td><td>Cada pie se apoya en el suelo que tiene debajo (escaleras, pendientes)</td></tr>
     <tr><td>Peso<br><code>grounding_weight</code></td><td>numero</td><td>1</td><td>0 a 1</td><td></td></tr>
     <tr><td>Escalon maximo<br><code>max_step</code></td><td>numero</td><td>0,5</td><td>0 a 2</td><td></td></tr>
     <tr><td>Inclinar el pie<br><code>align_feet</code></td><td>si/no</td><td>si</td><td></td><td>El pie sigue la pendiente del suelo</td></tr>
-    <tr><td colspan="5"><strong class="text-white">Cadenas (otros esqueletos) (lista)</strong> <code>chains</code> — Dos huesos que llegan a un objetivo: el hueso final y sus dos padres</td></tr>
+    <tr><td>Inclinar el cuerpo<br><code>align_body</code></td><td>si/no</td><td>si</td><td></td><td>Animales: el cuerpo sigue la pendiente bajo sus patas (cadenas con suelo)</td></tr>
+    <tr><td>Peso del cuerpo<br><code>body_align_weight</code></td><td>numero</td><td>1</td><td>0 a 1</td><td></td></tr>
+    <tr><td colspan="5"><strong class="text-white">Cadenas (animales y otros esqueletos) (lista)</strong> <code>chains</code> — Patas, cuellos, colas: el hueso final y cuantos huesos por encima se doblan. Con suelo, el pie se apoya en lo que tiene debajo</td></tr>
     <tr><td>&nbsp;&nbsp;&nbsp;Hueso final<br><code>bone</code></td><td>texto</td><td>(vacio)</td><td></td><td></td></tr>
+    <tr><td>&nbsp;&nbsp;&nbsp;Huesos<br><code>length</code></td><td>entero</td><td>2</td><td>1 a 16</td><td>2 = muslo y espinilla; 3 = patas de perro o caballo; mas = cuellos y colas</td></tr>
+    <tr><td>&nbsp;&nbsp;&nbsp;Al suelo<br><code>ground</code></td><td>si/no</td><td>no</td><td></td><td>El objetivo es el suelo bajo el pie (Pies en el suelo)</td></tr>
     <tr><td>&nbsp;&nbsp;&nbsp;Objetivo<br><code>target</code></td><td>entidad</td><td>(ninguna)</td><td>arrastrar desde la Jerarquia</td><td></td></tr>
     <tr><td>&nbsp;&nbsp;&nbsp;Doblar hacia<br><code>hint</code></td><td>entidad</td><td>(ninguna)</td><td>arrastrar desde la Jerarquia</td><td></td></tr>
     <tr><td>&nbsp;&nbsp;&nbsp;Peso<br><code>weight</code></td><td>numero</td><td>1</td><td>0 a 1</td><td></td></tr>
+    <tr><td>&nbsp;&nbsp;&nbsp;Copiar giro<br><code>match_rotation</code></td><td>si/no</td><td>no</td><td></td><td></td></tr>
+    <tr><td>&nbsp;&nbsp;&nbsp;Usar un punto<br><code>use_position</code></td><td>si/no</td><td>no</td><td></td><td></td></tr>
+    <tr><td>&nbsp;&nbsp;&nbsp;Punto<br><code>position</code></td><td>Vec3 (metros)</td><td>(0; 0; 0)</td><td></td><td></td></tr>
   </tbody>
 </table>
 <h3 id="ProceduralAnimation">Animacion procedural <code>ProceduralAnimation</code></h3>
@@ -253,6 +274,72 @@
     <tr><td>&nbsp;&nbsp;&nbsp;Hueso<br><code>bone</code></td><td>texto</td><td>(vacio)</td><td></td><td></td></tr>
     <tr><td>&nbsp;&nbsp;&nbsp;Amplitud<br><code>amplitude</code></td><td>numero</td><td>4</td><td>0 a 90</td><td></td></tr>
     <tr><td>&nbsp;&nbsp;&nbsp;Frecuencia<br><code>frequency</code></td><td>numero</td><td>0,4</td><td>0,01 a 10</td><td></td></tr>
+  </tbody>
+</table>
+<h3 id="Skeleton">Esqueleto (huesos) <code>Skeleton</code></h3>
+<p>Ver y mover los huesos de un modelo: los dibuja en la Escena (clic en una articulacion para resaltarla), los lista en el Inspector con un buscador y cada uno se puede girar, desplazar o escalar encima de la animacion. "Socket aqui" engancha una entidad al hueso resaltado. Ver <a href="esqueletos.html">Esqueletos</a>.</p>
+<table>
+  <thead><tr><th>Propiedad</th><th>Tipo</th><th>Por defecto</th><th>Valores</th><th>Descripcion</th></tr></thead>
+  <tbody>
+    <tr><td>Ver huesos<br><code>show_bones</code></td><td>si/no</td><td>si</td><td></td><td>Dibuja el esqueleto en la Escena (tambien en Play)</td></tr>
+    <tr><td>Ver nombres<br><code>show_names</code></td><td>si/no</td><td>no</td><td></td><td></td></tr>
+    <tr><td>Grosor<br><code>bone_size</code></td><td>numero</td><td>1</td><td>0,1 a 5</td><td></td></tr>
+    <tr><td>Hueso resaltado<br><code>selected</code></td><td>texto</td><td>(vacio)</td><td></td><td></td></tr>
+    <tr><td colspan="5"><strong class="text-white">Huesos movidos (lista)</strong> <code>bones</code> — Giro, desplazamiento y escala encima de la animacion</td></tr>
+    <tr><td>&nbsp;&nbsp;&nbsp;Hueso<br><code>bone</code></td><td>texto</td><td>(vacio)</td><td></td><td></td></tr>
+    <tr><td>&nbsp;&nbsp;&nbsp;Giro<br><code>rotation</code></td><td>Vec3 (grados)</td><td>(0; 0; 0)</td><td></td><td></td></tr>
+    <tr><td>&nbsp;&nbsp;&nbsp;Desplazamiento<br><code>position</code></td><td>Vec3 (metros)</td><td>(0; 0; 0)</td><td></td><td></td></tr>
+    <tr><td>&nbsp;&nbsp;&nbsp;Escala<br><code>scale</code></td><td>Vec3 (escala)</td><td>(1; 1; 1)</td><td></td><td></td></tr>
+    <tr><td>&nbsp;&nbsp;&nbsp;Peso<br><code>weight</code></td><td>numero</td><td>1</td><td>0 a 1</td><td></td></tr>
+  </tbody>
+</table>
+<h3 id="BoneSocket">Bone Socket <code>BoneSocket</code></h3>
+<p>Engancha una entidad a un hueso del modelo de un antepasado: Seguir al hueso (una espada en la mano, un sombrero, un collider en la cabeza) o Mover el hueso (el hueso sigue a la entidad: posar con el gizmo). Lua: <code>espada:attachToBone(personaje, "RightHand")</code>.</p>
+<table>
+  <thead><tr><th>Propiedad</th><th>Tipo</th><th>Por defecto</th><th>Valores</th><th>Descripcion</th></tr></thead>
+  <tbody>
+    <tr><td>Hueso<br><code>bone</code></td><td>texto</td><td>(vacio)</td><td></td><td>Nombre del hueso del modelo de un antepasado (o hermano)</td></tr>
+    <tr><td>Modo<br><code>mode</code></td><td>opcion</td><td>Seguir al hueso</td><td>Seguir al hueso, Mover el hueso</td><td>Seguir: la entidad va con el hueso. Mover: el hueso sigue a la entidad</td></tr>
+    <tr><td>Desplazamiento<br><code>position</code></td><td>Vec3 (metros)</td><td>(0; 0; 0)</td><td></td><td>En los ejes del hueso</td></tr>
+    <tr><td>Giro<br><code>rotation</code></td><td>Vec3 (grados)</td><td>(0; 0; 0)</td><td></td><td></td></tr>
+    <tr><td>Mover tambien la posicion<br><code>drive_position</code></td><td>si/no</td><td>no</td><td></td><td></td></tr>
+    <tr><td>Peso<br><code>weight</code></td><td>numero</td><td>1</td><td>0 a 1</td><td></td></tr>
+  </tbody>
+</table>
+<h3 id="PhysBones">Phys Bones <code>PhysBones</code></h3>
+<p>Huesos que se mueven solos con inercia, gravedad y choques, como los PhysBone de VRChat: pelo, coletas, colas, orejas, faldas, capas. Cada cadena parte de un hueso raiz con pull, spring, stiffness, gravedad, immobile, angulo maximo y radio. "Detectar pelo, colas, orejas..." las crea por el nombre de los huesos.</p>
+<table>
+  <thead><tr><th>Propiedad</th><th>Tipo</th><th>Por defecto</th><th>Valores</th><th>Descripcion</th></tr></thead>
+  <tbody>
+    <tr><td>Activados<br><code>enabled</code></td><td>si/no</td><td>si</td><td></td><td></td></tr>
+    <tr><td colspan="5"><strong class="text-white">Cadenas (lista)</strong> <code>chains</code> — Cada una: un hueso raiz y todos sus hijos (pelo, cola, orejas, falda)</td></tr>
+    <tr><td>&nbsp;&nbsp;&nbsp;Hueso raiz<br><code>bone</code></td><td>texto</td><td>(vacio)</td><td></td><td></td></tr>
+    <tr><td>&nbsp;&nbsp;&nbsp;Ignorar<br><code>ignore</code></td><td>texto</td><td>(vacio)</td><td></td><td>Huesos que no se mueven (separados por comas)</td></tr>
+    <tr><td>&nbsp;&nbsp;&nbsp;Pull<br><code>pull</code></td><td>numero</td><td>0,2</td><td>0 a 1</td><td>Cuanto vuelve a la pose animada</td></tr>
+    <tr><td>&nbsp;&nbsp;&nbsp;Spring<br><code>spring</code></td><td>numero</td><td>0,2</td><td>0 a 1</td><td>Rebote: cuanto conserva la velocidad</td></tr>
+    <tr><td>&nbsp;&nbsp;&nbsp;Stiffness<br><code>stiffness</code></td><td>numero</td><td>0,2</td><td>0 a 1</td><td>Rigidez: se queda en la direccion animada</td></tr>
+    <tr><td>&nbsp;&nbsp;&nbsp;Gravedad<br><code>gravity</code></td><td>numero</td><td>0</td><td>0 a 1</td><td></td></tr>
+    <tr><td>&nbsp;&nbsp;&nbsp;Gravity falloff<br><code>gravity_falloff</code></td><td>numero</td><td>0</td><td>0 a 1</td><td>Menos peso cuando ya cuelga en la animacion</td></tr>
+    <tr><td>&nbsp;&nbsp;&nbsp;Immobile<br><code>immobile</code></td><td>numero</td><td>0</td><td>0 a 1</td><td>1 = se mueve rigido con el personaje; 0 = se queda atras</td></tr>
+    <tr><td>&nbsp;&nbsp;&nbsp;Angulo maximo<br><code>max_angle</code></td><td>numero</td><td>0</td><td>0 a 180</td><td>0 = libre</td></tr>
+    <tr><td>&nbsp;&nbsp;&nbsp;Radio<br><code>radius</code></td><td>numero</td><td>0,02</td><td>0 a 1</td><td></td></tr>
+    <tr><td>&nbsp;&nbsp;&nbsp;Radio en la punta<br><code>radius_tip</code></td><td>numero</td><td>-1</td><td>-1 a 1</td><td>&lt; 0 = igual que el radio</td></tr>
+    <tr><td>&nbsp;&nbsp;&nbsp;Punta extra<br><code>end_length</code></td><td>numero</td><td>0</td><td>0 a 2</td><td>Largo extra tras el ultimo hueso (fraccion) para que tambien se mueva</td></tr>
+    <tr><td>&nbsp;&nbsp;&nbsp;Chocar<br><code>collide</code></td><td>si/no</td><td>si</td><td></td><td></td></tr>
+    <tr><td colspan="5"><strong class="text-white">Colliders (lista)</strong> <code>colliders</code> — Entidades con Phys Bone Collider. Vacio = todas las de la escena</td></tr>
+    <tr><td>&nbsp;&nbsp;&nbsp;Collider<br><code>entity</code></td><td>entidad</td><td>(ninguna)</td><td>arrastrar desde la Jerarquia</td><td></td></tr>
+  </tbody>
+</table>
+<h3 id="PhysBoneCollider">Phys Bone Collider <code>PhysBoneCollider</code></h3>
+<p>Esfera, capsula o plano con el que chocan los Phys Bones (la cabeza, el cuerpo, el suelo). Ponlo en una entidad con Bone Socket para que siga a un hueso.</p>
+<table>
+  <thead><tr><th>Propiedad</th><th>Tipo</th><th>Por defecto</th><th>Valores</th><th>Descripcion</th></tr></thead>
+  <tbody>
+    <tr><td>Forma<br><code>shape</code></td><td>opcion</td><td>Esfera</td><td>Esfera, Capsula, Plano</td><td></td></tr>
+    <tr><td>Radio<br><code>radius</code></td><td>numero</td><td>0,1</td><td>0,001 a 10</td><td></td></tr>
+    <tr><td>Alto<br><code>height</code></td><td>numero</td><td>0,3</td><td>0 a 20</td><td>Total, en el eje Y de la entidad</td></tr>
+    <tr><td>Centro<br><code>offset</code></td><td>Vec3 (metros)</td><td>(0; 0; 0)</td><td></td><td></td></tr>
+    <tr><td>Dentro<br><code>inside</code></td><td>si/no</td><td>no</td><td></td><td>Los huesos se quedan dentro de la forma en vez de fuera</td></tr>
   </tbody>
 </table>
       </div>

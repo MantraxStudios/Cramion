@@ -1,5 +1,7 @@
 #include "CramionCore/ecs/RenderSync.h"
 
+#include "CramionCore/ecs/Rigging.h"
+
 #include "CramionCore/anim/IK.h"
 #include "CramionCore/ecs/MathUtil.h"
 #include "CramionCore/navigation/Navigation.h"
@@ -610,6 +612,11 @@ void RenderSync::reset(scene::Scene& scene) {
     }
     models_.clear();
     loaded_.clear();
+    physbones_.clear();
+    ragdoll_tips_.clear();
+    shared_poses_.clear();
+    socket_sources_.clear();
+    drive_sockets_.clear();
     failed_.clear();
     materials_.clear();
     failed_materials_.clear();
@@ -689,9 +696,13 @@ const RenderSync::HumanoidInfo& RenderSync::humanoidInfo(std::uint32_t model, co
     HumanoidInfo info;
     info.map = humanoid::detect(data.nodes);
     info.rest = humanoid::restGlobals(data.nodes);
+    info.rig = creature::detect(data.nodes, info.rest);
     if (info.map.valid) {
         Vec3 right{};
         humanoid::characterAxes(info.map, info.rest, right, info.up, info.forward);
+    } else if (info.rig.valid) {
+        info.up = info.rig.up;
+        info.forward = info.rig.forward;
     }
     return humanoids_[model] = std::move(info);
 }
@@ -715,6 +726,14 @@ void RenderSync::applyInverseKinematics(World& world, Entity entity, const Inver
         decomposeMatrix(m, position, r, s);
         if (rotation != nullptr) *rotation = r;
         return true;
+    };
+    // Objetivo como entidad o como punto del mundo (Lua).
+    const auto goal_of = [&](const Uuid& id, bool use_position, const Vec3& position, Vec3& out, Quat* rotation) {
+        if (use_position) {
+            out = point_to_model(position);
+            return true;
+        }
+        return target_of(id, out, rotation);
     };
     const HumanoidInfo& human = humanoidInfo(model, data);
     const humanoid::Map& map = human.map;
@@ -767,11 +786,11 @@ void RenderSync::applyInverseKinematics(World& world, Entity entity, const Inver
     const auto limb = [&](const IKLimb& l, Bone upper, Bone lower, Bone end) {
         Vec3 target{};
         Quat rotation{};
-        if (!map.valid || l.weight <= 0.0f || !target_of(l.target, target, &rotation)) return;
+        if (!map.valid || l.weight <= 0.0f || !goal_of(l.target, l.use_position, l.position, target, &rotation)) return;
         Vec3 hint{};
         const bool has_hint = target_of(l.hint, hint, nullptr);
         ik::twoBone(pose, node(upper), node(lower), node(end), target, has_hint ? &hint : nullptr, l.weight);
-        if (l.match_rotation) {
+        if (l.match_rotation && !l.use_position) {
             // Objetivo sin girar = el giro de reposo de la mano/el pie.
             const Quat rest = [&] {
                 Vec3 t{};
@@ -789,9 +808,13 @@ void RenderSync::applyInverseKinematics(World& world, Entity entity, const Inver
     limb(ik.left_foot, Bone::LeftUpperLeg, Bone::LeftLowerLeg, Bone::LeftFoot);
     limb(ik.right_foot, Bone::RightUpperLeg, Bone::RightLowerLeg, Bone::RightFoot);
 
-    // --- Mirar: el cuello gira un poco y la cabeza el resto ---
+    // --- Mirar: el giro se reparte entre el cuello y la cabeza ---
+    // El hueso que mira: el pedido, la cabeza del humanoide o la del animal.
     Vec3 look{};
-    if (map.valid && ik.look_weight > 0.0f && target_of(ik.look_at, look, nullptr)) {
+    int look_node = !ik.look_bone.empty() ? findBone(data, ik.look_bone)
+                                          : (map.valid ? node(Bone::Head) : human.rig.head);
+    if (look_node >= 0 && ik.look_weight > 0.0f &&
+        goal_of(ik.look_at, ik.look_use_position, ik.look_position, look, nullptr)) {
         // Hacia donde mira ahora un hueso: el "delante" del personaje llevado
         // por lo que ese hueso ha girado desde su reposo.
         const auto facing = [&](int bone) {
@@ -802,30 +825,131 @@ void RenderSync::applyInverseKinematics(World& world, Entity entity, const Inver
             const Quat delta = quatMultiply(ik::nodeRotation(pose, bone), quatConjugate(rest));
             return quatRotate(delta, human.forward);
         };
-        const int neck = node(Bone::Neck);
-        const int head = node(Bone::Head);
-        if (neck >= 0 && neck != head) {
-            ik::lookAt(pose, neck, facing(neck), look, ik.look_weight * 0.35f, ik.look_max_angle * 0.35f);
+        // De arriba (cuello) a la cabeza: cada uno hace su parte del giro que
+        // queda; la cabeza, el resto.
+        std::vector<int> bones{look_node};
+        for (int k = 1; k < std::clamp(ik.look_chain, 1, 12); ++k) {
+            const int parent = data.nodes[static_cast<std::size_t>(bones.back())].parent;
+            if (parent < 0) break;
+            bones.push_back(parent);
         }
-        ik::lookAt(pose, head, facing(head), look, ik.look_weight, ik.look_max_angle);
+        std::reverse(bones.begin(), bones.end());
+        const std::size_t n = bones.size();
+        for (std::size_t k = 0; k < n; ++k) {
+            const float share = 1.0f / static_cast<float>(n - k);
+            ik::lookAt(pose, bones[k], facing(bones[k]), look, ik.look_weight * share, ik.look_max_angle * share);
+        }
     }
 
-    // --- Cadenas sueltas (cualquier esqueleto) ---
-    for (const IKChain& chain : ik.chains) {
-        Vec3 target{};
-        if (chain.bone.empty() || chain.weight <= 0.0f || !target_of(chain.target, target, nullptr)) continue;
-        int end = -1;
-        for (std::size_t i = 0; i < data.nodes.size(); ++i) {
-            if (data.nodes[i].name == chain.bone) {
-                end = static_cast<int>(i);
-                break;
+    // --- Patas al suelo (cualquier esqueleto: animales) ---
+    // Como los pies del humanoide: cada pie se apoya en lo que tiene debajo, el
+    // cuerpo baja lo que baje el pie mas bajo y, con 3 o mas patas, se inclina
+    // con la pendiente (cuesta arriba, de lado).
+    struct GroundFoot {
+        std::vector<int> joints;
+        const IKChain* chain = nullptr;
+        Vec3 world{};
+        float delta = 0.0f;
+        Vec3 normal{0.0f, 1.0f, 0.0f};
+        bool hit = false;
+    };
+    std::vector<GroundFoot> grounded;
+    if (ground_query_ && ik.grounding_weight > 0.0f) {
+        const Vec3 up_world{0.0f, 1.0f, 0.0f};
+        const float base_y = world_matrix.m[3][1];
+        for (const IKChain& chain : ik.chains) {
+            if (!chain.ground || chain.weight <= 0.0f) continue;
+            GroundFoot f;
+            f.chain = &chain;
+            f.joints = ik::chainTo(data.nodes, findBone(data, chain.bone), std::clamp(chain.length, 1, 16));
+            if (f.joints.size() < 2) continue;
+            f.world = transformPoint(world_matrix, ik::nodePosition(pose, f.joints.back()));
+            const float lift = f.world.y - base_y;
+            Vec3 ground{};
+            Vec3 normal{};
+            const Vec3 origin{f.world.x, base_y + ik.max_step + 0.05f, f.world.z};
+            if (ground_query_(origin, up_world * -1.0f, ik.max_step * 2.0f + 0.1f, ground, normal, entity)) {
+                f.hit = true;
+                f.normal = normal;
+                f.delta = std::clamp(ground.y + lift - f.world.y, -ik.max_step, ik.max_step);
+            }
+            grounded.push_back(std::move(f));
+        }
+        std::vector<int> roots;
+        float lowest = 0.0f;
+        for (const GroundFoot& f : grounded) {
+            roots.push_back(f.joints.front());
+            if (f.hit) lowest = std::min(lowest, f.delta);
+        }
+        const int body = procedural::commonAncestor(data.nodes, roots);
+        if (body >= 0 && !grounded.empty()) {
+            if (lowest < 0.0f) {
+                ik::translateGlobal(pose, body, transformDirection(to_model, up_world * (lowest * ik.grounding_weight)));
+            }
+            // Inclinar: diferencia de altura entre las patas de delante y de
+            // detras (y entre izquierda y derecha).
+            if (ik.align_body && ik.body_align_weight > 0.0f && grounded.size() >= 3) {
+                const Vec3 forward = core::normalize(transformDirection(world_matrix, human.forward));
+                const Vec3 flat_forward = core::normalize(Vec3{forward.x, 0.0f, forward.z});
+                const Vec3 right = core::normalize(core::cross(flat_forward, up_world));
+                const auto slope = [&](const Vec3& axis) {
+                    // Recta de minimos cuadrados de la altura del suelo frente a la
+                    // posicion sobre el eje: su pendiente.
+                    float sx = 0.0f, sy = 0.0f, sxx = 0.0f, sxy = 0.0f, n = 0.0f;
+                    for (const GroundFoot& f : grounded) {
+                        if (!f.hit) continue;
+                        const float x = core::dot(f.world, axis);
+                        const float y = f.delta;
+                        sx += x; sy += y; sxx += x * x; sxy += x * y; n += 1.0f;
+                    }
+                    const float den = n * sxx - sx * sx;
+                    return n >= 2.0f && std::abs(den) > 1e-6f ? (n * sxy - sx * sy) / den : 0.0f;
+                };
+                const float pitch = std::atan(slope(flat_forward));  // sube hacia delante
+                const float roll = std::atan(slope(right));          // sube hacia la derecha
+                const float w = ik.body_align_weight * ik.grounding_weight;
+                const auto axis_angle = [](const Vec3& axis, float radians) {
+                    const Vec3 a = axis * std::sin(radians * 0.5f);
+                    return Quat{a.x, a.y, a.z, std::cos(radians * 0.5f)};
+                };
+                // El giro con los ejes pasados al modelo.
+                const Vec3 axis_r = core::normalize(transformDirection(to_model, right));
+                const Vec3 axis_f = core::normalize(transformDirection(to_model, flat_forward));
+                ik::rotateGlobal(pose, body, quatMultiply(axis_angle(axis_r, -pitch * w), axis_angle(axis_f, roll * w)));
             }
         }
-        const int mid = end >= 0 ? data.nodes[static_cast<std::size_t>(end)].parent : -1;
-        const int upper = mid >= 0 ? data.nodes[static_cast<std::size_t>(mid)].parent : -1;
+        for (const GroundFoot& f : grounded) {
+            if (!f.hit) continue;
+            const Vec3 target = point_to_model(Vec3{f.world.x, f.world.y + f.delta, f.world.z});
+            Vec3 hint{};
+            const bool has_hint = target_of(f.chain->hint, hint, nullptr);
+            ik::chain(pose, f.joints, target, has_hint ? &hint : nullptr, ik.grounding_weight * f.chain->weight);
+            if (ik.align_feet) {
+                const Quat tilt = ik::rotationBetween(dir_to_model(up_world), dir_to_model(f.normal));
+                ik::rotateGlobal(pose, f.joints.back(), core::slerp(Quat{}, tilt, ik.grounding_weight));
+            }
+        }
+    }
+
+    // --- Cadenas a un objetivo (cualquier esqueleto) ---
+    for (const IKChain& chain : ik.chains) {
+        if (chain.ground || chain.bone.empty() || chain.weight <= 0.0f) continue;
+        Vec3 target{};
+        Quat rotation{};
+        if (!goal_of(chain.target, chain.use_position, chain.position, target, &rotation)) continue;
+        const std::vector<int> joints = ik::chainTo(data.nodes, findBone(data, chain.bone), std::clamp(chain.length, 1, 16));
+        if (joints.size() < 2) continue;
         Vec3 hint{};
         const bool has_hint = target_of(chain.hint, hint, nullptr);
-        ik::twoBone(pose, upper, mid, end, target, has_hint ? &hint : nullptr, chain.weight);
+        ik::chain(pose, joints, target, has_hint ? &hint : nullptr, chain.weight);
+        if (chain.match_rotation && !chain.use_position) {
+            Vec3 t{};
+            Quat rest{};
+            Vec3 s{};
+            decomposeMatrix(human.rest[static_cast<std::size_t>(joints.back())], t, rest, s);
+            const Quat wanted = quatMultiply(rotation, rest);
+            ik::setGlobalRotation(pose, joints.back(), core::slerp(ik::nodeRotation(pose, joints.back()), wanted, chain.weight));
+        }
     }
     animator.updateBones();
 }
@@ -1456,24 +1580,38 @@ void RenderSync::syncActors(World& world, scene::Scene& scene, gfx::VulkanRender
                 posed = true;
             }
         }
-        // Cinematica inversa sobre la pose de este frame (sin animar o en
-        // pausa se parte de la pose limpia: el IK no se acumula).
-        // Orden: animacion -> procedural (capas y patas) -> IK -> muelles
-        // (siguen a la pose final).
-        const InverseKinematics* ik = e.tryGet<InverseKinematics>();
-        const ProceduralAnimation* proc = e.tryGet<ProceduralAnimation>();
-        const bool use_ik = ik != nullptr && ik->enabled;
+        // Esqueleto sobre la pose de este frame (sin animar o en pausa se
+        // parte de la pose limpia: nada se acumula). Los componentes pueden
+        // estar en la pieza o en un antepasado (la raiz del modelo): entonces
+        // la primera pieza calcula la pose y las demas la copian.
+        // Orden: animacion -> huesos movidos y sockets -> procedural (capas y
+        // patas) -> IK -> muelles -> phys bones -> ragdoll.
+        const RigComponents rig = gatherRig(e);
+        const ProceduralAnimation* proc = rig.proc;
+        const bool use_ik = rig.ik != nullptr && rig.ik->enabled;
         const bool use_proc = proc != nullptr && proc->enabled;
-        if ((use_ik || use_proc) && !data.nodes.empty() && !data.bones.empty()) {
-            if (!posed) state.animator.evaluate();
-            if (use_proc) applyProceduralBefore(world, e, *proc, state.animator, data, *model, delta_seconds);
-            if (use_ik) applyInverseKinematics(world, e, *ik, state.animator, data, *model);
-            if (use_proc) applyProceduralSprings(e, *proc, state.animator, data, *model, delta_seconds);
-            state.animator.updateBones();
-            animating = true;
-        } else if (proc == nullptr) {
-            procedural_.erase(e.handle());
+        // Solo esqueletos de verdad (los modelos estaticos tienen un hueso).
+        if (rig.any() && data.nodes.size() > 1 && data.bones.size() > 1) {
+            if (copySharedPose(rig, state.animator, data)) {
+                animating = true;
+            } else {
+                if (!posed) state.animator.evaluate();
+                if (rig.skeleton != nullptr) applyBoneOverrides(*rig.skeleton, state.animator, data);
+                if (rig.drive) applyDriveSockets(world, e, state.animator, data);
+                if (use_proc) applyProceduralBefore(world, e, *proc, state.animator, data, *model, delta_seconds);
+                if (use_ik) applyInverseKinematics(world, e, *rig.ik, state.animator, data, *model);
+                if (use_proc) applyProceduralSprings(e, *proc, state.animator, data, *model, delta_seconds);
+                if (rig.physbones != nullptr && rig.physbones->enabled) {
+                    applyPhysBones(world, e, *rig.physbones, state.animator, data, delta_seconds);
+                }
+                if (rig.ragdoll != nullptr) applyRagdoll(e, *rig.ragdoll, state.animator, data, delta_seconds);
+                state.animator.updateBones();
+                storeSharedPose(rig, state.animator);
+                animating = true;
+            }
         }
+        if (proc == nullptr) procedural_.erase(e.handle());
+        if (rig.physbones == nullptr) physbones_.erase(e.handle());
 
         const Mat4& world_matrix = e.worldMatrix();
         if (count >= actors.size()) actors.emplace_back();
@@ -1498,6 +1636,9 @@ void RenderSync::syncActors(World& world, scene::Scene& scene, gfx::VulkanRender
         ++count;
     });
     actors.resize(count);
+    // Bone Sockets: lo enganchado a un hueso va con el (y los que mueven
+    // huesos se apuntan para el frame que viene).
+    updateSockets(world, scene);
 
     // El indice entidad -> actor solo se rehace si la lista cambio.
     if (actor_entities_ != previous_entities_) {
@@ -1512,7 +1653,17 @@ void RenderSync::syncActors(World& world, scene::Scene& scene, gfx::VulkanRender
 
     // Olvida los animadores de lo que ya no se dibuja.
     for (auto it = animations_.begin(); it != animations_.end();) {
-        it = it->second.seen == frame_ ? std::next(it) : animations_.erase(it);
+        if (it->second.seen == frame_) {
+            ++it;
+            continue;
+        }
+        physbones_.erase(it->first);
+        ragdoll_tips_.erase(it->first);
+        drive_sockets_.erase(it->first);
+        it = animations_.erase(it);
+    }
+    for (auto it = shared_poses_.begin(); it != shared_poses_.end();) {
+        it = it->second.frame + 2 < frame_ ? shared_poses_.erase(it) : std::next(it);
     }
 
     if (added) {

@@ -18,6 +18,7 @@
 #include "CramionCore/asset/AssetManager.h"
 #include "CramionCore/ecs/Components.h"
 #include "CramionCore/ecs/MathUtil.h"
+#include "CramionCore/physics/Ragdoll.h"
 #include "CramionCore/terrain/Terrain.h"
 #include "CramionCore/water/Water.h"
 
@@ -52,6 +53,7 @@
 #include <Jolt/Physics/Collision/Shape/StaticCompoundShape.h>
 #include <Jolt/Physics/Collision/ShapeCast.h>
 #include <Jolt/Physics/Collision/TransformedShape.h>
+#include <Jolt/Physics/Constraints/SwingTwistConstraint.h>
 #include <Jolt/Physics/PhysicsSettings.h>
 #include <Jolt/Physics/PhysicsSystem.h>
 #include <Jolt/RegisterTypes.h>
@@ -532,6 +534,256 @@ struct PhysicsSystem::Impl {
 
     std::unordered_map<entt::entity, BodyEntry> entries;
     std::unordered_map<std::uint32_t, entt::entity> body_entities;
+
+    // --- Ragdolls (ecs::Ragdoll): una capsula por hueso y sus articulaciones ---
+    struct RagdollEntry {
+        std::shared_ptr<ecs::RagdollRuntime> runtime;
+        std::vector<JPH::BodyID> bodies;
+        std::vector<JPH::Ref<JPH::Constraint>> constraints;
+        std::vector<Quat> offset;       // giro del cuerpo = giro del hueso * offset
+        std::vector<float> half;        // del hueso al centro, por el eje Y del cuerpo
+        std::vector<float> cylinder;    // medio cilindro de la capsula
+        std::vector<float> radius;
+        std::vector<Vec3> previous_position, current_position;
+        std::vector<Quat> previous_rotation, current_rotation;
+        bool follow = true;
+        Vec3 root_offset{};             // de la entidad a la raiz (horizontal)
+        float ground_gap = 0.0f;        // del punto mas bajo del cuerpo a la entidad
+    };
+    std::unordered_map<entt::entity, RagdollEntry> ragdolls;
+
+    void destroyRagdoll(RagdollEntry& r, float blend_out) {
+        for (JPH::Ref<JPH::Constraint>& c : r.constraints) {
+            if (system && c) system->RemoveConstraint(c);
+        }
+        r.constraints.clear();
+        for (const JPH::BodyID& id : r.bodies) {
+            if (id.IsInvalid() || !system) continue;
+            body_entities.erase(id.GetIndexAndSequenceNumber());
+            bodies().RemoveBody(id);
+            bodies().DestroyBody(id);
+        }
+        r.bodies.clear();
+        if (r.runtime) {
+            r.runtime->simulating = false;
+            r.runtime->blend_out = r.runtime->blend_out_total = std::max(blend_out, 0.0f);
+            r.runtime->pushes.clear();
+        }
+    }
+
+    static Quat axisRotation(const Vec3& from, const Vec3& to) {
+        const float d = core::dot(from, to);
+        if (d < -0.9999f) return Quat{1.0f, 0.0f, 0.0f, 0.0f};
+        const Vec3 c = core::cross(from, to);
+        return core::normalize(Quat{c.x, c.y, c.z, 1.0f + d});
+    }
+
+    void createRagdoll(ecs::World& w, entt::entity handle, const ecs::Ragdoll& rag,
+                       const std::shared_ptr<ecs::RagdollRuntime>& runtime) {
+        ecs::RagdollRuntime& rt = *runtime;
+        RagdollEntry r;
+        r.runtime = runtime;
+        r.follow = rag.follow_entity;
+        const ecs::Entity entity = w.wrap(handle);
+        const int layer = entity.tryGet<ecs::EntityInfo>() != nullptr ? entity.get<ecs::EntityInfo>().layer : 0;
+        const Vec3 kY{0.0f, 1.0f, 0.0f};
+        const float dt = std::max(rt.pose_dt, 1e-3f);
+        std::vector<Vec3> dirs(rt.bones.size());
+        float lowest = 1e30f;
+        for (std::size_t k = 0; k < rt.bones.size(); ++k) {
+            const ecs::RagdollRuntime::Bone& b = rt.bones[k];
+            Vec3 origin{};
+            Quat bone_rotation{};
+            Vec3 scale{};
+            ecs::decomposeMatrix(b.world, origin, bone_rotation, scale);
+            bone_rotation = core::normalize(bone_rotation);
+            Vec3 axis = b.tip - origin;
+            const float length = std::max(core::length(axis), 0.02f);
+            const Vec3 dir = core::length(axis) > 1e-5f ? axis * (1.0f / core::length(axis)) : ecs::quatRotate(bone_rotation, kY);
+            dirs[k] = dir;
+            const float radius = std::clamp(b.radius, 0.01f, std::max(length * 0.5f, 0.01f));
+            const float half_cylinder = std::max(length * 0.5f - radius, 0.005f);
+            const Quat body_rotation = axisRotation(kY, dir);
+            const Vec3 center = origin + dir * (length * 0.5f);
+            JPH::RefConst<JPH::Shape> shape = new JPH::CapsuleShape(half_cylinder, radius);
+
+            Vec3 linear{};
+            Vec3 angular{};
+            if (rag.inherit_velocity && rt.has_previous) {
+                Vec3 origin_p{};
+                Quat rotation_p{};
+                Vec3 scale_p{};
+                ecs::decomposeMatrix(b.previous, origin_p, rotation_p, scale_p);
+                rotation_p = core::normalize(rotation_p);
+                const Vec3 dir_local = ecs::quatRotate(ecs::quatConjugate(bone_rotation), dir);
+                const Vec3 center_p = origin_p + ecs::quatRotate(rotation_p, dir_local) * (length * 0.5f);
+                linear = (center - center_p) * (1.0f / dt);
+                Quat dq = ecs::quatMultiply(bone_rotation, ecs::quatConjugate(rotation_p));
+                if (dq.w < 0.0f) dq = Quat{-dq.x, -dq.y, -dq.z, -dq.w};
+                const float angle = 2.0f * std::acos(std::clamp(dq.w, -1.0f, 1.0f));
+                const float s = std::sqrt(std::max(1.0f - dq.w * dq.w, 0.0f));
+                if (s > 1e-5f) angular = Vec3{dq.x / s, dq.y / s, dq.z / s} * (angle / dt);
+                // Un teletransporte no es velocidad.
+                if (core::length(linear) > 40.0f) linear = linear * (40.0f / core::length(linear));
+                if (core::length(angular) > 40.0f) angular = angular * (40.0f / core::length(angular));
+            }
+            const JPH::BodyID id = createBody(shape, center, body_rotation, JPH::EMotionType::Dynamic, objectLayer(layer, true),
+                                              handle, false, [&](JPH::BodyCreationSettings& s) {
+                s.mFriction = rag.friction;
+                s.mRestitution = 0.0f;
+                s.mLinearDamping = std::max(rag.damping, 0.0f);
+                s.mAngularDamping = std::max(rag.damping, 0.0f) + 0.05f;
+                s.mOverrideMassProperties = JPH::EOverrideMassProperties::CalculateInertia;
+                s.mMassPropertiesOverride.mMass = std::max(b.mass, 0.05f);
+                s.mMotionQuality = JPH::EMotionQuality::LinearCast;  // las capsulas finas no atraviesan el suelo
+                s.mLinearVelocity = toJolt(linear);
+                s.mAngularVelocity = toJolt(angular);
+            });
+            r.bodies.push_back(id);
+            r.offset.push_back(ecs::quatMultiply(ecs::quatConjugate(bone_rotation), body_rotation));
+            r.half.push_back(length * 0.5f);
+            r.cylinder.push_back(half_cylinder);
+            r.radius.push_back(radius);
+            r.previous_position.push_back(center);
+            r.current_position.push_back(center);
+            r.previous_rotation.push_back(body_rotation);
+            r.current_rotation.push_back(body_rotation);
+            lowest = std::min(lowest, center.y - half_cylinder * std::abs(dir.y) - radius);
+            rt.bones[k].sim_position = origin;
+            rt.bones[k].sim_rotation = bone_rotation;
+        }
+        // Articulaciones: en el origen de cada hueso, con su padre.
+        for (std::size_t k = 0; k < rt.bones.size(); ++k) {
+            const int p = rt.bones[k].parent;
+            if (p < 0 || r.bodies[k].IsInvalid() || r.bodies[static_cast<std::size_t>(p)].IsInvalid()) continue;
+            const Vec3 anchor = rt.bones[k].sim_position;
+            const Vec3 twist = dirs[k];
+            const Vec3 pick = std::abs(twist.y) < 0.9f ? kY : Vec3{1.0f, 0.0f, 0.0f};
+            const Vec3 plane = core::normalize(core::cross(twist, pick));
+            JPH::SwingTwistConstraintSettings s;
+            s.mSpace = JPH::EConstraintSpace::WorldSpace;
+            s.mPosition1 = s.mPosition2 = JPH::RVec3(toJolt(anchor));
+            s.mTwistAxis1 = s.mTwistAxis2 = toJolt(twist);
+            s.mPlaneAxis1 = s.mPlaneAxis2 = toJolt(plane);
+            const float swing = std::clamp(rt.bones[k].swing, 1.0f, 179.0f) * core::kPi / 180.0f;
+            const float twist_angle = std::clamp(rt.bones[k].twist, 0.5f, 179.0f) * core::kPi / 180.0f;
+            s.mNormalHalfConeAngle = swing;
+            s.mPlaneHalfConeAngle = swing;
+            s.mTwistMinAngle = -twist_angle;
+            s.mTwistMaxAngle = twist_angle;
+            s.mMaxFrictionTorque = std::max(rag.joint_friction, 0.0f) * rt.bones[k].mass;
+            JPH::TwoBodyConstraint* c =
+                bodies().CreateConstraint(&s, r.bodies[static_cast<std::size_t>(p)], r.bodies[k]);
+            if (c == nullptr) continue;
+            system->AddConstraint(c);
+            r.constraints.emplace_back(c);
+        }
+        const Vec3 entity_position = entity.worldPosition();
+        const Vec3 root = rt.bones.front().sim_position;
+        r.root_offset = Vec3{root.x - entity_position.x, 0.0f, root.z - entity_position.z};
+        r.ground_gap = lowest - entity_position.y;
+        rt.simulating = true;
+        rt.sim_ready = true;
+        rt.blend_out = 0.0f;
+        std::cout << "[Fisica] Ragdoll de " << entity.name() << ": " << r.bodies.size() << " cuerpos, "
+                  << r.constraints.size() << " articulaciones" << std::endl;
+        ragdolls[handle] = std::move(r);
+    }
+
+    void syncRagdolls(ecs::World& w, bool simulate) {
+        entt::registry& registry = w.registry();
+        for (auto it = ragdolls.begin(); it != ragdolls.end();) {
+            const entt::entity h = it->first;
+            const ecs::Ragdoll* rag = registry.valid(h) ? registry.try_get<ecs::Ragdoll>(h) : nullptr;
+            const bool keep = simulate && rag != nullptr && rag->active && w.wrap(h).activeInHierarchy() &&
+                              rag->runtime.ptr == it->second.runtime;
+            if (keep) {
+                ++it;
+                continue;
+            }
+            destroyRagdoll(it->second, rag != nullptr ? rag->blend_out : 0.0f);
+            it = ragdolls.erase(it);
+        }
+        if (!simulate) return;
+        for (const entt::entity h : registry.view<ecs::Ragdoll>()) {
+            ecs::Ragdoll& rag = registry.get<ecs::Ragdoll>(h);
+            const std::shared_ptr<ecs::RagdollRuntime>& rt = rag.runtime.ptr;
+            if (!rag.active) {
+                if (rt) rt->pushes.clear();
+                continue;
+            }
+            if (ragdolls.contains(h) || !w.wrap(h).activeInHierarchy()) continue;
+            // La animacion todavia no dijo donde estan los huesos: el frame que viene.
+            if (!rt || !rt->pose_ready || rt->bones.empty()) continue;
+            createRagdoll(w, h, rag, rt);
+        }
+        // Empujones pedidos desde Lua.
+        for (auto& [h, r] : ragdolls) {
+            if (!r.runtime) continue;
+            for (const ecs::RagdollRuntime::Push& push : r.runtime->pushes) {
+                std::size_t k = 0;
+                if (push.bone >= 0 && static_cast<std::size_t>(push.bone) < r.bodies.size()) {
+                    k = static_cast<std::size_t>(push.bone);
+                } else if (push.at_point) {
+                    float best = 1e30f;
+                    for (std::size_t i = 0; i < r.current_position.size(); ++i) {
+                        const float dd = core::length(r.current_position[i] - push.point);
+                        if (dd < best) {
+                            best = dd;
+                            k = i;
+                        }
+                    }
+                }
+                if (k >= r.bodies.size() || r.bodies[k].IsInvalid()) continue;
+                if (push.at_point) {
+                    bodies().AddImpulse(r.bodies[k], toJolt(push.impulse), JPH::RVec3(toJolt(push.point)));
+                } else {
+                    bodies().AddImpulse(r.bodies[k], toJolt(push.impulse));
+                }
+            }
+            r.runtime->pushes.clear();
+        }
+    }
+
+    void captureRagdolls() {
+        for (auto& [h, r] : ragdolls) {
+            for (std::size_t k = 0; k < r.bodies.size(); ++k) {
+                if (r.bodies[k].IsInvalid()) continue;
+                r.previous_position[k] = r.current_position[k];
+                r.previous_rotation[k] = r.current_rotation[k];
+                JPH::RVec3 p;
+                JPH::Quat q;
+                bodies().GetPositionAndRotation(r.bodies[k], p, q);
+                r.current_position[k] = fromJolt(JPH::Vec3(p));
+                r.current_rotation[k] = fromJolt(q.Normalized());
+            }
+        }
+    }
+
+    // La pose de los huesos (interpolada como los cuerpos) y, si se pide, la
+    // entidad va con el cuerpo.
+    void writeRagdolls(ecs::World& w, float alpha) {
+        const Vec3 kY{0.0f, 1.0f, 0.0f};
+        const float t = std::clamp(alpha, 0.0f, 1.0f);
+        for (auto& [h, r] : ragdolls) {
+            if (!r.runtime || r.runtime->bones.size() != r.bodies.size()) continue;
+            float lowest = 1e30f;
+            for (std::size_t k = 0; k < r.bodies.size(); ++k) {
+                const Vec3 center = core::lerp(r.previous_position[k], r.current_position[k], t);
+                const Quat body_rotation = core::slerp(r.previous_rotation[k], r.current_rotation[k], t);
+                const Vec3 axis = ecs::quatRotate(body_rotation, kY);
+                ecs::RagdollRuntime::Bone& b = r.runtime->bones[k];
+                b.sim_rotation = core::normalize(ecs::quatMultiply(body_rotation, ecs::quatConjugate(r.offset[k])));
+                b.sim_position = center - axis * r.half[k];
+                lowest = std::min(lowest, center.y - r.cylinder[k] * std::abs(axis.y) - r.radius[k]);
+            }
+            r.runtime->sim_ready = true;
+            if (!r.follow || !w.valid(h)) continue;
+            ecs::Entity e = w.wrap(h);
+            const Vec3 root = r.runtime->bones.front().sim_position;
+            e.setWorldPosition(Vec3{root.x - r.root_offset.x, lowest - r.ground_gap, root.z - r.root_offset.z});
+        }
+    }
     std::map<MeshKey, JPH::RefConst<JPH::Shape>> mesh_shapes;
     // Mallas creadas por codigo (MeshRenderer::mesh): por malla y version.
     struct RuntimeShapeKey {
@@ -1469,6 +1721,9 @@ struct PhysicsSystem::Impl {
             const core::Mat4& world_matrix = entity.worldMatrix();
             const ecs::EntityInfo* info = Pools::find(pools.info, handle);
             const std::uint64_t signature = signatureOf(pools, handle, info != nullptr ? info->layer : 0);
+            // Ragdoll cayendo: su propio collider (la capsula del personaje)
+            // sale de la simulacion hasta que se apague.
+            if (ragdolls.contains(handle)) continue;
             auto it = entries.find(handle);
             if (it != entries.end()) it->second.seen = sync_generation;
             const bool has_mesh = pools.mesh.contains(handle);
@@ -1764,6 +2019,7 @@ struct PhysicsSystem::Impl {
         system->Update(dt, std::max(settings.collision_steps, 1), temp_allocator.get(), job_system.get());
         ++steps;
         capturePoses();
+        captureRagdolls();
         processContacts();
         (void)w;
     }
@@ -1867,6 +2123,8 @@ void PhysicsSystem::start(ecs::World& world) {
 void PhysicsSystem::stop() {
     Impl& d = *impl_;
     if (!d.system) return;
+    for (auto& [handle, ragdoll] : d.ragdolls) d.destroyRagdoll(ragdoll, 0.0f);
+    d.ragdolls.clear();
     for (auto& [handle, vehicle] : d.vehicles) d.removeVehicle(vehicle);
     d.vehicles.clear();
     for (auto& [handle, entry] : d.entries) {
@@ -1931,6 +2189,10 @@ void PhysicsSystem::shiftOrigin(const core::Vec3& offset) {
         shift_matrix(entry.matrix);
     }
     for (auto& [key, mesh] : d.static_meshes) mesh.origin = mesh.origin - offset;
+    for (auto& [handle, ragdoll] : d.ragdolls) {
+        for (Vec3& p : ragdoll.previous_position) p = p - offset;
+        for (Vec3& p : ragdoll.current_position) p = p - offset;
+    }
     d.queries.clear();
     if (d.system == nullptr) return;
     // Todos los cuerpos (tambien los de las mallas estaticas y las ruedas):
@@ -1962,6 +2224,7 @@ int PhysicsSystem::update(ecs::World& world, float delta_seconds, bool simulate)
     d.events.clear();
     const auto begin = std::chrono::steady_clock::now();
     d.sync(world, simulate);
+    d.syncRagdolls(world, simulate);
     int steps = 0;
     if (simulate) {
         const float step = d.settings.fixed_step;
@@ -1975,6 +2238,7 @@ int PhysicsSystem::update(ecs::World& world, float delta_seconds, bool simulate)
         // de acumular retraso.
         d.accumulator = std::min(d.accumulator, step);
         d.writeBack(world, d.accumulator / step);
+        d.writeRagdolls(world, d.accumulator / step);
     } else {
         d.accumulator = 0.0f;
         d.contact_points.clear();

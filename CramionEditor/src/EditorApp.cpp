@@ -130,6 +130,20 @@ bool EditorApp::openProject(const std::filesystem::path& path, bool open_scene) 
     }
     scripts_.setGraphics(graphics_host_.get());
     sync_ = std::make_unique<ecs::RenderSync>(*asset_manager_);
+    // Lua: huesos, IK y ragdoll leen la pose de cada frame del RenderSync.
+    scripts_.setSkeletonHost(scripting::ScriptSystem::SkeletonHost{
+        [this](ecs::Entity e, const std::string& bone, core::Mat4& m) {
+            return sync_ && e.world() != nullptr && (*sync_).boneWorld(*e.world(), e, bone, m);
+        },
+        [this](ecs::Entity e) {
+            std::vector<std::string> names;
+            ecs::RenderSync::SkeletonPose pose;
+            if (sync_ && e.world() != nullptr && (*sync_).skeletonPose(*e.world(), e, pose)) names = pose.names;
+            return names;
+        },
+        [this](ecs::Entity e, float* scale) -> const asset::ModelData* {
+            return sync_ && e.world() != nullptr ? (*sync_).skeletonData(*e.world(), e, scale) : nullptr;
+        }});
     sync_->reset(scene_);
     // Terrenos: datos en Assets (compartidos por el render y la fisica).
     terrain_store_.clear();

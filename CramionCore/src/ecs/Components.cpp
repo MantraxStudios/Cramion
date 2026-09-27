@@ -305,6 +305,11 @@ void InverseKinematics::reflect(PropertyVisitor& v) {
         v.entity({(k + "_hint").c_str(), "Codo / rodilla hacia", "Entidad hacia la que se dobla (opcional)"}, l.hint);
         v.field({(k + "_weight").c_str(), "Peso"}, l.weight, FloatRange{0.0f, 1.0f, 0.01f, "%.2f", true});
         v.field({(k + "_rotation").c_str(), "Copiar giro", "La mano o el pie gira como el objetivo"}, l.match_rotation);
+        v.field({(k + "_use_position").c_str(), "Usar un punto", "El objetivo es un punto del mundo (Lua: setIKTarget con un Vec3)"},
+                l.use_position);
+        if (v.wantsAllFields() || l.use_position) {
+            v.field({(k + "_position").c_str(), "Punto"}, l.position, Vec3Kind::Position);
+        }
         v.endGroup();
     };
     limb("Mano izquierda", "left_hand", left_hand);
@@ -315,6 +320,13 @@ void InverseKinematics::reflect(PropertyVisitor& v) {
         v.entity({"look_at", "Mirar a", "La cabeza sigue a esta entidad"}, look_at);
         v.field({"look_weight", "Peso"}, look_weight, FloatRange{0.0f, 1.0f, 0.01f, "%.2f", true});
         v.field({"look_max_angle", "Angulo maximo"}, look_max_angle, FloatRange{0.0f, 180.0f, 1.0f, "%.0f grados"});
+        v.field({"look_bone", "Hueso que mira", "Vacio = la cabeza (humanoide o animal detectado)"}, look_bone);
+        v.field({"look_chain", "Huesos del cuello", "Cuantos huesos hacia arriba reparten el giro (cuellos largos)"},
+                look_chain, 1, 12);
+        v.field({"look_use_position", "Mirar a un punto"}, look_use_position);
+        if (v.wantsAllFields() || look_use_position) {
+            v.field({"look_position", "Punto"}, look_position, Vec3Kind::Position);
+        }
         v.endGroup();
     }
     if (v.beginGroup("Pies en el suelo")) {
@@ -323,14 +335,118 @@ void InverseKinematics::reflect(PropertyVisitor& v) {
         v.field({"grounding_weight", "Peso"}, grounding_weight, FloatRange{0.0f, 1.0f, 0.01f, "%.2f", true});
         v.field({"max_step", "Escalon maximo"}, max_step, FloatRange{0.0f, 2.0f, 0.01f, "%.2f m"});
         v.field({"align_feet", "Inclinar el pie", "El pie sigue la pendiente del suelo"}, align_feet);
+        v.field({"align_body", "Inclinar el cuerpo", "Animales: el cuerpo sigue la pendiente bajo sus patas (cadenas con suelo)"},
+                align_body);
+        v.field({"body_align_weight", "Peso del cuerpo"}, body_align_weight, FloatRange{0.0f, 1.0f, 0.01f, "%.2f", true});
         v.endGroup();
     }
-    listField(v, {"chains", "Cadenas (otros esqueletos)", "Dos huesos que llegan a un objetivo: el hueso final y sus dos padres"},
+    listField(v, {"chains", "Cadenas (animales y otros esqueletos)",
+                  "Patas, cuellos, colas: el hueso final y cuantos huesos por encima se doblan. Con suelo, el pie se apoya "
+                  "en lo que tiene debajo"},
               chains, [](IKChain& c, PropertyVisitor& item) {
                   item.field({"bone", "Hueso final"}, c.bone);
+                  item.field({"length", "Huesos", "2 = muslo y espinilla; 3 = patas de perro o caballo; mas = cuellos y colas"},
+                             c.length, 1, 16);
+                  item.field({"ground", "Al suelo", "El objetivo es el suelo bajo el pie (Pies en el suelo)"}, c.ground);
                   item.entity({"target", "Objetivo"}, c.target);
                   item.entity({"hint", "Doblar hacia"}, c.hint);
                   item.field({"weight", "Peso"}, c.weight, FloatRange{0.0f, 1.0f, 0.01f, "%.2f", true});
+                  item.field({"match_rotation", "Copiar giro"}, c.match_rotation);
+                  item.field({"use_position", "Usar un punto"}, c.use_position);
+                  item.field({"position", "Punto"}, c.position, Vec3Kind::Position);
+              });
+}
+
+void Skeleton::reflect(PropertyVisitor& v) {
+    v.field({"show_bones", "Ver huesos", "Dibuja el esqueleto en la Escena (tambien en Play)"}, show_bones);
+    v.field({"show_names", "Ver nombres"}, show_names);
+    v.field({"bone_size", "Grosor"}, bone_size, FloatRange{0.1f, 5.0f, 0.01f, "%.2f"});
+    v.field({"selected", "Hueso resaltado"}, selected);
+    listField(v, {"bones", "Huesos movidos", "Giro, desplazamiento y escala encima de la animacion"}, bones,
+              [](BoneOverride& b, PropertyVisitor& item) {
+                  item.field({"bone", "Hueso"}, b.bone);
+                  item.field({"rotation", "Giro"}, b.rotation, Vec3Kind::Euler);
+                  item.field({"position", "Desplazamiento"}, b.position, Vec3Kind::Position);
+                  item.field({"scale", "Escala"}, b.scale, Vec3Kind::Scale);
+                  item.field({"weight", "Peso"}, b.weight, FloatRange{0.0f, 1.0f, 0.01f, "%.2f", true});
+              });
+}
+
+void BoneSocket::reflect(PropertyVisitor& v) {
+    v.field({"bone", "Hueso", "Nombre del hueso del modelo de un antepasado (o hermano)"}, bone);
+    static constexpr std::array<const char*, 2> kModes = {"Seguir al hueso", "Mover el hueso"};
+    enumField(v, {"mode", "Modo", "Seguir: la entidad va con el hueso. Mover: el hueso sigue a la entidad"}, mode, kModes);
+    v.field({"position", "Desplazamiento", "En los ejes del hueso"}, position, Vec3Kind::Position);
+    v.field({"rotation", "Giro"}, rotation, Vec3Kind::Euler);
+    if (v.wantsAllFields() || mode == SocketMode::Drive) {
+        v.field({"drive_position", "Mover tambien la posicion"}, drive_position);
+        v.field({"weight", "Peso"}, weight, FloatRange{0.0f, 1.0f, 0.01f, "%.2f", true});
+    }
+}
+
+void PhysBones::reflect(PropertyVisitor& v) {
+    v.field({"enabled", "Activados"}, enabled);
+    listField(v, {"chains", "Cadenas", "Cada una: un hueso raiz y todos sus hijos (pelo, cola, orejas, falda)"}, chains,
+              [](PhysBoneChain& c, PropertyVisitor& item) {
+                  item.field({"bone", "Hueso raiz"}, c.bone);
+                  item.field({"ignore", "Ignorar", "Huesos que no se mueven (separados por comas)"}, c.ignore);
+                  item.field({"pull", "Pull", "Cuanto vuelve a la pose animada"}, c.pull, FloatRange{0.0f, 1.0f, 0.01f, "%.2f", true});
+                  item.field({"spring", "Spring", "Rebote: cuanto conserva la velocidad"}, c.spring,
+                             FloatRange{0.0f, 1.0f, 0.01f, "%.2f", true});
+                  item.field({"stiffness", "Stiffness", "Rigidez: se queda en la direccion animada"}, c.stiffness,
+                             FloatRange{0.0f, 1.0f, 0.01f, "%.2f", true});
+                  item.field({"gravity", "Gravedad"}, c.gravity, FloatRange{0.0f, 1.0f, 0.01f, "%.2f", true});
+                  item.field({"gravity_falloff", "Gravity falloff", "Menos peso cuando ya cuelga en la animacion"},
+                             c.gravity_falloff, FloatRange{0.0f, 1.0f, 0.01f, "%.2f", true});
+                  item.field({"immobile", "Immobile", "1 = se mueve rigido con el personaje; 0 = se queda atras"}, c.immobile,
+                             FloatRange{0.0f, 1.0f, 0.01f, "%.2f", true});
+                  item.field({"max_angle", "Angulo maximo", "0 = libre"}, c.max_angle, FloatRange{0.0f, 180.0f, 1.0f, "%.0f grados"});
+                  item.field({"radius", "Radio"}, c.radius, FloatRange{0.0f, 1.0f, 0.001f, "%.3f m"});
+                  item.field({"radius_tip", "Radio en la punta", "< 0 = igual que el radio"}, c.radius_tip,
+                             FloatRange{-1.0f, 1.0f, 0.001f, "%.3f m"});
+                  item.field({"end_length", "Punta extra", "Largo extra tras el ultimo hueso (fraccion) para que tambien se mueva"},
+                             c.end_length, FloatRange{0.0f, 2.0f, 0.01f, "%.2f"});
+                  item.field({"collide", "Chocar"}, c.collide);
+              });
+    listField(v, {"colliders", "Colliders", "Entidades con Phys Bone Collider. Vacio = todas las de la escena"}, colliders,
+              [](Uuid& id, PropertyVisitor& item) { item.entity({"entity", "Collider"}, id); });
+}
+
+void PhysBoneCollider::reflect(PropertyVisitor& v) {
+    static constexpr std::array<const char*, 3> kShapes = {"Esfera", "Capsula", "Plano"};
+    enumField(v, {"shape", "Forma"}, shape, kShapes);
+    if (v.wantsAllFields() || shape != PhysBoneColliderShape::Plane) {
+        v.field({"radius", "Radio"}, radius, FloatRange{0.001f, 10.0f, 0.005f, "%.3f m"});
+    }
+    if (v.wantsAllFields() || shape == PhysBoneColliderShape::Capsule) {
+        v.field({"height", "Alto", "Total, en el eje Y de la entidad"}, height, FloatRange{0.0f, 20.0f, 0.01f, "%.2f m"});
+    }
+    v.field({"offset", "Centro"}, offset, Vec3Kind::Position);
+    if (v.wantsAllFields() || shape != PhysBoneColliderShape::Plane) {
+        v.field({"inside", "Dentro", "Los huesos se quedan dentro de la forma en vez de fuera"}, inside);
+    }
+}
+
+void Ragdoll::reflect(PropertyVisitor& v) {
+    v.field({"active", "Activo", "Simulando: cae con la fisica (Lua: entity.ragdoll = true)"}, active);
+    v.field({"mass", "Masa total"}, mass, FloatRange{0.1f, 100000.0f, 0.5f, "%.1f kg"});
+    v.field({"blend", "Peso", "Cuanto manda la fisica mientras esta activo"}, blend, FloatRange{0.0f, 1.0f, 0.01f, "%.2f", true});
+    v.field({"blend_out", "Volver a la animacion", "Segundos de mezcla al apagarlo"}, blend_out,
+            FloatRange{0.0f, 5.0f, 0.01f, "%.2f s"});
+    v.field({"friction", "Friccion"}, friction, FloatRange{0.0f, 2.0f, 0.01f, "%.2f", true});
+    v.field({"damping", "Frenado", "Resistencia del aire"}, damping, FloatRange{0.0f, 2.0f, 0.01f, "%.2f"});
+    v.field({"joint_friction", "Rigidez de las articulaciones"}, joint_friction, FloatRange{0.0f, 20.0f, 0.05f, "%.2f"});
+    v.field({"follow_entity", "Mover la entidad", "La entidad va con el cuerpo (camaras y scripts que la siguen)"}, follow_entity);
+    v.field({"inherit_velocity", "Heredar velocidad", "Cae con la velocidad que llevaba la animacion"}, inherit_velocity);
+    listField(v, {"bones", "Huesos", "Vacio = automatico (humanoides y animales). Generar en el Inspector los rellena"}, bones,
+              [](RagdollBoneSetting& b, PropertyVisitor& item) {
+                  item.field({"bone", "Hueso"}, b.bone);
+                  item.field({"radius", "Radio", "0 = automatico"}, b.radius, FloatRange{0.0f, 5.0f, 0.005f, "%.3f m"});
+                  item.field({"length", "Largo", "0 = hasta el siguiente hueso"}, b.length, FloatRange{0.0f, 10.0f, 0.01f, "%.2f m"});
+                  item.field({"mass", "Masa", "0 = reparto automatico"}, b.mass, FloatRange{0.0f, 10000.0f, 0.1f, "%.1f kg"});
+                  item.field({"swing", "Doblar", "Grados que se puede doblar"}, b.swing, FloatRange{0.0f, 180.0f, 1.0f, "%.0f grados"});
+                  item.field({"twist", "Girar", "Grados que puede girar sobre si mismo"}, b.twist,
+                             FloatRange{0.0f, 180.0f, 1.0f, "%.0f grados"});
               });
 }
 
@@ -522,6 +638,11 @@ void registerBuiltinComponents(ComponentRegistry& registry) {
     registry.registerComponent<Animator>("Animator", "Animator", "Animacion");
     registry.registerComponent<InverseKinematics>("InverseKinematics", "IK (cinematica inversa)", "Animacion");
     registry.registerComponent<ProceduralAnimation>("ProceduralAnimation", "Animacion procedural", "Animacion");
+    registry.registerComponent<Skeleton>("Skeleton", "Esqueleto (huesos)", "Animacion");
+    registry.registerComponent<BoneSocket>("BoneSocket", "Bone Socket", "Animacion");
+    registry.registerComponent<PhysBones>("PhysBones", "Phys Bones", "Animacion");
+    registry.registerComponent<PhysBoneCollider>("PhysBoneCollider", "Phys Bone Collider", "Animacion");
+    registry.registerComponent<Ragdoll>("Ragdoll", "Ragdoll", "Fisica");
     registry.registerComponent<Light>("Light", "Luz", "Renderizado");
     registry.registerComponent<Camera>("Camera", "Camara", "Renderizado");
     registry.registerComponent<Sky>("Sky", "Cielo", "Entorno");

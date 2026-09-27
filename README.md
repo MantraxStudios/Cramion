@@ -17,6 +17,20 @@ Incluye dos escenas de demostración, iluminadas por una sola luz direccional (e
 
 ---
 
+## Novedades de la 0.6.1
+
+**Esqueletos**
+- **Ragdoll** con Jolt para humanos y animales: cae con la velocidad que llevaba la animacion y vuelve a ella mezclando (`entity.ragdoll = true`).
+- **Phys Bones** como los de VRChat (pelo, colas, orejas, ropa) con colliders de esfera, capsula y plano.
+- **IK para animales**: patas de 3 huesos que se apoyan en escaleras y pendientes, el cuerpo que se inclina, cuellos y colas; se configura solo.
+- **Esqueleto**: ver todos los huesos, resaltarlos con un clic y girarlos, moverlos o escalarlos; **Bone Sockets** para enganchar cosas a un hueso.
+
+**Lua**
+- **Graphics**: calidad, escalado, resolucion, sombras, texturas, VSync, ventana y post-procesado desde un script, para el menu de opciones del juego.
+- `getField` / `setField` para cualquier campo de cualquier componente, y funciones de huesos, IK y ragdoll.
+
+**Plantilla Criaturas**: un perro con IK en las patas, cola fisica y sombrero, y un maniqui que cae como un ragdoll.
+
 ## Novedades de la 0.6
 
 **Editor**
@@ -86,6 +100,7 @@ Incluye dos escenas de demostración, iluminadas por una sola luz direccional (e
 
 ## Índice
 
+- [Novedades de la 0.6.1](#novedades-de-la-061)
 - [Novedades de la 0.6](#novedades-de-la-06)
 - [Novedades de la 0.5.1](#novedades-de-la-051)
 - [Novedades de la 0.5](#novedades-de-la-05)

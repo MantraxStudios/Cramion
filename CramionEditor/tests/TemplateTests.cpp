@@ -5,6 +5,11 @@
 // desde ella. Devuelve 0 si todo va.
 
 #include "ProjectTemplates.h"
+#include "CreatureModels.h"
+
+#include <CramionCore/anim/Creature.h>
+#include <CramionCore/anim/Humanoid.h>
+#include <CramionCore/ecs/Rigging.h>
 
 #include <CramionCore/CramionCore.h>
 #include <CramionDM/Input.h>
@@ -105,9 +110,61 @@ int main() {
 
     const std::vector<editor::ProjectTemplate> list = editor::availableTemplates();
     std::printf("Plantillas integradas\n");
-    check(list.size() == 5 && find(list, "blank") && find(list, "third_person") && find(list, "navigation") &&
-              find(list, "voxel") && find(list, "mmo"),
-          "hay 5 plantillas integradas");
+    check(list.size() == 6 && find(list, "blank") && find(list, "third_person") && find(list, "navigation") &&
+              find(list, "voxel") && find(list, "mmo") && find(list, "creatures"),
+          "hay 6 plantillas integradas");
+
+    // --- Criaturas: modelos con esqueleto generados, IK, phys bones, ragdoll ---
+    {
+        std::printf("Criaturas\n");
+        const asset::ModelData dog = editor::makeDogModel();
+        const asset::ModelData dummy = editor::makeDummyModel();
+        const creature::Rig rig = creature::detect(dog.nodes, humanoid::restGlobals(dog.nodes));
+        int three = 0;
+        for (const creature::Leg& l : rig.legs) three += l.bones == 3 ? 1 : 0;
+        check(rig.valid && rig.legs.size() == 4 && three == 4 && rig.head >= 0 && rig.tail.size() >= 4 && rig.forward.z < -0.9f,
+              "el perro: 4 patas de 3 huesos, cabeza, cola y mira a -Z");
+        check(humanoid::detect(dummy.nodes).valid, "el maniqui es humanoide (nombres de Mixamo)");
+        check(!dog.animations.empty() && dog.animations[0].name == "Caminar" && !dog.vertices.empty() &&
+                  dog.bones.size() + 1 == dog.nodes.size(),
+              "mallas skinneadas, huesos y clips");
+        ecs::InverseKinematics ik;
+        check(ecs::suggestCreatureIK(dog, ik) && ik.chains.size() == 4 && ik.look_bone == "Head" && ik.align_body,
+              "IK automatico del perro: 4 cadenas al suelo, cabeza y cuerpo inclinable");
+        const std::vector<ecs::PhysBoneChain> pb = ecs::suggestPhysBones(dog);
+        check(pb.size() == 3, "phys bones automaticos: cola y dos orejas");
+        check(ecs::suggestPhysBones(dummy).size() == 1, "phys bones del maniqui: la coleta");
+        check(ecs::suggestRagdollBones(dummy, 1.0f).size() == 12, "ragdoll del maniqui: 12 huesos");
+
+        const project::ProjectInfo p = editor::createProjectFromTemplate(*find(list, "creatures"), root, "Criaturas");
+        check(std::filesystem::exists(p.assetsFolder() / "Models" / "Perro.crdata") &&
+                  std::filesystem::exists(p.assetsFolder() / "Models" / "Maniqui.crdata"),
+              "escribe los modelos (.crdata)");
+        assets::AssetDatabase database;
+        database.open(p.assetsFolder());
+        assets::AssetManager manager(database);
+        Played r;
+        float moved = 0.0f;
+        Vec3 start{};
+        play(p, 3.0f, r, [&](ecs::World& w, navigation::NavigationSystem&, float t) {
+            const ecs::Entity dog_entity = w.findByName("Perro");
+            if (t < 0.02f) start = dog_entity.worldPosition();
+            moved = std::max(moved, core::length(dog_entity.worldPosition() - start));
+        });
+        const ecs::Entity dog_entity = r.world.findByName("Perro");
+        const ecs::MeshRenderer* mr = dog_entity.valid() ? dog_entity.tryGet<ecs::MeshRenderer>() : nullptr;
+        std::shared_ptr<const assets::ModelAsset> loaded = mr != nullptr ? manager.loadModel(mr->model.uuid) : nullptr;
+        check(loaded && loaded->animated && !loaded->parts.empty() && !loaded->parts[0]->bones.empty(),
+              "el perro carga como modelo animado con esqueleto");
+        check(r.loaded && r.script_errors == 0, "la escena se abre y los scripts corren sin errores");
+        check(dog_entity.valid() && dog_entity.has<ecs::InverseKinematics>() && dog_entity.has<ecs::PhysBones>() &&
+                  dog_entity.has<ecs::Ragdoll>() && dog_entity.has<ecs::Skeleton>(),
+              "el perro lleva IK, Phys Bones, Ragdoll y Esqueleto");
+        check(r.world.findByName("Sombrero").valid() && r.world.findByName("Sombrero").has<ecs::BoneSocket>(),
+              "el sombrero va enganchado a la cabeza (Bone Socket)");
+        std::printf("    el perro anduvo %.2f m\n", moved);
+        check(moved > 2.5f, "el perro recorre el circuito");
+    }
 
     // --- Vacia ---
     {
@@ -553,7 +610,7 @@ int main() {
               "guardar un proyecto como plantilla");
         const std::vector<editor::ProjectTemplate> again = editor::availableTemplates();
         const editor::ProjectTemplate* mine = find(again, "user:Mi plataformas");
-        check(again.size() == 6 && mine != nullptr && mine->category == "Mis plantillas" && mine->description == "Prueba",
+        check(again.size() == 7 && mine != nullptr && mine->category == "Mis plantillas" && mine->description == "Prueba",
               "aparece en la lista con su descripcion");
         if (mine != nullptr) {
             const project::ProjectInfo p = editor::createProjectFromTemplate(*mine, root, "Copia");

@@ -1,0 +1,116 @@
+<p>
+  <code>Graphics</code> cambia la configuración gráfica desde un script, como el <em>QualitySettings</em> y el
+  <em>Screen</em> de Unity juntos: calidad rápida, escalado y resolución, nitidez, VSync, FPS objetivo, sombras, texturas,
+  trazado de rayos, ventana y el <strong>post-procesado</strong> de la escena. Todo lo que hay en
+  <a href="render.html">Ajustes de render</a> y en el componente <a href="componentes-basicos.html#PostProcessing">PostProcessing</a>
+  se puede tocar desde Lua; sirve para montar el menú de opciones del juego.
+</p>
+
+<pre><code class="language-lua">Graphics.setQuality("Alta")           -- Baja, Media, Alta, Ultra (o 0..3)
+Graphics.vsync = true                  -- cualquier opción por su nombre
+Graphics.texture_quality = "high"
+Graphics.set{ shadow_quality = "ultra", target_fps = 144 }   -- varias a la vez
+Graphics.post.bloom = false            -- post-procesado de la escena
+Graphics.save()                        -- el juego lo recuerda la próxima vez</code></pre>
+
+<h3 id="funciones">Funciones</h3>
+<table>
+  <thead><tr><th>Función</th><th>Qué hace</th></tr></thead>
+  <tbody>
+    <tr><td><code>Graphics.setQuality(nivel)</code></td><td>Calidad rápida: <code>"Baja"</code>, <code>"Media"</code>, <code>"Alta"</code>, <code>"Ultra"</code> (también <code>"low"</code>... o un número 0..3). Ajusta escalado, resolución, nitidez, sombras, sonda de reflexión y trazado de rayos a la vez, igual que los botones del editor.</td></tr>
+    <tr><td><code>Graphics.getQuality()</code></td><td>La última calidad rápida aplicada, o <code>"Personalizada"</code> si luego se cambió algo suelto.</td></tr>
+    <tr><td><code>Graphics.qualityLevels()</code></td><td>Lista de calidades (para un desplegable).</td></tr>
+    <tr><td><code>Graphics.set(clave, valor)</code><br><code>Graphics.set{ clave = valor, ... }</code></td><td>Cambia una o varias opciones. Devuelve <code>true</code> si se aplicaron; si no, avisa en la Consola por qué (clave que no existe, de solo lectura, valor fuera de la lista).</td></tr>
+    <tr><td><code>Graphics.get(clave)</code></td><td>El valor actual (o <code>nil</code>).</td></tr>
+    <tr><td><code>Graphics.clave</code> / <code>Graphics.clave = valor</code></td><td>Lo mismo con la sintaxis de propiedad: <code>Graphics.vsync</code>, <code>Graphics.upscaler = "fsr1"</code>.</td></tr>
+    <tr><td><code>Graphics.getAll()</code></td><td>Tabla <code>clave → valor</code> con todo.</td></tr>
+    <tr><td><code>Graphics.options()</code></td><td>Lista para construir un menú: cada elemento tiene <code>key</code>, <code>value</code>, <code>writable</code>, <code>description</code> y, si es de una lista, <code>choices</code>.</td></tr>
+    <tr><td><code>Graphics.resolutions()</code></td><td>Resoluciones del monitor, de mayor a menor: <code>{ {width = 1920, height = 1080}, ... }</code>.</td></tr>
+    <tr><td><code>Graphics.save()</code></td><td>En el juego exportado guarda la configuración del jugador (incluida la ventana) en <code>%LOCALAPPDATA%/Cramion/Saves/&lt;juego&gt;.graphics.ini</code>. Al volver a abrir el juego se aplica encima de la de <em>ProjectSettings/Graphics.ini</em>. En el editor no guarda nada.</td></tr>
+  </tbody>
+</table>
+
+<h3 id="opciones">Opciones</h3>
+<table>
+  <thead><tr><th>Clave</th><th>Valores</th><th>Qué hace</th></tr></thead>
+  <tbody>
+    <tr><td><code>upscaler</code></td><td><code>"off"</code>, <code>"taa"</code>, <code>"fsr1"</code></td><td>Escalado y antialiasing: resolución nativa + FXAA, TAA (temporal) o AMD FSR 1.</td></tr>
+    <tr><td><code>resolution</code></td><td><code>"native"</code>, <code>"quality"</code>, <code>"balanced"</code>, <code>"performance"</code>, <code>"ultra_performance"</code>, <code>"custom"</code></td><td>Resolución interna con TAA o FSR: 100 %, 67 %, 58 %, 50 %, 33 % o la de <code>resolution_scale</code>.</td></tr>
+    <tr><td><code>resolution_scale</code></td><td>0.25 .. 1</td><td>Escala de la resolución interna. Cambiarla pasa a <code>resolution = "custom"</code> (y a TAA si no había escalado).</td></tr>
+    <tr><td><code>sharpness</code></td><td>0 .. 1</td><td>Nitidez (AMD RCAS) después del escalado.</td></tr>
+    <tr><td><code>vsync</code></td><td>true / false</td><td>Sincronizar con la pantalla.</td></tr>
+    <tr><td><code>adaptive</code></td><td>true / false</td><td>Presupuesto adaptativo: baja sola la calidad para llegar a <code>target_fps</code>.</td></tr>
+    <tr><td><code>target_fps</code></td><td>15 .. 360</td><td>FPS objetivo del presupuesto adaptativo.</td></tr>
+    <tr><td><code>shadows</code></td><td>true / false</td><td>Sombras.</td></tr>
+    <tr><td><code>shadow_quality</code></td><td><code>"auto"</code>, <code>"low"</code>, <code>"medium"</code>, <code>"high"</code>, <code>"ultra"</code></td><td>Resolución del mapa de sombras del sol: según el PC, 1024, 2048, 4096 o 6144 por cascada.</td></tr>
+    <tr><td><code>shadow_resolution</code></td><td>0, 512 .. 8192</td><td>Lo mismo en píxeles (0 = según el PC).</td></tr>
+    <tr><td><code>texture_quality</code></td><td><code>"auto"</code>, <code>"low"</code>, <code>"medium"</code>, <code>"high"</code>, <code>"ultra"</code>, <code>"max"</code></td><td>Lado máximo de las texturas: según el PC, 1024, 2048, 4096, 8192 o 16384.</td></tr>
+    <tr><td><code>texture_max_size</code></td><td>0, 64 .. 16384</td><td>Lo mismo en píxeles (0 = según el PC).</td></tr>
+    <tr><td><code>ray_tracing</code></td><td>true / false</td><td>GI y reflejos con trazado de rayos (si la GPU lo admite: <code>ray_tracing_supported</code>).</td></tr>
+    <tr><td><code>reflection_probe</code></td><td>true / false</td><td>Sonda de reflexión del entorno.</td></tr>
+    <tr><td><code>occlusion_culling</code></td><td>true / false</td><td>No dibujar lo que queda tapado.</td></tr>
+    <tr><td><code>cascade_debug</code></td><td>true / false</td><td>Colorea las cascadas de sombra (depurar).</td></tr>
+    <tr><td><code>window_mode</code></td><td><code>"maximized"</code>, <code>"fullscreen"</code>, <code>"windowed"</code></td><td>Ventana maximizada, pantalla completa sin bordes o ventana de <code>window_width</code> × <code>window_height</code>. Solo en el juego exportado.</td></tr>
+    <tr><td><code>window_width</code>, <code>window_height</code></td><td>píxeles</td><td>Tamaño de la ventana; darlo pasa a <code>"windowed"</code> (como <code>Screen.SetResolution</code>).</td></tr>
+  </tbody>
+</table>
+<p>De solo lectura: <code>gpu</code>, <code>hardware_tier</code>, <code>vram_mb</code>, <code>vram_used_mb</code>, <code>ray_tracing_supported</code>,
+  <code>render_width</code>/<code>render_height</code> (resolución interna), <code>screen_width</code>/<code>screen_height</code> (salida) y
+  <code>gpu_ms</code> (milisegundos de GPU por frame).</p>
+
+<div class="note">
+  <strong>Texturas:</strong> <code>texture_quality</code> se aplica a los modelos que se cargan después. En un menú de
+  opciones, vuelve a cargar la escena para verlo: <code>Scene.load(Scene.name())</code>.<br>
+  <strong>Presupuesto adaptativo:</strong> con <code>adaptive = true</code> el motor puede bajar sombras, efectos o resolución
+  por su cuenta si no llega a los FPS; para que se quede exactamente lo que elige el jugador, desactívalo.<br>
+  <strong>En el editor:</strong> lo que cambien los scripts en Play se deshace al parar; la ventana no se toca.
+</div>
+
+<h3 id="post">Post-procesado: Graphics.post</h3>
+<p>
+  <code>Graphics.post</code> lee y cambia el <strong>volumen de post-procesado global</strong> de la escena (el de mayor prioridad;
+  si la escena no tiene, se crea uno). Las claves son las del componente
+  <a href="componentes-basicos.html#PostProcessing">PostProcessing</a>: exposición, tonemapping, color, bloom, viñeta, lente,
+  rayos de sol, SSAO, GI, reflejos, sombras de contacto, luz volumétrica, LODs, FXAA... <code>Graphics.postKeys()</code> devuelve
+  la lista completa.
+</p>
+<pre><code class="language-lua">Graphics.post.bloom = false
+Graphics.post.exposure_compensation = 0.5
+Graphics.post.tonemapper = "ACES"                -- enums por su nombre (o su número)
+Graphics.post.vignette_color = Vec3(0.2, 0, 0)   -- colores con Vec3
+Graphics.post.contact_shadows = Graphics.getQuality() ~= "Baja"
+
+Graphics.setPost("volumetric_density", 0.05)     -- igual, con funciones
+Debug.log(Graphics.getPost("fxaa"))
+for _, key in ipairs(Graphics.postKeys()) do Debug.log(key) end</code></pre>
+<p>Los cambios de la escena se deshacen al parar el Play en el editor, como cualquier otro cambio del juego.</p>
+
+<h3 id="menu">Ejemplo: menú de opciones</h3>
+<pre><code class="language-lua">local Opciones = {}
+
+function Opciones:Start()
+    -- Lo guardado ya se aplico al abrir el juego; solo se muestra.
+    Debug.log("Calidad: " .. Graphics.getQuality() .. " en " .. Graphics.gpu)
+end
+
+-- Conectados a botones y casillas de la UI (eventos que llaman a metodos).
+function Opciones:CalidadBaja()  Graphics.setQuality("Baja")  end
+function Opciones:CalidadUltra() Graphics.setQuality("Ultra") end
+function Opciones:PantallaCompleta(activa)
+    Graphics.window_mode = activa and "fullscreen" or "maximized"
+end
+function Opciones:VSync(activo) Graphics.vsync = activo end
+function Opciones:Texturas(nivel)          -- "low", "medium", "high"...
+    Graphics.texture_quality = nivel
+    Scene.load(Scene.name())               -- recargar para ver las texturas nuevas
+end
+function Opciones:Guardar() Graphics.save() end
+
+-- Todas las opciones con su descripcion (para un menu generado).
+function Opciones:Listar()
+    for _, o in ipairs(Graphics.options()) do
+        if o.writable then Debug.log(o.key .. " = " .. tostring(o.value) .. "  -- " .. o.description) end
+    end
+end
+
+return Opciones</code></pre>

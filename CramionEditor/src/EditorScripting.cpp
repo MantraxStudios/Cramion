@@ -592,7 +592,7 @@ void EditorApp::drawLuaConsole() {
     if (ImGui::InputTextWithHint("##lua_console", "Lua> (Enter ejecuta; en Play, dentro del juego)", &lua_console_,
                                  ImGuiInputTextFlags_EnterReturnsTrue)) {
         std::string output;
-        const bool ok = scripts_.run(lua_console_, &output);
+        const bool ok = scripts_.run(lua_console_, &output, &world_);
         (ok ? std::cout : std::cerr) << "[Lua] > " << lua_console_ << (output.empty() ? "" : "  ->  ") << output << "\n";
         lua_console_.clear();
         ImGui::SetKeyboardFocusHere(-1);

@@ -6,6 +6,10 @@
 
 #include "ProjectTemplates.h"
 #include "TemplateMmoScripts.h"
+#include "TemplateCreatureScripts.h"
+#include "CreatureModels.h"
+
+#include <CramionCore/ecs/Rigging.h>
 
 #include <CramionCore/CramionCore.h>
 
@@ -2282,6 +2286,135 @@ void buildMmo(project::ProjectInfo& project) {
     navigation::saveNavigationSettings(project.settingsFolder() / "Navigation.json", nav);
 }
 
+// --- Criaturas: IK de animales, phys bones, ragdoll y huesos ------------------------
+
+void buildCreatures(project::ProjectInfo& project) {
+    Builder b(project);
+    b.world.setSceneUuid(Uuid::generate());
+    ecs::populateDefaultScene(b.world);
+    b.script("Perro.lua", creature_scripts::kDog);
+    b.script("Maniqui.lua", creature_scripts::kDummy);
+    b.script("Pelota.lua", creature_scripts::kBall);
+    b.script("Controles.lua", creature_scripts::kControls);
+    b.script("CamaraTercera.lua", kCameraScript);
+
+    // Los dos modelos con esqueleto, generados (como si se hubieran importado).
+    const asset::ModelData dog_model = makeDogModel();
+    const asset::ModelData dummy_model = makeDummyModel();
+    const Uuid dog_uuid = Uuid::generate();
+    const Uuid dummy_uuid = Uuid::generate();
+    std::string error;
+    if (!writeCreatureModel(project.assetsFolder() / "Models" / "Perro.crdata", dog_uuid, "Perro", dog_model, &error) ||
+        !writeCreatureModel(project.assetsFolder() / "Models" / "Maniqui.crdata", dummy_uuid, "Maniqui", dummy_model, &error)) {
+        throw std::runtime_error(error);
+    }
+
+    const assets::AssetRef floor = b.material("Cesped", Vec3{0.42f, 0.58f, 0.3f}, 0.95f);
+    const assets::AssetRef stone = b.material("Piedra", Vec3{0.55f, 0.55f, 0.58f}, 0.85f);
+    const assets::AssetRef wood = b.material("Madera", Vec3{0.62f, 0.44f, 0.26f}, 0.8f);
+    const assets::AssetRef red = b.material("Sombrero", Vec3{0.85f, 0.15f, 0.12f}, 0.5f);
+    const assets::AssetRef ball = b.material("Pelota", Vec3{1.0f, 0.82f, 0.2f}, 0.35f, 0.0f, Vec3{1.0f, 0.7f, 0.1f}, 0.4f);
+
+    b.box("Suelo", Vec3{0.0f, -0.5f, 0.0f}, Vec3{30.0f, 1.0f, 30.0f}, floor);
+    // Escalera: sube tres escalones, un rellano y baja (en el lado de delante).
+    const float step = 0.12f;
+    for (int i = 0; i < 3; ++i) {
+        const float h = step * static_cast<float>(i + 1);
+        b.box("Escalon subida " + std::to_string(i + 1), Vec3{0.0f + 0.6f * static_cast<float>(i), h * 0.5f, 7.0f},
+              Vec3{0.6f, h, 2.0f}, wood);
+        b.box("Escalon bajada " + std::to_string(i + 1), Vec3{4.8f - 0.6f * static_cast<float>(i), h * 0.5f, 7.0f},
+              Vec3{0.6f, h, 2.0f}, wood);
+    }
+    b.box("Rellano", Vec3{2.4f, step * 1.5f, 7.0f}, Vec3{1.8f, step * 3.0f, 2.0f}, wood);
+    // Rampa y bajada (lado derecho): el perro se inclina con la pendiente.
+    b.box("Rampa", Vec3{7.0f, 0.2f, -0.5f}, Vec3{2.4f, 0.2f, 4.2f}, stone, Vec3{10.0f, 0.0f, 0.0f});
+    b.box("Meseta", Vec3{7.0f, 0.46f, -3.4f}, Vec3{2.4f, 0.2f, 1.8f}, stone);
+    b.box("Bajada", Vec3{7.0f, 0.2f, -6.0f}, Vec3{2.4f, 0.2f, 3.6f}, stone, Vec3{-14.0f, 0.0f, 0.0f});
+    // Piedras sueltas (lado de atras): cada pata pisa a una altura.
+    const Vec3 rocks[] = {{-1.5f, 0.06f, -7.0f}, {-2.6f, 0.1f, -6.6f}, {-3.8f, 0.05f, -7.2f},
+                          {-4.9f, 0.12f, -6.8f}, {-6.0f, 0.07f, -6.3f}};
+    int r = 0;
+    for (const Vec3& p : rocks) {
+        const float h = p.y * 2.0f;
+        b.box("Piedra " + std::to_string(++r), p, Vec3{0.7f, h, 0.6f}, stone, Vec3{0.0f, 25.0f * static_cast<float>(r), 4.0f});
+    }
+
+    // Pelota que siguen con la cabeza.
+    ecs::Entity pelota = ecs::createPrimitive(b.world, assets::builtin::kSphere, "Pelota");
+    pelota.setLocalScale(Vec3{0.3f, 0.3f, 0.3f});
+    pelota.get<ecs::MeshRenderer>().materials = {ball};
+    Builder::attach(pelota, "Pelota.lua");
+
+    // --- El perro ---
+    ecs::Entity dog = b.world.create("Perro");
+    dog.setWorldPosition(Vec3{-7.0f, 0.0f, 7.0f});
+    dog.add<ecs::MeshRenderer>().model = assets::AssetRef{dog_uuid, assets::AssetType::Model};
+    dog.add<ecs::Animator>().clip_name = "Caminar";
+    ecs::InverseKinematics& dog_ik = dog.add<ecs::InverseKinematics>();
+    ecs::suggestCreatureIK(dog_model, dog_ik);  // 4 patas al suelo, cabeza y cuello
+    dog_ik.look_weight = 0.7f;
+    dog_ik.look_max_angle = 80.0f;
+    dog_ik.max_step = 0.4f;
+    dog.add<ecs::PhysBones>().chains = ecs::suggestPhysBones(dog_model);  // cola y orejas
+    ecs::Ragdoll& dog_rag = dog.add<ecs::Ragdoll>();
+    dog_rag.mass = 25.0f;
+    dog_rag.bones = ecs::suggestRagdollBones(dog_model, 1.0f);
+    ecs::Skeleton& dog_skeleton = dog.add<ecs::Skeleton>();
+    dog_skeleton.show_bones = false;
+    Builder::attach(dog, "Perro.lua");
+    // Sombrero enganchado a la cabeza (Bone Socket) y un collider en el
+    // cuerpo para que la cola no lo atraviese.
+    ecs::Entity hat_socket = b.world.create("Sombrero", dog);
+    ecs::BoneSocket& hat = hat_socket.add<ecs::BoneSocket>();
+    hat.bone = "Head";
+    hat.position = Vec3{0.0f, 0.1f, -0.02f};
+    ecs::Entity hat_mesh = ecs::createPrimitive(b.world, assets::builtin::kCylinder, "Copa", hat_socket);
+    hat_mesh.setLocalScale(Vec3{0.1f, 0.05f, 0.1f});
+    hat_mesh.get<ecs::MeshRenderer>().materials = {red};
+    ecs::Entity brim = ecs::createPrimitive(b.world, assets::builtin::kCylinder, "Ala", hat_socket);
+    brim.setLocalPosition(Vec3{0.0f, -0.045f, 0.0f});
+    brim.setLocalScale(Vec3{0.2f, 0.01f, 0.2f});
+    brim.get<ecs::MeshRenderer>().materials = {red};
+    ecs::Entity body_collider = b.world.create("Collider cuerpo", dog);
+    body_collider.add<ecs::BoneSocket>().bone = "Body";
+    ecs::PhysBoneCollider& body_sphere = body_collider.add<ecs::PhysBoneCollider>();
+    body_sphere.radius = 0.14f;
+
+    // --- El maniqui (un pie en un escalon) ---
+    b.box("Escalon del maniqui", Vec3{-3.1f, 0.08f, -1.5f}, Vec3{0.3f, 0.16f, 0.5f}, wood);
+    ecs::Entity dummy = b.world.create("Maniqui");
+    dummy.setWorldPosition(Vec3{-3.0f, 0.0f, -1.5f});
+    dummy.add<ecs::MeshRenderer>().model = assets::AssetRef{dummy_uuid, assets::AssetType::Model};
+    dummy.add<ecs::Animator>().clip_name = "Reposo";
+    ecs::InverseKinematics& dummy_ik = dummy.add<ecs::InverseKinematics>();
+    ecs::suggestCreatureIK(dummy_model, dummy_ik);  // pies en el suelo
+    dummy_ik.look_weight = 0.9f;
+    dummy.add<ecs::PhysBones>().chains = ecs::suggestPhysBones(dummy_model);  // la coleta
+    ecs::Ragdoll& dummy_rag = dummy.add<ecs::Ragdoll>();
+    dummy_rag.mass = 70.0f;
+    dummy_rag.blend_out = 0.6f;
+    dummy.add<ecs::Skeleton>().show_bones = false;
+    Builder::attach(dummy, "Maniqui.lua");
+    ecs::Entity head_collider = b.world.create("Collider cabeza", dummy);
+    head_collider.add<ecs::BoneSocket>().bone = "Head";
+    ecs::PhysBoneCollider& head_sphere = head_collider.add<ecs::PhysBoneCollider>();
+    head_sphere.radius = 0.11f;
+    head_sphere.offset = Vec3{0.0f, 0.09f, 0.0f};
+
+    // Camara que sigue al perro y el texto de ayuda.
+    ecs::Entity cam = b.world.findByName("Main Camera");
+    cam.setWorldPosition(Vec3{0.0f, 4.0f, 14.0f});
+    Builder::attach(cam, "CamaraTercera.lua",
+                    {{"objetivo", scripting::PropertyType::Text, "Perro"},
+                     {"distancia", scripting::PropertyType::Number, "5.5"},
+                     {"altura", scripting::PropertyType::Number, "0.4"},
+                     {"inclinacion", scripting::PropertyType::Number, "22"}});
+    ecs::Entity help = b.hud("Controles.lua");
+    help.get<ui::Text>().font_size = 24.0f;
+    help.get<ui::RectTransform>().size = Vec2{1800.0f, 40.0f};
+    b.save("Main");
+}
+
 void copyFolder(const std::filesystem::path& from, const std::filesystem::path& to) {
     std::error_code error;
     if (!std::filesystem::is_directory(from, error)) return;
@@ -2356,6 +2489,15 @@ std::vector<ProjectTemplate> availableTemplates() {
          "Enemigos con IA (aggro, leash, reaparicion), botin y un jefe con ataque en area",
          "Interfaz completa: marcos, barra de habilidades, chat, minimapa y niveles"},
         rgba(210, 160, 60), TemplateArt::Mmo, {}});
+    list.push_back(ProjectTemplate{
+        "creatures", "Criaturas: IK, ragdoll y phys bones", "Integradas",
+        "Un perro que recorre escaleras, una rampa y piedras apoyando cada pata con IK, con la cola y las orejas "
+        "fisicas (Phys Bones) y un sombrero enganchado a la cabeza; y un maniqui que cae como un ragdoll. Todo desde Lua.",
+        {"IK de animales: 4 patas de 3 huesos al suelo, el cuerpo se inclina y la cabeza sigue a la pelota",
+         "Phys Bones en la cola, las orejas y la coleta, con colliders en el cuerpo y la cabeza",
+         "Ragdoll con Jolt (R y F) que hereda la velocidad y vuelve a la animacion",
+         "Esqueleto visible (B), Bone Sockets y los dos modelos con esqueleto generados"},
+        rgba(230, 120, 90), TemplateArt::Creatures, {}});
 
     // Del usuario.
     std::error_code error;
@@ -2407,6 +2549,8 @@ project::ProjectInfo createProjectFromTemplate(const ProjectTemplate& t, const s
             buildVoxel(info);
         } else if (t.id == "mmo") {
             buildMmo(info);
+        } else if (t.id == "creatures") {
+            buildCreatures(info);
         } else {
             buildBlank(info);
         }

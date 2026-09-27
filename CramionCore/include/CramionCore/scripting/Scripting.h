@@ -30,6 +30,10 @@
 // mundos guardados). Input.lockCursor(true) captura el raton (primera persona).
 // Mallas por codigo: Mesh.new/cube/plane/sphere..., entity.mesh y
 // entity:addComponent("MeshCollider") (como el Mesh de Unity).
+// Esqueletos: entity:getBonePosition/setBoneRotation, IK (setIKTarget,
+// setLookAt, setupCreatureIK), ragdoll (entity.ragdoll, addRagdollForce),
+// Bone Sockets (attachToBone) y cualquier campo de cualquier componente con
+// entity:getField / entity:setField ("PhysBones", "chains[1].pull").
 // Configuracion grafica: la tabla Graphics (calidad, escalado, resolucion,
 // sombras, texturas, VSync, ventana, efectos de render y el post-procesado
 // global en Graphics.post), como QualitySettings + Screen de Unity.
@@ -59,6 +63,10 @@ class NavigationSystem;
 }
 namespace cramion::voxel {
 class VoxelSystem;
+}
+
+namespace cramion::asset {
+struct ModelData;
 }
 
 namespace cramion::scripting {
@@ -132,6 +140,15 @@ public:
     void setNavigation(navigation::NavigationSystem* navigation);
     // La tabla Voxel (el mundo de bloques de la escena).
     void setVoxels(voxel::VoxelSystem* voxels);
+    // Esqueletos: la pose de cada frame y el esqueleto de un modelo los tiene
+    // el programa (RenderSync). Sin esto, las funciones de huesos devuelven nil.
+    struct SkeletonHost {
+        std::function<bool(ecs::Entity, const std::string& bone, core::Mat4& world)> bone_world;
+        std::function<std::vector<std::string>(ecs::Entity)> bone_names;
+        // Esqueleto de la entidad (o de su pieza animada) y su escala (metros por unidad).
+        std::function<const asset::ModelData*(ecs::Entity, float* scale)> skeleton;
+    };
+    void setSkeletonHost(SkeletonHost host);
     // La tabla Graphics (nullptr: sus funciones avisan y no hacen nada; el
     // post-procesado, Graphics.post, funciona siempre: es de la escena).
     void setGraphics(GraphicsHost* graphics);
@@ -180,8 +197,9 @@ public:
     void callMethod(ecs::Entity target, const std::string& method, const std::string& value);
     void callMethod(ecs::Entity target, const std::string& method, bool value);
 
-    // Ejecuta codigo suelto (consola). Devuelve false si hay error.
-    bool run(const std::string& code, std::string* output = nullptr);
+    // Ejecuta codigo suelto (consola). Devuelve false si hay error. Fuera de
+    // Play usa un estado de Lua temporal sobre `world` (la escena del editor).
+    bool run(const std::string& code, std::string* output = nullptr, ecs::World* world = nullptr);
 
     // Scene.load("Nivel2"): la escena pedida (ruta del .crscene) o vacio. El
     // programa (editor en Play o juego) la carga al terminar el frame:

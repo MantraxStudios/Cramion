@@ -5,6 +5,9 @@
 #include "CramionCore/audio/Audio.h"
 #include "CramionCore/ecs/Components.h"
 #include "CramionCore/ecs/Prefab.h"
+#include "CramionCore/ecs/MathUtil.h"
+#include "CramionCore/ecs/Rigging.h"
+#include "CramionCore/physics/Ragdoll.h"
 #include "CramionCore/navigation/Navigation.h"
 #include "CramionCore/physics/PhysicsSystem.h"
 #include "CramionCore/ui/UI.h"
@@ -68,12 +71,14 @@ std::string vecString(const Vec3& v) {
     return buffer;
 }
 
-// --- Graphics.post: los campos del post-procesado por su clave ---
-// Recorre la reflexion del componente PostProcessing (la misma del
-// Inspector y de los .crscene) para leer o cambiar un campo por su clave
-// ("bloom", "bloom_intensity", "tonemapper"...). Sin las opciones del
-// volumen (forma, prioridad...) ni las casillas de sobrescribir: Graphics.post
-// es el aspecto de la escena, no el volumen.
+// --- Campos de componentes por su clave (Graphics.post, entity:getField) ---
+// Recorre la reflexion de un componente (la misma del Inspector y de los
+// .crscene) para leer o cambiar un campo por su clave ("bloom",
+// "look_weight", "chains[2].pull"...). Las listas se nombran con [indice]
+// desde 1, como en Lua; escribir en el indice siguiente al ultimo anade un
+// elemento. Con `post_only` (Graphics.post) se saltan las opciones del
+// volumen (forma, prioridad...) y las casillas de sobrescribir: es el aspecto
+// de la escena, no el volumen.
 struct PostValue {
     enum class Type { None, Bool, Number, Text, Vector } type = Type::None;
     bool flag = false;
@@ -84,17 +89,72 @@ struct PostValue {
 };
 
 class PostFieldVisitor final : public ecs::PropertyVisitor {
+    static PostValue numberValue(double n) {
+        PostValue v;
+        v.type = PostValue::Type::Number;
+        v.number = n;
+        return v;
+    }
+
 public:
     enum class Mode { Collect, Get, Set };
 
-    PostFieldVisitor(Mode mode, std::string key = {}, PostValue value = {})
-        : mode_(mode), key_(std::move(key)), value_(std::move(value)) {}
+    PostFieldVisitor(Mode mode, std::string key = {}, PostValue value = {}, bool post_only = true)
+        : mode_(mode), key_(std::move(key)), value_(std::move(value)), post_only_(post_only) {}
 
     bool beginGroup(const char* label, bool) override {
-        skipping_ = std::string(label) == "Volumen";
+        skipping_ = post_only_ && std::string(label) == "Volumen";
         return true;
     }
     void endGroup() override { skipping_ = false; }
+
+    // Listas: "clave[i].campo".
+    bool beginList(const ecs::Meta& meta, std::size_t& count) override {
+        if (skipping_ || meta.key == nullptr) return false;
+        const std::string base = prefix_ + meta.key;
+        ListState list{base, count, 0};
+        if (mode_ == Mode::Collect) {
+            fields_.emplace_back(base + "#", numberValue(static_cast<double>(count)));
+        } else {
+            const std::string open = base + "[";
+            if (key_.rfind(open, 0) != 0) {
+                // La lista entera: su numero de elementos.
+                if (key_ == base + "#" || key_ == base) {
+                    found_ = true;
+                    if (mode_ == Mode::Get) {
+                        value_ = numberValue(static_cast<double>(count));
+                    }
+                }
+                return false;
+            }
+            const std::size_t close = key_.find(']', open.size());
+            if (close == std::string::npos) return false;
+            const int index = std::atoi(key_.substr(open.size(), close - open.size()).c_str());
+            if (index < 1) return false;
+            if (mode_ == Mode::Set && static_cast<std::size_t>(index) == count + 1) ++count;  // anadir
+            if (static_cast<std::size_t>(index) > count) return false;
+            list.wanted = static_cast<std::size_t>(index);
+        }
+        lists_.push_back(list);
+        return true;
+    }
+    bool beginListItem(std::size_t index) override {
+        if (lists_.empty()) return false;
+        const ListState& list = lists_.back();
+        if (mode_ != Mode::Collect && index + 1 != list.wanted) return false;
+        saved_prefix_.push_back(prefix_);
+        prefix_ = list.base + "[" + std::to_string(index + 1) + "].";
+        return true;
+    }
+    void endListItem() override {
+        if (saved_prefix_.empty()) return;
+        prefix_ = saved_prefix_.back();
+        saved_prefix_.pop_back();
+    }
+    int endList() override {
+        if (!lists_.empty()) lists_.pop_back();
+        return -1;
+    }
 
     bool field(const ecs::Meta& meta, float& v, const ecs::FloatRange& range) override {
         PostValue current;
@@ -178,8 +238,8 @@ private:
     // true si hay que escribir `value_` en el campo (modo Set y es su clave).
     bool visit(const ecs::Meta& meta, PostValue& current) {
         if (skipping_ || meta.key == nullptr) return false;
-        const std::string key = meta.key;
-        if (key.rfind("override_", 0) == 0) return false;
+        const std::string key = prefix_ + meta.key;
+        if (post_only_ && key.rfind("override_", 0) == 0) return false;
         switch (mode_) {
             case Mode::Collect:
                 fields_.emplace_back(key, current);
@@ -228,9 +288,18 @@ private:
         return false;
     }
 
+    struct ListState {
+        std::string base;
+        std::size_t count = 0;
+        std::size_t wanted = 0;  // 1..count (Get/Set)
+    };
     Mode mode_;
     std::string key_;
     PostValue value_;
+    bool post_only_ = true;
+    std::string prefix_;
+    std::vector<std::string> saved_prefix_;
+    std::vector<ListState> lists_;
     bool skipping_ = false;
     bool found_ = false;
     std::string error_;
@@ -305,6 +374,7 @@ struct ScriptSystem::Impl {
     navigation::NavigationSystem* navigation = nullptr;
     voxel::VoxelSystem* voxels = nullptr;
     GraphicsHost* graphics = nullptr;
+    SkeletonHost skeleton_host;
     CursorLockCallback cursor_lock;
     bool cursor_locked = false;
     LogCallback log;
@@ -825,6 +895,309 @@ struct ScriptSystem::Impl {
             return true;
         };
 
+        // --- Cualquier campo de cualquier componente (la reflexion del Inspector) ---
+        //   e:getField("Light", "intensity")            e:setField("Light", "intensity", 5)
+        //   e:setField("PhysBones", "chains[1].pull", 0.5)   (listas desde 1; [n+1] anade)
+        //   e:getFields("Ragdoll") -> tabla clave -> valor
+        entity["getField"] = [](const LuaEntity& e, const std::string& component, const std::string& key,
+                                    sol::this_state s) -> sol::object {
+            const ecs::Entity x = e.get();
+            const ecs::ComponentType* type = ecs::ComponentRegistry::instance().find(component);
+            if (!x.valid() || type == nullptr || e.world == nullptr || !type->has(*e.world, x.handle())) return sol::lua_nil;
+            PostFieldVisitor visitor(PostFieldVisitor::Mode::Get, key, {}, false);
+            type->reflect(*e.world, x.handle(), visitor);
+            return visitor.found() ? postToLua(s, visitor.value()) : sol::object(sol::lua_nil);
+        };
+        entity["setField"] = [this](LuaEntity& e, const std::string& component, const std::string& key, sol::object value) {
+            ecs::Entity x = e.get();
+            const ecs::ComponentType* type = ecs::ComponentRegistry::instance().find(component);
+            if (!x.valid() || e.world == nullptr) return false;
+            if (type == nullptr) {
+                write(1, "setField: no hay componente '" + component + "'");
+                return false;
+            }
+            PostValue v;
+            if (!postFromLua(value, v)) {
+                write(1, "setField " + component + "." + key + ": valor no valido");
+                return false;
+            }
+            const bool added = !type->has(*e.world, x.handle());
+            if (added) type->add(*e.world, x.handle());
+            PostFieldVisitor visitor(PostFieldVisitor::Mode::Set, key, v, false);
+            type->reflect(*e.world, x.handle(), visitor);
+            if (!visitor.found()) {
+                if (added) type->remove(*e.world, x.handle());
+                write(1, "setField: " + component + " no tiene '" + key + "' (mira getFields)");
+                return false;
+            }
+            if (!visitor.error().empty()) {
+                write(1, "setField " + component + "." + key + ": " + visitor.error());
+                return false;
+            }
+            return true;
+        };
+        entity["getFields"] = [](const LuaEntity& e, const std::string& component, sol::this_state s) {
+            sol::state_view L(s);
+            sol::table t = L.create_table();
+            const ecs::Entity x = e.get();
+            const ecs::ComponentType* type = ecs::ComponentRegistry::instance().find(component);
+            if (!x.valid() || type == nullptr || e.world == nullptr || !type->has(*e.world, x.handle())) return t;
+            PostFieldVisitor visitor(PostFieldVisitor::Mode::Collect, {}, {}, false);
+            type->reflect(*e.world, x.handle(), visitor);
+            for (const auto& [k, v] : visitor.fields()) t[k] = postToLua(s, v);
+            return t;
+        };
+
+        // --- Huesos ---
+        entity["getBones"] = [this](const LuaEntity& e, sol::this_state s) {
+            sol::state_view L(s);
+            sol::table t = L.create_table();
+            const ecs::Entity x = e.get();
+            if (!x.valid() || !skeleton_host.bone_names) return t;
+            int i = 1;
+            for (const std::string& name : skeleton_host.bone_names(x)) t[i++] = name;
+            return t;
+        };
+        entity["getBonePosition"] = [this](const LuaEntity& e, const std::string& bone) -> sol::optional<Vec3> {
+            core::Mat4 m;
+            const ecs::Entity x = e.get();
+            if (!x.valid() || !skeleton_host.bone_world || !skeleton_host.bone_world(x, bone, m)) return sol::nullopt;
+            return Vec3{m.m[3][0], m.m[3][1], m.m[3][2]};
+        };
+        entity["getBoneRotation"] = [this](const LuaEntity& e, const std::string& bone) -> sol::optional<core::Quat> {
+            core::Mat4 m;
+            const ecs::Entity x = e.get();
+            if (!x.valid() || !skeleton_host.bone_world || !skeleton_host.bone_world(x, bone, m)) return sol::nullopt;
+            Vec3 t{};
+            core::Quat r{};
+            Vec3 sc{};
+            ecs::decomposeMatrix(m, t, r, sc);
+            return core::normalize(r);
+        };
+        // Mover huesos encima de la animacion (componente Skeleton).
+        const auto bone_override = [](ecs::Entity x, const std::string& bone) -> ecs::BoneOverride& {
+            ecs::Skeleton& sk = x.has<ecs::Skeleton>() ? x.get<ecs::Skeleton>() : x.add<ecs::Skeleton>();
+            for (ecs::BoneOverride& o : sk.bones) {
+                if (o.bone == bone) return o;
+            }
+            ecs::BoneOverride o;
+            o.bone = bone;
+            sk.bones.push_back(o);
+            return sk.bones.back();
+        };
+        entity["setBoneRotation"] = [bone_override](LuaEntity& e, const std::string& bone, sol::object rotation,
+                                                    sol::optional<float> weight) {
+            ecs::Entity x = e.get();
+            if (!x.valid()) return;
+            ecs::BoneOverride& o = bone_override(x, bone);
+            if (rotation.is<core::Quat>()) o.rotation = ecs::quatToEulerDegrees(rotation.as<core::Quat>());
+            else if (rotation.is<Vec3>()) o.rotation = rotation.as<Vec3>();
+            if (weight) o.weight = *weight;
+        };
+        entity["setBoneOffset"] = [bone_override](LuaEntity& e, const std::string& bone, const Vec3& offset) {
+            if (ecs::Entity x = e.get(); x.valid()) bone_override(x, bone).position = offset;
+        };
+        entity["setBoneScale"] = [bone_override](LuaEntity& e, const std::string& bone, sol::object scale) {
+            ecs::Entity x = e.get();
+            if (!x.valid()) return;
+            if (scale.is<Vec3>()) bone_override(x, bone).scale = scale.as<Vec3>();
+            else if (scale.get_type() == sol::type::number) {
+                const float s = scale.as<float>();
+                bone_override(x, bone).scale = Vec3{s, s, s};
+            }
+        };
+        entity["resetBone"] = [](LuaEntity& e, const std::string& bone) {
+            ecs::Entity x = e.get();
+            if (ecs::Skeleton* sk = x.valid() ? x.tryGet<ecs::Skeleton>() : nullptr) {
+                sk->bones.erase(std::remove_if(sk->bones.begin(), sk->bones.end(),
+                                               [&](const ecs::BoneOverride& o) { return o.bone == bone; }),
+                                sk->bones.end());
+            }
+        };
+        entity["resetBones"] = [](LuaEntity& e) {
+            ecs::Entity x = e.get();
+            if (ecs::Skeleton* sk = x.valid() ? x.tryGet<ecs::Skeleton>() : nullptr) sk->bones.clear();
+        };
+        entity["showBones"] = [](LuaEntity& e, sol::optional<bool> on) {
+            ecs::Entity x = e.get();
+            if (!x.valid()) return;
+            ecs::Skeleton& sk = x.has<ecs::Skeleton>() ? x.get<ecs::Skeleton>() : x.add<ecs::Skeleton>();
+            sk.show_bones = on.value_or(true);
+        };
+
+        // --- IK ---
+        // Objetivo: una entidad, un punto (Vec3) o nil (quitarlo).
+        const auto assign_target = [](const sol::object& target, Uuid& id, bool& use_position, Vec3& position) {
+            if (target.is<LuaEntity>()) {
+                const ecs::Entity t = target.as<LuaEntity>().get();
+                id = t.valid() ? t.uuid() : Uuid{};
+                use_position = false;
+            } else if (target.is<Vec3>()) {
+                position = target.as<Vec3>();
+                use_position = true;
+            } else {
+                id = Uuid{};
+                use_position = false;
+            }
+        };
+        const auto ik_of = [](ecs::Entity x) -> ecs::InverseKinematics& {
+            return x.has<ecs::InverseKinematics>() ? x.get<ecs::InverseKinematics>() : x.add<ecs::InverseKinematics>();
+        };
+        const auto limb_of = [](ecs::InverseKinematics& ik, const std::string& name) -> ecs::IKLimb* {
+            if (name == "left_hand" || name == "LeftHand") return &ik.left_hand;
+            if (name == "right_hand" || name == "RightHand") return &ik.right_hand;
+            if (name == "left_foot" || name == "LeftFoot") return &ik.left_foot;
+            if (name == "right_foot" || name == "RightFoot") return &ik.right_foot;
+            return nullptr;
+        };
+        const auto chain_of = [](ecs::InverseKinematics& ik, const std::string& bone, bool create) -> ecs::IKChain* {
+            for (ecs::IKChain& c : ik.chains) {
+                if (c.bone == bone) return &c;
+            }
+            if (!create) return nullptr;
+            ecs::IKChain c;
+            c.bone = bone;
+            ik.chains.push_back(c);
+            return &ik.chains.back();
+        };
+        // e:setIKTarget("left_hand", objetivo) o e:setIKTarget("Pata_D_Delante", objetivo, 3)
+        entity["setIKTarget"] = [assign_target, ik_of, limb_of, chain_of](LuaEntity& e, const std::string& name,
+                                                                         sol::object target, sol::optional<int> length) {
+            ecs::Entity x = e.get();
+            if (!x.valid()) return;
+            ecs::InverseKinematics& ik = ik_of(x);
+            if (ecs::IKLimb* limb = limb_of(ik, name)) {
+                assign_target(target, limb->target, limb->use_position, limb->position);
+                return;
+            }
+            ecs::IKChain* chain = chain_of(ik, name, true);
+            assign_target(target, chain->target, chain->use_position, chain->position);
+            chain->ground = false;
+            if (length) chain->length = std::clamp(*length, 1, 16);
+        };
+        entity["setIKHint"] = [ik_of, limb_of, chain_of](LuaEntity& e, const std::string& name, sol::object hint) {
+            ecs::Entity x = e.get();
+            if (!x.valid()) return;
+            ecs::InverseKinematics& ik = ik_of(x);
+            const ecs::Entity h = hint.is<LuaEntity>() ? hint.as<LuaEntity>().get() : ecs::Entity{};
+            const Uuid id = h.valid() ? h.uuid() : Uuid{};
+            if (ecs::IKLimb* limb = limb_of(ik, name)) limb->hint = id;
+            else if (ecs::IKChain* chain = chain_of(ik, name, false)) chain->hint = id;
+        };
+        entity["setIKWeight"] = [ik_of, limb_of, chain_of](LuaEntity& e, const std::string& name, float weight) {
+            ecs::Entity x = e.get();
+            if (!x.valid()) return;
+            ecs::InverseKinematics& ik = ik_of(x);
+            weight = std::clamp(weight, 0.0f, 1.0f);
+            if (ecs::IKLimb* limb = limb_of(ik, name)) limb->weight = weight;
+            else if (name == "look") ik.look_weight = weight;
+            else if (name == "feet" || name == "ground") ik.grounding_weight = weight;
+            else if (ecs::IKChain* chain = chain_of(ik, name, false)) chain->weight = weight;
+        };
+        entity["setLookAt"] = [assign_target, ik_of](LuaEntity& e, sol::object target, sol::optional<float> weight) {
+            ecs::Entity x = e.get();
+            if (!x.valid()) return;
+            ecs::InverseKinematics& ik = ik_of(x);
+            assign_target(target, ik.look_at, ik.look_use_position, ik.look_position);
+            if (weight) ik.look_weight = std::clamp(*weight, 0.0f, 1.0f);
+        };
+        entity["setFootGrounding"] = [ik_of](LuaEntity& e, bool on) {
+            ecs::Entity x = e.get();
+            if (!x.valid()) return;
+            ecs::InverseKinematics& ik = ik_of(x);
+            ik.foot_grounding = on;
+            for (ecs::IKChain& c : ik.chains) {
+                if (c.ground) c.weight = on ? std::max(c.weight, 1.0f) : 0.0f;
+            }
+        };
+        // Configuracion automatica desde el esqueleto.
+        entity["setupCreatureIK"] = [this, ik_of](LuaEntity& e) {
+            ecs::Entity x = e.get();
+            float scale = 1.0f;
+            const asset::ModelData* data = x.valid() && skeleton_host.skeleton ? skeleton_host.skeleton(x, &scale) : nullptr;
+            if (data == nullptr) return false;
+            return ecs::suggestCreatureIK(*data, ik_of(x));
+        };
+        entity["setupRagdoll"] = [this](LuaEntity& e) {
+            ecs::Entity x = e.get();
+            float scale = 1.0f;
+            const asset::ModelData* data = x.valid() && skeleton_host.skeleton ? skeleton_host.skeleton(x, &scale) : nullptr;
+            if (data == nullptr) return 0;
+            ecs::Ragdoll& rag = x.has<ecs::Ragdoll>() ? x.get<ecs::Ragdoll>() : x.add<ecs::Ragdoll>();
+            rag.bones = ecs::suggestRagdollBones(*data, scale);
+            return static_cast<int>(rag.bones.size());
+        };
+        entity["setupPhysBones"] = [this](LuaEntity& e) {
+            ecs::Entity x = e.get();
+            const asset::ModelData* data = x.valid() && skeleton_host.skeleton ? skeleton_host.skeleton(x, nullptr) : nullptr;
+            if (data == nullptr) return 0;
+            ecs::PhysBones& pb = x.has<ecs::PhysBones>() ? x.get<ecs::PhysBones>() : x.add<ecs::PhysBones>();
+            pb.chains = ecs::suggestPhysBones(*data);
+            return static_cast<int>(pb.chains.size());
+        };
+
+        // --- Ragdoll ---
+        entity["ragdoll"] = sol::property(
+            [](const LuaEntity& e) {
+                const ecs::Entity x = e.get();
+                const ecs::Ragdoll* r = x.valid() ? x.tryGet<ecs::Ragdoll>() : nullptr;
+                return r != nullptr && r->active;
+            },
+            [](LuaEntity& e, bool on) {
+                ecs::Entity x = e.get();
+                if (!x.valid()) return;
+                ecs::Ragdoll* r = x.tryGet<ecs::Ragdoll>();
+                if (r == nullptr) {
+                    if (!on) return;
+                    r = &x.add<ecs::Ragdoll>();
+                }
+                r->active = on;
+            });
+        // e:addRagdollForce(impulso [, "Hueso" | punto]): un golpe al caer.
+        entity["addRagdollForce"] = [](LuaEntity& e, const Vec3& impulse, sol::object where) {
+            ecs::Entity x = e.get();
+            ecs::Ragdoll* r = x.valid() ? x.tryGet<ecs::Ragdoll>() : nullptr;
+            if (r == nullptr || !r->active) return false;
+            if (!r->runtime.ptr) r->runtime.ptr = std::make_shared<ecs::RagdollRuntime>();
+            ecs::RagdollRuntime::Push push;
+            push.impulse = impulse;
+            if (where.get_type() == sol::type::string) {
+                const std::string bone = where.as<std::string>();
+                for (std::size_t i = 0; i < r->runtime.ptr->bones.size(); ++i) {
+                    const std::string& n = r->runtime.ptr->bones[i].name;
+                    if (n == bone || (n.size() > bone.size() && n.compare(n.size() - bone.size(), bone.size(), bone) == 0)) {
+                        push.bone = static_cast<int>(i);
+                        break;
+                    }
+                }
+            } else if (where.is<Vec3>()) {
+                push.point = where.as<Vec3>();
+                push.at_point = true;
+            }
+            r->runtime.ptr->pushes.push_back(push);
+            return true;
+        };
+
+        // --- Bone Sockets ---
+        // espada:attachToBone(personaje, "RightHand" [, desplazamiento, giro])
+        entity["attachToBone"] = [](LuaEntity& e, const LuaEntity& model, const std::string& bone, sol::optional<Vec3> offset,
+                                    sol::optional<Vec3> rotation) {
+            ecs::Entity x = e.get();
+            const ecs::Entity m = model.get();
+            if (!x.valid() || !m.valid() || x == m) return false;
+            if (!m.isAncestorOf(x)) x.setParent(m, true);
+            ecs::BoneSocket& s = x.has<ecs::BoneSocket>() ? x.get<ecs::BoneSocket>() : x.add<ecs::BoneSocket>();
+            s.bone = bone;
+            s.mode = ecs::SocketMode::Follow;
+            s.position = offset.value_or(Vec3{});
+            s.rotation = rotation.value_or(Vec3{});
+            return true;
+        };
+        entity["detachFromBone"] = [](LuaEntity& e) {
+            ecs::Entity x = e.get();
+            if (x.valid() && x.has<ecs::BoneSocket>()) x.remove<ecs::BoneSocket>();
+        };
+
         // Navegacion (NavAgent): como el MoveTo del AIController de Unreal.
         entity["moveTo"] = [this](LuaEntity& e, const Vec3& target) {
             const ecs::Entity x = e.get();
@@ -1145,6 +1518,17 @@ struct ScriptSystem::Impl {
                 if (o.is<Vec3>()) {
                     out.type = PostValue::Type::Vector;
                     out.vector = o.as<Vec3>();
+                    return true;
+                }
+                if (o.is<LuaEntity>()) {
+                    const ecs::Entity x = o.as<LuaEntity>().get();
+                    out.type = PostValue::Type::Text;
+                    out.text = x.valid() ? x.uuid().toString() : std::string();
+                    return true;
+                }
+                if (o.get_type() == sol::type::lua_nil) {
+                    out.type = PostValue::Type::Text;
+                    out.text.clear();
                     return true;
                 }
                 return false;
@@ -1842,6 +2226,7 @@ void ScriptSystem::setAudio(audio::AudioSystem* audio) { impl_->audio = audio; }
 void ScriptSystem::setNavigation(navigation::NavigationSystem* navigation) { impl_->navigation = navigation; }
 void ScriptSystem::setVoxels(voxel::VoxelSystem* voxels) { impl_->voxels = voxels; }
 void ScriptSystem::setGraphics(GraphicsHost* graphics) { impl_->graphics = graphics; }
+void ScriptSystem::setSkeletonHost(SkeletonHost host) { impl_->skeleton_host = std::move(host); }
 void ScriptSystem::setCursorLock(CursorLockCallback callback) { impl_->cursor_lock = std::move(callback); }
 bool ScriptSystem::cursorLocked() const { return impl_->cursor_locked; }
 void ScriptSystem::releaseCursor() { impl_->lockCursor(false); }
@@ -2097,28 +2482,37 @@ void ScriptSystem::callMethod(ecs::Entity target, const std::string& method, boo
     if (it != d.instances.end()) d.call(it->second, method.c_str(), value);
 }
 
-bool ScriptSystem::run(const std::string& code, std::string* output) {
+bool ScriptSystem::run(const std::string& code, std::string* output, ecs::World* world) {
     Impl& d = *impl_;
+    // Fuera de Play: un estado temporal que hace de estado principal mientras
+    // dura (las funciones crean sus objetos en `d.lua`) sobre la escena dada.
+    const bool temporary = d.lua == nullptr;
+    ecs::World* previous_world = d.world;
+    if (temporary) {
+        d.world = world;
+        d.lua = std::make_unique<sol::state>();
+        d.bind(*d.lua);
+    }
     sol::state* L = d.lua.get();
-    std::unique_ptr<sol::state> temp;
-    if (L == nullptr) {
-        temp = std::make_unique<sol::state>();
-        d.bind(*temp);
-        L = temp.get();
+    bool ok = true;
+    {
+        sol::protected_function_result r = L->safe_script(code, sol::script_pass_on_error, "@consola");
+        if (!r.valid()) {
+            sol::error e = r;
+            if (output) *output = e.what();
+            ok = false;
+        } else if (output) {
+            sol::object value = r;
+            sol::protected_function tostring = (*L)["tostring"];
+            sol::protected_function_result s = tostring(value);
+            *output = s.valid() ? s.get<std::string>() : std::string{};
+        }
     }
-    sol::protected_function_result r = L->safe_script(code, sol::script_pass_on_error, "@consola");
-    if (!r.valid()) {
-        sol::error e = r;
-        if (output) *output = e.what();
-        return false;
+    if (temporary) {
+        d.lua.reset();
+        d.world = previous_world;
     }
-    if (output) {
-        sol::object value = r;
-        sol::protected_function tostring = (*L)["tostring"];
-        sol::protected_function_result s = tostring(value);
-        *output = s.valid() ? s.get<std::string>() : std::string{};
-    }
-    return true;
+    return ok;
 }
 
 }  // namespace cramion::scripting

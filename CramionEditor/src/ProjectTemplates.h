@@ -21,7 +21,7 @@
 
 namespace cramion::editor {
 
-enum class TemplateArt : int { Blank = 0, ThirdPerson = 1, Navigation = 2, User = 3, Voxel = 4, Mmo = 5 };
+enum class TemplateArt : int { Blank = 0, ThirdPerson = 1, Navigation = 2, User = 3, Voxel = 4, Mmo = 5, Creatures = 6 };
 
 struct ProjectTemplate {
     std::string id;           // "blank", "third_person"... o la carpeta del usuario

@@ -124,6 +124,94 @@ bool twoBone(const Pose& pose, int upper, int mid, int end, const Vec3& target, 
     return true;
 }
 
+std::vector<int> chainTo(const std::vector<asset::Node>& nodes, int end, int bones) {
+    std::vector<int> joints;
+    if (end < 0 || static_cast<std::size_t>(end) >= nodes.size() || bones < 1) return joints;
+    joints.push_back(end);
+    for (int i = 0; i < bones; ++i) {
+        const int parent = nodes[static_cast<std::size_t>(joints.back())].parent;
+        if (parent < 0) return {};
+        joints.push_back(parent);
+    }
+    std::reverse(joints.begin(), joints.end());
+    return joints;
+}
+
+bool chain(const Pose& pose, const std::vector<int>& joints, const Vec3& target, const Vec3* pole, float weight,
+           int iterations) {
+    const std::size_t count = joints.size();
+    const int n = static_cast<int>(pose.nodes->size());
+    if (count < 2 || weight <= 0.0f) return false;
+    for (const int j : joints) {
+        if (j < 0 || j >= n) return false;
+    }
+    if (count == 3) return twoBone(pose, joints[0], joints[1], joints[2], target, pole, weight);
+
+    std::vector<Vec3> p(count);
+    std::vector<float> length(count - 1);
+    float total = 0.0f;
+    for (std::size_t i = 0; i < count; ++i) p[i] = nodePosition(pose, joints[i]);
+    for (std::size_t i = 0; i + 1 < count; ++i) {
+        length[i] = core::length(p[i + 1] - p[i]);
+        total += length[i];
+    }
+    if (total < 1e-6f) return false;
+    const Vec3 root = p[0];
+    const Vec3 goal = p.back() + (target - p.back()) * std::clamp(weight, 0.0f, 1.0f);
+
+    if (core::length(goal - root) >= total) {
+        // No llega: estirada hacia el objetivo.
+        const Vec3 dir = core::normalize(goal - root);
+        for (std::size_t i = 0; i + 1 < count; ++i) p[i + 1] = p[i] + dir * length[i];
+    } else {
+        const float tolerance = total * 1e-4f;
+        for (int it = 0; it < iterations && core::length(p.back() - goal) > tolerance; ++it) {
+            // Hacia atras: el extremo al objetivo.
+            p.back() = goal;
+            for (std::size_t i = count - 1; i-- > 0;) {
+                const Vec3 d = p[i] - p[i + 1];
+                const float len = core::length(d);
+                p[i] = len > 1e-6f ? p[i + 1] + d * (length[i] / len) : p[i + 1];
+            }
+            // Hacia delante: la raiz a su sitio.
+            p[0] = root;
+            for (std::size_t i = 0; i + 1 < count; ++i) {
+                const Vec3 d = p[i + 1] - p[i];
+                const float len = core::length(d);
+                p[i + 1] = len > 1e-6f ? p[i] + d * (length[i] / len) : p[i];
+            }
+        }
+        // Pole: cada articulacion de en medio gira alrededor de la linea
+        // entre sus vecinas hasta quedar lo mas cerca posible del pole.
+        if (pole != nullptr) {
+            for (std::size_t i = 1; i + 1 < count; ++i) {
+                const Vec3 axis_vec = p[i + 1] - p[i - 1];
+                const float axis_len = core::length(axis_vec);
+                if (axis_len < 1e-6f) continue;
+                const Vec3 axis = axis_vec * (1.0f / axis_len);
+                const auto project = [&](const Vec3& v) {
+                    const Vec3 rel = v - p[i - 1];
+                    return rel - axis * core::dot(rel, axis);
+                };
+                const Vec3 joint = project(p[i]);
+                const Vec3 wanted = project(*pole);
+                if (core::length(joint) < 1e-6f || core::length(wanted) < 1e-6f) continue;
+                const Quat turn = rotationBetween(core::normalize(joint), core::normalize(wanted));
+                p[i] = p[i - 1] + core::dot(p[i] - p[i - 1], axis) * axis + ecs::quatRotate(turn, joint);
+            }
+        }
+    }
+    // Cada hueso apunta a su nueva articulacion (los hijos le siguen).
+    for (std::size_t i = 0; i + 1 < count; ++i) {
+        const Vec3 from = nodePosition(pose, joints[i]);
+        const Vec3 now = nodePosition(pose, joints[i + 1]) - from;
+        const Vec3 wanted = p[i + 1] - from;
+        if (core::length(now) < 1e-6f || core::length(wanted) < 1e-6f) continue;
+        rotateGlobal(pose, joints[i], rotationBetween(core::normalize(now), core::normalize(wanted)));
+    }
+    return true;
+}
+
 void lookAt(const Pose& pose, int bone, const Vec3& forward, const Vec3& target, float weight, float max_angle_degrees) {
     if (bone < 0 || weight <= 0.0f) return;
     const Vec3 from = nodePosition(pose, bone);

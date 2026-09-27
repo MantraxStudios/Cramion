@@ -611,7 +611,7 @@ ImportResult importEnvironment(const std::filesystem::path& source,
 
 bool writeGeneratedModel(const std::filesystem::path& file, const Uuid& uuid, const std::string& name,
                          const std::vector<ModelNode>& nodes, const std::vector<asset::ModelData>& parts,
-                         std::string* error) {
+                         std::string* error, bool animated) {
     try {
         std::filesystem::create_directories(file.parent_path());
         crdata::Header header{};
@@ -622,6 +622,10 @@ bool writeGeneratedModel(const std::filesystem::path& file, const Uuid& uuid, co
         crdata::ModelContent content{};
         content.nodes = nodes;
         content.parts = parts;
+        content.animated = animated;
+        if (animated && !parts.empty()) {
+            for (const asset::AnimationClip& clip : parts.front().animations) content.animation_names.push_back(clip.name);
+        }
         crdata::writeModel(file, header, content);
         return true;
     } catch (const std::exception& e) {

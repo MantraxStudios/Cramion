@@ -12,6 +12,7 @@
     <tr><td><code>IA y navegación</code></td><td>Un laberinto con NavMesh y guardias con NavAgent que patrullan y persiguen si te ven; llegar a la meta gana.</td></tr>
     <tr><td><code>Mundo de bloques</code></td><td>Supervivencia como Minecraft: mundo infinito con biomas, cuevas, árboles y mar; romper, recoger, inventario de 36 huecos, 13 recetas, vida, hambre, aire, muerte y guardado.</td></tr>
     <tr><td><code>MMO RPG</code></td><td>Un rol online en miniatura. Ver abajo.</td></tr>
+    <tr><td><code>Criaturas</code></td><td>IK de animales, Phys Bones y ragdoll con un perro y un maniquí. Ver abajo.</td></tr>
   </tbody>
 </table>
 
@@ -42,6 +43,26 @@
   </tbody>
 </table>
 <p>La partida (nivel, experiencia, oro, inventario, equipo y misiones) se guarda sola en <code>Prefs</code>.</p>
+
+<h3 id="criaturas">Criaturas: IK, ragdoll y phys bones</h3>
+<p>
+  Un <strong>perro</strong> recorre un circuito con escaleras, una rampa y piedras: cada pata (3 huesos) se apoya en el
+  suelo con el <a href="esqueletos.html#ik">IK</a> y el cuerpo se inclina en la rampa; la cola y las orejas son
+  <a href="esqueletos.html#physbones">Phys Bones</a> con un collider en el cuerpo; lleva un sombrero enganchado a la
+  cabeza con un <a href="esqueletos.html#sockets">Bone Socket</a> y la cabeza sigue a una pelota. Un <strong>maniquí</strong>
+  humanoide apoya un pie en un escalón, mueve su coleta y sigue la pelota. Los dos modelos (con esqueleto, malla y
+  animaciones) se generan al crear el proyecto, en <code>Models/</code>.
+</p>
+<table>
+  <thead><tr><th>Tecla</th><th>Qué hace</th></tr></thead>
+  <tbody>
+    <tr><td><code>R</code></td><td>Ragdoll del perro (cae de lado); otra vez R se levanta. <code>Espacio</code>: otro empujón.</td></tr>
+    <tr><td><code>F</code></td><td>Tira al maniquí empujándolo desde la cámara; se levanta solo a los 4 s (o con <code>G</code>).</td></tr>
+    <tr><td><code>B</code></td><td>Ver los huesos del perro (en la vista Escena).</td></tr>
+    <tr><td><code>I</code> / <code>P</code></td><td>Encender y apagar el IK y los Phys Bones para comparar.</td></tr>
+  </tbody>
+</table>
+<p>Scripts: <code>Perro.lua</code>, <code>Maniqui.lua</code>, <code>Pelota.lua</code> y <code>Controles.lua</code>.</p>
 
 <h3 id="usuario">Tus plantillas</h3>
 <p>

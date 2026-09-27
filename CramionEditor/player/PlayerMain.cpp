@@ -294,6 +294,20 @@ int main() {
         voxels.setAssetsRoot(project->assetsFolder());
         voxels.setSaveRoot(editor::localDataFolder("Saves") / std::filesystem::path(exe_stem) / "Worlds");
         scripts.setVoxels(&voxels);
+        // Lua: huesos, IK y ragdoll leen la pose de cada frame del RenderSync.
+        scripts.setSkeletonHost(scripting::ScriptSystem::SkeletonHost{
+        [&sync](ecs::Entity e, const std::string& bone, core::Mat4& m) {
+            return e.world() != nullptr && sync.boneWorld(*e.world(), e, bone, m);
+        },
+        [&sync](ecs::Entity e) {
+            std::vector<std::string> names;
+            ecs::RenderSync::SkeletonPose pose;
+            if (e.world() != nullptr && sync.skeletonPose(*e.world(), e, pose)) names = pose.names;
+            return names;
+        },
+        [&sync](ecs::Entity e, float* scale) -> const asset::ModelData* {
+            return e.world() != nullptr ? sync.skeletonData(*e.world(), e, scale) : nullptr;
+        }});
         // Graphics (Lua): menu de opciones del juego. Graphics.save() lo
         // guarda para el jugador (se lee al volver a abrir el juego).
         editor::RendererGraphicsHost graphics_host(renderer, window.handle(), nullptr);

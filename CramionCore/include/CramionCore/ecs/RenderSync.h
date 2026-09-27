@@ -21,6 +21,8 @@
 #include "CramionCore/terrain/Terrain.h"
 #include "CramionCore/anim/Humanoid.h"
 #include "CramionCore/anim/Procedural.h"
+#include "CramionCore/anim/Creature.h"
+#include "CramionCore/anim/PhysBones.h"
 #include "CramionCore/water/Ripples.h"
 #include "CramionCore/water/Water.h"
 
@@ -112,6 +114,27 @@ public:
     // Caja en el espacio del modelo de un actor (para seleccionar con rayos).
     bool actorLocalBounds(std::uint32_t actor, core::Vec3& min, core::Vec3& max) const;
 
+    // --- Esqueletos (Lua y el editor) ---
+    // La entidad con esqueleto de `e`: ella o su primer descendiente animado
+    // (que tenga `bone`, si se pide).
+    Entity skinnedEntity(World& world, Entity e, const std::string* bone);
+    // Matriz de mundo de un hueso (tal como se dibuja este frame).
+    bool boneWorld(World& world, Entity e, const std::string& bone, core::Mat4& out);
+    struct SkeletonPose {
+        Entity source;                     // la pieza con el esqueleto
+        std::vector<std::string> names;
+        std::vector<int> nodes;            // indice en ModelData::nodes
+        std::vector<core::Vec3> positions; // mundo
+        std::vector<int> parents;          // indice en estas listas (-1 = raiz)
+        float scale = 1.0f;                // de la entidad (metros por unidad)
+    };
+    // Los huesos para dibujarlos o listarlos.
+    bool skeletonPose(World& world, Entity e, SkeletonPose& out);
+    // Las particulas de los phys bones (para dibujarlas), o nullptr.
+    const std::vector<physbone::Chain>* physBoneChains(World& world, Entity e);
+    // El esqueleto (nodos y huesos) de `e` o de su pieza animada, y su escala.
+    const asset::ModelData* skeletonData(World& world, Entity e, float* scale = nullptr);
+
 private:
     struct PartKey {
         Uuid uuid;
@@ -181,6 +204,7 @@ private:
         std::vector<core::Mat4> rest;
         core::Vec3 up{0.0f, 1.0f, 0.0f};
         core::Vec3 forward{0.0f, 0.0f, 1.0f};
+        creature::Rig rig;  // cualquier esqueleto: patas, cabeza, delante
     };
     std::unordered_map<std::uint32_t, HumanoidInfo> humanoids_;
     // Animacion procedural: lo que se simula por entidad (muelles, pies) y
@@ -204,6 +228,51 @@ private:
                                 const asset::ModelData& data, std::uint32_t model, float delta_seconds);
     GroundQuery ground_query_;
     const HumanoidInfo& humanoidInfo(std::uint32_t model, const asset::ModelData& data);
+    // Esqueletos: que componentes afectan a una pieza (en ella o en un
+    // antepasado) y la pose compartida entre las piezas de un mismo modelo.
+    struct RigComponents {
+        const InverseKinematics* ik = nullptr;
+        const ProceduralAnimation* proc = nullptr;
+        const Skeleton* skeleton = nullptr;
+        const PhysBones* physbones = nullptr;
+        Ragdoll* ragdoll = nullptr;
+        entt::entity ragdoll_owner = entt::null;
+        entt::entity share = entt::null;  // dueno en un antepasado: las piezas comparten la pose
+        bool drive = false;               // hay sockets que mueven huesos de esta pieza
+        bool any() const {
+            return (ik != nullptr && ik->enabled) || (proc != nullptr && proc->enabled) || skeleton != nullptr ||
+                   (physbones != nullptr && physbones->enabled) || ragdoll != nullptr || drive;
+        }
+    };
+    RigComponents gatherRig(Entity e);
+    struct SharedPose {
+        std::uint64_t frame = 0;
+        std::vector<core::Mat4> locals;
+    };
+    std::unordered_map<entt::entity, SharedPose> shared_poses_;
+    bool copySharedPose(const RigComponents& rig, anim::Animator& animator, const asset::ModelData& data);
+    void storeSharedPose(const RigComponents& rig, anim::Animator& animator);
+    void applyBoneOverrides(const Skeleton& skeleton, anim::Animator& animator, const asset::ModelData& data);
+    void applyDriveSockets(World& world, Entity entity, anim::Animator& animator, const asset::ModelData& data);
+    struct PhysBoneState {
+        std::uint64_t signature = 0;
+        std::vector<physbone::Chain> chains;
+    };
+    std::unordered_map<entt::entity, PhysBoneState> physbones_;
+    void applyPhysBones(World& world, Entity entity, const PhysBones& bones, anim::Animator& animator,
+                        const asset::ModelData& data, float delta_seconds);
+    struct RagdollTips {
+        std::vector<int> tips;
+        std::vector<float> lengths;  // modelo
+    };
+    std::unordered_map<entt::entity, RagdollTips> ragdoll_tips_;
+    void applyRagdoll(Entity entity, Ragdoll& ragdoll, anim::Animator& animator, const asset::ModelData& data,
+                      float delta_seconds);
+    // Bone Socket -> la pieza animada que lo lleva; piezas -> sockets que
+    // mueven sus huesos (del frame anterior).
+    std::unordered_map<entt::entity, entt::entity> socket_sources_;
+    std::unordered_map<entt::entity, std::vector<entt::entity>> drive_sockets_;
+    void updateSockets(World& world, scene::Scene& scene);
     void applyInverseKinematics(World& world, Entity entity, const InverseKinematics& ik, anim::Animator& animator,
                                 const asset::ModelData& data, std::uint32_t model);
     // Olas interactivas: la simulacion y donde estaba cada cuerpo el frame

@@ -1,5 +1,26 @@
 # Cambios
 
+## 0.6.1
+
+### Esqueletos: IK de animales, ragdoll y phys bones
+- **Ragdoll** (componente nuevo, *Fisica*) con Jolt: una capsula por hueso unidas por articulaciones *swing-twist* con limites de doblar y girar, masa repartida y friccion en las articulaciones. Apagado sigue a la animacion; al activarlo (`entity.ragdoll = true`) **cae con la velocidad que llevaba la animacion**, su propio collider sale de la simulacion y la entidad va con el cuerpo; al apagarlo **vuelve a la animacion mezclando**. Los huesos se eligen solos para **humanos y animales** (cuerpo, columna, cuello, cabeza, patas y cola) o se generan en el Inspector para ajustarlos. Empujones con `entity:addRagdollForce(impulso, hueso)`. En la Escena se ven sus capsulas.
+- **Phys Bones** (componente nuevo) como los de VRChat: pelo, coletas, colas, orejas, faldas y capas con **pull, spring, stiffness, gravedad y gravity falloff, immobile, angulo maximo, radio (y en la punta) y punta extra**, sin estirarse. **Phys Bone Collider**: esfera, capsula o plano (tambien "dentro"). *Detectar pelo, colas, orejas...* crea las cadenas por el nombre de los huesos.
+- **IK para animales**: cadenas de **1 a 16 huesos** (FABRIK con *pole*): patas de 3 huesos de perros y caballos, cuellos, colas, tentaculos. **Patas al suelo** en cualquier esqueleto (escaleras, piedras, pendientes): el cuerpo baja lo que baje la pata mas baja y, con 3 o mas patas, **se inclina con la pendiente**. **Mirar** con cualquier hueso repartiendo el giro por el cuello. Objetivos como entidad o como **punto del mundo**. *Configurar automaticamente* reconoce patas (delante/detras, izquierda/derecha), cabeza, cuello y cola por la forma del esqueleto; *Crear objetivos* pone uno en cada cadena.
+- **Esqueleto (huesos)** (componente nuevo): dibuja los huesos en la Escena (clic en una articulacion para resaltarla, nombres), los lista en el Inspector en arbol con buscador y permite **girar, desplazar y escalar** cualquier hueso encima de la animacion.
+- **Bone Socket** (componente nuevo): una entidad **sigue a un hueso** (espada en la mano, sombrero, collider en la cabeza) o **mueve el hueso** (posar con el gizmo). *Socket aqui* en el Esqueleto lo crea.
+- Los componentes de esqueleto pueden ir en la **raiz del modelo**: las piezas de un personaje (cuerpo, ropa, pelo) comparten la pose, el IK y el ragdoll. Lo enganchado a un socket no los hereda.
+
+### Lua
+- **Graphics**: toda la configuracion grafica desde un script (como `QualitySettings` + `Screen` de Unity): `Graphics.setQuality("Alta")`, escalado (`upscaler`, `resolution`, `resolution_scale`), nitidez, VSync, presupuesto adaptativo y FPS objetivo, **calidad de sombras y de texturas**, trazado de rayos, sonda de reflexion, occlusion culling, **ventana** (maximizada, pantalla completa, ventana con tamano) y resoluciones del monitor. `Graphics.options()` para montar un menu y `Graphics.save()` guarda lo que elige el jugador en el juego exportado. **`Graphics.post`** cambia el post-procesado de la escena (`Graphics.post.bloom = false`). En el editor, lo que cambien los scripts se deshace al parar el Play.
+- **Cualquier campo de cualquier componente**: `entity:getField("Light", "intensity")`, `entity:setField("PhysBones", "chains[1].pull", 0.5)` (listas desde 1; `[n+1]` anade) y `entity:getFields("Ragdoll")`.
+- Huesos: `getBones`, `getBonePosition`, `getBoneRotation`, `setBoneRotation`, `setBoneOffset`, `setBoneScale`, `resetBone(s)`, `showBones`. IK: `setIKTarget` (entidad, punto o nil), `setIKHint`, `setIKWeight`, `setLookAt`, `setFootGrounding`, `setupCreatureIK`. Ragdoll: `entity.ragdoll`, `addRagdollForce`, `setupRagdoll`. `setupPhysBones`. Sockets: `attachToBone`, `detachFromBone`.
+
+### Plantilla Criaturas
+- Nueva plantilla en el Hub: un **perro** que recorre escaleras, una rampa y piedras apoyando cada pata con IK, con la cola y las orejas fisicas, un sombrero enganchado a la cabeza y la cabeza siguiendo a una pelota; y un **maniqui** que apoya un pie en un escalon, mueve su coleta y cae como un ragdoll. R, F, B, I y P para probarlo todo. Los dos modelos (esqueleto, malla skinneada y animaciones) se generan por codigo.
+
+### Manual
+- Pagina nueva **Esqueletos: IK, ragdoll y phys bones** y pagina **Graphics**; referencia de los componentes nuevos; plantilla Criaturas. 62 paginas y 686 entradas en el buscador.
+
 ## 0.6.0
 
 ### Espacios de trabajo (pestañas)

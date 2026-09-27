@@ -224,9 +224,29 @@ const std::map<std::string, std::string>& intros() {
                      "maquina de estados elige clip, velocidad y bucle segun sus parametros; sin el mandan Clip / Nombre del "
                      "clip. Desde Lua: <code>setAnimatorFloat</code>, <code>setAnimatorBool</code>, "
                      "<code>setAnimatorTrigger</code>, <code>playAnimation</code>."},
-        {"InverseKinematics", "Cinematica inversa sobre la pose animada: manos y pies que llegan a un objetivo (otra entidad), "
-                              "la cabeza que mira a algo, pies que se apoyan en el suelo (escaleras, pendientes) y cadenas de "
-                              "dos huesos para esqueletos no humanoides. Va junto al Animator."},
+        {"InverseKinematics", "Cinematica inversa sobre la pose animada de humanos y animales: manos y pies que llegan a un "
+                              "objetivo (una entidad o un punto), la cabeza que mira a algo repartiendo el giro por el cuello, "
+                              "pies que se apoyan en el suelo (escaleras, pendientes) y cadenas de 1 a 16 huesos para cualquier "
+                              "esqueleto: patas de 3 huesos de perros y caballos con \"Al suelo\", cuellos, colas. El cuerpo baja "
+                              "y se inclina con la pendiente. \"Configurar automaticamente\" en el Inspector detecta patas, "
+                              "cabeza y cuello. Puede ir en el modelo o en su raiz. Ver <a href=\"esqueletos.html\">Esqueletos</a>."},
+        {"Skeleton", "Ver y mover los huesos de un modelo: los dibuja en la Escena (clic en una articulacion para "
+                     "resaltarla), los lista en el Inspector con un buscador y cada uno se puede girar, desplazar o escalar "
+                     "encima de la animacion. \"Socket aqui\" engancha una entidad al hueso resaltado. Ver "
+                     "<a href=\"esqueletos.html\">Esqueletos</a>."},
+        {"BoneSocket", "Engancha una entidad a un hueso del modelo de un antepasado: Seguir al hueso (una espada en la mano, "
+                       "un sombrero, un collider en la cabeza) o Mover el hueso (el hueso sigue a la entidad: posar con el "
+                       "gizmo). Lua: <code>espada:attachToBone(personaje, \"RightHand\")</code>."},
+        {"PhysBones", "Huesos que se mueven solos con inercia, gravedad y choques, como los PhysBone de VRChat: pelo, "
+                      "coletas, colas, orejas, faldas, capas. Cada cadena parte de un hueso raiz con pull, spring, stiffness, "
+                      "gravedad, immobile, angulo maximo y radio. \"Detectar pelo, colas, orejas...\" las crea por el nombre "
+                      "de los huesos."},
+        {"PhysBoneCollider", "Esfera, capsula o plano con el que chocan los Phys Bones (la cabeza, el cuerpo, el suelo). "
+                             "Ponlo en una entidad con Bone Socket para que siga a un hueso."},
+        {"Ragdoll", "Muneco de trapo con la fisica (Jolt): una capsula por hueso unidas por articulaciones con limites de "
+                    "giro. Apagado sigue a la animacion; al activarlo (<code>entity.ragdoll = true</code>) cae con la "
+                    "velocidad que llevaba y al apagarlo vuelve a la animacion mezclando. Sin huesos en la lista se eligen "
+                    "solos para humanos y animales; \"Generar huesos\" los rellena para ajustarlos."},
         {"ProceduralAnimation", "Animacion procedural: huesos con muelle (pelo, colas, capas), patas que dan pasos solas "
                                 "(aranas, robots) y capas de respirar, inclinarse y ruido. Con o sin Animator."},
         {"AudioSource", "Un sonido en una entidad: clip (WAV, MP3, FLAC, OGG), volumen, tono, bucle, 2D o 3D con atenuacion y "
