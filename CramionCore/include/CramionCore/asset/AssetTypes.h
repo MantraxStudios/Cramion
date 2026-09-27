@@ -32,6 +32,7 @@ enum class AssetType : std::uint32_t {
     AnimationClip = 5,
     Material = 6,
     Prefab = 7,
+    RenderTexture = 8,
 };
 
 inline const char* assetTypeName(AssetType type) {
@@ -43,6 +44,7 @@ inline const char* assetTypeName(AssetType type) {
         case AssetType::AnimationClip: return "Clip de animacion";
         case AssetType::Material: return "Material";
         case AssetType::Prefab: return "Prefab";
+        case AssetType::RenderTexture: return "Render Texture";
         default: return "Desconocido";
     }
 }

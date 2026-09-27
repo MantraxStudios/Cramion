@@ -112,6 +112,12 @@ struct MaterialData {
     std::int32_t surface_shader = -1;
     std::array<core::Vec4, 8> surface_params{};
     std::array<std::int32_t, 4> surface_textures{-1, -1, -1, -1};
+
+    // Render Textures (lo que ve una camara con Target Texture): id del
+    // renderizador (VulkanRenderer::createRenderTexture) en el color o en la
+    // emision; -1 = la textura normal. Los pone RenderSync.
+    std::int32_t albedo_render_texture = -1;
+    std::int32_t emissive_render_texture = -1;
 };
 
 // Tramo del buffer de indices que se dibuja con un material. Los escenarios

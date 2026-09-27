@@ -88,6 +88,12 @@ void EditorApp::drawInspector() {
         ImGui::End();
         return;
     }
+    // Una Render Texture elegida en el Proyecto: su tamano y lo que tiene.
+    if (inspected_render_texture_.valid()) {
+        drawRenderTextureEditor(inspected_render_texture_);
+        ImGui::End();
+        return;
+    }
     // Un material elegido en el Proyecto: su editor (como Unity).
     if (inspected_material_.valid()) {
         if (database_->find(inspected_material_)) {

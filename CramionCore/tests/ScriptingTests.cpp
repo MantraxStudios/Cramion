@@ -511,6 +511,18 @@ void testRigLua() {
     const ecs::Skeleton* sk = dog.tryGet<ecs::Skeleton>();
     check(sk != nullptr && sk->bones.size() == 1 && std::abs(sk->bones[0].rotation.y - 30.0f) < 1e-4f, "setBoneRotation");
     check(dog.has<ecs::Ragdoll>() && dog.get<ecs::Ragdoll>().active, "entity.ragdoll = true");
+
+    // Referencias a assets por su UUID (Target Texture de una camara).
+    const std::string rt = Uuid::generate().toString();
+    std::string asset_out;
+    scripts.run("local d = Scene.find('Perro')\n"
+                "d:setField('Camera', 'target_texture', '" + rt + "')\n"
+                "local a = d:getField('Camera', 'target_texture')\n"
+                "local bad = d:setField('Camera', 'target_texture', 'no-es-un-uuid')\n"
+                "return a .. '|' .. tostring(bad)",
+                &asset_out);
+    check(asset_out == rt + "|false" && dog.has<ecs::Camera>() && dog.get<ecs::Camera>().target_texture.uuid.toString() == rt,
+          "setField/getField de una referencia a asset (UUID como texto)");
     scripts.stop();
 }
 

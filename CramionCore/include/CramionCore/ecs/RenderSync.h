@@ -26,6 +26,7 @@
 #include "CramionCore/water/Ripples.h"
 #include "CramionCore/water/Water.h"
 
+#include <filesystem>
 #include <functional>
 #include <CramionFX/CramionFX.h>
 
@@ -45,9 +46,18 @@ public:
         // false (vista de escena del editor), la camara de scene::Scene no se
         // toca.
         bool apply_main_camera = false;
+        // Dibujar las camaras con Target Texture (Render Textures). La segunda
+        // vista del editor no (ya lo hizo la principal este frame).
+        bool render_textures = true;
     };
 
     explicit RenderSync(assets::AssetManager& assets) : assets_(assets) {}
+
+    // Id de una Render Texture en el renderizador (la crea si hace falta; -1
+    // si no existe): la vista previa del editor.
+    std::int32_t renderTextureId(const Uuid& uuid) { return renderTextureFor(uuid); }
+    // Por su ruta dentro de Assets (el hueco de un material).
+    std::int32_t renderTextureIdForAsset(const std::string& relative);
     ~RenderSync();
     RenderSync(const RenderSync&) = delete;
     RenderSync& operator=(const RenderSync&) = delete;
@@ -292,6 +302,21 @@ private:
                        const std::vector<std::pair<const water::WaterBody*, core::Mat4>>& bodies);
     std::uint64_t river_version_ = 0;
     void destroyTerrains();
+
+    // Render Textures (.crrt): una por archivo, creada al usarla (camara con
+    // Target Texture o material que la lee) con el tamano del asset. Si el
+    // archivo cambia (otro tamano) se rehace.
+    struct RenderTextureGpu {
+        std::int32_t id = -1;
+        std::filesystem::file_time_type stamp{};
+    };
+    std::unordered_map<std::string, RenderTextureGpu> render_textures_;  // por ruta absoluta
+    std::uint64_t render_texture_checks_ = 0;
+    std::int32_t renderTextureForPath(const std::filesystem::path& file);
+    std::int32_t renderTextureFor(const Uuid& uuid);
+    void refreshRenderTextures();
+    void renderCameraTextures(World& world, scene::Scene& scene, gfx::VulkanRenderer& renderer);
+    void destroyRenderTextures();
 
     // Vegetacion (foliage::Foliage): se siembra en otro hilo cuando cambia
     // algo (el componente, su posicion o el terreno al terminar un trazo) y

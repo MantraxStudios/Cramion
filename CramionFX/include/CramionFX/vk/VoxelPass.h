@@ -56,6 +56,8 @@ struct VoxelStats {
 
 class VoxelPass {
 public:
+    // Dibujar el G-buffer en lineas (vista Wireframe del editor).
+    void setWireframe(bool wireframe) { wireframe_ = wireframe; }
     static constexpr std::uint32_t kMaxQuadsPerSection = 32768;
 
     void create(const VulkanDevice& device, const vk::raii::DescriptorSetLayout& frame_layout,
@@ -134,6 +136,8 @@ private:
     vk::raii::DescriptorSetLayout set_layout_{nullptr};
     vk::raii::PipelineLayout layout_{nullptr};
     vk::raii::Pipeline gbuffer_pipeline_{nullptr};
+    vk::raii::Pipeline gbuffer_wire_pipeline_{nullptr};  // vista Wireframe del editor
+    bool wireframe_ = false;
     vk::raii::Pipeline shadow_pipeline_{nullptr};
     vk::raii::DescriptorPool pool_{nullptr};
     vk::raii::DescriptorSet set_{nullptr};

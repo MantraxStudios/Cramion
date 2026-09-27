@@ -63,6 +63,8 @@ struct FoliageStats {
 
 class FoliagePass {
 public:
+    // Dibujar el G-buffer en lineas (vista Wireframe del editor).
+    void setWireframe(bool wireframe) { wireframe_ = wireframe; }
     static constexpr std::uint32_t kSpecies = 3;
     static constexpr std::uint32_t kLists = 4;  // 3 niveles + sombras
     static constexpr std::uint32_t kMaxInstances = 8'000'000;
@@ -119,6 +121,8 @@ private:
     vk::raii::DescriptorSetLayout draw_set_layout_{nullptr};
     vk::raii::PipelineLayout draw_layout_{nullptr};
     vk::raii::Pipeline gbuffer_pipeline_{nullptr};
+    vk::raii::Pipeline gbuffer_wire_pipeline_{nullptr};  // vista Wireframe del editor
+    bool wireframe_ = false;
     vk::raii::Pipeline shadow_pipeline_{nullptr};
     vk::raii::DescriptorPool pool_{nullptr};
     std::vector<vk::raii::DescriptorSet> cull_sets_;

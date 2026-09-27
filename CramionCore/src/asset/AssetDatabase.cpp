@@ -122,6 +122,11 @@ void AssetDatabase::refresh() {
             if (!info) {
                 std::cerr << "[Assets] Prefab sin UUID o danado: " << crdata::utf8(file.filename()) << "\n";
             }
+        } else if (extension == ".crrt") {
+            info = sceneInfo(file, AssetType::RenderTexture);
+            if (!info) {
+                std::cerr << "[Assets] Render Texture sin UUID o danado: " << crdata::utf8(file.filename()) << "\n";
+            }
         } else if (extension == ".crmat") {
             info = sceneInfo(file, AssetType::Material);
             if (!info) {

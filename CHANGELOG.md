@@ -1,5 +1,22 @@
 # Cambios
 
+## 0.7.1
+
+### Render Textures
+- **Render Texture** nueva (`.crrt`, *+ Añadir > Render Texture*), como en Unity: una **Camera con Target Texture** dibuja lo que ve en esa textura en vez de en la pantalla, y cualquier **material** la usa en el hueco de **Color** o de **Emision**. Pantallas, camaras de seguridad, espejos, retrovisores, minimapas o retratos. Funciona en el editor (tambien fuera de Play) y en el juego exportado, con el mismo post-procesado que la pantalla.
+- Inspector de la Render Texture con su tamano (botones 128 a 2048 y 16:9) y lo que tiene en ese momento; si cambia el tamano, se rehace sola.
+- Desde Lua, `entity:setField("Camera", "target_texture", uuid)`: `getField`/`setField` ahora leen y cambian referencias a assets (materiales, Target Texture...) por su UUID.
+
+### Vistas del editor
+- **Free Aspect**: la vista Escena ocupa todo el panel y se dibuja a su tamano exacto (antes tenia la proporcion de la ventana, con bandas). Menu de **proporcion** en la Escena y en el Juego como el de Unity: Free Aspect, 16:9, 16:10, 21:9, 32:9, 4:3, 5:4, 3:2, 1:1, vertical 9:16 y 9:19,5, resoluciones fijas (720p, 1080p, 1440p, 4K, 1080x1920 movil) y una **resolucion propia**. Se recuerda por proyecto.
+- **Modo de dibujo** de la vista Escena: **Lit**, **Unlit** (solo el color de los materiales), **Wireframe** (las lineas de mallas, terreno, voxeles y vegetacion) y **Lit + Wireframe**.
+
+### Manual
+- Pagina nueva **Render Textures**; modos de dibujo y proporcion de la vista en *Vista Escena y gizmos*; la proporcion de la vista Juego en *Play*; Render Textures en los huecos de textura de *Materiales*. 66 paginas y 784 entradas en el buscador.
+
+### Corregido
+- Aviso de Vulkan (imagen en layout `UNDEFINED`) en el primer frame tras abrir un proyecto o cambiar el tamano de la vista.
+
 ## 0.7.0
 
 ### Multijugador

@@ -102,6 +102,9 @@ void SkinnedModel::create(const VulkanDevice& device, const asset::ModelData& mo
     // (0.5, 0.5, 1) en espacio tangente = la normal de la malla sin cambios.
     const std::size_t flat_normal_index = add_texel(128, 128, 255);
     const std::size_t black_index = add_texel(0, 0, 0);
+    white_index_ = white_index;
+    black_index_ = black_index;
+    render_texture_refs_.clear();
 
     // --- Un descriptor set por material ---
     const auto material_count = static_cast<std::uint32_t>(model.materials.size());
@@ -173,6 +176,8 @@ void SkinnedModel::create(const VulkanDevice& device, const asset::ModelData& mo
                 hasAlpha(model.textures[static_cast<std::size_t>(material.albedo_texture)]);
         }
         materials_.push_back(gpu);
+        if (material.albedo_render_texture >= 0) render_texture_refs_.push_back({m, 0, material.albedo_render_texture});
+        if (material.emissive_render_texture >= 0) render_texture_refs_.push_back({m, 4, material.emissive_render_texture});
 
         std::array<vk::DescriptorImageInfo, SkinnedPass::kMaterialBindingCount> infos{};
         for (std::uint32_t t = 0; t < SkinnedPass::kMaterialBindingCount; ++t) {
@@ -224,6 +229,22 @@ void SkinnedModel::create(const VulkanDevice& device, const asset::ModelData& mo
 
     std::cout << "[Vulkan] Modelo " << model.name << " subido: " << model.textures.size()
               << " texturas con mipmaps, " << material_count << " materiales\n";
+}
+
+void SkinnedModel::setMaterialImage(const VulkanDevice& device, const SkinnedPass& pass, std::uint32_t material,
+                                    std::uint32_t binding, vk::ImageView view) {
+    if (material >= material_sets_.size()) return;
+    if (!view) view = *textures_[binding == 4 ? black_index_ : white_index_].view();
+    vk::DescriptorImageInfo info{};
+    info.sampler = *pass.sampler();
+    info.imageView = view;
+    info.imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
+    vk::WriteDescriptorSet write{};
+    write.dstSet = *material_sets_[material];
+    write.dstBinding = binding;
+    write.descriptorType = vk::DescriptorType::eCombinedImageSampler;
+    write.setImageInfo(info);
+    device.handle().updateDescriptorSets(write, nullptr);
 }
 
 void SkinnedModel::destroy() {

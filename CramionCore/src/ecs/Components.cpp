@@ -83,6 +83,10 @@ void Camera::reflect(PropertyVisitor& v) {
     v.field({"near", "Plano cercano"}, near_plane, FloatRange{0.001f, 100.0f, 0.01f, "%.3f m"});
     v.field({"far", "Plano lejano"}, far_plane, FloatRange{1.0f, 100000.0f, 1.0f, "%.0f m"});
     v.field({"is_main", "Camara principal"}, is_main);
+    v.asset({"target_texture", "Target Texture",
+             "Render Texture (.crrt) donde se dibuja lo que ve esta camara (pantallas, espejos, minimapas). "
+             "Con una asignada no se usa como camara del juego"},
+            target_texture, assets::AssetType::RenderTexture);
 }
 
 void Sky::reflect(PropertyVisitor& v) {

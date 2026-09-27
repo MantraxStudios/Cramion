@@ -177,6 +177,7 @@ void TerrainPass::destroy() {
     patch_indices_.destroy();
     shadow_pipeline_ = nullptr;
     gbuffer_pipeline_ = nullptr;
+    gbuffer_wire_pipeline_ = nullptr;
     repeat_sampler_ = nullptr;
     clamp_sampler_ = nullptr;
     pool_ = nullptr;
@@ -243,6 +244,11 @@ void TerrainPass::createPipelines(const VulkanDevice& device, std::array<vk::For
         info.pDynamicState = &dynamic;
         info.layout = *layout_;
         gbuffer_pipeline_ = vk::raii::Pipeline(device.handle(), device.pipelineCache(), info);
+        if (device.fillModeNonSolidSupported()) {
+            raster.polygonMode = vk::PolygonMode::eLine;
+            gbuffer_wire_pipeline_ = vk::raii::Pipeline(device.handle(), device.pipelineCache(), info);
+            raster.polygonMode = vk::PolygonMode::eFill;
+        }
     }
     // --- Sombras (solo profundidad) ---
     {
@@ -694,7 +700,8 @@ void TerrainPass::recordGBuffer(const vk::raii::CommandBuffer& cmd, std::uint32_
     for (const auto& [id, terrain] : terrains_) {
         if (terrain->chunks.empty() || frame >= terrain->sets.size()) continue;
         if (!bound) {
-            cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *gbuffer_pipeline_);
+            cmd.bindPipeline(vk::PipelineBindPoint::eGraphics,
+                     wireframe_ && *gbuffer_wire_pipeline_ ? *gbuffer_wire_pipeline_ : *gbuffer_pipeline_);
             cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *layout_, 0, *frame_set, nullptr);
             cmd.bindVertexBuffers(0, *patch_vertices_.handle(), {0});
             cmd.bindIndexBuffer(*patch_indices_.handle(), 0, vk::IndexType::eUint32);

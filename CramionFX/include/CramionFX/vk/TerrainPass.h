@@ -58,6 +58,8 @@ struct TerrainDesc {
 
 class TerrainPass {
 public:
+    // Dibujar el G-buffer en lineas (vista Wireframe del editor).
+    void setWireframe(bool wireframe) { wireframe_ = wireframe; }
     // `frame_layout`: el set 0 de la geometria (camara, lluvia, clima,
     // decals), que el terreno comparte con los modelos.
     void create(const VulkanDevice& device, const vk::raii::DescriptorSetLayout& frame_layout,
@@ -142,6 +144,8 @@ private:
     vk::raii::DescriptorSetLayout set_layout_{nullptr};
     vk::raii::PipelineLayout layout_{nullptr};
     vk::raii::Pipeline gbuffer_pipeline_{nullptr};
+    vk::raii::Pipeline gbuffer_wire_pipeline_{nullptr};  // vista Wireframe del editor
+    bool wireframe_ = false;
     vk::raii::Pipeline shadow_pipeline_{nullptr};
     vk::raii::DescriptorPool pool_{nullptr};
     vk::raii::Sampler clamp_sampler_{nullptr};

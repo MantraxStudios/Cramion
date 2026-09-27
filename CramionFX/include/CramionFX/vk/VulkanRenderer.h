@@ -105,6 +105,16 @@ namespace cramion::gfx {
 // durante seis frames se dibuja ademas una cara del cubo desde la sonda (pasos
 // 1 a 5, sin la luz del frame anterior) y al final se prefiltra. Mientras
 // tanto se sigue usando la captura anterior.
+// Como se dibuja la vista Escena del editor (menu de Unity: Shaded,
+// Wireframe, Shaded Wireframe; mas Unlit). La vista Juego, el juego y las
+// Render Textures siempre Lit.
+enum class SceneDrawMode : int {
+    Lit = 0,           // con luz (normal)
+    Unlit = 1,         // solo el color de los materiales, sin luz ni sombras
+    Wireframe = 2,     // solo las lineas de la geometria
+    LitWireframe = 3,  // con luz y las lineas de las mallas encima
+};
+
 class VulkanRenderer {
 public:
     // Niveles de la cadena de bloom (debe coincidir con kBloomLevels de
@@ -146,6 +156,12 @@ public:
     void setEditorHelpersEnabled(bool enabled) { editor_helpers_ = enabled; }
 
     void onResize(std::uint32_t width, std::uint32_t height);
+    // Tamano al que se dibuja la escena (la imagen de salida, antes de la
+    // interfaz). 0 x 0 = el de la ventana (el juego). El editor pide el de su
+    // panel de vista (Free Aspect) o el de la proporcion elegida; se aplica
+    // en applyPendingResize, sin rehacer la swapchain.
+    void setViewExtent(std::uint32_t width, std::uint32_t height);
+    vk::Extent2D requestedViewExtent() const { return view_extent_request_; }
 
     // Recrea ya la swapchain y las imagenes si la ventana cambio de tamano
     // (si no, lo hace drawFrame, que entonces se salta ese frame). Una UI que
@@ -507,6 +523,28 @@ public:
     // imagen de la escena (sceneImageGeneration).
     static constexpr std::uint32_t kViewSlots = 2;
     void setViewSlot(std::uint32_t slot) { view_slot_ = slot < kViewSlots ? slot : 0; }
+    // Modo de dibujo de la vista Escena (solo con las ayudas del editor).
+    void setSceneDrawMode(SceneDrawMode mode) { scene_draw_mode_ = mode; }
+    SceneDrawMode sceneDrawMode() const { return scene_draw_mode_; }
+    bool wireframeSupported() const { return device_.fillModeNonSolidSupported(); }
+
+    // --- Render Textures (como los RenderTexture de Unity) ---
+    // Una textura que se rellena con lo que ve una camara (Target Texture) y
+    // que los materiales pueden leer (MaterialData::albedo_render_texture /
+    // emissive_render_texture). Se guarda en sRGB (con el mismo tonemapping y
+    // post-procesado que la pantalla). Devuelve el id (o -1).
+    std::int32_t createRenderTexture(std::uint32_t width, std::uint32_t height);
+    void resizeRenderTexture(std::int32_t id, std::uint32_t width, std::uint32_t height);
+    void destroyRenderTexture(std::int32_t id);
+    vk::Extent2D renderTextureExtent(std::int32_t id) const;
+    // Vista para mostrarla en una interfaz (vale hasta que cambie la generacion).
+    VkImageView renderTextureView(std::int32_t id) const;
+    std::uint64_t renderTextureGeneration() const { return render_texture_generation_; }
+    // Dibuja la escena desde `camera` (con la proporcion de la textura) y la
+    // deja en la textura `id`. Un frame completo: llamar antes de drawFrame.
+    void renderToTexture(const scene::Scene& scene, const scene::Camera& camera, std::int32_t id);
+    // Veces que se dibujo alguna el ultimo segundo (estadisticas).
+    std::uint32_t renderTextureDraws() const { return render_texture_draws_; }
     std::uint32_t viewSlot() const { return view_slot_; }
     VkImageView viewImageView(std::uint32_t slot) const { return *view_images_[slot < kViewSlots ? slot : 0].view(); }
     // Corte de camara (otra vista, un corte de una cinematica): las pasadas
@@ -870,6 +908,36 @@ private:
     std::array<VulkanImage, kViewSlots> view_images_{};
     std::uint32_t view_slot_ = 0;
     void recordViewCopy(const vk::raii::CommandBuffer& cmd);
+    void recordRenderTextureCopy(const vk::raii::CommandBuffer& cmd);
+    SceneDrawMode scene_draw_mode_ = SceneDrawMode::Lit;
+    // El de este dibujo: el elegido en la vista Escena; si no, Lit.
+    SceneDrawMode drawModeNow() const {
+        return editor_helpers_ && !capturing_ && render_texture_target_ < 0 ? scene_draw_mode_ : SceneDrawMode::Lit;
+    }
+    bool wire_gbuffer_ = false;                              // G-buffer en lineas (Wireframe)
+    const vk::raii::Pipeline* mesh_pipeline_override_ = nullptr;  // pasada de lineas encima
+    const vk::raii::Pipeline& meshGeometryPipeline() const {
+        if (mesh_pipeline_override_ != nullptr) return *mesh_pipeline_override_;
+        return wire_gbuffer_ ? skinned_pass_.geometryWirePipeline() : skinned_pass_.geometryPipeline();
+    }
+    void recordWireOverlayPass(const vk::raii::CommandBuffer& cmd, std::uint32_t frame_index);
+    struct RenderTextureSlot {
+        VulkanImage image;            // vista sRGB: la leen los materiales
+        vk::raii::ImageView ui_view{nullptr};  // vista UNORM: la interfaz (ya con gamma)
+        bool alive = false;
+    };
+    std::vector<std::unique_ptr<RenderTextureSlot>> render_textures_;
+    std::int32_t render_texture_target_ = -1;  // drawFrame dibuja para esta textura
+    const scene::Camera* camera_override_ = nullptr;
+    std::uint64_t render_texture_generation_ = 0;
+    std::uint32_t render_texture_draws_ = 0;
+    std::uint32_t render_texture_draw_count_ = 0;
+    std::chrono::steady_clock::time_point render_texture_second_{};
+    bool renderTextureValid(std::int32_t id) const;
+    void createRenderTextureImage(RenderTextureSlot& slot, std::uint32_t width, std::uint32_t height);
+    // Los huecos de material que leen `id` (o todos con -1) apuntan a su imagen.
+    void bindRenderTextures(std::uint32_t model);
+    void rebindRenderTexture(std::int32_t id);
     // Picking por ID.
     VulkanImage pick_ids_{};
     std::vector<VulkanBuffer> pick_buffers_;  // 4 bytes por frame en vuelo (lectura en la CPU)
@@ -1092,6 +1160,11 @@ private:
     std::uint32_t culled_small_ = 0;
     std::chrono::steady_clock::time_point last_budget_time_{};
     vk::Extent2D render_extent_{0, 0};
+    vk::Extent2D view_extent_request_{0, 0};  // 0 = el de la swapchain
+    bool targets_dirty_ = false;              // otro tamano de vista: rehacer los destinos
+    // Tamano de salida de la escena: el pedido o el de la ventana.
+    vk::Extent2D outputExtent() const;
+    void recreateRenderTargets();
     bool upscaling_ = false;  // hay pasada de escalado (TAA o FSR)
     bool taa_history_valid_ = false;
     std::uint32_t jitter_index_ = 0;

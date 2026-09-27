@@ -294,6 +294,7 @@ void FoliagePass::destroy() {
     vertices_.destroy();
     indices_.destroy();
     gbuffer_pipeline_ = nullptr;
+    gbuffer_wire_pipeline_ = nullptr;
     shadow_pipeline_ = nullptr;
     cull_pipeline_ = nullptr;
     pool_ = nullptr;
@@ -369,6 +370,11 @@ void FoliagePass::createPipelines(const VulkanDevice& device, std::array<vk::For
         info.pDynamicState = &dynamic;
         info.layout = *draw_layout_;
         gbuffer_pipeline_ = vk::raii::Pipeline(device.handle(), device.pipelineCache(), info);
+        if (device.fillModeNonSolidSupported()) {
+            raster.polygonMode = vk::PolygonMode::eLine;
+            gbuffer_wire_pipeline_ = vk::raii::Pipeline(device.handle(), device.pipelineCache(), info);
+            raster.polygonMode = vk::PolygonMode::eFill;
+        }
     }
     // --- Sombras (solo profundidad) ---
     {
@@ -594,7 +600,8 @@ void FoliagePass::draw(const vk::raii::CommandBuffer& cmd, std::uint32_t frame, 
 void FoliagePass::recordGBuffer(const vk::raii::CommandBuffer& cmd, std::uint32_t frame,
                                 const vk::raii::DescriptorSet& frame_set) const {
     if (instance_count_ == 0 || frame >= draw_sets_.size()) return;
-    cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *gbuffer_pipeline_);
+    cmd.bindPipeline(vk::PipelineBindPoint::eGraphics,
+                     wireframe_ && *gbuffer_wire_pipeline_ ? *gbuffer_wire_pipeline_ : *gbuffer_pipeline_);
     cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *draw_layout_, 0, *frame_set, nullptr);
     DrawPush push{};
     push.params = core::Vec4{time_, 0.0f, settings_.wind, 0.0f};

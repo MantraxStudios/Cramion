@@ -121,6 +121,7 @@ bool EditorApp::openProject(const std::filesystem::path& path, bool open_scene) 
     voxels_.setSaveRoot(project_.libraryFolder() / "Worlds");
     voxels_.setPhysics(&physics_);  // los Rigidbody chocan con los bloques
     loadGraphicsSettings();
+    loadViewSettings();
     // Graphics (Lua): el editor no cambia su ventana ni guarda desde Play;
     // lo que cambien los scripts se deshace al parar (exitPlay).
     if (!graphics_host_) {
@@ -550,6 +551,7 @@ bool EditorApp::isSelected(const Uuid& uuid) const {
 void EditorApp::selectOnly(const Uuid& uuid) {
     if (isStageHelper(uuid)) return;  // luz y cielo del escenario de un prefab
     inspected_material_ = {};
+    inspected_render_texture_ = {};
     selection_.clear();
     if (uuid.valid()) {
         selection_.push_back(uuid);
@@ -560,6 +562,7 @@ void EditorApp::selectOnly(const Uuid& uuid) {
 void EditorApp::toggleSelection(const Uuid& uuid) {
     if (isStageHelper(uuid)) return;
     inspected_material_ = {};
+    inspected_render_texture_ = {};
     const auto it = findUuid(selection_, uuid);
     if (it != selection_.end()) {
         selection_.erase(it);
@@ -574,6 +577,7 @@ void EditorApp::toggleSelection(const Uuid& uuid) {
 
 void EditorApp::clearSelection() {
     inspected_material_ = {};
+    inspected_render_texture_ = {};
     selection_.clear();
     active_ = {};
     renaming_ = {};
@@ -860,7 +864,14 @@ void EditorApp::drawUi(float delta_seconds) {
     if (pending_inspect_material_.valid() && ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
         const ImGuiIO& io = ImGui::GetIO();
         if (io.MouseDragMaxDistanceSqr[ImGuiMouseButton_Left] < io.MouseDragThreshold * io.MouseDragThreshold) {
-            inspected_material_ = pending_inspect_material_;
+            const auto picked = database_->find(pending_inspect_material_);
+            if (picked && picked->type == assets::AssetType::RenderTexture) {
+                inspected_render_texture_ = pending_inspect_material_;
+                inspected_material_ = {};
+            } else {
+                inspected_material_ = pending_inspect_material_;
+                inspected_render_texture_ = {};
+            }
         }
         pending_inspect_material_ = {};
     }
@@ -980,6 +991,7 @@ void EditorApp::drawUi(float delta_seconds) {
     }
     flushCommit();
     chooseRenderView();
+    updateViewExtent(delta_seconds);
     addCpuSample(kCpuUi, millisecondsSince(ui_start));
 }
 
@@ -1029,8 +1041,15 @@ void EditorApp::syncWorld(float delta_seconds, bool secondary) {
     // gizmos) o Juego (camara real, sin ayudas). Al cambiar de vista o en un
     // corte de camara, sin historias temporales (no se mezclan dos camaras).
     const bool game = view == kGameSlot;
+    // La camara con la proporcion de la imagen que se dibuja (la del panel o
+    // la elegida), no la de la ventana.
+    const vk::Extent2D extent = renderer_.sceneExtent();
+    if (extent.width > 0 && extent.height > 0) {
+        scene_.camera().setAspectRatio(static_cast<float>(extent.width) / static_cast<float>(extent.height));
+    }
     renderer_.setViewSlot(view);
     renderer_.setEditorHelpersEnabled(!game);
+    renderer_.setSceneDrawMode(static_cast<gfx::SceneDrawMode>(scene_draw_mode_));
     if (!secondary && (view != last_render_view_ || (game && cinematics_.cutThisFrame()))) {
         renderer_.invalidateHistory();
     }
@@ -1040,6 +1059,7 @@ void EditorApp::syncWorld(float delta_seconds, bool secondary) {
     const CpuClock::time_point t = CpuClock::now();
     ecs::RenderSync::Options options;
     options.apply_main_camera = game;
+    options.render_textures = !secondary;
     // La segunda vista no avanza animaciones ni agua (ya lo hace la principal).
     sync_->sync(world_, scene_, renderer_, secondary ? 0.0f : delta_seconds, options);
     if (!secondary) voxels_.syncRenderer(renderer_);

@@ -106,6 +106,7 @@ void SkinnedPass::create(const VulkanDevice& device, const GBuffer& gbuffer,
     material_layout_info.setBindings(material_bindings);
     material_set_layout_ = vk::raii::DescriptorSetLayout(device.handle(), material_layout_info);
 
+    hdr_format_ = hdr_format;
     createGeometryPipeline(device, gbuffer);
 
     // --- Sombras: set 0 (los huesos) y set 1 (el material, para el alfa) ---
@@ -154,6 +155,11 @@ void SkinnedPass::createGeometryPipeline(const VulkanDevice& device, const GBuff
     const vk::raii::ShaderModule vertex_module = shaders::loadModule(device, "skinned.vert.spv");
     const vk::raii::ShaderModule fragment_module = shaders::loadModule(device, "skinned.frag.spv");
     geometry_pipeline_ = buildGeometryPipeline(device, vertex_module, fragment_module);
+    if (device.fillModeNonSolidSupported()) {
+        geometry_wire_pipeline_ = buildGeometryPipeline(device, vertex_module, fragment_module, GeometryVariant::Wire);
+        const vk::raii::ShaderModule wire_module = shaders::loadModule(device, "wire.frag.spv");
+        wire_overlay_pipeline_ = buildGeometryPipeline(device, vertex_module, wire_module, GeometryVariant::WireOverlay);
+    }
 }
 
 vk::raii::Pipeline SkinnedPass::createSurfacePipeline(const VulkanDevice& device,
@@ -170,7 +176,10 @@ vk::raii::Pipeline SkinnedPass::createSurfacePipeline(const VulkanDevice& device
 
 vk::raii::Pipeline SkinnedPass::buildGeometryPipeline(const VulkanDevice& device,
                                                       const vk::raii::ShaderModule& vertex_module,
-                                                      const vk::raii::ShaderModule& fragment_module) const {
+                                                      const vk::raii::ShaderModule& fragment_module,
+                                                      GeometryVariant variant) const {
+    const bool lines = variant != GeometryVariant::Fill;
+    const bool overlay = variant == GeometryVariant::WireOverlay;
     const std::array<vk::PipelineShaderStageCreateInfo, 2> stages = {
         stage(vk::ShaderStageFlagBits::eVertex, vertex_module),
         stage(vk::ShaderStageFlagBits::eFragment, fragment_module)};
@@ -188,7 +197,14 @@ vk::raii::Pipeline SkinnedPass::buildGeometryPipeline(const VulkanDevice& device
     viewport_state.scissorCount = 1;
 
     vk::PipelineRasterizationStateCreateInfo rasterization{};
-    rasterization.polygonMode = vk::PolygonMode::eFill;
+    rasterization.polygonMode = lines ? vk::PolygonMode::eLine : vk::PolygonMode::eFill;
+    // Las lineas encima de la imagen: un poco hacia la camara (si no, se
+    // pelean con la superficie que ya esta en el depth).
+    if (overlay) {
+        rasterization.depthBiasEnable = VK_TRUE;
+        rasterization.depthBiasConstantFactor = -2.0f;
+        rasterization.depthBiasSlopeFactor = -1.5f;
+    }
     // Doble cara: la vegetacion, las telas y muchos objetos de los escenarios
     // son planos de una sola cara. skinned.frag gira la normal de las caras
     // traseras (gl_FrontFacing) para que se iluminen del lado que se ven.
@@ -202,8 +218,8 @@ vk::raii::Pipeline SkinnedPass::buildGeometryPipeline(const VulkanDevice& device
 
     vk::PipelineDepthStencilStateCreateInfo depth_stencil{};
     depth_stencil.depthTestEnable = VK_TRUE;
-    depth_stencil.depthWriteEnable = VK_TRUE;
-    depth_stencil.depthCompareOp = vk::CompareOp::eLess;
+    depth_stencil.depthWriteEnable = overlay ? VK_FALSE : VK_TRUE;
+    depth_stencil.depthCompareOp = overlay ? vk::CompareOp::eLessOrEqual : vk::CompareOp::eLess;
 
     vk::PipelineColorBlendAttachmentState blend_attachment{};
     blend_attachment.colorWriteMask =
@@ -215,6 +231,17 @@ vk::raii::Pipeline SkinnedPass::buildGeometryPipeline(const VulkanDevice& device
 
     vk::PipelineColorBlendStateCreateInfo color_blend{};
     color_blend.setAttachments(blend_attachments);
+    // Encima de la imagen HDR: mezcla por alfa en el color; su alfa (la
+    // distancia de la superficie) se queda como estaba.
+    vk::PipelineColorBlendAttachmentState overlay_blend = blend_attachment;
+    overlay_blend.blendEnable = VK_TRUE;
+    overlay_blend.srcColorBlendFactor = vk::BlendFactor::eSrcAlpha;
+    overlay_blend.dstColorBlendFactor = vk::BlendFactor::eOneMinusSrcAlpha;
+    overlay_blend.colorBlendOp = vk::BlendOp::eAdd;
+    overlay_blend.srcAlphaBlendFactor = vk::BlendFactor::eZero;
+    overlay_blend.dstAlphaBlendFactor = vk::BlendFactor::eOne;
+    overlay_blend.alphaBlendOp = vk::BlendOp::eAdd;
+    if (overlay) color_blend.setAttachments(overlay_blend);
 
     const std::array<vk::DynamicState, 2> dynamic_states = {vk::DynamicState::eViewport,
                                                             vk::DynamicState::eScissor};
@@ -223,6 +250,7 @@ vk::raii::Pipeline SkinnedPass::buildGeometryPipeline(const VulkanDevice& device
 
     vk::PipelineRenderingCreateInfo rendering_info{};
     rendering_info.setColorAttachmentFormats(gbuffer_color_formats_);
+    if (overlay) rendering_info.setColorAttachmentFormats(hdr_format_);
     rendering_info.depthAttachmentFormat = gbuffer_depth_format_;
 
     vk::GraphicsPipelineCreateInfo pipeline_info{};
@@ -506,6 +534,8 @@ void SkinnedPass::destroy() {
     shadow_pipeline_ = nullptr;
     shadow_layout_ = nullptr;
     geometry_pipeline_ = nullptr;
+    geometry_wire_pipeline_ = nullptr;
+    wire_overlay_pipeline_ = nullptr;
     geometry_layout_ = nullptr;
     material_set_layout_ = nullptr;
     frame_set_layout_ = nullptr;

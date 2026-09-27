@@ -230,7 +230,25 @@ public:
         error_ = "'" + value_.text + "' no es un valor de " + key_;
         return false;
     }
-    bool asset(const ecs::Meta&, assets::AssetRef&, assets::AssetType) override { return false; }
+    // Referencias a assets (material, Target Texture...): su UUID como texto
+    // ("" = ninguno).
+    bool asset(const ecs::Meta& meta, assets::AssetRef& ref, assets::AssetType) override {
+        PostValue current;
+        current.type = PostValue::Type::Text;
+        current.text = ref.valid() ? ref.uuid.toString() : std::string();
+        if (!visit(meta, current) || value_.text == current.text) return false;
+        if (value_.text.empty()) {
+            ref.uuid = {};
+            return true;
+        }
+        const Uuid uuid = Uuid::parse(value_.text);
+        if (!uuid.valid()) {
+            error_ = "'" + value_.text + "' no es un UUID de asset";
+            return false;
+        }
+        ref.uuid = uuid;
+        return true;
+    }
 
     // Collect: clave -> valor de todos los campos, en orden.
     const std::vector<std::pair<std::string, PostValue>>& fields() const { return fields_; }

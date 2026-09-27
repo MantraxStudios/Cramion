@@ -1,0 +1,45 @@
+<p>
+  Una <strong>Render Texture</strong> es una textura que se rellena cada frame con lo que ve una cámara, como los
+  <em>RenderTexture</em> de Unity. Con ella se hacen pantallas y monitores, cámaras de seguridad, espejos, retrovisores,
+  minimapas, retratos de personajes en la interfaz o portales.
+</p>
+
+<h3 id="crear">Crear y usar una</h3>
+<ol>
+  <li>En el Proyecto: <em>+ Añadir &gt; Render Texture</em> (o clic derecho <em>Crear &gt; Render Texture</em>). Crea un
+    archivo <code>.crrt</code>. Al elegirlo, el Inspector enseña su <strong>tamaño</strong> (ancho y alto, con botones
+    128 a 2048 y 16:9) y lo que tiene ahora mismo.</li>
+  <li>Crea una cámara (<em>GameObject &gt; Cámara</em>) y arrastra la Render Texture a su campo <strong>Target
+    Texture</strong>. Desde ese momento, lo que ve esa cámara se dibuja en la textura en vez de en la pantalla, y la
+    cámara deja de ser la del juego.</li>
+  <li>En un <a href="materiales.html">material</a>, arrastra la Render Texture al hueco de <strong>Color</strong> (se ve
+    con la luz de la escena) o al de <strong>Emisión</strong> (brilla sola, como una pantalla encendida; pon el color de
+    emisión en blanco). Asigna ese material a cualquier malla.</li>
+</ol>
+<p>
+  Funciona en el editor (también sin darle a Play) y en el juego exportado. La imagen lleva el mismo post-procesado y
+  tonemapping que la pantalla. Si cambias el tamaño en el Inspector, la textura se rehace sola.
+</p>
+
+<h3 id="ejemplo">Ejemplo: una cámara de seguridad</h3>
+<ul>
+  <li><code>Monitor.crrt</code> de 512 × 288 (16:9).</li>
+  <li>Una cámara en una esquina alta, mirando al pasillo, con <em>Target Texture</em> = <code>Monitor</code>.</li>
+  <li>Un cubo aplanado (la pantalla) con un material de color negro y <em>Emisión</em> blanca con el mapa
+    <code>Monitor.crrt</code>.</li>
+</ul>
+<p>
+  Desde Lua se mueve la cámara como cualquier entidad (seguir al jugador, girar como una cámara de vigilancia) y la
+  pantalla lo muestra al momento. Para cambiar a qué textura dibuja una cámara:
+  <code>cam:setField("Camera", "target_texture", "&lt;uuid de la .crrt&gt;")</code>.
+</p>
+
+<h3 id="rendimiento">Rendimiento</h3>
+<ul>
+  <li>Cada cámara con Target Texture <strong>dibuja la escena otra vez</strong> cada frame (con sombras, agua,
+    partículas y transparentes). Dos o tres van bien; muchas cuestan como muchas pantallas.</li>
+  <li>El tamaño de la textura importa poco para el coste (la escena se dibuja a la resolución de la vista y luego se
+    escala); úsalo para la nitidez que quieras en la pantalla.</li>
+  <li>Desactiva la cámara (<code>entity.active = false</code>) cuando nadie vea su pantalla: deja de dibujarse y la
+    textura se queda con la última imagen.</li>
+</ul>

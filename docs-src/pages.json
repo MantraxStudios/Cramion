@@ -48,7 +48,7 @@
         {
           "slug": "editor-escena",
           "title": "Vista Escena y gizmos",
-          "desc": "Moverse, seleccionar, mover/rotar/escalar, snap y soltar assets."
+          "desc": "Moverse, seleccionar, gizmos, snap, modos Lit/Unlit/Wireframe y proporción (Free Aspect)."
         },
         {
           "slug": "editor-jerarquia",
@@ -79,6 +79,11 @@
           "slug": "materiales",
           "title": "Materiales",
           "desc": "PBR, mapas de escaneos, transparencia y shaders propios."
+        },
+        {
+          "slug": "render-textures",
+          "title": "Render Textures",
+          "desc": "Lo que ve una cámara en una textura: pantallas, cámaras de seguridad, espejos y minimapas."
         },
         {
           "slug": "render",

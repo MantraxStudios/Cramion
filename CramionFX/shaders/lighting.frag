@@ -934,6 +934,11 @@ void main() {
             vec4 clouds = texture(clouds_map, v_uv);
             color = color * clouds.a + clouds.rgb;
         }
+        // Vista Escena Unlit / Wireframe (shadows.params.z 2 / 3, con
+        // exposicion 1): fondo liso.
+        if (shadows.params.z > 1.5) {
+            color = shadows.params.z > 2.5 ? vec3(0.03, 0.035, 0.045) : vec3(0.32, 0.38, 0.46);
+        }
     } else {
         vec4 normal_sample = texture(g_normal, v_uv);
         vec4 albedo_sample = texture(g_albedo, v_uv);
@@ -1144,8 +1149,14 @@ void main() {
         // --- Visualizacion de cascadas ---
         // Se sustituye el color, no se multiplica: mezclado con el albedo y las
         // luces no se distinguirian unas cascadas de otras.
-        if (shadows.params.z > 0.5) {
+        if (shadows.params.z > 0.5 && shadows.params.z < 1.5) {
             color = kCascadeColors[cascade_index] * (0.25 + 0.75 * shadow);
+        }
+        // --- Vista Escena del editor: Unlit (el color del material, sin luz)
+        // o Wireframe (el G-buffer solo tiene las lineas: claras) ---
+        bool flat_view = shadows.params.z > 1.5;
+        if (flat_view) {
+            color = shadows.params.z > 2.5 ? vec3(0.75, 0.78, 0.82) : albedo + emission;
         }
 
         // --- Niebla por altura hacia el color del cielo ---
@@ -1162,7 +1173,7 @@ void main() {
         fog_color += toLinear(lights.sun_color_ambient.rgb) * lights.sun_direction_intensity.w *
                      pow(sun_alignment, 10.0) * 0.35 * smoothstep(-0.05, 0.1, lights.sky_sun.y);
         fog_color *= mix(0.08, 1.0, gi.a);
-        float fog = heightFog(distance_to_camera, ray_direction);
+        float fog = flat_view ? 0.0 : heightFog(distance_to_camera, ray_direction);
         color = mix(color, fog_color, fog);
         surface_distance = distance_to_camera;
     }

@@ -100,6 +100,18 @@ public:
     // Todas las texturas del modelo, con las tres de por defecto al final.
     const std::vector<VulkanTexture>& textures() const { return textures_; }
 
+    // Huecos de material que leen un Render Texture (material, binding, id).
+    struct RenderTextureRef {
+        std::uint32_t material = 0;
+        std::uint32_t binding = 0;
+        std::int32_t texture = -1;
+    };
+    const std::vector<RenderTextureRef>& renderTextureRefs() const { return render_texture_refs_; }
+    // Cambia la imagen de un hueco (nullptr = la de por defecto: blanca en el
+    // color, negra en la emision). Sin frames en vuelo que usen el set.
+    void setMaterialImage(const VulkanDevice& device, const SkinnedPass& pass, std::uint32_t material,
+                          std::uint32_t binding, vk::ImageView view);
+
 private:
     VulkanBuffer vertices_;
     VulkanBuffer indices_;
@@ -117,6 +129,9 @@ private:
     // que falten (blanco, normal plana y negro), asi el shader no necesita
     // ramas aparte.
     std::vector<VulkanTexture> textures_;
+    std::size_t white_index_ = 0;
+    std::size_t black_index_ = 0;
+    std::vector<RenderTextureRef> render_texture_refs_;
 
     // El pool debe sobrevivir a los sets: se declara antes.
     vk::raii::DescriptorPool pool_{nullptr};

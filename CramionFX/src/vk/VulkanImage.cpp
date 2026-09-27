@@ -8,7 +8,7 @@ namespace cramion::gfx {
 
 void VulkanImage::create(const VulkanDevice& device, vk::Extent2D extent, vk::Format format,
                          vk::ImageUsageFlags usage, vk::ImageAspectFlags aspect,
-                         std::uint32_t layers) {
+                         std::uint32_t layers, vk::Format view_format) {
     if (extent.width == 0 || extent.height == 0) {
         throw std::runtime_error("No se puede crear una imagen de area 0.");
     }
@@ -26,6 +26,8 @@ void VulkanImage::create(const VulkanDevice& device, vk::Extent2D extent, vk::Fo
     image_info.usage = usage;
     image_info.sharingMode = vk::SharingMode::eExclusive;
     image_info.initialLayout = vk::ImageLayout::eUndefined;
+    const bool other_view = view_format != vk::Format::eUndefined && view_format != format;
+    if (other_view) image_info.flags = vk::ImageCreateFlagBits::eMutableFormat;
 
     image_ = vk::raii::Image(device.handle(), image_info);
 
@@ -42,7 +44,7 @@ void VulkanImage::create(const VulkanDevice& device, vk::Extent2D extent, vk::Fo
     vk::ImageViewCreateInfo view_info{};
     view_info.image = *image_;
     view_info.viewType = (layers > 1) ? vk::ImageViewType::e2DArray : vk::ImageViewType::e2D;
-    view_info.format = format;
+    view_info.format = other_view ? view_format : format;
     view_info.subresourceRange = vk::ImageSubresourceRange{aspect, 0, 1, 0, layers};
 
     view_ = vk::raii::ImageView(device.handle(), view_info);

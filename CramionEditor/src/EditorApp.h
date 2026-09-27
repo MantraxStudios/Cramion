@@ -30,6 +30,7 @@
 #include "BuildConfig.h"
 #include "Dialogs.h"
 #include <CramionCore/project/Pack.h>
+#include <CramionCore/asset/RenderTextureAsset.h>
 #include "ImGuiLayer.h"
 #include "LuaCompletion.h"
 #include "McpServer.h"
@@ -590,6 +591,13 @@ private:
     void flushMaterialEdit(bool force_structure);
     void drawMaterialEditor(const Uuid& uuid);
     void drawMeshMaterials(ecs::Entity entity);
+    // Render Texture (.crrt) elegida en el Proyecto: su Inspector.
+    Uuid inspected_render_texture_{};
+    Uuid render_texture_edit_uuid_{};
+    assets::RenderTextureAsset render_texture_edit_{};
+    std::filesystem::file_time_type render_texture_edit_stamp_{};
+    void drawRenderTextureEditor(const Uuid& uuid);
+    void createRenderTextureAsset(const std::filesystem::path& folder);
     Uuid inspected_material_{};     // material elegido en el Proyecto (el Inspector lo muestra)
     // Clic en un material del navegador: se abre al soltar si no se arrastro.
     Uuid pending_inspect_material_{};
@@ -608,6 +616,15 @@ private:
     static constexpr std::uint32_t kGameSlot = 1;
     void drawGameView();
     void chooseRenderView();
+    // --- Proporcion de las vistas (menu "Free Aspect" de Unity) ---
+    // Rectangulo de la imagen de la vista `slot` dentro de `avail` (y el
+    // tamano de render que quiere esa vista).
+    ImVec2 layoutViewImage(std::uint32_t slot, ImVec2 avail, ImVec2& origin);
+    void drawAspectMenu(std::uint32_t slot);
+    // Pide al renderer el tamano de la vista que se dibuja (al final de la UI).
+    void updateViewExtent(float delta_seconds);
+    void loadViewSettings();
+    void saveViewSettings() const;
     void updateCinematics(float delta_seconds);
     bool drawCinematicGizmos();  // true si el raton esta sobre un asa
     void drawCameraFrustum(const core::Vec3& position, const core::Quat& rotation, float fov_degrees, float depth,
@@ -1108,6 +1125,21 @@ private:
     bool focus_scene_ = false;                     // traer la Escena al frente
     std::optional<scene::Camera> saved_camera_;    // la del editor mientras se dibuja el Juego
     bool game_guides_ = false;                     // tercios en la vista Juego
+    // Proporcion de cada vista (Escena, Juego): preset de kAspectPresets
+    // (0 = Free Aspect) o -1 = resolucion propia (custom_w x custom_h).
+    struct ViewAspect {
+        int preset = 0;
+        int custom_w = 1920;
+        int custom_h = 1080;
+    };
+    ViewAspect view_aspect_[2]{};
+    // Modo de dibujo de la vista Escena (gfx::SceneDrawMode): Lit, Unlit,
+    // Wireframe o Lit + Wireframe.
+    int scene_draw_mode_ = 0;
+    void drawSceneDrawModeMenu();
+    std::uint32_t view_desired_[2][2] = {{0, 0}, {0, 0}};  // tamano de render que pide cada vista este frame
+    std::uint32_t pending_view_[2] = {0, 0};
+    float pending_view_time_ = 0.0f;
     int selected_waypoint_ = -1;                   // punto del riel seleccionado (en la Escena)
     Uuid waypoint_track_{};
     bool waypoint_gizmo_using_ = false;

@@ -27,9 +27,11 @@ public:
     // Crea imagen + memoria + vista. `aspect` distingue color de profundidad.
     // Con `layers` > 1 la vista principal es un array 2D y se generan tambien
     // las vistas individuales de cada capa.
+    // `view_format` (opcional): la vista principal en otro formato compatible
+    // (p. ej. UNORM escrito a mano y leido como sRGB); la imagen se crea mutable.
     void create(const VulkanDevice& device, vk::Extent2D extent, vk::Format format,
                 vk::ImageUsageFlags usage, vk::ImageAspectFlags aspect,
-                std::uint32_t layers = 1);
+                std::uint32_t layers = 1, vk::Format view_format = vk::Format::eUndefined);
 
     void destroy();
 

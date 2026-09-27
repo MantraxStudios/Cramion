@@ -62,6 +62,13 @@ public:
     const vk::raii::Sampler& sampler() const { return sampler_; }
 
     const vk::raii::Pipeline& geometryPipeline() const { return geometry_pipeline_; }
+    // Wireframe: la misma geometria en lineas (G-buffer). Sin soporte de la
+    // GPU, la normal.
+    const vk::raii::Pipeline& geometryWirePipeline() const {
+        return *geometry_wire_pipeline_ ? geometry_wire_pipeline_ : geometry_pipeline_;
+    }
+    // Lit + Wireframe: lineas negras encima de la imagen HDR ya iluminada.
+    const vk::raii::Pipeline& wireOverlayPipeline() const { return wire_overlay_pipeline_; }
     // Pipeline de un shader de superficie del usuario (surface.vert/.frag con
     // su codigo, ya en SPIR-V): el mismo layout y estado que la geometria.
     vk::raii::Pipeline createSurfacePipeline(const VulkanDevice& device, const std::vector<std::uint32_t>& vertex_spirv,
@@ -108,8 +115,10 @@ public:
 
 private:
     void createGeometryPipeline(const VulkanDevice& device, const GBuffer& gbuffer);
+    enum class GeometryVariant { Fill, Wire, WireOverlay };
     vk::raii::Pipeline buildGeometryPipeline(const VulkanDevice& device, const vk::raii::ShaderModule& vertex_module,
-                                             const vk::raii::ShaderModule& fragment_module) const;
+                                             const vk::raii::ShaderModule& fragment_module,
+                                             GeometryVariant variant = GeometryVariant::Fill) const;
     void createGlassPipeline(const VulkanDevice& device, vk::Format color_format,
                              vk::Format depth_format);
     vk::raii::Pipeline createOutlinePipeline(const VulkanDevice& device, vk::Format depth_format,
@@ -124,6 +133,9 @@ private:
 
     vk::raii::PipelineLayout geometry_layout_{nullptr};
     vk::raii::Pipeline geometry_pipeline_{nullptr};
+    vk::raii::Pipeline geometry_wire_pipeline_{nullptr};
+    vk::raii::Pipeline wire_overlay_pipeline_{nullptr};
+    vk::Format hdr_format_ = vk::Format::eUndefined;
     // Formatos del G-buffer (para las pipelines de los shaders del usuario).
     std::vector<vk::Format> gbuffer_color_formats_;
     vk::Format gbuffer_depth_format_ = vk::Format::eUndefined;

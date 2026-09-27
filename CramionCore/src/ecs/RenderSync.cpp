@@ -1,6 +1,7 @@
 #include "CramionCore/ecs/RenderSync.h"
 
 #include "CramionCore/foliage/Foliage.h"
+#include "CramionCore/asset/RenderTextureAsset.h"
 
 #include "CramionCore/ecs/Rigging.h"
 
@@ -342,11 +343,25 @@ asset::ModelData RenderSync::buildVariant(const asset::ModelData& base, const st
             continue;
         }
         asset::MaterialData d = assets::toMaterialData(*mat, original.name);
-        d.albedo_texture = file(mat->albedo);
+        // Una Render Texture (.crrt) en el color o en la emision: la lee el
+        // renderizador en vez de una imagen.
+        const auto render_texture = [&](const std::string& relative) -> std::int32_t {
+            if (relative.size() < 5) return -1;
+            std::string ext = relative.substr(relative.size() - 5);
+            std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            if (ext != assets::kRenderTextureExtension) return -1;
+            const std::int32_t id = renderTextureForPath(root / fromUtf8(relative));
+            return id >= 0 ? id : -2;  // -2: es una .crrt que no se pudo crear (sin imagen)
+        };
+        const std::int32_t albedo_rt = render_texture(mat->albedo);
+        const std::int32_t emissive_rt = render_texture(mat->emissive_map);
+        d.albedo_texture = albedo_rt == -1 ? file(mat->albedo) : -1;
+        d.albedo_render_texture = std::max(albedo_rt, -1);
         d.normal_texture = !mat->normal.empty() ? file(mat->normal) : bumpAsNormal(mat->bump_map);
         if (mat->normal.empty() && !mat->bump_map.empty()) d.normal_map_directx = false;
         d.occlusion_texture = packedOcclusion(*mat);
-        d.emissive_texture = file(mat->emissive_map);
+        d.emissive_texture = emissive_rt == -1 ? file(mat->emissive_map) : -1;
+        d.emissive_render_texture = std::max(emissive_rt, -1);
         d.metallic_roughness_texture = packedSurface(*mat);
         if (d.occlusion_texture < 0) d.height_scale = 0.0f;
         const std::function<std::int32_t(const std::string&)> texture = [&](const std::string& path) { return file(path); };
@@ -1394,10 +1409,98 @@ void RenderSync::sync(World& world, scene::Scene& scene, gfx::VulkanRenderer& re
     }
     // Despues de la camara: el agua mira si la camara esta sumergida.
     syncWater(world, renderer, delta_seconds, scene.camera().position());
+    // Al final (la escena ya esta lista): lo que ven las camaras con Target
+    // Texture, antes del frame de la pantalla.
+    if (options.render_textures) renderCameraTextures(world, scene, renderer);
 }
 
 RenderSync::~RenderSync() {
     destroyTerrains();
+    destroyRenderTextures();
+}
+
+// -----------------------------------------------------------------------------
+// Render Textures
+// -----------------------------------------------------------------------------
+
+std::int32_t RenderSync::renderTextureForPath(const std::filesystem::path& file) {
+    if (renderer_ == nullptr) return -1;
+    const std::string key = file.lexically_normal().generic_string();
+    if (const auto it = render_textures_.find(key); it != render_textures_.end()) return it->second.id;
+    assets::RenderTextureAsset asset;
+    std::string error;
+    RenderTextureGpu gpu;
+    if (!assets::loadRenderTexture(file, asset, &error)) {
+        std::cerr << "[RenderSync] Render Texture " << file.generic_string() << ": " << error << "\n";
+    } else {
+        gpu.id = renderer_->createRenderTexture(static_cast<std::uint32_t>(asset.width),
+                                                static_cast<std::uint32_t>(asset.height));
+        std::error_code ec;
+        gpu.stamp = std::filesystem::last_write_time(file, ec);
+    }
+    render_textures_[key] = gpu;  // tambien los que fallan: no se reintenta cada frame
+    return gpu.id;
+}
+
+std::int32_t RenderSync::renderTextureIdForAsset(const std::string& relative) {
+    return renderTextureForPath(assets_.database().root() / fromUtf8(relative));
+}
+
+std::int32_t RenderSync::renderTextureFor(const Uuid& uuid) {
+    const auto info = assets_.database().find(uuid);
+    if (!info || info->type != assets::AssetType::RenderTexture) return -1;
+    return renderTextureForPath(info->path);
+}
+
+// Cada ~segundo: un .crrt con otro tamano (editado en el Inspector) se rehace.
+void RenderSync::refreshRenderTextures() {
+    if (renderer_ == nullptr || ++render_texture_checks_ % 60 != 0) return;
+    for (auto& [key, gpu] : render_textures_) {
+        std::error_code ec;
+        const std::filesystem::path file(key);
+        const auto stamp = std::filesystem::last_write_time(file, ec);
+        if (ec || stamp == gpu.stamp) continue;
+        gpu.stamp = stamp;
+        assets::RenderTextureAsset asset;
+        if (!assets::loadRenderTexture(file, asset)) continue;
+        if (gpu.id < 0) {
+            gpu.id = renderer_->createRenderTexture(static_cast<std::uint32_t>(asset.width),
+                                                    static_cast<std::uint32_t>(asset.height));
+        } else {
+            renderer_->resizeRenderTexture(gpu.id, static_cast<std::uint32_t>(asset.width),
+                                           static_cast<std::uint32_t>(asset.height));
+        }
+    }
+}
+
+void RenderSync::renderCameraTextures(World& world, scene::Scene& scene, gfx::VulkanRenderer& renderer) {
+    refreshRenderTextures();
+    struct Job {
+        Entity entity;
+        std::int32_t texture;
+    };
+    std::vector<Job> jobs;
+    world.forEachDepthFirst([&](Entity e) {
+        const Camera* camera = e.tryGet<Camera>();
+        if (camera == nullptr || !camera->target_texture.valid() || !e.activeInHierarchy()) return;
+        const std::int32_t id = renderTextureFor(camera->target_texture.uuid);
+        if (id >= 0) jobs.push_back({e, id});
+    });
+    for (const Job& job : jobs) {
+        const Camera& camera = job.entity.get<Camera>();
+        scene::Camera view = scene.camera();
+        view.setPosition(job.entity.worldPosition());
+        view.setOrientation(job.entity.forward(), job.entity.up());
+        view.setFovY(camera.fov * kDegToRad);
+        renderer.renderToTexture(scene, view, job.texture);
+    }
+}
+
+void RenderSync::destroyRenderTextures() {
+    if (renderer_ != nullptr) {
+        for (auto& [key, gpu] : render_textures_) renderer_->destroyRenderTexture(gpu.id);
+    }
+    render_textures_.clear();
 }
 
 void RenderSync::destroyTerrains() {
@@ -2033,6 +2136,8 @@ void RenderSync::syncCamera(World& world, scene::Scene& scene) {
     Entity main;
     world.forEachDepthFirst([&](Entity e) {
         const Camera* camera = e.tryGet<Camera>();
+        // Las que dibujan en una Render Texture no son la del juego.
+        if (camera != nullptr && camera->target_texture.valid()) return;
         if (camera != nullptr && e.activeInHierarchy() && (!main.valid() || camera->is_main)) {
             if (!main.valid() || !main.get<Camera>().is_main) {
                 main = e;

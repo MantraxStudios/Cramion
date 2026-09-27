@@ -17,6 +17,14 @@ Incluye dos escenas de demostración, iluminadas por una sola luz direccional (e
 
 ---
 
+## Novedades de la 0.7.1
+
+**Render Textures**: una cámara con **Target Texture** dibuja lo que ve en una textura (`.crrt`) que cualquier material usa como color o emisión: pantallas, cámaras de seguridad, espejos y minimapas, como en Unity.
+
+**Vistas del editor**: **Free Aspect** (la Escena ocupa todo el panel, sin bandas) y menú de **proporción** en Escena y Juego (16:9, 4:3, 21:9, vertical de móvil, 1080p, 4K o la tuya); modos de dibujo **Lit**, **Unlit**, **Wireframe** y **Lit + Wireframe**.
+
+**Corregido**: aviso de Vulkan al abrir un proyecto o cambiar el tamaño de la vista.
+
 ## Novedades de la 0.7.0
 
 **Multijugador**
@@ -134,6 +142,7 @@ Incluye dos escenas de demostración, iluminadas por una sola luz direccional (e
 
 ## Índice
 
+- [Novedades de la 0.7.1](#novedades-de-la-071)
 - [Novedades de la 0.7.0](#novedades-de-la-070)
 - [Novedades de la 0.6.2](#novedades-de-la-062)
 - [Novedades de la 0.6.1](#novedades-de-la-061)

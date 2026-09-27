@@ -181,14 +181,20 @@ bool EditorApp::materialTextureSlot(const char* label, std::string& path) {
     const ImVec2 max{pos.x + size, pos.y + size};
     draw->AddRectFilled(pos, max, IM_COL32(40, 40, 46, 255), 3.0f);
     ImVec2 thumb_size{};
-    if (!path.empty()) {
+    const bool render_texture = path.size() > 5 && path.compare(path.size() - 5, 5, ".crrt") == 0;
+    if (render_texture) {
+        const std::int32_t id = sync_ ? sync_->renderTextureIdForAsset(path) : -1;
+        if (const ImTextureID t = id >= 0 ? imgui_.renderTexture(id) : 0; t != 0) {
+            draw->AddImage(t, ImVec2(pos.x + 2, pos.y + 2), ImVec2(max.x - 2, max.y - 2));
+        }
+    } else if (!path.empty()) {
         if (const ImTextureID t = imgui_.thumbnail(project_.assetsFolder() / dialogs::fromUtf8(path), &thumb_size); t != 0) {
             draw->AddImage(t, ImVec2(pos.x + 2, pos.y + 2), ImVec2(max.x - 2, max.y - 2));
         }
     }
     draw->AddRect(pos, max, ImGui::IsItemHovered() ? IM_COL32(255, 160, 40, 255) : IM_COL32(0, 0, 0, 140), 3.0f);
     if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("%s\n%s\nArrastra una imagen aquí (clic: elegir archivo)", label,
+        ImGui::SetTooltip("%s\n%s\nArrastra una imagen o una Render Texture aquí (clic: elegir archivo)", label,
                           path.empty() ? "(sin textura)" : path.c_str());
     }
     if (ImGui::IsItemClicked()) {
@@ -204,6 +210,17 @@ bool EditorApp::materialTextureSlot(const char* label, std::string& path) {
             if (!relative.empty()) {
                 path = relative;
                 changed = true;
+            }
+        }
+        // Una Render Texture del Proyecto (.crrt): lo que ve su camara.
+        if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(kAssetPayload)) {
+            AssetPayload asset{};
+            std::memcpy(&asset, payload->Data, sizeof(asset));
+            if (asset.type == assets::AssetType::RenderTexture) {
+                if (const auto info = database_->find(asset.uuid)) {
+                    path = assetRelative(info->path);
+                    changed = true;
+                }
             }
         }
         ImGui::EndDragDropTarget();

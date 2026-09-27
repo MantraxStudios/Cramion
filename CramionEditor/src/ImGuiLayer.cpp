@@ -361,6 +361,22 @@ ImTextureID ImGuiLayer::viewTexture(std::uint32_t slot) {
     return static_cast<ImTextureID>(reinterpret_cast<std::uintptr_t>(set));
 }
 
+ImTextureID ImGuiLayer::renderTexture(std::int32_t id) {
+    const VkImageView view = renderer_->renderTextureView(id);
+    if (view == VK_NULL_HANDLE) return 0;
+    const std::uint64_t generation = renderer_->renderTextureGeneration() + 1;
+    auto& [registered, set] = render_texture_sets_[id];
+    if (registered != generation || set == VK_NULL_HANDLE) {
+        if (set != VK_NULL_HANDLE) {
+            renderer_->waitIdle();
+            ImGui_ImplVulkan_RemoveTexture(set);
+        }
+        set = ImGui_ImplVulkan_AddTexture(view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        registered = generation;
+    }
+    return static_cast<ImTextureID>(reinterpret_cast<std::uintptr_t>(set));
+}
+
 // Tema oscuro sobrio, en la linea del editor de Unity: grises neutros, acento
 // azul para la seleccion y bordes suaves.
 void ImGuiLayer::applyStyle(float dpi_scale) {

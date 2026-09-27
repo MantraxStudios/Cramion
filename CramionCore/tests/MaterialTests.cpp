@@ -4,6 +4,7 @@
 
 #include "CramionCore/asset/AssetDatabase.h"
 #include "CramionCore/asset/MaterialAsset.h"
+#include "CramionCore/asset/RenderTextureAsset.h"
 #include "CramionCore/ecs/Components.h"
 #include "CramionCore/ecs/SceneSerializer.h"
 #include "CramionCore/ecs/World.h"
@@ -117,11 +118,48 @@ void testMeshRenderer() {
     check(lc.valid() && lc.has<ecs::Light>() && !lc.get<ecs::Light>().cast_shadows, "luz sin sombras en la escena");
 }
 
+// Render Texture (.crrt) y el Target Texture de la camara.
+void testRenderTexture() {
+    std::printf("Render Texture\n");
+    const std::filesystem::path root = std::filesystem::temp_directory_path() / "cramion_rt_test";
+    std::filesystem::remove_all(root);
+    std::filesystem::create_directories(root / "Texturas");
+    assets::RenderTextureAsset t;
+    t.width = 640;
+    t.height = 360;
+    const std::filesystem::path file = root / "Texturas" / "Monitor.crrt";
+    check(assets::saveRenderTexture(t, file) && t.uuid.valid(), "guardar le da un UUID");
+    assets::RenderTextureAsset loaded;
+    check(assets::loadRenderTexture(file, loaded) && loaded.uuid == t.uuid && loaded.width == 640 && loaded.height == 360,
+          "leerla igual");
+    assets::RenderTextureAsset big;
+    big.width = 100000;
+    big.height = 0;
+    check(assets::saveRenderTexture(big, root / "Grande.crrt") && big.width == 8192 && big.height == 1,
+          "el tamano se limita (1..8192)");
+    assets::AssetDatabase database;
+    database.open(root);
+    const auto info = database.find(t.uuid);
+    check(info && info->type == assets::AssetType::RenderTexture && info->name == "Monitor",
+          "la base de datos la encuentra como Render Texture");
+
+    ecs::World world;
+    ecs::Entity cam = world.create("Seguridad");
+    cam.add<ecs::Camera>().target_texture = assets::AssetRef{t.uuid, assets::AssetType::RenderTexture};
+    ecs::World copy;
+    ecs::deserializeWorld(copy, ecs::serializeWorld(world));
+    const ecs::Entity c = copy.findByName("Seguridad");
+    check(c.valid() && c.has<ecs::Camera>() && c.get<ecs::Camera>().target_texture.uuid == t.uuid,
+          "el Target Texture de la camara se guarda en la escena");
+    std::filesystem::remove_all(root);
+}
+
 }  // namespace
 
 int main() {
     testAsset();
     testMeshRenderer();
+    testRenderTexture();
     std::printf("\n%d comprobaciones, %d fallos\n", checks, failures);
     return failures == 0 ? 0 : 1;
 }

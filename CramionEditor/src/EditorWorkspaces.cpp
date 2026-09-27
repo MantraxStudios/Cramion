@@ -310,6 +310,7 @@ void EditorApp::loadWorkspaceWorld(int id) {
     reveal_ = {};
     flying_ = false;
     inspected_material_ = {};
+    inspected_render_texture_ = {};
 
     const ecs::DVec3 origin_before = world_.origin();
     if (target->stashed) {

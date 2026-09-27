@@ -370,6 +370,9 @@ struct Camera {
     float near_plane = 0.1f;
     float far_plane = 2000.0f;
     bool is_main = true;
+    // Target Texture (como Unity): lo que ve esta camara va a esa Render
+    // Texture (.crrt) en vez de a la pantalla.
+    assets::AssetRef target_texture{{}, assets::AssetType::RenderTexture};
 
     void reflect(PropertyVisitor& v);
 };

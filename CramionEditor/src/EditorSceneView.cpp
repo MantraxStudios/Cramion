@@ -14,7 +14,9 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
+#include <fstream>
 #include <limits>
 
 namespace cramion::editor {
@@ -96,6 +98,10 @@ void EditorApp::drawToolbar() {
                    "Mostrar los iconos y ayudas de la escena: luces, cámaras, decals, física, cinemáticas y agua (G)")) {
         show_gizmos_ = !show_gizmos_;
     }
+    ImGui::SameLine();
+    drawSceneDrawModeMenu();
+    ImGui::SameLine();
+    drawAspectMenu(kSceneSlot);
     // En Play con red: servidor o cliente y cuantos jugadores.
     if (const std::string net = scripts_.networkStatus(); !net.empty()) {
         ImGui::SameLine();
@@ -105,6 +111,213 @@ void EditorApp::drawToolbar() {
         ImGui::SetItemTooltip("Partida en red de los scripts (tabla Network). Salir de Play la cierra.");
     }
     ImGui::PopStyleVar();
+}
+
+// -----------------------------------------------------------------------------
+// Proporcion de las vistas (como el menu del Game view de Unity)
+// -----------------------------------------------------------------------------
+
+namespace {
+
+struct AspectPreset {
+    const char* label;
+    float ratio;  // ancho / alto (0 = libre o resolucion fija)
+    int width;    // resolucion fija (0 = no)
+    int height;
+};
+
+constexpr AspectPreset kAspectPresets[] = {
+    {"Free Aspect", 0.0f, 0, 0},
+    {"16:9", 16.0f / 9.0f, 0, 0},
+    {"16:10", 16.0f / 10.0f, 0, 0},
+    {"21:9", 21.0f / 9.0f, 0, 0},
+    {"32:9", 32.0f / 9.0f, 0, 0},
+    {"4:3", 4.0f / 3.0f, 0, 0},
+    {"5:4", 5.0f / 4.0f, 0, 0},
+    {"3:2", 3.0f / 2.0f, 0, 0},
+    {"1:1", 1.0f, 0, 0},
+    {"9:16 (vertical)", 9.0f / 16.0f, 0, 0},
+    {"9:19.5 (movil vertical)", 9.0f / 19.5f, 0, 0},
+    {"1280x720 (HD)", 0.0f, 1280, 720},
+    {"1920x1080 (Full HD)", 0.0f, 1920, 1080},
+    {"2560x1440 (QHD)", 0.0f, 2560, 1440},
+    {"3840x2160 (4K)", 0.0f, 3840, 2160},
+    {"1080x1920 (movil)", 0.0f, 1080, 1920},
+};
+constexpr int kAspectPresetCount = static_cast<int>(sizeof(kAspectPresets) / sizeof(kAspectPresets[0]));
+constexpr int kFirstFixedPreset = 11;
+
+ImVec2 fitAspect(ImVec2 avail, float aspect) {
+    ImVec2 size = avail;
+    if (aspect > 0.0f) {
+        if (avail.x / std::max(avail.y, 1.0f) > aspect) size.x = avail.y * aspect;
+        else size.y = avail.x / aspect;
+    }
+    return ImVec2(std::max(size.x, 1.0f), std::max(size.y, 1.0f));
+}
+
+}  // namespace
+
+ImVec2 EditorApp::layoutViewImage(std::uint32_t slot, ImVec2 avail, ImVec2& origin) {
+    const ViewAspect& a = view_aspect_[slot & 1];
+    // Lo que pide la vista: libre = todo el panel; proporcion = lo que cabe;
+    // resolucion fija = esa, mostrada a escala.
+    float target = avail.x / std::max(avail.y, 1.0f);
+    std::uint32_t want_w = 0;
+    std::uint32_t want_h = 0;
+    if (a.preset < 0) {
+        want_w = static_cast<std::uint32_t>(std::clamp(a.custom_w, 16, 8192));
+        want_h = static_cast<std::uint32_t>(std::clamp(a.custom_h, 16, 8192));
+        target = static_cast<float>(want_w) / static_cast<float>(want_h);
+    } else if (a.preset < kAspectPresetCount) {
+        const AspectPreset& p = kAspectPresets[a.preset];
+        if (p.width > 0) {
+            want_w = static_cast<std::uint32_t>(p.width);
+            want_h = static_cast<std::uint32_t>(p.height);
+            target = static_cast<float>(p.width) / static_cast<float>(p.height);
+        } else if (p.ratio > 0.0f) {
+            target = p.ratio;
+        }
+    }
+    ImVec2 size = fitAspect(avail, target);
+    if (want_w == 0) {
+        want_w = static_cast<std::uint32_t>(std::lround(size.x));
+        want_h = static_cast<std::uint32_t>(std::lround(size.y));
+    }
+    view_desired_[slot & 1][0] = want_w;
+    view_desired_[slot & 1][1] = want_h;
+    // La otra vista a la vez (Escena y Juego visibles): comparten la imagen,
+    // que tiene la proporcion de la que se dibuja; esta se ve sin deformar.
+    const vk::Extent2D extent = renderer_.sceneExtent();
+    if (slot != render_view_ && extent.width > 0 && extent.height > 0) {
+        size = fitAspect(avail, static_cast<float>(extent.width) / static_cast<float>(extent.height));
+    }
+    const ImVec2 cursor = ImGui::GetCursorScreenPos();
+    origin = ImVec2(std::floor(cursor.x + (avail.x - size.x) * 0.5f), std::floor(cursor.y + (avail.y - size.y) * 0.5f));
+    return size;
+}
+
+void EditorApp::drawAspectMenu(std::uint32_t slot) {
+    ViewAspect& a = view_aspect_[slot & 1];
+    char label[64];
+    if (a.preset < 0) std::snprintf(label, sizeof(label), "%dx%d", a.custom_w, a.custom_h);
+    else std::snprintf(label, sizeof(label), "%s", kAspectPresets[std::clamp(a.preset, 0, kAspectPresetCount - 1)].label);
+    ImGui::SetNextItemWidth(std::max(ImGui::CalcTextSize(label).x + 34.0f, 110.0f));
+    ImGui::PushID(static_cast<int>(slot));
+    if (ImGui::BeginCombo("##aspect", label, ImGuiComboFlags_HeightLarge)) {
+        bool changed = false;
+        for (int i = 0; i < kAspectPresetCount; ++i) {
+            if (i == 1 || i == kFirstFixedPreset) ImGui::Separator();
+            if (ImGui::Selectable(kAspectPresets[i].label, a.preset == i)) {
+                a.preset = i;
+                changed = true;
+            }
+        }
+        ImGui::Separator();
+        ImGui::TextDisabled("Resolucion propia");
+        ImGui::SetNextItemWidth(70.0f);
+        int w = a.custom_w;
+        int h = a.custom_h;
+        const bool edit_w = ImGui::InputInt("##cw", &w, 0);
+        ImGui::SameLine();
+        ImGui::TextUnformatted("x");
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(70.0f);
+        const bool edit_h = ImGui::InputInt("##ch", &h, 0);
+        ImGui::SameLine();
+        if (edit_w || edit_h) {
+            a.custom_w = std::clamp(w, 16, 8192);
+            a.custom_h = std::clamp(h, 16, 8192);
+        }
+        if (ImGui::Button("Usar") || ((edit_w || edit_h) && a.preset < 0)) {
+            a.preset = -1;
+            changed = true;
+        }
+        if (changed) saveViewSettings();
+        ImGui::EndCombo();
+    }
+    ImGui::SetItemTooltip("Proporcion de la vista: Free Aspect ocupa todo el panel; las demas lo recortan como la "
+                          "pantalla del juego; una resolucion fija se dibuja a ese tamano y se muestra a escala.");
+    ImGui::PopID();
+}
+
+void EditorApp::drawSceneDrawModeMenu() {
+    static constexpr const char* kModes[] = {"Lit", "Unlit", "Wireframe", "Lit + Wireframe"};
+    static constexpr const char* kHelp[] = {
+        "Con luz, sombras y efectos (como se vera el juego)",
+        "Solo el color de los materiales: sin luz, sombras ni niebla",
+        "Solo las lineas de la geometria (mallas, terreno, voxeles, vegetacion)",
+        "Con luz y las lineas de las mallas encima"};
+    const bool lines = renderer_.wireframeSupported();
+    scene_draw_mode_ = std::clamp(scene_draw_mode_, 0, 3);
+    ImGui::SetNextItemWidth(ImGui::CalcTextSize("Lit + Wireframe").x + 34.0f);
+    if (ImGui::BeginCombo("##draw_mode", kModes[scene_draw_mode_])) {
+        for (int i = 0; i < 4; ++i) {
+            const bool needs_lines = i >= 2;
+            if (ImGui::Selectable(kModes[i], scene_draw_mode_ == i, needs_lines && !lines ? ImGuiSelectableFlags_Disabled : 0)) {
+                scene_draw_mode_ = i;
+                saveViewSettings();
+            }
+            ImGui::SetItemTooltip("%s%s", kHelp[i], needs_lines && !lines ? " (tu GPU no dibuja lineas)" : "");
+        }
+        ImGui::EndCombo();
+    }
+    ImGui::SetItemTooltip("Modo de dibujo de la vista Escena (la vista Juego siempre con luz)");
+}
+
+void EditorApp::updateViewExtent(float delta_seconds) {
+    const std::uint32_t* want = view_desired_[render_view_ & 1];
+    if (want[0] == 0 || want[1] == 0) return;  // su panel no se dibujo
+    const vk::Extent2D current = renderer_.requestedViewExtent();
+    if (current.width == want[0] && current.height == want[1]) {
+        pending_view_time_ = 0.0f;
+        return;
+    }
+    if (pending_view_[0] != want[0] || pending_view_[1] != want[1]) {
+        pending_view_[0] = want[0];
+        pending_view_[1] = want[1];
+        pending_view_time_ = 0.0f;
+    }
+    pending_view_time_ += delta_seconds;
+    // Arrastrando el borde de un panel se espera a que pare un momento (cada
+    // cambio rehace las imagenes de la escena); si no, al momento.
+    if (current.width == 0 || !ImGui::IsMouseDown(ImGuiMouseButton_Left) || pending_view_time_ >= 0.15f) {
+        renderer_.setViewExtent(want[0], want[1]);
+        pending_view_time_ = 0.0f;
+    }
+}
+
+void EditorApp::loadViewSettings() {
+    view_aspect_[0] = ViewAspect{};
+    view_aspect_[1] = ViewAspect{};
+    std::ifstream in(project_.settingsFolder() / "EditorViews.ini");
+    scene_draw_mode_ = 0;
+    std::string key;
+    while (in >> key) {
+        if (key == "dibujo") {
+            in >> scene_draw_mode_;
+            scene_draw_mode_ = std::clamp(scene_draw_mode_, 0, 3);
+            continue;
+        }
+        ViewAspect a;
+        if (!(in >> a.preset >> a.custom_w >> a.custom_h)) break;
+        a.preset = std::clamp(a.preset, -1, kAspectPresetCount - 1);
+        a.custom_w = std::clamp(a.custom_w, 16, 8192);
+        a.custom_h = std::clamp(a.custom_h, 16, 8192);
+        if (key == "escena") view_aspect_[kSceneSlot] = a;
+        else if (key == "juego") view_aspect_[kGameSlot] = a;
+    }
+}
+
+void EditorApp::saveViewSettings() const {
+    if (!has_project_) return;
+    std::ofstream out(project_.settingsFolder() / "EditorViews.ini");
+    const auto line = [&](const char* key, const ViewAspect& a) {
+        out << key << ' ' << a.preset << ' ' << a.custom_w << ' ' << a.custom_h << '\n';
+    };
+    line("escena", view_aspect_[kSceneSlot]);
+    line("juego", view_aspect_[kGameSlot]);
+    out << "dibujo " << scene_draw_mode_ << '\n';
 }
 
 void EditorApp::drawSceneView() {
@@ -132,17 +345,9 @@ void EditorApp::drawSceneView() {
     }
     drawToolbar();
 
-    // La imagen, entera y sin deformar.
-    const vk::Extent2D extent = renderer_.sceneExtent();
-    const ImVec2 avail = ImGui::GetContentRegionAvail();
-    const float aspect = extent.height > 0 ? static_cast<float>(extent.width) / static_cast<float>(extent.height) : 1.0f;
-    ImVec2 size = avail;
-    if (avail.x / std::max(avail.y, 1.0f) > aspect) size.x = avail.y * aspect;
-    else size.y = avail.x / aspect;
-    size.x = std::max(size.x, 1.0f);
-    size.y = std::max(size.y, 1.0f);
-    const ImVec2 cursor = ImGui::GetCursorScreenPos();
-    const ImVec2 origin{cursor.x + (avail.x - size.x) * 0.5f, cursor.y + (avail.y - size.y) * 0.5f};
+    // La imagen: todo el panel (Free Aspect) o la proporcion elegida.
+    ImVec2 origin;
+    const ImVec2 size = layoutViewImage(kSceneSlot, ImGui::GetContentRegionAvail(), origin);
     ImGui::SetCursorScreenPos(origin);
     ImGui::Image(imgui_.viewTexture(kSceneSlot), size);
     view_x_ = origin.x;

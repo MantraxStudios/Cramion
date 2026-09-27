@@ -44,6 +44,7 @@ Icon assetIcon(assets::AssetType type) {
         case assets::AssetType::AnimationClip: return Icon::SkinnedMesh;
         case assets::AssetType::Material: return Icon::MeshRenderer;
         case assets::AssetType::Prefab: return Icon::ColliderBox;
+        case assets::AssetType::RenderTexture: return Icon::Camera;
         default: return Icon::AssetBrowser;
     }
 }
@@ -236,7 +237,8 @@ std::uint32_t categoryOf(const Item& item) {
     }
     switch (item.info.type) {
         case assets::AssetType::Model: return kFilterModels;
-        case assets::AssetType::Material: return kFilterMaterials;
+        case assets::AssetType::Material:
+        case assets::AssetType::RenderTexture: return kFilterMaterials;
         case assets::AssetType::Scene: return kFilterScenes;
         case assets::AssetType::Prefab: return kFilterPrefabs;
         case assets::AssetType::Environment: return kFilterSkies;
@@ -492,7 +494,9 @@ void EditorApp::browserClick(const BrowserItem& item, std::size_t index) {
     // Un material elegido se ve y se edita en el Inspector, pero al SOLTAR
     // sin arrastrar (como Unity): si se arrastra a los objetos seleccionados
     // en la Jerarquia, el Inspector no debe cambiar ni perder esa seleccion.
-    if (item.kind == Kind::Asset && item.info.type == assets::AssetType::Material && !io.KeyCtrl && !io.KeyShift) {
+    if (item.kind == Kind::Asset &&
+        (item.info.type == assets::AssetType::Material || item.info.type == assets::AssetType::RenderTexture) &&
+        !io.KeyCtrl && !io.KeyShift) {
         pending_inspect_material_ = item.info.uuid;
     }
 }
@@ -521,6 +525,10 @@ void EditorApp::openBrowserItem(const BrowserItem& item) {
         case assets::AssetType::Environment: assignEnvironment(info.uuid); break;
         case assets::AssetType::AnimatorController: openAnimatorEditor(info.uuid); break;
         case assets::AssetType::Material: inspected_material_ = info.uuid; break;
+        case assets::AssetType::RenderTexture:
+            inspected_material_ = {};
+            inspected_render_texture_ = info.uuid;
+            break;
         default: break;
     }
 }
@@ -792,6 +800,7 @@ void EditorApp::drawProject() {
         ImGui::Separator();
         if (ImGui::MenuItem("Escena")) createSceneAsset(target_folder);
         if (ImGui::MenuItem("Material")) createMaterialAsset(target_folder);
+        if (ImGui::MenuItem("Render Texture")) createRenderTextureAsset(target_folder);
         if (ImGui::MenuItem("Script Lua")) createScriptAsset(target_folder, {});
         if (ImGui::MenuItem("Shader (GLSL)")) openScript(createShaderAsset(target_folder));
         if (ImGui::MenuItem("Animator")) createAnimatorAsset(target_folder);
@@ -1235,6 +1244,7 @@ void EditorApp::drawProject() {
         if (ImGui::BeginMenu("Crear")) {
             if (ImGui::MenuItem("Escena")) createSceneAsset(target_folder);
             if (ImGui::MenuItem("Material")) createMaterialAsset(target_folder);
+            if (ImGui::MenuItem("Render Texture")) createRenderTextureAsset(target_folder);
             if (ImGui::MenuItem("Script Lua")) createScriptAsset(target_folder, {});
             if (ImGui::MenuItem("Shader (GLSL)")) openScript(createShaderAsset(target_folder));
             if (ImGui::MenuItem("Animator")) createAnimatorAsset(target_folder);

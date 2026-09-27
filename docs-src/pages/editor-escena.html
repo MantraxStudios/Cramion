@@ -65,6 +65,28 @@
 </table>
 <p>Con un terreno seleccionado, la vista pinta con sus herramientas (ver <a href="editor-herramientas.html#terreno">Terreno</a>).</p>
 
+<h3 id="modo">Modo de dibujo: Lit, Unlit y Wireframe</h3>
+<p>El desplegable de la barra de la vista (como el menú <em>Shaded</em> de Unity) cambia cómo se dibuja la vista Escena:</p>
+<table>
+  <thead><tr><th>Modo</th><th>Qué se ve</th></tr></thead>
+  <tbody>
+    <tr><td><code>Lit</code></td><td>Con luz, sombras y efectos: como se verá el juego.</td></tr>
+    <tr><td><code>Unlit</code></td><td>Solo el color de los materiales (y su emisión), sin luz, sombras ni niebla. Útil para revisar texturas y colores o trabajar en zonas oscuras.</td></tr>
+    <tr><td><code>Wireframe</code></td><td>Solo las líneas de la geometría (mallas, terreno, vóxeles y vegetación) sobre fondo oscuro: para ver la densidad de triángulos y los LODs.</td></tr>
+    <tr><td><code>Lit + Wireframe</code></td><td>Con luz y las aristas de las mallas encima.</td></tr>
+  </tbody>
+</table>
+<p>Solo afecta a la vista Escena: la vista Juego, el juego exportado y las <a href="render-textures.html">Render Textures</a> siempre se dibujan con luz. Se recuerda por proyecto.</p>
+
+<h3 id="proporcion">Proporción de la vista (Free Aspect)</h3>
+<p>
+  El desplegable de al lado elige la proporción, como en Unity: <strong>Free Aspect</strong> (por defecto) ocupa todo el
+  panel, sin bandas, y la escena se dibuja a su tamaño exacto; <strong>16:9, 16:10, 21:9, 32:9, 4:3, 5:4, 3:2, 1:1,
+  9:16</strong> y <strong>9:19,5</strong> (móvil vertical) recortan la vista a esa proporción; las <strong>resoluciones fijas</strong>
+  (1280×720, 1920×1080, 2560×1440, 4K, 1080×1920) y la <em>resolución propia</em> (ancho × alto) se dibujan a ese tamaño y se
+  muestran a escala. La vista Juego tiene el mismo menú. Se recuerda por proyecto (<code>ProjectSettings/EditorViews.ini</code>).
+</p>
+
 <h3 id="origen">Mundos grandes</h3>
 <p>
   El editor usa un <strong class="text-white">origen flotante</strong>: cuando la cámara se aleja mucho, todo el mundo se

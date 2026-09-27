@@ -287,6 +287,9 @@ void VulkanDevice::createLogicalDevice() {
     features.features.textureCompressionBC =
         texture_compression_bc_supported_ ? VK_TRUE : VK_FALSE;
     features.features.multiDrawIndirect = VK_TRUE;
+    // Lineas (modo Wireframe de la vista Escena del editor).
+    fill_mode_non_solid_supported_ = physical_device_.getFeatures().fillModeNonSolid == VK_TRUE;
+    features.features.fillModeNonSolid = fill_mode_non_solid_supported_ ? VK_TRUE : VK_FALSE;
     // Filtro anisotropico (texturas del terreno), si la GPU lo tiene.
     features.features.samplerAnisotropy = physical_device_.getFeatures().samplerAnisotropy;
     // Instancias en los comandos indirectos (batching por material).

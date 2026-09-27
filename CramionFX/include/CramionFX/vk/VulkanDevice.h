@@ -61,6 +61,8 @@ public:
     // objetos que quedan por delante del plano cercano de una cascada.
     bool depthClampSupported() const { return depth_clamp_supported_; }
     bool textureCompressionBcSupported() const { return texture_compression_bc_supported_; }
+    // Poligonos como lineas (vista Wireframe).
+    bool fillModeNonSolidSupported() const { return fill_mode_non_solid_supported_; }
 
     // Trazado de rayos por hardware (ray queries + estructuras de
     // aceleracion, con direcciones de buffer y texturas indexadas en los
@@ -111,6 +113,7 @@ private:
     vk::Format depth_format_ = vk::Format::eUndefined;
     bool depth_clamp_supported_ = false;
     bool texture_compression_bc_supported_ = false;
+    bool fill_mode_non_solid_supported_ = false;
     bool ray_tracing_supported_ = false;
     bool memory_budget_supported_ = false;
     std::string device_name_;

@@ -2231,8 +2231,37 @@ void VulkanRenderer::updatePostDescriptors() {
     write_storage(exposure_average_sets_[0], 1, exposure_buffer_);
 }
 
+vk::Extent2D VulkanRenderer::outputExtent() const {
+    if (view_extent_request_.width > 0 && view_extent_request_.height > 0) return view_extent_request_;
+    return swapchain_.extent();
+}
+
+void VulkanRenderer::setViewExtent(std::uint32_t width, std::uint32_t height) {
+    vk::Extent2D request{0, 0};
+    if (width > 0 && height > 0) request = vk::Extent2D{std::clamp(width, 16u, 8192u), std::clamp(height, 16u, 8192u)};
+    if (request == view_extent_request_) return;
+    view_extent_request_ = request;
+    targets_dirty_ = true;
+}
+
+// Solo los destinos de la escena (otro tamano de vista): la swapchain se queda.
+void VulkanRenderer::recreateRenderTargets() {
+    targets_dirty_ = false;
+    if (!swapchain_.isValid()) return;
+    device_.waitIdle();
+    computeRenderExtent();
+    gbuffer_.create(device_, render_extent_);
+    createRenderTargets();
+    updateLightingDescriptors();
+    updatePostDescriptors();
+    taa_history_valid_ = false;
+    jitter_index_ = 0;
+    invalidateHistory();
+    ++scene_image_generation_;
+}
+
 void VulkanRenderer::computeRenderExtent() {
-    const vk::Extent2D output = swapchain_.extent();
+    const vk::Extent2D output = outputExtent();
     const float scale = renderScale(graphics_);
     render_extent_ = vk::Extent2D{
         std::max(1u, static_cast<std::uint32_t>(std::lround(static_cast<float>(output.width) * scale))),
@@ -2293,9 +2322,9 @@ void VulkanRenderer::applyEffectiveGraphics() {
 
 void VulkanRenderer::createRenderTargets() {
     // La escena se dibuja a la resolucion interna; lo que va despues del
-    // escalado (bloom, composicion, gizmos, vistas), a la de pantalla.
+    // escalado (bloom, composicion, gizmos, vistas), a la de salida.
     const vk::Extent2D extent = render_extent_;
-    const vk::Extent2D output = swapchain_.extent();
+    const vk::Extent2D output = outputExtent();
     const vk::ImageUsageFlags target_usage =
         vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eSampled;
 
@@ -2306,8 +2335,17 @@ void VulkanRenderer::createRenderTargets() {
     glass_source_.create(device_, extent, kHdrFormat,
                          vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eTransferDst,
                          vk::ImageAspectFlagBits::eColor);
-    // Que tenga un layout valido aunque el primer frame no tenga vidrio.
+    // Que tengan un layout valido aunque el primer frame no tenga vidrio. La
+    // imagen HDR tambien: SSGI y SSR la tienen enlazada como color del frame
+    // anterior y el primer frame tras crearla (abrir un proyecto, cambiar el
+    // tamano de la vista, un Render Texture) aun no se escribio.
     device_.submitOneTime([&](const vk::raii::CommandBuffer& cmd) {
+        pipelineBarrier(cmd, colorBarrier(*scene_color_.handle(), vk::ImageLayout::eUndefined,
+                                          vk::ImageLayout::eShaderReadOnlyOptimal,
+                                          vk::PipelineStageFlagBits2::eTopOfPipe,
+                                          vk::AccessFlagBits2::eNone,
+                                          vk::PipelineStageFlagBits2::eFragmentShader,
+                                          vk::AccessFlagBits2::eShaderSampledRead));
         pipelineBarrier(cmd, colorBarrier(*glass_source_.handle(), vk::ImageLayout::eUndefined,
                                           vk::ImageLayout::eShaderReadOnlyOptimal,
                                           vk::PipelineStageFlagBits2::eTopOfPipe,
@@ -2550,6 +2588,7 @@ void VulkanRenderer::uploadModels(const scene::Scene& scene) {
     std::vector<const asset::ModelData*> models;
     for (const auto& model : scene.models()) {
         skinned_models_.emplace_back().create(device_, *model, skinned_pass_);
+        bindRenderTextures(static_cast<std::uint32_t>(skinned_models_.size() - 1));
         triangle_count_ += model->indices.size() / 3;
         models.push_back(model.get());
     }
@@ -2578,6 +2617,7 @@ void VulkanRenderer::uploadModel(const scene::Scene& scene, std::uint32_t index)
     fresh.create(device_, *scene.models()[index], skinned_pass_);
     if (index == skinned_models_.size()) {
         skinned_models_.push_back(std::move(fresh));
+        bindRenderTextures(index);
     } else {
         if (index < ray_traced_models_ && index < ray_pinned_.size() && !ray_pinned_[index]) {
             ray_pinned_[index] = true;
@@ -2586,6 +2626,7 @@ void VulkanRenderer::uploadModel(const scene::Scene& scene, std::uint32_t index)
             retired_models_.push_back(RetiredModel{std::move(skinned_models_[index]), kMaxFramesInFlight + 1});
         }
         skinned_models_[index] = std::move(fresh);
+        bindRenderTextures(index);
     }
     triangle_count_ = 0;
     for (const auto& model : scene.models()) triangle_count_ += model->indices.size() / 3;
@@ -2659,7 +2700,7 @@ void VulkanRenderer::updateUniforms(const scene::Scene& scene, const scene::Came
     const bool temporal = upscaling_ && graphics_.upscaler != Upscaler::Fsr1 && !isolated();
     Vec2 jitter_pixels{};
     if (temporal && render_extent_.width > 0) {
-        const float ratio = static_cast<float>(swapchain_.extent().width) / static_cast<float>(render_extent_.width);
+        const float ratio = static_cast<float>(outputExtent().width) / static_cast<float>(render_extent_.width);
         const auto phases = std::clamp(static_cast<std::uint32_t>(8.0f * ratio * ratio), 8u, 64u);
         jitter_index_ = jitter_index_ % phases + 1;
         const auto halton = [](std::uint32_t index, std::uint32_t base) {
@@ -2847,7 +2888,7 @@ void VulkanRenderer::updateUniforms(const scene::Scene& scene, const scene::Came
     // --- Rayos de luz: el sol proyectado en pantalla ---
     // Con w = 0 se proyecta la direccion (un punto en el infinito).
     light_shaft_push_ = GpuLightShaftPush{};
-    const vk::Extent2D extent = swapchain_.extent();
+    const vk::Extent2D extent = outputExtent();
     light_shaft_push_.aspect =
         static_cast<float>(extent.width) / static_cast<float>(std::max(extent.height, 1u));
     const Vec4 sun_clip = camera_data.view_projection * toVec4(lights.sky.to_sun, 0.0f);
@@ -2936,7 +2977,11 @@ void VulkanRenderer::updateUniforms(const scene::Scene& scene, const scene::Came
     shadow_data.split_distances = Vec4{splits[0], splits[1], splits[2], splits[3]};
     shadow_data.texel_world_sizes = Vec4{texels[0], texels[1], texels[2], texels[3]};
     shadow_data.params = Vec4{static_cast<float>(shadow_map_.resolution()),
-                              sunShadows() ? 1.0f : 0.0f, cascade_debug_ ? 1.0f : 0.0f,
+                              sunShadows() ? 1.0f : 0.0f,
+                              drawModeNow() == SceneDrawMode::Unlit       ? 2.0f
+                              : drawModeNow() == SceneDrawMode::Wireframe ? 3.0f
+                              : cascade_debug_                            ? 1.0f
+                                                                          : 0.0f,
                               kCascadeBlendBand};
 
     shadow_buffers_[frame_index].write(&shadow_data, sizeof(shadow_data));
@@ -3031,6 +3076,21 @@ void VulkanRenderer::drawFrame(const scene::Scene& scene, bool present) {
         last_budget_time_ = now;
         budget_.update(std::min(dt, 0.5f), gpu_profiler_.totalMilliseconds(), gpu_profiler_.timings());
         post_ = budget_.apply(user_post_);
+        if (const SceneDrawMode mode = drawModeNow(); mode == SceneDrawMode::Unlit || mode == SceneDrawMode::Wireframe) {
+            post_.auto_exposure = false;
+            post_.manual_exposure = 1.0f;
+            post_.exposure_compensation = 0.0f;
+            post_.bloom = false;
+            post_.light_shafts = false;
+            post_.volumetric_light = false;
+            post_.vignette = false;
+            post_.film_grain = 0.0f;
+            post_.chromatic_aberration = 0.0f;
+            post_.ambient_occlusion = false;
+            post_.global_illumination = false;
+            post_.reflections = false;
+            post_.contact_shadows = false;
+        }
         if (budget_.renderScale() != applied_budget_scale_) applyEffectiveGraphics();
     }
     gpu_visible_submeshes_ = culling.early + culling.late;
@@ -3041,7 +3101,7 @@ void VulkanRenderer::drawFrame(const scene::Scene& scene, bool present) {
     updateActors(scene, current_frame_);
     frame_timings_.actors_ms += since(stage);
 
-    if (probeCaptureDue(scene)) {
+    if (render_texture_target_ < 0 && probeCaptureDue(scene)) {
         stage = TimingClock::now();
         captureProbeFace(scene);
         frame_timings_.probe_ms += since(stage);
@@ -3086,7 +3146,7 @@ void VulkanRenderer::drawFrame(const scene::Scene& scene, bool present) {
     const Vec3 saved_camera_position = camera_position_;
     secondary_view_ = !present;
     stage = TimingClock::now();
-    updateUniforms(scene, scene.camera(), current_frame_);
+    updateUniforms(scene, camera_override_ != nullptr ? *camera_override_ : scene.camera(), current_frame_);
     frame_timings_.uniforms_ms += since(stage);
 
     device.resetFences(*fence);
@@ -3431,15 +3491,20 @@ void VulkanRenderer::recordCommandBuffer(const vk::raii::CommandBuffer& cmd,
     markPass(cmd, frame_index, "Volumetrica");
     recordLightingPass(cmd, frame_index, scene_color_);
     markPass(cmd, frame_index, "Iluminacion");
-    recordGlassPass(cmd, frame_index);
-    if (!water_pass_.empty() && !capturing_) {
+    const bool wire_only = drawModeNow() == SceneDrawMode::Wireframe;
+    if (!wire_only) recordGlassPass(cmd, frame_index);
+    if (!water_pass_.empty() && !capturing_ && !wire_only) {
         recordWaterPass(cmd, frame_index);
         markPass(cmd, frame_index, "Agua");
     }
     markPass(cmd, frame_index, "Vidrio");
-    if (!particles_.empty() && !capturing_) {
+    if (!particles_.empty() && !capturing_ && !wire_only) {
         recordParticlePass(cmd, frame_index);
         markPass(cmd, frame_index, "Particulas");
+    }
+    if (drawModeNow() == SceneDrawMode::LitWireframe && *skinned_pass_.wireOverlayPipeline()) {
+        recordWireOverlayPass(cmd, frame_index);
+        markPass(cmd, frame_index, "Lineas (Wireframe)");
     }
     recordFilterHistoryCopies(cmd);
     markPass(cmd, frame_index, "Copias de historia");
@@ -3467,7 +3532,8 @@ void VulkanRenderer::recordCommandBuffer(const vk::raii::CommandBuffer& cmd,
         recordOverlayPass(cmd, frame_index);
         markPass(cmd, frame_index, "Gizmos 3D");
     }
-    recordViewCopy(cmd);
+    if (render_texture_target_ >= 0) recordRenderTextureCopy(cmd);
+    else recordViewCopy(cmd);
     if (presenting_) recordPostProcessPass(cmd, image_index);
     markPass(cmd, frame_index, "FXAA + presentacion");
 
@@ -3700,6 +3766,10 @@ void VulkanRenderer::recordLocalShadowPass(const vk::raii::CommandBuffer& cmd,
 
 void VulkanRenderer::recordGeometryPass(const vk::raii::CommandBuffer& cmd,
                                         std::uint32_t frame_index) {
+    wire_gbuffer_ = drawModeNow() == SceneDrawMode::Wireframe && device_.fillModeNonSolidSupported();
+    terrain_pass_.setWireframe(wire_gbuffer_);
+    voxel_pass_.setWireframe(wire_gbuffer_);
+    foliage_pass_.setWireframe(wire_gbuffer_);
     const vk::Extent2D extent = gbuffer_.extent();
     const auto attachments = gbuffer_.colorAttachments();
 
@@ -3850,8 +3920,7 @@ void VulkanRenderer::drawCpuActors(const vk::raii::CommandBuffer& cmd,
             continue;  // Escenario (lo dibuja drawGpuClusters) o solo sombras.
         }
         if (!bound) {
-            cmd.bindPipeline(vk::PipelineBindPoint::eGraphics,
-                             *skinned_pass_.geometryPipeline());
+            cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *meshGeometryPipeline());
             cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics,
                                    *skinned_pass_.geometryLayout(), 0, *skin_sets_[frame_index],
                                    nullptr);
@@ -3915,7 +3984,7 @@ void VulkanRenderer::drawGpuClusters(const vk::raii::CommandBuffer& cmd,
         return;
     }
 
-    cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *skinned_pass_.geometryPipeline());
+    cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *meshGeometryPipeline());
     cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *skinned_pass_.geometryLayout(), 0,
                            *skin_sets_[frame_index], nullptr);
 
@@ -4709,6 +4778,169 @@ void VulkanRenderer::recordViewCopy(const vk::raii::CommandBuffer& cmd) {
                                        vk::AccessFlagBits2::eShaderSampledRead)});
 }
 
+// -----------------------------------------------------------------------------
+// Render Textures
+// -----------------------------------------------------------------------------
+
+bool VulkanRenderer::renderTextureValid(std::int32_t id) const {
+    return id >= 0 && static_cast<std::size_t>(id) < render_textures_.size() && render_textures_[id]->alive;
+}
+
+void VulkanRenderer::createRenderTextureImage(RenderTextureSlot& slot, std::uint32_t width, std::uint32_t height) {
+    // UNORM con vista sRGB: la composicion ya escribe con gamma (como la
+    // pantalla) y la copia no la cambia; al leerla en un material, la vista
+    // sRGB la devuelve lineal, como cualquier textura de color.
+    slot.image.create(device_, vk::Extent2D{std::clamp(width, 1u, 8192u), std::clamp(height, 1u, 8192u)},
+                      vk::Format::eR8G8B8A8Unorm,
+                      vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eTransferDst,
+                      vk::ImageAspectFlagBits::eColor, 1, vk::Format::eR8G8B8A8Srgb);
+    vk::ImageViewCreateInfo ui_info{};
+    ui_info.image = *slot.image.handle();
+    ui_info.viewType = vk::ImageViewType::e2D;
+    ui_info.format = vk::Format::eR8G8B8A8Unorm;
+    ui_info.subresourceRange = vk::ImageSubresourceRange{vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1};
+    slot.ui_view = vk::raii::ImageView(device_.handle(), ui_info);
+    device_.submitOneTime([&](const vk::raii::CommandBuffer& cmd) {
+        pipelineBarrier(cmd, colorBarrier(*slot.image.handle(), vk::ImageLayout::eUndefined,
+                                          vk::ImageLayout::eTransferDstOptimal, vk::PipelineStageFlagBits2::eTopOfPipe,
+                                          vk::AccessFlagBits2::eNone, vk::PipelineStageFlagBits2::eClear,
+                                          vk::AccessFlagBits2::eTransferWrite));
+        const vk::ClearColorValue black(std::array<float, 4>{0.0f, 0.0f, 0.0f, 1.0f});
+        const vk::ImageSubresourceRange range{vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1};
+        cmd.clearColorImage(*slot.image.handle(), vk::ImageLayout::eTransferDstOptimal, black, range);
+        pipelineBarrier(cmd, colorBarrier(*slot.image.handle(), vk::ImageLayout::eTransferDstOptimal,
+                                          vk::ImageLayout::eShaderReadOnlyOptimal, vk::PipelineStageFlagBits2::eClear,
+                                          vk::AccessFlagBits2::eTransferWrite, vk::PipelineStageFlagBits2::eFragmentShader,
+                                          vk::AccessFlagBits2::eShaderSampledRead));
+    });
+    slot.alive = true;
+}
+
+std::int32_t VulkanRenderer::createRenderTexture(std::uint32_t width, std::uint32_t height) {
+    if (!initialized_ || width == 0 || height == 0) return -1;
+    std::int32_t id = -1;
+    for (std::size_t i = 0; i < render_textures_.size(); ++i) {
+        if (!render_textures_[i]->alive) {
+            id = static_cast<std::int32_t>(i);
+            break;
+        }
+    }
+    if (id < 0) {
+        render_textures_.push_back(std::make_unique<RenderTextureSlot>());
+        id = static_cast<std::int32_t>(render_textures_.size() - 1);
+    }
+    createRenderTextureImage(*render_textures_[id], width, height);
+    ++render_texture_generation_;
+    rebindRenderTexture(id);  // modelos que ya la esperaban
+    return id;
+}
+
+void VulkanRenderer::resizeRenderTexture(std::int32_t id, std::uint32_t width, std::uint32_t height) {
+    if (!renderTextureValid(id) || width == 0 || height == 0) return;
+    const vk::Extent2D current = render_textures_[id]->image.extent();
+    if (current.width == std::clamp(width, 1u, 8192u) && current.height == std::clamp(height, 1u, 8192u)) return;
+    device_.waitIdle();
+    createRenderTextureImage(*render_textures_[id], width, height);
+    ++render_texture_generation_;
+    rebindRenderTexture(id);
+}
+
+void VulkanRenderer::destroyRenderTexture(std::int32_t id) {
+    if (!renderTextureValid(id)) return;
+    device_.waitIdle();
+    render_textures_[id]->alive = false;
+    rebindRenderTexture(id);  // sus materiales vuelven a la textura por defecto
+    render_textures_[id]->ui_view = nullptr;
+    render_textures_[id]->image.destroy();
+    ++render_texture_generation_;
+}
+
+vk::Extent2D VulkanRenderer::renderTextureExtent(std::int32_t id) const {
+    return renderTextureValid(id) ? render_textures_[id]->image.extent() : vk::Extent2D{0, 0};
+}
+
+VkImageView VulkanRenderer::renderTextureView(std::int32_t id) const {
+    return renderTextureValid(id) ? static_cast<VkImageView>(*render_textures_[id]->ui_view) : VK_NULL_HANDLE;
+}
+
+void VulkanRenderer::bindRenderTextures(std::uint32_t model) {
+    if (model >= skinned_models_.size()) return;
+    SkinnedModel& m = skinned_models_[model];
+    for (const SkinnedModel::RenderTextureRef& ref : m.renderTextureRefs()) {
+        const vk::ImageView view = renderTextureValid(ref.texture) ? *render_textures_[ref.texture]->image.view()
+                                                                   : vk::ImageView{};
+        m.setMaterialImage(device_, skinned_pass_, ref.material, ref.binding, view);
+    }
+}
+
+void VulkanRenderer::rebindRenderTexture(std::int32_t id) {
+    for (std::uint32_t i = 0; i < skinned_models_.size(); ++i) {
+        for (const SkinnedModel::RenderTextureRef& ref : skinned_models_[i].renderTextureRefs()) {
+            if (ref.texture == id) {
+                bindRenderTextures(i);
+                break;
+            }
+        }
+    }
+}
+
+void VulkanRenderer::renderToTexture(const scene::Scene& scene, const scene::Camera& camera, std::int32_t id) {
+    if (!initialized_ || !renderTextureValid(id) || !swapchain_.isValid()) return;
+    const vk::Extent2D extent = render_textures_[id]->image.extent();
+    // La camara con la proporcion de la textura: la imagen de la escena (la de
+    // la vista) se estira al copiarla y la geometria queda bien.
+    scene::Camera view = camera;
+    view.setAspectRatio(static_cast<float>(extent.width) / static_cast<float>(std::max(extent.height, 1u)));
+    const bool helpers = editor_helpers_;
+    editor_helpers_ = false;  // sin contorno, gizmos ni picking
+    camera_override_ = &view;
+    render_texture_target_ = id;
+    drawFrame(scene, false);
+    render_texture_target_ = -1;
+    camera_override_ = nullptr;
+    editor_helpers_ = helpers;
+
+    ++render_texture_draw_count_;
+    const auto now = std::chrono::steady_clock::now();
+    if (now - render_texture_second_ >= std::chrono::seconds(1)) {
+        render_texture_draws_ = render_texture_draw_count_;
+        render_texture_draw_count_ = 0;
+        render_texture_second_ = now;
+    }
+}
+
+// El resultado (compuesto, con tonemapping) a la textura, escalado.
+void VulkanRenderer::recordRenderTextureCopy(const vk::raii::CommandBuffer& cmd) {
+    VulkanImage& target = render_textures_[render_texture_target_]->image;
+    constexpr vk::ImageLayout kRead = vk::ImageLayout::eShaderReadOnlyOptimal;
+    pipelineBarrier(cmd, {colorBarrier(*ldr_color_.handle(), kRead, vk::ImageLayout::eTransferSrcOptimal,
+                                       vk::PipelineStageFlagBits2::eColorAttachmentOutput |
+                                           vk::PipelineStageFlagBits2::eFragmentShader,
+                                       vk::AccessFlagBits2::eColorAttachmentWrite | vk::AccessFlagBits2::eShaderSampledRead,
+                                       vk::PipelineStageFlagBits2::eBlit, vk::AccessFlagBits2::eTransferRead),
+                          colorBarrier(*target.handle(), kRead, vk::ImageLayout::eTransferDstOptimal,
+                                       vk::PipelineStageFlagBits2::eFragmentShader,
+                                       vk::AccessFlagBits2::eShaderSampledRead, vk::PipelineStageFlagBits2::eBlit,
+                                       vk::AccessFlagBits2::eTransferWrite)});
+    const vk::Extent2D from = ldr_color_.extent();
+    const vk::Extent2D to = target.extent();
+    vk::ImageBlit region{};
+    region.srcSubresource = vk::ImageSubresourceLayers{vk::ImageAspectFlagBits::eColor, 0, 0, 1};
+    region.dstSubresource = region.srcSubresource;
+    region.srcOffsets[1] = vk::Offset3D{static_cast<std::int32_t>(from.width), static_cast<std::int32_t>(from.height), 1};
+    region.dstOffsets[1] = vk::Offset3D{static_cast<std::int32_t>(to.width), static_cast<std::int32_t>(to.height), 1};
+    cmd.blitImage(*ldr_color_.handle(), vk::ImageLayout::eTransferSrcOptimal, *target.handle(),
+                  vk::ImageLayout::eTransferDstOptimal, region, vk::Filter::eLinear);
+    pipelineBarrier(cmd, {colorBarrier(*ldr_color_.handle(), vk::ImageLayout::eTransferSrcOptimal, kRead,
+                                       vk::PipelineStageFlagBits2::eBlit, vk::AccessFlagBits2::eTransferRead,
+                                       vk::PipelineStageFlagBits2::eFragmentShader,
+                                       vk::AccessFlagBits2::eShaderSampledRead),
+                          colorBarrier(*target.handle(), vk::ImageLayout::eTransferDstOptimal, kRead,
+                                       vk::PipelineStageFlagBits2::eBlit, vk::AccessFlagBits2::eTransferWrite,
+                                       vk::PipelineStageFlagBits2::eFragmentShader,
+                                       vk::AccessFlagBits2::eShaderSampledRead)});
+}
+
 void VulkanRenderer::requestPick(std::uint32_t x, std::uint32_t y) {
     // Llegan en pixeles de pantalla; el picking se dibuja a la resolucion interna.
     const vk::Extent2D output = ldr_color_.extent();
@@ -4793,10 +5025,12 @@ void VulkanRenderer::bindMaterialPipeline(const vk::raii::CommandBuffer& cmd, st
                         !*surface_pipelines_[static_cast<std::size_t>(shader)])) {
         shader = -1;  // sin pipeline (fallo al compilar): el estandar
     }
+    // En lineas (Wireframe y la pasada de lineas) todos con la estandar.
+    if (wire_gbuffer_ || mesh_pipeline_override_ != nullptr) shader = -1;
     if (shader != bound_shader) {
         cmd.bindPipeline(vk::PipelineBindPoint::eGraphics,
                          shader >= 0 ? *surface_pipelines_[static_cast<std::size_t>(shader)]
-                                     : *skinned_pass_.geometryPipeline());
+                                     : *meshGeometryPipeline());
         bound_shader = shader;
     }
     // En la geometria pick_id no se usa: dice el bloque de propiedades.
@@ -5020,6 +5254,56 @@ void VulkanRenderer::recordParticlePass(const vk::raii::CommandBuffer& cmd,
     cmd.endRendering();
 }
 
+// Lit + Wireframe: las lineas de las mallas encima de la imagen iluminada,
+// con el depth de la escena (solo lectura): lo tapado no se ve.
+void VulkanRenderer::recordWireOverlayPass(const vk::raii::CommandBuffer& cmd, std::uint32_t frame_index) {
+    const vk::Extent2D extent = scene_color_.extent();
+    vk::ImageMemoryBarrier2 color_barrier = colorBarrier(
+        *scene_color_.handle(), vk::ImageLayout::eColorAttachmentOptimal,
+        vk::ImageLayout::eColorAttachmentOptimal, vk::PipelineStageFlagBits2::eColorAttachmentOutput,
+        vk::AccessFlagBits2::eColorAttachmentWrite, vk::PipelineStageFlagBits2::eColorAttachmentOutput,
+        vk::AccessFlagBits2::eColorAttachmentRead | vk::AccessFlagBits2::eColorAttachmentWrite);
+    vk::ImageMemoryBarrier2 depth_barrier{};
+    depth_barrier.srcStageMask = vk::PipelineStageFlagBits2::eLateFragmentTests |
+                                 vk::PipelineStageFlagBits2::eFragmentShader;
+    depth_barrier.srcAccessMask = vk::AccessFlagBits2::eDepthStencilAttachmentWrite;
+    depth_barrier.dstStageMask = vk::PipelineStageFlagBits2::eEarlyFragmentTests |
+                                 vk::PipelineStageFlagBits2::eLateFragmentTests;
+    depth_barrier.dstAccessMask = vk::AccessFlagBits2::eDepthStencilAttachmentRead;
+    depth_barrier.oldLayout = vk::ImageLayout::eDepthReadOnlyOptimal;
+    depth_barrier.newLayout = vk::ImageLayout::eDepthReadOnlyOptimal;
+    depth_barrier.image = *gbuffer_.depth().handle();
+    depth_barrier.subresourceRange = vk::ImageSubresourceRange{vk::ImageAspectFlagBits::eDepth, 0, 1, 0, 1};
+    pipelineBarrier(cmd, {color_barrier, depth_barrier});
+
+    vk::RenderingAttachmentInfo color_attachment{};
+    color_attachment.imageView = *scene_color_.view();
+    color_attachment.imageLayout = vk::ImageLayout::eColorAttachmentOptimal;
+    color_attachment.loadOp = vk::AttachmentLoadOp::eLoad;
+    color_attachment.storeOp = vk::AttachmentStoreOp::eStore;
+    vk::RenderingAttachmentInfo depth_attachment{};
+    depth_attachment.imageView = *gbuffer_.depth().view();
+    depth_attachment.imageLayout = vk::ImageLayout::eDepthReadOnlyOptimal;
+    depth_attachment.loadOp = vk::AttachmentLoadOp::eLoad;
+    depth_attachment.storeOp = vk::AttachmentStoreOp::eNone;
+    vk::RenderingInfo rendering_info{};
+    rendering_info.renderArea = vk::Rect2D{vk::Offset2D{0, 0}, extent};
+    rendering_info.layerCount = 1;
+    rendering_info.setColorAttachments(color_attachment);
+    rendering_info.pDepthAttachment = &depth_attachment;
+
+    cmd.beginRendering(rendering_info);
+    cmd.setViewport(0, vk::Viewport{0.0f, 0.0f, static_cast<float>(extent.width), static_cast<float>(extent.height),
+                                    0.0f, 1.0f});
+    cmd.setScissor(0, vk::Rect2D{vk::Offset2D{0, 0}, extent});
+    mesh_pipeline_override_ = &skinned_pass_.wireOverlayPipeline();
+    drawCpuActors(cmd, frame_index);
+    drawGpuClusters(cmd, frame_index, 0);
+    drawGpuClusters(cmd, frame_index, 1);
+    mesh_pipeline_override_ = nullptr;
+    cmd.endRendering();
+}
+
 // Con escalado: la profundidad de la escena copiada (sin filtrar) a la
 // resolucion de pantalla, para el contorno y los gizmos. Una vez por frame.
 void VulkanRenderer::recordOutputDepth(const vk::raii::CommandBuffer& cmd) {
@@ -5233,7 +5517,7 @@ void VulkanRenderer::recordUpscalePass(const vk::raii::CommandBuffer& cmd) {
 }
 
 void VulkanRenderer::recordBloomPass(const vk::raii::CommandBuffer& cmd) {
-    const vk::Extent2D screen = swapchain_.extent();
+    const vk::Extent2D screen = outputExtent();
 
     // La imagen HDR pasa a textura; todos los niveles se reescriben enteros.
     // La imagen HDR la leen tambien los rayos de luz y el histograma de la
@@ -5518,8 +5802,10 @@ void VulkanRenderer::recordPostProcessPass(const vk::raii::CommandBuffer& cmd,
                            *post_process_sets_[current_frame_], nullptr);
 
     GpuPostProcessPush push{};
-    push.inverse_resolution = core::Vec2{1.0f / static_cast<float>(extent.width),
-                                         1.0f / static_cast<float>(extent.height)};
+    // (FXAA mira pixeles de la imagen de origen: la de salida de la escena.)
+    const vk::Extent2D source = ldr_color_.extent();
+    push.inverse_resolution = core::Vec2{1.0f / static_cast<float>(std::max(source.width, 1u)),
+                                         1.0f / static_cast<float>(std::max(source.height, 1u))};
     push.enabled = post_.fxaa ? 1.0f : 0.0f;
     cmd.pushConstants<GpuPostProcessPush>(*post_process_pass_.layout(),
                                           vk::ShaderStageFlagBits::eFragment, 0, push);
@@ -5546,10 +5832,15 @@ void VulkanRenderer::recordPostProcessPass(const vk::raii::CommandBuffer& cmd,
 }
 
 bool VulkanRenderer::applyPendingResize() {
-    if (!initialized_ || (!framebuffer_resized_ && !settings_dirty_ && swapchain_.isValid())) {
+    if (!initialized_ || (!framebuffer_resized_ && !settings_dirty_ && !targets_dirty_ && swapchain_.isValid())) {
         return false;
     }
+    if (!framebuffer_resized_ && !settings_dirty_ && swapchain_.isValid()) {
+        recreateRenderTargets();  // solo otro tamano de vista
+        return true;
+    }
     settings_dirty_ = false;
+    targets_dirty_ = false;
     recreateSwapchain();
     return true;
 }

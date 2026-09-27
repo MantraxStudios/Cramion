@@ -73,6 +73,8 @@ public:
     // setViewSlot) como textura de ImGui. Se vuelve a registrar si el
     // renderizador la recreo (ventana redimensionada).
     ImTextureID viewTexture(std::uint32_t slot);
+    // Una Render Texture del renderizador (vista previa); 0 si no existe.
+    ImTextureID renderTexture(std::int32_t id);
 
     // Icono del editor (0 si no se pudo cargar: quien lo usa dibuja algo en
     // su lugar).
@@ -107,6 +109,7 @@ private:
     std::array<VkDescriptorSet, gfx::VulkanRenderer::kViewSlots> view_sets_{};
     std::array<std::uint64_t, gfx::VulkanRenderer::kViewSlots> view_generations_{};
     std::uint32_t image_count_ = 0;
+    std::unordered_map<std::int32_t, std::pair<std::uint64_t, VkDescriptorSet>> render_texture_sets_;
 
     void loadIcons();
     std::array<ImTextureID, static_cast<std::size_t>(Icon::Count)> icons_{};

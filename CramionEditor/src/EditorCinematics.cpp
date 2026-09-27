@@ -166,20 +166,15 @@ void EditorApp::drawGameView() {
     } else {
         ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.3f, 1.0f), "No hay ninguna Camera en la escena");
     }
-    ImGui::SameLine(std::max(ImGui::GetWindowWidth() - 110.0f, 0.0f));
+    ImGui::SameLine(std::max(ImGui::GetWindowWidth() - 300.0f, 0.0f));
+    drawAspectMenu(kGameSlot);
+    ImGui::SameLine();
     ImGui::Checkbox("Tercios", &game_guides_);
 
-    // La imagen, entera y sin deformar.
-    const vk::Extent2D extent = renderer_.sceneExtent();
-    const ImVec2 avail = ImGui::GetContentRegionAvail();
-    const float aspect = extent.height > 0 ? static_cast<float>(extent.width) / static_cast<float>(extent.height) : 1.0f;
-    ImVec2 size = avail;
-    if (avail.x / std::max(avail.y, 1.0f) > aspect) size.x = avail.y * aspect;
-    else size.y = avail.x / aspect;
-    size.x = std::max(size.x, 1.0f);
-    size.y = std::max(size.y, 1.0f);
-    const ImVec2 cursor = ImGui::GetCursorScreenPos();
-    const ImVec2 origin{cursor.x + (avail.x - size.x) * 0.5f, cursor.y + (avail.y - size.y) * 0.5f};
+    // La imagen: todo el panel (Free Aspect) o la proporcion elegida (como la
+    // pantalla del juego).
+    ImVec2 origin;
+    const ImVec2 size = layoutViewImage(kGameSlot, ImGui::GetContentRegionAvail(), origin);
     ImGui::SetCursorScreenPos(origin);
     ImGui::Image(imgui_.viewTexture(kGameSlot), size);
     game_image_rect_[0] = origin.x;  // Input.lockCursor encierra el raton aqui
