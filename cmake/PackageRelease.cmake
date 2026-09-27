@@ -1,7 +1,8 @@
 # Empaqueta el motor compilado en un zip listo para descargar:
 #
 #   Cramion-<version>-win64/
-#     CramionEditor.exe, CramionPlayer.exe, cramion.exe, CramionMcp.exe (puente MCP)
+#     CramionEditor.exe, CramionPlayer.exe, cramion.exe, CramionMcp.exe (puente MCP),
+#     CramionUpdater.exe (actualizador)
 #     shaders/ (con source/ de los .crshader), editor_icons/, player_banner.png
 #     shaderc_shared.dll                  (compila los shaders propios)
 #     msvcp140.dll, vcruntime140*.dll   (runtime de C++, si se encuentra)
@@ -28,7 +29,7 @@ set(zip "${BIN_DIR}/Cramion-win64.zip")
 file(REMOVE_RECURSE "${BIN_DIR}/package")
 file(MAKE_DIRECTORY "${stage}")
 
-foreach(exe CramionEditor.exe CramionPlayer.exe cramion.exe CramionMcp.exe)
+foreach(exe CramionEditor.exe CramionPlayer.exe cramion.exe CramionMcp.exe CramionUpdater.exe)
     if(NOT EXISTS "${BIN_DIR}/${exe}")
         message(FATAL_ERROR "Falta ${BIN_DIR}/${exe}: compila antes el proyecto.")
     endif()
@@ -76,6 +77,8 @@ file(WRITE "${stage}/LEEME.txt"
 
 CramionEditor.exe   Editor de escenas: crea un proyecto, edita y pulsa Play.
 CramionPlayer.exe   Ejecutable de los juegos exportados (Archivo > Exportar juego).
+CramionUpdater.exe  Actualizador: busca, descarga e instala la version nueva
+                    (el editor avisa solo y guarda todo antes).
 cramion.exe         Demo de render. Necesita las escenas de demostracion en
                     assets/ (no incluidas; ver README.md).
 

@@ -124,7 +124,7 @@ float FrameBudget::estimateSaving(Lever lever, std::uint8_t level) const {
     switch (lever) {
         case Lever::Lod: return 0.35f * (p.geometry + 0.5f * p.shadows);
         case Lever::ShadowDetail: return 0.35f * (p.shadows + p.local_shadows);
-        case Lever::Volumetric: return 0.95f * (p.volumetric + p.shafts);
+        case Lever::Volumetric: return 0.95f * p.shafts + 0.45f * p.volumetric;
         case Lever::ContactShadows: return 0.25f * p.lighting;
         case Lever::Ssao: return 0.95f * p.ssao;
         case Lever::Reflections: return 0.9f * p.reflections;
@@ -307,8 +307,10 @@ PostProcessSettings FrameBudget::apply(const PostProcessSettings& user) const {
     if (!enabled_) return s;
     static constexpr float kLodFactor[] = {1.0f, 2.0f, 4.0f, 8.0f};
     s.lod_pixel_error *= kLodFactor[std::min<std::uint8_t>(level(Lever::Lod), 3)];
+    // El polvo no se apaga (el usuario lo ve desaparecer y volver segun a
+    // donde mire): se dibuja con la mitad de tramos y sin los rayos en pantalla.
     if (level(Lever::Volumetric) > 0) {
-        s.volumetric_light = false;
+        s.volumetric_steps = std::min(s.volumetric_steps, 16);
         s.light_shafts = false;
     }
     if (level(Lever::ContactShadows) > 0) s.contact_shadows = false;

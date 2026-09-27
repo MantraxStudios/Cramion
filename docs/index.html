@@ -69,7 +69,7 @@
     <div class="relative mx-auto max-w-6xl px-4 pb-20 pt-20 text-center sm:px-6 sm:pt-28">
       <img src="img/icon.png" alt="Logo de Cramion" class="mx-auto mb-8 h-24 w-24 drop-shadow-[0_0_40px_rgba(10,176,255,.35)]">
       <p class="mb-4 inline-flex items-center gap-2 rounded-full border border-line bg-panel px-3 py-1 text-xs font-medium text-slate-400">
-        <span class="h-1.5 w-1.5 rounded-full bg-brand"></span> v0.6.1 · Vulkan 1.3 · Windows x64
+        <span class="h-1.5 w-1.5 rounded-full bg-brand"></span> v0.6.2 · Vulkan 1.3 · Windows x64
       </p>
       <h1 class="mx-auto max-w-4xl text-4xl font-extrabold leading-tight tracking-tight text-white sm:text-6xl">
         Crea juegos 3D para Windows.<br><span class="text-brand">Editor, física y Lua en un solo motor.</span>
@@ -173,7 +173,7 @@
           </li>
           <li class="flex gap-4">
             <span class="mt-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-brand/15 font-mono text-sm text-brand">06</span>
-            <div><h3 class="font-semibold text-white">Editor y exportación</h3><p class="text-sm text-slate-400">Editor con paneles acoplables, pestañas para editar prefabs y scripts, modo Play y exportación con configuraciones de compilación (nombre, icono dentro del .exe, ventana) y <code class="font-mono text-slate-300">CramionPlayer.exe</code>.</p></div>
+            <div><h3 class="font-semibold text-white">Editor y exportación</h3><p class="text-sm text-slate-400">Editor con paneles acoplables, pestañas para editar prefabs y scripts, modo Play y exportación con configuraciones de compilación (nombre, icono dentro del .exe, ventana) y <code class="font-mono text-slate-300">CramionPlayer.exe</code>. Hub con plantillas y actualizador propio: avisa de las versiones nuevas y las instala guardando antes tu trabajo.</p></div>
           </li>
           <li class="flex gap-4">
             <span class="mt-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-brand/15 font-mono text-sm text-brand">07</span>
@@ -276,10 +276,10 @@ return Jugador</code></pre>
         <div class="relative grid items-center gap-10 lg:grid-cols-2">
           <div>
             <p class="text-sm font-semibold uppercase tracking-widest text-brand">Descargar</p>
-            <h2 class="mt-2 text-3xl font-bold text-white sm:text-4xl">Cramion 0.6.1 para Windows</h2>
+            <h2 class="mt-2 text-3xl font-bold text-white sm:text-4xl">Cramion 0.6.2 para Windows</h2>
             <p class="mt-4 text-slate-400">
               Build Release listo para usar: descomprime y abre <code class="font-mono text-slate-300">CramionEditor.exe</code>.
-              Incluye el editor, el player para exportar juegos y el runtime de C++.
+              Incluye el editor, el player para exportar juegos, el actualizador y el runtime de C++. Desde la 0.6.2, Cramion avisa y se actualiza solo.
             </p>
             <div class="mt-8 flex flex-col gap-3 sm:flex-row">
               <a href="https://github.com/MantraxStudios/Cramion/releases/latest/download/Cramion-win64.zip" class="inline-flex items-center justify-center gap-2 rounded-lg bg-brand px-6 py-3 font-semibold text-ink hover:bg-white">
@@ -293,6 +293,7 @@ return Jugador</code></pre>
           <ul class="space-y-3 rounded-xl border border-line bg-ink p-6 font-mono text-sm">
             <li class="flex justify-between gap-4"><span class="text-white">CramionEditor.exe</span><span class="text-slate-500">editor de escenas</span></li>
             <li class="flex justify-between gap-4"><span class="text-white">CramionPlayer.exe</span><span class="text-slate-500">juegos exportados</span></li>
+            <li class="flex justify-between gap-4"><span class="text-white">CramionUpdater.exe</span><span class="text-slate-500">actualizador</span></li>
             <li class="flex justify-between gap-4"><span class="text-white">cramion.exe</span><span class="text-slate-500">demo de render</span></li>
             <li class="flex justify-between gap-4"><span class="text-white">shaders/</span><span class="text-slate-500">SPIR-V</span></li>
             <li class="border-t border-line pt-3 font-sans text-xs text-slate-500">

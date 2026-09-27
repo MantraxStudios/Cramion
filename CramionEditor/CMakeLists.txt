@@ -52,7 +52,7 @@ file(GLOB CRAMION_EDITOR_SOURCES CONFIGURE_DEPENDS
 )
 
 add_executable(CramionEditor ${CRAMION_EDITOR_SOURCES} "${CRAMION_ICON_RC}")
-target_link_libraries(CramionEditor PRIVATE Cramion::Core cramion_imgui comdlg32 shell32 ole32 gdiplus dbghelp ws2_32)
+target_link_libraries(CramionEditor PRIVATE Cramion::Core cramion_imgui cramion_update comdlg32 shell32 ole32 gdiplus dbghelp ws2_32)
 # Las escenas de demostracion (src/DemoScenes.h) las comparte con cramion.exe.
 target_include_directories(CramionEditor PRIVATE "${CMAKE_SOURCE_DIR}/src")
 set_target_properties(CramionEditor PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")

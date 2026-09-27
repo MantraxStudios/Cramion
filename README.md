@@ -17,6 +17,23 @@ Incluye dos escenas de demostración, iluminadas por una sola luz direccional (e
 
 ---
 
+## Novedades de la 0.6.2
+
+**Actualizaciones**
+- **Actualizador** nuevo (`CramionUpdater.exe`), una aplicación aparte con su propia interfaz: busca la última versión en GitHub, enseña las novedades, la descarga, la comprueba y la instala. Si algo falla, todo vuelve a como estaba. También **Reinstalar** para reparar la instalación.
+- **Se guarda todo antes**: el editor guarda la escena, los prefabs, los scripts, el material y el Animator, se cierra y, tras instalar, vuelve a abrir el mismo proyecto.
+- El editor **avisa** cuando sale una versión nueva (y *Ayuda > Buscar actualizaciones*).
+
+**Hub rediseñado**: barra lateral con iconos, **Actualizaciones**, **Aprender** (manual, Lua, shaders, Discord), proyectos en tarjetas o en lista y tarjeta de la versión.
+
+**Corregido**
+- Volar con el botón derecho en la Escena ya no se frena al llegar el ratón al borde.
+- El polvo (luz volumétrica) ya no desaparece hasta mirar al sol con el presupuesto adaptativo activado.
+- IK de animales: la inclinación con la pendiente y el giro del cuello al mirar.
+- Ajustes de render: dos controles se llamaban "Sombras" (aviso de ID repetido).
+
+> Quien tenga la 0.6.1 o anterior debe bajar esta versión a mano una vez; desde la 0.6.2 las siguientes se instalan desde el propio Cramion.
+
 ## Novedades de la 0.6.1
 
 **Esqueletos**
@@ -100,6 +117,7 @@ Incluye dos escenas de demostración, iluminadas por una sola luz direccional (e
 
 ## Índice
 
+- [Novedades de la 0.6.2](#novedades-de-la-062)
 - [Novedades de la 0.6.1](#novedades-de-la-061)
 - [Novedades de la 0.6](#novedades-de-la-06)
 - [Novedades de la 0.5.1](#novedades-de-la-051)

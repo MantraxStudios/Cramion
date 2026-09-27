@@ -30,6 +30,8 @@ int main(int argc, char** argv) {
     using namespace cramion;
     editor::EditorLog::instance().install();
     editor::installCrashHandler("CramionEditor");
+    // Archivos que sustituyo la ultima actualizacion y seguian en uso.
+    update::cleanupOldFiles();
 
     try {
         // Nitidez en pantallas con escalado (antes de crear la ventana).
@@ -85,7 +87,13 @@ int main(int argc, char** argv) {
 
         // Win32 -> ImGui primero; los eventos van a la entrada de la camara,
         // al tamano del render y al editor (archivos soltados, cerrar).
-        window.setMessageHook([](HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
+        // El actualizador (CramionUpdater.exe) pide guardar todo y cerrar.
+        const UINT prepare_update = RegisterWindowMessageW(update::kPrepareMessage);
+        window.setMessageHook([&app, prepare_update](HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
+            if (msg == prepare_update) {
+                app.requestUpdateShutdown();
+                return true;
+            }
             return ImGui_ImplWin32_WndProcHandler(hwnd, msg, wparam, lparam) != 0;
         });
         window.setEventCallback([&](dm::Event& e) {

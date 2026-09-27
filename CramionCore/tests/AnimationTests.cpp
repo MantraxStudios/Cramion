@@ -731,6 +731,46 @@ void testRagdollPhysics() {
     physics.stop();
 }
 
+
+void testGroundTiltAndLook() {
+    std::printf("Inclinar el cuerpo y mirar con el cuello\n");
+    // Cuatro patas de un animal que mira a -Z: delante en z = -0.5, detras en z = +0.5.
+    const std::vector<Vec3> feet = {{-0.2f, 0.0f, -0.5f}, {0.2f, 0.0f, -0.5f}, {-0.2f, 0.0f, 0.5f}, {0.2f, 0.0f, 0.5f}};
+    const Vec3 forward{0.0f, 0.0f, -1.0f};
+    const Vec3 right = core::normalize(core::cross(forward, Vec3{0.0f, 1.0f, 0.0f}));
+    const auto tilted = [&](const std::vector<float>& h, const Vec3& v) { return ecs::quatRotate(ik::groundTilt(feet, h, forward), v); };
+    check(tilted({-0.2f, -0.2f, 0.0f, 0.0f}, forward).y < -0.1f, "el suelo baja por delante: el morro baja");
+    check(tilted({0.2f, 0.2f, 0.0f, 0.0f}, forward).y > 0.1f, "el suelo sube por delante: el morro sube");
+    // Derecha del animal: +X (mira a -Z). Sube por la derecha -> la derecha sube.
+    check(tilted({0.0f, 0.2f, 0.0f, 0.2f}, right).y > 0.1f && right.x > 0.9f, "el suelo sube por la derecha: ese lado sube");
+    check(std::abs(tilted({0.0f, 0.0f, 0.0f, 0.0f}, forward).y) < 1e-5f, "suelo plano: no se inclina");
+    const Vec3 steep = tilted({-5.0f, -5.0f, 0.0f, 0.0f}, forward);
+    check(std::asin(std::clamp(-steep.y, -1.0f, 1.0f)) * 180.0f / core::kPi <= 30.5f, "como mucho 30 grados");
+
+    // Cuello de 3 huesos hacia arriba y la cabeza mirando a -Z; objetivo detras.
+    std::vector<asset::Node> nodes = {{"root", -1, Mat4::identity()},
+                                      {"neck1", 0, core::translate(Vec3{0.0f, 1.0f, 0.0f})},
+                                      {"neck2", 1, core::translate(Vec3{0.0f, 0.2f, 0.0f})},
+                                      {"head", 2, core::translate(Vec3{0.0f, 0.2f, 0.0f})}};
+    std::vector<Mat4> local;
+    for (const asset::Node& n : nodes) local.push_back(n.local);
+    std::vector<Mat4> global(nodes.size());
+    ik::Pose pose{&nodes, &local, &global};
+    ik::recomputeGlobals(pose);
+    ik::lookChain(pose, {1, 2, 3}, forward, Vec3{0.0f, 1.4f, 5.0f}, 1.0f, 70.0f);
+    const Vec3 now = ecs::quatRotate(ik::nodeRotation(pose, 3), forward);
+    const float turned = std::acos(std::clamp(core::dot(now, forward), -1.0f, 1.0f)) * 180.0f / core::kPi;
+    std::printf("    la cabeza giro %.1f grados (objetivo detras)\n", turned);
+    check(turned <= 70.5f && turned > 60.0f, "con el objetivo detras la cabeza gira el maximo y no mas");
+    for (std::size_t i = 0; i < nodes.size(); ++i) local[i] = nodes[i].local;
+    ik::recomputeGlobals(pose);
+    ik::lookChain(pose, {1, 2, 3}, forward, Vec3{2.0f, 1.4f, -4.0f}, 1.0f, 70.0f);
+    const Vec3 dir = core::normalize(Vec3{2.0f, 1.4f, -4.0f} - ik::nodePosition(pose, 3));
+    check(core::dot(ecs::quatRotate(ik::nodeRotation(pose, 3), forward), dir) > 0.99f, "dentro del maximo, mira justo al objetivo");
+    const Vec3 up_neck = ik::nodePosition(pose, 2) - ik::nodePosition(pose, 1);
+    check(core::length(up_neck) > 0.199f && core::length(up_neck) < 0.201f, "el cuello no se estira");
+}
+
 int main(int argc, char** argv) {
     if (argc == 3 && std::string(argv[1]) == "--dump") return dumpModel(argv[2]);
     testDetection();
@@ -741,6 +781,7 @@ int main(int argc, char** argv) {
     testChainAndCreature();
     testPhysBones();
     testRagdollPhysics();
+    testGroundTiltAndLook();
     std::printf("\n%d comprobaciones, %d fallos\n", checks, failures);
     return failures == 0 ? 0 : 1;
 }

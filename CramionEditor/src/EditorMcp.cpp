@@ -500,6 +500,16 @@ json McpTools::call(const std::string& name, const json& args, bool& image, std:
         return json{{"project", created.name}, {"folder", dialogs::utf8(created.folder)}};
     }
 
+    // Tambien en el Hub (sin proyecto).
+    if (name == "screenshot") {
+        const std::filesystem::path png = std::filesystem::temp_directory_path() / "cramion_mcp_screenshot.png";
+        const std::vector<std::uint8_t> pixels = captureEditorWindow(a.window_.handle(), png);
+        if (pixels.empty()) throw ToolError("no se pudo capturar la ventana (minimizada?)");
+        image = true;
+        image_data = base64(readBytes(png));
+        return json{};
+    }
+
     needProject();
 
     if (name == "list_entities") {
@@ -1015,14 +1025,6 @@ json McpTools::call(const std::string& name, const json& args, bool& image, std:
         std::string text;
         for (auto it = picked.rbegin(); it != picked.rend(); ++it) text += *it + "\n";
         return text.empty() ? std::string("(consola vacia)") : text;
-    }
-    if (name == "screenshot") {
-        const std::filesystem::path png = std::filesystem::temp_directory_path() / "cramion_mcp_screenshot.png";
-        const std::vector<std::uint8_t> pixels = captureEditorWindow(a.window_.handle(), png);
-        if (pixels.empty()) throw ToolError("no se pudo capturar la ventana (minimizada?)");
-        image = true;
-        image_data = base64(readBytes(png));
-        return json{};
     }
     if (name == "undo") {
         a.undo();

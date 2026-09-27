@@ -37,6 +37,7 @@
 #include "ProfilerOverlay.h"
 
 #include <CramionCore/ecs/FloatingOrigin.h>
+#include <CramionUpdater/Update.h>
 #include "PropertyInspector.h"
 #include "ProjectTemplates.h"
 
@@ -127,6 +128,11 @@ public:
     void startSelfTest(const std::filesystem::path& folder, const std::filesystem::path& model,
                        const std::filesystem::path& environment, const std::filesystem::path& image = {});
     bool selfTestFinished() const { return self_test_step_ < 0; }
+
+    // Actualizaciones (EditorUpdates.cpp). El actualizador (CramionUpdater.exe)
+    // manda update::kPrepareMessage: el editor guarda todo (escena, prefabs,
+    // scripts, Animator), apunta su proyecto para volver a abrirlo y se cierra.
+    void requestUpdateShutdown() { update_shutdown_requested_ = true; }
 
     // Tiempo de CPU del render del frame (lo mide main.cpp alrededor de
     // drawFrame) para el desglose de Estadisticas.
@@ -299,6 +305,9 @@ private:
     void drawHubSidebar();
     void drawHubProjects();
     void drawHubNewProject();
+    void drawHubUpdates();
+    void drawHubLearn();
+    void drawHubUpdateBanner();
     void drawTemplateArt(ImDrawList* draw, ImVec2 a, ImVec2 b, const ProjectTemplate& t);
     void createProjectFromHub();
     void drawSaveTemplateDialog();
@@ -754,6 +763,11 @@ private:
     bool view_hovered_ = false;
     bool view_focused_ = false;
     bool flying_ = false;
+    // Volando, el cursor se oculta y se fija en el centro de la vista (el giro
+    // llega en bruto): no choca con el borde. Al soltar vuelve donde estaba.
+    void syncFlyCursor();
+    bool fly_cursor_captured_ = false;
+    POINT fly_cursor_restore_{};
     GizmoOperation gizmo_ = GizmoOperation::Translate;
     bool gizmo_local_ = false;
     bool gizmo_was_using_ = false;
@@ -1196,7 +1210,7 @@ private:
     std::string new_project_name_ = "Mi proyecto";
     std::string new_project_folder_;
     std::string hub_error_;
-    int hub_page_ = 0;      // 0 proyectos, 1 nuevo proyecto
+    int hub_page_ = 0;      // 0 proyectos, 1 nuevo, 2 actualizaciones, 3 aprender
     int hub_category_ = 0;  // 0 todas, 1 integradas, 2 del usuario
     int hub_template_ = 0;
     std::string hub_search_;
@@ -1204,6 +1218,44 @@ private:
     bool hub_templates_loaded_ = false;
     std::shared_ptr<dialogs::AsyncFolderPick> hub_open_pick_;
     std::shared_ptr<dialogs::AsyncFolderPick> hub_folder_pick_;
+    int hub_sort_ = 0;         // 0 recientes, 1 nombre
+    bool hub_list_view_ = false;
+
+    // Actualizaciones (EditorUpdates.cpp).
+    void pollUpdates();
+    void startUpdateCheck(bool manual);
+    // Hay una version nueva que el usuario no ha omitido.
+    bool updateAvailable() const;
+    const update::Release* latestRelease() const;
+    // Guarda la escena, los prefabs abiertos, los scripts, el material y el
+    // Animator. Las escenas sin guardar van a Assets/Scenes/ (sin dialogo).
+    bool saveEverythingForUpdate(std::string* error);
+    // Lo que se guardara (para el dialogo de confirmacion).
+    std::vector<std::string> unsavedWorkSummary() const;
+    // Guarda todo, lanza el actualizador y cierra el editor.
+    // `reinstall`: la misma version otra vez (repara archivos que falten o
+    // esten danados).
+    void beginUpdateInstall(bool reinstall = false);
+    enum class UpdaterMode { Open, Install, Reinstall };
+    bool launchUpdater(UpdaterMode mode);
+    bool update_ask_reinstall_ = false;
+    void drawUpdateToast();
+    void drawUpdateDialog();
+    void drawUpdateStatusLine(bool compact);
+    std::shared_ptr<update::CheckJob> update_check_;
+    update::Release update_release_;  // la ultima consultada (valida si update_known_)
+    bool update_known_ = false;
+    std::string update_check_error_;
+    bool update_check_manual_ = false;
+    double update_check_after_ = 3.0;  // segundos desde el arranque
+    bool update_check_started_ = false;
+    bool update_toast_dismissed_ = false;
+    bool show_update_dialog_ = false;
+    bool update_confirm_ = false;
+    std::string update_error_;
+    bool update_shutdown_requested_ = false;
+    std::vector<update::NoteLine> update_notes_;
+    update::Settings update_settings_ = update::loadSettings();
     bool show_save_template_ = false;
     std::string template_name_;
     std::string template_description_;

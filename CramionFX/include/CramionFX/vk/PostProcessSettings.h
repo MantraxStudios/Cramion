@@ -81,6 +81,10 @@ struct PostProcessSettings {
     float contact_shadow_length = 0.5f;
     float volumetric_density = 0.02f;
     float volumetric_anisotropy = 0.6f;
+    // Tramos por rayo del polvo (volumetric.frag). El presupuesto adaptativo
+    // lo baja a la mitad en vez de apagar el polvo: si lo apagaba, solo
+    // volvia cuando el frame se abarataba (mirando al cielo o al sol).
+    int volumetric_steps = 32;
 
     // --- Rendimiento ---
     // LODs automaticos: cada objeto estatico se dibuja (tambien en las

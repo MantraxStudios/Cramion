@@ -333,6 +333,26 @@ void EditorApp::drawSceneView() {
     ImGui::End();
 }
 
+// Volar con el boton derecho: el cursor capturado (oculto, fijo en el centro
+// de la vista, movimiento en bruto) para girar sin tope aunque el raton
+// llegue al borde de la vista o de la pantalla. Se llama cada frame; tambien
+// suelta el cursor si se dejo de volar desde otro sitio (pestanas, Hub).
+void EditorApp::syncFlyCursor() {
+    // El Play con Input.lockCursor manda sobre el cursor.
+    const bool want = flying_ && !(playing() && window_.cursorCaptured() && !fly_cursor_captured_);
+    if (want == fly_cursor_captured_) return;
+    if (want) {
+        GetCursorPos(&fly_cursor_restore_);
+        const RECT area{static_cast<LONG>(view_x_), static_cast<LONG>(view_y_), static_cast<LONG>(view_x_ + view_w_),
+                        static_cast<LONG>(view_y_ + view_h_)};
+        window_.setCursorCaptured(true, view_w_ > 1.0f ? &area : nullptr);
+    } else {
+        window_.setCursorCaptured(false);
+        SetCursorPos(fly_cursor_restore_.x, fly_cursor_restore_.y);  // donde empezo, como en Unity
+    }
+    fly_cursor_captured_ = want;
+}
+
 // Camara del editor: volar (boton derecho, lo hace scene::Camera con la
 // entrada), acercar con la rueda y desplazar con el boton central.
 void EditorApp::handleCameraControls() {

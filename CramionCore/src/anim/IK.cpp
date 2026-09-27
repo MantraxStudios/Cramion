@@ -212,6 +212,55 @@ bool chain(const Pose& pose, const std::vector<int>& joints, const Vec3& target,
     return true;
 }
 
+Quat groundTilt(const std::vector<Vec3>& feet, const std::vector<float>& heights, const Vec3& forward, float max_degrees) {
+    const Vec3 up{0.0f, 1.0f, 0.0f};
+    Vec3 f{forward.x, 0.0f, forward.z};
+    if (feet.size() < 3 || feet.size() != heights.size() || core::length(f) < 1e-5f) return Quat{};
+    f = core::normalize(f);
+    const Vec3 right = core::normalize(core::cross(f, up));
+    // Pendiente (altura por metro) a lo largo de un eje horizontal.
+    const auto slope = [&](const Vec3& axis) {
+        float sx = 0.0f, sy = 0.0f, sxx = 0.0f, sxy = 0.0f;
+        const float n = static_cast<float>(feet.size());
+        for (std::size_t i = 0; i < feet.size(); ++i) {
+            const float x = core::dot(feet[i], axis);
+            sx += x;
+            sy += heights[i];
+            sxx += x * x;
+            sxy += x * heights[i];
+        }
+        const float den = n * sxx - sx * sx;
+        return std::abs(den) > 1e-6f ? (n * sxy - sx * sy) / den : 0.0f;
+    };
+    const float limit = max_degrees * core::kPi / 180.0f;
+    const float pitch = std::clamp(std::atan(slope(f)), -limit, limit);      // + = sube por delante
+    const float roll = std::clamp(std::atan(slope(right)), -limit, limit);   // + = sube por la derecha
+    const auto axis_angle = [](const Vec3& axis, float radians) {
+        const Vec3 a = axis * std::sin(radians * 0.5f);
+        return Quat{a.x, a.y, a.z, std::cos(radians * 0.5f)};
+    };
+    // Girar +a alrededor de la derecha (f x arriba) lleva delante hacia
+    // arriba; girar +a alrededor de delante lleva la derecha hacia abajo.
+    return ecs::quatMultiply(axis_angle(right, pitch), axis_angle(f, -roll));
+}
+
+void lookChain(const Pose& pose, const std::vector<int>& bones, const Vec3& head_forward, const Vec3& target, float weight,
+               float max_angle_degrees) {
+    if (bones.empty() || weight <= 0.0f) return;
+    const int head = bones.back();
+    const Vec3 to = target - nodePosition(pose, head);
+    if (core::length(to) < 1e-4f || core::length(head_forward) < 1e-6f) return;
+    Quat turn = rotationBetween(core::normalize(head_forward), core::normalize(to));
+    const float angle = 2.0f * std::acos(std::clamp(std::abs(turn.w), 0.0f, 1.0f));
+    const float max_angle = max_angle_degrees * core::kPi / 180.0f;
+    if (angle > max_angle && angle > 1e-5f) turn = scaledRotation(turn, max_angle / angle);
+    turn = scaledRotation(turn, weight);
+    // Cada hueso hace su parte; los hijos heredan lo de sus padres, asi que la
+    // cabeza acaba girada el total.
+    const Quat part = scaledRotation(turn, 1.0f / static_cast<float>(bones.size()));
+    for (const int bone : bones) rotateGlobal(pose, bone, part);
+}
+
 void lookAt(const Pose& pose, int bone, const Vec3& forward, const Vec3& target, float weight, float max_angle_degrees) {
     if (bone < 0 || weight <= 0.0f) return;
     const Vec3 from = nodePosition(pose, bone);

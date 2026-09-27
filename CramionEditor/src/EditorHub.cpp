@@ -1,9 +1,15 @@
 // Hub de proyectos (como el Unity Hub y el lanzador de Unreal):
 //
-//   - Barra lateral: marca, secciones (Proyectos / Nuevo proyecto), abrir y
-//     la version.
-//   - Proyectos: tarjetas con su color, busqueda, fecha relativa y menu
-//     (abrir, mostrar en el Explorador, quitar de la lista). Doble clic abre.
+//   - Barra lateral: marca, secciones con icono (Proyectos, Nuevo proyecto,
+//     Actualizaciones con aviso "Nueva", Aprender), abrir, y abajo la tarjeta
+//     de la version (al dia / version nueva).
+//   - Proyectos: tarjetas o lista, ordenados por fecha o nombre, busqueda,
+//     fecha relativa y menu (abrir, mostrar en el Explorador, quitar de la
+//     lista). Doble clic abre. Si hay version nueva, un aviso arriba.
+//   - Actualizaciones: version instalada y publicada, novedades, buscar,
+//     actualizar (abre CramionUpdater.exe, que instala y vuelve a abrir el
+//     Hub) y las opciones del actualizador.
+//   - Aprender: manual, primeros pasos con Lua, shaders, Discord y GitHub.
 //   - Nuevo proyecto: galeria de plantillas (integradas y del usuario) con
 //     miniaturas dibujadas, y a la derecha sus detalles, nombre, ubicacion y
 //     Crear.
@@ -15,6 +21,8 @@
 
 #include "Dialogs.h"
 #include "ProjectTemplates.h"
+
+#include <CramionUpdater/NotesView.h>
 
 #include <shellapi.h>
 
@@ -136,6 +144,36 @@ void perspectiveGrid(ImDrawList* draw, ImVec2 a, ImVec2 b, float horizon, ImU32 
         const float t = static_cast<float>(i) / 6.0f;
         const float y = horizon + (b.y - horizon) * t * t;
         draw->AddLine(ImVec2(a.x, y), ImVec2(b.x, y), color, 1.0f);
+    }
+}
+
+// Iconos de la barra lateral: 0 proyectos (rejilla), 1 nuevo (+),
+// 2 actualizaciones (flecha abajo), 3 aprender (libro).
+void hubIcon(ImDrawList* draw, ImVec2 c, int icon, ImU32 color) {
+    switch (icon) {
+        case 0:
+            for (int y = 0; y < 2; ++y) {
+                for (int x = 0; x < 2; ++x) {
+                    const ImVec2 a(c.x - 7.0f + static_cast<float>(x) * 8.0f, c.y - 7.0f + static_cast<float>(y) * 8.0f);
+                    draw->AddRectFilled(a, ImVec2(a.x + 6.0f, a.y + 6.0f), color, 1.5f);
+                }
+            }
+            break;
+        case 1:
+            draw->AddRect(ImVec2(c.x - 7.5f, c.y - 7.5f), ImVec2(c.x + 7.5f, c.y + 7.5f), color, 3.0f, 0, 1.5f);
+            draw->AddLine(ImVec2(c.x - 3.5f, c.y), ImVec2(c.x + 3.5f, c.y), color, 1.8f);
+            draw->AddLine(ImVec2(c.x, c.y - 3.5f), ImVec2(c.x, c.y + 3.5f), color, 1.8f);
+            break;
+        case 2:
+            draw->AddCircle(c, 8.0f, color, 24, 1.5f);
+            draw->AddLine(ImVec2(c.x, c.y - 4.5f), ImVec2(c.x, c.y + 3.5f), color, 1.8f);
+            draw->AddLine(ImVec2(c.x - 3.5f, c.y + 0.5f), ImVec2(c.x, c.y + 4.0f), color, 1.8f);
+            draw->AddLine(ImVec2(c.x + 3.5f, c.y + 0.5f), ImVec2(c.x, c.y + 4.0f), color, 1.8f);
+            break;
+        default:
+            draw->AddRect(ImVec2(c.x - 8.0f, c.y - 6.5f), ImVec2(c.x - 0.5f, c.y + 6.5f), color, 1.5f, 0, 1.5f);
+            draw->AddRect(ImVec2(c.x + 0.5f, c.y - 6.5f), ImVec2(c.x + 8.0f, c.y + 6.5f), color, 1.5f, 0, 1.5f);
+            break;
     }
 }
 
@@ -336,10 +374,11 @@ void EditorApp::drawHub() {
     ImGui::SameLine(0.0f, 0.0f);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(32.0f, 26.0f));
     ImGui::BeginChild("hub_page", ImVec2(0.0f, 0.0f), ImGuiChildFlags_AlwaysUseWindowPadding);
-    if (hub_page_ == 0) {
-        drawHubProjects();
-    } else {
-        drawHubNewProject();
+    switch (hub_page_) {
+        case 1: drawHubNewProject(); break;
+        case 2: drawHubUpdates(); break;
+        case 3: drawHubLearn(); break;
+        default: drawHubProjects(); break;
     }
     ImGui::EndChild();
     ImGui::PopStyleVar();
@@ -348,46 +387,68 @@ void EditorApp::drawHub() {
 
 void EditorApp::drawHubSidebar() {
     ImGui::PushStyleColor(ImGuiCol_ChildBg, ImGui::ColorConvertU32ToFloat4(kSidebar));
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(18.0f, 22.0f));
-    ImGui::BeginChild("hub_side", ImVec2(240.0f, 0.0f), ImGuiChildFlags_AlwaysUseWindowPadding);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(16.0f, 20.0f));
+    ImGui::BeginChild("hub_side", ImVec2(252.0f, 0.0f), ImGuiChildFlags_AlwaysUseWindowPadding);
     ImDrawList* draw = ImGui::GetWindowDrawList();
+    {
+        // Linea que separa la barra de la pagina.
+        const ImVec2 wp = ImGui::GetWindowPos();
+        draw->AddLine(ImVec2(wp.x + ImGui::GetWindowWidth() - 1.0f, wp.y),
+                      ImVec2(wp.x + ImGui::GetWindowWidth() - 1.0f, wp.y + ImGui::GetWindowHeight()), kCardBorder);
+    }
 
     // Marca.
     const ImVec2 start = ImGui::GetCursorScreenPos();
     if (const ImTextureID logo = imgui_.logo(); logo != 0) {
-        draw->AddImage(logo, start, ImVec2(start.x + 44.0f, start.y + 44.0f));
+        draw->AddImage(logo, start, ImVec2(start.x + 40.0f, start.y + 40.0f));
     }
-    draw->AddText(ImGui::GetFont(), 24.0f, ImVec2(start.x + 54.0f, start.y + 1.0f), IM_COL32(240, 242, 246, 255),
+    draw->AddText(ImGui::GetFont(), 22.0f, ImVec2(start.x + 50.0f, start.y + 1.0f), IM_COL32(240, 242, 246, 255),
                   "CRAMION");
-    draw->AddText(ImGui::GetFont(), 14.0f, ImVec2(start.x + 55.0f, start.y + 27.0f), kTextDim, "Hub de proyectos");
-    ImGui::Dummy(ImVec2(0.0f, 60.0f));
+    draw->AddText(ImGui::GetFont(), 13.0f, ImVec2(start.x + 51.0f, start.y + 24.0f), kTextDim, "Hub");
+    ImGui::Dummy(ImVec2(0.0f, 58.0f));
 
-    // Secciones.
-    const auto nav = [&](const char* label, int page) {
+    // Secciones con icono; Actualizaciones con aviso si hay version nueva.
+    const auto section = [&](const char* title) {
+        ImGui::Dummy(ImVec2(0.0f, 4.0f));
+        const ImVec2 p = ImGui::GetCursorScreenPos();
+        draw->AddText(ImGui::GetFont(), 12.0f, ImVec2(p.x + 8.0f, p.y), IM_COL32(110, 116, 128, 255), title);
+        ImGui::Dummy(ImVec2(0.0f, 18.0f));
+    };
+    const auto nav = [&](const char* label, int page, int icon, const char* badge) {
         const bool active = hub_page_ == page;
         const ImVec2 p = ImGui::GetCursorScreenPos();
         const float width = ImGui::GetContentRegionAvail().x;
+        const float h = 38.0f;
         ImGui::PushID(label);
-        if (ImGui::InvisibleButton("nav", ImVec2(width, 38.0f))) {
+        if (ImGui::InvisibleButton("nav", ImVec2(width, h))) {
             hub_page_ = page;
             hub_error_.clear();
         }
         const bool hovered = ImGui::IsItemHovered();
         ImGui::PopID();
         if (active || hovered) {
-            draw->AddRectFilled(p, ImVec2(p.x + width, p.y + 38.0f),
-                                active ? IM_COL32(0, 143, 242, 40) : IM_COL32(255, 255, 255, 12), 6.0f);
+            draw->AddRectFilled(p, ImVec2(p.x + width, p.y + h), active ? IM_COL32(0, 143, 242, 38) : IM_COL32(255, 255, 255, 10),
+                                7.0f);
         }
-        if (active) draw->AddRectFilled(p, ImVec2(p.x + 3.0f, p.y + 38.0f), kAccent, 2.0f);
-        draw->AddText(ImVec2(p.x + 16.0f, p.y + 11.0f),
-                      active ? IM_COL32(255, 255, 255, 255) : IM_COL32(200, 204, 212, 255), label);
+        if (active) draw->AddRectFilled(ImVec2(p.x, p.y + 8.0f), ImVec2(p.x + 3.0f, p.y + h - 8.0f), kAccent, 2.0f);
+        const ImU32 color = active ? IM_COL32(255, 255, 255, 255) : IM_COL32(190, 195, 205, 255);
+        hubIcon(draw, ImVec2(p.x + 22.0f, p.y + h * 0.5f), icon, active ? kAccent : IM_COL32(150, 156, 168, 255));
+        draw->AddText(ImVec2(p.x + 42.0f, p.y + (h - ImGui::GetFontSize()) * 0.5f), color, label);
+        if (badge != nullptr) {
+            const ImVec2 ts = ImGui::CalcTextSize(badge);
+            const ImVec2 b0(p.x + width - ts.x - 22.0f, p.y + h * 0.5f - 10.0f);
+            draw->AddRectFilled(b0, ImVec2(b0.x + ts.x + 14.0f, b0.y + 20.0f), kAccent, 10.0f);
+            draw->AddText(ImVec2(b0.x + 7.0f, b0.y + 10.0f - ts.y * 0.5f), IM_COL32(255, 255, 255, 255), badge);
+        }
     };
-    nav("Proyectos", 0);
-    nav("Nuevo proyecto", 1);
+    section("INICIO");
+    nav("Proyectos", 0, 0, nullptr);
+    nav("Nuevo proyecto", 1, 1, nullptr);
+    section("CRAMION");
+    nav("Actualizaciones", 2, 2, updateAvailable() ? "Nueva" : nullptr);
+    nav("Aprender", 3, 3, nullptr);
 
-    ImGui::Dummy(ImVec2(0.0f, 12.0f));
-    ImGui::Separator();
-    ImGui::Dummy(ImVec2(0.0f, 8.0f));
+    ImGui::Dummy(ImVec2(0.0f, 10.0f));
     ImGui::BeginDisabled(hub_open_pick_ != nullptr);
     if (ImGui::Button("Abrir proyecto...", ImVec2(-1.0f, 32.0f))) {
         hub_error_.clear();
@@ -402,10 +463,36 @@ void EditorApp::drawHubSidebar() {
     }
     ImGui::SetItemTooltip("Tus plantillas: se crean desde el editor con Archivo > Guardar proyecto como plantilla");
 
-    // Abajo: version y salir.
-    const float bottom = ImGui::GetWindowHeight() - 70.0f;
+    // Abajo: tarjeta de la version (clic = Actualizaciones) y salir.
+    const float card_h = 64.0f;
+    const float bottom = ImGui::GetWindowHeight() - card_h - 58.0f;
     if (ImGui::GetCursorPosY() < bottom) ImGui::SetCursorPosY(bottom);
-    ImGui::TextDisabled("Cramion 0.2 · Vulkan 1.3");
+    {
+        const ImVec2 p = ImGui::GetCursorScreenPos();
+        const float w = ImGui::GetContentRegionAvail().x;
+        ImGui::InvisibleButton("version_card", ImVec2(w, card_h));
+        const bool hovered = ImGui::IsItemHovered();
+        if (ImGui::IsItemClicked()) hub_page_ = 2;
+        const bool fresh = updateAvailable();
+        draw->AddRectFilled(p, ImVec2(p.x + w, p.y + card_h), hovered ? kCardHover : kCard, 8.0f);
+        draw->AddRect(p, ImVec2(p.x + w, p.y + card_h), fresh ? kAccent : kCardBorder, 8.0f);
+        const std::string version = "Cramion " + update::currentVersion().str();
+        draw->AddText(ImVec2(p.x + 12.0f, p.y + 10.0f), IM_COL32(236, 238, 242, 255), version.c_str());
+        std::string status = "Vulkan 1.3 · Windows x64";
+        ImU32 status_color = kTextDim;
+        if (update_check_) {
+            status = "Buscando actualizaciones...";
+        } else if (fresh) {
+            status = "Nueva versión: " + update_release_.version.str();
+            status_color = kAccent;
+        } else if (update_known_) {
+            status = "Al día";
+            status_color = IM_COL32(46, 204, 113, 255);
+        }
+        draw->AddText(ImVec2(p.x + 12.0f, p.y + 34.0f), status_color, status.c_str());
+        if (fresh) draw->AddCircleFilled(ImVec2(p.x + w - 14.0f, p.y + 14.0f), 4.5f, kAccent);
+    }
+    ImGui::Dummy(ImVec2(0.0f, 4.0f));
     if (ImGui::Button("Salir", ImVec2(-1.0f, 26.0f))) quit_ = true;
     ImGui::EndChild();
     ImGui::PopStyleVar();
@@ -415,7 +502,16 @@ void EditorApp::drawHubSidebar() {
 // --- Proyectos ---------------------------------------------------------------------
 
 void EditorApp::drawHubProjects() {
-    const std::vector<project::RecentProject> recent = project::recentProjects();
+    std::vector<project::RecentProject> recent = project::recentProjects();
+    if (hub_sort_ == 1) {
+        std::stable_sort(recent.begin(), recent.end(), [](const project::RecentProject& a, const project::RecentProject& b) {
+            return lower(a.name) < lower(b.name);
+        });
+    } else {
+        std::stable_sort(recent.begin(), recent.end(), [](const project::RecentProject& a, const project::RecentProject& b) {
+            return a.last_opened > b.last_opened;
+        });
+    }
 
     // Cabecera: titulo, busqueda y acciones.
     ImGui::SetWindowFontScale(1.55f);
@@ -433,7 +529,29 @@ void EditorApp::drawHubProjects() {
     ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.2f, 0.65f, 1.0f, 1.0f));
     if (ImGui::Button("+  Nuevo proyecto", ImVec2(170.0f, 0.0f))) hub_page_ = 1;
     ImGui::PopStyleColor(2);
-    ImGui::Dummy(ImVec2(0.0f, 10.0f));
+    ImGui::Dummy(ImVec2(0.0f, 6.0f));
+    drawHubUpdateBanner();
+
+    // Orden y vista (tarjetas o lista).
+    if (!recent.empty()) {
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextDisabled("Ordenar por");
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(150.0f);
+        static constexpr const char* kSorts[] = {"Abiertos hace poco", "Nombre"};
+        ImGui::Combo("##orden", &hub_sort_, kSorts, 2);
+        ImGui::SameLine(ImGui::GetContentRegionMax().x - 176.0f);
+        const auto toggle = [&](const char* label, bool list) {
+            const bool active = hub_list_view_ == list;
+            if (active) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.0f, 0.56f, 0.95f, 0.45f));
+            if (ImGui::Button(label, ImVec2(84.0f, 0.0f))) hub_list_view_ = list;
+            if (active) ImGui::PopStyleColor();
+        };
+        toggle("Tarjetas", false);
+        ImGui::SameLine(0.0f, 8.0f);
+        toggle("Lista", true);
+    }
+    ImGui::Dummy(ImVec2(0.0f, 6.0f));
     if (!hub_error_.empty()) {
         ImGui::TextColored(ImVec4(1.0f, 0.45f, 0.4f, 1.0f), "%s", hub_error_.c_str());
         ImGui::Spacing();
@@ -464,10 +582,10 @@ void EditorApp::drawHubProjects() {
     draw = ImGui::GetWindowDrawList();
     const float spacing = 18.0f;
     const float avail = ImGui::GetContentRegionAvail().x;
-    const int columns = std::max(1, static_cast<int>((avail + spacing) / (270.0f + spacing)));
+    const int columns = hub_list_view_ ? 1 : std::max(1, static_cast<int>((avail + spacing) / (270.0f + spacing)));
     const float card_w = (avail - spacing * static_cast<float>(columns - 1)) / static_cast<float>(columns);
     const float banner_h = 112.0f;
-    const float card_h = banner_h + 78.0f;
+    const float card_h = hub_list_view_ ? 58.0f : banner_h + 78.0f;
     const std::string query = lower(hub_search_);
 
     std::optional<std::filesystem::path> to_open;
@@ -493,6 +611,39 @@ void EditorApp::drawHubProjects() {
             ImGui::Separator();
             if (ImGui::MenuItem("Quitar de la lista")) to_remove = p.file;
             ImGui::EndPopup();
+        }
+
+        if (hub_list_view_) {
+            // Fila: miniatura o iniciales, nombre, carpeta y fecha a la derecha.
+            draw->AddRectFilled(a, b, hovered ? kCardHover : kCard, 8.0f);
+            draw->AddRect(a, b, hovered ? kAccent : kCardBorder, 8.0f);
+            const ImVec2 ta(a.x + 8.0f, a.y + 8.0f), tb(a.x + 8.0f + 74.0f, b.y - 8.0f);
+            ImVec2 image_size{};
+            const std::filesystem::path thumbnail = p.file.parent_path() / "Library" / "thumbnail.png";
+            const ImTextureID texture =
+                exists && std::filesystem::exists(thumbnail) ? imgui_.image(thumbnail, &image_size) : ImTextureID{};
+            if (texture != 0 && image_size.x > 0.0f && image_size.y > 0.0f) {
+                const float keep = std::min(1.0f, ((tb.x - ta.x) / (tb.y - ta.y)) / (image_size.x / image_size.y));
+                draw->AddImageRounded(texture, ta, tb, ImVec2(0.0f, (1.0f - keep) * 0.5f), ImVec2(1.0f, 1.0f - (1.0f - keep) * 0.5f),
+                                      IM_COL32(255, 255, 255, 255), 5.0f);
+            } else {
+                const ImU32 color = exists ? colorFor(p.name) : IM_COL32(70, 72, 78, 255);
+                draw->AddRectFilled(ta, tb, color, 5.0f);
+                centeredText(draw, 20.0f, ImVec2((ta.x + tb.x) * 0.5f, (ta.y + tb.y) * 0.5f), IM_COL32(255, 255, 255, 230),
+                             initials(p.name).c_str());
+            }
+            const std::string when = relativeTime(p.last_opened);
+            const float when_w = ImGui::CalcTextSize(when.c_str()).x;
+            const float text_w = card_w - 110.0f - when_w - 30.0f;
+            draw->AddText(ImGui::GetFont(), 17.0f, ImVec2(tb.x + 14.0f, a.y + 9.0f), IM_COL32(240, 242, 246, 255),
+                          ellipsize(p.name, text_w).c_str());
+            const std::string where = exists ? dialogs::utf8(p.file.parent_path()) : "No se encuentra la carpeta";
+            draw->AddText(ImVec2(tb.x + 14.0f, a.y + 31.0f), exists ? kTextDim : IM_COL32(235, 110, 100, 255),
+                          ellipsize(where, text_w).c_str());
+            draw->AddText(ImVec2(b.x - when_w - 16.0f, a.y + (card_h - ImGui::GetFontSize()) * 0.5f),
+                          hovered && exists ? kAccent : IM_COL32(120, 126, 138, 255), when.c_str());
+            ImGui::PopID();
+            continue;
         }
 
         // Tarjeta: sombra, fondo, banner con iniciales y datos.
@@ -725,6 +876,229 @@ void EditorApp::createProjectFromHub() {
         beginOpenProject(info.file);
     } catch (const std::exception& e) {
         hub_error_ = e.what();
+    }
+}
+
+// --- Actualizaciones ------------------------------------------------------------------
+
+// Aviso arriba de Proyectos cuando hay version nueva.
+void EditorApp::drawHubUpdateBanner() {
+    if (!updateAvailable()) return;
+    ImDrawList* draw = ImGui::GetWindowDrawList();
+    const ImVec2 a = ImGui::GetCursorScreenPos();
+    const float w = ImGui::GetContentRegionAvail().x;
+    const float h = 52.0f;
+    draw->AddRectFilled(a, ImVec2(a.x + w, a.y + h), IM_COL32(0, 143, 242, 34), 8.0f);
+    draw->AddRect(a, ImVec2(a.x + w, a.y + h), IM_COL32(0, 143, 242, 140), 8.0f);
+    hubIcon(draw, ImVec2(a.x + 24.0f, a.y + h * 0.5f), 2, kAccent);
+    const std::string title = "Cramion " + update_release_.version.str() + " ya está disponible";
+    draw->AddText(ImVec2(a.x + 46.0f, a.y + 8.0f), IM_COL32(240, 242, 246, 255), title.c_str());
+    const std::string sub = "Tienes la " + update::currentVersion().str() + ". Mira las novedades e instálala con el actualizador.";
+    draw->AddText(ImVec2(a.x + 46.0f, a.y + 27.0f), kTextDim, sub.c_str());
+    ImGui::SetCursorScreenPos(ImVec2(a.x + w - 280.0f, a.y + (h - ImGui::GetFrameHeight()) * 0.5f));
+    if (ImGui::Button("Ver novedades", ImVec2(130.0f, 0.0f))) hub_page_ = 2;
+    ImGui::SameLine(0.0f, 8.0f);
+    ImGui::PushStyleColor(ImGuiCol_Button, ImGui::ColorConvertU32ToFloat4(kAccent));
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.2f, 0.65f, 1.0f, 1.0f));
+    ImGui::BeginDisabled(update_release_.zip_url.empty());
+    if (ImGui::Button("Actualizar", ImVec2(126.0f, 0.0f))) beginUpdateInstall();
+    ImGui::EndDisabled();
+    ImGui::PopStyleColor(2);
+    ImGui::SetCursorScreenPos(ImVec2(a.x, a.y + h + 12.0f));
+}
+
+void EditorApp::drawHubUpdates() {
+    ImGui::SetWindowFontScale(1.55f);
+    ImGui::TextUnformatted("Actualizaciones");
+    ImGui::SetWindowFontScale(1.0f);
+    ImGui::TextDisabled("Cramion se actualiza con su propio actualizador (CramionUpdater.exe): descarga, instala y "
+                        "vuelve a abrir tus proyectos.");
+    ImGui::Dummy(ImVec2(0.0f, 10.0f));
+
+    ImDrawList* draw = ImGui::GetWindowDrawList();
+    const std::string current = update::currentVersion().str();
+    const bool fresh = updateAvailable();
+    const bool newer = update_known_ && update_release_.version > update::currentVersion();
+
+    // Dos tarjetas: instalada y publicada.
+    const float w = ImGui::GetContentRegionAvail().x;
+    const float card_w = (w - 18.0f) * 0.5f;
+    const float card_h = 96.0f;
+    const auto card = [&](float x, const char* label, const std::string& big, const std::string& note, ImU32 accent) {
+        const ImVec2 a(ImGui::GetCursorScreenPos().x + x, ImGui::GetCursorScreenPos().y);
+        const ImVec2 b(a.x + card_w, a.y + card_h);
+        draw->AddRectFilled(a, b, kCard, 10.0f);
+        draw->AddRect(a, b, accent, 10.0f);
+        draw->AddText(ImVec2(a.x + 18.0f, a.y + 14.0f), kTextDim, label);
+        draw->AddText(ImGui::GetFont(), 30.0f, ImVec2(a.x + 18.0f, a.y + 34.0f), IM_COL32(240, 242, 246, 255), big.c_str());
+        draw->AddText(ImVec2(b.x - ImGui::CalcTextSize(note.c_str()).x - 18.0f, a.y + 14.0f), kTextDim, note.c_str());
+    };
+    card(0.0f, "Instalada", current, "Windows x64 · Vulkan 1.3", kCardBorder);
+    std::string published = "?";
+    std::string published_small;
+    if (update_check_) {
+        published = "...";
+        published_small = "Buscando";
+    } else if (update_known_) {
+        published = update_release_.version.str();
+        published_small = update_release_.published_at.empty() ? std::string{} : update::formatDate(update_release_.published_at);
+    } else if (!update_check_error_.empty()) {
+        published_small = "Sin respuesta";
+    }
+    card(card_w + 18.0f, "Última publicada", published, published_small, fresh ? kAccent : kCardBorder);
+    ImGui::Dummy(ImVec2(w, card_h + 14.0f));
+
+    // Estado y acciones.
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, ImGui::ColorConvertU32ToFloat4(kCard));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(18.0f, 14.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 10.0f);
+    ImGui::BeginChild("hub_update_state", ImVec2(0.0f, 0.0f),
+                      ImGuiChildFlags_AlwaysUseWindowPadding | ImGuiChildFlags_Borders | ImGuiChildFlags_AutoResizeY);
+    if (update_check_) {
+        ImGui::TextUnformatted("Buscando la última versión...");
+    } else if (fresh) {
+        ImGui::PushFont(nullptr, ImGui::GetFontSize() * 1.2f);
+        ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(kAccent), "Cramion %s está disponible", update_release_.version.str().c_str());
+        ImGui::PopFont();
+        ImGui::TextDisabled("Al actualizar se cierra el Hub, el actualizador descarga e instala la versión nueva y vuelve a "
+                            "abrir el Hub. Tus proyectos no se tocan.");
+        if (update_release_.zip_url.empty()) {
+            ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.35f, 1.0f), "Esta versión aún no tiene el paquete (%s).", update::kPackageAsset);
+        } else if (update_release_.zip_size > 0) {
+            ImGui::TextDisabled("Descarga: %s", update::formatBytes(update_release_.zip_size).c_str());
+        }
+    } else if (update_known_) {
+        ImGui::TextColored(ImVec4(0.18f, 0.8f, 0.44f, 1.0f), "Estás al día");
+        ImGui::TextDisabled(newer ? "Omitiste la %s: no se avisará de ella." : "Cramion %s es la última versión publicada.",
+                            newer ? update_release_.version.str().c_str() : current.c_str());
+    } else if (!update_check_error_.empty()) {
+        ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.35f, 1.0f), "No se pudo comprobar: %s", update_check_error_.c_str());
+    } else {
+        ImGui::TextDisabled("Aún no se ha buscado ninguna actualización.");
+    }
+    if (!update_error_.empty()) ImGui::TextColored(ImVec4(1.0f, 0.45f, 0.4f, 1.0f), "%s", update_error_.c_str());
+    ImGui::Spacing();
+    if (newer) {
+        ImGui::PushStyleColor(ImGuiCol_Button, ImGui::ColorConvertU32ToFloat4(kAccent));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.2f, 0.65f, 1.0f, 1.0f));
+        ImGui::BeginDisabled(update_release_.zip_url.empty());
+        if (ImGui::Button("Actualizar ahora", ImVec2(170.0f, 34.0f))) beginUpdateInstall();
+        ImGui::EndDisabled();
+        ImGui::PopStyleColor(2);
+        ImGui::SameLine();
+    }
+    ImGui::BeginDisabled(update_check_ != nullptr);
+    if (ImGui::Button("Buscar actualizaciones", ImVec2(0.0f, 34.0f))) startUpdateCheck(true);
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    if (ImGui::Button("Abrir el actualizador", ImVec2(0.0f, 34.0f))) launchUpdater(UpdaterMode::Open);
+    ImGui::SetItemTooltip("La aplicación de actualizaciones, aparte del editor");
+    ImGui::SameLine();
+    // Reinstalar: la version publicada otra vez (repara la instalacion).
+    ImGui::BeginDisabled(!update_known_ || update_release_.zip_url.empty());
+    if (ImGui::Button("Reinstalar", ImVec2(0.0f, 34.0f))) beginUpdateInstall(true);
+    ImGui::EndDisabled();
+    ImGui::SetItemTooltip(update_known_ && !update_release_.zip_url.empty()
+                              ? "Descarga e instala otra vez la %s: repara archivos que falten o estén dañados. "
+                                "Se cierra el Hub y vuelve a abrirse."
+                              : "Busca actualizaciones primero (hace falta el paquete de la versión publicada)",
+                          update_release_.version.str().c_str());
+    ImGui::SameLine();
+    if (ImGui::Button("Versiones en GitHub", ImVec2(0.0f, 34.0f))) {
+        update::openUrl(update_known_ ? update_release_.page_url : std::string(update::kReleasesPage));
+    }
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Spacing();
+    if (ImGui::Checkbox("Buscar actualizaciones al abrir Cramion", &update_settings_.check_on_startup)) {
+        update::Settings s = update::loadSettings();
+        s.check_on_startup = update_settings_.check_on_startup;
+        update::saveSettings(s);
+    }
+    if (!update_settings_.skipped_version.empty()) {
+        ImGui::SameLine(0.0f, 30.0f);
+        ImGui::TextDisabled("Omitida: %s", update_settings_.skipped_version.c_str());
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Dejar de omitir")) {
+            update_settings_ = update::loadSettings();
+            update_settings_.skipped_version.clear();
+            update::saveSettings(update_settings_);
+        }
+    }
+    ImGui::EndChild();
+    ImGui::PopStyleVar(2);
+    ImGui::PopStyleColor();
+
+    // Novedades.
+    if (update_known_) {
+        ImGui::Dummy(ImVec2(0.0f, 8.0f));
+        ImGui::TextDisabled("Novedades de la %s", update_release_.version.str().c_str());
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(18.0f, 12.0f));
+        ImGui::BeginChild("hub_update_notes", ImVec2(0.0f, 0.0f), ImGuiChildFlags_Borders | ImGuiChildFlags_AlwaysUseWindowPadding);
+        if (update_notes_.empty()) {
+            ImGui::TextDisabled("Esta versión no tiene notas.");
+        } else {
+            update::drawReleaseNotes(update_notes_, kAccent);
+        }
+        ImGui::EndChild();
+        ImGui::PopStyleVar();
+    }
+}
+
+// --- Aprender ----------------------------------------------------------------------
+
+void EditorApp::drawHubLearn() {
+    ImGui::SetWindowFontScale(1.55f);
+    ImGui::TextUnformatted("Aprender");
+    ImGui::SetWindowFontScale(1.0f);
+    ImGui::TextDisabled("El manual, la referencia de Lua y la comunidad.");
+    ImGui::Dummy(ImVec2(0.0f, 10.0f));
+
+    // El manual va con el motor (docs/); si no esta, el de la web.
+    const std::filesystem::path local_manual = update::installFolder() / "docs" / "manual" / "index.html";
+    const bool offline = std::filesystem::exists(local_manual);
+    struct Item {
+        const char* title;
+        const char* text;
+        std::string target;
+        ImU32 color;
+    };
+    const std::string web = "https://cramion.mantraxtools.store/manual/";
+    const Item items[] = {
+        {"Manual", offline ? "Todo el motor, paso a paso (sin conexión)." : "Todo el motor, paso a paso.",
+         offline ? dialogs::utf8(local_manual) : web + "index.html", IM_COL32(0, 143, 242, 255)},
+        {"Tu primer script", "Lua: mover objetos, entrada, física y UI.", web + "primer-script.html", IM_COL32(242, 140, 40, 255)},
+        {"Shaders propios", "Superficies .crshader con recarga en caliente.", web + "shaders.html", IM_COL32(160, 90, 240, 255)},
+        {"Novedades", "Qué trae cada versión (CHANGELOG).", std::string(update::kReleasesPage), IM_COL32(46, 204, 113, 255)},
+        {"Discord", "Pregunta, enseña tu juego y habla con el equipo.", "https://discord.gg/zG7rSsUGEz", IM_COL32(88, 101, 242, 255)},
+        {"GitHub", "Código, versiones e incidencias.", "https://github.com/MantraxStudios/Cramion", IM_COL32(200, 205, 215, 255)},
+    };
+    ImDrawList* draw = ImGui::GetWindowDrawList();
+    const float spacing = 18.0f;
+    const float avail = ImGui::GetContentRegionAvail().x;
+    const int columns = std::max(1, static_cast<int>((avail + spacing) / (300.0f + spacing)));
+    const float card_w = (avail - spacing * static_cast<float>(columns - 1)) / static_cast<float>(columns);
+    const float card_h = 108.0f;
+    int column = 0;
+    for (const Item& item : items) {
+        if (column > 0) ImGui::SameLine(0.0f, spacing);
+        ImGui::PushID(item.title);
+        const ImVec2 a = ImGui::GetCursorScreenPos();
+        const ImVec2 b(a.x + card_w, a.y + card_h);
+        if (ImGui::InvisibleButton("learn", ImVec2(card_w, card_h))) update::openUrl(item.target);
+        const bool hovered = ImGui::IsItemHovered();
+        ImGui::SetItemTooltip("%s", item.target.c_str());
+        draw->AddRectFilled(a, b, hovered ? kCardHover : kCard, 10.0f);
+        draw->AddRect(a, b, hovered ? item.color : kCardBorder, 10.0f);
+        draw->AddRectFilled(ImVec2(a.x, a.y + 14.0f), ImVec2(a.x + 4.0f, b.y - 14.0f), item.color, 2.0f);
+        draw->AddText(ImGui::GetFont(), 19.0f, ImVec2(a.x + 22.0f, a.y + 20.0f), IM_COL32(240, 242, 246, 255), item.title);
+        draw->AddText(ImVec2(a.x + 22.0f, a.y + 50.0f), kTextDim, ellipsize(item.text, card_w - 40.0f).c_str());
+        draw->AddText(ImVec2(a.x + 22.0f, a.y + 76.0f), hovered ? item.color : IM_COL32(120, 126, 138, 255), "Abrir  >");
+        ImGui::PopID();
+        if (++column >= columns) {
+            column = 0;
+            ImGui::Dummy(ImVec2(0.0f, spacing - ImGui::GetStyle().ItemSpacing.y));
+        }
     }
 }
 

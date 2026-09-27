@@ -99,6 +99,11 @@
           "slug": "atajos",
           "title": "Atajos de teclado",
           "desc": "Todos los atajos del editor."
+        },
+        {
+          "slug": "actualizaciones",
+          "title": "Actualizaciones",
+          "desc": "El actualizador: avisos, guardar todo antes, instalar, reinstalar y opciones."
         }
       ]
     },

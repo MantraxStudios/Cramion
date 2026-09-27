@@ -219,6 +219,8 @@ struct GpuVolumetricPush {
     // x = densidad del polvo (1/m), y = anisotropia (g de Henyey-Greenstein),
     // z = segundos (deriva del polvo), w = distancia maxima del rayo (m).
     core::Vec4 params{};
+    // x = tramos por rayo (8-32).
+    core::Vec4 quality{32.0f, 0.0f, 0.0f, 0.0f};
 };
 
 struct GpuCloudPush {

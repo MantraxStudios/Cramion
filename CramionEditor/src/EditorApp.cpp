@@ -849,6 +849,7 @@ void EditorApp::drawUi(float delta_seconds) {
     const CpuClock::time_point ui_start = CpuClock::now();
     frame_delta_ = delta_seconds;
     ImGuizmo::BeginFrame();
+    syncFlyCursor();  // volar sin tope: cursor capturado mientras se vuela
     imgui_.updateThumbnails();
     pollImports();
     if (has_project_ && thumbnail_countdown_ > 0 && --thumbnail_countdown_ == 0) saveProjectThumbnail();
@@ -874,6 +875,7 @@ void EditorApp::drawUi(float delta_seconds) {
     profiler_overlay_.update(delta_seconds, renderer_);
     watchAssets();
     pollMcp();
+    pollUpdates();
     runSelfTestStep();
     frame_tasks_ms_ += millisecondsSince(ui_start);
 
@@ -1244,6 +1246,11 @@ void EditorApp::drawMenuBar() {
         if (ImGui::MenuItem("Web de Cramion")) open(L"https://cramion.mantraxtools.store");
         if (ImGui::MenuItem("Discord")) open(L"https://discord.gg/zG7rSsUGEz");
         ImGui::Separator();
+        if (ImGui::MenuItem(updateAvailable() ? "Actualizar Cramion..." : "Buscar actualizaciones...")) {
+            show_update_dialog_ = true;
+            if (!updateAvailable()) startUpdateCheck(true);
+        }
+        ImGui::Separator();
         ImGui::MenuItem("Conectar una IA (MCP)...", nullptr, &show_mcp_);
         ImGui::EndMenu();
     }
@@ -1372,6 +1379,8 @@ void EditorApp::drawHubTitleBar() {
 
 void EditorApp::drawModals() {
     drawSaveTemplateDialog();
+    drawUpdateDialog();
+    drawUpdateToast();
     if (ask_save_) {
         ImGui::OpenPopup("¿Guardar cambios?");
         ask_save_ = false;
@@ -1552,7 +1561,7 @@ void EditorApp::drawRenderSettings() {
         }
     };
     ImGui::SeparatorText("Sombras");
-    toggle("Sombras", r.shadowsEnabled(), &gfx::VulkanRenderer::setShadowsEnabled);
+    toggle("Activar sombras", r.shadowsEnabled(), &gfx::VulkanRenderer::setShadowsEnabled);
     toggle("Ver cascadas", r.cascadeDebug(), &gfx::VulkanRenderer::setCascadeDebug);
     ImGui::SeparatorText("Iluminación global");
     if (r.rayTracingSupported()) {
@@ -1675,7 +1684,8 @@ void EditorApp::drawGraphicsSettings() {
             std::snprintf(shadow_preview, sizeof(shadow_preview), "%d", g.shadow_resolution);
         }
         ImGui::SetNextItemWidth(-90.0f);
-        if (ImGui::BeginCombo("Sombras", shadow_preview)) {
+        // ID propio: "Sombras" es tambien el interruptor de la seccion Sombras.
+        if (ImGui::BeginCombo("Sombras##resolucion", shadow_preview)) {
             for (const int size : kShadowSizes) {
                 char label[48];
                 if (size == 0) {

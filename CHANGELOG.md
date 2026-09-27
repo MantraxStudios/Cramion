@@ -1,5 +1,26 @@
 # Cambios
 
+## 0.6.2
+
+### Actualizaciones
+- **Actualizador** nuevo, `CramionUpdater.exe`: aplicacion aparte con su propia interfaz (Direct3D 11, funciona aunque Vulkan falle). Busca la ultima version en GitHub, ensena las novedades, descarga `Cramion-win64.zip` con progreso y velocidad, lo descomprime comprobando cada archivo (CRC) e instala sobre la carpeta del motor. Si algo falla **todo vuelve a como estaba**. Tambien **Reinstalar** (reparar) y **Omitir esta version**.
+- **Se guarda todo antes de actualizar**: el editor guarda la escena (una escena nueva va a `Assets/Scenes`), los prefabs abiertos, los scripts, el material y el Animator, se cierra, y al terminar se **vuelve a abrir el mismo proyecto**. Si el actualizador se abre por su cuenta, pide lo mismo a cada editor abierto.
+- El editor **avisa** cuando hay version nueva (abajo a la derecha, y *Ayuda > Buscar actualizaciones*). Se puede desactivar la busqueda al abrir.
+- **Reinstalar** desde el Hub (*Actualizaciones*), desde *Ayuda > Buscar actualizaciones* o desde el actualizador: descarga otra vez la version publicada y repara los archivos que falten o esten danados, guardando todo antes igual que al actualizar.
+
+### Hub
+- Rediseno: barra lateral con iconos y secciones, tarjeta de la version (al dia / version nueva), **Actualizaciones** (instalada y publicada, novedades, actualizar, opciones) y **Aprender** (manual, Lua, shaders, Discord, GitHub). Proyectos en **tarjetas o lista** y ordenados por fecha o nombre.
+
+### Corregido
+- **Camara de la Escena**: al volar con el boton derecho, el raton chocaba con el borde de la vista o de la pantalla y la camara dejaba de girar hasta soltar y volver al centro. Ahora el cursor se oculta y se queda fijo mientras se vuela (el giro llega en bruto, sin tope) y al soltar vuelve donde estaba.
+- **Polvo (luz volumetrica)**: con el presupuesto adaptativo activado, el polvo se apagaba cuando el frame iba justo y solo volvia al mirar al cielo o al sol (el frame se abarataba). Ahora el presupuesto solo lo abarata (la mitad de tramos por rayo y sin rayos en pantalla); nunca lo quita.
+- **IK de animales**: la inclinacion del cuerpo con la pendiente iba al reves (al bajar un escalon levantaba el morro y se torcia) y ahora gira alrededor del centro entre caderas y hombros. **Mirar** con el cuello ya no puede pasar del angulo maximo: el giro total se calcula una vez y se reparte entre los huesos (antes, con el objetivo detras, el cuello se retorcia).
+- Ejecutar Lua fuera de Play (consola del editor o `run_lua` del MCP) con `Scene.find` cerraba el editor.
+- **Ajustes de render**: el interruptor de sombras y el desplegable de su resolucion se llamaban los dos "Sombras" (ImGui avisaba de un ID repetido). Ahora son *Activar sombras* y *Sombras* (resolucion).
+
+### Manual
+- Pagina nueva **Actualizaciones** (avisos, guardar todo antes, instalar, reinstalar y opciones); el Hub nuevo en *Interfaz y pestanas*; el polvo con el presupuesto adaptativo en *Render*. 63 paginas y 697 entradas en el buscador.
+
 ## 0.6.1
 
 ### Esqueletos: IK de animales, ragdoll y phys bones

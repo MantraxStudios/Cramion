@@ -717,7 +717,7 @@ void testFrameBudget() {
             {"Reflejos", budget.level(Lever::Reflections) > 0 ? 0.0f : 0.9f * res},
             {"SSAO", budget.level(Lever::Ssao) > 0 ? 0.0f : 0.3f * res},
             {"Iluminacion", 0.6f * res},
-            {"Volumetrica", budget.level(Lever::Volumetric) > 0 ? 0.0f : 0.4f * res},
+            {"Volumetrica", (budget.level(Lever::Volumetric) > 0 ? 0.2f : 0.4f) * res},
         };
         float total = 0.4f;
         for (const gfx::GpuTiming& t : passes) total += t.milliseconds;
@@ -779,7 +779,7 @@ void testFrameBudget() {
                  {"Reflejos", weak.level(Lever::Reflections) > 0 ? 0.0f : 2.7f * res},
                  {"SSAO", weak.level(Lever::Ssao) > 0 ? 0.0f : 1.0f * res},
                  {"Iluminacion", 1.8f * res},
-                 {"Volumetrica", weak.level(Lever::Volumetric) > 0 ? 0.0f : 1.2f * res}};
+                 {"Volumetrica", (weak.level(Lever::Volumetric) > 0 ? 0.6f : 1.2f) * res}};
             ms = 1.2f * res;
             for (const gfx::GpuTiming& t : p) ms += t.milliseconds;
             weak.update(dt, ms, p);
@@ -793,6 +793,9 @@ void testFrameBudget() {
         check(in_target >= 0.0f && in_target < 15.0f && ms <= weak.targetMilliseconds() * 1.02f,
               "gama baja: llega a 60 FPS en menos de 15 s");
         check(late_changes <= 1, "gama baja: estable al final");
+        const gfx::PostProcessSettings low = weak.apply(gfx::PostProcessSettings{});
+        check(weak.level(Lever::Volumetric) == 0 || (low.volumetric_light && low.volumetric_steps == 16 && !low.light_shafts),
+              "gama baja: el polvo se abarata pero no se apaga (no depende de mirar al sol)");
     }
 
     // Apagado: nada cambia.

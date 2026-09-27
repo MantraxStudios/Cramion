@@ -58,6 +58,22 @@ bool chain(const Pose& pose, const std::vector<int>& joints, const core::Vec3& t
 // mas el (de arriba abajo). Vacia si no hay tantos antepasados.
 std::vector<int> chainTo(const std::vector<asset::Node>& nodes, int end, int bones);
 
+// Giro (mundo) que inclina un cuerpo con el suelo bajo sus patas: `feet`
+// son los puntos de apoyo (mundo) y `heights` cuanto sube (+) o baja (-) el
+// suelo en cada uno respecto a donde lo pone la animacion. Recta de minimos
+// cuadrados de la altura a lo largo de delante y de la derecha: si el suelo
+// baja por delante, el morro baja; si sube por la derecha, ese lado sube.
+// `forward`: delante del cuerpo (mundo). Como mucho `max_degrees` por eje.
+core::Quat groundTilt(const std::vector<core::Vec3>& feet, const std::vector<float>& heights, const core::Vec3& forward,
+                      float max_degrees = 30.0f);
+
+// Mirar con varios huesos (cuello y cabeza): el giro total se calcula una
+// vez desde la cabeza (`bones.back()`), se limita a `max_angle_degrees` y se
+// reparte entre los huesos (de arriba a la cabeza). `forward_of` da hacia
+// donde mira ahora cada hueso (modelo). Nunca gira mas del maximo en total.
+void lookChain(const Pose& pose, const std::vector<int>& bones, const core::Vec3& head_forward, const core::Vec3& target,
+               float weight, float max_angle_degrees);
+
 // `forward`: hacia donde mira ahora el hueso (espacio del modelo, unitario).
 void lookAt(const Pose& pose, int bone, const core::Vec3& forward, const core::Vec3& target, float weight,
             float max_angle_degrees);

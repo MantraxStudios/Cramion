@@ -825,8 +825,8 @@ void RenderSync::applyInverseKinematics(World& world, Entity entity, const Inver
             const Quat delta = quatMultiply(ik::nodeRotation(pose, bone), quatConjugate(rest));
             return quatRotate(delta, human.forward);
         };
-        // De arriba (cuello) a la cabeza: cada uno hace su parte del giro que
-        // queda; la cabeza, el resto.
+        // Del de arriba (cuello) a la cabeza; el giro total se limita al maximo
+        // y se reparte entre ellos.
         std::vector<int> bones{look_node};
         for (int k = 1; k < std::clamp(ik.look_chain, 1, 12); ++k) {
             const int parent = data.nodes[static_cast<std::size_t>(bones.back())].parent;
@@ -834,11 +834,7 @@ void RenderSync::applyInverseKinematics(World& world, Entity entity, const Inver
             bones.push_back(parent);
         }
         std::reverse(bones.begin(), bones.end());
-        const std::size_t n = bones.size();
-        for (std::size_t k = 0; k < n; ++k) {
-            const float share = 1.0f / static_cast<float>(n - k);
-            ik::lookAt(pose, bones[k], facing(bones[k]), look, ik.look_weight * share, ik.look_max_angle * share);
-        }
+        ik::lookChain(pose, bones, facing(look_node), look, ik.look_weight, ik.look_max_angle);
     }
 
     // --- Patas al suelo (cualquier esqueleto: animales) ---
@@ -877,45 +873,55 @@ void RenderSync::applyInverseKinematics(World& world, Entity entity, const Inver
         }
         std::vector<int> roots;
         float lowest = 0.0f;
+        float mean = 0.0f;
+        int hits = 0;
         for (const GroundFoot& f : grounded) {
             roots.push_back(f.joints.front());
-            if (f.hit) lowest = std::min(lowest, f.delta);
+            if (!f.hit) continue;
+            lowest = std::min(lowest, f.delta);
+            mean += f.delta;
+            ++hits;
         }
+        mean = hits > 0 ? mean / static_cast<float>(hits) : 0.0f;
         const int body = procedural::commonAncestor(data.nodes, roots);
+        const bool tilting = ik.align_body && ik.body_align_weight > 0.0f && hits >= 3;
         if (body >= 0 && !grounded.empty()) {
-            if (lowest < 0.0f) {
-                ik::translateGlobal(pose, body, transformDirection(to_model, up_world * (lowest * ik.grounding_weight)));
+            // El cuerpo baja lo que baje la pata mas baja (si no, no llega);
+            // si ademas se inclina, la inclinacion reparte las diferencias y
+            // basta con bajar la media.
+            const float drop = tilting ? std::min(mean, 0.0f) : lowest;
+            if (drop < 0.0f) {
+                ik::translateGlobal(pose, body, transformDirection(to_model, up_world * (drop * ik.grounding_weight)));
             }
-            // Inclinar: diferencia de altura entre las patas de delante y de
-            // detras (y entre izquierda y derecha).
-            if (ik.align_body && ik.body_align_weight > 0.0f && grounded.size() >= 3) {
-                const Vec3 forward = core::normalize(transformDirection(world_matrix, human.forward));
-                const Vec3 flat_forward = core::normalize(Vec3{forward.x, 0.0f, forward.z});
-                const Vec3 right = core::normalize(core::cross(flat_forward, up_world));
-                const auto slope = [&](const Vec3& axis) {
-                    // Recta de minimos cuadrados de la altura del suelo frente a la
-                    // posicion sobre el eje: su pendiente.
-                    float sx = 0.0f, sy = 0.0f, sxx = 0.0f, sxy = 0.0f, n = 0.0f;
-                    for (const GroundFoot& f : grounded) {
-                        if (!f.hit) continue;
-                        const float x = core::dot(f.world, axis);
-                        const float y = f.delta;
-                        sx += x; sy += y; sxx += x * x; sxy += x * y; n += 1.0f;
-                    }
-                    const float den = n * sxx - sx * sx;
-                    return n >= 2.0f && std::abs(den) > 1e-6f ? (n * sxy - sx * sy) / den : 0.0f;
-                };
-                const float pitch = std::atan(slope(flat_forward));  // sube hacia delante
-                const float roll = std::atan(slope(right));          // sube hacia la derecha
-                const float w = ik.body_align_weight * ik.grounding_weight;
-                const auto axis_angle = [](const Vec3& axis, float radians) {
-                    const Vec3 a = axis * std::sin(radians * 0.5f);
-                    return Quat{a.x, a.y, a.z, std::cos(radians * 0.5f)};
-                };
-                // El giro con los ejes pasados al modelo.
-                const Vec3 axis_r = core::normalize(transformDirection(to_model, right));
-                const Vec3 axis_f = core::normalize(transformDirection(to_model, flat_forward));
-                ik::rotateGlobal(pose, body, quatMultiply(axis_angle(axis_r, -pitch * w), axis_angle(axis_f, roll * w)));
+            // Inclinar con la pendiente bajo las patas (3 o mas apoyadas).
+            if (tilting) {
+                std::vector<Vec3> feet;
+                std::vector<float> heights;
+                for (const GroundFoot& f : grounded) {
+                    if (!f.hit) continue;
+                    feet.push_back(f.world);
+                    heights.push_back(f.delta);
+                }
+                const Vec3 forward = transformDirection(world_matrix, human.forward);
+                const Quat tilt = ik::groundTilt(feet, heights, forward);
+                // El giro del mundo con su eje pasado al modelo.
+                const float w = std::clamp(tilt.w, -1.0f, 1.0f);
+                const float s = std::sqrt(std::max(1.0f - w * w, 0.0f));
+                if (s > 1e-5f) {
+                    const Vec3 axis = core::normalize(transformDirection(to_model, Vec3{tilt.x / s, tilt.y / s, tilt.z / s}));
+                    const float angle = 2.0f * std::acos(w) * ik.body_align_weight * ik.grounding_weight;
+                    const Vec3 a = axis * std::sin(angle * 0.5f);
+                    // Gira alrededor del centro de las caderas y los hombros (no
+                    // de la cadera: el pecho bajaria el doble).
+                    const auto center = [&] {
+                        Vec3 c{};
+                        for (const int r : roots) c = c + ik::nodePosition(pose, r);
+                        return c * (1.0f / static_cast<float>(roots.size()));
+                    };
+                    const Vec3 before = center();
+                    ik::rotateGlobal(pose, body, Quat{a.x, a.y, a.z, std::cos(angle * 0.5f)});
+                    ik::translateGlobal(pose, body, before - center());
+                }
             }
         }
         for (const GroundFoot& f : grounded) {

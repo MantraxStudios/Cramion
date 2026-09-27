@@ -114,13 +114,15 @@ layout(push_constant) uniform PushConstants {
     // x = densidad del polvo (1/m), y = anisotropia (g de Henyey-Greenstein),
     // z = segundos (deriva del polvo), w = distancia maxima (m)
     vec4 params;
+    // x = tramos por rayo (8-32; el presupuesto adaptativo baja a 16)
+    vec4 quality;
 } push;
 
 layout(location = 0) in vec2 v_uv;
 layout(location = 0) out vec4 out_volume;
 
 const float kPi = 3.14159265;
-const int kSteps = 32;
+const int kSteps = 32;  // maximo (push.quality.x elige)
 // Fraccion isotropa de la fase.
 const float kIsotropicMix = 0.25;
 // Cuanto de la luz del cielo dispersa el polvo (1 = todo; menos porque el
@@ -339,12 +341,16 @@ void main() {
         return;
     }
 
-    float dt = march_distance / float(kSteps);
+    int steps = clamp(int(push.quality.x + 0.5), 8, kSteps);
+    float dt = march_distance / float(steps);
     float jitter = bayer4(half_pixel);
 
     vec3 scattered = vec3(0.0);
     float transmittance = 1.0;
     for (int i = 0; i < kSteps; ++i) {
+        if (i >= steps) {
+            break;
+        }
         float t = (float(i) + jitter) * dt;
         vec3 p = camera.position.xyz + direction * t;
 

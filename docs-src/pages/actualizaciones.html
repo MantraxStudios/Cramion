@@ -1,0 +1,67 @@
+<p>
+  Cramion se actualiza con su propio <strong class="text-white">actualizador</strong>, <code>CramionUpdater.exe</code>, una
+  aplicación aparte que va junto al editor. Busca la última versión publicada en
+  <a href="https://github.com/MantraxStudios/Cramion/releases">GitHub</a>, enseña sus novedades, la descarga, la instala
+  y vuelve a abrir tus proyectos. Tus proyectos no se tocan: solo se reemplazan los archivos del motor.
+</p>
+
+<h3 id="aviso">Cuando hay una versión nueva</h3>
+<p>
+  Unos segundos después de abrir Cramion se consulta GitHub en segundo plano. Si hay una versión nueva:
+</p>
+<ul>
+  <li>En el <strong class="text-white">Hub</strong> aparece un aviso encima de los proyectos y la sección
+    <strong class="text-white">Actualizaciones</strong> lleva la marca <em>Nueva</em>.</li>
+  <li>Con un proyecto abierto, sale un aviso abajo a la derecha con <em>Ver novedades</em> y <em>Actualizar</em>.</li>
+  <li>En cualquier momento: <code>Ayuda &gt; Buscar actualizaciones</code>.</li>
+</ul>
+
+<h3 id="guardar">Se guarda todo antes</h3>
+<p>
+  Al pulsar <em>Guardar todo y actualizar</em>, el editor guarda antes de cerrarse:
+</p>
+<ul>
+  <li>la escena (si es nueva y no tiene archivo, se guarda en <code>Assets/Scenes</code> sin preguntar);</li>
+  <li>los prefabs abiertos en sus pestañas;</li>
+  <li>los scripts con cambios;</li>
+  <li>el material que se está editando y el Animator Controller abierto.</li>
+</ul>
+<p>
+  Si se estaba en Play, se sale primero (lo cambiado en Play no se guarda, como siempre). Si algo no se puede guardar, el
+  editor <strong>no se cierra</strong> y dice qué falló. Después el actualizador descarga e instala la versión y vuelve a
+  abrir el mismo proyecto (o el Hub).
+</p>
+<p>
+  Si abres <code>CramionUpdater.exe</code> por tu cuenta con editores abiertos, les pide lo mismo a todos: cada uno guarda
+  su trabajo y se cierra, y al terminar se vuelven a abrir sus proyectos.
+</p>
+
+<h3 id="pasos">Qué hace el actualizador</h3>
+<table>
+  <thead><tr><th>Paso</th><th>Detalle</th></tr></thead>
+  <tbody>
+    <tr><td><code>Descargar</code></td><td>El paquete <code>Cramion-win64.zip</code> de la versión, con progreso y velocidad. Si ya se descargó entero, no se baja otra vez.</td></tr>
+    <tr><td><code>Comprobar</code></td><td>Se descomprime aparte y se comprueba cada archivo (CRC). Un paquete dañado no se instala.</td></tr>
+    <tr><td><code>Guardar y cerrar Cramion</code></td><td>Espera a que los editores guarden y se cierren.</td></tr>
+    <tr><td><code>Instalar</code></td><td>Reemplaza los archivos del motor. Si algo falla, <strong>todo vuelve a como estaba</strong>. Lo que no viene en el paquete (escenas de demostración, etc.) no se borra.</td></tr>
+    <tr><td><code>Listo</code></td><td>Vuelve a abrir tus proyectos o el Hub.</td></tr>
+  </tbody>
+</table>
+
+<h3 id="reinstalar">Reinstalar</h3>
+<p>
+  Si falta o se estropeó algún archivo del motor, <em>Reinstalar</em> descarga otra vez la versión publicada y la
+  instala encima, guardando todo antes igual que al actualizar. Está en el Hub (<em>Actualizaciones</em>), en
+  <code>Ayuda &gt; Buscar actualizaciones</code> y en el propio actualizador.
+</p>
+
+<h3 id="opciones">Opciones</h3>
+<ul>
+  <li><strong class="text-white">Buscar actualizaciones al abrir Cramion</strong>: se puede desactivar en el Hub o en el actualizador.</li>
+  <li><strong class="text-white">Omitir esta versión</strong>: no se avisa más de esa versión (sí de las siguientes). <em>Dejar de omitir</em> en el Hub lo deshace.</li>
+  <li>Los ajustes se guardan en <code>%LOCALAPPDATA%\Cramion\update.json</code>.</li>
+</ul>
+<p>
+  Hace falta conexión a Internet. GitHub permite unas 60 consultas por hora desde cada conexión; Cramion hace una al
+  abrirse, así que no se llega al límite.
+</p>

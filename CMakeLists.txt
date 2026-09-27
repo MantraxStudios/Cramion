@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(Cramion
-    VERSION 0.6.1
+    VERSION 0.6.2
     DESCRIPTION "Motor con capa de plataforma DirectX 12 (CramionDM) y renderizador Vulkan (CramionFX)"
     LANGUAGES CXX
 )
@@ -66,6 +66,9 @@ add_subdirectory(CramionCore)
 
 # Editor de escenas (Dear ImGui) sobre la misma libreria.
 add_subdirectory(CramionEditor)
+
+# Actualizador (CramionUpdater.exe) y su libreria comun con el editor.
+add_subdirectory(CramionUpdater)
 
 # -----------------------------------------------------------------------------
 # Escenarios
@@ -152,4 +155,4 @@ add_custom_target(cramion_package
             -P "${CMAKE_SOURCE_DIR}/cmake/PackageRelease.cmake"
     COMMENT "Empaquetando Cramion ${PROJECT_VERSION} (Cramion-win64.zip)"
     VERBATIM)
-add_dependencies(cramion_package cramion CramionEditor CramionPlayer)
+add_dependencies(cramion_package cramion CramionEditor CramionPlayer CramionUpdater)

@@ -3994,6 +3994,7 @@ void VulkanRenderer::recordVolumetricPass(const vk::raii::CommandBuffer& cmd,
     // Anisotropia 0.6: polvo y humo finos dispersan sobre todo hacia delante.
     // 60 m: mas alla el mapa de sombras ya es grueso y el efecto no aporta.
     push.params = Vec4{post_.volumetric_density, post_.volumetric_anisotropy, weather_time_, 60.0f};
+    push.quality = Vec4{static_cast<float>(std::clamp(post_.volumetric_steps, 8, 32)), 0.0f, 0.0f, 0.0f};
     drawFullscreen(cmd, volumetric_pass_, &volumetric_sets_[frame_index], volumetric_image_,
                    &push);
 
