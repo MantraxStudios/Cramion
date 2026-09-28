@@ -1,5 +1,6 @@
 // Humanoides (deteccion y retargeting) y cinematica inversa.
 
+#include "CramionCore/anim/Inertialization.h"
 #include "CramionCore/anim/Humanoid.h"
 #include "CramionCore/anim/IK.h"
 #include "CramionCore/anim/Procedural.h"
@@ -876,6 +877,70 @@ void testBlendTrees() {
     std::filesystem::remove(file);
 }
 
+void testInertialization() {
+    std::printf("\nInercializacion\n");
+    using cramion::anim::Inertializer;
+    // Un nodo que se movia a 2 m/s en X; la animacion nueva lo deja quieto en 0.
+    Inertializer in;
+    std::vector<Mat4> pose(1);
+    const float dt = 1.0f / 60.0f;
+    for (int f = 0; f < 3; ++f) {
+        pose[0] = core::composeTrs(Vec3{1.0f + 2.0f * dt * static_cast<float>(f), 0, 0}, Quat{}, Vec3{1.0f});
+        in.apply(pose, dt);
+    }
+    const float last_x = 1.0f + 4.0f * dt;
+    std::vector<Mat4> fresh(1, core::composeTrs(Vec3{0, 0, 0}, Quat{}, Vec3{1.0f}));
+    in.start(fresh, fresh, 0.3f, dt);
+    check(in.active(), "empieza la transicion");
+    std::vector<Mat4> out = fresh;
+    in.apply(out, dt);
+    const float first = out[0].m[3][0];
+    check(std::abs(first - last_x) < 0.05f, "el primer frame sigue donde estaba (sin salto)");
+    // Sin velocidad (quieto en el mismo punto) cae antes hacia la pose nueva.
+    Inertializer still;
+    std::vector<Mat4> rest(1, core::composeTrs(Vec3{last_x, 0, 0}, Quat{}, Vec3{1.0f}));
+    still.apply(rest, dt);
+    rest[0] = core::composeTrs(Vec3{last_x, 0, 0}, Quat{}, Vec3{1.0f});
+    still.apply(rest, dt);
+    still.start(fresh, fresh, 0.3f, dt);
+    std::vector<Mat4> still_out = fresh;
+    still.apply(still_out, dt);
+    check(first > still_out[0].m[3][0] + 1e-4f, "y conserva el impulso: tarda mas en volver");
+    float x = first;
+    for (int f = 0; f < 36; ++f) {
+        out = fresh;
+        in.apply(out, dt);
+        x = out[0].m[3][0];
+    }
+    check(std::abs(x) < 0.05f * last_x, "a la duracion casi no queda desfase");
+    // Giro: de 90 grados a 0 sin salto.
+    Inertializer r;
+    const Quat q90{0.0f, std::sin(0.785398f), 0.0f, std::cos(0.785398f)};
+    std::vector<Mat4> turned(1, core::composeTrs(Vec3{}, q90, Vec3{1.0f}));
+    r.apply(turned, dt);
+    r.apply(turned, dt);
+    r.start(fresh, fresh, 0.2f, dt);
+    out = fresh;
+    r.apply(out, dt);
+    check(out[0].m[0][0] < 0.2f, "el giro empieza desde el que se veia");
+    const Vec3 axis = anim::quatToScaledAxis(q90);
+    check(std::abs(axis.y - 1.5707963f) < 1e-3f, "eje * angulo de 90 grados");
+    // El controlador guarda el modo de mezcla y continuar el ciclo.
+    ecs::AnimatorController c;
+    c.states.resize(2);
+    ecs::AnimatorTransition t;
+    t.to = 1;
+    t.inertial = false;
+    t.sync_phase = true;
+    c.transitions.push_back(t);
+    const std::filesystem::path file = std::filesystem::temp_directory_path() / "cramion_inertial_test.cranimator";
+    ecs::AnimatorController loaded;
+    check(ecs::saveAnimatorController(c, file) && ecs::loadAnimatorController(file, loaded) &&
+              !loaded.transitions[0].inertial && loaded.transitions[0].sync_phase,
+          "fundido cruzado y continuar el ciclo se guardan");
+    std::filesystem::remove(file);
+}
+
 int main(int argc, char** argv) {
     if (argc == 3 && std::string(argv[1]) == "--dump") return dumpModel(argv[2]);
     testDetection();
@@ -888,6 +953,7 @@ int main(int argc, char** argv) {
     testRagdollPhysics();
     testGroundTiltAndLook();
     testBlendTrees();
+    testInertialization();
     std::printf("\n%d comprobaciones, %d fallos\n", checks, failures);
     return failures == 0 ? 0 : 1;
 }

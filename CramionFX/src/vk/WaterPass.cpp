@@ -100,7 +100,10 @@ void WaterPass::create(const VulkanDevice& device, const vk::raii::DescriptorSet
         device.handle().updateDescriptorSets(write, nullptr);
     }
 
-    // --- Pipeline: mezcla sobre la imagen HDR, prueba de profundidad sin escribir ---
+    // --- Pipeline: mezcla sobre la imagen HDR con su propia profundidad ---
+    // Escribe profundidad (en una copia de la de la escena, ver
+    // VulkanRenderer::recordWaterPass): sin ella las olas no se tapaban entre
+    // si y una cresta de detras se veia delante de la de delante.
     const vk::raii::ShaderModule vertex = shaders::loadModule(device, "water.vert.spv");
     const vk::raii::ShaderModule fragment = shaders::loadModule(device, "water.frag.spv");
     const std::array<vk::PipelineShaderStageCreateInfo, 2> shader_stages = {{
@@ -129,7 +132,7 @@ void WaterPass::create(const VulkanDevice& device, const vk::raii::DescriptorSet
     multisample.rasterizationSamples = vk::SampleCountFlagBits::e1;
     vk::PipelineDepthStencilStateCreateInfo depth{};
     depth.depthTestEnable = VK_TRUE;
-    depth.depthWriteEnable = VK_FALSE;
+    depth.depthWriteEnable = VK_TRUE;
     depth.depthCompareOp = vk::CompareOp::eLessOrEqual;
     vk::PipelineColorBlendAttachmentState blend_attachment{};
     blend_attachment.blendEnable = VK_TRUE;

@@ -208,6 +208,21 @@
   en los ejes del hueso.
 </p>
 
+<h3 id="transiciones">Transiciones inerciales y ciclos</h3>
+<p>
+  En la ventana Animator, cada transición tiene <strong>Mezcla</strong>: <em>Inercial</em> (por defecto, como el
+  Inertialization de Unreal) pasa a la animación nueva y apaga poco a poco la diferencia con la pose que se veía,
+  conservando el impulso de cada hueso; <em>Fundido cruzado</em> mezcla las dos poses como Unity. Una transición que
+  interrumpe a otra parte de lo que se ve, sin saltos. <strong>Continuar el ciclo</strong> hace que el estado nuevo siga
+  en el mismo punto del ciclo (andar &rarr; correr con el mismo pie delante). Sin controlador, el Animator suaviza
+  igual los cambios de clip (<em>Suavizado</em>).
+</p>
+<p>
+  <strong>Bloquear pies</strong> (componente IK): el pie que la animación apoya se queda clavado en el suelo hasta que
+  la animación lo levanta, aunque el personaje avance algo más o menos que el clip o gire en el sitio (se acabó el
+  patinaje). Se suelta si la pierna tendría que estirarse más de <em>Soltar a</em>.
+</p>
+
 <h3 id="ik">IK de humanos y animales</h3>
 <p>
   El componente <strong>IK</strong> trabaja sobre la pose animada. <strong>Configurar automáticamente</strong> reconoce el

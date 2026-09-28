@@ -817,6 +817,56 @@ void RenderSync::applyInverseKinematics(World& world, Entity entity, const Inver
         }
     }
 
+    // --- Pies bloqueados (anti-patinaje) ---
+    // Apoyado = el pie esta abajo (cerca de la altura minima que ha tenido) y
+    // casi quieto en el mundo. Entonces se clava donde esta; se suelta cuando
+    // la animacion lo levanta o la pierna tendria que estirarse demasiado.
+    if (ik.foot_locking && map.valid) {
+        const float base_y = world_matrix.m[3][1];
+        const Bone legs[2][3] = {{Bone::LeftUpperLeg, Bone::LeftLowerLeg, Bone::LeftFoot},
+                                 {Bone::RightUpperLeg, Bone::RightLowerLeg, Bone::RightFoot}};
+        for (int i = 0; i < 2; ++i) {
+            const int foot = node(legs[i][2]);
+            if (foot < 0 || node(legs[i][0]) < 0 || node(legs[i][1]) < 0) continue;
+            IKSmoothing::FootLock& lock = smooth.lock[i];
+            const Vec3 p = transformPoint(world_matrix, ik::nodePosition(pose, foot));
+            // Cuanto levanta el pie la animacion (sin lo que lo movio el suelo).
+            const float lift = p.y - base_y - (ik.foot_grounding ? smooth.feet[i] : 0.0f);
+            const Vec3 moved = p - lock.last;
+            if (!lock.has_last || core::length(moved) > 2.0f) {
+                // Primer frame o teletransporte: se empieza de cero.
+                lock = IKSmoothing::FootLock{};
+                lock.floor = lift;
+            }
+            // El suelo del pie baja al instante y sube despacio (se adapta).
+            lock.floor = std::min(lift, lock.floor + 0.05f * delta_seconds);
+            const float speed = lock.has_last && delta_seconds > 0.0f
+                                    ? std::sqrt(moved.x * moved.x + moved.z * moved.z) / delta_seconds
+                                    : 0.0f;
+            const bool down = lift < lock.floor + 0.035f;
+            const bool planted = lock.has_last && delta_seconds > 0.0f && down && speed < ik.foot_lock_speed;
+            if (!lock.locked && planted) {
+                lock.locked = true;
+                lock.position = p;
+            } else if (lock.locked) {
+                const float dx = lock.position.x - p.x;
+                const float dz = lock.position.z - p.z;
+                if (lift > lock.floor + 0.06f || std::sqrt(dx * dx + dz * dz) > ik.foot_lock_release) {
+                    lock.locked = false;
+                }
+            }
+            lock.weight += ((lock.locked ? 1.0f : 0.0f) - lock.weight) * follow(lock.locked ? 40.0f : 12.0f);
+            lock.last = p;
+            lock.has_last = true;
+            if (lock.weight > 0.001f) {
+                // La altura la manda la animacion (y el suelo); se clava en horizontal.
+                const Vec3 held{lock.position.x, p.y, lock.position.z};
+                const Vec3 goal = p + (held - p) * lock.weight;
+                ik::twoBone(pose, node(legs[i][0]), node(legs[i][1]), foot, point_to_model(goal), nullptr, 1.0f);
+            }
+        }
+    }
+
     // --- Manos y pies a sus objetivos ---
     const auto limb = [&](int index, const IKLimb& l, Bone upper, Bone lower, Bone end) {
         Vec3 target{};
@@ -1764,6 +1814,7 @@ void RenderSync::syncActors(World& world, scene::Scene& scene, gfx::VulkanRender
 
         bool animating = false;
         bool posed = false;  // la pose de este frame ya se evaluo
+        bool inertial_tracked = false;  // pose de animacion: la inercializacion la sigue
         // Un modelo sin clips propios tambien anima con un controlador (sus
         // clips son .cranim sueltos: el personaje de Mixamo y su pack).
         if (Animator* animator = e.tryGet<Animator>();
@@ -1835,14 +1886,22 @@ void RenderSync::syncActors(World& world, scene::Scene& scene, gfx::VulkanRender
                 };
 
                 stepAnimatorController(*controller, runtime, stateSamples(runtime.state, state.phase, 0.0f, nullptr));
+                float inertial_duration = 0.0f;
                 if (runtime.state != state.controller_state) {
-                    // Fundido desde el estado que sonaba (si la transicion lo pide).
-                    const float fade =
+                    // Fundido o inercializacion desde el estado que sonaba (si
+                    // la transicion lo pide).
+                    const AnimatorTransition* transition =
                         state.controller_state >= 0 && runtime.last_transition >= 0 &&
                                 runtime.last_transition < static_cast<int>(controller->transitions.size())
-                            ? controller->transitions[static_cast<std::size_t>(runtime.last_transition)].duration
-                            : 0.0f;
-                    if (fade > 0.0f) {
+                            ? &controller->transitions[static_cast<std::size_t>(runtime.last_transition)]
+                            : nullptr;
+                    const float fade = transition != nullptr ? transition->duration : 0.0f;
+                    const float old_phase = state.phase;
+                    if (fade > 0.0f && transition->inertial) {
+                        // Se deja de mezclar: el desfase con lo que se veia se apaga solo.
+                        state.fade_state = -1;
+                        inertial_duration = fade;
+                    } else if (fade > 0.0f) {
                         state.fade_state = state.controller_state;
                         state.fade_phase = state.phase;
                         state.fade_time = 0.0f;
@@ -1851,7 +1910,7 @@ void RenderSync::syncActors(World& world, scene::Scene& scene, gfx::VulkanRender
                         state.fade_state = -1;
                     }
                     state.controller_state = runtime.state;
-                    state.phase = 0.0f;
+                    state.phase = transition != nullptr && transition->sync_phase ? old_phase : 0.0f;
                     animator->time = 0.0f;
                 }
                 const AnimatorState& st = controller->states[static_cast<std::size_t>(runtime.state)];
@@ -1878,6 +1937,26 @@ void RenderSync::syncActors(World& world, scene::Scene& scene, gfx::VulkanRender
                 }
                 stateSamples(runtime.state, state.phase, fresh, &samples);
                 state.animator.evaluateBlend(samples);
+                if (inertial_duration > 0.0f && state.inertial.hasHistory() && animator->playing) {
+                    // La pose nueva un instante antes: su velocidad al empezar.
+                    float before_phase = state.phase;
+                    if (cycle > 0.0f) {
+                        before_phase -= delta_seconds * animator->speed * st.speed / cycle;
+                        before_phase = st.loop ? before_phase - std::floor(before_phase)
+                                               : std::clamp(before_phase, 0.0f, 1.0f);
+                    }
+                    const std::vector<Mat4> now = state.animator.locals();
+                    std::vector<anim::ClipSample> earlier;
+                    if (state.fade_state >= 0) {
+                        stateSamples(state.fade_state, state.fade_phase, 1.0f - fresh, &earlier);
+                    }
+                    stateSamples(runtime.state, before_phase, fresh, &earlier);
+                    state.animator.evaluateBlend(earlier);
+                    const std::vector<Mat4> before = state.animator.locals();
+                    state.animator.evaluateBlend(samples);
+                    state.inertial.start(now, before, inertial_duration, delta_seconds);
+                }
+                inertial_tracked = animator->playing;
                 state.clip = -3;  // sin controlador otra vez: vuelve a elegir clip
                 posed = true;
                 controlled = true;
@@ -1895,6 +1974,8 @@ void RenderSync::syncActors(World& world, scene::Scene& scene, gfx::VulkanRender
             clip = std::clamp(clip, -1, static_cast<int>(data.animations.size()) - 1);
             // Sin controlador: un clip (con controlador la pose ya esta hecha).
             if (!controlled) {
+                // Otro clip (el juego lo cambia): transicion inercial.
+                const bool switched = clip != state.clip && state.clip >= -1 && state.clip != -3;
                 if (restart || clip != state.clip || loop != state.loop) {
                     state.animator.play(clip, loop);
                     state.animator.setTime(animator->time);
@@ -1906,6 +1987,16 @@ void RenderSync::syncActors(World& world, scene::Scene& scene, gfx::VulkanRender
                     state.animator.update(delta_seconds);
                     animator->time = state.animator.time();
                     posed = true;
+                    if (switched && animator->blend_time > 0.0f && state.inertial.hasHistory()) {
+                        const std::vector<Mat4> now = state.animator.locals();
+                        state.animator.setTime(animator->time - delta_seconds * speed);
+                        state.animator.evaluate();
+                        const std::vector<Mat4> before = state.animator.locals();
+                        state.animator.setTime(animator->time);
+                        state.animator.evaluate();
+                        state.inertial.start(now, before, animator->blend_time, delta_seconds);
+                    }
+                    inertial_tracked = true;
                 } else if (std::abs(state.animator.time() - animator->time) > 1e-5f) {
                     // Pausado: el tiempo del Inspector manda (arrastrarlo = scrub).
                     state.animator.setTime(animator->time);
@@ -1913,6 +2004,18 @@ void RenderSync::syncActors(World& world, scene::Scene& scene, gfx::VulkanRender
                     posed = true;
                 }
             }
+        }
+        // Transicion inercial en curso: el desfase se suma a la pose animada
+        // (antes del IK, que sigue apoyando los pies donde toca).
+        if (inertial_tracked && data.nodes.size() > 1) {
+            const bool was_active = state.inertial.active();
+            state.inertial.apply(state.animator.locals(), delta_seconds);
+            if (was_active) {
+                ik::recomputeGlobals(ik::Pose{&data.nodes, &state.animator.locals(), &state.animator.globals()});
+                state.animator.updateBones();
+            }
+        } else if (!animating) {
+            state.inertial.reset();
         }
         // Esqueleto sobre la pose de este frame (sin animar o en pausa se
         // parte de la pose limpia: nada se acumula). Los componentes pueden
@@ -2034,7 +2137,8 @@ void RenderSync::syncLightsAndEnvironment(World& world, scene::Scene& scene,
                     }
                     break;
                 case LightType::Point:
-                    if (lights.points.size() < scene::kMaxPointLights) {
+                    // Apagada: no ocupa hueco (el limite es por frame).
+                    if (light->intensity > 0.0f) {
                         scene::PointLight p{};
                         p.position = e.worldPosition();
                         p.color = light->color;
@@ -2046,7 +2150,7 @@ void RenderSync::syncLightsAndEnvironment(World& world, scene::Scene& scene,
                     }
                     break;
                 case LightType::Spot:
-                    if (lights.spots.size() < scene::kMaxSpotLights) {
+                    if (light->intensity > 0.0f) {
                         scene::SpotLight s{};
                         s.position = e.worldPosition();
                         s.direction = e.forward();
@@ -2075,6 +2179,23 @@ void RenderSync::syncLightsAndEnvironment(World& world, scene::Scene& scene,
         }
     });
 
+    // Mas luces que huecos (32 puntuales, 8 focos): se quedan las que mas
+    // cuentan para la camara (cerca de ella o con mucho alcance), no las
+    // primeras de la Jerarquia. Antes, en un mapa grande, las salas del final
+    // se quedaban a oscuras aunque fueran las unicas a la vista.
+    {
+        const Vec3 eye = scene.camera().position();
+        const auto keepNearest = [&](auto& list, std::size_t max) {
+            if (list.size() <= max) return;
+            std::stable_sort(list.begin(), list.end(), [&](const auto& a, const auto& b) {
+                return core::length(a.position - eye) - a.range < core::length(b.position - eye) - b.range;
+            });
+            list.resize(max);
+        };
+        keepNearest(lights.points, scene::kMaxPointLights);
+        keepNearest(lights.spots, scene::kMaxSpotLights);
+    }
+
     // --- Cielo HDR ---
     Sky* sky = sky_entity.valid() ? sky_entity.tryGet<Sky>() : nullptr;
     bool hdr_active = false;
@@ -2093,6 +2214,21 @@ void RenderSync::syncLightsAndEnvironment(World& world, scene::Scene& scene,
     }
     renderer.setEnvironmentEnabled(hdr_active);
     renderer.setCloudsEnabled(sky == nullptr || sky->clouds);
+    if (sky != nullptr) {
+        gfx::CloudSettings clouds;
+        clouds.coverage = std::clamp(sky->cloud_coverage, 0.0f, 1.0f);
+        clouds.density = std::max(sky->cloud_density, 0.0f);
+        clouds.type = std::clamp(sky->cloud_type, 0.0f, 1.0f);
+        clouds.bottom = std::max(sky->cloud_height, 50.0f);
+        clouds.thickness = std::max(sky->cloud_thickness, 100.0f);
+        clouds.wind_speed = std::max(sky->wind_speed, 0.0f);
+        clouds.wind_direction = sky->wind_direction;
+        clouds.shadows = sky->cloud_shadows;
+        clouds.shadow_strength = std::clamp(sky->cloud_shadow_strength, 0.0f, 1.0f);
+        renderer.setCloudSettings(clouds);
+    } else {
+        renderer.setCloudSettings(gfx::CloudSettings{});
+    }
 
     // --- Sol ---
     // Luz direccional > sol de la foto HDR > hora del cielo.

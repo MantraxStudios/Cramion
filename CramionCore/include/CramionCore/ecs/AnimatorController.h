@@ -106,6 +106,13 @@ struct AnimatorTransition {
     // Fundido: segundos en que la pose pasa del estado viejo al nuevo (0 =
     // corte seco, como antes de la 0.7).
     float duration = 0.0f;
+    // Inercial (por defecto, como Unreal): pasa en seco a la pose nueva y
+    // apaga poco a poco la diferencia conservando el impulso de cada hueso.
+    // Si no, fundido cruzado entre las dos poses (el de Unity).
+    bool inertial = true;
+    // El estado nuevo sigue en el punto del ciclo del viejo (andar -> correr:
+    // el mismo pie delante) en vez de empezar desde el principio.
+    bool sync_phase = false;
     std::vector<AnimatorCondition> conditions;
 };
 

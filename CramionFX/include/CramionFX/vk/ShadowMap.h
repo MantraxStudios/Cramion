@@ -33,6 +33,9 @@ public:
 
     const VulkanImage& image() const { return depth_; }
     const vk::raii::Sampler& sampler() const { return sampler_; }
+    // Sin comparacion (la profundidad guardada tal cual): la busqueda de lo
+    // que tapa de las sombras suaves (PCSS) en lighting.frag.
+    const vk::raii::Sampler& rawSampler() const { return raw_sampler_; }
 
     // Vista de una cascada concreta, para renderizar en ella.
     const vk::raii::ImageView& cascadeView(std::uint32_t cascade) const {
@@ -47,6 +50,7 @@ private:
     std::uint32_t resolution_ = kDefaultResolution;
     VulkanImage depth_;
     vk::raii::Sampler sampler_{nullptr};
+    vk::raii::Sampler raw_sampler_{nullptr};
 };
 
 }  // namespace cramion::gfx

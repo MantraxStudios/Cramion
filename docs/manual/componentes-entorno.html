@@ -177,6 +177,15 @@
     <tr><td>Cielo HDR<br><code>environment</code></td><td>asset (Cielo HDR)</td><td>(ninguno)</td><td>arrastrar desde el Proyecto</td><td></td></tr>
     <tr><td>Usar el HDR<br><code>use_hdr</code></td><td>si/no</td><td>si</td><td></td><td>Si no, cielo fisico (dispersion atmosferica)</td></tr>
     <tr><td>Nubes volumetricas<br><code>clouds</code></td><td>si/no</td><td>si</td><td></td><td></td></tr>
+    <tr><td>Cobertura<br><code>cloud_coverage</code></td><td>numero</td><td>0,45</td><td>0 a 1</td><td>0 = despejado, 1 = cubierto (por zonas: hay claros y masas)</td></tr>
+    <tr><td>Densidad<br><code>cloud_density</code></td><td>numero</td><td>1</td><td>0,05 a 3</td><td>Mas = nubes mas opacas y bases mas oscuras</td></tr>
+    <tr><td>Tipo<br><code>cloud_type</code></td><td>numero</td><td>0,45</td><td>0 a 1</td><td>0 = estratos (capa baja y plana), 0.5 = cumulos, 1 = cumulonimbos (torres de tormenta)</td></tr>
+    <tr><td>Altura<br><code>cloud_height</code></td><td>numero</td><td>1500</td><td>200 a 6000</td><td>Base de las nubes sobre el suelo</td></tr>
+    <tr><td>Grosor<br><code>cloud_thickness</code></td><td>numero</td><td>2800</td><td>300 a 9000</td><td>Cuanto pueden crecer hacia arriba</td></tr>
+    <tr><td>Viento<br><code>wind_speed</code></td><td>numero</td><td>10</td><td>0 a 60</td><td>Velocidad a la que se mueven</td></tr>
+    <tr><td>Direccion del viento<br><code>wind_direction</code></td><td>numero</td><td>30</td><td>0 a 360</td><td></td></tr>
+    <tr><td>Sombras en el suelo<br><code>cloud_shadows</code></td><td>si/no</td><td>si</td><td></td><td>Las nubes tapan el sol: sus sombras recorren el terreno</td></tr>
+    <tr><td>Fuerza de las sombras<br><code>cloud_shadow_strength</code></td><td>numero</td><td>0,85</td><td>0 a 1</td><td></td></tr>
     <tr><td>Hora del dia<br><code>time_of_day</code></td><td>numero</td><td>10</td><td>0 a 24</td><td>Sin luz direccional ni HDR: posicion del sol</td></tr>
     <tr><td>Ciclo de dia<br><code>day_cycle</code></td><td>si/no</td><td>no</td><td></td><td></td></tr>
   </tbody>

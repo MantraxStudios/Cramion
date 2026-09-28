@@ -251,8 +251,10 @@ struct GiAtrousPush {
 constexpr std::uint32_t kRainMapSize = 2048;
 
 // Nubes: fraccion del cielo cubierta y densidad (multiplica la extincion).
-constexpr float kCloudCoverage = 0.38f;
-constexpr float kCloudDensity = 1.0f;
+// Sombra de las nubes: 512^2 texeles sobre 16 km (31 m por texel; son sombras
+// grandes y suaves).
+constexpr std::uint32_t kCloudShadowSize = 512;
+constexpr float kCloudShadowExtent = 16000.0f;
 
 // Fraccion final de cada cascada en la que se mezcla con la siguiente, para
 // que el salto de resolucion entre cascadas no se vea como una linea.
@@ -513,6 +515,11 @@ void VulkanRenderer::initialize(const EngineInfo& info, HWND window, std::uint32
         clouds.push_constant_size = sizeof(GpuCloudPush);
         clouds.color_format = kHdrFormat;
         clouds_pass_.create(device_, clouds);
+        // Sombra de las nubes: el mismo shader (modo mapa de sombra) y los
+        // mismos recursos, sobre un cuadrado del suelo.
+        FullscreenPassDesc cloud_shadow = clouds;
+        cloud_shadow.color_format = vk::Format::eR16Sfloat;
+        cloud_shadow_pass_.create(device_, cloud_shadow);
 
         FullscreenPassDesc shafts{};
         shafts.fragment_shader = "light_shafts.frag.spv";
@@ -576,6 +583,9 @@ void VulkanRenderer::initialize(const EngineInfo& info, HWND window, std::uint32
     ibl_probe_.create(device_, sky_lut_);
     reflection_probe_.create(device_);
     cloud_noise_.create(device_);
+    cloud_shadow_image_.create(device_, vk::Extent2D{kCloudShadowSize, kCloudShadowSize}, vk::Format::eR16Sfloat,
+                               vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eSampled,
+                               vk::ImageAspectFlagBits::eColor);
     if (device_.rayTracingSupported()) {
         ray_tracing_.create(device_);
     }
@@ -808,6 +818,7 @@ void VulkanRenderer::shutdown() {
     ray_tracing_.destroy();
     environment_.destroy();
     clouds_image_.destroy();
+    cloud_shadow_image_.destroy();
     cloud_noise_.destroy();
     reflection_probe_.destroy();
     ibl_probe_.destroy();
@@ -822,6 +833,7 @@ void VulkanRenderer::shutdown() {
     for (VulkanBuffer& buffer : pick_buffers_) buffer.destroy();
     pick_buffers_.clear();
     glass_source_.destroy();
+    water_depth_.destroy();
     upscale_target_.destroy();
     upscaled_color_.destroy();
     taa_history_.destroy();
@@ -994,8 +1006,9 @@ void VulkanRenderer::createDescriptors() {
     // (+ entorno y LUT de la BRDF del IBL, + la GI, + el SSR, + los dos cubos
     // de la sonda.)
     // (+ las nubes, + el mapa de entorno HDR.)
-    // (+ la luz volumetrica.)
-    pool_sizes[1].descriptorCount = kMaxFramesInFlight * (GBuffer::kColorAttachmentCount + 16);
+    // (+ la luz volumetrica, + la sombra de las nubes.)
+    // (+ las cascadas sin comparacion para las sombras suaves.)
+    pool_sizes[1].descriptorCount = kMaxFramesInFlight * (GBuffer::kColorAttachmentCount + 18);
 
     vk::DescriptorPoolCreateInfo pool_info{};
     pool_info.flags = vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet;
@@ -1548,6 +1561,7 @@ std::uint32_t VulkanRenderer::forEachVisibleSubmesh(const ActorDraw& actor,
 // luces locales. Por debajo del desplazamiento por normal del shader (0.5 a 2
 // texeles), para que la malla simplificada no tape a la real.
 constexpr float kLocalShadowLodTexels = 0.5f;
+constexpr float kCascadeShadowLodTexels = 0.5f;
 
 std::uint32_t VulkanRenderer::shadowLod(const SkinnedModel& model, float max_scale, float allowed) const {
     if (!post_.lods) return 0;
@@ -1629,7 +1643,12 @@ void VulkanRenderer::recordActorShadows(const vk::raii::CommandBuffer& cmd,
             if (draw.bounds_radius < texel_world_size * budget_.shadowMinTexels()) {
                 continue;
             }
-            lod = shadowLod(model, draw.max_scale, texel_world_size * budget_.shadowTexelFactor());
+            // Como mucho medio texel, sin depender del presupuesto: al bajar
+            // el detalle con muchos objetos la malla de la sombra asomaba
+            // varios texeles por encima de la real y el objeto se sombreaba a
+            // si mismo (y parpadeaba cada vez que el presupuesto cambiaba de
+            // nivel). El shader cubre ese medio texel.
+            lod = shadowLod(model, draw.max_scale, texel_world_size * kCascadeShadowLodTexels);
         }
 
         // Submallas que tocan el volumen de la luz (una sola prueba).
@@ -1828,7 +1847,7 @@ void VulkanRenderer::updateLightingDescriptors() {
             environment_hdr_info.imageView = *environment_.view();
         }
 
-        std::array<vk::WriteDescriptorSet, 23> writes{};
+        std::array<vk::WriteDescriptorSet, 25> writes{};
 
         writes[0].dstSet = *lighting_sets_[i];
         writes[0].dstBinding = 0;
@@ -1938,6 +1957,22 @@ void VulkanRenderer::updateLightingDescriptors() {
         writes[22].dstBinding = 22;
         writes[22].descriptorType = vk::DescriptorType::eCombinedImageSampler;
         writes[22].setImageInfo(volumetric_info);
+
+        vk::DescriptorImageInfo cloud_shadow_info{};
+        cloud_shadow_info.sampler = *lighting_pass_.sampler();
+        cloud_shadow_info.imageView = *cloud_shadow_image_.view();
+        cloud_shadow_info.imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
+        writes[23].dstSet = *lighting_sets_[i];
+        writes[23].dstBinding = 23;
+        writes[23].descriptorType = vk::DescriptorType::eCombinedImageSampler;
+        writes[23].setImageInfo(cloud_shadow_info);
+
+        vk::DescriptorImageInfo shadow_raw_info = shadow_map_info;
+        shadow_raw_info.sampler = *shadow_map_.rawSampler();
+        writes[24].dstSet = *lighting_sets_[i];
+        writes[24].dstBinding = 24;
+        writes[24].descriptorType = vk::DescriptorType::eCombinedImageSampler;
+        writes[24].setImageInfo(shadow_raw_info);
 
         device_.handle().updateDescriptorSets(writes, nullptr);
     }
@@ -2407,6 +2442,10 @@ void VulkanRenderer::createRenderTargets() {
     glass_source_.create(device_, extent, kHdrFormat,
                          vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eTransferDst,
                          vk::ImageAspectFlagBits::eColor);
+    // Profundidad propia del agua (copia de la de la escena + las olas).
+    water_depth_.create(device_, extent, device_.depthFormat(),
+                        vk::ImageUsageFlagBits::eDepthStencilAttachment | vk::ImageUsageFlagBits::eTransferDst,
+                        vk::ImageAspectFlagBits::eDepth);
     // Que tengan un layout valido aunque el primer frame no tenga vidrio. La
     // imagen HDR tambien: SSGI y SSR la tienen enlazada como color del frame
     // anterior y el primer frame tras crearla (abrir un proyecto, cambiar el
@@ -2908,15 +2947,20 @@ void VulkanRenderer::updateUniforms(const scene::Scene& scene, const scene::Came
     }
     weather.decal_info = Vec4{static_cast<float>(decal_count), 0.0f, 0.0f, 0.0f};
     weather_buffers_[frame_index].write(&weather, sizeof(weather));
-    light_data.rain = Vec4{weather.params.x, weather.params.y, weather.params.z, 0.0f};
+    // w: lo que el LOD de la camara deja desviarse la malla (m por metro de
+    // distancia): los rayos salen por encima de la malla que ve la camara.
+    light_data.rain = Vec4{weather.params.x, weather.params.y, weather.params.z, lod_error_per_meter_};
     light_data.flood = weather.flood;
 
     // --- Nubes ---
     // Con el cielo fotografiado no hay nubes volumetricas: la foto trae las
     // suyas.
     // x: nubes; y, z: niebla por altura (densidad y caida con la altura).
+    // w: cobertura de las nubes (el cielo cubierto da una luz ambiente gris).
     light_data.clouds = Vec4{clouds_enabled_ && !environmentActive() ? 1.0f : 0.0f, std::max(post_.fog_density, 0.0f),
-                             std::max(post_.fog_height_falloff, 0.0001f), 0.0f};
+                             std::max(post_.fog_height_falloff, 0.0001f),
+                             clouds_enabled_ && !environmentActive() ? std::clamp(cloud_settings_.coverage, 0.0f, 1.0f)
+                                                                     : 0.0f};
     // y: luz volumetrica. No en las caras de la sonda: su imagen es de la
     // camara de pantalla.
     // z: sombras de contacto (largo del rayo); no en la sonda (su depth es otro).
@@ -2929,6 +2973,13 @@ void VulkanRenderer::updateUniforms(const scene::Scene& scene, const scene::Came
                                   temporal_filter ? static_cast<float>(frame_count_ % 64u) : -1.0f};
     if (!isolated()) {
         cloud_time_ += frame_delta_seconds_;
+        // El viento se acumula (cambiar su direccion no hace saltar las nubes).
+        const float wind_angle = cloud_settings_.wind_direction * (core::kPi / 180.0f);
+        constexpr double kWindPeriod = 168000.0;
+        cloud_wind_offset_[0] = std::fmod(cloud_wind_offset_[0] + static_cast<double>(std::cos(wind_angle) *
+                                              cloud_settings_.wind_speed * frame_delta_seconds_), kWindPeriod);
+        cloud_wind_offset_[1] = std::fmod(cloud_wind_offset_[1] + static_cast<double>(std::sin(wind_angle) *
+                                              cloud_settings_.wind_speed * frame_delta_seconds_), kWindPeriod);
     }
 
     // Sonda de reflexion: el cubo nuevo entra fundiendose con el anterior.
@@ -2964,14 +3015,35 @@ void VulkanRenderer::updateUniforms(const scene::Scene& scene, const scene::Came
     sky_push_.moon = toVec4(lights.sky.to_moon, kMoonIlluminance);
 
     cloud_push_.to_light_time = toVec4(ibl_to_light_, cloud_time_);
-    cloud_push_.light_coverage = toVec4(ibl_light_radiance_, kCloudCoverage);
+    cloud_push_.light_coverage = toVec4(ibl_light_radiance_, std::clamp(cloud_settings_.coverage, 0.0f, 1.0f));
     // zw = origen del mundo (origen flotante) modulo 168 km: el ruido de forma
     // se repite cada 24 km y el de detalle cada 3.5 km, asi que las nubes no
     // saltan al desplazarse el mundo y el numero sigue siendo pequeno.
     constexpr double kCloudPeriod = 168000.0;
-    cloud_push_.params = Vec4{static_cast<float>(frame_count_ % 64), kCloudDensity,
-                              static_cast<float>(std::fmod(world_origin_[0], kCloudPeriod)),
-                              static_cast<float>(std::fmod(world_origin_[2], kCloudPeriod))};
+    cloud_push_.params = Vec4{static_cast<float>(frame_count_ % 64), std::max(cloud_settings_.density, 0.0f),
+                              static_cast<float>(std::fmod(world_origin_[0] - cloud_wind_offset_[0], kCloudPeriod)),
+                              static_cast<float>(std::fmod(world_origin_[2] - cloud_wind_offset_[1], kCloudPeriod))};
+    {
+        const float bottom = std::max(cloud_settings_.bottom, 50.0f);
+        const float wind_angle = cloud_settings_.wind_direction * (core::kPi / 180.0f);
+        cloud_push_.layer = Vec4{bottom, bottom + std::max(cloud_settings_.thickness, 100.0f),
+                                 std::clamp(cloud_settings_.type, 0.0f, 1.0f), 0.0f};
+        // Las cimas van por delante con el viento (mas rapido en altura).
+        cloud_push_.wind = Vec4{std::cos(wind_angle), std::sin(wind_angle),
+                                std::min(cloud_settings_.wind_speed * 40.0f, 1500.0f), 0.0f};
+        // Mapa de sombra centrado en la camara, pegado a sus texeles (no tiembla).
+        const float texel = kCloudShadowExtent / static_cast<float>(kCloudShadowSize);
+        const Vec4 eye = camera_data.position;
+        const float cx = std::floor(eye.x / texel) * texel;
+        const float cz = std::floor(eye.z / texel) * texel;
+        cloud_shadow_push_ = cloud_push_;
+        cloud_shadow_push_.wind.w = 1.0f;
+        cloud_shadow_push_.shadow = Vec4{cx, cz, kCloudShadowExtent, std::clamp(cloud_settings_.shadow_strength, 0.0f, 1.0f)};
+        cloud_push_.shadow = cloud_shadow_push_.shadow;
+        const bool cloud_shadows = clouds_enabled_ && !environmentActive() && cloud_settings_.shadows &&
+                                   cloud_settings_.coverage > 0.0f && cloud_settings_.shadow_strength > 0.0f;
+        light_data.cloud_shadow = cloud_shadows ? cloud_shadow_push_.shadow : Vec4{};
+    }
 
     // --- Rayos de luz: el sol proyectado en pantalla ---
     // Con w = 0 se proyecta la direccion (un punto en el infinito).
@@ -4599,16 +4671,59 @@ void VulkanRenderer::recordWaterPass(const vk::raii::CommandBuffer& cmd, std::ui
     copySceneForTransparency(cmd);
     const vk::Extent2D extent = render_extent_;
 
+    // El agua se prueba y ESCRIBE en una copia de la profundidad de la escena
+    // (las olas se tapan entre si); el shader sigue leyendo la de la escena,
+    // sin agua, para el grosor y la refraccion.
+    const auto depth_barrier = [](vk::Image image, vk::ImageLayout from, vk::ImageLayout to,
+                                  vk::PipelineStageFlags2 src_stage, vk::AccessFlags2 src_access,
+                                  vk::PipelineStageFlags2 dst_stage, vk::AccessFlags2 dst_access) {
+        vk::ImageMemoryBarrier2 b{};
+        b.srcStageMask = src_stage;
+        b.srcAccessMask = src_access;
+        b.dstStageMask = dst_stage;
+        b.dstAccessMask = dst_access;
+        b.oldLayout = from;
+        b.newLayout = to;
+        b.image = image;
+        b.subresourceRange = vk::ImageSubresourceRange{vk::ImageAspectFlagBits::eDepth, 0, 1, 0, 1};
+        return b;
+    };
+    using Stage = vk::PipelineStageFlagBits2;
+    using Access = vk::AccessFlagBits2;
+    const Stage tests = Stage::eEarlyFragmentTests;
+    pipelineBarrier(cmd, {depth_barrier(*gbuffer_.depth().handle(), vk::ImageLayout::eDepthReadOnlyOptimal,
+                                        vk::ImageLayout::eTransferSrcOptimal,
+                                        tests | Stage::eLateFragmentTests | Stage::eFragmentShader | Stage::eComputeShader,
+                                        Access::eDepthStencilAttachmentRead | Access::eShaderSampledRead,
+                                        Stage::eCopy, Access::eTransferRead),
+                          depth_barrier(*water_depth_.handle(), vk::ImageLayout::eUndefined,
+                                        vk::ImageLayout::eTransferDstOptimal, tests | Stage::eLateFragmentTests,
+                                        Access::eDepthStencilAttachmentWrite, Stage::eCopy, Access::eTransferWrite)});
+    vk::ImageCopy depth_region{};
+    depth_region.srcSubresource = vk::ImageSubresourceLayers{vk::ImageAspectFlagBits::eDepth, 0, 0, 1};
+    depth_region.dstSubresource = depth_region.srcSubresource;
+    depth_region.extent = vk::Extent3D{extent.width, extent.height, 1};
+    cmd.copyImage(*gbuffer_.depth().handle(), vk::ImageLayout::eTransferSrcOptimal, *water_depth_.handle(),
+                  vk::ImageLayout::eTransferDstOptimal, depth_region);
+    pipelineBarrier(cmd, {depth_barrier(*gbuffer_.depth().handle(), vk::ImageLayout::eTransferSrcOptimal,
+                                        vk::ImageLayout::eDepthReadOnlyOptimal, Stage::eCopy, Access::eTransferRead,
+                                        tests | Stage::eLateFragmentTests | Stage::eFragmentShader | Stage::eComputeShader,
+                                        Access::eDepthStencilAttachmentRead | Access::eShaderSampledRead),
+                          depth_barrier(*water_depth_.handle(), vk::ImageLayout::eTransferDstOptimal,
+                                        vk::ImageLayout::eDepthAttachmentOptimal, Stage::eCopy, Access::eTransferWrite,
+                                        tests | Stage::eLateFragmentTests,
+                                        Access::eDepthStencilAttachmentRead | Access::eDepthStencilAttachmentWrite)});
+
     vk::RenderingAttachmentInfo color_attachment{};
     color_attachment.imageView = *scene_color_.view();
     color_attachment.imageLayout = vk::ImageLayout::eColorAttachmentOptimal;
     color_attachment.loadOp = vk::AttachmentLoadOp::eLoad;
     color_attachment.storeOp = vk::AttachmentStoreOp::eStore;
     vk::RenderingAttachmentInfo depth_attachment{};
-    depth_attachment.imageView = *gbuffer_.depth().view();
-    depth_attachment.imageLayout = vk::ImageLayout::eDepthReadOnlyOptimal;
+    depth_attachment.imageView = *water_depth_.view();
+    depth_attachment.imageLayout = vk::ImageLayout::eDepthAttachmentOptimal;
     depth_attachment.loadOp = vk::AttachmentLoadOp::eLoad;
-    depth_attachment.storeOp = vk::AttachmentStoreOp::eNone;
+    depth_attachment.storeOp = vk::AttachmentStoreOp::eDontCare;
     vk::RenderingInfo rendering_info{};
     rendering_info.renderArea = vk::Rect2D{vk::Offset2D{0, 0}, extent};
     rendering_info.layerCount = 1;
@@ -5874,6 +5989,13 @@ void VulkanRenderer::recordRainMap(const vk::raii::CommandBuffer& cmd,
 
 void VulkanRenderer::recordCloudPass(const vk::raii::CommandBuffer& cmd,
                                      std::uint32_t frame_index) {
+    // Sombra de las nubes sobre el suelo (antes que la iluminacion).
+    pipelineBarrier(cmd, discardToAttachment(*cloud_shadow_image_.handle()));
+    if (clouds_enabled_ && !environmentActive() && cloud_settings_.shadows && cloud_settings_.coverage > 0.0f) {
+        drawFullscreen(cmd, cloud_shadow_pass_, &clouds_sets_[frame_index], cloud_shadow_image_, &cloud_shadow_push_);
+    }
+    pipelineBarrier(cmd, writtenToSampled(*cloud_shadow_image_.handle()));
+
     pipelineBarrier(cmd, discardToAttachment(*clouds_image_.handle()));
     // Apagadas no se dibujan (la iluminacion no las lee), pero la imagen
     // queda igualmente como textura para el descriptor.

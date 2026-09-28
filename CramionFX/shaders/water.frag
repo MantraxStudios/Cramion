@@ -359,8 +359,13 @@ void main() {
     vec3 wave_normal = gerstnerNormal(b, v_grid, t, footprint, jacobian, lost_variance);
     // En el rio el rizado corre a lo largo (angulo 90 grados = +y del rio) y
     // su pendiente vuelve al mundo con los ejes del rio en ese punto.
-    vec2 slope = detailSlope(ripple_space, t, river ? river_flow : flow, river ? 1.5707963 : b.wind.x, b.wind.w,
-                             footprint, lost_variance);
+    // Lejos (mas de ~5 cm por pixel) el rizado ya no se resuelve: a ras de
+    // agua se estiraba en rayas de "metal cepillado". Se apaga y su pendiente
+    // pasa a rugosidad (un reflejo suave, como se ve el mar a lo lejos).
+    float detail_far = smoothstep(0.03, 0.25, footprint);
+    vec2 slope = detailSlope(ripple_space, t, river ? river_flow : flow, river ? 1.5707963 : b.wind.x,
+                             b.wind.w * (1.0 - detail_far), footprint, lost_variance);
+    lost_variance += detail_far * 0.004 * b.wind.w * b.wind.w;
     if (river) slope = river_side * slope.x + river_dir * slope.y;
     // Olas interactivas (salpicaduras y estelas).
     vec2 ripple_slope = rippleSlope(v_world_position.xz);
@@ -511,6 +516,16 @@ void main() {
         bands = smoothstep(0.55, 1.0, sin(phase)) * (1.0 - smoothstep(0.0, shore_width * 3.0, vertical_depth)) * b.extra.x;
     }
     float crest_foam = smoothstep(0.35, -0.1, jacobian) * smoothstep(0.35, 0.8, crest);
+    // Borreguitos: las crestas mas altas y comprimidas de un mar con oleaje
+    // rompen en espuma, a manchas (no todas las olas a la vez), y la espuma se
+    // queda un poco en la cara de atras de la ola.
+    if (!river) {
+        float sea_state = smoothstep(0.3, 1.5, b.waves.x);
+        float patches = smoothstep(0.45, 0.75, fbm(v_grid * 0.035 + vec2(t * 0.03, -t * 0.02), footprint * 0.035));
+        float breaking = smoothstep(0.55, 0.95, crest) * smoothstep(0.95, 0.6, jacobian);
+        float trailing = smoothstep(0.25, 0.6, crest) * smoothstep(0.9, 0.75, jacobian) * 0.35;
+        crest_foam = max(crest_foam, (breaking + trailing) * patches * sea_state);
+    }
     float river_foam = 0.0;
     if (river) {
         float bank = smoothstep(0.32, 0.5, abs(v_uv.x - 0.5));

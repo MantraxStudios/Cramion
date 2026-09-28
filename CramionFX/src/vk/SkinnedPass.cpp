@@ -79,7 +79,7 @@ void SkinnedPass::create(const VulkanDevice& device, const GBuffer& gbuffer,
     // Texturas de los decals (estampas): 8 ranuras.
     frame_bindings[4].binding = 4;
     frame_bindings[4].descriptorType = vk::DescriptorType::eCombinedImageSampler;
-    frame_bindings[4].descriptorCount = 8;
+    frame_bindings[4].descriptorCount = kMaxDecalTextures;
     frame_bindings[4].stageFlags = vk::ShaderStageFlagBits::eFragment;
     // Propiedades de los materiales con shader propio (8 vec4 cada uno).
     frame_bindings[5].binding = 5;

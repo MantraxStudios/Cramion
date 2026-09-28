@@ -17,6 +17,34 @@ Incluye dos escenas de demostración, iluminadas por una sola luz direccional (e
 
 ---
 
+## Novedades de la 0.8.6
+
+**Corregido**: la 0.8.5 se cerraba al abrir y al cerrar el editor (error en `nvoglv64.dll`). Si la 0.8.5 no te abre, descarga la 0.8.6 a mano.
+
+## Novedades de la 0.8.5
+
+**Luces en mapas grandes**: con más de 32 luces puntuales (u 8 focos) se dibujan las más cercanas a la cámara, no las primeras de la Jerarquía, y las luces apagadas ya no ocupan hueco. Se acabaron las salas del final a oscuras.
+
+**Decals**: hasta 32 imágenes distintas por escena (antes 8).
+
+## Novedades de la 0.8.0
+
+**Agua realista**: las olas se tapan unas a otras (las de detrás ya no se ven delante), **borreguitos** de espuma en las crestas cuando hay oleaje y un mar lejano sin rayas.
+
+**Sombras del sol con penumbra real**: nítidas al pie de los objetos y suaves cuanto más lejos está lo que las proyecta, como con el sol de verdad. Con el cielo cubierto la luz ambiente se vuelve gris, como en un día nublado.
+
+**Nubes realistas**: claros y masas repartidos por el cielo, estratos, cúmulos y cumulonimbos, viento que las mueve y las inclina, y **sus sombras recorren el suelo**. Todo se ajusta en el componente Sky.
+
+**Animación más realista**: transiciones **inerciales** como en Unreal (el cuerpo conserva su impulso al cambiar de animación, sin poses flotando), *continuar el ciclo* entre estados y **pies bloqueados** que no patinan.
+
+**Path tracing** con un botón en la vista Escena, **fuerza de la sombra** en cada luz, **motion blur**, **profundidad de campo** con bokeh, distorsión y destellos de lente.
+
+**Presets de post-procesado** (y de cualquier componente): Realista, Cinematográfico, Noche, Terror, Retro... o los tuyos guardados en el proyecto.
+
+**Crear materiales y asignarlos**: clic derecho en uno o varios modelos y cada malla sale con sus texturas.
+
+**Corregido**: las manchas que parpadeaban encima de los objetos cuando había muchos en escena.
+
 ## Novedades de la 0.7.4
 
 **Sombras de focos y luces puntuales arregladas**: se acabaron los cuadros negros y las manchas en paredes, techos y modelos que salían cerca de una luz y desaparecían al acercarse (la cámara veía el modelo simplificado por el LOD y la luz el completo, y la superficie se sombreaba a sí misma). Las sombras ya no parpadean ni cambian de forma al mover la cámara, el terreno ya no se sombrea a sí mismo a manchas, y una lámpara que parpadea conserva su sombra.
@@ -158,6 +186,9 @@ Incluye dos escenas de demostración, iluminadas por una sola luz direccional (e
 
 ## Índice
 
+- [Novedades de la 0.8.6](#novedades-de-la-086)
+- [Novedades de la 0.8.5](#novedades-de-la-085)
+- [Novedades de la 0.8.0](#novedades-de-la-080)
 - [Novedades de la 0.7.4](#novedades-de-la-074)
 - [Novedades de la 0.7.2](#novedades-de-la-072)
 - [Novedades de la 0.7.1](#novedades-de-la-071)

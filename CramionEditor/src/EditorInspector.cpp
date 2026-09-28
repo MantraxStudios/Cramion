@@ -8,6 +8,8 @@
 
 #include "Dialogs.h"
 
+#include <CramionCore/ecs/ComponentPresets.h>
+
 #include <imgui.h>
 #include <imgui_stdlib.h>
 
@@ -15,6 +17,7 @@
 #include <cctype>
 #include <cfloat>
 #include <functional>
+#include <iostream>
 #include <map>
 
 namespace cramion::editor {
@@ -299,6 +302,10 @@ void EditorApp::drawInspector() {
                 }
                 commit();
             }
+            if (ImGui::BeginMenu("Presets")) {
+                drawComponentPresets(type.name, multi ? selected : std::vector<ecs::Entity>{entity});
+                ImGui::EndMenu();
+            }
             ImGui::EndPopup();
         }
         if (open) {
@@ -329,6 +336,15 @@ void EditorApp::drawInspector() {
                     type.reflect(world_, other.handle(), collect);
                 }
                 mixed = mixedFields(values);
+            }
+            // Presets a la vista en los componentes que traen de fabrica.
+            if (!ecs::builtinPresets(type.name).empty()) {
+                if (ImGui::Button("Presets...", ImVec2(-1.0f, 0.0f))) ImGui::OpenPopup("component_presets");
+                ImGui::SetItemTooltip("Aplicar un preset de fabrica o del proyecto, o guardar estos valores como preset");
+                if (ImGui::BeginPopup("component_presets")) {
+                    drawComponentPresets(type.name, multi ? selected : std::vector<ecs::Entity>{entity});
+                    ImGui::EndPopup();
+                }
             }
             visitor.beginComponent(multi ? &mixed : nullptr);
             if (type.reflect(world_, entity.handle(), visitor)) {
@@ -468,6 +484,40 @@ void EditorApp::drawInspector() {
         commit();
     }
 
+    // --- Guardar un preset (lo pide el menu de Presets) ---
+    if (preset_save_request_) {
+        preset_save_request_ = false;
+        ImGui::OpenPopup("Guardar preset");
+    }
+    if (ImGui::BeginPopupModal("Guardar preset", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::Text("Preset de %s", preset_save_component_.c_str());
+        ImGui::TextDisabled("Se guarda en Assets/Presets/%s", preset_save_component_.c_str());
+        if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();
+        const bool enter = ImGui::InputText("Nombre", &preset_save_name_, ImGuiInputTextFlags_EnterReturnsTrue);
+        const bool exists = !preset_save_name_.empty() &&
+                            ecs::findPreset(ecs::projectPresets(project_.assetsFolder(), preset_save_component_),
+                                            preset_save_name_) != nullptr;
+        if (exists) ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.3f, 1.0f), "Ya existe: se sobrescribe");
+        ImGui::BeginDisabled(preset_save_name_.empty());
+        if (ImGui::Button("Guardar", ImVec2(120.0f, 0.0f)) || (enter && !preset_save_name_.empty())) {
+            std::string error;
+            const std::filesystem::path file = ecs::savePreset(world_, entity, preset_save_component_, preset_save_name_,
+                                                               project_.assetsFolder(), &error);
+            if (file.empty()) {
+                std::cerr << "[Editor] No se pudo guardar el preset: " << error << "\n";
+            } else {
+                std::cout << "[Editor] Preset guardado: " << preset_save_name_ << "\n";
+            }
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+        if (ImGui::Button("Cancelar", ImVec2(120.0f, 0.0f)) || ImGui::IsKeyPressed(ImGuiKey_Escape)) {
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+    }
+
     // --- Add Component ---
     ImGui::Spacing();
     const float width = std::min(ImGui::GetContentRegionAvail().x, 260.0f);
@@ -488,6 +538,57 @@ void EditorApp::drawInspector() {
     }
     drawAddComponent(entity);
     ImGui::End();
+}
+
+void EditorApp::drawComponentPresets(const std::string& component, const std::vector<ecs::Entity>& targets) {
+    const std::vector<ecs::ComponentPreset> presets = ecs::allPresets(project_.assetsFolder(), component);
+    const auto apply = [&](const ecs::ComponentPreset& preset) {
+        std::string error;
+        int applied = 0;
+        for (ecs::Entity e : targets) {
+            if (ecs::applyPreset(world_, e, preset, &error)) ++applied;
+        }
+        if (applied > 0) {
+            commit();
+            std::cout << "[Editor] Preset \"" << preset.name << "\" aplicado a " << applied << " objeto(s)\n";
+        } else {
+            std::cerr << "[Editor] No se pudo aplicar el preset: " << error << "\n";
+        }
+    };
+    bool builtin_title = false;
+    bool project_title = false;
+    for (const ecs::ComponentPreset& preset : presets) {
+        if (preset.builtin && !builtin_title) {
+            ImGui::SeparatorText("De fábrica");
+            builtin_title = true;
+        }
+        if (!preset.builtin && !project_title) {
+            ImGui::SeparatorText("Del proyecto");
+            project_title = true;
+        }
+        ImGui::PushID(preset.name.c_str());
+        if (ImGui::MenuItem(preset.name.c_str())) apply(preset);
+        if (!preset.description.empty()) ImGui::SetItemTooltip("%s", preset.description.c_str());
+        if (!preset.builtin && ImGui::BeginPopupContextItem("preset_item")) {
+            if (ImGui::MenuItem("Borrar preset")) {
+                std::error_code ec;
+                std::filesystem::remove(preset.file, ec);
+                std::cout << "[Editor] Preset borrado: " << preset.name << "\n";
+            }
+            ImGui::EndPopup();
+        }
+        ImGui::PopID();
+    }
+    if (!project_title) {
+        ImGui::SeparatorText("Del proyecto");
+        ImGui::TextDisabled("(ninguno todavía)");
+    }
+    ImGui::Separator();
+    if (ImGui::MenuItem("Guardar estos valores como preset...", nullptr, false, !targets.empty())) {
+        preset_save_component_ = component;
+        preset_save_name_.clear();
+        preset_save_request_ = true;
+    }
 }
 
 void EditorApp::drawAddComponent(ecs::Entity entity) {

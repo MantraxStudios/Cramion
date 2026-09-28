@@ -326,6 +326,11 @@ private:
     static const void* hierarchyRowId(entt::entity entity);
     void drawInspector();
     void drawAddComponent(ecs::Entity entity);
+    // Presets del componente (de fabrica y del proyecto) para esas entidades.
+    void drawComponentPresets(const std::string& component, const std::vector<ecs::Entity>& targets);
+    bool preset_save_request_ = false;
+    std::string preset_save_component_;
+    std::string preset_save_name_;
     void drawProject();
     void drawSceneView();
     void drawSceneOverlays();

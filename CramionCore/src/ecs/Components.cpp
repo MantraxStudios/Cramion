@@ -54,6 +54,9 @@ void Animator::reflect(PropertyVisitor& v) {
     v.field({"loop", "Bucle"}, loop);
     v.field({"playing", "Reproduciendo"}, playing);
     v.field({"time", "Tiempo"}, time, FloatRange{0.0f, 0.0f, 0.01f, "%.2f s"});
+    v.field({"blend_time", "Suavizado", "Sin controlador: segundos en que el cuerpo pasa de un clip al otro "
+                                        "conservando su impulso (inercializacion; 0 = corte seco)"},
+            blend_time, FloatRange{0.0f, 1.0f, 0.01f, "%.2f s"});
 }
 
 void Light::reflect(PropertyVisitor& v) {
@@ -98,6 +101,27 @@ void Sky::reflect(PropertyVisitor& v) {
     v.asset({"environment", "Cielo HDR"}, environment, assets::AssetType::Environment);
     v.field({"use_hdr", "Usar el HDR", "Si no, cielo fisico (dispersion atmosferica)"}, use_hdr);
     v.field({"clouds", "Nubes volumetricas"}, clouds);
+    if (v.wantsAllFields() || clouds) {
+        v.field({"cloud_coverage", "Cobertura", "0 = despejado, 1 = cubierto (por zonas: hay claros y masas)"},
+                cloud_coverage, FloatRange{0.0f, 1.0f, 0.01f, "%.2f", true});
+        v.field({"cloud_density", "Densidad", "Mas = nubes mas opacas y bases mas oscuras"}, cloud_density,
+                FloatRange{0.05f, 3.0f, 0.01f, "%.2f", true});
+        v.field({"cloud_type", "Tipo", "0 = estratos (capa baja y plana), 0.5 = cumulos, 1 = cumulonimbos (torres de tormenta)"},
+                cloud_type, FloatRange{0.0f, 1.0f, 0.01f, "%.2f", true});
+        v.field({"cloud_height", "Altura", "Base de las nubes sobre el suelo"}, cloud_height,
+                FloatRange{200.0f, 6000.0f, 10.0f, "%.0f m"});
+        v.field({"cloud_thickness", "Grosor", "Cuanto pueden crecer hacia arriba"}, cloud_thickness,
+                FloatRange{300.0f, 9000.0f, 10.0f, "%.0f m"});
+        v.field({"wind_speed", "Viento", "Velocidad a la que se mueven"}, wind_speed,
+                FloatRange{0.0f, 60.0f, 0.1f, "%.1f m/s"});
+        v.field({"wind_direction", "Direccion del viento"}, wind_direction, FloatRange{0.0f, 360.0f, 1.0f, "%.0f grados"});
+        v.field({"cloud_shadows", "Sombras en el suelo", "Las nubes tapan el sol: sus sombras recorren el terreno"},
+                cloud_shadows);
+        if (v.wantsAllFields() || cloud_shadows) {
+            v.field({"cloud_shadow_strength", "Fuerza de las sombras"}, cloud_shadow_strength,
+                    FloatRange{0.0f, 1.0f, 0.01f, "%.2f", true});
+        }
+    }
     v.field({"time_of_day", "Hora del dia", "Sin luz direccional ni HDR: posicion del sol"},
             time_of_day, FloatRange{0.0f, 24.0f, 0.05f, "%.2f h", true});
     v.field({"day_cycle", "Ciclo de dia"}, day_cycle);
@@ -363,6 +387,15 @@ void InverseKinematics::reflect(PropertyVisitor& v) {
         v.field({"grounding_weight", "Peso"}, grounding_weight, FloatRange{0.0f, 1.0f, 0.01f, "%.2f", true});
         v.field({"max_step", "Escalon maximo"}, max_step, FloatRange{0.0f, 2.0f, 0.01f, "%.2f m"});
         v.field({"align_feet", "Inclinar el pie", "El pie sigue la pendiente del suelo"}, align_feet);
+        v.field({"foot_locking", "Bloquear pies",
+                 "Anti-patinaje: el pie apoyado se queda clavado hasta que la animacion lo levanta"},
+                foot_locking);
+        if (v.wantsAllFields() || foot_locking) {
+            v.field({"foot_lock_speed", "Velocidad de apoyo", "Un pie abajo y mas lento que esto se clava (m/s)"},
+                    foot_lock_speed, FloatRange{0.05f, 3.0f, 0.01f, "%.2f m/s"});
+            v.field({"foot_lock_release", "Soltar a", "Se suelta si la pierna tendria que estirarse mas (m)"},
+                    foot_lock_release, FloatRange{0.05f, 1.0f, 0.01f, "%.2f m"});
+        }
         v.field({"align_body", "Inclinar el cuerpo", "Animales: el cuerpo sigue la pendiente bajo sus patas (cadenas con suelo)"},
                 align_body);
         v.field({"body_align_weight", "Peso del cuerpo"}, body_align_weight, FloatRange{0.0f, 1.0f, 0.01f, "%.2f", true});

@@ -115,6 +115,9 @@ struct Animator {
     bool loop = true;
     bool playing = true;
     float time = 0.0f;      // segundos (lo avanza RenderSync)
+    // Sin controlador: al cambiar de clip, segundos de inercializacion (el
+    // cuerpo pasa a la animacion nueva conservando su impulso; 0 = corte seco).
+    float blend_time = 0.2f;
 
     // Estado de la maquina (no se guarda en la escena).
     AnimatorRuntime runtime;
@@ -181,6 +184,12 @@ struct InverseKinematics {
     float grounding_weight = 1.0f;
     float max_step = 0.5f;      // cuanto puede subir o bajar un pie (m)
     bool align_feet = true;     // el pie sigue la inclinacion del suelo
+    // Pies bloqueados (anti-patinaje): el pie que la animacion apoya se queda
+    // clavado en el mundo hasta que la animacion lo levanta, aunque el
+    // personaje avance un poco mas o menos que el clip o gire en el sitio.
+    bool foot_locking = false;
+    float foot_lock_speed = 0.5f;     // m/s: mas lento que esto (y abajo) = apoyado
+    float foot_lock_release = 0.3f;   // m: se suelta si la pierna se estira mas
     // Animales: el cuerpo se inclina con el suelo bajo sus patas (cuesta
     // arriba, de lado) ademas de bajar la cadera. Usa las cadenas con suelo.
     bool align_body = true;
@@ -385,6 +394,16 @@ struct Sky {
     assets::AssetRef environment{{}, assets::AssetType::Environment};
     bool use_hdr = true;
     bool clouds = true;
+    // Nubes volumetricas (como las Volumetric Clouds de Unreal/HDRP).
+    float cloud_coverage = 0.45f;   // 0 despejado .. 1 cubierto
+    float cloud_density = 1.0f;     // mas = mas opacas y oscuras por debajo
+    float cloud_type = 0.45f;       // 0 estratos (capa baja) .. 0.5 cumulos .. 1 cumulonimbos (torres)
+    float cloud_height = 1500.0f;   // base de la capa (m)
+    float cloud_thickness = 2800.0f;  // grosor de la capa (m): lo que pueden crecer las torres
+    float wind_speed = 10.0f;       // m/s
+    float wind_direction = 30.0f;   // grados (0 = hacia +X)
+    bool cloud_shadows = true;      // sombras de las nubes sobre el suelo
+    float cloud_shadow_strength = 0.85f;
     float time_of_day = 10.0f;  // horas (sin luz direccional ni HDR)
     bool day_cycle = false;
 

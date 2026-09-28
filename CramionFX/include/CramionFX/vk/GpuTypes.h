@@ -79,6 +79,9 @@ struct GpuLights {
     // reflejos fuera de pantalla. Igual que GpuWeather.params y .flood.
     core::Vec4 rain{};   // x = humedad, y = charcos, z = segundos
     core::Vec4 flood{};  // xy = centro (x, z), zw = radios (0 = sin agua)
+    // Sombra de las nubes (lighting.frag, binding 23): xy = centro del mapa
+    // (x, z de la escena), z = lado (m; 0 = sin sombras), w = fuerza.
+    core::Vec4 cloud_shadow{};
 };
 
 // Constante de push de los modelos con esqueleto (pasada de geometria). Son
@@ -207,7 +210,7 @@ struct GpuSsgiPush {
 // en la pasada de geometria. Caja unidad [-0.5, 0.5]^3 en su espacio; se
 // proyecta a lo largo de su eje Y local.
 inline constexpr std::uint32_t kMaxDecals = 64;
-inline constexpr std::uint32_t kMaxDecalTextures = 8;
+inline constexpr std::uint32_t kMaxDecalTextures = 32;
 
 struct GpuDecal {
     core::Mat4 world_to_decal = core::Mat4::identity();
@@ -245,8 +248,12 @@ struct GpuVolumetricPush {
 struct GpuCloudPush {
     core::Vec4 to_light_time{};   // xyz = hacia la luz direccional, w = segundos
     core::Vec4 light_coverage{};  // rgb = su radiancia, a = cobertura (0..1)
-    core::Vec4 params{};          // x = numero de frame, y = densidad, zw = origen del mundo xz (mod 168 km)
+    core::Vec4 params{};          // x = numero de frame, y = densidad, zw = origen del mundo + viento xz (mod 168 km)
+    core::Vec4 layer{};           // x = base (m), y = cima (m), z = tipo (0 estratos .. 1 cumulonimbos)
+    core::Vec4 wind{};            // xy = direccion del viento (x, z), z = inclinacion con la altura (m), w = 1 mapa de sombra
+    core::Vec4 shadow{};          // xy = centro del mapa de sombra (x, z de la escena), z = lado (m), w = fuerza
 };
+static_assert(sizeof(GpuCloudPush) == 96, "GpuCloudPush debe coincidir con clouds.frag");
 
 // Constante de push de la LUT del cielo (sky_lut.frag).
 struct GpuSkyPush {

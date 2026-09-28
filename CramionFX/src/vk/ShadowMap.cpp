@@ -34,6 +34,12 @@ void ShadowMap::create(const VulkanDevice& device, std::uint32_t resolution) {
 
     sampler_ = vk::raii::Sampler(device.handle(), sampler_info);
 
+    vk::SamplerCreateInfo raw_info = sampler_info;
+    raw_info.magFilter = vk::Filter::eNearest;
+    raw_info.minFilter = vk::Filter::eNearest;
+    raw_info.compareEnable = VK_FALSE;
+    raw_sampler_ = vk::raii::Sampler(device.handle(), raw_info);
+
     std::cout << "[Vulkan] Mapa de sombras creado: " << scene::kShadowCascadeCount
               << " cascadas de " << resolution_ << "x" << resolution_ << " ("
               << vk::to_string(depth_.format()) << ")\n";
@@ -41,6 +47,7 @@ void ShadowMap::create(const VulkanDevice& device, std::uint32_t resolution) {
 
 void ShadowMap::destroy() {
     sampler_ = nullptr;
+    raw_sampler_ = nullptr;
     depth_.destroy();
 }
 

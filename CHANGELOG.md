@@ -1,6 +1,50 @@
 # Cambios
 
-## 0.7.5 (sin publicar)
+## 0.8.6
+
+### Corregido
+- La 0.8.5 se **cerraba al abrir y al cerrar el editor** (error en `nvoglv64.dll`, el driver de NVIDIA). Al subir el máximo de imágenes de decal a 32, dos listas internas seguían siendo de 8 y se escribía fuera de ellas al arrancar. Si la 0.8.5 no te abre, descarga la 0.8.6 a mano desde la página de descargas.
+
+## 0.8.5
+
+### Luces
+- Con **más luces que huecos** (32 puntuales y 8 focos a la vez) se dibujan las que más cuentan para la cámara: las cercanas y las de mucho alcance. Antes se quedaban las primeras de la Jerarquía y, en un mapa grande, las salas del final se veían a oscuras aunque fueran las únicas a la vista.
+- Una luz **apagada** (intensidad 0) ya no ocupa hueco: se pueden tener muchas luces apagadas por la escena y encenderlas por script sin que otras desaparezcan.
+
+### Decals
+- Hasta **32 imágenes de decal distintas** en una escena (antes 8). Con más, las que no cabían salían como una mancha gris borrosa.
+
+## 0.8.0
+
+### Agua
+- Las **olas de detras ya no se ven delante**: el agua guarda su propia profundidad (una copia de la de la escena mas las olas), asi que cada cresta tapa lo que tiene detras. Antes solo se probaba contra la escena y las olas se dibujaban en el orden de los triangulos.
+- **Borreguitos**: con oleaje, las crestas mas altas y comprimidas rompen en espuma a manchas, y la espuma se queda un poco en la cara de atras de la ola.
+- A lo lejos el rizado fino se convierte en un reflejo suave en vez de rayas de "metal cepillado" a ras de agua.
+
+### Iluminacion
+- **Sombras del sol con penumbra real** (PCSS, como las de Unreal y HDRP): el sol mide 0.53 grados, asi que la sombra es nitida al pie de un objeto y se suaviza con la distancia a lo que la proyecta (la copa de un arbol, un tejado, un voladizo). En las cascadas cercanas; las lejanas siguen con su filtro.
+- **Cielo cubierto**: con muchas nubes la luz ambiente del cielo pasa del azul del cielo despejado a un gris neutro, como en un dia nublado.
+
+### Nubes
+- Nubes volumetricas nuevas: un **mapa de clima** reparte claros y masas por el cielo (ya no es un manto uniforme), cada zona tiene su **tipo** (estratos bajos y planos, cumulos, cumulonimbos que suben como torres), bordes mas finos cerca con una erosion que se retuerce, cimas que van por delante con el viento y formas que cambian despacio.
+- **Sombras de las nubes** sobre el suelo: sus sombras recorren el terreno con el viento (componente Sky: *Sombras en el suelo* y su fuerza).
+- Todo se ajusta en el componente **Sky**: cobertura, densidad, tipo, altura, grosor, velocidad y direccion del viento.
+- Rayo adaptativo: pasos largos por el aire y finos dentro de la nube; el horizonte ya no se ve a trozos.
+
+### Animacion mas realista
+- **Transiciones inerciales** (como el nodo Inertialization de Unreal): al cambiar de estado el cuerpo pasa a la animacion nueva conservando el impulso de cada hueso, sin las poses que flotan del fundido cruzado. Es la mezcla por defecto; en cada transicion se puede elegir *Fundido cruzado*.
+- **Continuar el ciclo** en una transicion: el estado nuevo sigue en el mismo punto del ciclo (andar -> correr con el mismo pie delante).
+- Sin controlador, cambiar de clip (Lua `entity:play`) tambien es suave: *Suavizado* en el Animator.
+- **Pies bloqueados** en el IK (anti-patinaje): el pie que la animacion apoya se queda clavado en el suelo hasta que la animacion lo levanta, aunque el personaje avance algo mas o menos que el clip o gire en el sitio.
+- La plantilla *Tercera persona avanzada* los usa, y se inclina al arrancar, frenar y girar.
+
+### Presets
+- **Presets de componentes** (como los de Unity): clic derecho en un componente > *Presets*, o el boton *Presets...* del Post-procesado. Aplicar uno o guardar los valores actuales como preset del proyecto (`Assets/Presets/<Componente>/*.crpreset`), a uno o a varios objetos.
+- El Post-procesado trae presets de fabrica: Realista, Cinematografico, Dia soleado, Atardecer, Noche de luna, Terror, Tormenta, Invierno, Retro (VHS / PSX) y Blanco y negro. En un volumen se conservan su forma, tamano, prioridad y peso.
+
+### Corregido
+- **Manchas que parpadeaban encima de los objetos** con muchos objetos en escena: con carga el presupuesto adaptativo simplifica mas las mallas que ve la camara, y los reflejos y la GI por trazado de rayos salian de esa malla simplificada, por dentro de la completa, y chocaban con el propio objeto. Los rayos salen ahora por encima de lo que se puede desviar el LOD.
+- Las sombras del sol cubren tambien lo que se desvia el LOD de la camara, y la malla de la sombra ya no se simplifica mas cuando el presupuesto baja el detalle (se sombreaba a si misma y cambiaba cada vez que el presupuesto cambiaba de nivel).
 
 ### Path tracing
 - Boton **Path Tracing** en la barra de la vista Escena (como el Path Tracer de Unreal): una imagen de referencia con luz fisicamente correcta con los rayos por hardware. El primer punto sale del G-buffer (normal maps, terreno, voxeles) y los caminos rebotan por la escena real muestreando el material (difuso y especular GGX con VNDF), con luz directa del sol (con su disco: penumbra real) y de las luces locales con rayos de sombra, cielo, emision, niebla y ruleta rusa.

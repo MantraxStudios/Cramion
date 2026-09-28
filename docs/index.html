@@ -48,7 +48,7 @@
         <a href="https://github.com/MantraxStudios/Cramion" class="hover:text-white">GitHub</a>
         <a href="https://discord.gg/zG7rSsUGEz" target="_blank" rel="noopener" class="hover:text-white">Discord</a>
       </div>
-      <a href="#descargar" class="ml-auto border border-paper/30 px-3 py-1.5 text-sm font-medium text-white hover:border-white">Descargar 0.7.4</a>
+      <a href="#descargar" class="ml-auto border border-paper/30 px-3 py-1.5 text-sm font-medium text-white hover:border-white">Descargar 0.8.6</a>
     </nav>
   </header>
 
@@ -68,7 +68,7 @@
           <a href="https://github.com/MantraxStudios/Cramion/releases/latest/download/Cramion-win64.zip" class="bg-brand px-5 py-2.5 font-semibold text-ink hover:bg-white">Descargar para Windows</a>
           <a href="manual/index.html" class="link text-paper">Leer el manual</a>
         </div>
-        <p class="mt-6 font-mono text-xs text-mute">0.7.4 · Windows 10/11 x64 · GPU con Vulkan 1.3 · ≈17 MB</p>
+        <p class="mt-6 font-mono text-xs text-mute">0.8.6 · Windows 10/11 x64 · GPU con Vulkan 1.3 · ≈19 MB</p>
       </div>
 
       <figure class="border border-rule bg-ink-2">
@@ -193,14 +193,21 @@ return Jugador</code></pre>
   <section id="novedades" class="border-b border-rule">
     <div class="mx-auto grid max-w-6xl gap-6 px-5 py-20 lg:grid-cols-[1fr_2fr]">
       <div>
-        <h2 class="text-2xl font-semibold tracking-tight text-white">0.7.4</h2>
+        <h2 class="text-2xl font-semibold tracking-tight text-white">0.8.6</h2>
         <p class="mt-1 font-mono text-xs text-mute">septiembre de 2026</p>
       </div>
       <div>
         <ul class="space-y-3 text-paper/75">
-          <li><span class="text-white">Sombras de focos y luces puntuales.</span> Sin cuadros negros ni manchas en paredes y modelos cerca de la luz: el sesgo de la sombra cubre lo que se desvía el LOD que ve la cámara.</li>
-          <li><span class="text-white">Sin parpadeo.</span> Las sombras locales ya no cambian de forma al mover la cámara, el terreno no se sombrea a sí mismo y una lámpara que parpadea conserva su sombra.</li>
-          <li><span class="text-white">Niebla.</span> Toma la luz media del cielo y ya no pinta el skybox sobre las paredes.</li>
+          <li><span class="text-white">Corregido.</span> La 0.8.5 se cerraba al abrir y al cerrar el editor.</li>
+          <li><span class="text-white">Luces en mapas grandes.</span> Con más de 32 luces se dibujan las más cercanas a la cámara y las apagadas no ocupan hueco.</li>
+          <li><span class="text-white">Decals.</span> Hasta 32 imágenes distintas por escena.</li>
+          <li><span class="text-white">Agua realista.</span> Las olas se tapan entre sí, borreguitos de espuma en las crestas y un mar lejano sin rayas.</li>
+          <li><span class="text-white">Sombras del sol con penumbra real.</span> Nítidas al pie y suaves con la distancia; el cielo cubierto da una luz gris.</li>
+          <li><span class="text-white">Nubes realistas.</span> Claros y masas, estratos, cúmulos y cumulonimbos, viento, y sus sombras recorren el suelo.</li>
+          <li><span class="text-white">Animación.</span> Transiciones inerciales como Unreal, ciclos que continúan entre estados y pies bloqueados que no patinan.</li>
+          <li><span class="text-white">Path tracing, motion blur y profundidad de campo.</span> Referencia física con un botón, bokeh de lente real y fuerza de la sombra por luz.</li>
+          <li><span class="text-white">Presets.</span> Post-procesado Realista, Cinematográfico, Noche, Terror, Retro... o los tuyos.</li>
+          <li><span class="text-white">Corregido.</span> Las manchas que parpadeaban sobre los objetos con muchos en escena.</li>
         </ul>
         <a href="https://github.com/MantraxStudios/Cramion/blob/main/CHANGELOG.md" class="link mt-6 inline-block text-sm">Todos los cambios</a>
       </div>
@@ -214,7 +221,7 @@ return Jugador</code></pre>
         <h2 class="text-2xl font-semibold tracking-tight text-white">Descargar</h2>
         <p class="mt-4 text-paper/70">Descomprime y abre <span class="font-mono text-[0.9em] text-white">CramionEditor.exe</span>. Desde la 0.6.2 el motor avisa de las versiones nuevas y se actualiza solo.</p>
         <div class="mt-8 flex flex-col items-start gap-3">
-          <a href="https://github.com/MantraxStudios/Cramion/releases/latest/download/Cramion-win64.zip" class="bg-brand px-5 py-2.5 font-semibold text-ink hover:bg-white">Cramion-win64.zip · ≈17 MB</a>
+          <a href="https://github.com/MantraxStudios/Cramion/releases/latest/download/Cramion-win64.zip" class="bg-brand px-5 py-2.5 font-semibold text-ink hover:bg-white">Cramion-win64.zip · ≈19 MB</a>
           <a href="https://github.com/MantraxStudios/Cramion/releases" class="link text-sm">Versiones anteriores</a>
           <a href="https://discord.gg/zG7rSsUGEz" target="_blank" rel="noopener" class="link text-sm">Discord de la comunidad</a>
         </div>

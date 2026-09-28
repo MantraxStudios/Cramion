@@ -230,6 +230,39 @@
   también el trazado de rayos y el path tracing.
 </p>
 
+<h3 id="penumbra">Sombras del sol con penumbra</h3>
+<p>
+  El sol no es un punto: mide 0,53 grados. Por eso su sombra es nítida donde el objeto toca el suelo y se suaviza
+  cuanto más lejos está lo que la proyecta (alrededor de 1 cm de penumbra por cada metro): la sombra de un poste es
+  dura al pie y la de la copa de un árbol o un tejado, suave. El motor lo calcula en las cascadas cercanas (PCSS:
+  busca a qué distancia está lo que tapa y filtra con ese tamaño); las lejanas usan su filtro de siempre. Con las
+  nubes cubriendo el cielo, la luz ambiente pasa del azul del cielo a un gris neutro.
+</p>
+
+<h3 id="nubes">Nubes volumétricas y sus sombras</h3>
+<p>
+  Con el cielo físico (componente <a href="componentes-entorno.html#Sky">Sky</a>, <em>Nubes volumétricas</em>) el cielo
+  tiene nubes de verdad, iluminadas por el sol o la luna. Un mapa de clima reparte claros y masas; cada zona tiene su
+  tipo y el viento las mueve, adelanta sus cimas y les cambia la forma poco a poco.
+</p>
+<ul>
+  <li><strong>Cobertura</strong>: 0 despejado, 1 cubierto. <strong>Densidad</strong>: más opacas y bases más oscuras.</li>
+  <li><strong>Tipo</strong>: 0 estratos (capa baja y plana), 0,5 cúmulos, 1 cumulonimbos (torres de tormenta).</li>
+  <li><strong>Altura</strong> de la base y <strong>Grosor</strong> de la capa (lo que pueden crecer).</li>
+  <li><strong>Viento</strong> (m/s) y su <strong>dirección</strong>.</li>
+  <li><strong>Sombras en el suelo</strong> y su fuerza: las nubes tapan el sol y sus sombras recorren el terreno.</li>
+</ul>
+
+<h3 id="presets">Presets de post-procesado</h3>
+<p>
+  El botón <strong>Presets...</strong> del Post-procesado (o clic derecho en cualquier componente &gt; <em>Presets</em>)
+  aplica un preset de fábrica (Realista, Cinematográfico, Día soleado, Atardecer, Noche de luna, Terror, Tormenta,
+  Invierno, Retro, Blanco y negro) o uno del proyecto. <em>Guardar estos valores como preset...</em> lo crea en
+  <code>Assets/Presets/&lt;Componente&gt;/</code> (un <code>.crpreset</code> que viaja con el proyecto; clic derecho en
+  él para borrarlo). Con varios objetos seleccionados se aplica a todos; en un volumen se conservan su forma, tamaño,
+  prioridad y peso.
+</p>
+
 <h3 id="efectos-camara">Efectos de cámara: motion blur, profundidad de campo y lente</h3>
 <p>
   Están en el componente <a href="componentes-basicos.html#PostProcessing">Post-procesado</a> (global o por volumen,
@@ -310,6 +343,8 @@
   <li>Marca <strong>Static</strong> lo que no se mueve: al exportar se combinan sus mallas (static batching).</li>
   <li>Modelos con cientos de piezas sueltas: <em>Reimportar (combinar mallas)</em> en el Proyecto.</li>
   <li>Luces locales con sombra: pocas. Las que se mueven, mejor sin sombras.</li>
+  <li>Se dibujan a la vez hasta <strong>32 luces puntuales y 8 focos</strong>: si hay más, las más cercanas a la cámara (o de más alcance). Las apagadas (intensidad 0) no cuentan. En un mapa grande, apaga por script lo que queda lejos.</li>
+  <li>Decals: hasta <strong>32 imágenes distintas</strong> por escena.</li>
   <li>Usa el <strong>Profiler</strong> (componente) en el juego y las <strong>Estadísticas</strong> en el editor para ver qué pasada cuesta más.</li>
 </ul>
       </div>

@@ -11,6 +11,7 @@
     <tr><td>Bucle<br><code>loop</code></td><td>si/no</td><td>si</td><td></td><td></td></tr>
     <tr><td>Reproduciendo<br><code>playing</code></td><td>si/no</td><td>si</td><td></td><td></td></tr>
     <tr><td>Tiempo<br><code>time</code></td><td>numero</td><td>0</td><td></td><td></td></tr>
+    <tr><td>Suavizado<br><code>blend_time</code></td><td>numero</td><td>0,2</td><td>0 a 1</td><td>Sin controlador: segundos en que el cuerpo pasa de un clip al otro conservando su impulso (inercializacion; 0 = corte seco)</td></tr>
   </tbody>
 </table>
 <h3 id="InverseKinematics">IK (cinematica inversa) <code>InverseKinematics</code></h3>
@@ -60,6 +61,9 @@
     <tr><td>Peso<br><code>grounding_weight</code></td><td>numero</td><td>1</td><td>0 a 1</td><td></td></tr>
     <tr><td>Escalon maximo<br><code>max_step</code></td><td>numero</td><td>0,5</td><td>0 a 2</td><td></td></tr>
     <tr><td>Inclinar el pie<br><code>align_feet</code></td><td>si/no</td><td>si</td><td></td><td>El pie sigue la pendiente del suelo</td></tr>
+    <tr><td>Bloquear pies<br><code>foot_locking</code></td><td>si/no</td><td>no</td><td></td><td>Anti-patinaje: el pie apoyado se queda clavado hasta que la animacion lo levanta</td></tr>
+    <tr><td>Velocidad de apoyo<br><code>foot_lock_speed</code></td><td>numero</td><td>0,5</td><td>0,05 a 3</td><td>Un pie abajo y mas lento que esto se clava (m/s)</td></tr>
+    <tr><td>Soltar a<br><code>foot_lock_release</code></td><td>numero</td><td>0,3</td><td>0,05 a 1</td><td>Se suelta si la pierna tendria que estirarse mas (m)</td></tr>
     <tr><td>Inclinar el cuerpo<br><code>align_body</code></td><td>si/no</td><td>si</td><td></td><td>Animales: el cuerpo sigue la pendiente bajo sus patas (cadenas con suelo)</td></tr>
     <tr><td>Peso del cuerpo<br><code>body_align_weight</code></td><td>numero</td><td>1</td><td>0 a 1</td><td></td></tr>
     <tr><td colspan="5"><strong class="text-white">Cadenas (animales y otros esqueletos) (lista)</strong> <code>chains</code> — Patas, cuellos, colas: el hueso final y cuantos huesos por encima se doblan. Con suelo, el pie se apoya en lo que tiene debajo</td></tr>

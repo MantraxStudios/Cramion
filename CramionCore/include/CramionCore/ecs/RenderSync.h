@@ -13,6 +13,7 @@
 //   sync.sync(world, scene, renderer, dt);
 //   renderer.drawFrame(scene);
 
+#include "CramionCore/anim/Inertialization.h"
 #include "CramionCore/asset/SurfaceShader.h"
 #include "CramionCore/asset/AssetManager.h"
 #include "CramionCore/asset/MaterialAsset.h"
@@ -168,6 +169,16 @@ private:
         std::vector<float> legs;       // lo mismo por pata con suelo (animales)
         bool limb_valid[4] = {false, false, false, false};
         core::Vec3 limb[4]{};          // objetivo de cada mano y pie (mundo)
+        // Pies bloqueados (humanoide).
+        struct FootLock {
+            bool has_last = false;
+            core::Vec3 last{};         // pie de la animacion el frame anterior (mundo)
+            float floor = 0.0f;        // altura del pie apoyado (sobre la base)
+            bool locked = false;
+            core::Vec3 position{};     // donde se clavo (mundo)
+            float weight = 0.0f;       // 0..1, sube y baja rapido
+        };
+        FootLock lock[2];
     };
     struct AnimationState {
         std::uint32_t model = 0;
@@ -185,6 +196,8 @@ private:
         std::uint64_t seen = 0;     // ultimo frame en que se dibujo
         bool animated = false;      // el frame anterior se animaba (hay que copiar su pose)
         IKSmoothing ik;
+        // Transiciones inerciales (controlador y cambios de clip).
+        anim::Inertializer inertial;
     };
     struct ClipKey {
         std::uint32_t model = 0;

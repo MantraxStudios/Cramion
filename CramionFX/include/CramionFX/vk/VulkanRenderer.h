@@ -116,6 +116,19 @@ enum class SceneDrawMode : int {
     LitWireframe = 3,  // con luz y las lineas de las mallas encima
 };
 
+// Nubes volumetricas (componente Sky).
+struct CloudSettings {
+    float coverage = 0.45f;
+    float density = 1.0f;
+    float type = 0.45f;         // 0 estratos .. 0.5 cumulos .. 1 cumulonimbos
+    float bottom = 1500.0f;     // m
+    float thickness = 2800.0f;  // m
+    float wind_speed = 10.0f;   // m/s
+    float wind_direction = 30.0f;  // grados
+    bool shadows = true;
+    float shadow_strength = 0.85f;
+};
+
 class VulkanRenderer {
 public:
     // Niveles de la cadena de bloom (debe coincidir con kBloomLevels de
@@ -415,6 +428,7 @@ public:
 
     // Nubes volumetricas.
     void setCloudsEnabled(bool enabled) { clouds_enabled_ = enabled; }
+    void setCloudSettings(const CloudSettings& settings) { cloud_settings_ = settings; }
     bool cloudsEnabled() const { return clouds_enabled_; }
 
     // Sonda de reflexion de la escena (si no, lo que el SSR no ve refleja el
@@ -725,6 +739,7 @@ private:
     // Copia de scene_color_ antes del vidrio: lo que el vidrio refleja (no
     // puede leer la imagen en la que esta dibujando).
     VulkanImage glass_source_{};
+    VulkanImage water_depth_{};  // profundidad del agua: la de la escena + las olas
     // Resultado de la composicion (tono + gamma); lo lee el FXAA.
     VulkanImage ldr_color_{};
     // r = oclusion ambiental, g = profundidad lineal (para el desenfoque).
@@ -780,8 +795,8 @@ private:
     bool rain_map_ready_ = false;
     std::vector<VulkanBuffer> weather_buffers_;
     std::vector<Decal> decals_;
-    std::array<VulkanTexture, 8> decal_textures_;
-    std::array<std::filesystem::path, 8> decal_texture_paths_;
+    std::array<VulkanTexture, kMaxDecalTextures> decal_textures_;
+    std::array<std::filesystem::path, kMaxDecalTextures> decal_texture_paths_;
     VulkanTexture decal_white_;
     vk::raii::Sampler decal_sampler_{nullptr};
     void writeDecalTextureDescriptors();
@@ -795,6 +810,13 @@ private:
     // Cielo fotografiado (opcional).
     EnvironmentMap environment_{};
     VulkanImage clouds_image_{};
+    // Sombra de las nubes: transmitancia hacia el sol sobre un cuadrado del
+    // suelo centrado en la camara (lo lee la iluminacion).
+    VulkanImage cloud_shadow_image_{};
+    FullscreenPass cloud_shadow_pass_{};
+    GpuCloudPush cloud_shadow_push_{};
+    CloudSettings cloud_settings_{};
+    double cloud_wind_offset_[2] = {0.0, 0.0};  // lo que ha avanzado el viento (m)
     // Sonda de reflexion de la escena y la imagen HDR donde se dibuja cada
     // cara antes de copiarla al cubo (no se usa la del frame: el SSR y la GI
     // del siguiente la leen como frame anterior).

@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(Cramion
-    VERSION 0.7.4
+    VERSION 0.8.6
     DESCRIPTION "Motor con capa de plataforma DirectX 12 (CramionDM) y renderizador Vulkan (CramionFX)"
     LANGUAGES CXX
 )

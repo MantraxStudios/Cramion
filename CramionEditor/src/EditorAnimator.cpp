@@ -526,6 +526,16 @@ void EditorApp::drawAnimatorSidePanel(ecs::Entity preview) {
         ImGui::DragFloat("Fundido", &t.duration, 0.01f, 0.0f, 3.0f, t.duration > 0.0f ? "%.2f s" : "corte seco");
         if (ImGui::IsItemDeactivatedAfterEdit()) animator_dirty_ = true;
         ImGui::SetItemTooltip("Segundos en que la pose pasa del estado viejo al nuevo (0 = cambio instantáneo)");
+        int blend_mode = t.inertial ? 0 : 1;
+        if (ImGui::Combo("Mezcla", &blend_mode, "Inercial\0Fundido cruzado\0")) {
+            t.inertial = blend_mode == 0;
+            animator_dirty_ = true;
+        }
+        ImGui::SetItemTooltip("Inercial (como Unreal): pasa a la pose nueva y el cuerpo conserva su impulso; "
+                              "sin poses flotando ni pies que patinan.\nFundido cruzado: mezcla las dos poses.");
+        if (ImGui::Checkbox("Continuar el ciclo", &t.sync_phase)) animator_dirty_ = true;
+        ImGui::SetItemTooltip("El estado nuevo empieza en el mismo punto del ciclo que el viejo "
+                              "(andar -> correr con el mismo pie delante)");
         ImGui::TextDisabled("Condiciones (todas deben cumplirse)");
         int remove_condition = -1;
         for (std::size_t i = 0; i < t.conditions.size(); ++i) {

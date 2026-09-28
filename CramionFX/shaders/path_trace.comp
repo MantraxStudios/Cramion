@@ -170,7 +170,7 @@ float shadowVisibility(vec3 origin, vec3 direction, float distance, float streng
 // tracing vea lo mismo que el raster. El cielo si es radiancia fisica.
 vec3 directLight(Surface s, vec3 v) {
     vec3 result = vec3(0.0);
-    vec3 origin = s.position + s.normal * (0.01 + 0.0005 * length(s.position - camera.position.xyz));
+    vec3 origin = s.position + s.normal * (0.01 + (0.0005 + lights.rain.w * 1.5) * length(s.position - camera.position.xyz));
 
     // --- Sol: una direccion dentro de su disco ---
     vec3 to_sun = -normalize(lights.sun_direction_intensity.xyz);
@@ -352,7 +352,7 @@ void main() {
                 throughput /= survive;
             }
 
-            vec3 origin = s.position + s.normal * (0.01 + 0.0005 * length(s.position - camera.position.xyz));
+            vec3 origin = s.position + s.normal * (0.01 + (0.0005 + lights.rain.w * 1.5) * length(s.position - camera.position.xyz));
             RtHit hit;
             if (!traceRay(origin, direction, kMaxDistance, hit)) {
                 if (bounce == 0) sky_visibility = 1.0;

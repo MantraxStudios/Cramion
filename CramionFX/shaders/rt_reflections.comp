@@ -67,7 +67,7 @@ void main() {
         }
     }
 
-    vec3 origin = position + normal * (0.01 + 0.002 * distance_to_camera);
+    vec3 origin = position + normal * gbufferRayBias(distance_to_camera, 0.01);
     RtHit hit;
     vec3 color;
     if (traceRay(origin, direction, kMaxDistance, hit)) {

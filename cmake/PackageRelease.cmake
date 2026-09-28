@@ -50,9 +50,17 @@ if(EXISTS "${SOURCE_DIR}/CHANGELOG.md")
     file(COPY "${SOURCE_DIR}/CHANGELOG.md" DESTINATION "${stage}")
 endif()
 # La documentacion viaja con el motor (se abre sin conexion salvo el estilo).
-file(COPY "${SOURCE_DIR}/docs" DESTINATION "${stage}"
-     PATTERN "*.mp4" EXCLUDE   # el video de fondo de la web no hace falta en el zip
-     PATTERN "docs.zip" EXCLUDE)  # paquete para subir la web (lleva el video)
+# Solo lo que la web necesita (html, manual, imagenes): sin el video de fondo,
+# el docs.zip para subirla ni restos que acaben en la carpeta (una copia de
+# 16 MB de docs.zip con otro nombre llego a colarse en el zip).
+file(MAKE_DIRECTORY "${stage}/docs")
+file(GLOB docs_pages "${SOURCE_DIR}/docs/*.html" "${SOURCE_DIR}/docs/.nojekyll")
+file(COPY ${docs_pages} DESTINATION "${stage}/docs")
+foreach(folder manual img)
+    if(EXISTS "${SOURCE_DIR}/docs/${folder}")
+        file(COPY "${SOURCE_DIR}/docs/${folder}" DESTINATION "${stage}/docs" PATTERN "*.mp4" EXCLUDE)
+    endif()
+endforeach()
 
 # Runtime de Visual C++ junto a los .exe (despliegue local, permitido por la
 # licencia del redistribuible). El editor copia los .dll de su carpeta en cada

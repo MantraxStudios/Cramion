@@ -142,6 +142,8 @@ bool saveAnimatorController(const AnimatorController& c, const std::filesystem::
                                {"has_exit_time", t.has_exit_time},
                                {"exit_time", t.exit_time},
                                {"duration", t.duration},
+                               {"blend", t.inertial ? "inertial" : "crossfade"},
+                               {"sync_phase", t.sync_phase},
                                {"conditions", std::move(conditions)}});
     }
     return writeText(path, root.dump(2), error);
@@ -215,6 +217,8 @@ bool loadAnimatorController(const std::filesystem::path& path, AnimatorControlle
             t.has_exit_time = j.value("has_exit_time", false);
             t.exit_time = j.value("exit_time", 1.0f);
             t.duration = std::max(0.0f, j.value("duration", 0.0f));
+            t.inertial = j.value("blend", std::string{"inertial"}) != "crossfade";
+            t.sync_phase = j.value("sync_phase", false);
             if (const auto k = j.find("conditions"); k != j.end() && k->is_array()) {
                 for (const json& jc : *k) {
                     if (!jc.is_object()) continue;

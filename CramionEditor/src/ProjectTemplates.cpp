@@ -3130,10 +3130,15 @@ void buildThirdPersonPro(project::ProjectInfo& project, std::filesystem::path pa
     animator.controller = assets::AssetRef{c.uuid, assets::AssetType::AnimatorController};
     ecs::InverseKinematics& ik = model.add<ecs::InverseKinematics>();
     ik.foot_grounding = true;
+    ik.foot_locking = true;  // los pies apoyados no patinan
     ik.max_step = 0.4f;
     ik.look_weight = 0.0f;
     ik.look_max_angle = 75.0f;
     ik.right_hand.weight = 0.0f;
+    // Se inclina al arrancar, frenar y girar (la inercia del cuerpo).
+    ecs::ProceduralAnimation& body = model.add<ecs::ProceduralAnimation>();
+    body.lean = true;
+    body.lean_amount = 7.0f;
     model.add<ecs::Skeleton>().show_bones = false;
 
     // Camara orbital y la interfaz.

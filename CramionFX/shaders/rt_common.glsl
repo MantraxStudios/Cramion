@@ -52,9 +52,18 @@ layout(set = 0, binding = 5) uniform LightBuffer {
     vec4 probes[2];
     vec4 clouds;
     vec4 environment;
-    vec4 rain;   // x = humedad, y = charcos, z = segundos
+    vec4 rain;   // x = humedad, y = charcos, z = segundos, w = error del LOD de la camara (m por m)
     vec4 flood;  // zona inundada: xy = centro (x, z), zw = radios
 } lights;
+
+// Separacion del origen de un rayo que sale de lo que ve la camara (G-buffer):
+// la camara puede dibujar una malla simplificada (LOD) unos centimetros por
+// dentro de la completa que tienen los rayos; sin cubrirlo, el rayo choca con
+// el propio objeto (manchas oscuras en los reflejos y la GI que aparecen y
+// desaparecen al cambiar el LOD, p. ej. con muchos objetos).
+float gbufferRayBias(float distance_to_camera, float base) {
+    return base + (0.002 + lights.rain.w * 1.5) * distance_to_camera;
+}
 
 // Entorno del cielo prefiltrado (IblProbe): lo que ve un rayo que no choca.
 layout(set = 0, binding = 6) uniform samplerCube environment_map;

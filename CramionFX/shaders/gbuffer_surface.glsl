@@ -27,7 +27,7 @@ layout(set = 0, binding = 3) uniform WeatherBuffer {
     vec4 decal_info;  // x = numero de decals
     Decal decals[kMaxDecals];
 } weather;
-layout(set = 0, binding = 4) uniform sampler2D decal_textures[8];
+layout(set = 0, binding = 4) uniform sampler2D decal_textures[32];  // kMaxDecalTextures (GpuTypes.h)
 
 layout(location = 0) out vec4 out_albedo;    // rgb = albedo, a = oclusion ambiental
 layout(location = 1) out vec4 out_normal;    // rg = normal (octaedrica), b = rugosidad,

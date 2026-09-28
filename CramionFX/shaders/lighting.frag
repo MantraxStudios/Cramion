@@ -73,11 +73,17 @@ layout(set = 0, binding = 4) uniform LightBuffer {
     vec4 clouds;                   // x = 1 si hay nubes volumetricas; y, z = niebla (densidad, caida)
     vec4 environment;              // z = largo de las sombras de contacto (m, 0 = no); x = 1 si el cielo es el mapa HDR (environment_hdr),
                                    // y = 1 si hay luz volumetrica (volumetric_map)
+    vec4 rain;                     // (rt_common.glsl)
+    vec4 flood;
+    vec4 cloud_shadow;             // xy = centro del mapa de sombra de las nubes (x, z), z = lado (m; 0 = no), w = fuerza
 } lights;
 
 // Mapa de sombras en cascada. El muestreador compara por hardware: devuelve
 // directamente "cuanta luz llega", ya filtrado bilinealmente (PCF 2x2 gratis).
 layout(set = 0, binding = 5) uniform sampler2DArrayShadow shadow_map;
+// Las mismas cascadas sin comparar (profundidad guardada): la busqueda de lo
+// que tapa de las sombras suaves (PCSS).
+layout(set = 0, binding = 24) uniform sampler2DArray shadow_depth;
 
 layout(set = 0, binding = 6) uniform ShadowBuffer {
     mat4 light_view_projection[kShadowCascadeCount];
@@ -144,6 +150,27 @@ layout(set = 0, binding = 21) uniform sampler2D environment_hdr;
 // Luz volumetrica (volumetric.frag), a media resolucion: rgb = luz del sol
 // dispersada por el polvo hacia la camara, a = transmitancia.
 layout(set = 0, binding = 22) uniform sampler2D volumetric_map;
+
+// Sombra de las nubes (clouds.frag en modo mapa de sombra): r = cuanta luz del
+// sol pasa las nubes, sobre un cuadrado del suelo centrado en la camara.
+layout(set = 0, binding = 23) uniform sampler2D cloud_shadow_map;
+
+// Luz del sol que dejan pasar las nubes en ese punto: se lleva el punto al
+// suelo a lo largo del rayo del sol (el mapa guarda ese mismo rayo).
+float cloudShadow(vec3 world_position, vec3 to_sun) {
+    vec4 area = lights.cloud_shadow;
+    if (area.z <= 0.0 || to_sun.y <= 0.02) {
+        return 1.0;
+    }
+    vec2 ground = world_position.xz - to_sun.xz * (world_position.y / to_sun.y);
+    vec2 uv = (ground - area.xy) / area.z + 0.5;
+    float edge = min(min(uv.x, uv.y), min(1.0 - uv.x, 1.0 - uv.y));
+    if (edge <= 0.0) {
+        return 1.0;
+    }
+    float light = textureLod(cloud_shadow_map, uv, 0.0).r;
+    return mix(1.0, light, smoothstep(0.0, 0.06, edge));
+}
 
 layout(location = 0) in vec2 v_uv;
 layout(location = 0) out vec4 out_color;
@@ -348,6 +375,69 @@ float optimizedPcf(sampler2DArrayShadow map, float map_size, vec2 uv, float dept
     return sum / 16.0;
 }
 
+// Sombra del sol con penumbra de verdad (PCSS, "percentage-closer soft
+// shadows", como las sombras de contacto de Unreal y HDRP). El sol mide 0.53
+// grados: la penumbra mide la distancia entre lo que tapa y el suelo por
+// tan(0.53) (~1 cm por metro). Nitida al pie de un poste y suave la sombra de
+// la copa de un arbol o de un tejado.
+//   1. Busqueda: la profundidad media de lo que tapa alrededor del punto.
+//   2. Filtro: PCF con el tamano de esa penumbra (disco de Vogel; el giro
+//      cambia por pixel y frame con el TAA, fijo sin el).
+const float kSunDiameterTan = 0.00925;
+const float kGoldenAngle = 2.39996323;
+
+vec2 vogelDisk(int index, int count, float rotation) {
+    float r = sqrt((float(index) + 0.5) / float(count));
+    float theta = float(index) * kGoldenAngle + rotation;
+    return vec2(cos(theta), sin(theta)) * r;
+}
+
+float softSunShadow(int cascade, vec2 uv, float depth, float texel_world) {
+    float map_size = shadows.params.x;
+    float texel_uv = 1.0 / map_size;
+    // Proyeccion ortografica: cuanto cambia la profundidad por metro hacia el sol.
+    mat4 m = shadows.light_view_projection[cascade];
+    float depth_per_meter = max(length(vec3(m[0][2], m[1][2], m[2][2])), 1e-6);
+    float uv_per_meter = 1.0 / max(texel_world * map_size, 1e-6);
+
+    float rotation = 0.0;
+    if (lights.environment.w >= 0.0) {
+        vec2 p = gl_FragCoord.xy + 5.588238 * lights.environment.w;
+        rotation = fract(52.9829189 * fract(dot(p, vec2(0.06711056, 0.00583715)))) * 6.2831853;
+    }
+
+    // 1. Lo que tapa: hasta ~40 m por encima (penumbra de ~37 cm).
+    float search_uv = clamp(40.0 * kSunDiameterTan * uv_per_meter, 2.0 * texel_uv, 32.0 * texel_uv);
+    float blocker_sum = 0.0;
+    float blockers = 0.0;
+    const int kSearch = 12;
+    for (int i = 0; i < kSearch; ++i) {
+        vec2 offset = vogelDisk(i, kSearch, rotation) * search_uv;
+        float stored = textureLod(shadow_depth, vec3(uv + offset, float(cascade)), 0.0).r;
+        if (stored < depth - 1e-5) {
+            blocker_sum += stored;
+            blockers += 1.0;
+        }
+    }
+    if (blockers < 0.5) {
+        return 1.0;  // nada tapa: iluminado
+    }
+    float blocker_distance = (depth - blocker_sum / blockers) / depth_per_meter;  // metros
+    float penumbra_uv = blocker_distance * kSunDiameterTan * uv_per_meter;
+    // Penumbra menor que el propio filtro: la sombra dura de siempre.
+    if (penumbra_uv < 1.5 * texel_uv) {
+        return optimizedPcf(shadow_map, map_size, uv, depth, float(cascade));
+    }
+    float radius = min(penumbra_uv, 32.0 * texel_uv);
+    const int kTaps = 16;
+    float lit = 0.0;
+    for (int i = 0; i < kTaps; ++i) {
+        vec2 offset = vogelDisk(i, kTaps, rotation + 1.3) * radius;
+        lit += texture(shadow_map, vec4(uv + offset, float(cascade), depth));
+    }
+    return lit / float(kTaps);
+}
+
 // Muestrea una cascada concreta. Devuelve 1 = totalmente iluminado, 0 = en
 // sombra.
 float sampleCascade(int cascade, vec3 world_position, vec3 normal, float n_dot_l) {
@@ -361,7 +451,16 @@ float sampleCascade(int cascade, vec3 world_position, vec3 normal, float n_dot_l
     // luz incide de frente (no hay acne posible) y maximo cuando es rasante,
     // que es el unico caso en que hace falta.
     float sin_theta = sqrt(clamp(1.0 - n_dot_l * n_dot_l, 0.0, 1.0));
-    vec3 offset_position = world_position + normal * (texel_world * (0.35 + 1.1 * sin_theta));
+    // Mas lo que se desvian los LODs (local_shadows.params.w = error del LOD
+    // de la camara por metro; 0 sin LODs): la camara puede dibujar el objeto
+    // con una malla simplificada unos centimetros por dentro de la del mapa
+    // (que ademas puede salirse medio texel). Sin este margen, con muchos
+    // objetos (el presupuesto sube el LOD) el objeto se sombreaba a si mismo a
+    // manchas que aparecian y desaparecian.
+    float lod_error = local_shadows.params.w > 0.0
+                          ? texel_world * 0.5 + local_shadows.params.w * length(world_position - camera.position.xyz)
+                          : 0.0;
+    vec3 offset_position = world_position + normal * (texel_world * (0.35 + 1.1 * sin_theta) + lod_error);
 
     vec4 light_clip = shadows.light_view_projection[cascade] * vec4(offset_position, 1.0);
     vec3 projected = light_clip.xyz / light_clip.w;
@@ -373,9 +472,12 @@ float sampleCascade(int cascade, vec3 world_position, vec3 normal, float n_dot_l
         return 1.0;
     }
 
-    // PCF de tienda en todas las cascadas, igual que los focos. Con un solo
-    // muestreo bilineal las cascadas lejanas dejaban el borde en escalera, y
-    // al moverse la camara esa escalera "hervia" como ruido.
+    // Cascadas cercanas: sombra suave de contacto (PCSS). Lejanas: PCF de
+    // tienda (con un solo muestreo bilineal las cascadas lejanas dejaban el
+    // borde en escalera, y al moverse la camara esa escalera "hervia").
+    if (cascade <= 1) {
+        return softSunShadow(cascade, uv, projected.z, texel_world);
+    }
     return optimizedPcf(shadow_map, shadows.params.x, uv, projected.z, float(cascade));
 }
 
@@ -998,7 +1100,16 @@ void main() {
         // Difuso: irradiancia del cielo (armonicos esfericos) en la parte que
         // ve el cielo, mas la luz rebotada. Relleno minimo de noche (luz de
         // estrellas, rebotes lejanos) para no llegar al negro absoluto.
-        vec3 diffuse_light = irradianceSh(normal) * sky_visibility + gi.rgb +
+        // Cielo cubierto: las nubes reparten la luz del sol por todo el cielo,
+        // asi que la luz ambiente pasa del azul del cielo despejado a un gris
+        // neutro (algo mas clara), como en un dia nublado.
+        vec3 sky_irradiance = irradianceSh(normal);
+        if (lights.clouds.x > 0.5 && lights.clouds.w > 0.0) {
+            float overcast = lights.clouds.w * lights.clouds.w;
+            float luminance_sky = dot(sky_irradiance, vec3(0.2126, 0.7152, 0.0722));
+            sky_irradiance = mix(sky_irradiance, vec3(luminance_sky * 1.15), overcast * 0.85);
+        }
+        vec3 diffuse_light = sky_irradiance * sky_visibility + gi.rgb +
                              toLinear(lights.ambient_color.rgb) * lights.sun_color_ambient.a *
                                  (1.0 - lights.sky_sun.w) * 0.25;
         vec3 diffuse_ibl = diffuse_light * albedo * (1.0 - env_fresnel) * (1.0 - metallic);
@@ -1064,6 +1175,8 @@ void main() {
             }
             shadow = mix(1.0, shadow, shadows.params.y);
         }
+        // Las nubes que pasan por delante del sol.
+        shadow *= cloudShadow(world_position, sun_direction);
 
         // El sol mide 0.53 grados: tangente de su radio angular.
         const float kSunSize = 0.00465;
