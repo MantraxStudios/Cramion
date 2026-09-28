@@ -5,6 +5,7 @@
 // tonemap sencillo), reducida si hace falta: iconos y miniaturas del editor.
 // Se puede llamar desde cualquier hilo.
 
+#include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <vector>
@@ -20,6 +21,10 @@ struct ImageRgba8 {
 // `max_size` (> 0): el lado mayor se reduce a ese tamano (media de areas).
 // false si no se pudo leer.
 bool loadImageRgba8(const std::filesystem::path& file, ImageRgba8& image, std::uint32_t max_size = 0);
+
+// Lo mismo desde un archivo ya en memoria (PNG/JPG/TGA/BMP incrustado en un
+// modelo). false si no se pudo decodificar.
+bool decodeImageRgba8(const std::uint8_t* data, std::size_t size, ImageRgba8& image);
 
 // Guarda la imagen como PNG (miniaturas en cache). false si no se pudo.
 bool saveImagePng(const std::filesystem::path& file, const ImageRgba8& image);

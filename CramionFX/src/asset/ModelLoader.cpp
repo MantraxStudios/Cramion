@@ -923,6 +923,19 @@ private:
     ImportProgressCallback callback_;
 };
 
+// Metros por unidad del archivo (FBX: UnitScaleFactor en centimetros).
+float sceneUnitScale(const aiScene& scene) {
+    if (scene.mMetaData == nullptr) return 1.0f;
+    double d = 0.0;
+    float f = 0.0f;
+    std::int32_t i = 0;
+    double factor = 0.0;
+    if (scene.mMetaData->Get("UnitScaleFactor", d)) factor = d;
+    else if (scene.mMetaData->Get("UnitScaleFactor", f)) factor = f;
+    else if (scene.mMetaData->Get("UnitScaleFactor", i)) factor = i;
+    return factor > 1e-6 && factor < 1e6 ? static_cast<float>(factor * 0.01) : 1.0f;
+}
+
 ModelData importWithAssimp(const std::filesystem::path& path, bool force_static,
                            bool keep_hierarchy = false,
                            const ImportProgressCallback& on_progress = {}) {
@@ -1101,6 +1114,92 @@ void finalizeModel(ModelData& model, const std::string& label) {
     if (model.indices.empty()) {
         throw std::runtime_error("El modelo " + label + " no tiene triangulos.");
     }
+}
+
+float fileUnitScale(const std::filesystem::path& path) {
+    std::string extension = path.extension().string();
+    std::transform(extension.begin(), extension.end(), extension.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    if (extension != ".fbx") return 1.0f;  // glTF en metros; OBJ sin unidades
+    Assimp::Importer importer;
+    // Sin postproceso: solo la cabecera y los metadatos.
+    const aiScene* scene = importer.ReadFile(utf8(path), 0);
+    return scene != nullptr ? sceneUnitScale(*scene) : 1.0f;
+}
+
+void scaleModel(ModelData& model, float scale) {
+    if (!(scale > 0.0f) || scale == 1.0f) return;
+    // Cada transformacion L pasa a S L S^-1 (S uniforme): su traslacion se
+    // escala y su giro y escala se quedan. Los vertices, por S.
+    const auto scaleTranslation = [scale](core::Mat4& m) {
+        m.m[3][0] *= scale;
+        m.m[3][1] *= scale;
+        m.m[3][2] *= scale;
+    };
+    for (SkinnedVertex& v : model.vertices) v.position = v.position * scale;
+    for (Node& n : model.nodes) scaleTranslation(n.local);
+    for (Bone& b : model.bones) scaleTranslation(b.offset);
+    for (AnimationClip& clip : model.animations) {
+        for (AnimationChannel& c : clip.channels) {
+            for (VectorKey& k : c.positions) k.value = k.value * scale;
+        }
+    }
+    const auto scaleBounds = [scale](std::vector<SubMesh>& list) {
+        for (SubMesh& s : list) {
+            s.bounds_min = s.bounds_min * scale;
+            s.bounds_max = s.bounds_max * scale;
+        }
+    };
+    scaleBounds(model.submeshes);
+    for (MeshLod& lod : model.lods) scaleBounds(lod.submeshes);
+}
+
+std::vector<AnimationClip> loadAnimationClips(const std::filesystem::path& path, const std::vector<Node>& target,
+                                              std::string* error, float scale, bool convert_units) {
+    std::vector<AnimationClip> clips;
+    Assimp::Importer importer;
+    importer.SetPropertyBool(AI_CONFIG_IMPORT_FBX_PRESERVE_PIVOTS, false);
+    // Sin postproceso de mallas: solo hacen falta los nodos y las pistas. Un
+    // archivo sin malla sale "incompleto" para assimp: vale si trae animaciones.
+    const aiScene* scene = importer.ReadFile(utf8(path), 0);
+    if (scene == nullptr || scene->mNumAnimations == 0) {
+        if (error != nullptr) {
+            *error = scene == nullptr ? std::string(importer.GetErrorString()) : std::string("el archivo no tiene animaciones");
+        }
+        return clips;
+    }
+    const float position_scale = scale * (convert_units ? sceneUnitScale(*scene) : 1.0f);
+    std::unordered_map<std::string, std::int32_t> by_name;
+    for (std::size_t i = 0; i < target.size(); ++i) by_name.emplace(target[i].name, static_cast<std::int32_t>(i));
+    for (unsigned int a = 0; a < scene->mNumAnimations; ++a) {
+        const aiAnimation& animation = *scene->mAnimations[a];
+        const double ticks_per_second = (animation.mTicksPerSecond > 0.0) ? animation.mTicksPerSecond : 25.0;
+        const auto to_seconds = [ticks_per_second](double ticks) { return static_cast<float>(ticks / ticks_per_second); };
+        AnimationClip clip{};
+        clip.name = animation.mName.C_Str();
+        clip.duration = to_seconds(animation.mDuration);
+        for (unsigned int c = 0; c < animation.mNumChannels; ++c) {
+            const aiNodeAnim& source = *animation.mChannels[c];
+            const auto it = by_name.find(source.mNodeName.C_Str());
+            if (it == by_name.end()) continue;
+            AnimationChannel channel{};
+            channel.node = it->second;
+            for (unsigned int k = 0; k < source.mNumPositionKeys; ++k) {
+                channel.positions.push_back(
+                    {to_seconds(source.mPositionKeys[k].mTime), toVec3(source.mPositionKeys[k].mValue) * position_scale});
+            }
+            for (unsigned int k = 0; k < source.mNumRotationKeys; ++k) {
+                channel.rotations.push_back({to_seconds(source.mRotationKeys[k].mTime), toQuat(source.mRotationKeys[k].mValue)});
+            }
+            for (unsigned int k = 0; k < source.mNumScalingKeys; ++k) {
+                channel.scales.push_back({to_seconds(source.mScalingKeys[k].mTime), toVec3(source.mScalingKeys[k].mValue)});
+            }
+            clip.channels.push_back(std::move(channel));
+        }
+        if (!clip.channels.empty()) clips.push_back(std::move(clip));
+    }
+    if (clips.empty() && error != nullptr) *error = "ninguna pista coincide con los huesos del personaje";
+    return clips;
 }
 
 ModelData loadModel(const std::filesystem::path& path, bool force_static) {

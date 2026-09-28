@@ -37,6 +37,48 @@
   </tbody>
 </table>
 
+<h3 id="path-tracing">Path tracing</h3>
+<p>
+  El botón <strong>Path Tracing</strong> de la barra de la vista Escena (junto a <em>Lit</em>) cambia el render por
+  una imagen de referencia con luz físicamente correcta, como el Path Tracer de Unreal: rayos por hardware que rebotan
+  por la escena real con el material de cada superficie (difuso y especular GGX), sombras suaves del sol (el tamaño de
+  su disco) y de las luces, luz indirecta, reflejos, cielo y niebla. Necesita una GPU con trazado de rayos.
+</p>
+<p>
+  Suma un camino por píxel en cada frame mientras nada cambie: el ruido baja solo y al lado del botón se ve cuántas
+  muestras lleva (verde al terminar). Mover la cámara, una luz o un objeto, o cambiar un material, empieza de nuevo.
+  Con <strong>clic derecho</strong> en el botón: <em>Rebotes</em> (interiores 4 a 8, exteriores 2 a 4),
+  <em>Muestras</em> máximas y <em>Empezar de nuevo</em>. El vidrio, el agua, las partículas y el post-procesado se
+  dibujan encima como siempre. Los rebotes chocan con los modelos de escenario; el terreno, los vóxeles y los
+  personajes animados solo están en el primer punto (lo que ve la cámara).
+</p>
+
+<h3 id="fuerza-sombra">Fuerza de la sombra de cada luz</h3>
+<p>
+  Cada <a href="componentes-basicos.html#Light">Light</a> tiene <em>Fuerza de la sombra</em> (Strength de Unity):
+  1 = sombra completa, 0,5 = a medias, 0 = no oscurece. Vale para el sol, las puntuales y los focos, y la respetan
+  también el trazado de rayos y el path tracing.
+</p>
+
+<h3 id="efectos-camara">Efectos de cámara: motion blur, profundidad de campo y lente</h3>
+<p>
+  Están en el componente <a href="componentes-basicos.html#PostProcessing">Post-procesado</a> (global o por volumen,
+  cada sección con su <em>Sobrescribir</em>):
+</p>
+<ul>
+  <li><strong>Motion blur</strong>: rastro de lo que se mueve, la cámara y cada objeto con sus vectores de movimiento.
+    <em>Intensidad</em> es la parte del frame con el obturador abierto (0,5 = 180 grados, como el cine) y
+    <em>Rastro máximo</em> lo limita en fracción del alto de la pantalla. El fondo quieto no se arrastra sobre lo que
+    se mueve delante.</li>
+  <li><strong>Profundidad de campo</strong>: bokeh con la fórmula de una lente real: <em>Distancia de enfoque</em>
+    (o <em>Autoenfoque</em> en lo que hay en el centro), <em>Apertura</em> (número f: 1,4 desenfoca mucho, 16 casi
+    nada) y <em>Focal</em> en milímetros. Lo de delante desenfocado se esparce sobre lo enfocado; lo de detrás no.</li>
+  <li><strong>Distorsión</strong> de la lente: más de 0 barril (gran angular), menos de 0 cojín (teleobjetivo).</li>
+  <li><strong>Destellos del sol</strong>: fantasmas, halo y estrella cuando el sol está en pantalla; se apagan solos si
+    algo lo tapa.</li>
+</ul>
+<p>Se aplican en las vistas Lit (no en Unlit ni Wireframe) y no en las capturas de sondas.</p>
+
 <h3 id="sombras">Sombras del sol: cascadas y sombras de contacto</h3>
 <p>
   El sol usa <strong>4 cascadas</strong>: mapas de sombra cada vez más grandes según se alejan de la cámara (su resolución

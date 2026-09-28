@@ -329,6 +329,37 @@ void EditorApp::drawTemplateArt(ImDrawList* draw, ImVec2 a, ImVec2 b, const Proj
             draw->AddLine(head, P(0.88f, 0.16f), IM_COL32(255, 120, 200, 160), t * 0.6f);
             break;
         }
+        case TemplateArt::ThirdPersonPro: {
+            // Figura corriendo por una escalera, con los pies marcados (IK) y
+            // lineas de velocidad.
+            perspectiveGrid(draw, a, b, horizon, scaled(accent, 1.1f, 70));
+            for (int i = 0; i < 5; ++i) {
+                const float x = 0.50f + 0.08f * static_cast<float>(i);
+                const float top = 0.80f - 0.06f * static_cast<float>(i);
+                draw->AddRectFilled(P(x, top), P(x + 0.08f, 0.88f), i % 2 == 0 ? IM_COL32(150, 105, 60, 255) : IM_COL32(242, 140, 40, 255));
+            }
+            const ImU32 body = IM_COL32(245, 245, 250, 255);
+            const float t = w * 0.014f;
+            const ImVec2 head = P(0.36f, 0.26f), neck = P(0.355f, 0.33f), hip = P(0.33f, 0.55f);
+            const ImVec2 knee_a = P(0.40f, 0.65f), foot_a = P(0.44f, 0.80f), knee_b = P(0.28f, 0.68f), foot_b = P(0.21f, 0.76f);
+            const ImVec2 elbow_a = P(0.30f, 0.42f), hand_a = P(0.26f, 0.50f), elbow_b = P(0.42f, 0.40f), hand_b = P(0.46f, 0.32f);
+            draw->AddCircleFilled(head, h * 0.055f, body, 20);
+            draw->AddLine(neck, hip, body, t * 1.3f);
+            draw->AddLine(hip, knee_a, body, t);
+            draw->AddLine(knee_a, foot_a, body, t);
+            draw->AddLine(hip, knee_b, body, t);
+            draw->AddLine(knee_b, foot_b, body, t);
+            draw->AddLine(neck, elbow_a, body, t);
+            draw->AddLine(elbow_a, hand_a, body, t);
+            draw->AddLine(neck, elbow_b, body, t);
+            draw->AddLine(elbow_b, hand_b, body, t);
+            for (const ImVec2& f : {foot_a, foot_b}) draw->AddCircle(f, h * 0.04f, IM_COL32(120, 255, 150, 255), 16, 2.0f);
+            for (int i = 0; i < 3; ++i) {
+                const float y = 0.36f + 0.1f * static_cast<float>(i);
+                draw->AddLine(P(0.06f, y), P(0.18f - 0.03f * static_cast<float>(i), y), scaled(accent, 1.4f, 200), 2.0f);
+            }
+            break;
+        }
         case TemplateArt::OpenWorld: {
             // Isla en el mar con un bosque de pinos y montanas.
             draw->AddRectFilledMultiColor(ImVec2(a.x, horizon), b, IM_COL32(20, 70, 110, 255), IM_COL32(20, 70, 110, 255),
@@ -400,6 +431,10 @@ void EditorApp::drawHub() {
     if (hub_folder_pick_ && hub_folder_pick_->done) {
         if (!hub_folder_pick_->result.empty()) new_project_folder_ = dialogs::utf8(hub_folder_pick_->result);
         hub_folder_pick_.reset();
+    }
+    if (hub_pack_pick_ && hub_pack_pick_->done) {
+        if (!hub_pack_pick_->result.empty()) hub_pack_path_ = dialogs::utf8(hub_pack_pick_->result);
+        hub_pack_pick_.reset();
     }
     if (show_new_project_) {  // (atajos antiguos: abren la pagina)
         hub_page_ = 1;
@@ -859,6 +894,29 @@ void EditorApp::drawHubNewProject() {
             ImGui::TextUnformatted(f.c_str());
             ImGui::PopTextWrapPos();
         }
+        // Tercera persona avanzada: el Locomotion Pack de Mixamo del usuario.
+        if (t.id == "third_person_pro") {
+            if (hub_pack_path_.empty() && !t.folder.empty()) hub_pack_path_ = dialogs::utf8(t.folder);
+            ImGui::Dummy(ImVec2(0.0f, 6.0f));
+            ImGui::TextUnformatted("Locomotion Pack (.zip o carpeta)");
+            ImGui::SetNextItemWidth(-40.0f);
+            ImGui::InputText("##pack", &hub_pack_path_);
+            ImGui::SameLine();
+            ImGui::BeginDisabled(hub_pack_pick_ != nullptr);
+            if (ImGui::Button("...##pack", ImVec2(32.0f, 0.0f))) hub_pack_pick_ = dialogs::pickFolderAsync(dialogs::fromUtf8(hub_pack_path_));
+            ImGui::EndDisabled();
+            std::error_code pack_error;
+            const bool found = !hub_pack_path_.empty() && std::filesystem::exists(dialogs::fromUtf8(hub_pack_path_), pack_error);
+            ImGui::PushTextWrapPos(0.0f);
+            if (found) {
+                ImGui::TextColored(ImVec4(0.45f, 0.9f, 0.5f, 1.0f), "Se importara al crear el proyecto (unos segundos).");
+            } else {
+                ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.35f, 1.0f),
+                                   "Descargalo gratis de mixamo.com: Packs > Locomotion Pack, formato FBX con skin. "
+                                   "Dejalo en Descargas o elige aqui su carpeta.");
+            }
+            ImGui::PopTextWrapPos();
+        }
     }
 
     ImGui::Dummy(ImVec2(0.0f, 8.0f));
@@ -904,8 +962,10 @@ void EditorApp::createProjectFromHub() {
     if (hub_templates_.empty() || new_project_name_.empty()) return;
     const ProjectTemplate& t = hub_templates_[static_cast<std::size_t>(std::clamp(hub_template_, 0, static_cast<int>(hub_templates_.size()) - 1))];
     try {
+        ProjectTemplate chosen = t;
+        if (chosen.id == "third_person_pro" && !hub_pack_path_.empty()) chosen.folder = dialogs::fromUtf8(hub_pack_path_);
         const project::ProjectInfo info =
-            createProjectFromTemplate(t, dialogs::fromUtf8(new_project_folder_), new_project_name_);
+            createProjectFromTemplate(chosen, dialogs::fromUtf8(new_project_folder_), new_project_name_);
         std::cout << "[Hub] Proyecto \"" << info.name << "\" creado con la plantilla " << t.name << "\n";
         hub_error_.clear();
         hub_page_ = 0;

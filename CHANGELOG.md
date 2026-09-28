@@ -1,5 +1,66 @@
 # Cambios
 
+## 0.7.5 (sin publicar)
+
+### Path tracing
+- Boton **Path Tracing** en la barra de la vista Escena (como el Path Tracer de Unreal): una imagen de referencia con luz fisicamente correcta con los rayos por hardware. El primer punto sale del G-buffer (normal maps, terreno, voxeles) y los caminos rebotan por la escena real muestreando el material (difuso y especular GGX con VNDF), con luz directa del sol (con su disco: penumbra real) y de las luces locales con rayos de sombra, cielo, emision, niebla y ruleta rusa.
+- Suma un camino por pixel y frame mientras nada cambie y se limpia solo; mover la camara, una luz, un objeto o cambiar un material empieza de nuevo. Clic derecho: rebotes, muestras maximas y empezar de nuevo. MCP: `graphics_settings` con `path_tracing`, `path_tracing_bounces` y `path_tracing_samples`.
+
+### Efectos de camara
+- **Motion blur** de la camara y de cada objeto con los vectores de movimiento: intensidad como el obturador (0.5 = 180 grados) y tope del rastro; el fondo quieto no se arrastra sobre lo que se mueve delante.
+- **Profundidad de campo** con bokeh y la formula de una lente real: distancia de enfoque o autoenfoque, apertura (numero f) y focal en milimetros.
+- **Distorsion de la lente** (barril o cojin) y **destellos del sol** (fantasmas, halo y estrella) que se apagan si algo tapa el sol.
+- Todo en el Post-procesado global y en los volumenes, cada seccion con su *Sobrescribir*.
+
+### Luces
+- **Fuerza de la sombra** en cada luz (Strength de Unity, 0 a 1) para el sol, las puntuales y los focos; la respetan tambien la GI y los reflejos por trazado de rayos y el path tracing.
+
+### Materiales de los modelos
+- Clic derecho en un modelo del Proyecto (o en varios seleccionados) > **Crear materiales y asignarlos**, como *Extract Materials* de Unity: un `.crmat` por cada material del modelo en `Materials/<modelo>`, con sus factores y sus texturas.
+- Las texturas que trae el modelo se sacan a `Textures/<modelo>`; el metal y la rugosidad empaquetados de glTF, la oclusion, la reflectancia y la cavidad quedan en mapas sueltos.
+- Las que le faltan (un FBX con las rutas rotas, un pack con las texturas aparte) se buscan en el proyecto y junto al archivo original por el nombre del material, de la malla o del modelo con los sufijos habituales (`_BaseColor`, `_Albedo`, `_Normal`, `_Roughness`, `_Metallic`, `_AO`...); las de fuera se copian al proyecto.
+- Cada material va a su hueco en cada pieza: las instancias de la escena abierta y todas las que se pongan despues ya salen con sus materiales. Los `.crmat` que ya existen no se sobrescriben.
+
+## 0.7.4
+
+### Sombras de focos y luces puntuales
+- Se acabaron los **cuadros negros** y las manchas que salian en paredes, techos y modelos cerca de un foco o una luz puntual, y que desaparecian al acercarse. De lejos la camara dibuja los modelos simplificados (LOD) y el mapa de sombra de la luz tenia el modelo completo: donde la cara simplificada quedaba unos centimetros por detras, la superficie se sombreaba a si misma. El desplazamiento de la sombra cubre ahora lo que el LOD puede desviarse (como mucho un pixel de pantalla), sin despegar la sombra.
+- Las sombras de las luces locales ya no **parpadean ni cambian de forma** al mover la camara: cada objeto proyecta con un detalle que solo depende de su distancia a la luz, y mas fino que antes (medio texel del mapa de esa luz; en focos de cono estrecho eran varios texeles y dejaban acne en la propia superficie).
+- **Terreno**: se dibuja en el mapa de cada luz con sus propios trozos, recortados por el volumen de la luz (tambien lo que queda fuera de pantalla), y el mapa guardado se rehace cuando cambia el detalle del terreno cerca de la luz. Antes el terreno se sombreaba a si mismo a manchas al moverse la camara.
+- Una **lampara que parpadea** (intensidad 0 a ratos) conserva su sombra durante el apagado en vez de soltar su hueco y obligar a redibujar las demas. El hueco se reconoce por la luz y no por su posicion en la lista: encender o apagar otra luz ya no reordena las sombras.
+
+### Niebla
+- El color de la niebla es la luz **media** del cielo mas el halo del sol, no el cielo de esa direccion: ya no "pinta" sobre las paredes el degradado, las nubes o la luna del skybox. De noche conserva un minimo con el color ambiente.
+
+## 0.7.2
+
+### Plantilla Tercera persona avanzada (Mixamo)
+- Plantilla nueva con el personaje y las animaciones del **Locomotion Pack** de Mixamo. Usa el tuyo (gratis en mixamo.com; su licencia no deja repartirlo con el motor): el Hub lo encuentra en **Descargas** (el `.zip` o la carpeta) o donde le digas, y lo importa al crear el proyecto.
+- Cada animacion pasa a un clip `.cranim` **en el sitio** y **medido** (lo que avanza por segundo, lo que gira, cuando despega y aterriza el salto): el script mueve al personaje a la misma velocidad y los pies no patinan.
+- **Animator Controller** con un **Blend Tree 2D** (parado, andar, correr, de lado andando y corriendo, y de espaldas con el clip de andar al reves), el salto y cuatro giros en el sitio.
+- Todo el juego en **Lua**: escalones y rampas sin saltar, pegado al suelo al bajar, salto sincronizado con la animacion, **apuntar** (clic derecho) con desplazamiento lateral y **giros de 90 y 180 grados en el sitio**, energia al correr, **IK de pies**, **mirada** y **mano** (E en una palanca: la agarra y la baja), camara con brazo de muelle que no atraviesa paredes, palancas, compuertas, cristales y depuracion (F1).
+
+### Escala al importar (Scale Factor)
+- Los FBX de Mixamo, Maya o 3ds Max van en **centimetros** y salian **100 veces mas grandes**. Ahora, como Unity: **Convert Units** usa la unidad que dice el propio archivo y **Scale Factor** multiplica el tamano.
+- Clic en un modelo del Proyecto: el Inspector muestra sus **ajustes de importacion** (Scale Factor con botones x0.01 a x100, Convert Units, la escala final, el **alto en metros**, personaje animado, normal maps de DirectX, combinar mallas) con **Aplicar** (reimporta y rehace sus instancias) y **Revertir**.
+- La escala va **dentro del modelo** (malla, huesos y animaciones), no en el Transform de la raiz: mide lo mismo lo pongas como lo pongas. Los modelos importados antes tienen Convert Units apagado: si alguno salia gigante, activalo y pulsa Aplicar.
+
+### Animacion
+- **IK suave**: la mirada ya no salta de golpe de un objeto a otro (el punto mirado se desplaza y el peso sube y baja poco a poco), y los pies, la cadera, las patas de los animales y los objetivos de manos y pies se amortiguan al cambiar de altura o de objetivo.
+- Un clip de un Blend Tree con **velocidad negativa** suena al reves (andar de espaldas con el clip de andar).
+- Un modelo sin animaciones propias (un personaje de Mixamo "sin animacion") se anima con un Animator Controller de clips `.cranim`.
+
+### Editor
+- En Play, el juego solo recibe teclado y raton con la vista **Juego** enfocada (como Unity): en la pestana Escena, WASD y el raton son solo de la camara del editor (antes movian las dos cosas a la vez). Al pasar a la Escena se suelta el raton capturado.
+
+### Render Textures
+- Cambiar el tamano de una Render Texture ya no cierra el editor aunque se este viendo su vista previa o la del material.
+- La camara no ve las superficies que muestran su propia textura (una pantalla delante de su camara salia dentro de si misma una y otra vez).
+- MCP: `inspect_asset` abre en el Inspector un material, una Render Texture o los ajustes de importacion de un modelo.
+
+### Manual
+- Plantilla *Tercera persona avanzada* en *Plantillas*; *Escala al importar (Scale Factor)* en *Proyecto e importacion*.
+
 ## 0.7.1
 
 ### Render Textures

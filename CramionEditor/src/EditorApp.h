@@ -587,6 +587,13 @@ private:
                              const asset::MaterialData* from = nullptr);
     int materialSlotCount(ecs::Entity entity) const;
     bool applyMaterial(ecs::Entity entity, const Uuid& material, int slot);
+    // Clic derecho en uno o varios modelos del Proyecto: un .crmat por
+    // material con sus texturas (EditorModelMaterials.cpp), guardado como
+    // los materiales del modelo y puesto en sus instancias de la escena.
+    void createModelMaterials(const std::vector<Uuid>& models);
+    // Los .crmat guardados del modelo en los huecos vacios de `root` y sus
+    // hijos (al ponerlo en la escena). true si puso alguno.
+    bool applyModelMaterials(ecs::Entity root, const Uuid& model);
     bool materialTextureSlot(const char* label, std::string& path);
     void flushMaterialEdit(bool force_structure);
     void drawMaterialEditor(const Uuid& uuid);
@@ -691,7 +698,19 @@ private:
     // Vuelve a importar un modelo desde su archivo original, combinando sus
     // piezas por material si tiene muchas, y al terminar rehace sus
     // instancias en la escena abierta. Devuelve false si no se puede.
-    bool startReimport(const Uuid& model);
+    // `settings`: los de importacion nuevos (el panel del Inspector); sin
+    // ellos, los que tenia el modelo.
+    bool startReimport(const Uuid& model, std::optional<assets::ModelImportSettings> settings = std::nullopt);
+    // Ajustes de importacion de un modelo elegido en el Proyecto (como la
+    // pestana Model de Unity): Scale Factor, Convert Units... y Aplicar.
+    void drawModelImportSettings(const Uuid& model);
+    Uuid inspected_model_{};
+    Uuid inspected_model_active_{};            // la seleccion de la escena al elegirlo
+    Uuid model_import_loaded_{};               // de que modelo son los ajustes en edicion
+    assets::ModelImportSettings model_import_edit_{};
+    assets::ModelImportSettings model_import_saved_{};
+    float model_import_height_ = 0.0f;         // alto del modelo importado (m)
+    std::string model_import_source_;
     void finishReimport(const ImportJob& job, const assets::ImportResult& result);
     // Cambia la jerarquia de cada instancia del modelo por la nueva (conserva
     // la raiz: su Transform, nombre, padre, componentes, Static y los .crmat
@@ -953,6 +972,7 @@ private:
         // antes (para conservar los .crmat asignados en la escena).
         Uuid reimport{};
         std::vector<std::vector<std::string>> old_materials;
+        std::optional<assets::ModelImportSettings> settings;  // al reimportar (si no, los suyos)
     };
     // En cola y en curso, en orden de llegada. Solo kMaxParallelImports a la
     // vez: una carpeta con muchos FBX grandes agotaria la RAM.
@@ -1117,12 +1137,17 @@ private:
     bool show_cinematic_ = true;
     bool scene_view_visible_ = true;
     bool game_view_visible_ = false;
+    // La vista Juego tiene el foco (o un hijo suyo): solo entonces el juego
+    // recibe teclado y raton en Play, como Unity. En la Escena, WASD y el
+    // raton son de la camara del editor.
+    bool game_view_focused_ = false;
     float game_image_rect_[4] = {0.0f, 0.0f, 0.0f, 0.0f};  // x, y, ancho, alto (pixeles de la ventana)
     std::uint32_t render_view_ = kSceneSlot;       // la vista que se dibuja este frame
     std::uint32_t last_render_view_ = kSceneSlot;
     std::uint32_t preferred_view_ = kSceneSlot;    // la ultima con la que se interactuo
     bool focus_game_ = false;                      // traer la vista Juego al frente
     bool focus_scene_ = false;                     // traer la Escena al frente
+    bool focus_inspector_ = false;                 // traer el Inspector al frente (asset elegido)
     std::optional<scene::Camera> saved_camera_;    // la del editor mientras se dibuja el Juego
     bool game_guides_ = false;                     // tercios en la vista Juego
     // Proporcion de cada vista (Escena, Juego): preset de kAspectPresets
@@ -1137,6 +1162,7 @@ private:
     // Wireframe o Lit + Wireframe.
     int scene_draw_mode_ = 0;
     void drawSceneDrawModeMenu();
+    void drawPathTracingButton();
     std::uint32_t view_desired_[2][2] = {{0, 0}, {0, 0}};  // tamano de render que pide cada vista este frame
     std::uint32_t pending_view_[2] = {0, 0};
     float pending_view_time_ = 0.0f;
@@ -1255,6 +1281,9 @@ private:
     bool hub_templates_loaded_ = false;
     std::shared_ptr<dialogs::AsyncFolderPick> hub_open_pick_;
     std::shared_ptr<dialogs::AsyncFolderPick> hub_folder_pick_;
+    // Tercera persona avanzada: donde esta el Locomotion Pack (zip o carpeta).
+    std::string hub_pack_path_;
+    std::shared_ptr<dialogs::AsyncFolderPick> hub_pack_pick_;
     int hub_sort_ = 0;         // 0 recientes, 1 nombre
     bool hub_list_view_ = false;
 

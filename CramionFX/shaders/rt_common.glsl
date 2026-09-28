@@ -456,9 +456,13 @@ vec3 hitRadiance(RtHit hit, float lod, bool from_screen) {
     // Sol (o luna), con sombra.
     vec3 to_light = -normalize(lights.sun_direction_intensity.xyz);
     float n_dot_l = dot(n, to_light);
-    if (n_dot_l > 0.0 && unoccluded(origin, to_light, 10000.0)) {
+    // ambient_color.w: fuerza de la sombra del sol (0 = sin sombra).
+    if (n_dot_l > 0.0) {
+        float visibility = lights.ambient_color.w <= 0.0 || unoccluded(origin, to_light, 10000.0)
+                               ? 1.0
+                               : 1.0 - lights.ambient_color.w;
         vec3 sun = toLinear(lights.sun_color_ambient.rgb) * lights.sun_direction_intensity.w;
-        radiance += diffuse * sun * n_dot_l;
+        radiance += diffuse * sun * n_dot_l * visibility;
     }
 
     // Cielo y luz rebotada que llegan a este punto: de la cache de radiancia

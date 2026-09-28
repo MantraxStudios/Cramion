@@ -6,6 +6,7 @@
 #include <stb_image.h>
 
 #include <algorithm>
+#include <cstddef>
 #include <filesystem>
 #include <cstdlib>
 #include <fstream>
@@ -520,6 +521,15 @@ void VulkanRenderer::initialize(const EngineInfo& info, HWND window, std::uint32
         shafts.color_format = kHdrFormat;
         light_shaft_pass_.create(device_, shafts);
 
+        const std::array<Type, 3> camera_fx_bindings = {Type::eCombinedImageSampler, Type::eCombinedImageSampler,
+                                                        Type::eCombinedImageSampler};
+        FullscreenPassDesc camera_fx{};
+        camera_fx.fragment_shader = "camera_fx.frag.spv";
+        camera_fx.bindings = camera_fx_bindings;
+        camera_fx.push_constant_size = sizeof(GpuCameraFxPush);
+        camera_fx.color_format = kHdrFormat;
+        camera_fx_pass_.create(device_, camera_fx);
+
         const std::array<Type, 4> taa_bindings = {Type::eCombinedImageSampler, Type::eCombinedImageSampler,
                                                   Type::eCombinedImageSampler, Type::eCombinedImageSampler};
         FullscreenPassDesc taa{};
@@ -650,6 +660,8 @@ void VulkanRenderer::shutdown() {
     skinned_models_.clear();
     retired_models_.clear();
     ray_pinned_models_.clear();
+    render_textures_.clear();
+    retired_render_textures_.clear();
     actor_draws_.clear();
     gpu_culling_.destroy();
     gpu_profiler_.destroy();
@@ -663,6 +675,7 @@ void VulkanRenderer::shutdown() {
     exposure_average_sets_.clear();
     histogram_sets_.clear();
     light_shaft_sets_.clear();
+    camera_fx_sets_.clear();
     taa_sets_.clear();
     easu_sets_.clear();
     rcas_sets_.clear();
@@ -728,6 +741,7 @@ void VulkanRenderer::shutdown() {
     exposure_average_pass_.destroy();
     histogram_pass_.destroy();
     light_shaft_pass_.destroy();
+    camera_fx_pass_.destroy();
     taa_pass_.destroy();
     easu_pass_.destroy();
     rcas_pass_.destroy();
@@ -760,8 +774,10 @@ void VulkanRenderer::shutdown() {
         level.destroy();
     }
     light_shafts_.destroy();
+    camera_fx_source_.destroy();
     gi_image_.destroy();
     gi_raw_.destroy();
+    path_tracing_accumulation_.destroy();
     gi_history_.destroy();
     gi_temporal_.destroy();
     gi_variance_.destroy();
@@ -1089,12 +1105,12 @@ void VulkanRenderer::createDescriptors() {
         // (+ la composicion por frame: 3 texturas, su exposicion y sus ajustes.)
         vk::DescriptorPoolSize{vk::DescriptorType::eUniformBuffer, kMaxFramesInFlight * 11},
         vk::DescriptorPoolSize{vk::DescriptorType::eCombinedImageSampler,
-                               kMaxFramesInFlight * 25 + kBloomSets + 2 + 1 + 1 + 6},
+                               kMaxFramesInFlight * 25 + kBloomSets + 2 + 1 + 1 + 6 + 3},
         vk::DescriptorPoolSize{vk::DescriptorType::eStorageBuffer, 3 + kMaxFramesInFlight * 2}};
 
     vk::DescriptorPoolCreateInfo post_pool_info{};
     post_pool_info.flags = vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet;
-    post_pool_info.maxSets = kMaxFramesInFlight * 8 + kBloomSets + 5 + 3;
+    post_pool_info.maxSets = kMaxFramesInFlight * 8 + kBloomSets + 5 + 3 + 1;
     post_pool_info.setPoolSizes(post_sizes);
     post_pool_ = vk::raii::DescriptorPool(device_.handle(), post_pool_info);
 
@@ -1111,6 +1127,7 @@ void VulkanRenderer::createDescriptors() {
     bloom_up_sets_ = allocate(bloom_up_pass_, kBloomLevels - 1);
     composite_sets_ = allocate(composite_pass_, kMaxFramesInFlight);
     light_shaft_sets_ = allocate(light_shaft_pass_, 1);
+    camera_fx_sets_ = allocate(camera_fx_pass_, 1);
     taa_sets_ = allocate(taa_pass_, 1);
     easu_sets_ = allocate(easu_pass_, 1);
     rcas_sets_ = allocate(rcas_pass_, 1);
@@ -1233,6 +1250,11 @@ void VulkanRenderer::updateActors(const scene::Scene& scene, std::uint32_t frame
     // pueden ser mas simples (hay menos pixeles que llenar).
     const float pixels_per_unit = std::abs(scene.camera().projection().m[1][1]) * 0.5f *
                                   static_cast<float>(std::max(render_extent_.height, 1u));
+    // Lo que chooseLod() deja desviarse la malla, en metros por metro de
+    // distancia (sin LODs, nada).
+    lod_error_per_meter_ = post_.lods && pixels_per_unit > 0.0f
+                               ? std::max(post_.lod_pixel_error, 0.05f) / pixels_per_unit
+                               : 0.0f;
     const float cull_pixels = budget_.cullPixels();
     draw_batches_.clear();
     batch_lookup_.clear();
@@ -1252,6 +1274,17 @@ void VulkanRenderer::updateActors(const scene::Scene& scene, std::uint32_t frame
         draw.bounds_radius = actor.bounds_radius;
         draw.cast_shadows = actor.cast_shadows;
         draw.shadows_only = actor.shadows_only;
+        // Dibujando una Render Texture: lo que la muestra (la pantalla) no lo
+        // ve su camara; si no, sale dentro de si misma una y otra vez (tunel).
+        // Su sombra sigue.
+        if (render_texture_target_ >= 0) {
+            for (const SkinnedModel::RenderTextureRef& ref : skinned_models_[actor.model].renderTextureRefs()) {
+                if (ref.texture == render_texture_target_) {
+                    draw.shadows_only = true;
+                    break;
+                }
+            }
+        }
 
         // Con un solo hueso todo el modelo se mueve con el: la caja de cada
         // submalla en el mundo es la de reposo por (actor x hueso).
@@ -1421,6 +1454,11 @@ void VulkanRenderer::updateActors(const scene::Scene& scene, std::uint32_t frame
         // Quien proyecta sombra tambien cambia las cascadas guardadas.
         actor_set_changed_ = previous_actor_motion_[i].cast_shadows != actor_draws_[i].cast_shadows;
     }
+    // Y los mapas de las luces locales tampoco (aparece o se va algo).
+    if (actor_set_changed_ && !isolated()) {
+        local_static_dirty_ = true;
+        path_tracing_reset_ = true;
+    }
 
     if (bone_staging_.empty()) {
         return;
@@ -1432,9 +1470,13 @@ void VulkanRenderer::updateActors(const scene::Scene& scene, std::uint32_t frame
 }
 
 bool VulkanRenderer::actorsTouch(const Vec3& light_position, float range) const {
-    for (const ActorDraw& draw : actor_draws_) {
-        const float reach = range + draw.bounds_radius;
-        const Vec3 offset = draw.bounds_center - light_position;
+    // Solo lo que se ha movido o se anima este frame (sus esferas de antes y
+    // de ahora): lo estatico ya esta en la cache. Antes se miraban todos los
+    // actores, asi que cualquier luz con un mueble al alcance se redibujaba
+    // entera cada frame (y con el LOD de la camara: la sombra temblaba).
+    for (const core::Vec4& sphere : moved_spheres_) {
+        const float reach = range + sphere.w;
+        const Vec3 offset = Vec3{sphere.x, sphere.y, sphere.z} - light_position;
         if (core::dot(offset, offset) <= reach * reach) {
             return true;
         }
@@ -1502,6 +1544,11 @@ std::uint32_t VulkanRenderer::forEachVisibleSubmesh(const ActorDraw& actor,
     return drawn;
 }
 
+// Error de LOD (en texeles del mapa) que se permite en las sombras de las
+// luces locales. Por debajo del desplazamiento por normal del shader (0.5 a 2
+// texeles), para que la malla simplificada no tape a la real.
+constexpr float kLocalShadowLodTexels = 0.5f;
+
 std::uint32_t VulkanRenderer::shadowLod(const SkinnedModel& model, float max_scale, float allowed) const {
     if (!post_.lods) return 0;
     const auto& lods = model.lods();
@@ -1562,7 +1609,23 @@ void VulkanRenderer::recordActorShadows(const vk::raii::CommandBuffer& cmd,
         // de menos de medio texel no deja una sombra que se vea, y el LOD
         // puede desviarse hasta lo que mide un texel (el mapa no ve mas).
         std::uint32_t lod = draw.lod;
-        if (texel_world_size > 0.0f && draw.per_submesh) {
+        if (local && draw.per_submesh) {
+            // Luces locales: el detalle lo decide la distancia a la luz, no a
+            // la camara (con la de la camara la silueta cambiaba al andar y la
+            // sombra temblaba). El error permitido es medio texel del mapa de
+            // ESA luz en su parte mas cercana: antes era un tope fijo (2/1024
+            // por metro) que en un foco de 2048 o de cono estrecho eran varios
+            // texeles, mas que el sesgo del shader, y la malla simplificada
+            // asomaba por encima de la real: el objeto se sombreaba a si mismo
+            // a manchas (ruido).
+            //
+            // NO depende del LOD de la camara: con el, cada vez que un objeto
+            // cambiaba de LOD al moverse la camara su sombra cambiaba de forma
+            // o desaparecia (parpadeo). Que la camara vea una malla mas simple
+            // que la del mapa lo compensa el shader (lod_error_per_meter_).
+            const float distance = std::max(core::length(draw.bounds_center - light_position) - draw.bounds_radius, 0.05f);
+            lod = shadowLod(model, draw.max_scale, distance * texel_world_size * kLocalShadowLodTexels);
+        } else if (texel_world_size > 0.0f && draw.per_submesh) {
             if (draw.bounds_radius < texel_world_size * budget_.shadowMinTexels()) {
                 continue;
             }
@@ -2085,6 +2148,10 @@ void VulkanRenderer::updatePostDescriptors() {
             inputs.gi_output = *gi_raw_.view();
             inputs.reflection_output = *ssr_raw_.view();
             inputs.environment = *ibl_probe_.environmentView();
+            inputs.albedo = *gbuffer_.albedo().view();
+            inputs.material = *gbuffer_.material().view();
+            inputs.path_output = *scene_color_.view();
+            inputs.accumulation = *path_tracing_accumulation_.view();
             inputs.sampler = *ssgi_pass_.sampler();
             inputs.environment_sampler = *ibl_probe_.sampler();
             ray_tracing_.updateFrameSet(device_, i, inputs);
@@ -2215,6 +2282,10 @@ void VulkanRenderer::updatePostDescriptors() {
     write_texture(light_shaft_sets_[0], 0, light_shaft_pass_.sampler(), gbuffer_.depth(),
                   vk::ImageLayout::eDepthReadOnlyOptimal);
     write_texture(light_shaft_sets_[0], 1, light_shaft_pass_.sampler(), postSource(), kRead);
+    write_texture(camera_fx_sets_[0], 0, camera_fx_pass_.sampler(), camera_fx_source_, kRead);
+    write_texture(camera_fx_sets_[0], 1, camera_fx_pass_.sampler(), gbuffer_.depth(),
+                  vk::ImageLayout::eDepthReadOnlyOptimal);
+    write_texture(camera_fx_sets_[0], 2, camera_fx_pass_.sampler(), gbuffer_.velocity(), kRead);
 
     write_texture(histogram_sets_[0], 0, histogram_pass_.sampler(), postSource(), kRead);
 
@@ -2329,8 +2400,9 @@ void VulkanRenderer::createRenderTargets() {
         vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eSampled;
 
     // (Origen de copia: el vidrio lee una copia sin si mismo, glass_source_.)
+    // Storage: el path tracing escribe en ella (path_trace.comp).
     scene_color_.create(device_, extent, kHdrFormat,
-                        target_usage | vk::ImageUsageFlagBits::eTransferSrc,
+                        target_usage | vk::ImageUsageFlagBits::eTransferSrc | vk::ImageUsageFlagBits::eStorage,
                         vk::ImageAspectFlagBits::eColor);
     glass_source_.create(device_, extent, kHdrFormat,
                          vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eTransferDst,
@@ -2404,6 +2476,9 @@ void VulkanRenderer::createRenderTargets() {
     // Los rayos son un desenfoque muy amplio: media resolucion basta.
     light_shafts_.create(device_, bloomLevelExtent(output, 0), kHdrFormat, target_usage,
                          vk::ImageAspectFlagBits::eColor);
+    camera_fx_source_.create(device_, output, kHdrFormat,
+                             vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eTransferDst,
+                             vk::ImageAspectFlagBits::eColor);
 
     // Los reflejos del suelo tienen que ser nitidos: resolucion completa.
     // (Storage: con trazado de rayos las escribe un compute shader.)
@@ -2434,6 +2509,14 @@ void VulkanRenderer::createRenderTargets() {
     // Las nubes son suaves: media resolucion.
     clouds_image_.create(device_, bloomLevelExtent(extent, 0), kHdrFormat, target_usage,
                          vk::ImageAspectFlagBits::eColor);
+
+    // Suma de caminos del path tracing (resolucion interna completa).
+    if (device_.rayTracingSupported()) {
+        path_tracing_accumulation_.create(device_, extent, vk::Format::eR32G32B32A32Sfloat,
+                                          vk::ImageUsageFlagBits::eStorage, vk::ImageAspectFlagBits::eColor);
+        path_tracing_layout_ready_ = false;
+        path_tracing_reset_ = true;
+    }
 
     // La luz rebotada es de baja frecuencia: media resolucion.
     gi_raw_.create(device_, bloomLevelExtent(extent, 0), kHdrFormat,
@@ -2488,7 +2571,9 @@ void VulkanRenderer::createRenderTargets() {
     // --- Escalado (a la resolucion de pantalla) ---
     upscale_target_.create(device_, output, kHdrFormat, target_usage | vk::ImageUsageFlagBits::eTransferSrc,
                            vk::ImageAspectFlagBits::eColor);
-    upscaled_color_.create(device_, output, kHdrFormat, target_usage, vk::ImageAspectFlagBits::eColor);
+    // Origen de copia: el motion blur y la profundidad de campo la copian.
+    upscaled_color_.create(device_, output, kHdrFormat, target_usage | vk::ImageUsageFlagBits::eTransferSrc,
+                           vk::ImageAspectFlagBits::eColor);
     taa_history_.create(device_, output, kHdrFormat,
                         vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eTransferDst,
                         vk::ImageAspectFlagBits::eColor);
@@ -2694,6 +2779,7 @@ void VulkanRenderer::updateUniforms(const scene::Scene& scene, const scene::Came
     GpuCamera camera_data{};
     camera_data.view = camera.view();
     const core::Mat4 unjittered = camera.projection() * camera_data.view;
+    camera_projection_ = camera.projection();
 
     // Jitter del TAA / escalado temporal: una fraccion de pixel distinta cada
     // frame (Halton 2,3), con mas fases cuanto mas se escala (como DLSS/FSR).
@@ -2758,7 +2844,8 @@ void VulkanRenderer::updateUniforms(const scene::Scene& scene, const scene::Came
     light_data.sun_direction_intensity =
         toVec4(core::normalize(lights.sun.direction), lights.sun.intensity);
     light_data.sun_color_ambient = toVec4(lights.sun.color, lights.ambient.intensity);
-    light_data.ambient_color = toVec4(lights.ambient.color, 0.0f);
+    // w: fuerza de la sombra del sol para los rayos (rt_common.glsl).
+    light_data.ambient_color = toVec4(lights.ambient.color, sunShadows() ? sun_shadow_strength_ : 0.0f);
     light_data.sky_sun = toVec4(lights.sky.to_sun, lights.sky.daylight);
     light_data.sky_moon = toVec4(lights.sky.to_moon, lights.sky.twilight);
 
@@ -2769,8 +2856,8 @@ void VulkanRenderer::updateUniforms(const scene::Scene& scene, const scene::Came
         light_data.points[i].position_range = toVec4(light.position, light.range);
         light_data.points[i].color_intensity = toVec4(light.color, light.intensity);
         light_data.points[i].shadow = Vec4{
-            static_cast<float>(local_shadows_.pointSlot(static_cast<std::size_t>(i))), 0.0f,
-            0.0f, 0.0f};
+            static_cast<float>(local_shadows_.pointSlot(static_cast<std::size_t>(i))),
+            light.cast_shadows ? light.shadow_strength : 0.0f, 0.0f, 0.0f};
     }
     light_data.point_count = point_count;
 
@@ -2787,7 +2874,8 @@ void VulkanRenderer::updateUniforms(const scene::Scene& scene, const scene::Came
         gpu.direction_intensity = toVec4(core::normalize(light.direction), light.intensity);
         gpu.color_inner = toVec4(light.color, std::cos(light.inner_angle));
         gpu.outer_shadow = Vec4{std::cos(light.outer_angle),
-                                static_cast<float>(local_shadows_.spotSlot(index)), 0.0f, 0.0f};
+                                static_cast<float>(local_shadows_.spotSlot(index)),
+                                light.cast_shadows ? light.shadow_strength : 0.0f, 0.0f};
         ++spot_count;
     }
     light_data.spot_count = spot_count;
@@ -2892,6 +2980,16 @@ void VulkanRenderer::updateUniforms(const scene::Scene& scene, const scene::Came
     light_shaft_push_.aspect =
         static_cast<float>(extent.width) / static_cast<float>(std::max(extent.height, 1u));
     const Vec4 sun_clip = camera_data.view_projection * toVec4(lights.sky.to_sun, 0.0f);
+    // El sol en pantalla tambien para los destellos de la lente.
+    sun_screen_weight_ = 0.0f;
+    if (sun_clip.w > 0.0f) {
+        const float u = sun_clip.x / sun_clip.w * 0.5f + 0.5f;
+        const float v = sun_clip.y / sun_clip.w * 0.5f + 0.5f;
+        sun_screen_uv_ = core::Vec2{u, v};
+        const float outside = std::max({-u, u - 1.0f, -v, v - 1.0f, 0.0f});
+        sun_screen_weight_ = (1.0f - smoothstepf(0.0f, 0.15f, outside)) *
+                             smoothstepf(-0.02f, 0.08f, lights.sky.to_sun.y);
+    }
     if (post_.light_shafts && sun_clip.w > 0.0f) {
         const float u = sun_clip.x / sun_clip.w * 0.5f + 0.5f;
         const float v = sun_clip.y / sun_clip.w * 0.5f + 0.5f;
@@ -2904,6 +3002,18 @@ void VulkanRenderer::updateUniforms(const scene::Scene& scene, const scene::Came
     }
 
     light_buffers_[frame_index].write(&light_data, sizeof(light_data));
+    // Luces que ve el path tracing (sin lo que cambia cada frame: lluvia).
+    if (!isolated()) {
+        std::uint64_t hash = 1469598103934665603ull;
+        const auto* bytes = reinterpret_cast<const std::uint8_t*>(&light_data);
+        for (std::size_t i = 0; i < offsetof(GpuLights, probes); ++i) {
+            hash = (hash ^ bytes[i]) * 1099511628211ull;
+        }
+        if (hash != path_tracing_lights_hash_) {
+            path_tracing_lights_hash_ = hash;
+            path_tracing_reset_ = true;
+        }
+    }
 
     // --- Cascadas de sombra ---
     // Dependen de la camara y del sol, asi que se recalculan cada frame.
@@ -2977,7 +3087,7 @@ void VulkanRenderer::updateUniforms(const scene::Scene& scene, const scene::Came
     shadow_data.split_distances = Vec4{splits[0], splits[1], splits[2], splits[3]};
     shadow_data.texel_world_sizes = Vec4{texels[0], texels[1], texels[2], texels[3]};
     shadow_data.params = Vec4{static_cast<float>(shadow_map_.resolution()),
-                              sunShadows() ? 1.0f : 0.0f,
+                              sunShadows() ? sun_shadow_strength_ : 0.0f,
                               drawModeNow() == SceneDrawMode::Unlit       ? 2.0f
                               : drawModeNow() == SceneDrawMode::Wireframe ? 3.0f
                               : cascade_debug_                            ? 1.0f
@@ -3002,7 +3112,7 @@ void VulkanRenderer::updateUniforms(const scene::Scene& scene, const scene::Came
     }
     local_data.params = Vec4{static_cast<float>(LocalShadowMaps::kSpotResolution),
                              static_cast<float>(LocalShadowMaps::kPointResolution),
-                             shadows_enabled_ ? 1.0f : 0.0f, 0.0f};
+                             shadows_enabled_ ? 1.0f : 0.0f, lod_error_per_meter_};
 
     local_shadow_buffers_[frame_index].write(&local_data, sizeof(local_data));
 }
@@ -3050,6 +3160,13 @@ void VulkanRenderer::drawFrame(const scene::Scene& scene, bool present) {
         if (retired.frames_left > 0) --retired.frames_left;
     }
     std::erase_if(retired_models_, [](const RetiredModel& r) { return r.frames_left == 0; });
+    // (Solo en los frames de la pantalla: la interfaz se dibuja en ellos.)
+    if (render_texture_target_ < 0) {
+        for (RetiredRenderTexture& retired : retired_render_textures_) {
+            if (retired.frames_left > 0) --retired.frames_left;
+        }
+        std::erase_if(retired_render_textures_, [](const RetiredRenderTexture& r) { return r.frames_left == 0; });
+    }
 
     // Picking que se grabo la ultima vez que se uso este hueco: ya termino.
     if (pick_in_flight_[current_frame_]) {
@@ -3086,6 +3203,10 @@ void VulkanRenderer::drawFrame(const scene::Scene& scene, bool present) {
             post_.vignette = false;
             post_.film_grain = 0.0f;
             post_.chromatic_aberration = 0.0f;
+            post_.lens_distortion = 0.0f;
+            post_.lens_flare = 0.0f;
+            post_.motion_blur = false;
+            post_.depth_of_field = false;
             post_.ambient_occlusion = false;
             post_.global_illumination = false;
             post_.reflections = false;
@@ -3458,7 +3579,10 @@ void VulkanRenderer::recordCommandBuffer(const vk::raii::CommandBuffer& cmd,
 
     // Terrenos: lo esculpido/pintado desde el frame anterior, y sus trozos
     // (LOD) para este frame (antes de las sombras, que tambien los dibujan).
-    if (terrain_pass_.recordUploads(cmd, frame_index)) local_static_dirty_ = true;
+    if (terrain_pass_.recordUploads(cmd, frame_index)) {
+        local_static_dirty_ = true;
+        path_tracing_reset_ = true;
+    }
     terrain_pass_.prepare(frame_index, camera_position_, camera_view_projection_);
     // Voxeles: secciones rehechas (romper/poner bloques) y las visibles.
     if (voxel_pass_.recordUploads(cmd, frame_index)) staticGeometryChanged();
@@ -3491,6 +3615,8 @@ void VulkanRenderer::recordCommandBuffer(const vk::raii::CommandBuffer& cmd,
     markPass(cmd, frame_index, "Volumetrica");
     recordLightingPass(cmd, frame_index, scene_color_);
     markPass(cmd, frame_index, "Iluminacion");
+    recordPathTracePass(cmd, frame_index);
+    markPass(cmd, frame_index, "Path tracing");
     const bool wire_only = drawModeNow() == SceneDrawMode::Wireframe;
     if (!wire_only) recordGlassPass(cmd, frame_index);
     if (!water_pass_.empty() && !capturing_ && !wire_only) {
@@ -3512,6 +3638,8 @@ void VulkanRenderer::recordCommandBuffer(const vk::raii::CommandBuffer& cmd,
         recordUpscalePass(cmd);
         markPass(cmd, frame_index, graphics_.upscaler == Upscaler::Fsr1 ? "FSR 1" : "TAA / escalado");
     }
+    recordCameraFxPass(cmd);
+    markPass(cmd, frame_index, "Motion blur + profundidad de campo");
     recordBloomPass(cmd);
     markPass(cmd, frame_index, "Bloom");
     recordLightShaftPass(cmd);
@@ -3642,6 +3770,8 @@ void VulkanRenderer::recordLocalShadowPass(const vk::raii::CommandBuffer& cmd,
         // Eje de la cara del cubo, para descartar lo que queda detras. Cero en
         // los focos.
         Vec3 face_axis;
+        // Texel del mapa por metro de distancia a la luz (LOD de los actores).
+        float texel_scale = 0.0f;
     };
 
     const vk::Image spot_image = *local_shadow_maps_.spotImage().handle();
@@ -3651,32 +3781,44 @@ void VulkanRenderer::recordLocalShadowPass(const vk::raii::CommandBuffer& cmd,
     // de la luz, su mapa se redibuja cada frame (y uno mas cuando se va, para
     // borrar su silueta).
     const bool static_dirty = local_static_dirty_;
-    const auto needs_render = [this, static_dirty](bool active, bool dirty, const Vec3& position, float range,
-                                                   bool& had_actor) {
+    const bool has_terrain = !terrain_pass_.empty();
+    const auto needs_render = [this, static_dirty, has_terrain](bool active, bool dirty, const Vec3& position,
+                                                                float range, bool& had_actor,
+                                                                std::uint64_t& terrain_signature) {
         const bool touches = active && actorsTouch(position, range);
-        const bool render = active && (dirty || static_dirty || touches || had_actor);
+        // El terreno se dibuja en el mapa con el LOD de la camara: si ese
+        // LOD cambia cerca de la luz, el mapa cacheado ya no coincide.
+        const std::uint64_t signature =
+            active && has_terrain ? terrain_pass_.localSignature(position, range) : 0;
+        const bool terrain_changed = signature != terrain_signature;
+        const bool render = active && (dirty || static_dirty || touches || had_actor || terrain_changed);
         had_actor = touches;
+        if (render || !active) terrain_signature = signature;
         return render;
     };
 
     std::vector<ShadowJob> jobs;
-    if (shadows_enabled_) {
+    // Solo con la escena de verdad: un render aislado (miniaturas del
+    // Proyecto, capturas) tiene otros actores (el modelo de la miniatura) y
+    // dejaba sus siluetas en la cache de una luz: sombras sin objeto (discos,
+    // cuadrados) que no se volvian a dibujar.
+    if (shadows_enabled_ && !isolated()) {
         local_static_dirty_ = false;
         for (std::uint32_t slot = 0; slot < scene::kMaxShadowedSpotLights; ++slot) {
             const scene::SpotShadow& spot = local_shadows_.spots()[slot];
             if (!needs_render(spot.active, spot.dirty, spot.position, spot.range,
-                              spot_had_actor_[slot])) {
+                              spot_had_actor_[slot], spot_terrain_signature_[slot])) {
                 continue;
             }
             jobs.push_back(ShadowJob{&local_shadow_maps_.spotView(slot), spot_image, slot,
                                      local_shadow_maps_.spotExtent(), spot.light_view_projection,
-                                     spot.position, spot.range, Vec3{}});
+                                     spot.position, spot.range, Vec3{}, spot.texel_scale});
         }
 
         for (std::uint32_t slot = 0; slot < scene::kMaxShadowedPointLights; ++slot) {
             const scene::PointShadow& point = local_shadows_.points()[slot];
             if (!needs_render(point.active(), point.dirty, point.position, point.range,
-                              point_had_actor_[slot])) {
+                              point_had_actor_[slot], point_terrain_signature_[slot])) {
                 continue;
             }
             for (std::uint32_t face = 0; face < scene::kPointShadowFaceCount; ++face) {
@@ -3685,7 +3827,8 @@ void VulkanRenderer::recordLocalShadowPass(const vk::raii::CommandBuffer& cmd,
                                          local_shadow_maps_.pointExtent(),
                                          point.face_view_projection[face], point.position,
                                          point.range,
-                                         scene::LocalLightShadows::faceDirection(face)});
+                                         scene::LocalLightShadows::faceDirection(face),
+                                         point.texel_scale});
             }
         }
     }
@@ -3748,7 +3891,7 @@ void VulkanRenderer::recordLocalShadowPass(const vk::raii::CommandBuffer& cmd,
         cmd.setScissor(0, vk::Rect2D{vk::Offset2D{0, 0}, job.extent});
 
         recordActorShadows(cmd, frame_index, job.light_view_projection, job.light_position,
-                           job.range);
+                           job.range, job.texel_scale);
         // El terreno y los bloques tambien tapan la luz de antorchas y focos.
         terrain_pass_.recordShadow(cmd, frame_index, skin_sets_[frame_index], job.light_view_projection,
                                    /*local=*/true);
@@ -4480,6 +4623,66 @@ void VulkanRenderer::recordWaterPass(const vk::raii::CommandBuffer& cmd, std::ui
     cmd.endRendering();
 }
 
+void VulkanRenderer::recordPathTracePass(const vk::raii::CommandBuffer& cmd, std::uint32_t frame_index) {
+    // Solo la vista principal en Lit: la acumulacion es de una camara.
+    if (!pathTracingActive() || isolated() || drawModeNow() != SceneDrawMode::Lit) {
+        return;
+    }
+
+    // --- Empezar de nuevo si algo cambio ---
+    // Camara (cualquier movimiento), objetos que se mueven o animan, luces,
+    // materiales y geometria (los marcan updateUniforms y compania).
+    bool camera_moved = false;
+    for (int c = 0; c < 4 && !camera_moved; ++c) {
+        for (int r = 0; r < 4; ++r) {
+            if (std::abs(camera_view_projection_.m[c][r] - path_tracing_view_projection_.m[c][r]) > 1e-6f) {
+                camera_moved = true;
+                break;
+            }
+        }
+    }
+    if (camera_moved || !moved_spheres_.empty() || path_tracing_reset_ || !path_tracing_layout_ready_) {
+        path_tracing_samples_ = 0;
+        path_tracing_view_projection_ = camera_view_projection_;
+        path_tracing_reset_ = false;
+    }
+    const bool trace = path_tracing_samples_ < path_tracing_max_samples_;
+
+    const vk::Image scene = *scene_color_.handle();
+    const vk::Image accumulation = *path_tracing_accumulation_.handle();
+    pipelineBarrier(cmd, {colorBarrier(scene, vk::ImageLayout::eColorAttachmentOptimal, vk::ImageLayout::eGeneral,
+                                       vk::PipelineStageFlagBits2::eColorAttachmentOutput,
+                                       vk::AccessFlagBits2::eColorAttachmentWrite,
+                                       vk::PipelineStageFlagBits2::eComputeShader,
+                                       vk::AccessFlagBits2::eShaderStorageWrite),
+                          colorBarrier(accumulation,
+                                       path_tracing_layout_ready_ ? vk::ImageLayout::eGeneral : vk::ImageLayout::eUndefined,
+                                       vk::ImageLayout::eGeneral, vk::PipelineStageFlagBits2::eComputeShader,
+                                       vk::AccessFlagBits2::eShaderStorageWrite,
+                                       vk::PipelineStageFlagBits2::eComputeShader,
+                                       vk::AccessFlagBits2::eShaderStorageRead | vk::AccessFlagBits2::eShaderStorageWrite)});
+    path_tracing_layout_ready_ = true;
+
+    RayTracing::Push push{};
+    push.previous_view_projection = previous_view_projection_;
+    push.params = Vec4{static_cast<float>(path_tracing_samples_ + frame_count_ * 7919u % 65536u),
+                       path_tracing_samples_ > 0 ? 1.0f : 0.0f, static_cast<float>(path_tracing_bounces_),
+                       trace ? 1.0f : 0.0f};
+    ray_tracing_.record(cmd, frame_index, RayTracing::Pass::PathTrace, render_extent_, push);
+    if (trace) ++path_tracing_samples_;
+
+    // De vuelta a destino de color: el vidrio, el agua y las particulas se
+    // dibujan encima.
+    pipelineBarrier(cmd, {colorBarrier(scene, vk::ImageLayout::eGeneral, vk::ImageLayout::eColorAttachmentOptimal,
+                                       vk::PipelineStageFlagBits2::eComputeShader,
+                                       vk::AccessFlagBits2::eShaderStorageWrite,
+                                       vk::PipelineStageFlagBits2::eColorAttachmentOutput |
+                                           vk::PipelineStageFlagBits2::eTransfer,
+                                       vk::AccessFlagBits2::eColorAttachmentRead |
+                                           vk::AccessFlagBits2::eColorAttachmentWrite |
+                                           vk::AccessFlagBits2::eTransferRead)});
+}
+
 void VulkanRenderer::recordGlassPass(const vk::raii::CommandBuffer& cmd,
                                      std::uint32_t frame_index) {
     // --- Que vidrio se ve ---
@@ -4782,6 +4985,16 @@ void VulkanRenderer::recordViewCopy(const vk::raii::CommandBuffer& cmd) {
 // Render Textures
 // -----------------------------------------------------------------------------
 
+void VulkanRenderer::retireRenderTextureImage(RenderTextureSlot& slot) {
+    RetiredRenderTexture retired;
+    retired.image = std::move(slot.image);
+    retired.ui_view = std::move(slot.ui_view);
+    retired.frames_left = kMaxFramesInFlight + 1;
+    retired_render_textures_.push_back(std::move(retired));
+    slot.image = VulkanImage{};
+    slot.ui_view = nullptr;
+}
+
 bool VulkanRenderer::renderTextureValid(std::int32_t id) const {
     return id >= 0 && static_cast<std::size_t>(id) < render_textures_.size() && render_textures_[id]->alive;
 }
@@ -4839,7 +5052,10 @@ void VulkanRenderer::resizeRenderTexture(std::int32_t id, std::uint32_t width, s
     if (!renderTextureValid(id) || width == 0 || height == 0) return;
     const vk::Extent2D current = render_textures_[id]->image.extent();
     if (current.width == std::clamp(width, 1u, 8192u) && current.height == std::clamp(height, 1u, 8192u)) return;
+    // La imagen vieja la puede estar leyendo la interfaz de este frame (vista
+    // previa, miniatura del material): se retira, no se destruye.
     device_.waitIdle();
+    retireRenderTextureImage(*render_textures_[id]);
     createRenderTextureImage(*render_textures_[id], width, height);
     ++render_texture_generation_;
     rebindRenderTexture(id);
@@ -4850,8 +5066,7 @@ void VulkanRenderer::destroyRenderTexture(std::int32_t id) {
     device_.waitIdle();
     render_textures_[id]->alive = false;
     rebindRenderTexture(id);  // sus materiales vuelven a la textura por defecto
-    render_textures_[id]->ui_view = nullptr;
-    render_textures_[id]->image.destroy();
+    retireRenderTextureImage(*render_textures_[id]);
     ++render_texture_generation_;
 }
 
@@ -4961,6 +5176,7 @@ void VulkanRenderer::updateModelMaterial(std::uint32_t model, std::uint32_t mate
         return;
     }
     SkinnedModel::Material& gpu = skinned_models_[model].materials()[material];
+    path_tracing_reset_ = true;  // el material cambia lo que se ve
     gpu.base_color = data.base_color;
     // El relieve del parallax solo si el material ya tiene mapa de alturas
     // (ponerlo o quitarlo rehace el modelo).
@@ -5668,6 +5884,63 @@ void VulkanRenderer::recordCloudPass(const vk::raii::CommandBuffer& cmd,
     pipelineBarrier(cmd, writtenToSampled(*clouds_image_.handle()));
 }
 
+void VulkanRenderer::recordCameraFxPass(const vk::raii::CommandBuffer& cmd) {
+    const PostProcessSettings& p = post_;
+    const bool blur = p.motion_blur && p.motion_blur_intensity > 0.0f && !capturing_;
+    const bool dof = p.depth_of_field && !capturing_;
+    if ((!blur && !dof) || drawModeNow() != SceneDrawMode::Lit) {
+        return;
+    }
+    const VulkanImage& target = postSource();
+    const vk::Extent2D extent = target.extent();
+
+    GpuCameraFxPush push{};
+    // Reproyeccion del cielo: del clip de este frame (sin jitter) al anterior.
+    push.reproject = motion_view_projection_ * core::inverse(camera_view_projection_);
+    push.params = Vec4{0.0f, std::clamp(p.motion_blur_intensity, 0.0f, 1.0f), std::clamp(p.motion_blur_max, 0.001f, 0.25f),
+                       static_cast<float>(frame_count_ % 1024)};
+    push.dof = Vec4{p.dof_auto_focus ? -1.0f : std::max(p.dof_focus_distance, 0.05f), std::max(p.dof_aperture, 0.5f),
+                    std::clamp(p.dof_focal_length, 5.0f, 600.0f), 0.025f};
+    push.camera = Vec4{camera_projection_.m[3][2], camera_projection_.m[2][2],
+                       static_cast<float>(extent.width) / static_cast<float>(std::max(extent.height, 1u)),
+                       1.0f / static_cast<float>(std::max(extent.height, 1u))};
+
+    const auto run = [&](float mode) {
+        // Copia de lo que hay (la lee el shader) y se dibuja encima.
+        pipelineBarrier(cmd, {colorBarrier(*target.handle(), vk::ImageLayout::eColorAttachmentOptimal,
+                                           vk::ImageLayout::eTransferSrcOptimal,
+                                           vk::PipelineStageFlagBits2::eColorAttachmentOutput,
+                                           vk::AccessFlagBits2::eColorAttachmentWrite, vk::PipelineStageFlagBits2::eCopy,
+                                           vk::AccessFlagBits2::eTransferRead),
+                              colorBarrier(*camera_fx_source_.handle(), vk::ImageLayout::eUndefined,
+                                           vk::ImageLayout::eTransferDstOptimal,
+                                           vk::PipelineStageFlagBits2::eFragmentShader,
+                                           vk::AccessFlagBits2::eShaderSampledRead, vk::PipelineStageFlagBits2::eCopy,
+                                           vk::AccessFlagBits2::eTransferWrite)});
+        vk::ImageCopy region{};
+        region.srcSubresource = vk::ImageSubresourceLayers{vk::ImageAspectFlagBits::eColor, 0, 0, 1};
+        region.dstSubresource = region.srcSubresource;
+        region.extent = vk::Extent3D{extent.width, extent.height, 1};
+        cmd.copyImage(*target.handle(), vk::ImageLayout::eTransferSrcOptimal, *camera_fx_source_.handle(),
+                      vk::ImageLayout::eTransferDstOptimal, region);
+        pipelineBarrier(cmd, {colorBarrier(*target.handle(), vk::ImageLayout::eTransferSrcOptimal,
+                                           vk::ImageLayout::eColorAttachmentOptimal, vk::PipelineStageFlagBits2::eCopy,
+                                           vk::AccessFlagBits2::eTransferRead,
+                                           vk::PipelineStageFlagBits2::eColorAttachmentOutput,
+                                           vk::AccessFlagBits2::eColorAttachmentWrite),
+                              colorBarrier(*camera_fx_source_.handle(), vk::ImageLayout::eTransferDstOptimal,
+                                           vk::ImageLayout::eShaderReadOnlyOptimal, vk::PipelineStageFlagBits2::eCopy,
+                                           vk::AccessFlagBits2::eTransferWrite, vk::PipelineStageFlagBits2::eFragmentShader,
+                                           vk::AccessFlagBits2::eShaderSampledRead)});
+        push.params.x = mode;
+        drawFullscreen(cmd, camera_fx_pass_, &camera_fx_sets_[0], target, &push);
+    };
+    // Primero el desenfoque de la lente y despues el del movimiento (como
+    // una camara: el rastro es de la imagen ya desenfocada).
+    if (dof) run(0.0f);
+    if (blur) run(1.0f);
+}
+
 void VulkanRenderer::recordLightShaftPass(const vk::raii::CommandBuffer& cmd) {
     pipelineBarrier(cmd, discardToAttachment(*light_shafts_.handle()));
     drawFullscreen(cmd, light_shaft_pass_, &light_shaft_sets_[0], light_shafts_,
@@ -5751,6 +6024,11 @@ void VulkanRenderer::recordCompositePass(const vk::raii::CommandBuffer& cmd,
     settings.gain = toVec4(p.gain, 0.0f);
     settings.vignette_color = toVec4(p.vignette_color, 0.0f);
     settings.bloom_tint = toVec4(p.bloom_tint, 0.0f);
+    settings.lens = Vec4{std::clamp(p.lens_distortion, -1.0f, 1.0f), std::max(p.lens_flare, 0.0f), sun_screen_uv_.x,
+                         sun_screen_uv_.y};
+    settings.flare = Vec4{sun_screen_weight_,
+                          static_cast<float>(screen.width) / static_cast<float>(std::max(screen.height, 1u)), 0.0f,
+                          0.0f};
     composite_buffers_[frame_index].write(&settings, sizeof(settings));
 
     drawFullscreen<GpuBloomPush>(cmd, composite_pass_, &composite_sets_[frame_index], ldr_color_,

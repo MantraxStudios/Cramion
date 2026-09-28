@@ -9,6 +9,7 @@
   <tbody>
     <tr><td><code>Vacío</code></td><td>Cielo físico, sol, cámara, un suelo con collider y post-procesado global.</td></tr>
     <tr><td><code>Tercera persona</code></td><td>Un personaje con Rigidbody que corre (Shift) y salta (Espacio), cámara orbital (clic derecho y rueda), plataformas, rampas y monedas con marcador.</td></tr>
+    <tr><td><code>Tercera persona avanzada</code></td><td>Un personaje de Mixamo con las animaciones del Locomotion Pack: Blend Tree 2D, apuntar y moverse de lado, giros en el sitio, salto sincronizado, IK de pies, mirada y manos. Ver abajo.</td></tr>
     <tr><td><code>IA y navegación</code></td><td>Un laberinto con NavMesh y guardias con NavAgent que patrullan y persiguen si te ven; llegar a la meta gana.</td></tr>
     <tr><td><code>Mundo de bloques</code></td><td>Supervivencia como Minecraft: mundo infinito con biomas, cuevas, árboles y mar; romper, recoger, inventario de 36 huecos, 13 recetas, vida, hambre, aire, muerte y guardado.</td></tr>
     <tr><td><code>MMO RPG</code></td><td>Un rol online en miniatura. Ver abajo.</td></tr>
@@ -17,6 +18,31 @@
     <tr><td><code>Mundo abierto (rendimiento)</code></td><td>Isla de 8 × 8 km con océano y unos 2 millones de árboles para medir el rendimiento. Ver abajo.</td></tr>
   </tbody>
 </table>
+
+<h3 id="tercera-avanzada">Tercera persona avanzada (Mixamo)</h3>
+<p>
+  Usa <strong>tu</strong> <em>Locomotion Pack</em> de Mixamo (gratis, pero su licencia no deja repartirlo con el motor):
+  en <a href="https://www.mixamo.com">mixamo.com</a> elige <em>Packs &gt; Locomotion Pack</em>, formato FBX con skin, y
+  déjalo en <strong>Descargas</strong> (el <code>.zip</code> o la carpeta). El Hub lo encuentra solo; si está en otro
+  sitio, indica su carpeta en el campo <em>Locomotion Pack</em>. Al crear el proyecto se importa en unos segundos:
+</p>
+<ul>
+  <li>El personaje en <code>Models/Locomotion</code> (en metros: el FBX va en centímetros y se convierte).</li>
+  <li>Cada animación a un clip <code>.cranim</code> en <code>Animations/Locomotion</code>, <strong>en el sitio</strong> (sin el avance de la cadera: lo mueve el script) y <strong>medida</strong>: lo que avanza por segundo, lo que gira y cuándo despega y aterriza el salto. Con eso los pies no patinan.</li>
+  <li><code>Personaje.cranimator</code>: un <a href="editor-ventanas.html#animator">Blend Tree 2D</a> (parado, andar, correr, de lado andando y corriendo, y de espaldas con el clip de andar al revés), el salto y cuatro giros en el sitio.</li>
+</ul>
+<table>
+  <thead><tr><th>Script</th><th>Contiene</th></tr></thead>
+  <tbody>
+    <tr><td><code>Personaje.lua</code></td><td>El controlador: WASD relativo a la cámara, correr con energía, <strong>escalones</strong> y rampas sin saltar, pegado al suelo al bajar, salto que despega en el fotograma de la animación y dura lo que dure la física, <strong>apuntar</strong> (clic derecho: el cuerpo sigue a la cámara y se mueve de lado o de espaldas), <strong>giros de 90 y 180 grados en el sitio</strong>, IK de <strong>pies</strong>, <strong>mirada</strong> (a lo interesante o a donde apuntas) y <strong>mano</strong> (E en una palanca: la agarra y la baja).</td></tr>
+    <tr><td><code>CamaraOrbital.lua</code></td><td>Cámara con brazo de muelle que no atraviesa paredes, al hombro al apuntar y con el campo de visión según corras o apuntes. Clic captura el ratón y Esc lo suelta.</td></tr>
+    <tr><td><code>Palanca.lua</code>, <code>Cristal.lua</code>, <code>Interfaz.lua</code></td><td>Palancas que abren compuertas, 7 cristales que recoger, energía, avisos y la depuración (F1: estado y los valores X/Y del Animator).</td></tr>
+  </tbody>
+</table>
+<p>
+  Las velocidades medidas llegan como propiedades del script (<code>velAndar</code>, <code>velCorrer</code>,
+  <code>despegue</code>...): si cambias de animaciones, cambia esos números en el Inspector.
+</p>
 
 <h3 id="mmo">MMO RPG</h3>
 <p>

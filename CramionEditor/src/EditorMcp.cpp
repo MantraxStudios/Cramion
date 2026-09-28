@@ -148,6 +148,7 @@ const std::vector<ToolDef>& toolDefs() {
                      {{"entity", entity}, {"component", prop("string", "Nombre del tipo, p. ej. Light, Rigidbody, BoxCollider, Script, Camera")}, {"values", prop("object", "Campos a cambiar")}}, {"entity", "component"}});
         d.push_back({"remove_component", "Quita un componente de una entidad.", {{"entity", entity}, {"component", prop("string", "Nombre del tipo")}}, {"entity", "component"}});
         d.push_back({"select", "Selecciona una entidad en el editor y opcionalmente centra la camara en ella.", {{"entity", entity}, {"focus", prop("boolean", "Centrar la camara")}}, {"entity"}});
+        d.push_back({"inspect_asset", "Muestra un asset en el Inspector (material, Render Texture o los ajustes de importacion de un modelo: Scale Factor...), como elegirlo en el Proyecto.", {{"asset", prop("string", "Ruta, nombre o UUID")}}, {"asset"}});
         d.push_back({"set_gizmo", "Cambia el gizmo de la vista de escena: none, move, rotate o scale, y si va en ejes locales.",
                      {{"mode", prop("string", "none | move | rotate | scale")}, {"local", prop("boolean", "Ejes locales (false = mundo)")}}, {"mode"}});
         d.push_back({"paint_prefabs", "Pinta prefabs con el pincel del editor (arboles, rocas... como el Foliage de Unreal) sobre el suelo alrededor de un punto, o los borra. Usa un grupo .crpaint o una lista de prefabs (misma probabilidad).",
@@ -187,7 +188,10 @@ const std::vector<ToolDef>& toolDefs() {
         d.push_back({"graphics_settings", "Lee o cambia la configuracion grafica: presupuesto adaptativo (adaptive, target_fps) y resolucion del mapa de sombras (0 = segun el hardware). Devuelve el estado del presupuesto.",
                      {{"adaptive", prop("boolean", "Optimizacion adaptativa")}, {"target_fps", prop("number", "FPS objetivo")},
                       {"shadow_resolution", prop("number", "Resolucion por cascada (0 = auto)")},
-                      {"texture_max_size", prop("number", "Lado maximo de las texturas (0 = auto)")}}, {}});
+                      {"texture_max_size", prop("number", "Lado maximo de las texturas (0 = auto)")},
+                      {"path_tracing", prop("boolean", "Path tracing en la vista Escena (necesita trazado de rayos)")},
+                      {"path_tracing_bounces", prop("number", "Rebotes del path tracing (1-16)")},
+                      {"path_tracing_samples", prop("number", "Muestras maximas por pixel del path tracing")}}, {}});
         d.push_back({"performance_stats", "Rendimiento del ultimo frame: FPS, ms de CPU y GPU, tiempo de GPU por pase, actores, triangulos, lotes y llamadas de sombras.",
                      json::object(), {}});
         d.push_back({"import_file", "Importa un archivo del disco al proyecto (modelo .fbx/.obj/.gltf/.glb, cielo .hdr).",
@@ -839,6 +843,21 @@ json McpTools::call(const std::string& name, const json& args, bool& image, std:
         }
         return out;
     }
+    if (name == "inspect_asset") {
+        const auto info = findAsset(arg(args, "asset"));
+        if (!info) throw ToolError("no existe el asset " + arg(args, "asset"));
+        a.inspected_material_ = {};
+        a.inspected_render_texture_ = {};
+        a.inspected_model_ = {};
+        if (info->type == assets::AssetType::Material) a.inspected_material_ = info->uuid;
+        else if (info->type == assets::AssetType::RenderTexture) a.inspected_render_texture_ = info->uuid;
+        else if (info->type == assets::AssetType::Model) {
+            a.inspected_model_ = info->uuid;  // sus ajustes de importacion
+            a.inspected_model_active_ = a.active_;
+        } else throw ToolError("el Inspector muestra materiales, Render Textures y modelos (importacion)");
+        a.focus_inspector_ = true;
+        return json{{"asset", info->name}, {"type", assets::assetTypeName(info->type)}};
+    }
     if (name == "assign_material") {
         ecs::Entity e = entity(arg(args, "entity"));
         const auto info = findAsset(arg(args, "material"));
@@ -864,7 +883,20 @@ json McpTools::call(const std::string& name, const json& args, bool& image, std:
             a.renderer_.setGraphicsSettings(g);
             a.saveGraphicsSettings();
         }
+        if (args.contains("path_tracing")) a.renderer_.setPathTracingEnabled(args["path_tracing"].get<bool>());
+        if (args.contains("path_tracing_bounces")) {
+            a.renderer_.setPathTracingBounces(static_cast<std::uint32_t>(std::max(args["path_tracing_bounces"].get<int>(), 1)));
+        }
+        if (args.contains("path_tracing_samples")) {
+            a.renderer_.setPathTracingMaxSamples(static_cast<std::uint32_t>(std::max(args["path_tracing_samples"].get<int>(), 1)));
+        }
         json j = budgetJson(a.renderer_);
+        j["path_tracing"] = json{{"enabled", a.renderer_.pathTracingEnabled()},
+                                 {"active", a.renderer_.pathTracingActive()},
+                                 {"supported", a.renderer_.rayTracingSupported()},
+                                 {"samples", a.renderer_.pathTracingSamples()},
+                                 {"max_samples", a.renderer_.pathTracingMaxSamples()},
+                                 {"bounces", a.renderer_.pathTracingBounces()}};
         j["shadow_resolution"] = a.renderer_.shadowResolution();
         j["shadow_resolution_setting"] = g.shadow_resolution;
         return j;

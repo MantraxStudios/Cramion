@@ -8,7 +8,9 @@
 //     Mundo de bloques (primera persona, romper y construir) y MMO RPG
 //     (pueblo, misiones, enemigos, otros jugadores; todo el juego en Lua) y
 //     Online (multijugador por red: arena, chat, marcador, objetos sincronizados)
-//     y Mundo abierto (isla de 8 km con 2 millones de arboles: rendimiento).
+//     y Mundo abierto (isla de 8 km con 2 millones de arboles: rendimiento) y
+//     Tercera persona avanzada (el Locomotion Pack de Mixamo del usuario,
+//     importado al crear el proyecto: Blend Tree 2D, IK, salto, giros).
 //   - Del usuario: carpetas en %LOCALAPPDATA%/Cramion/Templates/<nombre>/
 //     con template.json, Assets/ y ProjectSettings/ (se copian tal cual al
 //     proyecto nuevo). Se crean desde el editor con Archivo > Guardar
@@ -23,7 +25,8 @@
 
 namespace cramion::editor {
 
-enum class TemplateArt : int { Blank = 0, ThirdPerson = 1, Navigation = 2, User = 3, Voxel = 4, Mmo = 5, Creatures = 6, Online = 7, OpenWorld = 8 };
+enum class TemplateArt : int { Blank = 0, ThirdPerson = 1, Navigation = 2, User = 3, Voxel = 4, Mmo = 5, Creatures = 6, Online = 7, OpenWorld = 8,
+                               ThirdPersonPro = 9 };
 
 struct ProjectTemplate {
     std::string id;           // "blank", "third_person"... o la carpeta del usuario
@@ -33,7 +36,7 @@ struct ProjectTemplate {
     std::vector<std::string> features;
     std::uint32_t accent = 0xFFF28F00;  // RGBA8 (IM_COL32)
     TemplateArt art = TemplateArt::Blank;
-    std::filesystem::path folder;  // solo las del usuario
+    std::filesystem::path folder;  // las del usuario; en "third_person_pro", el Locomotion Pack (zip o carpeta)
 };
 
 // Integradas primero y despues las del usuario.

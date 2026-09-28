@@ -173,6 +173,25 @@ struct GpuCompositeSettings {
     core::Vec4 gain{1.0f, 1.0f, 1.0f, 0.0f};
     core::Vec4 vignette_color{0.0f, 0.0f, 0.0f, 0.0f};
     core::Vec4 bloom_tint{1.0f, 1.0f, 1.0f, 0.0f};
+    // x = distorsion de la lente, y = destellos del sol, zw = sol en pantalla (UV)
+    core::Vec4 lens{0.0f, 0.0f, 0.0f, 0.0f};
+    // x = el sol cuenta (0..1: en pantalla y sobre el horizonte), y = aspecto
+    core::Vec4 flare{0.0f, 1.0f, 0.0f, 0.0f};
+};
+
+// Constante de push del motion blur y la profundidad de campo (camera_fx.frag).
+struct GpuCameraFxPush {
+    // Clip actual (sin jitter) -> clip del frame anterior: movimiento del cielo.
+    core::Mat4 reproject = core::Mat4::identity();
+    // x = modo (0 profundidad de campo, 1 motion blur), y = intensidad del
+    // motion blur, z = rastro maximo (fraccion del alto), w = frame
+    core::Vec4 params{};
+    // x = distancia de enfoque (m; < 0 = autoenfoque), y = numero f,
+    // z = focal (mm), w = desenfoque maximo (fraccion del alto)
+    core::Vec4 dof{};
+    // x, y = proyeccion [3][2] y [2][2] (profundidad lineal), z = ancho / alto,
+    // w = 1 / alto de la imagen
+    core::Vec4 camera{};
 };
 
 // Constante de push de la iluminacion global de pantalla (ssgi.frag).
@@ -265,9 +284,10 @@ struct GpuExposureState {
     float initialized = 0.0f;
 };
 
-static_assert(sizeof(GpuCompositeSettings) == 11 * 16,
+static_assert(sizeof(GpuCompositeSettings) == 13 * 16,
               "GpuCompositeSettings debe coincidir con composite.frag (std140)");
 static_assert(sizeof(GpuExposurePush) == 32, "GpuExposurePush debe coincidir con exposure_average.comp");
+static_assert(sizeof(GpuCameraFxPush) == 112, "GpuCameraFxPush debe coincidir con camera_fx.frag");
 
 // Datos de las cascadas para el shader de iluminacion.
 struct GpuShadows {
@@ -296,7 +316,8 @@ struct GpuLocalShadows {
     core::Vec4 point_params[scene::kMaxShadowedPointLights]{};
 
     // x = resolucion de los focos, y = resolucion de las puntuales,
-    // z = intensidad de la sombra (0 = sin sombras).
+    // z = intensidad de la sombra (0 = sin sombras), w = error de los LOD de
+    // la camara en metros por metro de distancia (sesgo del receptor).
     core::Vec4 params{};
 };
 

@@ -204,6 +204,7 @@
     <tr><td>Angulo interior<br><code>inner_angle</code></td><td>numero</td><td>14</td><td>1 a 89</td><td></td></tr>
     <tr><td>Angulo exterior<br><code>outer_angle</code></td><td>numero</td><td>24</td><td>1 a 89</td><td></td></tr>
     <tr><td>Proyecta sombras<br><code>cast_shadows</code></td><td>si/no</td><td>si</td><td></td><td></td></tr>
+    <tr><td>Fuerza de la sombra<br><code>shadow_strength</code></td><td>numero</td><td>1</td><td>0 a 1</td><td>Cuanto oscurece su sombra (Strength de Unity): 1 = completa, 0.5 = a medias, 0 = nada</td></tr>
   </tbody>
 </table>
 <h3 id="Camera">Camara <code>Camera</code></h3>
@@ -270,6 +271,20 @@
     <tr><td>Sobrescribir<br><code>override_lens</code></td><td>si/no</td><td>no</td><td></td><td>Este volumen cambia esta seccion; si no, sale de los globales</td></tr>
     <tr><td>Aberracion cromatica<br><code>chromatic_aberration</code></td><td>numero</td><td>0</td><td>0 a 1</td><td></td></tr>
     <tr><td>Grano<br><code>film_grain</code></td><td>numero</td><td>0</td><td>0 a 1</td><td></td></tr>
+    <tr><td>Distorsion<br><code>lens_distortion</code></td><td>numero</td><td>0</td><td>-1 a 1</td><td>Mas de 0: barril (gran angular); menos de 0: cojin (teleobjetivo)</td></tr>
+    <tr><td>Destellos del sol<br><code>lens_flare</code></td><td>numero</td><td>0</td><td>0 a 2</td><td>Reflejos del sol dentro de la lente (fantasmas, halo y estrella); se apagan si algo tapa el sol</td></tr>
+    <tr><td colspan="5"><strong class="text-white">Motion blur</strong></td></tr>
+    <tr><td>Sobrescribir<br><code>override_motion_blur</code></td><td>si/no</td><td>no</td><td></td><td>Este volumen cambia esta seccion; si no, sale de los globales</td></tr>
+    <tr><td>Activado<br><code>motion_blur</code></td><td>si/no</td><td>no</td><td></td><td>Rastro de lo que se mueve (camara y objetos) mientras el obturador esta abierto</td></tr>
+    <tr><td>Intensidad<br><code>motion_blur_intensity</code></td><td>numero</td><td>0,5</td><td>0 a 1</td><td>Fraccion del frame con el obturador abierto: 0.5 = 180 grados (cine), 1 = 360</td></tr>
+    <tr><td>Rastro maximo<br><code>motion_blur_max</code></td><td>numero</td><td>0,05</td><td>0,005 a 0,2</td><td>Tope del rastro, en fraccion del alto de la pantalla</td></tr>
+    <tr><td colspan="5"><strong class="text-white">Profundidad de campo</strong></td></tr>
+    <tr><td>Sobrescribir<br><code>override_depth_of_field</code></td><td>si/no</td><td>no</td><td></td><td>Este volumen cambia esta seccion; si no, sale de los globales</td></tr>
+    <tr><td>Activada<br><code>depth_of_field</code></td><td>si/no</td><td>no</td><td></td><td>Desenfoque de lo que esta fuera de la distancia de enfoque (bokeh), como una camara real</td></tr>
+    <tr><td>Autoenfoque<br><code>dof_auto_focus</code></td><td>si/no</td><td>no</td><td></td><td>Enfoca lo que hay en el centro de la pantalla</td></tr>
+    <tr><td>Distancia de enfoque<br><code>dof_focus_distance</code></td><td>numero</td><td>10</td><td>0,1 a 1000</td><td></td></tr>
+    <tr><td>Apertura (f)<br><code>dof_aperture</code></td><td>numero</td><td>5,6</td><td>1 a 32</td><td>Numero f: 1.4 desenfoca mucho, 16 casi nada</td></tr>
+    <tr><td>Focal<br><code>dof_focal_length</code></td><td>numero</td><td>50</td><td>10 a 300</td><td>Milimetros del objetivo: mas focal, mas desenfoque</td></tr>
     <tr><td colspan="5"><strong class="text-white">Rayos de luz</strong></td></tr>
     <tr><td>Sobrescribir<br><code>override_light_shafts</code></td><td>si/no</td><td>no</td><td></td><td>Este volumen cambia esta seccion; si no, sale de los globales</td></tr>
     <tr><td>Activados<br><code>light_shafts</code></td><td>si/no</td><td>si</td><td></td><td></td></tr>

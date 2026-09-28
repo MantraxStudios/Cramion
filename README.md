@@ -17,6 +17,22 @@ Incluye dos escenas de demostración, iluminadas por una sola luz direccional (e
 
 ---
 
+## Novedades de la 0.7.4
+
+**Sombras de focos y luces puntuales arregladas**: se acabaron los cuadros negros y las manchas en paredes, techos y modelos que salían cerca de una luz y desaparecían al acercarse (la cámara veía el modelo simplificado por el LOD y la luz el completo, y la superficie se sombreaba a sí misma). Las sombras ya no parpadean ni cambian de forma al mover la cámara, el terreno ya no se sombrea a sí mismo a manchas, y una lámpara que parpadea conserva su sombra.
+
+**Niebla**: su color es la luz media del cielo y ya no pinta el skybox (degradado, nubes, luna) sobre las paredes.
+
+## Novedades de la 0.7.2
+
+**Plantilla Tercera persona avanzada**: un personaje de Mixamo con todas las animaciones del **Locomotion Pack** (el tuyo, desde Descargas), un **Blend Tree 2D** con las velocidades medidas de cada animación (los pies no patinan), apuntar con desplazamiento lateral, **giros en el sitio**, salto sincronizado con la física, escalones sin saltar e **IK** de pies, mirada y manos. Todo el juego en Lua.
+
+**Scale Factor como en Unity**: los FBX en centímetros (Mixamo, Maya, 3ds Max) ya no salen 100 veces más grandes. **Convert Units** lee la unidad del archivo y el Inspector de cada modelo tiene **Scale Factor**, su alto en metros y *Aplicar*.
+
+**IK suave**: la mirada pasa de un objeto a otro girando, no de golpe, y pies, cadera y patas se amortiguan.
+
+**Corregido**: en Play, la pestaña Escena ya no mueve a la vez el juego y la cámara del editor (el juego solo recibe la entrada con la vista Juego enfocada); cambiar el tamaño de una Render Texture con su vista previa abierta cerraba el editor; una pantalla delante de su cámara se veía dentro de sí misma (túnel).
+
 ## Novedades de la 0.7.1
 
 **Render Textures**: una cámara con **Target Texture** dibuja lo que ve en una textura (`.crrt`) que cualquier material usa como color o emisión: pantallas, cámaras de seguridad, espejos y minimapas, como en Unity.
@@ -142,6 +158,8 @@ Incluye dos escenas de demostración, iluminadas por una sola luz direccional (e
 
 ## Índice
 
+- [Novedades de la 0.7.4](#novedades-de-la-074)
+- [Novedades de la 0.7.2](#novedades-de-la-072)
 - [Novedades de la 0.7.1](#novedades-de-la-071)
 - [Novedades de la 0.7.0](#novedades-de-la-070)
 - [Novedades de la 0.6.2](#novedades-de-la-062)

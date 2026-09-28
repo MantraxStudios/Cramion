@@ -495,7 +495,8 @@ void EditorApp::browserClick(const BrowserItem& item, std::size_t index) {
     // sin arrastrar (como Unity): si se arrastra a los objetos seleccionados
     // en la Jerarquia, el Inspector no debe cambiar ni perder esa seleccion.
     if (item.kind == Kind::Asset &&
-        (item.info.type == assets::AssetType::Material || item.info.type == assets::AssetType::RenderTexture) &&
+        (item.info.type == assets::AssetType::Material || item.info.type == assets::AssetType::RenderTexture ||
+         item.info.type == assets::AssetType::Model) &&
         !io.KeyCtrl && !io.KeyShift) {
         pending_inspect_material_ = item.info.uuid;
     }
@@ -692,6 +693,31 @@ void EditorApp::browserItemMenu(const BrowserItem& item) {
                     break;
                 case assets::AssetType::Model:
                     if (ImGui::MenuItem("Poner en la escena")) instantiateAsset(info.uuid, {}, std::nullopt);
+                    {
+                        // Todos los modelos seleccionados (si este es uno de ellos).
+                        std::vector<Uuid> models;
+                        if (browserSelected(item)) {
+                            for (const BrowserItem& other : browser_items_) {
+                                if (other.kind == Kind::Asset && other.info.type == assets::AssetType::Model &&
+                                    !other.info.path.empty() && browserSelected(other)) {
+                                    models.push_back(other.info.uuid);
+                                }
+                            }
+                        }
+                        if (models.empty()) models.push_back(info.uuid);
+                        const std::string label = models.size() > 1
+                                                      ? "Crear materiales y asignarlos (" + std::to_string(models.size()) + " modelos)"
+                                                      : std::string("Crear materiales y asignarlos");
+                        if (ImGui::MenuItem(label.c_str())) createModelMaterials(models);
+                        ImGui::SetItemTooltip("Un material (.crmat) por cada material del modelo, en Materials/<modelo>,\n"
+                                              "con sus texturas: las que trae el modelo se sacan a Textures/<modelo>\n"
+                                              "(metal y rugosidad en mapas sueltos) y las que le faltan se buscan en\n"
+                                              "el proyecto y junto al archivo original por el nombre del material,\n"
+                                              "de la malla o del modelo (_BaseColor, _Normal, _Roughness...).\n"
+                                              "Cada material va a su hueco en cada pieza: las instancias de la escena\n"
+                                              "y las que pongas desde ahora ya salen con ellos. Los .crmat que ya\n"
+                                              "existan no se sobrescriben.");
+                    }
                     if (ImGui::MenuItem("Reimportar (combinar mallas)")) startReimport(info.uuid);
                     ImGui::SetItemTooltip("Lo vuelve a importar desde el archivo original. Si tiene muchas piezas\n"
                                           "(una palmera con cada hoja suelta) las junta por material: muchos\n"

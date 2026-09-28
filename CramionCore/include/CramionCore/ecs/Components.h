@@ -360,6 +360,9 @@ struct Light {
     float inner_angle = 14.0f;    // grados (foco)
     float outer_angle = 24.0f;
     bool cast_shadows = true;
+    // Cuanto oscurece su sombra (Strength de Unity): 1 = sombra completa,
+    // 0 = no oscurece (como sin sombra, pero se sigue calculando).
+    float shadow_strength = 1.0f;
 
     void reflect(PropertyVisitor& v);
 };
@@ -468,7 +471,9 @@ enum PostOverride : std::uint32_t {
     kPostAntialiasing = 1u << 7,
     kPostEffects = 1u << 8,
     kPostPerformance = 1u << 9,
-    kPostAll = (1u << 10) - 1u,
+    kPostMotionBlur = 1u << 10,
+    kPostDepthOfField = 1u << 11,
+    kPostAll = (1u << 12) - 1u,
 };
 
 struct PostProcessing {

@@ -771,6 +771,8 @@ ecs::Entity EditorApp::instantiateAsset(const Uuid& uuid, ecs::Entity parent,
         return {};
     }
     ecs::Entity root = ecs::instantiateModel(world_, *model, parent);
+    // Con los materiales creados para el modelo (Crear materiales y asignarlos).
+    applyModelMaterials(root, uuid);
     if (root.valid() && world_position) {
         root.setWorldPosition(*world_position);
     }
@@ -868,6 +870,12 @@ void EditorApp::drawUi(float delta_seconds) {
             if (picked && picked->type == assets::AssetType::RenderTexture) {
                 inspected_render_texture_ = pending_inspect_material_;
                 inspected_material_ = {};
+            } else if (picked && picked->type == assets::AssetType::Model) {
+                // Sus ajustes de importacion (hasta que se elija otra cosa).
+                inspected_model_ = pending_inspect_material_;
+                inspected_model_active_ = active_;
+                inspected_material_ = {};
+                inspected_render_texture_ = {};
             } else {
                 inspected_material_ = pending_inspect_material_;
                 inspected_render_texture_ = {};
@@ -1896,9 +1904,10 @@ void EditorApp::pollImports() {
         std::cout << "[Editor] Importando " << dialogs::utf8(job.source.filename()) << "...\n";
         if (job.reimport.valid()) {
             const std::optional<assets::AssetInfo> info = database_ ? database_->find(job.reimport) : std::nullopt;
-            job.result = std::async(std::launch::async, [info, progress = job.progress] {
+            job.result = std::async(std::launch::async, [info, progress = job.progress, settings = job.settings] {
                 if (!info) return assets::ImportResult{false, {}, "[Assets] El modelo ya no existe"};
-                return assets::reimportModel(*info, assets::modelImportSettings(info->path), progress.get());
+                return assets::reimportModel(*info, settings ? *settings : assets::modelImportSettings(info->path),
+                                             progress.get());
             });
         } else {
             job.result = std::async(std::launch::async, [file = job.source, folder = job.folder,

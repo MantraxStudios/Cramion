@@ -235,6 +235,27 @@ void clusterIndexRanges(const std::vector<SkinnedVertex>& vertices, std::vector<
 // trabaje por trozos. Sin el, solo se hornea si nada se anima.
 ModelData loadModel(const std::filesystem::path& path, bool force_static = false);
 
+// Metros por unidad segun el propio archivo (FBX: UnitScaleFactor / 100;
+// Mixamo, Maya y 3ds Max suelen ir en centimetros = 0.01). 1 si no lo dice
+// (glTF ya va en metros; OBJ no tiene unidades). Es el "Convert Units" de
+// Unity: el importador lo multiplica por su Scale Factor.
+float fileUnitScale(const std::filesystem::path& path);
+
+// Escala uniforme horneada en todo el modelo: vertices, nodos, huesos
+// (bind pose), pistas de posicion de las animaciones y cajas. Con ella el
+// modelo mide lo mismo lo use quien lo use (no depende de la raiz).
+void scaleModel(ModelData& model, float scale);
+
+// Solo las animaciones de un archivo (p. ej. los FBX de animaciones de Mixamo,
+// sin malla), con sus pistas asignadas por nombre de nodo a `target` (el
+// esqueleto del personaje que las va a usar). Las pistas de nodos que no
+// existan en `target` se descartan. Vacio (y `error`) si no se puede leer.
+// `scale` multiplica sus posiciones (el Scale Factor del personaje; con
+// `convert_units` tambien la unidad del archivo, como al importar el modelo).
+std::vector<AnimationClip> loadAnimationClips(const std::filesystem::path& path, const std::vector<Node>& target,
+                                              std::string* error = nullptr, float scale = 1.0f,
+                                              bool convert_units = true);
+
 // Calcula la caja de cada submalla a partir de sus vertices (pose de reposo).
 void computeSubmeshBounds(ModelData& model);
 

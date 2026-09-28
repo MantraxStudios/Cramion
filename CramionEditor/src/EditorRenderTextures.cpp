@@ -29,6 +29,7 @@ void EditorApp::createRenderTextureAsset(const std::filesystem::path& folder) {
     std::cout << "[Editor] Render Texture creada: " << dialogs::utf8(path.filename()) << "\n";
     inspected_material_ = {};
     inspected_render_texture_ = texture.uuid;
+    focus_inspector_ = true;
 }
 
 void EditorApp::drawRenderTextureEditor(const Uuid& uuid) {

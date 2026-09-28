@@ -75,6 +75,11 @@ void Light::reflect(PropertyVisitor& v) {
                 FloatRange{1.0f, 89.0f, 0.5f, "%.1f°", true});
     }
     v.field({"cast_shadows", "Proyecta sombras"}, cast_shadows);
+    if (all || cast_shadows) {
+        v.field({"shadow_strength", "Fuerza de la sombra",
+                 "Cuanto oscurece su sombra (Strength de Unity): 1 = completa, 0.5 = a medias, 0 = nada"},
+                shadow_strength, FloatRange{0.0f, 1.0f, 0.01f, "%.2f"});
+    }
 }
 
 void Camera::reflect(PropertyVisitor& v) {
@@ -226,6 +231,23 @@ void blendPostProcess(gfx::PostProcessSettings& o, const gfx::PostProcessSetting
     if (mask & kPostLens) {
         f(o.chromatic_aberration, v.chromatic_aberration);
         f(o.film_grain, v.film_grain);
+        f(o.lens_distortion, v.lens_distortion);
+        f(o.lens_flare, v.lens_flare);
+    }
+    if (mask & kPostMotionBlur) {
+        // Se funde por la intensidad (desde/hacia 0).
+        const float from = o.motion_blur ? o.motion_blur_intensity : 0.0f;
+        const float to = v.motion_blur ? v.motion_blur_intensity : 0.0f;
+        o.motion_blur_intensity = lerpf(from, to, t);
+        o.motion_blur = o.motion_blur_intensity > 0.0f;
+        f(o.motion_blur_max, v.motion_blur_max);
+    }
+    if (mask & kPostDepthOfField) {
+        b(o.depth_of_field, v.depth_of_field);
+        b(o.dof_auto_focus, v.dof_auto_focus);
+        f(o.dof_focus_distance, v.dof_focus_distance);
+        f(o.dof_aperture, v.dof_aperture);
+        f(o.dof_focal_length, v.dof_focal_length);
     }
     if (mask & kPostLightShafts) {
         const float from = o.light_shafts ? o.light_shaft_intensity : 0.0f;
@@ -569,6 +591,44 @@ void PostProcessing::reflect(PropertyVisitor& v) {
         v.field({"chromatic_aberration", "Aberracion cromatica"}, s.chromatic_aberration,
                 FloatRange{0.0f, 1.0f, 0.01f, "%.2f", true});
         v.field({"film_grain", "Grano"}, s.film_grain, FloatRange{0.0f, 1.0f, 0.01f, "%.2f", true});
+        v.field({"lens_distortion", "Distorsion", "Mas de 0: barril (gran angular); menos de 0: cojin (teleobjetivo)"},
+                s.lens_distortion, FloatRange{-1.0f, 1.0f, 0.01f, "%.2f", true});
+        v.field({"lens_flare", "Destellos del sol", "Reflejos del sol dentro de la lente (fantasmas, halo y estrella); "
+                                                     "se apagan si algo tapa el sol"},
+                s.lens_flare, FloatRange{0.0f, 2.0f, 0.01f, "%.2f", true});
+        v.endGroup();
+    }
+
+    if (v.beginGroup("Motion blur")) {
+        override_field(kPostMotionBlur, "override_motion_blur");
+        v.field({"motion_blur", "Activado", "Rastro de lo que se mueve (camara y objetos) mientras el obturador esta abierto"},
+                s.motion_blur);
+        if (all || s.motion_blur) {
+            v.field({"motion_blur_intensity", "Intensidad",
+                     "Fraccion del frame con el obturador abierto: 0.5 = 180 grados (cine), 1 = 360"},
+                    s.motion_blur_intensity, FloatRange{0.0f, 1.0f, 0.01f, "%.2f", true});
+            v.field({"motion_blur_max", "Rastro maximo", "Tope del rastro, en fraccion del alto de la pantalla"},
+                    s.motion_blur_max, FloatRange{0.005f, 0.2f, 0.001f, "%.3f", true});
+        }
+        v.endGroup();
+    }
+
+    if (v.beginGroup("Profundidad de campo")) {
+        override_field(kPostDepthOfField, "override_depth_of_field");
+        v.field({"depth_of_field", "Activada", "Desenfoque de lo que esta fuera de la distancia de enfoque (bokeh), "
+                                               "como una camara real"},
+                s.depth_of_field);
+        if (all || s.depth_of_field) {
+            v.field({"dof_auto_focus", "Autoenfoque", "Enfoca lo que hay en el centro de la pantalla"}, s.dof_auto_focus);
+            if (all || !s.dof_auto_focus) {
+                v.field({"dof_focus_distance", "Distancia de enfoque"}, s.dof_focus_distance,
+                        FloatRange{0.1f, 1000.0f, 0.05f, "%.2f m"});
+            }
+            v.field({"dof_aperture", "Apertura (f)", "Numero f: 1.4 desenfoca mucho, 16 casi nada"}, s.dof_aperture,
+                    FloatRange{1.0f, 32.0f, 0.1f, "f/%.1f"});
+            v.field({"dof_focal_length", "Focal", "Milimetros del objetivo: mas focal, mas desenfoque"},
+                    s.dof_focal_length, FloatRange{10.0f, 300.0f, 1.0f, "%.0f mm"});
+        }
         v.endGroup();
     }
 

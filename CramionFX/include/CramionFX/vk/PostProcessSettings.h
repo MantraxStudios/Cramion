@@ -62,6 +62,24 @@ struct PostProcessSettings {
     // --- Lente ---
     float chromatic_aberration = 0.0f;  // 0..1
     float film_grain = 0.0f;            // 0..1
+    // Distorsion de la lente: > 0 barril (gran angular), < 0 cojin (tele).
+    float lens_distortion = 0.0f;       // -1..1
+    // Destellos del sol en la lente (fantasmas, halo y estrella): 0 = no.
+    float lens_flare = 0.0f;            // 0..2
+
+    // --- Motion blur (camara y objetos, con los vectores de movimiento) ---
+    bool motion_blur = false;
+    // Fraccion del frame que el obturador esta abierto (0.5 = 180 grados).
+    float motion_blur_intensity = 0.5f;
+    // Tope del rastro, en fraccion del alto de la pantalla.
+    float motion_blur_max = 0.05f;
+
+    // --- Profundidad de campo (bokeh con la formula de una lente real) ---
+    bool depth_of_field = false;
+    bool dof_auto_focus = false;        // enfoca lo que hay en el centro de la pantalla
+    float dof_focus_distance = 10.0f;   // metros
+    float dof_aperture = 5.6f;          // numero f (menos = mas desenfoque)
+    float dof_focal_length = 50.0f;     // milimetros (mas = mas desenfoque)
 
     // --- Rayos de luz del sol (pantalla) ---
     bool light_shafts = true;

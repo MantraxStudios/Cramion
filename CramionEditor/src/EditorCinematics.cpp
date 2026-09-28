@@ -118,6 +118,7 @@ void EditorApp::updateCinematics(float delta_seconds) {
 void EditorApp::drawGameView() {
     if (!show_game_) {
         game_view_visible_ = false;
+        game_view_focused_ = false;
         return;
     }
     // La primera vez, como pestaña junto a la Escena (como Unity).
@@ -130,10 +131,12 @@ void EditorApp::drawGameView() {
     const bool open = ImGui::Begin("Juego", &show_game_, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
     ImGui::PopStyleVar();
     game_view_visible_ = open && show_game_;
+    game_view_focused_ = false;
     if (!open) {
         ImGui::End();
         return;
     }
+    game_view_focused_ = ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
     if (ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) ||
         (ImGui::IsWindowHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Left))) {
         preferred_view_ = kGameSlot;

@@ -84,6 +84,10 @@ std::string lower(std::string text) {
 }  // namespace
 
 void EditorApp::drawInspector() {
+    if (focus_inspector_) {
+        ImGui::SetNextWindowFocus();
+        focus_inspector_ = false;
+    }
     if (!ImGui::Begin(panelTitle("Inspector").c_str(), &show_inspector_)) {
         ImGui::End();
         return;
@@ -102,6 +106,16 @@ void EditorApp::drawInspector() {
             return;
         }
         inspected_material_ = {};
+    }
+    // Un modelo elegido en el Proyecto: sus ajustes de importacion (hasta que
+    // se elija un objeto de la escena).
+    if (inspected_model_.valid()) {
+        if (active_ == inspected_model_active_ && database_ && database_->find(inspected_model_)) {
+            drawModelImportSettings(inspected_model_);
+            ImGui::End();
+            return;
+        }
+        inspected_model_ = {};
     }
     const std::vector<ecs::Entity> selected = selectedEntities();
     ecs::Entity entity = world_.find(active_);

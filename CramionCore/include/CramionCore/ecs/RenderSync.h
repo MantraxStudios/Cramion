@@ -157,6 +157,18 @@ private:
             return std::hash<Uuid>{}(k.uuid) ^ (static_cast<std::size_t>(k.part) * 0x9E3779B1u);
         }
     };
+    // IK suavizado en el tiempo (por entidad): cambiar de objetivo o pisar
+    // otra altura no salta de golpe; la mirada, los pies, la cadera, las
+    // patas y los objetivos de manos y pies se acercan a lo pedido.
+    struct IKSmoothing {
+        bool look_valid = false;
+        core::Vec3 look{};          // punto que se mira (mundo)
+        float look_weight = 0.0f;   // peso que se aplica (sube y baja poco a poco)
+        float feet[2] = {0.0f, 0.0f};  // cuanto sube o baja cada pie (humanoide)
+        std::vector<float> legs;       // lo mismo por pata con suelo (animales)
+        bool limb_valid[4] = {false, false, false, false};
+        core::Vec3 limb[4]{};          // objetivo de cada mano y pie (mundo)
+    };
     struct AnimationState {
         std::uint32_t model = 0;
         anim::Animator animator;
@@ -172,6 +184,7 @@ private:
         float fade_duration = 0.0f;
         std::uint64_t seen = 0;     // ultimo frame en que se dibujo
         bool animated = false;      // el frame anterior se animaba (hay que copiar su pose)
+        IKSmoothing ik;
     };
     struct ClipKey {
         std::uint32_t model = 0;
@@ -292,7 +305,8 @@ private:
     std::unordered_map<entt::entity, std::vector<entt::entity>> drive_sockets_;
     void updateSockets(World& world, scene::Scene& scene);
     void applyInverseKinematics(World& world, Entity entity, const InverseKinematics& ik, anim::Animator& animator,
-                                const asset::ModelData& data, std::uint32_t model);
+                                const asset::ModelData& data, std::uint32_t model, IKSmoothing& smooth,
+                                float delta_seconds);
     // Olas interactivas: la simulacion y donde estaba cada cuerpo el frame
     // anterior (su velocidad).
     water::RippleSimulation ripples_;

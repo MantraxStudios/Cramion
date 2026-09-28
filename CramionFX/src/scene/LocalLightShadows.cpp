@@ -120,10 +120,34 @@ void LocalLightShadows::updatePoints(const Camera& camera, const LightSet& light
     std::vector<Candidate> candidates;
     candidates.reserve(lights.points.size());
 
+    // El hueco que ya tenia una luz: se reconoce por la luz (su posicion y su
+    // alcance), no por su indice en LightSet, que cambia si se activa o se
+    // desactiva otra luz de la escena; si se ha movido, por su indice.
+    const auto ownedSlot = [&](std::size_t index) -> std::int32_t {
+        const PointLight& light = lights.points[index];
+        for (std::uint32_t slot = 0; slot < kMaxShadowedPointLights; ++slot) {
+            const PointShadow& s = points_[slot];
+            if (s.active() && s.range == light.range && core::length(s.position - light.position) < 1e-3f) {
+                return static_cast<std::int32_t>(slot);
+            }
+        }
+        for (std::uint32_t slot = 0; slot < kMaxShadowedPointLights; ++slot) {
+            if (points_[slot].light_index == static_cast<std::int32_t>(index)) return static_cast<std::int32_t>(slot);
+        }
+        return -1;
+    };
+
     for (std::size_t i = 0; i < lights.points.size(); ++i) {
         const PointLight& light = lights.points[i];
-        if (light.range <= 0.0f || light.intensity <= 0.0f || !light.cast_shadows) {
+        if (light.range <= 0.0f || !light.cast_shadows) {
             continue;
+        }
+        if (light.intensity <= 0.0f) {
+            // Apagada: solo sigue si ya tenia hueco y no lleva demasiado asi.
+            const std::int32_t slot = ownedSlot(i);
+            if (slot < 0 || points_[static_cast<std::size_t>(slot)].dark_frames >= kPointShadowDarkGrace) {
+                continue;
+            }
         }
         const float distance = core::length(light.position - camera.position());
         candidates.push_back(Candidate{i, std::max(distance - light.range, 0.0f) + distance * 0.01f});
@@ -153,17 +177,13 @@ void LocalLightShadows::updatePoints(const Camera& camera, const LightSet& light
     std::vector<std::size_t> pending;
 
     for (const Candidate& candidate : candidates) {
-        bool kept = false;
-        for (std::uint32_t slot = 0; slot < kMaxShadowedPointLights; ++slot) {
-            if (!taken[slot] &&
-                points_[slot].light_index == static_cast<std::int32_t>(candidate.index)) {
-                taken[slot] = true;
-                point_slots_[candidate.index] = static_cast<std::int32_t>(slot);
-                kept = true;
-                break;
-            }
-        }
-        if (!kept) {
+        const std::int32_t owned = ownedSlot(candidate.index);
+        if (owned >= 0 && !taken[static_cast<std::size_t>(owned)]) {
+            const auto slot = static_cast<std::size_t>(owned);
+            taken[slot] = true;
+            points_[slot].light_index = static_cast<std::int32_t>(candidate.index);
+            point_slots_[candidate.index] = owned;
+        } else {
             pending.push_back(candidate.index);
         }
     }
@@ -177,11 +197,13 @@ void LocalLightShadows::updatePoints(const Camera& camera, const LightSet& light
         if (next_pending < pending.size()) {
             const std::size_t index = pending[next_pending++];
             points_[slot].light_index = static_cast<std::int32_t>(index);
+            points_[slot].dark_frames = 0;
             point_slots_[index] = static_cast<std::int32_t>(slot);
             taken[slot] = true;
         } else {
             points_[slot].light_index = -1;
             points_[slot].dirty = false;
+            points_[slot].dark_frames = 0;
             point_rendered_[slot] = Signature{};
         }
     }
@@ -200,6 +222,7 @@ void LocalLightShadows::updatePoints(const Camera& camera, const LightSet& light
         }
 
         const PointLight& light = lights.points[static_cast<std::size_t>(shadow.light_index)];
+        shadow.dark_frames = light.intensity > 0.0f ? 0 : shadow.dark_frames + 1;
         const Mat4 projection =
             core::perspective(fov, 1.0f, kNearPlane, std::max(light.range, kNearPlane * 2.0f));
 

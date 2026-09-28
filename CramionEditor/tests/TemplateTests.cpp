@@ -4,11 +4,13 @@
 // plantillas del usuario: guardar un proyecto como plantilla y crear otro
 // desde ella. Devuelve 0 si todo va.
 
+#include "LocomotionPack.h"
 #include "ProjectTemplates.h"
 #include "CreatureModels.h"
 
 #include <CramionCore/anim/Creature.h>
 #include <CramionCore/anim/Humanoid.h>
+#include <CramionCore/ecs/AnimatorController.h>
 #include <CramionCore/ecs/Rigging.h>
 #include <CramionCore/net/NetworkObject.h>
 
@@ -102,6 +104,17 @@ std::string hudText(ecs::World& world) {
 }  // namespace
 
 int main() {
+    // Solo importar el Locomotion Pack y ver las medidas (desarrollo).
+    if (const char* pack = std::getenv("LOCOMOTION_PACK")) {
+        const std::filesystem::path out = std::filesystem::temp_directory_path() / "cramion_locomotion_probe";
+        std::error_code ec;
+        std::filesystem::remove_all(out, ec);
+        std::filesystem::create_directories(out, ec);
+        const editor::locomotion::PackResult r = editor::locomotion::importPack(pack, out);
+        for (const std::string& line : r.log) std::printf("%s\n", line.c_str());
+        std::printf("%s %s\n", r.ok ? "OK" : "FALLO", r.error.c_str());
+        return r.ok ? 0 : 1;
+    }
     physics::registerPhysicsComponents();
     terrain::registerTerrainComponents();
     water::registerWaterComponents();
@@ -121,10 +134,11 @@ int main() {
 
     const std::vector<editor::ProjectTemplate> list = editor::availableTemplates();
     std::printf("Plantillas integradas\n");
-    check(list.size() == 8 && find(list, "blank") && find(list, "third_person") && find(list, "navigation") &&
+    check(list.size() == 9 && find(list, "blank") && find(list, "third_person") && find(list, "navigation") &&
+              find(list, "third_person_pro") &&
               find(list, "voxel") && find(list, "mmo") && find(list, "creatures") && find(list, "online") &&
               find(list, "open_world"),
-          "hay 8 plantillas integradas");
+          "hay 9 plantillas integradas");
 
     // --- Criaturas: modelos con esqueleto generados, IK, phys bones, ragdoll ---
     {
@@ -185,6 +199,155 @@ int main() {
         play(p, 0.5f, r);
         check(r.loaded && r.world.findByName("Suelo").valid() && r.world.findByName("Main Camera").valid(),
               "Vacia: escena inicial con suelo, camara y luz");
+    }
+
+    // --- Tercera persona avanzada (el Locomotion Pack de Mixamo, si esta en Descargas) ---
+    if (const editor::ProjectTemplate* pro = find(list, "third_person_pro"); pro != nullptr && !pro->folder.empty()) {
+        std::printf("Tercera persona avanzada (%s)\n", pro->folder.string().c_str());
+        const project::ProjectInfo p = editor::createProjectFromTemplate(*pro, root, "Locomocion");
+        const std::filesystem::path clips = p.assetsFolder() / "Animations" / "Locomotion";
+        int cranims = 0;
+        for (const auto& f : std::filesystem::directory_iterator(clips, ec)) cranims += f.path().extension() == ".cranim" ? 1 : 0;
+        check(cranims >= 10, "importa las animaciones del pack como clips (.cranim)");
+        ecs::AnimatorController controller;
+        check(ecs::loadAnimatorController(p.assetsFolder() / "Animations" / "Personaje.cranimator", controller) &&
+                  !controller.states.empty() && controller.states[0].motion == ecs::AnimatorMotion::BlendTree2D &&
+                  controller.states[0].children.size() == 8 && controller.states.size() == 6,
+              "Animator Controller: Blend Tree 2D de 8 clips, salto y 4 giros");
+        bool backwards = false;
+        for (const ecs::BlendTreeChild& c : controller.states[0].children) backwards = backwards || (c.speed < 0.0f && c.position.y < 0.0f);
+        check(backwards, "andar de espaldas: el clip de andar al reves");
+
+        ecs::World world;
+        std::string error;
+        const bool loaded = ecs::loadScene(world, p.assetsFolder() / "Scenes" / "Main.crscene", &error);
+        check(loaded, "la escena se abre");
+        if (loaded) {
+            const ecs::Entity model = world.findByName("Modelo");
+            check(model.valid() && model.has<ecs::Animator>() && model.has<ecs::InverseKinematics>() &&
+                      model.get<ecs::InverseKinematics>().foot_grounding,
+                  "el modelo lleva Animator (el controlador) e IK con los pies al suelo");
+            physics::PhysicsSystem physics;
+            physics.start(world);
+            dm::Input input;
+            scripting::ScriptSystem scripts;
+            scripts.setAssetsRoot(p.assetsFolder());
+            scripts.setPhysics(&physics);
+            scripts.setInput(&input);
+            scripts.setLog([&](int level, const std::string& message) {
+                if (level == 2) std::printf("  [Lua] %s\n", message.c_str());
+            });
+            scripts.start(world);
+            const auto frames = [&](int n) {
+                for (int i = 0; i < n; ++i) {
+                    const float dt = 1.0f / 60.0f;
+                    const int steps = physics.update(world, dt, true);
+                    scripts.fixedUpdate(world, dt, steps);
+                    scripts.update(world, dt);
+                    input.newFrame();
+                }
+            };
+            const auto key = [&](dm::Key k, bool down) {
+                dm::Event e;
+                e.type = down ? dm::EventType::KeyPressed : dm::EventType::KeyReleased;
+                e.key = k;
+                input.onEvent(e);
+            };
+            const auto lua = [&](const std::string& code) {
+                std::string out;
+                if (!scripts.run("local J = Scene.find('Jugador'):getScript()\n" + code, &out)) std::printf("  (lua: %s)\n", out.c_str());
+                return out;
+            };
+            const ecs::Entity player = world.findByName("Jugador");
+            frames(60);
+            const float rest_y = player.worldPosition().y;
+            check(std::abs(rest_y - 0.9f) < 0.08f, "el personaje se apoya en el suelo");
+
+            // Andar y correr hacia delante (la camara mira a -Z).
+            Vec3 a = player.worldPosition();
+            key(dm::Key::W, true);
+            frames(120);
+            Vec3 b = player.worldPosition();
+            const float walk = (a.z - b.z) / 2.0f;
+            key(dm::Key::LeftShift, true);
+            frames(90);
+            a = player.worldPosition();
+            frames(60);
+            b = player.worldPosition();
+            const float run = a.z - b.z;
+            key(dm::Key::LeftShift, false);
+            key(dm::Key::W, false);
+            const float y_param = model.get<ecs::Animator>().runtime.values.count("Y") ? model.get<ecs::Animator>().runtime.values.at("Y") : 0.0f;
+            std::printf("    anda a %.2f m/s, corre a %.2f m/s (Animator Y = %.2f)\n", walk, run, y_param);
+            check(walk > 1.0f && run > 3.5f && run > walk * 2.0f, "anda y corre (Shift) a la velocidad de sus animaciones");
+            check(y_param > 3.0f, "el Animator recibe la velocidad hacia delante (Y)");
+            check(lua("return tostring(J.energia < J.energiaMax)") == "true", "correr gasta energia");
+            frames(60);
+
+            // Escalera: sube andando (sin saltar) hasta el rellano.
+            lua("J.entity.position = Vec3(-8, 0.95, 6.5); J.entity.velocity = Vec3.zero; J.yaw = 0");
+            frames(20);
+            key(dm::Key::W, true);
+            float highest = 0.0f;
+            for (int i = 0; i < 480; ++i) {
+                frames(1);
+                highest = std::max(highest, player.worldPosition().y);
+                if (i % 30 == 0 && std::getenv("CRAMION_TRACE")) {
+                    std::printf("      t %.1f  z %.2f  y %.2f\n", i / 60.0, player.worldPosition().z, player.worldPosition().y);
+                }
+                if (player.worldPosition().z < -1.0f) break;
+            }
+            key(dm::Key::W, false);
+            std::printf("    en la escalera llega a y = %.2f (rellano a %.2f)\n", highest, 0.18 * 8 + 0.9);
+            check(highest > 0.18f * 8.0f + 0.9f - 0.1f, "sube la escalera andando (escalones de 18 cm)");
+            frames(30);
+
+            // Salto: sube lo que dice alturaSalto, y aterriza.
+            lua("J.entity.position = Vec3(0, 0.95, 12); J.entity.velocity = Vec3.zero");
+            frames(30);
+            const float ground = player.worldPosition().y;
+            key(dm::Key::Space, true);
+            frames(1);
+            key(dm::Key::Space, false);
+            float peak = ground;
+            for (int i = 0; i < 150; ++i) {
+                frames(1);
+                peak = std::max(peak, player.worldPosition().y);
+            }
+            std::printf("    salto: %.2f m\n", peak - ground);
+            check(peak - ground > 0.8f && peak - ground < 1.4f, "salta (despega en el fotograma de la animacion)");
+            check(lua("return tostring(J.salto == nil) .. tostring(J.enSuelo)") == "truetrue", "aterriza y termina el salto");
+
+            // Palanca: E cerca, la mano la agarra y la compuerta sube.
+            lua("local p = Scene.find('Palanca 1'); J.entity.position = p.position + p.forward * 1.0 + Vec3(0, 0.95, 0)");
+            frames(10);
+            const float gate_y = world.findByName("Compuerta 1").worldPosition().y;
+            key(dm::Key::E, true);
+            frames(1);
+            key(dm::Key::E, false);
+            frames(40);
+            const bool reaching = model.get<ecs::InverseKinematics>().right_hand.weight > 0.9f;
+            frames(160);
+            const float gate_up = world.findByName("Compuerta 1").worldPosition().y - gate_y;
+            check(reaching, "la mano derecha va a la palanca (IK)");
+            check(gate_up > 2.5f, "la palanca abre la compuerta");
+
+            // Cristales: recoger uno.
+            // (El del rellano ya se recogio al subir la escalera.)
+            const std::string before = lua("return tostring(J.cristales)");
+            lua("local c = Scene.find('Cristal 4'); J.entity.position = c.position");
+            frames(5);
+            const std::string after = lua("return tostring(J.cristales)");
+            std::printf("    cristales %s -> %s, marcador \"%s\"\n", before.c_str(), after.c_str(), hudText(world).c_str());
+            check(!before.empty() && after == std::to_string(std::stoi(before) + 1) &&
+                      hudText(world).find(after + " / 7") != std::string::npos,
+                  "recoge un cristal y el marcador lo cuenta");
+            check(scripts.errors().empty(), "los scripts corren sin errores");
+            scripts.stop();
+            physics.stop();
+        }
+    } else {
+        std::printf("Tercera persona avanzada: sin el Locomotion Pack en Descargas (no se prueba)\n");
     }
 
     // --- Tercera persona ---
@@ -841,7 +1004,7 @@ int main() {
               "guardar un proyecto como plantilla");
         const std::vector<editor::ProjectTemplate> again = editor::availableTemplates();
         const editor::ProjectTemplate* mine = find(again, "user:Mi plataformas");
-        check(again.size() == 9 && mine != nullptr && mine->category == "Mis plantillas" && mine->description == "Prueba",
+        check(again.size() == 10 && mine != nullptr && mine->category == "Mis plantillas" && mine->description == "Prueba",
               "aparece en la lista con su descripcion");
         if (mine != nullptr) {
             const project::ProjectInfo p = editor::createProjectFromTemplate(*mine, root, "Copia");

@@ -100,9 +100,10 @@ target_link_libraries(CramionMultiEditTests PRIVATE Cramion::Core cramion_imgui)
 # Prueba de las plantillas de proyecto (consola): crea, abre y juega cada una.
 add_executable(CramionTemplateTests "${CMAKE_CURRENT_SOURCE_DIR}/tests/TemplateTests.cpp"
                                     "${CMAKE_CURRENT_SOURCE_DIR}/src/ProjectTemplates.cpp"
-                                    "${CMAKE_CURRENT_SOURCE_DIR}/src/CreatureModels.cpp")
+                                    "${CMAKE_CURRENT_SOURCE_DIR}/src/CreatureModels.cpp"
+                                    "${CMAKE_CURRENT_SOURCE_DIR}/src/LocomotionPack.cpp")
 target_include_directories(CramionTemplateTests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
-target_link_libraries(CramionTemplateTests PRIVATE Cramion::Core)
+target_link_libraries(CramionTemplateTests PRIVATE Cramion::Core cramion_update)
 
 # Prueba de las configuraciones de compilacion (consola): perfiles, game.ini
 # y el icono escrito dentro de una copia del reproductor.

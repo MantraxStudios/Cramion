@@ -636,13 +636,18 @@ bool TerrainPass::recordUploads(const vk::raii::CommandBuffer& cmd, std::uint32_
 // Trozos (LOD)
 // -----------------------------------------------------------------------------
 
-void TerrainPass::selectChunks(Terrain& terrain, const core::Vec3& camera, const core::Mat4& view_projection) {
-    terrain.chunks.clear();
-    const TerrainDesc& d = terrain.desc;
-    if (!d.visible || terrain.resolution < 3) return;
-    const core::Frustum frustum(view_projection);
+namespace {
+
+// Recorre el arbol de trozos de un terreno: el LOD lo decide solo la
+// distancia a `camera`, y `keep` recorta (una caja por nodo). Asi el G-buffer
+// y los mapas de las luces locales eligen el MISMO detalle para un mismo
+// sitio aunque recorten con volumenes distintos.
+template <typename Keep, typename Visit>
+void walkChunks(const TerrainDesc& d, std::uint32_t resolution, const core::Vec3& camera, Keep&& keep,
+                Visit&& visit) {
+    if (!d.visible || resolution < 3) return;
     // El trozo mas pequeno: kPatchCells texeles de alturas por lado.
-    const float min_size = std::min(1.0f, static_cast<float>(kPatchCells) / static_cast<float>(terrain.resolution - 1));
+    const float min_size = std::min(1.0f, static_cast<float>(kPatchCells) / static_cast<float>(resolution - 1));
     struct Node {
         float u, v, size;
     };
@@ -652,7 +657,7 @@ void TerrainPass::selectChunks(Terrain& terrain, const core::Vec3& camera, const
         stack.pop_back();
         const core::Vec3 lo{d.origin.x + node.u * d.size, d.origin.y, d.origin.z + node.v * d.size};
         const core::Vec3 hi{lo.x + node.size * d.size, d.origin.y + d.max_height, lo.z + node.size * d.size};
-        if (!frustum.intersects(core::Aabb{lo, hi})) continue;
+        if (!keep(core::Aabb{lo, hi})) continue;
         // Distancia de la camara a la caja del trozo.
         const core::Vec3 closest{std::clamp(camera.x, lo.x, hi.x), std::clamp(camera.y, lo.y, hi.y),
                                  std::clamp(camera.z, lo.z, hi.z)};
@@ -668,11 +673,53 @@ void TerrainPass::selectChunks(Terrain& terrain, const core::Vec3& camera, const
         }
         // Faldon: lo bastante para tapar el salto con el vecino de otro LOD.
         const float cell = world_size / kPatchCells;
-        terrain.chunks.push_back(Chunk{node.u, node.v, node.size, cell * 2.0f + d.max_height * 0.02f + 0.5f});
+        visit(node.u, node.v, node.size, cell * 2.0f + d.max_height * 0.02f + 0.5f);
     }
 }
 
+}  // namespace
+
+void TerrainPass::selectChunks(Terrain& terrain, const core::Vec3& camera, const core::Mat4& view_projection) {
+    terrain.chunks.clear();
+    const core::Frustum frustum(view_projection);
+    walkChunks(
+        terrain.desc, terrain.resolution, camera, [&](const core::Aabb& box) { return frustum.intersects(box); },
+        [&](float u, float v, float size, float skirt) { terrain.chunks.push_back(Chunk{u, v, size, skirt}); });
+}
+
+std::uint64_t TerrainPass::localSignature(const core::Vec3& position, float range) const {
+    // FNV-1a de los trozos (con su LOD) que tocan la caja de la luz.
+    std::uint64_t hash = 1469598103934665603ull;
+    const auto mix = [&hash](std::uint64_t value) {
+        hash ^= value;
+        hash *= 1099511628211ull;
+    };
+    const core::Vec3 r{range, range, range};
+    const core::Vec3 light_lo = position - r;
+    const core::Vec3 light_hi = position + r;
+    for (const auto& [id, terrain] : terrains_) {
+        if (!terrain->desc.cast_shadows) continue;
+        mix(id);
+        walkChunks(
+            terrain->desc, terrain->resolution, lod_camera_,
+            [&](const core::Aabb& box) {
+                // El faldon cuelga por debajo del origen (como mucho el ancho
+                // del trozo).
+                const float skirt_bottom = box.min.y - (box.max.x - box.min.x);
+                return box.min.x <= light_hi.x && box.max.x >= light_lo.x && skirt_bottom <= light_hi.y &&
+                       box.max.y >= light_lo.y && box.min.z <= light_hi.z && box.max.z >= light_lo.z;
+            },
+            [&](float u, float v, float size, float) {
+                mix(std::bit_cast<std::uint32_t>(u));
+                mix(std::bit_cast<std::uint32_t>(v));
+                mix(std::bit_cast<std::uint32_t>(size));
+            });
+    }
+    return hash;
+}
+
 void TerrainPass::prepare(std::uint32_t frame, const core::Vec3& camera_position, const core::Mat4& view_projection) {
+    lod_camera_ = camera_position;
     for (auto& [id, terrain] : terrains_) {
         selectChunks(*terrain, camera_position, view_projection);
         if (frame >= terrain->params.size()) continue;
@@ -732,19 +779,31 @@ void TerrainPass::recordShadow(const vk::raii::CommandBuffer& cmd, std::uint32_t
             bound = true;
         }
         cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *layout_, 1, *terrain->sets[frame], nullptr);
-        const TerrainDesc& d = terrain->desc;
-        for (const Chunk& chunk : terrain->chunks) {
-            if (local) {
-                const core::Vec3 lo{d.origin.x + chunk.u * d.size, d.origin.y - chunk.skirt, d.origin.z + chunk.v * d.size};
-                const core::Vec3 hi{lo.x + chunk.size * d.size, d.origin.y + d.max_height, lo.z + chunk.size * d.size};
-                if (!light_frustum.intersects(core::Aabb{lo, hi})) continue;
-            }
+        const auto draw = [&](float u, float v, float size, float skirt) {
             GpuTerrainPush push{};
-            push.chunk = core::Vec4{chunk.u, chunk.v, chunk.size, chunk.skirt};
+            push.chunk = core::Vec4{u, v, size, skirt};
             push.light_view_projection = light_view_projection;
             push.shadow = 1;
             cmd.pushConstants<GpuTerrainPush>(*layout_, vk::ShaderStageFlagBits::eVertex, 0, push);
             cmd.drawIndexed(patch_index_count_, 1, 0, 0, 0);
+        };
+        if (local) {
+            // Luz local: sus propios trozos, recortados por SU volumen pero con
+            // el LOD de la camara. Con los trozos de la camara faltaba lo que
+            // queda fuera de pantalla y, como el mapa se cachea, al moverse la
+            // camara el terreno cambiaba de LOD y el del mapa no: el terreno se
+            // sombreaba a si mismo a manchas (ruido). Ver localSignature().
+            walkChunks(
+                terrain->desc, terrain->resolution, lod_camera_,
+                [&](const core::Aabb& box) {
+                    // El faldon cuelga por debajo del origen (como mucho el
+                    // ancho del trozo).
+                    const core::Vec3 skirt{0.0f, box.max.x - box.min.x, 0.0f};
+                    return light_frustum.intersects(core::Aabb{box.min - skirt, box.max});
+                },
+                draw);
+        } else {
+            for (const Chunk& chunk : terrain->chunks) draw(chunk.u, chunk.v, chunk.size, chunk.skirt);
         }
     }
 }

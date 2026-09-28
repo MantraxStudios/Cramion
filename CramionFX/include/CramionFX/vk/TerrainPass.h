@@ -98,6 +98,11 @@ public:
 
     std::uint32_t chunkCount() const;
 
+    // Firma de los trozos (y su LOD) que tocan el volumen de una luz local. Si
+    // cambia, el mapa cacheado de esa luz ya no coincide con el terreno que ve
+    // la camara y hay que redibujarlo.
+    std::uint64_t localSignature(const core::Vec3& position, float range) const;
+
 private:
     struct Upload {
         std::uint32_t id = 0;
@@ -155,6 +160,9 @@ private:
     std::uint32_t patch_index_count_ = 0;
     std::unordered_map<std::uint32_t, std::unique_ptr<Terrain>> terrains_;
     std::uint32_t next_id_ = 1;
+    // Camara del ultimo prepare(): decide el LOD tambien en los mapas de las
+    // luces locales.
+    core::Vec3 lod_camera_{};
     std::vector<Upload> uploads_;
     std::vector<VulkanBuffer> staging_;  // por frame en vuelo
 };

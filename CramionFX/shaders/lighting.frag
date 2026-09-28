@@ -38,14 +38,14 @@ const int kPointShadowFaceCount = 6;
 struct PointLightGpu {
     vec4 position_range;    // xyz = posicion, w = alcance
     vec4 color_intensity;   // rgb = color,    a = intensidad
-    vec4 shadow;            // x   = hueco de sombra (-1 = sin sombra)
+    vec4 shadow;            // x   = hueco de sombra (-1 = sin sombra), y = fuerza (0..1)
 };
 
 struct SpotLightGpu {
     vec4 position_range;       // xyz = posicion,  w = alcance
     vec4 direction_intensity;  // xyz = direccion, w = intensidad
     vec4 color_inner;          // rgb = color,     a = cos del angulo interior
-    vec4 outer_shadow;         // x   = cos del angulo exterior, y = hueco de sombra (-1 = sin)
+    vec4 outer_shadow;         // x   = cos del angulo exterior, y = hueco de sombra (-1 = sin), z = fuerza
 };
 
 layout(set = 0, binding = 0) uniform CameraBuffer {
@@ -418,9 +418,16 @@ float shadowFactor(vec3 world_position, vec3 normal, float n_dot_l, out int casc
 // Mismo desplazamiento por normal que las cascadas, pero el texel de una
 // proyeccion en perspectiva crece con la distancia a la luz, asi que su
 // tamano en el mundo llega ya multiplicado por ella.
+//
+// Mas el error del LOD de la camara: de lejos la camara dibuja una malla
+// simplificada cuyas caras pueden quedar hasta `lod_error` por detras de las
+// del mapa (que usa la malla fina, estable). Sin este margen la superficie se
+// sombreaba a si misma a parches (cuadros negros que desaparecian al
+// acercarse). Es como mucho ~1 pixel de pantalla: no despega la sombra.
 vec3 localNormalOffset(vec3 world_position, vec3 normal, float n_dot_l, float texel_world) {
     float sin_theta = sqrt(clamp(1.0 - n_dot_l * n_dot_l, 0.0, 1.0));
-    return world_position + normal * (texel_world * (0.5 + 1.5 * sin_theta));
+    float lod_error = local_shadows.params.w * length(world_position - camera.position.xyz);
+    return world_position + normal * (texel_world * (0.5 + 1.5 * sin_theta) + lod_error);
 }
 
 // Proyecta en el mapa de la luz y filtra. Fuera del frustum: iluminado.
@@ -1090,7 +1097,8 @@ void main() {
                                            world_position, geometric_normal,
                                            max(dot(geometric_normal, light_direction), 0.0));
                 point_shadow = mix(1.0, point_shadow,
-                                   local_shadows.params.z * local_shadows.point_params[slot].y);
+                                   local_shadows.params.z * local_shadows.point_params[slot].y *
+                                       lights.points[i].shadow.y);
             }
 
             color += shade(light_direction, radiance, normal, view_direction, albedo, roughness,
@@ -1135,7 +1143,7 @@ void main() {
                 spot_shadow = spotShadow(slot, distance_to_light, world_position,
                                          geometric_normal,
                                          max(dot(geometric_normal, light_direction), 0.0));
-                spot_shadow = mix(1.0, spot_shadow, local_shadows.params.z);
+                spot_shadow = mix(1.0, spot_shadow, local_shadows.params.z * lights.spots[i].outer_shadow.z);
             }
 
             color += shade(light_direction, radiance, normal, view_direction, albedo, roughness,
@@ -1166,13 +1174,17 @@ void main() {
         // calle estrecha no ve el cielo ni el sol, asi que su niebla es mucho
         // mas oscura (si no, todo queda velado de azul). Se aproxima con la
         // visibilidad del cielo del punto que se mira.
+        // El color es la luz MEDIA del cielo (el termino constante de su
+        // irradiancia), no el cielo de esa direccion: con el cielo la niebla
+        // "reflejaba" el skybox (su degradado, las nubes, la luna) sobre las
+        // paredes. Mas el halo hacia el sol y un minimo nocturno.
         vec3 ray_direction = -view_direction;
-        vec3 fog_color = skyColor(normalize(vec3(ray_direction.x, max(ray_direction.y, 0.0),
-                                                 ray_direction.z)), false);
+        vec3 fog_color = max(irradiance_sh.coefficients[0].rgb * 0.282095, vec3(0.0)) * (1.0 / 3.14159265);
         float sun_alignment = max(dot(ray_direction, lights.sky_sun.xyz), 0.0);
         fog_color += toLinear(lights.sun_color_ambient.rgb) * lights.sun_direction_intensity.w *
                      pow(sun_alignment, 10.0) * 0.35 * smoothstep(-0.05, 0.1, lights.sky_sun.y);
         fog_color *= mix(0.08, 1.0, gi.a);
+        fog_color += toLinear(lights.ambient_color.rgb) * lights.sun_color_ambient.a * 0.05;
         float fog = flat_view ? 0.0 : heightFog(distance_to_camera, ray_direction);
         color = mix(color, fog_color, fog);
         surface_distance = distance_to_camera;

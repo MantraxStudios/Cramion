@@ -726,8 +726,18 @@ const RenderSync::HumanoidInfo& RenderSync::humanoidInfo(std::uint32_t model, co
 }
 
 void RenderSync::applyInverseKinematics(World& world, Entity entity, const InverseKinematics& ik,
-                                        anim::Animator& animator, const asset::ModelData& data, std::uint32_t model) {
+                                        anim::Animator& animator, const asset::ModelData& data, std::uint32_t model,
+                                        IKSmoothing& smooth, float delta_seconds) {
     if (animator.locals().size() != data.nodes.size()) return;
+    // Fraccion del camino hacia lo pedido este frame (amortiguado: `rate` por
+    // segundo; sin tiempo, directo).
+    const auto follow = [delta_seconds](float rate) {
+        return delta_seconds > 0.0f ? 1.0f - std::exp(-rate * std::min(delta_seconds, 0.1f)) : 1.0f;
+    };
+    constexpr float kFootRate = 14.0f;   // pies y cadera (~70 ms)
+    constexpr float kLimbRate = 12.0f;   // manos y pies a su objetivo
+    constexpr float kLookRate = 5.0f;    // la mirada pasa de un objeto a otro (~0.2 s)
+    constexpr float kLookFade = 3.0f;    // peso de la mirada al aparecer o perder el objetivo
     ik::Pose pose{&data.nodes, &animator.locals(), &animator.globals()};
     const Mat4& world_matrix = entity.worldMatrix();
     const Mat4 to_model = core::inverse(world_matrix);
@@ -772,16 +782,23 @@ void RenderSync::applyInverseKinematics(World& world, Entity entity, const Inver
         Foot feet[2] = {{Bone::LeftUpperLeg, Bone::LeftLowerLeg, Bone::LeftFoot},
                         {Bone::RightUpperLeg, Bone::RightLowerLeg, Bone::RightFoot}};
         float lowest = 0.0f;
+        int foot_index = -1;
         for (Foot& f : feet) {
+            float& smoothed = smooth.feet[++foot_index];
             f.world = transformPoint(world_matrix, ik::nodePosition(pose, node(f.foot)));
             const float lift = f.world.y - base_y;  // cuanto levanta el pie la animacion
             Vec3 ground{};
             Vec3 normal{};
             const Vec3 origin{f.world.x, base_y + ik.max_step + 0.05f, f.world.z};
-            if (!ground_query_(origin, up_world * -1.0f, ik.max_step * 2.0f + 0.1f, ground, normal, entity)) continue;
+            if (!ground_query_(origin, up_world * -1.0f, ik.max_step * 2.0f + 0.1f, ground, normal, entity)) {
+                smoothed += (0.0f - smoothed) * follow(kFootRate);
+                continue;
+            }
             f.hit = true;
             f.normal = normal;
-            f.delta = std::clamp(ground.y + lift - f.world.y, -ik.max_step, ik.max_step);
+            const float wanted = std::clamp(ground.y + lift - f.world.y, -ik.max_step, ik.max_step);
+            smoothed += (wanted - smoothed) * follow(kFootRate);
+            f.delta = smoothed;
             lowest = std::min(lowest, f.delta);
         }
         // La cadera baja lo que baje el pie mas bajo (si no, esa pierna no llega).
@@ -801,10 +818,19 @@ void RenderSync::applyInverseKinematics(World& world, Entity entity, const Inver
     }
 
     // --- Manos y pies a sus objetivos ---
-    const auto limb = [&](const IKLimb& l, Bone upper, Bone lower, Bone end) {
+    const auto limb = [&](int index, const IKLimb& l, Bone upper, Bone lower, Bone end) {
         Vec3 target{};
         Quat rotation{};
-        if (!map.valid || l.weight <= 0.0f || !goal_of(l.target, l.use_position, l.position, target, &rotation)) return;
+        if (!map.valid || l.weight <= 0.0f || !goal_of(l.target, l.use_position, l.position, target, &rotation)) {
+            smooth.limb_valid[index] = false;
+            return;
+        }
+        // Cambiar de objetivo lleva la mano alli en un momento, no de golpe.
+        const Vec3 wanted = transformPoint(world_matrix, target);
+        if (!smooth.limb_valid[index]) smooth.limb[index] = wanted;
+        smooth.limb[index] = smooth.limb[index] + (wanted - smooth.limb[index]) * follow(kLimbRate);
+        smooth.limb_valid[index] = true;
+        target = point_to_model(smooth.limb[index]);
         Vec3 hint{};
         const bool has_hint = target_of(l.hint, hint, nullptr);
         ik::twoBone(pose, node(upper), node(lower), node(end), target, has_hint ? &hint : nullptr, l.weight);
@@ -821,18 +847,32 @@ void RenderSync::applyInverseKinematics(World& world, Entity entity, const Inver
             ik::setGlobalRotation(pose, node(end), core::slerp(ik::nodeRotation(pose, node(end)), wanted, l.weight));
         }
     };
-    limb(ik.left_hand, Bone::LeftUpperArm, Bone::LeftLowerArm, Bone::LeftHand);
-    limb(ik.right_hand, Bone::RightUpperArm, Bone::RightLowerArm, Bone::RightHand);
-    limb(ik.left_foot, Bone::LeftUpperLeg, Bone::LeftLowerLeg, Bone::LeftFoot);
-    limb(ik.right_foot, Bone::RightUpperLeg, Bone::RightLowerLeg, Bone::RightFoot);
+    limb(0, ik.left_hand, Bone::LeftUpperArm, Bone::LeftLowerArm, Bone::LeftHand);
+    limb(1, ik.right_hand, Bone::RightUpperArm, Bone::RightLowerArm, Bone::RightHand);
+    limb(2, ik.left_foot, Bone::LeftUpperLeg, Bone::LeftLowerLeg, Bone::LeftFoot);
+    limb(3, ik.right_foot, Bone::RightUpperLeg, Bone::RightLowerLeg, Bone::RightFoot);
 
     // --- Mirar: el giro se reparte entre el cuello y la cabeza ---
     // El hueso que mira: el pedido, la cabeza del humanoide o la del animal.
     Vec3 look{};
     int look_node = !ik.look_bone.empty() ? findBone(data, ik.look_bone)
                                           : (map.valid ? node(Bone::Head) : human.rig.head);
-    if (look_node >= 0 && ik.look_weight > 0.0f &&
-        goal_of(ik.look_at, ik.look_use_position, ik.look_position, look, nullptr)) {
+    // El punto mirado se desplaza hacia el objetivo (de un objeto a otro la
+    // cabeza gira, no salta) y el peso sube o baja poco a poco al aparecer o
+    // perder el objetivo.
+    const bool has_look = look_node >= 0 && ik.look_weight > 0.0f &&
+                          goal_of(ik.look_at, ik.look_use_position, ik.look_position, look, nullptr);
+    if (has_look) {
+        const Vec3 wanted = transformPoint(world_matrix, look);
+        if (!smooth.look_valid) smooth.look = wanted;
+        smooth.look = smooth.look + (wanted - smooth.look) * follow(kLookRate);
+        smooth.look_valid = true;
+    }
+    const float look_goal = has_look ? ik.look_weight : 0.0f;
+    smooth.look_weight += (look_goal - smooth.look_weight) * follow(kLookFade);
+    if (!has_look && smooth.look_weight < 1e-3f) smooth.look_valid = false;
+    if (look_node >= 0 && smooth.look_valid && smooth.look_weight > 1e-3f) {
+        look = point_to_model(smooth.look);
         // Hacia donde mira ahora un hueso: el "delante" del personaje llevado
         // por lo que ese hueso ha girado desde su reposo.
         const auto facing = [&](int bone) {
@@ -852,7 +892,7 @@ void RenderSync::applyInverseKinematics(World& world, Entity entity, const Inver
             bones.push_back(parent);
         }
         std::reverse(bones.begin(), bones.end());
-        ik::lookChain(pose, bones, facing(look_node), look, ik.look_weight, ik.look_max_angle);
+        ik::lookChain(pose, bones, facing(look_node), look, smooth.look_weight, ik.look_max_angle);
     }
 
     // --- Patas al suelo (cualquier esqueleto: animales) ---
@@ -869,6 +909,7 @@ void RenderSync::applyInverseKinematics(World& world, Entity entity, const Inver
     };
     std::vector<GroundFoot> grounded;
     if (ground_query_ && ik.grounding_weight > 0.0f) {
+        std::size_t leg_index = 0;
         const Vec3 up_world{0.0f, 1.0f, 0.0f};
         const float base_y = world_matrix.m[3][1];
         for (const IKChain& chain : ik.chains) {
@@ -882,10 +923,16 @@ void RenderSync::applyInverseKinematics(World& world, Entity entity, const Inver
             Vec3 ground{};
             Vec3 normal{};
             const Vec3 origin{f.world.x, base_y + ik.max_step + 0.05f, f.world.z};
+            if (smooth.legs.size() <= leg_index) smooth.legs.resize(leg_index + 1, 0.0f);
+            float& smoothed = smooth.legs[leg_index++];
             if (ground_query_(origin, up_world * -1.0f, ik.max_step * 2.0f + 0.1f, ground, normal, entity)) {
                 f.hit = true;
                 f.normal = normal;
-                f.delta = std::clamp(ground.y + lift - f.world.y, -ik.max_step, ik.max_step);
+                const float wanted = std::clamp(ground.y + lift - f.world.y, -ik.max_step, ik.max_step);
+                smoothed += (wanted - smoothed) * follow(kFootRate);
+                f.delta = smoothed;
+            } else {
+                smoothed += (0.0f - smoothed) * follow(kFootRate);
             }
             grounded.push_back(std::move(f));
         }
@@ -1717,7 +1764,10 @@ void RenderSync::syncActors(World& world, scene::Scene& scene, gfx::VulkanRender
 
         bool animating = false;
         bool posed = false;  // la pose de este frame ya se evaluo
-        if (Animator* animator = e.tryGet<Animator>(); animator != nullptr && !data.animations.empty()) {
+        // Un modelo sin clips propios tambien anima con un controlador (sus
+        // clips son .cranim sueltos: el personaje de Mixamo y su pack).
+        if (Animator* animator = e.tryGet<Animator>();
+            animator != nullptr && (!data.animations.empty() || animator->controller.valid())) {
             animating = true;
             int clip = animator->clip;
             bool loop = animator->loop;
@@ -1766,7 +1816,9 @@ void RenderSync::syncActors(World& world, scene::Scene& scene, gfx::VulkanRender
                         cycle += weights[k] * d;
                         used += weights[k];
                         if (out != nullptr) {
-                            out->push_back({c, phase * data.animations[static_cast<std::size_t>(c)].duration, weights[k]});
+                            // Velocidad negativa: el clip va hacia atras (andar de espaldas).
+                            const float t = child.speed < 0.0f ? 1.0f - phase : phase;
+                            out->push_back({c, t * data.animations[static_cast<std::size_t>(c)].duration, weights[k]});
                         }
                     }
                     if (out != nullptr && used > 1e-6f) {
@@ -1881,7 +1933,7 @@ void RenderSync::syncActors(World& world, scene::Scene& scene, gfx::VulkanRender
                 if (rig.skeleton != nullptr) applyBoneOverrides(*rig.skeleton, state.animator, data);
                 if (rig.drive) applyDriveSockets(world, e, state.animator, data);
                 if (use_proc) applyProceduralBefore(world, e, *proc, state.animator, data, *model, delta_seconds);
-                if (use_ik) applyInverseKinematics(world, e, *rig.ik, state.animator, data, *model);
+                if (use_ik) applyInverseKinematics(world, e, *rig.ik, state.animator, data, *model, state.ik, delta_seconds);
                 if (use_proc) applyProceduralSprings(e, *proc, state.animator, data, *model, delta_seconds);
                 if (rig.physbones != nullptr && rig.physbones->enabled) {
                     applyPhysBones(world, e, *rig.physbones, state.animator, data, delta_seconds);
@@ -1989,6 +2041,7 @@ void RenderSync::syncLightsAndEnvironment(World& world, scene::Scene& scene,
                         p.intensity = light->intensity;
                         p.range = light->range;
                         p.cast_shadows = light->cast_shadows;
+                        p.shadow_strength = std::clamp(light->shadow_strength, 0.0f, 1.0f);
                         lights.points.push_back(p);
                     }
                     break;
@@ -2005,6 +2058,7 @@ void RenderSync::syncLightsAndEnvironment(World& world, scene::Scene& scene,
                         s.outer_angle = light->outer_angle * kDegToRad;
                         s.enabled = true;
                         s.cast_shadows = light->cast_shadows;
+                        s.shadow_strength = std::clamp(light->shadow_strength, 0.0f, 1.0f);
                         lights.spots.push_back(s);
                     }
                     break;
@@ -2050,11 +2104,14 @@ void RenderSync::syncLightsAndEnvironment(World& world, scene::Scene& scene,
         lights.sun.color = lights.sun.color * light.color;
         lights.sun.intensity *= light.intensity;
         renderer.setSunShadowsEnabled(light.cast_shadows);
+        renderer.setSunShadowStrength(std::clamp(light.shadow_strength, 0.0f, 1.0f));
     } else if (hdr_active) {
         renderer.setSunShadowsEnabled(true);
+        renderer.setSunShadowStrength(1.0f);
         scene.setFixedSun(renderer.environmentSunDirection());
     } else {
         renderer.setSunShadowsEnabled(true);
+        renderer.setSunShadowStrength(1.0f);
         scene.setFixedSun(std::nullopt);
         if (sky != nullptr) {
             scene.setDayCycleEnabled(sky->day_cycle);

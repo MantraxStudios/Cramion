@@ -42,6 +42,7 @@
 #include "CramionFX/scene/LocalLightShadows.h"
 #include "CramionFX/scene/ShadowCascades.h"
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <filesystem>
@@ -195,6 +196,8 @@ public:
     bool shadowsEnabled() const { return shadows_enabled_; }
     // Sombras del sol/luna (la luz direccional con "Proyecta sombras").
     void setSunShadowsEnabled(bool enabled) { sun_shadows_ = enabled; }
+    // Cuanto oscurece la sombra del sol (0..1, Strength de la luz direccional).
+    void setSunShadowStrength(float strength) { sun_shadow_strength_ = strength; }
     bool sunShadowsEnabled() const { return sun_shadows_; }
 
     // Pinta cada cascada de un color, como el visualizador de cascadas de
@@ -321,6 +324,32 @@ public:
     bool rayTracingActive() const {
         return rt_enabled_ && device_.rayTracingSupported() && ray_tracing_.ready();
     }
+
+    // Path tracing (como el de Unreal): la imagen de referencia con luz
+    // fisicamente correcta (path_trace.comp). Suma un camino por pixel y
+    // frame mientras nada cambie; al mover la camara, una luz o un objeto
+    // empieza de nuevo. Necesita trazado de rayos por hardware.
+    void setPathTracingEnabled(bool enabled) {
+        if (enabled != path_tracing_) path_tracing_reset_ = true;
+        path_tracing_ = enabled;
+    }
+    bool pathTracingEnabled() const { return path_tracing_; }
+    bool pathTracingActive() const {
+        return path_tracing_ && device_.rayTracingSupported() && ray_tracing_.ready();
+    }
+    // Caminos sumados por pixel hasta ahora y tope (al llegar deja de trazar).
+    std::uint32_t pathTracingSamples() const { return path_tracing_samples_; }
+    std::uint32_t pathTracingMaxSamples() const { return path_tracing_max_samples_; }
+    void setPathTracingMaxSamples(std::uint32_t samples) {
+        path_tracing_max_samples_ = std::max(samples, 1u);
+    }
+    // Rebotes de la luz (1 = solo luz directa y un rebote de cielo).
+    std::uint32_t pathTracingBounces() const { return path_tracing_bounces_; }
+    void setPathTracingBounces(std::uint32_t bounces) {
+        if (bounces != path_tracing_bounces_) path_tracing_reset_ = true;
+        path_tracing_bounces_ = std::clamp(bounces, 1u, 16u);
+    }
+    void resetPathTracing() { path_tracing_reset_ = true; }
 
     // Occlusion culling (Hi-Z) de los escenarios. Apagado queda el de campo
     // de vision, tambien en la GPU.
@@ -619,6 +648,8 @@ private:
     // Dibuja los actores en un mapa de sombras ya abierto. Con `range` > 0
     // (luz local) solo los que tocan la esfera de la luz y con los pipelines
     // de las luces locales; con 0, los de las cascadas (depth clamp).
+    // `texel_world_size`: en las cascadas, lo que mide un texel; en una luz
+    // local, lo que mide por cada metro de distancia a la luz.
     void recordActorShadows(const vk::raii::CommandBuffer& cmd, std::uint32_t frame_index,
                             const core::Mat4& light_view_projection,
                             const core::Vec3& light_position = {}, float range = 0.0f,
@@ -927,6 +958,16 @@ private:
         bool alive = false;
     };
     std::vector<std::unique_ptr<RenderTextureSlot>> render_textures_;
+    // Imagenes de Render Textures rehechas (otro tamano) o borradas: la
+    // interfaz de este frame y los frames en vuelo aun pueden leerlas, asi
+    // que se destruyen unos frames despues (como los modelos retirados).
+    struct RetiredRenderTexture {
+        VulkanImage image;
+        vk::raii::ImageView ui_view{nullptr};
+        std::uint32_t frames_left = 0;
+    };
+    std::vector<RetiredRenderTexture> retired_render_textures_;
+    void retireRenderTextureImage(RenderTextureSlot& slot);
     std::int32_t render_texture_target_ = -1;  // drawFrame dibuja para esta textura
     const scene::Camera* camera_override_ = nullptr;
     std::uint64_t render_texture_generation_ = 0;
@@ -970,6 +1011,7 @@ private:
     std::uint32_t gpu_visible_submeshes_ = 0;
     std::uint32_t occluded_submeshes_ = 0;
     core::Mat4 camera_view_projection_ = core::Mat4::identity();
+    core::Mat4 camera_projection_ = core::Mat4::identity();  // sin jitter (profundidad lineal)
     // La del frame anterior, para reproyectar su imagen en el SSGI.
     core::Mat4 previous_view_projection_ = core::Mat4::identity();
     // La imagen HDR contiene un frame anterior valido (no justo tras crearla).
@@ -1046,6 +1088,14 @@ private:
     // quedaria congelada en la cache.
     std::array<bool, scene::kMaxShadowedSpotLights> spot_had_actor_{};
     std::array<bool, scene::kMaxShadowedPointLights> point_had_actor_{};
+    // Firma del terreno (trozos y LOD) con que se dibujo cada hueco: si el
+    // terreno que ve la camara cambia de detalle, el mapa se rehace.
+    std::array<std::uint64_t, scene::kMaxShadowedSpotLights> spot_terrain_signature_{};
+    std::array<std::uint64_t, scene::kMaxShadowedPointLights> point_terrain_signature_{};
+    // Error que puede tener en el mundo, por metro de distancia a la camara,
+    // la malla simplificada (LOD) que ve la camara. El shader lo suma al
+    // desplazamiento de las sombras locales.
+    float lod_error_per_meter_ = 0.0f;
 
     // Reparto del frustum entre cascadas; se recalcula cada frame.
     scene::ShadowCascades cascades_{};
@@ -1062,7 +1112,19 @@ private:
     void staticGeometryChanged() {
         cascades_valid_ = false;
         local_static_dirty_ = true;
+        path_tracing_reset_ = true;
     }
+    // --- Path tracing ---
+    bool path_tracing_ = false;
+    bool path_tracing_reset_ = true;
+    bool path_tracing_layout_ready_ = false;
+    std::uint32_t path_tracing_samples_ = 0;
+    std::uint32_t path_tracing_max_samples_ = 4096;
+    std::uint32_t path_tracing_bounces_ = 4;
+    std::uint64_t path_tracing_lights_hash_ = 0;
+    core::Mat4 path_tracing_view_projection_ = core::Mat4::identity();
+    VulkanImage path_tracing_accumulation_{};  // RGBA32F: suma de caminos por pixel
+    void recordPathTracePass(const vk::raii::CommandBuffer& cmd, std::uint32_t frame_index);
     std::uint64_t cascade_frame_ = 0;
     // Matrices, huecos y cache de las sombras de focos y luces puntuales.
     scene::LocalLightShadows local_shadows_{};
@@ -1080,6 +1142,14 @@ private:
     std::vector<vk::raii::DescriptorSet> bloom_up_sets_;
     std::vector<vk::raii::DescriptorSet> composite_sets_;
     std::vector<vk::raii::DescriptorSet> light_shaft_sets_;
+    // Motion blur y profundidad de campo (camera_fx.frag): copia de la imagen
+    // HDR que leen y escriben encima.
+    FullscreenPass camera_fx_pass_{};
+    std::vector<vk::raii::DescriptorSet> camera_fx_sets_;
+    VulkanImage camera_fx_source_{};
+    core::Vec2 sun_screen_uv_{};
+    float sun_screen_weight_ = 0.0f;  // 0..1: en pantalla y sobre el horizonte
+    void recordCameraFxPass(const vk::raii::CommandBuffer& cmd);
     std::vector<vk::raii::DescriptorSet> taa_sets_;
     std::vector<vk::raii::DescriptorSet> easu_sets_;
     std::vector<vk::raii::DescriptorSet> rcas_sets_;
@@ -1188,6 +1258,7 @@ private:
     void recordOutputDepth(const vk::raii::CommandBuffer& cmd);
     bool output_depth_ready_ = false;
     bool sun_shadows_ = true;
+    float sun_shadow_strength_ = 1.0f;
     bool sunShadows() const { return shadows_enabled_ && sun_shadows_; }
     bool cascade_debug_ = false;
     bool clouds_enabled_ = true;

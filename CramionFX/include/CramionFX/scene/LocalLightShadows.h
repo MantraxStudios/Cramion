@@ -20,6 +20,8 @@ namespace cramion::scene {
 inline constexpr std::uint32_t kMaxShadowedSpotLights = kMaxSpotLights;
 inline constexpr std::uint32_t kMaxShadowedPointLights = 8;
 inline constexpr std::uint32_t kPointShadowFaceCount = 6;
+// Frames que una luz puntual apagada (intensidad 0) conserva su hueco de sombra.
+inline constexpr std::uint32_t kPointShadowDarkGrace = 90;
 
 // Sombra de un foco: una sola proyeccion en perspectiva que cubre su cono.
 struct SpotShadow {
@@ -52,6 +54,10 @@ struct PointShadow {
     // Indice en LightSet::points de la luz que ocupa este hueco; -1 = libre.
     std::int32_t light_index = -1;
     bool dirty = false;
+    // Frames seguidos que su luz lleva a intensidad 0 (una lampara que
+    // parpadea): durante un margen conserva el hueco y su mapa en la cache, en
+    // vez de soltarlo en cada parpadeo y obligar a redibujar las demas.
+    std::uint32_t dark_frames = 0;
 
     bool active() const { return light_index >= 0; }
 };

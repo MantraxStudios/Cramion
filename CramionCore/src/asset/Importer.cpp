@@ -348,6 +348,8 @@ std::string settingsJson(const ModelImportSettings& settings) {
     nlohmann::json j;
     j["animated"] = settings.animated;
     j["scale"] = settings.scale;
+    j["convert_units"] = settings.convert_units;
+    j["file_unit_scale"] = settings.file_unit_scale;
     j["directx_normals"] = settings.directx_normals;
     j["combine_meshes"] = settings.combine_meshes;
     j["combine_above_parts"] = settings.combine_above_parts;
@@ -397,9 +399,14 @@ static ImportResult importModelTo(const std::filesystem::path& source,
 
         crdata::ModelContent content{};
         std::string how;
+        // Scale Factor x unidades del archivo: horneado en todo el modelo.
+        ModelImportSettings stored = settings;
+        stored.file_unit_scale = asset::fileUnitScale(source);
+        const float factor = settings.scale * (settings.convert_units ? stored.file_unit_scale : 1.0f);
         if (settings.animated) {
             // Personaje: una sola pieza con esqueleto y animaciones.
             ModelData model = asset::importModelSource(source, /*force_static=*/false, on_read);
+            asset::scaleModel(model, factor);
             report(progress, kReadShare, "Preparando el esqueleto y las animaciones");
             content.animated = !model.animations.empty() || model.bones.size() > 1;
             for (const asset::AnimationClip& clip : model.animations) {
@@ -411,6 +418,7 @@ static ImportResult importModelTo(const std::filesystem::path& source,
             how = "una pieza animada";
         } else {
             ModelData model = asset::importModelHierarchy(source, on_read);
+            asset::scaleModel(model, factor);
             report(progress, kReadShare, "Partiendo en piezas y agrupando");
             model.name = stem;
             std::string reason;
@@ -428,12 +436,7 @@ static ImportResult importModelTo(const std::filesystem::path& source,
             content.nodes[0].name = stem;
         }
 
-        // Escala de importacion y convenio de los normal maps.
-        if (settings.scale != 1.0f) {
-            content.nodes[0].local =
-                core::scale(Vec3{settings.scale, settings.scale, settings.scale}) *
-                content.nodes[0].local;
-        }
+        // (La escala ya va en las piezas: la raiz se queda sin escalar.)
         std::uint32_t missing = 0;
         std::size_t parts_done = 0;
         for (ModelData& part : content.parts) {
@@ -454,7 +457,7 @@ static ImportResult importModelTo(const std::filesystem::path& source,
         header.uuid = uuid.valid() ? uuid : Uuid::generate();
         header.name = stem;
         header.source = crdata::utf8(std::filesystem::absolute(source));
-        header.settings_json = settingsJson(settings);
+        header.settings_json = settingsJson(stored);
 
         const std::filesystem::path file =
             target.empty() ? crdata::uniquePath(destination_folder, stem, crdata::kExtension) : target;
@@ -478,6 +481,7 @@ static ImportResult importModelTo(const std::filesystem::path& source,
                          std::to_string(countTriangles(content)) + " triangulos, " +
                          std::to_string(result.info.size_bytes / (1024 * 1024)) + " MB, " +
                          std::to_string(seconds).substr(0, 5) + " s";
+        if (factor != 1.0f) result.message += " (escala " + std::to_string(factor).substr(0, 6) + ")";
         if (missing > 0) {
             result.message += " (" + std::to_string(missing) + " texturas no encontradas)";
         }
@@ -504,11 +508,19 @@ ModelImportSettings modelImportSettings(const std::filesystem::path& file) {
     if (!j.is_object()) return settings;
     settings.animated = j.value("animated", settings.animated);
     settings.scale = j.value("scale", settings.scale);
+    // Antes de la 0.7.2 no se convertian las unidades: igual al reimportar.
+    settings.convert_units = j.value("convert_units", false);
+    settings.file_unit_scale = j.value("file_unit_scale", 1.0f);
     settings.directx_normals = j.value("directx_normals", settings.directx_normals);
     // Los importados antes de existir el ajuste: se combinan al reimportar.
     settings.combine_meshes = j.value("combine_meshes", true);
     settings.combine_above_parts = j.value("combine_above_parts", settings.combine_above_parts);
     return settings;
+}
+
+std::string modelImportSource(const std::filesystem::path& file) {
+    const auto header = crdata::readHeader(file);
+    return header ? header->source : std::string();
 }
 
 ImportResult reimportModel(const AssetInfo& info, const ModelImportSettings& settings, ImportProgress* progress) {

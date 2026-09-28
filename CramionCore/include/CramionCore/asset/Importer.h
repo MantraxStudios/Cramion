@@ -45,8 +45,16 @@ struct ModelImportSettings {
     // parte en nodos). Si es false, cada malla del archivo es una pieza con
     // su nodo (hijos en la jerarquia al instanciarlo, como Unity).
     bool animated = false;
-    // Escala uniforme aplicada al importar (unidades del archivo -> metros).
+    // Scale Factor (como Unity): escala uniforme horneada en la malla, los
+    // huesos y las animaciones.
     float scale = 1.0f;
+    // Convert Units: ademas, la unidad que dice el archivo (un FBX en
+    // centimetros de Mixamo, Maya o 3ds Max mide 100 veces menos). Los
+    // importados antes de la 0.7.2 no la tenian (al reimportarlos sigue
+    // apagada salvo que se active).
+    bool convert_units = true;
+    // (Solo lectura: metros por unidad que dijo el archivo al importarlo.)
+    float file_unit_scale = 1.0f;
     // Normal maps de convenio DirectX (+Y hacia abajo).
     bool directx_normals = false;
     // Modelos con muchas piezas (una palmera con 60 hojas, cada una su nodo):
@@ -87,6 +95,8 @@ ImportResult reimportModel(const AssetInfo& info, const ModelImportSettings& set
                            ImportProgress* progress = nullptr);
 // Los ajustes con que se importo un .crdata (o los de por defecto).
 ModelImportSettings modelImportSettings(const std::filesystem::path& file);
+// Ruta (UTF-8) del archivo original de un .crdata ("" si no la guarda).
+std::string modelImportSource(const std::filesystem::path& file);
 
 // Escribe un modelo generado por el motor (no importado de un archivo), p. ej.
 // el lote de mallas estaticas de una escena al exportar. `nodes` y `parts`

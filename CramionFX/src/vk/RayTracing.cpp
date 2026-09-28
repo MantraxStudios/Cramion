@@ -136,7 +136,7 @@ struct RayTracing::Resources {
     std::vector<vk::raii::DescriptorSet> frame_sets;  // [frame * kPassCount + pase]
     std::vector<vk::raii::DescriptorSet> scene_sets;  // uno
     vk::raii::PipelineLayout pipeline_layout{nullptr};
-    std::array<vk::raii::Pipeline, kPassCount> pipelines{nullptr, nullptr, nullptr};
+    std::array<vk::raii::Pipeline, kPassCount> pipelines{nullptr, nullptr, nullptr, nullptr};
 
     // --- Cache de radiancia en el mundo (rt_common.glsl) ---
     DeviceBuffer cache_keys;      // uint por entrada
@@ -207,11 +207,13 @@ void RayTracing::create(const VulkanDevice& device) {
 
     // --- Set 0: lo de cada frame ---
     using Type = vk::DescriptorType;
-    const std::array<Type, 7> frame_types = {
+    // 7, 8, 9: albedo y material del G-buffer y la acumulacion (path tracing).
+    const std::array<Type, 10> frame_types = {
         Type::eUniformBuffer,        Type::eCombinedImageSampler, Type::eCombinedImageSampler,
         Type::eCombinedImageSampler, Type::eStorageImage,         Type::eUniformBuffer,
-        Type::eCombinedImageSampler};
-    std::array<vk::DescriptorSetLayoutBinding, 7> frame_bindings{};
+        Type::eCombinedImageSampler, Type::eCombinedImageSampler, Type::eCombinedImageSampler,
+        Type::eStorageImage};
+    std::array<vk::DescriptorSetLayoutBinding, 10> frame_bindings{};
     for (std::uint32_t i = 0; i < frame_bindings.size(); ++i) {
         frame_bindings[i].binding = i;
         frame_bindings[i].descriptorType = frame_types[i];
@@ -225,8 +227,8 @@ void RayTracing::create(const VulkanDevice& device) {
     constexpr std::uint32_t kFrameSets = kMaxFramesInFlight * kPassCount;
     const std::array<vk::DescriptorPoolSize, 3> frame_sizes = {
         vk::DescriptorPoolSize{Type::eUniformBuffer, kFrameSets * 2},
-        vk::DescriptorPoolSize{Type::eCombinedImageSampler, kFrameSets * 4},
-        vk::DescriptorPoolSize{Type::eStorageImage, kFrameSets}};
+        vk::DescriptorPoolSize{Type::eCombinedImageSampler, kFrameSets * 6},
+        vk::DescriptorPoolSize{Type::eStorageImage, kFrameSets * 2}};
     vk::DescriptorPoolCreateInfo frame_pool_info{};
     frame_pool_info.flags = vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet;
     frame_pool_info.maxSets = kFrameSets;
@@ -488,7 +490,7 @@ void RayTracing::build(const VulkanDevice& device,
     r.pipeline_layout = vk::raii::PipelineLayout(device.handle(), layout_info);
 
     const std::array<const char*, kPassCount> shaders = {"rt_gi.comp.spv", "rt_reflections.comp.spv",
-                                                         "rt_cache_resolve.comp.spv"};
+                                                         "rt_cache_resolve.comp.spv", "path_trace.comp.spv"};
     for (std::size_t i = 0; i < shaders.size(); ++i) {
         const vk::raii::ShaderModule module = shaders::loadModule(device, shaders[i]);
         vk::ComputePipelineCreateInfo pipeline_info{};
@@ -603,13 +605,19 @@ void RayTracing::updateFrameSet(const VulkanDevice& device, std::uint32_t frame_
         const vk::DescriptorImageInfo previous{inputs.sampler, inputs.previous_color,
                                                vk::ImageLayout::eShaderReadOnlyOptimal};
         // La resolucion de la cache no escribe imagen: se le pone la de la GI.
-        const vk::DescriptorImageInfo output{
-            nullptr, pass == 1 ? inputs.reflection_output : inputs.gi_output,
-            vk::ImageLayout::eGeneral};
+        const vk::ImageView output_view = pass == 1   ? inputs.reflection_output
+                                          : pass == 3 ? inputs.path_output
+                                                      : inputs.gi_output;
+        const vk::DescriptorImageInfo output{nullptr, output_view, vk::ImageLayout::eGeneral};
+        const vk::DescriptorImageInfo albedo{inputs.sampler, inputs.albedo,
+                                             vk::ImageLayout::eShaderReadOnlyOptimal};
+        const vk::DescriptorImageInfo material{inputs.sampler, inputs.material,
+                                               vk::ImageLayout::eShaderReadOnlyOptimal};
+        const vk::DescriptorImageInfo accumulation{nullptr, inputs.accumulation, vk::ImageLayout::eGeneral};
         const vk::DescriptorImageInfo environment{inputs.environment_sampler, inputs.environment,
                                                   vk::ImageLayout::eShaderReadOnlyOptimal};
 
-        std::array<vk::WriteDescriptorSet, 7> writes{};
+        std::array<vk::WriteDescriptorSet, 10> writes{};
         for (std::uint32_t i = 0; i < writes.size(); ++i) {
             writes[i].dstSet = set;
             writes[i].dstBinding = i;
@@ -629,6 +637,12 @@ void RayTracing::updateFrameSet(const VulkanDevice& device, std::uint32_t frame_
         writes[5].pBufferInfo = &lights;
         writes[6].descriptorType = vk::DescriptorType::eCombinedImageSampler;
         writes[6].pImageInfo = &environment;
+        writes[7].descriptorType = vk::DescriptorType::eCombinedImageSampler;
+        writes[7].pImageInfo = &albedo;
+        writes[8].descriptorType = vk::DescriptorType::eCombinedImageSampler;
+        writes[8].pImageInfo = &material;
+        writes[9].descriptorType = vk::DescriptorType::eStorageImage;
+        writes[9].pImageInfo = &accumulation;
         device.handle().updateDescriptorSets(writes, nullptr);
     }
 }

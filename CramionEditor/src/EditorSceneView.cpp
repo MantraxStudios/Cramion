@@ -101,6 +101,8 @@ void EditorApp::drawToolbar() {
     ImGui::SameLine();
     drawSceneDrawModeMenu();
     ImGui::SameLine();
+    drawPathTracingButton();
+    ImGui::SameLine();
     drawAspectMenu(kSceneSlot);
     // En Play con red: servidor o cliente y cuantos jugadores.
     if (const std::string net = scripts_.networkStatus(); !net.empty()) {
@@ -263,6 +265,42 @@ void EditorApp::drawSceneDrawModeMenu() {
         ImGui::EndCombo();
     }
     ImGui::SetItemTooltip("Modo de dibujo de la vista Escena (la vista Juego siempre con luz)");
+}
+
+// Path tracing (como el de Unreal): un boton que lo enciende y lo apaga. Con
+// clic derecho, rebotes y muestras; mientras esta encendido, cuantas lleva.
+void EditorApp::drawPathTracingButton() {
+    const bool supported = renderer_.rayTracingSupported();
+    const bool on = renderer_.pathTracingEnabled();
+    ImGui::BeginDisabled(!supported);
+    if (toolButton("Path Tracing", on,
+                   supported ? "Imagen de referencia con luz fisicamente correcta: rayos que rebotan por la escena real, "
+                               "sombras suaves, luz indirecta y reflejos. Se limpia sola mientras la camara esta quieta "
+                               "(al moverla vuelve a empezar). Clic derecho: rebotes y muestras."
+                             : "Necesita una GPU con trazado de rayos por hardware (Vulkan ray query)")) {
+        renderer_.setPathTracingEnabled(!on);
+    }
+    ImGui::EndDisabled();
+    if (ImGui::BeginPopupContextItem("path_tracing_options")) {
+        int bounces = static_cast<int>(renderer_.pathTracingBounces());
+        if (ImGui::SliderInt("Rebotes", &bounces, 1, 12)) renderer_.setPathTracingBounces(static_cast<std::uint32_t>(bounces));
+        ImGui::SetItemTooltip("Cuantas veces rebota la luz. Interiores: 4 a 8; exteriores: 2 a 4.");
+        int samples = static_cast<int>(renderer_.pathTracingMaxSamples());
+        if (ImGui::SliderInt("Muestras", &samples, 16, 16384, "%d", ImGuiSliderFlags_Logarithmic)) {
+            renderer_.setPathTracingMaxSamples(static_cast<std::uint32_t>(samples));
+        }
+        ImGui::SetItemTooltip("Caminos por pixel hasta dar la imagen por terminada (deja de trazar).");
+        if (ImGui::MenuItem("Empezar de nuevo")) renderer_.resetPathTracing();
+        ImGui::EndPopup();
+    }
+    if (on && renderer_.pathTracingActive()) {
+        ImGui::SameLine();
+        const std::uint32_t done = renderer_.pathTracingSamples();
+        const std::uint32_t total = renderer_.pathTracingMaxSamples();
+        if (done >= total) ImGui::TextColored(ImVec4(0.35f, 0.85f, 0.55f, 1.0f), "%u/%u", done, total);
+        else ImGui::TextDisabled("%u/%u", done, total);
+        ImGui::SetItemTooltip("Muestras por pixel acumuladas");
+    }
 }
 
 void EditorApp::updateViewExtent(float delta_seconds) {

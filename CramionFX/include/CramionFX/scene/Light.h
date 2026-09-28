@@ -27,6 +27,7 @@ struct PointLight {
     float intensity = 12.0f;
     float range = 18.0f;
     bool cast_shadows = true;
+    float shadow_strength = 1.0f;  // cuanto oscurece su sombra (0..1)
 };
 
 // Foco: luz puntual limitada a un cono. Entre el angulo interior y el exterior
@@ -41,6 +42,7 @@ struct SpotLight {
     float outer_angle = core::radians(24.0f);
     bool enabled = true;
     bool cast_shadows = true;
+    float shadow_strength = 1.0f;  // cuanto oscurece su sombra (0..1)
 };
 
 // Iluminacion ambiental de relleno (cielo).

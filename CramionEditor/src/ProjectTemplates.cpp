@@ -10,7 +10,10 @@
 #include "TemplateOnlineScripts.h"
 #include "TemplateOpenWorldScripts.h"
 #include "CreatureModels.h"
+#include "LocomotionPack.h"
+#include "TemplateLocomotionScripts.h"
 
+#include <CramionCore/ecs/AnimatorController.h>
 #include <CramionCore/ecs/Rigging.h>
 #include <CramionCore/net/NetworkObject.h>
 
@@ -26,6 +29,8 @@
 #include <map>
 #include <cstdlib>
 #include <fstream>
+#include <iostream>
+#include <random>
 #include <stdexcept>
 
 namespace cramion::editor {
@@ -2829,6 +2834,359 @@ void buildOpenWorld(project::ProjectInfo& project) {
     b.save("Main");
 }
 
+// Tercera persona avanzada: el personaje y las animaciones del Locomotion
+// Pack de Mixamo (el del usuario: el motor no puede repartirlo) con un
+// Animator Controller (Blend Tree 2D, salto, giros en el sitio), IK de pies,
+// mirada y manos, y un circuito para lucirlo. Todo el juego en Lua.
+void buildThirdPersonPro(project::ProjectInfo& project, std::filesystem::path pack) {
+    if (pack.empty()) pack = locomotion::findDownloadedPack();
+    if (pack.empty()) {
+        throw std::runtime_error(
+            "Falta el Locomotion Pack de Mixamo: en mixamo.com elige el pack \"Locomotion Pack\" (FBX, con skin) y "
+            "dejalo en Descargas (el .zip o la carpeta descomprimida), o indica donde esta.");
+    }
+    const locomotion::PackResult pr = locomotion::importPack(pack, project.assetsFolder());
+    for (const std::string& line : pr.log) std::cout << "[Plantilla] " << line << "\n";
+    if (!pr.ok) throw std::runtime_error(pr.error);
+
+    // --- El Animator Controller ---
+    ecs::AnimatorController c;
+    c.uuid = Uuid::generate();
+    const auto param = [&](const char* name, ecs::AnimatorParameterType type, float value = 0.0f) {
+        c.parameters.push_back({name, type, value});
+    };
+    param("X", ecs::AnimatorParameterType::Float);
+    param("Y", ecs::AnimatorParameterType::Float);
+    param("Moviendo", ecs::AnimatorParameterType::Bool);
+    param("EnSuelo", ecs::AnimatorParameterType::Bool, 1.0f);
+    param("Saltar", ecs::AnimatorParameterType::Trigger);
+    for (const char* t : {"GirarIzq90", "GirarDer90", "GirarIzq180", "GirarDer180"}) {
+        param(t, ecs::AnimatorParameterType::Trigger);
+    }
+    const auto clip_ref = [&](const std::string& key) {
+        const locomotion::ClipInfo* info = pr.clip(key);
+        return assets::AssetRef{info != nullptr ? info->uuid : Uuid{}, assets::AssetType::AnimationClip};
+    };
+    const auto speed_of = [&](const std::string& key, float fallback) {
+        const locomotion::ClipInfo* info = pr.clip(key);
+        return info != nullptr && info->speed > 0.1f ? info->speed : fallback;
+    };
+    const float walk = speed_of("walk", 1.6f);
+    const float run = speed_of("run", 4.3f);
+    const float side_walk = speed_of("strafe_walk_left", 1.7f);
+    const float side_run = speed_of("strafe_run_left", 4.4f);
+
+    ecs::AnimatorState moving;
+    moving.name = "Locomocion";
+    moving.motion = ecs::AnimatorMotion::BlendTree2D;
+    moving.blend_parameter = "X";
+    moving.blend_parameter_y = "Y";
+    moving.position = core::Vec2{0.0f, 0.0f};
+    const auto child = [&](const std::string& key, float x, float y, float speed = 1.0f) {
+        if (pr.clip(key) == nullptr) return;
+        ecs::BlendTreeChild ch;
+        ch.clip = clip_ref(key);
+        ch.position = core::Vec2{x, y};
+        ch.speed = speed;
+        moving.children.push_back(ch);
+    };
+    child("idle", 0.0f, 0.0f);
+    child("walk", 0.0f, walk);
+    child("run", 0.0f, run);
+    child("walk", 0.0f, -walk, -1.0f);  // de espaldas: andar al reves
+    child("strafe_walk_left", -side_walk, 0.0f);
+    child("strafe_walk_right", side_walk, 0.0f);
+    child("strafe_run_left", -side_run, 0.0f);
+    child("strafe_run_right", side_run, 0.0f);
+    c.states.push_back(moving);
+
+    const auto clip_state = [&](const char* name, const std::string& key, core::Vec2 at) {
+        ecs::AnimatorState s;
+        s.name = name;
+        s.clip = clip_ref(key);
+        s.loop = false;
+        s.position = at;
+        c.states.push_back(s);
+        return static_cast<int>(c.states.size()) - 1;
+    };
+    const int jump = clip_state("Saltar", "jump", core::Vec2{280.0f, -160.0f});
+    const locomotion::ClipInfo* jump_info = pr.clip("jump");
+    const float jump_duration = jump_info != nullptr ? std::max(jump_info->duration, 0.1f) : 2.0f;
+    const float takeoff = jump_info != nullptr && jump_info->landing > jump_info->takeoff ? jump_info->takeoff : 0.8f;
+    const float landing = jump_info != nullptr && jump_info->landing > jump_info->takeoff ? jump_info->landing : 1.25f;
+    const auto transition = [&](int from, int to, float duration, std::vector<ecs::AnimatorCondition> conditions,
+                                float exit_time = -1.0f) {
+        ecs::AnimatorTransition t;
+        t.from = from;
+        t.to = to;
+        t.duration = duration;
+        t.conditions = std::move(conditions);
+        if (exit_time >= 0.0f) {
+            t.has_exit_time = true;
+            t.exit_time = exit_time;
+        }
+        c.transitions.push_back(t);
+    };
+    using Mode = ecs::AnimatorConditionMode;
+    transition(ecs::kAnyState, jump, 0.12f, {{"Saltar", Mode::If, 0.0f}});
+    transition(jump, 0, 0.25f, {}, 0.97f);
+    // Aterrizando y moviendose: vuelve antes a andar o correr.
+    transition(jump, 0, 0.2f, {{"Moviendo", Mode::If, 0.0f}, {"EnSuelo", Mode::If, 0.0f}},
+               std::min(0.95f, (landing + 0.15f) / jump_duration));
+    struct Turn {
+        const char* state;
+        const char* key;
+        const char* trigger;
+        core::Vec2 at;
+    };
+    const Turn turns[] = {{"Girar 90 izq", "turn90_left", "GirarIzq90", {280.0f, 60.0f}},
+                          {"Girar 90 der", "turn90_right", "GirarDer90", {280.0f, 140.0f}},
+                          {"Girar 180 izq", "turn_left", "GirarIzq180", {280.0f, 220.0f}},
+                          {"Girar 180 der", "turn_right", "GirarDer180", {280.0f, 300.0f}}};
+    for (const Turn& t : turns) {
+        if (pr.clip(t.key) == nullptr) continue;
+        const int s = clip_state(t.state, t.key, t.at);
+        transition(0, s, 0.15f, {{t.trigger, Mode::If, 0.0f}});
+        transition(s, 0, 0.2f, {}, 0.9f);
+        transition(s, 0, 0.2f, {{"Moviendo", Mode::If, 0.0f}});  // echa a andar: se corta
+    }
+    const std::filesystem::path controller_path = project.assetsFolder() / "Animations" / "Personaje.cranimator";
+    std::string error;
+    if (!ecs::saveAnimatorController(c, controller_path, &error)) throw std::runtime_error("controlador: " + error);
+
+    // --- Escena ---
+    Builder b(project);
+    b.world.setSceneUuid(Uuid::generate());
+    ecs::populateDefaultScene(b.world);
+    b.script("Personaje.lua", locomotion_scripts::kCharacter);
+    b.script("CamaraOrbital.lua", locomotion_scripts::kOrbitCamera);
+    b.script("Palanca.lua", locomotion_scripts::kLever);
+    b.script("Cristal.lua", locomotion_scripts::kCrystal);
+    b.script("Interfaz.lua", locomotion_scripts::kInterface);
+
+    const assets::AssetRef floor = b.material("Suelo", Vec3{0.52f, 0.54f, 0.56f}, 0.9f);
+    const assets::AssetRef stone = b.material("Piedra", Vec3{0.46f, 0.45f, 0.43f}, 0.85f);
+    const assets::AssetRef wood = b.material("Madera", Vec3{0.60f, 0.42f, 0.25f}, 0.75f);
+    const assets::AssetRef wall = b.material("Muro", Vec3{0.36f, 0.38f, 0.42f}, 0.8f);
+    const assets::AssetRef orange = b.material("Naranja", Vec3{0.95f, 0.52f, 0.18f}, 0.55f);
+    const assets::AssetRef blue = b.material("Azul", Vec3{0.16f, 0.50f, 0.92f}, 0.45f);
+    const assets::AssetRef metal = b.material("Metal", Vec3{0.62f, 0.63f, 0.66f}, 0.35f, 1.0f);
+    const assets::AssetRef red = b.material("Pomo", Vec3{0.85f, 0.12f, 0.10f}, 0.4f);
+    const assets::AssetRef crystal = b.material("Cristal", Vec3{0.3f, 0.9f, 1.0f}, 0.1f, 0.0f, Vec3{0.2f, 0.8f, 1.0f}, 2.5f);
+
+    b.box("Suelo", Vec3{0.0f, -0.5f, 0.0f}, Vec3{70.0f, 1.0f, 70.0f}, floor);
+    b.ring(35.0f, 2.5f, 1.0f, wall);
+
+    // Escalera de 8 escalones (18 cm), rellano y bajada: los pies se apoyan en
+    // cada escalon (IK) y el personaje sube sin saltar.
+    const float rise = 0.18f;
+    const float tread = 0.4f;
+    const float top = rise * 8.0f;
+    for (int i = 0; i < 8; ++i) {
+        const float h = rise * static_cast<float>(i + 1);
+        b.box("Escalon " + std::to_string(i + 1), Vec3{-8.0f, h * 0.5f, 4.0f - tread * static_cast<float>(i) - tread * 0.5f},
+              Vec3{3.0f, h, tread}, i % 2 == 0 ? wood : orange);
+    }
+    b.box("Rellano", Vec3{-8.0f, top * 0.5f, -1.2f}, Vec3{3.0f, top, 4.0f}, wood);
+    for (int i = 0; i < 7; ++i) {
+        const float h = top - rise * static_cast<float>(i + 1);
+        b.box("Bajada " + std::to_string(i + 1), Vec3{-8.0f, h * 0.5f, -3.2f - tread * static_cast<float>(i) - tread * 0.5f},
+              Vec3{3.0f, h, tread}, i % 2 == 0 ? orange : wood);
+    }
+    // Rampa (15 grados) hasta una plataforma.
+    const float slope = 15.0f;
+    const float ramp_len = 6.0f;
+    const float ramp_top = ramp_len * std::sin(slope * 3.14159265f / 180.0f);
+    b.box("Rampa", Vec3{8.0f, ramp_top * 0.5f - 0.1f, 4.0f - ramp_len * 0.5f * std::cos(slope * 3.14159265f / 180.0f)},
+          Vec3{3.0f, 0.3f, ramp_len}, stone, Vec3{slope, 0.0f, 0.0f});
+    b.box("Plataforma", Vec3{8.0f, ramp_top * 0.5f, -3.8f}, Vec3{3.0f, ramp_top, 4.0f}, stone);
+    // Piedras de alturas distintas: cada pie pisa a una altura.
+    std::mt19937 rng(7);
+    const auto range = [&](float lo, float hi) { return std::uniform_real_distribution<float>(lo, hi)(rng); };
+    for (int i = 0; i < 14; ++i) {
+        const float h = range(0.08f, 0.32f);
+        const Vec3 p{range(-3.0f, 3.0f), h * 0.5f, range(-12.0f, -6.0f)};
+        b.box("Roca " + std::to_string(i + 1), p, Vec3{range(0.6f, 1.2f), h, range(0.6f, 1.2f)}, stone,
+              Vec3{range(-4.0f, 4.0f), range(0.0f, 90.0f), range(-4.0f, 4.0f)});
+    }
+    // Bloques para saltar (hay que saltar: mas altos que un escalon).
+    const float blocks[] = {0.7f, 1.3f, 1.9f};
+    for (int i = 0; i < 3; ++i) {
+        const float h = blocks[i];
+        b.box("Bloque " + std::to_string(i + 1), Vec3{17.0f, h * 0.5f, 4.0f - 3.2f * static_cast<float>(i)},
+              Vec3{2.2f, h, 2.2f}, i % 2 == 0 ? blue : orange);
+    }
+    // Cajas que se empujan.
+    for (int i = 0; i < 4; ++i) {
+        ecs::Entity crate = b.box("Caja " + std::to_string(i + 1),
+                                  Vec3{3.0f + 1.0f * static_cast<float>(i % 2), 0.4f + 0.8f * static_cast<float>(i / 2), 7.0f},
+                                  Vec3{0.8f, 0.8f, 0.8f}, wood);
+        physics::Rigidbody& rb = crate.add<physics::Rigidbody>();
+        rb.mass = 15.0f;
+    }
+
+    // Patio con compuerta (la abre la palanca 1) y camara con otra (palanca 2).
+    b.box("Patio muro norte", Vec3{0.0f, 1.5f, -27.0f}, Vec3{12.0f, 3.0f, 0.6f}, wall);
+    b.box("Patio muro oeste", Vec3{-6.0f, 1.5f, -22.5f}, Vec3{0.6f, 3.0f, 9.0f}, wall);
+    b.box("Patio muro este", Vec3{6.0f, 1.5f, -22.5f}, Vec3{0.6f, 3.0f, 9.0f}, wall);
+    b.box("Patio muro sur izq", Vec3{-4.0f, 1.5f, -18.0f}, Vec3{4.0f, 3.0f, 0.6f}, wall);
+    b.box("Patio muro sur der", Vec3{4.0f, 1.5f, -18.0f}, Vec3{4.0f, 3.0f, 0.6f}, wall);
+    b.box("Camara muro oeste", Vec3{-22.0f, 1.5f, -8.0f}, Vec3{0.6f, 3.0f, 6.0f}, wall);
+    b.box("Camara muro norte", Vec3{-19.0f, 1.5f, -11.0f}, Vec3{6.6f, 3.0f, 0.6f}, wall);
+    b.box("Camara muro sur", Vec3{-19.0f, 1.5f, -5.0f}, Vec3{6.6f, 3.0f, 0.6f}, wall);
+    b.box("Camara techo", Vec3{-19.0f, 3.15f, -8.0f}, Vec3{6.6f, 0.3f, 6.6f}, wall);
+    const auto gate = [&](const std::string& name, const Vec3& p, const Vec3& size) {
+        ecs::Entity g = b.box(name, p, size, metal);
+        g.add<physics::Rigidbody>().type = physics::BodyType::Kinematic;
+    };
+    gate("Compuerta 1", Vec3{0.0f, 1.5f, -18.0f}, Vec3{4.0f, 3.0f, 0.4f});
+    gate("Compuerta 2", Vec3{-16.0f, 1.5f, -8.0f}, Vec3{0.4f, 3.0f, 5.4f});
+
+    const auto lever = [&](const std::string& name, const Vec3& p, float yaw, const std::string& target) {
+        ecs::Entity root = b.world.create(name);
+        root.setWorldPosition(p);
+        root.setLocalEulerDegrees(Vec3{0.0f, yaw, 0.0f});
+        root.setTag("Palanca");
+        ecs::Entity base = ecs::createPrimitive(b.world, assets::builtin::kCube, "Base", root);
+        base.setLocalPosition(Vec3{0.0f, 0.45f, 0.0f});
+        base.setLocalScale(Vec3{0.4f, 0.9f, 0.3f});
+        base.get<ecs::MeshRenderer>().materials = {metal};
+        base.add<physics::BoxCollider>();
+        ecs::Entity arm = b.world.create("Brazo", root);
+        arm.setLocalPosition(Vec3{0.0f, 0.85f, -0.15f});
+        arm.setLocalEulerDegrees(Vec3{10.0f, 0.0f, 0.0f});
+        ecs::Entity rod = ecs::createPrimitive(b.world, assets::builtin::kCylinder, "Vara", arm);
+        rod.setLocalPosition(Vec3{0.0f, 0.22f, 0.0f});
+        rod.setLocalScale(Vec3{0.05f, 0.22f, 0.05f});
+        rod.get<ecs::MeshRenderer>().materials = {metal};
+        ecs::Entity knob = ecs::createPrimitive(b.world, assets::builtin::kSphere, "Pomo", arm);
+        knob.setLocalPosition(Vec3{0.0f, 0.46f, 0.0f});
+        knob.setLocalScale(Vec3{0.1f, 0.1f, 0.1f});
+        knob.get<ecs::MeshRenderer>().materials = {red};
+        Builder::attach(root, "Palanca.lua", {{"compuerta", scripting::PropertyType::Text, target}});
+    };
+    // (La palanca mira a -Z: yaw 180 = hacia +Z, por donde llega el jugador.)
+    lever("Palanca 1", Vec3{3.8f, 0.0f, -16.8f}, 180.0f, "Compuerta 1");
+    lever("Palanca 2", Vec3{-14.5f, 0.0f, -4.2f}, 270.0f, "Compuerta 2");
+
+    // Estatua (el personaje la mira al pasar).
+    ecs::Entity statue = ecs::createPrimitive(b.world, assets::builtin::kCylinder, "Pedestal");
+    statue.setWorldPosition(Vec3{-3.0f, 0.5f, 2.0f});
+    statue.setLocalScale(Vec3{0.7f, 0.5f, 0.7f});
+    statue.get<ecs::MeshRenderer>().materials = {stone};
+    statue.add<physics::CapsuleCollider>();
+    ecs::Entity bust = ecs::createPrimitive(b.world, assets::builtin::kSphere, "Estatua");
+    bust.setWorldPosition(Vec3{-3.0f, 1.45f, 2.0f});
+    bust.setLocalScale(Vec3{0.45f, 0.45f, 0.45f});
+    bust.get<ecs::MeshRenderer>().materials = {metal};
+    bust.setTag("Interes");
+
+    const Vec3 gems[] = {{-8.0f, top + 1.0f, -1.2f},   {8.0f, ramp_top + 1.0f, -3.8f}, {17.0f, 1.9f + 1.0f, -2.4f},
+                         {0.0f, 1.0f, -9.0f},          {-2.0f, 1.0f, -23.0f},          {3.0f, 1.0f, -25.0f},
+                         {-19.5f, 1.0f, -8.0f}};
+    int g = 0;
+    for (const Vec3& p : gems) {
+        ecs::Entity e = ecs::createPrimitive(b.world, assets::builtin::kSphere, "Cristal " + std::to_string(++g));
+        e.setWorldPosition(p);
+        e.setLocalScale(Vec3{0.28f, 0.45f, 0.28f});
+        e.get<ecs::MeshRenderer>().materials = {crystal};
+        e.setTag("Cristal");
+        Builder::attach(e, "Cristal.lua");
+    }
+
+    // --- El personaje: capsula con Rigidbody, un pivote que gira y el modelo ---
+    ecs::Entity player = b.world.create("Jugador");
+    player.setWorldPosition(Vec3{0.0f, 0.95f, 12.0f});
+    physics::CapsuleCollider& capsule = player.add<physics::CapsuleCollider>();
+    capsule.radius = 0.3f;
+    capsule.height = 1.8f;
+    capsule.material.friction = 0.0f;
+    physics::Rigidbody& rb = player.add<physics::Rigidbody>();
+    rb.mass = 70.0f;
+    rb.lock_rotation_x = rb.lock_rotation_y = rb.lock_rotation_z = true;
+    rb.continuous = true;
+    const auto num = [](float v) { return std::to_string(v); };
+    const auto duration_of = [&](const char* key, float fallback) {
+        const locomotion::ClipInfo* info = pr.clip(key);
+        return info != nullptr ? info->duration : fallback;
+    };
+    using scripting::PropertyType;
+    Builder::attach(player, "Personaje.lua",
+                    {{"velAndar", PropertyType::Number, num(walk)},
+                     {"velCorrer", PropertyType::Number, num(run)},
+                     {"velLateral", PropertyType::Number, num(side_walk)},
+                     {"velLateralCorrer", PropertyType::Number, num(side_run)},
+                     {"despegue", PropertyType::Number, num(takeoff)},
+                     {"aterrizaje", PropertyType::Number, num(landing)},
+                     {"duracionSalto", PropertyType::Number, num(jump_duration)},
+                     {"durGiro90", PropertyType::Number, num(duration_of("turn90_left", 0.93f))},
+                     {"durGiro180", PropertyType::Number, num(duration_of("turn_left", 1.63f))}});
+    ecs::Entity pivot = b.world.create("Pivote", player);
+    ecs::Entity model = b.world.create("Modelo", pivot);
+    model.setLocalPosition(Vec3{0.0f, -0.9f, 0.0f});
+    model.setLocalEulerDegrees(Vec3{0.0f, 180.0f, 0.0f});  // Mixamo mira a +Z; el motor, a -Z
+    model.add<ecs::MeshRenderer>().model = assets::AssetRef{pr.character, assets::AssetType::Model};
+    ecs::Animator& animator = model.add<ecs::Animator>();
+    animator.controller = assets::AssetRef{c.uuid, assets::AssetType::AnimatorController};
+    ecs::InverseKinematics& ik = model.add<ecs::InverseKinematics>();
+    ik.foot_grounding = true;
+    ik.max_step = 0.4f;
+    ik.look_weight = 0.0f;
+    ik.look_max_angle = 75.0f;
+    ik.right_hand.weight = 0.0f;
+    model.add<ecs::Skeleton>().show_bones = false;
+
+    // Camara orbital y la interfaz.
+    ecs::Entity cam = b.world.findByName("Main Camera");
+    cam.setWorldPosition(Vec3{0.0f, 2.5f, 16.0f});
+    Builder::attach(cam, "CamaraOrbital.lua");
+
+    ecs::Entity canvas = b.world.create("HUD");
+    canvas.add<ui::Canvas>();
+    const auto rect = [&](const std::string& name, Vec2 anchor, Vec2 pivot_at, Vec2 position, Vec2 size) {
+        ecs::Entity e = b.world.create(name, canvas);
+        ui::RectTransform& rt = e.add<ui::RectTransform>();
+        rt.anchor_min = anchor;
+        rt.anchor_max = anchor;
+        rt.pivot = pivot_at;
+        rt.position = position;
+        rt.size = size;
+        return e;
+    };
+    const auto label = [&](ecs::Entity e, const std::string& value, float size, ui::HAlign align,
+                           ui::VAlign valign = ui::VAlign::Middle) {
+        ui::Text& t = e.add<ui::Text>();
+        t.text = value;
+        t.font_size = size;
+        t.h_align = align;
+        t.v_align = valign;
+        t.shadow = true;
+        return e;
+    };
+    label(rect("Marcador", Vec2{0.0f, 0.0f}, Vec2{0.0f, 0.0f}, Vec2{40.0f, 30.0f}, Vec2{900.0f, 50.0f}), "", 36.0f,
+          ui::HAlign::Left);
+    label(rect("Ayuda", Vec2{0.0f, 1.0f}, Vec2{0.0f, 1.0f}, Vec2{40.0f, -24.0f}, Vec2{1500.0f, 40.0f}),
+          "WASD mover   Shift correr   Espacio saltar   Clic derecho apuntar   E palanca   Rueda distancia   "
+          "F1 depuracion   Esc soltar el raton",
+          22.0f, ui::HAlign::Left);
+    ecs::Entity energy = rect("Energia", Vec2{0.5f, 1.0f}, Vec2{0.5f, 1.0f}, Vec2{0.0f, -80.0f}, Vec2{420.0f, 16.0f});
+    ui::Slider& bar = energy.add<ui::Slider>();
+    bar.interactable = false;
+    bar.value = 1.0f;
+    bar.fill = Vec3{0.35f, 0.85f, 0.35f};
+    bar.handle = bar.fill;
+    label(rect("Aviso", Vec2{0.5f, 1.0f}, Vec2{0.5f, 1.0f}, Vec2{0.0f, -140.0f}, Vec2{900.0f, 50.0f}), "", 30.0f,
+          ui::HAlign::Center);
+    label(rect("Depuracion", Vec2{0.0f, 0.0f}, Vec2{0.0f, 0.0f}, Vec2{40.0f, 100.0f}, Vec2{900.0f, 180.0f}), "", 24.0f,
+          ui::HAlign::Left, ui::VAlign::Top);
+    Builder::attach(canvas, "Interfaz.lua");
+    b.save("Main");
+
+    std::vector<std::string> tags = ecs::defaultTags();
+    for (const char* t : {"Palanca", "Cristal", "Interes"}) tags.push_back(t);
+    ecs::saveTags(project.settingsFolder() / "Tags.json", tags);
+}
+
 void copyFolder(const std::filesystem::path& from, const std::filesystem::path& to) {
     std::error_code error;
     if (!std::filesystem::is_directory(from, error)) return;
@@ -2881,6 +3239,16 @@ std::vector<ProjectTemplate> availableTemplates() {
         {"Jugador con Rigidbody (WASD, Shift, Espacio)", "Cámara orbital (clic derecho y rueda)",
          "Monedas con trigger y marcador en el HUD", "Escalera, rampa y plataformas"},
         rgba(242, 140, 40), TemplateArt::ThirdPerson, {}});
+    list.push_back(ProjectTemplate{
+        "third_person_pro", "Tercera persona avanzada", "Integradas",
+        "Un personaje de Mixamo con todas las animaciones del Locomotion Pack: anda, corre, se mueve de lado al "
+        "apuntar, gira en el sitio y salta sincronizado con la fisica. Pies en el suelo, mirada y manos con IK. "
+        "Todo el juego en Lua. Usa tu Locomotion Pack (mixamo.com) desde Descargas.",
+        {"Blend Tree 2D con las velocidades medidas de cada animacion (los pies no patinan)",
+         "Escalones, rampas y rocas: sube sin saltar y cada pie se apoya con IK",
+         "Apuntar (clic derecho): desplazamiento lateral, de espaldas y giros de 90 y 180 grados en el sitio",
+         "Salto con el despegue y el aterrizaje de la animacion; palancas con la mano (IK) y camara con muelle"},
+        rgba(250, 110, 60), TemplateArt::ThirdPersonPro, locomotion::findDownloadedPack()});
     list.push_back(ProjectTemplate{
         "navigation", "IA y navegación", "Integradas",
         "Escapa de los guardias: patrullan un laberinto con NavMesh y te persiguen si te ven. Llega a la meta.",
@@ -2972,6 +3340,8 @@ project::ProjectInfo createProjectFromTemplate(const ProjectTemplate& t, const s
             }
         } else if (t.id == "third_person") {
             buildThirdPerson(info);
+        } else if (t.id == "third_person_pro") {
+            buildThirdPersonPro(info, t.folder);
         } else if (t.id == "navigation") {
             buildNavigation(info);
         } else if (t.id == "voxel") {

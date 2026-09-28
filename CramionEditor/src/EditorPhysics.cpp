@@ -231,9 +231,16 @@ void EditorApp::exitPlay() {
 // el audio (oyente: el AudioListener o la camara principal).
 void EditorApp::updateScriptsAndAudio(float delta_seconds, int physics_steps) {
     const bool typing = ImGui::GetIO().WantTextInput || ui_.typing();
-    scripts_.setInput(typing ? nullptr : input_);
+    // Con la pestana Juego, el juego solo oye el teclado y el raton si esa
+    // vista tiene el foco (en la Escena son de la camara del editor). Sin
+    // ella (se juega en la Escena), como siempre.
+    const bool game_input = !show_game_ || game_view_focused_;
+    // (Al pasar a la Escena se suelta el raton capturado; al dar Play el foco
+    // llega un frame tarde y no se suelta.)
+    if (!game_input && preferred_view_ != kGameSlot && scripts_.cursorLocked()) scripts_.releaseCursor();
+    scripts_.setInput(typing || !game_input ? nullptr : input_);
     // Vehiculos con "Teclado": WASD / flechas y Espacio (freno de mano).
-    if (input_ != nullptr && !typing) {
+    if (input_ != nullptr && !typing && game_input) {
         const auto down = [&](dm::Key a, dm::Key b) { return input_->isKeyDown(a) || input_->isKeyDown(b); };
         physics_.driveVehiclesWithKeyboard(world_, down(dm::Key::W, dm::Key::Up), down(dm::Key::S, dm::Key::Down),
                                            down(dm::Key::A, dm::Key::Left), down(dm::Key::D, dm::Key::Right),

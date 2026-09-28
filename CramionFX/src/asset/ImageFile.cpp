@@ -96,6 +96,21 @@ bool loadImageRgba8(const std::filesystem::path& file, ImageRgba8& image, std::u
     return true;
 }
 
+bool decodeImageRgba8(const std::uint8_t* data, std::size_t size, ImageRgba8& image) {
+    image = ImageRgba8{};
+    if (data == nullptr || size == 0) return false;
+    int width = 0;
+    int height = 0;
+    int channels = 0;
+    stbi_uc* pixels = stbi_load_from_memory(data, static_cast<int>(size), &width, &height, &channels, 4);
+    if (pixels == nullptr) return false;
+    image.width = static_cast<std::uint32_t>(width);
+    image.height = static_cast<std::uint32_t>(height);
+    image.pixels.assign(pixels, pixels + static_cast<std::size_t>(width) * height * 4);
+    stbi_image_free(pixels);
+    return true;
+}
+
 bool saveImagePng(const std::filesystem::path& file, const ImageRgba8& image) {
     if (image.width == 0 || image.height == 0 || image.pixels.size() < static_cast<std::size_t>(image.width) * image.height * 4) {
         return false;

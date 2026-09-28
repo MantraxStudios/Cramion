@@ -24,6 +24,27 @@
   estable: moverlo o renombrarlo en el panel no rompe las escenas que lo usan.
 </p>
 
+<h3 id="escala">Escala al importar (Scale Factor)</h3>
+<p>
+  Haz clic en un modelo del panel: el Inspector muestra sus <strong>ajustes de importación</strong>, como la pestaña
+  <em>Model</em> de Unity.
+</p>
+<table>
+  <thead><tr><th>Ajuste</th><th>Qué hace</th></tr></thead>
+  <tbody>
+    <tr><td><code>Scale Factor</code></td><td>Multiplica el tamaño del modelo (malla, huesos y animaciones). Botones rápidos ×0.01, ×0.1, ×1, ×10 y ×100.</td></tr>
+    <tr><td><code>Convert Units</code></td><td>Usa la unidad que dice el propio archivo. Los FBX de Mixamo, Maya o 3ds Max suelen ir en <strong>centímetros</strong>: sin esto salen 100 veces más grandes. Activado en los modelos nuevos.</td></tr>
+    <tr><td>Escala final y alto</td><td>El producto de los dos y lo que medirá el modelo en metros (avisa si sale enorme o diminuto).</td></tr>
+    <tr><td>Personaje animado, normal maps de DirectX, combinar mallas</td><td>Los demás ajustes de la importación.</td></tr>
+  </tbody>
+</table>
+<p>
+  <em>Aplicar</em> lo reimporta desde el archivo original y rehace sus instancias en la escena; <em>Revertir</em> deshace
+  los cambios sin aplicar. La escala va <strong>dentro del modelo</strong> (no en el Transform de la raíz): mide lo mismo
+  al arrastrarlo, en un prefab o puesto en un Mesh Renderer a mano. Los modelos importados antes de la 0.7.2 tienen
+  <em>Convert Units</em> apagado; si alguno salía gigante, actívalo y pulsa <em>Aplicar</em>.
+</p>
+
 <h3 id="crear">Crear assets</h3>
 <p>Clic derecho en el fondo &gt; <em>Crear</em>: carpeta, escena, material, script Lua, shader (GLSL), Animator Controller y prefab desde la selección.</p>
 
@@ -32,7 +53,7 @@
   <thead><tr><th>Asset</th><th>Doble clic / menú</th></tr></thead>
   <tbody>
     <tr><td>Escena</td><td>Abrirla (pregunta si guardar la actual).</td></tr>
-    <tr><td>Modelo</td><td>Ponerlo en la escena. <em>Reimportar (combinar mallas)</em>: lo vuelve a importar juntando las piezas por material (mucho menos coste de CPU) y rehace sus instancias. <em>Animaciones</em>: extraer sus clips a <code>.cranim</code>.</td></tr>
+    <tr><td>Modelo</td><td>Clic: sus <a href="#escala">ajustes de importación</a> en el Inspector. Doble clic: ponerlo en la escena. <em>Reimportar (combinar mallas)</em>: lo vuelve a importar juntando las piezas por material (mucho menos coste de CPU) y rehace sus instancias. <em>Animaciones</em>: extraer sus clips a <code>.cranim</code>. <em>Crear materiales y asignarlos</em> (también con varios modelos seleccionados): un <code>.crmat</code> por cada material del modelo en <code>Materials/&lt;modelo&gt;</code>, con sus texturas. Las que trae el modelo se sacan a <code>Textures/&lt;modelo&gt;</code> (metal y rugosidad empaquetados, en mapas sueltos) y las que le faltan se buscan en el proyecto y junto al archivo original por el nombre del material, de la malla o del modelo (<code>_BaseColor</code>, <code>_Albedo</code>, <code>_Normal</code>, <code>_Roughness</code>, <code>_Metallic</code>, <code>_AO</code>...). Cada material va a su hueco en cada pieza: las instancias de la escena y todas las que pongas desde entonces ya salen con sus materiales. Los <code>.crmat</code> que ya existen no se sobrescriben.</td></tr>
     <tr><td>Prefab</td><td>Abrirlo en su <a href="editor-interfaz.html#pestanas">pestaña</a> para editarlo; <em>Poner en la escena</em>; seleccionar sus instancias.</td></tr>
     <tr><td>Material</td><td>Editarlo en el Inspector; asignarlo a la selección; duplicarlo.</td></tr>
     <tr><td>Cielo HDR</td><td>Usarlo como cielo de la escena.</td></tr>

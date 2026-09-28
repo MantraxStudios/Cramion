@@ -18,6 +18,10 @@
 //   7. Saturacion y viveza (satura mas lo apagado).
 //   8. Vineta (intensidad, suavidad y color) y grano de pelicula.
 //   9. Gamma y ruido de +-1/255 contra el bandeado de los 8 bits.
+//
+// Antes de todo, la distorsion de la lente (barril o cojin) desplaza donde se
+// lee la imagen; y antes de la exposicion se suman los destellos del sol
+// (fantasmas, halo y estrella), tan fuertes como se vea el sol en la imagen.
 
 layout(set = 0, binding = 0) uniform sampler2D scene_color;
 layout(set = 0, binding = 1) uniform sampler2D bloom;
@@ -43,6 +47,8 @@ layout(set = 0, binding = 4) uniform Settings {
     vec4 gain;
     vec4 vignette_color;
     vec4 bloom_tint;
+    vec4 lens;            // x = distorsion, y = destellos del sol, zw = sol en pantalla (UV)
+    vec4 flare;           // x = el sol cuenta (0..1), y = ancho / alto
 } settings;
 
 layout(location = 0) in vec2 v_uv;
@@ -126,27 +132,88 @@ float hash12(vec2 p) {
     return fract((p3.x + p3.y) * p3.z);
 }
 
+// Destellos del sol en la lente: fantasmas sobre la linea sol -> centro, un
+// halo alrededor del centro y una estrella en el sol. Su fuerza sale de lo que
+// brilla la imagen en el sol (si algo lo tapa, se apagan solos).
+vec3 lensFlare(vec2 uv) {
+    float amount = settings.lens.y * settings.flare.x;
+    if (amount <= 0.0) {
+        return vec3(0.0);
+    }
+    vec2 sun = settings.lens.zw;
+    vec2 aspect = vec2(settings.flare.y, 1.0);
+    // Cuanto se ve el sol: su brillo en la imagen (5 muestras).
+    float visible = 0.0;
+    for (int i = 0; i < 5; ++i) {
+        vec2 o = i == 0 ? vec2(0.0) : vec2(i == 1 ? 0.004 : (i == 2 ? -0.004 : 0.0), i == 3 ? 0.004 : (i == 4 ? -0.004 : 0.0));
+        visible += luminance(textureLod(scene_color, clamp(sun + o, vec2(0.0), vec2(1.0)), 0.0).rgb);
+    }
+    visible = clamp(visible / 5.0 / 20.0, 0.0, 1.0);
+    if (visible <= 0.0) {
+        return vec3(0.0);
+    }
+
+    vec3 result = vec3(0.0);
+    vec2 axis = vec2(0.5) - sun;
+    // Fantasmas: discos suaves de colores a lo largo del eje.
+    const float kGhostPos[5] = float[](0.4, 0.75, 1.1, 1.45, 1.85);
+    const float kGhostSize[5] = float[](0.05, 0.02, 0.08, 0.03, 0.12);
+    const vec3 kGhostColor[5] = vec3[](vec3(0.9, 0.6, 0.3), vec3(0.4, 0.8, 1.0), vec3(0.6, 1.0, 0.6),
+                                       vec3(1.0, 0.5, 0.8), vec3(0.5, 0.6, 1.0));
+    for (int i = 0; i < 5; ++i) {
+        vec2 center = sun + axis * kGhostPos[i];
+        float d = length((uv - center) * aspect);
+        float disc = 1.0 - smoothstep(kGhostSize[i] * 0.7, kGhostSize[i], d);
+        result += kGhostColor[i] * disc * 0.06;
+    }
+    // Halo: un anillo alrededor del centro, hacia el lado del sol.
+    vec2 to_center = (uv - vec2(0.5)) * aspect;
+    float ring = length(to_center);
+    float halo = smoothstep(0.30, 0.34, ring) * (1.0 - smoothstep(0.34, 0.40, ring));
+    halo *= max(dot(normalize(to_center + 1e-5), normalize(-axis * aspect + 1e-5)), 0.0);
+    result += vec3(0.7, 0.8, 1.0) * halo * 0.08;
+    // Estrella en el sol: rayos horizontal y vertical y un brillo.
+    vec2 ds = (uv - sun) * aspect;
+    float glow = exp(-length(ds) * 18.0);
+    float streak = exp(-abs(ds.y) * 400.0) * exp(-abs(ds.x) * 3.0) + exp(-abs(ds.x) * 400.0) * exp(-abs(ds.y) * 6.0) * 0.4;
+    result += vec3(1.0, 0.9, 0.75) * (glow * 0.6 + streak * 0.5);
+    return result * amount * visible;
+}
+
 void main() {
-    vec2 centered = v_uv - 0.5;
+    // --- Distorsion de la lente (barril > 0, cojin < 0) ---
+    // Se amplia un poco para que el barril no deje bordes vacios.
+    vec2 uv = v_uv;
+    float k = settings.lens.x * 0.25;
+    if (k != 0.0) {
+        vec2 c = (v_uv - 0.5) * vec2(settings.flare.y, 1.0);
+        float r2 = dot(c, c);
+        float zoom = k > 0.0 ? 1.0 / (1.0 + k * 0.5 * (settings.flare.y * settings.flare.y + 1.0) * 0.25 * 2.0) : 1.0;
+        uv = 0.5 + (v_uv - 0.5) * (1.0 + k * r2) * zoom;
+    }
+    vec2 centered = uv - 0.5;
 
     // --- Aberracion cromatica (desplazamiento radial de rojo y azul) ---
     vec3 color;
     float aberration = settings.look.w;
     if (aberration > 0.0) {
         vec2 offset = centered * dot(centered, centered) * aberration * 0.08;
-        color.r = texture(scene_color, v_uv - offset).r;
-        color.g = texture(scene_color, v_uv).g;
-        color.b = texture(scene_color, v_uv + offset).b;
+        color.r = texture(scene_color, uv - offset).r;
+        color.g = texture(scene_color, uv).g;
+        color.b = texture(scene_color, uv + offset).b;
     } else {
-        color = texture(scene_color, v_uv).rgb;
+        color = texture(scene_color, uv).rgb;
     }
 
     // --- Bloom ---
-    vec3 halo = texture(bloom, v_uv).rgb / kBloomLevels * settings.bloom_tint.rgb;
+    vec3 halo = texture(bloom, uv).rgb / kBloomLevels * settings.bloom_tint.rgb;
     color = mix(color, halo, settings.exposure.y);
 
     // --- Rayos de luz ---
-    color += texture(light_shafts, v_uv).rgb * settings.tone.x;
+    color += texture(light_shafts, uv).rgb * settings.tone.x;
+
+    // --- Destellos del sol en la lente ---
+    color += lensFlare(uv) * luminance(textureLod(bloom, settings.lens.zw, 0.0).rgb / kBloomLevels + vec3(4.0));
 
     // --- Exposicion ---
     float exposure = settings.exposure.z > 0.5 && auto_exposure.initialized > 0.5
