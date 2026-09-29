@@ -178,7 +178,8 @@ struct GpuCompositeSettings {
     core::Vec4 bloom_tint{1.0f, 1.0f, 1.0f, 0.0f};
     // x = distorsion de la lente, y = destellos del sol, zw = sol en pantalla (UV)
     core::Vec4 lens{0.0f, 0.0f, 0.0f, 0.0f};
-    // x = el sol cuenta (0..1: en pantalla y sobre el horizonte), y = aspecto
+    // x = el sol cuenta (0..1: en pantalla y sobre el horizonte), y = aspecto,
+    // z = vision nocturna (0..1), w = luminancia de adaptacion con exposicion manual
     core::Vec4 flare{0.0f, 1.0f, 0.0f, 0.0f};
 };
 

@@ -42,6 +42,16 @@ public:
         return depth_.layerView(cascade);
     }
 
+    // Cache de lo estatico (como los "cached shadow maps" de Unreal): la
+    // misma cascada sin los actores animados. Cada frame se copia al mapa y
+    // encima se dibujan solo los animados; lo estatico (hierba, terreno) se
+    // redibuja por turnos o cuando algo estatico cambia. Sin ella (mapas de
+    // mas de 4096, por la VRAM), un personaje animado obligaba a redibujar
+    // todo lo que cubre la cascada cada frame.
+    bool hasStaticCache() const { return static_.isValid(); }
+    const VulkanImage& staticImage() const { return static_; }
+    const vk::raii::ImageView& staticCascadeView(std::uint32_t cascade) const { return static_.layerView(cascade); }
+
     vk::Format format() const { return depth_.format(); }
     vk::Extent2D extent() const { return vk::Extent2D{resolution_, resolution_}; }
     bool isValid() const { return depth_.isValid(); }
@@ -49,6 +59,7 @@ public:
 private:
     std::uint32_t resolution_ = kDefaultResolution;
     VulkanImage depth_;
+    VulkanImage static_;
     vk::raii::Sampler sampler_{nullptr};
     vk::raii::Sampler raw_sampler_{nullptr};
 };

@@ -220,6 +220,7 @@ void blendPostProcess(gfx::PostProcessSettings& o, const gfx::PostProcessSetting
         f(o.max_ev, v.max_ev);
         f(o.adaptation_speed_up, v.adaptation_speed_up);
         f(o.adaptation_speed_down, v.adaptation_speed_down);
+        f(o.night_vision, v.night_vision);
     }
     if ((mask & kPostTonemapping) && flip) o.tonemapper = v.tonemapper;
     if (mask & kPostBloom) {
@@ -564,6 +565,10 @@ void PostProcessing::reflect(PropertyVisitor& v) {
             v.field({"adaptation_speed_down", "Adaptacion a menos luz"}, s.adaptation_speed_down,
                     FloatRange{0.01f, 20.0f, 0.05f, "%.2f /s"});
         }
+        v.field({"night_vision", "Vision nocturna",
+                 "Como ve el ojo con poca luz (efecto Purkinje): la noche pierde el color y se vuelve gris "
+                 "azulada; lo iluminado por farolas y antorchas lo conserva. 0 = apagada"},
+                s.night_vision, FloatRange{0.0f, 1.0f, 0.01f, "%.2f", true});
         v.endGroup();
     }
 

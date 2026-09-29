@@ -35,6 +35,7 @@
 #include "CramionFX/vk/VulkanSurface.h"
 #include "CramionFX/vk/VulkanSwapchain.h"
 #include "CramionFX/vk/VulkanTexture.h"
+#include "CramionFX/vk/TemporalUpscalers.h"
 #include "CramionFX/xr/XrSystem.h"
 
 #include "CramionFX/core/Frustum.h"
@@ -633,6 +634,16 @@ public:
     void renderXrEye(const scene::Scene& scene, const scene::Camera& camera, int eye);
     void clearXrEye(int eye);
 
+    // --- Escaladores de los fabricantes (TemporalUpscalers.h) ---
+    // AMD FSR 3.1 (cualquier GPU; necesita amd_fidelityfx_vk.dll junto al
+    // .exe) y NVIDIA DLSS 4 (RTX). Si el elegido no se puede usar, se escala
+    // con el TAA del motor y upscalerStatus() dice por que.
+    bool fsr3Supported() const;
+    bool dlssSupported() const { return dlss_.available(); }
+    const std::string& upscalerStatus() const { return upscaler_status_; }
+    // El que esta escalando de verdad (FSR 3 / DLSS, o TAA si no se pudo).
+    Upscaler activeUpscaler() const;
+
     // --- Render Textures (como los RenderTexture de Unity) ---
     // Una textura que se rellena con lo que ve una camara (Target Texture) y
     // que los materiales pueden leer (MaterialData::albedo_render_texture /
@@ -726,10 +737,12 @@ private:
     // de las luces locales; con 0, los de las cascadas (depth clamp).
     // `texel_world_size`: en las cascadas, lo que mide un texel; en una luz
     // local, lo que mide por cada metro de distancia a la luz.
+    // Cache de las cascadas: lo estatico va a la cache; los animados, encima.
+    enum class ShadowActors : std::uint8_t { All, Static, Animated };
     void recordActorShadows(const vk::raii::CommandBuffer& cmd, std::uint32_t frame_index,
                             const core::Mat4& light_view_projection,
                             const core::Vec3& light_position = {}, float range = 0.0f,
-                            float texel_world_size = 0.0f);
+                            float texel_world_size = 0.0f, ShadowActors which = ShadowActors::All);
     // LOD para las sombras de una cascada: el mas simple cuyo error no pasa
     // de `allowed` unidades del mundo (lo que mide un texel, por el factor
     // del presupuesto). No depende de la camara.
@@ -1004,6 +1017,7 @@ private:
     std::uint32_t chooseLod(const SkinnedModel& model, const core::Mat4& to_world, const core::Vec3& center,
                             float radius, const core::Vec3& camera_position, float pixels_per_unit) const;
     std::vector<core::Vec4> moved_spheres_;  // xyz = centro, w = radio
+    std::vector<bool> moved_sphere_animated_;  // la de moved_spheres_ es de un actor con esqueleto
     bool actor_set_changed_ = true;
     std::vector<core::Aabb> submesh_bounds_;
     // Culling en GPU de los clusteres de escenario.
@@ -1057,6 +1071,24 @@ private:
     // VR: drawFrame dibuja para el ojo xr_eye_target_ (0/1) y copia a esa imagen
     // de la swapchain de OpenXR (pasando por xr_staging_, del tamano del ojo).
     xr::XrSystem xr_;
+    // FSR 3.1 y DLSS 4: sus contextos se rehacen con los destinos (otro
+    // tamano, otro escalador). Vectores de movimiento completos (con el cielo)
+    // a la resolucion interna.
+    Fsr3Upscaler fsr3_;
+    DlssUpscaler dlss_;
+    std::string upscaler_status_;
+    bool vendor_upscaler_ = false;
+    vk::Extent2D vendor_output_{};  // pantalla con la que se creo el contexto
+    vk::Extent2D dlss_render_{};    // resolucion interna maxima de la feature de DLSS
+    UpscaleQuality dlss_quality_ = UpscaleQuality::Native;
+    VulkanImage upscaler_motion_{};
+    FullscreenPass upscaler_motion_pass_{};
+    std::vector<vk::raii::DescriptorSet> upscaler_motion_sets_;
+    float camera_near_ = 0.1f;
+    float camera_far_ = 1000.0f;
+    float camera_fov_ = 1.2f;
+    void configureVendorUpscaler();
+    void recordVendorUpscale(const vk::raii::CommandBuffer& cmd);
     int xr_eye_target_ = -1;
     VkImage xr_target_image_ = VK_NULL_HANDLE;
     bool xr_copied_ = false;
@@ -1200,6 +1232,11 @@ private:
     std::array<scene::ShadowCascade, scene::kShadowCascadeCount> rendered_cascades_{};
     std::array<core::Vec3, scene::kShadowCascadeCount> rendered_cascade_camera_{};
     std::array<bool, scene::kShadowCascadeCount> cascade_due_{};
+    // Con la cache de lo estatico (ShadowMap::hasStaticCache): la cascada
+    // tiene actores animados este frame / los tenia el anterior (hay que
+    // borrar su silueta). cascade_due_ es entonces "redibujar lo estatico".
+    std::array<bool, scene::kShadowCascadeCount> cascade_animated_{};
+    std::array<bool, scene::kShadowCascadeCount> cascade_had_animated_{};
     bool cascades_valid_ = false;
     // El terreno o los voxeles cambiaron: los mapas de las luces locales se
     // redibujan (su cache solo vigila a los actores).
@@ -1264,6 +1301,7 @@ private:
     // dia.
     float exposure_ = 1.0f;
     float displayed_exposure_ = 1.0f;
+    float last_daylight_ = 1.0f;  // luz del dia del ultimo frame (vision nocturna con exposicion manual)
     float displayed_luminance_ = 0.0f;
 
     // Datos de este frame para el cielo, el IBL y los rayos de luz.

@@ -27,7 +27,7 @@ std::string lower(std::string s) {
 }
 
 // Nombres de Lua de los enums (en el orden del enum).
-constexpr std::array<const char*, 3> kUpscalerNames = {"off", "taa", "fsr1"};
+constexpr std::array<const char*, 5> kUpscalerNames = {"off", "taa", "fsr1", "fsr3", "dlss"};
 constexpr std::array<const char*, 6> kResolutionNames = {"native", "quality", "balanced",
                                                          "performance", "ultra_performance", "custom"};
 constexpr std::array<const char*, 3> kWindowModeNames = {"maximized", "fullscreen", "windowed"};
@@ -141,7 +141,7 @@ void loadGraphicsIni(const std::filesystem::path& file, gfx::VulkanRenderer& ren
         if (eq == std::string::npos) continue;
         const std::string key = line.substr(0, eq);
         const float value = std::strtof(line.c_str() + eq + 1, nullptr);
-        if (key == "upscaler") g.upscaler = static_cast<gfx::Upscaler>(std::clamp(static_cast<int>(value), 0, 2));
+        if (key == "upscaler") g.upscaler = static_cast<gfx::Upscaler>(std::clamp(static_cast<int>(value), 0, 4));
         if (key == "quality") g.quality = static_cast<gfx::UpscaleQuality>(std::clamp(static_cast<int>(value), 0, 5));
         if (key == "custom_scale") g.custom_scale = std::clamp(value, 0.25f, 1.0f);
         if (key == "sharpness") g.sharpness = std::clamp(value, 0.0f, 1.0f);
@@ -295,8 +295,13 @@ std::vector<GraphicsOption> RendererGraphicsHost::options() const {
     const auto number = [](double v) { return GraphicsValue{v}; };
 
     // Escalado y antialiasing
-    add("upscaler", std::string(kUpscalerNames[std::min<std::size_t>(static_cast<std::size_t>(g.upscaler), 2)]),
-        "Escalado y antialiasing: off (nativa + FXAA), taa o fsr1", names(kUpscalerNames));
+    add("upscaler", std::string(kUpscalerNames[std::min<std::size_t>(static_cast<std::size_t>(g.upscaler), 4)]),
+        "Escalado y antialiasing: off (nativa + FXAA), taa, fsr1, fsr3 (AMD FSR 3.1, INESTABLE) o dlss (NVIDIA DLSS 4, RTX, INESTABLE)",
+        names(kUpscalerNames));
+    add("upscaler_active", std::string(kUpscalerNames[static_cast<std::size_t>(renderer_.activeUpscaler())]),
+        "El que escala de verdad (fsr3 o dlss vuelven a taa si el equipo no los tiene)", {}, false);
+    add("fsr3_supported", renderer_.fsr3Supported(), "Hay AMD FSR 3.1 (lectura)", {}, false);
+    add("dlss_supported", renderer_.dlssSupported(), "Hay NVIDIA DLSS 4: GPU RTX (lectura)", {}, false);
     add("resolution", std::string(kResolutionNames[static_cast<std::size_t>(g.quality)]),
         "Resolucion interna con taa/fsr1: native 100%, quality 67%, balanced 58%, performance 50%, "
         "ultra_performance 33% o custom (resolution_scale)",

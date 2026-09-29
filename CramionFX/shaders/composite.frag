@@ -48,7 +48,8 @@ layout(set = 0, binding = 4) uniform Settings {
     vec4 vignette_color;
     vec4 bloom_tint;
     vec4 lens;            // x = distorsion, y = destellos del sol, zw = sol en pantalla (UV)
-    vec4 flare;           // x = el sol cuenta (0..1), y = ancho / alto
+    vec4 flare;           // x = el sol cuenta (0..1), y = ancho / alto, z = vision nocturna,
+                          // w = luminancia de adaptacion con exposicion manual
 } settings;
 
 layout(location = 0) in vec2 v_uv;
@@ -130,6 +131,48 @@ float hash12(vec2 p) {
     vec3 p3 = fract(vec3(p.xyx) * 0.1031);
     p3 += dot(p3, p3.yzx + 33.33);
     return fract((p3.x + p3.y) * p3.z);
+}
+
+// --- Vision nocturna (efecto Purkinje) ---
+// Con poca luz los conos dejan de ver y ven los bastones: no distinguen
+// colores, son mas sensibles al azul-verde (507 nm) y casi ciegos al rojo. Por
+// eso de noche el mundo es gris azulado, las flores rojas se ven negras y una
+// farola conserva su color alrededor (ahi aun ven los conos).
+//
+// Luminancia escotopica (la que ven los bastones) de Larson et al. a partir de
+// XYZ, normalizada para que el blanco valga lo mismo que en fotopica.
+const mat3 kSrgbToXyz = mat3(
+    0.4124, 0.2126, 0.0193,
+    0.3576, 0.7152, 0.1192,
+    0.1805, 0.0722, 0.9505);
+
+float scotopicLuminance(vec3 linear_srgb) {
+    vec3 xyz = kSrgbToXyz * max(linear_srgb, vec3(0.0));
+    if (xyz.x <= 1e-7) return xyz.y;
+    float v = xyz.y * (1.33 * (1.0 + (xyz.y + xyz.z) / xyz.x) - 1.68);
+    return max(v, 0.0) / 2.573;
+}
+
+// `adaptation`: luminancia media a la que esta adaptado el ojo (la de la
+// auto-exposicion). De dia no hace nada (aunque haya rincones oscuros: el ojo
+// esta adaptado a la luz y ven los conos). De noche, cada pixel pasa a la
+// vision de los bastones salvo donde hay bastante luz para los conos.
+// Umbrales en las unidades del motor: el dia medio ronda 0.3, el ocaso 0.1 y
+// la noche con luna 0.01.
+vec3 nightVision(vec3 color, float adaptation, float strength) {
+    if (strength <= 0.0 || adaptation <= 0.0) return color;
+    float night = 1.0 - smoothstep(log2(0.012), log2(0.09), log2(adaptation));
+    float lum = luminance(color);
+    // Los conos necesitan una luz absoluta (no relativa al entorno): el suelo
+    // a la luz de la luna (~0.02-0.05) ya no les llega; el charco de luz de
+    // una farola (0.3 o mas) si.
+    float cones = smoothstep(0.08, 0.6, lum);
+    float rods = night * (1.0 - cones) * strength * 0.9;
+    if (rods <= 0.0) return color;
+    // Gris azulado de los bastones (tinte de luminancia 1).
+    const vec3 kRodTint = vec3(0.88, 1.01, 1.26);
+    vec3 rod_color = scotopicLuminance(color) * kRodTint;
+    return mix(color, rod_color, rods);
 }
 
 // Destellos del sol en la lente: fantasmas sobre la linea sol -> centro, un
@@ -215,10 +258,13 @@ void main() {
     // --- Destellos del sol en la lente ---
     color += lensFlare(uv) * luminance(textureLod(bloom, settings.lens.zw, 0.0).rgb / kBloomLevels + vec3(4.0));
 
+    // --- Vision nocturna (antes de la exposicion: depende de la luz real) ---
+    bool auto_on = settings.exposure.z > 0.5 && auto_exposure.initialized > 0.5;
+    float adaptation = auto_on ? auto_exposure.average_luminance : settings.flare.w;
+    color = nightVision(color, adaptation, settings.flare.z);
+
     // --- Exposicion ---
-    float exposure = settings.exposure.z > 0.5 && auto_exposure.initialized > 0.5
-                         ? auto_exposure.exposure
-                         : settings.exposure.x;
+    float exposure = auto_on ? auto_exposure.exposure : settings.exposure.x;
     exposure *= exp2(settings.exposure.w);
     color *= exposure;
 
@@ -272,8 +318,10 @@ void main() {
         color = clamp(color + grain * settings.film.x * 0.2 * (0.35 + 0.65 * response), 0.0, 1.0);
     }
 
-    // --- Salida en sRGB (la swapchain es UNORM: la gamma va a mano) ---
-    color = pow(color, vec3(1.0 / 2.2));
+    // --- Salida en sRGB (la swapchain es UNORM: la curva va a mano) ---
+    // La curva sRGB exacta (tramo lineal cerca del negro), la que espera el
+    // monitor. Con una gamma 2.2 pura las sombras salian levantadas y lavadas.
+    color = mix(color * 12.92, 1.055 * pow(color, vec3(1.0 / 2.4)) - 0.055, step(vec3(0.0031308), color));
     color += (hash12(gl_FragCoord.xy) - 0.5) / 255.0;
 
     out_color = vec4(color, 1.0);

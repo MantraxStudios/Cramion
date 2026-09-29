@@ -149,8 +149,9 @@ const std::vector<ToolDef>& toolDefs() {
         d.push_back({"remove_component", "Quita un componente de una entidad.", {{"entity", entity}, {"component", prop("string", "Nombre del tipo")}}, {"entity", "component"}});
         d.push_back({"select", "Selecciona una entidad en el editor y opcionalmente centra la camara en ella.", {{"entity", entity}, {"focus", prop("boolean", "Centrar la camara")}}, {"entity"}});
         d.push_back({"inspect_asset", "Muestra un asset en el Inspector (material, Render Texture o los ajustes de importacion de un modelo: Scale Factor...), como elegirlo en el Proyecto.", {{"asset", prop("string", "Ruta, nombre o UUID")}}, {"asset"}});
-        d.push_back({"set_gizmo", "Cambia el gizmo de la vista de escena: none, move, rotate o scale, y si va en ejes locales.",
-                     {{"mode", prop("string", "none | move | rotate | scale")}, {"local", prop("boolean", "Ejes locales (false = mundo)")}}, {"mode"}});
+        d.push_back({"set_gizmo", "Cambia el gizmo de la vista de escena: none, move, rotate o scale, si va en ejes locales, y si se ven los iconos y guias.",
+                     {{"mode", prop("string", "none | move | rotate | scale")}, {"local", prop("boolean", "Ejes locales (false = mundo)")},
+                      {"show_gizmos", prop("boolean", "Mostrar iconos, contornos y volumenes en la vista de escena (false = captura limpia)")}}, {"mode"}});
         d.push_back({"paint_prefabs", "Pinta prefabs con el pincel del editor (arboles, rocas... como el Foliage de Unreal) sobre el suelo alrededor de un punto, o los borra. Usa un grupo .crpaint o una lista de prefabs (misma probabilidad).",
                      {{"center", vec3Prop("Centro del pincel (se busca el suelo debajo)")}, {"radius", prop("number", "Radio en metros (5)")},
                       {"density", prop("number", "Objetos por 100 m2 (8)")}, {"spacing", prop("number", "Separacion minima en metros (1.5)")},
@@ -187,6 +188,9 @@ const std::vector<ToolDef>& toolDefs() {
                      {{"asset", prop("string", "Ruta, nombre o UUID del modelo")}}, {"asset"}});
         d.push_back({"graphics_settings", "Lee o cambia la configuracion grafica: presupuesto adaptativo (adaptive, target_fps) y resolucion del mapa de sombras (0 = segun el hardware). Devuelve el estado del presupuesto.",
                      {{"adaptive", prop("boolean", "Optimizacion adaptativa")}, {"target_fps", prop("number", "FPS objetivo")},
+                      {"upscaler", prop("string", "Escalador: off, taa, fsr1, fsr3 (AMD FSR 3.1, INESTABLE) o dlss (NVIDIA DLSS 4, INESTABLE)")},
+                      {"resolution", prop("string", "Resolucion interna: native (DLAA/Native AA), quality, balanced, performance, ultra_performance")},
+                      {"sharpness", prop("number", "Nitidez RCAS tras el escalado (0..1)")},
                       {"shadow_resolution", prop("number", "Resolucion por cascada (0 = auto)")},
                       {"texture_max_size", prop("number", "Lado maximo de las texturas (0 = auto)")},
                       {"path_tracing", prop("boolean", "Path tracing en la vista Escena (necesita trazado de rayos)")},
@@ -644,7 +648,9 @@ json McpTools::call(const std::string& name, const json& args, bool& image, std:
         else if (mode == "scale") a.gizmo_ = EditorApp::GizmoOperation::Scale;
         else throw ToolError("mode debe ser none, move, rotate o scale");
         if (args.contains("local")) a.gizmo_local_ = args.value("local", false);
-        return json{{"ok", true}};
+        // Iconos, contornos y volumenes de la vista de escena (capturas limpias).
+        if (args.contains("show_gizmos")) a.show_gizmos_ = args.value("show_gizmos", true);
+        return json{{"ok", true}, {"show_gizmos", a.show_gizmos_}};
     }
     if (name == "paint_prefabs") {
         if (arg(args, "group").empty() && !args.contains("prefabs")) throw ToolError("pasa group o prefabs");
@@ -885,6 +891,33 @@ json McpTools::call(const std::string& name, const json& args, bool& image, std:
         bool changed = false;
         if (args.contains("adaptive")) { g.adaptive = args["adaptive"].get<bool>(); changed = true; }
         if (args.contains("target_fps")) { g.target_fps = args["target_fps"].get<float>(); changed = true; }
+        if (args.contains("upscaler")) {
+            static constexpr const char* kNames[] = {"off", "taa", "fsr1", "fsr3", "dlss"};
+            const std::string v = arg(args, "upscaler");
+            bool found = false;
+            for (int i = 0; i < 5; ++i) {
+                if (v == kNames[i]) {
+                    g.upscaler = static_cast<gfx::Upscaler>(i);
+                    found = true;
+                }
+            }
+            if (!found) throw ToolError("upscaler: off, taa, fsr1, fsr3 o dlss");
+            changed = true;
+        }
+        if (args.contains("resolution")) {
+            static constexpr const char* kNames[] = {"native", "quality", "balanced", "performance", "ultra_performance"};
+            const std::string v = arg(args, "resolution");
+            bool found = false;
+            for (int i = 0; i < 5; ++i) {
+                if (v == kNames[i]) {
+                    g.quality = static_cast<gfx::UpscaleQuality>(i);
+                    found = true;
+                }
+            }
+            if (!found) throw ToolError("resolution: native, quality, balanced, performance o ultra_performance");
+            changed = true;
+        }
+        if (args.contains("sharpness")) { g.sharpness = std::clamp(args["sharpness"].get<float>(), 0.0f, 1.0f); changed = true; }
         if (args.contains("shadow_resolution")) { g.shadow_resolution = args["shadow_resolution"].get<int>(); changed = true; }
         if (args.contains("texture_max_size")) { g.texture_max_size = args["texture_max_size"].get<int>(); changed = true; }
         if (changed) {
@@ -907,6 +940,18 @@ json McpTools::call(const std::string& name, const json& args, bool& image, std:
                                  {"bounces", a.renderer_.pathTracingBounces()}};
         j["shadow_resolution"] = a.renderer_.shadowResolution();
         j["shadow_resolution_setting"] = g.shadow_resolution;
+        {
+            static constexpr const char* kNames[] = {"off", "taa", "fsr1", "fsr3", "dlss"};
+            const vk::Extent2D render = a.renderer_.renderExtent();
+            const vk::Extent2D output = a.renderer_.sceneExtent();
+            j["upscaler"] = kNames[static_cast<int>(a.renderer_.graphicsSettings().upscaler)];
+            j["upscaler_active"] = kNames[static_cast<int>(a.renderer_.activeUpscaler())];
+            j["upscaler_status"] = a.renderer_.upscalerStatus();
+            j["fsr3_supported"] = a.renderer_.fsr3Supported();
+            j["dlss_supported"] = a.renderer_.dlssSupported();
+            j["render_size"] = json{render.width, render.height};
+            j["output_size"] = json{output.width, output.height};
+        }
         return j;
     }
     if (name == "performance_stats") {
@@ -930,6 +975,8 @@ json McpTools::call(const std::string& name, const json& args, bool& image, std:
                     {"culled_small_actors", a.renderer_.culledSmallActors()},
                     {"shadow_resolution", a.renderer_.shadowResolution()},
                     {"render_extent", json::array({a.renderer_.renderExtent().width, a.renderer_.renderExtent().height})},
+                    {"exposure", a.renderer_.currentExposure()},
+                    {"scene_luminance", a.renderer_.measuredLuminance()},
                     {"budget", budgetJson(a.renderer_)}};
     }
     if (name == "import_file") {

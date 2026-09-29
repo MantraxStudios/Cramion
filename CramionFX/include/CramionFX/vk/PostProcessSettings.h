@@ -31,6 +31,11 @@ struct PostProcessSettings {
     float max_ev = 1.4f;
     float adaptation_speed_up = 3.0f;    // hacia una escena mas brillante (por segundo)
     float adaptation_speed_down = 1.2f;  // hacia una escena mas oscura
+    // Vision nocturna del ojo (efecto Purkinje): con poca luz ven los
+    // bastones, que no distinguen colores y son mas sensibles al azul. La
+    // noche se ve gris azulada y lo que ilumina una farola conserva su
+    // color. 0 = apagada, 1 = la del ojo.
+    float night_vision = 1.0f;
 
     // --- Tonemapping ---
     Tonemapper tonemapper = Tonemapper::Neutral;

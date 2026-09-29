@@ -55,6 +55,17 @@ void ImGuiLayer::initialize(HWND hwnd, gfx::VulkanRenderer& renderer) {
     if (std::filesystem::exists(font)) {
         io.Fonts->AddFontFromFileTTF(font.string().c_str(), 16.0f);
     }
+    for (const char* mono : {"C:/Windows/Fonts/CascadiaMono.ttf", "C:/Windows/Fonts/consola.ttf"}) {
+        if (!std::filesystem::exists(mono)) continue;
+        mono_font_ = io.Fonts->AddFontFromFileTTF(mono, 16.0f);
+        // Lo que no tenga (los simbolos de las herramientas de IA: ⏺ ✻ ⎿...).
+        ImFontConfig merge;
+        merge.MergeMode = true;
+        for (const char* extra : {"C:/Windows/Fonts/seguisym.ttf", "C:/Windows/Fonts/segoeui.ttf"}) {
+            if (std::filesystem::exists(extra)) io.Fonts->AddFontFromFileTTF(extra, 16.0f, &merge);
+        }
+        break;
+    }
     applyStyle(dpi_scale);
 
     ImGui_ImplWin32_Init(hwnd);

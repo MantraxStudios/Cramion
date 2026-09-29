@@ -316,7 +316,14 @@ void VulkanRenderer::initialize(const EngineInfo& info, NativeWindow window, std
         report(0.0f, "Buscando el casco de VR");
         if (xr_.createInstance(info.app_name)) xr_instance_extensions = xr_.requiredInstanceExtensions();
     }
-    instance_.initialize(info, xr_instance_extensions);
+    // DLSS (NGX) pide sus extensiones (se anaden si existen).
+    std::vector<std::string> instance_extensions = xr_instance_extensions;
+    for (const std::string& name : DlssUpscaler::instanceExtensions()) {
+        if (std::find(instance_extensions.begin(), instance_extensions.end(), name) == instance_extensions.end()) {
+            instance_extensions.push_back(name);
+        }
+    }
+    instance_.initialize(info, instance_extensions);
     surface_.initialize(instance_, window);
     VkPhysicalDevice xr_gpu = VK_NULL_HANDLE;
     std::vector<std::string> xr_device_extensions;
@@ -324,7 +331,26 @@ void VulkanRenderer::initialize(const EngineInfo& info, NativeWindow window, std
         xr_gpu = xr_.physicalDevice(static_cast<VkInstance>(*instance_.handle()));
         if (xr_gpu != VK_NULL_HANDLE) xr_device_extensions = xr_.requiredDeviceExtensions();
     }
-    device_.initialize(instance_, surface_, xr_gpu, xr_device_extensions);
+    std::vector<std::string> device_extensions = xr_device_extensions;
+    for (const std::string& name : DlssUpscaler::deviceExtensions(static_cast<VkInstance>(*instance_.handle()))) {
+        if (std::find(device_extensions.begin(), device_extensions.end(), name) == device_extensions.end()) {
+            device_extensions.push_back(name);
+        }
+    }
+    device_.initialize(instance_, surface_, xr_gpu, device_extensions);
+    {
+        // DLSS: solo en GPUs NVIDIA RTX con un controlador que lo tenga.
+        std::string dlss_error;
+        const char* local = std::getenv("LOCALAPPDATA");
+        const std::filesystem::path logs = local != nullptr ? std::filesystem::path(local) / "Cramion" / "Logs" / "NGX"
+                                                            : std::filesystem::temp_directory_path() / "Cramion" / "NGX";
+        if (DlssUpscaler::compiled() &&
+            !dlss_.initialize(static_cast<VkInstance>(*instance_.handle()),
+                              static_cast<VkPhysicalDevice>(*device_.physicalDevice()),
+                              static_cast<VkDevice>(*device_.handle()), logs, dlss_error)) {
+            std::cout << "[DLSS] No disponible: " << dlss_error << "\n";
+        }
+    }
     if (xr_gpu != VK_NULL_HANDLE) {
         if (static_cast<VkPhysicalDevice>(*device_.physicalDevice()) != xr_gpu ||
             !xr_.createSession(static_cast<VkInstance>(*instance_.handle()), xr_gpu,
@@ -570,6 +596,14 @@ void VulkanRenderer::initialize(const EngineInfo& info, NativeWindow window, std
         taa.color_format = kHdrFormat;
         taa_pass_.create(device_, taa);
 
+        const std::array<Type, 2> motion_bindings = {Type::eCombinedImageSampler, Type::eCombinedImageSampler};
+        FullscreenPassDesc motion{};
+        motion.fragment_shader = "upscaler_motion.frag.spv";
+        motion.bindings = motion_bindings;
+        motion.push_constant_size = sizeof(core::Mat4);
+        motion.color_format = GBuffer::kVelocityFormat;
+        upscaler_motion_pass_.create(device_, motion);
+
         FullscreenPassDesc easu{};
         easu.fragment_shader = "fsr_easu.frag.spv";
         easu.bindings = one_texture;
@@ -693,6 +727,10 @@ void VulkanRenderer::shutdown() {
 
     // VR: la sesion usa el dispositivo; se cierra antes.
     xr_.shutdown();
+    // FSR 3 y DLSS tambien (sus recursos son del dispositivo).
+    fsr3_.destroy();
+    dlss_.shutdown();
+    upscaler_motion_ = VulkanImage{};
     for (VulkanImage& image : xr_staging_) image = VulkanImage{};
 
     skinned_models_.clear();
@@ -715,6 +753,7 @@ void VulkanRenderer::shutdown() {
     light_shaft_sets_.clear();
     camera_fx_sets_.clear();
     taa_sets_.clear();
+    upscaler_motion_sets_.clear();
     easu_sets_.clear();
     rcas_sets_.clear();
     outline_sets_.clear();
@@ -781,6 +820,7 @@ void VulkanRenderer::shutdown() {
     light_shaft_pass_.destroy();
     camera_fx_pass_.destroy();
     taa_pass_.destroy();
+    upscaler_motion_pass_.destroy();
     easu_pass_.destroy();
     rcas_pass_.destroy();
     clouds_pass_.destroy();
@@ -1177,6 +1217,7 @@ void VulkanRenderer::createDescriptors() {
     light_shaft_sets_ = allocate(light_shaft_pass_, 1);
     camera_fx_sets_ = allocate(camera_fx_pass_, 1);
     taa_sets_ = allocate(taa_pass_, 1);
+    upscaler_motion_sets_ = allocate(upscaler_motion_pass_, 1);
     easu_sets_ = allocate(easu_pass_, 1);
     rcas_sets_ = allocate(rcas_pass_, 1);
     outline_sets_ = allocate(outline_pass_, 1);
@@ -1281,6 +1322,7 @@ void VulkanRenderer::updateActors(const scene::Scene& scene, std::uint32_t frame
     }
     const std::size_t previous_count = actor_draws_.size();
     moved_spheres_.clear();
+    moved_sphere_animated_.clear();
 
     actor_draws_.clear();
     bone_staging_.clear();
@@ -1411,6 +1453,10 @@ void VulkanRenderer::updateActors(const scene::Scene& scene, std::uint32_t frame
                 std::memcmp(&before.transform, &draw.transform, sizeof(core::Mat4)) != 0) {
                 moved_spheres_.push_back(toVec4(before.center, before.radius));
                 moved_spheres_.push_back(toVec4(draw.bounds_center, draw.bounds_radius));
+                // Los animados no van en la cache de las cascadas (se dibujan
+                // encima cada frame): moverlos no la invalida.
+                moved_sphere_animated_.push_back(animated);
+                moved_sphere_animated_.push_back(animated);
             }
         }
         bone_staging_.insert(bone_staging_.end(), bones.begin(), bones.end());
@@ -1611,7 +1657,7 @@ void VulkanRenderer::recordActorShadows(const vk::raii::CommandBuffer& cmd,
                                         std::uint32_t frame_index,
                                         const core::Mat4& light_view_projection,
                                         const Vec3& light_position, float range,
-                                        float texel_world_size) {
+                                        float texel_world_size, ShadowActors which) {
     // Las cascadas se dibujan con depth clamp (range == 0): lo que queda entre
     // el sol y la cascada tambien proyecta sombra dentro, asi que no se
     // descarta por el plano cercano.
@@ -1643,6 +1689,9 @@ void VulkanRenderer::recordActorShadows(const vk::raii::CommandBuffer& cmd,
     for (const ActorDraw& draw : actor_draws_) {
         if (!draw.cast_shadows) {
             continue;  // MeshRenderer con "Proyecta sombras" apagado.
+        }
+        if (which != ShadowActors::All && (which == ShadowActors::Animated) == draw.per_submesh) {
+            continue;  // cache de las cascadas: estaticos o animados
         }
         if (local) {
             const float reach = range + draw.bounds_radius;
@@ -2364,6 +2413,9 @@ void VulkanRenderer::updatePostDescriptors() {
     write_texture(taa_sets_[0], 1, taa_pass_.sampler(), gbuffer_.depth(), vk::ImageLayout::eDepthReadOnlyOptimal);
     write_texture(taa_sets_[0], 2, taa_pass_.sampler(), gbuffer_.velocity(), kRead);
     write_texture(taa_sets_[0], 3, taa_pass_.sampler(), taa_history_, kRead);
+    write_texture(upscaler_motion_sets_[0], 0, upscaler_motion_pass_.sampler(), gbuffer_.depth(),
+                  vk::ImageLayout::eDepthReadOnlyOptimal);
+    write_texture(upscaler_motion_sets_[0], 1, upscaler_motion_pass_.sampler(), gbuffer_.velocity(), kRead);
     write_texture(easu_sets_[0], 0, easu_pass_.sampler(), scene_color_, kRead);
     write_texture(rcas_sets_[0], 0, rcas_pass_.sampler(), upscale_target_, kRead);
     write_storage(histogram_sets_[0], 1, histogram_buffer_);
@@ -2454,15 +2506,19 @@ void VulkanRenderer::applyEffectiveGraphics() {
         settings.custom_scale = std::clamp(scale, 0.25f, 1.0f);
     }
     if (settings == graphics_) return;
-    const bool rebuild = renderScale(settings) != renderScale(graphics_) || settings.vsync != graphics_.vsync ||
-                         (settings.upscaler == Upscaler::Off) != (graphics_.upscaler == Upscaler::Off);
+    const bool vsync_changed = settings.vsync != graphics_.vsync;
+    const bool rebuild = renderScale(settings) != renderScale(graphics_) || settings.upscaler != graphics_.upscaler ||
+                         settings.quality != graphics_.quality;
     graphics_ = settings;
     swapchain_.setVsync(settings.vsync);
     taa_history_valid_ = false;
     jitter_index_ = 0;
     // Destinos de otro tamano (o el post-proceso lee otra imagen): se rehacen
-    // al empezar el frame siguiente (applyPendingResize).
-    if (rebuild) settings_dirty_ = true;
+    // al empezar el frame siguiente (applyPendingResize). La swapchain solo
+    // con otro vsync: rehacerla en cada paso del presupuesto adaptativo daba
+    // tirones (y con FSR 3 / DLSS, que ademas rehacian su contexto, mas lag).
+    if (vsync_changed) settings_dirty_ = true;
+    if (rebuild) targets_dirty_ = true;
 }
 
 void VulkanRenderer::createRenderTargets() {
@@ -2647,11 +2703,17 @@ void VulkanRenderer::createRenderTargets() {
     gpu_culling_.resize(device_, gbuffer_.depth());
 
     // --- Escalado (a la resolucion de pantalla) ---
-    upscale_target_.create(device_, output, kHdrFormat, target_usage | vk::ImageUsageFlagBits::eTransferSrc,
+    upscale_target_.create(device_, output, kHdrFormat,
+                           target_usage | vk::ImageUsageFlagBits::eTransferSrc | vk::ImageUsageFlagBits::eStorage,
                            vk::ImageAspectFlagBits::eColor);
+    upscaler_motion_.create(device_, render_extent_, GBuffer::kVelocityFormat,
+                            vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eSampled,
+                            vk::ImageAspectFlagBits::eColor);
     // Origen de copia: el motion blur y la profundidad de campo la copian.
     upscaled_color_.create(device_, output, kHdrFormat, target_usage | vk::ImageUsageFlagBits::eTransferSrc,
                            vk::ImageAspectFlagBits::eColor);
+    // FSR 3 / DLSS con los tamanos nuevos (solo se rehacen si hace falta).
+    configureVendorUpscaler();
     taa_history_.create(device_, output, kHdrFormat,
                         vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eTransferDst,
                         vk::ImageAspectFlagBits::eColor);
@@ -2878,6 +2940,11 @@ void VulkanRenderer::updateUniforms(const scene::Scene& scene, const scene::Came
     camera_data.view = camera.view();
     const core::Mat4 unjittered = camera.projection() * camera_data.view;
     camera_projection_ = camera.projection();
+    if (!isolated()) {
+        camera_near_ = camera.nearPlane();
+        camera_far_ = camera.farPlane();
+        camera_fov_ = camera.fovY();
+    }
 
     // Jitter del TAA / escalado temporal: una fraccion de pixel distinta cada
     // frame (Halton 2,3), con mas fases cuanto mas se escala (como DLSS/FSR).
@@ -3060,6 +3127,7 @@ void VulkanRenderer::updateUniforms(const scene::Scene& scene, const scene::Came
     constexpr float kDayExposure = 1.15f;
     constexpr float kNightExposure = 2.6f;
     exposure_ = kNightExposure + (kDayExposure - kNightExposure) * lights.sky.daylight;
+    if (!isolated()) last_daylight_ = lights.sky.daylight;
 
     // --- Cielo fisico ---
     sky_push_.sun = toVec4(lights.sky.to_sun, kSunIlluminance);
@@ -3168,6 +3236,7 @@ void VulkanRenderer::updateUniforms(const scene::Scene& scene, const scene::Came
     const bool redraw_all =
         isolated() || !cascades_valid_ || !sunShadows() || actor_set_changed_ || detail_changed;
     const std::uint64_t far_period = 4ull * budget_.farCascadeInterval();
+    const bool static_cache = shadow_map_.hasStaticCache();
     if (!isolated()) {
         ++cascade_frame_;
     }
@@ -3183,10 +3252,21 @@ void VulkanRenderer::updateUniforms(const scene::Scene& scene, const scene::Came
             due = due || core::dot(moved, moved) > limit * limit;
 
             // Algo se movio dentro de la cascada (donde estaba o donde esta):
-            // su sombra guardada ya no vale.
+            // su sombra guardada ya no vale. En las lejanas (2 y 3) solo si
+            // es grande para sus texeles: un personaje animado esta siempre
+            // junto a la camara, dentro de las cuatro, y forzaba a redibujar
+            // cada frame las que cubren todo el mapa (en Play, 18 ms de
+            // sombras de 22; ningun escalador podia ayudar). Lo pequeno sigue
+            // su turno (cada 4 frames); de cerca lo dibujan la 0 y la 1.
+            // Con la cache de lo estatico, los animados no cuentan: se dibujan
+            // encima cada frame sin tocar lo demas.
+            const float min_radius = i >= 2 ? 8.0f * current.texel_world_size : 0.0f;
             if (!due && !moved_spheres_.empty()) {
                 const core::Frustum frustum(current.light_view_projection, /*ignore_near=*/true);
-                for (const core::Vec4& sphere : moved_spheres_) {
+                for (std::size_t s = 0; s < moved_spheres_.size(); ++s) {
+                    const core::Vec4& sphere = moved_spheres_[s];
+                    if (static_cache && moved_sphere_animated_[s]) continue;
+                    if (sphere.w < min_radius) continue;
                     const Vec3 r{sphere.w, sphere.w, sphere.w};
                     const Vec3 c{sphere.x, sphere.y, sphere.z};
                     if (frustum.intersects(core::Aabb{c - r, c + r})) {
@@ -3200,6 +3280,21 @@ void VulkanRenderer::updateUniforms(const scene::Scene& scene, const scene::Came
         if (due) {
             rendered_cascades_[i] = current;
             rendered_cascade_camera_[i] = camera.position();
+        }
+        // Actores animados dentro de la cascada (con la matriz con la que
+        // se dibujo): se copian la cache y ellos encima.
+        cascade_had_animated_[i] = cascade_animated_[i] && !redraw_all;
+        cascade_animated_[i] = false;
+        if (static_cache && sunShadows()) {
+            const core::Frustum frustum(rendered_cascades_[i].light_view_projection, /*ignore_near=*/true);
+            for (const ActorDraw& draw : actor_draws_) {
+                if (draw.per_submesh || !draw.cast_shadows) continue;
+                const Vec3 r{draw.bounds_radius, draw.bounds_radius, draw.bounds_radius};
+                if (frustum.intersects(core::Aabb{draw.bounds_center - r, draw.bounds_center + r})) {
+                    cascade_animated_[i] = true;
+                    break;
+                }
+            }
         }
     }
     cascades_valid_ = !isolated() && sunShadows();
@@ -3774,7 +3869,10 @@ void VulkanRenderer::recordCommandBuffer(const vk::raii::CommandBuffer& cmd,
     markPass(cmd, frame_index, "Copias de historia");
     if (upscaling_) {
         recordUpscalePass(cmd);
-        markPass(cmd, frame_index, graphics_.upscaler == Upscaler::Fsr1 ? "FSR 1" : "TAA / escalado");
+        markPass(cmd, frame_index, activeUpscaler() == Upscaler::Fsr1   ? "FSR 1"
+                                   : activeUpscaler() == Upscaler::Fsr3 ? "FSR 3"
+                                   : activeUpscaler() == Upscaler::Dlss ? "DLSS"
+                                                                        : "TAA / escalado");
     }
     recordCameraFxPass(cmd);
     markPass(cmd, frame_index, "Motion blur + profundidad de campo");
@@ -3809,45 +3907,50 @@ void VulkanRenderer::recordCommandBuffer(const vk::raii::CommandBuffer& cmd,
 
 void VulkanRenderer::recordShadowPass(const vk::raii::CommandBuffer& cmd,
                                       std::uint32_t frame_index) {
+    using Stage = vk::PipelineStageFlagBits2;
+    using Access = vk::AccessFlagBits2;
     const vk::Extent2D extent = shadow_map_.extent();
     const vk::ImageSubresourceRange all_cascades{vk::ImageAspectFlagBits::eDepth, 0, 1, 0,
                                                  scene::kShadowCascadeCount};
+    const bool cached = shadow_map_.hasStaticCache();
 
-    // --- Todas las capas pasan a destino de profundidad ---
-    // El frame anterior las dejo como textura de la pasada de iluminacion. Si
-    // alguna cascada no se redibuja, su contenido se conserva (layout
-    // anterior); si se redibujan todas, se puede descartar.
     bool all_due = true;
-    for (bool due : cascade_due_) {
-        all_due = all_due && due;
+    bool any_due = false;
+    bool any_update = false;
+    for (std::uint32_t i = 0; i < scene::kShadowCascadeCount; ++i) {
+        all_due = all_due && cascade_due_[i];
+        any_due = any_due || cascade_due_[i];
+        any_update = any_update || cascade_due_[i] || cascade_animated_[i] || cascade_had_animated_[i];
     }
-    vk::ImageMemoryBarrier2 to_attachment{};
-    to_attachment.srcStageMask = vk::PipelineStageFlagBits2::eFragmentShader |
-                                 vk::PipelineStageFlagBits2::eComputeShader;
-    to_attachment.srcAccessMask = vk::AccessFlagBits2::eShaderSampledRead;
-    to_attachment.dstStageMask = vk::PipelineStageFlagBits2::eEarlyFragmentTests |
-                                 vk::PipelineStageFlagBits2::eLateFragmentTests;
-    to_attachment.dstAccessMask = vk::AccessFlagBits2::eDepthStencilAttachmentWrite |
-                                  vk::AccessFlagBits2::eDepthStencilAttachmentRead;
-    to_attachment.oldLayout =
-        all_due ? vk::ImageLayout::eUndefined : vk::ImageLayout::eDepthReadOnlyOptimal;
-    to_attachment.newLayout = vk::ImageLayout::eDepthAttachmentOptimal;
-    to_attachment.image = *shadow_map_.image().handle();
-    to_attachment.subresourceRange = all_cascades;
+    const auto barrier = [&](vk::Image image, vk::ImageLayout from, vk::ImageLayout to,
+                             vk::PipelineStageFlags2 src_stage, vk::AccessFlags2 src_access,
+                             vk::PipelineStageFlags2 dst_stage, vk::AccessFlags2 dst_access) {
+        vk::ImageMemoryBarrier2 b{};
+        b.srcStageMask = src_stage;
+        b.srcAccessMask = src_access;
+        b.dstStageMask = dst_stage;
+        b.dstAccessMask = dst_access;
+        b.oldLayout = from;
+        b.newLayout = to;
+        b.image = image;
+        b.subresourceRange = all_cascades;
+        vk::DependencyInfo dependency{};
+        dependency.setImageMemoryBarriers(b);
+        cmd.pipelineBarrier2(dependency);
+    };
+    const vk::PipelineStageFlags2 depth_stages = Stage::eEarlyFragmentTests | Stage::eLateFragmentTests;
+    const vk::AccessFlags2 depth_access =
+        Access::eDepthStencilAttachmentWrite | Access::eDepthStencilAttachmentRead;
+    const vk::Image map = *shadow_map_.image().handle();
 
-    vk::DependencyInfo to_attachment_dependency{};
-    to_attachment_dependency.setImageMemoryBarriers(to_attachment);
-    cmd.pipelineBarrier2(to_attachment_dependency);
-
-    // --- Una pasada por cascada ---
-    for (std::uint32_t cascade = 0; cascade < scene::kShadowCascadeCount; ++cascade) {
-        if (!cascade_due_[cascade]) {
-            continue;  // Se queda la que ya habia (ver updateUniforms).
-        }
+    // Una cascada en `view`: borrada y con lo que diga `which`, o (sin borrar)
+    // solo los animados encima de lo que ya hay.
+    const auto draw_cascade = [&](const vk::raii::ImageView& view, std::uint32_t cascade, ShadowActors which) {
         vk::RenderingAttachmentInfo depth_attachment{};
-        depth_attachment.imageView = *shadow_map_.cascadeView(cascade);
+        depth_attachment.imageView = *view;
         depth_attachment.imageLayout = vk::ImageLayout::eDepthAttachmentOptimal;
-        depth_attachment.loadOp = vk::AttachmentLoadOp::eClear;
+        depth_attachment.loadOp =
+            which == ShadowActors::Animated ? vk::AttachmentLoadOp::eLoad : vk::AttachmentLoadOp::eClear;
         depth_attachment.storeOp = vk::AttachmentStoreOp::eStore;
         depth_attachment.clearValue = vk::ClearValue{vk::ClearDepthStencilValue{1.0f, 0}};
 
@@ -3857,41 +3960,86 @@ void VulkanRenderer::recordShadowPass(const vk::raii::CommandBuffer& cmd,
         rendering_info.pDepthAttachment = &depth_attachment;
 
         cmd.beginRendering(rendering_info);
-
         // Con las sombras apagadas basta con dejar el mapa limpio: todo queda
         // a profundidad maxima, o sea, sin nada que ocluya.
         if (sunShadows()) {
             cmd.setViewport(0, vk::Viewport{0.0f, 0.0f, static_cast<float>(extent.width),
                                             static_cast<float>(extent.height), 0.0f, 1.0f});
             cmd.setScissor(0, vk::Rect2D{vk::Offset2D{0, 0}, extent});
-
-            recordActorShadows(cmd, frame_index, rendered_cascades_[cascade].light_view_projection, {}, 0.0f,
-                               rendered_cascades_[cascade].texel_world_size);
-            terrain_pass_.recordShadow(cmd, frame_index, skin_sets_[frame_index],
-                                       rendered_cascades_[cascade].light_view_projection);
-            voxel_pass_.recordShadow(cmd, frame_index, skin_sets_[frame_index],
-                                     rendered_cascades_[cascade].light_view_projection);
-            foliage_pass_.recordShadow(cmd, frame_index, skin_sets_[frame_index],
-                                       rendered_cascades_[cascade].light_view_projection);
+            const core::Mat4& light_view_projection = rendered_cascades_[cascade].light_view_projection;
+            recordActorShadows(cmd, frame_index, light_view_projection, {}, 0.0f,
+                               rendered_cascades_[cascade].texel_world_size, which);
+            if (which != ShadowActors::Animated) {
+                terrain_pass_.recordShadow(cmd, frame_index, skin_sets_[frame_index], light_view_projection);
+                voxel_pass_.recordShadow(cmd, frame_index, skin_sets_[frame_index], light_view_projection);
+                foliage_pass_.recordShadow(cmd, frame_index, skin_sets_[frame_index], light_view_projection);
+            }
         }
-
         cmd.endRendering();
+    };
+
+    if (!cached) {
+        // --- Sin cache: las cascadas que tocan, enteras ---
+        // El frame anterior las dejo como textura de la pasada de iluminacion.
+        // Si alguna no se redibuja, su contenido se conserva (layout
+        // anterior); si se redibujan todas, se puede descartar.
+        barrier(map, all_due ? vk::ImageLayout::eUndefined : vk::ImageLayout::eDepthReadOnlyOptimal,
+                vk::ImageLayout::eDepthAttachmentOptimal, Stage::eFragmentShader | Stage::eComputeShader,
+                Access::eShaderSampledRead, depth_stages, depth_access);
+        for (std::uint32_t cascade = 0; cascade < scene::kShadowCascadeCount; ++cascade) {
+            if (cascade_due_[cascade]) draw_cascade(shadow_map_.cascadeView(cascade), cascade, ShadowActors::All);
+        }
+        barrier(map, vk::ImageLayout::eDepthAttachmentOptimal, vk::ImageLayout::eDepthReadOnlyOptimal,
+                Stage::eLateFragmentTests, Access::eDepthStencilAttachmentWrite, Stage::eFragmentShader,
+                Access::eShaderSampledRead);
+        return;
     }
 
-    // --- Y quedan listas para muestrearse desde la iluminacion ---
-    vk::ImageMemoryBarrier2 to_read{};
-    to_read.srcStageMask = vk::PipelineStageFlagBits2::eLateFragmentTests;
-    to_read.srcAccessMask = vk::AccessFlagBits2::eDepthStencilAttachmentWrite;
-    to_read.dstStageMask = vk::PipelineStageFlagBits2::eFragmentShader;
-    to_read.dstAccessMask = vk::AccessFlagBits2::eShaderSampledRead;
-    to_read.oldLayout = vk::ImageLayout::eDepthAttachmentOptimal;
-    to_read.newLayout = vk::ImageLayout::eDepthReadOnlyOptimal;
-    to_read.image = *shadow_map_.image().handle();
-    to_read.subresourceRange = all_cascades;
+    // --- Con cache (como los "cached shadow maps" de Unreal) ---
+    // 1) Lo estatico de las cascadas que tocan, en la cache (entre frames
+    //    esta como origen de copia).
+    const vk::Image cache = *shadow_map_.staticImage().handle();
+    if (any_due) {
+        barrier(cache, all_due ? vk::ImageLayout::eUndefined : vk::ImageLayout::eTransferSrcOptimal,
+                vk::ImageLayout::eDepthAttachmentOptimal, Stage::eTransfer, Access::eTransferRead, depth_stages,
+                depth_access);
+        for (std::uint32_t cascade = 0; cascade < scene::kShadowCascadeCount; ++cascade) {
+            if (cascade_due_[cascade]) {
+                draw_cascade(shadow_map_.staticCascadeView(cascade), cascade, ShadowActors::Static);
+            }
+        }
+        barrier(cache, vk::ImageLayout::eDepthAttachmentOptimal, vk::ImageLayout::eTransferSrcOptimal,
+                Stage::eLateFragmentTests, Access::eDepthStencilAttachmentWrite, Stage::eTransfer,
+                Access::eTransferRead);
+    }
+    if (!any_update) return;
 
-    vk::DependencyInfo to_read_dependency{};
-    to_read_dependency.setImageMemoryBarriers(to_read);
-    cmd.pipelineBarrier2(to_read_dependency);
+    // 2) Cache -> mapa en las que cambian (tambien donde hubo un animado el
+    //    frame anterior: se borra su silueta), y 3) los animados encima.
+    barrier(map, all_due ? vk::ImageLayout::eUndefined : vk::ImageLayout::eDepthReadOnlyOptimal,
+            vk::ImageLayout::eTransferDstOptimal,
+            Stage::eFragmentShader | Stage::eComputeShader, Access::eShaderSampledRead, Stage::eTransfer,
+            Access::eTransferWrite);
+    std::vector<vk::ImageCopy> copies;
+    for (std::uint32_t cascade = 0; cascade < scene::kShadowCascadeCount; ++cascade) {
+        if (!cascade_due_[cascade] && !cascade_animated_[cascade] && !cascade_had_animated_[cascade]) continue;
+        vk::ImageCopy region{};
+        region.srcSubresource = vk::ImageSubresourceLayers{vk::ImageAspectFlagBits::eDepth, 0, cascade, 1};
+        region.dstSubresource = region.srcSubresource;
+        region.extent = vk::Extent3D{extent.width, extent.height, 1};
+        copies.push_back(region);
+    }
+    cmd.copyImage(cache, vk::ImageLayout::eTransferSrcOptimal, map, vk::ImageLayout::eTransferDstOptimal, copies);
+    barrier(map, vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eDepthAttachmentOptimal, Stage::eTransfer,
+            Access::eTransferWrite, depth_stages, depth_access);
+    for (std::uint32_t cascade = 0; cascade < scene::kShadowCascadeCount; ++cascade) {
+        if (cascade_animated_[cascade]) {
+            draw_cascade(shadow_map_.cascadeView(cascade), cascade, ShadowActors::Animated);
+        }
+    }
+    barrier(map, vk::ImageLayout::eDepthAttachmentOptimal, vk::ImageLayout::eDepthReadOnlyOptimal,
+            Stage::eLateFragmentTests, Access::eDepthStencilAttachmentWrite, Stage::eFragmentShader,
+            Access::eShaderSampledRead);
 }
 
 void VulkanRenderer::recordLocalShadowPass(const vk::raii::CommandBuffer& cmd,
@@ -5937,6 +6085,153 @@ void VulkanRenderer::recordOverlayPass(const vk::raii::CommandBuffer& cmd,
 // Escalado de la imagen HDR interna a la de pantalla, antes del bloom y la
 // composicion: TAA/TAAU (temporal, con historia) o FSR 1 (EASU, espacial), y
 // despues la nitidez (RCAS) a upscaled_color_, que es lo que lee el resto.
+// -----------------------------------------------------------------------------
+// FSR 3.1 y DLSS 4 (TemporalUpscalers.h)
+// -----------------------------------------------------------------------------
+
+bool VulkanRenderer::fsr3Supported() const { return Fsr3Upscaler::supported(); }
+
+Upscaler VulkanRenderer::activeUpscaler() const {
+    if (!upscaling_) return Upscaler::Off;
+    if ((graphics_.upscaler == Upscaler::Fsr3 || graphics_.upscaler == Upscaler::Dlss) && !vendor_upscaler_) {
+        return Upscaler::Taa;
+    }
+    return graphics_.upscaler;
+}
+
+// Tras crear los destinos (el dispositivo esta parado): el contexto del SDK
+// elegido con la resolucion interna y la de pantalla. Si no se puede, TAA.
+// Crear un contexto cuesta decenas o cientos de ms (FSR 3 compila sus
+// pipelines): antes se rehacia cada vez que el presupuesto adaptativo movia la
+// resolucion interna, y el tiron hacia bajar otro paso (mas lag que sin
+// escalador). Ahora los dos admiten resolucion dinamica: FSR 3 se crea con
+// la resolucion de pantalla como maxima y DLSS con la del modo del usuario
+// (y un subrectangulo por frame); solo se rehacen con otra pantalla u otro modo.
+void VulkanRenderer::configureVendorUpscaler() {
+    const vk::Extent2D output = outputExtent();
+    const bool same_output = vendor_output_.width == output.width && vendor_output_.height == output.height;
+    std::string error;
+    if (graphics_.upscaler != Upscaler::Dlss) dlss_.releaseFeature();
+    if (graphics_.upscaler != Upscaler::Fsr3) fsr3_.destroy();
+    vendor_upscaler_ = false;
+    if (graphics_.upscaler == Upscaler::Fsr3) {
+        if (!fsr3_.ready() || !same_output) {
+            if (!fsr3_.create(static_cast<VkInstance>(*instance_.handle()), static_cast<VkDevice>(*device_.handle()),
+                              static_cast<VkPhysicalDevice>(*device_.physicalDevice()), output.width, output.height,
+                              output.width, output.height, error)) {
+                upscaler_status_ = "FSR 3 no disponible (" + error + "): se usa TAA";
+                std::cerr << "[FSR 3] " << upscaler_status_ << "\n";
+            }
+        }
+        vendor_upscaler_ = fsr3_.ready();
+        if (vendor_upscaler_) upscaler_status_ = "AMD FSR 3.1 (INESTABLE)";
+    } else if (graphics_.upscaler == Upscaler::Dlss) {
+        if (!dlss_.available()) {
+            upscaler_status_ = "DLSS no disponible en esta GPU: se usa TAA";
+        } else {
+            // El modo y la resolucion maxima salen de lo que eligio el usuario;
+            // lo que baje el presupuesto va como subrectangulo.
+            const float scale = renderScale(user_graphics_);
+            const vk::Extent2D base{
+                std::max(render_extent_.width,
+                         static_cast<std::uint32_t>(std::lround(static_cast<float>(output.width) * scale))),
+                std::max(render_extent_.height,
+                         static_cast<std::uint32_t>(std::lround(static_cast<float>(output.height) * scale)))};
+            const bool fits = dlss_render_.width >= render_extent_.width && dlss_render_.height >= render_extent_.height;
+            const bool same_mode = dlss_quality_ == user_graphics_.quality &&
+                                   (user_graphics_.quality != UpscaleQuality::Custom ||
+                                    (dlss_render_.width == base.width && dlss_render_.height == base.height));
+            if (!dlss_.featureReady() || !same_output || !fits || !same_mode) {
+                bool created = false;
+                device_.submitOneTime([&](const vk::raii::CommandBuffer& cmd) {
+                    created = dlss_.createFeature(static_cast<VkCommandBuffer>(*cmd), base.width, base.height,
+                                                  output.width, output.height, user_graphics_.quality, error);
+                });
+                dlss_render_ = created ? base : vk::Extent2D{};
+                dlss_quality_ = user_graphics_.quality;
+                if (!created) {
+                    upscaler_status_ = "DLSS no se pudo crear (" + error + "): se usa TAA";
+                    std::cerr << "[DLSS] " << upscaler_status_ << "\n";
+                }
+            }
+            vendor_upscaler_ = dlss_.featureReady();
+            if (vendor_upscaler_) {
+                upscaler_status_ =
+                    user_graphics_.quality == UpscaleQuality::Native ? "NVIDIA DLAA (DLSS 4, INESTABLE)" : "NVIDIA DLSS 4 (INESTABLE)";
+            }
+        }
+    } else {
+        upscaler_status_.clear();
+    }
+    vendor_output_ = output;
+    taa_history_valid_ = false;
+}
+
+void VulkanRenderer::recordVendorUpscale(const vk::raii::CommandBuffer& cmd) {
+    using Stage = vk::PipelineStageFlagBits2;
+    using Access = vk::AccessFlagBits2;
+    const vk::Extent2D render = render_extent_;
+    const vk::Extent2D output = upscale_target_.extent();
+
+    // 1) Vectores de movimiento completos (el cielo con la camara).
+    pipelineBarrier(cmd, discardToAttachment(*upscaler_motion_.handle()));
+    const core::Mat4 reproject = taa_reproject_;
+    drawFullscreen(cmd, upscaler_motion_pass_, &upscaler_motion_sets_[0], upscaler_motion_, &reproject);
+
+    // 2) Entradas para leer (SHADER_READ_ONLY) y la salida para escribir (GENERAL).
+    const vk::ImageSubresourceRange depth_range{gbuffer_.depth().aspect(), 0, 1, 0, 1};
+    vk::ImageMemoryBarrier2 depth_in{};
+    depth_in.srcStageMask = Stage::eAllCommands;
+    depth_in.srcAccessMask = Access::eMemoryRead | Access::eMemoryWrite;
+    depth_in.dstStageMask = Stage::eAllCommands;
+    depth_in.dstAccessMask = Access::eMemoryRead;
+    depth_in.oldLayout = vk::ImageLayout::eDepthReadOnlyOptimal;
+    depth_in.newLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
+    depth_in.image = *gbuffer_.depth().handle();
+    depth_in.subresourceRange = depth_range;
+    vk::ImageMemoryBarrier2 out_in = colorBarrier(*upscale_target_.handle(), vk::ImageLayout::eUndefined,
+                                                  vk::ImageLayout::eGeneral, Stage::eAllCommands, Access::eNone,
+                                                  Stage::eAllCommands, Access::eMemoryRead | Access::eMemoryWrite);
+    vk::ImageMemoryBarrier2 motion_read = writtenToSampled(*upscaler_motion_.handle());
+    motion_read.dstStageMask = Stage::eAllCommands;
+    pipelineBarrier(cmd, {depth_in, out_in, motion_read});
+
+    UpscaleDispatch d{};
+    d.command_buffer = static_cast<VkCommandBuffer>(*cmd);
+    const auto image = [](const VulkanImage& img, bool depth) {
+        return UpscaleImage{static_cast<VkImage>(*img.handle()), static_cast<VkImageView>(*img.view()),
+                            static_cast<VkFormat>(img.format()), img.extent().width, img.extent().height, depth};
+    };
+    d.color = image(scene_color_, false);
+    d.depth = image(gbuffer_.depth(), true);
+    d.motion = image(upscaler_motion_, false);
+    d.output = image(upscale_target_, false);
+    d.render_width = render.width;
+    d.render_height = render.height;
+    // La imagen se desplazo jitter_ndc * tamano / 2 pixeles (+x derecha, +y abajo).
+    d.jitter_x = jitter_ndc_.x * 0.5f * static_cast<float>(render.width);
+    d.jitter_y = jitter_ndc_.y * 0.5f * static_cast<float>(render.height);
+    d.reset = !taa_history_valid_;
+    d.frame_ms = std::max(frame_delta_seconds_, 0.0001f) * 1000.0f;
+    d.near_plane = camera_near_;
+    d.far_plane = camera_far_;
+    d.fov_y = camera_fov_;
+    const bool ok = graphics_.upscaler == Upscaler::Dlss ? dlss_.evaluate(d) : fsr3_.dispatch(d);
+    (void)output;
+    taa_history_valid_ = ok;
+
+    // 3) La profundidad vuelve a como la leen los demas; la salida, a textura.
+    vk::ImageMemoryBarrier2 depth_back = depth_in;
+    depth_back.oldLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
+    depth_back.newLayout = vk::ImageLayout::eDepthReadOnlyOptimal;
+    depth_back.srcAccessMask = Access::eMemoryRead | Access::eMemoryWrite;
+    vk::ImageMemoryBarrier2 out_back = colorBarrier(*upscale_target_.handle(), vk::ImageLayout::eGeneral,
+                                                    vk::ImageLayout::eShaderReadOnlyOptimal, Stage::eAllCommands,
+                                                    Access::eMemoryWrite, Stage::eFragmentShader | Stage::eComputeShader,
+                                                    Access::eShaderSampledRead);
+    pipelineBarrier(cmd, {depth_back, out_back});
+}
+
 void VulkanRenderer::recordUpscalePass(const vk::raii::CommandBuffer& cmd) {
     const vk::Extent2D render = render_extent_;
     const vk::Extent2D output = upscale_target_.extent();
@@ -5950,7 +6245,9 @@ void VulkanRenderer::recordUpscalePass(const vk::raii::CommandBuffer& cmd) {
     scene_read.dstStageMask |= vk::PipelineStageFlagBits2::eComputeShader;
     pipelineBarrier(cmd, {scene_read, discardToAttachment(*upscale_target_.handle())});
 
-    if (graphics_.upscaler == Upscaler::Fsr1) {
+    if (vendor_upscaler_ && !isolated()) {
+        recordVendorUpscale(cmd);
+    } else if (graphics_.upscaler == Upscaler::Fsr1) {
         // Constantes de FsrEasuCon (ffx_fsr1.h).
         const float in_w = static_cast<float>(render.width);
         const float in_h = static_cast<float>(render.height);
@@ -6338,9 +6635,11 @@ void VulkanRenderer::recordCompositePass(const vk::raii::CommandBuffer& cmd,
     settings.bloom_tint = toVec4(p.bloom_tint, 0.0f);
     settings.lens = Vec4{std::clamp(p.lens_distortion, -1.0f, 1.0f), std::max(p.lens_flare, 0.0f), sun_screen_uv_.x,
                          sun_screen_uv_.y};
+    // Vision nocturna: con exposicion manual, la adaptacion del ojo sale de la
+    // luz del dia (la auto-exposicion la mide en la GPU).
     settings.flare = Vec4{sun_screen_weight_,
-                          static_cast<float>(screen.width) / static_cast<float>(std::max(screen.height, 1u)), 0.0f,
-                          0.0f};
+                          static_cast<float>(screen.width) / static_cast<float>(std::max(screen.height, 1u)),
+                          std::clamp(p.night_vision, 0.0f, 1.0f), 0.01f + 0.3f * last_daylight_};
     composite_buffers_[frame_index].write(&settings, sizeof(settings));
 
     drawFullscreen<GpuBloomPush>(cmd, composite_pass_, &composite_sets_[frame_index], ldr_color_,

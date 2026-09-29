@@ -128,9 +128,11 @@ private:
     std::vector<std::int32_t> spot_slots_;
     std::vector<std::int32_t> point_slots_;
 
-    // Plano cercano de las proyecciones. Pequeno para no recortar lo que esta
-    // pegado a la luz.
-    static constexpr float kNearPlane = 0.05f;
+    // Plano cercano de las proyecciones (el de Unity por defecto): lo que
+    // esta a menos de 20 cm de la luz no proyecta sombra. Con 5 cm, una luz
+    // puesta dentro de su bombilla o de su farola (lo normal) quedaba tapada
+    // por ella y solo alumbraba por las rendijas.
+    static constexpr float kNearPlane = 0.2f;
 
     // Texeles de margen en cada borde de las caras del cubo, para el PCF.
     static constexpr float kPointGuardTexels = 2.0f;

@@ -36,6 +36,7 @@
 #include <CramionCore/input/InputActions.h>
 #include <CramionCore/asset/RenderTextureAsset.h>
 #include "ImGuiLayer.h"
+#include "Terminal.h"
 #include "LuaCompletion.h"
 #include "McpServer.h"
 #include "ModelPreviews.h"
@@ -234,6 +235,18 @@ private:
     bool show_mcp_ = false;
     std::string mcp_error_;
     std::deque<std::string> mcp_log_;
+
+    // --- Terminal integrada (EditorTerminal.cpp, Terminal.h) ---
+    enum class TerminalKind { PowerShell, Cmd, ClaudeCode, Codex, Gemini, InstallClaude };
+    void openTerminal(TerminalKind kind);
+    void drawTerminalWindow();
+    void drawTerminalSession(TerminalSession& session);
+    bool show_terminal_ = false;
+    std::vector<std::unique_ptr<TerminalSession>> terminals_;
+    int terminal_select_ = -1;
+    int terminal_cols_ = 120;
+    int terminal_rows_ = 30;
+    std::string terminal_error_;
 
     // --- Prefabs (EditorPrefabs.cpp) ---
     // El texto de un .crprefab por su UUID (cache; se vacia al refrescar la base).

@@ -251,13 +251,15 @@ void Scene::updateSun(float delta_seconds) {
         lights_.sun.color =
             core::lerp(Vec3{1.0f, 0.50f, 0.25f}, Vec3{1.0f, 0.95f, 0.85f}, high_sun);
     } else {
-        // Luz de luna: fria y tenue, pero suficiente para ver el relieve.
-        lights_.sun.intensity = 0.35f * moon_strength;
-        lights_.sun.color = Vec3{0.55f, 0.65f, 1.00f};
+        // Luz de luna: es luz del sol reflejada (casi blanca, algo fria); el
+        // azul de la noche lo pone la vision nocturna del ojo (composite.frag),
+        // no un color saturado. Tenue, pero deja ver el relieve y las sombras.
+        lights_.sun.intensity = 0.22f * moon_strength;
+        lights_.sun.color = Vec3{0.72f, 0.80f, 1.00f};
     }
 
     // --- Ambiente: cielo azul de dia, anaranjado al ocaso, azul oscuro de noche ---
-    const Vec3 night_ambient{0.10f, 0.13f, 0.26f};
+    const Vec3 night_ambient{0.13f, 0.15f, 0.22f};
     const Vec3 day_ambient{0.45f, 0.58f, 0.78f};
     const Vec3 dusk_ambient{0.70f, 0.45f, 0.35f};
 

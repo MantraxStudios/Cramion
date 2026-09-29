@@ -622,6 +622,7 @@ void EditorApp::drawWorkspacePanels(float delta_seconds) {
         drawScriptFileTree();
     }
     drawMcpWindow();
+    drawTerminalWindow();
     drawBuildConfigsWindow();
     drawTouchInterfaceWindow();
     drawInputActionsWindow();

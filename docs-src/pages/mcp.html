@@ -18,8 +18,23 @@
   <code>CRAMION_MCP_PORT</code> eliges otro.
 </div>
 
+<h3 id="terminal">Terminal integrada (IA sin salir del motor)</h3>
+<p>
+  <strong class="text-white">Ventana &gt; Terminal (IA)</strong> abre consolas de Windows de verdad dentro del editor,
+  con pestañas. El botón <strong class="text-white">Claude Code</strong> lo arranca en la carpeta del proyecto y ya
+  conectado a este editor por MCP (no toca tu configuración global de Claude): le pides "crea una plaza con farolas y
+  que sea de noche" y lo ves hacerlo en la escena. También hay <strong class="text-white">PowerShell</strong> y, en
+  <strong class="text-white">Más...</strong>, CMD, Codex, Gemini CLI e <em>Instalar Claude Code</em>.
+</p>
+<ul>
+  <li>Copiar: selecciona con el ratón y <code>Ctrl+C</code> (sin selección, <code>Ctrl+C</code> interrumpe como en
+    cualquier terminal). Pegar: <code>Ctrl+V</code> o clic derecho.</li>
+  <li>Historial: rueda del ratón o <code>Shift+RePág</code> / <code>Shift+AvPág</code>.</li>
+  <li>Mientras escribes en la terminal los atajos del editor (Supr, W/E/R, Ctrl+S...) no se disparan.</li>
+</ul>
+
 <h3 id="claude-code">Claude Code</h3>
-<p>En una terminal (con el editor abierto):</p>
+<p>En una terminal externa (con el editor abierto):</p>
 <pre><code class="language-bash">claude mcp add --transport http cramion http://127.0.0.1:7777/mcp</code></pre>
 
 <h3 id="cursor">Cursor, VS Code, Windsurf</h3>

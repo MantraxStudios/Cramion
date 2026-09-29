@@ -1018,6 +1018,7 @@ void EditorApp::drawUi(float delta_seconds) {
         if (show_animator_) drawAnimatorEditor();
         if (show_script_editor_ && script_tabs_.empty()) drawScriptEditor();  // los abiertos: su pestana
         drawMcpWindow();
+        drawTerminalWindow();
         drawBuildConfigsWindow();
         drawTouchInterfaceWindow();
         drawInputActionsWindow();
@@ -1325,6 +1326,7 @@ void EditorApp::drawMenuBar() {
         ImGui::MenuItem("Configuración gráfica", nullptr, &show_render_settings_);
         ImGui::MenuItem("Animator", nullptr, &show_animator_);
         ImGui::MenuItem("Scripts (Lua)", nullptr, &show_script_editor_);
+        ImGui::MenuItem("Terminal (IA)", nullptr, &show_terminal_);
         ImGui::MenuItem("MCP (IA)", nullptr, &show_mcp_);
         ImGui::MenuItem("Física", nullptr, &show_physics_);
         ImGui::MenuItem("Navegación", nullptr, &show_navigation_window_);
@@ -1354,6 +1356,7 @@ void EditorApp::drawMenuBar() {
             if (!updateAvailable()) startUpdateCheck(true);
         }
         ImGui::Separator();
+        ImGui::MenuItem("Terminal con IA (Claude Code)...", nullptr, &show_terminal_);
         ImGui::MenuItem("Conectar una IA (MCP)...", nullptr, &show_mcp_);
         ImGui::EndMenu();
     }
@@ -1710,19 +1713,34 @@ void EditorApp::drawGraphicsSettings() {
 
     ImGui::SeparatorText("Escalado y antialiasing");
     static constexpr const char* kUpscalers[] = {"Desactivado (nativa + FXAA)", "TAA (temporal, escala como TAAU)",
-                                                 "AMD FSR 1", "AMD FSR 3 (fase 2)", "NVIDIA DLSS (fase 2)"};
+                                                 "AMD FSR 1", "AMD FSR 3.1 (INESTABLE)",
+                                                 "NVIDIA DLSS 4 (INESTABLE)"};
     ImGui::SetNextItemWidth(-1.0f);
     if (ImGui::BeginCombo("##upscaler", kUpscalers[static_cast<int>(g.upscaler)])) {
         for (int i = 0; i < 5; ++i) {
-            // FSR 3 y DLSS llegan con sus SDK (siguiente fase).
-            const bool available = i <= 2;
+            // FSR 3.1 va en cualquier GPU (con su DLL); DLSS 4, en las RTX.
+            const bool available = i <= 2 || (i == 3 && r.fsr3Supported()) || (i == 4 && r.dlssSupported());
             if (ImGui::Selectable(kUpscalers[i], static_cast<int>(g.upscaler) == i,
                                   available ? 0 : ImGuiSelectableFlags_Disabled)) {
                 g.upscaler = static_cast<gfx::Upscaler>(i);
+                // FSR 3 / DLSS a resolucion nativa solo hacen antialiasing
+                // (cuestan mas que el TAA): al elegirlos, se escala (Calidad).
+                if ((i == 3 || i == 4) && g.quality == gfx::UpscaleQuality::Native) {
+                    g.quality = gfx::UpscaleQuality::Quality;
+                }
                 changed = true;
+            }
+            if (!available && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+                ImGui::SetTooltip(i == 4 ? "DLSS necesita una GPU NVIDIA RTX con un controlador reciente."
+                                         : "Falta amd_fidelityfx_vk.dll junto al editor.");
             }
         }
         ImGui::EndCombo();
+    }
+    if (!r.upscalerStatus().empty()) {
+        const bool fallback = r.activeUpscaler() == gfx::Upscaler::Taa && g.upscaler != gfx::Upscaler::Taa;
+        ImGui::TextColored(fallback ? ImVec4(1.0f, 0.7f, 0.3f, 1.0f) : ImVec4(0.5f, 0.85f, 0.5f, 1.0f), "%s",
+                           r.upscalerStatus().c_str());
     }
     ImGui::BeginDisabled(g.upscaler == gfx::Upscaler::Off);
     static constexpr const char* kQualities[] = {"Nativa (100 %, DLAA)", "Calidad (67 %)", "Equilibrado (58 %)",
@@ -1732,6 +1750,12 @@ void EditorApp::drawGraphicsSettings() {
     if (ImGui::Combo("Resolución", &quality, kQualities, 6)) {
         g.quality = static_cast<gfx::UpscaleQuality>(quality);
         changed = true;
+    }
+    if (g.quality == gfx::UpscaleQuality::Native &&
+        (g.upscaler == gfx::Upscaler::Fsr3 || g.upscaler == gfx::Upscaler::Dlss)) {
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.7f, 0.3f, 1.0f));
+        ImGui::TextWrapped("Nativa = solo antialiasing (DLAA / FSR AA): cuesta FPS. Para ganar FPS usa Calidad o menos.");
+        ImGui::PopStyleColor();
     }
     if (g.quality == gfx::UpscaleQuality::Custom) {
         float percent = g.custom_scale * 100.0f;

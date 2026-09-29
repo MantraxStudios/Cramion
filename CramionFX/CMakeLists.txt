@@ -106,6 +106,76 @@ if(CRAMION_XR AND NOT ANDROID)
     target_compile_options(openxr_loader PRIVATE -w)
 endif()
 
+# --- Escaladores temporales: AMD FSR 3.1 y NVIDIA DLSS 4 ---
+# Solo los archivos que hacen falta de cada SDK (cabeceras, DLL firmadas y
+# licencias), no los repositorios enteros. Se descargan una vez en _deps.
+#   FSR 3.1: FidelityFX SDK 1.1.4 (la ultima con Vulkan), API "ffx" con la DLL
+#            firmada amd_fidelityfx_vk.dll. Se carga en tiempo de ejecucion.
+#   DLSS 4:  DLSS SDK 310.9 (NGX para Vulkan; modelo transformer). Enlaza la
+#            lib estatica de NGX, que carga nvngx_dlss.dll junto al .exe.
+option(CRAMION_FSR3 "AMD FSR 3.1 (FidelityFX)" ON)
+option(CRAMION_DLSS "NVIDIA DLSS 4 (NGX)" ON)
+function(cramion_fetch_files ok_var dest base)
+    set(ok TRUE)
+    foreach(rel IN LISTS ARGN)
+        if(NOT EXISTS "${dest}/${rel}")
+            message(STATUS "Descargando ${rel}")
+            file(DOWNLOAD "${base}/${rel}" "${dest}/${rel}.part" STATUS status TLS_VERIFY ON)
+            list(GET status 0 code)
+            if(code EQUAL 0)
+                file(RENAME "${dest}/${rel}.part" "${dest}/${rel}")
+            else()
+                file(REMOVE "${dest}/${rel}.part")
+                message(WARNING "No se pudo descargar ${base}/${rel}: ${status}")
+                set(ok FALSE)
+            endif()
+        endif()
+    endforeach()
+    set(${ok_var} ${ok} PARENT_SCOPE)
+endfunction()
+
+set(CRAMION_FSR3_READY FALSE)
+set(CRAMION_DLSS_READY FALSE)
+if(WIN32 AND NOT ANDROID)
+    if(CRAMION_FSR3)
+        set(ffx_dir "${CMAKE_BINARY_DIR}/_deps/fidelityfx")
+        cramion_fetch_files(ffx_ok "${ffx_dir}"
+            "https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK/raw/v1.1.4"
+            ffx-api/include/ffx_api/ffx_api.h
+            ffx-api/include/ffx_api/ffx_api_types.h
+            ffx-api/include/ffx_api/ffx_api_loader.h
+            ffx-api/include/ffx_api/ffx_upscale.h
+            ffx-api/include/ffx_api/ffx_framegeneration.h
+            ffx-api/include/ffx_api/vk/ffx_api_vk.h
+            PrebuiltSignedDLL/amd_fidelityfx_vk.dll
+            LICENSE.txt)
+        if(ffx_ok)
+            set(CRAMION_FSR3_READY TRUE)
+            set_property(GLOBAL PROPERTY CRAMIONFX_FSR3_DLL "${ffx_dir}/PrebuiltSignedDLL/amd_fidelityfx_vk.dll")
+            set_property(GLOBAL PROPERTY CRAMIONFX_FSR3_LICENSE "${ffx_dir}/LICENSE.txt")
+        endif()
+    endif()
+    if(CRAMION_DLSS)
+        set(dlss_dir "${CMAKE_BINARY_DIR}/_deps/dlss")
+        set(dlss_headers nvsdk_ngx.h nvsdk_ngx_defs.h nvsdk_ngx_defs_dlssd.h nvsdk_ngx_defs_dlssg.h nvsdk_ngx_defs_vk.h
+            nvsdk_ngx_helpers.h nvsdk_ngx_helpers_vk.h nvsdk_ngx_helpers_dlssd.h nvsdk_ngx_helpers_dlssd_vk.h
+            nvsdk_ngx_helpers_dlssg.h nvsdk_ngx_helpers_dlssg_vk.h nvsdk_ngx_params.h nvsdk_ngx_params_dlssd.h
+            nvsdk_ngx_params_dlssg.h nvsdk_ngx_vk.h)
+        list(TRANSFORM dlss_headers PREPEND "include/")
+        cramion_fetch_files(dlss_ok "${dlss_dir}" "https://github.com/NVIDIA/DLSS/raw/v310.9.1"
+            ${dlss_headers}
+            lib/Windows_x86_64/x64/nvsdk_ngx_d.lib
+            lib/Windows_x86_64/x64/nvsdk_ngx_d_dbg.lib
+            lib/Windows_x86_64/rel/nvngx_dlss.dll
+            LICENSE.txt)
+        if(dlss_ok)
+            set(CRAMION_DLSS_READY TRUE)
+            set_property(GLOBAL PROPERTY CRAMIONFX_DLSS_DLL "${dlss_dir}/lib/Windows_x86_64/rel/nvngx_dlss.dll")
+            set_property(GLOBAL PROPERTY CRAMIONFX_DLSS_LICENSE "${dlss_dir}/LICENSE.txt")
+        endif()
+    endif()
+endif()
+
 # Cabeceros de assimp como SYSTEM: sus avisos no son nuestros.
 set_target_properties(assimp PROPERTIES SYSTEM TRUE)
 
@@ -156,6 +226,17 @@ target_link_libraries(CramionFX
         assimp::assimp
         meshoptimizer
 )
+if(CRAMION_FSR3_READY)
+    target_include_directories(CramionFX SYSTEM PRIVATE "${CMAKE_BINARY_DIR}/_deps/fidelityfx/ffx-api/include")
+    target_compile_definitions(CramionFX PUBLIC CRAMION_FSR3=1)
+endif()
+if(CRAMION_DLSS_READY)
+    set(dlss_lib_dir "${CMAKE_BINARY_DIR}/_deps/dlss/lib/Windows_x86_64/x64")
+    target_include_directories(CramionFX SYSTEM PRIVATE "${CMAKE_BINARY_DIR}/_deps/dlss/include")
+    target_link_libraries(CramionFX PRIVATE
+        "$<IF:$<CONFIG:Debug>,${dlss_lib_dir}/nvsdk_ngx_d_dbg.lib,${dlss_lib_dir}/nvsdk_ngx_d.lib>")
+    target_compile_definitions(CramionFX PUBLIC CRAMION_DLSS=1)
+endif()
 if(TARGET openxr_loader)
     target_link_libraries(CramionFX PRIVATE openxr_loader)
     target_include_directories(CramionFX SYSTEM PRIVATE "${openxr_SOURCE_DIR}/include" "${openxr_BINARY_DIR}/include")
@@ -297,6 +378,16 @@ function(cramionfx_deploy target)
         VERBATIM
     )
     add_dependencies(${target} ${target}_cramionfx_shaders)
+
+    # Los escaladores (FSR 3.1 y DLSS 4) junto al ejecutable.
+    foreach(prop CRAMIONFX_FSR3_DLL CRAMIONFX_DLSS_DLL)
+        get_property(sdk_dll GLOBAL PROPERTY ${prop})
+        if(sdk_dll)
+            add_custom_command(TARGET ${target} POST_BUILD
+                COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${sdk_dll}" "$<TARGET_FILE_DIR:${target}>"
+                VERBATIM)
+        endif()
+    endforeach()
 
     get_property(shaderc_dll GLOBAL PROPERTY CRAMIONFX_SHADERC_DLL)
     if(shaderc_dll)

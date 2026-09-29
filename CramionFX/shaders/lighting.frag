@@ -596,21 +596,94 @@ float hash13(vec3 cell) {
     return fract(sin(dot(cell, vec3(12.9898, 78.233, 45.164))) * 43758.5453);
 }
 
+// Ruido de valor 3D suave (Via Lactea, relieve de la luna).
+float valueNoise(vec3 p) {
+    vec3 i = floor(p);
+    vec3 f = fract(p);
+    f = f * f * (3.0 - 2.0 * f);
+    float n000 = hash13(i), n100 = hash13(i + vec3(1, 0, 0));
+    float n010 = hash13(i + vec3(0, 1, 0)), n110 = hash13(i + vec3(1, 1, 0));
+    float n001 = hash13(i + vec3(0, 0, 1)), n101 = hash13(i + vec3(1, 0, 1));
+    float n011 = hash13(i + vec3(0, 1, 1)), n111 = hash13(i + vec3(1, 1, 1));
+    return mix(mix(mix(n000, n100, f.x), mix(n010, n110, f.x), f.y),
+               mix(mix(n001, n101, f.x), mix(n011, n111, f.x), f.y), f.z);
+}
+
+float fbm(vec3 p) {
+    float sum = 0.0;
+    float amplitude = 0.5;
+    for (int i = 0; i < 5; ++i) {
+        sum += valueNoise(p) * amplitude;
+        p = p * 2.03 + vec3(17.1, 3.7, 9.2);
+        amplitude *= 0.5;
+    }
+    return sum;
+}
+
 // Estrellas: la esfera del cielo se parte en una rejilla y solo unas pocas
-// celdas tienen estrella, con brillo aleatorio. Van fijas a la direccion, asi
-// que no se mueven al desplazarse la camara.
-float starField(vec3 view_direction) {
-    vec3 grid = view_direction * 170.0;
+// celdas tienen estrella. Dos capas: pocas brillantes y muchas tenues (como
+// las magnitudes reales: por cada estrella brillante hay decenas debiles), con
+// el color de su temperatura (azuladas, blancas, amarillas, anaranjadas).
+// Van fijas a la direccion, asi que no se mueven al desplazarse la camara.
+vec3 starLayer(vec3 view_direction, float density, float chance_min, float strength) {
+    vec3 grid = view_direction * density;
     vec3 cell = floor(grid);
     float chance = hash13(cell);
-    if (chance < 0.985) {
-        return 0.0;
-    }
+    if (chance < chance_min) return vec3(0.0);
+    // Posicion dentro de la celda (no todas en el centro).
+    vec3 center = cell + 0.25 + 0.5 * vec3(hash13(cell + 7.1), hash13(cell + 3.3), hash13(cell + 5.7));
+    float falloff = smoothstep(0.32, 0.0, length(grid - center));
+    float magnitude = (chance - chance_min) / (1.0 - chance_min);
+    float brightness = magnitude * magnitude * magnitude * strength;
+    float temperature = hash13(cell + 11.0);
+    vec3 tint = temperature < 0.25 ? vec3(0.75, 0.85, 1.0)
+              : temperature < 0.75 ? vec3(1.0, 0.98, 0.95)
+              : temperature < 0.92 ? vec3(1.0, 0.88, 0.70)
+                                   : vec3(1.0, 0.72, 0.50);
+    return tint * falloff * brightness;
+}
 
-    vec3 center = cell + 0.5;
-    float falloff = smoothstep(0.45, 0.0, length(grid - center));
-    float brightness = (chance - 0.985) / 0.015;
-    return falloff * brightness * brightness;
+vec3 starField(vec3 view_direction) {
+    return starLayer(view_direction, 170.0, 0.985, 1.6) + starLayer(view_direction, 420.0, 0.97, 0.35);
+}
+
+// Via Lactea: una banda tenue a lo largo de un circulo maximo inclinado, con
+// nubes de polvo oscuro (ruido) y el nucleo mas brillante hacia un lado.
+vec3 milkyWay(vec3 view_direction) {
+    const vec3 kGalacticPole = normalize(vec3(0.35, 0.55, -0.76));
+    float band = 1.0 - abs(dot(view_direction, kGalacticPole));
+    band = pow(clamp(band, 0.0, 1.0), 14.0);
+    if (band < 0.002) return vec3(0.0);
+    float clouds = fbm(view_direction * 7.0);
+    float dust = smoothstep(0.35, 0.75, fbm(view_direction * 13.0 + 4.0));
+    const vec3 kCore = normalize(vec3(-0.7, 0.35, 0.62));
+    float core = 0.6 + 0.9 * pow(max(dot(view_direction, kCore), 0.0), 3.0);
+    return vec3(0.85, 0.88, 1.0) * band * clouds * (1.0 - 0.75 * dust) * core * 0.035;
+}
+
+// Luna: disco con los mares oscuros (ruido sobre su superficie), el borde un
+// poco mas oscuro y un halo suave alrededor (la luz dispersada en el aire).
+vec3 moonDisk(vec3 view_direction, vec3 to_moon) {
+    float moon_cos = dot(view_direction, to_moon);
+    const float kMoonCos = 0.99955;  // radio aparente ~1.7 grados (un poco mayor que el real: se lee mejor)
+    vec3 color = vec3(0.0);
+    if (moon_cos > kMoonCos - 0.0002) {
+        // Coordenadas sobre el disco para el relieve.
+        vec3 side = normalize(cross(to_moon, vec3(0.0, 1.0, 0.0) + vec3(1e-4)));
+        vec3 up = cross(side, to_moon);
+        vec2 disk = vec2(dot(view_direction, side), dot(view_direction, up)) / sqrt(1.0 - kMoonCos * kMoonCos);
+        float r2 = dot(disk, disk);
+        float mare = smoothstep(0.45, 0.62, fbm(vec3(disk * 2.2, 3.0)));
+        float craters = fbm(vec3(disk * 9.0, 7.0));
+        float albedo = mix(1.0, 0.55, mare) * (0.85 + 0.3 * craters);
+        float limb = sqrt(max(1.0 - r2, 0.0));
+        float edge = smoothstep(kMoonCos - 0.0002, kMoonCos + 0.0001, moon_cos);
+        color += vec3(0.92, 0.94, 1.0) * albedo * (0.55 + 0.45 * limb) * edge * 0.9;
+    }
+    // Halo (aureola de la bruma).
+    color += vec3(0.05, 0.06, 0.09) * pow(max(moon_cos, 0.0), 400.0);
+    color += vec3(0.015, 0.02, 0.035) * pow(max(moon_cos, 0.0), 30.0);
+    return color;
 }
 
 // Coordenadas de una direccion en la LUT del cielo (ver sky_lut.frag).
@@ -669,15 +742,15 @@ vec3 skyColor(vec3 view_direction, bool celestial) {
                             smoothstep(0.0, 0.35, to_sun.y));
         sky += sun_tint * disk * (0.4 + 0.6 * limb) * kSunDiskRadiance * sun_visible;
 
-        // --- Luna y estrellas ---
-        float moon_cos = dot(view_direction, to_moon);
+        // --- Luna, estrellas y Via Lactea ---
+        // Cerca del horizonte las estrellas se apagan (mas aire delante).
         float moon_visible = smoothstep(-0.05, 0.05, to_moon.y) * night;
-        sky += vec3(0.80, 0.86, 1.00) * smoothstep(0.99935, 0.99955, moon_cos) * 0.6 * moon_visible;
-        sky += vec3(0.02, 0.03, 0.06) * pow(max(moon_cos, 0.0), 48.0) * moon_visible;
-
-        float above_horizon = smoothstep(0.0, 0.12, view_direction.y);
-        sky += vec3(0.9, 0.93, 1.0) * 0.5 * starField(view_direction) * night * night *
-               above_horizon;
+        float above_horizon = smoothstep(0.0, 0.25, view_direction.y);
+        vec3 stars = starField(view_direction) * 0.5 + milkyWay(view_direction);
+        // La luna tapa las estrellas que tiene detras.
+        float behind_moon = smoothstep(0.99945, 0.99955, dot(view_direction, to_moon)) * moon_visible;
+        sky += stars * night * night * above_horizon * (1.0 - behind_moon);
+        sky += moonDisk(view_direction, to_moon) * moon_visible;
     }
 
     return sky;
