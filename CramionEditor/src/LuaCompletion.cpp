@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <map>
 #include <regex>
 #include <set>
 #include <unordered_map>
@@ -332,7 +333,11 @@ const List& entityMethods() {
         fn("setupRagdoll", "", "genera los huesos del ragdoll"), fn("setupPhysBones", "", "detecta pelo, colas, orejas..."),
         fn("addRagdollForce", "Vec3, \"Spine\"", "empujon al ragdoll (en un hueso)"),
         fn("attachToBone", "modelo, \"RightHand\", offset, giro", "sigue a un hueso (Bone Socket)"),
-        fn("detachFromBone", "", "deja de seguir al hueso")};
+        fn("detachFromBone", "", "deja de seguir al hueso"),
+        fn("resetCloth", "", "su tela (Cloth) vuelve a la pose de reposo"),
+        fn("addClothImpulse", "Vec3(0, 0, 3)", "empujon a su tela (m/s a cada particula libre)"),
+        fn("resetSoftBody", "", "su cuerpo blando vuelve a su forma, quieto"),
+        fn("addSoftBodyImpulse", "Vec3(0, 5, 0)", "empujon a su cuerpo blando (m/s a cada particula)")};
     return list;
 }
 const List& vectorMembers(char accessor) {
@@ -426,36 +431,740 @@ void fileSymbols(const std::string& text, List& locals, List& self_fields, List&
     }
     add(self_fields, "entity", "su objeto (Entity)", 3);
 }
+// Mas documentacion: lo que no estaba en las listas de arriba.
+const std::unordered_map<std::string, List>& moreTables() {
+    static const std::unordered_map<std::string, List> map = {
+        {"XR",
+         {fn("isAvailable", "", "hay casco y sesion de VR"), fn("isRunning", "", "el casco esta mostrando el juego"),
+          fn("isFocused", "", "el juego tiene los mandos (sin el menu del sistema encima)"),
+          fn("getSystemName", "", "nombre del casco"), fn("getRuntimeName", "", "runtime de OpenXR (SteamVR, Oculus...)"),
+          fn("getHeadPosition", "", "Vec3 de la cabeza en el mundo (o nil)"),
+          fn("getHeadRotation", "", "Quat de la cabeza en el mundo (o nil)"),
+          fn("getHeadLocalPosition", "", "Vec3 de la cabeza dentro de la habitacion"),
+          fn("isControllerActive", "\"right\"", "el mando esta encendido y se sigue"),
+          fn("getControllerPosition", "\"right\", \"grip\"", "Vec3 de la mano (grip) o del puntero (aim), o nil"),
+          fn("getControllerRotation", "\"right\", \"grip\"", "Quat de la mano o del puntero, o nil"),
+          fn("getAimRay", "\"right\"", "origen, direccion del puntero (para Physics.raycast)"),
+          fn("getTrigger", "\"right\"", "gatillo 0..1"), fn("getGrip", "\"right\"", "agarre 0..1"),
+          fn("getThumbstick", "\"left\"", "Vec3(x, y, 0) del stick, -1..1"),
+          fn("getButton", "\"right\", \"a\"", "boton mantenido: trigger, grip, thumbstick, primary (a/x), secondary (b/y), menu"),
+          fn("getButtonDown", "\"right\", \"trigger\"", "boton pulsado este frame"),
+          fn("getButtonUp", "\"right\", \"trigger\"", "boton soltado este frame"),
+          fn("vibrate", "\"right\", 0.5, 0.1", "vibracion: intensidad 0..1, segundos, hz"),
+          fn("setTrackingOrigin", "\"floor\"", "floor (de pie) o eyes (sentado); con XR Origin manda el componente"),
+          fn("getTrackingOrigin", "", "\"floor\" o \"eyes\""),
+          fn("getOriginPosition", "", "Vec3 del rig (XR Origin o la camara) en el mundo")}},
+        {"Screen",
+         {fn("width", "", "ancho en pixeles"), fn("height", "", "alto en pixeles"),
+          fn("orientation", "", "\"landscape\" o \"portrait\" segun el tamano"),
+          fn("setOrientation", "\"landscape\"", "auto, landscape, portrait, landscape_fixed, portrait_fixed (moviles)"),
+          fn("orientationMode", "", "el ultimo modo pedido")}},
+        {"Input",
+         {fn("getGamepadButton", "\"a\"", "boton del mando mantenido: a, b, x, y, lb, rb, ls, rs, start, back, up, down, left, right"),
+          fn("getGamepadButtonDown", "\"a\"", "pulsado este frame"), fn("getGamepadButtonUp", "\"a\"", "soltado este frame"),
+          fn("getGamepadAxis", "\"leftx\"", "eje del mando: leftx, lefty, rightx, righty, lt, rt"),
+          fn("isGamepadConnected", "", "hay un mando?"), fn("touchCount", "", "dedos en la pantalla"),
+          fn("getTouch", "1", "{id, position, delta, start, phase} de un dedo (1..touchCount)"),
+          fn("isMobile", "", "movil o pantalla tactil"), fn("vibrate", "60", "vibra el movil (ms)"),
+          fn("setTouchControls", "true", "muestra u oculta los controles tactiles"),
+          fn("touchControlsEnabled", "", "estan visibles?"), fn("setTouchJoystick", "true", "joystick tactil"),
+          fn("setTouchLook", "true", "zona para mirar arrastrando"),
+          fn("setTouchButton", "\"Saltar\", true", "muestra u oculta un boton tactil por su texto")}},
+        {"Scene",
+         {fn("findAll", "\"nombre\"", "todos los objetos con ese nombre"), fn("all", "", "todos los objetos de la escena")}},
+    };
+    return map;
+}
+
+const List& quatMembers(char accessor);
+
+// La API que dio el motor (setLuaApiReference).
+std::map<std::string, std::vector<LuaApiMember>>& apiReference() {
+    static std::map<std::string, std::vector<LuaApiMember>> reference;
+    return reference;
+}
+LuaProjectSymbols& project() {
+    static LuaProjectSymbols symbols;
+    return symbols;
+}
+
+// Miembros de un objeto sin documentar: los que da el motor.
+void appendReference(List& to, const std::string& owner, char accessor) {
+    const auto it = apiReference().find(owner);
+    if (it == apiReference().end()) return;
+    std::set<std::string> have;
+    for (const LuaCompletion& c : to) have.insert(c.label);
+    const bool object = !owner.empty() && owner.back() == ':';
+    if (object) {
+        // sol2 guarda en el objeto tambien las propiedades (como funciones) y
+        // lo estatico del tipo (Vec3.up, Mesh.cube): esos no son metodos.
+        const std::string type = owner.substr(0, owner.size() - 1);
+        const List* documented[2] = {nullptr, nullptr};
+        if (type == "Entity") documented[0] = &entityProperties(), documented[1] = &entityMethods();
+        if (type == "Vec3") documented[0] = &vectorMembers('.'), documented[1] = &vectorMembers(':');
+        if (type == "Quat") documented[0] = &quatMembers('.'), documented[1] = &quatMembers(':');
+        if (type == "Mesh") documented[0] = &meshMembers('.'), documented[1] = &meshMembers(':');
+        for (const List* list : documented) {
+            if (list == nullptr) continue;
+            for (const LuaCompletion& c : *list) have.insert(c.label);
+        }
+        if (const auto statics = apiReference().find(type); statics != apiReference().end()) {
+            for (const LuaApiMember& m : statics->second) have.insert(m.name);
+        }
+        for (const char* name : {"new", "copy_from", "forward", "right", "up"}) {
+            if (type != "Quat" || std::string_view(name) == "new") have.insert(name);
+        }
+    }
+    for (const LuaApiMember& m : it->second) {
+        if (have.contains(m.name)) continue;
+        // Con ':' solo metodos; con '.' en un objeto, los campos (y en una tabla, todo).
+        if (object && accessor == ':' && !m.function) continue;
+        if (object && accessor == '.' && m.function) continue;
+        to.push_back(m.function ? LuaCompletion{m.name, m.name + "(", m.name + "(...)  -  API del motor", 2}
+                                : LuaCompletion{m.name, m.name, "API del motor", object ? 3 : 1});
+    }
+}
+
+List tableMembers(const std::string& table) {
+    List out;
+    if (const auto it = tables().find(table); it != tables().end()) out = it->second;
+    if (const auto it = moreTables().find(table); it != moreTables().end()) {
+        std::set<std::string> have;
+        for (const LuaCompletion& c : out) have.insert(c.label);
+        for (const LuaCompletion& c : it->second) {
+            if (!have.contains(c.label)) out.push_back(c);
+        }
+    }
+    appendReference(out, table, '.');
+    return out;
+}
+
+bool isGlobalTable(const std::string& name) {
+    if (tables().contains(name) || moreTables().contains(name)) {
+        return std::isupper(static_cast<unsigned char>(name[0])) || name == "math" || name == "string" || name == "table";
+    }
+    return apiReference().contains(name) && !name.empty() && name.back() != ':';
+}
+
+const List& quatMembers(char accessor) {
+    static const List fields = {prop("x", ""), prop("y", ""), prop("z", ""), prop("w", "")};
+    static const List methods = {fn("normalized", "", "de longitud 1"), fn("inverse", "", "el giro contrario"),
+                                 fn("toEuler", "", "Vec3 en grados"), fn("dot", "otro", ""), fn("angle", "otro", "grados entre los dos"),
+                                 fn("slerp", "otro, t", "interpola"), fn("lerp", "otro, t", "interpola (rapido)"),
+                                 fn("rotateTowards", "otro, grados", "gira como mucho")};
+    return accessor == ':' ? methods : fields;
+}
+
+const List& structFields(const std::string& type) {
+    static const std::unordered_map<std::string, List> map = {
+        {"hit", {prop("entity", "Entity que se toco"), prop("point", "Vec3 punto del choque"), prop("normal", "Vec3 normal"),
+                 prop("distance", "metros")}},
+        {"voxelhit", {prop("block", "Vec3 del bloque"), prop("normal", "Vec3 cara"), prop("id", "numero del bloque"),
+                      prop("point", "Vec3 punto"), prop("distance", "metros")}},
+        {"touch", {prop("id", "dedo"), prop("position", "Vec3 en pixeles"), prop("delta", "Vec3 movimiento"),
+                   prop("start", "Vec3 donde empezo"), prop("phase", "began, moved, stationary, ended")}},
+    };
+    static const List empty;
+    if (const auto it = map.find(type); it != map.end()) return it->second;
+    if (const auto it = tables().find(type); it != tables().end()) return it->second;  // contact, res
+    return empty;
+}
+
+// --- Tipos ---
+// Lo que devuelve cada funcion ("Tabla.funcion" o "Tipo:metodo") o vale cada
+// campo ("Tipo.campo"). "[Entity" = lista de entidades.
+const std::unordered_map<std::string, std::string>& returnTypes() {
+    static const std::unordered_map<std::string, std::string> map = [] {
+        std::unordered_map<std::string, std::string> m;
+        for (const char* f : {"Scene.find", "Scene.create", "Scene.instantiate", "Scene.findWithTag", "Network.spawn",
+                              "Network.find", "Entity:find", "Entity.parent", "hit.entity"}) {
+            m[f] = "Entity";
+        }
+        for (const char* f : {"Scene.findAllWithTag", "Scene.findAll", "Scene.all", "Network.objects"}) m[f] = "[Entity";
+        for (const char* f : {"Vec3.zero", "Vec3.one", "Vec3.up", "Vec3.down", "Vec3.right", "Vec3.left", "Vec3.forward",
+                              "Vec3.back", "Vec3.lerp", "Vec3.lerpUnclamped", "Vec3.slerp", "Vec3.moveTowards", "Vec3.cross",
+                              "Vec3.project", "Vec3.projectOnPlane", "Vec3.reflect", "Vec3.min", "Vec3.max", "Vec3.scale",
+                              "Vec3:normalized", "Vec3:clampLength", "Vec3:cross", "Vec3:lerp", "Vec3:moveTowards", "Vec3:abs",
+                              "Vec3:floor", "Vec3:round", "Vec3:copy", "Quat:toEuler", "Input.mousePosition",
+                              "Input.mouseDelta", "Input.getActionValue", "XR.getHeadPosition", "XR.getHeadLocalPosition",
+                              "XR.getControllerPosition", "XR.getThumbstick", "XR.getOriginPosition",
+                              "Navigation.projectPoint", "Navigation.randomPoint", "Random.onUnitSphere",
+                              "Random.insideUnitSphere", "Random.insideUnitCircle", "Entity:getBonePosition", "Scene.toLocal",
+                              "Entity.position", "Entity.localPosition", "Entity.rotation", "Entity.scale", "Entity.forward",
+                              "Entity.right", "Entity.up", "Entity.velocity", "Entity.angularVelocity", "Entity.navVelocity",
+                              "Entity.uiPosition", "Entity.uiSize", "Entity.color", "hit.point", "hit.normal",
+                              "voxelhit.point", "voxelhit.normal", "voxelhit.block", "contact.point", "contact.normal",
+                              "contact.relativeVelocity", "touch.position", "touch.delta", "touch.start", "Mesh.boundsMin",
+                              "Mesh.boundsMax", "Mesh:getVertex"}) {
+            m[f] = "Vec3";
+        }
+        for (const char* f : {"Quat.identity", "Quat.euler", "Quat.angleAxis", "Quat.lookRotation", "Quat.fromToRotation",
+                              "Quat.slerp", "Quat.lerp", "Quat.rotateTowards", "Quat.inverse", "Quat:normalized",
+                              "Quat:inverse", "Quat:slerp", "Quat:lerp", "Quat:rotateTowards", "Random.rotation",
+                              "XR.getHeadRotation", "XR.getControllerRotation", "Entity:getBoneRotation", "Entity.quaternion"}) {
+            m[f] = "Quat";
+        }
+        for (const char* f : {"Mesh.new", "Mesh.cube", "Mesh.quad", "Mesh.plane", "Mesh.sphere", "Mesh.cylinder",
+                              "Mesh.capsule", "Mesh.wireCube", "Mesh:clone", "Entity.mesh"}) {
+            m[f] = "Mesh";
+        }
+        m["Physics.raycast"] = "hit";
+        m["Voxel.raycast"] = "voxelhit";
+        m["Input.getTouch"] = "touch";
+        return m;
+    }();
+    return map;
+}
+
+// Nombres de parametros habituales (callbacks del motor, funciones de Http...).
+std::string parameterType(const std::string& name) {
+    if (name == "other" || name == "entity" || name == "target" || name == "objetivo" || name == "jugador" ||
+        name == "player" || name == "enemy" || name == "enemigo") {
+        return "Entity";
+    }
+    if (name == "contact") return "contact";
+    if (name == "res" || name == "response") return "res";
+    if (name == "hit") return "hit";
+    if (name == "offset") return "Vec3";
+    return {};
+}
+
+std::string trim(std::string s) {
+    while (!s.empty() && std::isspace(static_cast<unsigned char>(s.back()))) s.pop_back();
+    std::size_t i = 0;
+    while (i < s.size() && std::isspace(static_cast<unsigned char>(s[i]))) ++i;
+    return s.substr(i);
+}
+
+// Una cadena a.b:c(...).d partida en trozos.
+struct Segment {
+    char accessor = 0;  // 0 el primero, '.' o ':'
+    std::string name;
+    bool called = false;
+};
+
+// Lee una cadena desde el principio de `expr`; `end` = donde termina.
+std::vector<Segment> parseChain(const std::string& expr, std::size_t* end = nullptr) {
+    std::vector<Segment> out;
+    std::size_t i = 0;
+    while (i < expr.size() && std::isspace(static_cast<unsigned char>(expr[i]))) ++i;
+    char accessor = 0;
+    while (i < expr.size()) {
+        std::size_t j = i;
+        while (j < expr.size() && identChar(expr[j])) ++j;
+        if (j == i) break;
+        Segment s{accessor, expr.substr(i, j - i), false};
+        i = j;
+        // Argumentos (parentesis equilibrados; "Vec3 {..}" o f"texto" tambien).
+        while (i < expr.size() && std::isspace(static_cast<unsigned char>(expr[i]))) ++i;
+        if (i < expr.size() && (expr[i] == '(' || expr[i] == '{' || expr[i] == '"' || expr[i] == '\'')) {
+            const char open = expr[i];
+            if (open == '"' || open == '\'') {
+                std::size_t k = i + 1;
+                while (k < expr.size() && expr[k] != open) k += expr[k] == '\\' ? 2 : 1;
+                i = std::min(k + 1, expr.size());
+            } else {
+                const char close = open == '(' ? ')' : '}';
+                int depth = 0;
+                char quote = 0;
+                for (; i < expr.size(); ++i) {
+                    const char c = expr[i];
+                    if (quote != 0) {
+                        if (c == '\\') ++i;
+                        else if (c == quote) quote = 0;
+                        continue;
+                    }
+                    if (c == '"' || c == '\'') quote = c;
+                    else if (c == open) ++depth;
+                    else if (c == close && --depth == 0) {
+                        ++i;
+                        break;
+                    }
+                }
+            }
+            s.called = true;
+        }
+        out.push_back(s);
+        // [indice] -> sigue igual (no cambia el tipo que sepamos).
+        while (i < expr.size() && expr[i] == '[') {
+            int depth = 0;
+            for (; i < expr.size(); ++i) {
+                if (expr[i] == '[') ++depth;
+                if (expr[i] == ']' && --depth == 0) {
+                    ++i;
+                    break;
+                }
+            }
+            out.back().name += "[]";
+        }
+        if (i < expr.size() && (expr[i] == '.' || expr[i] == ':')) {
+            accessor = expr[i];
+            ++i;
+            continue;
+        }
+        break;
+    }
+    if (end != nullptr) *end = i;
+    return out;
+}
+
+// Asignaciones del archivo: variable -> expresion (la ultima gana) y los
+// campos de self.
+struct FileTypes {
+    std::unordered_map<std::string, std::string> vars;        // nombre -> expresion
+    std::unordered_map<std::string, std::string> self_fields;  // campo -> expresion
+    std::unordered_map<std::string, std::string> loop_lists;   // variable de un for -> expresion de la lista
+};
+
+FileTypes scanTypes(const std::string& text) {
+    FileTypes t;
+    static const std::regex local_re(R"((?:^|[\s;])(?:local\s+)?([A-Za-z_]\w*)\s*=\s*([^=\n][^\n]*))");
+    static const std::regex self_re(R"(self\.([A-Za-z_]\w*)\s*=\s*([^=\n][^\n]*))");
+    static const std::regex for_re(R"(for\s+[A-Za-z_]\w*\s*,\s*([A-Za-z_]\w*)\s+in\s+i?pairs\s*\(([^\n]*)\)\s*do)");
+    for (std::sregex_iterator it(text.begin(), text.end(), local_re), end; it != end; ++it) {
+        t.vars[(*it)[1]] = (*it)[2];
+    }
+    for (std::sregex_iterator it(text.begin(), text.end(), self_re), end; it != end; ++it) {
+        t.self_fields[(*it)[1]] = (*it)[2];
+    }
+    for (std::sregex_iterator it(text.begin(), text.end(), for_re), end; it != end; ++it) {
+        t.loop_lists[(*it)[1]] = (*it)[2];
+    }
+    // properties = { velocidad = 5, objetivo = Vec3(...) }: tambien son de self.
+    const std::size_t at = text.find("properties");
+    if (at != std::string::npos) {
+        const std::size_t open = text.find('{', at);
+        if (open != std::string::npos) {
+            int depth = 0;
+            std::size_t close = open;
+            for (; close < text.size(); ++close) {
+                if (text[close] == '{') ++depth;
+                if (text[close] == '}' && --depth == 0) break;
+            }
+            const std::string body = text.substr(open + 1, close - open - 1);
+            static const std::regex prop_re(R"(([A-Za-z_]\w*)\s*=\s*([^,\n}]*))");
+            for (std::sregex_iterator it(body.begin(), body.end(), prop_re), end; it != end; ++it) {
+                t.self_fields.emplace((*it)[1], (*it)[2]);
+            }
+        }
+    }
+    return t;
+}
+
+std::string typeOf(const std::string& expr, const FileTypes& file, int depth);
+
+// Tipo de lo que devuelve un trozo sobre un tipo conocido.
+std::string stepType(const std::string& type, const Segment& s) {
+    if (type.empty()) return {};
+    if (type[0] == '@') {  // tabla global
+        const std::string table = type.substr(1);
+        if (table == "Vec3" && s.called && s.accessor == 0) return "Vec3";
+        const auto it = returnTypes().find(table + "." + s.name);
+        return it != returnTypes().end() ? it->second : std::string();
+    }
+    if (type[0] == '[') return s.name.ends_with("[]") ? type.substr(1) : std::string();
+    const std::string key = type + (s.accessor == ':' ? ":" : ".") + s.name;
+    if (const auto it = returnTypes().find(key); it != returnTypes().end()) return it->second;
+    return {};
+}
+
+std::string typeOfChain(const std::vector<Segment>& chain, const FileTypes& file, int depth) {
+    if (chain.empty() || depth > 6) return {};
+    const Segment& first = chain[0];
+    std::string type;
+    std::size_t next = 1;
+    std::string name = first.name;
+    bool indexed = false;
+    if (name.ends_with("[]")) {
+        name = name.substr(0, name.find('['));
+        indexed = true;
+    }
+    if (name == "Vec3" && first.called) {
+        type = "Vec3";
+    } else if (name == "Quat" && first.called) {
+        type = "Quat";
+    } else if (name == "self") {
+        if (chain.size() >= 2 && chain[1].accessor == '.') {
+            next = 2;
+            if (chain[1].name == "entity") {
+                type = "Entity";
+            } else if (const auto it = file.self_fields.find(chain[1].name); it != file.self_fields.end()) {
+                type = typeOf(it->second, file, depth + 1);
+            }
+        } else {
+            type = "self";
+        }
+    } else if (isGlobalTable(name)) {
+        type = "@" + name;
+    } else if (const auto it = file.vars.find(name); it != file.vars.end()) {
+        type = typeOf(it->second, file, depth + 1);
+        if (type.empty()) type = parameterType(name);
+    } else if (const auto loop = file.loop_lists.find(name); loop != file.loop_lists.end()) {
+        const std::string list = typeOf(loop->second, file, depth + 1);
+        type = !list.empty() && list[0] == '[' ? list.substr(1) : std::string();
+    } else {
+        type = parameterType(name);
+    }
+    if (indexed) type = !type.empty() && type[0] == '[' ? type.substr(1) : std::string();
+    for (std::size_t i = next; i < chain.size() && !type.empty(); ++i) {
+        Segment s = chain[i];
+        const bool idx = s.name.ends_with("[]");
+        if (idx) s.name = s.name.substr(0, s.name.find('['));
+        type = stepType(type, s);
+        if (idx) type = !type.empty() && type[0] == '[' ? type.substr(1) : std::string();
+    }
+    return type;
+}
+
+std::string typeOf(const std::string& raw, const FileTypes& file, int depth) {
+    std::string expr = trim(raw);
+    // "a or b": el de a.
+    if (const std::size_t sep = expr.find(" or "); sep != std::string::npos) expr = expr.substr(0, sep);
+    if (expr.rfind("not ", 0) == 0) return {};
+    std::size_t end = 0;
+    const std::vector<Segment> chain = parseChain(expr, &end);
+    std::string type = typeOfChain(chain, file, depth);
+    // "a + b", "v * 2": con un Vec3 delante (o un numero por un Vec3) sale Vec3.
+    const std::string rest = trim(expr.substr(std::min(end, expr.size())));
+    if (!rest.empty() && (rest[0] == '+' || rest[0] == '-' || rest[0] == '*' || rest[0] == '/')) {
+        if (type == "Vec3") return "Vec3";
+        if (type == "Quat" && rest[0] == '*') {
+            const std::string right = typeOf(rest.substr(1), file, depth + 1);
+            return right == "Vec3" ? "Vec3" : "Quat";
+        }
+        const std::string right = typeOf(rest.substr(1), file, depth + 1);
+        return right == "Vec3" ? "Vec3" : std::string();
+    }
+    if (!rest.empty() && rest[0] != ')' && rest[0] != ',' && rest[0] != ';' && rest.rfind("--", 0) != 0) return {};
+    if (chain.empty()) {
+        if (!expr.empty() && (expr[0] == '"' || expr[0] == '\'')) return "string";
+    }
+    return type;
+}
+
+// Miembros de un tipo con '.' o ':'.
+List typeMembers(const std::string& type, char accessor, const List& self_fields, const List& self_methods) {
+    List out;
+    const auto append = [&](const List& list) { out.insert(out.end(), list.begin(), list.end()); };
+    if (type == "self") {
+        append(accessor == ':' ? self_methods : self_fields);
+        if (accessor == ':') append(engineCallbacks());
+    } else if (type == "Entity") {
+        append(accessor == ':' ? entityMethods() : entityProperties());
+        appendReference(out, "Entity:", accessor);
+    } else if (type == "Vec3") {
+        append(vectorMembers(accessor));
+        appendReference(out, "Vec3:", accessor);
+    } else if (type == "Quat") {
+        append(quatMembers(accessor));
+        appendReference(out, "Quat:", accessor);
+    } else if (type == "Mesh") {
+        append(meshMembers(accessor));
+        appendReference(out, "Mesh:", accessor);
+    } else if (!type.empty() && type[0] == '@') {
+        out = tableMembers(type.substr(1));
+    } else if (accessor == '.') {
+        append(structFields(type));
+    }
+    return out;
+}
+
+// --- Textos: lo del proyecto segun la funcion y el argumento ---
+List values(const std::vector<std::string>& names, const char* detail) {
+    List out;
+    out.reserve(names.size());
+    for (const std::string& n : names) out.push_back(LuaCompletion{n, n, detail, 6});
+    return out;
+}
+
+List stringValues(const LuaCompletionContext& c, const std::string& text) {
+    const LuaProjectSymbols& p = project();
+    const std::string& f = c.call;
+    const int a = c.argument;
+    const auto is = [&](std::initializer_list<const char*> names) {
+        for (const char* n : names) {
+            if (f == n) return true;
+        }
+        return false;
+    };
+    static const std::vector<std::string> kAxes = {"Horizontal", "Vertical", "Mouse X", "Mouse Y"};
+    static const std::vector<std::string> kHands = {"left", "right"};
+    static const std::vector<std::string> kXrButtons = {"trigger", "grip", "thumbstick", "primary", "secondary", "menu",
+                                                        "a", "b", "x", "y"};
+    static const std::vector<std::string> kPadButtons = {"a", "b", "x", "y", "lb", "rb", "ls", "rs", "start", "back",
+                                                         "up", "down", "left", "right"};
+    static const std::vector<std::string> kPadAxes = {"leftx", "lefty", "rightx", "righty", "lt", "rt"};
+    static const std::vector<std::string> kEvents = {"started", "ongoing", "triggered", "completed", "canceled"};
+    static const std::vector<std::string> kForces = {"force", "impulse", "acceleration", "velocity"};
+    static const std::vector<std::string> kEffects = {"lowpass", "highpass", "echo", "reverb", "occlusion"};
+    static const std::vector<std::string> kOrientations = {"auto", "landscape", "portrait", "landscape_fixed", "portrait_fixed"};
+    static const std::vector<std::string> kQualities = {"Baja", "Media", "Alta", "Ultra"};
+
+    if (is({"Input.getKey", "Input.getKeyDown", "Input.getKeyUp"})) return values(p.keys, "tecla");
+    if (f == "Input.getAxis") {
+        List out = values(kAxes, "eje");
+        const List more = values(p.actions, "accion (Input Actions)");
+        out.insert(out.end(), more.begin(), more.end());
+        return out;
+    }
+    if (is({"Input.getAction", "Input.getActionValue", "Input.getActionState", "Input.isActionTriggered",
+            "Input.wasActionStarted", "Input.wasActionCompleted", "Input.wasActionCanceled", "Input.getActionElapsed",
+            "Input.getBindings"}) ||
+        (f == "Input.bindAction" && a == 0) || (f == "Input.rebind" && a == 1)) {
+        return values(p.actions, "accion (Archivo > Entrada del proyecto)");
+    }
+    if (f == "Input.bindAction" && a == 1) return values(kEvents, "evento");
+    if (is({"Input.addMappingContext", "Input.removeMappingContext", "Input.hasMappingContext"}) ||
+        (f == "Input.rebind" && a == 0)) {
+        return values(p.contexts, "contexto de entrada");
+    }
+    if (f == "Input.rebind" && a == 3) return values(p.input_sources, "tecla, boton o eje");
+    if (is({"Input.getGamepadButton", "Input.getGamepadButtonDown", "Input.getGamepadButtonUp"})) {
+        return values(kPadButtons, "boton del mando");
+    }
+    if (f == "Input.getGamepadAxis") return values(kPadAxes, "eje del mando");
+    if (is({"Scene.find", "Scene.findAll", "Entity:find"})) return values(p.entities, "objeto de la escena");
+    if (is({"Scene.findWithTag", "Scene.findAllWithTag", "Entity:compareTag"})) return values(p.tags, "tag");
+    if (is({"Scene.load", "Network.loadScene"})) return values(p.scenes, "escena");
+    if ((f == "Scene.instantiate" && a == 0) || (f == "Network.spawn" && a == 0)) return values(p.prefabs, "prefab");
+    if (f == "Audio.playOneShot" && a == 0) return values(p.audio, "sonido");
+    if (is({"Entity:addComponent", "Entity:removeComponent", "Entity:hasComponent", "Entity:getFields"}) ||
+        (is({"Entity:getField", "Entity:setField"}) && a == 0)) {
+        List out;
+        for (const LuaProjectSymbols::Component& comp : p.components) {
+            out.push_back(LuaCompletion{comp.name, comp.name, comp.label, 6});
+        }
+        return out;
+    }
+    if (is({"Entity:getField", "Entity:setField"}) && a == 1) {
+        List out;
+        for (const LuaProjectSymbols::Component& comp : p.components) {
+            if (comp.name != c.first_argument) continue;
+            for (const auto& [key, detail] : comp.fields) out.push_back(LuaCompletion{key, key, detail, 6});
+        }
+        return out;
+    }
+    if (f == "Entity:setMaterial" && a == 1) return values(p.materials, "material");
+    if (f == "Entity:addForce" && a == 1) return values(kForces, "modo de la fuerza");
+    if (f == "Entity:setSoundEffect" && a == 0) return values(kEffects, "efecto de sonido");
+    if (f.rfind("XR.", 0) == 0) {
+        if (a == 0 && f != "XR.setTrackingOrigin") return values(kHands, "mano");
+        if (a == 0) return values({"floor", "eyes"}, "origen del seguimiento");
+        if (a == 1 && (f == "XR.getButton" || f == "XR.getButtonDown" || f == "XR.getButtonUp")) {
+            return values(kXrButtons, "boton del mando VR");
+        }
+        if (a == 1 && (f == "XR.getControllerPosition" || f == "XR.getControllerRotation")) {
+            return values({"grip", "aim"}, "grip = la mano, aim = el puntero");
+        }
+    }
+    if (f == "Screen.setOrientation") return values(kOrientations, "orientacion");
+    if (f == "Graphics.setQuality") return values(kQualities, "calidad");
+    if ((f == "Graphics.set" || f == "Graphics.get") && a == 0) {
+        List out;
+        for (const LuaCompletion& item : tables().at("Graphics")) {
+            if (item.kind == 3 && item.label != "post") out.push_back(LuaCompletion{item.label, item.label, item.detail, 6});
+        }
+        return out;
+    }
+    // Claves de Prefs y mensajes de red: las que ya usa el archivo.
+    const auto used = [&](const char* pattern, const char* detail) {
+        std::set<std::string> found;
+        const std::regex re(pattern);
+        for (std::sregex_iterator it(text.begin(), text.end(), re), end; it != end; ++it) found.insert((*it)[1]);
+        return values(std::vector<std::string>(found.begin(), found.end()), detail);
+    };
+    if (f.rfind("Prefs.", 0) == 0 && a == 0) return used(R"(Prefs\.\w+\(\s*["']([^"']+)["'])", "clave usada en el script");
+    if (is({"Network.send", "Network.on", "Network.off"}) && a == 0) {
+        return used(R"(Network\.(?:send|on|off)\(\s*["']([^"']+)["'])", "mensaje usado en el script");
+    }
+    return {};
+}
+
+// Receptor antes de un '.' o ':' en `end`: cadena con llamadas y corchetes.
+std::size_t receiverStart(const std::string& text, std::size_t end) {
+    std::size_t r = end;
+    while (r > 0) {
+        const char c = text[r - 1];
+        if (identChar(c) || c == '.' || c == ':') {
+            --r;
+            continue;
+        }
+        if (c == ')' || c == ']') {
+            const char open = c == ')' ? '(' : '[';
+            int depth = 0;
+            std::size_t k = r;
+            while (k > 0) {
+                --k;
+                if (text[k] == c) ++depth;
+                else if (text[k] == open && --depth == 0) break;
+            }
+            if (depth != 0) break;
+            r = k;
+            continue;
+        }
+        break;
+    }
+    // Un ':' suelto delante (a::b no es Lua) o un punto inicial no cuentan.
+    while (r < end && (text[r] == '.' || text[r] == ':')) ++r;
+    return r;
+}
+
+// La llamada que contiene `pos` (el '(' sin cerrar mas cercano): donde esta
+// y en que argumento va.
+bool enclosingCall(const std::string& text, std::size_t pos, std::size_t& open, int& argument) {
+    int depth = 0;
+    argument = 0;
+    std::size_t line_breaks = 0;
+    for (std::size_t i = pos; i > 0; --i) {
+        const char c = text[i - 1];
+        if (c == '\n' && ++line_breaks > 8) return false;
+        if (c == '"' || c == '\'') {  // salta el texto hacia atras
+            std::size_t k = i - 1;
+            while (k > 0 && !(text[k - 1] == c && (k < 2 || text[k - 2] != '\\'))) --k;
+            if (k == 0) return false;
+            i = k;
+            continue;
+        }
+        if (c == ')' || c == '}' || c == ']') ++depth;
+        else if (c == '(' || c == '{' || c == '[') {
+            if (depth == 0) {
+                if (c != '(') return false;
+                open = i - 1;
+                return true;
+            }
+            --depth;
+        } else if (c == ',' && depth == 0) {
+            ++argument;
+        }
+    }
+    return false;
+}
+
+// "Input.getKey" / "Entity:getField" de la llamada que abre en `open`.
+std::string calleeName(const std::string& text, std::size_t open, const FileTypes& file) {
+    std::size_t end = open;
+    while (end > 0 && std::isspace(static_cast<unsigned char>(text[end - 1]))) --end;
+    const std::size_t start = receiverStart(text, end);
+    const std::string chain_text = text.substr(start, end - start);
+    std::vector<Segment> chain = parseChain(chain_text);
+    if (chain.empty()) return {};
+    const Segment last = chain.back();
+    if (chain.size() == 1) return last.name;
+    chain.pop_back();
+    std::string type = typeOfChain(chain, file, 0);
+    if (!type.empty() && type[0] == '@') return type.substr(1) + "." + last.name;
+    // Metodo de un objeto que no se sabe que es: si es de entidad, se toma como entidad.
+    if (type.empty() && last.accessor == ':') type = "Entity";
+    if (type.empty() && chain.size() == 1 && chain[0].name == "Vec3") type = "@Vec3";
+    return type.empty() ? std::string() : type + (last.accessor == ':' ? ":" : ".") + last.name;
+}
+
+const LuaCompletion* findDoc(const std::string& callee) {
+    const std::size_t sep = callee.find_first_of(".:");
+    if (sep == std::string::npos) {
+        for (const LuaCompletion& c : globals()) {
+            if (c.label == callee) return &c;
+        }
+        return nullptr;
+    }
+    const std::string owner = callee.substr(0, sep);
+    const std::string name = callee.substr(sep + 1);
+    const auto search = [&](const List& list) -> const LuaCompletion* {
+        for (const LuaCompletion& c : list) {
+            if (c.label == name) return &c;
+        }
+        return nullptr;
+    };
+    if (owner == "Entity") return search(callee[sep] == ':' ? entityMethods() : entityProperties());
+    if (owner == "Vec3" && callee[sep] == ':') return search(vectorMembers(':'));
+    if (owner == "Quat" && callee[sep] == ':') return search(quatMembers(':'));
+    if (owner == "Mesh" && callee[sep] == ':') return search(meshMembers(':'));
+    if (const auto it = tables().find(owner); it != tables().end()) {
+        if (const LuaCompletion* c = search(it->second)) return c;
+    }
+    if (const auto it = moreTables().find(owner); it != moreTables().end()) return search(it->second);
+    return nullptr;
+}
 
 }  // namespace
 
+void setLuaApiReference(const std::map<std::string, std::vector<LuaApiMember>>& reference) { apiReference() = reference; }
+
+void setLuaProjectSymbols(LuaProjectSymbols symbols) { project() = std::move(symbols); }
+
+bool luaIsApiName(std::string_view word) {
+    if (word.empty()) return false;
+    const std::string w(word);
+    if (w == "self" || tables().contains(w) || moreTables().contains(w)) return true;
+    for (const LuaCompletion& c : globals()) {
+        if (c.label == w) return true;
+    }
+    const auto it = apiReference().find("");
+    if (it == apiReference().end()) return false;
+    return std::any_of(it->second.begin(), it->second.end(), [&](const LuaApiMember& m) { return m.name == w; });
+}
+
 bool luaCompletionContext(const std::string& text, std::size_t cursor, LuaCompletionContext& context) {
     cursor = std::min(cursor, text.size());
-    // Dentro de un comentario o un texto no se completa.
+    context = LuaCompletionContext{};
     std::size_t line_start = text.rfind('\n', cursor == 0 ? 0 : cursor - 1);
     line_start = line_start == std::string::npos ? 0 : line_start + 1;
+    if (cursor == 0) line_start = 0;
     const std::string line = text.substr(line_start, cursor - line_start);
-    if (line.find("--") != std::string::npos) return false;
-    if (std::count(line.begin(), line.end(), '"') % 2 == 1 || std::count(line.begin(), line.end(), '\'') % 2 == 1) {
-        return false;
+    // Comentario: nada. (Un "--" dentro de un texto no cuenta.)
+    char quote = 0;
+    std::size_t quote_at = 0;
+    for (std::size_t i = 0; i < line.size(); ++i) {
+        const char c = line[i];
+        if (quote != 0) {
+            if (c == '\\') ++i;
+            else if (c == quote) quote = 0;
+            continue;
+        }
+        if (c == '-' && i + 1 < line.size() && line[i + 1] == '-') return false;
+        if (c == '"' || c == '\'') {
+            quote = c;
+            quote_at = i;
+        }
+    }
+    if (quote != 0) {
+        // Dentro de un texto: solo si es argumento de una llamada que sabemos completar.
+        const std::size_t string_start = line_start + quote_at;
+        std::size_t open = 0;
+        int argument = 0;
+        if (!enclosingCall(text, string_start, open, argument)) return false;
+        const FileTypes file = scanTypes(text);
+        context.call = calleeName(text, open, file);
+        if (context.call.empty()) return false;
+        context.in_string = true;
+        context.argument = argument;
+        context.prefix_start = string_start + 1;
+        context.prefix = text.substr(context.prefix_start, cursor - context.prefix_start);
+        // El primer argumento (para getField: el componente).
+        std::size_t i = open + 1;
+        while (i < text.size() && std::isspace(static_cast<unsigned char>(text[i]))) ++i;
+        if (i < text.size() && (text[i] == '"' || text[i] == '\'')) {
+            const std::size_t close = text.find(text[i], i + 1);
+            if (close != std::string::npos) context.first_argument = text.substr(i + 1, close - i - 1);
+        }
+        return true;
     }
     std::size_t start = cursor;
     while (start > 0 && identChar(text[start - 1])) --start;
-    context = LuaCompletionContext{};
     context.prefix_start = start;
     context.prefix = text.substr(start, cursor - start);
     if (!context.prefix.empty() && std::isdigit(static_cast<unsigned char>(context.prefix[0]))) return false;
     if (start > 0 && (text[start - 1] == '.' || text[start - 1] == ':')) {
+        // ".." (concatenar) no es un acceso.
+        if (text[start - 1] == '.' && start > 1 && text[start - 2] == '.') return !context.prefix.empty();
         context.accessor = text[start - 1];
-        // Receptor: la cadena a.b.c antes del punto.
-        std::size_t r = start - 1;
-        while (r > 0 && (identChar(text[r - 1]) || text[r - 1] == '.')) --r;
+        const std::size_t r = receiverStart(text, start - 1);
         context.receiver = text.substr(r, start - 1 - r);
+        if (context.receiver.empty()) return false;
         // "function Clase:" -> metodos del motor.
-        const std::string before = text.substr(line_start, r - line_start);
-        std::string trimmed = before;
-        while (!trimmed.empty() && std::isspace(static_cast<unsigned char>(trimmed.back()))) trimmed.pop_back();
-        context.after_function = trimmed.size() >= 8 && trimmed.compare(trimmed.size() - 8, 8, "function") == 0;
+        std::string before = text.substr(line_start, r - line_start);
+        while (!before.empty() && std::isspace(static_cast<unsigned char>(before.back()))) before.pop_back();
+        context.after_function = before.size() >= 8 && before.compare(before.size() - 8, 8, "function") == 0;
         return true;
     }
     return !context.prefix.empty();
@@ -466,40 +1175,49 @@ std::vector<LuaCompletion> luaCompletions(const std::string& text, const LuaComp
     List locals;
     List self_fields;
     List self_methods;
-    fileSymbols(text, locals, self_fields, self_methods);
     const auto append = [&](const List& list) { candidates.insert(candidates.end(), list.begin(), list.end()); };
 
-    if (context.accessor != 0) {
-        const std::string& r = context.receiver;
-        const auto table = tables().find(r);
-        if (context.after_function) {
-            append(engineCallbacks());
-        } else if (table != tables().end()) {
-            append(table->second);
-        } else if (r == "self") {
-            append(context.accessor == ':' ? self_methods : self_fields);
-            if (context.accessor == ':') append(engineCallbacks());
-        } else {
-            // Entidad (self.entity, other, lo que devuelve Scene.find...) o Vec3.
-            const std::string low = lower(r);
-            const bool looks_vector = low.find("pos") != std::string::npos || low.find("dir") != std::string::npos ||
-                                      low.find("vel") != std::string::npos || low.find("vec") != std::string::npos ||
-                                      low == "v" || low.find("point") != std::string::npos ||
-                                      low.find("normal") != std::string::npos;
-            const bool looks_mesh = low.find("mesh") != std::string::npos || low.find("malla") != std::string::npos;
-            if (looks_mesh) {
-                append(meshMembers(context.accessor));
-            } else if (looks_vector) {
-                append(vectorMembers(context.accessor));
-            } else {
-                append(context.accessor == ':' ? entityMethods() : entityProperties());
-                append(vectorMembers(context.accessor));
-            }
-        }
+    if (context.in_string) {
+        append(stringValues(context, text));
     } else {
-        append(locals);
-        append(globals());
-        append(keywords());
+        fileSymbols(text, locals, self_fields, self_methods);
+        if (context.accessor != 0) {
+            const FileTypes file = scanTypes(text);
+            const std::string type = typeOf(context.receiver, file, 0);
+            if (context.after_function) {
+                append(engineCallbacks());
+            } else if (!type.empty()) {
+                append(typeMembers(type, context.accessor, self_fields, self_methods));
+            } else {
+                // No se sabe que es: por el nombre (posiciones, mallas) o una entidad.
+                const std::string low = lower(context.receiver);
+                const bool looks_vector = low.find("pos") != std::string::npos || low.find("dir") != std::string::npos ||
+                                          low.find("vel") != std::string::npos || low.find("vec") != std::string::npos ||
+                                          low == "v" || low.find("point") != std::string::npos ||
+                                          low.find("normal") != std::string::npos;
+                const bool looks_mesh = low.find("mesh") != std::string::npos || low.find("malla") != std::string::npos;
+                if (looks_mesh) {
+                    append(typeMembers("Mesh", context.accessor, self_fields, self_methods));
+                } else if (looks_vector) {
+                    append(typeMembers("Vec3", context.accessor, self_fields, self_methods));
+                } else {
+                    append(typeMembers("Entity", context.accessor, self_fields, self_methods));
+                    append(vectorMembers(context.accessor));
+                }
+            }
+        } else {
+            append(locals);
+            append(globals());
+            // Las tablas y funciones globales del motor sin documentar aqui.
+            List more;
+            for (const auto& [name, list] : moreTables()) {
+                (void)list;
+                more.push_back(LuaCompletion{name, name, "tabla del motor", 1});
+            }
+            appendReference(more, "", '.');
+            append(more);
+            append(keywords());
+        }
     }
 
     // Filtro: empieza igual (primero) o contiene el texto; sin repetir.
@@ -509,18 +1227,39 @@ std::vector<LuaCompletion> luaCompletions(const std::string& text, const LuaComp
     std::set<std::string> seen;
     for (const LuaCompletion& c : candidates) {
         const std::string label = lower(c.label);
-        if (label == needle && context.accessor == 0) continue;  // ya esta escrito entero
+        if (label == needle && context.accessor == 0 && !context.in_string) continue;  // ya esta escrito entero
         if (!seen.insert(c.label).second) continue;
         if (label.rfind(needle, 0) == 0) {
             starts.push_back(c);
-        } else if (needle.size() >= 2 && label.find(needle) != std::string::npos) {
+        } else if (!needle.empty() && label.find(needle) != std::string::npos) {
             contains.push_back(c);
         }
     }
     const auto by_label = [](const LuaCompletion& a, const LuaCompletion& b) { return a.label < b.label; };
-    if (context.accessor == 0) std::stable_sort(starts.begin(), starts.end(), by_label);
+    if (context.accessor == 0 && !context.in_string) std::stable_sort(starts.begin(), starts.end(), by_label);
     starts.insert(starts.end(), contains.begin(), contains.end());
     return starts;
+}
+
+bool luaSignatureAt(const std::string& text, std::size_t cursor, LuaSignature& signature) {
+    cursor = std::min(cursor, text.size());
+    std::size_t open = 0;
+    int argument = 0;
+    if (!enclosingCall(text, cursor, open, argument)) return false;
+    const FileTypes file = scanTypes(text);
+    const std::string callee = calleeName(text, open, file);
+    if (callee.empty()) return false;
+    const LuaCompletion* doc = findDoc(callee);
+    if (doc == nullptr || doc->kind != 2) return false;
+    const std::size_t sep = doc->detail.find("  -  ");
+    signature.label = callee.substr(0, callee.find_last_of(".:") + 1) + doc->detail.substr(0, sep);
+    signature.detail = sep == std::string::npos ? std::string() : doc->detail.substr(sep + 5);
+    signature.argument = argument;
+    return true;
+}
+
+std::string luaExpressionType(const std::string& text, const std::string& expression) {
+    return typeOf(expression, scanTypes(text), 0);
 }
 
 }  // namespace cramion::editor

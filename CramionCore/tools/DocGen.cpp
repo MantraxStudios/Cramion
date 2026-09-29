@@ -10,6 +10,7 @@
 // hay que ejecutar docs-src/build_manual.py.
 
 #include <CramionCore/CramionCore.h>
+#include <CramionCore/xr/XrRig.h>
 
 #include <cstdio>
 #include <fstream>
@@ -327,6 +328,8 @@ const std::vector<Page>& pages() {
         {"componentes-navegacion", "Navegacion", {"Navegacion"}, "Volumenes de navmesh, modificadores y agentes."},
         {"componentes-ui", "Interfaz (UI)", {"UI"}, "Canvas, rectangulos, imagenes, textos, botones, sliders, casillas y campos."},
         {"componentes-scripting", "Scripts y prefabs", {"Scripting", "Prefab"}, "El componente Script y los que usan los prefabs."},
+        {"componentes-vr", "Realidad virtual", {"Realidad virtual"},
+         "XR Origin (el suelo de la habitacion, con la camara que sigue al casco) y los mandos (XR Controller)."},
     };
     return kPages;
 }
@@ -387,6 +390,7 @@ int main(int argc, char** argv) {
     audio::registerAudioComponents();
     scripting::registerScriptComponents();
     ui::registerUiComponents();
+    xr::registerXrComponents();
     const std::vector<ecs::ComponentType>& types = ecs::ComponentRegistry::instance().types();
 
     // Indice: todos los componentes por pagina.

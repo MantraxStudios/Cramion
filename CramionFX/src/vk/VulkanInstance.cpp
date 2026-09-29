@@ -119,8 +119,7 @@ std::vector<const char*> VulkanInstance::selectExtensions(const std::vector<std:
     // Las de OpenXR (el runtime del casco).
     for (const std::string& name : extra) {
         if (!has(name.c_str())) {
-            std::cerr << "[Vulkan] OpenXR pide " << name << " y no esta disponible
-";
+            std::cerr << "[Vulkan] OpenXR pide " << name << " y no esta disponible\n";
             continue;
         }
         if (std::none_of(extensions.begin(), extensions.end(), [&](const char* e) { return name == e; })) {

@@ -22,3 +22,16 @@ return Hola   -- obligatorio: el script debe devolver su tabla</code></pre>
         <strong class="text-white">Importante:</strong> el archivo tiene que terminar con <code>return &lt;tabla&gt;</code>.
         Si no, la consola mostrará <em>"el script debe terminar con 'return &lt;su tabla&gt;'"</em>.
       </div>
+
+      <h3 id="intellisense">El editor de scripts e IntelliSense</h3>
+      <p>
+        Doble clic en un <code>.lua</code> lo abre en el editor integrado. Mientras escribes (o con <kbd>Ctrl+Espacio</kbd>)
+        sale el autocompletado, con la firma y la descripción de cada función:
+      </p>
+      <ul>
+        <li><strong>Toda la API del motor</strong>: se la pide al propio motor al abrir el editor, así que sale todo lo que existe (<code>Input</code>, <code>XR</code>, <code>Screen</code>, <code>Graphics</code>, <code>Network</code>...).</li>
+        <li><strong>Sabe qué es cada cosa</strong>: <code>self.entity</code>, <code>other</code> o <code>Scene.find(...)</code> son entidades; <code>.position</code> o <code>Vec3(...)</code> un <code>Vec3</code>; <code>Quat.euler(...)</code> un <code>Quat</code>; <code>Physics.raycast(...)</code> un choque con <code>entity</code>, <code>point</code>... Y lo sigue por tus variables: tras <code>local p = self.entity.position</code>, <code>p.</code> ofrece <code>x</code>, <code>y</code>, <code>z</code> y <code>p:</code> <code>normalized</code>, <code>length</code>...</li>
+        <li><strong>Dentro de los textos, lo de tu proyecto</strong>: componentes (<code>addComponent("</code>) y sus campos (<code>getField("Light", "</code>), acciones y contextos de <a href="input-actions.html">Input Actions</a>, teclas, tags, objetos de la escena (<code>Scene.find("</code>), escenas, prefabs, sonidos, materiales y las manos y botones de VR.</li>
+        <li>Tus variables, funciones y propiedades, y los métodos que llama el motor tras <code>function MiScript:</code>.</li>
+        <li><strong>Firma</strong>: dentro de los paréntesis de una llamada se ve encima del cursor, con el argumento que estás escribiendo resaltado.</li>
+      </ul>

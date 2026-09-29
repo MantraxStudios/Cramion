@@ -245,6 +245,13 @@ void EditorApp::drawBuildConfigsWindow() {
     ImGui::Dummy(ImVec2(label_w - ImGui::GetStyle().ItemSpacing.x, 0.0f));
     ImGui::SameLine(label_w);
     changed |= ImGui::Checkbox("Mostrar FPS (desarrollo)", &c.show_fps);
+    if (c.platform == BuildPlatform::Windows) {
+        ImGui::Dummy(ImVec2(label_w - ImGui::GetStyle().ItemSpacing.x, 0.0f));
+        ImGui::SameLine(label_w);
+        changed |= ImGui::Checkbox("Realidad virtual (OpenXR)", &c.vr);
+        ImGui::SetItemTooltip("El juego se ve en el casco (SteamVR, Meta Quest Link, WMR...) si hay uno conectado;\n"
+                              "la ventana hace de espejo. Sin casco se juega normal. Ver Manual > Realidad virtual.");
+    }
 
     ImGui::Separator();
     const bool is_active = build_config_selected_ == build_configs_.active;

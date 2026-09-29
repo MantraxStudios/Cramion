@@ -5,6 +5,11 @@
 #include "CramionCore/ecs/World.h"
 #include "CramionCore/input/InputActions.h"
 #include "CramionCore/scripting/Scripting.h"
+#include "CramionCore/xr/XrRig.h"
+
+// windows.h (por Vulkan) define near/far.
+#undef near
+#undef far
 
 #include <CramionDM/Input.h>
 
@@ -226,6 +231,70 @@ return J
     scripts.stop();
 }
 
+// Mandos de VR (OpenXR): fuentes "XR ...", las acciones por defecto y la
+// tabla XR de Lua sin casco.
+void testXr() {
+    std::printf("Mandos de VR\n");
+    check(input::parseSource("XR Right Trigger").kind == input::SourceKind::XrAxis, "XR Right Trigger es un eje");
+    check(input::parseSource("xr left stick").kind == input::SourceKind::XrStick &&
+              input::parseSource("xr left stick").dimension == input::ValueType::Axis2D,
+          "XR Left Stick es Vec2");
+    check(input::parseSource("XR Right Primary").kind == input::SourceKind::XrButton, "XR Right Primary es un boton");
+    input::InputMapper m;
+    m.setSettings(input::defaultInputActions());
+    m.resetContexts();
+    dm::Input in;
+    in.setXrAxis(dm::XrAxis::LeftStickX, 1.0f);
+    in.setXrAxis(dm::XrAxis::RightTrigger, 1.0f);
+    in.setXrButton(dm::XrButton::RightPrimary, true);
+    check(input::pressedSourceName(in) == "XR Right Trigger" || input::pressedSourceName(in) == "XR Right Primary",
+          "pulsar un mando VR sale en pressedSourceName");
+    frame(m, in);
+    const input::ActionState* move = m.state("Move");
+    check(move != nullptr && move->value.x > 0.9f && near(move->value.y, 0.0f), "stick izquierdo -> Move");
+    check(m.state("Fire") != nullptr && m.state("Fire")->state == input::TriggerState::Triggered, "gatillo derecho -> Fire");
+    check(m.state("Jump") != nullptr && (m.state("Jump")->events & input::EventStarted), "A -> Jump");
+
+    const std::filesystem::path root = std::filesystem::temp_directory_path() / "cramion_input_xr";
+    std::filesystem::create_directories(root / "Scripts");
+    std::ofstream(root / "Scripts" / "Vr.lua", std::ios::binary) << R"(
+local V = {}
+function V:Update(dt)
+    self.entity.name = string.format("%s,%s,%s,%s", tostring(XR.isAvailable()), tostring(XR.getButton("right", "a")),
+        tostring(XR.getButtonDown("right", "primary")), tostring(XR.getHeadPosition()))
+end
+return V
+)";
+    ecs::World world;
+    scripting::registerScriptComponents();
+    ecs::Entity e = world.create("x");
+    e.add<scripting::Script>().file = "Scripts/Vr.lua";
+    scripting::ScriptSystem scripts;
+    scripts.setAssetsRoot(root);
+    dm::Input lua_in;
+    scripts.setInput(&lua_in);
+    scripts.start(world);
+    lua_in.setXrButton(dm::XrButton::RightPrimary, true);
+    scripts.update(world, 0.016f);
+    check(e.name() == "false,true,true,nil", "XR en Lua sin casco: botones por Input, sin poses");
+    scripts.stop();
+
+    // XR Origin desde Lua: de pie <-> sentado con getField/setField.
+    xr::registerXrComponents();
+    ecs::Entity rig = world.create("XR Origin");
+    rig.add<xr::XrOrigin>();
+    std::string out;
+    scripts.run("local o = Scene.find('XR Origin')\n"
+                "local antes = o:getField('XrOrigin', 'tracking')\n"
+                "o:setField('XrOrigin', 'tracking', 'Sentado')\n"
+                "o:setField('XrOrigin', 'camera_y_offset', 1.2)\n"
+                "print(antes .. ',' .. o:getField('XrOrigin', 'tracking'))",
+                &out, &world);
+    const xr::XrOrigin& o = rig.get<xr::XrOrigin>();
+    check(o.tracking == xr::TrackingOrigin::Eyes, "XrOrigin: setField('tracking', 'Sentado')");
+    check(near(o.camera_y_offset, 1.2f), "XrOrigin: setField('camera_y_offset')");
+}
+
 }  // namespace
 
 int main() {
@@ -234,6 +303,7 @@ int main() {
     testContexts();
     testJson();
     testLua();
+    testXr();
     std::printf("\n%d/%d comprobaciones correctas\n", checks - failures, checks);
     return failures == 0 ? 0 : 1;
 }

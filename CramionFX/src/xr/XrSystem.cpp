@@ -128,6 +128,7 @@ struct XrSystem::Impl {
     // Frame.
     XrFrameState frame_state{XR_TYPE_FRAME_STATE};
     bool frame_begun = false;
+    XrSpace frame_space = XR_NULL_HANDLE;  // el de las vistas de este frame (la capa va en el mismo)
     std::array<XrView, 2> views{};
     std::array<EyeView, 2> eye_views{};
     Pose head;
@@ -431,7 +432,7 @@ struct XrSystem::Impl {
                 v.subImage.imageRect.extent = {static_cast<std::int32_t>(extent.width), static_cast<std::int32_t>(extent.height)};
                 v.subImage.imageArrayIndex = 0;
             }
-            layer.space = appSpace();
+            layer.space = frame_space != XR_NULL_HANDLE ? frame_space : appSpace();
             layer.viewCount = 2;
             layer.views = projection_views.data();
         }
@@ -706,12 +707,13 @@ bool XrSystem::beginFrame() {
     XrFrameBeginInfo begin{XR_TYPE_FRAME_BEGIN_INFO};
     if (!d.ok(xrBeginFrame(d.session, &begin), "xrBeginFrame")) return false;
     d.frame_begun = true;
+    d.frame_space = d.appSpace();
 
     const XrTime time = d.frame_state.predictedDisplayTime;
     XrViewLocateInfo locate{XR_TYPE_VIEW_LOCATE_INFO};
     locate.viewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
     locate.displayTime = time;
-    locate.space = d.appSpace();
+    locate.space = d.frame_space;
     XrViewState view_state{XR_TYPE_VIEW_STATE};
     std::uint32_t count = 0;
     for (XrView& v : d.views) v = XrView{XR_TYPE_VIEW};

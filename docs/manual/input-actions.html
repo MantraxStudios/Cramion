@@ -75,6 +75,7 @@
         <a href="componentes-navegacion.html">Navegación</a>
         <a href="componentes-ui.html">Interfaz (UI)</a>
         <a href="componentes-scripting.html">Scripts y prefabs</a>
+        <a href="componentes-vr.html">Realidad virtual</a>
         <p class="group">Referencia de la API</p>
         <a href="vec3.html">Vec3</a>
         <a href="quat.html">Quat (rotaciones)</a>
@@ -84,6 +85,7 @@
         <a href="scene.html">Scene</a>
         <a href="input.html">Input</a>
         <a href="input-actions.html" class="active">Input Actions</a>
+        <a href="realidad-virtual.html">Realidad virtual (XR)</a>
         <a href="time.html">Time</a>
         <a href="physics.html">Physics</a>
         <a href="navegacion.html">Navegación</a>
@@ -143,13 +145,13 @@
       <table>
         <thead><tr><th>Acción</th><th>Tipo</th><th>Teclas (contexto <code>Default</code>)</th></tr></thead>
         <tbody>
-          <tr><td><code>Move</code></td><td>Axis2D (Vec2)</td><td>W/A/S/D, flechas, stick izquierdo, cruceta, joystick táctil. <code>x</code> derecha, <code>y</code> adelante.</td></tr>
-          <tr><td><code>Look</code></td><td>Axis2D (Vec2)</td><td>Ratón (o arrastrar el dedo) y stick derecho. Misma escala que <code>getAxis("Mouse X")</code>.</td></tr>
-          <tr><td><code>Jump</code></td><td>Bool</td><td>Space, mando A.</td></tr>
-          <tr><td><code>Sprint</code></td><td>Bool</td><td>LeftShift, mando LS.</td></tr>
-          <tr><td><code>Fire</code></td><td>Bool</td><td>Clic izquierdo, gatillo RT.</td></tr>
-          <tr><td><code>Aim</code></td><td>Bool</td><td>Clic derecho, gatillo LT.</td></tr>
-          <tr><td><code>Interact</code></td><td>Bool (trigger Pressed)</td><td>E, mando X.</td></tr>
+          <tr><td><code>Move</code></td><td>Axis2D (Vec2)</td><td>W/A/S/D, flechas, stick izquierdo, cruceta, joystick táctil, stick izquierdo de VR. <code>x</code> derecha, <code>y</code> adelante.</td></tr>
+          <tr><td><code>Look</code></td><td>Axis2D (Vec2)</td><td>Ratón (o arrastrar el dedo), stick derecho y stick derecho de VR (solo girar). Misma escala que <code>getAxis("Mouse X")</code>.</td></tr>
+          <tr><td><code>Jump</code></td><td>Bool</td><td>Space, mando A, VR A (derecha).</td></tr>
+          <tr><td><code>Sprint</code></td><td>Bool</td><td>LeftShift, mando LS, pulsar el stick izquierdo de VR.</td></tr>
+          <tr><td><code>Fire</code></td><td>Bool</td><td>Clic izquierdo, gatillo RT, gatillo derecho de VR.</td></tr>
+          <tr><td><code>Aim</code></td><td>Bool</td><td>Clic derecho, gatillo LT, gatillo izquierdo de VR.</td></tr>
+          <tr><td><code>Interact</code></td><td>Bool (trigger Pressed)</td><td>E, mando X, agarre derecho de VR.</td></tr>
           <tr><td><code>Zoom</code></td><td>Axis1D (float)</td><td>Rueda del ratón, RB (+) / LB (−).</td></tr>
           <tr><td><code>Fly</code></td><td>Axis3D (Vec3)</td><td>Contexto <code>Vuelo</code> (prioridad 1, inactivo al empezar): W/S → z, D/A → x, E/Q → y, stick izquierdo, RB/LB.</td></tr>
         </tbody>
@@ -179,6 +181,7 @@
           <tr><td>Ratón</td><td><code>"Mouse Left"</code>, <code>"Mouse Right"</code>, <code>"Mouse Middle"</code>, <code>"Mouse X1"</code>, <code>"Mouse X2"</code>; ejes <code>"Mouse X"</code>, <code>"Mouse Y"</code> (positivo hacia arriba), <code>"Mouse XY"</code> (2D, píxeles del frame) y <code>"Mouse Wheel"</code></td></tr>
           <tr><td>Mando</td><td><code>"Gamepad A"</code>, <code>"Gamepad B"</code>, <code>"Gamepad X"</code>, <code>"Gamepad Y"</code>, <code>"Gamepad LB"</code>, <code>"Gamepad RB"</code>, <code>"Gamepad LS"</code>, <code>"Gamepad RS"</code>, <code>"Gamepad Start"</code>, <code>"Gamepad Back"</code>, <code>"Gamepad DPad Up/Down/Left/Right"</code>; ejes <code>"Gamepad LT"</code>, <code>"Gamepad RT"</code>, <code>"Gamepad Left X/Y"</code>, <code>"Gamepad Right X/Y"</code>; sticks 2D <code>"Gamepad Left Stick"</code>, <code>"Gamepad Right Stick"</code></td></tr>
           <tr><td>Táctil</td><td><code>"Touch Stick"</code> (2D, el joystick en pantalla). Los botones táctiles pulsan teclas, así que se asignan con su tecla.</td></tr>
+          <tr><td>Realidad virtual</td><td>Sticks 2D <code>"XR Left Stick"</code>, <code>"XR Right Stick"</code> (o el trackpad del Vive); ejes <code>"XR Left Trigger"</code>, <code>"XR Right Trigger"</code>, <code>"XR Left Grip"</code>, <code>"XR Right Grip"</code> (0..1), <code>"XR Left Stick X/Y"</code>, <code>"XR Right Stick X/Y"</code>; botones <code>"XR Left Primary"</code> / <code>"XR Right Primary"</code> (X / A), <code>"XR Left Secondary"</code> / <code>"XR Right Secondary"</code> (Y / B), <code>"XR Left Stick Click"</code>, <code>"XR Left Menu"</code>, <code>"XR Right Trigger Click"</code>, <code>"XR Right Grip Click"</code>... Ver <a href="realidad-virtual.html">Realidad virtual</a>.</td></tr>
         </tbody>
       </table>
       <p>No distinguen mayúsculas ni espacios (<code>"gamepad left stick"</code> vale).</p>
@@ -329,7 +332,7 @@ end</code></pre>
         se pueden mezclar con las acciones.
       </p>
       </div>
-      <nav class="pager"><a href="input.html"><span>← anterior</span><b>Input</b></a><a class="next" href="time.html"><span>siguiente →</span><b>Time</b></a></nav>
+      <nav class="pager"><a href="input.html"><span>← anterior</span><b>Input</b></a><a class="next" href="realidad-virtual.html"><span>siguiente →</span><b>Realidad virtual (XR)</b></a></nav>
       <p class="help">¿Algo no queda claro o falta algo? Pregunta en el
         <a href="https://discord.gg/zG7rSsUGEz" target="_blank" rel="noopener">Discord</a>.</p>
     </main>

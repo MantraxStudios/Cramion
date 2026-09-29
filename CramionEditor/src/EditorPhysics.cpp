@@ -186,6 +186,13 @@ void EditorApp::enterPlay() {
         scripts_.setSceneName(std::string(stem.begin(), stem.end()));
     }
     scripts_.start(world_);
+    // VR: el casco marca el ritmo (xrWaitFrame); la ventana sin vsync
+    // (play_graphics_ lo devuelve al parar).
+    if (renderer_.xrAvailable()) {
+        gfx::GraphicsSettings g = renderer_.graphicsSettings();
+        g.vsync = false;
+        renderer_.setGraphicsSettings(g);
+    }
     cinematics_.reset();
     cinematics_.clearPreview();
     timeline_playing_ = false;
@@ -215,6 +222,7 @@ void EditorApp::exitPlay() {
     nav_.resetAgents();  // la malla se queda (el mundo vuelve con los mismos UUID)
     stopVoxels();        // guarda el mundo con nombre; editando vuelve la vista previa
     play_state_ = PlayState::Edit;
+    xr_rig_.reset();
     collider_handle_drag_ = 0;
     // El mundo vuelve a como estaba al darle a Play (la seleccion va por UUID).
     const ecs::DVec3 origin_before = world_.origin();

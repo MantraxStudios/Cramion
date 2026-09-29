@@ -61,6 +61,8 @@ int main(int argc, char** argv) {
 #else
             .enable_validation = true,
 #endif
+            // Editar > Play en realidad virtual (con casco conectado).
+            .enable_xr = editor::xrPlayPreference(),
         };
         {
             // Logo y % de shaders compilados mientras arranca Vulkan.
@@ -139,6 +141,7 @@ int main(int argc, char** argv) {
             const auto frame_start = FrameClock::now();
             const float delta_seconds = clock.tick();
             window.pumpEvents();
+            app.beginXrFrame(input);  // en Play con casco: poses y botones de los mandos
 
             // Si la ventana cambio de tamano, las imagenes nuevas se crean
             // ANTES de construir la interfaz (la vista apunta a la del render).
@@ -165,7 +168,9 @@ int main(int argc, char** argv) {
                 app.afterRender();
             }
             app.syncWorld(delta_seconds);
+            app.renderXrEyes();
             renderer.drawFrame(scene);
+            app.endXrFrame();
             app.afterRender();
             app.setRenderCpuTime(std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() -
                                                                             render_start)

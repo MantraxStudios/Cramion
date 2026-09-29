@@ -1,5 +1,36 @@
 # Cambios
 
+## 1.2.0
+
+### Input Actions (como el Enhanced Input de Unreal)
+- **Archivo > Entrada del proyecto**: acciones con tipo de valor **Bool, Axis1D (float), Axis2D (Vec2) y Axis3D (Vec3)** y **varios contextos** (configuraciones) que asignan a cada acción muchas teclas, botones del ratón, del mando, sticks o el joystick táctil. Se guarda en `ProjectSettings/InputActions.json`.
+- **Modificadores** por tecla y por acción: Negate, Swizzle (YXZ, ZYX, XZY...), Dead Zone (radial o por eje) y Scale. **Triggers**: Down, Pressed, Released, Hold, Hold And Release, Tap, Pulse y Chord, con eventos started / ongoing / triggered / completed / canceled.
+- Contextos con **prioridad**: el de más prioridad se queda las teclas compartidas. Se activan y quitan en el juego.
+- Pestaña **Depurar** en Play con el valor y el estado de cada acción; botón para asignar una tecla pulsándola.
+- Lua: `Input.getAction`, `Input.getActionState`, `Input.isActionTriggered`, `Input.wasActionStarted/Completed/Canceled`, `Input.bindAction`, `Input.addMappingContext`, `Input.removeMappingContext`, `Input.rebind`, `Input.saveBindings`, `Input.resetBindings`, `Input.getBindings`, `Input.anyKeyPressed` (menú de opciones de controles).
+- Configuración por defecto: Move, Look, Jump, Sprint, Fire, Aim, Interact, Zoom (contexto Default) y Fly (contexto Vuelo). Manual: *Input Actions*.
+
+### Realidad virtual (OpenXR)
+- **Juegos en VR con cualquier casco de PC** por OpenXR: SteamVR (Index, Vive, Pico), Meta Quest por Link/Air Link, Windows Mixed Reality, Varjo... Cada ojo con todo el render del motor; la ventana hace de espejo. Sin casco, el juego arranca normal.
+- **Configuraciones de compilación > Realidad virtual (OpenXR)** para el juego exportado y **Editar > Play en realidad virtual** para probar en el editor.
+- **XR Origin** y **XR Controller** (como en Unity): *GameObject > Realidad virtual > XR Origin* crea el rig con la cámara (la mueve el casco) y las dos manos. Origen de seguimiento suelo (de pie) u ojos (sentado). Sin rig, cualquier escena se ve en VR desde su cámara principal.
+- Los mandos en **Input Actions** (`XR Left Stick`, `XR Right Trigger`, `XR Right Primary`...), ya puestos en las acciones por defecto: un juego hecho con acciones funciona en VR sin tocar código. Perfiles: Meta Touch, Index, Vive, WMR y el genérico.
+- Lua: tabla **`XR`** con cabeza, mandos (mano y puntero), `getAimRay`, gatillo, agarre, stick, botones, `vibrate`, origen de seguimiento. Manual: *Realidad virtual (XR)*.
+
+### Telas (Cloth)
+- Componente **Tela (Cloth)**: simulacion de tela con los soft bodies de Jolt. Cuelga, se arruga, ondea con **viento y rachas** y **choca con colliders y rigidbodies** (y los empuja). Particulas fijadas a la entidad (borde de arriba, esquinas, borde izquierdo, centro) que la siguen al moverla; rigidez, resistencia a doblarse, masa, friccion, grosor e iteraciones.
+- Se dibuja con el skinning por GPU (una particula = un hueso): material .crmat del Mesh Renderer o color propio, doble cara, sombras, motion blur y culling con la caja real de la tela.
+- *GameObject > Fisica > Tela: cortina / bandera / sabana que cae*. Lua: `entity:resetCloth()`, `entity:addClothImpulse(Vec3)` y los campos con `setField("Cloth", ...)`.
+
+### Cuerpos blandos (gelatina)
+- Componente **Cuerpo blando (gelatina)** (`SoftBody`): esfera o cubo blando simulado con Jolt, con **presion interna** que conserva el volumen. Cae, rebota, se aplasta, tiembla y vuelve a su forma; choca con colliders y rigidbodies y los empuja. Firmeza, presion, frenado, rebote, friccion, masa y resolucion.
+- La entidad sigue al centro del cuerpo (scripts y camaras). Se dibuja con el skinning por GPU como las telas, con el .crmat del Mesh Renderer o su color.
+- *GameObject > Fisica > Cuerpo blando: gelatina (cubo) / pelota*. Lua: `entity:addSoftBodyImpulse(Vec3)`, `entity:resetSoftBody()` y `setField("SoftBody", ...)`.
+
+### Editor de scripts
+- **IntelliSense completo**: la API sale del propio motor (todas las tablas y funciones, también `XR` y `Screen`), sabe el tipo de cada expresión (entidades, `Vec3`, `Quat`, mallas, choques de `Physics.raycast`) y lo sigue por las variables del script, y dentro de los textos sugiere lo del proyecto: componentes y sus campos, acciones y contextos de entrada, teclas, tags, objetos, escenas, prefabs, sonidos, materiales y botones de VR. Firma de la función con el argumento actual resaltado.
+- Corregido el **temblor al escribir**: el texto coloreado se dibujaba un frame tarde respecto al cursor; el scroll ya no salta al añadir líneas al final y el cursor no parpadea mientras escribes.
+
 ## 1.0.0
 
 ### Android
@@ -20,14 +51,6 @@
 - Los botones de la interfaz (Canvas) tienen prioridad sobre el joystick.
 - Botón **Táctil** en la vista Juego: se prueban en Play con el ratón como dedo.
 - Lua: `Input.setTouchControls`, `Input.setTouchButton(texto, visible)`, `Input.setTouchJoystick`, `Input.setTouchLook`, `Input.touchCount`, `Input.getTouch`, `Input.isMobile`, `Input.vibrate`.
-
-### Input Actions (como el Enhanced Input de Unreal)
-- **Archivo > Entrada del proyecto**: acciones con tipo de valor **Bool, Axis1D (float), Axis2D (Vec2) y Axis3D (Vec3)** y **varios contextos** (configuraciones) que asignan a cada acción muchas teclas, botones del ratón, del mando, sticks o el joystick táctil. Se guarda en `ProjectSettings/InputActions.json`.
-- **Modificadores** por tecla y por acción: Negate, Swizzle (YXZ, ZYX, XZY...), Dead Zone (radial o por eje) y Scale. **Triggers**: Down, Pressed, Released, Hold, Hold And Release, Tap, Pulse y Chord, con eventos started / ongoing / triggered / completed / canceled.
-- Contextos con **prioridad**: el de más prioridad se queda las teclas compartidas. Se activan y quitan en el juego.
-- Pestaña **Depurar** en Play con el valor y el estado de cada acción; botón para asignar una tecla pulsándola.
-- Lua: `Input.getAction`, `Input.getActionState`, `Input.isActionTriggered`, `Input.wasActionStarted/Completed/Canceled`, `Input.bindAction`, `Input.addMappingContext`, `Input.removeMappingContext`, `Input.rebind`, `Input.saveBindings`, `Input.resetBindings`, `Input.getBindings`, `Input.anyKeyPressed` (menú de opciones de controles).
-- Configuración por defecto: Move, Look, Jump, Sprint, Fire, Aim, Interact, Zoom (contexto Default) y Fly (contexto Vuelo). Manual: *Input Actions*.
 
 ### Mando y pantalla
 - **Mando** (Bluetooth o USB en Android): `Input.getGamepadButton`, `Input.getGamepadAxis`, `Input.isGamepadConnected`; el stick izquierdo y la cruceta mueven `Horizontal`/`Vertical` y el derecho mira.

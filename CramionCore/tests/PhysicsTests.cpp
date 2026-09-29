@@ -5,8 +5,13 @@
 // Devuelve 0 si todo va.
 
 #include "CramionCore/ecs/Components.h"
+#include "CramionCore/ecs/MathUtil.h"
+
+#include <CramionFX/asset/Model.h>
 #include "CramionCore/ecs/SceneSerializer.h"
 #include "CramionCore/ecs/World.h"
+#include "CramionCore/physics/Cloth.h"
+#include "CramionCore/physics/SoftBody.h"
 #include "CramionCore/physics/Particles.h"
 #include "CramionCore/physics/PhysicsComponents.h"
 #include "CramionCore/physics/PhysicsSystem.h"
@@ -404,6 +409,182 @@ void testSerialization() {
     std::filesystem::remove(file);
 }
 
+// Tela (soft body de Jolt): una sabana cae sobre una caja y se queda encima
+// (no la atraviesa) con los bordes colgando; una cortina fijada sigue a su
+// entidad; el viento empuja una bandera; resetCloth la devuelve a su sitio.
+void testCloth() {
+    std::printf("Tela\n");
+    {
+        ecs::World world;
+        ecs::Entity box = world.create("Caja");
+        box.add<BoxCollider>().size = Vec3{1.0f, 1.0f, 1.0f};  // arriba en y = 0.5
+        ecs::Entity sheet = world.create("Sabana");
+        Cloth& cloth = sheet.add<Cloth>();
+        cloth.pin = ClothPin::None;
+        cloth.width = cloth.height = 2.0f;
+        cloth.segments_x = cloth.segments_y = 16;
+        cloth.bending = 0.05f;
+        sheet.setLocalEulerDegrees(Vec3{-90.0f, 0.0f, 0.0f});  // tumbada
+        sheet.setLocalPosition(Vec3{0.0f, 1.5f, 0.0f});
+        PhysicsSystem physics;
+        physics.start(world);
+        for (int i = 0; i < 180; ++i) physics.update(world, 1.0f / 60.0f);
+        const auto& rt = sheet.get<Cloth>().runtime.ptr;
+        check(rt && rt->simulated && rt->positions.size() == 17u * 17u, "la tela se simula (17x17 particulas)");
+        if (rt && rt->positions.size() == 17u * 17u) {
+            const Vec3 middle = rt->positions[8 * 17 + 8];
+            const Vec3 corner = rt->positions[0];
+            check(middle.y > 0.45f && middle.y < 0.7f, "el centro queda encima de la caja (no la atraviesa)");
+            check(corner.y < 0.2f, "las esquinas cuelgan por los lados");
+        }
+        physics.stop();
+    }
+    {
+        ecs::World world;
+        ecs::Entity curtain = world.create("Cortina");
+        Cloth& cloth = curtain.add<Cloth>();
+        cloth.pin = ClothPin::TopEdge;
+        curtain.setLocalPosition(Vec3{0.0f, 3.0f, 0.0f});
+        PhysicsSystem physics;
+        physics.start(world);
+        for (int i = 0; i < 30; ++i) physics.update(world, 1.0f / 60.0f);
+        // Se lleva 2 m a la derecha en un segundo y se deja quieta.
+        for (int i = 1; i <= 60; ++i) {
+            curtain.setLocalPosition(Vec3{2.0f * static_cast<float>(i) / 60.0f, 3.0f, 0.0f});
+            physics.update(world, 1.0f / 60.0f);
+        }
+        for (int i = 0; i < 240; ++i) physics.update(world, 1.0f / 60.0f);
+        const auto& rt = curtain.get<Cloth>().runtime.ptr;
+        const int nx = cloth.particlesX();
+        const Vec3 top_left = rt->positions[0];
+        check(std::abs(top_left.x - (2.0f - 1.0f)) < 0.05f && std::abs(top_left.y - 4.0f) < 0.05f,
+              "las particulas fijadas siguen a la entidad");
+        const Vec3 bottom = rt->positions[static_cast<std::size_t>(cloth.particleCount() - nx / 2 - 1)];
+        check(bottom.y < 2.2f && bottom.y > 1.5f, "la cortina cuelga sin estirarse de mas");
+
+        // Viento: la bandera se va hacia +Z.
+        cloth.wind = Vec3{0.0f, 0.0f, 10.0f};
+        for (int i = 0; i < 120; ++i) physics.update(world, 1.0f / 60.0f);
+        check(rt->positions[static_cast<std::size_t>(cloth.particleCount() - nx / 2 - 1)].z > 0.3f, "el viento la empuja");
+
+        rt->reset_requested = true;
+        cloth.wind = Vec3{};
+        physics.update(world, 1.0f / 60.0f);
+        physics.update(world, 1.0f / 60.0f);
+        check(std::abs(rt->positions[static_cast<std::size_t>(cloth.particleCount() - 1)].z) < 0.1f, "resetCloth la devuelve a su sitio");
+        physics.stop();
+        check(!rt->simulated, "al parar, sin simulacion");
+    }
+    {
+        // Render: cada vertice de la rejilla (skinning, un hueso por
+        // particula) cae en su particula y la normal sigue a la tela, con la
+        // entidad movida y girada.
+        Cloth cloth;
+        cloth.segments_x = cloth.segments_y = 4;
+        const asset::ModelData model = clothModel(cloth);
+        check(model.vertices.size() == 2u * 25u && model.bones.size() == 25u, "modelo: doble cara y un hueso por particula");
+        ecs::World world;
+        ecs::Entity e = world.create("Tela");
+        e.setLocalPosition(Vec3{5.0f, 1.0f, -2.0f});
+        e.setLocalEulerDegrees(Vec3{0.0f, 90.0f, 0.0f});
+        const core::Mat4 entity_world = e.worldMatrix();
+        // Tela doblada: la mitad de abajo hacia +X del mundo.
+        std::vector<Vec3> positions = clothRestPositions(cloth);
+        for (Vec3& p : positions) {
+            p = ecs::transformPoint(entity_world, p);
+            if (p.y < 1.0f) p.x += (1.0f - p.y);
+        }
+        std::vector<core::Mat4> globals;
+        clothBoneGlobals(cloth, entity_world, positions, globals);
+        float worst = 0.0f;
+        for (std::size_t v = 0; v < 25; ++v) {
+            const asset::SkinnedVertex& vertex = model.vertices[v];
+            const core::Mat4 bone = globals[vertex.joints[0]] * model.bones[vertex.joints[0]].offset;
+            const Vec3 skinned = ecs::transformPoint(entity_world * bone, vertex.position);
+            worst = std::max(worst, core::length(skinned - positions[v]));
+        }
+        check(worst < 1e-3f, "el skinning pone cada vertice en su particula");
+        std::vector<Vec3> normals;
+        clothNormals(cloth, positions, normals);
+        const core::Mat4 bone = globals[2] * model.bones[2].offset;  // fila de arriba (plana)
+        const Vec3 n = core::normalize(ecs::transformDirection(entity_world * bone, model.vertices[2].normal));
+        check(core::dot(n, normals[2]) > 0.99f && std::abs(n.x - 1.0f) < 0.01f, "la normal de delante gira con la entidad (+X)");
+    }
+}
+
+// Cuerpo blando: una pelota cae al suelo, no lo atraviesa, se aplasta un
+// poco pero guarda el volumen (mas presion = menos aplastada), la entidad va
+// con ella, los empujones la mueven y el render pone cada vertice en su
+// particula.
+void testSoftBody() {
+    std::printf("Cuerpo blando\n");
+    const auto drop = [](float pressure, float& height, float& lowest, Vec3& entity_position) {
+        ecs::World world;
+        makeFloor(world);
+        ecs::Entity ball = world.create("Pelota");
+        SoftBody& soft = ball.add<SoftBody>();
+        soft.size = Vec3{1.0f, 1.0f, 1.0f};
+        soft.pressure = pressure;
+        ball.setLocalPosition(Vec3{0.0f, 2.0f, 0.0f});
+        PhysicsSystem physics;
+        physics.start(world);
+        for (int i = 0; i < 240; ++i) physics.update(world, 1.0f / 60.0f);
+        const auto& rt = ball.get<SoftBody>().runtime.ptr;
+        float lo = 1e9f, hi = -1e9f;
+        for (const Vec3& p : rt->positions) {
+            lo = std::min(lo, p.y);
+            hi = std::max(hi, p.y);
+        }
+        height = hi - lo;
+        lowest = lo;
+        entity_position = ball.worldPosition();
+        physics.stop();
+    };
+    float firm_height = 0, firm_low = 0, soft_height = 0, soft_low = 0;
+    Vec3 firm_entity{}, soft_entity{};
+    drop(3.0f, firm_height, firm_low, firm_entity);
+    drop(0.2f, soft_height, soft_low, soft_entity);
+    check(firm_low > -0.05f && soft_low > -0.05f, "no atraviesa el suelo");
+    check(firm_height > 0.75f && firm_height < 1.05f, "con presion guarda casi toda su forma");
+    check(soft_height < firm_height - 0.05f, "con poca presion se aplasta mas (gelatina)");
+    check(std::abs(firm_entity.y - firm_height * 0.5f) < 0.2f && std::abs(firm_entity.x) < 0.1f,
+          "la entidad va al centro del cuerpo");
+
+    {
+        ecs::World world;
+        makeFloor(world);
+        ecs::Entity jelly = world.create("Gelatina");
+        SoftBody& soft = jelly.add<SoftBody>();
+        soft.shape = SoftBodyShape::Cube;
+        soft.resolution = 4;
+        jelly.setLocalPosition(Vec3{0.0f, 0.6f, 0.0f});
+        PhysicsSystem physics;
+        physics.start(world);
+        for (int i = 0; i < 60; ++i) physics.update(world, 1.0f / 60.0f);
+        const float before = jelly.worldPosition().y;
+        soft.runtime.ptr->pending_velocity = Vec3{0.0f, 6.0f, 0.0f};
+        for (int i = 0; i < 15; ++i) physics.update(world, 1.0f / 60.0f);
+        check(jelly.worldPosition().y > before + 0.4f, "addSoftBodyImpulse la lanza hacia arriba");
+
+        // Render: cada vertice sigue a su particula.
+        const SoftBodyMesh mesh = softBodyMesh(soft);
+        const asset::ModelData model = softBodyModel(soft);
+        check(model.bones.size() == mesh.particles.size() && mesh.particles.size() == 6u * 25u - 12u * 3u - 16u,
+              "cubo 4x4: particulas soldadas en las aristas");
+        const core::Mat4 world_matrix = jelly.worldMatrix();
+        std::vector<core::Mat4> globals;
+        softBodyBoneGlobals(mesh, world_matrix, soft.runtime.ptr->positions, globals);
+        float worst = 0.0f;
+        for (const asset::SkinnedVertex& v : model.vertices) {
+            const core::Mat4 bone = globals[v.joints[0]] * model.bones[v.joints[0]].offset;
+            const Vec3 skinned = ecs::transformPoint(world_matrix * bone, v.position);
+            worst = std::max(worst, core::length(skinned - soft.runtime.ptr->positions[v.joints[0]]));
+        }
+        check(worst < 1e-3f, "el skinning pone cada vertice en su particula");
+        physics.stop();
+    }
+}
+
 }  // namespace
 
 int main() {
@@ -415,6 +596,8 @@ int main() {
     testKinematicAndForces();
     testParticles();
     testSerialization();
+    testCloth();
+    testSoftBody();
     std::printf("\n%d comprobaciones, %d fallos\n", checks, failures);
     return failures == 0 ? 0 : 1;
 }

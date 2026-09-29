@@ -11,11 +11,14 @@
 #include "CramionCore/net/Http.h"
 #include "CramionCore/net/Network.h"
 #include "CramionCore/net/NetworkObject.h"
+#include "CramionCore/physics/Cloth.h"
 #include "CramionCore/physics/Ragdoll.h"
+#include "CramionCore/physics/SoftBody.h"
 #include "CramionCore/navigation/Navigation.h"
 #include "CramionCore/physics/PhysicsSystem.h"
 #include "CramionCore/ui/UI.h"
 #include "CramionCore/voxel/Voxel.h"
+#include "CramionCore/xr/XrRig.h"
 
 #include <CramionDM/Input.h>
 #include <CramionDM/TouchControls.h>
@@ -32,6 +35,7 @@
 #include <fstream>
 #include <iostream>
 #include <map>
+#include <set>
 #include <sstream>
 #include <unordered_map>
 #include <variant>
@@ -404,6 +408,8 @@ struct ScriptSystem::Impl {
     VibrateCallback vibrate;
     dm::TouchControls* touch_controls = nullptr;
     ScreenHost screen;
+    xr::XrSystem* xr_system = nullptr;
+    const xr::XrRig* xr_rig = nullptr;
     bool cursor_locked = false;
     LogCallback log;
     std::vector<ScriptError> errors;
@@ -1723,6 +1729,43 @@ struct ScriptSystem::Impl {
             return true;
         };
 
+        // --- Tela (Cloth): vuelve a su sitio o recibe un empujon (m/s) ---
+        const auto cloth_runtime = [](const LuaEntity& e) -> physics::ClothRuntime* {
+            const ecs::Entity x = e.get();
+            physics::Cloth* c = x.valid() ? x.tryGet<physics::Cloth>() : nullptr;
+            if (c == nullptr) return nullptr;
+            if (!c->runtime.ptr) c->runtime.ptr = std::make_shared<physics::ClothRuntime>();
+            return c->runtime.ptr.get();
+        };
+        entity["resetCloth"] = [cloth_runtime](const LuaEntity& e) {
+            physics::ClothRuntime* rt = cloth_runtime(e);
+            if (rt != nullptr) rt->reset_requested = true;
+            return rt != nullptr;
+        };
+        entity["addClothImpulse"] = [cloth_runtime](const LuaEntity& e, const Vec3& velocity) {
+            physics::ClothRuntime* rt = cloth_runtime(e);
+            if (rt != nullptr) rt->pending_velocity = rt->pending_velocity + velocity;
+            return rt != nullptr;
+        };
+        // --- Cuerpo blando (SoftBody): igual ---
+        const auto soft_runtime = [](const LuaEntity& e) -> physics::SoftBodyRuntime* {
+            const ecs::Entity x = e.get();
+            physics::SoftBody* s = x.valid() ? x.tryGet<physics::SoftBody>() : nullptr;
+            if (s == nullptr) return nullptr;
+            if (!s->runtime.ptr) s->runtime.ptr = std::make_shared<physics::SoftBodyRuntime>();
+            return s->runtime.ptr.get();
+        };
+        entity["resetSoftBody"] = [soft_runtime](const LuaEntity& e) {
+            physics::SoftBodyRuntime* rt = soft_runtime(e);
+            if (rt != nullptr) rt->reset_requested = true;
+            return rt != nullptr;
+        };
+        entity["addSoftBodyImpulse"] = [soft_runtime](const LuaEntity& e, const Vec3& velocity) {
+            physics::SoftBodyRuntime* rt = soft_runtime(e);
+            if (rt != nullptr) rt->pending_velocity = rt->pending_velocity + velocity;
+            return rt != nullptr;
+        };
+
         // --- Cualquier campo de cualquier componente (la reflexion del Inspector) ---
         //   e:getField("Light", "intensity")            e:setField("Light", "intensity", 5)
         //   e:setField("PhysBones", "chains[1].pull", 0.5)   (listas desde 1; [n+1] anade)
@@ -2375,6 +2418,142 @@ struct ScriptSystem::Impl {
             return true;
         };
         sc["orientationMode"] = [this]() { return screen.orientation_mode ? screen.orientation_mode() : std::string("auto"); };
+
+        // XR: realidad virtual (OpenXR). Manos "left"/"right"; botones
+        // trigger, grip, thumbstick, primary (A/X), secondary (B/Y), menu.
+        sol::table vr = L.create_named_table("XR");
+        const auto xr_on = [this]() { return xr_system != nullptr && xr_system->running(); };
+        const auto xr_hand = [this](const std::string& name, xr::Hand& out) {
+            const std::string n = lower(name);
+            if (n == "left" || n == "l" || n == "izquierda") {
+                out = xr::Hand::Left;
+            } else if (n == "right" || n == "r" || n == "derecha") {
+                out = xr::Hand::Right;
+            } else {
+                write(1, "XR: '" + name + "' no es una mano (left, right)");
+                return false;
+            }
+            return true;
+        };
+        const auto xr_button = [this, xr_hand](const std::string& hand, const std::string& name, dm::XrButton& out) {
+            xr::Hand h{};
+            if (!xr_hand(hand, h)) return false;
+            std::string n = lower(name);
+            if (n == "a" || n == "x") n = "primary";
+            if (n == "b" || n == "y") n = "secondary";
+            if (n == "stick") n = "thumbstick";
+            if (n == "squeeze") n = "grip";
+            for (int b = 0; b < static_cast<int>(xr::Button::Count); ++b) {
+                if (n == xr::buttonName(static_cast<xr::Button>(b))) {
+                    out = static_cast<dm::XrButton>(static_cast<int>(h) * 6 + b);
+                    return true;
+                }
+            }
+            write(1, "XR: '" + name + "' no es un boton (trigger, grip, thumbstick, primary, secondary, menu)");
+            return false;
+        };
+        const auto xr_world = [this](const xr::Pose& p) { return xr_rig != nullptr ? xr_rig->toWorld(p) : p; };
+        vr["isAvailable"] = [this]() { return xr_system != nullptr && xr_system->available(); };
+        vr["isRunning"] = xr_on;
+        vr["isFocused"] = [this]() { return xr_system != nullptr && xr_system->focused(); };
+        vr["getSystemName"] = [this]() { return xr_system != nullptr ? xr_system->systemName() : std::string(); };
+        vr["getRuntimeName"] = [this]() { return xr_system != nullptr ? xr_system->runtimeName() : std::string(); };
+        vr["getHeadPosition"] = [this, xr_on, xr_world]() -> sol::optional<Vec3> {
+            if (!xr_on() || !xr_system->head().valid) return sol::nullopt;
+            return xr_world(xr_system->head()).position;
+        };
+        vr["getHeadRotation"] = [this, xr_on, xr_world]() -> sol::optional<core::Quat> {
+            if (!xr_on() || !xr_system->head().valid) return sol::nullopt;
+            return xr_world(xr_system->head()).orientation;
+        };
+        // La cabeza dentro de la habitacion (metros desde el origen, sin el rig).
+        vr["getHeadLocalPosition"] = [this, xr_on]() -> sol::optional<Vec3> {
+            if (!xr_on() || !xr_system->head().valid) return sol::nullopt;
+            return xr_system->head().position;
+        };
+        vr["isControllerActive"] = [this, xr_on, xr_hand](const std::string& hand) {
+            xr::Hand h{};
+            return xr_on() && xr_hand(hand, h) && xr_system->controller(h).active;
+        };
+        // pose: "grip" (la mano, por defecto) o "aim" (el puntero).
+        const auto controller_pose = [this, xr_on, xr_hand](const std::string& hand, const sol::optional<std::string>& pose,
+                                                            xr::Pose& out) {
+            xr::Hand h{};
+            if (!xr_on() || !xr_hand(hand, h)) return false;
+            const xr::Controller& c = xr_system->controller(h);
+            out = lower(pose.value_or("grip")) == "aim" ? c.aim : c.grip;
+            return c.active && out.valid;
+        };
+        vr["getControllerPosition"] = [controller_pose, xr_world](const std::string& hand,
+                                                                  sol::optional<std::string> pose) -> sol::optional<Vec3> {
+            xr::Pose p;
+            if (!controller_pose(hand, pose, p)) return sol::nullopt;
+            return xr_world(p).position;
+        };
+        vr["getControllerRotation"] = [controller_pose, xr_world](const std::string& hand,
+                                                                  sol::optional<std::string> pose) -> sol::optional<core::Quat> {
+            xr::Pose p;
+            if (!controller_pose(hand, pose, p)) return sol::nullopt;
+            return xr_world(p).orientation;
+        };
+        // Rayo del puntero: origen y direccion en el mundo (para Physics.raycast).
+        vr["getAimRay"] = [this, controller_pose, xr_world](const std::string& hand) -> std::tuple<sol::object, sol::object> {
+            xr::Pose p;
+            if (!controller_pose(hand, std::string("aim"), p)) return {sol::lua_nil, sol::lua_nil};
+            const xr::Pose w = xr_world(p);
+            return {sol::make_object(*lua, w.position), sol::make_object(*lua, xr::rotate(w.orientation, Vec3{0.0f, 0.0f, -1.0f}))};
+        };
+        vr["getTrigger"] = [this, xr_on, xr_hand](const std::string& hand) {
+            xr::Hand h{};
+            return xr_on() && xr_hand(hand, h) ? xr_system->controller(h).trigger : 0.0f;
+        };
+        vr["getGrip"] = [this, xr_on, xr_hand](const std::string& hand) {
+            xr::Hand h{};
+            return xr_on() && xr_hand(hand, h) ? xr_system->controller(h).grip_value : 0.0f;
+        };
+        // Stick (o trackpad) como Vec3(x, y, 0), en [-1, 1] con Y arriba.
+        vr["getThumbstick"] = [this, xr_on, xr_hand](const std::string& hand) {
+            xr::Hand h{};
+            if (!xr_on() || !xr_hand(hand, h)) return Vec3{};
+            const core::Vec2 v = xr_system->controller(h).thumbstick;
+            return Vec3{v.x, v.y, 0.0f};
+        };
+        vr["getButton"] = [this, xr_button](const std::string& hand, const std::string& name) {
+            dm::XrButton b{};
+            return input != nullptr && xr_button(hand, name, b) && input->isXrButtonDown(b);
+        };
+        vr["getButtonDown"] = [this, xr_button](const std::string& hand, const std::string& name) {
+            dm::XrButton b{};
+            return input != nullptr && xr_button(hand, name, b) && input->isXrButtonPressed(b);
+        };
+        vr["getButtonUp"] = [this, xr_button](const std::string& hand, const std::string& name) {
+            dm::XrButton b{};
+            return input != nullptr && xr_button(hand, name, b) && input->isXrButtonReleased(b);
+        };
+        // Vibracion: intensidad 0..1, segundos y frecuencia en Hz (opcional).
+        vr["vibrate"] = [this, xr_hand](const std::string& hand, sol::optional<float> amplitude, sol::optional<float> seconds,
+                                        sol::optional<float> frequency) {
+            xr::Hand h{};
+            if (xr_system != nullptr && xr_hand(hand, h)) {
+                xr_system->vibrate(h, amplitude.value_or(0.5f), seconds.value_or(0.1f), frequency.value_or(0.0f));
+            }
+        };
+        // "floor" (de pie) o "eyes" (sentado). Con XR Origin manda su componente.
+        vr["setTrackingOrigin"] = [this](const std::string& mode) {
+            if (xr_system == nullptr) return false;
+            const std::string n = lower(mode);
+            if (n != "floor" && n != "eyes") {
+                write(1, "XR.setTrackingOrigin: '" + mode + "' no es un origen (floor, eyes)");
+                return false;
+            }
+            xr_system->setTrackingOrigin(n == "floor" ? xr::TrackingOrigin::Floor : xr::TrackingOrigin::Eyes);
+            return true;
+        };
+        vr["getTrackingOrigin"] = [this]() {
+            return std::string(xr_system != nullptr && xr_system->trackingOrigin() == xr::TrackingOrigin::Eyes ? "eyes" : "floor");
+        };
+        // Origen del rig en el mundo (la entidad con XR Origin, o la camara).
+        vr["getOriginPosition"] = [this]() { return xr_rig != nullptr ? xr_rig->originPosition() : Vec3{}; };
 
         // Time (se actualiza cada frame)
         sol::table t = L.create_named_table("Time");
@@ -3273,6 +3452,10 @@ void ScriptSystem::setCursorLock(CursorLockCallback callback) { impl_->cursor_lo
 void ScriptSystem::setVibrate(VibrateCallback callback) { impl_->vibrate = std::move(callback); }
 void ScriptSystem::setTouchControls(dm::TouchControls* controls) { impl_->touch_controls = controls; }
 void ScriptSystem::setScreen(ScreenHost host) { impl_->screen = std::move(host); }
+void ScriptSystem::setXr(xr::XrSystem* system, const xr::XrRig* rig) {
+    impl_->xr_system = system;
+    impl_->xr_rig = rig;
+}
 bool ScriptSystem::cursorLocked() const { return impl_->cursor_locked; }
 void ScriptSystem::releaseCursor() { impl_->lockCursor(false); }
 void ScriptSystem::setLog(LogCallback log) { impl_->log = std::move(log); }
@@ -3558,6 +3741,55 @@ void ScriptSystem::callMethod(ecs::Entity target, const std::string& method, boo
     Impl& d = *impl_;
     const auto it = target.valid() ? d.instances.find(target.handle()) : d.instances.end();
     if (it != d.instances.end()) d.call(it->second, method.c_str(), value);
+}
+
+std::map<std::string, std::vector<ScriptSystem::ApiMember>> ScriptSystem::apiReference() {
+    ScriptSystem temp;
+    Impl& d = *temp.impl_;
+    d.lua = std::make_unique<sol::state>();
+    d.bind(*d.lua);
+    sol::state& L = *d.lua;
+    std::map<std::string, std::vector<ApiMember>> out;
+    // Lo interno de sol2 y de Lua no es API.
+    const auto internal = [](const std::string& name) {
+        return name.empty() || name.rfind("__", 0) == 0 || name.rfind("class_", 0) == 0 || name == "_G" ||
+               name == "_VERSION" || name == "base" || name.find('\x1f') != std::string::npos || name.find(' ') != std::string::npos ||
+               name.find('.') != std::string::npos;
+    };
+    const auto collect = [&](const std::string& owner, const sol::object& object) {
+        if (object.get_type() != sol::type::table) return;
+        std::vector<ApiMember>& list = out[owner];
+        std::set<std::string> seen;
+        for (const ApiMember& m : list) seen.insert(m.name);
+        object.as<sol::table>().for_each([&](const sol::object& key, const sol::object& value) {
+            if (key.get_type() != sol::type::string) return;
+            const std::string name = key.as<std::string>();
+            if (internal(name) || !seen.insert(name).second) return;
+            list.push_back(ApiMember{name, value.get_type() == sol::type::function});
+        });
+        std::sort(list.begin(), list.end(), [](const ApiMember& a, const ApiMember& b) { return a.name < b.name; });
+    };
+    static const std::set<std::string> kSkip = {"_G", "package", "coroutine", "utf8", "os", "debug", "io"};
+    std::vector<ApiMember>& globals = out[""];
+    L.globals().for_each([&](const sol::object& key, const sol::object& value) {
+        if (key.get_type() != sol::type::string) return;
+        const std::string name = key.as<std::string>();
+        if (internal(name)) return;
+        if (value.get_type() == sol::type::function) {
+            globals.push_back(ApiMember{name, true});
+        } else if (value.get_type() == sol::type::table || value.get_type() == sol::type::userdata) {
+            globals.push_back(ApiMember{name, false});
+            if (!kSkip.contains(name)) collect(name, value);
+        }
+    });
+    std::sort(globals.begin(), globals.end(), [](const ApiMember& a, const ApiMember& b) { return a.name < b.name; });
+    // Los metodos de los objetos (entity:..., v:..., q:..., mesh:...).
+    sol::table registry = L.registry();
+    collect("Entity:", registry[sol::usertype_traits<LuaEntity>::metatable()]);
+    collect("Vec3:", registry[sol::usertype_traits<core::Vec3>::metatable()]);
+    collect("Quat:", registry[sol::usertype_traits<core::Quat>::metatable()]);
+    collect("Mesh:", registry[sol::usertype_traits<ecs::Mesh>::metatable()]);
+    return out;
 }
 
 bool ScriptSystem::run(const std::string& code, std::string* output, ecs::World* world) {

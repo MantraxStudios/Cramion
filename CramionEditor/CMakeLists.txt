@@ -127,6 +127,7 @@ target_link_libraries(CramionPreviewTests PRIVATE Cramion::Core)
 # Prueba del autocompletado de Lua (consola).
 add_executable(CramionCompletionTests "${CMAKE_CURRENT_SOURCE_DIR}/tests/CompletionTests.cpp"
                                       "${CMAKE_CURRENT_SOURCE_DIR}/src/LuaCompletion.cpp")
+target_link_libraries(CramionCompletionTests PRIVATE Cramion::Core)
 
 # Prueba de la edicion multiple del Inspector (consola).
 add_executable(CramionMultiEditTests "${CMAKE_CURRENT_SOURCE_DIR}/tests/MultiEditTests.cpp"

@@ -51,15 +51,8 @@ bool isKeyword(std::string_view w) {
     return false;
 }
 
-bool isApi(std::string_view w) {
-    static constexpr const char* kNames[] = {"self",  "Vec3",  "Entity", "Scene",  "Input", "Time",  "Physics",
-                                             "Audio", "Debug", "Mathf",  "print",  "math",  "string", "table",
-                                             "pairs", "ipairs", "tostring", "tonumber", "type", "setmetatable"};
-    for (const char* k : kNames) {
-        if (w == k) return true;
-    }
-    return false;
-}
+// Tablas y funciones globales del motor (la lista la da el propio motor).
+bool isApi(std::string_view w) { return luaIsApiName(w); }
 
 // --- Resaltado de GLSL (shaders de superficie, .crshader) ---
 bool isGlslKeyword(std::string_view w) {
@@ -328,9 +321,14 @@ void EditorApp::drawCodeEditor(ScriptTab& tab) {
     const float font_size = ImGui::GetFontSize();
 
     // Lineas y ancho del texto (el campo de texto no se desplaza: lo hace la
-    // ventana que lo contiene, asi el resaltado cae encima exacto).
+    // ventana que lo contiene, asi el resaltado cae encima exacto). Se miden
+    // otra vez despues del campo: lo que se escribio este frame se dibuja ya
+    // (antes salia un frame tarde y el texto "temblaba" detras del cursor).
     std::vector<std::string_view> lines;
-    {
+    float widest = 0.0f;
+    const auto measure = [&] {
+        lines.clear();
+        widest = 0.0f;
         std::string_view all(tab.text);
         std::size_t start = 0;
         while (true) {
@@ -339,11 +337,11 @@ void EditorApp::drawCodeEditor(ScriptTab& tab) {
             if (end == std::string_view::npos) break;
             start = end + 1;
         }
-    }
-    float widest = 0.0f;
-    for (const std::string_view line : lines) {
-        widest = std::max(widest, font->CalcTextSizeA(font_size, FLT_MAX, 0.0f, line.data(), line.data() + line.size()).x);
-    }
+        for (const std::string_view line : lines) {
+            widest = std::max(widest, font->CalcTextSizeA(font_size, FLT_MAX, 0.0f, line.data(), line.data() + line.size()).x);
+        }
+    };
+    measure();
 
     // Errores de este archivo.
     int error_line = -1;
@@ -372,28 +370,22 @@ void EditorApp::drawCodeEditor(ScriptTab& tab) {
     const ImVec2 padding = ImGui::GetStyle().FramePadding;
     ImGui::PushStyleColor(ImGuiCol_ChildBg, IM_COL32(30, 30, 30, 255));
     ImGui::BeginChild("##code", ImVec2(0.0f, -ImGui::GetFrameHeightWithSpacing() * 2.2f), ImGuiChildFlags_Borders,
-                      ImGuiWindowFlags_HorizontalScrollbar);
+                      ImGuiWindowFlags_HorizontalScrollbar | ImGuiWindowFlags_AlwaysVerticalScrollbar);
     const ImVec2 avail = ImGui::GetContentRegionAvail();
     const float scroll_y = ImGui::GetScrollY();
     const ImVec2 origin = ImGui::GetCursorScreenPos();
     ImDrawList* draw = ImGui::GetWindowDrawList();
     const int first_visible = std::max(0, static_cast<int>(scroll_y / line_height) - 1);
-    const int last_visible = std::min(static_cast<int>(lines.size()), static_cast<int>((scroll_y + avail.y) / line_height) + 2);
-
-    // Numeros de linea.
-    for (int i = first_visible; i < last_visible; ++i) {
-        char number[16];
-        std::snprintf(number, sizeof(number), "%d", i + 1);
-        const float y = origin.y + padding.y + static_cast<float>(i) * line_height;
-        const bool is_error = i + 1 == error_line;
-        draw->AddText(ImVec2(origin.x + gutter - 10.0f - ImGui::CalcTextSize(number).x, y),
-                      is_error ? IM_COL32(255, 90, 90, 255) : IM_COL32(110, 118, 129, 255), number);
-    }
+    int last_visible = std::min(static_cast<int>(lines.size()), static_cast<int>((scroll_y + avail.y) / line_height) + 2);
 
     // El texto editable (invisible) ...
     ImGui::SetCursorScreenPos(ImVec2(origin.x + gutter, origin.y));
-    const ImVec2 size{std::max(widest + font_size * 4.0f, avail.x - gutter),
-                      std::max(static_cast<float>(lines.size() + 2) * line_height + padding.y * 2.0f, avail.y)};
+    // Holgura: unas letras a la derecha y media vista por debajo, asi al
+    // escribir al final o en una linea larga el scroll hacia el cursor no se
+    // queda corto (el contenido crece un frame despues).
+    const ImVec2 size{std::max(widest + font_size * 8.0f, avail.x - gutter),
+                      std::max(static_cast<float>(lines.size() + 2) * line_height + padding.y * 2.0f + avail.y * 0.5f,
+                               avail.y)};
     EditState state;
     // Autocompletado: con la lista abierta, las flechas eligen y Enter/Tab
     // completan (se le quitan al campo de texto). Escape nunca deshace el texto.
@@ -434,17 +426,33 @@ void EditorApp::drawCodeEditor(ScriptTab& tab) {
                               editCallback, &state);
     const bool active = ImGui::IsItemActive();
     tab.was_active = active;
+    measure();  // el texto de este frame (con lo que se acaba de escribir)
+    last_visible = std::min(static_cast<int>(lines.size()), static_cast<int>((scroll_y + avail.y) / line_height) + 2);
+
+    // Numeros de linea.
+    for (int i = first_visible; i < last_visible; ++i) {
+        char number[16];
+        std::snprintf(number, sizeof(number), "%d", i + 1);
+        const float y = origin.y + padding.y + static_cast<float>(i) * line_height;
+        const bool is_error = i + 1 == error_line;
+        draw->AddText(ImVec2(origin.x + gutter - 10.0f - ImGui::CalcTextSize(number).x, y),
+                      is_error ? IM_COL32(255, 90, 90, 255) : IM_COL32(110, 118, 129, 255), number);
+    }
+
+    if (state.typed || !accepted.empty()) tab.last_edit = ImGui::GetTime();
     const ImVec2 text_origin{ImGui::GetItemRectMin().x + padding.x, ImGui::GetItemRectMin().y + padding.y};
     if (active) {
         const bool typed_ident = state.typed && accepted.empty() &&
                                  (std::isalnum(static_cast<unsigned char>(state.last_char)) || state.last_char == '_' ||
-                                  state.last_char == '.' || state.last_char == ':');
+                                  state.last_char == '.' || state.last_char == ':' || state.last_char == '"' ||
+                                  state.last_char == '\'' || state.last_char == '/' || state.last_char == ' ');
         const bool forced = io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Space, false);
         const bool edited_while_open = tab.completion_open && state.cursor != tab.cursor;
         if (!glsl && (typed_ident || forced || edited_while_open)) {
+            refreshLuaSymbols();
             LuaCompletionContext context;
             if (luaCompletionContext(tab.text, static_cast<std::size_t>(state.cursor), context) &&
-                (forced || !context.prefix.empty() || context.accessor != 0)) {
+                (forced || !context.prefix.empty() || context.accessor != 0 || context.in_string)) {
                 tab.completion_context = context;
                 tab.completions = luaCompletions(tab.text, context);
                 tab.completion_open = !tab.completions.empty();
@@ -498,7 +506,8 @@ void EditorApp::drawCodeEditor(ScriptTab& tab) {
         const float cx = text_origin.x + font->CalcTextSizeA(font_size, FLT_MAX, 0.0f, tab.text.data() + column_start,
                                                              tab.text.data() + std::min<int>(state.cursor, tab.text.size())).x;
         const float cy = text_origin.y + static_cast<float>(line) * line_height;
-        if (std::fmod(ImGui::GetTime(), 1.0) < 0.6) {
+        const double since_edit = ImGui::GetTime() - tab.last_edit;
+        if (since_edit < 0.6 || std::fmod(since_edit, 1.0) < 0.6) {
             draw->AddLine(ImVec2(cx, cy), ImVec2(cx, cy + line_height), IM_COL32(230, 230, 230, 255), 1.5f);
         }
         if (tab.completion_open && !tab.completions.empty()) {
@@ -507,7 +516,11 @@ void EditorApp::drawCodeEditor(ScriptTab& tab) {
             const int visible = std::min(count, 9);
             const int first = std::clamp(tab.completion_selected - visible + 1, 0, std::max(count - visible, 0));
             const float row = line_height + 4.0f;
-            const float width = 420.0f;
+            float width = 420.0f;
+            for (int i = 0; i < visible; ++i) {
+                width = std::max(width, ImGui::CalcTextSize(tab.completions[first + i].label.c_str()).x + 60.0f);
+            }
+            width = std::min(width, 720.0f);
             const std::string& detail = tab.completions[tab.completion_selected].detail;
             const float detail_h = detail.empty() ? 0.0f : row + 4.0f;
             ImVec2 min{cx - ImGui::CalcTextSize(tab.completion_context.prefix.c_str()).x, cy + line_height + 2.0f};
@@ -538,6 +551,46 @@ void EditorApp::drawCodeEditor(ScriptTab& tab) {
                 fg->PushClipRect(min, max, true);
                 fg->AddText(ImVec2(min.x + 8, y + 4), IM_COL32(160, 170, 185, 255), detail.c_str());
                 fg->PopClipRect();
+            }
+            if (count > visible) {
+                char more[32];
+                std::snprintf(more, sizeof(more), "%d/%d", tab.completion_selected + 1, count);
+                fg->AddText(ImVec2(max.x - ImGui::CalcTextSize(more).x - 8, min.y + 2), IM_COL32(120, 130, 145, 255), more);
+            }
+        } else if (!glsl) {
+            // Firma de la funcion que se esta llamando, con el argumento actual.
+            LuaSignature signature;
+            if (luaSignatureAt(tab.text, static_cast<std::size_t>(state.cursor), signature)) {
+                ImDrawList* fg = ImGui::GetForegroundDrawList();
+                std::string line = signature.label;
+                if (!signature.detail.empty()) line += "   " + signature.detail;
+                const ImVec2 text_size = ImGui::CalcTextSize(line.c_str());
+                ImVec2 min{cx, cy - text_size.y - 10.0f};
+                const ImVec2 display = ImGui::GetIO().DisplaySize;
+                if (min.y < 0.0f) min.y = cy + line_height + 4.0f;
+                min.x = std::clamp(min.x, 0.0f, std::max(0.0f, display.x - text_size.x - 16.0f));
+                const ImVec2 max{min.x + text_size.x + 16.0f, min.y + text_size.y + 8.0f};
+                fg->AddRectFilled(min, max, IM_COL32(37, 37, 42, 245), 4.0f);
+                fg->AddRect(min, max, IM_COL32(70, 90, 120, 255), 4.0f);
+                // El argumento que se esta escribiendo, resaltado.
+                const std::size_t open = signature.label.find('(');
+                std::size_t arg_start = open == std::string::npos ? 0 : open + 1;
+                for (int k = 0; k < signature.argument && arg_start < signature.label.size(); ++k) {
+                    const std::size_t comma = signature.label.find(',', arg_start);
+                    if (comma == std::string::npos) {
+                        arg_start = std::string::npos;
+                        break;
+                    }
+                    arg_start = comma + 1;
+                }
+                fg->AddText(ImVec2(min.x + 8, min.y + 4), IM_COL32(200, 205, 215, 255), line.c_str());
+                if (open != std::string::npos && arg_start != std::string::npos && arg_start < signature.label.size()) {
+                    std::size_t arg_end = signature.label.find_first_of(",)", arg_start);
+                    if (arg_end == std::string::npos) arg_end = signature.label.size();
+                    const float x0 = ImGui::CalcTextSize(signature.label.c_str(), signature.label.c_str() + arg_start).x;
+                    fg->AddText(ImVec2(min.x + 8 + x0, min.y + 4), IM_COL32(255, 200, 90, 255),
+                                signature.label.c_str() + arg_start, signature.label.c_str() + arg_end);
+                }
             }
         }
         // Que el cursor no se salga de la vista.

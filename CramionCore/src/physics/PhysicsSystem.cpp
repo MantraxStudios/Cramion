@@ -18,7 +18,9 @@
 #include "CramionCore/asset/AssetManager.h"
 #include "CramionCore/ecs/Components.h"
 #include "CramionCore/ecs/MathUtil.h"
+#include "CramionCore/physics/Cloth.h"
 #include "CramionCore/physics/Ragdoll.h"
+#include "CramionCore/physics/SoftBody.h"
 #include "CramionCore/terrain/Terrain.h"
 #include "CramionCore/water/Water.h"
 
@@ -53,7 +55,11 @@
 #include <Jolt/Physics/Collision/Shape/StaticCompoundShape.h>
 #include <Jolt/Physics/Collision/ShapeCast.h>
 #include <Jolt/Physics/Collision/TransformedShape.h>
+#include <Jolt/Physics/Collision/GroupFilter.h>
 #include <Jolt/Physics/Constraints/SwingTwistConstraint.h>
+#include <Jolt/Physics/SoftBody/SoftBodyCreationSettings.h>
+#include <Jolt/Physics/SoftBody/SoftBodyMotionProperties.h>
+#include <Jolt/Physics/SoftBody/SoftBodySharedSettings.h>
 #include <Jolt/Physics/PhysicsSettings.h>
 #include <Jolt/Physics/PhysicsSystem.h>
 #include <Jolt/RegisterTypes.h>
@@ -742,6 +748,445 @@ struct PhysicsSystem::Impl {
                 }
             }
             r.runtime->pushes.clear();
+        }
+    }
+
+    // --- Telas (physics::Cloth): un soft body de Jolt por entidad ---
+    // Las particulas fijadas son vertices cinematicos (masa infinita) que se
+    // llevan cada paso a su sitio en la entidad; el viento empuja segun la
+    // normal de la tela (lo que le da de frente empuja mas).
+    struct ClothEntry {
+        JPH::BodyID body;
+        std::shared_ptr<ClothRuntime> runtime;
+        std::string layout;
+        std::vector<Vec3> rest;              // en la entidad
+        std::vector<std::uint32_t> pinned;
+        std::vector<std::uint8_t> is_pinned;
+        std::vector<Vec3> previous, current;  // en el mundo, por paso
+        std::vector<Vec3> scratch, normals;
+        core::Mat4 last_world{};
+        float time = 0.0f;
+        int layer = 0;
+        bool collide = true;
+    };
+    std::unordered_map<entt::entity, ClothEntry> cloths;
+    static int layerOf(const ecs::Entity& e) {
+        const ecs::EntityInfo* info = e.tryGet<ecs::EntityInfo>();
+        return info != nullptr ? info->layer : 0;
+    }
+
+    // Chocar = no: un filtro de grupo que no deja chocar con nada.
+    class NoCollisionFilter final : public JPH::GroupFilter {
+    public:
+        bool CanCollide(const JPH::CollisionGroup&, const JPH::CollisionGroup&) const override { return false; }
+    };
+    JPH::Ref<JPH::GroupFilter> no_collision;  // se crea al usarlo (Jolt ya esta iniciado)
+
+    void destroyCloth(ClothEntry& c) {
+        if (!c.body.IsInvalid()) {
+            body_entities.erase(c.body.GetIndexAndSequenceNumber());
+            bodies().RemoveBody(c.body);
+            bodies().DestroyBody(c.body);
+        }
+        c.body = JPH::BodyID();
+        if (c.runtime) c.runtime->simulated = false;
+    }
+
+    void createCloth(ecs::World& w, entt::entity handle, Cloth& cloth) {
+        const ecs::Entity e = w.wrap(handle);
+        if (!cloth.runtime.ptr) cloth.runtime.ptr = std::make_shared<ClothRuntime>();
+        ClothEntry c;
+        c.runtime = cloth.runtime.ptr;
+        c.layout = cloth.layoutKey();
+        c.rest = clothRestPositions(cloth);
+        c.layer = layerOf(e);
+        c.collide = cloth.collide;
+        const int nx = cloth.particlesX();
+        const int ny = cloth.particlesY();
+        const std::size_t count = c.rest.size();
+        const core::Mat4 world = e.worldMatrix();
+        c.last_world = world;
+        c.current.resize(count);
+        Vec3 center{};
+        for (std::size_t i = 0; i < count; ++i) {
+            c.current[i] = ecs::transformPoint(world, c.rest[i]);
+            center = center + c.current[i];
+        }
+        center = center * (1.0f / static_cast<float>(count));
+        c.previous = c.current;
+        c.is_pinned.assign(count, 0);
+        for (int y = 0; y < ny; ++y) {
+            for (int x = 0; x < nx; ++x) {
+                if (!clothPinned(cloth, x, y)) continue;
+                const auto i = static_cast<std::uint32_t>(y * nx + x);
+                c.pinned.push_back(i);
+                c.is_pinned[i] = 1;
+            }
+        }
+
+        JPH::Ref<JPH::SoftBodySharedSettings> shared = new JPH::SoftBodySharedSettings;
+        const float inv_mass = static_cast<float>(count) / std::max(cloth.mass, 1e-3f);
+        for (std::size_t i = 0; i < count; ++i) {
+            const Vec3 local = c.current[i] - center;
+            shared->mVertices.push_back(JPH::SoftBodySharedSettings::Vertex(JPH::Float3(local.x, local.y, local.z),
+                                                                             JPH::Float3(0.0f, 0.0f, 0.0f),
+                                                                             c.is_pinned[i] ? 0.0f : inv_mass));
+        }
+        const std::vector<std::uint32_t> triangles = clothTriangles(cloth);
+        for (std::size_t t = 0; t + 2 < triangles.size(); t += 3) {
+            shared->AddFace(JPH::SoftBodySharedSettings::Face(triangles[t], triangles[t + 1], triangles[t + 2]));
+        }
+        // Rigidez 0..1 -> compliance (inversa de la rigidez; 0 = rigida del todo).
+        const float stretch = 1.0f - std::clamp(cloth.stiffness, 0.0f, 1.0f);
+        const float edge = stretch * stretch * 1e-2f;
+        const float bend_amount = std::clamp(cloth.bending, 0.0f, 1.0f);
+        const float bend = bend_amount <= 1e-3f ? FLT_MAX : (1.0f - bend_amount) * (1.0f - bend_amount) * 2.0f + 1e-6f;
+        // Con particulas fijas, un tope de distancia a ellas: no se estira de mas al colgar.
+        const JPH::SoftBodySharedSettings::VertexAttributes attributes(
+            edge, edge, bend,
+            c.pinned.empty() ? JPH::SoftBodySharedSettings::ELRAType::None
+                             : JPH::SoftBodySharedSettings::ELRAType::EuclideanDistance,
+            1.0f + stretch * 0.15f);
+        shared->CreateConstraints(&attributes, 1, JPH::SoftBodySharedSettings::EBendType::Distance);
+        shared->mVertexRadius = std::max(cloth.thickness, 0.0f);
+        shared->Optimize();
+
+        JPH::SoftBodyCreationSettings settings_(shared, JPH::RVec3(toJolt(center)), JPH::Quat::sIdentity(),
+                                                objectLayer(c.layer, true));
+        settings_.mNumIterations = static_cast<JPH::uint32>(std::clamp(cloth.iterations, 1, 32));
+        settings_.mLinearDamping = std::max(cloth.damping, 0.0f);
+        settings_.mFriction = std::clamp(cloth.friction, 0.0f, 1.0f);
+        settings_.mGravityFactor = cloth.gravity_scale;
+        settings_.mUserData = entityToUserData(handle);
+        if (!cloth.collide) {
+            if (!no_collision) no_collision = new NoCollisionFilter;
+            settings_.mCollisionGroup.SetGroupFilter(no_collision);
+        }
+        c.body = bodies().CreateAndAddSoftBody(settings_, JPH::EActivation::Activate);
+        if (c.body.IsInvalid()) {
+            std::cerr << "[Fisica] Tela de " << e.name() << ": no hay sitio para mas cuerpos (max_bodies)\n";
+            return;
+        }
+        body_entities[c.body.GetIndexAndSequenceNumber()] = handle;
+        c.runtime->positions = c.current;
+        c.runtime->simulated = true;
+        ++c.runtime->version;
+        cloths[handle] = std::move(c);
+    }
+
+    void syncCloths(ecs::World& w, bool simulate) {
+        auto& registry = w.registry();
+        for (auto it = cloths.begin(); it != cloths.end();) {
+            const entt::entity h = it->first;
+            const Cloth* cloth = registry.valid(h) ? registry.try_get<Cloth>(h) : nullptr;
+            const bool keep = cloth != nullptr && w.wrap(h).activeInHierarchy() && cloth->layoutKey() == it->second.layout &&
+                              cloth->collide == it->second.collide && layerOf(w.wrap(h)) == it->second.layer &&
+                              cloth->runtime.ptr == it->second.runtime;
+            if (keep) {
+                ++it;
+                continue;
+            }
+            destroyCloth(it->second);
+            it = cloths.erase(it);
+        }
+        if (!simulate) return;
+        for (const entt::entity h : registry.view<Cloth>()) {
+            if (cloths.contains(h) || !w.wrap(h).activeInHierarchy()) continue;
+            createCloth(w, h, registry.get<Cloth>(h));
+        }
+    }
+
+    // Antes de cada paso: fijadas a su sitio, viento, empujones y reinicios.
+    void preStepCloths(ecs::World& w, float dt) {
+        auto& registry = w.registry();
+        for (auto& [h, c] : cloths) {
+            if (c.body.IsInvalid() || !registry.valid(h)) continue;
+            const Cloth* cloth = registry.try_get<Cloth>(h);
+            if (cloth == nullptr) continue;
+            const core::Mat4 world = w.wrap(h).worldMatrix();
+            ClothRuntime& rt = *c.runtime;
+            const bool reset = rt.reset_requested;
+            const Vec3 push = rt.pending_velocity;
+            rt.reset_requested = false;
+            rt.pending_velocity = Vec3{};
+            c.time += dt;
+            // Viento con rachas: un poco de ruido en el tiempo y en el espacio.
+            const float gust = 1.0f + cloth->turbulence * (0.6f * std::sin(c.time * 1.9f) + 0.4f * std::sin(c.time * 4.3f + 1.3f));
+            const Vec3 wind = cloth->wind * std::max(gust, 0.0f);
+            const bool windy = core::length(cloth->wind) > 1e-4f && cloth->air_drag > 0.0f;
+            bool moved = reset || core::length(push) > 0.0f || windy;
+            for (int k = 0; k < 16 && !moved; ++k) moved = world.m[k / 4][k % 4] != c.last_world.m[k / 4][k % 4];
+            c.last_world = world;
+            if (moved) bodies().ActivateBody(c.body);
+            JPH::BodyLockWrite lock(system->GetBodyLockInterface(), c.body);
+            if (!lock.Succeeded()) continue;
+            JPH::Body& body = lock.GetBody();
+            auto* motion = static_cast<JPH::SoftBodyMotionProperties*>(body.GetMotionProperties());
+            motion->SetNumIterations(static_cast<JPH::uint32>(std::clamp(cloth->iterations, 1, 32)));
+            motion->SetLinearDamping(std::max(cloth->damping, 0.0f));
+            motion->SetGravityFactor(cloth->gravity_scale);
+            body.SetFriction(std::clamp(cloth->friction, 0.0f, 1.0f));
+            const JPH::RMat44 com = body.GetCenterOfMassTransform();
+            const JPH::RMat44 to_body = com.InversedRotationTranslation();
+            JPH::Array<JPH::SoftBodyVertex>& vertices = motion->GetVertices();
+            if (vertices.size() != c.rest.size()) continue;
+            if (windy) {
+                c.scratch.resize(vertices.size());
+                for (std::size_t i = 0; i < vertices.size(); ++i) {
+                    c.scratch[i] = fromJolt(JPH::Vec3(com * vertices[i].mPosition));
+                }
+                clothNormals(*cloth, c.scratch, c.normals);
+            }
+            const float jiggle = cloth->turbulence * 0.35f;
+            const int nx = cloth->particlesX();
+            for (std::size_t i = 0; i < vertices.size(); ++i) {
+                JPH::SoftBodyVertex& v = vertices[i];
+                if (c.is_pinned[i] || reset) {
+                    const JPH::Vec3 target = JPH::Vec3(to_body * JPH::RVec3(toJolt(ecs::transformPoint(world, c.rest[i]))));
+                    if (reset) {
+                        v.mPosition = target;
+                        v.mVelocity = JPH::Vec3::sZero();
+                    } else {
+                        // Jolt integra la velocidad tambien de los cinematicos:
+                        // con ella llegan justo al objetivo al final del paso.
+                        v.mVelocity = (target - v.mPosition) / std::max(dt, 1e-4f);
+                    }
+                    if (c.is_pinned[i]) continue;
+                }
+                if (v.mInvMass <= 0.0f) continue;
+                if (push.x != 0.0f || push.y != 0.0f || push.z != 0.0f) v.mVelocity += toJolt(push);
+                if (windy) {
+                    // Rachas locales: cada zona de la tela lleva un poco de retraso.
+                    const float px = static_cast<float>(static_cast<int>(i) % nx);
+                    const float local = 1.0f + jiggle * std::sin(c.time * 3.1f - px * 0.45f + static_cast<float>(i / nx) * 0.3f);
+                    const Vec3 relative = wind * local - fromJolt(v.mVelocity);
+                    const Vec3& n = c.normals[i];
+                    const float pressure = core::dot(relative, n);
+                    // Empuje por la cara que da al viento, y un poco de arrastre tangencial.
+                    const Vec3 accel = n * (pressure * cloth->air_drag * 0.5f) + relative * (cloth->air_drag * 0.05f);
+                    v.mVelocity += toJolt(accel * dt);
+                }
+            }
+        }
+    }
+
+    // --- Cuerpos blandos (physics::SoftBody): malla cerrada con presion ---
+    struct SoftEntry {
+        JPH::BodyID body;
+        std::shared_ptr<SoftBodyRuntime> runtime;
+        std::string layout;
+        std::vector<Vec3> rest;  // en la entidad
+        std::vector<Vec3> previous, current;
+        int layer = 0;
+        bool collide = true;
+    };
+    std::unordered_map<entt::entity, SoftEntry> soft_bodies;
+
+    void destroySoftBody(SoftEntry& s) {
+        if (!s.body.IsInvalid()) {
+            body_entities.erase(s.body.GetIndexAndSequenceNumber());
+            bodies().RemoveBody(s.body);
+            bodies().DestroyBody(s.body);
+        }
+        s.body = JPH::BodyID();
+        if (s.runtime) s.runtime->simulated = false;
+    }
+
+    void createSoftBody(ecs::World& w, entt::entity handle, SoftBody& soft) {
+        const ecs::Entity e = w.wrap(handle);
+        if (!soft.runtime.ptr) soft.runtime.ptr = std::make_shared<SoftBodyRuntime>();
+        SoftEntry s;
+        s.runtime = soft.runtime.ptr;
+        s.layout = soft.layoutKey();
+        s.layer = layerOf(e);
+        s.collide = soft.collide;
+        const SoftBodyMesh mesh = softBodyMesh(soft);
+        s.rest = mesh.particles;
+        const core::Mat4 world = e.worldMatrix();
+        const std::size_t count = s.rest.size();
+        s.current.resize(count);
+        Vec3 center{};
+        for (std::size_t i = 0; i < count; ++i) {
+            s.current[i] = ecs::transformPoint(world, s.rest[i]);
+            center = center + s.current[i];
+        }
+        center = center * (1.0f / static_cast<float>(count));
+        s.previous = s.current;
+        // Volumen y area en reposo (para la presion).
+        float volume = 0.0f, area = 0.0f;
+        for (std::size_t t = 0; t + 2 < mesh.triangles.size(); t += 3) {
+            const Vec3 a = s.current[mesh.triangles[t]] - center;
+            const Vec3 b = s.current[mesh.triangles[t + 1]] - center;
+            const Vec3 c = s.current[mesh.triangles[t + 2]] - center;
+            volume += core::dot(a, core::cross(b, c)) / 6.0f;
+            area += core::length(core::cross(b - a, c - a)) * 0.5f;
+        }
+        volume = std::max(std::abs(volume), 1e-6f);
+        area = std::max(area, 1e-6f);
+
+        JPH::Ref<JPH::SoftBodySharedSettings> shared = new JPH::SoftBodySharedSettings;
+        const float inv_mass = static_cast<float>(count) / std::max(soft.mass, 1e-3f);
+        for (std::size_t i = 0; i < count; ++i) {
+            const Vec3 local = s.current[i] - center;
+            shared->mVertices.push_back(JPH::SoftBodySharedSettings::Vertex(JPH::Float3(local.x, local.y, local.z),
+                                                                             JPH::Float3(0.0f, 0.0f, 0.0f), inv_mass));
+        }
+        for (std::size_t t = 0; t + 2 < mesh.triangles.size(); t += 3) {
+            shared->AddFace(JPH::SoftBodySharedSettings::Face(mesh.triangles[t], mesh.triangles[t + 1], mesh.triangles[t + 2]));
+        }
+        const float soft_amount = 1.0f - std::clamp(soft.stiffness, 0.0f, 1.0f);
+        const float edge = soft_amount * soft_amount * 5e-3f + 1e-7f;
+        const float bend = soft_amount * soft_amount * 0.5f + 1e-5f;  // guarda la forma (no se arruga como una tela)
+        const JPH::SoftBodySharedSettings::VertexAttributes attributes(edge, edge, bend);
+        shared->CreateConstraints(&attributes, 1, JPH::SoftBodySharedSettings::EBendType::Distance);
+        shared->mVertexRadius = std::max(soft.thickness, 0.0f);
+        shared->Optimize();
+
+        JPH::SoftBodyCreationSettings settings_(shared, JPH::RVec3(toJolt(center)), JPH::Quat::sIdentity(),
+                                                objectLayer(s.layer, true));
+        settings_.mNumIterations = static_cast<JPH::uint32>(std::clamp(soft.iterations, 1, 32));
+        settings_.mLinearDamping = std::max(soft.damping, 0.0f);
+        settings_.mFriction = std::clamp(soft.friction, 0.0f, 1.0f);
+        settings_.mRestitution = std::clamp(soft.restitution, 0.0f, 1.0f);
+        settings_.mGravityFactor = soft.gravity_scale;
+        // Presion (P = nRT / V): en reposo empuja hacia fuera `pressure` veces
+        // lo que hace falta para aguantar su propio peso sobre su superficie.
+        const float rest_pressure = std::max(soft.pressure, 0.0f) * std::max(soft.mass, 1e-3f) * 9.81f / area * 4.0f;
+        settings_.mPressure = rest_pressure * volume;
+        settings_.mUserData = entityToUserData(handle);
+        if (!soft.collide) {
+            if (!no_collision) no_collision = new NoCollisionFilter;
+            settings_.mCollisionGroup.SetGroupFilter(no_collision);
+        }
+        s.body = bodies().CreateAndAddSoftBody(settings_, JPH::EActivation::Activate);
+        if (s.body.IsInvalid()) {
+            std::cerr << "[Fisica] Cuerpo blando de " << e.name() << ": no hay sitio para mas cuerpos (max_bodies)\n";
+            return;
+        }
+        body_entities[s.body.GetIndexAndSequenceNumber()] = handle;
+        s.runtime->positions = s.current;
+        s.runtime->simulated = true;
+        ++s.runtime->version;
+        soft_bodies[handle] = std::move(s);
+    }
+
+    void syncSoftBodies(ecs::World& w, bool simulate) {
+        auto& registry = w.registry();
+        for (auto it = soft_bodies.begin(); it != soft_bodies.end();) {
+            const entt::entity h = it->first;
+            const SoftBody* soft = registry.valid(h) ? registry.try_get<SoftBody>(h) : nullptr;
+            const bool keep = soft != nullptr && w.wrap(h).activeInHierarchy() && soft->layoutKey() == it->second.layout &&
+                              soft->collide == it->second.collide && layerOf(w.wrap(h)) == it->second.layer &&
+                              soft->runtime.ptr == it->second.runtime;
+            if (keep) {
+                ++it;
+                continue;
+            }
+            destroySoftBody(it->second);
+            it = soft_bodies.erase(it);
+        }
+        if (!simulate) return;
+        for (const entt::entity h : registry.view<SoftBody>()) {
+            if (soft_bodies.contains(h) || !w.wrap(h).activeInHierarchy()) continue;
+            createSoftBody(w, h, registry.get<SoftBody>(h));
+        }
+    }
+
+    void preStepSoftBodies(ecs::World& w) {
+        auto& registry = w.registry();
+        for (auto& [h, s] : soft_bodies) {
+            if (s.body.IsInvalid() || !registry.valid(h)) continue;
+            const SoftBody* soft = registry.try_get<SoftBody>(h);
+            if (soft == nullptr) continue;
+            SoftBodyRuntime& rt = *s.runtime;
+            const bool reset = rt.reset_requested;
+            const Vec3 push = rt.pending_velocity;
+            rt.reset_requested = false;
+            rt.pending_velocity = Vec3{};
+            if (reset || core::length(push) > 0.0f) bodies().ActivateBody(s.body);
+            const core::Mat4 world = w.wrap(h).worldMatrix();
+            JPH::BodyLockWrite lock(system->GetBodyLockInterface(), s.body);
+            if (!lock.Succeeded()) continue;
+            JPH::Body& body = lock.GetBody();
+            auto* motion = static_cast<JPH::SoftBodyMotionProperties*>(body.GetMotionProperties());
+            motion->SetNumIterations(static_cast<JPH::uint32>(std::clamp(soft->iterations, 1, 32)));
+            motion->SetLinearDamping(std::max(soft->damping, 0.0f));
+            motion->SetGravityFactor(soft->gravity_scale);
+            body.SetFriction(std::clamp(soft->friction, 0.0f, 1.0f));
+            body.SetRestitution(std::clamp(soft->restitution, 0.0f, 1.0f));
+            if (!reset && push.x == 0.0f && push.y == 0.0f && push.z == 0.0f) continue;
+            const JPH::RMat44 to_body = body.GetCenterOfMassTransform().InversedRotationTranslation();
+            JPH::Array<JPH::SoftBodyVertex>& vertices = motion->GetVertices();
+            if (vertices.size() != s.rest.size()) continue;
+            for (std::size_t i = 0; i < vertices.size(); ++i) {
+                JPH::SoftBodyVertex& v = vertices[i];
+                if (reset) {
+                    v.mPosition = JPH::Vec3(to_body * JPH::RVec3(toJolt(ecs::transformPoint(world, s.rest[i]))));
+                    v.mVelocity = JPH::Vec3::sZero();
+                }
+                v.mVelocity += toJolt(push);
+            }
+        }
+    }
+
+    void captureSoftBodies() {
+        for (auto& [h, s] : soft_bodies) {
+            if (s.body.IsInvalid()) continue;
+            JPH::BodyLockRead lock(system->GetBodyLockInterface(), s.body);
+            if (!lock.Succeeded()) continue;
+            const JPH::Body& body = lock.GetBody();
+            const auto* motion = static_cast<const JPH::SoftBodyMotionProperties*>(body.GetMotionProperties());
+            const JPH::RMat44 com = body.GetCenterOfMassTransform();
+            const JPH::Array<JPH::SoftBodyVertex>& vertices = motion->GetVertices();
+            if (vertices.size() != s.current.size()) continue;
+            s.previous.swap(s.current);
+            for (std::size_t i = 0; i < vertices.size(); ++i) s.current[i] = fromJolt(JPH::Vec3(com * vertices[i].mPosition));
+        }
+    }
+
+    // Posiciones al render y, si se pide, la entidad al centro del cuerpo.
+    void writeSoftBodies(ecs::World& w, float alpha) {
+        const float t = std::clamp(alpha, 0.0f, 1.0f);
+        auto& registry = w.registry();
+        for (auto& [h, s] : soft_bodies) {
+            if (!s.runtime || s.current.size() != s.previous.size() || s.current.empty()) continue;
+            s.runtime->positions.resize(s.current.size());
+            Vec3 center{};
+            for (std::size_t i = 0; i < s.current.size(); ++i) {
+                s.runtime->positions[i] = core::lerp(s.previous[i], s.current[i], t);
+                center = center + s.runtime->positions[i];
+            }
+            center = center * (1.0f / static_cast<float>(s.current.size()));
+            s.runtime->simulated = true;
+            ++s.runtime->version;
+            const SoftBody* soft = registry.valid(h) ? registry.try_get<SoftBody>(h) : nullptr;
+            if (soft != nullptr && soft->follow_entity) w.wrap(h).setWorldPosition(center);
+        }
+    }
+
+    void captureCloths() {
+        for (auto& [h, c] : cloths) {
+            if (c.body.IsInvalid()) continue;
+            JPH::BodyLockRead lock(system->GetBodyLockInterface(), c.body);
+            if (!lock.Succeeded()) continue;
+            const JPH::Body& body = lock.GetBody();
+            const auto* motion = static_cast<const JPH::SoftBodyMotionProperties*>(body.GetMotionProperties());
+            const JPH::RMat44 com = body.GetCenterOfMassTransform();
+            const JPH::Array<JPH::SoftBodyVertex>& vertices = motion->GetVertices();
+            if (vertices.size() != c.current.size()) continue;
+            c.previous.swap(c.current);
+            for (std::size_t i = 0; i < vertices.size(); ++i) c.current[i] = fromJolt(JPH::Vec3(com * vertices[i].mPosition));
+        }
+    }
+
+    void writeCloths(float alpha) {
+        const float t = std::clamp(alpha, 0.0f, 1.0f);
+        for (auto& [h, c] : cloths) {
+            if (!c.runtime || c.current.size() != c.previous.size()) continue;
+            c.runtime->positions.resize(c.current.size());
+            for (std::size_t i = 0; i < c.current.size(); ++i) c.runtime->positions[i] = core::lerp(c.previous[i], c.current[i], t);
+            c.runtime->simulated = true;
+            ++c.runtime->version;
         }
     }
 
@@ -2014,12 +2459,16 @@ struct PhysicsSystem::Impl {
     void stepOnce(ecs::World& w) {
         const float dt = settings.fixed_step;
         moveKinematics(dt);
+        preStepCloths(w, dt);
+        preStepSoftBodies(w);
         applyBuoyancy(w, dt);
         applyVehicleInputs();
         system->Update(dt, std::max(settings.collision_steps, 1), temp_allocator.get(), job_system.get());
         ++steps;
         capturePoses();
         captureRagdolls();
+        captureCloths();
+        captureSoftBodies();
         processContacts();
         (void)w;
     }
@@ -2125,6 +2574,10 @@ void PhysicsSystem::stop() {
     if (!d.system) return;
     for (auto& [handle, ragdoll] : d.ragdolls) d.destroyRagdoll(ragdoll, 0.0f);
     d.ragdolls.clear();
+    for (auto& [handle, cloth] : d.cloths) d.destroyCloth(cloth);
+    d.cloths.clear();
+    for (auto& [handle, soft] : d.soft_bodies) d.destroySoftBody(soft);
+    d.soft_bodies.clear();
     for (auto& [handle, vehicle] : d.vehicles) d.removeVehicle(vehicle);
     d.vehicles.clear();
     for (auto& [handle, entry] : d.entries) {
@@ -2193,6 +2646,21 @@ void PhysicsSystem::shiftOrigin(const core::Vec3& offset) {
         for (Vec3& p : ragdoll.previous_position) p = p - offset;
         for (Vec3& p : ragdoll.current_position) p = p - offset;
     }
+    for (auto& [handle, cloth] : d.cloths) {
+        for (Vec3& p : cloth.previous) p = p - offset;
+        for (Vec3& p : cloth.current) p = p - offset;
+        shift_matrix(cloth.last_world);
+        if (cloth.runtime) {
+            for (Vec3& p : cloth.runtime->positions) p = p - offset;
+        }
+    }
+    for (auto& [handle, soft] : d.soft_bodies) {
+        for (Vec3& p : soft.previous) p = p - offset;
+        for (Vec3& p : soft.current) p = p - offset;
+        if (soft.runtime) {
+            for (Vec3& p : soft.runtime->positions) p = p - offset;
+        }
+    }
     d.queries.clear();
     if (d.system == nullptr) return;
     // Todos los cuerpos (tambien los de las mallas estaticas y las ruedas):
@@ -2225,6 +2693,8 @@ int PhysicsSystem::update(ecs::World& world, float delta_seconds, bool simulate)
     const auto begin = std::chrono::steady_clock::now();
     d.sync(world, simulate);
     d.syncRagdolls(world, simulate);
+    d.syncCloths(world, simulate);
+    d.syncSoftBodies(world, simulate);
     int steps = 0;
     if (simulate) {
         const float step = d.settings.fixed_step;
@@ -2239,6 +2709,8 @@ int PhysicsSystem::update(ecs::World& world, float delta_seconds, bool simulate)
         d.accumulator = std::min(d.accumulator, step);
         d.writeBack(world, d.accumulator / step);
         d.writeRagdolls(world, d.accumulator / step);
+        d.writeCloths(d.accumulator / step);
+        d.writeSoftBodies(world, d.accumulator / step);
     } else {
         d.accumulator = 0.0f;
         d.contact_points.clear();
@@ -2252,8 +2724,12 @@ void PhysicsSystem::singleStep(ecs::World& world) {
     if (!d.system) return;
     d.events.clear();
     d.sync(world, true);
+    d.syncCloths(world, true);
+    d.syncSoftBodies(world, true);
     d.stepOnce(world);
     d.writeBack(world, 1.0f);
+    d.writeCloths(1.0f);
+    d.writeSoftBodies(world, 1.0f);
 }
 
 // --- Consultas ---------------------------------------------------------------

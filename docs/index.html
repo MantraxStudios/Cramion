@@ -48,7 +48,7 @@
         <a href="https://github.com/MantraxStudios/Cramion" class="hover:text-white">GitHub</a>
         <a href="https://discord.gg/zG7rSsUGEz" target="_blank" rel="noopener" class="hover:text-white">Discord</a>
       </div>
-      <a href="#descargar" class="ml-auto border border-paper/30 px-3 py-1.5 text-sm font-medium text-white hover:border-white">Descargar 1.0</a>
+      <a href="#descargar" class="ml-auto border border-paper/30 px-3 py-1.5 text-sm font-medium text-white hover:border-white">Descargar 1.2</a>
     </nav>
   </header>
 
@@ -68,7 +68,7 @@
           <a href="https://github.com/MantraxStudios/Cramion/releases/latest/download/Cramion-win64.zip" class="bg-brand px-5 py-2.5 font-semibold text-ink hover:bg-white">Descargar para Windows</a>
           <a href="manual/index.html" class="link text-paper">Leer el manual</a>
         </div>
-        <p class="mt-6 font-mono text-xs text-mute">1.0 · Windows 10/11 x64 · exporta a Android · GPU con Vulkan 1.3 · ≈24 MB</p>
+        <p class="mt-6 font-mono text-xs text-mute">1.2 · Windows 10/11 x64 · exporta a Android · realidad virtual · GPU con Vulkan 1.3 · ≈26 MB</p>
       </div>
 
       <figure class="border border-rule bg-ink-2">
@@ -109,7 +109,7 @@
         </div>
         <div class="grid gap-2 border-b border-rule py-6 md:grid-cols-[1fr_2fr] md:gap-6">
           <dt class="font-medium text-white">Física y audio</dt>
-          <dd class="text-paper/75">Jolt: cuerpos rígidos, colliders, triggers, raycasts, vehículos con motor y marchas, ragdolls. Sonido 3D con oclusión por paredes, eco, filtros y zonas de reverberación.</dd>
+          <dd class="text-paper/75">Jolt: cuerpos rígidos, colliders, triggers, raycasts, vehículos con motor y marchas, ragdolls, telas que ondean con el viento y cuerpos blandos como gelatina. Sonido 3D con oclusión por paredes, eco, filtros y zonas de reverberación.</dd>
         </div>
         <div class="grid gap-2 border-b border-rule py-6 md:grid-cols-[1fr_2fr] md:gap-6">
           <dt class="font-medium text-white">Animación</dt>
@@ -117,7 +117,11 @@
         </div>
         <div class="grid gap-2 border-b border-rule py-6 md:grid-cols-[1fr_2fr] md:gap-6">
           <dt class="font-medium text-white">Editor</dt>
-          <dd class="text-paper/75">Paneles acoplables, vistas Escena y Juego, pestañas para prefabs y scripts, prefabs con instancias enlazadas, shaders de superficie en GLSL que se recompilan al guardar, mallas por código, interfaz de juego y exportación con icono y ajustes propios. Hub con plantillas y un actualizador que comprueba cada descarga con SHA-256.</dd>
+          <dd class="text-paper/75">Paneles acoplables, vistas Escena y Juego, pestañas para prefabs y scripts, prefabs con instancias enlazadas, editor de scripts con IntelliSense de toda la API y de tu proyecto, shaders de superficie en GLSL que se recompilan al guardar, mallas por código, interfaz de juego y exportación con icono y ajustes propios. Hub con plantillas y un actualizador que comprueba cada descarga con SHA-256.</dd>
+        </div>
+        <div class="grid gap-2 border-b border-rule py-6 md:grid-cols-[1fr_2fr] md:gap-6">
+          <dt class="font-medium text-white">Entrada y VR</dt>
+          <dd class="text-paper/75">Input Actions como el Enhanced Input de Unreal: acciones con teclado, ratón, mando, táctil y mandos de VR, contextos con prioridad, modificadores y triggers. Realidad virtual con OpenXR (SteamVR, Meta Quest Link, WMR) con XR Origin y mandos, en el juego exportado y en el Play del editor.</dd>
         </div>
         <div class="grid gap-2 border-b border-rule py-6 md:grid-cols-[1fr_2fr] md:gap-6">
           <dt class="font-medium text-white">Red</dt>
@@ -193,11 +197,16 @@ return Jugador</code></pre>
   <section id="novedades" class="border-b border-rule">
     <div class="mx-auto grid max-w-6xl gap-6 px-5 py-20 lg:grid-cols-[1fr_2fr]">
       <div>
-        <h2 class="text-2xl font-semibold tracking-tight text-white">1.0</h2>
+        <h2 class="text-2xl font-semibold tracking-tight text-white">1.2</h2>
         <p class="mt-1 font-mono text-xs text-mute">septiembre de 2026</p>
       </div>
       <div>
         <ul class="space-y-3 text-paper/75">
+          <li><span class="text-white">Realidad virtual.</span> OpenXR con cualquier casco de PC: XR Origin con cámara y mandos, botones en Input Actions y la tabla <span class="font-mono text-[0.9em]">XR</span> en Lua.</li>
+          <li><span class="text-white">Input Actions como Unreal.</span> Acciones Bool, float, Vec2 y Vec3 con muchas teclas, contextos, modificadores y triggers.</li>
+          <li><span class="text-white">Telas.</span> Cortinas, banderas y sábanas que cuelgan, ondean con el viento y chocan con todo.</li>
+          <li><span class="text-white">Cuerpos blandos.</span> Gelatinas y pelotas de goma que rebotan, se aplastan y vuelven a su forma.</li>
+          <li><span class="text-white">IntelliSense completo.</span> Toda la API, tipos por tus variables, lo de tu proyecto dentro de los textos y la firma de cada función. El editor de scripts ya no tiembla al escribir.</li>
           <li><span class="text-white">Android.</span> Exporta a APK, AAB (Google Play) y OBB con paquete, versión, orientación, permisos, icono y firma. <em>Exportar e instalar</em> lo abre en el móvil.</li>
           <li><span class="text-white">Controles táctiles como Unreal.</span> Joystick, mirar y botones diseñados en el editor, probados con el ratón y controlados desde Lua.</li>
           <li><span class="text-white">Mando y orientación.</span> Mandos Bluetooth/USB y <span class="font-mono text-[0.9em]">Screen.setOrientation</span> libre o fija.</li>
@@ -224,7 +233,7 @@ return Jugador</code></pre>
         <h2 class="text-2xl font-semibold tracking-tight text-white">Descargar</h2>
         <p class="mt-4 text-paper/70">Descomprime y abre <span class="font-mono text-[0.9em] text-white">CramionEditor.exe</span>. Desde la 0.6.2 el motor avisa de las versiones nuevas y se actualiza solo.</p>
         <div class="mt-8 flex flex-col items-start gap-3">
-          <a href="https://github.com/MantraxStudios/Cramion/releases/latest/download/Cramion-win64.zip" class="bg-brand px-5 py-2.5 font-semibold text-ink hover:bg-white">Cramion-win64.zip · ≈24 MB</a>
+          <a href="https://github.com/MantraxStudios/Cramion/releases/latest/download/Cramion-win64.zip" class="bg-brand px-5 py-2.5 font-semibold text-ink hover:bg-white">Cramion-win64.zip · ≈26 MB</a>
           <a href="https://github.com/MantraxStudios/Cramion/releases" class="link text-sm">Versiones anteriores</a>
           <a href="https://discord.gg/zG7rSsUGEz" target="_blank" rel="noopener" class="link text-sm">Discord de la comunidad</a>
         </div>

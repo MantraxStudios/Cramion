@@ -1,0 +1,134 @@
+<p>
+  Cramion juega en <strong>realidad virtual</strong> con <strong>OpenXR</strong>, el estándar de Khronos: vale cualquier casco
+  con runtime OpenXR en PC (SteamVR con Valve Index / HTC Vive / Pico, Meta Quest por Link o Air Link, Windows Mixed
+  Reality, Varjo...). Cada ojo se dibuja con todo el render del motor (iluminación, sombras, post-procesado) y la
+  ventana del PC hace de espejo. Sin casco o sin runtime, el juego sigue igual que siempre, sin VR.
+</p>
+<div class="note">Solo PC (Windows). En Android no hay VR todavía (Quest nativo); se exporta sin ella.</div>
+
+<h3 id="activar">Activarla</h3>
+<ul>
+  <li><strong>Juego exportado</strong>: en <em>Archivo &gt; Configuraciones de compilación</em>, marca
+    <strong>Realidad virtual (OpenXR)</strong> (escribe <code>vr=1</code> en <code>game.ini</code>). Al abrir el juego busca el
+    casco; si no hay, arranca normal.</li>
+  <li><strong>En el editor</strong>: <em>Editar &gt; Play en realidad virtual (OpenXR)</em>. Se aplica al volver a abrir el
+    editor (Vulkan se crea en la GPU a la que está conectado el casco). Desde entonces, al darle a Play el juego se ve en el
+    casco; fuera de Play el casco no se toca. El tooltip del menú dice qué casco encontró o por qué no.</li>
+</ul>
+<p>
+  Antes de abrir el juego, el runtime tiene que estar en marcha y ser el <em>activo</em> (SteamVR: Ajustes &gt; OpenXR &gt;
+  "Establecer SteamVR como runtime de OpenXR"; Meta: la app de Meta Quest Link con "OpenXR runtime" activo). El registro
+  (<code>%LOCALAPPDATA%/Cramion/Logs</code>) dice <code>[VR] ...</code> con el casco, el runtime y la resolución por ojo, o el
+  motivo si no pudo.
+</p>
+
+<h3 id="rig">El XR Origin (rig)</h3>
+<p>
+  Como el <em>XR Origin</em> de Unity: <em>GameObject &gt; Realidad virtual &gt; XR Origin (cámara y mandos)</em> crea
+</p>
+<pre><code>XR Origin          (XR Origin)       el suelo de la habitación del jugador
+  Main Camera      (Camera)          la cabeza: la mueve el casco
+  Mano izquierda   (XR Controller)   el mando izquierdo (con un cubo de modelo)
+  Mano derecha     (XR Controller)   el mando derecho</code></pre>
+<ul>
+  <li>Para <strong>mover al jugador</strong> (andar con el stick, teletransporte, subir a un vehículo) se mueve o gira la
+    entidad <code>XR Origin</code>, nunca la cámara: la cámara la pone el casco cada frame.</li>
+  <li>Los <strong>mandos</strong> siguen a la mano; pon de hijo el modelo que quieras (una mano, una pistola, una linterna).
+    Con <em>Ocultar sin mando</em> se desactivan cuando el mando se apaga o no se ve.</li>
+  <li><strong>Origen del seguimiento</strong>: <em>Suelo</em> (de pie / room scale, el 0 es el suelo real) u <em>Ojos</em>
+    (sentado: la cabeza empieza en el origen más la <em>Altura de la cabeza</em>).</li>
+</ul>
+<p>
+  <strong>Sin XR Origin</strong>, cualquier escena se ve en VR igual: la cámara principal hace de origen (su posición y su giro
+  horizontal) y la cabeza empieza donde está la cámara. El arriba/abajo lo pone siempre el casco (nunca un script), para no
+  marear.
+</p>
+
+<h3 id="entrada">Botones con Input Actions</h3>
+<p>
+  Los mandos entran en <a href="input-actions.html">Input Actions</a> como cualquier otro dispositivo: <code>"XR Left
+  Stick"</code>, <code>"XR Right Trigger"</code>, <code>"XR Right Primary"</code> (A), <code>"XR Left Grip"</code>... Las acciones
+  por defecto ya los tienen: <code>Move</code> = stick izquierdo, <code>Look</code> = stick derecho (solo girar),
+  <code>Jump</code> = A, <code>Fire</code> = gatillo derecho, <code>Aim</code> = gatillo izquierdo, <code>Interact</code> = agarre
+  derecho, <code>Sprint</code> = pulsar el stick izquierdo. Así un juego hecho con acciones funciona con teclado, mando y VR sin
+  tocar el código. Perfiles de mando reconocidos: Meta/Oculus Touch, Valve Index, HTC Vive (el trackpad hace de stick),
+  Windows Mixed Reality y el genérico <code>khr/simple_controller</code>.
+</p>
+
+<h3 id="lua">La tabla XR (Lua)</h3>
+<p>Manos: <code>"left"</code> / <code>"right"</code>. Las posiciones y giros salen en el <strong>mundo</strong> (con el rig ya aplicado).</p>
+<table>
+  <thead><tr><th>Función</th><th>Devuelve</th></tr></thead>
+  <tbody>
+    <tr><td><code>XR.isAvailable()</code></td><td>Hay casco y sesión de VR.</td></tr>
+    <tr><td><code>XR.isRunning()</code> / <code>XR.isFocused()</code></td><td>El casco está mostrando el juego / el juego tiene los mandos (no está el menú del sistema encima).</td></tr>
+    <tr><td><code>XR.getSystemName()</code> / <code>XR.getRuntimeName()</code></td><td>El casco (<code>"Oculus Quest2"</code>...) y el runtime (<code>"SteamVR/OpenXR"</code>...).</td></tr>
+    <tr><td><code>XR.getHeadPosition()</code> / <code>XR.getHeadRotation()</code></td><td><code>Vec3</code> / <code>Quat</code> de la cabeza, o <code>nil</code> sin seguimiento.</td></tr>
+    <tr><td><code>XR.getHeadLocalPosition()</code></td><td>La cabeza dentro de la habitación (metros desde el origen).</td></tr>
+    <tr><td><code>XR.isControllerActive(mano)</code></td><td>El mando está encendido y se sigue.</td></tr>
+    <tr><td><code>XR.getControllerPosition(mano [, "grip"|"aim"])</code></td><td><code>Vec3</code> de la mano (<code>grip</code>) o del puntero (<code>aim</code>), o <code>nil</code>.</td></tr>
+    <tr><td><code>XR.getControllerRotation(mano [, pose])</code></td><td><code>Quat</code>, o <code>nil</code>.</td></tr>
+    <tr><td><code>XR.getAimRay(mano)</code></td><td>Origen y dirección del puntero (dos <code>Vec3</code>) para <code>Physics.raycast</code>.</td></tr>
+    <tr><td><code>XR.getTrigger(mano)</code> / <code>XR.getGrip(mano)</code></td><td>0..1.</td></tr>
+    <tr><td><code>XR.getThumbstick(mano)</code></td><td><code>Vec3(x, y, 0)</code> en −1..1 (Y arriba).</td></tr>
+    <tr><td><code>XR.getButton(mano, boton)</code>, <code>XR.getButtonDown</code>, <code>XR.getButtonUp</code></td><td>Botones: <code>trigger</code>, <code>grip</code>, <code>thumbstick</code>, <code>primary</code> (A/X, también <code>"a"</code>/<code>"x"</code>), <code>secondary</code> (B/Y), <code>menu</code>. Gatillo y agarre cuentan como pulsados a partir de la mitad.</td></tr>
+    <tr><td><code>XR.vibrate(mano [, intensidad, segundos, hz])</code></td><td>Vibración (por defecto 0.5 durante 0.1 s).</td></tr>
+    <tr><td><code>XR.setTrackingOrigin("floor"|"eyes")</code>, <code>XR.getTrackingOrigin()</code></td><td>Origen sin XR Origin (con él manda el componente).</td></tr>
+    <tr><td><code>XR.getOriginPosition()</code></td><td>Dónde está el rig en el mundo.</td></tr>
+  </tbody>
+</table>
+
+<h3 id="ejemplo">Ejemplo: disparar con el puntero</h3>
+<pre><code class="language-lua">local Pistola = {}
+
+function Pistola:Update(dt)
+    if not XR.isRunning() then return end
+    if XR.getButtonDown("right", "trigger") then
+        local origen, dir = XR.getAimRay("right")
+        if origen then
+            local hit = Physics.raycast(origen, dir, 100)
+            if hit then
+                Debug.log("Tocado: " .. hit.entity.name)
+                XR.vibrate("right", 0.8, 0.08)
+            end
+        end
+    end
+end
+
+return Pistola</code></pre>
+
+<h3 id="rig-mover">Ejemplo: andar y girar a saltos</h3>
+<pre><code class="language-lua">-- En la entidad "XR Origin".
+local Andar = { properties = { velocidad = 2.0, giro = 30 } }
+
+function Andar:Start() self.listo = true end
+
+function Andar:Update(dt)
+    local stick = XR.getThumbstick("left")
+    local cabeza = XR.getHeadRotation()
+    if cabeza and (math.abs(stick.x) > 0.2 or math.abs(stick.y) > 0.2) then
+        -- Hacia donde mira la cabeza, en horizontal.
+        local adelante = cabeza * Vec3(0, 0, -1); adelante.y = 0
+        local derecha = cabeza * Vec3(1, 0, 0); derecha.y = 0
+        local mover = adelante:normalized() * stick.y + derecha:normalized() * stick.x
+        self.entity.position = self.entity.position + mover * self.velocidad * dt
+    end
+    -- Giro a saltos con el stick derecho (marea menos que girar suave).
+    local x = XR.getThumbstick("right").x
+    if self.listo and math.abs(x) > 0.7 then
+        local r = self.entity.rotation
+        self.entity.rotation = Vec3(r.x, r.y - self.giro * (x > 0 and 1 or -1), r.z)
+        self.listo = false
+    elseif math.abs(x) < 0.3 then
+        self.listo = true
+    end
+end
+
+return Andar</code></pre>
+
+<h3 id="rendimiento">Rendimiento</h3>
+<p>
+  En VR se dibuja la escena tres veces por frame (dos ojos y el espejo) y el casco marca el ritmo (72–144 Hz), así que la
+  ventana va sin vsync. Si va justo, baja la calidad en <em>Configuración gráfica</em> o desde Lua con <code>Graphics</code>
+  (resolución interna, sombras, nubes), y usa LODs. El <code>Profiler</code> sigue funcionando en la ventana.
+</p>

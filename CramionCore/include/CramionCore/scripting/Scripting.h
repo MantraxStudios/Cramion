@@ -46,6 +46,7 @@
 
 #include <filesystem>
 #include <functional>
+#include <map>
 #include <memory>
 #include <string>
 #include <utility>
@@ -73,6 +74,10 @@ namespace cramion::voxel {
 class VoxelSystem;
 }
 
+namespace cramion::xr {
+class XrSystem;
+class XrRig;
+}
 namespace cramion::asset {
 struct ModelData;
 }
@@ -186,6 +191,9 @@ public:
         std::function<std::string()> orientation_mode;                  // el ultimo pedido ("auto"...)
     };
     void setScreen(ScreenHost host);
+    // Tabla XR (realidad virtual): casco, mandos y vibracion. Las poses salen
+    // en el mundo con el origen del rig. nullptr: XR.isAvailable() da false.
+    void setXr(xr::XrSystem* system, const xr::XrRig* rig);
     bool cursorLocked() const;
     // El programa solto el raton por su cuenta (Escape en el editor, perder el foco).
     void releaseCursor();
@@ -249,6 +257,17 @@ public:
 
     // Prefs: se conservan al cambiar de escena y, con archivo, entre partidas.
     void setPrefsFile(const std::filesystem::path& file);
+
+    // La API de Lua tal como la ve un script (para el autocompletado del
+    // editor): cada tabla global ("Input", "XR", "math"...) y cada tipo
+    // ("Entity:", "Vec3:", "Quat:", "Mesh:": los miembros de sus objetos) con sus
+    // miembros. "" = funciones globales. Se saca de un estado de Lua con
+    // todos los bindings, asi que siempre esta al dia.
+    struct ApiMember {
+        std::string name;
+        bool function = false;
+    };
+    static std::map<std::string, std::vector<ApiMember>> apiReference();
 
 private:
     struct Impl;

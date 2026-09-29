@@ -156,3 +156,57 @@
     <tr><td>Rueda visible<br><code>visual</code></td><td>entidad</td><td>(ninguna)</td><td>arrastrar desde la Jerarquia</td><td>Objeto que gira con la rueda (eje X local)</td></tr>
   </tbody>
 </table>
+<h3 id="Cloth">Tela (Cloth) <code>Cloth</code></h3>
+<table>
+  <thead><tr><th>Propiedad</th><th>Tipo</th><th>Por defecto</th><th>Valores</th><th>Descripcion</th></tr></thead>
+  <tbody>
+    <tr><td>Ancho<br><code>width</code></td><td>numero</td><td>2</td><td>0,05 a 100</td><td>Metros (X local; la escala de la entidad lo agranda)</td></tr>
+    <tr><td>Alto<br><code>height</code></td><td>numero</td><td>2</td><td>0,05 a 100</td><td>Metros (Y local)</td></tr>
+    <tr><td>Divisiones X<br><code>segments_x</code></td><td>entero</td><td>20</td><td>1 a 96</td><td>Cuadros a lo ancho: mas = pliegues mas finos (y mas caro)</td></tr>
+    <tr><td>Divisiones Y<br><code>segments_y</code></td><td>entero</td><td>20</td><td>1 a 96</td><td></td></tr>
+    <tr><td>Fijada por<br><code>pin</code></td><td>opcion</td><td>Borde de arriba (cortina)</td><td>Ninguna (cae entera), Borde de arriba (cortina), Esquinas de arriba, Borde izquierdo (bandera), Las cuatro esquinas, El centro</td><td>Particulas pegadas a la entidad (la siguen al moverla)</td></tr>
+    <tr><td colspan="5"><strong class="text-white">Simulacion</strong></td></tr>
+    <tr><td>Masa<br><code>mass</code></td><td>numero</td><td>1</td><td>0,01 a 1000</td><td>kg de toda la tela</td></tr>
+    <tr><td>Rigidez<br><code>stiffness</code></td><td>numero</td><td>0,9</td><td>0 a 1</td><td>0 = elastica, 1 = no se estira</td></tr>
+    <tr><td>Resistencia a doblarse<br><code>bending</code></td><td>numero</td><td>0,3</td><td>0 a 1</td><td>0 = se arruga libre (seda), 1 = rigida (lona)</td></tr>
+    <tr><td>Frenado<br><code>damping</code></td><td>numero</td><td>0,2</td><td>0 a 5</td><td>Resistencia del aire</td></tr>
+    <tr><td>Friccion<br><code>friction</code></td><td>numero</td><td>0,5</td><td>0 a 1</td><td></td></tr>
+    <tr><td>Grosor<br><code>thickness</code></td><td>numero</td><td>0,02</td><td>0 a 0,2</td><td>Separacion con lo que toca (evita que se meta dentro)</td></tr>
+    <tr><td>Escala de gravedad<br><code>gravity_scale</code></td><td>numero</td><td>1</td><td>-5 a 5</td><td></td></tr>
+    <tr><td>Iteraciones<br><code>iterations</code></td><td>entero</td><td>6</td><td>1 a 32</td><td>Mas = mas precisa y rigida (y mas cara)</td></tr>
+    <tr><td>Chocar<br><code>collide</code></td><td>si/no</td><td>si</td><td></td><td>Con los colliders y rigidbodies de su capa</td></tr>
+    <tr><td colspan="5"><strong class="text-white">Viento</strong></td></tr>
+    <tr><td>Viento<br><code>wind</code></td><td>Vec3 (metros)</td><td>(0; 0; 0)</td><td></td><td>m/s en el mundo (una bandera: 5..12)</td></tr>
+    <tr><td>Rachas<br><code>turbulence</code></td><td>numero</td><td>0,4</td><td>0 a 1</td><td>0 = constante, 1 = rachas fuertes</td></tr>
+    <tr><td>Empuje del aire<br><code>air_drag</code></td><td>numero</td><td>1</td><td>0 a 10</td><td>Cuanto la mueve el viento</td></tr>
+    <tr><td colspan="5"><strong class="text-white">Aspecto</strong></td></tr>
+    <tr><td>Color<br><code>color</code></td><td>Color</td><td>(0,75; 0,12; 0,12)</td><td></td><td>Sin material .crmat en el Mesh Renderer</td></tr>
+    <tr><td>Rugosidad<br><code>roughness</code></td><td>numero</td><td>0,85</td><td>0,04 a 1</td><td></td></tr>
+    <tr><td>Doble cara<br><code>double_sided</code></td><td>si/no</td><td>si</td><td></td><td>Se ve por detras</td></tr>
+  </tbody>
+</table>
+<h3 id="SoftBody">Cuerpo blando (gelatina) <code>SoftBody</code></h3>
+<table>
+  <thead><tr><th>Propiedad</th><th>Tipo</th><th>Por defecto</th><th>Valores</th><th>Descripcion</th></tr></thead>
+  <tbody>
+    <tr><td>Forma<br><code>shape</code></td><td>opcion</td><td>Esfera</td><td>Esfera, Cubo</td><td></td></tr>
+    <tr><td>Tamano<br><code>size</code></td><td>Vec3 (escala)</td><td>(1; 1; 1)</td><td></td><td>Metros (esfera: el diametro es X)</td></tr>
+    <tr><td>Resolucion<br><code>resolution</code></td><td>entero</td><td>8</td><td>2 a 16</td><td>Divisiones por lado de cada cara: mas = mas suave (y mas caro)</td></tr>
+    <tr><td colspan="5"><strong class="text-white">Simulacion</strong></td></tr>
+    <tr><td>Masa<br><code>mass</code></td><td>numero</td><td>1</td><td>0,01 a 1000</td><td>kg</td></tr>
+    <tr><td>Firmeza<br><code>stiffness</code></td><td>numero</td><td>0,35</td><td>0 a 1</td><td>0 = gelatina muy blanda, 1 = goma dura</td></tr>
+    <tr><td>Presion<br><code>pressure</code></td><td>numero</td><td>1</td><td>0 a 10</td><td>Aire de dentro: 0 = se desinfla, 1 = aguanta su peso, 3+ = balon</td></tr>
+    <tr><td>Frenado<br><code>damping</code></td><td>numero</td><td>0,3</td><td>0 a 5</td><td>Mas = tiembla menos rato</td></tr>
+    <tr><td>Friccion<br><code>friction</code></td><td>numero</td><td>0,6</td><td>0 a 1</td><td></td></tr>
+    <tr><td>Rebote<br><code>restitution</code></td><td>numero</td><td>0</td><td>0 a 1</td><td></td></tr>
+    <tr><td>Escala de gravedad<br><code>gravity_scale</code></td><td>numero</td><td>1</td><td>-5 a 5</td><td></td></tr>
+    <tr><td>Grosor<br><code>thickness</code></td><td>numero</td><td>0,01</td><td>0 a 0,2</td><td>Separacion con lo que toca</td></tr>
+    <tr><td>Iteraciones<br><code>iterations</code></td><td>entero</td><td>8</td><td>1 a 32</td><td>Mas = mas precisa (y mas cara)</td></tr>
+    <tr><td>Chocar<br><code>collide</code></td><td>si/no</td><td>si</td><td></td><td>Con los colliders y rigidbodies de su capa</td></tr>
+    <tr><td>La entidad lo sigue<br><code>follow_entity</code></td><td>si/no</td><td>si</td><td></td><td>La entidad va al centro del cuerpo (scripts, camaras)</td></tr>
+    <tr><td colspan="5"><strong class="text-white">Aspecto</strong></td></tr>
+    <tr><td>Color<br><code>color</code></td><td>Color</td><td>(0,35; 0,85; 0,3)</td><td></td><td>Sin material .crmat en el Mesh Renderer</td></tr>
+    <tr><td>Rugosidad<br><code>roughness</code></td><td>numero</td><td>0,15</td><td>0,04 a 1</td><td>Bajo = brillante, como gelatina</td></tr>
+    <tr><td>Metalicidad<br><code>metallic</code></td><td>numero</td><td>0</td><td>0 a 1</td><td></td></tr>
+  </tbody>
+</table>

@@ -1,0 +1,270 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Realidad virtual · Manual de Cramion</title>
+  <meta name="description" content="XR Origin (el rig de VR) y XR Controller (una entidad que sigue a un mando).">
+  <link rel="icon" href="../img/icon.png">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/base16/tomorrow-night.min.css">
+  <link rel="stylesheet" href="manual.css">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/lua.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/glsl.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/json.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/bash.min.js"></script>
+  <script src="search.js"></script>
+</head>
+<body>
+
+  <header class="top">
+    <div class="top-inner">
+      <button id="menu-btn" class="menu-btn" aria-label="Menú">Menú</button>
+      <a href="index.html" class="brand"><img src="../img/icon.png" alt=""><b>Cramion</b><span>manual</span></a>
+      <div class="search">
+        <input id="search" type="search" autocomplete="off" placeholder="Buscar (funciones, componentes, páginas)">
+        <kbd>/</kbd>
+        <div id="results" class="results" hidden></div>
+      </div>
+      <nav class="top-links">
+        <a href="../index.html">Web</a>
+        <a href="https://discord.gg/zG7rSsUGEz" target="_blank" rel="noopener">Discord</a>
+        <a href="https://github.com/MantraxStudios/Cramion" target="_blank" rel="noopener">GitHub</a>
+      </nav>
+    </div>
+  </header>
+
+  <div class="frame">
+    <aside id="side" class="side">
+      <nav>
+        <a href="index.html">Índice</a>
+        <p class="group">Primeros pasos</p>
+        <a href="primer-script.html">Tu primer script</a>
+        <a href="ciclo-de-vida.html">Ciclo de vida</a>
+        <a href="propiedades.html">Propiedades</a>
+        <a href="recarga.html">Recarga en caliente</a>
+        <a href="prefabs.html">Prefabs</a>
+        <a href="mcp.html">Conectar una IA (MCP)</a>
+        <p class="group">El editor</p>
+        <a href="editor-interfaz.html">Interfaz y pestañas</a>
+        <a href="editor-escena.html">Vista Escena y gizmos</a>
+        <a href="editor-jerarquia.html">Jerarquía e Inspector</a>
+        <a href="editor-proyecto.html">Proyecto e importación</a>
+        <a href="editor-play.html">Play, deshacer y escenas</a>
+        <a href="editor-herramientas.html">Herramientas de mundo</a>
+        <a href="editor-ventanas.html">Ventanas de herramientas</a>
+        <a href="materiales.html">Materiales</a>
+        <a href="render-textures.html">Render Textures</a>
+        <a href="render.html">Render y rendimiento</a>
+        <a href="exportar.html">Exportar y compilación</a>
+        <a href="plantillas.html">Plantillas</a>
+        <a href="atajos.html">Atajos de teclado</a>
+        <a href="actualizaciones.html">Actualizaciones</a>
+        <p class="group">Componentes</p>
+        <a href="componentes.html">Todos los componentes</a>
+        <a href="componentes-basicos.html">Transform y renderizado</a>
+        <a href="componentes-entorno.html">Entorno</a>
+        <a href="componentes-fisica.html">Física</a>
+        <a href="componentes-efectos.html">Partículas y depuración</a>
+        <a href="componentes-animacion.html">Animación</a>
+        <a href="componentes-audio.html">Audio</a>
+        <a href="componentes-cinematicas.html">Cámaras y cinemáticas</a>
+        <a href="componentes-navegacion.html">Navegación</a>
+        <a href="componentes-ui.html">Interfaz (UI)</a>
+        <a href="componentes-scripting.html">Scripts y prefabs</a>
+        <a href="componentes-vr.html" class="active">Realidad virtual</a>
+        <p class="group">Referencia de la API</p>
+        <a href="vec3.html">Vec3</a>
+        <a href="quat.html">Quat (rotaciones)</a>
+        <a href="mathf.html">Mathf</a>
+        <a href="random.html">Random</a>
+        <a href="entity.html">Entity</a>
+        <a href="scene.html">Scene</a>
+        <a href="input.html">Input</a>
+        <a href="input-actions.html">Input Actions</a>
+        <a href="realidad-virtual.html">Realidad virtual (XR)</a>
+        <a href="time.html">Time</a>
+        <a href="physics.html">Physics</a>
+        <a href="navegacion.html">Navegación</a>
+        <a href="mallas.html">Mallas por código</a>
+        <a href="voxel.html">Mundo de bloques</a>
+        <a href="audio.html">Audio</a>
+        <a href="ui.html">Interfaz (UI)</a>
+        <a href="esqueletos.html">Esqueletos: IK, ragdoll y phys bones</a>
+        <a href="graphics.html">Graphics</a>
+        <a href="red.html">Network (multijugador)</a>
+        <a href="http.html">Http y Json</a>
+        <a href="prefs.html">Prefs y Game</a>
+        <a href="debug.html">Debug</a>
+        <p class="group">Gráficos</p>
+        <a href="shaders.html">Shaders propios</a>
+        <p class="group">Ejemplos</p>
+        <a href="ejemplo-girar.html">Girar un objeto</a>
+        <a href="ejemplo-camara.html">Cámara que sigue al jugador</a>
+        <a href="ejemplo-jugador.html">Jugador con física</a>
+        <a href="ejemplo-disparo.html">Disparo con raycast</a>
+        <a href="ejemplo-monedas.html">Monedas y puntuación</a>
+        <a href="ejemplo-spawner.html">Generador de enemigos</a>
+        <a href="ejemplo-vehiculo.html">Conducir un vehículo</a>
+        <a href="ejemplo-menu.html">Menú, opciones y récord</a>
+        <a href="ejemplo-animacion.html">Animación de un personaje</a>
+        <a href="ejemplo-comunicacion.html">Scripts que se hablan</a>
+        <a href="ejemplo-ia.html">IA: patrullar y perseguir</a>
+        <a href="ejemplo-terreno.html">Terreno procedural con colisión</a>
+        <a href="ejemplo-efectos.html">Varios materiales y efectos</a>
+        <a href="ejemplo-olas.html">Olas: cambiar la malla cada frame</a>
+      </nav>
+    </aside>
+
+    <main class="doc">
+      <div class="crumbs"><a href="index.html">Manual</a> / Componentes</div>
+      <h1>Realidad virtual</h1>
+      <p class="lede">XR Origin (el rig de VR) y XR Controller (una entidad que sigue a un mando).</p>
+      <div class="body">
+<p>XR Origin (el suelo de la habitacion, con la camara que sigue al casco) y los mandos (XR Controller). Referencia completa generada desde el motor.</p>
+<h3 id="XrOrigin">XR Origin (VR) <code>XrOrigin</code></h3>
+<table>
+  <thead><tr><th>Propiedad</th><th>Tipo</th><th>Por defecto</th><th>Valores</th><th>Descripcion</th></tr></thead>
+  <tbody>
+    <tr><td>Origen del seguimiento<br><code>tracking</code></td><td>opcion</td><td>De pie</td><td>De pie, Sentado</td><td>De pie: esta entidad es el suelo de la habitacion (room scale). Sentado: la cabeza empieza aqui (mas la altura)</td></tr>
+    <tr><td>Altura de la cabeza<br><code>camera_y_offset</code></td><td>numero</td><td>1,6</td><td>0 a 3</td><td>Sentado: metros de la cabeza sobre el origen</td></tr>
+    <tr><td>Mover la camara con el casco<br><code>drive_camera</code></td><td>si/no</td><td>si</td><td></td><td>La camara principal sigue a la cabeza</td></tr>
+  </tbody>
+</table>
+<h3 id="XrController">XR Controller (mando VR) <code>XrController</code></h3>
+<table>
+  <thead><tr><th>Propiedad</th><th>Tipo</th><th>Por defecto</th><th>Valores</th><th>Descripcion</th></tr></thead>
+  <tbody>
+    <tr><td>Mano<br><code>hand</code></td><td>opcion</td><td>Derecha</td><td>Izquierda, Derecha</td><td></td></tr>
+    <tr><td>Pose<br><code>pose</code></td><td>opcion</td><td>Mano (grip)</td><td>Mano (grip), Puntero (aim)</td><td>Mano: donde se agarra el mando. Puntero: hacia donde apunta (rayos)</td></tr>
+    <tr><td>Ocultar sin mando<br><code>hide_when_untracked</code></td><td>si/no</td><td>si</td><td></td><td>Se desactiva si el mando no se ve o esta apagado</td></tr>
+  </tbody>
+</table>
+      </div>
+      <nav class="pager"><a href="componentes-scripting.html"><span>← anterior</span><b>Scripts y prefabs</b></a><a class="next" href="vec3.html"><span>siguiente →</span><b>Vec3</b></a></nav>
+      <p class="help">¿Algo no queda claro o falta algo? Pregunta en el
+        <a href="https://discord.gg/zG7rSsUGEz" target="_blank" rel="noopener">Discord</a>.</p>
+    </main>
+    <aside class="onpage-col">
+      <p>En esta página</p>
+      <nav id="onpage" class="onpage"></nav>
+    </aside>
+  </div>
+
+  <script>
+    // Solo el codigo con lenguaje (los arboles de carpetas y la salida quedan tal cual).
+    hljs.configure({ cssSelector: 'pre code[class*="language-"]' });
+    hljs.highlightAll();
+
+    // Menu lateral en el movil.
+    const side = document.getElementById("side");
+    document.getElementById("menu-btn").addEventListener("click", () => document.body.classList.toggle("menu-open"));
+    document.addEventListener("click", ev => {
+      if (document.body.classList.contains("menu-open") && !ev.target.closest("#side, #menu-btn")) {
+        document.body.classList.remove("menu-open");
+      }
+    });
+    // El enlace activo a la vista dentro del menu (sin mover la pagina).
+    const current = side.querySelector("a.active");
+    if (current) side.scrollTop = current.offsetTop - side.clientHeight / 2;
+
+    // Ancla de cada seccion y boton de copiar en el codigo.
+    document.querySelectorAll(".doc h3[id]").forEach(h => {
+      const a = document.createElement("a");
+      a.className = "anchor";
+      a.href = "#" + h.id;
+      a.textContent = "#";
+      h.appendChild(a);
+    });
+    document.querySelectorAll(".doc pre").forEach(pre => {
+      const b = document.createElement("button");
+      b.className = "copy";
+      b.textContent = "copiar";
+      b.addEventListener("click", async () => {
+        try {
+          await navigator.clipboard.writeText(pre.querySelector("code")?.innerText ?? pre.innerText);
+          b.textContent = "copiado";
+        } catch { b.textContent = "no se pudo"; }
+        setTimeout(() => (b.textContent = "copiar"), 1400);
+      });
+      pre.appendChild(b);
+    });
+
+    // Tablas anchas: se desplazan dentro de su marco.
+    document.querySelectorAll(".doc table").forEach(t => {
+      const w = document.createElement("div");
+      w.className = "table-wrap";
+      t.replaceWith(w);
+      w.appendChild(t);
+    });
+
+    // "En esta pagina": los h3 con la seccion visible marcada.
+    const onpage = document.getElementById("onpage");
+    if (onpage) {
+      const heads = [...document.querySelectorAll(".doc h3[id]")];
+      if (heads.length < 2) {
+        onpage.closest("aside").style.visibility = "hidden";
+      } else {
+        onpage.innerHTML = heads.map(h => `<a href="#${h.id}">${h.firstChild.textContent}</a>`).join("");
+        const links = [...onpage.querySelectorAll("a")];
+        const obs = new IntersectionObserver(entries => {
+          for (const e of entries) {
+            if (e.isIntersecting) links.forEach(a => a.classList.toggle("active", a.getAttribute("href") === "#" + e.target.id));
+          }
+        }, { rootMargin: "-70px 0px -70% 0px" });
+        heads.forEach(h => obs.observe(h));
+      }
+    }
+
+    // Buscador: titulos, secciones y nombres de la API.
+    const input = document.getElementById("search");
+    const box = document.getElementById("results");
+    const norm = s => s.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+    const esc = s => s.replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+    let hits = [], sel = 0;
+    const render = () => {
+      const q = input.value.trim();
+      if (!hits.length) {
+        box.innerHTML = q ? '<p class="none">Sin resultados.</p>' : "";
+        box.hidden = !q;
+        return;
+      }
+      box.innerHTML = hits.map((h, i) => `
+        <a href="${h.u}" class="${i === sel ? "sel" : ""}">
+          <span class="t${h.c ? " code" : ""}">${esc(h.t)}</span><span class="g">${esc(h.g)}</span>
+          ${h.d ? `<span class="d">${esc(h.d)}</span>` : ""}
+        </a>`).join("");
+      box.hidden = false;
+    };
+    input.addEventListener("input", () => {
+      const q = norm(input.value.trim());
+      sel = 0;
+      if (!q) { hits = []; render(); return; }
+      const words = q.split(/\s+/);
+      hits = window.CRAMION_SEARCH
+        .map(e => {
+          const t = norm(e.t), all = t + " " + norm(e.g) + " " + norm(e.d || "");
+          if (!words.every(w => all.includes(w))) return null;
+          const score = (t.startsWith(q) ? 0 : t.includes(q) ? 1 : 2) + (e.c ? 0.5 : 0) - (e.d ? 0.3 : 0);
+          return { e, score };
+        })
+        .filter(Boolean).sort((a, b) => a.score - b.score).slice(0, 12).map(x => x.e);
+      render();
+    });
+    input.addEventListener("keydown", ev => {
+      if (ev.key === "ArrowDown") { sel = Math.min(sel + 1, hits.length - 1); render(); ev.preventDefault(); }
+      if (ev.key === "ArrowUp") { sel = Math.max(sel - 1, 0); render(); ev.preventDefault(); }
+      if (ev.key === "Enter" && hits[sel]) location.href = hits[sel].u;
+      if (ev.key === "Escape") { input.value = ""; hits = []; render(); input.blur(); }
+    });
+    document.addEventListener("keydown", ev => {
+      if (ev.key === "/" && document.activeElement !== input) { ev.preventDefault(); input.focus(); }
+    });
+    document.addEventListener("click", ev => { if (!ev.target.closest("#results, #search")) box.hidden = true; });
+    input.addEventListener("focus", () => { if (input.value.trim()) render(); });
+  </script>
+</body>
+</html>

@@ -49,6 +49,7 @@ BuildConfigs loadBuildConfigs(const std::filesystem::path& file) {
                 b.height = std::clamp(c.value("height", b.height), 240, 16384);
                 b.static_batching = c.value("static_batching", b.static_batching);
                 b.show_fps = c.value("show_fps", b.show_fps);
+                b.vr = c.value("vr", b.vr);
                 b.platform = c.value("platform", std::string("windows")) == "android" ? BuildPlatform::Android
                                                                                        : BuildPlatform::Windows;
                 if (const auto a = c.find("android"); a != c.end() && a->is_object()) {
@@ -97,6 +98,7 @@ bool saveBuildConfigs(const std::filesystem::path& file, const BuildConfigs& con
                         {"height", b.height},
                         {"static_batching", b.static_batching},
                         {"show_fps", b.show_fps},
+                        {"vr", b.vr},
                         {"platform", b.platform == BuildPlatform::Android ? "android" : "windows"}});
         const AndroidBuildSettings& s = b.android;
         list.back()["android"] = {{"package", s.package},
@@ -136,6 +138,7 @@ std::string buildConfigIni(const BuildConfig& config, const std::string& game_na
     ini << "width=" << config.width << "\n";
     ini << "height=" << config.height << "\n";
     ini << "show_fps=" << (config.show_fps ? 1 : 0) << "\n";
+    if (config.vr && config.platform == BuildPlatform::Windows) ini << "vr=1\n";
     if (config.platform == BuildPlatform::Android) {
         ini << "platform=android\n";
         ini << "android_quality=" << config.android.quality << "\n";

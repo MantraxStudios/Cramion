@@ -1,4 +1,7 @@
 #include "EditorApp.h"
+
+#include <CramionCore/physics/Cloth.h>
+#include <CramionCore/physics/SoftBody.h>
 #include "GraphicsConfig.h"
 
 #include "Dialogs.h"
@@ -58,6 +61,7 @@ EditorApp::EditorApp(dm::Window& window, gfx::VulkanRenderer& renderer, scene::S
     audio::registerAudioComponents();
     scripting::registerScriptComponents();
     ui::registerUiComponents();
+    xr::registerXrComponents();
     startMcp();  // servidor MCP para IA (solo este PC)
     physics_.addListener([this](const physics::PhysicsEvent& event) { onPhysicsEvent(event); });
     const std::filesystem::path documents = dialogs::documentsFolder();
@@ -120,6 +124,7 @@ bool EditorApp::openProject(const std::filesystem::path& path, bool open_scene) 
         screen.height = [this] { return static_cast<int>(game_image_rect_[3]); };
         scripts_.setScreen(screen);
     }
+    scripts_.setXr(&renderer_.xr(), &xr_rig_);
     audio_.setAssetsRoot(project_.assetsFolder());
     // Oclusion: paredes (colliders) entre el sonido y el oyente.
     audio_.setOcclusionQuery(audio::physicsOcclusionQuery(physics_));
@@ -695,6 +700,51 @@ ecs::Entity EditorApp::createEntity(int kind, ecs::Entity parent) {
             }
             break;
         }
+        case 18:
+        case 19:
+        case 20: {
+            // Tela (Jolt soft body): cortina colgada, bandera al viento o una
+            // sabana suelta que cae sobre lo que tenga debajo.
+            static constexpr const char* kNames[] = {"Cortina", "Bandera", "Sabana"};
+            created = world_.create(kNames[kind - 18], parent);
+            physics::Cloth& cloth = created.add<physics::Cloth>();
+            created.add<ecs::MeshRenderer>();
+            if (kind == 19) {
+                cloth.width = 3.0f;
+                cloth.height = 2.0f;
+                cloth.segments_x = 24;
+                cloth.segments_y = 16;
+                cloth.pin = physics::ClothPin::LeftEdge;
+                cloth.wind = Vec3{8.0f, 0.0f, 1.0f};
+                cloth.bending = 0.1f;
+                cloth.color = Vec3{0.1f, 0.25f, 0.75f};
+            } else if (kind == 20) {
+                cloth.pin = physics::ClothPin::None;
+                cloth.color = Vec3{0.85f, 0.85f, 0.8f};
+                cloth.bending = 0.05f;
+                created.setLocalEulerDegrees(Vec3{-90.0f, 0.0f, 0.0f});  // tumbada
+            }
+            break;
+        }
+        case 21:
+        case 22: {
+            created = world_.create(kind == 21 ? "Gelatina" : "Pelota blanda", parent);
+            physics::SoftBody& soft = created.add<physics::SoftBody>();
+            created.add<ecs::MeshRenderer>();
+            if (kind == 21) {
+                soft.shape = physics::SoftBodyShape::Cube;
+                soft.stiffness = 0.3f;
+                soft.pressure = 1.5f;
+                soft.color = Vec3{0.9f, 0.15f, 0.3f};
+            } else {
+                soft.stiffness = 0.6f;
+                soft.pressure = 3.0f;
+                soft.restitution = 0.4f;
+                soft.color = Vec3{0.95f, 0.75f, 0.1f};
+                soft.roughness = 0.4f;
+            }
+            break;
+        }
         default: created = ecs::createEmpty(world_, parent); break;
     }
     // Objetos 3D con su collider, como Unity.
@@ -1184,6 +1234,8 @@ void EditorApp::drawMenuBar() {
         if (ImGui::MenuItem("Borrar", "Supr", false, any)) deleteSelection();
         ImGui::Separator();
         if (ImGui::MenuItem("Enfocar selección", "F", false, any)) focusSelection();
+        ImGui::Separator();
+        drawXrMenu();
         ImGui::EndMenu();
     }
     if (ImGui::BeginMenu("GameObject")) {
@@ -1225,6 +1277,12 @@ void EditorApp::drawMenuBar() {
             item("Esfera con Rigidbody", 14);
             item("Zona trigger", 15);
             item("Vehículo (4 ruedas)", 17);
+            ImGui::Separator();
+            item("Tela: cortina", 18);
+            item("Tela: bandera", 19);
+            item("Tela: sábana que cae", 20);
+            item("Cuerpo blando: gelatina (cubo)", 21);
+            item("Cuerpo blando: pelota", 22);
             ImGui::EndMenu();
         }
         if (ImGui::BeginMenu("Efectos")) {
@@ -1238,6 +1296,10 @@ void EditorApp::drawMenuBar() {
             if (ImGui::MenuItem("Océano / playa")) createWaterEntity(0);
             if (ImGui::MenuItem("Lago")) createWaterEntity(1);
             if (ImGui::MenuItem("Río")) createWaterEntity(2);
+            ImGui::EndMenu();
+        }
+        if (ImGui::BeginMenu("Realidad virtual")) {
+            if (ImGui::MenuItem("XR Origin (cámara y mandos)")) createXrOrigin(world_.find(active_));
             ImGui::EndMenu();
         }
         drawNavigationCreateMenu();

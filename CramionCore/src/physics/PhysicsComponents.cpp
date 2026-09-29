@@ -1,5 +1,8 @@
 #include "CramionCore/physics/PhysicsComponents.h"
 
+#include "CramionCore/physics/Cloth.h"
+#include "CramionCore/physics/SoftBody.h"
+
 #include "CramionCore/asset/AssetTypes.h"
 #include "CramionCore/ecs/World.h"
 #include "CramionCore/physics/Particles.h"
@@ -157,6 +160,8 @@ void registerPhysicsComponents() {
     registry.registerComponent<PlaneCollider>("PlaneCollider", "Plane Collider", "Fisica");
     registry.registerComponent<Vehicle>("Vehicle", "Vehiculo", "Fisica");
     registry.registerComponent<WheelCollider>("WheelCollider", "Wheel Collider", "Fisica");
+    registry.registerComponent<Cloth>("Cloth", "Tela (Cloth)", "Fisica");
+    registry.registerComponent<SoftBody>("SoftBody", "Cuerpo blando (gelatina)", "Fisica");
     registry.registerComponent<ParticleSystem>("ParticleSystem", "Particle System", "Efectos");
 }
 

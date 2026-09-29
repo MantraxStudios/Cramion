@@ -169,6 +169,11 @@
           "slug": "componentes-scripting",
           "title": "Scripts y prefabs",
           "desc": "El componente Script y los de los prefabs."
+        },
+        {
+          "slug": "componentes-vr",
+          "title": "Realidad virtual",
+          "desc": "XR Origin (el rig de VR) y XR Controller (una entidad que sigue a un mando)."
         }
       ]
     },
@@ -214,6 +219,11 @@
           "slug": "input-actions",
           "title": "Input Actions",
           "desc": "Entrada como el Enhanced Input de Unreal: acciones Bool/float/Vec2/Vec3, varios contextos, muchas teclas por acción, modificadores y triggers."
+        },
+        {
+          "slug": "realidad-virtual",
+          "title": "Realidad virtual (XR)",
+          "desc": "OpenXR: jugar con casco (SteamVR, Meta Quest Link, WMR...), XR Origin, mandos, vibración y la tabla XR."
         },
         {
           "slug": "time",

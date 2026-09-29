@@ -301,8 +301,7 @@ void VulkanDevice::createLogicalDevice() {
         const auto available = physical_device_.enumerateDeviceExtensionProperties();
         for (const std::string& name : extra_extensions_) {
             if (!hasExtension(available, name.c_str())) {
-                std::cerr << "[Vulkan] OpenXR pide " << name << " y la GPU no la tiene
-";
+                std::cerr << "[Vulkan] OpenXR pide " << name << " y la GPU no la tiene\n";
                 continue;
             }
             if (std::none_of(extensions.begin(), extensions.end(), [&](const char* e) { return name == e; })) {

@@ -1,0 +1,385 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Realidad virtual (XR) · Manual de Cramion</title>
+  <meta name="description" content="OpenXR: jugar con casco (SteamVR, Meta Quest Link, WMR...), XR Origin, mandos, vibración y la tabla XR.">
+  <link rel="icon" href="../img/icon.png">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/base16/tomorrow-night.min.css">
+  <link rel="stylesheet" href="manual.css">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/lua.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/glsl.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/json.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/bash.min.js"></script>
+  <script src="search.js"></script>
+</head>
+<body>
+
+  <header class="top">
+    <div class="top-inner">
+      <button id="menu-btn" class="menu-btn" aria-label="Menú">Menú</button>
+      <a href="index.html" class="brand"><img src="../img/icon.png" alt=""><b>Cramion</b><span>manual</span></a>
+      <div class="search">
+        <input id="search" type="search" autocomplete="off" placeholder="Buscar (funciones, componentes, páginas)">
+        <kbd>/</kbd>
+        <div id="results" class="results" hidden></div>
+      </div>
+      <nav class="top-links">
+        <a href="../index.html">Web</a>
+        <a href="https://discord.gg/zG7rSsUGEz" target="_blank" rel="noopener">Discord</a>
+        <a href="https://github.com/MantraxStudios/Cramion" target="_blank" rel="noopener">GitHub</a>
+      </nav>
+    </div>
+  </header>
+
+  <div class="frame">
+    <aside id="side" class="side">
+      <nav>
+        <a href="index.html">Índice</a>
+        <p class="group">Primeros pasos</p>
+        <a href="primer-script.html">Tu primer script</a>
+        <a href="ciclo-de-vida.html">Ciclo de vida</a>
+        <a href="propiedades.html">Propiedades</a>
+        <a href="recarga.html">Recarga en caliente</a>
+        <a href="prefabs.html">Prefabs</a>
+        <a href="mcp.html">Conectar una IA (MCP)</a>
+        <p class="group">El editor</p>
+        <a href="editor-interfaz.html">Interfaz y pestañas</a>
+        <a href="editor-escena.html">Vista Escena y gizmos</a>
+        <a href="editor-jerarquia.html">Jerarquía e Inspector</a>
+        <a href="editor-proyecto.html">Proyecto e importación</a>
+        <a href="editor-play.html">Play, deshacer y escenas</a>
+        <a href="editor-herramientas.html">Herramientas de mundo</a>
+        <a href="editor-ventanas.html">Ventanas de herramientas</a>
+        <a href="materiales.html">Materiales</a>
+        <a href="render-textures.html">Render Textures</a>
+        <a href="render.html">Render y rendimiento</a>
+        <a href="exportar.html">Exportar y compilación</a>
+        <a href="plantillas.html">Plantillas</a>
+        <a href="atajos.html">Atajos de teclado</a>
+        <a href="actualizaciones.html">Actualizaciones</a>
+        <p class="group">Componentes</p>
+        <a href="componentes.html">Todos los componentes</a>
+        <a href="componentes-basicos.html">Transform y renderizado</a>
+        <a href="componentes-entorno.html">Entorno</a>
+        <a href="componentes-fisica.html">Física</a>
+        <a href="componentes-efectos.html">Partículas y depuración</a>
+        <a href="componentes-animacion.html">Animación</a>
+        <a href="componentes-audio.html">Audio</a>
+        <a href="componentes-cinematicas.html">Cámaras y cinemáticas</a>
+        <a href="componentes-navegacion.html">Navegación</a>
+        <a href="componentes-ui.html">Interfaz (UI)</a>
+        <a href="componentes-scripting.html">Scripts y prefabs</a>
+        <a href="componentes-vr.html">Realidad virtual</a>
+        <p class="group">Referencia de la API</p>
+        <a href="vec3.html">Vec3</a>
+        <a href="quat.html">Quat (rotaciones)</a>
+        <a href="mathf.html">Mathf</a>
+        <a href="random.html">Random</a>
+        <a href="entity.html">Entity</a>
+        <a href="scene.html">Scene</a>
+        <a href="input.html">Input</a>
+        <a href="input-actions.html">Input Actions</a>
+        <a href="realidad-virtual.html" class="active">Realidad virtual (XR)</a>
+        <a href="time.html">Time</a>
+        <a href="physics.html">Physics</a>
+        <a href="navegacion.html">Navegación</a>
+        <a href="mallas.html">Mallas por código</a>
+        <a href="voxel.html">Mundo de bloques</a>
+        <a href="audio.html">Audio</a>
+        <a href="ui.html">Interfaz (UI)</a>
+        <a href="esqueletos.html">Esqueletos: IK, ragdoll y phys bones</a>
+        <a href="graphics.html">Graphics</a>
+        <a href="red.html">Network (multijugador)</a>
+        <a href="http.html">Http y Json</a>
+        <a href="prefs.html">Prefs y Game</a>
+        <a href="debug.html">Debug</a>
+        <p class="group">Gráficos</p>
+        <a href="shaders.html">Shaders propios</a>
+        <p class="group">Ejemplos</p>
+        <a href="ejemplo-girar.html">Girar un objeto</a>
+        <a href="ejemplo-camara.html">Cámara que sigue al jugador</a>
+        <a href="ejemplo-jugador.html">Jugador con física</a>
+        <a href="ejemplo-disparo.html">Disparo con raycast</a>
+        <a href="ejemplo-monedas.html">Monedas y puntuación</a>
+        <a href="ejemplo-spawner.html">Generador de enemigos</a>
+        <a href="ejemplo-vehiculo.html">Conducir un vehículo</a>
+        <a href="ejemplo-menu.html">Menú, opciones y récord</a>
+        <a href="ejemplo-animacion.html">Animación de un personaje</a>
+        <a href="ejemplo-comunicacion.html">Scripts que se hablan</a>
+        <a href="ejemplo-ia.html">IA: patrullar y perseguir</a>
+        <a href="ejemplo-terreno.html">Terreno procedural con colisión</a>
+        <a href="ejemplo-efectos.html">Varios materiales y efectos</a>
+        <a href="ejemplo-olas.html">Olas: cambiar la malla cada frame</a>
+      </nav>
+    </aside>
+
+    <main class="doc">
+      <div class="crumbs"><a href="index.html">Manual</a> / Referencia de la API</div>
+      <h1>Realidad virtual (XR)</h1>
+      <p class="lede">OpenXR: jugar con casco (SteamVR, Meta Quest Link, WMR...), XR Origin, mandos, vibración y la tabla XR.</p>
+      <div class="body">
+<p>
+  Cramion juega en <strong>realidad virtual</strong> con <strong>OpenXR</strong>, el estándar de Khronos: vale cualquier casco
+  con runtime OpenXR en PC (SteamVR con Valve Index / HTC Vive / Pico, Meta Quest por Link o Air Link, Windows Mixed
+  Reality, Varjo...). Cada ojo se dibuja con todo el render del motor (iluminación, sombras, post-procesado) y la
+  ventana del PC hace de espejo. Sin casco o sin runtime, el juego sigue igual que siempre, sin VR.
+</p>
+<div class="note">Solo PC (Windows). En Android no hay VR todavía (Quest nativo); se exporta sin ella.</div>
+
+<h3 id="activar">Activarla</h3>
+<ul>
+  <li><strong>Juego exportado</strong>: en <em>Archivo &gt; Configuraciones de compilación</em>, marca
+    <strong>Realidad virtual (OpenXR)</strong> (escribe <code>vr=1</code> en <code>game.ini</code>). Al abrir el juego busca el
+    casco; si no hay, arranca normal.</li>
+  <li><strong>En el editor</strong>: <em>Editar &gt; Play en realidad virtual (OpenXR)</em>. Se aplica al volver a abrir el
+    editor (Vulkan se crea en la GPU a la que está conectado el casco). Desde entonces, al darle a Play el juego se ve en el
+    casco; fuera de Play el casco no se toca. El tooltip del menú dice qué casco encontró o por qué no.</li>
+</ul>
+<p>
+  Antes de abrir el juego, el runtime tiene que estar en marcha y ser el <em>activo</em> (SteamVR: Ajustes &gt; OpenXR &gt;
+  "Establecer SteamVR como runtime de OpenXR"; Meta: la app de Meta Quest Link con "OpenXR runtime" activo). El registro
+  (<code>%LOCALAPPDATA%/Cramion/Logs</code>) dice <code>[VR] ...</code> con el casco, el runtime y la resolución por ojo, o el
+  motivo si no pudo.
+</p>
+
+<h3 id="rig">El XR Origin (rig)</h3>
+<p>
+  Como el <em>XR Origin</em> de Unity: <em>GameObject &gt; Realidad virtual &gt; XR Origin (cámara y mandos)</em> crea
+</p>
+<pre><code>XR Origin          (XR Origin)       el suelo de la habitación del jugador
+  Main Camera      (Camera)          la cabeza: la mueve el casco
+  Mano izquierda   (XR Controller)   el mando izquierdo (con un cubo de modelo)
+  Mano derecha     (XR Controller)   el mando derecho</code></pre>
+<ul>
+  <li>Para <strong>mover al jugador</strong> (andar con el stick, teletransporte, subir a un vehículo) se mueve o gira la
+    entidad <code>XR Origin</code>, nunca la cámara: la cámara la pone el casco cada frame.</li>
+  <li>Los <strong>mandos</strong> siguen a la mano; pon de hijo el modelo que quieras (una mano, una pistola, una linterna).
+    Con <em>Ocultar sin mando</em> se desactivan cuando el mando se apaga o no se ve.</li>
+  <li><strong>Origen del seguimiento</strong>: <em>Suelo</em> (de pie / room scale, el 0 es el suelo real) u <em>Ojos</em>
+    (sentado: la cabeza empieza en el origen más la <em>Altura de la cabeza</em>).</li>
+</ul>
+<p>
+  <strong>Sin XR Origin</strong>, cualquier escena se ve en VR igual: la cámara principal hace de origen (su posición y su giro
+  horizontal) y la cabeza empieza donde está la cámara. El arriba/abajo lo pone siempre el casco (nunca un script), para no
+  marear.
+</p>
+
+<h3 id="entrada">Botones con Input Actions</h3>
+<p>
+  Los mandos entran en <a href="input-actions.html">Input Actions</a> como cualquier otro dispositivo: <code>"XR Left
+  Stick"</code>, <code>"XR Right Trigger"</code>, <code>"XR Right Primary"</code> (A), <code>"XR Left Grip"</code>... Las acciones
+  por defecto ya los tienen: <code>Move</code> = stick izquierdo, <code>Look</code> = stick derecho (solo girar),
+  <code>Jump</code> = A, <code>Fire</code> = gatillo derecho, <code>Aim</code> = gatillo izquierdo, <code>Interact</code> = agarre
+  derecho, <code>Sprint</code> = pulsar el stick izquierdo. Así un juego hecho con acciones funciona con teclado, mando y VR sin
+  tocar el código. Perfiles de mando reconocidos: Meta/Oculus Touch, Valve Index, HTC Vive (el trackpad hace de stick),
+  Windows Mixed Reality y el genérico <code>khr/simple_controller</code>.
+</p>
+
+<h3 id="lua">La tabla XR (Lua)</h3>
+<p>Manos: <code>"left"</code> / <code>"right"</code>. Las posiciones y giros salen en el <strong>mundo</strong> (con el rig ya aplicado).</p>
+<table>
+  <thead><tr><th>Función</th><th>Devuelve</th></tr></thead>
+  <tbody>
+    <tr><td><code>XR.isAvailable()</code></td><td>Hay casco y sesión de VR.</td></tr>
+    <tr><td><code>XR.isRunning()</code> / <code>XR.isFocused()</code></td><td>El casco está mostrando el juego / el juego tiene los mandos (no está el menú del sistema encima).</td></tr>
+    <tr><td><code>XR.getSystemName()</code> / <code>XR.getRuntimeName()</code></td><td>El casco (<code>"Oculus Quest2"</code>...) y el runtime (<code>"SteamVR/OpenXR"</code>...).</td></tr>
+    <tr><td><code>XR.getHeadPosition()</code> / <code>XR.getHeadRotation()</code></td><td><code>Vec3</code> / <code>Quat</code> de la cabeza, o <code>nil</code> sin seguimiento.</td></tr>
+    <tr><td><code>XR.getHeadLocalPosition()</code></td><td>La cabeza dentro de la habitación (metros desde el origen).</td></tr>
+    <tr><td><code>XR.isControllerActive(mano)</code></td><td>El mando está encendido y se sigue.</td></tr>
+    <tr><td><code>XR.getControllerPosition(mano [, "grip"|"aim"])</code></td><td><code>Vec3</code> de la mano (<code>grip</code>) o del puntero (<code>aim</code>), o <code>nil</code>.</td></tr>
+    <tr><td><code>XR.getControllerRotation(mano [, pose])</code></td><td><code>Quat</code>, o <code>nil</code>.</td></tr>
+    <tr><td><code>XR.getAimRay(mano)</code></td><td>Origen y dirección del puntero (dos <code>Vec3</code>) para <code>Physics.raycast</code>.</td></tr>
+    <tr><td><code>XR.getTrigger(mano)</code> / <code>XR.getGrip(mano)</code></td><td>0..1.</td></tr>
+    <tr><td><code>XR.getThumbstick(mano)</code></td><td><code>Vec3(x, y, 0)</code> en −1..1 (Y arriba).</td></tr>
+    <tr><td><code>XR.getButton(mano, boton)</code>, <code>XR.getButtonDown</code>, <code>XR.getButtonUp</code></td><td>Botones: <code>trigger</code>, <code>grip</code>, <code>thumbstick</code>, <code>primary</code> (A/X, también <code>"a"</code>/<code>"x"</code>), <code>secondary</code> (B/Y), <code>menu</code>. Gatillo y agarre cuentan como pulsados a partir de la mitad.</td></tr>
+    <tr><td><code>XR.vibrate(mano [, intensidad, segundos, hz])</code></td><td>Vibración (por defecto 0.5 durante 0.1 s).</td></tr>
+    <tr><td><code>XR.setTrackingOrigin("floor"|"eyes")</code>, <code>XR.getTrackingOrigin()</code></td><td>Origen sin XR Origin (con él manda el componente).</td></tr>
+    <tr><td><code>XR.getOriginPosition()</code></td><td>Dónde está el rig en el mundo.</td></tr>
+  </tbody>
+</table>
+
+<h3 id="ejemplo">Ejemplo: disparar con el puntero</h3>
+<pre><code class="language-lua">local Pistola = {}
+
+function Pistola:Update(dt)
+    if not XR.isRunning() then return end
+    if XR.getButtonDown("right", "trigger") then
+        local origen, dir = XR.getAimRay("right")
+        if origen then
+            local hit = Physics.raycast(origen, dir, 100)
+            if hit then
+                Debug.log("Tocado: " .. hit.entity.name)
+                XR.vibrate("right", 0.8, 0.08)
+            end
+        end
+    end
+end
+
+return Pistola</code></pre>
+
+<h3 id="rig-mover">Ejemplo: andar y girar a saltos</h3>
+<pre><code class="language-lua">-- En la entidad "XR Origin".
+local Andar = { properties = { velocidad = 2.0, giro = 30 } }
+
+function Andar:Start() self.listo = true end
+
+function Andar:Update(dt)
+    local stick = XR.getThumbstick("left")
+    local cabeza = XR.getHeadRotation()
+    if cabeza and (math.abs(stick.x) > 0.2 or math.abs(stick.y) > 0.2) then
+        -- Hacia donde mira la cabeza, en horizontal.
+        local adelante = cabeza * Vec3(0, 0, -1); adelante.y = 0
+        local derecha = cabeza * Vec3(1, 0, 0); derecha.y = 0
+        local mover = adelante:normalized() * stick.y + derecha:normalized() * stick.x
+        self.entity.position = self.entity.position + mover * self.velocidad * dt
+    end
+    -- Giro a saltos con el stick derecho (marea menos que girar suave).
+    local x = XR.getThumbstick("right").x
+    if self.listo and math.abs(x) > 0.7 then
+        local r = self.entity.rotation
+        self.entity.rotation = Vec3(r.x, r.y - self.giro * (x > 0 and 1 or -1), r.z)
+        self.listo = false
+    elseif math.abs(x) < 0.3 then
+        self.listo = true
+    end
+end
+
+return Andar</code></pre>
+
+<h3 id="rendimiento">Rendimiento</h3>
+<p>
+  En VR se dibuja la escena tres veces por frame (dos ojos y el espejo) y el casco marca el ritmo (72–144 Hz), así que la
+  ventana va sin vsync. Si va justo, baja la calidad en <em>Configuración gráfica</em> o desde Lua con <code>Graphics</code>
+  (resolución interna, sombras, nubes), y usa LODs. El <code>Profiler</code> sigue funcionando en la ventana.
+</p>
+      </div>
+      <nav class="pager"><a href="input-actions.html"><span>← anterior</span><b>Input Actions</b></a><a class="next" href="time.html"><span>siguiente →</span><b>Time</b></a></nav>
+      <p class="help">¿Algo no queda claro o falta algo? Pregunta en el
+        <a href="https://discord.gg/zG7rSsUGEz" target="_blank" rel="noopener">Discord</a>.</p>
+    </main>
+    <aside class="onpage-col">
+      <p>En esta página</p>
+      <nav id="onpage" class="onpage"></nav>
+    </aside>
+  </div>
+
+  <script>
+    // Solo el codigo con lenguaje (los arboles de carpetas y la salida quedan tal cual).
+    hljs.configure({ cssSelector: 'pre code[class*="language-"]' });
+    hljs.highlightAll();
+
+    // Menu lateral en el movil.
+    const side = document.getElementById("side");
+    document.getElementById("menu-btn").addEventListener("click", () => document.body.classList.toggle("menu-open"));
+    document.addEventListener("click", ev => {
+      if (document.body.classList.contains("menu-open") && !ev.target.closest("#side, #menu-btn")) {
+        document.body.classList.remove("menu-open");
+      }
+    });
+    // El enlace activo a la vista dentro del menu (sin mover la pagina).
+    const current = side.querySelector("a.active");
+    if (current) side.scrollTop = current.offsetTop - side.clientHeight / 2;
+
+    // Ancla de cada seccion y boton de copiar en el codigo.
+    document.querySelectorAll(".doc h3[id]").forEach(h => {
+      const a = document.createElement("a");
+      a.className = "anchor";
+      a.href = "#" + h.id;
+      a.textContent = "#";
+      h.appendChild(a);
+    });
+    document.querySelectorAll(".doc pre").forEach(pre => {
+      const b = document.createElement("button");
+      b.className = "copy";
+      b.textContent = "copiar";
+      b.addEventListener("click", async () => {
+        try {
+          await navigator.clipboard.writeText(pre.querySelector("code")?.innerText ?? pre.innerText);
+          b.textContent = "copiado";
+        } catch { b.textContent = "no se pudo"; }
+        setTimeout(() => (b.textContent = "copiar"), 1400);
+      });
+      pre.appendChild(b);
+    });
+
+    // Tablas anchas: se desplazan dentro de su marco.
+    document.querySelectorAll(".doc table").forEach(t => {
+      const w = document.createElement("div");
+      w.className = "table-wrap";
+      t.replaceWith(w);
+      w.appendChild(t);
+    });
+
+    // "En esta pagina": los h3 con la seccion visible marcada.
+    const onpage = document.getElementById("onpage");
+    if (onpage) {
+      const heads = [...document.querySelectorAll(".doc h3[id]")];
+      if (heads.length < 2) {
+        onpage.closest("aside").style.visibility = "hidden";
+      } else {
+        onpage.innerHTML = heads.map(h => `<a href="#${h.id}">${h.firstChild.textContent}</a>`).join("");
+        const links = [...onpage.querySelectorAll("a")];
+        const obs = new IntersectionObserver(entries => {
+          for (const e of entries) {
+            if (e.isIntersecting) links.forEach(a => a.classList.toggle("active", a.getAttribute("href") === "#" + e.target.id));
+          }
+        }, { rootMargin: "-70px 0px -70% 0px" });
+        heads.forEach(h => obs.observe(h));
+      }
+    }
+
+    // Buscador: titulos, secciones y nombres de la API.
+    const input = document.getElementById("search");
+    const box = document.getElementById("results");
+    const norm = s => s.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+    const esc = s => s.replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+    let hits = [], sel = 0;
+    const render = () => {
+      const q = input.value.trim();
+      if (!hits.length) {
+        box.innerHTML = q ? '<p class="none">Sin resultados.</p>' : "";
+        box.hidden = !q;
+        return;
+      }
+      box.innerHTML = hits.map((h, i) => `
+        <a href="${h.u}" class="${i === sel ? "sel" : ""}">
+          <span class="t${h.c ? " code" : ""}">${esc(h.t)}</span><span class="g">${esc(h.g)}</span>
+          ${h.d ? `<span class="d">${esc(h.d)}</span>` : ""}
+        </a>`).join("");
+      box.hidden = false;
+    };
+    input.addEventListener("input", () => {
+      const q = norm(input.value.trim());
+      sel = 0;
+      if (!q) { hits = []; render(); return; }
+      const words = q.split(/\s+/);
+      hits = window.CRAMION_SEARCH
+        .map(e => {
+          const t = norm(e.t), all = t + " " + norm(e.g) + " " + norm(e.d || "");
+          if (!words.every(w => all.includes(w))) return null;
+          const score = (t.startsWith(q) ? 0 : t.includes(q) ? 1 : 2) + (e.c ? 0.5 : 0) - (e.d ? 0.3 : 0);
+          return { e, score };
+        })
+        .filter(Boolean).sort((a, b) => a.score - b.score).slice(0, 12).map(x => x.e);
+      render();
+    });
+    input.addEventListener("keydown", ev => {
+      if (ev.key === "ArrowDown") { sel = Math.min(sel + 1, hits.length - 1); render(); ev.preventDefault(); }
+      if (ev.key === "ArrowUp") { sel = Math.max(sel - 1, 0); render(); ev.preventDefault(); }
+      if (ev.key === "Enter" && hits[sel]) location.href = hits[sel].u;
+      if (ev.key === "Escape") { input.value = ""; hits = []; render(); input.blur(); }
+    });
+    document.addEventListener("keydown", ev => {
+      if (ev.key === "/" && document.activeElement !== input) { ev.preventDefault(); input.focus(); }
+    });
+    document.addEventListener("click", ev => { if (!ev.target.closest("#results, #search")) box.hidden = true; });
+    input.addEventListener("focus", () => { if (input.value.trim()) render(); });
+  </script>
+</body>
+</html>

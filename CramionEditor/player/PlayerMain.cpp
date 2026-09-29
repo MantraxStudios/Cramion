@@ -27,6 +27,7 @@
 #include <CramionCore/project/Pack.h>
 #include <CramionCore/project/TouchInterface.h>
 #include <CramionCore/input/InputActions.h>
+#include <CramionCore/xr/XrRig.h>
 #include <CramionDM/CramionDM.h>
 #include <CramionFX/CramionFX.h>
 
@@ -201,6 +202,9 @@ int runPlayer() {
             }
         }
         const bool show_fps = readIniValue(ini, "show_fps") == "1";
+        // Realidad virtual (OpenXR): si hay casco, el juego se ve en el; la
+        // ventana queda de espejo. Sin runtime o sin casco, sigue sin VR.
+        const bool vr_requested = readIniValue(ini, "vr") == "1";
 
         dm::Window window;
         if (!window.create({.title = widen(title),
@@ -341,7 +345,10 @@ int runPlayer() {
 
         gfx::VulkanRenderer renderer;
         const std::string app_name = project ? project->name : title;
-        const gfx::EngineInfo engine_info{.app_name = app_name.c_str(), .engine_name = "Cramion Engine", .enable_validation = false};
+        const gfx::EngineInfo engine_info{.app_name = app_name.c_str(),
+                                          .engine_name = "Cramion Engine",
+                                          .enable_validation = false,
+                                          .enable_xr = vr_requested};
         renderer.setLoadingCallback([&](float fraction, const char* what) { loading->show(fraction, what); });
         renderer.initialize(engine_info, window.handle(), window.width(), window.height());
 #if defined(_WIN32)
@@ -350,6 +357,18 @@ int runPlayer() {
         editor::loadGraphicsIni(player_graphics, renderer);  // la del jugador, encima
 #endif
         renderer.setEditorHelpersEnabled(false);
+        const bool vr = renderer.xrAvailable();
+        if (vr) {
+            // El casco marca el ritmo (xrWaitFrame): la ventana sin vsync.
+            gfx::GraphicsSettings g = renderer.graphicsSettings();
+            g.vsync = false;
+            renderer.setGraphicsSettings(g);
+            std::cout << "[VR] " << renderer.xr().systemName() << " (" << renderer.xr().runtimeName() << "), "
+                      << renderer.xr().eyeExtent().width << "x" << renderer.xr().eyeExtent().height << " por ojo\n";
+        } else if (vr_requested) {
+            std::cout << "[VR] Sin realidad virtual: " << renderer.xr().error() << "\n";
+        }
+        xr::XrRig xr_rig;
 
         editor::ImGuiLayer imgui;
 #if !defined(_WIN32)
@@ -521,6 +540,7 @@ int runPlayer() {
         audio::registerAudioComponents();
         scripting::registerScriptComponents();
         ui::registerUiComponents();
+        xr::registerXrComponents();
 
         assets::AssetDatabase database;
         database.open(project->assetsFolder());
@@ -612,6 +632,7 @@ int runPlayer() {
         };
 #endif
         scripts.setScreen(screen_host);
+        scripts.setXr(&renderer.xr(), &xr_rig);
         // Mundos de bloques: texturas del juego y partidas en Saves/<juego>/Worlds.
         voxel::VoxelSystem voxels;
         voxels.setAssetsRoot(project->assetsFolder());
@@ -952,6 +973,13 @@ int runPlayer() {
             touch.update(synthesized);
             for (dm::Event& s : synthesized) feed(s);
             touch.apply(input);  // el joystick virtual a los ejes
+            // VR: espera al casco, poses de la cabeza y los mandos, y sus
+            // botones a Input (Input Actions "XR Right Trigger"...).
+            if (vr) {
+                renderer.xr().beginFrame();
+                renderer.xr().applyToInput(input);
+                if (renderer.xr().exitRequested()) quit = true;
+            }
             renderer.applyPendingResize();
             imgui.beginFrame();
             imgui.updateThumbnails();  // sube las imagenes ya decodificadas (banner, UI)
@@ -991,6 +1019,11 @@ int runPlayer() {
             if (scene_loading()) step_load(load_fraction, load_text);
             if (scene_loading() && !showing_banner) draw_loading(display, load_fraction, load_text);
             const bool running = loaded && !scene_loading() && !showing_banner;
+            if (running && vr) {
+                xr_rig.update(world, renderer.xr());  // camara y mandos antes de la logica
+            } else {
+                xr_rig.reset();
+            }
             if (running) {
                 const int steps = physics.update(world, dt, true);
                 particles.update(world, dt, &physics);
@@ -1067,7 +1100,10 @@ int runPlayer() {
                 renderer.setParticles(particles.drawList(scene.camera().position()));
                 voxels.syncRenderer(renderer);
             }
+            // VR: los dos ojos al casco; la ventana ve lo de la cabeza.
+            if (xr_rig.active()) xr_rig.renderEyes(renderer, scene);
             renderer.drawFrame(scene);
+            if (vr) renderer.xr().endFrame();
             input.newFrame();
 
             // Cada 5 s una linea de rendimiento en el log (se vuelca ya: si el

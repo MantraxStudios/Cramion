@@ -89,7 +89,7 @@ struct InputAction {
 // Una tecla/boton/eje asignado a una accion dentro de un contexto.
 struct KeyMapping {
     std::string action;
-    std::string key;  // "W", "Space", "Mouse Left", "Mouse XY", "Gamepad Left Stick", "Touch Stick"...
+    std::string key;  // "W", "Space", "Mouse Left", "Mouse XY", "Gamepad Left Stick", "Touch Stick", "XR Right Trigger"...
     std::vector<Modifier> modifiers;
     std::vector<Trigger> triggers;
     bool player_mappable = true;  // se puede cambiar en el juego (Input.rebind)
@@ -124,7 +124,19 @@ std::string inputActionsToJson(const InputActionSettings& settings);
 bool inputActionsFromJson(const std::string& text, InputActionSettings& out);
 
 // --- Fuentes (teclas y ejes) por nombre ---
-enum class SourceKind : std::uint8_t { None = 0, Key, MouseButton, MouseAxis, GamepadButton, GamepadAxis, GamepadStick, TouchStick };
+enum class SourceKind : std::uint8_t {
+    None = 0,
+    Key,
+    MouseButton,
+    MouseAxis,
+    GamepadButton,
+    GamepadAxis,
+    GamepadStick,
+    TouchStick,
+    XrButton,  // mandos de VR (OpenXR): "XR Right Primary"...
+    XrAxis,    // "XR Right Trigger", "XR Left Grip", "XR Left Stick X"...
+    XrStick,   // "XR Left Stick", "XR Right Stick"
+};
 struct Source {
     SourceKind kind = SourceKind::None;
     int code = 0;

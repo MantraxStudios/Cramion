@@ -10,3 +10,61 @@ local enSuelo = hit ~= nil</code></pre>
         Un rayo que empieza dentro de un collider lo detecta a distancia 0. Para no chocar con tu propio cuerpo,
         lanza el rayo desde fuera de él (por ejemplo, justo debajo de los pies).
       </div>
+
+      <h3 id="telas">Telas (Cloth)</h3>
+      <p>
+        El componente <strong>Tela (Cloth)</strong> simula una tela con Jolt (soft body): cuelga, se arruga, ondea con el viento
+        y choca con los colliders y los rigidbodies (y los empuja). En el editor: <em>GameObject &gt; Física &gt; Tela: cortina /
+        bandera / sábana que cae</em>, o <em>Add Component &gt; Tela (Cloth)</em> en cualquier objeto.
+      </p>
+      <ul>
+        <li>La rejilla está en el plano XY de la entidad (mirando a +Z), de <code>width</code> × <code>height</code> metros. Para un mantel o una sábana, gira la entidad −90° en X.</li>
+        <li><strong>Fijada por</strong>: qué partículas van pegadas a la entidad (borde de arriba, esquinas, borde izquierdo para una bandera, el centro...). Al mover la entidad, la tela la sigue.</li>
+        <li><strong>Rigidez</strong> (cuánto se estira), <strong>resistencia a doblarse</strong> (seda o lona), masa, frenado, fricción, grosor e iteraciones.</li>
+        <li><strong>Viento</strong> en m/s con <strong>rachas</strong>: empuja más por la cara que le da de frente.</li>
+        <li>Se dibuja con el material <code>.crmat</code> de su Mesh Renderer (o con su <em>Color</em>), por las dos caras, con sombras y motion blur. Fuera de Play se ve estirada.</li>
+        <li>Las divisiones mandan en el coste: 20×20 (441 partículas) va sobrado; varias telas de 64×64 ya se notan.</li>
+      </ul>
+      <pre><code class="language-lua">-- Una bandera que se agita mas fuerte al pulsar G y vuelve a su sitio con R.
+local Bandera = {}
+
+function Bandera:Update(dt)
+    if Input.getKeyDown("G") then
+        self.entity:setField("Cloth", "wind", Vec3(18, 0, 3))
+        self.entity:addClothImpulse(Vec3(0, 2, 4))   -- m/s a cada particula libre
+    end
+    if Input.getKeyDown("R") then
+        self.entity:resetCloth()
+    end
+end
+
+return Bandera</code></pre>
+
+      <h3 id="cuerpos-blandos">Cuerpos blandos (gelatina)</h3>
+      <p>
+        El componente <strong>Cuerpo blando (gelatina)</strong> (<code>SoftBody</code>) simula un objeto blando cerrado con Jolt:
+        cae, rebota, se aplasta, tiembla y vuelve a su forma, con presión dentro para conservar el volumen. Choca con los
+        colliders y los rigidbodies y los empuja. En el editor: <em>GameObject &gt; Física &gt; Cuerpo blando: gelatina (cubo) /
+        pelota</em>, o <em>Add Component</em>.
+      </p>
+      <ul>
+        <li><strong>Forma</strong>: esfera o cubo, de <code>size</code> metros (la escala de la entidad lo agranda). <strong>Resolución</strong>: divisiones por cara (8 va bien).</li>
+        <li><strong>Firmeza</strong>: 0.3 gelatina, 0.6 pelota de goma, 0.9 casi rígido. <strong>Presión</strong>: 0 se desinfla como un trapo, 1 aguanta su peso, 3 o más es un balón.</li>
+        <li><strong>Frenado</strong> (cuánto tiempo tiembla), rebote, fricción, masa y gravedad.</li>
+        <li>Con <em>La entidad lo sigue</em> (por defecto), la entidad va al centro del cuerpo: los scripts leen <code>entity.position</code> y las cámaras lo siguen.</li>
+        <li>Se dibuja con el <code>.crmat</code> de su Mesh Renderer o con su color (brillante por defecto, como la gelatina).</li>
+        <li>Dos cuerpos blandos no chocan entre sí (límite de Jolt); con todo lo demás, sí.</li>
+      </ul>
+      <pre><code class="language-lua">-- Una gelatina que salta al pulsar Espacio y vuelve a su forma con R.
+local Gelatina = {}
+
+function Gelatina:Update(dt)
+    if Input.getKeyDown("Space") then
+        self.entity:addSoftBodyImpulse(Vec3(0, 6, 0))   -- m/s a cada particula
+    end
+    if Input.getKeyDown("R") then
+        self.entity:resetSoftBody()
+    end
+end
+
+return Gelatina</code></pre>

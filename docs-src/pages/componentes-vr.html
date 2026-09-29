@@ -1,0 +1,19 @@
+<p>XR Origin (el suelo de la habitacion, con la camara que sigue al casco) y los mandos (XR Controller). Referencia completa generada desde el motor.</p>
+<h3 id="XrOrigin">XR Origin (VR) <code>XrOrigin</code></h3>
+<table>
+  <thead><tr><th>Propiedad</th><th>Tipo</th><th>Por defecto</th><th>Valores</th><th>Descripcion</th></tr></thead>
+  <tbody>
+    <tr><td>Origen del seguimiento<br><code>tracking</code></td><td>opcion</td><td>De pie</td><td>De pie, Sentado</td><td>De pie: esta entidad es el suelo de la habitacion (room scale). Sentado: la cabeza empieza aqui (mas la altura)</td></tr>
+    <tr><td>Altura de la cabeza<br><code>camera_y_offset</code></td><td>numero</td><td>1,6</td><td>0 a 3</td><td>Sentado: metros de la cabeza sobre el origen</td></tr>
+    <tr><td>Mover la camara con el casco<br><code>drive_camera</code></td><td>si/no</td><td>si</td><td></td><td>La camara principal sigue a la cabeza</td></tr>
+  </tbody>
+</table>
+<h3 id="XrController">XR Controller (mando VR) <code>XrController</code></h3>
+<table>
+  <thead><tr><th>Propiedad</th><th>Tipo</th><th>Por defecto</th><th>Valores</th><th>Descripcion</th></tr></thead>
+  <tbody>
+    <tr><td>Mano<br><code>hand</code></td><td>opcion</td><td>Derecha</td><td>Izquierda, Derecha</td><td></td></tr>
+    <tr><td>Pose<br><code>pose</code></td><td>opcion</td><td>Mano (grip)</td><td>Mano (grip), Puntero (aim)</td><td>Mano: donde se agarra el mando. Puntero: hacia donde apunta (rayos)</td></tr>
+    <tr><td>Ocultar sin mando<br><code>hide_when_untracked</code></td><td>si/no</td><td>si</td><td></td><td>Se desactiva si el mando no se ve o esta apagado</td></tr>
+  </tbody>
+</table>

@@ -42,6 +42,7 @@
 #include "ProfilerOverlay.h"
 
 #include <CramionCore/ecs/FloatingOrigin.h>
+#include <CramionCore/xr/XrRig.h>
 #include <CramionUpdater/Update.h>
 #include "PropertyInspector.h"
 #include "ProjectTemplates.h"
@@ -67,6 +68,11 @@
 #include <vector>
 
 namespace cramion::editor {
+
+// Editar > Play en realidad virtual (se guarda para el usuario; lo lee
+// main.cpp antes de crear Vulkan).
+bool xrPlayPreference();
+void setXrPlayPreference(bool on);
 
 class RendererGraphicsHost;
 
@@ -414,6 +420,12 @@ private:
     // --- Scripting y audio (EditorScripting.cpp) ---
 public:
     void setInput(const dm::Input* input) { input_ = input; }
+    // Realidad virtual en Play (EditorXr.cpp), desde el bucle de main.cpp:
+    // beginXrFrame antes de la interfaz y la logica, renderXrEyes despues de
+    // syncWorld y endXrFrame despues de drawFrame.
+    void beginXrFrame(dm::Input& input);
+    void renderXrEyes();
+    void endXrFrame();
     // Todos los eventos de la ventana (main.cpp) y el fin de cada frame: la
     // simulacion tactil lleva su propia entrada.
     void onRawInputEvent(const dm::Event& e);
@@ -436,7 +448,11 @@ private:
         std::vector<LuaCompletion> completions;
         LuaCompletionContext completion_context;
         bool was_active = false;
+        double last_edit = -10.0;  // el cursor no parpadea mientras se escribe
     };
+    // IntelliSense: la API del motor y lo del proyecto (EditorLuaSymbols.cpp).
+    void refreshLuaSymbols();
+    double lua_symbols_time_ = -1.0;
     std::string assetRelative(const std::filesystem::path& file) const;
     void createScriptAsset(const std::filesystem::path& folder, ecs::Entity attach_to);
     // --- Shaders de superficie (EditorShaders.cpp) ---
@@ -933,6 +949,12 @@ private:
     void drawProjectLoading(float delta_seconds);
     // --- Volumenes de post-proceso (EditorPostVolumes.cpp) ---
     ecs::Entity createPostVolume(int shape, ecs::Entity parent);  // 0 global, 1 caja, 2 esfera
+    // --- Realidad virtual (EditorXr.cpp) ---
+    ecs::Entity createXrOrigin(ecs::Entity parent);
+    void drawXrMenu();
+    xr::XrRig xr_rig_;
+    bool xr_frame_ = false;
+    bool xr_play_preference_ = xrPlayPreference();
     void drawPostVolumeGizmos();
     // Audio (EditorAudio.cpp): alcance, zonas de reverberacion y oclusion en Play.
     void drawAudioGizmos();

@@ -1,5 +1,8 @@
 #include "CramionCore/ecs/RenderSync.h"
 
+#include "CramionCore/physics/Cloth.h"
+#include "CramionCore/physics/SoftBody.h"
+
 #include "CramionCore/foliage/Foliage.h"
 #include "CramionCore/asset/RenderTextureAsset.h"
 
@@ -508,6 +511,81 @@ std::optional<std::uint32_t> RenderSync::resolveRuntimeMesh(const std::shared_pt
     return index;
 }
 
+std::optional<std::uint32_t> RenderSync::resolveClothModel(Entity e, const physics::Cloth& cloth, scene::Scene& scene,
+                                                          gfx::VulkanRenderer& renderer, bool full_upload_pending) {
+    const std::string layout = cloth.layoutKey();
+    auto it = cloth_models_.find(e.handle());
+    if (it != cloth_models_.end() && it->second.layout == layout) {
+        it->second.frame = frame_;
+        return it->second.index;
+    }
+    asset::ModelData data = physics::clothModel(cloth);
+    std::uint32_t index = 0;
+    if (it != cloth_models_.end()) {
+        index = it->second.index;
+        forgetVariantsOf(index);
+        scene.replaceModel(index, std::move(data));
+    } else if (!free_runtime_models_.empty()) {
+        index = free_runtime_models_.back();
+        free_runtime_models_.pop_back();
+        scene.replaceModel(index, std::move(data));
+    } else {
+        index = scene.addModel(std::move(data));
+    }
+    cloth_models_[e.handle()] = ClothSlot{layout, index, frame_};
+    const asset::ModelData& stored = *scene.models()[index];
+    anim::Animator bind(stored);
+    bind.play(-1);
+    if (model_bounds_.size() <= index) model_bounds_.resize(index + 1);
+    model_bounds_[index] = anim::skinnedBounds(stored, bind.boneMatrices());
+    if (!full_upload_pending) renderer.uploadModel(scene, index);
+    return index;
+}
+
+std::optional<std::uint32_t> RenderSync::resolveSoftBodyModel(Entity e, const physics::SoftBody& body, scene::Scene& scene,
+                                                             gfx::VulkanRenderer& renderer, bool full_upload_pending) {
+    const std::string layout = "soft/" + body.layoutKey();
+    auto it = cloth_models_.find(e.handle());
+    if (it != cloth_models_.end() && it->second.layout == layout) {
+        it->second.frame = frame_;
+        return it->second.index;
+    }
+    asset::ModelData data = physics::softBodyModel(body);
+    std::uint32_t index = 0;
+    if (it != cloth_models_.end()) {
+        index = it->second.index;
+        forgetVariantsOf(index);
+        scene.replaceModel(index, std::move(data));
+    } else if (!free_runtime_models_.empty()) {
+        index = free_runtime_models_.back();
+        free_runtime_models_.pop_back();
+        scene.replaceModel(index, std::move(data));
+    } else {
+        index = scene.addModel(std::move(data));
+    }
+    cloth_models_[e.handle()] =
+        ClothSlot{layout, index, frame_, std::make_shared<const physics::SoftBodyMesh>(physics::softBodyMesh(body))};
+    const asset::ModelData& stored = *scene.models()[index];
+    anim::Animator bind(stored);
+    bind.play(-1);
+    if (model_bounds_.size() <= index) model_bounds_.resize(index + 1);
+    model_bounds_[index] = anim::skinnedBounds(stored, bind.boneMatrices());
+    if (!full_upload_pending) renderer.uploadModel(scene, index);
+    return index;
+}
+
+void RenderSync::releaseClothModels() {
+    for (auto it = cloth_models_.begin(); it != cloth_models_.end();) {
+        if (it->second.frame == frame_) {
+            ++it;
+            continue;
+        }
+        free_runtime_models_.push_back(it->second.index);
+        forgetVariantsOf(it->second.index);
+        it = cloth_models_.erase(it);
+    }
+}
+
 void RenderSync::forgetVariantsOf(std::uint32_t base) {
     for (auto it = variant_lookup_.begin(); it != variant_lookup_.end();) {
         if (variants_[it->second].base == base) {
@@ -647,6 +725,7 @@ void RenderSync::reset(scene::Scene& scene) {
     variant_lookup_.clear();
     runtime_meshes_.clear();
     free_runtime_models_.clear();
+    cloth_models_.clear();
     warned_meshes_.clear();
     rebuild_materials_.clear();
     live_materials_.clear();
@@ -1785,6 +1864,11 @@ void RenderSync::syncActors(World& world, scene::Scene& scene, gfx::VulkanRender
     // entre frames, lo que agradecen las cascadas de sombra).
     world.forEachDepthFirst([&](Entity e) {
         const MeshRenderer* renderer_component = e.tryGet<MeshRenderer>();
+        // Una tela se dibuja aunque no tenga Mesh Renderer (con su color).
+        static const MeshRenderer kClothRenderer{};
+        if (renderer_component == nullptr && (e.has<physics::Cloth>() || e.has<physics::SoftBody>())) {
+            renderer_component = &kClothRenderer;
+        }
         if (renderer_component == nullptr || !renderer_component->visible ||
             !e.activeInHierarchy()) {
             return;
@@ -1793,9 +1877,13 @@ void RenderSync::syncActors(World& world, scene::Scene& scene, gfx::VulkanRender
         if (const EntityInfo* info = e.tryGet<EntityInfo>(); info != nullptr && info->static_batched) {
             return;
         }
-        // Una malla creada por codigo manda sobre el modelo del asset.
+        // Una tela o una malla creada por codigo mandan sobre el modelo del asset.
+        const physics::Cloth* cloth = e.tryGet<physics::Cloth>();
+        const physics::SoftBody* soft = cloth == nullptr ? e.tryGet<physics::SoftBody>() : nullptr;
         std::optional<std::uint32_t> model =
-            renderer_component->mesh
+            cloth != nullptr ? resolveClothModel(e, *cloth, scene, renderer, added)
+            : soft != nullptr ? resolveSoftBodyModel(e, *soft, scene, renderer, added)
+            : renderer_component->mesh
                 ? resolveRuntimeMesh(renderer_component->mesh, scene, renderer, added)
                 : resolveModel(renderer_component->model, renderer_component->part, scene, added);
         if (!model) {
@@ -2054,6 +2142,30 @@ void RenderSync::syncActors(World& world, scene::Scene& scene, gfx::VulkanRender
         }
         if (proc == nullptr) procedural_.erase(e.handle());
         if (rig.physbones == nullptr) physbones_.erase(e.handle());
+        // Tela simulada: cada hueso es una particula (en la pose de reposo si
+        // no hay simulacion, fuera de Play).
+        const std::vector<Vec3>* cloth_positions = nullptr;
+        if (cloth != nullptr && cloth->runtime.ptr && cloth->runtime.ptr->simulated &&
+            cloth->runtime.ptr->positions.size() == static_cast<std::size_t>(cloth->particleCount()) &&
+            state.animator.globals().size() == cloth->runtime.ptr->positions.size()) {
+            cloth_positions = &cloth->runtime.ptr->positions;
+            physics::clothBoneGlobals(*cloth, e.worldMatrix(), *cloth_positions, state.animator.globals());
+            state.animator.updateBones();
+            animating = true;
+        }
+        float soft_margin = 0.0f;
+        if (soft != nullptr && soft->runtime.ptr && soft->runtime.ptr->simulated &&
+            state.animator.globals().size() == soft->runtime.ptr->positions.size()) {
+            const auto slot = cloth_models_.find(e.handle());
+            if (slot != cloth_models_.end() && slot->second.soft_mesh) {
+                cloth_positions = &soft->runtime.ptr->positions;
+                physics::softBodyBoneGlobals(*slot->second.soft_mesh, e.worldMatrix(), *cloth_positions,
+                                             state.animator.globals());
+                state.animator.updateBones();
+                animating = true;
+                soft_margin = soft->thickness;
+            }
+        }
 
         const Mat4& world_matrix = e.worldMatrix();
         if (count >= actors.size()) actors.emplace_back();
@@ -2070,6 +2182,16 @@ void RenderSync::syncActors(World& world, scene::Scene& scene, gfx::VulkanRender
         const Vec3 center = (box.min + box.max) * 0.5f;
         actor.bounds_center = transformPoint(world_matrix, center);
         actor.bounds_radius = core::length(box.max - box.min) * 0.5f * maxAxisScale(world_matrix);
+        if (cloth_positions != nullptr && !cloth_positions->empty()) {
+            // La tela se aleja de su sitio (cae, ondea): la caja de sus particulas.
+            Vec3 lo = cloth_positions->front(), hi = lo;
+            for (const Vec3& p : *cloth_positions) {
+                lo = Vec3{std::min(lo.x, p.x), std::min(lo.y, p.y), std::min(lo.z, p.z)};
+                hi = Vec3{std::max(hi.x, p.x), std::max(hi.y, p.y), std::max(hi.z, p.z)};
+            }
+            actor.bounds_center = (lo + hi) * 0.5f;
+            actor.bounds_radius = core::length(hi - lo) * 0.5f + (cloth != nullptr ? cloth->thickness : soft_margin) + 0.05f;
+        }
         actor.cast_shadows = renderer_component->cast_shadows != ShadowCasting::Off;
         actor.shadows_only = renderer_component->cast_shadows == ShadowCasting::ShadowsOnly;
 
@@ -2090,8 +2212,9 @@ void RenderSync::syncActors(World& world, scene::Scene& scene, gfx::VulkanRender
         }
     }
 
-    // Las mallas de codigo que ya no existen dejan su hueco libre.
+    // Las mallas de codigo y las telas que ya no existen dejan su hueco libre.
     releaseRuntimeMeshes();
+    releaseClothModels();
 
     // Olvida los animadores de lo que ya no se dibuja.
     for (auto it = animations_.begin(); it != animations_.end();) {

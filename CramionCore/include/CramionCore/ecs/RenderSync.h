@@ -38,6 +38,12 @@
 #include <unordered_set>
 #include <vector>
 
+namespace cramion::physics {
+struct Cloth;
+struct SoftBody;
+struct SoftBodyMesh;
+}
+
 namespace cramion::ecs {
 
 class RenderSync {
@@ -411,6 +417,19 @@ private:
     };
     std::unordered_map<const Mesh*, RuntimeSlot> runtime_meshes_;
     std::vector<std::uint32_t> free_runtime_models_;  // huecos de mallas destruidas
+    // Telas (physics::Cloth): su rejilla con un hueso por particula, por entidad.
+    struct ClothSlot {
+        std::string layout;
+        std::uint32_t index = 0;
+        std::uint64_t frame = 0;
+        std::shared_ptr<const physics::SoftBodyMesh> soft_mesh;  // cuerpos blandos
+    };
+    std::unordered_map<entt::entity, ClothSlot> cloth_models_;
+    std::optional<std::uint32_t> resolveSoftBodyModel(Entity e, const physics::SoftBody& body, scene::Scene& scene,
+                                                      gfx::VulkanRenderer& renderer, bool full_upload_pending);
+    std::optional<std::uint32_t> resolveClothModel(Entity e, const physics::Cloth& cloth, scene::Scene& scene,
+                                                   gfx::VulkanRenderer& renderer, bool full_upload_pending);
+    void releaseClothModels();
     std::unordered_set<const Mesh*> warned_meshes_;
     std::unordered_map<std::string, std::uint32_t> variant_lookup_;  // clave -> variants_
     std::unordered_set<Uuid> rebuild_materials_;  // cambio de texturas/tiling/modo

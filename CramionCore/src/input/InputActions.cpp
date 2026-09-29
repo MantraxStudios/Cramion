@@ -8,6 +8,7 @@
 #include <cctype>
 #include <cmath>
 #include <fstream>
+#include <iterator>
 #include <sstream>
 #include <unordered_map>
 
@@ -80,7 +81,25 @@ const SourceTable& table() {
         }
         SourceGroup touch{"Tactil", {}};
         add(touch, "Touch Stick", {SourceKind::TouchStick, 0, ValueType::Axis2D});
-        s.groups = {keys, mouse, pad, touch};
+        // Mandos de realidad virtual (OpenXR). Primary = A/X, Secondary = B/Y.
+        SourceGroup xr{"Realidad virtual", {}};
+        static constexpr const char* kXrButtons[] = {"XR Left Trigger Click",  "XR Left Grip Click",  "XR Left Stick Click",
+                                                     "XR Left Primary",        "XR Left Secondary",   "XR Left Menu",
+                                                     "XR Right Trigger Click", "XR Right Grip Click", "XR Right Stick Click",
+                                                     "XR Right Primary",       "XR Right Secondary",  "XR Right Menu"};
+        static_assert(std::size(kXrButtons) == static_cast<std::size_t>(dm::XrButton::Count));
+        static constexpr const char* kXrAxes[] = {"XR Left Trigger",  "XR Left Grip",  "XR Left Stick X",  "XR Left Stick Y",
+                                                  "XR Right Trigger", "XR Right Grip", "XR Right Stick X", "XR Right Stick Y"};
+        static_assert(std::size(kXrAxes) == static_cast<std::size_t>(dm::XrAxis::Count));
+        add(xr, "XR Left Stick", {SourceKind::XrStick, 0, ValueType::Axis2D});
+        add(xr, "XR Right Stick", {SourceKind::XrStick, 1, ValueType::Axis2D});
+        for (int i = 0; i < static_cast<int>(dm::XrAxis::Count); ++i) {
+            add(xr, kXrAxes[i], {SourceKind::XrAxis, i, ValueType::Axis1D});
+        }
+        for (int i = 0; i < static_cast<int>(dm::XrButton::Count); ++i) {
+            add(xr, kXrButtons[i], {SourceKind::XrButton, i, ValueType::Bool});
+        }
+        s.groups = {keys, mouse, pad, touch, xr};
         // Alias (no salen en las listas).
         s.by_name["mouse0"] = {SourceKind::MouseButton, 0, ValueType::Bool};
         s.by_name["mouse1"] = {SourceKind::MouseButton, 1, ValueType::Bool};
@@ -377,6 +396,14 @@ std::string pressedSourceName(const dm::Input& in) {
                 // Gatillos a fondo.
                 if (src.code >= 4 && in.gamepadAxis(static_cast<dm::GamepadAxis>(src.code)) > 0.8f) return name;
                 break;
+            case SourceKind::XrButton:
+                // El gatillo y el agarre salen por su eje (abajo), no como "Click".
+                if (src.code % 6 >= 2 && in.isXrButtonPressed(static_cast<dm::XrButton>(src.code))) return name;
+                break;
+            case SourceKind::XrAxis:
+                // Gatillo o agarre (no los sticks) a fondo.
+                if (src.code % 4 < 2 && in.xrAxis(static_cast<dm::XrAxis>(src.code)) > 0.8f) return name;
+                break;
             default: break;
         }
     }
@@ -403,6 +430,12 @@ ActionValue readSource(const Source& s, const dm::Input& in) {
             if (s.code == 0) return {in.gamepadAxis(dm::GamepadAxis::LeftX), in.gamepadAxis(dm::GamepadAxis::LeftY), 0.0f};
             return {in.gamepadAxis(dm::GamepadAxis::RightX), in.gamepadAxis(dm::GamepadAxis::RightY), 0.0f};
         case SourceKind::TouchStick: return {in.virtualStickX(), in.virtualStickY(), 0.0f};
+        case SourceKind::XrButton: return {in.isXrButtonDown(static_cast<dm::XrButton>(s.code)) ? 1.0f : 0.0f, 0.0f, 0.0f};
+        case SourceKind::XrAxis: return {in.xrAxis(static_cast<dm::XrAxis>(s.code)), 0.0f, 0.0f};
+        case SourceKind::XrStick: {
+            const int x = s.code == 0 ? static_cast<int>(dm::XrAxis::LeftStickX) : static_cast<int>(dm::XrAxis::RightStickX);
+            return {in.xrAxis(static_cast<dm::XrAxis>(x)), in.xrAxis(static_cast<dm::XrAxis>(x + 1)), 0.0f};
+        }
         case SourceKind::None: break;
     }
     return {};
@@ -503,19 +536,26 @@ InputActionSettings defaultInputActions() {
     map(def, "Move", "Gamepad DPad Right");
     map(def, "Move", "Gamepad DPad Left", {negate()});
     map(def, "Move", "Touch Stick");
+    map(def, "Move", "XR Left Stick", {deadZone()});
     // Look (Vec2): raton (o arrastrar el dedo) y stick derecho, como getAxis("Mouse X").
     map(def, "Look", "Mouse XY", {scale(0.1f, 0.1f, 1.0f)});
     map(def, "Look", "Gamepad Right Stick", {deadZone(), scale(0.6f, 0.6f, 1.0f)});
+    map(def, "Look", "XR Right Stick", {deadZone(), scale(0.6f, 0.0f, 1.0f)});  // en VR solo girar (arriba/abajo es la cabeza)
     map(def, "Jump", "Space");
     map(def, "Jump", "Gamepad A");
+    map(def, "Jump", "XR Right Primary");
     map(def, "Sprint", "LeftShift");
     map(def, "Sprint", "Gamepad LS");
+    map(def, "Sprint", "XR Left Stick Click");
     map(def, "Fire", "Mouse Left");
     map(def, "Fire", "Gamepad RT");
+    map(def, "Fire", "XR Right Trigger");
     map(def, "Aim", "Mouse Right");
     map(def, "Aim", "Gamepad LT");
+    map(def, "Aim", "XR Left Trigger");
     map(def, "Interact", "E");
     map(def, "Interact", "Gamepad X");
+    map(def, "Interact", "XR Right Grip");
     map(def, "Zoom", "Mouse Wheel");
     map(def, "Zoom", "Gamepad RB");
     map(def, "Zoom", "Gamepad LB", {negate()});

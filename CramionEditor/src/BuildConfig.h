@@ -66,6 +66,7 @@ struct BuildConfig {
     int height = 900;
     bool static_batching = true;
     bool show_fps = false;      // desarrollo: FPS/CPU/GPU en una esquina
+    bool vr = false;            // realidad virtual (OpenXR) si hay casco; solo Windows
     BuildPlatform platform = BuildPlatform::Windows;
     AndroidBuildSettings android;
 };

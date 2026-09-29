@@ -17,6 +17,18 @@ Incluye dos escenas de demostración, iluminadas por una sola luz direccional (e
 
 ---
 
+## Novedades de la 1.2
+
+**Realidad virtual (OpenXR)**: juega con cualquier casco de PC (SteamVR, Meta Quest Link, Windows Mixed Reality...) activando *Realidad virtual* en la configuración de compilación, o pruébalo en el editor con *Editar > Play en realidad virtual*. Rig *XR Origin* con cámara y mandos como en Unity, los mandos en Input Actions y la tabla `XR` en Lua (poses, gatillos, botones y vibración).
+
+**Input Actions como el Enhanced Input de Unreal**: acciones Bool / float / Vec2 / Vec3 con muchas teclas cada una (teclado, ratón, mando, táctil y mandos de VR), varios contextos con prioridad, modificadores y triggers (Hold, Tap, Chord...). Se configuran en *Archivo > Entrada del proyecto* y se usan desde Lua con `Input.getAction` y `Input.bindAction`.
+
+**Telas**: cortinas, banderas y sábanas que cuelgan, ondean con el viento y chocan con todo (soft bodies de Jolt), con sombras y motion blur.
+
+**Cuerpos blandos**: gelatinas y pelotas de goma que caen, rebotan, se aplastan y vuelven a su forma.
+
+**IntelliSense completo en el editor de scripts**: toda la API del motor, tipos que sigue por tus variables, lo de tu proyecto dentro de los textos (componentes, acciones, escenas, prefabs, sonidos...) y la firma de cada función. Y el editor ya no tiembla al escribir.
+
 ## Novedades de la 1.0
 
 **Android**: exporta tu juego a **APK**, **AAB** (Google Play) y **OBB**, con paquete, versión, orientación, permisos, icono y firma configurables, sin Gradle ni Android Studio. *Exportar e instalar* lo abre en tu móvil o en el emulador. Funciona en GPUs de móvil de gama media (probado en Mali-G52) con un perfil móvil que apaga lo que no aguantan, y el arranque descomprime los assets en paralelo directamente desde el APK.
