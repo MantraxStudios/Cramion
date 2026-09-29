@@ -11,6 +11,7 @@
 #include "CramionCore/physics/PhysicsComponents.h"
 
 #include <CramionFX/asset/ImageFile.h>
+#include <CramionFX/vk/ShaderCompiler.h>
 
 #include <algorithm>
 #include <chrono>
@@ -112,8 +113,12 @@ void RenderSync::compileSurfaceShader(const std::string& path, SurfaceShaderEntr
     std::string error;
     entry.parsed = assets::loadSurfaceShader(file, entry.source, &error);
     std::vector<std::uint32_t> vertex, fragment;
-    if (entry.parsed && renderer_ != nullptr &&
-        assets::compileSurfaceShader(entry.source, assets::surfaceTemplateDirectory(), vertex, fragment, &error)) {
+    // Sin compilador (el juego en Android): el SPIR-V que dejo el editor al exportar.
+    const bool compiled = gfx::shaders::compilerAvailable()
+                              ? assets::compileSurfaceShader(entry.source, assets::surfaceTemplateDirectory(), vertex, fragment, &error)
+                              : assets::loadPrecompiledSurfaceShader(file, vertex, fragment) ||
+                                    (error = "sin compilador de shaders ni SPIR-V precompilado para " + path, false);
+    if (entry.parsed && renderer_ != nullptr && compiled) {
         const bool ok = entry.id >= 0 ? renderer_->updateSurfaceShader(entry.id, vertex, fragment, &error)
                                       : (entry.id = renderer_->createSurfaceShader(vertex, fragment, &error)) >= 0;
         if (ok) {

@@ -27,9 +27,13 @@
 // La fuente de verdad es el ecs::World; scene::Scene es solo lo que se le da
 // al renderizador (RenderSync la rellena cada frame).
 
+#include "AndroidBuild.h"
 #include "BuildConfig.h"
+
+#include <CramionDM/TouchControls.h>
 #include "Dialogs.h"
 #include <CramionCore/project/Pack.h>
+#include <CramionCore/input/InputActions.h>
 #include <CramionCore/asset/RenderTextureAsset.h>
 #include "ImGuiLayer.h"
 #include "LuaCompletion.h"
@@ -410,6 +414,10 @@ private:
     // --- Scripting y audio (EditorScripting.cpp) ---
 public:
     void setInput(const dm::Input* input) { input_ = input; }
+    // Todos los eventos de la ventana (main.cpp) y el fin de cada frame: la
+    // simulacion tactil lleva su propia entrada.
+    void onRawInputEvent(const dm::Event& e);
+    void endInputFrame();
 private:
     struct ScriptTab {
         std::filesystem::path path;
@@ -490,6 +498,14 @@ private:
         std::filesystem::path batch_cache;
         std::string batch_summary;
         std::filesystem::path icon;  // imagen o .ico de la configuracion (vacia = el del motor)
+        // Android: tras el paquete, el APK/AAB (AndroidBuild) y, si se pidio,
+        // instalar y abrir en el dispositivo elegido.
+        bool android = false;
+        AndroidToolchain android_tools;
+        AndroidPackageInput android_input;
+        AndroidPackageResult android_result;
+        std::string android_device;
+        std::atomic<float> phase{-1.0f};  // >= 0: progreso del empaquetado (en vez de los bytes)
     };
     void exportGame(bool run_after);
     void drawExportProgress();
@@ -507,6 +523,38 @@ private:
     bool static_children_value_ = false;
     std::string export_folder_;
     std::shared_ptr<dialogs::AsyncFolderPick> export_pick_;
+    // Android: dispositivos de adb para "Exportar y jugar" y el elegido.
+    std::vector<std::string> export_devices_;
+    std::string export_device_;
+    void refreshAndroidDevices();
+    // Seccion Android de la ventana de configuraciones (EditorAndroidBuild.cpp).
+    bool drawAndroidBuildSettings(BuildConfig& config);
+    // --- Interfaz tactil del proyecto (EditorTouchInterface.cpp) ---
+    void loadTouchInterface();
+    void drawTouchInterfaceWindow();
+    void drawTouchSimulation(const ImVec2& origin, const ImVec2& size);  // vista Juego en Play
+    const dm::Input* touchSimulatedInput();  // la entrada del juego con la simulacion
+    bool show_touch_interface_ = false;
+    dm::TouchLayout touch_layout_;
+    std::filesystem::path touch_layout_file_;
+    bool touch_preview_portrait_ = false;
+    bool touch_simulate_ = false;
+    dm::TouchControls touch_game_;       // la del juego en Play (Lua la cambia)
+    dm::Input touch_sim_input_;          // teclado real + lo que sale del tactil
+    std::vector<dm::Event> touch_pending_;
+    bool touch_sim_down_ = false;
+    int touch_button_dragged_ = -1;
+    // --- Entrada del proyecto: acciones y contextos (EditorInputActions.cpp) ---
+    void loadInputActions();
+    void drawInputActionsWindow();
+    void saveInputActionsNow();
+    bool show_input_actions_ = false;
+    input::InputActionSettings input_actions_;
+    std::filesystem::path input_actions_file_;
+    int input_action_selected_ = 0;
+    int input_context_selected_ = 0;
+    int input_capture_mapping_ = -1;  // esperando una tecla para esa fila
+    int input_tab_ = 0;               // 0 acciones, 1 contextos
     // --- Configuraciones de compilacion (EditorBuildConfigs.cpp) ---
     // Perfiles de exportacion: nombre del juego, version, icono del .exe,
     // escena inicial, ventana. ProjectSettings/BuildConfigs.json.

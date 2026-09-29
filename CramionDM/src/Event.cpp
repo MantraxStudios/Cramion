@@ -24,6 +24,16 @@ const char* eventTypeName(EventType type) {
         case EventType::MouseEnter: return "MouseEnter";
         case EventType::MouseLeave: return "MouseLeave";
         case EventType::MouseRawMoved: return "MouseRawMoved";
+        case EventType::TouchBegan: return "TouchBegan";
+        case EventType::TouchMoved: return "TouchMoved";
+        case EventType::TouchEnded: return "TouchEnded";
+        case EventType::GamepadButtonPressed: return "GamepadButtonPressed";
+        case EventType::GamepadButtonReleased: return "GamepadButtonReleased";
+        case EventType::GamepadAxisMoved: return "GamepadAxisMoved";
+        case EventType::GamepadConnected: return "GamepadConnected";
+        case EventType::GamepadDisconnected: return "GamepadDisconnected";
+        case EventType::WindowSurfaceLost: return "WindowSurfaceLost";
+        case EventType::WindowSurfaceCreated: return "WindowSurfaceCreated";
         default: return "None";
     }
 }

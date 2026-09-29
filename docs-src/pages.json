@@ -211,6 +211,11 @@
           "desc": "Teclado, ratón, ejes y mando."
         },
         {
+          "slug": "input-actions",
+          "title": "Input Actions",
+          "desc": "Entrada como el Enhanced Input de Unreal: acciones Bool/float/Vec2/Vec3, varios contextos, muchas teclas por acción, modificadores y triggers."
+        },
+        {
           "slug": "time",
           "title": "Time",
           "desc": "Tiempo del frame, tiempo total y escala de tiempo."

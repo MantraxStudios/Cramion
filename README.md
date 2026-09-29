@@ -17,6 +17,18 @@ Incluye dos escenas de demostración, iluminadas por una sola luz direccional (e
 
 ---
 
+## Novedades de la 1.0
+
+**Android**: exporta tu juego a **APK**, **AAB** (Google Play) y **OBB**, con paquete, versión, orientación, permisos, icono y firma configurables, sin Gradle ni Android Studio. *Exportar e instalar* lo abre en tu móvil o en el emulador. Funciona en GPUs de móvil de gama media (probado en Mali-G52) con un perfil móvil que apaga lo que no aguantan, y el arranque descomprime los assets en paralelo directamente desde el APK.
+
+**Controles táctiles como en Unreal**: joystick, zona para mirar y botones que se diseñan una vez en *Archivo > Controles táctiles*, se prueban en el editor con el botón *Táctil* y se controlan desde Lua. Los scripts de teclado y ratón funcionan en el móvil sin cambios.
+
+**Mando y orientación**: mandos Bluetooth/USB y `Screen.setOrientation` para girar la pantalla libremente o dejarla fija.
+
+**Render**: preset *Ultra realista* y los ajustes gráficos se aplican al momento, sin reiniciar.
+
+**Corregido**: el cierre con error del editor y del juego.
+
 ## Novedades de la 0.8.6
 
 **Corregido**: la 0.8.5 se cerraba al abrir y al cerrar el editor (error en `nvoglv64.dll`). Si la 0.8.5 no te abre, descarga la 0.8.6 a mano.
@@ -186,6 +198,7 @@ Incluye dos escenas de demostración, iluminadas por una sola luz direccional (e
 
 ## Índice
 
+- [Novedades de la 1.0](#novedades-de-la-10)
 - [Novedades de la 0.8.6](#novedades-de-la-086)
 - [Novedades de la 0.8.5](#novedades-de-la-085)
 - [Novedades de la 0.8.0](#novedades-de-la-080)

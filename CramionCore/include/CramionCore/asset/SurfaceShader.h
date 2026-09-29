@@ -72,6 +72,15 @@ bool compileSurfaceShader(const SurfaceShaderSource& shader, const std::filesyst
                           std::vector<std::uint32_t>& vertex_spirv, std::vector<std::uint32_t>& fragment_spirv,
                           std::string* error = nullptr);
 
+// SPIR-V ya compilado junto al .crshader (<archivo>.vert.spv y .frag.spv):
+// el juego exportado a Android no tiene compilador y usa estos (los escribe
+// el editor al exportar con writePrecompiledSurfaceShader).
+bool loadPrecompiledSurfaceShader(const std::filesystem::path& crshader, std::vector<std::uint32_t>& vertex_spirv,
+                                  std::vector<std::uint32_t>& fragment_spirv);
+bool writePrecompiledSurfaceShader(const std::filesystem::path& vertex_file, const std::filesystem::path& fragment_file,
+                                   const std::vector<std::uint32_t>& vertex_spirv,
+                                   const std::vector<std::uint32_t>& fragment_spirv);
+
 // shaders/source junto al ejecutable.
 std::filesystem::path surfaceTemplateDirectory();
 

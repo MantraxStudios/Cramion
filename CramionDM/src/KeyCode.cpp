@@ -111,4 +111,36 @@ const char* keyName(Key key) {
     }
 }
 
+const char* gamepadButtonName(GamepadButton button) {
+    switch (button) {
+        case GamepadButton::A: return "a";
+        case GamepadButton::B: return "b";
+        case GamepadButton::X: return "x";
+        case GamepadButton::Y: return "y";
+        case GamepadButton::LeftShoulder: return "lb";
+        case GamepadButton::RightShoulder: return "rb";
+        case GamepadButton::LeftStick: return "ls";
+        case GamepadButton::RightStick: return "rs";
+        case GamepadButton::Start: return "start";
+        case GamepadButton::Back: return "back";
+        case GamepadButton::DpadUp: return "up";
+        case GamepadButton::DpadDown: return "down";
+        case GamepadButton::DpadLeft: return "left";
+        case GamepadButton::DpadRight: return "right";
+        default: return "unknown";
+    }
+}
+
+const char* gamepadAxisName(GamepadAxis axis) {
+    switch (axis) {
+        case GamepadAxis::LeftX: return "leftx";
+        case GamepadAxis::LeftY: return "lefty";
+        case GamepadAxis::RightX: return "rightx";
+        case GamepadAxis::RightY: return "righty";
+        case GamepadAxis::LeftTrigger: return "lt";
+        case GamepadAxis::RightTrigger: return "rt";
+        default: return "unknown";
+    }
+}
+
 }  // namespace cramion::dm

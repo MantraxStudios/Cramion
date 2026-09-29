@@ -1,10 +1,13 @@
 #ifndef CRAMION_EDITOR_IMGUI_LAYER_H
 #define CRAMION_EDITOR_IMGUI_LAYER_H
 
+#include "PlatformWindow.h"
+
 #include <CramionFX/CramionFX.h>
 
 #include <imgui.h>
 
+#include <chrono>
 #include <cstdint>
 #include <array>
 #include <filesystem>
@@ -62,6 +65,13 @@ enum class Icon : int {
 class ImGuiLayer {
 public:
     void initialize(HWND hwnd, gfx::VulkanRenderer& renderer);
+    // Android (sin backend de plataforma): escala de la interfaz (densidad de
+    // la pantalla) antes de initialize, y el tamano en pixeles cada vez que cambie.
+    void setContentScale(float scale) { content_scale_ = scale; }
+    void setDisplaySize(std::uint32_t width, std::uint32_t height) {
+        display_width_ = width;
+        display_height_ = height;
+    }
     void shutdown();
 
     // Entre beginFrame() y endFrame() se construye la interfaz; endFrame()
@@ -138,6 +148,10 @@ private:
     std::uint64_t frame_ = 0;
     std::string ini_path_;
     bool initialized_ = false;
+    float content_scale_ = 0.0f;
+    std::uint32_t display_width_ = 1;
+    std::uint32_t display_height_ = 1;
+    std::chrono::steady_clock::time_point last_frame_{};
 };
 
 }  // namespace cramion::editor

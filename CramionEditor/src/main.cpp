@@ -98,6 +98,7 @@ int main(int argc, char** argv) {
         });
         window.setEventCallback([&](dm::Event& e) {
             input.onEvent(e);
+            app.onRawInputEvent(e);
             switch (e.type) {
                 case dm::EventType::WindowResize:
                     renderer.onResize(e.width, e.height);
@@ -170,6 +171,7 @@ int main(int argc, char** argv) {
                                                                             render_start)
                                      .count());
             input.newFrame();
+            app.endInputFrame();
             app.reportFrame(msSince(frame_start), window_ms, imgui_ms, scene_ms);
         }
 

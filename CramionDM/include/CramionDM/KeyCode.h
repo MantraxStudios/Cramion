@@ -150,6 +150,76 @@ enum class MouseButton : uint8_t {
     Count = 5
 };
 
+// Botones de un mando (disposicion de Xbox: A abajo, B derecha...). En
+// Android llegan de cualquier mando Bluetooth/USB.
+enum class GamepadButton : uint8_t {
+    A = 0,
+    B,
+    X,
+    Y,
+    LeftShoulder,
+    RightShoulder,
+    LeftStick,
+    RightStick,
+    Start,
+    Back,
+    DpadUp,
+    DpadDown,
+    DpadLeft,
+    DpadRight,
+    Count
+};
+
+// Ejes de un mando: sticks en [-1, 1] (Y positiva hacia arriba), gatillos en [0, 1].
+enum class GamepadAxis : uint8_t {
+    LeftX = 0,
+    LeftY,
+    RightX,
+    RightY,
+    LeftTrigger,
+    RightTrigger,
+    Count
+};
+
+// Botones de los mandos de realidad virtual (OpenXR). A/X = Primary, B/Y =
+// Secondary; Trigger y Grip cuentan como pulsados a partir de la mitad.
+enum class XrButton : uint8_t {
+    LeftTrigger = 0,
+    LeftGrip,
+    LeftThumbstick,
+    LeftPrimary,
+    LeftSecondary,
+    LeftMenu,
+    RightTrigger,
+    RightGrip,
+    RightThumbstick,
+    RightPrimary,
+    RightSecondary,
+    RightMenu,
+    Count
+};
+
+// Ejes de los mandos VR: gatillo y agarre en [0, 1], stick en [-1, 1] (Y arriba).
+enum class XrAxis : uint8_t {
+    LeftTrigger = 0,
+    LeftGrip,
+    LeftStickX,
+    LeftStickY,
+    RightTrigger,
+    RightGrip,
+    RightStickX,
+    RightStickY,
+    Count
+};
+
+// Fase de un dedo en la pantalla tactil.
+enum class TouchPhase : uint8_t {
+    Began = 0,
+    Moved,
+    Stationary,
+    Ended,
+};
+
 // Máscara de bits de los modificadores activos durante un evento.
 enum class KeyMods : uint8_t {
     None = 0,
@@ -177,5 +247,10 @@ inline bool hasMod(KeyMods value, KeyMods flag) {
 
 // Devuelve un nombre legible de la tecla (útil para depuración / logging).
 const char* keyName(Key key);
+// "a", "b", "x", "y", "lb", "rb", "ls", "rs", "start", "back", "up", "down",
+// "left", "right".
+const char* gamepadButtonName(GamepadButton button);
+// "leftx", "lefty", "rightx", "righty", "lt", "rt".
+const char* gamepadAxisName(GamepadAxis axis);
 
 }  // namespace cramion::dm

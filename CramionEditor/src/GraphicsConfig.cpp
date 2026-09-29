@@ -136,6 +136,7 @@ void loadGraphicsIni(const std::filesystem::path& file, gfx::VulkanRenderer& ren
     gfx::GraphicsSettings g = renderer.graphicsSettings();
     std::string line;
     while (std::getline(in, line)) {
+        if (!line.empty() && line.back() == '\r') line.pop_back();  // escrito en Windows (CRLF), leido en Android
         const std::size_t eq = line.find('=');
         if (eq == std::string::npos) continue;
         const std::string key = line.substr(0, eq);
@@ -185,6 +186,7 @@ bool readWindowSettings(const std::filesystem::path& file, WindowMode& mode, int
     bool found = false;
     std::string line;
     while (std::getline(in, line)) {
+        if (!line.empty() && line.back() == '\r') line.pop_back();  // escrito en Windows (CRLF), leido en Android
         const std::size_t eq = line.find('=');
         if (eq == std::string::npos) continue;
         const std::string key = line.substr(0, eq);
@@ -229,6 +231,14 @@ void applyQualityPreset(gfx::VulkanRenderer& renderer, int level) {
 // -----------------------------------------------------------------------------
 
 void applyWindowMode(HWND hwnd, WindowMode mode, int width, int height) {
+#if !defined(_WIN32)
+    // Android: siempre a pantalla completa.
+    (void)hwnd;
+    (void)mode;
+    (void)width;
+    (void)height;
+}
+#else
     if (hwnd == nullptr) return;
     MONITORINFO monitor{};
     monitor.cbSize = sizeof(monitor);
@@ -259,6 +269,7 @@ void applyWindowMode(HWND hwnd, WindowMode mode, int width, int height) {
     const int y = work.top + (work.bottom - work.top - h) / 2;
     SetWindowPos(hwnd, HWND_NOTOPMOST, x, y, w, h, SWP_FRAMECHANGED | SWP_SHOWWINDOW);
 }
+#endif
 
 // -----------------------------------------------------------------------------
 // Graphics (Lua)
@@ -509,6 +520,7 @@ bool RendererGraphicsHost::setQuality(const std::string& level, std::string& err
 
 std::vector<std::pair<int, int>> RendererGraphicsHost::resolutions() const {
     std::set<std::pair<int, int>, std::greater<>> sizes;
+#if defined(_WIN32)
     DEVMODEW mode{};
     mode.dmSize = sizeof(mode);
     for (DWORD i = 0; EnumDisplaySettingsW(nullptr, i, &mode) != 0; ++i) {
@@ -516,6 +528,10 @@ std::vector<std::pair<int, int>> RendererGraphicsHost::resolutions() const {
             sizes.insert({static_cast<int>(mode.dmPelsWidth), static_cast<int>(mode.dmPelsHeight)});
         }
     }
+#else
+    // Android: la pantalla (la resolucion de dibujo se baja con resolution_scale).
+    sizes.insert({window_width_, window_height_});
+#endif
     return {sizes.begin(), sizes.end()};
 }
 

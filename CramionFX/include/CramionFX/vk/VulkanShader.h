@@ -18,6 +18,8 @@ namespace shaders {
 
 // Carpeta de shaders junto al ejecutable, resuelta en tiempo de ejecucion.
 std::filesystem::path directory();
+// Otra carpeta (Android: donde el player saca los .spv del APK).
+void setDirectory(const std::filesystem::path& folder);
 
 // Carga <directory()>/<file_name> como modulo de shader.
 vk::raii::ShaderModule loadModule(const VulkanDevice& device, const std::string& file_name);

@@ -1,5 +1,48 @@
 # Cambios
 
+## 1.0.0
+
+### Android
+- **Exportar a Android**: en *Configuraciones de compilación*, *Plataforma: Android*. Sale un **APK** para instalar directamente, un **AAB** para Google Play, o los dos, y con **OBB** si los assets van aparte (`main.<versión>.<paquete>.obb`). Todo con las herramientas del Android SDK, sin Gradle ni Android Studio abierto.
+- Configurable: paquete, código de versión, Android mínimo y objetivo, orientación inicial, permisos (Internet, vibrar, micrófono), icono con sus 5 densidades, firma con tu keystore (o una clave de depuración que se crea sola) y perfil móvil (calidad inicial y FPS objetivo con el presupuesto adaptativo).
+- **Exportar e instalar**: lo instala por USB o en el emulador con adb, sube el OBB y abre el juego.
+- El juego en el móvil es el mismo reproductor: render Vulkan 1.3, física, Lua, audio, interfaz, red y `Http` (con la pila TLS de Android). Se pausa y vuelve de segundo plano sin perder nada; los logs van a `logcat`.
+- Los shaders propios (`.crshader`) se precompilan al exportar (en el móvil no hay compilador).
+- El motor compila el runtime de Android solo si está instalado el Android NDK (`CRAMION_ANDROID`), y el zip lo trae listo.
+- Funciona en **GPUs de móvil sin `drawIndirectCount` ni `multiDrawIndirect`** (Mali y muchas Adreno): el culling en GPU dibuja entonces comando a comando. Probado en una tablet con Mali-G52.
+- **Perfil móvil**: según la calidad elegida se apagan los efectos que un móvil no aguanta (motion blur, profundidad de campo, volumétrica, GI y reflejos de pantalla, nubes en Baja/Media) aunque la escena los pida, y el cielo y el IBL se recalculan cada 8 frames.
+- **Arranque rápido**: los assets se leen directamente del APK (sin copiarlos fuera) y se descomprimen en paralelo con todos los núcleos: 46 MB en medio segundo en una tablet de gama media. La descompresión en paralelo también acelera el primer arranque en Windows.
+- Si el móvil no tiene Vulkan 1.3 el juego lo explica en el log (qué le falta) y se cierra limpio en vez de fallar.
+
+### Controles táctiles (como el Touch Interface de Unreal)
+- **Archivo > Controles táctiles**: joystick que aparece donde se apoya el pulgar, zona para mirar arrastrando, botones que pulsan teclas o el ratón (Saltar = Espacio, Disparar = Mouse0...). Se colocan arrastrándolos sobre una vista previa del móvil y se guardan en el proyecto (`ProjectSettings/TouchInterface.json`).
+- Un script hecho para teclado y ratón funciona sin cambios: el joystick mueve `Horizontal`/`Vertical`, arrastrar es `mouseDelta`, un toque corto es un clic.
+- Los botones de la interfaz (Canvas) tienen prioridad sobre el joystick.
+- Botón **Táctil** en la vista Juego: se prueban en Play con el ratón como dedo.
+- Lua: `Input.setTouchControls`, `Input.setTouchButton(texto, visible)`, `Input.setTouchJoystick`, `Input.setTouchLook`, `Input.touchCount`, `Input.getTouch`, `Input.isMobile`, `Input.vibrate`.
+
+### Input Actions (como el Enhanced Input de Unreal)
+- **Archivo > Entrada del proyecto**: acciones con tipo de valor **Bool, Axis1D (float), Axis2D (Vec2) y Axis3D (Vec3)** y **varios contextos** (configuraciones) que asignan a cada acción muchas teclas, botones del ratón, del mando, sticks o el joystick táctil. Se guarda en `ProjectSettings/InputActions.json`.
+- **Modificadores** por tecla y por acción: Negate, Swizzle (YXZ, ZYX, XZY...), Dead Zone (radial o por eje) y Scale. **Triggers**: Down, Pressed, Released, Hold, Hold And Release, Tap, Pulse y Chord, con eventos started / ongoing / triggered / completed / canceled.
+- Contextos con **prioridad**: el de más prioridad se queda las teclas compartidas. Se activan y quitan en el juego.
+- Pestaña **Depurar** en Play con el valor y el estado de cada acción; botón para asignar una tecla pulsándola.
+- Lua: `Input.getAction`, `Input.getActionState`, `Input.isActionTriggered`, `Input.wasActionStarted/Completed/Canceled`, `Input.bindAction`, `Input.addMappingContext`, `Input.removeMappingContext`, `Input.rebind`, `Input.saveBindings`, `Input.resetBindings`, `Input.getBindings`, `Input.anyKeyPressed` (menú de opciones de controles).
+- Configuración por defecto: Move, Look, Jump, Sprint, Fire, Aim, Interact, Zoom (contexto Default) y Fly (contexto Vuelo). Manual: *Input Actions*.
+
+### Mando y pantalla
+- **Mando** (Bluetooth o USB en Android): `Input.getGamepadButton`, `Input.getGamepadAxis`, `Input.isGamepadConnected`; el stick izquierdo y la cruceta mueven `Horizontal`/`Vertical` y el derecho mira.
+- **Orientación desde Lua**: `Screen.setOrientation("auto" | "landscape" | "portrait" | "landscape_fixed" | "portrait_fixed")`, y `Screen.width`, `Screen.height`, `Screen.orientation`.
+
+### Render
+- Preset de post-procesado **Ultra realista**: todos los efectos prendidos con valores de cámara real (GI, reflejos, SSAO, volumétrica, bokeh, motion blur y LOD casi sin error).
+- **Los cambios de ajustes gráficos se aplican al momento**: al cambiar la calidad, activar un efecto, las sombras, el trazado de rayos o un preset, el presupuesto adaptativo devuelve lo que había bajado y vuelve a medir. Antes había que reiniciar el motor.
+
+### MCP
+- Herramientas `export_game` (Windows o Android, e instalar) y `export_status`.
+
+### Corregido
+- **Cierre del editor y del juego con error** en el driver: un pase de las sombras de las nubes se liberaba después del dispositivo.
+
 ## 0.8.6
 
 ### Corregido

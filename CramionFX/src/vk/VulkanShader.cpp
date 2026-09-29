@@ -2,7 +2,9 @@
 
 #include "CramionFX/vk/VulkanDevice.h"
 
+#if defined(_WIN32)
 #include <windows.h>
+#endif
 
 #include <fstream>
 #include <stdexcept>
@@ -10,7 +12,21 @@
 
 namespace cramion::gfx::shaders {
 
+namespace {
+std::filesystem::path& directoryOverride() {
+    static std::filesystem::path folder;
+    return folder;
+}
+}  // namespace
+
+void setDirectory(const std::filesystem::path& folder) { directoryOverride() = folder; }
+
 std::filesystem::path directory() {
+    if (!directoryOverride().empty()) return directoryOverride();
+#if defined(__ANDROID__)
+    // Sin setDirectory: el player de Android los saca del APK a su carpeta.
+    throw std::runtime_error("Carpeta de shaders sin configurar (shaders::setDirectory).");
+#else
     // Se resuelve desde la ruta del ejecutable para que funcione sea cual sea
     // el directorio de trabajo desde el que se lance.
     std::wstring buffer(MAX_PATH, L'\0');
@@ -27,6 +43,7 @@ std::filesystem::path directory() {
 
     buffer.resize(length);
     return std::filesystem::path(buffer).parent_path() / "shaders";
+#endif
 }
 
 vk::raii::ShaderModule loadModule(const VulkanDevice& device, const std::string& file_name) {

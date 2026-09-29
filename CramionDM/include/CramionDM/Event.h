@@ -43,6 +43,25 @@ enum class EventType : uint8_t {
     // (Window::setCursorCaptured): deltaX/deltaY sin limite de pantalla, para
     // mirar en primera persona.
     MouseRawMoved,
+
+    // Pantalla tactil: un evento por dedo (touchId lo sigue de Began a Ended;
+    // mouseX/mouseY = posicion en pixeles, deltaX/deltaY = movimiento).
+    TouchBegan,
+    TouchMoved,
+    TouchEnded,
+
+    // Mando (Android: Bluetooth/USB).
+    GamepadButtonPressed,
+    GamepadButtonReleased,
+    GamepadAxisMoved,     // gamepadAxis + value
+    GamepadConnected,
+    GamepadDisconnected,
+
+    // Android: el sistema quita la superficie de la ventana (la app pasa a
+    // segundo plano) y la devuelve al volver. Hay que soltar la swapchain en
+    // el momento (antes de que el callback termine) y crear otra al volver.
+    WindowSurfaceLost,
+    WindowSurfaceCreated,
 };
 
 // Categorías (máscara de bits) para poder filtrar eventos por grupo.
@@ -102,6 +121,14 @@ struct Event {
 
     // --- WindowDpiChanged (dpiScale = 1.0 a 96 DPI, 1.5 a 144 DPI, etc.) ---
     float dpiScale = 1.0f;
+
+    // --- Touch* ---
+    int32_t touchId = 0;
+
+    // --- Gamepad* ---
+    GamepadButton gamepadButton = GamepadButton::A;
+    GamepadAxis gamepadAxis = GamepadAxis::LeftX;
+    float value = 0.0f;
 
     // --- FileDropped (rutas soltadas; x/y = posición del cursor al soltar) ---
     std::vector<std::wstring> paths;

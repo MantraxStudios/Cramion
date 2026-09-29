@@ -38,6 +38,7 @@ constexpr double kMaxTextureDuplication = 1.5;
 // Variable de entorno (vacia si no existe). _dupenv_s: getenv esta marcada
 // como insegura en el CRT de Windows.
 std::string environmentVariable(const char* name) {
+#if defined(_WIN32)
     char* value = nullptr;
     std::size_t size = 0;
     std::string result;
@@ -46,6 +47,10 @@ std::string environmentVariable(const char* name) {
     }
     std::free(value);
     return result;
+#else
+    const char* value = std::getenv(name);
+    return value != nullptr ? std::string(value) : std::string();
+#endif
 }
 
 std::string lower(std::string text) {

@@ -37,8 +37,10 @@ bool hasExtension(const std::vector<vk::ExtensionProperties>& available, const c
 
 }  // namespace
 
-void VulkanDevice::initialize(const VulkanInstance& instance, const VulkanSurface& surface) {
-    pickPhysicalDevice(instance, surface);
+void VulkanDevice::initialize(const VulkanInstance& instance, const VulkanSurface& surface, VkPhysicalDevice required,
+                              const std::vector<std::string>& extra_extensions) {
+    extra_extensions_ = extra_extensions;
+    pickPhysicalDevice(instance, surface, required);
     queue_families_ = findQueueFamilies(physical_device_, surface.handle());
     createLogicalDevice();
     selectDepthFormat();
@@ -48,7 +50,7 @@ void VulkanDevice::initialize(const VulkanInstance& instance, const VulkanSurfac
 // Dispositivo fisico
 // -----------------------------------------------------------------------------
 
-void VulkanDevice::pickPhysicalDevice(const VulkanInstance& instance, const VulkanSurface& surface) {
+void VulkanDevice::pickPhysicalDevice(const VulkanInstance& instance, const VulkanSurface& surface, VkPhysicalDevice required) {
     vk::raii::PhysicalDevices candidates(instance.handle());
     if (candidates.empty()) {
         throw std::runtime_error("No se encontro ninguna GPU compatible con Vulkan.");
@@ -57,13 +59,54 @@ void VulkanDevice::pickPhysicalDevice(const VulkanInstance& instance, const Vulk
     // Se ordenan por puntuacion y se toma la mejor valida.
     std::multimap<std::uint32_t, const vk::raii::PhysicalDevice*> ranked;
     for (const auto& candidate : candidates) {
-        const std::uint32_t score = rateDevice(candidate, surface.handle());
+        std::uint32_t score = rateDevice(candidate, surface.handle());
+        // OpenXR: la GPU del casco gana a todas (si vale).
+        if (score > 0 && required != VK_NULL_HANDLE && static_cast<VkPhysicalDevice>(*candidate) == required) {
+            score += 1000000000u;
+        }
         if (score > 0) {
             ranked.emplace(score, &candidate);
         }
     }
 
     if (ranked.empty()) {
+        // Por que no vale cada una (en el log: para saber que le falta a un movil).
+        for (const auto& candidate : candidates) {
+            const auto p = candidate.getProperties();
+            std::cerr << "[Vulkan] " << p.deviceName.data() << ": API " << VK_API_VERSION_MAJOR(p.apiVersion) << '.'
+                      << VK_API_VERSION_MINOR(p.apiVersion) << '.' << VK_API_VERSION_PATCH(p.apiVersion) << ", driver "
+                      << p.driverVersion << "\n";
+            const auto available = candidate.enumerateDeviceExtensionProperties();
+            for (const char* required : kRequiredDeviceExtensions) {
+                if (!hasExtension(available, required)) std::cerr << "[Vulkan]   falta la extension " << required << "\n";
+            }
+            for (const char* optional : {"VK_KHR_dynamic_rendering", "VK_KHR_synchronization2", "VK_KHR_draw_indirect_count",
+                                         "VK_EXT_shader_demote_to_helper_invocation", "VK_KHR_create_renderpass2",
+                                         "VK_KHR_depth_stencil_resolve", "VK_KHR_buffer_device_address",
+                                         "VK_EXT_descriptor_indexing", "VK_KHR_maintenance4", "VK_KHR_format_feature_flags2"}) {
+                std::cerr << "[Vulkan]   " << optional << ": " << (hasExtension(available, optional) ? "si" : "no") << "\n";
+            }
+            const auto chain = candidate.getFeatures2<vk::PhysicalDeviceFeatures2, vk::PhysicalDeviceVulkan12Features,
+                                                      vk::PhysicalDeviceVulkan13Features>();
+            const auto& f = chain.template get<vk::PhysicalDeviceFeatures2>().features;
+            const auto& f12 = chain.template get<vk::PhysicalDeviceVulkan12Features>();
+            const auto& f13 = chain.template get<vk::PhysicalDeviceVulkan13Features>();
+            std::cerr << "[Vulkan]   dynamicRendering " << f13.dynamicRendering << " synchronization2 " << f13.synchronization2
+                      << " demote " << f13.shaderDemoteToHelperInvocation << " drawIndirectCount " << f12.drawIndirectCount
+                      << " multiDrawIndirect " << f.multiDrawIndirect << " drawIndirectFirstInstance "
+                      << f.drawIndirectFirstInstance << " depthClamp " << f.depthClamp << " textureCompressionBC "
+                      << f.textureCompressionBC << " ETC2 " << f.textureCompressionETC2 << " ASTC " << f.textureCompressionASTC_LDR
+                      << " geometryShader " << f.geometryShader << " shaderStorageImageExtendedFormats "
+                      << f.shaderStorageImageExtendedFormats << " independentBlend " << f.independentBlend
+                      << " samplerAnisotropy " << f.samplerAnisotropy << " imageCubeArray " << f.imageCubeArray
+                      << " fragmentStoresAndAtomics " << f.fragmentStoresAndAtomics << "\n";
+            std::cerr << "[Vulkan]   limites: maxImage2D " << p.limits.maxImageDimension2D << " maxPushConstants "
+                      << p.limits.maxPushConstantsSize << " maxBoundDescriptorSets " << p.limits.maxBoundDescriptorSets
+                      << " maxPerStageSamplers " << p.limits.maxPerStageDescriptorSamplers << " maxPerStageSampledImages "
+                      << p.limits.maxPerStageDescriptorSampledImages << " maxPerStageStorageImages "
+                      << p.limits.maxPerStageDescriptorStorageImages << " maxColorAttachments " << p.limits.maxColorAttachments
+                      << " maxComputeSharedMemory " << p.limits.maxComputeSharedMemorySize << "\n";
+        }
         throw std::runtime_error(
             "Ninguna GPU cumple los requisitos (Vulkan 1.3, VK_KHR_swapchain, "
             "dynamic rendering, synchronization2 y presentacion en la ventana).");
@@ -139,10 +182,12 @@ bool VulkanDevice::supportsRequiredFeatures(const vk::raii::PhysicalDevice& cand
     const auto& features12 = chain.template get<vk::PhysicalDeviceVulkan12Features>();
     const auto& features13 = chain.template get<vk::PhysicalDeviceVulkan13Features>();
 
-    // Dibujo indirecto con el numero de comandos en un buffer (culling en GPU).
+    // drawIndirectCount y multiDrawIndirect son opcionales: muchas GPU de
+    // movil (Mali, algunas Adreno) no los tienen y el culling en GPU dibuja
+    // entonces comando a comando (indirectCountSupported).
+    (void)features12;
     return features13.dynamicRendering && features13.synchronization2 &&
-           features13.shaderDemoteToHelperInvocation && features12.drawIndirectCount &&
-           features.multiDrawIndirect && features.drawIndirectFirstInstance;
+           features13.shaderDemoteToHelperInvocation && features.drawIndirectFirstInstance;
 }
 
 bool VulkanDevice::supportsRayTracing(const vk::raii::PhysicalDevice& candidate) {
@@ -251,6 +296,20 @@ void VulkanDevice::createLogicalDevice() {
 
     auto& create_info = chain.get<vk::DeviceCreateInfo>();
     create_info.setQueueCreateInfos(queue_infos);
+    // Las que pide OpenXR (si la GPU las tiene).
+    {
+        const auto available = physical_device_.enumerateDeviceExtensionProperties();
+        for (const std::string& name : extra_extensions_) {
+            if (!hasExtension(available, name.c_str())) {
+                std::cerr << "[Vulkan] OpenXR pide " << name << " y la GPU no la tiene
+";
+                continue;
+            }
+            if (std::none_of(extensions.begin(), extensions.end(), [&](const char* e) { return name == e; })) {
+                extensions.push_back(name.c_str());
+            }
+        }
+    }
     create_info.setPEnabledExtensionNames(extensions);
 
     auto& features13 = chain.get<vk::PhysicalDeviceVulkan13Features>();
@@ -260,9 +319,18 @@ void VulkanDevice::createLogicalDevice() {
     // OpDemoteToHelperInvocation (lo usa el recorte por alfa de los modelos).
     features13.shaderDemoteToHelperInvocation = VK_TRUE;
 
-    // Culling en GPU: vkCmdDrawIndexedIndirectCount con varios comandos.
+    // Culling en GPU: vkCmdDrawIndexedIndirectCount con varios comandos, si
+    // la GPU lo tiene (si no, un comando por llamada).
+    {
+        const auto available = physical_device_.getFeatures2<vk::PhysicalDeviceFeatures2, vk::PhysicalDeviceVulkan12Features>();
+        indirect_count_supported_ = available.get<vk::PhysicalDeviceVulkan12Features>().drawIndirectCount &&
+                                    available.get<vk::PhysicalDeviceFeatures2>().features.multiDrawIndirect;
+    }
     auto& features12 = chain.get<vk::PhysicalDeviceVulkan12Features>();
-    features12.drawIndirectCount = VK_TRUE;
+    features12.drawIndirectCount = indirect_count_supported_ ? VK_TRUE : VK_FALSE;
+    if (!indirect_count_supported_) {
+        std::cout << "[Vulkan] Sin drawIndirectCount/multiDrawIndirect (GPU de movil): dibujo indirecto comando a comando\n";
+    }
     if (ray_tracing_supported_) {
         // Estructuras de aceleracion (direcciones de buffer) y texturas de
         // todos los materiales indexadas desde los shaders de rayos.
@@ -286,7 +354,7 @@ void VulkanDevice::createLogicalDevice() {
     features.features.depthClamp = depth_clamp_supported_ ? VK_TRUE : VK_FALSE;
     features.features.textureCompressionBC =
         texture_compression_bc_supported_ ? VK_TRUE : VK_FALSE;
-    features.features.multiDrawIndirect = VK_TRUE;
+    features.features.multiDrawIndirect = indirect_count_supported_ ? VK_TRUE : VK_FALSE;
     // Lineas (modo Wireframe de la vista Escena del editor).
     fill_mode_non_solid_supported_ = physical_device_.getFeatures().fillModeNonSolid == VK_TRUE;
     features.features.fillModeNonSolid = fill_mode_non_solid_supported_ ? VK_TRUE : VK_FALSE;

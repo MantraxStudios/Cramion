@@ -4,6 +4,7 @@
 #     CramionEditor.exe, CramionPlayer.exe, cramion.exe, CramionMcp.exe (puente MCP),
 #     CramionUpdater.exe (actualizador)
 #     shaders/ (con source/ de los .crshader), editor_icons/, player_banner.png
+#     android/ (libmain.so por ABI: Exportar a Android)
 #     shaderc_shared.dll                  (compila los shaders propios)
 #     msvcp140.dll, vcruntime140*.dll   (runtime de C++, si se encuentra)
 #     LICENSE, README.md, CHANGELOG.md, LEEME.txt, docs/ (web y referencia de scripting)
@@ -39,6 +40,13 @@ foreach(exe CramionEditor.exe CramionPlayer.exe cramion.exe CramionMcp.exe Crami
     file(COPY "${BIN_DIR}/${exe}" DESTINATION "${stage}")
 endforeach()
 file(COPY "${BIN_DIR}/shaders" "${BIN_DIR}/editor_icons" "${BIN_DIR}/player_banner.png" DESTINATION "${stage}")
+# Runtime de Android (exportar APK/AAB), si se compilo con el NDK.
+if(EXISTS "${BIN_DIR}/android/arm64-v8a/libmain.so")
+    # Sin bundletool.jar (32 MB): el editor lo descarga el primer AAB.
+    file(COPY "${BIN_DIR}/android" DESTINATION "${stage}" PATTERN "*.jar" EXCLUDE)
+else()
+    message(WARNING "Falta android/arm64-v8a/libmain.so: el paquete no podra exportar a Android.")
+endif()
 # Compilador de los shaders de superficie del usuario (.crshader).
 if(EXISTS "${BIN_DIR}/shaderc_shared.dll")
     file(COPY "${BIN_DIR}/shaderc_shared.dll" DESTINATION "${stage}")

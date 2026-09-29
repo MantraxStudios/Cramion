@@ -1,6 +1,7 @@
 // Pruebas del ECS de CramionCore (consola): jerarquia, transformaciones,
 // duplicar, reflexion y serializacion de ida y vuelta. Devuelve 0 si todo va.
 
+#include "CramionCore/ecs/ComponentPresets.h"
 #include "CramionCore/ecs/Components.h"
 #include "CramionCore/ecs/MathUtil.h"
 #include "CramionCore/ecs/ModelInstantiation.h"
@@ -10,6 +11,7 @@
 #include <cmath>
 #include <cstdio>
 #include <string>
+#include <vector>
 
 using namespace cramion;
 using namespace cramion::ecs;
@@ -251,6 +253,29 @@ void testPostVolumes() {
     check(old.valid() && old.get<PostProcessing>().isGlobal(), "el global sigue global");
 }
 
+void testUltraRealisticPreset() {
+    std::printf("Preset Ultra realista\n");
+    const std::vector<ComponentPreset> presets = builtinPresets("PostProcessing");
+    const ComponentPreset* ultra = nullptr;
+    for (const ComponentPreset& p : presets) {
+        if (p.name == "Ultra realista") ultra = &p;
+    }
+    check(ultra != nullptr, "el preset existe");
+    if (ultra == nullptr) return;
+    World world;
+    Entity e = world.create("Post");
+    std::string error;
+    check(applyPreset(world, e, *ultra, &error), "se aplica");
+    const gfx::PostProcessSettings& s = e.get<PostProcessing>().settings;
+    check(s.auto_exposure && s.bloom && s.vignette && s.motion_blur && s.depth_of_field && s.dof_auto_focus &&
+              s.light_shafts && s.fxaa && s.ambient_occlusion && s.global_illumination && s.reflections &&
+              s.contact_shadows && s.volumetric_light && s.lods,
+          "todos los efectos prendidos");
+    check(s.film_grain > 0.0f && s.chromatic_aberration > 0.0f && s.lens_flare > 0.0f && s.fog_density > 0.0f,
+          "lente y niebla activas");
+    check(s.tonemapper == gfx::Tonemapper::Aces && s.lod_pixel_error < 1.0f, "ACES y LODs finos");
+}
+
 }  // namespace
 
 int main() {
@@ -259,6 +284,7 @@ int main() {
     testSerialization();
     testModelInstantiation();
     testPostVolumes();
+    testUltraRealisticPreset();
     std::printf("%d comprobaciones, %d fallos\n", checks, failures);
     return failures == 0 ? 0 : 1;
 }

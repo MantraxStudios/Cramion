@@ -17,17 +17,17 @@ public:
     VulkanSurface(const VulkanSurface&) = delete;
     VulkanSurface& operator=(const VulkanSurface&) = delete;
 
-    // `window` es el HWND de la ventana; debe seguir vivo mientras exista la
-    // superficie.
-    void initialize(const VulkanInstance& instance, HWND window);
+    // `window` es la ventana (HWND o ANativeWindow); debe seguir viva
+    // mientras exista la superficie.
+    void initialize(const VulkanInstance& instance, NativeWindow window);
     void shutdown();
 
     const vk::raii::SurfaceKHR& handle() const { return surface_; }
-    HWND window() const { return window_; }
+    NativeWindow window() const { return window_; }
 
 private:
     vk::raii::SurfaceKHR surface_{nullptr};
-    HWND window_ = nullptr;
+    NativeWindow window_ = nullptr;
 };
 
 }  // namespace cramion::gfx

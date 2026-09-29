@@ -4,6 +4,11 @@
 
 #include <cstring>
 #include <fstream>
+#include <algorithm>
+#include <thread>
+#include <mutex>
+#include <chrono>
+#include <atomic>
 #include <memory>
 
 namespace cramion::project {
@@ -178,13 +183,15 @@ bool writePack(const std::filesystem::path& file, const std::vector<PackInput>& 
     return true;
 }
 
-bool readPackIndex(const std::filesystem::path& file, std::vector<PackEntry>& entries, std::string* error) {
+bool readPackIndex(const std::filesystem::path& file, std::vector<PackEntry>& entries, std::string* error,
+                   std::uint64_t base, std::uint64_t length) {
     entries.clear();
     std::ifstream in(file, std::ios::binary);
     if (!in) {
         fail(error, "No se pudo abrir " + utf8(file));
         return false;
     }
+    in.seekg(static_cast<std::streamoff>(base));
     char magic[4] = {};
     std::uint32_t version = 0;
     std::uint32_t count = 0;
@@ -199,12 +206,18 @@ bool readPackIndex(const std::filesystem::path& file, std::vector<PackEntry>& en
         return false;
     }
     std::error_code ec;
-    const std::uint64_t file_size = std::filesystem::file_size(file, ec);
+    std::uint64_t file_size = length;
+    if (file_size == 0) {
+        in.seekg(0, std::ios::end);
+        const std::streamoff end = in.tellg();
+        if (end < 0 || static_cast<std::uint64_t>(end) < base) ec = std::make_error_code(std::errc::io_error);
+        else file_size = static_cast<std::uint64_t>(end) - base;
+    }
     if (ec || index < kHeaderSize || index > file_size) {
         fail(error, "Paquete danado (indice)");
         return false;
     }
-    in.seekg(static_cast<std::streamoff>(index));
+    in.seekg(static_cast<std::streamoff>(base + index));
     entries.reserve(count);
     for (std::uint32_t i = 0; i < count; ++i) {
         std::uint16_t length = 0;
@@ -226,72 +239,136 @@ bool readPackIndex(const std::filesystem::path& file, std::vector<PackEntry>& en
     return true;
 }
 
-bool extractPack(const std::filesystem::path& file, const std::filesystem::path& folder,
-                 const PackProgress& progress, std::string* error) {
-    std::vector<PackEntry> entries;
-    if (!readPackIndex(file, entries, error)) return false;
-    std::ifstream in(file, std::ios::binary);
-    std::unique_ptr<ZSTD_DCtx, DCtxDeleter> dctx(ZSTD_createDCtx());
-    std::vector<char> in_buffer(ZSTD_DStreamInSize());
-    std::vector<char> out_buffer(ZSTD_DStreamOutSize());
-    std::uint64_t done = 0;
+namespace {
+
+// Un archivo del paquete a disco (cada hilo con su lector y su descompresor).
+bool extractEntry(std::ifstream& in, ZSTD_DCtx* dctx, std::vector<char>& in_buffer, std::vector<char>& out_buffer,
+                  const PackEntry& e, std::uint64_t base, const std::filesystem::path& folder,
+                  std::atomic<std::uint64_t>& done, std::string& error) {
     std::error_code ec;
-    for (const PackEntry& e : entries) {
-        if (progress && !progress(done, e.path)) {
-            fail(error, "Cancelado");
+    const std::filesystem::path target = folder / fromUtf8(e.path);
+    std::filesystem::create_directories(target.parent_path(), ec);
+    std::ofstream out(target, std::ios::binary | std::ios::trunc);
+    if (!out) {
+        error = "No se pudo escribir " + utf8(target);
+        return false;
+    }
+    ZSTD_DCtx_reset(dctx, ZSTD_reset_session_only);
+    in.clear();
+    in.seekg(static_cast<std::streamoff>(base + e.offset));
+    std::uint64_t left = e.compressed;
+    std::uint64_t written = 0;
+    std::size_t last_result = 1;
+    while (left > 0) {
+        const std::size_t n = static_cast<std::size_t>(std::min<std::uint64_t>(left, in_buffer.size()));
+        in.read(in_buffer.data(), static_cast<std::streamsize>(n));
+        if (!in) {
+            error = "Paquete danado (" + e.path + ")";
             return false;
         }
-        const std::filesystem::path target = folder / fromUtf8(e.path);
-        std::filesystem::create_directories(target.parent_path(), ec);
-        std::ofstream out(target, std::ios::binary | std::ios::trunc);
-        if (!out) {
-            fail(error, "No se pudo escribir " + utf8(target));
-            return false;
-        }
-        ZSTD_DCtx_reset(dctx.get(), ZSTD_reset_session_only);
-        in.seekg(static_cast<std::streamoff>(e.offset));
-        std::uint64_t left = e.compressed;
-        std::uint64_t written = 0;
-        std::size_t last_result = 1;
-        while (left > 0) {
-            const std::size_t n = static_cast<std::size_t>(std::min<std::uint64_t>(left, in_buffer.size()));
-            in.read(in_buffer.data(), static_cast<std::streamsize>(n));
-            if (!in) {
-                fail(error, "Paquete danado (" + e.path + ")");
-                return false;
-            }
-            left -= n;
-            ZSTD_inBuffer zin{in_buffer.data(), n, 0};
-            while (zin.pos < zin.size) {
-                ZSTD_outBuffer zout{out_buffer.data(), out_buffer.size(), 0};
-                last_result = ZSTD_decompressStream(dctx.get(), &zout, &zin);
-                if (ZSTD_isError(last_result)) {
-                    fail(error, "Paquete danado (" + e.path + "): " + ZSTD_getErrorName(last_result));
-                    return false;
-                }
-                out.write(out_buffer.data(), static_cast<std::streamsize>(zout.pos));
-                written += zout.pos;
-            }
-        }
-        // Lo que quede en el descompresor (sin mas entrada).
-        while (last_result != 0) {
-            ZSTD_inBuffer zin{nullptr, 0, 0};
+        left -= n;
+        ZSTD_inBuffer zin{in_buffer.data(), n, 0};
+        while (zin.pos < zin.size) {
             ZSTD_outBuffer zout{out_buffer.data(), out_buffer.size(), 0};
-            last_result = ZSTD_decompressStream(dctx.get(), &zout, &zin);
-            if (ZSTD_isError(last_result) || zout.pos == 0) {
-                fail(error, "Paquete danado (" + e.path + ", incompleto)");
+            last_result = ZSTD_decompressStream(dctx, &zout, &zin);
+            if (ZSTD_isError(last_result)) {
+                error = "Paquete danado (" + e.path + "): " + ZSTD_getErrorName(last_result);
                 return false;
             }
             out.write(out_buffer.data(), static_cast<std::streamsize>(zout.pos));
             written += zout.pos;
+            done += zout.pos;
         }
-        if (written != e.size || !out) {
-            fail(error, "Paquete danado (" + e.path + ", tamano)");
+    }
+    // Lo que quede en el descompresor (sin mas entrada).
+    while (last_result != 0) {
+        ZSTD_inBuffer zin{nullptr, 0, 0};
+        ZSTD_outBuffer zout{out_buffer.data(), out_buffer.size(), 0};
+        last_result = ZSTD_decompressStream(dctx, &zout, &zin);
+        if (ZSTD_isError(last_result) || zout.pos == 0) {
+            error = "Paquete danado (" + e.path + ", incompleto)";
             return false;
         }
-        done += e.size;
+        out.write(out_buffer.data(), static_cast<std::streamsize>(zout.pos));
+        written += zout.pos;
+        done += zout.pos;
     }
-    if (progress) progress(done, {});
+    if (written != e.size || !out) {
+        error = "Paquete danado (" + e.path + ", tamano)";
+        return false;
+    }
+    return true;
+}
+
+}  // namespace
+
+bool extractPack(const std::filesystem::path& file, const std::filesystem::path& folder,
+                 const PackProgress& progress, std::string* error, std::uint64_t base, std::uint64_t length) {
+    std::vector<PackEntry> entries;
+    if (!readPackIndex(file, entries, error, base, length)) return false;
+    // Los grandes primero: los hilos acaban a la vez.
+    std::sort(entries.begin(), entries.end(), [](const PackEntry& a, const PackEntry& b) { return a.size > b.size; });
+
+    std::atomic<std::size_t> next{0};
+    std::atomic<std::uint64_t> done{0};
+    std::atomic<bool> stop{false};
+    std::atomic<int> active{0};
+    std::mutex error_mutex;
+    std::string first_error;
+    const auto worker = [&] {
+        struct Leave {
+            std::atomic<int>& n;
+            ~Leave() { --n; }
+        } leave{active};
+        std::ifstream in(file, std::ios::binary);
+        std::unique_ptr<ZSTD_DCtx, DCtxDeleter> dctx(ZSTD_createDCtx());
+        std::vector<char> in_buffer(ZSTD_DStreamInSize());
+        std::vector<char> out_buffer(ZSTD_DStreamOutSize());
+        if (!in || !dctx) {
+            std::lock_guard lock(error_mutex);
+            if (first_error.empty()) first_error = "No se pudo abrir " + utf8(file);
+            stop = true;
+            return;
+        }
+        while (!stop) {
+            const std::size_t i = next++;
+            if (i >= entries.size()) break;
+            std::string entry_error;
+            if (!extractEntry(in, dctx.get(), in_buffer, out_buffer, entries[i], base, folder, done, entry_error)) {
+                std::lock_guard lock(error_mutex);
+                if (first_error.empty()) first_error = entry_error;
+                stop = true;
+            }
+        }
+    };
+    const unsigned cores = std::max(1u, std::thread::hardware_concurrency());
+    const std::size_t count = std::min<std::size_t>({cores, 8u, std::max<std::size_t>(entries.size(), 1)});
+    std::vector<std::thread> threads;
+    const std::size_t helpers = progress ? count : count - 1;
+    active = static_cast<int>(helpers + (progress ? 0 : 1));
+    for (std::size_t t = 0; t < helpers; ++t) threads.emplace_back(worker);
+    // El hilo que llama tambien trabaja... salvo si hay que informar del
+    // progreso (pantalla de carga): entonces solo vigila.
+    if (!progress) {
+        worker();
+    } else {
+        while (true) {
+            const bool finished = active.load() == 0;
+            if (!progress(done.load(), {})) {
+                stop = true;
+                std::lock_guard lock(error_mutex);
+                if (first_error.empty()) first_error = "Cancelado";
+            }
+            if (finished) break;
+            std::this_thread::sleep_for(std::chrono::milliseconds(30));
+        }
+    }
+    for (std::thread& t : threads) t.join();
+    if (!first_error.empty()) {
+        fail(error, first_error);
+        return false;
+    }
+    if (progress) progress(done.load(), {});
     return true;
 }
 

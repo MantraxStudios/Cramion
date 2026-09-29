@@ -1,5 +1,102 @@
 #pragma once
 
+#if defined(__ANDROID__)
+
+// Android (NativeActivity + android_native_app_glue): la "ventana" es la
+// ANativeWindow de la actividad. La entrada llega como eventos Touch*,
+// Key* (teclado fisico y boton Atras = Escape) y Gamepad*.
+
+#include <cstdint>
+#include <functional>
+#include <string>
+
+#include "CramionDM/Event.h"
+
+struct android_app;
+struct ANativeWindow;
+
+namespace cramion::dm {
+
+struct WindowConfig {
+    std::wstring title = L"CramionDM";
+    uint32_t width = 0;   // ignorado: toda la pantalla
+    uint32_t height = 0;
+    bool resizable = true;
+    bool maximized = true;
+    bool custom_title_bar = false;
+};
+
+class Window {
+public:
+    // La actividad (android_main la recibe); antes de create().
+    static void setApp(android_app* app);
+    static android_app* app();
+
+    Window() = default;
+    ~Window();
+
+    Window(const Window&) = delete;
+    Window& operator=(const Window&) = delete;
+
+    // Espera a que Android de la superficie. false si la app se cierra antes.
+    bool create(const WindowConfig& config = {});
+    void destroy();
+
+    // Procesa los eventos pendientes. En segundo plano (sin superficie)
+    // espera sin gastar bateria hasta que la app vuelve o se cierra.
+    void pumpEvents();
+
+    void setEventCallback(EventCallback callback) { callback_ = std::move(callback); }
+
+    bool isOpen() const { return open_; }
+    ANativeWindow* handle() const { return window_; }
+    uint32_t width() const { return width_; }
+    uint32_t height() const { return height_; }
+    // Densidad de la pantalla (1 = 160 dpi): para dimensionar en dp.
+    float density() const { return density_; }
+    bool focused() const { return focused_; }
+
+    void setTitle(const std::wstring&) {}
+    void setCursorCaptured(bool captured) { cursor_captured_ = captured; }
+    bool cursorCaptured() const { return cursor_captured_; }
+
+    // Vibracion corta (necesita el permiso VIBRATE en el manifiesto).
+    void vibrate(int milliseconds);
+    // Orientacion pedida (Activity.setRequestedOrientation): uno de los
+    // ActivityInfo.SCREEN_ORIENTATION_* (0 horizontal, 1 vertical, 6/7 con
+    // sensor, 10 libre). Al girar llega un WindowResize.
+    void setOrientation(int android_orientation);
+    // Carpetas de la app: datos internos y (si existe) la del .obb.
+    std::string internalDataPath() const;
+    std::string externalDataPath() const;
+    std::string obbPath() const;
+
+    // Uso interno de los callbacks de la glue.
+    void handleCommand(int32_t command);
+    int32_t handleInput(const void* event);
+
+private:
+    void dispatch(Event& event);
+    void refreshSize();
+
+    EventCallback callback_;
+    ANativeWindow* window_ = nullptr;
+    uint32_t width_ = 0;
+    uint32_t height_ = 0;
+    float density_ = 1.0f;
+    bool open_ = false;
+    bool focused_ = true;
+    bool resumed_ = true;
+    bool cursor_captured_ = false;
+    float axes_[8] = {};
+    float hat_x_ = 0.0f;
+    float hat_y_ = 0.0f;
+};
+
+}  // namespace cramion::dm
+
+#else
+
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
@@ -130,3 +227,5 @@ private:
 };
 
 }  // namespace cramion::dm
+
+#endif  // __ANDROID__

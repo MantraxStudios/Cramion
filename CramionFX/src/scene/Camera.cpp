@@ -87,8 +87,34 @@ Mat4 Camera::view() const {
                         free_orientation_ ? free_up_ : Vec3{0.0f, 1.0f, 0.0f});
 }
 
+void Camera::setFovAngles(float left, float right, float up, float down) {
+    asymmetric_ = true;
+    tan_left_ = std::tan(left);
+    tan_right_ = std::tan(right);
+    tan_up_ = std::tan(up);
+    tan_down_ = std::tan(down);
+    // El cono simetrico que lo contiene (cascadas de sombras, LOD).
+    const float half_y = std::max(std::fabs(up), std::fabs(down));
+    const float half_x = std::max(std::fabs(tan_left_), std::fabs(tan_right_));
+    fov_y_ = 2.0f * half_y;
+    aspect_ = half_x / std::max(std::tan(half_y), 1e-4f);
+}
+
 Mat4 Camera::projection() const {
-    return core::perspective(fov_y_, aspect_, near_plane_, far_plane_);
+    if (!asymmetric_) return core::perspective(fov_y_, aspect_, near_plane_, far_plane_);
+    // Como perspective() (Vulkan: profundidad [0, 1], Y invertida) con el
+    // centro desplazado: tan(izq)..tan(der) -> -1..1.
+    const float w = tan_right_ - tan_left_;
+    const float h = tan_up_ - tan_down_;
+    Mat4 result{};
+    result.m[0][0] = 2.0f / w;
+    result.m[2][0] = (tan_right_ + tan_left_) / w;
+    result.m[1][1] = -2.0f / h;
+    result.m[2][1] = -(tan_up_ + tan_down_) / h;
+    result.m[2][2] = far_plane_ / (near_plane_ - far_plane_);
+    result.m[2][3] = -1.0f;
+    result.m[3][2] = (far_plane_ * near_plane_) / (near_plane_ - far_plane_);
+    return result;
 }
 
 }  // namespace cramion::scene

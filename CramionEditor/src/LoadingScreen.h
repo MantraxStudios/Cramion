@@ -6,12 +6,10 @@
 // porque se muestra mientras Vulkan todavia se esta creando; ademas atiende
 // los mensajes de la ventana para que Windows no la marque "No responde".
 
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#include <windows.h>
+#include "PlatformWindow.h"
 
 #include <chrono>
+#include <functional>
 #include <filesystem>
 #include <memory>
 #include <string>
@@ -37,8 +35,10 @@ private:
     void paint(float fraction, const std::wstring& text);
 
     HWND window_ = nullptr;
+#if defined(_WIN32)
     ULONG_PTR gdiplus_token_ = 0;
     std::unique_ptr<Gdiplus::Bitmap> image_;
+#endif
     std::chrono::steady_clock::time_point last_paint_{};
     bool painted_ = false;
 };
@@ -47,8 +47,15 @@ private:
 // y avisa con un mensaje (donde fallo y donde quedo el informe).
 void installCrashHandler(const std::string& app_name);
 
-// Carpeta %LOCALAPPDATA%/Cramion/<sub> (creada).
+// Carpeta %LOCALAPPDATA%/Cramion/<sub> (creada). En Android, dentro de los
+// datos internos de la app.
 std::filesystem::path localDataFolder(const std::filesystem::path& sub);
+
+#if !defined(_WIN32)
+// Android: la pantalla de carga se pinta con el renderizador y ImGui en
+// cuanto existen (antes, show() no hace nada).
+void setLoadingPainter(std::function<void(float fraction, const char* status)> painter);
+#endif
 
 }  // namespace cramion::editor
 

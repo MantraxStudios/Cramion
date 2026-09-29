@@ -21,7 +21,7 @@ bool contains(const std::vector<Properties>& list, const char* name, NameGetter 
 
 }  // namespace
 
-void VulkanInstance::initialize(const EngineInfo& info) {
+void VulkanInstance::initialize(const EngineInfo& info, const std::vector<std::string>& extra_extensions) {
     validation_enabled_ = info.enable_validation;
 
     // 1) Version de la API: se usa la mas alta que soporte el loader, con tope
@@ -35,7 +35,7 @@ void VulkanInstance::initialize(const EngineInfo& info) {
 
     // 2) Capas y extensiones.
     const std::vector<const char*> layers = selectLayers();
-    const std::vector<const char*> extensions = selectExtensions();
+    const std::vector<const char*> extensions = selectExtensions(extra_extensions);
 
     // 3) Descripcion de la aplicacion.
     vk::ApplicationInfo app_info{};
@@ -84,7 +84,7 @@ std::vector<const char*> VulkanInstance::selectLayers() {
     return layers;
 }
 
-std::vector<const char*> VulkanInstance::selectExtensions() {
+std::vector<const char*> VulkanInstance::selectExtensions(const std::vector<std::string>& extra) {
     const auto available = context_.enumerateInstanceExtensionProperties();
     const auto has = [&](const char* name) {
         return contains(available, name,
@@ -92,7 +92,11 @@ std::vector<const char*> VulkanInstance::selectExtensions() {
     };
 
     // Obligatorias para poder presentar en una ventana Win32.
+#if defined(__ANDROID__)
+    const char* required[] = {vk::KHRSurfaceExtensionName, vk::KHRAndroidSurfaceExtensionName};
+#else
     const char* required[] = {vk::KHRSurfaceExtensionName, vk::KHRWin32SurfaceExtensionName};
+#endif
 
     std::vector<const char*> extensions;
     for (const char* name : required) {
@@ -109,6 +113,18 @@ std::vector<const char*> VulkanInstance::selectExtensions() {
         } else {
             std::cout << "[Vulkan] VK_EXT_debug_utils no disponible; se desactiva la validacion.\n";
             validation_enabled_ = false;
+        }
+    }
+
+    // Las de OpenXR (el runtime del casco).
+    for (const std::string& name : extra) {
+        if (!has(name.c_str())) {
+            std::cerr << "[Vulkan] OpenXR pide " << name << " y no esta disponible
+";
+            continue;
+        }
+        if (std::none_of(extensions.begin(), extensions.end(), [&](const char* e) { return name == e; })) {
+            extensions.push_back(name.c_str());
         }
     }
 

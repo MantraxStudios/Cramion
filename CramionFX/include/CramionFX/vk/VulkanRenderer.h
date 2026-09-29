@@ -35,6 +35,7 @@
 #include "CramionFX/vk/VulkanSurface.h"
 #include "CramionFX/vk/VulkanSwapchain.h"
 #include "CramionFX/vk/VulkanTexture.h"
+#include "CramionFX/xr/XrSystem.h"
 
 #include "CramionFX/core/Frustum.h"
 
@@ -146,7 +147,7 @@ public:
     VulkanRenderer(const VulkanRenderer&) = delete;
     VulkanRenderer& operator=(const VulkanRenderer&) = delete;
 
-    void initialize(const EngineInfo& info, HWND window, std::uint32_t width,
+    void initialize(const EngineInfo& info, NativeWindow window, std::uint32_t width,
                     std::uint32_t height);
     void shutdown();
 
@@ -170,6 +171,12 @@ public:
     void setEditorHelpersEnabled(bool enabled) { editor_helpers_ = enabled; }
 
     void onResize(std::uint32_t width, std::uint32_t height);
+    // Android: la app pasa a segundo plano y el sistema se lleva la ventana.
+    // releaseSurface() suelta la swapchain y la superficie en el momento (los
+    // frames siguientes no dibujan); replaceWindow() crea las de la ventana
+    // nueva al volver. Texturas, modelos y pipelines siguen en la GPU.
+    void releaseSurface();
+    void replaceWindow(NativeWindow window, std::uint32_t width, std::uint32_t height);
     // Tamano al que se dibuja la escena (la imagen de salida, antes de la
     // interfaz). 0 x 0 = el de la ventana (el juego). El editor pide el de su
     // panel de vista (Free Aspect) o el de la proporcion elegida; se aplica
@@ -185,7 +192,10 @@ public:
     void waitIdle() const;
 
     // --- Ajustes de sombras ---
-    void setShadowsEnabled(bool enabled) { shadows_enabled_ = enabled; }
+    void setShadowsEnabled(bool enabled) {
+        if (enabled != shadows_enabled_) budget_.reset();
+        shadows_enabled_ = enabled;
+    }
     // Configuracion grafica: escalador (TAA, FSR, DLSS), resolucion interna,
     // nitidez y vsync. Si cambia la resolucion se rehacen los destinos al
     // final del frame.
@@ -225,10 +235,44 @@ public:
     // cambia entero y los setters sueltos de abajo cambian un campo. Todo se
     // aplica en el frame siguiente.
     void setPostProcess(const PostProcessSettings& settings) {
+        // Se prendio algo que el presupuesto adaptativo puede apagar: vuelve a
+        // medir desde el principio para que el cambio se vea ya.
+        if (postQualityRaised(user_post_, settings)) budget_.reset();
         user_post_ = settings;
-        post_ = budget_.apply(settings);
+        post_ = mobilePost(budget_.apply(settings));
+    }
+    // Perfil movil (el juego en Android): -1 apagado; 0 Baja, 1 Media, 2 Alta,
+    // 3 Ultra. Por debajo de Ultra se apagan los efectos que una GPU de movil
+    // no aguanta (desenfoques, volumetrica, GI y reflejos de pantalla...),
+    // mas cuanto mas baja la calidad, aunque la escena los pida.
+    void setMobileProfile(int level) {
+        mobile_level_ = level;
+        post_ = mobilePost(budget_.apply(user_post_));
+    }
+    int mobileProfile() const { return mobile_level_; }
+    PostProcessSettings mobilePost(PostProcessSettings p) const {
+        if (mobile_level_ < 0 || mobile_level_ >= 3) return p;
+        p.motion_blur = false;
+        p.depth_of_field = false;
+        p.volumetric_light = false;
+        if (mobile_level_ <= 1) {
+            p.global_illumination = false;
+            p.reflections = false;
+            p.contact_shadows = false;
+            p.light_shafts = false;
+        }
+        if (mobile_level_ == 0) {
+            p.ambient_occlusion = false;
+            p.lens_flare = 0.0f;
+            p.chromatic_aberration = 0.0f;
+            p.film_grain = 0.0f;
+        }
+        return p;
     }
     const PostProcessSettings& postProcess() const { return post_; }
+    // El usuario toco la calidad (Inspector, presets): el presupuesto
+    // adaptativo devuelve lo que habia bajado y vuelve a medir.
+    void resetAdaptiveBudget() { budget_.reset(); }
 
     // --- Picking por ID en la GPU (el clic del editor) ---
     // Pide que objeto se ve en el pixel (x, y) de la imagen de la escena: en
@@ -330,7 +374,12 @@ public:
 
     // Trazado de rayos por hardware para la luz rebotada y los reflejos (si
     // la GPU lo tiene). Apagado, se usan los de pantalla con la sonda.
-    void setRayTracingEnabled(bool enabled) { rt_enabled_ = enabled; }
+    // Cambia el coste del frame: el presupuesto adaptativo vuelve a medir
+    // (si no, lo que ya habia bajado seguiria apagado hasta reiniciar).
+    void setRayTracingEnabled(bool enabled) {
+        if (enabled != rt_enabled_) budget_.reset();
+        rt_enabled_ = enabled;
+    }
     bool rayTracingEnabled() const { return rt_enabled_; }
     bool rayTracingSupported() const { return device_.rayTracingSupported(); }
     // Se esta trazando de verdad este frame (soportado, activado y listo).
@@ -433,7 +482,10 @@ public:
 
     // Sonda de reflexion de la escena (si no, lo que el SSR no ve refleja el
     // cielo).
-    void setReflectionProbeEnabled(bool enabled) { probe_enabled_ = enabled; }
+    void setReflectionProbeEnabled(bool enabled) {
+        if (enabled != probe_enabled_) budget_.reset();
+        probe_enabled_ = enabled;
+    }
     bool reflectionProbeEnabled() const { return probe_enabled_; }
 
     // Iluminacion global de pantalla (luz rebotada).
@@ -570,6 +622,16 @@ public:
     void setSceneDrawMode(SceneDrawMode mode) { scene_draw_mode_ = mode; }
     SceneDrawMode sceneDrawMode() const { return scene_draw_mode_; }
     bool wireframeSupported() const { return device_.fillModeNonSolidSupported(); }
+
+    // --- Realidad virtual (OpenXR) ---
+    // Con EngineInfo::enable_xr y un casco conectado. xr().beginFrame() al
+    // empezar el frame (antes de la logica); luego renderXrEye() por ojo con
+    // la camara de ese ojo (o clearXrEye() si no tiene) y xr().endFrame().
+    xr::XrSystem& xr() { return xr_; }
+    const xr::XrSystem& xr() const { return xr_; }
+    bool xrAvailable() const { return xr_.available(); }
+    void renderXrEye(const scene::Scene& scene, const scene::Camera& camera, int eye);
+    void clearXrEye(int eye);
 
     // --- Render Textures (como los RenderTexture de Unity) ---
     // Una textura que se rellena con lo que ve una camara (Target Texture) y
@@ -965,7 +1027,8 @@ private:
     SceneDrawMode scene_draw_mode_ = SceneDrawMode::Lit;
     // El de este dibujo: el elegido en la vista Escena; si no, Lit.
     SceneDrawMode drawModeNow() const {
-        return editor_helpers_ && !capturing_ && render_texture_target_ < 0 ? scene_draw_mode_ : SceneDrawMode::Lit;
+        return editor_helpers_ && !capturing_ && render_texture_target_ < 0 && xr_eye_target_ < 0 ? scene_draw_mode_
+                                                                                                     : SceneDrawMode::Lit;
     }
     bool wire_gbuffer_ = false;                              // G-buffer en lineas (Wireframe)
     const vk::raii::Pipeline* mesh_pipeline_override_ = nullptr;  // pasada de lineas encima
@@ -991,6 +1054,16 @@ private:
     std::vector<RetiredRenderTexture> retired_render_textures_;
     void retireRenderTextureImage(RenderTextureSlot& slot);
     std::int32_t render_texture_target_ = -1;  // drawFrame dibuja para esta textura
+    // VR: drawFrame dibuja para el ojo xr_eye_target_ (0/1) y copia a esa imagen
+    // de la swapchain de OpenXR (pasando por xr_staging_, del tamano del ojo).
+    xr::XrSystem xr_;
+    int xr_eye_target_ = -1;
+    VkImage xr_target_image_ = VK_NULL_HANDLE;
+    bool xr_copied_ = false;
+    std::array<VulkanImage, 2> xr_staging_{};
+    void createXrStaging();
+    void recordXrEyeCopy(const vk::raii::CommandBuffer& cmd);
+    void clearXrImage(VkImage image);
     const scene::Camera* camera_override_ = nullptr;
     std::uint64_t render_texture_generation_ = 0;
     std::uint32_t render_texture_draws_ = 0;
@@ -1284,6 +1357,9 @@ private:
     bool sunShadows() const { return shadows_enabled_ && sun_shadows_; }
     bool cascade_debug_ = false;
     bool clouds_enabled_ = true;
+    int mobile_level_ = -1;
+    int sky_frames_skipped_ = 0;
+    bool sky_recorded_once_ = false;
     bool environment_enabled_ = true;
     bool rt_enabled_ = true;
     bool occlusion_culling_enabled_ = true;

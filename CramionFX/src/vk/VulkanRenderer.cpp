@@ -297,7 +297,7 @@ VulkanRenderer::~VulkanRenderer() {
 // Inicializacion y apagado
 // -----------------------------------------------------------------------------
 
-void VulkanRenderer::initialize(const EngineInfo& info, HWND window, std::uint32_t width,
+void VulkanRenderer::initialize(const EngineInfo& info, NativeWindow window, std::uint32_t width,
                                 std::uint32_t height) {
     if (initialized_) {
         return;
@@ -310,9 +310,33 @@ void VulkanRenderer::initialize(const EngineInfo& info, HWND window, std::uint32
         if (loading_callback_) loading_callback_(fraction, what);
     };
     report(0.0f, "Iniciando Vulkan");
-    instance_.initialize(info);
+    // VR: el runtime de OpenXR dice que extensiones y que GPU (la del casco).
+    std::vector<std::string> xr_instance_extensions;
+    if (info.enable_xr) {
+        report(0.0f, "Buscando el casco de VR");
+        if (xr_.createInstance(info.app_name)) xr_instance_extensions = xr_.requiredInstanceExtensions();
+    }
+    instance_.initialize(info, xr_instance_extensions);
     surface_.initialize(instance_, window);
-    device_.initialize(instance_, surface_);
+    VkPhysicalDevice xr_gpu = VK_NULL_HANDLE;
+    std::vector<std::string> xr_device_extensions;
+    if (!xr_instance_extensions.empty()) {
+        xr_gpu = xr_.physicalDevice(static_cast<VkInstance>(*instance_.handle()));
+        if (xr_gpu != VK_NULL_HANDLE) xr_device_extensions = xr_.requiredDeviceExtensions();
+    }
+    device_.initialize(instance_, surface_, xr_gpu, xr_device_extensions);
+    if (xr_gpu != VK_NULL_HANDLE) {
+        if (static_cast<VkPhysicalDevice>(*device_.physicalDevice()) != xr_gpu ||
+            !xr_.createSession(static_cast<VkInstance>(*instance_.handle()), xr_gpu,
+                               static_cast<VkDevice>(*device_.handle()), device_.queueFamilies().graphics, 0)) {
+            std::cerr << "[VR] No se pudo empezar la sesion de VR: " << xr_.error() << "\n";
+            xr_.shutdown();
+        } else {
+            createXrStaging();
+        }
+    } else if (!xr_instance_extensions.empty()) {
+        xr_.shutdown();
+    }
 
     // Shaders compilados para esta GPU (cache en disco) y cuantos pipelines
     // hubo la ultima vez (para el porcentaje).
@@ -667,6 +691,10 @@ void VulkanRenderer::shutdown() {
 
     device_.waitIdle();
 
+    // VR: la sesion usa el dispositivo; se cierra antes.
+    xr_.shutdown();
+    for (VulkanImage& image : xr_staging_) image = VulkanImage{};
+
     skinned_models_.clear();
     retired_models_.clear();
     ray_pinned_models_.clear();
@@ -756,6 +784,9 @@ void VulkanRenderer::shutdown() {
     easu_pass_.destroy();
     rcas_pass_.destroy();
     clouds_pass_.destroy();
+    // Sin esto su pipeline se liberaba en el destructor, con el dispositivo
+    // ya destruido: crash en el driver al cerrar el editor o el juego.
+    cloud_shadow_pass_.destroy();
     gi_atrous_pass_.destroy();
     gi_temporal_pass_.destroy();
     ssr_resolve_pass_.destroy();
@@ -969,7 +1000,11 @@ int VulkanRenderer::loadDecalTexture(const std::filesystem::path& file) {
     int height = 0;
     int channels = 0;
     FILE* handle = nullptr;
+#if defined(_WIN32)
     if (_wfopen_s(&handle, file.wstring().c_str(), L"rb") != 0) handle = nullptr;
+#else
+    handle = std::fopen(file.c_str(), "rb");
+#endif
     stbi_uc* pixels = handle ? stbi_load_from_file(handle, &width, &height, &channels, 4) : nullptr;
     if (handle) fclose(handle);
     if (pixels == nullptr) {
@@ -2390,10 +2425,14 @@ std::uint32_t VulkanRenderer::desiredTextureSize() const {
 }
 
 void VulkanRenderer::setGraphicsSettings(const GraphicsSettings& settings) {
+    const bool changed = !(settings == user_graphics_);
     user_graphics_ = settings;
     asset::setMaxTextureSize(desiredTextureSize());
     budget_.setEnabled(settings.adaptive);
     budget_.setTargetFps(settings.target_fps);
+    // Lo que el presupuesto adaptativo ya habia bajado (resolucion, efectos)
+    // seguia bajado con los ajustes nuevos hasta reiniciar: se vuelve a medir.
+    if (changed) budget_.reset();
     // Otro mapa de sombras: se rehace con los destinos (applyPendingResize).
     if (initialized_ && desiredShadowResolution() != shadow_map_.resolution()) {
         shadow_map_dirty_ = true;
@@ -2776,6 +2815,26 @@ void VulkanRenderer::onResize(std::uint32_t width, std::uint32_t height) {
     window_width_ = width;
     window_height_ = height;
     framebuffer_resized_ = true;
+}
+
+void VulkanRenderer::releaseSurface() {
+    if (!initialized_) return;
+    device_.waitIdle();
+    swapchain_.recreate(0, 0);  // libera las imagenes y la swapchain
+    surface_.shutdown();
+    window_width_ = window_height_ = 0;
+    framebuffer_resized_ = false;
+}
+
+void VulkanRenderer::replaceWindow(NativeWindow window, std::uint32_t width, std::uint32_t height) {
+    if (!initialized_ || window == nullptr) return;
+    device_.waitIdle();
+    swapchain_.recreate(0, 0);
+    surface_.shutdown();
+    surface_.initialize(instance_, window);
+    window_width_ = width;
+    window_height_ = height;
+    framebuffer_resized_ = true;  // el siguiente frame rehace swapchain y destinos
 }
 
 void VulkanRenderer::recreateSwapchain() {
@@ -3233,7 +3292,7 @@ void VulkanRenderer::drawFrame(const scene::Scene& scene, bool present) {
     }
     std::erase_if(retired_models_, [](const RetiredModel& r) { return r.frames_left == 0; });
     // (Solo en los frames de la pantalla: la interfaz se dibuja en ellos.)
-    if (render_texture_target_ < 0) {
+    if (render_texture_target_ < 0 && xr_eye_target_ < 0) {
         for (RetiredRenderTexture& retired : retired_render_textures_) {
             if (retired.frames_left > 0) --retired.frames_left;
         }
@@ -3264,7 +3323,7 @@ void VulkanRenderer::drawFrame(const scene::Scene& scene, bool present) {
                              : std::chrono::duration<float>(now - last_budget_time_).count();
         last_budget_time_ = now;
         budget_.update(std::min(dt, 0.5f), gpu_profiler_.totalMilliseconds(), gpu_profiler_.timings());
-        post_ = budget_.apply(user_post_);
+        post_ = mobilePost(budget_.apply(user_post_));
         if (const SceneDrawMode mode = drawModeNow(); mode == SceneDrawMode::Unlit || mode == SceneDrawMode::Wireframe) {
             post_.auto_exposure = false;
             post_.manual_exposure = 1.0f;
@@ -3294,7 +3353,7 @@ void VulkanRenderer::drawFrame(const scene::Scene& scene, bool present) {
     updateActors(scene, current_frame_);
     frame_timings_.actors_ms += since(stage);
 
-    if (render_texture_target_ < 0 && probeCaptureDue(scene)) {
+    if (render_texture_target_ < 0 && xr_eye_target_ < 0 && probeCaptureDue(scene)) {
         stage = TimingClock::now();
         captureProbeFace(scene);
         frame_timings_.probe_ms += since(stage);
@@ -3400,10 +3459,17 @@ void VulkanRenderer::drawFrame(const scene::Scene& scene, bool present) {
 
     const vk::Result present_result = device_.presentQueue().presentKHR(present_info);
 
-    if (present_result == vk::Result::eErrorOutOfDateKHR ||
-        present_result == vk::Result::eSuboptimalKHR || framebuffer_resized_) {
+#if defined(__ANDROID__)
+    // Android devuelve "suboptimo" siempre que la pantalla esta girada y la
+    // imagen no va pre-rotada (la rota el compositor): rehacerla cada frame
+    // no lo arregla. Se rehace si de verdad cambio el tamano (onResize).
+    const bool suboptimal = false;
+#else
+    const bool suboptimal = present_result == vk::Result::eSuboptimalKHR;
+#endif
+    if (present_result == vk::Result::eErrorOutOfDateKHR || suboptimal || framebuffer_resized_) {
         recreateSwapchain();
-    } else if (present_result != vk::Result::eSuccess) {
+    } else if (present_result != vk::Result::eSuccess && present_result != vk::Result::eSuboptimalKHR) {
         throw std::runtime_error("Fallo al presentar la imagen: " + vk::to_string(present_result));
     }
     frame_timings_.submit_ms += since(stage);
@@ -3732,7 +3798,8 @@ void VulkanRenderer::recordCommandBuffer(const vk::raii::CommandBuffer& cmd,
         recordOverlayPass(cmd, frame_index);
         markPass(cmd, frame_index, "Gizmos 3D");
     }
-    if (render_texture_target_ >= 0) recordRenderTextureCopy(cmd);
+    if (xr_eye_target_ >= 0) recordXrEyeCopy(cmd);
+    else if (render_texture_target_ >= 0) recordRenderTextureCopy(cmd);
     else recordViewCopy(cmd);
     if (presenting_) recordPostProcessPass(cmd, image_index);
     markPass(cmd, frame_index, "FXAA + presentacion");
@@ -4236,10 +4303,17 @@ void VulkanRenderer::drawGpuClusters(const vk::raii::CommandBuffer& cmd,
             *skinned_pass_.geometryLayout(),
             vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, push);
 
-        cmd.drawIndexedIndirectCount(
-            commands, static_cast<vk::DeviceSize>(batch.first_slot) * GpuCulling::kCommandSize, counts,
-            static_cast<vk::DeviceSize>(b) * sizeof(std::uint32_t), batch.capacity,
-            GpuCulling::kCommandSize);
+        const vk::DeviceSize offset = static_cast<vk::DeviceSize>(batch.first_slot) * GpuCulling::kCommandSize;
+        if (device_.indirectCountSupported()) {
+            cmd.drawIndexedIndirectCount(commands, offset, counts, static_cast<vk::DeviceSize>(b) * sizeof(std::uint32_t),
+                                         batch.capacity, GpuCulling::kCommandSize);
+        } else {
+            // GPU de movil: un comando por llamada; los huecos vacios estan a cero.
+            for (std::uint32_t i = 0; i < batch.capacity; ++i) {
+                cmd.drawIndexedIndirect(commands, offset + static_cast<vk::DeviceSize>(i) * GpuCulling::kCommandSize, 1,
+                                        GpuCulling::kCommandSize);
+            }
+        }
     }
 }
 
@@ -5239,6 +5313,112 @@ void VulkanRenderer::renderToTexture(const scene::Scene& scene, const scene::Cam
     }
 }
 
+// -----------------------------------------------------------------------------
+// Realidad virtual: cada ojo es un frame sin presentar que se copia a la
+// swapchain de OpenXR.
+// -----------------------------------------------------------------------------
+
+void VulkanRenderer::createXrStaging() {
+    const VkExtent2D e = xr_.eyeExtent();
+    // Mismo orden de canales que la swapchain, en UNORM: el blit escala sin
+    // tocar la gamma y la copia a la imagen sRGB lleva los bytes tal cual.
+    const vk::Format format =
+        xr_.swapchainFormat() == VK_FORMAT_B8G8R8A8_SRGB ? vk::Format::eB8G8R8A8Unorm : vk::Format::eR8G8B8A8Unorm;
+    for (VulkanImage& image : xr_staging_) {
+        image.create(device_, vk::Extent2D{e.width, e.height}, format,
+                     vk::ImageUsageFlagBits::eTransferSrc | vk::ImageUsageFlagBits::eTransferDst, vk::ImageAspectFlagBits::eColor);
+    }
+}
+
+void VulkanRenderer::renderXrEye(const scene::Scene& scene, const scene::Camera& camera, int eye) {
+    if (!initialized_ || eye < 0 || eye > 1) return;
+    const VkImage image = xr_.acquireEye(eye);
+    if (image == VK_NULL_HANDLE) return;
+    const bool helpers = editor_helpers_;
+    editor_helpers_ = false;
+    camera_override_ = &camera;
+    xr_eye_target_ = eye;
+    xr_target_image_ = image;
+    xr_copied_ = false;
+    drawFrame(scene, false);
+    xr_eye_target_ = -1;
+    xr_target_image_ = VK_NULL_HANDLE;
+    camera_override_ = nullptr;
+    editor_helpers_ = helpers;
+    if (!xr_copied_) clearXrImage(image);  // no se pudo dibujar (ventana minimizada...)
+    xr_.releaseEye(eye);
+}
+
+void VulkanRenderer::clearXrEye(int eye) {
+    if (!initialized_ || eye < 0 || eye > 1) return;
+    const VkImage image = xr_.acquireEye(eye);
+    if (image == VK_NULL_HANDLE) return;
+    clearXrImage(image);
+    xr_.releaseEye(eye);
+}
+
+// Negro (un ojo sin camara, o un frame que no se pudo dibujar).
+void VulkanRenderer::clearXrImage(VkImage image) {
+    device_.submitOneTime([&](const vk::raii::CommandBuffer& cmd) {
+        const vk::Image target(image);
+        pipelineBarrier(cmd, colorBarrier(target, vk::ImageLayout::eColorAttachmentOptimal, vk::ImageLayout::eTransferDstOptimal,
+                                          vk::PipelineStageFlagBits2::eColorAttachmentOutput,
+                                          vk::AccessFlagBits2::eColorAttachmentWrite, vk::PipelineStageFlagBits2::eClear,
+                                          vk::AccessFlagBits2::eTransferWrite));
+        const vk::ClearColorValue black(std::array<float, 4>{0.0f, 0.0f, 0.0f, 1.0f});
+        const vk::ImageSubresourceRange range{vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1};
+        cmd.clearColorImage(target, vk::ImageLayout::eTransferDstOptimal, black, range);
+        pipelineBarrier(cmd, colorBarrier(target, vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eColorAttachmentOptimal,
+                                          vk::PipelineStageFlagBits2::eClear, vk::AccessFlagBits2::eTransferWrite,
+                                          vk::PipelineStageFlagBits2::eColorAttachmentOutput,
+                                          vk::AccessFlagBits2::eColorAttachmentWrite));
+    });
+}
+
+void VulkanRenderer::recordXrEyeCopy(const vk::raii::CommandBuffer& cmd) {
+    VulkanImage& staging = xr_staging_[static_cast<std::size_t>(xr_eye_target_)];
+    if (xr_target_image_ == VK_NULL_HANDLE || !*staging.handle()) return;
+    const vk::Image target(xr_target_image_);
+    constexpr vk::ImageLayout kRead = vk::ImageLayout::eShaderReadOnlyOptimal;
+    using Stage = vk::PipelineStageFlagBits2;
+    using Access = vk::AccessFlagBits2;
+    // Resultado (8 bits con gamma) -> intermedia del tamano del ojo.
+    pipelineBarrier(cmd, {colorBarrier(*ldr_color_.handle(), kRead, vk::ImageLayout::eTransferSrcOptimal,
+                                       Stage::eColorAttachmentOutput | Stage::eFragmentShader,
+                                       Access::eColorAttachmentWrite | Access::eShaderSampledRead, Stage::eBlit,
+                                       Access::eTransferRead),
+                          colorBarrier(*staging.handle(), vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal,
+                                       Stage::eAllTransfer, Access::eTransferRead, Stage::eBlit, Access::eTransferWrite)});
+    const vk::Extent2D from = ldr_color_.extent();
+    const vk::Extent2D to = staging.extent();
+    vk::ImageBlit region{};
+    region.srcSubresource = vk::ImageSubresourceLayers{vk::ImageAspectFlagBits::eColor, 0, 0, 1};
+    region.dstSubresource = region.srcSubresource;
+    region.srcOffsets[1] = vk::Offset3D{static_cast<std::int32_t>(from.width), static_cast<std::int32_t>(from.height), 1};
+    region.dstOffsets[1] = vk::Offset3D{static_cast<std::int32_t>(to.width), static_cast<std::int32_t>(to.height), 1};
+    cmd.blitImage(*ldr_color_.handle(), vk::ImageLayout::eTransferSrcOptimal, *staging.handle(),
+                  vk::ImageLayout::eTransferDstOptimal, region, vk::Filter::eLinear);
+    // Intermedia -> imagen del casco (sRGB): los mismos bytes.
+    pipelineBarrier(cmd, {colorBarrier(*ldr_color_.handle(), vk::ImageLayout::eTransferSrcOptimal, kRead, Stage::eBlit,
+                                       Access::eTransferRead, Stage::eFragmentShader, Access::eShaderSampledRead),
+                          colorBarrier(*staging.handle(), vk::ImageLayout::eTransferDstOptimal,
+                                       vk::ImageLayout::eTransferSrcOptimal, Stage::eBlit, Access::eTransferWrite,
+                                       Stage::eCopy, Access::eTransferRead),
+                          colorBarrier(target, vk::ImageLayout::eColorAttachmentOptimal, vk::ImageLayout::eTransferDstOptimal,
+                                       Stage::eColorAttachmentOutput, Access::eColorAttachmentWrite, Stage::eCopy,
+                                       Access::eTransferWrite)});
+    vk::ImageCopy copy{};
+    copy.srcSubresource = vk::ImageSubresourceLayers{vk::ImageAspectFlagBits::eColor, 0, 0, 1};
+    copy.dstSubresource = copy.srcSubresource;
+    copy.extent = vk::Extent3D{to.width, to.height, 1};
+    cmd.copyImage(*staging.handle(), vk::ImageLayout::eTransferSrcOptimal, target, vk::ImageLayout::eTransferDstOptimal, copy);
+    // El runtime la espera en COLOR_ATTACHMENT_OPTIMAL.
+    pipelineBarrier(cmd, colorBarrier(target, vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eColorAttachmentOptimal,
+                                      Stage::eCopy, Access::eTransferWrite, Stage::eColorAttachmentOutput,
+                                      Access::eColorAttachmentWrite));
+    xr_copied_ = true;
+}
+
 // El resultado (compuesto, con tonemapping) a la textura, escalado.
 void VulkanRenderer::recordRenderTextureCopy(const vk::raii::CommandBuffer& cmd) {
     VulkanImage& target = render_textures_[render_texture_target_]->image;
@@ -5903,6 +6083,16 @@ void VulkanRenderer::recordBloomPass(const vk::raii::CommandBuffer& cmd) {
 }
 
 void VulkanRenderer::recordSkyLutPass(const vk::raii::CommandBuffer& cmd) {
+    // Movil: el cielo y el IBL cambian despacio; se rehacen 1 de cada 8
+    // frames (el resto se usan los de antes, que siguen como texturas).
+    if (mobile_level_ >= 0 && mobile_level_ < 3 && !capturing_) {
+        if (sky_frames_skipped_ < 7 && sky_recorded_once_) {
+            ++sky_frames_skipped_;
+            return;
+        }
+        sky_frames_skipped_ = 0;
+        sky_recorded_once_ = true;
+    }
     pipelineBarrier(cmd, discardToAttachment(*sky_lut_.handle()));
     drawFullscreen(cmd, sky_lut_pass_, nullptr, sky_lut_, &sky_push_);
 

@@ -152,6 +152,18 @@ float UiSystem::scaleOf(entt::entity entity) const {
     return 1.0f;
 }
 
+bool UiSystem::interactiveAt(const ecs::World& world, float x, float y) const {
+    const entt::registry& r = world.registry();
+    for (auto it = laid_.rbegin(); it != laid_.rend(); ++it) {
+        if (!it->rect.contains(x, y) || !r.valid(it->entity)) continue;
+        if (const Button* b = r.try_get<Button>(it->entity); b != nullptr && b->interactable) return true;
+        if (const Slider* s = r.try_get<Slider>(it->entity); s != nullptr && s->interactable) return true;
+        if (const Toggle* t = r.try_get<Toggle>(it->entity); t != nullptr && t->interactable) return true;
+        if (const InputField* f = r.try_get<InputField>(it->entity); f != nullptr && f->interactable) return true;
+    }
+    return false;
+}
+
 entt::entity UiSystem::pick(float x, float y) const {
     for (auto it = laid_.rbegin(); it != laid_.rend(); ++it) {
         if (it->rect.contains(x, y)) return it->entity;

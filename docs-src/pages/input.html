@@ -1,4 +1,9 @@
-<table>
+<p>
+        Para juegos con varias teclas por acción, mando y opciones de controles, mejor usa las
+        <a href="input-actions.html">Input Actions</a> (como el Enhanced Input de Unreal): <code>Input.getAction("Move")</code>.
+        Las funciones de esta página siguen funcionando igual.
+      </p>
+      <table>
         <tbody>
           <tr><td><code>Input.getKey(tecla)</code></td><td>La tecla está pulsada.</td></tr>
           <tr><td><code>Input.getKeyDown(tecla)</code></td><td>Se pulsó en este frame.</td></tr>
@@ -9,6 +14,13 @@
           <tr><td><code>Input.getAxis(eje)</code></td><td>Ejes virtuales (ver abajo).</td></tr>
           <tr><td><code>Input.lockCursor(activo)</code></td><td>Captura el ratón (primera persona): lo oculta, no sale de la ventana (en el editor, de la vista Juego) y <code>mouseDelta()</code> no se para en los bordes. <code>false</code> lo suelta. En el editor, <kbd>Escape</kbd> lo suelta siempre; al parar el juego se suelta solo.</td></tr>
           <tr><td><code>Input.isCursorLocked()</code></td><td>Si está capturado.</td></tr>
+          <tr><td><code>Input.touchCount()</code></td><td>Dedos en la pantalla táctil este frame.</td></tr>
+          <tr><td><code>Input.getTouch(i)</code></td><td>El dedo <code>i</code> (1..touchCount): tabla con <code>id</code>, <code>position</code>, <code>delta</code>, <code>start</code> (píxeles) y <code>phase</code> (<code>"began"</code>, <code>"moved"</code>, <code>"stationary"</code>, <code>"ended"</code>).</td></tr>
+          <tr><td><code>Input.isMobile()</code></td><td><code>true</code> en Android (o si se tocó la pantalla).</td></tr>
+          <tr><td><code>Input.vibrate(ms)</code></td><td>Vibra el móvil (60 ms por defecto; necesita el permiso <em>Vibrar</em> de la configuración de Android).</td></tr>
+          <tr><td><code>Input.getGamepadButton(b)</code>, <code>…Down(b)</code>, <code>…Up(b)</code></td><td>Botones del mando: <code>"a"</code>, <code>"b"</code>, <code>"x"</code>, <code>"y"</code>, <code>"lb"</code>, <code>"rb"</code>, <code>"ls"</code>, <code>"rs"</code>, <code>"start"</code>, <code>"back"</code>, <code>"up"</code>, <code>"down"</code>, <code>"left"</code>, <code>"right"</code>.</td></tr>
+          <tr><td><code>Input.getGamepadAxis(eje)</code></td><td><code>"leftx"</code>, <code>"lefty"</code>, <code>"rightx"</code>, <code>"righty"</code> (−1 a 1, con zona muerta) y <code>"lt"</code>, <code>"rt"</code> (0 a 1).</td></tr>
+          <tr><td><code>Input.isGamepadConnected()</code></td><td>Hay un mando (Android: Bluetooth o USB).</td></tr>
         </tbody>
       </table>
       <p>
@@ -20,9 +32,57 @@
       <table>
         <thead><tr><th>Eje</th><th>Valor</th></tr></thead>
         <tbody>
-          <tr><td><code>"Horizontal"</code></td><td>−1 a 1 con A/D o ←/→.</td></tr>
-          <tr><td><code>"Vertical"</code></td><td>−1 a 1 con S/W o ↓/↑.</td></tr>
-          <tr><td><code>"Mouse X"</code>, <code>"Mouse Y"</code></td><td>Movimiento del ratón (Y positivo hacia arriba).</td></tr>
+          <tr><td><code>"Horizontal"</code></td><td>−1 a 1 con A/D o ←/→, el joystick táctil y el stick izquierdo o la cruceta del mando.</td></tr>
+          <tr><td><code>"Vertical"</code></td><td>−1 a 1 con S/W o ↓/↑, el joystick táctil y el stick izquierdo o la cruceta del mando.</td></tr>
+          <tr><td><code>"Mouse X"</code>, <code>"Mouse Y"</code></td><td>Movimiento del ratón (Y positivo hacia arriba), arrastrar el dedo en la zona de mirar y el stick derecho del mando.</td></tr>
           <tr><td><code>"Mouse ScrollWheel"</code></td><td>Rueda del ratón.</td></tr>
+          <tr><td>Nombre de una acción</td><td>Si no es uno de los anteriores, el valor <code>x</code> de esa <a href="input-actions.html">Input Action</a> (<code>Input.getAxis("Zoom")</code>).</td></tr>
+        </tbody>
+      </table>
+      <h3 id="tactil">Móviles: controles táctiles</h3>
+      <p>
+        Como el <em>Touch Interface</em> de Unreal: los controles en pantalla se diseñan una vez en <em>Archivo &gt;
+        Controles táctiles</em> y se guardan en el proyecto (<code>ProjectSettings/TouchInterface.json</code>). El juego en
+        Android los carga solo y los convierte en la entrada de siempre, así que un script hecho para teclado y ratón
+        funciona sin cambios:
+      </p>
+      <ul>
+        <li><strong>Joystick</strong> (mitad izquierda): aparece donde se apoya el pulgar y mueve <code>Horizontal</code>/<code>Vertical</code>.</li>
+        <li><strong>Mirar</strong> (el resto): arrastrar es <code>mouseDelta()</code> / <code>"Mouse X"</code>; un toque corto es un clic izquierdo.</li>
+        <li><strong>Botones</strong>: mientras se mantienen pulsan su tecla (<code>Input.getKey("space")</code>) o un botón del ratón (<code>Mouse0</code>). Se colocan arrastrándolos en la vista previa; su posición es relativa a la pantalla.</li>
+        <li><strong>La interfaz manda</strong>: un dedo sobre un botón, deslizador o casilla del Canvas lo pulsa aunque caiga en la zona del joystick.</li>
+      </ul>
+      <p>
+        Para probarlos sin móvil: en Play, activa <strong>Táctil</strong> en la barra de la vista Juego; el ratón hace de
+        dedo. Desde Lua se cambian en el juego:
+      </p>
+      <table>
+        <tbody>
+          <tr><td><code>Input.setTouchControls(on)</code></td><td>Muestra u oculta todos los controles (oculto, el dedo es el ratón). <code>Input.touchControlsEnabled()</code> dice cómo están.</td></tr>
+          <tr><td><code>Input.setTouchButton(texto, visible)</code></td><td>Muestra u oculta un botón por su texto (<code>"Usar"</code> solo cerca de algo que se pueda usar).</td></tr>
+          <tr><td><code>Input.setTouchJoystick(on)</code>, <code>Input.setTouchLook(on)</code></td><td>El joystick o la zona de mirar.</td></tr>
+        </tbody>
+      </table>
+      <pre><code>-- Menu: sin controles (se toca la interfaz); en partida, con ellos
+function Jugador:Start()
+    Input.setTouchControls(Scene.name() ~= "Menu")
+end
+
+function Jugador:Update(dt)
+    if Input.getMouseButtonDown(0) or Input.getGamepadButtonDown("rb") then
+        self:disparar()
+    end
+    if Input.getKeyDown("space") or Input.getGamepadButtonDown("a") then
+        self:saltar()
+        Input.vibrate(40)
+    end
+end</code></pre>
+      <h3 id="pantalla">Pantalla y orientación</h3>
+      <table>
+        <tbody>
+          <tr><td><code>Screen.width()</code>, <code>Screen.height()</code></td><td>Tamaño de la pantalla (en el editor, de la vista Juego).</td></tr>
+          <tr><td><code>Screen.orientation()</code></td><td><code>"landscape"</code> o <code>"portrait"</code> según el tamaño actual.</td></tr>
+          <tr><td><code>Screen.setOrientation(modo)</code></td><td>En móviles: <code>"auto"</code> (gira a cualquier lado), <code>"landscape"</code> / <code>"portrait"</code> (gira entre las dos horizontales o verticales), <code>"landscape_fixed"</code> / <code>"portrait_fixed"</code> (fija). Al girar cambia el tamaño y todo se recoloca solo. En PC no hace nada.</td></tr>
+          <tr><td><code>Screen.orientationMode()</code></td><td>El último modo pedido.</td></tr>
         </tbody>
       </table>

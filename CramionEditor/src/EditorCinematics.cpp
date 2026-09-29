@@ -169,7 +169,11 @@ void EditorApp::drawGameView() {
     } else {
         ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.3f, 1.0f), "No hay ninguna Camera en la escena");
     }
-    ImGui::SameLine(std::max(ImGui::GetWindowWidth() - 300.0f, 0.0f));
+    ImGui::SameLine(std::max(ImGui::GetWindowWidth() - 370.0f, 0.0f));
+    ImGui::Checkbox("Táctil", &touch_simulate_);
+    ImGui::SetItemTooltip("En Play: los controles tactiles del proyecto sobre la vista, con el raton como dedo.\n"
+                          "Se disenan en Archivo > Controles tactiles.");
+    ImGui::SameLine();
     drawAspectMenu(kGameSlot);
     ImGui::SameLine();
     ImGui::Checkbox("Tercios", &game_guides_);
@@ -199,6 +203,7 @@ void EditorApp::drawGameView() {
     }
     // Interfaz del juego (Canvas) encima, y su editor fuera de Play.
     drawGameUi(origin, size);
+    if (playing() && touch_simulate_) drawTouchSimulation(origin, size);
     // Componente Profiler: FPS, CPU, GPU y memoria en su esquina.
     if (const ecs::Profiler* profiler = findProfiler(world_)) {
         profiler_overlay_.draw(draw, origin, size, *profiler, renderer_.device().name());

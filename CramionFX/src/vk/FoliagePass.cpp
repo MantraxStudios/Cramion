@@ -591,8 +591,11 @@ void FoliagePass::draw(const vk::raii::CommandBuffer& cmd, std::uint32_t frame, 
         if (shadow) {
             cmd.drawIndexedIndirect(*commands_[frame].handle(), (s * kLists + 3) * sizeof(DrawCommand), 1, sizeof(DrawCommand));
         } else {
-            // Los 3 niveles de la especie en una llamada.
-            cmd.drawIndexedIndirect(*commands_[frame].handle(), (s * kLists) * sizeof(DrawCommand), 3, sizeof(DrawCommand));
+            // Tres niveles de detalle, uno por llamada (sin multiDrawIndirect en muchos moviles).
+            for (std::uint32_t level = 0; level < 3; ++level) {
+                cmd.drawIndexedIndirect(*commands_[frame].handle(), (s * kLists + level) * sizeof(DrawCommand), 1,
+                                        sizeof(DrawCommand));
+            }
         }
     }
 }

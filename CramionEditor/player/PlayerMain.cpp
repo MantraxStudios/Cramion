@@ -9,6 +9,12 @@
 // Al abrir muestra el banner del motor mientras carga la escena inicial y
 // despues juega: render, fisica (Jolt), scripts Lua, audio, cinematicas,
 // particulas e interfaz (Canvas).
+//
+// Android (libmain.so en un APK, NativeActivity): el mismo juego. El APK
+// lleva assets/shaders, assets/Game (game.ini, banner.png) y el .crpack
+// (o va aparte en un .obb). Se copian a los datos internos de la app la
+// primera vez (o cuando cambia la compilacion) y el tactil se convierte en
+// raton, teclas y ejes con los controles en pantalla (dm::TouchControls).
 
 #include "GraphicsConfig.h"
 #include "ImGuiLayer.h"
@@ -19,11 +25,24 @@
 #include <CramionCore/CramionCore.h>
 #include <CramionCore/ecs/FloatingOrigin.h>
 #include <CramionCore/project/Pack.h>
+#include <CramionCore/project/TouchInterface.h>
+#include <CramionCore/input/InputActions.h>
 #include <CramionDM/CramionDM.h>
 #include <CramionFX/CramionFX.h>
 
 #include <imgui.h>
+#if defined(_WIN32)
 #include <imgui_impl_win32.h>
+#else
+#include "AndroidSupport.h"
+
+#include <CramionCore/net/Http.h>
+#include <android_native_app_glue.h>
+
+#include <cstdio>
+#include <cstring>
+#include <unistd.h>
+#endif
 
 #include <algorithm>
 #include <atomic>
@@ -43,28 +62,34 @@
 #include <unordered_set>
 #include <vector>
 
+#if defined(_WIN32)
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam);
+#endif
 
 namespace {
 
 using namespace cramion;
 
+#if defined(_WIN32)
 std::filesystem::path exeFolder() {
     wchar_t buffer[MAX_PATH] = {};
     GetModuleFileNameW(nullptr, buffer, MAX_PATH);
     return std::filesystem::path(buffer).parent_path();
 }
+#endif
 
 std::string readIniValue(const std::filesystem::path& file, const std::string& key) {
     std::ifstream in(file);
     std::string line;
     while (std::getline(in, line)) {
+        if (!line.empty() && line.back() == '\r') line.pop_back();  // escrito en Windows (CRLF), leido en Android
         const std::size_t eq = line.find('=');
         if (eq != std::string::npos && line.substr(0, eq) == key) return line.substr(eq + 1);
     }
     return {};
 }
 
+#if defined(_WIN32)
 std::wstring widen(const std::string& text) {
     if (text.empty()) return {};
     const int n = MultiByteToWideChar(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), nullptr, 0);
@@ -73,11 +98,56 @@ std::wstring widen(const std::string& text) {
     return out;
 }
 
+void showError(const std::string& message) { MessageBoxA(nullptr, message.c_str(), "Cramion", MB_ICONERROR); }
+#else
+std::wstring widen(const std::string& text) { return std::wstring(text.begin(), text.end()); }
+
+void showError(const std::string& message) { std::cerr << "[Juego] Error: " << message << std::endl; }
+
+// Copia del APK a los datos internos lo que el juego lee de disco: los
+// shaders del motor y Game/ (game.ini, banner.png). El .crpack no (es
+// grande: se descomprime directo mas tarde). Solo si cambio la compilacion
+// (build= de game.ini) o falta algo.
+bool installFromApk(const std::filesystem::path& root, std::string* error) {
+    const std::filesystem::path stamp = root / ".apk_build";
+    std::string apk_ini;
+    {
+        const std::filesystem::path probe = root / ".game_ini_apk";
+        if (!android::extractAsset("Game/game.ini", probe, nullptr, error)) return false;
+        apk_ini = readIniValue(probe, "build");
+        std::error_code e;
+        std::filesystem::remove(probe, e);
+    }
+    std::string installed;
+    std::ifstream(stamp) >> installed;
+    std::error_code e;
+    if (!apk_ini.empty() && installed == apk_ini && std::filesystem::exists(root / "shaders", e) &&
+        std::filesystem::exists(root / "Game" / "game.ini", e)) {
+        return true;
+    }
+    std::filesystem::remove_all(root / "shaders", e);
+    for (const std::string& name : android::assetFolder("shaders")) {
+        if (!android::extractAsset("shaders/" + name, root / "shaders" / name, nullptr, error)) return false;
+    }
+    // Fuentes de los shaders de superficie (shaders/source).
+    for (const std::string& name : android::assetFolder("shaders/source")) {
+        if (!android::extractAsset("shaders/source/" + name, root / "shaders" / "source" / name, nullptr, error)) return false;
+    }
+    for (const std::string& name : android::assetFolder("Game")) {
+        if (name.size() > 7 && name.substr(name.size() - 7) == ".crpack") continue;
+        if (!android::extractAsset("Game/" + name, root / "Game" / name, nullptr, error)) return false;
+    }
+    std::ofstream(stamp) << apk_ini;
+    return true;
+}
+#endif
+
 }  // namespace
 
-int main() {
+int runPlayer() {
     using namespace cramion;
     try {
+#if defined(_WIN32)
         ImGui_ImplWin32_EnableDpiAwareness();
         const std::filesystem::path root = exeFolder();
         const std::filesystem::path game = root / "Game";
@@ -94,6 +164,23 @@ int main() {
             std::cout.rdbuf(log_file.rdbuf());
             std::cerr.rdbuf(log_file.rdbuf());
         }
+#else
+        // Android: todo en los datos internos de la app; los logs a logcat.
+        const std::filesystem::path root = android::dataRoot();
+        const std::filesystem::path game = root / "Game";
+        const std::filesystem::path exe_stem = "Game";
+        const std::string game_name = "Game";
+        android::redirectLogs(editor::localDataFolder("Logs") / "Game.log");
+        editor::installCrashHandler(game_name);
+        {
+            std::string error;
+            if (!installFromApk(root, &error)) {
+                showError("No se pudieron preparar los archivos del juego: " + error);
+                return EXIT_FAILURE;
+            }
+        }
+        gfx::shaders::setDirectory(root / "shaders");
+#endif
 
         // Configuracion de compilacion (game.ini): titulo, ventana y FPS.
         const std::filesystem::path ini = game / "game.ini";
@@ -120,9 +207,10 @@ int main() {
                             .width = static_cast<std::uint32_t>(window_width >= 320 ? window_width : 1600),
                             .height = static_cast<std::uint32_t>(window_height >= 240 ? window_height : 900),
                             .maximized = window_mode == 0})) {
-            MessageBoxW(nullptr, L"No se pudo crear la ventana.", L"Cramion", MB_ICONERROR);
+            showError("No se pudo crear la ventana.");
             return EXIT_FAILURE;
         }
+#if defined(_WIN32)
         if (window_mode == 1) {
             // Pantalla completa sin bordes: la ventana ocupa todo el monitor.
             HWND hwnd = window.handle();
@@ -134,6 +222,7 @@ int main() {
             SetWindowPos(hwnd, HWND_TOP, r.left, r.top, r.right - r.left, r.bottom - r.top, SWP_FRAMECHANGED | SWP_SHOWWINDOW);
             window.pumpEvents();
         }
+#endif
         // El banner del motor desde el primer momento: descomprimir los
         // assets y compilar los shaders llevan su porcentaje.
         auto loading = std::make_unique<editor::LoadingScreen>(window.handle(), game / "banner.png");
@@ -142,6 +231,9 @@ int main() {
         // Assets: Game/<Juego>.crpack se descomprime una vez en
         // %LOCALAPPDATA%/Cramion/Games/<Juego> (se reutiliza si no cambio).
         // Sin paquete (exportaciones antiguas), la carpeta Game tal cual.
+        // Android: el paquete es el .obb (si se exporto aparte) o va dentro
+        // del APK (se copia fuera, se descomprime y se borra la copia).
+        const auto prepare_project = [&]() -> std::optional<project::ProjectInfo> {
         std::filesystem::path project_folder = game;
         {
             std::filesystem::path pack;
@@ -149,36 +241,98 @@ int main() {
             for (std::filesystem::directory_iterator it(game, e); !e && it != std::filesystem::directory_iterator(); it.increment(e)) {
                 if (it->path().extension() == ".crpack") pack = it->path();
             }
-            if (!pack.empty()) {
-                const std::string id = project::packId(pack);
+            std::string apk_pack;  // ruta dentro del APK
+#if !defined(_WIN32)
+            if (const std::string obb = window.obbPath(); !obb.empty()) {
+                std::error_code oe;
+                for (std::filesystem::directory_iterator it(obb, oe); !oe && it != std::filesystem::directory_iterator(); it.increment(oe)) {
+                    const std::string name = it->path().filename().string();
+                    if (name.rfind("main.", 0) == 0 && it->path().extension() == ".obb") pack = it->path();
+                }
+                if (!pack.empty()) std::cout << "[Juego] Assets del OBB: " << pack.string() << "\n";
+            }
+            if (pack.empty()) {
+                for (const std::string& name : android::assetFolder("Game")) {
+                    if (name.size() > 7 && name.substr(name.size() - 7) == ".crpack") apk_pack = "Game/" + name;
+                }
+            }
+#endif
+            if (!pack.empty() || !apk_pack.empty()) {
+                // Dentro del APK no se puede leer el indice sin sacarlo: vale
+                // la compilacion (build= de game.ini) y el tamano.
+                const std::string id = apk_pack.empty() ? project::packId(pack)
+                                                        : "apk-" + readIniValue(ini, "build") + "-" +
+#if defined(_WIN32)
+                                                              std::string();
+#else
+                                                              std::to_string(android::assetSize(apk_pack));
+#endif
                 const std::filesystem::path data = editor::localDataFolder("Games") / exe_stem;
                 std::string current;
                 std::ifstream(data / ".crpack_id") >> current;
                 if (id.empty() || current != id) {
+                    // Dentro del APK: se lee de alli mismo (va sin comprimir en
+                    // el zip, asi que es un trozo del archivo del APK).
+                    std::uint64_t pack_base = 0;
+                    std::uint64_t pack_length = 0;
+                    bool pack_copied = false;
+#if !defined(_WIN32)
+                    android::AssetRange range;
+                    if (!apk_pack.empty()) {
+                        if (android::openAssetRange(apk_pack, range)) {
+                            pack = range.path;
+                            pack_base = range.offset;
+                            pack_length = range.length;
+                        } else {
+                            // Comprimido dentro del APK (no deberia): se copia fuera.
+                            pack = root / "pack.crpack";
+                            std::string copy_error;
+                            const bool copied = android::extractAsset(apk_pack, pack, [&](std::uint64_t done, std::uint64_t total) {
+                                loading->show(total > 0 ? static_cast<float>(static_cast<double>(done) / static_cast<double>(total)) : 1.0f,
+                                              "Preparando los assets");
+                            }, &copy_error);
+                            if (!copied) throw std::runtime_error("No se pudieron copiar los assets del APK: " + copy_error);
+                            pack_copied = true;
+                        }
+                    }
+#endif
                     std::vector<project::PackEntry> entries;
                     std::string error;
-                    if (!project::readPackIndex(pack, entries, &error)) throw std::runtime_error(error);
+                    if (!project::readPackIndex(pack, entries, &error, pack_base, pack_length)) throw std::runtime_error(error);
                     std::uint64_t total = 0;
                     for (const project::PackEntry& entry : entries) total += entry.size;
                     std::filesystem::remove_all(data, e);
                     std::filesystem::create_directories(data, e);
+                    const auto unpack_start = std::chrono::steady_clock::now();
                     const bool ok = project::extractPack(pack, data, [&](std::uint64_t done, const std::string&) {
                         loading->show(total > 0 ? static_cast<float>(static_cast<double>(done) / static_cast<double>(total)) : 1.0f,
                                       "Descomprimiendo assets");
                         return true;
-                    }, &error);
+                    }, &error, pack_base, pack_length);
                     if (!ok) throw std::runtime_error("No se pudieron descomprimir los assets: " + error);
+                    std::cout << "[Juego] Assets descomprimidos: " << (total >> 20) << " MB en "
+                              << std::chrono::duration<double>(std::chrono::steady_clock::now() - unpack_start).count()
+                              << " s\n";
                     std::ofstream(data / ".crpack_id") << id;
+                    if (pack_copied) std::filesystem::remove(pack, e);  // la copia del APK ya no hace falta
+#if !defined(_WIN32)
+                    android::closeAssetRange(range);
+#endif
                 }
                 project_folder = data;
             }
         }
-        const std::optional<project::ProjectInfo> project = project::openProject(project_folder);
+        return project::openProject(project_folder);
+        };
+        std::optional<project::ProjectInfo> project;
+#if defined(_WIN32)
+        project = prepare_project();
         if (!project) {
-            MessageBoxW(nullptr, L"No se encontro el juego (carpeta Game).", L"Cramion", MB_ICONERROR);
+            showError("No se encontro el juego (carpeta Game).");
             return EXIT_FAILURE;
         }
         SetWindowTextW(window.handle(), widen(title).c_str());
+#endif
 
         dm::Input input;
         scene::Scene scene;
@@ -186,34 +340,176 @@ int main() {
         scene.camera().setAspectRatio(static_cast<float>(window.width()) / static_cast<float>(std::max(window.height(), 1u)));
 
         gfx::VulkanRenderer renderer;
-        const gfx::EngineInfo engine_info{.app_name = project->name.c_str(), .engine_name = "Cramion Engine", .enable_validation = false};
+        const std::string app_name = project ? project->name : title;
+        const gfx::EngineInfo engine_info{.app_name = app_name.c_str(), .engine_name = "Cramion Engine", .enable_validation = false};
         renderer.setLoadingCallback([&](float fraction, const char* what) { loading->show(fraction, what); });
         renderer.initialize(engine_info, window.handle(), window.width(), window.height());
+#if defined(_WIN32)
         loading.reset();
         editor::loadGraphicsIni(project->settingsFolder() / "Graphics.ini", renderer);
         editor::loadGraphicsIni(player_graphics, renderer);  // la del jugador, encima
+#endif
         renderer.setEditorHelpersEnabled(false);
 
         editor::ImGuiLayer imgui;
+#if !defined(_WIN32)
+        // La interfaz a la escala de la pantalla (un poco menos que la
+        // densidad: los moviles tienen mucha y la pantalla es pequena).
+        imgui.setContentScale(std::max(window.density() * 0.8f, 1.0f));
+        imgui.setDisplaySize(window.width(), window.height());
+#endif
         imgui.initialize(window.handle(), renderer);
 
+        // Pantalla de carga (encima de todo).
+        const auto draw_loading = [&](const ImVec2& display, float fraction, const std::string& text) {
+            ImDrawList* fg = ImGui::GetForegroundDrawList();
+            fg->AddRectFilled(ImVec2(0, 0), display, IM_COL32(13, 15, 20, 255));
+            ImGui::PushFont(nullptr, ImGui::GetStyle().FontSizeBase * 2.0f);
+            const ImVec2 title_size = ImGui::CalcTextSize(title.c_str());
+            fg->AddText(ImVec2((display.x - title_size.x) * 0.5f, display.y * 0.5f - 70.0f), IM_COL32(235, 238, 245, 255),
+                        title.c_str());
+            ImGui::PopFont();
+            const float width = std::min(520.0f, display.x - 64.0f);
+            const ImVec2 a{(display.x - width) * 0.5f, display.y * 0.5f};
+            const ImVec2 b{a.x + width, a.y + 8.0f};
+            fg->AddRectFilled(a, b, IM_COL32(40, 44, 54, 255), 4.0f);
+            fg->AddRectFilled(a, ImVec2(a.x + width * std::clamp(fraction, 0.0f, 1.0f), b.y), IM_COL32(90, 150, 255, 255), 4.0f);
+            char percent[16];
+            std::snprintf(percent, sizeof(percent), "%.0f %%", fraction * 100.0f);
+            const ImVec2 percent_size = ImGui::CalcTextSize(percent);
+            fg->AddText(ImVec2(b.x - percent_size.x, b.y + 10.0f), IM_COL32(150, 160, 180, 255), percent);
+            fg->AddText(ImVec2(a.x, b.y + 10.0f), IM_COL32(150, 160, 180, 255), text.c_str());
+        };
+
         bool quit = false;
+        // Controles tactiles (moviles): la interfaz tactil del proyecto
+        // (ProjectSettings/TouchInterface.json, se disena en el editor).
+        dm::TouchControls touch;
+        {
+            if (project) touch.setLayout(project::loadTouchInterface(project::touchInterfaceFile(project->settingsFolder())));
+            touch.setScreen(static_cast<float>(window.width()), static_cast<float>(window.height()),
+#if defined(_WIN32)
+                            1.0f);
+#else
+                            window.density());
+#endif
+        }
+        // Lo que sale de los controles tactiles va a Input y a la interfaz
+        // (ImGui: en Android no tiene backend de plataforma).
+        std::vector<dm::Event> synthesized;
+        const auto feed = [&](dm::Event& e) {
+            input.onEvent(e);
+#if !defined(_WIN32)
+            ImGuiIO& io = ImGui::GetIO();
+            switch (e.type) {
+                case dm::EventType::MouseMoved:
+                    io.AddMouseSourceEvent(ImGuiMouseSource_TouchScreen);
+                    io.AddMousePosEvent(e.mouseX, e.mouseY);
+                    break;
+                case dm::EventType::MouseButtonPressed:
+                case dm::EventType::MouseButtonReleased:
+                    io.AddMouseSourceEvent(ImGuiMouseSource_TouchScreen);
+                    io.AddMouseButtonEvent(static_cast<int>(e.button), e.type == dm::EventType::MouseButtonPressed);
+                    break;
+                case dm::EventType::MouseScrolled: io.AddMouseWheelEvent(e.scrollX, e.scrollY); break;
+                case dm::EventType::TextInput: io.AddInputCharacter(e.codepoint); break;
+                case dm::EventType::KeyPressed:
+                case dm::EventType::KeyReleased:
+                    if (e.key == dm::Key::Backspace) io.AddKeyEvent(ImGuiKey_Backspace, e.type == dm::EventType::KeyPressed);
+                    if (e.key == dm::Key::Enter) io.AddKeyEvent(ImGuiKey_Enter, e.type == dm::EventType::KeyPressed);
+                    break;
+                default: break;
+            }
+#endif
+        };
+#if defined(_WIN32)
         window.setMessageHook([](HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
             return ImGui_ImplWin32_WndProcHandler(hwnd, msg, wparam, lparam) != 0;
         });
+#endif
+        core::Clock touch_clock;
+        double touch_time = 0.0;
         window.setEventCallback([&](dm::Event& e) {
-            input.onEvent(e);
+            switch (e.type) {
+                case dm::EventType::TouchBegan:
+                case dm::EventType::TouchMoved:
+                case dm::EventType::TouchEnded:
+                    input.onEvent(e);  // Input.getTouch en Lua
+                    synthesized.clear();
+                    touch.onEvent(e, touch_time, synthesized);
+                    for (dm::Event& s : synthesized) feed(s);
+                    return;
+                default: break;
+            }
+            feed(e);
             switch (e.type) {
                 case dm::EventType::WindowResize:
                     renderer.onResize(e.width, e.height);
                     if (e.height > 0) scene.camera().setAspectRatio(static_cast<float>(e.width) / static_cast<float>(e.height));
+#if !defined(_WIN32)
+                    imgui.setDisplaySize(e.width, e.height);
+                    touch.setScreen(static_cast<float>(e.width), static_cast<float>(e.height), window.density());
+#endif
                     break;
                 case dm::EventType::WindowMinimized: renderer.onResize(0, 0); break;
                 case dm::EventType::WindowRestored: renderer.onResize(window.width(), window.height()); break;
                 case dm::EventType::WindowClose: quit = true; break;
+                // Android: segundo plano y vuelta (la swapchain va y viene).
+                case dm::EventType::WindowSurfaceLost: renderer.releaseSurface(); break;
+                case dm::EventType::WindowSurfaceCreated:
+                    renderer.replaceWindow(window.handle(), e.width, e.height);
+                    break;
+                case dm::EventType::WindowLostFocus:
+                    synthesized.clear();
+                    touch.releaseAll(synthesized);
+                    for (dm::Event& s : synthesized) feed(s);
+                    break;
                 default: break;
             }
         });
+
+#if !defined(_WIN32)
+        // Con el renderizador listo, la pantalla de carga se pinta con el.
+        editor::setLoadingPainter([&](float fraction, const char* status) {
+            window.pumpEvents();
+            renderer.applyPendingResize();
+            imgui.beginFrame();
+            draw_loading(ImGui::GetIO().DisplaySize, fraction, status);
+            imgui.endFrame();
+            renderer.drawFrame(scene);
+        });
+        loading->show(0.0f, "Cargando");
+        project = prepare_project();
+        loading.reset();
+        editor::setLoadingPainter(nullptr);
+        if (!project) {
+            showError("No se encontro el juego en el APK.");
+            return EXIT_FAILURE;
+        }
+        touch.setLayout(project::loadTouchInterface(project::touchInterfaceFile(project->settingsFolder())));
+        // Perfil movil: la calidad de la configuracion de compilacion (Baja
+        // por defecto), sin trazado de rayos y con el presupuesto adaptativo
+        // a los FPS objetivo. Encima, lo que el jugador guardo.
+        editor::loadGraphicsIni(project->settingsFolder() / "Graphics.ini", renderer);
+        {
+            const std::string quality = readIniValue(ini, "android_quality");
+            const int level = quality.empty() ? 0 : std::clamp(std::atoi(quality.c_str()), 0, 3);
+            editor::applyQualityPreset(renderer, level);
+            renderer.setRayTracingEnabled(false);
+            renderer.setMobileProfile(level);
+            // Las nubes volumetricas cuestan mucho en un movil: desde Alta.
+            if (level < 2) renderer.setCloudsEnabled(false);
+            gfx::GraphicsSettings g = renderer.graphicsSettings();
+            const int fps = std::atoi(readIniValue(ini, "android_fps").c_str());
+            g.target_fps = static_cast<float>(fps >= 15 ? fps : 30);
+            g.adaptive = true;
+            g.vsync = true;
+            renderer.setGraphicsSettings(g);
+        }
+        editor::loadGraphicsIni(player_graphics, renderer);
+        std::cout << "[Juego] " << project->name << " en " << renderer.device().name() << " (" << window.width() << "x"
+                  << window.height() << ", densidad " << window.density() << ")\n";
+#endif
 
         // --- Sistemas del juego ---
         ecs::registerPrefabComponents();
@@ -290,6 +586,32 @@ int main() {
         nav.setPhysics(&physics);
         scripts.setNavigation(&nav);
         scripts.setCursorLock([&](bool locked) { window.setCursorCaptured(locked); });
+        scripts.setTouchControls(&touch);
+        // Acciones y contextos de entrada del proyecto (Input.getAction...).
+        scripts.setInputActions(input::loadInputActions(input::inputActionsFile(project->settingsFolder())));
+        std::string orientation_mode = "auto";
+        scripting::ScriptSystem::ScreenHost screen_host;
+        screen_host.width = [&] { return static_cast<int>(window.width()); };
+        screen_host.height = [&] { return static_cast<int>(window.height()); };
+        screen_host.orientation_mode = [&] { return orientation_mode; };
+#if !defined(_WIN32)
+        scripts.setVibrate([&](int ms) { window.vibrate(ms); });
+        screen_host.set_orientation = [&](const std::string& mode) {
+            // ActivityInfo.SCREEN_ORIENTATION_*
+            static const std::pair<const char*, int> kModes[] = {{"auto", 10},          {"landscape", 6},
+                                                                 {"portrait", 7},       {"landscape_fixed", 0},
+                                                                 {"portrait_fixed", 1}};
+            for (const auto& [name, value] : kModes) {
+                if (mode == name) {
+                    window.setOrientation(value);
+                    orientation_mode = mode;
+                    return true;
+                }
+            }
+            return false;
+        };
+#endif
+        scripts.setScreen(screen_host);
         // Mundos de bloques: texturas del juego y partidas en Saves/<juego>/Worlds.
         voxel::VoxelSystem voxels;
         voxels.setAssetsRoot(project->assetsFolder());
@@ -330,6 +652,8 @@ int main() {
         physics::ParticleWorld particles;
         ui::UiSystem game_ui;
         ecs::World world;
+        // Un dedo sobre un boton de la interfaz la pulsa aunque caiga en el joystick.
+        touch.setUiHitTest([&](float x, float y) { return game_ui.interactiveAt(world, x, y); });
 
         // Escena inicial: la de game.ini, o la inicial del proyecto.
         std::filesystem::path scene_file;
@@ -503,27 +827,6 @@ int main() {
             }
         };
 
-        // Pantalla de carga (encima de todo).
-        const auto draw_loading = [&](const ImVec2& display, float fraction, const std::string& text) {
-            ImDrawList* fg = ImGui::GetForegroundDrawList();
-            fg->AddRectFilled(ImVec2(0, 0), display, IM_COL32(13, 15, 20, 255));
-            ImGui::PushFont(nullptr, ImGui::GetStyle().FontSizeBase * 2.0f);
-            const ImVec2 title_size = ImGui::CalcTextSize(title.c_str());
-            fg->AddText(ImVec2((display.x - title_size.x) * 0.5f, display.y * 0.5f - 70.0f), IM_COL32(235, 238, 245, 255),
-                        title.c_str());
-            ImGui::PopFont();
-            const float width = std::min(520.0f, display.x - 64.0f);
-            const ImVec2 a{(display.x - width) * 0.5f, display.y * 0.5f};
-            const ImVec2 b{a.x + width, a.y + 8.0f};
-            fg->AddRectFilled(a, b, IM_COL32(40, 44, 54, 255), 4.0f);
-            fg->AddRectFilled(a, ImVec2(a.x + width * std::clamp(fraction, 0.0f, 1.0f), b.y), IM_COL32(90, 150, 255, 255), 4.0f);
-            char percent[16];
-            std::snprintf(percent, sizeof(percent), "%.0f %%", fraction * 100.0f);
-            const ImVec2 percent_size = ImGui::CalcTextSize(percent);
-            fg->AddText(ImVec2(b.x - percent_size.x, b.y + 10.0f), IM_COL32(150, 160, 180, 255), percent);
-            fg->AddText(ImVec2(a.x, b.y + 10.0f), IM_COL32(150, 160, 180, 255), text.c_str());
-        };
-
         // --- Camara orbital por defecto (como el DefaultPawn de Unreal) ---
         // Si la escena no tiene ninguna Camera activa, el juego no se queda
         // mirando al vacio desde el origen: una vista orbita alrededor de todo
@@ -596,6 +899,39 @@ int main() {
             }
         };
 
+        // --- Controles tactiles en pantalla (joystick y botones) ---
+        const bool touch_platform =
+#if defined(_WIN32)
+            false;
+#else
+            true;
+#endif
+        const auto draw_touch = [&] {
+            const dm::TouchLayout& layout = touch.layout();
+            if (!layout.enabled || (!touch_platform && !input.touchScreen())) return;
+            ImDrawList* fg = ImGui::GetForegroundDrawList();
+            const auto alpha = [&](float k) { return static_cast<int>(std::clamp(layout.opacity * k, 0.0f, 1.0f) * 255.0f); };
+            if (layout.joystick) {
+                const dm::TouchControls::StickView s = touch.stick();
+                const ImVec2 base{s.base_x, s.base_y};
+                fg->AddCircleFilled(base, s.radius, IM_COL32(15, 17, 22, alpha(0.45f)), 48);
+                fg->AddCircle(base, s.radius, IM_COL32(255, 255, 255, alpha(0.55f)), 48, 2.0f);
+                fg->AddCircleFilled(ImVec2(s.knob_x, s.knob_y), s.radius * 0.42f,
+                                    IM_COL32(255, 255, 255, alpha(s.active ? 0.95f : 0.6f)), 32);
+            }
+            for (std::size_t i = 0; i < layout.buttons.size(); ++i) {
+                const dm::TouchButton& b = layout.buttons[i];
+                if (!b.visible) continue;
+                const ImVec2 c{touch.buttonCenterX(b), touch.buttonCenterY(b)};
+                const float r = touch.buttonRadius(b);
+                const bool down = touch.buttonDown(i);
+                fg->AddCircleFilled(c, r, down ? IM_COL32(90, 150, 255, alpha(0.9f)) : IM_COL32(15, 17, 22, alpha(0.5f)), 40);
+                fg->AddCircle(c, r, IM_COL32(255, 255, 255, alpha(0.7f)), 40, 2.0f);
+                const ImVec2 size = ImGui::CalcTextSize(b.label.c_str());
+                fg->AddText(ImVec2(c.x - size.x * 0.5f, c.y - size.y * 0.5f), IM_COL32(255, 255, 255, alpha(1.4f)), b.label.c_str());
+            }
+        };
+
         // --- Banner mientras carga ---
         const std::filesystem::path banner = game / "banner.png";
         constexpr float kBannerSeconds = 3.0f;
@@ -609,7 +945,13 @@ int main() {
         while (!quit) {
             const float clock_dt = clock.tick();  // sin recortar (el Profiler mide los frames reales)
             const float dt = std::min(clock_dt, 0.1f);
+            touch_time += clock_dt;
             window.pumpEvents();
+            // Lo que Lua apago con un dedo encima se suelta.
+            synthesized.clear();
+            touch.update(synthesized);
+            for (dm::Event& s : synthesized) feed(s);
+            touch.apply(input);  // el joystick virtual a los ejes
             renderer.applyPendingResize();
             imgui.beginFrame();
             imgui.updateThumbnails();  // sube las imagenes ya decodificadas (banner, UI)
@@ -701,6 +1043,7 @@ int main() {
                 editor::drawUiList(ImGui::GetBackgroundDrawList(), ImVec2(0, 0), game_ui.drawList(), imgui, project->assetsFolder());
                 // Sin Camera en la escena: vista orbital por defecto.
                 if (!has_camera()) update_orbit(dt, display);
+                draw_touch();
                 // Componente Profiler: FPS, CPU, GPU y memoria en una esquina.
                 profiler_overlay.update(clock_dt, renderer);
                 static const ecs::Profiler kDevelopmentProfiler{};  // "Mostrar FPS" de la configuracion
@@ -787,8 +1130,34 @@ int main() {
                       "de las texturas, usar menos modelos de alta resolucion (escaneos) o partir la escena.\n\n"
                       "Detalle: " + std::string(e.what());
         }
-        MessageBoxA(nullptr, message.c_str(), "Cramion", MB_ICONERROR);
+        showError(message);
         return EXIT_FAILURE;
     }
     return EXIT_SUCCESS;
 }
+
+#if defined(_WIN32)
+int main() { return runPlayer(); }
+#else
+// NativeActivity: la glue llama aqui en su propio hilo.
+void android_main(android_app* app) {
+    using namespace cramion;
+    dm::Window::setApp(app);
+    android::setAssetManager(app->activity->assetManager);
+    net::setJavaVM(app->activity->vm);
+    const std::filesystem::path data = app->activity->internalDataPath != nullptr ? app->activity->internalDataPath : "/data/local/tmp";
+    android::setDataRoot(data);
+    // temp_directory_path() (caches de modelos) dentro de la app.
+    std::error_code e;
+    std::filesystem::create_directories(data / "tmp", e);
+    setenv("TMPDIR", (data / "tmp").c_str(), 1);
+    runPlayer();
+    std::cout << std::endl;
+    // El proceso puede seguir vivo con la actividad cerrada: sin esto la
+    // proxima vez arrancaria con el estado estatico de esta. _exit y no exit:
+    // los destructores estaticos con hilos del driver aun vivos (Mali)
+    // abortaban el proceso al salir.
+    std::fflush(nullptr);
+    _exit(0);
+}
+#endif

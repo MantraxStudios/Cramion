@@ -2,8 +2,10 @@
 
 #include <nlohmann/json.hpp>
 
+#if defined(_WIN32)
 #include <windows.h>
 #include <shlobj.h>
+#endif
 
 #include <algorithm>
 #include <chrono>
@@ -56,6 +58,10 @@ void writeJson(const std::filesystem::path& file, const nlohmann::json& json) {
 }
 
 std::filesystem::path hubFile() {
+#if !defined(_WIN32)
+    // Android: el juego no usa el Hub de proyectos.
+    return std::filesystem::temp_directory_path() / "Cramion" / "hub.json";
+#else
     PWSTR folder = nullptr;
     std::filesystem::path result;
     if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_RoamingAppData, 0, nullptr, &folder))) {
@@ -65,6 +71,7 @@ std::filesystem::path hubFile() {
     }
     CoTaskMemFree(folder);
     return result;
+#endif
 }
 
 std::int64_t now() {

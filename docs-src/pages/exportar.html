@@ -1,6 +1,7 @@
 <p>
   <em>Archivo &gt; Exportar juego...</em> crea una carpeta con el juego listo para copiar a otro PC y jugar, como el Build
-  de Unity. <em>Exportar y jugar...</em> además lo abre al terminar.
+  de Unity. <em>Exportar y jugar...</em> además lo abre al terminar. Con una configuración de plataforma
+  <a href="#android">Android</a> sale un APK (y/o AAB para Google Play) que se puede instalar directamente en el móvil.
 </p>
 
 <h3 id="ventana">La ventana de exportar</h3>
@@ -48,3 +49,44 @@
   </tbody>
 </table>
 <div class="note">Por ejemplo, una configuración <em>Desarrollo</em> (ventana, con FPS) y otra <em>Final</em> (pantalla completa, con icono y versión).</div>
+
+<h3 id="android">Android (APK, AAB y OBB)</h3>
+<p>
+  En <em>Configuraciones de compilación</em>, <strong>Plataforma: Android</strong>. Se exporta con las herramientas del
+  Android SDK (sin Gradle ni Android Studio abierto): <code>aapt2</code>, <code>zipalign</code>, <code>apksigner</code> y, para
+  el AAB, <code>bundletool</code>. El juego es el mismo reproductor compilado para Android
+  (<code>android/arm64-v8a/libmain.so</code> junto al editor) con los mismos sistemas: render Vulkan, física, Lua, audio,
+  interfaz, red.
+</p>
+<table>
+  <thead><tr><th>Ajuste</th><th>Qué hace</th></tr></thead>
+  <tbody>
+    <tr><td><code>Paquete</code></td><td>El identificador de la app (<code>com.estudio.juego</code>). Vacío = <code>com.cramion.&lt;juego&gt;</code>. Google Play no deja cambiarlo después.</td></tr>
+    <tr><td><code>Código de versión</code></td><td>Entero que sube en cada versión publicada; el nombre de versión es el campo <em>Versión</em>.</td></tr>
+    <tr><td><code>Orientación</code></td><td>Al abrir: horizontal o vertical (gira entre las dos), libre, horizontal fija o vertical fija. Desde Lua se cambia en cualquier momento con <a href="input.html#pantalla"><code>Screen.setOrientation</code></a>.</td></tr>
+    <tr><td><code>Android mínimo / objetivo</code></td><td>API mínima (10 por defecto) y la de destino (15, la que pide Google Play).</td></tr>
+    <tr><td><code>Salida</code></td><td><strong>APK</strong> (instalar directamente), <strong>AAB</strong> (subir a Google Play) o ambos. <strong>Assets aparte en un OBB</strong>: el APK queda pequeño y el <code>.crpack</code> va en <code>main.&lt;versión&gt;.&lt;paquete&gt;.obb</code>, que se copia a <code>/sdcard/Android/obb/&lt;paquete&gt;/</code>. <strong>x86_64</strong> añade los emuladores.</td></tr>
+    <tr><td><code>Permisos</code></td><td>Internet (multijugador y <code>Http</code>), vibrar (<code>Input.vibrate</code>) y micrófono.</td></tr>
+    <tr><td><code>Icono</code></td><td>PNG/JPG cuadrado; se generan las cinco densidades (48 a 192 px). Vacío = el icono de la configuración o el del motor.</td></tr>
+    <tr><td><code>Firma</code></td><td>Un keystore (<code>.jks</code>) con su alias y contraseñas (las contraseñas no se guardan en el proyecto). Sin keystore se firma con una clave de depuración que se crea sola: sirve para probar, no para Google Play.</td></tr>
+    <tr><td><code>Perfil móvil</code></td><td>Calidad inicial (Baja por defecto) y FPS objetivo: el presupuesto adaptativo baja o sube efectos para llegar; sin trazado de rayos.</td></tr>
+  </tbody>
+</table>
+<p>
+  Los controles táctiles no se configuran aquí: son del proyecto (<em>Archivo &gt; Controles táctiles</em>, ver
+  <a href="input.html#tactil">Input en móviles</a>) y el juego los usa solos en cualquier exportación.
+</p>
+<p>
+  <em>Exportar e instalar...</em> instala el APK por <code>adb</code> en el dispositivo elegido (USB con la depuración activada o
+  un emulador), sube el OBB si lo hay y abre el juego. La salida:
+</p>
+<pre><code>MiJuego/
+  MiJuego.apk                      firmado y alineado (16 KB)
+  MiJuego.aab                      si se pidió (Google Play)
+  main.1.com.estudio.juego.obb     si los assets van aparte</code></pre>
+<p>
+  Requisitos: el Android SDK (Android Studio o las command-line tools, con build-tools y una plataforma), Java (el de
+  Android Studio vale) y un móvil con <strong>Vulkan 1.3</strong> (la mayoría desde 2020; el manifiesto lo pide y Google Play
+  oculta el juego a los que no lo tienen). El runtime de Android se compila con el motor si está instalado el Android NDK
+  (<code>CRAMION_ANDROID=ON</code>). En el móvil, los logs van a <code>logcat</code> (etiqueta <code>Cramion</code>).
+</p>

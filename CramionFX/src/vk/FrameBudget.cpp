@@ -94,6 +94,18 @@ void FrameBudget::setStartLevels(HardwareTier tier) {
     if (enabled_) levels_ = start_levels_;
 }
 
+void FrameBudget::reset() {
+    levels_ = enabled_ ? start_levels_ : std::array<std::uint8_t, kLeverCount>{};
+    pending_.active = false;
+    over_seconds_ = under_seconds_ = 0.0f;
+    has_sample_ = false;
+    for (auto& row : learned_) row.fill(-1.0f);
+    raise_blocked_until_ = {};
+    raise_backoff_ = {};
+    raised_at_ = {};
+    last_action_ = "Ajustes cambiados: calidad restablecida";
+}
+
 std::uint8_t FrameBudget::maxLevel(Lever lever) const {
     return kMaxLevel[static_cast<std::size_t>(lever)];
 }

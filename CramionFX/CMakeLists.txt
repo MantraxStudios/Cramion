@@ -86,6 +86,26 @@ FetchContent_Declare(fidelityfx_fsr1
 )
 FetchContent_MakeAvailable(fidelityfx_fsr1)
 
+# OpenXR (realidad virtual: SteamVR, Oculus/Meta, WMR, Pico...): el loader
+# oficial de Khronos, estatico, sin capas ni pruebas. Solo en PC.
+option(CRAMION_XR "Realidad virtual con OpenXR" ON)
+if(CRAMION_XR AND NOT ANDROID)
+    set(BUILD_TESTS OFF CACHE BOOL "" FORCE)
+    set(BUILD_API_LAYERS OFF CACHE BOOL "" FORCE)
+    set(BUILD_CONFORMANCE_TESTS OFF CACHE BOOL "" FORCE)
+    set(BUILD_LOADER ON CACHE BOOL "" FORCE)
+    set(DYNAMIC_LOADER OFF CACHE BOOL "" FORCE)
+    set(BUILD_WITH_SYSTEM_JSONCPP OFF CACHE BOOL "" FORCE)
+    set(INSTALL_TO_ARCHITECTURE_PREFIXES OFF CACHE BOOL "" FORCE)
+    FetchContent_Declare(openxr
+        GIT_REPOSITORY https://github.com/KhronosGroup/OpenXR-SDK.git
+        GIT_TAG release-1.1.63
+        GIT_SHALLOW TRUE
+    )
+    FetchContent_MakeAvailable(openxr)
+    target_compile_options(openxr_loader PRIVATE -w)
+endif()
+
 # Cabeceros de assimp como SYSTEM: sus avisos no son nuestros.
 set_target_properties(assimp PROPERTIES SYSTEM TRUE)
 
@@ -122,21 +142,39 @@ target_include_directories(CramionFX SYSTEM PRIVATE
     "${stb_SOURCE_DIR}"
 )
 
+if(ANDROID)
+    # libvulkan.so del sistema (NDK).
+    set(CRAMIONFX_VULKAN_LIB vulkan)
+else()
+    set(CRAMIONFX_VULKAN_LIB "${CMAKE_CURRENT_SOURCE_DIR}/vendor/lib/vulkan-1.lib")
+endif()
 target_link_libraries(CramionFX
     PUBLIC
         Cramion::DM
-        "${CMAKE_CURRENT_SOURCE_DIR}/vendor/lib/vulkan-1.lib"
+        ${CRAMIONFX_VULKAN_LIB}
     PRIVATE
         assimp::assimp
         meshoptimizer
 )
+if(TARGET openxr_loader)
+    target_link_libraries(CramionFX PRIVATE openxr_loader)
+    target_include_directories(CramionFX SYSTEM PRIVATE "${openxr_SOURCE_DIR}/include" "${openxr_BINARY_DIR}/include")
+    target_compile_definitions(CramionFX PUBLIC CRAMION_XR=1)
+endif()
 
-target_compile_definitions(CramionFX PUBLIC
-    VK_USE_PLATFORM_WIN32_KHR
-    VULKAN_HPP_HANDLE_ERROR_OUT_OF_DATE_AS_SUCCESS
-    WIN32_LEAN_AND_MEAN
-    NOMINMAX
-)
+if(ANDROID)
+    target_compile_definitions(CramionFX PUBLIC
+        VK_USE_PLATFORM_ANDROID_KHR
+        VULKAN_HPP_HANDLE_ERROR_OUT_OF_DATE_AS_SUCCESS
+    )
+else()
+    target_compile_definitions(CramionFX PUBLIC
+        VK_USE_PLATFORM_WIN32_KHR
+        VULKAN_HPP_HANDLE_ERROR_OUT_OF_DATE_AS_SUCCESS
+        WIN32_LEAN_AND_MEAN
+        NOMINMAX
+    )
+endif()
 
 target_compile_options(CramionFX PRIVATE
     -Wall

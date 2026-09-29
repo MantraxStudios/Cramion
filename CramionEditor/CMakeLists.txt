@@ -23,6 +23,43 @@ FetchContent_Declare(imguizmo
 )
 FetchContent_MakeAvailable(imgui imguizmo)
 
+# --- Android: libmain.so, el juego exportado (NativeActivity) ---
+# El mismo player que en Windows (player/PlayerMain.cpp) sin el editor. La
+# entrada de ImGui la da el propio player (tactil convertido a raton), asi
+# que solo hace falta el backend de Vulkan.
+if(ANDROID)
+    add_library(cramion_imgui STATIC
+        "${imgui_SOURCE_DIR}/imgui.cpp"
+        "${imgui_SOURCE_DIR}/imgui_draw.cpp"
+        "${imgui_SOURCE_DIR}/imgui_tables.cpp"
+        "${imgui_SOURCE_DIR}/imgui_widgets.cpp"
+        "${imgui_SOURCE_DIR}/backends/imgui_impl_vulkan.cpp"
+        "${imgui_SOURCE_DIR}/misc/cpp/imgui_stdlib.cpp"
+    )
+    target_include_directories(cramion_imgui SYSTEM PUBLIC
+        "${imgui_SOURCE_DIR}"
+        "${imgui_SOURCE_DIR}/backends"
+        "${imgui_SOURCE_DIR}/misc/cpp"
+    )
+    target_link_libraries(cramion_imgui PUBLIC Cramion::FX)
+    target_compile_options(cramion_imgui PRIVATE -O2 -w)
+
+    add_library(main SHARED
+        "${CMAKE_CURRENT_SOURCE_DIR}/player/PlayerMain.cpp"
+        "${CMAKE_CURRENT_SOURCE_DIR}/player/AndroidSupport.cpp"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/GraphicsConfig.cpp"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/ImGuiLayer.cpp"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/UiRenderer.cpp"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/ProfilerOverlay.cpp"
+    )
+    target_include_directories(main PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    target_link_libraries(main PRIVATE Cramion::Core cramion_imgui android log)
+    # La glue exporta ANativeActivity_onCreate: que el enlazador no la quite.
+    target_link_options(main PRIVATE "-u" "ANativeActivity_onCreate")
+    target_compile_options(main PRIVATE -Wall -Wextra)
+    return()
+endif()
+
 # Dear ImGui + sus backends de Win32 y Vulkan. Las cabeceras de Vulkan y
 # vulkan-1.lib vienen de CramionFX.
 add_library(cramion_imgui STATIC
@@ -111,6 +148,14 @@ add_executable(CramionBuildConfigTests "${CMAKE_CURRENT_SOURCE_DIR}/tests/BuildC
                                        "${CMAKE_CURRENT_SOURCE_DIR}/src/BuildConfig.cpp")
 target_include_directories(CramionBuildConfigTests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
 target_link_libraries(CramionBuildConfigTests PRIVATE Cramion::Core shell32)
+
+# Prueba de la exportacion a Android (consola): controles tactiles, ajustes,
+# manifiesto y un APK real si hay Android SDK.
+add_executable(CramionAndroidBuildTests "${CMAKE_CURRENT_SOURCE_DIR}/tests/AndroidBuildTests.cpp"
+                                        "${CMAKE_CURRENT_SOURCE_DIR}/src/AndroidBuild.cpp"
+                                        "${CMAKE_CURRENT_SOURCE_DIR}/src/BuildConfig.cpp")
+target_include_directories(CramionAndroidBuildTests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+target_link_libraries(CramionAndroidBuildTests PRIVATE Cramion::Core shell32)
 
 # --- CramionPlayer: el juego exportado (Archivo > Exportar juego) ---
 # Banner del motor al abrir, la escena inicial y todos los sistemas del

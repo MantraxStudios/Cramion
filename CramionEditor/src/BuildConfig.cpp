@@ -49,6 +49,29 @@ BuildConfigs loadBuildConfigs(const std::filesystem::path& file) {
                 b.height = std::clamp(c.value("height", b.height), 240, 16384);
                 b.static_batching = c.value("static_batching", b.static_batching);
                 b.show_fps = c.value("show_fps", b.show_fps);
+                b.platform = c.value("platform", std::string("windows")) == "android" ? BuildPlatform::Android
+                                                                                       : BuildPlatform::Windows;
+                if (const auto a = c.find("android"); a != c.end() && a->is_object()) {
+                    AndroidBuildSettings& s = b.android;
+                    s.package = a->value("package", s.package);
+                    s.version_code = std::max(1, a->value("version_code", s.version_code));
+                    s.min_sdk = std::clamp(a->value("min_sdk", s.min_sdk), 26, 40);
+                    s.target_sdk = std::clamp(a->value("target_sdk", s.target_sdk), s.min_sdk, 40);
+                    s.orientation = std::clamp(a->value("orientation", s.orientation), 0, 4);
+                    s.make_apk = a->value("apk", s.make_apk);
+                    s.make_aab = a->value("aab", s.make_aab);
+                    if (!s.make_apk && !s.make_aab) s.make_apk = true;
+                    s.split_obb = a->value("obb", s.split_obb);
+                    s.x86_64 = a->value("x86_64", s.x86_64);
+                    s.internet = a->value("internet", s.internet);
+                    s.vibrate = a->value("vibrate", s.vibrate);
+                    s.record_audio = a->value("record_audio", s.record_audio);
+                    s.icon = a->value("icon", s.icon);
+                    s.keystore = a->value("keystore", s.keystore);
+                    s.key_alias = a->value("key_alias", s.key_alias);
+                    s.quality = std::clamp(a->value("quality", s.quality), 0, 3);
+                    s.target_fps = std::clamp(a->value("target_fps", s.target_fps), 15, 240);
+                }
                 out.configs.push_back(std::move(b));
             }
         } catch (const std::exception&) {
@@ -73,7 +96,26 @@ bool saveBuildConfigs(const std::filesystem::path& file, const BuildConfigs& con
                         {"width", b.width},
                         {"height", b.height},
                         {"static_batching", b.static_batching},
-                        {"show_fps", b.show_fps}});
+                        {"show_fps", b.show_fps},
+                        {"platform", b.platform == BuildPlatform::Android ? "android" : "windows"}});
+        const AndroidBuildSettings& s = b.android;
+        list.back()["android"] = {{"package", s.package},
+                                  {"version_code", s.version_code},
+                                  {"min_sdk", s.min_sdk},
+                                  {"target_sdk", s.target_sdk},
+                                  {"orientation", s.orientation},
+                                  {"apk", s.make_apk},
+                                  {"aab", s.make_aab},
+                                  {"obb", s.split_obb},
+                                  {"x86_64", s.x86_64},
+                                  {"internet", s.internet},
+                                  {"vibrate", s.vibrate},
+                                  {"record_audio", s.record_audio},
+                                  {"icon", s.icon},
+                                  {"keystore", s.keystore},
+                                  {"key_alias", s.key_alias},
+                                  {"quality", s.quality},
+                                  {"target_fps", s.target_fps}};
     }
     const json root = {{"format", "CramionBuildConfigs"}, {"version", 1}, {"active", configs.active}, {"configs", list}};
     std::error_code e;
@@ -94,6 +136,11 @@ std::string buildConfigIni(const BuildConfig& config, const std::string& game_na
     ini << "width=" << config.width << "\n";
     ini << "height=" << config.height << "\n";
     ini << "show_fps=" << (config.show_fps ? 1 : 0) << "\n";
+    if (config.platform == BuildPlatform::Android) {
+        ini << "platform=android\n";
+        ini << "android_quality=" << config.android.quality << "\n";
+        ini << "android_fps=" << config.android.target_fps << "\n";
+    }
     return ini.str();
 }
 

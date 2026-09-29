@@ -42,6 +42,7 @@ void memoryBarrier(const vk::raii::CommandBuffer& cmd, vk::PipelineStageFlags2 s
 
 void GpuCulling::create(const VulkanDevice& device) {
     destroy();
+    clear_commands_ = !device.indirectCountSupported();
 
     using Type = vk::DescriptorType;
     const std::array<Type, 7> cull_bindings = {
@@ -291,7 +292,8 @@ void GpuCulling::createBuffers(const VulkanDevice& device, std::uint32_t cluster
     for (std::uint32_t phase = 0; phase < 2; ++phase) {
         commands_[phase].create(device, static_cast<vk::DeviceSize>(kCommandSize) * slot_capacity,
                                 vk::BufferUsageFlagBits::eStorageBuffer |
-                                    vk::BufferUsageFlagBits::eIndirectBuffer,
+                                    vk::BufferUsageFlagBits::eIndirectBuffer |
+                                    vk::BufferUsageFlagBits::eTransferDst,
                                 vk::MemoryPropertyFlagBits::eDeviceLocal);
         counts_[phase].create(device, sizeof(std::uint32_t) * group_capacity,
                               vk::BufferUsageFlagBits::eStorageBuffer |
@@ -388,6 +390,12 @@ void GpuCulling::recordCull(const vk::raii::CommandBuffer& cmd, std::uint32_t fr
                       Access::eTransferWrite | Access::eShaderRead | Access::eShaderWrite);
         cmd.fillBuffer(*counts_[0].handle(), 0, VK_WHOLE_SIZE, 0);
         cmd.fillBuffer(*counts_[1].handle(), 0, VK_WHOLE_SIZE, 0);
+        if (clear_commands_) {
+            // Sin drawIndirectCount se dibujan todos los huecos: los que el
+            // culling no llene quedan a cero (0 indices = nada).
+            cmd.fillBuffer(*commands_[0].handle(), 0, VK_WHOLE_SIZE, 0);
+            cmd.fillBuffer(*commands_[1].handle(), 0, VK_WHOLE_SIZE, 0);
+        }
         cmd.fillBuffer(*stats_[frame_index].handle(), 0, VK_WHOLE_SIZE, 0);
         memoryBarrier(cmd, Stage::eTransfer, Access::eTransferWrite, Stage::eComputeShader,
                       Access::eShaderRead | Access::eShaderWrite);

@@ -1,7 +1,14 @@
 #include "ProfilerOverlay.h"
 
+#if defined(_WIN32)
 #include <windows.h>
 #include <psapi.h>
+#else
+#include <time.h>
+#include <unistd.h>
+
+#include <fstream>
+#endif
 
 #include <algorithm>
 #include <cstdio>
@@ -10,9 +17,11 @@ namespace cramion::editor {
 
 namespace {
 
+#if defined(_WIN32)
 std::uint64_t fileTimeTo100ns(const FILETIME& t) {
     return (static_cast<std::uint64_t>(t.dwHighDateTime) << 32) | t.dwLowDateTime;
 }
+#endif
 
 // Verde si va bien, amarillo regular, rojo mal (umbral en ms por frame).
 ImU32 gradeColor(float milliseconds) {
@@ -53,6 +62,7 @@ void ProfilerOverlay::update(float dt, const gfx::VulkanRenderer& renderer) {
     window_cpu_ms_ = 0.0f;
 
     // % de CPU del proceso: tiempo de todos sus hilos / (tiempo real x nucleos).
+#if defined(_WIN32)
     FILETIME created, exited, kernel, user, now;
     if (GetProcessTimes(GetCurrentProcess(), &created, &exited, &kernel, &user)) {
         GetSystemTimeAsFileTime(&now);
@@ -68,10 +78,38 @@ void ProfilerOverlay::update(float dt, const gfx::VulkanRenderer& renderer) {
         last_process_time_ = process;
         last_wall_time_ = wall;
     }
+#else
+    // Tiempo de CPU del proceso (todos los hilos) / (real x nucleos), en 100 ns.
+    timespec process_time{};
+    timespec wall_time{};
+    if (clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &process_time) == 0 && clock_gettime(CLOCK_MONOTONIC, &wall_time) == 0) {
+        const std::uint64_t process = static_cast<std::uint64_t>(process_time.tv_sec) * 10000000ull +
+                                      static_cast<std::uint64_t>(process_time.tv_nsec) / 100ull;
+        const std::uint64_t wall = static_cast<std::uint64_t>(wall_time.tv_sec) * 10000000ull +
+                                   static_cast<std::uint64_t>(wall_time.tv_nsec) / 100ull;
+        if (last_wall_time_ != 0 && wall > last_wall_time_) {
+            const double cores = std::max<long>(sysconf(_SC_NPROCESSORS_ONLN), 1);
+            cpu_percent_ = static_cast<float>(static_cast<double>(process - last_process_time_) /
+                                              (static_cast<double>(wall - last_wall_time_) * cores) * 100.0);
+        }
+        last_process_time_ = process;
+        last_wall_time_ = wall;
+    }
+#endif
+#if defined(_WIN32)
     PROCESS_MEMORY_COUNTERS memory{};
     if (GetProcessMemoryInfo(GetCurrentProcess(), &memory, sizeof(memory))) {
         ram_mb_ = static_cast<double>(memory.WorkingSetSize) / (1024.0 * 1024.0);
     }
+#else
+    // Paginas residentes (segundo numero de /proc/self/statm).
+    std::ifstream statm("/proc/self/statm");
+    long total = 0;
+    long resident = 0;
+    if (statm >> total >> resident) {
+        ram_mb_ = static_cast<double>(resident) * static_cast<double>(sysconf(_SC_PAGESIZE)) / (1024.0 * 1024.0);
+    }
+#endif
 }
 
 void ProfilerOverlay::draw(ImDrawList* draw, const ImVec2& origin, const ImVec2& size, const ecs::Profiler& settings,

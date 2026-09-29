@@ -1,10 +1,15 @@
 // GLSL -> SPIR-V en tiempo de ejecucion con la API en C de shaderc
-// (shaderc_shared.dll). Se enlaza a mano con LoadLibrary: sin la DLL el motor
-// arranca igual y solo los shaders del usuario dan un error claro.
+// (shaderc_shared.dll; libshaderc_shared.so en Android si se incluye). Se
+// enlaza a mano: sin la biblioteca el motor arranca igual y solo los shaders
+// del usuario dan un error claro (el juego exportado los lleva ya compilados).
 
 #include "CramionFX/vk/ShaderCompiler.h"
 
+#if defined(_WIN32)
 #include <windows.h>
+#else
+#include <dlfcn.h>
+#endif
 
 #include <cstring>
 #include <mutex>
@@ -24,8 +29,16 @@ constexpr unsigned kVulkan13 = (1u << 22) | (3u << 12);  // shaderc_env_version_
 constexpr int kOptimizePerformance = 2;      // shaderc_optimization_level_performance
 constexpr int kStatusSuccess = 0;            // shaderc_compilation_status_success
 
+#if defined(_WIN32)
+using Library = HMODULE;
+void* symbol(Library dll, const char* name) { return reinterpret_cast<void*>(GetProcAddress(dll, name)); }
+#else
+using Library = void*;
+void* symbol(Library dll, const char* name) { return dlsym(dll, name); }
+#endif
+
 struct Api {
-    HMODULE dll = nullptr;
+    Library dll = nullptr;
     Compiler (*compiler_initialize)() = nullptr;
     Options (*options_initialize)() = nullptr;
     void (*options_release)(Options) = nullptr;
@@ -42,8 +55,8 @@ struct Api {
 };
 
 template <typename T>
-bool bind(HMODULE dll, const char* name, T& out) {
-    out = reinterpret_cast<T>(reinterpret_cast<void*>(GetProcAddress(dll, name)));
+bool bind(Library dll, const char* name, T& out) {
+    out = reinterpret_cast<T>(symbol(dll, name));
     return out != nullptr;
 }
 
@@ -51,6 +64,7 @@ Api& api() {
     static Api a;
     static std::once_flag once;
     std::call_once(once, [] {
+#if defined(_WIN32)
         // Primero junto al ejecutable (lo copia CMake y lo lleva el juego exportado).
         wchar_t exe[MAX_PATH] = {};
         GetModuleFileNameW(nullptr, exe, MAX_PATH);
@@ -62,6 +76,13 @@ Api& api() {
             a.failure = "no se encontro shaderc_shared.dll junto al ejecutable (viene con el Vulkan SDK)";
             return;
         }
+#else
+        a.dll = dlopen("libshaderc_shared.so", RTLD_NOW | RTLD_LOCAL);
+        if (a.dll == nullptr) {
+            a.failure = "sin compilador de shaders en este dispositivo (se usan los ya compilados al exportar)";
+            return;
+        }
+#endif
         const bool ok = bind(a.dll, "shaderc_compiler_initialize", a.compiler_initialize) &&
                         bind(a.dll, "shaderc_compile_options_initialize", a.options_initialize) &&
                         bind(a.dll, "shaderc_compile_options_release", a.options_release) &&

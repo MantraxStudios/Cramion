@@ -298,6 +298,45 @@ bool compileSurfaceShader(const SurfaceShaderSource& shader, const std::filesyst
     return true;
 }
 
+namespace {
+
+bool readWords(const std::filesystem::path& file, std::vector<std::uint32_t>& words) {
+    std::ifstream in(file, std::ios::binary);
+    if (!in) return false;
+    in.seekg(0, std::ios::end);
+    const std::streamoff size = in.tellg();
+    if (size <= 0 || size % 4 != 0) return false;
+    words.resize(static_cast<std::size_t>(size) / 4);
+    in.seekg(0);
+    in.read(reinterpret_cast<char*>(words.data()), size);
+    return static_cast<bool>(in) && !words.empty() && words[0] == 0x07230203u;  // numero magico de SPIR-V
+}
+
+bool writeWords(const std::filesystem::path& file, const std::vector<std::uint32_t>& words) {
+    std::error_code e;
+    std::filesystem::create_directories(file.parent_path(), e);
+    std::ofstream out(file, std::ios::binary | std::ios::trunc);
+    out.write(reinterpret_cast<const char*>(words.data()), static_cast<std::streamsize>(words.size() * 4));
+    return static_cast<bool>(out);
+}
+
+}  // namespace
+
+bool loadPrecompiledSurfaceShader(const std::filesystem::path& crshader, std::vector<std::uint32_t>& vertex_spirv,
+                                  std::vector<std::uint32_t>& fragment_spirv) {
+    std::filesystem::path vertex = crshader;
+    vertex += ".vert.spv";
+    std::filesystem::path fragment = crshader;
+    fragment += ".frag.spv";
+    return readWords(vertex, vertex_spirv) && readWords(fragment, fragment_spirv);
+}
+
+bool writePrecompiledSurfaceShader(const std::filesystem::path& vertex_file, const std::filesystem::path& fragment_file,
+                                   const std::vector<std::uint32_t>& vertex_spirv,
+                                   const std::vector<std::uint32_t>& fragment_spirv) {
+    return writeWords(vertex_file, vertex_spirv) && writeWords(fragment_file, fragment_spirv);
+}
+
 std::filesystem::path surfaceTemplateDirectory() { return gfx::shaders::directory() / "source"; }
 
 std::string surfaceShaderTemplate(const std::string& name) {

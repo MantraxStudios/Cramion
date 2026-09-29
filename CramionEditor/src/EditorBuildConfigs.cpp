@@ -45,7 +45,7 @@ std::filesystem::path EditorApp::buildIconPath(const BuildConfig& config) const 
 void EditorApp::drawBuildConfigsWindow() {
     if (!show_build_configs_) return;
     ensureBuildConfigs();
-    ImGui::SetNextWindowSize(ImVec2(760.0f, 470.0f), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(820.0f, 620.0f), ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_FirstUseEver, ImVec2(0.5f, 0.5f));
     if (!ImGui::Begin("Configuraciones de compilación", &show_build_configs_, ImGuiWindowFlags_NoDocking)) {
         ImGui::End();
@@ -108,6 +108,16 @@ void EditorApp::drawBuildConfigsWindow() {
     };
     row("Configuracion");
     changed |= ImGui::InputText("##name", &c.name);
+    row("Plataforma");
+    {
+        static const char* kPlatforms[] = {"Windows (.exe)", "Android (APK / AAB)"};
+        int platform = static_cast<int>(c.platform);
+        if (ImGui::Combo("##platform", &platform, kPlatforms, 2)) {
+            c.platform = static_cast<BuildPlatform>(platform);
+            changed = true;
+        }
+    }
+    const bool android = c.platform == BuildPlatform::Android;
     row("Nombre del juego");
     changed |= ImGui::InputTextWithHint("##game", project_.name.c_str(), &c.game_name);
     ImGui::SetItemTooltip("El .exe, la carpeta exportada, el titulo de la ventana y la pantalla de carga.\n"
@@ -211,7 +221,12 @@ void EditorApp::drawBuildConfigsWindow() {
         ImGui::EndCombo();
     }
 
+    if (android) {
+        ImGui::Separator();
+        changed |= drawAndroidBuildSettings(c);
+    }
     // Ventana.
+    if (!android) {
     row("Ventana");
     static const char* kModes[] = {"Maximizada", "Pantalla completa (sin bordes)", "Ventana"};
     changed |= ImGui::Combo("##window", &c.window_mode, kModes, 3);
@@ -223,6 +238,7 @@ void EditorApp::drawBuildConfigsWindow() {
         changed = true;
     }
     ImGui::SetItemTooltip("En modo Ventana; maximizada es el tamano al restaurar.");
+    }
     ImGui::Dummy(ImVec2(label_w - ImGui::GetStyle().ItemSpacing.x, 0.0f));
     ImGui::SameLine(label_w);
     changed |= ImGui::Checkbox("Combinar mallas estaticas (static batching)", &c.static_batching);
@@ -246,14 +262,21 @@ void EditorApp::drawBuildConfigsWindow() {
         exportGame(false);
     }
     ImGui::SameLine();
-    if (ImGui::Button("Exportar y jugar...")) {
+    if (ImGui::Button(android ? "Exportar e instalar..." : "Exportar y jugar...")) {
         build_configs_.active = build_config_selected_;
         changed = true;
         exportGame(true);
     }
     ImGui::EndDisabled();
     const std::string game = c.game_name.empty() ? project_.name : c.game_name;
-    ImGui::TextDisabled("Sale como %s.exe", game.c_str());
+    if (android) {
+        const AndroidBuildSettings& a = c.android;
+        const std::string package = a.package.empty() ? defaultAndroidPackage(game) : a.package;
+        ImGui::TextDisabled("Sale como %s%s%s (%s)", game.c_str(), a.make_apk || !a.make_aab ? ".apk" : "",
+                            a.make_aab ? (a.make_apk ? " + .aab" : ".aab") : "", package.c_str());
+    } else {
+        ImGui::TextDisabled("Sale como %s.exe", game.c_str());
+    }
     ImGui::EndChild();
     ImGui::End();
     if (changed) saveBuildConfigsNow();

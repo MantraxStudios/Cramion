@@ -169,6 +169,18 @@ void EditorApp::enterPlay() {
     // Audio y scripts (despues de la fisica: los scripts la usan en Awake).
     audio_.start(world_);
     scripts_.clearErrors();
+    // Interfaz tactil del proyecto (Lua: Input.setTouchControls...).
+    touch_layout_file_.clear();
+    loadTouchInterface();
+    touch_game_.setLayout(touch_layout_);
+    touch_game_.setUiHitTest([this](float x, float y) { return ui_.interactiveAt(world_, x, y); });
+    touch_sim_input_.reset();
+    touch_pending_.clear();
+    touch_sim_down_ = false;
+    // Acciones y contextos de entrada del proyecto (Input.getAction...).
+    input_actions_file_.clear();
+    loadInputActions();
+    scripts_.setInputActions(input_actions_);
     {
         const std::u8string stem = scene_path_.stem().u8string();
         scripts_.setSceneName(std::string(stem.begin(), stem.end()));
@@ -238,7 +250,8 @@ void EditorApp::updateScriptsAndAudio(float delta_seconds, int physics_steps) {
     // (Al pasar a la Escena se suelta el raton capturado; al dar Play el foco
     // llega un frame tarde y no se suelta.)
     if (!game_input && preferred_view_ != kGameSlot && scripts_.cursorLocked()) scripts_.releaseCursor();
-    scripts_.setInput(typing || !game_input ? nullptr : input_);
+    const dm::Input* game_in = touchSimulatedInput();  // con "Tactil": el raton es un dedo
+    scripts_.setInput(typing || !game_input ? nullptr : game_in);
     // Vehiculos con "Teclado": WASD / flechas y Espacio (freno de mano).
     if (input_ != nullptr && !typing && game_input) {
         const auto down = [&](dm::Key a, dm::Key b) { return input_->isKeyDown(a) || input_->isKeyDown(b); };

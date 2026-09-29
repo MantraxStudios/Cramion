@@ -1,0 +1,206 @@
+<p>
+        Como el <em>Enhanced Input</em> de Unreal: en vez de preguntar por teclas sueltas, el juego define
+        <strong>acciones</strong> (lo que hace el jugador) y <strong>contextos</strong> (qué teclas, botones o ejes las
+        activan). Una acción puede tener muchas teclas a la vez (teclado, ratón, mando y joystick táctil), y puedes tener
+        varias configuraciones (a pie, vehículo, vuelo, menú...) y activarlas o desactivarlas desde Lua.
+      </p>
+      <h3 id="editor">Dónde se configura</h3>
+      <p>
+        En <em>Archivo &gt; Entrada del proyecto (acciones y teclas)</em>. Todo se guarda al momento en
+        <code>ProjectSettings/InputActions.json</code> y el juego exportado (PC y Android) lo carga solo. En Play los
+        cambios se aplican al instante. La ventana tiene tres pestañas:
+      </p>
+      <ul>
+        <li><strong>Acciones (Input Actions)</strong>: nombre, tipo de valor, descripción, cómo se combinan varias teclas, modificadores y triggers de la acción.</li>
+        <li><strong>Contextos (Mapping Contexts)</strong>: nombre, prioridad, si está activo al empezar y, por cada acción, su lista de teclas. Cada tecla tiene sus propios modificadores y triggers. El botón <code>...</code> junto a una tecla (o <em>+ tecla</em>) espera a que pulses la tecla o el botón del mando; <kbd>Escape</kbd> cancela.</li>
+        <li><strong>Depurar (Play)</strong>: el estado (<code>none</code> / <code>ongoing</code> / <code>triggered</code>), el valor y el tiempo de cada acción, y los contextos activos.</li>
+      </ul>
+      <p>Un proyecto sin archivo usa la configuración por defecto (se puede editar a partir de ella):</p>
+      <table>
+        <thead><tr><th>Acción</th><th>Tipo</th><th>Teclas (contexto <code>Default</code>)</th></tr></thead>
+        <tbody>
+          <tr><td><code>Move</code></td><td>Axis2D (Vec2)</td><td>W/A/S/D, flechas, stick izquierdo, cruceta, joystick táctil. <code>x</code> derecha, <code>y</code> adelante.</td></tr>
+          <tr><td><code>Look</code></td><td>Axis2D (Vec2)</td><td>Ratón (o arrastrar el dedo) y stick derecho. Misma escala que <code>getAxis("Mouse X")</code>.</td></tr>
+          <tr><td><code>Jump</code></td><td>Bool</td><td>Space, mando A.</td></tr>
+          <tr><td><code>Sprint</code></td><td>Bool</td><td>LeftShift, mando LS.</td></tr>
+          <tr><td><code>Fire</code></td><td>Bool</td><td>Clic izquierdo, gatillo RT.</td></tr>
+          <tr><td><code>Aim</code></td><td>Bool</td><td>Clic derecho, gatillo LT.</td></tr>
+          <tr><td><code>Interact</code></td><td>Bool (trigger Pressed)</td><td>E, mando X.</td></tr>
+          <tr><td><code>Zoom</code></td><td>Axis1D (float)</td><td>Rueda del ratón, RB (+) / LB (−).</td></tr>
+          <tr><td><code>Fly</code></td><td>Axis3D (Vec3)</td><td>Contexto <code>Vuelo</code> (prioridad 1, inactivo al empezar): W/S → z, D/A → x, E/Q → y, stick izquierdo, RB/LB.</td></tr>
+        </tbody>
+      </table>
+
+      <h3 id="tipos">Tipos de valor</h3>
+      <table>
+        <thead><tr><th>Tipo</th><th>En Lua (<code>Input.getAction</code>)</th><th>Ejemplo</th></tr></thead>
+        <tbody>
+          <tr><td>Bool (digital)</td><td><code>true</code> / <code>false</code></td><td>Saltar, disparar, usar.</td></tr>
+          <tr><td>Axis1D (float)</td><td>número</td><td>Acelerador, zoom, girar un volante.</td></tr>
+          <tr><td>Axis2D (Vec2)</td><td><code>Vec3</code> con <code>x</code>, <code>y</code> (<code>z</code> = 0)</td><td>Andar, mirar.</td></tr>
+          <tr><td>Axis3D (Vec3)</td><td><code>Vec3</code></td><td>Volar, nadar, cámara libre.</td></tr>
+        </tbody>
+      </table>
+      <p>
+        Cada tecla da un valor: un botón da <code>1</code> en <code>x</code>; un eje (<code>Gamepad LT</code>, <code>Mouse Wheel</code>)
+        un número en <code>x</code>; un stick (<code>Gamepad Left Stick</code>, <code>Mouse XY</code>, <code>Touch Stick</code>) <code>x</code> e <code>y</code>.
+        Los <strong>modificadores</strong> lo llevan al eje que toca. Con varias teclas pulsadas a la vez, por defecto se toma
+        el mayor valor en cada sentido (W + S = 0; W + flecha arriba = 1, no 2); la opción <em>Sumar</em> las suma.
+      </p>
+
+      <h3 id="teclas">Nombres de teclas, botones y ejes</h3>
+      <table>
+        <tbody>
+          <tr><td>Teclado</td><td><code>"W"</code>, <code>"Space"</code>, <code>"LeftShift"</code>, <code>"Enter"</code>, <code>"F1"</code>, <code>"1"</code>, <code>"Up"</code>, <code>"Keypad0"</code>... (alias: <code>"Shift"</code>, <code>"Ctrl"</code>, <code>"Esc"</code>)</td></tr>
+          <tr><td>Ratón</td><td><code>"Mouse Left"</code>, <code>"Mouse Right"</code>, <code>"Mouse Middle"</code>, <code>"Mouse X1"</code>, <code>"Mouse X2"</code>; ejes <code>"Mouse X"</code>, <code>"Mouse Y"</code> (positivo hacia arriba), <code>"Mouse XY"</code> (2D, píxeles del frame) y <code>"Mouse Wheel"</code></td></tr>
+          <tr><td>Mando</td><td><code>"Gamepad A"</code>, <code>"Gamepad B"</code>, <code>"Gamepad X"</code>, <code>"Gamepad Y"</code>, <code>"Gamepad LB"</code>, <code>"Gamepad RB"</code>, <code>"Gamepad LS"</code>, <code>"Gamepad RS"</code>, <code>"Gamepad Start"</code>, <code>"Gamepad Back"</code>, <code>"Gamepad DPad Up/Down/Left/Right"</code>; ejes <code>"Gamepad LT"</code>, <code>"Gamepad RT"</code>, <code>"Gamepad Left X/Y"</code>, <code>"Gamepad Right X/Y"</code>; sticks 2D <code>"Gamepad Left Stick"</code>, <code>"Gamepad Right Stick"</code></td></tr>
+          <tr><td>Táctil</td><td><code>"Touch Stick"</code> (2D, el joystick en pantalla). Los botones táctiles pulsan teclas, así que se asignan con su tecla.</td></tr>
+        </tbody>
+      </table>
+      <p>No distinguen mayúsculas ni espacios (<code>"gamepad left stick"</code> vale).</p>
+
+      <h3 id="modificadores">Modificadores</h3>
+      <p>Se aplican en orden: primero los de la tecla y luego los de la acción.</p>
+      <table>
+        <tbody>
+          <tr><td><strong>Negate</strong></td><td>Cambia el signo de los ejes marcados (X, Y, Z). <code>A</code> en <code>Move</code> = Negate → (−1, 0).</td></tr>
+          <tr><td><strong>Swizzle</strong></td><td>Reordena los ejes. <code>YXZ</code>: una tecla 1D mueve la Y (<code>W</code> en un Vec2 = adelante). <code>ZYX</code>: a la Z (adelante en un Vec3). <code>XZY</code>: la Y de un stick pasa a Z. También <code>YZX</code> y <code>ZXY</code>.</td></tr>
+          <tr><td><strong>Dead Zone</strong></td><td>Ignora el valor por debajo de <em>Min</em> y reescala hasta <em>Max</em>. <em>Radial</em> usa la magnitud (sticks); si no, cada eje por separado.</td></tr>
+          <tr><td><strong>Scale</strong></td><td>Multiplica cada eje (sensibilidad del ratón o del stick).</td></tr>
+        </tbody>
+      </table>
+      <p>Ejemplo: <code>Move</code> (Vec2) = <code>W</code> [Swizzle YXZ], <code>S</code> [Swizzle YXZ, Negate], <code>D</code>, <code>A</code> [Negate], <code>Gamepad Left Stick</code> [Dead Zone].</p>
+
+      <h3 id="triggers">Triggers</h3>
+      <p>
+        Deciden cuándo se dispara la acción. Sin triggers, está disparada mientras tiene valor (Bool: a partir de 0.5).
+        <em>Umbral</em> es la magnitud mínima para contar como pulsado.
+      </p>
+      <table>
+        <tbody>
+          <tr><td><strong>Down</strong></td><td>Cada frame mientras está pulsada.</td></tr>
+          <tr><td><strong>Pressed</strong></td><td>Solo el frame en que se pulsa.</td></tr>
+          <tr><td><strong>Released</strong></td><td>Solo el frame en que se suelta (en curso mientras se mantiene).</td></tr>
+          <tr><td><strong>Hold</strong></td><td>Tras mantenerla <em>s</em> segundos. <em>Una vez</em>: dispara una vez; si no, cada frame desde entonces.</td></tr>
+          <tr><td><strong>Hold And Release</strong></td><td>Al soltar, si se mantuvo al menos <em>s</em> segundos (cargar un arco).</td></tr>
+          <tr><td><strong>Tap</strong></td><td>Al soltar, si se soltó antes de <em>s</em> segundos; si se mantiene más, se cancela.</td></tr>
+          <tr><td><strong>Pulse</strong></td><td>Cada <em>s</em> segundos mientras se mantiene (disparo automático). <em>Al empezar</em> dispara también al pulsar; <em>Límite</em> 0 = sin límite.</td></tr>
+          <tr><td><strong>Chord</strong></td><td>Solo si otra acción está disparada a la vez (<code>Ctrl</code> + <code>C</code>: la acción <code>Copiar</code> con Chord de <code>Modificador</code>).</td></tr>
+        </tbody>
+      </table>
+      <p>Cada frame la acción puede lanzar estos eventos (como <code>ETriggerEvent</code> de Unreal):</p>
+      <table>
+        <tbody>
+          <tr><td><code>started</code></td><td>Empezó (el primer frame con valor o en curso).</td></tr>
+          <tr><td><code>ongoing</code></td><td>En curso sin disparar todavía (manteniendo un Hold).</td></tr>
+          <tr><td><code>triggered</code></td><td>Disparada.</td></tr>
+          <tr><td><code>completed</code></td><td>Terminó después de dispararse.</td></tr>
+          <tr><td><code>canceled</code></td><td>Terminó sin llegar a dispararse (se soltó un Hold antes de tiempo).</td></tr>
+        </tbody>
+      </table>
+
+      <h3 id="contextos">Contextos y prioridad</h3>
+      <p>
+        Puede haber varios contextos activos a la vez. Si dos comparten una tecla, el de <strong>más prioridad</strong> se
+        la queda (si su acción tiene <em>Consumir las teclas</em>, activo por defecto) y el otro no la recibe. A igual
+        prioridad gana el último añadido. Ej.: con <code>Vuelo</code> (prioridad 1) activo, <code>W</code> mueve
+        <code>Fly</code> y no <code>Move</code>; al quitarlo, vuelve a <code>Move</code>.
+      </p>
+
+      <h3 id="api">API de Lua</h3>
+      <table>
+        <tbody>
+          <tr><td><code>Input.getAction(accion)</code></td><td>Valor según su tipo: <code>true</code>/<code>false</code>, número o <code>Vec3</code>. <code>nil</code> (y un aviso) si no existe.</td></tr>
+          <tr><td><code>Input.getActionValue(accion)</code></td><td>Siempre un <code>Vec3</code>.</td></tr>
+          <tr><td><code>Input.getActionState(accion)</code></td><td><code>"none"</code>, <code>"ongoing"</code> o <code>"triggered"</code>.</td></tr>
+          <tr><td><code>Input.isActionTriggered(accion)</code></td><td>Disparada este frame (respeta los triggers: con Pressed, solo el frame de la pulsación).</td></tr>
+          <tr><td><code>Input.isActionOngoing(accion)</code></td><td>En curso sin disparar.</td></tr>
+          <tr><td><code>Input.wasActionStarted(accion)</code>, <code>…Completed</code>, <code>…Canceled</code></td><td>Ese evento pasó este frame.</td></tr>
+          <tr><td><code>Input.getActionElapsed(accion)</code></td><td>Segundos desde que empezó (cuánto se lleva manteniendo).</td></tr>
+          <tr><td><code>Input.bindAction(accion, evento, funcion)</code></td><td>Llama a <code>funcion(valor, segundos)</code> cuando pasa el evento (<code>"started"</code>, <code>"ongoing"</code>, <code>"triggered"</code>, <code>"completed"</code>, <code>"canceled"</code>), antes de los <code>Update</code>. Devuelve un id. Se quitan solas al parar el juego o cambiar de escena.</td></tr>
+          <tr><td><code>Input.unbindAction(id)</code></td><td>Quita un <code>bindAction</code>.</td></tr>
+          <tr><td><code>Input.getActions()</code></td><td>Lista con los nombres de las acciones.</td></tr>
+          <tr><td><code>Input.addMappingContext(nombre [, prioridad])</code></td><td>Activa un contexto (con su prioridad o la que se pase). <code>false</code> si no existe.</td></tr>
+          <tr><td><code>Input.removeMappingContext(nombre)</code></td><td>Lo desactiva.</td></tr>
+          <tr><td><code>Input.hasMappingContext(nombre)</code></td><td>Si está activo.</td></tr>
+          <tr><td><code>Input.clearMappingContexts()</code></td><td>Desactiva todos (nada responde hasta añadir uno).</td></tr>
+          <tr><td><code>Input.getMappingContexts()</code></td><td>Los activos, de más a menos prioridad.</td></tr>
+          <tr><td><code>Input.getBindings(accion)</code></td><td>Lista de <code>{context=, key=}</code> con sus teclas en todos los contextos.</td></tr>
+          <tr><td><code>Input.rebind(contexto, accion, n, tecla)</code></td><td>Cambia la tecla número <code>n</code> (1 = la primera) de esa acción en ese contexto. <code>false</code> si no existe, la tecla no es válida o la tecla no es <em>cambiable por el jugador</em>.</td></tr>
+          <tr><td><code>Input.saveBindings()</code></td><td>Guarda las teclas cambiadas (con los <code>Prefs</code> del juego): se cargan solas en la próxima partida.</td></tr>
+          <tr><td><code>Input.resetBindings()</code></td><td>Vuelve a las teclas del proyecto y borra las guardadas.</td></tr>
+          <tr><td><code>Input.anyKeyPressed()</code></td><td>La tecla o botón pulsado este frame (<code>"W"</code>, <code>"Mouse Left"</code>, <code>"Gamepad A"</code>) o <code>nil</code>. Para menús de "pulsa una tecla".</td></tr>
+          <tr><td><code>Input.getAxis(accion)</code></td><td>También vale con el nombre de una acción: su <code>x</code>.</td></tr>
+        </tbody>
+      </table>
+
+      <h3 id="ejemplos">Ejemplos</h3>
+      <p>Personaje con <code>Move</code> (Vec2), <code>Look</code> (Vec2), <code>Jump</code> (Bool) y <code>Zoom</code> (float):</p>
+      <pre><code>local Jugador = { properties = { velocidad = 5.0, sensibilidad = 2.0 } }
+
+function Jugador:Awake()
+    self.yaw = 0
+    -- Evento: una vez al pulsar (vale cualquier tecla de Jump: Space, mando A, boton tactil)
+    Input.bindAction("Jump", "started", function()
+        self.entity:addImpulse(Vec3(0, 5, 0))
+    end)
+end
+
+function Jugador:Update(dt)
+    local mover = Input.getAction("Move")      -- Vec3: x derecha, y adelante
+    local mirar = Input.getAction("Look")      -- Vec3: x girar, y arriba
+    local zoom  = Input.getAction("Zoom")      -- numero
+    local rapidez = self.velocidad
+    if Input.getAction("Sprint") then rapidez = rapidez * 2 end  -- Bool
+
+    self.yaw = self.yaw - mirar.x * self.sensibilidad
+    self.entity.rotation = Vec3(0, self.yaw, 0)
+    local dir = self.entity.right * mover.x + self.entity.forward * mover.y
+    self.entity:translate(dir * rapidez * dt)
+end
+
+return Jugador</code></pre>
+      <p>Cambiar de configuración: subir a un vehículo o ponerse a volar (Vec3):</p>
+      <pre><code>function Jugador:Update(dt)
+    if Input.isActionTriggered("Interact") then          -- trigger Pressed: una vez
+        if Input.hasMappingContext("Vuelo") then
+            Input.removeMappingContext("Vuelo")
+        else
+            Input.addMappingContext("Vuelo")             -- prioridad 1: se queda W/A/S/D/E/Q
+        end
+    end
+    if Input.hasMappingContext("Vuelo") then
+        local v = Input.getAction("Fly")                 -- Vec3: x derecha, y arriba, z adelante
+        self.entity:translate(Vec3(v.x, v.y, v.z) * 8 * dt)
+    end
+end</code></pre>
+      <p>Mantener para cargar (trigger <em>Hold And Release</em> de 0.6 s en la acción <code>Fire</code>):</p>
+      <pre><code>Input.bindAction("Fire", "ongoing", function(v, t)
+    Debug.log("cargando " .. string.format("%.1f", t))
+end)
+Input.bindAction("Fire", "triggered", function() self:dispararFuerte() end)
+Input.bindAction("Fire", "canceled", function() self:dispararNormal() end)</code></pre>
+      <p>Menú de opciones: "pulsa una tecla" para cambiar el salto y guardarlo:</p>
+      <pre><code>function Opciones:Update(dt)
+    if self.esperando then
+        local tecla = Input.anyKeyPressed()
+        if tecla == "Escape" then
+            self.esperando = false
+        elseif tecla then
+            if Input.rebind("Default", "Jump", 1, tecla) then
+                Input.saveBindings()
+            end
+            self.esperando = false
+        end
+    end
+end
+
+function Opciones:mostrarTeclas()
+    for _, b in ipairs(Input.getBindings("Jump")) do
+        Debug.log(b.context .. ": " .. b.key)
+    end
+end</code></pre>
+      <p>
+        Las funciones de siempre (<code>Input.getKey</code>, <code>getAxis("Horizontal")</code>...) siguen funcionando;
+        se pueden mezclar con las acciones.
+      </p>

@@ -57,6 +57,10 @@ std::string urlEncode(const std::string& text);
 // o con HttpClient). `cancel` (opcional) la corta entre bloques.
 HttpResponse httpRequest(const HttpRequest& request, const std::atomic<bool>* cancel = nullptr);
 
+// Android: las peticiones van por java.net.HttpURLConnection (la pila TLS del
+// sistema) y necesitan la JavaVM de la actividad (JavaVM*). En Windows no hace nada.
+void setJavaVM(void* vm);
+
 class HttpClient {
 public:
     explicit HttpClient(int max_parallel = 6);

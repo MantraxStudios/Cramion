@@ -8,11 +8,18 @@
 // Vulkan, porque define las macros que configuran la biblioteca:
 //
 //   VK_USE_PLATFORM_WIN32_KHR                      -> superficie Win32 (HWND).
+//   VK_USE_PLATFORM_ANDROID_KHR (Android)          -> ANativeWindow.
 //   VULKAN_HPP_HANDLE_ERROR_OUT_OF_DATE_AS_SUCCESS -> eErrorOutOfDateKHR se
 //       devuelve como resultado normal en vez de lanzar excepcion, lo que
 //       permite recrear el swapchain al redimensionar sin usar try/catch.
 // -----------------------------------------------------------------------------
 
+#if defined(__ANDROID__)
+#if !defined(VK_USE_PLATFORM_ANDROID_KHR)
+#define VK_USE_PLATFORM_ANDROID_KHR
+#endif
+#include <android/native_window.h>
+#else
 #if !defined(WIN32_LEAN_AND_MEAN)
 #define WIN32_LEAN_AND_MEAN
 #endif
@@ -21,6 +28,7 @@
 #endif
 #if !defined(VK_USE_PLATFORM_WIN32_KHR)
 #define VK_USE_PLATFORM_WIN32_KHR
+#endif
 #endif
 #if !defined(VULKAN_HPP_HANDLE_ERROR_OUT_OF_DATE_AS_SUCCESS)
 #define VULKAN_HPP_HANDLE_ERROR_OUT_OF_DATE_AS_SUCCESS
@@ -31,6 +39,13 @@
 #include <cstdint>
 
 namespace cramion::gfx {
+
+// La ventana donde se presenta: HWND en Windows, ANativeWindow en Android.
+#if defined(__ANDROID__)
+using NativeWindow = ANativeWindow*;
+#else
+using NativeWindow = HWND;
+#endif
 
 // Numero de frames que la CPU puede preparar por delante de la GPU.
 inline constexpr std::uint32_t kMaxFramesInFlight = 2;
@@ -50,6 +65,10 @@ struct EngineInfo {
     // Activa las capas de validacion y el mensajero de depuracion. Si las capas
     // no estan instaladas en el sistema, se desactiva de forma silenciosa.
     bool enable_validation = true;
+
+    // Realidad virtual (OpenXR): si hay runtime y casco, Vulkan se crea en la
+    // GPU del casco con las extensiones que pide. Sin casco, sigue sin VR.
+    bool enable_xr = false;
 };
 
 // Indices de las familias de colas que necesita el motor.

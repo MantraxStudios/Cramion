@@ -54,9 +54,14 @@
 
 namespace cramion::dm {
 class Input;
+class TouchControls;
 }
 namespace cramion::physics {
 class PhysicsSystem;
+}
+namespace cramion::input {
+struct InputActionSettings;
+class InputMapper;
 }
 namespace cramion::audio {
 class AudioSystem;
@@ -137,6 +142,13 @@ public:
 
     void setAssetsRoot(const std::filesystem::path& root);
     void setInput(const dm::Input* input);
+    // Acciones y contextos del proyecto (ProjectSettings/InputActions.json,
+    // como el Enhanced Input de Unreal): Input.getAction, Input.bindAction,
+    // Input.addMappingContext... Sin llamar: defaultInputActions(). Se puede
+    // cambiar en Play (el editor la manda al guardar).
+    void setInputActions(const input::InputActionSettings& settings);
+    // Estado de las acciones (el editor lo ensena en Play).
+    const input::InputMapper& inputMapper() const;
     void setPhysics(physics::PhysicsSystem* physics);
     void setAudio(audio::AudioSystem* audio);
     // entity:moveTo, isMoving... y la tabla Navigation (NavAgent y la malla).
@@ -159,6 +171,21 @@ public:
     // Al parar los scripts se suelta solo.
     using CursorLockCallback = std::function<void(bool locked)>;
     void setCursorLock(CursorLockCallback callback);
+    // Input.vibrate(ms): vibracion del movil (quien tiene la ventana).
+    using VibrateCallback = std::function<void(int milliseconds)>;
+    void setVibrate(VibrateCallback callback);
+    // Los controles tactiles en pantalla del juego (Input.setTouchControls,
+    // Input.setTouchButton...). nullptr: esas funciones no hacen nada.
+    void setTouchControls(dm::TouchControls* controls);
+    // Tabla Screen: tamano de la pantalla y orientacion (en moviles,
+    // Screen.setOrientation la cambia o la deja fija).
+    struct ScreenHost {
+        std::function<int()> width;
+        std::function<int()> height;
+        std::function<bool(const std::string& mode)> set_orientation;  // false si no es un modo valido
+        std::function<std::string()> orientation_mode;                  // el ultimo pedido ("auto"...)
+    };
+    void setScreen(ScreenHost host);
     bool cursorLocked() const;
     // El programa solto el raton por su cuenta (Escape en el editor, perder el foco).
     void releaseCursor();

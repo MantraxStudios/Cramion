@@ -7,17 +7,21 @@
 #include <chrono>
 
 #include <imgui_impl_vulkan.h>
+#if defined(_WIN32)
 #include <imgui_impl_win32.h>
+#endif
 
 #include <algorithm>
 #include <filesystem>
 #include <iostream>
 #include <stdexcept>
 
+#if defined(_WIN32)
 // El backend de Win32 no declara su manejador de mensajes (para no obligar a
 // incluir <windows.h>): se declara aqui.
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hwnd, UINT msg, WPARAM wparam,
                                                              LPARAM lparam);
+#endif
 
 namespace cramion::editor {
 
@@ -39,6 +43,7 @@ void ImGuiLayer::initialize(HWND hwnd, gfx::VulkanRenderer& renderer) {
     ImGuiIO& io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_DockingEnable | ImGuiConfigFlags_NavEnableKeyboard;
 
+#if defined(_WIN32)
     // El diseño de los paneles se guarda junto al ejecutable.
     ini_path_ = (gfx::shaders::directory().parent_path() / "CramionEditor.ini").string();
     io.IniFilename = ini_path_.c_str();
@@ -53,10 +58,28 @@ void ImGuiLayer::initialize(HWND hwnd, gfx::VulkanRenderer& renderer) {
     applyStyle(dpi_scale);
 
     ImGui_ImplWin32_Init(hwnd);
+#else
+    // Android: sin .ini, Roboto (la del sistema) y la escala de la pantalla.
+    // La entrada la da el player (tactil convertido a raton).
+    (void)hwnd;
+    io.IniFilename = nullptr;
+    io.BackendPlatformName = "cramion_android";
+    io.ConfigFlags &= ~ImGuiConfigFlags_NavEnableKeyboard;
+    const float dpi_scale = content_scale_ > 0.0f ? content_scale_ : 1.0f;
+    for (const char* font : {"/system/fonts/Roboto-Regular.ttf", "/system/fonts/DroidSans.ttf"}) {
+        if (std::filesystem::exists(font)) {
+            io.Fonts->AddFontFromFileTTF(font, 16.0f);
+            break;
+        }
+    }
+    applyStyle(dpi_scale);
+    last_frame_ = std::chrono::steady_clock::now();
+#endif
 
     // La plataforma Win32 no sabe de Vulkan: la superficie de una ventana la
     // crea la aplicacion. Hace falta aunque los paneles no salgan de la
     // ventana principal (el backend de Vulkan lo comprueba al iniciarse).
+#if defined(_WIN32)
     ImGui::GetPlatformIO().Platform_CreateVkSurface =
         [](ImGuiViewport* viewport, ImU64 instance, const void* allocator,
            ImU64* out_surface) -> int {
@@ -69,6 +92,7 @@ void ImGuiLayer::initialize(HWND hwnd, gfx::VulkanRenderer& renderer) {
             static_cast<const VkAllocationCallbacks*>(allocator),
             reinterpret_cast<VkSurfaceKHR*>(out_surface)));
     };
+#endif
 
     const gfx::VulkanRenderer::NativeHandles handles = renderer.nativeHandles();
     device_ = handles.device;
@@ -136,14 +160,25 @@ void ImGuiLayer::shutdown() {
     thumbnails_.clear();
     renderer_->destroyUiTextures(textures);
     ImGui_ImplVulkan_Shutdown();
+#if defined(_WIN32)
     ImGui_ImplWin32_Shutdown();
+#endif
     ImGui::DestroyContext();
     initialized_ = false;
 }
 
 void ImGuiLayer::beginFrame() {
     ImGui_ImplVulkan_NewFrame();
+#if defined(_WIN32)
     ImGui_ImplWin32_NewFrame();
+#else
+    ImGuiIO& io = ImGui::GetIO();
+    io.DisplaySize = ImVec2(static_cast<float>(display_width_), static_cast<float>(display_height_));
+    io.DisplayFramebufferScale = ImVec2(1.0f, 1.0f);
+    const auto now = std::chrono::steady_clock::now();
+    io.DeltaTime = std::max(std::chrono::duration<float>(now - last_frame_).count(), 1.0f / 1000.0f);
+    last_frame_ = now;
+#endif
     ImGui::NewFrame();
 }
 

@@ -41,6 +41,26 @@ std::vector<ComponentPreset> postProcessingPresets() {
                         {"saturation", 1.0}, {"vibrance", 0.1}, {"vignette", true}, {"vignette_intensity", 0.2},
                         {"film_grain", 0.04}, {"lens_flare", 0.25}, {"motion_blur", true},
                         {"motion_blur_intensity", 0.5}, {"volumetric_light", true}}));
+    // Todo prendido con valores de camara real: cada efecto sutil para que
+    // sume sin notarse como filtro. Es el mas caro de la lista.
+    json ultra = {{"auto_exposure", true}, {"exposure_compensation", 0.0}, {"min_ev", -3.0}, {"max_ev", 2.5},
+                  {"adaptation_speed_up", 2.5}, {"adaptation_speed_down", 0.8}, {"tonemapper", "ACES"},
+                  {"bloom", true}, {"bloom_intensity", 0.05}, {"bloom_threshold", 0.8}, {"bloom_scatter", 1.2},
+                  {"contrast", 1.05}, {"saturation", 1.0}, {"vibrance", 0.1}, {"vignette", true},
+                  {"vignette_intensity", 0.22}, {"vignette_smoothness", 0.6}, {"chromatic_aberration", 0.05},
+                  {"film_grain", 0.03}, {"lens_distortion", 0.02}, {"lens_flare", 0.3}, {"motion_blur", true},
+                  {"motion_blur_intensity", 0.5}, {"motion_blur_max", 0.04}, {"depth_of_field", true},
+                  {"dof_auto_focus", true}, {"dof_aperture", 4.0}, {"dof_focal_length", 35.0},
+                  {"light_shafts", true}, {"light_shaft_intensity", 1.0}, {"fxaa", true},
+                  {"ambient_occlusion", true}, {"global_illumination", true}, {"reflections", true},
+                  {"contact_shadows", true}, {"contact_shadow_length", 1.0}, {"volumetric_light", true},
+                  {"volumetric_density", 0.025}, {"volumetric_anisotropy", 0.7}, {"fog_density", 0.0008},
+                  {"fog_height_falloff", 0.06}, {"lods", true}, {"lod_pixel_error", 0.5},
+                  {"override_antialiasing", true}, {"override_performance", true}};
+    out.push_back(post("Ultra realista",
+                       "Todos los efectos prendidos con valores de camara real: GI, reflejos, SSAO, volumetrica, "
+                       "bokeh, motion blur y LODs casi sin error. El mas pesado",
+                       ultra));
     out.push_back(post("Cinematografico", "ACES, sombras verdeazuladas y luces calidas, grano, bokeh y destellos",
                        {{"tonemapper", "ACES"}, {"contrast", 1.15}, {"saturation", 0.95}, {"vibrance", 0.15},
                         {"temperature", 8.0}, {"lift", {0.0, 0.012, 0.025}}, {"gain", {1.03, 1.0, 0.95}},

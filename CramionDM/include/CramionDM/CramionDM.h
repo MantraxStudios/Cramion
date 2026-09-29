@@ -3,11 +3,14 @@
 // Cabecera principal de la librería CramionDM (DirectX 12).
 // Incluir esto da acceso a toda la API pública de la librería.
 
+#if !defined(__ANDROID__)
 #include "CramionDM/Device.h"    // Dispositivo DX12
+#endif
 #include "CramionDM/Event.h"     // Sistema de eventos
 #include "CramionDM/Input.h"     // Estado de entrada (polling)
 #include "CramionDM/KeyCode.h"   // Teclas, botones y modificadores
-#include "CramionDM/Window.h"    // Ventana Win32 + bombeo de eventos
+#include "CramionDM/TouchControls.h"  // Controles tactiles en pantalla
+#include "CramionDM/Window.h"    // Ventana Win32 / Android + bombeo de eventos
 
 namespace cramion::dm {
 

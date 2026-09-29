@@ -113,6 +113,13 @@ bool EditorApp::openProject(const std::filesystem::path& path, bool open_scene) 
                         static_cast<LONG>(game_image_rect_[1] + game_image_rect_[3])};
         window_.setCursorCaptured(locked, game_image_rect_[2] > 0.0f ? &area : nullptr);
     });
+    scripts_.setTouchControls(&touch_game_);
+    {
+        scripting::ScriptSystem::ScreenHost screen;  // la vista Juego (sin orientacion en PC)
+        screen.width = [this] { return static_cast<int>(game_image_rect_[2]); };
+        screen.height = [this] { return static_cast<int>(game_image_rect_[3]); };
+        scripts_.setScreen(screen);
+    }
     audio_.setAssetsRoot(project_.assetsFolder());
     // Oclusion: paredes (colliders) entre el sonido y el oyente.
     audio_.setOcclusionQuery(audio::physicsOcclusionQuery(physics_));
@@ -962,6 +969,8 @@ void EditorApp::drawUi(float delta_seconds) {
         if (show_script_editor_ && script_tabs_.empty()) drawScriptEditor();  // los abiertos: su pestana
         drawMcpWindow();
         drawBuildConfigsWindow();
+        drawTouchInterfaceWindow();
+        drawInputActionsWindow();
         drawExportProgress();
         drawImportProgress();
         if (show_physics_) drawPhysicsWindow();
@@ -1153,6 +1162,8 @@ void EditorApp::drawMenuBar() {
             build_config_selected_ = build_configs_.active;
             show_build_configs_ = true;
         }
+        if (ImGui::MenuItem("Entrada del proyecto (acciones y teclas)...")) show_input_actions_ = true;
+        if (ImGui::MenuItem("Controles táctiles (móvil)...")) show_touch_interface_ = true;
         if (ImGui::MenuItem("Exportar juego...")) exportGame(false);
         if (ImGui::MenuItem("Exportar y jugar...")) exportGame(true);
         ImGui::Separator();

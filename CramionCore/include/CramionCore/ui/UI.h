@@ -179,6 +179,9 @@ public:
     float scaleOf(entt::entity entity) const;  // escala de su Canvas
     // Elemento visible mas arriba bajo un punto (seleccion en el editor).
     entt::entity pick(float x, float y) const;
+    // Hay un control que se puede pulsar (Button, Slider, Toggle, InputField)
+    // bajo el punto: en moviles ese dedo va a la interfaz, no al joystick.
+    bool interactiveAt(const ecs::World& world, float x, float y) const;
     void reset();
 
 private:

@@ -79,6 +79,11 @@ public:
     // tarda segundos en bajar).
     void setStartLevels(HardwareTier tier);
 
+    // El usuario cambio la calidad (ajustes graficos, un efecto prendido):
+    // se vuelve al punto de partida y se mide de nuevo, sin los bloqueos de
+    // subida ni lo aprendido (con otros ajustes cada cosa cuesta distinto).
+    void reset();
+
     // Una vez por frame con el tiempo de GPU ya medido (total y por pasada).
     // `dt`: segundos desde el anterior.
     void update(float dt, float gpu_ms, const std::vector<GpuTiming>& passes);
@@ -148,6 +153,16 @@ private:
 
     std::string last_action_;
 };
+
+// `after` prende algo que las palancas del presupuesto pueden apagar o pide
+// mas detalle de LOD que `before`.
+inline bool postQualityRaised(const PostProcessSettings& before, const PostProcessSettings& after) {
+    const auto on = [](bool was, bool now) { return now && !was; };
+    return on(before.light_shafts, after.light_shafts) || on(before.volumetric_light, after.volumetric_light) ||
+           on(before.contact_shadows, after.contact_shadows) || on(before.ambient_occlusion, after.ambient_occlusion) ||
+           on(before.reflections, after.reflections) || on(before.global_illumination, after.global_illumination) ||
+           on(before.lods, after.lods) || after.lod_pixel_error < before.lod_pixel_error * 0.99f;
+}
 
 }  // namespace cramion::gfx
 

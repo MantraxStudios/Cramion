@@ -48,7 +48,33 @@ void VulkanSwapchain::create(std::uint32_t width, std::uint32_t height) {
 
     const vk::SurfaceFormatKHR surface_format = chooseSurfaceFormat(formats);
     const vk::PresentModeKHR present_mode = choosePresentMode(present_modes);
-    const vk::Extent2D extent = chooseExtent(capabilities, width, height);
+    vk::Extent2D extent = chooseExtent(capabilities, width, height);
+    vk::SurfaceTransformFlagBitsKHR transform = capabilities.currentTransform;
+#if defined(__ANDROID__)
+    // Movil girado: el compositor rota la imagen (preTransform = identidad).
+    // currentExtent ya viene en la orientacion de la ventana: se usa tal
+    // cual (girarlo daba una imagen vertical en la pantalla horizontal).
+    // Si el driver no lo fija, el tamano de la ventana.
+    if (capabilities.supportedTransforms & vk::SurfaceTransformFlagBitsKHR::eIdentity) {
+        transform = vk::SurfaceTransformFlagBitsKHR::eIdentity;
+    }
+    if (width > 0 && height > 0 && capabilities.currentExtent.width != UINT32_MAX &&
+        (capabilities.currentExtent.width > capabilities.currentExtent.height) != (width > height)) {
+        // La ventana ya giro y la superficie aun no: manda la ventana.
+        extent = vk::Extent2D{std::clamp(width, capabilities.minImageExtent.width, capabilities.maxImageExtent.width),
+                              std::clamp(height, capabilities.minImageExtent.height, capabilities.maxImageExtent.height)};
+    }
+#endif
+    // Opaco si se puede (Android suele dar solo "heredado").
+    vk::CompositeAlphaFlagBitsKHR alpha = vk::CompositeAlphaFlagBitsKHR::eOpaque;
+    for (const vk::CompositeAlphaFlagBitsKHR candidate :
+         {vk::CompositeAlphaFlagBitsKHR::eOpaque, vk::CompositeAlphaFlagBitsKHR::eInherit,
+          vk::CompositeAlphaFlagBitsKHR::ePreMultiplied, vk::CompositeAlphaFlagBitsKHR::ePostMultiplied}) {
+        if (capabilities.supportedCompositeAlpha & candidate) {
+            alpha = candidate;
+            break;
+        }
+    }
 
     // Una imagen mas que el minimo para no quedarse esperando al driver.
     std::uint32_t image_count = capabilities.minImageCount + 1;
@@ -64,8 +90,8 @@ void VulkanSwapchain::create(std::uint32_t width, std::uint32_t height) {
     create_info.imageExtent = extent;
     create_info.imageArrayLayers = 1;
     create_info.imageUsage = vk::ImageUsageFlagBits::eColorAttachment;
-    create_info.preTransform = capabilities.currentTransform;
-    create_info.compositeAlpha = vk::CompositeAlphaFlagBitsKHR::eOpaque;
+    create_info.preTransform = transform;
+    create_info.compositeAlpha = alpha;
     create_info.presentMode = present_mode;
     create_info.clipped = VK_TRUE;
 

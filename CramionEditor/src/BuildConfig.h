@@ -13,12 +13,46 @@
 //                      (Explorador, barra de tareas y ventana)
 //   Escena inicial, ventana (maximizada, pantalla completa, ventana),
 //   static batching y contador de FPS de desarrollo.
+//
+//   Plataforma         Windows (.exe) o Android (APK / AAB, con el OBB
+//                      aparte si se quiere): paquete, version, orientacion
+//                      inicial, permisos, clave de firma y perfil movil
+//                      (AndroidBuildSettings). Los controles tactiles son del
+//                      proyecto (ProjectSettings/TouchInterface.json).
 
 #include <filesystem>
 #include <string>
 #include <vector>
 
 namespace cramion::editor {
+
+enum class BuildPlatform : int { Windows = 0, Android = 1 };
+
+struct AndroidBuildSettings {
+    std::string package;          // vacio = com.cramion.<juego>
+    int version_code = 1;         // sube en cada version que se publique
+    int min_sdk = 29;             // Android 10
+    int target_sdk = 35;          // Android 15 (lo que pide Google Play)
+    int orientation = 0;          // al abrir: 0 horizontal, 1 vertical, 2 libre, 3 horizontal fija, 4 vertical fija
+                                  // (despues, Screen.setOrientation en Lua)
+    bool make_apk = true;
+    bool make_aab = false;        // Google Play
+    bool split_obb = false;       // los assets en main.<version>.<paquete>.obb
+    bool x86_64 = false;          // tambien para emuladores (si esta compilado)
+    bool internet = true;
+    bool vibrate = true;
+    bool record_audio = false;
+    std::string icon;             // vacio = el de la configuracion (o el del motor)
+    // Firma: vacio = clave de depuracion (valida para probar, no para Play).
+    // Las contrasenas no se guardan en el proyecto.
+    std::string keystore;
+    std::string key_alias;
+    std::string store_password;   // solo en memoria
+    std::string key_password;     // solo en memoria
+    // Perfil movil: calidad inicial (0 Baja..3 Ultra) y FPS objetivo.
+    int quality = 0;
+    int target_fps = 30;
+};
 
 struct BuildConfig {
     std::string name = "Predeterminada";
@@ -32,6 +66,8 @@ struct BuildConfig {
     int height = 900;
     bool static_batching = true;
     bool show_fps = false;      // desarrollo: FPS/CPU/GPU en una esquina
+    BuildPlatform platform = BuildPlatform::Windows;
+    AndroidBuildSettings android;
 };
 
 struct BuildConfigs {
@@ -45,7 +81,8 @@ struct BuildConfigs {
 BuildConfigs loadBuildConfigs(const std::filesystem::path& file);
 bool saveBuildConfigs(const std::filesystem::path& file, const BuildConfigs& configs);
 
-// Lineas de game.ini para el juego exportado (sin la escena).
+// Lineas de game.ini para el juego exportado (sin la escena). En Android
+// ademas el perfil movil y los controles tactiles.
 std::string buildConfigIni(const BuildConfig& config, const std::string& game_name);
 
 // Icono de un .exe (su grupo de iconos 1, el que usan el Explorador y la

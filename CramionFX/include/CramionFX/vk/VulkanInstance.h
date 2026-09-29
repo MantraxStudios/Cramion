@@ -22,7 +22,8 @@ public:
     VulkanInstance& operator=(const VulkanInstance&) = delete;
 
     // Crea la instancia. Lanza std::runtime_error si falta algo obligatorio.
-    void initialize(const EngineInfo& info);
+    // `extra_extensions`: las que pide OpenXR (se anaden si existen).
+    void initialize(const EngineInfo& info, const std::vector<std::string>& extra_extensions = {});
 
     // Destruye el mensajero y la instancia (en ese orden).
     void shutdown();
@@ -34,7 +35,7 @@ public:
 private:
     // Extensiones de instancia obligatorias (superficie + plataforma) mas las
     // opcionales de depuracion si estan disponibles.
-    std::vector<const char*> selectExtensions();
+    std::vector<const char*> selectExtensions(const std::vector<std::string>& extra);
     std::vector<const char*> selectLayers();
     void createDebugMessenger();
 

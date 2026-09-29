@@ -349,6 +349,7 @@ void EditorApp::drawInspector() {
             visitor.beginComponent(multi ? &mixed : nullptr);
             if (type.reflect(world_, entity.handle(), visitor)) {
                 dirty_ = true;
+                if (type.name == "PostProcessing") renderer_.resetAdaptiveBudget();
                 // El campo editado, a los demas (solo ese campo).
                 if (multi && !is_transform && visitor.lastChange()) {
                     const auto& [path, value] = *visitor.lastChange();
@@ -550,6 +551,7 @@ void EditorApp::drawComponentPresets(const std::string& component, const std::ve
         }
         if (applied > 0) {
             commit();
+            if (component == "PostProcessing") renderer_.resetAdaptiveBudget();
             std::cout << "[Editor] Preset \"" << preset.name << "\" aplicado a " << applied << " objeto(s)\n";
         } else {
             std::cerr << "[Editor] No se pudo aplicar el preset: " << error << "\n";

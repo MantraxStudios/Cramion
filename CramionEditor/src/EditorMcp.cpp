@@ -206,6 +206,14 @@ const std::vector<ToolDef>& toolDefs() {
         d.push_back({"open_scene", "Abre una escena.", {{"scene", prop("string", "Ruta o nombre de la escena")}, {"force", prop("boolean", "Descartar cambios sin guardar")}}, {"scene"}});
         d.push_back({"save_scene", "Guarda la escena (en su archivo o en el que se indique).", {{"path", prop("string", "Ruta dentro de Assets (opcional, p. ej. Scenes/Nivel1.crscene)")}}, {}});
         d.push_back({"play", "Entra en modo Play (el juego corre en el editor).", json::object(), {}});
+        d.push_back({"export_game", "Exporta el juego con la configuracion de compilacion activa (en segundo plano: ver export_status). "
+                                    "Con platform android sale un APK/AAB; install lo instala y abre en el dispositivo por adb.",
+                     {{"folder", prop("string", "Carpeta de destino (fuera del proyecto)")},
+                      {"platform", prop("string", "windows o android (cambia la de la configuracion activa)")},
+                      {"install", prop("boolean", "Android: instalar y abrir en el dispositivo; Windows: ejecutar al terminar")},
+                      {"device", prop("string", "Android: serie del dispositivo de adb (por defecto el primero)")}},
+                     {"folder"}});
+        d.push_back({"export_status", "Progreso de la exportacion en curso o el resultado de la ultima.", json::object(), {}});
         d.push_back({"stop", "Sale del modo Play (la escena vuelve a como estaba).", json::object(), {}});
         d.push_back({"pause", "Pausa o reanuda el modo Play.", json::object(), {}});
         d.push_back({"run_lua", "Ejecuta codigo Lua en el motor (en Play, dentro del juego). Devuelve lo que retorne el codigo.",
@@ -1021,6 +1029,48 @@ json McpTools::call(const std::string& name, const json& args, bool& image, std:
         }
         if (!a.saveScene()) throw ToolError("no se pudo guardar (mira get_console)");
         return json{{"saved", a.assetRelative(a.scene_path_)}};
+    }
+    if (name == "export_game") {
+        if (a.export_job_) throw ToolError("ya hay una exportacion en marcha (export_status)");
+        a.ensureBuildConfigs();
+        BuildConfig& config = a.build_configs_.current();
+        if (args.contains("platform")) {
+            const std::string platform = arg(args, "platform");
+            if (platform != "windows" && platform != "android") throw ToolError("platform: windows o android");
+            config.platform = platform == "android" ? BuildPlatform::Android : BuildPlatform::Windows;
+            a.saveBuildConfigsNow();
+        }
+        const bool install = args.value("install", false);
+        if (args.contains("device")) {
+            a.refreshAndroidDevices();
+            const std::string wanted = arg(args, "device");
+            for (const std::string& d : a.export_devices_) {
+                if (d.rfind(wanted, 0) == 0) a.export_device_ = d;
+            }
+        }
+        a.export_message_.clear();
+        a.exportGame(install);
+        a.export_setup_ = false;  // sin la ventana: directo
+        a.startExport(dialogs::fromUtf8(arg(args, "folder")));
+        if (!a.export_job_) throw ToolError(a.export_message_.empty() ? std::string("no se pudo empezar") : a.export_message_);
+        return json{{"started", true}, {"platform", config.platform == BuildPlatform::Android ? "android" : "windows"}};
+    }
+    if (name == "export_status") {
+        if (a.export_job_) {
+            EditorApp::ExportJob& j = *a.export_job_;
+            std::string current;
+            {
+                std::lock_guard lock(j.mutex);
+                current = j.current;
+            }
+            const float phase = j.phase.load();
+            const double total = std::max<double>(static_cast<double>(j.total.load()), 1.0);
+            return json{{"running", true},
+                        {"step", phase >= 0.0f ? "android" : "copy"},
+                        {"progress", phase >= 0.0f ? phase : static_cast<float>(static_cast<double>(j.done.load()) / total)},
+                        {"current", current}};
+        }
+        return json{{"running", false}, {"message", a.export_message_}};
     }
     if (name == "play") {
         if (!a.playing()) a.enterPlay();

@@ -759,6 +759,28 @@ void testFrameBudget() {
     check(budget.level(Lever::ShadowDetail) == 0 && budget.level(Lever::Lod) == 0, "con margen recupera la calidad");
     check(gpu <= budget.targetMilliseconds(), "y sigue dentro del presupuesto");
 
+    // El usuario cambia un ajuste: lo bajado vuelve al punto de partida en el
+    // acto (antes seguia bajado hasta reiniciar el motor).
+    {
+        gfx::FrameBudget b;
+        b.setTargetFps(60.0f);
+        std::vector<gfx::GpuTiming> heavy = {{"GI", 20.0f}, {"SSAO", 4.0f}, {"Reflejos", 4.0f}};
+        for (int frame = 0; frame < 60 * 10; ++frame) b.update(dt, 40.0f, heavy);
+        int lowered = 0;
+        for (std::size_t i = 0; i < gfx::kLeverCount; ++i) lowered += b.level(static_cast<Lever>(i));
+        check(lowered > 0, "con la GPU desbordada baja palancas");
+        b.reset();
+        int after = 0;
+        for (std::size_t i = 0; i < gfx::kLeverCount; ++i) after += b.level(static_cast<Lever>(i));
+        check(after == 0 && b.renderScale() == 1.0f, "reset devuelve toda la calidad al instante");
+        gfx::PostProcessSettings before{};
+        before.global_illumination = false;
+        gfx::PostProcessSettings now = before;
+        check(!gfx::postQualityRaised(before, now), "sin cambios no se reinicia");
+        now.global_illumination = true;
+        check(gfx::postQualityRaised(before, now), "prender la GI reinicia el presupuesto");
+    }
+
     // GPU de gama baja (3 veces mas lenta): tiene que bajar hondo, sin oscilar.
     {
         gfx::FrameBudget weak;

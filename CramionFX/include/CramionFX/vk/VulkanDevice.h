@@ -30,7 +30,10 @@ public:
     VulkanDevice(const VulkanDevice&) = delete;
     VulkanDevice& operator=(const VulkanDevice&) = delete;
 
-    void initialize(const VulkanInstance& instance, const VulkanSurface& surface);
+    // `required`: la GPU que pide OpenXR (la del casco); `extra_extensions`:
+    // las extensiones de dispositivo que pide.
+    void initialize(const VulkanInstance& instance, const VulkanSurface& surface, VkPhysicalDevice required = VK_NULL_HANDLE,
+                    const std::vector<std::string>& extra_extensions = {});
     void shutdown();
 
     const vk::raii::PhysicalDevice& physicalDevice() const { return physical_device_; }
@@ -60,6 +63,9 @@ public:
     // ¿Se activo depthClamp? La pasada de sombras lo usa para no perder los
     // objetos que quedan por delante del plano cercano de una cascada.
     bool depthClampSupported() const { return depth_clamp_supported_; }
+    // vkCmdDrawIndexedIndirectCount y varios comandos por llamada (no en
+    // muchas GPU de movil).
+    bool indirectCountSupported() const { return indirect_count_supported_; }
     bool textureCompressionBcSupported() const { return texture_compression_bc_supported_; }
     // Poligonos como lineas (vista Wireframe).
     bool fillModeNonSolidSupported() const { return fill_mode_non_solid_supported_; }
@@ -85,7 +91,7 @@ public:
     void setPipelineCallback(std::function<void(std::uint32_t)> callback) { pipeline_callback_ = std::move(callback); }
 
 private:
-    void pickPhysicalDevice(const VulkanInstance& instance, const VulkanSurface& surface);
+    void pickPhysicalDevice(const VulkanInstance& instance, const VulkanSurface& surface, VkPhysicalDevice required);
     void createLogicalDevice();
 
     // Devuelve 0 si la GPU no sirve; cuanto mayor la puntuacion, mejor.
@@ -112,12 +118,14 @@ private:
     QueueFamilyIndices queue_families_{};
     vk::Format depth_format_ = vk::Format::eUndefined;
     bool depth_clamp_supported_ = false;
+    bool indirect_count_supported_ = true;
     bool texture_compression_bc_supported_ = false;
     bool fill_mode_non_solid_supported_ = false;
     bool ray_tracing_supported_ = false;
     bool memory_budget_supported_ = false;
     std::string device_name_;
     std::uint32_t api_version_ = 0;
+    std::vector<std::string> extra_extensions_;  // OpenXR
 
     vk::raii::PipelineCache pipeline_cache_{nullptr};
     std::filesystem::path pipeline_cache_file_;

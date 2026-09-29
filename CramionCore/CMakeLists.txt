@@ -173,16 +173,21 @@ add_library(Cramion::Assets ALIAS CramionAssets)
 target_include_directories(CramionAssets PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
 target_link_libraries(CramionAssets
     PUBLIC Cramion::FX
-    PRIVATE nlohmann_json::nlohmann_json shell32 ole32 assimp libzstd_static
+    PRIVATE nlohmann_json::nlohmann_json assimp libzstd_static
 )
 target_include_directories(CramionAssets PRIVATE "${zstd_SOURCE_DIR}/lib")
 target_compile_options(CramionAssets PRIVATE -Wall -Wextra)
 
 # Herramienta de consola de los assets: crea un proyecto temporal, importa
 # modelos y un cielo, y los vuelve a cargar (cramion_asset_tool --help).
+if(WIN32)
+    target_link_libraries(CramionAssets PRIVATE shell32 ole32)
+endif()
+if(NOT ANDROID)
 add_executable(cramion_asset_tool "${CMAKE_CURRENT_SOURCE_DIR}/tools/AssetTool.cpp")
 target_link_libraries(cramion_asset_tool PRIVATE Cramion::Assets)
 target_compile_options(cramion_asset_tool PRIVATE -Wall -Wextra)
+endif()
 
 # --- CramionCore -------------------------------------------------------------
 
@@ -230,8 +235,20 @@ target_include_directories(CramionCore PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/inclu
 target_link_libraries(CramionCore
     PUBLIC Cramion::Assets Cramion::FX EnTT::EnTT nlohmann_json::nlohmann_json
     PRIVATE Jolt cramion_lua cramion_miniaudio RecastNavigation::Recast RecastNavigation::Detour
-            RecastNavigation::DetourCrowd enet ws2_32 winmm winhttp
+            RecastNavigation::DetourCrowd enet
 )
+
+if(WIN32)
+    target_link_libraries(CramionCore PRIVATE ws2_32 winmm winhttp)
+elseif(ANDROID)
+    # miniaudio (AAudio/OpenSL por dlopen) y el log del sistema.
+    target_link_libraries(CramionCore PRIVATE android log OpenSLES dl)
+endif()
+
+# Android: solo las librerias (el juego); pruebas y herramientas son de PC.
+if(ANDROID)
+    return()
+endif()
 
 # --- Pruebas del ECS (consola) ---
 # Compila las fuentes del ECS que no dependen de la implementacion de los
@@ -244,6 +261,7 @@ add_executable(CramionCoreTests
     "${CMAKE_CURRENT_SOURCE_DIR}/src/ecs/MathUtil.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/ecs/SceneSerializer.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/ecs/ModelInstantiation.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/ecs/ComponentPresets.cpp"
 )
 target_include_directories(CramionCoreTests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include")
 target_link_libraries(CramionCoreTests PRIVATE Cramion::FX EnTT::EnTT nlohmann_json::nlohmann_json)
@@ -289,6 +307,11 @@ target_compile_options(CramionHttpTests PRIVATE -Wall -Wextra)
 add_executable(CramionScriptingTests "${CMAKE_CURRENT_SOURCE_DIR}/tests/ScriptingTests.cpp")
 target_link_libraries(CramionScriptingTests PRIVATE Cramion::Core)
 target_compile_options(CramionScriptingTests PRIVATE -Wall -Wextra)
+
+# --- Pruebas de la entrada por acciones (Enhanced Input) y su tabla de Lua ---
+add_executable(CramionInputTests "${CMAKE_CURRENT_SOURCE_DIR}/tests/InputTests.cpp")
+target_link_libraries(CramionInputTests PRIVATE Cramion::Core)
+target_compile_options(CramionInputTests PRIVATE -Wall -Wextra)
 
 # --- Pruebas de la interfaz del juego (consola) ---
 add_executable(CramionUiTests "${CMAKE_CURRENT_SOURCE_DIR}/tests/UiTests.cpp")

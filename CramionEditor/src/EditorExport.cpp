@@ -10,12 +10,17 @@
 // La copia va en otro hilo (el editor sigue respondiendo) con su barra de
 // progreso y se puede cancelar; al volver a exportar, lo que no cambio no se
 // copia otra vez.
+//
+// Con una configuracion de Android sale <Carpeta>/<Juego>/<Juego>.apk (y/o
+// .aab, y el .obb si los assets van aparte): el mismo .crpack, los shaders y
+// android/<abi>/libmain.so de junto al editor, empaquetados con AndroidBuild.
 
 #include "EditorApp.h"
 
 #include "Dialogs.h"
 
 #include <CramionCore/ecs/SceneSerializer.h>
+#include <CramionCore/asset/SurfaceShader.h>
 #include <CramionCore/ecs/StaticBatching.h>
 
 #include <imgui.h>
@@ -23,6 +28,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <fstream>
 #include <iostream>
 
@@ -75,6 +81,7 @@ void EditorApp::exportGame(bool run_after) {
     export_static_batching_ = build_configs_.current().static_batching;
     export_run_after_ = run_after;
     export_setup_ = true;
+    if (build_configs_.current().platform == BuildPlatform::Android && run_after) refreshAndroidDevices();
     if (export_folder_.empty()) {
         std::ifstream in(exportFolderMemory(project_));
         std::getline(in, export_folder_);
@@ -109,7 +116,8 @@ void EditorApp::startExport(const std::filesystem::path& parent) {
         return;
     }
     const std::filesystem::path source = editorFolder();
-    if (!std::filesystem::exists(source / "CramionPlayer.exe")) {
+    const bool android = config.platform == BuildPlatform::Android;
+    if (!android && !std::filesystem::exists(source / "CramionPlayer.exe")) {
         export_message_ = "Falta CramionPlayer.exe junto al editor: compila el proyecto.";
         std::cerr << "[Exportar] " << export_message_ << '\n';
         return;
@@ -127,6 +135,7 @@ void EditorApp::startExport(const std::filesystem::path& parent) {
         }
     }
     job->run_after = run_after;
+    job->android = android;
     std::error_code error;
     const auto add_file = [&](const std::filesystem::path& from, const std::filesystem::path& to) {
         std::error_code e;
@@ -143,15 +152,98 @@ void EditorApp::startExport(const std::filesystem::path& parent) {
             if (it->is_regular_file(fe)) add_file(it->path(), to / std::filesystem::relative(it->path(), from, fe));
         }
     };
-    add_file(source / "CramionPlayer.exe", job->exe);
-    add_folder(source / "shaders", target / "shaders");
-    for (std::filesystem::directory_iterator it(source, error); !error && it != std::filesystem::directory_iterator();
-         it.increment(error)) {
-        std::error_code fe;
-        if (it->is_regular_file(fe) && it->path().extension() == ".dll") add_file(it->path(), target / it->path().filename());
+    // Android: nada se copia a la carpeta; el juego (Game/ y el paquete) se
+    // prepara en _build y se empaqueta en el APK/AAB al final del hilo.
+    const std::filesystem::path game = android ? target / "_build" / "Game" : target / "Game";
+    if (android) {
+        const AndroidBuildSettings& a = config.android;
+        job->android_tools = findAndroidToolchain(source, a.target_sdk);
+        if (!job->android_tools.ok()) {
+            export_message_ = job->android_tools.error;
+            std::cerr << "[Exportar] " << export_message_ << '\n';
+            return;
+        }
+        AndroidPackageInput& in = job->android_input;
+        in.package = a.package.empty() ? defaultAndroidPackage(game_name) : a.package;
+        if (!validAndroidPackage(in.package)) {
+            export_message_ = "El nombre de paquete \"" + in.package +
+                              "\" no es valido (como com.estudio.juego). Cambialo en Configuraciones de compilacion.";
+            return;
+        }
+        in.label = buildGameName();
+        in.version_name = config.version.empty() ? std::string("1.0") : config.version;
+        in.version_code = a.version_code;
+        in.min_sdk = a.min_sdk;
+        in.target_sdk = a.target_sdk;
+        in.orientation = a.orientation;
+        in.internet = a.internet;
+        in.vibrate = a.vibrate;
+        in.record_audio = a.record_audio;
+        in.make_apk = a.make_apk || !a.make_aab;
+        in.make_aab = a.make_aab;
+        in.split_obb = a.split_obb;
+        std::filesystem::path icon = a.icon.empty() ? buildIconPath(config) : dialogs::fromUtf8(a.icon);
+        if (!icon.empty() && icon.is_relative()) icon = project_.folder / icon;
+        std::string icon_ext = dialogs::utf8(icon.extension());
+        std::transform(icon_ext.begin(), icon_ext.end(), icon_ext.begin(), [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+        if (icon_ext == ".ico") icon.clear();  // un .ico no sirve en Android: el del motor
+        in.icon = icon;
+        in.fallback_icon = source / "editor_icons" / "logo.png";
+        for (const char* abi : {"arm64-v8a", "x86_64"}) {
+            if (std::string(abi) == "x86_64" && !a.x86_64) continue;
+            const std::filesystem::path so = source / "android" / abi / "libmain.so";
+            if (std::filesystem::exists(so)) in.libraries.emplace_back(abi, so);
+        }
+        if (in.libraries.empty() || in.libraries.front().first != "arm64-v8a") {
+            export_message_ = "Falta android/arm64-v8a/libmain.so junto al editor: compila el motor con el Android NDK "
+                              "(CRAMION_ANDROID=ON) para poder exportar a Android.";
+            std::cerr << "[Exportar] " << export_message_ << '\n';
+            return;
+        }
+        // Shaders del motor y Game/ (game.ini y banner) como assets del APK.
+        std::error_code se;
+        for (std::filesystem::recursive_directory_iterator it(source / "shaders", se);
+             !se && it != std::filesystem::recursive_directory_iterator(); it.increment(se)) {
+            std::error_code fe;
+            if (!it->is_regular_file(fe)) continue;
+            const std::u8string rel = std::filesystem::relative(it->path(), source, fe).generic_u8string();
+            in.assets.emplace_back(std::string(rel.begin(), rel.end()), it->path());
+        }
+        in.assets.emplace_back("Game/banner.png", source / "player_banner.png");
+        in.assets.emplace_back("Game/game.ini", game / "game.ini");
+        in.output_folder = target;
+        in.file_stem = game_name;
+        in.work_folder = target / "_build" / "work";
+        in.pack_name = game_name + ".crpack";
+        in.key.keystore = a.keystore.empty() ? std::filesystem::path() : dialogs::fromUtf8(a.keystore);
+        if (!in.key.keystore.empty() && in.key.keystore.is_relative()) in.key.keystore = project_.folder / in.key.keystore;
+        in.key.alias = a.key_alias;
+        in.key.store_password = a.store_password;
+        in.key.key_password = a.key_password;
+        if (!in.key.keystore.empty() && in.key.store_password.empty()) {
+            export_message_ = "Escribe la contrasena del keystore en Configuraciones de compilacion > Android > Firma "
+                              "(no se guarda en el proyecto).";
+            return;
+        }
+        if (run_after) {
+            if (export_device_.empty()) refreshAndroidDevices();
+            job->android_device = export_device_;
+            if (job->android_device.empty() || !in.make_apk) {
+                export_message_ = in.make_apk ? "No hay ningun dispositivo Android conectado (activa la depuracion USB o abre un emulador)."
+                                              : "Para instalar en el dispositivo hace falta el APK (activalo en la configuracion).";
+                return;
+            }
+        }
+    } else {
+        add_file(source / "CramionPlayer.exe", job->exe);
+        add_folder(source / "shaders", target / "shaders");
+        for (std::filesystem::directory_iterator it(source, error); !error && it != std::filesystem::directory_iterator();
+             it.increment(error)) {
+            std::error_code fe;
+            if (it->is_regular_file(fe) && it->path().extension() == ".dll") add_file(it->path(), target / it->path().filename());
+        }
+        add_file(source / "player_banner.png", game / "banner.png");
     }
-    const std::filesystem::path game = target / "Game";
-    add_file(source / "player_banner.png", game / "banner.png");
 
     // Los assets del juego, comprimidos en un solo archivo .crpack.
     job->pack_file = game / dialogs::fromUtf8(game_name + ".crpack");
@@ -185,6 +277,10 @@ void EditorApp::startExport(const std::filesystem::path& parent) {
         if (const auto info = database_->find(chosen)) first_scene = info->path;
     }
     job->game_ini = "scene=" + assetRelative(first_scene) + "\n" + buildConfigIni(config, buildGameName());
+    // Identificador de esta compilacion: el juego de Android recopia sus
+    // archivos del APK cuando cambia.
+    job->game_ini += "build=" + std::to_string(std::chrono::system_clock::now().time_since_epoch().count()) + "\n";
+    if (android) job->android_input.pack = job->pack_file;
     job->game_folder = game;
     job->scene_name = dialogs::utf8(first_scene.filename());
     job->static_batching = export_static_batching_;
@@ -292,6 +388,36 @@ void EditorApp::startExport(const std::filesystem::path& parent) {
                 j->batch_summary += "\n" + scene_name + ": " + report.message;
             }
         }
+        // Android no tiene compilador de shaders: cada .crshader va al paquete
+        // tambien compilado (<archivo>.vert.spv / .frag.spv al lado).
+        if (j->android && !j->cancel && j->error.empty()) {
+            const std::filesystem::path spv_cache = j->batch_cache.parent_path() / "AndroidShaders";
+            std::error_code e;
+            std::filesystem::remove_all(spv_cache, e);
+            const std::size_t count = j->pack.size();
+            for (std::size_t i = 0; i < count; ++i) {
+                std::string extension = dialogs::utf8(j->pack[i].source.extension());
+                std::transform(extension.begin(), extension.end(), extension.begin(),
+                               [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+                if (extension != ".crshader") continue;
+                assets::SurfaceShaderSource shader;
+                std::vector<std::uint32_t> vertex, fragment;
+                std::string error;
+                if (!assets::loadSurfaceShader(j->pack[i].source, shader, &error) ||
+                    !assets::compileSurfaceShader(shader, assets::surfaceTemplateDirectory(), vertex, fragment, &error)) {
+                    std::cerr << "[Exportar] El shader " << j->pack[i].path << " no compila (en el movil se vera sin el): " << error
+                              << '\n';
+                    continue;
+                }
+                const std::filesystem::path base = spv_cache / std::to_string(i);
+                const std::filesystem::path vfile = std::filesystem::path(base).concat(".vert.spv");
+                const std::filesystem::path ffile = std::filesystem::path(base).concat(".frag.spv");
+                if (assets::writePrecompiledSurfaceShader(vfile, ffile, vertex, fragment)) {
+                    j->pack.push_back(project::PackInput{vfile, j->pack[i].path + ".vert.spv"});
+                    j->pack.push_back(project::PackInput{ffile, j->pack[i].path + ".frag.spv"});
+                }
+            }
+        }
         // Los assets al paquete (siempre se rehace: es rapido y asi nunca queda viejo).
         if (!j->cancel && j->error.empty()) {
             const std::uint64_t base = j->done;
@@ -322,7 +448,40 @@ void EditorApp::startExport(const std::filesystem::path& parent) {
                 if (it->path().extension() == ".crpack" && it->path() != j->pack_file) stale.push_back(it->path());
             }
             for (const std::filesystem::path& file : stale) std::filesystem::remove(file, e);
+            std::filesystem::create_directories(j->game_folder, e);
             std::ofstream(j->game_folder / "game.ini") << j->game_ini;
+        }
+        // Android: el APK/AAB con todo lo anterior.
+        if (j->android && !j->cancel && j->error.empty()) {
+            std::string error;
+            const bool ok = buildAndroidPackage(j->android_tools, j->android_input, [j](float f, const std::string& what) {
+                j->phase = f;
+                std::lock_guard lock(j->mutex);
+                j->current = what;
+            }, &j->cancel, j->android_result, &error);
+            std::cout << j->android_result.log;
+            if (!ok && !j->cancel) {
+                std::lock_guard lock(j->mutex);
+                j->error = error;
+            }
+            if (ok && !j->android_device.empty()) {
+                {
+                    std::lock_guard lock(j->mutex);
+                    j->current = "Instalando en " + j->android_device;
+                }
+                std::string log;
+                if (!installAndroidPackage(j->android_tools, j->android_device, j->android_result.apk, j->android_result.obb,
+                                           j->android_input.package, log, &error)) {
+                    std::lock_guard lock(j->mutex);
+                    j->error = "El juego se exporto pero no se pudo instalar: " + error;
+                }
+                std::cout << log;
+            }
+            // Los temporales (el paquete ya esta dentro del APK/AAB o en el .obb).
+            if (ok) {
+                std::error_code e;
+                std::filesystem::remove_all(j->target / "_build", e);
+            }
         }
         j->finished = true;
     });
@@ -347,11 +506,17 @@ void EditorApp::drawExportProgress() {
             std::lock_guard lock(j.mutex);
             current = j.current;
         }
-        ImGui::TextUnformatted(j.cancel ? "Cancelando..." : "Copiando el juego...");
+        const float phase = j.phase.load();
+        ImGui::TextUnformatted(j.cancel ? "Cancelando..." : (phase >= 0.0f ? "Empaquetando para Android..." : "Copiando el juego..."));
         char overlay[64];
-        std::snprintf(overlay, sizeof(overlay), "%.0f %%  (%.1f / %.1f MB)", fraction * 100.0f, done / 1048576.0,
-                      total / 1048576.0);
-        ImGui::ProgressBar(fraction, ImVec2(-1.0f, 0.0f), overlay);
+        if (phase >= 0.0f) {
+            std::snprintf(overlay, sizeof(overlay), "%.0f %%", phase * 100.0f);
+            ImGui::ProgressBar(phase, ImVec2(-1.0f, 0.0f), overlay);
+        } else {
+            std::snprintf(overlay, sizeof(overlay), "%.0f %%  (%.1f / %.1f MB)", fraction * 100.0f, done / 1048576.0,
+                          total / 1048576.0);
+            ImGui::ProgressBar(fraction, ImVec2(-1.0f, 0.0f), overlay);
+        }
         ImGui::TextDisabled("%s", current.c_str());
         if (!j.cancel && ImGui::Button("Cancelar", ImVec2(-1.0f, 0.0f))) j.cancel = true;
         if (j.finished) {
@@ -360,6 +525,24 @@ void EditorApp::drawExportProgress() {
                 export_message_ = "Exportacion cancelada.";
             } else if (!j.error.empty()) {
                 export_message_ = j.error;
+            } else if (j.android) {
+                const AndroidPackageResult& r = j.android_result;
+                export_message_ = "Juego exportado para Android en " + dialogs::utf8(j.target) + " (escena inicial: " + j.scene_name + ")";
+                if (!r.apk.empty()) export_message_ += "\n  APK: " + dialogs::utf8(r.apk.filename());
+                if (!r.aab.empty()) export_message_ += "\n  AAB (Google Play): " + dialogs::utf8(r.aab.filename());
+                if (!r.obb.empty()) {
+                    export_message_ += "\n  OBB: " + dialogs::utf8(r.obb.filename()) + "  (va en /sdcard/Android/obb/" +
+                                       j.android_input.package + "/)";
+                }
+                export_message_ += "\n  Paquete: " + j.android_input.package;
+                if (j.android_input.key.keystore.empty()) {
+                    export_message_ += "\n\nFirmado con la clave de depuracion: vale para probar, no para Google Play.";
+                }
+                if (!j.android_device.empty()) export_message_ += "\n\nInstalado y abierto en " + j.android_device + ".";
+                if (!j.batch_summary.empty()) export_message_ += "\n\nStatic batching:" + j.batch_summary;
+                if (j.android_device.empty()) {
+                    ShellExecuteW(nullptr, L"open", j.target.wstring().c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+                }
             } else {
                 export_message_ = "Juego exportado en " + dialogs::utf8(j.target) + " (escena inicial: " + j.scene_name + ")";
                 if (!j.batch_summary.empty()) export_message_ += "\n\nStatic batching:" + j.batch_summary;
@@ -412,8 +595,27 @@ void EditorApp::drawExportProgress() {
             show_build_configs_ = true;
         }
         const std::string game_name = safeFolderName(buildGameName());
-        ImGui::TextDisabled("Se creara: %s", dialogs::utf8(parent / dialogs::fromUtf8(game_name) / dialogs::fromUtf8(game_name + ".exe")).c_str());
-        ImGui::Checkbox("Ejecutar el juego al terminar", &export_run_after_);
+        const BuildConfig& active = build_configs_.current();
+        if (active.platform == BuildPlatform::Android) {
+            const std::string file = game_name + (active.android.make_apk || !active.android.make_aab ? ".apk" : ".aab");
+            ImGui::TextDisabled("Android: %s", dialogs::utf8(parent / dialogs::fromUtf8(game_name) / dialogs::fromUtf8(file)).c_str());
+            ImGui::Checkbox("Instalar y abrir en el dispositivo", &export_run_after_);
+            if (export_run_after_) {
+                ImGui::SetNextItemWidth(-110.0f);
+                if (ImGui::BeginCombo("##device", export_device_.empty() ? "(ninguno conectado)" : export_device_.c_str())) {
+                    for (const std::string& d : export_devices_) {
+                        if (ImGui::Selectable(d.c_str(), d == export_device_)) export_device_ = d;
+                    }
+                    ImGui::EndCombo();
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Buscar", ImVec2(-1.0f, 0.0f))) refreshAndroidDevices();
+                ImGui::TextDisabled("Por USB con la depuracion activada, o un emulador abierto.");
+            }
+        } else {
+            ImGui::TextDisabled("Se creara: %s", dialogs::utf8(parent / dialogs::fromUtf8(game_name) / dialogs::fromUtf8(game_name + ".exe")).c_str());
+            ImGui::Checkbox("Ejecutar el juego al terminar", &export_run_after_);
+        }
         if (ImGui::Checkbox("Combinar mallas estaticas (static batching)", &export_static_batching_)) {
             build_configs_.current().static_batching = export_static_batching_;
             saveBuildConfigsNow();
@@ -446,6 +648,14 @@ void EditorApp::drawExportProgress() {
         }
     }
     ImGui::EndPopup();
+}
+
+void EditorApp::refreshAndroidDevices() {
+    const AndroidToolchain tools = findAndroidToolchain(editorFolder(), 35);
+    export_devices_ = androidDevices(tools);
+    if (std::find(export_devices_.begin(), export_devices_.end(), export_device_) == export_devices_.end()) {
+        export_device_ = export_devices_.empty() ? std::string() : export_devices_.front();
+    }
 }
 
 void EditorApp::cancelExport() {

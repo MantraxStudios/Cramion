@@ -48,7 +48,7 @@
         <a href="https://github.com/MantraxStudios/Cramion" class="hover:text-white">GitHub</a>
         <a href="https://discord.gg/zG7rSsUGEz" target="_blank" rel="noopener" class="hover:text-white">Discord</a>
       </div>
-      <a href="#descargar" class="ml-auto border border-paper/30 px-3 py-1.5 text-sm font-medium text-white hover:border-white">Descargar 0.8.6</a>
+      <a href="#descargar" class="ml-auto border border-paper/30 px-3 py-1.5 text-sm font-medium text-white hover:border-white">Descargar 1.0</a>
     </nav>
   </header>
 
@@ -68,7 +68,7 @@
           <a href="https://github.com/MantraxStudios/Cramion/releases/latest/download/Cramion-win64.zip" class="bg-brand px-5 py-2.5 font-semibold text-ink hover:bg-white">Descargar para Windows</a>
           <a href="manual/index.html" class="link text-paper">Leer el manual</a>
         </div>
-        <p class="mt-6 font-mono text-xs text-mute">0.8.6 · Windows 10/11 x64 · GPU con Vulkan 1.3 · ≈19 MB</p>
+        <p class="mt-6 font-mono text-xs text-mute">1.0 · Windows 10/11 x64 · exporta a Android · GPU con Vulkan 1.3 · ≈24 MB</p>
       </div>
 
       <figure class="border border-rule bg-ink-2">
@@ -193,12 +193,15 @@ return Jugador</code></pre>
   <section id="novedades" class="border-b border-rule">
     <div class="mx-auto grid max-w-6xl gap-6 px-5 py-20 lg:grid-cols-[1fr_2fr]">
       <div>
-        <h2 class="text-2xl font-semibold tracking-tight text-white">0.8.6</h2>
+        <h2 class="text-2xl font-semibold tracking-tight text-white">1.0</h2>
         <p class="mt-1 font-mono text-xs text-mute">septiembre de 2026</p>
       </div>
       <div>
         <ul class="space-y-3 text-paper/75">
-          <li><span class="text-white">Corregido.</span> La 0.8.5 se cerraba al abrir y al cerrar el editor.</li>
+          <li><span class="text-white">Android.</span> Exporta a APK, AAB (Google Play) y OBB con paquete, versión, orientación, permisos, icono y firma. <em>Exportar e instalar</em> lo abre en el móvil.</li>
+          <li><span class="text-white">Controles táctiles como Unreal.</span> Joystick, mirar y botones diseñados en el editor, probados con el ratón y controlados desde Lua.</li>
+          <li><span class="text-white">Mando y orientación.</span> Mandos Bluetooth/USB y <span class="font-mono text-[0.9em]">Screen.setOrientation</span> libre o fija.</li>
+          <li><span class="text-white">Ultra realista.</span> Nuevo preset con todos los efectos, y los ajustes gráficos se aplican al momento.</li>
           <li><span class="text-white">Luces en mapas grandes.</span> Con más de 32 luces se dibujan las más cercanas a la cámara y las apagadas no ocupan hueco.</li>
           <li><span class="text-white">Decals.</span> Hasta 32 imágenes distintas por escena.</li>
           <li><span class="text-white">Agua realista.</span> Las olas se tapan entre sí, borreguitos de espuma en las crestas y un mar lejano sin rayas.</li>
@@ -221,7 +224,7 @@ return Jugador</code></pre>
         <h2 class="text-2xl font-semibold tracking-tight text-white">Descargar</h2>
         <p class="mt-4 text-paper/70">Descomprime y abre <span class="font-mono text-[0.9em] text-white">CramionEditor.exe</span>. Desde la 0.6.2 el motor avisa de las versiones nuevas y se actualiza solo.</p>
         <div class="mt-8 flex flex-col items-start gap-3">
-          <a href="https://github.com/MantraxStudios/Cramion/releases/latest/download/Cramion-win64.zip" class="bg-brand px-5 py-2.5 font-semibold text-ink hover:bg-white">Cramion-win64.zip · ≈19 MB</a>
+          <a href="https://github.com/MantraxStudios/Cramion/releases/latest/download/Cramion-win64.zip" class="bg-brand px-5 py-2.5 font-semibold text-ink hover:bg-white">Cramion-win64.zip · ≈24 MB</a>
           <a href="https://github.com/MantraxStudios/Cramion/releases" class="link text-sm">Versiones anteriores</a>
           <a href="https://discord.gg/zG7rSsUGEz" target="_blank" rel="noopener" class="link text-sm">Discord de la comunidad</a>
         </div>
@@ -234,6 +237,7 @@ return Jugador</code></pre>
           <tr class="border-t border-rule"><td class="py-2.5 pr-4 text-white">CramionUpdater.exe</td><td class="py-2.5 text-paper/70">actualizador</td></tr>
           <tr class="border-t border-rule"><td class="py-2.5 pr-4 text-white">cramion.exe</td><td class="py-2.5 text-paper/70">demo de render</td></tr>
           <tr class="border-t border-rule"><td class="py-2.5 pr-4 text-white">shaders/</td><td class="py-2.5 text-paper/70">SPIR-V compilado</td></tr>
+          <tr class="border-t border-rule"><td class="py-2.5 pr-4 text-white">android/</td><td class="py-2.5 text-paper/70">runtime para exportar a Android</td></tr>
           <tr class="border-y border-rule"><td class="py-2.5 pr-4 text-white">Requisitos</td><td class="py-2.5 font-sans text-paper/70">Windows 10/11 x64 y una GPU con Vulkan 1.3. Las escenas de demostración no van incluidas.</td></tr>
         </tbody>
       </table>

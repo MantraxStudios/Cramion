@@ -30,7 +30,18 @@ public:
 
     // Relacion de aspecto de la ventana; se aplica a la proyeccion.
     void setAspectRatio(float aspect) { aspect_ = (aspect > 0.0f) ? aspect : 1.0f; }
-    void setFovY(float radians) { fov_y_ = radians; }
+    void setFovY(float radians) {
+        fov_y_ = radians;
+        asymmetric_ = false;
+    }
+    // Campo de vision asimetrico (cada ojo de un casco de VR): angulos en
+    // radianes hacia la izquierda (negativo), derecha, arriba y abajo
+    // (negativo). fovY/aspectRatio quedan como el cono que lo abarca (sombras).
+    void setFovAngles(float left, float right, float up, float down);
+    void setClipPlanes(float near_plane, float far_plane) {
+        near_plane_ = near_plane > 0.0f ? near_plane : 0.01f;
+        far_plane_ = far_plane > near_plane_ ? far_plane : near_plane_ + 1.0f;
+    }
 
     // Orientacion libre, sin el limite de cabeceo del raton: mira hacia
     // `forward` con `up` arriba. La usan las caras de la sonda de reflexion
@@ -63,6 +74,8 @@ private:
     core::Vec3 free_up_{0.0f, 1.0f, 0.0f};
 
     float fov_y_ = core::radians(70.0f);
+    bool asymmetric_ = false;
+    float tan_left_ = -1.0f, tan_right_ = 1.0f, tan_up_ = 1.0f, tan_down_ = -1.0f;
     float aspect_ = 16.0f / 9.0f;
     float near_plane_ = 0.1f;
     float far_plane_ = 500.0f;

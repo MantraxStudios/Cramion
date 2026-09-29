@@ -39,12 +39,18 @@ using PackProgress = std::function<bool(std::uint64_t done, const std::string& c
 bool writePack(const std::filesystem::path& file, const std::vector<PackInput>& inputs, int level,
                const PackProgress& progress, std::string* error);
 
-bool readPackIndex(const std::filesystem::path& file, std::vector<PackEntry>& entries, std::string* error);
+// `base`/`length`: el paquete esta dentro de otro archivo (Android: dentro
+// del APK, sin copiarlo fuera) desde `base` y con `length` bytes (0 = hasta
+// el final).
+bool readPackIndex(const std::filesystem::path& file, std::vector<PackEntry>& entries, std::string* error,
+                   std::uint64_t base = 0, std::uint64_t length = 0);
 
 // Descomprime todo en `folder` (verifica los checksums). Rutas con ".." o
 // absolutas se rechazan.
+// Descomprime en paralelo (un hilo por nucleo); `progress` se llama siempre
+// desde el hilo que llama (puede dibujar una pantalla de carga).
 bool extractPack(const std::filesystem::path& file, const std::filesystem::path& folder,
-                 const PackProgress& progress, std::string* error);
+                 const PackProgress& progress, std::string* error, std::uint64_t base = 0, std::uint64_t length = 0);
 
 // Identificador del contenido (hash del indice y el tamano): cambia si el
 // paquete cambia.

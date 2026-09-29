@@ -7,6 +7,7 @@
 #include "CramionCore/ecs/Prefab.h"
 #include "CramionCore/ecs/MathUtil.h"
 #include "CramionCore/ecs/Rigging.h"
+#include "CramionCore/input/InputActions.h"
 #include "CramionCore/net/Http.h"
 #include "CramionCore/net/Network.h"
 #include "CramionCore/net/NetworkObject.h"
@@ -17,6 +18,7 @@
 #include "CramionCore/voxel/Voxel.h"
 
 #include <CramionDM/Input.h>
+#include <CramionDM/TouchControls.h>
 
 #include "LuaMath.h"
 
@@ -399,6 +401,9 @@ struct ScriptSystem::Impl {
     GraphicsHost* graphics = nullptr;
     SkeletonHost skeleton_host;
     CursorLockCallback cursor_lock;
+    VibrateCallback vibrate;
+    dm::TouchControls* touch_controls = nullptr;
+    ScreenHost screen;
     bool cursor_locked = false;
     LogCallback log;
     std::vector<ScriptError> errors;
@@ -443,6 +448,63 @@ struct ScriptSystem::Impl {
     std::unordered_map<std::string, DescribeCache> described;
 
     std::unordered_map<std::string, dm::Key> keys;
+
+    // --- Acciones (Enhanced Input) ---
+    input::InputMapper actions;
+    struct ActionBinding {
+        int id = 0;
+        std::string action;
+        std::uint8_t events = 0;  // input::TriggerEvent
+        sol::protected_function fn;
+    };
+    std::vector<ActionBinding> action_bindings;
+    int next_action_binding = 1;
+    static constexpr const char* kBindingsPref = "__input_bindings";
+
+    static std::uint8_t triggerEvent(const std::string& name) {
+        const std::string n = lower(name);
+        if (n == "started") return input::EventStarted;
+        if (n == "ongoing") return input::EventOngoing;
+        if (n == "triggered") return input::EventTriggered;
+        if (n == "completed") return input::EventCompleted;
+        if (n == "canceled" || n == "cancelled") return input::EventCanceled;
+        return 0;
+    }
+
+    const input::ActionState* actionState(const std::string& name, const char* where) {
+        const input::ActionState* s = actions.state(name);
+        if (s == nullptr) write(1, std::string(where) + ": no hay una accion \"" + name + "\" (Archivo > Entrada del proyecto)");
+        return s;
+    }
+
+    // Bool -> true/false, Axis1D -> numero, Axis2D/3D -> Vec3.
+    sol::object actionValue(const std::string& name, const input::ActionState& s) {
+        const input::InputAction* a = actions.settings().findAction(name);
+        const input::ValueType type = a != nullptr ? a->type : input::ValueType::Axis3D;
+        switch (type) {
+            case input::ValueType::Bool: return sol::make_object(*lua, s.value.x > 0.5f);
+            case input::ValueType::Axis1D: return sol::make_object(*lua, s.value.x);
+            default: return sol::make_object(*lua, Vec3{s.value.x, s.value.y, s.value.z});
+        }
+    }
+
+    // Despues de leer la entrada del frame, antes de Update.
+    void updateActions(float dt) {
+        actions.update(input, dt);
+        if (action_bindings.empty()) return;
+        // Copia: una funcion puede anadir o quitar enlaces.
+        const std::vector<ActionBinding> bindings = action_bindings;
+        for (const ActionBinding& b : bindings) {
+            const input::ActionState* s = actions.state(b.action);
+            if (s == nullptr || (s->events & b.events) == 0) continue;
+            sol::protected_function fn = b.fn;
+            sol::protected_function_result r = fn(actionValue(b.action, *s), s->elapsed);
+            if (!r.valid()) {
+                sol::error e = r;
+                fail("Input.bindAction", e.what());
+            }
+        }
+    }
 
     // Cambio de escena y salida pedidos desde Lua; datos guardados (Prefs).
     std::filesystem::path scene_request;
@@ -564,16 +626,40 @@ struct ScriptSystem::Impl {
     float axis(const std::string& name) const {
         if (input == nullptr) return 0.0f;
         const std::string n = lower(name);
+        // Teclado + joystick virtual (tactil) + stick izquierdo / cruceta del mando.
+        const auto pad = [&](dm::GamepadButton b) { return input->isGamepadButtonDown(b) ? 1.0f : 0.0f; };
         if (n == "horizontal") {
-            return (keyDown("d") || keyDown("right") ? 1.0f : 0.0f) - (keyDown("a") || keyDown("left") ? 1.0f : 0.0f);
+            const float keys = (keyDown("d") || keyDown("right") ? 1.0f : 0.0f) - (keyDown("a") || keyDown("left") ? 1.0f : 0.0f);
+            const float v = keys + input->virtualStickX() + input->gamepadAxis(dm::GamepadAxis::LeftX) +
+                            pad(dm::GamepadButton::DpadRight) - pad(dm::GamepadButton::DpadLeft);
+            return std::clamp(v, -1.0f, 1.0f);
         }
         if (n == "vertical") {
-            return (keyDown("w") || keyDown("up") ? 1.0f : 0.0f) - (keyDown("s") || keyDown("down") ? 1.0f : 0.0f);
+            const float keys = (keyDown("w") || keyDown("up") ? 1.0f : 0.0f) - (keyDown("s") || keyDown("down") ? 1.0f : 0.0f);
+            const float v = keys + input->virtualStickY() + input->gamepadAxis(dm::GamepadAxis::LeftY) +
+                            pad(dm::GamepadButton::DpadUp) - pad(dm::GamepadButton::DpadDown);
+            return std::clamp(v, -1.0f, 1.0f);
         }
-        if (n == "mouse x") return input->mouseDeltaX() * 0.1f;
-        if (n == "mouse y") return -input->mouseDeltaY() * 0.1f;
+        // Mirar: raton (o arrastrar el dedo) + stick derecho del mando.
+        if (n == "mouse x") return input->mouseDeltaX() * 0.1f + input->gamepadAxis(dm::GamepadAxis::RightX) * 0.6f;
+        if (n == "mouse y") return -input->mouseDeltaY() * 0.1f + input->gamepadAxis(dm::GamepadAxis::RightY) * 0.6f;
         if (n == "mouse scrollwheel") return input->scrollY();
+        // Una accion del proyecto (Axis1D o el x de las demas).
+        if (const input::ActionState* s = actions.state(name)) return s->value.x;
         return 0.0f;
+    }
+
+    // "a", "rb", "start"...; LeftShoulder = "lb".
+    static bool gamepadButton(const std::string& name, dm::GamepadButton& out) {
+        const std::string n = lower(name);
+        for (int i = 0; i < static_cast<int>(dm::GamepadButton::Count); ++i) {
+            const auto b = static_cast<dm::GamepadButton>(i);
+            if (n == dm::gamepadButtonName(b)) {
+                out = b;
+                return true;
+            }
+        }
+        return false;
     }
 
     // --- Multijugador ---
@@ -2095,6 +2181,201 @@ struct ScriptSystem::Impl {
         in["lockCursor"] = [this](sol::optional<bool> on) { lockCursor(on.value_or(true)); };
         in["isCursorLocked"] = [this]() { return cursor_locked; };
 
+        // Pantalla tactil: los dedos de este frame (1..touchCount).
+        in["touchCount"] = [this]() { return input != nullptr ? static_cast<int>(input->touches().size()) : 0; };
+        in["getTouch"] = [this](int index) -> sol::object {
+            if (input == nullptr || index < 1 || index > static_cast<int>(input->touches().size())) return sol::lua_nil;
+            const dm::Input::Touch& t = input->touches()[static_cast<std::size_t>(index - 1)];
+            static constexpr const char* kPhases[] = {"began", "moved", "stationary", "ended"};
+            sol::table out = lua->create_table();
+            out["id"] = t.id;
+            out["position"] = Vec3{t.x, t.y, 0.0f};
+            out["delta"] = Vec3{t.deltaX, t.deltaY, 0.0f};
+            out["start"] = Vec3{t.startX, t.startY, 0.0f};
+            out["phase"] = kPhases[static_cast<int>(t.phase)];
+            return out;
+        };
+        // El juego corre en un movil (Android) o se toco la pantalla.
+        in["isMobile"] = [this]() {
+#if defined(__ANDROID__)
+            (void)this;
+            return true;
+#else
+            return input != nullptr && input->touchScreen();
+#endif
+        };
+        in["vibrate"] = [this](sol::optional<int> ms) {
+            if (vibrate) vibrate(std::clamp(ms.value_or(60), 1, 5000));
+        };
+        // Mando: botones por nombre (a, b, x, y, lb, rb, ls, rs, start, back,
+        // up, down, left, right) y ejes (leftx, lefty, rightx, righty, lt, rt).
+        in["getGamepadButton"] = [this](const std::string& name) {
+            dm::GamepadButton b{};
+            return input != nullptr && gamepadButton(name, b) && input->isGamepadButtonDown(b);
+        };
+        in["getGamepadButtonDown"] = [this](const std::string& name) {
+            dm::GamepadButton b{};
+            return input != nullptr && gamepadButton(name, b) && input->isGamepadButtonPressed(b);
+        };
+        in["getGamepadButtonUp"] = [this](const std::string& name) {
+            dm::GamepadButton b{};
+            return input != nullptr && gamepadButton(name, b) && input->isGamepadButtonReleased(b);
+        };
+        in["getGamepadAxis"] = [this](const std::string& name) {
+            if (input == nullptr) return 0.0f;
+            const std::string n = lower(name);
+            for (int i = 0; i < static_cast<int>(dm::GamepadAxis::Count); ++i) {
+                const auto a = static_cast<dm::GamepadAxis>(i);
+                if (n == dm::gamepadAxisName(a)) return input->gamepadAxis(a);
+            }
+            return 0.0f;
+        };
+        in["isGamepadConnected"] = [this]() { return input != nullptr && input->gamepadConnected(); };
+
+        // --- Acciones y contextos (Enhanced Input; Archivo > Entrada del proyecto) ---
+        // Valor segun su tipo: Bool -> true/false, Axis1D -> numero, Axis2D/3D -> Vec3.
+        in["getAction"] = [this](const std::string& name) -> sol::object {
+            const input::ActionState* s = actionState(name, "Input.getAction");
+            return s != nullptr ? actionValue(name, *s) : sol::make_object(*lua, sol::lua_nil);
+        };
+        in["getActionValue"] = [this](const std::string& name) {
+            const input::ActionState* s = actionState(name, "Input.getActionValue");
+            return s != nullptr ? Vec3{s->value.x, s->value.y, s->value.z} : Vec3{};
+        };
+        in["getActionState"] = [this](const std::string& name) {
+            const input::ActionState* s = actionState(name, "Input.getActionState");
+            return std::string(input::triggerStateName(s != nullptr ? s->state : input::TriggerState::None));
+        };
+        const auto has_event = [this](const std::string& name, std::uint8_t ev, const char* where) {
+            const input::ActionState* s = actionState(name, where);
+            return s != nullptr && (s->events & ev) != 0;
+        };
+        in["isActionTriggered"] = [has_event](const std::string& n) { return has_event(n, input::EventTriggered, "Input.isActionTriggered"); };
+        in["isActionOngoing"] = [has_event](const std::string& n) { return has_event(n, input::EventOngoing, "Input.isActionOngoing"); };
+        in["wasActionStarted"] = [has_event](const std::string& n) { return has_event(n, input::EventStarted, "Input.wasActionStarted"); };
+        in["wasActionCompleted"] = [has_event](const std::string& n) { return has_event(n, input::EventCompleted, "Input.wasActionCompleted"); };
+        in["wasActionCanceled"] = [has_event](const std::string& n) { return has_event(n, input::EventCanceled, "Input.wasActionCanceled"); };
+        in["getActionElapsed"] = [this](const std::string& name) {
+            const input::ActionState* s = actionState(name, "Input.getActionElapsed");
+            return s != nullptr ? s->elapsed : 0.0f;
+        };
+        // Input.bindAction("Jump", "triggered", function(value, elapsed) ... end) -> id.
+        // Eventos: started, ongoing, triggered, completed, canceled.
+        in["bindAction"] = [this](const std::string& name, const std::string& event, sol::protected_function fn) {
+            const std::uint8_t ev = triggerEvent(event);
+            if (ev == 0) {
+                write(1, "Input.bindAction: '" + event + "' no es un evento (started, ongoing, triggered, completed, canceled)");
+                return 0;
+            }
+            if (actionState(name, "Input.bindAction") == nullptr) return 0;
+            const int id = next_action_binding++;
+            action_bindings.push_back({id, name, ev, std::move(fn)});
+            return id;
+        };
+        in["unbindAction"] = [this](int id) {
+            std::erase_if(action_bindings, [id](const ActionBinding& b) { return b.id == id; });
+        };
+        in["getActions"] = [this]() {
+            sol::table out = lua->create_table();
+            int i = 1;
+            for (const input::InputAction& a : actions.settings().actions) out[i++] = a.name;
+            return out;
+        };
+        // Contextos: varios activos a la vez; el de mas prioridad se queda las teclas.
+        in["addMappingContext"] = [this](const std::string& name, sol::optional<int> priority) {
+            const bool ok = priority ? actions.addContext(name, *priority) : actions.addContext(name);
+            if (!ok) write(1, "Input.addMappingContext: no hay un contexto \"" + name + "\"");
+            return ok;
+        };
+        in["removeMappingContext"] = [this](const std::string& name) { actions.removeContext(name); };
+        in["hasMappingContext"] = [this](const std::string& name) { return actions.hasContext(name); };
+        in["clearMappingContexts"] = [this]() { actions.clearContexts(); };
+        in["getMappingContexts"] = [this]() {
+            sol::table out = lua->create_table();
+            int i = 1;
+            for (const std::string& c : actions.activeContexts()) out[i++] = c;
+            return out;
+        };
+        // Reasignar teclas (menu de opciones): {{context=, key=}, ...}.
+        in["getBindings"] = [this](const std::string& action) {
+            sol::table out = lua->create_table();
+            int i = 1;
+            for (const auto& [context, key] : actions.bindings(action)) {
+                sol::table b = lua->create_table();
+                b["context"] = context;
+                b["key"] = key;
+                out[i++] = b;
+            }
+            return out;
+        };
+        // index: 1 = la primera tecla de esa accion en ese contexto.
+        in["rebind"] = [this](const std::string& context, const std::string& action, int index, const std::string& key) {
+            const bool ok = actions.rebind(context, action, index - 1, key);
+            if (!ok) write(1, "Input.rebind: no se pudo (" + context + " / " + action + " #" + std::to_string(index) + " -> " + key + ")");
+            return ok;
+        };
+        // Las teclas cambiadas se guardan con Prefs (entre partidas).
+        in["saveBindings"] = [this]() {
+            prefs[kBindingsPref] = actions.overridesJson();
+            savePrefs();
+        };
+        in["resetBindings"] = [this]() {
+            actions.clearOverrides();
+            prefs.erase(kBindingsPref);
+            savePrefs();
+        };
+        // La tecla/boton pulsado este frame ("W", "Mouse Left", "Gamepad A") o nil.
+        in["anyKeyPressed"] = [this]() -> sol::object {
+            if (input == nullptr) return sol::make_object(*lua, sol::lua_nil);
+            const std::string name = input::pressedSourceName(*input);
+            if (name.empty()) return sol::make_object(*lua, sol::lua_nil);
+            return sol::make_object(*lua, name);
+        };
+        // Controles tactiles en pantalla (se disenan en el editor: Archivo >
+        // Controles tactiles). Mostrar/ocultar todo, el joystick, la zona de
+        // mirar o un boton por su texto.
+        in["setTouchControls"] = [this](bool on) {
+            if (touch_controls != nullptr) touch_controls->setEnabled(on);
+        };
+        in["touchControlsEnabled"] = [this]() { return touch_controls != nullptr && touch_controls->layout().enabled; };
+        in["setTouchJoystick"] = [this](bool on) {
+            if (touch_controls != nullptr) touch_controls->setJoystick(on);
+        };
+        in["setTouchLook"] = [this](bool on) {
+            if (touch_controls != nullptr) touch_controls->setLook(on);
+        };
+        in["setTouchButton"] = [this](const std::string& label, bool visible) {
+            if (touch_controls == nullptr) return false;
+            if (!touch_controls->setButtonVisible(label, visible)) {
+                write(1, "Input.setTouchButton: no hay un boton tactil \"" + label + "\"");
+                return false;
+            }
+            return true;
+        };
+
+        // Screen: tamano y orientacion.
+        sol::table sc = L.create_named_table("Screen");
+        sc["width"] = [this]() { return screen.width ? screen.width() : 0; };
+        sc["height"] = [this]() { return screen.height ? screen.height() : 0; };
+        // "landscape" o "portrait" segun el tamano actual.
+        sc["orientation"] = [this]() {
+            const int w = screen.width ? screen.width() : 0;
+            const int h = screen.height ? screen.height() : 0;
+            return std::string(w >= h ? "landscape" : "portrait");
+        };
+        // auto (gira libre), landscape / portrait (gira solo entre las dos
+        // horizontales o verticales), landscape_fixed / portrait_fixed (fija).
+        sc["setOrientation"] = [this](const std::string& mode) {
+            if (!screen.set_orientation) return false;  // PC: no hace nada
+            if (!screen.set_orientation(lower(mode))) {
+                write(1, "Screen.setOrientation: '" + mode +
+                             "' no es un modo (auto, landscape, portrait, landscape_fixed, portrait_fixed)");
+                return false;
+            }
+            return true;
+        };
+        sc["orientationMode"] = [this]() { return screen.orientation_mode ? screen.orientation_mode() : std::string("auto"); };
+
         // Time (se actualiza cada frame)
         sol::table t = L.create_named_table("Time");
         t["deltaTime"] = 0.0f;
@@ -2960,7 +3241,23 @@ struct ScriptSystem::Impl {
     }
 };
 
-ScriptSystem::ScriptSystem() : impl_(std::make_unique<Impl>()) { impl_->buildKeys(); }
+ScriptSystem::ScriptSystem() : impl_(std::make_unique<Impl>()) {
+    impl_->buildKeys();
+    impl_->actions.setSettings(input::defaultInputActions());
+}
+
+void ScriptSystem::setInputActions(const input::InputActionSettings& settings) {
+    Impl& d = *impl_;
+    const std::vector<std::string> active = d.actions.activeContexts();
+    d.actions.setSettings(settings);
+    if (d.running) {
+        // En Play: los contextos que estaban activos siguen (con su prioridad nueva).
+        d.actions.clearContexts();
+        for (auto it = active.rbegin(); it != active.rend(); ++it) d.actions.addContext(*it);
+    }
+}
+
+const input::InputMapper& ScriptSystem::inputMapper() const { return impl_->actions; }
 
 ScriptSystem::~ScriptSystem() { stop(); }
 
@@ -2973,6 +3270,9 @@ void ScriptSystem::setVoxels(voxel::VoxelSystem* voxels) { impl_->voxels = voxel
 void ScriptSystem::setGraphics(GraphicsHost* graphics) { impl_->graphics = graphics; }
 void ScriptSystem::setSkeletonHost(SkeletonHost host) { impl_->skeleton_host = std::move(host); }
 void ScriptSystem::setCursorLock(CursorLockCallback callback) { impl_->cursor_lock = std::move(callback); }
+void ScriptSystem::setVibrate(VibrateCallback callback) { impl_->vibrate = std::move(callback); }
+void ScriptSystem::setTouchControls(dm::TouchControls* controls) { impl_->touch_controls = controls; }
+void ScriptSystem::setScreen(ScreenHost host) { impl_->screen = std::move(host); }
 bool ScriptSystem::cursorLocked() const { return impl_->cursor_locked; }
 void ScriptSystem::releaseCursor() { impl_->lockCursor(false); }
 void ScriptSystem::setLog(LogCallback log) { impl_->log = std::move(log); }
@@ -2998,6 +3298,7 @@ void ScriptSystem::setPrefsFile(const std::filesystem::path& file) {
     std::ifstream in(file);
     std::string line;
     while (std::getline(in, line)) {
+        if (!line.empty() && line.back() == '\r') line.pop_back();  // escrito en Windows (CRLF), leido en Android
         const std::size_t eq = line.find('=');
         if (eq != std::string::npos && eq > 0) d.prefs[line.substr(0, eq)] = line.substr(eq + 1);
     }
@@ -3015,6 +3316,10 @@ void ScriptSystem::start(ecs::World& world) {
     d.running = true;
     d.time = 0.0f;
     d.frame = 0;
+    // Contextos del principio y las teclas que el jugador guardo.
+    d.action_bindings.clear();
+    if (const auto saved = d.prefs.find(Impl::kBindingsPref); saved != d.prefs.end()) d.actions.applyOverridesJson(saved->second);
+    d.actions.resetContexts();
     if (d.physics != nullptr) {
         d.listener = d.physics->addListener([&d](const physics::PhysicsEvent& event) { d.events.push_back(event); });
     }
@@ -3054,6 +3359,7 @@ void ScriptSystem::update(ecs::World& world, float delta_seconds) {
         }
     }
 
+    d.updateActions(delta_seconds);
     d.dispatchEvents();
     // Copias de las claves: un script puede crear objetos durante el bucle.
     std::vector<entt::entity> order;
@@ -3115,6 +3421,7 @@ void ScriptSystem::stop() {
     d.net_entities.clear();
     if (d.http) d.http->cancelAll();
     d.http_callbacks.clear();
+    d.action_bindings.clear();  // sus funciones son del Lua que se va
     d.lua.reset();
     d.running = false;
     d.lockCursor(false);  // el raton vuelve al sistema

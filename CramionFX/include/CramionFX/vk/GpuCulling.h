@@ -91,6 +91,7 @@ private:
     std::uint32_t cluster_capacity_ = 0;
     std::uint32_t group_capacity_ = 0;
     std::uint32_t slot_capacity_ = 0;
+    bool clear_commands_ = false;  // sin drawIndirectCount: huecos a cero cada frame
 
     // Por frame en vuelo (los escribe la CPU): clusteres y estadisticas.
     std::array<VulkanBuffer, kMaxFramesInFlight> clusters_;

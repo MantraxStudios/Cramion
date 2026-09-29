@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(Cramion
-    VERSION 0.8.6
+    VERSION 1.0.0
     DESCRIPTION "Motor con capa de plataforma DirectX 12 (CramionDM) y renderizador Vulkan (CramionFX)"
     LANGUAGES CXX
 )
@@ -15,7 +15,9 @@ if(CRAMION_VERSION_SUFFIX)
 endif()
 
 # Recursos de Windows (el icono de los .exe: assets/icon.ico).
-enable_language(RC)
+if(WIN32)
+    enable_language(RC)
+endif()
 # C: Lua y miniaudio (scripting y audio de CramionCore).
 enable_language(C)
 set(CRAMION_ICON_RC "${CMAKE_CURRENT_SOURCE_DIR}/assets/cramion.rc")
@@ -58,6 +60,14 @@ add_subdirectory(CramionFX)
 # Aplicacion de ejemplo: carga un escenario y lo recorre con la camara.
 # -----------------------------------------------------------------------------
 
+# Android (NDK): solo el juego (libmain.so, CramionEditor/android); el
+# editor, el actualizador y las herramientas son de Windows.
+if(ANDROID)
+    add_subdirectory(CramionCore)
+    add_subdirectory(CramionEditor)
+    return()
+endif()
+
 add_executable(cramion src/main.cpp "${CRAMION_ICON_RC}")
 # En Release, sin consola (como el editor y el player).
 if(CMAKE_BUILD_TYPE STREQUAL "Release")
@@ -82,6 +92,88 @@ add_subdirectory(CramionEditor)
 
 # Actualizador (CramionUpdater.exe) y su libreria comun con el editor.
 add_subdirectory(CramionUpdater)
+
+# -----------------------------------------------------------------------------
+# Runtime de Android: el juego compilado con el NDK (android/<abi>/libmain.so
+# junto al editor) para exportar APK/AAB. Se compila en su propia carpeta
+# (build-android, build-android-x64) despues del editor, con la mitad de
+# compilaciones en paralelo para no sumar RAM a la del resto.
+# -----------------------------------------------------------------------------
+set(_cramion_ndk "")
+if(DEFINED ENV{ANDROID_NDK_HOME} AND EXISTS "$ENV{ANDROID_NDK_HOME}/build/cmake/android.toolchain.cmake")
+    set(_cramion_ndk "$ENV{ANDROID_NDK_HOME}")
+else()
+    file(GLOB _cramion_ndks "$ENV{LOCALAPPDATA}/Android/Sdk/ndk/*")
+    list(SORT _cramion_ndks COMPARE NATURAL ORDER DESCENDING)
+    foreach(_ndk IN LISTS _cramion_ndks)
+        if(EXISTS "${_ndk}/build/cmake/android.toolchain.cmake")
+            set(_cramion_ndk "${_ndk}")
+            break()
+        endif()
+    endforeach()
+endif()
+if(_cramion_ndk)
+    set(_cramion_android_default ON)
+else()
+    set(_cramion_android_default OFF)
+endif()
+option(CRAMION_ANDROID "Compilar el runtime de Android (exportar a APK/AAB); necesita el Android NDK" ${_cramion_android_default})
+set(CRAMION_ANDROID_NDK "${_cramion_ndk}" CACHE PATH "Carpeta del Android NDK")
+set(CRAMION_ANDROID_ABIS "arm64-v8a" CACHE STRING "ABIs de Android (arm64-v8a;x86_64 para emuladores)")
+if(CRAMION_ANDROID)
+    if(NOT EXISTS "${CRAMION_ANDROID_NDK}/build/cmake/android.toolchain.cmake")
+        message(FATAL_ERROR "CRAMION_ANDROID=ON pero no se encontro el NDK (CRAMION_ANDROID_NDK)")
+    endif()
+    include(ExternalProject)
+    file(GLOB _cramion_strip "${CRAMION_ANDROID_NDK}/toolchains/llvm/prebuilt/*/bin/llvm-strip*")
+    list(GET _cramion_strip 0 _cramion_strip)
+    math(EXPR _cramion_android_jobs "${CRAMION_COMPILE_JOBS} / 2")
+    if(_cramion_android_jobs LESS 1)
+        set(_cramion_android_jobs 1)
+    endif()
+    foreach(_abi IN LISTS CRAMION_ANDROID_ABIS)
+        if(_abi STREQUAL "arm64-v8a")
+            set(_dir "${CMAKE_SOURCE_DIR}/build-android")
+        else()
+            string(REPLACE "x86_64" "x64" _suffix "${_abi}")
+            set(_dir "${CMAKE_SOURCE_DIR}/build-android-${_suffix}")
+        endif()
+        ExternalProject_Add(cramion_android_${_abi}
+            SOURCE_DIR "${CMAKE_SOURCE_DIR}"
+            BINARY_DIR "${_dir}"
+            CMAKE_GENERATOR Ninja
+            CMAKE_ARGS
+                "-DCMAKE_TOOLCHAIN_FILE=${CRAMION_ANDROID_NDK}/build/cmake/android.toolchain.cmake"
+                "-DANDROID_ABI=${_abi}"
+                -DANDROID_PLATFORM=android-29
+                -DANDROID_STL=c++_static
+                -DCMAKE_BUILD_TYPE=Release
+                "-DCRAMION_COMPILE_JOBS=${_cramion_android_jobs}"
+            BUILD_COMMAND "${CMAKE_COMMAND}" --build "${_dir}" --target main
+            # Sin simbolos (la de la carpeta de compilacion los conserva para
+            # llvm-symbolizer): de ~250 MB a ~25 MB dentro del APK.
+            INSTALL_COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_BINARY_DIR}/android/${_abi}"
+                    COMMAND "${_cramion_strip}" --strip-unneeded "${_dir}/CramionEditor/libmain.so"
+                            -o "${CMAKE_BINARY_DIR}/android/${_abi}/libmain.so"
+            BUILD_ALWAYS TRUE
+            USES_TERMINAL_BUILD TRUE)
+        add_dependencies(cramion_android_${_abi} CramionEditor)
+    endforeach()
+    # bundletool (Google, Apache 2.0) para los AAB de Google Play.
+    set(_bundletool "${CMAKE_BINARY_DIR}/android/bundletool.jar")
+    if(NOT EXISTS "${_bundletool}")
+        message(STATUS "Descargando bundletool (AAB de Android)...")
+        file(DOWNLOAD "https://github.com/google/bundletool/releases/download/1.18.3/bundletool-all-1.18.3.jar"
+             "${_bundletool}.part" STATUS _status TLS_VERIFY ON)
+        list(GET _status 0 _code)
+        if(_code EQUAL 0)
+            file(RENAME "${_bundletool}.part" "${_bundletool}")
+        else()
+            file(REMOVE "${_bundletool}.part")
+            message(WARNING "No se pudo descargar bundletool: sin el, Exportar a Android solo hace APK")
+        endif()
+    endif()
+endif()
 
 # -----------------------------------------------------------------------------
 # Escenarios
@@ -169,3 +261,8 @@ add_custom_target(cramion_package
     COMMENT "Empaquetando Cramion ${CRAMION_VERSION_FULL} (Cramion-win64.zip)"
     VERBATIM)
 add_dependencies(cramion_package cramion CramionEditor CramionPlayer CramionUpdater)
+if(CRAMION_ANDROID)
+    foreach(_abi IN LISTS CRAMION_ANDROID_ABIS)
+        add_dependencies(cramion_package cramion_android_${_abi})
+    endforeach()
+endif()

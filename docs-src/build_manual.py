@@ -3,6 +3,7 @@
 #   docs-src/pages/*.html   el contenido de cada pagina (HTML con h3, p, table, pre...)
 # Uso: python docs-src/build_manual.py
 # Cada pagina sale con el menu lateral, el buscador (docs/manual/search.js),
+# el estilo de docs-src/manual.css (sin frameworks),
 # "En esta pagina", anterior/siguiente y el boton de copiar en el codigo.
 import html
 import json
@@ -103,8 +104,12 @@ with open(os.path.join(OUT, "search.js"), "w", encoding="utf-8", newline="\n") a
     f.write("window.CRAMION_SEARCH = " + json.dumps(search, ensure_ascii=False) + ";\n")
 
 # --- Plantilla ---------------------------------------------------------------------
+# Sin frameworks: el estilo esta en docs-src/manual.css (se copia a docs/manual/).
+import shutil
+shutil.copyfile(os.path.join(HERE, "manual.css"), os.path.join(OUT, "manual.css"))
+
 HEAD = """<!doctype html>
-<html lang="es" class="scroll-smooth">
+<html lang="es">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -113,86 +118,43 @@ HEAD = """<!doctype html>
   <link rel="icon" href="../img/icon.png">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-  <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
-  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css">
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/base16/tomorrow-night.min.css">
+  <link rel="stylesheet" href="manual.css">
   <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/lua.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/glsl.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/json.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/bash.min.js"></script>
   <script src="search.js"></script>
-  <style type="text/tailwindcss">
-    @theme {{
-      --color-ink: #0c0e12;
-      --color-panel: #13161d;
-      --color-line: #232834;
-      --color-brand: #0ab0ff;
-      --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
-      --font-mono: "JetBrains Mono", ui-monospace, monospace;
-    }}
-    body {{ background: var(--color-ink); }}
-    .hljs {{ background: transparent !important; padding: 0 !important; }}
-
-    .doc h3 {{ @apply mt-12 scroll-mt-24 border-b border-line pb-2 text-xl font-semibold text-white first:mt-0; }}
-    .doc p  {{ @apply mt-4 leading-7 text-slate-400; }}
-    .doc ul {{ @apply mt-4 list-disc space-y-1.5 pl-5 text-slate-400; }}
-    .doc :not(pre) > code {{ @apply rounded bg-panel px-1.5 py-0.5 font-mono text-[0.85em] text-sky-300; }}
-    .doc pre {{ @apply relative mt-4 overflow-x-auto rounded-xl border border-line bg-panel p-5 text-sm leading-relaxed; }}
-    .doc table {{ @apply mt-4 w-full border-collapse text-left text-sm; }}
-    .doc th {{ @apply border-b border-line py-2 pr-4 font-semibold text-slate-200; }}
-    .doc td {{ @apply border-b border-line/60 py-2.5 pr-4 align-top text-slate-400; }}
-    .doc td:first-child {{ @apply whitespace-nowrap; }}
-    .doc .table-wrap {{ @apply mt-4 overflow-x-auto rounded-xl border border-line px-4; }}
-    .doc .table-wrap table {{ @apply mt-0; }}
-    .doc .table-wrap tr:last-child td {{ @apply border-b-0; }}
-    .note {{ @apply mt-5 rounded-xl border border-brand/40 bg-brand/10 p-4 text-sm leading-6 text-slate-300; }}
-    .file {{ @apply !mb-0 !mt-6 flex items-center gap-2 font-mono text-xs !text-slate-500; }}
-    .file + pre {{ @apply !mt-2; }}
-
-    .side a {{ @apply block rounded-md px-3 py-1.5 text-sm text-slate-400 transition hover:bg-panel hover:text-white; }}
-    .side a.active {{ @apply bg-brand/10 font-medium text-brand; }}
-    .onpage a {{ @apply block border-l border-line py-1 pl-3 text-[13px] text-slate-500 transition hover:text-white; }}
-    .onpage a.active {{ @apply border-brand text-brand; }}
-    .copy {{ @apply absolute right-3 top-3 rounded-md border border-line bg-ink/80 px-2 py-1 font-sans text-xs text-slate-400 opacity-0 transition hover:text-white; }}
-    pre:hover .copy {{ @apply opacity-100; }}
-  </style>
 </head>
-<body class="font-sans text-slate-300 antialiased">
+<body>
 """
 
 HEADER = """
-  <header class="sticky top-0 z-40 border-b border-line/70 bg-ink/85 backdrop-blur">
-    <nav class="mx-auto flex max-w-[88rem] items-center gap-4 px-4 py-3 sm:px-6">
-      <button id="menu-btn" class="rounded-md p-1.5 text-slate-400 hover:bg-panel hover:text-white lg:hidden" aria-label="Menú">
-        <svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
-      </button>
-      <a href="index.html" class="flex shrink-0 items-center gap-2.5">
-        <img src="../img/icon.png" alt="" class="h-8 w-8">
-        <span class="hidden text-lg font-bold tracking-wide text-white sm:inline">CRAMION</span>
-        <span class="ml-1 hidden rounded border border-line px-2 py-0.5 text-xs text-slate-400 sm:inline">Manual</span>
-      </a>
-      <div class="relative mx-auto min-w-0 max-w-md flex-1">
-        <input id="search" type="search" autocomplete="off" placeholder="Buscar en el manual..."
-               class="w-full rounded-lg border border-line bg-panel py-2 pl-9 pr-10 text-sm text-white placeholder:text-slate-500 focus:border-brand focus:outline-none">
-        <svg class="pointer-events-none absolute left-3 top-2.5 h-4 w-4 text-slate-500" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
-        <kbd class="pointer-events-none absolute right-2.5 top-2 hidden rounded border border-line px-1.5 font-mono text-[11px] text-slate-500 sm:block">/</kbd>
-        <div id="results" class="absolute inset-x-0 top-full mt-2 hidden max-h-[70vh] overflow-y-auto rounded-xl border border-line bg-panel p-2 shadow-2xl shadow-black/60"></div>
+  <header class="top">
+    <div class="top-inner">
+      <button id="menu-btn" class="menu-btn" aria-label="Menú">Menú</button>
+      <a href="index.html" class="brand"><img src="../img/icon.png" alt=""><b>Cramion</b><span>manual</span></a>
+      <div class="search">
+        <input id="search" type="search" autocomplete="off" placeholder="Buscar (funciones, componentes, páginas)">
+        <kbd>/</kbd>
+        <div id="results" class="results" hidden></div>
       </div>
-      <div class="hidden shrink-0 items-center gap-5 text-sm md:flex">
-        <a href="../index.html" class="hover:text-white">Inicio</a>
-        <a href="{discord}" target="_blank" rel="noopener" class="hover:text-white">Discord</a>
-        <a href="{github}" target="_blank" rel="noopener" class="hover:text-white">GitHub</a>
-      </div>
-    </nav>
+      <nav class="top-links">
+        <a href="../index.html">Web</a>
+        <a href="{discord}" target="_blank" rel="noopener">Discord</a>
+        <a href="{github}" target="_blank" rel="noopener">GitHub</a>
+      </nav>
+    </div>
   </header>
 """
 
 
 def sidebar(current):
-    out = ['<a href="index.html" class="{}">Inicio del manual</a>'.format("active" if current == "index" else "")]
-    for group, gicon, _ in GROUPS:
-        out.append(f'<p class="mb-1 mt-7 flex items-center gap-2 px-3 text-xs font-semibold uppercase tracking-wider text-slate-500">{icon(gicon, "h-3.5 w-3.5")}{group}</p>')
+    out = ['<a href="index.html"{}>Índice</a>'.format(' class="active"' if current == "index" else "")]
+    for group, _, _ in GROUPS:
+        out.append(f'<p class="group">{group}</p>')
         for p in pages:
             if p["group"] == group:
                 active = ' class="active"' if p["slug"] == current else ""
@@ -202,32 +164,40 @@ def sidebar(current):
 
 SCRIPT = """
   <script>
+    // Solo el codigo con lenguaje (los arboles de carpetas y la salida quedan tal cual).
+    hljs.configure({ cssSelector: 'pre code[class*="language-"]' });
     hljs.highlightAll();
 
     // Menu lateral en el movil.
     const side = document.getElementById("side");
-    const shade = document.getElementById("shade");
-    const toggle = open => {
-      side.classList.toggle("-translate-x-full", !open);
-      shade.classList.toggle("hidden", !open);
-    };
-    document.getElementById("menu-btn").addEventListener("click", () => toggle(side.classList.contains("-translate-x-full")));
-    shade.addEventListener("click", () => toggle(false));
+    document.getElementById("menu-btn").addEventListener("click", () => document.body.classList.toggle("menu-open"));
+    document.addEventListener("click", ev => {
+      if (document.body.classList.contains("menu-open") && !ev.target.closest("#side, #menu-btn")) {
+        document.body.classList.remove("menu-open");
+      }
+    });
     // El enlace activo a la vista dentro del menu (sin mover la pagina).
     const current = side.querySelector("a.active");
     if (current) side.scrollTop = current.offsetTop - side.clientHeight / 2;
 
-    // Boton de copiar en cada bloque de codigo.
+    // Ancla de cada seccion y boton de copiar en el codigo.
+    document.querySelectorAll(".doc h3[id]").forEach(h => {
+      const a = document.createElement("a");
+      a.className = "anchor";
+      a.href = "#" + h.id;
+      a.textContent = "#";
+      h.appendChild(a);
+    });
     document.querySelectorAll(".doc pre").forEach(pre => {
       const b = document.createElement("button");
       b.className = "copy";
-      b.textContent = "Copiar";
+      b.textContent = "copiar";
       b.addEventListener("click", async () => {
         try {
           await navigator.clipboard.writeText(pre.querySelector("code")?.innerText ?? pre.innerText);
-          b.textContent = "Copiado";
-        } catch { b.textContent = "No se pudo"; }
-        setTimeout(() => (b.textContent = "Copiar"), 1400);
+          b.textContent = "copiado";
+        } catch { b.textContent = "no se pudo"; }
+        setTimeout(() => (b.textContent = "copiar"), 1400);
       });
       pre.appendChild(b);
     });
@@ -240,20 +210,20 @@ SCRIPT = """
       w.appendChild(t);
     });
 
-    // "En esta pagina": los h3 con resaltado de la seccion visible.
+    // "En esta pagina": los h3 con la seccion visible marcada.
     const onpage = document.getElementById("onpage");
     if (onpage) {
       const heads = [...document.querySelectorAll(".doc h3[id]")];
       if (heads.length < 2) {
-        onpage.closest("aside").classList.add("xl:invisible");
+        onpage.closest("aside").style.visibility = "hidden";
       } else {
-        onpage.innerHTML = heads.map(h => `<a href="#${h.id}">${h.textContent}</a>`).join("");
+        onpage.innerHTML = heads.map(h => `<a href="#${h.id}">${h.firstChild.textContent}</a>`).join("");
         const links = [...onpage.querySelectorAll("a")];
         const obs = new IntersectionObserver(entries => {
           for (const e of entries) {
             if (e.isIntersecting) links.forEach(a => a.classList.toggle("active", a.getAttribute("href") === "#" + e.target.id));
           }
-        }, { rootMargin: "-80px 0px -70% 0px" });
+        }, { rootMargin: "-70px 0px -70% 0px" });
         heads.forEach(h => obs.observe(h));
       }
     }
@@ -265,18 +235,18 @@ SCRIPT = """
     const esc = s => s.replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
     let hits = [], sel = 0;
     const render = () => {
+      const q = input.value.trim();
       if (!hits.length) {
-        box.innerHTML = input.value.trim() ? '<p class="px-3 py-2 text-sm text-slate-500">Sin resultados.</p>' : "";
-        box.classList.toggle("hidden", !input.value.trim());
+        box.innerHTML = q ? '<p class="none">Sin resultados.</p>' : "";
+        box.hidden = !q;
         return;
       }
       box.innerHTML = hits.map((h, i) => `
-        <a href="${h.u}" class="block rounded-lg px-3 py-2 ${i === sel ? "bg-brand/15" : "hover:bg-ink"}">
-          <span class="${h.c ? "font-mono text-sky-300" : "font-medium text-white"} text-sm">${esc(h.t)}</span>
-          <span class="ml-2 text-xs text-slate-500">${esc(h.g)}</span>
-          ${h.d ? `<span class="mt-0.5 block text-xs text-slate-400">${esc(h.d)}</span>` : ""}
+        <a href="${h.u}" class="${i === sel ? "sel" : ""}">
+          <span class="t${h.c ? " code" : ""}">${esc(h.t)}</span><span class="g">${esc(h.g)}</span>
+          ${h.d ? `<span class="d">${esc(h.d)}</span>` : ""}
         </a>`).join("");
-      box.classList.remove("hidden");
+      box.hidden = false;
     };
     input.addEventListener("input", () => {
       const q = norm(input.value.trim());
@@ -302,7 +272,7 @@ SCRIPT = """
     document.addEventListener("keydown", ev => {
       if (ev.key === "/" && document.activeElement !== input) { ev.preventDefault(); input.focus(); }
     });
-    document.addEventListener("click", ev => { if (!ev.target.closest("#results, #search")) box.classList.add("hidden"); });
+    document.addEventListener("click", ev => { if (!ev.target.closest("#results, #search")) box.hidden = true; });
     input.addEventListener("focus", () => { if (input.value.trim()) render(); });
   </script>
 </body>
@@ -312,14 +282,13 @@ SCRIPT = """
 
 def layout(current, main_html, with_onpage=True):
     onpage = """
-    <aside class="sticky top-16 hidden h-[calc(100vh-4rem)] w-52 shrink-0 overflow-y-auto py-10 xl:block">
-      <p class="mb-3 text-xs font-semibold uppercase tracking-wider text-slate-500">En esta página</p>
+    <aside class="onpage-col">
+      <p>En esta página</p>
       <nav id="onpage" class="onpage"></nav>
     </aside>""" if with_onpage else ""
     return f"""
-  <div id="shade" class="fixed inset-0 z-30 hidden bg-black/60 lg:hidden"></div>
-  <div class="mx-auto flex max-w-[88rem] gap-10 px-4 sm:px-6">
-    <aside id="side" class="side fixed inset-y-0 left-0 z-40 w-72 -translate-x-full overflow-y-auto border-r border-line bg-ink px-3 py-6 transition-transform lg:sticky lg:top-16 lg:z-0 lg:h-[calc(100vh-4rem)] lg:w-60 lg:shrink-0 lg:translate-x-0 lg:border-0 lg:px-0 lg:py-10">
+  <div class="frame">
+    <aside id="side" class="side">
       <nav>
         {sidebar(current)}
       </nav>
@@ -340,99 +309,83 @@ def write(name, title, desc, body):
 for i, p in enumerate(pages):
     prev_p = pages[i - 1] if i > 0 else None
     next_p = pages[i + 1] if i + 1 < len(pages) else None
-    nav = '<div class="mt-16 grid gap-4 border-t border-line pt-8 sm:grid-cols-2">'
+    nav = '<nav class="pager">'
     if prev_p:
-        nav += f'''
-        <a href="{prev_p["slug"]}.html" class="group rounded-xl border border-line p-4 transition hover:border-brand/60 hover:bg-panel">
-          <span class="text-xs text-slate-500">← Anterior</span>
-          <span class="mt-1 block font-semibold text-white group-hover:text-brand">{prev_p["title"]}</span>
-        </a>'''
-    else:
-        nav += "<span></span>"
+        nav += f'<a href="{prev_p["slug"]}.html"><span>← anterior</span><b>{prev_p["title"]}</b></a>'
     if next_p:
-        nav += f'''
-        <a href="{next_p["slug"]}.html" class="group rounded-xl border border-line p-4 text-right transition hover:border-brand/60 hover:bg-panel">
-          <span class="text-xs text-slate-500">Siguiente →</span>
-          <span class="mt-1 block font-semibold text-white group-hover:text-brand">{next_p["title"]}</span>
-        </a>'''
-    nav += "</div>"
+        nav += f'<a class="next" href="{next_p["slug"]}.html"><span>siguiente →</span><b>{next_p["title"]}</b></a>'
+    nav += "</nav>"
     main = f"""
-    <main class="doc min-w-0 flex-1 overflow-x-hidden py-10 lg:max-w-3xl">
-      <div class="flex items-center gap-2 text-sm text-slate-500">
-        <a href="index.html" class="hover:text-white">Manual</a><span>/</span>
-        <span class="flex items-center gap-1.5 text-brand">{icon(p["icon"], "h-3.5 w-3.5")}{p["group"]}</span>
-      </div>
-      <h1 class="mt-3 text-4xl font-extrabold tracking-tight text-white">{p["title"]}</h1>
-      <p class="!mt-3 text-lg !text-slate-400">{html.escape(p["desc"])}</p>
-      <div class="mt-10">
+    <main class="doc">
+      <div class="crumbs"><a href="index.html">Manual</a> / {p["group"]}</div>
+      <h1>{p["title"]}</h1>
+      <p class="lede">{html.escape(p["desc"])}</p>
+      <div class="body">
 {p["content"]}
       </div>
       {nav}
-      <p class="mt-10 text-sm text-slate-500">¿Algo no queda claro o falta algo? Pregunta en el
-        <a href="{DISCORD}" target="_blank" rel="noopener" class="text-brand hover:text-white">Discord</a>.</p>
+      <p class="help">¿Algo no queda claro o falta algo? Pregunta en el
+        <a href="{DISCORD}" target="_blank" rel="noopener">Discord</a>.</p>
     </main>"""
     write(p["slug"] + ".html", f'{strip(p["title"])} · Manual de Cramion', p["desc"], layout(p["slug"], main))
 
-# --- Portada del manual --------------------------------------------------------------
-def cards(group, mono=False):
-    items = []
+# --- Portada del manual: un indice --------------------------------------------------
+def toc(group, mono=False):
+    rows = []
     for p in pages:
         if p["group"] != group:
             continue
-        title_cls = "font-mono text-sky-300" if mono else "font-semibold text-white"
-        items.append(f'''
-          <a href="{p["slug"]}.html" class="group rounded-xl border border-line bg-panel/60 p-5 transition hover:-translate-y-0.5 hover:border-brand/60 hover:bg-panel">
-            <span class="{title_cls} group-hover:text-brand">{p["title"]}</span>
-            <span class="mt-2 block text-sm leading-6 text-slate-400">{html.escape(p["desc"])}</span>
-          </a>''')
-    return "".join(items)
+        cls = ' class="code"' if mono else ""
+        rows.append(f'<li><a href="{p["slug"]}.html"{cls}>{p["title"]}</a><span>{html.escape(p["desc"])}</span></li>')
+    return "\n          ".join(rows)
 
 
-steps = [
-    ("1", "Crea un script", "Proyecto &gt; Crear &gt; <strong class=\"text-white\">Script Lua</strong>, o <em>Nuevo script</em> en el Inspector.", "primer-script"),
-    ("2", "Engánchalo a un objeto", "Arrastra el <code>.lua</code> a un objeto de la Jerarquía o de la Escena.", "primer-script"),
-    ("3", "Dale a Play", "El motor llama a <code>Start</code>, <code>Update(dt)</code>... Guarda con Ctrl+S y se recarga en caliente.", "ciclo-de-vida"),
-]
-steps_html = "".join(f'''
-          <a href="{u}.html" class="group rounded-xl border border-line bg-panel/60 p-5 transition hover:border-brand/60">
-            <span class="flex h-8 w-8 items-center justify-center rounded-full bg-brand/15 font-mono text-sm font-semibold text-brand">{n}</span>
-            <span class="mt-4 block font-semibold text-white group-hover:text-brand">{t}</span>
-            <span class="mt-1 block text-sm leading-6 text-slate-400">{d}</span>
-          </a>''' for n, t, d, u in steps)
+def group_count(group):
+    return sum(1 for p in pages if p["group"] == group)
 
-def section(gicon, title, text, inner, cols="sm:grid-cols-2 xl:grid-cols-3"):
-    return f'''
-      <section class="mt-16">
-        <h2 class="flex items-center gap-2.5 text-2xl font-bold text-white"><span class="rounded-lg bg-brand/15 p-1.5 text-brand">{icon(gicon, "h-5 w-5")}</span>{title}</h2>
-        <p class="mt-2 text-slate-400">{text}</p>
-        <div class="mt-6 grid gap-4 {cols}">{inner}
-        </div>
+
+group_notes = {
+    "Primeros pasos": "Cómo funciona un script y cómo se trabaja con él en el editor.",
+    "Referencia de la API": "Todo lo que se puede usar desde Lua, por tema.",
+    "Gráficos": "Shaders propios: el aspecto de las superficies en GLSL.",
+    "Ejemplos": strip(examples_intro),
+}
+toc_html = ""
+for number, (group, _, _) in enumerate(GROUPS, start=1):
+    note = group_notes.get(group, "")
+    toc_html += f'''
+      <section class="toc-group">
+        <h2><small>{number:02d}</small>{group}</h2>
+        {f"<p>{note}</p>" if note else ""}
+        <ul class="toc">
+          {toc(group, mono=group == "Referencia de la API")}
+        </ul>
       </section>'''
 
 hub_main = f"""
-    <main class="doc min-w-0 flex-1 py-10">
-      <div class="relative overflow-hidden rounded-2xl border border-line bg-gradient-to-br from-brand/15 via-panel to-ink p-8 sm:p-12">
-        <div class="pointer-events-none absolute -right-24 -top-24 h-72 w-72 rounded-full bg-brand/20 blur-3xl"></div>
-        <p class="!mt-0 text-sm font-semibold uppercase tracking-widest text-brand">Scripting en Lua 5.4</p>
-        <h1 class="mt-2 text-4xl font-extrabold tracking-tight text-white sm:text-5xl">Manual de Cramion</h1>
-        <div class="max-w-2xl">{intro_html}</div>
-        <div class="mt-8 flex flex-wrap gap-3">
-          <a href="primer-script.html" class="rounded-lg bg-brand px-5 py-2.5 font-semibold text-ink hover:bg-white">Empezar →</a>
-          <a href="entity.html" class="rounded-lg border border-line bg-ink/60 px-5 py-2.5 font-semibold text-white hover:border-brand">Referencia de la API</a>
-          <a href="{examples[0]["slug"]}.html" class="rounded-lg border border-line bg-ink/60 px-5 py-2.5 font-semibold text-white hover:border-brand">Ver ejemplos</a>
-        </div>
+    <main class="doc cover">
+      <div class="crumbs">Manual · Lua 5.4 · {len(pages)} páginas</div>
+      <h1>Manual de Cramion</h1>
+      <div class="intro">{intro_html}</div>
+      <div class="start">
+        <a href="primer-script.html">Tu primer script</a>
+        <a href="entity.html">Referencia de la API</a>
+        <a href="{examples[0]["slug"]}.html">Ejemplos</a>
+        <a href="exportar.html">Exportar el juego</a>
       </div>
-{section("book", "Empieza aquí", "Tu primer script en tres pasos.", steps_html, "sm:grid-cols-3")}
-{section("book", "Primeros pasos", "Cómo funciona un script y cómo se trabaja con él en el editor.", cards("Primeros pasos"))}
-{section("code", "Referencia de la API", "Todo lo que puedes usar desde Lua, por tema.", cards("Referencia de la API", mono=True))}
-{section("paint", "Gráficos", "Tus propios shaders: el aspecto de las superficies en GLSL.", cards("Gráficos"))}
-{section("spark", "Ejemplos", strip(examples_intro), cards("Ejemplos"))}
-      <p class="mt-16 border-t border-line pt-8 text-sm text-slate-500">
-        La referencia completa del código está en <code>CramionCore/include/CramionCore/scripting/Scripting.h</code>.
-        ¿Dudas? Pregunta en el <a href="{DISCORD}" target="_blank" rel="noopener" class="text-brand hover:text-white">Discord</a>.
-      </p>
+      <section class="toc-group">
+        <h2><small>00</small>Empieza aquí</h2>
+        <ol class="steps">
+          <li><div><strong>Crea un script.</strong> Proyecto &gt; Crear &gt; <em>Script Lua</em>, o <em>Nuevo script</em> en el Inspector.</div></li>
+          <li><div><strong>Engánchalo a un objeto.</strong> Arrastra el <code>.lua</code> a un objeto de la Jerarquía o de la Escena.</div></li>
+          <li><div><strong>Dale a Play.</strong> El motor llama a <code>Start</code>, <code>Update(dt)</code>... Guarda con Ctrl+S y se recarga en caliente (<a href="ciclo-de-vida.html">ciclo de vida</a>).</div></li>
+        </ol>
+      </section>
+{toc_html}
+      <p class="help">La referencia completa del código está en <code>CramionCore/include/CramionCore/scripting/Scripting.h</code>.
+        ¿Dudas? Pregunta en el <a href="{DISCORD}" target="_blank" rel="noopener">Discord</a>.</p>
     </main>"""
-write("index.html", "Manual de Cramion", "Manual de scripting en Lua de Cramion: primeros pasos, referencia de la API y ejemplos.",
+write("index.html", "Manual de Cramion", "Manual de Cramion: el editor, los componentes, la API de Lua y ejemplos.",
       layout("index", hub_main, with_onpage=False))
 
 
