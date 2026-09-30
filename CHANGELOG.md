@@ -1,5 +1,13 @@
 # Cambios
 
+## 1.5.0 (sin publicar)
+
+### Licencia
+- **Nueva [Licencia del Motor Cramion](LICENSE)** en lugar de la MIT. Hacer juegos con Cramion y venderlos sigue siendo **gratis y sin regalías**; lo que ya no se permite es **vender o revender el motor, el editor o su código** (solos o en packs), quitar los créditos o hacerlo pasar por otro motor. Compartir un fork gratis en público sigue permitido.
+- Las versiones hasta la 1.4 incluida siguen con licencia MIT.
+- **[TRADEMARK.md](TRADEMARK.md)**: el nombre y el logo de Cramion solo se usan para el motor oficial y para decir "Hecho con Cramion Engine".
+- **[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)** con todas las librerías de terceros y sus licencias; viaja en el zip junto a `LICENSE` y `TRADEMARK.md`.
+
 ## 1.4.0
 
 ### DataPacks (como los AssetBundles de Unity)

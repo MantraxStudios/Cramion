@@ -1,21 +1,197 @@
-MIT License
+LICENCIA DEL MOTOR CRAMION (Cramion Engine License), versión 1.0
+Copyright (c) 2026 Josin (MantraxStudios). Todos los derechos reservados.
 
-Copyright (c) 2026 Josin
+(English version below.)
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+========================================================================
+ESPAÑOL
+========================================================================
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+0. DEFINICIONES
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+"Motor": el código fuente y los binarios de Cramion publicados por el
+Licenciante (CramionCore, CramionFX, CramionDM, CramionEditor,
+CramionUpdater, el player, las herramientas, las plantillas, los shaders,
+la documentación y los recursos que los acompañan), incluidas sus
+versiones modificadas.
+
+"Licenciante": Josin (MantraxStudios), autor y titular del copyright
+del Motor.
+
+"Producto": un juego, aplicación, experiencia interactiva, visualización
+o contenido creado CON el Motor, cuyo valor principal es su propio
+contenido y no el Motor en sí.
+
+"Runtime": las partes del Motor que un Producto necesita para ejecutarse
+(el player exportado, sus librerías y los shaders y datos que genera el
+editor al exportar).
+
+1. LO QUE PUEDES HACER (gratis y sin regalías)
+
+a) Usar el Motor y el editor para cualquier fin, personal o comercial.
+b) Crear Productos y venderlos, publicarlos o distribuirlos gratis o de
+   pago, en cualquier tienda o plataforma, sin pagar regalías al
+   Licenciante.
+c) Incluir el Runtime dentro de tus Productos, en forma compilada.
+d) Leer, estudiar y modificar el código fuente del Motor para tus
+   propios Productos.
+e) Compartir el código fuente del Motor, original o modificado, SOLO
+   gratis, de forma pública (por ejemplo, un fork en GitHub), con esta
+   licencia completa y sin quitar los avisos de copyright.
+
+2. LO QUE NO PUEDES HACER
+
+a) Vender, alquilar, sublicenciar o cobrar de cualquier forma
+   (incluidas donaciones obligatorias, suscripciones, "packs", muros de
+   pago o acceso anticipado) por el Motor, el editor o su código fuente,
+   originales o modificados, ya sea solos o dentro de un paquete, curso,
+   plantilla o bundle cuyo contenido principal sea el Motor.
+b) Distribuir el editor o las herramientas del Motor como parte de un
+   Producto, salvo el Runtime.
+c) Presentar el Motor, o una versión modificada, como obra propia, ni
+   cambiarle el nombre para ofrecerlo como otro motor o herramienta.
+d) Quitar, ocultar o alterar este aviso de licencia, los avisos de
+   copyright o los créditos del Motor.
+e) Usar el nombre "Cramion", sus logotipos o su identidad visual para
+   un producto que no sea el Motor oficial, salvo lo permitido en
+   TRADEMARK.md.
+f) Publicar en tiendas de assets, marketplaces u otras plataformas de
+   venta el Motor o partes sustanciales de su código.
+
+3. ATRIBUCIÓN
+
+Los Productos no tienen que mostrar un logotipo ni una pantalla de
+inicio de Cramion. Basta con incluir en sus créditos, o en un archivo
+de licencias junto al ejecutable, la frase "Hecho con Cramion Engine"
+(o "Made with Cramion Engine") y los avisos de terceros que exija el
+Runtime (ver THIRD_PARTY_NOTICES.md).
+
+4. COMPONENTES DE TERCEROS
+
+El Motor usa librerías de terceros que mantienen sus propias licencias
+(ver THIRD_PARTY_NOTICES.md). Esta licencia no restringe los derechos
+que esas licencias te dan sobre esos componentes.
+
+5. VERSIONES ANTERIORES
+
+Las versiones del Motor hasta la 1.4 incluida se publicaron con licencia
+MIT y siguen rigiéndose por ella. Esta licencia se aplica a la versión
+1.5 y a todas las posteriores, y a cualquier código añadido o cambiado
+a partir de ellas.
+
+6. TERMINACIÓN
+
+Si incumples esta licencia, tus derechos terminan automáticamente. Los
+Productos que ya hayas publicado cumpliéndola conservan su permiso de
+distribución. El Licenciante puede reclamar cualquier copia o venta no
+autorizada ante las plataformas y autoridades correspondientes.
+
+7. SIN GARANTÍA
+
+EL MOTOR SE ENTREGA "TAL CUAL", SIN GARANTÍA DE NINGÚN TIPO, EXPRESA O
+IMPLÍCITA, INCLUIDAS LAS DE COMERCIABILIDAD, IDONEIDAD PARA UN FIN
+CONCRETO Y NO INFRACCIÓN. EN NINGÚN CASO EL LICENCIANTE SERÁ RESPONSABLE
+DE RECLAMACIONES, DAÑOS U OTRAS RESPONSABILIDADES DERIVADAS DEL MOTOR O
+DE SU USO.
+
+8. PERMISOS ADICIONALES
+
+Para cualquier uso no cubierto aquí (por ejemplo, una licencia para
+redistribuir el Motor de forma comercial), contacta con el Licenciante:
+https://github.com/MantraxStudios/Cramion o el Discord oficial
+(https://discord.gg/zG7rSsUGEz).
+
+========================================================================
+ENGLISH
+========================================================================
+
+0. DEFINITIONS
+
+"Engine": the Cramion source code and binaries published by the
+Licensor (CramionCore, CramionFX, CramionDM, CramionEditor,
+CramionUpdater, the player, tools, templates, shaders, documentation
+and accompanying resources), including modified versions of them.
+
+"Licensor": Josin (MantraxStudios), author and copyright holder of the
+Engine.
+
+"Product": a game, application, interactive experience, visualization
+or content created WITH the Engine whose primary value is its own
+content and not the Engine itself.
+
+"Runtime": the parts of the Engine a Product needs in order to run (the
+exported player, its libraries, and the shaders and data the editor
+generates on export).
+
+1. WHAT YOU MAY DO (free of charge, royalty-free)
+
+a) Use the Engine and the editor for any purpose, personal or
+   commercial.
+b) Create Products and sell, publish or distribute them, for free or
+   for a fee, on any store or platform, without paying royalties to the
+   Licensor.
+c) Include the Runtime in your Products in compiled form.
+d) Read, study and modify the Engine source code for your own Products.
+e) Share the Engine source code, original or modified, ONLY free of
+   charge and publicly (for example, a fork on GitHub), together with
+   this full license and without removing copyright notices.
+
+2. WHAT YOU MAY NOT DO
+
+a) Sell, rent, sublicense or charge in any way (including mandatory
+   donations, subscriptions, "packs", paywalls or early access) for the
+   Engine, the editor or their source code, original or modified,
+   whether alone or inside a package, course, template or bundle whose
+   main content is the Engine.
+b) Distribute the editor or the Engine tools as part of a Product,
+   except for the Runtime.
+c) Present the Engine, or a modified version of it, as your own work,
+   or rename it to offer it as a different engine or tool.
+d) Remove, hide or alter this license notice, the copyright notices or
+   the Engine credits.
+e) Use the name "Cramion", its logos or its visual identity for any
+   product other than the official Engine, except as allowed in
+   TRADEMARK.md.
+f) Publish the Engine, or substantial parts of its code, on asset
+   stores, marketplaces or other sales platforms.
+
+3. ATTRIBUTION
+
+Products do not have to show a Cramion logo or splash screen. It is
+enough to include in their credits, or in a license file next to the
+executable, the phrase "Made with Cramion Engine" and the third-party
+notices the Runtime requires (see THIRD_PARTY_NOTICES.md).
+
+4. THIRD-PARTY COMPONENTS
+
+The Engine uses third-party libraries that keep their own licenses (see
+THIRD_PARTY_NOTICES.md). This license does not restrict the rights
+those licenses grant you over those components.
+
+5. EARLIER VERSIONS
+
+Engine versions up to and including 1.4 were released under the MIT
+license and remain governed by it. This license applies to version 1.5
+and every later version, and to any code added or changed from then on.
+
+6. TERMINATION
+
+If you breach this license, your rights end automatically. Products you
+already released in compliance with it keep their permission to be
+distributed. The Licensor may report any unauthorized copy or sale to
+the relevant platforms and authorities.
+
+7. NO WARRANTY
+
+THE ENGINE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
+THE LICENSOR BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY ARISING
+FROM, OUT OF OR IN CONNECTION WITH THE ENGINE OR ITS USE.
+
+8. ADDITIONAL PERMISSIONS
+
+For any use not covered here (for example, a license to redistribute
+the Engine commercially), contact the Licensor:
+https://github.com/MantraxStudios/Cramion or the official Discord
+(https://discord.gg/zG7rSsUGEz).

@@ -7,7 +7,7 @@
 #     android/ (libmain.so por ABI: Exportar a Android)
 #     shaderc_shared.dll                  (compila los shaders propios)
 #     msvcp140.dll, vcruntime140*.dll   (runtime de C++, si se encuentra)
-#     LICENSE, README.md, CHANGELOG.md, LEEME.txt, docs/ (web y referencia de scripting)
+#     LICENSE, TRADEMARK.md, THIRD_PARTY_NOTICES.md, README.md, CHANGELOG.md, LEEME.txt, docs/ (web y referencia de scripting)
 #
 # Lo llama el target cramion_package:
 #   cmake -DBIN_DIR=... -DSOURCE_DIR=... -DVERSION=... -P PackageRelease.cmake
@@ -70,7 +70,7 @@ endif()
 if(EXISTS "${BIN_DIR}/_deps/dlss/LICENSE.txt")
     file(COPY_FILE "${BIN_DIR}/_deps/dlss/LICENSE.txt" "${stage}/licencias/NVIDIA-DLSS-LICENSE.txt")
 endif()
-file(COPY "${SOURCE_DIR}/LICENSE" "${SOURCE_DIR}/README.md" DESTINATION "${stage}")
+file(COPY "${SOURCE_DIR}/LICENSE" "${SOURCE_DIR}/TRADEMARK.md" "${SOURCE_DIR}/THIRD_PARTY_NOTICES.md" "${SOURCE_DIR}/README.md" DESTINATION "${stage}")
 if(EXISTS "${SOURCE_DIR}/CHANGELOG.md")
     file(COPY "${SOURCE_DIR}/CHANGELOG.md" DESTINATION "${stage}")
 endif()

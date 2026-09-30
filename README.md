@@ -7,6 +7,8 @@ Motor de render en tiempo real para Windows con **renderizador diferido en Vulka
 
 El motor son dos librerías estáticas propias: **CramionFX**, el renderizador Vulkan con todos sus shaders, y **CramionDM**, la capa de plataforma (ventana, entrada y dispositivo DirectX 12). `cramion.exe` es solo una aplicación de ejemplo que las usa. Todo se compila con **CMake + Clang + Ninja**.
 
+**Licencia:** puedes hacer juegos con Cramion y venderlos gratis de regalías, pero **el motor no se puede vender ni revender**. La única versión oficial es la de este repositorio; si ves a alguien vendiéndolo, avisa en el Discord. Detalles en [LICENSE](LICENSE).
+
 **Comunidad:** dudas, ideas y lo que estés creando con Cramion, en el [Discord](https://discord.gg/zG7rSsUGEz).
 
 Incluye dos escenas de demostración, iluminadas por una sola luz direccional (el sol de día, la luna de noche) y su cielo:
@@ -813,7 +815,8 @@ Las teclas (`KeyCode.h`) siguen los Virtual-Key Codes de Windows. `keyName()` da
 
 ## Créditos y licencias
 
-- **Código de Cramion:** licencia MIT (ver [LICENSE](LICENSE)).
+- **Código de Cramion:** [Licencia del Motor Cramion](LICENSE) desde la 1.5. Puedes hacer juegos con Cramion y venderlos sin pagar regalías; lo que no puedes es vender ni revender el motor, el editor o su código, ni hacerlo pasar por tuyo. El nombre y el logo tienen su propia [política de marca](TRADEMARK.md). Las versiones hasta la 1.4 se publicaron con licencia MIT.
+- **Componentes de terceros:** cada uno con su licencia, en [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 - **Catedral de Šibenik:** de Marko Dabrović ([RNA studio](http://www.rna.hr)). Huecos corregidos por Kenzie Lamar (Vicarious Visions), texturas y mapas de relieve de Morgan McGuire; publicada en [casual-effects.com](https://casual-effects.com/data/). No se redistribuye con este repositorio.
 - **San Miguel:** modelado por Guillermo M. Leal Llaguno (Evolución Visual). Versión 2017 mejorada por Morgan McGuire, Guedis Cárdenas, Michael Mara y Nicholas Hull, publicada en [casual-effects.com](https://casual-effects.com/data/). **Solo para uso educativo y de investigación, con atribución.** No se redistribuye con este repositorio.
 - **Dependencias:**
