@@ -7,6 +7,8 @@
 #include "Dialogs.h"
 #include "EditorLog.h"
 
+#include "CramionCore/project/DataPack.h"
+
 #include <shellapi.h>
 
 #include <imgui.h>
@@ -63,6 +65,7 @@ EditorApp::EditorApp(dm::Window& window, gfx::VulkanRenderer& renderer, scene::S
     ui::registerUiComponents();
     xr::registerXrComponents();
     startMcp();  // servidor MCP para IA (solo este PC)
+    registerEditorSettings();  // antes del primer frame: ImGui lee su .ini ahi
     physics_.addListener([this](const physics::PhysicsEvent& event) { onPhysicsEvent(event); });
     const std::filesystem::path documents = dialogs::documentsFolder();
     new_project_folder_ = dialogs::utf8(documents.empty() ? std::filesystem::current_path()
@@ -74,6 +77,8 @@ EditorApp::~EditorApp() {
     // Cerrar en Play: los scripts terminan (OnDestroy) mientras todo lo que usan
     // sigue vivo (el mundo de bloques se destruye antes que ellos).
     scripts_.stop();
+    scripts_.unmountDataPacks();  // cerrar en Play: lo montado sale del proyecto
+    if (datapack_job_ && datapack_job_->thread.joinable()) datapack_job_->thread.join();
     scripts_.setVoxels(nullptr);
     voxels_.stop();
     cancelExport();
@@ -105,6 +110,11 @@ bool EditorApp::openProject(const std::filesystem::path& path, bool open_scene) 
     asset_manager_->setCacheFolder(project_.libraryFolder() / "Cache");
     model_previews_.start(project_.libraryFolder() / "Thumbnails");
     scripts_.setAssetsRoot(project_.assetsFolder());
+    // DataPacks montados en Play: se apuntan en Library y se quitan al parar;
+    // si el editor se cerro en Play, se quitan ahora (el proyecto queda limpio).
+    project::cleanupDataPackJournal(project_.libraryFolder() / "DataPacks.journal", project_.assetsFolder());
+    scripts_.setDataPackJournal(project_.libraryFolder() / "DataPacks.journal");
+    scripts_.setAssetsChangedCallback([this] { refreshDatabase(); });
     scripts_.setPrefsFile(project_.libraryFolder() / "Prefs.txt");  // Prefs en Play
     scripts_.setPhysics(&physics_);
     scripts_.setAudio(&audio_);
@@ -1019,6 +1029,7 @@ void EditorApp::drawUi(float delta_seconds) {
         if (show_script_editor_ && script_tabs_.empty()) drawScriptEditor();  // los abiertos: su pestana
         drawMcpWindow();
         drawTerminalWindow();
+        drawDataPackWindow();
         drawBuildConfigsWindow();
         drawTouchInterfaceWindow();
         drawInputActionsWindow();
@@ -1217,6 +1228,7 @@ void EditorApp::drawMenuBar() {
         if (ImGui::MenuItem("Controles táctiles (móvil)...")) show_touch_interface_ = true;
         if (ImGui::MenuItem("Exportar juego...")) exportGame(false);
         if (ImGui::MenuItem("Exportar y jugar...")) exportGame(true);
+        if (ImGui::MenuItem("Exportar escena como DataPack...")) openDataPackExport();
         ImGui::Separator();
         if (ImGui::MenuItem("Guardar proyecto como plantilla...")) show_save_template_ = true;
         if (ImGui::MenuItem("Abrir proyecto (Hub)...")) runOrAskToSave(PendingAction::BackToHub);

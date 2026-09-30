@@ -302,6 +302,54 @@ bool extractEntry(std::ifstream& in, ZSTD_DCtx* dctx, std::vector<char>& in_buff
 
 }  // namespace
 
+bool readPackFile(const std::filesystem::path& file, const std::string& path, std::string& data,
+                  std::string* error) {
+    std::vector<PackEntry> entries;
+    if (!readPackIndex(file, entries, error)) return false;
+    const auto it = std::find_if(entries.begin(), entries.end(), [&](const PackEntry& e) { return e.path == path; });
+    if (it == entries.end()) {
+        fail(error, "El paquete no tiene " + path);
+        return false;
+    }
+    std::ifstream in(file, std::ios::binary);
+    if (!in) {
+        fail(error, "No se pudo abrir " + utf8(file));
+        return false;
+    }
+    std::unique_ptr<ZSTD_DCtx, DCtxDeleter> dctx(ZSTD_createDCtx());
+    std::vector<char> in_buffer(ZSTD_DStreamInSize());
+    std::vector<char> out_buffer(ZSTD_DStreamOutSize());
+    data.clear();
+    data.reserve(static_cast<std::size_t>(it->size));
+    in.seekg(static_cast<std::streamoff>(it->offset));
+    std::uint64_t left = it->compressed;
+    std::size_t last_result = 1;
+    while (left > 0) {
+        const std::size_t n = static_cast<std::size_t>(std::min<std::uint64_t>(left, in_buffer.size()));
+        in.read(in_buffer.data(), static_cast<std::streamsize>(n));
+        if (!in) {
+            fail(error, "Paquete danado (" + path + ")");
+            return false;
+        }
+        left -= n;
+        ZSTD_inBuffer zin{in_buffer.data(), n, 0};
+        while (zin.pos < zin.size) {
+            ZSTD_outBuffer zout{out_buffer.data(), out_buffer.size(), 0};
+            last_result = ZSTD_decompressStream(dctx.get(), &zout, &zin);
+            if (ZSTD_isError(last_result)) {
+                fail(error, "Paquete danado (" + path + "): " + ZSTD_getErrorName(last_result));
+                return false;
+            }
+            data.append(out_buffer.data(), zout.pos);
+        }
+    }
+    if (data.size() != it->size) {
+        fail(error, "Paquete danado (" + path + ", tamano)");
+        return false;
+    }
+    return true;
+}
+
 bool extractPack(const std::filesystem::path& file, const std::filesystem::path& folder,
                  const PackProgress& progress, std::string* error, std::uint64_t base, std::uint64_t length) {
     std::vector<PackEntry> entries;

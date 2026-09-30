@@ -6,6 +6,8 @@
 
 #include "EditorApp.h"
 
+#include "CramionCore/project/DataPack.h"
+
 #include "Dialogs.h"
 #include "EditorLog.h"
 #include "ProjectTemplates.h"
@@ -208,6 +210,12 @@ const std::vector<ToolDef>& toolDefs() {
         d.push_back({"list_scenes", "Escenas del proyecto.", json::object(), {}});
         d.push_back({"new_scene", "Escena nueva (camara, luz y cielo).", {{"force", prop("boolean", "Descartar cambios sin guardar")}}, {}});
         d.push_back({"open_scene", "Abre una escena.", {{"scene", prop("string", "Ruta o nombre de la escena")}, {"force", prop("boolean", "Descartar cambios sin guardar")}}, {"scene"}});
+        d.push_back({"export_datapack", "Exporta escenas con TODO lo que usan (modelos, materiales, texturas, prefabs, scripts, sonidos) a un .datapack, sin ejecutable (como un AssetBundle de Unity). El juego lo carga con DataPack.load / DataPack.loadScene.",
+                     {{"file", prop("string", "Archivo .datapack de destino (ruta absoluta)")},
+                      {"scenes", prop("array", "Escenas y/o prefabs (nombre, ruta o UUID); por defecto la escena abierta")},
+                      {"entity", prop("string", "Objeto de la escena a empaquetar (se usa/crea su prefab en Assets/Prefabs)")},
+                      {"name", prop("string", "Nombre del paquete (por defecto el de la primera escena)")},
+                      {"async", prop("boolean", "true: exporta en segundo plano con la ventana de progreso del editor (el resultado sale en la Consola)")}}, {"file"}});
         d.push_back({"save_scene", "Guarda la escena (en su archivo o en el que se indique).", {{"path", prop("string", "Ruta dentro de Assets (opcional, p. ej. Scenes/Nivel1.crscene)")}}, {}});
         d.push_back({"play", "Entra en modo Play (el juego corre en el editor).", json::object(), {}});
         d.push_back({"export_game", "Exporta el juego con la configuracion de compilacion activa (en segundo plano: ver export_status). "
@@ -1059,6 +1067,44 @@ json McpTools::call(const std::string& name, const json& args, bool& image, std:
         if (!info || info->type != assets::AssetType::Scene) throw ToolError("no existe la escena " + arg(args, "scene"));
         if (!a.openScene(info->path)) throw ToolError("no se pudo abrir la escena");
         return json{{"scene", a.world_.sceneName()}, {"entities", a.world_.entityCount()}};
+    }
+    if (name == "export_datapack") {
+        if (a.playing()) throw ToolError("sal del modo Play (stop) antes de exportar");
+        std::vector<std::filesystem::path> scenes;
+        if (args.contains("scenes") && args["scenes"].is_array()) {
+            for (const json& item : args["scenes"]) {
+                const std::string wanted = item.is_string() ? item.get<std::string>() : std::string();
+                const auto info = findAsset(wanted);
+                if (!info || (info->type != assets::AssetType::Scene && info->type != assets::AssetType::Prefab)) {
+                    throw ToolError("no existe la escena o prefab " + wanted);
+                }
+                scenes.push_back(info->path);
+            }
+        }
+        if (args.contains("entity")) {
+            const ecs::Entity target = entity(arg(args, "entity"));
+            std::string message;
+            const std::filesystem::path prefab = a.prefabForDataPack(target, message);
+            if (prefab.empty()) throw ToolError(message);
+            scenes.push_back(prefab);
+        }
+        if (scenes.empty()) {
+            if (a.scene_path_.empty()) throw ToolError("la escena abierta no esta guardada");
+            if (a.dirty_ && !a.saveScene()) throw ToolError("no se pudo guardar la escena");
+            scenes.push_back(a.scene_path_);
+        }
+        std::filesystem::path file = dialogs::fromUtf8(arg(args, "file"));
+        if (file.extension() != project::kDataPackExtension) file += project::kDataPackExtension;
+        const std::string pack_name = args.contains("name") ? arg(args, "name") : dialogs::utf8(scenes.front().stem());
+        if (args.value("async", false)) {
+            if (a.datapack_job_) throw ToolError("ya hay una exportacion de DataPack en marcha");
+            a.startDataPackJob(scenes, file, pack_name);
+            return json{{"file", dialogs::utf8(file)}, {"started", true}};
+        }
+        std::string message;
+        std::size_t files = 0;
+        if (!a.exportDataPack(scenes, file, pack_name, message, &files)) throw ToolError(message);
+        return json{{"file", dialogs::utf8(file)}, {"files", files}, {"summary", message}};
     }
     if (name == "save_scene") {
         if (a.playing()) throw ToolError("sal del modo Play (stop) antes de guardar");

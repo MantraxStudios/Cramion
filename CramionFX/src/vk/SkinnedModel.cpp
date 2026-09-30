@@ -4,11 +4,76 @@
 #include "CramionFX/vk/SkinnedPass.h"
 #include "CramionFX/vk/VulkanDevice.h"
 
+#include <meshoptimizer.h>
+
+#include <algorithm>
 #include <array>
+#include <cmath>
+#include <cstring>
 #include <iostream>
+#include <unordered_map>
 
 namespace cramion::gfx {
 namespace {
+
+static_assert(sizeof(asset::SkinnedVertex) == 80, "meshlet_common.glsl lee los vertices como 20 floats");
+
+// ¿Cada arista (con los vertices soldados por posicion) la comparten
+// exactamente dos triangulos? Entonces la malla es cerrada: lo que mira hacia
+// atras siempre queda detras de algo que mira hacia delante.
+bool isClosedMesh(const asset::ModelData& model, const std::vector<asset::SubMesh>& submeshes,
+                  const std::vector<std::uint32_t>& indices, const std::vector<bool>& transparent) {
+    std::size_t triangles = 0;
+    for (const asset::SubMesh& submesh : submeshes) triangles += submesh.index_count / 3;
+    if (triangles == 0 || triangles > 2'000'000) return false;  // enorme: no se comprueba (tiempo de carga)
+
+    struct PositionHash {
+        std::size_t operator()(const std::array<std::uint32_t, 3>& p) const {
+            return (static_cast<std::size_t>(p[0]) * 73856093u) ^ (static_cast<std::size_t>(p[1]) * 19349663u) ^
+                   (static_cast<std::size_t>(p[2]) * 83492791u);
+        }
+    };
+    // Soldado con tolerancia (1/100000 del tamano del modelo): en las costuras
+    // de UV las copias de un vertice pueden diferir en el ultimo bit
+    // (cos(2 pi) != 1) y la malla parecia abierta.
+    core::Vec3 low = model.vertices[0].position;
+    core::Vec3 high = low;
+    for (const asset::SkinnedVertex& v : model.vertices) {
+        low = core::Vec3{std::min(low.x, v.position.x), std::min(low.y, v.position.y), std::min(low.z, v.position.z)};
+        high = core::Vec3{std::max(high.x, v.position.x), std::max(high.y, v.position.y), std::max(high.z, v.position.z)};
+    }
+    const float extent = std::max({high.x - low.x, high.y - low.y, high.z - low.z, 1e-6f});
+    const float cell = extent * 1e-5f;
+    std::unordered_map<std::array<std::uint32_t, 3>, std::uint32_t, PositionHash> welded;
+    welded.reserve(triangles * 2);
+    const auto weld = [&](std::uint32_t vertex) {
+        const core::Vec3& p = model.vertices[vertex].position;
+        const std::array<std::uint32_t, 3> key = {static_cast<std::uint32_t>(std::lround((p.x - low.x) / cell)),
+                                                  static_cast<std::uint32_t>(std::lround((p.y - low.y) / cell)),
+                                                  static_cast<std::uint32_t>(std::lround((p.z - low.z) / cell))};
+        return welded.emplace(key, static_cast<std::uint32_t>(welded.size())).first->second;
+    };
+    std::unordered_map<std::uint64_t, std::uint32_t> edges;
+    edges.reserve(triangles * 3);
+    for (const asset::SubMesh& submesh : submeshes) {
+        if (submesh.material < transparent.size() && transparent[submesh.material]) continue;
+        for (std::uint32_t t = 0; t + 2 < submesh.index_count; t += 3) {
+            const std::uint32_t v[3] = {weld(indices[submesh.first_index + t]), weld(indices[submesh.first_index + t + 1]),
+                                        weld(indices[submesh.first_index + t + 2])};
+            if (v[0] == v[1] || v[1] == v[2] || v[0] == v[2]) continue;  // degenerado
+            for (int e = 0; e < 3; ++e) {
+                const std::uint32_t a = std::min(v[e], v[(e + 1) % 3]);
+                const std::uint32_t b = std::max(v[e], v[(e + 1) % 3]);
+                ++edges[(static_cast<std::uint64_t>(a) << 32) | b];
+            }
+        }
+    }
+    if (edges.empty()) return false;
+    for (const auto& [edge, count] : edges) {
+        if (count != 2) return false;
+    }
+    return true;
+}
 
 // Formato de Vulkan de una textura comprimida del DDS. Variantes UNORM: el
 // shader linealiza el color base a mano.
@@ -52,9 +117,10 @@ void SkinnedModel::create(const VulkanDevice& device, const asset::ModelData& mo
                           const SkinnedPass& pass) {
     destroy();
 
+    // (Tambien storage: los mesh shaders leen los vertices de los meshlets.)
     vertices_ = VulkanBuffer::createDeviceLocal(
         device, model.vertices.data(), sizeof(asset::SkinnedVertex) * model.vertices.size(),
-        vk::BufferUsageFlagBits::eVertexBuffer);
+        vk::BufferUsageFlagBits::eVertexBuffer | vk::BufferUsageFlagBits::eStorageBuffer);
     // Indices de LOD0 y detras los de los LODs (sus submallas se desplazan).
     if (model.lod_indices.empty()) {
         indices_ = VulkanBuffer::createDeviceLocal(device, model.indices.data(),
@@ -227,8 +293,118 @@ void SkinnedModel::create(const VulkanDevice& device, const asset::ModelData& mo
         slot_count_ += group.capacity;
     }
 
+    buildMeshlets(device, model, pass);
+
     std::cout << "[Vulkan] Modelo " << model.name << " subido: " << model.textures.size()
               << " texturas con mipmaps, " << material_count << " materiales\n";
+}
+
+void SkinnedModel::buildMeshlets(const VulkanDevice& device, const asset::ModelData& model, const SkinnedPass& pass) {
+    meshlet_ranges_.clear();
+    closed_.clear();
+    max_cluster_meshlets_ = 0;
+    // Solo escenarios (rigidos): los animados se deforman y sus esferas y conos no valdrian.
+    if (!pass.meshShadersEnabled() || !rigid_ || model.vertices.empty()) return;
+
+    constexpr std::size_t kMaxVertices = 64;
+    constexpr std::size_t kMaxTriangles = 124;
+    constexpr float kConeWeight = 0.25f;
+    const float* positions = &model.vertices[0].position.x;
+    const std::size_t vertex_count = model.vertices.size();
+    constexpr std::size_t kStride = sizeof(asset::SkinnedVertex);
+
+    std::vector<bool> transparent(materials_.size());
+    for (std::size_t m = 0; m < materials_.size(); ++m) transparent[m] = materials_[m].transparent;
+
+    std::vector<GpuMeshlet> gpu;
+    std::vector<std::uint32_t> all_vertices;
+    std::vector<std::uint8_t> all_triangles;
+    std::vector<meshopt_Meshlet> built;
+    std::vector<unsigned int> built_vertices;
+    std::vector<unsigned char> built_triangles;
+    for (std::uint32_t lod = 0; lod < lodCount(); ++lod) {
+        const std::vector<asset::SubMesh>& submeshes = lod == 0 ? model.submeshes : model.lods[lod - 1].submeshes;
+        const std::vector<std::uint32_t>& indices = lod == 0 ? model.indices : model.lod_indices;
+        std::vector<MeshletRange> ranges(submeshes.size());
+        for (std::size_t s = 0; s < submeshes.size(); ++s) {
+            const asset::SubMesh& submesh = submeshes[s];
+            if (submesh.index_count < 3 || (submesh.material < transparent.size() && transparent[submesh.material])) {
+                continue;
+            }
+            const std::size_t bound = meshopt_buildMeshletsBound(submesh.index_count, kMaxVertices, kMaxTriangles);
+            built.resize(bound);
+            built_vertices.resize(bound * kMaxVertices);
+            built_triangles.resize(bound * kMaxTriangles * 3);
+            const std::size_t count = meshopt_buildMeshlets(
+                built.data(), built_vertices.data(), built_triangles.data(), indices.data() + submesh.first_index,
+                submesh.index_count, positions, vertex_count, kStride, kMaxVertices, kMaxTriangles, kConeWeight);
+            ranges[s] = MeshletRange{static_cast<std::uint32_t>(gpu.size()), static_cast<std::uint32_t>(count)};
+            max_cluster_meshlets_ = std::max(max_cluster_meshlets_, static_cast<std::uint32_t>(count));
+            for (std::size_t i = 0; i < count; ++i) {
+                const meshopt_Meshlet& m = built[i];
+                const meshopt_Bounds bounds =
+                    meshopt_computeMeshletBounds(&built_vertices[m.vertex_offset], &built_triangles[m.triangle_offset],
+                                                 m.triangle_count, positions, vertex_count, kStride);
+                GpuMeshlet out{};
+                out.center_radius = core::Vec4{bounds.center[0], bounds.center[1], bounds.center[2], bounds.radius};
+                out.cone_axis_cutoff =
+                    core::Vec4{bounds.cone_axis[0], bounds.cone_axis[1], bounds.cone_axis[2], bounds.cone_cutoff};
+                out.cone_apex = core::Vec4{bounds.cone_apex[0], bounds.cone_apex[1], bounds.cone_apex[2], 0.0f};
+                out.vertex_offset = static_cast<std::uint32_t>(all_vertices.size());
+                out.triangle_offset = static_cast<std::uint32_t>(all_triangles.size());
+                out.vertex_count = m.vertex_count;
+                out.triangle_count = m.triangle_count;
+                all_vertices.insert(all_vertices.end(), built_vertices.begin() + m.vertex_offset,
+                                    built_vertices.begin() + m.vertex_offset + m.vertex_count);
+                all_triangles.insert(all_triangles.end(), built_triangles.begin() + m.triangle_offset,
+                                     built_triangles.begin() + m.triangle_offset + m.triangle_count * 3);
+                gpu.push_back(out);
+            }
+        }
+        meshlet_ranges_.push_back(std::move(ranges));
+        // LOD0 se comprueba; los simplificados heredan (el simplificador no abre mallas cerradas).
+        closed_.push_back(lod == 0 ? isClosedMesh(model, submeshes, indices, transparent) : closed_[0]);
+    }
+    if (gpu.empty()) {
+        meshlet_ranges_.clear();
+        closed_.clear();
+        return;
+    }
+    while (all_triangles.size() % 4 != 0) all_triangles.push_back(0);
+
+    const auto storage = vk::BufferUsageFlagBits::eStorageBuffer;
+    meshlets_ = VulkanBuffer::createDeviceLocal(device, gpu.data(), sizeof(GpuMeshlet) * gpu.size(), storage);
+    meshlet_vertices_ = VulkanBuffer::createDeviceLocal(device, all_vertices.data(),
+                                                        sizeof(std::uint32_t) * all_vertices.size(), storage);
+    meshlet_triangles_ =
+        VulkanBuffer::createDeviceLocal(device, all_triangles.data(), all_triangles.size(), storage);
+
+    const vk::DescriptorPoolSize pool_size{vk::DescriptorType::eStorageBuffer, 4};
+    vk::DescriptorPoolCreateInfo pool_info{};
+    pool_info.flags = vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet;
+    pool_info.maxSets = 1;
+    pool_info.setPoolSizes(pool_size);
+    meshlet_pool_ = vk::raii::DescriptorPool(device.handle(), pool_info);
+    const vk::DescriptorSetLayout layout = *pass.meshletSetLayout();
+    vk::DescriptorSetAllocateInfo alloc{};
+    alloc.descriptorPool = *meshlet_pool_;
+    alloc.setSetLayouts(layout);
+    meshlet_sets_ = vk::raii::DescriptorSets(device.handle(), alloc);
+    const std::array<vk::DescriptorBufferInfo, 4> infos = {
+        vk::DescriptorBufferInfo{*vertices_.handle(), 0, VK_WHOLE_SIZE},
+        vk::DescriptorBufferInfo{*meshlets_.handle(), 0, VK_WHOLE_SIZE},
+        vk::DescriptorBufferInfo{*meshlet_vertices_.handle(), 0, VK_WHOLE_SIZE},
+        vk::DescriptorBufferInfo{*meshlet_triangles_.handle(), 0, VK_WHOLE_SIZE}};
+    std::array<vk::WriteDescriptorSet, 4> writes{};
+    for (std::uint32_t i = 0; i < 4; ++i) {
+        writes[i].dstSet = *meshlet_sets_[0];
+        writes[i].dstBinding = i;
+        writes[i].descriptorType = vk::DescriptorType::eStorageBuffer;
+        writes[i].setBufferInfo(infos[i]);
+    }
+    device.handle().updateDescriptorSets(writes, nullptr);
+    std::cout << "[Vulkan] " << model.name << ": " << gpu.size() << " meshlets en " << lodCount() << " LODs"
+              << (closed_[0] ? " (malla cerrada)" : "") << "\n";
 }
 
 void SkinnedModel::setMaterialImage(const VulkanDevice& device, const SkinnedPass& pass, std::uint32_t material,
@@ -248,6 +424,13 @@ void SkinnedModel::setMaterialImage(const VulkanDevice& device, const SkinnedPas
 }
 
 void SkinnedModel::destroy() {
+    meshlet_sets_.clear();
+    meshlet_pool_ = nullptr;
+    meshlets_.destroy();
+    meshlet_vertices_.destroy();
+    meshlet_triangles_.destroy();
+    meshlet_ranges_.clear();
+    closed_.clear();
     material_sets_.clear();
     pool_ = nullptr;
     textures_.clear();

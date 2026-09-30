@@ -623,6 +623,7 @@ void EditorApp::drawWorkspacePanels(float delta_seconds) {
     }
     drawMcpWindow();
     drawTerminalWindow();
+    drawDataPackWindow();
     drawBuildConfigsWindow();
     drawTouchInterfaceWindow();
     drawInputActionsWindow();

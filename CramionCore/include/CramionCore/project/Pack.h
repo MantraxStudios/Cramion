@@ -52,6 +52,11 @@ bool readPackIndex(const std::filesystem::path& file, std::vector<PackEntry>& en
 bool extractPack(const std::filesystem::path& file, const std::filesystem::path& folder,
                  const PackProgress& progress, std::string* error, std::uint64_t base = 0, std::uint64_t length = 0);
 
+// Un solo archivo del paquete, descomprimido en memoria (el manifiesto de un
+// DataPack sin extraer lo demas). false si no esta o esta danado.
+bool readPackFile(const std::filesystem::path& file, const std::string& path, std::string& data,
+                  std::string* error);
+
 // Identificador del contenido (hash del indice y el tamano): cambia si el
 // paquete cambia.
 std::string packId(const std::filesystem::path& file);

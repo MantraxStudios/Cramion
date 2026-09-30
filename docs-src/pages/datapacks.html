@@ -1,0 +1,102 @@
+<p>
+  Un <strong>DataPack</strong> es el equivalente a los <em>AssetBundles</em> de Unity: un archivo <code>.datapack</code> con
+  <strong>escenas enteras</strong> y/o <strong>objetos</strong> (prefabs) y <strong>todo lo que usan</strong> &mdash; modelos,
+  materiales, texturas, scripts, sonidos, animaciones, shaders, terrenos, interfaces... &mdash; pero <strong>sin el
+  ejecutable</strong>. El juego lo carga en marcha: niveles descargables, DLC, mods, skins, vehículos o personajes que se
+  reparten aparte del juego.
+</p>
+
+<h3 id="exportar">Exportar un DataPack</h3>
+<p>Hay dos caminos:</p>
+<ul>
+  <li><strong>Una escena entera</strong>: <em>Archivo &gt; Exportar escena como DataPack...</em> (la escena abierta ya viene
+    marcada; se pueden marcar más).</li>
+  <li><strong>Un objeto</strong>: <strong>clic derecho</strong> sobre él en la <a href="editor-jerarquia.html">Jerarquía</a>
+    &gt; <em>Empaquetar y exportar como DataPack...</em>. El objeto (con sus hijos) se guarda como prefab en
+    <code>Assets/Prefabs</code> y la ventana se abre con él elegido. Si ya es una instancia sin cambios de un prefab, se usa
+    ese prefab.</li>
+</ul>
+<p>La ventana <strong>Exportar DataPack</strong> tiene:</p>
+<ul>
+  <li><strong>Escenas</strong> y <strong>Objetos (prefabs)</strong>: casillas con lo que va en el paquete (se pueden mezclar).</li>
+  <li><strong>Nombre</strong> y <strong>carpeta</strong> (escribirla o <em>Examinar...</em>): el archivo es
+    <code>&lt;carpeta&gt;/&lt;Nombre&gt;.datapack</code>. Por defecto, la carpeta <code>DataPacks</code> junto al proyecto.</li>
+</ul>
+<p>
+  Al pulsar <strong>Exportar</strong>, el paquete se comprime <strong>en segundo plano</strong> con una barra de progreso
+  (como <a href="exportar.html">Exportar juego</a>) que muestra el archivo que se está comprimiendo, y se puede
+  <strong>Cancelar</strong>. Al terminar dice cuántos archivos lleva, el tamaño y <em>Abrir carpeta</em>. Si la escena tenía
+  cambios sin guardar se guarda antes.
+</p>
+
+<h3 id="que-lleva">Qué lleva</h3>
+<p>
+  Las dependencias se buscan solas desde las escenas y prefabs elegidos, recursivamente: por los <strong>UUID</strong> de los
+  assets (modelos, materiales, prefabs, cielos, controladores de animación...) y por las <strong>rutas entre comillas</strong>
+  que existen en <code>Assets</code> (scripts de los componentes, sonidos, texturas de interfaz, y lo que nombran los scripts
+  Lua: <code>"Sonidos/disparo.wav"</code>, <code>Scene.load("Nivel2")</code>,
+  <code>Scene.instantiate("Prefabs/Enemigo")</code>...). Lo que no se usa no entra.
+</p>
+<div class="note">
+  Una referencia que se arma en tiempo de ejecución (<code>"Nivel" .. n</code>) no se puede adivinar: pon ese asset en el
+  paquete a mano (por ejemplo, marca también esa escena) o escríbelo completo en algún script.
+</div>
+
+<h3 id="lua">Cargarlo desde Lua</h3>
+<pre><code class="language-lua">-- Una escena entera del paquete (la primera, o por nombre)
+DataPack.loadScene("Nivel2")                -- busca Nivel2.datapack
+DataPack.loadScene("Expansion", "Castillo") -- la escena "Castillo" del paquete Expansion
+
+-- Un objeto (prefab) del paquete en la escena actual
+local coche = DataPack.instantiate("Vehiculos", "Deportivo", Vec3(0, 1, 5))
+local skin  = DataPack.instantiate("Skins")   -- el primero del paquete
+
+-- Solo montarlo (sus assets quedan disponibles para Scene.load / Scene.instantiate)
+local info = DataPack.load("Expansion")
+if info then
+  for _, escena in ipairs(info.scenes) do Debug.log("escena: " .. escena) end
+  for _, objeto in ipairs(info.objects) do Debug.log("objeto: " .. objeto) end
+end
+
+-- Mirar lo que trae sin montarlo
+local i = DataPack.info("Expansion")        -- {name, version, scenes, objects, files}
+
+DataPack.isLoaded("Expansion")              -- true / false
+DataPack.list()                             -- nombres montados
+DataPack.unload("Expansion")                -- lo quita</code></pre>
+<table>
+  <thead><tr><th>Función</th><th>Devuelve</th><th>Qué hace</th></tr></thead>
+  <tbody>
+    <tr><td><code>DataPack.load(archivo)</code></td><td>tabla o <code>nil</code></td><td>Monta el paquete: <code>{name, scenes, objects, files}</code>.</td></tr>
+    <tr><td><code>DataPack.loadScene(archivo, escena?)</code></td><td><code>true</code>/<code>false</code></td><td>Monta y cambia a una escena suya al terminar el frame.</td></tr>
+    <tr><td><code>DataPack.instantiate(archivo, objeto?, posicion?, rotacion?)</code></td><td>Entity o <code>nil</code></td><td>Monta y crea un objeto (prefab) suyo en la escena.</td></tr>
+    <tr><td><code>DataPack.info(archivo)</code></td><td>tabla o <code>nil</code></td><td>El manifiesto sin montar nada (también <code>version</code>).</td></tr>
+    <tr><td><code>DataPack.isLoaded(archivo)</code></td><td>booleano</td><td>¿Está montado?</td></tr>
+    <tr><td><code>DataPack.list()</code></td><td>lista</td><td>Nombres de los paquetes montados.</td></tr>
+    <tr><td><code>DataPack.unload(archivo)</code></td><td>booleano</td><td>Desmonta: borra lo que extrajo.</td></tr>
+  </tbody>
+</table>
+<p>
+  El <code>archivo</code> se busca, con o sin <code>.datapack</code>: tal cual (ruta absoluta o relativa), junto al
+  ejecutable del juego y en su carpeta <code>DataPacks/</code>, junto a la carpeta del proyecto (y su
+  <code>DataPacks/</code>) y dentro de <code>Assets</code>. Los nombres de escena y objeto van sin carpeta ni extensión
+  (<code>"Castillo"</code>) o con su ruta dentro del paquete (<code>"Prefabs/Castillo.crprefab"</code>).
+</p>
+
+<h3 id="montar">Cómo se monta</h3>
+<ul>
+  <li>Se extrae dentro de los assets del juego con sus mismas rutas, así las referencias por ruta siguen valiendo.</li>
+  <li><strong>Nunca sobrescribe</strong> lo que ya existe: si el juego (u otro paquete) ya tiene ese archivo, se queda el
+    suyo y la Consola lo avisa.</li>
+  <li>Sigue montado al cambiar de escena. En el editor se desmonta al parar Play (el proyecto queda como estaba); en el juego
+    exportado, al cerrarlo. Si se cerró de golpe, se limpia al volver a abrir.</li>
+  <li>Un paquete se monta una sola vez aunque se llame varias veces a <code>load</code>/<code>instantiate</code>.</li>
+</ul>
+
+<h3 id="formato">Formato</h3>
+<p>
+  Es un <code>.crpack</code> (el mismo formato comprimido con zstd y checksum por archivo que el juego exportado) con un
+  manifiesto <code>datapack.json</code>: nombre, versión, versión de Cramion que lo creó, fecha, escenas, objetos y archivos.
+  Desde una IA conectada por <a href="mcp.html">MCP</a> se exporta con la herramienta <code>export_datapack</code>
+  (<code>file</code>, <code>scenes</code>, <code>entity</code>, <code>name</code>, <code>async</code>).
+</p>

@@ -1,0 +1,93 @@
+#version 460
+#extension GL_EXT_mesh_shader : require
+#extension GL_GOOGLE_include_directive : require
+
+// Geometria (G-buffer) con mesh shaders, mesh shader: los vertices de un
+// meshlet con exactamente lo que da skinned.vert en los lotes instanciados
+// (su fragment shader, skinned.frag, es el mismo): skinning con la matriz del
+// actor, normal, tangente, UV, posicion en el mundo y las dos posiciones de
+// recorte para los vectores de movimiento.
+
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+layout(triangles, max_vertices = 64, max_primitives = 124) out;
+
+#define MESHLET_SET 2
+#include "meshlet_common.glsl"
+
+layout(set = 0, binding = 0) uniform CameraBuffer {
+    mat4 view;
+    mat4 projection;
+    mat4 view_projection;
+    mat4 inverse_view_projection;
+    vec4 position;
+    mat4 unjittered_view_projection;
+    mat4 previous_view_projection;
+    vec4 jitter;
+    uvec4 motion;  // x = primer hueso del frame anterior
+} camera;
+
+layout(std430, set = 0, binding = 1) readonly buffer BoneBuffer {
+    mat4 bones[];
+};
+
+layout(push_constant) uniform PushConstants {
+    uvec4 batch;
+    uvec4 unused0;
+    uvec4 unused1;
+    uvec4 unused2;
+    vec4 base_color;
+    vec4 emissive;
+    vec4 material;
+    uint bone_offset;
+    float reflectance;
+    uint pick_id;
+    uint flags;  // bit 1: camara sin jitter
+} push;
+
+struct Payload {
+    uint instance;
+    uint meshlets[256];
+};
+taskPayloadSharedEXT Payload payload;
+
+layout(location = 0) out vec3 v_normal[];
+layout(location = 1) out vec2 v_uv[];
+layout(location = 2) out vec4 v_tangent[];
+layout(location = 3) out vec3 v_world_position[];
+layout(location = 4) out vec4 v_current_clip[];
+layout(location = 5) out vec4 v_previous_clip[];
+
+void main() {
+    Meshlet m = meshlets[payload.meshlets[gl_WorkGroupID.x]];
+    SetMeshOutputsEXT(m.vertex_count, m.triangle_count);
+    uint base = payload.instance;
+
+    for (uint v = gl_LocalInvocationIndex; v < m.vertex_count; v += 64u) {
+        uint vertex = meshlet_vertices[m.vertex_offset + v];
+        uvec4 joints = vertexJoints(vertex);
+        vec4 weights = vertexWeights(vertex);
+        vec3 position = vertexPosition(vertex);
+        mat4 skin = weights.x * bones[base + joints.x] + weights.y * bones[base + joints.y] +
+                    weights.z * bones[base + joints.z] + weights.w * bones[base + joints.w];
+        vec4 world_position = skin * vec4(position, 1.0);
+        // En los lotes la matriz del modelo es la identidad: la normal va con
+        // la parte 3x3 de los huesos (rigidos), como en skinned.vert.
+        mat3 to_world = mat3(skin);
+        vec4 tangent = vertexTangent(vertex);
+        v_normal[v] = to_world * vertexNormal(vertex);
+        v_tangent[v] = vec4(to_world * tangent.xyz, tangent.w);
+        v_uv[v] = vertexUv(vertex);
+        v_world_position[v] = world_position.xyz;
+        gl_MeshVerticesEXT[v].gl_Position =
+            ((push.flags & 2u) != 0u ? camera.unjittered_view_projection : camera.view_projection) * world_position;
+
+        uint previous = camera.motion.x + base;
+        mat4 previous_skin = weights.x * bones[previous + joints.x] + weights.y * bones[previous + joints.y] +
+                             weights.z * bones[previous + joints.z] + weights.w * bones[previous + joints.w];
+        v_current_clip[v] = camera.unjittered_view_projection * world_position;
+        v_previous_clip[v] = camera.previous_view_projection * (previous_skin * vec4(position, 1.0));
+    }
+    for (uint t = gl_LocalInvocationIndex; t < m.triangle_count; t += 64u) {
+        gl_PrimitiveTriangleIndicesEXT[t] = meshletTriangle(m, t);
+    }
+}

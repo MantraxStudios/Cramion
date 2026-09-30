@@ -38,9 +38,9 @@ struct Cluster {
     uint group;        // lote (modelo x material): su contador de comandos
     uint first_slot;   // primer hueco de comando del lote
     uint instance;     // matriz del actor en el buffer de huesos
-    uint pad0;
-    uint pad1;
-    uint pad2;
+    uint first_meshlet;  // lotes con mesh shaders: sus meshlets
+    uint meshlet_count;
+    uint mesh;           // 1: el lote va por mesh shaders (gbuffer_meshlet.task)
 };
 
 struct DrawCommand {  // VkDrawIndexedIndirectCommand
@@ -129,8 +129,13 @@ bool occluded(vec3 low, vec3 high) {
 
 void emit(Cluster cluster) {
     uint index = atomicAdd(counts[cluster.group], 1u);
+    // Con mesh shaders el mismo hueco lleva los meshlets del cluster (en
+    // instance_count y vertex_offset, que el task shader lee asi).
     commands[cluster.first_slot + index] =
-        DrawCommand(cluster.index_count, 1u, cluster.first_index, 0, cluster.instance);
+        cluster.mesh != 0u
+            ? DrawCommand(cluster.index_count, cluster.meshlet_count, cluster.first_index, int(cluster.first_meshlet),
+                          cluster.instance)
+            : DrawCommand(cluster.index_count, 1u, cluster.first_index, 0, cluster.instance);
 }
 
 void main() {

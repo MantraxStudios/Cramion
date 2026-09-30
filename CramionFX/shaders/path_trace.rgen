@@ -1,0 +1,63 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+#extension GL_EXT_ray_tracing : require
+#extension GL_EXT_shader_invocation_reorder : require
+
+// Path tracing con pipeline de rayos y Shader Execution Reordering (SER,
+// VK_EXT_ray_tracing_invocation_reorder). Mismo algoritmo que path_trace.comp
+// (path_trace_common.glsl); cambia como se lanza el rayo de cada rebote:
+//
+//   1. hitObjectTraceRayEXT: el hardware recorre la escena (con el any-hit
+//      path_trace.rahit para el follaje recortado por alfa) y devuelve el
+//      impacto SIN sombrearlo.
+//   2. reorderThreadEXT: la GPU reagrupa los hilos por el material que han
+//      tocado. Tras un rebote cada pixel ha chocado con cualquier cosa (los
+//      caminos divergen): sin reordenar, un grupo de 32 hilos lee 32
+//      materiales y texturas distintas y ejecuta ramas distintas; reordenados,
+//      los que sombrean lo mismo van juntos (mas coherencia de cache y menos
+//      divergencia). En RTX 40/50 lo hace el hardware.
+//   3. El sombreado sigue en este shader con los datos del impacto.
+//
+// Los rayos de sombra siguen siendo ray queries (rt_common.glsl): terminan en
+// el primer impacto y no sombrean nada, reordenarlos no aporta.
+
+#include "rt_common.glsl"
+#include "path_trace_common.glsl"
+
+// Baricentricas del impacto de triangulo (atributo del hit object).
+layout(location = 0) hitObjectAttributeEXT vec2 hit_barycentrics;
+// Sin uso (no se ejecuta ningun closest-hit), pero hitObjectTraceRayEXT
+// nombra la ubicacion 0: sin payload declarado ahi, glslang (SDK 1.4.357) se
+// cuelga en vez de dar un error.
+layout(location = 0) rayPayloadEXT vec4 unused_payload;
+
+bool traceBounce(vec3 origin, vec3 direction, float max_distance, out RtHit hit) {
+    hitObjectEXT hit_object;
+    hitObjectTraceRayEXT(hit_object, scene_tlas, gl_RayFlagsNoneEXT, 0xFF, 0, 0, 0, origin, 0.0, direction,
+                         max_distance, 0);
+
+    // Clave de reordenacion: el material tocado (los fallos, aparte).
+    uint key = 0xFFFFu;
+    if (hitObjectIsHitEXT(hit_object)) {
+        uint model = hitObjectGetInstanceCustomIndexEXT(hit_object);
+        uint geometry = hitObjectGetGeometryIndexEXT(hit_object);
+        uint primitive = hitObjectGetPrimitiveIndexEXT(hit_object);
+        key = rt_triangle_materials[rtTriangle(model, geometry, primitive)] & 0xFFFFu;
+    }
+    reorderThreadEXT(hit_object, key, 16u);
+
+    if (!hitObjectIsHitEXT(hit_object)) {
+        return false;
+    }
+    hitObjectGetAttributesEXT(hit_object, 0);
+    fillHit(hitObjectGetInstanceCustomIndexEXT(hit_object), hitObjectGetGeometryIndexEXT(hit_object),
+            hitObjectGetPrimitiveIndexEXT(hit_object), hit_barycentrics, hitObjectGetRayTMaxEXT(hit_object),
+            hitObjectGetWorldToObjectEXT(hit_object), origin, direction, hit);
+    return true;
+}
+
+void main() {
+    ivec2 pixel = ivec2(gl_LaunchIDEXT.xy);
+    ivec2 size = ivec2(gl_LaunchSizeEXT.xy);
+    pathTracePixel(pixel, size);
+}

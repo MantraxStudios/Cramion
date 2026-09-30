@@ -1,0 +1,124 @@
+#version 460
+#extension GL_EXT_mesh_shader : require
+#extension GL_GOOGLE_include_directive : require
+
+// Geometria (G-buffer) con mesh shaders, task shader: un grupo por cluster
+// visible (lo decidio cull.comp con frustum y oclusion Hi-Z, en dos fases).
+// Aqui se afina por meshlet (hasta 124 triangulos): los que caen fuera del
+// campo de vision y, en mallas cerradas, los que miran hacia atras (su cono de
+// normales entero de espaldas a la camara: siempre quedan detras de algo).
+//
+// Se lanzan tantos grupos como huecos tiene el lote; los que pasan del
+// contador del lote (clusters no visibles) no emiten nada.
+
+layout(local_size_x = 32, local_size_y = 1, local_size_z = 1) in;
+
+#define MESHLET_SET 2
+#include "meshlet_common.glsl"
+
+layout(set = 0, binding = 0) uniform CameraBuffer {
+    mat4 view;
+    mat4 projection;
+    mat4 view_projection;
+    mat4 inverse_view_projection;
+    vec4 position;
+    mat4 unjittered_view_projection;
+    mat4 previous_view_projection;
+    vec4 jitter;
+    uvec4 motion;
+} camera;
+
+layout(std430, set = 0, binding = 1) readonly buffer BoneBuffer {
+    mat4 bones[];
+};
+
+// Comandos de cull.comp en formato meshlet: (triangulos, meshlets del
+// cluster, primer indice, primer meshlet, matriz del actor).
+struct DrawCommand {
+    uint index_count;
+    uint meshlet_count;
+    uint first_index;
+    int first_meshlet;
+    uint instance;
+};
+layout(std430, set = 3, binding = 0) readonly buffer Commands { DrawCommand commands[]; };
+layout(std430, set = 3, binding = 1) readonly buffer Counts { uint counts[]; };
+
+// Mismo tamano y orden que GpuSkinnedPush (skinned.frag): donde el raster
+// lleva la matriz del modelo (identidad en los lotes) va el lote.
+layout(push_constant) uniform PushConstants {
+    uvec4 batch;  // x = primer hueco, y = huecos, z = indice del lote, w = 1: descartar por cono
+    uvec4 unused0;
+    uvec4 unused1;
+    uvec4 unused2;
+    vec4 base_color;
+    vec4 emissive;
+    vec4 material;
+    uint bone_offset;
+    float reflectance;
+    uint pick_id;
+    uint flags;
+} push;
+
+struct Payload {
+    uint instance;
+    uint meshlets[256];
+};
+taskPayloadSharedEXT Payload payload;
+
+shared uint visible_count;
+
+vec4 matrixRow(mat4 m, int row) {
+    return vec4(m[0][row], m[1][row], m[2][row], m[3][row]);
+}
+
+bool sphereInFrustum(vec3 center, float radius) {
+    mat4 m = camera.view_projection;
+    vec4 r0 = matrixRow(m, 0);
+    vec4 r1 = matrixRow(m, 1);
+    vec4 r2 = matrixRow(m, 2);
+    vec4 r3 = matrixRow(m, 3);
+    vec4 planes[6] = vec4[](r3 + r0, r3 - r0, r3 + r1, r3 - r1, r2, r3 - r2);
+    for (int i = 0; i < 6; ++i) {
+        if (dot(planes[i].xyz, center) + planes[i].w < -radius * length(planes[i].xyz)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+void main() {
+    uint slot = gl_WorkGroupID.x;
+    if (slot >= counts[push.batch.z]) {
+        EmitMeshTasksEXT(0u, 1u, 1u);  // hueco sin cluster visible
+    }
+    if (gl_LocalInvocationIndex == 0u) {
+        visible_count = 0u;
+    }
+    barrier();
+
+    DrawCommand command = commands[push.batch.x + slot];
+    uint first = uint(command.first_meshlet);
+    uint count = min(command.meshlet_count, 256u);
+    for (uint start = 0u; start < count; start += 32u) {
+        uint k = start + gl_LocalInvocationIndex;
+        if (k >= count) continue;
+        Meshlet m = meshlets[first + k];
+        mat4 skin = bones[command.instance + vertexJoints(meshlet_vertices[m.vertex_offset]).x];
+        vec3 center = (skin * vec4(m.center_radius.xyz, 1.0)).xyz;
+        float scale = length(skin[0].xyz);
+        bool keep = sphereInFrustum(center, m.center_radius.w * scale);
+        if (keep && push.batch.w != 0u && m.cone_axis_cutoff.w < 1.0) {
+            vec3 apex = (skin * vec4(m.cone_apex.xyz, 1.0)).xyz;
+            vec3 axis = normalize(mat3(skin) * m.cone_axis_cutoff.xyz);
+            keep = dot(normalize(apex - camera.position.xyz), axis) < m.cone_axis_cutoff.w;
+        }
+        if (keep) {
+            uint index = atomicAdd(visible_count, 1u);
+            payload.meshlets[index] = first + k;
+        }
+    }
+    barrier();
+    payload.instance = command.instance;
+    EmitMeshTasksEXT(visible_count, 1u, 1u);
+}

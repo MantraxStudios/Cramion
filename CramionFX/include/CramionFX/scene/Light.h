@@ -28,6 +28,7 @@ struct PointLight {
     float range = 18.0f;
     bool cast_shadows = true;
     float shadow_strength = 1.0f;  // cuanto oscurece su sombra (0..1)
+    float source_radius = 0.05f;   // tamano de la bombilla (m): penumbra de las sombras por rayos
 };
 
 // Foco: luz puntual limitada a un cono. Entre el angulo interior y el exterior
@@ -43,6 +44,7 @@ struct SpotLight {
     bool enabled = true;
     bool cast_shadows = true;
     float shadow_strength = 1.0f;  // cuanto oscurece su sombra (0..1)
+    float source_radius = 0.05f;   // tamano de la bombilla (m)
 };
 
 // Iluminacion ambiental de relleno (cielo).

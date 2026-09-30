@@ -267,7 +267,9 @@ void VulkanDevice::createLogicalDevice() {
     vk::StructureChain<vk::DeviceCreateInfo, vk::PhysicalDeviceFeatures2,
                        vk::PhysicalDeviceVulkan12Features, vk::PhysicalDeviceVulkan13Features,
                        vk::PhysicalDeviceAccelerationStructureFeaturesKHR,
-                       vk::PhysicalDeviceRayQueryFeaturesKHR>
+                       vk::PhysicalDeviceRayQueryFeaturesKHR, vk::PhysicalDeviceOpacityMicromapFeaturesEXT,
+                       vk::PhysicalDeviceRayTracingPipelineFeaturesKHR,
+                       vk::PhysicalDeviceRayTracingInvocationReorderFeaturesEXT, vk::PhysicalDeviceMeshShaderFeaturesEXT>
         chain{};
 
     ray_tracing_supported_ = supportsRayTracing(physical_device_);
@@ -284,6 +286,62 @@ void VulkanDevice::createLogicalDevice() {
         chain.unlink<vk::PhysicalDeviceAccelerationStructureFeaturesKHR>();
         chain.unlink<vk::PhysicalDeviceRayQueryFeaturesKHR>();
     }
+
+    // --- Extras de la generacion actual de GPUs (todos opcionales) ---
+    {
+        const auto available = physical_device_.enumerateDeviceExtensionProperties();
+        const auto features =
+            physical_device_.getFeatures2<vk::PhysicalDeviceFeatures2, vk::PhysicalDeviceOpacityMicromapFeaturesEXT,
+                                          vk::PhysicalDeviceRayTracingPipelineFeaturesKHR,
+                                          vk::PhysicalDeviceRayTracingInvocationReorderFeaturesEXT,
+                                          vk::PhysicalDeviceMeshShaderFeaturesEXT>();
+        // Opacity micromaps: el alfa del follaje horneado en las BLAS (el
+        // hardware se salta el shader en lo que es opaco o transparente seguro).
+        opacity_micromap_supported_ =
+            ray_tracing_supported_ && hasExtension(available, vk::EXTOpacityMicromapExtensionName) &&
+            features.get<vk::PhysicalDeviceOpacityMicromapFeaturesEXT>().micromap;
+        // Pipeline de ray tracing + Shader Execution Reordering (path tracing).
+        ray_tracing_pipeline_supported_ =
+            ray_tracing_supported_ && hasExtension(available, vk::KHRRayTracingPipelineExtensionName) &&
+            features.get<vk::PhysicalDeviceRayTracingPipelineFeaturesKHR>().rayTracingPipeline;
+        invocation_reorder_supported_ =
+            ray_tracing_pipeline_supported_ &&
+            hasExtension(available, vk::EXTRayTracingInvocationReorderExtensionName) &&
+            features.get<vk::PhysicalDeviceRayTracingInvocationReorderFeaturesEXT>().rayTracingInvocationReorder;
+        // Mesh shaders (task + mesh): meshlets con culling en la GPU.
+        mesh_shader_supported_ = hasExtension(available, vk::EXTMeshShaderExtensionName) &&
+                                 features.get<vk::PhysicalDeviceMeshShaderFeaturesEXT>().meshShader &&
+                                 features.get<vk::PhysicalDeviceMeshShaderFeaturesEXT>().taskShader;
+    }
+    if (opacity_micromap_supported_) {
+        extensions.push_back(vk::EXTOpacityMicromapExtensionName);
+        chain.get<vk::PhysicalDeviceOpacityMicromapFeaturesEXT>().micromap = VK_TRUE;
+    } else {
+        chain.unlink<vk::PhysicalDeviceOpacityMicromapFeaturesEXT>();
+    }
+    if (ray_tracing_pipeline_supported_) {
+        extensions.push_back(vk::KHRRayTracingPipelineExtensionName);
+        chain.get<vk::PhysicalDeviceRayTracingPipelineFeaturesKHR>().rayTracingPipeline = VK_TRUE;
+    } else {
+        chain.unlink<vk::PhysicalDeviceRayTracingPipelineFeaturesKHR>();
+    }
+    if (invocation_reorder_supported_) {
+        extensions.push_back(vk::EXTRayTracingInvocationReorderExtensionName);
+        chain.get<vk::PhysicalDeviceRayTracingInvocationReorderFeaturesEXT>().rayTracingInvocationReorder = VK_TRUE;
+    } else {
+        chain.unlink<vk::PhysicalDeviceRayTracingInvocationReorderFeaturesEXT>();
+    }
+    if (mesh_shader_supported_) {
+        extensions.push_back(vk::EXTMeshShaderExtensionName);
+        chain.get<vk::PhysicalDeviceMeshShaderFeaturesEXT>().meshShader = VK_TRUE;
+        chain.get<vk::PhysicalDeviceMeshShaderFeaturesEXT>().taskShader = VK_TRUE;
+    } else {
+        chain.unlink<vk::PhysicalDeviceMeshShaderFeaturesEXT>();
+    }
+    std::cout << "[Vulkan] Micromaps de opacidad: " << (opacity_micromap_supported_ ? "si" : "no")
+              << ", pipeline de rayos: " << (ray_tracing_pipeline_supported_ ? "si" : "no")
+              << ", SER: " << (invocation_reorder_supported_ ? "si" : "no")
+              << ", mesh shaders: " << (mesh_shader_supported_ ? "si" : "no") << "\n";
 
     // Opcional: cuanta VRAM se usa de verdad (diagnostico y presupuesto).
     for (const vk::ExtensionProperties& extension : physical_device_.enumerateDeviceExtensionProperties()) {

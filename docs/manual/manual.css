@@ -205,3 +205,10 @@ img { display: block; }
   .doc h1, .cover h1 { font-size: 28px; }
   .toc li { grid-template-columns: 1fr; gap: 2px; }
 }
+
+/* Capturas del motor dentro de una pagina. */
+.shots { display: grid; gap: 12px; margin: 18px 0; }
+@media (min-width: 900px) { .shots { grid-template-columns: 1fr 1fr; } }
+.shots figure { margin: 0; border: 1px solid var(--rule); background: var(--ink-2); }
+.shots img { width: 100%; height: auto; }
+.shots figcaption { font: 12px var(--mono); color: var(--mute); padding: 6px 10px; border-top: 1px solid var(--rule); }

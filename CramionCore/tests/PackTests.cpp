@@ -1,9 +1,12 @@
 // Pruebas de los paquetes .crpack (escribir, leer el indice, descomprimir,
 // detectar danos), en consola.
+#include "CramionCore/asset/AssetDatabase.h"
+#include "CramionCore/project/DataPack.h"
 #include "CramionCore/project/Pack.h"
 
 #include <cstdio>
 #include <fstream>
+#include <iterator>
 #include <random>
 #include <string>
 
@@ -95,6 +98,84 @@ int main() {
     check(!project::extractPack(pack, root / "out2", {}, &error), "detecta un paquete danado");
     std::printf("    (%s)\n", error.c_str());
     check(!project::readPackIndex(src / "Assets" / "escena.crscene", entries, &error), "rechaza lo que no es .crpack");
+
+    // --- DataPacks: una escena con todo lo que usa ---
+    {
+        const std::filesystem::path game = root / "dp_game" / "Assets";
+        const auto write = [](const std::filesystem::path& f, const std::string& text) {
+            std::filesystem::create_directories(f.parent_path());
+            std::ofstream(f, std::ios::binary) << text;
+        };
+        write(game / "Escenas" / "Nivel1.crscene",
+              "{\"entities\":[{\"Script\":{\"file\":\"Scripts/Jugador.lua\"}},{\"AudioSource\":{\"clip\":\"Sonidos/viento.wav\"}}]}");
+        write(game / "Scripts" / "Jugador.lua", "-- jugador\nAudio.play('Sonidos/disparo.wav')\nScene.load(\"Nivel2\")\n");
+        write(game / "Sonidos" / "viento.wav", "RIFFviento");
+        write(game / "Sonidos" / "disparo.wav", "RIFFdisparo");
+        write(game / "Escenas" / "Nivel2.crscene", "{\"entities\":[]}");
+        write(game / "NoUsado" / "grande.png", std::string(5000, 'x'));
+
+        assets::AssetDatabase database;
+        database.open(game);
+        const project::DataPackCollection deps =
+            project::collectDependencies({game / "Escenas" / "Nivel1.crscene"}, game, database);
+        const auto has = [&](const char* name) {
+            for (const auto& f : deps.files) {
+                if (f.filename() == name) return true;
+            }
+            return false;
+        };
+        check(deps.files.size() == 5 && has("Nivel1.crscene") && has("Jugador.lua") && has("viento.wav") &&
+                  has("disparo.wav") && has("Nivel2.crscene") && !has("grande.png"),
+              "DataPack: dependencias de la escena (script, sonidos, escena por nombre) y nada mas");
+
+        const std::filesystem::path pack_file = root / "Nivel1.datapack";
+        project::DataPackManifest written;
+        check(project::writeDataPack(pack_file, "Nivel1", {game / "Escenas" / "Nivel1.crscene"}, deps, game, "test", 3, {},
+                                     &error, &written),
+              "DataPack: se escribe");
+        project::DataPackManifest manifest;
+        check(project::readDataPackManifest(pack_file, manifest, &error) && manifest.name == "Nivel1" &&
+                  manifest.scenes.size() == 1 && manifest.scenes[0] == "Escenas/Nivel1.crscene" &&
+                  manifest.files.size() == 5,
+              "DataPack: manifiesto sin extraer");
+
+        // Montar en otro juego que ya tiene un archivo con el mismo nombre.
+        const std::filesystem::path other = root / "dp_other" / "Assets";
+        write(other / "Sonidos" / "viento.wav", "DEL JUEGO");
+        project::DataPackMount mount;
+        const std::filesystem::path journal = root / "dp_other" / "journal.txt";
+        check(project::mountDataPack(pack_file, other, mount, &error, journal) && mount.written.size() == 4 &&
+                  mount.kept.size() == 1,
+              "DataPack: se monta sin sobrescribir lo que existe");
+        std::ifstream kept(other / "Sonidos" / "viento.wav", std::ios::binary);
+        std::string kept_text((std::istreambuf_iterator<char>(kept)), std::istreambuf_iterator<char>());
+        kept.close();
+        check(kept_text == "DEL JUEGO" && std::filesystem::exists(other / "Scripts" / "Jugador.lua"),
+              "DataPack: el archivo del juego queda intacto");
+        project::unmountDataPack(mount, other, journal);
+        check(!std::filesystem::exists(other / "Scripts") && std::filesystem::exists(other / "Sonidos" / "viento.wav"),
+              "DataPack: desmontar borra lo suyo y sus carpetas vacias");
+        // Diario: un montaje que no se desmonto se limpia al abrir.
+        project::DataPackMount again;
+        project::mountDataPack(pack_file, other, again, &error, journal);
+        project::cleanupDataPackJournal(journal, other);
+        check(!std::filesystem::exists(other / "Escenas" / "Nivel2.crscene") && !std::filesystem::exists(journal),
+              "DataPack: el diario limpia montajes olvidados");
+
+        // Objetos: un prefab (con su script) en vez de una escena.
+        write(game / "Prefabs" / "Coche.crprefab", "{\"entities\":[{\"Script\":{\"file\":\"Scripts/Jugador.lua\"}}]}");
+        database.refresh();
+        const project::DataPackCollection object_deps =
+            project::collectDependencies({game / "Prefabs" / "Coche.crprefab"}, game, database);
+        const std::filesystem::path object_pack = root / "Coche.datapack";
+        project::DataPackManifest objects;
+        check(object_deps.files.size() == 4 &&
+                  project::writeDataPack(object_pack, "Coche", {game / "Prefabs" / "Coche.crprefab"}, object_deps, game,
+                                         "test", 3, {}, &error) &&
+                  project::readDataPackManifest(object_pack, objects, &error) && objects.scenes.empty() &&
+                  objects.objects.size() == 1 && objects.objects[0] == "Prefabs/Coche.crprefab",
+              "DataPack: objetos (prefab) con sus dependencias en \"objects\"");
+    }
 
     std::filesystem::remove_all(root);
     std::printf("\n%d fallos\n", failures);

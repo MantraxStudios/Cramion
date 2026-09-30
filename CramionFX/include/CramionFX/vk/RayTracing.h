@@ -29,8 +29,9 @@ class VulkanDevice;
 //   - Una TLAS con una instancia por actor de escenario (modelos rigidos).
 //   - Vertices, indices, materiales y todas las texturas accesibles desde los
 //     shaders (rt_common.glsl) para sombrear el punto de impacto.
-//   - Compute shaders: rt_gi.comp (media resolucion), rt_reflections.comp y
-//     path_trace.comp (path tracing de referencia, activable).
+//   - Compute shaders: rt_gi.comp (media resolucion), rt_reflections.comp,
+//     rt_shadows.comp (sombras de las luces locales) y path_trace.comp (path
+//     tracing de referencia, activable).
 class RayTracing {
 public:
     struct Instance {
@@ -52,6 +53,7 @@ public:
         vk::ImageView material;           // G-buffer: emision y metalicidad
         vk::ImageView path_output;        // storage: la imagen HDR de la escena
         vk::ImageView accumulation;       // storage RGBA32F: suma de caminos
+        vk::ImageView shadow_output;      // storage RGBA16F: sombras de las luces locales
         vk::Sampler sampler;              // lineal, bordes fijados
         vk::Sampler environment_sampler;
     };
@@ -65,8 +67,9 @@ public:
     // CacheResolve: la cache de radiancia en el mundo (rt_cache_resolve.comp),
     // despues de la GI; se lanza con cacheResolveExtent(). PathTrace: el path
     // tracing (path_trace.comp) a resolucion completa.
-    enum class Pass : std::uint32_t { Gi = 0, Reflections = 1, CacheResolve = 2, PathTrace = 3 };
-    static constexpr std::uint32_t kPassCount = 4;
+    // Shadows: sombras de las luces locales (rt_shadows.comp) a resolucion completa.
+    enum class Pass : std::uint32_t { Gi = 0, Reflections = 1, CacheResolve = 2, PathTrace = 3, Shadows = 4 };
+    static constexpr std::uint32_t kPassCount = 5;
     // Entradas de la cache (debe coincidir con kCacheSize de rt_common.glsl).
     static constexpr std::uint32_t kCacheEntries = 1u << 19;
     static vk::Extent2D cacheResolveExtent() { return vk::Extent2D{1024, kCacheEntries / 1024}; }
@@ -92,6 +95,10 @@ public:
 
     // Todo listo para trazar (escena subida y al menos una instancia).
     bool ready() const;
+    // El path tracing va por el pipeline de rayos con Shader Execution
+    // Reordering (path_trace.rgen) en vez del compute: sus barreras deben
+    // incluir la etapa de ray tracing.
+    bool serActive() const;
 
     // Vacia la cache de radiancia en la siguiente resolucion (el origen
     // flotante se movio: sus celdas estan en las coordenadas viejas).

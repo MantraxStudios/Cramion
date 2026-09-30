@@ -222,6 +222,9 @@ struct RtHit {
     vec3 direction;  // del rayo que llego
 };
 
+void fillHit(uint model, uint geometry, uint primitive, vec2 barycentrics, float t, mat4x3 world_to_object,
+             vec3 origin, vec3 direction, out RtHit hit);
+
 // Lanza un rayo y devuelve el primer impacto (con recorte por alfa).
 bool traceRay(vec3 origin, vec3 direction, float max_distance, out RtHit hit) {
     rayQueryEXT query;
@@ -237,12 +240,19 @@ bool traceRay(vec3 origin, vec3 direction, float max_distance, out RtHit hit) {
     if (rayQueryGetIntersectionTypeEXT(query, true) != gl_RayQueryCommittedIntersectionTriangleEXT) {
         return false;
     }
+    fillHit(rayQueryGetIntersectionInstanceCustomIndexEXT(query, true), rayQueryGetIntersectionGeometryIndexEXT(query, true),
+            rayQueryGetIntersectionPrimitiveIndexEXT(query, true), rayQueryGetIntersectionBarycentricsEXT(query, true),
+            rayQueryGetIntersectionTEXT(query, true), rayQueryGetIntersectionWorldToObjectEXT(query, true), origin,
+            direction, hit);
+    return true;
+}
 
-    uint model = rayQueryGetIntersectionInstanceCustomIndexEXT(query, true);
-    uint geometry = rayQueryGetIntersectionGeometryIndexEXT(query, true);
-    uint primitive = rayQueryGetIntersectionPrimitiveIndexEXT(query, true);
+// El impacto a partir de lo que da el hardware (ray query o hit object de un
+// pipeline de rayos): posicion, normal (con la inversa traspuesta del objeto),
+// UV y material.
+void fillHit(uint model, uint geometry, uint primitive, vec2 barycentrics, float t, mat4x3 world_to_object,
+             vec3 origin, vec3 direction, out RtHit hit) {
     uint triangle = rtTriangle(model, geometry, primitive);
-    vec2 barycentrics = rayQueryGetIntersectionBarycentricsEXT(query, true);
     vec3 w = vec3(1.0 - barycentrics.x - barycentrics.y, barycentrics);
 
     RtVertex a = rt_vertices[rt_indices[triangle * 3u]];
@@ -253,9 +263,7 @@ bool traceRay(vec3 origin, vec3 direction, float max_distance, out RtHit hit) {
     // Las normales se transforman con la inversa traspuesta: con la matriz
     // del objeto tal cual, una escala no uniforme las inclinaba y la luz de
     // los impactos salia mal orientada. n * M^-1 == (M^-1)^T * n.
-    mat4x3 world_to_object = rayQueryGetIntersectionWorldToObjectEXT(query, true);
-
-    hit.distance = rayQueryGetIntersectionTEXT(query, true);
+    hit.distance = t;
     hit.direction = direction;
     hit.position = origin + direction * hit.distance;
     hit.normal = normalize(normal * mat3(world_to_object));
@@ -265,7 +273,6 @@ bool traceRay(vec3 origin, vec3 direction, float max_distance, out RtHit hit) {
     }
     hit.uv = vec2(a.u, a.v) * w.x + vec2(b.u, b.v) * w.y + vec2(c.u, c.v) * w.z;
     hit.material = rt_triangle_materials[triangle];
-    return true;
 }
 
 // true si nada tapa el segmento (rayo de sombra: basta el primer impacto).

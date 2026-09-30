@@ -17,6 +17,7 @@
 #include <CramionDM/Input.h>
 
 #include <imgui.h>
+#include <imgui_internal.h>
 #include <imgui_stdlib.h>
 
 #include <ImGuizmo.h>
@@ -26,6 +27,7 @@
 #include <cstdio>
 #include <cstring>
 #include <iostream>
+#include <string_view>
 
 namespace cramion::editor {
 
@@ -196,8 +198,8 @@ void EditorApp::enterPlay() {
     cinematics_.reset();
     cinematics_.clearPreview();
     timeline_playing_ = false;
-    // Como Unity: al dar Play se ve el Juego.
-    if (show_game_) {
+    // Como Unity: al dar Play se ve el Juego (salvo "quedarse en la vista actual").
+    if (show_game_ && play_focus_game_) {
         focus_game_ = true;
         preferred_view_ = kGameSlot;
     }
@@ -213,6 +215,7 @@ void EditorApp::exitPlay() {
     if (!playing()) return;
     const std::uint64_t steps = physics_.stats().steps;
     scripts_.stop();
+    scripts_.unmountDataPacks();  // lo montado en Play (DataPack.load) sale del proyecto
     scripts_.shutdownNetwork();  // salir de Play cierra la partida en red
     audio_.stop();
     ui_.reset();
@@ -405,7 +408,8 @@ void EditorApp::drawPlayControls() {
     if (!has_project_) return;
     const float button = 64.0f;
     const float spacing = ImGui::GetStyle().ItemSpacing.x;
-    ImGui::SetCursorPosX((ImGui::GetWindowWidth() - (button * 3.0f + spacing * 2.0f)) * 0.5f);
+    const float arrow = ImGui::GetFrameHeight();
+    ImGui::SetCursorPosX((ImGui::GetWindowWidth() - (button * 3.0f + arrow + spacing * 3.0f)) * 0.5f);
     const auto toggle = [&](const char* label, bool active, ImVec4 color) {
         if (active) {
             ImGui::PushStyleColor(ImGuiCol_Button, color);
@@ -425,6 +429,45 @@ void EditorApp::drawPlayControls() {
     if (ImGui::Button("Paso", ImVec2(button, 0.0f))) ++step_requests_;
     ImGui::EndDisabled();
     ImGui::SetItemTooltip("Un paso fijo de fisica (en pausa)");
+
+    // Como el desplegable de Play de Unity (Play Focused / Unfocused).
+    ImGui::SameLine();
+    if (ImGui::ArrowButton("##play_options", ImGuiDir_Down)) ImGui::OpenPopup("##play_options_menu");
+    ImGui::SetItemTooltip(play_focus_game_ ? "Al dar Play: ir a la pestana Juego" : "Al dar Play: quedarse en la vista actual");
+    if (ImGui::BeginPopup("##play_options_menu")) {
+        ImGui::TextDisabled("Al dar Play");
+        if (ImGui::RadioButton("Ir a la pestaña Juego", play_focus_game_)) {
+            play_focus_game_ = true;
+            ImGui::MarkIniSettingsDirty();
+        }
+        if (ImGui::RadioButton("Quedarse en la vista actual", !play_focus_game_)) {
+            play_focus_game_ = false;
+            ImGui::MarkIniSettingsDirty();
+        }
+        ImGui::EndPopup();
+    }
+}
+
+// Preferencias del editor en CramionEditor.ini (el de ImGui, junto al .exe),
+// seccion [Cramion][Editor].
+void EditorApp::registerEditorSettings() {
+    ImGuiSettingsHandler handler;
+    handler.TypeName = "Cramion";
+    handler.TypeHash = ImHashStr("Cramion");
+    handler.UserData = this;
+    handler.ReadOpenFn = [](ImGuiContext*, ImGuiSettingsHandler* h, const char* name) -> void* {
+        return std::string_view(name) == "Editor" ? h->UserData : nullptr;
+    };
+    handler.ReadLineFn = [](ImGuiContext*, ImGuiSettingsHandler*, void* entry, const char* line) {
+        auto* app = static_cast<EditorApp*>(entry);
+        int value = 0;
+        if (std::sscanf(line, "PlayFocusGame=%d", &value) == 1) app->play_focus_game_ = value != 0;
+    };
+    handler.WriteAllFn = [](ImGuiContext*, ImGuiSettingsHandler* h, ImGuiTextBuffer* out) {
+        const auto* app = static_cast<const EditorApp*>(h->UserData);
+        out->appendf("[Cramion][Editor]\nPlayFocusGame=%d\n\n", app->play_focus_game_ ? 1 : 0);
+    };
+    ImGui::AddSettingsHandler(&handler);
 }
 
 // -----------------------------------------------------------------------------

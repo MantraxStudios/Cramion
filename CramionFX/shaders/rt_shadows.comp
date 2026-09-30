@@ -1,0 +1,127 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+
+// Sombras por rayos de las luces locales (puntuales y focos), a resolucion
+// completa. En cada pixel se eligen las 4 luces que mas luz le aportan (sin
+// sombra: intensidad, distancia, angulo y cono) y se lanza un rayo de sombra
+// hacia un punto al azar de la bombilla de cada una (el disco de su "Radio de
+// la fuente", perpendicular a la luz). Con una bombilla pequena la sombra es
+// nitida; con una grande, el borde se difumina segun la distancia entre lo que
+// tapa y lo que recibe (penumbra real). El punto cambia cada frame y
+// lighting.frag promedia los vecinos: el TAA hace el resto.
+//
+// Vale para TODAS las luces locales (no solo las que tienen mapa de sombras),
+// pero solo con lo que hay en la escena de rayos (el escenario). Los
+// personajes animados, el terreno y los voxeles siguen proyectando con los
+// mapas de sombras; lighting.frag se queda con la mas oscura de las dos.
+//
+// Salida (RGBA16F, un canal por luz): (luz + 1) * 32 + visibilidad (0..31);
+// 0 = hueco libre. Las luces se numeran: puntuales 0..31, focos 32..39. Enteros
+// < 2048: exactos en 16 bits.
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+#include "rt_common.glsl"
+
+const int kSlots = 4;
+// Como LocalLightShadows::kNearPlane: lo que esta a menos de 20 cm de la luz
+// (su bombilla, el poste de la farola) no tapa.
+const float kNearPlane = 0.2;
+
+void insertLight(int id, float score, inout int ids[kSlots], inout float scores[kSlots]) {
+    if (score <= scores[kSlots - 1]) return;
+    int k = kSlots - 1;
+    while (k > 0 && scores[k - 1] < score) {
+        ids[k] = ids[k - 1];
+        scores[k] = scores[k - 1];
+        --k;
+    }
+    ids[k] = id;
+    scores[k] = score;
+}
+
+void main() {
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = imageSize(output_image);
+    if (any(greaterThanEqual(pixel, size))) {
+        return;
+    }
+
+    float depth = texelFetch(g_depth, pixel, 0).r;
+    if (depth >= 1.0) {
+        imageStore(output_image, pixel, vec4(0.0));
+        return;
+    }
+    vec2 uv = (vec2(pixel) + 0.5) / vec2(size);
+    vec3 position = worldFromDepth(uv, depth);
+    vec3 normal = decodeNormal(texelFetch(g_normal, pixel, 0).rg);
+    float distance_to_camera = length(camera.position.xyz - position);
+
+    // --- Las 4 luces que mas aportan ---
+    int ids[kSlots] = int[](-1, -1, -1, -1);
+    float scores[kSlots] = float[](0.0, 0.0, 0.0, 0.0);
+    int point_count = min(lights.counts.x, kMaxPointLights);
+    for (int i = 0; i < point_count; ++i) {
+        if (lights.points[i].shadow.y <= 0.0) continue;  // sin sombra
+        vec3 to_light = lights.points[i].position_range.xyz - position;
+        float d = length(to_light);
+        float range = lights.points[i].position_range.w;
+        if (d > range) continue;
+        float n_dot_l = dot(normal, to_light / max(d, 1e-4));
+        if (n_dot_l <= 0.0) continue;
+        float score = luminance(toLinear(lights.points[i].color_intensity.rgb)) * lights.points[i].color_intensity.a *
+                      attenuation(d, range) * n_dot_l;
+        insertLight(i, score, ids, scores);
+    }
+    int spot_count = min(lights.counts.y, kMaxSpotLights);
+    for (int i = 0; i < spot_count; ++i) {
+        if (lights.spots[i].outer_shadow.z <= 0.0) continue;
+        vec3 to_light = lights.spots[i].position_range.xyz - position;
+        float d = length(to_light);
+        float range = lights.spots[i].position_range.w;
+        if (d > range) continue;
+        vec3 l = to_light / max(d, 1e-4);
+        float n_dot_l = dot(normal, l);
+        if (n_dot_l <= 0.0) continue;
+        float cosine = dot(-l, normalize(lights.spots[i].direction_intensity.xyz));
+        float inner_cos = lights.spots[i].color_inner.a;
+        float outer_cos = lights.spots[i].outer_shadow.x;
+        float cone = clamp((cosine - outer_cos) / max(inner_cos - outer_cos, 1e-4), 0.0, 1.0);
+        if (cone <= 0.0) continue;
+        float score = luminance(toLinear(lights.spots[i].color_inner.rgb)) * lights.spots[i].direction_intensity.w *
+                      cone * cone * attenuation(d, range) * n_dot_l;
+        insertLight(kMaxPointLights + i, score, ids, scores);
+    }
+
+    // --- Un rayo de sombra por luz ---
+    vec3 origin = position + normal * gbufferRayBias(distance_to_camera, 0.01);
+    vec4 result = vec4(0.0);
+    for (int k = 0; k < kSlots; ++k) {
+        int id = ids[k];
+        if (id < 0) continue;
+        bool spot = id >= kMaxPointLights;
+        vec3 light_position = spot ? lights.spots[id - kMaxPointLights].position_range.xyz
+                                   : lights.points[id].position_range.xyz;
+        float radius = spot ? lights.spots[id - kMaxPointLights].outer_shadow.w : lights.points[id].shadow.z;
+
+        // Punto al azar del disco de la bombilla, de cara al pixel.
+        vec3 to_light = normalize(light_position - origin);
+        vec3 up = abs(to_light.y) < 0.99 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
+        vec3 tangent = normalize(cross(up, to_light));
+        vec3 bitangent = cross(to_light, tangent);
+        vec2 xi = sampleNoise(vec2(pixel), float(k) * 0.371);
+        float r = radius * sqrt(xi.x);
+        float angle = 2.0 * kPi * xi.y;
+        vec3 target = light_position + (tangent * cos(angle) + bitangent * sin(angle)) * r;
+
+        vec3 ray = target - origin;
+        float length_to_target = length(ray);
+        float max_distance = length_to_target - max(kNearPlane, radius);
+        float visible = 1.0;
+        if (max_distance > 0.0 && !unoccluded(origin, ray / length_to_target, max_distance)) {
+            visible = 0.0;
+        }
+        result[k] = float(id + 1) * 32.0 + round(visible * 31.0);
+    }
+    imageStore(output_image, pixel, result);
+}

@@ -1,5 +1,61 @@
 # Cambios
 
+## 1.4.0
+
+### DataPacks (como los AssetBundles de Unity)
+- **Escenas enteras y objetos** con todo lo que usan (modelos, materiales, texturas, prefabs, scripts, sonidos, animaciones, shaders, terrenos, interfaces...) en un solo archivo `.datapack`, **sin el ejecutable**: niveles descargables, DLC, mods, skins, vehículos o personajes que se reparten aparte del juego.
+- **Archivo > Exportar escena como DataPack...** y **clic derecho en un objeto de la Jerarquía > Empaquetar y exportar como DataPack...** (el objeto con sus hijos se guarda como prefab y se empaqueta). La ventana deja mezclar escenas y objetos, elegir nombre y carpeta, y exporta **en segundo plano con barra de progreso y Cancelar**, como *Exportar juego*.
+- Las dependencias se buscan solas, recursivamente: por los UUID de los assets y por las rutas que nombran los componentes y los scripts Lua (`"Sonidos/disparo.wav"`, `Scene.load("Nivel2")`...). Lo que no se usa no entra.
+- Lua: `DataPack.loadScene("Nivel2")`, `DataPack.instantiate("Vehiculos", "Deportivo", Vec3(0, 1, 5))`, `DataPack.load`, `DataPack.info` (sin montar), `DataPack.unload`, `DataPack.list`, `DataPack.isLoaded`. El paquete se busca junto al juego, en `DataPacks/` o por ruta.
+- Al montarse **nunca sobrescribe** los archivos del juego; en el editor se quita al parar Play (el proyecto queda como estaba) y en el juego al cerrarlo. Si se cerró de golpe, se limpia al volver a abrir.
+- MCP: herramienta `export_datapack` (escenas, prefabs o una entidad; `async` para verlo con la barra de progreso). Manual: *DataPacks (bundles)*.
+
+### Editor
+- **Al dar Play**: flecha junto a *Paso* para elegir, como en Unity, si se salta a la pestaña **Juego** o se queda en la vista actual. Se recuerda entre sesiones.
+- **IntelliSense** completado: `DataPack`, `Screen` y `XR` entre las globales con su ayuda, `Input.getActions`, `Input.isActionOngoing`, `Input.clearMappingContexts`, `Mathf.negativeInfinity` y `Scene.instantiate` con prefabs por ruta.
+
+### Sombras por rayos de las luces locales
+- Con el trazado de rayos activado, las **luces puntuales y los focos proyectan sombras trazadas** contra la escena real (`rt_shadows.comp`): en cada píxel, las 4 luces que más le aportan. Vale para **todas** las luces locales con sombra, no solo las 8 puntuales y 8 focos que tienen mapa de sombras.
+- **Radio de la fuente** nuevo en el componente Light (0,05 m por defecto): bombilla pequeña = sombra nítida; lámpara grande = penumbra que se ensancha con la distancia.
+- Los personajes animados, el terreno y los vóxeles siguen con los mapas de sombras; se usa la más oscura de las dos. Coste medido: ~0,5 ms con 16 luces (RTX 4060 Ti).
+
+### Trazado de rayos de las GPUs actuales
+- **Opacity micromaps** (`VK_EXT_opacity_micromap`): el alfa del follaje recortado se hornea en la GPU (`rt_omm_bake.comp`, 256 microtriángulos por triángulo) dentro de las estructuras de rayos. Donde la hoja es opaca o el hueco transparente seguro, el hardware decide sin ejecutar el shader; lo dudoso lo sigue probando el shader, así que la imagen no cambia (comprobado: diferencia media < 1/255 en reflejos de espejo). `CRAMION_NO_OMM=1` lo desactiva.
+- **Shader Execution Reordering** (`VK_EXT_ray_tracing_invocation_reorder`): path tracing con pipeline de rayos (`path_trace.rgen`, any-hit para el alfa) que reordena los hilos por material antes de sombrear. **Opcional** (`CRAMION_SER=1`): con el sombreado del motor medí 0,31 ms por muestra con el compute de siempre, 0,37 con pipeline de rayos y 0,48 con SER (RTX 4060 Ti), así que por defecto sigue el compute.
+- Detección de micromaps, pipeline de rayos, SER y mesh shaders al crear el dispositivo (se ve en la consola).
+
+### Mesh shaders (`VK_EXT_mesh_shader`)
+- Cada clúster de los escenarios se parte al cargar en **meshlets** de hasta 64 vértices y 124 triángulos (meshoptimizer), con su esfera y su cono de normales, y se detecta si la malla es **cerrada** (cada arista entre dos triángulos, soldando las costuras).
+- **Sombras del sol por meshlets** (`shadow_meshlet.task/.mesh`): la GPU descarta los meshlets fuera de cada cascada y, en mallas cerradas, los que miran en contra de la luz (la profundidad del mapa no cambia). Lo recortado por alfa y las luces locales siguen como antes. Medido en el proyecto *minecraft* en Play (RTX 4060 Ti): sombras 10,6 → 9,5 ms, de 56 a 61 FPS.
+- **Geometría por meshlets** en mallas cerradas (`gbuffer_meshlet.task/.mesh` + el fragment shader de siempre): usa los clústeres visibles que ya decide el culling en GPU (frustum y oclusión Hi-Z en dos fases) y descarta por meshlet lo que queda fuera o de espaldas. Las mallas abiertas (hierba, follaje) siguen por el camino de siempre: ahí los meshlets no ahorraban nada.
+- Misma imagen con y sin (comprobado píxel a píxel). `CRAMION_NO_MESH=1` los desactiva.
+
+### Corregido
+- **Plano lejano de la cámara**: cambiar *Far* (y *Near*) en el componente Camera no hacía nada; ahora recorta la vista del juego y la de las cámaras con Render Texture.
+- **Visión nocturna**: lo que ilumina una farola se descoloraba al apartar la vista de la bombilla o al alejarse (se aplicaba a la imagen final según la luz de cada píxel). Ahora se aplica en la iluminación solo a la luz de la luna y del cielo nocturno, con la fuerza que marca la hora: farolas, antorchas y focos conservan su color siempre.
+
+## 1.3.0
+
+### Iluminación de día y de noche
+- **Visión nocturna** (efecto Purkinje): con poca luz el ojo ve con los bastones, que no distinguen colores y son más sensibles al azul. Lo que solo ilumina la luna se vuelve gris azulado; lo que alumbra una farola o una antorcha conserva su color. Ajuste *Visión nocturna* (0..1) en el PostProcessing, grupo *Exposición* (1 por defecto; de día no cambia nada).
+- **Cielo nocturno** nuevo: luna con mares, cráteres, oscurecimiento del borde y halo en la bruma; estrellas en dos capas (pocas brillantes, muchas tenues) con el color de su temperatura; Vía Láctea tenue con nubes de polvo. La luna tapa las estrellas de detrás.
+- **Luz de la luna** más tenue (0,35 → 0,22 del sol del motor) y casi blanca, y ambiente nocturno menos saturado: el azul lo pone la visión nocturna.
+- Salida con la **curva sRGB exacta** en vez de una gamma 2.2: sombras más profundas, no lavadas.
+- **Luces dentro de su lámpara**: el plano cercano de las sombras de luces puntuales y focos pasa de 5 a 20 cm (el de Unity). Una luz puesta dentro de la bombilla o del poste de una farola quedaba tapada por ellos y solo alumbraba por las rendijas.
+
+### Sombras más rápidas
+- Los **personajes animados** ya no obligan a redibujar cada frame las cascadas lejanas del sol (las que cubren todo el mapa): en una escena con mucha hierba, Play pasó de 39 a 58 FPS (sombras de 18 a 10 ms).
+- **Caché de lo estático** en las cascadas (como los *cached shadow maps* de Unreal): lo estático se dibuja por turnos en una copia y cada frame solo se añaden los personajes animados encima. Hasta mapas de 4096.
+
+### Terminal con IA en el editor
+- **Ventana > Terminal (IA)**: consolas de Windows de verdad (ConPTY) dentro del editor, con pestañas, colores, historial, selección y copiar/pegar. Mientras escribes ahí, los atajos del editor no se disparan.
+- Botón **Claude Code**: lo abre en la carpeta del proyecto y ya conectado al servidor MCP del editor (sin tocar la configuración global de Claude). También PowerShell, CMD, Codex, Gemini CLI e *Instalar Claude Code*.
+- MCP: `set_gizmo` con `show_gizmos` (capturas limpias de la vista de escena) y `performance_stats` con la exposición y la luminancia de la escena.
+
+### Escalado
+- **AMD FSR 3.1** y **NVIDIA DLSS 4** (modelo transformer), marcados *(INESTABLE)*. El contexto ya no se rehace cada vez que el presupuesto adaptativo cambia la resolución (daba tirones y más lag); al elegirlos pasan a *Calidad* (en *Nativa* solo hacen antialiasing y cuestan FPS). Solo ganan FPS si la escena depende de la resolución.
+- Cambiar la resolución interna rehace solo los destinos de render, no la swapchain.
+
 ## 1.2.0
 
 ### Input Actions (como el Enhanced Input de Unreal)

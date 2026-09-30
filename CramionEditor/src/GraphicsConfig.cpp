@@ -326,7 +326,7 @@ std::vector<GraphicsOption> RendererGraphicsHost::options() const {
         "Se aplica a lo que se carga despues (Scene.load)",
         levelNames(kTextureLevels));
     // Iluminacion y rendimiento del render
-    add("ray_tracing", renderer_.rayTracingEnabled(), "Trazado de rayos por hardware (GI y reflejos)");
+    add("ray_tracing", renderer_.rayTracingEnabled(), "Trazado de rayos por hardware (GI, reflejos y sombras de las luces locales)");
     add("reflection_probe", renderer_.reflectionProbeEnabled(), "Sonda de reflexion del entorno");
     add("occlusion_culling", renderer_.occlusionCullingEnabled(), "No dibujar lo que queda tapado (GPU)");
     add("cascade_debug", renderer_.cascadeDebug(), "Colorear las cascadas de sombra (depurar)");

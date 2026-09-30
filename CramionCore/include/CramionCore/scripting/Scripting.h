@@ -146,6 +146,17 @@ public:
     ScriptSystem& operator=(const ScriptSystem&) = delete;
 
     void setAssetsRoot(const std::filesystem::path& root);
+
+    // --- DataPacks (Lua: DataPack.load / loadScene / unload / list / info) ---
+    // Siguen montados entre escenas. `callback`: se llama al montar o
+    // desmontar (el programa vuelve a leer la base de assets). `journal`:
+    // diario de lo escrito, para limpiarlo si el programa se cierra sin
+    // desmontar (el editor; project::cleanupDataPackJournal).
+    void setAssetsChangedCallback(std::function<void()> callback);
+    void setDataPackJournal(const std::filesystem::path& journal);
+    // Desmonta todos (el editor al salir de Play: el proyecto queda como estaba).
+    void unmountDataPacks();
+    std::vector<std::string> mountedDataPacks() const;
     void setInput(const dm::Input* input);
     // Acciones y contextos del proyecto (ProjectSettings/InputActions.json,
     // como el Enhanced Input de Unreal): Input.getAction, Input.bindAction,

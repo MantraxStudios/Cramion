@@ -1,0 +1,354 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DataPacks (bundles) · Manual de Cramion</title>
+  <meta name="description" content="Escenas y objetos con todo lo que usan en un .datapack que el juego carga en marcha, como los AssetBundles.">
+  <link rel="icon" href="../img/icon.png">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/base16/tomorrow-night.min.css">
+  <link rel="stylesheet" href="manual.css">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/lua.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/glsl.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/json.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/bash.min.js"></script>
+  <script src="search.js"></script>
+</head>
+<body>
+
+  <header class="top">
+    <div class="top-inner">
+      <button id="menu-btn" class="menu-btn" aria-label="Menú">Menú</button>
+      <a href="index.html" class="brand"><img src="../img/icon.png" alt=""><b>Cramion</b><span>manual</span></a>
+      <div class="search">
+        <input id="search" type="search" autocomplete="off" placeholder="Buscar (funciones, componentes, páginas)">
+        <kbd>/</kbd>
+        <div id="results" class="results" hidden></div>
+      </div>
+      <nav class="top-links">
+        <a href="../index.html">Web</a>
+        <a href="https://discord.gg/zG7rSsUGEz" target="_blank" rel="noopener">Discord</a>
+        <a href="https://github.com/MantraxStudios/Cramion" target="_blank" rel="noopener">GitHub</a>
+      </nav>
+    </div>
+  </header>
+
+  <div class="frame">
+    <aside id="side" class="side">
+      <nav>
+        <a href="index.html">Índice</a>
+        <p class="group">Primeros pasos</p>
+        <a href="primer-script.html">Tu primer script</a>
+        <a href="ciclo-de-vida.html">Ciclo de vida</a>
+        <a href="propiedades.html">Propiedades</a>
+        <a href="recarga.html">Recarga en caliente</a>
+        <a href="prefabs.html">Prefabs</a>
+        <a href="mcp.html">Conectar una IA (MCP)</a>
+        <p class="group">El editor</p>
+        <a href="editor-interfaz.html">Interfaz y pestañas</a>
+        <a href="editor-escena.html">Vista Escena y gizmos</a>
+        <a href="editor-jerarquia.html">Jerarquía e Inspector</a>
+        <a href="editor-proyecto.html">Proyecto e importación</a>
+        <a href="editor-play.html">Play, deshacer y escenas</a>
+        <a href="editor-herramientas.html">Herramientas de mundo</a>
+        <a href="editor-ventanas.html">Ventanas de herramientas</a>
+        <a href="materiales.html">Materiales</a>
+        <a href="render-textures.html">Render Textures</a>
+        <a href="render.html">Render y rendimiento</a>
+        <a href="exportar.html">Exportar y compilación</a>
+        <a href="datapacks.html" class="active">DataPacks (bundles)</a>
+        <a href="plantillas.html">Plantillas</a>
+        <a href="atajos.html">Atajos de teclado</a>
+        <a href="actualizaciones.html">Actualizaciones</a>
+        <p class="group">Componentes</p>
+        <a href="componentes.html">Todos los componentes</a>
+        <a href="componentes-basicos.html">Transform y renderizado</a>
+        <a href="componentes-entorno.html">Entorno</a>
+        <a href="componentes-fisica.html">Física</a>
+        <a href="componentes-efectos.html">Partículas y depuración</a>
+        <a href="componentes-animacion.html">Animación</a>
+        <a href="componentes-audio.html">Audio</a>
+        <a href="componentes-cinematicas.html">Cámaras y cinemáticas</a>
+        <a href="componentes-navegacion.html">Navegación</a>
+        <a href="componentes-ui.html">Interfaz (UI)</a>
+        <a href="componentes-scripting.html">Scripts y prefabs</a>
+        <a href="componentes-vr.html">Realidad virtual</a>
+        <p class="group">Referencia de la API</p>
+        <a href="vec3.html">Vec3</a>
+        <a href="quat.html">Quat (rotaciones)</a>
+        <a href="mathf.html">Mathf</a>
+        <a href="random.html">Random</a>
+        <a href="entity.html">Entity</a>
+        <a href="scene.html">Scene</a>
+        <a href="input.html">Input</a>
+        <a href="input-actions.html">Input Actions</a>
+        <a href="realidad-virtual.html">Realidad virtual (XR)</a>
+        <a href="time.html">Time</a>
+        <a href="physics.html">Physics</a>
+        <a href="navegacion.html">Navegación</a>
+        <a href="mallas.html">Mallas por código</a>
+        <a href="voxel.html">Mundo de bloques</a>
+        <a href="audio.html">Audio</a>
+        <a href="ui.html">Interfaz (UI)</a>
+        <a href="esqueletos.html">Esqueletos: IK, ragdoll y phys bones</a>
+        <a href="graphics.html">Graphics</a>
+        <a href="red.html">Network (multijugador)</a>
+        <a href="http.html">Http y Json</a>
+        <a href="prefs.html">Prefs y Game</a>
+        <a href="debug.html">Debug</a>
+        <p class="group">Gráficos</p>
+        <a href="shaders.html">Shaders propios</a>
+        <p class="group">Ejemplos</p>
+        <a href="ejemplo-girar.html">Girar un objeto</a>
+        <a href="ejemplo-camara.html">Cámara que sigue al jugador</a>
+        <a href="ejemplo-jugador.html">Jugador con física</a>
+        <a href="ejemplo-disparo.html">Disparo con raycast</a>
+        <a href="ejemplo-monedas.html">Monedas y puntuación</a>
+        <a href="ejemplo-spawner.html">Generador de enemigos</a>
+        <a href="ejemplo-vehiculo.html">Conducir un vehículo</a>
+        <a href="ejemplo-menu.html">Menú, opciones y récord</a>
+        <a href="ejemplo-animacion.html">Animación de un personaje</a>
+        <a href="ejemplo-comunicacion.html">Scripts que se hablan</a>
+        <a href="ejemplo-ia.html">IA: patrullar y perseguir</a>
+        <a href="ejemplo-terreno.html">Terreno procedural con colisión</a>
+        <a href="ejemplo-efectos.html">Varios materiales y efectos</a>
+        <a href="ejemplo-olas.html">Olas: cambiar la malla cada frame</a>
+      </nav>
+    </aside>
+
+    <main class="doc">
+      <div class="crumbs"><a href="index.html">Manual</a> / El editor</div>
+      <h1>DataPacks (bundles)</h1>
+      <p class="lede">Escenas y objetos con todo lo que usan en un .datapack que el juego carga en marcha, como los AssetBundles.</p>
+      <div class="body">
+<p>
+  Un <strong>DataPack</strong> es el equivalente a los <em>AssetBundles</em> de Unity: un archivo <code>.datapack</code> con
+  <strong>escenas enteras</strong> y/o <strong>objetos</strong> (prefabs) y <strong>todo lo que usan</strong> &mdash; modelos,
+  materiales, texturas, scripts, sonidos, animaciones, shaders, terrenos, interfaces... &mdash; pero <strong>sin el
+  ejecutable</strong>. El juego lo carga en marcha: niveles descargables, DLC, mods, skins, vehículos o personajes que se
+  reparten aparte del juego.
+</p>
+
+<h3 id="exportar">Exportar un DataPack</h3>
+<p>Hay dos caminos:</p>
+<ul>
+  <li><strong>Una escena entera</strong>: <em>Archivo &gt; Exportar escena como DataPack...</em> (la escena abierta ya viene
+    marcada; se pueden marcar más).</li>
+  <li><strong>Un objeto</strong>: <strong>clic derecho</strong> sobre él en la <a href="editor-jerarquia.html">Jerarquía</a>
+    &gt; <em>Empaquetar y exportar como DataPack...</em>. El objeto (con sus hijos) se guarda como prefab en
+    <code>Assets/Prefabs</code> y la ventana se abre con él elegido. Si ya es una instancia sin cambios de un prefab, se usa
+    ese prefab.</li>
+</ul>
+<p>La ventana <strong>Exportar DataPack</strong> tiene:</p>
+<ul>
+  <li><strong>Escenas</strong> y <strong>Objetos (prefabs)</strong>: casillas con lo que va en el paquete (se pueden mezclar).</li>
+  <li><strong>Nombre</strong> y <strong>carpeta</strong> (escribirla o <em>Examinar...</em>): el archivo es
+    <code>&lt;carpeta&gt;/&lt;Nombre&gt;.datapack</code>. Por defecto, la carpeta <code>DataPacks</code> junto al proyecto.</li>
+</ul>
+<p>
+  Al pulsar <strong>Exportar</strong>, el paquete se comprime <strong>en segundo plano</strong> con una barra de progreso
+  (como <a href="exportar.html">Exportar juego</a>) que muestra el archivo que se está comprimiendo, y se puede
+  <strong>Cancelar</strong>. Al terminar dice cuántos archivos lleva, el tamaño y <em>Abrir carpeta</em>. Si la escena tenía
+  cambios sin guardar se guarda antes.
+</p>
+
+<h3 id="que-lleva">Qué lleva</h3>
+<p>
+  Las dependencias se buscan solas desde las escenas y prefabs elegidos, recursivamente: por los <strong>UUID</strong> de los
+  assets (modelos, materiales, prefabs, cielos, controladores de animación...) y por las <strong>rutas entre comillas</strong>
+  que existen en <code>Assets</code> (scripts de los componentes, sonidos, texturas de interfaz, y lo que nombran los scripts
+  Lua: <code>"Sonidos/disparo.wav"</code>, <code>Scene.load("Nivel2")</code>,
+  <code>Scene.instantiate("Prefabs/Enemigo")</code>...). Lo que no se usa no entra.
+</p>
+<div class="note">
+  Una referencia que se arma en tiempo de ejecución (<code>"Nivel" .. n</code>) no se puede adivinar: pon ese asset en el
+  paquete a mano (por ejemplo, marca también esa escena) o escríbelo completo en algún script.
+</div>
+
+<h3 id="lua">Cargarlo desde Lua</h3>
+<pre><code class="language-lua">-- Una escena entera del paquete (la primera, o por nombre)
+DataPack.loadScene("Nivel2")                -- busca Nivel2.datapack
+DataPack.loadScene("Expansion", "Castillo") -- la escena "Castillo" del paquete Expansion
+
+-- Un objeto (prefab) del paquete en la escena actual
+local coche = DataPack.instantiate("Vehiculos", "Deportivo", Vec3(0, 1, 5))
+local skin  = DataPack.instantiate("Skins")   -- el primero del paquete
+
+-- Solo montarlo (sus assets quedan disponibles para Scene.load / Scene.instantiate)
+local info = DataPack.load("Expansion")
+if info then
+  for _, escena in ipairs(info.scenes) do Debug.log("escena: " .. escena) end
+  for _, objeto in ipairs(info.objects) do Debug.log("objeto: " .. objeto) end
+end
+
+-- Mirar lo que trae sin montarlo
+local i = DataPack.info("Expansion")        -- {name, version, scenes, objects, files}
+
+DataPack.isLoaded("Expansion")              -- true / false
+DataPack.list()                             -- nombres montados
+DataPack.unload("Expansion")                -- lo quita</code></pre>
+<table>
+  <thead><tr><th>Función</th><th>Devuelve</th><th>Qué hace</th></tr></thead>
+  <tbody>
+    <tr><td><code>DataPack.load(archivo)</code></td><td>tabla o <code>nil</code></td><td>Monta el paquete: <code>{name, scenes, objects, files}</code>.</td></tr>
+    <tr><td><code>DataPack.loadScene(archivo, escena?)</code></td><td><code>true</code>/<code>false</code></td><td>Monta y cambia a una escena suya al terminar el frame.</td></tr>
+    <tr><td><code>DataPack.instantiate(archivo, objeto?, posicion?, rotacion?)</code></td><td>Entity o <code>nil</code></td><td>Monta y crea un objeto (prefab) suyo en la escena.</td></tr>
+    <tr><td><code>DataPack.info(archivo)</code></td><td>tabla o <code>nil</code></td><td>El manifiesto sin montar nada (también <code>version</code>).</td></tr>
+    <tr><td><code>DataPack.isLoaded(archivo)</code></td><td>booleano</td><td>¿Está montado?</td></tr>
+    <tr><td><code>DataPack.list()</code></td><td>lista</td><td>Nombres de los paquetes montados.</td></tr>
+    <tr><td><code>DataPack.unload(archivo)</code></td><td>booleano</td><td>Desmonta: borra lo que extrajo.</td></tr>
+  </tbody>
+</table>
+<p>
+  El <code>archivo</code> se busca, con o sin <code>.datapack</code>: tal cual (ruta absoluta o relativa), junto al
+  ejecutable del juego y en su carpeta <code>DataPacks/</code>, junto a la carpeta del proyecto (y su
+  <code>DataPacks/</code>) y dentro de <code>Assets</code>. Los nombres de escena y objeto van sin carpeta ni extensión
+  (<code>"Castillo"</code>) o con su ruta dentro del paquete (<code>"Prefabs/Castillo.crprefab"</code>).
+</p>
+
+<h3 id="montar">Cómo se monta</h3>
+<ul>
+  <li>Se extrae dentro de los assets del juego con sus mismas rutas, así las referencias por ruta siguen valiendo.</li>
+  <li><strong>Nunca sobrescribe</strong> lo que ya existe: si el juego (u otro paquete) ya tiene ese archivo, se queda el
+    suyo y la Consola lo avisa.</li>
+  <li>Sigue montado al cambiar de escena. En el editor se desmonta al parar Play (el proyecto queda como estaba); en el juego
+    exportado, al cerrarlo. Si se cerró de golpe, se limpia al volver a abrir.</li>
+  <li>Un paquete se monta una sola vez aunque se llame varias veces a <code>load</code>/<code>instantiate</code>.</li>
+</ul>
+
+<h3 id="formato">Formato</h3>
+<p>
+  Es un <code>.crpack</code> (el mismo formato comprimido con zstd y checksum por archivo que el juego exportado) con un
+  manifiesto <code>datapack.json</code>: nombre, versión, versión de Cramion que lo creó, fecha, escenas, objetos y archivos.
+  Desde una IA conectada por <a href="mcp.html">MCP</a> se exporta con la herramienta <code>export_datapack</code>
+  (<code>file</code>, <code>scenes</code>, <code>entity</code>, <code>name</code>, <code>async</code>).
+</p>
+      </div>
+      <nav class="pager"><a href="exportar.html"><span>← anterior</span><b>Exportar y compilación</b></a><a class="next" href="plantillas.html"><span>siguiente →</span><b>Plantillas</b></a></nav>
+      <p class="help">¿Algo no queda claro o falta algo? Pregunta en el
+        <a href="https://discord.gg/zG7rSsUGEz" target="_blank" rel="noopener">Discord</a>.</p>
+    </main>
+    <aside class="onpage-col">
+      <p>En esta página</p>
+      <nav id="onpage" class="onpage"></nav>
+    </aside>
+  </div>
+
+  <script>
+    // Solo el codigo con lenguaje (los arboles de carpetas y la salida quedan tal cual).
+    hljs.configure({ cssSelector: 'pre code[class*="language-"]' });
+    hljs.highlightAll();
+
+    // Menu lateral en el movil.
+    const side = document.getElementById("side");
+    document.getElementById("menu-btn").addEventListener("click", () => document.body.classList.toggle("menu-open"));
+    document.addEventListener("click", ev => {
+      if (document.body.classList.contains("menu-open") && !ev.target.closest("#side, #menu-btn")) {
+        document.body.classList.remove("menu-open");
+      }
+    });
+    // El enlace activo a la vista dentro del menu (sin mover la pagina).
+    const current = side.querySelector("a.active");
+    if (current) side.scrollTop = current.offsetTop - side.clientHeight / 2;
+
+    // Ancla de cada seccion y boton de copiar en el codigo.
+    document.querySelectorAll(".doc h3[id]").forEach(h => {
+      const a = document.createElement("a");
+      a.className = "anchor";
+      a.href = "#" + h.id;
+      a.textContent = "#";
+      h.appendChild(a);
+    });
+    document.querySelectorAll(".doc pre").forEach(pre => {
+      const b = document.createElement("button");
+      b.className = "copy";
+      b.textContent = "copiar";
+      b.addEventListener("click", async () => {
+        try {
+          await navigator.clipboard.writeText(pre.querySelector("code")?.innerText ?? pre.innerText);
+          b.textContent = "copiado";
+        } catch { b.textContent = "no se pudo"; }
+        setTimeout(() => (b.textContent = "copiar"), 1400);
+      });
+      pre.appendChild(b);
+    });
+
+    // Tablas anchas: se desplazan dentro de su marco.
+    document.querySelectorAll(".doc table").forEach(t => {
+      const w = document.createElement("div");
+      w.className = "table-wrap";
+      t.replaceWith(w);
+      w.appendChild(t);
+    });
+
+    // "En esta pagina": los h3 con la seccion visible marcada.
+    const onpage = document.getElementById("onpage");
+    if (onpage) {
+      const heads = [...document.querySelectorAll(".doc h3[id]")];
+      if (heads.length < 2) {
+        onpage.closest("aside").style.visibility = "hidden";
+      } else {
+        onpage.innerHTML = heads.map(h => `<a href="#${h.id}">${h.firstChild.textContent}</a>`).join("");
+        const links = [...onpage.querySelectorAll("a")];
+        const obs = new IntersectionObserver(entries => {
+          for (const e of entries) {
+            if (e.isIntersecting) links.forEach(a => a.classList.toggle("active", a.getAttribute("href") === "#" + e.target.id));
+          }
+        }, { rootMargin: "-70px 0px -70% 0px" });
+        heads.forEach(h => obs.observe(h));
+      }
+    }
+
+    // Buscador: titulos, secciones y nombres de la API.
+    const input = document.getElementById("search");
+    const box = document.getElementById("results");
+    const norm = s => s.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+    const esc = s => s.replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+    let hits = [], sel = 0;
+    const render = () => {
+      const q = input.value.trim();
+      if (!hits.length) {
+        box.innerHTML = q ? '<p class="none">Sin resultados.</p>' : "";
+        box.hidden = !q;
+        return;
+      }
+      box.innerHTML = hits.map((h, i) => `
+        <a href="${h.u}" class="${i === sel ? "sel" : ""}">
+          <span class="t${h.c ? " code" : ""}">${esc(h.t)}</span><span class="g">${esc(h.g)}</span>
+          ${h.d ? `<span class="d">${esc(h.d)}</span>` : ""}
+        </a>`).join("");
+      box.hidden = false;
+    };
+    input.addEventListener("input", () => {
+      const q = norm(input.value.trim());
+      sel = 0;
+      if (!q) { hits = []; render(); return; }
+      const words = q.split(/\s+/);
+      hits = window.CRAMION_SEARCH
+        .map(e => {
+          const t = norm(e.t), all = t + " " + norm(e.g) + " " + norm(e.d || "");
+          if (!words.every(w => all.includes(w))) return null;
+          const score = (t.startsWith(q) ? 0 : t.includes(q) ? 1 : 2) + (e.c ? 0.5 : 0) - (e.d ? 0.3 : 0);
+          return { e, score };
+        })
+        .filter(Boolean).sort((a, b) => a.score - b.score).slice(0, 12).map(x => x.e);
+      render();
+    });
+    input.addEventListener("keydown", ev => {
+      if (ev.key === "ArrowDown") { sel = Math.min(sel + 1, hits.length - 1); render(); ev.preventDefault(); }
+      if (ev.key === "ArrowUp") { sel = Math.max(sel - 1, 0); render(); ev.preventDefault(); }
+      if (ev.key === "Enter" && hits[sel]) location.href = hits[sel].u;
+      if (ev.key === "Escape") { input.value = ""; hits = []; render(); input.blur(); }
+    });
+    document.addEventListener("keydown", ev => {
+      if (ev.key === "/" && document.activeElement !== input) { ev.preventDefault(); input.focus(); }
+    });
+    document.addEventListener("click", ev => { if (!ev.target.closest("#results, #search")) box.hidden = true; });
+    input.addEventListener("focus", () => { if (input.value.trim()) render(); });
+  </script>
+</body>
+</html>

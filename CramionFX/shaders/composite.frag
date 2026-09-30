@@ -153,8 +153,8 @@ float scotopicLuminance(vec3 linear_srgb) {
     return max(v, 0.0) / 2.573;
 }
 
-// `adaptation`: luminancia media a la que esta adaptado el ojo (la de la
-// auto-exposicion). De dia no hace nada (aunque haya rincones oscuros: el ojo
+// `adaptation`: luz del entorno a la que esta adaptado el ojo (la del cielo
+// segun la hora: VulkanRenderer, 0.01 de noche .. 0.31 de dia). De dia no hace nada (aunque haya rincones oscuros: el ojo
 // esta adaptado a la luz y ven los conos). De noche, cada pixel pasa a la
 // vision de los bastones salvo donde hay bastante luz para los conos.
 // Umbrales en las unidades del motor: el dia medio ronda 0.3, el ocaso 0.1 y
@@ -164,9 +164,9 @@ vec3 nightVision(vec3 color, float adaptation, float strength) {
     float night = 1.0 - smoothstep(log2(0.012), log2(0.09), log2(adaptation));
     float lum = luminance(color);
     // Los conos necesitan una luz absoluta (no relativa al entorno): el suelo
-    // a la luz de la luna (~0.02-0.05) ya no les llega; el charco de luz de
-    // una farola (0.3 o mas) si.
-    float cones = smoothstep(0.08, 0.6, lum);
+    // a la luz de la luna (~0.01-0.02) ya no les llega; lo que alumbra una
+    // farola o una antorcha si, aunque sea poco (conserva su color).
+    float cones = smoothstep(0.02, 0.12, lum);
     float rods = night * (1.0 - cones) * strength * 0.9;
     if (rods <= 0.0) return color;
     // Gris azulado de los bastones (tinte de luminancia 1).
@@ -259,9 +259,12 @@ void main() {
     color += lensFlare(uv) * luminance(textureLod(bloom, settings.lens.zw, 0.0).rgb / kBloomLevels + vec3(4.0));
 
     // --- Vision nocturna (antes de la exposicion: depende de la luz real) ---
+    // Cuanta noche hay sale de la luz del cielo (la hora), no de lo que se ve:
+    // con la luz media de la imagen, mirar una farola "encendia" los conos y
+    // al apartar la vista lo que ella iluminaba perdia el color.
+    // (La vision nocturna se aplica en lighting.frag, solo a la luz de la luna
+    // y del cielo: aqui ya no se toca.)
     bool auto_on = settings.exposure.z > 0.5 && auto_exposure.initialized > 0.5;
-    float adaptation = auto_on ? auto_exposure.average_luminance : settings.flare.w;
-    color = nightVision(color, adaptation, settings.flare.z);
 
     // --- Exposicion ---
     float exposure = auto_on ? auto_exposure.exposure : settings.exposure.x;

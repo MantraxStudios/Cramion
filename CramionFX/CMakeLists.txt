@@ -300,6 +300,12 @@ file(GLOB CRAMIONFX_SHADER_SOURCES CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/shaders/*.vert"
     "${CMAKE_CURRENT_SOURCE_DIR}/shaders/*.frag"
     "${CMAKE_CURRENT_SOURCE_DIR}/shaders/*.comp"
+    # Pipeline de rayos (path tracing con SER) y mesh shaders.
+    "${CMAKE_CURRENT_SOURCE_DIR}/shaders/*.rgen"
+    "${CMAKE_CURRENT_SOURCE_DIR}/shaders/*.rahit"
+    "${CMAKE_CURRENT_SOURCE_DIR}/shaders/*.rmiss"
+    "${CMAKE_CURRENT_SOURCE_DIR}/shaders/*.task"
+    "${CMAKE_CURRENT_SOURCE_DIR}/shaders/*.mesh"
 )
 # Cabeceras que incluyen los shaders (#include): si cambian, se recompilan todos.
 file(GLOB CRAMIONFX_SHADER_INCLUDES CONFIGURE_DEPENDS

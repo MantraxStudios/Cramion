@@ -112,7 +112,27 @@ public:
     void setMaterialImage(const VulkanDevice& device, const SkinnedPass& pass, std::uint32_t material,
                           std::uint32_t binding, vk::ImageView view);
 
+    // --- Meshlets (mesh shaders) ---
+    // Cada submalla (cluster) de cada LOD partida en meshlets de hasta 64
+    // vertices y 124 triangulos (meshoptimizer), con su esfera y su cono de
+    // normales. Vacio sin mesh shaders o en modelos animados.
+    struct MeshletRange {
+        std::uint32_t first = 0;
+        std::uint32_t count = 0;
+    };
+    bool hasMeshlets() const { return !meshlet_ranges_.empty(); }
+    // Rango de cada submalla de un LOD (count 0: transparente).
+    const std::vector<MeshletRange>& meshletRanges(std::uint32_t lod) const { return meshlet_ranges_[lod]; }
+    // Malla cerrada (cada arista entre exactamente dos triangulos): se pueden
+    // descartar los meshlets que miran hacia atras.
+    bool closed(std::uint32_t lod) const { return lod < closed_.size() && closed_[lod]; }
+    const vk::raii::DescriptorSet& meshletSet() const { return meshlet_sets_[0]; }
+    // Meshlets del cluster mas grande (el task shader del G-buffer lleva hasta 256).
+    std::uint32_t maxClusterMeshlets() const { return max_cluster_meshlets_; }
+
 private:
+    void buildMeshlets(const VulkanDevice& device, const asset::ModelData& model, const SkinnedPass& pass);
+
     VulkanBuffer vertices_;
     VulkanBuffer indices_;
     std::uint32_t index_count_ = 0;
@@ -136,6 +156,15 @@ private:
     // El pool debe sobrevivir a los sets: se declara antes.
     vk::raii::DescriptorPool pool_{nullptr};
     std::vector<vk::raii::DescriptorSet> material_sets_;
+
+    VulkanBuffer meshlets_;
+    VulkanBuffer meshlet_vertices_;
+    VulkanBuffer meshlet_triangles_;
+    std::vector<std::vector<MeshletRange>> meshlet_ranges_;  // [lod][submalla]
+    std::vector<bool> closed_;                               // [lod]
+    std::uint32_t max_cluster_meshlets_ = 0;
+    vk::raii::DescriptorPool meshlet_pool_{nullptr};
+    std::vector<vk::raii::DescriptorSet> meshlet_sets_;
 };
 
 }  // namespace cramion::gfx

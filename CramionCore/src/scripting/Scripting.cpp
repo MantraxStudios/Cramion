@@ -1,5 +1,7 @@
 #include "CramionCore/scripting/Scripting.h"
 
+#include "CramionCore/project/DataPack.h"
+
 #include "CramionCore/asset/AssetTypes.h"
 #include "CramionCore/asset/MaterialAsset.h"
 #include "CramionCore/audio/Audio.h"
@@ -397,6 +399,75 @@ void registerScriptComponents() {
 
 struct ScriptSystem::Impl {
     std::filesystem::path root;
+    // DataPacks montados (DataPack.load): siguen entre escenas.
+    std::vector<project::DataPackMount> data_packs;
+    std::filesystem::path data_pack_journal;
+    std::function<void()> assets_changed;
+
+    // Un .datapack por ruta: tal cual, junto al ejecutable (y en su carpeta
+    // DataPacks/), junto a la carpeta del juego o dentro de Assets; con o sin
+    // la extension.
+    std::filesystem::path findDataPack(const std::string& name) const {
+        namespace fs = std::filesystem;
+        const fs::path wanted(std::u8string(name.begin(), name.end()));
+        std::vector<fs::path> bases = {fs::path{}};
+#if defined(_WIN32)
+        wchar_t buffer[1024] = {};
+        GetModuleFileNameW(nullptr, buffer, 1024);
+        const fs::path exe = fs::path(buffer).parent_path();
+        bases.push_back(exe);
+        bases.push_back(exe / "DataPacks");
+#endif
+        if (!root.empty()) {
+            bases.push_back(root.parent_path());
+            bases.push_back(root.parent_path() / "DataPacks");
+            bases.push_back(root);
+        }
+        std::error_code e;
+        for (const fs::path& base : bases) {
+            fs::path candidate = wanted.is_absolute() || base.empty() ? wanted : base / wanted;
+            if (fs::is_regular_file(candidate, e)) return candidate;
+            candidate += project::kDataPackExtension;
+            if (fs::is_regular_file(candidate, e)) return candidate;
+        }
+        return {};
+    }
+
+    const project::DataPackMount* mountedPack(const std::filesystem::path& file) const {
+        std::error_code e;
+        for (const project::DataPackMount& m : data_packs) {
+            if (std::filesystem::equivalent(m.file, file, e)) return &m;
+        }
+        return nullptr;
+    }
+
+    // Monta (o devuelve el ya montado). nullptr y un aviso en la Consola si no.
+    const project::DataPackMount* loadDataPack(const std::string& name, const char* who) {
+        const std::filesystem::path file = findDataPack(name);
+        if (file.empty()) {
+            write(2, std::string(who) + ": no existe el DataPack \"" + name + "\"");
+            return nullptr;
+        }
+        if (const project::DataPackMount* already = mountedPack(file)) return already;
+        if (root.empty()) {
+            write(2, std::string(who) + ": no hay carpeta de assets");
+            return nullptr;
+        }
+        project::DataPackMount mount;
+        std::string error;
+        if (!project::mountDataPack(file, root, mount, &error, data_pack_journal)) {
+            write(2, std::string(who) + ": " + error);
+            return nullptr;
+        }
+        if (!mount.kept.empty()) {
+            write(1, "DataPack \"" + mount.name + "\": " + std::to_string(mount.kept.size()) +
+                         " archivos ya existian y no se sobrescribieron");
+        }
+        write(0, "DataPack \"" + mount.name + "\" montado (" + std::to_string(mount.written.size()) + " archivos)");
+        data_packs.push_back(std::move(mount));
+        if (assets_changed) assets_changed();
+        return &data_packs.back();
+    }
     const dm::Input* input = nullptr;
     physics::PhysicsSystem* physics = nullptr;
     audio::AudioSystem* audio = nullptr;
@@ -2090,6 +2161,129 @@ struct ScriptSystem::Impl {
             return x.valid() && navigation != nullptr ? navigation->agentVelocity(x) : Vec3{};
         });
 
+        // DataPack (como los AssetBundles de Unity): escenas con todo lo que
+        // usan, en un .datapack que se monta en marcha.
+        sol::table data_pack = L.create_named_table("DataPack");
+        const auto pack_table = [this](const std::string& name, const std::string& version,
+                                       const std::vector<std::string>& scenes,
+                                       const std::vector<std::string>& objects, std::size_t files) {
+            sol::table t = lua->create_table();
+            t["name"] = name;
+            t["version"] = version;
+            sol::table list = lua->create_table();
+            for (std::size_t i = 0; i < scenes.size(); ++i) list[i + 1] = scenes[i];
+            t["scenes"] = list;
+            sol::table object_list = lua->create_table();
+            for (std::size_t i = 0; i < objects.size(); ++i) object_list[i + 1] = objects[i];
+            t["objects"] = object_list;
+            t["files"] = files;
+            return t;
+        };
+        // Una entrada del paquete por nombre (sin carpeta ni extension) o ruta.
+        const auto pick_entry = [](const std::vector<std::string>& entries, const std::string& wanted_name) -> std::string {
+            const auto low = [](std::string text) {
+                std::transform(text.begin(), text.end(), text.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+                return text;
+            };
+            const std::string wanted = low(wanted_name);
+            for (const std::string& entry : entries) {
+                const std::string stem = low(std::filesystem::path(std::u8string(entry.begin(), entry.end())).stem().string());
+                if (stem == wanted || low(entry) == wanted) return entry;
+            }
+            return {};
+        };
+        data_pack["load"] = [this, pack_table](const std::string& name) -> sol::object {
+            const project::DataPackMount* m = loadDataPack(name, "DataPack.load");
+            if (m == nullptr) return sol::lua_nil;
+            return pack_table(m->name, "", m->scenes, m->objects, m->written.size() + m->kept.size());
+        };
+        // Monta y carga una escena del paquete (la primera si no se dice cual).
+        data_pack["loadScene"] = [this, pick_entry](const std::string& name, sol::optional<std::string> scene_name) {
+            const project::DataPackMount* m = loadDataPack(name, "DataPack.loadScene");
+            if (m == nullptr) return false;
+            if (m->scenes.empty()) {
+                write(2, "DataPack.loadScene: \"" + m->name + "\" no tiene escenas");
+                return false;
+            }
+            std::string chosen = m->scenes.front();
+            if (scene_name && !scene_name->empty()) {
+                chosen = pick_entry(m->scenes, *scene_name);
+                if (chosen.empty()) {
+                    write(2, "DataPack.loadScene: \"" + m->name + "\" no tiene la escena \"" + *scene_name + "\"");
+                    return false;
+                }
+            }
+            scene_request = root / std::filesystem::path(std::u8string(chosen.begin(), chosen.end()));
+            return true;
+        };
+        // Monta y crea en la escena un objeto (prefab) del paquete: el primero
+        // si no se dice cual. Devuelve la entidad (nil si no se pudo).
+        data_pack["instantiate"] = [this, pick_entry](const std::string& name, sol::optional<std::string> object_name,
+                                                      sol::optional<Vec3> position,
+                                                      sol::optional<Vec3> rotation) -> sol::object {
+            if (world == nullptr) return sol::lua_nil;
+            const project::DataPackMount* m = loadDataPack(name, "DataPack.instantiate");
+            if (m == nullptr) return sol::lua_nil;
+            if (m->objects.empty()) {
+                write(2, "DataPack.instantiate: \"" + m->name + "\" no tiene objetos (prefabs)");
+                return sol::lua_nil;
+            }
+            std::string chosen = m->objects.front();
+            if (object_name && !object_name->empty()) {
+                chosen = pick_entry(m->objects, *object_name);
+                if (chosen.empty()) {
+                    write(2, "DataPack.instantiate: \"" + m->name + "\" no tiene el objeto \"" + *object_name + "\"");
+                    return sol::lua_nil;
+                }
+            }
+            const std::string text = prefab_cache(root / std::filesystem::path(std::u8string(chosen.begin(), chosen.end())));
+            ecs::Entity copy = text.empty() ? ecs::Entity{} : ecs::instantiatePrefab(*world, text);
+            if (!copy.valid()) {
+                write(2, "DataPack.instantiate: no se pudo crear \"" + chosen + "\"");
+                return sol::lua_nil;
+            }
+            if (position) copy.setWorldPosition(*position);
+            if (rotation) copy.setLocalEulerDegrees(*rotation);
+            return sol::make_object(*lua, LuaEntity{copy.handle(), world});
+        };
+        data_pack["unload"] = [this](const std::string& name) {
+            for (auto it = data_packs.begin(); it != data_packs.end(); ++it) {
+                std::error_code e;
+                const std::filesystem::path file = findDataPack(name);
+                if (it->name == name || (!file.empty() && std::filesystem::equivalent(it->file, file, e))) {
+                    project::unmountDataPack(*it, root, data_pack_journal);
+                    data_packs.erase(it);
+                    if (assets_changed) assets_changed();
+                    return true;
+                }
+            }
+            return false;
+        };
+        data_pack["list"] = [this]() {
+            sol::table t = lua->create_table();
+            for (std::size_t i = 0; i < data_packs.size(); ++i) t[i + 1] = data_packs[i].name;
+            return t;
+        };
+        data_pack["isLoaded"] = [this](const std::string& name) {
+            for (const project::DataPackMount& m : data_packs) {
+                if (m.name == name) return true;
+            }
+            const std::filesystem::path file = findDataPack(name);
+            return !file.empty() && mountedPack(file) != nullptr;
+        };
+        // El manifiesto sin montar nada: nombre, version, escenas, archivos.
+        data_pack["info"] = [this, pack_table](const std::string& name) -> sol::object {
+            const std::filesystem::path file = findDataPack(name);
+            if (file.empty()) return sol::lua_nil;
+            project::DataPackManifest manifest;
+            std::string error;
+            if (!project::readDataPackManifest(file, manifest, &error)) {
+                write(2, "DataPack.info: " + error);
+                return sol::lua_nil;
+            }
+            return pack_table(manifest.name, manifest.version, manifest.scenes, manifest.objects, manifest.files.size());
+        };
+
         // Scene
         sol::table scene = L.create_named_table("Scene");
         scene["find"] = [this](const std::string& name) -> sol::object {
@@ -3441,6 +3635,26 @@ const input::InputMapper& ScriptSystem::inputMapper() const { return impl_->acti
 ScriptSystem::~ScriptSystem() { stop(); }
 
 void ScriptSystem::setAssetsRoot(const std::filesystem::path& root) { impl_->root = root; }
+
+void ScriptSystem::setAssetsChangedCallback(std::function<void()> callback) {
+    impl_->assets_changed = std::move(callback);
+}
+
+void ScriptSystem::setDataPackJournal(const std::filesystem::path& journal) { impl_->data_pack_journal = journal; }
+
+void ScriptSystem::unmountDataPacks() {
+    Impl& d = *impl_;
+    if (d.data_packs.empty()) return;
+    for (const project::DataPackMount& m : d.data_packs) project::unmountDataPack(m, d.root, d.data_pack_journal);
+    d.data_packs.clear();
+    if (d.assets_changed) d.assets_changed();
+}
+
+std::vector<std::string> ScriptSystem::mountedDataPacks() const {
+    std::vector<std::string> names;
+    for (const project::DataPackMount& m : impl_->data_packs) names.push_back(m.name);
+    return names;
+}
 void ScriptSystem::setInput(const dm::Input* input) { impl_->input = input; }
 void ScriptSystem::setPhysics(physics::PhysicsSystem* physics) { impl_->physics = physics; }
 void ScriptSystem::setAudio(audio::AudioSystem* audio) { impl_->audio = audio; }

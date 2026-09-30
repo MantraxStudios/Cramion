@@ -1,0 +1,73 @@
+#version 460
+#extension GL_EXT_mesh_shader : require
+#extension GL_GOOGLE_include_directive : require
+
+// Sombras de las cascadas con mesh shaders, task shader: cada hilo prueba un
+// meshlet del actor y solo los que sirven pasan al mesh shader.
+//
+//   - Fuera de la cascada (su esfera no toca el rectangulo de la luz): fuera.
+//     El depth clamp deja que lo de delante del plano cercano proyecte, asi
+//     que solo se miran x e y.
+//   - De espaldas a la luz (su cono de normales entero mira hacia donde van
+//     los rayos): fuera, SOLO en mallas cerradas. Ahi la cara que mira a la
+//     luz ya deja la misma profundidad (el mapa guarda la mas cercana); en un
+//     plano suelto (hojas, carteles) no hay otra cara y se quedaria sin sombra.
+
+layout(local_size_x = 32, local_size_y = 1, local_size_z = 1) in;
+
+#include "meshlet_common.glsl"
+
+layout(std430, set = 0, binding = 1) readonly buffer BoneBuffer {
+    mat4 bones[];
+};
+
+layout(push_constant) uniform PushConstants {
+    mat4 light_model_view_projection;
+    uint first_meshlet;
+    uint meshlet_count;
+    uint bone_offset;
+    uint flags;            // bit 0: descartar los de espaldas a la luz
+    vec4 light_direction;  // hacia donde van los rayos, en el espacio del modelo
+} push;
+
+struct Payload {
+    uint meshlets[32];
+};
+taskPayloadSharedEXT Payload payload;
+
+shared uint visible_count;
+
+void main() {
+    if (gl_LocalInvocationIndex == 0u) {
+        visible_count = 0u;
+    }
+    barrier();
+
+    uint local = gl_WorkGroupID.x * 32u + gl_LocalInvocationIndex;
+    bool keep = false;
+    uint index = push.first_meshlet + local;
+    if (local < push.meshlet_count) {
+        Meshlet m = meshlets[index];
+        // Un meshlet es de un solo nodo (las submallas lo son): su hueso.
+        mat4 skin = bones[push.bone_offset + vertexJoints(meshlet_vertices[m.vertex_offset]).x];
+        vec3 center = (skin * vec4(m.center_radius.xyz, 1.0)).xyz;
+        float radius = m.center_radius.w * length(skin[0].xyz);
+
+        mat4 mvp = push.light_model_view_projection;
+        vec4 clip = mvp * vec4(center, 1.0);
+        float rx = radius * length(vec3(mvp[0][0], mvp[1][0], mvp[2][0]));
+        float ry = radius * length(vec3(mvp[0][1], mvp[1][1], mvp[2][1]));
+        keep = abs(clip.x) <= clip.w + rx && abs(clip.y) <= clip.w + ry;
+
+        if (keep && (push.flags & 1u) != 0u && m.cone_axis_cutoff.w < 1.0) {
+            vec3 axis = normalize(mat3(skin) * m.cone_axis_cutoff.xyz);
+            keep = dot(push.light_direction.xyz, axis) < m.cone_axis_cutoff.w;
+        }
+    }
+    if (keep) {
+        uint slot = atomicAdd(visible_count, 1u);
+        payload.meshlets[slot] = index;
+    }
+    barrier();
+    EmitMeshTasksEXT(visible_count, 1u, 1u);
+}

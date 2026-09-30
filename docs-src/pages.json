@@ -96,6 +96,11 @@
           "desc": "Crear el juego, configuraciones de compilación, nombre e icono."
         },
         {
+          "slug": "datapacks",
+          "title": "DataPacks (bundles)",
+          "desc": "Escenas y objetos con todo lo que usan en un .datapack que el juego carga en marcha, como los AssetBundles."
+        },
+        {
           "slug": "plantillas",
           "title": "Plantillas",
           "desc": "Vacío, Tercera persona, IA, Mundo de bloques, MMO RPG, Criaturas, Online, Mundo abierto y las tuyas."

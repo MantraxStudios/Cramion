@@ -1,0 +1,49 @@
+#version 460
+#extension GL_EXT_ray_tracing : require
+#extension GL_EXT_nonuniform_qualifier : require
+
+// Any-hit del path tracing con pipeline de rayos (path_trace.rgen): el
+// recorte por alfa del follaje, igual que candidateIsOpaque de rt_common.glsl.
+// Con micromapas de opacidad solo se llama en los microtriangulos dudosos.
+
+// Igual que rt_common.glsl (set 1 de la escena de rayos).
+struct RtVertex {
+    float px, py, pz;
+    float nx, ny, nz;
+    float u, v;
+};
+
+struct RtMaterial {
+    vec4 base_color;
+    vec4 emissive;
+    vec4 params;
+    uint albedo_texture;
+    uint metallic_roughness_texture;
+    uint emissive_texture;
+    uint flags;
+};
+
+layout(std430, set = 1, binding = 1) readonly buffer RtVertices { RtVertex rt_vertices[]; };
+layout(std430, set = 1, binding = 2) readonly buffer RtIndices { uint rt_indices[]; };
+layout(std430, set = 1, binding = 3) readonly buffer RtTriangleMaterials { uint rt_triangle_materials[]; };
+layout(std430, set = 1, binding = 4) readonly buffer RtMaterials { RtMaterial rt_materials[]; };
+layout(std430, set = 1, binding = 5) readonly buffer RtModels { uvec4 rt_models[]; };
+layout(set = 1, binding = 7) uniform sampler2D rt_textures[];
+
+hitAttributeEXT vec2 barycentrics;
+
+void main() {
+    uint model = gl_InstanceCustomIndexEXT;
+    uint geometry = gl_GeometryIndexEXT;
+    uint triangle = (geometry == 0u ? rt_models[model].x : rt_models[model].y) + uint(gl_PrimitiveID);
+    RtMaterial material = rt_materials[rt_triangle_materials[triangle]];
+    RtVertex a = rt_vertices[rt_indices[triangle * 3u]];
+    RtVertex b = rt_vertices[rt_indices[triangle * 3u + 1u]];
+    RtVertex c = rt_vertices[rt_indices[triangle * 3u + 2u]];
+    vec3 w = vec3(1.0 - barycentrics.x - barycentrics.y, barycentrics);
+    vec2 uv = vec2(a.u, a.v) * w.x + vec2(b.u, b.v) * w.y + vec2(c.u, c.v) * w.z;
+    float alpha = textureLod(rt_textures[nonuniformEXT(material.albedo_texture)], uv, 0.0).a * material.base_color.a;
+    if (alpha < 0.5) {
+        ignoreIntersectionEXT;
+    }
+}

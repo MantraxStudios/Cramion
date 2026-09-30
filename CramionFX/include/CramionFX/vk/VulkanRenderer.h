@@ -840,6 +840,14 @@ private:
     // (ssr_resolve.frag, los que lee la iluminacion) y la copia de estos que
     // sirve de historia al frame siguiente.
     VulkanImage ssr_raw_{};
+    // Sombras por rayos de las luces locales (rt_shadows.comp): por pixel, las
+    // 4 luces que mas aportan, cada canal = (luz + 1) * 32 + visibilidad (0..31).
+    VulkanImage rt_shadow_mask_{};
+    bool rt_shadows_this_frame_ = false;
+    // Se decide al preparar las luces del frame (updateUniforms): rayos
+    // activos, vista de pantalla y alguna luz local con sombra.
+    bool rt_shadows_planned_ = false;
+    void recordRtShadowPass(const vk::raii::CommandBuffer& cmd, std::uint32_t frame_index);
     VulkanImage ssr_image_{};
     VulkanImage ssr_history_{};
     std::array<VulkanImage, kBloomLevels> bloom_levels_{};
@@ -981,8 +989,16 @@ private:
         std::uint32_t group = 0;  // grupo de dibujo del modelo (su material)
         std::uint32_t first_slot = 0;
         std::uint32_t capacity = 0;
+        bool mesh = false;    // por mesh shaders (gbuffer_meshlet.*): comandos en formato meshlet
+        bool closed = false;  // malla cerrada: el task shader descarta por cono
     };
     std::vector<DrawBatch> draw_batches_;
+    // Set 3 del G-buffer con mesh shaders (comandos y contadores de cull.comp):
+    // [frame * 2 + fase], se reescribe si el culling cambia de buffers.
+    vk::raii::DescriptorPool mesh_draw_pool_{nullptr};
+    std::vector<vk::raii::DescriptorSet> mesh_draw_sets_;
+    std::vector<std::array<vk::Buffer, 2>> mesh_draw_buffers_;
+    bool meshGeometryAllowed() const;
     std::unordered_map<std::uint64_t, std::uint32_t> batch_lookup_;
 public:
     // Llamadas de dibujo de los escenarios (lotes) y clusteres que agrupan.

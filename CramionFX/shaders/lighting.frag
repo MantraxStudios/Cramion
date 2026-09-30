@@ -76,6 +76,7 @@ layout(set = 0, binding = 4) uniform LightBuffer {
     vec4 rain;                     // (rt_common.glsl)
     vec4 flood;
     vec4 cloud_shadow;             // xy = centro del mapa de sombra de las nubes (x, z), z = lado (m; 0 = no), w = fuerza
+    vec4 rt_shadows;               // x = 1 si rt_shadow_mask vale este frame, y = vision nocturna (0..0.9)
 } lights;
 
 // Mapa de sombras en cascada. El muestreador compara por hardware: devuelve
@@ -84,6 +85,9 @@ layout(set = 0, binding = 5) uniform sampler2DArrayShadow shadow_map;
 // Las mismas cascadas sin comparar (profundidad guardada): la busqueda de lo
 // que tapa de las sombras suaves (PCSS).
 layout(set = 0, binding = 24) uniform sampler2DArray shadow_depth;
+// Sombras por rayos de las luces locales (rt_shadows.comp): por pixel, las 4
+// luces que mas aportan, cada canal = (luz + 1) * 32 + visibilidad (0..31).
+layout(set = 0, binding = 25) uniform sampler2D rt_shadow_mask;
 
 layout(set = 0, binding = 6) uniform ShadowBuffer {
     mat4 light_view_projection[kShadowCascadeCount];
@@ -594,6 +598,77 @@ int shadowSlot(float encoded) {
 // Hash de una celda 3D a [0, 1).
 float hash13(vec3 cell) {
     return fract(sin(dot(cell, vec3(12.9898, 78.233, 45.164))) * 43758.5453);
+}
+
+// --- Vision nocturna (efecto Purkinje) ---
+// Con poca luz ven los bastones del ojo: no distinguen colores y son mas
+// sensibles al azul-verde (507 nm). Se aplica SOLO a la luz de la luna y del
+// cielo nocturno: lo que alumbra una farola o una antorcha lo ven los conos y
+// conserva su color, este cerca o lejos de la luz y se mire donde se mire.
+// (Hecho sobre la imagen final, lo iluminado de lejos por una farola quedaba
+// gris al apartar la vista de la bombilla.)
+// Luminancia escotopica de Larson et al. (XYZ), normalizada al blanco.
+vec3 rodVision(vec3 linear_srgb) {
+    float strength = lights.rt_shadows.y;
+    if (strength <= 0.0) return linear_srgb;
+    const mat3 kSrgbToXyz = mat3(0.4124, 0.2126, 0.0193, 0.3576, 0.7152, 0.1192, 0.1805, 0.0722, 0.9505);
+    vec3 xyz = kSrgbToXyz * max(linear_srgb, vec3(0.0));
+    float scotopic = xyz.x > 1e-7 ? max(xyz.y * (1.33 * (1.0 + (xyz.y + xyz.z) / xyz.x) - 1.68), 0.0) / 2.573 : xyz.y;
+    // Gris azulado de los bastones (tinte de luminancia 1).
+    const vec3 kRodTint = vec3(0.88, 1.01, 1.26);
+    return mix(linear_srgb, scotopic * kRodTint, strength);
+}
+
+// --- Sombras por rayos de las luces locales ---
+// Los 3x3 vecinos de la misma superficie (profundidad y normal parecidas) se
+// leen una vez por pixel; cada luz promedia su visibilidad en los que la
+// tienen. Asi el ruido de la penumbra (un rayo por luz y pixel) se suaviza sin
+// que la sombra se corra a otra superficie.
+vec4 rt_neighbor_mask[9];
+bool rt_neighbor_ok[9];
+
+void loadRtShadowNeighborhood(float center_z, vec3 normal) {
+    ivec2 pixel = ivec2(gl_FragCoord.xy);
+    ivec2 size = textureSize(rt_shadow_mask, 0);
+    int n = 0;
+    for (int dy = -1; dy <= 1; ++dy) {
+        for (int dx = -1; dx <= 1; ++dx) {
+            ivec2 q = clamp(pixel + ivec2(dx, dy), ivec2(0), size - 1);
+            rt_neighbor_mask[n] = texelFetch(rt_shadow_mask, q, 0);
+            bool ok = true;
+            if (dx != 0 || dy != 0) {
+                float z = linearDepth(texelFetch(g_depth, q, 0).r);
+                vec3 nq = decodeNormal(texelFetch(g_normal, q, 0).rg);
+                ok = abs(z - center_z) <= center_z * 0.05 && dot(nq, normal) > 0.8;
+            }
+            rt_neighbor_ok[n] = ok;
+            ++n;
+        }
+    }
+}
+
+// Visibilidad (0..1) de la luz `id` (puntuales 0..31, focos 32..39), o -1 si
+// no es de las 4 que el pase trazo en este pixel.
+float rtLocalShadow(int id) {
+    float base = float(id + 1) * 32.0;
+    vec4 own = rt_neighbor_mask[4];
+    vec4 inside = step(vec4(base), own) * (1.0 - step(vec4(base + 32.0), own));
+    if (dot(inside, vec4(1.0)) < 0.5) {
+        return -1.0;
+    }
+    float sum = 0.0;
+    float count = 0.0;
+    for (int n = 0; n < 9; ++n) {
+        if (!rt_neighbor_ok[n]) continue;
+        vec4 m = rt_neighbor_mask[n];
+        for (int c = 0; c < 4; ++c) {
+            if (m[c] >= base && m[c] < base + 32.0) {
+                sum += (m[c] - base) / 31.0;
+                count += 1.0;
+            }
+        }
+    }
+    return count > 0.0 ? sum / count : -1.0;
 }
 
 // Ruido de valor 3D suave (Via Lactea, relieve de la luna).
@@ -1116,6 +1191,8 @@ void main() {
             vec4 clouds = texture(clouds_map, v_uv);
             color = color * clouds.a + clouds.rgb;
         }
+        // El cielo nocturno tambien lo ven los bastones.
+        color = rodVision(color);
         // Vista Escena Unlit / Wireframe (shadows.params.z 2 / 3, con
         // exposicion 1): fondo liso.
         if (shadows.params.z > 1.5) {
@@ -1257,6 +1334,16 @@ void main() {
                        metallic, f0, energy, kSunSize) *
                  shadow;
 
+        // Luz de la luna y del cielo: la ven los bastones de noche. Las luces
+        // locales, que se suman despues, conservan su color.
+        color = rodVision(color);
+
+        // --- Sombras por rayos de las luces locales (si el pase corrio) ---
+        bool rt_local = lights.rt_shadows.x > 0.5;
+        if (rt_local) {
+            loadRtShadowNeighborhood(distance_to_camera_z, normal);
+        }
+
         // --- Luces puntuales ---
         int point_count = min(lights.counts.x, kMaxPointLights);
         for (int i = 0; i < point_count; ++i) {
@@ -1285,6 +1372,12 @@ void main() {
                 point_shadow = mix(1.0, point_shadow,
                                    local_shadows.params.z * local_shadows.point_params[slot].y *
                                        lights.points[i].shadow.y);
+            }
+            // Con rayos: la mas oscura de las dos (los rayos ven el escenario
+            // real; el mapa, ademas, los personajes y el terreno).
+            if (rt_local) {
+                float rt = rtLocalShadow(i);
+                if (rt >= 0.0) point_shadow = min(point_shadow, mix(1.0, rt, lights.points[i].shadow.y));
             }
 
             color += shade(light_direction, radiance, normal, view_direction, albedo, roughness,
@@ -1330,6 +1423,10 @@ void main() {
                                          geometric_normal,
                                          max(dot(geometric_normal, light_direction), 0.0));
                 spot_shadow = mix(1.0, spot_shadow, local_shadows.params.z * lights.spots[i].outer_shadow.z);
+            }
+            if (rt_local) {
+                float rt = rtLocalShadow(kMaxPointLights + i);
+                if (rt >= 0.0) spot_shadow = min(spot_shadow, mix(1.0, rt, lights.spots[i].outer_shadow.z));
             }
 
             color += shade(light_direction, radiance, normal, view_direction, albedo, roughness,

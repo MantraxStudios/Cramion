@@ -24,6 +24,7 @@
 
 #include <CramionCore/CramionCore.h>
 #include <CramionCore/ecs/FloatingOrigin.h>
+#include <CramionCore/project/DataPack.h>
 #include <CramionCore/project/Pack.h>
 #include <CramionCore/project/TouchInterface.h>
 #include <CramionCore/input/InputActions.h>
@@ -591,6 +592,12 @@ int runPlayer() {
         audio.setOcclusionQuery(audio::physicsOcclusionQuery(physics));
         scripting::ScriptSystem scripts;
         scripts.setAssetsRoot(project->assetsFolder());
+        // DataPack.load: lo montado entra en la base de assets (sus modelos,
+        // prefabs y escenas se encuentran por UUID).
+        scripts.setAssetsChangedCallback([&database] { database.refresh(); });
+        // Se apuntan para limpiarlos si el juego se cerro de golpe con alguno montado.
+        project::cleanupDataPackJournal(project->libraryFolder() / "DataPacks.journal", project->assetsFolder());
+        scripts.setDataPackJournal(project->libraryFolder() / "DataPacks.journal");
         scripts.setPhysics(&physics);
         scripts.setAudio(&audio);
         // Navegacion: ajustes del proyecto y la misma geometria que la fisica.
@@ -1148,6 +1155,7 @@ int runPlayer() {
         // Cerrado a media carga: el hilo de los modelos termina antes de nada.
         if (load.worker.valid()) load.worker.wait();
         scripts.stop();
+        scripts.unmountDataPacks();  // lo montado con DataPack.load sale de los assets del juego
         scripts.shutdownNetwork();  // avisa a los demas jugadores
         audio.stop();
         physics.stop();

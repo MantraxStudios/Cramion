@@ -6,6 +6,7 @@
 #include <stb_image.h>
 
 #include <algorithm>
+#include <bit>
 #include <cstddef>
 #include <filesystem>
 #include <cstdlib>
@@ -775,6 +776,9 @@ void VulkanRenderer::shutdown() {
     post_process_sets_.clear();
     lighting_sets_.clear();
     descriptor_pool_ = nullptr;
+    mesh_draw_sets_.clear();
+    mesh_draw_pool_ = nullptr;
+    mesh_draw_buffers_.clear();
     skin_sets_.clear();
     skin_pool_ = nullptr;
     glass_sets_.clear();
@@ -870,6 +874,7 @@ void VulkanRenderer::shutdown() {
     }
     ssr_image_.destroy();
     ssr_raw_.destroy();
+    rt_shadow_mask_.destroy();
     ssr_history_.destroy();
     probe_capture_.destroy();
     for (VulkanBuffer& buffer : weather_buffers_) {
@@ -1083,7 +1088,8 @@ void VulkanRenderer::createDescriptors() {
     // (+ las nubes, + el mapa de entorno HDR.)
     // (+ la luz volumetrica, + la sombra de las nubes.)
     // (+ las cascadas sin comparacion para las sombras suaves.)
-    pool_sizes[1].descriptorCount = kMaxFramesInFlight * (GBuffer::kColorAttachmentCount + 18);
+    // (+ las sombras por rayos de las luces locales.)
+    pool_sizes[1].descriptorCount = kMaxFramesInFlight * (GBuffer::kColorAttachmentCount + 19);
 
     vk::DescriptorPoolCreateInfo pool_info{};
     pool_info.flags = vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet;
@@ -1432,11 +1438,29 @@ void VulkanRenderer::updateActors(const scene::Scene& scene, std::uint32_t frame
                 const auto [it, inserted] =
                     batch_lookup_.try_emplace(key, static_cast<std::uint32_t>(draw_batches_.size()));
                 if (inserted) {
-                    draw_batches_.push_back(DrawBatch{actor.model, group, 0, 0});
+                    // Por mesh shaders si el modelo tiene meshlets, es una malla
+                    // cerrada y el material usa el shader estandar (los del
+                    // usuario son vertex shaders). Solo cerradas: lo que ganan
+                    // los meshlets en la camara es descartar los que miran hacia
+                    // atras; en mallas abiertas (hierba, follaje) el culling de
+                    // clusters ya hace el resto y el task shader solo sumaba
+                    // (medido: 1.94 ms frente a 1.71 en la hierba de minecraft).
+                    const SkinnedModel::Material& batch_material = model.materials()[model.drawGroups()[group].material];
+                    const bool mesh = meshGeometryAllowed() && model.hasMeshlets() && model.closed(draw.lod) &&
+                                      batch_material.surface_shader < 0 && model.maxClusterMeshlets() <= 256;
+                    draw_batches_.push_back(DrawBatch{actor.model, group, 0, 0, mesh, mesh && model.closed(draw.lod)});
                 }
-                ++draw_batches_[it->second].capacity;
+                DrawBatch& cluster_batch = draw_batches_[it->second];
+                ++cluster_batch.capacity;
+                cluster_batch.closed = cluster_batch.closed && model.closed(draw.lod);
                 cluster.group = it->second;
                 cluster.instance = instance;
+                if (cluster_batch.mesh) {
+                    const SkinnedModel::MeshletRange range = model.meshletRanges(draw.lod)[i];
+                    cluster.first_meshlet = range.first;
+                    cluster.meshlet_count = range.count;
+                    cluster.mesh = 1;
+                }
                 gpu_clusters_.push_back(cluster);
             }
         }
@@ -1761,6 +1785,75 @@ void VulkanRenderer::recordActorShadows(const vk::raii::CommandBuffer& cmd,
             continue;
         }
 
+        // --- Mesh shaders: lo opaco de los escenarios en las cascadas ---
+        // Por meshlets (shadow_meshlet.task/.mesh): la GPU descarta los que
+        // caen fuera de la cascada y, en mallas cerradas, los que miran en
+        // contra de la luz. Lo recortado por alfa sigue por el pipeline de
+        // siempre (necesita la textura).
+        bool meshlet_opaque = false;
+        if (!local && texel_world_size > 0.0f && draw.per_submesh && skinned_pass_.meshShadersEnabled() &&
+            model.hasMeshlets()) {
+            meshlet_opaque = true;
+            const auto& ranges = model.meshletRanges(lod);
+            const auto& lod_submeshes = model.lodSubmeshes(lod);
+            // Direccion de los rayos en el espacio del modelo (la inversa de
+            // un giro es su traspuesta). Con escala no uniforme los conos no
+            // valen: sin descarte por cono.
+            const Vec3 travel = -ibl_to_light_;
+            const core::Mat4& t = draw.transform;
+            Vec3 columns[3];
+            float scales[3];
+            for (int c = 0; c < 3; ++c) {
+                columns[c] = Vec3{t.m[c][0], t.m[c][1], t.m[c][2]};
+                scales[c] = core::length(columns[c]);
+            }
+            const bool uniform = std::abs(scales[0] - scales[1]) < scales[0] * 0.01f &&
+                                 std::abs(scales[0] - scales[2]) < scales[0] * 0.01f && scales[0] > 1e-6f;
+            const Vec3 local_travel = core::normalize(
+                Vec3{core::dot(columns[0], travel), core::dot(columns[1], travel), core::dot(columns[2], travel)});
+            GpuMeshletShadowPush mesh_push{};
+            mesh_push.light_model_view_projection = light_view_projection * draw.transform;
+            mesh_push.bone_offset = draw.bone_offset;
+            mesh_push.flags = model.closed(lod) && uniform ? 1u : 0u;
+            mesh_push.light_direction = toVec4(local_travel, 0.0f);
+
+            bool mesh_bound = false;
+            std::uint32_t run_first = 0;
+            std::uint32_t run_count = 0;
+            const auto flush_meshlets = [&]() {
+                if (run_count == 0) return;
+                if (!mesh_bound) {
+                    cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *skinned_pass_.meshShadowPipeline());
+                    cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *skinned_pass_.meshShadowLayout(), 0,
+                                           *skin_sets_[frame_index], nullptr);
+                    cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *skinned_pass_.meshShadowLayout(), 1,
+                                           *model.meshletSet(), nullptr);
+                    mesh_bound = true;
+                    bound_pipeline = vk::Pipeline{};  // el pipeline de siempre vuelve a enlazar sus sets
+                }
+                mesh_push.first_meshlet = run_first;
+                mesh_push.meshlet_count = run_count;
+                cmd.pushConstants<GpuMeshletShadowPush>(
+                    *skinned_pass_.meshShadowLayout(),
+                    vk::ShaderStageFlagBits::eTaskEXT | vk::ShaderStageFlagBits::eMeshEXT, 0, mesh_push);
+                cmd.drawMeshTasksEXT((run_count + 31) / 32, 1, 1);
+                ++shadow_draw_calls_;
+                run_count = 0;
+            };
+            for (const std::uint32_t i : visible) {
+                const SkinnedModel::Material& material = model.materials()[lod_submeshes[i].material];
+                if (material.alpha_masked || material.transparent || ranges[i].count == 0) continue;
+                if (run_count > 0 && run_first + run_count == ranges[i].first) {
+                    run_count += ranges[i].count;
+                } else {
+                    flush_meshlets();
+                    run_first = ranges[i].first;
+                    run_count = ranges[i].count;
+                }
+            }
+            flush_meshlets();
+        }
+
         bind(bound_pipeline ? bound_pipeline : opaque_pipeline);
 
         GpuSkinnedShadowPush push{};
@@ -1782,6 +1875,7 @@ void VulkanRenderer::recordActorShadows(const vk::raii::CommandBuffer& cmd,
         // clusteres de un escenario lo estan casi siempre) van en UNA llamada.
         // Las recortadas solo se juntan si comparten material.
         for (int masked = 0; masked < 2; ++masked) {
+            if (masked == 0 && meshlet_opaque) continue;  // ya lo dibujaron los meshlets
             bool pipeline_set = false;
             std::uint32_t bound_material = UINT32_MAX;
             std::uint32_t run_first = 0;
@@ -1931,7 +2025,7 @@ void VulkanRenderer::updateLightingDescriptors() {
             environment_hdr_info.imageView = *environment_.view();
         }
 
-        std::array<vk::WriteDescriptorSet, 25> writes{};
+        std::array<vk::WriteDescriptorSet, 26> writes{};
 
         writes[0].dstSet = *lighting_sets_[i];
         writes[0].dstBinding = 0;
@@ -2057,6 +2151,16 @@ void VulkanRenderer::updateLightingDescriptors() {
         writes[24].dstBinding = 24;
         writes[24].descriptorType = vk::DescriptorType::eCombinedImageSampler;
         writes[24].setImageInfo(shadow_raw_info);
+
+        // Sombras por rayos de las luces locales (se lee con texelFetch).
+        vk::DescriptorImageInfo rt_shadow_info{};
+        rt_shadow_info.sampler = *lighting_pass_.sampler();
+        rt_shadow_info.imageView = *rt_shadow_mask_.view();
+        rt_shadow_info.imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
+        writes[25].dstSet = *lighting_sets_[i];
+        writes[25].dstBinding = 25;
+        writes[25].descriptorType = vk::DescriptorType::eCombinedImageSampler;
+        writes[25].setImageInfo(rt_shadow_info);
 
         device_.handle().updateDescriptorSets(writes, nullptr);
     }
@@ -2271,6 +2375,7 @@ void VulkanRenderer::updatePostDescriptors() {
             inputs.material = *gbuffer_.material().view();
             inputs.path_output = *scene_color_.view();
             inputs.accumulation = *path_tracing_accumulation_.view();
+            inputs.shadow_output = *rt_shadow_mask_.view();
             inputs.sampler = *ssgi_pass_.sampler();
             inputs.environment_sampler = *ibl_probe_.sampler();
             ray_tracing_.updateFrameSet(device_, i, inputs);
@@ -2626,6 +2731,18 @@ void VulkanRenderer::createRenderTargets() {
                         vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eTransferDst,
                         vk::ImageAspectFlagBits::eColor);
     ssr_filter_history_valid_ = false;
+
+    // Sombras por rayos de las luces locales: resolucion completa (bordes nitidos).
+    rt_shadow_mask_.create(device_, extent, vk::Format::eR16G16B16A16Sfloat,
+                           vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eStorage,
+                           vk::ImageAspectFlagBits::eColor);
+    device_.submitOneTime([&](const vk::raii::CommandBuffer& cmd) {
+        pipelineBarrier(cmd, colorBarrier(*rt_shadow_mask_.handle(), vk::ImageLayout::eUndefined,
+                                          vk::ImageLayout::eShaderReadOnlyOptimal,
+                                          vk::PipelineStageFlagBits2::eTopOfPipe, vk::AccessFlagBits2::eNone,
+                                          vk::PipelineStageFlagBits2::eFragmentShader,
+                                          vk::AccessFlagBits2::eShaderSampledRead));
+    });
 
     // La luz volumetrica tambien es suave: media resolucion. Se deja como
     // textura desde el principio (las caras de la sonda no la dibujan).
@@ -3022,7 +3139,7 @@ void VulkanRenderer::updateUniforms(const scene::Scene& scene, const scene::Came
         light_data.points[i].color_intensity = toVec4(light.color, light.intensity);
         light_data.points[i].shadow = Vec4{
             static_cast<float>(local_shadows_.pointSlot(static_cast<std::size_t>(i))),
-            light.cast_shadows ? light.shadow_strength : 0.0f, 0.0f, 0.0f};
+            light.cast_shadows ? light.shadow_strength : 0.0f, std::max(light.source_radius, 0.0f), 0.0f};
     }
     light_data.point_count = point_count;
 
@@ -3040,10 +3157,28 @@ void VulkanRenderer::updateUniforms(const scene::Scene& scene, const scene::Came
         gpu.color_inner = toVec4(light.color, std::cos(light.inner_angle));
         gpu.outer_shadow = Vec4{std::cos(light.outer_angle),
                                 static_cast<float>(local_shadows_.spotSlot(index)),
-                                light.cast_shadows ? light.shadow_strength : 0.0f, 0.0f};
+                                light.cast_shadows ? light.shadow_strength : 0.0f,
+                                std::max(light.source_radius, 0.0f)};
         ++spot_count;
     }
     light_data.spot_count = spot_count;
+    // Sombras por rayos de las luces locales: con rayos por hardware, en la
+    // vista de pantalla y si alguna luz local proyecta sombra.
+    {
+        bool shadowed = false;
+        for (std::int32_t i = 0; i < point_count; ++i) shadowed = shadowed || light_data.points[i].shadow.y > 0.0f;
+        for (std::int32_t i = 0; i < spot_count; ++i) shadowed = shadowed || light_data.spots[i].outer_shadow.z > 0.0f;
+        const bool planned = shadowed && shadows_enabled_ && rayTracingActive() && !isolated();
+        if (!isolated()) rt_shadows_planned_ = planned;
+        // y: vision nocturna para la luz de la luna y el cielo (lighting.frag):
+        // de la hora, no de lo que se ve. 0 de dia, 0.9 con noche cerrada.
+        const float adaptation = 0.01f + 0.3f * lights.sky.daylight;
+        const float t = std::clamp((std::log2(adaptation) - std::log2(0.012f)) /
+                                       (std::log2(0.09f) - std::log2(0.012f)), 0.0f, 1.0f);
+        const float night = 1.0f - t * t * (3.0f - 2.0f * t);
+        light_data.rt_shadows = Vec4{planned ? 1.0f : 0.0f, night * std::clamp(post_.night_vision, 0.0f, 1.0f) * 0.9f,
+                                     0.0f, 0.0f};
+    }
     light_data.ssao_enabled = post_.ambient_occlusion ? 1 : 0;
     light_data.gi_enabled = post_.global_illumination ? 1 : 0;
     // --- Lluvia ---
@@ -3846,6 +3981,8 @@ void VulkanRenderer::recordCommandBuffer(const vk::raii::CommandBuffer& cmd,
     markPass(cmd, frame_index, "Reflejos");
     recordVolumetricPass(cmd, frame_index);
     markPass(cmd, frame_index, "Volumetrica");
+    recordRtShadowPass(cmd, frame_index);
+    if (rt_shadows_this_frame_) markPass(cmd, frame_index, "Sombras por rayos");
     recordLightingPass(cmd, frame_index, scene_color_);
     markPass(cmd, frame_index, "Iluminacion");
     recordPathTracePass(cmd, frame_index);
@@ -4408,18 +4545,100 @@ void VulkanRenderer::drawCpuActors(const vk::raii::CommandBuffer& cmd,
     }
 }
 
+// G-buffer por mesh shaders: no en Wireframe ni con las lineas encima (esas
+// pasadas dibujan los mismos comandos con pipelines de vertices).
+bool VulkanRenderer::meshGeometryAllowed() const {
+    const SceneDrawMode mode = drawModeNow();
+    return skinned_pass_.meshShadersEnabled() && mode != SceneDrawMode::Wireframe &&
+           mode != SceneDrawMode::LitWireframe;
+}
+
 void VulkanRenderer::drawGpuClusters(const vk::raii::CommandBuffer& cmd,
                                      std::uint32_t frame_index, std::uint32_t phase) {
     if (gpu_culling_.clusterCount() == 0) {
         return;
     }
 
+    const vk::Buffer commands = *gpu_culling_.commands(phase).handle();
+    const vk::Buffer counts = *gpu_culling_.counts(phase).handle();
+
+    // --- Lotes por mesh shaders (gbuffer_meshlet.task/.mesh + skinned.frag) ---
+    // Un grupo de task shader por hueco del lote: los que tienen un cluster
+    // visible (cull.comp) lo parten en meshlets y descartan los que sobran.
+    bool any_mesh = false;
+    for (const DrawBatch& batch : draw_batches_) any_mesh = any_mesh || batch.mesh;
+    if (any_mesh) {
+        // Set 3: comandos y contadores de esta fase (se reescribe si el
+        // culling creo buffers nuevos; nunca mientras un frame lo usa).
+        const std::size_t set_index = static_cast<std::size_t>(frame_index) * 2 + phase;
+        if (mesh_draw_sets_.empty()) {
+            const vk::DescriptorPoolSize pool_size{vk::DescriptorType::eStorageBuffer, kMaxFramesInFlight * 2 * 2};
+            vk::DescriptorPoolCreateInfo pool_info{};
+            pool_info.flags = vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet;
+            pool_info.maxSets = kMaxFramesInFlight * 2;
+            pool_info.setPoolSizes(pool_size);
+            mesh_draw_pool_ = vk::raii::DescriptorPool(device_.handle(), pool_info);
+            const std::vector<vk::DescriptorSetLayout> layouts(kMaxFramesInFlight * 2,
+                                                               *skinned_pass_.meshDrawSetLayout());
+            vk::DescriptorSetAllocateInfo alloc{};
+            alloc.descriptorPool = *mesh_draw_pool_;
+            alloc.setSetLayouts(layouts);
+            mesh_draw_sets_ = vk::raii::DescriptorSets(device_.handle(), alloc);
+            mesh_draw_buffers_.assign(kMaxFramesInFlight * 2, {vk::Buffer{}, vk::Buffer{}});
+        }
+        if (mesh_draw_buffers_[set_index][0] != commands || mesh_draw_buffers_[set_index][1] != counts) {
+            const std::array<vk::DescriptorBufferInfo, 2> infos = {vk::DescriptorBufferInfo{commands, 0, VK_WHOLE_SIZE},
+                                                                   vk::DescriptorBufferInfo{counts, 0, VK_WHOLE_SIZE}};
+            std::array<vk::WriteDescriptorSet, 2> writes{};
+            for (std::uint32_t i = 0; i < 2; ++i) {
+                writes[i].dstSet = *mesh_draw_sets_[set_index];
+                writes[i].dstBinding = i;
+                writes[i].descriptorType = vk::DescriptorType::eStorageBuffer;
+                writes[i].setBufferInfo(infos[i]);
+            }
+            device_.handle().updateDescriptorSets(writes, nullptr);
+            mesh_draw_buffers_[set_index] = {commands, counts};
+        }
+
+        const vk::PipelineLayout layout = *skinned_pass_.meshGeometryLayout();
+        cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *skinned_pass_.meshGeometryPipeline());
+        cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, layout, 0, *skin_sets_[frame_index], nullptr);
+        cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, layout, 3, *mesh_draw_sets_[set_index], nullptr);
+        std::uint32_t mesh_model = UINT32_MAX;
+        for (std::uint32_t b = 0; b < draw_batches_.size(); ++b) {
+            const DrawBatch& batch = draw_batches_[b];
+            if (!batch.mesh || batch.capacity == 0) continue;
+            const SkinnedModel& model = skinned_models_[batch.model];
+            if (batch.model != mesh_model) {
+                cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, layout, 2, *model.meshletSet(), nullptr);
+                mesh_model = batch.model;
+            }
+            const SkinnedModel::DrawGroup& group = model.drawGroups()[batch.group];
+            const SkinnedModel::Material& material = model.materials()[group.material];
+            cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, layout, 1, *model.materialSet(group.material),
+                                   nullptr);
+            GpuSkinnedPush push{};
+            // Donde el raster lleva la matriz del modelo: el lote (gbuffer_meshlet.task).
+            push.model.m[0][0] = std::bit_cast<float>(batch.first_slot);
+            push.model.m[0][1] = std::bit_cast<float>(batch.capacity);
+            push.model.m[0][2] = std::bit_cast<float>(b);
+            push.model.m[0][3] = std::bit_cast<float>(batch.closed ? 1u : 0u);
+            push.base_color = material.base_color;
+            push.emissive = material.emissive;
+            push.material = material.params;
+            push.reflectance = material.reflectance;
+            push.flags = 1u | material.shader_flags;
+            cmd.pushConstants<GpuSkinnedPush>(layout,
+                                              vk::ShaderStageFlagBits::eTaskEXT | vk::ShaderStageFlagBits::eMeshEXT |
+                                                  vk::ShaderStageFlagBits::eFragment,
+                                              0, push);
+            cmd.drawMeshTasksEXT(batch.capacity, 1, 1);
+        }
+    }
+
     cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *meshGeometryPipeline());
     cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *skinned_pass_.geometryLayout(), 0,
                            *skin_sets_[frame_index], nullptr);
-
-    const vk::Buffer commands = *gpu_culling_.commands(phase).handle();
-    const vk::Buffer counts = *gpu_culling_.counts(phase).handle();
 
     // Una llamada por lote (modelo x material, todos los actores juntos):
     // la GPU decide cuantas submallas (y de quien) dibuja, leyendo el
@@ -4428,6 +4647,7 @@ void VulkanRenderer::drawGpuClusters(const vk::raii::CommandBuffer& cmd,
     std::int32_t bound_shader = -1;
     for (std::uint32_t b = 0; b < draw_batches_.size(); ++b) {
         const DrawBatch& batch = draw_batches_[b];
+        if (batch.mesh) continue;  // ya dibujado por meshlets (sus comandos son de otro formato)
         const SkinnedModel& model = skinned_models_[batch.model];
         if (batch.model != bound_model) {
             cmd.bindVertexBuffers(0, *model.vertices().handle(), {0});
@@ -4515,6 +4735,37 @@ void VulkanRenderer::recordVolumetricPass(const vk::raii::CommandBuffer& cmd,
                    &push);
 
     pipelineBarrier(cmd, writtenToSampled(*volumetric_image_.handle()));
+}
+
+// Sombras por rayos de las luces locales (rt_shadows.comp): en cada pixel,
+// un rayo de sombra hacia un punto al azar de la bombilla de cada una de las 4
+// luces que mas le aportan. La iluminacion lo lee (binding 25) y lo suaviza
+// con los vecinos. Solo con rayos por hardware, en la vista de pantalla y si
+// hay luces locales con sombra.
+void VulkanRenderer::recordRtShadowPass(const vk::raii::CommandBuffer& cmd, std::uint32_t frame_index) {
+    rt_shadows_this_frame_ = rt_shadows_planned_;
+    if (!rt_shadows_planned_) return;
+
+    pipelineBarrier(cmd, colorBarrier(*rt_shadow_mask_.handle(), vk::ImageLayout::eShaderReadOnlyOptimal,
+                                      vk::ImageLayout::eGeneral, vk::PipelineStageFlagBits2::eFragmentShader,
+                                      vk::AccessFlagBits2::eShaderSampledRead,
+                                      vk::PipelineStageFlagBits2::eComputeShader,
+                                      vk::AccessFlagBits2::eShaderStorageWrite));
+    // El compute lee el G-buffer (como la GI).
+    memoryBarrier(cmd,
+                  vk::PipelineStageFlagBits2::eLateFragmentTests | vk::PipelineStageFlagBits2::eColorAttachmentOutput,
+                  vk::AccessFlagBits2::eDepthStencilAttachmentWrite | vk::AccessFlagBits2::eColorAttachmentWrite,
+                  vk::PipelineStageFlagBits2::eComputeShader, vk::AccessFlagBits2::eShaderSampledRead);
+    RayTracing::Push push{};
+    push.previous_view_projection = previous_view_projection_;
+    push.params = Vec4{static_cast<float>(frame_count_ % 1024), 0.0f, 0.0f, 0.0f};
+    ray_tracing_.record(cmd, frame_index, RayTracing::Pass::Shadows, rt_shadow_mask_.extent(), push);
+    pipelineBarrier(cmd, colorBarrier(*rt_shadow_mask_.handle(), vk::ImageLayout::eGeneral,
+                                      vk::ImageLayout::eShaderReadOnlyOptimal,
+                                      vk::PipelineStageFlagBits2::eComputeShader,
+                                      vk::AccessFlagBits2::eShaderStorageWrite,
+                                      vk::PipelineStageFlagBits2::eFragmentShader,
+                                      vk::AccessFlagBits2::eShaderSampledRead));
 }
 
 void VulkanRenderer::recordSsgiPass(const vk::raii::CommandBuffer& cmd,

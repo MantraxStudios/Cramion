@@ -26,7 +26,11 @@ struct GpuCluster {
     // Matriz de mundo del actor en el buffer de huesos: va al first_instance
     // del comando y skinned.vert la lee con gl_InstanceIndex.
     std::uint32_t instance = 0;
-    std::uint32_t pad[3] = {0, 0, 0};
+    // Lotes con mesh shaders: los meshlets del cluster, que cull.comp copia al
+    // comando (gbuffer_meshlet.task los lee de ahi).
+    std::uint32_t first_meshlet = 0;
+    std::uint32_t meshlet_count = 0;
+    std::uint32_t mesh = 0;
 };
 static_assert(sizeof(GpuCluster) == 64, "GpuCluster debe coincidir con cull.comp");
 

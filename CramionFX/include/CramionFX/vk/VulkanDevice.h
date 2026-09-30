@@ -74,6 +74,11 @@ public:
     // aceleracion, con direcciones de buffer y texturas indexadas en los
     // shaders). Opcional: sin el, la GI y los reflejos son de pantalla.
     bool rayTracingSupported() const { return ray_tracing_supported_; }
+    // Opcionales de las GPUs actuales (RTX 40/50, RDNA 3+...).
+    bool opacityMicromapSupported() const { return opacity_micromap_supported_; }
+    bool rayTracingPipelineSupported() const { return ray_tracing_pipeline_supported_; }
+    bool invocationReorderSupported() const { return invocation_reorder_supported_; }
+    bool meshShaderSupported() const { return mesh_shader_supported_; }
 
     // Memoria de video real (VK_EXT_memory_budget): lo que usa este proceso
     // y lo que el sistema le deja usar ahora mismo (baja si otras apps, como
@@ -122,6 +127,10 @@ private:
     bool texture_compression_bc_supported_ = false;
     bool fill_mode_non_solid_supported_ = false;
     bool ray_tracing_supported_ = false;
+    bool opacity_micromap_supported_ = false;
+    bool ray_tracing_pipeline_supported_ = false;
+    bool invocation_reorder_supported_ = false;
+    bool mesh_shader_supported_ = false;
     bool memory_budget_supported_ = false;
     std::string device_name_;
     std::uint32_t api_version_ = 0;

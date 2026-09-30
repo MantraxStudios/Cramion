@@ -60,6 +60,7 @@
         <a href="render-textures.html">Render Textures</a>
         <a href="render.html" class="active">Render y rendimiento</a>
         <a href="exportar.html">Exportar y compilación</a>
+        <a href="datapacks.html">DataPacks (bundles)</a>
         <a href="plantillas.html">Plantillas</a>
         <a href="atajos.html">Atajos de teclado</a>
         <a href="actualizaciones.html">Actualizaciones</a>
@@ -153,7 +154,7 @@
   <thead><tr><th>Ajuste</th><th>Qué hace</th></tr></thead>
   <tbody>
     <tr><td><code>Calidad rápida</code></td><td>Baja, Media, Alta o Ultra: ajusta todo a la vez.</td></tr>
-    <tr><td><code>Escalado y antialiasing</code></td><td><strong>Desactivado</strong> (resolución nativa + FXAA), <strong>TAA</strong> (temporal, también escala como TAAU) o <strong>AMD FSR 1</strong>. FSR 3 y DLSS aparecen en la lista pero están en preparación.</td></tr>
+    <tr><td><code>Escalado y antialiasing</code></td><td><strong>Desactivado</strong> (resolución nativa + FXAA), <strong>TAA</strong> (temporal, también escala como TAAU), <strong>AMD FSR 1</strong>, <strong>AMD FSR 3.1</strong> (cualquier GPU) o <strong>NVIDIA DLSS 4</strong> (RTX). FSR 3.1 y DLSS 4 están marcados <em>(INESTABLE)</em>: funcionan, pero solo ganan FPS si la escena depende de la resolución; si lo que pesa son las sombras o la geometría (mira <em>Estadísticas</em>), escalar no ayuda. En <em>Nativa</em> solo hacen antialiasing (DLAA) y cuestan FPS.</td></tr>
     <tr><td><code>Resolución</code></td><td>Nativa (100 %), Calidad (67 %), Equilibrado (58 %), Rendimiento (50 %), Ultra rendimiento (33 %) o una escala personalizada. Se muestra la resolución interna y la de pantalla.</td></tr>
     <tr><td><code>Nitidez</code></td><td>AMD RCAS después del escalado (0 = sin nitidez).</td></tr>
     <tr><td><code>Presupuesto adaptativo</code></td><td>Mide cuánto tarda cada pasada de la GPU y, si no se llega a los FPS <em>objetivo</em>, baja solo lo que más ahorra y menos se nota (LODs, detalle de sombras, efectos, resolución con FSR 1). Aprende lo que cuesta cada cosa en este PC y vuelve a subir la calidad cuando sobra tiempo.</td></tr>
@@ -162,6 +163,32 @@
     <tr><td><code>VSync</code></td><td>Sincroniza con la pantalla. Sin VSync usa <em>mailbox</em> (sin cortes de imagen y sin tope de FPS).</td></tr>
   </tbody>
 </table>
+
+<h3 id="dia-noche">Día y noche realistas</h3>
+<div class="shots">
+  <figure><img src="../img/newlightday.png" alt="La escena de prueba de día" loading="lazy"><figcaption>De día: sol, cielo físico y nubes</figcaption></figure>
+  <figure><img src="../img/newlightnight.png" alt="La misma escena de noche, con la farola encendida" loading="lazy"><figcaption>De noche: luna, estrellas y una farola</figcaption></figure>
+</div>
+<p>
+  La misma escena con el sol arriba y bajo el horizonte, sin tocar nada más. De noche se ve como la ve el ojo:
+</p>
+<ul>
+  <li><strong>Visión nocturna</strong> (efecto Purkinje). Con poca luz ven los bastones del ojo, que no distinguen
+    colores y son más sensibles al azul: lo iluminado solo por la luna se vuelve gris azulado, mientras que lo que
+    alumbra una farola o una antorcha conserva su color cálido. Se regula en el
+    <a href="componentes-basicos.html#PostProcessing">PostProcessing</a>, grupo <em>Exposición</em>,
+    <em>Visión nocturna</em> (1 = la del ojo, 0 = apagada). De día no cambia nada.</li>
+  <li><strong>Cielo nocturno</strong>: luna con sus mares y cráteres y un halo en la bruma, estrellas de distintos
+    brillos y colores (azuladas, blancas, anaranjadas) y la Vía Láctea tenue. La luz de la luna es luz del sol
+    reflejada: tenue y casi blanca.</li>
+  <li><strong>Luces dentro de su lámpara</strong>: lo que está a menos de 20 cm de una luz puntual o un foco no
+    proyecta su sombra, así que la luz se puede poner dentro de la bombilla o del poste de la farola (como en Unity).</li>
+  <li>La imagen sale con la <strong>curva sRGB</strong> exacta del monitor: sombras profundas, no lavadas.</li>
+</ul>
+<div class="note">
+  Si el día se ve gris y sin sombras marcadas, suele ser una nube tapando el sol: baja la <em>cobertura de nubes</em>
+  del <a href="componentes-entorno.html#Sky">Sky</a> (0,45 por defecto) para un día despejado.
+</div>
 
 <h3 id="path-tracing">Path tracing</h3>
 <p>
@@ -178,6 +205,43 @@
   dibujan encima como siempre. Los rebotes chocan con los modelos de escenario; el terreno, los vóxeles y los
   personajes animados solo están en el primer punto (lo que ve la cámara).
 </p>
+
+<h3 id="sombras-rayos">Sombras por rayos de las luces</h3>
+<p>
+  Con el <strong>trazado de rayos</strong> activado (GPU con rayos por hardware, calidad Ultra o
+  <code>Graphics.set("ray_tracing", true)</code>), las luces puntuales y los focos proyectan sombras trazadas contra la
+  escena real. Funciona para <strong>todas</strong> las luces locales con <em>Proyecta sombras</em>, no solo para las 8
+  puntuales y 8 focos que tienen mapa de sombras: en cada píxel se trazan las 4 luces que más le aportan.
+</p>
+<ul>
+  <li><strong>Radio de la fuente</strong> (<a href="componentes-basicos.html#Light">Light</a>): el tamaño de la
+    bombilla. Pequeño (0,05 m) da sombras nítidas; grande (una lámpara, un fluorescente, 0,3 m o más) da un borde suave
+    que se ensancha con la distancia, como en la realidad.</li>
+  <li>Los rayos ven el escenario (los modelos). Los personajes animados, el terreno y los vóxeles siguen proyectando con
+    los mapas de sombras: se usa la más oscura de las dos.</li>
+  <li>Cuesta alrededor de medio milisegundo con una docena de luces en pantalla (RTX 4060 Ti, 1080p). Aparece como
+    <em>Sombras por rayos</em> en las estadísticas.</li>
+</ul>
+
+<h3 id="gpu-actuales">Mesh shaders, micromapas y SER</h3>
+<p>
+  Con una GPU que las tenga (NVIDIA RTX 40/50, AMD RDNA 3 o más nuevas) el motor usa solo tres extensiones de
+  Vulkan de la generación actual; en la consola aparece cuáles detectó al arrancar. La imagen no cambia: solo cuesta
+  menos dibujarla.
+</p>
+<ul>
+  <li><strong>Mesh shaders.</strong> Los escenarios se parten en <em>meshlets</em> (grupos de hasta 124 triángulos).
+    En las sombras del sol la GPU descarta los que caen fuera de cada cascada y, en mallas cerradas, los que miran
+    en contra de la luz; en la cámara, los que quedan de espaldas. Las mallas abiertas (hierba, follaje) y lo
+    recortado por alfa siguen el camino de siempre.</li>
+  <li><strong>Micromapas de opacidad.</strong> El alfa del follaje se guarda dentro de la escena de rayos: la GPU
+    sabe sin ejecutar ningún shader qué partes de cada hoja son opacas o hueco, y solo pregunta en los bordes.</li>
+  <li><strong>SER</strong> (reordenación de hilos del path tracing). Está pero apagado: con los materiales del
+    motor el path tracing de siempre es más rápido. Se activa arrancando con <code>CRAMION_SER=1</code>.</li>
+</ul>
+<div class="note">
+  Para comparar: <code>CRAMION_NO_MESH=1</code> y <code>CRAMION_NO_OMM=1</code> los apagan al arrancar el editor.
+</div>
 
 <h3 id="fuerza-sombra">Fuerza de la sombra de cada luz</h3>
 <p>

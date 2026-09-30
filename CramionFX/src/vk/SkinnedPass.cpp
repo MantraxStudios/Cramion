@@ -8,7 +8,9 @@
 
 #include <array>
 #include <cstddef>
+#include <cstdlib>
 #include <iostream>
+#include <string_view>
 
 namespace cramion::gfx {
 
@@ -59,15 +61,21 @@ void SkinnedPass::create(const VulkanDevice& device, const GBuffer& gbuffer,
     // Camara y clima tambien en fragmentos y vertices: los shaders de
     // superficie del usuario leen la posicion de la camara y los segundos.
     const vk::ShaderStageFlags both = vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment;
+    // Con mesh shaders, la camara y los huesos tambien los leen el task y el mesh shader.
+    const char* no_mesh = std::getenv("CRAMION_NO_MESH");
+    mesh_shaders_ = device.meshShaderSupported() && (no_mesh == nullptr || std::string_view(no_mesh) == "0");
+    const vk::ShaderStageFlags mesh_stages =
+        mesh_shaders_ ? vk::ShaderStageFlags(vk::ShaderStageFlagBits::eTaskEXT | vk::ShaderStageFlagBits::eMeshEXT)
+                      : vk::ShaderStageFlags{};
     std::array<vk::DescriptorSetLayoutBinding, 6> frame_bindings{};
     frame_bindings[0].binding = 0;
     frame_bindings[0].descriptorType = vk::DescriptorType::eUniformBuffer;
     frame_bindings[0].descriptorCount = 1;
-    frame_bindings[0].stageFlags = both;
+    frame_bindings[0].stageFlags = both | mesh_stages;
     frame_bindings[1].binding = 1;
     frame_bindings[1].descriptorType = vk::DescriptorType::eStorageBuffer;
     frame_bindings[1].descriptorCount = 1;
-    frame_bindings[1].stageFlags = vk::ShaderStageFlagBits::eVertex;
+    frame_bindings[1].stageFlags = vk::ShaderStageFlagBits::eVertex | mesh_stages;
     frame_bindings[2].binding = 2;
     frame_bindings[2].descriptorType = vk::DescriptorType::eCombinedImageSampler;
     frame_bindings[2].descriptorCount = 1;
@@ -127,6 +135,54 @@ void SkinnedPass::create(const VulkanDevice& device, const GBuffer& gbuffer,
     local_shadow_pipeline_ = createShadowPipeline(device, shadow_format, false, 1.5f, true);
     local_shadow_opaque_pipeline_ =
         createShadowPipeline(device, shadow_format, false, 1.5f, false);
+
+    // --- Mesh shaders: set de los meshlets y sombras de las cascadas ---
+    if (mesh_shaders_) {
+        std::array<vk::DescriptorSetLayoutBinding, 4> meshlet_bindings{};
+        for (std::uint32_t i = 0; i < meshlet_bindings.size(); ++i) {
+            meshlet_bindings[i].binding = i;
+            meshlet_bindings[i].descriptorType = vk::DescriptorType::eStorageBuffer;
+            meshlet_bindings[i].descriptorCount = 1;
+            meshlet_bindings[i].stageFlags = mesh_stages;
+        }
+        vk::DescriptorSetLayoutCreateInfo meshlet_layout_info{};
+        meshlet_layout_info.setBindings(meshlet_bindings);
+        meshlet_set_layout_ = vk::raii::DescriptorSetLayout(device.handle(), meshlet_layout_info);
+
+        vk::PushConstantRange mesh_shadow_push{};
+        mesh_shadow_push.stageFlags = mesh_stages;
+        mesh_shadow_push.size = sizeof(GpuMeshletShadowPush);
+        const std::array<vk::DescriptorSetLayout, 2> mesh_shadow_sets = {*frame_set_layout_, *meshlet_set_layout_};
+        vk::PipelineLayoutCreateInfo mesh_shadow_layout_info{};
+        mesh_shadow_layout_info.setSetLayouts(mesh_shadow_sets);
+        mesh_shadow_layout_info.setPushConstantRanges(mesh_shadow_push);
+        mesh_shadow_layout_ = vk::raii::PipelineLayout(device.handle(), mesh_shadow_layout_info);
+        mesh_shadow_pipeline_ = createMeshShadowPipeline(device, shadow_format, clamp);
+
+        // G-buffer: set 3 = comandos y contadores de cull.comp (los lee el task shader).
+        std::array<vk::DescriptorSetLayoutBinding, 2> draw_bindings{};
+        for (std::uint32_t i = 0; i < draw_bindings.size(); ++i) {
+            draw_bindings[i].binding = i;
+            draw_bindings[i].descriptorType = vk::DescriptorType::eStorageBuffer;
+            draw_bindings[i].descriptorCount = 1;
+            draw_bindings[i].stageFlags = vk::ShaderStageFlagBits::eTaskEXT;
+        }
+        vk::DescriptorSetLayoutCreateInfo draw_layout_info{};
+        draw_layout_info.setBindings(draw_bindings);
+        mesh_draw_set_layout_ = vk::raii::DescriptorSetLayout(device.handle(), draw_layout_info);
+
+        vk::PushConstantRange geometry_push{};
+        geometry_push.stageFlags = mesh_stages | vk::ShaderStageFlagBits::eFragment;
+        geometry_push.size = sizeof(GpuSkinnedPush);
+        const std::array<vk::DescriptorSetLayout, 4> geometry_sets = {*frame_set_layout_, *material_set_layout_,
+                                                                      *meshlet_set_layout_, *mesh_draw_set_layout_};
+        vk::PipelineLayoutCreateInfo geometry_layout_info{};
+        geometry_layout_info.setSetLayouts(geometry_sets);
+        geometry_layout_info.setPushConstantRanges(geometry_push);
+        mesh_geometry_layout_ = vk::raii::PipelineLayout(device.handle(), geometry_layout_info);
+        mesh_geometry_pipeline_ = createMeshGeometryPipeline(device);
+        std::cout << "[Vulkan] Mesh shaders activos (geometria y sombras de las cascadas por meshlets)\n";
+    }
 
     createGlassPipeline(device, hdr_format, gbuffer.depthFormat());
     outline_silhouette_pipeline_ = createOutlinePipeline(device, gbuffer.depthFormat(), false);
@@ -521,7 +577,121 @@ vk::raii::Pipeline SkinnedPass::createShadowPipeline(const VulkanDevice& device,
     return vk::raii::Pipeline(device.handle(), device.pipelineCache(), pipeline_info);
 }
 
+vk::raii::Pipeline SkinnedPass::createMeshShadowPipeline(const VulkanDevice& device, vk::Format depth_format,
+                                                         bool depth_clamp) const {
+    const vk::raii::ShaderModule task_module = shaders::loadModule(device, "shadow_meshlet.task.spv");
+    const vk::raii::ShaderModule mesh_module = shaders::loadModule(device, "shadow_meshlet.mesh.spv");
+    const std::array<vk::PipelineShaderStageCreateInfo, 2> stages = {
+        stage(vk::ShaderStageFlagBits::eTaskEXT, task_module), stage(vk::ShaderStageFlagBits::eMeshEXT, mesh_module)};
+
+    vk::PipelineViewportStateCreateInfo viewport_state{};
+    viewport_state.viewportCount = 1;
+    viewport_state.scissorCount = 1;
+
+    // Igual que la de las cascadas de solo profundidad (createShadowPipeline).
+    vk::PipelineRasterizationStateCreateInfo rasterization{};
+    rasterization.polygonMode = vk::PolygonMode::eFill;
+    rasterization.cullMode = vk::CullModeFlagBits::eNone;
+    rasterization.frontFace = vk::FrontFace::eCounterClockwise;
+    rasterization.lineWidth = 1.0f;
+    rasterization.depthBiasEnable = VK_TRUE;
+    rasterization.depthBiasConstantFactor = 0.6f;
+    rasterization.depthBiasSlopeFactor = 1.1f;
+    rasterization.depthClampEnable = depth_clamp ? VK_TRUE : VK_FALSE;
+
+    vk::PipelineMultisampleStateCreateInfo multisample{};
+    multisample.rasterizationSamples = vk::SampleCountFlagBits::e1;
+
+    vk::PipelineDepthStencilStateCreateInfo depth_stencil{};
+    depth_stencil.depthTestEnable = VK_TRUE;
+    depth_stencil.depthWriteEnable = VK_TRUE;
+    depth_stencil.depthCompareOp = vk::CompareOp::eLess;
+
+    vk::PipelineColorBlendStateCreateInfo color_blend{};
+    const std::array<vk::DynamicState, 2> dynamic_states = {vk::DynamicState::eViewport, vk::DynamicState::eScissor};
+    vk::PipelineDynamicStateCreateInfo dynamic_state{};
+    dynamic_state.setDynamicStates(dynamic_states);
+
+    vk::PipelineRenderingCreateInfo rendering_info{};
+    rendering_info.depthAttachmentFormat = depth_format;
+
+    // Con mesh shaders no hay entrada de vertices ni ensamblado.
+    vk::GraphicsPipelineCreateInfo pipeline_info{};
+    pipeline_info.pNext = &rendering_info;
+    pipeline_info.setStages(stages);
+    pipeline_info.pViewportState = &viewport_state;
+    pipeline_info.pRasterizationState = &rasterization;
+    pipeline_info.pMultisampleState = &multisample;
+    pipeline_info.pDepthStencilState = &depth_stencil;
+    pipeline_info.pColorBlendState = &color_blend;
+    pipeline_info.pDynamicState = &dynamic_state;
+    pipeline_info.layout = *mesh_shadow_layout_;
+    return vk::raii::Pipeline(device.handle(), device.pipelineCache(), pipeline_info);
+}
+
+vk::raii::Pipeline SkinnedPass::createMeshGeometryPipeline(const VulkanDevice& device) const {
+    const vk::raii::ShaderModule task_module = shaders::loadModule(device, "gbuffer_meshlet.task.spv");
+    const vk::raii::ShaderModule mesh_module = shaders::loadModule(device, "gbuffer_meshlet.mesh.spv");
+    const vk::raii::ShaderModule fragment_module = shaders::loadModule(device, "skinned.frag.spv");
+    const std::array<vk::PipelineShaderStageCreateInfo, 3> stages = {
+        stage(vk::ShaderStageFlagBits::eTaskEXT, task_module), stage(vk::ShaderStageFlagBits::eMeshEXT, mesh_module),
+        stage(vk::ShaderStageFlagBits::eFragment, fragment_module)};
+
+    vk::PipelineViewportStateCreateInfo viewport_state{};
+    viewport_state.viewportCount = 1;
+    viewport_state.scissorCount = 1;
+
+    // El mismo estado que buildGeometryPipeline (relleno, doble cara).
+    vk::PipelineRasterizationStateCreateInfo rasterization{};
+    rasterization.polygonMode = vk::PolygonMode::eFill;
+    rasterization.cullMode = vk::CullModeFlagBits::eNone;
+    rasterization.frontFace = vk::FrontFace::eCounterClockwise;
+    rasterization.lineWidth = 1.0f;
+
+    vk::PipelineMultisampleStateCreateInfo multisample{};
+    multisample.rasterizationSamples = vk::SampleCountFlagBits::e1;
+
+    vk::PipelineDepthStencilStateCreateInfo depth_stencil{};
+    depth_stencil.depthTestEnable = VK_TRUE;
+    depth_stencil.depthWriteEnable = VK_TRUE;
+    depth_stencil.depthCompareOp = vk::CompareOp::eLess;
+
+    vk::PipelineColorBlendAttachmentState blend_attachment{};
+    blend_attachment.colorWriteMask = vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG |
+                                      vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA;
+    std::vector<vk::PipelineColorBlendAttachmentState> blend_attachments(gbuffer_color_formats_.size(),
+                                                                         blend_attachment);
+    vk::PipelineColorBlendStateCreateInfo color_blend{};
+    color_blend.setAttachments(blend_attachments);
+
+    const std::array<vk::DynamicState, 2> dynamic_states = {vk::DynamicState::eViewport, vk::DynamicState::eScissor};
+    vk::PipelineDynamicStateCreateInfo dynamic_state{};
+    dynamic_state.setDynamicStates(dynamic_states);
+
+    vk::PipelineRenderingCreateInfo rendering_info{};
+    rendering_info.setColorAttachmentFormats(gbuffer_color_formats_);
+    rendering_info.depthAttachmentFormat = gbuffer_depth_format_;
+
+    vk::GraphicsPipelineCreateInfo pipeline_info{};
+    pipeline_info.pNext = &rendering_info;
+    pipeline_info.setStages(stages);
+    pipeline_info.pViewportState = &viewport_state;
+    pipeline_info.pRasterizationState = &rasterization;
+    pipeline_info.pMultisampleState = &multisample;
+    pipeline_info.pDepthStencilState = &depth_stencil;
+    pipeline_info.pColorBlendState = &color_blend;
+    pipeline_info.pDynamicState = &dynamic_state;
+    pipeline_info.layout = *mesh_geometry_layout_;
+    return vk::raii::Pipeline(device.handle(), device.pipelineCache(), pipeline_info);
+}
+
 void SkinnedPass::destroy() {
+    mesh_geometry_pipeline_ = nullptr;
+    mesh_geometry_layout_ = nullptr;
+    mesh_draw_set_layout_ = nullptr;
+    mesh_shadow_pipeline_ = nullptr;
+    mesh_shadow_layout_ = nullptr;
+    meshlet_set_layout_ = nullptr;
     outline_visible_pipeline_ = nullptr;
     pick_pipeline_ = nullptr;
     outline_silhouette_pipeline_ = nullptr;

@@ -58,6 +58,11 @@ int main(int argc, char** argv) {
           "self.entity: -> metodos de Entity");
     check(has(at(head + "self.entity."), "position"), "self.entity. -> propiedades de Entity");
     check(has(at(head + "Vec3."), "up"), "Vec3. -> up");
+    check(has(at(head + "Dat"), "DataPack") && has(at(head + "DataPack."), "loadScene") &&
+              has(at(head + "DataPack."), "instantiate") && has(at(head + "DataPack.i"), "info"),
+          "DataPack. -> load, loadScene, instantiate, info");
+    check(has(at(head + "Input."), "getActions") && has(at(head + "Input."), "isActionOngoing"),
+          "Input. -> getActions, isActionOngoing");
     check(has(at("local C = {}\nfunction C:"), "OnCollisionEnter"), "function C: -> metodos del motor");
     check(at(head + "-- Inp").empty(), "nada dentro de un comentario");
     check(has(at(head + "fu"), "function"), "palabras clave");

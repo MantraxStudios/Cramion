@@ -39,14 +39,16 @@ struct GpuCamera {
 struct GpuPointLight {
     core::Vec4 position_range{};   // xyz = posicion, w = alcance
     core::Vec4 color_intensity{};  // rgb = color, a = intensidad
-    core::Vec4 shadow{-1.0f, 0.0f, 0.0f, 0.0f};  // x = hueco de sombra (-1 = sin sombra)
+    // x = hueco de sombra (-1 = sin sombra), y = fuerza, z = radio de la fuente (m)
+    core::Vec4 shadow{-1.0f, 0.0f, 0.0f, 0.0f};
 };
 
 struct GpuSpotLight {
     core::Vec4 position_range{};       // xyz = posicion, w = alcance
     core::Vec4 direction_intensity{};  // xyz = direccion, w = intensidad
     core::Vec4 color_inner{};          // rgb = color, a = cos(angulo interior)
-    core::Vec4 outer_shadow{};         // x = cos(angulo exterior), y = hueco de sombra (-1 = sin)
+    core::Vec4 outer_shadow{};         // x = cos(angulo exterior), y = hueco de sombra (-1 = sin),
+                                       // z = fuerza, w = radio de la fuente (m)
 };
 
 struct GpuLights {
@@ -82,6 +84,9 @@ struct GpuLights {
     // Sombra de las nubes (lighting.frag, binding 23): xy = centro del mapa
     // (x, z de la escena), z = lado (m; 0 = sin sombras), w = fuerza.
     core::Vec4 cloud_shadow{};
+    // Sombras por rayos de las luces locales (rt_shadows.comp): x = 1 si la
+    // mascara de este frame vale.
+    core::Vec4 rt_shadows{};
 };
 
 // Constante de push de los modelos con esqueleto (pasada de geometria). Son
@@ -134,6 +139,30 @@ struct GpuSkinnedShadowPush {
     std::uint32_t bone_offset = 0;
     std::uint32_t pad[3] = {0, 0, 0};
 };
+
+// Un meshlet (mesh shaders): esfera, cono de normales (meshoptimizer) y
+// donde estan sus vertices y triangulos. Debe coincidir con meshlet_common.glsl.
+struct GpuMeshlet {
+    core::Vec4 center_radius{};     // en el espacio del modelo
+    core::Vec4 cone_axis_cutoff{};  // cutoff 1 = sin cono (no se descarta)
+    core::Vec4 cone_apex{};
+    std::uint32_t vertex_offset = 0;    // en meshlet_vertices
+    std::uint32_t triangle_offset = 0;  // byte en meshlet_triangles
+    std::uint32_t vertex_count = 0;
+    std::uint32_t triangle_count = 0;
+};
+static_assert(sizeof(GpuMeshlet) == 64, "GpuMeshlet debe coincidir con meshlet_common.glsl");
+
+// Sombras de las cascadas con mesh shaders (shadow_meshlet.task/.mesh).
+struct GpuMeshletShadowPush {
+    core::Mat4 light_model_view_projection = core::Mat4::identity();
+    std::uint32_t first_meshlet = 0;
+    std::uint32_t meshlet_count = 0;
+    std::uint32_t bone_offset = 0;
+    std::uint32_t flags = 0;         // bit 0: descartar los meshlets de espaldas a la luz (malla cerrada)
+    core::Vec4 light_direction{};    // hacia donde van los rayos, en el espacio del modelo
+};
+static_assert(sizeof(GpuMeshletShadowPush) == 96, "GpuMeshletShadowPush debe coincidir con shadow_meshlet.task");
 
 static_assert(sizeof(GpuSkinnedPush) == 128, "GpuSkinnedPush debe coincidir con skinned.vert");
 static_assert(sizeof(GpuSkinnedShadowPush) == 80,

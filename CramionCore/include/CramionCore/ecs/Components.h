@@ -372,6 +372,9 @@ struct Light {
     // Cuanto oscurece su sombra (Strength de Unity): 1 = sombra completa,
     // 0 = no oscurece (como sin sombra, pero se sigue calculando).
     float shadow_strength = 1.0f;
+    // Tamano de la bombilla (m, puntual y foco): con sombras por rayos, cuanto
+    // mayor, mas suave el borde de la sombra (penumbra real).
+    float source_radius = 0.05f;
 
     void reflect(PropertyVisitor& v);
 };

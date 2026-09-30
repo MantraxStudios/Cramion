@@ -1,0 +1,48 @@
+#version 460
+#extension GL_EXT_mesh_shader : require
+#extension GL_GOOGLE_include_directive : require
+
+// Sombras de las cascadas con mesh shaders, mesh shader: los vertices y
+// triangulos de un meshlet que paso el task shader. Solo profundidad (sin
+// fragment shader), con el mismo skinning que skinned_shadow.vert.
+
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+layout(triangles, max_vertices = 64, max_primitives = 124) out;
+
+#include "meshlet_common.glsl"
+
+layout(std430, set = 0, binding = 1) readonly buffer BoneBuffer {
+    mat4 bones[];
+};
+
+layout(push_constant) uniform PushConstants {
+    mat4 light_model_view_projection;
+    uint first_meshlet;
+    uint meshlet_count;
+    uint bone_offset;
+    uint flags;
+    vec4 light_direction;
+} push;
+
+struct Payload {
+    uint meshlets[32];
+};
+taskPayloadSharedEXT Payload payload;
+
+void main() {
+    Meshlet m = meshlets[payload.meshlets[gl_WorkGroupID.x]];
+    SetMeshOutputsEXT(m.vertex_count, m.triangle_count);
+
+    for (uint v = gl_LocalInvocationIndex; v < m.vertex_count; v += 64u) {
+        uint vertex = meshlet_vertices[m.vertex_offset + v];
+        uvec4 joints = vertexJoints(vertex);
+        vec4 weights = vertexWeights(vertex);
+        uint base = push.bone_offset;
+        mat4 skin = weights.x * bones[base + joints.x] + weights.y * bones[base + joints.y] +
+                    weights.z * bones[base + joints.z] + weights.w * bones[base + joints.w];
+        gl_MeshVerticesEXT[v].gl_Position = push.light_model_view_projection * (skin * vec4(vertexPosition(vertex), 1.0));
+    }
+    for (uint t = gl_LocalInvocationIndex; t < m.triangle_count; t += 64u) {
+        gl_PrimitiveTriangleIndicesEXT[t] = meshletTriangle(m, t);
+    }
+}

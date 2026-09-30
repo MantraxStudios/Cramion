@@ -83,6 +83,12 @@ void Light::reflect(PropertyVisitor& v) {
                  "Cuanto oscurece su sombra (Strength de Unity): 1 = completa, 0.5 = a medias, 0 = nada"},
                 shadow_strength, FloatRange{0.0f, 1.0f, 0.01f, "%.2f"});
     }
+    if (all || type != LightType::Directional) {
+        v.field({"source_radius", "Radio de la fuente",
+                 "Tamano de la bombilla. Con sombras por rayos: pequeno = sombra nitida, grande = borde suave "
+                 "(una lampara, una ventana)"},
+                source_radius, FloatRange{0.0f, 2.0f, 0.01f, "%.2f m"});
+    }
 }
 
 void Camera::reflect(PropertyVisitor& v) {

@@ -552,6 +552,39 @@ private:
     bool static_children_value_ = false;
     std::string export_folder_;
     std::shared_ptr<dialogs::AsyncFolderPick> export_pick_;
+
+    // --- DataPacks (EditorDataPack.cpp): escenas con todo lo que usan ---
+    void openDataPackExport();
+    void drawDataPackWindow();
+    // Sin ventana (MCP): escribe `file` con `scenes` y sus dependencias.
+    bool exportDataPack(const std::vector<std::filesystem::path>& scenes, const std::filesystem::path& file,
+                        const std::string& name, std::string& message, std::size_t* file_count = nullptr);
+    struct DataPackJob {
+        std::thread thread;
+        std::atomic<std::uint64_t> done{0};
+        std::uint64_t total = 0;
+        std::atomic<bool> finished{false};
+        std::atomic<bool> cancel{false};
+        bool ok = false;
+        std::string message;
+        std::filesystem::path file;
+        std::mutex mutex;
+        std::string current;  // archivo que se esta comprimiendo
+    };
+    bool show_datapack_ = false;
+    std::string datapack_name_;
+    std::string datapack_folder_;
+    std::vector<std::filesystem::path> datapack_scenes_;  // escenas elegidas
+    std::shared_ptr<dialogs::AsyncFolderPick> datapack_pick_;
+    std::unique_ptr<DataPackJob> datapack_job_;
+    std::string datapack_message_;
+    bool datapack_done_ = false;  // la ventana muestra el resultado
+    // Clic derecho en la Jerarquia > Empaquetar y exportar como DataPack.
+    void openDataPackExportFor(ecs::Entity entity);
+    std::filesystem::path prefabForDataPack(ecs::Entity entity, std::string& message);
+    // Exporta en otro hilo con la ventana de progreso (boton Exportar y MCP async).
+    void startDataPackJob(const std::vector<std::filesystem::path>& scenes, const std::filesystem::path& file,
+                          const std::string& name);
     // Android: dispositivos de adb para "Exportar y jugar" y el elegido.
     std::vector<std::string> export_devices_;
     std::string export_device_;
@@ -1234,6 +1267,10 @@ private:
     std::uint32_t last_render_view_ = kSceneSlot;
     std::uint32_t preferred_view_ = kSceneSlot;    // la ultima con la que se interactuo
     bool focus_game_ = false;                      // traer la vista Juego al frente
+    // Al dar Play, ir a la pestana Juego (Play Focused de Unity) o quedarse en
+    // la vista actual (Play Unfocused). Se guarda en CramionEditor.ini.
+    bool play_focus_game_ = true;
+    void registerEditorSettings();
     bool focus_scene_ = false;                     // traer la Escena al frente
     bool focus_inspector_ = false;                 // traer el Inspector al frente (asset elegido)
     std::optional<scene::Camera> saved_camera_;    // la del editor mientras se dibuja el Juego

@@ -1,0 +1,179 @@
+#version 460
+#extension GL_EXT_nonuniform_qualifier : require
+
+// Horneado de los micromapas de opacidad (VK_EXT_opacity_micromap) del
+// follaje recortado por alfa. Cada triangulo recortado se parte en 4^nivel
+// microtriangulos (en el orden "bird curve" de Vulkan) y cada uno recibe un
+// estado de 2 bits:
+//   0 transparente seguro  -> el hardware ignora el impacto (sin shader)
+//   1 opaco seguro         -> el hardware lo acepta (sin shader)
+//   2 / 3 desconocido      -> el shader prueba el alfa como siempre
+//                             (candidateIsOpaque en rt_common.glsl)
+// Conservador: "seguro" solo si el alfa del mip cuyo texel cubre TODO el
+// microtriangulo (la media de lo que hay dentro) es ~0 o ~1 en sus esquinas,
+// aristas y centro. Si hay duda, desconocido: la imagen no puede cambiar,
+// solo se ahorra trabajo.
+//
+// Un hilo por palabra de 32 bits (16 microtriangulos): sin atomicos.
+
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+// Igual que rt_common.glsl (set 1 de la escena de rayos).
+struct RtVertex {
+    float px, py, pz;
+    float nx, ny, nz;
+    float u, v;
+};
+
+struct RtMaterial {
+    vec4 base_color;
+    vec4 emissive;
+    vec4 params;
+    uint albedo_texture;
+    uint metallic_roughness_texture;
+    uint emissive_texture;
+    uint flags;
+};
+
+layout(std430, set = 1, binding = 1) readonly buffer RtVertices { RtVertex rt_vertices[]; };
+layout(std430, set = 1, binding = 2) readonly buffer RtIndices { uint rt_indices[]; };
+layout(std430, set = 1, binding = 3) readonly buffer RtTriangleMaterials { uint rt_triangle_materials[]; };
+layout(std430, set = 1, binding = 4) readonly buffer RtMaterials { RtMaterial rt_materials[]; };
+layout(set = 1, binding = 7) uniform sampler2D rt_textures[];
+
+// Set 2: que triangulos (indice global, en el orden del micromapa) y la salida.
+layout(std430, set = 2, binding = 0) readonly buffer MaskedTriangles { uint masked_triangles[]; };
+layout(std430, set = 2, binding = 1) writeonly buffer OmmData { uint omm_data[]; };
+
+layout(push_constant) uniform PushConstants {
+    uint triangle_count;
+    uint level;           // nivel de subdivision (4^nivel microtriangulos)
+    uint words_per_triangle;
+    uint pad;
+} push;
+
+// --- Microtriangulo -> baricentricas (referencia de la especificacion de
+// Vulkan, "Micromap" / curva "bird") ---
+uint extractEvenBits(uint x) {
+    x &= 0x55555555u;
+    x = (x | (x >> 1)) & 0x33333333u;
+    x = (x | (x >> 2)) & 0x0f0f0f0fu;
+    x = (x | (x >> 4)) & 0x00ff00ffu;
+    x = (x | (x >> 8)) & 0x0000ffffu;
+    return x;
+}
+
+uint prefixEor(uint x) {
+    x ^= (x >> 1) & 0x7fff7fffu;
+    x ^= (x >> 2) & 0x3fff3fffu;
+    x ^= (x >> 4) & 0x0fff0fffu;
+    x ^= (x >> 8) & 0x00ff00ffu;
+    return x;
+}
+
+void index2dbary(uint index, out uint u, out uint v, out uint w) {
+    uint b0 = extractEvenBits(index);
+    uint b1 = extractEvenBits(index >> 1);
+    uint fx = prefixEor(b0);
+    uint fy = prefixEor(b0 & ~b1);
+    uint t = fy ^ b1;
+    u = (fx & ~t) | (b0 & ~t) | (~b0 & ~fx & t);
+    v = fy ^ b0;
+    w = (~fx & ~t) | (b0 & ~t) | (~b0 & fx & t);
+}
+
+// Las tres esquinas (u, v) del microtriangulo `index` del nivel `level`.
+void index2bary(uint index, uint level, out vec2 p0, out vec2 p1, out vec2 p2) {
+    if (level == 0u) {
+        p0 = vec2(0.0, 0.0);
+        p1 = vec2(1.0, 0.0);
+        p2 = vec2(0.0, 1.0);
+        return;
+    }
+    uint iu, iv, iw;
+    index2dbary(index, iu, iv, iw);
+    uint mask = (1u << level) - 1u;
+    iu &= mask;
+    iv &= mask;
+    iw &= mask;
+    bool upright = ((iu & 1u) ^ (iv & 1u) ^ (iw & 1u)) != 0u;
+    if (!upright) {
+        iu += 1u;
+        iv += 1u;
+    }
+    float scale = 1.0 / float(1u << level);
+    float d = upright ? scale : -scale;
+    vec2 base = vec2(float(iu), float(iv)) * scale;
+    p0 = base;
+    p1 = base + vec2(d, 0.0);
+    p2 = base + vec2(0.0, d);
+}
+
+void main() {
+    uint thread = gl_GlobalInvocationID.x;
+    uint triangle_slot = thread / push.words_per_triangle;
+    uint word = thread % push.words_per_triangle;
+    if (triangle_slot >= push.triangle_count) {
+        return;
+    }
+
+    uint triangle = masked_triangles[triangle_slot];
+    RtVertex a = rt_vertices[rt_indices[triangle * 3u]];
+    RtVertex b = rt_vertices[rt_indices[triangle * 3u + 1u]];
+    RtVertex c = rt_vertices[rt_indices[triangle * 3u + 2u]];
+    RtMaterial material = rt_materials[rt_triangle_materials[triangle]];
+    vec2 uv_a = vec2(a.u, a.v);
+    vec2 uv_b = vec2(b.u, b.v);
+    vec2 uv_c = vec2(c.u, c.v);
+    uint texture_index = material.albedo_texture;
+    float alpha_factor = material.base_color.a;
+
+    // Texeles que cubre cada microtriangulo: con el mip en que uno solo los
+    // abarca, su media dice si todo lo de dentro es opaco o transparente.
+    vec2 size = vec2(textureSize(rt_textures[nonuniformEXT(texture_index)], 0));
+    vec2 e1 = (uv_b - uv_a) * size;
+    vec2 e2 = (uv_c - uv_a) * size;
+    float texels = abs(e1.x * e2.y - e1.y * e2.x) * 0.5 / float(1u << (2u * push.level));
+    // Rejilla sobre el microtriangulo con una muestra cada ~2 texeles del lado
+    // (entre 4 y 16 divisiones): cada punto lee el mip cuyo texel mide lo que
+    // separa dos muestras, asi entre todas ven todo lo de dentro sin
+    // promediarlo con lo de fuera.
+    float side = sqrt(2.0 * max(texels, 1.0));
+    int kGrid = int(clamp(ceil(side * 0.5), 4.0, 16.0));
+    float lod = max(log2(side / float(kGrid)), 0.0);
+
+    uint micro_count = 1u << (2u * push.level);
+    uint result = 0u;
+    for (uint j = 0u; j < 16u; ++j) {
+        uint micro = word * 16u + j;
+        if (micro >= micro_count) break;
+        vec2 p0, p1, p2;
+        index2bary(micro, push.level, p0, p1, p2);
+        float lowest = 1.0;
+        float highest = 0.0;
+        for (int gi = 0; gi <= kGrid; ++gi) {
+            for (int gj = 0; gj <= kGrid - gi; ++gj) {
+                float s = float(gi) / float(kGrid);
+                float t = float(gj) / float(kGrid);
+                vec2 bary = p0 + (p1 - p0) * s + (p2 - p0) * t;
+                vec2 uv = uv_a * (1.0 - bary.x - bary.y) + uv_b * bary.x + uv_c * bary.y;
+                float alpha = textureLod(rt_textures[nonuniformEXT(texture_index)], uv, lod).a * alpha_factor;
+                lowest = min(lowest, alpha);
+                highest = max(highest, alpha);
+            }
+        }
+        vec2 center_bary = (p0 + p1 + p2) / 3.0;
+        vec2 center_uv = uv_a * (1.0 - center_bary.x - center_bary.y) + uv_b * center_bary.x + uv_c * center_bary.y;
+        float center = textureLod(rt_textures[nonuniformEXT(texture_index)], center_uv, 0.0).a * alpha_factor;
+        uint state;
+        if (lowest >= 0.95) {
+            state = 1u;  // opaco seguro
+        } else if (highest <= 0.05) {
+            state = 0u;  // transparente seguro
+        } else {
+            state = center >= 0.5 ? 3u : 2u;  // desconocido (lo decide el shader)
+        }
+        result |= state << (2u * j);
+    }
+    omm_data[triangle_slot * push.words_per_triangle + word] = result;
+}

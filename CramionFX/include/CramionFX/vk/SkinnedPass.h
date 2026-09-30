@@ -89,6 +89,23 @@ public:
     }
     const vk::raii::PipelineLayout& shadowLayout() const { return shadow_layout_; }
 
+    // --- Mesh shaders (VK_EXT_mesh_shader) ---
+    // Activos si la GPU los tiene (CRAMION_NO_MESH=1 los apaga para comparar).
+    bool meshShadersEnabled() const { return mesh_shaders_; }
+    // Set de los meshlets de un modelo (meshlet_common.glsl): 0 vertices,
+    // 1 meshlets, 2 vertices de cada meshlet, 3 triangulos.
+    const vk::raii::DescriptorSetLayout& meshletSetLayout() const { return meshlet_set_layout_; }
+    // Sombras de las cascadas con task + mesh shader, solo profundidad (lo
+    // opaco de los escenarios): set 0 (huesos) y set 1 (meshlets).
+    const vk::raii::Pipeline& meshShadowPipeline() const { return mesh_shadow_pipeline_; }
+    const vk::raii::PipelineLayout& meshShadowLayout() const { return mesh_shadow_layout_; }
+    // G-buffer con task + mesh shader (gbuffer_meshlet.*) y skinned.frag:
+    // set 0 y 1 como la geometria, set 2 los meshlets, set 3 los comandos y
+    // contadores del culling (meshDrawSetLayout).
+    const vk::raii::DescriptorSetLayout& meshDrawSetLayout() const { return mesh_draw_set_layout_; }
+    const vk::raii::Pipeline& meshGeometryPipeline() const { return mesh_geometry_pipeline_; }
+    const vk::raii::PipelineLayout& meshGeometryLayout() const { return mesh_geometry_layout_; }
+
     // Set 2 del vidrio: 0 camara, 1 luces, 2 cascadas (datos), 3 mapa de las
     // cascadas, 4 profundidad, 5 imagen HDR sin vidrio, 6 entorno IBL,
     // 7 y 8 cubos de la sonda de reflexion.
@@ -126,6 +143,17 @@ private:
     vk::raii::Pipeline createShadowPipeline(const VulkanDevice& device, vk::Format depth_format,
                                             bool depth_clamp, float slope_bias,
                                             bool alpha_tested) const;
+    vk::raii::Pipeline createMeshShadowPipeline(const VulkanDevice& device, vk::Format depth_format,
+                                                bool depth_clamp) const;
+
+    bool mesh_shaders_ = false;
+    vk::raii::DescriptorSetLayout meshlet_set_layout_{nullptr};
+    vk::raii::PipelineLayout mesh_shadow_layout_{nullptr};
+    vk::raii::Pipeline mesh_shadow_pipeline_{nullptr};
+    vk::raii::DescriptorSetLayout mesh_draw_set_layout_{nullptr};
+    vk::raii::PipelineLayout mesh_geometry_layout_{nullptr};
+    vk::raii::Pipeline mesh_geometry_pipeline_{nullptr};
+    vk::raii::Pipeline createMeshGeometryPipeline(const VulkanDevice& device) const;
 
     vk::raii::Sampler sampler_{nullptr};
     vk::raii::DescriptorSetLayout frame_set_layout_{nullptr};

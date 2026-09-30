@@ -17,6 +17,32 @@ Incluye dos escenas de demostración, iluminadas por una sola luz direccional (e
 
 ---
 
+## Novedades de la 1.4
+
+**DataPacks, como los AssetBundles de Unity**: escenas enteras u objetos con todo lo que usan (modelos, materiales, texturas, scripts, sonidos...) en un solo archivo `.datapack`, sin el ejecutable, para niveles descargables, DLC, mods o skins. Se exportan desde *Archivo > Exportar escena como DataPack...* o con **clic derecho en un objeto > Empaquetar y exportar como DataPack**, en segundo plano con barra de progreso. El juego los carga en marcha con `DataPack.loadScene("Nivel2")` o `DataPack.instantiate("Skins", "Coche")`, sin tocar sus propios archivos.
+
+**Sombras por rayos para muchas luces**: con trazado de rayos, farolas, antorchas y focos proyectan sombras trazadas (las 4 luces que más aportan a cada píxel), con **radio de la fuente** para penumbras reales. ~0,5 ms con 16 luces.
+
+**Funciones de las GPUs actuales**: **mesh shaders** para las sombras del sol y la geometría (de 56 a 61 FPS en una escena grande), **opacity micromaps** para el follaje en el trazado de rayos y **Shader Execution Reordering** opcional en el path tracing.
+
+**Editor**: elige si Play salta a la pestaña Juego o se queda en la vista actual, como en Unity; IntelliSense con `DataPack`, `Screen`, `XR` y lo que faltaba de `Input`.
+
+**Corregido**: el plano lejano (*Far*) de la cámara no hacía nada, y lo que ilumina una farola se descoloraba de noche al apartar la vista.
+
+## Novedades de la 1.3
+
+<img src="docs/img/newlightday.png" width="49%" alt="Día"> <img src="docs/img/newlightnight.png" width="49%" alt="Noche">
+
+**Noches realistas**: visión nocturna del ojo (efecto Purkinje): lo que solo ilumina la luna se vuelve gris azulado y lo que alumbra una farola conserva su color. Luna con mares y halo, estrellas de colores y la Vía Láctea. Se regula con *Visión nocturna* en el PostProcessing.
+
+**Terminal con IA en el editor**: *Ventana > Terminal (IA)* abre consolas de Windows con pestañas y un botón que lanza **Claude Code ya conectado al editor** por MCP. También PowerShell, CMD, Codex y Gemini.
+
+**Luces dentro de su lámpara**: una luz puesta dentro de la bombilla o del poste de una farola ya no queda tapada por ellos.
+
+**Sombras más rápidas**: los personajes animados ya no obligan a redibujar todo el mapa de sombras del sol cada frame (de 39 a 58 FPS en una escena con mucha hierba), con caché de lo estático como Unreal.
+
+**AMD FSR 3.1 y NVIDIA DLSS 4** *(inestables)*, y salida con la curva sRGB exacta.
+
 ## Novedades de la 1.2
 
 **Realidad virtual (OpenXR)**: juega con cualquier casco de PC (SteamVR, Meta Quest Link, Windows Mixed Reality...) activando *Realidad virtual* en la configuración de compilación, o pruébalo en el editor con *Editar > Play en realidad virtual*. Rig *XR Origin* con cámara y mandos como en Unity, los mandos en Input Actions y la tabla `XR` en Lua (poses, gatillos, botones y vibración).
@@ -210,6 +236,9 @@ Incluye dos escenas de demostración, iluminadas por una sola luz direccional (e
 
 ## Índice
 
+- [Novedades de la 1.4](#novedades-de-la-14)
+- [Novedades de la 1.3](#novedades-de-la-13)
+- [Novedades de la 1.2](#novedades-de-la-12)
 - [Novedades de la 1.0](#novedades-de-la-10)
 - [Novedades de la 0.8.6](#novedades-de-la-086)
 - [Novedades de la 0.8.5](#novedades-de-la-085)

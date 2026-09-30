@@ -1673,6 +1673,7 @@ void RenderSync::renderCameraTextures(World& world, scene::Scene& scene, gfx::Vu
         view.setPosition(job.entity.worldPosition());
         view.setOrientation(job.entity.forward(), job.entity.up());
         view.setFovY(camera.fov * kDegToRad);
+        view.setClipPlanes(camera.near_plane, camera.far_plane);
         renderer.renderToTexture(scene, view, job.texture);
     }
 }
@@ -2274,6 +2275,7 @@ void RenderSync::syncLightsAndEnvironment(World& world, scene::Scene& scene,
                         p.range = light->range;
                         p.cast_shadows = light->cast_shadows;
                         p.shadow_strength = std::clamp(light->shadow_strength, 0.0f, 1.0f);
+                        p.source_radius = std::clamp(light->source_radius, 0.0f, 2.0f);
                         lights.points.push_back(p);
                     }
                     break;
@@ -2291,6 +2293,7 @@ void RenderSync::syncLightsAndEnvironment(World& world, scene::Scene& scene,
                         s.enabled = true;
                         s.cast_shadows = light->cast_shadows;
                         s.shadow_strength = std::clamp(light->shadow_strength, 0.0f, 1.0f);
+                        s.source_radius = std::clamp(light->source_radius, 0.0f, 2.0f);
                         lights.spots.push_back(s);
                     }
                     break;
@@ -2473,8 +2476,10 @@ void RenderSync::syncCamera(World& world, scene::Scene& scene) {
     view.setPosition(main.worldPosition());
     view.setOrientation(main.forward(), main.up());
     view.setFovY(camera.fov * kDegToRad);
-    // (Los planos cercano y lejano de scene::Camera no se pueden fijar desde
-    // fuera todavia.)
+    // Plano cercano y lejano del componente (lo que queda mas alla del lejano
+    // no se dibuja: se ve el cielo). Antes no se aplicaban y la camara del
+    // juego usaba siempre 0.1 - 500 m.
+    view.setClipPlanes(camera.near_plane, camera.far_plane);
 }
 
 int RenderSync::actorIndex(Entity entity) const {

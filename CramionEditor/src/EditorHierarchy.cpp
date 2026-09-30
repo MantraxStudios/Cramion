@@ -561,6 +561,9 @@ void EditorApp::drawHierarchyRow(const HierarchyRow& row, bool scroll_to) {
             if (ImGui::MenuItem("Enfocar", "F")) focusSelection();
             drawExtractAnimationsMenu(entity);
             drawPrefabHierarchyMenu(entity);
+            if (ImGui::MenuItem("Empaquetar y exportar como DataPack...", nullptr, false, !playing())) {
+                openDataPackExportFor(entity);
+            }
             ImGui::Separator();
             if (ImGui::MenuItem(entity.activeSelf() ? "Desactivar" : "Activar")) {
                 entity.setActive(!entity.activeSelf());
