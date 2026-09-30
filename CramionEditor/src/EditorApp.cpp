@@ -1038,6 +1038,8 @@ void EditorApp::drawUi(float delta_seconds) {
         if (show_physics_) drawPhysicsWindow();
         if (show_navigation_window_) drawNavigationWindow();
         drawPaintWindow();
+        drawTerrainGeneratorWindow();
+        drawHouseGeneratorWindow();
         if (show_cinematic_) drawCinematicWindow();
         drawModals();
         addCpuSample(kCpuPanels, millisecondsSince(t));
@@ -1125,6 +1127,20 @@ void EditorApp::syncWorld(float delta_seconds, bool secondary) {
     const vk::Extent2D extent = renderer_.sceneExtent();
     if (extent.width > 0 && extent.height > 0) {
         scene_.camera().setAspectRatio(static_cast<float>(extent.width) / static_cast<float>(extent.height));
+    }
+    // La camara del editor ve todo el mundo: con terrenos grandes o mar, el
+    // plano lejano crece (con 500 m una isla de 2 km se cortaba a la mitad).
+    if (!game) {
+        float reach = 1000.0f;
+        for (const entt::entity h : world_.registry().view<terrain::Terrain>()) {
+            const terrain::Terrain& t = world_.registry().get<terrain::Terrain>(h);
+            reach = std::max(reach, t.size * 1.6f + t.height);
+        }
+        for (const entt::entity h : world_.registry().view<water::WaterBody>()) {
+            if (world_.registry().get<water::WaterBody>(h).type == water::WaterType::Ocean) reach = std::max(reach, 6000.0f);
+        }
+        scene::Camera& camera = scene_.camera();
+        if (std::abs(camera.farPlane() - reach) > 1.0f) camera.setClipPlanes(camera.nearPlane(), std::min(reach, 40000.0f));
     }
     renderer_.setViewSlot(view);
     renderer_.setEditorHelpersEnabled(!game);
@@ -1343,6 +1359,8 @@ void EditorApp::drawMenuBar() {
         ImGui::MenuItem("Física", nullptr, &show_physics_);
         ImGui::MenuItem("Navegación", nullptr, &show_navigation_window_);
         ImGui::MenuItem("Pintar prefabs", nullptr, &show_paint_window_);
+        ImGui::MenuItem("Generador de terreno", nullptr, &show_terrain_generator_);
+        ImGui::MenuItem("Generador de casas", nullptr, &show_house_generator_);
         ImGui::MenuItem("Juego", nullptr, &show_game_);
         ImGui::MenuItem("Cinemática", nullptr, &show_cinematic_);
         ImGui::Separator();

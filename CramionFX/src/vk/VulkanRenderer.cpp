@@ -1430,8 +1430,13 @@ void VulkanRenderer::updateActors(const scene::Scene& scene, std::uint32_t frame
                 const core::Aabb& box = draw.lod > 0 ? lod_bounds_[draw.first_lod_bounds + i]
                                                      : submesh_bounds_[draw.first_bounds + i];
                 GpuCluster cluster{};
-                cluster.bounds_min = toVec4(box.min, 0.0f);
-                cluster.bounds_max = toVec4(box.max, 0.0f);
+                // El relieve teselado sube la superficie: la caja crece lo que
+                // sube, para que el culling no la descarte asomando.
+                const SkinnedModel::Material& cluster_material = model.materials()[model.drawGroups()[group].material];
+                const float relief = tessellatedMaterial(cluster_material) ? cluster_material.emissive.w : 0.0f;
+                const Vec3 grow{relief, relief, relief};
+                cluster.bounds_min = toVec4(box.min - grow, 0.0f);
+                cluster.bounds_max = toVec4(box.max + grow, 0.0f);
                 cluster.first_index = submesh.first_index;
                 cluster.index_count = submesh.index_count;
                 const std::uint64_t key = (static_cast<std::uint64_t>(actor.model) << 32) | group;
@@ -1447,7 +1452,8 @@ void VulkanRenderer::updateActors(const scene::Scene& scene, std::uint32_t frame
                     // (medido: 1.94 ms frente a 1.71 en la hierba de minecraft).
                     const SkinnedModel::Material& batch_material = model.materials()[model.drawGroups()[group].material];
                     const bool mesh = meshGeometryAllowed() && model.hasMeshlets() && model.closed(draw.lod) &&
-                                      batch_material.surface_shader < 0 && model.maxClusterMeshlets() <= 256;
+                                      batch_material.surface_shader < 0 && model.maxClusterMeshlets() <= 256 &&
+                                      !tessellatedMaterial(batch_material);
                     draw_batches_.push_back(DrawBatch{actor.model, group, 0, 0, mesh, mesh && model.closed(draw.lod)});
                 }
                 DrawBatch& cluster_batch = draw_batches_[it->second];
@@ -1842,7 +1848,10 @@ void VulkanRenderer::recordActorShadows(const vk::raii::CommandBuffer& cmd,
             };
             for (const std::uint32_t i : visible) {
                 const SkinnedModel::Material& material = model.materials()[lod_submeshes[i].material];
-                if (material.alpha_masked || material.transparent || ranges[i].count == 0) continue;
+                if (material.alpha_masked || material.transparent || ranges[i].count == 0 ||
+                    tessellatedMaterial(material)) {
+                    continue;  // recortado o teselado: por el pipeline de siempre
+                }
                 if (run_count > 0 && run_first + run_count == ranges[i].first) {
                     run_count += ranges[i].count;
                 } else {
@@ -1859,8 +1868,8 @@ void VulkanRenderer::recordActorShadows(const vk::raii::CommandBuffer& cmd,
         GpuSkinnedShadowPush push{};
         push.light_model_view_projection = light_view_projection * draw.transform;
         push.bone_offset = draw.bone_offset;
-        cmd.pushConstants<GpuSkinnedShadowPush>(*skinned_pass_.shadowLayout(),
-                                                vk::ShaderStageFlagBits::eVertex, 0, push);
+        cmd.pushConstants<GpuSkinnedShadowPush>(*skinned_pass_.shadowLayout(), skinned_pass_.shadowPushStages(), 0,
+                                                push);
 
         cmd.bindVertexBuffers(0, *model.vertices().handle(), {0});
         cmd.bindIndexBuffer(*model.indices().handle(), 0, vk::IndexType::eUint32);
@@ -1888,8 +1897,9 @@ void VulkanRenderer::recordActorShadows(const vk::raii::CommandBuffer& cmd,
             };
             for (const std::uint32_t i : visible) {
                 const asset::SubMesh& submesh = model.lodSubmeshes(lod)[i];
-                if (model.materials()[submesh.material].alpha_masked != (masked != 0)) {
-                    continue;
+                if (model.materials()[submesh.material].alpha_masked != (masked != 0) ||
+                    tessellatedMaterial(model.materials()[submesh.material])) {
+                    continue;  // los teselados van despues, con su pipeline
                 }
                 if (!pipeline_set) {
                     bind(masked != 0 ? masked_pipeline : opaque_pipeline);
@@ -1911,6 +1921,35 @@ void VulkanRenderer::recordActorShadows(const vk::raii::CommandBuffer& cmd,
                 }
             }
             flush();
+        }
+
+        // --- Relieve teselado: la sombra sube con los vertices ---
+        // Cada submalla con su material (la altura sale de su textura). La
+        // camara va al espacio del modelo para partir como lo que ella ve.
+        bool tess_push_ready = false;
+        for (const std::uint32_t i : visible) {
+            const asset::SubMesh& submesh = model.lodSubmeshes(lod)[i];
+            const SkinnedModel::Material& material = model.materials()[submesh.material];
+            if (!tessellatedMaterial(material)) continue;
+            bind(*skinned_pass_.shadowTessPipeline(local, material.alpha_masked));
+            if (!tess_push_ready) {
+                const core::Mat4& t = draw.transform;
+                const core::Vec4 camera_model = core::inverse(t) * toVec4(camera_position_, 1.0f);
+                push.camera_model = core::Vec4{camera_model.x, camera_model.y, camera_model.z, 0.0f};
+                push.model_scale = core::Vec4{core::length(Vec3{t.m[0][0], t.m[0][1], t.m[0][2]}),
+                                              core::length(Vec3{t.m[1][0], t.m[1][1], t.m[1][2]}),
+                                              core::length(Vec3{t.m[2][0], t.m[2][1], t.m[2][2]}), 0.0f};
+                tess_push_ready = true;
+            }
+            push.height = material.emissive.w;
+            push.max_factor = static_cast<float>((material.shader_flags & GpuSkinnedPush::kTessFactorMask) >>
+                                                 GpuSkinnedPush::kTessFactorShift);
+            cmd.pushConstants<GpuSkinnedShadowPush>(*skinned_pass_.shadowLayout(), skinned_pass_.shadowPushStages(),
+                                                    0, push);
+            cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *skinned_pass_.shadowLayout(), 1,
+                                   *model.materialSet(submesh.material), nullptr);
+            cmd.drawIndexed(submesh.index_count, 1, submesh.first_index, 0, 0);
+            ++shadow_draw_calls_;
         }
     }
 }
@@ -2025,7 +2064,7 @@ void VulkanRenderer::updateLightingDescriptors() {
             environment_hdr_info.imageView = *environment_.view();
         }
 
-        std::array<vk::WriteDescriptorSet, 26> writes{};
+        std::array<vk::WriteDescriptorSet, 27> writes{};
 
         writes[0].dstSet = *lighting_sets_[i];
         writes[0].dstBinding = 0;
@@ -2161,6 +2200,16 @@ void VulkanRenderer::updateLightingDescriptors() {
         writes[25].dstBinding = 25;
         writes[25].descriptorType = vk::DescriptorType::eCombinedImageSampler;
         writes[25].setImageInfo(rt_shadow_info);
+
+        // Modelo de sombreado de Disney (disney_brdf.glsl).
+        vk::DescriptorImageInfo shading_info{};
+        shading_info.sampler = *lighting_pass_.sampler();
+        shading_info.imageView = *gbuffer_.shading().view();
+        shading_info.imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
+        writes[26].dstSet = *lighting_sets_[i];
+        writes[26].dstBinding = 26;
+        writes[26].descriptorType = vk::DescriptorType::eCombinedImageSampler;
+        writes[26].setImageInfo(shading_info);
 
         device_.handle().updateDescriptorSets(writes, nullptr);
     }
@@ -2373,6 +2422,7 @@ void VulkanRenderer::updatePostDescriptors() {
             inputs.environment = *ibl_probe_.environmentView();
             inputs.albedo = *gbuffer_.albedo().view();
             inputs.material = *gbuffer_.material().view();
+            inputs.shading = *gbuffer_.shading().view();
             inputs.path_output = *scene_color_.view();
             inputs.accumulation = *path_tracing_accumulation_.view();
             inputs.shadow_output = *rt_shadow_mask_.view();
@@ -3092,7 +3142,9 @@ void VulkanRenderer::updateUniforms(const scene::Scene& scene, const scene::Came
     // de la sonda no cuentan).
     camera_data.unjittered_view_projection = unjittered;
     camera_data.previous_view_projection = isolated() ? unjittered : motion_view_projection_;
-    camera_data.jitter = Vec4{jitter_ndc.x, jitter_ndc.y, 0.0f, 0.0f};
+    // zw: resolucion interna (la teselacion mide los bordes en pixeles).
+    camera_data.jitter = Vec4{jitter_ndc.x, jitter_ndc.y, static_cast<float>(render_extent_.width),
+                              static_cast<float>(render_extent_.height)};
     camera_data.motion[0] = motion_offset_;
     if (!isolated()) {
         jitter_ndc_ = jitter_ndc;
@@ -3206,7 +3258,11 @@ void VulkanRenderer::updateUniforms(const scene::Scene& scene, const scene::Came
                           std::clamp(decal.edge_softness, 0.001f, 0.5f), decal.amount};
         gpu.material = Vec4{decal.roughness, decal.roughness_amount, decal.metallic, 0.0f};
     }
-    weather.decal_info = Vec4{static_cast<float>(decal_count), 0.0f, 0.0f, 0.0f};
+    // yzw: hacia el sol, para la auto-sombra del parallax (0 = sin sol).
+    const Vec3 to_sun = lights.sun.intensity > 0.0f && core::length(lights.sun.direction) > 1e-6f
+                            ? -core::normalize(lights.sun.direction)
+                            : Vec3{};
+    weather.decal_info = Vec4{static_cast<float>(decal_count), to_sun.x, to_sun.y, to_sun.z};
     weather_buffers_[frame_index].write(&weather, sizeof(weather));
     // w: lo que el LOD de la camara deja desviarse la malla (m por metro de
     // distancia): los rayos salen por encima de la malla que ve la camara.
@@ -3952,6 +4008,10 @@ void VulkanRenderer::recordCommandBuffer(const vk::raii::CommandBuffer& cmd,
         path_tracing_reset_ = true;
     }
     terrain_pass_.prepare(frame_index, camera_position_, camera_view_projection_);
+    // Hierba: las briznas visibles de este frame (compute). En las capturas
+    // aisladas (sondas, Render Textures) no avanza el reloj del viento.
+    terrain_pass_.recordGrassCull(cmd, frame_index, camera_position_, camera_view_projection_,
+                                  isolated() ? 0.0f : frame_delta_seconds_);
     // Voxeles: secciones rehechas (romper/poner bloques) y las visibles.
     if (voxel_pass_.recordUploads(cmd, frame_index)) staticGeometryChanged();
     voxel_pass_.prepare(frame_index, camera_position_, camera_view_projection_);
@@ -4420,6 +4480,7 @@ void VulkanRenderer::recordGeometryPass(const vk::raii::CommandBuffer& cmd,
     drawCpuActors(cmd, frame_index);
     // El terreno, pronto: tapa mucho y entra en la piramide Hi-Z.
     terrain_pass_.recordGBuffer(cmd, frame_index, skin_sets_[frame_index]);
+    terrain_pass_.recordGrassGBuffer(cmd, frame_index, skin_sets_[frame_index]);
     // Los voxeles tambien tapan mucho: pronto, de cerca a lejos.
     voxel_pass_.recordGBuffer(cmd, frame_index, skin_sets_[frame_index]);
     // Vegetacion: una llamada indirecta por especie (sus 3 niveles).
@@ -4526,11 +4587,10 @@ void VulkanRenderer::drawCpuActors(const vk::raii::CommandBuffer& cmd,
                 push.bone_offset = draw.bone_offset;
                 push.reflectance = material.reflectance;
                 push.flags = material.shader_flags;
+                push.pick_id = material.shading;  // modelo de Disney (skinned.frag)
                 bindMaterialPipeline(cmd, frame_index, material, bound_shader, push);
-                cmd.pushConstants<GpuSkinnedPush>(
-                    *skinned_pass_.geometryLayout(),
-                    vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0,
-                    push);
+                cmd.pushConstants<GpuSkinnedPush>(*skinned_pass_.geometryLayout(),
+                                                  skinned_pass_.geometryPushStages(), 0, push);
                 bound_material = submesh.material;
             }
             if (run_count > 0 && run_first + run_count == submesh.first_index) {
@@ -4628,6 +4688,7 @@ void VulkanRenderer::drawGpuClusters(const vk::raii::CommandBuffer& cmd,
             push.material = material.params;
             push.reflectance = material.reflectance;
             push.flags = 1u | material.shader_flags;
+            push.pick_id = material.shading;  // modelo de Disney (skinned.frag)
             cmd.pushConstants<GpuSkinnedPush>(layout,
                                               vk::ShaderStageFlagBits::eTaskEXT | vk::ShaderStageFlagBits::eMeshEXT |
                                                   vk::ShaderStageFlagBits::eFragment,
@@ -4666,10 +4727,10 @@ void VulkanRenderer::drawGpuClusters(const vk::raii::CommandBuffer& cmd,
         push.material = material.params;
         push.reflectance = material.reflectance;
         push.flags = 1u | material.shader_flags;
+        push.pick_id = material.shading;  // modelo de Disney (skinned.frag)
         bindMaterialPipeline(cmd, frame_index, material, bound_shader, push);
-        cmd.pushConstants<GpuSkinnedPush>(
-            *skinned_pass_.geometryLayout(),
-            vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, push);
+        cmd.pushConstants<GpuSkinnedPush>(*skinned_pass_.geometryLayout(), skinned_pass_.geometryPushStages(), 0,
+                                          push);
 
         const vk::DeviceSize offset = static_cast<vk::DeviceSize>(batch.first_slot) * GpuCulling::kCommandSize;
         if (device_.indirectCountSupported()) {
@@ -5357,6 +5418,7 @@ void VulkanRenderer::recordGlassPass(const vk::raii::CommandBuffer& cmd,
             push.material = material.params;
             push.bone_offset = draw.bone_offset;
             push.reflectance = material.reflectance;
+            push.pick_id = material.shading;  // transmision de Disney (glass.frag)
             cmd.pushConstants<GpuSkinnedPush>(
                 *skinned_pass_.glassLayout(),
                 vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, push);
@@ -5447,9 +5509,8 @@ void VulkanRenderer::recordOutlinePass(const vk::raii::CommandBuffer& cmd,
             push.model = draw->transform;
             push.bone_offset = draw->bone_offset;
             push.flags = 2u;  // sin jitter: el contorno no tiembla con el TAA
-            cmd.pushConstants<GpuSkinnedPush>(
-                *skinned_pass_.geometryLayout(),
-                vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, push);
+            cmd.pushConstants<GpuSkinnedPush>(*skinned_pass_.geometryLayout(),
+                                              skinned_pass_.geometryPushStages(), 0, push);
             // Todas las submallas, opacas y de vidrio.
             const auto& submeshes = model.submeshes();
             for (std::uint32_t i = 0; i < submeshes.size(); ++i) {
@@ -5874,9 +5935,12 @@ void VulkanRenderer::updateModelMaterial(std::uint32_t model, std::uint32_t mate
     gpu.base_color = data.base_color;
     // El relieve del parallax solo si el material ya tiene mapa de alturas
     // (ponerlo o quitarlo rehace el modelo).
-    const bool parallax = (gpu.shader_flags & GpuSkinnedPush::kFlagHeightMap) != 0;
+    const bool relief = (gpu.shader_flags & (GpuSkinnedPush::kFlagHeightMap | GpuSkinnedPush::kFlagTessellation)) != 0;
     gpu.emissive = core::Vec4{data.emissive.x, data.emissive.y, data.emissive.z,
-                              parallax ? std::max(data.height_scale, 0.0f) : 0.0f};
+                              relief ? std::max(data.height_scale, 0.0f) : 0.0f};
+    // Parallax o teselado, auto-sombra y densidad: se cambian en vivo.
+    gpu.shader_flags = SkinnedModel::reliefFlags(gpu.shader_flags, data, relief, skinned_pass_.tessellationEnabled());
+    gpu.shading = SkinnedModel::shadingBits(data);
     gpu.params = core::Vec4{data.metallic, data.roughness, data.occlusion_strength,
                             data.normal_map_directx ? -data.normal_scale : data.normal_scale};
     gpu.reflectance = data.reflectance;
@@ -5937,11 +6001,18 @@ void VulkanRenderer::bindMaterialPipeline(const vk::raii::CommandBuffer& cmd, st
     }
     // En lineas (Wireframe y la pasada de lineas) todos con la estandar.
     if (wire_gbuffer_ || mesh_pipeline_override_ != nullptr) shader = -1;
-    if (shader != bound_shader) {
+    // Relieve teselado: solo con el shader estandar y dibujando relleno.
+    constexpr std::int32_t kTessellated = -2;
+    const bool tessellated = shader < 0 && !wire_gbuffer_ && mesh_pipeline_override_ == nullptr &&
+                             (material.shader_flags & GpuSkinnedPush::kFlagTessellation) != 0 &&
+                             skinned_pass_.tessellationEnabled();
+    const std::int32_t key = tessellated ? kTessellated : shader;
+    if (key != bound_shader) {
         cmd.bindPipeline(vk::PipelineBindPoint::eGraphics,
-                         shader >= 0 ? *surface_pipelines_[static_cast<std::size_t>(shader)]
-                                     : *meshGeometryPipeline());
-        bound_shader = shader;
+                         tessellated   ? *skinned_pass_.geometryTessPipeline()
+                         : shader >= 0 ? *surface_pipelines_[static_cast<std::size_t>(shader)]
+                                       : *meshGeometryPipeline());
+        bound_shader = key;
     }
     // En la geometria pick_id no se usa: dice el bloque de propiedades.
     if (shader >= 0) push.pick_id = pushSurfaceParams(frame_index, material.surface_params);
@@ -6066,8 +6137,7 @@ void VulkanRenderer::recordPickPass(const vk::raii::CommandBuffer& cmd, std::uin
         push.model = draw.transform;
         push.bone_offset = draw.bone_offset;
         push.pick_id = draw.scene_actor + 1;
-        cmd.pushConstants<GpuSkinnedPush>(*skinned_pass_.geometryLayout(),
-                                          vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0,
+        cmd.pushConstants<GpuSkinnedPush>(*skinned_pass_.geometryLayout(), skinned_pass_.geometryPushStages(), 0,
                                           push);
         const auto& submeshes = model.submeshes();
         std::uint32_t pushed_material = UINT32_MAX;
@@ -6078,8 +6148,7 @@ void VulkanRenderer::recordPickPass(const vk::raii::CommandBuffer& cmd, std::uin
                 // lo pone en la parte que hay bajo el raton.
                 pushed_material = submeshes[i].material;
                 const std::uint32_t id = (draw.scene_actor + 1) | (std::min(pushed_material, 4095u) << 20);
-                cmd.pushConstants<std::uint32_t>(*skinned_pass_.geometryLayout(),
-                                                 vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment,
+                cmd.pushConstants<std::uint32_t>(*skinned_pass_.geometryLayout(), skinned_pass_.geometryPushStages(),
                                                  offsetof(GpuSkinnedPush, pick_id), id);
             }
             cmd.drawIndexed(submeshes[i].index_count, 1, submeshes[i].first_index, 0, 0);

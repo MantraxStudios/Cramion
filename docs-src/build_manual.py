@@ -15,7 +15,6 @@ ROOT = os.path.dirname(HERE)
 DOCS = os.path.join(ROOT, "docs")
 OUT = os.path.join(DOCS, "manual")
 DISCORD = "https://discord.gg/zG7rSsUGEz"
-GITHUB = "https://github.com/MantraxStudios/Cramion"
 
 data = json.load(open(os.path.join(HERE, "pages.json"), encoding="utf-8"))
 intro_html = data["intro"]
@@ -144,7 +143,8 @@ HEADER = """
       <nav class="top-links">
         <a href="../index.html">Web</a>
         <a href="{discord}" target="_blank" rel="noopener">Discord</a>
-        <a href="{github}" target="_blank" rel="noopener">GitHub</a>
+        <a href="licencia.html">Licencia</a>
+        <a href="https://paypal.me/evan2025" target="_blank" rel="noopener">Donar</a>
       </nav>
     </div>
   </header>
@@ -300,7 +300,7 @@ def layout(current, main_html, with_onpage=True):
 
 def write(name, title, desc, body):
     text = (HEAD.format(title=html.escape(title), desc=html.escape(desc))
-            + HEADER.format(discord=DISCORD, github=GITHUB) + body + SCRIPT)
+            + HEADER.format(discord=DISCORD) + body + SCRIPT)
     with open(os.path.join(OUT, name), "w", encoding="utf-8", newline="\n") as f:
         f.write(text)
 

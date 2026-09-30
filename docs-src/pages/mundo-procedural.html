@@ -1,0 +1,126 @@
+<p>
+  Un mundo entero en unos segundos: relieve con erosión, mar, ríos y lagos, capas con texturas realistas, hierba en la GPU
+  que se aparta con la física, árboles procedurales y aldeas de casas. Todo se genera en el editor y queda en la escena como
+  objetos normales, que se pueden editar, mover o borrar.
+</p>
+
+<div class="shots">
+  <figure><img src="../img/mundo-casa.jpg" alt="Casa de campo procedural entre árboles" loading="lazy"><figcaption>Casa de campo, hierba y árboles generados</figcaption></figure>
+  <figure><img src="../img/mundo-aldea.jpg" alt="Aldea junto al río vista desde arriba" loading="lazy"><figcaption>Una aldea en el llano, junto al río</figcaption></figure>
+</div>
+
+<h3 id="terreno">Generador de terreno</h3>
+<p>
+  <em>Ventana &gt; Generador de terreno</em>. Se elige una <strong class="text-white">forma</strong> (isla, archipiélago,
+  continente, cordilleras o cañones), una semilla y se pulsa <strong>Generar</strong>. Se calcula en segundo plano (barra de
+  progreso y <em>Cancelar</em>; una isla de 2 km con 1025 vértices por lado tarda menos de un segundo) y crea el grupo
+  <strong>Mundo generado</strong>. Volver a generar reemplaza ese grupo.
+</p>
+<table>
+  <thead><tr><th>Apartado</th><th>Qué controla</th></tr></thead>
+  <tbody>
+    <tr><td>Tamaño</td><td>Lado en metros, altura máxima, resolución (257 a 2049) y nivel del mar.</td></tr>
+    <tr><td>Relieve</td><td>Escala de las formas, montañas, crestas afiladas, colinas, deformación (<em>domain warping</em>), mesetas y costa irregular.</td></tr>
+    <tr><td>Erosión</td><td>Lluvia (gotas que excavan cauces y dejan sedimentos), su fuerza, y desmoronamiento de las laderas por encima del ángulo de reposo.</td></tr>
+    <tr><td>Agua</td><td>Océano, número de ríos (nacen arriba y bajan siguiendo el terreno hasta el mar), su anchura y profundidad, y lagos en las cuencas.</td></tr>
+    <tr><td>Capas</td><td>8 capas pintadas por reglas (hierba, hierba seca, tierra, roca, arena, grava, nieve y barro) con texturas PBR procedurales en <code>Assets/Terrains/Texturas</code>; franja de playa, pendiente de la roca, cota de la nieve.</td></tr>
+    <tr><td>Vegetación</td><td>Hierba en la GPU (briznas por m²) y árboles (por hectárea).</td></tr>
+    <tr><td>Aldea</td><td>Número de casas procedurales (0 = sin aldea). Ver <a href="#casas">Casas y cabañas</a>.</td></tr>
+  </tbody>
+</table>
+<p>
+  La cámara del editor y la del juego alargan su distancia de dibujado para ver el mundo entero. Por MCP:
+  <code>generate_terrain</code> (mismos parámetros, más <code>houses</code>) y <code>ground_height</code> para saber la
+  altura del suelo en un punto.
+</p>
+
+<h3 id="hierba">Hierba (GPU)</h3>
+<p>
+  El componente <strong class="text-white">Grass</strong> va en el terreno y crece donde está pintada su capa (la seca la
+  amarillea). No hay mallas: cada fotograma un <em>compute shader</em> recorre una rejilla fija al mundo alrededor de la
+  cámara, descarta lo que queda fuera de la vista y escribe las briznas visibles; cerca con 7 tramos y lejos con 3, más
+  anchas y menos. Hasta 3 millones de briznas. Las briznas tienen perfil de hoja, se agrupan en matas, se mecen con rachas
+  de viento y dejan pasar la luz a contraluz (modelo de Disney <em>subsurface</em>).
+</p>
+<p>
+  <strong>Reacciona a la física</strong>: los objetos con <code>Rigidbody</code> no estático (y un collider) a menos de
+  120 m de la cámara la apartan y la aplastan; los 32 más cercanos. Propiedades: densidad, distancia máxima y de detalle,
+  altura y su variación, anchura, curvatura, colores de base, punta y seca, viento y cuánto la empujan.
+</p>
+<div class="shots">
+  <figure><img src="../img/mundo-hierba.jpg" alt="Hierba de cerca" loading="lazy"><figcaption>Hierba a ras de suelo</figcaption></figure>
+  <figure><img src="../img/mundo-bosque.jpg" alt="Bosque procedural" loading="lazy"><figcaption>Árboles procedurales con corteza de placas y racimos de hojas</figcaption></figure>
+</div>
+
+<h3 id="arboles">Árboles procedurales</h3>
+<p>
+  El componente <strong class="text-white">Foliage</strong> (<em>Vegetación</em>) reparte árboles por el terreno según la
+  altura y la pendiente, y los dibuja instanciados con <em>culling</em> en la GPU. Cada árbol se genera como un SpeedTree
+  sencillo: tronco y ramas de verdad (hasta tres niveles, filotaxia de 137,5°, gravedad, fototropismo y torsión), racimos
+  de hojas con translucidez y normales esféricas para que la copa se ilumine como un volumen, y tres LOD del mismo
+  esqueleto. Texturas procedurales: corteza de placas, abedul, ramitas con hojas, agujas y frondas.
+</p>
+<p>
+  En <em>Especies</em> se elige qué árbol es cada una de las 3 especies de la mezcla (pino, abeto, roble, abedul, palmera o
+  sauce) y su semilla, altura, cantidad de hojas y de ramas y lo torcidos que son. <strong>No crecen en el agua</strong>:
+  se quitan del cauce de los ríos (y su orilla) y de lo que queda bajo el nivel de los lagos, ni dentro de las casas de las
+  aldeas (claros).
+</p>
+
+<h3 id="bajo-el-agua">Bajo el agua</h3>
+<p>
+  El efecto de bajo el agua (color, niebla, cáusticas) funciona con <strong>todos los tipos de agua</strong>: océano,
+  lagos y ríos. Solo se activa donde hay agua de verdad: dentro del rectángulo del lago, con el suelo por debajo de la
+  superficie y la cámara por encima del fondo. Fuera del lago, en una orilla seca o bajo tierra no se ve. En los ríos, la
+  superficie es la del punto donde está la cámara.
+</p>
+
+<h3 id="casas">Casas y cabañas</h3>
+<p>
+  <em>Ventana &gt; Generador de casas</em> crea casas procedurales listas para el juego:
+  <strong class="text-white">cabaña de troncos</strong> (troncos redondos cruzados en las esquinas), <strong class="text-white">cabaña de tablas</strong>,
+  <strong class="text-white">casita de piedra</strong> y <strong class="text-white">casa de campo</strong> de dos plantas. Se
+  elige el estilo, la semilla (otras medidas y ventanas), ancho, fondo, plantas, altura, pendiente del tejado, alero,
+  ventanas, porche con barandilla, chimenea y contraventanas.
+</p>
+<div class="shots">
+  <figure><img src="../img/mundo-cabana.jpg" alt="Cabaña de troncos con porche" loading="lazy"><figcaption>Cabaña de troncos</figcaption></figure>
+  <figure><img src="../img/mundo-piedra.jpg" alt="Casita de piedra" loading="lazy"><figcaption>Casita de piedra</figcaption></figure>
+</div>
+<ul>
+  <li><strong>Crear en la escena</strong> la pone delante de la cámara, sobre el suelo. La puerta mira a +Z.</li>
+  <li><strong>Crear aldea en el terreno</strong> (o el apartado <em>Aldea</em> del generador de terreno) busca un sitio llano y seco, fuera de ríos y lagos, reparte las casas alrededor de una plaza con la puerta hacia ella y abre claros en la vegetación.</li>
+</ul>
+<p>
+  <strong>Pensadas para el juego</strong>: entre 1.000 y 6.000 triángulos por casa, con LOD automáticos. Todas comparten 9
+  materiales (<code>Assets/Casas/Materiales</code>: troncos, veta, tablas, revestimiento, piedra, tejado, marcos, vidrio y
+  hierro) con texturas PBR y relieve (parallax) que se crean una sola vez en <code>Assets/Casas/Texturas</code>; las casas
+  iguales son instancias del mismo modelo (<code>Assets/Casas/Modelos</code>). Los materiales se pueden editar y todas las
+  casas cambian.
+</p>
+<p>
+  Cada casa tiene dos hijos: <strong>Casa</strong>, con <code>MeshCollider</code>, y <strong>Puerta</strong>, con
+  <code>BoxCollider</code> y su origen en la bisagra. Para abrirla desde Lua basta con girarla en Y:
+</p>
+<pre><code class="language-lua">-- Script en la raiz de la casa: E abre y cierra la puerta poco a poco.
+local Casa = {}
+
+function Casa:Start()
+    self.puerta = self.entity:find("Puerta")
+    self.angulo = 0
+end
+
+function Casa:Update(dt)
+    if Input.getKeyDown("e") then self.abierta = not self.abierta end
+    local objetivo = self.abierta and -100 or 0
+    self.angulo = self.angulo + (objetivo - self.angulo) * math.min(dt * 6, 1)
+    self.puerta.rotation = Vec3(0, self.angulo, 0)  -- giro local en grados
+end
+
+return Casa</code></pre>
+<p>
+  Los cristales son opacos y reflejan el cielo (no se ve el interior), para no gastar rendimiento. Por MCP:
+  <code>generate_house</code> (<code>style</code>: <code>log</code>, <code>timber</code>, <code>stone</code> o
+  <code>farm</code>; medidas, <code>position</code>, <code>yaw</code>) o <code>generate_house</code> con
+  <code>village</code> = número de casas para una aldea.
+</p>

@@ -18,6 +18,7 @@
 // Las subidas (alturas, pesos) se graban en el command buffer del frame, con
 // un staging por frame en vuelo: esculpir no para la GPU.
 
+#include "CramionFX/vk/GBuffer.h"
 #include "CramionFX/core/Math.h"
 #include "CramionFX/vk/VulkanBuffer.h"
 #include "CramionFX/vk/VulkanCommon.h"
@@ -46,6 +47,31 @@ struct TerrainLayerDesc {
     core::Vec3 tint{1.0f, 1.0f, 1.0f};  // multiplica el color (sRGB)
 };
 
+// Hierba de un terreno: millones de briznas generadas cada frame en la GPU
+// alrededor de la camara (grass_cull.comp), sin mallas ni instancias en la
+// CPU. Crece donde el terreno tiene su capa; mas lejos, menos y mas anchas.
+struct GrassDesc {
+    bool enabled = false;
+    int layer = 0;               // capa del terreno donde crece
+    float threshold = 0.25f;     // peso minimo de esa capa
+    int dry_layer = 1;           // capa que la vuelve seca (-1 = ninguna)
+    float density = 70.0f;       // briznas por m2 (de cerca)
+    float max_distance = 80.0f;  // hasta donde se dibuja (m)
+    float near_distance = 22.0f; // con todo el detalle hasta aqui
+    float height = 0.45f;        // m
+    float height_variation = 0.4f;
+    float width = 0.028f;        // m (en la base)
+    float bend = 0.35f;          // curvatura propia
+    core::Vec3 base_color{0.06f, 0.11f, 0.03f};  // sRGB
+    core::Vec3 tip_color{0.27f, 0.38f, 0.11f};
+    core::Vec3 dry_color{0.5f, 0.45f, 0.25f};
+    float color_variation = 0.25f;
+    float wind = 1.0f;
+    float wind_direction = 30.0f;  // grados (0 = +X)
+    float interaction = 1.0f;      // cuanto la apartan los objetos
+    std::uint32_t max_blades = 3000000;
+};
+
 struct TerrainDesc {
     core::Vec3 origin{};   // esquina (x minima, z minima) y altura 0
     float size = 256.0f;   // metros en X y en Z
@@ -54,6 +80,7 @@ struct TerrainDesc {
     bool cast_shadows = true;
     float lod_distance = 2.0f;  // mas = mas detalle lejos
     std::vector<TerrainLayerDesc> layers;
+    GrassDesc grass;
 };
 
 class TerrainPass {
@@ -63,7 +90,7 @@ public:
     // `frame_layout`: el set 0 de la geometria (camara, lluvia, clima,
     // decals), que el terreno comparte con los modelos.
     void create(const VulkanDevice& device, const vk::raii::DescriptorSetLayout& frame_layout,
-                std::array<vk::Format, 4> gbuffer_formats, vk::Format depth_format, vk::Format shadow_format,
+                std::array<vk::Format, GBuffer::kColorAttachmentCount> gbuffer_formats, vk::Format depth_format, vk::Format shadow_format,
                 std::uint32_t frames_in_flight);
     void destroy();
 
@@ -98,6 +125,17 @@ public:
 
     std::uint32_t chunkCount() const;
 
+    // --- Hierba ---
+    // Lo que aparta la hierba (objetos fisicos, personajes): xyz = centro, w = radio.
+    void setGrassInteractors(const std::vector<core::Vec4>& spheres);
+    // Fuera de cualquier pase de dibujo, antes del G-buffer: genera las
+    // briznas visibles de este frame (compute).
+    void recordGrassCull(const vk::raii::CommandBuffer& cmd, std::uint32_t frame, const core::Vec3& camera_position,
+                         const core::Mat4& view_projection, float delta_seconds);
+    // Dentro del pase de geometria (G-buffer abierto, set 0 del frame).
+    void recordGrassGBuffer(const vk::raii::CommandBuffer& cmd, std::uint32_t frame,
+                            const vk::raii::DescriptorSet& frame_set) const;
+
     // Firma de los trozos (y su LOD) que tocan el volumen de una luz local. Si
     // cambia, el mapa cacheado de esa luz ya no coincide con el terreno que ve
     // la camara y hay que redibujarlo.
@@ -119,6 +157,14 @@ private:
         vk::raii::Image image{nullptr};
         vk::raii::ImageView view{nullptr};
     };
+    struct Grass {
+        VulkanBuffer blades;               // 2 listas (cerca, lejos) de `capacity`
+        VulkanBuffer args;                 // 2 comandos de dibujo indirecto
+        std::vector<VulkanBuffer> params;  // uno por frame en vuelo
+        std::vector<vk::raii::DescriptorSet> sets;
+        std::uint32_t capacity = 0;
+        bool culled = false;               // se genero este frame
+    };
     struct Terrain {
         std::uint32_t resolution = 0;
         std::uint32_t splat_resolution = 0;
@@ -134,15 +180,20 @@ private:
         std::vector<VulkanBuffer> params;  // uno por frame en vuelo
         std::vector<vk::raii::DescriptorSet> sets;
         std::vector<Chunk> chunks;
+        std::unique_ptr<Grass> grass;
     };
 
-    void createPipelines(const VulkanDevice& device, std::array<vk::Format, 4> gbuffer_formats,
+    void createPipelines(const VulkanDevice& device, std::array<vk::Format, GBuffer::kColorAttachmentCount> gbuffer_formats,
                          vk::Format depth_format, vk::Format shadow_format);
     void createPatchMesh(const VulkanDevice& device);
     void loadLayerTextures(Terrain& terrain);
     void createArrayTexture(ArrayTexture& texture, const std::vector<std::vector<std::uint8_t>>& layers);
     void writeDescriptors(Terrain& terrain);
     void selectChunks(Terrain& terrain, const core::Vec3& camera, const core::Mat4& view_projection);
+    void createGrassPipelines(const VulkanDevice& device, const vk::raii::DescriptorSetLayout& frame_layout,
+                              std::array<vk::Format, GBuffer::kColorAttachmentCount> gbuffer_formats,
+                              vk::Format depth_format);
+    bool ensureGrass(Terrain& terrain);
 
     const VulkanDevice* device_ = nullptr;
     std::uint32_t frames_ = 2;
@@ -165,6 +216,17 @@ private:
     core::Vec3 lod_camera_{};
     std::vector<Upload> uploads_;
     std::vector<VulkanBuffer> staging_;  // por frame en vuelo
+
+    // Hierba.
+    vk::raii::DescriptorSetLayout grass_set_layout_{nullptr};
+    vk::raii::PipelineLayout grass_cull_layout_{nullptr};
+    vk::raii::Pipeline grass_cull_pipeline_{nullptr};
+    vk::raii::PipelineLayout grass_draw_layout_{nullptr};
+    vk::raii::Pipeline grass_pipeline_{nullptr};
+    vk::raii::DescriptorPool grass_pool_{nullptr};
+    std::vector<core::Vec4> grass_interactors_;
+    float grass_seconds_ = 0.0f;
+    float grass_previous_seconds_ = 0.0f;
 };
 
 }  // namespace cramion::gfx

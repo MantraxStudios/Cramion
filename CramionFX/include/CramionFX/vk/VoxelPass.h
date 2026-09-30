@@ -24,6 +24,7 @@
 //   b: capa de textura (10) | luz del cielo 0..15 (4) | luz de bloque (4) |
 //      tinte R G B de 4 bits (12)
 
+#include "CramionFX/vk/GBuffer.h"
 #include "CramionFX/core/Math.h"
 #include "CramionFX/vk/VulkanBuffer.h"
 #include "CramionFX/vk/VulkanCommon.h"
@@ -61,7 +62,7 @@ public:
     static constexpr std::uint32_t kMaxQuadsPerSection = 32768;
 
     void create(const VulkanDevice& device, const vk::raii::DescriptorSetLayout& frame_layout,
-                std::array<vk::Format, 4> gbuffer_formats, vk::Format depth_format, vk::Format shadow_format,
+                std::array<vk::Format, GBuffer::kColorAttachmentCount> gbuffer_formats, vk::Format depth_format, vk::Format shadow_format,
                 std::uint32_t frames_in_flight);
     void destroy();
 
@@ -123,7 +124,7 @@ private:
         std::uint64_t release_frame = 0;
     };
 
-    void createPipelines(const VulkanDevice& device, std::array<vk::Format, 4> gbuffer_formats,
+    void createPipelines(const VulkanDevice& device, std::array<vk::Format, GBuffer::kColorAttachmentCount> gbuffer_formats,
                          vk::Format depth_format, vk::Format shadow_format);
     Allocation allocate(std::uint64_t bytes);
     void release(const Allocation& allocation);

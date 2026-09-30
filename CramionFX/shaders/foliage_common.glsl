@@ -14,6 +14,5 @@ float foliageScale(uint p) { return 0.25 + float((p >> 10u) & 255u) * (3.75 / 25
 uint foliageSpecies(uint p) { return (p >> 18u) & 3u; }
 float foliageTint(uint p) { return float((p >> 20u) & 255u) / 255.0; }
 
-// Esfera que envuelve cada especie (a escala 1): centro sobre el pie y radio.
-const float kFoliageCenterY[3] = float[](5.0, 4.6, 5.2);
-const float kFoliageRadius[3] = float[](5.8, 5.4, 5.2);
+// La esfera de cada especie (arboles procedurales) la da FoliagePass en
+// foliage_cull.comp (binding 3): cambia al regenerar las especies.

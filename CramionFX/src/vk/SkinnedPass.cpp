@@ -11,6 +11,7 @@
 #include <cstdlib>
 #include <iostream>
 #include <string_view>
+#include <vector>
 
 namespace cramion::gfx {
 
@@ -67,11 +68,20 @@ void SkinnedPass::create(const VulkanDevice& device, const GBuffer& gbuffer,
     const vk::ShaderStageFlags mesh_stages =
         mesh_shaders_ ? vk::ShaderStageFlags(vk::ShaderStageFlagBits::eTaskEXT | vk::ShaderStageFlagBits::eMeshEXT)
                       : vk::ShaderStageFlags{};
+    // Relieve teselado: la camara (factores) y la altura (set 1, binding 3)
+    // tambien en la teselacion.
+    tessellation_ = device.tessellationSupported();
+    const vk::ShaderStageFlags tess_stages =
+        tessellation_ ? vk::ShaderStageFlags(vk::ShaderStageFlagBits::eTessellationControl |
+                                             vk::ShaderStageFlagBits::eTessellationEvaluation)
+                      : vk::ShaderStageFlags{};
+    geometry_push_stages_ = both | tess_stages;
+    shadow_push_stages_ = vk::ShaderStageFlagBits::eVertex | tess_stages;
     std::array<vk::DescriptorSetLayoutBinding, 6> frame_bindings{};
     frame_bindings[0].binding = 0;
     frame_bindings[0].descriptorType = vk::DescriptorType::eUniformBuffer;
     frame_bindings[0].descriptorCount = 1;
-    frame_bindings[0].stageFlags = both | mesh_stages;
+    frame_bindings[0].stageFlags = both | mesh_stages | tess_stages;
     frame_bindings[1].binding = 1;
     frame_bindings[1].descriptorType = vk::DescriptorType::eStorageBuffer;
     frame_bindings[1].descriptorCount = 1;
@@ -108,6 +118,10 @@ void SkinnedPass::create(const VulkanDevice& device, const GBuffer& gbuffer,
         material_bindings[i].descriptorCount = 1;
         material_bindings[i].stageFlags = i < kMaterialTextureCount ? vk::ShaderStageFlags(vk::ShaderStageFlagBits::eFragment)
                                                                     : both;
+        // La altura del relieve (G de la oclusion) la lee skinned.tese.
+        if (i == 3 && tessellation_) {
+            material_bindings[i].stageFlags |= vk::ShaderStageFlagBits::eTessellationEvaluation;
+        }
     }
 
     vk::DescriptorSetLayoutCreateInfo material_layout_info{};
@@ -119,7 +133,7 @@ void SkinnedPass::create(const VulkanDevice& device, const GBuffer& gbuffer,
 
     // --- Sombras: set 0 (los huesos) y set 1 (el material, para el alfa) ---
     vk::PushConstantRange shadow_push{};
-    shadow_push.stageFlags = vk::ShaderStageFlagBits::eVertex;
+    shadow_push.stageFlags = shadow_push_stages_;
     shadow_push.size = sizeof(GpuSkinnedShadowPush);
 
     const std::array<vk::DescriptorSetLayout, 2> shadow_set_layouts = {*frame_set_layout_,
@@ -135,6 +149,12 @@ void SkinnedPass::create(const VulkanDevice& device, const GBuffer& gbuffer,
     local_shadow_pipeline_ = createShadowPipeline(device, shadow_format, false, 1.5f, true);
     local_shadow_opaque_pipeline_ =
         createShadowPipeline(device, shadow_format, false, 1.5f, false);
+    if (tessellation_) {
+        shadow_tess_pipelines_[0] = createShadowPipeline(device, shadow_format, clamp, 1.1f, false, true);
+        shadow_tess_pipelines_[1] = createShadowPipeline(device, shadow_format, clamp, 1.1f, true, true);
+        shadow_tess_pipelines_[2] = createShadowPipeline(device, shadow_format, false, 1.5f, false, true);
+        shadow_tess_pipelines_[3] = createShadowPipeline(device, shadow_format, false, 1.5f, true, true);
+    }
 
     // --- Mesh shaders: set de los meshlets y sombras de las cascadas ---
     if (mesh_shaders_) {
@@ -194,7 +214,7 @@ void SkinnedPass::create(const VulkanDevice& device, const GBuffer& gbuffer,
 
 void SkinnedPass::createGeometryPipeline(const VulkanDevice& device, const GBuffer& gbuffer) {
     vk::PushConstantRange push_range{};
-    push_range.stageFlags = vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment;
+    push_range.stageFlags = geometry_push_stages_;
     push_range.size = sizeof(GpuSkinnedPush);
 
     const std::array<vk::DescriptorSetLayout, 2> set_layouts = {*frame_set_layout_,
@@ -211,6 +231,13 @@ void SkinnedPass::createGeometryPipeline(const VulkanDevice& device, const GBuff
     const vk::raii::ShaderModule vertex_module = shaders::loadModule(device, "skinned.vert.spv");
     const vk::raii::ShaderModule fragment_module = shaders::loadModule(device, "skinned.frag.spv");
     geometry_pipeline_ = buildGeometryPipeline(device, vertex_module, fragment_module);
+    if (tessellation_) {
+        const vk::raii::ShaderModule control_module = shaders::loadModule(device, "skinned.tesc.spv");
+        const vk::raii::ShaderModule evaluation_module = shaders::loadModule(device, "skinned.tese.spv");
+        geometry_tess_pipeline_ = buildGeometryPipeline(device, vertex_module, fragment_module, GeometryVariant::Fill,
+                                                        &control_module, &evaluation_module);
+        std::cout << "[Vulkan] Relieve teselado disponible (materiales con teselacion)\n";
+    }
     if (device.fillModeNonSolidSupported()) {
         geometry_wire_pipeline_ = buildGeometryPipeline(device, vertex_module, fragment_module, GeometryVariant::Wire);
         const vk::raii::ShaderModule wire_module = shaders::loadModule(device, "wire.frag.spv");
@@ -233,12 +260,21 @@ vk::raii::Pipeline SkinnedPass::createSurfacePipeline(const VulkanDevice& device
 vk::raii::Pipeline SkinnedPass::buildGeometryPipeline(const VulkanDevice& device,
                                                       const vk::raii::ShaderModule& vertex_module,
                                                       const vk::raii::ShaderModule& fragment_module,
-                                                      GeometryVariant variant) const {
+                                                      GeometryVariant variant,
+                                                      const vk::raii::ShaderModule* tess_control,
+                                                      const vk::raii::ShaderModule* tess_evaluation) const {
     const bool lines = variant != GeometryVariant::Fill;
     const bool overlay = variant == GeometryVariant::WireOverlay;
-    const std::array<vk::PipelineShaderStageCreateInfo, 2> stages = {
-        stage(vk::ShaderStageFlagBits::eVertex, vertex_module),
-        stage(vk::ShaderStageFlagBits::eFragment, fragment_module)};
+    const bool tessellated = tess_control != nullptr && tess_evaluation != nullptr;
+    std::vector<vk::PipelineShaderStageCreateInfo> stages = {stage(vk::ShaderStageFlagBits::eVertex, vertex_module)};
+    if (tessellated) {
+        stages.push_back(stage(vk::ShaderStageFlagBits::eTessellationControl, *tess_control));
+        stages.push_back(stage(vk::ShaderStageFlagBits::eTessellationEvaluation, *tess_evaluation));
+    }
+    stages.push_back(stage(vk::ShaderStageFlagBits::eFragment, fragment_module));
+    // Triangulos como parches de 3 puntos de control para la teselacion.
+    vk::PipelineTessellationStateCreateInfo tessellation_state{};
+    tessellation_state.patchControlPoints = 3;
 
     const VertexLayout layout;
     vk::PipelineVertexInputStateCreateInfo vertex_input{};
@@ -246,7 +282,7 @@ vk::raii::Pipeline SkinnedPass::buildGeometryPipeline(const VulkanDevice& device
     vertex_input.setVertexAttributeDescriptions(layout.attributes);
 
     vk::PipelineInputAssemblyStateCreateInfo input_assembly{};
-    input_assembly.topology = vk::PrimitiveTopology::eTriangleList;
+    input_assembly.topology = tessellated ? vk::PrimitiveTopology::ePatchList : vk::PrimitiveTopology::eTriangleList;
 
     vk::PipelineViewportStateCreateInfo viewport_state{};
     viewport_state.viewportCount = 1;
@@ -314,6 +350,7 @@ vk::raii::Pipeline SkinnedPass::buildGeometryPipeline(const VulkanDevice& device
     pipeline_info.setStages(stages);
     pipeline_info.pVertexInputState = &vertex_input;
     pipeline_info.pInputAssemblyState = &input_assembly;
+    if (tessellated) pipeline_info.pTessellationState = &tessellation_state;
     pipeline_info.pViewportState = &viewport_state;
     pipeline_info.pRasterizationState = &rasterization;
     pipeline_info.pMultisampleState = &multisample;
@@ -507,17 +544,26 @@ vk::raii::Pipeline SkinnedPass::createOutlinePipeline(const VulkanDevice& device
 
 vk::raii::Pipeline SkinnedPass::createShadowPipeline(const VulkanDevice& device,
                                                      vk::Format depth_format, bool depth_clamp,
-                                                     float slope_bias, bool alpha_tested) const {
+                                                     float slope_bias, bool alpha_tested, bool tessellated) const {
     const vk::raii::ShaderModule vertex_module =
-        shaders::loadModule(device, "skinned_shadow.vert.spv");
+        shaders::loadModule(device, tessellated ? "skinned_shadow_tess.vert.spv" : "skinned_shadow.vert.spv");
     const vk::raii::ShaderModule fragment_module =
         shaders::loadModule(device, "skinned_shadow.frag.spv");
-    const std::array<vk::PipelineShaderStageCreateInfo, 2> all_stages = {
-        stage(vk::ShaderStageFlagBits::eVertex, vertex_module),
-        stage(vk::ShaderStageFlagBits::eFragment, fragment_module)};
-    // Lo opaco: solo el vertex shader (la profundidad la escribe la GPU).
-    const vk::ArrayProxyNoTemporaries<const vk::PipelineShaderStageCreateInfo> shadow_stages(
-        alpha_tested ? 2u : 1u, all_stages.data());
+    std::vector<vk::PipelineShaderStageCreateInfo> shadow_stages = {
+        stage(vk::ShaderStageFlagBits::eVertex, vertex_module)};
+    // Relieve teselado: la teselacion sube los vertices antes de proyectar.
+    vk::raii::ShaderModule control_module{nullptr};
+    vk::raii::ShaderModule evaluation_module{nullptr};
+    if (tessellated) {
+        control_module = shaders::loadModule(device, "skinned_shadow.tesc.spv");
+        evaluation_module = shaders::loadModule(device, "skinned_shadow.tese.spv");
+        shadow_stages.push_back(stage(vk::ShaderStageFlagBits::eTessellationControl, control_module));
+        shadow_stages.push_back(stage(vk::ShaderStageFlagBits::eTessellationEvaluation, evaluation_module));
+    }
+    // Lo opaco: sin fragment shader (la profundidad la escribe la GPU).
+    if (alpha_tested) shadow_stages.push_back(stage(vk::ShaderStageFlagBits::eFragment, fragment_module));
+    vk::PipelineTessellationStateCreateInfo tessellation_state{};
+    tessellation_state.patchControlPoints = 3;
 
     const VertexLayout layout;
     vk::PipelineVertexInputStateCreateInfo vertex_input{};
@@ -525,7 +571,7 @@ vk::raii::Pipeline SkinnedPass::createShadowPipeline(const VulkanDevice& device,
     vertex_input.setVertexAttributeDescriptions(layout.attributes);
 
     vk::PipelineInputAssemblyStateCreateInfo input_assembly{};
-    input_assembly.topology = vk::PrimitiveTopology::eTriangleList;
+    input_assembly.topology = tessellated ? vk::PrimitiveTopology::ePatchList : vk::PrimitiveTopology::eTriangleList;
 
     vk::PipelineViewportStateCreateInfo viewport_state{};
     viewport_state.viewportCount = 1;
@@ -566,6 +612,7 @@ vk::raii::Pipeline SkinnedPass::createShadowPipeline(const VulkanDevice& device,
     pipeline_info.setStages(shadow_stages);
     pipeline_info.pVertexInputState = &vertex_input;
     pipeline_info.pInputAssemblyState = &input_assembly;
+    if (tessellated) pipeline_info.pTessellationState = &tessellation_state;
     pipeline_info.pViewportState = &viewport_state;
     pipeline_info.pRasterizationState = &rasterization;
     pipeline_info.pMultisampleState = &multisample;
@@ -686,6 +733,8 @@ vk::raii::Pipeline SkinnedPass::createMeshGeometryPipeline(const VulkanDevice& d
 }
 
 void SkinnedPass::destroy() {
+    for (vk::raii::Pipeline& pipeline : shadow_tess_pipelines_) pipeline = nullptr;
+    geometry_tess_pipeline_ = nullptr;
     mesh_geometry_pipeline_ = nullptr;
     mesh_geometry_layout_ = nullptr;
     mesh_draw_set_layout_ = nullptr;

@@ -50,7 +50,7 @@ void imageBarrier(const vk::raii::CommandBuffer& cmd, vk::Image image, vk::Image
 // -----------------------------------------------------------------------------
 
 void VoxelPass::create(const VulkanDevice& device, const vk::raii::DescriptorSetLayout& frame_layout,
-                       std::array<vk::Format, 4> gbuffer_formats, vk::Format depth_format, vk::Format shadow_format,
+                       std::array<vk::Format, GBuffer::kColorAttachmentCount> gbuffer_formats, vk::Format depth_format, vk::Format shadow_format,
                        std::uint32_t frames_in_flight) {
     destroy();
     device_ = &device;
@@ -132,7 +132,7 @@ void VoxelPass::destroy() {
     device_ = nullptr;
 }
 
-void VoxelPass::createPipelines(const VulkanDevice& device, std::array<vk::Format, 4> gbuffer_formats,
+void VoxelPass::createPipelines(const VulkanDevice& device, std::array<vk::Format, GBuffer::kColorAttachmentCount> gbuffer_formats,
                                 vk::Format depth_format, vk::Format shadow_format) {
     const vk::raii::ShaderModule vertex = shaders::loadModule(device, "voxel.vert.spv");
     const vk::raii::ShaderModule fragment = shaders::loadModule(device, "voxel.frag.spv");

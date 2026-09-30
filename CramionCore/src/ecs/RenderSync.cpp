@@ -12,6 +12,7 @@
 #include "CramionCore/ecs/MathUtil.h"
 #include "CramionCore/navigation/Navigation.h"
 #include "CramionCore/physics/PhysicsComponents.h"
+#include "CramionCore/terrain/TerrainTools.h"
 
 #include <CramionFX/asset/ImageFile.h>
 #include <CramionFX/vk/ShaderCompiler.h>
@@ -59,6 +60,22 @@ void copyFactors(asset::MaterialData& to, const asset::MaterialData& from) {
     to.normal_map_directx = from.normal_map_directx;
     to.reflectance = from.reflectance;
     to.height_scale = from.height_scale;
+    to.tessellation = from.tessellation;
+    to.tessellation_density = from.tessellation_density;
+    to.parallax_shadows = from.parallax_shadows;
+    to.shading_model = from.shading_model;
+    to.specular_tint = from.specular_tint;
+    to.clearcoat = from.clearcoat;
+    to.clearcoat_roughness = from.clearcoat_roughness;
+    to.sheen = from.sheen;
+    to.sheen_tint = from.sheen_tint;
+    to.subsurface = from.subsurface;
+    to.translucency = from.translucency;
+    to.subsurface_thickness = from.subsurface_thickness;
+    to.anisotropy = from.anisotropy;
+    to.anisotropy_rotation = from.anisotropy_rotation;
+    to.ior = from.ior;
+    to.transmission_thickness = from.transmission_thickness;
 }
 }  // namespace
 
@@ -365,8 +382,14 @@ asset::ModelData RenderSync::buildVariant(const asset::ModelData& base, const st
         const std::int32_t emissive_rt = render_texture(mat->emissive_map);
         d.albedo_texture = albedo_rt == -1 ? file(mat->albedo) : -1;
         d.albedo_render_texture = std::max(albedo_rt, -1);
-        d.normal_texture = !mat->normal.empty() ? file(mat->normal) : bumpAsNormal(mat->bump_map);
-        if (mat->normal.empty() && !mat->bump_map.empty()) d.normal_map_directx = false;
+        // Sin normal map, el bump; y si el relieve es teselado y tampoco hay
+        // bump, la propia altura (la malla sube, pero la luz necesita la
+        // inclinacion de cada piedra).
+        const std::string& bump = !mat->bump_map.empty() || mat->relief != assets::ReliefMode::Tessellation
+                                      ? mat->bump_map
+                                      : mat->height_map;
+        d.normal_texture = !mat->normal.empty() ? file(mat->normal) : bumpAsNormal(bump);
+        if (mat->normal.empty() && !bump.empty()) d.normal_map_directx = false;
         d.occlusion_texture = packedOcclusion(*mat);
         d.emissive_texture = emissive_rt == -1 ? file(mat->emissive_map) : -1;
         d.emissive_render_texture = std::max(emissive_rt, -1);
@@ -1341,17 +1364,28 @@ void RenderSync::syncWater(World& world, gfx::VulkanRenderer& renderer, float de
         p.look = core::Vec4{body->roughness, body->refraction, body->caustics, body->shore_foam};
         p.extra = core::Vec4{body->shore_waves, body->scattering, 0.0f, 0.0f};
 
-        // Camara cerca o bajo la superficie (oceano y lagos): el shader decide
-        // por pixel con la misma ola.
-        if (underwater < 0 && body->type != water::WaterType::River) {
+        // Camara cerca o bajo la superficie de cualquier agua (oceano, lago o
+        // rio): el shader decide por pixel con la misma ola. Solo si ahi hay
+        // agua de verdad: el suelo bajo la camara esta por debajo de la
+        // superficie (el rectangulo de un lago tambien cubre orillas y valles
+        // secos, y bajo tierra tampoco se esta en el agua).
+        if (underwater < 0) {
             const int forced = water::underwaterOverride(camera_position);
+            const water::WaterSample at_camera = water::sampleWater(*body, m, camera_position, water::waterTime());
+            bool inside = false;
             if (forced == 1) {
-                underwater = static_cast<int>(bodies.size());
-            } else if (forced < 0) {
-                const water::WaterSample at_camera = water::sampleWater(*body, m, camera_position, water::waterTime());
-                if (at_camera.inside && camera_position.y < at_camera.height + body->wave_height + 0.5f) {
-                    underwater = static_cast<int>(bodies.size());
+                inside = true;
+            } else if (forced < 0 && at_camera.inside) {
+                const float margin = body->type == water::WaterType::River ? 0.3f : body->wave_height + 0.5f;
+                if (camera_position.y < at_camera.height + margin) {
+                    float ground = 0.0f;
+                    const bool has_ground = groundHeight(camera_position.x, camera_position.z, ground);
+                    inside = !has_ground || (ground < at_camera.height - 0.05f && camera_position.y > ground - 0.5f);
                 }
+            }
+            if (inside) {
+                underwater = static_cast<int>(bodies.size());
+                p.extra.z = at_camera.height;  // superficie aqui (el rio no es un plano)
             }
         }
         if (body->type == water::WaterType::River) {
@@ -1583,7 +1617,7 @@ void RenderSync::sync(World& world, scene::Scene& scene, gfx::VulkanRenderer& re
     scene.setAnimateActors(false);
     syncActors(world, scene, renderer, delta_seconds);
     syncLightsAndEnvironment(world, scene, renderer);
-    syncTerrains(world, renderer);
+    syncTerrains(world, renderer, scene.camera().position());
     syncFoliage(world, renderer);
     if (options.apply_main_camera) {
         syncCamera(world, scene);
@@ -1730,6 +1764,39 @@ void RenderSync::syncFoliage(World& world, gfx::VulkanRenderer& renderer) {
         jobs.push_back({f, p});
         for (foliage::FoliageClearing& c : jobs.back().params.clearings) c.center = c.center + world_origin;
     }
+    // El agua de la escena (rios y lagos): alli no crecen arboles.
+    if (!jobs.empty()) {
+        std::vector<foliage::FoliageWater> water;
+        for (const entt::entity handle : world.registry().view<water::WaterBody>()) {
+            const Entity e = world.wrap(handle);
+            if (!e.activeInHierarchy()) continue;
+            const water::WaterBody& body = e.get<water::WaterBody>();
+            const core::Mat4& m = e.worldMatrix();
+            if (body.type == water::WaterType::River) {
+                const std::vector<water::RiverSample> line = water::riverCenterline(body, m, 4.0f);
+                for (std::size_t i = 0; i + 1 < line.size(); ++i) {
+                    foliage::FoliageWater w;
+                    w.river = true;
+                    w.a = line[i].position + world_origin;
+                    w.b = line[i + 1].position + world_origin;
+                    w.width = std::max(line[i].width, line[i + 1].width);
+                    water.push_back(w);
+                }
+            } else if (body.type == water::WaterType::Lake) {
+                foliage::FoliageWater w;
+                w.a = e.worldPosition() + world_origin;
+                w.half = core::Vec2{body.size.x * 0.5f, body.size.y * 0.5f};
+                w.angle = std::atan2(-m.m[0][2], m.m[0][0]);
+                w.level = w.a.y;
+                water.push_back(w);
+            }
+        }
+        for (const foliage::FoliageWater& w : water) {
+            const float values[] = {w.a.x, w.a.y, w.a.z, w.b.x, w.b.z, w.width, w.half.x, w.half.y, w.angle};
+            hash_bytes(values, sizeof(values));
+        }
+        for (Job& job : jobs) job.params.water = water;
+    }
     std::vector<foliage::FoliageGround> ground;
     if (!jobs.empty() && terrain_store_ != nullptr) {
         for (const entt::entity handle : world.registry().view<terrain::Terrain>()) {
@@ -1747,7 +1814,10 @@ void RenderSync::syncFoliage(World& world, gfx::VulkanRenderer& renderer) {
             ground.push_back({data, t, origin});
         }
     }
-    if (first != nullptr) renderer.setFoliageSettings(first->settings());
+    if (first != nullptr) {
+        renderer.setFoliageSettings(first->settings());
+        renderer.setFoliageSpecies(first->species());
+    }
 
     // Termino una siembra: a la GPU.
     if (foliage_job_.valid() && foliage_job_.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
@@ -1782,7 +1852,19 @@ void RenderSync::syncFoliage(World& world, gfx::VulkanRenderer& renderer) {
 
 // Terrenos: se crean en el renderizador la primera vez, se suben las regiones
 // que cambiaron (esculpir/pintar) y su descripcion (posicion, capas) cada frame.
-void RenderSync::syncTerrains(World& world, gfx::VulkanRenderer& renderer) {
+bool RenderSync::groundHeight(float x, float z, float& height) const {
+    for (const TerrainSample& t : terrain_samples_) {
+        const float size = std::max(t.terrain.size, 1.0f);
+        if (x < t.origin.x || z < t.origin.z || x > t.origin.x + size || z > t.origin.z + size) continue;
+        height = terrain::heightAt(*t.data, t.terrain, t.origin, x, z);
+        return true;
+    }
+    return false;
+}
+
+void RenderSync::syncTerrains(World& world, gfx::VulkanRenderer& renderer, const core::Vec3& eye) {
+    grass_eye_ = eye;
+    terrain_samples_.clear();
     renderer_ = &renderer;
     std::unordered_set<entt::entity> alive;
     if (terrain_store_ != nullptr) {
@@ -1793,6 +1875,7 @@ void RenderSync::syncTerrains(World& world, gfx::VulkanRenderer& renderer) {
             const std::shared_ptr<terrain::TerrainData> data = terrain_store_->get(comp);
             if (!data) continue;
             alive.insert(handle);
+            terrain_samples_.push_back({data, comp, e.worldPosition()});
             TerrainGpu& gpu = terrains_[handle];
             if (gpu.id == 0 || gpu.data != data || gpu.resolution != data->resolution() ||
                 gpu.splat_resolution != data->splatResolution()) {
@@ -1833,8 +1916,42 @@ void RenderSync::syncTerrains(World& world, gfx::VulkanRenderer& renderer) {
                 l.tint = layer.tint;
                 desc.layers.push_back(std::move(l));
             }
+            // Hierba: el componente en la misma entidad.
+            if (const foliage::Grass* grass = e.tryGet<foliage::Grass>()) desc.grass = grass->desc();
             renderer.setTerrainDesc(gpu.id, desc);
         }
+    }
+    // Lo que aparta la hierba: los cuerpos fisicos que se mueven y los
+    // personajes cerca de la camara (hasta 32, los mas cercanos).
+    {
+        std::vector<core::Vec4> spheres;
+        const core::Vec3 eye = grass_eye_;
+        world.forEachDepthFirst([&](Entity e) {
+            if (!e.activeInHierarchy()) return;
+            // Cuerpos que se mueven (dinamicos y cinematicos: jugadores,
+            // vehiculos...), con el tamano de su collider.
+            const physics::Rigidbody* body = e.tryGet<physics::Rigidbody>();
+            if (body == nullptr || body->type == physics::BodyType::Static) return;
+            const core::Vec3 s = e.localScale();
+            const float scale = std::max(std::abs(s.x), std::max(std::abs(s.y), std::abs(s.z)));
+            float radius = 0.5f * scale;
+            if (const physics::SphereCollider* c = e.tryGet<physics::SphereCollider>()) radius = c->radius * scale;
+            if (const physics::CapsuleCollider* c = e.tryGet<physics::CapsuleCollider>()) radius = c->radius * scale * 1.2f;
+            if (const physics::BoxCollider* c = e.tryGet<physics::BoxCollider>()) {
+                radius = 0.5f * scale * std::max(c->size.x, c->size.z);
+            }
+            radius = std::clamp(radius, 0.15f, 5.0f);
+            const core::Vec3 p = e.worldPosition();
+            if (core::length(p - eye) > 120.0f) return;
+            spheres.push_back(core::Vec4{p.x, p.y, p.z, radius});
+        });
+        std::sort(spheres.begin(), spheres.end(), [&](const core::Vec4& a, const core::Vec4& b) {
+            const core::Vec3 da{a.x - eye.x, a.y - eye.y, a.z - eye.z};
+            const core::Vec3 db{b.x - eye.x, b.y - eye.y, b.z - eye.z};
+            return core::dot(da, da) < core::dot(db, db);
+        });
+        if (spheres.size() > 32) spheres.resize(32);
+        renderer.setGrassInteractors(spheres);
     }
     for (auto it = terrains_.begin(); it != terrains_.end();) {
         if (alive.count(it->first) == 0) {

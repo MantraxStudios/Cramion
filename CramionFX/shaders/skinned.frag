@@ -60,37 +60,13 @@ const float kEmissiveIntensity = 6.0;
 
 const uint kFlagSpecularMap = 1u << 2;
 const uint kFlagHeightMap = 1u << 3;
+const uint kFlagParallaxShadow = 1u << 5;
 
 #include "gbuffer_surface.glsl"
+const float kPi = 3.14159265;
+#include "disney_brdf.glsl"
 
-// Parallax occlusion mapping (Tatarchuk 2006): se recorre el rayo de la
-// vista dentro del relieve en capas hasta cruzar el mapa de alturas y se
-// interpola entre las dos ultimas. `view_ts`: hacia la camara, en espacio
-// tangente (x = U, y = V). `scale`: profundidad del relieve en UV. Las
-// derivadas se toman fuera del bucle.
-vec2 parallaxUv(vec2 uv, vec2 dx, vec2 dy, vec3 view_ts, float scale) {
-    // Mas capas mirando de refilon (donde el desplazamiento es mayor).
-    float layers = mix(32.0, 8.0, clamp(view_ts.z, 0.0, 1.0));
-    float layer_depth = 1.0 / layers;
-    // Desplazamiento limitado: xy / z se dispara de refilon y la textura se
-    // estiraba en rayas ("offset limiting", Welsh 2004, suavizado).
-    vec2 step_uv = view_ts.xy / (view_ts.z + 0.42) * scale / layers;
-
-    vec2 current_uv = uv;
-    float current_depth = 0.0;
-    float surface_depth = 1.0 - textureGrad(occlusion_map, current_uv, dx, dy).g;
-    for (int i = 0; i < 32 && current_depth < surface_depth; ++i) {
-        current_uv -= step_uv;
-        current_depth += layer_depth;
-        surface_depth = 1.0 - textureGrad(occlusion_map, current_uv, dx, dy).g;
-    }
-    // Interpolacion entre la capa de antes y la de despues del cruce.
-    vec2 previous_uv = current_uv + step_uv;
-    float after = surface_depth - current_depth;
-    float before = (1.0 - textureGrad(occlusion_map, previous_uv, dx, dy).g) - (current_depth - layer_depth);
-    float weight = after / min(after - before, -1e-5);
-    return mix(current_uv, previous_uv, clamp(weight, 0.0, 1.0));
-}
+#include "parallax_common.glsl"
 
 void main() {
     // --- Base tangente-bitangente-normal ---
@@ -114,23 +90,9 @@ void main() {
     vec3 pos_dx = dFdx(v_world_position);
     vec3 pos_dy = dFdy(v_world_position);
     if ((push.flags & kFlagHeightMap) != 0u && has_tangent) {
-        vec3 to_camera = camera.position.xyz - v_world_position;
-        float distance_fade = 1.0 - smoothstep(15.0, 30.0, length(to_camera));
-        if (distance_fade > 0.0) {
-            vec3 view = normalize(to_camera);
-            // La bitangente apunta a V creciente (hacia abajo en la imagen).
-            vec3 view_ts = vec3(dot(view, t), dot(view, b), dot(view, n));
-            if (!gl_FrontFacing) view_ts.z = -view_ts.z;
-            // La profundidad del material va en metros: se pasa a UV con la
-            // densidad de la textura en este punto (UV por metro), asi un
-            // mismo valor sirve para un suelo que se repite y para un
-            // escaneo con toda la malla en una sola UV.
-            float meters = length(pos_dx) + length(pos_dy);
-            float uv_per_meter = (length(uv_dx) + length(uv_dy)) / max(meters, 1e-6);
-            if (view_ts.z > 0.0 && meters > 1e-6) {
-                uv = parallaxUv(v_uv, uv_dx, uv_dy, view_ts, push.emissive.w * uv_per_meter * distance_fade);
-            }
-        }
+        uv = applyParallax(occlusion_map, vec4(0.0, 1.0, 0.0, 0.0), push.emissive.w,
+                           (push.flags & kFlagParallaxShadow) != 0u, v_uv, uv_dx, uv_dy, pos_dx, pos_dy,
+                           v_world_position, t, b, n, surface_sun_shadow);
     }
 
     // El G-buffer guarda el albedo en sRGB (lighting.frag lo linealiza), pero
@@ -198,6 +160,30 @@ void main() {
     // --- Emision ---
     vec3 emissive = toLinear(textureGrad(emissive_map, uv, uv_dx, uv_dy).rgb) * push.emissive.rgb *
                     kEmissiveIntensity;
+
+    // --- Modelo de sombreado de Disney (push.pick_id: bits 0-3 modelo, 8-31
+    // tres parametros de 8 bits) ---
+    {
+        uint packed = push.pick_id;
+        int model = int(packed & 0xFu);
+        vec3 params = vec3(float((packed >> 8u) & 0xFFu), float((packed >> 16u) & 0xFFu),
+                           float((packed >> 24u) & 0xFFu)) / 255.0;
+        if (model == kShadingAnisotropic) {
+            // La direccion del brillo: la tangente de la malla girada lo que
+            // diga el material, sobre la normal final; se guarda como angulo.
+            vec3 b1;
+            vec3 b2;
+            shadingBasis(normal, b1, b2);
+            vec3 direction = has_tangent ? t : b1;
+            float turn = params.y * kPi;
+            vec3 side = cross(n, direction);
+            direction = direction * cos(turn) + side * sin(turn);
+            direction = direction - normal * dot(normal, direction);
+            if (dot(direction, direction) < 1e-8) direction = b1;
+            params.y = shadingEncodeAngle(normal, normalize(direction));
+        }
+        surface_shading = vec4(float(model) / 255.0, params);
+    }
 
     writeSurface(albedo, n, normal, tangent_normal, aa_normal, metallic, roughness, occlusion, emissive,
                  reflectance, v_world_position);

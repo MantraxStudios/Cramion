@@ -34,7 +34,7 @@ namespace cramion::update {
 inline constexpr const char* kDefaultFeed = "https://api.github.com/repos/MantraxStudios/Cramion/releases/latest";
 // Canal beta: la lista de releases (incluye las previas; "latest" no las da).
 inline constexpr const char* kBetaFeed = "https://api.github.com/repos/MantraxStudios/Cramion/releases?per_page=30";
-inline constexpr const char* kReleasesPage = "https://github.com/MantraxStudios/Cramion/releases";
+inline constexpr const char* kReleasesPage = "https://cramion.mantraxtools.store/#novedades";
 inline constexpr const char* kPackageAsset = "Cramion-win64.zip";
 inline constexpr const wchar_t* kUpdaterExe = L"CramionUpdater.exe";
 inline constexpr const wchar_t* kEditorExe = L"CramionEditor.exe";

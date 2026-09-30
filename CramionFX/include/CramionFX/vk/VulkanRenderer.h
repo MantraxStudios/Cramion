@@ -548,6 +548,8 @@ public:
     std::uint32_t createTerrain(std::uint32_t resolution, std::uint32_t splat_resolution);
     void destroyTerrain(std::uint32_t id);
     void setTerrainDesc(std::uint32_t id, const TerrainDesc& desc) { terrain_pass_.setDesc(id, desc); }
+    // Lo que aparta la hierba: xyz = centro, w = radio (hasta 32).
+    void setGrassInteractors(const std::vector<core::Vec4>& spheres) { terrain_pass_.setGrassInteractors(spheres); }
     // Agua (oceano, lagos, rios): los cuerpos de este frame y el reloj de sus olas.
     void setWaterBodies(const std::vector<WaterBodyDesc>& bodies, float time, int underwater = -1) {
         water_pass_.setBodies(bodies, time, underwater);
@@ -599,6 +601,9 @@ public:
         }
     }
     void setFoliageSettings(const FoliageSettings& settings) { foliage_pass_.setSettings(settings); }
+    void setFoliageSpecies(const std::array<asset::TreeSpecies, FoliagePass::kSpecies>& species) {
+        foliage_pass_.setSpecies(species);
+    }
     // Origen del mundo (origen flotante): las instancias van en coordenadas absolutas.
     void setFoliageOrigin(const core::Vec3& origin) { foliage_pass_.setOrigin(origin); }
     const FoliageSettings& foliageSettings() const { return foliage_pass_.settings(); }
@@ -1062,6 +1067,10 @@ private:
     }
     bool wire_gbuffer_ = false;                              // G-buffer en lineas (Wireframe)
     const vk::raii::Pipeline* mesh_pipeline_override_ = nullptr;  // pasada de lineas encima
+    // Material con relieve teselado que la GPU puede teselar.
+    bool tessellatedMaterial(const SkinnedModel::Material& material) const {
+        return skinned_pass_.tessellationEnabled() && (material.shader_flags & GpuSkinnedPush::kFlagTessellation) != 0;
+    }
     const vk::raii::Pipeline& meshGeometryPipeline() const {
         if (mesh_pipeline_override_ != nullptr) return *mesh_pipeline_override_;
         return wire_gbuffer_ ? skinned_pass_.geometryWirePipeline() : skinned_pass_.geometryPipeline();

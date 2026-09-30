@@ -19,6 +19,8 @@
 //     generan por codigo: color por vertice, oclusion en la copa y peso del
 //     viento (las copas se mecen).
 
+#include "CramionFX/asset/TreeGenerator.h"
+#include "CramionFX/vk/GBuffer.h"
 #include "CramionFX/core/Math.h"
 #include "CramionFX/vk/VulkanBuffer.h"
 #include "CramionFX/vk/VulkanCommon.h"
@@ -70,7 +72,7 @@ public:
     static constexpr std::uint32_t kMaxInstances = 8'000'000;
 
     void create(const VulkanDevice& device, const vk::raii::DescriptorSetLayout& frame_layout,
-                std::array<vk::Format, 4> gbuffer_formats, vk::Format depth_format, vk::Format shadow_format,
+                std::array<vk::Format, GBuffer::kColorAttachmentCount> gbuffer_formats, vk::Format depth_format, vk::Format shadow_format,
                 std::uint32_t frames_in_flight);
     void destroy();
 
@@ -78,6 +80,10 @@ public:
     void setInstances(const std::vector<FoliageInstance>& instances);
     void clear() { setInstances({}); }
     void setSettings(const FoliageSettings& settings) { settings_ = settings; }
+    // Las 3 especies (arboles procedurales). Si cambian, se rehacen sus mallas
+    // (espera a la GPU).
+    void setSpecies(const std::array<asset::TreeSpecies, kSpecies>& species);
+    const std::array<asset::TreeSpecies, kSpecies>& species() const { return species_; }
     const FoliageSettings& settings() const { return settings_; }
     bool empty() const { return instance_count_ == 0; }
 
@@ -102,9 +108,15 @@ private:
         std::int32_t vertex_offset = 0;
     };
 
-    void createPipelines(const VulkanDevice& device, std::array<vk::Format, 4> gbuffer_formats,
+    void createPipelines(const VulkanDevice& device, std::array<vk::Format, GBuffer::kColorAttachmentCount> gbuffer_formats,
                          vk::Format depth_format, vk::Format shadow_format);
     void buildMeshes();
+    void createTextures();
+    struct TextureArray {
+        vk::raii::DeviceMemory memory{nullptr};
+        vk::raii::Image image{nullptr};
+        vk::raii::ImageView view{nullptr};
+    };
     void writeSets();
     void draw(const vk::raii::CommandBuffer& cmd, std::uint32_t frame, bool shadow) const;
 
@@ -130,6 +142,11 @@ private:
 
     VulkanBuffer vertices_;
     VulkanBuffer indices_;
+    VulkanBuffer bounds_;  // vec4 por especie: y del centro, radio, altura
+    std::array<asset::TreeSpecies, kSpecies> species_{};
+    TextureArray albedo_array_;
+    TextureArray normal_array_;
+    vk::raii::Sampler texture_sampler_{nullptr};
     std::array<Mesh, kSpecies * 3> meshes_{};  // especie * 3 + nivel
     std::array<std::uint32_t, kSpecies * 3> triangles_{};
 

@@ -24,6 +24,15 @@ enum class MaterialMode : int {
     Transparent = 1,  // vidrio, agua: semitransparente
 };
 
+enum class ReliefMode { Parallax, Tessellation };
+
+// Modelo de material de Disney (Burley 2012/2015). Todos llevan el difuso de
+// Burley y el especular GGX; cada uno anade su capa.
+enum class ShadingModel { Standard, Clearcoat, Cloth, Subsurface, Anisotropic, Transmission };
+inline constexpr int kShadingModelCount = 6;
+const char* shadingModelKey(ShadingModel model);    // "standard", "clearcoat"...
+ShadingModel shadingModelFromKey(const std::string& key);
+
 struct MaterialAsset {
     Uuid uuid;
     MaterialMode mode = MaterialMode::Opaque;
@@ -43,6 +52,26 @@ struct MaterialAsset {
     // lo que hay del negro al blanco del mapa (0.03 = 3 cm).
     float height_scale = 0.03f;
     float cavity_strength = 1.0f;  // cuanto oscurecen las grietas (mapa de cavidad)
+    // Como se usa el mapa de alturas: parallax (la textura simula el relieve)
+    // o teselacion (la malla se parte y sube de verdad: silueta y sombras).
+    ReliefMode relief = ReliefMode::Parallax;
+    float tessellation_density = 16.0f;  // teselacion maxima por borde (1..64)
+    bool parallax_shadows = true;        // el relieve se sombrea a si mismo (sol)
+
+    // Modelo de Disney y sus parametros (0..1 salvo donde se indica).
+    ShadingModel shading = ShadingModel::Standard;
+    float specular_tint = 0.0f;          // la reflectancia toma el tono del color
+    float clearcoat = 1.0f;              // barniz
+    float clearcoat_roughness = 0.05f;
+    float sheen = 1.0f;                  // tela
+    float sheen_tint = 0.5f;
+    float subsurface = 1.0f;             // subsurface
+    float translucency = 0.5f;
+    float subsurface_thickness = 0.05f;  // metros (0.01..0.3)
+    float anisotropy = 0.8f;             // anisotropo
+    float anisotropy_rotation = 0.0f;    // grados (0..180)
+    float ior = 1.5f;                    // transmision (vidrio): 1..2.5
+    float transmission_thickness = 0.02f;  // metros (0..0.2)
 
     // Texturas: rutas dentro de Assets (vacias = solo el factor).
     std::string albedo;

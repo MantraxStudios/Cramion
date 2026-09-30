@@ -238,7 +238,16 @@ private:
     void syncLightsAndEnvironment(World& world, scene::Scene& scene,
                                   gfx::VulkanRenderer& renderer);
     void syncCamera(World& world, scene::Scene& scene);
-    void syncTerrains(World& world, gfx::VulkanRenderer& renderer);
+    void syncTerrains(World& world, gfx::VulkanRenderer& renderer, const core::Vec3& eye);
+    core::Vec3 grass_eye_{};  // camara: los que apartan la hierba, los mas cercanos
+    // Terrenos de este frame (para saber si bajo la camara hay suelo o agua).
+    struct TerrainSample {
+        std::shared_ptr<terrain::TerrainData> data;
+        terrain::Terrain terrain;
+        core::Vec3 origin{};
+    };
+    std::vector<TerrainSample> terrain_samples_;
+    bool groundHeight(float x, float z, float& height) const;
     void syncWater(World& world, gfx::VulkanRenderer& renderer, float delta_seconds,
                    const core::Vec3& camera_position);
     struct RiverMesh {

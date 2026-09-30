@@ -19,6 +19,7 @@ void GBuffer::create(const VulkanDevice& device, vk::Extent2D extent) {
     material_.create(device, extent, kMaterialFormat, color_usage,
                      vk::ImageAspectFlagBits::eColor);
     velocity_.create(device, extent, kVelocityFormat, color_usage, vk::ImageAspectFlagBits::eColor);
+    shading_.create(device, extent, kShadingFormat, color_usage, vk::ImageAspectFlagBits::eColor);
 
     // La profundidad tambien se muestrea desde la pasada de iluminacion para
     // reconstruir la posicion del mundo.
@@ -36,6 +37,7 @@ void GBuffer::create(const VulkanDevice& device, vk::Extent2D extent) {
 
 void GBuffer::destroy() {
     depth_.destroy();
+    shading_.destroy();
     velocity_.destroy();
     material_.destroy();
     normal_.destroy();

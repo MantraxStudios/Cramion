@@ -1,4 +1,5 @@
 #version 450
+#extension GL_GOOGLE_include_directive : require
 
 // Pasada de iluminacion diferida: lee el G-buffer y acumula todas las luces de
 // la escena sobre cada pixel. El coste ya no depende de la geometria, solo de
@@ -158,6 +159,8 @@ layout(set = 0, binding = 22) uniform sampler2D volumetric_map;
 // Sombra de las nubes (clouds.frag en modo mapa de sombra): r = cuanta luz del
 // sol pasa las nubes, sobre un cuadrado del suelo centrado en la camara.
 layout(set = 0, binding = 23) uniform sampler2D cloud_shadow_map;
+// Modelo de sombreado de Disney: r = modelo, gba = parametros (disney_brdf.glsl).
+layout(set = 0, binding = 26) uniform sampler2D g_shading;
 
 // Luz del sol que dejan pasar las nubes en ese punto: se lleva el punto al
 // suelo a lo largo del rayo del sol (el mapa guarda ese mismo rayo).
@@ -180,6 +183,13 @@ layout(location = 0) in vec2 v_uv;
 layout(location = 0) out vec4 out_color;
 
 const float kPi = 3.14159265;
+
+// Modelo de material de Disney (difuso de Burley, barniz, tela, subsurface,
+// anisotropo): comun con el path tracing.
+#include "disney_brdf.glsl"
+
+// El modelo de sombreado de este pixel (G-buffer, binding 26); lo usa shade().
+ShadingModel surface_model;
 
 // Niveles de mip del cubo de entorno (IblProbe::kEnvironmentMips - 1). La
 // sonda de reflexion tiene los mismos (ReflectionProbe::kMips).
@@ -289,28 +299,8 @@ vec3 fresnelSchlick(float cosine, vec3 f0) {
 // puntos blancos que parpadean.
 vec3 shade(vec3 light_direction, vec3 radiance, vec3 normal, vec3 view_direction, vec3 albedo,
            float roughness, float metallic, vec3 f0, vec3 energy, float light_size) {
-    float n_dot_l = max(dot(normal, light_direction), 0.0);
-    if (n_dot_l <= 0.0) {
-        return vec3(0.0);
-    }
-
-    vec3 halfway = normalize(light_direction + view_direction);
-    float n_dot_v = max(dot(normal, view_direction), 0.0001);
-    float n_dot_h = max(dot(normal, halfway), 0.0);
-    float v_dot_h = max(dot(view_direction, halfway), 0.0);
-
-    // Metales: nada de difuso.
-    float alpha = max(roughness * roughness, 0.002);
-    float alpha_light = min(alpha + light_size * 0.5, 1.0);
-    float size_normalization = (alpha / alpha_light) * (alpha / alpha_light);
-    vec3 fresnel = fresnelSchlick(v_dot_h, f0);
-    vec3 specular = distributionGgx(n_dot_h, alpha_light) * size_normalization *
-                    visibilitySmith(n_dot_v, n_dot_l, alpha) * fresnel * kPi * energy;
-
-    // Lo que refleja el especular no entra en el difuso (conservacion).
-    vec3 diffuse = albedo * (1.0 - fresnel) * (1.0 - metallic);
-
-    return radiance * n_dot_l * (diffuse + specular);
+    return radiance * disneyBrdf(surface_model, normal, view_direction, light_direction, albedo, roughness, metallic,
+                                 f0, energy, light_size);
 }
 
 // Irradiancia difusa (ya / pi) del entorno para una normal.
@@ -1208,7 +1198,10 @@ void main() {
         float reflectance = normal_sample.a;
         vec4 material_sample = texture(g_material, v_uv);
         vec3 emission = material_sample.rgb;
-        float metallic = material_sample.a;
+        // Alfa = metalicidad + 2 x sombra propia del relieve (gbuffer_surface.glsl).
+        float self_shadow_level = floor(material_sample.a * 0.5);
+        float metallic = material_sample.a - 2.0 * self_shadow_level;
+        float relief_shadow = 1.0 - self_shadow_level / 7.0;
         vec3 albedo = toLinear(albedo_sample.rgb);
 
         vec3 to_camera = camera.position.xyz - world_position;
@@ -1232,7 +1225,12 @@ void main() {
         vec3 sun_direction = normalize(-lights.sun_direction_intensity.xyz);
 
         // --- Ambiente: IBL del entorno (cielo + suelo) ---
-        vec3 f0 = mix(vec3(reflectance), albedo, metallic);
+        // Modelo de Disney de este pixel (y el tinte especular en F0).
+        surface_model = decodeShading(texture(g_shading, v_uv), normal);
+        vec3 f0 = disneyF0(surface_model, albedo, reflectance, metallic);
+        // Subsurface: lo que atraviesa se mira en la cara de atras, a este grosor.
+        bool translucent = surface_model.model == kShadingSubsurface && surface_model.params.y > 0.0;
+        float translucent_thickness = mix(0.01, 0.3, surface_model.params.z);
         // Fresnel con rugosidad (Lagarde): en superficies rugosas el borde
         // brilla menos.
         vec3 env_fresnel = f0 + (max(vec3(1.0 - roughness), f0) - f0) * pow(1.0 - n_dot_v, 5.0);
@@ -1266,7 +1264,17 @@ void main() {
 
         // Especular: entorno prefiltrado en la direccion del reflejo, al mip
         // de su rugosidad, por la integral de la BRDF.
-        vec3 reflected = reflect(-view_direction, normal);
+        // Anisotropo: el reflejo del entorno se estira como el brillo
+        // (normal doblada, Filament / McAuley).
+        vec3 reflection_normal = normal;
+        if (surface_model.model == kShadingAnisotropic) {
+            vec3 aniso_direction = surface_model.bitangent;
+            vec3 aniso_tangent = cross(aniso_direction, view_direction);
+            vec3 aniso_normal = cross(aniso_tangent, aniso_direction);
+            float bend = surface_model.params.x * clamp(5.0 * roughness, 0.0, 1.0);
+            reflection_normal = normalize(mix(normal, aniso_normal, bend));
+        }
+        vec3 reflected = reflect(-view_direction, reflection_normal);
         vec3 prefiltered = textureLod(environment_map, reflected,
                                       roughness * kEnvironmentMaxLod).rgb;
         vec2 brdf = texture(brdf_lut, vec2(n_dot_v, roughness)).rg;
@@ -1307,6 +1315,21 @@ void main() {
                                   0.0, 1.0);
 
         color = diffuse_ibl * multiBounceAo(ao, albedo) + specular_ibl * specular_ao;
+        // Tela: el sheen tambien con la luz del cielo (sobre todo de canto).
+        if (surface_model.model == kShadingCloth) {
+            vec3 sheen_color = mix(vec3(1.0), disneyTint(albedo), surface_model.params.y);
+            color += diffuse_light * sheen_color * surface_model.params.x * (1.0 - metallic) *
+                     (0.1 + 0.5 * schlickWeight(n_dot_v)) * ao;
+        }
+        // Barniz: su propio reflejo del entorno, nitido, encima de todo.
+        if (surface_model.model == kShadingClearcoat && surface_model.params.x > 0.0) {
+            float coat_fresnel = (0.04 + 0.96 * schlickWeight(n_dot_v)) * surface_model.params.x;
+            vec3 coat_reflected = reflect(-view_direction, normal);
+            vec3 coat_light = textureLod(environment_map, coat_reflected,
+                                         surface_model.params.y * kEnvironmentMaxLod).rgb * sky_visibility;
+            float coat_horizon = min(1.0 + dot(coat_reflected, geometric_normal), 1.0);
+            color = color * (1.0 - coat_fresnel) + coat_light * coat_fresnel * coat_horizon * coat_horizon * specular_ao;
+        }
 
         // --- Luz direccional (sol), con sombras en cascada ---
         float sun_n_dot_l = max(dot(normal, sun_direction), 0.0);
@@ -1327,12 +1350,27 @@ void main() {
         }
         // Las nubes que pasan por delante del sol.
         shadow *= cloudShadow(world_position, sun_direction);
+        // Y las piedras del propio material (auto-sombra del parallax).
+        shadow *= relief_shadow;
 
         // El sol mide 0.53 grados: tangente de su radio angular.
         const float kSunSize = 0.00465;
         color += shade(sun_direction, sun_radiance, normal, view_direction, albedo, roughness,
                        metallic, f0, energy, kSunSize) *
                  shadow;
+        // Subsurface: el sol que atraviesa la hoja, la oreja o la cera. La
+        // sombra es la de la cara de atras (un poco hacia dentro): una hoja fina
+        // la tiene iluminada; un muro, no, y no deja pasar nada.
+        if (translucent && dot(normal, sun_direction) < 0.2) {
+            int back_cascade = 0;
+            vec3 back_position = world_position - geometric_normal * translucent_thickness;
+            float back_shadow = shadowFactor(back_position, -geometric_normal,
+                                             max(dot(-geometric_normal, sun_direction), 0.0), back_cascade);
+            back_shadow = mix(1.0, back_shadow, shadows.params.y) * cloudShadow(world_position, sun_direction);
+            color += sun_radiance * disneyTranslucency(surface_model, normal, view_direction, sun_direction, albedo,
+                                                       metallic) *
+                     back_shadow;
+        }
 
         // Luz de la luna y del cielo: la ven los bastones de noche. Las luces
         // locales, que se suman despues, conservan su color.
@@ -1355,9 +1393,13 @@ void main() {
 
             vec3 light_direction = to_light / max(distance_to_light, 0.0001);
             float n_dot_l = dot(normal, light_direction);
-            if (n_dot_l <= 0.0) {
+            // Por detras solo cuenta la translucidez (subsurface).
+            bool from_behind = n_dot_l <= 0.0;
+            if (from_behind && !translucent) {
                 continue;
             }
+            vec3 shadow_position = from_behind ? world_position - geometric_normal * translucent_thickness : world_position;
+            vec3 shadow_normal = from_behind ? -geometric_normal : geometric_normal;
 
             vec3 radiance = toLinear(lights.points[i].color_intensity.rgb) *
                             lights.points[i].color_intensity.a *
@@ -1367,21 +1409,23 @@ void main() {
             int slot = shadowSlot(lights.points[i].shadow.x);
             if (slot >= 0 && local_shadows.params.z > 0.0) {
                 point_shadow = pointShadow(slot, lights.points[i].position_range.xyz,
-                                           world_position, geometric_normal,
-                                           max(dot(geometric_normal, light_direction), 0.0));
+                                           shadow_position, shadow_normal,
+                                           max(dot(shadow_normal, light_direction), 0.0));
                 point_shadow = mix(1.0, point_shadow,
                                    local_shadows.params.z * local_shadows.point_params[slot].y *
                                        lights.points[i].shadow.y);
             }
             // Con rayos: la mas oscura de las dos (los rayos ven el escenario
             // real; el mapa, ademas, los personajes y el terreno).
-            if (rt_local) {
+            if (rt_local && !from_behind) {
                 float rt = rtLocalShadow(i);
                 if (rt >= 0.0) point_shadow = min(point_shadow, mix(1.0, rt, lights.points[i].shadow.y));
             }
 
-            color += shade(light_direction, radiance, normal, view_direction, albedo, roughness,
-                           metallic, f0, energy, 0.0) *
+            color += (from_behind ? radiance * disneyTranslucency(surface_model, normal, view_direction,
+                                                                  light_direction, albedo, metallic)
+                                  : shade(light_direction, radiance, normal, view_direction, albedo, roughness,
+                                          metallic, f0, energy, 0.0)) *
                      point_shadow;
         }
 
@@ -1412,25 +1456,30 @@ void main() {
                             attenuation(distance_to_light, lights.spots[i].position_range.w);
 
             float n_dot_l = dot(normal, light_direction);
-            if (n_dot_l <= 0.0) {
+            bool from_behind = n_dot_l <= 0.0;
+            if (from_behind && !translucent) {
                 continue;
             }
+            vec3 shadow_position = from_behind ? world_position - geometric_normal * translucent_thickness : world_position;
+            vec3 shadow_normal = from_behind ? -geometric_normal : geometric_normal;
 
             float spot_shadow = 1.0;
             int slot = shadowSlot(lights.spots[i].outer_shadow.y);
             if (slot >= 0 && local_shadows.params.z > 0.0) {
-                spot_shadow = spotShadow(slot, distance_to_light, world_position,
-                                         geometric_normal,
-                                         max(dot(geometric_normal, light_direction), 0.0));
+                spot_shadow = spotShadow(slot, distance_to_light, shadow_position,
+                                         shadow_normal,
+                                         max(dot(shadow_normal, light_direction), 0.0));
                 spot_shadow = mix(1.0, spot_shadow, local_shadows.params.z * lights.spots[i].outer_shadow.z);
             }
-            if (rt_local) {
+            if (rt_local && !from_behind) {
                 float rt = rtLocalShadow(kMaxPointLights + i);
                 if (rt >= 0.0) spot_shadow = min(spot_shadow, mix(1.0, rt, lights.spots[i].outer_shadow.z));
             }
 
-            color += shade(light_direction, radiance, normal, view_direction, albedo, roughness,
-                           metallic, f0, energy, 0.0) *
+            color += (from_behind ? radiance * disneyTranslucency(surface_model, normal, view_direction,
+                                                                  light_direction, albedo, metallic)
+                                  : shade(light_direction, radiance, normal, view_direction, albedo, roughness,
+                                          metallic, f0, energy, 0.0)) *
                      spot_shadow;
         }
 

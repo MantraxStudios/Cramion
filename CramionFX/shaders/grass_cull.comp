@@ -1,0 +1,136 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+
+// Hierba: cada hilo es una celda de una rejilla alrededor de la camara (fija
+// al mundo: las briznas no "nadan" al moverse). Decide si hay brizna (la capa
+// de hierba del terreno, el recorte por el frustum, menos densidad lejos) y la
+// escribe en la lista cercana (con detalle) o en la lejana (simple). Tambien
+// calcula aqui, una vez por brizna, lo que la empujan los objetos fisicos.
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+#define GRASS_SET 1
+#include "grass_common.glsl"
+
+// Set 0: el del terreno (terrain.vert/.frag).
+layout(set = 0, binding = 0) uniform sampler2D heightmap;
+layout(set = 0, binding = 1) uniform TerrainParams {
+    vec4 origin_size;
+    vec4 info;  // x altura maxima, y resolucion, z 1/resolucion, w capas
+    vec4 layer_params[8];
+    vec4 layer_tint[8];
+    vec4 layer_extra[8];
+} terrain;
+layout(set = 0, binding = 2) uniform sampler2D splat0;
+layout(set = 0, binding = 3) uniform sampler2D splat1;
+
+layout(std430, set = 1, binding = 1) writeonly buffer Blades {
+    GrassBlade blades[];
+};
+
+struct DrawArgs {
+    uint vertex_count;
+    uint instance_count;
+    uint first_vertex;
+    uint first_instance;
+};
+layout(std430, set = 1, binding = 2) buffer Args {
+    DrawArgs args[2];  // 0 = cerca (con detalle), 1 = lejos
+};
+
+float heightAt(vec2 uv) {
+    float res = terrain.info.y;
+    vec2 texel = (clamp(uv, 0.0, 1.0) * (res - 1.0) + 0.5) / res;
+    return textureLod(heightmap, texel, 0.0).r * terrain.info.x;
+}
+
+float layerWeight(vec2 uv, int layer) {
+    if (layer < 0) return 0.0;
+    vec4 w = layer < 4 ? textureLod(splat0, uv, 0.0) : textureLod(splat1, uv, 0.0);
+    return w[layer & 3];
+}
+
+void main() {
+    uint cells = uint(grass.grid.y);
+    if (gl_GlobalInvocationID.x >= cells || gl_GlobalInvocationID.y >= cells) return;
+    float spacing = grass.grid.x;
+
+    // Celda del mundo y un punto al azar dentro de ella.
+    vec2 cell = floor(grass.origin.xy / spacing) + vec2(gl_GlobalInvocationID.xy);
+    vec2 random = grassHash2(cell + grass.camera_pos.w);
+    vec2 xz = (cell + random) * spacing;
+
+    vec2 to_camera = xz - grass.camera_pos.xz;
+    float distance_xz = length(to_camera);
+    float max_distance = grass.grid.z;
+    if (distance_xz > max_distance) return;
+
+    // Dentro del terreno y donde crece la hierba (su capa).
+    vec2 uv = (xz - terrain.origin_size.xz) / terrain.origin_size.w;
+    if (any(lessThan(uv, vec2(0.0))) || any(greaterThan(uv, vec2(1.0)))) return;
+    float weight = layerWeight(uv, grass.layers.x);
+    float threshold = grass.origin.z;
+    float density = clamp((weight - threshold) / max(1.0 - threshold, 1e-3), 0.0, 1.0);
+    float chance = grassHash(cell * 1.37 + 7.1);
+    if (chance >= density) return;
+
+    // Menos briznas lejos (mas anchas, para cubrir lo mismo).
+    float near_distance = grass.grid.w;
+    float keep = mix(1.0, 0.12, smoothstep(near_distance, max_distance, distance_xz));
+    if (grassHash(cell * 2.91 + 3.3) >= keep) return;
+
+    vec3 base = vec3(xz.x, terrain.origin_size.y + heightAt(uv), xz.y);
+    // Matas: las briznas vecinas se parecen (altura), como la hierba real.
+    vec2 clump_cell = floor(xz / 0.6);
+    float clump = grassHash(clump_cell * 7.31 + 2.2);
+    float height_scale = 1.0 + ((grassHash(cell * 5.17) * 0.45 + clump * 0.55) - 0.5) * 2.0 * grass.shape.y;
+    // Mas bajas en los bordes de la capa (transicion natural).
+    height_scale *= mix(0.45, 1.0, smoothstep(0.0, 0.5, density));
+    float height = grass.shape.x * max(height_scale, 0.15);
+
+    // Frustum (con margen por la altura y el viento).
+    vec4 clip = grass.view_projection * vec4(base + vec3(0.0, height * 0.5, 0.0), 1.0);
+    float margin = height * 1.5 + 0.3;
+    vec4 clip_margin = grass.view_projection * vec4(base + vec3(margin, height * 0.5, 0.0), 1.0);
+    float r = length(clip_margin.xy - clip.xy) + margin;
+    if (clip.w < -margin || clip.x > clip.w + r || clip.x < -clip.w - r || clip.y > clip.w + r ||
+        clip.y < -clip.w - r) {
+        return;
+    }
+
+    // Lo que la empuja: objetos fisicos, personajes (y lo que pase cerca).
+    vec3 push = vec3(0.0);
+    for (int i = 0; i < grass.layers.z; ++i) {
+        vec4 s = grass.interactors[i];
+        vec3 d = base - s.xyz;
+        float vertical = max(-d.y - height, d.y - s.w);  // por encima de la punta o por debajo del objeto
+        if (vertical > 0.0) continue;
+        float dist = length(d.xz);
+        float reach = s.w + height * 0.6;
+        if (dist >= reach) continue;
+        float strength = 1.0 - smoothstep(s.w * 0.4, reach, dist);
+        vec2 away = dist > 1e-3 ? d.xz / dist : vec2(1.0, 0.0);
+        push.xz += away * strength * height * 1.2;
+        push.y = max(push.y, strength);
+    }
+    push *= grass.dry_color.a;
+    push.y = clamp(push.y, 0.0, 1.0);
+
+    float dry = grass.layers.y >= 0 ? layerWeight(uv, grass.layers.y) : 0.0;
+    dry = clamp(dry + (grassHash(cell * 9.7) - 0.5) * 0.3, 0.0, 1.0);
+    float width_scale = clamp(inversesqrt(max(keep, 0.12)) / 3.0, 0.0, 1.0);  // 1/sqrt(keep), hasta 3x
+    uint bits = packBlade(grassHash(cell * 3.3 + 1.7), clamp(height / (grass.shape.x * 2.5), 0.0, 1.0), dry,
+                          width_scale);
+
+    uint list = distance_xz < near_distance ? 0u : 1u;
+    uint index = atomicAdd(args[list].instance_count, 1u);
+    uint cap = uint(grass.origin.w);
+    if (index >= cap) {
+        atomicAdd(args[list].instance_count, 0xFFFFFFFFu);  // deshacer: la lista esta llena
+        return;
+    }
+    GrassBlade blade;
+    blade.position = vec4(base, uintBitsToFloat(bits));
+    blade.push = vec4(push, grassHash(cell * 0.73) * 6.2831853);
+    blades[list * cap + index] = blade;
+}

@@ -35,6 +35,16 @@ layout(location = 1) out vec4 out_normal;    // rg = normal (octaedrica), b = ru
 layout(location = 2) out vec4 out_material;  // rgb = emision (HDR lineal), a = metalicidad
 layout(location = 3) out vec2 out_velocity;  // UV actual - UV anterior (sin jitter)
 
+// Sombra del sol que el material se hace a si mismo (auto-sombra del
+// parallax): 1 = nada. Va en el alfa de out_material junto a la
+// metalicidad (ver decodeMetallic en lighting.frag).
+float surface_sun_shadow = 1.0;
+
+// Modelo de sombreado de Disney (disney_brdf.glsl): r = modelo / 255, gba =
+// parametros. 0 = estandar (lo que escriben el terreno, los voxeles...).
+layout(location = 4) out vec4 out_shading;
+vec4 surface_shading = vec4(0.0);
+
 // Movimiento en pantalla de este pixel, de las posiciones de recorte (sin
 // jitter) de este frame y del anterior.
 void writeVelocity(vec4 current_clip, vec4 previous_clip) {
@@ -254,5 +264,8 @@ void writeSurface(vec4 albedo, vec3 n, vec3 normal, vec3 tangent_normal, vec3 aa
 
     out_albedo = vec4(albedo.rgb, occlusion);
     out_normal = vec4(encodeNormal(normal), roughness, reflectance);
-    out_material = vec4(emissive, metallic);
+    // Metalicidad (0..1) + 2 x sombra propia en 8 niveles (0 = nada).
+    float self_shadow_level = floor((1.0 - clamp(surface_sun_shadow, 0.0, 1.0)) * 7.0 + 0.5);
+    out_material = vec4(emissive, clamp(metallic, 0.0, 1.0) + 2.0 * self_shadow_level);
+    out_shading = surface_shading;
 }

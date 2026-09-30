@@ -1,0 +1,310 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Licencia · Manual de Cramion</title>
+  <meta name="description" content="Qué puedes hacer con Cramion y con tus juegos, y cómo pedir el código fuente.">
+  <link rel="icon" href="../img/icon.png">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/base16/tomorrow-night.min.css">
+  <link rel="stylesheet" href="manual.css">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/lua.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/glsl.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/json.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/bash.min.js"></script>
+  <script src="search.js"></script>
+</head>
+<body>
+
+  <header class="top">
+    <div class="top-inner">
+      <button id="menu-btn" class="menu-btn" aria-label="Menú">Menú</button>
+      <a href="index.html" class="brand"><img src="../img/icon.png" alt=""><b>Cramion</b><span>manual</span></a>
+      <div class="search">
+        <input id="search" type="search" autocomplete="off" placeholder="Buscar (funciones, componentes, páginas)">
+        <kbd>/</kbd>
+        <div id="results" class="results" hidden></div>
+      </div>
+      <nav class="top-links">
+        <a href="../index.html">Web</a>
+        <a href="https://discord.gg/zG7rSsUGEz" target="_blank" rel="noopener">Discord</a>
+        <a href="licencia.html">Licencia</a>
+        <a href="https://paypal.me/evan2025" target="_blank" rel="noopener">Donar</a>
+      </nav>
+    </div>
+  </header>
+
+  <div class="frame">
+    <aside id="side" class="side">
+      <nav>
+        <a href="index.html">Índice</a>
+        <p class="group">Primeros pasos</p>
+        <a href="primer-script.html">Tu primer script</a>
+        <a href="ciclo-de-vida.html">Ciclo de vida</a>
+        <a href="propiedades.html">Propiedades</a>
+        <a href="recarga.html">Recarga en caliente</a>
+        <a href="prefabs.html">Prefabs</a>
+        <a href="mcp.html">Conectar una IA (MCP)</a>
+        <a href="licencia.html" class="active">Licencia</a>
+        <p class="group">El editor</p>
+        <a href="editor-interfaz.html">Interfaz y pestañas</a>
+        <a href="editor-escena.html">Vista Escena y gizmos</a>
+        <a href="editor-jerarquia.html">Jerarquía e Inspector</a>
+        <a href="editor-proyecto.html">Proyecto e importación</a>
+        <a href="editor-play.html">Play, deshacer y escenas</a>
+        <a href="editor-herramientas.html">Herramientas de mundo</a>
+        <a href="mundo-procedural.html">Mundo procedural</a>
+        <a href="editor-ventanas.html">Ventanas de herramientas</a>
+        <a href="materiales.html">Materiales</a>
+        <a href="render-textures.html">Render Textures</a>
+        <a href="render.html">Render y rendimiento</a>
+        <a href="exportar.html">Exportar y compilación</a>
+        <a href="datapacks.html">DataPacks (bundles)</a>
+        <a href="plantillas.html">Plantillas</a>
+        <a href="atajos.html">Atajos de teclado</a>
+        <a href="actualizaciones.html">Actualizaciones</a>
+        <p class="group">Componentes</p>
+        <a href="componentes.html">Todos los componentes</a>
+        <a href="componentes-basicos.html">Transform y renderizado</a>
+        <a href="componentes-entorno.html">Entorno</a>
+        <a href="componentes-fisica.html">Física</a>
+        <a href="componentes-efectos.html">Partículas y depuración</a>
+        <a href="componentes-animacion.html">Animación</a>
+        <a href="componentes-audio.html">Audio</a>
+        <a href="componentes-cinematicas.html">Cámaras y cinemáticas</a>
+        <a href="componentes-navegacion.html">Navegación</a>
+        <a href="componentes-ui.html">Interfaz (UI)</a>
+        <a href="componentes-scripting.html">Scripts y prefabs</a>
+        <a href="componentes-vr.html">Realidad virtual</a>
+        <p class="group">Referencia de la API</p>
+        <a href="vec3.html">Vec3</a>
+        <a href="quat.html">Quat (rotaciones)</a>
+        <a href="mathf.html">Mathf</a>
+        <a href="random.html">Random</a>
+        <a href="entity.html">Entity</a>
+        <a href="scene.html">Scene</a>
+        <a href="input.html">Input</a>
+        <a href="input-actions.html">Input Actions</a>
+        <a href="realidad-virtual.html">Realidad virtual (XR)</a>
+        <a href="time.html">Time</a>
+        <a href="physics.html">Physics</a>
+        <a href="navegacion.html">Navegación</a>
+        <a href="mallas.html">Mallas por código</a>
+        <a href="voxel.html">Mundo de bloques</a>
+        <a href="audio.html">Audio</a>
+        <a href="ui.html">Interfaz (UI)</a>
+        <a href="esqueletos.html">Esqueletos: IK, ragdoll y phys bones</a>
+        <a href="graphics.html">Graphics</a>
+        <a href="red.html">Network (multijugador)</a>
+        <a href="http.html">Http y Json</a>
+        <a href="prefs.html">Prefs y Game</a>
+        <a href="debug.html">Debug</a>
+        <p class="group">Gráficos</p>
+        <a href="shaders.html">Shaders propios</a>
+        <p class="group">Ejemplos</p>
+        <a href="ejemplo-girar.html">Girar un objeto</a>
+        <a href="ejemplo-camara.html">Cámara que sigue al jugador</a>
+        <a href="ejemplo-jugador.html">Jugador con física</a>
+        <a href="ejemplo-disparo.html">Disparo con raycast</a>
+        <a href="ejemplo-monedas.html">Monedas y puntuación</a>
+        <a href="ejemplo-spawner.html">Generador de enemigos</a>
+        <a href="ejemplo-vehiculo.html">Conducir un vehículo</a>
+        <a href="ejemplo-menu.html">Menú, opciones y récord</a>
+        <a href="ejemplo-animacion.html">Animación de un personaje</a>
+        <a href="ejemplo-comunicacion.html">Scripts que se hablan</a>
+        <a href="ejemplo-ia.html">IA: patrullar y perseguir</a>
+        <a href="ejemplo-terreno.html">Terreno procedural con colisión</a>
+        <a href="ejemplo-efectos.html">Varios materiales y efectos</a>
+        <a href="ejemplo-olas.html">Olas: cambiar la malla cada frame</a>
+      </nav>
+    </aside>
+
+    <main class="doc">
+      <div class="crumbs"><a href="index.html">Manual</a> / Primeros pasos</div>
+      <h1>Licencia</h1>
+      <p class="lede">Qué puedes hacer con Cramion y con tus juegos, y cómo pedir el código fuente.</p>
+      <div class="body">
+<p>
+  Cramion es <strong class="text-white">gratis para hacer juegos</strong>, y los juegos que hagas con él son tuyos: los
+  vendes donde quieras y <strong class="text-white">sin regalías</strong>. Lo que no se permite es vender, revender o
+  resubir el motor, ni hacerlo pasar por otro. El texto completo, en español y en inglés, es el archivo
+  <code>LICENSE</code> que viene en el zip.
+</p>
+
+<h3 id="puedes">Lo que puedes hacer</h3>
+<ul>
+  <li>Descargar y usar el editor para cualquier fin, personal o comercial.</li>
+  <li>Hacer juegos, aplicaciones o visualizaciones y <strong>venderlos o regalarlos</strong> en cualquier tienda
+    (Steam, itch.io, Google Play...), sin pagar nada al autor.</li>
+  <li>Incluir el <em>runtime</em> (lo que genera <a href="exportar.html">Exportar juego</a>) dentro de tus juegos.</li>
+</ul>
+
+<h3 id="no-puedes">Lo que no puedes hacer</h3>
+<ul>
+  <li>Vender, alquilar o cobrar de cualquier forma por el motor, el editor o su código, ni solos ni dentro de packs,
+    cursos, plantillas o bundles.</li>
+  <li>Resubir el editor o el zip a otra web, tienda o servidor.</li>
+  <li>Descompilar los ejecutables para sacar el código fuente.</li>
+  <li>Quitar los créditos o la licencia, cambiarle el nombre o presentarlo como obra propia.</li>
+  <li>Usar el nombre <em>Cramion</em> o su logo para otra cosa que no sea el motor oficial, salvo para decir que tu juego
+    está "Hecho con Cramion Engine" (archivo <code>TRADEMARK.md</code>).</li>
+</ul>
+
+<h3 id="creditos">Créditos en tu juego</h3>
+<p>
+  No hace falta pantalla de inicio ni logo. Basta con poner <strong>"Hecho con Cramion Engine"</strong> (o <em>"Made with
+  Cramion Engine"</em>) en los créditos o en un archivo junto al ejecutable, y copiar <code>THIRD_PARTY_NOTICES.md</code> y
+  la carpeta <code>licencias/</code> del zip, que tienen las licencias de las librerías que usa el juego.
+</p>
+
+<h3 id="codigo-fuente">Código fuente</h3>
+<p>
+  El código fuente <strong>no es público</strong>: solo se entrega con una <strong>licencia de código fuente</strong> que da
+  el autor por escrito. Para pedirla, escribe a
+  <a href="mailto:tupapienrakion1234@gmail.com?subject=Licencia%20de%20c%C3%B3digo%20fuente%20de%20Cramion">tupapienrakion1234@gmail.com</a>
+  contando quién eres y para qué lo necesitas. En esa licencia se fijan el precio (si lo hay), los usos permitidos y la
+  duración. Tener el código sin ella no da permiso para usarlo, compilarlo, modificarlo ni compartirlo.
+</p>
+
+<h3 id="versiones-anteriores">Versiones anteriores</h3>
+<p>
+  Desde el 30 de septiembre de 2026 esta licencia vale para <strong>todas</strong> las versiones, también la 1.4 y las
+  anteriores. Quien ya tuviera antes una copia con licencia MIT la conserva, pero solo si mantiene intactos el copyright y
+  el texto de la MIT.
+</p>
+
+<h3 id="copias-no-oficiales">Si alguien vende Cramion</h3>
+<p>
+  La única descarga oficial es la de la <a href="../index.html#descargar">web</a>, y es gratis. Si ves a alguien vendiendo
+  el motor o el editor, avisa en el <a href="https://discord.gg/zG7rSsUGEz" target="_blank" rel="noopener">Discord</a> o
+  escribe a <a href="mailto:tupapienrakion1234@gmail.com">tupapienrakion1234@gmail.com</a> con el enlace.
+</p>
+      </div>
+      <nav class="pager"><a href="mcp.html"><span>← anterior</span><b>Conectar una IA (MCP)</b></a><a class="next" href="editor-interfaz.html"><span>siguiente →</span><b>Interfaz y pestañas</b></a></nav>
+      <p class="help">¿Algo no queda claro o falta algo? Pregunta en el
+        <a href="https://discord.gg/zG7rSsUGEz" target="_blank" rel="noopener">Discord</a>.</p>
+    </main>
+    <aside class="onpage-col">
+      <p>En esta página</p>
+      <nav id="onpage" class="onpage"></nav>
+    </aside>
+  </div>
+
+  <script>
+    // Solo el codigo con lenguaje (los arboles de carpetas y la salida quedan tal cual).
+    hljs.configure({ cssSelector: 'pre code[class*="language-"]' });
+    hljs.highlightAll();
+
+    // Menu lateral en el movil.
+    const side = document.getElementById("side");
+    document.getElementById("menu-btn").addEventListener("click", () => document.body.classList.toggle("menu-open"));
+    document.addEventListener("click", ev => {
+      if (document.body.classList.contains("menu-open") && !ev.target.closest("#side, #menu-btn")) {
+        document.body.classList.remove("menu-open");
+      }
+    });
+    // El enlace activo a la vista dentro del menu (sin mover la pagina).
+    const current = side.querySelector("a.active");
+    if (current) side.scrollTop = current.offsetTop - side.clientHeight / 2;
+
+    // Ancla de cada seccion y boton de copiar en el codigo.
+    document.querySelectorAll(".doc h3[id]").forEach(h => {
+      const a = document.createElement("a");
+      a.className = "anchor";
+      a.href = "#" + h.id;
+      a.textContent = "#";
+      h.appendChild(a);
+    });
+    document.querySelectorAll(".doc pre").forEach(pre => {
+      const b = document.createElement("button");
+      b.className = "copy";
+      b.textContent = "copiar";
+      b.addEventListener("click", async () => {
+        try {
+          await navigator.clipboard.writeText(pre.querySelector("code")?.innerText ?? pre.innerText);
+          b.textContent = "copiado";
+        } catch { b.textContent = "no se pudo"; }
+        setTimeout(() => (b.textContent = "copiar"), 1400);
+      });
+      pre.appendChild(b);
+    });
+
+    // Tablas anchas: se desplazan dentro de su marco.
+    document.querySelectorAll(".doc table").forEach(t => {
+      const w = document.createElement("div");
+      w.className = "table-wrap";
+      t.replaceWith(w);
+      w.appendChild(t);
+    });
+
+    // "En esta pagina": los h3 con la seccion visible marcada.
+    const onpage = document.getElementById("onpage");
+    if (onpage) {
+      const heads = [...document.querySelectorAll(".doc h3[id]")];
+      if (heads.length < 2) {
+        onpage.closest("aside").style.visibility = "hidden";
+      } else {
+        onpage.innerHTML = heads.map(h => `<a href="#${h.id}">${h.firstChild.textContent}</a>`).join("");
+        const links = [...onpage.querySelectorAll("a")];
+        const obs = new IntersectionObserver(entries => {
+          for (const e of entries) {
+            if (e.isIntersecting) links.forEach(a => a.classList.toggle("active", a.getAttribute("href") === "#" + e.target.id));
+          }
+        }, { rootMargin: "-70px 0px -70% 0px" });
+        heads.forEach(h => obs.observe(h));
+      }
+    }
+
+    // Buscador: titulos, secciones y nombres de la API.
+    const input = document.getElementById("search");
+    const box = document.getElementById("results");
+    const norm = s => s.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+    const esc = s => s.replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+    let hits = [], sel = 0;
+    const render = () => {
+      const q = input.value.trim();
+      if (!hits.length) {
+        box.innerHTML = q ? '<p class="none">Sin resultados.</p>' : "";
+        box.hidden = !q;
+        return;
+      }
+      box.innerHTML = hits.map((h, i) => `
+        <a href="${h.u}" class="${i === sel ? "sel" : ""}">
+          <span class="t${h.c ? " code" : ""}">${esc(h.t)}</span><span class="g">${esc(h.g)}</span>
+          ${h.d ? `<span class="d">${esc(h.d)}</span>` : ""}
+        </a>`).join("");
+      box.hidden = false;
+    };
+    input.addEventListener("input", () => {
+      const q = norm(input.value.trim());
+      sel = 0;
+      if (!q) { hits = []; render(); return; }
+      const words = q.split(/\s+/);
+      hits = window.CRAMION_SEARCH
+        .map(e => {
+          const t = norm(e.t), all = t + " " + norm(e.g) + " " + norm(e.d || "");
+          if (!words.every(w => all.includes(w))) return null;
+          const score = (t.startsWith(q) ? 0 : t.includes(q) ? 1 : 2) + (e.c ? 0.5 : 0) - (e.d ? 0.3 : 0);
+          return { e, score };
+        })
+        .filter(Boolean).sort((a, b) => a.score - b.score).slice(0, 12).map(x => x.e);
+      render();
+    });
+    input.addEventListener("keydown", ev => {
+      if (ev.key === "ArrowDown") { sel = Math.min(sel + 1, hits.length - 1); render(); ev.preventDefault(); }
+      if (ev.key === "ArrowUp") { sel = Math.max(sel - 1, 0); render(); ev.preventDefault(); }
+      if (ev.key === "Enter" && hits[sel]) location.href = hits[sel].u;
+      if (ev.key === "Escape") { input.value = ""; hits = []; render(); input.blur(); }
+    });
+    document.addEventListener("keydown", ev => {
+      if (ev.key === "/" && document.activeElement !== input) { ev.preventDefault(); input.focus(); }
+    });
+    document.addEventListener("click", ev => { if (!ev.target.closest("#results, #search")) box.hidden = true; });
+    input.addEventListener("focus", () => { if (input.value.trim()) render(); });
+  </script>
+</body>
+</html>

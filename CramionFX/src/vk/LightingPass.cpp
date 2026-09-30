@@ -27,7 +27,7 @@ void LightingPass::create(const VulkanDevice& device, vk::Format color_format) {
     sampler_ = vk::raii::Sampler(device.handle(), sampler_info);
 
     // --- Descriptores ---
-    std::array<vk::DescriptorSetLayoutBinding, 26> bindings{};
+    std::array<vk::DescriptorSetLayoutBinding, 27> bindings{};
 
     bindings[0].binding = 0;
     bindings[0].descriptorType = vk::DescriptorType::eUniformBuffer;
@@ -120,7 +120,8 @@ void LightingPass::create(const VulkanDevice& device, vk::Format color_format) {
     // las nubes sobre el suelo. Binding 24: las cascadas sin comparacion
     // (busqueda de lo que tapa de las sombras suaves).
     // Binding 25: sombras por rayos de las luces locales (rt_shadows.comp).
-    for (std::uint32_t binding = 18; binding <= 25; ++binding) {
+    // Binding 26: modelo de sombreado de Disney del G-buffer.
+    for (std::uint32_t binding = 18; binding <= 26; ++binding) {
         bindings[binding].binding = binding;
         bindings[binding].descriptorType = vk::DescriptorType::eCombinedImageSampler;
         bindings[binding].descriptorCount = 1;

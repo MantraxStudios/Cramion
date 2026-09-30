@@ -102,19 +102,22 @@ std::vector<std::uint8_t> solidLayer(std::uint8_t r, std::uint8_t g, std::uint8_
 // -----------------------------------------------------------------------------
 
 void TerrainPass::create(const VulkanDevice& device, const vk::raii::DescriptorSetLayout& frame_layout,
-                         std::array<vk::Format, 4> gbuffer_formats, vk::Format depth_format,
+                         std::array<vk::Format, GBuffer::kColorAttachmentCount> gbuffer_formats, vk::Format depth_format,
                          vk::Format shadow_format, std::uint32_t frames_in_flight) {
     destroy();
     device_ = &device;
     frames_ = frames_in_flight;
 
     // Set 1: alturas y parametros (vertice y fragmento), pesos y capas.
-    const auto stage_all = vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment;
+    // (La hierba lee alturas, parametros y pesos en su compute.)
+    const auto stage_all =
+        vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment | vk::ShaderStageFlagBits::eCompute;
+    const auto stage_splat = vk::ShaderStageFlagBits::eFragment | vk::ShaderStageFlagBits::eCompute;
     const std::array<vk::DescriptorSetLayoutBinding, 6> bindings = {{
         {0, vk::DescriptorType::eCombinedImageSampler, 1, stage_all},
         {1, vk::DescriptorType::eUniformBuffer, 1, stage_all},
-        {2, vk::DescriptorType::eCombinedImageSampler, 1, vk::ShaderStageFlagBits::eFragment},
-        {3, vk::DescriptorType::eCombinedImageSampler, 1, vk::ShaderStageFlagBits::eFragment},
+        {2, vk::DescriptorType::eCombinedImageSampler, 1, stage_splat},
+        {3, vk::DescriptorType::eCombinedImageSampler, 1, stage_splat},
         {4, vk::DescriptorType::eCombinedImageSampler, 1, vk::ShaderStageFlagBits::eFragment},
         {5, vk::DescriptorType::eCombinedImageSampler, 1, vk::ShaderStageFlagBits::eFragment},
     }};
@@ -164,12 +167,20 @@ void TerrainPass::create(const VulkanDevice& device, const vk::raii::DescriptorS
     repeat_sampler_ = vk::raii::Sampler(device.handle(), repeat);
 
     createPipelines(device, gbuffer_formats, depth_format, shadow_format);
+    createGrassPipelines(device, frame_layout, gbuffer_formats, depth_format);
     createPatchMesh(device);
     staging_.resize(frames_in_flight);
 }
 
 void TerrainPass::destroy() {
     terrains_.clear();
+    grass_pipeline_ = nullptr;
+    grass_draw_layout_ = nullptr;
+    grass_cull_pipeline_ = nullptr;
+    grass_cull_layout_ = nullptr;
+    grass_pool_ = nullptr;
+    grass_set_layout_ = nullptr;
+    grass_interactors_.clear();
     uploads_.clear();
     for (VulkanBuffer& buffer : staging_) buffer.destroy();
     staging_.clear();
@@ -186,7 +197,7 @@ void TerrainPass::destroy() {
     device_ = nullptr;
 }
 
-void TerrainPass::createPipelines(const VulkanDevice& device, std::array<vk::Format, 4> gbuffer_formats,
+void TerrainPass::createPipelines(const VulkanDevice& device, std::array<vk::Format, GBuffer::kColorAttachmentCount> gbuffer_formats,
                                   vk::Format depth_format, vk::Format shadow_format) {
     const vk::raii::ShaderModule vertex = shaders::loadModule(device, "terrain.vert.spv");
     const vk::raii::ShaderModule fragment = shaders::loadModule(device, "terrain.frag.spv");
@@ -281,6 +292,280 @@ void TerrainPass::createPipelines(const VulkanDevice& device, std::array<vk::For
         info.pDynamicState = &dynamic;
         info.layout = *layout_;
         shadow_pipeline_ = vk::raii::Pipeline(device.handle(), device.pipelineCache(), info);
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Hierba
+// -----------------------------------------------------------------------------
+
+namespace {
+
+// Debe coincidir con GrassParams (grass_common.glsl).
+constexpr std::uint32_t kMaxGrassInteractors = 32;
+struct GpuGrassParams {
+    core::Vec4 grid;
+    core::Vec4 origin;
+    core::Vec4 shape;
+    core::Vec4 base_color;
+    core::Vec4 tip_color;
+    core::Vec4 dry_color;
+    core::Vec4 wind;
+    core::Vec4 camera_pos;
+    std::int32_t layers[4];
+    core::Mat4 view_projection;
+    core::Vec4 interactors[kMaxGrassInteractors];
+};
+struct GpuGrassBlade {
+    core::Vec4 position;
+    core::Vec4 push;
+};
+static_assert(sizeof(GpuGrassBlade) == 32, "GpuGrassBlade debe coincidir con grass_common.glsl");
+struct DrawIndirect {
+    std::uint32_t vertex_count;
+    std::uint32_t instance_count;
+    std::uint32_t first_vertex;
+    std::uint32_t first_instance;
+};
+constexpr std::uint32_t kNearSegments = 7;  // 7 tramos + punta = 45 vertices
+constexpr std::uint32_t kFarSegments = 3;   // 3 tramos + punta = 21
+
+}  // namespace
+
+void TerrainPass::createGrassPipelines(const VulkanDevice& device, const vk::raii::DescriptorSetLayout& frame_layout,
+                                       std::array<vk::Format, GBuffer::kColorAttachmentCount> gbuffer_formats,
+                                       vk::Format depth_format) {
+    const auto compute = vk::ShaderStageFlagBits::eCompute;
+    const vk::ShaderStageFlags all = vk::ShaderStageFlagBits::eCompute | vk::ShaderStageFlagBits::eVertex |
+                                     vk::ShaderStageFlagBits::eFragment;
+    const std::array<vk::DescriptorSetLayoutBinding, 3> bindings = {{
+        {0, vk::DescriptorType::eUniformBuffer, 1, all},
+        {1, vk::DescriptorType::eStorageBuffer, 1, compute | vk::ShaderStageFlagBits::eVertex},
+        {2, vk::DescriptorType::eStorageBuffer, 1, compute},
+    }};
+    vk::DescriptorSetLayoutCreateInfo set_info{};
+    set_info.setBindings(bindings);
+    grass_set_layout_ = vk::raii::DescriptorSetLayout(device.handle(), set_info);
+
+    const std::uint32_t max_sets = 16 * frames_;
+    const std::array<vk::DescriptorPoolSize, 2> sizes = {{
+        {vk::DescriptorType::eUniformBuffer, max_sets},
+        {vk::DescriptorType::eStorageBuffer, max_sets * 2},
+    }};
+    vk::DescriptorPoolCreateInfo pool_info{};
+    pool_info.flags = vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet;
+    pool_info.maxSets = max_sets;
+    pool_info.setPoolSizes(sizes);
+    grass_pool_ = vk::raii::DescriptorPool(device.handle(), pool_info);
+
+    // --- Compute: set 0 el del terreno, set 1 el de la hierba ---
+    {
+        const std::array<vk::DescriptorSetLayout, 2> sets = {*set_layout_, *grass_set_layout_};
+        vk::PipelineLayoutCreateInfo layout_info{};
+        layout_info.setSetLayouts(sets);
+        grass_cull_layout_ = vk::raii::PipelineLayout(device.handle(), layout_info);
+        const vk::raii::ShaderModule module = shaders::loadModule(device, "grass_cull.comp.spv");
+        vk::ComputePipelineCreateInfo info{};
+        info.stage = vk::PipelineShaderStageCreateInfo{{}, compute, *module, "main"};
+        info.layout = *grass_cull_layout_;
+        grass_cull_pipeline_ = vk::raii::Pipeline(device.handle(), device.pipelineCache(), info);
+    }
+    // --- Dibujo: set 0 el del frame, 1 el del terreno, 2 el de la hierba ---
+    {
+        const std::array<vk::DescriptorSetLayout, 3> sets = {*frame_layout, *set_layout_, *grass_set_layout_};
+        vk::PushConstantRange push{vk::ShaderStageFlagBits::eVertex, 0, sizeof(std::uint32_t)};
+        vk::PipelineLayoutCreateInfo layout_info{};
+        layout_info.setSetLayouts(sets);
+        layout_info.setPushConstantRanges(push);
+        grass_draw_layout_ = vk::raii::PipelineLayout(device.handle(), layout_info);
+
+        const vk::raii::ShaderModule vertex = shaders::loadModule(device, "grass.vert.spv");
+        const vk::raii::ShaderModule fragment = shaders::loadModule(device, "grass.frag.spv");
+        const std::array<vk::PipelineShaderStageCreateInfo, 2> stages = {{
+            {{}, vk::ShaderStageFlagBits::eVertex, *vertex, "main"},
+            {{}, vk::ShaderStageFlagBits::eFragment, *fragment, "main"},
+        }};
+        vk::PipelineVertexInputStateCreateInfo vertex_input{};  // sin vertices: salen del indice
+        vk::PipelineInputAssemblyStateCreateInfo input_assembly{};
+        input_assembly.topology = vk::PrimitiveTopology::eTriangleList;
+        vk::PipelineViewportStateCreateInfo viewport{};
+        viewport.viewportCount = 1;
+        viewport.scissorCount = 1;
+        vk::PipelineRasterizationStateCreateInfo raster{};
+        raster.polygonMode = vk::PolygonMode::eFill;
+        raster.cullMode = vk::CullModeFlagBits::eNone;  // las briznas se ven por las dos caras
+        raster.lineWidth = 1.0f;
+        vk::PipelineMultisampleStateCreateInfo multisample{};
+        multisample.rasterizationSamples = vk::SampleCountFlagBits::e1;
+        vk::PipelineDepthStencilStateCreateInfo depth{};
+        depth.depthTestEnable = VK_TRUE;
+        depth.depthWriteEnable = VK_TRUE;
+        depth.depthCompareOp = vk::CompareOp::eLessOrEqual;
+        std::array<vk::PipelineColorBlendAttachmentState, GBuffer::kColorAttachmentCount> blends{};
+        for (auto& b : blends) {
+            b.colorWriteMask = vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG |
+                               vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA;
+        }
+        vk::PipelineColorBlendStateCreateInfo blend{};
+        blend.setAttachments(blends);
+        const std::array<vk::DynamicState, 2> dynamic_states = {vk::DynamicState::eViewport, vk::DynamicState::eScissor};
+        vk::PipelineDynamicStateCreateInfo dynamic{};
+        dynamic.setDynamicStates(dynamic_states);
+        vk::PipelineRenderingCreateInfo rendering{};
+        rendering.setColorAttachmentFormats(gbuffer_formats);
+        rendering.depthAttachmentFormat = depth_format;
+        vk::GraphicsPipelineCreateInfo info{};
+        info.pNext = &rendering;
+        info.setStages(stages);
+        info.pVertexInputState = &vertex_input;
+        info.pInputAssemblyState = &input_assembly;
+        info.pViewportState = &viewport;
+        info.pRasterizationState = &raster;
+        info.pMultisampleState = &multisample;
+        info.pDepthStencilState = &depth;
+        info.pColorBlendState = &blend;
+        info.pDynamicState = &dynamic;
+        info.layout = *grass_draw_layout_;
+        grass_pipeline_ = vk::raii::Pipeline(device.handle(), device.pipelineCache(), info);
+    }
+}
+
+bool TerrainPass::ensureGrass(Terrain& t) {
+    const GrassDesc& g = t.desc.grass;
+    const std::uint32_t capacity = std::clamp<std::uint32_t>(g.max_blades / 2, 1024, 4000000);
+    if (t.grass && t.grass->capacity == capacity) return true;
+    device_->waitIdle();
+    auto grass = std::make_unique<Grass>();
+    grass->capacity = capacity;
+    grass->blades.create(*device_, static_cast<vk::DeviceSize>(capacity) * 2 * sizeof(GpuGrassBlade),
+                         vk::BufferUsageFlagBits::eStorageBuffer, vk::MemoryPropertyFlagBits::eDeviceLocal);
+    grass->args.create(*device_, sizeof(DrawIndirect) * 2,
+                       vk::BufferUsageFlagBits::eStorageBuffer | vk::BufferUsageFlagBits::eIndirectBuffer |
+                           vk::BufferUsageFlagBits::eTransferDst,
+                       vk::MemoryPropertyFlagBits::eDeviceLocal);
+    grass->params.resize(frames_);
+    for (VulkanBuffer& b : grass->params) {
+        b.create(*device_, sizeof(GpuGrassParams), vk::BufferUsageFlagBits::eUniformBuffer,
+                 vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent);
+    }
+    const std::vector<vk::DescriptorSetLayout> layouts(frames_, *grass_set_layout_);
+    vk::DescriptorSetAllocateInfo alloc{};
+    alloc.descriptorPool = *grass_pool_;
+    alloc.setSetLayouts(layouts);
+    try {
+        grass->sets = vk::raii::DescriptorSets(device_->handle(), alloc);
+    } catch (const std::exception&) {
+        return false;  // mas de 16 terrenos con hierba
+    }
+    for (std::uint32_t f = 0; f < frames_; ++f) {
+        const vk::DescriptorBufferInfo params{*grass->params[f].handle(), 0, sizeof(GpuGrassParams)};
+        const vk::DescriptorBufferInfo blades{*grass->blades.handle(), 0, VK_WHOLE_SIZE};
+        const vk::DescriptorBufferInfo args{*grass->args.handle(), 0, VK_WHOLE_SIZE};
+        const std::array<vk::WriteDescriptorSet, 3> writes = {{
+            {*grass->sets[f], 0, 0, 1, vk::DescriptorType::eUniformBuffer, nullptr, &params},
+            {*grass->sets[f], 1, 0, 1, vk::DescriptorType::eStorageBuffer, nullptr, &blades},
+            {*grass->sets[f], 2, 0, 1, vk::DescriptorType::eStorageBuffer, nullptr, &args},
+        }};
+        device_->handle().updateDescriptorSets(writes, nullptr);
+    }
+    t.grass = std::move(grass);
+    return true;
+}
+
+void TerrainPass::setGrassInteractors(const std::vector<core::Vec4>& spheres) {
+    grass_interactors_.assign(spheres.begin(), spheres.begin() + std::min<std::size_t>(spheres.size(), kMaxGrassInteractors));
+}
+
+void TerrainPass::recordGrassCull(const vk::raii::CommandBuffer& cmd, std::uint32_t frame,
+                                  const core::Vec3& camera_position, const core::Mat4& view_projection,
+                                  float delta_seconds) {
+    grass_previous_seconds_ = grass_seconds_;
+    grass_seconds_ += std::clamp(delta_seconds, 0.0f, 0.1f);
+    if (!*grass_cull_pipeline_) return;
+    for (auto& [id, terrain] : terrains_) {
+        Terrain& t = *terrain;
+        const GrassDesc& g = t.desc.grass;
+        if (t.grass) t.grass->culled = false;
+        if (!g.enabled || !t.desc.visible || frame >= t.sets.size() || !t.arrays_ready) continue;
+        if (!ensureGrass(t)) continue;
+        Grass& grass = *t.grass;
+
+        // Rejilla: una celda por brizna posible (con la densidad de cerca).
+        const float max_distance = std::clamp(g.max_distance, 2.0f, 400.0f);
+        float spacing = 1.0f / std::sqrt(std::max(g.density, 0.01f));
+        float cells = std::ceil(max_distance * 2.0f / spacing) + 1.0f;
+        if (cells > 4096.0f) {
+            spacing = max_distance * 2.0f / 4095.0f;
+            cells = 4096.0f;
+        }
+        GpuGrassParams p{};
+        p.grid = core::Vec4{spacing, cells, max_distance, std::min(g.near_distance, max_distance)};
+        p.origin = core::Vec4{camera_position.x - max_distance, camera_position.z - max_distance,
+                              std::clamp(g.threshold, 0.0f, 0.99f), static_cast<float>(grass.capacity)};
+        p.shape = core::Vec4{g.height, g.height_variation, g.width, g.bend};
+        p.base_color = core::Vec4{g.base_color.x, g.base_color.y, g.base_color.z, g.color_variation};
+        p.tip_color = core::Vec4{g.tip_color.x, g.tip_color.y, g.tip_color.z, g.wind};
+        p.dry_color = core::Vec4{g.dry_color.x, g.dry_color.y, g.dry_color.z, g.interaction};
+        const float wind_angle = g.wind_direction * 3.14159265f / 180.0f;
+        p.wind = core::Vec4{std::cos(wind_angle), std::sin(wind_angle), grass_seconds_, grass_previous_seconds_};
+        p.camera_pos = core::Vec4{camera_position.x, camera_position.y, camera_position.z, static_cast<float>(id % 97)};
+        p.layers[0] = g.layer;
+        p.layers[1] = g.dry_layer;
+        p.layers[2] = static_cast<std::int32_t>(grass_interactors_.size());
+        p.view_projection = view_projection;
+        for (std::size_t i = 0; i < grass_interactors_.size(); ++i) p.interactors[i] = grass_interactors_[i];
+        grass.params[frame].write(&p, sizeof(p));
+
+        // Contadores a cero (despues de que el frame anterior dibujara).
+        vk::MemoryBarrier2 before{};
+        before.srcStageMask = vk::PipelineStageFlagBits2::eDrawIndirect | vk::PipelineStageFlagBits2::eVertexShader;
+        before.srcAccessMask = vk::AccessFlagBits2::eIndirectCommandRead | vk::AccessFlagBits2::eShaderStorageRead;
+        before.dstStageMask = vk::PipelineStageFlagBits2::eTransfer | vk::PipelineStageFlagBits2::eComputeShader;
+        before.dstAccessMask = vk::AccessFlagBits2::eTransferWrite | vk::AccessFlagBits2::eShaderStorageWrite;
+        cmd.pipelineBarrier2(vk::DependencyInfo{}.setMemoryBarriers(before));
+        const std::array<DrawIndirect, 2> reset = {{{kNearSegments * 6 + 3, 0, 0, 0},
+                                                    {kFarSegments * 6 + 3, 0, 0, grass.capacity}}};
+        cmd.updateBuffer<DrawIndirect>(*grass.args.handle(), 0, reset);
+        vk::MemoryBarrier2 cleared{};
+        cleared.srcStageMask = vk::PipelineStageFlagBits2::eTransfer;
+        cleared.srcAccessMask = vk::AccessFlagBits2::eTransferWrite;
+        cleared.dstStageMask = vk::PipelineStageFlagBits2::eComputeShader;
+        cleared.dstAccessMask = vk::AccessFlagBits2::eShaderStorageRead | vk::AccessFlagBits2::eShaderStorageWrite;
+        cmd.pipelineBarrier2(vk::DependencyInfo{}.setMemoryBarriers(cleared));
+
+        cmd.bindPipeline(vk::PipelineBindPoint::eCompute, *grass_cull_pipeline_);
+        cmd.bindDescriptorSets(vk::PipelineBindPoint::eCompute, *grass_cull_layout_, 0,
+                               {*t.sets[frame], *grass.sets[frame]}, nullptr);
+        const auto groups = static_cast<std::uint32_t>((cells + 7.0f) / 8.0f);
+        cmd.dispatch(groups, groups, 1);
+
+        vk::MemoryBarrier2 done{};
+        done.srcStageMask = vk::PipelineStageFlagBits2::eComputeShader;
+        done.srcAccessMask = vk::AccessFlagBits2::eShaderStorageWrite;
+        done.dstStageMask = vk::PipelineStageFlagBits2::eDrawIndirect | vk::PipelineStageFlagBits2::eVertexShader;
+        done.dstAccessMask = vk::AccessFlagBits2::eIndirectCommandRead | vk::AccessFlagBits2::eShaderStorageRead;
+        cmd.pipelineBarrier2(vk::DependencyInfo{}.setMemoryBarriers(done));
+        grass.culled = true;
+    }
+}
+
+void TerrainPass::recordGrassGBuffer(const vk::raii::CommandBuffer& cmd, std::uint32_t frame,
+                                     const vk::raii::DescriptorSet& frame_set) const {
+    bool bound = false;
+    for (const auto& [id, terrain] : terrains_) {
+        const Terrain& t = *terrain;
+        if (!t.grass || !t.grass->culled || frame >= t.grass->sets.size()) continue;
+        if (!bound) {
+            cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *grass_pipeline_);
+            cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *grass_draw_layout_, 0, *frame_set, nullptr);
+            bound = true;
+        }
+        cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *grass_draw_layout_, 1,
+                               {*t.sets[frame], *t.grass->sets[frame]}, nullptr);
+        cmd.pushConstants<std::uint32_t>(*grass_draw_layout_, vk::ShaderStageFlagBits::eVertex, 0, kNearSegments);
+        cmd.drawIndirect(*t.grass->args.handle(), 0, 1, sizeof(DrawIndirect));
+        cmd.pushConstants<std::uint32_t>(*grass_draw_layout_, vk::ShaderStageFlagBits::eVertex, 0, kFarSegments);
+        cmd.drawIndirect(*t.grass->args.handle(), sizeof(DrawIndirect), 1, sizeof(DrawIndirect));
     }
 }
 

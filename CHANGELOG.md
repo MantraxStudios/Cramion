@@ -1,12 +1,85 @@
 # Cambios
 
-## 1.5.0 (sin publicar)
+## 1.8.0
+
+### Generador de terreno
+- **Ventana > Generador de terreno**: un mundo entero en un paso, calculado en segundo plano (barra de progreso y *Cancelar*). Una isla de 2 km con 1025 vértices por lado tarda menos de un segundo.
+- Formas: **isla, archipiélago, continente, cordilleras y cañones**. Relieve con fBm deformado (*domain warping*), crestas (*ridged multifractal*), colinas, mesetas y terrazas, y costa irregular.
+- **Erosión** térmica (desmoronamiento por encima del ángulo de reposo) e **hidráulica por gotas** (Beyer/Lague), repartida en hilos: cauces, abanicos y sedimentos.
+- **Agua**: océano, **ríos** que nacen arriba y bajan siguiendo el terreno hasta el mar (*priority-flood* y acumulación de flujo), con su cauce excavado, y **lagos** en las cuencas. Se crean como `WaterBody` normales (Océano, Río N, Lago N).
+- **8 capas** pintadas por reglas (hierba, hierba seca, tierra, roca, arena, grava, nieve y barro) según la altura, la pendiente, la humedad y los sedimentos, con **texturas PBR procedurales** (color y normal) en `Assets/Terrains/Texturas`.
+- Vegetación, hierba y aldea opcionales. La cámara del editor y la del juego alargan su distancia de dibujado según el tamaño del mundo (antes el terreno lejano desaparecía a 500 m).
+- MCP: `generate_terrain` (todos los parámetros, más `houses`) y `ground_height`.
+
+### Hierba en la GPU
+- Nuevo componente **Grass** en el terreno: millones de briznas (hasta 3 millones) sin mallas. Un *compute shader* recorre una rejilla fija al mundo alrededor de la cámara, recorta por la vista y reparte en dos listas: **cerca con 7 tramos y lejos con 3** (más anchas y menos).
+- Briznas con **perfil de hoja**, normales redondeadas, **matas** (las vecinas se parecen), rachas de viento que recorren el campo y **translucidez** a contraluz (Disney *subsurface*). La capa seca las amarillea.
+- **Reacciona a la física**: los `Rigidbody` no estáticos cercanos (los 32 más próximos, hasta 120 m) la apartan y la aplastan.
+
+### Árboles procedurales
+- Los árboles de `Foliage` ya no son *low poly*: se generan como un SpeedTree sencillo, con **tronco y ramas de verdad** (hasta 3 niveles, filotaxia de 137,5°, gravedad, fototropismo y torsión), **racimos de hojas** con normales esféricas y translucidez, y **3 LOD** del mismo esqueleto.
+- 6 especies (**pino, abeto, roble, abedul, palmera y sauce**); en *Especies* se elige cuál es cada una de las tres de la mezcla, su semilla, altura, hojas, ramas y lo torcidas que son.
+- Texturas procedurales: **corteza de placas** (Voronoi estirado con surcos, fibras y musgo), abedul, **ramitas con 60-90 hojas pequeñas**, agujas y frondas, con mips que conservan la cobertura del alfa. Sombras con recorte por alfa.
+- **No crecen en el agua**: se quitan del cauce y la orilla de los ríos y de lo que queda bajo el nivel de los lagos.
+
+### Casas y cabañas procedurales
+- **Ventana > Generador de casas**: **cabaña de troncos** (troncos redondos cruzados en las esquinas), **cabaña de tablas**, **casita de piedra** y **casa de campo** de dos plantas. Estilo, semilla, medidas, plantas, pendiente del tejado, alero, ventanas, porche con barandilla y escalones, chimenea y contraventanas.
+- **Aldeas**: busca un sitio llano y seco del terreno (fuera de ríos, lagos y mar), reparte las casas alrededor de una plaza con la puerta hacia ella y abre claros en la vegetación. También desde el generador de terreno (apartado *Aldea*).
+- **Para el juego**: 1.000-6.000 triángulos por casa con LOD automáticos; 9 materiales `.crmat` compartidos por todas (texturas PBR con altura para el parallax, creadas una vez en `Assets/Casas/Texturas`); las casas iguales son instancias del mismo modelo.
+- Cada casa tiene los hijos **Casa** (`MeshCollider`) y **Puerta** (`BoxCollider`, con el origen en la bisagra: se abre girándola en Y desde Lua).
+- MCP: `generate_house` (estilo, medidas, posición y giro, o `village` para una aldea).
+
+### Agua
+- El efecto de **bajo el agua** funciona con **todos los tipos**: océano, lagos y ríos. Solo se activa donde hay agua de verdad (dentro del lago, con el suelo por debajo de la superficie y la cámara por encima del fondo); en los ríos usa la superficie del punto donde está la cámara.
+
+### Corregido
+- Los troncos de los árboles se veían **negros con un borde brillante**: la normal de la corteza se invertía según la cara del triángulo. Las copas brillaban todas igual: menos translucidez y oclusión en el interior y la parte de abajo.
+
+## 1.7.0
+
+### Materiales de Disney
+- **Modelo de Disney** (Burley 2012, *Physically Based Shading at Disney*, y 2015 para la transmisión), común al raster (`lighting.frag`) y al path tracing (`disney_brdf.glsl`).
+- **Difuso de Burley** en todos los materiales, en lugar de Lambert: retro-reflexión en lo rugoso y bordes más oscuros en lo liso.
+- Nuevo apartado **Modelo (Disney)** en el editor de materiales, con un modelo por material (como los *Shading Models* de Unreal):
+  - **Barniz** (clearcoat): segunda capa especular dieléctrica con su rugosidad y su propio reflejo del entorno.
+  - **Tela** (sheen): brillo de los bordes, con tinte del color; también con la luz del cielo.
+  - **Piel / cera** (subsurface): difuso de Hanrahan-Krueger de Disney y **translucidez** a contraluz del sol, de las luces puntuales y de los focos. La sombra que se aplica es la de la cara de atrás a su **grosor**: una hoja fina brilla; un muro no deja pasar luz.
+  - **Anisótropo**: GGX anisótropo con su visibilidad (Heitz) y el reflejo del entorno estirado (normal doblada), en la dirección de la tangente girada por el material.
+  - **Transmisión** (vidrio, material transparente): refracción por **IOR**, **grosor**, tinte por color y **esmerilado** por rugosidad (12 muestras), en vez de mezclar por alfa.
+  - **Tinte especular** de Disney en todos los modelos que lo admiten.
+- G-buffer con un quinto destino (RGBA8: modelo y 3 parámetros); la dirección del anisótropo se guarda como ángulo sobre una base de la normal (Duff 2017).
+- `.crmat`: `shading` y sus parámetros (`clearcoat`, `sheen`, `subsurface`, `translucency`, `anisotropy`, `ior`...). MCP `create_material` con los mismos campos. Se cambian en vivo.
+
+### Corregido
+- Error de validación de Vulkan de los mesh shaders de la 1.4 (`LocalSizeId` sin `maintenance4`).
+
+## 1.6.0
+
+### Relieve teselado
+- Nuevo **Modo** del relieve en el editor de materiales: **Parallax** (como hasta ahora) o **Teselación**. Con teselación la malla se subdivide en la GPU (`skinned.tesc`/`.tese`) y cada vértice sube por su normal lo que dice el mapa de altura: silueta, sombras y oclusión reales.
+- Cuánto se parte cada borde depende de los píxeles que ocupa (un vértice cada ~10 px), hasta la **Densidad** del material (1..64, 16 por defecto): de lejos casi no cuesta. Los parches fuera de la vista no se teselan. Los bordes compartidos se parten igual: sin grietas en mallas con normales suaves.
+- **Sombras teseladas** del sol (cascadas) y de las luces locales, con el mismo reparto que ve la cámara (`skinned_shadow.tesc`/`.tese`).
+- El relieve sube hacia fuera: la malla original queda debajo y el trazado de rayos no se tapa a sí mismo. Las cajas del culling crecen lo que sube el relieve.
+- Sin normal map ni bump, en modo teselación la altura también hace de normal map. Si la GPU no tiene teselación, esos materiales usan el parallax.
+- `.crmat`: `relief` (`parallax`/`tessellation`), `tessellation_density`, `parallax_shadows`. MCP `create_material` con los mismos campos.
+
+### Parallax
+- **Auto-sombra** (casilla en el material, activada por defecto): desde el punto que encuentra el parallax se traza hacia el sol, y las piedras que sobresalen dan sombra a las de al lado. Se guarda en el G-buffer junto a la metalicidad y solo afecta a la luz del sol.
+- Los **shaders propios** (`.crshader`) con mapa de altura tienen el mismo parallax y la misma auto-sombra que el material estándar (código común en `parallax_common.glsl`).
+
+### Donaciones
+- Botón **Donar con PayPal** en el Hub (y tarjeta en *Aprender*) y en la web (menú, descarga, pie y manual): https://paypal.me/evan2025.
+
+## 1.5.0
 
 ### Licencia
-- **Nueva [Licencia del Motor Cramion](LICENSE)** en lugar de la MIT. Hacer juegos con Cramion y venderlos sigue siendo **gratis y sin regalías**; lo que ya no se permite es **vender o revender el motor, el editor o su código** (solos o en packs), quitar los créditos o hacerlo pasar por otro motor. Compartir un fork gratis en público sigue permitido.
-- Las versiones hasta la 1.4 incluida siguen con licencia MIT.
+- **Nueva [Licencia del Motor Cramion](LICENSE)** en lugar de la MIT. Hacer juegos con Cramion y venderlos sigue siendo **gratis y sin regalías**; lo que ya no se permite es **vender o revender el motor, el editor o su código** (solos o en packs), resubir el editor a otras webs, quitar los créditos o hacerlo pasar por otro motor.
+- **Código fuente bajo licencia**: deja de ser público. Compilarlo, modificarlo o usarlo requiere una licencia de código fuente, que se pide por correo a tupapienrakion1234@gmail.com. Para hacer juegos no hace falta: basta con el zip.
+- **También la 1.4 y las anteriores** se distribuyen desde el 30 de septiembre de 2026 solo con esta licencia. Quien ya tuviera una copia con MIT la conserva, pero solo si mantiene intactos el copyright y la licencia; quitar los créditos deja la copia sin permiso.
 - **[TRADEMARK.md](TRADEMARK.md)**: el nombre y el logo de Cramion solo se usan para el motor oficial y para decir "Hecho con Cramion Engine".
 - **[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)** con todas las librerías de terceros y sus licencias; viaja en el zip junto a `LICENSE` y `TRADEMARK.md`.
+- Web y manual: página **Licencia**, sección **Código fuente** en lugar de *Compilarlo*, y aviso de que la única descarga oficial es la de la web.
+- Hub y actualizador: *Novedades* abre la web en vez de GitHub, y la tarjeta *GitHub* pasa a ser *Licencia*.
 
 ## 1.4.0
 

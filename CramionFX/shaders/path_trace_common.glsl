@@ -8,6 +8,10 @@ bool traceBounce(vec3 origin, vec3 direction, float max_distance, out RtHit hit)
 layout(set = 0, binding = 7) uniform sampler2D g_albedo;    // rgb = albedo (sRGB), a = oclusion del material
 layout(set = 0, binding = 8) uniform sampler2D g_material;  // rgb = emision, a = metalicidad
 layout(set = 0, binding = 9, rgba32f) uniform image2D accumulation;
+// Modelo de sombreado de Disney del G-buffer (el primer punto de cada camino).
+layout(set = 0, binding = 10) uniform sampler2D g_shading;
+
+#include "disney_brdf.glsl"
 
 // push.params: x = numero de camino (semilla), y = caminos ya sumados (0 =
 // empezar de nuevo), z = rebotes maximos, w = 1 si este frame suma un camino
@@ -39,6 +43,9 @@ struct Surface {
     float metallic;
     float roughness;
     float reflectance;  // F0 de la parte no metalica
+    // Modelo de Disney: el del G-buffer en el primer punto; en los rebotes,
+    // el estandar (las tablas de materiales de los rayos no lo llevan).
+    ShadingModel model;
 };
 
 void basis(vec3 n, out vec3 t, out vec3 b) {
@@ -62,24 +69,13 @@ float smithG1(float n_dot_x, float alpha) {
     return 2.0 * n_dot_x / (n_dot_x + sqrt(a2 + (1.0 - a2) * n_dot_x * n_dot_x));
 }
 
-// BRDF x coseno hacia `l` (difuso + especular), para la luz directa.
+// BRDF x coseno hacia `l`, para la luz directa: el mismo modelo de Disney
+// que lighting.frag (alli con pi dentro de las luces, aqui sin el).
 vec3 evalBrdf(Surface s, vec3 v, vec3 l) {
-    vec3 n = s.normal;
-    float n_dot_l = dot(n, l);
-    float n_dot_v = max(dot(n, v), 1e-4);
-    if (n_dot_l <= 0.0) {
-        return vec3(0.0);
-    }
-    vec3 h = normalize(v + l);
-    float n_dot_h = max(dot(n, h), 0.0);
-    float v_dot_h = max(dot(v, h), 0.0);
-    float alpha = max(s.roughness * s.roughness, 0.002);
-    vec3 f0 = mix(vec3(s.reflectance), s.albedo, s.metallic);
-    vec3 f = fresnelSchlick(v_dot_h, f0);
-    vec3 specular = f * ggxD(n_dot_h, alpha) * smithG1(n_dot_v, alpha) * smithG1(n_dot_l, alpha) /
-                    (4.0 * n_dot_v * n_dot_l);
-    vec3 diffuse = (1.0 - f) * s.albedo * (1.0 - s.metallic) / kPi;
-    return (diffuse + specular) * n_dot_l;
+    vec3 f0 = disneyF0(s.model, s.albedo, s.reflectance, s.metallic);
+    vec3 result = disneyBrdf(s.model, s.normal, v, l, s.albedo, s.roughness, s.metallic, f0, vec3(1.0), 0.0);
+    if (dot(s.normal, l) <= 0.0) result = disneyTranslucency(s.model, s.normal, v, l, s.albedo, s.metallic);
+    return result / kPi;
 }
 
 // Normal visible de GGX (Heitz 2018) en el espacio tangente (z = normal).
@@ -227,6 +223,7 @@ Surface hitSurface(RtHit hit, float lod) {
     s.metallic = clamp(material.params.x * mr.b, 0.0, 1.0);
     s.roughness = clamp(material.params.y * mr.g, 0.04, 1.0);
     s.reflectance = 0.04;
+    s.model = standardShading();
     s.emission = toLinear(textureLod(rt_textures[nonuniformEXT(material.emissive_texture)], hit.uv, lod).rgb) *
                  material.emissive.rgb * kEmissiveIntensity;
     return s;
@@ -287,8 +284,10 @@ void pathTracePixel(ivec2 pixel, ivec2 size) {
         s.roughness = clamp(normal_sample.b, 0.04, 1.0);
         s.reflectance = normal_sample.a;
         s.albedo = toLinear(texelFetch(g_albedo, pixel, 0).rgb);
-        s.metallic = material_sample.a;
+        // Alfa = metalicidad + 2 x sombra propia del relieve (gbuffer_surface.glsl).
+        s.metallic = material_sample.a - 2.0 * floor(material_sample.a * 0.5);
         s.emission = material_sample.rgb;
+        s.model = decodeShading(texelFetch(g_shading, pixel, 0), s.normal);
 
         vec3 v = normalize(camera.position.xyz - position);
         // La normal del normal map puede mirar de espaldas a la camara.

@@ -7,17 +7,49 @@ Motor de render en tiempo real para Windows con **renderizador diferido en Vulka
 
 El motor son dos librerías estáticas propias: **CramionFX**, el renderizador Vulkan con todos sus shaders, y **CramionDM**, la capa de plataforma (ventana, entrada y dispositivo DirectX 12). `cramion.exe` es solo una aplicación de ejemplo que las usa. Todo se compila con **CMake + Clang + Ninja**.
 
-**Licencia:** puedes hacer juegos con Cramion y venderlos gratis de regalías, pero **el motor no se puede vender ni revender**. La única versión oficial es la de este repositorio; si ves a alguien vendiéndolo, avisa en el Discord. Detalles en [LICENSE](LICENSE).
+**Licencia:** el editor es gratis y los juegos que hagas con él son tuyos: los vendes donde quieras, **sin regalías**. **El motor no se puede vender, revender ni resubir.** El **código fuente** solo se entrega con una licencia de código fuente: pídela por correo a **tupapienrakion1234@gmail.com**. La única descarga oficial es la de la web, <https://cramion.mantraxtools.store>; si ves a alguien vendiéndolo, avisa en el Discord. Detalles en [LICENSE](LICENSE).
 
 **Comunidad:** dudas, ideas y lo que estés creando con Cramion, en el [Discord](https://discord.gg/zG7rSsUGEz).
+
+**Apoya Cramion:** el motor es gratis; si te sirve, puedes donar en [PayPal](https://paypal.me/evan2025).
 
 Incluye dos escenas de demostración, iluminadas por una sola luz direccional (el sol de día, la luna de noche) y su cielo:
 - **Catedral de Šibenik** (por defecto): 75 mil triángulos. Un interior en el que el sol entra por los ventanales.
 - **San Miguel**: ≈10 millones de triángulos, 287 materiales y 266 texturas. Un patio exterior.
 
-**Descarga:** el zip listo para usar (editor, player y documentación) está en [Releases](../../releases/latest). La lista completa de cambios de cada versión, en [CHANGELOG.md](CHANGELOG.md).
+**Descarga:** el zip listo para usar (editor, player y documentación) está en <https://cramion.mantraxtools.store>. La lista completa de cambios de cada versión, en [CHANGELOG.md](CHANGELOG.md).
 
 ---
+
+## Novedades de la 1.8
+
+**Mundo procedural**: *Ventana > Generador de terreno* crea en un segundo una isla, archipiélago, continente, cordillera o cañones con **erosión por lluvia**, **ríos** que bajan hasta el mar, **lagos**, océano y **8 capas** con texturas realistas. Encima, **hierba en la GPU** (millones de briznas con viento que se apartan con la física), **árboles procedurales** con ramas de verdad (pino, abeto, roble, abedul, palmera y sauce; nunca en el agua) y **aldeas**.
+
+**Casas y cabañas procedurales** (*Ventana > Generador de casas*): cabaña de troncos, de tablas, casita de piedra y casa de campo, listas para el juego: pocos triángulos, 9 materiales PBR compartidos con relieve, colisión y una puerta que se abre girándola.
+
+**Bajo el agua** en océanos, lagos y ríos, solo donde de verdad hay agua.
+
+![Casa de campo procedural entre árboles generados](docs/img/mundo-casa.jpg)
+
+## Novedades de la 1.7
+
+**Materiales de Disney** (Burley 2012/2015, el modelo de Unreal, Unity HDRP y el *Principled BSDF* de Blender): todos los materiales llevan el **difuso de Burley**, y cada uno elige un **modelo**: **Barniz** (clearcoat, con su propio reflejo), **Tela** (sheen), **Piel / cera** (subsurface y translucidez a contraluz según el grosor), **Anisótropo** (metal cepillado, con dirección) y **Transmisión** (vidrio con refracción por IOR, grosor, tinte y esmerilado). Tinte especular en todos. El path tracing usa el mismo modelo.
+
+## Novedades de la 1.6
+
+**Relieve teselado**: con un mapa de altura, el material puede elegir **Teselación** en vez de parallax. La malla se parte cerca de la cámara (un vértice cada ~10 píxeles, hasta la *Densidad* del material) y cada vértice sube lo que dice el mapa: silueta, sombras del sol y de las luces y oclusión reales, como el displacement de Unreal. Si la GPU no tesela, se usa el parallax.
+
+**Auto-sombra del parallax**: las piedras y grietas del relieve se hacen sombra entre ellas con el sol (casilla *Auto-sombra*). Y los **shaders propios** (`.crshader`) con mapa de altura reciben el mismo parallax.
+
+**Donaciones**: botón **Donar con PayPal** en el Hub y en la web (https://paypal.me/evan2025). Cramion sigue siendo gratis.
+
+## Novedades de la 1.5
+
+**Licencia nueva**: el editor sigue siendo gratis y lo que hagas con él es tuyo, para venderlo sin regalías. Lo que ya no se permite es **vender, revender o resubir el motor**, quitar los créditos o hacerlo pasar por otro. Vale también para la 1.4 y las anteriores desde el 30 de septiembre de 2026.
+
+**Código fuente bajo licencia**: deja de ser público. Se entrega con una licencia de código fuente que se pide por correo a tupapienrakion1234@gmail.com.
+
+**Créditos en orden**: el zip trae `LICENSE`, `TRADEMARK.md` (nombre y logo) y `THIRD_PARTY_NOTICES.md` con las licencias de todas las librerías.
 
 ## Novedades de la 1.4
 
@@ -238,6 +270,10 @@ Incluye dos escenas de demostración, iluminadas por una sola luz direccional (e
 
 ## Índice
 
+- [Novedades de la 1.8](#novedades-de-la-18)
+- [Novedades de la 1.7](#novedades-de-la-17)
+- [Novedades de la 1.6](#novedades-de-la-16)
+- [Novedades de la 1.5](#novedades-de-la-15)
 - [Novedades de la 1.4](#novedades-de-la-14)
 - [Novedades de la 1.3](#novedades-de-la-13)
 - [Novedades de la 1.2](#novedades-de-la-12)
@@ -321,6 +357,8 @@ cmake --build --preset clang-ninja-release
 La primera compilación completa es la que tarda (varios minutos, según el procesador); después solo se recompila lo que cambias.
 
 ## Compilar y ejecutar
+
+> **Hace falta una licencia de código fuente.** Compilar, modificar o usar el código de Cramion solo está permitido con la licencia de código fuente que da el autor por escrito (pídela a tupapienrakion1234@gmail.com). Para hacer juegos no hace falta: usa el zip de la web.
 
 ### 1. Las escenas
 
@@ -815,7 +853,7 @@ Las teclas (`KeyCode.h`) siguen los Virtual-Key Codes de Windows. `keyName()` da
 
 ## Créditos y licencias
 
-- **Código de Cramion:** [Licencia del Motor Cramion](LICENSE) desde la 1.5. Puedes hacer juegos con Cramion y venderlos sin pagar regalías; lo que no puedes es vender ni revender el motor, el editor o su código, ni hacerlo pasar por tuyo. El nombre y el logo tienen su propia [política de marca](TRADEMARK.md). Las versiones hasta la 1.4 se publicaron con licencia MIT.
+- **Cramion:** [Licencia del Motor Cramion](LICENSE). Puedes hacer juegos con Cramion y venderlos sin pagar regalías; lo que no puedes es vender, revender o resubir el motor o el editor, ni hacerlo pasar por tuyo. El código fuente solo se usa con una licencia de código fuente del autor (tupapienrakion1234@gmail.com). El nombre y el logo tienen su propia [política de marca](TRADEMARK.md). Desde el 30 de septiembre de 2026 todas las versiones, también la 1.4 y las anteriores, se distribuyen con esta licencia (quien ya tuviera una copia con MIT la conserva mientras mantenga intactos los créditos).
 - **Componentes de terceros:** cada uno con su licencia, en [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 - **Catedral de Šibenik:** de Marko Dabrović ([RNA studio](http://www.rna.hr)). Huecos corregidos por Kenzie Lamar (Vicarious Visions), texturas y mapas de relieve de Morgan McGuire; publicada en [casual-effects.com](https://casual-effects.com/data/). No se redistribuye con este repositorio.
 - **San Miguel:** modelado por Guillermo M. Leal Llaguno (Evolución Visual). Versión 2017 mejorada por Morgan McGuire, Guedis Cárdenas, Michael Mara y Nicholas Hull, publicada en [casual-effects.com](https://casual-effects.com/data/). **Solo para uso educativo y de investigación, con atribución.** No se redistribuye con este repositorio.

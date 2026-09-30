@@ -1,11 +1,14 @@
 #include "CramionFX/vk/FoliagePass.h"
 
+#include "CramionFX/asset/TreeGenerator.h"
+
 #include "CramionFX/vk/GBuffer.h"
 #include "CramionFX/vk/VulkanDevice.h"
 #include "CramionFX/vk/VulkanShader.h"
 
 #include <algorithm>
 #include <cmath>
+#include <iostream>
 
 namespace cramion::gfx {
 
@@ -13,14 +16,7 @@ namespace {
 
 constexpr float kPi = 3.14159265f;
 
-// Debe coincidir con foliage.vert (vertice de 32 bytes).
-struct FoliageVertex {
-    float px, py, pz;
-    float nx, ny, nz;
-    std::uint32_t color;  // RGBA8: rgb color (sRGB), a oclusion
-    float wind;
-};
-static_assert(sizeof(FoliageVertex) == 32);
+using FoliageVertex = asset::TreeVertex;  // 48 bytes (foliage.vert)
 
 // VkDrawIndexedIndirectCommand (20 bytes), igual que en foliage_cull.comp.
 struct DrawCommand {
@@ -46,151 +42,6 @@ struct DrawPush {
     core::Vec4 params;  // x segundos, y sombra, z viento
     core::Vec4 offset;
 };
-
-std::uint32_t rgba(float r, float g, float b, float a) {
-    const auto c = [](float v) { return static_cast<std::uint32_t>(std::clamp(v, 0.0f, 1.0f) * 255.0f + 0.5f); };
-    return c(r) | (c(g) << 8) | (c(b) << 16) | (c(a) << 24);
-}
-
-// Constructor de mallas de arboles (color por vertice).
-struct TreeMesh {
-    std::vector<FoliageVertex> vertices;
-    std::vector<std::uint32_t> indices;
-    float height = 10.0f;  // para el peso del viento
-
-    std::uint32_t add(core::Vec3 p, core::Vec3 n, core::Vec3 color, float ao, float wind) {
-        n = core::normalize(n);
-        vertices.push_back({p.x, p.y, p.z, n.x, n.y, n.z, rgba(color.x, color.y, color.z, ao), wind});
-        return static_cast<std::uint32_t>(vertices.size() - 1);
-    }
-    float windAt(float y, float strength) const { return strength * std::pow(std::clamp(y / height, 0.0f, 1.0f), 1.5f); }
-
-    // Tronco: cilindro (o tronco de cono) sin tapas.
-    void trunk(float r0, float r1, float y0, float y1, int sides, core::Vec3 color) {
-        const std::uint32_t first = static_cast<std::uint32_t>(vertices.size());
-        const float slope = (r0 - r1) / std::max(y1 - y0, 1e-3f);
-        for (int k = 0; k <= sides; ++k) {
-            const float a = 2.0f * kPi * static_cast<float>(k) / static_cast<float>(sides);
-            const float c = std::cos(a), s = std::sin(a);
-            add(core::Vec3{c * r0, y0, s * r0}, core::Vec3{c, slope, s}, color, 0.55f, windAt(y0, 0.15f));
-            add(core::Vec3{c * r1, y1, s * r1}, core::Vec3{c, slope, s}, color * 1.08f, 0.9f, windAt(y1, 0.15f));
-        }
-        for (int k = 0; k < sides; ++k) {
-            const std::uint32_t b0 = first + static_cast<std::uint32_t>(k) * 2, t0 = b0 + 1, b1 = b0 + 2, t1 = b0 + 3;
-            indices.insert(indices.end(), {b0, t0, b1, b1, t0, t1});
-        }
-    }
-
-    // Cono de hojas (pino) con su base.
-    void cone(float radius, float y0, float y1, int sides, core::Vec3 color) {
-        const float h = y1 - y0;
-        const std::uint32_t apex_first = static_cast<std::uint32_t>(vertices.size());
-        for (int k = 0; k <= sides; ++k) {
-            const float a = 2.0f * kPi * (static_cast<float>(k) + 0.5f) / static_cast<float>(sides);
-            add(core::Vec3{0.0f, y1, 0.0f}, core::Vec3{std::cos(a) * h, radius, std::sin(a) * h}, color * 1.15f, 1.0f,
-                windAt(y1, 1.0f));
-        }
-        const std::uint32_t ring_first = static_cast<std::uint32_t>(vertices.size());
-        for (int k = 0; k <= sides; ++k) {
-            const float a = 2.0f * kPi * static_cast<float>(k) / static_cast<float>(sides);
-            const float c = std::cos(a), s = std::sin(a);
-            add(core::Vec3{c * radius, y0, s * radius}, core::Vec3{c * h, radius, s * h}, color * 0.85f, 0.62f,
-                windAt(y0, 1.0f));
-        }
-        for (int k = 0; k < sides; ++k) {
-            indices.insert(indices.end(), {ring_first + static_cast<std::uint32_t>(k), apex_first + static_cast<std::uint32_t>(k),
-                                           ring_first + static_cast<std::uint32_t>(k) + 1});
-        }
-        // Base (hacia abajo, oscura: dentro de la copa).
-        const std::uint32_t center = add(core::Vec3{0.0f, y0 + h * 0.08f, 0.0f}, core::Vec3{0, -1, 0}, color * 0.6f, 0.35f,
-                                         windAt(y0, 1.0f));
-        const std::uint32_t cap_first = static_cast<std::uint32_t>(vertices.size());
-        for (int k = 0; k <= sides; ++k) {
-            const float a = 2.0f * kPi * static_cast<float>(k) / static_cast<float>(sides);
-            add(core::Vec3{std::cos(a) * radius, y0, std::sin(a) * radius}, core::Vec3{0, -1, 0}, color * 0.6f, 0.4f,
-                windAt(y0, 1.0f));
-        }
-        for (int k = 0; k < sides; ++k) {
-            indices.insert(indices.end(), {center, cap_first + static_cast<std::uint32_t>(k) + 1, cap_first + static_cast<std::uint32_t>(k)});
-        }
-    }
-
-    // Copa redondeada: elipsoide de anillos (rings >= 2).
-    void blob(core::Vec3 center, core::Vec3 radii, int rings, int sides, core::Vec3 color) {
-        const std::uint32_t first = static_cast<std::uint32_t>(vertices.size());
-        for (int r = 0; r <= rings; ++r) {
-            const float lat = -kPi * 0.5f + kPi * static_cast<float>(r) / static_cast<float>(rings);
-            const float cy = std::sin(lat), cr = std::cos(lat);
-            const float up = static_cast<float>(r) / static_cast<float>(rings);  // 0 abajo, 1 arriba
-            for (int k = 0; k <= sides; ++k) {
-                const float a = 2.0f * kPi * static_cast<float>(k) / static_cast<float>(sides) + (r % 2) * kPi / sides;
-                const core::Vec3 unit{std::cos(a) * cr, cy, std::sin(a) * cr};
-                const core::Vec3 p = center + core::Vec3{unit.x * radii.x, unit.y * radii.y, unit.z * radii.z};
-                const core::Vec3 n{unit.x / radii.x, unit.y / radii.y, unit.z / radii.z};
-                add(p, n, color * (0.72f + 0.4f * up), 0.45f + 0.55f * up, windAt(p.y, 1.0f));
-            }
-        }
-        const std::uint32_t row = static_cast<std::uint32_t>(sides) + 1;
-        for (int r = 0; r < rings; ++r) {
-            for (int k = 0; k < sides; ++k) {
-                const std::uint32_t a = first + static_cast<std::uint32_t>(r) * row + static_cast<std::uint32_t>(k);
-                const std::uint32_t b = a + row;
-                indices.insert(indices.end(), {a, b, a + 1, a + 1, b, b + 1});
-            }
-        }
-    }
-};
-
-// Especie x nivel (0 cerca, 1 media, 2 lejos).
-TreeMesh makeTree(std::uint32_t species, std::uint32_t level) {
-    TreeMesh m;
-    if (species == 0) {  // Pino: conos apilados
-        const core::Vec3 bark{0.36f, 0.25f, 0.16f}, needles{0.14f, 0.31f, 0.15f};
-        m.height = 10.2f;
-        if (level == 0) {
-            m.trunk(0.28f, 0.12f, 0.0f, 4.0f, 8, bark);
-            m.cone(2.4f, 1.8f, 5.8f, 10, needles);
-            m.cone(1.9f, 3.8f, 7.6f, 10, needles);
-            m.cone(1.35f, 5.6f, 9.2f, 9, needles);
-            m.cone(0.8f, 7.4f, 10.2f, 8, needles);
-        } else if (level == 1) {
-            m.trunk(0.28f, 0.14f, 0.0f, 3.0f, 5, bark);
-            m.cone(2.4f, 1.8f, 6.5f, 6, needles);
-            m.cone(1.6f, 4.8f, 10.0f, 6, needles);
-        } else {
-            m.cone(2.3f, 1.0f, 10.0f, 4, needles);
-        }
-    } else if (species == 1) {  // Roble: copa ancha de varias bolas
-        const core::Vec3 bark{0.40f, 0.29f, 0.19f}, leaves{0.21f, 0.39f, 0.15f};
-        m.height = 8.6f;
-        if (level == 0) {
-            m.trunk(0.45f, 0.30f, 0.0f, 4.0f, 8, bark);
-            m.blob({0.0f, 5.3f, 0.0f}, {3.2f, 2.6f, 3.2f}, 6, 10, leaves);
-            m.blob({1.3f, 6.4f, 0.8f}, {2.0f, 1.8f, 2.0f}, 5, 9, leaves);
-            m.blob({-1.2f, 6.2f, -1.0f}, {2.1f, 1.7f, 2.1f}, 5, 9, leaves);
-            m.blob({0.2f, 7.2f, -0.4f}, {1.6f, 1.4f, 1.6f}, 4, 8, leaves);
-        } else if (level == 1) {
-            m.trunk(0.45f, 0.30f, 0.0f, 3.5f, 5, bark);
-            m.blob({0.0f, 5.6f, 0.0f}, {3.4f, 2.9f, 3.4f}, 4, 7, leaves);
-        } else {
-            m.blob({0.0f, 5.4f, 0.0f}, {3.3f, 3.0f, 3.3f}, 2, 5, leaves);
-        }
-    } else {  // Abedul: tronco claro y copa alta
-        const core::Vec3 bark{0.86f, 0.84f, 0.78f}, leaves{0.38f, 0.54f, 0.19f};
-        m.height = 10.2f;
-        if (level == 0) {
-            m.trunk(0.20f, 0.11f, 0.0f, 7.5f, 7, bark);
-            m.blob({0.0f, 6.6f, 0.0f}, {1.9f, 3.0f, 1.9f}, 6, 9, leaves);
-            m.blob({0.5f, 8.6f, 0.3f}, {1.2f, 1.6f, 1.2f}, 4, 8, leaves);
-        } else if (level == 1) {
-            m.trunk(0.20f, 0.12f, 0.0f, 5.0f, 4, bark);
-            m.blob({0.0f, 7.0f, 0.0f}, {2.0f, 3.2f, 2.0f}, 4, 6, leaves);
-        } else {
-            m.blob({0.0f, 6.8f, 0.0f}, {2.0f, 3.4f, 2.0f}, 2, 4, leaves);
-        }
-    }
-    return m;
-}
 
 void memoryBarrier(const vk::raii::CommandBuffer& cmd, vk::PipelineStageFlags2 src_stage, vk::AccessFlags2 src_access,
                    vk::PipelineStageFlags2 dst_stage, vk::AccessFlags2 dst_access) {
@@ -226,7 +77,7 @@ FoliageInstance FoliageInstance::make(const core::Vec3& position, float yaw_radi
 // -----------------------------------------------------------------------------
 
 void FoliagePass::create(const VulkanDevice& device, const vk::raii::DescriptorSetLayout& frame_layout,
-                         std::array<vk::Format, 4> gbuffer_formats, vk::Format depth_format, vk::Format shadow_format,
+                         std::array<vk::Format, GBuffer::kColorAttachmentCount> gbuffer_formats, vk::Format depth_format, vk::Format shadow_format,
                          std::uint32_t frames_in_flight) {
     destroy();
     device_ = &device;
@@ -234,10 +85,12 @@ void FoliagePass::create(const VulkanDevice& device, const vk::raii::DescriptorS
 
     // Computo: instancias, visibles, comandos.
     {
-        const std::array<vk::DescriptorSetLayoutBinding, 3> bindings = {{
+        // 3: la esfera de cada especie (cambia al regenerar los arboles).
+        const std::array<vk::DescriptorSetLayoutBinding, 4> bindings = {{
             {0, vk::DescriptorType::eStorageBuffer, 1, vk::ShaderStageFlagBits::eCompute},
             {1, vk::DescriptorType::eStorageBuffer, 1, vk::ShaderStageFlagBits::eCompute},
             {2, vk::DescriptorType::eStorageBuffer, 1, vk::ShaderStageFlagBits::eCompute},
+            {3, vk::DescriptorType::eStorageBuffer, 1, vk::ShaderStageFlagBits::eCompute},
         }};
         vk::DescriptorSetLayoutCreateInfo info{};
         info.setBindings(bindings);
@@ -255,9 +108,12 @@ void FoliagePass::create(const VulkanDevice& device, const vk::raii::DescriptorS
     }
     // Dibujo: set 0 = el de la geometria (camara, lluvia, decals), set 1 = instancias y visibles.
     {
-        const std::array<vk::DescriptorSetLayoutBinding, 2> bindings = {{
+        // 2 y 3: texturas de los arboles (color con alfa recortado, normal).
+        const std::array<vk::DescriptorSetLayoutBinding, 4> bindings = {{
             {0, vk::DescriptorType::eStorageBuffer, 1, vk::ShaderStageFlagBits::eVertex},
             {1, vk::DescriptorType::eStorageBuffer, 1, vk::ShaderStageFlagBits::eVertex},
+            {2, vk::DescriptorType::eCombinedImageSampler, 1, vk::ShaderStageFlagBits::eFragment},
+            {3, vk::DescriptorType::eCombinedImageSampler, 1, vk::ShaderStageFlagBits::eFragment},
         }};
         vk::DescriptorSetLayoutCreateInfo info{};
         info.setBindings(bindings);
@@ -269,14 +125,22 @@ void FoliagePass::create(const VulkanDevice& device, const vk::raii::DescriptorS
         layout_info.setPushConstantRanges(push);
         draw_layout_ = vk::raii::PipelineLayout(device.handle(), layout_info);
     }
-    const vk::DescriptorPoolSize size{vk::DescriptorType::eStorageBuffer, 5 * frames_in_flight};
+    const std::array<vk::DescriptorPoolSize, 2> sizes = {{
+        {vk::DescriptorType::eStorageBuffer, 6 * frames_in_flight},
+        {vk::DescriptorType::eCombinedImageSampler, 2 * frames_in_flight},
+    }};
     vk::DescriptorPoolCreateInfo pool_info{};
     pool_info.flags = vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet;
     pool_info.maxSets = 2 * frames_in_flight;
-    pool_info.setPoolSizes(size);
+    pool_info.setPoolSizes(sizes);
     pool_ = vk::raii::DescriptorPool(device.handle(), pool_info);
 
     createPipelines(device, gbuffer_formats, depth_format, shadow_format);
+    createTextures();
+    species_ = {asset::treePreset(asset::TreeKind::Pine), asset::treePreset(asset::TreeKind::Oak),
+                asset::treePreset(asset::TreeKind::Birch)};
+    bounds_.create(device, sizeof(core::Vec4) * kSpecies, vk::BufferUsageFlagBits::eStorageBuffer,
+                   vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent);
     buildMeshes();
     readback_ready_.assign(frames_in_flight, false);
 }
@@ -293,6 +157,10 @@ void FoliagePass::destroy() {
     readback_.clear();
     vertices_.destroy();
     indices_.destroy();
+    bounds_.destroy();
+    albedo_array_ = TextureArray{};
+    normal_array_ = TextureArray{};
+    texture_sampler_ = nullptr;
     gbuffer_pipeline_ = nullptr;
     gbuffer_wire_pipeline_ = nullptr;
     shadow_pipeline_ = nullptr;
@@ -307,17 +175,19 @@ void FoliagePass::destroy() {
     device_ = nullptr;
 }
 
-void FoliagePass::createPipelines(const VulkanDevice& device, std::array<vk::Format, 4> gbuffer_formats,
+void FoliagePass::createPipelines(const VulkanDevice& device, std::array<vk::Format, GBuffer::kColorAttachmentCount> gbuffer_formats,
                                   vk::Format depth_format, vk::Format shadow_format) {
     const vk::raii::ShaderModule vertex = shaders::loadModule(device, "foliage.vert.spv");
     const vk::raii::ShaderModule fragment = shaders::loadModule(device, "foliage.frag.spv");
 
     const vk::VertexInputBindingDescription binding{0, sizeof(FoliageVertex), vk::VertexInputRate::eVertex};
-    const std::array<vk::VertexInputAttributeDescription, 4> attributes = {{
+    const std::array<vk::VertexInputAttributeDescription, 6> attributes = {{
         {0, 0, vk::Format::eR32G32B32Sfloat, 0},
         {1, 0, vk::Format::eR32G32B32Sfloat, 12},
         {2, 0, vk::Format::eR8G8B8A8Unorm, 24},
         {3, 0, vk::Format::eR32Sfloat, 28},
+        {4, 0, vk::Format::eR32G32Sfloat, 32},   // uv
+        {5, 0, vk::Format::eR32G32Sfloat, 40},   // capa de textura, hoja (0/1)
     }};
     vk::PipelineVertexInputStateCreateInfo vertex_input{};
     vertex_input.setVertexBindingDescriptions(binding);
@@ -376,9 +246,13 @@ void FoliagePass::createPipelines(const VulkanDevice& device, std::array<vk::For
             raster.polygonMode = vk::PolygonMode::eFill;
         }
     }
-    // --- Sombras (solo profundidad) ---
+    // --- Sombras (profundidad, con el recorte de las hojas) ---
     {
-        const vk::PipelineShaderStageCreateInfo stage{{}, vk::ShaderStageFlagBits::eVertex, *vertex, "main"};
+        const vk::raii::ShaderModule shadow_fragment = shaders::loadModule(device, "foliage_shadow.frag.spv");
+        const std::array<vk::PipelineShaderStageCreateInfo, 2> stage = {{
+            {{}, vk::ShaderStageFlagBits::eVertex, *vertex, "main"},
+            {{}, vk::ShaderStageFlagBits::eFragment, *shadow_fragment, "main"},
+        }};
         vk::PipelineRasterizationStateCreateInfo raster{};
         raster.polygonMode = vk::PolygonMode::eFill;
         raster.cullMode = vk::CullModeFlagBits::eNone;
@@ -409,9 +283,10 @@ void FoliagePass::createPipelines(const VulkanDevice& device, std::array<vk::For
 void FoliagePass::buildMeshes() {
     std::vector<FoliageVertex> vertices;
     std::vector<std::uint32_t> indices;
+    std::array<core::Vec4, kSpecies> bounds{};
     for (std::uint32_t s = 0; s < kSpecies; ++s) {
         for (std::uint32_t l = 0; l < 3; ++l) {
-            const TreeMesh m = makeTree(s, l);
+            const asset::TreeMeshData m = asset::buildTree(species_[s], static_cast<int>(l));
             Mesh& mesh = meshes_[s * 3 + l];
             mesh.first_index = static_cast<std::uint32_t>(indices.size());
             mesh.index_count = static_cast<std::uint32_t>(m.indices.size());
@@ -419,12 +294,119 @@ void FoliagePass::buildMeshes() {
             triangles_[s * 3 + l] = mesh.index_count / 3;
             vertices.insert(vertices.end(), m.vertices.begin(), m.vertices.end());
             indices.insert(indices.end(), m.indices.begin(), m.indices.end());
+            // La esfera del nivel 0 (el mas grande) para el recorte.
+            if (l == 0) bounds[s] = core::Vec4{m.center_y, m.radius * 1.05f, m.height, 0.0f};
         }
     }
+    vertices_.destroy();
+    indices_.destroy();
     vertices_ = VulkanBuffer::createDeviceLocal(*device_, vertices.data(), vertices.size() * sizeof(FoliageVertex),
                                                 vk::BufferUsageFlagBits::eVertexBuffer);
     indices_ = VulkanBuffer::createDeviceLocal(*device_, indices.data(), indices.size() * sizeof(std::uint32_t),
                                                vk::BufferUsageFlagBits::eIndexBuffer);
+    bounds_.write(bounds.data(), sizeof(bounds));
+}
+
+void FoliagePass::setSpecies(const std::array<asset::TreeSpecies, kSpecies>& species) {
+    if (device_ == nullptr) return;
+    bool same = true;
+    for (std::uint32_t s = 0; s < kSpecies; ++s) same = same && species[s] == species_[s];
+    if (same) return;
+    device_->waitIdle();
+    species_ = species;
+    buildMeshes();
+}
+
+void FoliagePass::createTextures() {
+    const asset::TreeTextures t = asset::generateTreeTextures(512);
+    const auto upload = [&](TextureArray& texture, const std::vector<std::vector<std::vector<std::uint8_t>>>& layers,
+                            vk::Format format) {
+        const VulkanDevice& device = *device_;
+        const auto count = static_cast<std::uint32_t>(layers.size());
+        const std::uint32_t mips = t.mips;
+        vk::ImageCreateInfo info{};
+        info.imageType = vk::ImageType::e2D;
+        info.format = format;
+        info.extent = vk::Extent3D{t.size, t.size, 1};
+        info.mipLevels = mips;
+        info.arrayLayers = count;
+        info.samples = vk::SampleCountFlagBits::e1;
+        info.tiling = vk::ImageTiling::eOptimal;
+        info.usage = vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eTransferDst;
+        info.initialLayout = vk::ImageLayout::eUndefined;
+        texture.image = vk::raii::Image(device.handle(), info);
+        const vk::MemoryRequirements requirements = texture.image.getMemoryRequirements();
+        vk::MemoryAllocateInfo allocate{};
+        allocate.allocationSize = requirements.size;
+        allocate.memoryTypeIndex = device.findMemoryType(requirements.memoryTypeBits, vk::MemoryPropertyFlagBits::eDeviceLocal);
+        texture.memory = vk::raii::DeviceMemory(device.handle(), allocate);
+        texture.image.bindMemory(*texture.memory, 0);
+
+        vk::DeviceSize total = 0;
+        for (const auto& layer : layers) {
+            for (const auto& level : layer) total += level.size();
+        }
+        VulkanBuffer staging;
+        staging.create(device, total, vk::BufferUsageFlagBits::eTransferSrc,
+                       vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent);
+        std::vector<vk::BufferImageCopy> regions;
+        vk::DeviceSize offset = 0;
+        for (std::uint32_t l = 0; l < count; ++l) {
+            std::uint32_t size = t.size;
+            for (std::uint32_t m = 0; m < mips && m < layers[l].size(); ++m) {
+                staging.write(layers[l][m].data(), layers[l][m].size(), offset);
+                vk::BufferImageCopy region{};
+                region.bufferOffset = offset;
+                region.imageSubresource = vk::ImageSubresourceLayers{vk::ImageAspectFlagBits::eColor, m, l, 1};
+                region.imageExtent = vk::Extent3D{size, size, 1};
+                regions.push_back(region);
+                offset += layers[l][m].size();
+                size = std::max(size / 2, 1U);
+            }
+        }
+        const vk::Image image = *texture.image;
+        device.submitOneTime([&](const vk::raii::CommandBuffer& cmd) {
+            vk::ImageMemoryBarrier2 to_copy{};
+            to_copy.srcStageMask = vk::PipelineStageFlagBits2::eTopOfPipe;
+            to_copy.dstStageMask = vk::PipelineStageFlagBits2::eTransfer;
+            to_copy.dstAccessMask = vk::AccessFlagBits2::eTransferWrite;
+            to_copy.oldLayout = vk::ImageLayout::eUndefined;
+            to_copy.newLayout = vk::ImageLayout::eTransferDstOptimal;
+            to_copy.image = image;
+            to_copy.subresourceRange = vk::ImageSubresourceRange{vk::ImageAspectFlagBits::eColor, 0, mips, 0, count};
+            cmd.pipelineBarrier2(vk::DependencyInfo{}.setImageMemoryBarriers(to_copy));
+            cmd.copyBufferToImage(*staging.handle(), image, vk::ImageLayout::eTransferDstOptimal, regions);
+            vk::ImageMemoryBarrier2 to_read = to_copy;
+            to_read.srcStageMask = vk::PipelineStageFlagBits2::eTransfer;
+            to_read.srcAccessMask = vk::AccessFlagBits2::eTransferWrite;
+            to_read.dstStageMask = vk::PipelineStageFlagBits2::eFragmentShader;
+            to_read.dstAccessMask = vk::AccessFlagBits2::eShaderSampledRead;
+            to_read.oldLayout = vk::ImageLayout::eTransferDstOptimal;
+            to_read.newLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
+            cmd.pipelineBarrier2(vk::DependencyInfo{}.setImageMemoryBarriers(to_read));
+        });
+        vk::ImageViewCreateInfo view{};
+        view.image = image;
+        view.viewType = vk::ImageViewType::e2DArray;
+        view.format = format;
+        view.subresourceRange = vk::ImageSubresourceRange{vk::ImageAspectFlagBits::eColor, 0, mips, 0, count};
+        texture.view = vk::raii::ImageView(device.handle(), view);
+    };
+    upload(albedo_array_, t.albedo, vk::Format::eR8G8B8A8Srgb);
+    upload(normal_array_, t.normal, vk::Format::eR8G8B8A8Unorm);
+
+    vk::SamplerCreateInfo sampler{};
+    sampler.magFilter = vk::Filter::eLinear;
+    sampler.minFilter = vk::Filter::eLinear;
+    sampler.mipmapMode = vk::SamplerMipmapMode::eLinear;
+    sampler.addressModeU = sampler.addressModeV = sampler.addressModeW = vk::SamplerAddressMode::eRepeat;
+    sampler.maxLod = VK_LOD_CLAMP_NONE;
+    const vk::PhysicalDeviceFeatures features = device_->physicalDevice().getFeatures();
+    if (features.samplerAnisotropy) {
+        sampler.anisotropyEnable = VK_TRUE;
+        sampler.maxAnisotropy = std::min(8.0f, device_->physicalDevice().getProperties().limits.maxSamplerAnisotropy);
+    }
+    texture_sampler_ = vk::raii::Sampler(device_->handle(), sampler);
 }
 
 // -----------------------------------------------------------------------------
@@ -499,7 +481,10 @@ void FoliagePass::writeSets() {
         const vk::DescriptorBufferInfo instances{*instances_.handle(), 0, VK_WHOLE_SIZE};
         const vk::DescriptorBufferInfo visible{*visible_[f].handle(), 0, VK_WHOLE_SIZE};
         const vk::DescriptorBufferInfo commands{*commands_[f].handle(), 0, VK_WHOLE_SIZE};
-        std::array<vk::WriteDescriptorSet, 5> writes{};
+        const vk::DescriptorBufferInfo bounds{*bounds_.handle(), 0, VK_WHOLE_SIZE};
+        const vk::DescriptorImageInfo albedo{*texture_sampler_, *albedo_array_.view, vk::ImageLayout::eShaderReadOnlyOptimal};
+        const vk::DescriptorImageInfo normal{*texture_sampler_, *normal_array_.view, vk::ImageLayout::eShaderReadOnlyOptimal};
+        std::array<vk::WriteDescriptorSet, 8> writes{};
         const auto write = [&](vk::WriteDescriptorSet& w, const vk::raii::DescriptorSet& set, std::uint32_t binding,
                                const vk::DescriptorBufferInfo& info) {
             w.dstSet = *set;
@@ -512,6 +497,15 @@ void FoliagePass::writeSets() {
         write(writes[2], cull_sets_[f], 2, commands);
         write(writes[3], draw_sets_[f], 0, instances);
         write(writes[4], draw_sets_[f], 1, visible);
+        write(writes[5], cull_sets_[f], 3, bounds);
+        writes[6].dstSet = *draw_sets_[f];
+        writes[6].dstBinding = 2;
+        writes[6].descriptorType = vk::DescriptorType::eCombinedImageSampler;
+        writes[6].setImageInfo(albedo);
+        writes[7].dstSet = *draw_sets_[f];
+        writes[7].dstBinding = 3;
+        writes[7].descriptorType = vk::DescriptorType::eCombinedImageSampler;
+        writes[7].setImageInfo(normal);
         device.updateDescriptorSets(writes, nullptr);
     }
 }

@@ -51,6 +51,7 @@ public:
         vk::ImageView environment;        // cubo del IBL
         vk::ImageView albedo;             // G-buffer (path tracing)
         vk::ImageView material;           // G-buffer: emision y metalicidad
+        vk::ImageView shading;            // G-buffer: modelo de sombreado de Disney
         vk::ImageView path_output;        // storage: la imagen HDR de la escena
         vk::ImageView accumulation;       // storage RGBA32F: suma de caminos
         vk::ImageView shadow_output;      // storage RGBA16F: sombras de las luces locales

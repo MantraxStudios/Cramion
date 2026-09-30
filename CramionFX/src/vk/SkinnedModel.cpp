@@ -113,6 +113,46 @@ bool hasAlpha(const asset::TextureData& texture) {
 
 }  // namespace
 
+std::uint32_t SkinnedModel::shadingBits(const asset::MaterialData& material) {
+    const auto byte = [](float value) {
+        return static_cast<std::uint32_t>(std::clamp(value, 0.0f, 1.0f) * 255.0f + 0.5f);
+    };
+    int model = std::clamp(material.shading_model, 0, 5);
+    // La transmision es del vidrio (pasada forward); en lo opaco, estandar.
+    if (model == 5 && !material.transparent) model = 0;
+    float p0 = material.specular_tint;
+    float p1 = 0.0f;
+    float p2 = 0.0f;
+    switch (model) {
+        case 1: p0 = material.clearcoat; p1 = material.clearcoat_roughness; p2 = material.specular_tint; break;
+        case 2: p0 = material.sheen; p1 = material.sheen_tint; p2 = material.specular_tint; break;
+        case 3:
+            p0 = material.subsurface;
+            p1 = material.translucency;
+            p2 = (material.subsurface_thickness - 0.01f) / 0.29f;
+            break;
+        case 4: p0 = material.anisotropy; p1 = material.anisotropy_rotation / 180.0f; p2 = material.specular_tint; break;
+        case 5: p0 = (material.ior - 1.0f) / 1.5f; p1 = material.transmission_thickness / 0.2f; break;
+        default: break;
+    }
+    return static_cast<std::uint32_t>(model) | (byte(p0) << 8) | (byte(p1) << 16) | (byte(p2) << 24);
+}
+
+std::uint32_t SkinnedModel::reliefFlags(std::uint32_t flags, const asset::MaterialData& material, bool has_height,
+                                        bool tessellation) {
+    flags &= ~(GpuSkinnedPush::kFlagHeightMap | GpuSkinnedPush::kFlagTessellation |
+               GpuSkinnedPush::kFlagParallaxShadow | GpuSkinnedPush::kTessFactorMask);
+    if (!has_height) return flags;
+    if (material.tessellation && tessellation) {
+        const auto factor = static_cast<std::uint32_t>(std::clamp(material.tessellation_density, 1.0f, 64.0f) + 0.5f);
+        return flags | GpuSkinnedPush::kFlagTessellation | (factor << GpuSkinnedPush::kTessFactorShift);
+    }
+    // Parallax (tambien si se pidio teselacion y la GPU no la tiene).
+    flags |= GpuSkinnedPush::kFlagHeightMap;
+    if (material.parallax_shadows) flags |= GpuSkinnedPush::kFlagParallaxShadow;
+    return flags;
+}
+
 void SkinnedModel::create(const VulkanDevice& device, const asset::ModelData& model,
                           const SkinnedPass& pass) {
     destroy();
@@ -202,10 +242,11 @@ void SkinnedModel::create(const VulkanDevice& device, const asset::ModelData& mo
         const bool parallax = material.height_scale > 0.0f && material.occlusion_texture >= 0;
         gpu.emissive = core::Vec4{material.emissive.x, material.emissive.y, material.emissive.z,
                                   parallax ? material.height_scale : 0.0f};
-        gpu.shader_flags = (parallax ? GpuSkinnedPush::kFlagHeightMap : 0u) |
-                           (material.specular_map && material.metallic_roughness_texture >= 0
-                                ? GpuSkinnedPush::kFlagSpecularMap
-                                : 0u);
+        gpu.shader_flags = material.specular_map && material.metallic_roughness_texture >= 0
+                               ? GpuSkinnedPush::kFlagSpecularMap
+                               : 0u;
+        gpu.shader_flags = reliefFlags(gpu.shader_flags, material, parallax, pass.tessellationEnabled());
+        gpu.shading = shadingBits(material);
         // El signo de la escala del normal map dice su convenio (ver
         // skinned.frag): positivo = OpenGL, negativo = DirectX.
         gpu.params = core::Vec4{material.metallic, material.roughness, material.occlusion_strength,

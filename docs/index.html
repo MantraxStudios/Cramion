@@ -45,10 +45,11 @@
         <a href="#scripting" class="hover:text-white">Lua</a>
         <a href="#novedades" class="hover:text-white">Novedades</a>
         <a href="manual/index.html" class="hover:text-white">Manual</a>
-        <a href="https://github.com/MantraxStudios/Cramion" class="hover:text-white">GitHub</a>
+        <a href="manual/licencia.html" class="hover:text-white">Licencia</a>
         <a href="https://discord.gg/zG7rSsUGEz" target="_blank" rel="noopener" class="hover:text-white">Discord</a>
       </div>
-      <a href="#descargar" class="ml-auto border border-paper/30 px-3 py-1.5 text-sm font-medium text-white hover:border-white">Descargar 1.4</a>
+      <a href="https://paypal.me/evan2025" target="_blank" rel="noopener" class="ml-auto mr-3 bg-[#ffc439] px-3 py-1.5 text-sm font-semibold text-[#003087] hover:bg-[#ffd466]">Donar</a>
+      <a href="#descargar" class="border border-paper/30 px-3 py-1.5 text-sm font-medium text-white hover:border-white">Descargar 1.8</a>
     </nav>
   </header>
 
@@ -62,13 +63,13 @@
         <p class="mt-6 max-w-lg text-lg text-paper/70">
           Montas la escena en el editor, escribes el juego en Lua y le das a Play. Render en Vulkan 1.3, física con Jolt,
           terreno, agua, navegación, animación con IK y exportación a un <span class="font-mono text-[0.9em] text-white">.exe</span>.
-          Gratis y de código abierto.
+          Gratis para hacer y vender tus juegos, sin regalías.
         </p>
         <div class="mt-8 flex flex-wrap items-center gap-x-6 gap-y-3">
           <a href="https://github.com/MantraxStudios/Cramion/releases/latest/download/Cramion-win64.zip" class="bg-brand px-5 py-2.5 font-semibold text-ink hover:bg-white">Descargar para Windows</a>
           <a href="manual/index.html" class="link text-paper">Leer el manual</a>
         </div>
-        <p class="mt-6 font-mono text-xs text-mute">1.4 · Windows 10/11 x64 · exporta a Android · realidad virtual · GPU con Vulkan 1.3 · ≈60 MB</p>
+        <p class="mt-6 font-mono text-xs text-mute">1.8 · Windows 10/11 x64 · exporta a Android · realidad virtual · GPU con Vulkan 1.3 · ≈60 MB</p>
       </div>
 
       <figure class="border border-rule bg-ink-2">
@@ -197,6 +198,95 @@ return Jugador</code></pre>
   <section id="novedades" class="border-b border-rule">
     <div class="mx-auto grid max-w-6xl gap-6 px-5 py-20 lg:grid-cols-[1fr_2fr]">
       <div>
+        <h2 class="text-2xl font-semibold tracking-tight text-white">1.8</h2>
+        <p class="mt-1 font-mono text-xs text-mute">septiembre de 2026</p>
+      </div>
+      <div>
+        <ul class="space-y-3 text-paper/75">
+          <li><span class="text-white">Generador de terreno.</span> Un mundo entero en un segundo: isla, archipiélago, continente, cordilleras o cañones, con erosión por lluvia, ríos que bajan hasta el mar, lagos, océano y 8 capas con texturas realistas.</li>
+          <li><span class="text-white">Hierba en la GPU.</span> Millones de briznas con viento y translucidez que se apartan y se aplastan cuando pasa algo con física.</li>
+          <li><span class="text-white">Árboles procedurales.</span> Pino, abeto, roble, abedul, palmera y sauce con tronco y ramas de verdad, corteza de placas y racimos de hojas. Nunca crecen en el agua.</li>
+          <li><span class="text-white">Casas y aldeas.</span> Cabañas de troncos, de tablas, casitas de piedra y casas de campo procedurales, listas para el juego (pocos triángulos, materiales compartidos, colisión y puerta que se abre), repartidas en aldeas junto al río.</li>
+          <li><span class="text-white">Bajo el agua en todas partes.</span> El efecto funciona en el océano, los lagos y los ríos, solo donde de verdad hay agua.</li>
+        </ul>
+        <div class="mt-6 grid gap-3 sm:grid-cols-2">
+          <figure class="border border-rule bg-ink-2">
+            <img src="img/mundo-casa.jpg" alt="Casa de campo procedural entre árboles generados" class="w-full" loading="lazy">
+            <figcaption class="border-t border-rule px-3 py-1.5 font-mono text-[11px] text-mute">Casa de campo y bosque</figcaption>
+          </figure>
+          <figure class="border border-rule bg-ink-2">
+            <img src="img/mundo-cabana.jpg" alt="Cabaña de troncos procedural" class="w-full" loading="lazy">
+            <figcaption class="border-t border-rule px-3 py-1.5 font-mono text-[11px] text-mute">Cabaña de troncos</figcaption>
+          </figure>
+        </div>
+        <a href="manual/mundo-procedural.html" class="link mt-6 inline-block text-sm">Mundo procedural en el manual</a>
+      </div>
+    </div>
+  </section>
+
+  <!-- Novedades de la 1.7 -->
+  <section id="novedades-17" class="border-b border-rule">
+    <div class="mx-auto grid max-w-6xl gap-6 px-5 py-20 lg:grid-cols-[1fr_2fr]">
+      <div>
+        <h2 class="text-2xl font-semibold tracking-tight text-white">1.7</h2>
+        <p class="mt-1 font-mono text-xs text-mute">septiembre de 2026</p>
+      </div>
+      <div>
+        <ul class="space-y-3 text-paper/75">
+          <li><span class="text-white">Materiales de Disney.</span> El modelo de Burley (el de Unreal, Unity HDRP y el Principled BSDF de Blender): difuso de Burley en todos los materiales y un modelo por material.</li>
+          <li><span class="text-white">Barniz.</span> Una capa brillante encima con su propio reflejo: coches, madera barnizada, fibra de carbono.</li>
+          <li><span class="text-white">Tela.</span> Brillo suave en los bordes para ropa, terciopelo y musgo.</li>
+          <li><span class="text-white">Piel y hojas.</span> Subsurface y translucidez: a contraluz la luz atraviesa las hojas y las orejas, según su grosor.</li>
+          <li><span class="text-white">Metal cepillado.</span> Brillo y reflejos anisótropos con dirección.</li>
+          <li><span class="text-white">Vidrio con refracción.</span> Índice de refracción, grosor, tinte y esmerilado por rugosidad.</li>
+        </ul>
+        <a href="manual/materiales.html#disney" class="link mt-6 inline-block text-sm">Los modelos en el manual</a>
+      </div>
+    </div>
+  </section>
+
+  <!-- Novedades de la 1.6 -->
+  <section id="novedades-16" class="border-b border-rule">
+    <div class="mx-auto grid max-w-6xl gap-6 px-5 py-20 lg:grid-cols-[1fr_2fr]">
+      <div>
+        <h2 class="text-2xl font-semibold tracking-tight text-white">1.6</h2>
+        <p class="mt-1 font-mono text-xs text-mute">septiembre de 2026</p>
+      </div>
+      <div>
+        <ul class="space-y-3 text-paper/75">
+          <li><span class="text-white">Relieve teselado.</span> Con un mapa de altura, el material puede partir la malla cerca de la cámara y subir cada vértice de verdad: silueta, sombras y oclusión reales, como el displacement de Unreal. Densidad por material y menos detalle con la distancia.</li>
+          <li><span class="text-white">Auto-sombra del parallax.</span> Las piedras y grietas del relieve se hacen sombra entre ellas con el sol.</li>
+          <li><span class="text-white">Parallax en los shaders propios.</span> Los <span class="font-mono text-[0.9em]">.crshader</span> con mapa de altura tienen el mismo relieve que el material estándar.</li>
+          <li><span class="text-white">Donaciones.</span> Botón de PayPal en el Hub y en la web, para quien quiera apoyar el motor. Sigue siendo gratis.</li>
+        </ul>
+        <a href="manual/materiales.html#relieve" class="link mt-6 inline-block text-sm">Relieve en el manual</a>
+      </div>
+    </div>
+  </section>
+
+  <!-- Novedades de la 1.5 -->
+  <section id="novedades-15" class="border-b border-rule">
+    <div class="mx-auto grid max-w-6xl gap-6 px-5 py-20 lg:grid-cols-[1fr_2fr]">
+      <div>
+        <h2 class="text-2xl font-semibold tracking-tight text-white">1.5</h2>
+        <p class="mt-1 font-mono text-xs text-mute">septiembre de 2026</p>
+      </div>
+      <div>
+        <ul class="space-y-3 text-paper/75">
+          <li><span class="text-white">Licencia nueva.</span> El editor sigue siendo gratis, y los juegos que hagas con él son tuyos: los vendes donde quieras, sin regalías. Lo que no se permite es vender, revender o resubir el motor.</li>
+          <li><span class="text-white">Código fuente bajo licencia.</span> Ya no es público: se entrega con una licencia de código fuente que se pide por correo.</li>
+          <li><span class="text-white">Para todas las versiones.</span> Desde el 30 de septiembre de 2026 la licencia nueva vale también para la 1.4 y las anteriores.</li>
+          <li><span class="text-white">Créditos en orden.</span> El zip trae la licencia, la política de marca y las licencias de todas las librerías que usa.</li>
+        </ul>
+        <a href="manual/licencia.html" class="link mt-6 inline-block text-sm">Leer la licencia</a>
+      </div>
+    </div>
+  </section>
+
+  <!-- Novedades de la 1.4 -->
+  <section id="novedades-14" class="border-b border-rule">
+    <div class="mx-auto grid max-w-6xl gap-6 px-5 py-20 lg:grid-cols-[1fr_2fr]">
+      <div>
         <h2 class="text-2xl font-semibold tracking-tight text-white">1.4</h2>
         <p class="mt-1 font-mono text-xs text-mute">septiembre de 2026</p>
       </div>
@@ -212,7 +302,6 @@ return Jugador</code></pre>
           <li><span class="text-white">Corregido.</span> El plano lejano de la cámara, y el color de lo que alumbra una farola de noche.</li>
         </ul>
         <a href="manual/datapacks.html" class="link mt-6 inline-block text-sm">DataPacks en el manual</a>
-        <a href="https://github.com/MantraxStudios/Cramion/blob/main/CHANGELOG.md" class="link mt-6 ml-4 inline-block text-sm">Todos los cambios</a>
       </div>
     </div>
   </section>
@@ -243,7 +332,6 @@ return Jugador</code></pre>
           <li><span class="text-white">AMD FSR 3.1 y NVIDIA DLSS 4</span> <span class="font-mono text-xs text-mute">(inestables)</span>. Escalado temporal de los fabricantes, sin tirones al cambiar la resolución.</li>
           <li><span class="text-white">Color más fiel.</span> Salida con la curva sRGB exacta: sombras profundas, no lavadas.</li>
         </ul>
-        <a href="https://github.com/MantraxStudios/Cramion/blob/main/CHANGELOG.md" class="link mt-6 inline-block text-sm">Todos los cambios</a>
       </div>
     </div>
   </section>
@@ -276,7 +364,6 @@ return Jugador</code></pre>
           <li><span class="text-white">Presets.</span> Post-procesado Realista, Cinematográfico, Noche, Terror, Retro... o los tuyos.</li>
           <li><span class="text-white">Corregido.</span> Las manchas que parpadeaban sobre los objetos con muchos en escena.</li>
         </ul>
-        <a href="https://github.com/MantraxStudios/Cramion/blob/main/CHANGELOG.md" class="link mt-6 inline-block text-sm">Todos los cambios</a>
       </div>
     </div>
   </section>
@@ -287,10 +374,15 @@ return Jugador</code></pre>
       <div>
         <h2 class="text-2xl font-semibold tracking-tight text-white">Descargar</h2>
         <p class="mt-4 text-paper/70">Descomprime y abre <span class="font-mono text-[0.9em] text-white">CramionEditor.exe</span>. Desde la 0.6.2 el motor avisa de las versiones nuevas y se actualiza solo.</p>
+        <p class="mt-4 text-sm text-mute">La única descarga oficial es esta, y es gratis. Si alguien te vende Cramion, no es oficial: avisa en el Discord.</p>
         <div class="mt-8 flex flex-col items-start gap-3">
           <a href="https://github.com/MantraxStudios/Cramion/releases/latest/download/Cramion-win64.zip" class="bg-brand px-5 py-2.5 font-semibold text-ink hover:bg-white">Cramion-win64.zip · ≈60 MB</a>
-          <a href="https://github.com/MantraxStudios/Cramion/releases" class="link text-sm">Versiones anteriores</a>
           <a href="https://discord.gg/zG7rSsUGEz" target="_blank" rel="noopener" class="link text-sm">Discord de la comunidad</a>
+        </div>
+        <div class="mt-10 border-l-2 border-[#ffc439] pl-4">
+          <p class="text-white">Apoya Cramion</p>
+          <p class="mt-1 text-sm text-paper/70">El motor es gratis y lo seguirá siendo. Si te sirve, una donación ayuda a seguir añadiendo cosas.</p>
+          <a href="https://paypal.me/evan2025" target="_blank" rel="noopener" class="mt-3 inline-block bg-[#ffc439] px-5 py-2 font-semibold text-[#003087] hover:bg-[#ffd466]">Donar con PayPal</a>
         </div>
       </div>
       <table class="w-full self-start text-sm">
@@ -309,32 +401,18 @@ return Jugador</code></pre>
     </div>
   </section>
 
-  <!-- Compilar -->
-  <section id="empezar" class="border-b border-rule">
+  <!-- Codigo fuente -->
+  <section id="codigo" class="border-b border-rule">
     <div class="mx-auto grid max-w-6xl gap-10 px-5 py-20 lg:grid-cols-[1fr_2fr]">
       <div>
-        <h2 class="text-2xl font-semibold tracking-tight text-white">Compilarlo</h2>
-        <p class="mt-4 text-paper/70">Hace falta Windows 10/11 con el Windows SDK, el Vulkan SDK, CMake 3.21 o más, Clang (LLVM) y Ninja. La primera vez descarga las dependencias.</p>
-        <p class="mt-4 text-sm text-mute">RAM: 8 GB como mínimo, 16 recomendados. Disco: unos 10 GB para Release, 16 con Debug; mejor en SSD.</p>
+        <h2 class="text-2xl font-semibold tracking-tight text-white">Código fuente</h2>
+        <p class="mt-4 text-paper/70">Para hacer juegos no hace falta: el zip trae el editor completo.</p>
       </div>
-      <div class="space-y-8">
-        <div>
-          <p class="mb-2 text-sm text-white">Release y el zip</p>
-          <pre class="overflow-x-auto border border-rule bg-ink-2 p-4 font-mono text-[13px] text-paper">cmake --preset clang-ninja-release
-cmake --build --preset clang-ninja-release
-cmake --build --preset clang-ninja-release --target cramion_package</pre>
-        </div>
-        <div>
-          <p class="mb-2 text-sm text-white">Ejecutar</p>
-          <pre class="overflow-x-auto border border-rule bg-ink-2 p-4 font-mono text-[13px] text-paper">.\build-release\CramionEditor.exe
-.\build-release\cramion.exe san-miguel</pre>
-        </div>
-        <div class="border-l-2 border-amber pl-4 text-sm text-paper/75">
-          <p class="text-white">Si el PC se congela al compilar</p>
-          <p class="mt-1">Cada archivo puede usar hasta 1,5 GB. CMake ya limita cuántos compila a la vez según tu RAM (7 con 16 GB); si aun así se atasca, bájalo con
-            <span class="font-mono text-[0.9em] text-white">-DCRAMION_COMPILE_JOBS=3</span>.</p>
-          <p class="mt-2 text-mute">Tamaños medidos: LLVM ~2,9 GB, Vulkan SDK ~1,7 GB, código ~0,7 GB y <span class="font-mono">build-release</span> ~3,1 GB.</p>
-        </div>
+      <div class="space-y-4 text-paper/75">
+        <p>El código fuente de Cramion se entrega solo con una <span class="text-white">licencia de código fuente</span>. Para pedirla, escribe a
+          <a href="mailto:tupapienrakion1234@gmail.com?subject=Licencia%20de%20c%C3%B3digo%20fuente%20de%20Cramion" class="link">tupapienrakion1234@gmail.com</a>
+          contando quién eres y para qué lo necesitas.</p>
+        <p class="text-sm text-mute">Tener el código sin esa licencia no da permiso para usarlo, compilarlo ni compartirlo. Detalles en la <a href="manual/licencia.html" class="link">licencia</a>.</p>
       </div>
     </div>
   </section>
@@ -344,8 +422,9 @@ cmake --build --preset clang-ninja-release --target cramion_package</pre>
       <div class="flex items-center gap-2"><img src="img/icon.png" alt="" class="h-5 w-5"> Cramion Engine · CramionFX · CramionCore · CramionEditor</div>
       <div class="flex gap-5">
         <a href="manual/index.html" class="hover:text-white">Manual</a>
-        <a href="https://github.com/MantraxStudios/Cramion" class="hover:text-white">GitHub</a>
+        <a href="manual/licencia.html" class="hover:text-white">Licencia</a>
         <a href="https://discord.gg/zG7rSsUGEz" target="_blank" rel="noopener" class="hover:text-white">Discord</a>
+        <a href="https://paypal.me/evan2025" target="_blank" rel="noopener" class="hover:text-white">Donar</a>
       </div>
     </div>
   </footer>

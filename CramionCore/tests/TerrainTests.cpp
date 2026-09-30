@@ -7,11 +7,17 @@
 #include "CramionCore/physics/PhysicsComponents.h"
 #include "CramionCore/physics/PhysicsSystem.h"
 #include "CramionCore/terrain/Terrain.h"
+#include "CramionCore/terrain/TerrainGenerator.h"
 #include "CramionCore/terrain/TerrainTools.h"
+
+#include <CramionFX/asset/HouseGenerator.h>
+#include <CramionFX/asset/ImageFile.h>
+#include <CramionFX/asset/TreeGenerator.h>
 
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 
 using namespace cramion;
@@ -270,7 +276,130 @@ void testFoliage() {
     check(foliage::generateFoliage(big, Vec3{}, {}).instances.size() <= 1000000, "el tope de arboles se respeta (celdas mayores)");
 }
 
+void testGenerator() {
+    std::printf("Generador de terreno\n");
+    GenSettings s;
+    s.seed = std::getenv("CRAMION_GEN_SEED") ? static_cast<std::uint32_t>(std::atoi(std::getenv("CRAMION_GEN_SEED"))) : 42;
+    s.resolution = std::getenv("CRAMION_GEN_RES") ? std::atoi(std::getenv("CRAMION_GEN_RES")) : 513;
+    s.splat_resolution = s.resolution - 1;
+    s.size = 2048.0f;
+    s.rivers = 3;
+    GenResult a;
+    const auto start = std::chrono::steady_clock::now();
+    const bool done = generateTerrain(s, a);
+    const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+    std::printf("    isla 513: %.0f ms, %zu rios, %zu lagos, erosion %.0f m3\n", ms, a.rivers.size(), a.lakes.size(),
+                a.erosion_volume);
+    check(done, "genera la isla");
+    if (const char* probe = std::getenv("CRAMION_GEN_PROBE")) {
+        // Depuracion: pesos en un punto del mundo "x,z" (terreno centrado).
+        float px = 0.0f, pz = 0.0f;
+        std::sscanf(probe, "%f,%f", &px, &pz);
+        const std::uint32_t sr = a.data.splatResolution();
+        const auto sx = static_cast<std::uint32_t>((px / s.size + 0.5f) * sr);
+        const auto sy = static_cast<std::uint32_t>((pz / s.size + 0.5f) * sr);
+        std::printf("    sonda (%.0f, %.0f) h=%.3f:", px, pz, a.data.sample(px / s.size + 0.5f, pz / s.size + 0.5f));
+        for (int l = 0; l < 8; ++l) std::printf(" %d", a.data.weight(l, sx, sy));
+        std::printf("\n");
+    }
+    check(finite(a.data), "alturas finitas en 0..1");
+    // Hay mar alrededor y tierra en el centro.
+    const float corner = a.data.sample(0.02f, 0.02f);
+    const float center = a.data.sample(0.5f, 0.5f);
+    check(corner < s.sea_level && center > s.sea_level, "mar en el borde y tierra en el centro");
+    check(a.erosion_volume > 0.0f, "la erosion mueve tierra");
+    check(!a.rivers.empty(), "al menos un rio");
+    bool downhill = true;
+    bool reaches_sea = true;
+    for (const GenRiver& r : a.rivers) {
+        for (std::size_t i = 1; i < r.points.size(); ++i) downhill = downhill && r.points[i].y <= r.points[i - 1].y + 1e-3f;
+        reaches_sea = reaches_sea && r.points.back().y < 1.5f;
+    }
+    check(downhill, "el agua de los rios siempre baja");
+    check(reaches_sea, "los rios llegan al mar (y ~ 0)");
+    // Las capas suman 255 en cada texel.
+    bool sums = true;
+    for (std::uint32_t y = 0; y < a.data.splatResolution() && sums; y += 17) {
+        for (std::uint32_t x = 0; x < a.data.splatResolution(); x += 13) {
+            int total = 0;
+            for (int l = 0; l < 8; ++l) total += a.data.weight(l, x, y);
+            if (total != 255) sums = false;
+        }
+    }
+    check(sums, "los pesos de las 8 capas suman 255");
+    {
+        // Cobertura de cada capa (en tierra): la hierba debe dominar.
+        double cover[8] = {};
+        double land = 0.0;
+        const std::uint32_t sr = a.data.splatResolution();
+        for (std::uint32_t y = 0; y < sr; y += 2) {
+            for (std::uint32_t x = 0; x < sr; x += 2) {
+                const float h = a.data.sample((x + 0.5f) / sr, (y + 0.5f) / sr);
+                if (h <= s.sea_level) continue;
+                land += 1.0;
+                for (int l = 0; l < 8; ++l) cover[l] += a.data.weight(l, x, y) / 255.0;
+            }
+        }
+        const char* names[8] = {"hierba", "seca", "tierra", "roca", "arena", "grava", "nieve", "barro"};
+        std::printf("    capas en tierra:");
+        for (int l = 0; l < 8; ++l) std::printf(" %s %.0f%%", names[l], 100.0 * cover[l] / std::max(land, 1.0));
+        std::printf("\n");
+        check(cover[0] + cover[1] > cover[5] + cover[3], "la hierba cubre mas que la grava y la roca");
+    }
+    // Misma semilla, mismo terreno.
+    GenResult b;
+    generateTerrain(s, b);
+    check(a.data.heights() == b.data.heights(), "misma semilla = mismo terreno");
+    // Las otras formas tambien salen.
+    for (int shape = 1; shape < kGenShapeCount; ++shape) {
+        GenSettings o = s;
+        o.shape = static_cast<GenShape>(shape);
+        o.resolution = 257;
+        o.splat_resolution = 256;
+        GenResult r;
+        const bool ok = generateTerrain(o, r) && finite(r.data);
+        char label[96];
+        std::snprintf(label, sizeof(label), "forma %s", genShapeName(o.shape));
+        check(ok, label);
+    }
+    // Cancelar.
+    GenResult c;
+    check(!generateTerrain(s, c, [](float t, const char*) { return t < 0.3f; }), "se puede cancelar");
+    // Texturas de las capas.
+    const std::filesystem::path folder = std::filesystem::temp_directory_path() / "cramion_gen_textures";
+    check(writeGeneratorTextures(folder.string(), 128) &&
+              std::filesystem::exists(folder / "Roca_Color.png") && std::filesystem::exists(folder / "Hierba_Normal.png"),
+          "texturas de las 8 capas");
+}
+
+// CRAMION_DUMP_TEXTURES=carpeta: guarda las texturas procedurales de arboles
+// y casas como PNG (para revisarlas a ojo).
+void dumpTextures(const char* folder) {
+    namespace fs = std::filesystem;
+    fs::create_directories(folder);
+    const cramion::asset::TreeTextures trees = cramion::asset::generateTreeTextures(512);
+    for (std::size_t layer = 0; layer < trees.albedo.size(); ++layer) {
+        cramion::asset::ImageRgba8 img;
+        img.width = img.height = trees.size;
+        img.pixels = trees.albedo[layer][0];
+        cramion::asset::saveImagePng(fs::path(folder) / ("tree_" + std::to_string(layer) + ".png"), img);
+        img.pixels = trees.normal[layer][0];
+        cramion::asset::saveImagePng(fs::path(folder) / ("tree_" + std::to_string(layer) + "_n.png"), img);
+    }
+    for (int m = 0; m < cramion::asset::kHouseMaterialCount; ++m) {
+        cramion::asset::HouseTextureSet set;
+        if (!cramion::asset::generateHouseTexture(m, 512, 7, set)) continue;
+        cramion::asset::saveImagePng(fs::path(folder) / (std::string("house_") + cramion::asset::houseTextureName(m) + ".png"), set.color);
+    }
+    std::printf("texturas en %s\n", folder);
+}
+
 int main() {
+    if (const char* dump = std::getenv("CRAMION_DUMP_TEXTURES")) {
+        dumpTextures(dump);
+        return 0;
+    }
+    testGenerator();
     testFoliage();
     testTools();
     testSaveLoad();

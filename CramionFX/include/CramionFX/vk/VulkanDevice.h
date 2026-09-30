@@ -69,6 +69,8 @@ public:
     bool textureCompressionBcSupported() const { return texture_compression_bc_supported_; }
     // Poligonos como lineas (vista Wireframe).
     bool fillModeNonSolidSupported() const { return fill_mode_non_solid_supported_; }
+    // Shaders de teselacion (materiales con relieve teselado).
+    bool tessellationSupported() const { return tessellation_supported_; }
 
     // Trazado de rayos por hardware (ray queries + estructuras de
     // aceleracion, con direcciones de buffer y texturas indexadas en los
@@ -126,6 +128,7 @@ private:
     bool indirect_count_supported_ = true;
     bool texture_compression_bc_supported_ = false;
     bool fill_mode_non_solid_supported_ = false;
+    bool tessellation_supported_ = false;
     bool ray_tracing_supported_ = false;
     bool opacity_micromap_supported_ = false;
     bool ray_tracing_pipeline_supported_ = false;

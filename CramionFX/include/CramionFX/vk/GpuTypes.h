@@ -112,6 +112,13 @@ struct GpuSkinnedPush {
     static constexpr std::uint32_t kFlagSpecularMap = 1u << 2;
     // G de occlusion_map = altura (parallax occlusion mapping, emissive.w).
     static constexpr std::uint32_t kFlagHeightMap = 1u << 3;
+    // Relieve teselado (skinned.tesc/.tese): la altura sube los vertices.
+    static constexpr std::uint32_t kFlagTessellation = 1u << 4;
+    // Auto-sombra del parallax hacia el sol.
+    static constexpr std::uint32_t kFlagParallaxShadow = 1u << 5;
+    // Bits 8-15: teselacion maxima del material (1..64).
+    static constexpr std::uint32_t kTessFactorShift = 8;
+    static constexpr std::uint32_t kTessFactorMask = 0xFFu << kTessFactorShift;
 };
 
 // Escalado temporal / TAA (taa.frag).
@@ -137,7 +144,17 @@ struct GpuRcasPush {
 struct GpuSkinnedShadowPush {
     core::Mat4 light_model_view_projection = core::Mat4::identity();
     std::uint32_t bone_offset = 0;
-    std::uint32_t pad[3] = {0, 0, 0};
+    // Relieve teselado (skinned_shadow.tesc/.tese): altura en metros,
+    // teselacion maxima, la camara en el espacio del modelo y la escala del
+    // modelo por eje. Con la escala, los bordes y las distancias se miden en
+    // metros como en skinned.tesc: la sombra se parte igual que lo que ve la
+    // camara (si no, la superficie de la sombra no coincide y se sombrea a
+    // si misma).
+    float height = 0.0f;
+    float max_factor = 1.0f;
+    std::uint32_t flags = 0;
+    core::Vec4 camera_model{};
+    core::Vec4 model_scale{1.0f, 1.0f, 1.0f, 0.0f};
 };
 
 // Un meshlet (mesh shaders): esfera, cono de normales (meshoptimizer) y
@@ -165,7 +182,7 @@ struct GpuMeshletShadowPush {
 static_assert(sizeof(GpuMeshletShadowPush) == 96, "GpuMeshletShadowPush debe coincidir con shadow_meshlet.task");
 
 static_assert(sizeof(GpuSkinnedPush) == 128, "GpuSkinnedPush debe coincidir con skinned.vert");
-static_assert(sizeof(GpuSkinnedShadowPush) == 80,
+static_assert(sizeof(GpuSkinnedShadowPush) == 112,
               "GpuSkinnedShadowPush debe coincidir con skinned_shadow.vert");
 
 // Constante de push del post-proceso: tamano de pixel e interruptor de FXAA.

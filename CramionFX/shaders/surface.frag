@@ -48,25 +48,48 @@ layout(location = 5) in vec4 v_previous_clip;
 const float kEmissiveIntensity = 6.0;
 
 #include "gbuffer_surface.glsl"
+#include "parallax_common.glsl"
+
+const uint kFlagHeightMap = 1u << 3;
+const uint kFlagParallaxShadow = 1u << 5;
 
 #define CRAMION_FRAGMENT_STAGE 1
 #include "surface_common.glsl"
 #include "surface_user.glsl"
 
 void main() {
-    vec4 albedo = texture(albedo_map, v_uv) *
-                  vec4(pow(max(push.base_color.rgb, vec3(0.0)), vec3(1.0 / 2.2)), push.base_color.a);
-
-    // Base tangente y normal map, como skinned.frag.
+    // Base tangente, como skinned.frag.
     vec3 n = normalize(v_normal);
     vec3 t = v_tangent.xyz - n * dot(n, v_tangent.xyz);
     vec3 normal = n;
     mat3 tbn = mat3(vec3(1, 0, 0), vec3(0, 1, 0), n);
     bool has_tangent = dot(t, t) > 1e-8;
+    vec3 b = vec3(0.0);
     if (has_tangent) {
         t = normalize(t);
-        vec3 b = cross(n, t) * (v_tangent.w < 0.0 ? -1.0 : 1.0);
-        vec2 xy = texture(normal_map, v_uv).xy * 2.0 - 1.0;
+        b = cross(n, t) * (v_tangent.w < 0.0 ? -1.0 : 1.0);
+    }
+
+    // Parallax del mapa de alturas del material (G de occlusion_map), como
+    // en el shader estandar: las texturas se leen en la UV desplazada, con
+    // las derivadas de la original.
+    vec2 uv_dx = dFdx(v_uv);
+    vec2 uv_dy = dFdy(v_uv);
+    vec3 pos_dx = dFdx(v_world_position);
+    vec3 pos_dy = dFdy(v_world_position);
+    vec2 uv = v_uv;
+    if ((push.flags & kFlagHeightMap) != 0u && has_tangent) {
+        uv = applyParallax(occlusion_map, vec4(0.0, 1.0, 0.0, 0.0), push.emissive.w,
+                           (push.flags & kFlagParallaxShadow) != 0u, v_uv, uv_dx, uv_dy, pos_dx, pos_dy,
+                           v_world_position, t, b, n, surface_sun_shadow);
+    }
+
+    vec4 albedo = textureGrad(albedo_map, uv, uv_dx, uv_dy) *
+                  vec4(pow(max(push.base_color.rgb, vec3(0.0)), vec3(1.0 / 2.2)), push.base_color.a);
+
+    // Normal map.
+    if (has_tangent) {
+        vec2 xy = textureGrad(normal_map, uv, uv_dx, uv_dy).xy * 2.0 - 1.0;
         vec3 tangent_normal = vec3(xy, sqrt(max(1.0 - dot(xy, xy), 0.0)));
         float scale = push.material.w;
         tangent_normal.y = scale >= 0.0 ? -tangent_normal.y : tangent_normal.y;
@@ -80,7 +103,7 @@ void main() {
         tbn[2] = -tbn[2];
     }
 
-    vec4 metallic_roughness = texture(metallic_roughness_map, v_uv);
+    vec4 metallic_roughness = textureGrad(metallic_roughness_map, uv, uv_dx, uv_dy);
 
     Surface s;
     s.albedo = albedo.rgb;
@@ -88,9 +111,9 @@ void main() {
     s.normal = normal;
     s.metallic = clamp(push.material.x * metallic_roughness.b, 0.0, 1.0);
     s.roughness = clamp(push.material.y * metallic_roughness.g, 0.0, 1.0);
-    s.occlusion = mix(1.0, texture(occlusion_map, v_uv).r, push.material.z);
-    s.emission = toLinear(texture(emissive_map, v_uv).rgb) * push.emissive.rgb;
-    s.uv = v_uv;
+    s.occlusion = mix(1.0, textureGrad(occlusion_map, uv, uv_dx, uv_dy).r, push.material.z);
+    s.emission = toLinear(textureGrad(emissive_map, uv, uv_dx, uv_dy).rgb) * push.emissive.rgb;
+    s.uv = uv;
     s.worldPosition = v_world_position;
     s.vertexNormal = n;
     s.viewDirection = normalize(camera.position.xyz - v_world_position);

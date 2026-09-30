@@ -89,6 +89,31 @@ struct MaterialData {
     // Parallax occlusion mapping: altura en el canal G de occlusion_texture
     // (R = oclusion); 0 = sin relieve. En metros.
     float height_scale = 0.0f;
+    // El relieve sube los vertices de verdad (teselacion) en vez del parallax:
+    // silueta y sombras reales. Si la GPU no tesela, parallax.
+    bool tessellation = false;
+    // Teselacion maxima (cada triangulo se parte hasta en N por borde, 1..64).
+    float tessellation_density = 16.0f;
+    // Auto-sombra del parallax hacia el sol (las piedras se sombrean entre si).
+    bool parallax_shadows = true;
+
+    // Modelo de material de Disney (disney_brdf.glsl): 0 estandar, 1 barniz,
+    // 2 tela, 3 subsurface, 4 anisotropo, 5 transmision (solo transparentes).
+    // Todos llevan el difuso de Burley; cada uno usa sus parametros (0..1
+    // salvo donde se indica).
+    int shading_model = 0;
+    float specular_tint = 0.0f;         // la reflectancia toma el tono del color
+    float clearcoat = 1.0f;             // barniz: cuanto
+    float clearcoat_roughness = 0.05f;  // barniz: rugosidad
+    float sheen = 1.0f;                 // tela: brillo de los bordes
+    float sheen_tint = 0.5f;            // tela: tono del color en el sheen
+    float subsurface = 1.0f;            // subsurface: difuso aplanado (Hanrahan-Krueger)
+    float translucency = 0.5f;          // subsurface: luz que atraviesa
+    float subsurface_thickness = 0.05f; // subsurface: grosor en metros (0.01..0.3)
+    float anisotropy = 0.8f;            // anisotropo: cuanto se estira el brillo
+    float anisotropy_rotation = 0.0f;   // anisotropo: grados (0..180) sobre la tangente
+    float ior = 1.5f;                   // transmision: indice de refraccion (1..2.5)
+    float transmission_thickness = 0.02f;  // transmision: grosor en metros (0..0.2)
     // R de metallic_roughness_texture = reflectancia (0.5 -> F0 0.04). El
     // alfa de esa textura es siempre la cavidad (1 = sin grietas).
     bool specular_map = false;

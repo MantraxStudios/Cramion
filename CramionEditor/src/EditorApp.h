@@ -44,6 +44,9 @@
 
 #include <CramionCore/ecs/FloatingOrigin.h>
 #include <CramionCore/xr/XrRig.h>
+#include <CramionCore/asset/ModelMaterials.h>
+#include <CramionCore/terrain/TerrainGenerator.h>
+#include <CramionFX/asset/HouseGenerator.h>
 #include <CramionUpdater/Update.h>
 #include "PropertyInspector.h"
 #include "ProjectTemplates.h"
@@ -1035,6 +1038,51 @@ private:
     };
     bool paint_mode_ = false;
     bool show_paint_window_ = false;
+    // --- Generador de terreno (EditorTerrainGenerator.cpp) ---
+    struct TerrainGenJob {
+        terrain::GenSettings settings;
+        bool textures = true;
+        std::string texture_folder;  // disco
+        std::thread thread;
+        std::atomic<float> progress{0.0f};
+        std::atomic<bool> cancel{false};
+        std::atomic<bool> done{false};
+        bool ok = false;
+        std::mutex mutex;
+        std::string stage = "Empezando";
+        std::unique_ptr<terrain::GenResult> result;
+        ~TerrainGenJob() {
+            cancel = true;
+            if (thread.joinable()) thread.join();
+        }
+    };
+    bool show_terrain_generator_ = false;
+    terrain::GenSettings terrain_gen_;
+    bool terrain_gen_textures_ = true;
+    bool terrain_gen_trees_ = true;
+    bool terrain_gen_grass_ = true;
+    float terrain_gen_grass_density_ = 70.0f;
+    float terrain_gen_tree_density_ = 120.0f;
+    std::unique_ptr<TerrainGenJob> terrain_gen_job_;
+    void drawTerrainGeneratorWindow();
+    void startTerrainGeneration();
+    void applyGeneratedTerrain(terrain::GenResult& result);
+    int terrain_gen_houses_ = 8;  // casas de la aldea (0 = sin aldea)
+
+    // --- Generador de casas (EditorHouseGenerator.cpp) ---
+    bool show_house_generator_ = false;
+    asset::HouseSettings house_gen_ = asset::housePreset(asset::HouseStyle::LogCabin, 1);
+    int house_gen_village_ = 8;
+    void drawHouseGeneratorWindow();
+    // Texturas y .crmat compartidos de las casas (se crean si faltan).
+    bool ensureHouseMaterials(assets::ModelMaterialMap& map, std::string* error);
+    // Modelo de una casa (se reutiliza si ya existe uno igual); uuid invalido si falla.
+    Uuid writeHouseModel(const asset::HouseSettings& settings, std::string* error);
+    // Instancia con sus materiales y colisiones (MeshCollider + la puerta con BoxCollider).
+    ecs::Entity placeHouse(const Uuid& model, const core::Vec3& position, float yaw_degrees, ecs::Entity parent);
+    // Aldea en el terreno de la escena; devuelve cuantas casas puso.
+    int placeVillage(int count, std::uint32_t seed, ecs::Entity parent, std::string* error);
+    bool groundAt(float x, float z, float& y);
     PaintGroup paint_group_;
     int paint_selected_ = -1;
     PaintBrush paint_brush_;

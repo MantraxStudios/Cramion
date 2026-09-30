@@ -40,6 +40,9 @@ namespace cramion::editor {
 
 namespace {
 
+// Donaciones (PayPal): boton del Hub y tarjeta de Aprender.
+constexpr const char* kDonateUrl = "https://paypal.me/evan2025";
+
 constexpr ImU32 kAccent = IM_COL32(0, 143, 242, 255);
 constexpr ImU32 kCard = IM_COL32(30, 32, 37, 255);
 constexpr ImU32 kCardHover = IM_COL32(38, 41, 47, 255);
@@ -534,9 +537,20 @@ void EditorApp::drawHubSidebar() {
     }
     ImGui::SetItemTooltip("Tus plantillas: se crean desde el editor con Archivo > Guardar proyecto como plantilla");
 
-    // Abajo: tarjeta de la version (clic = Actualizaciones) y salir.
+    // Abajo: donar, tarjeta de la version (clic = Actualizaciones) y salir.
     const float card_h = 64.0f;
-    const float bottom = ImGui::GetWindowHeight() - card_h - 58.0f;
+    const float donate_h = 34.0f;
+    const float bottom = ImGui::GetWindowHeight() - card_h - donate_h - 66.0f;
+    if (ImGui::GetCursorPosY() < bottom) ImGui::SetCursorPosY(bottom);
+    // Donar: el amarillo de PayPal, para que se vea.
+    ImGui::PushStyleColor(ImGuiCol_Button, IM_COL32(255, 196, 57, 255));
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, IM_COL32(255, 212, 102, 255));
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive, IM_COL32(236, 176, 40, 255));
+    ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(0, 48, 135, 255));
+    if (ImGui::Button("Donar con PayPal", ImVec2(-1.0f, donate_h))) update::openUrl(kDonateUrl);
+    ImGui::PopStyleColor(4);
+    ImGui::SetItemTooltip("Cramion es gratis. Si te sirve, puedes apoyar su desarrollo (abre PayPal).");
+    ImGui::Dummy(ImVec2(0.0f, 4.0f));
     if (ImGui::GetCursorPosY() < bottom) ImGui::SetCursorPosY(bottom);
     {
         const ImVec2 p = ImGui::GetCursorScreenPos();
@@ -1104,7 +1118,7 @@ void EditorApp::drawHubUpdates() {
                               : "Busca actualizaciones primero (hace falta el paquete de la versión publicada)",
                           update_release_.version.str().c_str());
     ImGui::SameLine();
-    if (ImGui::Button("Versiones en GitHub", ImVec2(0.0f, 34.0f))) {
+    if (ImGui::Button("Ver novedades", ImVec2(0.0f, 34.0f))) {
         update::openUrl(update_known_ ? update_release_.page_url : std::string(update::kReleasesPage));
     }
     ImGui::Spacing();
@@ -1184,9 +1198,10 @@ void EditorApp::drawHubLearn() {
          offline ? dialogs::utf8(local_manual) : web + "index.html", IM_COL32(0, 143, 242, 255)},
         {"Tu primer script", "Lua: mover objetos, entrada, física y UI.", web + "primer-script.html", IM_COL32(242, 140, 40, 255)},
         {"Shaders propios", "Superficies .crshader con recarga en caliente.", web + "shaders.html", IM_COL32(160, 90, 240, 255)},
-        {"Novedades", "Qué trae cada versión (CHANGELOG).", std::string(update::kReleasesPage), IM_COL32(46, 204, 113, 255)},
+        {"Novedades", "Qué trae cada versión.", std::string(update::kReleasesPage), IM_COL32(46, 204, 113, 255)},
         {"Discord", "Pregunta, enseña tu juego y habla con el equipo.", "https://discord.gg/zG7rSsUGEz", IM_COL32(88, 101, 242, 255)},
-        {"GitHub", "Código, versiones e incidencias.", "https://github.com/MantraxStudios/Cramion", IM_COL32(200, 205, 215, 255)},
+        {"Donar", "Cramion es gratis: apoya su desarrollo con PayPal.", kDonateUrl, IM_COL32(255, 196, 57, 255)},
+        {"Licencia", "Gratis para tus juegos. El código fuente, por correo.", web + "licencia.html", IM_COL32(200, 205, 215, 255)},
     };
     ImDrawList* draw = ImGui::GetWindowDrawList();
     const float spacing = 18.0f;

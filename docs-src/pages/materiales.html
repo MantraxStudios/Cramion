@@ -32,7 +32,7 @@
 <table>
   <thead><tr><th>Mapa</th><th>Uso</th></tr></thead>
   <tbody>
-    <tr><td><code>Altura</code></td><td>Relieve con <em>parallax occlusion mapping</em>. <em>Profundidad</em> en metros: lo que hay del negro al blanco (0,03 = 3 cm).</td></tr>
+    <tr><td><code>Altura</code></td><td>Relieve (blanco = alto), por <em>parallax</em> o por <em>teselación</em> (ver <a href="#relieve">Relieve</a>). <em>Profundidad</em> en metros: lo que hay del negro al blanco (0,03 = 3 cm).</td></tr>
     <tr><td><code>Cavidad</code></td><td>Grietas (negro = hueco): quita brillo y luz. Con su fuerza.</td></tr>
     <tr><td><code>Especular</code></td><td>Reflectancia por píxel (0,5 = 0,04, como Unreal).</td></tr>
     <tr><td><code>Brillo (gloss)</code></td><td>Rugosidad invertida, si el pack no trae rugosidad.</td></tr>
@@ -40,6 +40,76 @@
   </tbody>
 </table>
 <p>Arrastra las imágenes del Proyecto a cada hueco del editor de materiales (clic derecho: quitar).</p>
+
+<h3 id="disney">Modelo de sombreado (Disney)</h3>
+<p>
+  Los materiales siguen el <strong>modelo de Disney</strong> (Burley 2012 y 2015), el mismo en el que se basan Unreal,
+  Unity HDRP y el <em>Principled BSDF</em> de Blender. Todos llevan el <strong>difuso de Burley</strong> (lo rugoso se
+  aclara un poco en los bordes y lo liso se oscurece, en vez del Lambert plano) y el especular GGX. En el apartado
+  <strong>Modelo (Disney)</strong> del material se elige además una capa:
+</p>
+<table>
+  <thead><tr><th>Modelo</th><th>Parámetros</th><th>Para qué</th></tr></thead>
+  <tbody>
+    <tr><td><strong>Estándar</strong></td><td><em>Tinte especular</em></td><td>Casi todo.</td></tr>
+    <tr><td><strong>Barniz</strong> (clearcoat)</td><td><em>Barniz</em>, <em>Rugosidad barniz</em>, tinte especular</td>
+      <td>Una segunda capa brillante encima, con su propio reflejo: pintura de coche, madera barnizada, fibra de carbono.</td></tr>
+    <tr><td><strong>Tela</strong> (sheen)</td><td><em>Sheen</em>, <em>Tinte sheen</em>, tinte especular</td>
+      <td>Brillo suave en los bordes: tela, terciopelo, polvo, musgo.</td></tr>
+    <tr><td><strong>Piel / cera</strong> (subsurface)</td><td><em>Subsurface</em>, <em>Translucidez</em>, <em>Grosor</em></td>
+      <td>La luz se suaviza dentro del material y, a contraluz, lo atraviesa: piel, orejas, hojas, velas, mármol, jade. El
+        grosor decide cuánto pasa: una hoja fina brilla con el sol detrás; un muro grueso no deja pasar nada.</td></tr>
+    <tr><td><strong>Anisótropo</strong></td><td><em>Anisotropía</em>, <em>Dirección</em>, tinte especular</td>
+      <td>El brillo y el reflejo se estiran en una dirección (la tangente de la malla, según sus UV, girada lo que diga
+        <em>Dirección</em>): metal cepillado, pelo, sartenes, discos.</td></tr>
+    <tr><td><strong>Transmisión</strong></td><td><em>Índice (IOR)</em>, <em>Grosor</em> y la <em>Rugosidad</em> del material</td>
+      <td>Solo con el material en <strong>Transparente</strong>: vidrio y líquidos que <strong>refractan</strong> lo de
+        detrás (agua 1.33, vidrio 1.5, diamante 2.42), se tiñen con el color y se <strong>esmerilan</strong> con la
+        rugosidad.</td></tr>
+  </tbody>
+</table>
+<ul>
+  <li><em>Tinte especular</em>: el brillo de lo no metálico toma el tono del color base (latón barnizado, plásticos de color).</li>
+  <li>El <em>path tracing</em> usa el mismo modelo en lo que ve la cámara (los rebotes, el estándar).</li>
+  <li>Se cambia en vivo, sin recargar el modelo. MCP: <code>create_material</code> con <code>shading</code>
+    (<code>standard</code>, <code>clearcoat</code>, <code>cloth</code>, <code>subsurface</code>, <code>anisotropic</code>,
+    <code>transmission</code>) y sus parámetros.</li>
+  <li>Cada material usa un solo modelo, como los <em>Shading Models</em> de Unreal.</li>
+</ul>
+
+<h3 id="relieve">Relieve: parallax o teselación</h3>
+<p>
+  Con un mapa de <code>Altura</code>, el apartado <strong>Relieve</strong> del material tiene un <strong>Modo</strong>:
+</p>
+<table>
+  <thead><tr><th>Modo</th><th>Qué hace</th><th>Cuándo</th></tr></thead>
+  <tbody>
+    <tr><td><strong>Parallax</strong> (por defecto)</td>
+      <td><em>Parallax occlusion mapping</em>: la textura se desplaza para simular el relieve al mirarlo de lado. La
+        malla no cambia: los bordes siguen rectos y la sombra del objeto es la de siempre. Con <strong>Auto-sombra</strong>,
+        las piedras dan sombra del sol a las de al lado. Se apaga entre 15 y 30 m.</td>
+      <td>Casi siempre: suelos, muros, caminos. Barato.</td></tr>
+    <tr><td><strong>Teselación</strong></td>
+      <td>La malla se <strong>parte en triángulos más pequeños</strong> cerca de la cámara (un vértice cada ~10
+        píxeles, hasta la <strong>Densidad</strong> del material) y cada vértice <strong>sube</strong> lo que dice el
+        mapa. La silueta, las sombras (del sol y de las luces) y lo que tapa son reales. Sube hacia fuera: el objeto
+        crece hasta la <em>Profundidad</em>.</td>
+      <td>Primeros planos: rocas, adoquines, muros que se ven de canto. Más caro.</td></tr>
+  </tbody>
+</table>
+<ul>
+  <li>La teselación necesita una malla con <strong>normales suaves y UV continuas</strong>: en las aristas duras (un cubo
+    con caras separadas) cada cara sube por su lado y se abre una grieta. Un plano o un escaneo van perfectos.</li>
+  <li>La <em>Densidad</em> es por borde (como mucho 64 trozos): un plano de 10 m con 2 triángulos baja a unos 16 cm por
+    trozo. Para piedras pequeñas en superficies grandes, usa una malla algo más subdividida.</li>
+  <li>Sin <em>normal map</em> ni <em>bump</em>, en modo teselación la altura también se usa como normal map (la luz
+    necesita la inclinación de cada piedra).</li>
+  <li>Si la GPU no tiene teselación, esos materiales usan el parallax.</li>
+  <li>Los <a href="shaders.html">shaders propios</a> (<code>.crshader</code>) también reciben el parallax y la auto-sombra
+    si el material tiene mapa de altura (la teselación es solo del shader estándar).</li>
+  <li>MCP: <code>create_material</code> con <code>relief: "tessellation"</code>, <code>tessellation_density</code> y
+    <code>parallax_shadows</code>.</li>
+</ul>
 
 <h3 id="shader">Shader propio</h3>
 <p>

@@ -1,0 +1,381 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Mundo procedural · Manual de Cramion</title>
+  <meta name="description" content="Terreno con erosión, ríos y mar, hierba en la GPU, árboles procedurales y casas y aldeas.">
+  <link rel="icon" href="../img/icon.png">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/base16/tomorrow-night.min.css">
+  <link rel="stylesheet" href="manual.css">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/lua.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/glsl.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/json.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/bash.min.js"></script>
+  <script src="search.js"></script>
+</head>
+<body>
+
+  <header class="top">
+    <div class="top-inner">
+      <button id="menu-btn" class="menu-btn" aria-label="Menú">Menú</button>
+      <a href="index.html" class="brand"><img src="../img/icon.png" alt=""><b>Cramion</b><span>manual</span></a>
+      <div class="search">
+        <input id="search" type="search" autocomplete="off" placeholder="Buscar (funciones, componentes, páginas)">
+        <kbd>/</kbd>
+        <div id="results" class="results" hidden></div>
+      </div>
+      <nav class="top-links">
+        <a href="../index.html">Web</a>
+        <a href="https://discord.gg/zG7rSsUGEz" target="_blank" rel="noopener">Discord</a>
+        <a href="licencia.html">Licencia</a>
+        <a href="https://paypal.me/evan2025" target="_blank" rel="noopener">Donar</a>
+      </nav>
+    </div>
+  </header>
+
+  <div class="frame">
+    <aside id="side" class="side">
+      <nav>
+        <a href="index.html">Índice</a>
+        <p class="group">Primeros pasos</p>
+        <a href="primer-script.html">Tu primer script</a>
+        <a href="ciclo-de-vida.html">Ciclo de vida</a>
+        <a href="propiedades.html">Propiedades</a>
+        <a href="recarga.html">Recarga en caliente</a>
+        <a href="prefabs.html">Prefabs</a>
+        <a href="mcp.html">Conectar una IA (MCP)</a>
+        <a href="licencia.html">Licencia</a>
+        <p class="group">El editor</p>
+        <a href="editor-interfaz.html">Interfaz y pestañas</a>
+        <a href="editor-escena.html">Vista Escena y gizmos</a>
+        <a href="editor-jerarquia.html">Jerarquía e Inspector</a>
+        <a href="editor-proyecto.html">Proyecto e importación</a>
+        <a href="editor-play.html">Play, deshacer y escenas</a>
+        <a href="editor-herramientas.html">Herramientas de mundo</a>
+        <a href="mundo-procedural.html" class="active">Mundo procedural</a>
+        <a href="editor-ventanas.html">Ventanas de herramientas</a>
+        <a href="materiales.html">Materiales</a>
+        <a href="render-textures.html">Render Textures</a>
+        <a href="render.html">Render y rendimiento</a>
+        <a href="exportar.html">Exportar y compilación</a>
+        <a href="datapacks.html">DataPacks (bundles)</a>
+        <a href="plantillas.html">Plantillas</a>
+        <a href="atajos.html">Atajos de teclado</a>
+        <a href="actualizaciones.html">Actualizaciones</a>
+        <p class="group">Componentes</p>
+        <a href="componentes.html">Todos los componentes</a>
+        <a href="componentes-basicos.html">Transform y renderizado</a>
+        <a href="componentes-entorno.html">Entorno</a>
+        <a href="componentes-fisica.html">Física</a>
+        <a href="componentes-efectos.html">Partículas y depuración</a>
+        <a href="componentes-animacion.html">Animación</a>
+        <a href="componentes-audio.html">Audio</a>
+        <a href="componentes-cinematicas.html">Cámaras y cinemáticas</a>
+        <a href="componentes-navegacion.html">Navegación</a>
+        <a href="componentes-ui.html">Interfaz (UI)</a>
+        <a href="componentes-scripting.html">Scripts y prefabs</a>
+        <a href="componentes-vr.html">Realidad virtual</a>
+        <p class="group">Referencia de la API</p>
+        <a href="vec3.html">Vec3</a>
+        <a href="quat.html">Quat (rotaciones)</a>
+        <a href="mathf.html">Mathf</a>
+        <a href="random.html">Random</a>
+        <a href="entity.html">Entity</a>
+        <a href="scene.html">Scene</a>
+        <a href="input.html">Input</a>
+        <a href="input-actions.html">Input Actions</a>
+        <a href="realidad-virtual.html">Realidad virtual (XR)</a>
+        <a href="time.html">Time</a>
+        <a href="physics.html">Physics</a>
+        <a href="navegacion.html">Navegación</a>
+        <a href="mallas.html">Mallas por código</a>
+        <a href="voxel.html">Mundo de bloques</a>
+        <a href="audio.html">Audio</a>
+        <a href="ui.html">Interfaz (UI)</a>
+        <a href="esqueletos.html">Esqueletos: IK, ragdoll y phys bones</a>
+        <a href="graphics.html">Graphics</a>
+        <a href="red.html">Network (multijugador)</a>
+        <a href="http.html">Http y Json</a>
+        <a href="prefs.html">Prefs y Game</a>
+        <a href="debug.html">Debug</a>
+        <p class="group">Gráficos</p>
+        <a href="shaders.html">Shaders propios</a>
+        <p class="group">Ejemplos</p>
+        <a href="ejemplo-girar.html">Girar un objeto</a>
+        <a href="ejemplo-camara.html">Cámara que sigue al jugador</a>
+        <a href="ejemplo-jugador.html">Jugador con física</a>
+        <a href="ejemplo-disparo.html">Disparo con raycast</a>
+        <a href="ejemplo-monedas.html">Monedas y puntuación</a>
+        <a href="ejemplo-spawner.html">Generador de enemigos</a>
+        <a href="ejemplo-vehiculo.html">Conducir un vehículo</a>
+        <a href="ejemplo-menu.html">Menú, opciones y récord</a>
+        <a href="ejemplo-animacion.html">Animación de un personaje</a>
+        <a href="ejemplo-comunicacion.html">Scripts que se hablan</a>
+        <a href="ejemplo-ia.html">IA: patrullar y perseguir</a>
+        <a href="ejemplo-terreno.html">Terreno procedural con colisión</a>
+        <a href="ejemplo-efectos.html">Varios materiales y efectos</a>
+        <a href="ejemplo-olas.html">Olas: cambiar la malla cada frame</a>
+      </nav>
+    </aside>
+
+    <main class="doc">
+      <div class="crumbs"><a href="index.html">Manual</a> / El editor</div>
+      <h1>Mundo procedural</h1>
+      <p class="lede">Terreno con erosión, ríos y mar, hierba en la GPU, árboles procedurales y casas y aldeas.</p>
+      <div class="body">
+<p>
+  Un mundo entero en unos segundos: relieve con erosión, mar, ríos y lagos, capas con texturas realistas, hierba en la GPU
+  que se aparta con la física, árboles procedurales y aldeas de casas. Todo se genera en el editor y queda en la escena como
+  objetos normales, que se pueden editar, mover o borrar.
+</p>
+
+<div class="shots">
+  <figure><img src="../img/mundo-casa.jpg" alt="Casa de campo procedural entre árboles" loading="lazy"><figcaption>Casa de campo, hierba y árboles generados</figcaption></figure>
+  <figure><img src="../img/mundo-aldea.jpg" alt="Aldea junto al río vista desde arriba" loading="lazy"><figcaption>Una aldea en el llano, junto al río</figcaption></figure>
+</div>
+
+<h3 id="terreno">Generador de terreno</h3>
+<p>
+  <em>Ventana &gt; Generador de terreno</em>. Se elige una <strong class="text-white">forma</strong> (isla, archipiélago,
+  continente, cordilleras o cañones), una semilla y se pulsa <strong>Generar</strong>. Se calcula en segundo plano (barra de
+  progreso y <em>Cancelar</em>; una isla de 2 km con 1025 vértices por lado tarda menos de un segundo) y crea el grupo
+  <strong>Mundo generado</strong>. Volver a generar reemplaza ese grupo.
+</p>
+<table>
+  <thead><tr><th>Apartado</th><th>Qué controla</th></tr></thead>
+  <tbody>
+    <tr><td>Tamaño</td><td>Lado en metros, altura máxima, resolución (257 a 2049) y nivel del mar.</td></tr>
+    <tr><td>Relieve</td><td>Escala de las formas, montañas, crestas afiladas, colinas, deformación (<em>domain warping</em>), mesetas y costa irregular.</td></tr>
+    <tr><td>Erosión</td><td>Lluvia (gotas que excavan cauces y dejan sedimentos), su fuerza, y desmoronamiento de las laderas por encima del ángulo de reposo.</td></tr>
+    <tr><td>Agua</td><td>Océano, número de ríos (nacen arriba y bajan siguiendo el terreno hasta el mar), su anchura y profundidad, y lagos en las cuencas.</td></tr>
+    <tr><td>Capas</td><td>8 capas pintadas por reglas (hierba, hierba seca, tierra, roca, arena, grava, nieve y barro) con texturas PBR procedurales en <code>Assets/Terrains/Texturas</code>; franja de playa, pendiente de la roca, cota de la nieve.</td></tr>
+    <tr><td>Vegetación</td><td>Hierba en la GPU (briznas por m²) y árboles (por hectárea).</td></tr>
+    <tr><td>Aldea</td><td>Número de casas procedurales (0 = sin aldea). Ver <a href="#casas">Casas y cabañas</a>.</td></tr>
+  </tbody>
+</table>
+<p>
+  La cámara del editor y la del juego alargan su distancia de dibujado para ver el mundo entero. Por MCP:
+  <code>generate_terrain</code> (mismos parámetros, más <code>houses</code>) y <code>ground_height</code> para saber la
+  altura del suelo en un punto.
+</p>
+
+<h3 id="hierba">Hierba (GPU)</h3>
+<p>
+  El componente <strong class="text-white">Grass</strong> va en el terreno y crece donde está pintada su capa (la seca la
+  amarillea). No hay mallas: cada fotograma un <em>compute shader</em> recorre una rejilla fija al mundo alrededor de la
+  cámara, descarta lo que queda fuera de la vista y escribe las briznas visibles; cerca con 7 tramos y lejos con 3, más
+  anchas y menos. Hasta 3 millones de briznas. Las briznas tienen perfil de hoja, se agrupan en matas, se mecen con rachas
+  de viento y dejan pasar la luz a contraluz (modelo de Disney <em>subsurface</em>).
+</p>
+<p>
+  <strong>Reacciona a la física</strong>: los objetos con <code>Rigidbody</code> no estático (y un collider) a menos de
+  120 m de la cámara la apartan y la aplastan; los 32 más cercanos. Propiedades: densidad, distancia máxima y de detalle,
+  altura y su variación, anchura, curvatura, colores de base, punta y seca, viento y cuánto la empujan.
+</p>
+<div class="shots">
+  <figure><img src="../img/mundo-hierba.jpg" alt="Hierba de cerca" loading="lazy"><figcaption>Hierba a ras de suelo</figcaption></figure>
+  <figure><img src="../img/mundo-bosque.jpg" alt="Bosque procedural" loading="lazy"><figcaption>Árboles procedurales con corteza de placas y racimos de hojas</figcaption></figure>
+</div>
+
+<h3 id="arboles">Árboles procedurales</h3>
+<p>
+  El componente <strong class="text-white">Foliage</strong> (<em>Vegetación</em>) reparte árboles por el terreno según la
+  altura y la pendiente, y los dibuja instanciados con <em>culling</em> en la GPU. Cada árbol se genera como un SpeedTree
+  sencillo: tronco y ramas de verdad (hasta tres niveles, filotaxia de 137,5°, gravedad, fototropismo y torsión), racimos
+  de hojas con translucidez y normales esféricas para que la copa se ilumine como un volumen, y tres LOD del mismo
+  esqueleto. Texturas procedurales: corteza de placas, abedul, ramitas con hojas, agujas y frondas.
+</p>
+<p>
+  En <em>Especies</em> se elige qué árbol es cada una de las 3 especies de la mezcla (pino, abeto, roble, abedul, palmera o
+  sauce) y su semilla, altura, cantidad de hojas y de ramas y lo torcidos que son. <strong>No crecen en el agua</strong>:
+  se quitan del cauce de los ríos (y su orilla) y de lo que queda bajo el nivel de los lagos, ni dentro de las casas de las
+  aldeas (claros).
+</p>
+
+<h3 id="bajo-el-agua">Bajo el agua</h3>
+<p>
+  El efecto de bajo el agua (color, niebla, cáusticas) funciona con <strong>todos los tipos de agua</strong>: océano,
+  lagos y ríos. Solo se activa donde hay agua de verdad: dentro del rectángulo del lago, con el suelo por debajo de la
+  superficie y la cámara por encima del fondo. Fuera del lago, en una orilla seca o bajo tierra no se ve. En los ríos, la
+  superficie es la del punto donde está la cámara.
+</p>
+
+<h3 id="casas">Casas y cabañas</h3>
+<p>
+  <em>Ventana &gt; Generador de casas</em> crea casas procedurales listas para el juego:
+  <strong class="text-white">cabaña de troncos</strong> (troncos redondos cruzados en las esquinas), <strong class="text-white">cabaña de tablas</strong>,
+  <strong class="text-white">casita de piedra</strong> y <strong class="text-white">casa de campo</strong> de dos plantas. Se
+  elige el estilo, la semilla (otras medidas y ventanas), ancho, fondo, plantas, altura, pendiente del tejado, alero,
+  ventanas, porche con barandilla, chimenea y contraventanas.
+</p>
+<div class="shots">
+  <figure><img src="../img/mundo-cabana.jpg" alt="Cabaña de troncos con porche" loading="lazy"><figcaption>Cabaña de troncos</figcaption></figure>
+  <figure><img src="../img/mundo-piedra.jpg" alt="Casita de piedra" loading="lazy"><figcaption>Casita de piedra</figcaption></figure>
+</div>
+<ul>
+  <li><strong>Crear en la escena</strong> la pone delante de la cámara, sobre el suelo. La puerta mira a +Z.</li>
+  <li><strong>Crear aldea en el terreno</strong> (o el apartado <em>Aldea</em> del generador de terreno) busca un sitio llano y seco, fuera de ríos y lagos, reparte las casas alrededor de una plaza con la puerta hacia ella y abre claros en la vegetación.</li>
+</ul>
+<p>
+  <strong>Pensadas para el juego</strong>: entre 1.000 y 6.000 triángulos por casa, con LOD automáticos. Todas comparten 9
+  materiales (<code>Assets/Casas/Materiales</code>: troncos, veta, tablas, revestimiento, piedra, tejado, marcos, vidrio y
+  hierro) con texturas PBR y relieve (parallax) que se crean una sola vez en <code>Assets/Casas/Texturas</code>; las casas
+  iguales son instancias del mismo modelo (<code>Assets/Casas/Modelos</code>). Los materiales se pueden editar y todas las
+  casas cambian.
+</p>
+<p>
+  Cada casa tiene dos hijos: <strong>Casa</strong>, con <code>MeshCollider</code>, y <strong>Puerta</strong>, con
+  <code>BoxCollider</code> y su origen en la bisagra. Para abrirla desde Lua basta con girarla en Y:
+</p>
+<pre><code class="language-lua">-- Script en la raiz de la casa: E abre y cierra la puerta poco a poco.
+local Casa = {}
+
+function Casa:Start()
+    self.puerta = self.entity:find("Puerta")
+    self.angulo = 0
+end
+
+function Casa:Update(dt)
+    if Input.getKeyDown("e") then self.abierta = not self.abierta end
+    local objetivo = self.abierta and -100 or 0
+    self.angulo = self.angulo + (objetivo - self.angulo) * math.min(dt * 6, 1)
+    self.puerta.rotation = Vec3(0, self.angulo, 0)  -- giro local en grados
+end
+
+return Casa</code></pre>
+<p>
+  Los cristales son opacos y reflejan el cielo (no se ve el interior), para no gastar rendimiento. Por MCP:
+  <code>generate_house</code> (<code>style</code>: <code>log</code>, <code>timber</code>, <code>stone</code> o
+  <code>farm</code>; medidas, <code>position</code>, <code>yaw</code>) o <code>generate_house</code> con
+  <code>village</code> = número de casas para una aldea.
+</p>
+      </div>
+      <nav class="pager"><a href="editor-herramientas.html"><span>← anterior</span><b>Herramientas de mundo</b></a><a class="next" href="editor-ventanas.html"><span>siguiente →</span><b>Ventanas de herramientas</b></a></nav>
+      <p class="help">¿Algo no queda claro o falta algo? Pregunta en el
+        <a href="https://discord.gg/zG7rSsUGEz" target="_blank" rel="noopener">Discord</a>.</p>
+    </main>
+    <aside class="onpage-col">
+      <p>En esta página</p>
+      <nav id="onpage" class="onpage"></nav>
+    </aside>
+  </div>
+
+  <script>
+    // Solo el codigo con lenguaje (los arboles de carpetas y la salida quedan tal cual).
+    hljs.configure({ cssSelector: 'pre code[class*="language-"]' });
+    hljs.highlightAll();
+
+    // Menu lateral en el movil.
+    const side = document.getElementById("side");
+    document.getElementById("menu-btn").addEventListener("click", () => document.body.classList.toggle("menu-open"));
+    document.addEventListener("click", ev => {
+      if (document.body.classList.contains("menu-open") && !ev.target.closest("#side, #menu-btn")) {
+        document.body.classList.remove("menu-open");
+      }
+    });
+    // El enlace activo a la vista dentro del menu (sin mover la pagina).
+    const current = side.querySelector("a.active");
+    if (current) side.scrollTop = current.offsetTop - side.clientHeight / 2;
+
+    // Ancla de cada seccion y boton de copiar en el codigo.
+    document.querySelectorAll(".doc h3[id]").forEach(h => {
+      const a = document.createElement("a");
+      a.className = "anchor";
+      a.href = "#" + h.id;
+      a.textContent = "#";
+      h.appendChild(a);
+    });
+    document.querySelectorAll(".doc pre").forEach(pre => {
+      const b = document.createElement("button");
+      b.className = "copy";
+      b.textContent = "copiar";
+      b.addEventListener("click", async () => {
+        try {
+          await navigator.clipboard.writeText(pre.querySelector("code")?.innerText ?? pre.innerText);
+          b.textContent = "copiado";
+        } catch { b.textContent = "no se pudo"; }
+        setTimeout(() => (b.textContent = "copiar"), 1400);
+      });
+      pre.appendChild(b);
+    });
+
+    // Tablas anchas: se desplazan dentro de su marco.
+    document.querySelectorAll(".doc table").forEach(t => {
+      const w = document.createElement("div");
+      w.className = "table-wrap";
+      t.replaceWith(w);
+      w.appendChild(t);
+    });
+
+    // "En esta pagina": los h3 con la seccion visible marcada.
+    const onpage = document.getElementById("onpage");
+    if (onpage) {
+      const heads = [...document.querySelectorAll(".doc h3[id]")];
+      if (heads.length < 2) {
+        onpage.closest("aside").style.visibility = "hidden";
+      } else {
+        onpage.innerHTML = heads.map(h => `<a href="#${h.id}">${h.firstChild.textContent}</a>`).join("");
+        const links = [...onpage.querySelectorAll("a")];
+        const obs = new IntersectionObserver(entries => {
+          for (const e of entries) {
+            if (e.isIntersecting) links.forEach(a => a.classList.toggle("active", a.getAttribute("href") === "#" + e.target.id));
+          }
+        }, { rootMargin: "-70px 0px -70% 0px" });
+        heads.forEach(h => obs.observe(h));
+      }
+    }
+
+    // Buscador: titulos, secciones y nombres de la API.
+    const input = document.getElementById("search");
+    const box = document.getElementById("results");
+    const norm = s => s.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+    const esc = s => s.replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+    let hits = [], sel = 0;
+    const render = () => {
+      const q = input.value.trim();
+      if (!hits.length) {
+        box.innerHTML = q ? '<p class="none">Sin resultados.</p>' : "";
+        box.hidden = !q;
+        return;
+      }
+      box.innerHTML = hits.map((h, i) => `
+        <a href="${h.u}" class="${i === sel ? "sel" : ""}">
+          <span class="t${h.c ? " code" : ""}">${esc(h.t)}</span><span class="g">${esc(h.g)}</span>
+          ${h.d ? `<span class="d">${esc(h.d)}</span>` : ""}
+        </a>`).join("");
+      box.hidden = false;
+    };
+    input.addEventListener("input", () => {
+      const q = norm(input.value.trim());
+      sel = 0;
+      if (!q) { hits = []; render(); return; }
+      const words = q.split(/\s+/);
+      hits = window.CRAMION_SEARCH
+        .map(e => {
+          const t = norm(e.t), all = t + " " + norm(e.g) + " " + norm(e.d || "");
+          if (!words.every(w => all.includes(w))) return null;
+          const score = (t.startsWith(q) ? 0 : t.includes(q) ? 1 : 2) + (e.c ? 0.5 : 0) - (e.d ? 0.3 : 0);
+          return { e, score };
+        })
+        .filter(Boolean).sort((a, b) => a.score - b.score).slice(0, 12).map(x => x.e);
+      render();
+    });
+    input.addEventListener("keydown", ev => {
+      if (ev.key === "ArrowDown") { sel = Math.min(sel + 1, hits.length - 1); render(); ev.preventDefault(); }
+      if (ev.key === "ArrowUp") { sel = Math.max(sel - 1, 0); render(); ev.preventDefault(); }
+      if (ev.key === "Enter" && hits[sel]) location.href = hits[sel].u;
+      if (ev.key === "Escape") { input.value = ""; hits = []; render(); input.blur(); }
+    });
+    document.addEventListener("keydown", ev => {
+      if (ev.key === "/" && document.activeElement !== input) { ev.preventDefault(); input.focus(); }
+    });
+    document.addEventListener("click", ev => { if (!ev.target.closest("#results, #search")) box.hidden = true; });
+    input.addEventListener("focus", () => { if (input.value.trim()) render(); });
+  </script>
+</body>
+</html>

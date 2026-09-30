@@ -197,10 +197,14 @@ const std::map<std::string, std::string>& intros() {
         {"WaterBody", "Agua procedural: <strong>Oceano</strong> (plano infinito con oleaje Gerstner), <strong>Lago</strong> "
                       "(rectangulo con olas suaves) o <strong>Rio</strong> (cinta que sigue sus puntos, con corriente). Los "
                       "Rigidbody flotan, la camara bajo el agua ve niebla y causticas y los cuerpos que se mueven dejan ondas."},
-        {"Foliage", "Bosques de <strong>millones de arboles</strong> (pinos, robles y abedules) sembrados en segundo plano "
-                    "sobre el terreno, evitando el agua, las pendientes y los <em>claros</em>. La GPU los recorta y elige su "
-                    "nivel de detalle (3 LODs), con sombras cercanas y viento. Ver "
-                    "<a href=\"editor-herramientas.html#vegetacion\">Vegetacion</a>."},
+        {"Foliage", "Bosques de <strong>millones de arboles procedurales</strong> (pino, abeto, roble, abedul, palmera o sauce: "
+                    "tres especies por mezcla) sembrados en segundo plano sobre el terreno, evitando los rios, los lagos, las "
+                    "pendientes y los <em>claros</em>. Tronco y ramas de verdad, racimos de hojas translucidos, 3 LODs, "
+                    "culling en la GPU, sombras y viento. Ver <a href=\"mundo-procedural.html#arboles\">Arboles procedurales</a>."},
+        {"Grass", "Hierba en la GPU sobre la capa del terreno que se elija: millones de briznas alrededor de la camara, sin "
+                  "mallas, con viento, matas y translucidez, que se <strong>apartan y se aplastan</strong> con los Rigidbody "
+                  "que pasan por encima. Va en la misma entidad que el Terrain. Ver "
+                  "<a href=\"mundo-procedural.html#hierba\">Hierba (GPU)</a>."},
         {"VoxelWorld", "Un mundo de bloques infinito como Minecraft: biomas, cuevas, minerales, arboles, agua y luz por bloques. "
                        "Se genera y se malla en hilos de fondo; en el editor, con <em>Vista previa</em>. Ver "
                        "<a href=\"voxel.html\">Mundo de bloques</a> para la API de Lua."},

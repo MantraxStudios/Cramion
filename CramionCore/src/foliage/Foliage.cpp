@@ -35,9 +35,12 @@ void Foliage::reflect(ecs::PropertyVisitor& v) {
     v.field({"density", "Densidad", "Arboles por hectarea (100 x 100 m). 60 = bosque; 300 = muy denso"}, density,
             ecs::FloatRange{0.1f, 2000.0f, 1.0f, "%.1f / ha"});
     v.field({"seed", "Semilla", "Otra semilla, otro bosque (la misma, el mismo)"}, seed, 0, 1000000);
-    v.field({"pine", "Pinos", "Peso de los pinos en la mezcla"}, pine, ecs::FloatRange{0.0f, 1.0f, 0.01f, "%.2f"});
-    v.field({"oak", "Robles", "Peso de los robles en la mezcla"}, oak, ecs::FloatRange{0.0f, 1.0f, 0.01f, "%.2f"});
-    v.field({"birch", "Abedules", "Peso de los abedules en la mezcla"}, birch, ecs::FloatRange{0.0f, 1.0f, 0.01f, "%.2f"});
+    v.field({"pine", "Peso especie 1", "Cuanto de la mezcla es la especie 1 (por defecto pinos)"}, pine,
+            ecs::FloatRange{0.0f, 1.0f, 0.01f, "%.2f"});
+    v.field({"oak", "Peso especie 2", "Cuanto de la mezcla es la especie 2 (por defecto robles)"}, oak,
+            ecs::FloatRange{0.0f, 1.0f, 0.01f, "%.2f"});
+    v.field({"birch", "Peso especie 3", "Cuanto de la mezcla es la especie 3 (por defecto abedules)"}, birch,
+            ecs::FloatRange{0.0f, 1.0f, 0.01f, "%.2f"});
     v.field({"min_scale", "Escala minima"}, min_scale, ecs::FloatRange{0.25f, 4.0f, 0.01f, "%.2f"});
     v.field({"max_scale", "Escala maxima"}, max_scale, ecs::FloatRange{0.25f, 4.0f, 0.01f, "%.2f"});
     v.field({"on_terrain", "Sobre el terreno", "Apoyarlos en el terreno de debajo (si no, a la altura del objeto)"},
@@ -64,6 +67,35 @@ void Foliage::reflect(ecs::PropertyVisitor& v) {
             ecs::FloatRange{0.0f, 2000.0f, 1.0f, "%.0f m"});
     v.field({"cast_shadows", "Proyectan sombra"}, cast_shadows);
     v.field({"wind", "Viento", "Cuanto se mecen las copas (0 = quietos)"}, wind, ecs::FloatRange{0.0f, 5.0f, 0.01f, "%.2f"});
+    if (v.wantsAllFields() || v.beginGroup("Especies (arboles procedurales)", true)) {
+        static constexpr const char* kKinds[] = {"Pino", "Abeto", "Roble", "Abedul", "Palmera", "Sauce"};
+        v.enumeration({"species1", "Especie 1", "Tipo de arbol del peso 1"}, species1, kKinds);
+        v.enumeration({"species2", "Especie 2", "Tipo de arbol del peso 2"}, species2, kKinds);
+        v.enumeration({"species3", "Especie 3", "Tipo de arbol del peso 3"}, species3, kKinds);
+        v.field({"tree_seed", "Semilla de los arboles", "Otra forma de ramas y hojas"}, tree_seed, 0, 100000);
+        v.field({"tree_height", "Altura", "Multiplica la altura de cada especie"}, tree_height,
+                ecs::FloatRange{0.3f, 3.0f, 0.01f, "%.2f"});
+        v.field({"leaf_density", "Hojas", "Cuantas hojas (1 = normal)"}, leaf_density, ecs::FloatRange{0.1f, 3.0f, 0.01f, "%.2f"});
+        v.field({"branch_density", "Ramas", "Cuantas ramas (1 = normal)"}, branch_density,
+                ecs::FloatRange{0.2f, 2.5f, 0.01f, "%.2f"});
+        v.field({"gnarl", "Torcido", "Ramas mas rectas (0) o mas retorcidas"}, gnarl, ecs::FloatRange{0.0f, 3.0f, 0.01f, "%.2f"});
+        if (!v.wantsAllFields()) v.endGroup();
+    }
+}
+
+std::array<asset::TreeSpecies, gfx::FoliagePass::kSpecies> Foliage::species() const {
+    std::array<asset::TreeSpecies, gfx::FoliagePass::kSpecies> out{};
+    const int kinds[3] = {species1, species2, species3};
+    for (int i = 0; i < 3; ++i) {
+        asset::TreeSpecies s = asset::treePreset(static_cast<asset::TreeKind>(std::clamp(kinds[i], 0, asset::kTreeKindCount - 1)));
+        s.seed = static_cast<std::uint32_t>(std::max(tree_seed, 0)) * 31U + static_cast<std::uint32_t>(i) * 7U + 1U;
+        s.height *= std::max(tree_height, 0.1f);
+        s.leaf_density = leaf_density;
+        s.branch_density = branch_density;
+        s.gnarl = gnarl;
+        out[static_cast<std::size_t>(i)] = s;
+    }
+    return out;
 }
 
 gfx::FoliageSettings Foliage::settings() const {
@@ -142,6 +174,28 @@ FoliageResult generateFoliage(const Foliage& f, const core::Vec3& center, const 
                     ++rejected[t];
                     continue;
                 }
+                // Ni en los rios ni bajo el agua de los lagos.
+                bool wet = false;
+                for (const FoliageWater& w : f.water) {
+                    if (w.river) {
+                        const float abx = w.b.x - w.a.x, abz = w.b.z - w.a.z;
+                        const float len2 = abx * abx + abz * abz;
+                        const float tt = len2 > 0.0f ? std::clamp(((x - w.a.x) * abx + (z - w.a.z) * abz) / len2, 0.0f, 1.0f) : 0.0f;
+                        const float dx = x - (w.a.x + abx * tt), dz = z - (w.a.z + abz * tt);
+                        const float reach = w.width * 0.5f + 3.0f;  // el cauce y un poco de orilla
+                        if (dx * dx + dz * dz < reach * reach) wet = true;
+                    } else {
+                        const float c = std::cos(w.angle), s = std::sin(w.angle);
+                        const float lx = (x - w.a.x) * c + (z - w.a.z) * s;
+                        const float lz = -(x - w.a.x) * s + (z - w.a.z) * c;
+                        if (std::abs(lx) < w.half.x && std::abs(lz) < w.half.y && y < w.level + 0.6f) wet = true;
+                    }
+                    if (wet) break;
+                }
+                if (wet) {
+                    ++rejected[t];
+                    continue;
+                }
                 const float pick = rng.next();
                 const std::uint32_t species = pick < w_pine ? 0u : (pick < w_pine + w_oak ? 1u : 2u);
                 const float scale = min_scale + (max_scale - min_scale) * rng.next();
@@ -163,10 +217,65 @@ FoliageResult generateFoliage(const Foliage& f, const core::Vec3& center, const 
     return result;
 }
 
+void Grass::reflect(ecs::PropertyVisitor& v) {
+    v.field({"layer", "Capa", "Capa del terreno donde crece (0 = la primera)"}, layer, 0, 7);
+    v.field({"threshold", "Umbral", "Peso minimo de la capa: mas alto = solo donde esta bien pintada"}, threshold,
+            ecs::FloatRange{0.0f, 0.99f, 0.01f, "%.2f"});
+    v.field({"dry_layer", "Capa seca", "Donde el terreno tiene esta capa, la hierba se seca (-1 = ninguna)"}, dry_layer,
+            -1, 7);
+    v.field({"density", "Densidad", "Briznas por metro cuadrado (de cerca)"}, density,
+            ecs::FloatRange{1.0f, 400.0f, 0.5f, "%.0f / m2"});
+    v.field({"max_distance", "Distancia", "Hasta donde se dibuja; lejos, menos briznas y mas anchas"}, max_distance,
+            ecs::FloatRange{5.0f, 400.0f, 1.0f, "%.0f m"});
+    v.field({"detail_distance", "Detalle hasta", "Briznas curvas y con todo el detalle hasta esta distancia"},
+            detail_distance, ecs::FloatRange{1.0f, 200.0f, 0.5f, "%.0f m"});
+    v.field({"height", "Altura"}, height, ecs::FloatRange{0.02f, 3.0f, 0.01f, "%.2f m"});
+    v.field({"height_variation", "Variacion de altura"}, height_variation, ecs::FloatRange{0.0f, 1.0f, 0.01f, "%.2f"});
+    v.field({"width", "Anchura"}, width, ecs::FloatRange{0.005f, 0.3f, 0.001f, "%.3f m"});
+    v.field({"bend", "Curvatura", "Cuanto se doblan solas"}, bend, ecs::FloatRange{0.0f, 1.5f, 0.01f, "%.2f"});
+    v.field({"base_color", "Color base"}, base_color, ecs::Vec3Kind::Color);
+    v.field({"tip_color", "Color de la punta"}, tip_color, ecs::Vec3Kind::Color);
+    v.field({"dry_color", "Color seca"}, dry_color, ecs::Vec3Kind::Color);
+    v.field({"color_variation", "Variacion de color"}, color_variation, ecs::FloatRange{0.0f, 1.0f, 0.01f, "%.2f"});
+    v.field({"wind", "Viento", "Cuanto se mece (0 = quieta)"}, wind, ecs::FloatRange{0.0f, 4.0f, 0.01f, "%.2f"});
+    v.field({"wind_direction", "Direccion del viento"}, wind_direction, ecs::FloatRange{0.0f, 360.0f, 1.0f, "%.0f°"});
+    v.field({"interaction", "Interaccion", "Cuanto la apartan y aplastan los objetos fisicos y los personajes"},
+            interaction, ecs::FloatRange{0.0f, 3.0f, 0.01f, "%.2f"});
+    v.field({"max_blades", "Maximo de briznas", "Tope de memoria de la GPU (32 bytes por brizna)"}, max_blades, 10000,
+            8000000);
+}
+
+gfx::GrassDesc Grass::desc() const {
+    gfx::GrassDesc d;
+    d.enabled = true;
+    d.layer = layer;
+    d.threshold = threshold;
+    d.dry_layer = dry_layer;
+    d.density = density;
+    d.max_distance = max_distance;
+    d.near_distance = detail_distance;
+    d.height = height;
+    d.height_variation = height_variation;
+    d.width = width;
+    d.bend = bend;
+    d.base_color = base_color;
+    d.tip_color = tip_color;
+    d.dry_color = dry_color;
+    d.color_variation = color_variation;
+    d.wind = wind;
+    d.wind_direction = wind_direction;
+    d.interaction = interaction;
+    d.max_blades = static_cast<std::uint32_t>(std::max(max_blades, 10000));
+    return d;
+}
+
 void registerFoliageComponents() {
     ecs::ComponentRegistry& registry = ecs::ComponentRegistry::instance();
     if (registry.find("Foliage") == nullptr) {
         registry.registerComponent<Foliage>("Foliage", "Vegetacion (bosque instanciado)", "Entorno");
+    }
+    if (registry.find("Grass") == nullptr) {
+        registry.registerComponent<Grass>("Grass", "Hierba (en un terreno)", "Entorno");
     }
 }
 

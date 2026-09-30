@@ -554,7 +554,7 @@ bool parseRelease(const std::string& text, Release& out, std::string* error, con
     if (r.name.empty()) r.name = "Cramion " + r.version.str();
     const json& body = doc.contains("body") ? doc["body"] : doc.contains("notes") ? doc["notes"] : json();
     if (body.is_string()) r.notes = body.get<std::string>();
-    r.page_url = doc.value("html_url", std::string(kReleasesPage));
+    r.page_url = kReleasesPage;
     r.published_at = doc.value("published_at", std::string{});
     r.prerelease = doc.value("prerelease", !r.version.pre.empty());
     const auto hexOf = [](std::string text) {

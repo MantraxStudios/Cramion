@@ -48,6 +48,9 @@ layout(location = 2) out vec4 v_tangent;
 layout(location = 3) out vec3 v_world_position;  // para la lluvia (skinned.frag)
 layout(location = 4) out vec4 v_current_clip;    // vectores de movimiento (sin jitter)
 layout(location = 5) out vec4 v_previous_clip;
+// Relieve teselado (skinned.tese): la posicion del frame anterior, para
+// desplazarla igual que la de este.
+layout(location = 6) out vec3 v_previous_world;
 
 void main() {
     // Instanciado: push.model es la identidad y la matriz de mundo del actor
@@ -88,5 +91,7 @@ void main() {
                          in_weights.z * bones[previous + in_joints.z] +
                          in_weights.w * bones[previous + in_joints.w];
     v_current_clip = camera.unjittered_view_projection * world_position;
-    v_previous_clip = camera.previous_view_projection * (previous_skin * vec4(in_position, 1.0));
+    vec4 previous_world = previous_skin * vec4(in_position, 1.0);
+    v_previous_clip = camera.previous_view_projection * previous_world;
+    v_previous_world = previous_world.xyz;
 }

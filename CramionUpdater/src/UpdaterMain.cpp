@@ -908,7 +908,7 @@ void Updater::frame(HWND hwnd) {
             break;
         case Screen::NoPackage:
             footer(130.0f * 2.0f + 8.0f);
-            if (secondaryButton("Ver en GitHub", 130.0f)) update::openUrl(release_.page_url);
+            if (secondaryButton("Ver novedades", 130.0f)) update::openUrl(release_.page_url);
             ImGui::SameLine();
             if (primaryButton("Buscar de nuevo", 130.0f)) startCheck();
             break;
@@ -941,7 +941,7 @@ void Updater::frame(HWND hwnd) {
             break;
         case Screen::Error:
             footer(130.0f + 120.0f + 120.0f + 16.0f);
-            if (secondaryButton("Ver en GitHub", 130.0f)) update::openUrl(release_.page_url.empty() ? update::kReleasesPage : release_.page_url);
+            if (secondaryButton("Ver novedades", 130.0f)) update::openUrl(release_.page_url.empty() ? update::kReleasesPage : release_.page_url);
             ImGui::SameLine();
             if (secondaryButton("Cerrar", 120.0f)) finish(1);
             ImGui::SameLine();

@@ -359,16 +359,109 @@ void EditorApp::drawMaterialEditor(const Uuid& uuid) {
         changed |= ImGui::SliderFloat("Fuerza AO", &m.occlusion_strength, 0.0f, 1.0f, "%.2f");
     }
 
+    // --- Modelo de sombreado (Disney) ---
+    ImGui::SeparatorText("Modelo (Disney)");
+    {
+        static constexpr const char* kShadings[] = {"Estándar",    "Barniz (clearcoat)", "Tela (sheen)",
+                                                    "Piel / cera (subsurface)", "Anisótropo", "Transmisión (vidrio)"};
+        static constexpr const char* kShadingHelp[] = {
+            "Metal/rugosidad con el difuso de Burley (lo rugoso se aclara en los bordes).",
+            "Una capa de barniz brillante encima: pintura de coche, madera barnizada, fibra de carbono.",
+            "Brillo suave en los bordes: tela, terciopelo, polvo, musgo.",
+            "La luz entra y sale por otro punto: piel, cera, hojas, mármol, jade. A contraluz deja pasar la luz.",
+            "El brillo se estira en una dirección: metal cepillado, pelo, sartenes, discos.",
+            "Vidrio y líquidos con refracción (índice), grosor y esmerilado (rugosidad). Solo en modo Transparente."};
+        int shading = static_cast<int>(m.shading);
+        ImGui::SetNextItemWidth(-90.0f);
+        if (ImGui::Combo("Modelo", &shading, kShadings, assets::kShadingModelCount)) {
+            m.shading = static_cast<assets::ShadingModel>(shading);
+            changed = true;
+        }
+        ImGui::SetItemTooltip("%s", kShadingHelp[std::clamp(shading, 0, assets::kShadingModelCount - 1)]);
+        const auto slider = [&](const char* label, float* value, float lo, float hi, const char* format,
+                                const char* help) {
+            ImGui::SetNextItemWidth(-90.0f);
+            changed |= ImGui::SliderFloat(label, value, lo, hi, format);
+            ImGui::SetItemTooltip("%s", help);
+        };
+        switch (m.shading) {
+            case assets::ShadingModel::Clearcoat:
+                slider("Barniz", &m.clearcoat, 0.0f, 1.0f, "%.2f", "Cuánto barniz: 0 = sin capa, 1 = capa completa.");
+                slider("Rugosidad barniz", &m.clearcoat_roughness, 0.0f, 1.0f, "%.2f",
+                       "0 = barniz de espejo (coche nuevo), más = satinado.");
+                break;
+            case assets::ShadingModel::Cloth:
+                slider("Sheen", &m.sheen, 0.0f, 1.0f, "%.2f", "Brillo de los bordes de la tela.");
+                slider("Tinte sheen", &m.sheen_tint, 0.0f, 1.0f, "%.2f",
+                       "0 = brillo blanco, 1 = del color de la tela (terciopelo).");
+                break;
+            case assets::ShadingModel::Subsurface:
+                slider("Subsurface", &m.subsurface, 0.0f, 1.0f, "%.2f",
+                       "Cuánto se suaviza la luz dentro del material (Hanrahan-Krueger de Disney).");
+                slider("Translucidez", &m.translucency, 0.0f, 1.0f, "%.2f",
+                       "Luz que atraviesa a contraluz: hojas, orejas, velas. 0 = nada.");
+                slider("Grosor (m)", &m.subsurface_thickness, 0.01f, 0.3f, "%.3f",
+                       "Grosor del objeto: más fino deja pasar más luz; un muro grueso no deja pasar nada.");
+                break;
+            case assets::ShadingModel::Anisotropic:
+                slider("Anisotropía", &m.anisotropy, 0.0f, 1.0f, "%.2f", "Cuánto se estira el brillo.");
+                slider("Dirección (°)", &m.anisotropy_rotation, 0.0f, 180.0f, "%.0f",
+                       "Giro del brillo sobre la tangente de la malla (sus UV).");
+                break;
+            case assets::ShadingModel::Transmission:
+                if (m.mode != assets::MaterialMode::Transparent) {
+                    ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.3f, 1.0f), "Pon el material en Transparente arriba.");
+                }
+                slider("Índice (IOR)", &m.ior, 1.0f, 2.5f, "%.2f",
+                       "Cuánto desvía la luz: agua 1.33, vidrio 1.5, diamante 2.42.");
+                slider("Grosor (m)##transmission", &m.transmission_thickness, 0.0f, 0.2f, "%.3f",
+                       "Cuánto se desplaza lo de detrás: 0 = lámina fina (ventana), más = vaso, bloque.");
+                ImGui::TextDisabled("La rugosidad de arriba esmerila el vidrio.");
+                break;
+            default:
+                break;
+        }
+        if (m.shading != assets::ShadingModel::Subsurface && m.shading != assets::ShadingModel::Transmission) {
+            slider("Tinte especular", &m.specular_tint, 0.0f, 1.0f, "%.2f",
+                   "El brillo de lo no metálico toma el tono del color (latón barnizado, plásticos de color).");
+        }
+    }
+
     // --- Relieve ---
     ImGui::SeparatorText("Relieve");
     if (materialTextureSlot("Altura / Displacement", m.height_map)) changed = structural = true;
-    ImGui::SetItemTooltip("Gris: blanco = alto. Parallax occlusion mapping: las piedras y grietas\n"
-                          "tienen profundidad real al mirarlas de lado (hasta ~30 m de la cámara).");
+    ImGui::SetItemTooltip("Gris: blanco = alto. Parallax: las piedras y grietas tienen profundidad al\n"
+                          "mirarlas de lado. Teselación: la malla se parte y sube de verdad.");
     if (!m.height_map.empty()) {
+        // Parallax o teselacion.
+        int relief = m.relief == assets::ReliefMode::Tessellation ? 1 : 0;
+        const char* reliefs[] = {"Parallax (textura)", "Teselación (geometría)"};
+        ImGui::SetNextItemWidth(-90.0f);
+        if (ImGui::Combo("Modo", &relief, reliefs, 2)) {
+            m.relief = relief == 1 ? assets::ReliefMode::Tessellation : assets::ReliefMode::Parallax;
+            changed = true;
+            // Sin normal map ni bump, la altura pasa a ser el normal map (se hornea).
+            if (m.normal.empty() && m.bump_map.empty()) structural = true;
+        }
+        ImGui::SetItemTooltip("Parallax: barato, la textura simula el relieve (bordes planos).\n"
+                              "Teselación: la malla se subdivide cerca de la cámara y sube con el mapa:\n"
+                              "silueta y sombras reales. Más caro; si la GPU no tesela, se usa parallax.");
         ImGui::SetNextItemWidth(-90.0f);
         changed |= ImGui::SliderFloat("Profundidad (m)", &m.height_scale, 0.0f, 0.15f, "%.3f");
-        ImGui::SetItemTooltip("Metros del negro al blanco del mapa de alturas (0.03 = 3 cm).\n"
-                              "Si la textura se estira o \"nada\", bájalo.");
+        ImGui::SetItemTooltip(m.relief == assets::ReliefMode::Tessellation
+                                  ? "Metros que sube la superficie del negro al blanco del mapa (0.03 = 3 cm).\n"
+                                    "Sube hacia fuera: el objeto crece un poco."
+                                  : "Metros del negro al blanco del mapa de alturas (0.03 = 3 cm).\n"
+                                    "Si la textura se estira o \"nada\", bájalo.");
+        if (m.relief == assets::ReliefMode::Tessellation) {
+            ImGui::SetNextItemWidth(-90.0f);
+            changed |= ImGui::SliderFloat("Densidad", &m.tessellation_density, 1.0f, 64.0f, "%.0f");
+            ImGui::SetItemTooltip("Cuánto se puede partir cada triángulo (por borde) de cerca.\n"
+                                  "La malla ya se parte menos con la distancia. Más = más detalle y más coste.");
+        } else {
+            changed |= ImGui::Checkbox("Auto-sombra", &m.parallax_shadows);
+            ImGui::SetItemTooltip("Las piedras del relieve dan sombra a las de al lado (luz del sol).");
+        }
     }
     if (m.normal.empty()) {
         if (materialTextureSlot("Bump (mapa)", m.bump_map)) changed = structural = true;

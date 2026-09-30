@@ -300,6 +300,9 @@ file(GLOB CRAMIONFX_SHADER_SOURCES CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/shaders/*.vert"
     "${CMAKE_CURRENT_SOURCE_DIR}/shaders/*.frag"
     "${CMAKE_CURRENT_SOURCE_DIR}/shaders/*.comp"
+    # Teselacion (relieve teselado de los materiales).
+    "${CMAKE_CURRENT_SOURCE_DIR}/shaders/*.tesc"
+    "${CMAKE_CURRENT_SOURCE_DIR}/shaders/*.tese"
     # Pipeline de rayos (path tracing con SER) y mesh shaders.
     "${CMAKE_CURRENT_SOURCE_DIR}/shaders/*.rgen"
     "${CMAKE_CURRENT_SOURCE_DIR}/shaders/*.rahit"

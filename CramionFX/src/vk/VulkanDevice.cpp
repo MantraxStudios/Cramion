@@ -375,6 +375,9 @@ void VulkanDevice::createLogicalDevice() {
     // Con --target-env=vulkan1.3, glslc traduce `discard` a
     // OpDemoteToHelperInvocation (lo usa el recorte por alfa de los modelos).
     features13.shaderDemoteToHelperInvocation = VK_TRUE;
+    // Los task/mesh shaders (glslc) declaran el tamano de grupo con
+    // LocalSizeId, que pide maintenance4 (obligatorio en Vulkan 1.3).
+    features13.maintenance4 = VK_TRUE;
 
     // Culling en GPU: vkCmdDrawIndexedIndirectCount con varios comandos, si
     // la GPU lo tiene (si no, un comando por llamada).
@@ -415,6 +418,9 @@ void VulkanDevice::createLogicalDevice() {
     // Lineas (modo Wireframe de la vista Escena del editor).
     fill_mode_non_solid_supported_ = physical_device_.getFeatures().fillModeNonSolid == VK_TRUE;
     features.features.fillModeNonSolid = fill_mode_non_solid_supported_ ? VK_TRUE : VK_FALSE;
+    // Teselacion (relieve real de los materiales con mapa de alturas).
+    tessellation_supported_ = physical_device_.getFeatures().tessellationShader == VK_TRUE;
+    features.features.tessellationShader = tessellation_supported_ ? VK_TRUE : VK_FALSE;
     // Filtro anisotropico (texturas del terreno), si la GPU lo tiene.
     features.features.samplerAnisotropy = physical_device_.getFeatures().samplerAnisotropy;
     // Instancias en los comandos indirectos (batching por material).

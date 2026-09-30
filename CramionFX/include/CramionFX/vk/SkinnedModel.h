@@ -27,6 +27,9 @@ public:
         core::Vec4 emissive{0.0f, 0.0f, 0.0f, 0.0f};
         // Bits de GpuSkinnedPush::flags del material (kFlagSpecularMap...).
         std::uint32_t shader_flags = 0;
+        // Modelo de sombreado de Disney empaquetado para push.pick_id (bits
+        // 0-3 modelo, 8-31 tres parametros de 8 bits; ver shadingBits).
+        std::uint32_t shading = 0;
         // x = metalicidad, y = rugosidad, z = fuerza de la oclusion, w = escala
         // del normal map.
         core::Vec4 params{0.0f, 0.8f, 1.0f, 1.0f};
@@ -58,6 +61,14 @@ public:
     static constexpr std::uint32_t kNoGroup = UINT32_MAX;  // transparente: no se dibuja
 
     void create(const VulkanDevice& device, const asset::ModelData& model, const SkinnedPass& pass);
+
+    // Bits del relieve en GpuSkinnedPush::flags (parallax o teselado,
+    // auto-sombra y teselacion maxima) sobre `flags`. `has_height`: el
+    // material tiene mapa de alturas; `tessellation`: la GPU tesela.
+    static std::uint32_t reliefFlags(std::uint32_t flags, const asset::MaterialData& material, bool has_height,
+                                     bool tessellation);
+    // El modelo de Disney del material, como lo leen skinned.frag y glass.frag.
+    static std::uint32_t shadingBits(const asset::MaterialData& material);
     void destroy();
 
     const VulkanBuffer& vertices() const { return vertices_; }

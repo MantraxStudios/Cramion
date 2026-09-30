@@ -32,7 +32,8 @@
       <nav class="top-links">
         <a href="../index.html">Web</a>
         <a href="https://discord.gg/zG7rSsUGEz" target="_blank" rel="noopener">Discord</a>
-        <a href="https://github.com/MantraxStudios/Cramion" target="_blank" rel="noopener">GitHub</a>
+        <a href="licencia.html">Licencia</a>
+        <a href="https://paypal.me/evan2025" target="_blank" rel="noopener">Donar</a>
       </nav>
     </div>
   </header>
@@ -48,6 +49,7 @@
         <a href="recarga.html">Recarga en caliente</a>
         <a href="prefabs.html">Prefabs</a>
         <a href="mcp.html">Conectar una IA (MCP)</a>
+        <a href="licencia.html">Licencia</a>
         <p class="group">El editor</p>
         <a href="editor-interfaz.html">Interfaz y pestañas</a>
         <a href="editor-escena.html">Vista Escena y gizmos</a>
@@ -55,6 +57,7 @@
         <a href="editor-proyecto.html">Proyecto e importación</a>
         <a href="editor-play.html">Play, deshacer y escenas</a>
         <a href="editor-herramientas.html">Herramientas de mundo</a>
+        <a href="mundo-procedural.html">Mundo procedural</a>
         <a href="editor-ventanas.html">Ventanas de herramientas</a>
         <a href="materiales.html">Materiales</a>
         <a href="render-textures.html">Render Textures</a>
@@ -219,16 +222,16 @@
   </tbody>
 </table>
 <h3 id="Foliage">Vegetacion (bosque instanciado) <code>Foliage</code></h3>
-<p>Bosques de <strong>millones de arboles</strong> (pinos, robles y abedules) sembrados en segundo plano sobre el terreno, evitando el agua, las pendientes y los <em>claros</em>. La GPU los recorta y elige su nivel de detalle (3 LODs), con sombras cercanas y viento. Ver <a href="editor-herramientas.html#vegetacion">Vegetacion</a>.</p>
+<p>Bosques de <strong>millones de arboles procedurales</strong> (pino, abeto, roble, abedul, palmera o sauce: tres especies por mezcla) sembrados en segundo plano sobre el terreno, evitando los rios, los lagos, las pendientes y los <em>claros</em>. Tronco y ramas de verdad, racimos de hojas translucidos, 3 LODs, culling en la GPU, sombras y viento. Ver <a href="mundo-procedural.html#arboles">Arboles procedurales</a>.</p>
 <table>
   <thead><tr><th>Propiedad</th><th>Tipo</th><th>Por defecto</th><th>Valores</th><th>Descripcion</th></tr></thead>
   <tbody>
     <tr><td>Area (m)<br><code>area</code></td><td>numero</td><td>2000</td><td>10 a 64000</td><td>Lado del cuadrado sembrado, centrado en el objeto</td></tr>
     <tr><td>Densidad<br><code>density</code></td><td>numero</td><td>60</td><td>0,1 a 2000</td><td>Arboles por hectarea (100 x 100 m). 60 = bosque; 300 = muy denso</td></tr>
     <tr><td>Semilla<br><code>seed</code></td><td>entero</td><td>1</td><td>0 a 1000000</td><td>Otra semilla, otro bosque (la misma, el mismo)</td></tr>
-    <tr><td>Pinos<br><code>pine</code></td><td>numero</td><td>0,5</td><td>0 a 1</td><td>Peso de los pinos en la mezcla</td></tr>
-    <tr><td>Robles<br><code>oak</code></td><td>numero</td><td>0,3</td><td>0 a 1</td><td>Peso de los robles en la mezcla</td></tr>
-    <tr><td>Abedules<br><code>birch</code></td><td>numero</td><td>0,2</td><td>0 a 1</td><td>Peso de los abedules en la mezcla</td></tr>
+    <tr><td>Peso especie 1<br><code>pine</code></td><td>numero</td><td>0,5</td><td>0 a 1</td><td>Cuanto de la mezcla es la especie 1 (por defecto pinos)</td></tr>
+    <tr><td>Peso especie 2<br><code>oak</code></td><td>numero</td><td>0,3</td><td>0 a 1</td><td>Cuanto de la mezcla es la especie 2 (por defecto robles)</td></tr>
+    <tr><td>Peso especie 3<br><code>birch</code></td><td>numero</td><td>0,2</td><td>0 a 1</td><td>Cuanto de la mezcla es la especie 3 (por defecto abedules)</td></tr>
     <tr><td>Escala minima<br><code>min_scale</code></td><td>numero</td><td>0,8</td><td>0,25 a 4</td><td></td></tr>
     <tr><td>Escala maxima<br><code>max_scale</code></td><td>numero</td><td>1,35</td><td>0,25 a 4</td><td></td></tr>
     <tr><td>Sobre el terreno<br><code>on_terrain</code></td><td>si/no</td><td>si</td><td></td><td>Apoyarlos en el terreno de debajo (si no, a la altura del objeto)</td></tr>
@@ -245,6 +248,39 @@
     <tr><td>Sombras hasta<br><code>shadow_distance</code></td><td>numero</td><td>140</td><td>0 a 2000</td><td>Los arboles mas cerca que esto proyectan sombra</td></tr>
     <tr><td>Proyectan sombra<br><code>cast_shadows</code></td><td>si/no</td><td>si</td><td></td><td></td></tr>
     <tr><td>Viento<br><code>wind</code></td><td>numero</td><td>1</td><td>0 a 5</td><td>Cuanto se mecen las copas (0 = quietos)</td></tr>
+    <tr><td>Especie 1<br><code>species1</code></td><td>opcion</td><td>Pino</td><td>Pino, Abeto, Roble, Abedul, Palmera, Sauce</td><td>Tipo de arbol del peso 1</td></tr>
+    <tr><td>Especie 2<br><code>species2</code></td><td>opcion</td><td>Roble</td><td>Pino, Abeto, Roble, Abedul, Palmera, Sauce</td><td>Tipo de arbol del peso 2</td></tr>
+    <tr><td>Especie 3<br><code>species3</code></td><td>opcion</td><td>Abedul</td><td>Pino, Abeto, Roble, Abedul, Palmera, Sauce</td><td>Tipo de arbol del peso 3</td></tr>
+    <tr><td>Semilla de los arboles<br><code>tree_seed</code></td><td>entero</td><td>1</td><td>0 a 100000</td><td>Otra forma de ramas y hojas</td></tr>
+    <tr><td>Altura<br><code>tree_height</code></td><td>numero</td><td>1</td><td>0,3 a 3</td><td>Multiplica la altura de cada especie</td></tr>
+    <tr><td>Hojas<br><code>leaf_density</code></td><td>numero</td><td>1</td><td>0,1 a 3</td><td>Cuantas hojas (1 = normal)</td></tr>
+    <tr><td>Ramas<br><code>branch_density</code></td><td>numero</td><td>1</td><td>0,2 a 2,5</td><td>Cuantas ramas (1 = normal)</td></tr>
+    <tr><td>Torcido<br><code>gnarl</code></td><td>numero</td><td>1</td><td>0 a 3</td><td>Ramas mas rectas (0) o mas retorcidas</td></tr>
+  </tbody>
+</table>
+<h3 id="Grass">Hierba (en un terreno) <code>Grass</code></h3>
+<p>Hierba en la GPU sobre la capa del terreno que se elija: millones de briznas alrededor de la camara, sin mallas, con viento, matas y translucidez, que se <strong>apartan y se aplastan</strong> con los Rigidbody que pasan por encima. Va en la misma entidad que el Terrain. Ver <a href="mundo-procedural.html#hierba">Hierba (GPU)</a>.</p>
+<table>
+  <thead><tr><th>Propiedad</th><th>Tipo</th><th>Por defecto</th><th>Valores</th><th>Descripcion</th></tr></thead>
+  <tbody>
+    <tr><td>Capa<br><code>layer</code></td><td>entero</td><td>0</td><td>0 a 7</td><td>Capa del terreno donde crece (0 = la primera)</td></tr>
+    <tr><td>Umbral<br><code>threshold</code></td><td>numero</td><td>0,25</td><td>0 a 0,99</td><td>Peso minimo de la capa: mas alto = solo donde esta bien pintada</td></tr>
+    <tr><td>Capa seca<br><code>dry_layer</code></td><td>entero</td><td>1</td><td>-1 a 7</td><td>Donde el terreno tiene esta capa, la hierba se seca (-1 = ninguna)</td></tr>
+    <tr><td>Densidad<br><code>density</code></td><td>numero</td><td>70</td><td>1 a 400</td><td>Briznas por metro cuadrado (de cerca)</td></tr>
+    <tr><td>Distancia<br><code>max_distance</code></td><td>numero</td><td>80</td><td>5 a 400</td><td>Hasta donde se dibuja; lejos, menos briznas y mas anchas</td></tr>
+    <tr><td>Detalle hasta<br><code>detail_distance</code></td><td>numero</td><td>22</td><td>1 a 200</td><td>Briznas curvas y con todo el detalle hasta esta distancia</td></tr>
+    <tr><td>Altura<br><code>height</code></td><td>numero</td><td>0,45</td><td>0,02 a 3</td><td></td></tr>
+    <tr><td>Variacion de altura<br><code>height_variation</code></td><td>numero</td><td>0,4</td><td>0 a 1</td><td></td></tr>
+    <tr><td>Anchura<br><code>width</code></td><td>numero</td><td>0,028</td><td>0,005 a 0,3</td><td></td></tr>
+    <tr><td>Curvatura<br><code>bend</code></td><td>numero</td><td>0,35</td><td>0 a 1,5</td><td>Cuanto se doblan solas</td></tr>
+    <tr><td>Color base<br><code>base_color</code></td><td>Color</td><td>(0,06; 0,11; 0,03)</td><td></td><td></td></tr>
+    <tr><td>Color de la punta<br><code>tip_color</code></td><td>Color</td><td>(0,27; 0,38; 0,11)</td><td></td><td></td></tr>
+    <tr><td>Color seca<br><code>dry_color</code></td><td>Color</td><td>(0,5; 0,45; 0,25)</td><td></td><td></td></tr>
+    <tr><td>Variacion de color<br><code>color_variation</code></td><td>numero</td><td>0,25</td><td>0 a 1</td><td></td></tr>
+    <tr><td>Viento<br><code>wind</code></td><td>numero</td><td>1</td><td>0 a 4</td><td>Cuanto se mece (0 = quieta)</td></tr>
+    <tr><td>Direccion del viento<br><code>wind_direction</code></td><td>numero</td><td>30</td><td>0 a 360</td><td></td></tr>
+    <tr><td>Interaccion<br><code>interaction</code></td><td>numero</td><td>1</td><td>0 a 3</td><td>Cuanto la apartan y aplastan los objetos fisicos y los personajes</td></tr>
+    <tr><td>Maximo de briznas<br><code>max_blades</code></td><td>entero</td><td>3000000</td><td>10000 a 8000000</td><td>Tope de memoria de la GPU (32 bytes por brizna)</td></tr>
   </tbody>
 </table>
 <h3 id="VoxelWorld">Mundo de bloques <code>VoxelWorld</code></h3>

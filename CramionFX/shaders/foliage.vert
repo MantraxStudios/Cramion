@@ -37,12 +37,16 @@ layout(location = 0) in vec3 in_position;
 layout(location = 1) in vec3 in_normal;
 layout(location = 2) in vec4 in_color;  // rgb color (sRGB), a oclusion
 layout(location = 3) in float in_wind;  // 0 = rigido (tronco), 1 = punta de la copa
+layout(location = 4) in vec2 in_uv;
+layout(location = 5) in vec2 in_layer_flutter;  // x = capa de textura, y = 1 si es hoja
 
 layout(location = 0) out vec3 v_world_position;
 layout(location = 1) out vec3 v_normal;
 layout(location = 2) out vec4 v_color;
 layout(location = 3) out vec4 v_current_clip;
 layout(location = 4) out vec4 v_previous_clip;
+layout(location = 5) out vec3 v_uv_layer;  // xy uv, z capa
+layout(location = 6) out float v_leaf;
 
 void main() {
     FoliageInstance inst = instances[visible[gl_InstanceIndex]];
@@ -61,6 +65,14 @@ void main() {
     float gust = sin(t * 0.7 + phase * 0.5) * 0.5 + 0.5;
     vec2 sway = vec2(sin(t * 1.3 + phase), cos(t * 1.1 + phase * 1.7)) * (0.12 + 0.18 * gust);
     world.xz += sway * in_wind * push.params.z * scale;
+    // Las hojas tiemblan (rapido y poco), cada racimo con su fase.
+    if (in_layer_flutter.y > 0.5) {
+        float leaf_phase = dot(in_position, vec3(3.1, 2.3, 4.7)) + phase;
+        world += vec3(sin(t * 5.3 + leaf_phase), sin(t * 4.1 + leaf_phase * 1.3) * 0.6, cos(t * 4.7 + leaf_phase)) *
+                 (0.035 * push.params.z * scale * (0.5 + gust));
+    }
+    v_uv_layer = vec3(in_uv, in_layer_flutter.x);
+    v_leaf = in_layer_flutter.y;
 
     vec3 n = in_normal;
     v_normal = vec3(c * n.x + s * n.z, n.y, -s * n.x + c * n.z);

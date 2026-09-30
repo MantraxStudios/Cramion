@@ -122,6 +122,24 @@ bool loadMaterial(const std::filesystem::path& path, MaterialAsset& out, std::st
     m.bump_map = text(j, "bump_map");
     m.height_scale = number(j, "height_scale", m.height_scale);
     m.cavity_strength = number(j, "cavity_strength", m.cavity_strength);
+    m.relief = text(j, "relief") == "tessellation" ? ReliefMode::Tessellation : ReliefMode::Parallax;
+    m.tessellation_density = std::clamp(number(j, "tessellation_density", m.tessellation_density), 1.0f, 64.0f);
+    if (const auto shadows = j.find("parallax_shadows"); shadows != j.end() && shadows->is_boolean()) {
+        m.parallax_shadows = shadows->get<bool>();
+    }
+    m.shading = shadingModelFromKey(text(j, "shading"));
+    m.specular_tint = std::clamp(number(j, "specular_tint", m.specular_tint), 0.0f, 1.0f);
+    m.clearcoat = std::clamp(number(j, "clearcoat", m.clearcoat), 0.0f, 1.0f);
+    m.clearcoat_roughness = std::clamp(number(j, "clearcoat_roughness", m.clearcoat_roughness), 0.0f, 1.0f);
+    m.sheen = std::clamp(number(j, "sheen", m.sheen), 0.0f, 1.0f);
+    m.sheen_tint = std::clamp(number(j, "sheen_tint", m.sheen_tint), 0.0f, 1.0f);
+    m.subsurface = std::clamp(number(j, "subsurface", m.subsurface), 0.0f, 1.0f);
+    m.translucency = std::clamp(number(j, "translucency", m.translucency), 0.0f, 1.0f);
+    m.subsurface_thickness = std::clamp(number(j, "subsurface_thickness", m.subsurface_thickness), 0.01f, 0.3f);
+    m.anisotropy = std::clamp(number(j, "anisotropy", m.anisotropy), 0.0f, 1.0f);
+    m.anisotropy_rotation = std::clamp(number(j, "anisotropy_rotation", m.anisotropy_rotation), 0.0f, 180.0f);
+    m.ior = std::clamp(number(j, "ior", m.ior), 1.0f, 2.5f);
+    m.transmission_thickness = std::clamp(number(j, "transmission_thickness", m.transmission_thickness), 0.0f, 0.2f);
     out = std::move(m);
     return true;
 }
@@ -157,6 +175,22 @@ bool saveMaterial(MaterialAsset& m, const std::filesystem::path& path, std::stri
     j["bump_map"] = m.bump_map;
     j["height_scale"] = m.height_scale;
     j["cavity_strength"] = m.cavity_strength;
+    j["relief"] = m.relief == ReliefMode::Tessellation ? "tessellation" : "parallax";
+    j["tessellation_density"] = m.tessellation_density;
+    j["parallax_shadows"] = m.parallax_shadows;
+    j["shading"] = shadingModelKey(m.shading);
+    j["specular_tint"] = m.specular_tint;
+    j["clearcoat"] = m.clearcoat;
+    j["clearcoat_roughness"] = m.clearcoat_roughness;
+    j["sheen"] = m.sheen;
+    j["sheen_tint"] = m.sheen_tint;
+    j["subsurface"] = m.subsurface;
+    j["translucency"] = m.translucency;
+    j["subsurface_thickness"] = m.subsurface_thickness;
+    j["anisotropy"] = m.anisotropy;
+    j["anisotropy_rotation"] = m.anisotropy_rotation;
+    j["ior"] = m.ior;
+    j["transmission_thickness"] = m.transmission_thickness;
     if (!m.shader.empty()) {
         j["shader"] = m.shader;
         json values = json::object();
@@ -187,6 +221,8 @@ std::uint64_t materialStructureHash(const MaterialAsset& m) {
     }
     // La cavidad se hornea en la textura con su fuerza.
     h = mixFloat(h, m.cavity_map.empty() ? 0.0f : m.cavity_strength);
+    // Teselado sin normal map ni bump: la altura hace de normal map.
+    h = mix(h, m.relief == ReliefMode::Tessellation && m.normal.empty() && m.bump_map.empty() ? 1u : 0u);
     h = mixFloat(h, m.tiling.x);
     h = mixFloat(h, m.tiling.y);
     h = mixFloat(h, m.offset.x);
@@ -203,6 +239,23 @@ std::uint64_t materialStructureHash(const MaterialAsset& m) {
     return h;
 }
 
+namespace {
+constexpr const char* kShadingKeys[kShadingModelCount] = {"standard",   "clearcoat",   "cloth",
+                                                          "subsurface", "anisotropic", "transmission"};
+}  // namespace
+
+const char* shadingModelKey(ShadingModel model) {
+    const int index = static_cast<int>(model);
+    return index >= 0 && index < kShadingModelCount ? kShadingKeys[index] : kShadingKeys[0];
+}
+
+ShadingModel shadingModelFromKey(const std::string& key) {
+    for (int i = 0; i < kShadingModelCount; ++i) {
+        if (key == kShadingKeys[i]) return static_cast<ShadingModel>(i);
+    }
+    return ShadingModel::Standard;
+}
+
 asset::MaterialData toMaterialData(const MaterialAsset& m, const std::string& name) {
     asset::MaterialData d;
     d.name = name;
@@ -216,6 +269,22 @@ asset::MaterialData toMaterialData(const MaterialAsset& m, const std::string& na
     d.reflectance = m.reflectance;
     d.transparent = m.mode == MaterialMode::Transparent;
     d.height_scale = m.height_map.empty() ? 0.0f : std::max(m.height_scale, 0.0f);
+    d.tessellation = m.relief == ReliefMode::Tessellation;
+    d.tessellation_density = m.tessellation_density;
+    d.parallax_shadows = m.parallax_shadows;
+    d.shading_model = static_cast<int>(m.shading);
+    d.specular_tint = m.specular_tint;
+    d.clearcoat = m.clearcoat;
+    d.clearcoat_roughness = m.clearcoat_roughness;
+    d.sheen = m.sheen;
+    d.sheen_tint = m.sheen_tint;
+    d.subsurface = m.subsurface;
+    d.translucency = m.translucency;
+    d.subsurface_thickness = m.subsurface_thickness;
+    d.anisotropy = m.anisotropy;
+    d.anisotropy_rotation = m.anisotropy_rotation;
+    d.ior = m.ior;
+    d.transmission_thickness = m.transmission_thickness;
     d.specular_map = !m.specular_map.empty();
     return d;
 }

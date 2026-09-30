@@ -6,6 +6,8 @@
 
 #include "EditorApp.h"
 
+#include <CramionCore/terrain/TerrainGenerator.h>
+
 #include "CramionCore/project/DataPack.h"
 
 #include "Dialogs.h"
@@ -179,6 +181,18 @@ const std::vector<ToolDef>& toolDefs() {
                       {"normal_texture", prop("string", "Imagen de Assets para el normal map")},
                       {"from_image", prop("string", "Imagen de color de Assets: busca sus companeras por sufijo (_Normal, _Roughness, _AO, _Displacement, _Cavity, _Specular, _Gloss, _Bump) como un pack de Megascans")},
                       {"height_texture", prop("string", "Mapa de alturas / displacement (parallax)")}, {"height_scale", prop("number", "Profundidad del relieve en metros (0.03 por defecto)")},
+                      {"relief", prop("string", "Uso del mapa de alturas: parallax (por defecto) o tessellation (la malla sube de verdad: silueta y sombras)")},
+                      {"tessellation_density", prop("number", "Teselacion maxima por borde, 1..64 (16 por defecto)")},
+                      {"parallax_shadows", prop("boolean", "Auto-sombra del relieve hacia el sol (true por defecto)")},
+                      {"shading", prop("string", "Modelo de Disney: standard, clearcoat (barniz), cloth (tela), subsurface (piel/cera/hojas), anisotropic (metal cepillado), transmission (vidrio con refraccion; con transparent)")},
+                      {"specular_tint", prop("number", "0..1: el brillo toma el tono del color")},
+                      {"clearcoat", prop("number", "0..1 barniz")}, {"clearcoat_roughness", prop("number", "0..1 rugosidad del barniz")},
+                      {"sheen", prop("number", "0..1 brillo de tela")}, {"sheen_tint", prop("number", "0..1 tono del sheen")},
+                      {"subsurface", prop("number", "0..1")}, {"translucency", prop("number", "0..1 luz a contraluz")},
+                      {"subsurface_thickness", prop("number", "Grosor en metros (0.01..0.3)")},
+                      {"anisotropy", prop("number", "0..1")}, {"anisotropy_rotation", prop("number", "Grados 0..180")},
+                      {"ior", prop("number", "Indice de refraccion 1..2.5 (transmission)")},
+                      {"transmission_thickness", prop("number", "Grosor del vidrio en metros 0..0.2")},
                       {"roughness_texture", prop("string", "Mapa de rugosidad")}, {"occlusion_texture", prop("string", "Mapa de oclusion (AO)")},
                       {"cavity_texture", prop("string", "Mapa de cavidad")}, {"specular_texture", prop("string", "Mapa specular")}, {"gloss_texture", prop("string", "Mapa de brillo (gloss)")},
                       {"transparent", prop("boolean", "Modo transparente (vidrio)")},
@@ -202,6 +216,28 @@ const std::vector<ToolDef>& toolDefs() {
                      json::object(), {}});
         d.push_back({"import_file", "Importa un archivo del disco al proyecto (modelo .fbx/.obj/.gltf/.glb, cielo .hdr).",
                      {{"path", prop("string", "Ruta absoluta del archivo")}, {"folder", prop("string", "Subcarpeta de Assets (por defecto Models)")}}, {"path"}});
+        d.push_back({"ground_height", "Altura del suelo (terreno o lo que haya) en un punto x, z del mundo: para colocar camaras u objetos encima.",
+                     {{"x", prop("number", "X del mundo")}, {"z", prop("number", "Z del mundo")}}, {"x", "z"}});
+        d.push_back({"generate_house", "Crea una casa o cabana procedural realista (Ventana > Generador de casas): 8 materiales PBR compartidos con relieve, MeshCollider y la puerta aparte (hijo 'Puerta', gira en Y). Con 'village' crea una aldea de N casas en el terreno (reemplaza 'Aldea').",
+                     {{"style", prop("string", "log (troncos), timber (tablas), stone (piedra) o farm (casa de campo de 2 plantas)")},
+                      {"seed", prop("integer", "Semilla: otras medidas y ventanas")}, {"width", prop("number", "Ancho en m")},
+                      {"depth", prop("number", "Fondo en m")}, {"floors", prop("integer", "1 o 2")}, {"wall_height", prop("number", "Altura por planta")},
+                      {"roof_pitch", prop("number", "Grados")}, {"roof_overhang", prop("number", "Alero en m")}, {"windows", prop("integer", "Ventanas delante (-1 auto)")},
+                      {"porch", prop("boolean", "Porche")}, {"chimney", prop("boolean", "Chimenea")}, {"shutters", prop("boolean", "Contraventanas")},
+                      {"position", vec3Prop("Donde (la puerta mira a +Z)")}, {"on_ground", prop("boolean", "Posarla en el terreno (true)")},
+                      {"yaw", prop("number", "Giro en grados")}, {"village", prop("integer", "Aldea de N casas en el terreno")}}, {}});
+        d.push_back({"generate_terrain", "Genera un mundo completo (como Ventana > Generador de terreno): relieve con erosion, rios, lagos, oceano, capas con texturas y arboles. Reemplaza el grupo 'Mundo generado'. Tarda unos segundos.",
+                     {{"shape", prop("string", "island, archipelago, continent, mountains o canyons")}, {"seed", prop("integer", "Semilla")},
+                      {"size", prop("number", "Metros por lado (2048)")}, {"height", prop("number", "Altura maxima en metros (420)")}, {"houses", prop("integer", "Casas de la aldea (8; 0 = sin aldea)")},
+                      {"resolution", prop("integer", "Vertices por lado: 257, 513, 1025, 2049")}, {"sea_level", prop("number", "0..1 de la altura bajo el mar")},
+                      {"mountains", prop("number", "0..1")}, {"ridges", prop("number", "0..1")}, {"hills", prop("number", "0..1")},
+                      {"warp", prop("number", "0..1")}, {"plateaus", prop("number", "0..1")}, {"feature_scale", prop("number", "Escala de las formas (1)")},
+                      {"erosion", prop("number", "0..2 lluvia")}, {"erosion_strength", prop("number", "0..1")}, {"thermal", prop("number", "0..1")},
+                      {"ocean", prop("boolean", "Mar alrededor")}, {"rivers", prop("integer", "Rios principales")}, {"lakes", prop("boolean", "Lagos")},
+                      {"beach_width", prop("number", "Metros de playa")}, {"snow_line", prop("number", "0..1 altura de la nieve")},
+                      {"textures", prop("boolean", "Texturas procedurales de las capas (true)")},
+                      {"trees", prop("boolean", "Arboles (true)")}, {"tree_density", prop("number", "Arboles por hectarea (120)")},
+                      {"grass", prop("boolean", "Hierba en la GPU (true)")}, {"grass_density", prop("number", "Briznas por m2 (40)")}}, {}});
         d.push_back({"create_model", "Crea un modelo 3D a partir de texto OBJ (y opcionalmente MTL) y lo importa como asset.",
                      {{"name", prop("string", "Nombre del modelo")}, {"obj", prop("string", "Contenido del .obj (v, vt, vn, f...)")}, {"mtl", prop("string", "Contenido del .mtl (opcional)")}}, {"name", "obj"}});
         d.push_back({"instantiate", "Pone en la escena un modelo, prefab o cielo del proyecto.",
@@ -835,6 +871,25 @@ json McpTools::call(const std::string& name, const json& args, bool& image, std:
         texture("specular_texture", m.specular_map);
         texture("gloss_texture", m.gloss_map);
         m.height_scale = args.value("height_scale", m.height_scale);
+        if (arg(args, "relief") == "tessellation") m.relief = assets::ReliefMode::Tessellation;
+        m.tessellation_density = std::clamp(args.value("tessellation_density", m.tessellation_density), 1.0f, 64.0f);
+        m.parallax_shadows = args.value("parallax_shadows", m.parallax_shadows);
+        if (args.contains("shading")) m.shading = assets::shadingModelFromKey(arg(args, "shading"));
+        const auto unit = [&](const char* key, float& value, float lo, float hi) {
+            if (args.contains(key) && args[key].is_number()) value = std::clamp(args[key].get<float>(), lo, hi);
+        };
+        unit("specular_tint", m.specular_tint, 0.0f, 1.0f);
+        unit("clearcoat", m.clearcoat, 0.0f, 1.0f);
+        unit("clearcoat_roughness", m.clearcoat_roughness, 0.0f, 1.0f);
+        unit("sheen", m.sheen, 0.0f, 1.0f);
+        unit("sheen_tint", m.sheen_tint, 0.0f, 1.0f);
+        unit("subsurface", m.subsurface, 0.0f, 1.0f);
+        unit("translucency", m.translucency, 0.0f, 1.0f);
+        unit("subsurface_thickness", m.subsurface_thickness, 0.01f, 0.3f);
+        unit("anisotropy", m.anisotropy, 0.0f, 1.0f);
+        unit("anisotropy_rotation", m.anisotropy_rotation, 0.0f, 180.0f);
+        unit("ior", m.ior, 1.0f, 2.5f);
+        unit("transmission_thickness", m.transmission_thickness, 0.0f, 0.2f);
         if ((!m.roughness_map.empty() || !m.gloss_map.empty()) && !args.contains("roughness")) m.roughness = 1.0f;
         if (args.value("transparent", false)) m.mode = assets::MaterialMode::Transparent;
         if (args.contains("tiling") && args["tiling"].is_array() && args["tiling"].size() >= 2) {
@@ -998,6 +1053,118 @@ json McpTools::call(const std::string& name, const json& args, bool& image, std:
         a.refreshDatabase();
         return json{{"name", result.info.name}, {"uuid", result.info.uuid.toString()}, {"type", assets::assetTypeName(result.info.type)},
                     {"path", a.assetRelative(result.info.path)}};
+    }
+    if (name == "ground_height") {
+        float y = 0.0f;
+        const float x = args.value("x", 0.0f);
+        const float z = args.value("z", 0.0f);
+        if (!a.groundHeightAt(x, z, y)) return json{{"found", false}};
+        return json{{"found", true}, {"y", y}};
+    }
+    if (name == "generate_terrain") {
+        if (a.playing()) throw ToolError("para el modo Play antes de generar");
+        if (a.terrain_gen_job_) throw ToolError("ya se esta generando un terreno");
+        terrain::GenSettings gs = a.terrain_gen_;
+        static const std::map<std::string, terrain::GenShape> shapes = {
+            {"island", terrain::GenShape::Island},       {"archipelago", terrain::GenShape::Archipelago},
+            {"continent", terrain::GenShape::Continent}, {"mountains", terrain::GenShape::Mountains},
+            {"canyons", terrain::GenShape::Canyons}};
+        if (args.contains("shape")) {
+            const auto it = shapes.find(arg(args, "shape"));
+            if (it == shapes.end()) throw ToolError("forma desconocida: " + arg(args, "shape"));
+            gs.shape = it->second;
+            if (gs.shape == terrain::GenShape::Mountains || gs.shape == terrain::GenShape::Canyons) gs.ocean = false;
+        }
+        const auto number = [&](const char* key, float& value, float lo, float hi) {
+            if (args.contains(key) && args[key].is_number()) value = std::clamp(args[key].get<float>(), lo, hi);
+        };
+        if (args.contains("seed") && args["seed"].is_number_integer()) gs.seed = args["seed"].get<std::uint32_t>();
+        number("size", gs.size, 256.0f, 16384.0f);
+        number("height", gs.height, 20.0f, 3000.0f);
+        if (args.contains("resolution") && args["resolution"].is_number_integer()) {
+            gs.resolution = std::clamp(args["resolution"].get<int>(), 129, 4097);
+            gs.splat_resolution = std::max(gs.resolution - 1, 256);
+        }
+        number("sea_level", gs.sea_level, 0.0f, 0.9f);
+        number("mountains", gs.mountains, 0.0f, 1.0f);
+        number("ridges", gs.ridges, 0.0f, 1.0f);
+        number("hills", gs.hills, 0.0f, 1.0f);
+        number("warp", gs.warp, 0.0f, 1.0f);
+        number("plateaus", gs.plateaus, 0.0f, 1.0f);
+        number("feature_scale", gs.feature_scale, 0.1f, 8.0f);
+        number("erosion", gs.erosion, 0.0f, 2.0f);
+        number("erosion_strength", gs.erosion_strength, 0.0f, 1.0f);
+        number("thermal", gs.thermal, 0.0f, 1.0f);
+        number("beach_width", gs.beach_width, 0.0f, 60.0f);
+        number("snow_line", gs.snow_line, 0.1f, 1.0f);
+        gs.ocean = args.value("ocean", gs.ocean);
+        gs.lakes = args.value("lakes", gs.lakes);
+        if (args.contains("rivers") && args["rivers"].is_number_integer()) gs.rivers = std::clamp(args["rivers"].get<int>(), 0, 20);
+        a.terrain_gen_ = gs;
+        a.terrain_gen_textures_ = args.value("textures", a.terrain_gen_textures_);
+        a.terrain_gen_trees_ = args.value("trees", a.terrain_gen_trees_);
+        number("tree_density", a.terrain_gen_tree_density_, 1.0f, 2000.0f);
+        a.terrain_gen_grass_ = args.value("grass", a.terrain_gen_grass_);
+        number("grass_density", a.terrain_gen_grass_density_, 1.0f, 400.0f);
+        if (args.contains("houses") && args["houses"].is_number_integer()) {
+            a.terrain_gen_houses_ = std::clamp(args["houses"].get<int>(), 0, 60);
+        }
+        terrain::GenResult result;
+        if (!terrain::generateTerrain(gs, result)) throw ToolError("no se pudo generar");
+        const std::filesystem::path textures = a.project_.assetsFolder() / "Terrains" / "Texturas";
+        if (a.terrain_gen_textures_ && !terrain::generatorTexturesCurrent(dialogs::utf8(textures))) {
+            terrain::writeGeneratorTextures(dialogs::utf8(textures), 1024, 7);
+        }
+        const double seconds = result.seconds;
+        const std::size_t rivers = result.rivers.size();
+        const std::size_t lakes = result.lakes.size();
+        a.applyGeneratedTerrain(result);
+        return json{{"seconds", seconds}, {"rivers", rivers}, {"lakes", lakes}, {"group", "Mundo generado"}};
+    }
+    if (name == "generate_house") {
+        const std::string style_name = args.value("style", std::string("log"));
+        asset::HouseStyle style = asset::HouseStyle::LogCabin;
+        if (style_name == "timber" || style_name == "tablas") style = asset::HouseStyle::TimberCabin;
+        else if (style_name == "stone" || style_name == "piedra") style = asset::HouseStyle::StoneCottage;
+        else if (style_name == "farm" || style_name == "farmhouse" || style_name == "campo") style = asset::HouseStyle::Farmhouse;
+        const std::uint32_t seed = args.contains("seed") && args["seed"].is_number_integer() ? args["seed"].get<std::uint32_t>() : 1U;
+        if (args.contains("village") && args["village"].is_number_integer()) {
+            if (ecs::Entity old = a.world_.findByName("Aldea"); old.valid()) a.world_.destroy(old);
+            std::string error;
+            const int made = a.placeVillage(std::clamp(args["village"].get<int>(), 1, 60), seed,
+                                            a.world_.findByName("Mundo generado"), &error);
+            if (made == 0) throw ToolError(error);
+            a.commit();
+            return json{{"houses", made}, {"group", "Aldea"}};
+        }
+        asset::HouseSettings s = asset::housePreset(style, seed);
+        const auto number = [&](const char* key, float& value, float lo, float hi) {
+            if (args.contains(key) && args[key].is_number()) value = std::clamp(args[key].get<float>(), lo, hi);
+        };
+        number("width", s.width, 3.0f, 30.0f);
+        number("depth", s.depth, 3.0f, 30.0f);
+        number("wall_height", s.wall_height, 2.2f, 4.0f);
+        number("roof_pitch", s.roof_pitch, 10.0f, 60.0f);
+        number("roof_overhang", s.roof_overhang, 0.1f, 2.0f);
+        if (args.contains("floors") && args["floors"].is_number_integer()) s.floors = std::clamp(args["floors"].get<int>(), 1, 2);
+        if (args.contains("windows") && args["windows"].is_number_integer()) s.windows = std::clamp(args["windows"].get<int>(), -1, 10);
+        s.porch = args.value("porch", s.porch);
+        s.chimney = args.value("chimney", s.chimney);
+        s.shutters = args.value("shutters", s.shutters);
+        std::string error;
+        const Uuid uuid = a.writeHouseModel(s, &error);
+        if (!uuid.valid()) throw ToolError(error);
+        core::Vec3 position{};
+        position = readVec(args, "position", position);
+        if (!args.contains("position") || args.value("on_ground", true)) {
+            float y = 0.0f;
+            if (a.groundAt(position.x, position.z, y)) position.y = y;
+        }
+        ecs::Entity house = a.placeHouse(uuid, position, args.value("yaw", 0.0f), {});
+        if (!house.valid()) throw ToolError("no se pudo instanciar la casa");
+        a.commit();
+        return json{{"entity", house.name()}, {"uuid", house.uuid().toString()}, {"model", uuid.toString()},
+                    {"position", {position.x, position.y, position.z}}};
     }
     if (name == "create_model") {
         const std::string model = safeName(arg(args, "name"));

@@ -22,6 +22,11 @@
 //   2. de la sonda de reflexion (la escena vista desde cerca);
 //   3. del entorno (IBL).
 // Y se suma el brillo del sol en el cristal, con su sombra.
+//
+// Transmision (modelo de Disney 2015, material con modelo "Transmision"): el
+// vidrio tiene IOR, grosor y rugosidad. Lo de detras se lee desviado por la
+// refraccion y, si es rugoso, desenfocado (vidrio esmerilado), y se tine con
+// el color del material en vez de mezclarse por alfa.
 
 layout(set = 1, binding = 0) uniform sampler2D albedo_map;
 
@@ -33,6 +38,8 @@ layout(push_constant) uniform PushConstants {
     vec4 material;
     uint bone_offset;
     float reflectance;
+    uint pick_id;  // aqui: modelo de sombreado (bits 0-3) y parametros (8-31)
+    uint flags;
 } push;
 
 const int kShadowCascadeCount = 4;
@@ -97,6 +104,8 @@ layout(location = 0) out vec4 out_color;
 
 const float kPi = 3.14159265;
 const float kGlassF0 = 0.04;
+const int kShadingTransmission = 5;  // disney_brdf.glsl: modelos 0-4, este es del vidrio
+float glass_f0 = kGlassF0;
 // Vidrio de ventana: casi liso (un poco de polvo y ondulacion).
 const float kGlassRoughness = 0.04;
 const float kMaxRadiance = 30.0;
@@ -225,7 +234,38 @@ float visibilitySmith(float n_dot_v, float n_dot_l, float alpha) {
 float fresnel(float cosine) {
     float m = 1.0 - clamp(cosine, 0.0, 1.0);
     float m2 = m * m;
-    return kGlassF0 + (1.0 - kGlassF0) * m2 * m2 * m;
+    return glass_f0 + (1.0 - glass_f0) * m2 * m2 * m;
+}
+
+// Lo que se ve a traves del vidrio: la imagen sin vidrio leida donde llega el
+// rayo refractado (a `thickness` metros), con desenfoque si es rugoso. Si ese
+// punto esta por delante del vidrio (otro objeto), sin desviar.
+vec3 refractedScene(vec3 view_position, vec3 view_direction, vec3 normal, float ior, float thickness,
+                    float roughness) {
+    vec2 size = vec2(textureSize(scene_color, 0));
+    vec2 base_uv = gl_FragCoord.xy / size;
+    vec3 refracted = refract(-view_direction, normal, 1.0 / ior);
+    if (dot(refracted, refracted) < 1e-6) refracted = -view_direction;  // reflexion total
+    vec3 target = view_position + normalize(mat3(camera.view) * refracted) * thickness;
+    vec2 uv;
+    if (!project(target, uv) || !insideScreen(uv)) uv = base_uv;
+    ivec2 texel = clamp(ivec2(uv * size), ivec2(0), ivec2(size) - 1);
+    if (linearDepth(texelFetch(g_depth, texel, 0).r) < -view_position.z) uv = base_uv;
+
+    // Esmerilado: 12 muestras en un disco que crece con la rugosidad.
+    float radius = roughness * roughness * 0.06;
+    if (radius < 0.5 / size.y) {
+        return min(textureLod(scene_color, uv, 0.0).rgb, vec3(kMaxRadiance));
+    }
+    float rotation = fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715)))) * 6.2831853;
+    vec3 sum = vec3(0.0);
+    for (int i = 0; i < 12; ++i) {
+        float r = sqrt((float(i) + 0.5) / 12.0) * radius;
+        float a = float(i) * 2.3999632 + rotation;
+        vec2 offset = vec2(cos(a), sin(a)) * r * vec2(size.y / size.x, 1.0);
+        sum += min(textureLod(scene_color, clamp(uv + offset, vec2(0.0), vec2(1.0)), 0.0).rgb, vec3(kMaxRadiance));
+    }
+    return sum / 12.0;
 }
 
 // Reflectancia de la lamina fina (dos caras, todos los rebotes).
@@ -248,6 +288,19 @@ void main() {
     }
     float n_dot_v = max(dot(normal, view_direction), 1e-4);
 
+    // Transmision de Disney: IOR (1..2.5), grosor (0..0.2 m) y rugosidad.
+    bool transmission = int(push.pick_id & 0xFu) == kShadingTransmission;
+    float ior = 1.5;
+    float thickness = 0.0;
+    float roughness = kGlassRoughness;
+    if (transmission) {
+        ior = 1.0 + float((push.pick_id >> 8u) & 0xFFu) / 255.0 * 1.5;
+        thickness = float((push.pick_id >> 16u) & 0xFFu) / 255.0 * 0.2;
+        roughness = clamp(push.material.y, 0.02, 1.0);
+        float f = (ior - 1.0) / (ior + 1.0);
+        glass_f0 = f * f;
+    }
+
     float reflectance = slabReflectance(n_dot_v);
     float transmittance = 1.0 - reflectance;
 
@@ -263,7 +316,7 @@ void main() {
     screen.a *= 1.0 - toward_camera;
 
     // Respaldo: la sonda (la escena alrededor) o, sin ella, el entorno.
-    float lod = kGlassRoughness * 5.0;
+    float lod = roughness * 5.0;
     vec3 fallback = textureLod(environment_map, reflected, lod).rgb;
     float probe_weight = lights.probes[0].w + lights.probes[1].w;
     if (probe_weight > 0.001) {
@@ -286,7 +339,7 @@ void main() {
     vec3 sun = vec3(0.0);
     if (n_dot_l > 0.0) {
         vec3 halfway = normalize(sun_direction + view_direction);
-        float alpha = kGlassRoughness * kGlassRoughness;
+        float alpha = roughness * roughness;
         float specular = distributionGgx(max(dot(normal, halfway), 0.0), alpha) *
                          visibilitySmith(n_dot_v, n_dot_l, alpha) *
                          slabReflectance(max(dot(view_direction, halfway), 0.0)) * kPi;
@@ -304,6 +357,12 @@ void main() {
     float tint_peak = max(tint.r, max(tint.g, tint.b));
     vec3 hue = tint_peak > 1e-4 ? tint / tint_peak : vec3(1.0);
     float tint_transmission = dot(hue, vec3(0.2126, 0.7152, 0.0722));
+    if (transmission) {
+        // Lo de detras ya va dentro (refractado y tenido): sustituye.
+        vec3 behind = refractedScene(view_position, view_direction, normal, ior, thickness, roughness);
+        out_color = vec4(reflection * reflectance + sun + behind * transmittance * hue, 0.0);
+        return;
+    }
     out_color = vec4(reflection * reflectance + sun,
                      transmittance * clamp(tint_transmission, 0.0, 1.0));
 }

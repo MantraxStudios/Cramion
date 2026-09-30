@@ -74,6 +74,18 @@ public:
     vk::raii::Pipeline createSurfacePipeline(const VulkanDevice& device, const std::vector<std::uint32_t>& vertex_spirv,
                                              const std::vector<std::uint32_t>& fragment_spirv) const;
     const vk::raii::PipelineLayout& geometryLayout() const { return geometry_layout_; }
+    // Etapas de la push constant de la geometria (con las de teselacion si
+    // la GPU la tiene): todas las llamadas con geometryLayout() las usan.
+    vk::ShaderStageFlags geometryPushStages() const { return geometry_push_stages_; }
+
+    // --- Relieve teselado (materiales con kFlagTessellation) ---
+    // Sin soporte de la GPU no hay pipelines: esos materiales usan el parallax.
+    bool tessellationEnabled() const { return tessellation_; }
+    const vk::raii::Pipeline& geometryTessPipeline() const { return geometry_tess_pipeline_; }
+    const vk::raii::Pipeline& shadowTessPipeline(bool local, bool alpha_tested) const {
+        return shadow_tess_pipelines_[(local ? 2 : 0) + (alpha_tested ? 1 : 0)];
+    }
+    vk::ShaderStageFlags shadowPushStages() const { return shadow_push_stages_; }
 
     // Sombras de las cascadas (con depth clamp) y de las luces locales. Cada
     // una en dos versiones: con recorte por alfa (hojas, rejas: lee la
@@ -135,18 +147,26 @@ private:
     enum class GeometryVariant { Fill, Wire, WireOverlay };
     vk::raii::Pipeline buildGeometryPipeline(const VulkanDevice& device, const vk::raii::ShaderModule& vertex_module,
                                              const vk::raii::ShaderModule& fragment_module,
-                                             GeometryVariant variant = GeometryVariant::Fill) const;
+                                             GeometryVariant variant = GeometryVariant::Fill,
+                                             const vk::raii::ShaderModule* tess_control = nullptr,
+                                             const vk::raii::ShaderModule* tess_evaluation = nullptr) const;
     void createGlassPipeline(const VulkanDevice& device, vk::Format color_format,
                              vk::Format depth_format);
     vk::raii::Pipeline createOutlinePipeline(const VulkanDevice& device, vk::Format depth_format,
                                              bool visible_only, bool pick = false) const;
     vk::raii::Pipeline createShadowPipeline(const VulkanDevice& device, vk::Format depth_format,
                                             bool depth_clamp, float slope_bias,
-                                            bool alpha_tested) const;
+                                            bool alpha_tested, bool tessellated = false) const;
     vk::raii::Pipeline createMeshShadowPipeline(const VulkanDevice& device, vk::Format depth_format,
                                                 bool depth_clamp) const;
 
     bool mesh_shaders_ = false;
+    bool tessellation_ = false;
+    vk::ShaderStageFlags geometry_push_stages_{};
+    vk::ShaderStageFlags shadow_push_stages_{};
+    vk::raii::Pipeline geometry_tess_pipeline_{nullptr};
+    // Cascadas / luces locales x opaco / recortado.
+    std::array<vk::raii::Pipeline, 4> shadow_tess_pipelines_{nullptr, nullptr, nullptr, nullptr};
     vk::raii::DescriptorSetLayout meshlet_set_layout_{nullptr};
     vk::raii::PipelineLayout mesh_shadow_layout_{nullptr};
     vk::raii::Pipeline mesh_shadow_pipeline_{nullptr};

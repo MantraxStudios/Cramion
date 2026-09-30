@@ -131,6 +131,15 @@ Documentacion: docs/manual/index.html (como programar en Lua: API completa y
 ejemplos) y docs/index.html. Para empezar, crea un proyecto desde el Hub con
 una plantilla (Tercera persona, IA y navegacion o Mundo de bloques) y dale a
 Play.
+
+Licencia
+--------
+Gratis para hacer juegos y venderlos, sin regalias. No se permite vender,
+revender ni resubir el motor o el editor (ver LICENSE y TRADEMARK.md).
+La unica descarga oficial es https://cramion.mantraxtools.store
+El codigo fuente se entrega solo con licencia de codigo fuente:
+tupapienrakion1234@gmail.com
+Librerias de terceros: THIRD_PARTY_NOTICES.md y la carpeta licencias/.
 ")
 
 file(REMOVE "${zip}")

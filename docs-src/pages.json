@@ -34,6 +34,11 @@
           "slug": "mcp",
           "title": "Conectar una IA (MCP)",
           "desc": "Claude, Cursor o Copilot trabajando dentro del editor: escenas, scripts, shaders y modelos."
+        },
+        {
+          "slug": "licencia",
+          "title": "Licencia",
+          "desc": "Qué puedes hacer con Cramion y con tus juegos, y cómo pedir el código fuente."
         }
       ]
     },
@@ -69,6 +74,11 @@
           "slug": "editor-herramientas",
           "title": "Herramientas de mundo",
           "desc": "Terreno, estampar decals, pintar prefabs, agua y volúmenes."
+        },
+        {
+          "slug": "mundo-procedural",
+          "title": "Mundo procedural",
+          "desc": "Terreno con erosión, ríos y mar, hierba en la GPU, árboles procedurales y casas y aldeas."
         },
         {
           "slug": "editor-ventanas",

@@ -99,7 +99,18 @@ void main() {
     vec3 normal;
     float jacobian;
     vec3 wave = gerstnerWaves(b, near_point.xz - b.origin.xz, t, 0.0, normal, jacobian);
-    if (near_point.y > b.origin.y + wave.y) discard;
+    int type = int(b.extent.z + 0.5);
+    // Rio: la superficie donde esta la camara (extra.z), sin olas.
+    float surface = type == 2 ? b.extra.z : b.origin.y + wave.y;
+    if (near_point.y > surface) discard;
+    // Lago: solo dentro de su rectangulo (fuera no hay agua).
+    if (type == 1) {
+        float c = cos(b.origin.w);
+        float s = sin(b.origin.w);
+        vec2 d = near_point.xz - b.origin.xz;
+        vec2 local = vec2(d.x * c + d.y * s, -d.x * s + d.y * c);
+        if (any(greaterThan(abs(local), b.extent.xy + vec2(0.3)))) discard;
+    }
 
     ivec2 pixel = ivec2(gl_FragCoord.xy);
     float depth = texelFetch(g_depth, pixel, 0).r;
@@ -113,7 +124,7 @@ void main() {
         vec3 n_unused;
         float j_unused;
         vec3 wave_here = gerstnerWaves(b, surface_point.xz - b.origin.xz, t, 0.0, n_unused, j_unused);
-        float water_above = b.origin.y + wave_here.y - surface_point.y;  // metros de agua encima
+        float water_above = (type == 2 ? surface : b.origin.y + wave_here.y) - surface_point.y;  // metros de agua encima
         if (water_above > 0.0) {
             // Proyectadas desde el sol hasta la superficie (se mueven con el
             // punto de entrada de la luz, no con la camara).
@@ -129,7 +140,7 @@ void main() {
     vec3 ambient = textureLod(environment_map, vec3(0.0, 1.0, 0.0), 6.0).rgb +
                    toLinear(lights.ambient_color.rgb) * lights.sun_color_ambient.a;
     // Mas oscuro cuanto mas hondo (la luz llega de arriba).
-    float depth_below = max(b.origin.y - near_point.y, 0.0);
+    float depth_below = max(surface - near_point.y, 0.0);
     float light_left = exp(-depth_below * 0.08);
     vec3 in_scatter = mix(b.deep.rgb, b.shallow.rgb, 0.35) *
                       (sun_radiance * clamp(sun_direction.y, 0.0, 1.0) * 0.35 + ambient) * light_left;

@@ -29,6 +29,11 @@ layout(std430, set = 0, binding = 2) buffer Commands {
     DrawCommand commands[];  // especie * 4 + (0, 1, 2 niveles; 3 sombras)
 };
 
+// Por especie (a escala 1): x = y del centro sobre el pie, y = radio.
+layout(std430, set = 0, binding = 3) readonly buffer SpeciesBounds {
+    vec4 species_bounds[3];
+};
+
 layout(push_constant) uniform CullPush {
     mat4 view_projection;
     vec4 camera;   // xyz posicion (con el origen flotante ya restado), w distancia maxima
@@ -67,8 +72,8 @@ void main() {
     uint species = foliageSpecies(inst.packed);
     float scale = foliageScale(inst.packed);
     vec3 base = inst.position - push.offset.xyz;
-    vec3 center = base + vec3(0.0, kFoliageCenterY[species] * scale, 0.0);
-    float radius = kFoliageRadius[species] * scale;
+    vec3 center = base + vec3(0.0, species_bounds[species].x * scale, 0.0);
+    float radius = species_bounds[species].y * scale;
     float distance_to_camera = length(center - push.camera.xyz);
 
     if (push.lod.w > 0.5 && distance_to_camera < push.lod.z) push_to(species * 4u + 3u, i);
