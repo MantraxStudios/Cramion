@@ -1,5 +1,7 @@
 #include "ImGuiLayer.h"
 
+#include "Theme.h"
+
 #include <CramionFX/asset/ImageFile.h>
 
 #include <cstdlib>
@@ -64,6 +66,12 @@ void ImGuiLayer::initialize(HWND hwnd, gfx::VulkanRenderer& renderer) {
         for (const char* extra : {"C:/Windows/Fonts/seguisym.ttf", "C:/Windows/Fonts/segoeui.ttf"}) {
             if (std::filesystem::exists(extra)) io.Fonts->AddFontFromFileTTF(extra, 16.0f, &merge);
         }
+        break;
+    }
+    // Seminegrita para titulos (cabeceras de componentes, secciones).
+    for (const char* bold : {"C:/Windows/Fonts/seguisb.ttf", "C:/Windows/Fonts/segoeuib.ttf"}) {
+        if (!std::filesystem::exists(bold)) continue;
+        theme::g_bold_font = io.Fonts->AddFontFromFileTTF(bold, 16.0f);
         break;
     }
     applyStyle(dpi_scale);
@@ -423,103 +431,11 @@ ImTextureID ImGuiLayer::renderTexture(std::int32_t id) {
     return static_cast<ImTextureID>(reinterpret_cast<std::uintptr_t>(set));
 }
 
-// Tema oscuro sobrio, en la linea del editor de Unity: grises neutros, acento
-// azul para la seleccion y bordes suaves.
+// Tema del editor (Theme.h): negros en capas, texto blanco, rojo para lo
+// principal y la seleccion, amarillo para avisos y estados.
 void ImGuiLayer::applyStyle(float dpi_scale) {
     ImGuiStyle& style = ImGui::GetStyle();
-    ImGui::StyleColorsDark(&style);
-
-    // Formas: suaves, con aire (como Unreal 5 / los editores actuales).
-    style.WindowRounding = 6.0f;
-    style.ChildRounding = 6.0f;
-    style.FrameRounding = 5.0f;
-    style.PopupRounding = 8.0f;
-    style.GrabRounding = 4.0f;
-    style.TabRounding = 6.0f;
-    style.ScrollbarRounding = 8.0f;
-    style.WindowBorderSize = 1.0f;
-    style.ChildBorderSize = 1.0f;
-    style.PopupBorderSize = 1.0f;
-    style.FrameBorderSize = 1.0f;
-    style.TabBorderSize = 0.0f;
-    style.TabBarBorderSize = 1.0f;
-    style.TabBarOverlineSize = 2.0f;
-    style.WindowPadding = ImVec2(10.0f, 10.0f);
-    style.FramePadding = ImVec2(8.0f, 5.0f);
-    style.CellPadding = ImVec2(6.0f, 4.0f);
-    style.ItemSpacing = ImVec2(8.0f, 6.0f);
-    style.ItemInnerSpacing = ImVec2(6.0f, 4.0f);
-    style.IndentSpacing = 16.0f;
-    style.ScrollbarSize = 12.0f;
-    style.GrabMinSize = 10.0f;
-    style.SeparatorTextBorderSize = 2.0f;
-    style.SeparatorTextPadding = ImVec2(12.0f, 4.0f);
-    style.DockingSeparatorSize = 2.0f;
-    style.WindowMenuButtonPosition = ImGuiDir_None;
-
-    // Colores: grises azulados oscuros y el azul del logo como acento.
-    ImVec4* c = style.Colors;
-    const ImVec4 base{0.078f, 0.082f, 0.094f, 1.0f};      // fondo (barra, pestanas)
-    const ImVec4 panel{0.114f, 0.118f, 0.133f, 1.0f};     // paneles
-    const ImVec4 frame{0.157f, 0.163f, 0.184f, 1.0f};     // campos
-    const ImVec4 frame_hover{0.200f, 0.208f, 0.235f, 1.0f};
-    const ImVec4 border{0.200f, 0.208f, 0.235f, 1.0f};
-    const ImVec4 accent{0.000f, 0.560f, 0.950f, 1.0f};    // #008FF2
-    const ImVec4 accent_soft{0.000f, 0.560f, 0.950f, 0.35f};
-    const ImVec4 accent_mid{0.000f, 0.560f, 0.950f, 0.55f};
-    const ImVec4 text{0.902f, 0.910f, 0.929f, 1.0f};
-
-    c[ImGuiCol_Text] = text;
-    c[ImGuiCol_TextDisabled] = ImVec4{0.529f, 0.549f, 0.600f, 1.0f};
-    c[ImGuiCol_WindowBg] = panel;
-    c[ImGuiCol_ChildBg] = ImVec4{0.0f, 0.0f, 0.0f, 0.0f};
-    c[ImGuiCol_PopupBg] = ImVec4{0.125f, 0.130f, 0.149f, 0.98f};
-    c[ImGuiCol_Border] = border;
-    c[ImGuiCol_BorderShadow] = ImVec4{0, 0, 0, 0};
-    c[ImGuiCol_FrameBg] = frame;
-    c[ImGuiCol_FrameBgHovered] = frame_hover;
-    c[ImGuiCol_FrameBgActive] = ImVec4{0.227f, 0.239f, 0.278f, 1.0f};
-    c[ImGuiCol_TitleBg] = base;
-    c[ImGuiCol_TitleBgActive] = base;
-    c[ImGuiCol_TitleBgCollapsed] = base;
-    c[ImGuiCol_MenuBarBg] = base;
-    c[ImGuiCol_ScrollbarBg] = ImVec4{0, 0, 0, 0};
-    c[ImGuiCol_ScrollbarGrab] = ImVec4{0.260f, 0.270f, 0.305f, 1.0f};
-    c[ImGuiCol_ScrollbarGrabHovered] = ImVec4{0.330f, 0.342f, 0.385f, 1.0f};
-    c[ImGuiCol_ScrollbarGrabActive] = accent_mid;
-    c[ImGuiCol_CheckMark] = accent;
-    c[ImGuiCol_SliderGrab] = accent;
-    c[ImGuiCol_SliderGrabActive] = ImVec4{0.30f, 0.72f, 1.0f, 1.0f};
-    c[ImGuiCol_Button] = ImVec4{0.180f, 0.188f, 0.212f, 1.0f};
-    c[ImGuiCol_ButtonHovered] = ImVec4{0.235f, 0.247f, 0.282f, 1.0f};
-    c[ImGuiCol_ButtonActive] = accent_mid;
-    c[ImGuiCol_Header] = ImVec4{0.000f, 0.420f, 0.720f, 0.40f};       // seleccion (Jerarquia)
-    c[ImGuiCol_HeaderHovered] = ImVec4{0.220f, 0.232f, 0.265f, 1.0f};
-    c[ImGuiCol_HeaderActive] = accent_mid;
-    c[ImGuiCol_Separator] = border;
-    c[ImGuiCol_SeparatorHovered] = accent_mid;
-    c[ImGuiCol_SeparatorActive] = accent;
-    c[ImGuiCol_ResizeGrip] = ImVec4{0, 0, 0, 0};
-    c[ImGuiCol_ResizeGripHovered] = accent_soft;
-    c[ImGuiCol_ResizeGripActive] = accent_mid;
-    c[ImGuiCol_Tab] = base;
-    c[ImGuiCol_TabHovered] = ImVec4{0.180f, 0.188f, 0.212f, 1.0f};
-    c[ImGuiCol_TabSelected] = panel;
-    c[ImGuiCol_TabSelectedOverline] = accent;
-    c[ImGuiCol_TabDimmed] = base;
-    c[ImGuiCol_TabDimmedSelected] = panel;
-    c[ImGuiCol_TabDimmedSelectedOverline] = ImVec4{0.35f, 0.37f, 0.42f, 1.0f};
-    c[ImGuiCol_DockingPreview] = accent_mid;
-    c[ImGuiCol_DockingEmptyBg] = base;
-    c[ImGuiCol_PlotLines] = accent;
-    c[ImGuiCol_PlotHistogram] = accent;
-    c[ImGuiCol_TableHeaderBg] = frame;
-    c[ImGuiCol_TableBorderStrong] = border;
-    c[ImGuiCol_TableBorderLight] = ImVec4{0.160f, 0.168f, 0.190f, 1.0f};
-    c[ImGuiCol_TextSelectedBg] = accent_soft;
-    c[ImGuiCol_DragDropTarget] = accent;
-    c[ImGuiCol_NavCursor] = accent;
-    c[ImGuiCol_ModalWindowDimBg] = ImVec4{0.0f, 0.0f, 0.0f, 0.55f};
+    theme::applyStyle(style);
 
     style.ScaleAllSizes(dpi_scale);
     style.FontScaleDpi = dpi_scale;

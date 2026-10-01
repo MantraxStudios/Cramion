@@ -38,7 +38,7 @@ std::string lower(std::string text) {
 bool isTextAsset(const std::string& extension) {
     static const std::set<std::string> kText = {".crscene", ".crprefab", ".crmat", ".crrt",  ".crpaint", ".crshader",
                                                 ".lua",     ".json",     ".txt",   ".ini",   ".crcontroller",
-                                                ".cranim",  ".crterrain", ".crui", ".csv"};
+                                                ".cranim",  ".crterrain", ".crui", ".csv",  ".crfsm"};
     return kText.count(extension) != 0;
 }
 

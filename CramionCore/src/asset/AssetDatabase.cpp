@@ -122,6 +122,11 @@ void AssetDatabase::refresh() {
             if (!info) {
                 std::cerr << "[Assets] Prefab sin UUID o danado: " << crdata::utf8(file.filename()) << "\n";
             }
+        } else if (extension == ".crfsm") {
+            info = sceneInfo(file, AssetType::StateMachine);
+            if (!info) {
+                std::cerr << "[Assets] Maquina de estados sin UUID o danada: " << crdata::utf8(file.filename()) << "\n";
+            }
         } else if (extension == ".crrt") {
             info = sceneInfo(file, AssetType::RenderTexture);
             if (!info) {

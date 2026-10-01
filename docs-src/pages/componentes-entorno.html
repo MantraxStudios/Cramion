@@ -33,6 +33,51 @@
     <tr><td>Radios (x, z)<br><code>flood_radii</code></td><td>Vec2</td><td>(3; 2)</td><td></td><td></td></tr>
   </tbody>
 </table>
+<h3 id="Environment">Ambiente (clima y hora) <code>Environment</code></h3>
+<table>
+  <thead><tr><th>Propiedad</th><th>Tipo</th><th>Por defecto</th><th>Valores</th><th>Descripcion</th></tr></thead>
+  <tbody>
+    <tr><td colspan="5"><strong class="text-white">Clima</strong></td></tr>
+    <tr><td>Clima<br><code>weather</code></td><td>opcion</td><td>Despejado</td><td>Despejado, Nubes, Cubierto, Niebla, Llovizna, Lluvia, Tormenta, Nevada ligera, Nieve, Ventisca, Tormenta de arena</td><td>Al cambiarlo pasa a el poco a poco (Transicion)</td></tr>
+    <tr><td>Transicion<br><code>transition_time</code></td><td>numero</td><td>8</td><td>0 a 300</td><td>Segundos que tarda en pasar de un clima a otro</td></tr>
+    <tr><td>Clima al azar<br><code>random_weather</code></td><td>si/no</td><td>no</td><td></td><td>Cambia solo, con probabilidades segun la estacion</td></tr>
+    <tr><td>Duracion minima<br><code>min_duration</code></td><td>numero</td><td>120</td><td>5 a 3600</td><td></td></tr>
+    <tr><td>Duracion maxima<br><code>max_duration</code></td><td>numero</td><td>360</td><td>5 a 7200</td><td></td></tr>
+    <tr><td>Transicion al azar<br><code>random_transition</code></td><td>numero</td><td>40</td><td>0 a 600</td><td></td></tr>
+    <tr><td colspan="5"><strong class="text-white">Hora y fecha</strong></td></tr>
+    <tr><td>Controlar el sol<br><code>control_time</code></td><td>si/no</td><td>si</td><td></td><td>El sol y la luna siguen la hora, la fecha y la latitud (cielo fisico)</td></tr>
+    <tr><td>Hora<br><code>time_of_day</code></td><td>numero</td><td>10</td><td>0 a 24</td><td>0..24</td></tr>
+    <tr><td>El tiempo avanza<br><code>time_progress</code></td><td>si/no</td><td>no</td><td></td><td></td></tr>
+    <tr><td>Duracion del dia<br><code>day_length</code></td><td>numero</td><td>24</td><td>0,1 a 1440</td><td>Minutos reales que dura un dia de juego</td></tr>
+    <tr><td>Dia<br><code>day</code></td><td>entero</td><td>21</td><td>1 a 31</td><td></td></tr>
+    <tr><td>Mes<br><code>month</code></td><td>entero</td><td>6</td><td>1 a 12</td><td></td></tr>
+    <tr><td>Latitud<br><code>latitude</code></td><td>numero</td><td>40</td><td>-89 a 89</td><td>Grados: 0 ecuador, 40 Madrid, -34 Buenos Aires. Cambia la altura del sol y la duracion de los dias</td></tr>
+    <tr><td colspan="5"><strong class="text-white">Estaciones</strong></td></tr>
+    <tr><td>Estacion por la fecha<br><code>season_from_date</code></td><td>si/no</td><td>si</td><td></td><td></td></tr>
+    <tr><td>Estacion<br><code>season</code></td><td>opcion</td><td>Verano</td><td>Primavera, Verano, Otono, Invierno</td><td></td></tr>
+    <tr><td>Color de la vegetacion<br><code>vegetation_tint</code></td><td>si/no</td><td>si</td><td></td><td>La hierba y las hojas amarillean en otono</td></tr>
+    <tr><td colspan="5"><strong class="text-white">Viento</strong></td></tr>
+    <tr><td>Direccion<br><code>wind_direction</code></td><td>numero</td><td>30</td><td>0 a 360</td><td>Grados (0 = hacia +X)</td></tr>
+    <tr><td>Fuerza<br><code>wind_strength</code></td><td>numero</td><td>1</td><td>0 a 4</td><td>Multiplica el viento de cada clima</td></tr>
+    <tr><td>Vaiven<br><code>wind_wander</code></td><td>si/no</td><td>si</td><td></td><td>La direccion cambia despacio y con las rachas</td></tr>
+    <tr><td colspan="5"><strong class="text-white">Lluvia y nieve</strong></td></tr>
+    <tr><td>Densidad<br><code>precipitation_density</code></td><td>numero</td><td>1</td><td>0 a 3</td><td>Multiplica las gotas y copos (rendimiento)</td></tr>
+    <tr><td>Salpicaduras<br><code>splashes</code></td><td>si/no</td><td>si</td><td></td><td></td></tr>
+    <tr><td>Nieve acumulada<br><code>snow_accumulation</code></td><td>si/no</td><td>si</td><td></td><td>La nieve cubre lo que mira hacia arriba y se derrite con calor</td></tr>
+    <tr><td>Velocidad de acumulacion<br><code>accumulation_speed</code></td><td>numero</td><td>1</td><td>0 a 10</td><td></td></tr>
+    <tr><td>Velocidad de deshielo<br><code>melt_speed</code></td><td>numero</td><td>1</td><td>0 a 10</td><td></td></tr>
+    <tr><td colspan="5"><strong class="text-white">Tormenta</strong></td></tr>
+    <tr><td>Rayos<br><code>lightning</code></td><td>si/no</td><td>si</td><td></td><td></td></tr>
+    <tr><td>Frecuencia<br><code>lightning_frequency</code></td><td>numero</td><td>1</td><td>0 a 10</td><td>Multiplica los rayos por minuto de la tormenta</td></tr>
+    <tr><td>Brillo<br><code>lightning_brightness</code></td><td>numero</td><td>1</td><td>0 a 5</td><td></td></tr>
+    <tr><td>Trazo en el cielo<br><code>lightning_bolts</code></td><td>si/no</td><td>si</td><td></td><td></td></tr>
+    <tr><td colspan="5"><strong class="text-white">Niebla y audio</strong></td></tr>
+    <tr><td>Niebla<br><code>fog_strength</code></td><td>numero</td><td>1</td><td>0 a 3</td><td>Multiplica la niebla de cada clima (0 = la del post-procesado)</td></tr>
+    <tr><td>Sonido ambiente<br><code>ambient_audio</code></td><td>si/no</td><td>si</td><td></td><td>Lluvia, viento y truenos sintetizados (en Play)</td></tr>
+    <tr><td>Volumen<br><code>audio_volume</code></td><td>numero</td><td>1</td><td>0 a 2</td><td></td></tr>
+    <tr><td>Volumen de los truenos<br><code>thunder_volume</code></td><td>numero</td><td>1</td><td>0 a 2</td><td></td></tr>
+  </tbody>
+</table>
 <h3 id="Terrain">Terreno <code>Terrain</code></h3>
 <p>Terreno de mapa de alturas (como el Landscape de Unreal): tamano, altura maxima, hasta 8 capas de textura y su archivo de datos (<code>.crterrain</code> en Assets). La entidad marca la esquina (x, z minimas) y la altura 0; no gira ni escala. Herramientas del Inspector: esculpir, suavizar, aplanar, rampa, ruido, erosion, terrazas, pintar capas y generar un relieve.</p>
 <table>
@@ -59,7 +104,7 @@
   </tbody>
 </table>
 <h3 id="WaterBody">Agua <code>WaterBody</code></h3>
-<p>Agua procedural: <strong>Oceano</strong> (plano infinito con oleaje Gerstner), <strong>Lago</strong> (rectangulo con olas suaves) o <strong>Rio</strong> (cinta que sigue sus puntos, con corriente). Los Rigidbody flotan, la camara bajo el agua ve niebla y causticas y los cuerpos que se mueven dejan ondas.</p>
+<p>Agua procedural: <strong>Oceano</strong> (plano infinito hasta el horizonte con oleaje FFT en 4 cascadas, viento, fetch y mar de fondo), <strong>Lago</strong> (rectangulo con olas suaves) o <strong>Rio</strong> (cinta que sigue sus puntos, con corriente y rapidos). Los Rigidbody flotan, bajo el agua se ven la ventana de Snell, rayos de sol, causticas y particulas, y los cuerpos que se mueven dejan ondas. Ver <a href="agua.html">Agua</a>.</p>
 <table>
   <thead><tr><th>Propiedad</th><th>Tipo</th><th>Por defecto</th><th>Valores</th><th>Descripcion</th></tr></thead>
   <tbody>
@@ -71,6 +116,11 @@
     <tr><td>Crestas<br><code>steepness</code></td><td>numero</td><td>0,45</td><td>0 a 1</td><td>0 = redondeadas, 1 = afiladas</td></tr>
     <tr><td>Direccion del viento<br><code>wind_direction</code></td><td>numero</td><td>30</td><td>-180 a 180</td><td></td></tr>
     <tr><td>Dispersion<br><code>wind_spread</code></td><td>numero</td><td>35</td><td>0 a 90</td><td></td></tr>
+    <tr><td>Viento<br><code>wind_speed</code></td><td>numero</td><td>0</td><td>0 a 40</td><td>Velocidad del viento (m/s). Mayor que 0: la altura y la longitud de onda salen del espectro JONSWAP con el viento y el fetch; 0 = las de arriba</td></tr>
+    <tr><td>Fetch<br><code>fetch</code></td><td>numero</td><td>300</td><td>1 a 2000</td><td>Distancia sobre la que sopla el viento (km): mas, olas mas grandes y largas</td></tr>
+    <tr><td>Mar de fondo<br><code>swell_height</code></td><td>numero</td><td>0</td><td>0 a 8</td><td>Olas largas que llegan de lejos (altura significativa)</td></tr>
+    <tr><td>Longitud del mar de fondo<br><code>swell_wavelength</code></td><td>numero</td><td>120</td><td>20 a 600</td><td></td></tr>
+    <tr><td>Direccion del mar de fondo<br><code>swell_direction</code></td><td>numero</td><td>0</td><td>-180 a 180</td><td></td></tr>
     <tr><td>Corriente<br><code>flow_speed</code></td><td>numero</td><td>1,5</td><td>0 a 10</td><td></td></tr>
     <tr><td>Color (dispersion)<br><code>shallow_color</code></td><td>Color</td><td>(0,1; 0,42; 0,38)</td><td></td><td></td></tr>
     <tr><td>Color profundo<br><code>deep_color</code></td><td>Color</td><td>(0,012; 0,055; 0,075)</td><td></td><td></td></tr>
@@ -83,6 +133,9 @@
     <tr><td>Olas en la playa<br><code>shore_waves</code></td><td>numero</td><td>1</td><td>0 a 3</td><td></td></tr>
     <tr><td>Causticas<br><code>caustics</code></td><td>numero</td><td>1</td><td>0 a 3</td><td></td></tr>
     <tr><td>Luz en las crestas<br><code>scattering</code></td><td>numero</td><td>1</td><td>0 a 3</td><td></td></tr>
+    <tr><td>Duracion de la espuma<br><code>foam_persistence</code></td><td>numero</td><td>4</td><td>0,1 a 20</td><td>Segundos que tarda en deshacerse la de las crestas</td></tr>
+    <tr><td>Rayos de sol<br><code>god_rays</code></td><td>numero</td><td>1</td><td>0 a 3</td><td>Haces de luz bajo la superficie (con las causticas y la sombra)</td></tr>
+    <tr><td>Particulas<br><code>particles</code></td><td>numero</td><td>1</td><td>0 a 3</td><td>Motas en suspension que se ven buceando</td></tr>
     <tr><td>Flotacion<br><code>buoyancy</code></td><td>si/no</td><td>si</td><td></td><td>Los Rigidbody que entran flotan (Jolt)</td></tr>
     <tr><td>Empuje<br><code>density</code></td><td>numero</td><td>1</td><td>0 a 4</td><td>1 = agua; mas, flota mas</td></tr>
     <tr><td>Frenado<br><code>drag</code></td><td>numero</td><td>0,5</td><td>0 a 5</td><td></td></tr>
@@ -151,6 +204,44 @@
     <tr><td>Direccion del viento<br><code>wind_direction</code></td><td>numero</td><td>30</td><td>0 a 360</td><td></td></tr>
     <tr><td>Interaccion<br><code>interaction</code></td><td>numero</td><td>1</td><td>0 a 3</td><td>Cuanto la apartan y aplastan los objetos fisicos y los personajes</td></tr>
     <tr><td>Maximo de briznas<br><code>max_blades</code></td><td>entero</td><td>3000000</td><td>10000 a 8000000</td><td>Tope de memoria de la GPU (32 bytes por brizna)</td></tr>
+  </tbody>
+</table>
+<h3 id="Fire">Fuego (incendio que se propaga) <code>Fire</code></h3>
+<table>
+  <thead><tr><th>Propiedad</th><th>Tipo</th><th>Por defecto</th><th>Valores</th><th>Descripcion</th></tr></thead>
+  <tbody>
+    <tr><td>Activo<br><code>enabled</code></td><td>si/no</td><td>si</td><td></td><td></td></tr>
+    <tr><td>Tamano (m)<br><code>size</code></td><td>numero</td><td>120</td><td>4 a 4000</td><td>Lado del cuadrado donde puede arder, centrado en el objeto</td></tr>
+    <tr><td>Celda (m)<br><code>cell_size</code></td><td>numero</td><td>0,5</td><td>0,1 a 20</td><td>Detalle del fuego. Mas de 256 celdas por lado: se agrandan solas</td></tr>
+    <tr><td>Se propaga<br><code>spread</code></td><td>si/no</td><td>si</td><td></td><td>Las celdas que arden encienden a sus vecinas</td></tr>
+    <tr><td>Solo en la zona<br><code>limit_to_zone</code></td><td>si/no</td><td>si</td><td></td><td>No sale del cuadrado. Si no, la zona crece cuando el fuego llega al borde</td></tr>
+    <tr><td>Tamano maximo (m)<br><code>max_size</code></td><td>numero</td><td>800</td><td>10 a 20000</td><td>Hasta donde crece la zona sin limite</td></tr>
+    <tr><td>Simular en el editor<br><code>simulate_in_editor</code></td><td>si/no</td><td>no</td><td></td><td>Ver el fuego sin darle a Play</td></tr>
+    <tr><td>Semilla<br><code>seed</code></td><td>entero</td><td>1</td><td>0 a 1000000</td><td>La misma semilla, el mismo incendio</td></tr>
+    <tr><td>Velocidad<br><code>spread_speed</code></td><td>numero</td><td>0,5</td><td>0 a 20</td><td>Metros por segundo que avanza el frente (sin viento ni cuesta)</td></tr>
+    <tr><td>Tiempo de llama<br><code>burn_time</code></td><td>numero</td><td>20</td><td>0,5 a 600</td><td>Segundos que arde una celda con todo su combustible</td></tr>
+    <tr><td>Brasas<br><code>smolder_time</code></td><td>numero</td><td>25</td><td>0 a 600</td><td>Segundos de brasas y humo cuando se acaba la llama</td></tr>
+    <tr><td>Altura de las llamas<br><code>flame_height</code></td><td>numero</td><td>3</td><td>0,2 a 40</td><td></td></tr>
+    <tr><td>Brillo de las llamas<br><code>flame_intensity</code></td><td>numero</td><td>1</td><td>0 a 20</td><td></td></tr>
+    <tr><td>Cantidad<br><code>smoke_amount</code></td><td>numero</td><td>1</td><td>0 a 5</td><td></td></tr>
+    <tr><td>Altura<br><code>smoke_height</code></td><td>numero</td><td>55</td><td>2 a 400</td><td>Hasta donde sube la columna</td></tr>
+    <tr><td>Subida<br><code>smoke_rise</code></td><td>numero</td><td>3,5</td><td>0,2 a 30</td><td>Metros por segundo que sube (con viento, se tumba mas)</td></tr>
+    <tr><td>Color<br><code>smoke_color</code></td><td>Color</td><td>(0,42; 0,4; 0,38)</td><td></td><td></td></tr>
+    <tr><td>Viento del cielo<br><code>sky_wind</code></td><td>si/no</td><td>si</td><td></td><td>Direccion del viento del Cielo y la mitad de su velocidad</td></tr>
+    <tr><td>Viento<br><code>wind_speed</code></td><td>numero</td><td>3</td><td>0 a 40</td><td>Si no usa el del cielo</td></tr>
+    <tr><td>Direccion del viento<br><code>wind_direction</code></td><td>numero</td><td>30</td><td>0 a 360</td><td>0 = hacia +X</td></tr>
+    <tr><td>Efecto del viento<br><code>wind_influence</code></td><td>numero</td><td>1</td><td>0 a 4</td><td>Cuanto acelera el fuego a favor del viento</td></tr>
+    <tr><td>Efecto de la pendiente<br><code>slope_influence</code></td><td>numero</td><td>1</td><td>0 a 4</td><td>Cuanto mas rapido sube por las cuestas</td></tr>
+    <tr><td>Combustible del terreno<br><code>terrain_fuel</code></td><td>si/no</td><td>si</td><td></td><td>Hierba y hierba seca arden bien; tierra poco; roca, arena, nieve, barro y agua nada</td></tr>
+    <tr><td>Combustible sin terreno<br><code>default_fuel</code></td><td>numero</td><td>0,8</td><td>0 a 1</td><td>Donde no hay terreno debajo (0..1)</td></tr>
+    <tr><td>Multiplicador de combustible<br><code>fuel_multiplier</code></td><td>numero</td><td>1</td><td>0 a 3</td><td></td></tr>
+    <tr><td>Encender al empezar<br><code>ignite_on_start</code></td><td>si/no</td><td>si</td><td></td><td>En los puntos de abajo al darle a Play</td></tr>
+    <tr><td colspan="5"><strong class="text-white">Puntos de encendido (lista)</strong> <code>ignitions</code> — Respecto al objeto</td></tr>
+    <tr><td>&nbsp;&nbsp;&nbsp;Posicion<br><code>position</code></td><td>Vec3 (metros)</td><td>(0; 0; 0)</td><td></td><td>Respecto al objeto (solo cuentan x y z)</td></tr>
+    <tr><td>&nbsp;&nbsp;&nbsp;Radio<br><code>radius</code></td><td>numero</td><td>2</td><td>0,1 a 500</td><td></td></tr>
+    <tr><td>Luces<br><code>lights</code></td><td>si/no</td><td>si</td><td></td><td>Luces puntuales que parpadean donde mas arde</td></tr>
+    <tr><td>Maximo de luces<br><code>max_lights</code></td><td>entero</td><td>6</td><td>0 a 16</td><td></td></tr>
+    <tr><td>Intensidad de las luces<br><code>light_intensity</code></td><td>numero</td><td>1</td><td>0 a 20</td><td></td></tr>
   </tbody>
 </table>
 <h3 id="VoxelWorld">Mundo de bloques <code>VoxelWorld</code></h3>

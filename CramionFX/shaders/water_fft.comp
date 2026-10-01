@@ -1,0 +1,149 @@
+#version 450
+
+// Oceano FFT (Tessendorf; cascadas como Crest): cada frame, para las 4
+// cascadas de 128 x 128 modos,
+//   modo 0  espectro en el instante t: h(k,t) = h0 e^{iwt} + conj(h0(-k)) e^{-iwt}
+//           y lo que se necesita de el (desplazamiento y sus derivadas), dos
+//           campos reales por numero complejo (8 campos en 4 complejos, 2
+//           capas rgba por cascada).
+//   modo 1  FFT inversa de las filas (en memoria compartida, radix 2).
+//   modo 2  FFT inversa de las columnas.
+//   modo 3  montaje: desplazamiento (xyz, con el "choppiness") + espuma que
+//           dura (jacobiano < umbral, se apaga poco a poco) y las derivadas
+//           para la normal. Luego WaterPass genera los mipmaps.
+// El mismo espectro (y la misma suma en la CPU) usa water::sampleWater.
+
+layout(local_size_x = 128) in;
+
+const int N = 128;
+const float kPi = 3.14159265358979;
+
+// Por modo: h0 (re, im), conj(h0(-k)) (re, im) | omega, kx, kz, -
+layout(std430, set = 0, binding = 0) readonly buffer Spectrum {
+    vec4 modes[];
+};
+layout(set = 0, binding = 1, rgba32f) uniform image2DArray fft_image;      // 2 capas por cascada
+layout(set = 0, binding = 2, rgba16f) uniform image2DArray displacement;   // xyz + espuma
+layout(set = 0, binding = 3, rgba16f) uniform image2DArray derivatives;    // dY/dx, dY/dz, dX/dx, dZ/dz
+
+layout(push_constant) uniform Push {
+    uint mode;
+    float time;        // tiempo del oceano (modulo su periodo)
+    float dt;          // para que la espuma se apague
+    float chop;        // desplazamiento horizontal
+    float foam_threshold;  // jacobiano por debajo del cual hay espuma
+    float foam_decay;      // por segundo
+    uint reset;
+    float foam_amount;
+} push;
+
+shared vec4 buffer_a[N];
+shared vec4 buffer_b[N];
+
+vec2 cmul(vec2 a, vec2 b) { return vec2(a.x * b.x - a.y * b.y, a.x * b.y + a.y * b.x); }
+// i * z
+vec2 ci(vec2 z) { return vec2(-z.y, z.x); }
+
+uint bitReverse(uint v) { return bitfieldReverse(v) >> (32u - 7u); }  // 7 bits = log2(128)
+
+// FFT inversa de 128 vec4 (dos complejos a la vez) en memoria compartida.
+// Entrada en orden de bits invertido; resultado en buffer_a.
+void inverseFft(uint i) {
+    bool in_a = true;
+    for (uint len = 2u; len <= uint(N); len <<= 1u) {
+        uint half_len = len >> 1u;
+        uint j = i % len;
+        uint base = i - j;
+        uint k = j % half_len;
+        float angle = 2.0 * kPi * float(k) / float(len);
+        vec2 w = vec2(cos(angle), sin(angle));
+        vec4 u = in_a ? buffer_a[base + k] : buffer_b[base + k];
+        vec4 v = in_a ? buffer_a[base + k + half_len] : buffer_b[base + k + half_len];
+        vec4 vw = vec4(cmul(v.xy, w), cmul(v.zw, w));
+        vec4 r = j < half_len ? u + vw : u - vw;
+        if (in_a) {
+            buffer_b[i] = r;
+        } else {
+            buffer_a[i] = r;
+        }
+        barrier();
+        in_a = !in_a;
+    }
+    if (!in_a) {
+        // log2(128) = 7 etapas (impar): el resultado quedo en buffer_b.
+        buffer_a[i] = buffer_b[i];
+        barrier();
+    }
+}
+
+void main() {
+    uint x = gl_LocalInvocationID.x;
+    uint y = gl_WorkGroupID.y;
+    uint layer = gl_WorkGroupID.z;
+
+    if (push.mode == 0u) {
+        uint cascade = layer;
+        uint index = (cascade * uint(N) + y) * uint(N) + x;
+        vec4 a = modes[index * 2u];
+        vec4 b = modes[index * 2u + 1u];
+        float omega = b.x;
+        vec2 k = b.yz;
+        float len = length(k);
+        vec2 e = vec2(cos(omega * push.time), sin(omega * push.time));
+        vec2 h = cmul(a.xy, e) + cmul(a.zw, vec2(e.x, -e.y));
+        vec2 kn = len > 1e-6 ? k / len : vec2(0.0);
+        // Campos (reales en el espacio): Dx, Dz = -i k/|k| h; Dy = h;
+        // dY/dx = i kx h; dY/dz = i kz h; dX/dx = kx^2/|k| h; dZ/dz = kz^2/|k| h;
+        // dX/dz = kx kz/|k| h. Dos por complejo: A + iB.
+        vec2 dx = -ci(h) * kn.x;
+        vec2 dz = -ci(h) * kn.y;
+        vec2 dy = h;
+        vec2 dxdz = h * (len > 1e-6 ? k.x * k.y / len : 0.0);
+        vec2 dydx = ci(h) * k.x;
+        vec2 dydz = ci(h) * k.y;
+        vec2 dxdx = h * (len > 1e-6 ? k.x * k.x / len : 0.0);
+        vec2 dzdz = h * (len > 1e-6 ? k.y * k.y / len : 0.0);
+        vec2 c1 = dx + ci(dz);
+        vec2 c2 = dy + ci(dxdz);
+        vec2 c3 = dydx + ci(dydz);
+        vec2 c4 = dxdx + ci(dzdz);
+        imageStore(fft_image, ivec3(x, y, cascade * 2u), vec4(c1, c2));
+        imageStore(fft_image, ivec3(x, y, cascade * 2u + 1u), vec4(c3, c4));
+        return;
+    }
+    if (push.mode == 1u || push.mode == 2u) {
+        // Fila y (modo 1) o columna y (modo 2) de la capa `layer`.
+        ivec3 source = push.mode == 1u ? ivec3(bitReverse(x), y, layer) : ivec3(y, bitReverse(x), layer);
+        buffer_a[x] = imageLoad(fft_image, source);
+        barrier();
+        inverseFft(x);
+        ivec3 target = push.mode == 1u ? ivec3(x, y, layer) : ivec3(y, x, layer);
+        imageStore(fft_image, target, buffer_a[x]);
+        return;
+    }
+    // --- Montaje ---
+    uint cascade = layer;
+    vec4 p = imageLoad(fft_image, ivec3(x, y, cascade * 2u));
+    vec4 q = imageLoad(fft_image, ivec3(x, y, cascade * 2u + 1u));
+    float lambda = push.chop;
+    vec3 offset = vec3(p.x * lambda, p.z, p.y * lambda);
+    float dxdz = p.w * lambda;
+    float dydx = q.x;
+    float dydz = q.y;
+    float dxdx = q.z * lambda;
+    float dzdz = q.w * lambda;
+    // Jacobiano de la superficie desplazada: < 1 se comprime (cresta), < 0
+    // se pliega (rompe).
+    float jacobian = (1.0 + dxdx) * (1.0 + dzdz) - dxdz * dxdz;
+    float foam = 0.0;
+    if (push.reset == 0u) {
+        foam = imageLoad(displacement, ivec3(x, y, cascade)).w * exp(-push.dt * push.foam_decay);
+    }
+    // Solo las tres cascadas grandes rompen (el rizado no hace espuma).
+    if (cascade < 3u) {
+        float fresh = clamp((push.foam_threshold - jacobian) * 2.5, 0.0, 1.0) * push.foam_amount;
+        foam = max(foam, fresh);
+    }
+    imageStore(displacement, ivec3(x, y, cascade), vec4(offset, clamp(foam, 0.0, 1.0)));
+    imageStore(derivatives, ivec3(x, y, cascade), vec4(dydx, dydz, dxdx, dzdz));
+}

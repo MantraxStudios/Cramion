@@ -58,6 +58,9 @@ EditorApp::EditorApp(dm::Window& window, gfx::VulkanRenderer& renderer, scene::S
     terrain::registerTerrainComponents();
     water::registerWaterComponents();
     foliage::registerFoliageComponents();
+    fire::registerFireComponents();
+    fluid::registerFluidComponents();
+    fluid::setActiveSystem(&fluids_);  // Lua (Fluid.*) y las consultas
     navigation::registerNavigationComponents();
     voxel::registerVoxelComponents();
     audio::registerAudioComponents();
@@ -173,6 +176,14 @@ bool EditorApp::openProject(const std::filesystem::path& path, bool open_scene) 
     terrain_store_.clear();
     terrain_store_.setRoot(project_.assetsFolder());
     sync_->setTerrainStore(&terrain_store_);
+    // Liquidos: el terreno y las cajas de las mallas (Mesh Collider).
+    fluids_.clear();
+    fluids_.setTerrainStore(&terrain_store_);
+    fluids_.setBoundsProvider([this](ecs::Entity e, core::Vec3& min, core::Vec3& max) {
+        if (!sync_) return false;
+        const int actor = sync_->actorIndex(e);
+        return actor >= 0 && sync_->actorLocalBounds(static_cast<std::uint32_t>(actor), min, max);
+    });
     sync_->setGroundQuery([this](const core::Vec3& origin, const core::Vec3& direction, float max_distance, core::Vec3& point,
                             core::Vec3& normal, ecs::Entity self) {
         // Suelo para el IK de los pies: el impacto mas cercano que no sea el
@@ -262,6 +273,14 @@ void EditorApp::closeProject() {
     animator_path_.clear();
     animator_ = {};
     show_animator_ = false;
+    if (fsm_dirty_) saveStateMachineEditor();
+    fsm_uuid_ = {};
+    fsm_path_.clear();
+    fsm_ = {};
+    fsm_code_state_ = -2;
+    fsm_code_tab_ = ScriptTab{};
+    fsm_cache_.clear();
+    show_state_machine_ = false;
     renderer_.waitIdle();
     renderer_.setOutlinedActors({});
     world_.clear();
@@ -371,6 +390,10 @@ bool EditorApp::saveSceneAs() {
         return false;
     }
     world_.setSceneName(dialogs::utf8(path.stem()));
+    // Otro archivo = otra escena: UUID nuevo (con el de la original, el
+    // proyecto veria dos escenas con el mismo UUID e ignoraria la copia).
+    std::error_code ec;
+    if (scene_path_.empty() || !std::filesystem::equivalent(path, scene_path_, ec)) world_.setSceneUuid(Uuid::generate());
     scene_path_ = path;
     return saveScene();
 }
@@ -994,6 +1017,17 @@ void EditorApp::drawUi(float delta_seconds) {
         addCpuSample(kCpuPhysics, millisecondsSince(physics_start));
     }
 
+    // Modo cine: solo la imagen de la escena, sin paneles ni gizmos.
+    if (cinema_) {
+        drawCinemaView();
+        drawModals();
+        flushCommit();
+        render_view_ = kSceneSlot;
+        updateViewExtent(delta_seconds);
+        addCpuSample(kCpuUi, millisecondsSince(ui_start));
+        return;
+    }
+
     drawMenuBar();
     drawWorkspaceBar();
     const WorkspaceKind workspace = activeWorkspaceKind();
@@ -1026,6 +1060,12 @@ void EditorApp::drawUi(float delta_seconds) {
         if (show_console_) drawConsole();
         if (show_render_settings_) drawRenderSettings();
         if (show_animator_) drawAnimatorEditor();
+        // Ventana > Maquina de estados (o un objeto que la pide): su pestana.
+        if (show_state_machine_ && std::none_of(workspaces_.begin(), workspaces_.end(), [](const Workspace& ws) {
+                return ws.kind == WorkspaceKind::StateMachine;
+            })) {
+            openStateMachineWorkspace();
+        }
         if (show_script_editor_ && script_tabs_.empty()) drawScriptEditor();  // los abiertos: su pestana
         drawMcpWindow();
         drawTerminalWindow();
@@ -1040,6 +1080,7 @@ void EditorApp::drawUi(float delta_seconds) {
         drawPaintWindow();
         drawTerrainGeneratorWindow();
         drawHouseGeneratorWindow();
+        drawEnvironmentWindow();
         if (show_cinematic_) drawCinematicWindow();
         drawModals();
         addCpuSample(kCpuPanels, millisecondsSince(t));
@@ -1048,7 +1089,7 @@ void EditorApp::drawUi(float delta_seconds) {
     // Atajos globales (no mientras se escribe ni se vuela; en un script, el
     // editor de codigo tiene los suyos).
     ImGuiIO& io = ImGui::GetIO();
-    if (!io.WantTextInput && !flying_ && workspace != WorkspaceKind::Script) {
+    if (!io.WantTextInput && !flying_ && workspace != WorkspaceKind::Script && workspace != WorkspaceKind::StateMachine) {
         if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_S, false)) {
             if (io.KeyShift) {
                 saveSceneAs();
@@ -1318,9 +1359,22 @@ void EditorApp::drawMenuBar() {
             item("Sistema de partículas", 16);
             ImGui::EndMenu();
         }
+        if (ImGui::BeginMenu("Líquidos")) {
+            if (ImGui::MenuItem("Grifo de agua (emisor)")) createFluidEntity(0);
+            if (ImGui::MenuItem("Bloque de agua (cae y salpica)")) createFluidEntity(1);
+            if (ImGui::MenuItem("Chorro de miel")) createFluidEntity(2);
+            if (ImGui::MenuItem("Chorro de lava")) createFluidEntity(3);
+            ImGui::Separator();
+            if (ImGui::MenuItem("Mundo de líquidos (ajustes)")) createFluidEntity(4);
+            if (ImGui::MenuItem("Desagüe")) createFluidEntity(5);
+            if (ImGui::MenuItem("Tanque de demostración")) createFluidEntity(6);
+            ImGui::EndMenu();
+        }
         if (ImGui::MenuItem("Terreno")) createTerrainEntity();
         if (ImGui::MenuItem("Vegetación (bosque)")) createFoliageEntity();
         if (ImGui::MenuItem("Mundo de bloques")) createVoxelWorldEntity();
+        if (ImGui::MenuItem("Ambiente (clima y hora)")) createEnvironmentEntity();
+        if (ImGui::MenuItem("Fuego (incendio)")) createFireEntity();
         if (ImGui::BeginMenu("Agua")) {
             if (ImGui::MenuItem("Océano / playa")) createWaterEntity(0);
             if (ImGui::MenuItem("Lago")) createWaterEntity(1);
@@ -1353,6 +1407,10 @@ void EditorApp::drawMenuBar() {
         ImGui::MenuItem("Consola", nullptr, &show_console_);
         ImGui::MenuItem("Configuración gráfica", nullptr, &show_render_settings_);
         ImGui::MenuItem("Animator", nullptr, &show_animator_);
+        if (ImGui::MenuItem("Máquina de estados", nullptr, show_state_machine_)) {
+            show_state_machine_ = true;
+            openStateMachineWorkspace();
+        }
         ImGui::MenuItem("Scripts (Lua)", nullptr, &show_script_editor_);
         ImGui::MenuItem("Terminal (IA)", nullptr, &show_terminal_);
         ImGui::MenuItem("MCP (IA)", nullptr, &show_mcp_);
@@ -1361,6 +1419,7 @@ void EditorApp::drawMenuBar() {
         ImGui::MenuItem("Pintar prefabs", nullptr, &show_paint_window_);
         ImGui::MenuItem("Generador de terreno", nullptr, &show_terrain_generator_);
         ImGui::MenuItem("Generador de casas", nullptr, &show_house_generator_);
+        ImGui::MenuItem("Ambiente (clima y hora)", nullptr, &show_environment_window_);
         ImGui::MenuItem("Juego", nullptr, &show_game_);
         ImGui::MenuItem("Cinemática", nullptr, &show_cinematic_);
         ImGui::Separator();
@@ -1451,7 +1510,7 @@ void EditorApp::drawWindowControls() {
         const bool held = ImGui::IsItemActive();
         ImGui::PopID();
         if (hovered || held) {
-            const ImU32 bg = i == 2 ? (held ? IM_COL32(200, 30, 40, 255) : IM_COL32(232, 17, 35, 255))
+            const ImU32 bg = i == 2 ? (held ? theme::kRedActive : theme::kRed)
                                     : (held ? IM_COL32(255, 255, 255, 45) : IM_COL32(255, 255, 255, 28));
             draw->AddRectFilled(min, max, bg);
         }
@@ -1651,21 +1710,53 @@ void EditorApp::drawConsole() {
     if (ImGui::Button("Limpiar")) log.clear();
     ImGui::SameLine();
     ImGui::Checkbox("Auto-desplazar", &console_autoscroll_);
+    // Cuantos avisos (amarillo) y errores (rojo) hay.
+    {
+        std::size_t warnings = 0;
+        std::size_t errors = 0;
+        {
+            std::lock_guard lock(log.mutex());
+            for (const EditorLog::Entry& entry : log.entries()) {
+                if (entry.level == EditorLog::Level::Warning) ++warnings;
+                if (entry.level == EditorLog::Level::Error) ++errors;
+            }
+        }
+        const std::string error_text = std::to_string(errors) + (errors == 1 ? " error" : " errores");
+        const std::string warning_text = std::to_string(warnings) + (warnings == 1 ? " aviso" : " avisos");
+        ImGui::SameLine();
+        theme::badge(error_text.c_str(), errors > 0 ? theme::kRed : theme::kBg4);
+        ImGui::SameLine(0.0f, 4.0f);
+        theme::badge(warning_text.c_str(), warnings > 0 ? theme::kYellow : theme::kBg4);
+    }
     ImGui::SameLine();
-    ImGui::SetNextItemWidth(-1.0f);
-    ImGui::InputTextWithHint("##filter", "Filtrar...", &console_filter_);
+    theme::searchBox("filter", console_filter_, "Filtrar...");
     ImGui::Separator();
     ImGui::BeginChild("log", ImVec2(0.0f, 0.0f), ImGuiChildFlags_None,
                       ImGuiWindowFlags_HorizontalScrollbar);
     {
         std::lock_guard lock(log.mutex());
         const auto line = [](const EditorLog::Entry& entry) {
-            ImVec4 color{0.85f, 0.85f, 0.85f, 1.0f};
-            if (entry.level == EditorLog::Level::Warning) color = ImVec4{1.0f, 0.8f, 0.35f, 1.0f};
-            if (entry.level == EditorLog::Level::Error) color = ImVec4{1.0f, 0.45f, 0.4f, 1.0f};
+            // Avisos en amarillo y errores en rojo, con una marca a la izquierda.
+            ImU32 color = theme::kLabel;
+            ImU32 mark = 0;
+            if (entry.level == EditorLog::Level::Warning) color = mark = theme::kYellow;
+            if (entry.level == EditorLog::Level::Error) {
+                color = theme::kRedText;
+                mark = theme::kRed;
+            }
+            const ImVec2 at = ImGui::GetCursorScreenPos();
+            ImGui::SetCursorScreenPos(ImVec2(at.x + 8.0f, at.y));
             ImGui::PushStyleColor(ImGuiCol_Text, color);
             ImGui::TextUnformatted(entry.text.c_str());
             ImGui::PopStyleColor();
+            if (mark != 0) {
+                ImDrawList* draw = ImGui::GetWindowDrawList();
+                const ImVec2 max = ImGui::GetItemRectMax();
+                const float right = ImGui::GetWindowPos().x + ImGui::GetWindowWidth();
+                draw->AddRectFilled(ImVec2(at.x, at.y), ImVec2(std::max(max.x, right), max.y),
+                                    theme::withAlpha(mark, 18));
+                draw->AddRectFilled(ImVec2(at.x, at.y), ImVec2(at.x + 3.0f, max.y), mark);
+            }
         };
         const auto& entries = log.entries();
         if (console_filter_.empty()) {
@@ -1769,7 +1860,7 @@ void EditorApp::drawGraphicsSettings() {
     }
     if (!r.upscalerStatus().empty()) {
         const bool fallback = r.activeUpscaler() == gfx::Upscaler::Taa && g.upscaler != gfx::Upscaler::Taa;
-        ImGui::TextColored(fallback ? ImVec4(1.0f, 0.7f, 0.3f, 1.0f) : ImVec4(0.5f, 0.85f, 0.5f, 1.0f), "%s",
+        ImGui::TextColored(fallback ? theme::vec(theme::kYellow) : theme::vec(theme::kOk), "%s",
                            r.upscalerStatus().c_str());
     }
     ImGui::BeginDisabled(g.upscaler == gfx::Upscaler::Off);
@@ -1783,7 +1874,7 @@ void EditorApp::drawGraphicsSettings() {
     }
     if (g.quality == gfx::UpscaleQuality::Native &&
         (g.upscaler == gfx::Upscaler::Fsr3 || g.upscaler == gfx::Upscaler::Dlss)) {
-        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.7f, 0.3f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_Text, theme::kYellow);
         ImGui::TextWrapped("Nativa = solo antialiasing (DLAA / FSR AA): cuesta FPS. Para ganar FPS usa Calidad o menos.");
         ImGui::PopStyleColor();
     }
@@ -1899,11 +1990,14 @@ void EditorApp::drawGraphicsSettings() {
             char vram_text[64];
             std::snprintf(vram_text, sizeof(vram_text), "VRAM %.2f / %.2f GB", vram_used / 1073741824.0,
                           vram_budget / 1073741824.0);
-            if (fraction > 0.9f) ImGui::PushStyleColor(ImGuiCol_PlotHistogram, ImVec4(0.9f, 0.3f, 0.25f, 1.0f));
+            // Gris normal, amarillo al acercarse al limite y rojo casi lleno (tema).
+            ImGui::PushStyleColor(ImGuiCol_PlotHistogram, fraction > 0.9f    ? theme::kRed
+                                                          : fraction > 0.75f ? theme::kYellowDeep
+                                                                             : theme::kTextFaint);
             ImGui::ProgressBar(std::min(fraction, 1.0f), ImVec2(-1.0f, 0.0f), vram_text);
+            ImGui::PopStyleColor();
             if (fraction > 0.9f) {
-                ImGui::PopStyleColor();
-                ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.4f, 1.0f),
+                ImGui::TextColored(theme::vec(theme::kRedText),
                                    "Casi sin VRAM: la GPU usará la RAM y habrá caídas de FPS. Baja las texturas.");
             }
         }
@@ -1925,9 +2019,9 @@ void EditorApp::drawGraphicsSettings() {
                     ImGui::TextUnformatted(gfx::FrameBudget::leverName(lever));
                     ImGui::TableNextColumn();
                     if (level == 0) {
-                        ImGui::TextColored(ImVec4(0.45f, 0.85f, 0.45f, 1.0f), "máxima");
+                        ImGui::TextColored(theme::vec(theme::kOk), "máxima");
                     } else {
-                        ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.3f, 1.0f), "-%d de %d", level, max);
+                        ImGui::TextColored(theme::vec(theme::kYellow), "-%d de %d", level, max);
                     }
                 }
                 ImGui::EndTable();
@@ -2081,7 +2175,7 @@ void EditorApp::drawImportProgress() {
 
     const float overall = importFraction();
     const std::size_t current = std::min(imports_done_ + 1, imports_total_);
-    ImGui::TextColored(ImVec4(0.55f, 0.75f, 1.0f, 1.0f), "Importando archivo %zu de %zu", current, imports_total_);
+    ImGui::TextColored(theme::vec(theme::kYellow), "Importando archivo %zu de %zu", current, imports_total_);
     char overlay[48];
     std::snprintf(overlay, sizeof(overlay), "%.0f %%", overall * 100.0f);
     ImGui::ProgressBar(overall, ImVec2(-1.0f, 0.0f), overlay);
@@ -2116,7 +2210,7 @@ void EditorApp::drawImportProgress() {
         }
     }
     if (imports_failed_ > 0) {
-        ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.4f, 1.0f), "%zu fallaron (ver consola)", imports_failed_);
+        ImGui::TextColored(theme::vec(theme::kRedText), "%zu fallaron (ver consola)", imports_failed_);
     }
     ImGui::End();
 }

@@ -77,7 +77,7 @@ void SkinnedPass::create(const VulkanDevice& device, const GBuffer& gbuffer,
                       : vk::ShaderStageFlags{};
     geometry_push_stages_ = both | tess_stages;
     shadow_push_stages_ = vk::ShaderStageFlagBits::eVertex | tess_stages;
-    std::array<vk::DescriptorSetLayoutBinding, 6> frame_bindings{};
+    std::array<vk::DescriptorSetLayoutBinding, 7> frame_bindings{};
     frame_bindings[0].binding = 0;
     frame_bindings[0].descriptorType = vk::DescriptorType::eUniformBuffer;
     frame_bindings[0].descriptorCount = 1;
@@ -104,6 +104,12 @@ void SkinnedPass::create(const VulkanDevice& device, const GBuffer& gbuffer,
     frame_bindings[5].descriptorType = vk::DescriptorType::eStorageBuffer;
     frame_bindings[5].descriptorCount = 1;
     frame_bindings[5].stageFlags = both;
+    // Mapa de quemado de las zonas de fuego (FirePass): lo lee la hierba
+    // (vertices) y todo lo que escribe el G-buffer.
+    frame_bindings[6].binding = 6;
+    frame_bindings[6].descriptorType = vk::DescriptorType::eCombinedImageSampler;
+    frame_bindings[6].descriptorCount = 1;
+    frame_bindings[6].stageFlags = both;
 
     vk::DescriptorSetLayoutCreateInfo frame_layout_info{};
     frame_layout_info.setBindings(frame_bindings);

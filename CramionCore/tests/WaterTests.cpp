@@ -44,12 +44,38 @@ void testWaves() {
 
     // La consulta encuentra el punto de la cuadricula que el oleaje lleva a
     // la posicion pedida: su desplazamiento es el mismo que dibuja el shader.
+    // Lagos y rios: Gerstner.
     const float gx = 12.3f;
     const float gz = -4.1f;
-    const Vec3 d = gerstner(ocean, gx, gz, 5.0f);
-    const WaterSample s = sampleWater(ocean, at_origin, Vec3{gx + d.x, 0.0f, gz + d.z}, 5.0f);
+    WaterBody waves = ocean;
+    waves.type = WaterType::Lake;
+    waves.size = core::Vec2{1000.0f, 1000.0f};
+    const Vec3 d = gerstner(waves, gx, gz, 5.0f);
+    const WaterSample s = sampleWater(waves, at_origin, Vec3{gx + d.x, 0.0f, gz + d.z}, 5.0f);
     check(std::abs(s.height - d.y) < 0.02f, "la altura consultada coincide con la malla desplazada");
     check(s.normal.y > 0.5f, "la normal apunta hacia arriba");
+    // Oceano: FFT (el mismo espectro que water_fft.comp).
+    {
+        const Vec3 od = oceanDisplacement(ocean, gx, gz, 5.0f);
+        const WaterSample os = sampleWater(ocean, at_origin, Vec3{gx + od.x, 0.0f, gz + od.z}, 5.0f);
+        check(std::abs(os.height - od.y) < 0.05f, "oceano FFT: la altura consultada coincide con la malla");
+        check(os.normal.y > 0.3f, "oceano FFT: la normal apunta hacia arriba");
+        double sum = 0.0;
+        double sum2 = 0.0;
+        int count = 0;
+        for (int i = 0; i < 96; ++i) {
+            for (int j = 0; j < 96; ++j) {
+                const float h = oceanDisplacement(ocean, static_cast<float>(i) * 2.9f, static_cast<float>(j) * 3.3f, 9.0f).y;
+                sum += h;
+                sum2 += static_cast<double>(h) * h;
+                ++count;
+            }
+        }
+        const double mean = sum / count;
+        const double hs = 4.0 * std::sqrt(std::max(sum2 / count - mean * mean, 0.0));
+        std::printf("  oceano FFT: altura significativa medida %.2f m (pedida %.2f m)\n", hs, ocean.wave_height);
+        check(std::abs(hs - ocean.wave_height) < ocean.wave_height * 0.35, "oceano FFT: altura significativa");
+    }
 
     // Espectro JONSWAP: 4 x desviacion tipica de la superficie = altura
     // significativa (la definicion de los oceanografos).

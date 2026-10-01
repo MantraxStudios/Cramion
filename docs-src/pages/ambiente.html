@@ -1,0 +1,165 @@
+<p>
+  El componente <strong>Ambiente</strong> (<code>Environment</code>) es el equivalente a <em>Enviro Sky 3</em> de Unity: un
+  solo objeto que lleva el <strong>clima</strong> (con transiciones suaves), la <strong>hora y la fecha</strong> (el sol y la
+  luna siguen su recorrido real), las <strong>estaciones</strong>, el <strong>viento</strong> global, la
+  <strong>lluvia</strong> y la <strong>nieve</strong> que caen, la nieve que se <strong>acumula</strong>, los
+  <strong>rayos</strong> con sus truenos y el <strong>sonido ambiente</strong>. No duplica nada: conduce el
+  <a href="componentes-entorno.html#Sky">Cielo</a> (nubes volumétricas), la niebla del post-procesado, la humedad y los
+  charcos, la hierba y la vegetación, que siguen funcionando igual sin él.
+</p>
+
+<h3 id="crear">Crear el ambiente</h3>
+<ul>
+  <li><em>GameObject &gt; Ambiente (clima y hora)</em>: añade el componente a la entidad que ya tiene el
+    <code>Sky</code>, o crea una entidad <strong>Ambiente</strong> con cielo físico.</li>
+  <li><em>Ventana &gt; Ambiente (clima y hora)</em>: los botones de los climas, acciones rápidas y el estado en marcha
+    (hora, estación, temperatura, viento, humedad, nieve acumulada).</li>
+  <li>O <em>Add Component &gt; Entorno &gt; Ambiente (clima y hora)</em> en el Inspector.</li>
+</ul>
+<p>
+  Al pulsar un clima, la escena pasa a él en los segundos de <strong>Transición</strong>. Funciona también en
+  <strong>modo edición</strong> (vista previa): se ven las nubes cerrarse, la lluvia empezar y el suelo mojarse.
+</p>
+<div class="note">
+  Para que el ambiente mueva el sol, el <code>Sky</code> debe usar el <strong>cielo físico</strong>
+  (<code>use_hdr</code> desactivado). Con un cielo HDR el clima, la lluvia y la nieve funcionan, pero el sol queda donde está
+  en la foto. Si hay una luz direccional, su color e intensidad se siguen aplicando, pero su giro lo pone el ambiente
+  mientras <em>Controlar el sol</em> esté activo.
+</div>
+
+<h3 id="climas">Climas</h3>
+<table>
+  <thead><tr><th>Clima</th><th>Nombre (Lua / MCP)</th><th>Qué hace</th></tr></thead>
+  <tbody>
+    <tr><td>Despejado</td><td><code>Clear</code></td><td>Pocas nubes, brisa suave.</td></tr>
+    <tr><td>Nubes</td><td><code>Cloudy</code></td><td>Cúmulos a medias, algo más de viento.</td></tr>
+    <tr><td>Cubierto</td><td><code>Overcast</code></td><td>Capa gris casi cerrada, menos sol, algo de bruma.</td></tr>
+    <tr><td>Niebla</td><td><code>Foggy</code></td><td>Niebla densa a ras de suelo, horizonte velado, superficies húmedas.</td></tr>
+    <tr><td>Llovizna</td><td><code>LightRain</code></td><td>Lluvia fina, suelo mojado y pocos charcos.</td></tr>
+    <tr><td>Lluvia</td><td><code>Rain</code></td><td>Lluvia con estela movida por el viento, salpicaduras y charcos.</td></tr>
+    <tr><td>Tormenta</td><td><code>Storm</code></td><td>Cumulonimbos, aguacero, rachas fuertes, rayos y truenos.</td></tr>
+    <tr><td>Nevada ligera</td><td><code>LightSnow</code></td><td>Copos sueltos; la nieve empieza a cuajar.</td></tr>
+    <tr><td>Nieve</td><td><code>Snow</code></td><td>Nevada continua; todo se cubre de blanco.</td></tr>
+    <tr><td>Ventisca</td><td><code>Blizzard</code></td><td>Nieve casi horizontal, viento muy fuerte, poca visibilidad.</td></tr>
+    <tr><td>Tormenta de arena</td><td><code>Sandstorm</code></td><td>Polvo en el aire, luz anaranjada, niebla de arena.</td></tr>
+  </tbody>
+</table>
+<p>
+  Los nombres valen en inglés o en español, sin importar mayúsculas ni espacios (<code>"light rain"</code>,
+  <code>"Tormenta"</code>, <code>"nieve"</code>). En cada transición se interpola todo: cobertura, densidad y tipo de las
+  nubes, niebla, viento y rachas, intensidad de la lluvia, nieve y polvo, humedad y charcos objetivo, rayos por minuto, luz
+  del sol, luz ambiente, su tinte y la temperatura.
+</p>
+<p>
+  <strong>Clima al azar</strong>: cambia solo cada <em>Duración mínima</em>–<em>Duración máxima</em> segundos, con
+  probabilidades según la estación (en verano más despejado y tormentas, en otoño niebla y lluvia, en invierno nieve).
+</p>
+
+<h3 id="hora">Hora, fecha y estaciones</h3>
+<ul>
+  <li><strong>Hora</strong> (0–24), <strong>Día</strong>, <strong>Mes</strong> y <strong>Latitud</strong>: el sol sale por
+    el este y se pone por el oeste con la altura real del día y la latitud (en verano está más alto y los días son más
+    largos; en el hemisferio sur, al revés). La luna va al otro lado del cielo.</li>
+  <li><strong>El tiempo avanza</strong> y <strong>Duración del día</strong> (minutos reales por día de juego): al pasar
+    las 24 h cambia el día y el mes.</li>
+  <li><strong>Estación por la fecha</strong> (o fija): la hierba y las hojas amarillean en otoño
+    (<em>Color de la vegetación</em>), cambia la temperatura y las probabilidades del clima al azar.</li>
+</ul>
+
+<h3 id="superficies">Lluvia, nieve y superficies</h3>
+<ul>
+  <li>La lluvia y la nieve se dibujan en la GPU alrededor de la cámara (hasta ~100 000 gotas o copos), ancladas al mundo,
+    empujadas por el viento y <strong>sin entrar bajo techo</strong> (usan el mapa de lluvia visto desde arriba). La lluvia
+    deja <strong>salpicaduras</strong> en el suelo. <em>Densidad</em> multiplica cuántas hay (rendimiento).</li>
+  <li>La lluvia <strong>moja</strong> y <strong>encharca</strong> poco a poco; al parar, se seca (más rápido con sol).</li>
+  <li>La nieve se <strong>acumula</strong> en lo que mira hacia arriba y está a la intemperie: terreno, tejados, modelos,
+    hierba (que se aplasta y blanquea). Es blanca, rugosa y con destellos. Cuando hace calor (o llueve encima) se
+    <strong>derrite</strong> y deja las superficies mojadas.</li>
+</ul>
+
+<h3 id="tormenta">Rayos y truenos</h3>
+<p>
+  En las tormentas caen rayos (<em>Frecuencia</em> multiplica los rayos por minuto del clima). Cada rayo ilumina la escena,
+  el cielo y las nubes con varios parpadeos, se ve su <strong>trazo</strong> con ramas (<em>Trazo en el cielo</em>) y su
+  <strong>trueno</strong> llega con el retraso de la distancia (343 m/s): cerca suena un chasquido seco, lejos un retumbar
+  largo y apagado.
+</p>
+
+<h3 id="viento">Viento</h3>
+<p>
+  Un viento global (<em>Dirección</em>, <em>Fuerza</em> y <em>Vaivén</em>) con rachas según el clima. Mueve las nubes
+  (más rápido en altura), la hierba, los árboles de la vegetación, la lluvia, la nieve y el polvo. Desde Lua:
+  <code>Weather.getWind()</code>.
+</p>
+
+<h3 id="audio">Sonido ambiente</h3>
+<p>
+  En Play, el ambiente <strong>sintetiza</strong> (sin muestras grabadas) la lluvia (siseo y golpeteo de gotas), el viento
+  (con rachas y silbido cuando sopla fuerte), la arena y los truenos, y los mezcla según la intensidad del clima.
+  <em>Volumen</em> y <em>Volumen de los truenos</em> en el grupo <em>Niebla y audio</em>.
+</p>
+
+<h3 id="lua">Desde Lua</h3>
+<p>La tabla <code>Weather</code> (también <code>Environment</code>). Si la escena no tiene ambiente, los cambios lo crean.</p>
+<pre><code class="language-lua">Weather.set("Storm", 20)          -- a tormenta en 20 segundos
+Weather.set("Clear", 0)           -- despejado al instante (tambien se seca)
+print(Weather.get())              -- "Storm" (o el anterior si la transicion va por menos de la mitad)
+if Weather.isTransitioning() then print(Weather.transition()) end
+
+Weather.setTime(19.5)             -- 19:30
+Weather.setDate(21, 12)           -- 21 de diciembre
+Weather.setLatitude(-34)          -- hemisferio sur
+Weather.setTimeScale(60)          -- un dia dura 24 minutos (0 = parado)
+Weather.setSeason("Winter")       -- o "auto" (por la fecha)
+
+Weather.setWind(90, 2)            -- direccion en grados y fuerza
+local v = Weather.getWind()       -- Vec3 en m/s
+Weather.lightning(600)            -- un rayo a 600 m
+Weather.setSnowCover(1)           -- todo nevado ya
+Weather.setWetness(1, 0.6)        -- mojado y con charcos
+Weather.setRandom(true, 120, 300) -- clima al azar
+
+if Weather.isNight() then ... end
+print(Weather.getTemperature(), Weather.getRain(), Weather.getSnow())</code></pre>
+<p>
+  Otras: <code>getTarget</code>, <code>getLabel</code>, <code>presets</code>, <code>getTime</code>, <code>getDate</code>,
+  <code>getLatitude</code>, <code>setDayLength</code>, <code>getTimeScale</code>, <code>getSeason</code>,
+  <code>getWindSpeed</code>, <code>getWindDirection</code>, <code>getFog</code>, <code>getWetness</code>,
+  <code>getSnowCover</code>, <code>setPrecipitationDensity</code>, <code>setLightning</code>,
+  <code>getSunDirection</code>, <code>setAudio</code>.
+</p>
+
+<h3 id="mcp">Desde la IA (MCP)</h3>
+<ul>
+  <li><code>set_weather</code>: <code>weather</code>, <code>seconds</code>, <code>random</code>, <code>snow_cover</code>,
+    <code>wetness</code>, <code>puddles</code>, <code>density</code>.</li>
+  <li><code>set_time</code>: <code>hours</code>, <code>day</code>, <code>month</code>, <code>latitude</code>,
+    <code>day_length</code> (0 = parado), <code>season</code>.</li>
+  <li><code>set_wind</code>: <code>direction</code>, <code>strength</code>, <code>wander</code>.</li>
+  <li><code>lightning_strike</code>: <code>distance</code>.</li>
+  <li><code>get_environment</code>: el estado completo (clima, transición, hora, estación, temperatura, viento, lluvia,
+    nieve, humedad, partículas dibujadas).</li>
+</ul>
+
+<h3 id="propiedades">Propiedades</h3>
+<table>
+  <thead><tr><th>Grupo</th><th>Propiedades</th></tr></thead>
+  <tbody>
+    <tr><td>Clima</td><td><code>weather</code>, <code>transition_time</code>, <code>random_weather</code>,
+      <code>min_duration</code>, <code>max_duration</code>, <code>random_transition</code></td></tr>
+    <tr><td>Hora y fecha</td><td><code>control_time</code>, <code>time_of_day</code>, <code>time_progress</code>,
+      <code>day_length</code>, <code>day</code>, <code>month</code>, <code>latitude</code></td></tr>
+    <tr><td>Estaciones</td><td><code>season_from_date</code>, <code>season</code>, <code>vegetation_tint</code></td></tr>
+    <tr><td>Viento</td><td><code>wind_direction</code>, <code>wind_strength</code>, <code>wind_wander</code></td></tr>
+    <tr><td>Lluvia y nieve</td><td><code>precipitation_density</code>, <code>splashes</code>, <code>snow_accumulation</code>,
+      <code>accumulation_speed</code>, <code>melt_speed</code></td></tr>
+    <tr><td>Tormenta</td><td><code>lightning</code>, <code>lightning_frequency</code>, <code>lightning_brightness</code>,
+      <code>lightning_bolts</code></td></tr>
+    <tr><td>Niebla y audio</td><td><code>fog_strength</code>, <code>ambient_audio</code>, <code>audio_volume</code>,
+      <code>thunder_volume</code></td></tr>
+  </tbody>
+</table>
+<div class="note">
+  El componente <code>Weather</code> (Clima) sigue funcionando: su humedad y sus charcos se suman a los del ambiente, y su
+  zona inundada es independiente.
+</div>

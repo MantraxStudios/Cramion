@@ -262,6 +262,8 @@ add_executable(CramionCoreTests
     "${CMAKE_CURRENT_SOURCE_DIR}/src/ecs/SceneSerializer.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/ecs/ModelInstantiation.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/ecs/ComponentPresets.cpp"
+    # Components.cpp registra el componente Environment (reflect).
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/environment/Environment.cpp"
 )
 target_include_directories(CramionCoreTests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include")
 target_link_libraries(CramionCoreTests PRIVATE Cramion::FX EnTT::EnTT nlohmann_json::nlohmann_json)
@@ -341,6 +343,11 @@ cramionfx_deploy(CramionShaderTests)
 add_executable(CramionAnimationTests "${CMAKE_CURRENT_SOURCE_DIR}/tests/AnimationTests.cpp")
 target_link_libraries(CramionAnimationTests PRIVATE Cramion::Core)
 target_compile_options(CramionAnimationTests PRIVATE -Wall -Wextra)
+
+# --- Pruebas de las maquinas de estados de IA (consola) ---
+add_executable(CramionStateMachineTests "${CMAKE_CURRENT_SOURCE_DIR}/tests/StateMachineTests.cpp")
+target_link_libraries(CramionStateMachineTests PRIVATE Cramion::Core)
+target_compile_options(CramionStateMachineTests PRIVATE -Wall -Wextra)
 
 add_executable(CramionLuaMathTests "${CMAKE_CURRENT_SOURCE_DIR}/tests/LuaMathTests.cpp")
 target_link_libraries(CramionLuaMathTests PRIVATE Cramion::Core)

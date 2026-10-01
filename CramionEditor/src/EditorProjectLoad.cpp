@@ -32,7 +32,7 @@ std::vector<std::uint8_t> captureEditorWindow(HWND hwnd, const std::filesystem::
 
 namespace {
 
-constexpr ImU32 kAccent = IM_COL32(0, 168, 255, 255);  // el azul del logo
+constexpr ImU32 kAccent = theme::kRed;  // acento del tema
 constexpr ImU32 kCardBg = IM_COL32(12, 14, 17, 255);   // el fondo del banner (igual: sin recuadro)
 
 }  // namespace
@@ -240,7 +240,7 @@ void EditorApp::drawProjectLoading(float delta_seconds) {
     const float fill_x = bar_x0 + (bar_x1 - bar_x0) * std::clamp(load.shown, 0.0f, 1.0f);
     if (fill_x > bar_x0 + 1.0f) {
         // Brillo detras de la barra y la barra.
-        draw->AddRectFilled(ImVec2(bar_x0, y - 3.0f), ImVec2(fill_x, y + bar_h + 3.0f), IM_COL32(0, 168, 255, 40), 6.0f);
+        draw->AddRectFilled(ImVec2(bar_x0, y - 3.0f), ImVec2(fill_x, y + bar_h + 3.0f), theme::withAlpha(kAccent, 40), 6.0f);
         draw->AddRectFilled(ImVec2(bar_x0, y), ImVec2(fill_x, y + bar_h), kAccent, 3.0f);
         // Reflejo que recorre lo cargado (se ve que no esta colgado).
         const float sweep = std::fmod(load.time * 0.9f, 1.4f) - 0.2f;

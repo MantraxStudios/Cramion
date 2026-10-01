@@ -1,0 +1,139 @@
+<p>
+  Cramion simula <strong>líquidos de partículas</strong> en la GPU, como Obi Fluid, FleX o Niagara Fluids: agua que sale
+  de un grifo y salpica, miel que cae despacio y se amontona, lava que brilla, barro, sangre, aceite o ácido. Las
+  partículas chocan con los colliders y el terreno, empujan a los <code>Rigidbody</code> (flotan y los arrastra la
+  corriente) y se dibujan como una superficie continua con refracción, absorción de color, reflejos y espuma.
+  Se crean desde <em>GameObject &gt; Efectos &gt; Líquidos</em> (o el menú <em>+</em> de la Jerarquía).
+</p>
+
+<h3 id="rapido">Empezar en 10 segundos</h3>
+<ol>
+  <li><em>GameObject &gt; Líquidos &gt; Tanque de demostración</em>: un tanque invisible de 3 × 2,5 × 3 m, un bloque de
+    agua que cae y un cubo físico que flota. Tiene <em>Simular en el editor</em> encendido: se mueve sin dar a Play.</li>
+  <li><em>Grifo de agua</em>, <em>Chorro de miel</em> o <em>Chorro de lava</em>: un emisor 3 m por encima del suelo,
+    delante de la cámara. Si la escena no tiene <code>FluidWorld</code> se crea uno (sin terreno debajo, con paredes
+    sólidas para que el líquido no se pierda).</li>
+  <li>Dale a Play: en Play el líquido siempre se simula; al parar, desaparece (como las partículas).</li>
+</ol>
+
+<h3 id="componentes">Componentes</h3>
+<h4 id="FluidWorld">FluidWorld (Mundo de líquidos)</h4>
+<p>
+  Los ajustes de la simulación. Se usa el primero activo de la escena. Sin ninguno, los emisores usan los valores por
+  defecto con un dominio de 8 × 6 × 8 m alrededor del primer emisor.
+</p>
+<table>
+  <tr><th>Grupo</th><th>Campos</th></tr>
+  <tr><td>Dominio</td><td><code>size</code> caja (m) centrada en el objeto, sin giro. <code>solid_walls</code>: la caja es
+    un tanque invisible. <code>kill_outside</code>: lo que sale de la caja desaparece.</td></tr>
+  <tr><td>Simulación</td><td><code>particle_radius</code> (0,04 m: separación 8 cm), <code>max_particles</code>
+    (65 536, hasta 262 144), <code>gravity</code>, <code>iterations</code> del solver, <code>substep_rate</code> (120 Hz),
+    <code>max_substeps</code> por frame, <code>friction</code>, <code>surface_tension</code>, <code>max_speed</code>.</td></tr>
+  <tr><td>Choques e interacción</td><td><code>collide_scene</code>, <code>collide_terrain</code>,
+    <code>push_bodies</code>, <code>buoyancy</code>, <code>drag</code>, <code>simulate_in_editor</code>.</td></tr>
+  <tr><td>Aspecto</td><td><code>render_radius</code>, <code>smoothing</code>, <code>thickness</code>,
+    <code>refraction</code>, <code>debug_particles</code> (ver las partículas sin superficie).</td></tr>
+  <tr><td>Líquido personalizado</td><td><code>custom_color</code>, <code>custom_absorption</code> (1/m por canal),
+    <code>custom_emission</code> (HDR), <code>custom_viscosity</code>, <code>custom_cohesion</code>,
+    <code>custom_density</code> (kg/m³).</td></tr>
+</table>
+
+<h4 id="FluidEmitter">FluidEmitter (Emisor de líquido)</h4>
+<ul>
+  <li><strong>Líquido</strong>: Agua, Aceite, Miel, Lava, Barro, Sangre, Ácido o Personalizado.</li>
+  <li><strong>Forma</strong>: <em>Boquilla</em> (un chorro continuo en la <em>Dirección</em> local, con
+    <em>Velocidad</em> y <em>Radio de la boquilla</em>; <em>Caudal</em> 0 = chorro lleno, o N partículas por segundo
+    con <em>Dispersión</em> para un spray), <em>Caja</em> o <em>Esfera</em> (se llenan de golpe y caen; con
+    <em>Repetir</em> vuelven a llenarse cada <em>Intervalo</em>).</li>
+  <li><strong>Retraso</strong>, <strong>Vida</strong> de cada partícula (0 = siempre) y <strong>Máximo total</strong>.</li>
+</ul>
+
+<h4 id="FluidDrain">FluidDrain (Desagüe)</h4>
+<p>Una caja (gira con el objeto) donde el líquido desaparece: el sumidero de una fuente que no se llena nunca.</p>
+
+<h3 id="tipos">Tipos de líquido</h3>
+<table>
+  <tr><th>Tipo</th><th>Clave</th><th>Densidad</th><th>Cómo es</th></tr>
+  <tr><td>Agua</td><td><code>water</code></td><td>1000</td><td>Transparente, azulada con grosor, espuma al chocar.</td></tr>
+  <tr><td>Aceite</td><td><code>oil</code></td><td>900</td><td>Dorado, algo viscoso, flota sobre el agua.</td></tr>
+  <tr><td>Miel</td><td><code>honey</code></td><td>1420</td><td>Ámbar, muy viscosa: cae en hilo y se amontona.</td></tr>
+  <tr><td>Lava</td><td><code>lava</code></td><td>2600</td><td>Opaca y emisiva, costra oscura con grietas brillantes.</td></tr>
+  <tr><td>Barro</td><td><code>mud</code></td><td>1700</td><td>Marrón opaco y espeso.</td></tr>
+  <tr><td>Sangre</td><td><code>blood</code></td><td>1060</td><td>Rojo oscuro, algo viscosa.</td></tr>
+  <tr><td>Ácido</td><td><code>acid</code></td><td>1200</td><td>Verde que brilla un poco.</td></tr>
+  <tr><td>Personalizado</td><td><code>custom</code></td><td>la del mundo</td><td>Los campos <em>Líquido personalizado</em> del FluidWorld.</td></tr>
+</table>
+
+<h3 id="como">Cómo funciona</h3>
+<ul>
+  <li><strong>Simulación</strong>: Position Based Fluids (Macklin y Müller, 2013) en compute shaders. Cada subpaso fijo
+    ordena las partículas en una rejilla uniforme (vecinos contiguos en memoria), resuelve la restricción de densidad
+    (N iteraciones, con el término anti-agrupamiento), aplica viscosidad XSPH, cohesión (tensión superficial) y
+    confinamiento de vorticidad. Los pasos son fijos (<code>substep_rate</code>): el resultado no depende de los FPS.</li>
+  <li><strong>Choques</strong>: Box, Sphere, Capsule y Plane Collider como formas exactas; Mesh Collider convexo o de un
+    cuerpo dinámico como su caja; los terrenos como campo de alturas. Los triggers no cuentan. Un Mesh Collider no
+    convexo y estático (un nivel entero) se ignora: usa colliders simples donde deba chocar el líquido.</li>
+  <li><strong>Cuerpos</strong>: los <code>Rigidbody</code> dinámicos son obstáculos que se mueven (apartan el líquido)
+    y reciben del líquido el empuje de Arquímedes (densidad del líquido × volumen hundido) y un arrastre hacia su
+    velocidad (más en los viscosos). Un cubo de 0,4 m con 20 kg (~300 kg/m³) flota en todos; uno de 60 kg
+    (~940 kg/m³) flota en agua pero se hunde en aceite.</li>
+  <li><strong>Render</strong>: superficie en espacio de pantalla (Simon Green, van der Laan): profundidad de esferas,
+    suavizado bilateral de rango estrecho en dos rondas (con el radio en metros: no se ven las esferas ni de cerca), grosor, normales reconstruidas, refracción de la escena, absorción Beer-Lambert, reflejo de
+    Fresnel del cielo y las sondas, brillo del sol con sombra, espuma y emisión. Se compone tras el agua y el vidrio,
+    respetando la profundidad de la escena.</li>
+</ul>
+
+<h3 id="lua">Lua: Fluid</h3>
+<pre><code class="language-lua">-- Una bola de 2000 particulas de miel que cae
+Fluid.spawn(Vec3(0, 3, 0), 2000, "honey")
+-- Lanzar agua hacia delante (velocidad), que dure 5 s
+Fluid.spawn(self.entity.position, 500, "water", self.entity.forward * 6, 0, 5)
+
+-- Consultas (los datos llegan de la GPU con 1-2 frames de retraso)
+if Fluid.isInside(jugador.position) then Debug.log("Te mojas") end
+local d = Fluid.density(Vec3(0, 0.5, 0))        -- 0 = seco, ~1 = lleno
+local v = Fluid.velocity(Vec3(0, 0.5, 0))       -- corriente (Vec3)
+local h = Fluid.surfaceHeight(0, 0)             -- nil si no hay liquido
+Debug.log(Fluid.count(), Fluid.count("lava"))
+
+-- Emisores
+local grifo = Scene.find("Grifo de agua")
+Fluid.stop(grifo)
+Fluid.setType(grifo, "lava")
+Fluid.start(grifo)
+Fluid.restart(Scene.find("Bloque de agua"))     -- vuelve a llenar
+Fluid.clear()                                    -- borra todo</code></pre>
+<table>
+  <tr><th>Función</th><th>Qué hace</th></tr>
+  <tr><td><code>Fluid.spawn(pos, cantidad, tipo, vel, radio, vida)</code></td><td>Bola de partículas (tipo por clave, nombre o número).</td></tr>
+  <tr><td><code>Fluid.clear()</code></td><td>Borra todas las partículas.</td></tr>
+  <tr><td><code>Fluid.count(tipo)</code></td><td>Partículas vivas (todas o de un tipo).</td></tr>
+  <tr><td><code>Fluid.density(pos, radio)</code> / <code>Fluid.isInside(pos)</code></td><td>Cuánto líquido hay en un punto.</td></tr>
+  <tr><td><code>Fluid.velocity(pos, radio)</code></td><td>Velocidad media del líquido.</td></tr>
+  <tr><td><code>Fluid.surfaceHeight(x, z)</code></td><td>Altura de la superficie, o nil.</td></tr>
+  <tr><td><code>Fluid.start/stop/restart(entidad)</code>, <code>Fluid.setType(entidad, tipo)</code></td><td>Controlar un FluidEmitter.</td></tr>
+  <tr><td><code>Fluid.types()</code>, <code>Fluid.stats()</code>, <code>Fluid.isActive()</code></td><td>Tipos, estadísticas (particles, capacity, emitters, floatingBodies, memoryMB...).</td></tr>
+</table>
+<p>Los campos de los componentes también se cambian con <code>entity:setField("FluidEmitter", "speed", 4)</code>.</p>
+
+<h3 id="mcp">MCP (IA)</h3>
+<ul>
+  <li><code>fluid_create</code>: <code>kind</code> = faucet, block, honey, lava, world, drain o tank; <code>position</code>,
+    <code>fluid</code>, <code>emitter_fields</code>, <code>world_fields</code>.</li>
+  <li><code>fluid_spawn</code>: <code>position</code>, <code>count</code>, <code>fluid</code>, <code>velocity</code>,
+    <code>radius</code>, <code>lifetime</code>.</li>
+  <li><code>fluid_state</code>: partículas por tipo, capacidad, colliders, cuerpos que flotan, memoria; con
+    <code>position</code>, densidad, velocidad y altura de la superficie.</li>
+  <li><code>fluid_clear</code>.</li>
+</ul>
+
+<h3 id="rendimiento">Rendimiento y límites</h3>
+<ul>
+  <li>Decenas de miles de partículas a 60 FPS en una GPU media (RTX 4060 Ti: ~65 000 con 3 iteraciones y 2 subpasos).
+    Para más volumen sube <code>particle_radius</code> (cada vez que se duplica, hacen falta 8 veces menos partículas).</li>
+  <li>El dominio es una caja sin giro; todo lo que esté fuera no existe para el líquido. Mantenlo ajustado: la rejilla
+    tiene como mucho 2 millones de celdas.</li>
+  <li>Hasta 256 formas de choque cerca del dominio y 16 desagües.</li>
+  <li>Las consultas desde Lua y la flotación usan una copia de la GPU con 1-2 frames de retraso.</li>
+  <li>Un solo FluidWorld activo por escena; todos los tipos de líquido se mezclan en la misma simulación.</li>
+</ul>

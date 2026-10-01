@@ -1,0 +1,557 @@
+<!doctype html>
+<html lang="es" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Máquinas de estados · Documentación de Cramion</title>
+  <meta name="description" content="IA como Bolt: estados con código Lua, transiciones y depuración en vivo.">
+  <meta name="theme-color" content="#09090b">
+  <link rel="icon" href="../img/icon.png">
+  <script>
+    // Tema antes de pintar (sin parpadeo). Oscuro por defecto.
+    try { const t = localStorage.getItem("cramion-theme"); if (t) document.documentElement.dataset.theme = t; } catch (e) {}
+  </script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/base16/tomorrow-night.min.css">
+  <link rel="stylesheet" href="manual.css">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/lua.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/glsl.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/json.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/bash.min.js"></script>
+  <script src="search.js"></script>
+</head>
+<body data-group="El editor">
+
+  <header class="site-header">
+    <div class="header-inner">
+      <button id="menu-btn" class="icon-btn menu-btn" aria-label="Abrir el menú"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h16M4 12h16M4 18h16"/></svg></button>
+      <a href="index.html" class="brand"><img src="../img/icon.png" alt=""><span>Cramion</span><span class="tag">Docs</span></a>
+      <nav class="main-nav" aria-label="Secciones">
+        <a href="index.html" data-nav="index">Documentación</a>
+        <a href="editor-interfaz.html" data-nav="El editor">Editor</a>
+        <a href="componentes.html" data-nav="Componentes">Componentes</a>
+        <a href="entity.html" data-nav="Referencia de la API">API de Lua</a>
+        <a href="ejemplo-girar.html" data-nav="Ejemplos">Ejemplos</a>
+      </nav>
+      <div class="header-right">
+        <button id="search-open" class="search-trigger" aria-label="Buscar en la documentación">
+          <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg><span>Buscar en la documentación...</span><kbd>Ctrl K</kbd>
+        </button>
+        <a href="https://discord.gg/zG7rSsUGEz" target="_blank" rel="noopener" class="icon-btn hide-mobile" aria-label="Discord" title="Discord"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M8.5 16.5c-2 .6-3.6 0-3.6 0C3.7 13 4 9 5.4 6.6 6.8 5.6 8.5 5.3 8.5 5.3l.6 1.2c1.9-.4 3.9-.4 5.8 0l.6-1.2s1.7.3 3.1 1.3C20 9 20.3 13 19.1 16.5c0 0-1.6.6-3.6 0l-.8-1.3"/><circle cx="9.5" cy="12" r="1"/><circle cx="14.5" cy="12" r="1"/></svg></a>
+        <button id="theme" class="icon-btn" aria-label="Cambiar entre tema claro y oscuro" title="Tema">
+          <span class="i-sun"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg></span><span class="i-moon"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5Z"/></svg></span>
+        </button>
+        <a href="https://paypal.me/evan2025" target="_blank" rel="noopener" class="btn btn-donate btn-sm hide-mobile"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M19 14c1.5-1.5 3-3.2 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.8 0-3 .5-4.5 2-1.5-1.5-2.7-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4 3 5.5l7 7Z"/></svg>Donar</a>
+        <a href="https://paypal.me/evan2025" target="_blank" rel="noopener" class="icon-btn only-mobile" aria-label="Donar con PayPal" title="Donar"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M19 14c1.5-1.5 3-3.2 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.8 0-3 .5-4.5 2-1.5-1.5-2.7-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4 3 5.5l7 7Z"/></svg></a>
+      </div>
+    </div>
+  </header>
+  <div class="overlay" id="overlay"></div>
+
+  <div id="cmd" class="cmd-backdrop" hidden>
+    <div class="cmd" role="dialog" aria-modal="true" aria-label="Buscar">
+      <div class="cmd-input"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg><input id="search" type="search" autocomplete="off" spellcheck="false"
+        placeholder="Buscar funciones, componentes, páginas..."><kbd>Esc</kbd></div>
+      <div id="results" class="cmd-list"></div>
+      <div class="cmd-foot"><span><kbd>↑</kbd><kbd>↓</kbd> moverse</span><span><kbd>Enter</kbd> abrir</span><span><kbd>Esc</kbd> cerrar</span></div>
+    </div>
+  </div>
+
+  <div class="layout">
+    <aside id="side" class="sidebar" aria-label="Menú del manual">
+      <nav>
+        <div class="sheet-head"><a href="index.html" class="brand"><img src="../img/icon.png" alt=""><span>Cramion</span></a><button id="menu-close" class="icon-btn" aria-label="Cerrar el menú"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12"/></svg></button></div>
+        <div class="group"><p class="group-title"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m3 11 9-8 9 8"/><path d="M5 10v10h14V10"/></svg>Inicio</p><a href="index.html">Introducción</a><a href="../index.html">Web de Cramion</a></div>
+        <div class="group"><p class="group-title"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5a2 2 0 0 1 2-2h13v16H6a2 2 0 0 0-2 2V5Z"/><path d="M4 19a2 2 0 0 1 2-2h13"/></svg>Primeros pasos</p><a href="primer-script.html">Tu primer script</a><a href="ciclo-de-vida.html">Ciclo de vida</a><a href="propiedades.html">Propiedades</a><a href="recarga.html">Recarga en caliente</a><a href="prefabs.html">Prefabs</a><a href="mcp.html">Conectar una IA (MCP)</a><a href="licencia.html">Licencia</a></div>
+        <div class="group"><p class="group-title"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M9 9v11"/></svg>El editor</p><a href="editor-interfaz.html">Interfaz y pestañas</a><a href="editor-tema.html">Tema e Inspector</a><a href="editor-escena.html">Vista Escena y gizmos</a><a href="editor-jerarquia.html">Jerarquía e Inspector</a><a href="editor-proyecto.html">Proyecto e importación</a><a href="editor-play.html">Play, deshacer y escenas</a><a href="editor-herramientas.html">Herramientas de mundo</a><a href="mundo-procedural.html">Mundo procedural</a><a href="ambiente.html">Ambiente y clima</a><a href="agua.html">Agua</a><a href="fuego.html">Fuego</a><a href="liquidos.html">Líquidos</a><a href="editor-ventanas.html">Ventanas de herramientas</a><a href="maquinas-de-estados.html" class="active" aria-current="page">Máquinas de estados</a><a href="materiales.html">Materiales</a><a href="render-textures.html">Render Textures</a><a href="render.html">Render y rendimiento</a><a href="exportar.html">Exportar y compilación</a><a href="datapacks.html">DataPacks (bundles)</a><a href="plantillas.html">Plantillas</a><a href="atajos.html">Atajos de teclado</a><a href="actualizaciones.html">Actualizaciones</a></div>
+        <div class="group"><p class="group-title"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m12 3 8 4.5v9L12 21l-8-4.5v-9L12 3Z"/><path d="m4 7.5 8 4.5 8-4.5M12 12v9"/></svg>Componentes</p><a href="componentes.html">Todos los componentes</a><a href="componentes-basicos.html">Transform y renderizado</a><a href="componentes-entorno.html">Entorno</a><a href="componentes-fisica.html">Física</a><a href="componentes-efectos.html">Partículas y depuración</a><a href="componentes-animacion.html">Animación</a><a href="componentes-audio.html">Audio</a><a href="componentes-cinematicas.html">Cámaras y cinemáticas</a><a href="componentes-navegacion.html">Navegación</a><a href="componentes-ui.html">Interfaz (UI)</a><a href="componentes-scripting.html">Scripts y prefabs</a><a href="componentes-vr.html">Realidad virtual</a></div>
+        <div class="group"><p class="group-title"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m8 8-4 4 4 4"/><path d="m16 8 4 4-4 4"/><path d="m14 4-4 16"/></svg>Referencia de la API</p><a href="vec3.html">Vec3</a><a href="quat.html">Quat (rotaciones)</a><a href="mathf.html">Mathf</a><a href="random.html">Random</a><a href="entity.html">Entity</a><a href="scene.html">Scene</a><a href="input.html">Input</a><a href="input-actions.html">Input Actions</a><a href="realidad-virtual.html">Realidad virtual (XR)</a><a href="time.html">Time</a><a href="physics.html">Physics</a><a href="navegacion.html">Navegación</a><a href="mallas.html">Mallas por código</a><a href="voxel.html">Mundo de bloques</a><a href="audio.html">Audio</a><a href="ui.html">Interfaz (UI)</a><a href="esqueletos.html">Esqueletos: IK, ragdoll y phys bones</a><a href="graphics.html">Graphics</a><a href="red.html">Network (multijugador)</a><a href="http.html">Http y Json</a><a href="prefs.html">Prefs y Game</a><a href="debug.html">Debug</a></div>
+        <div class="group"><p class="group-title"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a9 9 0 1 0 0 18c1.1 0 1.5-.8 1.5-1.5 0-.9-.7-1.2-.7-2 0-.8.6-1.5 1.5-1.5H16a5 5 0 0 0 5-5c0-4.4-4-8-9-8Z"/><circle cx="7.5" cy="11" r="1"/><circle cx="10" cy="7" r="1"/><circle cx="15" cy="7.5" r="1"/></svg>Gráficos</p><a href="shaders.html">Shaders propios</a></div>
+        <div class="group"><p class="group-title"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v4M12 17v4M3 12h4M17 12h4M6 6l2.5 2.5M15.5 15.5 18 18M6 18l2.5-2.5M15.5 8.5 18 6"/></svg>Ejemplos</p><a href="ejemplo-girar.html">Girar un objeto</a><a href="ejemplo-camara.html">Cámara que sigue al jugador</a><a href="ejemplo-jugador.html">Jugador con física</a><a href="ejemplo-disparo.html">Disparo con raycast</a><a href="ejemplo-monedas.html">Monedas y puntuación</a><a href="ejemplo-spawner.html">Generador de enemigos</a><a href="ejemplo-vehiculo.html">Conducir un vehículo</a><a href="ejemplo-menu.html">Menú, opciones y récord</a><a href="ejemplo-animacion.html">Animación de un personaje</a><a href="ejemplo-comunicacion.html">Scripts que se hablan</a><a href="ejemplo-ia.html">IA: patrullar y perseguir</a><a href="ejemplo-terreno.html">Terreno procedural con colisión</a><a href="ejemplo-efectos.html">Varios materiales y efectos</a><a href="ejemplo-olas.html">Olas: cambiar la malla cada frame</a></div>
+        
+      <div class="donate-card side-donate">
+        <div class="t"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M19 14c1.5-1.5 3-3.2 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.8 0-3 .5-4.5 2-1.5-1.5-2.7-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4 3 5.5l7 7Z"/></svg>Apoya Cramion</div>
+        <p>El motor es gratis y lo seguirá siendo. Una donación ayuda a seguir añadiendo cosas.</p>
+        <a href="https://paypal.me/evan2025" target="_blank" rel="noopener" class="btn btn-donate btn-sm btn-block">Donar con PayPal</a>
+      </div>
+      </nav>
+    </aside>
+
+    <main class="doc">
+      <div class="doc-inner">
+        <nav class="crumbs" aria-label="Ruta"><a href="index.html">Documentación</a><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m9 6 6 6-6 6"/></svg><span>El editor</span><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m9 6 6 6-6 6"/></svg><span class="here">Máquinas de estados</span></nav>
+        <h1>Máquinas de estados</h1>
+        <p class="lede">IA como Bolt: estados con código Lua, transiciones y depuración en vivo.</p>
+        <details class="toc-inline"><summary>En esta página <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg></summary><nav class="onpage"></nav></details>
+        <div class="body">
+<p>
+        Como los <strong class="text-white">State Graphs de Bolt</strong> (Visual Scripting de Unity): la IA de un objeto se dibuja como
+        un grafo de <strong class="text-white">estados</strong> (Patrullar, Perseguir, Atacar...) unidos por
+        <strong class="text-white">transiciones</strong> con condiciones. Dentro de cada estado se programa en Lua solo lo que hace
+        mientras está en él. Las variables de la IA viven en una <strong class="text-white">pizarra</strong> (blackboard) con tipo, que
+        leen las condiciones y el código, y cada objeto puede tener sus propios valores.
+      </p>
+      <div class="note">
+        Para verlo funcionando, crea un proyecto con la plantilla <strong class="text-white">IA con máquinas de estados</strong>:
+        dos enemigos patrullan, te persiguen, te atacan, huyen cuando les quitas vida (tecla <code>F</code>) y vuelven a casa.
+      </div>
+
+      <h3 id="crear">Crear una máquina</h3>
+      <p>
+        En el Proyecto: clic derecho &gt; <strong class="text-white">Crear &gt; Máquina de estados (IA)</strong> &gt; Vacía o
+        Enemigo de ejemplo. Se crea un archivo <code>.crfsm</code> y se abre la ventana <strong class="text-white">Máquina de
+        estados</strong> (también en Ventana &gt; Máquina de estados, o con doble clic en el archivo).
+        Para usarla, añade a un objeto el componente <code>StateMachine</code> y asígnale el <code>.crfsm</code> (o arrastra el
+        <code>.crfsm</code> sobre el objeto en la Jerarquía, o usa <em>Asignar a la selección</em>).
+      </p>
+
+      <h3 id="ventana">La ventana</h3>
+      <p>
+        La máquina se abre en su <strong class="text-white">propia pestaña</strong> (morada, <em>Máquina: nombre</em>) en la barra
+        de espacios de trabajo, como los scripts: ocupa toda la ventana del editor. Doble clic en un <code>.crfsm</code>,
+        <em>Abrir en la ventana Máquina de estados</em> en el Inspector o <em>Ventana &gt; Máquina de estados</em> la abren; abrir otra
+        reemplaza la de la pestaña. La escena sigue cargada: se vuelve a ella con la pestaña <em>Escena</em> y, en Play, la máquina
+        se sigue viendo en vivo. La <code>×</code> de la pestaña la cierra (guardando los cambios).
+      </p>
+      <table>
+        <tbody>
+          <tr><td>Izquierda</td><td>Las <strong class="text-white">variables</strong> (pizarra): nombre, tipo y valor inicial. En Play, los valores en vivo del objeto seleccionado (se pueden cambiar para probar), los triggers a mano y el historial de cambios de estado.</td></tr>
+          <tr><td>Centro</td><td>El <strong class="text-white">grafo</strong>. Clic derecho en el fondo: crear un estado (vacío o con una plantilla de IA: Esperar, Patrullar, Perseguir, Atacar, Huir). Arrastrar desde el punto de la derecha de un estado hasta otro: crear una transición (o clic derecho &gt; Crear transición). Arrastrar: mover. Rueda: zoom. Botón central o Alt+arrastrar: desplazar. <code>Supr</code>: borrar.</td></tr>
+          <tr><td>Derecha</td><td>El <strong class="text-white">código del estado</strong> seleccionado, con el mismo editor de los scripts (colores, autocompletado, errores con su línea), o las <strong class="text-white">condiciones</strong> de la transición seleccionada.</td></tr>
+        </tbody>
+      </table>
+      <p>
+        Se guarda sola al terminar cada cambio (y con <code>Ctrl+S</code> en el código). En Play, guardar recarga la máquina en caliente:
+        cada objeto sigue en su estado y con sus variables. El estado activo del objeto seleccionado se ilumina, la barra azul
+        cuenta el tiempo en el estado y la última transición tomada parpadea en naranja. En la transición seleccionada, un punto
+        verde o rojo dice si cada condición se cumple ahora.
+      </p>
+
+      <h3 id="nodos">Nodos especiales</h3>
+      <table>
+        <tbody>
+          <tr><td><strong class="text-white">Entrada</strong></td><td>Apunta al estado en el que empieza la máquina (clic derecho en un estado &gt; Estado de entrada).</td></tr>
+          <tr><td><strong class="text-white">Cualquier estado</strong></td><td>Su código corre <strong class="text-white">siempre</strong>, antes de mirar las transiciones: es el sitio de los "sensores" (calcular la distancia al jugador, si lo ve...). Sus funciones sirven en todos los estados (<code>self:miFuncion()</code>). Las transiciones que salen de él se pueden tomar desde cualquier estado (morir, huir...).</td></tr>
+        </tbody>
+      </table>
+
+      <h3 id="codigo">El código de un estado</h3>
+      <p>
+        Cada estado define funciones globales (o devuelve una tabla con ellas, como un script). Solo se llaman mientras el estado está activo:
+      </p>
+      <table>
+        <tbody>
+          <tr><td><code>OnEnter(self, sm)</code></td><td>Al entrar en el estado.</td></tr>
+          <tr><td><code>OnUpdate(self, dt)</code></td><td>Cada frame.</td></tr>
+          <tr><td><code>OnExit(self)</code></td><td>Al salir.</td></tr>
+          <tr><td><code>OnLateUpdate</code>, <code>OnFixedUpdate</code></td><td>Como en los scripts.</td></tr>
+          <tr><td><code>OnCollisionEnter/Stay/Exit</code>, <code>OnTriggerEnter/Stay/Exit</code></td><td><code>(self, otro, contacto)</code>, mientras el estado está activo (y siempre en Cualquier estado).</td></tr>
+        </tbody>
+      </table>
+      <p>
+        <code>self</code> es la misma tabla en todos los estados del objeto: lo que guardes en ella (<code>self.punto = 3</code>) sigue ahí al cambiar de estado.
+      </p>
+      <table>
+        <tbody>
+          <tr><td><code>self.entity</code></td><td>El objeto.</td></tr>
+          <tr><td><code>self.vars.nombre</code></td><td>Una variable de la pizarra (leer y escribir; el tipo se respeta).</td></tr>
+          <tr><td><code>self.sm</code></td><td>La máquina (ver abajo).</td></tr>
+          <tr><td><code>self.state</code></td><td>Nombre del estado actual.</td></tr>
+        </tbody>
+      </table>
+      <p>
+        Un estado también puede usar un <code>.lua</code> de Assets en lugar de su código (arrástralo al campo del estado): un script normal
+        que devuelve una tabla con <code>OnEnter</code>, <code>OnUpdate</code>, <code>OnExit</code>. Los errores salen en la Consola con la máquina,
+        el estado y la línea (<code>Maquina IA/Enemigo.crfsm (estado Atacar, linea 12): ...</code>) y la línea se marca en rojo en el editor.
+      </p>
+
+      <h3 id="transiciones">Transiciones y condiciones</h3>
+      <p>
+        Una transición se toma cuando se cumplen <strong class="text-white">todas</strong> sus condiciones (sin condiciones, enseguida). Se miran
+        una vez por frame, después del código de Cualquier estado. Si varias se cumplen, gana la de mayor <strong class="text-white">prioridad</strong>;
+        a igual prioridad, las de Cualquier estado y después el orden de la lista.
+      </p>
+      <table>
+        <tbody>
+          <tr><td>Variable</td><td>Compara una variable con un valor (<code>distancia &lt; 10</code>) o con otra variable escribiendo <code>$nombre</code> (<code>distancia &lt; $rangoVision</code>). Bool, string y entity: igual, distinto, verdadero, falso. Los <code>vec3</code> comparan su longitud.</td></tr>
+          <tr><td>Trigger</td><td>Se cumple el frame siguiente a <code>sm:trigger("nombre")</code> (los triggers se consumen al mirarlos).</td></tr>
+          <tr><td>Temporizador</td><td>Después de N segundos en el estado.</td></tr>
+          <tr><td>Expresión Lua</td><td>Cualquier expresión: ve las variables por su nombre, <code>entity</code>, <code>sm</code>, <code>self</code> y las globales (<code>vida &lt; 30 and not entity.isMoving</code>).</td></tr>
+        </tbody>
+      </table>
+
+      <h3 id="variables">Variables (pizarra)</h3>
+      <p>
+        Tipos: <code>bool</code>, <code>int</code>, <code>float</code>, <code>string</code>, <code>entity</code> (un objeto: se escribe su nombre, tag o UUID,
+        o se arrastra desde la Jerarquía; en Lua es el objeto) y <code>vec3</code>. En el Inspector del componente <code>StateMachine</code>, la casilla de
+        cada variable le da a ese objeto su propio valor inicial (un enemigo que ve más lejos que otro). En Play el Inspector muestra el estado actual,
+        permite saltar a otro y cambiar las variables en vivo.
+      </p>
+
+      <h3 id="componente">Componente StateMachine</h3>
+      <table>
+        <tbody>
+          <tr><td>Máquina de estados</td><td>El <code>.crfsm</code>.</td></tr>
+          <tr><td>Empieza activa</td><td>Si no, espera a <code>sm:start()</code>.</td></tr>
+          <tr><td>Depurar</td><td>Cada cambio de estado sale en la Consola con la transición que lo causó.</td></tr>
+          <tr><td>Variables</td><td>Los valores propios de este objeto.</td></tr>
+        </tbody>
+      </table>
+      <p>
+        Las máquinas corren en Play y en los juegos exportados (Windows y Android). Se actualizan en orden fijo, así el resultado es el mismo cada vez.
+      </p>
+
+      <h3 id="lua">API Lua</h3>
+      <p>Desde el código de un estado (<code>sm</code> o <code>self.sm</code>) o desde cualquier script (<code>entity:getStateMachine()</code>):</p>
+      <table>
+        <tbody>
+          <tr><td><code>entity:getStateMachine()</code></td><td>La máquina del objeto, o <code>nil</code>. También <code>StateMachine.of(entity)</code>.</td></tr>
+          <tr><td><code>sm.state</code>, <code>sm.previous</code></td><td>Nombre del estado actual y del anterior.</td></tr>
+          <tr><td><code>sm.stateTime</code>, <code>sm.time</code></td><td>Segundos en el estado actual y desde que empezó.</td></tr>
+          <tr><td><code>sm.changes</code>, <code>sm.running</code></td><td>Cambios de estado hasta ahora; si está en marcha.</td></tr>
+          <tr><td><code>sm:go("Estado")</code></td><td>Cambia de estado por código (se aplica enseguida, con OnExit y OnEnter). También <code>sm:changeState</code>.</td></tr>
+          <tr><td><code>sm:isIn("Estado")</code></td><td>Si está en ese estado.</td></tr>
+          <tr><td><code>sm:trigger("nombre")</code></td><td>Dispara un trigger para las transiciones. <code>StateMachine.broadcast("nombre")</code> lo dispara en todas las máquinas.</td></tr>
+          <tr><td><code>sm:get("var")</code>, <code>sm:set("var", valor)</code>, <code>sm:has("var")</code></td><td>Variables de la pizarra (también <code>sm.vars.var</code>). <code>set</code> de una variable que no existe la crea.</td></tr>
+          <tr><td><code>sm:states()</code></td><td>Lista con los nombres de los estados.</td></tr>
+          <tr><td><code>sm:start()</code>, <code>sm:stop()</code>, <code>sm:restart()</code></td><td>Reanudar, pausar o empezar de nuevo desde la entrada con las variables iniciales.</td></tr>
+        </tbody>
+      </table>
+
+      <h3 id="ejemplo">Ejemplo: enemigo completo</h3>
+      <p>
+        Es la máquina <em>Enemigo de ejemplo</em>. Necesita un <code>NavAgent</code> en el enemigo, una NavMesh y un objeto llamado <code>Jugador</code>.
+        Variables: <code>objetivo</code> (entity = Jugador), <code>distancia</code>, <code>rangoVision</code> (10), <code>rangoAtaque</code> (2),
+        <code>rangoPerder</code> (16), <code>vida</code> (100), <code>danio</code>, <code>radioPatrulla</code> y <code>casa</code> (vec3).
+      </p>
+      <p class="file">Cualquier estado (sensores)</p>
+      <pre><code class="language-lua">function OnEnter(self, sm)
+    self.vars.casa = self.entity.position
+end
+
+function OnUpdate(self, dt)
+    local objetivo = self.vars.objetivo
+    if objetivo and objetivo:valid() then
+        self.vars.distancia = self.entity:distanceTo(objetivo)
+    else
+        self.vars.distancia = 9999
+    end
+end</code></pre>
+      <p class="file">Patrullar (estado de entrada)</p>
+      <pre><code class="language-lua">-- De un punto de ruta a otro (objetos con tag "Waypoint"); sin ruta,
+-- puntos al azar de la NavMesh alrededor de casa.
+function OnEnter(self, sm)
+    self.ruta = Scene.findAllWithTag("Waypoint")
+    table.sort(self.ruta, function(a, b) return a.name &lt; b.name end)
+    self.punto = self.punto or 0
+    self.espera = 0
+    self:siguientePunto()
+end
+
+function siguientePunto(self)
+    if #self.ruta &gt; 0 then
+        self.punto = self.punto % #self.ruta + 1
+        self.entity:moveTo(self.ruta[self.punto].position)
+    else
+        local p = Navigation.randomPoint(self.vars.casa, self.vars.radioPatrulla)
+        if p then self.entity:moveTo(p) end
+    end
+end
+
+function OnUpdate(self, dt)
+    if not self.entity.isMoving then
+        self.espera = self.espera + dt
+        if self.espera &gt; 1.5 then
+            self.espera = 0
+            self:siguientePunto()
+        end
+    end
+end
+
+function OnExit(self)
+    self.entity:stopMoving()
+end</code></pre>
+      <p class="file">Perseguir</p>
+      <pre><code class="language-lua">function OnEnter(self, sm)
+    self.recalcular = 0
+end
+
+function OnUpdate(self, dt)
+    self.recalcular = self.recalcular - dt
+    local objetivo = self.vars.objetivo
+    if objetivo and self.recalcular &lt;= 0 then
+        self.entity:moveTo(objetivo.position)
+        self.recalcular = 0.25
+    end
+end
+
+function OnExit(self)
+    self.entity:stopMoving()
+end</code></pre>
+      <p class="file">Atacar</p>
+      <pre><code class="language-lua">function OnEnter(self, sm)
+    self.golpe = 0
+end
+
+function OnUpdate(self, dt)
+    local objetivo = self.vars.objetivo
+    if not objetivo then return end
+    local p = objetivo.position
+    self.entity:lookAt(Vec3(p.x, self.entity.position.y, p.z))
+    self.golpe = self.golpe - dt
+    if self.golpe &lt;= 0 then
+        self.golpe = 1.0
+        Debug.log(self.entity.name .. " ataca (" .. self.vars.danio .. " de danio)")
+        local otra = objetivo:getStateMachine()
+        if otra then otra:trigger("golpeado") end
+    end
+end</code></pre>
+      <p class="file">Huir y Volver</p>
+      <pre><code class="language-lua">-- Huir: se aleja y se cura poco a poco.
+function OnEnter(self, sm)
+    self:alejarse()
+end
+
+function alejarse(self)
+    local objetivo = self.vars.objetivo
+    local desde = objetivo and objetivo.position or self.vars.casa
+    local lejos = self.entity.position + (self.entity.position - desde):normalized() * 12
+    local p = Navigation.projectPoint(lejos, 8) or Navigation.randomPoint(self.entity.position, 12)
+    if p then self.entity:moveTo(p) end
+end
+
+function OnUpdate(self, dt)
+    self.vars.vida = math.min(100, self.vars.vida + 8 * dt)
+    if not self.entity.isMoving then self:alejarse() end
+end
+
+-- Volver (otro estado): a casa y, al llegar, a patrullar por codigo.
+function OnEnter(self, sm)
+    self.entity:moveTo(self.vars.casa)
+end
+
+function OnUpdate(self, dt)
+    if self.sm.stateTime &gt; 0.5 and (not self.entity.isMoving or self.entity.remainingDistance &lt; 0.6) then
+        self.sm:go("Patrullar")
+    end
+end</code></pre>
+      <p>Transiciones:</p>
+      <table>
+        <tbody>
+          <tr><td>Patrullar → Perseguir</td><td><code>distancia &lt; $rangoVision</code> (otra: trigger <code>ruido</code>)</td></tr>
+          <tr><td>Perseguir → Atacar</td><td><code>distancia &lt;= $rangoAtaque</code></td></tr>
+          <tr><td>Atacar → Perseguir</td><td><code>distancia &gt; $rangoAtaque</code> y 0.5 s en el estado</td></tr>
+          <tr><td>Perseguir → Volver</td><td><code>distancia &gt; $rangoPerder</code></td></tr>
+          <tr><td>Cualquier estado → Huir</td><td><code>vida &lt; 30</code>, prioridad 10</td></tr>
+          <tr><td>Huir → Volver</td><td>Expresión Lua <code>vida &gt;= 60</code></td></tr>
+          <tr><td>Volver → Perseguir</td><td><code>distancia &lt; $rangoVision</code></td></tr>
+        </tbody>
+      </table>
+      <p>Desde otro script (por ejemplo, el arma del jugador):</p>
+      <pre><code class="language-lua">for _, e in ipairs(Scene.findAllWithTag("Enemigo")) do
+    local sm = e:getStateMachine()
+    if sm and self.entity:distanceTo(e) &lt; 3 then
+        sm:set("vida", sm:get("vida") - 35)
+    end
+end
+StateMachine.broadcast("ruido")  -- todos los enemigos lo oyen</code></pre>
+
+      <h3 id="archivo">Formato .crfsm</h3>
+      <p>
+        JSON legible (lo pueden escribir una persona o una IA). En las transiciones, <code>from</code> y <code>to</code> son el nombre del estado
+        (o <code>"any"</code> = Cualquier estado).
+      </p>
+      <pre><code class="language-json">{
+  "uuid": "…",
+  "entry": "Patrullar",
+  "any_code": "function OnUpdate(self, dt) … end",
+  "variables": [ { "name": "distancia", "type": "float", "value": 9999 } ],
+  "states": [ { "name": "Patrullar", "position": [0, 0], "color": [0.2, 0.45, 0.25], "code": "function OnEnter(self, sm) … end" } ],
+  "transitions": [
+    { "from": "Patrullar", "to": "Perseguir", "conditions": [ { "type": "variable", "variable": "distancia", "compare": "&lt;", "value": "$rangoVision" } ] },
+    { "from": "any", "to": "Huir", "priority": 10, "conditions": [ { "type": "lua", "expression": "vida &lt; 30" } ] }
+  ]
+}</code></pre>
+
+      <h3 id="mcp">MCP (IA)</h3>
+      <table>
+        <tbody>
+          <tr><td><code>create_state_machine</code></td><td>Crea o reemplaza un <code>.crfsm</code> desde su JSON (o el de ejemplo) y opcionalmente lo pone en una entidad.</td></tr>
+          <tr><td><code>get_state_machine</code></td><td>Su JSON completo y los problemas que tenga.</td></tr>
+          <tr><td><code>update_state_machine</code></td><td>Reemplazarla o cambiar el código de algunos estados (se recarga en Play).</td></tr>
+          <tr><td><code>assign_state_machine</code></td><td>Componente StateMachine en una entidad con valores propios.</td></tr>
+          <tr><td><code>state_machine_debug</code></td><td>En Play: estado actual, variables e historial; y <code>go</code>, <code>trigger</code>, <code>set</code> para probar.</td></tr>
+        </tbody>
+      </table>
+        </div>
+        <nav class="pager" aria-label="Paginación"><a href="editor-ventanas.html"><span>← Anterior</span><b>Ventanas de herramientas</b></a><a class="next" href="materiales.html"><span>Siguiente →</span><b>Materiales</b></a></nav>
+        <div class="help"><span>¿Algo no queda claro o falta algo? Pregunta en el
+          <a href="https://discord.gg/zG7rSsUGEz" target="_blank" rel="noopener">Discord</a>.</span>
+          <a href="https://paypal.me/evan2025" target="_blank" rel="noopener" class="btn btn-outline btn-sm"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M19 14c1.5-1.5 3-3.2 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.8 0-3 .5-4.5 2-1.5-1.5-2.7-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4 3 5.5l7 7Z"/></svg>Apoyar el proyecto</a></div>
+      </div>
+    </main>
+    <aside class="toc-col" aria-label="En esta página">
+      <div>
+        <p class="toc-title">En esta página</p>
+        <nav class="onpage"></nav>
+      </div>
+      
+      <div class="donate-card">
+        <div class="t"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M19 14c1.5-1.5 3-3.2 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.8 0-3 .5-4.5 2-1.5-1.5-2.7-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4 3 5.5l7 7Z"/></svg>Apoya Cramion</div>
+        <p>El motor es gratis y lo seguirá siendo. Una donación ayuda a seguir añadiendo cosas.</p>
+        <a href="https://paypal.me/evan2025" target="_blank" rel="noopener" class="btn btn-donate btn-sm btn-block">Donar con PayPal</a>
+      </div>
+    </aside>
+  </div>
+
+  <footer class="site-footer">
+    <div class="footer-inner">
+      <span>Cramion Engine · manual de la 1.9. Gratis para hacer y vender tus juegos.</span>
+      <nav>
+        <a href="../index.html">Web</a>
+        <a href="licencia.html">Licencia</a>
+        <a href="https://discord.gg/zG7rSsUGEz" target="_blank" rel="noopener">Discord</a>
+        <a href="https://paypal.me/evan2025" target="_blank" rel="noopener">Donar con PayPal</a>
+      </nav>
+    </div>
+  </footer>
+
+  <script>
+    // Solo el codigo con lenguaje (los arboles de carpetas y la salida quedan tal cual).
+    hljs.configure({ cssSelector: 'pre code[class*="language-"]' });
+    hljs.highlightAll();
+    const ICON_COPY = '<svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>', ICON_CHECK = '<svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>';
+
+    // Tema claro / oscuro.
+    const root = document.documentElement;
+    const syncTheme = () => {
+      const dark = root.dataset.theme === "dark";
+      document.querySelector("#theme .i-sun").style.display = dark ? "inline-flex" : "none";
+      document.querySelector("#theme .i-moon").style.display = dark ? "none" : "inline-flex";
+    };
+    syncTheme();
+    document.getElementById("theme").addEventListener("click", () => {
+      root.dataset.theme = root.dataset.theme === "dark" ? "light" : "dark";
+      try { localStorage.setItem("cramion-theme", root.dataset.theme); } catch (e) {}
+      syncTheme();
+    });
+
+    // Seccion de la cabecera marcada.
+    const group = document.body.dataset.group;
+    document.querySelectorAll(".main-nav a").forEach(a => a.classList.toggle("on", a.dataset.nav === group));
+
+    // Menu lateral (panel deslizante en el movil).
+    const side = document.getElementById("side");
+    const setMenu = open => document.body.classList.toggle("menu-open", open);
+    document.getElementById("menu-btn").addEventListener("click", () => setMenu(true));
+    document.getElementById("menu-close").addEventListener("click", () => setMenu(false));
+    document.getElementById("overlay").addEventListener("click", () => setMenu(false));
+    const current = side.querySelector("a.active");
+    if (current) side.scrollTop = current.offsetTop - side.clientHeight / 2;
+
+    // Ancla de cada seccion y boton de copiar en el codigo.
+    document.querySelectorAll(".doc h3[id]").forEach(h => {
+      const a = document.createElement("a");
+      a.className = "anchor";
+      a.href = "#" + h.id;
+      a.setAttribute("aria-label", "Enlace a esta sección");
+      a.textContent = "#";
+      h.appendChild(a);
+    });
+    document.querySelectorAll(".doc pre").forEach(pre => {
+      const b = document.createElement("button");
+      b.className = "copy";
+      b.setAttribute("aria-label", "Copiar el código");
+      b.innerHTML = ICON_COPY;
+      b.addEventListener("click", async () => {
+        try {
+          await navigator.clipboard.writeText(pre.querySelector("code")?.innerText ?? pre.innerText);
+          b.innerHTML = ICON_CHECK;
+        } catch (e) { b.textContent = "!"; }
+        setTimeout(() => (b.innerHTML = ICON_COPY), 1400);
+      });
+      pre.appendChild(b);
+    });
+
+    // Tablas anchas: se desplazan dentro de su marco.
+    document.querySelectorAll(".doc table").forEach(t => {
+      const w = document.createElement("div");
+      w.className = "table-wrap";
+      t.replaceWith(w);
+      w.appendChild(t);
+    });
+
+    // "En esta pagina": los h3, con la seccion visible marcada (columna y desplegable).
+    const heads = [...document.querySelectorAll(".doc h3[id]")];
+    const lists = [...document.querySelectorAll(".onpage")];
+    if (heads.length < 2) {
+      document.querySelectorAll(".toc-col > div, .toc-inline").forEach(el => el.remove());
+    } else {
+      lists.forEach(list => list.innerHTML = heads.map(h => `<a href="#${h.id}">${h.firstChild.textContent}</a>`).join(""));
+      const links = [...document.querySelectorAll(".onpage a")];
+      const obs = new IntersectionObserver(entries => {
+        for (const e of entries) {
+          if (e.isIntersecting) links.forEach(a => a.classList.toggle("active", a.getAttribute("href") === "#" + e.target.id));
+        }
+      }, { rootMargin: "-80px 0px -70% 0px" });
+      heads.forEach(h => obs.observe(h));
+      document.querySelectorAll(".toc-inline a").forEach(a => a.addEventListener("click", () => a.closest("details").open = false));
+    }
+
+    // Buscador (Command): titulos, secciones y nombres de la API.
+    const cmd = document.getElementById("cmd");
+    const input = document.getElementById("search");
+    const box = document.getElementById("results");
+    const norm = s => s.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+    const esc = s => s.replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+    const ICON_PAGE = '<svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8Z"/><path d="M14 3v5h5"/></svg>', ICON_HASH = '<svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9h16M4 15h16M10 3 8 21M16 3l-2 18"/></svg>', ICON_CODE = '<svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m8 8-4 4 4 4"/><path d="m16 8 4 4-4 4"/><path d="m14 4-4 16"/></svg>';
+    let hits = [], sel = 0;
+    const suggested = window.CRAMION_SEARCH.filter(e => e.d).slice(0, 8);
+    const render = () => {
+      const q = input.value.trim();
+      const list = q ? hits : suggested;
+      if (!list.length) { box.innerHTML = '<p class="none">Sin resultados para "' + esc(q) + '".</p>'; return; }
+      box.innerHTML = (q ? "" : '<p class="heading">Páginas</p>') + list.map((h, i) => `
+        <a href="${h.u}" class="${i === sel ? "sel" : ""}">
+          ${h.c ? ICON_CODE : h.d ? ICON_PAGE : ICON_HASH}
+          <span><span class="t${h.c ? " code" : ""}">${esc(h.t)}</span>
+          <span class="g">${esc(h.g)}</span></span>
+        </a>`).join("");
+      box.querySelector("a.sel")?.scrollIntoView({ block: "nearest" });
+    };
+    const openSearch = () => { cmd.hidden = false; document.body.style.overflow = "hidden"; sel = 0; render(); setTimeout(() => input.focus(), 0); };
+    const closeSearch = () => { cmd.hidden = true; document.body.style.overflow = ""; input.value = ""; hits = []; };
+    document.getElementById("search-open").addEventListener("click", openSearch);
+    cmd.addEventListener("click", ev => { if (ev.target === cmd) closeSearch(); });
+    input.addEventListener("input", () => {
+      const q = norm(input.value.trim());
+      sel = 0;
+      if (!q) { hits = []; render(); return; }
+      const words = q.split(/\s+/);
+      hits = window.CRAMION_SEARCH
+        .map(e => {
+          const t = norm(e.t), all = t + " " + norm(e.g) + " " + norm(e.d || "");
+          if (!words.every(w => all.includes(w))) return null;
+          const score = (t.startsWith(q) ? 0 : t.includes(q) ? 1 : 2) + (e.c ? 0.5 : 0) - (e.d ? 0.3 : 0);
+          return { e, score };
+        })
+        .filter(Boolean).sort((a, b) => a.score - b.score).slice(0, 20).map(x => x.e);
+      render();
+    });
+    input.addEventListener("keydown", ev => {
+      const list = input.value.trim() ? hits : suggested;
+      if (ev.key === "ArrowDown") { sel = Math.min(sel + 1, list.length - 1); render(); ev.preventDefault(); }
+      if (ev.key === "ArrowUp") { sel = Math.max(sel - 1, 0); render(); ev.preventDefault(); }
+      if (ev.key === "Enter" && list[sel]) { location.href = list[sel].u; closeSearch(); }
+    });
+    document.addEventListener("keydown", ev => {
+      const typing = /INPUT|TEXTAREA/.test(document.activeElement.tagName);
+      if ((ev.key === "k" && (ev.ctrlKey || ev.metaKey)) || (ev.key === "/" && !typing)) { ev.preventDefault(); cmd.hidden ? openSearch() : closeSearch(); }
+      if (ev.key === "Escape") { if (!cmd.hidden) closeSearch(); setMenu(false); }
+    });
+  </script>
+</body>
+</html>

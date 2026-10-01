@@ -44,6 +44,9 @@
 
 #include <CramionCore/ecs/FloatingOrigin.h>
 #include <CramionCore/xr/XrRig.h>
+#include <CramionCore/fluid/Fluid.h>
+#include <CramionCore/ai/StateMachine.h>
+#include <functional>
 #include <CramionCore/asset/ModelMaterials.h>
 #include <CramionCore/terrain/TerrainGenerator.h>
 #include <CramionFX/asset/HouseGenerator.h>
@@ -281,13 +284,15 @@ private:
     // se actualizan todas sus instancias de la escena. Solo hay un ecs::World:
     // al cambiar de pestana el mundo que no se ve se guarda en JSON (con su
     // deshacer, seleccion y camara) y se carga el otro.
-    enum class WorkspaceKind { Scene, Prefab, Script };
+    enum class WorkspaceKind { Scene, Prefab, Script, StateMachine };
     WorkspaceKind activeWorkspaceKind() const;
     // Titulo de un panel: en la Escena tal cual (el diseno de siempre); en
     // otro espacio con un ID propio para acoplarse en su dockspace.
     std::string panelTitle(const char* name) const;
     void openPrefabWorkspace(const Uuid& prefab);
     void openScriptWorkspace(const std::filesystem::path& file);
+    // Pestana de la maquina de estados abierta (a toda la ventana, como un script).
+    void openStateMachineWorkspace();
     bool savePrefabWorkspace();
     void requestWorkspace(int id);
     void applyPendingWorkspace();
@@ -465,6 +470,9 @@ private:
         LuaCompletionContext completion_context;
         bool was_active = false;
         double last_edit = -10.0;  // el cursor no parpadea mientras se escribe
+        // Codigo que no es un archivo (el de un estado de una maquina de
+        // estados): Ctrl+S llama a esto en lugar de escribir `path`.
+        std::function<void()> on_save;
     };
     // IntelliSense: la API del motor y lo del proyecto (EditorLuaSymbols.cpp).
     void refreshLuaSymbols();
@@ -667,6 +675,19 @@ private:
     void startVoxels();
     void stopVoxels();
     core::Vec3 voxelViewer();
+
+    // --- Ambiente: clima, hora, estaciones y viento (EditorEnvironment.cpp) ---
+    bool show_environment_window_ = false;
+    ecs::Entity createEnvironmentEntity();
+    void drawEnvironmentInspector(ecs::Entity entity);
+    void drawEnvironmentWindow();
+
+    // --- Fuego (EditorFire.cpp) ---
+    ecs::Entity createFireEntity(const core::Vec3* position = nullptr);
+    void drawFireInspector(ecs::Entity entity);
+    bool drawFireTool();  // contorno de la zona y "Encender con clic"; true si se queda el clic
+    bool fire_click_ignite_ = false;
+    float fire_click_radius_ = 2.0f;
 
     // --- Agua (EditorWater.cpp) ---
     ecs::Entity createWaterEntity(int kind);  // 0 oceano, 1 lago, 2 rio
@@ -1069,6 +1090,29 @@ private:
     void applyGeneratedTerrain(terrain::GenResult& result);
     int terrain_gen_houses_ = 8;  // casas de la aldea (0 = sin aldea)
 
+    // --- Modo cine (EditorCinematics.cpp): grabar trailers por MCP ---
+    // Solo la imagen de la escena, a toda la ventana y del tamano pedido; el
+    // tiempo solo avanza cuando se pide un paso (cinema_step), `cinema_dt_`
+    // por paso, para que cada frame capturado sea un frame exacto del video.
+public:
+    float cinemaDelta(float real_seconds);
+    bool cinemaActive() const { return cinema_; }
+private:
+    bool cinema_ = false;
+    float cinema_dt_ = 1.0f / 30.0f;
+    int cinema_pending_ = 0;
+    std::uint64_t cinema_frames_ = 0;
+    void setCinema(bool enabled, int width, int height, float fps);
+    // Cambios de la ventana pedidos por el modo cine: se aplican entre frames
+    // (ShowWindow dentro del frame de ImGui colgaba el editor al salir).
+    int cinema_window_request_ = 0;  // 0 nada, 1 entrar, 2 salir
+    int cinema_window_width_ = 1920;
+    int cinema_window_height_ = 1080;
+public:
+    void applyWindowRequests();
+private:
+    void drawCinemaView();
+
     // --- Generador de casas (EditorHouseGenerator.cpp) ---
     bool show_house_generator_ = false;
     asset::HouseSettings house_gen_ = asset::housePreset(asset::HouseStyle::LogCabin, 1);
@@ -1229,6 +1273,46 @@ private:
     unsigned int scene_dock_id_ = 0;  // nodo de la Escena (para acoplar el Animator)
     unsigned int console_dock_id_ = 0;  // nodo de la Consola (para acoplar la ventana Fisica)
 
+    // --- Maquinas de estados de IA (EditorStateMachine.cpp) ---
+    // example: con los estados del enemigo de ejemplo (Patrullar, Perseguir...).
+    Uuid createStateMachineAsset(const std::filesystem::path& folder, bool example = false);
+    void openStateMachineEditor(const Uuid& uuid);   // la carga y abre su pestana
+    bool loadStateMachineEditor(const Uuid& uuid);   // solo la carga (sin cambiar de pestana)
+    void saveStateMachineEditor();
+    void assignStateMachineToSelection(const Uuid& uuid);
+    void drawStateMachineEditor();
+    void drawStateMachineGraph(ecs::Entity live);
+    void drawStateMachineVariables(ecs::Entity live);
+    void drawStateMachineDetails(ecs::Entity live);
+    void drawStateMachineInspector(ecs::Entity entity);
+    void selectStateMachineCode(int state);  // -1 = Cualquier estado, -2 = ninguno
+    // Objeto que usa la maquina abierta (la seleccion o el primero): depuracion en vivo.
+    ecs::Entity stateMachineLiveEntity();
+    // El asset de una maquina (la abierta o leida del disco, con cache).
+    const ai::StateMachineAsset* stateMachineAsset(const Uuid& uuid);
+    // MCP: herramientas de maquinas de estados (args y resultado en JSON).
+    std::string stateMachineMcpTool(const std::string& name, const std::string& args_json, std::string& error);
+    bool show_state_machine_ = false;
+    bool fsm_focus_ = false;
+    Uuid fsm_uuid_{};
+    std::filesystem::path fsm_path_;
+    ai::StateMachineAsset fsm_;
+    bool fsm_dirty_ = false;
+    core::Vec2 fsm_pan_{360.0f, 140.0f};
+    float fsm_zoom_ = 1.0f;
+    int fsm_selected_state_ = -3;       // -3 ninguno, -1 Cualquier estado, >= 0 estado
+    int fsm_selected_transition_ = -1;
+    int fsm_link_from_ = -3;            // -3 = no se crea transicion; -1 = desde Cualquier estado
+    int fsm_drag_ = -4;                 // nodo arrastrado (-1 Any, -2 Entrada, -4 nada)
+    float fsm_right_width_ = 470.0f;    // panel del codigo
+    int fsm_code_state_ = -2;           // estado cuyo codigo esta en fsm_code_tab_
+    ScriptTab fsm_code_tab_;
+    struct FsmAssetCache {
+        ai::StateMachineAsset machine;
+        std::filesystem::file_time_type time{};
+    };
+    std::unordered_map<Uuid, FsmAssetCache> fsm_cache_;
+
     // Terreno.
     terrain::TerrainStore terrain_store_;
     terrain::TerrainBrush terrain_brush_;
@@ -1361,6 +1445,14 @@ private:
     enum class PlayState { Edit, Playing, Paused };
     physics::PhysicsSystem physics_;
     physics::ParticleWorld particles_;
+    // Liquidos (fluid::FluidSystem, EditorFluid.cpp): en Play y con "Simular
+    // en el editor".
+    fluid::FluidSystem fluids_;
+    bool fluid_preview_ = false;  // el liquido de la vista previa sigue ahi
+    void updateFluids(float delta_seconds);
+    // 0 grifo de agua, 1 bloque de agua, 2 chorro de miel, 3 chorro de lava,
+    // 4 mundo de liquidos, 5 desague, 6 tanque de demostracion.
+    ecs::Entity createFluidEntity(int kind);
     physics::PhysicsSettings physics_settings_;
     PlayState play_state_ = PlayState::Edit;
     std::string play_snapshot_;     // el mundo al darle a Play

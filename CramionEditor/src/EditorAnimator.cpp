@@ -645,7 +645,7 @@ void EditorApp::drawAnimatorGraph(ecs::Entity preview) {
     };
 
     draw->PushClipRect(origin, ImVec2(origin.x + size.x, origin.y + size.y), true);
-    draw->AddRectFilled(origin, ImVec2(origin.x + size.x, origin.y + size.y), IM_COL32(32, 32, 35, 255));
+    draw->AddRectFilled(origin, ImVec2(origin.x + size.x, origin.y + size.y), theme::kBg1);
     // Rejilla.
     const float step = 32.0f * zoom;
     for (float x = std::fmod(animator_pan_.x, step); x < size.x; x += step) {
@@ -673,19 +673,19 @@ void EditorApp::drawAnimatorGraph(ecs::Entity preview) {
     };
     if (state_count > 0) {
         arrow(nodeCenter(kEntryNode), nodeCenter(std::clamp(c.default_state, 0, state_count - 1)),
-              IM_COL32(230, 150, 60, 255), 2.0f);
+              theme::kRed, 2.0f);  // entrada -> estado por defecto (rojo, tema)
     }
     int hovered_transition = -1;
     for (std::size_t i = 0; i < c.transitions.size(); ++i) {
         const ecs::AnimatorTransition& t = c.transitions[i];
         const bool selected = static_cast<int>(i) == animator_selected_transition_;
         const auto [a, b] = arrow(nodeCenter(t.from), nodeCenter(t.to),
-                                  selected ? IM_COL32(90, 170, 255, 255) : IM_COL32(200, 200, 205, 220),
+                                  selected ? theme::kRed : theme::withAlpha(theme::kLabel, 220),
                                   selected ? 3.0f : 2.0f);
         if (hovered && distanceToSegment(io.MousePos, a, b) < 6.0f) hovered_transition = static_cast<int>(i);
     }
     if (animator_link_from_ != -2) {
-        draw->AddLine(nodeCenter(animator_link_from_), io.MousePos, IM_COL32(90, 170, 255, 255), 2.0f);
+        draw->AddLine(nodeCenter(animator_link_from_), io.MousePos, theme::kRed, 2.0f);
     }
 
     // --- Nodos ---
@@ -710,7 +710,7 @@ void EditorApp::drawAnimatorGraph(ecs::Entity preview) {
             }
             draw->AddRectFilled(ImVec2(min.x + 4.0f, max.y - 6.0f * zoom),
                                 ImVec2(min.x + 4.0f + (node_size.x - 8.0f) * progress, max.y - 3.0f * zoom),
-                                IM_COL32(90, 170, 255, 255), 2.0f);
+                                theme::kYellow, 2.0f);  // en vivo (amarillo, tema)
         }
         ImGui::PushFont(nullptr, ImGui::GetStyle().FontSizeBase * std::clamp(zoom, 0.6f, 1.6f));
         const ImVec2 text = ImGui::CalcTextSize(label);
@@ -721,8 +721,8 @@ void EditorApp::drawAnimatorGraph(ecs::Entity preview) {
     drawNode(kEntryNode, "Entry", IM_COL32(60, 140, 70, 255));
     drawNode(ecs::kAnyState, "Cualquier estado", IM_COL32(50, 130, 140, 255));
     for (int i = 0; i < state_count; ++i) {
-        ImU32 fill = i == c.default_state ? IM_COL32(190, 110, 40, 255) : IM_COL32(75, 75, 82, 255);
-        if (live != nullptr && live->runtime.state == i) fill = IM_COL32(45, 95, 170, 255);
+        ImU32 fill = i == c.default_state ? IM_COL32(168, 36, 42, 255) : IM_COL32(62, 62, 68, 255);  // defecto en rojo
+        if (live != nullptr && live->runtime.state == i) fill = IM_COL32(150, 104, 0, 255);  // en vivo: ambar
         const std::string label = c.states[i].isBlendTree()
                                       ? c.states[i].name + (c.states[i].motion == ecs::AnimatorMotion::BlendTree1D ? "\n(Blend 1D)" : "\n(Blend 2D)")
                                       : c.states[i].name;
@@ -952,12 +952,12 @@ void EditorApp::drawBlendTreeEditor(ecs::AnimatorState& st, const asset::ModelDa
             for (std::size_t k = 0; k < st.children.size(); ++k) {
                 const float x = toX(st.children[k].threshold);
                 const float r = 4.0f + 7.0f * weights[k];
-                draw->AddCircleFilled(ImVec2(x, mid), r, IM_COL32(90, 170, 255, static_cast<int>(90 + 165 * weights[k])));
+                draw->AddCircleFilled(ImVec2(x, mid), r, theme::withAlpha(theme::kRed, static_cast<int>(90 + 165 * weights[k])));
                 const std::string tag = std::to_string(k + 1);
                 draw->AddText(ImVec2(x - 3.0f, a.y + 3.0f), IM_COL32(200, 204, 212, 255), tag.c_str());
             }
             const float cx = toX(std::clamp(px, lo, hi));
-            draw->AddLine(ImVec2(cx, a.y + 4.0f), ImVec2(cx, b.y - 4.0f), IM_COL32(255, 170, 60, 255), 2.0f);
+            draw->AddLine(ImVec2(cx, a.y + 4.0f), ImVec2(cx, b.y - 4.0f), theme::kYellow, 2.0f);
         } else {
             float extent = 1.0f;
             for (const ecs::BlendTreeChild& ch : st.children) {
@@ -973,13 +973,13 @@ void EditorApp::drawBlendTreeEditor(ecs::AnimatorState& st, const asset::ModelDa
             draw->AddLine(ImVec2(center.x, center.y - half), ImVec2(center.x, center.y + half), IM_COL32(60, 62, 70, 255));
             for (std::size_t k = 0; k < st.children.size(); ++k) {
                 const ImVec2 p = toScreen(st.children[k].position);
-                draw->AddCircleFilled(p, 4.0f + 9.0f * weights[k], IM_COL32(90, 170, 255, static_cast<int>(90 + 165 * weights[k])));
+                draw->AddCircleFilled(p, 4.0f + 9.0f * weights[k], theme::withAlpha(theme::kRed, static_cast<int>(90 + 165 * weights[k])));
                 const std::string tag = std::to_string(k + 1);
                 draw->AddText(ImVec2(p.x + 6.0f, p.y - 16.0f), IM_COL32(200, 204, 212, 255), tag.c_str());
             }
             const ImVec2 cur = toScreen(core::Vec2{std::clamp(px, -extent, extent), std::clamp(py, -extent, extent)});
-            draw->AddCircle(cur, 6.0f, IM_COL32(255, 170, 60, 255), 16, 2.0f);
-            draw->AddCircleFilled(cur, 2.5f, IM_COL32(255, 170, 60, 255));
+            draw->AddCircle(cur, 6.0f, theme::kYellow, 16, 2.0f);
+            draw->AddCircleFilled(cur, 2.5f, theme::kYellow);
         }
     }
     ImGui::Dummy(ImVec2(w, h + 4.0f));

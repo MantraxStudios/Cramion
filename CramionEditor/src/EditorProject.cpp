@@ -45,6 +45,7 @@ Icon assetIcon(assets::AssetType type) {
         case assets::AssetType::Material: return Icon::MeshRenderer;
         case assets::AssetType::Prefab: return Icon::ColliderBox;
         case assets::AssetType::RenderTexture: return Icon::Camera;
+        case assets::AssetType::StateMachine: return Icon::NavMeshAgent;
         default: return Icon::AssetBrowser;
     }
 }
@@ -195,7 +196,7 @@ void EditorApp::createSceneAsset(const std::filesystem::path& folder) {
 
 namespace {
 
-constexpr ImU32 kBrand = IM_COL32(10, 176, 255, 255);
+constexpr ImU32 kBrand = theme::kRed;  // seleccion (tema)
 
 // Filtros por tipo (bits de browser_filter_).
 enum BrowserFilter : std::uint32_t {
@@ -244,6 +245,7 @@ std::uint32_t categoryOf(const Item& item) {
         case assets::AssetType::Environment: return kFilterSkies;
         case assets::AssetType::AnimatorController:
         case assets::AssetType::AnimationClip: return kFilterAnimation;
+        case assets::AssetType::StateMachine: return kFilterScripts;  // logica de juego, como los scripts
         default: return 0;
     }
 }
@@ -525,6 +527,7 @@ void EditorApp::openBrowserItem(const BrowserItem& item) {
         case assets::AssetType::Prefab: openPrefabWorkspace(info.uuid); break;  // como Unity: modo prefab
         case assets::AssetType::Environment: assignEnvironment(info.uuid); break;
         case assets::AssetType::AnimatorController: openAnimatorEditor(info.uuid); break;
+        case assets::AssetType::StateMachine: openStateMachineEditor(info.uuid); break;
         case assets::AssetType::Material: inspected_material_ = info.uuid; break;
         case assets::AssetType::RenderTexture:
             inspected_material_ = {};
@@ -766,6 +769,12 @@ void EditorApp::browserItemMenu(const BrowserItem& item) {
                         assignAnimatorToSelection(info.uuid);
                     }
                     break;
+                case assets::AssetType::StateMachine:
+                    if (ImGui::MenuItem("Abrir en la ventana Máquina de estados")) openStateMachineEditor(info.uuid);
+                    if (ImGui::MenuItem("Asignar a la selección", nullptr, false, !selection_.empty())) {
+                        assignStateMachineToSelection(info.uuid);
+                    }
+                    break;
                 default: break;
             }
             if (info.path.empty()) {  // integrado: sin archivo
@@ -816,10 +825,7 @@ void EditorApp::drawProject() {
 
     // ------------------------------------------------------------ barra
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(8.0f, 5.0f));
-    ImGui::PushStyleColor(ImGuiCol_Button, IM_COL32(20, 120, 60, 255));
-    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, IM_COL32(30, 150, 75, 255));
-    if (ImGui::Button("+ Añadir")) ImGui::OpenPopup("add_menu");
-    ImGui::PopStyleColor(2);
+    if (theme::primaryButton("+ Añadir")) ImGui::OpenPopup("add_menu");  // accion principal (rojo)
     const std::filesystem::path target_folder = current_folder_.empty() ? project_.assetsFolder() : current_folder_;
     if (ImGui::BeginPopup("add_menu")) {
         if (ImGui::MenuItem("Carpeta")) createFolderIn(target_folder);
@@ -830,6 +836,11 @@ void EditorApp::drawProject() {
         if (ImGui::MenuItem("Script Lua")) createScriptAsset(target_folder, {});
         if (ImGui::MenuItem("Shader (GLSL)")) openScript(createShaderAsset(target_folder));
         if (ImGui::MenuItem("Animator")) createAnimatorAsset(target_folder);
+        if (ImGui::BeginMenu("Máquina de estados (IA)")) {
+            if (ImGui::MenuItem("Vacía")) createStateMachineAsset(target_folder, false);
+            if (ImGui::MenuItem("Enemigo de ejemplo")) createStateMachineAsset(target_folder, true);
+            ImGui::EndMenu();
+        }
         ImGui::Separator();
         if (ImGui::MenuItem("Prefab desde la selección", nullptr, false, !selection_.empty())) createPrefabsFromSelection(target_folder);
         ImGui::EndPopup();
@@ -975,6 +986,7 @@ void EditorApp::drawProject() {
     ImGui::BeginChild("sources", ImVec2(220.0f, -status_height), ImGuiChildFlags_ResizeX | ImGuiChildFlags_Borders);
     if (!browser_favorites_.empty() &&
         ImGui::CollapsingHeader("Favoritos", ImGuiTreeNodeFlags_DefaultOpen)) {
+        theme::pushSelectionColors();
         for (std::size_t i = 0; i < browser_favorites_.size(); ++i) {
             const std::filesystem::path folder = browser_favorites_[i];
             ImGui::PushID(static_cast<int>(i) + 5000);
@@ -994,8 +1006,10 @@ void EditorApp::drawProject() {
             }
             ImGui::PopID();
         }
+        ImGui::PopStyleColor(3);  // pushSelectionColors
     }
     if (ImGui::CollapsingHeader("Carpetas", ImGuiTreeNodeFlags_DefaultOpen)) {
+        theme::pushSelectionColors();  // carpeta actual en rojo (tema)
         if (!folder_nodes_.empty()) drawFolderNode(0);
         const ImVec2 p = ImGui::GetCursorScreenPos();
         const float h = ImGui::GetFrameHeight();
@@ -1004,13 +1018,15 @@ void EditorApp::drawProject() {
                         IM_COL32(150, 150, 160, 255));
         ImGui::GetWindowDrawList()->AddText(ImVec2(p.x + h + 6.0f, p.y + (h - ImGui::GetTextLineHeight()) * 0.5f),
                                             ImGui::GetColorU32(ImGuiCol_TextDisabled), "Integrados (primitivas)");
+        ImGui::PopStyleColor(3);  // pushSelectionColors
     }
     ImGui::EndChild();
     ImGui::SameLine();
 
     // ------------------------------------------------------------ contenido
-    ImGui::PushStyleColor(ImGuiCol_ChildBg, IM_COL32(24, 24, 28, 255));
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, theme::kBg2);
     ImGui::BeginChild("content", ImVec2(0.0f, -status_height), ImGuiChildFlags_None);
+    theme::pushSelectionColors();  // filas elegidas de la vista de lista en rojo (tema)
     draw = ImGui::GetWindowDrawList();
     const std::vector<Item> items = browser_items_;  // copia: una accion puede cambiar la lista
     bool clicked_item = false;
@@ -1098,7 +1114,7 @@ void EditorApp::drawProject() {
             const float r = std::max(7.0f, size * 0.13f);
             const ImVec2 c(pos.x + size - r - 3.0f, pos.y + size - r - 3.0f);
             draw->AddCircleFilled(c, r + 1.5f, IM_COL32(12, 14, 18, 235), 24);
-            draw->AddCircle(c, r + 1.0f, IM_COL32(0, 168, 255, 255), 24, 1.5f);
+            draw->AddCircle(c, r + 1.0f, theme::kYellow, 24, 1.5f);  // insignia (tema)
             const float icon = r * 1.35f;
             imgui_.drawIcon(draw, Icon::SkinnedMesh, ImVec2(c.x - icon * 0.5f, c.y - icon * 0.5f), icon,
                             IM_COL32(235, 240, 250, 255));
@@ -1274,6 +1290,11 @@ void EditorApp::drawProject() {
             if (ImGui::MenuItem("Script Lua")) createScriptAsset(target_folder, {});
             if (ImGui::MenuItem("Shader (GLSL)")) openScript(createShaderAsset(target_folder));
             if (ImGui::MenuItem("Animator")) createAnimatorAsset(target_folder);
+            if (ImGui::BeginMenu("Máquina de estados (IA)")) {
+                if (ImGui::MenuItem("Vacía")) createStateMachineAsset(target_folder, false);
+                if (ImGui::MenuItem("Enemigo de ejemplo")) createStateMachineAsset(target_folder, true);
+                ImGui::EndMenu();
+            }
             ImGui::EndMenu();
         }
         if (ImGui::MenuItem("Importar...")) {
@@ -1322,6 +1343,7 @@ void EditorApp::drawProject() {
             for (const Item& item : items) browser_selection_.push_back(item.key());
         }
     }
+    ImGui::PopStyleColor(3);  // pushSelectionColors
     ImGui::EndChild();
     ImGui::PopStyleColor();
 

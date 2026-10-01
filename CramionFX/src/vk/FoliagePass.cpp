@@ -16,7 +16,7 @@ namespace {
 
 constexpr float kPi = 3.14159265f;
 
-using FoliageVertex = asset::TreeVertex;  // 48 bytes (foliage.vert)
+using FoliageVertex = asset::TreeVertex;  // 64 bytes (foliage.vert)
 
 // VkDrawIndexedIndirectCommand (20 bytes), igual que en foliage_cull.comp.
 struct DrawCommand {
@@ -39,7 +39,7 @@ static_assert(sizeof(CullPush) == 128, "el minimo que garantiza Vulkan");
 
 struct DrawPush {
     core::Mat4 light_view_projection;
-    core::Vec4 params;  // x segundos, y sombra, z viento
+    core::Vec4 params;  // x segundos, y sombra, z viento, w segundos del ultimo frame
     core::Vec4 offset;
 };
 
@@ -181,13 +181,16 @@ void FoliagePass::createPipelines(const VulkanDevice& device, std::array<vk::For
     const vk::raii::ShaderModule fragment = shaders::loadModule(device, "foliage.frag.spv");
 
     const vk::VertexInputBindingDescription binding{0, sizeof(FoliageVertex), vk::VertexInputRate::eVertex};
-    const std::array<vk::VertexInputAttributeDescription, 6> attributes = {{
+    static_assert(sizeof(FoliageVertex) == 64);
+    const std::array<vk::VertexInputAttributeDescription, 8> attributes = {{
         {0, 0, vk::Format::eR32G32B32Sfloat, 0},
         {1, 0, vk::Format::eR32G32B32Sfloat, 12},
         {2, 0, vk::Format::eR8G8B8A8Unorm, 24},
         {3, 0, vk::Format::eR32Sfloat, 28},
-        {4, 0, vk::Format::eR32G32Sfloat, 32},   // uv
-        {5, 0, vk::Format::eR32G32Sfloat, 40},   // capa de textura, hoja (0/1)
+        {4, 0, vk::Format::eR32G32Sfloat, 32},     // uv
+        {5, 0, vk::Format::eR32G32Sfloat, 40},     // capa de textura, temblor (0 = corteza)
+        {6, 0, vk::Format::eR32G32B32Sfloat, 48},  // pivote de la rama principal
+        {7, 0, vk::Format::eR8G8B8A8Unorm, 60},    // fase y flexibilidad de la rama, fase de la hoja, extra
     }};
     vk::PipelineVertexInputStateCreateInfo vertex_input{};
     vertex_input.setVertexBindingDescriptions(binding);
@@ -318,7 +321,7 @@ void FoliagePass::setSpecies(const std::array<asset::TreeSpecies, kSpecies>& spe
 }
 
 void FoliagePass::createTextures() {
-    const asset::TreeTextures t = asset::generateTreeTextures(512);
+    const asset::TreeTextures t = asset::generateTreeTextures(1024);
     const auto upload = [&](TextureArray& texture, const std::vector<std::vector<std::vector<std::uint8_t>>>& layers,
                             vk::Format format) {
         const VulkanDevice& device = *device_;
@@ -518,7 +521,8 @@ void FoliagePass::recordCull(const vk::raii::CommandBuffer& cmd, std::uint32_t f
                              const core::Mat4& view_projection, float delta_seconds) {
     using Stage = vk::PipelineStageFlagBits2;
     using Access = vk::AccessFlagBits2;
-    time_ += std::clamp(delta_seconds, 0.0f, 0.25f);
+    last_delta_ = std::clamp(delta_seconds, 0.0f, 0.25f);
+    time_ += last_delta_;
     if (instance_count_ == 0 || frame >= commands_.size()) return;
 
     // Lo que conto la GPU la ultima vez que uso este frame (ya termino).
@@ -601,7 +605,7 @@ void FoliagePass::recordGBuffer(const vk::raii::CommandBuffer& cmd, std::uint32_
                      wireframe_ && *gbuffer_wire_pipeline_ ? *gbuffer_wire_pipeline_ : *gbuffer_pipeline_);
     cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *draw_layout_, 0, *frame_set, nullptr);
     DrawPush push{};
-    push.params = core::Vec4{time_, 0.0f, settings_.wind, 0.0f};
+    push.params = core::Vec4{time_, 0.0f, settings_.wind, last_delta_};
     push.offset = core::Vec4{origin_offset_.x, origin_offset_.y, origin_offset_.z, 0.0f};
     cmd.pushConstants<DrawPush>(*draw_layout_, vk::ShaderStageFlagBits::eVertex, 0, push);
     draw(cmd, frame, false);

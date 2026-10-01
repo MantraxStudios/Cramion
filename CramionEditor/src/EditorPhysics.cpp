@@ -165,6 +165,8 @@ void EditorApp::enterPlay() {
     // Mundo fisico nuevo: velocidades iniciales, sin contactos viejos.
     physics_.stop();
     particles_.clear();
+    fluids_.clear();  // la vista previa del editor no pasa al juego
+    fluid_preview_ = false;
     physics_.start(world_);
     nav_.resetAgents();
     startVoxels();  // antes de los scripts (Voxel.* en Awake)
@@ -222,6 +224,8 @@ void EditorApp::exitPlay() {
     physics_.stop();
     particles_.clear();
     renderer_.setParticles({});
+    fluids_.clear();
+    fluid_preview_ = false;
     nav_.resetAgents();  // la malla se queda (el mundo vuelve con los mismos UUID)
     stopVoxels();        // guarda el mundo con nombre; editando vuelve la vista previa
     play_state_ = PlayState::Edit;
@@ -281,6 +285,7 @@ void EditorApp::updateScriptsAndAudio(float delta_seconds, int physics_steps) {
         physics_.stop();
         particles_.clear();
         renderer_.setParticles({});
+        fluids_.clear();  // otro nivel: sin el liquido del anterior
         std::string error;
         nav_.clear();  // otro nivel: otra malla
         stopVoxels();
@@ -365,6 +370,15 @@ void EditorApp::updatePhysics(float delta_seconds) {
         }
     }
     renderer_.setParticles(particles_.drawList(scene_.camera().position()));
+    updateFluids(delta_seconds);  // liquidos (EditorFluid.cpp)
+    // Incendios (fire::Fire): en Play; en el editor solo los que tienen
+    // "Simular en el editor". En pausa no avanzan.
+    {
+        const fire::FireMode fire_mode = play_state_ == PlayState::Playing  ? fire::FireMode::Play
+                                         : play_state_ == PlayState::Paused ? fire::FireMode::Paused
+                                                                            : fire::FireMode::Edit;
+        fire::updateFires(world_, delta_seconds, fire_mode, &terrain_store_);
+    }
     if (console_events_skipped_ > 0) {
         std::cout << "[Fisica] ... y " << console_events_skipped_ << " eventos mas en este frame (ventana Fisica > Eventos)\n";
     }
@@ -410,20 +424,24 @@ void EditorApp::drawPlayControls() {
     const float spacing = ImGui::GetStyle().ItemSpacing.x;
     const float arrow = ImGui::GetFrameHeight();
     ImGui::SetCursorPosX((ImGui::GetWindowWidth() - (button * 3.0f + arrow + spacing * 3.0f)) * 0.5f);
+    // Modo Play/Pausa en amarillo (estado del editor, regla del tema).
     const auto toggle = [&](const char* label, bool active, ImVec4 color) {
         if (active) {
             ImGui::PushStyleColor(ImGuiCol_Button, color);
-            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(color.x * 1.15f, color.y * 1.15f, color.z * 1.15f, 1.0f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(std::min(color.x * 1.08f, 1.0f),
+                                                                 std::min(color.y * 1.08f, 1.0f),
+                                                                 std::min(color.z * 1.08f, 1.0f), 1.0f));
+            ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(14, 14, 16, 255));
         }
         const bool pressed = ImGui::Button(label, ImVec2(button, 0.0f));
-        if (active) ImGui::PopStyleColor(2);
+        if (active) ImGui::PopStyleColor(3);
         return pressed;
     };
-    if (toggle(playing() ? "Stop" : "Play", playing(), ImVec4(0.2f, 0.45f, 0.8f, 1.0f))) {
+    if (toggle(playing() ? "Stop" : "Play", playing(), theme::vec(theme::kYellow))) {
         playing() ? exitPlay() : enterPlay();
     }
     ImGui::SetItemTooltip(playing() ? "Parar y restaurar la escena (Ctrl+P)" : "Simular la fisica (Ctrl+P)");
-    if (toggle("Pausa", play_state_ == PlayState::Paused, ImVec4(0.75f, 0.5f, 0.15f, 1.0f))) togglePause();
+    if (toggle("Pausa", play_state_ == PlayState::Paused, theme::vec(theme::kYellowDeep))) togglePause();
     ImGui::SetItemTooltip("Pausar / seguir (Ctrl+Mayus+P)");
     ImGui::BeginDisabled(play_state_ != PlayState::Paused);
     if (ImGui::Button("Paso", ImVec2(button, 0.0f))) ++step_requests_;

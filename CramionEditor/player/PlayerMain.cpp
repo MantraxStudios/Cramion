@@ -29,6 +29,7 @@
 #include <CramionCore/project/TouchInterface.h>
 #include <CramionCore/input/InputActions.h>
 #include <CramionCore/xr/XrRig.h>
+#include <CramionCore/fluid/Fluid.h>
 #include <CramionDM/CramionDM.h>
 #include <CramionFX/CramionFX.h>
 
@@ -536,6 +537,8 @@ int runPlayer() {
         terrain::registerTerrainComponents();
         water::registerWaterComponents();
         foliage::registerFoliageComponents();
+        fire::registerFireComponents();
+        fluid::registerFluidComponents();
         navigation::registerNavigationComponents();
         voxel::registerVoxelComponents();
         audio::registerAudioComponents();
@@ -678,6 +681,14 @@ int runPlayer() {
         voxels.setPhysics(&physics);
         cinema::CinematicSystem cinematics;
         physics::ParticleWorld particles;
+        // Liquidos (fluid::FluidSystem): Lua los usa con Fluid.*.
+        fluid::FluidSystem fluids;
+        fluid::setActiveSystem(&fluids);
+        fluids.setTerrainStore(&terrains);
+        fluids.setBoundsProvider([&sync](ecs::Entity e, core::Vec3& min, core::Vec3& max) {
+            const int actor = sync.actorIndex(e);
+            return actor >= 0 && sync.actorLocalBounds(static_cast<std::uint32_t>(actor), min, max);
+        });
         ui::UiSystem game_ui;
         ecs::World world;
         // Un dedo sobre un boton de la interfaz la pulsa aunque caiga en el joystick.
@@ -763,6 +774,7 @@ int runPlayer() {
                     game_ui.reset();
                     physics.stop();
                     particles.clear();
+                    fluids.clear();
                     nav.clear();
                     voxels.stop();
                     std::string error;
@@ -1034,6 +1046,8 @@ int runPlayer() {
             if (running) {
                 const int steps = physics.update(world, dt, true);
                 particles.update(world, dt, &physics);
+                fluids.update(world, dt, true, &physics, renderer);
+                fire::updateFires(world, dt, fire::FireMode::Play, &terrains);
                 nav.update(world, dt, true, nav_settings.runtime_generation);
                 scripts.setInput(game_ui.typing() ? nullptr : &input);
                 if (!game_ui.typing()) {
@@ -1053,6 +1067,7 @@ int runPlayer() {
                     if (const std::optional<core::Vec3> offset = ecs::updateFloatingOrigin(world, focus)) {
                         physics.shiftOrigin(*offset);
                         particles.shiftOrigin(*offset);
+                        fluids.shiftOrigin(*offset);
                         nav.shiftOrigin(*offset);
                         voxels.shiftOrigin(*offset);
                         cinematics.shiftOrigin(*offset);

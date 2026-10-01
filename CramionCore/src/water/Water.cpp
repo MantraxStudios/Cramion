@@ -5,6 +5,10 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <complex>
+#include <cstring>
+#include <map>
+#include <mutex>
 
 namespace cramion::water {
 
@@ -59,6 +63,20 @@ void WaterBody::reflect(ecs::PropertyVisitor& v) {
         v.field({"wind_direction", "Direccion del viento"}, wind_direction,
                 FloatRange{-180.0f, 180.0f, 1.0f, "%.0f°", true});
         v.field({"wind_spread", "Dispersion"}, wind_spread, FloatRange{0.0f, 90.0f, 1.0f, "%.0f°", true});
+        if (all || type == WaterType::Ocean) {
+            v.field({"wind_speed", "Viento",
+                     "Velocidad del viento (m/s). Mayor que 0: la altura y la longitud de onda salen del espectro "
+                     "JONSWAP con el viento y el fetch; 0 = las de arriba"},
+                    wind_speed, FloatRange{0.0f, 40.0f, 0.1f, "%.1f m/s"});
+            v.field({"fetch", "Fetch", "Distancia sobre la que sopla el viento (km): mas, olas mas grandes y largas"},
+                    fetch, FloatRange{1.0f, 2000.0f, 1.0f, "%.0f km"});
+            v.field({"swell_height", "Mar de fondo", "Olas largas que llegan de lejos (altura significativa)"},
+                    swell_height, FloatRange{0.0f, 8.0f, 0.01f, "%.2f m"});
+            v.field({"swell_wavelength", "Longitud del mar de fondo"}, swell_wavelength,
+                    FloatRange{20.0f, 600.0f, 1.0f, "%.0f m"});
+            v.field({"swell_direction", "Direccion del mar de fondo"}, swell_direction,
+                    FloatRange{-180.0f, 180.0f, 1.0f, "%.0f°", true});
+        }
         if (all || type == WaterType::River) {
             v.field({"flow_speed", "Corriente"}, flow_speed, FloatRange{0.0f, 10.0f, 0.05f, "%.2f m/s"});
         }
@@ -79,6 +97,17 @@ void WaterBody::reflect(ecs::PropertyVisitor& v) {
         }
         v.field({"caustics", "Causticas"}, caustics, FloatRange{0.0f, 3.0f, 0.01f, "%.2f", true});
         v.field({"scattering", "Luz en las crestas"}, scattering, FloatRange{0.0f, 3.0f, 0.01f, "%.2f", true});
+        if (all || type == WaterType::Ocean) {
+            v.field({"foam_persistence", "Duracion de la espuma", "Segundos que tarda en deshacerse la de las crestas"},
+                    foam_persistence, FloatRange{0.1f, 20.0f, 0.05f, "%.2f s"});
+        }
+        if (!all) v.endGroup();
+    }
+    if (all || v.beginGroup("Bajo el agua")) {
+        v.field({"god_rays", "Rayos de sol", "Haces de luz bajo la superficie (con las causticas y la sombra)"},
+                god_rays, FloatRange{0.0f, 3.0f, 0.01f, "%.2f", true});
+        v.field({"particles", "Particulas", "Motas en suspension que se ven buceando"}, particles,
+                FloatRange{0.0f, 3.0f, 0.01f, "%.2f", true});
         if (!all) v.endGroup();
     }
     if (all || v.beginGroup("Fisica")) {
@@ -284,6 +313,22 @@ WaterSample sampleWater(const WaterBody& body, const core::Mat4& world, const Ve
     const float pz = position.z - origin.z;
     float x0 = px;
     float z0 = pz;
+    if (body.type == WaterType::Ocean) {
+        // Oceano FFT: la misma superficie que water_fft.comp.
+        for (int i = 0; i < 4; ++i) {
+            const Vec3 d = oceanDisplacement(body, x0, z0, time);
+            x0 = px - d.x;
+            z0 = pz - d.z;
+        }
+        Vec3 n{};
+        Vec3 v{};
+        const Vec3 d = oceanDisplacement(body, x0, z0, time, &n, &v);
+        result.inside = true;
+        result.height = origin.y + d.y;
+        result.normal = n;
+        result.velocity = v;
+        return result;
+    }
     for (int i = 0; i < 4; ++i) {
         const Vec3 d = gerstner(body, x0, z0, time);
         x0 = px - d.x;
@@ -299,6 +344,367 @@ WaterSample sampleWater(const WaterBody& body, const core::Mat4& world, const Ve
     return result;
 }
 
+// ---------------------------------------------------------------------------
+// Oceano FFT (Tessendorf, "Simulating Ocean Water"; cascadas como Crest)
+// ---------------------------------------------------------------------------
+namespace {
+
+constexpr int kN = kOceanResolution;
+constexpr int kCpuN = 64;               // la CPU: todo lo de las 3 cascadas grandes cabe en 64 x 64
+constexpr int kCpuCascades = 3;         // la ultima (rizado de centimetros) no mueve lo que flota
+constexpr float kCascadeRatio = 3.7f;   // no entero: las cascadas no se repiten a la vez
+constexpr float kCascadeLowCut = 4.0f;  // cada cascada empieza en 4 ondas por lado (sin repeticion visible)
+
+struct SpectrumParams {
+    float height, wavelength, wind, spread, speed, chop, swell_h, swell_l, swell_dir, wind_speed, fetch;
+};
+
+SpectrumParams spectrumParams(const WaterBody& b) {
+    return SpectrumParams{b.wave_height,     b.wavelength,   b.wind_direction, b.wind_spread,
+                          b.wave_speed,      b.steepness,    b.swell_height,   b.swell_wavelength,
+                          b.swell_direction, b.wind_speed,   b.fetch};
+}
+
+std::uint64_t paramsKey(const SpectrumParams& p) {
+    std::uint64_t h = 1469598103934665603ull;
+    const float values[] = {p.height, p.wavelength, p.wind,      p.spread,     p.speed, p.chop,
+                            p.swell_h, p.swell_l,   p.swell_dir, p.wind_speed, p.fetch};
+    for (const float f : values) {
+        std::uint32_t bits = 0;
+        std::memcpy(&bits, &f, sizeof(bits));
+        h = (h ^ bits) * 1099511628211ull;
+    }
+    return h;
+}
+
+// Numero aleatorio gaussiano fijo por modo (la misma mar cada vez).
+std::uint32_t pcgHash(std::uint32_t v) {
+    const std::uint32_t state = v * 747796405u + 2891336453u;
+    const std::uint32_t word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
+    return (word >> 22u) ^ word;
+}
+std::complex<float> gaussianPair(std::uint32_t seed) {
+    const std::uint32_t a = pcgHash(seed);
+    const std::uint32_t b = pcgHash(a ^ 0x68E31DA4u);
+    const float u1 = (static_cast<float>(a >> 8) + 0.5f) * (1.0f / 16777216.0f);
+    const float u2 = static_cast<float>(b >> 8) * (1.0f / 16777216.0f);
+    const float r = std::sqrt(-2.0f * std::log(u1));
+    return {r * std::cos(2.0f * kPi * u2), r * std::sin(2.0f * kPi * u2)};
+}
+
+// JONSWAP S(omega) sin la constante alfa (se normaliza despues).
+double jonswap(double omega, double omega_p) {
+    if (omega <= 1e-4) return 0.0;
+    const double sigma = omega <= omega_p ? 0.07 : 0.09;
+    const double r = std::exp(-(omega - omega_p) * (omega - omega_p) / (2.0 * sigma * sigma * omega_p * omega_p));
+    const double g2 = static_cast<double>(kGravity) * kGravity;
+    return g2 / std::pow(omega, 5.0) * std::exp(-1.25 * std::pow(omega_p / omega, 4.0)) * std::pow(3.3, r);
+}
+
+// Reparto por direcciones: cos^p alrededor del viento (p segun la dispersion,
+// la mitad de energia a +-spread) y, en las ondas cortas, algo en todas las
+// direcciones (el rizado no va todo en fila). Normalizado en el circulo.
+double directional(double delta, double spread, double k_over_kp) {
+    const double s = std::clamp(spread, 0.02, 1.5);
+    const double p = std::log(0.5) / std::log(std::cos(s));
+    const double c = std::cos(delta);
+    const double norm = std::sqrt(static_cast<double>(kPi)) * std::tgamma(p * 0.5 + 0.5) / std::tgamma(p * 0.5 + 1.0);
+    const double cosine = c > 0.0 ? std::pow(c, p) / norm : 0.0;
+    const double turbulence = std::clamp(0.04 + 0.08 * std::log2(std::max(k_over_kp, 1.0)), 0.04, 0.35);
+    return cosine * (1.0 - turbulence) + turbulence / (2.0 * kPi);
+}
+
+std::shared_ptr<OceanSpectrum> buildSpectrum(const SpectrumParams& p) {
+    auto out = std::make_shared<OceanSpectrum>();
+    double omega_p = 0.0;
+    double hs = p.height;
+    if (p.wind_speed > 0.1f) {
+        // JONSWAP limitado por el fetch (Hasselmann 1973); como mucho, mar
+        // totalmente desarrollada (Pierson-Moskowitz).
+        const double u = p.wind_speed;
+        const double fetch = std::max(p.fetch, 0.5f) * 1000.0;
+        const double x = kGravity * fetch / (u * u);
+        omega_p = std::max(22.0 * (kGravity / u) * std::pow(x, -0.33), 0.855 * kGravity / u);
+        const double alpha = std::max(0.076 * std::pow(x, -0.22), 0.0081);
+        double m0 = 0.0;
+        const double d = omega_p * 0.005;
+        for (double w = omega_p * 0.3; w < omega_p * 8.0; w += d) m0 += alpha * jonswap(w, omega_p) * d;
+        hs = 4.0 * std::sqrt(m0);
+    } else {
+        omega_p = std::sqrt(kGravity * 2.0 * kPi / std::max(p.wavelength, 0.5f));
+    }
+    const double k_p = omega_p * omega_p / kGravity;
+    out->peak_wavelength = static_cast<float>(2.0 * kPi / k_p);
+    out->significant_height = static_cast<float>(hs);
+    out->choppiness = std::clamp(p.chop, 0.0f, 1.0f) * 1.6f;
+    out->wave_speed = p.speed;
+    const float base = std::clamp(out->peak_wavelength * 8.0f, 40.0f, 4000.0f);
+    for (int c = 0; c < kOceanCascades; ++c) out->sizes[c] = base / std::pow(kCascadeRatio, static_cast<float>(c));
+
+    const double wind = p.wind * kPi / 180.0;
+    const double spread = p.spread * kPi / 180.0;
+    const double swell_k = 2.0 * kPi / std::max(p.swell_l, 5.0f);
+    const double swell_dir = p.swell_dir * kPi / 180.0;
+    const double omega_step = 2.0 * kPi / kOceanPeriod;
+
+    // Varianza de la superficie en cada modo, de las olas de viento y del mar
+    // de fondo; luego se normaliza cada parte a su altura significativa.
+    const std::size_t count = static_cast<std::size_t>(kOceanCascades) * kN * kN;
+    std::vector<double> wind_part(count, 0.0);
+    std::vector<double> swell_part(count, 0.0);
+    double wind_total = 0.0;
+    double swell_total = 0.0;
+    for (int c = 0; c < kOceanCascades; ++c) {
+        const double dk = 2.0 * kPi / out->sizes[c];
+        const double k_low = c == 0 ? 0.5 * dk : kCascadeLowCut * dk;
+        const double k_high = c + 1 < kOceanCascades ? kCascadeLowCut * 2.0 * kPi / out->sizes[c + 1] : 1e30;
+        for (int n = 0; n < kN; ++n) {
+            for (int m = 0; m < kN; ++m) {
+                const int ux = m < kN / 2 ? m : m - kN;
+                const int uz = n < kN / 2 ? n : n - kN;
+                if (ux == -kN / 2 || uz == -kN / 2) continue;  // Nyquist: sin pareja simetrica
+                const double kx = ux * dk;
+                const double kz = uz * dk;
+                const double k = std::sqrt(kx * kx + kz * kz);
+                if (k < k_low || k >= k_high) continue;
+                const std::size_t i = (static_cast<std::size_t>(c) * kN + n) * kN + m;
+                const double omega = std::sqrt(kGravity * k);
+                const double theta = std::atan2(kz, kx);
+                // S(k) = S(omega) domega/dk / k * D(theta)
+                double s = jonswap(omega, omega_p) * (kGravity / (2.0 * omega)) / k *
+                           directional(theta - wind, spread, k / k_p);
+                // Sin rizado capilar por debajo de ~1 cm.
+                s *= std::exp(-(k * 0.01) * (k * 0.01));
+                wind_part[i] = s * dk * dk;
+                wind_total += wind_part[i];
+                if (p.swell_h > 0.0f) {
+                    const double rel = (k - swell_k) / (0.12 * swell_k);
+                    const double c2 = std::cos(theta - swell_dir);
+                    const double sw = std::exp(-0.5 * rel * rel) * (c2 > 0.0 ? std::pow(c2, 60.0) : 0.0) / k;
+                    swell_part[i] = sw * dk * dk;
+                    swell_total += swell_part[i];
+                }
+            }
+        }
+    }
+    const double wind_scale = wind_total > 0.0 ? (hs * hs / 16.0) / wind_total : 0.0;
+    const double swell_scale =
+        swell_total > 0.0 ? (static_cast<double>(p.swell_h) * p.swell_h / 16.0) / swell_total : 0.0;
+
+    // Amplitudes: h(k) y h(-k) se reparten la varianza (<|h0|^2> = var / 2).
+    std::vector<std::complex<float>> h0(count);
+    for (std::size_t i = 0; i < count; ++i) {
+        const double variance = wind_part[i] * wind_scale + swell_part[i] * swell_scale;
+        if (variance <= 0.0) continue;
+        h0[i] = gaussianPair(static_cast<std::uint32_t>(i) * 2654435761u + 12345u) *
+                static_cast<float>(std::sqrt(variance * 0.5) / std::sqrt(2.0));
+    }
+    out->modes.assign(count * 8, 0.0f);
+    for (int c = 0; c < kOceanCascades; ++c) {
+        const double dk = 2.0 * kPi / out->sizes[c];
+        double slope = 0.0;
+        for (int n = 0; n < kN; ++n) {
+            for (int m = 0; m < kN; ++m) {
+                const std::size_t i = (static_cast<std::size_t>(c) * kN + n) * kN + m;
+                const std::size_t mirror =
+                    (static_cast<std::size_t>(c) * kN + (kN - n) % kN) * kN + (kN - m) % kN;
+                const int ux = m < kN / 2 ? m : m - kN;
+                const int uz = n < kN / 2 ? n : n - kN;
+                const double kx = ux * dk;
+                const double kz = uz * dk;
+                const double k = std::sqrt(kx * kx + kz * kz);
+                // Frecuencia redondeada: todo se repite cada kOceanPeriod s
+                // (sin perder precision con el reloj).
+                const double omega =
+                    std::floor(std::sqrt(kGravity * k) * std::max(p.speed, 0.0f) / omega_step) * omega_step;
+                const std::complex<float> a = h0[i];
+                const std::complex<float> b = std::conj(h0[mirror]);
+                float* o = &out->modes[i * 8];
+                o[0] = a.real();
+                o[1] = a.imag();
+                o[2] = b.real();
+                o[3] = b.imag();
+                o[4] = static_cast<float>(omega);
+                o[5] = static_cast<float>(kx);
+                o[6] = static_cast<float>(kz);
+                slope += k * k * (std::norm(a) + std::norm(b));
+            }
+        }
+        out->slope_variance[c] = static_cast<float>(slope);
+    }
+    out->key = paramsKey(p);
+    return out;
+}
+
+std::mutex g_spectrum_mutex;
+std::map<std::uint64_t, std::shared_ptr<OceanSpectrum>> g_spectra;
+
+// Estado en la CPU (la suma de las 3 cascadas grandes en un instante).
+struct OceanCpuState {
+    std::uint64_t key = 0;
+    float time = -1.0f;
+    // Por cascada: dx, dy, dz, vx, vy, vz en kCpuN x kCpuN.
+    std::array<std::array<std::vector<float>, 6>, kCpuCascades> fields;
+};
+std::mutex g_state_mutex;
+std::map<std::uint64_t, OceanCpuState> g_states;
+
+// FFT inversa (sin dividir por N), en el sitio, de tamano potencia de 2.
+void inverseFft(std::complex<float>* data, int n, int stride) {
+    for (int i = 1, j = 0; i < n; ++i) {
+        int bit = n >> 1;
+        for (; j & bit; bit >>= 1) j ^= bit;
+        j ^= bit;
+        if (i < j) std::swap(data[i * stride], data[j * stride]);
+    }
+    for (int len = 2; len <= n; len <<= 1) {
+        const float angle = 2.0f * kPi / static_cast<float>(len);
+        for (int i = 0; i < n; i += len) {
+            for (int j = 0; j < len / 2; ++j) {
+                const std::complex<float> w(std::cos(angle * j), std::sin(angle * j));
+                const std::complex<float> u = data[(i + j) * stride];
+                const std::complex<float> v = data[(i + j + len / 2) * stride] * w;
+                data[(i + j) * stride] = u + v;
+                data[(i + j + len / 2) * stride] = u - v;
+            }
+        }
+    }
+}
+
+void inverseFft2d(std::vector<std::complex<float>>& grid) {
+    for (int r = 0; r < kCpuN; ++r) inverseFft(grid.data() + r * kCpuN, kCpuN, 1);
+    for (int c = 0; c < kCpuN; ++c) inverseFft(grid.data() + c, kCpuN, kCpuN);
+}
+
+void evaluate(const OceanSpectrum& spectrum, OceanCpuState& state, float time) {
+    const float t = std::fmod(std::max(time, 0.0f), kOceanPeriod);
+    std::vector<std::complex<float>> a(kCpuN * kCpuN), b(kCpuN * kCpuN), c(kCpuN * kCpuN);
+    const std::complex<float> i_unit(0.0f, 1.0f);
+    for (int cascade = 0; cascade < kCpuCascades; ++cascade) {
+        std::fill(a.begin(), a.end(), std::complex<float>{});
+        std::fill(b.begin(), b.end(), std::complex<float>{});
+        std::fill(c.begin(), c.end(), std::complex<float>{});
+        for (int n = 0; n < kN; ++n) {
+            const int uz = n < kN / 2 ? n : n - kN;
+            if (uz < -kCpuN / 2 || uz >= kCpuN / 2) continue;
+            for (int m = 0; m < kN; ++m) {
+                const int ux = m < kN / 2 ? m : m - kN;
+                if (ux < -kCpuN / 2 || ux >= kCpuN / 2) continue;
+                const float* o = &spectrum.modes[((static_cast<std::size_t>(cascade) * kN + n) * kN + m) * 8];
+                if (o[0] == 0.0f && o[1] == 0.0f && o[2] == 0.0f && o[3] == 0.0f) continue;
+                const float kx = o[5];
+                const float kz = o[6];
+                const float k = std::sqrt(kx * kx + kz * kz);
+                const std::complex<float> e(std::cos(o[4] * t), std::sin(o[4] * t));
+                const std::complex<float> h0(o[0], o[1]);
+                const std::complex<float> h0m(o[2], o[3]);
+                const std::complex<float> h = h0 * e + h0m * std::conj(e);
+                const std::complex<float> dh = i_unit * o[4] * (h0 * e - h0m * std::conj(e));
+                const float ix = k > 0.0f ? kx / k : 0.0f;
+                const float iz = k > 0.0f ? kz / k : 0.0f;
+                // Desplazamiento horizontal: -i k/|k| h (hacia las crestas).
+                const std::complex<float> dx = -i_unit * ix * h;
+                const std::complex<float> dz = -i_unit * iz * h;
+                const std::complex<float> vx = -i_unit * ix * dh;
+                const std::complex<float> vz = -i_unit * iz * dh;
+                const int gi = ((uz + kCpuN) % kCpuN) * kCpuN + (ux + kCpuN) % kCpuN;
+                a[gi] = dx + i_unit * dz;
+                b[gi] = h + i_unit * dh;
+                c[gi] = vx + i_unit * vz;
+            }
+        }
+        inverseFft2d(a);
+        inverseFft2d(b);
+        inverseFft2d(c);
+        auto& f = state.fields[cascade];
+        for (auto& v : f) v.resize(kCpuN * kCpuN);
+        const float chop = spectrum.choppiness;
+        for (int i = 0; i < kCpuN * kCpuN; ++i) {
+            f[0][i] = a[i].real() * chop;
+            f[2][i] = a[i].imag() * chop;
+            f[1][i] = b[i].real();
+            f[4][i] = b[i].imag();
+            f[3][i] = c[i].real() * chop;
+            f[5][i] = c[i].imag() * chop;
+        }
+    }
+    state.time = time;
+    state.key = spectrum.key;
+}
+
+float bilinear(const std::vector<float>& grid, float u, float v) {
+    u -= std::floor(u);
+    v -= std::floor(v);
+    const float x = u * kCpuN;
+    const float y = v * kCpuN;
+    const int x0 = static_cast<int>(x) % kCpuN;
+    const int y0 = static_cast<int>(y) % kCpuN;
+    const int x1 = (x0 + 1) % kCpuN;
+    const int y1 = (y0 + 1) % kCpuN;
+    const float fx = x - std::floor(x);
+    const float fy = y - std::floor(y);
+    const float a = grid[y0 * kCpuN + x0] + (grid[y0 * kCpuN + x1] - grid[y0 * kCpuN + x0]) * fx;
+    const float b = grid[y1 * kCpuN + x0] + (grid[y1 * kCpuN + x1] - grid[y1 * kCpuN + x0]) * fx;
+    return a + (b - a) * fy;
+}
+
+// Desplazamiento y velocidad (el estado ya esta al dia).
+void sampleState(const OceanSpectrum& spectrum, const OceanCpuState& state, float x, float z, Vec3& d, Vec3* v) {
+    d = Vec3{};
+    if (v != nullptr) *v = Vec3{};
+    for (int c = 0; c < kCpuCascades; ++c) {
+        const float u = x / spectrum.sizes[c];
+        const float w = z / spectrum.sizes[c];
+        const auto& f = state.fields[c];
+        d.x += bilinear(f[0], u, w);
+        d.y += bilinear(f[1], u, w);
+        d.z += bilinear(f[2], u, w);
+        if (v != nullptr) {
+            v->x += bilinear(f[3], u, w);
+            v->y += bilinear(f[4], u, w);
+            v->z += bilinear(f[5], u, w);
+        }
+    }
+}
+
+}  // namespace
+
+std::shared_ptr<const OceanSpectrum> oceanSpectrum(const WaterBody& body) {
+    const SpectrumParams params = spectrumParams(body);
+    const std::uint64_t key = paramsKey(params);
+    std::lock_guard<std::mutex> lock(g_spectrum_mutex);
+    if (const auto it = g_spectra.find(key); it != g_spectra.end()) return it->second;
+    if (g_spectra.size() > 8) g_spectra.clear();  // se estan editando: no acumular
+    auto spectrum = buildSpectrum(params);
+    g_spectra[key] = spectrum;
+    return spectrum;
+}
+
+Vec3 oceanDisplacement(const WaterBody& body, float x, float z, float time, Vec3* normal, Vec3* velocity) {
+    const std::shared_ptr<const OceanSpectrum> spectrum = oceanSpectrum(body);
+    std::lock_guard<std::mutex> lock(g_state_mutex);
+    if (g_states.size() > 8 && g_states.find(spectrum->key) == g_states.end()) g_states.clear();
+    OceanCpuState& state = g_states[spectrum->key];
+    if (state.key != spectrum->key || state.time != time) evaluate(*spectrum, state, time);
+    Vec3 d{};
+    sampleState(*spectrum, state, x, z, d, velocity);
+    if (normal != nullptr) {
+        // Normal de la superficie desplazada (diferencias centradas).
+        constexpr float e = 0.35f;
+        Vec3 px0, px1, pz0, pz1;
+        sampleState(*spectrum, state, x - e, z, px0, nullptr);
+        sampleState(*spectrum, state, x + e, z, px1, nullptr);
+        sampleState(*spectrum, state, x, z - e, pz0, nullptr);
+        sampleState(*spectrum, state, x, z + e, pz1, nullptr);
+        const Vec3 tx = Vec3{2.0f * e, 0.0f, 0.0f} + (px1 - px0);
+        const Vec3 tz = Vec3{0.0f, 0.0f, 2.0f * e} + (pz1 - pz0);
+        Vec3 n = core::cross(tz, tx);
+        if (n.y < 0.0f) n = n * -1.0f;
+        *normal = core::length(n) > 1e-6f ? core::normalize(n) : Vec3{0.0f, 1.0f, 0.0f};
+    }
+    return d;
+}
+
 float waterTime() { return g_time; }
 
 namespace {
@@ -311,7 +717,8 @@ int underwaterOverride(const core::Vec3& camera) { return g_underwater ? g_under
 void advanceWaterTime(float delta_seconds) {
     g_time += std::clamp(delta_seconds, 0.0f, 0.25f);
     // Sin perder precision tras horas abiertas (las ondas se repiten mucho antes).
-    if (g_time > 36000.0f) g_time -= 36000.0f;
+    // Multiplo del periodo del oceano FFT (sin salto al dar la vuelta).
+    if (g_time > 140.0f * kOceanPeriod) g_time -= 140.0f * kOceanPeriod;
 }
 
 void registerWaterComponents() {

@@ -1,0 +1,156 @@
+<p>
+  El componente <strong>Fuego</strong> (<code>Fire</code>) crea un <strong>incendio que se propaga</strong>: la hierba y el
+  bosque arden, el frente avanza más rápido cuesta arriba y a favor del viento, los ríos, los lagos y la roca lo frenan, y
+  detrás quedan brasas, humo y el suelo carbonizado. Las <strong>llamas</strong> y el <strong>humo</strong> son
+  <strong>volumétricos</strong> (raymarching sobre la imagen HDR, como los incendios de las demos de Unreal), unas luces
+  que parpadean iluminan los alrededores de noche, y la hierba, el terreno, los árboles y los modelos que quedan dentro
+  se ven quemados.
+</p>
+
+<h3 id="crear">Crear un fuego</h3>
+<ul>
+  <li><em>GameObject &gt; Fuego (incendio)</em>: crea una entidad <strong>Fuego</strong> delante de la cámara, sobre el
+    suelo, con <em>Simular en el editor</em> activado (se ve arder sin darle a Play).</li>
+  <li>O <em>Add Component &gt; Entorno &gt; Fuego (incendio que se propaga)</em> en cualquier entidad.</li>
+  <li>En el Inspector: <strong>Encender con clic</strong> (luego clic en el suelo de la vista Escena; Esc para salir),
+    <strong>Apagar</strong> y <strong>Reiniciar</strong> (vuelve a empezar: nada quemado). Debajo, el estado en marcha:
+    celdas en llamas, m² ardiendo, porcentaje quemado.</li>
+</ul>
+<p>
+  La <strong>zona</strong> es un cuadrado de <em>Tamaño</em> metros centrado en la entidad (en la Escena se dibuja su
+  contorno naranja y los puntos de encendido). Dentro se simula una rejilla de hasta 256 × 256 celdas a 10 pasos por
+  segundo. Con <strong>Solo en la zona</strong> el fuego nunca sale del cuadrado; sin ella, la zona crece sola (hasta el
+  <em>Tamaño máximo</em>) cuando el frente llega al borde.
+</p>
+<div class="note">
+  El mismo incendio cada vez: la simulación usa la <strong>Semilla</strong>. Al darle a Play empieza de cero (lo que se
+  viera en el editor no cuenta) y se enciende en los <em>Puntos de encendido</em> si <em>Encender al empezar</em> está
+  activo.
+</div>
+
+<h3 id="combustible">Combustible</h3>
+<p>
+  Con <em>Combustible del terreno</em>, cada celda toma el combustible de las capas del terreno de debajo, por su nombre:
+</p>
+<table>
+  <thead><tr><th>Capa</th><th>Arde</th></tr></thead>
+  <tbody>
+    <tr><td>Hierba seca, paja</td><td>Muy bien (1)</td></tr>
+    <tr><td>Hojas, bosque, matorral</td><td>Muy bien (0,9)</td></tr>
+    <tr><td>Hierba, césped, prado</td><td>Bien (0,8)</td></tr>
+    <tr><td>Tierra, suelo</td><td>Poco (0,2)</td></tr>
+    <tr><td>Barro</td><td>Casi nada</td></tr>
+    <tr><td>Roca, piedra, arena, grava, nieve, hielo, asfalto, camino</td><td>Nada</td></tr>
+    <tr><td>Otras capas</td><td>A medias (0,4)</td></tr>
+  </tbody>
+</table>
+<p>
+  Los ríos (su cauce y la orilla), los lagos y lo que queda bajo el nivel del mar no arden: hacen de cortafuegos. Donde
+  no hay terreno se usa <em>Combustible sin terreno</em>; <em>Multiplicador de combustible</em> lo escala todo.
+</p>
+
+<h3 id="propiedades">Propiedades</h3>
+<table>
+  <thead><tr><th>Campo</th><th>Clave</th><th>Qué hace</th></tr></thead>
+  <tbody>
+    <tr><td>Tamaño</td><td><code>size</code></td><td>Lado de la zona (m).</td></tr>
+    <tr><td>Celda</td><td><code>cell_size</code></td><td>Detalle (m por celda). Si no cabe en 256 celdas, se agrandan solas.</td></tr>
+    <tr><td>Se propaga</td><td><code>spread</code></td><td>Las celdas que arden encienden a sus vecinas.</td></tr>
+    <tr><td>Solo en la zona</td><td><code>limit_to_zone</code></td><td>No sale del cuadrado (si no, la zona crece).</td></tr>
+    <tr><td>Tamaño máximo</td><td><code>max_size</code></td><td>Hasta dónde crece la zona sin límite.</td></tr>
+    <tr><td>Simular en el editor</td><td><code>simulate_in_editor</code></td><td>Arde sin darle a Play.</td></tr>
+    <tr><td>Semilla</td><td><code>seed</code></td><td>Misma semilla, mismo incendio.</td></tr>
+    <tr><td>Velocidad</td><td><code>spread_speed</code></td><td>m/s del frente sin viento ni pendiente.</td></tr>
+    <tr><td>Tiempo de llama</td><td><code>burn_time</code></td><td>Segundos que arde una celda con todo su combustible.</td></tr>
+    <tr><td>Brasas</td><td><code>smolder_time</code></td><td>Segundos de brasas (y mucho humo) al acabarse la llama.</td></tr>
+    <tr><td>Altura / brillo de las llamas</td><td><code>flame_height</code>, <code>flame_intensity</code></td><td>Llamas a pleno calor.</td></tr>
+    <tr><td>Humo: cantidad, altura, subida, color</td><td><code>smoke_amount</code>, <code>smoke_height</code>, <code>smoke_rise</code>, <code>smoke_color</code></td><td>La columna sube <em>smoke_rise</em> m/s hasta <em>smoke_height</em> y se ensancha arriba.</td></tr>
+    <tr><td>Viento del cielo</td><td><code>sky_wind</code></td><td>Dirección del viento del <code>Sky</code> (y la mitad de su velocidad).</td></tr>
+    <tr><td>Viento / dirección</td><td><code>wind_speed</code>, <code>wind_direction</code></td><td>Si no usa el del cielo (grados, 0 = hacia +X).</td></tr>
+    <tr><td>Efecto del viento / pendiente</td><td><code>wind_influence</code>, <code>slope_influence</code></td><td>Cuánto aceleran el frente. Con viento fuerte saltan pavesas que encienden focos por delante.</td></tr>
+    <tr><td>Combustible</td><td><code>terrain_fuel</code>, <code>default_fuel</code>, <code>fuel_multiplier</code></td><td>Ver arriba.</td></tr>
+    <tr><td>Encender al empezar</td><td><code>ignite_on_start</code>, <code>ignitions</code></td><td>Puntos (respecto al objeto) y radio donde empieza.</td></tr>
+    <tr><td>Luces</td><td><code>lights</code>, <code>max_lights</code>, <code>light_intensity</code></td><td>Luces puntuales naranjas que parpadean sobre los focos más grandes.</td></tr>
+  </tbody>
+</table>
+
+<h3 id="render">Cómo se ve</h3>
+<ul>
+  <li><strong>Llamas</strong>: emisivas, con color de cuerpo negro (rojo oscuro → naranja → amarillo blanco), ruido
+    turbulento que sube y tumbadas por el viento. Se separan en <strong>lenguas</strong> que suben, cada mata con su altura
+    (más altas donde hay más calor), y son semitransparentes. En el borde de la zona se desvanecen (sin corte recto).</li>
+  <li><strong>Humo</strong>: sale de lo que arde y de las brasas y sube <strong>recto</strong> cerca del fuego (el aire caliente
+    sube rápido); más arriba se enfría, se ensancha y el viento lo va tumbando poco a poco (el desvío crece con el cuadrado de
+    la altura), con una columna irregular y huecos. Lo iluminan el sol (con sombra propia), el cielo y el resplandor naranja
+    del fuego de debajo, solo cerca de las llamas.</li>
+  <li><strong>Suelo quemado</strong>: carbón negro con manchas de ceniza y brasas que brillan donde aún hay calor, en el
+    terreno, los modelos y los árboles. La hierba quemada se queda en rastrojo negro.</li>
+  <li>Hasta <strong>4 zonas</strong> a la vez se dibujan (las primeras activas).</li>
+</ul>
+
+<h3 id="lua">Desde Lua</h3>
+<p>La tabla <code>Fire</code> actúa sobre todas las zonas que tocan el punto (posiciones del mundo, radios en metros):</p>
+<table>
+  <thead><tr><th>Función</th><th>Qué hace</th></tr></thead>
+  <tbody>
+    <tr><td><code>Fire.ignite(pos, radio)</code></td><td>Enciende un círculo. Devuelve cuántas zonas lo recibieron (0 = fuera de toda zona).</td></tr>
+    <tr><td><code>Fire.extinguish(pos, radio)</code></td><td>Apaga el fuego en el círculo (lo quemado se queda).</td></tr>
+    <tr><td><code>Fire.extinguishAll()</code></td><td>Apaga todo.</td></tr>
+    <tr><td><code>Fire.reset()</code></td><td>Vuelve a empezar (nada quemado; se reenciende si <em>Encender al empezar</em>).</td></tr>
+    <tr><td><code>Fire.isBurning(pos)</code></td><td>¿Hay llamas ahí?</td></tr>
+    <tr><td><code>Fire.heatAt(pos)</code></td><td>Calor 0..1.</td></tr>
+    <tr><td><code>Fire.burnedAt(pos)</code> / <code>Fire.charAt(pos)</code></td><td>Quemado 0..1.</td></tr>
+    <tr><td><code>Fire.burnedFraction()</code></td><td>0..1 de lo que podía arder.</td></tr>
+    <tr><td><code>Fire.burningArea()</code></td><td>m² en llamas ahora.</td></tr>
+    <tr><td><code>Fire.isActive()</code></td><td>¿Arde algo?</td></tr>
+    <tr><td><code>Fire.stats()</code></td><td>Tabla <code>{burningCells, smolderingCells, burnedCells, burnableCells, burningArea, burnedFraction, size, seconds, windX, windZ}</code>.</td></tr>
+  </tbody>
+</table>
+<pre><code class="language-lua">-- Antorcha: al pulsar E enciende el suelo delante del jugador
+local Antorcha = { properties = { vida = 100 } }
+
+function Antorcha:Update(dt)
+    if Input.getKeyDown("E") then
+        local p = self.entity.position + self.entity.forward * 2
+        if Fire.ignite(p, 1.5) == 0 then
+            Debug.log("Aqui no hay zona de fuego")
+        end
+    end
+    -- Se quema si pisa llamas
+    if Fire.isBurning(self.entity.position) then
+        self.vida = self.vida - 20 * dt
+    end
+end
+
+return Antorcha</code></pre>
+<pre><code class="language-lua">-- Hidroavion: apaga lo que tiene debajo y avisa cuando se acaba
+local Hidroavion = {}
+
+function Hidroavion:Update(dt)
+    Fire.extinguish(self.entity.position, 12)
+    if not self.avisado and not Fire.isActive() then
+        self.avisado = true
+        Debug.log(string.format("Incendio controlado: %.0f%% quemado", Fire.burnedFraction() * 100))
+    end
+end
+
+return Hidroavion</code></pre>
+
+<h3 id="mcp">Desde la IA (MCP)</h3>
+<table>
+  <thead><tr><th>Herramienta</th><th>Qué hace</th></tr></thead>
+  <tbody>
+    <tr><td><code>fire_create</code></td><td>Crea una zona (<code>position</code>, <code>size</code>, <code>fields</code> del componente, <code>ignite</code>).</td></tr>
+    <tr><td><code>fire_ignite</code></td><td>Enciende un círculo (en el editor activa <em>Simular en el editor</em> de esas zonas).</td></tr>
+    <tr><td><code>fire_extinguish</code></td><td>Apaga un círculo, todo (<code>all</code>) o reinicia (<code>reset</code>).</td></tr>
+    <tr><td><code>fire_state</code></td><td>Estado de cada zona y, con <code>position</code>, el calor y lo quemado en ese punto.</td></tr>
+  </tbody>
+</table>
+
+<h3 id="rendimiento">Rendimiento</h3>
+<ul>
+  <li>La simulación cuesta lo mismo con fuego o sin él: pocas décimas de ms por zona de 256 × 256 celdas a 10 Hz.</li>
+  <li>El humo y las llamas solo se calculan en los píxeles cuyo rayo cruza la caja de la zona; el TAA suaviza el ruido
+    de los pasos. Para zonas enormes, celdas más grandes (o varias zonas) mantienen el detalle donde importa.</li>
+  <li>Las luces del fuego cuentan dentro del límite de 32 luces puntuales (se quedan las más cercanas a la cámara).</li>
+</ul>

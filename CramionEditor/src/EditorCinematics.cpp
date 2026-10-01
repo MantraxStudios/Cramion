@@ -198,7 +198,8 @@ void EditorApp::drawGameView() {
         }
     }
     if (playing()) {
-        const ImU32 frame = play_state_ == PlayState::Paused ? IM_COL32(255, 190, 60, 220) : IM_COL32(80, 170, 255, 220);
+        const ImU32 frame = play_state_ == PlayState::Paused ? theme::withAlpha(theme::kYellowDeep, 150)
+                                                             : theme::withAlpha(theme::kYellow, 220);
         draw->AddRect(origin, ImVec2(origin.x + size.x, origin.y + size.y), frame, 0.0f, 0, 3.0f);
     }
     // Interfaz del juego (Canvas) encima, y su editor fuera de Play.
@@ -1010,6 +1011,79 @@ void EditorApp::drawCinematicWindow() {
                             ImVec2(xp, canvas_pos.y + 9.0f), IM_COL32(255, 80, 80, 255));
     draw->PopClipRect();
     ImGui::End();
+}
+
+}  // namespace cramion::editor
+
+// --- Modo cine: grabar un trailer por MCP -----------------------------------
+namespace cramion::editor {
+
+float EditorApp::cinemaDelta(float real_seconds) {
+    if (!cinema_) return real_seconds;
+    ++cinema_frames_;
+    if (cinema_pending_ > 0) {
+        --cinema_pending_;
+        return cinema_dt_;
+    }
+    return 0.0f;  // tiempo parado: se repite el mismo instante (el TAA converge)
+}
+
+void EditorApp::setCinema(bool enabled, int width, int height, float fps) {
+    cinema_ = enabled;
+    cinema_dt_ = 1.0f / std::clamp(fps, 1.0f, 240.0f);
+    cinema_pending_ = 0;
+    renderer_.setBudgetSuspended(enabled);
+    cinema_window_request_ = enabled ? 1 : 2;
+    cinema_window_width_ = width;
+    cinema_window_height_ = height;
+    if (enabled) {
+        overlay_.clear();
+        flushOverlay();
+    }
+}
+
+void EditorApp::applyWindowRequests() {
+    const int request = cinema_window_request_;
+    if (request == 0) return;
+    cinema_window_request_ = 0;
+    HWND hwnd = window_.handle();
+    const int width = cinema_window_width_;
+    const int height = cinema_window_height_;
+    if (request == 1) {
+        // Ventana del tamano exacto del video (el area cliente), arriba a la izquierda.
+        if (IsZoomed(hwnd)) ShowWindow(hwnd, SW_RESTORE);
+        SetWindowPos(hwnd, HWND_TOP, 0, 0, width, height, SWP_SHOWWINDOW);
+        RECT client{};
+        GetClientRect(hwnd, &client);
+        const int extra_w = width - (client.right - client.left);
+        const int extra_h = height - (client.bottom - client.top);
+        if (extra_w != 0 || extra_h != 0) {
+            SetWindowPos(hwnd, HWND_TOP, 0, 0, width + extra_w, height + extra_h, SWP_SHOWWINDOW);
+        }
+    } else {
+        ShowWindow(hwnd, SW_MAXIMIZE);
+    }
+}
+
+void EditorApp::drawCinemaView() {
+    const ImGuiViewport* viewport = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(viewport->Pos);
+    ImGui::SetNextWindowSize(viewport->Size);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
+    ImGui::Begin("##cine", nullptr,
+                 ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings |
+                     ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoScrollWithMouse);
+    ImGui::Image(imgui_.viewTexture(kSceneSlot), viewport->Size);
+    ImGui::End();
+    ImGui::PopStyleVar(3);
+    view_desired_[kSceneSlot][0] = static_cast<std::uint32_t>(std::max(viewport->Size.x, 16.0f));
+    view_desired_[kSceneSlot][1] = static_cast<std::uint32_t>(std::max(viewport->Size.y, 16.0f));
+    scene_view_visible_ = true;
+    game_view_visible_ = false;
+    overlay_.clear();
+    flushOverlay();  // sin gizmos ni iconos
 }
 
 }  // namespace cramion::editor

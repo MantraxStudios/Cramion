@@ -1,0 +1,532 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+
+// Liquidos: Position Based Fluids (Macklin y Muller 2013) en la GPU. Un solo
+// shader con etapas (push.stage); FluidPass las encadena con barreras:
+//
+//   SPAWN, COMMIT                 particulas nuevas (de la CPU)
+//   PREDICT                       gravedad, muertes, celda y cuenta por celda
+//   SCAN_LOCAL/BLOCKS/ADD         prefijo de las cuentas (inicio de cada celda)
+//   SCATTER, COUNT                reparto ordenado (muertas al final) y cuantas viven
+//   LAMBDA, DELTA, APPLY  (x N)   restriccion de densidad y colisiones
+//   VELOCITY, VISCOSITY, FINAL    velocidad, XSPH, cohesion, vorticidad, espuma
+//
+// Rejilla uniforme ENVUELTA (celda = radio del nucleo h): la celda (i,j,k)
+// del mundo cae en (i mod nx, j mod ny, k mod nz). Con n >= 3 por eje los 27
+// vecinos nunca coinciden: no se cuenta dos veces a nadie, y el dominio puede
+// ser mayor que la rejilla.
+
+layout(local_size_x = 256) in;
+
+#include "fluid_common.glsl"
+
+layout(std140, set = 0, binding = 0) uniform SimParams {
+    vec4 gravity_dt;      // xyz gravedad, w dt del subpaso
+    vec4 kernel;          // x h, y radio de particula, z densidad de reposo, w 1/densidad
+    vec4 constants;       // x poly6, y spiky, z epsilon de la restriccion, w anti-agrupamiento
+    vec4 domain_min;      // xyz, w paredes solidas (0/1)
+    vec4 domain_max;      // xyz, w matar fuera (0/1)
+    ivec4 grid;           // xyz celdas, w total (la celda de las muertas = total)
+    uvec4 counts;         // x capacidad, y formas, z desagues, w campo de alturas (0/1)
+    vec4 height_origin;   // x, z origen; y tamano de celda; w velocidad maxima
+    uvec4 height_size;    // x ancho, y alto, z bloques del prefijo
+    vec4 shift;           // xyz desplazamiento del origen (solo el primer subpaso), w friccion
+    vec4 extra;           // x tension superficial, y W(dq) del anti-agrupamiento
+    FluidMaterialGpu materials[kFluidMaterials];
+} sim;
+
+layout(std430, set = 0, binding = 1) buffer PosA { vec4 pos_a[]; };
+layout(std430, set = 0, binding = 2) buffer VelA { vec4 vel_a[]; };
+layout(std430, set = 0, binding = 3) buffer InfoA { vec4 info_a[]; };
+layout(std430, set = 0, binding = 4) buffer PredA { vec4 pred_a[]; };
+layout(std430, set = 0, binding = 5) buffer PosB { vec4 pos_b[]; };
+layout(std430, set = 0, binding = 6) buffer VelB { vec4 vel_b[]; };
+layout(std430, set = 0, binding = 7) buffer InfoB { vec4 info_b[]; };
+layout(std430, set = 0, binding = 8) buffer PredB { vec4 pred_b[]; };
+layout(std430, set = 0, binding = 9) buffer Delta { vec4 delta[]; };
+layout(std430, set = 0, binding = 10) buffer Scalar { vec4 scalar[]; };  // x lambda, y densidad relativa
+layout(std430, set = 0, binding = 11) buffer Omega { vec4 omega[]; };
+layout(std430, set = 0, binding = 12) buffer VelTmp { vec4 vel_tmp[]; };
+layout(std430, set = 0, binding = 13) buffer CellOf { uint cell_of[]; };
+layout(std430, set = 0, binding = 14) buffer CellCount { uint cell_count[]; };
+layout(std430, set = 0, binding = 15) buffer CellStart { uint cell_start[]; };
+layout(std430, set = 0, binding = 16) buffer CellOffset { uint cell_offset[]; };
+layout(std430, set = 0, binding = 17) buffer BlockSums { uint block_sums[]; };
+// [0..2] argumentos del dispatch indirecto, [3] vivas, [4..7] dibujo indirecto.
+layout(std430, set = 0, binding = 18) buffer State { uint state[]; };
+// Formas: 4 vec4 por forma (a.w = tipo). Primero los colliders, luego los desagues.
+layout(std430, set = 0, binding = 19) readonly buffer Shapes { vec4 shapes[]; };
+layout(std430, set = 0, binding = 20) readonly buffer Heights { float heights[]; };
+// 2 vec4 por particula nueva: (posicion, material), (velocidad, vida).
+layout(std430, set = 0, binding = 21) readonly buffer Spawns { vec4 spawns[]; };
+
+layout(push_constant) uniform Push {
+    uint stage;
+    uint extra;      // SPAWN: cuantas
+    uint iteration;
+    uint first;      // 1 = primer subpaso del frame
+} push;
+
+const uint STAGE_SPAWN = 0u;
+const uint STAGE_COMMIT = 1u;
+const uint STAGE_PREDICT = 2u;
+const uint STAGE_SCAN_LOCAL = 3u;
+const uint STAGE_SCAN_BLOCKS = 4u;
+const uint STAGE_SCAN_ADD = 5u;
+const uint STAGE_SCATTER = 6u;
+const uint STAGE_COUNT = 7u;
+const uint STAGE_LAMBDA = 8u;
+const uint STAGE_DELTA = 9u;
+const uint STAGE_APPLY = 10u;
+const uint STAGE_VELOCITY = 11u;
+const uint STAGE_VISCOSITY = 12u;
+const uint STAGE_FINAL = 13u;
+const uint STAGE_CLEAR = 14u;
+
+const float kPi = 3.14159265;
+
+shared uint s_scan[256];
+
+// --- Nucleos (SPH) ---
+float poly6(float r2) {
+    float h2 = sim.kernel.x * sim.kernel.x;
+    if (r2 >= h2) return 0.0;
+    float d = h2 - r2;
+    return sim.constants.x * d * d * d;
+}
+vec3 spikyGrad(vec3 r, float len) {
+    float h = sim.kernel.x;
+    if (len >= h || len < 1e-6) return vec3(0.0);
+    float d = h - len;
+    return -sim.constants.y * d * d * (r / len);
+}
+
+// --- Rejilla ---
+ivec3 cellCoord(vec3 p) { return ivec3(floor(p / sim.kernel.x)); }
+uint cellIndex(ivec3 c) {
+    ivec3 n = sim.grid.xyz;
+    ivec3 w = ((c % n) + n) % n;
+    return uint(w.x + n.x * (w.y + n.y * w.z));
+}
+
+void writeArgs() {
+    uint count = state[3];
+    state[0] = (count + 255u) / 256u;
+    state[1] = 1u;
+    state[2] = 1u;
+    state[4] = count * 6u;
+    state[5] = 1u;
+    state[6] = 0u;
+    state[7] = 0u;
+}
+
+// --- Colisiones ---
+vec3 quatRotate(vec4 q, vec3 v) {
+    vec3 t = 2.0 * cross(q.xyz, v);
+    return v + q.w * t + cross(q.xyz, t);
+}
+
+// Distancia con signo a la forma s (negativa dentro) y su normal.
+float shapeDistance(uint s, vec3 p, out vec3 normal) {
+    vec4 a = shapes[s * 4u + 0u];
+    vec4 b = shapes[s * 4u + 1u];
+    vec4 c = shapes[s * 4u + 2u];
+    uint type = uint(a.w + 0.5);
+    if (type == 0u) {  // esfera
+        vec3 d = p - a.xyz;
+        float len = length(d);
+        normal = len > 1e-6 ? d / len : vec3(0.0, 1.0, 0.0);
+        return len - b.w;
+    }
+    if (type == 1u) {  // caja (c = giro)
+        vec4 q = c;
+        vec4 qi = vec4(-q.xyz, q.w);
+        vec3 local = quatRotate(qi, p - a.xyz);
+        vec3 e = abs(local) - b.xyz;
+        float outside = length(max(e, 0.0));
+        float inside = min(max(e.x, max(e.y, e.z)), 0.0);
+        vec3 n_local;
+        if (outside > 0.0) {
+            n_local = max(e, 0.0) * sign(local) / outside;
+        } else if (e.x > e.y && e.x > e.z) {
+            n_local = vec3(sign(local.x), 0.0, 0.0);
+        } else if (e.y > e.z) {
+            n_local = vec3(0.0, sign(local.y), 0.0);
+        } else {
+            n_local = vec3(0.0, 0.0, sign(local.z));
+        }
+        normal = quatRotate(q, n_local);
+        return outside + inside;
+    }
+    if (type == 2u) {  // capsula
+        vec3 ab = b.xyz - a.xyz;
+        float t = clamp(dot(p - a.xyz, ab) / max(dot(ab, ab), 1e-8), 0.0, 1.0);
+        vec3 d = p - (a.xyz + ab * t);
+        float len = length(d);
+        normal = len > 1e-6 ? d / len : vec3(0.0, 1.0, 0.0);
+        return len - b.w;
+    }
+    // plano: a = normal, b.x = d
+    normal = a.xyz;
+    return dot(p, a.xyz) - b.x;
+}
+
+float terrainHeight(vec2 xz, out vec3 normal) {
+    vec2 g = (xz - sim.height_origin.xz) / sim.height_origin.y;
+    uint w = sim.height_size.x;
+    uint h = sim.height_size.y;
+    normal = vec3(0.0, 1.0, 0.0);
+    if (g.x < 0.0 || g.y < 0.0 || g.x > float(w - 1u) || g.y > float(h - 1u)) return -1e30;
+    ivec2 i = min(ivec2(floor(g)), ivec2(int(w) - 2, int(h) - 2));
+    vec2 f = g - vec2(i);
+    float h00 = heights[uint(i.y) * w + uint(i.x)];
+    float h10 = heights[uint(i.y) * w + uint(i.x) + 1u];
+    float h01 = heights[uint(i.y + 1) * w + uint(i.x)];
+    float h11 = heights[uint(i.y + 1) * w + uint(i.x) + 1u];
+    float dx = mix(h10 - h00, h11 - h01, f.y) / sim.height_origin.y;
+    float dz = mix(h01 - h00, h11 - h10, f.x) / sim.height_origin.y;
+    normal = normalize(vec3(-dx, 1.0, -dz));
+    return mix(mix(h00, h10, f.x), mix(h01, h11, f.x), f.y);
+}
+
+// Saca la particula de lo solido; `previous` (posicion al empezar el
+// subpaso) da la friccion: se quita parte del deslizamiento tangencial.
+void collide(inout vec3 p, vec3 previous) {
+    float r = sim.kernel.y;
+    float friction = sim.shift.w;
+    for (uint s = 0u; s < sim.counts.y; ++s) {
+        vec3 n;
+        float d = shapeDistance(s, p, n);
+        if (d < r) {
+            p += n * (r - d);
+            vec3 moved = p - previous;
+            vec3 tangent = moved - n * dot(moved, n);
+            p -= tangent * friction;
+        }
+    }
+    if (sim.counts.w != 0u) {
+        vec3 n;
+        float ground = terrainHeight(p.xz, n);
+        if (p.y < ground + r) {
+            float depth = ground + r - p.y;
+            p += n * (depth * n.y);
+            vec3 moved = p - previous;
+            vec3 tangent = moved - n * dot(moved, n);
+            p -= tangent * friction;
+        }
+    }
+    if (sim.domain_min.w > 0.5) {
+        p = clamp(p, sim.domain_min.xyz + vec3(r), sim.domain_max.xyz - vec3(r));
+    }
+}
+
+bool insideDrain(vec3 p) {
+    for (uint s = sim.counts.y; s < sim.counts.y + sim.counts.z; ++s) {
+        vec3 n;
+        if (shapeDistance(s, p, n) < 0.0) return true;
+    }
+    return false;
+}
+
+FluidMaterialGpu materialOf(float w) {
+    return sim.materials[min(uint(w + 0.5), kFluidMaterials - 1u)];
+}
+
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    uint count = state[3];
+
+    if (push.stage == STAGE_CLEAR) {
+        if (i == 0u) {
+            state[3] = 0u;
+            writeArgs();
+        }
+        return;
+    }
+
+    if (push.stage == STAGE_SPAWN) {
+        if (i >= push.extra) return;
+        uint index = count + i;
+        if (index >= sim.counts.x) return;
+        vec4 p = spawns[i * 2u];
+        vec4 v = spawns[i * 2u + 1u];
+        pos_a[index] = p;
+        vel_a[index] = vec4(v.xyz, 0.0);
+        info_a[index] = vec4(v.w, 1.0, 0.0, 0.0);
+        return;
+    }
+    if (push.stage == STAGE_COMMIT) {
+        if (i == 0u) {
+            state[3] = min(count + push.extra, sim.counts.x);
+            writeArgs();
+        }
+        return;
+    }
+
+    float dt = sim.gravity_dt.w;
+    uint dead_cell = uint(sim.grid.w);
+
+    if (push.stage == STAGE_PREDICT) {
+        if (i >= count) return;
+        vec4 p = pos_a[i];
+        vec4 v = vel_a[i];
+        vec4 info = info_a[i];
+        if (push.first != 0u) p.xyz += sim.shift.xyz;
+        FluidMaterialGpu m = materialOf(p.w);
+        v.xyz += sim.gravity_dt.xyz * dt;
+        v.xyz *= 1.0 / (1.0 + m.params.z * dt);
+        float speed = length(v.xyz);
+        if (speed > sim.height_origin.w) v.xyz *= sim.height_origin.w / speed;
+        v.w += dt;  // edad
+        vec3 predicted = p.xyz + v.xyz * dt;
+        collide(predicted, p.xyz);
+        bool dead = (info.x > 0.0 && v.w > info.x) || any(isnan(predicted)) || insideDrain(predicted);
+        if (sim.domain_max.w > 0.5 && sim.domain_min.w < 0.5) {
+            dead = dead || any(lessThan(predicted, sim.domain_min.xyz)) || any(greaterThan(predicted, sim.domain_max.xyz));
+        }
+        vel_a[i] = v;
+        pos_a[i] = p;
+        pred_a[i] = vec4(predicted, p.w);
+        uint cell = dead ? dead_cell : cellIndex(cellCoord(predicted));
+        cell_of[i] = cell;
+        atomicAdd(cell_count[cell], 1u);
+        return;
+    }
+
+    if (push.stage == STAGE_SCAN_LOCAL) {
+        // 512 entradas por grupo (2 por hilo): prefijo exclusivo local.
+        uint local = gl_LocalInvocationID.x;
+        uint base = gl_WorkGroupID.x * 512u + local * 2u;
+        uint total = uint(sim.grid.w) + 1u;
+        uint a = base < total ? cell_count[base] : 0u;
+        uint b = base + 1u < total ? cell_count[base + 1u] : 0u;
+        s_scan[local] = a + b;
+        barrier();
+        for (uint offset = 1u; offset < 256u; offset <<= 1u) {
+            uint value = local >= offset ? s_scan[local - offset] : 0u;
+            barrier();
+            s_scan[local] += value;
+            barrier();
+        }
+        uint inclusive = s_scan[local];
+        uint exclusive = inclusive - (a + b);
+        if (base < total) cell_start[base] = exclusive;
+        if (base + 1u < total) cell_start[base + 1u] = exclusive + a;
+        if (local == 255u) block_sums[gl_WorkGroupID.x] = inclusive;
+        return;
+    }
+    if (push.stage == STAGE_SCAN_BLOCKS) {
+        // Un grupo: prefijo exclusivo de las sumas de los bloques (<= 4096).
+        uint local = gl_LocalInvocationID.x;
+        uint blocks = sim.height_size.z;
+        uint per = (blocks + 255u) / 256u;
+        uint first = local * per;
+        uint sum = 0u;
+        for (uint k = 0u; k < per; ++k) {
+            if (first + k < blocks) sum += block_sums[first + k];
+        }
+        s_scan[local] = sum;
+        barrier();
+        for (uint offset = 1u; offset < 256u; offset <<= 1u) {
+            uint value = local >= offset ? s_scan[local - offset] : 0u;
+            barrier();
+            s_scan[local] += value;
+            barrier();
+        }
+        uint running = s_scan[local] - sum;
+        for (uint k = 0u; k < per; ++k) {
+            if (first + k < blocks) {
+                uint value = block_sums[first + k];
+                block_sums[first + k] = running;
+                running += value;
+            }
+        }
+        return;
+    }
+    if (push.stage == STAGE_SCAN_ADD) {
+        uint total = uint(sim.grid.w) + 1u;
+        if (i >= total) return;
+        uint start = cell_start[i] + block_sums[i / 512u];
+        cell_start[i] = start;
+        cell_offset[i] = start;
+        return;
+    }
+    if (push.stage == STAGE_SCATTER) {
+        if (i >= count) return;
+        uint dst = atomicAdd(cell_offset[cell_of[i]], 1u);
+        pos_b[dst] = pos_a[i];
+        vel_b[dst] = vel_a[i];
+        info_b[dst] = info_a[i];
+        pred_b[dst] = pred_a[i];
+        return;
+    }
+    if (push.stage == STAGE_COUNT) {
+        if (i == 0u) {
+            state[3] = cell_start[dead_cell];
+            writeArgs();
+        }
+        return;
+    }
+
+    if (i >= count) return;
+    float h = sim.kernel.x;
+    float h2 = h * h;
+    float inv_rest = sim.kernel.w;
+
+    if (push.stage == STAGE_LAMBDA) {
+        vec3 pi = pred_b[i].xyz;
+        float density = 0.0;
+        vec3 grad_i = vec3(0.0);
+        float sum_grad2 = 0.0;
+        ivec3 c = cellCoord(pi);
+        for (int z = -1; z <= 1; ++z)
+        for (int y = -1; y <= 1; ++y)
+        for (int x = -1; x <= 1; ++x) {
+            uint cell = cellIndex(c + ivec3(x, y, z));
+            uint start = cell_start[cell];
+            uint end = start + cell_count[cell];
+            for (uint j = start; j < end; ++j) {
+                vec3 r = pi - pred_b[j].xyz;
+                float r2 = dot(r, r);
+                if (r2 >= h2) continue;
+                density += poly6(r2);
+                if (j != i) {
+                    vec3 g = spikyGrad(r, sqrt(r2)) * inv_rest;
+                    grad_i += g;
+                    sum_grad2 += dot(g, g);
+                }
+            }
+        }
+        float constraint = max(density * inv_rest - 1.0, 0.0);
+        sum_grad2 += dot(grad_i, grad_i);
+        float lambda = -constraint / (sum_grad2 + sim.constants.z);
+        scalar[i] = vec4(lambda, density * inv_rest, 0.0, 0.0);
+        return;
+    }
+    if (push.stage == STAGE_DELTA) {
+        vec3 pi = pred_b[i].xyz;
+        float li = scalar[i].x;
+        vec3 d = vec3(0.0);
+        ivec3 c = cellCoord(pi);
+        for (int z = -1; z <= 1; ++z)
+        for (int y = -1; y <= 1; ++y)
+        for (int x = -1; x <= 1; ++x) {
+            uint cell = cellIndex(c + ivec3(x, y, z));
+            uint start = cell_start[cell];
+            uint end = start + cell_count[cell];
+            for (uint j = start; j < end; ++j) {
+                if (j == i) continue;
+                vec3 r = pi - pred_b[j].xyz;
+                float r2 = dot(r, r);
+                if (r2 >= h2) continue;
+                float ratio = poly6(r2) / sim.extra.y;
+                float scorr = -sim.constants.w * ratio * ratio * ratio * ratio;
+                d += (li + scalar[j].x + scorr) * spikyGrad(r, sqrt(r2));
+            }
+        }
+        delta[i] = vec4(d * inv_rest, 0.0);
+        return;
+    }
+    if (push.stage == STAGE_APPLY) {
+        vec3 p = pred_b[i].xyz + delta[i].xyz;
+        collide(p, pos_b[i].xyz);
+        pred_b[i].xyz = p;
+        return;
+    }
+    if (push.stage == STAGE_VELOCITY) {
+        vec3 v = (pred_b[i].xyz - pos_b[i].xyz) / dt;
+        float speed = length(v);
+        if (speed > sim.height_origin.w) v *= sim.height_origin.w / speed;
+        vel_tmp[i] = vec4(v, vel_b[i].w);
+        return;
+    }
+    if (push.stage == STAGE_VISCOSITY) {
+        // XSPH (viscosidad), cohesion (atrae a los vecinos a media distancia:
+        // tension superficial) y vorticidad.
+        vec3 pi = pred_b[i].xyz;
+        vec4 vi4 = vel_tmp[i];
+        vec3 vi = vi4.xyz;
+        FluidMaterialGpu mi = materialOf(pred_b[i].w);
+        vec3 visc = vec3(0.0);
+        float weight = poly6(0.0);
+        vec3 cohesion = vec3(0.0);
+        vec3 w = vec3(0.0);
+        float r_rest = 2.0 * sim.kernel.y;
+        ivec3 c = cellCoord(pi);
+        for (int z = -1; z <= 1; ++z)
+        for (int y = -1; y <= 1; ++y)
+        for (int x = -1; x <= 1; ++x) {
+            uint cell = cellIndex(c + ivec3(x, y, z));
+            uint start = cell_start[cell];
+            uint end = start + cell_count[cell];
+            for (uint j = start; j < end; ++j) {
+                if (j == i) continue;
+                vec4 pj = pred_b[j];
+                vec3 r = pi - pj.xyz;
+                float r2 = dot(r, r);
+                if (r2 >= h2) continue;
+                float len = sqrt(r2);
+                vec3 vij = vel_tmp[j].xyz - vi;
+                float wij = poly6(r2);
+                FluidMaterialGpu mj = materialOf(pj.w);
+                visc += vij * wij * 0.5 * (mi.absorb_visc.a + mj.absorb_visc.a);
+                weight += wij;
+                w += cross(vij, spikyGrad(r, len)) * inv_rest;
+                // Cohesion: 0 al tocarse, maxima a media distancia, 0 en h.
+                if (len > r_rest * 0.8) {
+                    float t = (len - r_rest * 0.8) / max(h - r_rest * 0.8, 1e-5);
+                    float pull = 4.0 * t * (1.0 - t);
+                    cohesion -= (r / len) * pull * 0.5 * (mi.scatter_cohes.a + mj.scatter_cohes.a);
+                }
+            }
+        }
+        vec3 v = vi + visc / max(weight, 1e-8) + cohesion * sim.extra.x * dt;
+        vel_b[i] = vec4(v, vi4.w);
+        omega[i] = vec4(w, length(w));
+        return;
+    }
+    if (push.stage == STAGE_FINAL) {
+        vec4 pi4 = pred_b[i];
+        vec3 pi = pi4.xyz;
+        FluidMaterialGpu mi = materialOf(pi4.w);
+        vec3 v = vel_b[i].xyz;
+        float age = vel_b[i].w;
+        // Confinamiento de vorticidad: devuelve los remolinos que la
+        // disipacion numerica se come.
+        vec3 eta = vec3(0.0);
+        ivec3 c = cellCoord(pi);
+        if (mi.emission_vort.a > 0.0) {
+            for (int z = -1; z <= 1; ++z)
+            for (int y = -1; y <= 1; ++y)
+            for (int x = -1; x <= 1; ++x) {
+                uint cell = cellIndex(c + ivec3(x, y, z));
+                uint start = cell_start[cell];
+                uint end = start + cell_count[cell];
+                for (uint j = start; j < end; ++j) {
+                    if (j == i) continue;
+                    vec3 r = pi - pred_b[j].xyz;
+                    float r2 = dot(r, r);
+                    if (r2 >= h2) continue;
+                    eta += omega[j].w * spikyGrad(r, sqrt(r2)) * inv_rest;
+                }
+            }
+            float len = length(eta);
+            if (len > 1e-5) {
+                vec3 n = eta / len;
+                v += mi.emission_vort.a * h * cross(n, omega[i].xyz) * dt;
+            }
+        }
+        // Espuma: rapido y en la superficie (pocos vecinos); se apaga sola.
+        float density = scalar[i].y;
+        float speed = length(v);
+        float kinetic = smoothstep(1.8, 5.5, speed);
+        float surface = 1.0 - smoothstep(0.55, 0.95, density);
+        float fresh = kinetic * (0.35 + 0.65 * surface) * mi.params.x;
+        vec4 info = info_b[i];
+        float foam = max(info.z * exp(-dt * 1.2), fresh);
+        pos_a[i] = pi4;
+        vel_a[i] = vec4(v, age);
+        info_a[i] = vec4(info.x, density, foam, 0.0);
+        return;
+    }
+}

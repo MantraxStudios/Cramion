@@ -25,9 +25,13 @@ layout(set = 0, binding = 3) uniform WeatherBuffer {
     vec4 params;  // x = humedad (0..1), y = charcos (0..1), z = segundos, w = mapa listo
     vec4 flood;   // zona inundada: xy = centro (x, z), zw = radios (0 = sin agua)
     vec4 decal_info;  // x = numero de decals
+    vec4 snow;        // x = cobertura (0..1), y = espesor (m), z = humedad al derretirse, w = reservado
+    vec4 fire_zones[4];  // xy = esquina minima (x, z), z = lado (m), w = parte del mapa usada (0 = apagada)
     Decal decals[kMaxDecals];
 } weather;
 layout(set = 0, binding = 4) uniform sampler2D decal_textures[32];  // kMaxDecalTextures (GpuTypes.h)
+// 6 = mapa de quemado de las zonas de fuego.
+#include "fire_burn.glsl"
 
 layout(location = 0) out vec4 out_albedo;    // rgb = albedo, a = oclusion ambiental
 layout(location = 1) out vec4 out_normal;    // rg = normal (octaedrica), b = rugosidad,
@@ -197,8 +201,39 @@ void writeSurface(vec4 albedo, vec3 n, vec3 normal, vec3 tangent_normal, vec3 aa
         }
     }
 
+    // --- Estacion (sistema de ambiente): lo verde amarillea y enrojece en
+    // otono (hierba, hojas, capas de hierba del terreno). snow.w = 0 verde ..
+    // 1 otono. Se conserva la luminancia: solo cambia el tono.
+    if (weather.snow.w > 0.0) {
+        vec3 c = albedo.rgb;
+        float greenness = clamp((c.g - max(c.r, c.b)) / max(c.g, 0.02) * 3.0, 0.0, 1.0);
+        if (greenness > 0.0) {
+            float leaf_noise = rainValueNoise(world_position.xz * 0.45 + world_position.y * 0.3);
+            vec3 palette = mix(vec3(0.78, 0.5, 0.1), vec3(0.6, 0.17, 0.06), smoothstep(0.35, 0.85, leaf_noise));
+            float lum = dot(c, vec3(0.2126, 0.7152, 0.0722));
+            vec3 autumn = palette * (lum / max(dot(palette, vec3(0.2126, 0.7152, 0.0722)), 0.01)) * 1.1;
+            albedo.rgb = mix(c, clamp(autumn, 0.0, 1.0), greenness * weather.snow.w * (0.65 + 0.35 * leaf_noise));
+        }
+    }
+
+    // --- Fuego: suelo, hierba y arboles quemados (fire_burn.glsl) ---
+    // Carbon negro con manchas de ceniza gris, mate; y brasas que brillan
+    // donde aun hay calor.
+    vec2 burn = fireBurnAt(world_position, weather.fire_zones);
+    if (burn.x > 0.002 || burn.y > 0.002) {
+        float ash = smoothstep(0.45, 0.8, rainValueNoise(world_position.xz * 0.9) * 0.7 +
+                                              rainValueNoise(world_position.xz * 4.3) * 0.3);
+        vec3 charred = mix(vec3(0.045, 0.04, 0.036), vec3(0.32, 0.31, 0.3), ash * 0.6);
+        float c = smoothstep(0.0, 1.0, burn.x);
+        albedo.rgb = mix(albedo.rgb, charred, c * 0.94);
+        roughness = mix(roughness, 0.97, c);
+        metallic *= 1.0 - c;
+        float embers = smoothstep(0.55, 0.95, rainValueNoise(world_position.xz * 2.7 + weather.params.z * 0.15));
+        emissive += vec3(1.0, 0.27, 0.04) * (burn.y * burn.y * (0.6 + 6.0 * embers)) * (1.0 - ash * 0.7);
+    }
+
     float flood = max(floodLevel(world_position.xz, weather.flood), decal_water);
-    if (weather.params.x > 0.0 || weather.params.y > 0.0 || flood > 0.0 || decal_wet > 0.0) {
+    if (weather.params.x > 0.0 || weather.params.y > 0.0 || flood > 0.0 || decal_wet > 0.0 || weather.snow.z > 0.0) {
         float exposed = rainExposure(world_position);
 
         // El agua se queda en lo horizontal; las paredes escurren.
@@ -223,7 +258,7 @@ void writeSurface(vec4 albedo, vec3 n, vec3 normal, vec3 tangent_normal, vec3 aa
         // de un charco esta saturada aunque el agua no la cubra).
         float wet = max(max(weather.params.x * exposed * mix(0.25, 1.0, facing_up),
                             clamp(level * 3.0, 0.0, 1.0)),
-                        decal_wet);
+                        max(decal_wet, weather.snow.z * exposed * mix(0.5, 1.0, facing_up)));  // + nieve que se derrite
 
         // Material empapado (Lagarde): en lineal, no sobre el sRGB.
         vec2 wet_factors = wetFactors(roughness, metallic, wet);
@@ -252,6 +287,54 @@ void writeSurface(vec4 albedo, vec3 n, vec3 normal, vec3 tangent_normal, vec3 aa
             metallic *= 1.0 - water;
         }
         albedo.rgb = toSrgb(linear_albedo);
+    }
+
+    // --- Nieve acumulada (sistema de ambiente) ---
+    // snow.x = cobertura, y = espesor (m), z = humedad al derretirse. Cubre lo
+    // que mira hacia arriba y esta a la intemperie (mapa de lluvia): primero
+    // lo plano y las zonas altas de un ruido del mundo; con mas cobertura
+    // llega a las pendientes. Blanca, rugosa, tapa el relieve fino del
+    // material (mas cuanto mas gruesa) y tiene destellos de los cristales.
+    if (weather.snow.x > 0.0) {
+        float exposed_snow = rainExposure(world_position);
+        float up = smoothstep(0.15, 0.85, n.y);
+        float detail_up = mix(up, smoothstep(0.1, 0.9, normal.y), 0.35);
+        float drift_noise = rainFbm(world_position.xz * 0.35 + 11.0) * 0.6 +
+                            rainValueNoise(world_position.xz * 3.7) * 0.4;
+        float field = detail_up * mix(0.65, 1.0, drift_noise);
+        float threshold = 1.0 - weather.snow.x * 1.15;
+        float snow = smoothstep(threshold, threshold + 0.18, field) * smoothstep(0.2, 0.45, n.y) * exposed_snow;
+        if (snow > 0.0) {
+            // Relieve propio de la nieve (montones suaves).
+            vec2 q = world_position.xz * 2.3;
+            float h0 = rainValueNoise(q);
+            vec3 snow_normal = normalize(n + vec3(h0 - rainValueNoise(q + vec2(0.07, 0.0)), 0.0,
+                                                  h0 - rainValueNoise(q + vec2(0.0, 0.07))) * 1.4);
+            float hide_detail = snow * clamp(0.55 + weather.snow.y * 6.0, 0.55, 1.0);
+            // Derritiendose: mas gris, mas lisa (agua) y con menos espesor.
+            float melting = weather.snow.z;
+            vec3 snow_color = mix(vec3(0.9, 0.92, 0.96), vec3(0.8, 0.83, 0.88), drift_noise * 0.5);
+            snow_color = mix(snow_color, vec3(0.62, 0.65, 0.68), melting * 0.6);
+            float snow_roughness = mix(0.72, 0.35, melting);
+            float snow_reflectance = 0.025;
+            // Destellos: algun cristal de cada ~1.5 cm con la cara al azar
+            // (brilla cuando refleja el sol). Se apagan si no caben en el pixel.
+            vec2 cell = floor(world_position.xz / 0.015);
+            float glint = step(0.982, rainHash12(cell)) * (1.0 - smoothstep(0.004, 0.02, footprint)) * (1.0 - melting);
+            vec3 glint_normal = normalize(snow_normal + vec3(rainHash22(cell) - 0.5, 0.0).xzy * 1.3);
+            snow_normal = normalize(mix(snow_normal, glint_normal, glint));
+            snow_roughness = mix(snow_roughness, 0.1, glint);
+            snow_reflectance = mix(snow_reflectance, 0.5, glint);
+
+            albedo.rgb = mix(albedo.rgb, snow_color, snow);
+            normal = normalize(mix(normal, snow_normal, hide_detail));
+            aa_normal = normalize(mix(aa_normal, snow_normal, hide_detail));
+            roughness = mix(roughness, snow_roughness, snow);
+            reflectance = mix(reflectance, snow_reflectance, snow);
+            metallic *= 1.0 - snow;
+            emissive *= 1.0 - snow;
+            occlusion = mix(occlusion, max(occlusion, 0.85), snow);
+        }
     }
 
     // --- Antialiasing especular (Tokuyoshi 2019) ---

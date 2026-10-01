@@ -1,0 +1,39 @@
+<p>
+  El editor usa un tema oscuro de <strong class="text-white">negros en capas</strong>, texto
+  <strong class="text-white">blanco</strong> y dos acentos con significado fijo: <strong class="text-white">rojo</strong>
+  para lo principal y lo elegido, <strong class="text-white">amarillo</strong> para la atención y el estado. Lo que no
+  significa nada va en grises, así que un color siempre te dice algo.
+</p>
+
+<h3 id="colores">Qué significa cada color</h3>
+<table>
+  <thead><tr><th>Color</th><th>Dónde aparece</th></tr></thead>
+  <tbody>
+    <tr><td><code>Rojo</code></td><td>Selección (Jerarquía, Proyecto, transiciones del Animator), pestaña con foco, botón principal (<em>Add Component</em>, <em>+ Añadir</em>, <em>Guardar</em>), deslizadores, casillas y barras de progreso. También los errores de la Consola.</td></tr>
+    <tr><td><code>Amarillo</code></td><td>Avisos, modo <em>Play</em> y <em>Pausa</em> (botones y marco de la vista), destino al soltar algo arrastrado, cambios sin guardar, insignias (edición múltiple, actualización) y el estado que se reproduce en el Animator.</td></tr>
+    <tr><td><code>Rojo / verde / azul</code></td><td>Los ejes X, Y y Z en los campos de posición, rotación y escala (convención de la industria).</td></tr>
+    <tr><td><code>Azul</code></td><td>Prefabs (icono en la Jerarquía, modo de edición de prefab), como en Unity.</td></tr>
+    <tr><td><code>Blanco y grises</code></td><td>El contenido en blanco; etiquetas, metadatos y lo desactivado en grises.</td></tr>
+  </tbody>
+</table>
+
+<h3 id="inspector">El Inspector</h3>
+<ul>
+  <li><strong class="text-white">Cabecera del objeto</strong> en una tarjeta: casilla de activo, icono del tipo, nombre, <em>Static</em>, etiqueta y capa. Con varios objetos elegidos, una insignia amarilla dice cuántos son.</li>
+  <li><strong class="text-white">Buscar propiedad</strong>: la caja de arriba filtra al escribir. Si coincide el nombre del componente se ve entero; si no, solo los campos que coinciden (los grupos se abren solos).</li>
+  <li><strong class="text-white">Tarjeta por componente</strong>: cabecera con icono y nombre en seminegrita, botón <em>Presets</em> (si los tiene) y el menú <code>⋮</code> (también con clic derecho): <em>Restablecer valores</em>, <em>Copiar valores</em>, <em>Pegar valores</em> (en otro objeto con el mismo componente, o en todos los elegidos), <em>Presets</em> y <em>Quitar componente</em>.</li>
+  <li><strong class="text-white">Dos columnas alineadas</strong>: la etiqueta a la izquierda (se acorta con «...» si no cabe; el texto completo y la ayuda salen al pasar el ratón) y el control a la derecha.</li>
+  <li><strong class="text-white">Campos de asset</strong>: caja con el tipo (<code>MDL</code>, <code>MAT</code>, <code>HDR</code>...) y el nombre; acepta soltar desde el Proyecto, la diana abre una lista con buscador de los assets de ese tipo y la <code>x</code> la vacía. Los campos de objeto (<code>OBJ</code>) funcionan igual con la Jerarquía.</li>
+  <li><strong class="text-white">Add Component</strong>: botón rojo a todo el ancho; abre el buscador de componentes por categorías (Enter añade el primero de la lista).</li>
+</ul>
+
+<h3 id="widgets">Para quien hace ventanas del editor</h3>
+<p>
+  Los colores y los widgets compartidos están en <code>CramionEditor/src/Theme.h</code> (espacio de nombres
+  <code>cramion::editor::theme</code>): <code>kBg0</code>...<code>kBg5</code>, <code>kText</code>, <code>kTextDim</code>,
+  <code>kRed</code>, <code>kYellow</code>, <code>kOk</code>, <code>withAlpha()</code>, <code>vec()</code> y los widgets
+  <code>primaryButton</code>, <code>ghostButton</code>, <code>sectionHeader</code>, <code>badge</code>,
+  <code>searchBox</code>, <code>kebabButton</code>, <code>smallText</code>, <code>boldText</code>,
+  <code>beginCard</code>/<code>endCard</code> y <code>pushSelectionColors</code>. Usa los nombres en lugar de colores
+  sueltos para que la ventana siga el tema.
+</p>

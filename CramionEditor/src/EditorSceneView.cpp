@@ -395,7 +395,8 @@ void EditorApp::drawSceneView() {
     view_hovered_ = ImGui::IsItemHovered();
     // En Play (o en pausa) un marco de color, como el tinte de Unity.
     if (playing()) {
-        const ImU32 frame = play_state_ == PlayState::Paused ? IM_COL32(255, 190, 60, 220) : IM_COL32(80, 170, 255, 220);
+        const ImU32 frame = play_state_ == PlayState::Paused ? theme::withAlpha(theme::kYellowDeep, 150)
+                                                             : theme::withAlpha(theme::kYellow, 220);
         ImGui::GetWindowDrawList()->AddRect(origin, ImVec2(origin.x + size.x, origin.y + size.y), frame, 0.0f, 0, 3.0f);
     }
 
@@ -514,6 +515,8 @@ void EditorApp::drawSceneView() {
         waypoint_handle = cinematic_handle || water_handle;
         collider_handle = drawColliderHandles();
     }
+    // Fuego: contorno de la zona y encender con clic (se queda el clic).
+    if (drawFireTool()) collider_handle = true;
     // Herramienta de terreno: se queda con el raton mientras pinta.
     const bool terrain_tool = drawTerrainTool(frame_delta_);
     collider_handle = collider_handle || waypoint_handle || terrain_tool;

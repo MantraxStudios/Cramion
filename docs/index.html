@@ -1,174 +1,254 @@
 <!doctype html>
-<html lang="es" class="scroll-smooth">
+<html lang="es" class="dark scroll-smooth">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Cramion Engine</title>
   <meta name="description" content="Cramion: motor de juegos para Windows con renderizador diferido en Vulkan 1.3, editor de escenas, física, terreno, agua y scripting en Lua.">
+  <meta name="theme-color" content="#09090b">
   <link rel="icon" href="img/icon.png">
+  <script>
+    // Tema antes de pintar (oscuro por defecto; el mismo que el manual).
+    try { const t = localStorage.getItem("cramion-theme"); if (t === "light") document.documentElement.classList.remove("dark"); } catch (e) {}
+  </script>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
   <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/base16/tomorrow-night.min.css">
   <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/lua.min.js"></script>
   <style type="text/tailwindcss">
+    /* Tokens de shadcn/ui (zinc), claro y oscuro. */
+    @custom-variant dark (&:where(.dark, .dark *));
     @theme {
-      --color-ink: #101114;
-      --color-ink-2: #16181c;
-      --color-rule: #2a2d33;
-      --color-mute: #8b919c;
-      --color-paper: #e9e6df;
-      --color-brand: #3fb6ff;
-      --color-amber: #e8a54b;
-      --font-sans: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
-      --font-mono: "IBM Plex Mono", ui-monospace, monospace;
+      --color-background: var(--background);
+      --color-foreground: var(--foreground);
+      --color-card: var(--card);
+      --color-muted: var(--muted);
+      --color-muted-foreground: var(--muted-foreground);
+      --color-accent: var(--accent);
+      --color-primary: var(--primary);
+      --color-primary-foreground: var(--primary-foreground);
+      --color-border: var(--border);
+      --color-brand: var(--brand);
+      --color-donate: #ffc439;
+      --color-donate-foreground: #003087;
+      --font-sans: "Geist", ui-sans-serif, system-ui, sans-serif;
+      --font-mono: "Geist Mono", ui-monospace, monospace;
+      --radius-lg: 0.625rem;
+      --radius-xl: 0.875rem;
     }
-    body { background: var(--color-ink); }
+    :root {
+      --background: #ffffff; --foreground: #09090b; --card: #ffffff; --muted: #f4f4f5; --muted-foreground: #71717a;
+      --accent: #f4f4f5; --primary: #18181b; --primary-foreground: #fafafa; --border: #e4e4e7; --brand: #0284c7;
+    }
+    .dark {
+      --background: #09090b; --foreground: #fafafa; --card: #0c0c0e; --muted: #18181b; --muted-foreground: #a1a1aa;
+      --accent: #1c1c20; --primary: #fafafa; --primary-foreground: #18181b; --border: #27272a; --brand: #38bdf8;
+      color-scheme: dark;
+    }
+    body { background: var(--background); color: var(--foreground); overflow-x: hidden; }
     .hljs { background: transparent !important; padding: 0 !important; }
-    ::selection { background: rgb(63 182 255 / .3); }
-    .link { text-decoration: underline; text-decoration-color: var(--color-rule); text-underline-offset: 4px; }
-    .link:hover { text-decoration-color: var(--color-brand); color: white; }
+    ::selection { background: rgb(56 189 248 / .25); }
+    /* En la capa de componentes: las utilidades (hidden, sm:inline-flex...) mandan sobre ellas. */
+    @layer components {
+      .link { @apply font-medium underline decoration-border underline-offset-4 hover:decoration-foreground; }
+      .btn { @apply inline-flex h-10 items-center justify-center gap-2 rounded-lg px-5 text-sm font-medium whitespace-nowrap transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-muted-foreground; }
+      .btn-sm { @apply h-9 px-3.5; }
+      .btn-primary { @apply bg-primary text-primary-foreground hover:opacity-90; }
+      .btn-outline { @apply border border-border bg-background hover:bg-accent; }
+      .btn-ghost { @apply hover:bg-accent; }
+      .btn-donate { @apply bg-donate font-semibold text-donate-foreground hover:bg-[#ffd466]; }
+      .icon-btn { @apply inline-flex size-9 items-center justify-center rounded-lg hover:bg-accent; }
+      .card { @apply rounded-xl border border-border bg-card; }
+      .badge { @apply inline-flex items-center gap-2 rounded-full border border-border bg-muted px-3 py-1 text-xs text-muted-foreground; }
+      .code-inline { @apply rounded-md border border-border bg-muted px-1.5 py-0.5 font-mono text-[0.85em] text-foreground; }
+    }
+    details > summary { list-style: none; }
+    details > summary::-webkit-details-marker { display: none; }
+    details[open] .chev { transform: rotate(180deg); }
   </style>
 </head>
-<body class="font-sans text-[15px] leading-relaxed text-paper/80 antialiased">
+<body class="font-sans text-[15px] leading-relaxed antialiased">
 
-  <header class="sticky top-0 z-40 border-b border-rule bg-ink/95">
-    <nav class="mx-auto flex h-14 max-w-6xl items-center gap-8 px-5">
-      <a href="#" class="flex items-center gap-2.5">
-        <img src="img/icon.png" alt="" class="h-6 w-6">
-        <span class="font-semibold text-white">Cramion</span>
+  <!-- Cabecera -->
+  <header class="sticky top-0 z-50 border-b border-border bg-background/80 backdrop-blur-md">
+    <nav class="mx-auto flex h-14 max-w-6xl items-center gap-6 px-4 sm:px-6">
+      <a href="#" class="flex shrink-0 items-center gap-2.5 font-semibold">
+        <img src="img/icon.png" alt="" class="size-6 rounded-md bg-zinc-950 p-0.5 dark:bg-transparent dark:p-0"> Cramion
       </a>
-      <div class="hidden gap-6 text-sm text-mute md:flex">
-        <a href="#motor" class="hover:text-white">Motor</a>
-        <a href="#scripting" class="hover:text-white">Lua</a>
-        <a href="#novedades" class="hover:text-white">Novedades</a>
-        <a href="manual/index.html" class="hover:text-white">Manual</a>
-        <a href="manual/licencia.html" class="hover:text-white">Licencia</a>
-        <a href="https://discord.gg/zG7rSsUGEz" target="_blank" rel="noopener" class="hover:text-white">Discord</a>
+      <div class="hidden gap-6 text-sm text-muted-foreground lg:flex">
+        <a href="#motor" class="hover:text-foreground">Características</a>
+        <a href="#scripting" class="hover:text-foreground">Lua</a>
+        <a href="#novedades" class="hover:text-foreground">Novedades</a>
+        <a href="manual/index.html" class="hover:text-foreground">Documentación</a>
+        <a href="manual/licencia.html" class="hover:text-foreground">Licencia</a>
       </div>
-      <a href="https://paypal.me/evan2025" target="_blank" rel="noopener" class="ml-auto mr-3 bg-[#ffc439] px-3 py-1.5 text-sm font-semibold text-[#003087] hover:bg-[#ffd466]">Donar</a>
-      <a href="#descargar" class="border border-paper/30 px-3 py-1.5 text-sm font-medium text-white hover:border-white">Descargar 1.8</a>
+      <div class="ml-auto flex items-center gap-1.5">
+        <a href="https://discord.gg/zG7rSsUGEz" target="_blank" rel="noopener" class="icon-btn hidden sm:inline-flex" aria-label="Discord" title="Discord">
+          <svg class="size-[18px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M8.5 16.5c-2 .6-3.6 0-3.6 0C3.7 13 4 9 5.4 6.6 6.8 5.6 8.5 5.3 8.5 5.3l.6 1.2c1.9-.4 3.9-.4 5.8 0l.6-1.2s1.7.3 3.1 1.3C20 9 20.3 13 19.1 16.5c0 0-1.6.6-3.6 0l-.8-1.3"/><circle cx="9.5" cy="12" r="1"/><circle cx="14.5" cy="12" r="1"/></svg>
+        </a>
+        <button id="theme" class="icon-btn" aria-label="Cambiar entre tema claro y oscuro" title="Tema">
+          <svg class="size-[18px] dark:hidden" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5Z"/></svg>
+          <svg class="hidden size-[18px] dark:block" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+        </button>
+        <a href="https://paypal.me/evan2025" target="_blank" rel="noopener" class="btn btn-donate btn-sm hidden sm:inline-flex">
+          <svg class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M19 14c1.5-1.5 3-3.2 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.8 0-3 .5-4.5 2-1.5-1.5-2.7-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4 3 5.5l7 7Z"/></svg>Donar
+        </a>
+        <a href="https://paypal.me/evan2025" target="_blank" rel="noopener" class="icon-btn text-rose-500 sm:hidden" aria-label="Donar con PayPal" title="Donar">
+          <svg class="size-[18px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M19 14c1.5-1.5 3-3.2 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.8 0-3 .5-4.5 2-1.5-1.5-2.7-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4 3 5.5l7 7Z"/></svg>
+        </a>
+        <a href="#descargar" class="btn btn-primary btn-sm hidden min-[420px]:inline-flex">Descargar</a>
+        <button id="menu" class="icon-btn lg:hidden" aria-label="Menú" aria-expanded="false" aria-controls="mobile-menu">
+          <svg class="size-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
+        </button>
+      </div>
     </nav>
+    <div id="mobile-menu" class="hidden border-t border-border lg:hidden">
+      <div class="mx-auto grid max-w-6xl gap-1 px-4 py-3 text-sm sm:px-6">
+        <a href="#motor" class="rounded-md px-3 py-2 hover:bg-accent">Características</a>
+        <a href="#scripting" class="rounded-md px-3 py-2 hover:bg-accent">Lua</a>
+        <a href="#novedades" class="rounded-md px-3 py-2 hover:bg-accent">Novedades</a>
+        <a href="manual/index.html" class="rounded-md px-3 py-2 hover:bg-accent">Documentación</a>
+        <a href="manual/licencia.html" class="rounded-md px-3 py-2 hover:bg-accent">Licencia</a>
+        <a href="https://discord.gg/zG7rSsUGEz" target="_blank" rel="noopener" class="rounded-md px-3 py-2 hover:bg-accent">Discord</a>
+        <a href="https://paypal.me/evan2025" target="_blank" rel="noopener" class="btn btn-donate mt-2">Donar con PayPal</a>
+      </div>
+    </div>
   </header>
 
-  <!-- Inicio -->
-  <section class="border-b border-rule">
-    <div class="mx-auto grid max-w-6xl gap-10 px-5 py-16 lg:grid-cols-[1fr_1.15fr] lg:items-center lg:py-24">
-      <div>
-        <h1 class="text-4xl font-semibold leading-[1.1] tracking-tight text-white sm:text-5xl">
-          Un motor de juegos 3D para Windows, con su editor.
-        </h1>
-        <p class="mt-6 max-w-lg text-lg text-paper/70">
-          Montas la escena en el editor, escribes el juego en Lua y le das a Play. Render en Vulkan 1.3, física con Jolt,
-          terreno, agua, navegación, animación con IK y exportación a un <span class="font-mono text-[0.9em] text-white">.exe</span>.
-          Gratis para hacer y vender tus juegos, sin regalías.
-        </p>
-        <div class="mt-8 flex flex-wrap items-center gap-x-6 gap-y-3">
-          <a href="https://github.com/MantraxStudios/Cramion/releases/latest/download/Cramion-win64.zip" class="bg-brand px-5 py-2.5 font-semibold text-ink hover:bg-white">Descargar para Windows</a>
-          <a href="manual/index.html" class="link text-paper">Leer el manual</a>
+  <main>
+    <!-- Inicio -->
+    <section class="relative overflow-hidden border-b border-border">
+      <div class="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_60%_50%_at_50%_0%,rgb(56_189_248/0.12),transparent)]"></div>
+      <div class="relative mx-auto grid max-w-6xl gap-12 px-4 py-16 sm:px-6 lg:grid-cols-[1fr_1.1fr] lg:items-center lg:py-24">
+        <div class="min-w-0">
+          <a href="#novedades" class="badge hover:text-foreground">
+            <span class="font-medium text-foreground">Nuevo en la 1.9</span> Fuego, líquidos, clima e IA
+            <svg class="size-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+          </a>
+          <h1 class="mt-6 text-4xl font-bold leading-[1.08] tracking-tight sm:text-5xl lg:text-6xl">
+            Un motor de juegos 3D para Windows, con su editor.
+          </h1>
+          <p class="mt-6 max-w-xl text-lg text-muted-foreground">
+            Montas la escena en el editor, escribes el juego en Lua y le das a Play. Render en Vulkan 1.3, física con Jolt,
+            terreno, agua, navegación, animación con IK y exportación a un <span class="code-inline">.exe</span>.
+            Gratis para hacer y vender tus juegos, sin regalías.
+          </p>
+          <div class="mt-8 flex flex-wrap gap-3">
+            <a href="https://github.com/MantraxStudios/Cramion/releases/latest/download/Cramion-win64.zip" class="btn btn-primary">
+              <svg class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v11M7 10l5 5 5-5M5 20h14"/></svg>Descargar para Windows
+            </a>
+            <a href="manual/index.html" class="btn btn-outline">Leer la documentación</a>
+          </div>
+          <p class="mt-6 font-mono text-xs text-muted-foreground">1.9 · Windows 10/11 x64 · Android · realidad virtual · Vulkan 1.3 · ≈64 MB</p>
         </div>
-        <p class="mt-6 font-mono text-xs text-mute">1.8 · Windows 10/11 x64 · exporta a Android · realidad virtual · GPU con Vulkan 1.3 · ≈60 MB</p>
+
+        <figure class="card min-w-0 overflow-hidden shadow-2xl shadow-black/20">
+          <div class="flex items-center gap-2 border-b border-border px-4 py-2.5">
+            <span class="size-2.5 rounded-full bg-[#ff5f57]"></span><span class="size-2.5 rounded-full bg-[#febc2e]"></span><span class="size-2.5 rounded-full bg-[#28c840]"></span>
+            <span class="ml-2 truncate font-mono text-[11px] text-muted-foreground">Escena · Main — Lit · Free Aspect</span>
+          </div>
+          <video id="hero-video" class="aspect-video w-full object-cover" autoplay muted loop playsinline preload="auto" poster="img/bg-poster.jpg">
+            <source src="bg-web.mp4" type="video/mp4">
+          </video>
+          <figcaption class="border-t border-border px-4 py-2 text-xs text-muted-foreground">Capturado en el motor, en tiempo real.</figcaption>
+        </figure>
       </div>
+    </section>
 
-      <figure class="border border-rule bg-ink-2">
-        <div class="flex items-center justify-between border-b border-rule px-3 py-1.5 font-mono text-[11px] text-mute">
-          <span>Escena · Main</span><span>Lit · Free Aspect</span>
+    <!-- Motor -->
+    <section id="motor" class="scroll-mt-16 border-b border-border">
+      <div class="mx-auto max-w-6xl px-4 py-20 sm:px-6">
+        <div class="max-w-2xl">
+          <p class="text-sm font-medium text-brand">Características</p>
+          <h2 class="mt-2 text-3xl font-bold tracking-tight sm:text-4xl">Todo lo de un juego completo</h2>
+          <p class="mt-4 text-muted-foreground">
+            Un solo motor escrito en C++20. Lo que sigue es lo que hay hoy, no una hoja de ruta. Cada punto tiene su página en la
+            <a href="manual/index.html" class="link text-foreground">documentación</a>.
+          </p>
         </div>
-        <video id="hero-video" class="aspect-video w-full object-cover" autoplay muted loop playsinline preload="auto" poster="img/bg-poster.jpg">
-          <source src="bg-web.mp4" type="video/mp4">
-        </video>
-        <figcaption class="border-t border-rule px-3 py-1.5 font-mono text-[11px] text-mute">Capturado en el motor, en tiempo real.</figcaption>
-      </figure>
-    </div>
-  </section>
 
-  <!-- Motor: hoja de caracteristicas -->
-  <section id="motor" class="border-b border-rule">
-    <div class="mx-auto max-w-6xl px-5 py-20">
-      <div class="grid gap-6 lg:grid-cols-[1fr_2fr]">
-        <h2 class="text-2xl font-semibold tracking-tight text-white">Qué trae</h2>
-        <p class="max-w-2xl text-paper/70">
-          Un solo motor con todo lo de un juego completo, escrito en C++20. Lo que sigue es lo que hay hoy, no una hoja de ruta.
-          Cada punto tiene su página en el <a href="manual/index.html" class="link">manual</a>.
-        </p>
+        <div class="mt-12 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          <article id="render" class="card p-6">
+            <h3 class="font-semibold">Render <span class="ml-1 font-mono text-xs font-normal text-muted-foreground">Vulkan 1.3</span></h3>
+            <p class="mt-2 text-sm text-muted-foreground">Diferido con PBR y materiales de Disney. Cielo físico con día y noche que ilumina y refleja (IBL), sombras en cascada con caché, sombras de contacto y de luces locales, SSAO y SSGI, luz volumétrica, nubes y niebla por altura. Noches con visión nocturna, luna, estrellas y Vía Láctea. Bloom, auto-exposición, TAA, FSR 1, FSR 3.1 y DLSS 4 (inestables), volúmenes de post-procesado, relieve teselado y Render Textures.</p>
+          </article>
+          <article class="card p-6">
+            <h3 class="font-semibold">Rendimiento</h3>
+            <p class="mt-2 text-sm text-muted-foreground">LODs automáticos, static batching, occlusion culling y recorte por clústeres en la GPU, y un presupuesto de frame que baja lo que menos se nota para llegar a tus FPS. Escenas de unos 10 millones de triángulos; bosques de millones de árboles y hierba dibujados en la GPU.</p>
+          </article>
+          <article class="card p-6">
+            <h3 class="font-semibold">Mundo</h3>
+            <p class="mt-2 text-sm text-muted-foreground">Generador de mundos con erosión, ríos, lagos y mar; terreno para esculpir y pintar; océano, lagos y ríos con olas; hierba que reacciona a la física; árboles, casas y aldeas procedurales; NavMesh en tiempo real; mundos de bloques infinitos y pintar prefabs.</p>
+          </article>
+          <article class="card p-6">
+            <h3 class="font-semibold">Física y audio</h3>
+            <p class="mt-2 text-sm text-muted-foreground">Jolt: cuerpos rígidos, colliders, triggers, raycasts, vehículos con motor y marchas, ragdolls, telas que ondean con el viento y cuerpos blandos. Sonido 3D con oclusión por paredes, eco, filtros y zonas de reverberación.</p>
+          </article>
+          <article class="card p-6">
+            <h3 class="font-semibold">Animación</h3>
+            <p class="mt-2 text-sm text-muted-foreground">Animator con Blend Trees 1D y 2D y fundidos inerciales; IK de humanos y animales; Phys Bones, sockets, huesos editables y retargeting de humanoides; cinemáticas con línea de tiempo. Importa FBX, glTF, OBJ y DAE.</p>
+          </article>
+          <article class="card p-6">
+            <h3 class="font-semibold">Editor</h3>
+            <p class="mt-2 text-sm text-muted-foreground">Paneles acoplables, vistas Escena y Juego, pestañas para prefabs y scripts, prefabs enlazados, editor de scripts con IntelliSense, shaders GLSL que se recompilan al guardar, interfaz de juego y exportación a Windows y Android. Hub con plantillas y actualizador con SHA-256.</p>
+          </article>
+          <article class="card p-6">
+            <h3 class="font-semibold">Entrada y VR</h3>
+            <p class="mt-2 text-sm text-muted-foreground">Input Actions como el Enhanced Input de Unreal: teclado, ratón, mando, táctil y mandos de VR, con contextos, modificadores y triggers. Realidad virtual con OpenXR (SteamVR, Meta Quest Link, WMR) en el juego y en el Play del editor.</p>
+          </article>
+          <article class="card p-6">
+            <h3 class="font-semibold">Red</h3>
+            <p class="mt-2 text-sm text-muted-foreground">Multijugador por UDP (ENet) desde Lua: crear partida y unirse por IP, mensajes, objetos y variables sincronizados, entrar tarde. Peticiones HTTPS con el certificado comprobado y JSON.</p>
+          </article>
+          <article class="card p-6">
+            <h3 class="font-semibold">IA en el editor</h3>
+            <p class="mt-2 text-sm text-muted-foreground">Terminal integrada con Claude Code ya conectado al editor, y servidor MCP: Claude, Cursor o Copilot crean escenas, scripts y materiales, prueban en Play y miran capturas dentro del editor.</p>
+          </article>
+        </div>
+
+        <div class="mt-16 grid gap-8 lg:grid-cols-[1fr_2fr]">
+          <div>
+            <h3 class="text-xl font-semibold tracking-tight">Plantillas</h3>
+            <p class="mt-2 text-sm text-muted-foreground">Todas llevan el juego en Lua, a la vista para leerlo y cambiarlo.</p>
+          </div>
+          <div class="grid gap-3 text-sm sm:grid-cols-2">
+            <p class="card p-4"><span class="font-medium">Tercera persona avanzada.</span> <span class="text-muted-foreground">Locomotion Pack de Mixamo con Blend Tree 2D, giros en el sitio, salto sincronizado e IK.</span></p>
+            <p class="card p-4"><span class="font-medium">MMO RPG.</span> <span class="text-muted-foreground">Combate, misiones, inventario, tienda, un jefe y jugadores simulados.</span></p>
+            <p class="card p-4"><span class="font-medium">Online.</span> <span class="text-muted-foreground">Partida por red con chat, marcador y física compartida.</span></p>
+            <p class="card p-4"><span class="font-medium">Mundo abierto.</span> <span class="text-muted-foreground">Isla de 8 × 8 km con unos 2 millones de árboles.</span></p>
+            <p class="card p-4"><span class="font-medium">Mundo de bloques.</span> <span class="text-muted-foreground">Supervivencia con crafteo, hambre y guardado.</span></p>
+            <p class="card p-4"><span class="font-medium">Criaturas.</span> <span class="text-muted-foreground">Un perro con IK en las cuatro patas, Phys Bones y ragdoll.</span></p>
+          </div>
+        </div>
       </div>
+    </section>
 
-      <dl id="render" class="mt-12 border-t border-rule">
-        <div class="grid gap-2 border-b border-rule py-6 md:grid-cols-[1fr_2fr] md:gap-6">
-          <dt class="font-medium text-white">Render <span class="block font-mono text-xs font-normal text-mute">CramionFX · Vulkan 1.3</span></dt>
-          <dd class="text-paper/75">Diferido con PBR metal/rugosidad. Cielo físico con día y noche que ilumina y refleja (IBL), sombras en cascada estabilizadas (con caché de lo estático), sombras de contacto y de luces puntuales y focos, SSAO y SSGI, luz volumétrica con polvo iluminado, nubes y niebla por altura. Noches con visión nocturna del ojo, luna, estrellas y Vía Láctea. Bloom, auto-exposición, TAA, FSR 1, FSR 3.1 y DLSS 4 (inestables) y volúmenes de post-procesado por zonas. Materiales de escaneo con parallax, cavidad y gloss. Render Textures para pantallas, espejos y minimapas.</dd>
+    <!-- Lua -->
+    <section id="scripting" class="scroll-mt-16 border-b border-border">
+      <div class="mx-auto grid max-w-6xl gap-12 px-4 py-20 sm:px-6 lg:grid-cols-2 lg:items-center">
+        <div class="min-w-0">
+          <p class="text-sm font-medium text-brand">Scripting</p>
+          <h2 class="mt-2 text-3xl font-bold tracking-tight sm:text-4xl">El juego se escribe en Lua</h2>
+          <p class="mt-4 text-muted-foreground">
+            Un script es una tabla con <span class="code-inline">Start</span>, <span class="code-inline">Update</span>,
+            <span class="code-inline">OnTriggerEnter</span> y lo que necesites. Sus <span class="code-inline">properties</span>
+            salen en el Inspector y, si guardas el archivo durante el Play, se recarga sin perder el estado.
+          </p>
+          <p class="mt-4 text-muted-foreground">
+            La API cubre entidades, física, navegación, audio, interfaz, animación e IK, gráficos,
+            <a href="manual/red.html" class="link text-foreground">red</a> y <a href="manual/http.html" class="link text-foreground">HTTPS</a>,
+            con autocompletado en el editor. Corre aislado: sin acceso a tus archivos.
+          </p>
+          <a href="manual/index.html" class="btn btn-outline mt-8">Referencia y ejemplos</a>
         </div>
-        <div class="grid gap-2 border-b border-rule py-6 md:grid-cols-[1fr_2fr] md:gap-6">
-          <dt class="font-medium text-white">Rendimiento</dt>
-          <dd class="text-paper/75">LODs automáticos, static batching, occlusion culling y recorte por clústeres en la GPU, y un presupuesto de frame que baja lo que menos se nota para llegar a tus FPS. Escenas de unos 10 millones de triángulos; bosques de millones de árboles dibujados en la GPU con tres niveles de detalle.</dd>
-        </div>
-        <div class="grid gap-2 border-b border-rule py-6 md:grid-cols-[1fr_2fr] md:gap-6">
-          <dt class="font-medium text-white">Mundo</dt>
-          <dd class="text-paper/75">Terreno para esculpir y pintar; océano, lagos y ríos con olas que reaccionan a lo que entra; NavMesh (Recast/Detour) que se rehace en tiempo real con agentes que se esquivan; vegetación sembrada sobre el terreno; mundos de bloques infinitos con cuevas y guardado; pintar prefabs como el Foliage de Unreal.</dd>
-        </div>
-        <div class="grid gap-2 border-b border-rule py-6 md:grid-cols-[1fr_2fr] md:gap-6">
-          <dt class="font-medium text-white">Física y audio</dt>
-          <dd class="text-paper/75">Jolt: cuerpos rígidos, colliders, triggers, raycasts, vehículos con motor y marchas, ragdolls, telas que ondean con el viento y cuerpos blandos como gelatina. Sonido 3D con oclusión por paredes, eco, filtros y zonas de reverberación.</dd>
-        </div>
-        <div class="grid gap-2 border-b border-rule py-6 md:grid-cols-[1fr_2fr] md:gap-6">
-          <dt class="font-medium text-white">Animación</dt>
-          <dd class="text-paper/75">Animator con Blend Trees 1D y 2D y fundidos; IK de humanos y animales (pies y patas al suelo, mirada, manos) suavizado en el tiempo; Phys Bones, sockets, huesos editables y retargeting de humanoides; cinemáticas con línea de tiempo. Importación de FBX, glTF, OBJ y DAE con Scale Factor y conversión de unidades.</dd>
-        </div>
-        <div class="grid gap-2 border-b border-rule py-6 md:grid-cols-[1fr_2fr] md:gap-6">
-          <dt class="font-medium text-white">Editor</dt>
-          <dd class="text-paper/75">Paneles acoplables, vistas Escena y Juego, pestañas para prefabs y scripts, prefabs con instancias enlazadas, editor de scripts con IntelliSense de toda la API y de tu proyecto, shaders de superficie en GLSL que se recompilan al guardar, mallas por código, interfaz de juego y exportación con icono y ajustes propios. Hub con plantillas y un actualizador que comprueba cada descarga con SHA-256.</dd>
-        </div>
-        <div class="grid gap-2 border-b border-rule py-6 md:grid-cols-[1fr_2fr] md:gap-6">
-          <dt class="font-medium text-white">Entrada y VR</dt>
-          <dd class="text-paper/75">Input Actions como el Enhanced Input de Unreal: acciones con teclado, ratón, mando, táctil y mandos de VR, contextos con prioridad, modificadores y triggers. Realidad virtual con OpenXR (SteamVR, Meta Quest Link, WMR) con XR Origin y mandos, en el juego exportado y en el Play del editor.</dd>
-        </div>
-        <div class="grid gap-2 border-b border-rule py-6 md:grid-cols-[1fr_2fr] md:gap-6">
-          <dt class="font-medium text-white">Red</dt>
-          <dd class="text-paper/75">Multijugador por UDP (ENet) desde Lua: crear partida y unirse por IP, mensajes, objetos y variables sincronizados, entrar tarde. Peticiones HTTPS con el certificado comprobado y JSON.</dd>
-        </div>
-        <div class="grid gap-2 py-6 md:grid-cols-[1fr_2fr] md:gap-6">
-          <dt class="font-medium text-white">IA en el editor</dt>
-          <dd class="text-paper/75">Terminal integrada con Claude Code ya conectado al editor, y servidor MCP: Claude, Cursor o Copilot crean escenas, scripts y materiales, prueban en Play y miran capturas dentro del editor.</dd>
-        </div>
-      </dl>
-
-      <div class="mt-16 grid gap-6 lg:grid-cols-[1fr_2fr]">
-        <h3 class="text-lg font-semibold text-white">Plantillas</h3>
-        <div class="grid gap-x-10 gap-y-4 text-sm sm:grid-cols-2">
-          <p><span class="text-white">Tercera persona avanzada.</span> Tu Locomotion Pack de Mixamo con Blend Tree 2D, giros en el sitio, salto sincronizado e IK.</p>
-          <p><span class="text-white">MMO RPG.</span> Combate, misiones, inventario, tienda, un jefe y jugadores simulados.</p>
-          <p><span class="text-white">Online.</span> Partida por red con chat, marcador y física compartida.</p>
-          <p><span class="text-white">Mundo abierto.</span> Isla de 8 × 8 km con unos 2 millones de árboles.</p>
-          <p><span class="text-white">Mundo de bloques.</span> Supervivencia con crafteo, hambre y guardado.</p>
-          <p><span class="text-white">Criaturas.</span> Un perro con IK en las cuatro patas, Phys Bones y ragdoll.</p>
-        </div>
-        <p class="text-sm text-mute lg:col-start-2">Todas llevan el juego en Lua, a la vista para leerlo y cambiarlo.</p>
-      </div>
-    </div>
-  </section>
-
-  <!-- Lua -->
-  <section id="scripting" class="border-b border-rule">
-    <div class="mx-auto grid max-w-6xl gap-12 px-5 py-20 lg:grid-cols-2">
-      <div>
-        <h2 class="text-2xl font-semibold tracking-tight text-white">El juego se escribe en Lua</h2>
-        <p class="mt-4 text-paper/70">
-          Un script es una tabla con <code class="font-mono text-[0.9em] text-white">Start</code>, <code class="font-mono text-[0.9em] text-white">Update</code>,
-          <code class="font-mono text-[0.9em] text-white">OnTriggerEnter</code> y lo que necesites. Sus <code class="font-mono text-[0.9em] text-white">properties</code>
-          salen en el Inspector y, si guardas el archivo durante el Play, se recarga sin perder el estado.
-        </p>
-        <p class="mt-4 text-paper/70">
-          La API cubre entidades, física, navegación, audio, interfaz, animación e IK, gráficos,
-          <a href="manual/red.html" class="link">red</a> y <a href="manual/http.html" class="link">HTTPS</a>, con autocompletado
-          en el editor. Corre aislado: sin acceso a tus archivos.
-        </p>
-        <a href="manual/index.html" class="link mt-6 inline-block text-paper">Referencia y ejemplos</a>
-      </div>
-      <div class="border border-rule bg-ink-2">
-        <div class="border-b border-rule px-4 py-2 font-mono text-xs text-mute">Assets/Scripts/Jugador.lua</div>
-        <pre class="overflow-x-auto p-5 text-[13px] leading-relaxed"><code class="language-lua">local Jugador = {
+        <div class="min-w-0 overflow-hidden rounded-xl border border-border bg-[#0c0c0e]">
+          <div class="flex items-center justify-between border-b border-white/10 px-4 py-2.5 font-mono text-xs text-zinc-400">
+            <span class="truncate">Assets/Scripts/Jugador.lua</span><span>Lua 5.4</span>
+          </div>
+          <pre class="overflow-x-auto p-5 text-[13px] leading-relaxed text-zinc-200"><code class="language-lua">local Jugador = {
     properties = { velocidad = 5.0, salto = 6.0 }
 }
 
@@ -190,247 +270,286 @@ function Jugador:OnTriggerEnter(other)
 end
 
 return Jugador</code></pre>
-      </div>
-    </div>
-  </section>
-
-  <!-- Novedades -->
-  <section id="novedades" class="border-b border-rule">
-    <div class="mx-auto grid max-w-6xl gap-6 px-5 py-20 lg:grid-cols-[1fr_2fr]">
-      <div>
-        <h2 class="text-2xl font-semibold tracking-tight text-white">1.8</h2>
-        <p class="mt-1 font-mono text-xs text-mute">septiembre de 2026</p>
-      </div>
-      <div>
-        <ul class="space-y-3 text-paper/75">
-          <li><span class="text-white">Generador de terreno.</span> Un mundo entero en un segundo: isla, archipiélago, continente, cordilleras o cañones, con erosión por lluvia, ríos que bajan hasta el mar, lagos, océano y 8 capas con texturas realistas.</li>
-          <li><span class="text-white">Hierba en la GPU.</span> Millones de briznas con viento y translucidez que se apartan y se aplastan cuando pasa algo con física.</li>
-          <li><span class="text-white">Árboles procedurales.</span> Pino, abeto, roble, abedul, palmera y sauce con tronco y ramas de verdad, corteza de placas y racimos de hojas. Nunca crecen en el agua.</li>
-          <li><span class="text-white">Casas y aldeas.</span> Cabañas de troncos, de tablas, casitas de piedra y casas de campo procedurales, listas para el juego (pocos triángulos, materiales compartidos, colisión y puerta que se abre), repartidas en aldeas junto al río.</li>
-          <li><span class="text-white">Bajo el agua en todas partes.</span> El efecto funciona en el océano, los lagos y los ríos, solo donde de verdad hay agua.</li>
-        </ul>
-        <div class="mt-6 grid gap-3 sm:grid-cols-2">
-          <figure class="border border-rule bg-ink-2">
-            <img src="img/mundo-casa.jpg" alt="Casa de campo procedural entre árboles generados" class="w-full" loading="lazy">
-            <figcaption class="border-t border-rule px-3 py-1.5 font-mono text-[11px] text-mute">Casa de campo y bosque</figcaption>
-          </figure>
-          <figure class="border border-rule bg-ink-2">
-            <img src="img/mundo-cabana.jpg" alt="Cabaña de troncos procedural" class="w-full" loading="lazy">
-            <figcaption class="border-t border-rule px-3 py-1.5 font-mono text-[11px] text-mute">Cabaña de troncos</figcaption>
-          </figure>
-        </div>
-        <a href="manual/mundo-procedural.html" class="link mt-6 inline-block text-sm">Mundo procedural en el manual</a>
-      </div>
-    </div>
-  </section>
-
-  <!-- Novedades de la 1.7 -->
-  <section id="novedades-17" class="border-b border-rule">
-    <div class="mx-auto grid max-w-6xl gap-6 px-5 py-20 lg:grid-cols-[1fr_2fr]">
-      <div>
-        <h2 class="text-2xl font-semibold tracking-tight text-white">1.7</h2>
-        <p class="mt-1 font-mono text-xs text-mute">septiembre de 2026</p>
-      </div>
-      <div>
-        <ul class="space-y-3 text-paper/75">
-          <li><span class="text-white">Materiales de Disney.</span> El modelo de Burley (el de Unreal, Unity HDRP y el Principled BSDF de Blender): difuso de Burley en todos los materiales y un modelo por material.</li>
-          <li><span class="text-white">Barniz.</span> Una capa brillante encima con su propio reflejo: coches, madera barnizada, fibra de carbono.</li>
-          <li><span class="text-white">Tela.</span> Brillo suave en los bordes para ropa, terciopelo y musgo.</li>
-          <li><span class="text-white">Piel y hojas.</span> Subsurface y translucidez: a contraluz la luz atraviesa las hojas y las orejas, según su grosor.</li>
-          <li><span class="text-white">Metal cepillado.</span> Brillo y reflejos anisótropos con dirección.</li>
-          <li><span class="text-white">Vidrio con refracción.</span> Índice de refracción, grosor, tinte y esmerilado por rugosidad.</li>
-        </ul>
-        <a href="manual/materiales.html#disney" class="link mt-6 inline-block text-sm">Los modelos en el manual</a>
-      </div>
-    </div>
-  </section>
-
-  <!-- Novedades de la 1.6 -->
-  <section id="novedades-16" class="border-b border-rule">
-    <div class="mx-auto grid max-w-6xl gap-6 px-5 py-20 lg:grid-cols-[1fr_2fr]">
-      <div>
-        <h2 class="text-2xl font-semibold tracking-tight text-white">1.6</h2>
-        <p class="mt-1 font-mono text-xs text-mute">septiembre de 2026</p>
-      </div>
-      <div>
-        <ul class="space-y-3 text-paper/75">
-          <li><span class="text-white">Relieve teselado.</span> Con un mapa de altura, el material puede partir la malla cerca de la cámara y subir cada vértice de verdad: silueta, sombras y oclusión reales, como el displacement de Unreal. Densidad por material y menos detalle con la distancia.</li>
-          <li><span class="text-white">Auto-sombra del parallax.</span> Las piedras y grietas del relieve se hacen sombra entre ellas con el sol.</li>
-          <li><span class="text-white">Parallax en los shaders propios.</span> Los <span class="font-mono text-[0.9em]">.crshader</span> con mapa de altura tienen el mismo relieve que el material estándar.</li>
-          <li><span class="text-white">Donaciones.</span> Botón de PayPal en el Hub y en la web, para quien quiera apoyar el motor. Sigue siendo gratis.</li>
-        </ul>
-        <a href="manual/materiales.html#relieve" class="link mt-6 inline-block text-sm">Relieve en el manual</a>
-      </div>
-    </div>
-  </section>
-
-  <!-- Novedades de la 1.5 -->
-  <section id="novedades-15" class="border-b border-rule">
-    <div class="mx-auto grid max-w-6xl gap-6 px-5 py-20 lg:grid-cols-[1fr_2fr]">
-      <div>
-        <h2 class="text-2xl font-semibold tracking-tight text-white">1.5</h2>
-        <p class="mt-1 font-mono text-xs text-mute">septiembre de 2026</p>
-      </div>
-      <div>
-        <ul class="space-y-3 text-paper/75">
-          <li><span class="text-white">Licencia nueva.</span> El editor sigue siendo gratis, y los juegos que hagas con él son tuyos: los vendes donde quieras, sin regalías. Lo que no se permite es vender, revender o resubir el motor.</li>
-          <li><span class="text-white">Código fuente bajo licencia.</span> Ya no es público: se entrega con una licencia de código fuente que se pide por correo.</li>
-          <li><span class="text-white">Para todas las versiones.</span> Desde el 30 de septiembre de 2026 la licencia nueva vale también para la 1.4 y las anteriores.</li>
-          <li><span class="text-white">Créditos en orden.</span> El zip trae la licencia, la política de marca y las licencias de todas las librerías que usa.</li>
-        </ul>
-        <a href="manual/licencia.html" class="link mt-6 inline-block text-sm">Leer la licencia</a>
-      </div>
-    </div>
-  </section>
-
-  <!-- Novedades de la 1.4 -->
-  <section id="novedades-14" class="border-b border-rule">
-    <div class="mx-auto grid max-w-6xl gap-6 px-5 py-20 lg:grid-cols-[1fr_2fr]">
-      <div>
-        <h2 class="text-2xl font-semibold tracking-tight text-white">1.4</h2>
-        <p class="mt-1 font-mono text-xs text-mute">septiembre de 2026</p>
-      </div>
-      <div>
-        <ul class="space-y-3 text-paper/75">
-          <li><span class="text-white">DataPacks.</span> Como los AssetBundles de Unity: escenas enteras u objetos con todo lo que usan en un <span class="font-mono text-[0.9em]">.datapack</span>, sin el ejecutable. Niveles descargables, DLC, mods o skins que el juego carga en marcha con <span class="font-mono text-[0.9em]">DataPack.loadScene</span> y <span class="font-mono text-[0.9em]">DataPack.instantiate</span>.</li>
-          <li><span class="text-white">Empaquetar con un clic derecho.</span> Sobre un objeto de la Jerarquía, o una escena desde el menú Archivo. Exporta en segundo plano con barra de progreso y se puede cancelar.</li>
-          <li><span class="text-white">Sombras por rayos para muchas luces.</span> Farolas, antorchas y focos con sombras trazadas y penumbra según el tamaño de la lámpara. ~0,5 ms con 16 luces.</li>
-          <li><span class="text-white">Mesh shaders.</span> Sombras del sol y geometría por meshlets: de 56 a 61 FPS en una escena grande, con la misma imagen.</li>
-          <li><span class="text-white">Opacity micromaps y SER.</span> El follaje recortado se resuelve en el hardware de rayos y el path tracing puede reordenar los hilos por material.</li>
-          <li><span class="text-white">Play como Unity.</span> Elige si al dar Play se salta a la pestaña Juego o se queda en la vista actual.</li>
-          <li><span class="text-white">IntelliSense.</span> DataPack, Screen, XR y lo que faltaba de Input, con su ayuda.</li>
-          <li><span class="text-white">Corregido.</span> El plano lejano de la cámara, y el color de lo que alumbra una farola de noche.</li>
-        </ul>
-        <a href="manual/datapacks.html" class="link mt-6 inline-block text-sm">DataPacks en el manual</a>
-      </div>
-    </div>
-  </section>
-
-  <!-- Novedades de la 1.3 -->
-  <section id="novedades-13" class="border-b border-rule">
-    <div class="mx-auto grid max-w-6xl gap-6 px-5 py-20 lg:grid-cols-[1fr_2fr]">
-      <div>
-        <h2 class="text-2xl font-semibold tracking-tight text-white">1.3</h2>
-        <p class="mt-1 font-mono text-xs text-mute">septiembre de 2026</p>
-      </div>
-      <div>
-        <div class="grid gap-3 sm:grid-cols-2">
-          <figure class="border border-rule bg-ink-2">
-            <img src="img/newlightday.png" alt="Escena de prueba de día en el editor de Cramion" class="w-full" loading="lazy">
-            <figcaption class="border-t border-rule px-3 py-1.5 font-mono text-[11px] text-mute">Día</figcaption>
-          </figure>
-          <figure class="border border-rule bg-ink-2">
-            <img src="img/newlightnight.png" alt="La misma escena de noche, con luna y una farola" class="w-full" loading="lazy">
-            <figcaption class="border-t border-rule px-3 py-1.5 font-mono text-[11px] text-mute">Noche · misma escena, sin tocar nada más</figcaption>
-          </figure>
-        </div>
-        <ul class="mt-8 space-y-3 text-paper/75">
-          <li><span class="text-white">Noches realistas.</span> Visión nocturna del ojo (efecto Purkinje): lo que solo ilumina la luna se vuelve gris azulado y lo que alumbra una farola conserva su color. Luna con mares y halo, estrellas de colores y la Vía Láctea.</li>
-          <li><span class="text-white">Terminal con IA en el editor.</span> <em>Ventana &gt; Terminal (IA)</em>: consolas de Windows con pestañas y un botón que abre Claude Code ya conectado al editor por MCP. También PowerShell, CMD, Codex y Gemini.</li>
-          <li><span class="text-white">Luces dentro de su lámpara.</span> Una luz puesta dentro de la bombilla o del poste ya no queda tapada por ellos.</li>
-          <li><span class="text-white">Sombras más rápidas.</span> Los personajes animados ya no obligan a redibujar todo el mapa de sombras cada frame: en escenas con mucha hierba, de 39 a 58 FPS en Play.</li>
-          <li><span class="text-white">AMD FSR 3.1 y NVIDIA DLSS 4</span> <span class="font-mono text-xs text-mute">(inestables)</span>. Escalado temporal de los fabricantes, sin tirones al cambiar la resolución.</li>
-          <li><span class="text-white">Color más fiel.</span> Salida con la curva sRGB exacta: sombras profundas, no lavadas.</li>
-        </ul>
-      </div>
-    </div>
-  </section>
-
-  <!-- Novedades de la 1.2 -->
-  <section id="novedades-12" class="border-b border-rule">
-    <div class="mx-auto grid max-w-6xl gap-6 px-5 py-20 lg:grid-cols-[1fr_2fr]">
-      <div>
-        <h2 class="text-2xl font-semibold tracking-tight text-white">1.2</h2>
-        <p class="mt-1 font-mono text-xs text-mute">septiembre de 2026</p>
-      </div>
-      <div>
-        <ul class="space-y-3 text-paper/75">
-          <li><span class="text-white">Realidad virtual.</span> OpenXR con cualquier casco de PC: XR Origin con cámara y mandos, botones en Input Actions y la tabla <span class="font-mono text-[0.9em]">XR</span> en Lua.</li>
-          <li><span class="text-white">Input Actions como Unreal.</span> Acciones Bool, float, Vec2 y Vec3 con muchas teclas, contextos, modificadores y triggers.</li>
-          <li><span class="text-white">Telas.</span> Cortinas, banderas y sábanas que cuelgan, ondean con el viento y chocan con todo.</li>
-          <li><span class="text-white">Cuerpos blandos.</span> Gelatinas y pelotas de goma que rebotan, se aplastan y vuelven a su forma.</li>
-          <li><span class="text-white">IntelliSense completo.</span> Toda la API, tipos por tus variables, lo de tu proyecto dentro de los textos y la firma de cada función. El editor de scripts ya no tiembla al escribir.</li>
-          <li><span class="text-white">Android.</span> Exporta a APK, AAB (Google Play) y OBB con paquete, versión, orientación, permisos, icono y firma. <em>Exportar e instalar</em> lo abre en el móvil.</li>
-          <li><span class="text-white">Controles táctiles como Unreal.</span> Joystick, mirar y botones diseñados en el editor, probados con el ratón y controlados desde Lua.</li>
-          <li><span class="text-white">Mando y orientación.</span> Mandos Bluetooth/USB y <span class="font-mono text-[0.9em]">Screen.setOrientation</span> libre o fija.</li>
-          <li><span class="text-white">Ultra realista.</span> Nuevo preset con todos los efectos, y los ajustes gráficos se aplican al momento.</li>
-          <li><span class="text-white">Luces en mapas grandes.</span> Con más de 32 luces se dibujan las más cercanas a la cámara y las apagadas no ocupan hueco.</li>
-          <li><span class="text-white">Decals.</span> Hasta 32 imágenes distintas por escena.</li>
-          <li><span class="text-white">Agua realista.</span> Las olas se tapan entre sí, borreguitos de espuma en las crestas y un mar lejano sin rayas.</li>
-          <li><span class="text-white">Sombras del sol con penumbra real.</span> Nítidas al pie y suaves con la distancia; el cielo cubierto da una luz gris.</li>
-          <li><span class="text-white">Nubes realistas.</span> Claros y masas, estratos, cúmulos y cumulonimbos, viento, y sus sombras recorren el suelo.</li>
-          <li><span class="text-white">Animación.</span> Transiciones inerciales como Unreal, ciclos que continúan entre estados y pies bloqueados que no patinan.</li>
-          <li><span class="text-white">Path tracing, motion blur y profundidad de campo.</span> Referencia física con un botón, bokeh de lente real y fuerza de la sombra por luz.</li>
-          <li><span class="text-white">Presets.</span> Post-procesado Realista, Cinematográfico, Noche, Terror, Retro... o los tuyos.</li>
-          <li><span class="text-white">Corregido.</span> Las manchas que parpadeaban sobre los objetos con muchos en escena.</li>
-        </ul>
-      </div>
-    </div>
-  </section>
-
-  <!-- Descargar -->
-  <section id="descargar" class="border-b border-rule bg-ink-2">
-    <div class="mx-auto grid max-w-6xl gap-10 px-5 py-20 lg:grid-cols-[1fr_2fr]">
-      <div>
-        <h2 class="text-2xl font-semibold tracking-tight text-white">Descargar</h2>
-        <p class="mt-4 text-paper/70">Descomprime y abre <span class="font-mono text-[0.9em] text-white">CramionEditor.exe</span>. Desde la 0.6.2 el motor avisa de las versiones nuevas y se actualiza solo.</p>
-        <p class="mt-4 text-sm text-mute">La única descarga oficial es esta, y es gratis. Si alguien te vende Cramion, no es oficial: avisa en el Discord.</p>
-        <div class="mt-8 flex flex-col items-start gap-3">
-          <a href="https://github.com/MantraxStudios/Cramion/releases/latest/download/Cramion-win64.zip" class="bg-brand px-5 py-2.5 font-semibold text-ink hover:bg-white">Cramion-win64.zip · ≈60 MB</a>
-          <a href="https://discord.gg/zG7rSsUGEz" target="_blank" rel="noopener" class="link text-sm">Discord de la comunidad</a>
-        </div>
-        <div class="mt-10 border-l-2 border-[#ffc439] pl-4">
-          <p class="text-white">Apoya Cramion</p>
-          <p class="mt-1 text-sm text-paper/70">El motor es gratis y lo seguirá siendo. Si te sirve, una donación ayuda a seguir añadiendo cosas.</p>
-          <a href="https://paypal.me/evan2025" target="_blank" rel="noopener" class="mt-3 inline-block bg-[#ffc439] px-5 py-2 font-semibold text-[#003087] hover:bg-[#ffd466]">Donar con PayPal</a>
         </div>
       </div>
-      <table class="w-full self-start text-sm">
-        <caption class="pb-3 text-left font-mono text-xs text-mute">Contenido del zip</caption>
-        <tbody class="font-mono">
-          <tr class="border-t border-rule"><td class="py-2.5 pr-4 text-white">CramionEditor.exe</td><td class="py-2.5 text-paper/70">editor de escenas</td></tr>
-          <tr class="border-t border-rule"><td class="py-2.5 pr-4 text-white">CramionPlayer.exe</td><td class="py-2.5 text-paper/70">base de los juegos exportados</td></tr>
-          <tr class="border-t border-rule"><td class="py-2.5 pr-4 text-white">CramionUpdater.exe</td><td class="py-2.5 text-paper/70">actualizador</td></tr>
-          <tr class="border-t border-rule"><td class="py-2.5 pr-4 text-white">cramion.exe</td><td class="py-2.5 text-paper/70">demo de render</td></tr>
-          <tr class="border-t border-rule"><td class="py-2.5 pr-4 text-white">shaders/</td><td class="py-2.5 text-paper/70">SPIR-V compilado</td></tr>
-          <tr class="border-t border-rule"><td class="py-2.5 pr-4 text-white">*.dll</td><td class="py-2.5 text-paper/70">AMD FSR 3.1 y NVIDIA DLSS 4</td></tr>
-          <tr class="border-t border-rule"><td class="py-2.5 pr-4 text-white">android/</td><td class="py-2.5 text-paper/70">runtime para exportar a Android</td></tr>
-          <tr class="border-y border-rule"><td class="py-2.5 pr-4 text-white">Requisitos</td><td class="py-2.5 font-sans text-paper/70">Windows 10/11 x64 y una GPU con Vulkan 1.3. Las escenas de demostración no van incluidas.</td></tr>
-        </tbody>
-      </table>
-    </div>
-  </section>
+    </section>
 
-  <!-- Codigo fuente -->
-  <section id="codigo" class="border-b border-rule">
-    <div class="mx-auto grid max-w-6xl gap-10 px-5 py-20 lg:grid-cols-[1fr_2fr]">
-      <div>
-        <h2 class="text-2xl font-semibold tracking-tight text-white">Código fuente</h2>
-        <p class="mt-4 text-paper/70">Para hacer juegos no hace falta: el zip trae el editor completo.</p>
+    <!-- Novedades -->
+    <section id="novedades" class="scroll-mt-16 border-b border-border">
+      <div class="mx-auto max-w-6xl px-4 py-20 sm:px-6">
+        <div class="flex flex-wrap items-end justify-between gap-4">
+          <div>
+            <p class="text-sm font-medium text-brand">Novedades</p>
+            <h2 class="mt-2 text-3xl font-bold tracking-tight sm:text-4xl">Cramion 1.9: fuego, líquidos, clima e IA</h2>
+          </div>
+          <span class="badge">septiembre de 2026</span>
+        </div>
+
+        <div class="mt-10 grid gap-6 lg:grid-cols-[1.2fr_1fr]">
+          <div class="grid min-w-0 gap-4 sm:grid-cols-2">
+            <figure class="card overflow-hidden sm:col-span-2">
+              <img src="img/v19-fuego.jpg" alt="Incendio con llamas y una columna de humo volumétrica" class="w-full" loading="lazy">
+              <figcaption class="border-t border-border px-4 py-2 text-xs text-muted-foreground">Incendio que se propaga, con llamas y humo volumétricos</figcaption>
+            </figure>
+            <figure class="card overflow-hidden">
+              <img src="img/v19-lava.jpg" alt="Lava de partículas cayendo en un tanque de agua" class="w-full" loading="lazy">
+              <figcaption class="border-t border-border px-4 py-2 text-xs text-muted-foreground">Lava sobre agua (líquidos en la GPU)</figcaption>
+            </figure>
+            <figure class="card overflow-hidden">
+              <img src="img/v19-oceano.jpg" alt="Océano con oleaje FFT" class="w-full" loading="lazy">
+              <figcaption class="border-t border-border px-4 py-2 text-xs text-muted-foreground">Océano con oleaje FFT</figcaption>
+            </figure>
+            <figure class="card overflow-hidden sm:col-span-2">
+              <img src="img/v19-maquina.jpg" alt="Editor de máquinas de estados en su propia pestaña" class="w-full" loading="lazy">
+              <figcaption class="border-t border-border px-4 py-2 text-xs text-muted-foreground">Máquina de estados de un enemigo, en su propia pestaña</figcaption>
+            </figure>
+          </div>
+          <div class="card min-w-0 p-6">
+            <ul class="space-y-4 text-sm">
+              <li><p class="font-medium">Ambiente y clima</p><p class="mt-1 text-muted-foreground">Como Enviro Sky: clima con transiciones, hora y fecha con el sol y la luna reales, estaciones, viento, rayos con truenos, lluvia y nieve que cae y se acumula, y sonido ambiente.</p></li>
+              <li><p class="font-medium">Fuego</p><p class="mt-1 text-muted-foreground">Incendios que se propagan por la hierba y el bosque según el viento y la pendiente, con llamas y humo volumétricos, luces y suelo carbonizado.</p></li>
+              <li><p class="font-medium">Líquidos</p><p class="mt-1 text-muted-foreground">Agua, miel, lava, barro, sangre, aceite y ácido de partículas en la GPU: chocan, salpican, hacen flotar los objetos y se ven como una superficie continua.</p></li>
+              <li><p class="font-medium">Océano FFT</p><p class="mt-1 text-muted-foreground">Oleaje como el de Crest calculado con el viento, mar de fondo, espuma que viaja con la ola, ríos con corriente y una vista bajo el agua nueva.</p></li>
+              <li><p class="font-medium">Máquinas de estados</p><p class="mt-1 text-muted-foreground">IA como los State Graphs de Bolt: estados en un grafo con transiciones y Lua dentro de cada estado, en su propia pestaña y en vivo durante el Play.</p></li>
+              <li><p class="font-medium">Editor renovado</p><p class="mt-1 text-muted-foreground">Tema nuevo y un Inspector con tarjetas, buscador de propiedades y copiar y pegar valores.</p></li>
+            </ul>
+            <a href="manual/fuego.html" class="btn btn-outline btn-sm mt-6">Fuego, líquidos y clima en la documentación</a>
+          </div>
+        </div>
+
+        <h3 class="mt-16 text-lg font-semibold tracking-tight">Versiones anteriores</h3>
+        <div class="mt-4 divide-y divide-border rounded-xl border border-border">
+          <details id="novedades-18" class="group">
+            <summary class="flex cursor-pointer items-center justify-between gap-4 px-5 py-4 hover:bg-accent/50">
+              <span><span class="font-semibold">1.8</span> <span class="ml-2 text-sm text-muted-foreground">Mundo procedural</span></span>
+              <svg class="chev size-4 shrink-0 transition-transform" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="m6 9 6 6 6-6"/></svg>
+            </summary>
+            <div class="px-5 pb-5 text-sm text-muted-foreground">
+              <div class="grid gap-3 sm:grid-cols-2">
+                <figure class="card overflow-hidden"><img src="img/mundo-casa.jpg" alt="Casa de campo procedural entre árboles generados" class="w-full" loading="lazy"><figcaption class="border-t border-border px-3 py-1.5 text-xs">Casa de campo, hierba y bosque generados</figcaption></figure>
+                <figure class="card overflow-hidden"><img src="img/mundo-aldea.jpg" alt="Aldea junto al río vista desde arriba" class="w-full" loading="lazy"><figcaption class="border-t border-border px-3 py-1.5 text-xs">Aldea junto al río</figcaption></figure>
+              </div>
+              <ul class="mt-4 list-disc space-y-2 pl-5">
+                <li><span class="text-foreground">Generador de terreno.</span> Un mundo entero en un segundo: isla, archipiélago, continente, cordilleras o cañones, con erosión por lluvia, ríos que bajan hasta el mar, lagos, océano y 8 capas con texturas realistas.</li>
+                <li><span class="text-foreground">Hierba en la GPU.</span> Millones de briznas con viento y translucidez que se apartan y se aplastan cuando pasa algo con física.</li>
+                <li><span class="text-foreground">Árboles procedurales.</span> Pino, abeto, roble, abedul, palmera y sauce con tronco y ramas de verdad. Nunca crecen en el agua.</li>
+                <li><span class="text-foreground">Casas y aldeas.</span> Cabañas de troncos, de tablas, casitas de piedra y casas de campo listas para el juego.</li>
+                <li><span class="text-foreground">Bajo el agua en todas partes.</span> En el océano, los lagos y los ríos, solo donde de verdad hay agua.</li>
+              </ul>
+              <a href="manual/mundo-procedural.html" class="link mt-4 inline-block text-foreground">Mundo procedural en la documentación</a>
+            </div>
+          </details>
+          <details id="novedades-17" class="group">
+            <summary class="flex cursor-pointer items-center justify-between gap-4 px-5 py-4 hover:bg-accent/50">
+              <span><span class="font-semibold">1.7</span> <span class="ml-2 text-sm text-muted-foreground">Materiales de Disney</span></span>
+              <svg class="chev size-4 shrink-0 transition-transform" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="m6 9 6 6 6-6"/></svg>
+            </summary>
+            <div class="px-5 pb-5 text-sm text-muted-foreground">
+              <ul class="list-disc space-y-2 pl-5">
+                <li><span class="text-foreground">Materiales de Disney.</span> El modelo de Burley (el de Unreal, Unity HDRP y el Principled BSDF de Blender): difuso de Burley en todos los materiales y un modelo por material.</li>
+                <li><span class="text-foreground">Barniz.</span> Una capa brillante encima con su propio reflejo: coches, madera barnizada, fibra de carbono.</li>
+                <li><span class="text-foreground">Tela.</span> Brillo suave en los bordes para ropa, terciopelo y musgo.</li>
+                <li><span class="text-foreground">Piel y hojas.</span> Subsurface y translucidez: a contraluz la luz atraviesa las hojas y las orejas, según su grosor.</li>
+                <li><span class="text-foreground">Metal cepillado.</span> Brillo y reflejos anisótropos con dirección.</li>
+                <li><span class="text-foreground">Vidrio con refracción.</span> Índice de refracción, grosor, tinte y esmerilado por rugosidad.</li>
+              </ul>
+              <a href="manual/materiales.html#disney" class="link mt-4 inline-block text-foreground">Los modelos en la documentación</a>
+            </div>
+          </details>
+          <details id="novedades-16" class="group">
+            <summary class="flex cursor-pointer items-center justify-between gap-4 px-5 py-4 hover:bg-accent/50">
+              <span><span class="font-semibold">1.6</span> <span class="ml-2 text-sm text-muted-foreground">Relieve teselado y donaciones</span></span>
+              <svg class="chev size-4 shrink-0 transition-transform" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="m6 9 6 6 6-6"/></svg>
+            </summary>
+            <div class="px-5 pb-5 text-sm text-muted-foreground">
+              <ul class="list-disc space-y-2 pl-5">
+                <li><span class="text-foreground">Relieve teselado.</span> Con un mapa de altura, el material puede partir la malla cerca de la cámara y subir cada vértice de verdad: silueta, sombras y oclusión reales, como el displacement de Unreal.</li>
+                <li><span class="text-foreground">Auto-sombra del parallax.</span> Las piedras y grietas del relieve se hacen sombra entre ellas con el sol.</li>
+                <li><span class="text-foreground">Parallax en los shaders propios.</span> Los <span class="code-inline">.crshader</span> con mapa de altura tienen el mismo relieve que el material estándar.</li>
+                <li><span class="text-foreground">Donaciones.</span> Botón de PayPal en el Hub y en la web, para quien quiera apoyar el motor. Sigue siendo gratis.</li>
+              </ul>
+              <a href="manual/materiales.html#relieve" class="link mt-4 inline-block text-foreground">Relieve en la documentación</a>
+            </div>
+          </details>
+          <details id="novedades-15" class="group">
+            <summary class="flex cursor-pointer items-center justify-between gap-4 px-5 py-4 hover:bg-accent/50">
+              <span><span class="font-semibold">1.5</span> <span class="ml-2 text-sm text-muted-foreground">Licencia nueva</span></span>
+              <svg class="chev size-4 shrink-0 transition-transform" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="m6 9 6 6 6-6"/></svg>
+            </summary>
+            <div class="px-5 pb-5 text-sm text-muted-foreground">
+              <ul class="list-disc space-y-2 pl-5">
+                <li><span class="text-foreground">Licencia nueva.</span> El editor sigue siendo gratis, y los juegos que hagas con él son tuyos: los vendes donde quieras, sin regalías. Lo que no se permite es vender, revender o resubir el motor.</li>
+                <li><span class="text-foreground">Código fuente bajo licencia.</span> Ya no es público: se entrega con una licencia de código fuente que se pide por correo.</li>
+                <li><span class="text-foreground">Para todas las versiones.</span> Desde el 30 de septiembre de 2026 la licencia nueva vale también para la 1.4 y las anteriores.</li>
+                <li><span class="text-foreground">Créditos en orden.</span> El zip trae la licencia, la política de marca y las licencias de todas las librerías que usa.</li>
+              </ul>
+              <a href="manual/licencia.html" class="link mt-4 inline-block text-foreground">Leer la licencia</a>
+            </div>
+          </details>
+          <details id="novedades-14" class="group">
+            <summary class="flex cursor-pointer items-center justify-between gap-4 px-5 py-4 hover:bg-accent/50">
+              <span><span class="font-semibold">1.4</span> <span class="ml-2 text-sm text-muted-foreground">DataPacks y mesh shaders</span></span>
+              <svg class="chev size-4 shrink-0 transition-transform" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="m6 9 6 6 6-6"/></svg>
+            </summary>
+            <div class="px-5 pb-5 text-sm text-muted-foreground">
+              <ul class="list-disc space-y-2 pl-5">
+                <li><span class="text-foreground">DataPacks.</span> Como los AssetBundles de Unity: escenas enteras u objetos con todo lo que usan en un <span class="code-inline">.datapack</span>, sin el ejecutable. Niveles descargables, DLC, mods o skins que el juego carga en marcha con <span class="code-inline">DataPack.loadScene</span> y <span class="code-inline">DataPack.instantiate</span>.</li>
+                <li><span class="text-foreground">Empaquetar con un clic derecho.</span> Sobre un objeto de la Jerarquía, o una escena desde el menú Archivo, en segundo plano con barra de progreso.</li>
+                <li><span class="text-foreground">Sombras por rayos para muchas luces.</span> Farolas, antorchas y focos con sombras trazadas y penumbra según el tamaño de la lámpara. ~0,5 ms con 16 luces.</li>
+                <li><span class="text-foreground">Mesh shaders.</span> Sombras del sol y geometría por meshlets: de 56 a 61 FPS en una escena grande, con la misma imagen.</li>
+                <li><span class="text-foreground">Opacity micromaps y SER.</span> El follaje recortado se resuelve en el hardware de rayos y el path tracing puede reordenar los hilos por material.</li>
+                <li><span class="text-foreground">Play como Unity.</span> Elige si al dar Play se salta a la pestaña Juego o se queda en la vista actual.</li>
+                <li><span class="text-foreground">IntelliSense.</span> DataPack, Screen, XR y lo que faltaba de Input, con su ayuda.</li>
+                <li><span class="text-foreground">Corregido.</span> El plano lejano de la cámara, y el color de lo que alumbra una farola de noche.</li>
+              </ul>
+              <a href="manual/datapacks.html" class="link mt-4 inline-block text-foreground">DataPacks en la documentación</a>
+            </div>
+          </details>
+          <details id="novedades-13" class="group">
+            <summary class="flex cursor-pointer items-center justify-between gap-4 px-5 py-4 hover:bg-accent/50">
+              <span><span class="font-semibold">1.3</span> <span class="ml-2 text-sm text-muted-foreground">Noches realistas y terminal con IA</span></span>
+              <svg class="chev size-4 shrink-0 transition-transform" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="m6 9 6 6 6-6"/></svg>
+            </summary>
+            <div class="px-5 pb-5 text-sm text-muted-foreground">
+              <div class="grid gap-3 sm:grid-cols-2">
+                <figure class="card overflow-hidden"><img src="img/newlightday.png" alt="Escena de prueba de día en el editor de Cramion" class="w-full" loading="lazy"><figcaption class="border-t border-border px-3 py-1.5 text-xs">Día</figcaption></figure>
+                <figure class="card overflow-hidden"><img src="img/newlightnight.png" alt="La misma escena de noche, con luna y una farola" class="w-full" loading="lazy"><figcaption class="border-t border-border px-3 py-1.5 text-xs">Noche · misma escena, sin tocar nada más</figcaption></figure>
+              </div>
+              <ul class="mt-4 list-disc space-y-2 pl-5">
+                <li><span class="text-foreground">Noches realistas.</span> Visión nocturna del ojo (efecto Purkinje), luna con mares y halo, estrellas de colores y la Vía Láctea.</li>
+                <li><span class="text-foreground">Terminal con IA en el editor.</span> Consolas con pestañas y un botón que abre Claude Code ya conectado al editor por MCP. También PowerShell, CMD, Codex y Gemini.</li>
+                <li><span class="text-foreground">Luces dentro de su lámpara.</span> Una luz dentro de la bombilla o del poste ya no queda tapada por ellos.</li>
+                <li><span class="text-foreground">Sombras más rápidas.</span> En escenas con mucha hierba, de 39 a 58 FPS en Play.</li>
+                <li><span class="text-foreground">AMD FSR 3.1 y NVIDIA DLSS 4</span> (inestables). Escalado temporal de los fabricantes.</li>
+                <li><span class="text-foreground">Color más fiel.</span> Salida con la curva sRGB exacta: sombras profundas, no lavadas.</li>
+              </ul>
+            </div>
+          </details>
+          <details id="novedades-12" class="group">
+            <summary class="flex cursor-pointer items-center justify-between gap-4 px-5 py-4 hover:bg-accent/50">
+              <span><span class="font-semibold">1.2</span> <span class="ml-2 text-sm text-muted-foreground">Realidad virtual, Android y telas</span></span>
+              <svg class="chev size-4 shrink-0 transition-transform" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="m6 9 6 6 6-6"/></svg>
+            </summary>
+            <div class="px-5 pb-5 text-sm text-muted-foreground">
+              <ul class="list-disc space-y-2 pl-5">
+                <li><span class="text-foreground">Realidad virtual.</span> OpenXR con cualquier casco de PC: XR Origin con cámara y mandos, botones en Input Actions y la tabla <span class="code-inline">XR</span> en Lua.</li>
+                <li><span class="text-foreground">Input Actions como Unreal.</span> Acciones Bool, float, Vec2 y Vec3 con muchas teclas, contextos, modificadores y triggers.</li>
+                <li><span class="text-foreground">Telas y cuerpos blandos.</span> Cortinas y banderas que ondean con el viento; gelatinas y pelotas de goma.</li>
+                <li><span class="text-foreground">IntelliSense completo.</span> Toda la API, tipos por tus variables y la firma de cada función.</li>
+                <li><span class="text-foreground">Android.</span> Exporta a APK, AAB (Google Play) y OBB, con controles táctiles diseñados en el editor, mando y orientación.</li>
+                <li><span class="text-foreground">Render.</span> Preset ultra realista, agua con espuma, sombras del sol con penumbra real, nubes con sus sombras, path tracing, motion blur y profundidad de campo.</li>
+                <li><span class="text-foreground">Animación.</span> Transiciones inerciales como Unreal y pies bloqueados que no patinan.</li>
+              </ul>
+            </div>
+          </details>
+        </div>
       </div>
-      <div class="space-y-4 text-paper/75">
-        <p>El código fuente de Cramion se entrega solo con una <span class="text-white">licencia de código fuente</span>. Para pedirla, escribe a
-          <a href="mailto:tupapienrakion1234@gmail.com?subject=Licencia%20de%20c%C3%B3digo%20fuente%20de%20Cramion" class="link">tupapienrakion1234@gmail.com</a>
-          contando quién eres y para qué lo necesitas.</p>
-        <p class="text-sm text-mute">Tener el código sin esa licencia no da permiso para usarlo, compilarlo ni compartirlo. Detalles en la <a href="manual/licencia.html" class="link">licencia</a>.</p>
+    </section>
+
+    <!-- Descargar -->
+    <section id="descargar" class="scroll-mt-16 border-b border-border">
+      <div class="mx-auto grid max-w-6xl gap-6 px-4 py-20 sm:px-6 lg:grid-cols-[1fr_1.2fr]">
+        <div class="card min-w-0 p-6 sm:p-8">
+          <p class="text-sm font-medium text-brand">Descargar</p>
+          <h2 class="mt-2 text-3xl font-bold tracking-tight">Cramion 1.9 para Windows</h2>
+          <p class="mt-4 text-muted-foreground">Descomprime y abre <span class="code-inline">CramionEditor.exe</span>. El motor avisa de las versiones nuevas y se actualiza solo.</p>
+          <a href="https://github.com/MantraxStudios/Cramion/releases/latest/download/Cramion-win64.zip" class="btn btn-primary mt-6 w-full sm:w-auto">
+            <svg class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v11M7 10l5 5 5-5M5 20h14"/></svg>Cramion-win64.zip · ≈64 MB
+          </a>
+          <div class="mt-6 rounded-lg border border-border bg-muted px-4 py-3 text-sm text-muted-foreground">
+            La única descarga oficial es esta, y es gratis. Si alguien te vende Cramion, no es oficial: avisa en el
+            <a href="https://discord.gg/zG7rSsUGEz" target="_blank" rel="noopener" class="link text-foreground">Discord</a>.
+          </div>
+          <div class="mt-6 rounded-lg border border-border p-4">
+            <p class="flex items-center gap-2 font-semibold">
+              <svg class="size-4 text-rose-500" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M19 14c1.5-1.5 3-3.2 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.8 0-3 .5-4.5 2-1.5-1.5-2.7-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4 3 5.5l7 7Z"/></svg>Apoya Cramion
+            </p>
+            <p class="mt-1 text-sm text-muted-foreground">El motor es gratis y lo seguirá siendo. Si te sirve, una donación ayuda a seguir añadiendo cosas.</p>
+            <a href="https://paypal.me/evan2025" target="_blank" rel="noopener" class="btn btn-donate btn-sm mt-3">Donar con PayPal</a>
+          </div>
+        </div>
+        <div class="card min-w-0 overflow-hidden">
+          <div class="border-b border-border px-5 py-3 text-sm font-medium">Contenido del zip</div>
+          <div class="overflow-x-auto">
+            <table class="w-full text-sm">
+              <tbody class="divide-y divide-border">
+                <tr><td class="px-5 py-3 font-mono whitespace-nowrap">CramionEditor.exe</td><td class="px-5 py-3 text-muted-foreground">editor de escenas</td></tr>
+                <tr><td class="px-5 py-3 font-mono whitespace-nowrap">CramionPlayer.exe</td><td class="px-5 py-3 text-muted-foreground">base de los juegos exportados</td></tr>
+                <tr><td class="px-5 py-3 font-mono whitespace-nowrap">CramionUpdater.exe</td><td class="px-5 py-3 text-muted-foreground">actualizador</td></tr>
+                <tr><td class="px-5 py-3 font-mono whitespace-nowrap">cramion.exe</td><td class="px-5 py-3 text-muted-foreground">demo de render</td></tr>
+                <tr><td class="px-5 py-3 font-mono whitespace-nowrap">shaders/</td><td class="px-5 py-3 text-muted-foreground">SPIR-V compilado</td></tr>
+                <tr><td class="px-5 py-3 font-mono whitespace-nowrap">*.dll</td><td class="px-5 py-3 text-muted-foreground">AMD FSR 3.1 y NVIDIA DLSS 4</td></tr>
+                <tr><td class="px-5 py-3 font-mono whitespace-nowrap">android/</td><td class="px-5 py-3 text-muted-foreground">runtime para exportar a Android</td></tr>
+                <tr><td class="px-5 py-3 font-medium whitespace-nowrap">Requisitos</td><td class="px-5 py-3 text-muted-foreground">Windows 10/11 x64 y una GPU con Vulkan 1.3. Las escenas de demostración no van incluidas.</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
       </div>
-    </div>
-  </section>
+    </section>
+
+    <!-- Codigo fuente -->
+    <section id="codigo" class="scroll-mt-16 border-b border-border">
+      <div class="mx-auto grid max-w-6xl gap-6 px-4 py-20 sm:px-6 lg:grid-cols-[1fr_2fr]">
+        <div>
+          <h2 class="text-2xl font-bold tracking-tight">Código fuente</h2>
+          <p class="mt-3 text-muted-foreground">Para hacer juegos no hace falta: el zip trae el editor completo.</p>
+        </div>
+        <div class="card min-w-0 space-y-4 p-6 text-muted-foreground">
+          <p>El código fuente de Cramion se entrega solo con una <span class="font-medium text-foreground">licencia de código fuente</span>. Para pedirla, escribe a
+            <a href="mailto:tupapienrakion1234@gmail.com?subject=Licencia%20de%20c%C3%B3digo%20fuente%20de%20Cramion" class="link break-all text-foreground">tupapienrakion1234@gmail.com</a>
+            contando quién eres y para qué lo necesitas.</p>
+          <p class="text-sm">Tener el código sin esa licencia no da permiso para usarlo, compilarlo ni compartirlo. Detalles en la <a href="manual/licencia.html" class="link text-foreground">licencia</a>.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- Apoyo -->
+    <section class="border-b border-border">
+      <div class="mx-auto max-w-6xl px-4 py-16 sm:px-6">
+        <div class="flex flex-col items-start justify-between gap-6 rounded-xl border border-border bg-gradient-to-br from-muted to-card p-8 sm:flex-row sm:items-center">
+          <div>
+            <h2 class="text-2xl font-bold tracking-tight">Cramion es gratis</h2>
+            <p class="mt-2 max-w-xl text-muted-foreground">Hacer y vender juegos con él no cuesta nada. Si te sirve, puedes apoyar el desarrollo con una donación.</p>
+          </div>
+          <a href="https://paypal.me/evan2025" target="_blank" rel="noopener" class="btn btn-donate shrink-0">
+            <svg class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M19 14c1.5-1.5 3-3.2 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.8 0-3 .5-4.5 2-1.5-1.5-2.7-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4 3 5.5l7 7Z"/></svg>Donar con PayPal
+          </a>
+        </div>
+      </div>
+    </section>
+  </main>
 
   <footer>
-    <div class="mx-auto flex max-w-6xl flex-col gap-4 px-5 py-10 text-sm text-mute sm:flex-row sm:items-center sm:justify-between">
-      <div class="flex items-center gap-2"><img src="img/icon.png" alt="" class="h-5 w-5"> Cramion Engine · CramionFX · CramionCore · CramionEditor</div>
-      <div class="flex gap-5">
-        <a href="manual/index.html" class="hover:text-white">Manual</a>
-        <a href="manual/licencia.html" class="hover:text-white">Licencia</a>
-        <a href="https://discord.gg/zG7rSsUGEz" target="_blank" rel="noopener" class="hover:text-white">Discord</a>
-        <a href="https://paypal.me/evan2025" target="_blank" rel="noopener" class="hover:text-white">Donar</a>
-      </div>
+    <div class="mx-auto flex max-w-6xl flex-col gap-4 px-4 py-10 text-sm text-muted-foreground sm:flex-row sm:items-center sm:justify-between sm:px-6">
+      <div class="flex items-center gap-2"><img src="img/icon.png" alt="" class="size-5"> Cramion Engine · CramionFX · CramionCore · CramionEditor</div>
+      <nav class="flex flex-wrap gap-x-5 gap-y-2">
+        <a href="manual/index.html" class="hover:text-foreground">Documentación</a>
+        <a href="manual/licencia.html" class="hover:text-foreground">Licencia</a>
+        <a href="https://discord.gg/zG7rSsUGEz" target="_blank" rel="noopener" class="hover:text-foreground">Discord</a>
+        <a href="https://paypal.me/evan2025" target="_blank" rel="noopener" class="hover:text-foreground">Donar</a>
+      </nav>
     </div>
   </footer>
 
   <script>hljs.highlightAll();</script>
   <script>
+    // Tema claro / oscuro (se recuerda; el mismo que usa el manual).
+    document.getElementById("theme").addEventListener("click", () => {
+      const dark = document.documentElement.classList.toggle("dark");
+      try { localStorage.setItem("cramion-theme", dark ? "dark" : "light"); } catch (e) {}
+    });
+    // Menu del movil.
+    const menu = document.getElementById("menu"), panel = document.getElementById("mobile-menu");
+    menu.addEventListener("click", () => {
+      const open = panel.classList.toggle("hidden") === false;
+      menu.setAttribute("aria-expanded", String(open));
+    });
+    panel.querySelectorAll("a").forEach(a => a.addEventListener("click", () => panel.classList.add("hidden")));
+    // Enlaces a una version anterior (#novedades-17...): abre su desplegable.
+    const openHash = () => { const d = document.querySelector(location.hash + "[open], " + location.hash); if (d && d.tagName === "DETAILS") d.open = true; };
+    if (/^#novedades-\d+$/.test(location.hash)) openHash();
+    window.addEventListener("hashchange", () => { if (/^#novedades-\d+$/.test(location.hash)) openHash(); });
     // Con "reducir movimiento" del sistema, el video queda quieto.
     if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
       const video = document.getElementById("hero-video");

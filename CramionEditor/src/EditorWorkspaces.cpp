@@ -8,6 +8,7 @@
 //            instancias de la escena se ponen al dia (respetando sus
 //            cambios propios).
 //   Script   el editor de un .lua / .crshader a toda la ventana
+//   Maquina  el editor de la maquina de estados (.crfsm) a toda la ventana
 //
 // Solo hay un ecs::World (y un renderizador): el mundo de la pestana que no
 // se ve se guarda en JSON con su deshacer, su seleccion y su camara, y se
@@ -36,8 +37,10 @@ constexpr ImU32 kPrefabTab = IM_COL32(60, 110, 185, 255);
 constexpr ImU32 kPrefabTabActive = IM_COL32(75, 140, 230, 255);
 constexpr ImU32 kScriptTab = IM_COL32(70, 120, 80, 255);
 constexpr ImU32 kScriptTabActive = IM_COL32(90, 160, 100, 255);
+constexpr ImU32 kMachineTab = IM_COL32(110, 80, 160, 255);
+constexpr ImU32 kMachineTabActive = IM_COL32(140, 105, 205, 255);
 
-const char* workspaceSuffix(int kind) { return kind == 1 ? "@prefab" : "@script"; }
+const char* workspaceSuffix(int kind) { return kind == 1 ? "@prefab" : (kind == 3 ? "@fsm" : "@script"); }
 
 std::string lowerText(std::string text) {
     std::transform(text.begin(), text.end(), text.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
@@ -115,7 +118,8 @@ EditorApp::WorkspaceKind EditorApp::activeWorkspaceKind() const {
 std::string EditorApp::panelTitle(const char* name) const {
     const WorkspaceKind kind = activeWorkspaceKind();
     if (kind == WorkspaceKind::Scene) return name;
-    return std::string(name) + "###" + name + workspaceSuffix(kind == WorkspaceKind::Prefab ? 1 : 2);
+    const int suffix = kind == WorkspaceKind::Prefab ? 1 : (kind == WorkspaceKind::StateMachine ? 3 : 2);
+    return std::string(name) + "###" + name + workspaceSuffix(suffix);
 }
 
 ecs::Entity EditorApp::prefabStageRoot() {
@@ -178,6 +182,28 @@ void EditorApp::openScriptWorkspace(const std::filesystem::path& file) {
     }
 }
 
+// Una sola pestana para la maquina de estados que se edita (abrir otra la
+// reemplaza). No cambia el mundo: en Play se sigue viendo en vivo.
+void EditorApp::openStateMachineWorkspace() {
+    if (workspaces_.empty()) resetWorkspaces();
+    const auto info = database_ ? database_->find(fsm_uuid_) : std::nullopt;
+    const std::string name = info ? info->name : std::string("Máquina de estados");
+    for (Workspace& ws : workspaces_) {
+        if (ws.kind != WorkspaceKind::StateMachine) continue;
+        ws.name = name;
+        ws.path = fsm_path_;
+        requestWorkspace(ws.id);
+        return;
+    }
+    Workspace ws;
+    ws.id = next_workspace_id_++;
+    ws.kind = WorkspaceKind::StateMachine;
+    ws.name = name;
+    ws.path = fsm_path_;
+    workspaces_.push_back(std::move(ws));
+    requestWorkspace(workspaces_.back().id);
+}
+
 // Una pestana por cada script abierto (y ninguna de los que se cerraron).
 void EditorApp::syncScriptWorkspaces() {
     for (const ScriptTab& tab : script_tabs_) {
@@ -236,7 +262,7 @@ void EditorApp::activateWorkspace(int id) {
     }
     const WorkspaceKind kind = ws->kind;
     const std::filesystem::path script = ws->path;
-    if (kind != WorkspaceKind::Script) loadWorkspaceWorld(id);
+    if (kind != WorkspaceKind::Script && kind != WorkspaceKind::StateMachine) loadWorkspaceWorld(id);
     active_workspace_ = id;
     flying_ = false;
     if (kind == WorkspaceKind::Script) {
@@ -261,7 +287,7 @@ void EditorApp::returnToSceneWorkspace() {
 void EditorApp::loadWorkspaceWorld(int id) {
     if (id == world_workspace_) return;
     Workspace* target = findWorkspace(id);
-    if (target == nullptr || target->kind == WorkspaceKind::Script) return;
+    if (target == nullptr || target->kind == WorkspaceKind::Script || target->kind == WorkspaceKind::StateMachine) return;
     flushCommit();
 
     // El cielo de lo que se ve ahora: el escenario del prefab lo copia (el
@@ -422,6 +448,18 @@ bool EditorApp::savePrefabWorkspace() {
 void EditorApp::closeWorkspace(int id, bool save) {
     Workspace* ws = findWorkspace(id);
     if (ws == nullptr || ws->kind == WorkspaceKind::Scene) return;
+    if (ws->kind == WorkspaceKind::StateMachine) {
+        if (fsm_dirty_) saveStateMachineEditor();
+        show_state_machine_ = false;
+        const bool was_active = active_workspace_ == id;
+        workspaces_.erase(std::remove_if(workspaces_.begin(), workspaces_.end(), [&](const Workspace& w) { return w.id == id; }),
+                          workspaces_.end());
+        if (was_active) {
+            active_workspace_ = -1;
+            activateWorkspace(world_workspace_ >= 0 ? world_workspace_ : 0);
+        }
+        return;
+    }
     if (ws->kind == WorkspaceKind::Script) {
         const std::filesystem::path path = ws->path;
         for (std::size_t i = 0; i < script_tabs_.size(); ++i) {
@@ -485,6 +523,9 @@ void EditorApp::drawWorkspaceBar() {
             } else if (ws.kind == WorkspaceKind::Prefab) {
                 dirty = loaded ? dirty_ : ws.dirty;
                 prefix = "Prefab: ";
+            } else if (ws.kind == WorkspaceKind::StateMachine) {
+                prefix = "Máquina: ";
+                dirty = fsm_dirty_;
             } else {
                 prefix = "Script: ";
                 for (const ScriptTab& tab : script_tabs_) {
@@ -499,11 +540,14 @@ void EditorApp::drawWorkspaceBar() {
             int colors = 0;
             if (ws.kind != WorkspaceKind::Scene) {
                 const bool prefab = ws.kind == WorkspaceKind::Prefab;
-                ImGui::PushStyleColor(ImGuiCol_Tab, prefab ? kPrefabTab : kScriptTab);
-                ImGui::PushStyleColor(ImGuiCol_TabDimmed, prefab ? kPrefabTab : kScriptTab);
-                ImGui::PushStyleColor(ImGuiCol_TabHovered, prefab ? kPrefabTabActive : kScriptTabActive);
-                ImGui::PushStyleColor(ImGuiCol_TabSelected, prefab ? kPrefabTabActive : kScriptTabActive);
-                ImGui::PushStyleColor(ImGuiCol_TabDimmedSelected, prefab ? kPrefabTabActive : kScriptTabActive);
+                const bool machine = ws.kind == WorkspaceKind::StateMachine;
+                const ImU32 tab = prefab ? kPrefabTab : (machine ? kMachineTab : kScriptTab);
+                const ImU32 tab_active = prefab ? kPrefabTabActive : (machine ? kMachineTabActive : kScriptTabActive);
+                ImGui::PushStyleColor(ImGuiCol_Tab, tab);
+                ImGui::PushStyleColor(ImGuiCol_TabDimmed, tab);
+                ImGui::PushStyleColor(ImGuiCol_TabHovered, tab_active);
+                ImGui::PushStyleColor(ImGuiCol_TabSelected, tab_active);
+                ImGui::PushStyleColor(ImGuiCol_TabDimmedSelected, tab_active);
                 colors = 5;
             }
             bool open = true;
@@ -609,6 +653,10 @@ void EditorApp::drawWorkspacePanels(float delta_seconds) {
         if (show_inspector_) drawInspector();
         if (show_project_) drawProject();
         if (show_console_) drawConsole();
+    } else if (activeWorkspaceKind() == WorkspaceKind::StateMachine) {
+        scene_view_visible_ = false;
+        flying_ = false;
+        drawStateMachineEditor();
     } else {
         const ImGuiID dock = ImHashStr("CramionScriptDockspace");
         const ImGuiDockNode* node = ImGui::DockBuilderGetNode(dock);
@@ -644,7 +692,7 @@ void EditorApp::drawPrefabStageBanner() {
     draw->ChannelsSetCurrent(1);
     ImGui::Dummy(ImVec2(0.0f, 2.0f));
     ImGui::Indent(6.0f);
-    ImGui::TextColored(ImVec4(0.45f, 0.72f, 1.0f, 1.0f), "Editando prefab");
+    ImGui::TextColored(theme::vec(theme::kPrefab), "Editando prefab");
     ImGui::SameLine();
     ImGui::TextUnformatted(ws->name.c_str());
     ImGui::BeginDisabled(playing());
@@ -657,8 +705,8 @@ void EditorApp::drawPrefabStageBanner() {
     ImGui::Dummy(ImVec2(0.0f, 2.0f));
     draw->ChannelsSetCurrent(0);
     const ImVec2 end(start.x + width, ImGui::GetCursorScreenPos().y);
-    draw->AddRectFilled(start, end, IM_COL32(75, 140, 230, 40), 4.0f);
-    draw->AddRect(start, end, IM_COL32(75, 140, 230, 140), 4.0f);
+    draw->AddRectFilled(start, end, theme::withAlpha(theme::kPrefab, 30), 4.0f);  // modo prefab (azul, tema)
+    draw->AddRect(start, end, theme::withAlpha(theme::kPrefab, 140), 4.0f);
     draw->ChannelsMerge();
     ImGui::PopID();
 }

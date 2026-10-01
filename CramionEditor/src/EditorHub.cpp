@@ -43,12 +43,13 @@ namespace {
 // Donaciones (PayPal): boton del Hub y tarjeta de Aprender.
 constexpr const char* kDonateUrl = "https://paypal.me/evan2025";
 
-constexpr ImU32 kAccent = IM_COL32(0, 143, 242, 255);
-constexpr ImU32 kCard = IM_COL32(30, 32, 37, 255);
-constexpr ImU32 kCardHover = IM_COL32(38, 41, 47, 255);
-constexpr ImU32 kCardBorder = IM_COL32(52, 56, 64, 255);
-constexpr ImU32 kSidebar = IM_COL32(20, 21, 25, 255);
-constexpr ImU32 kTextDim = IM_COL32(150, 156, 168, 255);
+// Colores del tema (Theme.h): rojo de acento sobre negros.
+constexpr ImU32 kAccent = theme::kRed;
+constexpr ImU32 kCard = theme::kBg2;
+constexpr ImU32 kCardHover = theme::kBg3;
+constexpr ImU32 kCardBorder = theme::kBorder;
+constexpr ImU32 kSidebar = theme::kBg0;
+constexpr ImU32 kTextDim = theme::kTextDim;
 
 ImU32 scaled(ImU32 color, float factor, int alpha = -1) {
     const float r = static_cast<float>(color & 0xFF) * factor;
@@ -501,7 +502,7 @@ void EditorApp::drawHubSidebar() {
         const bool hovered = ImGui::IsItemHovered();
         ImGui::PopID();
         if (active || hovered) {
-            draw->AddRectFilled(p, ImVec2(p.x + width, p.y + h), active ? IM_COL32(0, 143, 242, 38) : IM_COL32(255, 255, 255, 10),
+            draw->AddRectFilled(p, ImVec2(p.x + width, p.y + h), active ? theme::withAlpha(kAccent, 38) : IM_COL32(255, 255, 255, 10),
                                 7.0f);
         }
         if (active) draw->AddRectFilled(ImVec2(p.x, p.y + 8.0f), ImVec2(p.x + 3.0f, p.y + h - 8.0f), kAccent, 2.0f);
@@ -611,7 +612,7 @@ void EditorApp::drawHubProjects() {
     ImGui::InputTextWithHint("##buscar", "Buscar proyecto...", &hub_search_);
     ImGui::SameLine();
     ImGui::PushStyleColor(ImGuiCol_Button, ImGui::ColorConvertU32ToFloat4(kAccent));
-    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.2f, 0.65f, 1.0f, 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, theme::vec(theme::kRedHover));
     if (ImGui::Button("+  Nuevo proyecto", ImVec2(170.0f, 0.0f))) hub_page_ = 1;
     ImGui::PopStyleColor(2);
     ImGui::Dummy(ImVec2(0.0f, 6.0f));
@@ -628,7 +629,7 @@ void EditorApp::drawHubProjects() {
         ImGui::SameLine(ImGui::GetContentRegionMax().x - 176.0f);
         const auto toggle = [&](const char* label, bool list) {
             const bool active = hub_list_view_ == list;
-            if (active) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.0f, 0.56f, 0.95f, 0.45f));
+            if (active) ImGui::PushStyleColor(ImGuiCol_Button, theme::vec(theme::kRed, 0.45f));
             if (ImGui::Button(label, ImVec2(84.0f, 0.0f))) hub_list_view_ = list;
             if (active) ImGui::PopStyleColor();
         };
@@ -638,7 +639,7 @@ void EditorApp::drawHubProjects() {
     }
     ImGui::Dummy(ImVec2(0.0f, 6.0f));
     if (!hub_error_.empty()) {
-        ImGui::TextColored(ImVec4(1.0f, 0.45f, 0.4f, 1.0f), "%s", hub_error_.c_str());
+        ImGui::TextColored(theme::vec(theme::kRedText), "%s", hub_error_.c_str());
         ImGui::Spacing();
     }
 
@@ -647,7 +648,7 @@ void EditorApp::drawHubProjects() {
         // Estado vacio: invita a crear o abrir.
         const ImVec2 avail = ImGui::GetContentRegionAvail();
         const ImVec2 center(ImGui::GetCursorScreenPos().x + avail.x * 0.5f, ImGui::GetCursorScreenPos().y + avail.y * 0.35f);
-        draw->AddCircleFilled(center, 54.0f, IM_COL32(0, 143, 242, 30), 48);
+        draw->AddCircleFilled(center, 54.0f, theme::withAlpha(kAccent, 30), 48);
         centeredText(draw, 46.0f, center, kAccent, "+");
         centeredText(draw, 22.0f, ImVec2(center.x, center.y + 86.0f), IM_COL32(230, 232, 238, 255),
                      "Todavía no hay proyectos");
@@ -814,7 +815,7 @@ void EditorApp::drawHubNewProject() {
     for (int i = 0; i < 3; ++i) {
         if (i > 0) ImGui::SameLine();
         const bool active = hub_category_ == i;
-        if (active) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.0f, 0.56f, 0.95f, 0.45f));
+        if (active) ImGui::PushStyleColor(ImGuiCol_Button, theme::vec(theme::kRed, 0.45f));
         if (ImGui::Button(kCategories[i], ImVec2(0.0f, 28.0f))) hub_category_ = i;
         if (active) ImGui::PopStyleColor();
     }
@@ -925,7 +926,7 @@ void EditorApp::drawHubNewProject() {
             if (found) {
                 ImGui::TextColored(ImVec4(0.45f, 0.9f, 0.5f, 1.0f), "Se importara al crear el proyecto (unos segundos).");
             } else {
-                ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.35f, 1.0f),
+                ImGui::TextColored(theme::vec(theme::kYellow),
                                    "Descargalo gratis de mixamo.com: Packs > Locomotion Pack, formato FBX con skin. "
                                    "Dejalo en Descargas o elige aqui su carpeta.");
             }
@@ -954,16 +955,16 @@ void EditorApp::drawHubNewProject() {
                        !std::filesystem::is_empty(target, error);
     ImGui::PushTextWrapPos(0.0f);
     if (taken) {
-        ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.35f, 1.0f), "Ya existe una carpeta con ese nombre y no está vacía.");
+        ImGui::TextColored(theme::vec(theme::kYellow), "Ya existe una carpeta con ese nombre y no está vacía.");
     } else {
         ImGui::TextDisabled("Se creará en: %s", dialogs::utf8(target).c_str());
     }
-    if (!hub_error_.empty()) ImGui::TextColored(ImVec4(1.0f, 0.45f, 0.4f, 1.0f), "%s", hub_error_.c_str());
+    if (!hub_error_.empty()) ImGui::TextColored(theme::vec(theme::kRedText), "%s", hub_error_.c_str());
     ImGui::PopTextWrapPos();
     ImGui::Dummy(ImVec2(0.0f, 6.0f));
     ImGui::BeginDisabled(new_project_name_.empty() || taken || hub_templates_.empty());
     ImGui::PushStyleColor(ImGuiCol_Button, ImGui::ColorConvertU32ToFloat4(kAccent));
-    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.2f, 0.65f, 1.0f, 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, theme::vec(theme::kRedHover));
     if (ImGui::Button("Crear proyecto", ImVec2(-1.0f, 40.0f))) createProjectFromHub();
     ImGui::PopStyleColor(2);
     ImGui::EndDisabled();
@@ -998,8 +999,8 @@ void EditorApp::drawHubUpdateBanner() {
     const ImVec2 a = ImGui::GetCursorScreenPos();
     const float w = ImGui::GetContentRegionAvail().x;
     const float h = 52.0f;
-    draw->AddRectFilled(a, ImVec2(a.x + w, a.y + h), IM_COL32(0, 143, 242, 34), 8.0f);
-    draw->AddRect(a, ImVec2(a.x + w, a.y + h), IM_COL32(0, 143, 242, 140), 8.0f);
+    draw->AddRectFilled(a, ImVec2(a.x + w, a.y + h), theme::withAlpha(kAccent, 34), 8.0f);
+    draw->AddRect(a, ImVec2(a.x + w, a.y + h), theme::withAlpha(kAccent, 140), 8.0f);
     hubIcon(draw, ImVec2(a.x + 24.0f, a.y + h * 0.5f), 2, kAccent);
     const std::string title = "Cramion " + update_release_.version.str() + " ya está disponible";
     draw->AddText(ImVec2(a.x + 46.0f, a.y + 8.0f), IM_COL32(240, 242, 246, 255), title.c_str());
@@ -1009,7 +1010,7 @@ void EditorApp::drawHubUpdateBanner() {
     if (ImGui::Button("Ver novedades", ImVec2(130.0f, 0.0f))) hub_page_ = 2;
     ImGui::SameLine(0.0f, 8.0f);
     ImGui::PushStyleColor(ImGuiCol_Button, ImGui::ColorConvertU32ToFloat4(kAccent));
-    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.2f, 0.65f, 1.0f, 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, theme::vec(theme::kRedHover));
     ImGui::BeginDisabled(update_release_.zip_url.empty());
     if (ImGui::Button("Actualizar", ImVec2(126.0f, 0.0f))) beginUpdateInstall();
     ImGui::EndDisabled();
@@ -1077,7 +1078,7 @@ void EditorApp::drawHubUpdates() {
         ImGui::TextDisabled("Al actualizar se cierra el Hub, el actualizador descarga e instala la versión nueva y vuelve a "
                             "abrir el Hub. Tus proyectos no se tocan.");
         if (update_release_.zip_url.empty()) {
-            ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.35f, 1.0f), "Esta versión aún no tiene el paquete (%s).", update::kPackageAsset);
+            ImGui::TextColored(theme::vec(theme::kYellow), "Esta versión aún no tiene el paquete (%s).", update::kPackageAsset);
         } else if (update_release_.zip_size > 0) {
             ImGui::TextDisabled("Descarga: %s", update::formatBytes(update_release_.zip_size).c_str());
         }
@@ -1086,15 +1087,15 @@ void EditorApp::drawHubUpdates() {
         ImGui::TextDisabled(newer ? "Omitiste la %s: no se avisará de ella." : "Cramion %s es la última versión publicada.",
                             newer ? update_release_.version.str().c_str() : current.c_str());
     } else if (!update_check_error_.empty()) {
-        ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.35f, 1.0f), "No se pudo comprobar: %s", update_check_error_.c_str());
+        ImGui::TextColored(theme::vec(theme::kYellow), "No se pudo comprobar: %s", update_check_error_.c_str());
     } else {
         ImGui::TextDisabled("Aún no se ha buscado ninguna actualización.");
     }
-    if (!update_error_.empty()) ImGui::TextColored(ImVec4(1.0f, 0.45f, 0.4f, 1.0f), "%s", update_error_.c_str());
+    if (!update_error_.empty()) ImGui::TextColored(theme::vec(theme::kRedText), "%s", update_error_.c_str());
     ImGui::Spacing();
     if (newer) {
         ImGui::PushStyleColor(ImGuiCol_Button, ImGui::ColorConvertU32ToFloat4(kAccent));
-        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.2f, 0.65f, 1.0f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, theme::vec(theme::kRedHover));
         ImGui::BeginDisabled(update_release_.zip_url.empty());
         if (ImGui::Button("Actualizar ahora", ImVec2(170.0f, 34.0f))) beginUpdateInstall();
         ImGui::EndDisabled();
@@ -1195,7 +1196,7 @@ void EditorApp::drawHubLearn() {
     const std::string web = "https://cramion.mantraxtools.store/manual/";
     const Item items[] = {
         {"Manual", offline ? "Todo el motor, paso a paso (sin conexión)." : "Todo el motor, paso a paso.",
-         offline ? dialogs::utf8(local_manual) : web + "index.html", IM_COL32(0, 143, 242, 255)},
+         offline ? dialogs::utf8(local_manual) : web + "index.html", kAccent},
         {"Tu primer script", "Lua: mover objetos, entrada, física y UI.", web + "primer-script.html", IM_COL32(242, 140, 40, 255)},
         {"Shaders propios", "Superficies .crshader con recarga en caliente.", web + "shaders.html", IM_COL32(160, 90, 240, 255)},
         {"Novedades", "Qué trae cada versión.", std::string(update::kReleasesPage), IM_COL32(46, 204, 113, 255)},
@@ -1251,7 +1252,7 @@ void EditorApp::drawSaveTemplateDialog() {
     ImGui::InputText("##template_name", &template_name_);
     ImGui::TextUnformatted("Descripción");
     ImGui::InputTextMultiline("##template_description", &template_description_, ImVec2(-1.0f, 70.0f));
-    if (!template_error_.empty()) ImGui::TextColored(ImVec4(1.0f, 0.45f, 0.4f, 1.0f), "%s", template_error_.c_str());
+    if (!template_error_.empty()) ImGui::TextColored(theme::vec(theme::kRedText), "%s", template_error_.c_str());
     ImGui::Spacing();
     ImGui::BeginDisabled(template_name_.empty());
     if (ImGui::Button("Guardar", ImVec2(120.0f, 0.0f))) {

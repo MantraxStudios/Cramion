@@ -139,6 +139,20 @@ public:
     void setTimeOfDayHours(float hours);
     void setDayCycleEnabled(bool enabled) { day_cycle_enabled_ = enabled; }
 
+    // Sol y luna dados desde fuera (sistema de ambiente: su recorrido real
+    // con la latitud y la fecha). Sustituye al arco de la hora mientras este
+    // puesto (no al sol fijo de un cielo HDR). Recalcula las luces ya.
+    // nullopt lo suelta.
+    struct Celestial {
+        core::Vec3 to_sun;
+        core::Vec3 to_moon;
+    };
+    void setCelestial(const std::optional<Celestial>& celestial) {
+        celestial_ = celestial;
+        updateSun(0.0f);
+    }
+    bool celestialSet() const { return celestial_.has_value(); }
+
 private:
     void createLights();
     void updateSun(float delta_seconds);
@@ -159,6 +173,7 @@ private:
     bool day_cycle_enabled_ = false;
     bool animate_actors_ = true;
     std::optional<core::Vec3> fixed_sun_;
+    std::optional<Celestial> celestial_;
 };
 
 }  // namespace cramion::scene

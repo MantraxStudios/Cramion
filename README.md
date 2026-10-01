@@ -21,6 +21,20 @@ Incluye dos escenas de demostración, iluminadas por una sola luz direccional (e
 
 ---
 
+## Novedades de la 1.9
+
+**Ambiente y clima** (como Enviro Sky): clima con transiciones, hora y fecha con el sol y la luna reales, estaciones, viento, rayos con truenos, **lluvia y nieve que caen y se acumulan** y sonido ambiente.
+
+**Fuego**: incendios que se propagan por la hierba y el bosque según el viento y la pendiente, con **llamas y humo volumétricos**, luces que parpadean y suelo carbonizado.
+
+**Líquidos** en la GPU: agua, miel, lava, barro, sangre, aceite y ácido que chocan, salpican, **hacen flotar los objetos** y se ven como una superficie continua.
+
+**Océano FFT** como Crest (olas calculadas con el viento, mar de fondo y espuma), ríos con corriente y una vista bajo el agua nueva.
+
+**Máquinas de estados** para la IA, como los State Graphs de Bolt, en su propia pestaña del editor y en vivo durante el Play. Y un **editor renovado**: tema nuevo e Inspector con tarjetas, buscador y copiar/pegar valores.
+
+![Incendio con llamas y humo volumétricos](docs/img/v19-fuego.jpg)
+
 ## Novedades de la 1.8
 
 **Mundo procedural**: *Ventana > Generador de terreno* crea en un segundo una isla, archipiélago, continente, cordillera o cañones con **erosión por lluvia**, **ríos** que bajan hasta el mar, **lagos**, océano y **8 capas** con texturas realistas. Encima, **hierba en la GPU** (millones de briznas con viento que se apartan con la física), **árboles procedurales** con ramas de verdad (pino, abeto, roble, abedul, palmera y sauce; nunca en el agua) y **aldeas**.

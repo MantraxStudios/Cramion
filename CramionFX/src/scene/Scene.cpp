@@ -216,9 +216,13 @@ void Scene::updateSun(float delta_seconds) {
     const float c = std::cos(sun_angle_);
     const float s = std::sin(sun_angle_);
     // Con un cielo fotografiado, el sol esta donde esta en la foto.
+    // Con el sistema de ambiente, su recorrido real (latitud y fecha).
     const Vec3 to_sun = fixed_sun_ ? core::normalize(*fixed_sun_)
-                                   : core::normalize(Vec3{c, s, 0.35f});
-    const Vec3 to_moon = fixed_sun_ ? -to_sun : core::normalize(Vec3{-c, -s, 0.35f});
+                        : celestial_ ? core::normalize(celestial_->to_sun)
+                                     : core::normalize(Vec3{c, s, 0.35f});
+    const Vec3 to_moon = fixed_sun_ ? -to_sun
+                         : celestial_ ? core::normalize(celestial_->to_moon)
+                                      : core::normalize(Vec3{-c, -s, 0.35f});
 
     // Cuanta luz da cada astro. El sol se apaga justo al tocar el horizonte y
     // la luna no empieza hasta que el sol esta algo por debajo: en el cambio

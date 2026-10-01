@@ -136,7 +136,8 @@ target_link_libraries(CramionCompletionTests PRIVATE Cramion::Core)
 
 # Prueba de la edicion multiple del Inspector (consola).
 add_executable(CramionMultiEditTests "${CMAKE_CURRENT_SOURCE_DIR}/tests/MultiEditTests.cpp"
-                                     "${CMAKE_CURRENT_SOURCE_DIR}/src/PropertyInspector.cpp")
+                                     "${CMAKE_CURRENT_SOURCE_DIR}/src/PropertyInspector.cpp"
+                                     "${CMAKE_CURRENT_SOURCE_DIR}/src/EditorTheme.cpp")
 target_include_directories(CramionMultiEditTests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
 target_link_libraries(CramionMultiEditTests PRIVATE Cramion::Core cramion_imgui)
 

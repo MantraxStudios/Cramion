@@ -2,6 +2,7 @@
 
 #include "CramionCore/project/DataPack.h"
 
+#include "CramionCore/ai/StateMachine.h"
 #include "CramionCore/asset/AssetTypes.h"
 #include "CramionCore/asset/MaterialAsset.h"
 #include "CramionCore/audio/Audio.h"
@@ -9,6 +10,9 @@
 #include "CramionCore/ecs/Prefab.h"
 #include "CramionCore/ecs/MathUtil.h"
 #include "CramionCore/ecs/Rigging.h"
+#include "CramionCore/environment/Environment.h"
+#include "CramionCore/fire/Fire.h"
+#include "CramionCore/fluid/Fluid.h"
 #include "CramionCore/input/InputActions.h"
 #include "CramionCore/net/Http.h"
 #include "CramionCore/net/Network.h"
@@ -391,6 +395,7 @@ void registerScriptComponents() {
         registry.registerComponent<Script>("Script", "Script (Lua)", "Scripting");
     }
     net::registerNetworkComponents();
+    ai::registerStateMachineComponents();
 }
 
 // -----------------------------------------------------------------------------
@@ -486,6 +491,12 @@ struct ScriptSystem::Impl {
     std::vector<ScriptError> errors;
 
     std::unique_ptr<sol::state> lua;
+    // Maquinas de estados de IA (StateMachineScripting.inl). Va despues de
+    // `lua`: se destruye antes (guarda objetos de ese estado de Lua).
+    struct FsmHost;
+    std::unique_ptr<FsmHost> fsm;
+    void bindStateMachine(sol::state& L, sol::usertype<LuaEntity>& entity);
+    void fsmEvent(entt::entity target, const char* method, entt::entity other, const sol::table& contact);
     ecs::World* world = nullptr;
     bool running = false;
     float time = 0.0f;
@@ -2393,6 +2404,7 @@ struct ScriptSystem::Impl {
         game["quit"] = [this]() { quit_request = true; };
 
         bindNetwork(L, entity);
+        bindStateMachine(L, entity);
         bindHttp(L);
 
         // Input
@@ -2797,9 +2809,276 @@ struct ScriptSystem::Impl {
             return std::make_tuple(clear, hit);
         };
 
+        // Fire: incendios de las zonas de fuego (fire/Fire.h). Posiciones
+        // en el mundo; el radio en metros.
+        {
+            sol::table fi = L.create_named_table("Fire");
+            fi["ignite"] = [this](const Vec3& position, sol::optional<float> radius) {
+                return world != nullptr ? fire::ignite(*world, position, std::max(radius.value_or(2.0f), 0.1f)) : 0;
+            };
+            fi["extinguish"] = [this](const Vec3& position, sol::optional<float> radius) {
+                return world != nullptr ? fire::extinguish(*world, position, std::max(radius.value_or(4.0f), 0.1f)) : 0;
+            };
+            fi["extinguishAll"] = [this]() {
+                if (world != nullptr) fire::extinguishAll(*world);
+            };
+            fi["reset"] = [this]() {
+                if (world != nullptr) fire::resetAll(*world);
+            };
+            fi["isBurning"] = [this](const Vec3& position) {
+                return world != nullptr && fire::heatAt(*world, position) >= 0.3f;
+            };
+            fi["heatAt"] = [this](const Vec3& position) {
+                return world != nullptr ? fire::heatAt(*world, position) : 0.0f;
+            };
+            const auto burned_at = [this](const Vec3& position) {
+                return world != nullptr ? fire::charAt(*world, position) : 0.0f;
+            };
+            fi["burnedAt"] = burned_at;
+            fi["charAt"] = burned_at;
+            fi["burnedFraction"] = [this]() {
+                return world != nullptr ? fire::totalStats(*world).burned_fraction : 0.0f;
+            };
+            fi["burningArea"] = [this]() {
+                return world != nullptr ? fire::totalStats(*world).burning_area : 0.0f;
+            };
+            fi["isActive"] = [this]() {
+                return world != nullptr && fire::totalStats(*world).burning_cells > 0;
+            };
+            fi["stats"] = [this]() {
+                const fire::FireStats st = world != nullptr ? fire::totalStats(*world) : fire::FireStats{};
+                sol::table out = lua->create_table();
+                out["active"] = st.active;
+                out["burningCells"] = st.burning_cells;
+                out["smolderingCells"] = st.smoldering_cells;
+                out["burnedCells"] = st.burned_cells;
+                out["burnableCells"] = st.burnable_cells;
+                out["burningArea"] = st.burning_area;
+                out["burnedFraction"] = st.burned_fraction;
+                out["size"] = st.size;
+                out["seconds"] = st.simulated_seconds;
+                out["windX"] = st.wind.x;
+                out["windZ"] = st.wind.y;
+                return out;
+            };
+        }
+
         bindVoxel(L);
         bindMesh(L);
         bindGraphics(L);
+        bindFluid(L);
+
+        // Weather (alias Environment): clima, hora, fecha, estacion y viento
+        // del componente Ambiente (environment/Environment.h). Los cambios
+        // crean el Ambiente si la escena no tiene.
+        {
+            namespace envns = cramion::environment;
+            sol::table we = L.create_named_table("Weather");
+            L["Environment"] = we;
+            const auto find = [this]() -> envns::Environment* {
+                return world != nullptr ? envns::findEnvironment(*world) : nullptr;
+            };
+            const auto ensure = [this]() -> envns::Environment* {
+                return world != nullptr ? &envns::ensureEnvironment(*world) : nullptr;
+            };
+            const auto setWeather = [this, ensure](const std::string& name, sol::optional<float> seconds) {
+                envns::WeatherPreset preset{};
+                if (!envns::presetFromName(name, preset)) {
+                    write(1, "Weather.set: clima desconocido '" + name + "' (Clear, Cloudy, Overcast, Foggy, LightRain, "
+                             "Rain, Storm, LightSnow, Snow, Blizzard, Sandstorm)");
+                    return false;
+                }
+                envns::Environment* env = ensure();
+                if (env == nullptr) return false;
+                envns::setWeather(*env, preset, std::max(seconds.value_or(env->transition_time), 0.0f));
+                return true;
+            };
+            we["set"] = setWeather;
+            we["setWeather"] = setWeather;
+            const auto getWeather = [find]() {
+                const envns::Environment* env = find();
+                return std::string(env != nullptr ? envns::presetName(envns::currentPreset(*env)) : "Clear");
+            };
+            we["get"] = getWeather;
+            we["getWeather"] = getWeather;
+            we["getTarget"] = [find]() {
+                const envns::Environment* env = find();
+                return std::string(env != nullptr ? envns::presetName(env->weather) : "Clear");
+            };
+            we["getLabel"] = [find]() {
+                const envns::Environment* env = find();
+                return std::string(env != nullptr ? envns::presetLabel(envns::currentPreset(*env)) : envns::presetLabel(envns::WeatherPreset::Clear));
+            };
+            we["presets"] = [this]() {
+                sol::table out = lua->create_table();
+                for (int i = 0; i < envns::kWeatherPresetCount; ++i) {
+                    out[i + 1] = std::string(envns::presetName(static_cast<envns::WeatherPreset>(i)));
+                }
+                return out;
+            };
+            // 0..1: cuanto lleva la transicion (1 = terminada).
+            we["transition"] = [find]() {
+                const envns::Environment* env = find();
+                return env != nullptr && env->runtime.initialized ? env->runtime.transition : 1.0f;
+            };
+            we["isTransitioning"] = [find]() {
+                const envns::Environment* env = find();
+                return env != nullptr && env->runtime.initialized && env->runtime.transition < 1.0f;
+            };
+            we["setRandom"] = [ensure](bool on, sol::optional<float> min_seconds, sol::optional<float> max_seconds) {
+                if (envns::Environment* env = ensure()) {
+                    env->random_weather = on;
+                    if (min_seconds) env->min_duration = std::max(*min_seconds, 5.0f);
+                    if (max_seconds) env->max_duration = std::max(*max_seconds, env->min_duration);
+                    env->runtime.next_change = env->min_duration;
+                }
+            };
+            // --- Hora y fecha ---
+            we["setTime"] = [ensure](float hours) {
+                if (envns::Environment* env = ensure()) {
+                    hours = std::fmod(hours, 24.0f);
+                    env->time_of_day = hours < 0.0f ? hours + 24.0f : hours;
+                }
+            };
+            we["getTime"] = [find]() {
+                const envns::Environment* env = find();
+                return env != nullptr ? env->time_of_day : 12.0f;
+            };
+            we["setDate"] = [ensure](int day, int month) {
+                if (envns::Environment* env = ensure()) {
+                    env->month = std::clamp(month, 1, 12);
+                    env->day = std::clamp(day, 1, 31);
+                }
+            };
+            we["getDate"] = [find]() {
+                const envns::Environment* env = find();
+                return env != nullptr ? std::make_tuple(env->day, env->month) : std::make_tuple(21, 6);
+            };
+            we["setLatitude"] = [ensure](float degrees) {
+                if (envns::Environment* env = ensure()) env->latitude = std::clamp(degrees, -89.0f, 89.0f);
+            };
+            we["getLatitude"] = [find]() {
+                const envns::Environment* env = find();
+                return env != nullptr ? env->latitude : 40.0f;
+            };
+            // Minutos reales por dia de juego; 0 o nil = el tiempo se para.
+            we["setDayLength"] = [ensure](sol::optional<float> minutes) {
+                if (envns::Environment* env = ensure()) {
+                    env->time_progress = minutes.has_value() && *minutes > 0.0f;
+                    if (env->time_progress) env->day_length = std::max(*minutes, 0.05f);
+                }
+            };
+            // Velocidad del tiempo: 1 = tiempo real (dia de 24 h), 60 = un dia en 24 min; 0 = parado.
+            we["setTimeScale"] = [ensure](float scale) {
+                if (envns::Environment* env = ensure()) {
+                    env->time_progress = scale > 0.0f;
+                    if (scale > 0.0f) env->day_length = std::max(1440.0f / scale, 0.05f);
+                }
+            };
+            we["getTimeScale"] = [find]() {
+                const envns::Environment* env = find();
+                return env != nullptr && env->time_progress ? 1440.0f / std::max(env->day_length, 0.05f) : 0.0f;
+            };
+            // --- Estacion ---
+            we["setSeason"] = [this, ensure](const std::string& name) {
+                envns::Environment* env = ensure();
+                if (env == nullptr) return;
+                if (name.empty() || name == "auto" || name == "Auto") {
+                    env->season_from_date = true;
+                    return;
+                }
+                envns::Season season{};
+                if (!envns::seasonFromName(name, season)) {
+                    write(1, "Weather.setSeason: estacion desconocida '" + name + "' (Spring, Summer, Autumn, Winter, auto)");
+                    return;
+                }
+                env->season_from_date = false;
+                env->season = season;
+            };
+            we["getSeason"] = [find]() {
+                const envns::Environment* env = find();
+                if (env == nullptr) return std::string("Summer");
+                return std::string(envns::seasonName(env->runtime.initialized ? env->runtime.season_now : env->season));
+            };
+            we["getTemperature"] = [find]() {
+                const envns::Environment* env = find();
+                return env != nullptr ? env->runtime.temperature : 15.0f;
+            };
+            // --- Viento ---
+            we["setWind"] = [ensure](float direction_degrees, sol::optional<float> strength) {
+                if (envns::Environment* env = ensure()) {
+                    env->wind_direction = direction_degrees;
+                    if (strength) env->wind_strength = std::max(*strength, 0.0f);
+                }
+            };
+            we["getWind"] = [find]() {
+                const envns::Environment* env = find();
+                return env != nullptr ? env->runtime.wind : Vec3{};
+            };
+            we["getWindSpeed"] = [find]() {
+                const envns::Environment* env = find();
+                return env != nullptr ? env->runtime.wind_speed : 0.0f;
+            };
+            we["getWindDirection"] = [find]() {
+                const envns::Environment* env = find();
+                return env != nullptr ? env->runtime.wind_direction : 0.0f;
+            };
+            // --- Lluvia, nieve y superficies ---
+            we["getRain"] = [find]() {
+                const envns::Environment* env = find();
+                return env != nullptr ? env->runtime.current.rain : 0.0f;
+            };
+            we["getSnow"] = [find]() {
+                const envns::Environment* env = find();
+                return env != nullptr ? env->runtime.current.snow : 0.0f;
+            };
+            we["getFog"] = [find]() {
+                const envns::Environment* env = find();
+                return env != nullptr ? env->runtime.current.fog * env->fog_strength : 0.0f;
+            };
+            we["getWetness"] = [find]() {
+                const envns::Environment* env = find();
+                return env != nullptr ? env->runtime.wetness : 0.0f;
+            };
+            we["setWetness"] = [ensure](float wetness, sol::optional<float> puddles) {
+                if (envns::Environment* env = ensure()) envns::setWetness(*env, wetness, puddles.value_or(env->runtime.puddles));
+            };
+            we["getSnowCover"] = [find]() {
+                const envns::Environment* env = find();
+                return env != nullptr ? env->runtime.snow_cover : 0.0f;
+            };
+            we["setSnowCover"] = [ensure](float cover) {
+                if (envns::Environment* env = ensure()) envns::setSnowCover(*env, cover);
+            };
+            we["setPrecipitationDensity"] = [ensure](float density) {
+                if (envns::Environment* env = ensure()) env->precipitation_density = std::clamp(density, 0.0f, 3.0f);
+            };
+            // --- Rayos ---
+            we["lightning"] = [ensure](sol::optional<float> distance) {
+                if (envns::Environment* env = ensure()) envns::strikeLightning(*env, distance.value_or(-1.0f));
+            };
+            we["setLightning"] = [ensure](bool on, sol::optional<float> frequency) {
+                if (envns::Environment* env = ensure()) {
+                    env->lightning = on;
+                    if (frequency) env->lightning_frequency = std::max(*frequency, 0.0f);
+                }
+            };
+            // --- Astros ---
+            we["getSunDirection"] = [find]() {
+                const envns::Environment* env = find();
+                return env != nullptr ? env->runtime.to_sun : Vec3{0.0f, 1.0f, 0.0f};
+            };
+            we["isNight"] = [find]() {
+                const envns::Environment* env = find();
+                return env != nullptr && env->runtime.initialized && env->runtime.to_sun.y < -0.05f;
+            };
+            we["setAudio"] = [ensure](bool on, sol::optional<float> volume) {
+                if (envns::Environment* env = ensure()) {
+                    env->ambient_audio = on;
+                    if (volume) env->audio_volume = std::max(*volume, 0.0f);
+                }
+            };
+        }
 
         // Audio
         sol::table au = L.create_named_table("Audio");
@@ -3257,6 +3536,112 @@ struct ScriptSystem::Impl {
         };
     }
 
+    // Fluid: liquidos por particulas (fluid/Fluid.h). Los tipos se nombran
+    // por clave ("water", "honey", "lava"...), por nombre ("Miel") o numero.
+    void bindFluid(sol::state& L) {
+        sol::table fl = L.create_named_table("Fluid");
+        sol::state* S = &L;
+        constexpr int kTypes = static_cast<int>(fluid::FluidType::Count);
+        // -1 si no existe; nil = agua.
+        const auto typeOf = [](const sol::object& value) -> int {
+            if (value.get_type() == sol::type::number) return std::clamp(value.as<int>(), 0, kTypes - 1);
+            if (value.get_type() == sol::type::string) return fluid::fluidTypeFromName(value.as<std::string>());
+            return 0;
+        };
+        const auto emitterOf = [](const LuaEntity& entity) -> fluid::FluidEmitter* {
+            const ecs::Entity e = entity.get();
+            return e.valid() ? e.tryGet<fluid::FluidEmitter>() : nullptr;
+        };
+        fl["isActive"] = []() {
+            const fluid::FluidSystem* f = fluid::activeSystem();
+            return f != nullptr && f->stats().active;
+        };
+        fl["spawn"] = [this, typeOf](const Vec3& position, int count, sol::object type, sol::optional<Vec3> velocity,
+                                     sol::optional<float> radius, sol::optional<float> lifetime) {
+            fluid::FluidSystem* f = fluid::activeSystem();
+            if (f == nullptr) return;
+            int t = typeOf(type);
+            if (t < 0) {
+                write(1, "Fluid.spawn: liquido desconocido (water, oil, honey, lava, mud, blood, acid, custom)");
+                t = 0;
+            }
+            f->spawn(position, count, static_cast<fluid::FluidType>(t), velocity.value_or(Vec3{}), radius.value_or(0.0f),
+                     lifetime.value_or(0.0f));
+        };
+        fl["clear"] = []() {
+            if (fluid::FluidSystem* f = fluid::activeSystem()) f->clear();
+        };
+        fl["count"] = [typeOf](sol::object type) -> int {
+            const fluid::FluidSystem* f = fluid::activeSystem();
+            if (f == nullptr) return 0;
+            if (type.get_type() == sol::type::lua_nil || type.get_type() == sol::type::none) {
+                return static_cast<int>(f->particleCount());
+            }
+            const int t = typeOf(type);
+            return t < 0 ? 0 : static_cast<int>(f->particleCount(static_cast<fluid::FluidType>(t)));
+        };
+        fl["density"] = [](const Vec3& position, sol::optional<float> radius) {
+            const fluid::FluidSystem* f = fluid::activeSystem();
+            return f != nullptr ? f->densityAt(position, radius.value_or(0.0f)) : 0.0f;
+        };
+        fl["isInside"] = [](const Vec3& position) {
+            const fluid::FluidSystem* f = fluid::activeSystem();
+            return f != nullptr && f->densityAt(position) > 0.25f;
+        };
+        fl["velocity"] = [](const Vec3& position, sol::optional<float> radius) {
+            const fluid::FluidSystem* f = fluid::activeSystem();
+            return f != nullptr ? f->velocityAt(position, radius.value_or(0.0f)) : Vec3{};
+        };
+        fl["surfaceHeight"] = [S](float x, float z, sol::optional<float> radius) -> sol::object {
+            const fluid::FluidSystem* f = fluid::activeSystem();
+            float height = 0.0f;
+            if (f == nullptr || !f->surfaceHeight(x, z, height, radius.value_or(0.0f))) return sol::lua_nil;
+            return sol::make_object(*S, height);
+        };
+        fl["start"] = [emitterOf](const LuaEntity& entity) {
+            if (fluid::FluidEmitter* em = emitterOf(entity)) em->emitting = true;
+        };
+        fl["stop"] = [emitterOf](const LuaEntity& entity) {
+            if (fluid::FluidEmitter* em = emitterOf(entity)) em->emitting = false;
+        };
+        fl["restart"] = [emitterOf](const LuaEntity& entity) {
+            fluid::FluidSystem* f = fluid::activeSystem();
+            if (fluid::FluidEmitter* em = emitterOf(entity); em != nullptr && f != nullptr) {
+                em->emitting = true;
+                f->restart(entity.get());
+            }
+        };
+        fl["setType"] = [this, typeOf, emitterOf](const LuaEntity& entity, sol::object type) {
+            fluid::FluidEmitter* em = emitterOf(entity);
+            const int t = typeOf(type);
+            if (em == nullptr) return;
+            if (t < 0) {
+                write(1, "Fluid.setType: liquido desconocido");
+                return;
+            }
+            em->fluid = static_cast<fluid::FluidType>(t);
+        };
+        fl["types"] = [S]() {
+            sol::table out = S->create_table();
+            for (int i = 0; i < kTypes; ++i) out[i + 1] = std::string(fluid::fluidTypeKeys()[static_cast<std::size_t>(i)]);
+            return out;
+        };
+        fl["stats"] = [S]() {
+            sol::table out = S->create_table();
+            const fluid::FluidSystem* f = fluid::activeSystem();
+            const fluid::FluidSystemStats s = f != nullptr ? f->stats() : fluid::FluidSystemStats{};
+            out["particles"] = s.particles;
+            out["capacity"] = s.capacity;
+            out["substeps"] = s.substeps;
+            out["colliders"] = s.shapes;
+            out["emitters"] = s.emitters;
+            out["floatingBodies"] = s.floating_bodies;
+            out["memoryMB"] = static_cast<double>(s.memory_bytes) / (1024.0 * 1024.0);
+            out["simulating"] = s.simulating;
+            return out;
+        };
+    }
+
     // Mesh: mallas creadas por codigo, como el Mesh de Unity. Los triangulos
     // usan indices de vertice desde 0 (como Unity): el vertice 0 es
     // mesh.vertices[1] en Lua. Las UV van en Vec3 (x, y). Cambiar una lista
@@ -3603,16 +3988,21 @@ struct ScriptSystem::Impl {
             const physics::PhysicsEvent sides[2] = {event, event.flipped()};
             for (const physics::PhysicsEvent& side : sides) {
                 const auto it = instances.find(side.a.handle());
-                if (it == instances.end() || !side.b.valid()) continue;
+                const bool machine = fsm != nullptr && world != nullptr && world->registry().valid(side.a.handle()) &&
+                                     world->registry().all_of<ai::StateMachine>(side.a.handle());
+                if ((it == instances.end() && !machine) || !side.b.valid()) continue;
                 sol::table contact = lua->create_table();
                 contact["point"] = side.point;
                 contact["normal"] = side.normal;
                 contact["relativeVelocity"] = side.relative_velocity;
-                call(it->second, method, LuaEntity{side.b.handle(), world}, contact);
+                if (it != instances.end()) call(it->second, method, LuaEntity{side.b.handle(), world}, contact);
+                if (machine) fsmEvent(side.a.handle(), method, side.b.handle(), contact);
             }
         }
     }
 };
+
+#include "StateMachineScripting.inl"
 
 ScriptSystem::ScriptSystem() : impl_(std::make_unique<Impl>()) {
     impl_->buildKeys();
@@ -3710,6 +4100,7 @@ void ScriptSystem::start(ecs::World& world) {
     d.world = &world;
     d.lua = std::make_unique<sol::state>();
     d.bind(*d.lua);
+    d.fsm = std::make_unique<Impl::FsmHost>(d);
     d.running = true;
     d.time = 0.0f;
     d.frame = 0;
@@ -3774,6 +4165,9 @@ void ScriptSystem::update(ecs::World& world, float delta_seconds) {
         }
         d.call(it->second, "Update", delta_seconds);
     }
+    // Maquinas de estados: despues de los Update (ven sus triggers del frame).
+    if (d.fsm) d.fsm->update(world, delta_seconds);
+    if (d.fsm) d.fsm->forwardAll("OnLateUpdate", delta_seconds);
     for (const entt::entity handle : order) {
         const auto it = d.instances.find(handle);
         if (it == d.instances.end()) continue;
@@ -3797,6 +4191,7 @@ void ScriptSystem::fixedUpdate(ecs::World& world, float step, int steps) {
             if (!e.get<Script>().enabled || !inst.started) continue;
             d.call(inst, "FixedUpdate", step);
         }
+        if (d.fsm) d.fsm->forwardAll("OnFixedUpdate", step);
     }
 }
 
@@ -3807,6 +4202,7 @@ void ScriptSystem::stop() {
     }
     if (d.physics != nullptr && d.listener >= 0) d.physics->removeListener(d.listener);
     d.listener = -1;
+    d.fsm.reset();  // sus objetos son del Lua que se va
     d.instances.clear();
     d.classes.clear();
     d.failed_classes.clear();
@@ -3843,6 +4239,9 @@ void ScriptSystem::reloadFile(const std::string& file) {
     Impl& d = *impl_;
     d.described.erase(file);
     if (!d.running) return;
+    // Maquinas de estados: su .crfsm o un .lua que usa alguno de sus estados.
+    if (d.fsm) d.fsm->reload(file);
+    if (std::filesystem::path(file).extension() == ai::kStateMachineExtension) return;
     std::string error;
     sol::object cls = d.loadClass(*d.lua, file, &error);
     if (!cls.is<sol::table>()) {
@@ -4003,6 +4402,7 @@ std::map<std::string, std::vector<ScriptSystem::ApiMember>> ScriptSystem::apiRef
     collect("Vec3:", registry[sol::usertype_traits<core::Vec3>::metatable()]);
     collect("Quat:", registry[sol::usertype_traits<core::Quat>::metatable()]);
     collect("Mesh:", registry[sol::usertype_traits<ecs::Mesh>::metatable()]);
+    collect("StateMachine:", registry[sol::usertype_traits<LuaStateMachine>::metatable()]);
     return out;
 }
 

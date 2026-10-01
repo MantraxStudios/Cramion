@@ -293,6 +293,11 @@ void EditorApp::openScript(const std::filesystem::path& file) {
 }
 
 bool EditorApp::saveScript(ScriptTab& tab) {
+    if (tab.on_save) {  // codigo de un estado de una maquina: lo guarda su dueno
+        tab.on_save();
+        tab.saved = tab.text;
+        return true;
+    }
     std::ofstream out(tab.path, std::ios::binary | std::ios::trunc);
     if (!out) {
         std::cerr << "[Editor] No se pudo guardar " << dialogs::utf8(tab.path) << "\n";

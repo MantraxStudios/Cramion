@@ -7,6 +7,7 @@
 #include "EditorApp.h"
 
 #include <CramionCore/terrain/TerrainGenerator.h>
+#include <CramionCore/environment/Environment.h>
 
 #include "CramionCore/project/DataPack.h"
 
@@ -164,6 +165,21 @@ const std::vector<ToolDef>& toolDefs() {
                       {"scale_min", prop("number", "Escala minima (0.9)")}, {"scale_max", prop("number", "Escala maxima (1.1)")},
                       {"erase", prop("boolean", "Borrar en vez de pintar")}}, {"center"}});
         d.push_back({"set_camera", "Coloca la camara del editor.", {{"position", vec3Prop("Posicion")}, {"target", vec3Prop("Punto al que mira")}}, {"position", "target"}});
+        d.push_back({"set_weather", "Ambiente (como Enviro): cambia el clima con una transicion suave. Crea el componente Environment (con cielo fisico) si la escena no tiene. Climas: Clear, Cloudy, Overcast, Foggy, LightRain, Rain, Storm, LightSnow, Snow, Blizzard, Sandstorm (tambien en espanol).",
+                     {{"weather", prop("string", "Clima (p. ej. Storm, Nieve)")}, {"seconds", prop("number", "Segundos de la transicion (0 = al instante, tambien la humedad y la nieve acumulada)")},
+                      {"random", prop("boolean", "Clima al azar segun la estacion")}, {"snow_cover", prop("number", "Nieve acumulada 0..1 al instante")},
+                      {"wetness", prop("number", "Humedad de las superficies 0..1 al instante")}, {"puddles", prop("number", "Charcos 0..1 al instante")},
+                      {"density", prop("number", "Densidad de gotas y copos 0..3")}}, {}});
+        d.push_back({"set_time", "Ambiente: hora, fecha, latitud, estacion y velocidad del tiempo (mueve el sol y la luna por su recorrido real).",
+                     {{"hours", prop("number", "Hora del dia 0..24")}, {"day", prop("integer", "Dia 1..31")}, {"month", prop("integer", "Mes 1..12")},
+                      {"latitude", prop("number", "Latitud en grados (-89..89)")}, {"day_length", prop("number", "Minutos reales por dia (0 = el tiempo no avanza)")},
+                      {"season", prop("string", "Spring, Summer, Autumn, Winter o auto (por la fecha)")}}, {}});
+        d.push_back({"set_wind", "Ambiente: viento global (nubes, hierba, arboles, lluvia y nieve).",
+                     {{"direction", prop("number", "Grados (0 = hacia +X)")}, {"strength", prop("number", "Multiplica el viento del clima (0..4)")},
+                      {"wander", prop("boolean", "La direccion cambia despacio")}}, {}});
+        d.push_back({"lightning_strike", "Ambiente: lanza un rayo ahora (destello, trazo y trueno con el retraso de la distancia).",
+                     {{"distance", prop("number", "Distancia en metros (sin ella, al azar)")}}, {}});
+        d.push_back({"get_environment", "Ambiente: estado actual (clima, transicion, hora, fecha, estacion, temperatura, viento, lluvia, nieve, humedad, particulas dibujadas).", json::object(), {}});
         d.push_back({"list_assets", "Assets del proyecto (modelos, materiales, escenas, prefabs, cielos...) y archivos sueltos (scripts .lua, shaders .crshader, imagenes, audio).",
                      {{"folder", prop("string", "Subcarpeta de Assets (opcional)")}, {"type", prop("string", "Filtro: Model, Material, Scene, Prefab, Environment...")}}, {}});
         d.push_back({"read_file", "Lee un archivo de texto del proyecto (ruta relativa a Assets, p. ej. Scripts/Jugador.lua).", {{"path", prop("string", "Ruta dentro de Assets")}}, {"path"}});
@@ -218,6 +234,29 @@ const std::vector<ToolDef>& toolDefs() {
                      {{"path", prop("string", "Ruta absoluta del archivo")}, {"folder", prop("string", "Subcarpeta de Assets (por defecto Models)")}}, {"path"}});
         d.push_back({"ground_height", "Altura del suelo (terreno o lo que haya) en un punto x, z del mundo: para colocar camaras u objetos encima.",
                      {{"x", prop("number", "X del mundo")}, {"z", prop("number", "Z del mundo")}}, {"x", "z"}});
+        d.push_back({"fluid_create", "Crea liquidos de particulas (GameObject > Efectos > Liquidos): faucet (grifo de agua), block (bloque de agua que cae), honey (chorro de miel), lava (chorro de lava), world (Mundo de liquidos: dominio y ajustes), drain (desague) o tank (tanque de demostracion con un cubo que flota). Crea un FluidWorld si no hay (con 'Simular en el editor').",
+                     {{"kind", prop("string", "faucet, block, honey, lava, world, drain o tank")}, {"position", vec3Prop("Donde (sin: delante de la camara)")},
+                      {"fluid", prop("string", "Tipo del emisor: water, oil, honey, lava, mud, blood, acid, custom")},
+                      {"emitter_fields", prop("object", "Campos del FluidEmitter {\"speed\": 3, \"nozzle_radius\": 0.1, \"shape\": \"Caja (se llena)\", ...}")},
+                      {"world_fields", prop("object", "Campos del FluidWorld {\"size\": [6,5,6], \"particle_radius\": 0.04, \"solid_walls\": true, ...}")}}, {}});
+        d.push_back({"fluid_spawn", "Crea una bola de liquido (particulas) en un punto. Sin FluidWorld usa el dominio por defecto (8x6x8 m).",
+                     {{"position", vec3Prop("Centro (mundo)")}, {"count", prop("integer", "Particulas (1000)")},
+                      {"fluid", prop("string", "water, oil, honey, lava, mud, blood, acid, custom")}, {"velocity", vec3Prop("Velocidad inicial m/s")},
+                      {"radius", prop("number", "Radio de la bola (0 = el justo)")}, {"lifetime", prop("number", "Segundos de vida (0 = siempre)")}}, {"position"}});
+        d.push_back({"fluid_state", "Estado de los liquidos: particulas (total y por tipo), capacidad, pasos, colliders, emisores, cuerpos que flotan, memoria. Con 'position': densidad, velocidad y altura de la superficie ahi.",
+                     {{"position", vec3Prop("Punto a consultar (opcional)")}, {"radius", prop("number", "Radio de la consulta")}}, {}});
+        d.push_back({"fluid_clear", "Borra todas las particulas de liquido (los emisores de caja/esfera vuelven a llenarse).", json::object(), {}});
+        d.push_back({"fire_create", "Crea una zona de fuego (componente Fire: incendio que se propaga con llamas y humo volumetricos, suelo quemado y luces). Sin position: delante de la camara sobre el suelo. Se simula en el editor; 'fields' ajusta el componente (size, cell_size, spread, limit_to_zone, spread_speed, burn_time, flame_height, smoke_amount, smoke_height, wind_speed, wind_direction, sky_wind...).",
+                     {{"position", vec3Prop("Centro de la zona (y = suelo)")}, {"on_ground", prop("boolean", "Posarla en el terreno (true)")},
+                      {"size", prop("number", "Lado de la zona en m (120)")}, {"ignite", prop("boolean", "Encender ya en el centro (true)")},
+                      {"fields", prop("object", "Campos del componente Fire {\"spread_speed\": 1.0, ...}")}}, {}});
+        d.push_back({"fire_ignite", "Enciende fuego en un circulo (mundo) dentro de las zonas de fuego que lo tocan. En el editor activa 'Simular en el editor' de esas zonas.",
+                     {{"position", vec3Prop("Centro (mundo)")}, {"radius", prop("number", "Radio en m (2)")}}, {"position"}});
+        d.push_back({"fire_extinguish", "Apaga el fuego en un circulo (mundo) o todo con all=true. reset=true ademas borra lo quemado (vuelve a empezar).",
+                     {{"position", vec3Prop("Centro (mundo)")}, {"radius", prop("number", "Radio en m (10)")},
+                      {"all", prop("boolean", "Todas las zonas")}, {"reset", prop("boolean", "Reiniciar las zonas (nada quemado)")}}, {}});
+        d.push_back({"fire_state", "Estado de los incendios: por zona celdas en llamas, con brasas, quemadas, area en llamas, fraccion quemada, viento y segundos simulados; con position, calor y quemado en ese punto.",
+                     {{"position", vec3Prop("Punto a consultar (opcional)")}}, {}});
         d.push_back({"generate_house", "Crea una casa o cabana procedural realista (Ventana > Generador de casas): 8 materiales PBR compartidos con relieve, MeshCollider y la puerta aparte (hijo 'Puerta', gira en Y). Con 'village' crea una aldea de N casas en el terreno (reemplaza 'Aldea').",
                      {{"style", prop("string", "log (troncos), timber (tablas), stone (piedra) o farm (casa de campo de 2 plantas)")},
                       {"seed", prop("integer", "Semilla: otras medidas y ventanas")}, {"width", prop("number", "Ancho en m")},
@@ -268,7 +307,31 @@ const std::vector<ToolDef>& toolDefs() {
                      {{"code", prop("string", "Codigo Lua; usa return para obtener un valor")}}, {"code"}});
         d.push_back({"get_console", "Ultimas lineas de la consola del editor (logs, avisos, errores de scripts y shaders).",
                      {{"lines", prop("integer", "Cuantas (por defecto 60)")}, {"level", prop("string", "all, warnings o errors")}}, {}});
-        d.push_back({"screenshot", "Captura del editor (imagen PNG) para ver el resultado.", json::object(), {}});
+        d.push_back({"screenshot", "Captura del editor (imagen PNG) para ver el resultado. Con 'path' la guarda en ese archivo y no devuelve la imagen (para grabar frames).",
+                     {{"path", prop("string", "Opcional: ruta absoluta del PNG")}}, {}});
+        d.push_back({"cinema", "Modo cine para grabar trailers: la ventana pasa a ser SOLO la imagen de la escena (sin paneles ni gizmos) del tamano pedido, calidad maxima (sin presupuesto adaptativo) y el tiempo del motor (viento, agua, nubes, fisica) se para: solo avanza 1/fps por cada paso de cinema_step.",
+                     {{"enabled", prop("boolean", "Activar o salir")}, {"width", prop("integer", "Ancho (1920)")}, {"height", prop("integer", "Alto (1080)")}, {"fps", prop("number", "Frames por segundo del video (30)")}}, {"enabled"}});
+        d.push_back({"cinema_step", "En modo cine: coloca la camara (opcional) y avanza el tiempo 'frames' pasos. Devuelve el contador de frames; espera con cinema_state a que pase de ese valor + 3 antes de capturar.",
+                     {{"position", vec3Prop("Posicion de la camara")}, {"target", vec3Prop("Punto al que mira")}, {"frames", prop("integer", "Pasos de tiempo (1)")}}, {}});
+        d.push_back({"cinema_state", "Estado del modo cine: frames dibujados, pasos pendientes y tamano de la ventana.", json::object(), {}});
+        // Maquinas de estados de IA (.crfsm, EditorStateMachine.cpp).
+        {
+            const json machine = prop("string", "La maquina: ruta dentro de Assets (IA/Enemigo.crfsm), nombre o UUID");
+            d.push_back({"create_state_machine", "Crea (o reemplaza, conservando su UUID) una maquina de estados de IA (.crfsm) como los State Graphs de Bolt. 'machine' es el JSON del .crfsm: {variables:[{name,type(bool|int|float|string|entity|vec3),value}], states:[{name, code (Lua con OnEnter(self, sm), OnUpdate(self, dt), OnExit(self)...), position:[x,y], color:[r,g,b], script (opcional: .lua de Assets)}], entry:'Estado', any_code:'Lua de Cualquier estado (sensores, corre siempre)', transitions:[{from:'Estado'|'any', to:'Estado', priority, conditions:[{type:'variable', variable, compare(==,!=,>,<,>=,<=,true,false), value (o '$otraVariable')}, {type:'trigger', trigger}, {type:'timer', seconds}, {type:'lua', expression}]}]}. En el codigo: self.entity, self.vars.x, self.sm:go('Estado'), self.sm:trigger('t'), self.sm.stateTime. Sin 'machine' crea una vacia; example=true crea el enemigo de ejemplo (Patrullar/Perseguir/Atacar/Huir/Volver con NavAgent).",
+                         {{"name", prop("string", "Nombre del archivo (sin extension)")}, {"folder", prop("string", "Carpeta dentro de Assets (por defecto IA)")},
+                          {"machine", prop("object", "JSON del .crfsm (ver descripcion)")}, {"example", prop("boolean", "Crear el enemigo de ejemplo")},
+                          {"attach_to", entity}, {"open", prop("boolean", "Abrirla en la ventana Maquina de estados")}}, {"name"}});
+            d.push_back({"get_state_machine", "Lee una maquina de estados: su JSON completo (variables, estados con su codigo, transiciones) y los problemas que tenga.",
+                         {{"machine", machine}}, {"machine"}});
+            d.push_back({"update_state_machine", "Cambia una maquina de estados: 'data' la reemplaza entera (mismo formato que create_state_machine) y/o 'state_code' cambia el codigo de algunos estados {\"Patrullar\": \"function OnEnter(self, sm) ... end\"}, 'any_code' el de Cualquier estado y 'entry' el estado de entrada. En Play se recarga en caliente.",
+                         {{"machine", machine}, {"data", prop("object", "JSON completo del .crfsm")}, {"state_code", prop("object", "{estado: codigo Lua}")},
+                          {"any_code", prop("string", "Codigo de Cualquier estado")}, {"entry", prop("string", "Estado de entrada")}}, {"machine"}});
+            d.push_back({"assign_state_machine", "Pone el componente StateMachine con esa maquina en una entidad. 'variables' cambia los valores iniciales de la pizarra solo para ese objeto.",
+                         {{"entity", entity}, {"machine", machine}, {"variables", prop("object", "{variable: valor}")},
+                          {"start_active", prop("boolean", "Empieza sola (por defecto si)")}, {"debug", prop("boolean", "Cada cambio de estado a la consola")}}, {"entity", "machine"}});
+            d.push_back({"state_machine_debug", "Estado en vivo (en Play) de la maquina de una entidad: estado actual, anterior, tiempo, variables e historial de cambios. Opcional: go (ir a un estado), trigger (disparar uno) y set ({variable: valor}).",
+                         {{"entity", entity}, {"go", prop("string", "Ir a este estado")}, {"trigger", prop("string", "Disparar este trigger")}, {"set", prop("object", "{variable: valor}")}}, {"entity"}});
+        }
         d.push_back({"undo", "Deshace la ultima accion.", json::object(), {}});
         d.push_back({"redo", "Rehace.", json::object(), {}});
         return d;
@@ -316,6 +379,10 @@ MeshRenderer, Light (type Directional/Point/Spot, color, intensity, range), Came
 BoxCollider, SphereCollider, CapsuleCollider, MeshCollider, Script (file = "Scripts/X.lua"),
 AudioSource, Animator, ParticleSystem, NavAgent, Terrain, WaterBody, Decal.
 Nota: primitivas (cube, sphere...) ya traen su collider.
+
+## Ambiente (clima y hora)
+set_weather (Storm, Snow, Foggy...; seconds = transicion), set_time (hours, day, month, latitude,
+day_length, season), set_wind, lightning_strike, get_environment. En Lua: Weather.set("Rain", 5).
 )";
 
 }  // namespace
@@ -480,6 +547,10 @@ private:
         const std::string rel = a.assetRelative(file);
         const std::string ext = file.extension().string();
         if (ext == ".lua") a.scripts_.reloadFile(rel);
+        if (ext == ai::kStateMachineExtension) {  // maquina de estados: Play y la ventana abierta
+            a.fsm_cache_.clear();
+            a.scripts_.reloadFile(rel);
+        }
         if (ext == assets::kSurfaceShaderExtension && a.sync_) a.sync_->reloadSurfaceShaders();
         if (ext == ".crmat" && a.sync_) {
             for (const assets::AssetInfo& info : a.database_->all()) {
@@ -562,9 +633,12 @@ json McpTools::call(const std::string& name, const json& args, bool& image, std:
 
     // Tambien en el Hub (sin proyecto).
     if (name == "screenshot") {
-        const std::filesystem::path png = std::filesystem::temp_directory_path() / "cramion_mcp_screenshot.png";
+        const bool to_file = args.contains("path") && args["path"].is_string() && !arg(args, "path").empty();
+        const std::filesystem::path png = to_file ? dialogs::fromUtf8(arg(args, "path"))
+                                                  : std::filesystem::temp_directory_path() / "cramion_mcp_screenshot.png";
         const std::vector<std::uint8_t> pixels = captureEditorWindow(a.window_.handle(), png);
         if (pixels.empty()) throw ToolError("no se pudo capturar la ventana (minimizada?)");
+        if (to_file) return json{{"path", arg(args, "path")}};
         image = true;
         image_data = base64(readBytes(png));
         return json{};
@@ -739,6 +813,93 @@ json McpTools::call(const std::string& name, const json& args, bool& image, std:
         return json{{"ok", true}};
     }
 
+    // --- Ambiente (environment::Environment) ---
+    if (name == "set_weather" || name == "set_time" || name == "set_wind" || name == "lightning_strike" ||
+        name == "get_environment") {
+        namespace envns = cramion::environment;
+        const auto state = [&](const envns::Environment& env) {
+            const envns::EnvironmentRuntime& rt = env.runtime;
+            return json{{"weather", envns::presetName(envns::currentPreset(env))},
+                        {"target", envns::presetName(env.weather)},
+                        {"label", envns::presetLabel(envns::currentPreset(env))},
+                        {"transition", rt.initialized ? rt.transition : 1.0f},
+                        {"random", env.random_weather},
+                        {"hours", env.time_of_day},
+                        {"day", env.day},
+                        {"month", env.month},
+                        {"latitude", env.latitude},
+                        {"time_progress", env.time_progress},
+                        {"day_length", env.day_length},
+                        {"season", envns::seasonName(rt.initialized ? rt.season_now : env.season)},
+                        {"temperature", rt.temperature},
+                        {"wind", vec(rt.wind)},
+                        {"wind_speed", rt.wind_speed},
+                        {"wind_direction", rt.wind_direction},
+                        {"rain", rt.current.rain},
+                        {"snow", rt.current.snow},
+                        {"fog", rt.current.fog * env.fog_strength},
+                        {"wetness", rt.wetness},
+                        {"puddles", rt.puddles},
+                        {"snow_cover", rt.snow_cover},
+                        {"to_sun", vec(rt.to_sun)},
+                        {"particles", a.renderer_.precipitationParticles()}};
+        };
+        if (name == "get_environment") {
+            const envns::Environment* env = envns::findEnvironment(a.world_);
+            if (env == nullptr) return json{{"environment", false}};
+            json j = state(*env);
+            j["environment"] = true;
+            return j;
+        }
+        envns::Environment& env = envns::ensureEnvironment(a.world_);
+        if (name == "set_weather") {
+            if (args.contains("weather")) {
+                envns::WeatherPreset preset{};
+                if (!envns::presetFromName(arg(args, "weather"), preset)) {
+                    throw ToolError("clima desconocido: usa Clear, Cloudy, Overcast, Foggy, LightRain, Rain, Storm, LightSnow, Snow, Blizzard o Sandstorm");
+                }
+                envns::setWeather(env, preset, std::max(args.value("seconds", env.transition_time), 0.0f));
+            }
+            if (args.contains("random")) env.random_weather = args.value("random", false);
+            if (args.contains("density")) env.precipitation_density = std::clamp(args.value("density", 1.0f), 0.0f, 3.0f);
+            if (args.contains("snow_cover")) envns::setSnowCover(env, args.value("snow_cover", 0.0f));
+            if (args.contains("wetness") || args.contains("puddles")) {
+                envns::setWetness(env, args.value("wetness", env.runtime.wetness), args.value("puddles", env.runtime.puddles));
+            }
+        } else if (name == "set_time") {
+            if (args.contains("hours")) env.time_of_day = std::clamp(args.value("hours", 12.0f), 0.0f, 24.0f);
+            if (args.contains("month")) env.month = std::clamp(args.value("month", 6), 1, 12);
+            if (args.contains("day")) env.day = std::clamp(args.value("day", 21), 1, 31);
+            if (args.contains("latitude")) env.latitude = std::clamp(args.value("latitude", 40.0f), -89.0f, 89.0f);
+            if (args.contains("day_length")) {
+                const float minutes = args.value("day_length", 0.0f);
+                env.time_progress = minutes > 0.0f;
+                if (minutes > 0.0f) env.day_length = std::max(minutes, 0.05f);
+            }
+            if (args.contains("season")) {
+                const std::string season_name = arg(args, "season");
+                envns::Season season{};
+                if (season_name.empty() || season_name == "auto") {
+                    env.season_from_date = true;
+                } else if (envns::seasonFromName(season_name, season)) {
+                    env.season_from_date = false;
+                    env.season = season;
+                } else {
+                    throw ToolError("estacion desconocida: Spring, Summer, Autumn, Winter o auto");
+                }
+            }
+            env.control_time = true;
+        } else if (name == "set_wind") {
+            if (args.contains("direction")) env.wind_direction = args.value("direction", 30.0f);
+            if (args.contains("strength")) env.wind_strength = std::clamp(args.value("strength", 1.0f), 0.0f, 4.0f);
+            if (args.contains("wander")) env.wind_wander = args.value("wander", true);
+        } else {
+            envns::strikeLightning(env, args.value("distance", -1.0f));
+        }
+        if (!a.playing()) a.commit();
+        return state(env);
+    }
+
     if (name == "list_assets") {
         const std::string type_filter = arg(args, "type");
         std::filesystem::path folder = a.project_.assetsFolder();
@@ -752,7 +913,7 @@ json McpTools::call(const std::string& name, const json& args, bool& image, std:
                     {"Model", assets::AssetType::Model}, {"Environment", assets::AssetType::Environment},
                     {"Scene", assets::AssetType::Scene}, {"Material", assets::AssetType::Material},
                     {"Prefab", assets::AssetType::Prefab}, {"AnimatorController", assets::AssetType::AnimatorController},
-                    {"AnimationClip", assets::AssetType::AnimationClip}};
+                    {"AnimationClip", assets::AssetType::AnimationClip}, {"StateMachine", assets::AssetType::StateMachine}};
                 const auto it = names.find(type_filter);
                 if (it != names.end() && it->second != info.type) continue;
             }
@@ -1061,6 +1222,188 @@ json McpTools::call(const std::string& name, const json& args, bool& image, std:
         if (!a.groundHeightAt(x, z, y)) return json{{"found", false}};
         return json{{"found", true}, {"y", y}};
     }
+    if (name == "fluid_create") {
+        static const std::map<std::string, int> kinds = {{"faucet", 0}, {"block", 1}, {"honey", 2}, {"lava", 3},
+                                                         {"world", 4},  {"drain", 5}, {"tank", 6}};
+        const auto it = kinds.find(arg(args, "kind", "faucet"));
+        if (it == kinds.end()) throw ToolError("kind desconocido: " + arg(args, "kind"));
+        bool had_world = false;
+        for (const entt::entity h : a.world_.registry().view<fluid::FluidWorld>()) {
+            (void)h;
+            had_world = true;
+            break;
+        }
+        ecs::Entity e = a.createFluidEntity(it->second);
+        if (!e.valid()) throw ToolError("no se pudo crear");
+        // Lo creado (y sus hijos) se mueve; si esta llamada creo tambien el
+        // FluidWorld, el dominio va con ello (un mundo que ya habia, no).
+        if (args.contains("position")) {
+            const Vec3 before = e.worldPosition();
+            const Vec3 p = readVec(args, "position", before);
+            e.setWorldPosition(p);
+            if (!had_world && !e.has<fluid::FluidWorld>()) {
+                for (const entt::entity h : a.world_.registry().view<fluid::FluidWorld>()) {
+                    ecs::Entity w = a.world_.wrap(h);
+                    w.setWorldPosition(w.worldPosition() + (p - before));
+                    break;
+                }
+            }
+        }
+        if (args.contains("fluid") && e.has<fluid::FluidEmitter>()) {
+            const int t = fluid::fluidTypeFromName(arg(args, "fluid"));
+            if (t < 0) throw ToolError("liquido desconocido: " + arg(args, "fluid"));
+            e.get<fluid::FluidEmitter>().fluid = static_cast<fluid::FluidType>(t);
+        }
+        if (args.contains("emitter_fields") && e.has<fluid::FluidEmitter>()) {
+            applyComponents(e, json{{"FluidEmitter", args["emitter_fields"]}});
+        }
+        if (args.contains("world_fields")) {
+            ecs::Entity w = e.has<fluid::FluidWorld>() ? e : ecs::Entity{};
+            if (!w.valid()) {
+                for (const entt::entity h : a.world_.registry().view<fluid::FluidWorld>()) {
+                    w = a.world_.wrap(h);
+                    break;
+                }
+            }
+            if (w.valid()) applyComponents(w, json{{"FluidWorld", args["world_fields"]}});
+        }
+        a.commit();
+        json j = summary(e);
+        for (const entt::entity h : a.world_.registry().view<fluid::FluidWorld>()) {
+            const ecs::Entity w = a.world_.wrap(h);
+            j["fluid_world"] = w.name();
+            j["domain_center"] = vec(w.worldPosition());
+            j["domain_size"] = vec(w.get<fluid::FluidWorld>().size);
+            j["simulate_in_editor"] = w.get<fluid::FluidWorld>().simulate_in_editor;
+            break;
+        }
+        return j;
+    }
+    if (name == "fluid_spawn") {
+        fluid::FluidSystem& f = a.fluids_;
+        const int t = fluid::fluidTypeFromName(arg(args, "fluid", "water"));
+        if (t < 0) throw ToolError("liquido desconocido: " + arg(args, "fluid"));
+        const int count = std::clamp(args.value("count", 1000), 1, static_cast<int>(gfx::FluidPass::kMaxParticles));
+        f.spawn(readVec(args, "position", {}), count, static_cast<fluid::FluidType>(t), readVec(args, "velocity", {}),
+                args.value("radius", 0.0f), args.value("lifetime", 0.0f));
+        return json{{"queued", count},
+                    {"note", a.playing() || fluid::FluidSystem::previewInEditor(a.world_)
+                                 ? "se simula"
+                                 : "fuera de Play y sin 'Simular en el editor' el liquido se queda quieto"}};
+    }
+    if (name == "fluid_state") {
+        const fluid::FluidSystem& f = a.fluids_;
+        const fluid::FluidSystemStats& s = f.stats();
+        json types = json::object();
+        for (std::size_t i = 0; i < static_cast<std::size_t>(fluid::FluidType::Count); ++i) {
+            const std::uint32_t n = f.particleCount(static_cast<fluid::FluidType>(i));
+            if (n > 0) types[fluid::fluidTypeKeys()[i]] = n;
+        }
+        json j{{"active", s.active},
+               {"simulating", s.simulating},
+               {"particles", s.particles},
+               {"by_type", types},
+               {"capacity", s.capacity},
+               {"substeps_last_frame", s.substeps},
+               {"colliders", s.shapes},
+               {"emitters", s.emitters},
+               {"floating_bodies", s.floating_bodies},
+               {"particle_radius", f.particleRadius()},
+               {"gpu_memory_mb", static_cast<double>(s.memory_bytes) / (1024.0 * 1024.0)}};
+        if (args.contains("position")) {
+            const Vec3 p = readVec(args, "position", {});
+            const float r = args.value("radius", 0.0f);
+            j["density"] = f.densityAt(p, r);
+            j["velocity"] = vec(f.velocityAt(p, r));
+            float height = 0.0f;
+            j["surface_height"] = f.surfaceHeight(p.x, p.z, height, r) ? json(height) : json(nullptr);
+        }
+        return j;
+    }
+    if (name == "fluid_clear") {
+        a.fluids_.clear();
+        return json{{"cleared", true}};
+    }
+    if (name == "fire_create") {
+        ecs::Entity e;
+        if (args.contains("position")) {
+            Vec3 p = readVec(args, "position", {});
+            float ground = 0.0f;
+            if (args.value("on_ground", true) && a.groundHeightAt(p.x, p.z, ground)) p.y = ground;
+            e = a.createFireEntity(&p);
+        } else {
+            e = a.createFireEntity();
+        }
+        if (!e.valid()) throw ToolError("no se pudo crear");
+        fire::Fire& f = e.get<fire::Fire>();
+        if (args.contains("size") && args["size"].is_number()) f.size = std::clamp(args["size"].get<float>(), 4.0f, 4000.0f);
+        if (args.contains("fields")) applyComponents(e, json{{"Fire", args["fields"]}});
+        if (!args.value("ignite", true)) f.ignite_on_start = false;
+        a.commit();
+        json j = summary(e);
+        j["size"] = f.size;
+        j["simulate_in_editor"] = f.simulate_in_editor;
+        return j;
+    }
+    if (name == "fire_ignite") {
+        const Vec3 p = readVec(args, "position", {});
+        const float radius = std::max(args.value("radius", 2.0f), 0.1f);
+        if (!a.playing()) {
+            // En el editor solo arden las zonas que se simulan.
+            for (const entt::entity h : a.world_.registry().view<fire::Fire>()) {
+                const ecs::Entity e = a.world_.wrap(h);
+                fire::Fire& f = e.get<fire::Fire>();
+                const Vec3 local = p - e.worldPosition();
+                const float half = f.size * 0.5f + radius;
+                if (std::abs(local.x) <= half && std::abs(local.z) <= half) f.simulate_in_editor = true;
+            }
+        }
+        const int zones = fire::ignite(a.world_, p, radius);
+        return json{{"zones", zones}, {"note", zones == 0 ? "el punto esta fuera de toda zona de fuego (fire_create)" : ""}};
+    }
+    if (name == "fire_extinguish") {
+        if (args.value("reset", false)) {
+            fire::resetAll(a.world_);
+            return json{{"reset", true}};
+        }
+        if (args.value("all", false) || !args.contains("position")) {
+            fire::extinguishAll(a.world_);
+            return json{{"all", true}};
+        }
+        const int zones = fire::extinguish(a.world_, readVec(args, "position", {}), std::max(args.value("radius", 10.0f), 0.1f));
+        return json{{"zones", zones}};
+    }
+    if (name == "fire_state") {
+        json zones = json::array();
+        for (const entt::entity h : a.world_.registry().view<fire::Fire>()) {
+            const ecs::Entity e = a.world_.wrap(h);
+            const fire::Fire& f = e.get<fire::Fire>();
+            const fire::FireStats st = fire::stats(f);
+            zones.push_back(json{{"entity", e.name()},
+                                 {"uuid", e.uuid().toString()},
+                                 {"position", vec(e.worldPosition())},
+                                 {"enabled", f.enabled},
+                                 {"simulating", st.active},
+                                 {"simulate_in_editor", f.simulate_in_editor},
+                                 {"size", st.active ? st.size : f.size},
+                                 {"resolution", st.resolution},
+                                 {"burning_cells", st.burning_cells},
+                                 {"smoldering_cells", st.smoldering_cells},
+                                 {"burned_cells", st.burned_cells},
+                                 {"burnable_cells", st.burnable_cells},
+                                 {"burning_area_m2", st.burning_area},
+                                 {"burned_fraction", st.burned_fraction},
+                                 {"wind", json::array({st.wind.x, st.wind.y})},
+                                 {"seconds", st.simulated_seconds}});
+        }
+        json j{{"zones", zones}, {"playing", a.playing()}};
+        if (args.contains("position")) {
+            const Vec3 p = readVec(args, "position", {});
+            j["heat"] = fire::heatAt(a.world_, p);
+            j["burned"] = fire::charAt(a.world_, p);
+        }
+        return j;
+    }
     if (name == "generate_terrain") {
         if (a.playing()) throw ToolError("para el modo Play antes de generar");
         if (a.terrain_gen_job_) throw ToolError("ya se esta generando un terreno");
@@ -1165,6 +1508,25 @@ json McpTools::call(const std::string& name, const json& args, bool& image, std:
         a.commit();
         return json{{"entity", house.name()}, {"uuid", house.uuid().toString()}, {"model", uuid.toString()},
                     {"position", {position.x, position.y, position.z}}};
+    }
+    if (name == "cinema") {
+        const bool on = args.value("enabled", true);
+        a.setCinema(on, std::clamp(args.value("width", 1920), 320, 7680), std::clamp(args.value("height", 1080), 180, 4320),
+                    args.value("fps", 30.0f));
+        return json{{"enabled", on}, {"fps", 1.0f / a.cinema_dt_}};
+    }
+    if (name == "cinema_step") {
+        if (args.contains("position") && args.contains("target")) {
+            a.scene_.placeCamera(readVec(args, "position", {}), readVec(args, "target", {}));
+        }
+        if (a.cinema_) a.cinema_pending_ += std::clamp(args.value("frames", 1), 0, 100000);
+        return json{{"frame", a.cinema_frames_}, {"pending", a.cinema_pending_}};
+    }
+    if (name == "cinema_state") {
+        RECT client{};
+        GetClientRect(a.window_.handle(), &client);
+        return json{{"enabled", a.cinema_}, {"frame", a.cinema_frames_}, {"pending", a.cinema_pending_},
+                    {"width", client.right - client.left}, {"height", client.bottom - client.top}};
     }
     if (name == "create_model") {
         const std::string model = safeName(arg(args, "name"));
@@ -1279,6 +1641,9 @@ json McpTools::call(const std::string& name, const json& args, bool& image, std:
             std::filesystem::path file = assetPath(arg(args, "path"));
             if (file.extension() != ".crscene") file += ".crscene";
             std::filesystem::create_directories(file.parent_path());
+            // Guardar como otra escena: UUID nuevo (si no, choca con la original).
+            std::error_code ec;
+            if (a.scene_path_.empty() || !std::filesystem::equivalent(file, a.scene_path_, ec)) a.world_.setSceneUuid(Uuid::generate());
             a.scene_path_ = file;
             a.world_.setSceneName(dialogs::utf8(file.stem()));
         } else if (a.scene_path_.empty()) {
@@ -1344,6 +1709,18 @@ json McpTools::call(const std::string& name, const json& args, bool& image, std:
         if (!a.playing()) throw ToolError("no esta en modo Play");
         a.togglePause();
         return json{{"mode", a.play_state_ == EditorApp::PlayState::Paused ? "paused" : "play"}};
+    }
+    if (name == "create_state_machine" || name == "get_state_machine" || name == "update_state_machine" ||
+        name == "assign_state_machine" || name == "state_machine_debug") {
+        needProject();
+        // Las entidades llegan como UUID (aqui se aceptan tambien nombre y ruta).
+        json in = args;
+        if (args.contains("entity")) in["entity"] = entity(arg(args, "entity")).uuid().toString();
+        if (args.contains("attach_to")) in["attach_to"] = entity(arg(args, "attach_to")).uuid().toString();
+        std::string error;
+        const std::string out = a.stateMachineMcpTool(name, in.dump(), error);
+        if (!error.empty()) throw ToolError(error);
+        return json::parse(out, nullptr, false);
     }
     if (name == "run_lua") {
         std::string out;

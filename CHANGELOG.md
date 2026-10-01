@@ -1,5 +1,46 @@
 # Cambios
 
+## 1.9.0
+
+### Ambiente y clima
+- Nuevo componente **Ambiente** (`Environment`), como Enviro Sky de Unity: un solo objeto lleva el **clima** con transiciones suaves (despejado, nubes, cubierto, niebla, llovizna, lluvia, tormenta, nieve, ventisca...), la **hora y la fecha** (el sol y la luna siguen su recorrido real según la latitud), las **estaciones**, el **viento** global, los **rayos** con sus truenos y el **sonido ambiente**.
+- **Lluvia y nieve** que caen de verdad (partículas en la GPU) y **nieve que se acumula** sobre el terreno, los modelos y la hierba, y se derrite dejando el suelo mojado. En otoño la vegetación amarillea y enrojece.
+- Conduce lo que ya había (nubes volumétricas, niebla, humedad y charcos, hierba y árboles); funciona en el editor como vista previa. **Ventana > Ambiente (clima y hora)** con los botones de los climas.
+- Lua y MCP: `set_weather`, `set_time`, `set_wind`, `lightning_strike`, `get_environment`.
+
+### Océano FFT
+- El océano usa ahora **oleaje FFT** (espectro JONSWAP en 4 cascadas de 128 × 128, como Crest), con **viento y fetch** que calculan la altura de las olas, **mar de fondo**, crestas afiladas y **espuma** que dura unos segundos y viaja con la ola. La flotación usa la misma superficie.
+- Malla en **clipmap** alrededor de la cámara hasta el horizonte, sin grietas; a lo lejos el mar se ve mate y sin parpadeo.
+- **Ríos** con la corriente en dos fases (*flow map*) y rápidos donde hay desnivel. **Bajo el agua**: absorción y luz dispersada, cáusticas, rayos de sol, partículas en suspensión, el menisco en la línea del agua y la superficie vista desde abajo con la ventana de Snell.
+
+### Fuego
+- Nuevo componente **Fuego** (`Fire`): **incendios que se propagan** por la hierba y el bosque, más rápido cuesta arriba y a favor del viento; los ríos, los lagos y la roca los frenan. Detrás quedan brasas, humo y el **suelo carbonizado** (terreno, modelos, árboles y hierba quemada).
+- **Llamas y humo volumétricos**: lenguas de fuego que suben y una **columna de humo** que sube recta y el viento va tumbando con la altura, iluminada por el sol, el cielo y el resplandor de las llamas. Luces que parpadean iluminan los alrededores.
+- El combustible sale de las capas del terreno. Lua y MCP: `fire_create`, `fire_ignite`, `fire_extinguish`, `fire_state`.
+
+### Líquidos
+- **Líquidos de partículas en la GPU**, como Obi Fluid o FleX: **agua, miel, lava, barro, sangre, aceite, ácido** y uno personalizado, con su viscosidad, cohesión y densidad. Componentes **Mundo de líquidos**, **Emisor** (grifo, caja, esfera) y **Desagüe**.
+- Chocan con los colliders y el terreno, **empujan a los Rigidbody** (flotan según su densidad y los arrastra la corriente) y se dibujan como una **superficie continua** con refracción, absorción de color, reflejos, espuma y emisión (lava).
+- **GameObject > Efectos > Líquidos** con un tanque de demostración. Lua (`Fluid`) y MCP: `fluid_create`, `fluid_spawn`, `fluid_state`, `fluid_clear`.
+
+### Máquinas de estados (IA)
+- **Máquinas de estados** como los State Graphs de Bolt: la IA se dibuja como un **grafo** de estados unidos por transiciones con condiciones (variables, triggers, temporizadores o una expresión Lua); en cada estado se programa en Lua solo lo que hace (`OnEnter`, `OnUpdate`, `OnExit`). Variables en una **pizarra** con tipo, propias de cada objeto.
+- Se editan en su **propia pestaña a toda la ventana**, como los scripts. En Play se ven **en vivo**: el estado activo se ilumina, la última transición parpadea y las condiciones dicen si se cumplen; guardar recarga en caliente.
+- Componente **StateMachine**, plantilla **IA con máquinas de estados** (enemigos que patrullan, persiguen, atacan, huyen y vuelven) y MCP: `create_state_machine`, `get_state_machine`, `update_state_machine`, `assign_state_machine`, `state_machine_debug`.
+
+### Editor
+- **Tema nuevo**: negros en capas, texto blanco, **rojo** para lo principal y la selección y **amarillo** para avisos.
+- **Inspector rediseñado**: cada componente en una tarjeta con su icono, **buscador de propiedades**, menú ⋮ con **Copiar / Pegar valores**, presets y quitar, campos de referencia con el tipo de asset y ejes X/Y/Z de color.
+
+### Corregido
+- El Inspector dejaba **filas y cabeceras invisibles** (se veían huecos): el borde de las tarjetas, con esquinas redondeadas parciales, tapaba el panel.
+- Los líquidos se veían como **bolitas** de cerca y con rayas en los bordes: suavizado en dos rondas con el radio en metros.
+- El fuego se veía como un **bloque cortado**: las llamas eran un muro opaco del tamaño de la zona y el humo una losa naranja con bordes rectos.
+- El humo salía **en diagonal hacia un lado** en vez de subir: ahora sube recto cerca del fuego y se tumba poco a poco.
+- El color de los líquidos dejaba una **mancha por partícula**: el grosor y el material se suavizan con el mismo radio que la superficie.
+- Un error de Lua dentro de un estado marcaba la **línea equivocada** (la del *traceback*, no la del error).
+- El editor se **colgaba al salir del modo cine** (MCP `cinema`): el tamaño de la ventana se cambia ahora entre frames.
+
 ## 1.8.0
 
 ### Generador de terreno
@@ -31,6 +72,13 @@
 
 ### Agua
 - El efecto de **bajo el agua** funciona con **todos los tipos**: océano, lagos y ríos. Solo se activa donde hay agua de verdad (dentro del lago, con el suelo por debajo de la superficie y la cámara por encima del fondo); en los ríos usa la superficie del punto donde está la cámara.
+
+### Web y documentación
+- **Documentación rediseñada** con el estilo de shadcn/ui: cabecera fija, menú lateral por secciones (en el móvil, un panel deslizante), buscador tipo *Command* con <kbd>Ctrl K</kbd> o <kbd>/</kbd>, "En esta página", migas de pan, tablas y bloques de código con botón de copiar, **modo claro y oscuro** y portada con tarjetas por sección.
+- **Web nueva** con el mismo estilo: características en tarjetas, novedades de la 1.8 con capturas y las versiones anteriores en desplegables, y menú para el móvil.
+- **Responsive** arreglado en la web y en el manual: nada se sale de la pantalla en el móvil.
+- **Donaciones** con PayPal (https://paypal.me/evan2025) en la cabecera, en el menú lateral y en cada página del manual, y en la web.
+- Nueva página del manual: **Mundo procedural**.
 
 ### Corregido
 - Los troncos de los árboles se veían **negros con un borde brillante**: la normal de la corteza se invertía según la cara del triángulo. Las copas brillaban todas igual: menos translucidez y oclusión en el interior y la parte de abajo.

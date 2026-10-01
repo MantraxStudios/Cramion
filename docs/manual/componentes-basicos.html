@@ -1,14 +1,19 @@
 <!doctype html>
-<html lang="es">
+<html lang="es" data-theme="dark">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Transform y renderizado · Manual de Cramion</title>
+  <title>Transform y renderizado · Documentación de Cramion</title>
   <meta name="description" content="Transform, Mesh Renderer, Luz, Cámara, Decal y Post-procesado.">
+  <meta name="theme-color" content="#09090b">
   <link rel="icon" href="../img/icon.png">
+  <script>
+    // Tema antes de pintar (sin parpadeo). Oscuro por defecto.
+    try { const t = localStorage.getItem("cramion-theme"); if (t) document.documentElement.dataset.theme = t; } catch (e) {}
+  </script>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/base16/tomorrow-night.min.css">
   <link rel="stylesheet" href="manual.css">
   <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
@@ -18,116 +23,70 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/bash.min.js"></script>
   <script src="search.js"></script>
 </head>
-<body>
+<body data-group="Componentes">
 
-  <header class="top">
-    <div class="top-inner">
-      <button id="menu-btn" class="menu-btn" aria-label="Menú">Menú</button>
-      <a href="index.html" class="brand"><img src="../img/icon.png" alt=""><b>Cramion</b><span>manual</span></a>
-      <div class="search">
-        <input id="search" type="search" autocomplete="off" placeholder="Buscar (funciones, componentes, páginas)">
-        <kbd>/</kbd>
-        <div id="results" class="results" hidden></div>
-      </div>
-      <nav class="top-links">
-        <a href="../index.html">Web</a>
-        <a href="https://discord.gg/zG7rSsUGEz" target="_blank" rel="noopener">Discord</a>
-        <a href="licencia.html">Licencia</a>
-        <a href="https://paypal.me/evan2025" target="_blank" rel="noopener">Donar</a>
+  <header class="site-header">
+    <div class="header-inner">
+      <button id="menu-btn" class="icon-btn menu-btn" aria-label="Abrir el menú"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h16M4 12h16M4 18h16"/></svg></button>
+      <a href="index.html" class="brand"><img src="../img/icon.png" alt=""><span>Cramion</span><span class="tag">Docs</span></a>
+      <nav class="main-nav" aria-label="Secciones">
+        <a href="index.html" data-nav="index">Documentación</a>
+        <a href="editor-interfaz.html" data-nav="El editor">Editor</a>
+        <a href="componentes.html" data-nav="Componentes">Componentes</a>
+        <a href="entity.html" data-nav="Referencia de la API">API de Lua</a>
+        <a href="ejemplo-girar.html" data-nav="Ejemplos">Ejemplos</a>
       </nav>
+      <div class="header-right">
+        <button id="search-open" class="search-trigger" aria-label="Buscar en la documentación">
+          <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg><span>Buscar en la documentación...</span><kbd>Ctrl K</kbd>
+        </button>
+        <a href="https://discord.gg/zG7rSsUGEz" target="_blank" rel="noopener" class="icon-btn hide-mobile" aria-label="Discord" title="Discord"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M8.5 16.5c-2 .6-3.6 0-3.6 0C3.7 13 4 9 5.4 6.6 6.8 5.6 8.5 5.3 8.5 5.3l.6 1.2c1.9-.4 3.9-.4 5.8 0l.6-1.2s1.7.3 3.1 1.3C20 9 20.3 13 19.1 16.5c0 0-1.6.6-3.6 0l-.8-1.3"/><circle cx="9.5" cy="12" r="1"/><circle cx="14.5" cy="12" r="1"/></svg></a>
+        <button id="theme" class="icon-btn" aria-label="Cambiar entre tema claro y oscuro" title="Tema">
+          <span class="i-sun"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg></span><span class="i-moon"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5Z"/></svg></span>
+        </button>
+        <a href="https://paypal.me/evan2025" target="_blank" rel="noopener" class="btn btn-donate btn-sm hide-mobile"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M19 14c1.5-1.5 3-3.2 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.8 0-3 .5-4.5 2-1.5-1.5-2.7-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4 3 5.5l7 7Z"/></svg>Donar</a>
+        <a href="https://paypal.me/evan2025" target="_blank" rel="noopener" class="icon-btn only-mobile" aria-label="Donar con PayPal" title="Donar"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M19 14c1.5-1.5 3-3.2 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.8 0-3 .5-4.5 2-1.5-1.5-2.7-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4 3 5.5l7 7Z"/></svg></a>
+      </div>
     </div>
   </header>
+  <div class="overlay" id="overlay"></div>
 
-  <div class="frame">
-    <aside id="side" class="side">
+  <div id="cmd" class="cmd-backdrop" hidden>
+    <div class="cmd" role="dialog" aria-modal="true" aria-label="Buscar">
+      <div class="cmd-input"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg><input id="search" type="search" autocomplete="off" spellcheck="false"
+        placeholder="Buscar funciones, componentes, páginas..."><kbd>Esc</kbd></div>
+      <div id="results" class="cmd-list"></div>
+      <div class="cmd-foot"><span><kbd>↑</kbd><kbd>↓</kbd> moverse</span><span><kbd>Enter</kbd> abrir</span><span><kbd>Esc</kbd> cerrar</span></div>
+    </div>
+  </div>
+
+  <div class="layout">
+    <aside id="side" class="sidebar" aria-label="Menú del manual">
       <nav>
-        <a href="index.html">Índice</a>
-        <p class="group">Primeros pasos</p>
-        <a href="primer-script.html">Tu primer script</a>
-        <a href="ciclo-de-vida.html">Ciclo de vida</a>
-        <a href="propiedades.html">Propiedades</a>
-        <a href="recarga.html">Recarga en caliente</a>
-        <a href="prefabs.html">Prefabs</a>
-        <a href="mcp.html">Conectar una IA (MCP)</a>
-        <a href="licencia.html">Licencia</a>
-        <p class="group">El editor</p>
-        <a href="editor-interfaz.html">Interfaz y pestañas</a>
-        <a href="editor-escena.html">Vista Escena y gizmos</a>
-        <a href="editor-jerarquia.html">Jerarquía e Inspector</a>
-        <a href="editor-proyecto.html">Proyecto e importación</a>
-        <a href="editor-play.html">Play, deshacer y escenas</a>
-        <a href="editor-herramientas.html">Herramientas de mundo</a>
-        <a href="mundo-procedural.html">Mundo procedural</a>
-        <a href="editor-ventanas.html">Ventanas de herramientas</a>
-        <a href="materiales.html">Materiales</a>
-        <a href="render-textures.html">Render Textures</a>
-        <a href="render.html">Render y rendimiento</a>
-        <a href="exportar.html">Exportar y compilación</a>
-        <a href="datapacks.html">DataPacks (bundles)</a>
-        <a href="plantillas.html">Plantillas</a>
-        <a href="atajos.html">Atajos de teclado</a>
-        <a href="actualizaciones.html">Actualizaciones</a>
-        <p class="group">Componentes</p>
-        <a href="componentes.html">Todos los componentes</a>
-        <a href="componentes-basicos.html" class="active">Transform y renderizado</a>
-        <a href="componentes-entorno.html">Entorno</a>
-        <a href="componentes-fisica.html">Física</a>
-        <a href="componentes-efectos.html">Partículas y depuración</a>
-        <a href="componentes-animacion.html">Animación</a>
-        <a href="componentes-audio.html">Audio</a>
-        <a href="componentes-cinematicas.html">Cámaras y cinemáticas</a>
-        <a href="componentes-navegacion.html">Navegación</a>
-        <a href="componentes-ui.html">Interfaz (UI)</a>
-        <a href="componentes-scripting.html">Scripts y prefabs</a>
-        <a href="componentes-vr.html">Realidad virtual</a>
-        <p class="group">Referencia de la API</p>
-        <a href="vec3.html">Vec3</a>
-        <a href="quat.html">Quat (rotaciones)</a>
-        <a href="mathf.html">Mathf</a>
-        <a href="random.html">Random</a>
-        <a href="entity.html">Entity</a>
-        <a href="scene.html">Scene</a>
-        <a href="input.html">Input</a>
-        <a href="input-actions.html">Input Actions</a>
-        <a href="realidad-virtual.html">Realidad virtual (XR)</a>
-        <a href="time.html">Time</a>
-        <a href="physics.html">Physics</a>
-        <a href="navegacion.html">Navegación</a>
-        <a href="mallas.html">Mallas por código</a>
-        <a href="voxel.html">Mundo de bloques</a>
-        <a href="audio.html">Audio</a>
-        <a href="ui.html">Interfaz (UI)</a>
-        <a href="esqueletos.html">Esqueletos: IK, ragdoll y phys bones</a>
-        <a href="graphics.html">Graphics</a>
-        <a href="red.html">Network (multijugador)</a>
-        <a href="http.html">Http y Json</a>
-        <a href="prefs.html">Prefs y Game</a>
-        <a href="debug.html">Debug</a>
-        <p class="group">Gráficos</p>
-        <a href="shaders.html">Shaders propios</a>
-        <p class="group">Ejemplos</p>
-        <a href="ejemplo-girar.html">Girar un objeto</a>
-        <a href="ejemplo-camara.html">Cámara que sigue al jugador</a>
-        <a href="ejemplo-jugador.html">Jugador con física</a>
-        <a href="ejemplo-disparo.html">Disparo con raycast</a>
-        <a href="ejemplo-monedas.html">Monedas y puntuación</a>
-        <a href="ejemplo-spawner.html">Generador de enemigos</a>
-        <a href="ejemplo-vehiculo.html">Conducir un vehículo</a>
-        <a href="ejemplo-menu.html">Menú, opciones y récord</a>
-        <a href="ejemplo-animacion.html">Animación de un personaje</a>
-        <a href="ejemplo-comunicacion.html">Scripts que se hablan</a>
-        <a href="ejemplo-ia.html">IA: patrullar y perseguir</a>
-        <a href="ejemplo-terreno.html">Terreno procedural con colisión</a>
-        <a href="ejemplo-efectos.html">Varios materiales y efectos</a>
-        <a href="ejemplo-olas.html">Olas: cambiar la malla cada frame</a>
+        <div class="sheet-head"><a href="index.html" class="brand"><img src="../img/icon.png" alt=""><span>Cramion</span></a><button id="menu-close" class="icon-btn" aria-label="Cerrar el menú"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12"/></svg></button></div>
+        <div class="group"><p class="group-title"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m3 11 9-8 9 8"/><path d="M5 10v10h14V10"/></svg>Inicio</p><a href="index.html">Introducción</a><a href="../index.html">Web de Cramion</a></div>
+        <div class="group"><p class="group-title"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5a2 2 0 0 1 2-2h13v16H6a2 2 0 0 0-2 2V5Z"/><path d="M4 19a2 2 0 0 1 2-2h13"/></svg>Primeros pasos</p><a href="primer-script.html">Tu primer script</a><a href="ciclo-de-vida.html">Ciclo de vida</a><a href="propiedades.html">Propiedades</a><a href="recarga.html">Recarga en caliente</a><a href="prefabs.html">Prefabs</a><a href="mcp.html">Conectar una IA (MCP)</a><a href="licencia.html">Licencia</a></div>
+        <div class="group"><p class="group-title"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M9 9v11"/></svg>El editor</p><a href="editor-interfaz.html">Interfaz y pestañas</a><a href="editor-tema.html">Tema e Inspector</a><a href="editor-escena.html">Vista Escena y gizmos</a><a href="editor-jerarquia.html">Jerarquía e Inspector</a><a href="editor-proyecto.html">Proyecto e importación</a><a href="editor-play.html">Play, deshacer y escenas</a><a href="editor-herramientas.html">Herramientas de mundo</a><a href="mundo-procedural.html">Mundo procedural</a><a href="ambiente.html">Ambiente y clima</a><a href="agua.html">Agua</a><a href="fuego.html">Fuego</a><a href="liquidos.html">Líquidos</a><a href="editor-ventanas.html">Ventanas de herramientas</a><a href="maquinas-de-estados.html">Máquinas de estados</a><a href="materiales.html">Materiales</a><a href="render-textures.html">Render Textures</a><a href="render.html">Render y rendimiento</a><a href="exportar.html">Exportar y compilación</a><a href="datapacks.html">DataPacks (bundles)</a><a href="plantillas.html">Plantillas</a><a href="atajos.html">Atajos de teclado</a><a href="actualizaciones.html">Actualizaciones</a></div>
+        <div class="group"><p class="group-title"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m12 3 8 4.5v9L12 21l-8-4.5v-9L12 3Z"/><path d="m4 7.5 8 4.5 8-4.5M12 12v9"/></svg>Componentes</p><a href="componentes.html">Todos los componentes</a><a href="componentes-basicos.html" class="active" aria-current="page">Transform y renderizado</a><a href="componentes-entorno.html">Entorno</a><a href="componentes-fisica.html">Física</a><a href="componentes-efectos.html">Partículas y depuración</a><a href="componentes-animacion.html">Animación</a><a href="componentes-audio.html">Audio</a><a href="componentes-cinematicas.html">Cámaras y cinemáticas</a><a href="componentes-navegacion.html">Navegación</a><a href="componentes-ui.html">Interfaz (UI)</a><a href="componentes-scripting.html">Scripts y prefabs</a><a href="componentes-vr.html">Realidad virtual</a></div>
+        <div class="group"><p class="group-title"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m8 8-4 4 4 4"/><path d="m16 8 4 4-4 4"/><path d="m14 4-4 16"/></svg>Referencia de la API</p><a href="vec3.html">Vec3</a><a href="quat.html">Quat (rotaciones)</a><a href="mathf.html">Mathf</a><a href="random.html">Random</a><a href="entity.html">Entity</a><a href="scene.html">Scene</a><a href="input.html">Input</a><a href="input-actions.html">Input Actions</a><a href="realidad-virtual.html">Realidad virtual (XR)</a><a href="time.html">Time</a><a href="physics.html">Physics</a><a href="navegacion.html">Navegación</a><a href="mallas.html">Mallas por código</a><a href="voxel.html">Mundo de bloques</a><a href="audio.html">Audio</a><a href="ui.html">Interfaz (UI)</a><a href="esqueletos.html">Esqueletos: IK, ragdoll y phys bones</a><a href="graphics.html">Graphics</a><a href="red.html">Network (multijugador)</a><a href="http.html">Http y Json</a><a href="prefs.html">Prefs y Game</a><a href="debug.html">Debug</a></div>
+        <div class="group"><p class="group-title"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a9 9 0 1 0 0 18c1.1 0 1.5-.8 1.5-1.5 0-.9-.7-1.2-.7-2 0-.8.6-1.5 1.5-1.5H16a5 5 0 0 0 5-5c0-4.4-4-8-9-8Z"/><circle cx="7.5" cy="11" r="1"/><circle cx="10" cy="7" r="1"/><circle cx="15" cy="7.5" r="1"/></svg>Gráficos</p><a href="shaders.html">Shaders propios</a></div>
+        <div class="group"><p class="group-title"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v4M12 17v4M3 12h4M17 12h4M6 6l2.5 2.5M15.5 15.5 18 18M6 18l2.5-2.5M15.5 8.5 18 6"/></svg>Ejemplos</p><a href="ejemplo-girar.html">Girar un objeto</a><a href="ejemplo-camara.html">Cámara que sigue al jugador</a><a href="ejemplo-jugador.html">Jugador con física</a><a href="ejemplo-disparo.html">Disparo con raycast</a><a href="ejemplo-monedas.html">Monedas y puntuación</a><a href="ejemplo-spawner.html">Generador de enemigos</a><a href="ejemplo-vehiculo.html">Conducir un vehículo</a><a href="ejemplo-menu.html">Menú, opciones y récord</a><a href="ejemplo-animacion.html">Animación de un personaje</a><a href="ejemplo-comunicacion.html">Scripts que se hablan</a><a href="ejemplo-ia.html">IA: patrullar y perseguir</a><a href="ejemplo-terreno.html">Terreno procedural con colisión</a><a href="ejemplo-efectos.html">Varios materiales y efectos</a><a href="ejemplo-olas.html">Olas: cambiar la malla cada frame</a></div>
+        
+      <div class="donate-card side-donate">
+        <div class="t"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M19 14c1.5-1.5 3-3.2 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.8 0-3 .5-4.5 2-1.5-1.5-2.7-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4 3 5.5l7 7Z"/></svg>Apoya Cramion</div>
+        <p>El motor es gratis y lo seguirá siendo. Una donación ayuda a seguir añadiendo cosas.</p>
+        <a href="https://paypal.me/evan2025" target="_blank" rel="noopener" class="btn btn-donate btn-sm btn-block">Donar con PayPal</a>
+      </div>
       </nav>
     </aside>
 
     <main class="doc">
-      <div class="crumbs"><a href="index.html">Manual</a> / Componentes</div>
-      <h1>Transform y renderizado</h1>
-      <p class="lede">Transform, Mesh Renderer, Luz, Cámara, Decal y Post-procesado.</p>
-      <div class="body">
+      <div class="doc-inner">
+        <nav class="crumbs" aria-label="Ruta"><a href="index.html">Documentación</a><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m9 6 6 6-6 6"/></svg><span>Componentes</span><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m9 6 6 6-6 6"/></svg><span class="here">Transform y renderizado</span></nav>
+        <h1>Transform y renderizado</h1>
+        <p class="lede">Transform, Mesh Renderer, Luz, Cámara, Decal y Post-procesado.</p>
+        <details class="toc-inline"><summary>En esta página <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg></summary><nav class="onpage"></nav></details>
+        <div class="body">
 <p>Lo que tiene toda entidad (Transform) y lo que se dibuja: mallas, luces, camaras, decals y post-procesado. Referencia completa generada desde el motor.</p>
 <h3 id="Transform">Transform <code>Transform</code></h3>
 <p>Posicion, giro y escala <strong>locales</strong> (respecto al padre en la Jerarquia). Lo tienen todas las entidades. Desde Lua: <code>entity.position</code> (mundo), <code>localPosition</code>, <code>rotation</code> (grados), <code>quaternion</code> y <code>scale</code>.</p>
@@ -290,31 +249,69 @@
     <tr><td>Angulo maximo<br><code>max_angle</code></td><td>numero</td><td>60</td><td>1 a 90</td><td>No pinta superficies mas inclinadas respecto al eje</td></tr>
   </tbody>
 </table>
+        </div>
+        <nav class="pager" aria-label="Paginación"><a href="componentes.html"><span>← Anterior</span><b>Todos los componentes</b></a><a class="next" href="componentes-entorno.html"><span>Siguiente →</span><b>Entorno</b></a></nav>
+        <div class="help"><span>¿Algo no queda claro o falta algo? Pregunta en el
+          <a href="https://discord.gg/zG7rSsUGEz" target="_blank" rel="noopener">Discord</a>.</span>
+          <a href="https://paypal.me/evan2025" target="_blank" rel="noopener" class="btn btn-outline btn-sm"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M19 14c1.5-1.5 3-3.2 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.8 0-3 .5-4.5 2-1.5-1.5-2.7-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4 3 5.5l7 7Z"/></svg>Apoyar el proyecto</a></div>
       </div>
-      <nav class="pager"><a href="componentes.html"><span>← anterior</span><b>Todos los componentes</b></a><a class="next" href="componentes-entorno.html"><span>siguiente →</span><b>Entorno</b></a></nav>
-      <p class="help">¿Algo no queda claro o falta algo? Pregunta en el
-        <a href="https://discord.gg/zG7rSsUGEz" target="_blank" rel="noopener">Discord</a>.</p>
     </main>
-    <aside class="onpage-col">
-      <p>En esta página</p>
-      <nav id="onpage" class="onpage"></nav>
+    <aside class="toc-col" aria-label="En esta página">
+      <div>
+        <p class="toc-title">En esta página</p>
+        <nav class="onpage"></nav>
+      </div>
+      
+      <div class="donate-card">
+        <div class="t"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M19 14c1.5-1.5 3-3.2 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.8 0-3 .5-4.5 2-1.5-1.5-2.7-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4 3 5.5l7 7Z"/></svg>Apoya Cramion</div>
+        <p>El motor es gratis y lo seguirá siendo. Una donación ayuda a seguir añadiendo cosas.</p>
+        <a href="https://paypal.me/evan2025" target="_blank" rel="noopener" class="btn btn-donate btn-sm btn-block">Donar con PayPal</a>
+      </div>
     </aside>
   </div>
+
+  <footer class="site-footer">
+    <div class="footer-inner">
+      <span>Cramion Engine · manual de la 1.9. Gratis para hacer y vender tus juegos.</span>
+      <nav>
+        <a href="../index.html">Web</a>
+        <a href="licencia.html">Licencia</a>
+        <a href="https://discord.gg/zG7rSsUGEz" target="_blank" rel="noopener">Discord</a>
+        <a href="https://paypal.me/evan2025" target="_blank" rel="noopener">Donar con PayPal</a>
+      </nav>
+    </div>
+  </footer>
 
   <script>
     // Solo el codigo con lenguaje (los arboles de carpetas y la salida quedan tal cual).
     hljs.configure({ cssSelector: 'pre code[class*="language-"]' });
     hljs.highlightAll();
+    const ICON_COPY = '<svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>', ICON_CHECK = '<svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>';
 
-    // Menu lateral en el movil.
-    const side = document.getElementById("side");
-    document.getElementById("menu-btn").addEventListener("click", () => document.body.classList.toggle("menu-open"));
-    document.addEventListener("click", ev => {
-      if (document.body.classList.contains("menu-open") && !ev.target.closest("#side, #menu-btn")) {
-        document.body.classList.remove("menu-open");
-      }
+    // Tema claro / oscuro.
+    const root = document.documentElement;
+    const syncTheme = () => {
+      const dark = root.dataset.theme === "dark";
+      document.querySelector("#theme .i-sun").style.display = dark ? "inline-flex" : "none";
+      document.querySelector("#theme .i-moon").style.display = dark ? "none" : "inline-flex";
+    };
+    syncTheme();
+    document.getElementById("theme").addEventListener("click", () => {
+      root.dataset.theme = root.dataset.theme === "dark" ? "light" : "dark";
+      try { localStorage.setItem("cramion-theme", root.dataset.theme); } catch (e) {}
+      syncTheme();
     });
-    // El enlace activo a la vista dentro del menu (sin mover la pagina).
+
+    // Seccion de la cabecera marcada.
+    const group = document.body.dataset.group;
+    document.querySelectorAll(".main-nav a").forEach(a => a.classList.toggle("on", a.dataset.nav === group));
+
+    // Menu lateral (panel deslizante en el movil).
+    const side = document.getElementById("side");
+    const setMenu = open => document.body.classList.toggle("menu-open", open);
+    document.getElementById("menu-btn").addEventListener("click", () => setMenu(true));
+    document.getElementById("menu-close").addEventListener("click", () => setMenu(false));
+    document.getElementById("overlay").addEventListener("click", () => setMenu(false));
     const current = side.querySelector("a.active");
     if (current) side.scrollTop = current.offsetTop - side.clientHeight / 2;
 
@@ -323,19 +320,21 @@
       const a = document.createElement("a");
       a.className = "anchor";
       a.href = "#" + h.id;
+      a.setAttribute("aria-label", "Enlace a esta sección");
       a.textContent = "#";
       h.appendChild(a);
     });
     document.querySelectorAll(".doc pre").forEach(pre => {
       const b = document.createElement("button");
       b.className = "copy";
-      b.textContent = "copiar";
+      b.setAttribute("aria-label", "Copiar el código");
+      b.innerHTML = ICON_COPY;
       b.addEventListener("click", async () => {
         try {
           await navigator.clipboard.writeText(pre.querySelector("code")?.innerText ?? pre.innerText);
-          b.textContent = "copiado";
-        } catch { b.textContent = "no se pudo"; }
-        setTimeout(() => (b.textContent = "copiar"), 1400);
+          b.innerHTML = ICON_CHECK;
+        } catch (e) { b.textContent = "!"; }
+        setTimeout(() => (b.innerHTML = ICON_COPY), 1400);
       });
       pre.appendChild(b);
     });
@@ -348,44 +347,48 @@
       w.appendChild(t);
     });
 
-    // "En esta pagina": los h3 con la seccion visible marcada.
-    const onpage = document.getElementById("onpage");
-    if (onpage) {
-      const heads = [...document.querySelectorAll(".doc h3[id]")];
-      if (heads.length < 2) {
-        onpage.closest("aside").style.visibility = "hidden";
-      } else {
-        onpage.innerHTML = heads.map(h => `<a href="#${h.id}">${h.firstChild.textContent}</a>`).join("");
-        const links = [...onpage.querySelectorAll("a")];
-        const obs = new IntersectionObserver(entries => {
-          for (const e of entries) {
-            if (e.isIntersecting) links.forEach(a => a.classList.toggle("active", a.getAttribute("href") === "#" + e.target.id));
-          }
-        }, { rootMargin: "-70px 0px -70% 0px" });
-        heads.forEach(h => obs.observe(h));
-      }
+    // "En esta pagina": los h3, con la seccion visible marcada (columna y desplegable).
+    const heads = [...document.querySelectorAll(".doc h3[id]")];
+    const lists = [...document.querySelectorAll(".onpage")];
+    if (heads.length < 2) {
+      document.querySelectorAll(".toc-col > div, .toc-inline").forEach(el => el.remove());
+    } else {
+      lists.forEach(list => list.innerHTML = heads.map(h => `<a href="#${h.id}">${h.firstChild.textContent}</a>`).join(""));
+      const links = [...document.querySelectorAll(".onpage a")];
+      const obs = new IntersectionObserver(entries => {
+        for (const e of entries) {
+          if (e.isIntersecting) links.forEach(a => a.classList.toggle("active", a.getAttribute("href") === "#" + e.target.id));
+        }
+      }, { rootMargin: "-80px 0px -70% 0px" });
+      heads.forEach(h => obs.observe(h));
+      document.querySelectorAll(".toc-inline a").forEach(a => a.addEventListener("click", () => a.closest("details").open = false));
     }
 
-    // Buscador: titulos, secciones y nombres de la API.
+    // Buscador (Command): titulos, secciones y nombres de la API.
+    const cmd = document.getElementById("cmd");
     const input = document.getElementById("search");
     const box = document.getElementById("results");
     const norm = s => s.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
     const esc = s => s.replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+    const ICON_PAGE = '<svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8Z"/><path d="M14 3v5h5"/></svg>', ICON_HASH = '<svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9h16M4 15h16M10 3 8 21M16 3l-2 18"/></svg>', ICON_CODE = '<svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m8 8-4 4 4 4"/><path d="m16 8 4 4-4 4"/><path d="m14 4-4 16"/></svg>';
     let hits = [], sel = 0;
+    const suggested = window.CRAMION_SEARCH.filter(e => e.d).slice(0, 8);
     const render = () => {
       const q = input.value.trim();
-      if (!hits.length) {
-        box.innerHTML = q ? '<p class="none">Sin resultados.</p>' : "";
-        box.hidden = !q;
-        return;
-      }
-      box.innerHTML = hits.map((h, i) => `
+      const list = q ? hits : suggested;
+      if (!list.length) { box.innerHTML = '<p class="none">Sin resultados para "' + esc(q) + '".</p>'; return; }
+      box.innerHTML = (q ? "" : '<p class="heading">Páginas</p>') + list.map((h, i) => `
         <a href="${h.u}" class="${i === sel ? "sel" : ""}">
-          <span class="t${h.c ? " code" : ""}">${esc(h.t)}</span><span class="g">${esc(h.g)}</span>
-          ${h.d ? `<span class="d">${esc(h.d)}</span>` : ""}
+          ${h.c ? ICON_CODE : h.d ? ICON_PAGE : ICON_HASH}
+          <span><span class="t${h.c ? " code" : ""}">${esc(h.t)}</span>
+          <span class="g">${esc(h.g)}</span></span>
         </a>`).join("");
-      box.hidden = false;
+      box.querySelector("a.sel")?.scrollIntoView({ block: "nearest" });
     };
+    const openSearch = () => { cmd.hidden = false; document.body.style.overflow = "hidden"; sel = 0; render(); setTimeout(() => input.focus(), 0); };
+    const closeSearch = () => { cmd.hidden = true; document.body.style.overflow = ""; input.value = ""; hits = []; };
+    document.getElementById("search-open").addEventListener("click", openSearch);
+    cmd.addEventListener("click", ev => { if (ev.target === cmd) closeSearch(); });
     input.addEventListener("input", () => {
       const q = norm(input.value.trim());
       sel = 0;
@@ -398,20 +401,20 @@
           const score = (t.startsWith(q) ? 0 : t.includes(q) ? 1 : 2) + (e.c ? 0.5 : 0) - (e.d ? 0.3 : 0);
           return { e, score };
         })
-        .filter(Boolean).sort((a, b) => a.score - b.score).slice(0, 12).map(x => x.e);
+        .filter(Boolean).sort((a, b) => a.score - b.score).slice(0, 20).map(x => x.e);
       render();
     });
     input.addEventListener("keydown", ev => {
-      if (ev.key === "ArrowDown") { sel = Math.min(sel + 1, hits.length - 1); render(); ev.preventDefault(); }
+      const list = input.value.trim() ? hits : suggested;
+      if (ev.key === "ArrowDown") { sel = Math.min(sel + 1, list.length - 1); render(); ev.preventDefault(); }
       if (ev.key === "ArrowUp") { sel = Math.max(sel - 1, 0); render(); ev.preventDefault(); }
-      if (ev.key === "Enter" && hits[sel]) location.href = hits[sel].u;
-      if (ev.key === "Escape") { input.value = ""; hits = []; render(); input.blur(); }
+      if (ev.key === "Enter" && list[sel]) { location.href = list[sel].u; closeSearch(); }
     });
     document.addEventListener("keydown", ev => {
-      if (ev.key === "/" && document.activeElement !== input) { ev.preventDefault(); input.focus(); }
+      const typing = /INPUT|TEXTAREA/.test(document.activeElement.tagName);
+      if ((ev.key === "k" && (ev.ctrlKey || ev.metaKey)) || (ev.key === "/" && !typing)) { ev.preventDefault(); cmd.hidden ? openSearch() : closeSearch(); }
+      if (ev.key === "Escape") { if (!cmd.hidden) closeSearch(); setMenu(false); }
     });
-    document.addEventListener("click", ev => { if (!ev.target.closest("#results, #search")) box.hidden = true; });
-    input.addEventListener("focus", () => { if (input.value.trim()) render(); });
   </script>
 </body>
 </html>

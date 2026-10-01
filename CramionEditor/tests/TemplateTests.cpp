@@ -134,11 +134,11 @@ int main() {
 
     const std::vector<editor::ProjectTemplate> list = editor::availableTemplates();
     std::printf("Plantillas integradas\n");
-    check(list.size() == 9 && find(list, "blank") && find(list, "third_person") && find(list, "navigation") &&
+    check(list.size() == 10 && find(list, "blank") && find(list, "third_person") && find(list, "navigation") &&
               find(list, "third_person_pro") &&
               find(list, "voxel") && find(list, "mmo") && find(list, "creatures") && find(list, "online") &&
-              find(list, "open_world"),
-          "hay 9 plantillas integradas");
+              find(list, "open_world") && find(list, "state_machines"),
+          "hay 10 plantillas integradas");
 
     // --- Criaturas: modelos con esqueleto generados, IK, phys bones, ragdoll ---
     {
@@ -1004,7 +1004,7 @@ int main() {
               "guardar un proyecto como plantilla");
         const std::vector<editor::ProjectTemplate> again = editor::availableTemplates();
         const editor::ProjectTemplate* mine = find(again, "user:Mi plataformas");
-        check(again.size() == 10 && mine != nullptr && mine->category == "Mis plantillas" && mine->description == "Prueba",
+        check(again.size() == 11 && mine != nullptr && mine->category == "Mis plantillas" && mine->description == "Prueba",
               "aparece en la lista con su descripcion");
         if (mine != nullptr) {
             const project::ProjectInfo p = editor::createProjectFromTemplate(*mine, root, "Copia");

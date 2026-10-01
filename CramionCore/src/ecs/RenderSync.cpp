@@ -4,6 +4,7 @@
 #include "CramionCore/physics/SoftBody.h"
 
 #include "CramionCore/foliage/Foliage.h"
+#include "CramionCore/fire/Fire.h"
 #include "CramionCore/asset/RenderTextureAsset.h"
 
 #include "CramionCore/ecs/Rigging.h"
@@ -1346,6 +1347,9 @@ void RenderSync::syncWater(World& world, gfx::VulkanRenderer& renderer, float de
     std::unordered_map<entt::entity, RiverMesh> seen;
     std::vector<std::pair<const water::WaterBody*, Mat4>> water_bodies;
     int underwater = -1;
+    std::shared_ptr<const water::OceanSpectrum> ocean_spectrum;
+    float ocean_foam = 1.0f;
+    float ocean_foam_persistence = 4.0f;
     world.forEachDepthFirst([&](Entity e) {
         const water::WaterBody* body = e.tryGet<water::WaterBody>();
         if (body == nullptr || !e.activeInHierarchy() || bodies.size() >= gfx::kMaxWaterBodies) return;
@@ -1363,6 +1367,13 @@ void RenderSync::syncWater(World& world, gfx::VulkanRenderer& renderer, float de
         p.wind = core::Vec4{body->wind_direction * kRad, body->wind_spread * kRad, body->flow_speed, body->detail};
         p.look = core::Vec4{body->roughness, body->refraction, body->caustics, body->shore_foam};
         p.extra = core::Vec4{body->shore_waves, body->scattering, 0.0f, 0.0f};
+        p.under = core::Vec4{body->god_rays, body->particles, 0.0f, 0.0f};
+        // Oceano FFT: el espectro del primero (el mismo que usa la flotacion).
+        if (body->type == water::WaterType::Ocean && ocean_spectrum == nullptr) {
+            ocean_spectrum = water::oceanSpectrum(*body);
+            ocean_foam = body->foam;
+            ocean_foam_persistence = body->foam_persistence;
+        }
 
         // Camara cerca o bajo la superficie de cualquier agua (oceano, lago o
         // rio): el shader decide por pixel con la misma ola. Solo si ahi hay
@@ -1376,7 +1387,11 @@ void RenderSync::syncWater(World& world, gfx::VulkanRenderer& renderer, float de
             if (forced == 1) {
                 inside = true;
             } else if (forced < 0 && at_camera.inside) {
-                const float margin = body->type == water::WaterType::River ? 0.3f : body->wave_height + 0.5f;
+                // Oceano FFT: la altura de sus olas sale del espectro (viento).
+                const float waves = body->type == water::WaterType::Ocean
+                                        ? std::max(body->wave_height, water::oceanSpectrum(*body)->significant_height)
+                                        : body->wave_height;
+                const float margin = body->type == water::WaterType::River ? 0.3f : waves + 0.5f;
                 if (camera_position.y < at_camera.height + margin) {
                     float ground = 0.0f;
                     const bool has_ground = groundHeight(camera_position.x, camera_position.z, ground);
@@ -1413,8 +1428,14 @@ void RenderSync::syncWater(World& world, gfx::VulkanRenderer& renderer, float de
                 mesh.version = ++river_version_;
                 const std::vector<water::RiverSample> line = water::riverCenterline(*body, m, 1.5f);
                 constexpr std::uint32_t kAcross = 8;
-                for (const water::RiverSample& sample : line) {
+                for (std::size_t s = 0; s < line.size(); ++s) {
+                    const water::RiverSample& sample = line[s];
                     const Vec3 side{-sample.tangent.z, 0.0f, sample.tangent.x};
+                    // Desnivel (m por m) con los vecinos: rapidos donde baja.
+                    const water::RiverSample& before = line[s > 0 ? s - 1 : s];
+                    const water::RiverSample& after = line[s + 1 < line.size() ? s + 1 : s];
+                    const float run = after.distance - before.distance;
+                    const float drop = run > 1e-3f ? std::max(before.position.y - after.position.y, 0.0f) / run : 0.0f;
                     for (std::uint32_t j = 0; j < kAcross; ++j) {
                         const float a = static_cast<float>(j) / static_cast<float>(kAcross - 1);
                         const Vec3 pos = sample.position + side * ((a - 0.5f) * sample.width);
@@ -1423,7 +1444,8 @@ void RenderSync::syncWater(World& world, gfx::VulkanRenderer& renderer, float de
                         const float width = std::max(sample.width, 0.01f);
                         mesh.vertices.push_back(gfx::WaterVertex{{pos.x, pos.y, pos.z},
                                                                  {a, sample.distance},
-                                                                 {sample.tangent.x * width, sample.tangent.z * width}});
+                                                                 {sample.tangent.x * width, sample.tangent.z * width},
+                                                                 drop});
                     }
                 }
                 for (std::uint32_t i = 0; i + 1 < line.size(); ++i) {
@@ -1443,6 +1465,22 @@ void RenderSync::syncWater(World& world, gfx::VulkanRenderer& renderer, float de
     });
     rivers_ = std::move(seen);
     renderer.setWaterBodies(bodies, water::waterTime(), underwater);
+    gfx::WaterSpectrumDesc spectrum;
+    if (ocean_spectrum != nullptr) {
+        spectrum.modes = &ocean_spectrum->modes;
+        spectrum.key = ocean_spectrum->key;
+        static_assert(water::kOceanCascades == 4 && gfx::kOceanCascades == 4, "4 cascadas en la CPU y la GPU");
+        const auto& sizes = ocean_spectrum->sizes;
+        const auto& slopes = ocean_spectrum->slope_variance;
+        spectrum.sizes = core::Vec4{sizes[0], sizes[1], sizes[2], sizes[3]};
+        spectrum.slope_variance = core::Vec4{slopes[0], slopes[1], slopes[2], slopes[3]};
+        spectrum.choppiness = ocean_spectrum->choppiness;
+        spectrum.significant_height = ocean_spectrum->significant_height;
+        spectrum.foam = ocean_foam;
+        spectrum.foam_persistence = ocean_foam_persistence;
+        spectrum.period = water::kOceanPeriod;
+    }
+    renderer.setWaterSpectrum(spectrum);
     updateRipples(world, renderer, delta_seconds, camera_position, water_bodies);
 }
 
@@ -1616,6 +1654,7 @@ void RenderSync::sync(World& world, scene::Scene& scene, gfx::VulkanRenderer& re
     // La animacion la lleva el componente Animator, no scene.update().
     scene.setAnimateActors(false);
     syncActors(world, scene, renderer, delta_seconds);
+    environment_delta_ = delta_seconds;
     syncLightsAndEnvironment(world, scene, renderer);
     syncTerrains(world, renderer, scene.camera().position());
     syncFoliage(world, renderer);
@@ -1815,7 +1854,9 @@ void RenderSync::syncFoliage(World& world, gfx::VulkanRenderer& renderer) {
         }
     }
     if (first != nullptr) {
-        renderer.setFoliageSettings(first->settings());
+        gfx::FoliageSettings foliage_settings = first->settings();
+        environment::applyToFoliage(environment_frame_, foliage_settings);  // viento del ambiente
+        renderer.setFoliageSettings(foliage_settings);
         renderer.setFoliageSpecies(first->species());
     }
 
@@ -1918,6 +1959,7 @@ void RenderSync::syncTerrains(World& world, gfx::VulkanRenderer& renderer, const
             }
             // Hierba: el componente en la misma entidad.
             if (const foliage::Grass* grass = e.tryGet<foliage::Grass>()) desc.grass = grass->desc();
+            environment::applyToGrass(environment_frame_, desc.grass);  // viento, estacion y nieve
             renderer.setTerrainDesc(gpu.id, desc);
         }
     }
@@ -2427,6 +2469,19 @@ void RenderSync::syncLightsAndEnvironment(World& world, scene::Scene& scene,
         }
     });
 
+    // Fuego: zonas (mapas de calor, quemado y humo) para el renderizador y
+    // luces que parpadean donde mas arde.
+    {
+        static const auto fire_epoch = std::chrono::steady_clock::now();
+        const float fire_seconds =
+            std::chrono::duration<float>(std::chrono::steady_clock::now() - fire_epoch).count();
+        std::vector<gfx::FireZone> fire_zones;
+        std::vector<scene::PointLight> fire_lights;
+        fire::collectFireRender(world, fire_seconds, fire_zones, fire_lights);
+        renderer.setFireZones(fire_zones);
+        lights.points.insert(lights.points.end(), fire_lights.begin(), fire_lights.end());
+    }
+
     // Mas luces que huecos (32 puntuales, 8 focos): se quedan las que mas
     // cuentan para la camara (cerca de ella o con mucho alcance), no las
     // primeras de la Jerarquia. Antes, en un mapa grande, las salas del final
@@ -2571,6 +2626,14 @@ void RenderSync::syncLightsAndEnvironment(World& world, scene::Scene& scene,
         blendPostProcess(blended, v.post->settings, t, v.post->isGlobal() ? kPostAll : v.post->overrides);
     }
     renderer.setPostProcess(blended);
+
+    // --- Ambiente (Environment): clima, hora, viento, lluvia, nieve, rayos ---
+    // Al final: conduce lo de arriba (nubes, sol, humedad, niebla).
+    environment_frame_ = environment::applyEnvironment(
+        world, scene, renderer, environment_delta_, blended,
+        directional.valid() ? directional.tryGet<Light>() : nullptr, hdr_active,
+        global_weather != nullptr ? global_weather->wetness : 0.0f, global_weather != nullptr ? global_weather->puddles : 0.0f,
+        global_weather != nullptr && global_weather->rain);
 }
 
 void RenderSync::syncCamera(World& world, scene::Scene& scene) {

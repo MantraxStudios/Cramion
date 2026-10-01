@@ -21,6 +21,19 @@ layout(set = 0, binding = 0) uniform CameraBuffer {
 #define GRASS_SET 2
 #include "grass_common.glsl"
 
+// El principio de WeatherBuffer (gbuffer_surface.glsl): solo hasta las zonas
+// de fuego. La hierba quemada se queda en rastrojo negro.
+layout(set = 0, binding = 3) uniform WeatherBuffer {
+    mat4 rain_view_projection;
+    vec4 params;
+    vec4 flood;
+    vec4 decal_info;
+    vec4 snow;
+    vec4 fire_zones[4];
+} weather;
+#include "fire_burn.glsl"
+float burn_height = 1.0;  // altura que le queda a la brizna (fuego)
+
 layout(std430, set = 2, binding = 1) readonly buffer Blades {
     GrassBlade blades[];
 };
@@ -50,7 +63,7 @@ vec2 windOffset(vec2 xz, float phase, float seconds) {
 vec3 bladePoint(GrassBlade blade, vec4 info, float t, float side, float seconds, out vec3 tangent_up,
                 out vec3 across) {
     float yaw = info.x * 6.2831853;
-    float height = info.y * grass.shape.x * 2.5;
+    float height = info.y * grass.shape.x * 2.5 * burn_height;
     float width = grass.shape.z * (1.0 + info.w * 2.0);
     vec3 facing = vec3(cos(yaw), 0.0, sin(yaw));
     across = vec3(-facing.z, 0.0, facing.x);
@@ -100,6 +113,9 @@ void main() {
         side = c == 0u ? -1.0 : (c == 1u ? 1.0 : 0.0);
     }
 
+    vec2 burn = fireBurnAt(blade.position.xyz, weather.fire_zones);
+    burn_height = 1.0 - 0.92 * smoothstep(0.05, 0.6, burn.x);
+
     vec3 tangent_up;
     vec3 across;
     vec3 world = bladePoint(blade, info, t, side, grass.wind.z, tangent_up, across);
@@ -120,6 +136,7 @@ void main() {
     vec3 green = mix(grass.base_color.rgb, grass.tip_color.rgb, smoothstep(0.0, 1.0, t));
     vec3 dry = mix(grass.base_color.rgb * 1.3, grass.dry_color.rgb, smoothstep(0.0, 1.0, t));
     v_color = clamp(mix(green, dry, info.z) * (1.0 + variation), 0.0, 1.0);
+    v_color = mix(v_color, vec3(0.05, 0.045, 0.04), smoothstep(0.0, 0.4, burn.x));
 
     v_world_position = world;
     v_normal = n;

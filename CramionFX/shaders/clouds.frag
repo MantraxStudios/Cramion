@@ -46,6 +46,7 @@ layout(push_constant) uniform PushConstants {
     vec4 layer;             // x = base (m), y = cima (m), z = tipo (0 estratos .. 1 cumulonimbos)
     vec4 wind;              // xy = direccion del viento, z = adelanto de las cimas (m), w = 1 mapa de sombra
     vec4 shadow;            // xy = centro del mapa de sombra, z = lado (m), w = fuerza
+    vec4 flash;             // rayo: xyz = donde cayo (mundo), w = brillo del destello (0 = nada)
 } push;
 
 layout(location = 0) in vec2 v_uv;
@@ -299,6 +300,13 @@ void main() {
             float h = heightFraction(p);
             vec3 ambient = mix(ground_ambient, sky_ambient, h * 0.7 + 0.3) * mix(0.35, 1.0, sqrt(h));
             vec3 in_scattered = light_radiance * energy + ambient;
+            // Rayo: la nube se ilumina por dentro alrededor de la descarga
+            // (y un poco toda la capa, por la luz que rebota dentro).
+            if (push.flash.w > 0.0) {
+                vec3 strike = vec3(push.flash.x, kEarthRadius + cloudBottom() + 300.0, push.flash.z);
+                float d = length(p - strike);
+                in_scattered += vec3(0.75, 0.8, 1.0) * push.flash.w * (exp(-d / 1400.0) * 6.0 + 0.35);
+            }
 
             // Integracion exacta del tramo (Hillaire 2015): estable aunque el
             // paso sea largo frente a la extincion.

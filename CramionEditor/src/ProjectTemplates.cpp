@@ -14,6 +14,7 @@
 #include "TemplateLocomotionScripts.h"
 
 #include <CramionCore/ecs/AnimatorController.h>
+#include <CramionCore/ai/StateMachine.h>
 #include <CramionCore/ecs/Rigging.h>
 #include <CramionCore/net/NetworkObject.h>
 
@@ -1444,6 +1445,131 @@ void buildNavigation(project::ProjectInfo& project) {
     b.player(Vec3{-20.0f, 1.1f, 20.0f}, body, visor);
     b.camera(13.0f, 50.0f);
     b.hud("Marcador.lua");
+    b.save("Main");
+
+    navigation::NavigationSettings nav;
+    navigation::saveNavigationSettings(project.settingsFolder() / "Navigation.json", nav);
+}
+
+// --- IA con maquinas de estados ----------------------------------------------------
+
+constexpr const char* kStrikeScript = R"lua(-- Golpear (F): resta vida a los enemigos cercanos. Su maquina de estados
+-- lo ve en la variable "vida": con menos de 30 pasan a Huir (transicion
+-- desde Cualquier estado) y, curados, vuelven a casa y a patrullar.
+local Golpe = {
+    properties = {
+        alcance = 3.5,
+        danio = 35,
+    }
+}
+
+function Golpe:Update(dt)
+    if not Input.getKeyDown("f") then return end
+    for _, e in ipairs(Scene.findAllWithTag("Enemigo")) do
+        if self.entity:distanceTo(e) <= self.alcance then
+            local sm = e:getStateMachine()
+            if sm then
+                sm:set("vida", (sm:get("vida") or 100) - self.danio)
+                Debug.log("Golpe a " .. e.name .. ": vida " .. sm:get("vida"))
+            end
+        end
+    end
+end
+
+return Golpe
+)lua";
+
+constexpr const char* kStateHudScript = R"lua(-- HUD: el estado de la maquina de cada enemigo (sm.state) y su vida.
+local Estados = { properties = {} }
+
+function Estados:Update(dt)
+    local lineas = { "WASD moverse  ·  F golpear (con poca vida huyen)" }
+    for _, e in ipairs(Scene.findAllWithTag("Enemigo")) do
+        local sm = e:getStateMachine()
+        if sm then
+            lineas[#lineas + 1] = string.format("%s:  %s   (vida %d)", e.name, sm.state or "-", math.floor(sm:get("vida") or 0))
+        end
+    end
+    self.entity.text = table.concat(lineas, "\n")
+end
+
+return Estados
+)lua";
+
+void buildStateMachines(project::ProjectInfo& project) {
+    Builder b(project);
+    b.world.setSceneUuid(Uuid::generate());
+    ecs::populateDefaultScene(b.world);
+    b.script("Jugador.lua", kPlayerScript);
+    b.script("CamaraTercera.lua", kCameraScript);
+    b.script("Golpe.lua", kStrikeScript);
+    b.script("Estados.lua", kStateHudScript);
+
+    // La maquina de estados del enemigo (la de ejemplo del motor).
+    ai::StateMachineAsset machine = ai::exampleEnemyStateMachine();
+    machine.uuid = Uuid::generate();
+    const std::filesystem::path machine_path = project.assetsFolder() / "IA" / "Enemigo.crfsm";
+    std::filesystem::create_directories(machine_path.parent_path());
+    std::string error;
+    if (!ai::saveStateMachine(machine, machine_path, &error)) throw std::runtime_error("maquina de estados: " + error);
+
+    const assets::AssetRef floor = b.material("Suelo", Vec3{0.44f, 0.48f, 0.46f}, 0.9f);
+    const assets::AssetRef wall = b.material("Muro", Vec3{0.70f, 0.68f, 0.64f}, 0.8f);
+    const assets::AssetRef body = b.material("Jugador", Vec3{0.10f, 0.72f, 0.95f}, 0.35f);
+    const assets::AssetRef visor = b.material("Visor", Vec3{0.05f, 0.06f, 0.08f}, 0.15f, 0.6f);
+    const assets::AssetRef enemy = b.material("Enemigo", Vec3{0.85f, 0.30f, 0.12f}, 0.4f);
+    const assets::AssetRef eye = b.material("Ojo", Vec3{1.0f, 0.9f, 0.3f}, 0.3f, 0.0f, Vec3{1.0f, 0.8f, 0.2f}, 3.0f);
+    const assets::AssetRef marker = b.material("Waypoint", Vec3{0.3f, 0.6f, 1.0f}, 0.3f, 0.0f, Vec3{0.3f, 0.6f, 1.0f}, 2.0f);
+
+    b.box("Suelo", Vec3{0.0f, -0.5f, 0.0f}, Vec3{44.0f, 1.0f, 44.0f}, floor);
+    b.ring(21.0f, 2.5f, 1.0f, wall);
+    b.box("Muro A", Vec3{-6.0f, 1.25f, 6.0f}, Vec3{14.0f, 2.5f, 1.0f}, wall);
+    b.box("Muro B", Vec3{8.0f, 1.25f, -6.0f}, Vec3{1.0f, 2.5f, 12.0f}, wall);
+
+    ecs::Entity volume = b.world.create("NavMeshBoundsVolume");
+    volume.setWorldPosition(Vec3{0.0f, 2.0f, 0.0f});
+    volume.add<navigation::NavMeshBounds>().size = Vec3{44.0f, 8.0f, 44.0f};
+
+    // Ruta de patrulla: objetos con el tag "Waypoint" (en orden de nombre).
+    const Vec3 points[] = {{-14.0f, 0.1f, -14.0f}, {14.0f, 0.1f, -14.0f}, {14.0f, 0.1f, 14.0f}, {-14.0f, 0.1f, 14.0f}};
+    int n = 0;
+    for (const Vec3& p : points) {
+        ecs::Entity w = ecs::createPrimitive(b.world, assets::builtin::kCylinder, "Punto " + std::to_string(++n));
+        w.setWorldPosition(p);
+        w.setLocalScale(Vec3{0.6f, 0.05f, 0.6f});
+        w.get<ecs::MeshRenderer>().materials = {marker};
+        w.setTag("Waypoint");
+    }
+
+    // Dos enemigos con NavAgent y la misma maquina (el segundo ve mas lejos).
+    const Vec3 spawns[] = {{-10.0f, 1.0f, -10.0f}, {10.0f, 1.0f, 10.0f}};
+    n = 0;
+    for (const Vec3& p : spawns) {
+        ecs::Entity g = b.world.create("Enemigo " + std::to_string(++n));
+        g.setWorldPosition(p);
+        g.setTag("Enemigo");
+        navigation::NavAgent& agent = g.add<navigation::NavAgent>();
+        agent.speed = 3.4f;
+        agent.base_offset = 1.0f;  // pivote en el centro de la capsula
+        ai::StateMachine& sm = g.add<ai::StateMachine>();
+        sm.machine = assets::AssetRef{machine.uuid, assets::AssetType::StateMachine};
+        sm.debug = n == 1;  // sus cambios de estado salen en la Consola
+        if (n == 2) sm.variables.push_back(ai::VariableOverride{"rangoVision", static_cast<int>(ai::VarType::Float), "14"});
+        ecs::Entity mesh = ecs::createPrimitive(b.world, assets::builtin::kCapsule, "Cuerpo", g);
+        mesh.get<ecs::MeshRenderer>().materials = {enemy};
+        ecs::Entity e = ecs::createPrimitive(b.world, assets::builtin::kCube, "Ojo", g);
+        e.setLocalPosition(Vec3{0.0f, 0.5f, -0.4f});
+        e.setLocalScale(Vec3{0.55f, 0.16f, 0.2f});
+        e.get<ecs::MeshRenderer>().materials = {eye};
+    }
+
+    ecs::Entity player = b.player(Vec3{0.0f, 1.1f, 16.0f}, body, visor);
+    ecs::Entity strike = b.world.create("Golpe", player);
+    Builder::attach(strike, "Golpe.lua");
+    b.camera(12.0f, 45.0f);
+    ecs::Entity hud = b.hud("Estados.lua");
+    if (auto* rt = hud.tryGet<ui::RectTransform>()) rt->size = Vec2{1000.0f, 200.0f};
+    if (auto* t = hud.tryGet<ui::Text>()) t->font_size = 28.0f;
     b.save("Main");
 
     navigation::NavigationSettings nav;
@@ -3261,6 +3387,14 @@ std::vector<ProjectTemplate> availableTemplates() {
          "Visión con Navigation.raycast", "Meta, HUD y reinicio del nivel"},
         rgba(60, 200, 110), TemplateArt::Navigation, {}});
     list.push_back(ProjectTemplate{
+        "state_machines", "IA con máquinas de estados", "Integradas",
+        "Enemigos con una máquina de estados como las de Bolt: patrullan una ruta, te persiguen si te ven, te atacan, "
+        "huyen con poca vida y vuelven a casa. Cada estado tiene su código Lua; ábrela en la ventana Máquina de estados "
+        "y mira en Play cómo cambia de estado.",
+        {"Máquina Enemigo.crfsm: Patrullar, Perseguir, Atacar, Huir y Volver", "Variables (pizarra) con valores por enemigo",
+         "Transiciones con variables, temporizador y expresión Lua", "F para golpear y HUD con el estado de cada enemigo"},
+        rgba(240, 120, 60), TemplateArt::Navigation, {}});
+    list.push_back(ProjectTemplate{
         "voxel", "Mundo de bloques", "Integradas",
         "Supervivencia en un mundo infinito de bloques como Minecraft: rompe, recoge, craftea herramientas y construye. "
         "Vida, hambre y aire. Se guarda solo.",
@@ -3349,6 +3483,8 @@ project::ProjectInfo createProjectFromTemplate(const ProjectTemplate& t, const s
             buildThirdPersonPro(info, t.folder);
         } else if (t.id == "navigation") {
             buildNavigation(info);
+        } else if (t.id == "state_machines") {
+            buildStateMachines(info);
         } else if (t.id == "voxel") {
             buildVoxel(info);
         } else if (t.id == "mmo") {

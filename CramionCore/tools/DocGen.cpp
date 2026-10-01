@@ -11,6 +11,7 @@
 
 #include <CramionCore/CramionCore.h>
 #include <CramionCore/xr/XrRig.h>
+#include <CramionCore/fluid/Fluid.h>
 
 #include <cstdio>
 #include <fstream>
@@ -194,9 +195,11 @@ const std::map<std::string, std::string>& intros() {
                     "su archivo de datos (<code>.crterrain</code> en Assets). La entidad marca la esquina (x, z minimas) y la altura "
                     "0; no gira ni escala. Herramientas del Inspector: esculpir, suavizar, aplanar, rampa, ruido, erosion, "
                     "terrazas, pintar capas y generar un relieve."},
-        {"WaterBody", "Agua procedural: <strong>Oceano</strong> (plano infinito con oleaje Gerstner), <strong>Lago</strong> "
-                      "(rectangulo con olas suaves) o <strong>Rio</strong> (cinta que sigue sus puntos, con corriente). Los "
-                      "Rigidbody flotan, la camara bajo el agua ve niebla y causticas y los cuerpos que se mueven dejan ondas."},
+        {"WaterBody", "Agua procedural: <strong>Oceano</strong> (plano infinito hasta el horizonte con oleaje FFT en 4 "
+                      "cascadas, viento, fetch y mar de fondo), <strong>Lago</strong> (rectangulo con olas suaves) o "
+                      "<strong>Rio</strong> (cinta que sigue sus puntos, con corriente y rapidos). Los Rigidbody flotan, "
+                      "bajo el agua se ven la ventana de Snell, rayos de sol, causticas y particulas, y los cuerpos que se "
+                      "mueven dejan ondas. Ver <a href=\"agua.html\">Agua</a>."},
         {"Foliage", "Bosques de <strong>millones de arboles procedurales</strong> (pino, abeto, roble, abedul, palmera o sauce: "
                     "tres especies por mezcla) sembrados en segundo plano sobre el terreno, evitando los rios, los lagos, las "
                     "pendientes y los <em>claros</em>. Tronco y ramas de verdad, racimos de hojas translucidos, 3 LODs, "
@@ -389,6 +392,8 @@ int main(int argc, char** argv) {
     terrain::registerTerrainComponents();
     water::registerWaterComponents();
     foliage::registerFoliageComponents();
+    fire::registerFireComponents();
+    fluid::registerFluidComponents();
     navigation::registerNavigationComponents();
     voxel::registerVoxelComponents();
     audio::registerAudioComponents();

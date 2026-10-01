@@ -13,9 +13,12 @@
 #include "CramionFX/vk/OverlayGeometry.h"
 #include "CramionFX/vk/OverlayPass.h"
 #include "CramionFX/vk/ParticlePass.h"
+#include "CramionFX/vk/FirePass.h"
+#include "CramionFX/vk/PrecipitationPass.h"
 #include "CramionFX/vk/TerrainPass.h"
 #include "CramionFX/vk/VoxelPass.h"
 #include "CramionFX/vk/FoliagePass.h"
+#include "CramionFX/vk/FluidPass.h"
 #include "CramionFX/vk/WaterPass.h"
 #include "CramionFX/vk/GpuTypes.h"
 #include "CramionFX/vk/GraphicsSettings.h"
@@ -274,6 +277,14 @@ public:
     // El usuario toco la calidad (Inspector, presets): el presupuesto
     // adaptativo devuelve lo que habia bajado y vuelve a medir.
     void resetAdaptiveBudget() { budget_.reset(); }
+    // Grabacion (modo cine del editor): tiempo fijo por frame (< 0 = el reloj
+    // real) para que el viento, el agua y las nubes avancen igual aunque cada
+    // frame tarde en capturarse, y sin presupuesto adaptativo (calidad maxima).
+    void setFrameDeltaOverride(float seconds) { frame_delta_override_ = seconds; }
+    void setBudgetSuspended(bool suspended) {
+        budget_suspended_ = suspended;
+        if (suspended) budget_.reset();
+    }
 
     // --- Picking por ID en la GPU (el clic del editor) ---
     // Pide que objeto se ve en el pixel (x, y) de la imagen de la escena: en
@@ -340,6 +351,9 @@ public:
     // Particulas (ParticleGeometry.h): discos suaves sobre la imagen HDR,
     // con profundidad. Se dibujan en el frame siguiente; se sustituyen enteras.
     void setParticles(ParticleDrawList particles) { particles_ = std::move(particles); }
+    // Zonas de fuego (fire::Fire): mapas de calor, quemado y humo de la
+    // simulacion (hasta kFireZoneSlots). Vacio = sin fuego.
+    void setFireZones(const std::vector<FireZone>& zones) { fire_pass_.setZones(zones); }
     const ParticleDrawList& particles() const { return particles_; }
 
     // Contorno de seleccion (naranja, como Unity) alrededor de estos actores
@@ -438,6 +452,12 @@ public:
     }
     void setRainEnabled(bool enabled) { rain_enabled_ = enabled; }
     bool rainEnabled() const { return rain_enabled_; }
+    // Sistema de ambiente (PrecipitationPass.h): lluvia, nieve y polvo que
+    // caen, nieve acumulada, tinte de la estacion, destello y trazo de los
+    // rayos y niebla del horizonte. Por defecto, nada.
+    void setPrecipitation(PrecipitationSettings settings) { precipitation_ = std::move(settings); }
+    const PrecipitationSettings& precipitation() const { return precipitation_; }
+    std::uint32_t precipitationParticles() const { return precipitation_pass_.lastCount(); }
     bool rainAvailable() const { return wetness_ > 0.0f || puddles_ > 0.0f; }
 
     // Zona inundada: una lamina de agua sobre el suelo (como los charcos, pero
@@ -558,6 +578,8 @@ public:
                          float cell) {
         water_pass_.setRipples(heights, size, origin_x, origin_z, cell);
     }
+    // Espectro del oceano FFT (modes = nullptr: no hay oceano).
+    void setWaterSpectrum(const WaterSpectrumDesc& spectrum) { water_pass_.setSpectrum(spectrum); }
     // Una region de los datos completos (se sube en el siguiente frame).
     void updateTerrainHeights(std::uint32_t id, const float* heights, std::uint32_t x, std::uint32_t y,
                               std::uint32_t w, std::uint32_t h);
@@ -608,6 +630,12 @@ public:
     void setFoliageOrigin(const core::Vec3& origin) { foliage_pass_.setOrigin(origin); }
     const FoliageSettings& foliageSettings() const { return foliage_pass_.settings(); }
     FoliageStats foliageStats() const { return foliage_pass_.stats(); }
+
+    // --- Liquidos (FluidPass.h): simulacion PBF en la GPU y superficie en
+    // pantalla. CramionCore (fluid::FluidSystem) le da cada frame los ajustes,
+    // las formas, las particulas nuevas y los subpasos.
+    FluidPass& fluid() { return fluid_pass_; }
+    const FluidPass& fluid() const { return fluid_pass_; }
 
     // --- Texturas de la interfaz (iconos, miniaturas del editor) ---
     // RGBA8 con mipmaps (se ven bien pequenas). Devuelve un identificador
@@ -800,6 +828,11 @@ private:
     void recordOutlinePass(const vk::raii::CommandBuffer& cmd, std::uint32_t frame_index);
     // Particulas sobre la imagen HDR (despues del vidrio, antes del bloom).
     void recordParticlePass(const vk::raii::CommandBuffer& cmd, std::uint32_t frame_index);
+    // Liquidos (VulkanRendererFluid.cpp): profundidad, grosor, suavizado y sombreado.
+    void recordFluidPass(const vk::raii::CommandBuffer& cmd, std::uint32_t frame_index);
+    void recordFirePass(const vk::raii::CommandBuffer& cmd, std::uint32_t frame_index);
+    // Lluvia, nieve, polvo, salpicaduras y rayos (sistema de ambiente).
+    void recordPrecipitationPass(const vk::raii::CommandBuffer& cmd, std::uint32_t frame_index);
     // Picking: los actores bajo el pixel pedido en la imagen de IDs.
     void recordPickPass(const vk::raii::CommandBuffer& cmd, std::uint32_t frame_index);
     // Gizmos 3D (overlay_geometry_) sobre la imagen compuesta, con profundidad.
@@ -1142,10 +1175,16 @@ private:
     TerrainPass terrain_pass_{};
     VoxelPass voxel_pass_{};
     FoliagePass foliage_pass_{};
+    FluidPass fluid_pass_{};
     WaterPass water_pass_{};
     core::Vec3 camera_position_{};
     ParticleDrawList particles_;
     ParticlePass particle_pass_{};
+    FirePass fire_pass_{};
+    FireLighting fire_lighting_{};  // sol y cielo de este frame (updateUniforms)
+    PrecipitationSettings precipitation_{};
+    PrecipitationPass precipitation_pass_{};
+    core::Vec3 precipitation_light_{0.5f, 0.5f, 0.5f};  // luz de las gotas (de las luces del frame)
     core::Mat4 camera_view_ = core::Mat4::identity();
     // Post-proceso y efectos de pantalla (unica fuente de verdad).
     PostProcessSettings post_{};
@@ -1382,6 +1421,8 @@ private:
     std::uint32_t desiredTextureSize() const;
     HardwareProfile hardware_{};
     FrameBudget budget_{};
+    float frame_delta_override_ = -1.0f;
+    bool budget_suspended_ = false;
     PostProcessSettings user_post_{};
     float applied_budget_scale_ = 1.0f;
     bool shadow_map_dirty_ = false;

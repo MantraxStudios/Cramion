@@ -427,6 +427,8 @@ void VulkanRenderer::initialize(const EngineInfo& info, NativeWindow window, std
                        shadow_map_.format(), kMaxFramesInFlight);
     foliage_pass_.create(device_, skinned_pass_.frameSetLayout(), gbuffer_.colorFormats(), gbuffer_.depthFormat(),
                          shadow_map_.format(), kMaxFramesInFlight);
+    // Liquidos: sombrean con el set del vidrio (escena detras, cielo, luces).
+    fluid_pass_.create(device_, skinned_pass_.glassSetLayout(), kHdrFormat, kMaxFramesInFlight);
 
     {
         using Type = vk::DescriptorType;
@@ -497,6 +499,10 @@ void VulkanRenderer::initialize(const EngineInfo& info, NativeWindow window, std
         overlay_pass_.create(device_, kLdrFormat, gbuffer_.depthFormat(), kMaxFramesInFlight);
         // Particulas: sobre la imagen HDR, antes del bloom.
         particle_pass_.create(device_, kHdrFormat, gbuffer_.depthFormat(), kMaxFramesInFlight);
+        // Fuego y humo volumetricos (y el mapa de quemado de la geometria).
+        fire_pass_.create(device_, kHdrFormat, kMaxFramesInFlight);
+        // Lluvia, nieve y rayos del sistema de ambiente (igual: sobre la HDR).
+        precipitation_pass_.create(device_, kHdrFormat, gbuffer_.depthFormat(), kMaxFramesInFlight);
 
         FullscreenPassDesc sky{};
         sky.fragment_shader = "sky_lut.frag.spv";
@@ -841,6 +847,8 @@ void VulkanRenderer::shutdown() {
     outline_pass_.destroy();
     overlay_pass_.destroy();
     particle_pass_.destroy();
+    fire_pass_.destroy();
+    precipitation_pass_.destroy();
     bloom_up_pass_.destroy();
     bloom_down_pass_.destroy();
     ssao_pass_.destroy();
@@ -848,6 +856,7 @@ void VulkanRenderer::shutdown() {
     terrain_pass_.destroy();
     voxel_pass_.destroy();
     foliage_pass_.destroy();
+    fluid_pass_.destroy();
     water_pass_.destroy();
     surface_pipelines_.clear();
     skinned_pass_.destroy();
@@ -1121,7 +1130,7 @@ void VulkanRenderer::createDescriptors() {
         vk::DescriptorPoolSize{vk::DescriptorType::eUniformBuffer, kMaxFramesInFlight * 2},
         vk::DescriptorPoolSize{vk::DescriptorType::eStorageBuffer, kMaxFramesInFlight * 2},
         vk::DescriptorPoolSize{vk::DescriptorType::eCombinedImageSampler,
-                               kMaxFramesInFlight * (1 + kMaxDecalTextures)}};
+                               kMaxFramesInFlight * (1 + kMaxDecalTextures + 1)}};  // + el mapa de quemado
 
     vk::DescriptorPoolCreateInfo skin_pool_info{};
     skin_pool_info.flags = vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet;
@@ -1182,6 +1191,18 @@ void VulkanRenderer::createDescriptors() {
         surface_write.descriptorType = vk::DescriptorType::eStorageBuffer;
         surface_write.setBufferInfo(surface_info);
         device_.handle().updateDescriptorSets(surface_write, nullptr);
+
+        // Mapa de quemado de las zonas de fuego (siempre la misma imagen).
+        vk::DescriptorImageInfo burn_info{};
+        burn_info.sampler = *fire_pass_.mapSampler();
+        burn_info.imageView = *fire_pass_.mapView();
+        burn_info.imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
+        vk::WriteDescriptorSet burn_write{};
+        burn_write.dstSet = *skin_sets_[i];
+        burn_write.dstBinding = 6;
+        burn_write.descriptorType = vk::DescriptorType::eCombinedImageSampler;
+        burn_write.setImageInfo(burn_info);
+        device_.handle().updateDescriptorSets(burn_write, nullptr);
     }
     writeDecalTextureDescriptors();
 
@@ -3228,8 +3249,21 @@ void VulkanRenderer::updateUniforms(const scene::Scene& scene, const scene::Came
         const float t = std::clamp((std::log2(adaptation) - std::log2(0.012f)) /
                                        (std::log2(0.09f) - std::log2(0.012f)), 0.0f, 1.0f);
         const float night = 1.0f - t * t * (3.0f - 2.0f * t);
+        // z: destello de un rayo (sistema de ambiente); w: niebla en el
+        // horizonte del cielo (0..1).
         light_data.rt_shadows = Vec4{planned ? 1.0f : 0.0f, night * std::clamp(post_.night_vision, 0.0f, 1.0f) * 0.9f,
-                                     0.0f, 0.0f};
+                                     std::max(precipitation_.flash, 0.0f), std::clamp(precipitation_.sky_fog, 0.0f, 1.0f)};
+    }
+    {
+        // Luz que reciben la lluvia y la nieve (HDR lineal): algo del sol
+        // (menos con el cielo cubierto) y la del cielo.
+        const auto lin = [](float c) { return std::pow(std::max(c, 0.0f), 2.2f); };
+        const float covered = std::clamp(cloud_settings_.coverage, 0.0f, 1.0f);
+        const Vec3 sun{lin(lights.sun.color.x), lin(lights.sun.color.y), lin(lights.sun.color.z)};
+        const Vec3 amb{lin(lights.ambient.color.x), lin(lights.ambient.color.y), lin(lights.ambient.color.z)};
+        precipitation_light_ = sun * (lights.sun.intensity * 0.12f * (1.0f - 0.6f * covered)) +
+                               Vec3{0.30f, 0.33f, 0.38f} * (lights.sky.daylight * (1.0f - 0.45f * covered)) +
+                               amb * (lights.ambient.intensity * 0.3f);
     }
     light_data.ssao_enabled = post_.ambient_occlusion ? 1 : 0;
     light_data.gi_enabled = post_.global_illumination ? 1 : 0;
@@ -3246,6 +3280,9 @@ void VulkanRenderer::updateUniforms(const scene::Scene& scene, const scene::Came
     const bool flooded = water_enabled_ && waterAvailable();
     weather.flood = Vec4{water_center_.x, water_center_.y, flooded ? water_radii_.x : 0.0f,
                          flooded ? water_radii_.y : 0.0f};
+    // Nieve acumulada y tinte de la estacion (sistema de ambiente).
+    weather.snow = Vec4{std::clamp(precipitation_.snow_cover, 0.0f, 1.0f), std::max(precipitation_.snow_thickness, 0.0f),
+                        std::clamp(precipitation_.snow_melt, 0.0f, 1.0f), std::clamp(precipitation_.season_tint, 0.0f, 1.0f)};
     // Decals (estampas, charcos y humedad locales).
     std::uint32_t decal_count = 0;
     for (const Decal& decal : decals_) {
@@ -3263,6 +3300,21 @@ void VulkanRenderer::updateUniforms(const scene::Scene& scene, const scene::Came
                             ? -core::normalize(lights.sun.direction)
                             : Vec3{};
     weather.decal_info = Vec4{static_cast<float>(decal_count), to_sun.x, to_sun.y, to_sun.z};
+    // Zonas de fuego: suelo y vegetacion quemados (fire_burn.glsl).
+    {
+        const std::array<Vec4, kFireZoneSlots> rects = fire_pass_.zoneRects();
+        for (std::uint32_t i = 0; i < kFireZoneSlots && i < kMaxFireZones; ++i) weather.fire_zones[i] = rects[i];
+        // Luz del humo (HDR lineal): el sol (o la luna) y el cielo.
+        const auto lin = [](float c) { return std::pow(std::max(c, 0.0f), 2.2f); };
+        const float covered = std::clamp(cloud_settings_.coverage, 0.0f, 1.0f);
+        const Vec3 sun{lin(lights.sun.color.x), lin(lights.sun.color.y), lin(lights.sun.color.z)};
+        const Vec3 amb{lin(lights.ambient.color.x), lin(lights.ambient.color.y), lin(lights.ambient.color.z)};
+        fire_lighting_.to_sun = core::length(lights.sun.direction) > 1e-6f ? -core::normalize(lights.sun.direction)
+                                                                          : Vec3{0.0f, 1.0f, 0.0f};
+        fire_lighting_.sun_color = sun * (lights.sun.intensity * 0.35f * (1.0f - 0.5f * covered));
+        fire_lighting_.ambient = Vec3{0.32f, 0.36f, 0.42f} * (lights.sky.daylight * 0.55f) +
+                                 amb * (lights.ambient.intensity * 0.5f);
+    }
     weather_buffers_[frame_index].write(&weather, sizeof(weather));
     // w: lo que el LOD de la camara deja desviarse la malla (m por metro de
     // distancia): los rayos salen por encima de la malla que ve la camara.
@@ -3354,6 +3406,8 @@ void VulkanRenderer::updateUniforms(const scene::Scene& scene, const scene::Came
         const Vec4 eye = camera_data.position;
         const float cx = std::floor(eye.x / texel) * texel;
         const float cz = std::floor(eye.z / texel) * texel;
+        // Destello de un rayo dentro de las nubes (sistema de ambiente).
+        cloud_push_.flash = toVec4(precipitation_.flash_position, std::max(precipitation_.flash, 0.0f));
         cloud_shadow_push_ = cloud_push_;
         cloud_shadow_push_.wind.w = 1.0f;
         cloud_shadow_push_.shadow = Vec4{cx, cz, kCloudShadowExtent, std::clamp(cloud_settings_.shadow_strength, 0.0f, 1.0f)};
@@ -3608,7 +3662,7 @@ void VulkanRenderer::drawFrame(const scene::Scene& scene, bool present) {
                              ? 0.0f
                              : std::chrono::duration<float>(now - last_budget_time_).count();
         last_budget_time_ = now;
-        budget_.update(std::min(dt, 0.5f), gpu_profiler_.totalMilliseconds(), gpu_profiler_.timings());
+        if (!budget_suspended_) budget_.update(std::min(dt, 0.5f), gpu_profiler_.totalMilliseconds(), gpu_profiler_.timings());
         post_ = mobilePost(budget_.apply(user_post_));
         if (const SceneDrawMode mode = drawModeNow(); mode == SceneDrawMode::Unlit || mode == SceneDrawMode::Wireframe) {
             post_.auto_exposure = false;
@@ -3676,6 +3730,7 @@ void VulkanRenderer::drawFrame(const scene::Scene& scene, bool present) {
     frame_delta_seconds_ =
         (frame_count_ == 0) ? 0.0f : std::chrono::duration<float>(now - last_frame_time_).count();
     last_frame_time_ = now;
+    if (frame_delta_override_ >= 0.0f) frame_delta_seconds_ = frame_delta_override_;
 
     // Los uniform buffers de este frame no estan en uso: la fence lo garantiza.
     const core::Mat4 saved_view_projection = camera_view_projection_;
@@ -4018,8 +4073,14 @@ void VulkanRenderer::recordCommandBuffer(const vk::raii::CommandBuffer& cmd,
     // Vegetacion: recorte y niveles de detalle en la GPU (antes de las sombras).
     foliage_pass_.recordCull(cmd, frame_index, camera_position_, camera_view_projection_, frame_delta_seconds_);
     water_pass_.prepare(frame_index);
+    // Oceano FFT: el oleaje de este frame (compute + mipmaps), una vez por
+    // frame; las vistas aisladas usan el ultimo.
+    if (!isolated() && !water_pass_.empty()) water_pass_.recordSimulation(cmd, frame_index);
+    // Liquidos: los subpasos de este frame (compute; una vez por frame).
+    if (!isolated()) fluid_pass_.recordSimulate(cmd, frame_index);
 
-    if (!rain_map_ready_ && (rainAvailable() || waterAvailable()) && !actor_draws_.empty()) {
+    if (!rain_map_ready_ && (rainAvailable() || waterAvailable() || precipitation_.needsRainMap()) &&
+        !actor_draws_.empty()) {
         recordRainMap(cmd, frame_index);
         markPass(cmd, frame_index, "Mapa de lluvia");
     }
@@ -4031,6 +4092,7 @@ void VulkanRenderer::recordCommandBuffer(const vk::raii::CommandBuffer& cmd,
     markPass(cmd, frame_index, "Cielo + IBL");
     recordCloudPass(cmd, frame_index);
     markPass(cmd, frame_index, "Nubes");
+    fire_pass_.recordUpload(cmd, frame_index);  // mapa de quemado antes de la geometria
     recordGeometryPass(cmd, frame_index);
     markPass(cmd, frame_index, "Geometria + culling");
     recordSsaoPass(cmd, frame_index);
@@ -4054,9 +4116,21 @@ void VulkanRenderer::recordCommandBuffer(const vk::raii::CommandBuffer& cmd,
         markPass(cmd, frame_index, "Agua");
     }
     markPass(cmd, frame_index, "Vidrio");
+    if (fluid_pass_.active() && !capturing_ && !wire_only) {
+        recordFluidPass(cmd, frame_index);
+        markPass(cmd, frame_index, "Liquidos");
+    }
     if (!particles_.empty() && !capturing_ && !wire_only) {
         recordParticlePass(cmd, frame_index);
         markPass(cmd, frame_index, "Particulas");
+    }
+    if (fire_pass_.active() && !capturing_ && !wire_only) {
+        recordFirePass(cmd, frame_index);
+        markPass(cmd, frame_index, "Fuego y humo");
+    }
+    if (precipitation_.drawsSomething() && !capturing_ && !wire_only) {
+        recordPrecipitationPass(cmd, frame_index);
+        markPass(cmd, frame_index, "Lluvia y nieve");
     }
     if (drawModeNow() == SceneDrawMode::LitWireframe && *skinned_pass_.wireOverlayPipeline()) {
         recordWireOverlayPass(cmd, frame_index);
@@ -6230,6 +6304,99 @@ void VulkanRenderer::recordParticlePass(const vk::raii::CommandBuffer& cmd,
 
     cmd.beginRendering(rendering_info);
     particle_pass_.record(cmd, frame_index, extent);
+    cmd.endRendering();
+}
+
+// Sistema de ambiente: lluvia, nieve, polvo, salpicaduras y el trazo de los
+// rayos sobre la imagen HDR (como las particulas: depth en solo lectura, que
+// ademas leen las salpicaduras para ponerse sobre el suelo).
+void VulkanRenderer::recordPrecipitationPass(const vk::raii::CommandBuffer& cmd, std::uint32_t frame_index) {
+    const vk::Extent2D extent = scene_color_.extent();
+    PrecipitationFrame view;
+    view.view_projection = camera_view_projection_;
+    view.inverse_view_projection = core::inverse(camera_view_projection_);
+    view.rain_view_projection = rain_view_projection_;
+    view.camera_position = camera_position_;
+    view.camera_right = core::normalize(Vec3{camera_view_.m[0][0], camera_view_.m[1][0], camera_view_.m[2][0]});
+    view.tan_half_fov = std::abs(camera_projection_.m[1][1]) > 1e-6f ? 1.0f / std::abs(camera_projection_.m[1][1]) : 0.7f;
+    view.extent = extent;
+    view.rain_map_ready = rain_map_ready_;
+    view.light = precipitation_light_;
+    view.delta_seconds = isolated() ? 0.0f : frame_delta_seconds_;
+    if (!precipitation_pass_.prepare(device_, frame_index, precipitation_, view, rain_map_, *rain_sampler_,
+                                     gbuffer_.depth())) {
+        return;
+    }
+
+    vk::ImageMemoryBarrier2 color_barrier = colorBarrier(
+        *scene_color_.handle(), vk::ImageLayout::eColorAttachmentOptimal, vk::ImageLayout::eColorAttachmentOptimal,
+        vk::PipelineStageFlagBits2::eColorAttachmentOutput, vk::AccessFlagBits2::eColorAttachmentWrite,
+        vk::PipelineStageFlagBits2::eColorAttachmentOutput,
+        vk::AccessFlagBits2::eColorAttachmentRead | vk::AccessFlagBits2::eColorAttachmentWrite);
+    vk::ImageMemoryBarrier2 depth_barrier{};
+    depth_barrier.srcStageMask = vk::PipelineStageFlagBits2::eLateFragmentTests | vk::PipelineStageFlagBits2::eFragmentShader;
+    depth_barrier.srcAccessMask = vk::AccessFlagBits2::eDepthStencilAttachmentWrite;
+    depth_barrier.dstStageMask = vk::PipelineStageFlagBits2::eEarlyFragmentTests |
+                                 vk::PipelineStageFlagBits2::eLateFragmentTests | vk::PipelineStageFlagBits2::eVertexShader;
+    depth_barrier.dstAccessMask = vk::AccessFlagBits2::eDepthStencilAttachmentRead | vk::AccessFlagBits2::eShaderSampledRead;
+    depth_barrier.oldLayout = vk::ImageLayout::eDepthReadOnlyOptimal;
+    depth_barrier.newLayout = vk::ImageLayout::eDepthReadOnlyOptimal;
+    depth_barrier.image = *gbuffer_.depth().handle();
+    depth_barrier.subresourceRange = vk::ImageSubresourceRange{vk::ImageAspectFlagBits::eDepth, 0, 1, 0, 1};
+    pipelineBarrier(cmd, {color_barrier, depth_barrier});
+
+    vk::RenderingAttachmentInfo color_attachment{};
+    color_attachment.imageView = *scene_color_.view();
+    color_attachment.imageLayout = vk::ImageLayout::eColorAttachmentOptimal;
+    color_attachment.loadOp = vk::AttachmentLoadOp::eLoad;
+    color_attachment.storeOp = vk::AttachmentStoreOp::eStore;
+    vk::RenderingAttachmentInfo depth_attachment{};
+    depth_attachment.imageView = *gbuffer_.depth().view();
+    depth_attachment.imageLayout = vk::ImageLayout::eDepthReadOnlyOptimal;
+    depth_attachment.loadOp = vk::AttachmentLoadOp::eLoad;
+    depth_attachment.storeOp = vk::AttachmentStoreOp::eNone;
+    vk::RenderingInfo rendering_info{};
+    rendering_info.renderArea = vk::Rect2D{vk::Offset2D{0, 0}, extent};
+    rendering_info.layerCount = 1;
+    rendering_info.setColorAttachments(color_attachment);
+    rendering_info.pDepthAttachment = &depth_attachment;
+    cmd.beginRendering(rendering_info);
+    precipitation_pass_.record(cmd, frame_index, extent);
+    cmd.endRendering();
+}
+
+// Fuego y humo volumetricos (FirePass): sobre la imagen HDR, leyendo el depth
+// de la escena como textura (sin adjuntarlo).
+void VulkanRenderer::recordFirePass(const vk::raii::CommandBuffer& cmd, std::uint32_t frame_index) {
+    const vk::Extent2D extent = scene_color_.extent();
+    vk::ImageMemoryBarrier2 color_barrier = colorBarrier(
+        *scene_color_.handle(), vk::ImageLayout::eColorAttachmentOptimal, vk::ImageLayout::eColorAttachmentOptimal,
+        vk::PipelineStageFlagBits2::eColorAttachmentOutput, vk::AccessFlagBits2::eColorAttachmentWrite,
+        vk::PipelineStageFlagBits2::eColorAttachmentOutput,
+        vk::AccessFlagBits2::eColorAttachmentRead | vk::AccessFlagBits2::eColorAttachmentWrite);
+    vk::ImageMemoryBarrier2 depth_barrier{};
+    depth_barrier.srcStageMask = vk::PipelineStageFlagBits2::eLateFragmentTests | vk::PipelineStageFlagBits2::eFragmentShader;
+    depth_barrier.srcAccessMask = vk::AccessFlagBits2::eDepthStencilAttachmentWrite;
+    depth_barrier.dstStageMask = vk::PipelineStageFlagBits2::eFragmentShader;
+    depth_barrier.dstAccessMask = vk::AccessFlagBits2::eShaderSampledRead;
+    depth_barrier.oldLayout = vk::ImageLayout::eDepthReadOnlyOptimal;
+    depth_barrier.newLayout = vk::ImageLayout::eDepthReadOnlyOptimal;
+    depth_barrier.image = *gbuffer_.depth().handle();
+    depth_barrier.subresourceRange = vk::ImageSubresourceRange{vk::ImageAspectFlagBits::eDepth, 0, 1, 0, 1};
+    pipelineBarrier(cmd, {color_barrier, depth_barrier});
+
+    vk::RenderingAttachmentInfo color_attachment{};
+    color_attachment.imageView = *scene_color_.view();
+    color_attachment.imageLayout = vk::ImageLayout::eColorAttachmentOptimal;
+    color_attachment.loadOp = vk::AttachmentLoadOp::eLoad;
+    color_attachment.storeOp = vk::AttachmentStoreOp::eStore;
+    vk::RenderingInfo rendering_info{};
+    rendering_info.renderArea = vk::Rect2D{vk::Offset2D{0, 0}, extent};
+    rendering_info.layerCount = 1;
+    rendering_info.setColorAttachments(color_attachment);
+    cmd.beginRendering(rendering_info);
+    fire_pass_.record(cmd, frame_index, extent, *camera_buffers_[frame_index].handle(), sizeof(GpuCamera),
+                      *gbuffer_.depth().view(), fire_lighting_, weather_time_, static_cast<std::uint32_t>(frame_count_));
     cmd.endRendering();
 }
 

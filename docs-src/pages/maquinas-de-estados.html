@@ -1,0 +1,299 @@
+<p>
+        Como los <strong class="text-white">State Graphs de Bolt</strong> (Visual Scripting de Unity): la IA de un objeto se dibuja como
+        un grafo de <strong class="text-white">estados</strong> (Patrullar, Perseguir, Atacar...) unidos por
+        <strong class="text-white">transiciones</strong> con condiciones. Dentro de cada estado se programa en Lua solo lo que hace
+        mientras está en él. Las variables de la IA viven en una <strong class="text-white">pizarra</strong> (blackboard) con tipo, que
+        leen las condiciones y el código, y cada objeto puede tener sus propios valores.
+      </p>
+      <div class="note">
+        Para verlo funcionando, crea un proyecto con la plantilla <strong class="text-white">IA con máquinas de estados</strong>:
+        dos enemigos patrullan, te persiguen, te atacan, huyen cuando les quitas vida (tecla <code>F</code>) y vuelven a casa.
+      </div>
+
+      <h3 id="crear">Crear una máquina</h3>
+      <p>
+        En el Proyecto: clic derecho &gt; <strong class="text-white">Crear &gt; Máquina de estados (IA)</strong> &gt; Vacía o
+        Enemigo de ejemplo. Se crea un archivo <code>.crfsm</code> y se abre la ventana <strong class="text-white">Máquina de
+        estados</strong> (también en Ventana &gt; Máquina de estados, o con doble clic en el archivo).
+        Para usarla, añade a un objeto el componente <code>StateMachine</code> y asígnale el <code>.crfsm</code> (o arrastra el
+        <code>.crfsm</code> sobre el objeto en la Jerarquía, o usa <em>Asignar a la selección</em>).
+      </p>
+
+      <h3 id="ventana">La ventana</h3>
+      <p>
+        La máquina se abre en su <strong class="text-white">propia pestaña</strong> (morada, <em>Máquina: nombre</em>) en la barra
+        de espacios de trabajo, como los scripts: ocupa toda la ventana del editor. Doble clic en un <code>.crfsm</code>,
+        <em>Abrir en la ventana Máquina de estados</em> en el Inspector o <em>Ventana &gt; Máquina de estados</em> la abren; abrir otra
+        reemplaza la de la pestaña. La escena sigue cargada: se vuelve a ella con la pestaña <em>Escena</em> y, en Play, la máquina
+        se sigue viendo en vivo. La <code>×</code> de la pestaña la cierra (guardando los cambios).
+      </p>
+      <table>
+        <tbody>
+          <tr><td>Izquierda</td><td>Las <strong class="text-white">variables</strong> (pizarra): nombre, tipo y valor inicial. En Play, los valores en vivo del objeto seleccionado (se pueden cambiar para probar), los triggers a mano y el historial de cambios de estado.</td></tr>
+          <tr><td>Centro</td><td>El <strong class="text-white">grafo</strong>. Clic derecho en el fondo: crear un estado (vacío o con una plantilla de IA: Esperar, Patrullar, Perseguir, Atacar, Huir). Arrastrar desde el punto de la derecha de un estado hasta otro: crear una transición (o clic derecho &gt; Crear transición). Arrastrar: mover. Rueda: zoom. Botón central o Alt+arrastrar: desplazar. <code>Supr</code>: borrar.</td></tr>
+          <tr><td>Derecha</td><td>El <strong class="text-white">código del estado</strong> seleccionado, con el mismo editor de los scripts (colores, autocompletado, errores con su línea), o las <strong class="text-white">condiciones</strong> de la transición seleccionada.</td></tr>
+        </tbody>
+      </table>
+      <p>
+        Se guarda sola al terminar cada cambio (y con <code>Ctrl+S</code> en el código). En Play, guardar recarga la máquina en caliente:
+        cada objeto sigue en su estado y con sus variables. El estado activo del objeto seleccionado se ilumina, la barra azul
+        cuenta el tiempo en el estado y la última transición tomada parpadea en naranja. En la transición seleccionada, un punto
+        verde o rojo dice si cada condición se cumple ahora.
+      </p>
+
+      <h3 id="nodos">Nodos especiales</h3>
+      <table>
+        <tbody>
+          <tr><td><strong class="text-white">Entrada</strong></td><td>Apunta al estado en el que empieza la máquina (clic derecho en un estado &gt; Estado de entrada).</td></tr>
+          <tr><td><strong class="text-white">Cualquier estado</strong></td><td>Su código corre <strong class="text-white">siempre</strong>, antes de mirar las transiciones: es el sitio de los "sensores" (calcular la distancia al jugador, si lo ve...). Sus funciones sirven en todos los estados (<code>self:miFuncion()</code>). Las transiciones que salen de él se pueden tomar desde cualquier estado (morir, huir...).</td></tr>
+        </tbody>
+      </table>
+
+      <h3 id="codigo">El código de un estado</h3>
+      <p>
+        Cada estado define funciones globales (o devuelve una tabla con ellas, como un script). Solo se llaman mientras el estado está activo:
+      </p>
+      <table>
+        <tbody>
+          <tr><td><code>OnEnter(self, sm)</code></td><td>Al entrar en el estado.</td></tr>
+          <tr><td><code>OnUpdate(self, dt)</code></td><td>Cada frame.</td></tr>
+          <tr><td><code>OnExit(self)</code></td><td>Al salir.</td></tr>
+          <tr><td><code>OnLateUpdate</code>, <code>OnFixedUpdate</code></td><td>Como en los scripts.</td></tr>
+          <tr><td><code>OnCollisionEnter/Stay/Exit</code>, <code>OnTriggerEnter/Stay/Exit</code></td><td><code>(self, otro, contacto)</code>, mientras el estado está activo (y siempre en Cualquier estado).</td></tr>
+        </tbody>
+      </table>
+      <p>
+        <code>self</code> es la misma tabla en todos los estados del objeto: lo que guardes en ella (<code>self.punto = 3</code>) sigue ahí al cambiar de estado.
+      </p>
+      <table>
+        <tbody>
+          <tr><td><code>self.entity</code></td><td>El objeto.</td></tr>
+          <tr><td><code>self.vars.nombre</code></td><td>Una variable de la pizarra (leer y escribir; el tipo se respeta).</td></tr>
+          <tr><td><code>self.sm</code></td><td>La máquina (ver abajo).</td></tr>
+          <tr><td><code>self.state</code></td><td>Nombre del estado actual.</td></tr>
+        </tbody>
+      </table>
+      <p>
+        Un estado también puede usar un <code>.lua</code> de Assets en lugar de su código (arrástralo al campo del estado): un script normal
+        que devuelve una tabla con <code>OnEnter</code>, <code>OnUpdate</code>, <code>OnExit</code>. Los errores salen en la Consola con la máquina,
+        el estado y la línea (<code>Maquina IA/Enemigo.crfsm (estado Atacar, linea 12): ...</code>) y la línea se marca en rojo en el editor.
+      </p>
+
+      <h3 id="transiciones">Transiciones y condiciones</h3>
+      <p>
+        Una transición se toma cuando se cumplen <strong class="text-white">todas</strong> sus condiciones (sin condiciones, enseguida). Se miran
+        una vez por frame, después del código de Cualquier estado. Si varias se cumplen, gana la de mayor <strong class="text-white">prioridad</strong>;
+        a igual prioridad, las de Cualquier estado y después el orden de la lista.
+      </p>
+      <table>
+        <tbody>
+          <tr><td>Variable</td><td>Compara una variable con un valor (<code>distancia &lt; 10</code>) o con otra variable escribiendo <code>$nombre</code> (<code>distancia &lt; $rangoVision</code>). Bool, string y entity: igual, distinto, verdadero, falso. Los <code>vec3</code> comparan su longitud.</td></tr>
+          <tr><td>Trigger</td><td>Se cumple el frame siguiente a <code>sm:trigger("nombre")</code> (los triggers se consumen al mirarlos).</td></tr>
+          <tr><td>Temporizador</td><td>Después de N segundos en el estado.</td></tr>
+          <tr><td>Expresión Lua</td><td>Cualquier expresión: ve las variables por su nombre, <code>entity</code>, <code>sm</code>, <code>self</code> y las globales (<code>vida &lt; 30 and not entity.isMoving</code>).</td></tr>
+        </tbody>
+      </table>
+
+      <h3 id="variables">Variables (pizarra)</h3>
+      <p>
+        Tipos: <code>bool</code>, <code>int</code>, <code>float</code>, <code>string</code>, <code>entity</code> (un objeto: se escribe su nombre, tag o UUID,
+        o se arrastra desde la Jerarquía; en Lua es el objeto) y <code>vec3</code>. En el Inspector del componente <code>StateMachine</code>, la casilla de
+        cada variable le da a ese objeto su propio valor inicial (un enemigo que ve más lejos que otro). En Play el Inspector muestra el estado actual,
+        permite saltar a otro y cambiar las variables en vivo.
+      </p>
+
+      <h3 id="componente">Componente StateMachine</h3>
+      <table>
+        <tbody>
+          <tr><td>Máquina de estados</td><td>El <code>.crfsm</code>.</td></tr>
+          <tr><td>Empieza activa</td><td>Si no, espera a <code>sm:start()</code>.</td></tr>
+          <tr><td>Depurar</td><td>Cada cambio de estado sale en la Consola con la transición que lo causó.</td></tr>
+          <tr><td>Variables</td><td>Los valores propios de este objeto.</td></tr>
+        </tbody>
+      </table>
+      <p>
+        Las máquinas corren en Play y en los juegos exportados (Windows y Android). Se actualizan en orden fijo, así el resultado es el mismo cada vez.
+      </p>
+
+      <h3 id="lua">API Lua</h3>
+      <p>Desde el código de un estado (<code>sm</code> o <code>self.sm</code>) o desde cualquier script (<code>entity:getStateMachine()</code>):</p>
+      <table>
+        <tbody>
+          <tr><td><code>entity:getStateMachine()</code></td><td>La máquina del objeto, o <code>nil</code>. También <code>StateMachine.of(entity)</code>.</td></tr>
+          <tr><td><code>sm.state</code>, <code>sm.previous</code></td><td>Nombre del estado actual y del anterior.</td></tr>
+          <tr><td><code>sm.stateTime</code>, <code>sm.time</code></td><td>Segundos en el estado actual y desde que empezó.</td></tr>
+          <tr><td><code>sm.changes</code>, <code>sm.running</code></td><td>Cambios de estado hasta ahora; si está en marcha.</td></tr>
+          <tr><td><code>sm:go("Estado")</code></td><td>Cambia de estado por código (se aplica enseguida, con OnExit y OnEnter). También <code>sm:changeState</code>.</td></tr>
+          <tr><td><code>sm:isIn("Estado")</code></td><td>Si está en ese estado.</td></tr>
+          <tr><td><code>sm:trigger("nombre")</code></td><td>Dispara un trigger para las transiciones. <code>StateMachine.broadcast("nombre")</code> lo dispara en todas las máquinas.</td></tr>
+          <tr><td><code>sm:get("var")</code>, <code>sm:set("var", valor)</code>, <code>sm:has("var")</code></td><td>Variables de la pizarra (también <code>sm.vars.var</code>). <code>set</code> de una variable que no existe la crea.</td></tr>
+          <tr><td><code>sm:states()</code></td><td>Lista con los nombres de los estados.</td></tr>
+          <tr><td><code>sm:start()</code>, <code>sm:stop()</code>, <code>sm:restart()</code></td><td>Reanudar, pausar o empezar de nuevo desde la entrada con las variables iniciales.</td></tr>
+        </tbody>
+      </table>
+
+      <h3 id="ejemplo">Ejemplo: enemigo completo</h3>
+      <p>
+        Es la máquina <em>Enemigo de ejemplo</em>. Necesita un <code>NavAgent</code> en el enemigo, una NavMesh y un objeto llamado <code>Jugador</code>.
+        Variables: <code>objetivo</code> (entity = Jugador), <code>distancia</code>, <code>rangoVision</code> (10), <code>rangoAtaque</code> (2),
+        <code>rangoPerder</code> (16), <code>vida</code> (100), <code>danio</code>, <code>radioPatrulla</code> y <code>casa</code> (vec3).
+      </p>
+      <p class="file">Cualquier estado (sensores)</p>
+      <pre><code class="language-lua">function OnEnter(self, sm)
+    self.vars.casa = self.entity.position
+end
+
+function OnUpdate(self, dt)
+    local objetivo = self.vars.objetivo
+    if objetivo and objetivo:valid() then
+        self.vars.distancia = self.entity:distanceTo(objetivo)
+    else
+        self.vars.distancia = 9999
+    end
+end</code></pre>
+      <p class="file">Patrullar (estado de entrada)</p>
+      <pre><code class="language-lua">-- De un punto de ruta a otro (objetos con tag "Waypoint"); sin ruta,
+-- puntos al azar de la NavMesh alrededor de casa.
+function OnEnter(self, sm)
+    self.ruta = Scene.findAllWithTag("Waypoint")
+    table.sort(self.ruta, function(a, b) return a.name &lt; b.name end)
+    self.punto = self.punto or 0
+    self.espera = 0
+    self:siguientePunto()
+end
+
+function siguientePunto(self)
+    if #self.ruta &gt; 0 then
+        self.punto = self.punto % #self.ruta + 1
+        self.entity:moveTo(self.ruta[self.punto].position)
+    else
+        local p = Navigation.randomPoint(self.vars.casa, self.vars.radioPatrulla)
+        if p then self.entity:moveTo(p) end
+    end
+end
+
+function OnUpdate(self, dt)
+    if not self.entity.isMoving then
+        self.espera = self.espera + dt
+        if self.espera &gt; 1.5 then
+            self.espera = 0
+            self:siguientePunto()
+        end
+    end
+end
+
+function OnExit(self)
+    self.entity:stopMoving()
+end</code></pre>
+      <p class="file">Perseguir</p>
+      <pre><code class="language-lua">function OnEnter(self, sm)
+    self.recalcular = 0
+end
+
+function OnUpdate(self, dt)
+    self.recalcular = self.recalcular - dt
+    local objetivo = self.vars.objetivo
+    if objetivo and self.recalcular &lt;= 0 then
+        self.entity:moveTo(objetivo.position)
+        self.recalcular = 0.25
+    end
+end
+
+function OnExit(self)
+    self.entity:stopMoving()
+end</code></pre>
+      <p class="file">Atacar</p>
+      <pre><code class="language-lua">function OnEnter(self, sm)
+    self.golpe = 0
+end
+
+function OnUpdate(self, dt)
+    local objetivo = self.vars.objetivo
+    if not objetivo then return end
+    local p = objetivo.position
+    self.entity:lookAt(Vec3(p.x, self.entity.position.y, p.z))
+    self.golpe = self.golpe - dt
+    if self.golpe &lt;= 0 then
+        self.golpe = 1.0
+        Debug.log(self.entity.name .. " ataca (" .. self.vars.danio .. " de danio)")
+        local otra = objetivo:getStateMachine()
+        if otra then otra:trigger("golpeado") end
+    end
+end</code></pre>
+      <p class="file">Huir y Volver</p>
+      <pre><code class="language-lua">-- Huir: se aleja y se cura poco a poco.
+function OnEnter(self, sm)
+    self:alejarse()
+end
+
+function alejarse(self)
+    local objetivo = self.vars.objetivo
+    local desde = objetivo and objetivo.position or self.vars.casa
+    local lejos = self.entity.position + (self.entity.position - desde):normalized() * 12
+    local p = Navigation.projectPoint(lejos, 8) or Navigation.randomPoint(self.entity.position, 12)
+    if p then self.entity:moveTo(p) end
+end
+
+function OnUpdate(self, dt)
+    self.vars.vida = math.min(100, self.vars.vida + 8 * dt)
+    if not self.entity.isMoving then self:alejarse() end
+end
+
+-- Volver (otro estado): a casa y, al llegar, a patrullar por codigo.
+function OnEnter(self, sm)
+    self.entity:moveTo(self.vars.casa)
+end
+
+function OnUpdate(self, dt)
+    if self.sm.stateTime &gt; 0.5 and (not self.entity.isMoving or self.entity.remainingDistance &lt; 0.6) then
+        self.sm:go("Patrullar")
+    end
+end</code></pre>
+      <p>Transiciones:</p>
+      <table>
+        <tbody>
+          <tr><td>Patrullar → Perseguir</td><td><code>distancia &lt; $rangoVision</code> (otra: trigger <code>ruido</code>)</td></tr>
+          <tr><td>Perseguir → Atacar</td><td><code>distancia &lt;= $rangoAtaque</code></td></tr>
+          <tr><td>Atacar → Perseguir</td><td><code>distancia &gt; $rangoAtaque</code> y 0.5 s en el estado</td></tr>
+          <tr><td>Perseguir → Volver</td><td><code>distancia &gt; $rangoPerder</code></td></tr>
+          <tr><td>Cualquier estado → Huir</td><td><code>vida &lt; 30</code>, prioridad 10</td></tr>
+          <tr><td>Huir → Volver</td><td>Expresión Lua <code>vida &gt;= 60</code></td></tr>
+          <tr><td>Volver → Perseguir</td><td><code>distancia &lt; $rangoVision</code></td></tr>
+        </tbody>
+      </table>
+      <p>Desde otro script (por ejemplo, el arma del jugador):</p>
+      <pre><code class="language-lua">for _, e in ipairs(Scene.findAllWithTag("Enemigo")) do
+    local sm = e:getStateMachine()
+    if sm and self.entity:distanceTo(e) &lt; 3 then
+        sm:set("vida", sm:get("vida") - 35)
+    end
+end
+StateMachine.broadcast("ruido")  -- todos los enemigos lo oyen</code></pre>
+
+      <h3 id="archivo">Formato .crfsm</h3>
+      <p>
+        JSON legible (lo pueden escribir una persona o una IA). En las transiciones, <code>from</code> y <code>to</code> son el nombre del estado
+        (o <code>"any"</code> = Cualquier estado).
+      </p>
+      <pre><code class="language-json">{
+  "uuid": "…",
+  "entry": "Patrullar",
+  "any_code": "function OnUpdate(self, dt) … end",
+  "variables": [ { "name": "distancia", "type": "float", "value": 9999 } ],
+  "states": [ { "name": "Patrullar", "position": [0, 0], "color": [0.2, 0.45, 0.25], "code": "function OnEnter(self, sm) … end" } ],
+  "transitions": [
+    { "from": "Patrullar", "to": "Perseguir", "conditions": [ { "type": "variable", "variable": "distancia", "compare": "&lt;", "value": "$rangoVision" } ] },
+    { "from": "any", "to": "Huir", "priority": 10, "conditions": [ { "type": "lua", "expression": "vida &lt; 30" } ] }
+  ]
+}</code></pre>
+
+      <h3 id="mcp">MCP (IA)</h3>
+      <table>
+        <tbody>
+          <tr><td><code>create_state_machine</code></td><td>Crea o reemplaza un <code>.crfsm</code> desde su JSON (o el de ejemplo) y opcionalmente lo pone en una entidad.</td></tr>
+          <tr><td><code>get_state_machine</code></td><td>Su JSON completo y los problemas que tenga.</td></tr>
+          <tr><td><code>update_state_machine</code></td><td>Reemplazarla o cambiar el código de algunos estados (se recarga en Play).</td></tr>
+          <tr><td><code>assign_state_machine</code></td><td>Componente StateMachine en una entidad con valores propios.</td></tr>
+          <tr><td><code>state_machine_debug</code></td><td>En Play: estado actual, variables e historial; y <code>go</code>, <code>trigger</code>, <code>set</code> para probar.</td></tr>
+        </tbody>
+      </table>

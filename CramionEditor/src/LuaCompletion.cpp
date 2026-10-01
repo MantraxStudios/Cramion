@@ -42,6 +42,7 @@ const List& globals() {
         LuaCompletion{"Navigation", "Navigation", "la malla de navegacion (findPath, randomPoint...)", 1},
         LuaCompletion{"Mesh", "Mesh", "mallas creadas por codigo (Mesh.new, Mesh.cube, entity.mesh)", 1},
         LuaCompletion{"Voxel", "Voxel", "el mundo de bloques (getBlock, setBlock, raycast, mundos)", 1},
+        LuaCompletion{"Fluid", "Fluid", "liquidos por particulas: spawn, density, emisores (agua, miel, lava...)", 1},
         LuaCompletion{"Debug", "Debug", "mensajes en la Consola", 1},
         LuaCompletion{"Prefs", "Prefs", "datos guardados (como PlayerPrefs)", 1},
         LuaCompletion{"Game", "Game", "el juego (quit)", 1},
@@ -54,6 +55,9 @@ const List& globals() {
         LuaCompletion{"Random", "Random", "aleatorios con semilla: range, int, pick, onUnitSphere...", 1},
         LuaCompletion{"DataPack", "DataPack", "paquetes de escenas y objetos (como AssetBundles): load, loadScene, instantiate", 1},
         LuaCompletion{"Screen", "Screen", "tamano y orientacion de la pantalla", 1},
+        LuaCompletion{"Weather", "Weather", "ambiente: clima (set \"Storm\"), hora, fecha, estacion, viento, rayos", 1},
+        LuaCompletion{"Environment", "Environment", "lo mismo que Weather (clima, hora, viento)", 1},
+        LuaCompletion{"Fire", "Fire", "incendios: ignite, extinguish, isBurning, burnedFraction", 1},
         LuaCompletion{"XR", "XR", "realidad virtual (OpenXR): cabeza, mandos, botones, vibracion", 1},
         LuaCompletion{"math", "math", "biblioteca math de Lua", 1},
         LuaCompletion{"string", "string", "biblioteca string de Lua", 1},
@@ -195,11 +199,41 @@ const std::unordered_map<std::string, List>& tables() {
          {prop("deltaTime", "segundos desde el frame anterior"), prop("time", "segundos desde el Play"),
           prop("frameCount", "frames desde el Play"), prop("fixedDeltaTime", "paso fijo de la fisica")}},
         {"Physics", {fn("raycast", "origen, direccion, distancia", "nil o {entity, point, normal, distance}")}},
+        {"Weather",
+         {fn("set", "\"Storm\", 10", "cambia de clima en N segundos (Clear, Cloudy, Overcast, Foggy, LightRain, Rain, Storm, LightSnow, Snow, Blizzard, Sandstorm)"),
+          fn("setWeather", "\"Rain\", 5", "lo mismo que set"), fn("get", "", "clima actual (\"Storm\")"),
+          fn("getTarget", "", "clima al que va la transicion"), fn("getLabel", "", "nombre visible (\"Tormenta\")"),
+          fn("presets", "", "lista de climas"), fn("transition", "", "0..1 lo que lleva la transicion"),
+          fn("isTransitioning", "", "esta cambiando?"), fn("setRandom", "true, 120, 360", "clima al azar (segundos min y max)"),
+          fn("setTime", "18.5", "hora del dia (0..24)"), fn("getTime", "", "hora del dia"),
+          fn("setDate", "21, 12", "dia y mes (mueve el sol y la estacion)"), fn("getDate", "", "dia, mes"),
+          fn("setLatitude", "40", "latitud en grados"), fn("getLatitude", "", "latitud"),
+          fn("setDayLength", "24", "minutos reales por dia (nil = el tiempo se para)"),
+          fn("setTimeScale", "60", "velocidad del tiempo (1 = real, 0 = parado)"), fn("getTimeScale", "", "velocidad del tiempo"),
+          fn("setSeason", "\"Winter\"", "estacion fija (\"auto\" = por la fecha)"), fn("getSeason", "", "estacion actual"),
+          fn("getTemperature", "", "grados C"), fn("setWind", "90, 1.5", "direccion (grados) y fuerza del viento"),
+          fn("getWind", "", "Vec3 del viento (m/s)"), fn("getWindSpeed", "", "m/s con rachas"),
+          fn("getWindDirection", "", "grados"), fn("getRain", "", "lluvia 0..1"), fn("getSnow", "", "nevada 0..1"),
+          fn("getFog", "", "densidad de la niebla"), fn("getWetness", "", "humedad de las superficies 0..1"),
+          fn("setWetness", "1, 0.6", "humedad y charcos al instante"), fn("getSnowCover", "", "nieve acumulada 0..1"),
+          fn("setSnowCover", "1", "nieve acumulada al instante"), fn("setPrecipitationDensity", "0.5", "menos gotas (rendimiento)"),
+          fn("lightning", "800", "un rayo ya (distancia en m; sin ella al azar)"),
+          fn("setLightning", "true, 2", "rayos en las tormentas y su frecuencia"),
+          fn("getSunDirection", "", "Vec3 hacia el sol"), fn("isNight", "", "el sol esta bajo el horizonte?"),
+          fn("setAudio", "true, 0.8", "sonido de lluvia, viento y truenos")}},
         {"Audio", {fn("playOneShot", "\"Audio/golpe.wav\", posicion, volumen", "sonido suelto (sin posicion = 2D)"),
                    fn("setOcclusion", "true", "paredes tapan los sonidos (Audio Listener)"),
                    fn("occlusion", "", "esta la oclusion activa?"),
                    fn("setLowPass", "true, 800", "todo apagado (bajo el agua, pausa)"),
                    fn("reverbLevel", "", "reverberacion que se oye ahora (zonas)")}},
+        {"Fire",
+         {fn("ignite", "posicion, radio", "enciende fuego en las zonas Fuego que tocan el circulo (devuelve cuantas)"),
+          fn("extinguish", "posicion, radio", "apaga el fuego en el circulo"), fn("extinguishAll", "", "apaga todo"),
+          fn("reset", "", "vuelve a empezar: nada quemado (y se reenciende si 'Encender al empezar')"), fn("isBurning", "posicion", "hay llamas ahi?"),
+          fn("heatAt", "posicion", "calor 0..1"), fn("burnedAt", "posicion", "quemado 0..1"),
+          fn("charAt", "posicion", "lo mismo que burnedAt"), fn("burnedFraction", "", "0..1 de lo que podia arder"),
+          fn("burningArea", "", "m2 en llamas"), fn("isActive", "", "hay algo ardiendo?"),
+          fn("stats", "", "{burningCells, burnedFraction, burningArea, seconds...}")}},
         {"Navigation",
          {fn("findPath", "desde, hasta", "nil o lista de Vec3 (los giros del camino)"),
           fn("projectPoint", "Vec3, radio", "nil o el punto de la malla mas cercano"),
@@ -221,6 +255,16 @@ const std::unordered_map<std::string, List>& tables() {
           fn("saveWorld", "", "guarda"), fn("listWorlds", "", "lista de mundos"), fn("deleteWorld", "\"nombre\"", "lo borra"),
           fn("setMeta", "\"clave\", \"texto\"", "dato guardado con el mundo"), fn("getMeta", "\"clave\", \"\"", "lee un dato"),
           fn("worldName", "", "nombre del mundo"), fn("seed", "", "semilla"), fn("isActive", "", "hay mundo de bloques?")}},
+        {"Fluid",
+         {fn("spawn", "pos, cantidad, \"water\", vel, radio, vida", "crea liquido (bola de particulas)"),
+          fn("clear", "", "borra todo el liquido"), fn("count", "\"honey\"", "particulas (todas o de un tipo)"),
+          fn("density", "pos, radio", "0 = seco, ~1 = lleno"), fn("isInside", "pos", "hay liquido ahi?"),
+          fn("velocity", "pos, radio", "velocidad media del liquido (Vec3)"),
+          fn("surfaceHeight", "x, z", "nil o la altura de la superficie"),
+          fn("start", "entidad", "el emisor empieza"), fn("stop", "entidad", "el emisor para"),
+          fn("restart", "entidad", "vuelve a llenar una caja/esfera"), fn("setType", "entidad, \"lava\"", "cambia el liquido del emisor"),
+          fn("types", "", "lista de tipos"), fn("stats", "", "{particles, capacity, emitters...}"),
+          fn("isActive", "", "hay liquidos en la escena?")}},
         {"Debug",
          {fn("log", "...", "mensaje en la Consola"), fn("warn", "...", "aviso"), fn("error", "...", "error")}},
         {"Mathf",
@@ -641,6 +685,7 @@ std::string parameterType(const std::string& name) {
         return "Entity";
     }
     if (name == "contact") return "contact";
+    if (name == "sm") return "StateMachine";  // OnEnter(self, sm) de una maquina de estados
     if (name == "res" || name == "response") return "res";
     if (name == "hit") return "hit";
     if (name == "offset") return "Vec3";
@@ -806,6 +851,8 @@ std::string typeOfChain(const std::vector<Segment>& chain, const FileTypes& file
             next = 2;
             if (chain[1].name == "entity") {
                 type = "Entity";
+            } else if (chain[1].name == "sm") {
+                type = "StateMachine";
             } else if (const auto it = file.self_fields.find(chain[1].name); it != file.self_fields.end()) {
                 type = typeOf(it->second, file, depth + 1);
             }
@@ -879,6 +926,8 @@ List typeMembers(const std::string& type, char accessor, const List& self_fields
     } else if (type == "Mesh") {
         append(meshMembers(accessor));
         appendReference(out, "Mesh:", accessor);
+    } else if (type == "StateMachine") {
+        appendReference(out, "StateMachine:", accessor);
     } else if (!type.empty() && type[0] == '@') {
         out = tableMembers(type.substr(1));
     } else if (accessor == '.') {

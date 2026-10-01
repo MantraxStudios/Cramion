@@ -2,6 +2,7 @@
 
 #include "CramionCore/ecs/MathUtil.h"
 #include "CramionCore/ecs/World.h"
+#include "CramionCore/environment/Environment.h"
 
 #include <array>
 
@@ -763,6 +764,7 @@ void registerBuiltinComponents(ComponentRegistry& registry) {
     registry.registerComponent<Camera>("Camera", "Camara", "Renderizado");
     registry.registerComponent<Sky>("Sky", "Cielo", "Entorno");
     registry.registerComponent<Weather>("Weather", "Clima", "Entorno");
+    registry.registerComponent<environment::Environment>("Environment", "Ambiente (clima y hora)", "Entorno");
     registry.registerComponent<PostProcessing>("PostProcessing", "Post-procesado", "Renderizado");
     registry.registerComponent<Decal>("Decal", "Decal", "Renderizado");
     registry.registerComponent<Profiler>("Profiler", "Profiler", "Depuracion");

@@ -106,6 +106,13 @@ void EditorApp::drawWaterInspector(ecs::Entity entity) {
         p.wavelength = 80.0f;
         p.steepness = 0.8f;
         p.foam = 1.8f;
+        // Oceano FFT: viento fuerte con mucho fetch y mar de fondo cruzado.
+        p.wind_speed = 17.0f;
+        p.fetch = 800.0f;
+        p.swell_height = 1.2f;
+        p.swell_wavelength = 160.0f;
+        p.swell_direction = p.wind_direction - 35.0f;
+        p.foam_persistence = 7.0f;
         p.deep_color = Vec3{0.006f, 0.022f, 0.03f};
         p.shallow_color = Vec3{0.08f, 0.22f, 0.22f};
         apply(p);

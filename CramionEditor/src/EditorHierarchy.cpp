@@ -40,19 +40,21 @@ DropZone dropZone() {
 }  // namespace
 
 Icon EditorApp::entityIcon(const ecs::Entity& e, ImU32& tint) const {
-    tint = IM_COL32(200, 200, 205, 255);
+    // Iconos en gris claro; color solo donde dice algo (luces en amarillo,
+    // prefabs en azul, fisica en verde).
+    tint = theme::kLabel;
     if (e.has<ecs::PrefabInstance>()) {
-        tint = IM_COL32(95, 170, 255, 255);
+        tint = theme::kPrefab;
         return Icon::ColliderBox;  // cubo azul: raiz de una instancia de prefab
     }
     if (const ecs::Light* light = e.tryGet<ecs::Light>()) {
-        tint = IM_COL32(255, 205, 80, 255);
+        tint = theme::kYellow;
         return light->type == ecs::LightType::Directional ? Icon::DirectionalLight
                : light->type == ecs::LightType::Spot      ? Icon::SpotLight
                                                           : Icon::PointLight;
     }
     if (e.has<ecs::Camera>()) {
-        tint = IM_COL32(120, 220, 140, 255);
+        tint = theme::kText;
         return Icon::Camera;
     }
     if (e.has<terrain::Terrain>()) {
@@ -92,11 +94,11 @@ Icon EditorApp::entityIcon(const ecs::Entity& e, ImU32& tint) const {
         return box->material.is_trigger ? Icon::TriggerVolume : Icon::ColliderBox;
     }
     if (e.has<ecs::Animator>()) {
-        tint = IM_COL32(110, 170, 255, 255);
+        tint = theme::kLabel;
         return Icon::SkinnedMesh;
     }
     if (e.has<ecs::MeshRenderer>()) {
-        tint = IM_COL32(110, 170, 255, 255);
+        tint = theme::kLabel;
         return Icon::MeshRenderer;
     }
     if (e.has<ecs::Sky>() || e.has<ecs::PostProcessing>() || e.has<ecs::Weather>()) {
@@ -117,9 +119,9 @@ void EditorApp::drawHierarchy() {
     if (ImGui::Button("+")) {
         ImGui::OpenPopup("crear_menu");
     }
+    ImGui::SetItemTooltip("Crear objeto");
     ImGui::SameLine();
-    ImGui::SetNextItemWidth(-1.0f);
-    ImGui::InputTextWithHint("##buscar", "Buscar...", &hierarchy_filter_);
+    theme::searchBox("buscar", hierarchy_filter_, "Buscar...");
     if (ImGui::BeginPopup("crear_menu")) {
         const ecs::Entity parent = world_.find(active_);
         const auto item = [&](const char* label, int kind) {
@@ -145,10 +147,22 @@ void EditorApp::drawHierarchy() {
         if (ImGui::MenuItem("Terreno")) createTerrainEntity();
         if (ImGui::MenuItem("Vegetación (bosque)")) createFoliageEntity();
         if (ImGui::MenuItem("Mundo de bloques")) createVoxelWorldEntity();
+        if (ImGui::MenuItem("Fuego (incendio)")) createFireEntity();
         if (ImGui::BeginMenu("Agua")) {
             if (ImGui::MenuItem("Océano / playa")) createWaterEntity(0);
             if (ImGui::MenuItem("Lago")) createWaterEntity(1);
             if (ImGui::MenuItem("Río")) createWaterEntity(2);
+            ImGui::EndMenu();
+        }
+        if (ImGui::BeginMenu("Líquidos")) {
+            if (ImGui::MenuItem("Grifo de agua (emisor)")) createFluidEntity(0);
+            if (ImGui::MenuItem("Bloque de agua (cae y salpica)")) createFluidEntity(1);
+            if (ImGui::MenuItem("Chorro de miel")) createFluidEntity(2);
+            if (ImGui::MenuItem("Chorro de lava")) createFluidEntity(3);
+            ImGui::Separator();
+            if (ImGui::MenuItem("Mundo de líquidos (ajustes)")) createFluidEntity(4);
+            if (ImGui::MenuItem("Desagüe")) createFluidEntity(5);
+            if (ImGui::MenuItem("Tanque de demostración")) createFluidEntity(6);
             ImGui::EndMenu();
         }
         drawNavigationCreateMenu();
@@ -168,6 +182,7 @@ void EditorApp::drawHierarchy() {
     // Solo se dibujan las filas que se ven (ImGuiListClipper): con miles de
     // objetos el coste es el de las ~40 filas de la ventana, no el del mundo.
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(4.0f, 1.0f));
+    theme::pushSelectionColors();  // seleccion en rojo (tema)
     buildHierarchyRows();
     if (!hierarchy_filter_.empty()) {
         // Busqueda: lista plana de coincidencias (como Unity).
@@ -210,6 +225,7 @@ void EditorApp::drawHierarchy() {
             }
         }
     }
+    ImGui::PopStyleColor(3);
     ImGui::PopStyleVar();
     reveal_ = {};
 
@@ -257,10 +273,22 @@ void EditorApp::drawHierarchy() {
         if (ImGui::MenuItem("Terreno")) createTerrainEntity();
         if (ImGui::MenuItem("Vegetación (bosque)")) createFoliageEntity();
         if (ImGui::MenuItem("Mundo de bloques")) createVoxelWorldEntity();
+        if (ImGui::MenuItem("Fuego (incendio)")) createFireEntity();
         if (ImGui::BeginMenu("Agua")) {
             if (ImGui::MenuItem("Océano / playa")) createWaterEntity(0);
             if (ImGui::MenuItem("Lago")) createWaterEntity(1);
             if (ImGui::MenuItem("Río")) createWaterEntity(2);
+            ImGui::EndMenu();
+        }
+        if (ImGui::BeginMenu("Líquidos")) {
+            if (ImGui::MenuItem("Grifo de agua (emisor)")) createFluidEntity(0);
+            if (ImGui::MenuItem("Bloque de agua (cae y salpica)")) createFluidEntity(1);
+            if (ImGui::MenuItem("Chorro de miel")) createFluidEntity(2);
+            if (ImGui::MenuItem("Chorro de lava")) createFluidEntity(3);
+            ImGui::Separator();
+            if (ImGui::MenuItem("Mundo de líquidos (ajustes)")) createFluidEntity(4);
+            if (ImGui::MenuItem("Desagüe")) createFluidEntity(5);
+            if (ImGui::MenuItem("Tanque de demostración")) createFluidEntity(6);
             ImGui::EndMenu();
         }
         drawNavigationCreateMenu();
@@ -393,6 +421,12 @@ void EditorApp::drawHierarchyRow(const HierarchyRow& row, bool scroll_to) {
         const float name_x = label_x + icon_size + 4.0f;
         {
             ImDrawList* draw = ImGui::GetWindowDrawList();
+            // Seleccionada: barra roja al borde izquierdo (la del objeto activo, entera).
+            if (selected) {
+                const bool is_active = active_ == uuid;
+                draw->AddRectFilled(ImVec2(row_min.x, row_min.y + 1.0f), ImVec2(row_min.x + 2.0f, row_max.y - 1.0f),
+                                    is_active ? theme::kRed : theme::withAlpha(theme::kRed, 140));
+            }
             ImU32 tint = IM_COL32_WHITE;
             const Icon icon = entityIcon(entity, tint);
             if (!entity.activeInHierarchy()) tint = (tint & 0x00FFFFFFu) | 0x70000000u;
@@ -463,7 +497,7 @@ void EditorApp::drawHierarchyRow(const HierarchyRow& row, bool scroll_to) {
             const ImVec2 min = ImGui::GetItemRectMin();
             const ImVec2 max = ImGui::GetItemRectMax();
             ImDrawList* draw = ImGui::GetWindowDrawList();
-            const ImU32 accent = IM_COL32(90, 160, 255, 255);
+            const ImU32 accent = theme::kYellow;  // destino al soltar
             if (const ImGuiPayload* payload =
                     ImGui::AcceptDragDropPayload(kEntityPayload, ImGuiDragDropFlags_AcceptBeforeDelivery |
                                                                      ImGuiDragDropFlags_AcceptNoDrawDefaultRect)) {
@@ -495,6 +529,14 @@ void EditorApp::drawHierarchyRow(const HierarchyRow& row, bool scroll_to) {
                 if (asset.type == assets::AssetType::Model) instantiateAsset(asset.uuid, entity, std::nullopt);
                 if (asset.type == assets::AssetType::Prefab) instantiatePrefabAsset(asset.uuid, entity, std::nullopt);
                 if (asset.type == assets::AssetType::Environment) assignEnvironment(asset.uuid);
+                // Maquina de estados: el componente StateMachine con ella.
+                if (asset.type == assets::AssetType::StateMachine) {
+                    ai::StateMachine& sm = entity.has<ai::StateMachine>() ? entity.get<ai::StateMachine>()
+                                                                          : entity.add<ai::StateMachine>();
+                    sm.machine = assets::AssetRef{asset.uuid, assets::AssetType::StateMachine};
+                    selectOnly(entity.uuid());
+                    commit();
+                }
                 // Material: a todos sus huecos (y a los de sus hijos si no tiene malla).
                 if (asset.type == assets::AssetType::Material && applyMaterial(entity, asset.uuid, -1)) {
                     inline_material_ = asset.uuid;
@@ -540,10 +582,22 @@ void EditorApp::drawHierarchyRow(const HierarchyRow& row, bool scroll_to) {
         item("Vehículo (4 ruedas)", 17);
         if (ImGui::MenuItem("Terreno")) createTerrainEntity();
         if (ImGui::MenuItem("Mundo de bloques")) createVoxelWorldEntity();
+        if (ImGui::MenuItem("Fuego (incendio)")) createFireEntity();
         if (ImGui::BeginMenu("Agua")) {
             if (ImGui::MenuItem("Océano / playa")) createWaterEntity(0);
             if (ImGui::MenuItem("Lago")) createWaterEntity(1);
             if (ImGui::MenuItem("Río")) createWaterEntity(2);
+            ImGui::EndMenu();
+        }
+        if (ImGui::BeginMenu("Líquidos")) {
+            if (ImGui::MenuItem("Grifo de agua (emisor)")) createFluidEntity(0);
+            if (ImGui::MenuItem("Bloque de agua (cae y salpica)")) createFluidEntity(1);
+            if (ImGui::MenuItem("Chorro de miel")) createFluidEntity(2);
+            if (ImGui::MenuItem("Chorro de lava")) createFluidEntity(3);
+            ImGui::Separator();
+            if (ImGui::MenuItem("Mundo de líquidos (ajustes)")) createFluidEntity(4);
+            if (ImGui::MenuItem("Desagüe")) createFluidEntity(5);
+            if (ImGui::MenuItem("Tanque de demostración")) createFluidEntity(6);
             ImGui::EndMenu();
         }
         drawNavigationCreateMenu();

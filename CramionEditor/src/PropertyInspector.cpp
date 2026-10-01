@@ -1,9 +1,12 @@
 #include "PropertyInspector.h"
 
+#include "Theme.h"
+
 #include <imgui.h>
 #include <imgui_internal.h>
 #include <imgui_stdlib.h>
 
+#include <cfloat>
 #include <cmath>
 #include <cstring>
 #include <cstdio>
@@ -14,10 +17,85 @@ namespace cramion::editor {
 
 namespace {
 
-// Ancho de la columna de etiquetas, como el Inspector de Unity.
+// Ancho de la columna de etiquetas, como el Inspector de Unity: una parte
+// fija del ancho (todas las filas alineadas) con minimo y maximo.
 float labelWidth() {
-    return std::max(ImGui::GetContentRegionAvail().x * 0.38f, 90.0f);
+    return std::clamp(ImGui::GetContentRegionAvail().x * 0.40f, 96.0f, 240.0f);
 }
+
+// Abreviatura del tipo de asset (la etiqueta pequena del campo).
+const char* assetTypeTag(assets::AssetType type) {
+    switch (type) {
+        case assets::AssetType::Model: return "MDL";
+        case assets::AssetType::Environment: return "HDR";
+        case assets::AssetType::Scene: return "ESC";
+        case assets::AssetType::AnimatorController: return "ANM";
+        case assets::AssetType::AnimationClip: return "CLIP";
+        case assets::AssetType::Material: return "MAT";
+        case assets::AssetType::Prefab: return "PRE";
+        case assets::AssetType::RenderTexture: return "RT";
+        case assets::AssetType::StateMachine: return "FSM";
+        default: return "AST";
+    }
+}
+
+// Caja de un campo de referencia (asset u objeto): fondo de campo, etiqueta
+// del tipo a la izquierda y el nombre. Devuelve si se hizo clic.
+bool referenceBox(const char* id, const char* tag, const std::string& text, bool assigned, float width) {
+    const float h = ImGui::GetFrameHeight();
+    const ImVec2 p = ImGui::GetCursorScreenPos();
+    const bool pressed = ImGui::InvisibleButton(id, ImVec2(std::max(width, 20.0f), h));
+    const bool hovered = ImGui::IsItemHovered();
+    const ImVec2 q(p.x + std::max(width, 20.0f), p.y + h);
+    ImDrawList* draw = ImGui::GetWindowDrawList();
+    const float rounding = ImGui::GetStyle().FrameRounding;
+    draw->AddRectFilled(p, q, hovered ? theme::kBg4 : theme::kBg3, rounding);
+    draw->AddRect(p, q, hovered ? theme::kBorderStrong : theme::kBorder, rounding);
+    // Etiqueta del tipo.
+    const float small_size = theme::smallFontSize();
+    ImFont* font = ImGui::GetFont();
+    const ImVec2 ts = font->CalcTextSizeA(small_size, FLT_MAX, 0.0f, tag);
+    const ImVec2 ta(p.x + 4.0f, p.y + 4.0f);
+    const ImVec2 tb(ta.x + ts.x + 8.0f, q.y - 4.0f);
+    draw->AddRectFilled(ta, tb, assigned ? theme::kBg5 : theme::kBg2, 2.0f);
+    draw->AddText(font, small_size, ImVec2(ta.x + 4.0f, ta.y + (tb.y - ta.y - ts.y) * 0.5f),
+                  assigned ? theme::kText : theme::kTextFaint, tag);
+    // Nombre (recortado al ancho).
+    const float x = tb.x + 6.0f;
+    draw->PushClipRect(ImVec2(x, p.y), ImVec2(q.x - 4.0f, q.y), true);
+    draw->AddText(ImVec2(x, p.y + ImGui::GetStyle().FramePadding.y), assigned ? theme::kText : theme::kTextDim,
+                  text.c_str());
+    draw->PopClipRect();
+    return pressed;
+}
+
+// Boton cuadrado pequeno con un simbolo dibujado (x de vaciar, diana de elegir).
+enum class Glyph { Clear, Pick };
+bool glyphButton(const char* id, Glyph glyph) {
+    const float h = ImGui::GetFrameHeight();
+    const ImVec2 p = ImGui::GetCursorScreenPos();
+    const bool pressed = ImGui::InvisibleButton(id, ImVec2(h, h));
+    const bool hovered = ImGui::IsItemHovered();
+    ImDrawList* draw = ImGui::GetWindowDrawList();
+    const ImVec2 q(p.x + h, p.y + h);
+    const float rounding = ImGui::GetStyle().FrameRounding;
+    draw->AddRectFilled(p, q, ImGui::IsItemActive() ? theme::kBg5 : (hovered ? theme::kBg4 : theme::kBg3), rounding);
+    draw->AddRect(p, q, theme::kBorder, rounding);
+    const ImU32 color = hovered ? theme::kText : theme::kTextDim;
+    const ImVec2 c(std::floor((p.x + q.x) * 0.5f) + 0.5f, std::floor((p.y + q.y) * 0.5f) + 0.5f);
+    const float s = h * 0.18f;
+    if (glyph == Glyph::Clear) {
+        draw->AddLine(ImVec2(c.x - s, c.y - s), ImVec2(c.x + s, c.y + s), color, 1.5f);
+        draw->AddLine(ImVec2(c.x + s, c.y - s), ImVec2(c.x - s, c.y + s), color, 1.5f);
+    } else {
+        draw->AddCircle(c, s * 1.5f, color, 16, 1.4f);
+        draw->AddCircleFilled(c, 1.8f, color, 8);
+    }
+    return pressed;
+}
+
+constexpr ImU32 kAxisColors[4] = {theme::kAxisX, theme::kAxisY, theme::kAxisZ, theme::kTextFaint};
+constexpr const char* kAxisNames[4] = {"X", "Y", "Z", "W"};
 
 // Lo que muestra un campo con valores distintos (como Unity).
 constexpr const char* kMixed = "\xe2\x80\x94";  // "—"
@@ -288,15 +366,50 @@ int ImGuiPropertyVisitor::mixed(const char* key) const {
     return it == mixed_->end() ? 0 : it->second;
 }
 
-// Etiqueta a la izquierda y control a la derecha. Devuelve true siempre (el
+std::string lowerText(const char* text) {
+    std::string out = text != nullptr ? text : "";
+    std::transform(out.begin(), out.end(), out.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return out;
+}
+
+bool FilterMatchVisitor::check(const ecs::Meta& meta) {
+    if (!matched_ && (needle_.empty() || lowerText(meta.label).find(needle_) != std::string::npos)) matched_ = true;
+    return false;
+}
+
+bool ImGuiPropertyVisitor::visible(const ecs::Meta& meta) const {
+    if (filter_.empty() || filter_bypass_ > 0) return true;
+    return lowerText(meta.label).find(filter_) != std::string::npos;
+}
+
+// Etiqueta a la izquierda (gris, blanca al pasar el raton; recortada con
+// "..." si no cabe) y control a la derecha. Devuelve true siempre (el
 // control va a continuacion con su ID oculto).
 bool ImGuiPropertyVisitor::label(const ecs::Meta& meta) {
-    ImGui::AlignTextToFramePadding();
-    ImGui::TextUnformatted(meta.label);
-    if (meta.tooltip != nullptr && ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
-        ImGui::SetTooltip("%s", meta.tooltip);
+    const float column = labelWidth();
+    const float start_x = ImGui::GetCursorPosX();
+    const ImVec2 pos = ImGui::GetCursorScreenPos();
+    const float max_w = std::max(column - start_x - ImGui::GetStyle().ItemSpacing.x, 10.0f);
+    const float h = ImGui::GetFrameHeight();
+    ImGui::PushID(meta.key);
+    ImGui::Dummy(ImVec2(max_w, h));
+    ImGui::PopID();
+    const bool hovered = ImGui::IsItemHovered();
+    const ImVec2 ts = ImGui::CalcTextSize(meta.label);
+    const bool clipped = ts.x > max_w;
+    ImGui::PushStyleColor(ImGuiCol_Text, hovered ? theme::kText : theme::kLabel);
+    ImGui::RenderTextEllipsis(ImGui::GetWindowDrawList(), ImVec2(pos.x, pos.y + ImGui::GetStyle().FramePadding.y),
+                              ImVec2(pos.x + max_w, pos.y + h), pos.x + max_w, meta.label, nullptr, &ts);
+    ImGui::PopStyleColor();
+    if ((meta.tooltip != nullptr || clipped) && ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+        if (meta.tooltip != nullptr && clipped) {
+            ImGui::SetTooltip("%s\n%s", meta.label, meta.tooltip);
+        } else {
+            ImGui::SetTooltip("%s", meta.tooltip != nullptr ? meta.tooltip : meta.label);
+        }
     }
-    ImGui::SameLine(labelWidth());
+    ImGui::SameLine(column);
     ImGui::SetNextItemWidth(-1.0f);
     ImGui::PushID(meta.key);
     return true;
@@ -316,45 +429,84 @@ bool ImGuiPropertyVisitor::dragAxes(float* values, int count, float speed, float
     changed_axes = 0;
     const float full = ImGui::GetContentRegionAvail().x;
     ImGui::GetCurrentContext()->NextItemData.ClearFlags();  // el -1 de label()
-    ImGui::PushMultiItemsWidths(count, full);
+    // Cada eje: una pestana de color con su letra (X rojo, Y verde, Z azul)
+    // pegada a su campo.
+    const float h = ImGui::GetFrameHeight();
+    const float tag_w = std::floor(h * 0.78f);
+    const float gap = ImGui::GetStyle().ItemInnerSpacing.x;
+    const float each = std::max((full - gap * static_cast<float>(count - 1)) / static_cast<float>(count), tag_w + 20.0f);
+    const float rounding = ImGui::GetStyle().FrameRounding;
+    ImDrawList* draw = ImGui::GetWindowDrawList();
     bool changed = false;
     for (int i = 0; i < count; ++i) {
         ImGui::PushID(i);
-        if (i > 0) ImGui::SameLine(0.0f, ImGui::GetStyle().ItemInnerSpacing.x);
+        if (i > 0) ImGui::SameLine(0.0f, gap);
+        const ImVec2 p = ImGui::GetCursorScreenPos();
+        draw->AddRectFilled(p, ImVec2(p.x + tag_w, p.y + h), kAxisColors[std::min(i, 3)], rounding,
+                            ImDrawFlags_RoundCornersLeft);
+        const ImVec2 ts = ImGui::CalcTextSize(kAxisNames[std::min(i, 3)]);
+        draw->AddText(ImVec2(p.x + std::floor((tag_w - ts.x) * 0.5f), p.y + std::floor((h - ts.y) * 0.5f)),
+                      IM_COL32(255, 255, 255, 255), kAxisNames[std::min(i, 3)]);
+        ImGui::SetCursorScreenPos(ImVec2(p.x + tag_w, p.y));
+        ImGui::SetNextItemWidth(each - tag_w);
+        ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 0.0f);
         const char* fmt = (mixed_axes >> i) & 1 ? kMixed : format;
         if (ImGui::DragFloat("##a", &values[i], speed, min, max, fmt)) {
             changed = true;
             changed_axes |= 1 << i;
         }
+        ImGui::PopStyleVar();
         if (ImGui::IsItemDeactivatedAfterEdit()) edit_finished_ = true;
         ImGui::PopID();
-        ImGui::PopItemWidth();
     }
     return changed;
 }
 
+// Subgrupo (Bloom, Vineta...): una barra fina con el titulo en seminegrita.
+// Con filtro no se dibuja (se ven solo los campos que coinciden).
 bool ImGuiPropertyVisitor::beginGroup(const char* text, bool default_open) {
+    if (!filter_.empty() && filter_bypass_ == 0) {
+        push(text != nullptr ? text : "");
+        groups_drawn_.push_back(false);
+        ++depth_;
+        return true;
+    }
     ImGui::PushID(text);
+    ImGui::PushStyleColor(ImGuiCol_Header, theme::withAlpha(theme::kText, 9));
+    ImGui::PushStyleColor(ImGuiCol_HeaderHovered, theme::withAlpha(theme::kText, 18));
+    ImGui::PushStyleColor(ImGuiCol_HeaderActive, theme::withAlpha(theme::kText, 26));
+    ImGui::PushStyleColor(ImGuiCol_Border, IM_COL32(0, 0, 0, 0));
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(6.0f, 3.0f));
+    if (theme::boldFont() != nullptr) ImGui::PushFont(theme::boldFont(), 0.0f);
     const bool open = ImGui::TreeNodeEx(text, (default_open ? ImGuiTreeNodeFlags_DefaultOpen : 0) |
-                                                  ImGuiTreeNodeFlags_SpanAvailWidth |
+                                                  ImGuiTreeNodeFlags_SpanAvailWidth | ImGuiTreeNodeFlags_Framed |
                                                   ImGuiTreeNodeFlags_FramePadding);
+    if (theme::boldFont() != nullptr) ImGui::PopFont();
+    ImGui::PopStyleVar();
+    ImGui::PopStyleColor(4);
     if (!open) {
         ImGui::PopID();
         return false;
     }
     push(text != nullptr ? text : "");
+    groups_drawn_.push_back(true);
     ++depth_;
     return true;
 }
 
 void ImGuiPropertyVisitor::endGroup() {
-    ImGui::TreePop();
-    ImGui::PopID();
+    const bool drawn = groups_drawn_.empty() || groups_drawn_.back();
+    if (!groups_drawn_.empty()) groups_drawn_.pop_back();
+    if (drawn) {
+        ImGui::TreePop();
+        ImGui::PopID();
+    }
     pop();
     --depth_;
 }
 
 bool ImGuiPropertyVisitor::field(const ecs::Meta& meta, float& value, const ecs::FloatRange& range) {
+    if (!visible(meta)) return false;
     const char* format = mixed(meta.key) ? kMixed : range.format;
     label(meta);
     bool changed = false;
@@ -376,6 +528,7 @@ bool ImGuiPropertyVisitor::field(const ecs::Meta& meta, float& value, const ecs:
 }
 
 bool ImGuiPropertyVisitor::field(const ecs::Meta& meta, int& value, int min, int max) {
+    if (!visible(meta)) return false;
     const char* format = mixed(meta.key) ? kMixed : "%d";
     label(meta);
     const bool changed = max > min ? ImGui::SliderInt("##v", &value, min, max, format)
@@ -390,6 +543,7 @@ bool ImGuiPropertyVisitor::field(const ecs::Meta& meta, int& value, int min, int
 }
 
 bool ImGuiPropertyVisitor::field(const ecs::Meta& meta, bool& value) {
+    if (!visible(meta)) return false;
     const bool is_mixed = mixed(meta.key) != 0;
     label(meta);
     ImGui::PushItemFlag(ImGuiItemFlags_MixedValue, is_mixed);
@@ -408,6 +562,7 @@ bool ImGuiPropertyVisitor::field(const ecs::Meta& meta, bool& value) {
 }
 
 bool ImGuiPropertyVisitor::field(const ecs::Meta& meta, std::string& value) {
+    if (!visible(meta)) return false;
     const bool is_mixed = mixed(meta.key) != 0;
     label(meta);
     bool changed = false;
@@ -431,6 +586,7 @@ bool ImGuiPropertyVisitor::field(const ecs::Meta& meta, std::string& value) {
 }
 
 bool ImGuiPropertyVisitor::field(const ecs::Meta& meta, core::Vec3& value, ecs::Vec3Kind kind) {
+    if (!visible(meta)) return false;
     const int mixed_axes = mixed(meta.key);
     label(meta);
     bool changed = false;
@@ -478,6 +634,7 @@ bool ImGuiPropertyVisitor::field(const ecs::Meta& meta, core::Vec3& value, ecs::
 }
 
 bool ImGuiPropertyVisitor::field(const ecs::Meta& meta, core::Vec2& value, float speed) {
+    if (!visible(meta)) return false;
     const int mixed_axes = mixed(meta.key);
     label(meta);
     int axes = 0x3;
@@ -494,6 +651,7 @@ bool ImGuiPropertyVisitor::field(const ecs::Meta& meta, core::Vec2& value, float
 
 bool ImGuiPropertyVisitor::enumeration(const ecs::Meta& meta, int& value,
                                        std::span<const char* const> names) {
+    if (!visible(meta)) return false;
     const bool is_mixed = mixed(meta.key) != 0;
     label(meta);
     bool changed = false;
@@ -522,6 +680,7 @@ bool ImGuiPropertyVisitor::enumeration(const ecs::Meta& meta, int& value,
 // Mascara de capas (LayerMask de Unity): el resumen en la caja y una casilla
 // por capa con nombre en la lista.
 bool ImGuiPropertyVisitor::layerMask(const ecs::Meta& meta, std::uint32_t& mask) {
+    if (!visible(meta)) return false;
     const bool is_mixed = mixed(meta.key) != 0;
     label(meta);
     const physics::PhysicsSettings& settings = physics::projectPhysicsSettings();
@@ -576,6 +735,7 @@ bool ImGuiPropertyVisitor::layerMask(const ecs::Meta& meta, std::uint32_t& mask)
 }
 
 bool ImGuiPropertyVisitor::entity(const ecs::Meta& meta, Uuid& ref) {
+    if (!visible(meta)) return false;
     const bool is_mixed = mixed(meta.key) != 0;
     label(meta);
     bool changed = false;
@@ -586,7 +746,7 @@ bool ImGuiPropertyVisitor::entity(const ecs::Meta& meta, Uuid& ref) {
     }
     const float clear_width = ImGui::GetFrameHeight();
     const float width = std::max(ImGui::GetContentRegionAvail().x - clear_width - 4.0f, 20.0f);
-    if (ImGui::Button(text.c_str(), ImVec2(width, 0.0f))) ImGui::OpenPopup("pick_entity");
+    if (referenceBox("##entity", "OBJ", text, ref.valid() && !is_mixed, width)) ImGui::OpenPopup("pick_entity");
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) {
         ImGui::SetTooltip("Arrastra un objeto desde la Jerarquia o haz clic para elegirlo");
     }
@@ -605,8 +765,7 @@ bool ImGuiPropertyVisitor::entity(const ecs::Meta& meta, Uuid& ref) {
             filter.clear();
             ImGui::SetKeyboardFocusHere();
         }
-        ImGui::SetNextItemWidth(220.0f);
-        ImGui::InputTextWithHint("##filter", "Buscar...", &filter);
+        theme::searchBox("entity_filter", filter, "Buscar...", 260.0f);
         if (ImGui::Selectable("Ninguno", !ref.valid())) {
             ref = Uuid{};
             changed = true;
@@ -635,10 +794,11 @@ bool ImGuiPropertyVisitor::entity(const ecs::Meta& meta, Uuid& ref) {
         ImGui::EndPopup();
     }
     ImGui::SameLine(0.0f, 4.0f);
-    if (ImGui::Button("x", ImVec2(clear_width, 0.0f)) && (ref.valid() || is_mixed)) {
+    if (glyphButton("##clear", Glyph::Clear) && (ref.valid() || is_mixed)) {
         ref = Uuid{};
         changed = true;
     }
+    ImGui::SetItemTooltip("Vaciar");
     if (changed) edit_finished_ = true;
     ImGui::PopID();
     if (changed) {
@@ -653,6 +813,13 @@ bool ImGuiPropertyVisitor::beginList(const ecs::Meta& meta, std::size_t& count) 
     const bool is_mixed = mixed(meta.key) != 0;
     const std::string path = pathOf(meta.key);
     ImGui::PushID(meta.key);
+    // Con filtro: la lista sale entera si su nombre coincide; si no, nada.
+    if (!filter_.empty() && filter_bypass_ == 0 && !visible(meta)) {
+        lists_.push_back(ListState{});
+        list_paths_.push_back(path);
+        push(meta.key);
+        return true;
+    }
     char header[128];
     if (is_mixed) {
         std::snprintf(header, sizeof(header), "%s (%s)", meta.label, kMixed);
@@ -660,6 +827,11 @@ bool ImGuiPropertyVisitor::beginList(const ecs::Meta& meta, std::size_t& count) 
         std::snprintf(header, sizeof(header), "%s (%zu)", meta.label, count);
     }
     ListState state;
+    if (!filter_.empty()) {
+        ImGui::SetNextItemOpen(true, ImGuiCond_Always);
+        state.bypass = true;
+        ++filter_bypass_;
+    }
     state.open = ImGui::TreeNodeEx("##list", ImGuiTreeNodeFlags_SpanAvailWidth | ImGuiTreeNodeFlags_FramePadding |
                                                  ImGuiTreeNodeFlags_AllowOverlap,
                                    "%s", header);
@@ -713,6 +885,7 @@ int ImGuiPropertyVisitor::endList() {
     lists_.pop_back();
     if (!list_paths_.empty()) list_paths_.pop_back();
     pop();
+    if (state.bypass && filter_bypass_ > 0) --filter_bypass_;
     if (state.open) ImGui::TreePop();
     ImGui::PopID();
     return state.remove;
@@ -723,6 +896,7 @@ int ImGuiPropertyVisitor::endList() {
 // vaciarlo.
 bool ImGuiPropertyVisitor::asset(const ecs::Meta& meta, assets::AssetRef& ref,
                                  assets::AssetType type) {
+    if (!visible(meta)) return false;
     const bool is_mixed = mixed(meta.key) != 0;
     label(meta);
     bool changed = false;
@@ -734,15 +908,18 @@ bool ImGuiPropertyVisitor::asset(const ecs::Meta& meta, assets::AssetRef& ref,
         const auto info = database_ != nullptr ? database_->find(ref.uuid) : std::nullopt;
         text = info ? info->name : "Falta (" + ref.uuid.toString().substr(0, 8) + ")";
     }
-    const float clear_width = ImGui::GetFrameHeight();
-    ImGui::SetNextItemWidth(-clear_width - ImGui::GetStyle().ItemSpacing.x);
-    ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_FrameBg));
-    ImGui::Button(text.c_str(), ImVec2(ImGui::GetContentRegionAvail().x - clear_width -
-                                           ImGui::GetStyle().ItemSpacing.x,
-                                       0.0f));
-    ImGui::PopStyleColor();
-    if (ImGui::IsItemHovered() && ref.valid() && !is_mixed) {
-        ImGui::SetTooltip("UUID %s", ref.uuid.toString().c_str());
+    // [TIPO nombre........] [◎] [x]: la caja acepta soltar, la diana abre la
+    // lista de assets de ese tipo y la x lo vacia.
+    const float button = ImGui::GetFrameHeight();
+    const float gap = ImGui::GetStyle().ItemInnerSpacing.x;
+    const float box_width = ImGui::GetContentRegionAvail().x - (button + gap) * 2.0f;
+    referenceBox("##asset", assetTypeTag(type), text, ref.valid() && !is_mixed, box_width);
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) {
+        if (ref.valid() && !is_mixed) {
+            ImGui::SetTooltip("%s\nUUID %s", text.c_str(), ref.uuid.toString().c_str());
+        } else {
+            ImGui::SetTooltip("Arrastra aquí un asset (%s) desde el Proyecto", assets::assetTypeName(type));
+        }
     }
     if (ImGui::BeginDragDropTarget()) {
         if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(kAssetPayload)) {
@@ -757,12 +934,54 @@ bool ImGuiPropertyVisitor::asset(const ecs::Meta& meta, assets::AssetRef& ref,
         }
         ImGui::EndDragDropTarget();
     }
-    ImGui::SameLine();
-    if (ImGui::Button("x", ImVec2(clear_width, 0.0f)) && (ref.valid() || is_mixed)) {
+    ImGui::SameLine(0.0f, gap);
+    if (glyphButton("##pick", Glyph::Pick)) ImGui::OpenPopup("pick_asset");
+    ImGui::SetItemTooltip("Elegir %s", assets::assetTypeName(type));
+    if (ImGui::BeginPopup("pick_asset")) {
+        static std::string filter;
+        if (ImGui::IsWindowAppearing()) {
+            filter.clear();
+            ImGui::SetKeyboardFocusHere();
+        }
+        theme::searchBox("asset_filter", filter, "Buscar...", 280.0f);
+        const std::string needle = lowerText(filter.c_str());
+        theme::pushSelectionColors();
+        if (ImGui::Selectable("Ninguno", !ref.valid())) {
+            ref.uuid = {};
+            changed = true;
+            edit_finished_ = true;
+        }
+        ImGui::BeginChild("list", ImVec2(280.0f, 280.0f));
+        int shown = 0;
+        if (database_ != nullptr) {
+            for (const assets::AssetInfo& info : database_->all()) {
+                if (info.type != type) continue;
+                if (!needle.empty() && lowerText(info.name.c_str()).find(needle) == std::string::npos) continue;
+                ++shown;
+                ImGui::PushID(info.uuid.toString().c_str());
+                if (ImGui::Selectable(info.name.c_str(), ref.valid() && info.uuid == ref.uuid)) {
+                    ref.uuid = info.uuid;
+                    ref.type = type;
+                    changed = true;
+                    edit_finished_ = true;
+                    ImGui::CloseCurrentPopup();
+                }
+                if (!info.path.empty()) ImGui::SetItemTooltip("%s", info.path.generic_string().c_str());
+                ImGui::PopID();
+            }
+        }
+        if (shown == 0) ImGui::TextDisabled("No hay assets de este tipo");
+        ImGui::EndChild();
+        ImGui::PopStyleColor(3);
+        ImGui::EndPopup();
+    }
+    ImGui::SameLine(0.0f, gap);
+    if (glyphButton("##clear", Glyph::Clear) && (ref.valid() || is_mixed)) {
         ref.uuid = {};
         changed = true;
         edit_finished_ = true;
     }
+    ImGui::SetItemTooltip("Vaciar");
     ImGui::PopID();
     if (changed) {
         FieldValue v = makeValue(FieldValue::Kind::Asset);

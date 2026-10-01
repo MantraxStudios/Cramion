@@ -1,5 +1,8 @@
 #include "CramionCore/audio/Audio.h"
 
+#include "CramionCore/environment/Environment.h"
+#include "WeatherAudio.h"
+
 #include <miniaudio.h>
 
 #include <algorithm>
@@ -419,6 +422,8 @@ struct AudioSystem::Impl {
     Vec3 listener_last{};
     bool listener_has_last = false;
     float reverb_level = 0.0f;
+    // Lluvia, viento y truenos del ambiente (sintetizados, al master).
+    WeatherAudio weather_audio;
 
     ma_node_graph* graph() { return ma_engine_get_node_graph(&engine); }
 
@@ -443,9 +448,12 @@ struct AudioSystem::Impl {
             reverb_ok = true;
             ma_node_attach_output_bus(&reverb.base, 0, master_ok ? static_cast<ma_node*>(&master.base) : ma_engine_get_endpoint(&engine), 0);
         }
+        weather_audio.create(graph(), master_ok ? static_cast<void*>(&master.base) : static_cast<void*>(ma_engine_get_endpoint(&engine)),
+                             channels, rate);
     }
 
     void uninitBuses() {
+        weather_audio.destroy();
         if (reverb_ok) ma_node_uninit(&reverb.base, nullptr);
         if (master_ok) ma_node_uninit(&master.base, nullptr);
         reverb_ok = master_ok = false;
@@ -686,6 +694,37 @@ void AudioSystem::update(ecs::World& world, float delta_seconds, const Vec3& cam
         d.reverb.room.store(room, std::memory_order_relaxed);
         d.reverb.damping.store(damping, std::memory_order_relaxed);
         d.reverb.level.store(level, std::memory_order_relaxed);
+    }
+
+    // --- Ambiente (environment::Environment): lluvia, viento y truenos ---
+    // Solo en Play; fuera, en silencio (los truenos pendientes se descartan).
+    if (d.weather_audio.valid()) {
+        environment::Environment* env = environment::findEnvironment(world);
+        if (env != nullptr && env->runtime.initialized) {
+            environment::EnvironmentRuntime& rt = env->runtime;
+            const bool on = d.running && env->ambient_audio;
+            if (on) {
+                const environment::WeatherState& s = rt.current;
+                d.weather_audio.setLevels(s.rain, std::clamp(rt.wind_speed / 16.0f, 0.0f, 1.5f), s.gusts, s.dust,
+                                          std::max(env->audio_volume, 0.0f));
+            } else {
+                d.weather_audio.setLevels(0.0f, 0.0f, 0.0f, 0.0f, 0.0f);
+            }
+            for (auto it = rt.thunder.begin(); it != rt.thunder.end();) {
+                if (it->time > rt.elapsed) {
+                    ++it;
+                    continue;
+                }
+                // Si se paso hace mucho (pausa, editor), no suena tarde.
+                if (on && rt.elapsed - it->time < 2.0) {
+                    d.weather_audio.thunder(std::clamp(it->volume * std::max(env->thunder_volume, 0.0f), 0.0f, 2.0f),
+                                            it->distance);
+                }
+                it = rt.thunder.erase(it);
+            }
+        } else {
+            d.weather_audio.setLevels(0.0f, 0.0f, 0.0f, 0.0f, 0.0f);
+        }
     }
 
     if (!d.running) return;

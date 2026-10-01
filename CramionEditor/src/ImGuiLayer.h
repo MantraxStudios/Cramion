@@ -7,6 +7,8 @@
 
 #include <imgui.h>
 
+#include "Theme.h"  // colores con nombre y widgets del tema (todo el editor)
+
 #include <chrono>
 #include <cstdint>
 #include <array>

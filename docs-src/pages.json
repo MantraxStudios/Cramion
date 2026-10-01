@@ -51,6 +51,11 @@
           "desc": "El Hub, los paneles, los menús y las pestañas de Escena, Prefab y Script."
         },
         {
+          "slug": "editor-tema",
+          "title": "Tema e Inspector",
+          "desc": "Colores del editor, tarjetas del Inspector, buscador y Add Component."
+        },
+        {
           "slug": "editor-escena",
           "title": "Vista Escena y gizmos",
           "desc": "Moverse, seleccionar, gizmos, snap, modos Lit/Unlit/Wireframe y proporción (Free Aspect)."
@@ -81,9 +86,34 @@
           "desc": "Terreno con erosión, ríos y mar, hierba en la GPU, árboles procedurales y casas y aldeas."
         },
         {
+          "slug": "ambiente",
+          "title": "Ambiente y clima",
+          "desc": "Lluvia, nieve, tormentas, hora, fecha, estaciones y viento."
+        },
+        {
+          "slug": "agua",
+          "title": "Agua",
+          "desc": "Océano FFT, lagos, ríos y la vista bajo el agua."
+        },
+        {
+          "slug": "fuego",
+          "title": "Fuego",
+          "desc": "Incendios que se propagan con llamas y humo volumétricos."
+        },
+        {
+          "slug": "liquidos",
+          "title": "Líquidos",
+          "desc": "Agua, miel, lava y más: emisores, desagües y cuerpos que flotan."
+        },
+        {
           "slug": "editor-ventanas",
           "title": "Ventanas de herramientas",
           "desc": "Física, Navegación, Animator, Cinemática, Consola y Estadísticas."
+        },
+        {
+          "slug": "maquinas-de-estados",
+          "title": "Máquinas de estados",
+          "desc": "IA como Bolt: estados con código Lua, transiciones y depuración en vivo."
         },
         {
           "slug": "materiales",

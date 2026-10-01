@@ -33,6 +33,7 @@ enum class AssetType : std::uint32_t {
     Material = 6,
     Prefab = 7,
     RenderTexture = 8,
+    StateMachine = 9,  // .crfsm maquina de estados de IA (ai/StateMachine.h)
 };
 
 inline const char* assetTypeName(AssetType type) {
@@ -45,6 +46,7 @@ inline const char* assetTypeName(AssetType type) {
         case AssetType::Material: return "Material";
         case AssetType::Prefab: return "Prefab";
         case AssetType::RenderTexture: return "Render Texture";
+        case AssetType::StateMachine: return "Maquina de estados";
         default: return "Desconocido";
     }
 }

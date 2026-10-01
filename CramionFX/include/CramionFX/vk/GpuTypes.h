@@ -85,7 +85,8 @@ struct GpuLights {
     // (x, z de la escena), z = lado (m; 0 = sin sombras), w = fuerza.
     core::Vec4 cloud_shadow{};
     // Sombras por rayos de las luces locales (rt_shadows.comp): x = 1 si la
-    // mascara de este frame vale.
+    // mascara de este frame vale. y = vision nocturna, z = destello de un
+    // rayo (ambiente), w = niebla en el horizonte del cielo (0..1).
     core::Vec4 rt_shadows{};
 };
 
@@ -279,8 +280,17 @@ struct GpuWeather {
     core::Vec4 flood{};
     // x = numero de decals.
     core::Vec4 decal_info{};
+    // Nieve (sistema de ambiente): x = cobertura (0..1), y = espesor de la
+    // capa acumulada (m), z = humedad al derretirse (0..1), w = reservado.
+    core::Vec4 snow{};
+    // Zonas de fuego (hasta kMaxFireZones): xy = esquina minima (x, z) del
+    // mundo, z = lado (m), w = parte del mapa usada (resolucion / 256; 0 =
+    // apagada). La capa N del mapa de quemado (binding 6 del set de la
+    // geometria, FirePass) es la zona N.
+    core::Vec4 fire_zones[4]{};
     GpuDecal decals[kMaxDecals]{};
 };
+inline constexpr std::uint32_t kMaxFireZones = 4;
 
 // Constante de push de las nubes volumetricas (clouds.frag).
 // Constante de push de la luz volumetrica (volumetric.frag).
@@ -299,8 +309,9 @@ struct GpuCloudPush {
     core::Vec4 layer{};           // x = base (m), y = cima (m), z = tipo (0 estratos .. 1 cumulonimbos)
     core::Vec4 wind{};            // xy = direccion del viento (x, z), z = inclinacion con la altura (m), w = 1 mapa de sombra
     core::Vec4 shadow{};          // xy = centro del mapa de sombra (x, z de la escena), z = lado (m), w = fuerza
+    core::Vec4 flash{};           // rayo (ambiente): xyz = donde cayo (mundo), w = brillo del destello
 };
-static_assert(sizeof(GpuCloudPush) == 96, "GpuCloudPush debe coincidir con clouds.frag");
+static_assert(sizeof(GpuCloudPush) == 112, "GpuCloudPush debe coincidir con clouds.frag");
 
 // Constante de push de la LUT del cielo (sky_lut.frag).
 struct GpuSkyPush {

@@ -45,6 +45,74 @@
     <tr><td>Enviar eventos<br><code>send_collision_events</code></td><td>si/no</td><td>si</td><td></td><td>Eventos ParticleCollision (el emisor y lo que toca)</td></tr>
   </tbody>
 </table>
+<h3 id="FluidWorld">Mundo de líquidos <code>FluidWorld</code></h3>
+<table>
+  <thead><tr><th>Propiedad</th><th>Tipo</th><th>Por defecto</th><th>Valores</th><th>Descripcion</th></tr></thead>
+  <tbody>
+    <tr><td colspan="5"><strong class="text-white">Dominio</strong></td></tr>
+    <tr><td>Tamaño (m)<br><code>size</code></td><td>Vec3 (escala)</td><td>(8; 6; 8)</td><td></td><td>Caja donde vive el liquido, centrada en el objeto (sin giro)</td></tr>
+    <tr><td>Paredes sólidas<br><code>solid_walls</code></td><td>si/no</td><td>no</td><td></td><td>La caja es un tanque invisible: el liquido no sale</td></tr>
+    <tr><td>Borrar fuera<br><code>kill_outside</code></td><td>si/no</td><td>si</td><td></td><td>Lo que sale de la caja desaparece</td></tr>
+    <tr><td colspan="5"><strong class="text-white">Simulación</strong></td></tr>
+    <tr><td>Radio de partícula<br><code>particle_radius</code></td><td>numero</td><td>0,04</td><td>0,01 a 0,5</td><td>Mas pequeno = mas detalle y mas particulas para el mismo volumen (2 cm .. 10 cm)</td></tr>
+    <tr><td>Máximo de partículas<br><code>max_particles</code></td><td>entero</td><td>65536</td><td>1024 a 262144</td><td>Capacidad (memoria de la GPU: ~200 bytes por particula)</td></tr>
+    <tr><td>Gravedad<br><code>gravity</code></td><td>Vec3 (metros)</td><td>(0; -9,81; 0)</td><td></td><td>m/s2</td></tr>
+    <tr><td>Iteraciones<br><code>iterations</code></td><td>entero</td><td>3</td><td>1 a 10</td><td>Del solver de densidad: mas = menos compresible (y mas caro)</td></tr>
+    <tr><td>Pasos por segundo<br><code>substep_rate</code></td><td>numero</td><td>120</td><td>30 a 480</td><td>Pasos fijos de la simulacion (Hz)</td></tr>
+    <tr><td>Pasos máximos por frame<br><code>max_substeps</code></td><td>entero</td><td>3</td><td>1 a 8</td><td>Si el frame tarda mas, el liquido va mas lento (no explota)</td></tr>
+    <tr><td>Fricción<br><code>friction</code></td><td>numero</td><td>0,1</td><td>0 a 1</td><td>Contra los colliders y el terreno</td></tr>
+    <tr><td>Tensión superficial<br><code>surface_tension</code></td><td>numero</td><td>1</td><td>0 a 5</td><td>Escala la cohesion de cada liquido (gotas, chorros)</td></tr>
+    <tr><td>Velocidad máxima<br><code>max_speed</code></td><td>numero</td><td>25</td><td>1 a 100</td><td>m/s</td></tr>
+    <tr><td colspan="5"><strong class="text-white">Choques e interacción</strong></td></tr>
+    <tr><td>Chocar con colliders<br><code>collide_scene</code></td><td>si/no</td><td>si</td><td></td><td>Box, Sphere, Capsule y Plane Collider; Mesh Collider convexo o dinamico como su caja</td></tr>
+    <tr><td>Chocar con el terreno<br><code>collide_terrain</code></td><td>si/no</td><td>si</td><td></td><td></td></tr>
+    <tr><td>Empujar Rigidbody<br><code>push_bodies</code></td><td>si/no</td><td>si</td><td></td><td>Flotacion y arrastre de los cuerpos dinamicos</td></tr>
+    <tr><td>Flotación<br><code>buoyancy</code></td><td>numero</td><td>1</td><td>0 a 5</td><td>Escala del empuje (Arquimedes con la densidad de cada liquido)</td></tr>
+    <tr><td>Arrastre<br><code>drag</code></td><td>numero</td><td>1</td><td>0 a 10</td><td>Cuanto arrastra la corriente a los cuerpos (mas en los viscosos)</td></tr>
+    <tr><td>Simular en el editor<br><code>simulate_in_editor</code></td><td>si/no</td><td>no</td><td></td><td>Ver el liquido moverse sin dar a Play</td></tr>
+    <tr><td colspan="5"><strong class="text-white">Aspecto</strong></td></tr>
+    <tr><td>Tamaño de las esferas<br><code>render_radius</code></td><td>numero</td><td>1,3</td><td>0,5 a 3</td><td>x radio de particula: mas = superficie mas llena</td></tr>
+    <tr><td>Suavizado<br><code>smoothing</code></td><td>numero</td><td>1</td><td>0 a 2</td><td>Superficie mas lisa (0 = ver las gotas)</td></tr>
+    <tr><td>Grosor<br><code>thickness</code></td><td>numero</td><td>1</td><td>0 a 5</td><td>Escala de la absorcion (color mas intenso)</td></tr>
+    <tr><td>Refracción<br><code>refraction</code></td><td>numero</td><td>1</td><td>0 a 4</td><td>Cuanto se deforma lo que hay detras</td></tr>
+    <tr><td>Ver partículas<br><code>debug_particles</code></td><td>si/no</td><td>no</td><td></td><td>Dibuja las particulas sin superficie (depuracion)</td></tr>
+    <tr><td colspan="5"><strong class="text-white">Líquido personalizado</strong></td></tr>
+    <tr><td>Color<br><code>custom_color</code></td><td>Color</td><td>(0,3; 0,05; 0,45)</td><td></td><td>Color difuso (lo que se ve con grosor)</td></tr>
+    <tr><td>Absorción<br><code>custom_absorption</code></td><td>Color HDR</td><td>(2; 6; 1,5)</td><td></td><td>1/m por canal: mas = mas opaco en ese color</td></tr>
+    <tr><td>Emisión<br><code>custom_emission</code></td><td>Color HDR</td><td>(0; 0; 0)</td><td></td><td>Brillo propio (HDR)</td></tr>
+    <tr><td>Viscosidad<br><code>custom_viscosity</code></td><td>numero</td><td>0,2</td><td>0 a 1</td><td></td></tr>
+    <tr><td>Cohesión<br><code>custom_cohesion</code></td><td>numero</td><td>1</td><td>0 a 5</td><td></td></tr>
+    <tr><td>Densidad<br><code>custom_density</code></td><td>numero</td><td>1000</td><td>100 a 20000</td><td>kg/m3 (flotacion)</td></tr>
+  </tbody>
+</table>
+<h3 id="FluidEmitter">Emisor de líquido <code>FluidEmitter</code></h3>
+<table>
+  <thead><tr><th>Propiedad</th><th>Tipo</th><th>Por defecto</th><th>Valores</th><th>Descripcion</th></tr></thead>
+  <tbody>
+    <tr><td>Líquido<br><code>fluid</code></td><td>opcion</td><td>Agua</td><td>Agua, Aceite, Miel, Lava, Barro, Sangre, Ácido, Personalizado</td><td></td></tr>
+    <tr><td>Forma<br><code>shape</code></td><td>opcion</td><td>Boquilla (chorro)</td><td>Boquilla (chorro), Caja (se llena), Esfera (se llena)</td><td></td></tr>
+    <tr><td>Emitiendo<br><code>emitting</code></td><td>si/no</td><td>si</td><td></td><td></td></tr>
+    <tr><td>Dirección<br><code>direction</code></td><td>Vec3 (direccion)</td><td>(0; -1; 0)</td><td></td><td>Local: gira con el objeto</td></tr>
+    <tr><td>Velocidad<br><code>speed</code></td><td>numero</td><td>2,5</td><td>0 a 50</td><td>m/s del chorro</td></tr>
+    <tr><td>Radio de la boquilla<br><code>nozzle_radius</code></td><td>numero</td><td>0,08</td><td>0,01 a 2</td><td></td></tr>
+    <tr><td>Caudal<br><code>rate</code></td><td>numero</td><td>0</td><td>0 a 200000</td><td>Particulas por segundo (0 = chorro lleno del tamano de la boquilla)</td></tr>
+    <tr><td>Dispersión<br><code>spread</code></td><td>numero</td><td>2</td><td>0 a 45</td><td>Grados (spray)</td></tr>
+    <tr><td>Tamaño de la caja<br><code>size</code></td><td>Vec3 (escala)</td><td>(0,8; 0,8; 0,8)</td><td></td><td>Forma Caja (m)</td></tr>
+    <tr><td>Radio de la esfera<br><code>radius</code></td><td>numero</td><td>0,4</td><td>0,05 a 10</td><td>Forma Esfera (m)</td></tr>
+    <tr><td>Repetir<br><code>repeat</code></td><td>si/no</td><td>no</td><td></td><td>Caja/Esfera: volver a llenar cada intervalo</td></tr>
+    <tr><td>Intervalo<br><code>interval</code></td><td>numero</td><td>2</td><td>0,1 a 60</td><td></td></tr>
+    <tr><td>Retraso<br><code>delay</code></td><td>numero</td><td>0</td><td>0 a 60</td><td>Segundos antes de empezar</td></tr>
+    <tr><td>Vida<br><code>lifetime</code></td><td>numero</td><td>0</td><td>0 a 600</td><td>Segundos que dura cada particula (0 = siempre)</td></tr>
+    <tr><td>Máximo total<br><code>max_total</code></td><td>entero</td><td>0</td><td>0 a 1000000</td><td>Particulas que crea en total (0 = sin limite)</td></tr>
+  </tbody>
+</table>
+<h3 id="FluidDrain">Desagüe de líquido <code>FluidDrain</code></h3>
+<table>
+  <thead><tr><th>Propiedad</th><th>Tipo</th><th>Por defecto</th><th>Valores</th><th>Descripcion</th></tr></thead>
+  <tbody>
+    <tr><td>Tamaño (m)<br><code>size</code></td><td>Vec3 (escala)</td><td>(1; 0,5; 1)</td><td></td><td>Caja (gira con el objeto) donde el liquido desaparece</td></tr>
+  </tbody>
+</table>
 <h3 id="Profiler">Profiler <code>Profiler</code></h3>
 <p>Muestra en una esquina del juego los FPS, la CPU, la GPU y la memoria con una grafica del tiempo de cada frame (como <em>stat fps</em> de Unreal). Basta uno en la escena.</p>
 <table>

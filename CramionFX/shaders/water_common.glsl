@@ -1,4 +1,4 @@
-// Agua: datos compartidos por water.vert y water.frag.
+// Agua: datos compartidos por water.vert, water.frag y water_under.frag.
 
 struct WaterBody {
     vec4 origin;   // xyz origen, w = giro en Y
@@ -8,12 +8,16 @@ struct WaterBody {
     vec4 waves;    // altura, longitud de onda, velocidad, crestas
     vec4 wind;     // viento (rad), dispersion (rad), corriente, ondulacion fina
     vec4 look;     // rugosidad, refraccion, causticas, espuma de orilla (m)
-    vec4 extra;    // olas de playa, luz en las crestas
+    vec4 extra;    // olas de playa, luz en las crestas, superficie en la camara (rio), -
+    vec4 under;    // rayos de sol, particulas, -, -
 };
 
 layout(set = 1, binding = 0) uniform WaterBuffer {
-    vec4 time_count;  // x = tiempo
-    vec4 ripple;      // olas interactivas: xy = esquina (x, z), z = celda (m), w = lado (0 = no hay)
+    vec4 time_count;     // x = tiempo, y = cuerpos, z = cuerpo con la camara dentro (-1), w = tiempo del oceano
+    vec4 ripple;         // olas interactivas: xy = esquina (x, z), z = celda (m), w = lado (0 = no hay)
+    vec4 cascade_size;   // oceano FFT: lado de cada cascada (m); 0 = sin espectro
+    vec4 cascade_slope;  // varianza de la pendiente de cada cascada
+    vec4 ocean;          // x choppiness, y altura significativa, z niveles del clipmap
     WaterBody bodies[16];
 } water;
 
@@ -21,6 +25,19 @@ layout(set = 1, binding = 0) uniform WaterBuffer {
 layout(std430, set = 1, binding = 1) readonly buffer RippleBuffer {
     float ripple_heights[];
 };
+
+// Oceano FFT (water_fft.comp): una capa por cascada, con mipmaps.
+layout(set = 1, binding = 2) uniform sampler2DArray ocean_displacement;  // xyz desplazamiento, w espuma
+layout(set = 1, binding = 3) uniform sampler2DArray ocean_derivatives;   // dY/dx, dY/dz, dX/dx, dZ/dz
+
+layout(push_constant) uniform PushConstants {
+    uint body;
+    uint mesh;  // 0 lago, 1 oceano, 2 rio
+    uvec2 pad;
+} push;
+
+const float kWaterPi = 3.14159265358979;
+const float kOceanTexels = 128.0;
 
 float rippleCell(ivec2 c, int n) {
     c = clamp(c, ivec2(0), ivec2(n - 1));
@@ -51,13 +68,40 @@ vec2 rippleSlope(vec2 xz) {
                 rippleHeight(xz + vec2(0.0, e)) - rippleHeight(xz - vec2(0.0, e))) / (2.0 * e);
 }
 
-layout(push_constant) uniform PushConstants {
-    uint body;
-    uint mesh;  // 0 lago, 1 oceano, 2 rio
-    uvec2 pad;
-} push;
+// --- Oceano FFT ---
+bool oceanAvailable() { return water.cascade_size.x > 0.0; }
 
-const float kWaterPi = 3.14159265358979;
+// Coordenada de textura de la cascada `c` para el punto `p` (m, relativo al
+// origen del agua). El texel n guarda el valor en x = n * L / N (la CPU usa
+// lo mismo): de ahi el medio texel.
+vec3 oceanUv(vec2 p, int c) { return vec3(p / water.cascade_size[c] + 0.5 / kOceanTexels, float(c)); }
+
+// Desplazamiento (xyz) y espuma (w) filtrados para vertices separados
+// `spacing` m: las olas mas cortas que dos vertices se promedian (mipmap).
+vec4 oceanDisplacementAt(vec2 p, float spacing) {
+    vec4 d = vec4(0.0);
+    for (int c = 0; c < 4; ++c) {
+        float lod = max(log2(spacing * 2.0 * kOceanTexels / water.cascade_size[c]), 0.0);
+        d += textureLod(ocean_displacement, oceanUv(p, c), lod);
+    }
+    return d;
+}
+
+// Altura del oceano en el punto `p` (relativo al origen): el que la ola
+// lleva hasta alli (se deshace el desplazamiento horizontal).
+float oceanHeight(vec2 p, float spacing) {
+    vec2 q = p;
+    for (int i = 0; i < 3; ++i) {
+        q = p - oceanDisplacementAt(q, spacing).xz;
+    }
+    return oceanDisplacementAt(q, spacing).y;
+}
+
+// Separacion de la malla del oceano en el nivel 0: mas grande cuanto mas alta
+// la camara (a ras de agua, 20 cm; desde un avion, metros).
+float oceanBaseSpacing(float camera_height) {
+    return 0.2 * exp2(floor(log2(max(abs(camera_height), 1.0) / 8.0 + 1.0)));
+}
 
 // Causticas: la luz del sol que las olas concentran en el fondo (0 .. ~4).
 // Las usan water.frag (el fondo visto a traves de la superficie) y
@@ -75,14 +119,11 @@ float caustic(vec2 p, float t) {
     return pow(clamp(1.0 - c * 0.55, 0.0, 1.0), 5.0) * 4.0;
 }
 
-// Oleaje: espectro JONSWAP (el del mar real, medido en el Mar del Norte)
-// muestreado en 24 ondas de Gerstner. Longitudes de 2 a 0.06 veces la
-// principal; la amplitud de cada una sale del espectro (el pico, cerca de la
-// principal) y esta normalizada para que la altura sea la ALTURA SIGNIFICATIVA
-// (la media del tercio mas alto de las olas, la que usan los oceanografos).
-// Direcciones repartidas alrededor del viento (mas abiertas cuanto mas corta
-// la onda) y fases pseudoaleatorias: sin el patron regular de pocas ondas.
-// MISMAS tablas en CramionCore/src/water/Water.cpp (la flotacion).
+// Oleaje de lagos y rios: espectro JONSWAP muestreado en 24 ondas de
+// Gerstner. Longitudes de 2 a 0.06 veces la principal; la amplitud de cada una
+// sale del espectro y esta normalizada para que la altura sea la ALTURA
+// SIGNIFICATIVA. Direcciones repartidas alrededor del viento y fases
+// pseudoaleatorias. MISMAS tablas en CramionCore/src/water/Water.cpp.
 const int kWaveCount = 24;
 const float kWaveLengths[24] = float[](2.000000, 1.717188, 1.474368, 1.265883, 1.086880, 0.933189, 0.801230, 0.687931, 0.590654, 0.507132, 0.435420, 0.373849, 0.320985, 0.275596, 0.236625, 0.203165, 0.174436, 0.149770, 0.128591, 0.110408, 0.094795, 0.081391, 0.069882, 0.060000);
 const float kWaveAmplitudes[24] = float[](0.029095, 0.048279, 0.068845, 0.097571, 0.152326, 0.166827, 0.122764, 0.094758, 0.084349, 0.076526, 0.068538, 0.060708, 0.053334, 0.046573, 0.040490, 0.035085, 0.030329, 0.026171, 0.022553, 0.019417, 0.016704, 0.014363, 0.012346, 0.010609);
@@ -120,4 +161,41 @@ vec3 gerstnerWaves(WaterBody b, vec2 p, float t, float fade_distance, out vec3 n
     }
     normal = normalize(n);
     return offset;
+}
+
+// Lago: dentro de su rectangulo (con margen).
+bool insideLake(WaterBody b, vec2 xz, float margin) {
+    float c = cos(b.origin.w);
+    float s = sin(b.origin.w);
+    vec2 d = xz - b.origin.xz;
+    vec2 local = vec2(d.x * c + d.y * s, -d.x * s + d.y * c);
+    return all(lessThanEqual(abs(local), b.extent.xy + vec2(margin)));
+}
+
+// Altura de la superficie del cuerpo en (x, z) del mundo (para decidir que
+// esta bajo el agua). Rio: la de la camara (extra.z).
+float waterSurfaceHeight(WaterBody b, vec2 xz, float t) {
+    int type = int(b.extent.z + 0.5);
+    if (type == 2) return b.extra.z;
+    if (type == 0 && oceanAvailable()) return b.origin.y + oceanHeight(xz - b.origin.xz, 0.1);
+    vec3 n;
+    float j;
+    return b.origin.y + gerstnerWaves(b, xz - b.origin.xz, t, 0.0, n, j).y;
+}
+
+// --- Luz bajo el agua (comun a la superficie vista desde abajo y al volumen) ---
+// Coeficiente de extincion por canal (1/m): el agua se traga antes el rojo;
+// `shallow` (el color de la dispersion) es lo que sobrevive.
+vec3 waterExtinction(WaterBody b) {
+    float clarity = max(b.shallow.w, 0.05);
+    return (vec3(1.05) - clamp(b.shallow.rgb, 0.0, 1.0)) * (2.3 / clarity);
+}
+
+// Radiancia del agua "infinita" (lo que se ve mirando a lo hondo) a `depth`
+// metros bajo la superficie: luz del cielo y del sol dispersada, cada vez mas
+// oscura y azul con la profundidad.
+vec3 waterInScatter(WaterBody b, vec3 sun_radiance, float sun_height, vec3 ambient, float depth) {
+    vec3 light_left = exp(-waterExtinction(b) * max(depth, 0.0) * 0.35);
+    vec3 albedo = mix(b.deep.rgb, b.shallow.rgb, 0.35);
+    return albedo * (sun_radiance * sun_height * 0.35 + ambient) * light_left;
 }

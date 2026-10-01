@@ -1,0 +1,68 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+
+// Liquidos: suavizado bilateral separable de la profundidad (filtro de
+// rango estrecho, Truong y Yuksel 2018): las muestras de otra capa (mucho
+// mas lejos o mas cerca) o del fondo se ignoran. El
+// radio en pixeles sale de un radio en metros (igual a cualquier distancia).
+// Dos rondas H, V, H, V (pass 0..3): raw -> temp -> smooth -> temp -> smooth.
+// Con radios grandes (de cerca) se salta de a `step` pixeles: como mucho
+// ~24 muestras por lado.
+
+layout(local_size_x = 16, local_size_y = 16) in;
+
+#include "fluid_render.glsl"
+
+layout(set = 0, binding = 5, r32f) uniform image2D depth_raw;
+layout(set = 0, binding = 6, r32f) uniform image2D depth_temp;
+layout(set = 0, binding = 7, r32f) uniform image2D depth_smooth;
+
+layout(push_constant) uniform Push {
+    uint pass;  // par horizontal, impar vertical (ver arriba)
+} push;
+
+float loadDepth(ivec2 p) {
+    if (push.pass == 0u) return imageLoad(depth_raw, p).r;
+    if (push.pass == 2u) return imageLoad(depth_smooth, p).r;
+    return imageLoad(depth_temp, p).r;
+}
+
+void main() {
+    ivec2 size = ivec2(fr.viewport.xy);
+    ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+    if (p.x >= size.x || p.y >= size.y) return;
+    float z = loadDepth(p);
+    float result = z;
+    if (z > 0.0 && fr.params.z > 0.0) {
+        float pixels = fr.params.z * fr.projection[1][1] * 0.5 * fr.viewport.y / z;
+        // La segunda ronda, algo mas corta (solo limpia lo que quede).
+        float reach = clamp(abs(pixels), 1.0, fr.params.w) * (push.pass >= 2u ? 0.6 : 1.0);
+        int step = max(int(reach / 24.0), 1);
+        int radius = max(int(reach) / step, 1);
+        float sigma = max(float(radius) * 0.5, 0.5);
+        float range = fr.params2.z * 4.0;  // m
+        ivec2 axis = (push.pass & 1u) == 0u ? ivec2(1, 0) : ivec2(0, 1);
+        float sum = 0.0;
+        float weight = 0.0;
+        for (int k = -radius; k <= radius; ++k) {
+            ivec2 q = clamp(p + axis * (k * step), ivec2(0), size - 1);
+            float s = loadDepth(q);
+            if (s <= 0.0) continue;
+            // Otra capa (detras o delante): fuera. Acotar las de delante
+            // (Truong y Yuksel) dejaba rayas en los bordes con el filtro
+            // separable.
+            if (abs(s - z) > range) continue;
+            float spatial = exp(-float(k * k) / (2.0 * sigma * sigma));
+            float dz = (s - z) / range;
+            float w = spatial * exp(-dz * dz * 2.0);
+            sum += s * w;
+            weight += w;
+        }
+        result = weight > 0.0 ? sum / weight : z;
+    }
+    if ((push.pass & 1u) == 0u) {
+        imageStore(depth_temp, p, vec4(result));
+    } else {
+        imageStore(depth_smooth, p, vec4(result));
+    }
+}

@@ -157,8 +157,13 @@ public:
         change_.reset();
     }
     const std::optional<std::pair<std::string, FieldValue>>& lastChange() const { return change_; }
+    // Filtro del Inspector (texto en minusculas; vacio = todo): solo se
+    // dibujan los campos cuya etiqueta lo contiene (los grupos se abren y las
+    // listas que coinciden salen enteras).
+    void setFilter(std::string needle) { filter_ = std::move(needle); }
 
 private:
+    bool visible(const ecs::Meta& meta) const;
     bool label(const ecs::Meta& meta);
     void finishItem();
     int mixed(const char* key) const;
@@ -174,12 +179,47 @@ private:
     const ecs::World* world_ = nullptr;
     struct ListState {
         bool open = false;
+        bool bypass = false;  // coincidio con el filtro: su contenido se ve entero
         int remove = -1;
     };
     std::vector<ListState> lists_;
+    std::vector<bool> groups_drawn_;  // beginGroup dibujo un nodo (con filtro no)
+    std::string filter_;
+    int filter_bypass_ = 0;  // dentro de una lista que coincide: todo visible
     int depth_ = 0;
     bool edit_finished_ = false;
 };
+
+// Si alguna propiedad de un componente coincide con el filtro (etiquetas en
+// minusculas).
+class FilterMatchVisitor final : public ecs::PropertyVisitor {
+public:
+    explicit FilterMatchVisitor(std::string needle) : needle_(std::move(needle)) {}
+    bool wantsAllFields() const override { return false; }
+    bool matched() const { return matched_; }
+    bool field(const ecs::Meta& meta, float&, const ecs::FloatRange&) override { return check(meta); }
+    bool field(const ecs::Meta& meta, int&, int, int) override { return check(meta); }
+    bool field(const ecs::Meta& meta, bool&) override { return check(meta); }
+    bool field(const ecs::Meta& meta, std::string&) override { return check(meta); }
+    bool field(const ecs::Meta& meta, core::Vec3&, ecs::Vec3Kind) override { return check(meta); }
+    bool field(const ecs::Meta& meta, core::Vec2&, float) override { return check(meta); }
+    bool enumeration(const ecs::Meta& meta, int&, std::span<const char* const>) override { return check(meta); }
+    bool asset(const ecs::Meta& meta, assets::AssetRef&, assets::AssetType) override { return check(meta); }
+    bool layerMask(const ecs::Meta& meta, std::uint32_t&) override { return check(meta); }
+    bool entity(const ecs::Meta& meta, Uuid&) override { return check(meta); }
+    bool beginList(const ecs::Meta& meta, std::size_t&) override {
+        check(meta);
+        return false;
+    }
+
+private:
+    bool check(const ecs::Meta& meta);
+    std::string needle_;
+    bool matched_ = false;
+};
+
+// Etiqueta en minusculas (para filtrar).
+std::string lowerText(const char* text);
 
 }  // namespace cramion::editor
 

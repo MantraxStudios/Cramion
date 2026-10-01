@@ -25,8 +25,8 @@ namespace cramion::editor {
 
 namespace {
 
-constexpr ImU32 kAccent = IM_COL32(0, 143, 242, 255);
-constexpr ImU32 kGreen = IM_COL32(46, 204, 113, 255);
+constexpr ImU32 kAccent = theme::kRed;  // tema: rojo para la accion principal
+constexpr ImU32 kGreen = theme::kOk;
 
 bool updateCheckDisabledByEnvironment() {
     wchar_t value[8] = {};
@@ -219,7 +219,7 @@ void EditorApp::drawUpdateStatusLine(bool compact) {
     if (update_check_) {
         ImGui::TextDisabled("Buscando actualizaciones...");
     } else if (updateAvailable()) {
-        ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(kAccent), "Cramion %s disponible", update_release_.version.str().c_str());
+        ImGui::TextColored(theme::vec(theme::kYellow), "Cramion %s disponible", update_release_.version.str().c_str());
         if (!compact) {
             ImGui::SameLine();
             ImGui::TextDisabled("(tienes la %s)", current.c_str());
@@ -253,7 +253,7 @@ void EditorApp::drawUpdateToast() {
                          ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_AlwaysAutoResize)) {
         ImDrawList* d = ImGui::GetWindowDrawList();
         const ImVec2 p = ImGui::GetCursorScreenPos();
-        d->AddCircleFilled(ImVec2(p.x + 14.0f, p.y + 14.0f), 14.0f, IM_COL32(0, 143, 242, 50), 24);
+        d->AddCircleFilled(ImVec2(p.x + 14.0f, p.y + 14.0f), 14.0f, theme::withAlpha(kAccent, 50), 24);
         d->AddLine(ImVec2(p.x + 14.0f, p.y + 6.0f), ImVec2(p.x + 14.0f, p.y + 19.0f), kAccent, 2.5f);
         d->AddLine(ImVec2(p.x + 8.5f, p.y + 14.0f), ImVec2(p.x + 14.0f, p.y + 19.5f), kAccent, 2.5f);
         d->AddLine(ImVec2(p.x + 19.5f, p.y + 14.0f), ImVec2(p.x + 14.0f, p.y + 19.5f), kAccent, 2.5f);
@@ -272,7 +272,7 @@ void EditorApp::drawUpdateToast() {
         if (ImGui::Button("Ver novedades", ImVec2(150.0f, 0.0f))) show_update_dialog_ = true;
         ImGui::SameLine();
         ImGui::PushStyleColor(ImGuiCol_Button, ImGui::ColorConvertU32ToFloat4(kAccent));
-        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.2f, 0.65f, 1.0f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, theme::vec(theme::kRedHover));
         if (ImGui::Button("Actualizar...", ImVec2(-1.0f, 0.0f))) {
             show_update_dialog_ = true;
             update_confirm_ = true;
@@ -340,7 +340,7 @@ void EditorApp::drawUpdateDialog() {
     if (available) {
         ImGui::BeginDisabled(update_release_.zip_url.empty());
         ImGui::PushStyleColor(ImGuiCol_Button, ImGui::ColorConvertU32ToFloat4(kAccent));
-        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.2f, 0.65f, 1.0f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, theme::vec(theme::kRedHover));
         if (ImGui::Button("Guardar todo y actualizar", ImVec2(220.0f, 32.0f))) {
             beginUpdateInstall();
             if (quit_) ImGui::CloseCurrentPopup();

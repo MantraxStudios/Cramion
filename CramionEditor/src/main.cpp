@@ -139,7 +139,10 @@ int main(int argc, char** argv) {
         };
         while (!app.quitRequested()) {
             const auto frame_start = FrameClock::now();
-            const float delta_seconds = clock.tick();
+            // En modo cine (grabar por MCP) el tiempo avanza a pasos fijos.
+            const float delta_seconds = app.cinemaDelta(clock.tick());
+            renderer.setFrameDeltaOverride(app.cinemaActive() ? delta_seconds : -1.0f);
+            app.applyWindowRequests();  // modo cine: tamano de la ventana, fuera del frame
             window.pumpEvents();
             app.beginXrFrame(input);  // en Play con casco: poses y botones de los mandos
 

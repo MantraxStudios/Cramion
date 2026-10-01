@@ -1,0 +1,90 @@
+<p>
+  El componente <a href="componentes-entorno.html#WaterBody"><code>WaterBody</code></a> dibuja agua procedural (sin
+  texturas) en tres formas: <strong>Oceano</strong>, <strong>Lago</strong> y <strong>Rio</strong>. Todas tienen
+  reflejos, refracción con absorción por color, espuma, cáusticas, flotación con Jolt y una vista bajo el agua. Se crean
+  desde <em>GameObject &gt; Líquidos</em> (Océano / playa, Lago, Río) o con <em>generate_terrain</em> (la isla trae océano, un río y lagos).
+</p>
+
+<h3 id="oceano">Océano: oleaje FFT</h3>
+<p>
+  El océano es un plano infinito a la altura de la entidad. Sus olas salen de un <strong>espectro JONSWAP</strong> (el de
+  los oceanógrafos) que la GPU anima cada frame con una <strong>FFT</strong> en <strong>4 cascadas</strong> de 128 × 128,
+  desde las olas largas hasta el rizado de centímetros, como Crest. Las cascadas tienen tamaños que no encajan entre sí,
+  así que el mar no se ve repetido en ninguna distancia.
+</p>
+<ul>
+  <li><strong>Viento</strong> (<code>wind_speed</code>, m/s) y <strong>Fetch</strong> (<code>fetch</code>, km): con viento
+    mayor que 0 la altura y la longitud de las olas se calculan solas (un mar de 10 m/s con 300 km de fetch da olas de
+    ~2 m). Con viento 0 se usan <em>Altura de ola</em> y <em>Longitud de onda</em> a mano.</li>
+  <li><strong>Dirección del viento</strong> y <strong>Dispersión</strong>: hacia dónde van las olas y cuánto se abren.</li>
+  <li><strong>Mar de fondo</strong> (<code>swell_height</code>, <code>swell_wavelength</code>,
+    <code>swell_direction</code>): olas largas y ordenadas que llegan de una tormenta lejana, en otra dirección.</li>
+  <li><strong>Crestas</strong> (<code>steepness</code>): el desplazamiento horizontal (crestas afiladas y valles
+    anchos).</li>
+  <li><strong>Espuma</strong> y <strong>Duración de la espuma</strong> (<code>foam_persistence</code>): las crestas que
+    rompen dejan espuma que se va deshaciendo durante unos segundos y viaja con la ola.</li>
+</ul>
+<p>
+  La malla es un <em>clipmap</em> centrado en la cámara: anillos cada uno con el doble de separación que el anterior,
+  hasta el horizonte, sin grietas entre ellos. Lo que es más fino que un píxel se convierte en rugosidad: a lo lejos el
+  mar se ve mate y sin parpadeo, con el brillo del sol ensanchado como en la realidad.
+</p>
+<p>
+  La flotación y las consultas usan <strong>la misma superficie</strong> (la CPU hace la misma transformada de las tres
+  cascadas grandes), así que un barco sube y baja con la ola que se ve.
+</p>
+
+<h3 id="aspecto">Aspecto</h3>
+<ul>
+  <li><strong>Color (dispersión)</strong> y <strong>Transparencia</strong>: el color que sobrevive dentro del agua y los
+    metros hasta que el fondo deja de verse (absorción de Beer-Lambert por canal: el rojo se pierde antes).</li>
+  <li><strong>Color profundo</strong>: el del agua honda.</li>
+  <li><strong>Luz en las crestas</strong> (<code>scattering</code>): el brillo verde turquesa de las olas a contraluz
+    (la luz del sol que atraviesa la cresta).</li>
+  <li><strong>Espuma de orilla</strong> y <strong>Olas en la playa</strong>: espuma donde el agua es poco profunda y
+    bandas que avanzan hacia la orilla.</li>
+  <li><strong>Cáusticas</strong>: la luz que las olas concentran en el fondo.</li>
+  <li><strong>Rugosidad</strong>, <strong>Refracción</strong> y <strong>Ondulación fina</strong>.</li>
+</ul>
+
+<h3 id="lagos">Lagos</h3>
+<p>
+  Un rectángulo (<code>size</code>) con olas suaves (Gerstner) y el rizado del viento; la orilla la pone el terreno.
+  Valores típicos: altura 0,1 m, longitud 6 m. Solo se está «dentro» del lago donde el suelo queda por debajo del agua:
+  al bucear y mirar fuera de él se ve la orilla, no agua.
+</p>
+
+<h3 id="rios">Ríos</h3>
+<p>
+  Una cinta que sigue sus <em>Puntos del río</em> (posición y ancho). La corriente (<code>flow_speed</code>) arrastra el
+  rizado y la espuma con un <em>flow map</em> en dos fases: va más rápida en el centro que en las orillas y mucho más
+  donde el río baja (<strong>rápidos</strong>, con espuma blanca y agua más revuelta). En las orillas también hay
+  espuma.
+</p>
+
+<h3 id="bajo">Bajo el agua</h3>
+<ul>
+  <li><strong>Ventana de Snell</strong>: mirando hacia arriba se ve el cielo y la orilla comprimidos en un círculo
+    (97°); fuera de él, la superficie refleja el propio agua (reflexión total). Lo de fuera se ve atenuado por el agua
+    que hay hasta la superficie, sin quemarse en blanco.</li>
+  <li><strong>Niebla del agua</strong>: absorción y luz dispersada, más oscura cuanto más hondo.</li>
+  <li><strong>Rayos de sol</strong> (<code>god_rays</code>): haces de luz que entran por las olas, con la sombra de lo
+    que hay encima.</li>
+  <li><strong>Partículas</strong> (<code>particles</code>): motas en suspensión que flotan despacio.</li>
+  <li><strong>Línea del agua</strong>: con la cámara a medias, cada mitad de la pantalla se ve como toca, separadas por
+    el menisco (una línea oscura).</li>
+  <li><strong>Cáusticas</strong> sobre el fondo, las rocas y los personajes.</li>
+</ul>
+
+<h3 id="interaccion">Interacción</h3>
+<p>
+  Todo lo que tiene collider y cruza la superficie deja ondas: al caer salpica y al moverse deja estela; lo que está
+  quieto (postes, rocas) hace rebotar las ondas. Los Rigidbody flotan según <em>Empuje</em> y se frenan con
+  <em>Frenado</em>.
+</p>
+
+<h3 id="rendimiento">Rendimiento</h3>
+<p>
+  La simulación FFT cuesta muy poco (4 cascadas de 128 × 128 en compute, una vez por frame). Si no hay océano en la
+  escena no se simula nada. Bajar <em>Rayos de sol</em> a 0 ahorra trabajo bajo el agua.
+</p>

@@ -21,6 +21,7 @@ void EditorApp::applyOriginShift(const Vec3& offset, bool move_world) {
     if (move_world) world_.shiftOrigin(offset);
     physics_.shiftOrigin(offset);
     particles_.shiftOrigin(offset);
+    fluids_.shiftOrigin(offset);
     nav_.shiftOrigin(offset);
     voxels_.shiftOrigin(offset);
     cinematics_.shiftOrigin(offset);

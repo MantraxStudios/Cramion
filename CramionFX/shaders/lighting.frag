@@ -1181,6 +1181,16 @@ void main() {
             vec4 clouds = texture(clouds_map, v_uv);
             color = color * clouds.a + clouds.rgb;
         }
+        // Sistema de ambiente: niebla en el horizonte (dias de niebla,
+        // ventisca, arena) y el destello de un rayo en todo el cielo.
+        if (lights.rt_shadows.w > 0.0 || lights.rt_shadows.z > 0.0) {
+            vec3 sky_direction = normalize(world_position - camera.position.xyz);
+            vec3 haze = max(irradiance_sh.coefficients[0].rgb * 0.282095, vec3(0.0)) * (1.0 / 3.14159265) +
+                        vec3(0.75, 0.8, 1.0) * lights.rt_shadows.z * 0.25;
+            float horizon = 1.0 - smoothstep(-0.05, 0.45, sky_direction.y);
+            color = mix(color, haze, clamp(lights.rt_shadows.w * mix(0.55, 1.0, horizon), 0.0, 1.0));
+            color += vec3(0.75, 0.8, 1.0) * lights.rt_shadows.z * 0.15;
+        }
         // El cielo nocturno tambien lo ven los bastones.
         color = rodVision(color);
         // Vista Escena Unlit / Wireframe (shadows.params.z 2 / 3, con
@@ -1260,6 +1270,12 @@ void main() {
         vec3 diffuse_light = sky_irradiance * sky_visibility + gi.rgb +
                              toLinear(lights.ambient_color.rgb) * lights.sun_color_ambient.a *
                                  (1.0 - lights.sky_sun.w) * 0.25;
+        // Destello de un rayo (sistema de ambiente): luz blanca azulada de
+        // todo el cielo, mas en lo que mira hacia arriba y ve el cielo.
+        if (lights.rt_shadows.z > 0.0) {
+            diffuse_light += vec3(0.75, 0.8, 1.0) * lights.rt_shadows.z * (0.45 + 0.55 * max(normal.y, 0.0)) *
+                             sky_visibility;
+        }
         vec3 diffuse_ibl = diffuse_light * albedo * (1.0 - env_fresnel) * (1.0 - metallic);
 
         // Especular: entorno prefiltrado en la direccion del reflejo, al mip

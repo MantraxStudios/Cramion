@@ -161,6 +161,7 @@ private:
 
     core::Vec3 origin_offset_{};
     float time_ = 0.0f;
+    float last_delta_ = 0.0f;  // segundos del ultimo frame (viento del frame anterior, vectores de movimiento)
 };
 
 }  // namespace cramion::gfx

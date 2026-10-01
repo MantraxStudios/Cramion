@@ -19,6 +19,7 @@
 #include "CramionCore/asset/MaterialAsset.h"
 #include "CramionCore/ecs/AnimatorController.h"
 #include "CramionCore/ecs/World.h"
+#include "CramionCore/environment/Environment.h"
 #include "CramionCore/terrain/Terrain.h"
 #include "CramionCore/anim/Humanoid.h"
 #include "CramionCore/anim/Procedural.h"
@@ -240,6 +241,11 @@ private:
     void syncCamera(World& world, scene::Scene& scene);
     void syncTerrains(World& world, gfx::VulkanRenderer& renderer, const core::Vec3& eye);
     core::Vec3 grass_eye_{};  // camara: los que apartan la hierba, los mas cercanos
+    // Sistema de ambiente (environment/Environment.h): segundos del frame
+    // (0 = segunda vista del editor) y lo aplicado (viento, estacion y nieve
+    // de la hierba y los arboles).
+    float environment_delta_ = 0.0f;
+    environment::EnvironmentFrame environment_frame_;
     // Terrenos de este frame (para saber si bajo la camara hay suelo o agua).
     struct TerrainSample {
         std::shared_ptr<terrain::TerrainData> data;
