@@ -1,0 +1,17 @@
+<p>Localización: textos en el idioma actual, plurales y cambio de idioma.</p>
+
+<h3 id="text">Text</h3>
+<table>
+  <tbody>
+    <tr><td><code>Value format(texto, nombre)</code></td><td>sustituye {0}, {1}, {nombre}</td></tr>
+    <tr><td><code>Value get(texto, ...)</code></td><td>texto en el idioma actual ({0}, {1}... con los argumentos)</td></tr>
+    <tr><td><code>Value has(texto)</code></td><td>existe la clave?</td></tr>
+    <tr><td><code>Value language(...)</code></td><td>idioma actual (&quot;es&quot;)</td></tr>
+    <tr><td><code>Value languages(...)</code></td><td>{code, name} de cada idioma</td></tr>
+    <tr><td><code>Value onLanguageChanged(callback)</code></td><td>end) aviso al cambiar de idioma (devuelve un id)</td></tr>
+    <tr><td><code>Value plural(texto, n, ...)</code></td><td>forma plural (clave#one / clave#other) con {n}</td></tr>
+    <tr><td><code>Value removeListener(id)</code></td><td>quita un aviso</td></tr>
+    <tr><td><code>Value setLanguage(texto)</code></td><td>cambia el idioma (la UI se actualiza sola)</td></tr>
+    <tr><td><code>Value systemLanguage(...)</code></td><td>idioma del sistema</td></tr>
+  </tbody>
+</table>

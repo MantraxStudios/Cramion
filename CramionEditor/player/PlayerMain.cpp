@@ -30,8 +30,15 @@
 #include <CramionCore/project/Pack.h>
 #include <CramionCore/project/TouchInterface.h>
 #include <CramionCore/input/InputActions.h>
+#include <CramionCore/gameplay/Localization.h>
+#include <CramionCore/gameplay/SaveGame.h>
 #include <CramionCore/xr/XrRig.h>
 #include <CramionCore/fluid/Fluid.h>
+#include <CramionCore/platform/Steam.h>
+#include <CramionCore/replay/Replay.h>
+#include <CramionCore/lighting/ProbeBaker.h>
+#include <CramionCore/twod/System2D.h>
+#include <CramionCore/vfx/VisualEffect.h>
 #include <CramionDM/CramionDM.h>
 #include <CramionFX/CramionFX.h>
 
@@ -717,6 +724,40 @@ int runPlayer() {
             const int actor = sync.actorIndex(e);
             return actor >= 0 && sync.actorLocalBounds(static_cast<std::uint32_t>(actor), min, max);
         });
+        // VFX Graph (particulas en la GPU), 2D y repeticiones.
+        vfx::VfxSystem vfx_system;
+        vfx::setActiveSystem(&vfx_system);
+        vfx_system.setAssetsRoot(project->assetsFolder());
+        vfx_system.setGraphResolver([&database](const Uuid& uuid) -> std::filesystem::path {
+            const auto info = database.find(uuid);
+            return info ? info->path : std::filesystem::path{};
+        });
+        vfx_system.setModelProvider([&asset_manager](const Uuid& uuid) { return asset_manager.loadModel(uuid); });
+        twod::System2D twod_system;
+        twod_system.setAssetsRoot(project->assetsFolder());
+        twod::loadSortingLayers(project->settingsFolder() / "SortingLayers.json");
+        replay::ReplaySystem replays;
+        replay::setActiveSystem(&replays);
+        replays.setFolder(editor::localDataFolder("Saves") / exe_stem / "replays");
+        replays.setAudio(&audio);
+        replays.setInput(&input);
+        audio::setOneShotListener([&replays](const std::string& clip, const core::Vec3& position, float volume, bool spatial) {
+            if (replays.recording()) replays.notifyOneShot(clip, position, volume, spatial);
+        });
+        // Steam (Configuraciones de compilacion > Steam): sin Steam el juego sigue igual.
+        {
+            const std::string app = readIniValue(game / "game.ini", "steam_app_id");
+            if (!app.empty()) {
+                const std::uint32_t app_id = static_cast<std::uint32_t>(std::strtoul(app.c_str(), nullptr, 10));
+                if (readIniValue(game / "game.ini", "steam_restart") == "1" &&
+                    platform::Steam::restartAppIfNecessary(app_id, root)) {
+                    return 0;  // Steam abre el juego de nuevo
+                }
+                if (!platform::Steam::instance().init(app_id, root)) {
+                    std::cerr << "[Steam] " << platform::Steam::instance().error() << "\n";
+                }
+            }
+        }
         ui::UiSystem game_ui;
         ecs::World world;
         // Un dedo sobre un boton de la interfaz la pulsa aunque caiga en el joystick.
@@ -732,6 +773,19 @@ int runPlayer() {
 
         // Datos guardados de los scripts (Prefs), por juego.
         scripts.setPrefsFile(editor::localDataFolder("Saves") / std::filesystem::path(exe_stem).concat(".prefs"));
+        // Partidas (Save.save): %APPDATA%/<juego>/saves en Windows.
+        {
+            const std::u8string game_u8 = exe_stem.u8string();
+            scripts.setSaveFolder(gameplay::SaveSystem::defaultFolder(
+                std::string(game_u8.begin(), game_u8.end()), editor::localDataFolder("Saves") / exe_stem / "saves"));
+        }
+        // Textos en varios idiomas (ProjectSettings/Localization).
+        {
+            std::string loc_error;
+            if (!gameplay::localization().load(project->settingsFolder() / "Localization", &loc_error)) {
+                std::cerr << "[Localizacion] " << loc_error << "\n";
+            }
+        }
 
         const auto main_camera = [&](core::Vec3& position, core::Vec3& forward) {
             position = scene.camera().position();
@@ -804,11 +858,27 @@ int runPlayer() {
                     physics.stop();
                     particles.clear();
                     fluids.clear();
+                    vfx_system.clear();
+                    twod_system.stop();
+                    if (replays.playing()) replays.stop(world);
+                    if (replays.recording()) replays.stopRecording();
                     nav.clear();
                     voxels.stop();
                     std::string error;
                     if (load.file.empty() || !ecs::loadScene(world, load.file, &error)) {
                         std::cerr << "[Juego] No se pudo abrir la escena " << load.file.string() << " " << error << "\n";
+                    }
+                    // Iluminacion horneada de la escena (<escena>.crbake).
+                    {
+                        gfx::BakedLighting baked;
+                        gfx::LightingMode mode = gfx::LightingMode::Realtime;
+                        const std::filesystem::path bake_file = lighting::bakedLightingFile(load.file);
+                        if (!load.file.empty() && std::filesystem::exists(bake_file)) {
+                            std::string bake_error;
+                            if (!lighting::loadBakedLighting(bake_file, baked, mode, &bake_error)) std::cerr << "[Juego] " << bake_error << "\n";
+                        }
+                        renderer.setBakedLighting(std::move(baked));
+                        renderer.setLightingMode(mode);
                     }
                     // Instancias de prefab guardadas con una revision vieja: al dia.
                     ecs::syncOutdatedInstances(world, [&](const Uuid& id) {
@@ -873,6 +943,7 @@ int runPlayer() {
                 case Stage::Systems: {
                     if (load.frames++ == 0) break;
                     physics.start(world);
+                    twod_system.start(world);  // fisica 2D del nivel
                     // La malla lista antes de que empiecen los scripts.
                     nav.waitForBuild(world, 20.0f);
                     // Los bloques de alrededor listos antes de empezar (no se cae del mundo).
@@ -1087,6 +1158,7 @@ int runPlayer() {
                 const int steps = physics.update(world, dt, true);
                 particles.update(world, dt, &physics);
                 fluids.update(world, dt, true, &physics, renderer);
+                twod_system.update(world, dt, twod::System2D::Mode::Play);
                 fire::updateFires(world, dt, fire::FireMode::Play, &terrains);
                 nav.update(world, dt, true, nav_settings.runtime_generation);
                 scripts.setInput(game_ui.typing() ? nullptr : &input);
@@ -1111,6 +1183,8 @@ int runPlayer() {
                 cpp_scripts.fixedUpdate(world, physics_settings.fixed_step, steps);
                 cpp_scripts.update(world, dt);
                 cinematics.update(world, dt, true);
+                replays.update(world, dt);  // despues de los scripts
+                if (platform::Steam::instance().available()) platform::Steam::instance().update();
                 // Origen flotante: si la camara se alejo mucho del (0,0,0), todo
                 // se desplaza para que vuelva cerca (nada tiembla a 100 km).
                 {
@@ -1120,6 +1194,7 @@ int runPlayer() {
                         physics.shiftOrigin(*offset);
                         particles.shiftOrigin(*offset);
                         fluids.shiftOrigin(*offset);
+                        vfx_system.shiftOrigin(*offset);
                         nav.shiftOrigin(*offset);
                         voxels.shiftOrigin(*offset);
                         cinematics.shiftOrigin(*offset);
@@ -1180,6 +1255,8 @@ int runPlayer() {
             if (loaded && !scene_loading()) {
                 sync.sync(world, scene, renderer, running ? dt : 0.0f, sync_options);
                 renderer.setParticles(particles.drawList(scene.camera().position()));
+                vfx_system.update(world, running ? dt : 0.0f, true, {}, renderer);
+                renderer.setSprites(twod_system.drawList(world, scene.camera().position(), scene.camera().forward()));
                 voxels.syncRenderer(renderer);
             }
             // VR: los dos ojos al casco; la ventana ve lo de la cabeza.

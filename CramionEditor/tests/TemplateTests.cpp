@@ -13,6 +13,7 @@
 #include <CramionCore/ecs/AnimatorController.h>
 #include <CramionCore/ecs/Rigging.h>
 #include <CramionCore/net/NetworkObject.h>
+#include <CramionCore/twod/System2D.h>
 
 #include <CramionCore/CramionCore.h>
 #include <CramionDM/Input.h>
@@ -51,6 +52,10 @@ struct Played {
     ecs::World world;
 };
 
+// La fisica 3D de la partida que se esta jugando (para conducir el coche
+// desde `each_frame`).
+physics::PhysicsSystem* playing_physics = nullptr;
+
 // Abre el proyecto, carga su escena inicial y la juega `seconds`.
 void play(const project::ProjectInfo& created, float seconds, Played& out,
           const std::function<void(ecs::World&, navigation::NavigationSystem&, float)>& each_frame = {}) {
@@ -80,19 +85,26 @@ void play(const project::ProjectInfo& created, float seconds, Played& out,
     scripts.setLog([&](int level, const std::string& message) {
         if (level == 2) std::printf("  [Lua] %s\n", message.c_str());
     });
+    twod::System2D twod_system;  // sprites, tilemaps y fisica 2D
+    twod_system.setAssetsRoot(info->assetsFolder());
     physics.start(out.world);
+    twod_system.start(out.world);
     nav.waitForBuild(out.world);
     scripts.start(out.world);
+    playing_physics = &physics;
     const float dt = 1.0f / 60.0f;
     for (float t = 0.0f; t < seconds; t += dt) {
         const int steps = physics.update(out.world, dt, true);
+        twod_system.update(out.world, dt, twod::System2D::Mode::Play);
         nav.update(out.world, dt, true);
         scripts.fixedUpdate(out.world, dt, steps);
         scripts.update(out.world, dt);
         if (each_frame) each_frame(out.world, nav, t);
     }
     out.script_errors = static_cast<int>(scripts.errors().size());
+    playing_physics = nullptr;
     scripts.stop();
+    twod_system.stop();
     physics.stop();
 }
 
@@ -134,11 +146,12 @@ int main() {
 
     const std::vector<editor::ProjectTemplate> list = editor::availableTemplates();
     std::printf("Plantillas integradas\n");
-    check(list.size() == 10 && find(list, "blank") && find(list, "third_person") && find(list, "navigation") &&
+    check(list.size() == 12 && find(list, "blank") && find(list, "third_person") && find(list, "navigation") &&
               find(list, "third_person_pro") &&
               find(list, "voxel") && find(list, "mmo") && find(list, "creatures") && find(list, "online") &&
-              find(list, "open_world") && find(list, "state_machines"),
-          "hay 10 plantillas integradas");
+              find(list, "open_world") && find(list, "state_machines") && find(list, "platformer_2d") &&
+              find(list, "cars"),
+          "hay 12 plantillas integradas");
 
     // --- Criaturas: modelos con esqueleto generados, IK, phys bones, ragdoll ---
     {
@@ -996,6 +1009,60 @@ int main() {
         guest.physics.stop();
     }
 
+    // --- Plataformas 2D: tilemap, sprites y fisica 2D ---
+    {
+        std::printf("Plataformas 2D\n");
+        const project::ProjectInfo p = editor::createProjectFromTemplate(*find(list, "platformer_2d"), root, "Plataformas2D");
+        check(std::filesystem::exists(p.assetsFolder() / "2D" / "Terreno.crtileset") &&
+                  std::filesystem::exists(p.assetsFolder() / "2D" / "jugador.png"),
+              "escribe el tileset y los sprites");
+        Played r;
+        float y_15 = 0.0f;
+        float y_25 = 0.0f;
+        play(p, 2.6f, r, [&](ecs::World& w, navigation::NavigationSystem&, float t) {
+            const float y = w.findByName("Jugador").worldPosition().y;
+            if (t < 1.5f) y_15 = y;
+            if (t < 2.5f) y_25 = y;
+        });
+        std::printf("  (jugador en y = %.2f a 1.5 s y %.2f a 2.5 s)\n", static_cast<double>(y_15), static_cast<double>(y_25));
+        const ecs::Entity cam = r.world.findByName("Main Camera");
+        check(r.loaded, "la escena inicial se abre");
+        check(r.script_errors == 0, "los scripts se ejecutan sin errores");
+        check(y_25 < 1.5f && y_25 > -3.0f && std::abs(y_25 - y_15) < 0.05f,
+              "el jugador cae y se queda sobre el tilemap (Tilemap Collider 2D)");
+        check(r.world.findAllWithTag("Moneda").size() == 7, "las 7 monedas tienen su tag");
+        check(cam.valid() && cam.has<ecs::Camera>() && cam.get<ecs::Camera>().orthographic, "camara ortografica");
+    }
+
+    // --- Coches: Vehicle + Wheel Collider ---
+    {
+        std::printf("Coches\n");
+        const project::ProjectInfo p = editor::createProjectFromTemplate(*find(list, "cars"), root, "Coches");
+        Played r;
+        int on_ground = 0;
+        physics::PhysicsSystem::VehicleState last;
+        float start_z = 0.0f;
+        play(p, 5.0f, r, [&](ecs::World& w, navigation::NavigationSystem&, float t) {
+            const ecs::Entity car = w.findByName("Coche");
+            if (playing_physics == nullptr || !car.valid()) return;
+            if (t < 1.0f) {
+                on_ground = playing_physics->vehicleState(car).wheels_on_ground;
+                start_z = car.worldPosition().z;
+            } else {
+                playing_physics->setVehicleInput(car, 1.0f, 0.0f, 0.0f, 0.0f);  // a fondo, recto
+            }
+            last = playing_physics->vehicleState(car);
+        });
+        const ecs::Entity car = r.world.findByName("Coche");
+        const float moved = car.valid() ? std::abs(car.worldPosition().z - start_z) : 0.0f;
+        std::printf("  (%d ruedas en el suelo; tras 4 s a fondo: %.1f km/h, marcha %d, %.1f m)\n", on_ground,
+                    static_cast<double>(last.speed_kmh), last.gear, static_cast<double>(moved));
+        check(r.loaded, "la escena inicial se abre");
+        check(r.script_errors == 0, "los scripts se ejecutan sin errores");
+        check(last.valid && last.wheel_count == 4 && on_ground == 4, "el coche se apoya en sus 4 Wheel Collider");
+        check(last.speed_kmh > 20.0f && last.gear >= 1 && moved > 10.0f, "acelera y avanza con el motor y las marchas");
+    }
+
     // --- Del usuario ---
     {
         std::printf("Plantillas del usuario\n");
@@ -1004,7 +1071,7 @@ int main() {
               "guardar un proyecto como plantilla");
         const std::vector<editor::ProjectTemplate> again = editor::availableTemplates();
         const editor::ProjectTemplate* mine = find(again, "user:Mi plataformas");
-        check(again.size() == 11 && mine != nullptr && mine->category == "Mis plantillas" && mine->description == "Prueba",
+        check(again.size() == 13 && mine != nullptr && mine->category == "Mis plantillas" && mine->description == "Prueba",
               "aparece en la lista con su descripcion");
         if (mine != nullptr) {
             const project::ProjectInfo p = editor::createProjectFromTemplate(*mine, root, "Copia");

@@ -1,0 +1,519 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+
+// VFX Graph: simulacion de las particulas de un efecto (VfxPass). Un solo
+// shader con etapas (push.stage) que interpreta los bloques compilados en la
+// CPU (vfx/VisualEffect.cpp):
+//
+//   RESET    todas muertas en la pila del efecto
+//   BEGIN    vivas del dibujo a 0 (un hilo por efecto)
+//   EMIT     un hilo por particula nueva: sale de la pila, bloques Initialize
+//   UPDATE   un hilo por particula del rango: bloques Update (fuerzas),
+//            integracion, colisiones; muere (vuelve a la pila) o pasa a la
+//            lista de vivas del dibujo indirecto
+
+layout(local_size_x = 64) in;
+
+#define VFX_COMPUTE
+#include "vfx_common.glsl"
+
+// ---------------------------------------------------------------------------
+// Ruido (valor 3D suavizado) y ruido de rotacional (curl noise): un campo sin
+// divergencia, remolinos que no se juntan en puntos.
+// ---------------------------------------------------------------------------
+
+float hash3(ivec3 c) {
+    uvec3 q = uvec3(c + ivec3(32768));
+    return float(vfxHash(q.x + vfxHash(q.y + vfxHash(q.z)))) * (2.0 / 4294967295.0) - 1.0;
+}
+
+float valueNoise(vec3 p) {
+    vec3 i = floor(p);
+    vec3 f = p - i;
+    vec3 u = f * f * (3.0 - 2.0 * f);
+    ivec3 c = ivec3(i);
+    float n000 = hash3(c);
+    float n100 = hash3(c + ivec3(1, 0, 0));
+    float n010 = hash3(c + ivec3(0, 1, 0));
+    float n110 = hash3(c + ivec3(1, 1, 0));
+    float n001 = hash3(c + ivec3(0, 0, 1));
+    float n101 = hash3(c + ivec3(1, 0, 1));
+    float n011 = hash3(c + ivec3(0, 1, 1));
+    float n111 = hash3(c + ivec3(1, 1, 1));
+    float x00 = mix(n000, n100, u.x);
+    float x10 = mix(n010, n110, u.x);
+    float x01 = mix(n001, n101, u.x);
+    float x11 = mix(n011, n111, u.x);
+    return mix(mix(x00, x10, u.y), mix(x01, x11, u.y), u.z);
+}
+
+vec3 potential(vec3 p, int octaves) {
+    vec3 sum = vec3(0.0);
+    float amplitude = 1.0;
+    float frequency = 1.0;
+    for (int o = 0; o < octaves; ++o) {
+        vec3 q = p * frequency;
+        sum += amplitude * vec3(valueNoise(q), valueNoise(q + vec3(31.416, 47.853, 12.679)),
+                                valueNoise(q + vec3(-19.123, 7.271, 83.117)));
+        amplitude *= 0.5;
+        frequency *= 2.0;
+    }
+    return sum;
+}
+
+vec3 curlNoise(vec3 p, int octaves) {
+    const float e = 0.1;
+    vec3 dx = potential(p + vec3(e, 0.0, 0.0), octaves) - potential(p - vec3(e, 0.0, 0.0), octaves);
+    vec3 dy = potential(p + vec3(0.0, e, 0.0), octaves) - potential(p - vec3(0.0, e, 0.0), octaves);
+    vec3 dz = potential(p + vec3(0.0, 0.0, e), octaves) - potential(p - vec3(0.0, 0.0, e), octaves);
+    // curl = (dPz/dy - dPy/dz, dPx/dz - dPz/dx, dPy/dx - dPx/dy)
+    return vec3(dy.z - dz.y, dz.x - dx.z, dx.y - dy.x) / (2.0 * e);
+}
+
+// ---------------------------------------------------------------------------
+// Espacios: los bloques dan posiciones en el espacio del EMISOR (como el
+// "Local" de Unity) y la gravedad/viento en el del MUNDO. La simulacion va
+// en el mundo o en el emisor (world_space).
+// ---------------------------------------------------------------------------
+
+bool worldSpace(uint slot) {
+    return (instances[slot].flags.z & VFX_WORLD_SPACE) != 0u;
+}
+
+// Punto del emisor -> espacio de la simulacion.
+vec3 pointToSim(uint slot, vec3 p) {
+    return worldSpace(slot) ? (instances[slot].local_to_world * vec4(p, 1.0)).xyz : p;
+}
+
+vec3 dirToSim(uint slot, vec3 d) {
+    return worldSpace(slot) ? mat3(instances[slot].local_to_world) * d : d;
+}
+
+// Vector del mundo (gravedad, viento) -> espacio de la simulacion.
+vec3 worldDirToSim(uint slot, vec3 d) {
+    return worldSpace(slot) ? d : mat3(instances[slot].world_to_local) * d;
+}
+
+vec3 simToWorld(uint slot, vec3 p) {
+    return (instances[slot].transform * vec4(p, 1.0)).xyz;
+}
+
+vec3 worldToSim(uint slot, vec3 p) {
+    return worldSpace(slot) ? p : (instances[slot].world_to_local * vec4(p, 1.0)).xyz;
+}
+
+vec3 anyPerpendicular(vec3 n) {
+    vec3 a = abs(n.y) < 0.99 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
+    return normalize(cross(a, n));
+}
+
+// ---------------------------------------------------------------------------
+// RESET
+// ---------------------------------------------------------------------------
+
+void stageReset(uint slot) {
+    uint i = gl_GlobalInvocationID.x;
+    uint capacity = instances[slot].range.y;
+    uint offset = instances[slot].range.x;
+    if (i == 0u) {
+        uint base = instances[slot].range.z * 8u;
+        counters[base + 0u] = int(capacity);
+        counters[base + 1u] = 0;
+        counters[base + 4u] = 6;
+        counters[base + 5u] = 0;
+        counters[base + 6u] = 0;
+        counters[base + 7u] = 0;
+    }
+    if (i >= capacity) return;
+    uint p = offset + i;
+    // La pila: la ultima en salir es la primera del rango.
+    dead_list[offset + i] = offset + (capacity - 1u - i);
+    particles[p * 4u + 0u] = vec4(0.0);
+    particles[p * 4u + 1u] = vec4(0.0);
+    particles[p * 4u + 2u] = vec4(0.0);
+    particles[p * 4u + 3u] = vec4(0.0);
+}
+
+// ---------------------------------------------------------------------------
+// BEGIN (un hilo por ranura: push.count = ranuras)
+// ---------------------------------------------------------------------------
+
+void stageBegin() {
+    uint slot = gl_GlobalInvocationID.x;
+    if (slot >= push.count) return;
+    uint base = slot * 8u;
+    counters[base + 1u] = 0;
+    counters[base + 4u] = 6;
+    counters[base + 5u] = 0;
+    counters[base + 6u] = 0;
+    counters[base + 7u] = 0;
+}
+
+// ---------------------------------------------------------------------------
+// EMIT
+// ---------------------------------------------------------------------------
+
+void stageEmit(uint slot) {
+    uint i = gl_GlobalInvocationID.x;
+    if (i >= instances[slot].range.w) return;
+    uint base = instances[slot].range.z * 8u;
+    int top = atomicAdd(counters[base + 0u], -1);
+    if (top <= 0) {
+        atomicAdd(counters[base + 0u], 1);  // pila vacia: no nace (capacidad llena)
+        return;
+    }
+    uint offset = instances[slot].range.x;
+    uint p = dead_list[offset + uint(top - 1)];
+
+    uint seed = vfxHash(instances[slot].flags.x ^ vfxHash(instances[slot].flags.y * 9781u + i * 6271u));
+    vec3 pos = vec3(0.0);
+    vec3 vel = vec3(0.0);
+    vec3 shape_dir = vec3(0.0, 1.0, 0.0);
+    float lifetime = 1.0;
+    float size = 0.1;
+    vec4 color = vec4(1.0);
+    float rotation = 0.0;
+    float spin = 0.0;
+    float frame0 = 0.0;
+    bool positioned = false;
+
+    uint first = instances[slot].blocks.x;
+    uint count = instances[slot].blocks.y;
+    for (uint b = first; b < first + count; ++b) {
+        VfxBlock k = blocks[b];
+        uint type = k.info.x;
+        if (type == B_POSITION_SPHERE) {
+            vec3 d = vfxRandomDirection(seed);
+            float arc = clamp(k.b.y, 0.0, 360.0) * 0.0174532925;
+            if (arc < 6.2831) {
+                float phi = vfxRand(seed) * arc;
+                float r = sqrt(max(1.0 - d.y * d.y, 0.0));
+                d = vec3(r * cos(phi), d.y, r * sin(phi));
+            }
+            float volume = clamp(k.b.x, 0.0, 1.0);
+            float r = k.a.w * (1.0 - volume * (1.0 - pow(vfxRand(seed), 1.0 / 3.0)));
+            pos = k.a.xyz + d * r;
+            shape_dir = d;
+            positioned = true;
+        } else if (type == B_POSITION_BOX) {
+            vec3 size3 = max(k.b.xyz, vec3(0.0));
+            vec3 u = vec3(vfxRand(seed), vfxRand(seed), vfxRand(seed)) - 0.5;
+            if (k.b.w > 0.5) {
+                // Superficie: una cara al azar segun su area.
+                vec3 area = vec3(size3.y * size3.z, size3.x * size3.z, size3.x * size3.y);
+                float total = max(area.x + area.y + area.z, 1e-6);
+                float pick = vfxRand(seed) * total;
+                float side = vfxRand(seed) < 0.5 ? -0.5 : 0.5;
+                if (pick < area.x) {
+                    u.x = side;
+                    shape_dir = vec3(sign(side), 0.0, 0.0);
+                } else if (pick < area.x + area.y) {
+                    u.y = side;
+                    shape_dir = vec3(0.0, sign(side), 0.0);
+                } else {
+                    u.z = side;
+                    shape_dir = vec3(0.0, 0.0, sign(side));
+                }
+            } else {
+                shape_dir = length(u) > 1e-4 ? normalize(u) : vec3(0.0, 1.0, 0.0);
+            }
+            pos = k.a.xyz + u * size3;
+            positioned = true;
+        } else if (type == B_POSITION_CONE) {
+            float volume = clamp(k.b.z, 0.0, 1.0);
+            float rr = 1.0 - volume * (1.0 - sqrt(vfxRand(seed)));  // 0..1 del radio
+            float phi = vfxRand(seed) * 6.28318530718;
+            float angle = clamp(k.b.x, 0.0, 89.0) * 0.0174532925;
+            float tilt = angle * (k.a.w > 1e-5 ? rr : sqrt(vfxRand(seed)));
+            vec3 dir = vec3(sin(tilt) * cos(phi), cos(tilt), sin(tilt) * sin(phi));
+            vec3 base = vec3(cos(phi), 0.0, sin(phi)) * (k.a.w * rr);
+            pos = k.a.xyz + base + dir * (max(k.b.y, 0.0) * vfxRand(seed));
+            shape_dir = dir;
+            positioned = true;
+        } else if (type == B_POSITION_CIRCLE) {
+            float volume = clamp(k.b.x, 0.0, 1.0);
+            float rr = 1.0 - volume * (1.0 - sqrt(vfxRand(seed)));
+            float phi = vfxRand(seed) * 6.28318530718;
+            vec3 radial = vec3(cos(phi), 0.0, sin(phi));
+            pos = k.a.xyz + radial * (k.a.w * rr);
+            shape_dir = radial;
+            positioned = true;
+        } else if (type == B_POSITION_LINE) {
+            pos = mix(k.a.xyz, k.b.xyz, vfxRand(seed));
+            shape_dir = vec3(0.0, 1.0, 0.0);
+            positioned = true;
+        } else if (type == B_POSITION_MESH) {
+            uint n = uint(max(k.a.y, 0.0));
+            if (n > 0u) {
+                uint idx = uint(k.a.x) + min(uint(vfxRand(seed) * float(n)), n - 1u);
+                vec3 normal = points[idx * 2u + 1u].xyz;
+                pos = points[idx * 2u].xyz + normal * k.b.x;
+                shape_dir = length(normal) > 1e-4 ? normalize(normal) : vec3(0.0, 1.0, 0.0);
+                positioned = true;
+            }
+        } else if (type == B_VELOCITY_RANDOM) {
+            vec3 v = vec3(vfxRange(seed, k.a.x, k.b.x), vfxRange(seed, k.a.y, k.b.y), vfxRange(seed, k.a.z, k.b.z));
+            vel = (k.info.y & 1u) != 0u ? vel + v : v;
+        } else if (type == B_VELOCITY_FROM_SHAPE) {
+            vec3 d = shape_dir;
+            float spread = clamp(k.a.z, 0.0, 180.0) * 0.0174532925;
+            if (spread > 1e-4) {
+                vec3 t = anyPerpendicular(d);
+                vec3 bt = cross(d, t);
+                float a = vfxRand(seed) * spread;
+                float phi = vfxRand(seed) * 6.28318530718;
+                d = normalize(d * cos(a) + (t * cos(phi) + bt * sin(phi)) * sin(a));
+            }
+            vel += d * vfxRange(seed, k.a.x, k.a.y);
+        } else if (type == B_LIFETIME) {
+            lifetime = max(vfxRange(seed, k.a.x, k.a.y), 0.01);
+        } else if (type == B_SIZE) {
+            size = max(vfxRange(seed, k.a.x, k.a.y), 0.0);
+        } else if (type == B_COLOR) {
+            color = mix(k.a, k.b, vfxRand(seed));
+        } else if (type == B_ROTATION) {
+            rotation = vfxRange(seed, k.a.x, k.a.y) * 0.0174532925;
+            spin = vfxRange(seed, k.a.z, k.a.w) * 0.0174532925;
+        } else if (type == B_FLIPBOOK_FRAME) {
+            frame0 = floor(vfxRange(seed, k.a.x, k.a.y + 0.999));
+        }
+    }
+
+    // A la simulacion: las posiciones y direcciones del emisor.
+    vec3 sim_pos = pointToSim(slot, positioned ? pos : vec3(0.0));
+    vec3 sim_vel = dirToSim(slot, vel);
+    // Heredar la velocidad del emisor (despues de pasar al mundo).
+    for (uint b = first; b < first + count; ++b) {
+        if (blocks[b].info.x == B_INHERIT_VELOCITY) {
+            sim_vel += worldDirToSim(slot, instances[slot].emitter_velocity.xyz) * blocks[b].a.x;
+        }
+    }
+    // Nacen repartidas dentro del frame (sin "capas" con mucho caudal).
+    float dt = instances[slot].time.x;
+    float early = vfxRand(seed) * dt;
+    sim_pos += sim_vel * early;
+    // UPDATE quitara el desplazamiento del origen de este frame: estas ya
+    // nacieron en las coordenadas nuevas.
+    if (worldSpace(slot)) sim_pos += instances[slot].shift.xyz;
+
+    particles[p * 4u + 0u] = vec4(sim_pos, early);
+    particles[p * 4u + 1u] = vec4(sim_vel, lifetime);
+    particles[p * 4u + 2u] = color;
+    particles[p * 4u + 3u] = vec4(size, rotation, spin, frame0);
+}
+
+// ---------------------------------------------------------------------------
+// UPDATE
+// ---------------------------------------------------------------------------
+
+bool isCollision(uint type) {
+    return type == B_COLLIDE_DEPTH || type == B_COLLIDE_PLANE || type == B_COLLIDE_SPHERE || type == B_KILL_BOX;
+}
+
+vec3 worldFromDepth(vec2 uv, float depth) {
+    vec4 p = frame.inverse_view_projection * vec4(uv * 2.0 - 1.0, depth, 1.0);
+    return p.xyz / p.w;
+}
+
+// Rebote contra una superficie (normal n, en el espacio de la simulacion).
+void bounce(inout vec3 vel, vec3 n, float restitution, float friction) {
+    float vn = dot(vel, n);
+    if (vn < 0.0) {
+        vec3 vt = vel - n * vn;
+        vel = vt * (1.0 - clamp(friction, 0.0, 1.0)) - n * vn * clamp(restitution, 0.0, 1.0);
+    }
+}
+
+void stageUpdate(uint slot) {
+    uint i = gl_GlobalInvocationID.x;
+    if (i >= instances[slot].range.y) return;
+    uint offset = instances[slot].range.x;
+    uint p = offset + i;
+    vec4 P0 = particles[p * 4u + 0u];
+    vec4 P1 = particles[p * 4u + 1u];
+    if (P1.w <= 0.0) return;  // muerta (esta en la pila)
+    vec4 P2 = particles[p * 4u + 2u];
+    vec4 P3 = particles[p * 4u + 3u];
+
+    vec3 pos = P0.xyz;
+    vec3 vel = P1.xyz;
+    float age = P0.w;
+    float lifetime = P1.w;
+    float dt = instances[slot].time.x;
+    float clock = instances[slot].time.y;
+    uint base = instances[slot].range.z * 8u;
+    if (worldSpace(slot)) pos -= instances[slot].shift.xyz;
+
+    uint seed = vfxHash(p * 7919u ^ vfxHash(instances[slot].flags.y));
+    float radius = P3.x * 0.5;
+    bool dies = false;
+
+    uint first = instances[slot].blocks.z;
+    uint count = instances[slot].blocks.w;
+    if (dt > 0.0) {
+        // --- Fuerzas, en orden ---
+        for (uint b = first; b < first + count; ++b) {
+            VfxBlock k = blocks[b];
+            uint type = k.info.x;
+            if (type == B_GRAVITY) {
+                vel += worldDirToSim(slot, k.a.xyz) * dt;
+            } else if (type == B_WIND) {
+                vec3 wind = worldDirToSim(slot, k.a.xyz);
+                vel += (wind - vel) * clamp(k.a.w * dt, 0.0, 1.0);
+            } else if (type == B_DRAG) {
+                float speed = length(vel);
+                float damping = max(k.a.x, 0.0) + max(k.a.y, 0.0) * speed;
+                vel *= 1.0 / (1.0 + damping * dt);
+            } else if (type == B_TURBULENCE) {
+                // En el mundo: el patron no se mueve con el emisor.
+                vec3 world = simToWorld(slot, pos);
+                vec3 q = world * max(k.a.y, 1e-4) + vec3(0.0, clock * k.a.w, clock * k.a.w * 0.37);
+                int octaves = clamp(int(k.a.z + 0.5), 1, 4);
+                vec3 force = curlNoise(q, octaves) * k.a.x;
+                vel += worldDirToSim(slot, force) * dt;
+            } else if (type == B_ATTRACTOR) {
+                vec3 target = pointToSim(slot, k.a.xyz);
+                vec3 d = target - pos;
+                float dist = length(d);
+                if (k.b.y > 0.0 && dist < k.b.y) {
+                    dies = true;
+                } else if (dist > 1e-4 && (k.b.x <= 0.0 || dist < k.b.x)) {
+                    float falloff = k.b.x > 0.0 ? 1.0 - dist / k.b.x : 1.0;
+                    vel += d / dist * (k.a.w * falloff * dt);
+                }
+            } else if (type == B_VORTEX) {
+                vec3 center = pointToSim(slot, k.a.xyz);
+                vec3 axis = normalize(dirToSim(slot, length(k.b.xyz) > 1e-4 ? k.b.xyz : vec3(0.0, 1.0, 0.0)));
+                vec3 rel = pos - center;
+                vec3 radial = rel - axis * dot(rel, axis);
+                float r = length(radial);
+                if (r > 1e-4) {
+                    vec3 tangent = normalize(cross(axis, radial));
+                    vel += tangent * (k.a.w * dt) - radial / r * (k.b.w * dt);
+                }
+            } else if (type == B_SPEED_LIMIT) {
+                float speed = length(vel);
+                float limit = max(k.a.x, 0.0);
+                if (speed > limit && speed > 1e-5) {
+                    float target = mix(speed, limit, clamp(k.a.y > 0.0 ? k.a.y : 1.0, 0.0, 1.0));
+                    vel *= target / speed;
+                }
+            } else if (type == B_CONFORM_SPHERE) {
+                vec3 center = pointToSim(slot, k.a.xyz);
+                vec3 rel = pos - center;
+                float dist = length(rel);
+                if (dist > 1e-4) {
+                    vec3 n = rel / dist;
+                    float error = k.a.w - dist;  // > 0 dentro
+                    vel += n * (error * max(k.b.x, 0.0) * dt);
+                    // Pegajosidad: frena lo que va hacia fuera/dentro de la esfera.
+                    vel -= n * dot(vel, n) * clamp(k.b.y * dt, 0.0, 1.0);
+                }
+            }
+        }
+
+        // --- Integracion ---
+        pos += vel * dt;
+        age += dt;
+        P3.y += P3.z * dt;
+
+        // --- Colisiones y zonas, en orden ---
+        for (uint b = first; b < first + count; ++b) {
+            VfxBlock k = blocks[b];
+            uint type = k.info.x;
+            if (!isCollision(type)) continue;
+            if (type == B_COLLIDE_PLANE) {
+                vec3 n = normalize(dirToSim(slot, length(k.a.xyz) > 1e-4 ? k.a.xyz : vec3(0.0, 1.0, 0.0)));
+                vec3 on = pointToSim(slot, (length(k.a.xyz) > 1e-4 ? normalize(k.a.xyz) : vec3(0.0, 1.0, 0.0)) * k.a.w);
+                float d = dot(pos - on, n) - radius;
+                if (d < 0.0) {
+                    pos -= n * d;
+                    bounce(vel, n, k.b.x, k.b.y);
+                    age += clamp(k.b.z, 0.0, 1.0) * lifetime;
+                }
+            } else if (type == B_COLLIDE_SPHERE) {
+                vec3 center = pointToSim(slot, k.a.xyz);
+                vec3 rel = pos - center;
+                float dist = length(rel);
+                bool inside = k.b.z > 0.5;  // las particulas viven DENTRO de la esfera
+                if (dist > 1e-5) {
+                    vec3 n = rel / dist;
+                    if (!inside && dist < k.a.w + radius) {
+                        pos = center + n * (k.a.w + radius);
+                        bounce(vel, n, k.b.x, k.b.y);
+                    } else if (inside && dist > k.a.w - radius) {
+                        pos = center + n * max(k.a.w - radius, 0.0);
+                        bounce(vel, -n, k.b.x, k.b.y);
+                    }
+                }
+            } else if (type == B_KILL_BOX) {
+                vec3 local = (instances[slot].world_to_local * vec4(simToWorld(slot, pos), 1.0)).xyz - k.a.xyz;
+                bool in_box = all(lessThanEqual(abs(local), max(k.b.xyz, vec3(0.0)) * 0.5));
+                bool kill_outside = (k.info.y & 1u) != 0u;
+                if (in_box != kill_outside) dies = true;
+            } else if (type == B_COLLIDE_DEPTH && frame.camera.w > 0.5) {
+                // Contra lo que ve la camara (el depth de la escena).
+                vec3 world = simToWorld(slot, pos);
+                vec4 clip = frame.view_projection * vec4(world, 1.0);
+                if (clip.w <= 1e-4) continue;
+                vec3 ndc = clip.xyz / clip.w;
+                vec2 uv = ndc.xy * 0.5 + 0.5;
+                if (any(lessThan(uv, vec2(0.0))) || any(greaterThan(uv, vec2(1.0)))) continue;
+                float depth = textureLod(scene_depth, uv, 0.0).r;
+                if (depth >= 1.0) continue;  // cielo
+                vec3 surface = worldFromDepth(uv, depth);
+                vec3 cam = frame.camera.xyz;
+                float d_particle = length(world - cam);
+                float d_surface = length(surface - cam);
+                float r = radius * max(k.a.w, 0.0);
+                float thickness = max(k.b.x, 0.05);
+                if (d_particle > d_surface - r && d_particle < d_surface + thickness) {
+                    vec2 texel = frame.viewport.zw;
+                    vec2 uvx = uv + vec2(texel.x, 0.0);
+                    vec2 uvy = uv + vec2(0.0, texel.y);
+                    vec3 px = worldFromDepth(uvx, textureLod(scene_depth, uvx, 0.0).r);
+                    vec3 py = worldFromDepth(uvy, textureLod(scene_depth, uvy, 0.0).r);
+                    vec3 n = cross(px - surface, py - surface);
+                    if (length(n) < 1e-8) continue;
+                    n = normalize(n);
+                    if (dot(n, cam - surface) < 0.0) n = -n;
+                    // De vuelta a la superficie (mas el radio), en el mundo.
+                    vec3 fixed_world = surface + n * r;
+                    vec3 n_sim = worldDirToSim(slot, n);
+                    float n_len = length(n_sim);
+                    n_sim = n_len > 1e-6 ? n_sim / n_len : n_sim;
+                    pos = worldToSim(slot, fixed_world);
+                    bounce(vel, n_sim, k.a.x, k.a.y);
+                    age += clamp(k.a.z, 0.0, 1.0) * lifetime;
+                    if (k.b.y > 0.5) dies = true;
+                }
+            }
+        }
+    }
+
+    if (dies || age >= lifetime) {
+        // Muere: vuelve a la pila.
+        particles[p * 4u + 1u] = vec4(vel, 0.0);
+        int top = atomicAdd(counters[base + 0u], 1);
+        dead_list[offset + uint(top)] = p;
+        return;
+    }
+    particles[p * 4u + 0u] = vec4(pos, age);
+    particles[p * 4u + 1u] = vec4(vel, lifetime);
+    particles[p * 4u + 3u] = P3;
+    int slot_alive = atomicAdd(counters[base + 5u], 1);
+    alive_list[offset + uint(slot_alive)] = p;
+    atomicAdd(counters[base + 1u], 1);
+}
+
+void main() {
+    if (push.stage == STAGE_RESET) {
+        stageReset(push.slot);
+    } else if (push.stage == STAGE_BEGIN) {
+        stageBegin();
+    } else if (push.stage == STAGE_EMIT) {
+        stageEmit(push.slot);
+    } else {
+        stageUpdate(push.slot);
+    }
+}

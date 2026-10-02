@@ -1,0 +1,51 @@
+<p>
+  <strong>Diálogos ramificados</strong> (como Yarn Spinner o los Dialogue Trees de Unreal): un asset <code>.crdialog</code> es
+  un grafo de nodos que se edita en el editor de diálogos y se ejecuta con <code>Dialogue.start("Mercader")</code>. La caja de
+  diálogo de la UI lo muestra sin escribir código.
+</p>
+
+<h3 id="crear">Crear y editar</h3>
+<ul>
+  <li><em>Proyecto &gt; Crear &gt; Diálogo</em>: <strong>Vacío</strong> o <strong>Mercader de ejemplo</strong>. Doble clic lo abre.</li>
+  <li>Clic derecho o <kbd>Espacio</kbd>: crear un nodo. Arrastrar desde la salida de un nodo hasta otro lo enlaza (soltar en el
+    vacío crea uno nuevo enlazado). <kbd>Alt</kbd>+clic en una entrada quita lo que llega.</li>
+  <li>A la derecha, los detalles del nodo; a la izquierda, las <strong>variables</strong> (compartidas por todos los diálogos y
+    guardadas con las partidas). En los textos, <code>{$oro}</code> pone el valor de una variable.</li>
+  <li><strong>Probar</strong> recorre el diálogo dentro del editor, sin dar Play. En Play, el nodo que corre brilla.</li>
+</ul>
+
+<h3 id="nodos">Nodos</h3>
+<table>
+  <thead><tr><th>Nodo</th><th>Qué hace</th></tr></thead>
+  <tbody>
+    <tr><td>Inicio</td><td>Donde empieza</td></tr>
+    <tr><td>Línea</td><td>Quién habla, el texto (o una clave de localización), un audio y si avanza solo tras unos segundos</td></tr>
+    <tr><td>Opciones</td><td>El jugador elige. Cada opción puede tener una condición (oculta o deshabilitada si no se cumple)</td></tr>
+    <tr><td>Condición</td><td>Va por "Sí" o por "No" según las variables (<code>oro &gt;= 10</code>; <code>$otra</code> compara con otra variable)</td></tr>
+    <tr><td>Variable</td><td>Cambia una variable: <code>=</code>, <code>+=</code>, <code>-=</code> o alternar</td></tr>
+    <tr><td>Evento</td><td>Avisa a los scripts (<code>Dialogue.onEvent</code>) y/o llama a un método del script de un objeto</td></tr>
+    <tr><td>Saltar</td><td>A otro nodo o a otro diálogo</td></tr>
+    <tr><td>Fin</td><td>Termina</td></tr>
+  </tbody>
+</table>
+
+<h3 id="ui">Caja de diálogo</h3>
+<p>
+  El componente de UI <strong>Caja de diálogo</strong> (<code>DialogueBox</code>, en un objeto con RectTransform dentro de un
+  Canvas) dibuja el panel, el nombre, el texto con efecto máquina de escribir y las opciones. Clic, <kbd>Espacio</kbd> o
+  <kbd>Enter</kbd> siguen; <kbd>1</kbd>..<kbd>9</kbd> o clic eligen.
+</p>
+
+<h3 id="api">Desde los scripts</h3>
+<pre><code class="language-lua">function OnTriggerEnter(self, otro)
+    if otro.tag == "Player" then Dialogue.start("Mercader") end
+end
+
+Dialogue.onEvent(function(nombre, argumento)
+    if nombre == "Vender" then Save.setValue("oro", Save.getValue("oro", 0) + 10) end
+end)</code></pre>
+<p>
+  También: <code>Dialogue.next()</code>, <code>Dialogue.choose(1)</code>, <code>Dialogue.currentLine()</code>,
+  <code>Dialogue.choices()</code>, <code>Dialogue.setVar</code>/<code>getVar</code> y los avisos <code>onStart</code>,
+  <code>onLine</code>, <code>onChoices</code> y <code>onEnd</code> (para hacer tu propia interfaz).
+</p>

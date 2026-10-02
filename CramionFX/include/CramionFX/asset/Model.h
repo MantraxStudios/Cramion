@@ -238,6 +238,11 @@ struct ModelData {
     // la cache ni en el .crdata. LOD0 son `indices`/`submeshes`.
     std::vector<std::uint32_t> lod_indices;
     std::vector<MeshLod> lods;
+
+    // UV de lightmap (UV2) por vertice, en [0, 1]: las pone la iluminacion
+    // horneada al cargar (CramionCore lighting::applyLightmapUvs). Vacio = sin
+    // lightmap. Como los LODs, no se guardan en la cache ni en el .crdata.
+    std::vector<core::Vec2> lightmap_uvs;
 };
 
 // Genera los LODs de un modelo estatico (sin animaciones, un hueso) con

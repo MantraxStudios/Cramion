@@ -1,6 +1,8 @@
 <p>
         Si guardas un <code>.cpp</code> o un <code>.h</code> durante el modo Play, se compila y la DLL nueva se carga al momento:
-        los scripts se vuelven a crear con los valores del Inspector (los datos que guardaban en sus variables empiezan de nuevo).
+        los scripts se recrean <strong>sin parar el juego</strong> y conservan sus <code>Property&lt;T&gt;</code> con los valores que
+        tenían en ese momento (no se vuelve a llamar a <code>awake()</code> ni a <code>start()</code>). Un aviso abajo a la derecha
+        dice si se recargó o, si no compila, el primer error (el juego sigue con la DLL anterior).
         Con <em>Formatear al guardar</em> activado (Configuración del motor), se formatea antes.
       </p>
       <p>
@@ -10,4 +12,23 @@
       <p>
         La línea de comandos de la Consola C++ cambia CVars (<code>r.Shadows 0</code>, <code>cvars filtro</code>) y ejecuta
         código suelto del juego, por ejemplo para mover un objeto mientras pruebas.
+      </p>
+
+      <h3 id="estado">Conservar el resto del estado</h3>
+      <p>
+        Las variables privadas (las que no son <code>Property&lt;T&gt;</code>) se guardan con <code>onBeforeReload()</code> y se
+        recuperan en <code>onAfterReload()</code> de la instancia nueva. Ahí también se vuelven a registrar los callbacks
+        (<code>Input::bindAction</code>, <code>Network::on</code>...), porque eran del proceso anterior.
+      </p>
+      <pre><code class="language-cpp">Value Torreta::onBeforeReload() {
+    return Value{{"municion", municion}, {"enfriamiento", enfriamiento}};
+}
+
+void Torreta::onAfterReload(const Value&amp; estado) {
+    municion = estado["municion"];
+    enfriamiento = estado["enfriamiento"];
+}</code></pre>
+      <p>
+        La CVar <code>script.cpp.HotReloadKeepState</code> (activa por defecto) lo controla: apagada, los scripts empiezan de nuevo
+        como antes.
       </p>

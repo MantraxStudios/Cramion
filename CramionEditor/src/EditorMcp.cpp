@@ -377,6 +377,26 @@ const std::vector<ToolDef>& toolDefs() {
             d.push_back({"state_machine_debug", "Estado en vivo (en Play) de la maquina de una entidad: estado actual, anterior, tiempo, variables e historial de cambios. Opcional: go (ir a un estado), trigger (disparar uno) y set ({variable: valor}).",
                          {{"entity", entity}, {"go", prop("string", "Ir a este estado")}, {"trigger", prop("string", "Disparar este trigger")}, {"set", prop("object", "{variable: valor}")}}, {"entity"}});
         }
+        // --- 2.1: pruebas, iluminacion horneada, VFX, Visual Script, Shader Graph, Behavior Trees (EditorMcp21.cpp) ---
+        d.push_back({"run_tests", "Ejecuta las pruebas automaticas del proyecto (*.test.lua y Assets/Tests): entra en Play, corre las de edicion y las de Play y vuelve. Mira el resultado con test_results.",
+                     {{"mode", prop("string", "all (por defecto), edit o play")}}, {}});
+        d.push_back({"test_results", "Resultado de la ultima ejecucion de pruebas: running y cada prueba (file, name, mode, status passed/failed/skipped, message, seconds, assertions).", json::object(), {}});
+        d.push_back({"bake_lighting", "Hornea la luz rebotada de la escena abierta en volumenes de sondas (Light Probe Volume; si no hay, uno automatico) y la activa. Corre en segundo plano: mira lighting_state.",
+                     {{"rays", prop("integer", "Rayos por sonda (256)")}, {"bounces", prop("integer", "Rebotes extra (2)")}, {"spacing", prop("number", "Separacion del volumen automatico en metros (2)")}}, {}});
+        d.push_back({"lighting_state", "Estado de la iluminacion horneada: baking, progress, mode (baked/realtime), volumes, probes.", json::object(), {}});
+        d.push_back({"create_vfx", "Crea un efecto del VFX Graph (.crvfx) desde una plantilla (Chispas, Fuego, Humo, Chispas que rebotan, Explosion, Magia, Luciernagas, Nieve, Lluvia, Estela; o su indice 0..9) o desde 'graph' (el JSON del .crvfx: capacity, world_space, duration, loop, params, spawn/initialize/update/output_blocks [{type, values{campo: valor}, bind{campo: parametro}}], output{orient, blend, intensity, texture...}). attach_to: le pone el componente Visual Effect.",
+                     {{"name", prop("string", "Nombre del archivo")}, {"folder", prop("string", "Carpeta dentro de Assets (Efectos)")}, {"preset", prop("string", "Plantilla")},
+                      {"graph", prop("object", "JSON del .crvfx")}, {"attach_to", entity}}, {}});
+        d.push_back({"vfx_control", "Controla el Visual Effect de una entidad (en Play o con vista previa): action play, stop (clear), event (event) o set (param, value: numero, bool, [x,y,z] o [r,g,b,a]).",
+                     {{"entity", entity}, {"action", prop("string", "play, stop, event o set")}, {"event", prop("string", "Evento del bloque Spawn")},
+                      {"param", prop("string", "Parametro expuesto")}, {"value", prop("string", "Valor")}, {"clear", prop("boolean", "Borrar las particulas al parar")}}, {"entity"}});
+        d.push_back({"create_visual_script", "Crea un Visual Script (.crgraph, Blueprints). 'graph': {variables:[{name,type,value,exposed}], nodes:[{id, kind ('event.start', 'event.update', 'flow.branch', 'var.get', 'call'...), fn ('Debug.log', 'Entity:translate'...), values:{pin: valor}, position:[x,y]}], links:[{from, out (nombre o indice), to, in}]}. Devuelve si compila y los errores por nodo. attach_to: le pone el componente.",
+                     {{"name", prop("string", "Nombre del archivo")}, {"folder", prop("string", "Carpeta (Scripts)")}, {"graph", prop("object", "JSON del grafo")}, {"attach_to", entity}}, {}});
+        d.push_back({"create_shader_graph", "Crea un Shader Graph (.crshadergraph) y genera su .crshader (los materiales lo eligen como shader). 'graph' es el JSON del grafo (nodes [{id, type, x, y, inputs, name, value...}], links [{from_node, from_pin, to_node, to_pin}]); sin el, el de ejemplo. Devuelve el codigo generado y los errores.",
+                     {{"name", prop("string", "Nombre del archivo")}, {"folder", prop("string", "Carpeta (Shaders)")}, {"graph", prop("object", "JSON del grafo")}}, {}});
+        d.push_back({"create_behavior_tree", "Crea un Behavior Tree (.crbt): example=true el guardia de ejemplo; 'tree' el JSON (blackboard [{name,type,value}], nodes [{kind, name, children, decorators, services, params, position}]). attach_to: le pone el componente.",
+                     {{"name", prop("string", "Nombre del archivo")}, {"folder", prop("string", "Carpeta (IA)")}, {"example", prop("boolean", "El guardia de ejemplo")},
+                      {"tree", prop("object", "JSON del arbol")}, {"attach_to", entity}}, {}});
         d.push_back({"undo", "Deshace la ultima accion.", json::object(), {}});
         d.push_back({"redo", "Rehace.", json::object(), {}});
         return d;
@@ -2143,6 +2163,19 @@ json McpTools::call(const std::string& name, const json& args, bool& image, std:
         if (args.contains("attach_to")) in["attach_to"] = entity(arg(args, "attach_to")).uuid().toString();
         std::string error;
         const std::string out = a.stateMachineMcpTool(name, in.dump(), error);
+        if (!error.empty()) throw ToolError(error);
+        return json::parse(out, nullptr, false);
+    }
+    if (name == "run_tests" || name == "test_results" || name == "bake_lighting" || name == "lighting_state" ||
+        name == "create_vfx" || name == "vfx_control" || name == "create_visual_script" || name == "create_shader_graph" ||
+        name == "create_behavior_tree") {
+        needProject();
+        json in = args;
+        // Las entidades llegan como UUID (aqui se aceptan tambien nombre y ruta).
+        if (args.contains("entity")) in["entity"] = entity(arg(args, "entity")).uuid().toString();
+        if (args.contains("attach_to")) in["attach_to"] = entity(arg(args, "attach_to")).uuid().toString();
+        std::string error;
+        const std::string out = a.mcpTools21(name, in.dump(), error);
         if (!error.empty()) throw ToolError(error);
         return json::parse(out, nullptr, false);
     }

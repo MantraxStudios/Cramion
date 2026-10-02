@@ -1,0 +1,25 @@
+<p>Diálogos ramificados: empezar, seguir, elegir y avisos.</p>
+
+<h3 id="dialogue">Dialogue</h3>
+<table>
+  <tbody>
+    <tr><td><code>Value advance(...)</code></td><td>lo mismo que next</td></tr>
+    <tr><td><code>Value choices(...)</code></td><td>lista de {index, text, enabled}</td></tr>
+    <tr><td><code>Value choose(valor)</code></td><td>elige la opcion 1..n</td></tr>
+    <tr><td><code>Value currentLine(...)</code></td><td>{speaker, text, audio, node, autoAdvance} o nil</td></tr>
+    <tr><td><code>Value getVar(texto)</code></td><td>lee una variable</td></tr>
+    <tr><td><code>Value isActive(...)</code></td><td>hay un dialogo en marcha?</td></tr>
+    <tr><td><code>Value isWaitingChoice(...)</code></td><td>esta esperando que se elija?</td></tr>
+    <tr><td><code>Value name(...)</code></td><td>dialogo que corre</td></tr>
+    <tr><td><code>Value next(...)</code></td><td>sigue tras una linea</td></tr>
+    <tr><td><code>Value onChoices(callback)</code></td><td>end) opciones para elegir</td></tr>
+    <tr><td><code>Value onEnd(callback)</code></td><td>end) al terminar</td></tr>
+    <tr><td><code>Value onEvent(callback)</code></td><td>end) nodo Evento</td></tr>
+    <tr><td><code>Value onLine(callback)</code></td><td>end) cada linea</td></tr>
+    <tr><td><code>Value onStart(callback)</code></td><td>end) al empezar</td></tr>
+    <tr><td><code>Value setAutoAudio(activar)</code></td><td>reproduce solo el audio de cada linea</td></tr>
+    <tr><td><code>Value setVar(texto, valor)</code></td><td>variable de los dialogos</td></tr>
+    <tr><td><code>Value start(texto)</code></td><td>empieza un .crdialog (nombre o ruta)</td></tr>
+    <tr><td><code>Value stop(...)</code></td><td>lo corta</td></tr>
+  </tbody>
+</table>

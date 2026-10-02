@@ -1,5 +1,8 @@
 #include "CramionCore/ui/UI.h"
 
+#include "CramionCore/gameplay/DialogueUi.h"
+#include "CramionCore/gameplay/Localization.h"
+
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -50,6 +53,8 @@ void Image::reflect(ecs::PropertyVisitor& v) {
 
 void Text::reflect(ecs::PropertyVisitor& v) {
     v.field({"text", "Texto"}, text);
+    v.field({"localization_key", "Clave de localizacion", "Clave de la tabla de idiomas (Proyecto > Localizacion). Vacia = el Texto tal cual"},
+            localization_key);
     v.field({"font_size", "Tamano"}, font_size, FloatRange{4.0f, 400.0f, 0.5f, "%.0f"});
     v.field({"color", "Color"}, color, Vec3Kind::Color);
     v.field({"alpha", "Opacidad"}, alpha, FloatRange{0.0f, 1.0f, 0.01f, "%.2f", true});
@@ -444,7 +449,7 @@ void UiSystem::update(ecs::World& world, float width, float height, const UiInpu
         if (const Text* text = e.tryGet<Text>()) {
             UiDrawCommand c = base;
             c.type = UiDrawCommand::Type::Text;
-            c.text = text->text;
+            c.text = text->localization_key.empty() ? text->text : gameplay::localization().get(text->localization_key);
             c.font_size = text->font_size * s;
             c.color = rgba(text->color, text->alpha);
             c.h_align = static_cast<int>(text->h_align);
@@ -452,6 +457,10 @@ void UiSystem::update(ecs::World& world, float width, float height, const UiInpu
             c.wrap = text->wrap;
             c.shadow = text->shadow;
             draw_.push_back(c);
+        }
+        // Caja de dialogo (gameplay/DialogueUi.cpp): el dialogo que corre.
+        if (const gameplay::DialogueBox* box = e.tryGet<gameplay::DialogueBox>()) {
+            if (gameplay::updateDialogueBox(*box, r, s, input, interactive, l.entity, draw_)) capturing_mouse_ = true;
         }
     }
 }

@@ -444,6 +444,8 @@ public:
     virtual ~PropertyBase() = default;
     virtual void load(const Value& v) = 0;
     virtual PropInfo info() const = 0;
+    // El valor actual (recarga en caliente: se guarda y se vuelve a poner).
+    virtual Value current() const = 0;
     const std::string& name() const { return name_; }
 
 protected:
@@ -602,6 +604,18 @@ public:
     }
 
     void load(const Value& v) override { value_ = detail::PropTypeOf<T>::load(v, default_); }
+    Value current() const override {
+        // Las entidades se guardan con su id (save() las deja vacias: el Inspector usa UUID).
+        if constexpr (std::is_same_v<T, Entity>) {
+            return Value(value_);
+        } else if constexpr (std::is_same_v<T, std::vector<Entity>>) {
+            Value out = Value::array();
+            for (const Entity& e : value_) out.push(Value(e));
+            return out;
+        } else {
+            return detail::PropTypeOf<T>::save(value_);
+        }
+    }
     detail::PropInfo info() const override {
         detail::PropInfo p;
         p.name = name_;
@@ -925,6 +939,12 @@ public:
     virtual void onOriginShift(const Vec3& /*offset*/) {}
     /// Objeto de red: llego un cambio de una variable sincronizada (setNetVar del dueno o del servidor).
     virtual void onNetVar(const std::string& /*key*/, const Value& /*value*/) {}
+    /// Recarga en caliente (guardaste el .cpp en Play): lo que devuelvas aqui llega a onAfterReload
+    /// de la instancia nueva. Las Property<T> se conservan solas; guarda aqui el resto (variables privadas).
+    virtual Value onBeforeReload() { return {}; }
+    /// Recarga en caliente: la instancia nueva ya tiene sus Property<T>; no se llama awake() ni start().
+    /// Vuelve a registrar aqui los callbacks (Input.bindAction, Network.on...) del proceso anterior.
+    virtual void onAfterReload(const Value& /*state*/) {}
     /// Que hacer con un mensaje (en el constructor o en awake):
     /// on("OnJugar", [this](const Value&) { Scene::load("Nivel1"); });
     /// on("OnVolumen", [this](const Value& v) { Prefs::setFloat("volumen", v); });

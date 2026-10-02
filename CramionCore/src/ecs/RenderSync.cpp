@@ -835,6 +835,7 @@ void RenderSync::reset(scene::Scene& scene) {
     animations_.clear();
     controllers_.clear();
     failed_controllers_.clear();
+    motion_features_.clear();  // por indice de modelo: se rehacen
     external_clips_.clear();
     pending_clips_.clear();  // (los futuros esperan a su hilo al destruirse)
     prefetched_controllers_.clear();
@@ -1835,6 +1836,7 @@ void RenderSync::renderCameraTextures(World& world, scene::Scene& scene, gfx::Vu
         view.setPosition(job.entity.worldPosition());
         view.setOrientation(job.entity.forward(), job.entity.up());
         view.setFovY(camera.fov * kDegToRad);
+        view.setOrthographic(camera.orthographic, camera.ortho_size);
         view.setClipPlanes(camera.near_plane, camera.far_plane);
         renderer.renderToTexture(scene, view, job.texture);
     }
@@ -2160,9 +2162,21 @@ void RenderSync::syncActors(World& world, scene::Scene& scene, gfx::VulkanRender
         bool animating = false;
         bool posed = false;  // la pose de este frame ya se evaluo
         bool inertial_tracked = false;  // pose de animacion: la inercializacion la sigue
+        // Motion Matching (RenderSyncMotion.cpp): si esta activo y tiene base,
+        // manda sobre el Animator.
+        if (anim::MotionMatching* mm = e.tryGet<anim::MotionMatching>();
+            mm != nullptr && mm->enabled && mm->database.valid()) {
+            const MotionStep step = updateMotionMatching(e, *mm, *model, data, state, scene, delta_seconds);
+            if (step == MotionStep::Waiting) return;
+            if (step == MotionStep::Posed) {
+                animating = true;
+                posed = true;
+                inertial_tracked = true;
+            }
+        }
         // Un modelo sin clips propios tambien anima con un controlador (sus
         // clips son .cranim sueltos: el personaje de Mixamo y su pack).
-        if (Animator* animator = e.tryGet<Animator>();
+        if (Animator* animator = posed ? nullptr : e.tryGet<Animator>();
             animator != nullptr && (!data.animations.empty() || animator->controller.valid())) {
             animating = true;
             int clip = animator->clip;
@@ -2254,7 +2268,10 @@ void RenderSync::syncActors(World& world, scene::Scene& scene, gfx::VulkanRender
                     phase = st.loop ? phase - std::floor(phase) : std::clamp(phase, 0.0f, 1.0f);
                 };
 
-                stepAnimatorController(*controller, runtime, stateSamples(runtime.state, state.phase, 0.0f, nullptr));
+                if (!runtime.replay_control) {  // repeticion: el estado lo pone ella
+                    stepAnimatorController(*controller, runtime, stateSamples(runtime.state, state.phase, 0.0f, nullptr));
+                }
+                runtime.state = std::clamp(runtime.state, 0, static_cast<int>(controller->states.size()) - 1);
                 float inertial_duration = 0.0f;
                 if (runtime.state != state.controller_state) {
                     // Fundido o inercializacion desde el estado que sonaba (si
@@ -2280,7 +2297,7 @@ void RenderSync::syncActors(World& world, scene::Scene& scene, gfx::VulkanRender
                     }
                     state.controller_state = runtime.state;
                     state.phase = transition != nullptr && transition->sync_phase ? old_phase : 0.0f;
-                    animator->time = 0.0f;
+                    if (!runtime.replay_control) animator->time = 0.0f;  // repeticion: su tiempo manda
                 }
                 const AnimatorState& st = controller->states[static_cast<std::size_t>(runtime.state)];
                 const float cycle = stateSamples(runtime.state, state.phase, 0.0f, nullptr);
@@ -2782,6 +2799,7 @@ void RenderSync::syncCamera(World& world, scene::Scene& scene) {
     view.setPosition(main.worldPosition());
     view.setOrientation(main.forward(), main.up());
     view.setFovY(camera.fov * kDegToRad);
+    view.setOrthographic(camera.orthographic, camera.ortho_size);
     // Plano cercano y lejano del componente (lo que queda mas alla del lejano
     // no se dibuja: se ve el cielo). Antes no se aplicaban y la camara del
     // juego usaba siempre 0.1 - 500 m.

@@ -1126,6 +1126,155 @@ std::string calleeName(const std::string& text, std::size_t open, const FileType
     return type.empty() ? std::string() : type + (last.accessor == ':' ? ":" : ".") + last.name;
 }
 
+
+// La API de la 2.1 (Steam, pruebas, partidas, idiomas, dialogos, Behavior
+// Trees, repeticiones, 2D, VFX, destruccion, Motion Matching y vehiculos).
+// "Entity:" y "Entity." son los metodos y propiedades nuevos de los objetos.
+const std::unordered_map<std::string, List>& docs21() {
+    static const std::unordered_map<std::string, List> map = {
+        {"Entity:",
+         {fn("playEffect", "", "VisualEffect: empieza (o reinicia) el efecto"),
+          fn("stopEffect", "borrar", "deja de emitir (true = borra las particulas)"),
+          fn("pauseEffect", "true", "pausa o sigue la simulacion"), fn("isEffectPlaying", "", "esta emitiendo?"),
+          fn("sendEffectEvent", "\"Explode\"", "evento del bloque Spawn 'Al recibir un evento'"),
+          fn("setEffectFloat", "\"Rate\", 200", "parametro expuesto (float)"),
+          fn("setEffectVector", "\"Viento\", Vec3(1, 0, 0)", "parametro expuesto (Vector3)"),
+          fn("setEffectColor", "\"Color\", Vec3(1, 0.5, 0), 1", "parametro expuesto (color y alfa)"),
+          fn("setEffectBool", "\"Activo\", true", "parametro expuesto (bool)"),
+          fn("getEffectFloat", "\"Rate\"", "valor actual de un parametro (o nil)"),
+          fn("addForce2D", "Vec3(0, 5, 0), \"impulse\"", "Rigidbody2D: fuerza (force, impulse, velocity)"),
+          fn("addForceAtPosition2D", "fuerza, punto, \"impulse\"", "fuerza en un punto (tambien gira)"),
+          fn("addTorque2D", "par, \"impulse\"", "giro en el plano"),
+          fn("movePosition2D", "Vec3(x, y, 0)", "lleva el cuerpo 2D ahi (sin chocar)"),
+          fn("isSleeping2D", "", "el cuerpo 2D esta dormido"),
+          fn("playSpriteAnimation", "\"Correr\", reiniciar", "SpriteAnimator: cambia de clip (true si existe)"),
+          fn("setTile", "x, y, id, capa", "Tilemap: pone una celda (id 0 = vacia, n = celda n-1 del tileset, -k = Rule Tile k)"),
+          fn("getTile", "x, y, capa", "Tilemap: lo que hay en una celda"),
+          fn("worldToCell", "posicion", "Tilemap: celda (x, y) de un punto del mundo"),
+          fn("cellToWorld", "x, y", "Tilemap: centro de una celda en el mundo"),
+          fn("fracture", "punto, fuerza", "Destructible: se rompe ya (fuerza en m/s hacia fuera)"),
+          fn("damage", "cantidad, punto, fuerza", "Destructible: quita vida (se rompe al llegar a 0)"),
+          fn("setGear", "marcha", "Vehicle con cambio manual: -1 atras, 0 punto muerto, 1..n"),
+          fn("shiftGear", "1", "Vehicle: sube (1) o baja (-1) una marcha"),
+          fn("vehicleState", "", "{speed, forwardSpeed, rpm, rpmFraction, gear, gearCount, automatic} o nil"),
+          fn("setMotionVelocity", "Vec3", "Motion Matching (modo Script): velocidad que se pide (m/s)"),
+          fn("setMotionFacing", "Vec3", "Motion Matching: hacia donde mirar (cero = hacia donde se mueve)"),
+          fn("setMotionTags", "\"agachado\"", "Motion Matching: solo fotogramas con esas etiquetas"),
+          fn("getBehaviorTree", "", "su BehaviorTree (bt:get/set/start/stop/finishTask) o nil")}},
+        {"Entity.",
+         {prop("effectParticles", "particulas vivas de su VisualEffect"),
+          prop("velocity2D", "Vec3 de su Rigidbody2D (z = 0)"),
+          prop("angularVelocity2D", "giro de su Rigidbody2D (grados/s)"),
+          prop("spriteAnimation", "clip que suena en su SpriteAnimator"),
+          prop("spriteAnimationFinished", "el clip sin bucle termino"),
+          prop("spriteFrame", "corte de la hoja de su SpriteRenderer"), prop("flipX", "voltea su sprite"),
+          prop("spriteColor", "Vec3 tinte de su sprite"), prop("health", "vida de su Destructible"),
+          prop("isBroken", "su Destructible ya se rompio"), prop("motionClip", "clip que eligio el Motion Matching")}},
+        {"Physics2D",
+         {fn("raycast", "origen, direccion, distancia, mascara", "nil o {entity, point, normal, distance, fraction}"),
+          fn("raycastAll", "origen, direccion, distancia, mascara", "lista de choques, del mas cercano al mas lejano"),
+          fn("overlapCircle", "centro, radio, mascara", "objetos con collider 2D dentro del circulo"),
+          fn("overlapBox", "centro, tamano, angulo, mascara", "objetos dentro de la caja"),
+          fn("overlapPoint", "punto, mascara", "objetos que tocan el punto"),
+          fn("getGravity", "", "Vec3 gravedad 2D"), fn("setGravity", "Vec3(0, -9.81, 0)", "cambia la gravedad 2D")}},
+        {"Replay",
+         {fn("start", "{rate = 30, maxSeconds = 10, tag = \"Coche\"}", "empieza a grabar"),
+          fn("stop", "", "deja de grabar"), fn("play", "desde, velocidad", "reproduce (desde < 0 = los ultimos N segundos)"),
+          fn("stopPlayback", "", "vuelve al juego"), fn("seek", "segundos", "salta a ese momento"),
+          fn("pause", "true", "pausa la reproduccion"), fn("setSpeed", "0.25", "camara lenta / rapida"),
+          fn("setLoop", "true", "en bucle"), fn("setFreeCamera", "true", "camara libre (WASD + raton)"),
+          fn("mark", "\"Gol\", datos", "marcador en la linea de tiempo"), fn("save", "\"gol\"", "guarda un .crreplay"),
+          fn("load", "\"gol\"", "carga un .crreplay"), fn("list", "", "repeticiones guardadas"),
+          fn("isRecording", "", "esta grabando?"), fn("isPlaying", "", "esta reproduciendo?"),
+          fn("time", "", "segundo de la reproduccion"), fn("duration", "", "segundos grabados")}},
+        {"Save",
+         {fn("save", "\"slot1\", \"Etiqueta\"", "guarda la partida (objetos Saveable, valores, dialogos)"),
+          fn("load", "\"slot1\"", "carga una partida (cambia de escena si hace falta)"),
+          fn("delete", "\"slot1\"", "borra una ranura"), fn("exists", "\"slot1\"", "existe?"),
+          fn("list", "", "{slot, label, scene, date, playtime, size} de cada ranura"),
+          fn("info", "\"slot1\"", "datos de una ranura (o nil)"),
+          fn("setValue", "\"oro\", 120", "valor suelto (va en cada partida)"), fn("getValue", "\"oro\", 0", "lee un valor suelto"),
+          fn("hasValue", "\"oro\"", "existe?"), fn("deleteValue", "\"oro\"", "lo borra"), fn("clearValues", "", "borra todos"),
+          fn("setAutosave", "60, \"autosave\"", "autoguardado cada N segundos (0 = no)"),
+          fn("playtime", "", "segundos jugados"), fn("setCompression", "true", "partidas comprimidas"),
+          fn("isWriting", "", "esta escribiendo en segundo plano?"), fn("folder", "", "carpeta de las partidas"),
+          fn("onLoaded", "function(slot) end", "despues de cargar una partida")}},
+        {"Text",
+         {fn("get", "\"menu.jugar\", ...", "texto en el idioma actual ({0}, {1}... con los argumentos)"),
+          fn("plural", "\"monedas\", n, ...", "forma plural (clave#one / clave#other) con {n}"),
+          fn("format", "\"Hola {0}\", nombre", "sustituye {0}, {1}, {nombre}"),
+          fn("has", "\"clave\"", "existe la clave?"), fn("language", "", "idioma actual (\"es\")"),
+          fn("setLanguage", "\"en\"", "cambia el idioma (la UI se actualiza sola)"),
+          fn("languages", "", "{code, name} de cada idioma"), fn("systemLanguage", "", "idioma del sistema"),
+          fn("onLanguageChanged", "function(codigo) end", "aviso al cambiar de idioma (devuelve un id)"),
+          fn("removeListener", "id", "quita un aviso")}},
+        {"Dialogue",
+         {fn("start", "\"Mercader\"", "empieza un .crdialog (nombre o ruta)"), fn("stop", "", "lo corta"),
+          fn("next", "", "sigue tras una linea"), fn("advance", "", "lo mismo que next"),
+          fn("choose", "1", "elige la opcion 1..n"), fn("isActive", "", "hay un dialogo en marcha?"),
+          fn("isWaitingChoice", "", "esta esperando que se elija?"), fn("name", "", "dialogo que corre"),
+          fn("currentLine", "", "{speaker, text, audio, node, autoAdvance} o nil"),
+          fn("choices", "", "lista de {index, text, enabled}"), fn("setVar", "\"oro\", 10", "variable de los dialogos"),
+          fn("getVar", "\"oro\"", "lee una variable"), fn("setAutoAudio", "true", "reproduce solo el audio de cada linea"),
+          fn("onStart", "function(nombre) end", "al empezar"), fn("onLine", "function(linea) end", "cada linea"),
+          fn("onChoices", "function(opciones) end", "opciones para elegir"),
+          fn("onEvent", "function(nombre, argumento) end", "nodo Evento"), fn("onEnd", "function(nombre) end", "al terminar")}},
+        {"BehaviorTree",
+         {fn("of", "entity", "el arbol de un objeto (o nil)"),
+          fn("registerTask", "\"Atacar\", function(self, bt, primera) return \"running\" end", "tarea Run Script en Lua"),
+          fn("reportNoise", "posicion, radio, quien", "ruido que oye el servicio Hearing"),
+          fn("broadcast", "\"clave\", valor", "cambia una clave en todos los arboles")}},
+        {"Steam",
+         {fn("available", "", "Steam esta abierto y la DLL cargada"), fn("error", "", "por que no lo esta"),
+          fn("appId", "", "AppID"), fn("userId", "", "SteamID del jugador"), fn("userName", "", "nombre del jugador"),
+          fn("friendName", "id", "nombre de un amigo"), fn("language", "", "idioma de Steam"),
+          fn("isDlcInstalled", "appId", "tiene el DLC?"), fn("isSteamDeck", "", "corre en una Steam Deck?"),
+          fn("unlockAchievement", "\"PRIMERA_SANGRE\"", "desbloquea un logro"),
+          fn("clearAchievement", "\"PRIMERA_SANGRE\"", "lo vuelve a bloquear (pruebas)"),
+          fn("isAchievementUnlocked", "\"PRIMERA_SANGRE\"", "esta desbloqueado?"),
+          fn("achievementProgress", "\"COLECCIONISTA\", 5, 10", "muestra el progreso"),
+          fn("setStatInt", "\"partidas\", 3", "estadistica entera"), fn("setStatFloat", "\"km\", 4.5", "estadistica decimal"),
+          fn("getStatInt", "\"partidas\"", "lee una estadistica"), fn("getStatFloat", "\"km\"", "lee una estadistica"),
+          fn("storeStats", "", "envia logros y estadisticas a Steam"),
+          fn("uploadScore", "\"Puntos\", 1200, function(ok, puesto) end", "sube una puntuacion al marcador"),
+          fn("downloadScores", "\"Puntos\", \"global\", 1, 10, function(ok, filas) end", "lee el marcador"),
+          fn("setRichPresence", "\"steam_display\", \"#Jugando\"", "estado que ven los amigos"),
+          fn("clearRichPresence", "", "lo borra"), fn("openOverlay", "\"friends\"", "abre el overlay"),
+          fn("openOverlayUrl", "\"https://...\"", "web en el overlay"), fn("openStore", "", "la pagina de la tienda"),
+          fn("overlayEnabled", "", "el overlay funciona?"), fn("overlayActive", "", "esta abierto ahora?"),
+          fn("cloudEnabled", "", "Steam Cloud activo?"), fn("cloudWrite", "\"partida.json\", texto", "guarda en la nube"),
+          fn("cloudRead", "\"partida.json\"", "lee de la nube (o nil)"), fn("cloudExists", "\"partida.json\"", "existe?"),
+          fn("cloudDelete", "\"partida.json\"", "lo borra"), fn("cloudFiles", "", "{name, size} de cada archivo"),
+          fn("workshopItems", "", "objetos del Workshop suscritos"),
+          fn("workshopUpload", "{title, description, folder, preview, tags}, function(ok, id) end", "sube al Workshop"),
+          fn("workshopProgress", "", "0..1 de la subida"),
+          fn("createLobby", "\"public\", 4, function(ok, sala) end", "crea una sala"),
+          fn("joinLobby", "sala, function(ok, sala) end", "entra en una sala"), fn("leaveLobby", "sala", "sale"),
+          fn("findLobbies", "{modo = \"coop\"}, 20, function(ok, salas) end", "busca salas"),
+          fn("setLobbyData", "sala, \"ip\", \"1.2.3.4:7777\"", "dato de la sala"), fn("getLobbyData", "sala, \"ip\"", "lo lee"),
+          fn("lobbyMembers", "sala", "{id, name} de cada jugador"), fn("lobbyOwner", "sala", "SteamID del dueno"),
+          fn("inviteToLobby", "sala", "dialogo de invitar del overlay"),
+          fn("onLobbyJoinRequested", "function(sala) end", "un amigo invito y el jugador acepto"),
+          fn("onOverlay", "function(abierto) end", "se abrio o cerro el overlay (pausar)")}},
+        {"Test",
+         {fn("case", "\"nombre\", {play = true, timeout = 10}, function() end", "una prueba (de edicion o de Play)"),
+          fn("wait", "frames", "espera frames (pruebas de Play)"), fn("waitSeconds", "1.5", "espera segundos"),
+          fn("waitUntil", "function() return x end, limite", "espera a que se cumpla (falla al pasar el limite)"),
+          fn("pass", "\"mensaje\"", "da la prueba por buena"), fn("fail", "\"mensaje\"", "la da por mala"),
+          fn("log", "\"texto\"", "texto en el resultado"), fn("setTimeout", "segundos", "tiempo maximo"),
+          fn("isRunning", "", "hay una prueba en marcha?"), fn("name", "", "nombre de la prueba"),
+          fn("elapsed", "", "segundos que lleva")}},
+        {"Assert",
+         {fn("isTrue", "valor, mensaje", ""), fn("isFalse", "valor, mensaje", ""), fn("equal", "real, esperado, mensaje", ""),
+          fn("notEqual", "a, b, mensaje", ""), fn("approx", "real, esperado, tolerancia, mensaje", "numeros o Vec3"),
+          fn("isNil", "valor, mensaje", ""), fn("notNil", "valor, mensaje", ""), fn("greater", "a, b, mensaje", ""),
+          fn("less", "a, b, mensaje", ""), fn("atLeast", "a, b, mensaje", ""), fn("atMost", "a, b, mensaje", ""),
+          fn("contains", "lista o texto, valor, mensaje", ""), fn("throws", "funcion, mensaje", "la funcion tiene que fallar"),
+          fn("noError", "funcion, mensaje", "no tiene que fallar"), fn("fail", "mensaje", "falla siempre")}},
+    };
+    return map;
+}
+
 const LuaCompletion* findDoc(const std::string& callee) {
     const std::size_t sep = callee.find_first_of(".:");
     if (sep == std::string::npos) {
@@ -1142,7 +1291,11 @@ const LuaCompletion* findDoc(const std::string& callee) {
         }
         return nullptr;
     };
-    if (owner == "Entity") return search(callee[sep] == ':' ? entityMethods() : entityProperties());
+    if (owner == "Entity") {
+        if (const LuaCompletion* c = search(callee[sep] == ':' ? entityMethods() : entityProperties())) return c;
+        const auto more = docs21().find(callee[sep] == ':' ? "Entity:" : "Entity.");
+        return more != docs21().end() ? search(more->second) : nullptr;
+    }
     if (owner == "Vec3" && callee[sep] == ':') return search(vectorMembers(':'));
     if (owner == "Quat" && callee[sep] == ':') return search(quatMembers(':'));
     if (owner == "Mesh" && callee[sep] == ':') return search(meshMembers(':'));
@@ -1150,6 +1303,9 @@ const LuaCompletion* findDoc(const std::string& callee) {
         if (const LuaCompletion* c = search(it->second)) return c;
     }
     if (const auto it = moreTables().find(owner); it != moreTables().end()) {
+        if (const LuaCompletion* c = search(it->second)) return c;
+    }
+    if (const auto it = docs21().find(owner); it != docs21().end()) {
         if (const LuaCompletion* c = search(it->second)) return c;
     }
     if (owner == "Mesh" && callee[sep] == '.') return search(meshMembers('.'));

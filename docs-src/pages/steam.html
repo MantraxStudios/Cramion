@@ -1,0 +1,43 @@
+<p>
+  Integración con <strong>Steam</strong> (Steamworks): logros, estadísticas, marcadores, Rich Presence, overlay, Steam Cloud,
+  Workshop y salas (lobbies). El motor carga <code>steam_api64.dll</code> al arrancar si está; <strong>sin Steam el juego
+  funciona igual</strong> (<code>Steam.available()</code> = false y las llamadas no hacen nada).
+</p>
+
+<h3 id="configurar">Configurar</h3>
+<ol>
+  <li>Descarga el <strong>Steamworks SDK</strong> de Valve (no se incluye con el motor).</li>
+  <li><em>Configuraciones de compilación &gt; Steam &gt; Usar Steamworks</em>: tu <strong>AppID</strong> (480 = Spacewar, para
+    probar) y la ruta de <code>redistributable_bin/win64/steam_api64.dll</code>.</li>
+  <li><em>Copiar steam_appid.txt</em> permite probar el juego sin abrirlo desde Steam (quítalo en la versión que subes).
+    <em>Relanzar desde Steam</em> hace que el juego abierto a mano se reabra desde Steam.</li>
+</ol>
+<p>
+  Al exportar se copian la DLL y <code>steam_appid.txt</code> junto al <code>.exe</code>. En el editor, Steam se conecta al dar
+  Play (con Steam abierto) y un aviso dice con qué cuenta.
+</p>
+
+<h3 id="logros">Logros, estadísticas y marcadores</h3>
+<pre><code class="language-cpp">Steam::unlockAchievement("PRIMERA_SANGRE");
+Steam::achievementProgress("COLECCIONISTA", 5, 10);
+Steam::setStatInt("partidas", 3);
+Steam::storeStats();                       // envia todo a Steam</code></pre>
+<pre><code class="language-lua">Steam.uploadScore("Puntos", 1200, function(ok, puesto)
+    if ok then Debug.log("Puesto " .. puesto) end
+end)
+Steam.downloadScores("Puntos", "global", 1, 10, function(ok, filas)
+    for _, f in ipairs(filas) do Debug.log(f.rank .. ". " .. f.name .. " " .. f.score) end
+end)</code></pre>
+
+<h3 id="mas">Más</h3>
+<table>
+  <thead><tr><th>Función</th><th>Qué hace</th></tr></thead>
+  <tbody>
+    <tr><td><code>setRichPresence(clave, valor)</code></td><td>Lo que ven los amigos ("Jugando el nivel 3")</td></tr>
+    <tr><td><code>openOverlay("friends")</code>, <code>onOverlay(fn)</code></td><td>Overlay de Steam (pausa el juego al abrirse)</td></tr>
+    <tr><td><code>cloudWrite</code>, <code>cloudRead</code>, <code>cloudFiles</code></td><td>Steam Cloud</td></tr>
+    <tr><td><code>workshopUpload</code>, <code>workshopItems</code></td><td>Subir y listar contenido del Workshop</td></tr>
+    <tr><td><code>createLobby</code>, <code>findLobbies</code>, <code>joinLobby</code>, <code>setLobbyData</code>, <code>onLobbyJoinRequested</code></td><td>Salas para el multijugador (guarda en la sala la IP del host y conecta con <a href="cpp-network.html">Network</a>)</td></tr>
+    <tr><td><code>userName</code>, <code>userId</code>, <code>language</code>, <code>isSteamDeck</code>, <code>isDlcInstalled</code></td><td>Datos del jugador</td></tr>
+  </tbody>
+</table>

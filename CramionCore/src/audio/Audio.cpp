@@ -812,7 +812,17 @@ bool AudioSystem::isPlaying(ecs::Entity entity) const {
     return it != impl_->voices.end() && it->second->loaded && ma_sound_is_playing(&it->second->sound);
 }
 
+namespace {
+OneShotListener& oneShotListener() {
+    static OneShotListener listener;
+    return listener;
+}
+}  // namespace
+
+void setOneShotListener(OneShotListener listener) { oneShotListener() = std::move(listener); }
+
 void AudioSystem::playOneShot(const std::string& clip, const Vec3& position, float volume, bool spatial) {
+    if (const OneShotListener& listener = oneShotListener()) listener(clip, position, volume, spatial);
     Impl& d = *impl_;
     auto voice = std::make_unique<Impl::Voice>();
     if (!d.load(*voice, clip, spatial)) return;

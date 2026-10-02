@@ -22,6 +22,8 @@
     <tr><td><code>void onMessage(const std::string&amp; name, const Value&amp; value)</code></td><td>Un mensaje por su nombre: los botones (on_click &quot;OnJugar&quot;), sliders, casillas y campos de la UI lo envian al script del objeto. Por defecto llama al de on(...).</td></tr>
     <tr><td><code>void onOriginShift(const Vec3&amp; )</code></td><td>Mundos grandes: el motor recoloco el origen y todo se movio -offset (resta offset a las posiciones guardadas).</td></tr>
     <tr><td><code>void onNetVar(const std::string&amp; , const Value&amp; )</code></td><td>Objeto de red: llego un cambio de una variable sincronizada (setNetVar del dueno o del servidor).</td></tr>
+    <tr><td><code>Value onBeforeReload()</code></td><td>Recarga en caliente (guardaste el .cpp en Play): lo que devuelvas aqui llega a onAfterReload de la instancia nueva. Las Property&lt;T&gt; se conservan solas; guarda aqui el resto (variables privadas).</td></tr>
+    <tr><td><code>void onAfterReload(const Value&amp; )</code></td><td>Recarga en caliente: la instancia nueva ya tiene sus Property&lt;T&gt;; no se llama awake() ni start(). Vuelve a registrar aqui los callbacks (Input.bindAction, Network.on...) del proceso anterior.</td></tr>
     <tr><td><code>void on(const std::string&amp; name, std::function&lt;void(const Value&amp;)&gt; fn)</code></td><td>Que hacer con un mensaje (en el constructor o en awake): on(&quot;OnJugar&quot;, [this](const Value&amp;) { Scene::load(&quot;Nivel1&quot;); }); on(&quot;OnVolumen&quot;, [this](const Value&amp; v) { Prefs::setFloat(&quot;volumen&quot;, v); });</td></tr>
   </tbody>
 </table>
@@ -39,6 +41,7 @@
     <tr><td><code>Property&amp; operator=(const T&amp; v)</code></td><td></td></tr>
     <tr><td><code>auto operator[](std::size_t i) const -&gt; decltype(std::declval&lt;const U&amp;&gt;()[i])</code></td><td></td></tr>
     <tr><td><code>void load(const Value&amp; v)</code></td><td></td></tr>
+    <tr><td><code>Value current() const</code></td><td></td></tr>
     <tr><td><code>detail::PropInfo info() const</code></td><td></td></tr>
   </tbody>
 </table>
@@ -98,6 +101,7 @@
     <tr><td><code>detail::PropertyBase::PropertyBase(Script* owner, const char* name) : name_(name)</code></td><td></td></tr>
     <tr><td><code>class Mesh</code></td><td>Malla creada por codigo (Mesh::cube, Mesh::create, entity().mesh()). Cambiala y llama a apply().</td></tr>
     <tr><td><code>class StateMachine</code></td><td>Maquina de estados de un objeto (entity().getStateMachine()): go, trigger, set/get...</td></tr>
+    <tr><td><code>class BehaviorTree</code></td><td>Behavior Tree de un objeto (entity().getBehaviorTree()): get/set de la pizarra, start/stop, finishTask...</td></tr>
     <tr><td><code>std::string uuid</code></td><td></td></tr>
     <tr><td><code>std::string path</code></td><td></td></tr>
     <tr><td><code>bool valid() const</code></td><td>Existe todavia (no se ha destruido).</td></tr>

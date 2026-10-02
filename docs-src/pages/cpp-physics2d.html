@@ -1,0 +1,14 @@
+<p>Física 2D: rayos y solapes en el plano XY.</p>
+
+<h3 id="physics2d">Physics2D</h3>
+<table>
+  <tbody>
+    <tr><td><code>Value getGravity(...)</code></td><td>Physics2D.getGravity() Vec3 gravedad 2D</td></tr>
+    <tr><td><code>Value overlapBox(centro, tamano, angulo, mascara)</code></td><td>Physics2D.overlapBox(centro, tamano, angulo, mascara) objetos dentro de la caja</td></tr>
+    <tr><td><code>Value overlapCircle(centro, radio, mascara)</code></td><td>Physics2D.overlapCircle(centro, radio, mascara) objetos con collider 2D dentro del circulo</td></tr>
+    <tr><td><code>Value overlapPoint(punto, mascara)</code></td><td>Physics2D.overlapPoint(punto, mascara) objetos que tocan el punto</td></tr>
+    <tr><td><code>Value raycast(origen, direccion, distancia, mascara)</code></td><td>Physics2D.raycast(origen, direccion, distancia, mascara) nil o {entity, point, normal, distance, fraction}</td></tr>
+    <tr><td><code>Value raycastAll(origen, direccion, distancia, mascara)</code></td><td>Physics2D.raycastAll(origen, direccion, distancia, mascara) lista de choques, del mas cercano al mas lejano</td></tr>
+    <tr><td><code>Value setGravity(arg)</code></td><td>Physics2D.setGravity(Vec3(0, -9.81, 0)) cambia la gravedad 2D</td></tr>
+  </tbody>
+</table>

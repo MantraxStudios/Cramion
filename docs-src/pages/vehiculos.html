@@ -1,0 +1,40 @@
+<p>
+  <strong>Vehículos</strong> con ruedas, como el Wheel Collider de Unity o el Chaos Vehicle de Unreal (sobre el vehículo de
+  Jolt): motor con curva de par, caja de cambios automática o manual, diferenciales (delantera, trasera o 4×4 con reparto),
+  suspensión, neumáticos con curvas de fricción, barras estabilizadoras y ganchos de sonido y derrape.
+</p>
+
+<h3 id="montar">Montar un coche</h3>
+<ol>
+  <li>Importa el modelo: la carrocería y las ruedas como hijos (nombres con <em>wheel</em>, <em>rueda</em>, <em>tire</em> o
+    <em>llanta</em>).</li>
+  <li>Selecciona la raíz y abre <em>Ventana &gt; Asistente de vehículo</em>: elige la tracción y la masa y pulsa
+    <strong>Montar el vehículo</strong>. Crea un <strong>Wheel Collider</strong> por rueda (radio sacado de su malla, las de
+    delante con dirección) y pone <strong>Rigidbody</strong>, collider y <strong>Vehicle</strong>.</li>
+  <li>Dale a Play: <kbd>W</kbd>/<kbd>S</kbd> acelerar y frenar, <kbd>A</kbd>/<kbd>D</kbd> girar, <kbd>Espacio</kbd> freno de mano
+    (o las Input Actions <em>Move</em> y <em>Jump</em>, también con mando).</li>
+</ol>
+
+<h3 id="vehicle">Componente Vehicle</h3>
+<ul>
+  <li><strong>Motor</strong>: par máximo (Nm), rpm mínimas y máximas, curva de par, inercia.</li>
+  <li><strong>Caja de cambios</strong>: automática o manual, relaciones, marcha atrás, rpm de subir y bajar, tiempo de cambio.</li>
+  <li><strong>Diferenciales</strong>: grupo final, autoblocante, reparto delante/detrás en 4×4.</li>
+  <li><strong>Estabilidad</strong>: barras estabilizadoras, centro de masas, inclinación máxima.</li>
+  <li><strong>Entrada</strong>: lo conduce el jugador, con Input Actions (acciones de conducir, freno de mano, freno y cambio
+    manual) y velocidad del volante.</li>
+  <li><strong>Efectos</strong>: un AudioSource de motor (su tono y volumen siguen a las rpm) y otro de derrape, y un sistema de
+    partículas de humo que emite al derrapar.</li>
+</ul>
+<p>
+  Cada <strong>Wheel Collider</strong>: radio, ancho, masa, suspensión (recorrido, precarga, frecuencia, amortiguación),
+  dirección, tracción, frenos y las curvas de fricción hacia delante y de lado (extremo y asíntota, como Unity). Su
+  <em>Visual</em> es el objeto que gira con la rueda.
+</p>
+
+<h3 id="scripts">Desde los scripts</h3>
+<pre><code class="language-cpp">entity().setVehicleInput(acelerador, direccion, freno, frenoDeMano);
+entity().setGear(2);                    // cambio manual
+float kmh = entity().speed();
+Value estado = entity().vehicleState(); // speed, rpm, rpmFraction, gear, gearCount...</code></pre>
+<p>Para una cámara de persecución, mira <a href="ejemplo-vehiculo.html">el ejemplo de vehículo</a>.</p>

@@ -1,0 +1,39 @@
+<p>
+  <strong>Destrucción</strong> como la de Unreal (Geometry Collections): la malla de un objeto se parte de antemano en trozos
+  convexos (celdas de Voronoi) con su cara de corte, y en el juego el objeto se rompe con golpes fuertes o desde un script:
+  los trozos salen como cuerpos rígidos empujados desde el punto del golpe.
+</p>
+
+<h3 id="fracturar">Fracturar</h3>
+<ol>
+  <li>Selecciona el objeto (con malla) y abre <em>Ventana &gt; Fracturar (destrucción)</em>.</li>
+  <li>Elige los <strong>Trozos</strong>, la <strong>Semilla</strong> (la misma = los mismos trozos), los <strong>Niveles</strong>
+    (2 o 3: los trozos grandes se rompen otra vez con más golpes) y, si quieres, <em>Concentrar alrededor de un punto</em>
+    (trozos pequeños donde va a llegar el impacto).</li>
+  <li><strong>Fracturar</strong> guarda <code>Assets/Fracturas/&lt;objeto&gt;.crfracture</code> y le pone el componente
+    <strong>Destructible</strong>.</li>
+</ol>
+
+<h3 id="destructible">Componente Destructible</h3>
+<table>
+  <thead><tr><th>Grupo</th><th>Propiedades</th></tr></thead>
+  <tbody>
+    <tr><td>Vida y golpes</td><td>Vida; romper con golpes; umbral (m/s de choque que no hacen daño); daño por m/s; fuerza con que salen los trozos</td></tr>
+    <tr><td>Trozos</td><td>Material del interior (o un color); densidad (si no tiene Rigidbody); romper otra vez; vida de los trozos</td></tr>
+    <tr><td>Escombros</td><td>Duración (0 = siempre); segundos encogiendo antes de desaparecer; máximo de trozos en la escena</td></tr>
+  </tbody>
+</table>
+
+<h3 id="scripts">Desde los scripts</h3>
+<pre><code class="language-cpp">// Un disparo que rompe lo que toca
+entity().fracture(punto, 8.0f);      // punto del golpe y fuerza (m/s)
+otro.damage(25.0f, punto);           // quita vida; se rompe al llegar a 0
+float vida = otro.health();</code></pre>
+<pre><code class="language-lua">function Muro:OnBreak(trozos, punto)
+    Audio.playOneShot("Audio/derrumbe.wav", punto)
+    Debug.log(#trozos .. " trozos")
+end</code></pre>
+<div class="note">
+  El objeto roto se desactiva (los scripts que lo tengan guardado no fallan) y sus trozos son objetos nuevos con
+  MeshRenderer, Rigidbody y Mesh Collider convexo. Funciona en el juego exportado.
+</div>

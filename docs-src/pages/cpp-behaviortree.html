@@ -1,0 +1,32 @@
+<p>Behavior Trees: tareas de script, ruidos y avisos a todos los árboles.</p>
+
+<h3 id="behaviortree">BehaviorTree</h3>
+<table>
+  <tbody>
+    <tr><td><code>Value handle</code></td><td></td></tr>
+    <tr><td><code>BehaviorTree() = default</code></td><td></td></tr>
+    <tr><td><code>BehaviorTree(Value v)</code></td><td></td></tr>
+    <tr><td><code>operator Value() const</code></td><td></td></tr>
+    <tr><td><code>operator bool() const</code></td><td></td></tr>
+    <tr><td><code>Value activeTask(...) const</code></td><td></td></tr>
+    <tr><td><code>static BehaviorTree broadcast(texto, valor)</code></td><td>cambia una clave en todos los arboles</td></tr>
+    <tr><td><code>Value clear(...) const</code></td><td></td></tr>
+    <tr><td><code>Value cycles(...) const</code></td><td></td></tr>
+    <tr><td><code>Value entity(...) const</code></td><td></td></tr>
+    <tr><td><code>Value finishTask(...) const</code></td><td></td></tr>
+    <tr><td><code>Value get(...) const</code></td><td></td></tr>
+    <tr><td><code>Value has(...) const</code></td><td></td></tr>
+    <tr><td><code>Value isActive(...) const</code></td><td></td></tr>
+    <tr><td><code>Value create(...) const</code></td><td></td></tr>
+    <tr><td><code>static BehaviorTree of(entity)</code></td><td>el arbol de un objeto (o nil)</td></tr>
+    <tr><td><code>static BehaviorTree registerTask(texto, callback)</code></td><td>return &quot;running&quot; end) tarea Run Script en Lua</td></tr>
+    <tr><td><code>static BehaviorTree reportNoise(posicion, radio, quien)</code></td><td>ruido que oye el servicio Hearing</td></tr>
+    <tr><td><code>Value restart(...) const</code></td><td></td></tr>
+    <tr><td><code>Value running(...) const</code></td><td></td></tr>
+    <tr><td><code>Value set(...) const</code></td><td></td></tr>
+    <tr><td><code>Value start(...) const</code></td><td></td></tr>
+    <tr><td><code>Value stop(...) const</code></td><td></td></tr>
+    <tr><td><code>Value time(...) const</code></td><td></td></tr>
+    <tr><td><code>Value vars(...) const</code></td><td></td></tr>
+  </tbody>
+</table>

@@ -1,0 +1,37 @@
+<p>
+  <strong>Localización</strong>: los textos del juego en varios idiomas, como el paquete Localization de Unity o las String
+  Tables de Unreal. Una tabla de <strong>claves</strong> (<code>menu.jugar</code>) con su texto en cada idioma; la UI y los
+  diálogos cambian solos al cambiar de idioma.
+</p>
+
+<h3 id="ventana">Ventana Localización</h3>
+<ul>
+  <li><em>Ventana &gt; Localización (idiomas)</em>: la tabla con una columna por idioma. Las celdas vacías (sin traducir)
+    salen en naranja y <em>Solo sin traducir</em> las filtra.</li>
+  <li><strong>Idiomas</strong>: añadir (código y nombre), quitar, el de por defecto, cuántos textos le faltan y si el juego
+    empieza en el idioma del sistema.</li>
+  <li><strong>Importar / Exportar CSV</strong> (<code>clave,es,en,...</code>) para pasarlo a traductores. Importar mezcla:
+    conserva las claves que no vengan.</li>
+  <li><em>Idioma actual</em> cambia lo que se ve en la vista Juego.</li>
+</ul>
+<p>Se guarda en <code>ProjectSettings/Localization/</code> (un JSON por idioma) y va con el juego exportado.</p>
+
+<h3 id="textos">Textos con argumentos y plurales</h3>
+<ul>
+  <li>Argumentos: <code>"Hola {0}, tienes {1} monedas"</code> o con nombre <code>"{jugador}"</code>.</li>
+  <li>Plurales: claves con sufijo <code>#one</code>, <code>#other</code> (y <code>#zero</code>, <code>#few</code>,
+    <code>#many</code>): <code>monedas#one = "{n} moneda"</code>, <code>monedas#other = "{n} monedas"</code>. La regla de cada
+    idioma elige la forma.</li>
+</ul>
+
+<h3 id="ui">En la interfaz</h3>
+<p>
+  Los <strong>UI Text</strong> tienen el campo <strong>Clave de localización</strong>: si está puesto, se ve el texto de esa
+  clave en el idioma actual (y cambia al cambiar de idioma). Las líneas y opciones de los diálogos también aceptan claves.
+</p>
+
+<h3 id="api">Desde los scripts</h3>
+<pre><code class="language-cpp">entity().setText(Text::get("hud.vidas", vidas));
+Text::setLanguage("en");
+std::string monedas = Text::plural("monedas", 3);   // "3 monedas"</code></pre>
+<p><code>Text.onLanguageChanged(funcion)</code> avisa al cambiar de idioma.</p>

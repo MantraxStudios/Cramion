@@ -60,6 +60,10 @@ class TouchControls;
 namespace cramion::physics {
 class PhysicsSystem;
 }
+namespace cramion::gameplay {
+class SaveSystem;
+class DialogueSystem;
+}
 namespace cramion::input {
 struct InputActionSettings;
 class InputMapper;
@@ -268,6 +272,12 @@ public:
 
     // Prefs: se conservan al cambiar de escena y, con archivo, entre partidas.
     void setPrefsFile(const std::filesystem::path& file);
+    // Partidas guardadas (tabla Save): carpeta de las .crsave. El editor usa
+    // Library/Saves; el juego exportado %APPDATA%/<juego>/saves.
+    void setSaveFolder(const std::filesystem::path& folder);
+    gameplay::SaveSystem& saveSystem();
+    // El dialogo que corre (tabla Dialogue y caja de dialogo de la UI).
+    gameplay::DialogueSystem& dialogueSystem();
 
     // La API de Lua tal como la ve un script (para el autocompletado del
     // editor): cada tabla global ("Input", "XR", "math"...) y cada tipo
@@ -289,6 +299,39 @@ public:
     void setBridgeCallbackSink(std::function<void(std::uint64_t id, const std::string& args_json)> sink);
     // Una variable de red que llego a un objeto (OnNetVar): tambien para los scripts de C++.
     void setNetVarListener(std::function<void(ecs::Entity e, const std::string& key, const std::string& value_json)> listener);
+    // Mensajes para los scripts de C++ del objeto (Send Message y Run Script de
+    // los Behavior Trees): Script::onMessage(method, value).
+    void setMessageListener(std::function<void(ecs::Entity e, const std::string& method, const std::string& value_json)> listener);
+
+    // --- Visual Scripting: depuracion del editor (VisualScriptScripting.inl) ---
+    struct VisualScriptDebug {
+        std::string graph;                               // .crgraph de la instancia
+        bool failed = false;                             // no compilo o fallo en marcha
+        double now = 0.0;                                // Time.time de Lua
+        std::map<int, double> executed;                  // nodo -> ultima vez que corrio (Time.time)
+        std::map<std::string, std::string> values;       // "nodo:pin" -> ultimo valor (texto)
+        std::map<std::string, std::string> variables;    // variables del grafo
+    };
+    // Lo que el editor pinta sobre el grafo de un objeto en Play. false si no tiene.
+    bool visualScriptDebug(ecs::Entity entity, VisualScriptDebug& out);
+    // Puntos de ruptura: con la depuracion activa, pasar por uno pausa Play.
+    void setVisualScriptDebugging(bool on);
+    void setVisualScriptBreakpoints(const std::string& graph, const std::vector<int>& nodes);
+    // Un punto de ruptura que se alcanzo (lo consume). false si no hay.
+    bool takeVisualScriptBreak(std::string& graph, int& node, entt::entity& entity);
+    // Objetos que ejecutan un .crgraph (vacio = todos).
+    std::vector<entt::entity> visualScriptObjects(const std::string& graph) const;
+
+    // --- Pruebas automaticas (Test / Assert, PlatformScripting.inl) ---
+    // Ejecuta un archivo de pruebas (.test.lua) en el estado de Play: sus
+    // Test.case(...) quedan registrados. false (y el error) si falla.
+    bool loadTestFile(const std::string& file, std::string* error = nullptr);
+    // Llama a una funcion interna de la biblioteca de pruebas
+    // (__cramion_test_list, __cramion_test_run_edit, __cramion_test_begin,
+    // __cramion_test_step, __cramion_test_abort, __cramion_test_reset_cases)
+    // y devuelve su resultado como texto (JSON). Vacio si no hay Play.
+    std::string testCall(const std::string& function, const std::string& arg = {});
+    std::string testStep(float delta_seconds);
 
 private:
     struct Impl;

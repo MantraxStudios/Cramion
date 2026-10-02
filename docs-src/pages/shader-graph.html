@@ -1,0 +1,44 @@
+<p>
+  El <strong>Shader Graph</strong> hace materiales con nodos (como el Shader Graph de Unity o el editor de materiales de
+  Unreal). Un grafo <code>.crshadergraph</code> genera un <code>.crshader</code> normal al lado
+  (<code>Rocas.crshadergraph</code> → <code>Rocas.crshader</code>): los materiales lo eligen como cualquier shader de
+  superficie, se recompila al momento y funciona en el juego exportado y en Android.
+</p>
+
+<h3 id="crear">Crear y editar</h3>
+<ul>
+  <li><em>Proyecto &gt; Crear &gt; Shader Graph</em>. Empieza con el color del material por un tinte (propiedad).</li>
+  <li>Clic derecho o <kbd>Espacio</kbd> en el lienzo: buscador de nodos (por nombre en español o en inglés). Soltar un enlace
+    en el vacío abre el buscador y conecta el nodo nuevo.</li>
+  <li>Arrastrar desde un pin enlaza; <kbd>Alt</kbd>+clic en una entrada la suelta; <kbd>Supr</kbd> borra; <kbd>Ctrl</kbd>+<kbd>C</kbd>/<kbd>V</kbd>/<kbd>D</kbd>
+    copia, pega y duplica; <kbd>F</kbd> encuadra; rueda = zoom; botón central = desplazar. Clic derecho en un nodo:
+    <em>Agrupar la selección</em>.</li>
+  <li>Las entradas sin conectar se editan dentro del propio nodo.</li>
+  <li><strong>Crear material</strong> hace un <code>.crmat</code> que usa el shader.</li>
+</ul>
+
+<h3 id="nodos">Nodos</h3>
+<table>
+  <thead><tr><th>Grupo</th><th>Nodos</th></tr></thead>
+  <tbody>
+    <tr><td>Entrada</td><td>UV, Tiempo, Posición (mundo), Normal, Dirección de vista, Cámara, Objeto, Color de vértice, Material (base)</td></tr>
+    <tr><td>Propiedades</td><td>Float, Rango, Color, Vector, Textura: salen en el Inspector del material</td></tr>
+    <tr><td>Texturas</td><td>Muestrear textura 2D, triplanar</td></tr>
+    <tr><td>Matemáticas</td><td>Sumar, restar, multiplicar, dividir, lerp, clamp, saturate, potencia, dot, cross, normalizar, 1 − x, smoothstep, step, seno, coseno, frac, remap...</td></tr>
+    <tr><td>Ruido</td><td>Valor, Perlin, Voronoi</td></tr>
+    <tr><td>Utilidades</td><td>Fresnel, mezcla de normales, panner, swizzle, separar/combinar</td></tr>
+    <tr><td>Salida</td><td>Color base, alfa, metal, rugosidad, oclusión, emisión, normal (tangente o mundo) y, en los vértices, desplazamiento</td></tr>
+  </tbody>
+</table>
+<p>
+  Lo que no se conecta a la Salida conserva el valor del material (sus texturas y factores). Los pines de color: azul = float,
+  verde = vec2, amarillo = vec3, rosa = vec4, rojo = textura, blanco = dinámico (acepta cualquiera).
+</p>
+
+<h3 id="vista-previa">Vista previa, código y errores</h3>
+<p>
+  A la derecha hay una esfera con la superficie del grafo (evaluada en la CPU; las texturas se ven como damero), la pestaña
+  <strong>Código generado</strong> y los errores: si el <code>.crshader</code> no compila, el nodo que generó esa línea se
+  marca en rojo con el mensaje al pasar el ratón. Un <code>.crshader</code> generado lleva una marca y abrirlo abre su grafo;
+  un <code>.crshader</code> escrito a mano nunca se pisa.
+</p>

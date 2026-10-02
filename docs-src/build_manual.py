@@ -501,7 +501,7 @@ hub_main = f"""
     <main class="doc">
       <div class="doc-inner" style="max-width: 1040px">
         <section class="hero">
-          <a class="badge" href="mundo-procedural.html"><b>Nuevo en la {VERSION}</b> Mundo procedural {icon("arrow")}</a>
+          <a class="badge" href="visual-scripting.html"><b>Nuevo en la {VERSION}</b> Grafos de nodos, 2D e iluminación horneada {icon("arrow")}</a>
           <h1>Documentación de Cramion</h1>
           <div class="intro">{intro_html}</div>
           <div class="actions">

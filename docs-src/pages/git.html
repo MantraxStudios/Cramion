@@ -1,0 +1,32 @@
+<p>
+  <strong>Control de versiones con Git</strong> dentro del editor: ver los cambios, preparar, hacer commit, push y pull, ramas e
+  historial. Usa el <code>git</code> instalado en el sistema (<a href="https://git-scm.com">git-scm.com</a>); Git LFS es opcional
+  para imágenes, modelos y audio.
+</p>
+
+<h3 id="empezar">Empezar</h3>
+<p>
+  <em>Ventana &gt; Control de versiones (Git)</em>. Si el proyecto no está en un repositorio, <strong>Inicializar
+  repositorio</strong> crea uno con un <code>.gitignore</code> pensado para Cramion (<code>Library/</code>, <code>Builds/</code>,
+  logs...) y un <code>.gitattributes</code> que guarda los binarios grandes con <strong>Git LFS</strong> (PNG, JPG, HDR, FBX, GLB,
+  WAV, OGG, <code>.crpack</code>...) y las escenas y scripts con saltos de línea normales.
+</p>
+
+<h3 id="cambios">Cambios y commit</h3>
+<ul>
+  <li>La lista de la izquierda tiene los archivos cambiados (verde nuevo, amarillo modificado, rojo borrado). La casilla los
+    <strong>prepara</strong> (entran en el commit); <em>Preparar todo</em> / <em>Quitar todo</em>.</li>
+  <li>Clic en un archivo: sus <strong>diferencias</strong> a la derecha. Clic derecho: <em>Descartar los cambios</em>.</li>
+  <li>Escribe el mensaje y <strong>Commit</strong>.</li>
+  <li><strong>Pull</strong> (solo avance rápido) y <strong>Push</strong> (a <code>origin</code>, con la rama). Los comandos largos
+    corren en segundo plano; su salida está en la pestaña <em>Salida</em>.</li>
+</ul>
+
+<h3 id="ramas">Ramas e historial</h3>
+<p>
+  El desplegable de arriba cambia de rama; <em>Crear rama</em> hace una nueva y se pasa a ella. La pestaña
+  <strong>Historial</strong> tiene los últimos 60 commits.
+</p>
+<div class="note">
+  Guarda la escena antes de cambiar de rama: Git cambia los archivos en el disco y el editor vuelve a leer el proyecto.
+</div>

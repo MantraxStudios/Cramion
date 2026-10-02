@@ -1,10 +1,12 @@
 #include "CramionCore/scripting/Scripting.h"
 #include "CramionCore/scripting/CppScripts.h"
+#include "CramionCore/scripting/VisualScript.h"
 #include "CramionCore/cvar/CVar.h"
 
 #include "CramionCore/project/DataPack.h"
 
 #include "CramionCore/ai/StateMachine.h"
+#include "CramionCore/ai/BehaviorTree.h"
 #include "CramionCore/asset/AssetTypes.h"
 #include "CramionCore/asset/MaterialAsset.h"
 #include "CramionCore/audio/Audio.h"
@@ -27,6 +29,16 @@
 #include "CramionCore/ui/UI.h"
 #include "CramionCore/voxel/Voxel.h"
 #include "CramionCore/xr/XrRig.h"
+#include "CramionCore/gameplay/Dialogue.h"
+#include "CramionCore/gameplay/Localization.h"
+#include "CramionCore/gameplay/SaveGame.h"
+#include "CramionCore/platform/Steam.h"
+#include "CramionCore/anim/MotionMatching.h"
+#include "CramionCore/twod/System2D.h"
+#include "CramionCore/vfx/VisualEffect.h"
+#include "CramionCore/physics/Destruction.h"
+#include "CramionCore/lighting/ProbeBaker.h"
+#include "CramionCore/replay/Replay.h"
 
 #include <CramionDM/Input.h>
 #include <CramionDM/TouchControls.h>
@@ -398,7 +410,15 @@ void registerScriptComponents() {
     }
     net::registerNetworkComponents();
     ai::registerStateMachineComponents();
+    ai::registerBehaviorTreeComponents();
     registerCppScriptComponents();
+    vscript::registerVisualScriptComponents();
+    gameplay::registerSaveComponents();
+    gameplay::registerDialogueComponents();
+    anim::registerMotionMatchingComponents();  // Motion Matching (anim/MotionMatching.h)
+    vfx::registerVfxComponents();              // VFX Graph (vfx/VisualEffect.h)
+    twod::register2DComponents();              // sprites, tilemaps y fisica 2D (twod/System2D.h)
+    lighting::registerLightingComponents();    // Light Probe Volume (lighting/ProbeBaker.h)
 }
 
 // -----------------------------------------------------------------------------
@@ -499,6 +519,11 @@ struct ScriptSystem::Impl {
     struct FsmHost;
     std::unique_ptr<FsmHost> fsm;
     void bindStateMachine(sol::state& L, sol::usertype<LuaEntity>& entity);
+    // Behavior Trees (BehaviorTreeScripting.inl): igual que fsm.
+    struct BtHost;
+    std::unique_ptr<BtHost> behavior;
+    void bindBehaviorTree(sol::state& L, sol::usertype<LuaEntity>& entity);
+    std::function<void(ecs::Entity, const std::string&, const std::string&)> message_listener;
     void bindCharacter(sol::state& L, sol::usertype<LuaEntity>& entity);  // CharacterScripting.inl
     // Puente para los scripts de C++ (BridgeScripting.inl): objetos del motor
     // que se dieron como handle y a donde van los callbacks.
@@ -515,6 +540,44 @@ struct ScriptSystem::Impl {
     int listener = -1;
     std::vector<physics::PhysicsEvent> events;
     std::vector<entt::entity> pending_destroy;
+
+    // --- Partidas, localizacion y dialogos (GameplayScripting.inl) ---
+    // Sobreviven a stop()/start() (Save.load de otra escena); las funciones
+    // de Lua no (van despues de `lua`: se destruyen antes).
+    gameplay::SaveSystem saves;
+    gameplay::DialogueSystem dialogue;
+    std::optional<nlohmann::json> save_apply;  // Save.load de la misma escena
+    bool save_notify_loaded = false;
+    std::string save_loaded_slot;
+    bool dialogue_auto_audio = true;
+    std::vector<sol::protected_function> save_on_loaded;
+    std::vector<sol::protected_function> dialogue_on_start, dialogue_on_line, dialogue_on_choices, dialogue_on_event,
+        dialogue_on_end;
+    std::vector<int> language_listeners;
+    void bindGameplay(sol::state& L);
+    // Steam y pruebas automaticas (PlatformScripting.inl). `steam_session`
+    // caduca al parar: los resultados que lleguen tarde no llaman a nada.
+    std::shared_ptr<int> steam_session;
+    void bindPlatform(sol::state& L);
+    // VFX, 2D, destruccion, repeticiones, Motion Matching y vehiculos (EffectsScripting.inl).
+    void bindEffects(sol::state& L, sol::usertype<LuaEntity>& entity);
+    void dispatch2DEvents();     // OnCollisionEnter2D... (System2D del mundo)
+    void dispatchBreakEvents();  // OnBreak de los Destructible
+    int break_listener = -1;
+    std::vector<physics::BreakEvent> breaks;
+    void gameplayStart();
+    void gameplayUpdate(float dt);
+    void gameplayStop();
+    void applyPendingSave();
+    nlohmann::json saveValueToJson(const sol::object& v, int depth = 0);
+    sol::object saveValueFromJson(const nlohmann::json& j);
+    nlohmann::json captureScriptState(ecs::Entity e);
+    void restoreScriptState(ecs::Entity e, const nlohmann::json& state);
+    std::filesystem::path findDialogue(const std::string& name) const;
+    void callLuaList(std::vector<sol::protected_function>& list, const char* what,
+                     const std::function<sol::protected_function_result(sol::protected_function&)>& invoke);
+    sol::table dialogueLineTable(const gameplay::DialogueLine& line);
+    sol::table dialogueChoicesTable(const std::vector<gameplay::DialogueChoice>& choices);
 
     // --- Multijugador ---
     // La sesion sobrevive a stop() (cambios de escena); los manejadores de Lua no.
@@ -538,6 +601,27 @@ struct ScriptSystem::Impl {
     std::unordered_map<entt::entity, Instance> instances;
     std::unordered_map<std::string, sol::table> classes;
     std::unordered_map<std::string, std::string> failed_classes;  // archivo -> error
+
+    // Visual Scripting (VisualScriptScripting.inl): instancias de los .crgraph
+    // (aparte de las de los scripts). Va despues de `lua`: se destruye antes.
+    struct VsHost;
+    std::unique_ptr<VsHost> vs;
+    bool vs_debugging = false;                            // el editor: puntos de ruptura
+    std::map<std::string, std::set<int>> vs_breakpoints;  // los que pone el editor, por .crgraph
+    struct VsBreak {
+        std::string graph;
+        int node = 0;
+        entt::entity entity = entt::null;
+        bool pending = false;
+    };
+    VsBreak vs_break;
+    void vsStart();
+    void vsUpdate(int phase, float dt);  // 0 = Start/Update, 1 = LateUpdate
+    void vsFixed(float step);
+    void vsStop(bool destroy_events);
+    Instance* vsInstance(entt::entity handle);
+    void vsForget(entt::entity handle);
+    bool vsReload(const std::string& file);  // false si no es un .crgraph
 
     struct DescribeCache {
         std::filesystem::file_time_type stamp{};
@@ -2491,8 +2575,12 @@ struct ScriptSystem::Impl {
 
         bindNetwork(L, entity);
         bindStateMachine(L, entity);
+        bindBehaviorTree(L, entity);
         bindCharacter(L, entity);
+        bindGameplay(L);  // Save, Text, Dialogue (GameplayScripting.inl)
         bindHttp(L);
+        bindPlatform(L);  // Steam, Test y Assert (PlatformScripting.inl)
+        bindEffects(L, entity);  // VFX, 2D, destruccion, Replay... (EffectsScripting.inl)
 
         // Input
         sol::table in = L.create_named_table("Input");
@@ -4050,6 +4138,10 @@ struct ScriptSystem::Impl {
                     call(it->second, "OnDestroy");
                     instances.erase(it);
                 }
+                if (Instance* visual = vsInstance(h)) {  // su Visual Script
+                    call(*visual, "OnDestroy");
+                    vsForget(h);
+                }
                 for (const entt::entity c : world->wrap(h).children()) stack.push_back(c);
             }
             world->destroy(world->wrap(handle));
@@ -4077,12 +4169,14 @@ struct ScriptSystem::Impl {
                 const auto it = instances.find(side.a.handle());
                 const bool machine = fsm != nullptr && world != nullptr && world->registry().valid(side.a.handle()) &&
                                      world->registry().all_of<ai::StateMachine>(side.a.handle());
-                if ((it == instances.end() && !machine) || !side.b.valid()) continue;
+                Instance* visual = vsInstance(side.a.handle());
+                if ((it == instances.end() && !machine && visual == nullptr) || !side.b.valid()) continue;
                 sol::table contact = lua->create_table();
                 contact["point"] = side.point;
                 contact["normal"] = side.normal;
                 contact["relativeVelocity"] = side.relative_velocity;
                 if (it != instances.end()) call(it->second, method, LuaEntity{side.b.handle(), world}, contact);
+                if (visual != nullptr) call(*visual, method, LuaEntity{side.b.handle(), world}, contact);
                 if (machine) fsmEvent(side.a.handle(), method, side.b.handle(), contact);
             }
         }
@@ -4090,8 +4184,13 @@ struct ScriptSystem::Impl {
 };
 
 #include "StateMachineScripting.inl"
+#include "BehaviorTreeScripting.inl"
 #include "CharacterScripting.inl"
 #include "BridgeScripting.inl"
+#include "PlatformScripting.inl"
+#include "EffectsScripting.inl"
+#include "VisualScriptScripting.inl"
+#include "GameplayScripting.inl"
 
 ScriptSystem::ScriptSystem() : impl_(std::make_unique<Impl>()) {
     impl_->buildKeys();
@@ -4179,6 +4278,9 @@ void ScriptSystem::setPrefsFile(const std::filesystem::path& file) {
         if (eq != std::string::npos && eq > 0) d.prefs[line.substr(0, eq)] = line.substr(eq + 1);
     }
 }
+void ScriptSystem::setSaveFolder(const std::filesystem::path& folder) { impl_->saves.setFolder(folder); }
+gameplay::SaveSystem& ScriptSystem::saveSystem() { return impl_->saves; }
+gameplay::DialogueSystem& ScriptSystem::dialogueSystem() { return impl_->dialogue; }
 bool ScriptSystem::running() const { return impl_->running; }
 const std::vector<ScriptError>& ScriptSystem::errors() const { return impl_->errors; }
 void ScriptSystem::clearErrors() { impl_->errors.clear(); }
@@ -4190,6 +4292,8 @@ void ScriptSystem::start(ecs::World& world) {
     d.lua = std::make_unique<sol::state>();
     d.bind(*d.lua);
     d.fsm = std::make_unique<Impl::FsmHost>(d);
+    d.behavior = std::make_unique<Impl::BtHost>(d);
+    d.behavior->message_listener = d.message_listener;
     d.running = true;
     d.time = 0.0f;
     d.frame = 0;
@@ -4205,6 +4309,9 @@ void ScriptSystem::start(ecs::World& world) {
         const Script& script = e.get<Script>();
         if (e.activeInHierarchy()) d.createInstance(e, script);
     }
+    d.vsStart();  // Visual Scripts (.crgraph)
+    // Partidas (objetos de la escena) y una carga pendiente de otra escena.
+    d.gameplayStart();
 }
 
 void ScriptSystem::update(ecs::World& world, float delta_seconds) {
@@ -4236,8 +4343,11 @@ void ScriptSystem::update(ecs::World& world, float delta_seconds) {
         }
     }
 
+    d.gameplayUpdate(delta_seconds);  // partida pendiente, autoguardado, eventos de dialogo
     d.updateActions(delta_seconds);
     d.dispatchEvents();
+    d.dispatch2DEvents();     // fisica 2D (EffectsScripting.inl)
+    d.dispatchBreakEvents();  // Destructible que se rompieron
     // Copias de las claves: un script puede crear objetos durante el bucle.
     std::vector<entt::entity> order;
     order.reserve(d.instances.size());
@@ -4254,8 +4364,11 @@ void ScriptSystem::update(ecs::World& world, float delta_seconds) {
         }
         d.call(it->second, "Update", delta_seconds);
     }
+    d.vsUpdate(0, delta_seconds);  // Visual Scripts: Start y Update
     // Maquinas de estados: despues de los Update (ven sus triggers del frame).
     if (d.fsm) d.fsm->update(world, delta_seconds);
+    // Behavior Trees: tambien despues de los Update.
+    if (d.behavior) d.behavior->update(world, delta_seconds);
     if (d.fsm) d.fsm->forwardAll("OnLateUpdate", delta_seconds);
     for (const entt::entity handle : order) {
         const auto it = d.instances.find(handle);
@@ -4264,6 +4377,7 @@ void ScriptSystem::update(ecs::World& world, float delta_seconds) {
         if (!e.get<Script>().enabled || !e.activeInHierarchy()) continue;
         d.call(it->second, "LateUpdate", delta_seconds);
     }
+    d.vsUpdate(1, delta_seconds);  // Visual Scripts: LateUpdate
     d.sendNetworkTransforms(delta_seconds);
     d.flushDestroys();
 }
@@ -4280,6 +4394,7 @@ void ScriptSystem::fixedUpdate(ecs::World& world, float step, int steps) {
             if (!e.get<Script>().enabled || !inst.started) continue;
             d.call(inst, "FixedUpdate", step);
         }
+        d.vsFixed(step);
         if (d.fsm) d.fsm->forwardAll("OnFixedUpdate", step);
     }
 }
@@ -4288,10 +4403,17 @@ void ScriptSystem::stop() {
     Impl& d = *impl_;
     if (d.running) {
         for (auto& [handle, inst] : d.instances) d.call(inst, "OnDestroy");
+        d.gameplayStop();  // antes de soltar el estado de Lua (guarda funciones suyas)
     }
+    d.vsStop(d.running);  // Visual Scripts: OnDestroy y sus objetos de Lua
     if (d.physics != nullptr && d.listener >= 0) d.physics->removeListener(d.listener);
     d.listener = -1;
     d.fsm.reset();  // sus objetos son del Lua que se va
+    if (d.behavior && d.world != nullptr) {
+        // Los NavAgent que movia un arbol se paran.
+        for (const entt::entity h : d.world->registry().view<ai::BehaviorTree>()) d.behavior->abort(h);
+    }
+    d.behavior.reset();
     d.bridge_handles.clear();  // tambien (los handles de los scripts de C++)
     d.instances.clear();
     d.classes.clear();
@@ -4305,6 +4427,12 @@ void ScriptSystem::stop() {
     if (d.http) d.http->cancelAll();
     d.http_callbacks.clear();
     d.action_bindings.clear();  // sus funciones son del Lua que se va
+    d.steam_session.reset();    // los resultados de Steam que lleguen tarde no llaman a nada
+    if (d.physics != nullptr && d.break_listener >= 0) d.physics->destruction().removeBreakListener(d.break_listener);
+    d.break_listener = -1;
+    d.breaks.clear();
+    platform::Steam::instance().setLobbyJoinRequestedListener(nullptr);
+    platform::Steam::instance().setOverlayListener(nullptr);
     d.lua.reset();
     d.running = false;
     d.lockCursor(false);  // el raton vuelve al sistema
@@ -4329,9 +4457,12 @@ void ScriptSystem::reloadFile(const std::string& file) {
     Impl& d = *impl_;
     d.described.erase(file);
     if (!d.running) return;
+    if (d.vsReload(file)) return;  // un .crgraph (Visual Script)
     // Maquinas de estados: su .crfsm o un .lua que usa alguno de sus estados.
     if (d.fsm) d.fsm->reload(file);
     if (std::filesystem::path(file).extension() == ai::kStateMachineExtension) return;
+    if (d.behavior) d.behavior->reload(file);
+    if (std::filesystem::path(file).extension() == ai::kBehaviorTreeExtension) return;
     std::string error;
     sol::object cls = d.loadClass(*d.lua, file, &error);
     if (!cls.is<sol::table>()) {
@@ -4421,6 +4552,11 @@ void ScriptSystem::setNetVarListener(std::function<void(ecs::Entity, const std::
     impl_->net_var_listener = std::move(listener);
 }
 
+void ScriptSystem::setMessageListener(std::function<void(ecs::Entity, const std::string&, const std::string&)> listener) {
+    impl_->message_listener = std::move(listener);
+    if (impl_->behavior) impl_->behavior->message_listener = impl_->message_listener;
+}
+
 void ScriptSystem::shiftOrigin(const core::Vec3& offset) {
     Impl& d = *impl_;
     for (auto& [handle, inst] : d.instances) d.call(inst, "OnOriginShift", offset);
@@ -4430,24 +4566,31 @@ void ScriptSystem::callMethod(ecs::Entity target, const std::string& method, ecs
     Impl& d = *impl_;
     const auto it = target.valid() ? d.instances.find(target.handle()) : d.instances.end();
     if (it != d.instances.end()) d.call(it->second, method.c_str(), LuaEntity{source.handle(), d.world});
+    // Y el Custom Event del mismo nombre de su Visual Script.
+    if (Impl::Instance* visual = target.valid() ? d.vsInstance(target.handle()) : nullptr) {
+        d.call(*visual, method.c_str(), LuaEntity{source.handle(), d.world});
+    }
 }
 
 void ScriptSystem::callMethod(ecs::Entity target, const std::string& method, float value) {
     Impl& d = *impl_;
     const auto it = target.valid() ? d.instances.find(target.handle()) : d.instances.end();
     if (it != d.instances.end()) d.call(it->second, method.c_str(), value);
+    if (Impl::Instance* visual = target.valid() ? d.vsInstance(target.handle()) : nullptr) d.call(*visual, method.c_str(), value);
 }
 
 void ScriptSystem::callMethod(ecs::Entity target, const std::string& method, const std::string& value) {
     Impl& d = *impl_;
     const auto it = target.valid() ? d.instances.find(target.handle()) : d.instances.end();
     if (it != d.instances.end()) d.call(it->second, method.c_str(), value);
+    if (Impl::Instance* visual = target.valid() ? d.vsInstance(target.handle()) : nullptr) d.call(*visual, method.c_str(), value);
 }
 
 void ScriptSystem::callMethod(ecs::Entity target, const std::string& method, bool value) {
     Impl& d = *impl_;
     const auto it = target.valid() ? d.instances.find(target.handle()) : d.instances.end();
     if (it != d.instances.end()) d.call(it->second, method.c_str(), value);
+    if (Impl::Instance* visual = target.valid() ? d.vsInstance(target.handle()) : nullptr) d.call(*visual, method.c_str(), value);
 }
 
 std::map<std::string, std::vector<ScriptSystem::ApiMember>> ScriptSystem::apiReference() {
@@ -4497,6 +4640,7 @@ std::map<std::string, std::vector<ScriptSystem::ApiMember>> ScriptSystem::apiRef
     collect("Quat:", registry[sol::usertype_traits<core::Quat>::metatable()]);
     collect("Mesh:", registry[sol::usertype_traits<ecs::Mesh>::metatable()]);
     collect("StateMachine:", registry[sol::usertype_traits<LuaStateMachine>::metatable()]);
+    collect("BehaviorTree:", registry[sol::usertype_traits<LuaBehaviorTree>::metatable()]);
     return out;
 }
 

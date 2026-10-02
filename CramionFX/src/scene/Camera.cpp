@@ -101,6 +101,10 @@ void Camera::setFovAngles(float left, float right, float up, float down) {
 }
 
 Mat4 Camera::projection() const {
+    if (orthographic_) {
+        const float half_width = ortho_size_ * aspect_;
+        return core::orthographic(-half_width, half_width, -ortho_size_, ortho_size_, near_plane_, far_plane_);
+    }
     if (!asymmetric_) return core::perspective(fov_y_, aspect_, near_plane_, far_plane_);
     // Como perspective() (Vulkan: profundidad [0, 1], Y invertida) con el
     // centro desplazado: tan(izq)..tan(der) -> -1..1.

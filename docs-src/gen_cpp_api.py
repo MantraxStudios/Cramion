@@ -232,6 +232,15 @@ TITLES = {
     "Screen": "Tamaño y orientación de la pantalla.",
     "Voxel": "Mundo de bloques: leer y poner bloques, mundos guardados.",
     "XR": "Realidad virtual: casco, mandos, botones y vibración.",
+    "Steam": "Steam: logros, estadísticas, marcadores, Rich Presence, overlay, nube, Workshop y salas.",
+    "Save": "Partidas guardadas: ranuras, valores sueltos y autoguardado.",
+    "Text": "Localización: textos en el idioma actual, plurales y cambio de idioma.",
+    "Dialogue": "Diálogos ramificados: empezar, seguir, elegir y avisos.",
+    "Replay": "Repeticiones: grabar, reproducir, buscar, guardar y cargar.",
+    "Physics2D": "Física 2D: rayos y solapes en el plano XY.",
+    "BehaviorTree": "Behavior Trees: tareas de script, ruidos y avisos a todos los árboles.",
+    "Test": "Pruebas automáticas: casos y esperas.",
+    "Assert": "Comprobaciones de las pruebas automáticas.",
 }
 
 

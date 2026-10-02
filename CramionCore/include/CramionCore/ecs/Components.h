@@ -385,6 +385,10 @@ struct Camera {
     float near_plane = 0.1f;
     float far_plane = 2000.0f;
     bool is_main = true;
+    // Ortografica (juegos 2D, vistas de planta): sin perspectiva; `ortho_size`
+    // es la mitad de lo que se ve en vertical (el Size de Unity), en metros.
+    bool orthographic = false;
+    float ortho_size = 5.0f;
     // Target Texture (como Unity): lo que ve esta camara va a esa Render
     // Texture (.crrt) en vez de a la pantalla.
     assets::AssetRef target_texture{{}, assets::AssetType::RenderTexture};

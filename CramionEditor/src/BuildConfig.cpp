@@ -50,8 +50,19 @@ BuildConfigs loadBuildConfigs(const std::filesystem::path& file) {
                 b.static_batching = c.value("static_batching", b.static_batching);
                 b.show_fps = c.value("show_fps", b.show_fps);
                 b.vr = c.value("vr", b.vr);
-                b.platform = c.value("platform", std::string("windows")) == "android" ? BuildPlatform::Android
-                                                                                       : BuildPlatform::Windows;
+                {
+                    const std::string platform = c.value("platform", std::string("windows"));
+                    b.platform = platform == "android" ? BuildPlatform::Android
+                                 : platform == "linux" ? BuildPlatform::Linux
+                                                       : BuildPlatform::Windows;
+                }
+                if (const auto st = c.find("steam"); st != c.end() && st->is_object()) {
+                    b.steam.enabled = st->value("enabled", b.steam.enabled);
+                    b.steam.app_id = st->value("app_id", b.steam.app_id);
+                    b.steam.ship_appid_file = st->value("appid_file", b.steam.ship_appid_file);
+                    b.steam.restart_if_necessary = st->value("restart", b.steam.restart_if_necessary);
+                    b.steam.dll = st->value("dll", b.steam.dll);
+                }
                 if (const auto a = c.find("android"); a != c.end() && a->is_object()) {
                     AndroidBuildSettings& s = b.android;
                     s.package = a->value("package", s.package);
@@ -99,7 +110,14 @@ bool saveBuildConfigs(const std::filesystem::path& file, const BuildConfigs& con
                         {"static_batching", b.static_batching},
                         {"show_fps", b.show_fps},
                         {"vr", b.vr},
-                        {"platform", b.platform == BuildPlatform::Android ? "android" : "windows"}});
+                        {"platform", b.platform == BuildPlatform::Android ? "android"
+                                     : b.platform == BuildPlatform::Linux ? "linux"
+                                                                          : "windows"}});
+        list.back()["steam"] = {{"enabled", b.steam.enabled},
+                                {"app_id", b.steam.app_id},
+                                {"appid_file", b.steam.ship_appid_file},
+                                {"restart", b.steam.restart_if_necessary},
+                                {"dll", b.steam.dll}};
         const AndroidBuildSettings& s = b.android;
         list.back()["android"] = {{"package", s.package},
                                   {"version_code", s.version_code},
@@ -139,6 +157,10 @@ std::string buildConfigIni(const BuildConfig& config, const std::string& game_na
     ini << "height=" << config.height << "\n";
     ini << "show_fps=" << (config.show_fps ? 1 : 0) << "\n";
     if (config.vr && config.platform == BuildPlatform::Windows) ini << "vr=1\n";
+    if (config.steam.enabled && config.platform != BuildPlatform::Android) {
+        ini << "steam_app_id=" << config.steam.app_id << "\n";
+        if (config.steam.restart_if_necessary) ini << "steam_restart=1\n";
+    }
     if (config.platform == BuildPlatform::Android) {
         ini << "platform=android\n";
         ini << "android_quality=" << config.android.quality << "\n";

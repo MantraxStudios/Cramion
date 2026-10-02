@@ -54,12 +54,16 @@ using CallbackFn = int (*)(std::uint64_t, const char*, char*, int);
 using MessageFn = int (*)(void*, const char*, const char*, char*, int);
 using CallFn = int (*)(void*, std::uint32_t, const proto::EventArgs*, char*, int);
 using DestroyFn = void (*)(void*);
+using SnapshotFn = int (*)(void*, char*, int, char*, int);
+using RestoreFn = int (*)(void*, const char*, char*, int);
 CreateFn g_create = nullptr;
 CallFn g_call = nullptr;
 DestroyFn g_destroy = nullptr;
 DescribeFn g_describe = nullptr;
 CallbackFn g_callback = nullptr;
 MessageFn g_message = nullptr;  // opcional
+SnapshotFn g_snapshot = nullptr;  // opcional (recarga en caliente)
+RestoreFn g_restore = nullptr;    // opcional
 
 std::unordered_map<std::uint32_t, void*> g_instances;
 
@@ -227,7 +231,7 @@ int recordFault(EXCEPTION_POINTERS* ep) {
 // Llamadas protegidas: sin objetos de C++ en esta funcion (SEH no se mezcla
 // con su limpieza).
 struct Job {
-    int kind;  // 0 crear, 1 evento, 2 destruir, 3 describir, 4 callback, 5 mensaje (cls = metodo)
+    int kind;  // 0 crear, 1 evento, 2 destruir, 3 describir, 4 callback, 5 mensaje (cls = metodo), 6 snapshot, 7 restaurar
     const char* cls;
     std::uint64_t entity;
     const char* json;
@@ -253,6 +257,10 @@ void runJob(Job* j) {
         j->result = g_describe(j->out, j->out_size, j->error, j->error_size);
     } else if (j->kind == 5) {
         j->result = g_message != nullptr ? g_message(j->instance, j->cls, j->json, j->error, j->error_size) : 0;
+    } else if (j->kind == 6) {
+        j->result = g_snapshot != nullptr ? g_snapshot(j->instance, j->out, j->out_size, j->error, j->error_size) : 0;
+    } else if (j->kind == 7) {
+        j->result = g_restore != nullptr ? g_restore(j->instance, j->json, j->error, j->error_size) : 0;
     } else {
         j->result = g_callback(j->entity, j->json, j->error, j->error_size);
     }
@@ -319,6 +327,8 @@ void load(proto::Reader& r) {
     g_describe = reinterpret_cast<DescribeFn>(GetProcAddress(g_dll, "cramion_describe"));
     g_callback = reinterpret_cast<CallbackFn>(GetProcAddress(g_dll, "cramion_callback"));
     g_message = reinterpret_cast<MessageFn>(GetProcAddress(g_dll, "cramion_message"));
+    g_snapshot = reinterpret_cast<SnapshotFn>(GetProcAddress(g_dll, "cramion_snapshot"));
+    g_restore = reinterpret_cast<RestoreFn>(GetProcAddress(g_dll, "cramion_restore"));
     if (abi == nullptr || init == nullptr || count == nullptr || name == nullptr || g_create == nullptr || g_call == nullptr ||
         g_destroy == nullptr || g_describe == nullptr || g_callback == nullptr) {
         sendDone(ipc::Status::Missing, "la DLL no es de scripts de Cramion (faltan exportaciones del SDK)");
@@ -409,6 +419,52 @@ void callback(proto::Reader& r) {
     sendDone(job.result != 0 ? ipc::Status::Exception : ipc::Status::Ok, error);
 }
 
+// Recarga en caliente: el estado de una instancia (propiedades + onBeforeReload).
+void snapshot(proto::Reader& r) {
+    const std::uint32_t id = r.u32();
+    const auto it = g_instances.find(id);
+    if (it == g_instances.end() || g_snapshot == nullptr) {
+        proto::Writer extra;
+        extra.str("{}");
+        sendDone(ipc::Status::Ok, {}, &extra);
+        return;
+    }
+    char error[2048] = {};
+    g_current = "onBeforeReload()";
+    std::vector<char> out(1 << 16);
+    for (int attempt = 0; attempt < 2; ++attempt) {
+        Job job{6, nullptr, 0, nullptr, out.data(), static_cast<int>(out.size()), it->second, 0, nullptr, error, sizeof(error), nullptr, 0};
+        if (!guarded(&job)) {
+            sendDone(ipc::Status::Crash, describeFault());
+            return;
+        }
+        if (job.result <= static_cast<int>(out.size())) {
+            proto::Writer extra;
+            extra.str(job.result > 0 ? out.data() : "{}");
+            sendDone(error[0] != 0 ? ipc::Status::Exception : ipc::Status::Ok, error, &extra);
+            return;
+        }
+        out.resize(static_cast<std::size_t>(job.result) + 16);
+    }
+    sendDone(ipc::Status::Exception, "estado demasiado grande para la recarga");
+}
+
+void restore(proto::Reader& r) {
+    const std::uint32_t id = r.u32();
+    const std::string state = r.str();
+    const auto it = g_instances.find(id);
+    if (it == g_instances.end()) {
+        sendDone(ipc::Status::Missing, "no existe la instancia");
+        return;
+    }
+    char error[2048] = {};
+    g_current = "onAfterReload()";
+    Job job{7, nullptr, 0, state.c_str(), nullptr, 0, it->second, 0, nullptr, error, sizeof(error), nullptr, 0};
+    if (!guarded(&job)) sendDone(ipc::Status::Crash, describeFault());
+    else if (job.result != 0) sendDone(ipc::Status::Exception, error);
+    else sendDone(ipc::Status::Ok, {});
+}
+
 void destroy(proto::Reader& r) {
     const std::uint32_t id = r.u32();
     const auto it = g_instances.find(id);
@@ -483,6 +539,8 @@ int main(int argc, char** argv) {
             }
             case ipc::Op::Destroy: destroy(r); break;
             case ipc::Op::Describe: describe(); break;
+            case ipc::Op::Snapshot: snapshot(r); break;
+            case ipc::Op::Restore: restore(r); break;
             case ipc::Op::Callback: callback(r); break;
             case ipc::Op::Message: {
                 const std::uint32_t id = r.u32();

@@ -48,6 +48,16 @@ public:
     // (arriba y abajo miran en vertical).
     void setOrientation(const core::Vec3& forward, const core::Vec3& up);
 
+    // Proyeccion ortografica (juegos 2D, vistas de planta): sin perspectiva;
+    // `half_height` es la mitad de lo que se ve en vertical, en metros (el
+    // "Size" de la camara de Unity). El ancho sale de la relacion de aspecto.
+    void setOrthographic(bool enabled, float half_height = 5.0f) {
+        orthographic_ = enabled;
+        ortho_size_ = half_height > 0.001f ? half_height : 0.001f;
+    }
+    bool orthographic() const { return orthographic_; }
+    float orthoSize() const { return ortho_size_; }
+
     core::Mat4 view() const;
     core::Mat4 projection() const;
 
@@ -77,6 +87,8 @@ private:
     bool asymmetric_ = false;
     float tan_left_ = -1.0f, tan_right_ = 1.0f, tan_up_ = 1.0f, tan_down_ = -1.0f;
     float aspect_ = 16.0f / 9.0f;
+    bool orthographic_ = false;
+    float ortho_size_ = 5.0f;
     float near_plane_ = 0.1f;
     float far_plane_ = 500.0f;
 

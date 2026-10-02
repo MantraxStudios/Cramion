@@ -1,0 +1,25 @@
+<p>Partidas guardadas: ranuras, valores sueltos y autoguardado.</p>
+
+<h3 id="save">Save</h3>
+<table>
+  <tbody>
+    <tr><td><code>Value clearValues(...)</code></td><td>borra todos</td></tr>
+    <tr><td><code>Value delete_(texto)</code></td><td>borra una ranura</td></tr>
+    <tr><td><code>Value deleteValue(texto)</code></td><td>lo borra</td></tr>
+    <tr><td><code>Value exists(texto)</code></td><td>existe?</td></tr>
+    <tr><td><code>Value folder(...)</code></td><td>carpeta de las partidas</td></tr>
+    <tr><td><code>Value getValue(texto, valor)</code></td><td>lee un valor suelto</td></tr>
+    <tr><td><code>Value hasValue(texto)</code></td><td>existe?</td></tr>
+    <tr><td><code>Value info(texto)</code></td><td>datos de una ranura (o nil)</td></tr>
+    <tr><td><code>Value isWriting(...)</code></td><td>esta escribiendo en segundo plano?</td></tr>
+    <tr><td><code>Value list(...)</code></td><td>{slot, label, scene, date, playtime, size} de cada ranura</td></tr>
+    <tr><td><code>Value load(texto)</code></td><td>carga una partida (cambia de escena si hace falta)</td></tr>
+    <tr><td><code>Value onLoaded(callback)</code></td><td>end) despues de cargar una partida</td></tr>
+    <tr><td><code>Value playtime(...)</code></td><td>segundos jugados</td></tr>
+    <tr><td><code>Value remove(...)</code></td><td></td></tr>
+    <tr><td><code>Value save(texto, texto2)</code></td><td>guarda la partida (objetos Saveable, valores, dialogos)</td></tr>
+    <tr><td><code>Value setAutosave(valor, texto)</code></td><td>autoguardado cada N segundos (0 = no)</td></tr>
+    <tr><td><code>Value setCompression(activar)</code></td><td>partidas comprimidas</td></tr>
+    <tr><td><code>Value setValue(texto, valor)</code></td><td>valor suelto (va en cada partida)</td></tr>
+  </tbody>
+</table>

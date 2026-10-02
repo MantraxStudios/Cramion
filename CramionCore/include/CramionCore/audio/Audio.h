@@ -153,6 +153,12 @@ private:
 // Extensiones de audio que se pueden reproducir.
 bool isAudioFile(const std::filesystem::path& file);
 
+// Aviso de cada AudioSystem::playOneShot (las repeticiones lo graban). Uno
+// solo para todo el programa; vacio = ninguno.
+using OneShotListener =
+    std::function<void(const std::string& clip, const core::Vec3& position, float volume, bool spatial)>;
+void setOneShotListener(OneShotListener listener);
+
 void registerAudioComponents();
 
 }  // namespace cramion::audio

@@ -6,6 +6,88 @@
 
 namespace cramion {
 
+namespace Assert {
+/// Assert.approx(real, esperado, tolerancia, mensaje)
+/// numeros o Vec3
+template <typename T0 = Value, typename T1 = Value, typename T2 = Value, typename T3 = Value>
+inline Value approx(const T0& real = {}, const T1& esperado = {}, const T2& tolerancia = {}, const T3& mensaje = {}) {
+    return detail::lua("Assert.approx", Values{Value(real), Value(esperado), Value(tolerancia), Value(mensaje)});
+}
+/// Assert.atLeast(a, b, mensaje)
+template <typename T0 = Value, typename T1 = Value, typename T2 = Value>
+inline Value atLeast(const T0& a = {}, const T1& b = {}, const T2& mensaje = {}) {
+    return detail::lua("Assert.atLeast", Values{Value(a), Value(b), Value(mensaje)});
+}
+/// Assert.atMost(a, b, mensaje)
+template <typename T0 = Value, typename T1 = Value, typename T2 = Value>
+inline Value atMost(const T0& a = {}, const T1& b = {}, const T2& mensaje = {}) {
+    return detail::lua("Assert.atMost", Values{Value(a), Value(b), Value(mensaje)});
+}
+/// Assert.contains(lista o texto, valor, mensaje)
+template <typename T0 = Value, typename T1 = Value, typename T2 = Value>
+inline Value contains(const T0& listaOTexto = {}, const T1& valor = {}, const T2& mensaje = {}) {
+    return detail::lua("Assert.contains", Values{Value(listaOTexto), Value(valor), Value(mensaje)});
+}
+/// Assert.equal(real, esperado, mensaje)
+template <typename T0 = Value, typename T1 = Value, typename T2 = Value>
+inline Value equal(const T0& real = {}, const T1& esperado = {}, const T2& mensaje = {}) {
+    return detail::lua("Assert.equal", Values{Value(real), Value(esperado), Value(mensaje)});
+}
+/// Assert.fail(mensaje)
+/// falla siempre
+template <typename T0 = Value>
+inline Value fail(const T0& mensaje = {}) {
+    return detail::lua("Assert.fail", Values{Value(mensaje)});
+}
+/// Assert.greater(a, b, mensaje)
+template <typename T0 = Value, typename T1 = Value, typename T2 = Value>
+inline Value greater(const T0& a = {}, const T1& b = {}, const T2& mensaje = {}) {
+    return detail::lua("Assert.greater", Values{Value(a), Value(b), Value(mensaje)});
+}
+/// Assert.isFalse(valor, mensaje)
+template <typename T0 = Value, typename T1 = Value>
+inline Value isFalse(const T0& valor = {}, const T1& mensaje = {}) {
+    return detail::lua("Assert.isFalse", Values{Value(valor), Value(mensaje)});
+}
+/// Assert.isNil(valor, mensaje)
+template <typename T0 = Value, typename T1 = Value>
+inline Value isNil(const T0& valor = {}, const T1& mensaje = {}) {
+    return detail::lua("Assert.isNil", Values{Value(valor), Value(mensaje)});
+}
+/// Assert.isTrue(valor, mensaje)
+template <typename T0 = Value, typename T1 = Value>
+inline Value isTrue(const T0& valor = {}, const T1& mensaje = {}) {
+    return detail::lua("Assert.isTrue", Values{Value(valor), Value(mensaje)});
+}
+/// Assert.less(a, b, mensaje)
+template <typename T0 = Value, typename T1 = Value, typename T2 = Value>
+inline Value less(const T0& a = {}, const T1& b = {}, const T2& mensaje = {}) {
+    return detail::lua("Assert.less", Values{Value(a), Value(b), Value(mensaje)});
+}
+/// Assert.noError(funcion, mensaje)
+/// no tiene que fallar
+template <typename T0 = Value, typename T1 = Value>
+inline Value noError(const T0& funcion = {}, const T1& mensaje = {}) {
+    return detail::lua("Assert.noError", Values{Value(funcion), Value(mensaje)});
+}
+/// Assert.notEqual(a, b, mensaje)
+template <typename T0 = Value, typename T1 = Value, typename T2 = Value>
+inline Value notEqual(const T0& a = {}, const T1& b = {}, const T2& mensaje = {}) {
+    return detail::lua("Assert.notEqual", Values{Value(a), Value(b), Value(mensaje)});
+}
+/// Assert.notNil(valor, mensaje)
+template <typename T0 = Value, typename T1 = Value>
+inline Value notNil(const T0& valor = {}, const T1& mensaje = {}) {
+    return detail::lua("Assert.notNil", Values{Value(valor), Value(mensaje)});
+}
+/// Assert.throws(funcion, mensaje)
+/// la funcion tiene que fallar
+template <typename T0 = Value, typename T1 = Value>
+inline Value throws(const T0& funcion = {}, const T1& mensaje = {}) {
+    return detail::lua("Assert.throws", Values{Value(funcion), Value(mensaje)});
+}
+}  // namespace Assert
+
 namespace Audio {
 /// Audio.occlusion()
 /// esta la oclusion activa?
@@ -101,6 +183,117 @@ inline Value warn(Mas&&... mas) {
     return detail::lua("Debug.warn", Values{Value(std::forward<Mas>(mas))...});
 }
 }  // namespace Debug
+
+namespace Dialogue {
+/// Dialogue.advance()
+/// lo mismo que next
+template <typename... Mas>
+inline Value advance(Mas&&... mas) {
+    return detail::lua("Dialogue.advance", Values{Value(std::forward<Mas>(mas))...});
+}
+/// Dialogue.choices()
+/// lista de {index, text, enabled}
+template <typename... Mas>
+inline Value choices(Mas&&... mas) {
+    return detail::lua("Dialogue.choices", Values{Value(std::forward<Mas>(mas))...});
+}
+/// Dialogue.choose(1)
+/// elige la opcion 1..n
+template <typename T0 = Value>
+inline Value choose(const T0& valor = {}) {
+    return detail::lua("Dialogue.choose", Values{Value(valor)});
+}
+/// Dialogue.currentLine()
+/// {speaker, text, audio, node, autoAdvance} o nil
+template <typename... Mas>
+inline Value currentLine(Mas&&... mas) {
+    return detail::lua("Dialogue.currentLine", Values{Value(std::forward<Mas>(mas))...});
+}
+/// Dialogue.getVar("oro")
+/// lee una variable
+template <typename T0 = Value>
+inline Value getVar(const T0& texto = {}) {
+    return detail::lua("Dialogue.getVar", Values{Value(texto)});
+}
+/// Dialogue.isActive()
+/// hay un dialogo en marcha?
+template <typename... Mas>
+inline Value isActive(Mas&&... mas) {
+    return detail::lua("Dialogue.isActive", Values{Value(std::forward<Mas>(mas))...});
+}
+/// Dialogue.isWaitingChoice()
+/// esta esperando que se elija?
+template <typename... Mas>
+inline Value isWaitingChoice(Mas&&... mas) {
+    return detail::lua("Dialogue.isWaitingChoice", Values{Value(std::forward<Mas>(mas))...});
+}
+/// Dialogue.name()
+/// dialogo que corre
+template <typename... Mas>
+inline Value name(Mas&&... mas) {
+    return detail::lua("Dialogue.name", Values{Value(std::forward<Mas>(mas))...});
+}
+/// Dialogue.next()
+/// sigue tras una linea
+template <typename... Mas>
+inline Value next(Mas&&... mas) {
+    return detail::lua("Dialogue.next", Values{Value(std::forward<Mas>(mas))...});
+}
+/// Dialogue.onChoices(function(opciones) end)
+/// opciones para elegir
+template <typename T0 = Value>
+inline Value onChoices(const T0& callback = {}) {
+    return detail::lua("Dialogue.onChoices", Values{Value(callback)});
+}
+/// Dialogue.onEnd(function(nombre) end)
+/// al terminar
+template <typename T0 = Value>
+inline Value onEnd(const T0& callback = {}) {
+    return detail::lua("Dialogue.onEnd", Values{Value(callback)});
+}
+/// Dialogue.onEvent(function(nombre, argumento) end)
+/// nodo Evento
+template <typename T0 = Value>
+inline Value onEvent(const T0& callback = {}) {
+    return detail::lua("Dialogue.onEvent", Values{Value(callback)});
+}
+/// Dialogue.onLine(function(linea) end)
+/// cada linea
+template <typename T0 = Value>
+inline Value onLine(const T0& callback = {}) {
+    return detail::lua("Dialogue.onLine", Values{Value(callback)});
+}
+/// Dialogue.onStart(function(nombre) end)
+/// al empezar
+template <typename T0 = Value>
+inline Value onStart(const T0& callback = {}) {
+    return detail::lua("Dialogue.onStart", Values{Value(callback)});
+}
+/// Dialogue.setAutoAudio(true)
+/// reproduce solo el audio de cada linea
+template <typename T0 = Value>
+inline Value setAutoAudio(const T0& activar = {}) {
+    return detail::lua("Dialogue.setAutoAudio", Values{Value(activar)});
+}
+/// Dialogue.setVar("oro", 10)
+/// variable de los dialogos
+template <typename T0 = Value, typename T1 = Value>
+inline Value setVar(const T0& texto = {}, const T1& valor = {}) {
+    return detail::lua("Dialogue.setVar", Values{Value(texto), Value(valor)});
+}
+/// Dialogue.start("Mercader")
+/// empieza un .crdialog (nombre o ruta)
+template <typename T0 = Value>
+inline Value start(const T0& texto = {}) {
+    return detail::lua("Dialogue.start", Values{Value(texto)});
+}
+/// Dialogue.stop()
+/// lo corta
+template <typename... Mas>
+inline Value stop(Mas&&... mas) {
+    return detail::lua("Dialogue.stop", Values{Value(std::forward<Mas>(mas))...});
+}
+}  // namespace Dialogue
 
 namespace Environment {
 /// Environment.get(...)
@@ -1078,6 +1271,51 @@ inline Value stats(Mas&&... mas) {
 }
 }  // namespace Network
 
+namespace Physics2D {
+/// Physics2D.getGravity()
+/// Vec3 gravedad 2D
+template <typename... Mas>
+inline Value getGravity(Mas&&... mas) {
+    return detail::lua("Physics2D.getGravity", Values{Value(std::forward<Mas>(mas))...});
+}
+/// Physics2D.overlapBox(centro, tamano, angulo, mascara)
+/// objetos dentro de la caja
+template <typename T0 = Value, typename T1 = Value, typename T2 = Value, typename T3 = Value>
+inline Value overlapBox(const T0& centro = {}, const T1& tamano = {}, const T2& angulo = {}, const T3& mascara = {}) {
+    return detail::lua("Physics2D.overlapBox", Values{Value(centro), Value(tamano), Value(angulo), Value(mascara)});
+}
+/// Physics2D.overlapCircle(centro, radio, mascara)
+/// objetos con collider 2D dentro del circulo
+template <typename T0 = Value, typename T1 = Value, typename T2 = Value>
+inline Value overlapCircle(const T0& centro = {}, const T1& radio = {}, const T2& mascara = {}) {
+    return detail::lua("Physics2D.overlapCircle", Values{Value(centro), Value(radio), Value(mascara)});
+}
+/// Physics2D.overlapPoint(punto, mascara)
+/// objetos que tocan el punto
+template <typename T0 = Value, typename T1 = Value>
+inline Value overlapPoint(const T0& punto = {}, const T1& mascara = {}) {
+    return detail::lua("Physics2D.overlapPoint", Values{Value(punto), Value(mascara)});
+}
+/// Physics2D.raycast(origen, direccion, distancia, mascara)
+/// nil o {entity, point, normal, distance, fraction}
+template <typename T0 = Value, typename T1 = Value, typename T2 = Value, typename T3 = Value>
+inline Value raycast(const T0& origen = {}, const T1& direccion = {}, const T2& distancia = {}, const T3& mascara = {}) {
+    return detail::lua("Physics2D.raycast", Values{Value(origen), Value(direccion), Value(distancia), Value(mascara)});
+}
+/// Physics2D.raycastAll(origen, direccion, distancia, mascara)
+/// lista de choques, del mas cercano al mas lejano
+template <typename T0 = Value, typename T1 = Value, typename T2 = Value, typename T3 = Value>
+inline Value raycastAll(const T0& origen = {}, const T1& direccion = {}, const T2& distancia = {}, const T3& mascara = {}) {
+    return detail::lua("Physics2D.raycastAll", Values{Value(origen), Value(direccion), Value(distancia), Value(mascara)});
+}
+/// Physics2D.setGravity(Vec3(0, -9.81, 0))
+/// cambia la gravedad 2D
+template <typename T0 = Value>
+inline Value setGravity(const T0& arg = {}) {
+    return detail::lua("Physics2D.setGravity", Values{Value(arg)});
+}
+}  // namespace Physics2D
+
 namespace Prefs {
 /// Prefs.deleteAll()
 /// borra todo
@@ -1210,6 +1448,221 @@ inline Value value(Mas&&... mas) {
 }
 }  // namespace Random
 
+namespace Replay {
+/// Replay.duration()
+/// segundos grabados
+template <typename... Mas>
+inline Value duration(Mas&&... mas) {
+    return detail::lua("Replay.duration", Values{Value(std::forward<Mas>(mas))...});
+}
+/// Replay.isPlaying()
+/// esta reproduciendo?
+template <typename... Mas>
+inline Value isPlaying(Mas&&... mas) {
+    return detail::lua("Replay.isPlaying", Values{Value(std::forward<Mas>(mas))...});
+}
+/// Replay.isRecording()
+/// esta grabando?
+template <typename... Mas>
+inline Value isRecording(Mas&&... mas) {
+    return detail::lua("Replay.isRecording", Values{Value(std::forward<Mas>(mas))...});
+}
+/// Replay.list()
+/// repeticiones guardadas
+template <typename... Mas>
+inline Value list(Mas&&... mas) {
+    return detail::lua("Replay.list", Values{Value(std::forward<Mas>(mas))...});
+}
+/// Replay.load("gol")
+/// carga un .crreplay
+template <typename T0 = Value>
+inline Value load(const T0& texto = {}) {
+    return detail::lua("Replay.load", Values{Value(texto)});
+}
+/// Replay.mark("Gol", datos)
+/// marcador en la linea de tiempo
+template <typename T0 = Value, typename T1 = Value>
+inline Value mark(const T0& texto = {}, const T1& datos = {}) {
+    return detail::lua("Replay.mark", Values{Value(texto), Value(datos)});
+}
+/// Replay.pause(true)
+/// pausa la reproduccion
+template <typename T0 = Value>
+inline Value pause(const T0& activar = {}) {
+    return detail::lua("Replay.pause", Values{Value(activar)});
+}
+/// Replay.play(desde, velocidad)
+/// reproduce (desde < 0 = los ultimos N segundos)
+template <typename T0 = Value, typename T1 = Value>
+inline Value play(const T0& desde = {}, const T1& velocidad = {}) {
+    return detail::lua("Replay.play", Values{Value(desde), Value(velocidad)});
+}
+/// Replay.save("gol")
+/// guarda un .crreplay
+template <typename T0 = Value>
+inline Value save(const T0& texto = {}) {
+    return detail::lua("Replay.save", Values{Value(texto)});
+}
+/// Replay.seek(segundos)
+/// salta a ese momento
+template <typename T0 = Value>
+inline Value seek(const T0& segundos = {}) {
+    return detail::lua("Replay.seek", Values{Value(segundos)});
+}
+/// Replay.setFreeCamera(true)
+/// camara libre (WASD + raton)
+template <typename T0 = Value>
+inline Value setFreeCamera(const T0& activar = {}) {
+    return detail::lua("Replay.setFreeCamera", Values{Value(activar)});
+}
+/// Replay.setLoop(true)
+/// en bucle
+template <typename T0 = Value>
+inline Value setLoop(const T0& activar = {}) {
+    return detail::lua("Replay.setLoop", Values{Value(activar)});
+}
+/// Replay.setSpeed(0.25)
+/// camara lenta / rapida
+template <typename T0 = Value>
+inline Value setSpeed(const T0& valor = {}) {
+    return detail::lua("Replay.setSpeed", Values{Value(valor)});
+}
+/// Replay.start({rate = 30, maxSeconds = 10, tag = "Coche"})
+/// empieza a grabar
+template <typename T0 = Value>
+inline Value start(const T0& tabla = {}) {
+    return detail::lua("Replay.start", Values{Value(tabla)});
+}
+/// Replay.stop()
+/// deja de grabar
+template <typename... Mas>
+inline Value stop(Mas&&... mas) {
+    return detail::lua("Replay.stop", Values{Value(std::forward<Mas>(mas))...});
+}
+/// Replay.stopPlayback()
+/// vuelve al juego
+template <typename... Mas>
+inline Value stopPlayback(Mas&&... mas) {
+    return detail::lua("Replay.stopPlayback", Values{Value(std::forward<Mas>(mas))...});
+}
+/// Replay.time()
+/// segundo de la reproduccion
+template <typename... Mas>
+inline Value time(Mas&&... mas) {
+    return detail::lua("Replay.time", Values{Value(std::forward<Mas>(mas))...});
+}
+}  // namespace Replay
+
+namespace Save {
+/// Save.clearValues()
+/// borra todos
+template <typename... Mas>
+inline Value clearValues(Mas&&... mas) {
+    return detail::lua("Save.clearValues", Values{Value(std::forward<Mas>(mas))...});
+}
+/// Save.delete("slot1")
+/// borra una ranura
+template <typename T0 = Value>
+inline Value delete_(const T0& texto = {}) {
+    return detail::lua("Save.delete", Values{Value(texto)});
+}
+/// Save.deleteValue("oro")
+/// lo borra
+template <typename T0 = Value>
+inline Value deleteValue(const T0& texto = {}) {
+    return detail::lua("Save.deleteValue", Values{Value(texto)});
+}
+/// Save.exists("slot1")
+/// existe?
+template <typename T0 = Value>
+inline Value exists(const T0& texto = {}) {
+    return detail::lua("Save.exists", Values{Value(texto)});
+}
+/// Save.folder()
+/// carpeta de las partidas
+template <typename... Mas>
+inline Value folder(Mas&&... mas) {
+    return detail::lua("Save.folder", Values{Value(std::forward<Mas>(mas))...});
+}
+/// Save.getValue("oro", 0)
+/// lee un valor suelto
+template <typename T0 = Value, typename T1 = Value>
+inline Value getValue(const T0& texto = {}, const T1& valor = {}) {
+    return detail::lua("Save.getValue", Values{Value(texto), Value(valor)});
+}
+/// Save.hasValue("oro")
+/// existe?
+template <typename T0 = Value>
+inline Value hasValue(const T0& texto = {}) {
+    return detail::lua("Save.hasValue", Values{Value(texto)});
+}
+/// Save.info("slot1")
+/// datos de una ranura (o nil)
+template <typename T0 = Value>
+inline Value info(const T0& texto = {}) {
+    return detail::lua("Save.info", Values{Value(texto)});
+}
+/// Save.isWriting()
+/// esta escribiendo en segundo plano?
+template <typename... Mas>
+inline Value isWriting(Mas&&... mas) {
+    return detail::lua("Save.isWriting", Values{Value(std::forward<Mas>(mas))...});
+}
+/// Save.list()
+/// {slot, label, scene, date, playtime, size} de cada ranura
+template <typename... Mas>
+inline Value list(Mas&&... mas) {
+    return detail::lua("Save.list", Values{Value(std::forward<Mas>(mas))...});
+}
+/// Save.load("slot1")
+/// carga una partida (cambia de escena si hace falta)
+template <typename T0 = Value>
+inline Value load(const T0& texto = {}) {
+    return detail::lua("Save.load", Values{Value(texto)});
+}
+/// Save.onLoaded(function(slot) end)
+/// despues de cargar una partida
+template <typename T0 = Value>
+inline Value onLoaded(const T0& callback = {}) {
+    return detail::lua("Save.onLoaded", Values{Value(callback)});
+}
+/// Save.playtime()
+/// segundos jugados
+template <typename... Mas>
+inline Value playtime(Mas&&... mas) {
+    return detail::lua("Save.playtime", Values{Value(std::forward<Mas>(mas))...});
+}
+/// Save.remove(...)
+template <typename... Mas>
+inline Value remove(Mas&&... mas) {
+    return detail::lua("Save.remove", Values{Value(std::forward<Mas>(mas))...});
+}
+/// Save.save("slot1", "Etiqueta")
+/// guarda la partida (objetos Saveable, valores, dialogos)
+template <typename T0 = Value, typename T1 = Value>
+inline Value save(const T0& texto = {}, const T1& texto2 = {}) {
+    return detail::lua("Save.save", Values{Value(texto), Value(texto2)});
+}
+/// Save.setAutosave(60, "autosave")
+/// autoguardado cada N segundos (0 = no)
+template <typename T0 = Value, typename T1 = Value>
+inline Value setAutosave(const T0& valor = {}, const T1& texto = {}) {
+    return detail::lua("Save.setAutosave", Values{Value(valor), Value(texto)});
+}
+/// Save.setCompression(true)
+/// partidas comprimidas
+template <typename T0 = Value>
+inline Value setCompression(const T0& activar = {}) {
+    return detail::lua("Save.setCompression", Values{Value(activar)});
+}
+/// Save.setValue("oro", 120)
+/// valor suelto (va en cada partida)
+template <typename T0 = Value, typename T1 = Value>
+inline Value setValue(const T0& texto = {}, const T1& valor = {}) {
+    return detail::lua("Save.setValue", Values{Value(texto), Value(valor)});
+}
+}  // namespace Save
+
 namespace Scene {
 /// Scene.destroy(entity)
 /// lo destruye al final del frame
@@ -1293,6 +1746,428 @@ inline Value width(Mas&&... mas) {
     return detail::lua("Screen.width", Values{Value(std::forward<Mas>(mas))...});
 }
 }  // namespace Screen
+
+namespace Steam {
+/// Steam.achievementProgress("COLECCIONISTA", 5, 10)
+/// muestra el progreso
+template <typename T0 = Value, typename T1 = Value, typename T2 = Value>
+inline Value achievementProgress(const T0& texto = {}, const T1& valor = {}, const T2& valor2 = {}) {
+    return detail::lua("Steam.achievementProgress", Values{Value(texto), Value(valor), Value(valor2)});
+}
+/// Steam.appId()
+/// AppID
+template <typename... Mas>
+inline Value appId(Mas&&... mas) {
+    return detail::lua("Steam.appId", Values{Value(std::forward<Mas>(mas))...});
+}
+/// Steam.available()
+/// Steam esta abierto y la DLL cargada
+template <typename... Mas>
+inline Value available(Mas&&... mas) {
+    return detail::lua("Steam.available", Values{Value(std::forward<Mas>(mas))...});
+}
+/// Steam.clearAchievement("PRIMERA_SANGRE")
+/// lo vuelve a bloquear (pruebas)
+template <typename T0 = Value>
+inline Value clearAchievement(const T0& texto = {}) {
+    return detail::lua("Steam.clearAchievement", Values{Value(texto)});
+}
+/// Steam.clearRichPresence()
+/// lo borra
+template <typename... Mas>
+inline Value clearRichPresence(Mas&&... mas) {
+    return detail::lua("Steam.clearRichPresence", Values{Value(std::forward<Mas>(mas))...});
+}
+/// Steam.cloudDelete("partida.json")
+/// lo borra
+template <typename T0 = Value>
+inline Value cloudDelete(const T0& texto = {}) {
+    return detail::lua("Steam.cloudDelete", Values{Value(texto)});
+}
+/// Steam.cloudEnabled()
+/// Steam Cloud activo?
+template <typename... Mas>
+inline Value cloudEnabled(Mas&&... mas) {
+    return detail::lua("Steam.cloudEnabled", Values{Value(std::forward<Mas>(mas))...});
+}
+/// Steam.cloudExists("partida.json")
+/// existe?
+template <typename T0 = Value>
+inline Value cloudExists(const T0& texto = {}) {
+    return detail::lua("Steam.cloudExists", Values{Value(texto)});
+}
+/// Steam.cloudFiles()
+/// {name, size} de cada archivo
+template <typename... Mas>
+inline Value cloudFiles(Mas&&... mas) {
+    return detail::lua("Steam.cloudFiles", Values{Value(std::forward<Mas>(mas))...});
+}
+/// Steam.cloudRead("partida.json")
+/// lee de la nube (o nil)
+template <typename T0 = Value>
+inline Value cloudRead(const T0& texto = {}) {
+    return detail::lua("Steam.cloudRead", Values{Value(texto)});
+}
+/// Steam.cloudWrite("partida.json", texto)
+/// guarda en la nube
+template <typename T0 = Value, typename T1 = Value>
+inline Value cloudWrite(const T0& texto = {}, const T1& texto2 = {}) {
+    return detail::lua("Steam.cloudWrite", Values{Value(texto), Value(texto2)});
+}
+/// Steam.createLobby("public", 4, function(ok, sala) end)
+/// crea una sala
+template <typename T0 = Value, typename T1 = Value, typename T2 = Value>
+inline Value createLobby(const T0& texto = {}, const T1& valor = {}, const T2& callback = {}) {
+    return detail::lua("Steam.createLobby", Values{Value(texto), Value(valor), Value(callback)});
+}
+/// Steam.downloadScores("Puntos", "global", 1, 10, function(ok, filas) end)
+/// lee el marcador
+template <typename T0 = Value, typename T1 = Value, typename T2 = Value, typename T3 = Value, typename T4 = Value>
+inline Value downloadScores(const T0& texto = {}, const T1& texto2 = {}, const T2& valor = {}, const T3& valor2 = {}, const T4& callback = {}) {
+    return detail::lua("Steam.downloadScores", Values{Value(texto), Value(texto2), Value(valor), Value(valor2), Value(callback)});
+}
+/// Steam.error()
+/// por que no lo esta
+template <typename... Mas>
+inline Value error(Mas&&... mas) {
+    return detail::lua("Steam.error", Values{Value(std::forward<Mas>(mas))...});
+}
+/// Steam.findLobbies({modo = "coop"}, 20, function(ok, salas) end)
+/// busca salas
+template <typename T0 = Value, typename T1 = Value, typename T2 = Value>
+inline Value findLobbies(const T0& tabla = {}, const T1& valor = {}, const T2& callback = {}) {
+    return detail::lua("Steam.findLobbies", Values{Value(tabla), Value(valor), Value(callback)});
+}
+/// Steam.friendName(id)
+/// nombre de un amigo
+template <typename T0 = Value>
+inline Value friendName(const T0& id = {}) {
+    return detail::lua("Steam.friendName", Values{Value(id)});
+}
+/// Steam.getLobbyData(sala, "ip")
+/// lo lee
+template <typename T0 = Value, typename T1 = Value>
+inline Value getLobbyData(const T0& sala = {}, const T1& texto = {}) {
+    return detail::lua("Steam.getLobbyData", Values{Value(sala), Value(texto)});
+}
+/// Steam.getStatFloat("km")
+/// lee una estadistica
+template <typename T0 = Value>
+inline Value getStatFloat(const T0& texto = {}) {
+    return detail::lua("Steam.getStatFloat", Values{Value(texto)});
+}
+/// Steam.getStatInt("partidas")
+/// lee una estadistica
+template <typename T0 = Value>
+inline Value getStatInt(const T0& texto = {}) {
+    return detail::lua("Steam.getStatInt", Values{Value(texto)});
+}
+/// Steam.inviteToLobby(sala)
+/// dialogo de invitar del overlay
+template <typename T0 = Value>
+inline Value inviteToLobby(const T0& sala = {}) {
+    return detail::lua("Steam.inviteToLobby", Values{Value(sala)});
+}
+/// Steam.isAchievementUnlocked("PRIMERA_SANGRE")
+/// esta desbloqueado?
+template <typename T0 = Value>
+inline Value isAchievementUnlocked(const T0& texto = {}) {
+    return detail::lua("Steam.isAchievementUnlocked", Values{Value(texto)});
+}
+/// Steam.isDlcInstalled(appId)
+/// tiene el DLC?
+template <typename T0 = Value>
+inline Value isDlcInstalled(const T0& appId = {}) {
+    return detail::lua("Steam.isDlcInstalled", Values{Value(appId)});
+}
+/// Steam.isSteamDeck()
+/// corre en una Steam Deck?
+template <typename... Mas>
+inline Value isSteamDeck(Mas&&... mas) {
+    return detail::lua("Steam.isSteamDeck", Values{Value(std::forward<Mas>(mas))...});
+}
+/// Steam.joinLobby(sala, function(ok, sala) end)
+/// entra en una sala
+template <typename T0 = Value, typename T1 = Value>
+inline Value joinLobby(const T0& sala = {}, const T1& callback = {}) {
+    return detail::lua("Steam.joinLobby", Values{Value(sala), Value(callback)});
+}
+/// Steam.language()
+/// idioma de Steam
+template <typename... Mas>
+inline Value language(Mas&&... mas) {
+    return detail::lua("Steam.language", Values{Value(std::forward<Mas>(mas))...});
+}
+/// Steam.leaveLobby(sala)
+/// sale
+template <typename T0 = Value>
+inline Value leaveLobby(const T0& sala = {}) {
+    return detail::lua("Steam.leaveLobby", Values{Value(sala)});
+}
+/// Steam.lobbyMembers(sala)
+/// {id, name} de cada jugador
+template <typename T0 = Value>
+inline Value lobbyMembers(const T0& sala = {}) {
+    return detail::lua("Steam.lobbyMembers", Values{Value(sala)});
+}
+/// Steam.lobbyOwner(sala)
+/// SteamID del dueno
+template <typename T0 = Value>
+inline Value lobbyOwner(const T0& sala = {}) {
+    return detail::lua("Steam.lobbyOwner", Values{Value(sala)});
+}
+/// Steam.onLobbyJoinRequested(function(sala) end)
+/// un amigo invito y el jugador acepto
+template <typename T0 = Value>
+inline Value onLobbyJoinRequested(const T0& callback = {}) {
+    return detail::lua("Steam.onLobbyJoinRequested", Values{Value(callback)});
+}
+/// Steam.onOverlay(function(abierto) end)
+/// se abrio o cerro el overlay (pausar)
+template <typename T0 = Value>
+inline Value onOverlay(const T0& callback = {}) {
+    return detail::lua("Steam.onOverlay", Values{Value(callback)});
+}
+/// Steam.openOverlay("friends")
+/// abre el overlay
+template <typename T0 = Value>
+inline Value openOverlay(const T0& texto = {}) {
+    return detail::lua("Steam.openOverlay", Values{Value(texto)});
+}
+/// Steam.openOverlayUrl("https://...")
+/// web en el overlay
+template <typename T0 = Value>
+inline Value openOverlayUrl(const T0& texto = {}) {
+    return detail::lua("Steam.openOverlayUrl", Values{Value(texto)});
+}
+/// Steam.openStore()
+/// la pagina de la tienda
+template <typename... Mas>
+inline Value openStore(Mas&&... mas) {
+    return detail::lua("Steam.openStore", Values{Value(std::forward<Mas>(mas))...});
+}
+/// Steam.overlayActive()
+/// esta abierto ahora?
+template <typename... Mas>
+inline Value overlayActive(Mas&&... mas) {
+    return detail::lua("Steam.overlayActive", Values{Value(std::forward<Mas>(mas))...});
+}
+/// Steam.overlayEnabled()
+/// el overlay funciona?
+template <typename... Mas>
+inline Value overlayEnabled(Mas&&... mas) {
+    return detail::lua("Steam.overlayEnabled", Values{Value(std::forward<Mas>(mas))...});
+}
+/// Steam.setLobbyData(sala, "ip", "1.2.3.4:7777")
+/// dato de la sala
+template <typename T0 = Value, typename T1 = Value, typename T2 = Value>
+inline Value setLobbyData(const T0& sala = {}, const T1& texto = {}, const T2& texto2 = {}) {
+    return detail::lua("Steam.setLobbyData", Values{Value(sala), Value(texto), Value(texto2)});
+}
+/// Steam.setRichPresence("steam_display", "#Jugando")
+/// estado que ven los amigos
+template <typename T0 = Value, typename T1 = Value>
+inline Value setRichPresence(const T0& texto = {}, const T1& texto2 = {}) {
+    return detail::lua("Steam.setRichPresence", Values{Value(texto), Value(texto2)});
+}
+/// Steam.setStatFloat("km", 4.5)
+/// estadistica decimal
+template <typename T0 = Value, typename T1 = Value>
+inline Value setStatFloat(const T0& texto = {}, const T1& valor = {}) {
+    return detail::lua("Steam.setStatFloat", Values{Value(texto), Value(valor)});
+}
+/// Steam.setStatInt("partidas", 3)
+/// estadistica entera
+template <typename T0 = Value, typename T1 = Value>
+inline Value setStatInt(const T0& texto = {}, const T1& valor = {}) {
+    return detail::lua("Steam.setStatInt", Values{Value(texto), Value(valor)});
+}
+/// Steam.storeStats()
+/// envia logros y estadisticas a Steam
+template <typename... Mas>
+inline Value storeStats(Mas&&... mas) {
+    return detail::lua("Steam.storeStats", Values{Value(std::forward<Mas>(mas))...});
+}
+/// Steam.unlockAchievement("PRIMERA_SANGRE")
+/// desbloquea un logro
+template <typename T0 = Value>
+inline Value unlockAchievement(const T0& texto = {}) {
+    return detail::lua("Steam.unlockAchievement", Values{Value(texto)});
+}
+/// Steam.uploadScore("Puntos", 1200, function(ok, puesto) end)
+/// sube una puntuacion al marcador
+template <typename T0 = Value, typename T1 = Value, typename T2 = Value>
+inline Value uploadScore(const T0& texto = {}, const T1& valor = {}, const T2& callback = {}) {
+    return detail::lua("Steam.uploadScore", Values{Value(texto), Value(valor), Value(callback)});
+}
+/// Steam.userId()
+/// SteamID del jugador
+template <typename... Mas>
+inline Value userId(Mas&&... mas) {
+    return detail::lua("Steam.userId", Values{Value(std::forward<Mas>(mas))...});
+}
+/// Steam.userName()
+/// nombre del jugador
+template <typename... Mas>
+inline Value userName(Mas&&... mas) {
+    return detail::lua("Steam.userName", Values{Value(std::forward<Mas>(mas))...});
+}
+/// Steam.workshopItems()
+/// objetos del Workshop suscritos
+template <typename... Mas>
+inline Value workshopItems(Mas&&... mas) {
+    return detail::lua("Steam.workshopItems", Values{Value(std::forward<Mas>(mas))...});
+}
+/// Steam.workshopProgress()
+/// 0..1 de la subida
+template <typename... Mas>
+inline Value workshopProgress(Mas&&... mas) {
+    return detail::lua("Steam.workshopProgress", Values{Value(std::forward<Mas>(mas))...});
+}
+/// Steam.workshopUpload({title, description, folder, preview, tags}, function(ok, id) end)
+/// sube al Workshop
+template <typename T0 = Value, typename T1 = Value>
+inline Value workshopUpload(const T0& tabla = {}, const T1& callback = {}) {
+    return detail::lua("Steam.workshopUpload", Values{Value(tabla), Value(callback)});
+}
+}  // namespace Steam
+
+namespace Test {
+/// Test.case("nombre", {play = true, timeout = 10}, function() end)
+/// una prueba (de edicion o de Play)
+template <typename T0 = Value, typename T1 = Value, typename T2 = Value>
+inline Value case_(const T0& texto = {}, const T1& tabla = {}, const T2& callback = {}) {
+    return detail::lua("Test.case", Values{Value(texto), Value(tabla), Value(callback)});
+}
+/// Test.elapsed()
+/// segundos que lleva
+template <typename... Mas>
+inline Value elapsed(Mas&&... mas) {
+    return detail::lua("Test.elapsed", Values{Value(std::forward<Mas>(mas))...});
+}
+/// Test.fail("mensaje")
+/// la da por mala
+template <typename T0 = Value>
+inline Value fail(const T0& texto = {}) {
+    return detail::lua("Test.fail", Values{Value(texto)});
+}
+/// Test.isRunning()
+/// hay una prueba en marcha?
+template <typename... Mas>
+inline Value isRunning(Mas&&... mas) {
+    return detail::lua("Test.isRunning", Values{Value(std::forward<Mas>(mas))...});
+}
+/// Test.log("texto")
+/// texto en el resultado
+template <typename T0 = Value>
+inline Value log(const T0& texto = {}) {
+    return detail::lua("Test.log", Values{Value(texto)});
+}
+/// Test.name()
+/// nombre de la prueba
+template <typename... Mas>
+inline Value name(Mas&&... mas) {
+    return detail::lua("Test.name", Values{Value(std::forward<Mas>(mas))...});
+}
+/// Test.pass("mensaje")
+/// da la prueba por buena
+template <typename T0 = Value>
+inline Value pass(const T0& texto = {}) {
+    return detail::lua("Test.pass", Values{Value(texto)});
+}
+/// Test.setFrames(...)
+template <typename... Mas>
+inline Value setFrames(Mas&&... mas) {
+    return detail::lua("Test.setFrames", Values{Value(std::forward<Mas>(mas))...});
+}
+/// Test.setTimeout(segundos)
+/// tiempo maximo
+template <typename T0 = Value>
+inline Value setTimeout(const T0& segundos = {}) {
+    return detail::lua("Test.setTimeout", Values{Value(segundos)});
+}
+/// Test.wait(frames)
+/// espera frames (pruebas de Play)
+template <typename T0 = Value>
+inline Value wait(const T0& frames = {}) {
+    return detail::lua("Test.wait", Values{Value(frames)});
+}
+/// Test.waitSeconds(1.5)
+/// espera segundos
+template <typename T0 = Value>
+inline Value waitSeconds(const T0& valor = {}) {
+    return detail::lua("Test.waitSeconds", Values{Value(valor)});
+}
+/// Test.waitUntil(function() return x end, limite)
+/// espera a que se cumpla (falla al pasar el limite)
+template <typename T0 = Value, typename T1 = Value>
+inline Value waitUntil(const T0& callback = {}, const T1& limite = {}) {
+    return detail::lua("Test.waitUntil", Values{Value(callback), Value(limite)});
+}
+}  // namespace Test
+
+namespace Text {
+/// Text.format("Hola {0}", nombre)
+/// sustituye {0}, {1}, {nombre}
+template <typename T0 = Value, typename T1 = Value>
+inline Value format(const T0& texto = {}, const T1& nombre = {}) {
+    return detail::lua("Text.format", Values{Value(texto), Value(nombre)});
+}
+/// Text.get("menu.jugar", ...)
+/// texto en el idioma actual ({0}, {1}... con los argumentos)
+template <typename T0 = Value, typename... Mas>
+inline Value get(const T0& texto = {}, Mas&&... mas) {
+    return detail::lua("Text.get", Values{Value(texto), Value(std::forward<Mas>(mas))...});
+}
+/// Text.has("clave")
+/// existe la clave?
+template <typename T0 = Value>
+inline Value has(const T0& texto = {}) {
+    return detail::lua("Text.has", Values{Value(texto)});
+}
+/// Text.language()
+/// idioma actual ("es")
+template <typename... Mas>
+inline Value language(Mas&&... mas) {
+    return detail::lua("Text.language", Values{Value(std::forward<Mas>(mas))...});
+}
+/// Text.languages()
+/// {code, name} de cada idioma
+template <typename... Mas>
+inline Value languages(Mas&&... mas) {
+    return detail::lua("Text.languages", Values{Value(std::forward<Mas>(mas))...});
+}
+/// Text.onLanguageChanged(function(codigo) end)
+/// aviso al cambiar de idioma (devuelve un id)
+template <typename T0 = Value>
+inline Value onLanguageChanged(const T0& callback = {}) {
+    return detail::lua("Text.onLanguageChanged", Values{Value(callback)});
+}
+/// Text.plural("monedas", n, ...)
+/// forma plural (clave#one / clave#other) con {n}
+template <typename T0 = Value, typename T1 = Value, typename... Mas>
+inline Value plural(const T0& texto = {}, const T1& n = {}, Mas&&... mas) {
+    return detail::lua("Text.plural", Values{Value(texto), Value(n), Value(std::forward<Mas>(mas))...});
+}
+/// Text.removeListener(id)
+/// quita un aviso
+template <typename T0 = Value>
+inline Value removeListener(const T0& id = {}) {
+    return detail::lua("Text.removeListener", Values{Value(id)});
+}
+/// Text.setLanguage("en")
+/// cambia el idioma (la UI se actualiza sola)
+template <typename T0 = Value>
+inline Value setLanguage(const T0& texto = {}) {
+    return detail::lua("Text.setLanguage", Values{Value(texto)});
+}
+/// Text.systemLanguage()
+/// idioma del sistema
+template <typename... Mas>
+inline Value systemLanguage(Mas&&... mas) {
+    return detail::lua("Text.systemLanguage", Values{Value(std::forward<Mas>(mas))...});
+}
+}  // namespace Text
 
 namespace Voxel {
 /// Voxel.blockColor("stone")
@@ -2110,6 +2985,120 @@ public:
         return handle.call("trigger", Values{Value(std::forward<Mas>(mas))...});
     }
     /// StateMachine:vars(...)
+    template <typename... Mas>
+    Value vars(Mas&&... mas) const {
+        return handle.call("vars", Values{Value(std::forward<Mas>(mas))...});
+    }
+};
+
+/// Behavior Tree de un objeto (entity().getBehaviorTree()): get/set de la pizarra, start/stop, finishTask...
+class BehaviorTree {
+public:
+    Value handle;
+    BehaviorTree() = default;
+    BehaviorTree(Value v) : handle(std::move(v)) {}
+    operator Value() const { return handle; }
+    explicit operator bool() const { return handle.truthy(); }
+    /// BehaviorTree:activeTask(...)
+    template <typename... Mas>
+    Value activeTask(Mas&&... mas) const {
+        return handle.call("activeTask", Values{Value(std::forward<Mas>(mas))...});
+    }
+    /// BehaviorTree.broadcast("clave", valor)
+    /// cambia una clave en todos los arboles
+    template <typename T0 = Value, typename T1 = Value>
+    static BehaviorTree broadcast(const T0& texto = {}, const T1& valor = {}) {
+        return BehaviorTree(detail::lua("BehaviorTree.broadcast", Values{Value(texto), Value(valor)}));
+    }
+    /// BehaviorTree:clear(...)
+    template <typename... Mas>
+    Value clear(Mas&&... mas) const {
+        return handle.call("clear", Values{Value(std::forward<Mas>(mas))...});
+    }
+    /// BehaviorTree:cycles(...)
+    template <typename... Mas>
+    Value cycles(Mas&&... mas) const {
+        return handle.call("cycles", Values{Value(std::forward<Mas>(mas))...});
+    }
+    /// BehaviorTree:entity(...)
+    template <typename... Mas>
+    Value entity(Mas&&... mas) const {
+        return handle.call("entity", Values{Value(std::forward<Mas>(mas))...});
+    }
+    /// BehaviorTree:finishTask(...)
+    template <typename... Mas>
+    Value finishTask(Mas&&... mas) const {
+        return handle.call("finishTask", Values{Value(std::forward<Mas>(mas))...});
+    }
+    /// BehaviorTree:get(...)
+    template <typename... Mas>
+    Value get(Mas&&... mas) const {
+        return handle.call("get", Values{Value(std::forward<Mas>(mas))...});
+    }
+    /// BehaviorTree:has(...)
+    template <typename... Mas>
+    Value has(Mas&&... mas) const {
+        return handle.call("has", Values{Value(std::forward<Mas>(mas))...});
+    }
+    /// BehaviorTree:isActive(...)
+    template <typename... Mas>
+    Value isActive(Mas&&... mas) const {
+        return handle.call("isActive", Values{Value(std::forward<Mas>(mas))...});
+    }
+    /// BehaviorTree:new(...)
+    template <typename... Mas>
+    Value create(Mas&&... mas) const {
+        return handle.call("new", Values{Value(std::forward<Mas>(mas))...});
+    }
+    /// BehaviorTree.of(entity)
+    /// el arbol de un objeto (o nil)
+    template <typename T0 = Value>
+    static BehaviorTree of(const T0& entity = {}) {
+        return BehaviorTree(detail::lua("BehaviorTree.of", Values{Value(entity)}));
+    }
+    /// BehaviorTree.registerTask("Atacar", function(self, bt, primera) return "running" end)
+    /// tarea Run Script en Lua
+    template <typename T0 = Value, typename T1 = Value>
+    static BehaviorTree registerTask(const T0& texto = {}, const T1& callback = {}) {
+        return BehaviorTree(detail::lua("BehaviorTree.registerTask", Values{Value(texto), Value(callback)}));
+    }
+    /// BehaviorTree.reportNoise(posicion, radio, quien)
+    /// ruido que oye el servicio Hearing
+    template <typename T0 = Value, typename T1 = Value, typename T2 = Value>
+    static BehaviorTree reportNoise(const T0& posicion = {}, const T1& radio = {}, const T2& quien = {}) {
+        return BehaviorTree(detail::lua("BehaviorTree.reportNoise", Values{Value(posicion), Value(radio), Value(quien)}));
+    }
+    /// BehaviorTree:restart(...)
+    template <typename... Mas>
+    Value restart(Mas&&... mas) const {
+        return handle.call("restart", Values{Value(std::forward<Mas>(mas))...});
+    }
+    /// BehaviorTree:running(...)
+    template <typename... Mas>
+    Value running(Mas&&... mas) const {
+        return handle.call("running", Values{Value(std::forward<Mas>(mas))...});
+    }
+    /// BehaviorTree:set(...)
+    template <typename... Mas>
+    Value set(Mas&&... mas) const {
+        return handle.call("set", Values{Value(std::forward<Mas>(mas))...});
+    }
+    /// BehaviorTree:start(...)
+    template <typename... Mas>
+    Value start(Mas&&... mas) const {
+        return handle.call("start", Values{Value(std::forward<Mas>(mas))...});
+    }
+    /// BehaviorTree:stop(...)
+    template <typename... Mas>
+    Value stop(Mas&&... mas) const {
+        return handle.call("stop", Values{Value(std::forward<Mas>(mas))...});
+    }
+    /// BehaviorTree:time(...)
+    template <typename... Mas>
+    Value time(Mas&&... mas) const {
+        return handle.call("time", Values{Value(std::forward<Mas>(mas))...});
+    }
+    /// BehaviorTree:vars(...)
     template <typename... Mas>
     Value vars(Mas&&... mas) const {
         return handle.call("vars", Values{Value(std::forward<Mas>(mas))...});

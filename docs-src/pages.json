@@ -111,9 +111,19 @@
           "desc": "Máquinas de estados desde C++."
         },
         {
+          "slug": "cpp-assert",
+          "title": "Assert",
+          "desc": "Comprobaciones de las pruebas automáticas."
+        },
+        {
           "slug": "cpp-audio",
           "title": "Audio",
           "desc": "Sonidos sueltos, filtros y oclusión por paredes."
+        },
+        {
+          "slug": "cpp-behaviortree",
+          "title": "BehaviorTree",
+          "desc": "Behavior Trees: tareas de script, ruidos y avisos a todos los árboles."
         },
         {
           "slug": "cpp-charactercontroller",
@@ -124,6 +134,11 @@
           "slug": "cpp-datapack",
           "title": "DataPack",
           "desc": "Cargar escenas y objetos de un .datapack en marcha."
+        },
+        {
+          "slug": "cpp-dialogue",
+          "title": "Dialogue",
+          "desc": "Diálogos ramificados: empezar, seguir, elegir y avisos."
         },
         {
           "slug": "cpp-environment",
@@ -171,6 +186,11 @@
           "desc": "Multijugador: crear y unirse, mensajes, objetos de red."
         },
         {
+          "slug": "cpp-physics2d",
+          "title": "Physics2D",
+          "desc": "Física 2D: rayos y solapes en el plano XY."
+        },
+        {
           "slug": "cpp-prefs",
           "title": "Prefs",
           "desc": "Datos guardados entre partidas (como PlayerPrefs)."
@@ -181,9 +201,34 @@
           "desc": "Aleatorios con semilla."
         },
         {
+          "slug": "cpp-replay",
+          "title": "Replay",
+          "desc": "Repeticiones: grabar, reproducir, buscar, guardar y cargar."
+        },
+        {
+          "slug": "cpp-save",
+          "title": "Save",
+          "desc": "Partidas guardadas: ranuras, valores sueltos y autoguardado."
+        },
+        {
           "slug": "cpp-screen",
           "title": "Screen",
           "desc": "Tamaño y orientación de la pantalla."
+        },
+        {
+          "slug": "cpp-steam",
+          "title": "Steam",
+          "desc": "Steam: logros, estadísticas, marcadores, Rich Presence, overlay, nube, Workshop y salas."
+        },
+        {
+          "slug": "cpp-test",
+          "title": "Test",
+          "desc": "Pruebas automáticas: casos y esperas."
+        },
+        {
+          "slug": "cpp-text",
+          "title": "Text",
+          "desc": "Localización: textos en el idioma actual, plurales y cambio de idioma."
         },
         {
           "slug": "cpp-voxel",
@@ -246,6 +291,11 @@
           "desc": "Mallas editables como ProBuilder: formas, vértices, aristas y caras, extruir, biselar, booleanas, UV."
         },
         {
+          "slug": "2d",
+          "title": "2D",
+          "desc": "Sprites, animación, tilemaps con Rule Tiles, luces 2D y física 2D."
+        },
+        {
           "slug": "mundo-procedural",
           "title": "Mundo procedural",
           "desc": "Terreno con erosión, ríos y mar, hierba en la GPU, árboles procedurales y casas y aldeas."
@@ -266,9 +316,34 @@
           "desc": "Incendios que se propagan con llamas y humo volumétricos."
         },
         {
+          "slug": "vfx-graph",
+          "title": "VFX Graph",
+          "desc": "Partículas simuladas en la GPU: contextos Spawn, Initialize, Update y Output."
+        },
+        {
           "slug": "liquidos",
           "title": "Líquidos",
           "desc": "Agua, miel, lava y más: emisores, desagües y cuerpos que flotan."
+        },
+        {
+          "slug": "destruccion",
+          "title": "Destrucción",
+          "desc": "Fracturar mallas en trozos y el componente Destructible."
+        },
+        {
+          "slug": "vehiculos",
+          "title": "Vehículos",
+          "desc": "Coches con motor, cambios, suspensión y el asistente de ruedas."
+        },
+        {
+          "slug": "motion-matching",
+          "title": "Motion Matching",
+          "desc": "Animación por búsqueda en una base de fotogramas, sin máquina de estados."
+        },
+        {
+          "slug": "replays",
+          "title": "Repeticiones",
+          "desc": "Grabar y reproducir el juego: killcam, cámara lenta y cámara libre."
         },
         {
           "slug": "editor-ventanas",
@@ -281,9 +356,39 @@
           "desc": "IA como Bolt: estados con código Lua, transiciones y depuración en vivo."
         },
         {
+          "slug": "visual-scripting",
+          "title": "Visual Scripting",
+          "desc": "Lógica con nodos (Blueprints): eventos, flujo, variables y toda la API."
+        },
+        {
+          "slug": "behavior-trees",
+          "title": "Behavior Trees",
+          "desc": "IA con árboles de comportamiento, pizarra y depuración en vivo."
+        },
+        {
+          "slug": "dialogos",
+          "title": "Diálogos",
+          "desc": "Conversaciones ramificadas con un editor de nodos y caja de diálogo."
+        },
+        {
+          "slug": "localizacion",
+          "title": "Localización",
+          "desc": "Textos en varios idiomas, CSV, plurales y textos de la UI con clave."
+        },
+        {
+          "slug": "guardado",
+          "title": "Partidas guardadas",
+          "desc": "Save.save/load, ranuras, autoguardado y el componente Saveable."
+        },
+        {
           "slug": "materiales",
           "title": "Materiales",
           "desc": "PBR, mapas de escaneos, transparencia y shaders propios."
+        },
+        {
+          "slug": "shader-graph",
+          "title": "Shader Graph",
+          "desc": "Materiales con nodos que generan un .crshader, con vista previa."
         },
         {
           "slug": "render-textures",
@@ -296,9 +401,34 @@
           "desc": "Sombras, GI, trazado de rayos, escalado, presupuesto adaptativo y LODs."
         },
         {
+          "slug": "iluminacion-horneada",
+          "title": "Iluminación horneada",
+          "desc": "Luz rebotada en sondas para Android y PCs sin rayos."
+        },
+        {
           "slug": "exportar",
           "title": "Exportar y compilación",
           "desc": "Crear el juego, configuraciones de compilación, nombre e icono."
+        },
+        {
+          "slug": "steam",
+          "title": "Steam",
+          "desc": "Logros, estadísticas, marcadores, overlay, nube, Workshop y salas."
+        },
+        {
+          "slug": "linux",
+          "title": "Linux",
+          "desc": "El reproductor del juego en Linux (x64)."
+        },
+        {
+          "slug": "git",
+          "title": "Control de versiones (Git)",
+          "desc": "Cambios, diferencias, commit, push/pull y ramas en el editor."
+        },
+        {
+          "slug": "pruebas",
+          "title": "Pruebas automáticas",
+          "desc": "Test Runner, Test.case/Assert y --run-tests para integración continua."
         },
         {
           "slug": "datapacks",
@@ -379,6 +509,16 @@
           "slug": "componentes-scripting",
           "title": "Scripts y prefabs",
           "desc": "El componente Script y los de los prefabs."
+        },
+        {
+          "slug": "componentes-2d",
+          "title": "2D",
+          "desc": "Sprite Renderer, Sprite Animator, Luz 2D, Tilemap y fisica 2D."
+        },
+        {
+          "slug": "componentes-iluminacion",
+          "title": "Iluminación horneada",
+          "desc": "Light Probe Volume."
         },
         {
           "slug": "componentes-vr",

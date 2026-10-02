@@ -1,0 +1,39 @@
+<p>
+  <strong>Repeticiones</strong>: graba lo que pasa en el juego (posición y giro de los objetos que se mueven, sus animaciones,
+  los objetos que aparecen y desaparecen y los sonidos) y lo vuelve a reproducir con línea de tiempo, cámara lenta, pausa y
+  cámara libre. Sirve para repeticiones de goles, killcams y "instant replay". Se comprime con fotogramas completos cada
+  cierto tiempo y diferencias entre medias.
+</p>
+
+<h3 id="editor">Ventana Repeticiones</h3>
+<ul>
+  <li><em>Ventana &gt; Repeticiones</em>. En Play: <strong>Grabar</strong>, <strong>Parar</strong>, <strong>Reproducir</strong>
+    o <strong>Últimos 5 s</strong>.</li>
+  <li>Reproduciendo: la línea de tiempo (con los marcadores en amarillo), velocidad, bucle y <strong>cámara libre</strong>
+    (<kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd>/<kbd>Q</kbd><kbd>E</kbd> y botón derecho, <kbd>Mayús</kbd> = rápido).
+    <em>Volver al juego</em> deja todo como estaba.</li>
+  <li>Opciones: muestras por segundo, <em>Últimos (s)</em> (solo guarda los últimos N segundos: killcam), solo los objetos
+    con una etiqueta, sonidos y animaciones.</li>
+  <li><strong>Guardar</strong> / <strong>Cargar</strong> archivos <code>.crreplay</code> (en el editor, en
+    <code>Library/Replays</code>; en el juego, en su carpeta de datos).</li>
+</ul>
+
+<h3 id="scripts">Desde los scripts</h3>
+<pre><code class="language-lua">function Partido:Start()
+    Replay.start({ rate = 30, maxSeconds = 10 })   -- siempre los ultimos 10 s
+end
+
+function Partido:OnGol()
+    Replay.mark("Gol")
+    Replay.play(-6, 0.5)          -- los ultimos 6 segundos a camara lenta
+    Replay.setFreeCamera(false)
+end
+
+function Partido:Update(dt)
+    if Replay.isPlaying() and Replay.time() >= Replay.duration() then
+        Replay.stopPlayback()
+        Replay.start({ rate = 30, maxSeconds = 10 })
+    end
+end</code></pre>
+<p>También: <code>Replay.seek</code>, <code>pause</code>, <code>setSpeed</code>, <code>setLoop</code>, <code>save</code>,
+  <code>load</code> y <code>list</code>.</p>

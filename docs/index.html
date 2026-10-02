@@ -125,7 +125,7 @@
       <div class="relative mx-auto grid max-w-6xl gap-12 px-4 py-16 sm:px-6 lg:grid-cols-[1fr_1.1fr] lg:items-center lg:py-24">
         <div class="min-w-0">
           <a href="#novedades" class="badge hover:text-foreground">
-            <span class="font-medium text-foreground">Nuevo en la 2.0</span> Scripts en C++, luz realista y bosques vivos
+            <span class="font-medium text-foreground">Nuevo en la 2.1</span> Grafos de nodos, 2D, scripts en C++ y luz realista
             <svg class="size-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
           </a>
           <h1 class="mt-6 text-4xl font-bold leading-[1.08] tracking-tight sm:text-5xl lg:text-6xl">
@@ -142,7 +142,7 @@
             </a>
             <a href="manual/index.html" class="btn btn-outline">Leer la documentación</a>
           </div>
-          <p class="mt-6 font-mono text-xs text-muted-foreground">2.0 · Windows 10/11 x64 · Android · realidad virtual · Vulkan 1.3 · ≈ZIPMB MB</p>
+          <p class="mt-6 font-mono text-xs text-muted-foreground">2.1 · Windows 10/11 x64 · Android · realidad virtual · Vulkan 1.3 · ≈151 MB</p>
         </div>
 
         <figure class="card min-w-0 overflow-hidden shadow-2xl shadow-black/20">
@@ -193,7 +193,7 @@
           </article>
           <article class="card p-6">
             <h3 class="font-semibold">Editor</h3>
-            <p class="mt-2 text-sm text-muted-foreground">Paneles acoplables, vistas Escena y Juego, pestañas para prefabs y scripts, prefabs enlazados, editor de scripts con IntelliSense, shaders GLSL que se recompilan al guardar, interfaz de juego y exportación a Windows y Android. Hub con plantillas y actualizador con SHA-256.</p>
+            <p class="mt-2 text-sm text-muted-foreground">Paneles acoplables, vistas Escena, Juego y 2D, pestañas para prefabs y scripts, prefabs enlazados, editor de scripts con IntelliSense, Shader Graph, VFX Graph, Visual Scripting, Behavior Trees y diálogos con nodos, Git y pruebas automáticas dentro del editor, interfaz de juego y exportación a Windows y Android. Hub con plantillas y actualizador con SHA-256.</p>
           </article>
           <article class="card p-6">
             <h3 class="font-semibold">Entrada y VR</h3>
@@ -221,6 +221,8 @@
             <p class="card p-4"><span class="font-medium">Mundo abierto.</span> <span class="text-muted-foreground">Isla de 8 × 8 km con unos 2 millones de árboles.</span></p>
             <p class="card p-4"><span class="font-medium">Mundo de bloques.</span> <span class="text-muted-foreground">Supervivencia con crafteo, hambre y guardado.</span></p>
             <p class="card p-4"><span class="font-medium">Criaturas.</span> <span class="text-muted-foreground">Un perro con IK en las cuatro patas, Phys Bones y ragdoll.</span></p>
+            <p class="card p-4"><span class="font-medium">Plataformas 2D.</span> <span class="text-muted-foreground">Pixel art con tilemap de Rule Tiles, física 2D, sprites animados y monedas.</span></p>
+            <p class="card p-4"><span class="font-medium">Coches.</span> <span class="text-muted-foreground">Un coche con motor, marchas y suspensión en una pista con rampas.</span></p>
           </div>
         </div>
       </div>
@@ -280,7 +282,8 @@ CRAMION_SCRIPT(Jugador)</code></pre>
         <div class="flex flex-wrap items-end justify-between gap-4">
           <div>
             <p class="text-sm font-medium text-brand">Novedades</p>
-            <h2 class="mt-2 text-3xl font-bold tracking-tight sm:text-4xl">Cramion 2.0: C++, luz realista y bosques vivos</h2>
+            <h2 class="mt-2 text-3xl font-bold tracking-tight sm:text-4xl">Cramion 2.1: grafos de nodos, 2D, C++ y luz realista</h2>
+            <p class="mt-3 max-w-2xl text-muted-foreground">La 2.1 trae también todo lo de la 2.0, que no se publicó por separado.</p>
           </div>
           <span class="badge">octubre de 2026</span>
         </div>
@@ -299,13 +302,26 @@ CRAMION_SCRIPT(Jugador)</code></pre>
               <img src="img/v20-especies.jpg" alt="Abetos, sauce y palmeras procedurales" class="w-full" loading="lazy">
               <figcaption class="border-t border-border px-4 py-2 text-xs text-muted-foreground">Abetos y sauce a contraluz</figcaption>
             </figure>
-            <figure class="card overflow-hidden sm:col-span-2">
+            <figure class="card overflow-hidden">
               <img src="img/v20-rio.jpg" alt="Río que baja entre pinos y abedules hacia las montañas" class="w-full" loading="lazy">
-              <figcaption class="border-t border-border px-4 py-2 text-xs text-muted-foreground">Río en cuesta entre pinos con borlas de agujas en 3D</figcaption>
+              <figcaption class="border-t border-border px-4 py-2 text-xs text-muted-foreground">Río en cuesta entre pinos</figcaption>
+            </figure>
+            <figure class="card overflow-hidden">
+              <img src="img/v20-aldea.jpg" alt="Aldea procedural entre abedules, robles y pinos con hierba alta" class="w-full" loading="lazy">
+              <figcaption class="border-t border-border px-4 py-2 text-xs text-muted-foreground">Aldea entre los árboles</figcaption>
             </figure>
           </div>
           <div class="card min-w-0 p-6">
-            <ul class="space-y-4 text-sm">
+            <p class="text-xs font-medium uppercase tracking-wide text-brand">Nuevo en la 2.1</p>
+            <ul class="mt-3 space-y-4 text-sm">
+              <li><p class="font-medium">Grafos de nodos para todo</p><p class="mt-1 text-muted-foreground">Shader Graph con vista previa, VFX Graph con partículas enteras en la GPU (hasta cientos de miles), Visual Scripting como los Blueprints con depuración en vivo, Behavior Trees con pizarra y diálogos ramificados.</p></li>
+              <li><p class="font-medium">2D</p><p class="mt-1 text-muted-foreground">Sprites y Sprite Editor, animación por fotogramas, tilemaps con Rule Tiles, luces 2D, física 2D propia y la plantilla Plataformas 2D.</p></li>
+              <li><p class="font-medium">Juego</p><p class="mt-1 text-muted-foreground">Partidas guardadas, localización con plurales, repeticiones y killcams, Motion Matching, destrucción con trozos de Voronoi y vehículos completos con asistente de ruedas.</p></li>
+              <li><p class="font-medium">Iluminación horneada</p><p class="mt-1 text-muted-foreground">Luz rebotada horneada en volúmenes de sondas: casi gratis en Android y en PCs sin trazado de rayos.</p></li>
+              <li><p class="font-medium">Flujo de trabajo</p><p class="mt-1 text-muted-foreground">Git dentro del editor, pruebas automáticas (Test Runner y <span class="code-inline">--run-tests</span> para CI), Steam y recarga en caliente de C++ que conserva el estado.</p></li>
+            </ul>
+            <p class="mt-8 text-xs font-medium uppercase tracking-wide text-brand">Y de la 2.0</p>
+            <ul class="mt-3 space-y-4 text-sm">
               <li><p class="font-medium">Scripts en C++</p><p class="mt-1 text-muted-foreground">El lenguaje del motor: clases con start y update, propiedades en el Inspector como en Unity, compilador incluido, IntelliSense de clangd y scripts aislados en otro proceso (un fallo no tumba el editor).</p></li>
               <li><p class="font-medium">Luz más realista</p><p class="mt-1 text-muted-foreground">Los rayos ven el terreno y los árboles, sombras del sol por rayos, oclusión del cielo sin RT, luces sin fugas, tonemapper AgX y autoenfoque suave. Y el RT apagado no cuesta nada.</p></li>
               <li><p class="font-medium">Árboles y hierba realistas</p><p class="mt-1 text-muted-foreground">Copas que se iluminan a contraluz, cortezas nuevas, pinos con brotes en 3D, abetos densos y hierba en matas con manchas de color, puntas secas y paja.</p></li>
@@ -313,7 +329,7 @@ CRAMION_SCRIPT(Jugador)</code></pre>
               <li><p class="font-medium">Modelado y personajes</p><p class="mt-1 text-muted-foreground">Mallas editables como ProBuilder (vértices, aristas y caras, bisel, booleanas...) y un Character Controller con escalones, pendientes y plataformas.</p></li>
               <li><p class="font-medium">Agua</p><p class="mt-1 text-muted-foreground">Los ríos en cuesta ya no se cortan al acercarse y la espuma de las orillas es natural.</p></li>
             </ul>
-            <a href="manual/render.html" class="btn btn-outline btn-sm mt-6">Iluminación y rayos en la documentación</a>
+            <a href="manual/index.html" class="btn btn-outline btn-sm mt-6">Todo en la documentación</a>
           </div>
         </div>
 
@@ -471,10 +487,10 @@ CRAMION_SCRIPT(Jugador)</code></pre>
       <div class="mx-auto grid max-w-6xl gap-6 px-4 py-20 sm:px-6 lg:grid-cols-[1fr_1.2fr]">
         <div class="card min-w-0 p-6 sm:p-8">
           <p class="text-sm font-medium text-brand">Descargar</p>
-          <h2 class="mt-2 text-3xl font-bold tracking-tight">Cramion 2.0 para Windows</h2>
+          <h2 class="mt-2 text-3xl font-bold tracking-tight">Cramion 2.1 para Windows</h2>
           <p class="mt-4 text-muted-foreground">Descomprime y abre <span class="code-inline">CramionEditor.exe</span>. El motor avisa de las versiones nuevas y se actualiza solo.</p>
           <a href="https://github.com/MantraxStudios/Cramion/releases/latest/download/Cramion-win64.zip" class="btn btn-primary mt-6 w-full sm:w-auto">
-            <svg class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v11M7 10l5 5 5-5M5 20h14"/></svg>Cramion-win64.zip · ≈ZIPMB MB
+            <svg class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v11M7 10l5 5 5-5M5 20h14"/></svg>Cramion-win64.zip · ≈151 MB
           </a>
           <div class="mt-6 rounded-lg border border-border bg-muted px-4 py-3 text-sm text-muted-foreground">
             La única descarga oficial es esta, y es gratis. Si alguien te vende Cramion, no es oficial: avisa en el

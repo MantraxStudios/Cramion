@@ -144,6 +144,9 @@ struct AnimatorRuntime {
     float state_time = 0.0f;      // segundos en el estado actual
     std::unordered_map<std::string, float> values;  // parametros actuales
     int last_transition = -1;     // la que causo el ultimo cambio (-1 = entrada)
+    // Repeticiones (replay/Replay.h): el estado y el tiempo los pone la
+    // repeticion; la maquina no avanza ni cambia de estado sola.
+    bool replay_control = false;
 };
 
 // Avanza la maquina: aplica la primera transicion que se cumpla (consume los

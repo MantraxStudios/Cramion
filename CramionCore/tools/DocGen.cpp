@@ -354,6 +354,10 @@ const std::vector<Page>& pages() {
         {"componentes-navegacion", "Navegacion", {"Navegacion"}, "Volumenes de navmesh, modificadores y agentes."},
         {"componentes-ui", "Interfaz (UI)", {"UI"}, "Canvas, rectangulos, imagenes, textos, botones, sliders, casillas y campos."},
         {"componentes-scripting", "Scripts y prefabs", {"Scripting", "Prefab"}, "El componente Script y los que usan los prefabs."},
+        {"componentes-2d", "2D", {"2D"},
+         "Sprites, animacion por fotogramas, luces 2D, tilemaps y fisica 2D (ver la pagina 2D del editor)."},
+        {"componentes-iluminacion", "Iluminacion horneada", {"Iluminacion"},
+         "Volumenes de sondas de luz rebotada (ver Iluminacion horneada en el editor)."},
         {"componentes-vr", "Realidad virtual", {"Realidad virtual"},
          "XR Origin (el suelo de la habitacion, con la camara que sigue al casco) y los mandos (XR Controller)."},
     };

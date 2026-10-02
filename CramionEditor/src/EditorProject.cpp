@@ -46,6 +46,7 @@ Icon assetIcon(assets::AssetType type) {
         case assets::AssetType::Prefab: return Icon::ColliderBox;
         case assets::AssetType::RenderTexture: return Icon::Camera;
         case assets::AssetType::StateMachine: return Icon::NavMeshAgent;
+        case assets::AssetType::Dialogue: return Icon::AudioSource;
         default: return Icon::AssetBrowser;
     }
 }
@@ -165,7 +166,7 @@ void EditorApp::rebuildBrowserCache() {
             if (ext == ".lua" || ext == ".cpp" || ext == ".cc" || ext == ".cxx" || ext == ".h" || ext == ".hpp") {
                 current_scripts_.push_back(entry.path());
             }
-            if (ext == assets::kSurfaceShaderExtension) current_shaders_.push_back(entry.path());
+            if (ext == assets::kSurfaceShaderExtension || isGraphFileExtension(ext)) current_shaders_.push_back(entry.path());
             if (audio::isAudioFile(entry.path())) current_audio_.push_back(entry.path());
         }
         std::sort(current_images_.begin(), current_images_.end());
@@ -248,6 +249,7 @@ std::uint32_t categoryOf(const Item& item) {
         case assets::AssetType::AnimatorController:
         case assets::AssetType::AnimationClip: return kFilterAnimation;
         case assets::AssetType::StateMachine: return kFilterScripts;  // logica de juego, como los scripts
+        case assets::AssetType::Dialogue: return kFilterScripts;
         default: return 0;
     }
 }
@@ -423,7 +425,9 @@ void EditorApp::buildBrowserItems() {
                 else if (ext == ".cpp" || ext == ".cc" || ext == ".cxx" || ext == ".h" || ext == ".hpp") {
                     browser_all_loose_.push_back(file_item(p, Kind::Script, "Script C++"));
                 }
-                else if (ext == assets::kSurfaceShaderExtension) browser_all_loose_.push_back(file_item(p, Kind::Shader, "Shader"));
+                else if (ext == assets::kSurfaceShaderExtension || isGraphFileExtension(ext)) {
+                    browser_all_loose_.push_back(file_item(p, Kind::Shader, graphFileLabel(ext)));
+                }
                 else if (audio::isAudioFile(p)) browser_all_loose_.push_back(file_item(p, Kind::Audio, "Audio"));
             }
         }
@@ -464,7 +468,9 @@ void EditorApp::buildBrowserItems() {
         for (const std::filesystem::path& p : current_scripts_) {
             browser_items_.push_back(file_item(p, Kind::Script, lower(p.extension().string()) == ".lua" ? "Script Lua (obsoleto)" : "Script C++"));
         }
-        for (const std::filesystem::path& p : current_shaders_) browser_items_.push_back(file_item(p, Kind::Shader, "Shader"));
+        for (const std::filesystem::path& p : current_shaders_) {
+            browser_items_.push_back(file_item(p, Kind::Shader, graphFileLabel(lower(p.extension().string()))));
+        }
         for (const std::filesystem::path& p : current_audio_) browser_items_.push_back(file_item(p, Kind::Audio, "Audio"));
     }
     // Carpetas primero; luego por tipo y por nombre (como Unreal).
@@ -515,7 +521,10 @@ void EditorApp::openBrowserItem(const BrowserItem& item) {
     switch (item.kind) {
         case Kind::Folder: navigateTo(item.path); return;
         case Kind::Script:
-        case Kind::Shader: openScript(item.path); return;
+        case Kind::Shader:
+            if (openGraphFile(item.path)) return;  // .crshadergraph, .crgraph, .crtileset (EditorGraphs.cpp)
+            openScript(item.path);
+            return;
         case Kind::Audio:
             if (audio_.previewing()) audio_.stopPreview();
             else audio_.preview(item.path);
@@ -535,6 +544,10 @@ void EditorApp::openBrowserItem(const BrowserItem& item) {
         case assets::AssetType::Environment: assignEnvironment(info.uuid); break;
         case assets::AssetType::AnimatorController: openAnimatorEditor(info.uuid); break;
         case assets::AssetType::StateMachine: openStateMachineEditor(info.uuid); break;
+        case assets::AssetType::Dialogue: openDialogueEditor(info.path); break;
+        case assets::AssetType::VisualEffect: openVfxEditor(info.uuid); break;
+        case assets::AssetType::BehaviorTree: openBehaviorTreeEditor(info.uuid); break;
+        case assets::AssetType::MotionDatabase: openMotionDatabaseEditor(info.uuid); break;
         case assets::AssetType::Material: inspected_material_ = info.uuid; break;
         case assets::AssetType::RenderTexture:
             inspected_material_ = {};
@@ -848,6 +861,12 @@ void EditorApp::drawProject() {
             if (ImGui::MenuItem("Enemigo de ejemplo")) createStateMachineAsset(target_folder, true);
             ImGui::EndMenu();
         }
+        if (ImGui::BeginMenu("Diálogo")) {
+            if (ImGui::MenuItem("Vacío")) createDialogueAsset(target_folder, false);
+            if (ImGui::MenuItem("Mercader de ejemplo")) createDialogueAsset(target_folder, true);
+            ImGui::EndMenu();
+        }
+        drawCreateMenuExtras(target_folder);  // VFX, Shader Graph, Visual Script, BT, 2D...
         ImGui::Separator();
         if (ImGui::MenuItem("Prefab desde la selección", nullptr, false, !selection_.empty())) createPrefabsFromSelection(target_folder);
         ImGui::EndPopup();
@@ -1309,6 +1328,12 @@ void EditorApp::drawProject() {
                 if (ImGui::MenuItem("Enemigo de ejemplo")) createStateMachineAsset(target_folder, true);
                 ImGui::EndMenu();
             }
+            if (ImGui::BeginMenu("Diálogo")) {
+                if (ImGui::MenuItem("Vacío")) createDialogueAsset(target_folder, false);
+                if (ImGui::MenuItem("Mercader de ejemplo")) createDialogueAsset(target_folder, true);
+                ImGui::EndMenu();
+            }
+            drawCreateMenuExtras(target_folder);  // VFX, Shader Graph, Visual Script, BT, 2D...
             ImGui::EndMenu();
         }
         if (ImGui::MenuItem("Importar...")) {

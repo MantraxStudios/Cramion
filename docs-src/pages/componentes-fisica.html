@@ -161,12 +161,51 @@
 <table>
   <thead><tr><th>Propiedad</th><th>Tipo</th><th>Por defecto</th><th>Valores</th><th>Descripcion</th></tr></thead>
   <tbody>
+    <tr><td colspan="5"><strong class="text-white">Motor</strong></td></tr>
     <tr><td>Par del motor<br><code>engine_torque</code></td><td>numero</td><td>500</td><td>10 a 10000</td><td></td></tr>
     <tr><td>RPM minimas<br><code>min_rpm</code></td><td>numero</td><td>1000</td><td>100 a 5000</td><td></td></tr>
     <tr><td>RPM maximas<br><code>max_rpm</code></td><td>numero</td><td>6000</td><td>1000 a 20000</td><td></td></tr>
-    <tr><td>Cambio automatico<br><code>automatic</code></td><td>si/no</td><td>si</td><td></td><td></td></tr>
+    <tr><td colspan="5"><strong class="text-white">Curva de par (lista)</strong> <code>torque_curve</code> — Puntos (rpm 0..1 entre min y max, par 0..1 del maximo), como la curva de Unreal</td></tr>
+    <tr><td>&nbsp;&nbsp;&nbsp;RPM (0..1)<br><code>x</code></td><td>numero</td><td>0</td><td>0 a 1</td><td></td></tr>
+    <tr><td>&nbsp;&nbsp;&nbsp;Par (0..1)<br><code>y</code></td><td>numero</td><td>0,8</td><td>0 a 1,5</td><td></td></tr>
+    <tr><td>Inercia del motor<br><code>engine_inertia</code></td><td>numero</td><td>0,5</td><td>0,01 a 10</td><td>kg m2: mas = sube de vueltas mas despacio</td></tr>
+    <tr><td>Freno motor<br><code>engine_damping</code></td><td>numero</td><td>0,2</td><td>0 a 5</td><td>Cuanto baja de vueltas al soltar el acelerador</td></tr>
+    <tr><td colspan="5"><strong class="text-white">Caja de cambios</strong></td></tr>
+    <tr><td>Cambio automatico<br><code>automatic</code></td><td>si/no</td><td>si</td><td></td><td>Sin: manual (subir/bajar marcha por accion o script)</td></tr>
+    <tr><td colspan="5"><strong class="text-white">Marchas (lista)</strong> <code>gears</code> — Relacion de cada marcha (1a, 2a...)</td></tr>
+    <tr><td>&nbsp;&nbsp;&nbsp;Relacion<br><code>ratio</code></td><td>numero</td><td>2,66</td><td>0,1 a 10</td><td></td></tr>
+    <tr><td>Marcha atras<br><code>reverse_ratio</code></td><td>numero</td><td>2,9</td><td>0,1 a 10</td><td></td></tr>
+    <tr><td>Subir marcha a<br><code>shift_up_rpm</code></td><td>numero</td><td>4000</td><td>500 a 20000</td><td></td></tr>
+    <tr><td>Bajar marcha a<br><code>shift_down_rpm</code></td><td>numero</td><td>2000</td><td>100 a 20000</td><td></td></tr>
+    <tr><td>Tiempo de cambio<br><code>shift_time</code></td><td>numero</td><td>0,5</td><td>0 a 3</td><td></td></tr>
+    <tr><td>Embrague<br><code>clutch_strength</code></td><td>numero</td><td>10</td><td>0,1 a 100</td><td></td></tr>
+    <tr><td colspan="5"><strong class="text-white">Diferenciales</strong></td></tr>
+    <tr><td>Grupo final<br><code>final_drive</code></td><td>numero</td><td>3,42</td><td>0,5 a 10</td><td>Relacion del diferencial (mas = mas aceleracion, menos punta)</td></tr>
+    <tr><td>Autoblocante<br><code>limited_slip</code></td><td>numero</td><td>1,4</td><td>1 a 10</td><td>Relacion maxima entre la rueda rapida y la lenta antes de pasar el par a la lenta (10 = abierto)</td></tr>
+    <tr><td>Reparto delante (4x4)<br><code>front_torque_split</code></td><td>numero</td><td>0,5</td><td>0 a 1</td><td>Parte del par al eje delantero si los dos traccionan</td></tr>
+    <tr><td colspan="5"><strong class="text-white">Estabilidad</strong></td></tr>
     <tr><td>Inclinacion maxima<br><code>max_pitch_roll</code></td><td>numero</td><td>60</td><td>5 a 180</td><td>Grados antes de volcar (180 = libre)</td></tr>
-    <tr><td>Conducir con teclado<br><code>keyboard</code></td><td>si/no</td><td>si</td><td></td><td>W/S, A/D y Espacio (freno de mano). Sin: por script</td></tr>
+    <tr><td>Barras estabilizadoras<br><code>anti_roll_bars</code></td><td>si/no</td><td>si</td><td></td><td>Reducen el balanceo en las curvas (por eje)</td></tr>
+    <tr><td>Rigidez de las barras<br><code>anti_roll_stiffness</code></td><td>numero</td><td>1500</td><td>0 a 100000</td><td></td></tr>
+    <tr><td>Centro de masas<br><code>center_of_mass_offset</code></td><td>Vec3 (metros)</td><td>(0; 0; 0)</td><td></td><td>Desplazamiento del centro de masas (mas bajo = vuelca menos)</td></tr>
+    <tr><td colspan="5"><strong class="text-white">Entrada</strong></td></tr>
+    <tr><td>Lo conduce el jugador<br><code>keyboard</code></td><td>si/no</td><td>si</td><td></td><td>Teclado/mando (sin: entity:setVehicleInput desde un script)</td></tr>
+    <tr><td>Usar Input Actions<br><code>use_input_actions</code></td><td>si/no</td><td>si</td><td></td><td>Lee las acciones del proyecto (teclado, mando y tactil). Sin: W/S, A/D y Espacio</td></tr>
+    <tr><td>Accion conducir<br><code>drive_action</code></td><td>texto</td><td>&quot;Move&quot;</td><td></td><td>Vec2: Y acelerar/atras, X girar (Move por defecto)</td></tr>
+    <tr><td>Accion freno de mano<br><code>handbrake_action</code></td><td>texto</td><td>&quot;Jump&quot;</td><td></td><td></td></tr>
+    <tr><td>Accion freno<br><code>brake_action</code></td><td>texto</td><td>(vacio)</td><td></td><td>Opcional (si no: atras frena mientras avanza)</td></tr>
+    <tr><td>Accion subir marcha<br><code>shift_up_action</code></td><td>texto</td><td>(vacio)</td><td></td><td>Cambio manual</td></tr>
+    <tr><td>Accion bajar marcha<br><code>shift_down_action</code></td><td>texto</td><td>(vacio)</td><td></td><td>Cambio manual</td></tr>
+    <tr><td>Velocidad del volante<br><code>steer_speed</code></td><td>numero</td><td>5</td><td>0 a 50</td><td>Giro por segundo (0 = al instante)</td></tr>
+    <tr><td colspan="5"><strong class="text-white">Sonido y efectos</strong></td></tr>
+    <tr><td>Sonido del motor<br><code>engine_sound</code></td><td>entidad</td><td>(ninguna)</td><td>arrastrar desde la Jerarquia</td><td>Objeto con AudioSource en bucle: su tono sigue a las rpm</td></tr>
+    <tr><td>Tono al ralenti<br><code>engine_pitch_min</code></td><td>numero</td><td>0,7</td><td>0,1 a 3</td><td></td></tr>
+    <tr><td>Tono al maximo<br><code>engine_pitch_max</code></td><td>numero</td><td>2</td><td>0,1 a 4</td><td></td></tr>
+    <tr><td>Volumen sin acelerar<br><code>engine_volume_min</code></td><td>numero</td><td>0,4</td><td>0 a 1</td><td></td></tr>
+    <tr><td>Volumen acelerando<br><code>engine_volume_max</code></td><td>numero</td><td>1</td><td>0 a 1</td><td></td></tr>
+    <tr><td>Sonido de derrape<br><code>skid_sound</code></td><td>entidad</td><td>(ninguna)</td><td>arrastrar desde la Jerarquia</td><td>Objeto con AudioSource en bucle: su volumen sigue al derrape</td></tr>
+    <tr><td>Humo de derrape<br><code>skid_particles</code></td><td>entidad</td><td>(ninguna)</td><td>arrastrar desde la Jerarquia</td><td>Objeto con ParticleSystem: emite segun el derrape</td></tr>
+    <tr><td>Umbral de derrape<br><code>skid_threshold</code></td><td>numero</td><td>0,15</td><td>0 a 1</td><td></td></tr>
   </tbody>
 </table>
 <h3 id="WheelCollider">Wheel Collider <code>WheelCollider</code></h3>
@@ -176,8 +215,11 @@
   <tbody>
     <tr><td>Radio<br><code>radius</code></td><td>numero</td><td>0,38</td><td>0,05 a 5</td><td></td></tr>
     <tr><td>Ancho<br><code>width</code></td><td>numero</td><td>0,25</td><td>0,02 a 3</td><td></td></tr>
+    <tr><td>Masa<br><code>mass</code></td><td>numero</td><td>20</td><td>0,5 a 500</td><td>Inercia de la rueda (cilindro)</td></tr>
+    <tr><td colspan="5"><strong class="text-white">Suspension</strong></td></tr>
     <tr><td>Suspension min<br><code>suspension_min</code></td><td>numero</td><td>0,05</td><td>0 a 3</td><td></td></tr>
     <tr><td>Suspension max<br><code>suspension_max</code></td><td>numero</td><td>0,35</td><td>0,01 a 3</td><td></td></tr>
+    <tr><td>Precarga<br><code>suspension_preload</code></td><td>numero</td><td>0</td><td>0 a 1</td><td></td></tr>
     <tr><td>Dureza (Hz)<br><code>spring_frequency</code></td><td>numero</td><td>1,6</td><td>0,1 a 10</td><td></td></tr>
     <tr><td>Amortiguacion<br><code>damping</code></td><td>numero</td><td>0,5</td><td>0 a 1</td><td></td></tr>
     <tr><td>Giro maximo<br><code>max_steer_angle</code></td><td>numero</td><td>0</td><td>0 a 80</td><td>Grados; 0 = no gira (ruedas traseras)</td></tr>
@@ -185,6 +227,16 @@
     <tr><td>Freno<br><code>max_brake_torque</code></td><td>numero</td><td>1500</td><td>0 a 20000</td><td></td></tr>
     <tr><td>Freno de mano<br><code>max_handbrake_torque</code></td><td>numero</td><td>0</td><td>0 a 20000</td><td></td></tr>
     <tr><td>Agarre<br><code>grip</code></td><td>numero</td><td>1</td><td>0,05 a 3</td><td></td></tr>
+    <tr><td colspan="5"><strong class="text-white">Friccion adelante</strong></td></tr>
+    <tr><td>Deslizamiento del pico<br><code>forward_extremum_slip</code></td><td>numero</td><td>0,06</td><td>0,001 a 1</td><td></td></tr>
+    <tr><td>Agarre del pico<br><code>forward_extremum_value</code></td><td>numero</td><td>1,2</td><td>0 a 3</td><td></td></tr>
+    <tr><td>Deslizamiento al derrapar<br><code>forward_asymptote_slip</code></td><td>numero</td><td>0,2</td><td>0,002 a 2</td><td></td></tr>
+    <tr><td>Agarre al derrapar<br><code>forward_asymptote_value</code></td><td>numero</td><td>1</td><td>0 a 3</td><td></td></tr>
+    <tr><td colspan="5"><strong class="text-white">Friccion lateral</strong></td></tr>
+    <tr><td>Angulo del pico<br><code>sideways_extremum_slip</code></td><td>numero</td><td>3</td><td>0,1 a 45</td><td></td></tr>
+    <tr><td>Agarre del pico<br><code>sideways_extremum_value</code></td><td>numero</td><td>1,2</td><td>0 a 3</td><td></td></tr>
+    <tr><td>Angulo al derrapar<br><code>sideways_asymptote_slip</code></td><td>numero</td><td>20</td><td>0,2 a 90</td><td></td></tr>
+    <tr><td>Agarre al derrapar<br><code>sideways_asymptote_value</code></td><td>numero</td><td>1</td><td>0 a 3</td><td></td></tr>
     <tr><td>Rueda visible<br><code>visual</code></td><td>entidad</td><td>(ninguna)</td><td>arrastrar desde la Jerarquia</td><td>Objeto que gira con la rueda (eje X local)</td></tr>
   </tbody>
 </table>
@@ -240,5 +292,28 @@
     <tr><td>Color<br><code>color</code></td><td>Color</td><td>(0,35; 0,85; 0,3)</td><td></td><td>Sin material .crmat en el Mesh Renderer</td></tr>
     <tr><td>Rugosidad<br><code>roughness</code></td><td>numero</td><td>0,15</td><td>0,04 a 1</td><td>Bajo = brillante, como gelatina</td></tr>
     <tr><td>Metalicidad<br><code>metallic</code></td><td>numero</td><td>0</td><td>0 a 1</td><td></td></tr>
+  </tbody>
+</table>
+<h3 id="Destructible">Destructible <code>Destructible</code></h3>
+<table>
+  <thead><tr><th>Propiedad</th><th>Tipo</th><th>Por defecto</th><th>Valores</th><th>Descripcion</th></tr></thead>
+  <tbody>
+    <tr><td>Fractura (.crfracture)<br><code>fracture</code></td><td>asset (Fractura)</td><td>(ninguno)</td><td>arrastrar desde el Proyecto</td><td>Trozos precalculados (clic derecho en un modelo &gt; Crear fractura)</td></tr>
+    <tr><td colspan="5"><strong class="text-white">Vida y golpes</strong></td></tr>
+    <tr><td>Vida<br><code>health</code></td><td>numero</td><td>100</td><td>0 a 100000</td><td>Se rompe al llegar a 0</td></tr>
+    <tr><td>Romper con golpes<br><code>break_on_impact</code></td><td>si/no</td><td>si</td><td></td><td>Los choques fuertes le quitan vida</td></tr>
+    <tr><td>Umbral de golpe<br><code>damage_threshold</code></td><td>numero</td><td>3</td><td>0 a 100</td><td>m/s de choque que no hacen dano</td></tr>
+    <tr><td>Daño por m/s<br><code>damage_per_speed</code></td><td>numero</td><td>20</td><td>0 a 10000</td><td>Dano por cada m/s por encima del umbral</td></tr>
+    <tr><td>Fuerza de rotura<br><code>break_force</code></td><td>numero</td><td>4</td><td>0 a 100</td><td>m/s con que salen los trozos desde el golpe</td></tr>
+    <tr><td colspan="5"><strong class="text-white">Trozos</strong></td></tr>
+    <tr><td>Material del interior<br><code>interior_material</code></td><td>asset (Material)</td><td>(ninguno)</td><td>arrastrar desde el Proyecto</td><td>Material (.crmat) de las caras del corte</td></tr>
+    <tr><td>Color del interior<br><code>interior_color</code></td><td>Color</td><td>(0,55; 0,5; 0,45)</td><td></td><td>Si no hay material</td></tr>
+    <tr><td>Densidad<br><code>density</code></td><td>numero</td><td>600</td><td>1 a 20000</td><td>kg/m3 si el objeto no tiene Rigidbody (madera 600, piedra 2500)</td></tr>
+    <tr><td>Romper otra vez<br><code>multi_level</code></td><td>si/no</td><td>si</td><td></td><td>Los trozos grandes (fractura de varios niveles) se rompen otra vez</td></tr>
+    <tr><td>Vida de los trozos<br><code>piece_health</code></td><td>numero</td><td>40</td><td>0 a 100000</td><td></td></tr>
+    <tr><td colspan="5"><strong class="text-white">Escombros</strong></td></tr>
+    <tr><td>Duración<br><code>debris_lifetime</code></td><td>numero</td><td>10</td><td>0 a 600</td><td>Segundos hasta que desaparecen (0 = siempre)</td></tr>
+    <tr><td>Encoger durante<br><code>fade_time</code></td><td>numero</td><td>1,5</td><td>0 a 30</td><td>Segundos encogiendo antes de desaparecer</td></tr>
+    <tr><td>Máximo de trozos<br><code>max_active_pieces</code></td><td>entero</td><td>300</td><td>1 a 5000</td><td>En toda la escena: los mas viejos desaparecen</td></tr>
   </tbody>
 </table>

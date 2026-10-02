@@ -1,0 +1,24 @@
+<p>Repeticiones: grabar, reproducir, buscar, guardar y cargar.</p>
+
+<h3 id="replay">Replay</h3>
+<table>
+  <tbody>
+    <tr><td><code>Value duration(...)</code></td><td>segundos grabados</td></tr>
+    <tr><td><code>Value isPlaying(...)</code></td><td>esta reproduciendo?</td></tr>
+    <tr><td><code>Value isRecording(...)</code></td><td>esta grabando?</td></tr>
+    <tr><td><code>Value list(...)</code></td><td>repeticiones guardadas</td></tr>
+    <tr><td><code>Value load(texto)</code></td><td>carga un .crreplay</td></tr>
+    <tr><td><code>Value mark(texto, datos)</code></td><td>marcador en la linea de tiempo</td></tr>
+    <tr><td><code>Value pause(activar)</code></td><td>pausa la reproduccion</td></tr>
+    <tr><td><code>Value play(desde, velocidad)</code></td><td>reproduce (desde &lt; 0 = los ultimos N segundos)</td></tr>
+    <tr><td><code>Value save(texto)</code></td><td>guarda un .crreplay</td></tr>
+    <tr><td><code>Value seek(segundos)</code></td><td>salta a ese momento</td></tr>
+    <tr><td><code>Value setFreeCamera(activar)</code></td><td>camara libre (WASD + raton)</td></tr>
+    <tr><td><code>Value setLoop(activar)</code></td><td>en bucle</td></tr>
+    <tr><td><code>Value setSpeed(valor)</code></td><td>camara lenta / rapida</td></tr>
+    <tr><td><code>Value start(tabla)</code></td><td>empieza a grabar</td></tr>
+    <tr><td><code>Value stop(...)</code></td><td>deja de grabar</td></tr>
+    <tr><td><code>Value stopPlayback(...)</code></td><td>vuelve al juego</td></tr>
+    <tr><td><code>Value time(...)</code></td><td>segundo de la reproduccion</td></tr>
+  </tbody>
+</table>

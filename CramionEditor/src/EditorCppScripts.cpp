@@ -90,9 +90,19 @@ void EditorApp::updateCppScripts() {
                           std::to_string(cpp_scripts_.classes().size()) + " clases cargadas la ultima vez)";
             std::cout << "[C++] Scripts compilados (" << r->compiler << ", " << std::to_string(r->seconds).substr(0, 4) << " s)"
                       << std::endl;
-            if (playing()) cpp_scripts_.reload();  // en Play: con la DLL nueva al momento
+            if (playing()) {
+                // En Play: recarga en caliente con la DLL nueva (sin parar el juego).
+                cpp_scripts_.reload();
+                pushToast("Scripts de C++ recargados", "En caliente, sin parar Play (" + std::to_string(r->seconds).substr(0, 4) + " s)", 1);
+            }
         } else {
             cpp_status_ = "Errores de compilacion: " + std::to_string(r->errors.size());
+            if (playing()) {
+                const std::string first = r->errors.empty() ? std::string()
+                                                            : r->errors.front().file + ":" + std::to_string(r->errors.front().line) + ": " +
+                                                                  r->errors.front().message;
+                pushToast("No se recargaron los scripts de C++", std::to_string(r->errors.size()) + " errores. " + first, 3);
+            }
             for (const scripting::ScriptError& e : r->errors) {
                 std::cerr << "[C++] " << (e.file.empty() ? "" : e.file + ":" + std::to_string(e.line) + ": ") << e.message << std::endl;
             }

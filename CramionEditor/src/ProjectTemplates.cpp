@@ -12,8 +12,10 @@
 #include "CreatureModels.h"
 #include "LocomotionPack.h"
 #include "TemplateLocomotionScripts.h"
+#include "Template21Scripts.h"
 
 #include <CramionCore/ecs/AnimatorController.h>
+#include <CramionCore/twod/System2D.h>
 #include <CramionCore/ai/StateMachine.h>
 #include <CramionCore/ecs/Rigging.h>
 #include <CramionCore/net/NetworkObject.h>
@@ -3358,6 +3360,293 @@ std::filesystem::path userTemplatesFolder() {
     return base / "Cramion" / "Templates";
 }
 
+// --- Plataformas 2D (2.1) ------------------------------------------------------------
+
+namespace pixel2d {
+
+struct Canvas {
+    int w = 0, h = 0;
+    std::vector<std::uint8_t> rgba;
+    Canvas(int width, int height) : w(width), h(height), rgba(static_cast<std::size_t>(width * height * 4), 0) {}
+    void set(int x, int y, std::uint32_t c) {
+        if (x < 0 || y < 0 || x >= w || y >= h) return;
+        std::uint8_t* p = &rgba[static_cast<std::size_t>((y * w + x) * 4)];
+        p[0] = static_cast<std::uint8_t>(c >> 24);
+        p[1] = static_cast<std::uint8_t>(c >> 16);
+        p[2] = static_cast<std::uint8_t>(c >> 8);
+        p[3] = static_cast<std::uint8_t>(c);
+    }
+    void rect(int x0, int y0, int x1, int y1, std::uint32_t c) {
+        for (int y = y0; y <= y1; ++y) {
+            for (int x = x0; x <= x1; ++x) set(x, y, c);
+        }
+    }
+    void save(const std::filesystem::path& file) const {
+        asset::ImageRgba8 image;
+        image.width = static_cast<std::uint32_t>(w);
+        image.height = static_cast<std::uint32_t>(h);
+        image.pixels = rgba;
+        std::filesystem::create_directories(file.parent_path());
+        if (!asset::saveImagePng(file, image)) throw std::runtime_error("no se pudo escribir " + file.string());
+    }
+};
+
+// Celda (col, fila) de 16 px de un terreno: hierba arriba, tierra con
+// piedrecitas y bordes mas oscuros segun el lado.
+void terrainTile(Canvas& c, int col, int row, bool top, bool bottom, bool left, bool right, std::mt19937& rng) {
+    const int ox = col * 16, oy = row * 16;
+    std::uniform_int_distribution<int> noise(0, 9);
+    for (int y = 0; y < 16; ++y) {
+        for (int x = 0; x < 16; ++x) {
+            std::uint32_t color = noise(rng) < 2 ? 0x7A4A28FFu : 0x8B5A33FFu;  // tierra
+            if (noise(rng) == 0) color = 0x9E9A92FFu;                           // piedrecita
+            if (top && y < 4) color = y == 3 ? 0x3E8C2AFFu : (noise(rng) < 3 ? 0x5DB83AFFu : 0x4FA832FFu);
+            if (left && x == 0) color = 0x5A3519FFu;
+            if (right && x == 15) color = 0x5A3519FFu;
+            if (bottom && y == 15) color = 0x5A3519FFu;
+            c.set(ox + x, oy + y, color);
+        }
+    }
+}
+
+}  // namespace pixel2d
+
+void buildPlatformer2D(project::ProjectInfo& project) {
+    Builder b(project);
+    b.world.setSceneUuid(Uuid::generate());
+    ecs::populateDefaultScene(b.world);
+    b.script("Jugador2D.lua", template21::kPlayer2D);
+    b.script("Camara2D.lua", template21::kCamera2D);
+    b.script("Marcador2D.lua", "-- El texto lo escribe Jugador2D.lua al recoger monedas.\nlocal Marcador = {}\nreturn Marcador\n");
+
+    // --- Imagenes (pixel art de 16 px, 16 pixeles por unidad) ---
+    const std::filesystem::path art = project.assetsFolder() / "2D";
+    std::mt19937 rng(7);
+    pixel2d::Canvas tiles(64, 64);
+    // Terreno 3x3 (celdas 0-2, 4-6, 8-10): esquinas, bordes y centro.
+    for (int row = 0; row < 3; ++row) {
+        for (int col = 0; col < 3; ++col) {
+            pixel2d::terrainTile(tiles, col, row, row == 0, row == 2, col == 0, col == 2, rng);
+        }
+    }
+    // 3: bloque de piedra (plataformas).
+    tiles.rect(48, 0, 63, 15, 0x8C8C94FFu);
+    tiles.rect(48, 0, 63, 1, 0xB4B4BCFFu);
+    tiles.rect(48, 14, 63, 15, 0x5E5E66FFu);
+    tiles.rect(55, 2, 56, 13, 0x6E6E76FFu);
+    // 7: flores (decoracion, sin colision).
+    tiles.rect(52, 26, 52, 31, 0x2F8A2AFFu);
+    tiles.rect(51, 24, 53, 25, 0xF2C230FFu);
+    tiles.rect(58, 27, 58, 31, 0x2F8A2AFFu);
+    tiles.rect(57, 25, 59, 26, 0xE8505AFFu);
+    tiles.save(art / "terreno.png");
+
+    // Jugador: 4 cortes de 16 x 16 (quieto, correr x2, saltar).
+    pixel2d::Canvas hero(64, 16);
+    for (int f = 0; f < 4; ++f) {
+        const int ox = f * 16;
+        hero.rect(ox + 5, 1, ox + 10, 6, 0xF2C29AFFu);   // cabeza
+        hero.rect(ox + 4, 0, ox + 11, 1, 0x6B3B1EFFu);   // pelo
+        hero.set(ox + 9, 3, 0x1A1A1AFFu);                 // ojo
+        hero.rect(ox + 4, 7, ox + 11, 11, 0x2E7BE6FFu);  // cuerpo
+        const int step = f == 1 ? 1 : (f == 2 ? -1 : 0);
+        if (f == 3) {
+            hero.rect(ox + 4, 12, ox + 6, 13, 0x23314AFFu);
+            hero.rect(ox + 9, 12, ox + 11, 13, 0x23314AFFu);
+        } else {
+            hero.rect(ox + 5 + step, 12, ox + 6 + step, 15, 0x23314AFFu);
+            hero.rect(ox + 9 - step, 12, ox + 10 - step, 15, 0x23314AFFu);
+        }
+    }
+    hero.save(art / "jugador.png");
+    twod::SpriteSheet hero_sheet;
+    hero_sheet.mode = twod::SpriteMode::Multiple;
+    hero_sheet.pixels_per_unit = 16.0f;
+    hero_sheet.filter = twod::SpriteFilter::Point;
+    hero_sheet.width = 64;
+    hero_sheet.height = 16;
+    hero_sheet.frames = twod::sliceGrid(64, 16, 16, 16, 0, 0, 0, 0, "jugador");
+    twod::saveSpriteSheet(art / "jugador.png", hero_sheet);
+
+    // Moneda.
+    pixel2d::Canvas coin(16, 16);
+    for (int y = 0; y < 16; ++y) {
+        for (int x = 0; x < 16; ++x) {
+            const float dx = static_cast<float>(x) - 7.5f;
+            const float dy = static_cast<float>(y) - 7.5f;
+            const float d = std::sqrt(dx * dx + dy * dy);
+            if (d < 6.5f) coin.set(x, y, d > 5.2f ? 0xC9901AFFu : (dx + dy < -3.0f ? 0xFFF0A0FFu : 0xF7C531FFu));
+        }
+    }
+    coin.save(art / "moneda.png");
+    twod::SpriteSheet coin_sheet;
+    coin_sheet.pixels_per_unit = 16.0f;
+    coin_sheet.filter = twod::SpriteFilter::Point;
+    twod::saveSpriteSheet(art / "moneda.png", coin_sheet);
+
+    // Tileset con la Rule Tile del terreno y las flores sin colision.
+    twod::Tileset tileset;
+    tileset.image = "2D/terreno.png";
+    tileset.tile_width = 16;
+    tileset.tile_height = 16;
+    tileset.filter = twod::SpriteFilter::Point;
+    tileset.no_collider = {7};
+    tileset.rule_tiles.push_back(twod::makeTerrainRuleTile("Terreno", 0, 4));
+    std::string error;
+    if (!twod::saveTileset(art / "Terreno.crtileset", tileset, &error)) throw std::runtime_error(error);
+
+    // --- Escena ---
+    ecs::Entity cam = b.world.findByName("Main Camera");
+    cam.setWorldPosition(Vec3{0.0f, 1.5f, 10.0f});
+    cam.setLocalEulerDegrees(Vec3{0.0f, 0.0f, 0.0f});
+    if (ecs::Camera* c = cam.tryGet<ecs::Camera>()) {
+        c->orthographic = true;
+        c->ortho_size = 6.0f;
+    }
+    Builder::attach(cam, "Camara2D.lua");
+
+    ecs::Entity level = b.world.create("Nivel");
+    twod::Tilemap& map = level.add<twod::Tilemap>();
+    map.tileset = "2D/Terreno.crtileset";
+    map.layers = {twod::TilemapLayer{}, twod::TilemapLayer{}};
+    map.layers[0].name = "Suelo";
+    map.layers[1].name = "Detalles";
+    map.layers[1].collision = false;
+    map.layers[1].order = 1;
+    const auto ground = [&](int x0, int x1, int top) {
+        for (int x = x0; x <= x1; ++x) {
+            for (int y = top - 3; y <= top; ++y) map.setTile(x, y, -1, 0);
+        }
+    };
+    ground(-12, 8, -1);
+    ground(12, 22, -1);
+    ground(26, 34, 0);
+    ground(36, 46, 1);
+    for (int x = 4; x <= 6; ++x) map.setTile(x, 3, 4, 0);    // plataformas de piedra
+    for (int x = 15; x <= 18; ++x) map.setTile(x, 4, 4, 0);
+    for (int x = 28; x <= 30; ++x) map.setTile(x, 5, 4, 0);
+    for (const int x : {-6, -2, 14, 19, 31, 40}) map.setTile(x, x > 34 ? 2 : (x > 24 ? 1 : 0), 8, 1);  // flores
+    level.add<twod::TilemapCollider2D>();
+
+    ecs::Entity player = b.world.create("Jugador");
+    player.setWorldPosition(Vec3{0.0f, 1.5f, 0.0f});
+    twod::SpriteRenderer& sprite = player.add<twod::SpriteRenderer>();
+    sprite.sprite = "2D/jugador.png";
+    sprite.order_in_layer = 10;
+    sprite.alpha_cutoff = 0.5f;
+    twod::SpriteAnimator& anim = player.add<twod::SpriteAnimator>();
+    anim.clips = {twod::SpriteClip{"Quieto", "0", 4.0f, true}, twod::SpriteClip{"Correr", "1-2", 10.0f, true},
+                  twod::SpriteClip{"Saltar", "3", 4.0f, true}};
+    anim.default_clip = "Quieto";
+    twod::Rigidbody2D& body = player.add<twod::Rigidbody2D>();
+    body.freeze_rotation = true;
+    body.mass = 1.0f;
+    twod::BoxCollider2D& box = player.add<twod::BoxCollider2D>();
+    box.size = core::Vec2{0.6f, 0.95f};
+    box.material.friction = 0.0f;
+    Builder::attach(player, "Jugador2D.lua");
+
+    const Vec3 coins[] = {{5, 4.6f, 0}, {16.5f, 5.6f, 0}, {29, 6.6f, 0}, {10, 1.0f, 0}, {24, 2.0f, 0}, {41, 3.0f, 0}, {-8, 0.6f, 0}};
+    int n = 0;
+    for (const Vec3& p : coins) {
+        ecs::Entity c = b.world.create("Moneda " + std::to_string(++n));
+        c.setWorldPosition(p);
+        c.setTag("Moneda");
+        twod::SpriteRenderer& s = c.add<twod::SpriteRenderer>();
+        s.sprite = "2D/moneda.png";
+        s.order_in_layer = 5;
+        s.alpha_cutoff = 0.5f;
+        twod::CircleCollider2D& col = c.add<twod::CircleCollider2D>();
+        col.radius = 0.4f;
+        col.material.is_trigger = true;
+    }
+
+    ecs::Entity marcador = b.hud("Marcador2D.lua");
+    marcador.get<ui::Text>().text = "Monedas: 0   (A/D moverse, Espacio saltar)";
+    b.save("Main");
+
+    std::vector<std::string> tags = ecs::defaultTags();
+    tags.push_back("Moneda");
+    ecs::saveTags(project.settingsFolder() / "Tags.json", tags);
+}
+
+// --- Coches (2.1) -------------------------------------------------------------------
+
+void buildCars(project::ProjectInfo& project) {
+    Builder b(project);
+    b.world.setSceneUuid(Uuid::generate());
+    ecs::populateDefaultScene(b.world);
+    b.script("CamaraCoche.lua", template21::kChaseCamera);
+    b.script("Velocimetro.lua", template21::kSpeedometer);
+
+    const assets::AssetRef asphalt = b.material("Asfalto", Vec3{0.22f, 0.23f, 0.25f}, 0.85f);
+    const assets::AssetRef line = b.material("Linea", Vec3{0.95f, 0.95f, 0.9f}, 0.6f);
+    const assets::AssetRef ramp = b.material("Rampa", Vec3{0.95f, 0.55f, 0.15f}, 0.6f);
+    const assets::AssetRef barrier = b.material("Barrera", Vec3{0.85f, 0.15f, 0.12f}, 0.5f);
+    const assets::AssetRef paint = b.material("Pintura", Vec3{0.08f, 0.35f, 0.85f}, 0.3f, 0.6f);
+    const assets::AssetRef glass = b.material("Cristal", Vec3{0.05f, 0.06f, 0.08f}, 0.1f, 0.8f);
+    const assets::AssetRef tyre = b.material("Neumatico", Vec3{0.05f, 0.05f, 0.05f}, 0.95f);
+
+    b.box("Suelo", Vec3{0.0f, -0.5f, 0.0f}, Vec3{300.0f, 1.0f, 300.0f}, asphalt);
+    for (int i = -6; i <= 6; ++i) {
+        ecs::Entity l = ecs::createPrimitive(b.world, assets::builtin::kCube, "Linea " + std::to_string(i + 7));
+        l.setLocalPosition(Vec3{0.0f, 0.01f, static_cast<float>(i) * 10.0f});
+        l.setLocalScale(Vec3{0.25f, 0.02f, 4.0f});
+        l.get<ecs::MeshRenderer>().materials = {line};
+    }
+    b.box("Rampa 1", Vec3{0.0f, 1.0f, -60.0f}, Vec3{6.0f, 0.4f, 12.0f}, ramp, Vec3{14.0f, 0.0f, 0.0f});
+    b.box("Rampa 2", Vec3{40.0f, 0.8f, 0.0f}, Vec3{12.0f, 0.4f, 6.0f}, ramp, Vec3{0.0f, 0.0f, -12.0f});
+    b.ring(120.0f, 1.2f, 1.0f, barrier);
+    for (int i = 0; i < 8; ++i) {
+        b.box("Cono " + std::to_string(i + 1), Vec3{-20.0f + static_cast<float>(i) * 4.0f, 0.4f, -25.0f}, Vec3{0.5f, 0.8f, 0.5f},
+              ramp);
+    }
+
+    // El coche: Rigidbody + Box Collider + Vehicle; 4 Wheel Collider con su
+    // rueda visible (un pivote que gira y el cilindro dentro). El frente es -Z.
+    ecs::Entity car = b.world.create("Coche");
+    car.setWorldPosition(Vec3{0.0f, 1.2f, 0.0f});
+    physics::BoxCollider& col = car.add<physics::BoxCollider>();
+    col.size = Vec3{1.8f, 0.6f, 4.2f};
+    physics::Rigidbody& rb = car.add<physics::Rigidbody>();
+    rb.mass = 1200.0f;
+    rb.continuous = true;
+    physics::Vehicle& vehicle = car.add<physics::Vehicle>();
+    vehicle.keyboard = true;
+    vehicle.center_of_mass_offset = Vec3{0.0f, -0.35f, 0.0f};
+    ecs::Entity shell = ecs::createPrimitive(b.world, assets::builtin::kCube, "Carroceria", car);
+    shell.setLocalScale(Vec3{1.8f, 0.6f, 4.2f});
+    shell.get<ecs::MeshRenderer>().materials = {paint};
+    ecs::Entity cabin = ecs::createPrimitive(b.world, assets::builtin::kCube, "Cabina", car);
+    cabin.setLocalPosition(Vec3{0.0f, 0.5f, 0.3f});
+    cabin.setLocalScale(Vec3{1.5f, 0.5f, 2.0f});
+    cabin.get<ecs::MeshRenderer>().materials = {glass};
+    const Vec3 offsets[4] = {{-0.95f, -0.3f, -1.35f}, {0.95f, -0.3f, -1.35f}, {-0.95f, -0.3f, 1.35f}, {0.95f, -0.3f, 1.35f}};
+    const char* names[4] = {"Rueda delantera izquierda", "Rueda delantera derecha", "Rueda trasera izquierda", "Rueda trasera derecha"};
+    for (int i = 0; i < 4; ++i) {
+        ecs::Entity pivot = b.world.create(names[i], car);
+        pivot.setLocalPosition(offsets[i]);
+        ecs::Entity rim = ecs::createPrimitive(b.world, assets::builtin::kCylinder, "Neumatico", pivot);
+        rim.setLocalEulerDegrees(Vec3{0.0f, 0.0f, 90.0f});
+        rim.setLocalScale(Vec3{0.76f, 0.25f, 0.76f});
+        rim.get<ecs::MeshRenderer>().materials = {tyre};
+        ecs::Entity wheel = b.world.create(std::string(names[i]) + " (Wheel Collider)", car);
+        wheel.setLocalPosition(offsets[i]);
+        physics::WheelCollider& wc = wheel.add<physics::WheelCollider>();
+        wc.max_steer_angle = i < 2 ? 32.0f : 0.0f;
+        wc.drive = i >= 2;  // traccion trasera
+        wc.max_handbrake_torque = i < 2 ? 0.0f : 4000.0f;
+        wc.visual = pivot.uuid();
+    }
+
+    ecs::Entity cam = b.world.findByName("Main Camera");
+    cam.setWorldPosition(Vec3{0.0f, 4.0f, 9.0f});
+    Builder::attach(cam, "CamaraCoche.lua");
+    ecs::Entity hud = b.hud("Velocimetro.lua");
+    hud.get<ui::Text>().text = "W/S acelerar y frenar, A/D girar, Espacio freno de mano, R volver a la salida";
+    b.save("Main");
+}
+
 std::vector<ProjectTemplate> availableTemplates() {
     std::vector<ProjectTemplate> list;
     list.push_back(ProjectTemplate{
@@ -3434,6 +3723,21 @@ std::vector<ProjectTemplate> availableTemplates() {
          "~2 millones de arboles (Vegetacion): recorte y niveles de detalle en la GPU",
          "HUD de rendimiento y teclas para forzar el motor (calidad, densidad, distancia, sombras)"},
         rgba(70, 180, 120), TemplateArt::OpenWorld, {}});
+    list.push_back(ProjectTemplate{
+        "platformer_2d", "Plataformas 2D", "Integradas",
+        "Un juego de plataformas en 2D con pixel art: corre, salta, recoge monedas y no te caigas. Tilemap con Rule "
+        "Tiles, sprites animados, física 2D y cámara que sigue al jugador. Todo el juego en Lua.",
+        {"Tilemap con Rule Tiles (bordes y esquinas solos) y Tilemap Collider 2D",
+         "Jugador con Rigidbody 2D, Sprite Animator (quieto, correr, saltar) y volteo",
+         "Monedas con trigger 2D y marcador en el HUD", "Cámara ortográfica que sigue al jugador"},
+        rgba(120, 200, 80), TemplateArt::Blank, {}});
+    list.push_back(ProjectTemplate{
+        "cars", "Coches", "Integradas",
+        "Un coche que se conduce en una pista con rampas y conos: motor con marchas, suspensión, freno de mano y "
+        "cámara de persecución. Hecho con Vehicle y Wheel Collider.",
+        {"Vehicle con motor, cambio automático y tracción trasera", "4 Wheel Collider con ruedas visibles que giran",
+         "Cámara de persecución con muelle", "Velocímetro (km/h, marcha, rpm) y R para volver a la salida"},
+        rgba(80, 140, 255), TemplateArt::ThirdPerson, {}});
 
     // Del usuario.
     std::error_code error;
@@ -3495,6 +3799,10 @@ project::ProjectInfo createProjectFromTemplate(const ProjectTemplate& t, const s
             buildOnline(info);
         } else if (t.id == "creatures") {
             buildCreatures(info);
+        } else if (t.id == "platformer_2d") {
+            buildPlatformer2D(info);
+        } else if (t.id == "cars") {
+            buildCars(info);
         } else {
             buildBlank(info);
         }

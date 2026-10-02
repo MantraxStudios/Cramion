@@ -1,0 +1,64 @@
+<p>
+  Herramientas <strong>2D</strong> como las de Unity: sprites y hojas de sprites, animación por fotogramas, tilemaps con
+  Rule Tiles, luces 2D y una física 2D propia (en el plano XY, aparte de la física 3D). Todo se dibuja sobre la imagen de la
+  escena (se puede mezclar con 3D) y funciona en el juego exportado y en Android.
+</p>
+
+<h3 id="vista">Vista 2D</h3>
+<p>
+  El botón <strong>2D</strong> de la barra de la Escena pone la cámara del editor ortográfica mirando el plano XY: rueda =
+  zoom hacia el ratón, botón central o derecho = desplazar. Un clic elige sprites y tilemaps. Para el juego, la
+  <strong>Cámara</strong> tiene <em>Ortográfica</em> y <em>Tamaño</em> (la mitad de lo que se ve en vertical).
+</p>
+
+<h3 id="sprites">Sprites</h3>
+<ul>
+  <li><strong>Sprite Renderer</strong>: la imagen (arrástrala desde el Proyecto), el corte de la hoja, tinte, opacidad, volteo,
+    <em>Capa de orden</em> y <em>Orden en la capa</em>, <em>Iluminado</em> (le afectan las Luces 2D), corte alfa (pixel art) y
+    modo <em>Mosaico</em> (repite el sprite hasta llenar un tamaño).</li>
+  <li><strong>Sprite Editor</strong> (<em>Ventana &gt; 2D</em>): suelta una imagen. <em>Single</em> = la imagen entera;
+    <em>Multiple</em> = hoja de sprites, cortada por rejilla (tamaño de celda, margen y separación), por filas y columnas o
+    <strong>automático</strong> (islas de píxeles opacos). Píxeles por unidad, pivote y filtro <em>Point</em> para pixel art.
+    Los ajustes van en <code>&lt;imagen&gt;.crsprite</code>.</li>
+  <li><strong>Sprite Animator</strong>: clips de fotogramas (<code>"0-5, 8"</code>) a N fps con bucle. En los scripts:
+    <code>entity:playSpriteAnimation("Correr")</code>.</li>
+  <li><strong>Luz 2D</strong>: puntual (radio y caída) o global (la luz ambiente de los sprites iluminados).</li>
+  <li><em>Ventana &gt; 2D &gt; Capas de orden</em>: las Sorting Layers del proyecto, de atrás adelante.</li>
+</ul>
+
+<h3 id="tilemaps">Tilemaps</h3>
+<ul>
+  <li><em>Proyecto &gt; Crear &gt; 2D &gt; Tileset</em>: una imagen cortada en celdas. En su editor se marcan las celdas
+    <strong>sin colisión</strong> (decoración) y se crean <strong>Rule Tiles</strong>: tiles que eligen su dibujo según sus 8
+    vecinos (<em>+ Terreno 3x3</em> crea las reglas de un terreno con bordes y esquinas a partir de 3×3 celdas).</li>
+  <li><strong>Paleta de tiles</strong> (botón <em>Paleta</em> de la vista 2D): con un objeto con <strong>Tilemap</strong>
+    seleccionado, pinta con <em>Pincel</em>, <em>Rectángulo</em>, <em>Relleno</em>, <em>Borrar</em> (o <kbd>Mayús</kbd>) y
+    <em>Gotero</em>, por capas (fondo, suelo, detalles...). <em>Crear Tilemap</em> hace uno con su collider.</li>
+  <li>El Tilemap se guarda por trozos de 16×16 celdas y solo se redibuja lo que cambia.</li>
+</ul>
+
+<h3 id="fisica">Física 2D</h3>
+<p>
+  <strong>Rigidbody 2D</strong> (dinámico, cinemático o estático; gravedad, rozamiento, congelar giro o ejes),
+  <strong>Box</strong>, <strong>Circle</strong> y <strong>Polygon Collider 2D</strong>, <strong>Tilemap Collider 2D</strong> (las
+  celdas sólidas unidas en rectángulos, sin costuras al deslizar) y <strong>Composite Collider 2D</strong>. Los colliders tienen
+  fricción, rebote, trigger y <em>Un sentido</em> (plataformas que se atraviesan saltando desde abajo).
+</p>
+<pre><code class="language-lua">function Jugador:Update(dt)
+    local v = self.entity.velocity2D
+    v.x = Input.getAxis("Horizontal") * 6
+    if Input.getKeyDown("Space") and Physics2D.raycast(self.entity.position, Vec3(0, -1, 0), 0.6) then
+        v.y = 12
+    end
+    self.entity.velocity2D = v
+    self.entity.flipX = v.x &lt; 0
+end
+
+function Jugador:OnCollisionEnter2D(otro, contacto)
+    if otro.tag == "Moneda" then otro:destroy() end
+end</code></pre>
+<p>
+  También <code>OnCollisionStay2D/Exit2D</code>, <code>OnTriggerEnter2D/Stay2D/Exit2D</code>, <code>addForce2D</code>,
+  <code>Physics2D.overlapCircle/overlapBox/overlapPoint</code> y en los Tilemap <code>setTile</code>, <code>getTile</code>,
+  <code>worldToCell</code> y <code>cellToWorld</code>.
+</p>

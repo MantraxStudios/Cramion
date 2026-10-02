@@ -65,6 +65,7 @@ void EditorApp::drawToolbar() {
     drawStampToolbar();
     drawPaintToolbar();
     drawModelingToolbar();
+    draw2DViewToggle();  // vista 2D (Editor2D.cpp)
     ImGui::SameLine();
     ImGui::TextDisabled("|");
     ImGui::SameLine();
@@ -522,7 +523,7 @@ void EditorApp::drawSceneView() {
     // Herramienta de terreno: se queda con el raton mientras pinta.
     const bool terrain_tool = drawTerrainTool(frame_delta_);
     collider_handle = collider_handle || waypoint_handle || terrain_tool;
-    const bool stamping = drawStampTool() || drawPrefabPaintTool();
+    const bool stamping = drawStampTool() || drawPrefabPaintTool() || draw2DTileTool();
     if (!stamping && collider_handle_drag_ == 0 && !(terrain_edit_ && terrain_tool)) drawGizmo();
     handleCameraControls();
     // Modelado: clic y caja eligen vertices/aristas/caras (no objetos).
@@ -623,6 +624,7 @@ void EditorApp::syncFlyCursor() {
 // entrada), acercar con la rueda y desplazar con el boton central.
 void EditorApp::handleCameraControls() {
     ImGuiIO& io = ImGui::GetIO();
+    if (handle2DCamera()) return;  // vista 2D: zoom y desplazar en el plano XY (Editor2D.cpp)
     if (view_hovered_ && ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
         flying_ = true;
         ImGui::SetWindowFocus();
@@ -674,6 +676,7 @@ bool EditorApp::mouseRay(float x, float y, Vec3& origin, Vec3& direction) const 
 // objeto (el modelo entero); otro clic en el mismo sitio baja un nivel hacia
 // la pieza tocada.
 void EditorApp::pickAt(float x, float y) {
+    if (pick2DAt(x, y)) return;  // sprites y tilemaps (Editor2D.cpp)
     const bool additive = ImGui::GetIO().KeyCtrl;
     const auto choose = [&](const Uuid& uuid) {
         if (additive) toggleSelection(uuid);

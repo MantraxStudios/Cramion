@@ -119,6 +119,8 @@ bool EditorApp::openProject(const std::filesystem::path& path, bool open_scene) 
     scripts_.setDataPackJournal(project_.libraryFolder() / "DataPacks.journal");
     scripts_.setAssetsChangedCallback([this] { refreshDatabase(); });
     scripts_.setPrefsFile(project_.libraryFolder() / "Prefs.txt");  // Prefs en Play
+    scripts_.setSaveFolder(project_.libraryFolder() / "Saves");     // Save.save en Play (EditorGameplay.cpp)
+    loadLocalization();
     scripts_.setPhysics(&physics_);
     setupCppScripts();
     scripts_.setAudio(&audio_);
@@ -180,6 +182,7 @@ bool EditorApp::openProject(const std::filesystem::path& path, bool open_scene) 
     // Liquidos: el terreno y las cajas de las mallas (Mesh Collider).
     fluids_.clear();
     fluids_.setTerrainStore(&terrain_store_);
+    setupEffects();  // VFX Graph, 2D y repeticiones (EditorEffects.cpp)
     fluids_.setBoundsProvider([this](ecs::Entity e, core::Vec3& min, core::Vec3& max) {
         if (!sync_) return false;
         const int actor = sync_->actorIndex(e);
@@ -341,6 +344,7 @@ bool EditorApp::openScene(const std::filesystem::path& path) {
     }
     alignOriginAfterLoad(origin_before);
     scene_path_ = path;
+    loadSceneLighting();  // iluminacion horneada de la escena (EditorLighting.cpp)
     clearSelection();
     syncPrefabInstances();  // prefabs que cambiaron con la escena cerrada
     resetUndo();
@@ -999,6 +1003,7 @@ void EditorApp::drawUi(float delta_seconds) {
     pollMcp();
     pollUpdates();
     runSelfTestStep();
+    updatePlatform(delta_seconds);  // Steam, pruebas automaticas, Git (EditorPlatform.cpp)
     frame_tasks_ms_ += millisecondsSince(ui_start);
 
     if (!has_project_) {
@@ -1048,6 +1053,11 @@ void EditorApp::drawUi(float delta_seconds) {
     updateCppScripts();
     drawEngineSettingsWindow();
     drawCVarsWindow();
+    drawPlatformWindows();  // Git, Pruebas y avisos (en cualquier pestana)
+    drawGameplayWindows();  // Localizacion, Partidas y Dialogos (EditorGameplay.cpp)
+    drawEffectsWindows();   // VFX Graph y Repeticiones (EditorEffects.cpp)
+    drawGraphEditors();     // Shader Graph, Visual Script, Behavior Tree y 2D
+    drawPhysicsToolWindows();  // Fracturar, vehiculo, Motion Matching e Iluminacion
     if (workspace != WorkspaceKind::Scene) {
         const CpuClock::time_point t = CpuClock::now();
         drawWorkspacePanels(delta_seconds);
@@ -1450,6 +1460,11 @@ void EditorApp::drawMenuBar() {
         ImGui::MenuItem("Pintar prefabs", nullptr, &show_paint_window_);
         ImGui::MenuItem("Modelado (ProBuilder)", nullptr, &show_modeling_window_);
         ImGui::MenuItem("Variables (CVars) y memoria", nullptr, &show_cvars_window_);
+        drawPlatformWindowMenu();  // Control de versiones (Git) y Pruebas
+        drawGameplayWindowMenu();  // Localizacion y Partidas
+        drawEffectsWindowMenu();   // Repeticiones y VFX Graph
+        draw2DWindowMenu();        // Paleta de tiles y capas de orden
+        drawPhysicsToolMenu();     // Iluminacion, Fracturar, Asistente de vehiculo
         ImGui::MenuItem("Generador de terreno", nullptr, &show_terrain_generator_);
         ImGui::MenuItem("Generador de casas", nullptr, &show_house_generator_);
         ImGui::MenuItem("Ambiente (clima y hora)", nullptr, &show_environment_window_);

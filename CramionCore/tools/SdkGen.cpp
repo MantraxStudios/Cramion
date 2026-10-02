@@ -273,6 +273,9 @@ int main(int argc, char** argv) {
          {"new", "cube", "quad", "plane", "sphere", "cylinder", "capsule", "wireCube"}},
         {"StateMachine:", "StateMachine", "Maquina de estados de un objeto (entity().getStateMachine()): go, trigger, set/get...",
          {"new", "of"}},
+        {"BehaviorTree:", "BehaviorTree",
+         "Behavior Tree de un objeto (entity().getBehaviorTree()): get/set de la pizarra, start/stop, finishTask...",
+         {"of", "registerTask", "reportNoise", "broadcast"}},
     };
     for (const ObjectType& type : objects) {
         const auto it = api.find(type.lua);

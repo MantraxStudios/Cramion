@@ -1,0 +1,57 @@
+<p>
+  Los <strong>Behavior Trees</strong> (árboles de comportamiento) son la IA de Unreal: una raíz, nodos compuestos que deciden
+  el orden, tareas en las hojas, decoradores (condiciones) y servicios (sensores) sobre una <strong>pizarra</strong>
+  (Blackboard) de variables con tipo. Un árbol es un asset <code>.crbt</code>; un objeto lo usa con el componente
+  <strong>Behavior Tree</strong> y corre en Play y en el juego exportado.
+</p>
+
+<h3 id="crear">Crear</h3>
+<ul>
+  <li><em>Proyecto &gt; Crear &gt; Behavior Tree (IA)</em>: <strong>Vacío</strong> o <strong>Guardia de ejemplo</strong> (ve al
+    "Player", lo persigue y ataca; si lo pierde va al último sitio donde lo vio; si no, patrulla).</li>
+  <li>Doble clic en el <code>.crbt</code> abre el editor; <strong>Asignar a la selección</strong> pone el componente.</li>
+  <li>El árbol se dibuja de arriba abajo. Arrastrar desde la parte de abajo de un nodo crea un hijo (o soltar en el vacío
+    abre el buscador). <strong>Los hijos de la izquierda tienen prioridad</strong>: al moverlos se reordenan solos.
+    <em>Ordenar</em> coloca el árbol.</li>
+</ul>
+
+<h3 id="nodos">Nodos</h3>
+<table>
+  <thead><tr><th>Tipo</th><th>Nodos</th></tr></thead>
+  <tbody>
+    <tr><td>Compuestos</td><td><strong>Selector</strong> (el primer hijo que salga bien), <strong>Sequence</strong> (todos en orden hasta que uno falle), <strong>Parallel</strong> (todos a la vez), <strong>Random Selector</strong></td></tr>
+    <tr><td>Tareas</td><td>Move To (NavMesh), Wait, Play Animation, Set Animator Param, Rotate To Face, Set Blackboard, Find Random Point, Run Script (Lua o C++), Send Message, Log</td></tr>
+    <tr><td>Decoradores</td><td>Blackboard (comparar una clave), Script Condition, Is At Location, Cooldown, Loop, Time Limit, Inverter, Force Success, Force Failure</td></tr>
+    <tr><td>Servicios</td><td>Find Nearest With Tag, Distance To, Sight (cono de visión con rayo de línea de vista), Hearing (ruidos y cercanía), Run Script</td></tr>
+  </tbody>
+</table>
+<p>
+  Los decoradores de condición pueden <strong>abortar</strong> (observer aborts): <em>Self</em> corta su rama si deja de
+  cumplirse; <em>Lower Priority</em> corta las ramas de la derecha si empieza a cumplirse (el guardia deja de patrullar al
+  ver al jugador). Los servicios corren cada <em>N</em> segundos mientras su rama está activa y escriben en la pizarra.
+</p>
+
+<h3 id="depurar">Depuración en vivo</h3>
+<p>
+  En Play, el objeto seleccionado que usa el árbol se ve en el editor: la <strong>rama activa</strong> brilla en azul, cada
+  nodo muestra su último resultado (verde bien, rojo mal, naranja abortado), la pizarra enseña sus valores (y se pueden
+  cambiar para probar) y abajo está el historial de abortos y fallos.
+</p>
+
+<h3 id="scripts">Desde los scripts</h3>
+<pre><code class="language-lua">local bt = self.entity:getBehaviorTree()
+bt:set("objetivo", Scene.find("Player"))
+if bt:get("alerta") then bt:restart() end
+
+-- Tarea "Run Script" con funcion "Atacar"
+BehaviorTree.registerTask("Atacar", function(self, bt, primera)
+    if primera then self.entity:playSpriteAnimation("Golpe") end
+    return "success"   -- "running", "success" o "failure"
+end)
+
+-- Un ruido que oye el servicio Hearing
+BehaviorTree.reportNoise(self.entity.position, 15, self.entity)</code></pre>
+<p>
+  Los scripts de C++ reciben las tareas <em>Run Script</em> y <em>Send Message</em> como mensajes
+  (<code>on("Atacar", ...)</code>).
+</p>

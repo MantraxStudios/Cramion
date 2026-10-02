@@ -169,6 +169,7 @@ void EditorApp::enterPlay() {
     fluids_.clear();  // la vista previa del editor no pasa al juego
     fluid_preview_ = false;
     physics_.start(world_);
+    effectsEnterPlay();  // VFX, fisica 2D y repeticiones (EditorEffects.cpp)
     nav_.resetAgents();
     startVoxels();  // antes de los scripts (Voxel.* en Awake)
     // Audio y scripts (despues de la fisica: los scripts la usan en Awake).
@@ -190,6 +191,7 @@ void EditorApp::enterPlay() {
         const std::u8string stem = scene_path_.stem().u8string();
         scripts_.setSceneName(std::string(stem.begin(), stem.end()));
     }
+    platformEnterPlay();  // Steam (si el proyecto lo usa) antes de Awake
     scripts_.start(world_);
     startCppScripts();  // los de C++, en su proceso aparte
     // VR: el casco marca el ritmo (xrWaitFrame); la ventana sin vsync
@@ -229,6 +231,7 @@ void EditorApp::exitPlay() {
     renderer_.setParticles({});
     fluids_.clear();
     fluid_preview_ = false;
+    effectsExitPlay();
     nav_.resetAgents();  // la malla se queda (el mundo vuelve con los mismos UUID)
     stopVoxels();        // guarda el mundo con nombre; editando vuelve la vista previa
     play_state_ = PlayState::Edit;
@@ -317,6 +320,7 @@ void EditorApp::updateScriptsAndAudio(float delta_seconds, int physics_steps) {
         const std::u8string stem = next.stem().u8string();
         scripts_.setSceneName(std::string(stem.begin(), stem.end()));
         physics_.start(world_);
+        effectsEnterPlay();  // fisica 2D del nivel nuevo
         startVoxels();
         audio_.start(world_);
         scripts_.start(world_);
@@ -389,6 +393,7 @@ void EditorApp::updatePhysics(float delta_seconds) {
     }
     renderer_.setParticles(particles_.drawList(scene_.camera().position()));
     updateFluids(delta_seconds);  // liquidos (EditorFluid.cpp)
+    updateEffects(delta_seconds);  // VFX Graph, 2D y repeticiones (EditorEffects.cpp)
     // Incendios (fire::Fire): en Play; en el editor solo los que tienen
     // "Simular en el editor". En pausa no avanzan.
     {

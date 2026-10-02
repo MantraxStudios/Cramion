@@ -35,6 +35,12 @@ struct Actor {
     // para la camara, pero su sombra se ve).
     bool cast_shadows = true;
     bool shadows_only = false;
+
+    // Lightmap horneado (BakedLighting de CramionCore): capa del atlas (-1 =
+    // sin lightmap) y escala (xy) y desplazamiento (zw) de su rectangulo en
+    // esa capa. Solo vale si su modelo tiene UV de lightmap.
+    std::int32_t lightmap_layer = -1;
+    core::Vec4 lightmap_scale_offset{1.0f, 1.0f, 0.0f, 0.0f};
 };
 
 // Escena: los modelos cargados, la camara y una unica luz direccional (el

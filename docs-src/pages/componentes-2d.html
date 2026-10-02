@@ -1,0 +1,140 @@
+<p>Sprites, animacion por fotogramas, luces 2D, tilemaps y fisica 2D (ver la pagina 2D del editor). Referencia completa generada desde el motor.</p>
+<h3 id="SpriteRenderer">Sprite Renderer <code>SpriteRenderer</code></h3>
+<table>
+  <thead><tr><th>Propiedad</th><th>Tipo</th><th>Por defecto</th><th>Valores</th><th>Descripcion</th></tr></thead>
+  <tbody>
+    <tr><td>Sprite<br><code>sprite</code></td><td>texto</td><td>(vacio)</td><td></td><td>Imagen de Assets (ruta relativa). Arrastrala desde el Proyecto</td></tr>
+    <tr><td>Corte<br><code>frame</code></td><td>entero</td><td>0</td><td>0 a 4095</td><td>Indice del corte de la hoja (modo Multiple, ver el Sprite Editor)</td></tr>
+    <tr><td>Color<br><code>color</code></td><td>Color</td><td>(1; 1; 1)</td><td></td><td>Tinte (multiplica la imagen)</td></tr>
+    <tr><td>Opacidad<br><code>opacity</code></td><td>numero</td><td>1</td><td>0 a 1</td><td></td></tr>
+    <tr><td>Voltear X<br><code>flip_x</code></td><td>si/no</td><td>no</td><td></td><td></td></tr>
+    <tr><td>Voltear Y<br><code>flip_y</code></td><td>si/no</td><td>no</td><td></td><td></td></tr>
+    <tr><td>Capa de orden<br><code>sorting_layer</code></td><td>texto</td><td>&quot;Default&quot;</td><td></td><td>Sorting Layer: las de atras se dibujan primero</td></tr>
+    <tr><td>Orden en la capa<br><code>order_in_layer</code></td><td>entero</td><td>0</td><td>-32768 a 32767</td><td>Dentro de la capa: mas = delante</td></tr>
+    <tr><td>Iluminado<br><code>lit</code></td><td>si/no</td><td>no</td><td></td><td>Le afectan las Light2D (si no, se ve tal cual)</td></tr>
+    <tr><td>Corte alfa<br><code>alpha_cutoff</code></td><td>numero</td><td>0</td><td>0 a 1</td><td>0 = mezcla suave; &gt; 0 descarta los pixeles con menos alfa</td></tr>
+    <tr><td>Modo de dibujo<br><code>draw_mode</code></td><td>opcion</td><td>Simple</td><td>Simple, Mosaico</td><td>Mosaico: repite el corte hasta llenar el tamano</td></tr>
+    <tr><td>Tamano<br><code>size</code></td><td>Vec2</td><td>(1; 1)</td><td></td><td>Mosaico: ancho y alto en unidades</td></tr>
+  </tbody>
+</table>
+<h3 id="SpriteAnimator">Sprite Animator <code>SpriteAnimator</code></h3>
+<table>
+  <thead><tr><th>Propiedad</th><th>Tipo</th><th>Por defecto</th><th>Valores</th><th>Descripcion</th></tr></thead>
+  <tbody>
+    <tr><td colspan="5"><strong class="text-white">Clips (lista)</strong> <code>clips</code> — Animaciones por fotogramas de la hoja del Sprite Renderer</td></tr>
+    <tr><td>&nbsp;&nbsp;&nbsp;Nombre<br><code>name</code></td><td>texto</td><td>&quot;Clip&quot;</td><td></td><td></td></tr>
+    <tr><td>&nbsp;&nbsp;&nbsp;Fotogramas<br><code>frames</code></td><td>texto</td><td>&quot;0&quot;</td><td></td><td>Cortes de la hoja: &quot;0-5, 8&quot;</td></tr>
+    <tr><td>&nbsp;&nbsp;&nbsp;Fotogramas por segundo<br><code>fps</code></td><td>numero</td><td>12</td><td>0,1 a 120</td><td></td></tr>
+    <tr><td>&nbsp;&nbsp;&nbsp;Bucle<br><code>loop</code></td><td>si/no</td><td>si</td><td></td><td></td></tr>
+    <tr><td>Clip inicial<br><code>default_clip</code></td><td>texto</td><td>(vacio)</td><td></td><td>El que suena al empezar (vacio = el primero)</td></tr>
+    <tr><td>Velocidad<br><code>speed</code></td><td>numero</td><td>1</td><td>0 a 10</td><td></td></tr>
+    <tr><td>Reproduciendo<br><code>playing</code></td><td>si/no</td><td>si</td><td></td><td></td></tr>
+    <tr><td>Vista previa en el editor<br><code>preview_in_editor</code></td><td>si/no</td><td>no</td><td></td><td>Animar tambien fuera de Play</td></tr>
+  </tbody>
+</table>
+<h3 id="Light2D">Luz 2D <code>Light2D</code></h3>
+<table>
+  <thead><tr><th>Propiedad</th><th>Tipo</th><th>Por defecto</th><th>Valores</th><th>Descripcion</th></tr></thead>
+  <tbody>
+    <tr><td>Tipo<br><code>type</code></td><td>opcion</td><td>Puntual</td><td>Puntual, Global</td><td>Global: la luz ambiente de todos los sprites iluminados</td></tr>
+    <tr><td>Color<br><code>color</code></td><td>Color</td><td>(1; 1; 1)</td><td></td><td></td></tr>
+    <tr><td>Intensidad<br><code>intensity</code></td><td>numero</td><td>1</td><td>0 a 20</td><td></td></tr>
+    <tr><td>Radio<br><code>radius</code></td><td>numero</td><td>5</td><td>0,01 a 1000</td><td>Unidades</td></tr>
+    <tr><td>Caida<br><code>falloff</code></td><td>numero</td><td>1,5</td><td>0,05 a 8</td><td>Exponente: mas = borde mas suave</td></tr>
+  </tbody>
+</table>
+<h3 id="Tilemap">Tilemap <code>Tilemap</code></h3>
+<table>
+  <thead><tr><th>Propiedad</th><th>Tipo</th><th>Por defecto</th><th>Valores</th><th>Descripcion</th></tr></thead>
+  <tbody>
+    <tr><td>Tileset<br><code>tileset</code></td><td>texto</td><td>(vacio)</td><td></td><td>Archivo .crtileset de Assets (la imagen cortada en celdas y sus Rule Tiles)</td></tr>
+    <tr><td>Tamano de celda<br><code>cell_size</code></td><td>Vec2</td><td>(1; 1)</td><td></td><td>Unidades por celda</td></tr>
+    <tr><td>Capa de orden<br><code>sorting_layer</code></td><td>texto</td><td>&quot;Default&quot;</td><td></td><td></td></tr>
+    <tr><td>Orden en la capa<br><code>order_in_layer</code></td><td>entero</td><td>0</td><td>-32768 a 32767</td><td></td></tr>
+    <tr><td>Iluminado<br><code>lit</code></td><td>si/no</td><td>no</td><td></td><td>Le afectan las Light2D</td></tr>
+    <tr><td colspan="5"><strong class="text-white">Capas (lista)</strong> <code>layers</code> — Fondo, suelo, detalles... (la paleta pinta en la elegida)</td></tr>
+    <tr><td>&nbsp;&nbsp;&nbsp;Nombre<br><code>name</code></td><td>texto</td><td>&quot;Capa&quot;</td><td></td><td></td></tr>
+    <tr><td>&nbsp;&nbsp;&nbsp;Visible<br><code>visible</code></td><td>si/no</td><td>si</td><td></td><td></td></tr>
+    <tr><td>&nbsp;&nbsp;&nbsp;Colision<br><code>collision</code></td><td>si/no</td><td>si</td><td></td><td>Sus celdas cuentan para el Tilemap Collider 2D</td></tr>
+    <tr><td>&nbsp;&nbsp;&nbsp;Orden<br><code>order</code></td><td>entero</td><td>0</td><td>-1000 a 1000</td><td>Se suma al orden en la capa del Tilemap</td></tr>
+    <tr><td>&nbsp;&nbsp;&nbsp;Tinte<br><code>tint</code></td><td>Color</td><td>(1; 1; 1)</td><td></td><td></td></tr>
+    <tr><td>&nbsp;&nbsp;&nbsp;Opacidad<br><code>opacity</code></td><td>numero</td><td>1</td><td>0 a 1</td><td></td></tr>
+    <tr><td>&nbsp;&nbsp;&nbsp;Celdas<br><code>cells</code></td><td>texto</td><td>&quot;v1;&quot;</td><td></td><td></td></tr>
+  </tbody>
+</table>
+<h3 id="TilemapCollider2D">Tilemap Collider 2D <code>TilemapCollider2D</code></h3>
+<table>
+  <thead><tr><th>Propiedad</th><th>Tipo</th><th>Por defecto</th><th>Valores</th><th>Descripcion</th></tr></thead>
+  <tbody>
+    <tr><td>Es trigger<br><code>is_trigger</code></td><td>si/no</td><td>no</td><td></td><td></td></tr>
+    <tr><td>Friccion<br><code>friction</code></td><td>numero</td><td>0,4</td><td>0 a 2</td><td></td></tr>
+    <tr><td>Rebote<br><code>bounciness</code></td><td>numero</td><td>0</td><td>0 a 1</td><td></td></tr>
+    <tr><td>Un sentido<br><code>one_way</code></td><td>si/no</td><td>no</td><td></td><td>Plataformas que se atraviesan saltando desde abajo</td></tr>
+    <tr><td>Usado por el Composite<br><code>used_by_composite</code></td><td>si/no</td><td>no</td><td></td><td>Lo junta el Composite Collider 2D de la entidad</td></tr>
+  </tbody>
+</table>
+<h3 id="Rigidbody2D">Rigidbody 2D <code>Rigidbody2D</code></h3>
+<table>
+  <thead><tr><th>Propiedad</th><th>Tipo</th><th>Por defecto</th><th>Valores</th><th>Descripcion</th></tr></thead>
+  <tbody>
+    <tr><td>Tipo<br><code>type</code></td><td>opcion</td><td>Dinámico</td><td>Dinámico, Cinemático, Estático</td><td>Dinamico: lo mueve la fisica. Cinematico: su Transform o un script</td></tr>
+    <tr><td>Masa<br><code>mass</code></td><td>numero</td><td>1</td><td>0,001 a 100000</td><td></td></tr>
+    <tr><td>Rozamiento lineal<br><code>linear_drag</code></td><td>numero</td><td>0</td><td>0 a 100</td><td></td></tr>
+    <tr><td>Rozamiento angular<br><code>angular_drag</code></td><td>numero</td><td>0,05</td><td>0 a 100</td><td></td></tr>
+    <tr><td>Escala de gravedad<br><code>gravity_scale</code></td><td>numero</td><td>1</td><td>-10 a 10</td><td></td></tr>
+    <tr><td>Congelar giro<br><code>freeze_rotation</code></td><td>si/no</td><td>no</td><td></td><td></td></tr>
+    <tr><td>Congelar X<br><code>freeze_x</code></td><td>si/no</td><td>no</td><td></td><td></td></tr>
+    <tr><td>Congelar Y<br><code>freeze_y</code></td><td>si/no</td><td>no</td><td></td><td></td></tr>
+    <tr><td>Velocidad inicial<br><code>initial_velocity</code></td><td>Vec2</td><td>(0; 0)</td><td></td><td></td></tr>
+    <tr><td>Interpolar<br><code>interpolate</code></td><td>si/no</td><td>si</td><td></td><td>Movimiento suave entre pasos de fisica</td></tr>
+    <tr><td>Puede dormir<br><code>allow_sleep</code></td><td>si/no</td><td>si</td><td></td><td></td></tr>
+  </tbody>
+</table>
+<h3 id="BoxCollider2D">Box Collider 2D <code>BoxCollider2D</code></h3>
+<table>
+  <thead><tr><th>Propiedad</th><th>Tipo</th><th>Por defecto</th><th>Valores</th><th>Descripcion</th></tr></thead>
+  <tbody>
+    <tr><td>Tamaño<br><code>size</code></td><td>Vec2</td><td>(1; 1)</td><td></td><td></td></tr>
+    <tr><td>Desplazamiento<br><code>offset</code></td><td>Vec2</td><td>(0; 0)</td><td></td><td></td></tr>
+    <tr><td>Es trigger<br><code>is_trigger</code></td><td>si/no</td><td>no</td><td></td><td>Detecta (OnTriggerEnter2D) pero no choca</td></tr>
+    <tr><td>Fricción<br><code>friction</code></td><td>numero</td><td>0,4</td><td>0 a 2</td><td></td></tr>
+    <tr><td>Rebote<br><code>bounciness</code></td><td>numero</td><td>0</td><td>0 a 1</td><td></td></tr>
+    <tr><td>Un sentido<br><code>one_way</code></td><td>si/no</td><td>no</td><td></td><td>Plataforma que se atraviesa saltando desde abajo</td></tr>
+    <tr><td>Usado por el Composite<br><code>used_by_composite</code></td><td>si/no</td><td>no</td><td></td><td></td></tr>
+  </tbody>
+</table>
+<h3 id="CircleCollider2D">Circle Collider 2D <code>CircleCollider2D</code></h3>
+<table>
+  <thead><tr><th>Propiedad</th><th>Tipo</th><th>Por defecto</th><th>Valores</th><th>Descripcion</th></tr></thead>
+  <tbody>
+    <tr><td>Radio<br><code>radius</code></td><td>numero</td><td>0,5</td><td>0,001 a 1000</td><td></td></tr>
+    <tr><td>Desplazamiento<br><code>offset</code></td><td>Vec2</td><td>(0; 0)</td><td></td><td></td></tr>
+    <tr><td>Es trigger<br><code>is_trigger</code></td><td>si/no</td><td>no</td><td></td><td>Detecta (OnTriggerEnter2D) pero no choca</td></tr>
+    <tr><td>Fricción<br><code>friction</code></td><td>numero</td><td>0,4</td><td>0 a 2</td><td></td></tr>
+    <tr><td>Rebote<br><code>bounciness</code></td><td>numero</td><td>0</td><td>0 a 1</td><td></td></tr>
+    <tr><td>Un sentido<br><code>one_way</code></td><td>si/no</td><td>no</td><td></td><td>Plataforma que se atraviesa saltando desde abajo</td></tr>
+  </tbody>
+</table>
+<h3 id="PolygonCollider2D">Polygon Collider 2D <code>PolygonCollider2D</code></h3>
+<table>
+  <thead><tr><th>Propiedad</th><th>Tipo</th><th>Por defecto</th><th>Valores</th><th>Descripcion</th></tr></thead>
+  <tbody>
+    <tr><td colspan="5"><strong class="text-white">Puntos (lista)</strong> <code>points</code> — Convexo (si no, su envolvente convexa); hasta 16</td></tr>
+    <tr><td>&nbsp;&nbsp;&nbsp;Punto<br><code>p</code></td><td>Vec2</td><td>(-0,5; -0,5)</td><td></td><td></td></tr>
+    <tr><td>Desplazamiento<br><code>offset</code></td><td>Vec2</td><td>(0; 0)</td><td></td><td></td></tr>
+    <tr><td>Es trigger<br><code>is_trigger</code></td><td>si/no</td><td>no</td><td></td><td>Detecta (OnTriggerEnter2D) pero no choca</td></tr>
+    <tr><td>Fricción<br><code>friction</code></td><td>numero</td><td>0,4</td><td>0 a 2</td><td></td></tr>
+    <tr><td>Rebote<br><code>bounciness</code></td><td>numero</td><td>0</td><td>0 a 1</td><td></td></tr>
+    <tr><td>Un sentido<br><code>one_way</code></td><td>si/no</td><td>no</td><td></td><td>Plataforma que se atraviesa saltando desde abajo</td></tr>
+  </tbody>
+</table>
+<h3 id="CompositeCollider2D">Composite Collider 2D <code>CompositeCollider2D</code></h3>
+<table>
+  <thead><tr><th>Propiedad</th><th>Tipo</th><th>Por defecto</th><th>Valores</th><th>Descripcion</th></tr></thead>
+  <tbody>
+    <tr><td>Es trigger<br><code>is_trigger</code></td><td>si/no</td><td>no</td><td></td><td>Detecta (OnTriggerEnter2D) pero no choca</td></tr>
+    <tr><td>Fricción<br><code>friction</code></td><td>numero</td><td>0,4</td><td>0 a 2</td><td></td></tr>
+    <tr><td>Rebote<br><code>bounciness</code></td><td>numero</td><td>0</td><td>0 a 1</td><td></td></tr>
+    <tr><td>Un sentido<br><code>one_way</code></td><td>si/no</td><td>no</td><td></td><td>Plataforma que se atraviesa saltando desde abajo</td></tr>
+  </tbody>
+</table>

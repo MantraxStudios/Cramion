@@ -113,6 +113,21 @@
     <tr><td>Tamaño (m)<br><code>size</code></td><td>Vec3 (escala)</td><td>(1; 0,5; 1)</td><td></td><td>Caja (gira con el objeto) donde el liquido desaparece</td></tr>
   </tbody>
 </table>
+<h3 id="VisualEffect">Visual Effect (VFX Graph) <code>VisualEffect</code></h3>
+<table>
+  <thead><tr><th>Propiedad</th><th>Tipo</th><th>Por defecto</th><th>Valores</th><th>Descripcion</th></tr></thead>
+  <tbody>
+    <tr><td>Efecto (.crvfx)<br><code>graph</code></td><td>asset (Efecto visual (VFX))</td><td>(ninguno)</td><td>arrastrar desde el Proyecto</td><td>El asset del VFX Graph (Crear &gt; Efecto visual)</td></tr>
+    <tr><td>Reproducir al empezar<br><code>play_on_awake</code></td><td>si/no</td><td>si</td><td></td><td></td></tr>
+    <tr><td>Semilla<br><code>seed</code></td><td>entero</td><td>0</td><td>0 a 1000000</td><td>0 = al azar cada vez</td></tr>
+    <tr><td>Velocidad<br><code>simulation_speed</code></td><td>numero</td><td>1</td><td>0 a 10</td><td>Multiplica el tiempo de la simulacion</td></tr>
+    <tr><td>Vista previa en el editor<br><code>preview_in_editor</code></td><td>si/no</td><td>si</td><td></td><td>Simular en la escena si esta seleccionado</td></tr>
+    <tr><td colspan="5"><strong class="text-white">Parámetros (lista)</strong> <code>params</code> — Valores de los parametros expuestos del efecto para este objeto</td></tr>
+    <tr><td>&nbsp;&nbsp;&nbsp;Nombre<br><code>name</code></td><td>texto</td><td>(vacio)</td><td></td><td></td></tr>
+    <tr><td>&nbsp;&nbsp;&nbsp;Valor<br><code>value</code></td><td>Vec3 (metros)</td><td>(0; 0; 0)</td><td></td><td>Float = X; Color = RGB (y A abajo)</td></tr>
+    <tr><td>&nbsp;&nbsp;&nbsp;Alfa / W<br><code>w</code></td><td>numero</td><td>1</td><td>0 a 1</td><td></td></tr>
+  </tbody>
+</table>
 <h3 id="Profiler">Profiler <code>Profiler</code></h3>
 <p>Muestra en una esquina del juego los FPS, la CPU, la GPU y la memoria con una grafica del tiempo de cada frame (como <em>stat fps</em> de Unreal). Basta uno en la escena.</p>
 <table>

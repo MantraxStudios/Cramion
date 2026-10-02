@@ -13,12 +13,15 @@
 #include "CramionFX/vk/OverlayGeometry.h"
 #include "CramionFX/vk/OverlayPass.h"
 #include "CramionFX/vk/ParticlePass.h"
+#include "CramionFX/vk/SpritePass.h"
 #include "CramionFX/vk/FirePass.h"
 #include "CramionFX/vk/PrecipitationPass.h"
 #include "CramionFX/vk/TerrainPass.h"
 #include "CramionFX/vk/VoxelPass.h"
 #include "CramionFX/vk/FoliagePass.h"
 #include "CramionFX/vk/FluidPass.h"
+#include "CramionFX/vk/VfxPass.h"
+#include "CramionFX/vk/BakedGi.h"
 #include "CramionFX/vk/WaterPass.h"
 #include "CramionFX/vk/GpuTypes.h"
 #include "CramionFX/vk/GraphicsSettings.h"
@@ -374,6 +377,12 @@ public:
     // simulacion (hasta kFireZoneSlots). Vacio = sin fuego.
     void setFireZones(const std::vector<FireZone>& zones) { fire_pass_.setZones(zones); }
     const ParticleDrawList& particles() const { return particles_; }
+    // Sprites y tilemaps 2D (SpriteGeometry.h): cuadrados con textura sobre
+    // la imagen HDR, en el orden dado. Se sustituyen enteros cada frame.
+    void setSprites(SpriteDrawList sprites) { sprites_ = std::move(sprites); }
+    const SpriteDrawList& sprites() const { return sprites_; }
+    // Las imagenes de los sprites cambiaron en disco: volver a leerlas.
+    void reloadSpriteTextures() { sprite_pass_.reloadTextures(); }
 
     // Contorno de seleccion (naranja, como Unity) alrededor de estos actores
     // (indices en scene.actors()): mas intenso donde se ven, tenue donde algo
@@ -666,6 +675,17 @@ public:
     // pantalla. CramionCore (fluid::FluidSystem) le da cada frame los ajustes,
     // las formas, las particulas nuevas y los subpasos.
     FluidPass& fluid() { return fluid_pass_; }
+    // --- VFX Graph (VfxPass.h): particulas en la GPU. CramionCore
+    // (vfx::VfxSystem) le da cada frame los efectos vivos y sus bloques.
+    VfxPass& vfx() { return vfx_pass_; }
+    const VfxPass& vfx() const { return vfx_pass_; }
+    // --- Iluminacion horneada (BakedGi.h): volumenes de sondas. En modo
+    // Baked sustituyen al SSGI / trazado de rayos (y funcionan sin ellos). ---
+    void setBakedLighting(BakedLighting data);
+    const BakedLighting& bakedLighting() const { return baked_; }
+    void setLightingMode(LightingMode mode) { lighting_mode_ = mode; }
+    LightingMode lightingMode() const { return lighting_mode_; }
+    bool bakedGiActive() const;
     const FluidPass& fluid() const { return fluid_pass_; }
 
     // --- Texturas de la interfaz (iconos, miniaturas del editor) ---
@@ -851,6 +871,10 @@ private:
     void recordSsaoPass(const vk::raii::CommandBuffer& cmd, std::uint32_t frame_index);
     void recordVolumetricPass(const vk::raii::CommandBuffer& cmd, std::uint32_t frame_index);
     void recordSsgiPass(const vk::raii::CommandBuffer& cmd, std::uint32_t frame_index);
+    // GI horneada (VulkanRendererBaked.cpp).
+    void createBakedGi();
+    void destroyBakedGi();
+    void updateBakedGiSets();
     void recordSsrPass(const vk::raii::CommandBuffer& cmd, std::uint32_t frame_index);
     // Guarda los reflejos y la luz rebotada filtrados de este frame como
     // historia del siguiente.
@@ -880,8 +904,12 @@ private:
     void recordOutlinePass(const vk::raii::CommandBuffer& cmd, std::uint32_t frame_index);
     // Particulas sobre la imagen HDR (despues del vidrio, antes del bloom).
     void recordParticlePass(const vk::raii::CommandBuffer& cmd, std::uint32_t frame_index);
+    // Sprites 2D (VulkanRendererSprites.cpp), antes de las particulas.
+    void recordSpritePass(const vk::raii::CommandBuffer& cmd, std::uint32_t frame_index);
     // Liquidos (VulkanRendererFluid.cpp): profundidad, grosor, suavizado y sombreado.
     void recordFluidPass(const vk::raii::CommandBuffer& cmd, std::uint32_t frame_index);
+    // VFX Graph (VulkanRendererVfx.cpp): simulacion en la GPU y dibujo sobre la HDR.
+    void recordVfxPass(const vk::raii::CommandBuffer& cmd, std::uint32_t frame_index);
     void recordFirePass(const vk::raii::CommandBuffer& cmd, std::uint32_t frame_index);
     // Lluvia, nieve, polvo, salpicaduras y rayos (sistema de ambiente).
     void recordPrecipitationPass(const vk::raii::CommandBuffer& cmd, std::uint32_t frame_index);
@@ -1017,6 +1045,14 @@ private:
     FullscreenPass composite_pass_{};
     FullscreenPass sky_lut_pass_{};
     FullscreenPass ssgi_pass_{};
+    FullscreenPass baked_gi_pass_{};
+    vk::raii::DescriptorPool baked_gi_pool_{nullptr};
+    std::vector<vk::raii::DescriptorSet> baked_gi_sets_;
+    VulkanBuffer baked_probe_buffer_;
+    VulkanBuffer baked_volume_buffer_;
+    BakedLighting baked_;
+    LightingMode lighting_mode_ = LightingMode::Realtime;
+    std::uint32_t baked_volume_count_ = 0;
     FullscreenPass ssr_pass_{};
     FullscreenPass ssr_resolve_pass_{};
     ComputePass gi_temporal_pass_{};
@@ -1307,10 +1343,13 @@ private:
     VoxelPass voxel_pass_{};
     FoliagePass foliage_pass_{};
     FluidPass fluid_pass_{};
+    VfxPass vfx_pass_{};
     WaterPass water_pass_{};
     core::Vec3 camera_position_{};
     ParticleDrawList particles_;
     ParticlePass particle_pass_{};
+    SpriteDrawList sprites_;
+    SpritePass sprite_pass_{};
     FirePass fire_pass_{};
     FireLighting fire_lighting_{};  // sol y cielo de este frame (updateUniforms)
     PrecipitationSettings precipitation_{};

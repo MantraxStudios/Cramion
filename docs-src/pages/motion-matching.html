@@ -1,0 +1,38 @@
+<p>
+  <strong>Motion Matching</strong> (como el de For Honor, The Last of Us Part II o el Pose Search de Unreal 5): en lugar de una
+  máquina de estados con transiciones a mano, una <strong>base de datos</strong> con todos los fotogramas de un conjunto de
+  clips. Cada pocos frames se busca el fotograma que mejor encaja con la <strong>trayectoria</strong> que se pide (dónde estará
+  el personaje dentro de 0,33, 0,66 y 1 s y hacia dónde mirará) y con la <strong>pose</strong> actual (pies y cadera), y se
+  salta allí con inercialización: el cuerpo conserva su impulso, sin fundidos que flotan.
+</p>
+
+<h3 id="base">La base (.crmmdb)</h3>
+<ul>
+  <li>Selecciona los clips (<code>.cranim</code>) en el Proyecto y <em>Crear &gt; Base de Motion Matching</em> (o arrástralos
+    después a su editor). También se pueden usar clips del propio modelo por su nombre.</li>
+  <li>Cada clip: <strong>etiquetas</strong> (<code>agachado, combate</code>), bucle, recorte y un sesgo de coste (un idle
+    preferido). Los clips <strong>en el sitio</strong> (Mixamo <em>In Place</em>) necesitan su <strong>velocidad</strong>
+    (m/s, +Z delante) y su <strong>giro</strong> (°/s): de ahí sale su trayectoria.</li>
+  <li>La base: fotogramas por segundo, tiempos de la trayectoria, <em>Quitar root motion</em> (al personaje lo mueve su script o
+    su Character Controller) y los pesos de cada rasgo. Los huesos se buscan solos en un humanoide.</li>
+</ul>
+
+<h3 id="componente">Componente Motion Matching</h3>
+<p>
+  Va en el objeto del modelo animado (el del MeshRenderer con esqueleto); mientras está activo manda sobre el Animator.
+</p>
+<ul>
+  <li><strong>Entrada</strong>: <em>Movimiento del objeto</em> (sigue cómo se mueve: script, Character Controller, NavAgent) o
+    <em>Script</em> (lo pide el juego con <code>setMotionVelocity</code> / <code>setMotionFacing</code>).</li>
+  <li>Intervalo de búsqueda, tiempo de transición, mejora mínima para saltar, muelles de velocidad y giro, velocidad y
+    etiquetas requeridas.</li>
+  <li><strong>Dibujo de depuración</strong>: con el objeto seleccionado en Play, la trayectoria pedida (naranja) y la del
+    fotograma elegido (azul) en la Escena.</li>
+</ul>
+
+<h3 id="scripts">Desde los scripts</h3>
+<pre><code class="language-lua">-- Modo Script: la velocidad que quiere el jugador
+local dir = Vec3(Input.getAxis("Horizontal"), 0, Input.getAxis("Vertical"))
+self.modelo:setMotionVelocity(dir * (Input.getKey("LeftShift") and 5.5 or 2))
+self.modelo:setMotionTags(Input.getKey("C") and "agachado" or "")
+Debug.log(self.modelo.motionClip)</code></pre>

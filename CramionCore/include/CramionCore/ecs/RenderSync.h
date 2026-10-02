@@ -14,6 +14,7 @@
 //   renderer.drawFrame(scene);
 
 #include "CramionCore/anim/Inertialization.h"
+#include "CramionCore/anim/MotionMatching.h"
 #include "CramionCore/asset/SurfaceShader.h"
 #include "CramionCore/asset/AssetManager.h"
 #include "CramionCore/asset/MaterialAsset.h"
@@ -104,6 +105,13 @@ public:
     // llama a reload... al guardarlos para que el cambio se vea al momento.
     std::shared_ptr<const AnimatorController> animatorController(const Uuid& uuid);
     void reloadAnimatorController(const Uuid& uuid);
+
+    // Bases de Motion Matching (.crmmdb) en uso: se leen una vez; el editor
+    // llama a reloadMotionDatabase() al guardarlas (se rehacen sus rasgos).
+    std::shared_ptr<const anim::MotionDatabaseAsset> motionDatabase(const Uuid& uuid);
+    void reloadMotionDatabase(const Uuid& uuid);
+    // Rasgos que usa ahora el Motion Matching de `e` (nullptr si aun no hay).
+    std::shared_ptr<const anim::MotionFeatures> motionFeaturesOf(Entity e) const;
 
     // Materiales (.crmat) en uso: se leen una vez. El editor llama a
     // reloadMaterial() al guardarlos: los colores y factores cambian en vivo;
@@ -227,6 +235,12 @@ private:
     // modelo (al verlo por primera vez): llegan antes de que los necesite.
     void prefetchClips(std::uint32_t model, const Uuid& controller_uuid, const AnimatorController& controller,
                        scene::Scene& scene);
+    // Motion Matching (RenderSyncMotion.cpp): elige el fotograma y deja la
+    // pose en state.animator. Waiting = sus clips aun se leen (no se dibuja).
+    enum class MotionStep { None, Waiting, Posed };
+    MotionStep updateMotionMatching(Entity e, anim::MotionMatching& mm, std::uint32_t model,
+                                    const asset::ModelData& data, AnimationState& state, scene::Scene& scene,
+                                    float delta_seconds);
 
     std::optional<std::uint32_t> resolveModel(const assets::AssetRef& ref, int part,
                                               scene::Scene& scene, bool& added);
@@ -416,6 +430,11 @@ private:
     // animaciones) y los controladores ya precargados por modelo.
     std::unordered_map<ClipKey, std::future<std::optional<asset::AnimationClip>>, ClipKeyHash> pending_clips_;
     std::unordered_set<ClipKey, ClipKeyHash> prefetched_controllers_;
+    // Motion Matching (RenderSyncMotion.cpp): bases leidas y sus rasgos por
+    // modelo (la clave es {modelo, UUID de la base}).
+    std::unordered_map<Uuid, std::shared_ptr<const anim::MotionDatabaseAsset>> motion_databases_;
+    std::unordered_set<Uuid> failed_motion_databases_;
+    std::unordered_map<ClipKey, std::shared_ptr<anim::MotionFeatures>, ClipKeyHash> motion_features_;
     std::unordered_map<std::string, int> decal_textures_;  // ruta -> ranura del renderizador
     std::vector<entt::entity> actor_entities_;
     std::vector<entt::entity> previous_entities_;  // los del frame anterior (reutilizar actores)

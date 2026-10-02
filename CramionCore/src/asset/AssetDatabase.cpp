@@ -122,10 +122,36 @@ void AssetDatabase::refresh() {
             if (!info) {
                 std::cerr << "[Assets] Prefab sin UUID o danado: " << crdata::utf8(file.filename()) << "\n";
             }
+        } else if (extension == ".crdialog") {
+            info = sceneInfo(file, AssetType::Dialogue);
+            if (!info) {
+                std::cerr << "[Assets] Dialogo sin UUID o danado: " << crdata::utf8(file.filename()) << "\n";
+            }
         } else if (extension == ".crfsm") {
             info = sceneInfo(file, AssetType::StateMachine);
             if (!info) {
                 std::cerr << "[Assets] Maquina de estados sin UUID o danada: " << crdata::utf8(file.filename()) << "\n";
+            }
+        } else if (extension == ".crmmdb") {
+            info = sceneInfo(file, AssetType::MotionDatabase);
+            if (!info) {
+                std::cerr << "[Assets] Base de Motion Matching sin UUID o danada: " << crdata::utf8(file.filename()) << "\n";
+            }
+        } else if (extension == ".crbt") {
+            info = sceneInfo(file, AssetType::BehaviorTree);
+            if (!info) {
+                std::cerr << "[Assets] Behavior Tree sin UUID o danado: " << crdata::utf8(file.filename()) << "\n";
+            }
+        } else if (extension == ".crvfx") {
+            info = sceneInfo(file, AssetType::VisualEffect);
+            if (!info) {
+                std::cerr << "[Assets] Efecto VFX sin UUID o danado: " << crdata::utf8(file.filename()) << "\n";
+            }
+        } else if (extension == ".crfracture") {
+            // 1a linea: cabecera JSON (uuid); despues los trozos.
+            info = sceneInfo(file, AssetType::Fracture, /*first_line_only=*/true);
+            if (!info) {
+                std::cerr << "[Assets] Fractura sin UUID o danada: " << crdata::utf8(file.filename()) << "\n";
             }
         } else if (extension == ".crrt") {
             info = sceneInfo(file, AssetType::RenderTexture);

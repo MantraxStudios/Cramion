@@ -278,6 +278,11 @@ add_executable(CramionPhysicsTests "${CMAKE_CURRENT_SOURCE_DIR}/tests/PhysicsTes
 target_link_libraries(CramionPhysicsTests PRIVATE Cramion::Core)
 target_compile_options(CramionPhysicsTests PRIVATE -Wall -Wextra)
 
+# --- Pruebas de los sistemas de la 2.1 (consola) ---
+add_executable(CramionFeatures21Tests "${CMAKE_CURRENT_SOURCE_DIR}/tests/Features21Tests.cpp")
+target_link_libraries(CramionFeatures21Tests PRIVATE Cramion::Core)
+target_compile_options(CramionFeatures21Tests PRIVATE -Wall -Wextra)
+
 # --- Pruebas de las cinematicas (consola) ---
 add_executable(CramionCinematicsTests "${CMAKE_CURRENT_SOURCE_DIR}/tests/CinematicsTests.cpp")
 target_link_libraries(CramionCinematicsTests PRIVATE Cramion::Core)

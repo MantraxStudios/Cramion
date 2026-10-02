@@ -32,6 +32,8 @@
 #include <CramionFX/core/Math.h>
 
 #include <cstdint>
+#include <string>
+#include <vector>
 
 namespace cramion::ecs {
 class Entity;
@@ -130,34 +132,93 @@ struct PlaneCollider {
 
 // Registra los componentes de fisica y de particulas en ComponentRegistry
 // (idempotente).
-// Vehiculo (como el Wheel Collider de Unity, con el vehiculo de Jolt): en el
-// objeto con Rigidbody dinamico; sus ruedas son los WheelCollider de los
-// hijos. Motor, cambio automatico y diferenciales entre las ruedas motrices.
+// Vehiculo (como el Wheel Collider de Unity / el Chaos Vehicle de Unreal, con
+// el vehiculo de Jolt): en el objeto con Rigidbody dinamico; sus ruedas son
+// los WheelCollider de los hijos. Motor con curva de par, caja de cambios
+// (automatica o manual), diferenciales (delantera, trasera o 4x4 con reparto),
+// barras estabilizadoras, centro de masas, entrada por teclado o Input
+// Actions y ganchos de sonido (motor, derrape) y particulas (derrape).
+struct VehicleCurvePoint {
+    float x = 0.0f;  // fraccion de las rpm (0 = min, 1 = max)
+    float y = 1.0f;  // fraccion del par maximo
+};
+struct VehicleGear {
+    float ratio = 1.0f;
+};
+
 struct Vehicle {
+    // Motor
     float engine_torque = 500.0f;  // Nm
     float min_rpm = 1000.0f;
     float max_rpm = 6000.0f;
+    std::vector<VehicleCurvePoint> torque_curve{{0.0f, 0.8f}, {0.66f, 1.0f}, {1.0f, 0.8f}};
+    float engine_inertia = 0.5f;   // kg m2
+    float engine_damping = 0.2f;
+    // Caja de cambios
     bool automatic = true;         // cambio automatico
+    std::vector<VehicleGear> gears{{2.66f}, {1.78f}, {1.3f}, {1.0f}, {0.74f}};
+    float reverse_ratio = 2.9f;
+    float shift_up_rpm = 4000.0f;
+    float shift_down_rpm = 2000.0f;
+    float shift_time = 0.5f;       // s sin par al cambiar (automatico)
+    float clutch_strength = 10.0f;
+    // Diferenciales
+    float final_drive = 3.42f;     // relacion del grupo
+    float limited_slip = 1.4f;     // autoblocante (rapida/lenta); >= 10 = abierto
+    float front_torque_split = 0.5f;  // 4x4: parte del par para el eje delantero
+    // Estabilidad
     float max_pitch_roll = 60.0f;  // grados antes de dejar de volcar (180 = libre)
-    bool keyboard = true;          // W/S acelerar/atras, A/D girar, Espacio freno de mano
+    bool anti_roll_bars = true;
+    float anti_roll_stiffness = 1500.0f;  // N/m
+    core::Vec3 center_of_mass_offset{};   // m (mas bajo = vuelca menos)
+    // Entrada
+    bool keyboard = true;          // lo conduce el jugador (si no: por script)
+    bool use_input_actions = true; // con las Input Actions (teclado, mando, tactil)
+    std::string drive_action = "Move";      // Vec2: y = acelerar/atras, x = girar
+    std::string handbrake_action = "Jump";  // freno de mano
+    std::string brake_action;               // freno aparte (opcional)
+    std::string shift_up_action;            // cambio manual (opcional)
+    std::string shift_down_action;
+    float steer_speed = 5.0f;      // giro del volante por segundo (0 = al instante)
+    // Efectos
+    Uuid engine_sound{};           // AudioSource en bucle: su tono sigue a las rpm
+    float engine_pitch_min = 0.7f;
+    float engine_pitch_max = 2.0f;
+    float engine_volume_min = 0.4f;  // al ralenti / sin acelerar
+    float engine_volume_max = 1.0f;
+    Uuid skid_sound{};             // AudioSource en bucle: volumen = derrape
+    Uuid skid_particles{};         // ParticleSystem: emision = derrape
+    float skid_threshold = 0.15f;  // derrape (0..1) desde el que suena/humea
     void reflect(ecs::PropertyVisitor& v);
 };
 
 // Una rueda (su posicion es la del objeto): suspension por raycast, direccion,
 // traccion y frenos. `visual`: el objeto que se mueve y gira con la rueda (su
-// eje de giro es su X local).
+// eje de giro es su X local). La friccion del neumatico es la curva de Unity
+// (WheelFrictionCurve): sube hasta el extremo y baja a la asintota al
+// derrapar; adelante con el deslizamiento (0..1) y de lado en grados.
 struct WheelCollider {
     float radius = 0.38f;
     float width = 0.25f;
+    float mass = 20.0f;             // kg (inercia de la rueda)
     float suspension_min = 0.05f;  // m desde el anclaje (subida maxima)
     float suspension_max = 0.35f;  // m (bajada maxima)
+    float suspension_preload = 0.0f;  // m
     float spring_frequency = 1.6f;  // Hz (mas = mas dura)
     float damping = 0.5f;           // 0..1
     float max_steer_angle = 0.0f;   // grados (0 = no gira)
     bool drive = true;              // recibe el par del motor
     float max_brake_torque = 1500.0f;
     float max_handbrake_torque = 0.0f;
-    float grip = 1.0f;              // friccion del neumatico
+    float grip = 1.0f;              // friccion del neumatico (multiplica las curvas)
+    float forward_extremum_slip = 0.06f;
+    float forward_extremum_value = 1.2f;
+    float forward_asymptote_slip = 0.2f;
+    float forward_asymptote_value = 1.0f;
+    float sideways_extremum_slip = 3.0f;   // grados
+    float sideways_extremum_value = 1.2f;
+    float sideways_asymptote_slip = 20.0f; // grados
+    float sideways_asymptote_value = 1.0f;
     Uuid visual{};
     void reflect(ecs::PropertyVisitor& v);
 };

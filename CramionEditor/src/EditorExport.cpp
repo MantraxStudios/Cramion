@@ -117,6 +117,12 @@ void EditorApp::startExport(const std::filesystem::path& parent) {
     }
     const std::filesystem::path source = editorFolder();
     const bool android = config.platform == BuildPlatform::Android;
+    if (config.platform == BuildPlatform::Linux) {
+        export_message_ = "Linux: el reproductor nativo aun no esta disponible. Exporta para Windows: funciona en Linux "
+                          "y Steam Deck con Proton (ver Manual > Linux).";
+        std::cerr << "[Exportar] " << export_message_ << '\n';
+        return;
+    }
     if (!android && !std::filesystem::exists(source / "CramionPlayer.exe")) {
         export_message_ = "Falta CramionPlayer.exe junto al editor: compila el proyecto.";
         std::cerr << "[Exportar] " << export_message_ << '\n';
@@ -243,6 +249,8 @@ void EditorApp::startExport(const std::filesystem::path& parent) {
             if (it->is_regular_file(fe) && it->path().extension() == ".dll") add_file(it->path(), target / it->path().filename());
         }
         add_file(source / "player_banner.png", game / "banner.png");
+        // Steam: steam_api64.dll y steam_appid.txt (EditorPlatform.cpp).
+        for (const auto& [from, to] : platformExportFiles(config, target)) add_file(from, to);
         // Scripts de C++: el proceso aislado y la DLL (al dia) con sus simbolos.
         if (cpp_scripts_.hasSources()) {
             if (!cpp_scripts_.upToDate()) {

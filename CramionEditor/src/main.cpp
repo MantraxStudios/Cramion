@@ -32,6 +32,7 @@ int main(int argc, char** argv) {
     editor::installCrashHandler("CramionEditor");
     // Archivos que sustituyo la ultima actualizacion y seguian en uso.
     update::cleanupOldFiles();
+    int exit_code = EXIT_SUCCESS;  // --run-tests: 0 = todas las pruebas bien
 
     try {
         // Nitidez en pantallas con escalado (antes de crear la ventana).
@@ -83,6 +84,13 @@ int main(int argc, char** argv) {
 
         if (argc >= 5 && std::string_view(argv[1]) == "--selftest") {
             app.startSelfTest(argv[2], argv[3], argv[4], argc >= 6 ? std::filesystem::path(argv[5]) : std::filesystem::path{});
+        } else if (argc >= 3 && std::string_view(argv[1]) == "--run-tests") {
+            // CramionEditor.exe --run-tests <proyecto> [--junit resultados.xml]
+            std::filesystem::path junit;
+            for (int i = 3; i + 1 < argc; ++i) {
+                if (std::string_view(argv[i]) == "--junit") junit = std::filesystem::path(argv[i + 1]);
+            }
+            app.startTestRunFromCli(std::filesystem::path(argv[2]), junit);
         } else if (argc >= 2) {
             app.openProject(std::filesystem::path(argv[1]));
         }
@@ -183,6 +191,7 @@ int main(int argc, char** argv) {
             app.reportFrame(msSince(frame_start), window_ms, imgui_ms, scene_ms);
         }
 
+        exit_code = app.exitCode();
         renderer.waitIdle();
         imgui.shutdown();
         renderer.shutdown();
@@ -194,5 +203,5 @@ int main(int argc, char** argv) {
     }
 
     editor::EditorLog::instance().uninstall();
-    return EXIT_SUCCESS;
+    return exit_code;
 }

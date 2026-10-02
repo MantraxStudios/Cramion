@@ -58,6 +58,9 @@ struct Image {
 
 struct Text {
     std::string text = "Texto";
+    // Clave de la tabla de localizacion (gameplay/Localization.h): si no esta
+    // vacia, se muestra su texto en el idioma actual (y cambia con el idioma).
+    std::string localization_key;
     float font_size = 32.0f;
     core::Vec3 color{1.0f, 1.0f, 1.0f};
     float alpha = 1.0f;

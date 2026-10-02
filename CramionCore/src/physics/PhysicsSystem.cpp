@@ -19,7 +19,11 @@
 #include "CramionCore/ecs/Components.h"
 #include "CramionCore/ecs/MathUtil.h"
 #include "CramionCore/modeling/EditableMesh.h"
+#include "CramionCore/audio/Audio.h"
+#include "CramionCore/input/InputActions.h"
 #include "CramionCore/physics/Cloth.h"
+#include "CramionCore/physics/Destruction.h"
+#include "CramionCore/physics/Particles.h"
 #include "CramionCore/physics/Ragdoll.h"
 #include "CramionCore/physics/SoftBody.h"
 #include "CramionCore/terrain/Terrain.h"
@@ -51,6 +55,7 @@
 #include <Jolt/Physics/Collision/Shape/ConvexHullShape.h>
 #include <Jolt/Physics/Collision/Shape/HeightFieldShape.h>
 #include <Jolt/Physics/Collision/Shape/MeshShape.h>
+#include <Jolt/Physics/Collision/Shape/OffsetCenterOfMassShape.h>
 #include <Jolt/Physics/Collision/Shape/PlaneShape.h>
 #include <Jolt/Physics/Collision/Shape/RotatedTranslatedShape.h>
 #include <Jolt/Physics/Collision/Shape/SphereShape.h>
@@ -70,6 +75,7 @@
 #include <Jolt/Physics/Vehicle/WheeledVehicleController.h>
 
 #include <algorithm>
+#include <cfloat>
 #include <chrono>
 #include <cmath>
 #include <cstdarg>
@@ -557,6 +563,8 @@ struct PhysicsSystem::Impl {
     };
     std::unordered_map<std::uint64_t, StaticMesh> static_meshes;
     assets::AssetManager* asset_manager = nullptr;
+    // Objetos que se rompen (Destructible): trozos, impactos y escombros.
+    std::unique_ptr<DestructionSystem> destruction = std::make_unique<DestructionSystem>();
 
     std::unordered_map<entt::entity, BodyEntry> entries;
     std::unordered_map<std::uint32_t, entt::entity> body_entities;
@@ -1667,7 +1675,8 @@ struct PhysicsSystem::Impl {
               mesh(r.storage<MeshCollider>()),
               plane(r.storage<PlaneCollider>()),
               terrain(r.storage<terrain::Terrain>()),
-              renderer(r.storage<ecs::MeshRenderer>()) {}
+              renderer(r.storage<ecs::MeshRenderer>()),
+              vehicle(r.storage<Vehicle>()) {}
         template <typename Storage>
         static auto* find(Storage& storage, entt::entity e) {
             return storage.contains(e) ? &storage.get(e) : nullptr;
@@ -1690,6 +1699,7 @@ struct PhysicsSystem::Impl {
         entt::storage_for_t<PlaneCollider>& plane;
         entt::storage_for_t<terrain::Terrain>& terrain;
         entt::storage_for_t<ecs::MeshRenderer>& renderer;
+        entt::storage_for_t<Vehicle>& vehicle;
     };
 
     static std::uint64_t signatureOf(Pools& pools, entt::entity entity, int layer) {
@@ -1763,6 +1773,10 @@ struct PhysicsSystem::Impl {
             s.push_back(t->height);
             s.push_back(t->friction);
         }
+        if (const Vehicle* v = Pools::find(pools.vehicle, entity)) {
+            s.push_back(16.0f);
+            push3(v->center_of_mass_offset);
+        }
         return s.hash;
     }
 
@@ -1773,7 +1787,20 @@ struct PhysicsSystem::Impl {
         std::uint64_t signature = 0;
         std::vector<Uuid> visuals;
         std::vector<Vec3> visual_scales;
+        std::vector<Uuid> wheel_entities;
+        // Para el derrape: el pico de la curva de friccion de cada rueda.
+        std::vector<Vec3> friction_peaks;  // x = deslizamiento adelante, y = grados de lado, z = (sin uso)
+        std::vector<Vec3> friction_tails;
         float throttle = 0.0f, steering = 0.0f, brake = 0.0f, handbrake = 0.0f;
+        float applied_steering = 0.0f;  // con la velocidad del volante
+        float steer_speed = 0.0f;
+        bool automatic = true;
+        int manual_gear = 1;
+        int gear_count = 5;
+        float min_rpm = 1000.0f, max_rpm = 6000.0f;
+        float skid = 0.0f;
+        float skid_particle_rate = -1.0f;  // emision original del humo (-1 = sin leer)
+        Uuid skid_particles{};
     };
     std::unordered_map<entt::entity, VehicleEntry> vehicles;
 
@@ -1838,16 +1865,50 @@ struct PhysicsSystem::Impl {
             sig.push_back(vehicle.max_rpm);
             sig.push_back(vehicle.automatic ? 1.0f : 0.0f);
             sig.push_back(vehicle.max_pitch_roll);
+            for (const VehicleCurvePoint& p : vehicle.torque_curve) {
+                sig.push_back(p.x);
+                sig.push_back(p.y);
+            }
+            sig.push_back(vehicle.engine_inertia);
+            sig.push_back(vehicle.engine_damping);
+            for (const VehicleGear& g : vehicle.gears) sig.push_back(g.ratio);
+            for (const float f : {vehicle.reverse_ratio, vehicle.shift_up_rpm, vehicle.shift_down_rpm, vehicle.shift_time,
+                                  vehicle.clutch_strength, vehicle.final_drive, vehicle.limited_slip,
+                                  vehicle.front_torque_split, vehicle.anti_roll_bars ? vehicle.anti_roll_stiffness : -1.0f}) {
+                sig.push_back(f);
+            }
             for (std::size_t i = 0; i < wheels.size(); ++i) {
                 const WheelCollider& wc = wheels[i].get<WheelCollider>();
                 for (const float f : {local[i].x, local[i].y, local[i].z, wc.radius, wc.width, wc.suspension_min,
                                       wc.suspension_max, wc.spring_frequency, wc.damping, wc.max_steer_angle,
-                                      wc.drive ? 1.0f : 0.0f, wc.max_brake_torque, wc.max_handbrake_torque, wc.grip}) {
+                                      wc.drive ? 1.0f : 0.0f, wc.max_brake_torque, wc.max_handbrake_torque, wc.grip,
+                                      wc.mass, wc.suspension_preload, wc.forward_extremum_slip, wc.forward_extremum_value,
+                                      wc.forward_asymptote_slip, wc.forward_asymptote_value, wc.sideways_extremum_slip,
+                                      wc.sideways_extremum_value, wc.sideways_asymptote_slip, wc.sideways_asymptote_value}) {
                     sig.push_back(std::round(f * 1000.0f));
                 }
             }
             seen.insert(handle);
             VehicleEntry& entry = vehicles[handle];
+            // Lo que no obliga a rehacer la fisica se lee cada vez.
+            entry.steer_speed = std::max(vehicle.steer_speed, 0.0f);
+            entry.automatic = vehicle.automatic;
+            entry.gear_count = static_cast<int>(vehicle.gears.size());
+            entry.min_rpm = vehicle.min_rpm;
+            entry.max_rpm = vehicle.max_rpm;
+            if (entry.skid_particles != vehicle.skid_particles) {
+                entry.skid_particles = vehicle.skid_particles;
+                entry.skid_particle_rate = -1.0f;
+            }
+            entry.wheel_entities.resize(wheels.size());
+            entry.friction_peaks.resize(wheels.size());
+            entry.friction_tails.resize(wheels.size());
+            for (std::size_t i = 0; i < wheels.size(); ++i) {
+                const WheelCollider& wc = wheels[i].get<WheelCollider>();
+                entry.wheel_entities[i] = wheels[i].uuid();
+                entry.friction_peaks[i] = Vec3{wc.forward_extremum_slip, wc.sideways_extremum_slip, 0.0f};
+                entry.friction_tails[i] = Vec3{wc.forward_asymptote_slip, wc.sideways_asymptote_slip, 0.0f};
+            }
             // Las ruedas visibles se leen cada vez (cambian sin rehacer la fisica).
             entry.visuals.assign(wheels.size(), Uuid{});
             entry.visual_scales.assign(wheels.size(), Vec3{1.0f, 1.0f, 1.0f});
@@ -1877,20 +1938,76 @@ struct PhysicsSystem::Impl {
                 ws->mWidth = std::max(wc.width, 0.01f);
                 ws->mSuspensionMinLength = std::max(wc.suspension_min, 0.0f);
                 ws->mSuspensionMaxLength = std::max(wc.suspension_max, ws->mSuspensionMinLength + 0.01f);
+                ws->mSuspensionPreloadLength = std::max(wc.suspension_preload, 0.0f);
                 ws->mSuspensionSpring.mFrequency = std::max(wc.spring_frequency, 0.05f);
                 ws->mSuspensionSpring.mDamping = std::clamp(wc.damping, 0.0f, 1.0f);
                 ws->mMaxSteerAngle = JPH::DegreesToRadians(std::clamp(wc.max_steer_angle, 0.0f, 89.0f));
                 ws->mMaxBrakeTorque = std::max(wc.max_brake_torque, 0.0f);
                 ws->mMaxHandBrakeTorque = std::max(wc.max_handbrake_torque, 0.0f);
-                for (auto& point : ws->mLongitudinalFriction.mPoints) point.mY *= wc.grip;
-                for (auto& point : ws->mLateralFriction.mPoints) point.mY *= wc.grip;
+                // Inercia de un cilindro macizo: m r^2 / 2.
+                ws->mInertia = std::max(0.5f * std::max(wc.mass, 0.1f) * ws->mRadius * ws->mRadius, 0.01f);
+                // Curvas de friccion (WheelFrictionCurve de Unity): 0 -> pico -> asintota.
+                const float grip = std::max(wc.grip, 0.0f);
+                const float f_peak = std::max(wc.forward_extremum_slip, 0.001f);
+                const float f_tail = std::max(wc.forward_asymptote_slip, f_peak + 0.001f);
+                ws->mLongitudinalFriction.Clear();
+                ws->mLongitudinalFriction.AddPoint(0.0f, 0.0f);
+                ws->mLongitudinalFriction.AddPoint(f_peak, std::max(wc.forward_extremum_value, 0.0f) * grip);
+                ws->mLongitudinalFriction.AddPoint(f_tail, std::max(wc.forward_asymptote_value, 0.0f) * grip);
+                const float s_peak = std::max(wc.sideways_extremum_slip, 0.1f);
+                const float s_tail = std::max(wc.sideways_asymptote_slip, s_peak + 0.1f);
+                ws->mLateralFriction.Clear();
+                ws->mLateralFriction.AddPoint(0.0f, 0.0f);
+                ws->mLateralFriction.AddPoint(s_peak, std::max(wc.sideways_extremum_value, 0.0f) * grip);
+                ws->mLateralFriction.AddPoint(s_tail, std::max(wc.sideways_asymptote_value, 0.0f) * grip);
                 settings.mWheels.push_back(ws);
+            }
+            // Barras estabilizadoras: una por eje (izquierda/derecha a la misma altura del coche).
+            if (vehicle.anti_roll_bars && vehicle.anti_roll_stiffness > 0.0f) {
+                std::vector<bool> paired(wheels.size(), false);
+                for (std::size_t a = 0; a < wheels.size(); ++a) {
+                    if (paired[a]) continue;
+                    for (std::size_t b = a + 1; b < wheels.size(); ++b) {
+                        if (paired[b] || std::abs(local[b].z - local[a].z) >= 0.5f || (local[a].x < 0.0f) == (local[b].x < 0.0f)) {
+                            continue;
+                        }
+                        JPH::VehicleAntiRollBar bar;
+                        bar.mLeftWheel = static_cast<int>(local[a].x < 0.0f ? a : b);
+                        bar.mRightWheel = static_cast<int>(local[a].x < 0.0f ? b : a);
+                        bar.mStiffness = vehicle.anti_roll_stiffness;
+                        settings.mAntiRollBars.push_back(bar);
+                        paired[a] = paired[b] = true;
+                        break;
+                    }
+                }
             }
             JPH::WheeledVehicleControllerSettings* controller = new JPH::WheeledVehicleControllerSettings;
             controller->mEngine.mMaxTorque = std::max(vehicle.engine_torque, 1.0f);
             controller->mEngine.mMinRPM = std::max(vehicle.min_rpm, 50.0f);
             controller->mEngine.mMaxRPM = std::max(vehicle.max_rpm, controller->mEngine.mMinRPM + 100.0f);
+            controller->mEngine.mInertia = std::max(vehicle.engine_inertia, 0.01f);
+            controller->mEngine.mAngularDamping = std::max(vehicle.engine_damping, 0.0f);
+            if (vehicle.torque_curve.size() >= 2) {
+                controller->mEngine.mNormalizedTorque.Clear();
+                std::vector<VehicleCurvePoint> curve = vehicle.torque_curve;
+                std::sort(curve.begin(), curve.end(), [](const VehicleCurvePoint& a, const VehicleCurvePoint& b) { return a.x < b.x; });
+                for (const VehicleCurvePoint& p : curve) {
+                    controller->mEngine.mNormalizedTorque.AddPoint(std::clamp(p.x, 0.0f, 1.0f), std::max(p.y, 0.0f));
+                }
+            }
             controller->mTransmission.mMode = vehicle.automatic ? JPH::ETransmissionMode::Auto : JPH::ETransmissionMode::Manual;
+            if (!vehicle.gears.empty()) {
+                controller->mTransmission.mGearRatios.clear();
+                for (const VehicleGear& g : vehicle.gears) controller->mTransmission.mGearRatios.push_back(std::max(g.ratio, 0.05f));
+            }
+            controller->mTransmission.mReverseGearRatios.clear();
+            controller->mTransmission.mReverseGearRatios.push_back(-std::max(std::abs(vehicle.reverse_ratio), 0.05f));
+            controller->mTransmission.mShiftUpRPM = std::max(vehicle.shift_up_rpm, 100.0f);
+            controller->mTransmission.mShiftDownRPM = std::clamp(vehicle.shift_down_rpm, 50.0f, controller->mTransmission.mShiftUpRPM - 50.0f);
+            controller->mTransmission.mSwitchTime = std::max(vehicle.shift_time, 0.0f);
+            controller->mTransmission.mClutchStrength = std::max(vehicle.clutch_strength, 0.1f);
+            // Entre diferenciales (4x4): >= 10 es abierto.
+            controller->mDifferentialLimitedSlipRatio = vehicle.limited_slip >= 10.0f ? FLT_MAX : std::max(vehicle.limited_slip, 1.01f);
             // Diferenciales: las ruedas motrices por parejas (izquierda/derecha a la
             // misma altura del coche); una suelta va sola.
             std::vector<int> drive;
@@ -1916,10 +2033,30 @@ struct PhysicsSystem::Impl {
                 } else {
                     diff.mLeftWheel = a;
                 }
+                diff.mDifferentialRatio = std::max(vehicle.final_drive, 0.05f);
+                diff.mLimitedSlipRatio = vehicle.limited_slip >= 10.0f ? FLT_MAX : std::max(vehicle.limited_slip, 1.01f);
                 controller->mDifferentials.push_back(diff);
             }
-            for (auto& diff : controller->mDifferentials) {
-                diff.mEngineTorqueRatio = 1.0f / static_cast<float>(controller->mDifferentials.size());
+            // Reparto del par: con ejes delante (-Z) y detras traccionando, el
+            // delantero se lleva front_torque_split; si no, a partes iguales.
+            {
+                const auto diff_z = [&](const JPH::VehicleDifferentialSettings& d) {
+                    const int a = d.mLeftWheel >= 0 ? d.mLeftWheel : d.mRightWheel;
+                    const int b = d.mRightWheel >= 0 ? d.mRightWheel : d.mLeftWheel;
+                    return (local[static_cast<std::size_t>(a)].z + local[static_cast<std::size_t>(b)].z) * 0.5f;
+                };
+                int front = 0;
+                int rear = 0;
+                for (const auto& diff : controller->mDifferentials) (diff_z(diff) < 0.0f ? front : rear) += 1;
+                const float split = std::clamp(vehicle.front_torque_split, 0.0f, 1.0f);
+                for (auto& diff : controller->mDifferentials) {
+                    if (front > 0 && rear > 0) {
+                        diff.mEngineTorqueRatio = diff_z(diff) < 0.0f ? split / static_cast<float>(front)
+                                                                      : (1.0f - split) / static_cast<float>(rear);
+                    } else {
+                        diff.mEngineTorqueRatio = 1.0f / static_cast<float>(controller->mDifferentials.size());
+                    }
+                }
             }
             settings.mController = controller;
 
@@ -1944,13 +2081,92 @@ struct PhysicsSystem::Impl {
         }
     }
 
-    void applyVehicleInputs() {
+    void applyVehicleInputs(float dt) {
         for (auto& [handle, v] : vehicles) {
             if (!v.constraint) continue;
             auto* controller = static_cast<JPH::WheeledVehicleController*>(v.constraint->GetController());
-            controller->SetDriverInput(v.throttle, v.steering, v.brake, v.handbrake);
-            if (v.throttle != 0.0f || v.steering != 0.0f || v.brake != 0.0f || v.handbrake != 0.0f) {
+            // Volante: hacia la direccion pedida a steer_speed por segundo.
+            if (v.steer_speed <= 0.0f) {
+                v.applied_steering = v.steering;
+            } else {
+                const float step = v.steer_speed * dt;
+                v.applied_steering += std::clamp(v.steering - v.applied_steering, -step, step);
+            }
+            float forward = v.throttle;
+            float brake = v.brake;
+            if (!v.automatic) {
+                // Manual: el acelerador es 0..1 y la marcha decide el sentido;
+                // pedir lo contrario frena.
+                const int gear = std::clamp(v.manual_gear, -1, std::max(v.gear_count, 1));
+                controller->GetTransmission().Set(gear, 1.0f);
+                if (gear < 0) {
+                    forward = std::max(-v.throttle, 0.0f);
+                    brake = std::max(brake, std::max(v.throttle, 0.0f));
+                } else {
+                    forward = std::max(v.throttle, 0.0f);
+                    brake = std::max(brake, std::max(-v.throttle, 0.0f));
+                }
+            }
+            controller->SetDriverInput(forward, v.applied_steering, brake, v.handbrake);
+            if (v.throttle != 0.0f || v.steering != 0.0f || v.brake != 0.0f || v.handbrake != 0.0f ||
+                std::abs(v.applied_steering) > 1e-3f) {
                 bodies().ActivateBody(v.body);
+            }
+        }
+    }
+
+    // Derrape de una rueda (0..1): cuanto pasa del pico de su curva de friccion.
+    float wheelSkid(const VehicleEntry& v, std::size_t i) const {
+        if (!v.constraint || i >= v.constraint->GetWheels().size()) return 0.0f;
+        const auto* wheel = static_cast<const JPH::WheelWV*>(v.constraint->GetWheels()[i]);
+        if (!wheel->HasContact()) return 0.0f;
+        // Casi parado y sin girar: los deslizamientos no significan nada.
+        const float wheel_speed = std::abs(wheel->GetAngularVelocity()) * wheel->GetSettings()->mRadius;
+        const float ground_speed = wheel->GetContactPointVelocity().Length();
+        if (wheel_speed < 0.5f && ground_speed < 0.5f) return 0.0f;
+        const Vec3 peak = i < v.friction_peaks.size() ? v.friction_peaks[i] : Vec3{0.06f, 3.0f, 0.0f};
+        const Vec3 tail = i < v.friction_tails.size() ? v.friction_tails[i] : Vec3{0.2f, 20.0f, 0.0f};
+        const float longitudinal = std::abs(wheel->mLongitudinalSlip);
+        const float lateral = std::abs(JPH::RadiansToDegrees(wheel->mLateralSlip));
+        const float a = longitudinal > peak.x ? (longitudinal - peak.x) / std::max(tail.x - peak.x, 0.05f) : 0.0f;
+        const float b = lateral > peak.y ? (lateral - peak.y) / std::max(tail.y - peak.y, 1.0f) : 0.0f;
+        return std::clamp(std::max(a, b), 0.0f, 1.0f);
+    }
+
+    // Sonido del motor (tono y volumen), derrape (sonido y humo). Cada frame.
+    void updateVehicleEffects(ecs::World& w) {
+        for (auto& [handle, v] : vehicles) {
+            if (!v.constraint || !w.valid(handle)) continue;
+            const Vehicle* vehicle = w.wrap(handle).tryGet<Vehicle>();
+            if (vehicle == nullptr) continue;
+            v.skid = 0.0f;
+            for (std::size_t i = 0; i < v.constraint->GetWheels().size(); ++i) v.skid = std::max(v.skid, wheelSkid(v, i));
+            const auto* controller = static_cast<const JPH::WheeledVehicleController*>(v.constraint->GetController());
+            const float rpm = controller->GetEngine().GetCurrentRPM();
+            const float t = std::clamp((rpm - v.min_rpm) / std::max(v.max_rpm - v.min_rpm, 1.0f), 0.0f, 1.0f);
+            if (vehicle->engine_sound.valid()) {
+                if (const ecs::Entity e = w.find(vehicle->engine_sound); e.valid()) {
+                    if (audio::AudioSource* source = e.tryGet<audio::AudioSource>()) {
+                        source->pitch = vehicle->engine_pitch_min + (vehicle->engine_pitch_max - vehicle->engine_pitch_min) * t;
+                        const float gas = std::clamp(std::abs(v.throttle), 0.0f, 1.0f);
+                        source->volume = vehicle->engine_volume_min + (vehicle->engine_volume_max - vehicle->engine_volume_min) * gas;
+                    }
+                }
+            }
+            const float threshold = std::clamp(vehicle->skid_threshold, 0.0f, 0.99f);
+            const float amount = v.skid > threshold ? (v.skid - threshold) / (1.0f - threshold) : 0.0f;
+            if (vehicle->skid_sound.valid()) {
+                if (const ecs::Entity e = w.find(vehicle->skid_sound); e.valid()) {
+                    if (audio::AudioSource* source = e.tryGet<audio::AudioSource>()) source->volume = amount;
+                }
+            }
+            if (vehicle->skid_particles.valid()) {
+                if (const ecs::Entity e = w.find(vehicle->skid_particles); e.valid()) {
+                    if (ParticleSystem* particles = e.tryGet<ParticleSystem>()) {
+                        if (v.skid_particle_rate < 0.0f) v.skid_particle_rate = particles->rate;
+                        particles->rate = v.skid_particle_rate * amount;
+                    }
+                }
             }
         }
     }
@@ -2087,8 +2303,16 @@ struct PhysicsSystem::Impl {
         std::vector<ShapePart> sensor_parts;
         entry.mesh = nullptr;
         collectShapes(entity, entry.type, solid_parts, sensor_parts, entry.mesh);
-        const JPH::RefConst<JPH::Shape> solid = combine(solid_parts, entry.scale, name);
+        JPH::RefConst<JPH::Shape> solid = combine(solid_parts, entry.scale, name);
         const JPH::RefConst<JPH::Shape> sensor = combine(sensor_parts, entry.scale, name);
+        // Vehiculo: centro de masas desplazado (mas bajo = vuelca menos).
+        if (const Vehicle* vehicle = entity.tryGet<Vehicle>();
+            solid != nullptr && vehicle != nullptr && entry.type == BodyType::Dynamic &&
+            core::length(vehicle->center_of_mass_offset) > 1e-4f) {
+            const auto shifted =
+                JPH::OffsetCenterOfMassShapeSettings(toJolt(vehicle->center_of_mass_offset), solid.GetPtr()).Create();
+            if (!shifted.HasError()) solid = shifted.Get();
+        }
 
         const int layer = entity.tryGet<ecs::EntityInfo>() != nullptr ? entity.get<ecs::EntityInfo>().layer : 0;
         const bool moving = entry.type != BodyType::Static;
@@ -2485,7 +2709,7 @@ struct PhysicsSystem::Impl {
         preStepCloths(w, dt);
         preStepSoftBodies(w);
         applyBuoyancy(w, dt);
-        applyVehicleInputs();
+        applyVehicleInputs(dt);
         system->Update(dt, std::max(settings.collision_steps, 1), temp_allocator.get(), job_system.get());
         ++steps;
         capturePoses();
@@ -3024,6 +3248,11 @@ void PhysicsSystem::setTerrainProvider(TerrainProvider provider) {
 
 void PhysicsSystem::setAssetManager(assets::AssetManager* manager) {
     impl_->asset_manager = manager;
+    impl_->destruction->setAssetManager(manager);
+}
+
+DestructionSystem& PhysicsSystem::destruction() {
+    return *impl_->destruction;
 }
 
 void PhysicsSystem::start(ecs::World& world) {
@@ -3064,6 +3293,7 @@ void PhysicsSystem::stop() {
     d.soft_bodies.clear();
     for (auto& [handle, vehicle] : d.vehicles) d.removeVehicle(vehicle);
     d.vehicles.clear();
+    d.destruction->reset();
     d.pairs.clear();  // sin eventos Exit al parar
     for (auto& [handle, character] : d.characters) {
         character.touches.clear();
@@ -3212,6 +3442,9 @@ int PhysicsSystem::update(ecs::World& world, float delta_seconds, bool simulate)
         d.writeRagdolls(world, d.accumulator / step);
         d.writeCloths(d.accumulator / step);
         d.writeSoftBodies(world, d.accumulator / step);
+        d.updateVehicleEffects(world);
+        // Impactos que rompen Destructible, escombros que caducan.
+        d.destruction->update(world, *this, delta_seconds);
     } else {
         d.accumulator = 0.0f;
         d.contact_points.clear();
@@ -3489,17 +3722,111 @@ void PhysicsSystem::driveVehiclesWithKeyboard(ecs::World& world, bool forward, b
     }
 }
 
+void PhysicsSystem::driveVehiclesWithActions(ecs::World& world, const input::InputMapper& mapper) {
+    const auto value = [&](const std::string& action) -> const input::ActionState* {
+        return action.empty() ? nullptr : mapper.state(action);
+    };
+    for (auto& [handle, v] : impl_->vehicles) {
+        if (!world.valid(handle)) continue;
+        const ecs::Entity e = world.wrap(handle);
+        const Vehicle* vehicle = e.tryGet<Vehicle>();
+        if (vehicle == nullptr || !vehicle->keyboard || !vehicle->use_input_actions) continue;
+        const input::ActionState* drive = value(vehicle->drive_action);
+        if (drive == nullptr) continue;  // la accion no existe: se queda el teclado
+        float throttle = std::clamp(drive->value.y, -1.0f, 1.0f);
+        const float steering = std::clamp(drive->value.x, -1.0f, 1.0f);
+        float brake = 0.0f;
+        if (const input::ActionState* b = value(vehicle->brake_action)) brake = std::clamp(b->value.magnitude(), 0.0f, 1.0f);
+        float handbrake = 0.0f;
+        if (const input::ActionState* h = value(vehicle->handbrake_action)) {
+            handbrake = std::clamp(h->value.magnitude(), 0.0f, 1.0f);
+        }
+        if (vehicle->automatic) {
+            // Como con el teclado: pedir el sentido contrario mientras avanza frena.
+            const float along = core::dot(linearVelocity(e), e.forward());
+            if ((throttle < -0.05f && along > 1.0f) || (throttle > 0.05f && along < -1.0f)) {
+                brake = std::max(brake, std::abs(throttle));
+                throttle = 0.0f;
+            }
+        }
+        if (const input::ActionState* up = value(vehicle->shift_up_action); up != nullptr && (up->events & input::EventStarted)) {
+            shiftVehicleGear(e, 1);
+        }
+        if (const input::ActionState* down = value(vehicle->shift_down_action);
+            down != nullptr && (down->events & input::EventStarted)) {
+            shiftVehicleGear(e, -1);
+        }
+        setVehicleInput(e, throttle, steering, brake, handbrake);
+    }
+}
+
+void PhysicsSystem::setVehicleGear(ecs::Entity vehicle, int gear) {
+    const auto it = impl_->vehicles.find(vehicle.handle());
+    if (it == impl_->vehicles.end() || it->second.automatic) return;
+    it->second.manual_gear = std::clamp(gear, -1, std::max(it->second.gear_count, 1));
+}
+
+void PhysicsSystem::shiftVehicleGear(ecs::Entity vehicle, int delta) {
+    const auto it = impl_->vehicles.find(vehicle.handle());
+    if (it == impl_->vehicles.end() || it->second.automatic) return;
+    setVehicleGear(vehicle, it->second.manual_gear + delta);
+}
+
 PhysicsSystem::VehicleState PhysicsSystem::vehicleState(ecs::Entity vehicle) const {
     VehicleState state;
     const auto it = impl_->vehicles.find(vehicle.handle());
     if (it == impl_->vehicles.end() || !it->second.constraint) return state;
-    const auto* controller = static_cast<const JPH::WheeledVehicleController*>(it->second.constraint->GetController());
+    const Impl::VehicleEntry& v = it->second;
+    const auto* controller = static_cast<const JPH::WheeledVehicleController*>(v.constraint->GetController());
     state.valid = true;
     state.rpm = controller->GetEngine().GetCurrentRPM();
+    state.rpm_fraction = std::clamp((state.rpm - v.min_rpm) / std::max(v.max_rpm - v.min_rpm, 1.0f), 0.0f, 1.0f);
     state.gear = controller->GetTransmission().GetCurrentGear();
-    state.speed_kmh = core::length(linearVelocity(vehicle)) * 3.6f;
-    for (const JPH::Wheel* wheel : it->second.constraint->GetWheels()) {
+    state.gear_count = v.gear_count;
+    state.automatic = v.automatic;
+    state.shifting = controller->GetTransmission().IsSwitchingGear();
+    const Vec3 velocity = linearVelocity(vehicle);
+    state.speed_kmh = core::length(velocity) * 3.6f;
+    state.forward_speed_kmh = vehicle.valid() ? core::dot(velocity, vehicle.forward()) * 3.6f : state.speed_kmh;
+    state.wheel_count = static_cast<int>(v.constraint->GetWheels().size());
+    for (const JPH::Wheel* wheel : v.constraint->GetWheels()) {
         if (wheel->HasContact()) ++state.wheels_on_ground;
+    }
+    state.throttle = v.throttle;
+    state.steering = v.applied_steering;
+    state.brake = v.brake;
+    state.handbrake = v.handbrake;
+    state.skid = v.skid;
+    return state;
+}
+
+PhysicsSystem::WheelState PhysicsSystem::wheelState(ecs::Entity vehicle, int index) const {
+    WheelState state;
+    const auto it = impl_->vehicles.find(vehicle.handle());
+    if (it == impl_->vehicles.end() || !it->second.constraint || index < 0) return state;
+    const Impl::VehicleEntry& v = it->second;
+    const std::size_t i = static_cast<std::size_t>(index);
+    if (i >= v.constraint->GetWheels().size()) return state;
+    const auto* wheel = static_cast<const JPH::WheelWV*>(v.constraint->GetWheels()[i]);
+    const JPH::WheelSettings* settings = wheel->GetSettings();
+    state.valid = true;
+    if (vehicle.world() != nullptr && i < v.wheel_entities.size()) state.wheel = vehicle.world()->find(v.wheel_entities[i]);
+    state.contact = wheel->HasContact();
+    state.suspension_length = wheel->GetSuspensionLength();
+    const float range = std::max(settings->mSuspensionMaxLength - settings->mSuspensionMinLength, 1e-4f);
+    state.compression = std::clamp((settings->mSuspensionMaxLength - state.suspension_length) / range, 0.0f, 1.0f);
+    state.rpm = wheel->GetAngularVelocity() * 60.0f / (2.0f * 3.14159265f);
+    state.steer_degrees = JPH::RadiansToDegrees(wheel->GetSteerAngle());
+    state.longitudinal_slip = wheel->mLongitudinalSlip;
+    state.lateral_slip_degrees = JPH::RadiansToDegrees(wheel->mLateralSlip);
+    state.skid = impl_->wheelSkid(v, i);
+    if (state.contact) {
+        state.contact_point = fromJolt(JPH::Vec3(wheel->GetContactPosition()));
+        state.contact_normal = fromJolt(wheel->GetContactNormal());
+        const auto found = impl_->body_entities.find(wheel->GetContactBodyID().GetIndexAndSequenceNumber());
+        if (found != impl_->body_entities.end() && vehicle.world() != nullptr && vehicle.world()->valid(found->second)) {
+            state.ground = vehicle.world()->wrap(found->second);
+        }
     }
     return state;
 }

@@ -21,6 +21,20 @@ Incluye dos escenas de demostración, iluminadas por una sola luz direccional (e
 
 ---
 
+## Novedades de la 2.1
+
+La 2.1 incluye también todo lo de la 2.0 (más abajo), que no se publicó por separado.
+
+**Grafos de nodos para todo**: **Shader Graph** (materiales con nodos y vista previa), **VFX Graph** (partículas simuladas enteras en la GPU, de cientos a cientos de miles), **Visual Scripting** como los Blueprints (toda la API como nodos, con depuración en vivo y puntos de ruptura), **Behavior Trees** con pizarra y **Diálogos** ramificados.
+
+**Juego**: partidas guardadas, localización con plurales, repeticiones (killcam, cámara lenta), **Motion Matching**, **destrucción** con trozos de Voronoi y **vehículos** completos con asistente de ruedas.
+
+**2D**: sprites y hojas de sprites, animación por fotogramas, **tilemaps con Rule Tiles**, luces 2D, física 2D propia y la plantilla *Plataformas 2D*.
+
+**Iluminación horneada** en volúmenes de sondas: luz rebotada casi gratis en Android y en PCs sin trazado de rayos.
+
+**Flujo de trabajo**: **Git** dentro del editor, **pruebas automáticas** (Test Runner y `--run-tests` para CI), **Steam** (logros, marcadores, nube, Workshop, salas) y recarga en caliente de C++ que **conserva el estado** sin parar Play.
+
 ## Novedades de la 2.0
 
 **Scripts en C++**: el lenguaje del motor (Lua queda obsoleto). Clases con `start`, `update` y colisiones, **propiedades en el Inspector** como en Unity, compilador incluido (no hace falta Visual Studio), **IntelliSense de clangd** y scripts aislados en **otro proceso**: un puntero nulo o un bucle infinito no tumban el editor. Toda la API de Lua está también en C++.
@@ -298,6 +312,7 @@ Incluye dos escenas de demostración, iluminadas por una sola luz direccional (e
 
 ## Índice
 
+- [Novedades de la 2.1](#novedades-de-la-21)
 - [Novedades de la 2.0](#novedades-de-la-20)
 - [Novedades de la 1.9](#novedades-de-la-19)
 - [Novedades de la 1.8](#novedades-de-la-18)

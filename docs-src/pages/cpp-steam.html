@@ -1,0 +1,54 @@
+<p>Steam: logros, estadísticas, marcadores, Rich Presence, overlay, nube, Workshop y salas.</p>
+
+<h3 id="steam">Steam</h3>
+<table>
+  <tbody>
+    <tr><td><code>Value achievementProgress(texto, valor, valor2)</code></td><td>muestra el progreso</td></tr>
+    <tr><td><code>Value appId(...)</code></td><td>AppID</td></tr>
+    <tr><td><code>Value available(...)</code></td><td>Steam esta abierto y la DLL cargada</td></tr>
+    <tr><td><code>Value clearAchievement(texto)</code></td><td>lo vuelve a bloquear (pruebas)</td></tr>
+    <tr><td><code>Value clearRichPresence(...)</code></td><td>lo borra</td></tr>
+    <tr><td><code>Value cloudDelete(texto)</code></td><td>lo borra</td></tr>
+    <tr><td><code>Value cloudEnabled(...)</code></td><td>Steam Cloud activo?</td></tr>
+    <tr><td><code>Value cloudExists(texto)</code></td><td>existe?</td></tr>
+    <tr><td><code>Value cloudFiles(...)</code></td><td>{name, size} de cada archivo</td></tr>
+    <tr><td><code>Value cloudRead(texto)</code></td><td>lee de la nube (o nil)</td></tr>
+    <tr><td><code>Value cloudWrite(texto, texto2)</code></td><td>guarda en la nube</td></tr>
+    <tr><td><code>Value createLobby(texto, valor, callback)</code></td><td>end) crea una sala</td></tr>
+    <tr><td><code>Value downloadScores(texto, texto2, valor, valor2, callback)</code></td><td>end) lee el marcador</td></tr>
+    <tr><td><code>Value error(...)</code></td><td>por que no lo esta</td></tr>
+    <tr><td><code>Value findLobbies(tabla, valor, callback)</code></td><td>end) busca salas</td></tr>
+    <tr><td><code>Value friendName(id)</code></td><td>nombre de un amigo</td></tr>
+    <tr><td><code>Value getLobbyData(sala, texto)</code></td><td>lo lee</td></tr>
+    <tr><td><code>Value getStatFloat(texto)</code></td><td>lee una estadistica</td></tr>
+    <tr><td><code>Value getStatInt(texto)</code></td><td>lee una estadistica</td></tr>
+    <tr><td><code>Value inviteToLobby(sala)</code></td><td>dialogo de invitar del overlay</td></tr>
+    <tr><td><code>Value isAchievementUnlocked(texto)</code></td><td>esta desbloqueado?</td></tr>
+    <tr><td><code>Value isDlcInstalled(appId)</code></td><td>tiene el DLC?</td></tr>
+    <tr><td><code>Value isSteamDeck(...)</code></td><td>corre en una Steam Deck?</td></tr>
+    <tr><td><code>Value joinLobby(sala, callback)</code></td><td>end) entra en una sala</td></tr>
+    <tr><td><code>Value language(...)</code></td><td>idioma de Steam</td></tr>
+    <tr><td><code>Value leaveLobby(sala)</code></td><td>sale</td></tr>
+    <tr><td><code>Value lobbyMembers(sala)</code></td><td>{id, name} de cada jugador</td></tr>
+    <tr><td><code>Value lobbyOwner(sala)</code></td><td>SteamID del dueno</td></tr>
+    <tr><td><code>Value onLobbyJoinRequested(callback)</code></td><td>end) un amigo invito y el jugador acepto</td></tr>
+    <tr><td><code>Value onOverlay(callback)</code></td><td>end) se abrio o cerro el overlay (pausar)</td></tr>
+    <tr><td><code>Value openOverlay(texto)</code></td><td>abre el overlay</td></tr>
+    <tr><td><code>Value openOverlayUrl(texto)</code></td><td>web en el overlay</td></tr>
+    <tr><td><code>Value openStore(...)</code></td><td>la pagina de la tienda</td></tr>
+    <tr><td><code>Value overlayActive(...)</code></td><td>esta abierto ahora?</td></tr>
+    <tr><td><code>Value overlayEnabled(...)</code></td><td>el overlay funciona?</td></tr>
+    <tr><td><code>Value setLobbyData(sala, texto, texto2)</code></td><td>dato de la sala</td></tr>
+    <tr><td><code>Value setRichPresence(texto, texto2)</code></td><td>estado que ven los amigos</td></tr>
+    <tr><td><code>Value setStatFloat(texto, valor)</code></td><td>estadistica decimal</td></tr>
+    <tr><td><code>Value setStatInt(texto, valor)</code></td><td>estadistica entera</td></tr>
+    <tr><td><code>Value storeStats(...)</code></td><td>envia logros y estadisticas a Steam</td></tr>
+    <tr><td><code>Value unlockAchievement(texto)</code></td><td>desbloquea un logro</td></tr>
+    <tr><td><code>Value uploadScore(texto, valor, callback)</code></td><td>end) sube una puntuacion al marcador</td></tr>
+    <tr><td><code>Value userId(...)</code></td><td>SteamID del jugador</td></tr>
+    <tr><td><code>Value userName(...)</code></td><td>nombre del jugador</td></tr>
+    <tr><td><code>Value workshopItems(...)</code></td><td>objetos del Workshop suscritos</td></tr>
+    <tr><td><code>Value workshopProgress(...)</code></td><td>0..1 de la subida</td></tr>
+    <tr><td><code>Value workshopUpload(tabla, callback)</code></td><td>end) sube al Workshop</td></tr>
+  </tbody>
+</table>

@@ -1,0 +1,50 @@
+<p>
+  <strong>Visual Scripting</strong>: lógica con nodos en lugar de código, como los <strong>Blueprints</strong> de Unreal. Un
+  grafo <code>.crgraph</code> se pone en un objeto con el componente <strong>Visual Script</strong> y corre en el editor y en
+  el juego exportado, con la misma API que los scripts: <strong>cualquier función del motor es un nodo</strong>.
+</p>
+
+<h3 id="crear">Crear</h3>
+<ul>
+  <li><em>Proyecto &gt; Crear &gt; Visual Script</em>: empieza con un ejemplo (Start escribe "Hola" y Update gira el objeto).</li>
+  <li><strong>Asignar a la selección</strong> le pone el componente a los objetos seleccionados.</li>
+  <li>Doble clic en el <code>.crgraph</code> lo abre. Se guarda solo; en Play se recompila al momento.</li>
+</ul>
+
+<h3 id="nodos">Nodos</h3>
+<table>
+  <thead><tr><th>Grupo</th><th>Nodos</th></tr></thead>
+  <tbody>
+    <tr><td>Eventos</td><td>Start, Update, Late/Fixed Update, choques y triggers (también 2D), acción de entrada, tecla, eventos propios, temporizadores</td></tr>
+    <tr><td>Flujo</td><td>Branch, Sequence, For, While (con tope), Delay, Do Once, Flip Flop, Gate</td></tr>
+    <tr><td>Variables</td><td>Get / Set de las variables del grafo</td></tr>
+    <tr><td>Matemáticas y lógica</td><td>operaciones, comparaciones, vectores, texto</td></tr>
+    <tr><td>Objetos</td><td>transform, buscar, crear prefabs, destruir, campos de componentes</td></tr>
+    <tr><td>API: …</td><td>todas las funciones y propiedades de la API (<code>Audio.playOneShot</code>, <code>Entity:translate</code>, <code>Get Entity.position</code>...)</td></tr>
+    <tr><td>Depuración</td><td>Print, Log</td></tr>
+  </tbody>
+</table>
+<p>
+  Los pines blancos (triángulos) son de <strong>ejecución</strong>: marcan el orden. Los de datos tienen color por tipo
+  (rojo bool, verde float, turquesa int, rosa texto, amarillo vector, azul objeto) y se calculan al usarse. Las entradas sin
+  enlace se escriben dentro del nodo. Las funciones que solo leen (get…, is…, find…) se crean sin pines de ejecución.
+</p>
+
+<h3 id="variables">Variables</h3>
+<p>
+  A la izquierda: nombre, tipo, valor inicial y <em>En el Inspector</em> (cada objeto puede cambiarla en su componente).
+  Los botones <strong>Get</strong> y <strong>Set</strong> crean sus nodos.
+</p>
+
+<h3 id="depurar">Depurar</h3>
+<ul>
+  <li>En Play, con un objeto que usa el grafo (el seleccionado o el primero), los nodos que corren <strong>se iluminan</strong>,
+    los enlaces de ejecución muestran el flujo y al pasar el ratón por un pin se ve su último valor.</li>
+  <li><kbd>F9</kbd> (o clic derecho) pone un <strong>punto de ruptura</strong>; con <em>Puntos de ruptura</em> activado, al
+    pasar por él el juego se pausa y el nodo se selecciona.</li>
+  <li>Los errores de compilación salen en el nodo (borde rojo) y en la lista de la izquierda.</li>
+</ul>
+<div class="note">
+  El grafo se traduce a Lua y corre en el mismo estado que los scripts: lo que hace un script lo puede hacer un grafo, y los
+  eventos propios se llaman como cualquier método (un botón de la UI con <em>Al pulsar</em> = el nombre del evento).
+</div>

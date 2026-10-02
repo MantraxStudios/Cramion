@@ -110,9 +110,9 @@ void EditorApp::drawBuildConfigsWindow() {
     changed |= ImGui::InputText("##name", &c.name);
     row("Plataforma");
     {
-        static const char* kPlatforms[] = {"Windows (.exe)", "Android (APK / AAB)"};
+        static const char* kPlatforms[] = {"Windows (.exe)", "Android (APK / AAB)", "Linux (x64)"};
         int platform = static_cast<int>(c.platform);
-        if (ImGui::Combo("##platform", &platform, kPlatforms, 2)) {
+        if (ImGui::Combo("##platform", &platform, kPlatforms, 3)) {
             c.platform = static_cast<BuildPlatform>(platform);
             changed = true;
         }
@@ -252,6 +252,7 @@ void EditorApp::drawBuildConfigsWindow() {
         ImGui::SetItemTooltip("El juego se ve en el casco (SteamVR, Meta Quest Link, WMR...) si hay uno conectado;\n"
                               "la ventana hace de espejo. Sin casco se juega normal. Ver Manual > Realidad virtual.");
     }
+    drawPlatformBuildSettings(c, changed);  // Steam y Linux (EditorPlatform.cpp)
 
     ImGui::Separator();
     const bool is_active = build_config_selected_ == build_configs_.active;

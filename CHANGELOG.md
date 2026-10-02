@@ -1,6 +1,48 @@
 # Cambios
 
-## 2.0.0
+## 2.1.0
+
+Incluye también todo lo de la 2.0.0 (más abajo), que no se publicó por separado.
+
+### Grafos de nodos
+- **Shader Graph** (`.crshadergraph`): materiales con nodos como el Shader Graph de Unity o el editor de materiales de Unreal. Entradas (UV, tiempo, posición, normal, vista, color de vértice...), propiedades que salen en el Inspector del material, texturas (también triplanar), matemáticas, ruido (valor, Perlin, Voronoi), Fresnel, panner, mezcla de normales y una salida con color, alfa, metal, rugosidad, oclusión, emisión, normal y desplazamiento de vértices. Genera un `.crshader` normal (recompila al momento, funciona en Android) con **vista previa** en una esfera, el **código generado** y los errores de compilación marcados en su nodo.
+- **VFX Graph** (`.crvfx`): partículas simuladas **enteras en la GPU** (de cientos a cientos de miles) con contextos Spawn / Initialize / Update / Output: caudal, ráfagas, por distancia y por evento; formas (esfera, caja, cono, círculo, línea, superficie de un modelo); gravedad, viento, rozamiento, turbulencia (curl noise), atractores, vórtices, **colisión con la escena** por el buffer de profundidad, con planos y esferas; color y tamaño en la vida, color por velocidad, partículas suaves, flipbook, estiradas por la velocidad e iluminadas. **Parámetros expuestos** que cambian el Inspector y los scripts (`setEffectFloat`, `sendEffectEvent`...). 10 plantillas (fuego, humo, explosión, magia, nieve, lluvia...).
+- **Visual Scripting** (`.crgraph`, como los Blueprints): eventos, flujo (Branch, Sequence, For, While, Delay, Do Once, Flip Flop, Gate), variables expuestas, matemáticas y **cualquier función de la API como nodo**. Corre en Play y en el juego; los nodos que se ejecutan **se iluminan**, los pines enseñan su último valor y hay **puntos de ruptura** (F9) que pausan el juego.
+- **Behavior Trees** (`.crbt`) con pizarra, como los de Unreal: Selector, Sequence, Parallel, Random; tareas (Move To con NavMesh, Wait, animaciones, Run Script...), decoradores con **observer aborts**, servicios (vista con línea de visión, oído, el más cercano con un tag...). **Depuración en vivo**: la rama activa brilla, cada nodo enseña su último resultado y la pizarra se puede cambiar.
+- **Diálogos** (`.crdialog`) con su editor de nodos: líneas, opciones con condición, condiciones, variables, eventos y saltos, una **caja de diálogo** de UI lista para usar y una prueba del diálogo sin dar Play.
+- Un lienzo de nodos común para todos los editores: zoom, desplazar, selección por caja, copiar/pegar/duplicar, comentarios y un buscador de nodos (Espacio o clic derecho; soltar un enlace en el vacío crea un nodo conectado).
+
+### Juego
+- **Partidas guardadas**: `Save.save("slot1")` / `Save.load`, ranuras con fecha, escena y tiempo jugado, autoguardado, valores sueltos y el componente **Saveable** (transform, física, componentes elegidos y estado del script con `OnSave`/`OnLoad`). Se escriben en segundo plano. Ventana *Partidas guardadas*.
+- **Localización**: tabla de textos por idioma (ventana *Localización*), CSV para traductores, argumentos `{0}` / `{nombre}`, **plurales** por idioma y una *Clave de localización* en los textos de la UI que cambian solos con el idioma (`Text.setLanguage`).
+- **Repeticiones**: graba y reproduce el juego (objetos, animaciones y sonidos) con línea de tiempo, cámara lenta, cámara libre, marcadores y archivos `.crreplay`; con *Últimos N segundos* sirve para killcams. API `Replay.*`.
+- **Motion Matching** (`.crmmdb`): animación por búsqueda en una base de fotogramas, como el Pose Search de Unreal: trayectoria predicha con muelles, pies y cadera, etiquetas e inercialización. Editor de la base y trayectorias de depuración en la Escena.
+- **Destrucción**: *Ventana > Fracturar* parte una malla en trozos de Voronoi (con varios niveles y trozos pequeños alrededor de un punto) y el componente **Destructible** la rompe con golpes fuertes o con `entity:fracture(punto, fuerza)`; escombros que encogen y desaparecen y un máximo de trozos en la escena.
+- **Vehículos completos**: curva de par, caja de cambios automática o manual, diferenciales (4×4 con reparto), barras estabilizadoras, curvas de fricción de los neumáticos, Input Actions, sonido de motor que sigue a las rpm y derrape con humo. **Asistente de vehículo** que monta las ruedas solo buscando su nombre. `vehicleState()`, `setGear`.
+
+### 2D
+- **Sprites** con *Sprite Editor* (cortes por rejilla, filas/columnas o automáticos, pivote, píxeles por unidad, filtro Point), **Sprite Animator**, **Luces 2D**, capas de orden y modo mosaico.
+- **Tilemaps** por capas con **Rule Tiles** (autotiling de bordes y esquinas), **paleta** para pintar en la Escena (pincel, rectángulo, relleno, borrar, gotero) y **Tilemap Collider 2D** sin costuras.
+- **Física 2D** propia (Rigidbody 2D, colliders de caja, círculo, polígono, tilemap y composite, triggers, plataformas de un sentido), eventos `OnCollisionEnter2D`/`OnTriggerEnter2D` y `Physics2D.raycast/overlap*`.
+- **Vista 2D** en el editor y cámaras **ortográficas** en el juego.
+- Plantilla **Plataformas 2D**.
+
+### Iluminación horneada
+- *Ventana > Iluminación*: la luz rebotada se hornea una vez en la CPU (todos los núcleos, BVH, varios rebotes, luces puntuales y focos con sombra, superficies emisivas y cielo) en **volúmenes de sondas** (componente *Light Probe Volume*; si no hay, uno automático). En el juego sustituye al SSGI o a los rayos y casi no cuesta: luz rebotada en **Android** y en PCs sin trazado de rayos, para lo estático y lo que se mueve. Se guarda junto a la escena (`.crbake`) y va con el juego.
+
+### Flujo de trabajo y plataforma
+- **Control de versiones (Git)** en el editor: cambios, diferencias, preparar, commit, push/pull, ramas e historial; inicializa el repositorio con `.gitignore` y Git LFS para los binarios.
+- **Pruebas automáticas**: `Test.case` y `Assert` en `*.test.lua`, pruebas de edición y de Play (esperan frames, segundos o a que se cumpla algo), ventana *Pruebas (Test Runner)* y `CramionEditor.exe --run-tests <proyecto> --junit resultados.xml` para integración continua.
+- **Steam** (Steamworks, sin incluir el SDK): logros, estadísticas, marcadores, Rich Presence, overlay, Steam Cloud, Workshop y salas; se configura en *Configuraciones de compilación* y el juego funciona igual sin Steam.
+- **Recarga en caliente de C++ con estado**: guardar un `.cpp` en Play recompila y cambia la DLL **sin parar el juego**, conservando las propiedades y lo que guarden `onBeforeReload`/`onAfterReload`; un aviso dice si se recargó o el primer error.
+- Avisos flotantes en el editor y herramientas MCP nuevas: `run_tests`, `test_results`, `bake_lighting`, `lighting_state`, `create_vfx`, `vfx_control`, `create_visual_script`, `create_shader_graph`, `create_behavior_tree`.
+- Plantilla **Coches**: un coche con motor, marchas y cámara de persecución en una pista con rampas.
+
+### Notas
+- Linux: la plataforma *Linux (x64)* ya se puede elegir y configurar en *Configuraciones de compilación*, pero el reproductor nativo de Linux aún no existe (los juegos de Windows funcionan con Proton).
+- La iluminación horneada usa sondas (no lightmaps por texel); el generador de UV de lightmap ya existe en el motor y queda para una versión siguiente.
+
+## 2.0.0 (publicada dentro de la 2.1)
 
 ### Streaming de modelos y animaciones
 - **Carga en segundo plano**: los modelos se leen en hilos de fondo (el `.crdata`, sus texturas y sus LODs) y aparecen al terminar, sin congelar el frame al abrir una escena ni al **instanciar en el juego**. Si otro sistema (la física de un Mesh Collider) necesita el mismo modelo, espera a ese hilo en vez de leerlo dos veces.

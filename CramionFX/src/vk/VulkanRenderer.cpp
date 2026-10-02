@@ -499,6 +499,10 @@ void VulkanRenderer::initialize(const EngineInfo& info, NativeWindow window, std
         overlay_pass_.create(device_, kLdrFormat, gbuffer_.depthFormat(), kMaxFramesInFlight);
         // Particulas: sobre la imagen HDR, antes del bloom.
         particle_pass_.create(device_, kHdrFormat, gbuffer_.depthFormat(), kMaxFramesInFlight);
+        // VFX Graph: particulas simuladas en la GPU (igual: sobre la HDR).
+        vfx_pass_.create(device_, kHdrFormat, gbuffer_.depthFormat(), kMaxFramesInFlight);
+        // Sprites y tilemaps 2D: igual, sobre la HDR con el depth de la escena.
+        sprite_pass_.create(device_, kHdrFormat, gbuffer_.depthFormat(), kMaxFramesInFlight);
         // Fuego y humo volumetricos (y el mapa de quemado de la geometria).
         fire_pass_.create(device_, kHdrFormat, kMaxFramesInFlight);
         // Lluvia, nieve y rayos del sistema de ambiente (igual: sobre la HDR).
@@ -528,6 +532,7 @@ void VulkanRenderer::initialize(const EngineInfo& info, NativeWindow window, std
         FullscreenPassDesc gi = ssgi;
         gi.bindings = gi_bindings;
         ssgi_pass_.create(device_, gi);
+        createBakedGi();  // GI horneada (VulkanRendererBaked.cpp)
 
         // Mismos recursos que la GI (camara, profundidad, normales e imagen
         // anterior), pero a resolucion completa.
@@ -848,11 +853,14 @@ void VulkanRenderer::shutdown() {
     ssr_resolve_pass_.destroy();
     ssr_pass_.destroy();
     ssgi_pass_.destroy();
+    destroyBakedGi();
     sky_lut_pass_.destroy();
     composite_pass_.destroy();
     outline_pass_.destroy();
     overlay_pass_.destroy();
     particle_pass_.destroy();
+    vfx_pass_.destroy();
+    sprite_pass_.destroy();
     fire_pass_.destroy();
     precipitation_pass_.destroy();
     bloom_up_pass_.destroy();
@@ -2382,6 +2390,7 @@ void VulkanRenderer::updateGlassDescriptors() {
 
 void VulkanRenderer::updatePostDescriptors() {
     writeDofFocusDescriptors();  // el autoenfoque lee la profundidad del G-buffer
+    updateBakedGiSets();         // GI horneada: profundidad y normales nuevas
     const auto write_texture = [&](const vk::raii::DescriptorSet& set, std::uint32_t binding,
                                    const vk::raii::Sampler& sampler, const VulkanImage& image,
                                    vk::ImageLayout layout) {
@@ -3376,7 +3385,7 @@ void VulkanRenderer::updateUniforms(const scene::Scene& scene, const scene::Came
                                amb * (lights.ambient.intensity * 0.3f);
     }
     light_data.ssao_enabled = post_.ambient_occlusion ? 1 : 0;
-    light_data.gi_enabled = post_.global_illumination ? 1 : 0;
+    light_data.gi_enabled = post_.global_illumination || bakedGiActive() ? 1 : 0;
     // --- Lluvia ---
     if (!isolated()) {
         weather_time_ += frame_delta_seconds_;
@@ -4248,9 +4257,17 @@ void VulkanRenderer::recordCommandBuffer(const vk::raii::CommandBuffer& cmd,
         recordFluidPass(cmd, frame_index);
         markPass(cmd, frame_index, "Liquidos");
     }
+    if (!sprites_.empty() && !capturing_ && !wire_only) {
+        recordSpritePass(cmd, frame_index);
+        markPass(cmd, frame_index, "Sprites 2D");
+    }
     if (!particles_.empty() && !capturing_ && !wire_only) {
         recordParticlePass(cmd, frame_index);
         markPass(cmd, frame_index, "Particulas");
+    }
+    if (vfx_pass_.active() && !capturing_ && !wire_only) {
+        recordVfxPass(cmd, frame_index);
+        markPass(cmd, frame_index, "VFX Graph");
     }
     if (fire_pass_.active() && !capturing_ && !wire_only) {
         recordFirePass(cmd, frame_index);
@@ -5034,7 +5051,9 @@ void VulkanRenderer::recordRtShadowPass(const vk::raii::CommandBuffer& cmd, std:
 
 void VulkanRenderer::recordSsgiPass(const vk::raii::CommandBuffer& cmd,
                                     std::uint32_t frame_index) {
-    const bool ray_traced = rayTracingActive() && !isolated();
+    // GI horneada: las sondas en lugar de los rayos o el SSGI.
+    const bool baked = bakedGiActive();
+    const bool ray_traced = !baked && rayTracingActive() && !isolated();
 
     // Con rayos, la imagen la escribe un compute shader (layout General).
     std::vector<vk::ImageMemoryBarrier2> barriers = {
@@ -5107,6 +5126,9 @@ void VulkanRenderer::recordSsgiPass(const vk::raii::CommandBuffer& cmd,
                                       vk::AccessFlagBits2::eShaderStorageWrite,
                                       vk::PipelineStageFlagBits2::eComputeShader,
                                       vk::AccessFlagBits2::eShaderSampledRead);
+    } else if (baked) {
+        drawFullscreen(cmd, baked_gi_pass_, &baked_gi_sets_[frame_index], gi_raw_, &push);
+        raw_to_sampled.dstStageMask = vk::PipelineStageFlagBits2::eComputeShader;
     } else {
         drawFullscreen(cmd, ssgi_pass_, &ssgi_sets_[frame_index], gi_raw_, &push);
         raw_to_sampled.dstStageMask = vk::PipelineStageFlagBits2::eComputeShader;

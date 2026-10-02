@@ -36,6 +36,20 @@
     <tr><td>&nbsp;&nbsp;&nbsp;Valor<br><code>value</code></td><td>texto</td><td>(vacio)</td><td></td><td></td></tr>
   </tbody>
 </table>
+<h3 id="BehaviorTree">Behavior Tree (IA) <code>BehaviorTree</code></h3>
+<table>
+  <thead><tr><th>Propiedad</th><th>Tipo</th><th>Por defecto</th><th>Valores</th><th>Descripcion</th></tr></thead>
+  <tbody>
+    <tr><td>Behavior Tree<br><code>tree</code></td><td>asset (Behavior Tree)</td><td>(ninguno)</td><td>arrastrar desde el Proyecto</td><td>Asset .crbt: el árbol (compuestos, tareas, decoradores y servicios) y su pizarra</td></tr>
+    <tr><td>Empieza activo<br><code>start_active</code></td><td>si/no</td><td>si</td><td></td><td>Si no, espera a bt:start() desde un script</td></tr>
+    <tr><td>Intervalo (s)<br><code>tick_interval</code></td><td>numero</td><td>0</td><td>0 a 2</td><td>0 = cada frame; más = menos CPU con muchos enemigos</td></tr>
+    <tr><td>Depurar<br><code>debug</code></td><td>si/no</td><td>no</td><td></td><td>Abortos y fallos a la Consola</td></tr>
+    <tr><td colspan="5"><strong class="text-white">Pizarra (lista)</strong> <code>variables</code></td></tr>
+    <tr><td>&nbsp;&nbsp;&nbsp;Nombre<br><code>name</code></td><td>texto</td><td>(vacio)</td><td></td><td></td></tr>
+    <tr><td>&nbsp;&nbsp;&nbsp;Tipo<br><code>type</code></td><td>entero</td><td>2</td><td>0 a 5</td><td></td></tr>
+    <tr><td>&nbsp;&nbsp;&nbsp;Valor<br><code>value</code></td><td>texto</td><td>(vacio)</td><td></td><td></td></tr>
+  </tbody>
+</table>
 <h3 id="CppScript">C++ Script <code>CppScript</code></h3>
 <p>Script de C++ (la clase de CRAMION_SCRIPT en un .cpp de Assets). Corre aislado en otro proceso: si falla, el motor sigue y la Consola dice el archivo y la linea. Ver <a href="scripts-cpp.html">Scripts en C++</a>.</p>
 <table>
@@ -47,6 +61,31 @@
     <tr><td colspan="5"><strong class="text-white">Valores (lista)</strong> <code>values</code></td></tr>
     <tr><td>&nbsp;&nbsp;&nbsp;Nombre<br><code>name</code></td><td>texto</td><td>(vacio)</td><td></td><td></td></tr>
     <tr><td>&nbsp;&nbsp;&nbsp;Valor<br><code>json</code></td><td>texto</td><td>(vacio)</td><td></td><td></td></tr>
+  </tbody>
+</table>
+<h3 id="VisualScript">Visual Script (Blueprints) <code>VisualScript</code></h3>
+<table>
+  <thead><tr><th>Propiedad</th><th>Tipo</th><th>Por defecto</th><th>Valores</th><th>Descripcion</th></tr></thead>
+  <tbody>
+    <tr><td>Visual Script<br><code>graph</code></td><td>texto</td><td>(vacio)</td><td></td><td>Archivo .crgraph en Assets</td></tr>
+    <tr><td>Activo<br><code>enabled</code></td><td>si/no</td><td>si</td><td></td><td></td></tr>
+    <tr><td colspan="5"><strong class="text-white">Variables (lista)</strong> <code>properties</code></td></tr>
+    <tr><td>&nbsp;&nbsp;&nbsp;Nombre<br><code>name</code></td><td>texto</td><td>(vacio)</td><td></td><td></td></tr>
+    <tr><td>&nbsp;&nbsp;&nbsp;Tipo<br><code>type</code></td><td>entero</td><td>0</td><td>0 a 3</td><td></td></tr>
+    <tr><td>&nbsp;&nbsp;&nbsp;Valor<br><code>value</code></td><td>texto</td><td>(vacio)</td><td></td><td></td></tr>
+  </tbody>
+</table>
+<h3 id="Saveable">Guardable (partidas) <code>Saveable</code></h3>
+<table>
+  <thead><tr><th>Propiedad</th><th>Tipo</th><th>Por defecto</th><th>Valores</th><th>Descripcion</th></tr></thead>
+  <tbody>
+    <tr><td>ID de guardado<br><code>save_id</code></td><td>texto</td><td>(vacio)</td><td></td><td>Vacio = el UUID del objeto. Ponlo a mano para que una partida vieja lo encuentre aunque recrees el objeto</td></tr>
+    <tr><td>Posicion, rotacion y escala<br><code>save_transform</code></td><td>si/no</td><td>si</td><td></td><td></td></tr>
+    <tr><td>Activo/inactivo<br><code>save_active</code></td><td>si/no</td><td>si</td><td></td><td></td></tr>
+    <tr><td>Velocidad (Rigidbody)<br><code>save_physics</code></td><td>si/no</td><td>si</td><td></td><td></td></tr>
+    <tr><td>Estado del script<br><code>save_script</code></td><td>si/no</td><td>si</td><td></td><td>Sus propiedades y lo que devuelva OnSave() (al cargar: OnLoad(datos))</td></tr>
+    <tr><td>Transform de los hijos<br><code>save_children</code></td><td>si/no</td><td>no</td><td></td><td></td></tr>
+    <tr><td>Componentes<br><code>components</code></td><td>texto</td><td>(vacio)</td><td></td><td>Nombres separados por comas (Light, AudioSource...) o * para todos</td></tr>
   </tbody>
 </table>
 <h3 id="PrefabInstance">Instancia de prefab <code>PrefabInstance</code></h3>

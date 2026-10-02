@@ -1,0 +1,49 @@
+<p>
+  <strong>Pruebas automáticas</strong> (como el Test Runner de Unity): scripts de prueba con <code>Test.case</code> y
+  <code>Assert</code> que se ejecutan en el editor o desde la línea de comandos (integración continua). Hay pruebas de
+  <strong>edición</strong> (corren de golpe) y de <strong>Play</strong> (corren frame a frame en la escena: pueden esperar
+  segundos o a que pase algo).
+</p>
+
+<h3 id="escribir">Escribir pruebas</h3>
+<p>
+  Son archivos <code>*.test.lua</code> en cualquier carpeta de Assets (o cualquier <code>.lua</code> dentro de
+  <code>Assets/Tests</code>). <em>Ventana &gt; Pruebas &gt; Nueva prueba</em> crea uno de ejemplo.
+</p>
+<pre><code class="language-lua">Test.case("las matematicas funcionan", function()
+    Assert.equal(2 + 2, 4)
+    Assert.approx(math.sqrt(2), 1.41421, 0.0001)
+end)
+
+Test.case("el jugador cae al suelo", {play = true, timeout = 10}, function()
+    local jugador = Scene.find("Jugador")
+    Assert.notNil(jugador, "no hay jugador")
+    Test.waitSeconds(2)
+    Assert.less(jugador.position.y, 1.5)
+end)
+
+Test.case("la puerta se abre", {play = true}, function()
+    local puerta = Scene.find("Puerta")
+    puerta:sendMessage("Abrir")
+    Test.waitUntil(function() return puerta.rotation.y > 80 end, 5, "la puerta no se abrio")
+end)</code></pre>
+<p>
+  Esperas: <code>Test.wait(frames)</code>, <code>Test.waitSeconds(s)</code>, <code>Test.waitUntil(funcion, limite)</code>.
+  Comprobaciones: <code>Assert.isTrue/isFalse/equal/notEqual/approx/isNil/notNil/greater/less/atLeast/atMost/contains/throws/noError/fail</code>.
+  Una prueba falla en la primera comprobación que no se cumple (con su mensaje) o al pasar su tiempo máximo.
+</p>
+
+<h3 id="runner">Test Runner</h3>
+<p>
+  <em>Ventana &gt; Pruebas (Test Runner)</em>: <strong>Ejecutar todas</strong>, <em>Solo edición</em> o <em>Solo Play</em>.
+  Entra en Play en la escena abierta, ejecuta y vuelve a Edición. Los resultados salen agrupados por archivo (✔ bien, ✖ mal,
+  – saltada) con el mensaje, el tiempo y las comprobaciones.
+</p>
+
+<h3 id="cli">Línea de comandos (CI)</h3>
+<pre><code class="language-text">CramionEditor.exe --run-tests "C:\Juegos\MiJuego" --junit resultados.xml</code></pre>
+<p>
+  Abre el proyecto (con su escena inicial), ejecuta todas las pruebas, escribe cada resultado en la consola y, si se pide, un
+  informe <strong>JUnit</strong> (lo entienden GitHub Actions, Jenkins, GitLab...) y cierra. Código de salida: 0 todas bien,
+  1 alguna falló, 2 no hay pruebas, 3 no se pudo abrir el proyecto.
+</p>

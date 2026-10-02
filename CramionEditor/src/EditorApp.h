@@ -46,6 +46,9 @@
 #include <CramionCore/ecs/FloatingOrigin.h>
 #include <CramionCore/xr/XrRig.h>
 #include <CramionCore/fluid/Fluid.h>
+#include <CramionCore/replay/Replay.h>
+#include <CramionCore/twod/System2D.h>
+#include <CramionCore/vfx/VisualEffect.h>
 #include <CramionCore/modeling/EditableMesh.h>
 #include <CramionCore/scripting/CppScripts.h>
 #include <CramionCore/ai/StateMachine.h>
@@ -85,6 +88,15 @@ bool xrPlayPreference();
 void setXrPlayPreference(bool on);
 
 class RendererGraphicsHost;
+struct PlatformState;  // EditorPlatform.cpp: Steam, Git, pruebas automaticas y avisos
+struct GameplayEditorState;  // EditorGameplay.cpp: localizacion, partidas y dialogos
+struct EffectsEditorState;   // EditorEffects.cpp: VFX Graph, 2D y repeticiones
+struct GraphEditorState;     // EditorGraphs.cpp: Shader Graph y Visual Scripting
+struct BtEditorState;        // EditorBehaviorTree.cpp
+struct TwoDEditorState;      // Editor2D.cpp: tilesets, paleta y sprites
+struct LightingEditorState;  // EditorLighting.cpp: horneado de la luz rebotada
+struct MotionEditorState;    // EditorMotion.cpp: bases de Motion Matching
+struct PhysicsToolsState;    // EditorDestruction.cpp: fracturar y asistente de vehiculo
 
 // std::find sobre Uuid: la STL de MSVC intenta vectorizar la comparacion de
 // 16 bytes y con clang falla una static_assert; find_if la evita.
@@ -99,6 +111,17 @@ inline std::vector<Uuid>::iterator findUuid(std::vector<Uuid>& list, const Uuid&
 inline constexpr const char* kImagePayload = "CRAMION_IMAGE";
 inline constexpr const char* kScriptPayload = "CRAMION_SCRIPT";  // ruta (utf8) de un .lua
 inline constexpr const char* kAudioPayload = "CRAMION_AUDIO";    // ruta (utf8) de un audio
+
+// Archivos de la 2.1 que se ven como los shaders en el Proyecto (extension en minusculas).
+inline bool isGraphFileExtension(const std::string& ext) {
+    return ext == ".crshadergraph" || ext == ".crgraph" || ext == ".crtileset";
+}
+inline const char* graphFileLabel(const std::string& ext) {
+    if (ext == ".crshadergraph") return "Shader Graph";
+    if (ext == ".crgraph") return "Visual Script";
+    if (ext == ".crtileset") return "Tileset 2D";
+    return "Shader";
+}
 
 class EditorApp {
 public:
@@ -1605,6 +1628,81 @@ private:
     // Liquidos (fluid::FluidSystem, EditorFluid.cpp): en Play y con "Simular
     // en el editor".
     fluid::FluidSystem fluids_;
+    // --- VFX Graph, 2D y repeticiones (EditorEffects.cpp) ---
+    vfx::VfxSystem vfx_;
+    twod::System2D twod_;
+    replay::ReplaySystem replay_;
+    std::shared_ptr<EffectsEditorState> effects_editor_;
+    EffectsEditorState& effectsEditor();
+    void setupEffects();              // al abrir un proyecto
+    void updateEffects(float delta_seconds);  // cada frame, tras la fisica
+    void effectsEnterPlay();
+    void effectsExitPlay();
+    Uuid createVfxAsset(const std::filesystem::path& folder, int preset);
+    void openVfxEditor(const Uuid& uuid);
+    void drawVfxEditor();
+    void drawReplayWindow();
+    void drawEffectsWindows();
+    void drawEffectsWindowMenu();
+    void drawEffectsCreateMenu(const std::filesystem::path& folder);  // Proyecto > Crear
+    // Proyecto > Crear: los assets nuevos de la 2.1 (VFX, grafos, 2D, pruebas...).
+    void drawCreateMenuExtras(const std::filesystem::path& folder);
+    // Abre un .crshadergraph / .crgraph / .crtileset en su editor (false si no es de esos).
+    bool openGraphFile(const std::filesystem::path& file);
+    // --- Shader Graph y Visual Scripting (EditorGraphs.cpp) ---
+    std::shared_ptr<GraphEditorState> graph_editors_;
+    GraphEditorState& graphEditors();
+    void openShaderGraphEditor(const std::filesystem::path& file);
+    void saveShaderGraphEditor();
+    void drawShaderGraphEditor();
+    void openVisualScriptEditor(const std::filesystem::path& file);
+    void saveVisualScriptEditor();
+    void drawVisualScriptEditor();
+    void drawGraphEditors();  // todos los de grafos y 2D (cada frame)
+    // --- Behavior Trees (EditorBehaviorTree.cpp) ---
+    std::shared_ptr<BtEditorState> bt_editor_;
+    BtEditorState& btEditor();
+    Uuid createBehaviorTreeAsset(const std::filesystem::path& folder, bool example);
+    void openBehaviorTreeEditor(const Uuid& uuid);
+    void saveBehaviorTreeEditor();
+    void drawBehaviorTreeEditor();
+    // --- 2D (Editor2D.cpp) ---
+    std::shared_ptr<TwoDEditorState> twod_editor_;
+    TwoDEditorState& twodEditor();
+    void openTilesetEditor(const std::filesystem::path& file);
+    void draw2DCreateMenu(const std::filesystem::path& folder);
+    void draw2DWindows();
+    void draw2DWindowMenu();
+    // Vista de Escena: pintar tiles (true = se queda con el raton), la vista
+    // 2D (ortografica en el plano XY) y elegir sprites con un clic.
+    bool draw2DTileTool();
+    bool handle2DCamera();
+    bool pick2DAt(float x, float y);
+    void draw2DViewToggle();
+    // --- Iluminacion horneada (EditorLighting.cpp) ---
+    std::shared_ptr<LightingEditorState> lighting_editor_;
+    LightingEditorState& lightingEditor();
+    void loadSceneLighting();  // <escena>.crbake al abrir la escena
+    void startLightingBake();
+    void drawLightingWindow();
+    void configureLightingBake(int rays, int bounces, float spacing);  // < 0 = no cambiar
+    std::string lightingStateJson();
+    // MCP de la 2.1 (EditorMcp21.cpp): pruebas, horneado, VFX, grafos y arboles.
+    std::string mcpTools21(const std::string& name, const std::string& args_json, std::string& error);
+    // --- Motion Matching (EditorMotion.cpp) ---
+    std::shared_ptr<MotionEditorState> motion_editor_;
+    MotionEditorState& motionEditor();
+    Uuid createMotionDatabaseAsset(const std::filesystem::path& folder);
+    void openMotionDatabaseEditor(const Uuid& uuid);
+    void drawMotionDatabaseEditor();
+    void drawMotionMatchingDebug();
+    // --- Fracturar y vehiculos (EditorDestruction.cpp) ---
+    std::shared_ptr<PhysicsToolsState> physics_tools_;
+    PhysicsToolsState& physicsTools();
+    void drawFractureWindow();
+    void drawVehicleWizard();
+    void drawPhysicsToolWindows();  // y Motion Matching e Iluminacion
+    void drawPhysicsToolMenu();
     bool fluid_preview_ = false;  // el liquido de la vista previa sigue ahi
     void updateFluids(float delta_seconds);
     // 0 grifo de agua, 1 bloque de agua, 2 chorro de miel, 3 chorro de lava,
@@ -1748,6 +1846,52 @@ private:
     std::string template_name_;
     std::string template_description_;
     std::string template_error_;
+
+    // --- Partidas, localizacion y dialogos (EditorGameplay.cpp) ---
+    std::shared_ptr<GameplayEditorState> gameplay_editor_;
+    GameplayEditorState& gameplayEditor();
+    void loadLocalization();
+    void saveLocalization();
+    void drawLocalizationWindow();
+    void drawSavesWindow();
+    void createDialogueAsset(const std::filesystem::path& folder, bool example);
+    void openDialogueEditor(const std::filesystem::path& file);
+    void saveDialogueEditor();
+    void drawDialogueWindow();
+    void drawGameplayWindows();
+    void drawGameplayWindowMenu();
+
+    // --- Plataforma (EditorPlatform.cpp, EditorGit.cpp, EditorTests.cpp) ---
+    // Steam (logros, marcadores... en Play), panel de Git, pruebas
+    // automaticas (Test Runner, --run-tests) y avisos flotantes.
+    std::shared_ptr<PlatformState> platform_;
+    PlatformState& platform();
+    void updatePlatform(float delta_seconds);  // cada frame, antes de la interfaz
+    void drawPlatformWindows();                // Git, Pruebas y avisos
+    void drawPlatformWindowMenu();             // entradas de Ventana
+    void drawPlatformBuildSettings(BuildConfig& config, bool& changed);  // Steam y Linux en Configuraciones de compilacion
+    // Archivos extra de la exportacion (steam_api64.dll, steam_appid.txt): de -> a.
+    std::vector<std::pair<std::filesystem::path, std::filesystem::path>> platformExportFiles(const BuildConfig& config,
+                                                                                             const std::filesystem::path& target);
+    void platformEnterPlay();                  // Steam al dar Play
+    void drawGitWindow();
+    void drawTestRunnerWindow();
+    void drawToasts();
+    void updateTestRunner(float delta_seconds);
+    void startTestRun(int mode);  // 0 todas, 1 edicion, 2 Play, 3 las que fallaron
+    void stopTestRun();
+    bool testRunActive() const;
+    std::string testResultsJson() const;
+    void gitRefresh();
+public:
+    // Un aviso flotante abajo a la derecha (kind: 0 info, 1 bien, 2 aviso, 3 error).
+    void pushToast(const std::string& title, const std::string& text = {}, int kind = 0);
+    // CramionEditor.exe --run-tests <proyecto> [--junit archivo]: abre el
+    // proyecto, ejecuta todas las pruebas y cierra (codigo de salida 0 = todas bien).
+    void startTestRunFromCli(const std::filesystem::path& project, const std::filesystem::path& junit);
+    int exitCode() const { return exit_code_; }
+private:
+    int exit_code_ = 0;
 
     // Paneles visibles y acciones pendientes.
     bool show_hierarchy_ = true;

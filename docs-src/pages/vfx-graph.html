@@ -1,0 +1,55 @@
+<p>
+  El <strong>VFX Graph</strong> hace efectos de partículas que se simulan <strong>enteros en la GPU</strong> (como el VFX Graph
+  de Unity o Niagara de Unreal): de cientos a cientos de miles de partículas sin coste en la CPU. Un efecto es un asset
+  <code>.crvfx</code> con cuatro <em>contextos</em> apilados con bloques; un objeto lo usa con el componente
+  <strong>Visual Effect</strong>. Los sistemas de partículas de siempre (<code>ParticleSystem</code>) siguen igual.
+</p>
+
+<h3 id="crear">Crear un efecto</h3>
+<ul>
+  <li><em>Proyecto &gt; clic derecho &gt; Crear &gt; Efecto visual (VFX Graph)</em> y una plantilla: Chispas, Fuego, Humo,
+    Chispas que rebotan, Explosión (con el evento <code>Explode</code>), Magia, Luciérnagas, Nieve, Lluvia o Estela.</li>
+  <li>Se abre su editor. <strong>Crear objeto con este efecto</strong> pone uno delante de la cámara y lo selecciona: la vista
+    previa corre en la Escena mientras está seleccionado, sin dar Play.</li>
+  <li>Doble clic en un <code>.crvfx</code> lo abre; los cambios se ven al momento y se guardan solos al soltar el control.</li>
+</ul>
+
+<h3 id="contextos">Contextos y bloques</h3>
+<table>
+  <thead><tr><th>Contexto</th><th>Qué hace</th><th>Bloques</th></tr></thead>
+  <tbody>
+    <tr><td>Spawn</td><td>Cuántas nacen (en la CPU: solo números)</td><td>Caudal constante, Ráfaga, Ráfaga periódica, Caudal por distancia (estelas), Al recibir un evento</td></tr>
+    <tr><td>Initialize</td><td>Cómo nacen</td><td>Posición en esfera, caja, cono, círculo, línea o la superficie de un modelo; velocidad al azar o desde la forma; vida; tamaño; color; giro; cuadro del flipbook; heredar la velocidad del emisor</td></tr>
+    <tr><td>Update</td><td>Qué les pasa cada frame</td><td>Gravedad, viento, rozamiento, turbulencia (curl noise), atractor, vórtice, colisión con la escena (buffer de profundidad), con un plano o una esfera, matar en caja, velocidad máxima, conformar a una esfera</td></tr>
+    <tr><td>Output</td><td>Cómo se ven</td><td>Color en la vida (degradado), tamaño en la vida (curva), color por velocidad; orientación (de cara a la cámara, estiradas por la velocidad, horizontales, verticales), mezcla aditiva/alfa/premultiplicada, partículas suaves, textura y flipbook, iluminadas (humo)</td></tr>
+  </tbody>
+</table>
+<p>
+  Cada bloque se activa o desactiva con su casilla y se reordena con <code>^</code>. Los de Update se aplican en orden.
+  <strong>Colisión con la escena</strong> choca contra lo que ve la cámara (sin colliders): las chispas rebotan en el suelo y
+  la lluvia muere al tocarlo.
+</p>
+
+<h3 id="parametros">Parámetros expuestos</h3>
+<p>
+  A la izquierda del editor se crean <em>parámetros</em> (Float, Vector3, Color, Bool). El botón <code>·</code> de cualquier
+  campo lo <strong>ata</strong> a un parámetro del mismo tipo. Los parámetros salen en el Inspector de cada objeto
+  (<em>Parámetros</em>: nombre y valor) y los cambian los scripts:
+</p>
+<pre><code class="language-cpp">entity().setEffectFloat("Rate", 400.0f);
+entity().setEffectColor("Color", Vec3{1, 0.4f, 0.1f}, 1.0f);
+entity().sendEffectEvent("Explode");   // bloque Spawn "Al recibir un evento"
+entity().stopEffect(false);             // deja de emitir (true = borra las que hay)</code></pre>
+
+<h3 id="componente">Componente Visual Effect</h3>
+<ul>
+  <li><strong>Efecto</strong>: el <code>.crvfx</code> (arrástralo desde el Proyecto).</li>
+  <li><strong>Reproducir al empezar</strong>, <strong>Semilla</strong> (0 = distinta cada vez), <strong>Velocidad</strong> y
+    <strong>Vista previa en el editor</strong>.</li>
+  <li><strong>Parámetros</strong>: valores propios de este objeto para los parámetros expuestos.</li>
+</ul>
+<div class="note">
+  Rendimiento: cada partícula ocupa 64 bytes de la GPU; la <em>Capacidad</em> del efecto es el máximo de vivas. Un único
+  compute shader interpreta los bloques de todos los efectos (no hay que compilar nada por efecto) y el dibujo es indirecto.
+  Funciona igual en el juego exportado.
+</div>

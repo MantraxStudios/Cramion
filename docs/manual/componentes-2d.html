@@ -1,0 +1,399 @@
+<!doctype html>
+<html lang="es" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>2D · Documentación de Cramion</title>
+  <meta name="description" content="Sprite Renderer, Sprite Animator, Luz 2D, Tilemap y fisica 2D.">
+  <meta name="theme-color" content="#09090b">
+  <link rel="icon" href="../img/icon.png">
+  <script>
+    // Tema antes de pintar (sin parpadeo). Oscuro por defecto.
+    try { const t = localStorage.getItem("cramion-theme"); if (t) document.documentElement.dataset.theme = t; } catch (e) {}
+  </script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/base16/tomorrow-night.min.css">
+  <link rel="stylesheet" href="manual.css">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/lua.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/glsl.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/json.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/bash.min.js"></script>
+  <script src="search.js"></script>
+</head>
+<body data-group="Componentes">
+
+  <header class="site-header">
+    <div class="header-inner">
+      <button id="menu-btn" class="icon-btn menu-btn" aria-label="Abrir el menú"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h16M4 12h16M4 18h16"/></svg></button>
+      <a href="index.html" class="brand"><img src="../img/icon.png" alt=""><span>Cramion</span><span class="tag">Docs</span></a>
+      <nav class="main-nav" aria-label="Secciones">
+        <a href="index.html" data-nav="index">Documentación</a>
+        <a href="editor-interfaz.html" data-nav="El editor">Editor</a>
+        <a href="componentes.html" data-nav="Componentes">Componentes</a>
+        <a href="cpp-script.html" data-nav="API de C++">API de C++</a>
+        <a href="ejemplo-girar.html" data-nav="Ejemplos">Ejemplos</a>
+      </nav>
+      <div class="header-right">
+        <button id="search-open" class="search-trigger" aria-label="Buscar en la documentación">
+          <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg><span>Buscar en la documentación...</span><kbd>Ctrl K</kbd>
+        </button>
+        <a href="https://discord.gg/zG7rSsUGEz" target="_blank" rel="noopener" class="icon-btn hide-mobile" aria-label="Discord" title="Discord"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M8.5 16.5c-2 .6-3.6 0-3.6 0C3.7 13 4 9 5.4 6.6 6.8 5.6 8.5 5.3 8.5 5.3l.6 1.2c1.9-.4 3.9-.4 5.8 0l.6-1.2s1.7.3 3.1 1.3C20 9 20.3 13 19.1 16.5c0 0-1.6.6-3.6 0l-.8-1.3"/><circle cx="9.5" cy="12" r="1"/><circle cx="14.5" cy="12" r="1"/></svg></a>
+        <button id="theme" class="icon-btn" aria-label="Cambiar entre tema claro y oscuro" title="Tema">
+          <span class="i-sun"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg></span><span class="i-moon"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5Z"/></svg></span>
+        </button>
+        <a href="https://paypal.me/evan2025" target="_blank" rel="noopener" class="btn btn-donate btn-sm hide-mobile"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M19 14c1.5-1.5 3-3.2 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.8 0-3 .5-4.5 2-1.5-1.5-2.7-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4 3 5.5l7 7Z"/></svg>Donar</a>
+        <a href="https://paypal.me/evan2025" target="_blank" rel="noopener" class="icon-btn only-mobile" aria-label="Donar con PayPal" title="Donar"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M19 14c1.5-1.5 3-3.2 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.8 0-3 .5-4.5 2-1.5-1.5-2.7-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4 3 5.5l7 7Z"/></svg></a>
+      </div>
+    </div>
+  </header>
+  <div class="overlay" id="overlay"></div>
+
+  <div id="cmd" class="cmd-backdrop" hidden>
+    <div class="cmd" role="dialog" aria-modal="true" aria-label="Buscar">
+      <div class="cmd-input"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg><input id="search" type="search" autocomplete="off" spellcheck="false"
+        placeholder="Buscar funciones, componentes, páginas..."><kbd>Esc</kbd></div>
+      <div id="results" class="cmd-list"></div>
+      <div class="cmd-foot"><span><kbd>↑</kbd><kbd>↓</kbd> moverse</span><span><kbd>Enter</kbd> abrir</span><span><kbd>Esc</kbd> cerrar</span></div>
+    </div>
+  </div>
+
+  <div class="layout">
+    <aside id="side" class="sidebar" aria-label="Menú del manual">
+      <nav>
+        <div class="sheet-head"><a href="index.html" class="brand"><img src="../img/icon.png" alt=""><span>Cramion</span></a><button id="menu-close" class="icon-btn" aria-label="Cerrar el menú"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12"/></svg></button></div>
+        <div class="group"><p class="group-title"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m3 11 9-8 9 8"/><path d="M5 10v10h14V10"/></svg>Inicio</p><a href="index.html">Introducción</a><a href="../index.html">Web de Cramion</a></div>
+        <div class="group"><p class="group-title"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5a2 2 0 0 1 2-2h13v16H6a2 2 0 0 0-2 2V5Z"/><path d="M4 19a2 2 0 0 1 2-2h13"/></svg>Primeros pasos</p><a href="primer-script.html">Tu primer script</a><a href="ciclo-de-vida.html">Ciclo de vida</a><a href="propiedades.html">Propiedades</a><a href="recarga.html">Recarga en caliente</a><a href="prefabs.html">Prefabs</a><a href="mcp.html">Conectar una IA (MCP)</a><a href="licencia.html">Licencia</a></div>
+        <div class="group"><p class="group-title"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m8 8-4 4 4 4"/><path d="m16 8 4 4-4 4"/><path d="m14 4-4 16"/></svg>API de C++</p><a href="scripts-cpp.html">Scripts en C++ y CVars</a><a href="cpp-script.html">Script y propiedades</a><a href="cpp-entity.html">Entity</a><a href="cpp-matematicas.html">Mathf, Vec3, Quat y Color</a><a href="cpp-scene.html">Scene</a><a href="cpp-input.html">Input</a><a href="cpp-physics.html">Physics</a><a href="cpp-time.html">Time</a><a href="cpp-debug.html">Debug</a><a href="cpp-lua.html">Lua (puente)</a><a href="cpp-cvars.html">CVars</a><a href="cpp-mesh.html">Mesh (mallas por código)</a><a href="cpp-statemachine.html">StateMachine</a><a href="cpp-assert.html">Assert</a><a href="cpp-audio.html">Audio</a><a href="cpp-behaviortree.html">BehaviorTree</a><a href="cpp-charactercontroller.html">CharacterController</a><a href="cpp-datapack.html">DataPack</a><a href="cpp-dialogue.html">Dialogue</a><a href="cpp-environment.html">Environment</a><a href="cpp-fire.html">Fire</a><a href="cpp-fluid.html">Fluid</a><a href="cpp-game.html">Game</a><a href="cpp-graphics.html">Graphics</a><a href="cpp-http.html">Http</a><a href="cpp-json.html">Json</a><a href="cpp-navigation.html">Navigation</a><a href="cpp-network.html">Network</a><a href="cpp-physics2d.html">Physics2D</a><a href="cpp-prefs.html">Prefs</a><a href="cpp-random.html">Random</a><a href="cpp-replay.html">Replay</a><a href="cpp-save.html">Save</a><a href="cpp-screen.html">Screen</a><a href="cpp-steam.html">Steam</a><a href="cpp-test.html">Test</a><a href="cpp-text.html">Text</a><a href="cpp-voxel.html">Voxel</a><a href="cpp-weather.html">Weather</a><a href="cpp-xr.html">XR</a></div>
+        <div class="group"><p class="group-title"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M9 9v11"/></svg>El editor</p><a href="editor-interfaz.html">Interfaz y pestañas</a><a href="editor-tema.html">Tema e Inspector</a><a href="editor-escena.html">Vista Escena y gizmos</a><a href="editor-jerarquia.html">Jerarquía e Inspector</a><a href="editor-proyecto.html">Proyecto e importación</a><a href="editor-play.html">Play, deshacer y escenas</a><a href="editor-herramientas.html">Herramientas de mundo</a><a href="modelado.html">Modelado poligonal</a><a href="2d.html">2D</a><a href="mundo-procedural.html">Mundo procedural</a><a href="ambiente.html">Ambiente y clima</a><a href="agua.html">Agua</a><a href="fuego.html">Fuego</a><a href="vfx-graph.html">VFX Graph</a><a href="liquidos.html">Líquidos</a><a href="destruccion.html">Destrucción</a><a href="vehiculos.html">Vehículos</a><a href="motion-matching.html">Motion Matching</a><a href="replays.html">Repeticiones</a><a href="editor-ventanas.html">Ventanas de herramientas</a><a href="maquinas-de-estados.html">Máquinas de estados</a><a href="visual-scripting.html">Visual Scripting</a><a href="behavior-trees.html">Behavior Trees</a><a href="dialogos.html">Diálogos</a><a href="localizacion.html">Localización</a><a href="guardado.html">Partidas guardadas</a><a href="materiales.html">Materiales</a><a href="shader-graph.html">Shader Graph</a><a href="render-textures.html">Render Textures</a><a href="render.html">Render y rendimiento</a><a href="iluminacion-horneada.html">Iluminación horneada</a><a href="exportar.html">Exportar y compilación</a><a href="steam.html">Steam</a><a href="linux.html">Linux</a><a href="git.html">Control de versiones (Git)</a><a href="pruebas.html">Pruebas automáticas</a><a href="datapacks.html">DataPacks (bundles)</a><a href="plantillas.html">Plantillas</a><a href="atajos.html">Atajos de teclado</a><a href="actualizaciones.html">Actualizaciones</a></div>
+        <div class="group"><p class="group-title"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m12 3 8 4.5v9L12 21l-8-4.5v-9L12 3Z"/><path d="m4 7.5 8 4.5 8-4.5M12 12v9"/></svg>Componentes</p><a href="componentes.html">Todos los componentes</a><a href="componentes-basicos.html">Transform y renderizado</a><a href="componentes-entorno.html">Entorno</a><a href="componentes-fisica.html">Física</a><a href="componentes-efectos.html">Partículas y depuración</a><a href="componentes-animacion.html">Animación</a><a href="componentes-audio.html">Audio</a><a href="componentes-cinematicas.html">Cámaras y cinemáticas</a><a href="componentes-navegacion.html">Navegación</a><a href="componentes-ui.html">Interfaz (UI)</a><a href="componentes-scripting.html">Scripts y prefabs</a><a href="componentes-2d.html" class="active" aria-current="page">2D</a><a href="componentes-iluminacion.html">Iluminación horneada</a><a href="componentes-vr.html">Realidad virtual</a></div>
+        <div class="group"><p class="group-title"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a9 9 0 1 0 0 18c1.1 0 1.5-.8 1.5-1.5 0-.9-.7-1.2-.7-2 0-.8.6-1.5 1.5-1.5H16a5 5 0 0 0 5-5c0-4.4-4-8-9-8Z"/><circle cx="7.5" cy="11" r="1"/><circle cx="10" cy="7" r="1"/><circle cx="15" cy="7.5" r="1"/></svg>Gráficos</p><a href="shaders.html">Shaders propios</a></div>
+        <div class="group"><p class="group-title"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v4M12 17v4M3 12h4M17 12h4M6 6l2.5 2.5M15.5 15.5 18 18M6 18l2.5-2.5M15.5 8.5 18 6"/></svg>Ejemplos</p><a href="ejemplo-girar.html">Girar un objeto</a><a href="ejemplo-camara.html">Cámara que sigue al jugador</a><a href="ejemplo-jugador.html">Jugador con física</a><a href="ejemplo-disparo.html">Disparo con raycast</a><a href="ejemplo-monedas.html">Monedas y puntuación</a><a href="ejemplo-spawner.html">Generador de enemigos</a><a href="ejemplo-vehiculo.html">Conducir un vehículo</a><a href="ejemplo-menu.html">Menú, opciones y récord</a><a href="ejemplo-animacion.html">Animación de un personaje</a><a href="ejemplo-comunicacion.html">Scripts que se hablan</a><a href="ejemplo-ia.html">IA: patrullar y perseguir</a><a href="ejemplo-terreno.html">Terreno procedural con colisión</a><a href="ejemplo-efectos.html">Varios materiales y efectos</a><a href="ejemplo-olas.html">Olas: cambiar la malla cada frame</a></div>
+        <div class="group"><p class="group-title"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m8 8-4 4 4 4"/><path d="m16 8 4 4-4 4"/><path d="m14 4-4 16"/></svg>Referencia de Lua (obsoleta)</p><a href="vec3.html">Vec3</a><a href="quat.html">Quat (rotaciones)</a><a href="mathf.html">Mathf</a><a href="random.html">Random</a><a href="entity.html">Entity</a><a href="scene.html">Scene</a><a href="input.html">Input</a><a href="input-actions.html">Input Actions</a><a href="realidad-virtual.html">Realidad virtual (XR)</a><a href="time.html">Time</a><a href="physics.html">Physics</a><a href="navegacion.html">Navegación</a><a href="mallas.html">Mallas por código</a><a href="voxel.html">Mundo de bloques</a><a href="audio.html">Audio</a><a href="ui.html">Interfaz (UI)</a><a href="esqueletos.html">Esqueletos: IK, ragdoll y phys bones</a><a href="graphics.html">Graphics</a><a href="red.html">Network (multijugador)</a><a href="http.html">Http y Json</a><a href="prefs.html">Prefs y Game</a><a href="debug.html">Debug</a></div>
+        
+      <div class="donate-card side-donate">
+        <div class="t"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M19 14c1.5-1.5 3-3.2 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.8 0-3 .5-4.5 2-1.5-1.5-2.7-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4 3 5.5l7 7Z"/></svg>Apoya Cramion</div>
+        <p>El motor es gratis y lo seguirá siendo. Una donación ayuda a seguir añadiendo cosas.</p>
+        <a href="https://paypal.me/evan2025" target="_blank" rel="noopener" class="btn btn-donate btn-sm btn-block">Donar con PayPal</a>
+      </div>
+      </nav>
+    </aside>
+
+    <main class="doc">
+      <div class="doc-inner">
+        <nav class="crumbs" aria-label="Ruta"><a href="index.html">Documentación</a><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m9 6 6 6-6 6"/></svg><span>Componentes</span><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m9 6 6 6-6 6"/></svg><span class="here">2D</span></nav>
+        <h1>2D</h1>
+        <p class="lede">Sprite Renderer, Sprite Animator, Luz 2D, Tilemap y fisica 2D.</p>
+        <details class="toc-inline"><summary>En esta página <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg></summary><nav class="onpage"></nav></details>
+        <div class="body">
+<p>Sprites, animacion por fotogramas, luces 2D, tilemaps y fisica 2D (ver la pagina 2D del editor). Referencia completa generada desde el motor.</p>
+<h3 id="SpriteRenderer">Sprite Renderer <code>SpriteRenderer</code></h3>
+<table>
+  <thead><tr><th>Propiedad</th><th>Tipo</th><th>Por defecto</th><th>Valores</th><th>Descripcion</th></tr></thead>
+  <tbody>
+    <tr><td>Sprite<br><code>sprite</code></td><td>texto</td><td>(vacio)</td><td></td><td>Imagen de Assets (ruta relativa). Arrastrala desde el Proyecto</td></tr>
+    <tr><td>Corte<br><code>frame</code></td><td>entero</td><td>0</td><td>0 a 4095</td><td>Indice del corte de la hoja (modo Multiple, ver el Sprite Editor)</td></tr>
+    <tr><td>Color<br><code>color</code></td><td>Color</td><td>(1; 1; 1)</td><td></td><td>Tinte (multiplica la imagen)</td></tr>
+    <tr><td>Opacidad<br><code>opacity</code></td><td>numero</td><td>1</td><td>0 a 1</td><td></td></tr>
+    <tr><td>Voltear X<br><code>flip_x</code></td><td>si/no</td><td>no</td><td></td><td></td></tr>
+    <tr><td>Voltear Y<br><code>flip_y</code></td><td>si/no</td><td>no</td><td></td><td></td></tr>
+    <tr><td>Capa de orden<br><code>sorting_layer</code></td><td>texto</td><td>&quot;Default&quot;</td><td></td><td>Sorting Layer: las de atras se dibujan primero</td></tr>
+    <tr><td>Orden en la capa<br><code>order_in_layer</code></td><td>entero</td><td>0</td><td>-32768 a 32767</td><td>Dentro de la capa: mas = delante</td></tr>
+    <tr><td>Iluminado<br><code>lit</code></td><td>si/no</td><td>no</td><td></td><td>Le afectan las Light2D (si no, se ve tal cual)</td></tr>
+    <tr><td>Corte alfa<br><code>alpha_cutoff</code></td><td>numero</td><td>0</td><td>0 a 1</td><td>0 = mezcla suave; &gt; 0 descarta los pixeles con menos alfa</td></tr>
+    <tr><td>Modo de dibujo<br><code>draw_mode</code></td><td>opcion</td><td>Simple</td><td>Simple, Mosaico</td><td>Mosaico: repite el corte hasta llenar el tamano</td></tr>
+    <tr><td>Tamano<br><code>size</code></td><td>Vec2</td><td>(1; 1)</td><td></td><td>Mosaico: ancho y alto en unidades</td></tr>
+  </tbody>
+</table>
+<h3 id="SpriteAnimator">Sprite Animator <code>SpriteAnimator</code></h3>
+<table>
+  <thead><tr><th>Propiedad</th><th>Tipo</th><th>Por defecto</th><th>Valores</th><th>Descripcion</th></tr></thead>
+  <tbody>
+    <tr><td colspan="5"><strong class="text-white">Clips (lista)</strong> <code>clips</code> — Animaciones por fotogramas de la hoja del Sprite Renderer</td></tr>
+    <tr><td>&nbsp;&nbsp;&nbsp;Nombre<br><code>name</code></td><td>texto</td><td>&quot;Clip&quot;</td><td></td><td></td></tr>
+    <tr><td>&nbsp;&nbsp;&nbsp;Fotogramas<br><code>frames</code></td><td>texto</td><td>&quot;0&quot;</td><td></td><td>Cortes de la hoja: &quot;0-5, 8&quot;</td></tr>
+    <tr><td>&nbsp;&nbsp;&nbsp;Fotogramas por segundo<br><code>fps</code></td><td>numero</td><td>12</td><td>0,1 a 120</td><td></td></tr>
+    <tr><td>&nbsp;&nbsp;&nbsp;Bucle<br><code>loop</code></td><td>si/no</td><td>si</td><td></td><td></td></tr>
+    <tr><td>Clip inicial<br><code>default_clip</code></td><td>texto</td><td>(vacio)</td><td></td><td>El que suena al empezar (vacio = el primero)</td></tr>
+    <tr><td>Velocidad<br><code>speed</code></td><td>numero</td><td>1</td><td>0 a 10</td><td></td></tr>
+    <tr><td>Reproduciendo<br><code>playing</code></td><td>si/no</td><td>si</td><td></td><td></td></tr>
+    <tr><td>Vista previa en el editor<br><code>preview_in_editor</code></td><td>si/no</td><td>no</td><td></td><td>Animar tambien fuera de Play</td></tr>
+  </tbody>
+</table>
+<h3 id="Light2D">Luz 2D <code>Light2D</code></h3>
+<table>
+  <thead><tr><th>Propiedad</th><th>Tipo</th><th>Por defecto</th><th>Valores</th><th>Descripcion</th></tr></thead>
+  <tbody>
+    <tr><td>Tipo<br><code>type</code></td><td>opcion</td><td>Puntual</td><td>Puntual, Global</td><td>Global: la luz ambiente de todos los sprites iluminados</td></tr>
+    <tr><td>Color<br><code>color</code></td><td>Color</td><td>(1; 1; 1)</td><td></td><td></td></tr>
+    <tr><td>Intensidad<br><code>intensity</code></td><td>numero</td><td>1</td><td>0 a 20</td><td></td></tr>
+    <tr><td>Radio<br><code>radius</code></td><td>numero</td><td>5</td><td>0,01 a 1000</td><td>Unidades</td></tr>
+    <tr><td>Caida<br><code>falloff</code></td><td>numero</td><td>1,5</td><td>0,05 a 8</td><td>Exponente: mas = borde mas suave</td></tr>
+  </tbody>
+</table>
+<h3 id="Tilemap">Tilemap <code>Tilemap</code></h3>
+<table>
+  <thead><tr><th>Propiedad</th><th>Tipo</th><th>Por defecto</th><th>Valores</th><th>Descripcion</th></tr></thead>
+  <tbody>
+    <tr><td>Tileset<br><code>tileset</code></td><td>texto</td><td>(vacio)</td><td></td><td>Archivo .crtileset de Assets (la imagen cortada en celdas y sus Rule Tiles)</td></tr>
+    <tr><td>Tamano de celda<br><code>cell_size</code></td><td>Vec2</td><td>(1; 1)</td><td></td><td>Unidades por celda</td></tr>
+    <tr><td>Capa de orden<br><code>sorting_layer</code></td><td>texto</td><td>&quot;Default&quot;</td><td></td><td></td></tr>
+    <tr><td>Orden en la capa<br><code>order_in_layer</code></td><td>entero</td><td>0</td><td>-32768 a 32767</td><td></td></tr>
+    <tr><td>Iluminado<br><code>lit</code></td><td>si/no</td><td>no</td><td></td><td>Le afectan las Light2D</td></tr>
+    <tr><td colspan="5"><strong class="text-white">Capas (lista)</strong> <code>layers</code> — Fondo, suelo, detalles... (la paleta pinta en la elegida)</td></tr>
+    <tr><td>&nbsp;&nbsp;&nbsp;Nombre<br><code>name</code></td><td>texto</td><td>&quot;Capa&quot;</td><td></td><td></td></tr>
+    <tr><td>&nbsp;&nbsp;&nbsp;Visible<br><code>visible</code></td><td>si/no</td><td>si</td><td></td><td></td></tr>
+    <tr><td>&nbsp;&nbsp;&nbsp;Colision<br><code>collision</code></td><td>si/no</td><td>si</td><td></td><td>Sus celdas cuentan para el Tilemap Collider 2D</td></tr>
+    <tr><td>&nbsp;&nbsp;&nbsp;Orden<br><code>order</code></td><td>entero</td><td>0</td><td>-1000 a 1000</td><td>Se suma al orden en la capa del Tilemap</td></tr>
+    <tr><td>&nbsp;&nbsp;&nbsp;Tinte<br><code>tint</code></td><td>Color</td><td>(1; 1; 1)</td><td></td><td></td></tr>
+    <tr><td>&nbsp;&nbsp;&nbsp;Opacidad<br><code>opacity</code></td><td>numero</td><td>1</td><td>0 a 1</td><td></td></tr>
+    <tr><td>&nbsp;&nbsp;&nbsp;Celdas<br><code>cells</code></td><td>texto</td><td>&quot;v1;&quot;</td><td></td><td></td></tr>
+  </tbody>
+</table>
+<h3 id="TilemapCollider2D">Tilemap Collider 2D <code>TilemapCollider2D</code></h3>
+<table>
+  <thead><tr><th>Propiedad</th><th>Tipo</th><th>Por defecto</th><th>Valores</th><th>Descripcion</th></tr></thead>
+  <tbody>
+    <tr><td>Es trigger<br><code>is_trigger</code></td><td>si/no</td><td>no</td><td></td><td></td></tr>
+    <tr><td>Friccion<br><code>friction</code></td><td>numero</td><td>0,4</td><td>0 a 2</td><td></td></tr>
+    <tr><td>Rebote<br><code>bounciness</code></td><td>numero</td><td>0</td><td>0 a 1</td><td></td></tr>
+    <tr><td>Un sentido<br><code>one_way</code></td><td>si/no</td><td>no</td><td></td><td>Plataformas que se atraviesan saltando desde abajo</td></tr>
+    <tr><td>Usado por el Composite<br><code>used_by_composite</code></td><td>si/no</td><td>no</td><td></td><td>Lo junta el Composite Collider 2D de la entidad</td></tr>
+  </tbody>
+</table>
+<h3 id="Rigidbody2D">Rigidbody 2D <code>Rigidbody2D</code></h3>
+<table>
+  <thead><tr><th>Propiedad</th><th>Tipo</th><th>Por defecto</th><th>Valores</th><th>Descripcion</th></tr></thead>
+  <tbody>
+    <tr><td>Tipo<br><code>type</code></td><td>opcion</td><td>Dinámico</td><td>Dinámico, Cinemático, Estático</td><td>Dinamico: lo mueve la fisica. Cinematico: su Transform o un script</td></tr>
+    <tr><td>Masa<br><code>mass</code></td><td>numero</td><td>1</td><td>0,001 a 100000</td><td></td></tr>
+    <tr><td>Rozamiento lineal<br><code>linear_drag</code></td><td>numero</td><td>0</td><td>0 a 100</td><td></td></tr>
+    <tr><td>Rozamiento angular<br><code>angular_drag</code></td><td>numero</td><td>0,05</td><td>0 a 100</td><td></td></tr>
+    <tr><td>Escala de gravedad<br><code>gravity_scale</code></td><td>numero</td><td>1</td><td>-10 a 10</td><td></td></tr>
+    <tr><td>Congelar giro<br><code>freeze_rotation</code></td><td>si/no</td><td>no</td><td></td><td></td></tr>
+    <tr><td>Congelar X<br><code>freeze_x</code></td><td>si/no</td><td>no</td><td></td><td></td></tr>
+    <tr><td>Congelar Y<br><code>freeze_y</code></td><td>si/no</td><td>no</td><td></td><td></td></tr>
+    <tr><td>Velocidad inicial<br><code>initial_velocity</code></td><td>Vec2</td><td>(0; 0)</td><td></td><td></td></tr>
+    <tr><td>Interpolar<br><code>interpolate</code></td><td>si/no</td><td>si</td><td></td><td>Movimiento suave entre pasos de fisica</td></tr>
+    <tr><td>Puede dormir<br><code>allow_sleep</code></td><td>si/no</td><td>si</td><td></td><td></td></tr>
+  </tbody>
+</table>
+<h3 id="BoxCollider2D">Box Collider 2D <code>BoxCollider2D</code></h3>
+<table>
+  <thead><tr><th>Propiedad</th><th>Tipo</th><th>Por defecto</th><th>Valores</th><th>Descripcion</th></tr></thead>
+  <tbody>
+    <tr><td>Tamaño<br><code>size</code></td><td>Vec2</td><td>(1; 1)</td><td></td><td></td></tr>
+    <tr><td>Desplazamiento<br><code>offset</code></td><td>Vec2</td><td>(0; 0)</td><td></td><td></td></tr>
+    <tr><td>Es trigger<br><code>is_trigger</code></td><td>si/no</td><td>no</td><td></td><td>Detecta (OnTriggerEnter2D) pero no choca</td></tr>
+    <tr><td>Fricción<br><code>friction</code></td><td>numero</td><td>0,4</td><td>0 a 2</td><td></td></tr>
+    <tr><td>Rebote<br><code>bounciness</code></td><td>numero</td><td>0</td><td>0 a 1</td><td></td></tr>
+    <tr><td>Un sentido<br><code>one_way</code></td><td>si/no</td><td>no</td><td></td><td>Plataforma que se atraviesa saltando desde abajo</td></tr>
+    <tr><td>Usado por el Composite<br><code>used_by_composite</code></td><td>si/no</td><td>no</td><td></td><td></td></tr>
+  </tbody>
+</table>
+<h3 id="CircleCollider2D">Circle Collider 2D <code>CircleCollider2D</code></h3>
+<table>
+  <thead><tr><th>Propiedad</th><th>Tipo</th><th>Por defecto</th><th>Valores</th><th>Descripcion</th></tr></thead>
+  <tbody>
+    <tr><td>Radio<br><code>radius</code></td><td>numero</td><td>0,5</td><td>0,001 a 1000</td><td></td></tr>
+    <tr><td>Desplazamiento<br><code>offset</code></td><td>Vec2</td><td>(0; 0)</td><td></td><td></td></tr>
+    <tr><td>Es trigger<br><code>is_trigger</code></td><td>si/no</td><td>no</td><td></td><td>Detecta (OnTriggerEnter2D) pero no choca</td></tr>
+    <tr><td>Fricción<br><code>friction</code></td><td>numero</td><td>0,4</td><td>0 a 2</td><td></td></tr>
+    <tr><td>Rebote<br><code>bounciness</code></td><td>numero</td><td>0</td><td>0 a 1</td><td></td></tr>
+    <tr><td>Un sentido<br><code>one_way</code></td><td>si/no</td><td>no</td><td></td><td>Plataforma que se atraviesa saltando desde abajo</td></tr>
+  </tbody>
+</table>
+<h3 id="PolygonCollider2D">Polygon Collider 2D <code>PolygonCollider2D</code></h3>
+<table>
+  <thead><tr><th>Propiedad</th><th>Tipo</th><th>Por defecto</th><th>Valores</th><th>Descripcion</th></tr></thead>
+  <tbody>
+    <tr><td colspan="5"><strong class="text-white">Puntos (lista)</strong> <code>points</code> — Convexo (si no, su envolvente convexa); hasta 16</td></tr>
+    <tr><td>&nbsp;&nbsp;&nbsp;Punto<br><code>p</code></td><td>Vec2</td><td>(-0,5; -0,5)</td><td></td><td></td></tr>
+    <tr><td>Desplazamiento<br><code>offset</code></td><td>Vec2</td><td>(0; 0)</td><td></td><td></td></tr>
+    <tr><td>Es trigger<br><code>is_trigger</code></td><td>si/no</td><td>no</td><td></td><td>Detecta (OnTriggerEnter2D) pero no choca</td></tr>
+    <tr><td>Fricción<br><code>friction</code></td><td>numero</td><td>0,4</td><td>0 a 2</td><td></td></tr>
+    <tr><td>Rebote<br><code>bounciness</code></td><td>numero</td><td>0</td><td>0 a 1</td><td></td></tr>
+    <tr><td>Un sentido<br><code>one_way</code></td><td>si/no</td><td>no</td><td></td><td>Plataforma que se atraviesa saltando desde abajo</td></tr>
+  </tbody>
+</table>
+<h3 id="CompositeCollider2D">Composite Collider 2D <code>CompositeCollider2D</code></h3>
+<table>
+  <thead><tr><th>Propiedad</th><th>Tipo</th><th>Por defecto</th><th>Valores</th><th>Descripcion</th></tr></thead>
+  <tbody>
+    <tr><td>Es trigger<br><code>is_trigger</code></td><td>si/no</td><td>no</td><td></td><td>Detecta (OnTriggerEnter2D) pero no choca</td></tr>
+    <tr><td>Fricción<br><code>friction</code></td><td>numero</td><td>0,4</td><td>0 a 2</td><td></td></tr>
+    <tr><td>Rebote<br><code>bounciness</code></td><td>numero</td><td>0</td><td>0 a 1</td><td></td></tr>
+    <tr><td>Un sentido<br><code>one_way</code></td><td>si/no</td><td>no</td><td></td><td>Plataforma que se atraviesa saltando desde abajo</td></tr>
+  </tbody>
+</table>
+        </div>
+        <nav class="pager" aria-label="Paginación"><a href="componentes-scripting.html"><span>← Anterior</span><b>Scripts y prefabs</b></a><a class="next" href="componentes-iluminacion.html"><span>Siguiente →</span><b>Iluminación horneada</b></a></nav>
+        <div class="help"><span>¿Algo no queda claro o falta algo? Pregunta en el
+          <a href="https://discord.gg/zG7rSsUGEz" target="_blank" rel="noopener">Discord</a>.</span>
+          <a href="https://paypal.me/evan2025" target="_blank" rel="noopener" class="btn btn-outline btn-sm"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M19 14c1.5-1.5 3-3.2 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.8 0-3 .5-4.5 2-1.5-1.5-2.7-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4 3 5.5l7 7Z"/></svg>Apoyar el proyecto</a></div>
+      </div>
+    </main>
+    <aside class="toc-col" aria-label="En esta página">
+      <div>
+        <p class="toc-title">En esta página</p>
+        <nav class="onpage"></nav>
+      </div>
+      
+      <div class="donate-card">
+        <div class="t"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M19 14c1.5-1.5 3-3.2 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.8 0-3 .5-4.5 2-1.5-1.5-2.7-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4 3 5.5l7 7Z"/></svg>Apoya Cramion</div>
+        <p>El motor es gratis y lo seguirá siendo. Una donación ayuda a seguir añadiendo cosas.</p>
+        <a href="https://paypal.me/evan2025" target="_blank" rel="noopener" class="btn btn-donate btn-sm btn-block">Donar con PayPal</a>
+      </div>
+    </aside>
+  </div>
+
+  <footer class="site-footer">
+    <div class="footer-inner">
+      <span>Cramion Engine · manual de la 2.1. Gratis para hacer y vender tus juegos.</span>
+      <nav>
+        <a href="../index.html">Web</a>
+        <a href="licencia.html">Licencia</a>
+        <a href="https://discord.gg/zG7rSsUGEz" target="_blank" rel="noopener">Discord</a>
+        <a href="https://paypal.me/evan2025" target="_blank" rel="noopener">Donar con PayPal</a>
+      </nav>
+    </div>
+  </footer>
+
+  <script>
+    // Solo el codigo con lenguaje (los arboles de carpetas y la salida quedan tal cual).
+    hljs.configure({ cssSelector: 'pre code[class*="language-"]' });
+    hljs.highlightAll();
+    const ICON_COPY = '<svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>', ICON_CHECK = '<svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>';
+
+    // Tema claro / oscuro.
+    const root = document.documentElement;
+    const syncTheme = () => {
+      const dark = root.dataset.theme === "dark";
+      document.querySelector("#theme .i-sun").style.display = dark ? "inline-flex" : "none";
+      document.querySelector("#theme .i-moon").style.display = dark ? "none" : "inline-flex";
+    };
+    syncTheme();
+    document.getElementById("theme").addEventListener("click", () => {
+      root.dataset.theme = root.dataset.theme === "dark" ? "light" : "dark";
+      try { localStorage.setItem("cramion-theme", root.dataset.theme); } catch (e) {}
+      syncTheme();
+    });
+
+    // Seccion de la cabecera marcada.
+    const group = document.body.dataset.group;
+    document.querySelectorAll(".main-nav a").forEach(a => a.classList.toggle("on", a.dataset.nav === group));
+
+    // Menu lateral (panel deslizante en el movil).
+    const side = document.getElementById("side");
+    const setMenu = open => document.body.classList.toggle("menu-open", open);
+    document.getElementById("menu-btn").addEventListener("click", () => setMenu(true));
+    document.getElementById("menu-close").addEventListener("click", () => setMenu(false));
+    document.getElementById("overlay").addEventListener("click", () => setMenu(false));
+    const current = side.querySelector("a.active");
+    if (current) side.scrollTop = current.offsetTop - side.clientHeight / 2;
+
+    // Ancla de cada seccion y boton de copiar en el codigo.
+    document.querySelectorAll(".doc h3[id]").forEach(h => {
+      const a = document.createElement("a");
+      a.className = "anchor";
+      a.href = "#" + h.id;
+      a.setAttribute("aria-label", "Enlace a esta sección");
+      a.textContent = "#";
+      h.appendChild(a);
+    });
+    document.querySelectorAll(".doc pre").forEach(pre => {
+      const b = document.createElement("button");
+      b.className = "copy";
+      b.setAttribute("aria-label", "Copiar el código");
+      b.innerHTML = ICON_COPY;
+      b.addEventListener("click", async () => {
+        try {
+          await navigator.clipboard.writeText(pre.querySelector("code")?.innerText ?? pre.innerText);
+          b.innerHTML = ICON_CHECK;
+        } catch (e) { b.textContent = "!"; }
+        setTimeout(() => (b.innerHTML = ICON_COPY), 1400);
+      });
+      pre.appendChild(b);
+    });
+
+    // Tablas anchas: se desplazan dentro de su marco.
+    document.querySelectorAll(".doc table").forEach(t => {
+      const w = document.createElement("div");
+      w.className = "table-wrap";
+      t.replaceWith(w);
+      w.appendChild(t);
+    });
+
+    // "En esta pagina": los h3, con la seccion visible marcada (columna y desplegable).
+    const heads = [...document.querySelectorAll(".doc h3[id]")];
+    const lists = [...document.querySelectorAll(".onpage")];
+    if (heads.length < 2) {
+      document.querySelectorAll(".toc-col > div, .toc-inline").forEach(el => el.remove());
+    } else {
+      lists.forEach(list => list.innerHTML = heads.map(h => `<a href="#${h.id}">${h.firstChild.textContent}</a>`).join(""));
+      const links = [...document.querySelectorAll(".onpage a")];
+      const obs = new IntersectionObserver(entries => {
+        for (const e of entries) {
+          if (e.isIntersecting) links.forEach(a => a.classList.toggle("active", a.getAttribute("href") === "#" + e.target.id));
+        }
+      }, { rootMargin: "-80px 0px -70% 0px" });
+      heads.forEach(h => obs.observe(h));
+      document.querySelectorAll(".toc-inline a").forEach(a => a.addEventListener("click", () => a.closest("details").open = false));
+    }
+
+    // Buscador (Command): titulos, secciones y nombres de la API.
+    const cmd = document.getElementById("cmd");
+    const input = document.getElementById("search");
+    const box = document.getElementById("results");
+    const norm = s => s.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+    const esc = s => s.replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+    const ICON_PAGE = '<svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8Z"/><path d="M14 3v5h5"/></svg>', ICON_HASH = '<svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9h16M4 15h16M10 3 8 21M16 3l-2 18"/></svg>', ICON_CODE = '<svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m8 8-4 4 4 4"/><path d="m16 8 4 4-4 4"/><path d="m14 4-4 16"/></svg>';
+    let hits = [], sel = 0;
+    const suggested = window.CRAMION_SEARCH.filter(e => e.d).slice(0, 8);
+    const render = () => {
+      const q = input.value.trim();
+      const list = q ? hits : suggested;
+      if (!list.length) { box.innerHTML = '<p class="none">Sin resultados para "' + esc(q) + '".</p>'; return; }
+      box.innerHTML = (q ? "" : '<p class="heading">Páginas</p>') + list.map((h, i) => `
+        <a href="${h.u}" class="${i === sel ? "sel" : ""}">
+          ${h.c ? ICON_CODE : h.d ? ICON_PAGE : ICON_HASH}
+          <span><span class="t${h.c ? " code" : ""}">${esc(h.t)}</span>
+          <span class="g">${esc(h.g)}</span></span>
+        </a>`).join("");
+      box.querySelector("a.sel")?.scrollIntoView({ block: "nearest" });
+    };
+    const openSearch = () => { cmd.hidden = false; document.body.style.overflow = "hidden"; sel = 0; render(); setTimeout(() => input.focus(), 0); };
+    const closeSearch = () => { cmd.hidden = true; document.body.style.overflow = ""; input.value = ""; hits = []; };
+    document.getElementById("search-open").addEventListener("click", openSearch);
+    cmd.addEventListener("click", ev => { if (ev.target === cmd) closeSearch(); });
+    input.addEventListener("input", () => {
+      const q = norm(input.value.trim());
+      sel = 0;
+      if (!q) { hits = []; render(); return; }
+      const words = q.split(/\s+/);
+      hits = window.CRAMION_SEARCH
+        .map(e => {
+          const t = norm(e.t), all = t + " " + norm(e.g) + " " + norm(e.d || "");
+          if (!words.every(w => all.includes(w))) return null;
+          const score = (t.startsWith(q) ? 0 : t.includes(q) ? 1 : 2) + (e.c ? 0.5 : 0) - (e.d ? 0.3 : 0);
+          return { e, score };
+        })
+        .filter(Boolean).sort((a, b) => a.score - b.score).slice(0, 20).map(x => x.e);
+      render();
+    });
+    input.addEventListener("keydown", ev => {
+      const list = input.value.trim() ? hits : suggested;
+      if (ev.key === "ArrowDown") { sel = Math.min(sel + 1, list.length - 1); render(); ev.preventDefault(); }
+      if (ev.key === "ArrowUp") { sel = Math.max(sel - 1, 0); render(); ev.preventDefault(); }
+      if (ev.key === "Enter" && list[sel]) { location.href = list[sel].u; closeSearch(); }
+    });
+    document.addEventListener("keydown", ev => {
+      const typing = /INPUT|TEXTAREA/.test(document.activeElement.tagName);
+      if ((ev.key === "k" && (ev.ctrlKey || ev.metaKey)) || (ev.key === "/" && !typing)) { ev.preventDefault(); cmd.hidden ? openSearch() : closeSearch(); }
+      if (ev.key === "Escape") { if (!cmd.hidden) closeSearch(); setMenu(false); }
+    });
+  </script>
+</body>
+</html>

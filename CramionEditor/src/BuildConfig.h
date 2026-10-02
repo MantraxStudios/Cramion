@@ -21,12 +21,24 @@
 //                      proyecto (ProjectSettings/TouchInterface.json).
 
 #include <filesystem>
+#include <cstdint>
 #include <string>
 #include <vector>
 
 namespace cramion::editor {
 
-enum class BuildPlatform : int { Windows = 0, Android = 1 };
+// Linux: se compila en Linux o WSL (CMakePresets "linux-release"); el editor
+// solo guarda la configuracion y explica como hacerlo.
+enum class BuildPlatform : int { Windows = 0, Android = 1, Linux = 2 };
+
+// Steam (platform/Steam.h): el juego carga steam_api64.dll si esta.
+struct SteamBuildSettings {
+    bool enabled = false;
+    std::uint32_t app_id = 480;   // 480 = Spacewar (la de pruebas de Valve)
+    bool ship_appid_file = true;  // steam_appid.txt junto al .exe (solo para probar fuera de Steam)
+    bool restart_if_necessary = false;  // relanzar desde Steam si se abre a mano
+    std::string dll;              // ruta de steam_api64.dll del Steamworks SDK (se copia al exportar)
+};
 
 struct AndroidBuildSettings {
     std::string package;          // vacio = com.cramion.<juego>
@@ -69,6 +81,7 @@ struct BuildConfig {
     bool vr = false;            // realidad virtual (OpenXR) si hay casco; solo Windows
     BuildPlatform platform = BuildPlatform::Windows;
     AndroidBuildSettings android;
+    SteamBuildSettings steam;
 };
 
 struct BuildConfigs {

@@ -1,0 +1,37 @@
+<p>
+  <strong>Partidas guardadas</strong> en ranuras (<code>"slot1"</code>, <code>"autosave"</code>...), como el Save Game de
+  Unreal. Se guardan los objetos con el componente <strong>Saveable</strong>, los objetos creados y destruidos durante el
+  juego, los valores sueltos y las variables de los diálogos. El archivo (<code>.crsave</code>, JSON versionado, comprimido si
+  se pide) se escribe en un hilo aparte: el juego no se para.
+</p>
+
+<h3 id="saveable">Componente Saveable</h3>
+<ul>
+  <li><strong>Id de guardado</strong>: vacío = el UUID del objeto. Ponlo a mano si el objeto se puede borrar y volver a crear
+    en el editor y quieres que las partidas viejas lo sigan encontrando.</li>
+  <li><strong>Transform</strong>, <strong>Activo</strong>, <strong>Física</strong> (velocidades) y <strong>Script</strong> (sus
+    propiedades y lo que devuelva <code>OnSave()</code>; al cargar se llama a <code>OnLoad(datos)</code>).</li>
+  <li><strong>Componentes</strong>: los que se guardan enteros, por nombre (<code>"Light, AudioSource"</code>) o
+    <code>*</code> para todos.</li>
+</ul>
+
+<h3 id="api">Guardar y cargar</h3>
+<pre><code class="language-cpp">Save::save("slot1", "Antes del jefe");   // etiqueta opcional
+Save::load("slot1");                      // si es de otra escena, la abre primero
+Save::setValue("oro", 120);
+int oro = Save::getValue("oro", 0);
+Save::setAutosave(120.0f, "autosave");    // cada 2 minutos</code></pre>
+<p>
+  <code>Save.list()</code> da cada ranura con su escena, fecha, tiempo jugado y tamaño (para un menú de cargar partida);
+  <code>Save.onLoaded(funcion)</code> avisa al terminar de cargar.
+</p>
+
+<h3 id="donde">Dónde se guardan</h3>
+<ul>
+  <li>En el editor: <code>Library/Saves</code> del proyecto. <em>Ventana &gt; Partidas guardadas</em> las lista, guarda en Play
+    y las carga o borra.</li>
+  <li>En el juego exportado: <code>%APPDATA%/&lt;juego&gt;/saves</code> (en Windows).</li>
+</ul>
+<div class="note">
+  Con Steam (Configuraciones de compilación), <code>Steam.cloudWrite</code> sube una partida a Steam Cloud.
+</div>

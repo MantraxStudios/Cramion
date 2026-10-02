@@ -1,0 +1,23 @@
+<p>
+  <strong>Linux (x64)</strong>: <em>todavía no se puede exportar a Linux.</em> En <em>Configuraciones de compilación</em> ya se
+  puede elegir la plataforma <strong>Linux (x64)</strong> y guardar sus ajustes (nombre, icono, Steam), pero el reproductor de
+  Linux aún no existe: el motor usa ventanas, entrada y archivos de Windows, y falta la versión para X11/Wayland.
+</p>
+
+<h3 id="estado">Estado</h3>
+<ul>
+  <li>Hecho: la plataforma en las configuraciones de compilación, sus ajustes guardados en el proyecto y los archivos de Steam
+    preparados para un depósito de Linux.</li>
+  <li>Falta: la ventana y la entrada en Linux, la superficie de Vulkan para X11, el <code>main</code> del reproductor y su
+    configuración de CMake. Al pulsar <em>Exportar</em> con Linux elegido, el editor lo avisa y no hace nada.</li>
+</ul>
+
+<h3 id="mientras">Mientras tanto</h3>
+<p>
+  Los juegos exportados para Windows funcionan en Linux y en Steam Deck con <strong>Proton</strong> (Steam) o Wine con DXVK/VKD3D:
+  el render es Vulkan, así que no hay traducción de gráficos. En Steam, marca el juego como compatible con Proton.
+</p>
+<div class="note">
+  Cuando llegue el reproductor nativo, lo que solo existe en Windows (scripts de C++ con su proceso aislado, realidad virtual,
+  DLSS/FSR 3) se desactivará en Linux; Lua, la física, el audio, la red y el render funcionarán igual.
+</div>

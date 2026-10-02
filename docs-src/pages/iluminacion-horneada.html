@@ -1,0 +1,45 @@
+<p>
+  La <strong>iluminación horneada</strong> calcula una vez la luz que rebota entre las superficies (en la CPU, con todos los
+  núcleos) y la guarda en <strong>volúmenes de sondas</strong> (irradiance volumes, como los Light Probe Groups de Unity o el
+  Volumetric Lightmap de Unreal). En el juego cuesta casi nada: sustituye a la luz rebotada en tiempo real (SSGI o trazado de
+  rayos), así que es la forma de tener luz rebotada en <strong>Android</strong> y en PCs <strong>sin trazado de rayos</strong>.
+</p>
+
+<h3 id="generar">Generar</h3>
+<ol>
+  <li>Marca como <strong>Static</strong> (Inspector) los objetos que no se mueven y deben aportar luz rebotada. Si no hay ninguno
+    marcado, cuentan todas las mallas que no caen con física. El terreno cuenta siempre.</li>
+  <li>Opcional: pon uno o varios <strong>Light Probe Volume</strong> (componente o el botón de la ventana): una caja centrada en
+    el objeto llena de sondas cada <em>Separación</em> metros. Más juntas = más detalle (y más tiempo). Si no hay ninguno, se
+    usa uno automático que cubre la escena.</li>
+  <li><em>Ventana &gt; Iluminación (horneado)</em> &gt; <strong>Generar iluminación</strong>. Corre en otro hilo con barra de
+    progreso; se puede cancelar.</li>
+</ol>
+<p>
+  El resultado se guarda junto a la escena (<code>Nivel1.crbake</code>), se carga solo al abrirla y va con el juego
+  exportado. <em>Borrar la iluminación horneada</em> vuelve al tiempo real.
+</p>
+
+<h3 id="ajustes">Ajustes</h3>
+<table>
+  <thead><tr><th>Ajuste</th><th>Qué hace</th></tr></thead>
+  <tbody>
+    <tr><td>Modo</td><td><em>Tiempo real</em> (SSGI / rayos) u <em>Horneada</em> (las sondas). Se guarda con la escena.</td></tr>
+    <tr><td>Rayos por sonda</td><td>Más = menos ruido</td></tr>
+    <tr><td>Rebotes</td><td>Rebotes además del primero</td></tr>
+    <tr><td>Intensidad del cielo</td><td>Cuánto ilumina el cielo a las superficies (y lo que rebota de ellas)</td></tr>
+    <tr><td>Separación automática</td><td>De las sondas del volumen automático</td></tr>
+  </tbody>
+</table>
+
+<h3 id="como">Cómo funciona</h3>
+<p>
+  Cada sonda guarda la luz rebotada que le llega (armónicos esféricos L2) y cuánto cielo ve en cada dirección. En el render,
+  un pase a media resolución interpola las 8 sondas de alrededor de cada píxel (con pesos que evitan fugas a través de las
+  paredes) y escribe la misma imagen de luz rebotada que leería la iluminación. Sirve igual para lo estático y para lo que se
+  mueve (personajes, objetos con física). La luz directa (sol, luces, sombras) sigue siendo en tiempo real.
+</p>
+<div class="note">
+  Vuelve a generar si cambias la escena, la hora del sol o las luces: lo horneado no se entera. Las sondas que caen dentro de
+  la geometría se descartan solas.
+</div>

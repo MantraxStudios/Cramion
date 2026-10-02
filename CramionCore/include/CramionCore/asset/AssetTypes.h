@@ -34,6 +34,11 @@ enum class AssetType : std::uint32_t {
     Prefab = 7,
     RenderTexture = 8,
     StateMachine = 9,  // .crfsm maquina de estados de IA (ai/StateMachine.h)
+    Dialogue = 30,     // .crdialog dialogo ramificado (gameplay/Dialogue.h)
+    BehaviorTree = 20,  // .crbt arbol de comportamiento de IA (ai/BehaviorTree.h)
+    MotionDatabase = 40,  // .crmmdb base de datos de Motion Matching (anim/MotionMatching.h)
+    VisualEffect = 50,    // .crvfx efecto de particulas en la GPU (vfx/VisualEffect.h)
+    Fracture = 60,        // .crfracture trozos precalculados de un objeto (physics/Fracture.h)
 };
 
 inline const char* assetTypeName(AssetType type) {
@@ -47,6 +52,11 @@ inline const char* assetTypeName(AssetType type) {
         case AssetType::Prefab: return "Prefab";
         case AssetType::RenderTexture: return "Render Texture";
         case AssetType::StateMachine: return "Maquina de estados";
+        case AssetType::Dialogue: return "Dialogo";
+        case AssetType::BehaviorTree: return "Behavior Tree";
+        case AssetType::MotionDatabase: return "Motion Matching";
+        case AssetType::VisualEffect: return "Efecto visual (VFX)";
+        case AssetType::Fracture: return "Fractura";
         default: return "Desconocido";
     }
 }

@@ -288,6 +288,60 @@ CRAMION_EXPORT int cramion_message(void* instance, const char* method, const cha
     return 1;
 }
 
+// Recarga en caliente: las propiedades actuales y lo que devuelva
+// onBeforeReload(). Devuelve el tamano que hace falta (como cramion_describe);
+// si no llega, el proceso vuelve a pedirlo con la misma instancia y se
+// reutiliza el texto (onBeforeReload no se llama dos veces).
+CRAMION_EXPORT int cramion_snapshot(void* instance, char* out, int size, char* error, int error_size) {
+    static void* last_instance = nullptr;
+    static std::string last_json;
+    auto* s = static_cast<Script*>(instance);
+    if (last_instance != instance) {
+        last_json.clear();
+        try {
+            Value props = Value::object();
+            for (const detail::PropertyBase* p : ScriptAccess::properties(*s)) props.set(p->name(), p->current());
+            Value state = s->onBeforeReload();
+            last_json = Value{{"props", props}, {"state", state}}.toJson();
+            detail::flush();
+        } catch (const std::exception& e) {
+            detail::copyError(error, error_size, std::string("excepcion en onBeforeReload: ") + e.what());
+            last_json = "{}";
+        } catch (...) {
+            detail::copyError(error, error_size, "excepcion desconocida en onBeforeReload");
+            last_json = "{}";
+        }
+        last_instance = instance;
+    }
+    const int needed = static_cast<int>(last_json.size() + 1);
+    if (out != nullptr && size >= needed) {
+        std::memcpy(out, last_json.data(), last_json.size());
+        out[last_json.size()] = 0;
+        last_instance = nullptr;  // entregado
+    }
+    return needed;
+}
+
+CRAMION_EXPORT int cramion_restore(void* instance, const char* snapshot_json, char* error, int error_size) {
+    auto* s = static_cast<Script*>(instance);
+    try {
+        const Value snap = Value::parse(snapshot_json != nullptr ? snapshot_json : "{}");
+        const Value& props = snap["props"];
+        for (detail::PropertyBase* p : ScriptAccess::properties(*s)) {
+            const Value v = props[p->name()];
+            if (!v.isNil()) p->load(v);
+        }
+        s->onAfterReload(snap["state"]);
+        detail::flush();
+        return 0;
+    } catch (const std::exception& e) {
+        detail::copyError(error, error_size, std::string("excepcion en onAfterReload: ") + e.what());
+    } catch (...) {
+        detail::copyError(error, error_size, "excepcion desconocida en onAfterReload");
+    }
+    return 1;
+}
+
 CRAMION_EXPORT void cramion_destroy(void* instance) {
     auto& live = detail::liveScripts();
     live.erase(std::remove(live.begin(), live.end(), static_cast<Script*>(instance)), live.end());

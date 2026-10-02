@@ -159,7 +159,10 @@ public:
     void start(ecs::World& world);
     void stop();
     bool running() const;
-    // Otra DLL (recien compilada) en Play: se reinicia el proceso y los scripts.
+    // Otra DLL (recien compilada) en Play: recarga en caliente. Cada script
+    // guarda sus Property<T> y lo que devuelva onBeforeReload(), se cambia el
+    // proceso y la DLL, y las instancias nuevas lo recuperan (onAfterReload)
+    // sin volver a llamar a awake()/start() (script.cpp.HotReloadKeepState).
     void reload();
     void fixedUpdate(ecs::World& world, float step, int steps);
     void update(ecs::World& world, float delta_seconds);
@@ -180,6 +183,7 @@ public:
         int instances = 0;
         int faulted = 0;
         int restarts = 0;
+        int reloads = 0;  // recargas en caliente en esta sesion de Play
         std::uint64_t rpcs = 0;  // mensajes con el proceso en el ultimo frame
         std::uint64_t calls = 0;  // llamadas al motor en el ultimo frame (con las del lote)
         double frame_ms = 0.0;    // tiempo de los scripts en el ultimo frame

@@ -30,6 +30,8 @@ enum class Op : std::uint32_t {
     Describe = 6,  // -> Done: str JSON con las clases, su archivo y sus propiedades
     Callback = 7,  // u64 id, str JSON con los argumentos -> Done (un callback que el script dio a la API)
     Message = 8,   // u32 id, str metodo, str JSON del valor -> Done (botones de UI: on_click "OnJugar"...)
+    Snapshot = 9,  // u32 id -> Done: str JSON {"props":{...},"state":...} (recarga en caliente)
+    Restore = 10,  // u32 id, str JSON de Snapshot -> Done (propiedades + onAfterReload(state))
     Rpc = 100,       // proceso -> motor: u32 rpc, datos
     RpcReply = 101,  // motor -> proceso: la respuesta
     Done = 200,      // proceso -> motor: u32 estado, str error

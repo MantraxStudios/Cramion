@@ -61,6 +61,10 @@ cvar::CVar<std::string> g_compiler("script.cpp.Compiler", "",
                                    "Ruta de clang++.exe o cl.exe (vacio = el incluido con el motor, o clang/Visual Studio del sistema)",
                                    cvar::Saved);
 cvar::CVar<bool> g_enabled("script.cpp.Enabled", true, "Ejecutar los scripts de C++ en Play", cvar::Saved);
+cvar::CVar<bool> g_hot_keep_state("script.cpp.HotReloadKeepState", true,
+                                   "Recarga en caliente (guardar un .cpp en Play): conservar propiedades y estado (onBeforeReload/"
+                                   "onAfterReload) sin volver a llamar a awake/start",
+                                   cvar::Saved);
 cvar::CVar<int> g_max_restarts("script.cpp.MaxRestarts", 20,
                                "Veces que se rearranca el proceso de scripts en una sesion de Play antes de rendirse",
                                cvar::Saved, 0, 1000);
@@ -743,12 +747,20 @@ struct CppScriptSystem::Impl {
     bool playing = false;
     std::unordered_map<entt::entity, Instance> instances;
     std::vector<std::tuple<entt::entity, std::string, std::string>> net_vars;  // OnNetVar pendientes
+    std::vector<std::tuple<entt::entity, std::string, std::string>> bt_messages;  // de los Behavior Trees
     std::unordered_set<entt::entity> faulted;
     std::vector<entt::entity> pending_destroy;
     std::vector<physics::PhysicsEvent> events;
     std::vector<std::pair<std::uint64_t, std::string>> callbacks;
     std::uint32_t next_id = 1;
     int restarts = 0;
+    // Recarga en caliente: el estado de cada instancia hasta que se cree con la DLL nueva.
+    struct ReloadState {
+        std::string json;
+        bool started = false;
+    };
+    std::unordered_map<entt::entity, ReloadState> reload_state;
+    int reloads = 0;
     bool load_failed = false;
     std::uint64_t calls = 0;
     double frame_ms = 0.0;
@@ -1361,6 +1373,22 @@ struct CppScriptSystem::Impl {
                 continue;
             }
             inst.created = true;
+            // Recarga en caliente: el estado de antes en vez de awake()/start().
+            const auto saved = reload_state.find(h);
+            if (saved != reload_state.end()) {
+                const bool was_started = saved->second.started;
+                proto::Writer restore;
+                restore.u32(inst.id).str(saved->second.json);
+                reload_state.erase(saved);
+                std::string restore_message;
+                const Outcome ro = request(ipc::Op::Restore, restore, restore_message);
+                if (ro != Outcome::Ok) {
+                    fault(h, inst, "onAfterReload()", ro, restore_message);
+                    continue;
+                }
+                inst.started = was_started;
+                continue;
+            }
             callEvent(h, inst, proto::Event::Awake, args(0.0f));
         }
         return host.running();
@@ -1562,6 +1590,10 @@ void CppScriptSystem::setLuaBridge(ScriptSystem* lua) {
         // Variables de red (OnNetVar): se guardan y se entregan en el siguiente update.
         lua->setNetVarListener([alive, d](ecs::Entity e, const std::string& key, const std::string& value) {
             if (!alive.expired()) d->net_vars.emplace_back(e.handle(), key, value);
+        });
+        // Mensajes de los Behavior Trees (Send Message / Run Script): onMessage.
+        lua->setMessageListener([alive, d](ecs::Entity e, const std::string& method, const std::string& value) {
+            if (!alive.expired()) d->bt_messages.emplace_back(e.handle(), method, value);
         });
     }
 }
@@ -1897,6 +1929,7 @@ void CppScriptSystem::start(ecs::World& world) {
     d.callbacks.clear();
     d.pending_destroy.clear();
     d.restarts = 0;
+    d.reload_state.clear();
     d.load_failed = false;
     d.time = 0.0f;
     d.frame = 0;
@@ -1923,10 +1956,35 @@ bool CppScriptSystem::running() const { return impl_->host.running(); }
 void CppScriptSystem::reload() {
     Impl& d = *impl_;
     if (!d.playing) return;
+    // Recarga en caliente: se guarda el estado de cada script vivo (propiedades
+    // + onBeforeReload) y se recrean con la DLL nueva sin parar el juego.
+    d.reload_state.clear();
+    int kept = 0;
+    if (g_hot_keep_state.get() && d.host.running()) {
+        d.forEachLive([&](entt::entity h, Impl::Instance& inst) {
+            proto::Writer w;
+            w.u32(inst.id);
+            std::string message;
+            std::vector<std::uint8_t> payload;
+            const Outcome o = d.request(ipc::Op::Snapshot, w, message, &payload);
+            std::string text = "{}";
+            if (!payload.empty()) {
+                proto::Reader r(payload.data(), payload.size());
+                text = r.str();
+            }
+            if (o != Outcome::Ok) d.error({}, 0, inst.cls + " (" + d.entityName(h) + "): recarga sin su estado: " + message);
+            d.reload_state[h] = Impl::ReloadState{text, inst.started};
+            ++kept;
+        });
+        proto::Writer quit;
+        std::string ignored;
+        if (d.host.running()) d.request(ipc::Op::Quit, quit, ignored);
+    }
     d.closeHost();
     d.load_failed = false;
     d.faulted.clear();
-    std::cout << "[C++] Scripts recargados" << std::endl;
+    ++d.reloads;
+    std::cout << "[C++] Scripts recargados en caliente (" << kept << " con su estado)" << std::endl;
 }
 
 void CppScriptSystem::fixedUpdate(ecs::World& world, float step, int steps) {
@@ -1961,6 +2019,12 @@ void CppScriptSystem::update(ecs::World& world, float delta_seconds) {
             if (!world.valid(h)) continue;
             json msg{{"key", key}, {"value", json::parse(value, nullptr, false)}};
             sendMessage(world.wrap(h), "OnNetVar", msg.dump());
+        }
+        // Mensajes de los Behavior Trees (tareas Run Script / Send Message).
+        auto bt_messages = std::move(d.bt_messages);
+        d.bt_messages.clear();
+        for (const auto& [h, method, value] : bt_messages) {
+            if (world.valid(h)) sendMessage(world.wrap(h), method, value);
         }
         d.forEachLive([&](entt::entity h, Impl::Instance& inst) {
             if (!inst.started) {
@@ -2017,6 +2081,7 @@ CppScriptSystem::Stats CppScriptSystem::stats() const {
     s.instances = static_cast<int>(d.instances.size());
     s.faulted = static_cast<int>(d.faulted.size());
     s.restarts = d.restarts;
+    s.reloads = d.reloads;
     s.rpcs = d.host.rpcs;
     s.calls = d.calls;
     s.frame_ms = d.frame_ms;

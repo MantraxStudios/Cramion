@@ -57,8 +57,13 @@ class AssetManager;
 namespace cramion::terrain {
 class TerrainData;
 }
+namespace cramion::input {
+class InputMapper;
+}
 
 namespace cramion::physics {
+
+class DestructionSystem;
 
 // --- Eventos ------------------------------------------------------------------
 
@@ -237,14 +242,48 @@ public:
     void setVehicleInput(ecs::Entity vehicle, float throttle, float steering, float brake, float handbrake);
     // Los que tienen "Conducir con teclado" (W/S, A/D, Espacio).
     void driveVehiclesWithKeyboard(ecs::World& world, bool forward, bool back, bool left, bool right, bool handbrake);
+    // Los que conduce el jugador con "Usar Input Actions": la accion de
+    // conducir (Vec2), freno de mano, freno y cambio manual. Se llama despues
+    // de driveVehiclesWithKeyboard (manda sobre ella en esos vehiculos).
+    void driveVehiclesWithActions(ecs::World& world, const input::InputMapper& mapper);
+    // Cambio manual: -1 atras, 0 punto muerto, 1..n. En automatico no hace nada.
+    void setVehicleGear(ecs::Entity vehicle, int gear);
+    void shiftVehicleGear(ecs::Entity vehicle, int delta);
     struct VehicleState {
         bool valid = false;
-        float speed_kmh = 0.0f;
+        float speed_kmh = 0.0f;          // velocidad (siempre positiva)
+        float forward_speed_kmh = 0.0f;  // con signo: negativa marcha atras
         float rpm = 0.0f;
-        int gear = 0;
+        float rpm_fraction = 0.0f;       // 0 = ralenti, 1 = maximo (cuentarrevoluciones)
+        int gear = 0;                    // -1 atras, 0 punto muerto, 1..n
+        int gear_count = 0;
+        bool automatic = true;
+        bool shifting = false;           // cambiando de marcha
         int wheels_on_ground = 0;
+        int wheel_count = 0;
+        float throttle = 0.0f, steering = 0.0f, brake = 0.0f, handbrake = 0.0f;  // entrada aplicada
+        float skid = 0.0f;               // 0..1: lo que mas derrapa una rueda en el suelo
     };
     VehicleState vehicleState(ecs::Entity vehicle) const;
+    struct WheelState {
+        bool valid = false;
+        bool contact = false;
+        ecs::Entity wheel;               // la entidad del WheelCollider
+        ecs::Entity ground;              // lo que pisa (vacia: suelo sin entidad o nada)
+        core::Vec3 contact_point{};
+        core::Vec3 contact_normal{0.0f, 1.0f, 0.0f};
+        float suspension_length = 0.0f;  // m
+        float compression = 0.0f;        // 0 = colgando, 1 = tope
+        float rpm = 0.0f;
+        float steer_degrees = 0.0f;
+        float longitudinal_slip = 0.0f;  // deslizamiento adelante (0 = rueda en sincronia)
+        float lateral_slip_degrees = 0.0f;
+        float skid = 0.0f;               // 0..1 (pasado el pico de la curva de friccion)
+    };
+    WheelState wheelState(ecs::Entity vehicle, int index) const;
+
+    // --- Destruccion (componente Destructible, Destruction.h) ---
+    DestructionSystem& destruction();
     void setLinearVelocity(ecs::Entity entity, const core::Vec3& velocity);
     core::Vec3 angularVelocity(ecs::Entity entity) const;
     void setAngularVelocity(ecs::Entity entity, const core::Vec3& velocity);
