@@ -281,6 +281,11 @@
           "desc": "Jugar dentro del editor, deshacer, guardar y la escena inicial."
         },
         {
+          "slug": "insights",
+          "title": "Insights y rendimiento",
+          "desc": "Perfilador de CPU, capturas .crtrace, tirones automáticos y optimizaciones (LOD de animación, presupuestos)."
+        },
+        {
           "slug": "editor-herramientas",
           "title": "Herramientas de mundo",
           "desc": "Terreno, estampar decals, pintar prefabs, agua y volúmenes."

@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cmath>
 #include <fstream>
+#include <iterator>
 #include <iostream>
 #include <sstream>
 
@@ -421,6 +422,32 @@ bool saveAnimationClip(const asset::ModelData& model, const asset::AnimationClip
     return writeText(path, header.dump() + "\n" + body.dump() + "\n", error);
 }
 
+namespace {
+// Las claves de un canal (p, r, s) sin copiar sus arrays (json::value los copiaba enteros).
+void readChannelKeys(const json& j, asset::AnimationChannel& channel) {
+    if (const auto p = j.find("p"); p != j.end() && p->is_array()) {
+        channel.positions.reserve(p->size());
+        for (const json& k : *p) {
+            if (k.size() == 4) channel.positions.push_back({k[0].get<float>(), {k[1].get<float>(), k[2].get<float>(), k[3].get<float>()}});
+        }
+    }
+    if (const auto r = j.find("r"); r != j.end() && r->is_array()) {
+        channel.rotations.reserve(r->size());
+        for (const json& k : *r) {
+            if (k.size() == 5) {
+                channel.rotations.push_back({k[0].get<float>(), {k[1].get<float>(), k[2].get<float>(), k[3].get<float>(), k[4].get<float>()}});
+            }
+        }
+    }
+    if (const auto s = j.find("s"); s != j.end() && s->is_array()) {
+        channel.scales.reserve(s->size());
+        for (const json& k : *s) {
+            if (k.size() == 4) channel.scales.push_back({k[0].get<float>(), {k[1].get<float>(), k[2].get<float>(), k[3].get<float>()}});
+        }
+    }
+}
+}  // namespace
+
 bool loadAnimationClip(const std::filesystem::path& path, const asset::ModelData& model,
                        asset::AnimationClip& out, std::string* error) {
     std::ifstream file(path, std::ios::binary);
@@ -428,10 +455,12 @@ bool loadAnimationClip(const std::filesystem::path& path, const asset::ModelData
         if (error) *error = "no se pudo abrir " + path.string();
         return false;
     }
-    std::string header_line;
-    std::getline(file, header_line);
-    const json header = json::parse(header_line, nullptr, false);
-    const json body = json::parse(file, nullptr, false);
+    // Se lee entero y se analiza de memoria (el istream iba caracter a caracter).
+    std::string text((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+    const std::size_t cut = text.find('\n');
+    const json header = json::parse(text.begin(), cut == std::string::npos ? text.end() : text.begin() + static_cast<std::ptrdiff_t>(cut),
+                                    nullptr, false);
+    const json body = cut == std::string::npos ? json() : json::parse(text.begin() + static_cast<std::ptrdiff_t>(cut) + 1, text.end(), nullptr, false);
     if (header.is_discarded() || body.is_discarded() || !body.contains("channels")) {
         if (error) *error = "clip danado: " + path.string();
         return false;
@@ -468,18 +497,7 @@ bool loadAnimationClip(const std::filesystem::path& path, const asset::ModelData
             if (node == source_index.end()) continue;
             asset::AnimationChannel channel;
             channel.node = node->second;
-            for (const json& k : j.value("p", json::array())) {
-                if (k.size() == 4) channel.positions.push_back({k[0].get<float>(), {k[1].get<float>(), k[2].get<float>(), k[3].get<float>()}});
-            }
-            for (const json& k : j.value("r", json::array())) {
-                if (k.size() == 5) {
-                    channel.rotations.push_back(
-                        {k[0].get<float>(), {k[1].get<float>(), k[2].get<float>(), k[3].get<float>(), k[4].get<float>()}});
-                }
-            }
-            for (const json& k : j.value("s", json::array())) {
-                if (k.size() == 4) channel.scales.push_back({k[0].get<float>(), {k[1].get<float>(), k[2].get<float>(), k[3].get<float>()}});
-            }
+            readChannelKeys(j, channel);
             source_clip.channels.push_back(std::move(channel));
         }
         std::string why;
@@ -500,18 +518,7 @@ bool loadAnimationClip(const std::filesystem::path& path, const asset::ModelData
         if (node == nodes.end()) continue;
         asset::AnimationChannel channel;
         channel.node = node->second;
-        for (const json& k : j.value("p", json::array())) {
-            if (k.size() == 4) channel.positions.push_back({k[0].get<float>(), {k[1].get<float>(), k[2].get<float>(), k[3].get<float>()}});
-        }
-        for (const json& k : j.value("r", json::array())) {
-            if (k.size() == 5) {
-                channel.rotations.push_back(
-                    {k[0].get<float>(), {k[1].get<float>(), k[2].get<float>(), k[3].get<float>(), k[4].get<float>()}});
-            }
-        }
-        for (const json& k : j.value("s", json::array())) {
-            if (k.size() == 4) channel.scales.push_back({k[0].get<float>(), {k[1].get<float>(), k[2].get<float>(), k[3].get<float>()}});
-        }
+        readChannelKeys(j, channel);
         clip.channels.push_back(std::move(channel));
     }
     out = std::move(clip);

@@ -94,6 +94,18 @@ public:
     // salir de Play).
     void clear();
 
+    // Presupuesto de particulas (fx.particles.*): desde donde se mira. Lejos
+    // no se emite, fuera de la vista y lejos no se calculan choques, y si en
+    // total hay mas que el presupuesto, todos los emisores emiten menos.
+    void setViewer(const core::Vec3& position, const core::Vec3& forward);
+    struct BudgetStats {
+        std::size_t emitters = 0;
+        std::size_t culled = 0;        // lejos: sin emitir
+        std::size_t no_collision = 0;  // sin choques (lejos o detras)
+        float emission_scale = 1.0f;   // < 1 si se paso del presupuesto
+    };
+    const BudgetStats& budgetStats() const { return budget_; }
+
     // Origen flotante (ecs/FloatingOrigin.h): el mundo se desplazo -offset;
     // lo que guarda en coordenadas del mundo se mueve igual.
     void shiftOrigin(const core::Vec3& offset);
@@ -108,6 +120,14 @@ public:
     gfx::ParticleDrawList drawList(const core::Vec3& camera_position) const;
 
     std::size_t particleCount() const;
+
+private:
+    core::Vec3 viewer_position_{};
+    core::Vec3 viewer_forward_{0.0f, 0.0f, -1.0f};
+    bool has_viewer_ = false;
+    BudgetStats budget_;
+
+public:
     std::size_t particleCount(ecs::Entity entity) const;
     std::uint64_t collisionCount() const { return collisions_; }
 

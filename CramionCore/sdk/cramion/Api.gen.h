@@ -1373,6 +1373,39 @@ inline Value setString(const T0& texto = {}, const T1& texto2 = {}) {
 }
 }  // namespace Prefs
 
+namespace Profiler {
+/// Profiler.begin(...)
+template <typename... Mas>
+inline Value begin(Mas&&... mas) {
+    return detail::lua("Profiler.begin", Values{Value(std::forward<Mas>(mas))...});
+}
+/// Profiler.capture(...)
+template <typename... Mas>
+inline Value capture(Mas&&... mas) {
+    return detail::lua("Profiler.capture", Values{Value(std::forward<Mas>(mas))...});
+}
+/// Profiler.counter(...)
+template <typename... Mas>
+inline Value counter(Mas&&... mas) {
+    return detail::lua("Profiler.counter", Values{Value(std::forward<Mas>(mas))...});
+}
+/// Profiler.finish(...)
+template <typename... Mas>
+inline Value finish(Mas&&... mas) {
+    return detail::lua("Profiler.finish", Values{Value(std::forward<Mas>(mas))...});
+}
+/// Profiler.frameMs(...)
+template <typename... Mas>
+inline Value frameMs(Mas&&... mas) {
+    return detail::lua("Profiler.frameMs", Values{Value(std::forward<Mas>(mas))...});
+}
+/// Profiler.zones(...)
+template <typename... Mas>
+inline Value zones(Mas&&... mas) {
+    return detail::lua("Profiler.zones", Values{Value(std::forward<Mas>(mas))...});
+}
+}  // namespace Profiler
+
 namespace Random {
 /// Random.chance(0.25)
 /// true con esa probabilidad

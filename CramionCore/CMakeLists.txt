@@ -283,6 +283,11 @@ add_executable(CramionFeatures21Tests "${CMAKE_CURRENT_SOURCE_DIR}/tests/Feature
 target_link_libraries(CramionFeatures21Tests PRIVATE Cramion::Core)
 target_compile_options(CramionFeatures21Tests PRIVATE -Wall -Wextra)
 
+# --- Pruebas de las optimizaciones del roadmap (Insights, particulas, Lua) ---
+add_executable(CramionOptimizationTests "${CMAKE_CURRENT_SOURCE_DIR}/tests/OptimizationTests.cpp")
+target_link_libraries(CramionOptimizationTests PRIVATE Cramion::Core)
+target_compile_options(CramionOptimizationTests PRIVATE -Wall -Wextra)
+
 # --- Pruebas de las cinematicas (consola) ---
 add_executable(CramionCinematicsTests "${CMAKE_CURRENT_SOURCE_DIR}/tests/CinematicsTests.cpp")
 target_link_libraries(CramionCinematicsTests PRIVATE Cramion::Core)
@@ -407,3 +412,7 @@ add_custom_command(TARGET cramion_sdkgen POST_BUILD
 
 add_executable(cramion_docgen "${CMAKE_CURRENT_SOURCE_DIR}/tools/DocGen.cpp")
 target_link_libraries(cramion_docgen PRIVATE Cramion::Core)
+
+# Herramienta: tiempo de carga y conversion de clips (.cranim)
+add_executable(cramion_cliptime "${CMAKE_CURRENT_SOURCE_DIR}/tests/ClipTimingTool.cpp")
+target_link_libraries(cramion_cliptime PRIVATE Cramion::Core)

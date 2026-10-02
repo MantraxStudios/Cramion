@@ -310,7 +310,28 @@ private:
     // se actualizan todas sus instancias de la escena. Solo hay un ecs::World:
     // al cambiar de pestana el mundo que no se ve se guarda en JSON (con su
     // deshacer, seleccion y camara) y se carga el otro.
-    enum class WorkspaceKind { Scene, Prefab, Script, StateMachine };
+    enum class WorkspaceKind { Scene, Prefab, Script, StateMachine, Graph };
+    // Editores de nodos que se abren en su pestana (una por tipo, a toda la
+    // ventana, como los scripts): abrir otro archivo del mismo tipo la reusa.
+    enum class GraphKind { Vfx, ShaderGraph, VisualScript, BehaviorTree, Dialogue, Animator, Count };
+    struct GraphDoc {
+        bool* show = nullptr;   // el editor esta abierto
+        bool* focus = nullptr;  // se acaba de pedir (traer su pestana delante)
+        bool dirty = false;
+        std::string name;
+        std::filesystem::path path;
+    };
+    GraphDoc graphDoc(GraphKind kind);
+    void saveGraphDoc(GraphKind kind);
+    GraphDoc graphDocVfx();
+    GraphDoc graphDocShaderGraph();
+    GraphDoc graphDocVisualScript();
+    GraphDoc graphDocBehaviorTree();
+    GraphDoc graphDocDialogue();
+    void syncGraphWorkspaces();
+    // Begin() del editor de nodos `kind` a toda la ventana si su pestana es la
+    // activa; si no, no dibuja nada (y devuelve false sin Begin).
+    bool beginGraphWorkspace(GraphKind kind, const char* title);
     WorkspaceKind activeWorkspaceKind() const;
     // Titulo de un panel: en la Escena tal cual (el diseno de siempre); en
     // otro espacio con un ID propio para acoplarse en su dockspace.
@@ -1532,6 +1553,7 @@ private:
         std::string name;
         Uuid prefab{};               // Prefab: el asset
         std::filesystem::path path;  // Script: el archivo
+        GraphKind graph = GraphKind::Vfx;  // Graph: que editor de nodos
         Uuid root{};                 // Prefab: raiz de la instancia en el escenario
         std::vector<Uuid> helpers;   // Prefab: luz y cielo del escenario
         bool built = false;          // Prefab: escenario creado
@@ -1640,6 +1662,7 @@ private:
     void effectsExitPlay();
     Uuid createVfxAsset(const std::filesystem::path& folder, int preset);
     void openVfxEditor(const Uuid& uuid);
+    void saveVfxEditor();
     void drawVfxEditor();
     void drawReplayWindow();
     void drawEffectsWindows();
@@ -1898,6 +1921,9 @@ private:
     bool show_inspector_ = true;
     bool show_project_ = true;
     bool show_statistics_ = true;
+    // Ventana > Insights (perfilador de CPU, EditorInsights.cpp).
+    bool show_insights_ = false;
+    void drawInsightsWindow();
     bool show_console_ = true;
     bool show_render_settings_ = true;
     bool reset_layout_ = false;

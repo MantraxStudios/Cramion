@@ -9,6 +9,8 @@
 #include <CramionCore/terrain/TerrainGenerator.h>
 #include <CramionCore/environment/Environment.h>
 #include <CramionCore/cvar/CVar.h>
+#include <CramionCore/profiling/Profiler.h>
+#include <CramionCore/ecs/AnimatorController.h>
 
 #include "CramionCore/project/DataPack.h"
 
@@ -19,6 +21,7 @@
 #include <imgui.h>
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <chrono>
 #include <ctime>
 #include <fstream>
@@ -261,6 +264,9 @@ const std::vector<ToolDef>& toolDefs() {
                       {"tiling", prop("array", "Repeticion UV [x, y]")}}, {"name"}});
         d.push_back({"assign_material", "Asigna un material a una entidad (y sus hijos si no tiene malla).",
                      {{"entity", entity}, {"material", prop("string", "Ruta, nombre o UUID del .crmat")}, {"slot", prop("integer", "Hueco de material (-1 = todos)")}}, {"entity", "material"}});
+        d.push_back({"extract_clips", "Extrae las animaciones de un modelo importado a clips .cranim (los que usan los estados del Animator), como Proyecto > clic derecho > Animaciones > Extraer. Con 'name' el clip se llama asi (si hay varios, name_1, name_2...); sin el, como la animacion.",
+                     {{"model", prop("string", "Ruta, nombre o UUID del modelo")}, {"folder", prop("string", "Carpeta dentro de Assets (por defecto la del modelo)")},
+                      {"name", prop("string", "Nombre del archivo (opcional)")}}, {"model"}});
         d.push_back({"reimport_model", "Reimporta un modelo desde su archivo original combinando sus piezas por material (una palmera con cada hoja suelta pasa a tronco + hojas) y rehace sus instancias en la escena. En segundo plano: mira get_console.",
                      {{"asset", prop("string", "Ruta, nombre o UUID del modelo")}}, {"asset"}});
         d.push_back({"graphics_settings", "Lee o cambia la configuracion grafica: presupuesto adaptativo (adaptive, target_fps) y resolucion del mapa de sombras (0 = segun el hardware). Devuelve el estado del presupuesto.",
@@ -275,6 +281,10 @@ const std::vector<ToolDef>& toolDefs() {
                       {"path_tracing_samples", prop("number", "Muestras maximas por pixel del path tracing")}}, {}});
         d.push_back({"performance_stats", "Rendimiento del ultimo frame: FPS, ms de CPU y GPU, tiempo de GPU por pase, actores, triangulos, lotes y llamadas de sombras.",
                      json::object(), {}});
+        d.push_back({"profiler", "Insights (perfilador de CPU): percentiles del frame (p50/p95/p99, tirones), las zonas que mas cuestan (media, propio, p95, max, llamadas) y los contadores (animaciones evaluadas/saltadas por LOD, voces de audio, Lua...). action=capture guarda un .crtrace (Perfetto/chrome://tracing).",
+                     {{"action", prop("string", "stats (por defecto) o capture")},
+                      {"frames", prop("integer", "Frames que se miran o se capturan (120 / 600)")},
+                      {"top", prop("integer", "Cuantas zonas devolver (20)")}}, {}});
         d.push_back({"import_file", "Importa un archivo del disco al proyecto (modelo .fbx/.obj/.gltf/.glb, cielo .hdr).",
                      {{"path", prop("string", "Ruta absoluta del archivo")}, {"folder", prop("string", "Subcarpeta de Assets (por defecto Models)")}}, {"path"}});
         d.push_back({"ground_height", "Altura del suelo (terreno o lo que haya) en un punto x, z del mundo: para colocar camaras u objetos encima.",
@@ -1359,7 +1369,8 @@ json McpTools::call(const std::string& name, const json& args, bool& image, std:
                 if (it != names.end() && it->second != info.type) continue;
             }
             const std::string rel = a.assetRelative(info.path);
-            const std::string folder_rel = a.assetRelative(folder);
+            // Sin carpeta: todo (assetRelative de la raiz no da "" en todos los proyectos).
+            const std::string folder_rel = folder == a.project_.assetsFolder() ? std::string() : a.assetRelative(folder);
             if (!folder_rel.empty() && rel.rfind(folder_rel, 0) != 0) continue;
             list.push_back(json{{"name", info.name}, {"type", type}, {"path", rel}, {"uuid", info.uuid.toString()}});
         }
@@ -1548,6 +1559,39 @@ json McpTools::call(const std::string& name, const json& args, bool& image, std:
         a.commit();
         return json{{"entity", e.name()}, {"material", info->name}};
     }
+    if (name == "extract_clips") {
+        const auto info = findAsset(arg(args, "model"));
+        if (!info || info->type != assets::AssetType::Model) throw ToolError("no existe el modelo " + arg(args, "model"));
+        const auto model = assets::AssetManager::readModel(info->uuid, info->path, info->name);
+        const asset::ModelData* animated = nullptr;
+        if (model) {
+            for (const auto& part : model->parts) {
+                if (part && !part->animations.empty()) {
+                    animated = part.get();
+                    break;
+                }
+            }
+        }
+        if (animated == nullptr) throw ToolError(model ? "el modelo no tiene animaciones" : "no se pudo leer el modelo");
+        const std::filesystem::path folder = args.contains("folder") ? a.project_.assetsFolder() / dialogs::fromUtf8(arg(args, "folder"))
+                                                                      : info->path.parent_path();
+        std::error_code ec;
+        std::filesystem::create_directories(folder, ec);
+        const std::string base = arg(args, "name");
+        json clips = json::array();
+        for (std::size_t i = 0; i < animated->animations.size(); ++i) {
+            const asset::AnimationClip& clip = animated->animations[i];
+            std::string file = base.empty() ? clip.name : base;
+            if (!base.empty() && animated->animations.size() > 1) file += "_" + std::to_string(i + 1);
+            const std::filesystem::path path = folder / dialogs::fromUtf8(file + ".cranim");
+            std::string error;
+            if (!ecs::saveAnimationClip(*animated, clip, path, &error)) throw ToolError("no se pudo extraer " + clip.name + ": " + error);
+            clips.push_back(json{{"path", dialogs::utf8(std::filesystem::relative(path, a.project_.assetsFolder(), ec))},
+                                 {"animation", clip.name}, {"duration", clip.duration}});
+        }
+        a.refreshDatabase();
+        return json{{"clips", clips}};
+    }
     if (name == "reimport_model") {
         const auto info = findAsset(arg(args, "asset"));
         if (!info || info->type != assets::AssetType::Model) throw ToolError("no existe el modelo " + arg(args, "asset"));
@@ -1621,6 +1665,39 @@ json McpTools::call(const std::string& name, const json& args, bool& image, std:
             j["output_size"] = json{output.width, output.height};
         }
         return j;
+    }
+    if (name == "profiler") {
+        const std::string action = args.value("action", std::string("stats"));
+        if (action == "capture") {
+            const int frames = args.value("frames", 600);
+            const std::filesystem::path file =
+                prof::captureFolder() / ("captura_" + std::to_string(prof::frameIndex()) + ".crtrace");
+            std::string error;
+            if (!prof::saveTrace(file, frames, &error)) throw ToolError(error);
+            return json{{"file", dialogs::utf8(file)}, {"frames", frames},
+                        {"hint", "Abrelo en ui.perfetto.dev o chrome://tracing"}};
+        }
+        const int frames = args.value("frames", 120);
+        std::vector<prof::ZoneStats> zones = prof::stats(frames);
+        std::sort(zones.begin(), zones.end(), [](const auto& x, const auto& y) { return x.avg_ms > y.avg_ms; });
+        json zl = json::array();
+        const int top = args.value("top", 20);
+        for (int i = 0; i < std::min(top, static_cast<int>(zones.size())); ++i) {
+            const prof::ZoneStats& z = zones[static_cast<std::size_t>(i)];
+            zl.push_back(json{{"zone", z.path}, {"avg_ms", z.avg_ms}, {"self_ms", z.self_ms}, {"p95_ms", z.p95_ms},
+                              {"max_ms", z.max_ms}, {"calls", z.calls}, {"thread", z.thread}});
+        }
+        json cl = json::array();
+        for (const prof::CounterStats& c : prof::counters(frames)) {
+            cl.push_back(json{{"counter", c.name}, {"last", c.last}, {"avg", c.avg}, {"max", c.max}});
+        }
+        const prof::FrameSummary s = prof::summary(300);
+        return json{{"enabled", prof::enabled()},
+                    {"frame", {{"avg_ms", s.avg_ms}, {"p50_ms", s.p50_ms}, {"p95_ms", s.p95_ms}, {"p99_ms", s.p99_ms},
+                               {"max_ms", s.max_ms}, {"hitches", s.hitches}}},
+                    {"zones", zl},
+                    {"counters", cl},
+                    {"last_hitch_capture", dialogs::utf8(prof::lastHitchCapture())}};
     }
     if (name == "performance_stats") {
         json passes = json::array();

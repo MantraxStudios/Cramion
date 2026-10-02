@@ -446,7 +446,10 @@ void EditorApp::draw2DWindows() {
             twod::Tileset& t = st.tileset;
             bool changed = false;
             ImGui::BeginChild("ts_left", ImVec2(330.0f, 0.0f), ImGuiChildFlags_ResizeX | ImGuiChildFlags_Borders);
-            changed |= ImGui::InputTextWithHint("Imagen", "arrastra una imagen", &t.image);
+            changed |= assetFilePicker("ts_image", project_.assetsFolder(), kImageFileExts, "imagen", t.image);
+            ImGui::SameLine(0.0f, ImGui::GetStyle().ItemInnerSpacing.x);
+            ImGui::SetNextItemWidth(ImGui::CalcItemWidth() - (ImGui::GetFrameHeight() + ImGui::GetStyle().ItemInnerSpacing.x));
+            changed |= ImGui::InputTextWithHint("Imagen", "arrastra o busca una imagen", &t.image);
             if (ImGui::BeginDragDropTarget()) {
                 if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(kImagePayload)) {
                     t.image = assetRelative(dialogs::fromUtf8(static_cast<const char*>(payload->Data)));
@@ -603,8 +606,16 @@ void EditorApp::draw2DWindows() {
     if (st.show_sprite) {
         ImGui::SetNextWindowSize(ImVec2(900.0f, 600.0f), ImGuiCond_FirstUseEver);
         if (ImGui::Begin("Sprite Editor###sprite_editor", &st.show_sprite)) {
+            if (assetFilePicker("sp_image", project_.assetsFolder(), kImageFileExts, "imagen", st.sprite_image)) {
+                st.sheet = twod::SpriteSheet{};
+                st.sheet_loaded = !st.sprite_image.empty() &&
+                                  twod::loadSpriteSheet(twod_.sprites().absolute(st.sprite_image), st.sheet);
+                st.sheet_dirty = false;
+                st.frame_selected = -1;
+            }
+            ImGui::SameLine(0.0f, ImGui::GetStyle().ItemInnerSpacing.x);
             ImGui::SetNextItemWidth(320.0f);
-            ImGui::InputTextWithHint("Imagen", "arrastra una imagen del Proyecto", &st.sprite_image, ImGuiInputTextFlags_ReadOnly);
+            ImGui::InputTextWithHint("Imagen", "arrastra o busca una imagen del Proyecto", &st.sprite_image, ImGuiInputTextFlags_ReadOnly);
             if (ImGui::BeginDragDropTarget()) {
                 if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(kImagePayload)) {
                     st.sprite_image = assetRelative(dialogs::fromUtf8(static_cast<const char*>(payload->Data)));

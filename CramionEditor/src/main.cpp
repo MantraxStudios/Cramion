@@ -6,6 +6,7 @@
 //   CramionEditor.exe <proyecto.crproj>  abre ese proyecto directamente
 // -----------------------------------------------------------------------------
 
+#include <CramionCore/profiling/Profiler.h>
 #include "EditorApp.h"
 #include "EditorLog.h"
 #include "ImGuiLayer.h"
@@ -145,8 +146,10 @@ int main(int argc, char** argv) {
         const auto msSince = [](FrameClock::time_point t) {
             return std::chrono::duration<float, std::milli>(FrameClock::now() - t).count();
         };
+        cramion::prof::setLog([](const std::string& line) { std::cout << line << std::endl; });
         while (!app.quitRequested()) {
             const auto frame_start = FrameClock::now();
+            cramion::prof::beginFrame();
             // En modo cine (grabar por MCP) el tiempo avanza a pasos fijos.
             const float delta_seconds = app.cinemaDelta(clock.tick());
             renderer.setFrameDeltaOverride(app.cinemaActive() ? delta_seconds : -1.0f);
@@ -158,6 +161,7 @@ int main(int argc, char** argv) {
             // ANTES de construir la interfaz (la vista apunta a la del render).
             renderer.applyPendingResize();
             const float window_ms = msSince(frame_start);
+            cramion::prof::begin("Editor e interfaz (incluye la logica en Play)");
 
             auto t = FrameClock::now();
             imgui.beginFrame();
@@ -166,6 +170,7 @@ int main(int argc, char** argv) {
             t = FrameClock::now();
             imgui.endFrame();
             imgui_ms += msSince(t);
+            cramion::prof::end();
 
             t = FrameClock::now();
             scene.update(app.sceneWantsInput() ? input : idle_input, delta_seconds);
@@ -174,13 +179,20 @@ int main(int argc, char** argv) {
             // Escena y Juego visibles a la vez: las dos se dibujan cada frame
             // (la otra primero, sin presentar), tambien en Play.
             if (app.wantsSecondaryView()) {
+                CR_PROFILE_SCOPE("Vista secundaria");
                 app.syncWorld(delta_seconds, /*secondary=*/true);
                 renderer.drawFrame(scene, /*present=*/false);
                 app.afterRender();
             }
-            app.syncWorld(delta_seconds);
+            {
+                CR_PROFILE_SCOPE("Sincronizar mundo");
+                app.syncWorld(delta_seconds);
+            }
             app.renderXrEyes();
-            renderer.drawFrame(scene);
+            {
+                CR_PROFILE_SCOPE("Render (CPU)");
+                renderer.drawFrame(scene);
+            }
             app.endXrFrame();
             app.afterRender();
             app.setRenderCpuTime(std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() -
@@ -189,6 +201,7 @@ int main(int argc, char** argv) {
             input.newFrame();
             app.endInputFrame();
             app.reportFrame(msSince(frame_start), window_ms, imgui_ms, scene_ms);
+            cramion::prof::endFrame();
         }
 
         exit_code = app.exitCode();

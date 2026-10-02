@@ -12,6 +12,8 @@
 #include <cstdio>
 #include <cctype>
 #include <algorithm>
+#include <filesystem>
+#include <vector>
 
 namespace cramion::editor {
 
@@ -92,6 +94,136 @@ bool glyphButton(const char* id, Glyph glyph) {
         draw->AddCircleFilled(c, 1.8f, color, 8);
     }
     return pressed;
+}
+
+// --- Campos de texto que son rutas de Assets ---------------------------------
+// Los componentes guardan algunas referencias como ruta relativa a Assets
+// ("2D/Terreno.crtileset"). Se reconocen por la clave o porque su ayuda habla
+// de un archivo de Assets; llevan un boton para buscar el archivo.
+struct PathField {
+    bool is_path = false;
+    std::vector<std::string> exts;  // vacio = cualquier archivo
+    const char* hint = "Archivo de Assets";
+};
+
+std::string lowerAscii(std::string text) {
+    std::transform(text.begin(), text.end(), text.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return text;
+}
+
+std::string utf8Of(const std::filesystem::path& path) {
+    const std::u8string s = path.generic_u8string();
+    return std::string(s.begin(), s.end());
+}
+
+PathField pathFieldOf(const ecs::Meta& meta) {
+    static const std::vector<std::string> kImages = {".png", ".jpg", ".jpeg", ".tga", ".bmp", ".hdr"};
+    static const std::vector<std::string> kAudio = {".wav", ".ogg", ".mp3", ".flac"};
+    const std::string key = meta.key != nullptr ? meta.key : "";
+    const std::string tip = lowerAscii(meta.tooltip != nullptr ? meta.tooltip : "");
+    const std::string label = lowerAscii(meta.label != nullptr ? meta.label : "");
+    PathField f;
+    if (label.rfind("carpeta", 0) == 0) return f;  // carpetas (Voxel/Textures): texto
+    if (key == "tileset") {
+        f = {true, {".crtileset"}, "Tileset (.crtileset)"};
+    } else if (key == "sprite" || key == "texture" || key == "albedo" || key == "normal" || key == "normal_map" ||
+               key == "emission_map" || key == "image") {
+        f = {true, kImages, "Imagen (PNG, JPG, TGA)"};
+    } else if ((key == "clip" && tip.find("audio") != std::string::npos) || key == "audio") {
+        f = {true, kAudio, "Audio (WAV, OGG, MP3, FLAC)"};
+    } else if (key == "file" || key == "script") {
+        f = {true, {".lua", ".crgraph"}, "Script (.lua) o Visual Script (.crgraph)"};
+    } else if (tip.find("assets") != std::string::npos && tip.find("archivo") != std::string::npos) {
+        f.is_path = true;
+    }
+    if (!f.is_path || !f.exts.empty()) return f;
+    // Las extensiones que nombra la ayuda (".crterrain"...).
+    std::vector<std::string> named;
+    for (std::size_t i = tip.find('.'); i != std::string::npos; i = tip.find('.', i + 1)) {
+        std::size_t j = i + 1;
+        while (j < tip.size() && std::isalnum(static_cast<unsigned char>(tip[j]))) ++j;
+        if (j - i >= 3 && (i == 0 || tip[i - 1] == ' ')) named.push_back(tip.substr(i, j - i));
+    }
+    if (!named.empty()) f.exts = named;
+    return f;
+}
+
+bool extensionAllowed(const PathField& field, const std::filesystem::path& file) {
+    if (field.exts.empty()) return true;
+    const std::string ext = lowerAscii(utf8Of(file.extension()));
+    return std::find(field.exts.begin(), field.exts.end(), ext) != field.exts.end();
+}
+
+// Soltar un archivo del Proyecto en la caja: su ruta relativa a Assets (o "").
+std::string acceptDroppedFile(const assets::AssetDatabase* database, const PathField& field) {
+    std::string result;
+    if (!ImGui::BeginDragDropTarget()) return result;
+    std::filesystem::path dropped;
+    for (const char* type : {"CRAMION_IMAGE", "CRAMION_SCRIPT", "CRAMION_AUDIO"}) {
+        if (const ImGuiPayload* p = ImGui::AcceptDragDropPayload(type)) {
+            const char* text = static_cast<const char*>(p->Data);
+            dropped = std::filesystem::path(std::u8string(text, text + std::strlen(text)).c_str());
+        }
+    }
+    if (const ImGuiPayload* p = ImGui::AcceptDragDropPayload(kAssetPayload)) {
+        AssetPayload asset{};
+        std::memcpy(&asset, p->Data, sizeof(asset));
+        if (const auto info = database->find(asset.uuid)) dropped = info->path;
+    }
+    ImGui::EndDragDropTarget();
+    if (dropped.empty() || !extensionAllowed(field, dropped)) return result;
+    std::error_code ec;
+    const std::filesystem::path relative = std::filesystem::relative(dropped, database->root(), ec);
+    if (!ec && !relative.empty() && utf8Of(relative).rfind("..", 0) != 0) result = utf8Of(relative);
+    return result;
+}
+
+// Lista con buscador de los archivos de Assets que valen para el campo.
+bool pickFilePopup(const char* id, const std::filesystem::path& root, const PathField& field, std::string& value) {
+    if (!ImGui::BeginPopup(id)) return false;
+    static std::vector<std::string> files;
+    static std::string filter;
+    if (ImGui::IsWindowAppearing()) {
+        filter.clear();
+        files.clear();
+        std::error_code ec;
+        for (auto it = std::filesystem::recursive_directory_iterator(root, std::filesystem::directory_options::skip_permission_denied, ec);
+             !ec && it != std::filesystem::recursive_directory_iterator() && files.size() < 20000; it.increment(ec)) {
+            const std::filesystem::path& p = it->path();
+            if (it->is_directory(ec)) {
+                if (utf8Of(p.filename()).rfind('.', 0) == 0) it.disable_recursion_pending();  // .git, .cache...
+                continue;
+            }
+            if (!extensionAllowed(field, p)) continue;
+            files.push_back(utf8Of(std::filesystem::relative(p, root, ec)));
+        }
+        std::sort(files.begin(), files.end());
+        ImGui::SetKeyboardFocusHere();
+    }
+    theme::searchBox("file_filter", filter, "Buscar...", 360.0f);
+    const std::string needle = lowerAscii(filter);
+    bool changed = false;
+    theme::pushSelectionColors();
+    if (ImGui::Selectable("Ninguno", value.empty())) {
+        value.clear();
+        changed = true;
+    }
+    ImGui::BeginChild("files", ImVec2(360.0f, 320.0f));
+    int shown = 0;
+    for (const std::string& f : files) {
+        if (!needle.empty() && lowerAscii(f).find(needle) == std::string::npos) continue;
+        ++shown;
+        if (ImGui::Selectable(f.c_str(), f == value)) {
+            value = f;
+            changed = true;
+            ImGui::CloseCurrentPopup();
+        }
+    }
+    if (shown == 0) ImGui::TextDisabled("No hay archivos (%s) en Assets", field.hint);
+    ImGui::EndChild();
+    ImGui::PopStyleColor(3);
+    ImGui::EndPopup();
+    return changed;
 }
 
 constexpr ImU32 kAxisColors[4] = {theme::kAxisX, theme::kAxisY, theme::kAxisZ, theme::kTextFaint};
@@ -366,6 +498,20 @@ int ImGuiPropertyVisitor::mixed(const char* key) const {
     return it == mixed_->end() ? 0 : it->second;
 }
 
+bool assetFilePicker(const char* id, const std::filesystem::path& assets_root, const std::vector<std::string>& exts,
+                     const char* hint, std::string& value) {
+    ImGui::PushID(id);
+    if (glyphButton("##pick_file", Glyph::Pick)) ImGui::OpenPopup("pick_file");
+    ImGui::SetItemTooltip("Buscar en el Proyecto (%s)", hint);
+    PathField field;
+    field.is_path = true;
+    field.exts = exts;
+    field.hint = hint;
+    const bool changed = pickFilePopup("pick_file", assets_root, field, value);
+    ImGui::PopID();
+    return changed;
+}
+
 std::string lowerText(const char* text) {
     std::string out = text != nullptr ? text : "";
     std::transform(out.begin(), out.end(), out.begin(),
@@ -566,6 +712,11 @@ bool ImGuiPropertyVisitor::field(const ecs::Meta& meta, std::string& value) {
     const bool is_mixed = mixed(meta.key) != 0;
     label(meta);
     bool changed = false;
+    // Rutas de archivos de Assets: la caja (se puede escribir o soltar un
+    // archivo del Proyecto) y un boton [◎] que abre la lista para buscarlo.
+    const PathField path_field = pathFieldOf(meta);
+    const float gap = ImGui::GetStyle().ItemInnerSpacing.x;
+    if (path_field.is_path) ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - ImGui::GetFrameHeight() - gap);
     if (is_mixed) {
         // Vacio con "—": lo que se escriba va a todos.
         std::string text;
@@ -574,9 +725,26 @@ bool ImGuiPropertyVisitor::field(const ecs::Meta& meta, std::string& value) {
             changed = true;
         }
     } else {
-        changed = ImGui::InputText("##v", &value);
+        changed = ImGui::InputTextWithHint("##v", path_field.is_path ? path_field.hint : "", &value);
     }
-    finishItem();
+    if (path_field.is_path && database_ != nullptr) {
+        if (const std::string dropped = acceptDroppedFile(database_, path_field); !dropped.empty()) {
+            value = dropped;
+            changed = true;
+            edit_finished_ = true;
+        }
+    }
+    if (ImGui::IsItemDeactivatedAfterEdit()) edit_finished_ = true;
+    if (path_field.is_path && database_ != nullptr) {
+        ImGui::SameLine(0.0f, gap);
+        if (glyphButton("##pick_file", Glyph::Pick)) ImGui::OpenPopup("pick_file");
+        ImGui::SetItemTooltip("Buscar en el Proyecto (%s)", path_field.hint);
+        if (pickFilePopup("pick_file", database_->root(), path_field, value)) {
+            changed = true;
+            edit_finished_ = true;
+        }
+    }
+    ImGui::PopID();
     if (changed) {
         FieldValue v = makeValue(FieldValue::Kind::String);
         v.s = value;

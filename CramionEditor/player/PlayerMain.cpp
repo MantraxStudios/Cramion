@@ -16,6 +16,7 @@
 // primera vez (o cuando cambia la compilacion) y el tactil se convierte en
 // raton, teclas y ejes con los controles en pantalla (dm::TouchControls).
 
+#include <CramionCore/profiling/Profiler.h>
 #include "GraphicsConfig.h"
 #include "ImGuiLayer.h"
 #include "LoadingScreen.h"
@@ -60,6 +61,12 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <thread>
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <windows.h>
+#endif
 #include <cmath>
 #include <cstdlib>
 #include <exception>
@@ -589,10 +596,7 @@ int runPlayer() {
             float best = max_distance + 1.0f;
             for (const physics::RaycastHit& hit : physics.raycastAll(origin, direction, max_distance, filter)) {
                 if (hit.trigger || hit.distance >= best) continue;
-                if (hit.entity.valid() &&
-                    (hit.entity == self || self.isAncestorOf(hit.entity) || hit.entity.isAncestorOf(self))) {
-                    continue;
-                }
+                if (!physics::isFootGround(hit.entity, self)) continue;
                 best = hit.distance;
                 point = hit.point;
                 normal = hit.normal;
@@ -1093,7 +1097,9 @@ int runPlayer() {
         core::Clock clock;
         float perf_seconds = 0.0f;
         int perf_frames = 0;
+        prof::setLog([](const std::string& line) { std::cout << line << std::endl; });
         while (!quit) {
+            prof::beginFrame();
             const float clock_dt = clock.tick();  // sin recortar (el Profiler mide los frames reales)
             const float dt = std::min(clock_dt, 0.1f);
             touch_time += clock_dt;
@@ -1155,12 +1161,20 @@ int runPlayer() {
                 xr_rig.reset();
             }
             if (running) {
-                const int steps = physics.update(world, dt, true);
+                int steps = 0;
+                {
+                    CR_PROFILE_SCOPE("Fisica");
+                    steps = physics.update(world, dt, true);
+                }
+                particles.setViewer(scene.camera().position(), scene.camera().forward());
                 particles.update(world, dt, &physics);
                 fluids.update(world, dt, true, &physics, renderer);
                 twod_system.update(world, dt, twod::System2D::Mode::Play);
                 fire::updateFires(world, dt, fire::FireMode::Play, &terrains);
-                nav.update(world, dt, true, nav_settings.runtime_generation);
+                {
+                    CR_PROFILE_SCOPE("Navegacion");
+                    nav.update(world, dt, true, nav_settings.runtime_generation);
+                }
                 scripts.setInput(game_ui.typing() ? nullptr : &input);
                 if (!game_ui.typing()) {
                     const auto down = [&](dm::Key a, dm::Key b) { return input.isKeyDown(a) || input.isKeyDown(b); };
@@ -1177,11 +1191,17 @@ int runPlayer() {
                     keys.crouch = down(dm::Key::C, dm::Key::LeftControl);
                     physics.driveCharactersWithKeyboard(world, keys);
                 }
-                scripts.fixedUpdate(world, physics_settings.fixed_step, steps);
-                scripts.update(world, dt);
+                {
+                    CR_PROFILE_SCOPE("Scripts Lua");
+                    scripts.fixedUpdate(world, physics_settings.fixed_step, steps);
+                    scripts.update(world, dt);
+                }
                 cpp_scripts.setInput(game_ui.typing() ? nullptr : &input);
-                cpp_scripts.fixedUpdate(world, physics_settings.fixed_step, steps);
-                cpp_scripts.update(world, dt);
+                {
+                    CR_PROFILE_SCOPE("Scripts C++");
+                    cpp_scripts.fixedUpdate(world, physics_settings.fixed_step, steps);
+                    cpp_scripts.update(world, dt);
+                }
                 cinematics.update(world, dt, true);
                 replays.update(world, dt);  // despues de los scripts
                 if (platform::Steam::instance().available()) platform::Steam::instance().update();
@@ -1261,7 +1281,10 @@ int runPlayer() {
             }
             // VR: los dos ojos al casco; la ventana ve lo de la cabeza.
             if (xr_rig.active()) xr_rig.renderEyes(renderer, scene);
-            renderer.drawFrame(scene);
+            {
+                CR_PROFILE_SCOPE("Render (CPU)");
+                renderer.drawFrame(scene);
+            }
             if (vr) renderer.xr().endFrame();
             input.newFrame();
 
@@ -1298,25 +1321,50 @@ int runPlayer() {
                             std::cout << " " << static_cast<int>(budget.level(static_cast<gfx::Lever>(i)));
                         }
                     }
+                    const prof::FrameSummary fs = prof::summary(300);
+                    std::cout << " | frame p50 " << fs.p50_ms << " / p95 " << fs.p95_ms << " / p99 " << fs.p99_ms
+                              << " ms, tirones " << fs.hitches;
                     std::cout << std::endl;
                     perf_seconds = 0.0f;
                     perf_frames = 0;
                 }
             }
+            prof::endFrame();
         }
+        // Cierre: cada paso queda en el log con lo que tardo y, si algo se
+        // atasca, un vigilante cierra el proceso (un juego siempre debe cerrarse).
+        std::cout << "[Juego] Cerrando..." << std::endl;
+        std::thread([] {
+            std::this_thread::sleep_for(std::chrono::seconds(8));
+            std::cout << "[Juego] El cierre tardo mas de 8 s: se termina el proceso" << std::endl;
+            std::cerr.flush();
+#ifdef _WIN32
+            TerminateProcess(GetCurrentProcess(), 0);
+#else
+            std::_Exit(0);
+#endif
+        }).detach();
+        const auto paso = [](const char* nombre, auto&& fn) {
+            if (std::getenv("CRAMION_TRACE_SHUTDOWN") != nullptr) std::cout << "[Juego] Cierre: " << nombre << "..." << std::endl;
+            const auto t0 = std::chrono::steady_clock::now();
+            fn();
+            const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+            if (ms > 50.0) std::cout << "[Juego] Cierre: " << nombre << " " << static_cast<int>(ms) << " ms" << std::endl;
+        };
         // Cerrado a media carga: el hilo de los modelos termina antes de nada.
-        if (load.worker.valid()) load.worker.wait();
-        scripts.stop();
-        cpp_scripts.stop();
-        scripts.unmountDataPacks();  // lo montado con DataPack.load sale de los assets del juego
-        scripts.shutdownNetwork();  // avisa a los demas jugadores
-        audio.stop();
-        physics.stop();
-        voxels.stop();  // guarda el mundo con nombre
-        renderer.waitIdle();
-        sync.reset(scene);
-        imgui.shutdown();
-        renderer.shutdown();
+        paso("carga", [&] { if (load.worker.valid()) load.worker.wait(); });
+        paso("Lua", [&] { scripts.stop(); });
+        paso("C++", [&] { cpp_scripts.stop(); });
+        paso("datapacks", [&] { scripts.unmountDataPacks(); });  // lo montado con DataPack.load sale de los assets del juego
+        paso("red", [&] { scripts.shutdownNetwork(); });  // avisa a los demas jugadores
+        paso("audio", [&] { audio.stop(); });
+        paso("fisica", [&] { physics.stop(); });
+        paso("voxeles", [&] { voxels.stop(); });  // guarda el mundo con nombre
+        paso("GPU", [&] { renderer.waitIdle(); });
+        paso("escena", [&] { sync.reset(scene); });
+        paso("interfaz", [&] { imgui.shutdown(); });
+        paso("render", [&] { renderer.shutdown(); });
+        std::cout << "[Juego] Cerrado" << std::endl;
     } catch (const std::exception& e) {
         std::string message = e.what();
         std::cerr << "[Juego] Error: " << message << "\n";

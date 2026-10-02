@@ -1,3 +1,4 @@
+#include "CramionCore/profiling/Profiler.h"
 #include "CramionCore/ecs/RenderSync.h"
 #include "CramionCore/cvar/CVar.h"
 #include "CramionCore/modeling/EditableMesh.h"
@@ -26,6 +27,7 @@
 #include <cmath>
 #include <cstring>
 #include <fstream>
+#include <cstdlib>
 #include <iostream>
 #include <string>
 #include <unordered_set>
@@ -53,6 +55,23 @@ cvar::CVar<float> g_min_pixels("render.streaming.MinPixels", 0.5f,
                                64.0f);
 cvar::CVar<float> g_idle_seconds("render.streaming.IdleSeconds", 5.0f,
                                  "Segundos sin verse antes de salir de la memoria de video", cvar::Saved, 0.5f, 600.0f);
+
+// LOD de animacion (roadmap CR-CROWD-004): los personajes lejanos o que no se
+// ven no se animan cada frame. El tiempo que se salta se acumula y se aplica
+// en el siguiente frame evaluado (no se desincronizan); los frames de cada
+// objeto se reparten para no animar todos a la vez.
+cvar::CVar<bool> g_anim_lod("anim.lod.Enabled", true,
+                            "Animar menos a menudo lo lejano y lo que no se ve (cerca: cada frame)", cvar::Saved);
+cvar::CVar<float> g_anim_lod_near("anim.lod.Near", 15.0f, "Hasta esta distancia (m) se anima cada frame",
+                                  cvar::Saved, 1.0f, 1000.0f);
+cvar::CVar<float> g_anim_lod_mid("anim.lod.Mid", 30.0f, "Hasta esta distancia, uno de cada 2 frames", cvar::Saved,
+                                 1.0f, 2000.0f);
+cvar::CVar<float> g_anim_lod_far("anim.lod.Far", 60.0f,
+                                 "Hasta esta distancia, uno de cada 4 frames; mas lejos, uno de cada 8", cvar::Saved,
+                                 1.0f, 5000.0f);
+cvar::CVar<int> g_anim_lod_offscreen("anim.lod.Offscreen", 6,
+                                     "Cada cuantos frames se anima lo que esta detras de la camara (1 = siempre)",
+                                     cvar::Saved, 1, 60);
 
 }  // namespace
 
@@ -731,6 +750,7 @@ int RenderSync::externalClip(std::uint32_t model, const Uuid& clip, scene::Scene
     // Leyendose en segundo plano: se mira si ya llego, sin esperar.
     if (auto pending = pending_clips_.find(key); pending != pending_clips_.end()) {
         if (pending->second.wait_for(std::chrono::seconds(0)) != std::future_status::ready) return -1;
+        CR_PROFILE_SCOPE("Clip recibido");
         std::optional<asset::AnimationClip> loaded = pending->second.get();
         pending_clips_.erase(pending);
         int index = -1;
@@ -757,6 +777,13 @@ int RenderSync::externalClip(std::uint32_t model, const Uuid& clip, scene::Scene
         const std::string name = info->name;
         pending_clips_.emplace(key, std::async(std::launch::async,
                                                [skeleton, path, name]() -> std::optional<asset::AnimationClip> {
+                                                   const bool trace = std::getenv("CRAMION_TRACE_SHUTDOWN") != nullptr;
+                                                   if (trace) std::cout << "[RenderSync] clip " << name << " empieza" << std::endl;
+                                                   struct Fin {
+                                                       bool t;
+                                                       std::string n;
+                                                       ~Fin() { if (t) std::cout << "[RenderSync] clip " << n << " termina" << std::endl; }
+                                                   } fin{trace, name};
                                                    asset::AnimationClip loaded;
                                                    std::string error;
                                                    if (loadAnimationClip(path, *skeleton, loaded, &error) &&
@@ -806,45 +833,80 @@ const asset::ModelData* RenderSync::actorModelData(Entity entity, const scene::S
 }
 
 void RenderSync::reset(scene::Scene& scene) {
+    const bool trace = std::getenv("CRAMION_TRACE_SHUTDOWN") != nullptr;
+    const auto marca = [&](const char* paso) { if (trace) std::cout << "[RenderSync] reset: " << paso << std::endl; };
+    marca("scene");
     scene.actors().clear();
+    marca("scene");
     scene.clear();
     for (const auto& [uuid, asset] : loaded_) {
         // Las piezas se movieron a la escena: el AssetManager ya no las tiene
         // completas. Se descargan para que la proxima vez se relean.
         assets_.unload(uuid);
     }
+    marca("models_");
     models_.clear();
+    marca("loaded_");
     loaded_.clear();
+    marca("physbones_");
     physbones_.clear();
+    marca("ragdoll_tips_");
     ragdoll_tips_.clear();
+    marca("shared_poses_");
     shared_poses_.clear();
+    marca("socket_sources_");
     socket_sources_.clear();
+    marca("drive_sockets_");
     drive_sockets_.clear();
+    marca("failed_");
     failed_.clear();
+    marca("materials_");
     materials_.clear();
+    marca("failed_materials_");
     failed_materials_.clear();
+    marca("variants_");
     variants_.clear();
+    marca("variant_lookup_");
     variant_lookup_.clear();
+    marca("runtime_meshes_");
     runtime_meshes_.clear();
+    marca("free_runtime_models_");
     free_runtime_models_.clear();
+    marca("cloth_models_");
     cloth_models_.clear();
+    marca("warned_meshes_");
     warned_meshes_.clear();
+    marca("rebuild_materials_");
     rebuild_materials_.clear();
+    marca("live_materials_");
     live_materials_.clear();
+    marca("model_bounds_");
     model_bounds_.clear();
+    marca("animations_");
     animations_.clear();
+    marca("controllers_");
     controllers_.clear();
+    marca("failed_controllers_");
     failed_controllers_.clear();
     motion_features_.clear();  // por indice de modelo: se rehacen
+    marca("external_clips_");
     external_clips_.clear();
     pending_clips_.clear();  // (los futuros esperan a su hilo al destruirse)
+    marca("prefetched_controllers_");
     prefetched_controllers_.clear();
+    marca("decal_textures_");
     decal_textures_.clear();
+    marca("rivers_");
     rivers_.clear();
+    marca("actor_entities_");
     actor_entities_.clear();
+    marca("previous_entities_");
     previous_entities_.clear();
+    marca("destroyTerrains");
     destroyTerrains();
+    marca("actor_models_");
     actor_models_.clear();
+    marca("entity_actor_");
     entity_actor_.clear();
     loaded_environment_ = {};
     failed_environment_ = {};
@@ -1738,6 +1800,7 @@ void RenderSync::updateRipples(World& world, gfx::VulkanRenderer& renderer, floa
 
 void RenderSync::sync(World& world, scene::Scene& scene, gfx::VulkanRenderer& renderer,
                       float delta_seconds, const Options& options) {
+    CR_PROFILE_SCOPE("RenderSync");
     renderer_ = &renderer;  // los .crshader se compilan al construir variantes
     // Mallas editables (modelado) -> su malla del MeshRenderer.
     modeling::updateEditableMeshes(world);
@@ -1755,7 +1818,10 @@ void RenderSync::sync(World& world, scene::Scene& scene, gfx::VulkanRenderer& re
     syncWater(world, renderer, delta_seconds, scene.camera().position());
     // Al final (la escena ya esta lista): lo que ven las camaras con Target
     // Texture, antes del frame de la pantalla.
-    if (options.render_textures) renderCameraTextures(world, scene, renderer);
+    if (options.render_textures) {
+        CR_PROFILE_SCOPE("Render Textures (camaras)");
+        renderCameraTextures(world, scene, renderer);
+    }
 }
 
 RenderSync::~RenderSync() {
@@ -1815,6 +1881,20 @@ void RenderSync::refreshRenderTextures() {
                                            static_cast<std::uint32_t>(asset.height));
         }
     }
+}
+
+int RenderSync::animationLodInterval(const Entity& e, const scene::Scene& scene) const {
+    const scene::Camera& camera = scene.camera();
+    const Vec3 to = e.worldPosition() - camera.position();
+    const float distance = core::length(to);
+    // Detras de la camara (con margen para lo que esta justo al lado).
+    if (distance > 4.0f && core::dot(to * (1.0f / distance), camera.forward()) < -0.25f) {
+        return std::max(g_anim_lod_offscreen.get(), 1);
+    }
+    if (distance <= g_anim_lod_near.get()) return 1;
+    if (distance <= g_anim_lod_mid.get()) return 2;
+    if (distance <= g_anim_lod_far.get()) return 4;
+    return 8;
 }
 
 void RenderSync::renderCameraTextures(World& world, scene::Scene& scene, gfx::VulkanRenderer& renderer) {
@@ -2098,6 +2178,8 @@ void RenderSync::syncTerrains(World& world, gfx::VulkanRenderer& renderer, const
 
 void RenderSync::syncActors(World& world, scene::Scene& scene, gfx::VulkanRenderer& renderer,
                             float delta_seconds) {
+    CR_PROFILE_SCOPE("Actores y animacion");
+    anim_lod_evaluated_ = anim_lod_skipped_ = 0;
     bool added = false;
     // Modelos que terminaron de leer los hilos de fondo (streaming).
     assets_.pollLoads();
@@ -2159,6 +2241,27 @@ void RenderSync::syncActors(World& world, scene::Scene& scene, gfx::VulkanRender
         }
         state.seen = frame_;
 
+        // LOD de animacion: lejos o detras de la camara no se evalua cada frame
+        // (la pose del frame anterior se queda) y el tiempo se acumula.
+        float anim_dt = delta_seconds;
+        bool lod_skip = false;
+        if (g_anim_lod.get() && delta_seconds > 0.0f && data.nodes.size() > 1 && data.bones.size() > 1 &&
+            !e.has<anim::MotionMatching>() && cloth == nullptr && soft == nullptr) {
+            const RigComponents lod_rig = gatherRig(e);
+            if (lod_rig.physbones == nullptr && lod_rig.ragdoll == nullptr) {
+                const int interval = animationLodInterval(e, scene);
+                state.lod_dt += delta_seconds;
+                const std::uint64_t slot = frame_ + static_cast<std::uint64_t>(entt::to_integral(e.handle()));
+                if (interval > 1 && slot % static_cast<std::uint64_t>(interval) != 0) {
+                    lod_skip = true;
+                } else {
+                    anim_dt = std::min(state.lod_dt, 0.25f);
+                    state.lod_dt = 0.0f;
+                }
+            }
+            lod_skip ? ++anim_lod_skipped_ : ++anim_lod_evaluated_;
+        }
+
         bool animating = false;
         bool posed = false;  // la pose de este frame ya se evaluo
         bool inertial_tracked = false;  // pose de animacion: la inercializacion la sigue
@@ -2166,7 +2269,7 @@ void RenderSync::syncActors(World& world, scene::Scene& scene, gfx::VulkanRender
         // manda sobre el Animator.
         if (anim::MotionMatching* mm = e.tryGet<anim::MotionMatching>();
             mm != nullptr && mm->enabled && mm->database.valid()) {
-            const MotionStep step = updateMotionMatching(e, *mm, *model, data, state, scene, delta_seconds);
+            const MotionStep step = updateMotionMatching(e, *mm, *model, data, state, scene, anim_dt);
             if (step == MotionStep::Waiting) return;
             if (step == MotionStep::Posed) {
                 animating = true;
@@ -2176,7 +2279,7 @@ void RenderSync::syncActors(World& world, scene::Scene& scene, gfx::VulkanRender
         }
         // Un modelo sin clips propios tambien anima con un controlador (sus
         // clips son .cranim sueltos: el personaje de Mixamo y su pack).
-        if (Animator* animator = posed ? nullptr : e.tryGet<Animator>();
+        if (Animator* animator = (posed || lod_skip) ? nullptr : e.tryGet<Animator>();
             animator != nullptr && (!data.animations.empty() || animator->controller.valid())) {
             animating = true;
             int clip = animator->clip;
@@ -2186,10 +2289,14 @@ void RenderSync::syncActors(World& world, scene::Scene& scene, gfx::VulkanRender
             bool controlled = false;  // la pose ya la hizo el controlador
 
             // Con controlador: la maquina de estados elige el clip.
-            const std::shared_ptr<const AnimatorController> controller =
-                animator->controller.valid() ? animatorController(animator->controller.uuid) : nullptr;
+            std::shared_ptr<const AnimatorController> controller;
+            {
+                CR_PROFILE_SCOPE("Controlador y clips");
+                controller = animator->controller.valid() ? animatorController(animator->controller.uuid) : nullptr;
+                if (controller && !controller->states.empty()) prefetchClips(*model, animator->controller.uuid, *controller, scene);
+            }
             if (controller && !controller->states.empty()) {
-                prefetchClips(*model, animator->controller.uuid, *controller, scene);
+                CR_PROFILE_SCOPE("Maquina de estados");
                 // El clip del estado actual aun se esta leyendo (streaming): este
                 // frame no se dibuja (mejor que verlo un instante en pose T).
                 {
@@ -2268,12 +2375,47 @@ void RenderSync::syncActors(World& world, scene::Scene& scene, gfx::VulkanRender
                     phase = st.loop ? phase - std::floor(phase) : std::clamp(phase, 0.0f, 1.0f);
                 };
 
-                if (!runtime.replay_control) {  // repeticion: el estado lo pone ella
+                // CrossFade pedido por el juego: manda sobre las transiciones.
+                bool forced = false;
+                const float forced_fade = std::max(runtime.cross_fade_time, 0.0f);
+                const bool forced_inertial = runtime.cross_fade_inertial;
+                if (!runtime.cross_fade.empty() && !runtime.replay_control) {
+                    for (std::size_t i = 0; i < controller->states.size(); ++i) {
+                        if (controller->states[i].name == runtime.cross_fade) {
+                            // Su clip aun se esta leyendo (streaming): se espera
+                            // con la pose actual en vez de saltar a la pose T.
+                            const AnimatorState& next = controller->states[i];
+                            bool pending = next.clip.valid() && clipPending(*model, next.clip.uuid);
+                            for (const BlendTreeChild& child : next.children) {
+                                pending = pending || (child.clip.valid() && clipPending(*model, child.clip.uuid));
+                            }
+                            if (pending) {
+                                if (next.clip.valid()) externalClip(*model, next.clip.uuid, scene);
+                                for (const BlendTreeChild& child : next.children) {
+                                    if (child.clip.valid()) externalClip(*model, child.clip.uuid, scene);
+                                }
+                                pending = next.clip.valid() && clipPending(*model, next.clip.uuid);
+                            }
+                            if (pending) break;  // la peticion sigue en cross_fade
+                            runtime.state = static_cast<int>(i);
+                            runtime.state_time = 0.0f;
+                            runtime.last_transition = -1;
+                            forced = true;
+                            break;
+                        }
+                    }
+                    if (forced) runtime.cross_fade.clear();
+                    // Un estado que no existe no se queda pidiendose para siempre.
+                    bool exists = false;
+                    for (const AnimatorState& s : controller->states) exists = exists || s.name == runtime.cross_fade;
+                    if (!exists) runtime.cross_fade.clear();
+                }
+                if (!runtime.replay_control && !forced) {  // repeticion: el estado lo pone ella
                     stepAnimatorController(*controller, runtime, stateSamples(runtime.state, state.phase, 0.0f, nullptr));
                 }
                 runtime.state = std::clamp(runtime.state, 0, static_cast<int>(controller->states.size()) - 1);
                 float inertial_duration = 0.0f;
-                if (runtime.state != state.controller_state) {
+                if (runtime.state != state.controller_state || (forced && state.controller_state >= 0)) {
                     // Fundido o inercializacion desde el estado que sonaba (si
                     // la transicion lo pide).
                     const AnimatorTransition* transition =
@@ -2281,9 +2423,10 @@ void RenderSync::syncActors(World& world, scene::Scene& scene, gfx::VulkanRender
                                 runtime.last_transition < static_cast<int>(controller->transitions.size())
                             ? &controller->transitions[static_cast<std::size_t>(runtime.last_transition)]
                             : nullptr;
-                    const float fade = transition != nullptr ? transition->duration : 0.0f;
+                    const float fade = forced ? forced_fade : transition != nullptr ? transition->duration : 0.0f;
+                    const bool inertial = forced ? forced_inertial : transition != nullptr && transition->inertial;
                     const float old_phase = state.phase;
-                    if (fade > 0.0f && transition->inertial) {
+                    if (fade > 0.0f && inertial) {
                         // Se deja de mezclar: el desfase con lo que se veia se apaga solo.
                         state.fade_state = -1;
                         inertial_duration = fade;
@@ -2296,17 +2439,18 @@ void RenderSync::syncActors(World& world, scene::Scene& scene, gfx::VulkanRender
                         state.fade_state = -1;
                     }
                     state.controller_state = runtime.state;
-                    state.phase = transition != nullptr && transition->sync_phase ? old_phase : 0.0f;
+                    state.phase = !forced && transition != nullptr && transition->sync_phase ? old_phase : 0.0f;
                     if (!runtime.replay_control) animator->time = 0.0f;  // repeticion: su tiempo manda
                 }
                 const AnimatorState& st = controller->states[static_cast<std::size_t>(runtime.state)];
+                runtime.state_name = st.name;
                 const float cycle = stateSamples(runtime.state, state.phase, 0.0f, nullptr);
                 if (animator->playing) {
-                    runtime.state_time += delta_seconds * std::abs(animator->speed * st.speed);
-                    advance(runtime.state, state.phase, delta_seconds);
+                    runtime.state_time += anim_dt * std::abs(animator->speed * st.speed);
+                    advance(runtime.state, state.phase, anim_dt);
                     if (state.fade_state >= 0) {
-                        advance(state.fade_state, state.fade_phase, delta_seconds);
-                        state.fade_time += delta_seconds;
+                        advance(state.fade_state, state.fade_phase, anim_dt);
+                        state.fade_time += anim_dt;
                         if (state.fade_time >= state.fade_duration) state.fade_state = -1;
                     }
                     animator->time = state.phase * cycle;
@@ -2327,7 +2471,7 @@ void RenderSync::syncActors(World& world, scene::Scene& scene, gfx::VulkanRender
                     // La pose nueva un instante antes: su velocidad al empezar.
                     float before_phase = state.phase;
                     if (cycle > 0.0f) {
-                        before_phase -= delta_seconds * animator->speed * st.speed / cycle;
+                        before_phase -= anim_dt * animator->speed * st.speed / cycle;
                         before_phase = st.loop ? before_phase - std::floor(before_phase)
                                                : std::clamp(before_phase, 0.0f, 1.0f);
                     }
@@ -2340,7 +2484,7 @@ void RenderSync::syncActors(World& world, scene::Scene& scene, gfx::VulkanRender
                     state.animator.evaluateBlend(earlier);
                     const std::vector<Mat4> before = state.animator.locals();
                     state.animator.evaluateBlend(samples);
-                    state.inertial.start(now, before, inertial_duration, delta_seconds);
+                    state.inertial.start(now, before, inertial_duration, anim_dt);
                 }
                 inertial_tracked = animator->playing;
                 state.clip = -3;  // sin controlador otra vez: vuelve a elegir clip
@@ -2370,17 +2514,17 @@ void RenderSync::syncActors(World& world, scene::Scene& scene, gfx::VulkanRender
                 }
                 state.animator.setSpeed(speed);
                 if (animator->playing) {
-                    state.animator.update(delta_seconds);
+                    state.animator.update(anim_dt);
                     animator->time = state.animator.time();
                     posed = true;
                     if (switched && animator->blend_time > 0.0f && state.inertial.hasHistory()) {
                         const std::vector<Mat4> now = state.animator.locals();
-                        state.animator.setTime(animator->time - delta_seconds * speed);
+                        state.animator.setTime(animator->time - anim_dt * speed);
                         state.animator.evaluate();
                         const std::vector<Mat4> before = state.animator.locals();
                         state.animator.setTime(animator->time);
                         state.animator.evaluate();
-                        state.inertial.start(now, before, animator->blend_time, delta_seconds);
+                        state.inertial.start(now, before, animator->blend_time, anim_dt);
                     }
                     inertial_tracked = true;
                 } else if (std::abs(state.animator.time() - animator->time) > 1e-5f) {
@@ -2395,12 +2539,12 @@ void RenderSync::syncActors(World& world, scene::Scene& scene, gfx::VulkanRender
         // (antes del IK, que sigue apoyando los pies donde toca).
         if (inertial_tracked && data.nodes.size() > 1) {
             const bool was_active = state.inertial.active();
-            state.inertial.apply(state.animator.locals(), delta_seconds);
+            state.inertial.apply(state.animator.locals(), anim_dt);
             if (was_active) {
                 ik::recomputeGlobals(ik::Pose{&data.nodes, &state.animator.locals(), &state.animator.globals()});
                 state.animator.updateBones();
             }
-        } else if (!animating) {
+        } else if (!animating && !lod_skip) {
             state.inertial.reset();
         }
         // Esqueleto sobre la pose de este frame (sin animar o en pausa se
@@ -2414,20 +2558,29 @@ void RenderSync::syncActors(World& world, scene::Scene& scene, gfx::VulkanRender
         const bool use_ik = rig.ik != nullptr && rig.ik->enabled;
         const bool use_proc = proc != nullptr && proc->enabled;
         // Solo esqueletos de verdad (los modelos estaticos tienen un hueso).
-        if (rig.any() && data.nodes.size() > 1 && data.bones.size() > 1) {
+        if (rig.any() && data.nodes.size() > 1 && data.bones.size() > 1 && !lod_skip) {
             if (copySharedPose(rig, state.animator, data)) {
                 animating = true;
             } else {
                 if (!posed) state.animator.evaluate();
                 if (rig.skeleton != nullptr) applyBoneOverrides(*rig.skeleton, state.animator, data);
                 if (rig.drive) applyDriveSockets(world, e, state.animator, data);
-                if (use_proc) applyProceduralBefore(world, e, *proc, state.animator, data, *model, delta_seconds);
-                if (use_ik) applyInverseKinematics(world, e, *rig.ik, state.animator, data, *model, state.ik, delta_seconds);
-                if (use_proc) applyProceduralSprings(e, *proc, state.animator, data, *model, delta_seconds);
-                if (rig.physbones != nullptr && rig.physbones->enabled) {
-                    applyPhysBones(world, e, *rig.physbones, state.animator, data, delta_seconds);
+                if (use_proc) {
+                    CR_PROFILE_SCOPE("Procedural");
+                    applyProceduralBefore(world, e, *proc, state.animator, data, *model, anim_dt);
                 }
-                if (rig.ragdoll != nullptr) applyRagdoll(e, *rig.ragdoll, state.animator, data, delta_seconds);
+                if (use_ik) {
+                    CR_PROFILE_SCOPE("IK");
+                    applyInverseKinematics(world, e, *rig.ik, state.animator, data, *model, state.ik, anim_dt);
+                }
+                if (use_proc) applyProceduralSprings(e, *proc, state.animator, data, *model, anim_dt);
+                if (rig.physbones != nullptr && rig.physbones->enabled) {
+                    applyPhysBones(world, e, *rig.physbones, state.animator, data, anim_dt);
+                }
+                if (rig.ragdoll != nullptr) {
+                    CR_PROFILE_SCOPE("Ragdoll (pose)");
+                    applyRagdoll(e, *rig.ragdoll, state.animator, data, anim_dt);
+                }
                 state.animator.updateBones();
                 storeSharedPose(rig, state.animator);
                 animating = true;
@@ -2493,6 +2646,8 @@ void RenderSync::syncActors(World& world, scene::Scene& scene, gfx::VulkanRender
         ++count;
     });
     actors.resize(count);
+    prof::counter("Animaciones evaluadas", static_cast<double>(anim_lod_evaluated_));
+    prof::counter("Animaciones saltadas (LOD)", static_cast<double>(anim_lod_skipped_));
     // Bone Sockets: lo enganchado a un hueso va con el (y los que mueven
     // huesos se apuntan para el frame que viene).
     updateSockets(world, scene);

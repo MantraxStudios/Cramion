@@ -39,8 +39,12 @@ constexpr ImU32 kScriptTab = IM_COL32(70, 120, 80, 255);
 constexpr ImU32 kScriptTabActive = IM_COL32(90, 160, 100, 255);
 constexpr ImU32 kMachineTab = IM_COL32(110, 80, 160, 255);
 constexpr ImU32 kMachineTabActive = IM_COL32(140, 105, 205, 255);
+constexpr ImU32 kGraphTab = IM_COL32(170, 95, 45, 255);
+constexpr ImU32 kGraphTabActive = IM_COL32(215, 125, 60, 255);
 
-const char* workspaceSuffix(int kind) { return kind == 1 ? "@prefab" : (kind == 3 ? "@fsm" : "@script"); }
+const char* workspaceSuffix(int kind) {
+    return kind == 1 ? "@prefab" : (kind == 3 ? "@fsm" : (kind == 4 ? "@graph" : "@script"));
+}
 
 std::string lowerText(std::string text) {
     std::transform(text.begin(), text.end(), text.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
@@ -121,7 +125,10 @@ EditorApp::WorkspaceKind EditorApp::activeWorkspaceKind() const {
 std::string EditorApp::panelTitle(const char* name) const {
     const WorkspaceKind kind = activeWorkspaceKind();
     if (kind == WorkspaceKind::Scene) return name;
-    const int suffix = kind == WorkspaceKind::Prefab ? 1 : (kind == WorkspaceKind::StateMachine ? 3 : 2);
+    const int suffix = kind == WorkspaceKind::Prefab         ? 1
+                       : kind == WorkspaceKind::StateMachine ? 3
+                       : kind == WorkspaceKind::Graph        ? 4
+                                                             : 2;
     return std::string(name) + "###" + name + workspaceSuffix(suffix);
 }
 
@@ -237,6 +244,99 @@ void EditorApp::syncScriptWorkspaces() {
     }
 }
 
+// Una pestana por cada editor de nodos abierto (VFX, Shader Graph, Visual
+// Script, Behavior Tree, Dialogo, Animator); se quita al cerrarlo.
+EditorApp::GraphDoc EditorApp::graphDoc(GraphKind kind) {
+    switch (kind) {
+        case GraphKind::Vfx: return graphDocVfx();
+        case GraphKind::ShaderGraph: return graphDocShaderGraph();
+        case GraphKind::VisualScript: return graphDocVisualScript();
+        case GraphKind::BehaviorTree: return graphDocBehaviorTree();
+        case GraphKind::Dialogue: return graphDocDialogue();
+        case GraphKind::Animator: {
+            GraphDoc d;
+            d.show = &show_animator_;
+            d.focus = &animator_focus_;
+            d.dirty = animator_dirty_;
+            d.path = animator_path_;
+            const auto info = database_ ? database_->find(animator_uuid_) : std::nullopt;
+            d.name = info ? info->name : std::string("Animator");
+            return d;
+        }
+        default: return {};
+    }
+}
+
+void EditorApp::saveGraphDoc(GraphKind kind) {
+    switch (kind) {
+        case GraphKind::Vfx: saveVfxEditor(); break;
+        case GraphKind::ShaderGraph: saveShaderGraphEditor(); break;
+        case GraphKind::VisualScript: saveVisualScriptEditor(); break;
+        case GraphKind::BehaviorTree: saveBehaviorTreeEditor(); break;
+        case GraphKind::Dialogue: saveDialogueEditor(); break;
+        case GraphKind::Animator: saveAnimatorEditor(); break;
+        default: break;
+    }
+}
+
+void EditorApp::syncGraphWorkspaces() {
+    if (!has_project_) return;
+    bool lost_active = false;
+    for (int k = 0; k < static_cast<int>(GraphKind::Count); ++k) {
+        const GraphKind kind = static_cast<GraphKind>(k);
+        const GraphDoc doc = graphDoc(kind);
+        const bool open = doc.show != nullptr && *doc.show;
+        auto it = std::find_if(workspaces_.begin(), workspaces_.end(),
+                               [&](const Workspace& ws) { return ws.kind == WorkspaceKind::Graph && ws.graph == kind; });
+        if (open) {
+            if (it == workspaces_.end()) {
+                Workspace ws;
+                ws.id = next_workspace_id_++;
+                ws.kind = WorkspaceKind::Graph;
+                ws.graph = kind;
+                workspaces_.push_back(std::move(ws));
+                it = workspaces_.end() - 1;
+                requestWorkspace(it->id);  // recien abierto: delante
+            }
+            it->name = doc.name.empty() ? dialogs::utf8(doc.path.stem()) : doc.name;
+            it->path = doc.path;
+            if (doc.focus != nullptr && *doc.focus) {
+                *doc.focus = false;
+                requestWorkspace(it->id);
+            }
+        } else if (it != workspaces_.end()) {
+            if (it->id == active_workspace_) lost_active = true;
+            workspaces_.erase(it);
+        }
+    }
+    if (lost_active) {
+        active_workspace_ = -1;
+        activateWorkspace(world_workspace_ >= 0 ? world_workspace_ : 0);
+    }
+}
+
+bool EditorApp::beginGraphWorkspace(GraphKind kind, const char* title) {
+    const Workspace* ws = findWorkspace(active_workspace_);
+    if (ws == nullptr || ws->kind != WorkspaceKind::Graph || ws->graph != kind) {
+        // Sin Begin: que los SetNextWindow* de quien llama no pasen a otra ventana.
+        ImGui::GetCurrentContext()->NextWindowData.ClearFlags();
+        return false;
+    }
+    const ImGuiViewport* viewport = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(viewport->WorkPos);
+    ImGui::SetNextWindowSize(viewport->WorkSize);
+    ImGui::SetNextWindowViewport(viewport->ID);
+    const ImGuiWindowFlags flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoDocking |
+                                   ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoSavedSettings;
+    // ID propio (@ws): la ventana flotante/acoplada de antes queda en el .ini sin estorbar.
+    const std::string id = std::string(title) + "@ws";
+    if (!ImGui::Begin(id.c_str(), nullptr, flags)) {
+        ImGui::End();
+        return false;
+    }
+    return true;
+}
+
 // -----------------------------------------------------------------------------
 // Cambiar de pestana
 // -----------------------------------------------------------------------------
@@ -265,7 +365,9 @@ void EditorApp::activateWorkspace(int id) {
     }
     const WorkspaceKind kind = ws->kind;
     const std::filesystem::path script = ws->path;
-    if (kind != WorkspaceKind::Script && kind != WorkspaceKind::StateMachine) loadWorkspaceWorld(id);
+    if (kind != WorkspaceKind::Script && kind != WorkspaceKind::StateMachine && kind != WorkspaceKind::Graph) {
+        loadWorkspaceWorld(id);
+    }
     active_workspace_ = id;
     flying_ = false;
     if (kind == WorkspaceKind::Script) {
@@ -290,7 +392,10 @@ void EditorApp::returnToSceneWorkspace() {
 void EditorApp::loadWorkspaceWorld(int id) {
     if (id == world_workspace_) return;
     Workspace* target = findWorkspace(id);
-    if (target == nullptr || target->kind == WorkspaceKind::Script || target->kind == WorkspaceKind::StateMachine) return;
+    if (target == nullptr || target->kind == WorkspaceKind::Script || target->kind == WorkspaceKind::StateMachine ||
+        target->kind == WorkspaceKind::Graph) {
+        return;
+    }
     flushCommit();
 
     // El cielo de lo que se ve ahora: el escenario del prefab lo copia (el
@@ -463,6 +568,14 @@ void EditorApp::closeWorkspace(int id, bool save) {
         }
         return;
     }
+    if (ws->kind == WorkspaceKind::Graph) {
+        const GraphKind graph = ws->graph;
+        const GraphDoc doc = graphDoc(graph);
+        if (doc.dirty) saveGraphDoc(graph);  // como los scripts: cerrar guarda
+        if (doc.show != nullptr) *doc.show = false;
+        syncGraphWorkspaces();
+        return;
+    }
     if (ws->kind == WorkspaceKind::Script) {
         const std::filesystem::path path = ws->path;
         for (std::size_t i = 0; i < script_tabs_.size(); ++i) {
@@ -506,6 +619,7 @@ void EditorApp::closeWorkspace(int id, bool save) {
 void EditorApp::drawWorkspaceBar() {
     if (workspaces_.empty()) resetWorkspaces();
     syncScriptWorkspaces();
+    syncGraphWorkspaces();
     ImGuiViewport* viewport = ImGui::GetMainViewport();
     const float height = ImGui::GetFrameHeight() + 6.0f;
     const ImGuiWindowFlags flags = ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse |
@@ -530,6 +644,11 @@ void EditorApp::drawWorkspaceBar() {
             } else if (ws.kind == WorkspaceKind::StateMachine) {
                 prefix = "Máquina: ";
                 dirty = fsm_dirty_;
+            } else if (ws.kind == WorkspaceKind::Graph) {
+                static const char* const kPrefixes[] = {"VFX: ", "Shader Graph: ", "Visual Script: ",
+                                                        "Behavior Tree: ", "Diálogo: ", "Animator: "};
+                prefix = kPrefixes[static_cast<int>(ws.graph)];
+                dirty = graphDoc(ws.graph).dirty;
             } else {
                 prefix = "Script: ";
                 for (const ScriptTab& tab : script_tabs_) {
@@ -545,8 +664,10 @@ void EditorApp::drawWorkspaceBar() {
             if (ws.kind != WorkspaceKind::Scene) {
                 const bool prefab = ws.kind == WorkspaceKind::Prefab;
                 const bool machine = ws.kind == WorkspaceKind::StateMachine;
-                const ImU32 tab = prefab ? kPrefabTab : (machine ? kMachineTab : kScriptTab);
-                const ImU32 tab_active = prefab ? kPrefabTabActive : (machine ? kMachineTabActive : kScriptTabActive);
+                const bool graph = ws.kind == WorkspaceKind::Graph;
+                const ImU32 tab = prefab ? kPrefabTab : (machine ? kMachineTab : (graph ? kGraphTab : kScriptTab));
+                const ImU32 tab_active =
+                    prefab ? kPrefabTabActive : (machine ? kMachineTabActive : (graph ? kGraphTabActive : kScriptTabActive));
                 ImGui::PushStyleColor(ImGuiCol_Tab, tab);
                 ImGui::PushStyleColor(ImGuiCol_TabDimmed, tab);
                 ImGui::PushStyleColor(ImGuiCol_TabHovered, tab_active);
@@ -661,6 +782,12 @@ void EditorApp::drawWorkspacePanels(float delta_seconds) {
         scene_view_visible_ = false;
         flying_ = false;
         drawStateMachineEditor();
+    } else if (activeWorkspaceKind() == WorkspaceKind::Graph) {
+        // Los editores de nodos se dibujan en su sitio de siempre (drawGraphEditors,
+        // drawEffectsWindows...) y ocupan la ventana con beginGraphWorkspace.
+        scene_view_visible_ = false;
+        flying_ = false;
+        if (show_animator_) drawAnimatorEditor();
     } else {
         const ImGuiID dock = ImHashStr("CramionScriptDockspace");
         const ImGuiDockNode* node = ImGui::DockBuilderGetNode(dock);

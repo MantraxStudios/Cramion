@@ -213,7 +213,14 @@ private:
         IKSmoothing ik;
         // Transiciones inerciales (controlador y cambios de clip).
         anim::Inertializer inertial;
+        // LOD de animacion (anim.lod.*): tiempo de los frames que no se evaluaron.
+        float lod_dt = 0.0f;
     };
+    // Cada cuantos frames se anima un objeto segun su distancia a la camara y
+    // si esta delante (1 = todos).
+    int animationLodInterval(const Entity& e, const scene::Scene& scene) const;
+    std::size_t anim_lod_evaluated_ = 0;
+    std::size_t anim_lod_skipped_ = 0;
     struct ClipKey {
         std::uint32_t model = 0;
         Uuid clip;

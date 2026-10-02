@@ -238,19 +238,21 @@ void EditorApp::saveBehaviorTreeEditor() {
     scripts_.reloadFile(assetRelative(st.path));
 }
 
+EditorApp::GraphDoc EditorApp::graphDocBehaviorTree() {
+    BtEditorState& st = btEditor();
+    GraphDoc d;
+    d.show = &st.show;
+    d.focus = &st.focus;
+    d.dirty = st.dirty;
+    d.path = st.path;
+    return d;
+}
+
 void EditorApp::drawBehaviorTreeEditor() {
     BtEditorState& st = btEditor();
     if (!st.show) return;
-    if (st.focus) {
-        ImGui::SetNextWindowFocus();
-        st.focus = false;
-    }
-    ImGui::SetNextWindowSize(ImVec2(1250.0f, 740.0f), ImGuiCond_FirstUseEver);
     const std::string title = "Behavior Tree: " + dialogs::utf8(st.path.stem()) + (st.dirty ? " *" : "") + "###behavior_tree";
-    if (!ImGui::Begin(title.c_str(), &st.show)) {
-        ImGui::End();
-        return;
-    }
+    if (!beginGraphWorkspace(GraphKind::BehaviorTree, title.c_str())) return;  // en su pestana de arriba
     if (!st.show && st.dirty) saveBehaviorTreeEditor();
     ai::BehaviorTreeAsset& t = st.tree;
     t.ensureRoot();

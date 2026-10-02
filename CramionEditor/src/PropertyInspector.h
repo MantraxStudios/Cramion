@@ -221,6 +221,13 @@ private:
 // Etiqueta en minusculas (para filtrar).
 std::string lowerText(const char* text);
 
+// Boton [◎] que abre una lista con buscador de los archivos de Assets con esas
+// extensiones (vacio = todos). `value`: ruta relativa a Assets. true si cambio.
+bool assetFilePicker(const char* id, const std::filesystem::path& assets_root, const std::vector<std::string>& exts,
+                     const char* hint, std::string& value);
+inline const std::vector<std::string> kImageFileExts{".png", ".jpg", ".jpeg", ".tga", ".bmp", ".hdr"};
+inline const std::vector<std::string> kAudioFileExts{".wav", ".ogg", ".mp3", ".flac"};
+
 }  // namespace cramion::editor
 
 #endif  // CRAMION_EDITOR_PROPERTY_INSPECTOR_H

@@ -228,6 +228,11 @@ bool EditorApp::materialTextureSlot(const char* label, std::string& path) {
     ImGui::SameLine();
     ImGui::BeginGroup();
     ImGui::TextUnformatted(label);
+    ImGui::SameLine();
+    {
+        static const std::vector<std::string> kExts = {".png", ".jpg", ".jpeg", ".tga", ".bmp", ".hdr", ".crrt"};
+        if (assetFilePicker("pick", project_.assetsFolder(), kExts, "imagen o Render Texture", path)) changed = true;
+    }
     if (!path.empty()) {
         ImGui::TextDisabled("%s", dialogs::utf8(dialogs::fromUtf8(path).filename()).c_str());
         ImGui::SameLine();

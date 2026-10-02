@@ -479,19 +479,22 @@ void EditorApp::saveDialogueEditor() {
     st.dialogue_dirty = false;
 }
 
+EditorApp::GraphDoc EditorApp::graphDocDialogue() {
+    GameplayEditorState& st = gameplayEditor();
+    GraphDoc d;
+    d.show = &st.show_dialogue;
+    d.focus = &st.dialogue_focus;
+    d.dirty = st.dialogue_dirty;
+    d.path = st.dialogue_path;
+    d.name = st.dialogue.name;
+    return d;
+}
+
 void EditorApp::drawDialogueWindow() {
     GameplayEditorState& st = gameplayEditor();
     if (!st.show_dialogue) return;
-    ImGui::SetNextWindowSize(ImVec2(1200.0f, 700.0f), ImGuiCond_FirstUseEver);
-    if (st.dialogue_focus) {
-        ImGui::SetNextWindowFocus();
-        st.dialogue_focus = false;
-    }
     const std::string title = "Diálogo: " + st.dialogue.name + (st.dialogue_dirty ? " *" : "") + "###dialogue_editor";
-    if (!ImGui::Begin(title.c_str(), &st.show_dialogue)) {
-        ImGui::End();
-        return;
-    }
+    if (!beginGraphWorkspace(GraphKind::Dialogue, title.c_str())) return;  // en su pestana de arriba
     if (!st.show_dialogue && st.dialogue_dirty) saveDialogueEditor();
     DialogueAsset& d = st.dialogue;
 
@@ -752,6 +755,9 @@ void EditorApp::drawDialogueWindow() {
                 changed |= ImGui::InputTextMultiline("Texto", &n->text, ImVec2(-1.0f, 80.0f));
                 changed |= ImGui::InputTextWithHint("Clave", "localización (opcional)", &n->text_key);
                 if (!n->text_key.empty()) ImGui::TextDisabled("= %s", gameplay::localization().get(n->text_key).c_str());
+                changed |= assetFilePicker("dlg_audio", project_.assetsFolder(), kAudioFileExts, "audio", n->audio);
+                ImGui::SameLine(0.0f, ImGui::GetStyle().ItemInnerSpacing.x);
+                ImGui::SetNextItemWidth(ImGui::CalcItemWidth() - (ImGui::GetFrameHeight() + ImGui::GetStyle().ItemInnerSpacing.x));
                 changed |= ImGui::InputTextWithHint("Audio", "Audio/linea1.ogg", &n->audio);
                 changed |= ImGui::DragFloat("Avanzar solo (s)", &n->auto_advance, 0.05f, 0.0f, 60.0f, "%.1f");
                 ImGui::SetItemTooltip("0 = espera al jugador");
@@ -822,6 +828,12 @@ void EditorApp::drawDialogueWindow() {
                 break;
             case DialogueNodeType::Jump:
                 changed |= ImGui::InputInt("Nodo", &n->jump_node);
+                {
+                    static const std::vector<std::string> kDialogs = {".crdialog"};
+                    changed |= assetFilePicker("dlg_jump", project_.assetsFolder(), kDialogs, "diálogo .crdialog", n->jump_dialogue);
+                }
+                ImGui::SameLine(0.0f, ImGui::GetStyle().ItemInnerSpacing.x);
+                ImGui::SetNextItemWidth(ImGui::CalcItemWidth() - (ImGui::GetFrameHeight() + ImGui::GetStyle().ItemInnerSpacing.x));
                 changed |= ImGui::InputTextWithHint("Otro diálogo", "nombre o ruta (vacío = este)", &n->jump_dialogue);
                 break;
             case DialogueNodeType::End: ImGui::TextDisabled("Termina el diálogo."); break;

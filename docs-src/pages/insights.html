@@ -1,0 +1,67 @@
+<h3 id="insights">Insights: el perfilador de CPU</h3>
+<p>
+  <strong>Ventana &gt; Insights (perfilador de CPU)</strong> enseña en qué se va cada frame, como el Unreal Insights o el
+  Profiler de Unity: un árbol de <em>zonas</em> (Física, Scripts Lua, Scripts C++, RenderSync, Actores y animación, Render…)
+  con su media, su tiempo <em>propio</em> (sin las zonas de dentro), el p95, el máximo y las llamadas por frame. Arriba,
+  el resumen del frame (media, p50, p95, p99, máximo y tirones) y la gráfica de los últimos frames.
+</p>
+<table>
+  <thead><tr><th>Botón</th><th>Qué hace</th></tr></thead>
+  <tbody>
+    <tr><td><code>Medir</code></td><td>Enciende o apaga el perfilador (<code>prof.Enabled</code>). Apagado no cuesta nada.</td></tr>
+    <tr><td><code>Congelar</code></td><td>Deja la tabla quieta para leerla.</td></tr>
+    <tr><td><code>Frames</code></td><td>Cuántos frames entran en las medias (10 a 600).</td></tr>
+    <tr><td><code>Capturar .crtrace</code></td><td>Guarda los últimos 600 frames (todas las zonas de todos los hilos y los contadores). Se abre arrastrándolo a <code>ui.perfetto.dev</code> o <code>chrome://tracing</code>.</td></tr>
+    <tr><td><code>Abrir carpeta</code></td><td>La carpeta de capturas: <code>%LOCALAPPDATA%\Cramion\Traces</code>.</td></tr>
+  </tbody>
+</table>
+
+<h3 id="tirones">Capturas automáticas de tirones</h3>
+<p>
+  Si un frame tarda más que <code>prof.HitchMs</code> (50 ms por defecto), el motor guarda solo una captura
+  <code>tiron_FECHA_HORA_Nms.crtrace</code> con los frames de antes (<code>prof.HitchFrames</code>) y escribe en la consola
+  qué zona se comió el frame: <code>[Insights] Tiron de 485 ms (sobre todo RenderSync: 478 ms)</code>. También en el
+  juego exportado. Entre capturas pasan al menos <code>prof.HitchCooldown</code> segundos y se guardan como mucho
+  <code>prof.HitchKeep</code> (las viejas se borran).
+</p>
+
+<h3 id="zonas-propias">Zonas propias</h3>
+<p>Desde C++ (o Lua) se mide cualquier trozo del juego y sale en el árbol:</p>
+<pre><code>// C++ del motor (CramionCore): una zona hasta el final del bloque
+CR_PROFILE_SCOPE("Mi sistema");
+CR_PROFILE_COUNTER("Enemigos vivos", enemigos.size());</code></pre>
+<pre><code>-- Lua
+Profiler.begin("IA de los enemigos")
+-- ...
+Profiler.finish()
+Profiler.counter("Balas", #balas)
+local ms = Profiler.frameMs()          -- lo que tardo el ultimo frame
+local archivo = Profiler.capture(300)  -- guarda una captura de 300 frames
+for _, z in ipairs(Profiler.zones(5)) do print(z.name, z.ms, z.self) end</code></pre>
+<p>
+  Cada script de Lua es una zona propia (<code>Scripts/Enemigo.lua:Update</code>) y si uno pasa de <code>lua.BudgetMs</code>
+  (2 ms) en un frame, la consola lo avisa (como mucho una vez cada 5 segundos por script).
+</p>
+<p>
+  Por MCP, la herramienta <code>profiler</code> devuelve el resumen, las zonas y los contadores
+  (<code>action: "stats"</code>) o guarda una captura (<code>action: "capture"</code>).
+</p>
+
+<h3 id="optimizaciones">Optimizaciones automáticas</h3>
+<p>Los ajustes también están abajo en la ventana Insights y en <em>Variables (CVars)</em>.</p>
+<table>
+  <thead><tr><th>CVar</th><th>Por defecto</th><th>Qué hace</th></tr></thead>
+  <tbody>
+    <tr><td><code>anim.lod.Enabled</code></td><td>sí</td><td>LOD de animación: los personajes lejanos se animan menos veces por segundo (cada frame hasta <code>anim.lod.Near</code> m, 1 de 2 hasta <code>Mid</code>, 1 de 4 hasta <code>Far</code>, 1 de 8 más lejos y <code>Offscreen</code> detrás de la cámara). Los que tienen ragdoll, tela o motion matching van siempre a tiempo.</td></tr>
+    <tr><td><code>fx.particles.Budget</code></td><td>30000</td><td>Partículas vivas como mucho en toda la escena: al acercarse al límite los emisores emiten menos, y nunca se pasa.</td></tr>
+    <tr><td><code>fx.particles.CullDistance</code></td><td>120 m</td><td>Más lejos los emisores no emiten.</td></tr>
+    <tr><td><code>fx.particles.CollisionDistance</code></td><td>40 m</td><td>Más lejos (o detrás de la cámara) las partículas no chocan con la física.</td></tr>
+    <tr><td><code>audio.MaxVoices</code></td><td>32</td><td>Sonidos que se mezclan de verdad. Los que menos se oyen pasan a <em>virtuales</em>: siguen "sonando" para el juego (<code>isPlaying</code>) y vuelven por donde tocarían.</td></tr>
+    <tr><td><code>lua.BudgetMs</code></td><td>2 ms</td><td>Aviso por script de Lua que se come el frame.</td></tr>
+    <tr><td><code>prof.HitchMs</code></td><td>50 ms</td><td>Umbral de las capturas automáticas de tirones (0 = sin capturas).</td></tr>
+  </tbody>
+</table>
+<div class="note">
+  Mide siempre con el motor en <strong>Release</strong> (la versión que se descarga). Una compilación Debug del motor es unas
+  diez veces más lenta en animación y scripts y los números no sirven para comparar.
+</div>

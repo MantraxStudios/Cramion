@@ -310,17 +310,7 @@ void EditorApp::extractClips(const asset::ModelData& model, int clip) {
 // --- Ventana --------------------------------------------------------------------
 
 void EditorApp::drawAnimatorEditor() {
-    if (animator_focus_) {
-        ImGui::SetNextWindowFocus();
-        animator_focus_ = false;
-    }
-    // La primera vez, como pestana junto a la Escena (ancho de sobra).
-    if (scene_dock_id_ != 0) ImGui::SetNextWindowDockID(scene_dock_id_, ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowSize(ImVec2(900.0f, 520.0f), ImGuiCond_FirstUseEver);
-    if (!ImGui::Begin("Animator", &show_animator_)) {
-        ImGui::End();
-        return;
-    }
+    if (!beginGraphWorkspace(GraphKind::Animator, "Animator###animator_editor")) return;  // en su pestana de arriba
     if (!animator_uuid_.valid() || !database_->find(animator_uuid_)) {
         ImGui::TextDisabled("Sin Animator abierto.");
         ImGui::TextDisabled("Proyecto > clic derecho > Crear > Animator, o doble clic en un .cranimator.");

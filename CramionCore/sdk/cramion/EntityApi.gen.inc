@@ -65,6 +65,18 @@ void setAlpha(const Value& v) const { set("alpha", v); }
 /// entity.angularVelocity2D: giro de su Rigidbody2D (grados/s)
 Value angularVelocity2D() const { return get("angularVelocity2D"); }
 void setAngularVelocity2D(const Value& v) const { set("angularVelocity2D", v); }
+/// entity:animatorState()
+/// nombre del estado actual del Animator
+template <typename... Mas>
+Value animatorState(Mas&&... mas) const {
+    return call("animatorState", Values{Value(std::forward<Mas>(mas))...});
+}
+/// entity:animatorStateTime()
+/// segundos en el estado actual del Animator
+template <typename... Mas>
+Value animatorStateTime(Mas&&... mas) const {
+    return call("animatorStateTime", Values{Value(std::forward<Mas>(mas))...});
+}
 /// entity:attachToBone(modelo, "RightHand", offset, giro)
 /// sigue a un hueso (Bone Socket)
 template <typename T0 = Value, typename T1 = Value, typename T2 = Value, typename T3 = Value>
@@ -94,6 +106,12 @@ Value characterState(Mas&&... mas) const {
 /// entity.color: Vec3 color de su UIImage/UIText
 Value color() const { return get("color"); }
 void setColor(const Value& v) const { set("color", v); }
+/// entity:crossFade("Golpe", 0.1, true)
+/// salta a un estado del Animator por su nombre (fundido; true = inercial)
+template <typename T0 = Value, typename T1 = Value, typename T2 = Value>
+Value crossFade(const T0& texto = {}, const T1& valor = {}, const T2& activar = {}) const {
+    return call("crossFade", Values{Value(texto), Value(valor), Value(activar)});
+}
 /// entity:damage(cantidad, punto, fuerza)
 /// Destructible: quita vida (se rompe al llegar a 0)
 template <typename T0 = Value, typename T1 = Value, typename T2 = Value>

@@ -324,36 +324,44 @@ void EditorApp::drawEffectsCreateMenu(const std::filesystem::path& folder) {
 
 // --- Editor del VFX Graph ---------------------------------------------------------
 
+void EditorApp::saveVfxEditor() {
+    EffectsEditorState& st = effectsEditor();
+    if (st.vfx_path.empty()) return;
+    std::string error;
+    if (!vfx::saveVfxGraph(st.graph, st.vfx_path, &error)) {
+        st.vfx_error = error;
+        return;
+    }
+    st.vfx_error.clear();
+    st.vfx_dirty = false;
+    vfx_.clearGraphOverride(st.vfx_uuid);
+    vfx_.reloadGraphs();
+}
+
+EditorApp::GraphDoc EditorApp::graphDocVfx() {
+    EffectsEditorState& st = effectsEditor();
+    GraphDoc d;
+    d.show = &st.show_vfx;
+    d.focus = &st.vfx_focus;
+    d.dirty = st.vfx_dirty;
+    d.path = st.vfx_path;
+    const auto info = database_ ? database_->find(st.vfx_uuid) : std::nullopt;
+    if (info) d.name = info->name;
+    return d;
+}
+
 void EditorApp::drawVfxEditor() {
     EffectsEditorState& st = effectsEditor();
     if (!st.show_vfx) {
         if (st.vfx_uuid.valid() && st.vfx_dirty) vfx_.clearGraphOverride(st.vfx_uuid);
         return;
     }
-    if (st.vfx_focus) {
-        ImGui::SetNextWindowFocus();
-        st.vfx_focus = false;
-    }
-    ImGui::SetNextWindowSize(ImVec2(1280.0f, 720.0f), ImGuiCond_FirstUseEver);
     const auto info = database_ ? database_->find(st.vfx_uuid) : std::nullopt;
     const std::string title = "VFX Graph: " + (info ? info->name : std::string("?")) + (st.vfx_dirty ? " *" : "") + "###vfx_editor";
-    if (!ImGui::Begin(title.c_str(), &st.show_vfx)) {
-        ImGui::End();
-        return;
-    }
+    if (!beginGraphWorkspace(GraphKind::Vfx, title.c_str())) return;  // en su pestana de arriba
     vfx::VfxGraph& g = st.graph;
     bool changed = false;
-    const auto save = [&] {
-        std::string error;
-        if (!vfx::saveVfxGraph(g, st.vfx_path, &error)) {
-            st.vfx_error = error;
-            return;
-        }
-        st.vfx_error.clear();
-        st.vfx_dirty = false;
-        vfx_.clearGraphOverride(st.vfx_uuid);
-        vfx_.reloadGraphs();
-    };
+    const auto save = [&] { saveVfxEditor(); };
 
     // --- Barra ---
     if (ImGui::Button("Guardar")) save();
@@ -559,6 +567,9 @@ void EditorApp::drawVfxEditor() {
             if (o.orient == gfx::VfxOrient::Stretched) changed |= ImGui::DragFloat("Estela (s)", &o.stretch, 0.005f, 0.0f, 2.0f, "%.3f");
             changed |= ImGui::SliderFloat("Recorte alfa", &o.alpha_clip, 0.0f, 1.0f, "%.2f");
             changed |= ImGui::Checkbox("Iluminadas (humo, polvo)", &o.lit);
+            changed |= assetFilePicker("vfx_tex", project_.assetsFolder(), kImageFileExts, "imagen", o.texture);
+            ImGui::SameLine(0.0f, ImGui::GetStyle().ItemInnerSpacing.x);
+            ImGui::SetNextItemWidth(ImGui::CalcItemWidth() - (ImGui::GetFrameHeight() + ImGui::GetStyle().ItemInnerSpacing.x));
             changed |= ImGui::InputTextWithHint("Textura", "(disco suave)", &o.texture);
             if (ImGui::BeginDragDropTarget()) {
                 if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(kImagePayload)) {

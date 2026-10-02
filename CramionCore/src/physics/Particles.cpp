@@ -1,3 +1,5 @@
+#include "CramionCore/cvar/CVar.h"
+#include "CramionCore/profiling/Profiler.h"
 #include "CramionCore/physics/Particles.h"
 
 #include "CramionCore/ecs/MathUtil.h"
@@ -8,6 +10,20 @@
 #include <cmath>
 
 namespace cramion::physics {
+namespace {
+cvar::CVar<int> g_particle_budget("fx.particles.Budget", 30000,
+                                  "Particulas vivas como mucho en toda la escena: por encima, todos los emisores emiten "
+                                  "menos en proporcion (no se corta ninguno de golpe)",
+                                  cvar::Saved, 100, 2000000);
+cvar::CVar<float> g_particle_cull("fx.particles.CullDistance", 120.0f,
+                                  "Mas lejos que esto (m) un emisor deja de emitir (las suyas siguen y se apagan; 0 = "
+                                  "nunca)",
+                                  cvar::Saved, 0.0f, 100000.0f);
+cvar::CVar<float> g_particle_collision("fx.particles.CollisionDistance", 40.0f,
+                                       "Mas lejos que esto (m), o detras de la camara, las particulas no calculan "
+                                       "choques (los rayos son lo que mas cuesta)",
+                                       cvar::Saved, 0.0f, 100000.0f);
+}  // namespace
 
 using core::Vec3;
 using core::Vec4;
@@ -154,9 +170,28 @@ void ParticleWorld::emit(Emitter& emitter, const ParticleSystem& s, int count) {
     }
 }
 
+void ParticleWorld::setViewer(const core::Vec3& position, const core::Vec3& forward) {
+    viewer_position_ = position;
+    viewer_forward_ = forward;
+    has_viewer_ = true;
+}
+
 void ParticleWorld::update(ecs::World& world, float delta_seconds, PhysicsSystem* physics,
                            const std::vector<entt::entity>& only) {
+    CR_PROFILE_SCOPE("Particulas");
     const float dt = std::clamp(delta_seconds, 0.0f, 0.1f);
+    // Presupuesto: al acercarse al limite todos los emisores emiten menos (por
+    // igual) y nunca se pasa del hueco que queda (las rafagas si, una vez).
+    const std::size_t alive = particleCount();
+    const float limit = static_cast<float>(std::max(g_particle_budget.get(), 1));
+    budget_ = BudgetStats{};
+    const float soft = limit * 0.75f;
+    budget_.emission_scale =
+        static_cast<float>(alive) > soft ? std::clamp((limit - static_cast<float>(alive)) / (limit - soft), 0.0f, 1.0f)
+                                         : 1.0f;
+    int room = std::max(static_cast<int>(limit) - static_cast<int>(alive), 0);
+    const float cull_distance = g_particle_cull.get();
+    const float collision_distance = g_particle_collision.get();
     const Vec3 gravity = physics != nullptr ? physics->settings().gravity : Vec3{0.0f, -9.81f, 0.0f};
 
     // Emisores que ya no existen (o fuera de la vista previa).
@@ -182,6 +217,20 @@ void ParticleWorld::update(ecs::World& world, float delta_seconds, PhysicsSystem
         }
         em.matrix = entity.worldMatrix();
         em.blend = s.blend;
+        ++budget_.emitters;
+        // Distancia y si esta delante de quien mira (solo con camara conocida).
+        bool far_away = false;
+        bool cheap = false;  // sin choques
+        if (has_viewer_ && only.empty()) {
+            const Vec3 origin{em.matrix.m[3][0], em.matrix.m[3][1], em.matrix.m[3][2]};
+            const Vec3 to = origin - viewer_position_;
+            const float distance = core::length(to);
+            far_away = cull_distance > 0.0f && distance > cull_distance;
+            const bool behind = distance > 6.0f && core::dot(to * (1.0f / distance), viewer_forward_) < -0.3f;
+            cheap = far_away || behind || (collision_distance > 0.0f && distance > collision_distance);
+            if (far_away) ++budget_.culled;
+            if (cheap) ++budget_.no_collision;
+        }
         em.size_start = s.size_start;
         em.size_end = s.size_end;
         em.color_start = colorOf(s.color_start, s.alpha_start, s.intensity);
@@ -197,9 +246,10 @@ void ParticleWorld::update(ecs::World& world, float delta_seconds, PhysicsSystem
                 emit(em, s, s.burst);
                 em.burst_done = true;
             }
-            em.pending += std::max(s.rate, 0.0f) * dt;
-            const int count = static_cast<int>(em.pending);
-            em.pending -= static_cast<float>(count);
+            em.pending += far_away ? 0.0f : std::max(s.rate, 0.0f) * dt * budget_.emission_scale;
+            const int count = std::min(static_cast<int>(em.pending), room);
+            em.pending -= static_cast<float>(static_cast<int>(em.pending));
+            room -= count;
             emit(em, s, count);
             em.time += dt;
             if (em.time >= std::max(s.duration, 0.05f)) {
@@ -221,7 +271,7 @@ void ParticleWorld::update(ecs::World& world, float delta_seconds, PhysicsSystem
         filter.layer_mask = s.collides_with;
         filter.triggers = QueryTriggers::Ignore;
         filter.record = false;  // miles de rayos: no son para los gizmos
-        const bool collide = s.collision && physics != nullptr && physics->running();
+        const bool collide = s.collision && physics != nullptr && physics->running() && !cheap;
         int events_this_frame = 0;
 
         for (std::size_t i = 0; i < em.particles.size();) {

@@ -199,7 +199,9 @@ std::shared_ptr<ModelAsset> AssetManager::readModel(const Uuid& uuid, const std:
             // dibujan simplificados cuando la diferencia no se ve.
             asset::generateLods(part);
             // Texturas incrustadas: se decodifican aqui (en paralelo).
-            if (decode_textures) asset::finalizeModel(part, name + "/" + part.name);
+            // Solo esqueleto y animaciones (paquetes de clips): se leen para extraerlos.
+            const bool clips_only = part.indices.empty() && !part.animations.empty();
+            if (decode_textures && !clips_only) asset::finalizeModel(part, name + "/" + part.name);
             asset->parts.push_back(std::make_shared<asset::ModelData>(std::move(part)));
         }
     } catch (const std::exception& error) {

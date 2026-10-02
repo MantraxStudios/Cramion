@@ -147,7 +147,8 @@ struct WeatherAudio::Node {
 
             // --- Lluvia ---
             if (rain_level > 0.001f || dust_level > 0.001f) {
-                const float hiss_gain = 0.16f * std::pow(rain_level, 0.8f) + 0.07f * dust_level * gust;
+                // Mezcla mas baja: la lluvia fina sonaba como un aguacero y tapaba el juego.
+                const float hiss_gain = 0.06f * std::pow(rain_level, 1.2f) + 0.05f * dust_level * gust;
                 for (int c = 0; c < 2; ++c) {
                     const float x = white();
                     hiss_hp[c] += hiss_hp_a * (x - hiss_hp[c]);
@@ -165,7 +166,7 @@ struct WeatherAudio::Node {
                         const float hz = 1400.0f + 4200.0f * uniform();
                         const float w = kTwoPi * hz / rate;
                         d.k = 2.0f * std::cos(w);
-                        d.amp = (0.03f + 0.17f * uniform() * uniform()) * std::sqrt(rain_level);
+                        d.amp = (0.015f + 0.08f * uniform() * uniform()) * rain_level;
                         d.y1 = std::sin(w) * d.amp;
                         d.y2 = 0.0f;
                         d.decay = std::exp(-1.0f / ((0.0015f + 0.006f * uniform()) * rate));
@@ -190,7 +191,7 @@ struct WeatherAudio::Node {
             if (wind_amount > 0.001f) {
                 const float cutoff = 180.0f + 900.0f * std::min(wind_amount * gust, 1.5f);
                 const float a = onePole(cutoff, rate);
-                const float gain = 0.55f * std::pow(wind_amount, 1.3f) * std::max(gust, 0.1f);
+                const float gain = 0.22f * std::pow(wind_amount, 1.5f) * std::max(gust, 0.1f);
                 for (int c = 0; c < 2; ++c) {
                     brown[c] = std::clamp(brown[c] * 0.996f + white() * 0.06f, -1.0f, 1.0f);
                     wind_lp[c] += a * (brown[c] * 3.0f - wind_lp[c]);

@@ -208,6 +208,21 @@ Quat fromJolt(JPH::QuatArg q) {
 std::uint64_t entityToUserData(entt::entity entity) {
     return static_cast<std::uint64_t>(entt::to_integral(entity));
 }
+}  // namespace
+
+bool isFootGround(const ecs::Entity& hit, const ecs::Entity& self) {
+    if (!hit.valid()) return true;  // terreno u otra cosa sin entidad
+    if (hit == self || self.isAncestorOf(hit) || hit.isAncestorOf(self)) return false;
+    if (hit.has<ecs::Ragdoll>()) return false;
+    if (const Rigidbody* rb = hit.tryGet<Rigidbody>(); rb != nullptr && rb->type == BodyType::Dynamic) return false;
+    for (ecs::Entity e = hit; e.valid(); e = e.parent()) {
+        if (e.has<CharacterController>()) return false;
+    }
+    return true;
+}
+
+namespace {
+
 entt::entity userDataToEntity(std::uint64_t data) {
     return static_cast<entt::entity>(static_cast<std::underlying_type_t<entt::entity>>(data));
 }
@@ -405,6 +420,12 @@ struct PhysicsSystem::Impl {
             if (body1.GetUserData() == body2.GetUserData()) {
                 return JPH::ValidateResult::RejectAllContactsForThisBodyPair;
             }
+            // El ragdoll de un personaje no choca con su propia capsula (el
+            // Character Controller esta en un antepasado del modelo).
+            if (impl_.ragdollOf(body1.GetUserData(), body2.GetUserData()) ||
+                impl_.ragdollOf(body2.GetUserData(), body1.GetUserData())) {
+                return JPH::ValidateResult::RejectAllContactsForThisBodyPair;
+            }
             // El inner body de un personaje: triggers y dinamicos (que no lo
             // atraviesen); con lo quieto ya choca el propio personaje.
             if (!body1.IsSensor() && !body2.IsSensor()) {
@@ -536,6 +557,18 @@ struct PhysicsSystem::Impl {
         overrides_dirty = false;
     }
 
+    // Ragdoll -> personaje que lo lleva (se lee desde los hilos de Jolt; solo
+    // cambia fuera del paso de la fisica).
+    std::unordered_map<std::uint64_t, std::uint64_t> ragdoll_owner;
+    // Cuerpos de ragdolls: los personajes no se suben encima (pasan por encima
+    // de un cuerpo caido empujandolo, como en GTA, en vez de quedarse de pie en el).
+    std::unordered_set<std::uint32_t> ragdoll_bodies;
+    bool ragdollOf(std::uint64_t body, std::uint64_t owner) const {
+        if (ragdoll_owner.empty()) return false;
+        const auto it = ragdoll_owner.find(body);
+        return it != ragdoll_owner.end() && it->second == owner;
+    }
+
     bool isInnerBody(const JPH::BodyID& id) const {
         return !inner_bodies.empty() && inner_bodies.contains(id.GetIndexAndSequenceNumber());
     }
@@ -594,6 +627,7 @@ struct PhysicsSystem::Impl {
         for (const JPH::BodyID& id : r.bodies) {
             if (id.IsInvalid() || !system) continue;
             body_entities.erase(id.GetIndexAndSequenceNumber());
+            ragdoll_bodies.erase(id.GetIndexAndSequenceNumber());
             bodies().RemoveBody(id);
             bodies().DestroyBody(id);
         }
@@ -674,6 +708,7 @@ struct PhysicsSystem::Impl {
                 s.mAngularVelocity = toJolt(angular);
             });
             r.bodies.push_back(id);
+            ragdoll_bodies.insert(id.GetIndexAndSequenceNumber());
             r.offset.push_back(ecs::quatMultiply(ecs::quatConjugate(bone_rotation), body_rotation));
             r.half.push_back(length * 0.5f);
             r.cylinder.push_back(half_cylinder);
@@ -719,6 +754,12 @@ struct PhysicsSystem::Impl {
         rt.simulating = true;
         rt.sim_ready = true;
         rt.blend_out = 0.0f;
+        for (ecs::Entity a = entity.parent(); a.valid(); a = a.parent()) {
+            if (a.has<CharacterController>()) {
+                ragdoll_owner[entityToUserData(handle)] = entityToUserData(a.handle());
+                break;
+            }
+        }
         std::cout << "[Fisica] Ragdoll de " << entity.name() << ": " << r.bodies.size() << " cuerpos, "
                   << r.constraints.size() << " articulaciones" << std::endl;
         ragdolls[handle] = std::move(r);
@@ -736,6 +777,7 @@ struct PhysicsSystem::Impl {
                 continue;
             }
             destroyRagdoll(it->second, rag != nullptr ? rag->blend_out : 0.0f);
+            ragdoll_owner.erase(entityToUserData(h));
             it = ragdolls.erase(it);
         }
         if (!simulate) return;
@@ -2827,13 +2869,15 @@ struct PhysicsSystem::Impl {
     // Filtro de cuerpos del personaje: ni triggers ni lo de su propia entidad.
     class CharacterBodyFilter final : public JPH::BodyFilter {
     public:
-        explicit CharacterBodyFilter(std::uint64_t own) : own_(own) {}
+        CharacterBodyFilter(std::uint64_t own, const Impl& impl) : own_(own), impl_(impl) {}
         bool ShouldCollideLocked(const JPH::Body& body) const override {
-            return !body.IsSensor() && body.GetUserData() != own_;
+            return !body.IsSensor() && body.GetUserData() != own_ && !impl_.ragdollOf(body.GetUserData(), own_) &&
+                   !impl_.ragdoll_bodies.contains(body.GetID().GetIndexAndSequenceNumber());
         }
 
     private:
         std::uint64_t own_;
+        const Impl& impl_;
     };
 
     static float yawOf(const Quat& q) {
@@ -2938,7 +2982,7 @@ struct PhysicsSystem::Impl {
 
     void refreshCharacterContacts(CharacterEntry& c, entt::entity handle) {
         const JPH::ObjectLayer layer = objectLayer(c.layer, true);
-        const CharacterBodyFilter filter(entityToUserData(handle));
+        const CharacterBodyFilter filter(entityToUserData(handle), *this);
         c.character->RefreshContacts(system->GetDefaultBroadPhaseLayerFilter(layer), system->GetDefaultLayerFilter(layer),
                                      filter, {}, *temp_allocator);
     }
@@ -3012,7 +3056,7 @@ struct PhysicsSystem::Impl {
         update.mStickToFloorStepDown = stick ? JPH::Vec3(0.0f, -std::max(cc.step_offset, 0.25f), 0.0f) : JPH::Vec3::sZero();
         update.mWalkStairsStepUp = JPH::Vec3(0.0f, std::max(cc.step_offset * std::abs(c.scale.y), 0.0f), 0.0f);
         const JPH::ObjectLayer layer = objectLayer(c.layer, true);
-        const CharacterBodyFilter filter(entityToUserData(handle));
+        const CharacterBodyFilter filter(entityToUserData(handle), *this);
         ch.ExtendedUpdate(dt, gravity, update, system->GetDefaultBroadPhaseLayerFilter(layer),
                           system->GetDefaultLayerFilter(layer), filter, {}, *temp_allocator);
         c.flags = contactFlags(ch, std::cos(core::radians(std::clamp(cc.slope_limit, 0.0f, 89.0f))));
@@ -3021,7 +3065,7 @@ struct PhysicsSystem::Impl {
     void tryCrouch(CharacterEntry& c, entt::entity handle, bool want) {
         if (want == c.crouching) return;
         const JPH::ObjectLayer layer = objectLayer(c.layer, true);
-        const CharacterBodyFilter filter(entityToUserData(handle));
+        const CharacterBodyFilter filter(entityToUserData(handle), *this);
         // Levantarse solo si cabe de pie.
         if (c.character->SetShape(want ? c.crouched.GetPtr() : c.standing.GetPtr(), 1.5f * c.character->GetCharacterPadding(),
                                   system->GetDefaultBroadPhaseLayerFilter(layer), system->GetDefaultLayerFilter(layer),

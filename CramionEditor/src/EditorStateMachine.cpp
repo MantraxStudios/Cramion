@@ -1264,6 +1264,16 @@ void EditorApp::drawStateMachineDetails(ecs::Entity live) {
             ImGui::PopID();
         }
         // Script de Assets en lugar del codigo.
+        {
+            static const std::vector<std::string> kLua = {".lua"};
+            std::string picked = st.script;
+            if (assetFilePicker("fsm_script", project_.assetsFolder(), kLua, "script .lua", picked) && picked != st.script) {
+                st.script = picked;
+                selectStateMachineCode(-2);
+                fsm_dirty_ = true;
+            }
+        }
+        ImGui::SameLine(0.0f, ImGui::GetStyle().ItemInnerSpacing.x);
         ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - 90.0f);
         std::string script = st.script;
         if (ImGui::InputTextWithHint("##script", "o un .lua de Assets (arrastrar aquí)", &script,

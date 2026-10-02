@@ -268,16 +268,8 @@ void EditorApp::saveShaderGraphEditor() {
 void EditorApp::drawShaderGraphEditor() {
     GraphEditorState& st = graphEditors();
     if (!st.show_sg) return;
-    if (st.sg_focus) {
-        ImGui::SetNextWindowFocus();
-        st.sg_focus = false;
-    }
-    ImGui::SetNextWindowSize(ImVec2(1300.0f, 760.0f), ImGuiCond_FirstUseEver);
     const std::string title = "Shader Graph: " + dialogs::utf8(st.sg_path.stem()) + (st.sg_dirty ? " *" : "") + "###shader_graph";
-    if (!ImGui::Begin(title.c_str(), &st.show_sg)) {
-        ImGui::End();
-        return;
-    }
+    if (!beginGraphWorkspace(GraphKind::ShaderGraph, title.c_str())) return;  // en su pestana de arriba
     if (!st.show_sg && st.sg_dirty) saveShaderGraphEditor();
     sg::Graph& g = st.sg_graph;
     bool changed = false;
@@ -630,6 +622,9 @@ void EditorApp::drawShaderGraphEditor() {
                     changed |= ImGui::DragFloat("Máximo", &n->max, 0.01f);
                 }
                 if (sg::hasField(def->fields, sg::NodeField::Texture)) {
+                    changed |= assetFilePicker("sg_tex", project_.assetsFolder(), kImageFileExts, "imagen", n->texture);
+                    ImGui::SameLine(0.0f, ImGui::GetStyle().ItemInnerSpacing.x);
+                    ImGui::SetNextItemWidth(ImGui::CalcItemWidth() - (ImGui::GetFrameHeight() + ImGui::GetStyle().ItemInnerSpacing.x));
                     changed |= ImGui::InputTextWithHint("Textura", "ruta en Assets", &n->texture);
                     if (ImGui::BeginDragDropTarget()) {
                         if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(kImagePayload)) {
@@ -712,16 +707,8 @@ void EditorApp::saveVisualScriptEditor() {
 void EditorApp::drawVisualScriptEditor() {
     GraphEditorState& st = graphEditors();
     if (!st.show_vs) return;
-    if (st.vs_focus) {
-        ImGui::SetNextWindowFocus();
-        st.vs_focus = false;
-    }
-    ImGui::SetNextWindowSize(ImVec2(1300.0f, 760.0f), ImGuiCond_FirstUseEver);
     const std::string title = "Visual Script: " + dialogs::utf8(st.vs_path.stem()) + (st.vs_dirty ? " *" : "") + "###visual_script";
-    if (!ImGui::Begin(title.c_str(), &st.show_vs)) {
-        ImGui::End();
-        return;
-    }
+    if (!beginGraphWorkspace(GraphKind::VisualScript, title.c_str())) return;  // en su pestana de arriba
     if (!st.show_vs && st.vs_dirty) saveVisualScriptEditor();
     vscript::Graph& g = st.vs_graph;
     const std::string relative = assetRelative(st.vs_path);
@@ -1144,6 +1131,26 @@ void EditorApp::drawVisualScriptEditor() {
     }
     if (st.vs_dirty && !ImGui::IsAnyItemActive() && ImGui::GetIO().MouseDownDuration[0] < 0.0f) saveVisualScriptEditor();
     ImGui::End();
+}
+
+EditorApp::GraphDoc EditorApp::graphDocShaderGraph() {
+    GraphEditorState& st = graphEditors();
+    GraphDoc d;
+    d.show = &st.show_sg;
+    d.focus = &st.sg_focus;
+    d.dirty = st.sg_dirty;
+    d.path = st.sg_path;
+    return d;
+}
+
+EditorApp::GraphDoc EditorApp::graphDocVisualScript() {
+    GraphEditorState& st = graphEditors();
+    GraphDoc d;
+    d.show = &st.show_vs;
+    d.focus = &st.vs_focus;
+    d.dirty = st.vs_dirty;
+    d.path = st.vs_path;
+    return d;
 }
 
 void EditorApp::drawGraphEditors() {

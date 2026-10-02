@@ -1,3 +1,5 @@
+#include "CramionCore/cvar/CVar.h"
+#include "CramionCore/profiling/Profiler.h"
 #include "CramionCore/audio/Audio.h"
 
 #include "CramionCore/environment/Environment.h"
@@ -16,6 +18,12 @@
 #include <vector>
 
 namespace cramion::audio {
+namespace {
+cvar::CVar<int> g_max_voices("audio.MaxVoices", 32,
+                             "Fuentes que se mezclan de verdad a la vez: las demas (las que menos se oyen y las que "
+                             "estan fuera de su alcance) siguen 'sonando' para el juego pero no gastan CPU",
+                             cvar::Saved, 1, 512);
+}  // namespace
 
 using core::Vec3;
 using ecs::FloatRange;
@@ -411,12 +419,78 @@ struct AudioSystem::Impl {
         // Sonidos sueltos: sus ajustes y su sitio.
         AudioSource settings;
         Vec3 position{};
+        // Virtualizacion (audio.MaxVoices): sonando para el juego pero sin
+        // mezclarse; su tiempo sigue avanzando y vuelve donde tocaria.
+        bool virtual_voice = false;
+        double virtual_since = 0.0;
+        ma_uint64 virtual_cursor = 0;
+        float audible = 0.0f;  // volumen que llega al oyente (este frame)
         ~Voice() {
             if (loaded) ma_sound_uninit(&sound);
             if (fx_ok) ma_node_uninit(&fx.base, nullptr);
         }
     };
     std::unordered_map<entt::entity, std::unique_ptr<Voice>> voices;
+    double clock = 0.0;  // segundos de juego (para el tiempo de las voces virtuales)
+    std::size_t real_voices = 0;
+    std::size_t virtual_voices = 0;
+
+    // Lo que se oye de una fuente desde el oyente: volumen por la caida con
+    // la distancia (0 fuera de su alcance).
+    static float audibility(const AudioSource& s, const Vec3& source, const Vec3& listener) {
+        if (s.mute) return 0.0f;
+        const float volume = std::max(s.volume, 0.0f);
+        if (!s.spatial) return volume;
+        const float distance = core::length(source - listener);
+        const float min_d = std::max(s.min_distance, 0.01f);
+        const float max_d = std::max(s.max_distance, min_d + 0.01f);
+        if (distance >= max_d) return 0.0f;
+        return volume * std::min(1.0f, min_d / std::max(distance, min_d));
+    }
+
+    // Deja sonar de verdad solo las mas audibles; las demas pasan a virtuales.
+    void virtualizeVoices() {
+        const int max_voices = std::max(g_max_voices.get(), 1);
+        std::vector<Voice*> wanted;
+        for (auto& [handle, v] : voices) {
+            if (!v->loaded) continue;
+            if (v->virtual_voice || ma_sound_is_playing(&v->sound)) wanted.push_back(v.get());
+        }
+        std::sort(wanted.begin(), wanted.end(), [](const Voice* a, const Voice* b) { return a->audible > b->audible; });
+        real_voices = virtual_voices = 0;
+        for (std::size_t i = 0; i < wanted.size(); ++i) {
+            Voice& v = *wanted[i];
+            const bool keep_real = static_cast<int>(i) < max_voices && v.audible > 1e-4f;
+            if (keep_real) {
+                if (v.virtual_voice) devirtualize(v);
+                if (!v.virtual_voice) ++real_voices;
+            } else {
+                if (!v.virtual_voice) {
+                    ma_sound_get_cursor_in_pcm_frames(&v.sound, &v.virtual_cursor);
+                    ma_sound_stop(&v.sound);
+                    v.virtual_voice = true;
+                    v.virtual_since = clock;
+                }
+                ++virtual_voices;
+            }
+        }
+    }
+
+    void devirtualize(Voice& v) {
+        ma_uint32 rate = 0;
+        ma_sound_get_data_format(&v.sound, nullptr, nullptr, &rate, nullptr, 0);
+        ma_uint64 length = 0;
+        ma_sound_get_length_in_pcm_frames(&v.sound, &length);
+        const double elapsed = std::max(clock - v.virtual_since, 0.0) * static_cast<double>(std::max(rate, 1u));
+        ma_uint64 cursor = v.virtual_cursor + static_cast<ma_uint64>(elapsed);
+        v.virtual_voice = false;
+        if (length > 0 && cursor >= length) {
+            if (!ma_sound_is_looping(&v.sound)) return;  // ya habria terminado
+            cursor %= length;
+        }
+        ma_sound_seek_to_pcm_frame(&v.sound, cursor);
+        ma_sound_start(&v.sound);
+    }
     std::vector<std::unique_ptr<Voice>> one_shots;
     std::unique_ptr<Voice> preview;
     Vec3 listener_last{};
@@ -636,6 +710,7 @@ void AudioSystem::start(ecs::World& world) {
 }
 
 void AudioSystem::update(ecs::World& world, float delta_seconds, const Vec3& camera_position, const Vec3& camera_forward) {
+    CR_PROFILE_SCOPE("Audio");
     Impl& d = *impl_;
     if (!d.ok) return;
 
@@ -743,9 +818,16 @@ void AudioSystem::update(ecs::World& world, float delta_seconds, const Vec3& cam
             it->second = std::make_unique<Impl::Voice>();
             if (d.load(*it->second, source->clip, source->spatial) && was_playing) ma_sound_start(&it->second->sound);
         }
-        if (it->second->loaded) d.apply(*it->second, *source, e.worldPosition(), delta_seconds, e);
+        if (it->second->loaded) {
+            d.apply(*it->second, *source, e.worldPosition(), delta_seconds, e);
+            it->second->audible = Impl::audibility(*source, e.worldPosition(), d.listener_position);
+        }
         ++it;
     }
+    d.clock += delta_seconds;
+    d.virtualizeVoices();
+    prof::counter("Voces de audio", static_cast<double>(d.real_voices));
+    prof::counter("Voces virtuales", static_cast<double>(d.virtual_voices));
     for (auto it = d.one_shots.begin(); it != d.one_shots.end();) {
         Impl::Voice& shot = **it;
         if (!shot.loaded || ma_sound_at_end(&shot.sound)) {
@@ -789,6 +871,7 @@ void AudioSystem::play(ecs::Entity entity) {
         if (!d.load(*voice, source->clip, source->spatial)) return;
     }
     voice->queried = false;  // la oclusion se mira ya, sin fundido
+    voice->virtual_voice = false;
     d.apply(*voice, *source, entity.worldPosition(), 0.0f, entity);
     ma_sound_seek_to_pcm_frame(&voice->sound, 0);
     ma_sound_start(&voice->sound);
@@ -797,6 +880,7 @@ void AudioSystem::play(ecs::Entity entity) {
 void AudioSystem::stop(ecs::Entity entity) {
     const auto it = impl_->voices.find(entity.handle());
     if (it != impl_->voices.end() && it->second->loaded) {
+        it->second->virtual_voice = false;
         ma_sound_stop(&it->second->sound);
         ma_sound_seek_to_pcm_frame(&it->second->sound, 0);
     }
@@ -804,12 +888,23 @@ void AudioSystem::stop(ecs::Entity entity) {
 
 void AudioSystem::pause(ecs::Entity entity) {
     const auto it = impl_->voices.find(entity.handle());
-    if (it != impl_->voices.end() && it->second->loaded) ma_sound_stop(&it->second->sound);
+    if (it != impl_->voices.end() && it->second->loaded) {
+        if (it->second->virtual_voice) {  // pausada: se queda donde iba
+            Impl& d = *impl_;
+            ma_uint32 rate = 0;
+            ma_sound_get_data_format(&it->second->sound, nullptr, nullptr, &rate, nullptr, 0);
+            const double elapsed = std::max(d.clock - it->second->virtual_since, 0.0) * static_cast<double>(std::max(rate, 1u));
+            ma_sound_seek_to_pcm_frame(&it->second->sound, it->second->virtual_cursor + static_cast<ma_uint64>(elapsed));
+            it->second->virtual_voice = false;
+        }
+        ma_sound_stop(&it->second->sound);
+    }
 }
 
 bool AudioSystem::isPlaying(ecs::Entity entity) const {
     const auto it = impl_->voices.find(entity.handle());
-    return it != impl_->voices.end() && it->second->loaded && ma_sound_is_playing(&it->second->sound);
+    return it != impl_->voices.end() && it->second->loaded &&
+           (it->second->virtual_voice || ma_sound_is_playing(&it->second->sound));
 }
 
 namespace {

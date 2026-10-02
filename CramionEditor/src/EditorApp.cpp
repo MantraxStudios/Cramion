@@ -80,6 +80,10 @@ EditorApp::~EditorApp() {
     // Cerrar en Play: los scripts terminan (OnDestroy) mientras todo lo que usan
     // sigue vivo (el mundo de bloques se destruye antes que ellos).
     scripts_.stop();
+    // Los scripts de C++ se desenganchan de la fisica mientras sigue viva (se
+    // declaran antes que physics_ y se destruirian despues: crash al cerrar).
+    cpp_scripts_.stop();
+    cpp_scripts_.setPhysics(nullptr);
     scripts_.unmountDataPacks();  // cerrar en Play: lo montado sale del proyecto
     if (datapack_job_ && datapack_job_->thread.joinable()) datapack_job_->thread.join();
     scripts_.setVoxels(nullptr);
@@ -198,9 +202,7 @@ bool EditorApp::openProject(const std::filesystem::path& path, bool open_scene) 
         float best = max_distance + 1.0f;
         for (const physics::RaycastHit& hit : physics_.raycastAll(origin, direction, max_distance, filter)) {
             if (hit.trigger || hit.distance >= best) continue;
-            if (hit.entity.valid() && (hit.entity == self || self.isAncestorOf(hit.entity) || hit.entity.isAncestorOf(self))) {
-                continue;
-            }
+            if (!physics::isFootGround(hit.entity, self)) continue;
             best = hit.distance;
             point = hit.point;
             normal = hit.normal;
@@ -1054,6 +1056,7 @@ void EditorApp::drawUi(float delta_seconds) {
     drawEngineSettingsWindow();
     drawCVarsWindow();
     drawPlatformWindows();  // Git, Pruebas y avisos (en cualquier pestana)
+    drawInsightsWindow();   // perfilador de CPU (EditorInsights.cpp)
     drawGameplayWindows();  // Localizacion, Partidas y Dialogos (EditorGameplay.cpp)
     drawEffectsWindows();   // VFX Graph y Repeticiones (EditorEffects.cpp)
     drawGraphEditors();     // Shader Graph, Visual Script, Behavior Tree y 2D
@@ -1117,7 +1120,11 @@ void EditorApp::drawUi(float delta_seconds) {
     // Atajos globales (no mientras se escribe ni se vuela; en un script, el
     // editor de codigo tiene los suyos).
     ImGuiIO& io = ImGui::GetIO();
-    if (!io.WantTextInput && !flying_ && workspace != WorkspaceKind::Script && workspace != WorkspaceKind::StateMachine) {
+    if (workspace == WorkspaceKind::Graph && !io.WantTextInput && io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_S, false)) {
+        if (const Workspace* ws = findWorkspace(active_workspace_)) saveGraphDoc(ws->graph);  // el grafo, no la escena
+    }
+    if (!io.WantTextInput && !flying_ && workspace != WorkspaceKind::Script && workspace != WorkspaceKind::StateMachine &&
+        workspace != WorkspaceKind::Graph) {
         if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_S, false)) {
             if (io.KeyShift) {
                 saveSceneAs();
@@ -1445,6 +1452,7 @@ void EditorApp::drawMenuBar() {
         ImGui::MenuItem("Inspector", nullptr, &show_inspector_);
         ImGui::MenuItem("Proyecto", nullptr, &show_project_);
         ImGui::MenuItem("Estadísticas", nullptr, &show_statistics_);
+        ImGui::MenuItem("Insights (perfilador de CPU)", nullptr, &show_insights_);
         ImGui::MenuItem("Consola", nullptr, &show_console_);
         ImGui::MenuItem("Configuración gráfica", nullptr, &show_render_settings_);
         ImGui::MenuItem("Animator", nullptr, &show_animator_);

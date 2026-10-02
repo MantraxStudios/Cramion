@@ -2,6 +2,11 @@
 #include "CramionCore/scripting/CppScripts.h"
 #include "CramionCore/scripting/VisualScript.h"
 #include "CramionCore/cvar/CVar.h"
+#include "CramionCore/profiling/Profiler.h"
+
+#include <array>
+#include <chrono>
+#include <cstring>
 
 #include "CramionCore/project/DataPack.h"
 
@@ -61,6 +66,12 @@
 #include <variant>
 
 namespace cramion::scripting {
+namespace {
+cvar::CVar<float> g_lua_budget_ms("lua.BudgetMs", 2.0f,
+                                  "Milisegundos por frame que puede usar un script de Lua (sus Update, LateUpdate y "
+                                  "FixedUpdate) antes de avisar en la Consola (0 = no avisar)",
+                                  cvar::Saved, 0.0f, 100.0f);
+}  // namespace
 
 using core::Vec3;
 
@@ -597,7 +608,14 @@ struct ScriptSystem::Impl {
         sol::table self;
         bool started = false;
         bool failed = false;
+        // Insights: nombres de sus zonas (Update, LateUpdate, FixedUpdate).
+        std::array<const char*, 3> zone_names{};
+        const char* file_key = nullptr;  // inst.file internado (para el presupuesto)
     };
+    // Lua profiler: milisegundos de cada archivo este frame y cuando se aviso
+    // por ultima vez de que se pasaba del presupuesto.
+    std::unordered_map<const char*, double> script_ms;
+    std::unordered_map<std::string, double> budget_warned;
     std::unordered_map<entt::entity, Instance> instances;
     std::unordered_map<std::string, sol::table> classes;
     std::unordered_map<std::string, std::string> failed_classes;  // archivo -> error
@@ -1788,6 +1806,28 @@ struct ScriptSystem::Impl {
             "setAnimatorFloat", [](LuaEntity& e, const std::string& n, float v) { if (auto x = e.get(); x.valid()) if (auto* a = x.tryGet<ecs::Animator>()) a->setFloat(n, v); },
             "setAnimatorBool", [](LuaEntity& e, const std::string& n, bool v) { if (auto x = e.get(); x.valid()) if (auto* a = x.tryGet<ecs::Animator>()) a->setBool(n, v); },
             "setAnimatorTrigger", [](LuaEntity& e, const std::string& n) { if (auto x = e.get(); x.valid()) if (auto* a = x.tryGet<ecs::Animator>()) a->setTrigger(n); },
+            // Animator.CrossFade: salta a un estado del controlador por su nombre.
+            "crossFade", [](LuaEntity& e, const std::string& state, sol::optional<float> seconds, sol::optional<bool> inertial) {
+                if (auto x = e.get(); x.valid()) {
+                    if (auto* a = x.tryGet<ecs::Animator>()) {
+                        a->runtime.cross_fade = state;
+                        a->runtime.cross_fade_time = seconds.value_or(0.15f);
+                        a->runtime.cross_fade_inertial = inertial.value_or(true);
+                        a->playing = true;
+                    }
+                }
+            },
+            "animatorState", [](const LuaEntity& e) -> std::string {
+                const ecs::Entity x = e.get();
+                const ecs::Animator* a = x.valid() ? x.tryGet<ecs::Animator>() : nullptr;
+                if (a == nullptr) return {};
+                return !a->runtime.cross_fade.empty() ? a->runtime.cross_fade : a->runtime.state_name;  // pedido este frame
+            },
+            "animatorStateTime", [](const LuaEntity& e) {
+                const ecs::Entity x = e.get();
+                const ecs::Animator* a = x.valid() ? x.tryGet<ecs::Animator>() : nullptr;
+                return a != nullptr && a->runtime.cross_fade.empty() ? a->runtime.state_time : 0.0f;
+            },
             "hasComponent", [](const LuaEntity& e, const std::string& name) {
                 const ecs::Entity x = e.get();
                 const ecs::ComponentType* type = ecs::ComponentRegistry::instance().find(name);
@@ -2517,6 +2557,41 @@ struct ScriptSystem::Impl {
 
         sol::table game = L.create_named_table("Game");
         game["quit"] = [this]() { quit_request = true; };
+        // Insights desde Lua: zonas propias, capturas y lo que cuesta cada cosa.
+        sol::table profiler = L.create_named_table("Profiler");
+        profiler["begin"] = [](const std::string& name) { prof::begin(prof::intern(name)); };
+        profiler["finish"] = []() { prof::end(); };
+        profiler["counter"] = [](const std::string& name, double value) { prof::counter(prof::intern(name), value); };
+        profiler["frameMs"] = []() {
+            const std::vector<float> f = prof::frameTimes();
+            return f.empty() ? 0.0 : static_cast<double>(f.back());
+        };
+        profiler["capture"] = [this](sol::optional<int> frames) -> std::string {
+            const std::filesystem::path file =
+                prof::captureFolder() / ("captura_" + std::to_string(prof::frameIndex()) + ".crtrace");
+            std::string error;
+            if (!prof::saveTrace(file, frames.value_or(300), &error)) {
+                write(2, "Profiler.capture: " + error);
+                return {};
+            }
+            return file.string();
+        };
+        profiler["zones"] = [](sol::optional<int> count, sol::this_state ts) {
+            sol::state_view lua_view(ts);
+            std::vector<prof::ZoneStats> z = prof::stats(120);
+            std::sort(z.begin(), z.end(), [](const auto& a, const auto& b) { return a.self_ms > b.self_ms; });
+            sol::table out = lua_view.create_table();
+            const int n = std::min(count.value_or(10), static_cast<int>(z.size()));
+            for (int i = 0; i < n; ++i) {
+                sol::table row = lua_view.create_table();
+                row["name"] = z[static_cast<std::size_t>(i)].path;
+                row["ms"] = z[static_cast<std::size_t>(i)].avg_ms;
+                row["self"] = z[static_cast<std::size_t>(i)].self_ms;
+                row["max"] = z[static_cast<std::size_t>(i)].max_ms;
+                out[i + 1] = row;
+            }
+            return out;
+        };
 
         // CVar: las variables de configuracion del motor y del juego (cvar/CVar.h).
         sol::table cv = L.create_named_table("CVar");
@@ -4118,12 +4193,53 @@ struct ScriptSystem::Impl {
         sol::object fn = inst.self[method];
         if (fn.get_type() != sol::type::function) return;
         sol::protected_function pf = fn;
+        // Insights: Update, LateUpdate y FixedUpdate de cada script se miden
+        // (zona con el nombre del archivo y tiempo para el presupuesto).
+        const int slot = std::strcmp(method, "Update") == 0        ? 0
+                         : std::strcmp(method, "LateUpdate") == 0  ? 1
+                         : std::strcmp(method, "FixedUpdate") == 0 ? 2
+                                                                   : -1;
+        std::chrono::steady_clock::time_point t0{};
+        const char* file_key = nullptr;  // 'inst' puede dejar de valer durante la llamada
+        if (slot >= 0) {
+            const char*& zone = inst.zone_names[static_cast<std::size_t>(slot)];
+            if (zone == nullptr) zone = prof::intern(inst.file + ":" + method);
+            if (inst.file_key == nullptr) inst.file_key = prof::intern(inst.file);
+            file_key = inst.file_key;
+            prof::begin(zone);
+            t0 = std::chrono::steady_clock::now();
+        }
         sol::protected_function_result r = pf(inst.self, std::forward<Args>(args)...);
+        if (slot >= 0) {
+            script_ms[file_key] +=
+                std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+            prof::end();
+        }
         if (!r.valid()) {
             sol::error e = r;
             inst.failed = true;  // hasta que se recargue el script
             fail(inst.file, e.what());
         }
+    }
+
+    // Lua profiler: un script que se come el frame se avisa (una vez cada pocos
+    // segundos), con lo que tarda y el presupuesto (lua.BudgetMs).
+    void checkBudgets() {
+        double total = 0.0;
+        const double budget = g_lua_budget_ms.get();
+        for (const auto& [key, ms] : script_ms) {
+            const std::string file = key;
+            total += ms;
+            const auto warned = budget_warned.find(file);
+            if (budget > 0.0 && ms > budget && (warned == budget_warned.end() || time - warned->second > 5.0)) {
+                budget_warned[file] = time;
+                char buf[160];
+                std::snprintf(buf, sizeof(buf), "%.2f ms este frame (presupuesto lua.BudgetMs = %.2f ms)", ms, budget);
+                write(1, file + " va lento: " + buf + ". Mira la ventana Insights para ver que funcion.");
+            }
+        }
+        prof::counter("Lua (ms)", total);
+        script_ms.clear();
     }
 
     void flushDestroys() {
@@ -4380,6 +4496,7 @@ void ScriptSystem::update(ecs::World& world, float delta_seconds) {
     d.vsUpdate(1, delta_seconds);  // Visual Scripts: LateUpdate
     d.sendNetworkTransforms(delta_seconds);
     d.flushDestroys();
+    d.checkBudgets();
 }
 
 void ScriptSystem::fixedUpdate(ecs::World& world, float step, int steps) {

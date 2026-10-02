@@ -439,7 +439,8 @@ void EditorApp::drawCppScriptInspector(ecs::Entity entity, bool header) {
             ImGui::SameLine(110.0f);
             ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_FrameBg));
             const std::string label = path.empty() ? std::string("(suelta un ") + kinds[std::clamp(file_kind, 0, 4)] + ")" : path;
-            ImGui::Button(label.c_str(), ImVec2(-28.0f, 0.0f));
+            const float side = ImGui::GetFrameHeight() * 2.0f + ImGui::GetStyle().ItemSpacing.x * 2.0f;
+            ImGui::Button(label.c_str(), ImVec2(-side, 0.0f));
             ImGui::PopStyleColor();
             bool changed = false;
             std::string next = path;
@@ -459,6 +460,18 @@ void EditorApp::drawCppScriptInspector(ecs::Entity entity, bool header) {
                     }
                 }
                 ImGui::EndDragDropTarget();
+            }
+            ImGui::SameLine();
+            {
+                // [◎]: buscar el archivo en el Proyecto (sin escribir la ruta).
+                static const std::vector<std::string> kExts[5] = {
+                    {".png", ".jpg", ".jpeg", ".tga", ".bmp", ".hdr"},
+                    {".wav", ".ogg", ".mp3", ".flac"},
+                    {".lua"},
+                    {".crshader"},
+                    {}};
+                const int k = std::clamp(file_kind, 0, 4);
+                if (assetFilePicker("file", project_.assetsFolder(), kExts[k], kinds[k], next)) changed = true;
             }
             ImGui::SameLine();
             if (ImGui::Button("x", ImVec2(-1.0f, 0.0f)) && !path.empty()) {

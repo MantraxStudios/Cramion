@@ -12,6 +12,7 @@
 //     asas para editar cajas, esferas y capsulas, emisores de particulas,
 //     contactos, velocidades y consultas (rayos, esferas, cajas).
 
+#include <CramionCore/profiling/Profiler.h>
 #include "EditorApp.h"
 
 #include <CramionDM/Input.h>
@@ -290,11 +291,17 @@ void EditorApp::updateScriptsAndAudio(float delta_seconds, int physics_steps) {
         keys.crouch = down(dm::Key::C, dm::Key::LeftControl);
         physics_.driveCharactersWithKeyboard(world_, keys);
     }
-    scripts_.fixedUpdate(world_, physics_settings_.fixed_step, physics_steps);
-    scripts_.update(world_, delta_seconds);
+    {
+        CR_PROFILE_SCOPE("Scripts Lua");
+        scripts_.fixedUpdate(world_, physics_settings_.fixed_step, physics_steps);
+        scripts_.update(world_, delta_seconds);
+    }
     cpp_scripts_.setInput(typing || !game_input ? nullptr : game_in);
-    cpp_scripts_.fixedUpdate(world_, physics_settings_.fixed_step, physics_steps);
-    cpp_scripts_.update(world_, delta_seconds);
+    {
+        CR_PROFILE_SCOPE("Scripts C++");
+        cpp_scripts_.fixedUpdate(world_, physics_settings_.fixed_step, physics_steps);
+        cpp_scripts_.update(world_, delta_seconds);
+    }
     // Scene.load(...) en Play: se carga en el mundo de Play (al parar vuelve
     // la escena que estaba abierta). Game.quit() sale de Play.
     if (const std::filesystem::path next = scripts_.takeSceneRequest(); !next.empty()) {
@@ -356,10 +363,15 @@ void EditorApp::updatePhysics(float delta_seconds) {
     console_events_skipped_ = 0;
     physics_.setRecordQueries(gizmo_queries_);
     const float fixed = physics_settings_.fixed_step;
+    particles_.setViewer(scene_.camera().position(), scene_.camera().forward());  // presupuesto de particulas
     switch (play_state_) {
         case PlayState::Playing: {
             play_time_ += delta_seconds;
-            const int steps = physics_.update(world_, delta_seconds, true);
+            int steps = 0;
+            {
+                CR_PROFILE_SCOPE("Fisica");
+                steps = physics_.update(world_, delta_seconds, true);
+            }
             particles_.update(world_, delta_seconds, &physics_);
             updateScriptsAndAudio(delta_seconds, steps);
             break;

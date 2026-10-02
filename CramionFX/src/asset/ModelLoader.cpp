@@ -966,8 +966,10 @@ ModelData importWithAssimp(const std::filesystem::path& path, bool force_static,
     StageTimer timer;
     const aiScene* scene = importer.ReadFile(utf8(path), flags);
     timer.lap("lectura y procesado de assimp");
+    // Paquetes de animaciones sin malla (solo esqueleto: Motifect, Mixamo
+    // "without skin"): assimp los marca incompletos, pero sirven como clips.
     if (scene == nullptr || scene->mRootNode == nullptr ||
-        (scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE) != 0) {
+        ((scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE) != 0 && scene->mNumAnimations == 0)) {
         throw std::runtime_error("No se pudo cargar el modelo " + utf8(path) + ": " +
                                  importer.GetErrorString());
     }
@@ -987,6 +989,8 @@ ModelData importWithAssimp(const std::filesystem::path& path, bool force_static,
         computeSubmeshBounds(model);
         return model;
     }
+    // Solo esqueleto y animaciones (sin malla): se conserva la jerarquia.
+    skinned = scene->mNumMeshes == 0 && scene->mNumAnimations > 0 && !force_static;
     for (unsigned int m = 0; m < scene->mNumMeshes && !skinned && !force_static; ++m) {
         skinned = scene->mMeshes[m]->HasBones();
     }

@@ -80,6 +80,12 @@ inline constexpr int kPhysicsEventTypeCount = 7;
 const char* eventTypeName(PhysicsEventType type);
 bool isTriggerEvent(PhysicsEventType type);
 
+// Suelo valido para apoyar los pies con IK: lo estatico o cinematico del
+// escenario. No cuentan el propio personaje, otros personajes (su capsula),
+// los ragdolls ni los objetos dinamicos (una caja que rueda, un cuerpo caido):
+// los pies acababan pisando al rival y el cuerpo subia por el aire.
+bool isFootGround(const ecs::Entity& hit, const ecs::Entity& self);
+
 struct PhysicsEvent {
     PhysicsEventType type = PhysicsEventType::CollisionEnter;
     ecs::Entity a;  // Collision: uno de los dos; Trigger: el trigger; Particle: el emisor

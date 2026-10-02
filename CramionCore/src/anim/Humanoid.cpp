@@ -245,6 +245,24 @@ Map detect(const std::vector<asset::Node>& nodes) {
             break;
         }
     }
+    // Esqueletos que llaman "Leg" al muslo y "Shin"/"Calf" a la espinilla
+    // (Motifect, algunos BVH): sin muslo por nombre, de dos "piernas bajas"
+    // encadenadas la de arriba es el muslo.
+    for (const auto& [upper, lower] : {std::pair{Bone::LeftUpperLeg, Bone::LeftLowerLeg},
+                                       std::pair{Bone::RightUpperLeg, Bone::RightLowerLeg}}) {
+        auto& ups = candidates[static_cast<std::size_t>(upper)];
+        auto& lows = candidates[static_cast<std::size_t>(lower)];
+        if (!ups.empty() || lows.size() < 2) continue;
+        for (std::size_t a = 0; a < lows.size() && ups.empty(); ++a) {
+            for (std::size_t b = 0; b < lows.size(); ++b) {
+                if (a != b && isAncestor(nodes, lows[a], lows[b])) {
+                    ups.push_back(lows[a]);
+                    lows.erase(lows.begin() + static_cast<std::ptrdiff_t>(a));
+                    break;
+                }
+            }
+        }
+    }
     // Elige el primero que cuelgue de donde debe (la pierna, de la cadera...).
     const auto pick = [&](Bone bone, int ancestor) {
         for (const int c : candidates[static_cast<std::size_t>(bone)]) {
@@ -370,7 +388,24 @@ bool retargetClip(const std::vector<asset::Node>& source, const asset::Animation
     std::vector<Mat4> global_s(source.size());
     std::vector<Mat4> global_t(target.size());
     const int hips_t = mt[Bone::Hips];
-    const Vec3 hips_rest_s = positionOf(rest_s[static_cast<std::size_t>(ms[Bone::Hips])]);
+    Vec3 hips_rest_s = positionOf(rest_s[static_cast<std::size_t>(ms[Bone::Hips])]);
+    {
+        // Reposo que no pisa el suelo (BVH/Motifect: la cadera en el origen y
+        // los pies un metro por debajo) mientras el clip si lo pisa: el
+        // desplazamiento de la cadera se mide desde ese reposo puesto de pie.
+        float ground = 0.0f;
+        bool any = false;
+        for (const Bone b : {Bone::LeftFoot, Bone::RightFoot, Bone::LeftToes, Bone::RightToes}) {
+            if (ms[b] < 0) continue;
+            const float y = ecs::quatRotate(cs_inv, positionOf(rest_s[static_cast<std::size_t>(ms[b])])).y;
+            ground = any ? std::min(ground, y) : y;
+            any = true;
+        }
+        const float hips_up = ecs::quatRotate(cs_inv, hips_rest_s).y;
+        if (any && ground < -0.25f * std::max(hips_up - ground, 1e-4f)) {
+            hips_rest_s = hips_rest_s - ecs::quatRotate(cs, Vec3{0.0f, ground, 0.0f});
+        }
+    }
     const Vec3 hips_rest_t = positionOf(rest_t[static_cast<std::size_t>(hips_t)]);
     for (int f = 0; f < frames; ++f) {
         const float time = std::min(static_cast<float>(f) / fps, clip.duration);

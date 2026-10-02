@@ -1,5 +1,31 @@
 # Cambios
 
+## Sin publicar
+
+### Rendimiento
+- **Insights** (*Ventana > Insights*): perfilador de CPU con árbol de zonas (media, propio, p95, máximo, llamadas), resumen del frame (p50/p95/p99, tirones), contadores y capturas **`.crtrace`** que se abren en Perfetto o `chrome://tracing`. Los **tirones se capturan solos** (`prof.HitchMs`) y la consola dice qué zona se comió el frame, también en el juego exportado. API: `CR_PROFILE_SCOPE`, Lua `Profiler.*`, herramienta MCP `profiler`.
+- **LOD de animación**: los personajes lejanos o detrás de la cámara se animan menos veces por segundo (`anim.lod.*`).
+- **Presupuesto de partículas** (`fx.particles.Budget`): los emisores frenan al acercarse al límite y nunca se pasa; los lejanos no emiten ni chocan.
+- **Voces de audio virtuales** (`audio.MaxVoices`): solo se mezclan las que más se oyen; las demás siguen el tiempo y vuelven donde tocaría.
+- **Lua profiler**: cada script es una zona y avisa si pasa de `lua.BudgetMs`.
+- Los clips `.cranim` se leen más rápido (sin copiar los arrays de claves).
+
+### Animación e IK
+- **IK blando**: brazos y piernas ya no se bloquean rectos de golpe al llegar a su largo, y un objetivo fuera de alcance deja de tirar del miembro (antes cualquier cosa cercana lo estiraba).
+- **Pies en el suelo** ya no pisan a otros personajes, ragdolls ni objetos dinámicos.
+- **`crossFade(estado, segundos)`** (como `Animator.CrossFade`): saltar a un estado del Animator desde Lua o C++; espera a que su clip esté leído (nunca pose T). `animatorState()` y `animatorStateTime()`.
+- **Retargeting** de esqueletos cuyo reposo no pisa el suelo (BVH, Motifect): ya no flotan. Se reconocen esqueletos que llaman `Leg` al muslo y `Shin` a la espinilla.
+- **FBX solo de animación** (sin malla): se importan y sus clips se extraen; herramienta MCP `extract_clips`.
+
+### Física
+- El **ragdoll** de un personaje no choca con su propia cápsula y los personajes no se suben encima de un cuerpo caído.
+
+### Arreglos
+- Cerrar el editor con scripts de C++ cargados podía colgarse o fallar al salir.
+- El juego exportado siempre se cierra (si algo se atasca al salir, se termina a los 8 s) y deja en el log lo que tardó cada paso del cierre (`CRAMION_TRACE_SHUTDOWN=1`).
+- Lluvia y viento sintetizados más bajos (la lluvia fina sonaba como un aguacero).
+- MCP `list_assets` sin carpeta no devolvía ningún asset.
+
 ## 2.1.0
 
 Incluye también todo lo de la 2.0.0 (más abajo), que no se publicó por separado.

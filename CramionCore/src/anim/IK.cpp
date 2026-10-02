@@ -91,13 +91,25 @@ bool twoBone(const Pose& pose, int upper, int mid, int end, const Vec3& target, 
     const float l1 = core::length(b - a);
     const float l2 = core::length(c - b);
     if (l1 < 1e-6f || l2 < 1e-6f) return false;
+    const float reach = l1 + l2;
+    // Objetivos fuera de alcance: el miembro no los persigue. Hasta un 15 %
+    // mas lejos se estira entero; a partir de ahi el peso cae y con un 60 %
+    // mas ya no tira (antes cualquier objetivo cercano lo estiraba de golpe).
+    const float beyond = core::length(target - a) / reach;
+    weight = std::clamp(weight, 0.0f, 1.0f) * (1.0f - std::clamp((beyond - 1.15f) / 0.45f, 0.0f, 1.0f));
+    if (weight <= 0.0f) return false;
     // Objetivo mezclado con la pose animada.
-    const Vec3 goal = c + (target - c) * std::clamp(weight, 0.0f, 1.0f);
+    const Vec3 goal = c + (target - c) * weight;
     Vec3 to_goal = goal - a;
     float distance = core::length(to_goal);
     if (distance < 1e-6f) return false;
     const Vec3 dir = to_goal * (1.0f / distance);
-    distance = std::clamp(distance, std::abs(l1 - l2) + 1e-4f, (l1 + l2) * 0.9999f);
+    // IK blando: el ultimo 8 % del alcance se acerca de forma asintotica (sin
+    // el chasquido del codo/rodilla que se bloquea recto de golpe).
+    const float soft = reach * 0.08f;
+    const float hard = reach - soft;
+    if (distance > hard) distance = hard + soft * (1.0f - std::exp(-(distance - hard) / soft));
+    distance = std::clamp(distance, std::abs(l1 - l2) + 1e-4f, reach * 0.9999f);
 
     // Hacia donde se dobla: el pole o, sin el, hacia donde ya se doblaba
     // (el codo respecto a la linea hombro-mano).

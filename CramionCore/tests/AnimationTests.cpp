@@ -141,6 +141,15 @@ const std::map<std::string, std::string> kBiped = {
     {"LeftLowerLeg", "Bip01 L Calf"}, {"LeftFoot", "Bip01 L Foot"},     {"LeftToes", "Bip01 L Toe0"},
     {"RightUpperLeg", "Bip01 R Thigh"}, {"RightLowerLeg", "Bip01 R Calf"}, {"RightFoot", "Bip01 R Foot"},
     {"RightToes", "Bip01 R Toe0"}};
+// Motifect (y algunos BVH): "Leg" es el muslo y "Shin" la espinilla.
+const std::map<std::string, std::string> kMotifect = {
+    {"Hips", "Hips"},                 {"Spine", "Spine1"},             {"Chest", "Chest"},
+    {"Neck", "Neck1"},                {"Head", "Head"},                {"LeftShoulder", "LeftShoulder"},
+    {"LeftUpperArm", "LeftArm"},      {"LeftLowerArm", "LeftForeArm"}, {"LeftHand", "LeftHand"},
+    {"RightShoulder", "RightShoulder"}, {"RightUpperArm", "RightArm"}, {"RightLowerArm", "RightForeArm"},
+    {"RightHand", "RightHand"},       {"LeftUpperLeg", "LeftLeg"},     {"LeftLowerLeg", "LeftShin"},
+    {"LeftFoot", "LeftFoot"},         {"LeftToes", "LeftToeBase"},     {"RightUpperLeg", "RightLeg"},
+    {"RightLowerLeg", "RightShin"},   {"RightFoot", "RightFoot"},      {"RightToes", "RightToeBase"}};
 
 int nodeNamed(const std::vector<asset::Node>& nodes, const std::string& name) {
     for (std::size_t i = 0; i < nodes.size(); ++i) {
@@ -154,7 +163,7 @@ void testDetection() {
     const struct {
         const char* label;
         const std::map<std::string, std::string>* names;
-    } rigs[] = {{"Mixamo", &kMixamo}, {"Unreal", &kUnreal}, {"Blender", &kBlender}, {"3ds Max Biped", &kBiped}};
+    } rigs[] = {{"Mixamo", &kMixamo}, {"Unreal", &kUnreal}, {"Blender", &kBlender}, {"3ds Max Biped", &kBiped}, {"Motifect", &kMotifect}};
     for (const auto& rig : rigs) {
         const std::vector<asset::Node> nodes = makeSkeleton(*rig.names, 0.0f, 1.0f, Mat4::identity(), false);
         const humanoid::Map map = humanoid::detect(nodes);
@@ -255,6 +264,29 @@ void testRetarget() {
     check(ecs::loadAnimationClip(file, target, loaded) && loaded.channels.size() > 2,
           "cargarlo en el esqueleto de Unreal lo convierte");
     std::filesystem::remove(file);
+
+    // Reposo que no pisa el suelo (BVH de Motifect: cadera en el origen, pies a
+    // -1 m) y un clip que si lo pisa: el destino no flota.
+    asset::ModelData bvh;
+    bvh.nodes = makeSkeleton(kMotifect, 0.0f, 1.0f, core::translate(Vec3{0.0f, -1.0f, 0.0f}), false);
+    const int bvh_hips = nodeNamed(bvh.nodes, "Hips");
+    asset::AnimationClip stand;
+    stand.name = "DePie";
+    stand.duration = 1.0f;
+    asset::AnimationChannel stand_hips;
+    stand_hips.node = bvh_hips;
+    // la raiz baja 1 m: 1.97 en local = 0.97 sobre el suelo (agachado 3 cm)
+    stand_hips.positions = {{0.0f, Vec3{0.0f, 1.97f, 0.0f}}, {1.0f, Vec3{0.0f, 1.97f, 0.0f}}};
+    stand.channels = {stand_hips};
+    asset::ModelData mixamo;
+    mixamo.nodes = makeSkeleton(kMixamo, 0.0f, 1.0f, Mat4::identity(), false);
+    asset::AnimationClip stand_converted;
+    check(humanoid::retargetClip(bvh.nodes, stand, mixamo.nodes, stand_converted, &error), "clip de un BVH con la cadera en el origen");
+    mixamo.animations = {stand_converted};
+    const std::vector<Mat4> stood = poseAt(mixamo, 0.5f);
+    const float hips_y = positionOf(stood[static_cast<std::size_t>(nodeNamed(mixamo.nodes, "mixamorig:Hips"))]).y;
+    std::printf("    (cadera del destino a %.3f; en reposo 1.0)\n", hips_y);
+    check(std::abs(hips_y - 0.97f) < 0.02f, "el destino no flota: la cadera queda a la altura del clip");
 }
 
 void testIK() {
@@ -288,11 +320,20 @@ void testIK() {
     const Vec3 bend = elbow - line * core::dot(elbow, line);
     check(bend.z > 0.2f, "el codo apunta al pole");
 
-    // Fuera de alcance: se estira hacia el.
-    const Vec3 far_target{0.0f, 5.0f, 0.0f};
-    ik::twoBone(pose, 1, 2, 3, far_target, nullptr, 1.0f);
-    const Vec3 reach = core::normalize(ik::nodePosition(pose, 3) - a);
-    check(core::dot(reach, Vec3{0, 1, 0}) > 0.999f, "fuera de alcance, el brazo se estira hacia el objetivo");
+    // Un poco fuera de alcance (110 %): se estira hacia el, con IK blando (no
+    // llega a bloquearse recto: se queda un pelo antes del largo total).
+    const Vec3 near_target{0.0f, 2.2f, 0.0f};
+    ik::twoBone(pose, 1, 2, 3, near_target, nullptr, 1.0f);
+    const Vec3 hand = ik::nodePosition(pose, 3) - a;
+    const float total = l1 + l2;
+    std::printf("    (mano a %.3f de %.3f m)\n", core::length(hand), total);
+    check(core::dot(core::normalize(hand), Vec3{0, 1, 0}) > 0.999f, "fuera de alcance, el brazo se estira hacia el objetivo");
+    check(core::length(hand) > total * 0.95f && core::length(hand) < total * 0.999f, "IK blando: casi recto, sin bloquearse");
+
+    // Muy lejos (2.5 veces el brazo): no lo persigue (antes se estiraba de golpe).
+    const std::vector<Mat4> antes = global;
+    ik::twoBone(pose, 1, 2, 3, Vec3{0.0f, 5.0f, 0.0f}, nullptr, 1.0f);
+    check(core::length(positionOf(global[3]) - positionOf(antes[3])) < 1e-4f, "un objetivo muy lejos no estira el brazo");
 
     // Peso 0.5: a medio camino.
     ik::recomputeGlobals(pose);
