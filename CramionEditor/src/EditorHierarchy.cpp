@@ -544,9 +544,7 @@ void EditorApp::drawHierarchyRow(const HierarchyRow& row, bool scroll_to) {
                 }
             }
             if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(kScriptPayload)) {
-                scripting::Script& s = entity.has<scripting::Script>() ? entity.get<scripting::Script>()
-                                                                       : entity.add<scripting::Script>();
-                s.file = assetRelative(dialogs::fromUtf8(static_cast<const char*>(payload->Data)));
+                attachScriptFile(entity, assetRelative(dialogs::fromUtf8(static_cast<const char*>(payload->Data))));
                 selectOnly(entity.uuid());
                 commit();
             }

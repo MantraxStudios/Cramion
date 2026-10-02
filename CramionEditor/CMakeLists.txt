@@ -196,3 +196,81 @@ add_executable(CramionMcp "${CMAKE_CURRENT_SOURCE_DIR}/mcp/McpBridge.cpp")
 target_link_libraries(CramionMcp PRIVATE ws2_32)
 set_target_properties(CramionMcp PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
 add_dependencies(CramionEditor CramionMcp)
+
+# --- CramionScriptHost.exe: el proceso aislado de los scripts de C++ ---
+# Carga la DLL de los scripts del juego y ejecuta sus eventos; si un script
+# falla, cae este proceso y no el motor (ver CramionCore/scripting/CppScripts.h).
+# Sin dependencias del motor: solo las cabeceras del canal y del SDK.
+add_executable(CramionScriptHost "${CMAKE_CURRENT_SOURCE_DIR}/host/ScriptHost.cpp")
+target_include_directories(CramionScriptHost PRIVATE "${CMAKE_SOURCE_DIR}/CramionCore/include" "${CMAKE_SOURCE_DIR}/CramionCore/sdk")
+target_link_libraries(CramionScriptHost PRIVATE dbghelp)
+target_compile_options(CramionScriptHost PRIVATE -Wall -Wextra)
+set_target_properties(CramionScriptHost PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
+# El SDK (cabeceras y el arranque de la DLL) junto a los ejecutables, en sdk/:
+# el editor compila con el y la exportacion lo usa.
+# (en cada compilacion: un cambio solo en una cabecera del SDK tambien llega).
+add_custom_target(cramion_sdk_copy ALL
+    COMMAND ${CMAKE_COMMAND} -E copy_directory_if_different
+            "${CMAKE_SOURCE_DIR}/CramionCore/sdk" "${CMAKE_BINARY_DIR}/sdk"
+    COMMENT "SDK de los scripts de C++")
+add_dependencies(cramion_sdk_copy cramion_sdkgen)
+add_dependencies(CramionScriptHost cramion_sdk_copy)
+add_dependencies(CramionEditor CramionScriptHost)
+add_dependencies(CramionPlayer CramionScriptHost)
+add_dependencies(CramionCppScriptTests CramionScriptHost)
+
+# --- Compilador incluido para los scripts de C++ y su IntelliSense ---
+# llvm-mingw (LLVM/clang + lld + libc++ + cabeceras de mingw-w64, todo
+# redistribuible): clang++ compila la DLL de los scripts sin Visual Studio ni
+# LLVM instalados y clangd da el IntelliSense del editor de codigo. Se baja una
+# vez a %LOCALAPPDATA%/Cramion/downloads (compartido entre build y
+# build-release) y se copia lo justo (x86_64) a <bin>/toolchain.
+option(CRAMION_BUNDLE_TOOLCHAIN "Incluir clang/clangd (llvm-mingw) para los scripts de C++" ON)
+if(CRAMION_BUNDLE_TOOLCHAIN)
+    set(CRAMION_TOOLCHAIN_VERSION 20260922)
+    set(_tc_name "llvm-mingw-${CRAMION_TOOLCHAIN_VERSION}-ucrt-x86_64")
+    set(_tc_cache "$ENV{LOCALAPPDATA}/Cramion/downloads")
+    set(_tc_zip "${_tc_cache}/${_tc_name}.zip")
+    set(_tc_dir "${CMAKE_BINARY_DIR}/toolchain")
+    set(_tc_stamp "${_tc_dir}/.cramion-${CRAMION_TOOLCHAIN_VERSION}-2")  # -2: con clang-format
+    if(NOT EXISTS "${_tc_stamp}")
+        if(NOT EXISTS "${_tc_zip}")
+            message(STATUS "Descargando ${_tc_name} (unos 190 MB, una sola vez)...")
+            file(DOWNLOAD
+                "https://github.com/mstorsjo/llvm-mingw/releases/download/${CRAMION_TOOLCHAIN_VERSION}/${_tc_name}.zip"
+                "${_tc_zip}.part"
+                EXPECTED_HASH SHA256=e3ad77d117a4bea19a7a3b333341824d79a5a371004a10e25b8504e7b3047666
+                STATUS _tc_status)
+            list(GET _tc_status 0 _tc_code)
+            if(_tc_code EQUAL 0)
+                file(RENAME "${_tc_zip}.part" "${_tc_zip}")
+            else()
+                file(REMOVE "${_tc_zip}.part")
+                message(WARNING "No se pudo descargar llvm-mingw (${_tc_status}): los scripts de C++ usaran el clang o Visual Studio del sistema.")
+            endif()
+        endif()
+        if(EXISTS "${_tc_zip}")
+            message(STATUS "Preparando el compilador de los scripts de C++ en ${_tc_dir}...")
+            file(REMOVE_RECURSE "${_tc_dir}" "${CMAKE_BINARY_DIR}/_toolchain_extract")
+            file(ARCHIVE_EXTRACT INPUT "${_tc_zip}" DESTINATION "${CMAKE_BINARY_DIR}/_toolchain_extract"
+                PATTERNS
+                    "${_tc_name}/LICENSE.TXT"
+                    "${_tc_name}/bin/clang++.exe" "${_tc_name}/bin/clang.exe" "${_tc_name}/bin/clang-[0-9]*.exe"
+                    "${_tc_name}/bin/x86_64-w64-mingw32-clang++.exe" "${_tc_name}/bin/ld.lld.exe" "${_tc_name}/bin/clangd.exe"
+                    "${_tc_name}/bin/clang-format.exe"
+                    "${_tc_name}/bin/libLLVM-*.dll" "${_tc_name}/bin/libclang-cpp.dll" "${_tc_name}/bin/libc++.dll"
+                    "${_tc_name}/bin/libunwind.dll" "${_tc_name}/bin/libwinpthread-1.dll"
+                    "${_tc_name}/bin/x86_64-*.cfg" "${_tc_name}/bin/mingw32-common.cfg"
+                    "${_tc_name}/lib/clang/*/include/*" "${_tc_name}/lib/clang/*/lib/windows/libclang_rt.builtins-x86_64.a"
+                    "${_tc_name}/include/*" "${_tc_name}/x86_64-w64-mingw32/lib/*")
+            file(RENAME "${CMAKE_BINARY_DIR}/_toolchain_extract/${_tc_name}" "${_tc_dir}" RESULT _tc_rename)
+            file(REMOVE_RECURSE "${CMAKE_BINARY_DIR}/_toolchain_extract")
+            if(_tc_rename EQUAL 0)
+                file(WRITE "${_tc_stamp}" "${_tc_name}\n")
+            else()
+                # Un editor abierto tiene clangd.exe en uso: se reintenta en la proxima configuracion.
+                message(WARNING "No se pudo preparar ${_tc_dir} (${_tc_rename}): cierra el editor (clangd en uso) y vuelve a compilar.")
+            endif()
+        endif()
+    endif()
+endif()

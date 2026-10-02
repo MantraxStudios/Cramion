@@ -280,6 +280,16 @@ public:
     };
     static std::map<std::string, std::vector<ApiMember>> apiReference();
 
+    // Puente para los scripts de C++: una llamada a la API de Lua en JSON
+    // ({"op":"call|get|set","fn":"Audio.playOneShot","self":valor,"key":"x",
+    // "args":[...],"value":v}); devuelve {"ok":true,"result":...} o
+    // {"ok":false,"error":"..."}. Ver BridgeScripting.inl.
+    std::string bridgeCall(const std::string& request_json);
+    // Donde van los callbacks que los scripts de C++ dieron a la API.
+    void setBridgeCallbackSink(std::function<void(std::uint64_t id, const std::string& args_json)> sink);
+    // Una variable de red que llego a un objeto (OnNetVar): tambien para los scripts de C++.
+    void setNetVarListener(std::function<void(ecs::Entity e, const std::string& key, const std::string& value_json)> listener);
+
 private:
     struct Impl;
     std::unique_ptr<Impl> impl_;

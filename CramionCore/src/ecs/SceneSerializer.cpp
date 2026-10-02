@@ -4,6 +4,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <cmath>
 #include <fstream>
 #include <iostream>
 #include <sstream>
@@ -131,6 +132,25 @@ std::string serializeWorld(const World& const_world) {
     return root.dump(2);
 }
 
+// Escenas guardadas con versiones anteriores del formato: valores por defecto
+// que cambiaron. Solo se toca lo que tenia EXACTAMENTE el valor por defecto
+// viejo (lo ajustado a mano se respeta).
+static void migrateScene(json& root, int version) {
+    if (version >= 2) return;
+    auto it = root.find("entities");
+    if (it == root.end() || !it->is_array()) return;
+    for (json& entity : *it) {
+        auto components = entity.find("components");
+        if (components == entity.end() || !components->is_object()) continue;
+        auto post = components->find("PostProcessing");
+        if (post == components->end() || !post->is_object()) continue;
+        auto density = post->find("volumetric_density");
+        if (density != post->end() && density->is_number() && std::abs(density->get<double>() - 0.02) < 1e-6) {
+            *density = 0.004;
+        }
+    }
+}
+
 bool deserializeWorld(World& world, const std::string& text, std::string* error) {
     json root = json::parse(text, nullptr, false);
     if (root.is_discarded() || !root.is_object()) {
@@ -146,6 +166,7 @@ bool deserializeWorld(World& world, const std::string& text, std::string* error)
         std::cerr << "[Escena] Formato " << version << " mas nuevo que el del motor ("
                   << kSceneFormatVersion << "): se lee lo que se entienda\n";
     }
+    migrateScene(root, version);
     world.clear();
     const Uuid uuid = Uuid::parse(root.value("uuid", std::string{}));
     world.setSceneUuid(uuid.valid() ? uuid : Uuid::generate());

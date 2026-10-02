@@ -1,34 +1,43 @@
-<p class="file">Disparo.lua</p>
-      <pre><code class="language-lua">local Disparo = {
-    properties = {
-        alcance = 100.0,
-        fuerza = 12.0,
-        cadencia = 0.15,   -- segundos entre disparos
-    }
+<p>Al hacer clic, lanza un rayo hacia delante y empuja lo que toque; si es un Enemigo (el del <a href="ejemplo-spawner.html">generador</a>), le quita vida llamando a su script.</p>
+<p class="file">Assets/Scripts/Disparo.h</p>
+<pre><code class="language-cpp">#pragma once
+#include &lt;cramion/Script.h&gt;
+using namespace cramion;
+
+class Disparo : public Script {
+public:
+    Property&lt;float&gt; alcance{this, &quot;alcance&quot;, 100.0f};
+    Property&lt;float&gt; fuerza{this, &quot;fuerza&quot;, 12.0f};
+    Property&lt;float&gt; cadencia{this, &quot;cadencia&quot;, 0.15f, Tooltip(&quot;Segundos entre disparos&quot;)};
+    Property&lt;AudioClip&gt; sonido{this, &quot;sonido&quot;};
+
+    void update(float dt) override;
+
+private:
+    float espera = 0.0f;
+};</code></pre>
+<p class="file">Assets/Scripts/Disparo.cpp</p>
+<pre><code class="language-cpp">#include &quot;Disparo.h&quot;
+#include &quot;Enemigo.h&quot;
+
+#include &lt;cstdio&gt;
+
+void Disparo::update(float dt) {
+    espera -= dt;
+    if (!Input::mouseButton(0) || espera &gt; 0.0f) return;
+    espera = cadencia;
+
+    const Vec3 origen = entity().position();
+    const Vec3 dir = entity().forward();
+    Audio::playOneShot(sonido, origen, 0.7f);
+
+    RaycastHit hit;
+    if (!Physics::raycast(origen, dir, alcance, &amp;hit, entity())) return;
+    char texto[128];
+    std::snprintf(texto, sizeof(texto), &quot;Impacto en %s a %.1f m&quot;, hit.entity.name().c_str(), hit.distance);
+    Debug::log(texto);
+    if (hit.entity.has(&quot;Rigidbody&quot;)) hit.entity.addForce(dir * fuerza.get(), ForceMode::Impulse);
+    if (Enemigo* enemigo = hit.entity.script&lt;Enemigo&gt;()) enemigo-&gt;dano(25);
 }
 
-function Disparo:Start()
-    self.espera = 0
-end
-
-function Disparo:Update(dt)
-    self.espera = self.espera - dt
-    if not Input.getMouseButton(0) or self.espera > 0 then return end
-    self.espera = self.cadencia
-
-    local origen = self.entity.position
-    local dir = self.entity.forward
-    Audio.playOneShot("Audio/disparo.wav", origen, 0.7)
-
-    local hit = Physics.raycast(origen, dir, self.alcance)
-    if hit then
-        Debug.log("Impacto en", hit.entity.name, "a", string.format("%.1f m", hit.distance))
-        if hit.entity:hasComponent("Rigidbody") then
-            hit.entity:addForce(dir * self.fuerza, "impulse")
-        end
-        local objetivo = hit.entity:getScript()
-        if objetivo and objetivo.Dano then objetivo:Dano(25) end
-    end
-end
-
-return Disparo</code></pre>
+CRAMION_SCRIPT(Disparo)</code></pre>

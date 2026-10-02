@@ -207,7 +207,7 @@ bool VulkanDevice::supportsRayTracing(const vk::raii::PhysicalDevice& candidate)
            chain.template get<vk::PhysicalDeviceRayQueryFeaturesKHR>().rayQuery &&
            features12.bufferDeviceAddress && features12.runtimeDescriptorArray &&
            features12.shaderSampledImageArrayNonUniformIndexing &&
-           features12.shaderStorageBufferArrayNonUniformIndexing;
+           features12.shaderStorageBufferArrayNonUniformIndexing && features12.descriptorBindingPartiallyBound;
 }
 
 QueueFamilyIndices VulkanDevice::findQueueFamilies(const vk::raii::PhysicalDevice& candidate,
@@ -398,6 +398,8 @@ void VulkanDevice::createLogicalDevice() {
         features12.runtimeDescriptorArray = VK_TRUE;
         features12.shaderSampledImageArrayNonUniformIndexing = VK_TRUE;
         features12.shaderStorageBufferArrayNonUniformIndexing = VK_TRUE;
+        // El array de texturas de la escena tiene huecos sin escribir.
+        features12.descriptorBindingPartiallyBound = VK_TRUE;
     }
 
     // depthClamp es opcional: si la GPU no lo tiene, la pasada de sombras

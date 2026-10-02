@@ -1,15 +1,22 @@
-<p class="file">AnimarPersonaje.lua</p>
-      <pre><code class="language-lua">local AnimarPersonaje = { properties = {} }
+<p>Alimenta los parámetros del controlador de animación a partir de la velocidad del Rigidbody.</p>
+<p class="file">Assets/Scripts/AnimarPersonaje.h</p>
+<pre><code class="language-cpp">#pragma once
+#include &lt;cramion/Script.h&gt;
+using namespace cramion;
 
-function AnimarPersonaje:Update(dt)
-    local v = self.entity.velocity
-    local plano = Vec3(v.x, 0, v.z):length()
-    self.entity:setAnimatorFloat("Velocidad", plano)
-    self.entity:setAnimatorBool("EnAire", math.abs(v.y) > 0.5)
-    if Input.getKeyDown("e") then
-        self.entity:setAnimatorTrigger("Saludar")
-    end
-end
+class AnimarPersonaje : public Script {
+public:
+    void update(float dt) override;
+};</code></pre>
+<p class="file">Assets/Scripts/AnimarPersonaje.cpp</p>
+<pre><code class="language-cpp">#include &quot;AnimarPersonaje.h&quot;
 
-return AnimarPersonaje</code></pre>
-      <p>Sin controlador, también puedes reproducir un clip directamente: <code>self.entity:playAnimation("Correr", true)</code>.</p>
+void AnimarPersonaje::update(float) {
+    const Vec3 v = entity().velocity();
+    const float plano = Vec3{v.x, 0.0f, v.z}.length();
+    entity().setAnimatorFloat(&quot;Velocidad&quot;, plano);
+    entity().setAnimatorBool(&quot;EnAire&quot;, Mathf::abs(v.y) &gt; 0.5f);
+    if (Input::keyDown(&quot;E&quot;)) entity().setAnimatorTrigger(&quot;Saludar&quot;);
+}
+
+CRAMION_SCRIPT(AnimarPersonaje)</code></pre>

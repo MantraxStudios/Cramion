@@ -214,11 +214,27 @@ vec3 disneyBrdf(ShadingModel s, vec3 n, vec3 v, vec3 l, vec3 albedo, float rough
 // hacia la camara (hojas a contraluz, orejas, cera). Se suma aunque N.L sea
 // negativo; la sombra que se le aplica es la de la cara de atras (ver
 // lighting.frag). Aproximacion de Barre-Brisebois y Bouchard (2011).
+// Color de la luz que atraviesa: mas claro y saturado que el que se refleja
+// (recorre el interior: una oreja a contraluz sale roja). En lo fino (hojas,
+// params.z bajo) tira al verde amarillento de una hoja con el sol detras; con
+// el color reflejado (verde oscuro) las copas a contraluz salian negras.
+vec3 translucencyColor(ShadingModel s, vec3 albedo) {
+    vec3 transmitted = pow(max(albedo, vec3(0.0)), vec3(0.6));
+    float thin = 1.0 - smoothstep(0.1, 0.3, s.params.z);
+    return transmitted * mix(vec3(1.0), vec3(1.08, 1.12, 0.62), thin);
+}
+
 vec3 disneyTranslucency(ShadingModel s, vec3 n, vec3 v, vec3 l, vec3 albedo, float metallic) {
     if (s.model != kShadingSubsurface || s.params.y <= 0.0) return vec3(0.0);
+    float thin = 1.0 - smoothstep(0.1, 0.3, s.params.z);
+    // Transmision difusa: lo que entra por la cara de atras sale repartido
+    // hacia todos lados (en una hoja fina es lo principal; en algo grueso,
+    // poco). Antes solo brillaba mirando justo al sol a traves de ella.
+    float diffuse = clamp(dot(-n, l), 0.0, 1.0) * mix(0.3, 0.85, thin);
+    // Mas el lobulo hacia delante: mirando a la luz a traves de ella.
     vec3 through = normalize(l + n * 0.35);
-    float back = pow(clamp(dot(v, -through), 0.0, 1.0), 4.0) * 1.5;
-    // Ademas un poco de luz que da la vuelta al objeto (envoltura).
-    float wrap = clamp((dot(-n, l) + 0.2) / 1.2, 0.0, 1.0) * 0.25;
-    return albedo * s.params.y * (back + wrap) * (1.0 - metallic);
+    float forward = pow(clamp(dot(v, -through), 0.0, 1.0), 6.0) * 2.0;
+    // Y un poco de luz que da la vuelta al objeto (envoltura).
+    float wrap = clamp((dot(-n, l) + 0.2) / 1.2, 0.0, 1.0) * 0.15;
+    return translucencyColor(s, albedo) * s.params.y * (diffuse + forward + wrap) * (1.0 - metallic);
 }

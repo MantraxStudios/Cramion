@@ -1,0 +1,29 @@
+#version 450
+
+// Autoenfoque de la profundidad de campo: la distancia (m) de lo mas cercano
+// en el centro de la imagen (5 x 5 muestras). La lee la CPU un par de frames
+// despues y la suaviza en el tiempo, como el motor de enfoque de una lente:
+// el enfoque viaja de un sitio a otro en vez de saltar.
+
+layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) uniform sampler2D depth_map;
+layout(std430, set = 0, binding = 1) writeonly buffer Focus {
+    float distance_m;
+} focus;
+
+layout(push_constant) uniform Push {
+    vec4 camera;  // x, y = proyeccion [3][2] y [2][2]; z = ancho / alto
+} push;
+
+void main() {
+    float nearest = 2000.0;
+    for (int y = -2; y <= 2; ++y) {
+        for (int x = -2; x <= 2; ++x) {
+            vec2 uv = vec2(0.5) + vec2(float(x) / push.camera.z, float(y)) * 0.012;
+            float depth = textureLod(depth_map, uv, 0.0).r;
+            if (depth < 1.0) nearest = min(nearest, push.camera.x / (depth + push.camera.y));
+        }
+    }
+    focus.distance_m = nearest;
+}

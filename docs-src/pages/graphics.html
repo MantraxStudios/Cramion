@@ -46,8 +46,9 @@ Graphics.save()                        -- el juego lo recuerda la próxima vez</
     <tr><td><code>shadow_resolution</code></td><td>0, 512 .. 8192</td><td>Lo mismo en píxeles (0 = según el PC).</td></tr>
     <tr><td><code>texture_quality</code></td><td><code>"auto"</code>, <code>"low"</code>, <code>"medium"</code>, <code>"high"</code>, <code>"ultra"</code>, <code>"max"</code></td><td>Lado máximo de las texturas: según el PC, 1024, 2048, 4096, 8192 o 16384.</td></tr>
     <tr><td><code>texture_max_size</code></td><td>0, 64 .. 16384</td><td>Lo mismo en píxeles (0 = según el PC).</td></tr>
-    <tr><td><code>ray_tracing</code></td><td>true / false</td><td>GI y reflejos con trazado de rayos (si la GPU lo admite: <code>ray_tracing_supported</code>).</td></tr>
+    <tr><td><code>ray_tracing</code></td><td>true / false</td><td>GI, reflejos y sombras del sol y de las luces con trazado de rayos (si la GPU lo admite: <code>ray_tracing_supported</code>). Apagado no ocupa memoria.</td></tr>
     <tr><td><code>reflection_probe</code></td><td>true / false</td><td>Sonda de reflexión del entorno.</td></tr>
+    <tr><td><code>sky_occlusion</code></td><td>true / false</td><td>Oclusión del cielo vista desde arriba (sin trazado de rayos): bajo los árboles y los tejados llega menos cielo.</td></tr>
     <tr><td><code>occlusion_culling</code></td><td>true / false</td><td>No dibujar lo que queda tapado.</td></tr>
     <tr><td><code>cascade_debug</code></td><td>true / false</td><td>Colorea las cascadas de sombra (depurar).</td></tr>
     <tr><td><code>window_mode</code></td><td><code>"maximized"</code>, <code>"fullscreen"</code>, <code>"windowed"</code></td><td>Ventana maximizada, pantalla completa sin bordes o ventana de <code>window_width</code> × <code>window_height</code>. Solo en el juego exportado.</td></tr>

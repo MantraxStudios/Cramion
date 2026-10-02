@@ -1,58 +1,82 @@
-<p class="file">Generador.lua</p>
-      <pre><code class="language-lua">local Generador = {
-    properties = {
-        plantilla = "EnemigoPlantilla",
-        intervalo = 2.0,
-        radio = 10.0,
-        maximo = 12,
+<p>Copia un objeto plantilla (desactivado en la escena, arrastrado al Inspector) cada cierto tiempo en un punto aleatorio. Los enemigos persiguen al jugador y tienen vida.</p>
+<p class="file">Assets/Scripts/Generador.h</p>
+<pre><code class="language-cpp">#pragma once
+#include &lt;cramion/Script.h&gt;
+using namespace cramion;
+
+class Generador : public Script {
+public:
+    Property&lt;Entity&gt; plantilla{this, &quot;plantilla&quot;, {}, Tooltip(&quot;Un enemigo desactivado de la escena&quot;)};
+    Property&lt;float&gt; intervalo{this, &quot;intervalo&quot;, 2.0f};
+    Property&lt;float&gt; radio{this, &quot;radio&quot;, 10.0f};
+    Property&lt;int&gt; maximo{this, &quot;maximo&quot;, 12};
+
+    void update(float dt) override;
+
+private:
+    float reloj = 0.0f;
+};</code></pre>
+<p class="file">Assets/Scripts/Generador.cpp</p>
+<pre><code class="language-cpp">#include &quot;Generador.h&quot;
+
+void Generador::update(float dt) {
+    if (!plantilla.get()) return;
+    reloj += dt;
+    if (reloj &lt; intervalo) return;
+    reloj = 0.0f;
+    if (static_cast&lt;int&gt;(Scene::findAllWithTag(&quot;Enemigo&quot;).size()) &gt;= maximo) return;
+
+    const float angulo = Random::range(0.0f, Mathf::tau);
+    const Vec3 punto = entity().position() + Vec3{Mathf::cos(angulo), 0.0f, Mathf::sin(angulo)} * radio.get();
+    const Entity enemigo = Scene::instantiate(plantilla.get(), punto);
+    enemigo.setName(&quot;Enemigo&quot;);
+    enemigo.set(&quot;tag&quot;, &quot;Enemigo&quot;);
+    enemigo.setActive(true);
+}
+
+CRAMION_SCRIPT(Generador)</code></pre>
+<p class="file">Assets/Scripts/Enemigo.h</p>
+<pre><code class="language-cpp">#pragma once
+#include &lt;cramion/Script.h&gt;
+using namespace cramion;
+
+class Enemigo : public Script {
+public:
+    Property&lt;float&gt; velocidad{this, &quot;velocidad&quot;, 2.5f};
+    Property&lt;int&gt; vidaInicial{this, &quot;vida&quot;, 50};
+    Property&lt;AudioClip&gt; explosion{this, &quot;explosion&quot;};
+
+    void start() override;
+    void update(float dt) override;
+    void dano(int cantidad);  // la llama Disparo
+
+private:
+    Entity jugador;
+    int vida = 0;
+};</code></pre>
+<p class="file">Assets/Scripts/Enemigo.cpp</p>
+<pre><code class="language-cpp">#include &quot;Enemigo.h&quot;
+
+void Enemigo::start() {
+    jugador = Scene::find(&quot;Jugador&quot;);
+    vida = vidaInicial;
+}
+
+void Enemigo::update(float dt) {
+    if (!jugador.valid()) return;
+    Vec3 hacia = jugador.position() - entity().position();
+    hacia.y = 0.0f;
+    if (hacia.length() &gt; 1.2f) {
+        entity().translate(hacia.normalized() * (velocidad * dt));
+        entity().lookAt(jugador.position());
     }
 }
 
-function Generador:Start()
-    self.molde = Scene.find(self.plantilla)
-    self.reloj = 0
-end
+void Enemigo::dano(int cantidad) {
+    vida -= cantidad;
+    if (vida &gt; 0) return;
+    Audio::playOneShot(explosion, entity().position());
+    entity().destroy();
+}
 
-function Generador:Update(dt)
-    if not self.molde then return end
-    self.reloj = self.reloj + dt
-    if self.reloj &lt; self.intervalo then return end
-    self.reloj = 0
-
-    if #Scene.findAllWithTag("Enemigo") >= self.maximo then return end
-
-    local angulo = Mathf.random(0, 2 * Mathf.pi)
-    local punto = self.entity.position + Vec3(math.cos(angulo), 0, math.sin(angulo)) * self.radio
-    local enemigo = Scene.instantiate(self.molde, punto)
-    enemigo.name = "Enemigo"
-    enemigo.tag = "Enemigo"
-    enemigo.active = true
-end
-
-return Generador</code></pre>
-      <p class="file">Enemigo.lua</p>
-      <pre><code class="language-lua">local Enemigo = { properties = { velocidad = 2.5, vida = 50 } }
-
-function Enemigo:Start()
-    self.jugador = Scene.find("Jugador")
-end
-
-function Enemigo:Update(dt)
-    if not self.jugador then return end
-    local hacia = self.jugador.position - self.entity.position
-    hacia.y = 0
-    if hacia:length() > 1.2 then
-        self.entity:translate(hacia:normalized() * self.velocidad * dt)
-        self.entity:lookAt(self.jugador.position)
-    end
-end
-
-function Enemigo:Dano(cantidad)   -- lo llama Disparo.lua
-    self.vida = self.vida - cantidad
-    if self.vida &lt;= 0 then
-        Audio.playOneShot("Audio/explosion.wav", self.entity.position)
-        self.entity:destroy()
-    end
-end
-
-return Enemigo</code></pre>
+CRAMION_SCRIPT(Enemigo)</code></pre>

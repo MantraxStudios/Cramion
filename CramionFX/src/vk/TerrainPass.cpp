@@ -698,6 +698,27 @@ void TerrainPass::setDesc(std::uint32_t id, const TerrainDesc& desc) {
         device_->waitIdle();
         loadLayerTextures(t);
     }
+    // Lo que cambia el color del terreno para los rayos: capas, tintes y hierba.
+    std::uint64_t signature = 1469598103934665603ull ^ t.desc.layers.size();
+    const auto mix_float = [&](float f) {
+        std::uint32_t bits = 0;
+        std::memcpy(&bits, &f, sizeof(bits));
+        signature = (signature ^ bits) * 1099511628211ull;
+    };
+    for (const TerrainLayerDesc& layer : t.desc.layers) {
+        for (const float f : {layer.tint.x, layer.tint.y, layer.tint.z}) mix_float(f);
+    }
+    const GrassDesc& grass = t.desc.grass;
+    for (const float f : {grass.enabled ? 1.0f : 0.0f, static_cast<float>(grass.layer), static_cast<float>(grass.dry_layer),
+                          grass.threshold, grass.base_color.x, grass.base_color.y, grass.base_color.z, grass.tip_color.x,
+                          grass.tip_color.y, grass.tip_color.z, grass.dry_color.x, grass.dry_color.y,
+                          grass.dry_color.z}) {
+        mix_float(f);
+    }
+    if (signature != t.look_signature) {
+        t.look_signature = signature;
+        ++t.look_revision;
+    }
 }
 
 void TerrainPass::createArrayTexture(ArrayTexture& texture, const std::vector<std::vector<std::uint8_t>>& layers) {
@@ -804,6 +825,19 @@ void TerrainPass::loadLayerTextures(Terrain& terrain) {
     createArrayTexture(terrain.albedo_array, albedo);
     createArrayTexture(terrain.normal_array, normal);
     terrain.arrays_ready = true;
+    // Color medio de cada capa (lo que se ve de lejos, y lo que ven los rayos).
+    for (std::uint32_t i = 0; i < kMaxTerrainLayers; ++i) {
+        double sum[3] = {0.0, 0.0, 0.0};
+        const std::vector<std::uint8_t>& pixels = albedo[i];
+        const std::size_t count = pixels.size() / 4;
+        for (std::size_t p = 0; p < count; ++p) {
+            for (std::size_t c = 0; c < 3; ++c) sum[c] += pixels[p * 4 + c];
+        }
+        const double scale = count > 0 ? 1.0 / (255.0 * static_cast<double>(count)) : 0.0;
+        terrain.layer_average[i] = core::Vec3{static_cast<float>(sum[0] * scale), static_cast<float>(sum[1] * scale),
+                                              static_cast<float>(sum[2] * scale)};
+    }
+    ++terrain.look_revision;
     writeDescriptors(terrain);
 }
 
@@ -848,6 +882,15 @@ void TerrainPass::updateHeights(std::uint32_t id, const float* heights, std::uin
                     heights + static_cast<std::size_t>(y + row) * res + x, w * sizeof(float));
     }
     uploads_.push_back(std::move(upload));
+    if (keep_cpu_copy_) {
+        Terrain& t = *it->second;
+        t.cpu_heights.resize(static_cast<std::size_t>(res) * res, 0.0f);
+        for (std::uint32_t row = 0; row < h; ++row) {
+            const std::size_t at = static_cast<std::size_t>(y + row) * res + x;
+            std::memcpy(t.cpu_heights.data() + at, heights + at, w * sizeof(float));
+        }
+        ++t.height_revision;
+    }
 }
 
 void TerrainPass::updateSplat(std::uint32_t id, const std::uint8_t* splat0, const std::uint8_t* splat1,
@@ -868,6 +911,60 @@ void TerrainPass::updateSplat(std::uint32_t id, const std::uint8_t* splat0, cons
         std::memcpy(upload.bytes.data() + plane + static_cast<std::size_t>(row) * w * 4, splat1 + source, w * 4);
     }
     uploads_.push_back(std::move(upload));
+    if (keep_cpu_copy_) {
+        Terrain& t = *it->second;
+        t.cpu_splat0.resize(static_cast<std::size_t>(res) * res * 4, 0);
+        t.cpu_splat1.resize(static_cast<std::size_t>(res) * res * 4, 0);
+        for (std::uint32_t row = 0; row < h; ++row) {
+            const std::size_t at = (static_cast<std::size_t>(y + row) * res + x) * 4;
+            std::memcpy(t.cpu_splat0.data() + at, splat0 + at, w * 4);
+            std::memcpy(t.cpu_splat1.data() + at, splat1 + at, w * 4);
+        }
+        ++t.look_revision;
+    }
+}
+
+std::vector<TerrainPass::RayTracingSource> TerrainPass::rayTracingSources() const {
+    std::vector<RayTracingSource> out;
+    for (const auto& [id, terrain] : terrains_) {
+        const Terrain& t = *terrain;
+        const std::size_t heights = static_cast<std::size_t>(t.resolution) * t.resolution;
+        const std::size_t splat = static_cast<std::size_t>(t.splat_resolution) * t.splat_resolution * 4;
+        if (t.cpu_heights.size() != heights || t.cpu_splat0.size() != splat || t.cpu_splat1.size() != splat) continue;
+        RayTracingSource s;
+        s.id = id;
+        s.resolution = t.resolution;
+        s.splat_resolution = t.splat_resolution;
+        s.origin = t.desc.origin;
+        s.size = t.desc.size;
+        s.max_height = t.desc.max_height;
+        s.visible = t.desc.visible;
+        s.heights = t.cpu_heights.data();
+        s.splat0 = t.cpu_splat0.data();
+        s.splat1 = t.cpu_splat1.data();
+        s.layer_count = static_cast<std::uint32_t>(std::min<std::size_t>(t.desc.layers.size(), kMaxTerrainLayers));
+        for (std::uint32_t i = 0; i < kMaxTerrainLayers; ++i) {
+            // Sin textura, terrain.frag pinta su tinte con manchas de media ~1.
+            const core::Vec3 tint = i < t.desc.layers.size() ? t.desc.layers[i].tint : core::Vec3{1.0f, 1.0f, 1.0f};
+            const core::Vec3 base = t.layer_average[i];
+            s.layer_color[i] = core::Vec3{base.x * tint.x, base.y * tint.y, base.z * tint.z};
+        }
+        s.height_revision = t.height_revision;
+        s.look_revision = t.look_revision;
+        const GrassDesc& grass = t.desc.grass;
+        if (grass.enabled && grass.layer >= 0 && static_cast<std::uint32_t>(grass.layer) < kMaxTerrainLayers) {
+            s.grass = true;
+            s.grass_layer = static_cast<std::uint32_t>(grass.layer);
+            s.grass_dry_layer = grass.dry_layer;
+            s.grass_threshold = grass.threshold;
+            // La brizna es casi toda del color de la punta (grass.vert); la
+            // base solo asoma entre ellas.
+            s.grass_color = grass.base_color * 0.15f + grass.tip_color * 0.85f;
+            s.grass_dry_color = grass.dry_color;
+        }
+        out.push_back(s);
+    }
+    return out;
 }
 
 bool TerrainPass::recordUploads(const vk::raii::CommandBuffer& cmd, std::uint32_t frame) {

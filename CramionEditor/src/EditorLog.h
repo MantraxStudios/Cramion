@@ -1,6 +1,7 @@
 #ifndef CRAMION_EDITOR_LOG_H
 #define CRAMION_EDITOR_LOG_H
 
+#include <cstdint>
 #include <deque>
 #include <mutex>
 #include <streambuf>
@@ -33,6 +34,8 @@ public:
     // Para leer las entradas: bloquear mutex() mientras se recorren.
     std::mutex& mutex() { return mutex_; }
     const std::deque<Entry>& entries() const { return entries_; }
+    // Entradas anadidas desde el principio (la primera de entries() es la total() - size()).
+    std::uint64_t total() const { return total_; }
 
 private:
     // Reenvia al streambuf original y parte el texto en lineas.
@@ -59,6 +62,7 @@ private:
 
     std::mutex mutex_;
     std::deque<Entry> entries_;
+    std::uint64_t total_ = 0;
     TeeBuffer* out_ = nullptr;
     TeeBuffer* err_ = nullptr;
 };

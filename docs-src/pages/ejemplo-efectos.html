@@ -1,24 +1,41 @@
-<pre><code class="language-lua">local Cristal = { properties = {} }
+<p>Una malla con dos submallas y dos materiales: piedra con textura y un cristal que brilla y late.</p>
+<p class="file">Assets/Scripts/Cristal.h</p>
+<pre><code class="language-cpp">#pragma once
+#include &lt;cramion/Script.h&gt;
+using namespace cramion;
 
-function Cristal:Start()
-    self.malla = Mesh.cube(1)
-    -- Dos submallas: las caras de arriba y abajo brillan, el resto es piedra con textura.
-    local tris = self.malla.triangles
-    local lados, tapas = {}, {}
-    for i = 1, #tris, 3 do
-        local destino = (i > 12 and i <= 24) and tapas or lados   -- caras 3 y 4 del cubo: +Y y -Y
-        table.insert(destino, tris[i]); table.insert(destino, tris[i + 1]); table.insert(destino, tris[i + 2])
-    end
-    self.malla:setTriangles(lados, 0)
-    self.malla:setTriangles(tapas, 1)
-    self.malla:setMaterial(0, { texture = "Textures/piedra.png", normalMap = "Textures/piedra_n.png", tiling = Vec3(2, 2, 0) })
-    self.malla:setMaterial(1, { color = Vec3(0.2, 0.6, 1), emission = Vec3(0.2, 0.6, 1), emissionIntensity = 4 })
-    self.entity.mesh = self.malla
-end
+class Cristal : public Script {
+public:
+    void start() override;
+    void update(float dt) override;
 
-function Cristal:Update(dt)
-    -- El brillo late: solo factores, no se vuelve a subir la malla.
-    self.malla:setMaterial(1, { emissionIntensity = 3 + math.sin(Time.time * 4) * 2 })
-end
+private:
+    Mesh malla;
+};</code></pre>
+<p class="file">Assets/Scripts/Cristal.cpp</p>
+<pre><code class="language-cpp">#include &quot;Cristal.h&quot;
 
-return Cristal</code></pre>
+void Cristal::start() {
+    malla = Mesh::cube(1.0f);
+    // Dos submallas: las caras de arriba y abajo brillan, el resto es piedra.
+    const Value tris = malla.triangles();
+    Values lados, tapas;
+    for (std::size_t i = 0; i + 2 &lt; tris.size(); i += 3) {
+        Values&amp; destino = (i &gt;= 12 &amp;&amp; i &lt; 24) ? tapas : lados;  // caras 3 y 4 del cubo: +Y y -Y
+        destino.push_back(tris[i]);
+        destino.push_back(tris[i + 1]);
+        destino.push_back(tris[i + 2]);
+    }
+    malla.setTriangles(lados, 0);
+    malla.setTriangles(tapas, 1);
+    malla.setMaterial(0, Value{{&quot;texture&quot;, &quot;Textures/piedra.png&quot;}, {&quot;normalMap&quot;, &quot;Textures/piedra_n.png&quot;}, {&quot;tiling&quot;, Vec3{2, 2, 0}}});
+    malla.setMaterial(1, Value{{&quot;color&quot;, Vec3{0.2f, 0.6f, 1.0f}}, {&quot;emission&quot;, Vec3{0.2f, 0.6f, 1.0f}}, {&quot;emissionIntensity&quot;, 4.0f}});
+    entity().setMesh(malla);
+}
+
+void Cristal::update(float) {
+    // El brillo late: solo cambia el material (no se vuelve a subir la malla).
+    malla.setMaterial(1, Value{{&quot;emissionIntensity&quot;, 3.0f + Mathf::sin(Time::time() * 4.0f) * 2.0f}});
+}
+
+CRAMION_SCRIPT(Cristal)</code></pre>

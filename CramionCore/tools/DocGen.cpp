@@ -202,11 +202,13 @@ const std::map<std::string, std::string>& intros() {
                       "mueven dejan ondas. Ver <a href=\"agua.html\">Agua</a>."},
         {"Foliage", "Bosques de <strong>millones de arboles procedurales</strong> (pino, abeto, roble, abedul, palmera o sauce: "
                     "tres especies por mezcla) sembrados en segundo plano sobre el terreno, evitando los rios, los lagos, las "
-                    "pendientes y los <em>claros</em>. Tronco y ramas de verdad, racimos de hojas translucidos, 3 LODs, "
-                    "culling en la GPU, sombras y viento. Ver <a href=\"mundo-procedural.html#arboles\">Arboles procedurales</a>."},
+                    "pendientes y los <em>claros</em>. Tronco y ramas de verdad, cortezas de crestas y de placas, borlas de "
+                    "agujas, racimos de hojas que se iluminan a contraluz, 3 LODs, culling en la GPU, sombras y viento. Ver "
+                    "<a href=\"mundo-procedural.html#arboles\">Arboles procedurales</a>."},
         {"Grass", "Hierba en la GPU sobre la capa del terreno que se elija: millones de briznas alrededor de la camara, sin "
-                  "mallas, con viento, matas y translucidez, que se <strong>apartan y se aplastan</strong> con los Rigidbody "
-                  "que pasan por encima. Va en la misma entidad que el Terrain. Ver "
+                  "mallas, en matas que se abren desde su centro, con manchas de color, puntas secas y alguna brizna de "
+                  "paja, viento y translucidez, que se <strong>apartan y se aplastan</strong> con los Rigidbody que pasan "
+                  "por encima. Va en la misma entidad que el Terrain. Ver "
                   "<a href=\"mundo-procedural.html#hierba\">Hierba (GPU)</a>."},
         {"VoxelWorld", "Un mundo de bloques infinito como Minecraft: biomas, cuevas, minerales, arboles, agua y luz por bloques. "
                        "Se genera y se malla en hilos de fondo; en el editor, con <em>Vista previa</em>. Ver "
@@ -226,7 +228,24 @@ const std::map<std::string, std::string>& intros() {
         {"Vehicle", "Vehiculo con ruedas (el de Jolt): en el objeto con Rigidbody dinamico; sus ruedas son los "
                     "<code>WheelCollider</code> de los hijos. Motor, cambio automatico y diferenciales. Se conduce con "
                     "<code>entity:setVehicleInput(acelerador, direccion, freno, freno de mano)</code> o con el teclado."},
-        {"WheelCollider", "Una rueda de un <code>Vehicle</code>: suspension por raycast, direccion, traccion y frenos. "
+        {"CppScript",
+         "Script de C++ (la clase de CRAMION_SCRIPT en un .cpp de Assets). Corre aislado en otro proceso: si falla, el "
+         "motor sigue y la Consola dice el archivo y la linea. Ver <a href=\"scripts-cpp.html\">Scripts en C++</a>."},
+        {"EditableMesh",
+         "Malla de poligonos que se edita en la vista Escena por vertices, aristas y caras (como ProBuilder): genera la "
+         "malla del Mesh Renderer y del Mesh Collider. Se crea con GameObject &gt; Malla editable o se convierte un "
+         "modelo con la ventana Modelado. Ver <a href=\"modelado.html\">Modelado poligonal</a>."},
+        {"CharacterController",
+         "Personaje que se mueve chocando y deslizando (el CharacterController de Unity y el CharacterMovement de "
+         "Unreal, sobre el CharacterVirtual de Jolt): capsula vertical que sube escalones, no sube rampas mas "
+         "empinadas que su limite, se pega al suelo al bajar, sigue a las plataformas que se mueven y empuja a los "
+         "Rigidbody. Es collider: la tocan los rayos, entra en los triggers y da eventos Collision. "
+         "<em>Manual</em>: solo <code>entity:move(desplazamiento)</code> desde un script (sin gravedad, como Unity). "
+         "<em>Integrado</em>: gravedad, salto (con tiempo coyote y doble salto), andar/correr/agacharse con "
+         "aceleracion; con el teclado (WASD relativo a la camara principal, Shift, Espacio, C/Ctrl) o con "
+         "<code>entity:setMoveInput(dir, correr)</code>, <code>entity:jump()</code> y "
+         "<code>entity:setCrouch(true)</code>. Crear uno listo: GameObject &gt; Fisica &gt; Personaje."},
+        {"WheelCollider","Una rueda de un <code>Vehicle</code>: suspension por raycast, direccion, traccion y frenos. "
                           "<em>Visual</em> es el objeto que gira con ella."},
         {"ParticleSystem", "Emisor de particulas como el de Unity: emision continua y rafagas, forma, velocidad, tamano y color "
                            "a lo largo de la vida, gravedad, rozamiento y colision con los colliders (rebotan y envian eventos). "

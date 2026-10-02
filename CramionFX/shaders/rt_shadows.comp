@@ -27,6 +27,16 @@ const int kSlots = 4;
 // Como LocalLightShadows::kNearPlane: lo que esta a menos de 20 cm de la luz
 // (su bombilla, el poste de la farola) no tapa.
 const float kNearPlane = 0.2;
+// El sol ocupa un hueco mas con este numero de luz (lighting.frag: kRtSunId).
+// Va primero: es la luz que mas aporta de dia. Un rayo hacia un punto al azar
+// de su disco (0.53 grados): sombra nitida al pie de las cosas y que se
+// difumina con la distancia (penumbra real). Ve el escenario y el terreno con
+// su forma exacta y llega mas alla de las cascadas (la sombra de una montana
+// al atardecer a kilometros). Los arboles no: en el raster se mecen con el
+// viento y su sombra la pone el mapa de cascadas. lighting.frag se queda con
+// la mas oscura de las dos.
+const int kSunId = kMaxPointLights + kMaxSpotLights;
+const float kSunAngularRadius = 0.00465;
 
 void insertLight(int id, float score, inout int ids[kSlots], inout float scores[kSlots]) {
     if (score <= scores[kSlots - 1]) return;
@@ -57,10 +67,19 @@ void main() {
     vec3 normal = decodeNormal(texelFetch(g_normal, pixel, 0).rg);
     float distance_to_camera = length(camera.position.xyz - position);
 
-    // --- Las 4 luces que mas aportan ---
+    // --- Las 4 luces que mas aportan (el sol, si toca, la primera) ---
+    // push.params.z: 1 = luces locales, 2 = sol (se pueden sumar).
+    int flags = int(push.params.z + 0.5);
+    bool want_local = (flags & 1) != 0;
+    vec3 to_sun = -normalize(lights.sun_direction_intensity.xyz);
+    bool want_sun = (flags & 2) != 0 && dot(normal, to_sun) > 0.0;
     int ids[kSlots] = int[](-1, -1, -1, -1);
     float scores[kSlots] = float[](0.0, 0.0, 0.0, 0.0);
-    int point_count = min(lights.counts.x, kMaxPointLights);
+    if (want_sun) {
+        ids[0] = kSunId;
+        scores[0] = 3.0e38;
+    }
+    int point_count = want_local ? min(lights.counts.x, kMaxPointLights) : 0;
     for (int i = 0; i < point_count; ++i) {
         if (lights.points[i].shadow.y <= 0.0) continue;  // sin sombra
         vec3 to_light = lights.points[i].position_range.xyz - position;
@@ -73,7 +92,7 @@ void main() {
                       attenuation(d, range) * n_dot_l;
         insertLight(i, score, ids, scores);
     }
-    int spot_count = min(lights.counts.y, kMaxSpotLights);
+    int spot_count = want_local ? min(lights.counts.y, kMaxSpotLights) : 0;
     for (int i = 0; i < spot_count; ++i) {
         if (lights.spots[i].outer_shadow.z <= 0.0) continue;
         vec3 to_light = lights.spots[i].position_range.xyz - position;
@@ -99,6 +118,17 @@ void main() {
     for (int k = 0; k < kSlots; ++k) {
         int id = ids[k];
         if (id < 0) continue;
+        if (id == kSunId) {
+            vec3 sun_tangent = normalize(cross(abs(to_sun.y) < 0.99 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0), to_sun));
+            vec3 sun_bitangent = cross(to_sun, sun_tangent);
+            vec2 xi = sampleNoise(vec2(pixel), 0.913);
+            float r = kSunAngularRadius * sqrt(xi.x);
+            float angle = 2.0 * kPi * xi.y;
+            vec3 direction = normalize(to_sun + (sun_tangent * cos(angle) + sun_bitangent * sin(angle)) * r);
+            float sun_visible = unoccludedMask(origin, direction, 20000.0, kMaskScenery | kMaskTerrain) ? 1.0 : 0.0;
+            result[k] = float(id + 1) * 32.0 + round(sun_visible * 31.0);
+            continue;
+        }
         bool spot = id >= kMaxPointLights;
         vec3 light_position = spot ? lights.spots[id - kMaxPointLights].position_range.xyz
                                    : lights.points[id].position_range.xyz;

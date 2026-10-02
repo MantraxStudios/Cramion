@@ -236,7 +236,9 @@ void Grass::reflect(ecs::PropertyVisitor& v) {
     v.field({"base_color", "Color base"}, base_color, ecs::Vec3Kind::Color);
     v.field({"tip_color", "Color de la punta"}, tip_color, ecs::Vec3Kind::Color);
     v.field({"dry_color", "Color seca"}, dry_color, ecs::Vec3Kind::Color);
-    v.field({"color_variation", "Variacion de color"}, color_variation, ecs::FloatRange{0.0f, 1.0f, 0.01f, "%.2f"});
+    v.field({"color_variation", "Variacion de color",
+             "Tono de cada mata, manchas del campo (frondosas y pobres), puntas secas y briznas de paja (0 = todas iguales)"},
+            color_variation, ecs::FloatRange{0.0f, 1.0f, 0.01f, "%.2f"});
     v.field({"wind", "Viento", "Cuanto se mece (0 = quieta)"}, wind, ecs::FloatRange{0.0f, 4.0f, 0.01f, "%.2f"});
     v.field({"wind_direction", "Direccion del viento"}, wind_direction, ecs::FloatRange{0.0f, 360.0f, 1.0f, "%.0f°"});
     v.field({"interaction", "Interaccion", "Cuanto la apartan y aplastan los objetos fisicos y los personajes"},

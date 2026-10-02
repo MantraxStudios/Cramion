@@ -1,47 +1,56 @@
-<p class="file">Guardia.lua</p>
-      <pre><code class="language-lua">local Guardia = {
-    properties = {
-        radioPatrulla = 12.0,
-        vision = 10.0,
-    }
+<p>Un guardia con NavAgent que patrulla por puntos al azar y persigue al jugador cuando lo ve (el raycast de la malla de navegación comprueba que no haya una pared en medio). Si lo pierde, vuelve a patrullar.</p>
+<p class="file">Assets/Scripts/Guardia.h</p>
+<pre><code class="language-cpp">#pragma once
+#include &lt;cramion/Script.h&gt;
+using namespace cramion;
+
+class Guardia : public Script {
+public:
+    Property&lt;float&gt; radioPatrulla{this, &quot;radioPatrulla&quot;, 12.0f};
+    Property&lt;float&gt; vision{this, &quot;vision&quot;, 10.0f};
+
+    void start() override;
+    void update(float dt) override;
+
+private:
+    bool veAlJugador() const;
+    enum class Estado { Patrulla, Persigue } estado = Estado::Patrulla;
+    Vec3 casa;
+    Entity jugador;
+    float espera = 0.0f;
+};</code></pre>
+<p class="file">Assets/Scripts/Guardia.cpp</p>
+<pre><code class="language-cpp">#include &quot;Guardia.h&quot;
+
+void Guardia::start() {
+    casa = entity().position();
+    jugador = Scene::find(&quot;Jugador&quot;);
 }
 
-function Guardia:Start()
-    self.casa = self.entity.position
-    self.jugador = Scene.find("Jugador")
-    self.estado = "patrulla"
-    self.espera = 0
-end
+bool Guardia::veAlJugador() const {
+    if (!jugador.valid()) return false;
+    if (Vec3::distance(entity().position(), jugador.position()) &gt; vision) return false;
+    return Navigation::raycast(entity().position(), jugador.position());  // sin paredes en medio
+}
 
-function Guardia:veAlJugador()
-    if not self.jugador then return false end
-    if self.entity:distanceTo(self.jugador) > self.vision then return false end
-    local libre = Navigation.raycast(self.entity.position, self.jugador.position)
-    return libre
-end
+void Guardia::update(float dt) {
+    if (veAlJugador()) {
+        estado = Estado::Persigue;
+        entity().moveTo(jugador.position());
+        return;
+    }
+    const bool moviendose = entity().isMoving();
+    if (estado == Estado::Persigue) {
+        // Lo perdio: va al ultimo sitio donde lo vio y luego patrulla.
+        if (!moviendose) estado = Estado::Patrulla;
+        return;
+    }
+    // Patrulla: un punto al azar alrededor de casa, espera y otro.
+    if (moviendose) return;
+    espera -= dt;
+    if (espera &gt; 0.0f) return;
+    if (const Value punto = Navigation::randomPoint(casa, radioPatrulla.get()); !punto.isNil()) entity().moveTo(punto);
+    espera = Random::range(1.0f, 3.0f);
+}
 
-function Guardia:Update(dt)
-    if self:veAlJugador() then
-        self.estado = "persigue"
-        self.entity:moveTo(self.jugador.position)
-        return
-    end
-
-    if self.estado == "persigue" then
-        -- Lo perdio: va al ultimo sitio donde lo vio y luego patrulla.
-        if not self.entity.isMoving then self.estado = "patrulla" end
-        return
-    end
-
-    -- Patrulla: un punto al azar alrededor de casa, espera y otro.
-    if not self.entity.isMoving then
-        self.espera = self.espera - dt
-        if self.espera &lt;= 0 then
-            local punto = Navigation.randomPoint(self.casa, self.radioPatrulla)
-            if punto then self.entity:moveTo(punto) end
-            self.espera = Mathf.random(1, 3)
-        end
-    end
-end
-
-return Guardia</code></pre>
+CRAMION_SCRIPT(Guardia)</code></pre>

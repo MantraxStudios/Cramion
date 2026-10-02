@@ -153,6 +153,7 @@ void loadGraphicsIni(const std::filesystem::path& file, gfx::VulkanRenderer& ren
         if (key == "shadows") renderer.setShadowsEnabled(value != 0.0f);
         if (key == "ray_tracing" && renderer.rayTracingSupported()) renderer.setRayTracingEnabled(value != 0.0f);
         if (key == "reflection_probe") renderer.setReflectionProbeEnabled(value != 0.0f);
+        if (key == "sky_occlusion") renderer.setSkyOcclusionEnabled(value != 0.0f);
         if (key == "occlusion_culling") renderer.setOcclusionCullingEnabled(value != 0.0f);
     }
     renderer.setGraphicsSettings(g);
@@ -176,6 +177,7 @@ bool saveGraphicsIni(const std::filesystem::path& file, const gfx::VulkanRendere
     out << "shadows=" << (renderer.shadowsEnabled() ? 1 : 0) << "\n";
     out << "ray_tracing=" << (renderer.rayTracingEnabled() ? 1 : 0) << "\n";
     out << "reflection_probe=" << (renderer.reflectionProbeEnabled() ? 1 : 0) << "\n";
+    out << "sky_occlusion=" << (renderer.skyOcclusionEnabled() ? 1 : 0) << "\n";
     out << "occlusion_culling=" << (renderer.occlusionCullingEnabled() ? 1 : 0) << "\n";
     return static_cast<bool>(out);
 }
@@ -328,6 +330,8 @@ std::vector<GraphicsOption> RendererGraphicsHost::options() const {
     // Iluminacion y rendimiento del render
     add("ray_tracing", renderer_.rayTracingEnabled(), "Trazado de rayos por hardware (GI, reflejos y sombras de las luces locales)");
     add("reflection_probe", renderer_.reflectionProbeEnabled(), "Sonda de reflexion del entorno");
+    add("sky_occlusion", renderer_.skyOcclusionEnabled(),
+        "Oclusion del cielo vista desde arriba (sin trazado de rayos): bajo los arboles y los tejados llega menos cielo");
     add("occlusion_culling", renderer_.occlusionCullingEnabled(), "No dibujar lo que queda tapado (GPU)");
     add("cascade_debug", renderer_.cascadeDebug(), "Colorear las cascadas de sombra (depurar)");
     // Ventana (solo en el juego exportado)
@@ -361,6 +365,11 @@ std::vector<GraphicsOption> RendererGraphicsHost::options() const {
         "Arboles dibujados el ultimo frame", {}, false);
     add("foliage_near", number(static_cast<double>(fs.visible[0])), "Arboles con todo el detalle (cerca)", {}, false);
     add("foliage_triangles", number(static_cast<double>(fs.triangles)), "Triangulos de la vegetacion el ultimo frame", {}, false);
+    // Streaming de la memoria de video (render.streaming.*).
+    add("models_resident", number(static_cast<double>(renderer_.uploadedModelCount() - renderer_.evictedModelCount())),
+        "Modelos en la memoria de video", {}, false);
+    add("models_evicted", number(static_cast<double>(renderer_.evictedModelCount())),
+        "Modelos fuera de la memoria de video porque no se ven (vuelven al acercarse)", {}, false);
     return o;
 }
 
@@ -466,6 +475,9 @@ bool RendererGraphicsHost::set(const std::string& key, const GraphicsValue& valu
     } else if (key == "reflection_probe") {
         if (!need_bool()) return false;
         renderer_.setReflectionProbeEnabled(flag);
+    } else if (key == "sky_occlusion") {
+        if (!need_bool()) return false;
+        renderer_.setSkyOcclusionEnabled(flag);
     } else if (key == "occlusion_culling") {
         if (!need_bool()) return false;
         renderer_.setOcclusionCullingEnabled(flag);

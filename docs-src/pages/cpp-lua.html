@@ -1,0 +1,11 @@
+<p>Llamar a código Lua desde C++ (proyectos antiguos).</p>
+
+<h3 id="lua">Lua</h3>
+<table>
+  <tbody>
+    <tr><td><code>Value call(std::string_view fn, Values args = {})</code></td><td>Llama a cualquier funcion de Lua por su nombre: Lua::call(&quot;Audio.playOneShot&quot;, {&quot;x.wav&quot;}).</td></tr>
+    <tr><td><code>Value get(std::string_view path)</code></td><td>Lee cualquier valor de Lua (&quot;Time.time&quot;, &quot;MiTabla.valor&quot;).</td></tr>
+    <tr><td><code>void set(std::string_view path, const Value&amp; v)</code></td><td>Cambia un valor global de Lua.</td></tr>
+    <tr><td><code>void send(std::string_view fn, Values args = {})</code></td><td></td></tr>
+  </tbody>
+</table>

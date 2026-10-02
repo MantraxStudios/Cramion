@@ -1,26 +1,29 @@
-<p>Todos los métodos son opcionales. El motor solo llama a los que existen.</p>
+<p>Todos los métodos son opcionales (son <code>virtual</code> en <code>Script</code>): el motor llama a los que sobreescribas con <code>override</code>.</p>
       <table>
         <thead><tr><th>Método</th><th>Cuándo se llama</th></tr></thead>
         <tbody>
-          <tr><td><code>Awake()</code></td><td>Al crear la instancia, al entrar en Play o al instanciar la entidad.</td></tr>
-          <tr><td><code>Start()</code></td><td>Una vez, antes del primer <code>Update</code> de la instancia.</td></tr>
-          <tr><td><code>Update(dt)</code></td><td>Cada frame, después de la física. <code>dt</code> son los segundos del frame.</td></tr>
-          <tr><td><code>LateUpdate(dt)</code></td><td>Cada frame, después de todos los <code>Update</code>. Útil para cámaras.</td></tr>
-          <tr><td><code>FixedUpdate(step)</code></td><td>Una vez por cada paso de física del frame (paso fijo, 1/60 s por defecto).</td></tr>
-          <tr><td><code>OnCollisionEnter(other, contact)</code></td><td>Empieza un choque con otra entidad. También <code>OnCollisionStay</code> y <code>OnCollisionExit</code>.</td></tr>
-          <tr><td><code>OnTriggerEnter(other, contact)</code></td><td>Otra entidad entra en un collider marcado como trigger. También <code>OnTriggerStay</code> y <code>OnTriggerExit</code>.</td></tr>
-          <tr><td><code>OnDestroy()</code></td><td>Antes de destruir la entidad, o al salir de Play.</td></tr>
-          <tr><td><code>OnNetVar(clave, valor)</code></td><td>En un <a href="red.html#objetos">objeto de red</a>: llegó un cambio de una variable sincronizada (<code>setNetVar</code> del dueño o del servidor).</td></tr>
-          <tr><td><code>OnOriginShift(offset)</code></td><td>En mundos grandes el motor recoloca el origen: todo se movió <code>-offset</code>. Resta <code>offset</code> a las posiciones del mundo que tengas guardadas.</td></tr>
+          <tr><td><code>awake()</code></td><td>Al crear la instancia: al entrar en Play o al instanciar el objeto. Aquí se registran los mensajes con <code>on(...)</code>.</td></tr>
+          <tr><td><code>start()</code></td><td>Una vez, antes del primer <code>update</code> de la instancia.</td></tr>
+          <tr><td><code>update(float dt)</code></td><td>Cada frame, después de la física. <code>dt</code> son los segundos del frame.</td></tr>
+          <tr><td><code>lateUpdate(float dt)</code></td><td>Cada frame, después de todos los <code>update</code>. Útil para cámaras.</td></tr>
+          <tr><td><code>fixedUpdate(float step)</code></td><td>Una vez por cada paso de física del frame (paso fijo, 1/60 s por defecto).</td></tr>
+          <tr><td><code>onCollisionEnter(const Collision&amp; c)</code></td><td>Empieza un choque con otro objeto. También <code>onCollisionStay</code> y <code>onCollisionExit</code>.</td></tr>
+          <tr><td><code>onTriggerEnter(Entity other)</code></td><td>Otro objeto entra en un collider marcado como trigger. También <code>onTriggerStay</code> y <code>onTriggerExit</code>.</td></tr>
+          <tr><td><code>onDestroy()</code></td><td>Antes de destruir el objeto, o al salir de Play.</td></tr>
+          <tr><td><code>onMessage(name, value)</code> / <code>on("Nombre", ...)</code></td><td>Un mensaje por su nombre: los botones (<em>Al hacer clic</em>: <code>OnJugar</code>), sliders, casillas y campos de la UI.</td></tr>
+          <tr><td><code>onNetVar(key, value)</code></td><td>En un objeto de red: llegó un cambio de una variable sincronizada (setNetVar del dueño o del servidor).</td></tr>
+          <tr><td><code>onOriginShift(const Vec3&amp; offset)</code></td><td>En mundos grandes el motor recoloca el origen: todo se movió <code>-offset</code>. Resta <code>offset</code> a las posiciones del mundo que tengas guardadas.</td></tr>
         </tbody>
       </table>
       <p>
-        En los eventos de física, <code>other</code> es la otra <a href="entity.html" class="text-brand">Entity</a>
-        y <code>contact</code> una tabla con <code>point</code>, <code>normal</code> y <code>relativeVelocity</code> (todos <code>Vec3</code>).
+        En los choques, <code>Collision</code> tiene <code>other</code> (la otra <a href="cpp-entity.html">Entity</a>),
+        <code>point</code>, <code>normal</code> y <code>relativeVelocity</code> (todos <code>Vec3</code>).
       </p>
-      <pre><code class="language-lua">function Caja:OnCollisionEnter(other, contact)
-    local golpe = contact.relativeVelocity:length()
-    if golpe > 4 then
-        Audio.playOneShot("Audio/golpe.wav", contact.point, math.min(1, golpe / 10))
-    end
-end</code></pre>
+      <pre><code class="language-cpp">void Caja::onCollisionEnter(const Collision&amp; c) {
+    const float golpe = c.relativeVelocity.length();
+    if (golpe &gt; 4.0f) Audio::playOneShot(sonido, c.point, Mathf::min(1.0f, golpe / 10.0f));
+}</code></pre>
+      <p>
+        Si un método falla (puntero nulo, excepción, bucle sin fin...) la Consola muestra el archivo y la línea, ese script
+        se desactiva hasta el siguiente Play y el resto sigue.
+      </p>

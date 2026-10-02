@@ -1,0 +1,62 @@
+<p>Teclado, ratón, ejes, mando, táctil e Input Actions.</p>
+
+<h3 id="input">Input</h3>
+<table>
+  <tbody>
+    <tr><td><code>bool keyMode(std::string_view key, std::uint32_t mode)</code></td><td></td></tr>
+    <tr><td><code>bool key(std::string_view k)</code></td><td>Tecla mantenida (&quot;W&quot;, &quot;Space&quot;, &quot;LeftShift&quot;...).</td></tr>
+    <tr><td><code>bool keyDown(std::string_view k)</code></td><td>Tecla pulsada este frame.</td></tr>
+    <tr><td><code>bool keyUp(std::string_view k)</code></td><td>Tecla soltada este frame.</td></tr>
+    <tr><td><code>bool mouseButton(int button, std::uint32_t mode = 0)</code></td><td>Boton del raton (0 izq., 1 der., 2 centro); mode 0 mantenido, 1 pulsado, 2 soltado.</td></tr>
+    <tr><td><code>float axis(std::string_view name)</code></td><td>Eje: &quot;Horizontal&quot;, &quot;Vertical&quot; (WASD/flechas/stick), &quot;Mouse X&quot;, &quot;Mouse Y&quot;.</td></tr>
+    <tr><td><code>MouseState mouse()</code></td><td>Posicion y movimiento del raton.</td></tr>
+    <tr><td><code>Value addMappingContext(texto, valor)</code></td><td>activa un contexto (prioridad opcional)</td></tr>
+    <tr><td><code>Value anyKeyPressed(...)</code></td><td>tecla/boton pulsado este frame (&quot;W&quot;, &quot;Gamepad A&quot;) o nil</td></tr>
+    <tr><td><code>Value bindAction(texto, texto2, callback)</code></td><td>end) llama a la funcion en ese evento; devuelve un id</td></tr>
+    <tr><td><code>Value clearMappingContexts(...)</code></td><td></td></tr>
+    <tr><td><code>Value getAction(texto)</code></td><td>valor de una accion: Bool -&gt; true/false, Axis1D -&gt; numero, Axis2D/3D -&gt; Vec3</td></tr>
+    <tr><td><code>Value getActionElapsed(texto)</code></td><td>segundos desde que empezo</td></tr>
+    <tr><td><code>Value getActionState(texto)</code></td><td>&quot;none&quot;, &quot;ongoing&quot; o &quot;triggered&quot;</td></tr>
+    <tr><td><code>Value getActionValue(texto)</code></td><td>Vec3 con el valor de la accion</td></tr>
+    <tr><td><code>Value getActions(...)</code></td><td></td></tr>
+    <tr><td><code>Value getAxis(texto)</code></td><td>-1..1: Horizontal (A/D), Vertical (W/S), Mouse X, Mouse Y</td></tr>
+    <tr><td><code>Value getBindings(texto)</code></td><td>lista {context, key} de las teclas de una accion</td></tr>
+    <tr><td><code>Value getGamepadAxis(texto)</code></td><td>eje del mando: leftx, lefty, rightx, righty, lt, rt</td></tr>
+    <tr><td><code>Value getGamepadButton(texto)</code></td><td>boton del mando mantenido: a, b, x, y, lb, rb, ls, rs, start, back, up, down, left, right</td></tr>
+    <tr><td><code>Value getGamepadButtonDown(texto)</code></td><td>pulsado este frame</td></tr>
+    <tr><td><code>Value getGamepadButtonUp(texto)</code></td><td>soltado este frame</td></tr>
+    <tr><td><code>Value getKey(texto)</code></td><td>tecla mantenida</td></tr>
+    <tr><td><code>Value getKeyDown(texto)</code></td><td>tecla pulsada este frame</td></tr>
+    <tr><td><code>Value getKeyUp(texto)</code></td><td>tecla soltada este frame</td></tr>
+    <tr><td><code>Value getMappingContexts(...)</code></td><td>lista de contextos activos</td></tr>
+    <tr><td><code>Value getMouseButton(valor)</code></td><td>boton del raton mantenido (0 izq, 1 der, 2 medio)</td></tr>
+    <tr><td><code>Value getMouseButtonDown(valor)</code></td><td>boton pulsado este frame</td></tr>
+    <tr><td><code>Value getMouseButtonUp(valor)</code></td><td>boton soltado</td></tr>
+    <tr><td><code>Value getTouch(valor)</code></td><td>{id, position, delta, start, phase} de un dedo (1..touchCount)</td></tr>
+    <tr><td><code>Value hasMappingContext(texto)</code></td><td>esta activo?</td></tr>
+    <tr><td><code>Value isActionOngoing(...)</code></td><td></td></tr>
+    <tr><td><code>Value isActionTriggered(texto)</code></td><td>disparada este frame (segun sus triggers)</td></tr>
+    <tr><td><code>Value isCursorLocked(...)</code></td><td>esta capturado?</td></tr>
+    <tr><td><code>Value isGamepadConnected(...)</code></td><td>hay un mando?</td></tr>
+    <tr><td><code>Value isMobile(...)</code></td><td>movil o pantalla tactil</td></tr>
+    <tr><td><code>Value lockCursor(activar)</code></td><td>captura el raton (primera persona); false lo suelta</td></tr>
+    <tr><td><code>Value mouseDelta(...)</code></td><td>Vec3 con el movimiento</td></tr>
+    <tr><td><code>Value mousePosition(...)</code></td><td>Vec3 con la posicion del raton</td></tr>
+    <tr><td><code>Value rebind(texto, texto2, valor, texto3)</code></td><td>cambia una tecla (1 = la primera de esa accion)</td></tr>
+    <tr><td><code>Value removeMappingContext(texto)</code></td><td>desactiva un contexto</td></tr>
+    <tr><td><code>Value resetBindings(...)</code></td><td>vuelve a las teclas del proyecto</td></tr>
+    <tr><td><code>Value saveBindings(...)</code></td><td>guarda las teclas cambiadas (entre partidas)</td></tr>
+    <tr><td><code>Value setTouchButton(texto, activar)</code></td><td>muestra u oculta un boton tactil por su texto</td></tr>
+    <tr><td><code>Value setTouchControls(activar)</code></td><td>muestra u oculta los controles tactiles</td></tr>
+    <tr><td><code>Value setTouchJoystick(activar)</code></td><td>joystick tactil</td></tr>
+    <tr><td><code>Value setTouchLook(activar)</code></td><td>zona para mirar arrastrando</td></tr>
+    <tr><td><code>Value touchControlsEnabled(...)</code></td><td>estan visibles?</td></tr>
+    <tr><td><code>Value touchCount(...)</code></td><td>dedos en la pantalla</td></tr>
+    <tr><td><code>Value unbindAction(id)</code></td><td>quita un bindAction</td></tr>
+    <tr><td><code>Value vibrate(valor)</code></td><td>vibra el movil (ms)</td></tr>
+    <tr><td><code>Value wasActionCanceled(texto)</code></td><td>se solto sin llegar a dispararse (Hold corto...)</td></tr>
+    <tr><td><code>Value wasActionCompleted(texto)</code></td><td>termino este frame (se solto tras dispararse)</td></tr>
+    <tr><td><code>Value wasActionStarted(texto)</code></td><td>empezo este frame</td></tr>
+    <tr><td><code>float x, y, dx, dy, wheel</code></td><td></td></tr>
+  </tbody>
+</table>

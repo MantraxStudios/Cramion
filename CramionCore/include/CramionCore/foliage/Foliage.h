@@ -102,7 +102,7 @@ struct Grass {
     float height_variation = 0.4f;
     float width = 0.028f;        // m
     float bend = 0.35f;
-    core::Vec3 base_color{0.06f, 0.11f, 0.03f};
+    core::Vec3 base_color{0.1f, 0.16f, 0.045f};
     core::Vec3 tip_color{0.27f, 0.38f, 0.11f};
     core::Vec3 dry_color{0.5f, 0.45f, 0.25f};
     float color_variation = 0.25f;

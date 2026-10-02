@@ -14,6 +14,7 @@ enum class Tonemapper : std::int32_t {
     Neutral = 0,  // Khronos PBR Neutral (por defecto)
     Aces = 1,     // ACES (ajuste de Stephen Hill)
     None = 2,     // lineal recortado (para depurar)
+    Agx = 3,      // AgX (Blender 4): respuesta de pelicula, luces fuertes que se desaturan como en camara
 };
 
 // Todo lo configurable del post-proceso y de los efectos de pantalla. Los
@@ -83,6 +84,9 @@ struct PostProcessSettings {
     bool depth_of_field = false;
     bool dof_auto_focus = false;        // enfoca lo que hay en el centro de la pantalla
     float dof_focus_distance = 10.0f;   // metros
+    // Autoenfoque: lo rapido que sigue lo que hay en el centro (1/s; el
+    // enfoque viaja como el de una lente en vez de saltar). 3 = ~0.4 s.
+    float dof_focus_speed = 3.0f;
     float dof_aperture = 5.6f;          // numero f (menos = mas desenfoque)
     float dof_focal_length = 50.0f;     // milimetros (mas = mas desenfoque)
 
@@ -102,7 +106,11 @@ struct PostProcessSettings {
     // que las cascadas no resuelven. Largo del rayo en metros.
     bool contact_shadows = true;
     float contact_shadow_length = 0.5f;
-    float volumetric_density = 0.02f;
+    // Polvo del aire (1/m). 0.004: aire de un dia claro, se ven los rayos de
+    // sol entre los arboles sin velar el paisaje. (Era 0.02: con el cielo
+    // iluminando el polvo, a 30 m ya tapaba la mitad de la escena: todo se
+    // veia lechoso.)
+    float volumetric_density = 0.004f;
     float volumetric_anisotropy = 0.6f;
     // Niebla por altura: densidad a la altura 0 (1/m) y lo rapido que se
     // aclara al subir (1/m). La de siempre es fina para escenarios pequenos;

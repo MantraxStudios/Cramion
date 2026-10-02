@@ -1,0 +1,154 @@
+<p>Un objeto de la escena. El del script es <code>entity()</code>; otros se buscan con <a href="cpp-scene.html">Scene</a> o llegan en los eventos (<code>Collision::other</code>).</p>
+
+<h3 id="entity">Entity</h3>
+<table>
+  <tbody>
+    <tr><td><code>Entity() = default</code></td><td></td></tr>
+    <tr><td><code>Entity(std::uint64_t id)</code></td><td></td></tr>
+    <tr><td><code>std::uint64_t id() const</code></td><td>Identificador de la entidad (0 = ninguna).</td></tr>
+    <tr><td><code>bool valid() const</code></td><td>Existe todavia (no se ha destruido).</td></tr>
+    <tr><td><code>operator bool() const</code></td><td></td></tr>
+    <tr><td><code>bool operator==(const Entity&amp; o) const</code></td><td></td></tr>
+    <tr><td><code>bool operator!=(const Entity&amp; o) const</code></td><td></td></tr>
+    <tr><td><code>std::string name() const</code></td><td>Nombre del objeto (el de la Jerarquia).</td></tr>
+    <tr><td><code>void setName(std::string_view n) const</code></td><td>Cambia el nombre del objeto.</td></tr>
+    <tr><td><code>std::string tag() const</code></td><td>Su etiqueta (Tag).</td></tr>
+    <tr><td><code>Vec3 position() const</code></td><td>Posicion en el mundo.</td></tr>
+    <tr><td><code>Vec3 localPosition() const</code></td><td>Posicion respecto a su padre.</td></tr>
+    <tr><td><code>Vec3 rotation() const</code></td><td>Giro local en grados (X, Y, Z), como en el Inspector.</td></tr>
+    <tr><td><code>Vec3 scale() const</code></td><td>Escala local.</td></tr>
+    <tr><td><code>Vec3 forward() const</code></td><td>Su delante en el mundo (-Z local).</td></tr>
+    <tr><td><code>Vec3 right() const</code></td><td>Su derecha en el mundo (+X local).</td></tr>
+    <tr><td><code>Vec3 up() const</code></td><td>Su arriba en el mundo (+Y local).</td></tr>
+    <tr><td><code>void setPosition(const Vec3&amp; v) const</code></td><td>Pone la posicion en el mundo.</td></tr>
+    <tr><td><code>void setLocalPosition(const Vec3&amp; v) const</code></td><td>Pone la posicion respecto a su padre.</td></tr>
+    <tr><td><code>void setRotation(const Vec3&amp; degrees) const</code></td><td>Pone el giro local en grados (X, Y, Z).</td></tr>
+    <tr><td><code>void setScale(const Vec3&amp; v) const</code></td><td>Pone la escala local.</td></tr>
+    <tr><td><code>void translate(const Vec3&amp; d) const</code></td><td>Mueve d metros (en el mundo).</td></tr>
+    <tr><td><code>void rotate(const Vec3&amp; degrees) const</code></td><td>Gira estos grados (X, Y, Z).</td></tr>
+    <tr><td><code>void lookAt(const Vec3&amp; target) const</code></td><td>Gira para mirar a un punto del mundo.</td></tr>
+    <tr><td><code>bool active() const</code></td><td>Esta activo en la escena.</td></tr>
+    <tr><td><code>void setActive(bool on) const</code></td><td>Activa o desactiva el objeto (y sus hijos).</td></tr>
+    <tr><td><code>Entity parent() const</code></td><td>Su padre en la Jerarquia (no valida si no tiene).</td></tr>
+    <tr><td><code>void destroy() const</code></td><td>Lo borra de la escena (al final del frame).</td></tr>
+    <tr><td><code>bool has(std::string_view component) const</code></td><td>Tiene ese componente (&quot;Light&quot;, &quot;Rigidbody&quot;, &quot;AudioSource&quot;...).</td></tr>
+    <tr><td><code>bool add(std::string_view component) const</code></td><td>Le pone un componente por su nombre.</td></tr>
+    <tr><td><code>Value component(std::string_view type) const</code></td><td>Todos los campos de un componente (objeto JSON).</td></tr>
+    <tr><td><code>bool setComponent(std::string_view type, const Value&amp; fields) const</code></td><td>Cambia varios campos de un componente a la vez.</td></tr>
+    <tr><td><code>Value field(std::string_view component, std::string_view path) const</code></td><td>Un campo de un componente: field(&quot;Light&quot;, &quot;intensity&quot;).</td></tr>
+    <tr><td><code>bool setField(std::string_view component, std::string_view path, const Value&amp; value) const</code></td><td>Cambia un campo: setField(&quot;Light&quot;, &quot;intensity&quot;, 2.0f).</td></tr>
+    <tr><td><code>float getFloat(std::string_view component, std::string_view path) const</code></td><td>Un campo numerico de un componente.</td></tr>
+    <tr><td><code>bool getBool(std::string_view component, std::string_view path) const</code></td><td>Un campo verdadero/falso de un componente.</td></tr>
+    <tr><td><code>bool setFloat(std::string_view component, std::string_view path, float v) const</code></td><td>Cambia un campo numerico de un componente.</td></tr>
+    <tr><td><code>bool setBool(std::string_view component, std::string_view path, bool v) const</code></td><td>Cambia un campo verdadero/falso de un componente.</td></tr>
+    <tr><td><code>Vec3 velocity() const</code></td><td>Velocidad (Rigidbody o Character Controller), m/s.</td></tr>
+    <tr><td><code>void setVelocity(const Vec3&amp; v) const</code></td><td>Pone la velocidad del Rigidbody.</td></tr>
+    <tr><td><code>Vec3 angularVelocity() const</code></td><td>Velocidad de giro del Rigidbody.</td></tr>
+    <tr><td><code>void setAngularVelocity(const Vec3&amp; v) const</code></td><td>Pone la velocidad de giro del Rigidbody.</td></tr>
+    <tr><td><code>void addForce(const Vec3&amp; f, ForceMode mode = ForceMode::Force) const</code></td><td>Empuja el Rigidbody (fuerza, aceleracion, impulso o cambio de velocidad).</td></tr>
+    <tr><td><code>std::uint32_t move(const Vec3&amp; d) const</code></td><td>Character Controller: mueve chocando con el mundo; devuelve con que choco (bits).</td></tr>
+    <tr><td><code>bool isGrounded() const</code></td><td>Character Controller: esta en el suelo.</td></tr>
+    <tr><td><code>void setMoveInput(const Vec3&amp; dir, bool run = false) const</code></td><td>Character Controller: hacia donde andar (con su velocidad, gravedad y escalones).</td></tr>
+    <tr><td><code>bool jump(float height = -1.0f) const</code></td><td>Character Controller: salta (altura en metros; -1 = la del componente).</td></tr>
+    <tr><td><code>void setCrouch(bool on) const</code></td><td>Character Controller: agacharse o levantarse.</td></tr>
+    <tr><td><code>Value call(std::string_view method, Values args = {}) const</code></td><td>Cualquier metodo de Lua de la entidad: call(&quot;playSound&quot;, {&quot;Audio/x.wav&quot;}).</td></tr>
+    <tr><td><code>Value get(std::string_view field_name) const</code></td><td>Cualquier campo de Lua de la entidad.</td></tr>
+    <tr><td><code>void set(std::string_view field_name, const Value&amp; v) const</code></td><td>Cambia un campo de Lua de la entidad.</td></tr>
+    <tr><td><code>T* script() const</code></td><td>El script de C++ de tipo T de este objeto (nullptr si no tiene): como GetComponent&lt;T&gt;() de Unity. auto* marcador = Scene::find(&quot;Marcador&quot;).script&lt;Marcador&gt;();</td></tr>
+    <tr><td><code>Value addCharacterVelocity(...) const</code></td><td></td></tr>
+    <tr><td><code>Value addClothImpulse(arg) const</code></td><td>) empujon a su tela (m/s a cada particula libre)</td></tr>
+    <tr><td><code>Value addComponent(texto) const</code></td><td>anade un componente por su nombre</td></tr>
+    <tr><td><code>Value addImpulse(vec) const</code></td><td>impulso</td></tr>
+    <tr><td><code>Value addRagdollForce(vec, texto) const</code></td><td>empujon al ragdoll (en un hueso)</td></tr>
+    <tr><td><code>Value addSoftBodyImpulse(arg) const</code></td><td>) empujon a su cuerpo blando (m/s a cada particula)</td></tr>
+    <tr><td><code>Value addTorque(vec) const</code></td><td>par de giro</td></tr>
+    <tr><td><code>Value alpha() const</code></td><td>entity.alpha: transparencia de su UIImage/UIText</td></tr>
+    <tr><td><code>void setAlpha(const Value&amp; v) const</code></td><td></td></tr>
+    <tr><td><code>Value attachToBone(modelo, texto, offset, giro) const</code></td><td>sigue a un hueso (Bone Socket)</td></tr>
+    <tr><td><code>Value audioOcclusion(...) const</code></td><td>oclusion de su Audio Listener (true/false)</td></tr>
+    <tr><td><code>Value castShadows() const</code></td><td>entity.castShadows: su MeshRenderer proyecta sombra</td></tr>
+    <tr><td><code>void setCastShadows(const Value&amp; v) const</code></td><td></td></tr>
+    <tr><td><code>Value characterState(...) const</code></td><td></td></tr>
+    <tr><td><code>Value color() const</code></td><td>entity.color: Vec3 color de su UIImage/UIText</td></tr>
+    <tr><td><code>void setColor(const Value&amp; v) const</code></td><td></td></tr>
+    <tr><td><code>Value detachFromBone(...) const</code></td><td>deja de seguir al hueso</td></tr>
+    <tr><td><code>Value distanceTo(otra) const</code></td><td>distancia a otro objeto</td></tr>
+    <tr><td><code>Value find(texto) const</code></td><td>un hijo por nombre</td></tr>
+    <tr><td><code>Value gear() const</code></td><td>entity.gear: marcha del Vehicle</td></tr>
+    <tr><td><code>void setGear(const Value&amp; v) const</code></td><td></td></tr>
+    <tr><td><code>Value getBonePosition(texto) const</code></td><td>Vec3 del hueso en el mundo</td></tr>
+    <tr><td><code>Value getBoneRotation(texto) const</code></td><td>Quat del hueso</td></tr>
+    <tr><td><code>Value getBones(...) const</code></td><td>nombres de los huesos</td></tr>
+    <tr><td><code>Value getField(texto, texto2) const</code></td><td>campo de cualquier componente</td></tr>
+    <tr><td><code>Value getFields(texto) const</code></td><td>todos los campos de un componente</td></tr>
+    <tr><td><code>Value getNetVar(texto) const</code></td><td>red: lee una variable sincronizada</td></tr>
+    <tr><td><code>Value getScript(...) const</code></td><td>la instancia de su script</td></tr>
+    <tr><td><code>Value getStateMachine(...) const</code></td><td></td></tr>
+    <tr><td><code>Value hasComponent(texto) const</code></td><td>tiene ese componente?</td></tr>
+    <tr><td><code>Value interactable() const</code></td><td>entity.interactable: su boton/slider/campo responde</td></tr>
+    <tr><td><code>void setInteractable(const Value&amp; v) const</code></td><td></td></tr>
+    <tr><td><code>Value isCrouching(...) const</code></td><td></td></tr>
+    <tr><td><code>Value isMine(...) const</code></td><td>red: este objeto lo controlas tu (sin red, siempre)</td></tr>
+    <tr><td><code>Value isMoving() const</code></td><td>entity.isMoving: su NavAgent va hacia un destino</td></tr>
+    <tr><td><code>void setIsMoving(const Value&amp; v) const</code></td><td></td></tr>
+    <tr><td><code>Value isPlayingSound(...) const</code></td><td>suena?</td></tr>
+    <tr><td><code>Value mesh() const</code></td><td>entity.mesh: malla creada por codigo de su MeshRenderer</td></tr>
+    <tr><td><code>void setMesh(const Value&amp; v) const</code></td><td></td></tr>
+    <tr><td><code>Value moveTo(vec) const</code></td><td>su NavAgent camina hasta alli por la malla</td></tr>
+    <tr><td><code>Value navVelocity() const</code></td><td>entity.navVelocity: Vec3 de su NavAgent</td></tr>
+    <tr><td><code>void setNavVelocity(const Value&amp; v) const</code></td><td></td></tr>
+    <tr><td><code>Value netId(...) const</code></td><td>red: id del objeto (0 = no es de red)</td></tr>
+    <tr><td><code>Value netOwner(...) const</code></td><td>red: id del jugador dueno</td></tr>
+    <tr><td><code>Value new_(...) const</code></td><td></td></tr>
+    <tr><td><code>Value playAnimation(texto, activar) const</code></td><td>clip del Animator</td></tr>
+    <tr><td><code>Value playSound(...) const</code></td><td>su Audio Source</td></tr>
+    <tr><td><code>Value quaternion() const</code></td><td>entity.quaternion: Quat de su giro</td></tr>
+    <tr><td><code>void setQuaternion(const Value&amp; v) const</code></td><td></td></tr>
+    <tr><td><code>Value ragdoll() const</code></td><td>entity.ragdoll: ragdoll activado (true/false)</td></tr>
+    <tr><td><code>void setRagdoll(const Value&amp; v) const</code></td><td></td></tr>
+    <tr><td><code>Value remainingDistance() const</code></td><td>entity.remainingDistance: metros que le quedan</td></tr>
+    <tr><td><code>void setRemainingDistance(const Value&amp; v) const</code></td><td></td></tr>
+    <tr><td><code>Value removeComponent(texto) const</code></td><td>quita un componente</td></tr>
+    <tr><td><code>Value resetBone(texto) const</code></td><td>quita los cambios del hueso</td></tr>
+    <tr><td><code>Value resetBones(...) const</code></td><td>quita los de todos</td></tr>
+    <tr><td><code>Value resetCloth(...) const</code></td><td>su tela (Cloth) vuelve a la pose de reposo</td></tr>
+    <tr><td><code>Value resetSoftBody(...) const</code></td><td>su cuerpo blando vuelve a su forma, quieto</td></tr>
+    <tr><td><code>Value rpm() const</code></td><td>entity.rpm: rpm del motor del Vehicle</td></tr>
+    <tr><td><code>void setRpm(const Value&amp; v) const</code></td><td></td></tr>
+    <tr><td><code>Value setAnimatorBool(texto, activar) const</code></td><td>Argumentos: &quot;saltando&quot;, true</td></tr>
+    <tr><td><code>Value setAnimatorFloat(texto, valor) const</code></td><td>parametro del Animator Controller</td></tr>
+    <tr><td><code>Value setAnimatorTrigger(texto) const</code></td><td>Argumentos: &quot;atacar&quot;</td></tr>
+    <tr><td><code>Value setBoneOffset(texto, vec) const</code></td><td>desplaza el hueso</td></tr>
+    <tr><td><code>Value setBoneRotation(texto, arg) const</code></td><td>gira el hueso encima de la animacion</td></tr>
+    <tr><td><code>Value setBoneScale(texto, valor) const</code></td><td>escala el hueso</td></tr>
+    <tr><td><code>Value setFootGrounding(activar) const</code></td><td>patas al suelo</td></tr>
+    <tr><td><code>Value setIKHint(texto, objetivo) const</code></td><td>pole (hacia donde dobla)</td></tr>
+    <tr><td><code>Value setIKTarget(texto, objetivo) const</code></td><td>objetivo de una cadena IK (entidad, Vec3 o nil)</td></tr>
+    <tr><td><code>Value setIKWeight(texto, valor) const</code></td><td>peso 0..1</td></tr>
+    <tr><td><code>Value setLookAt(objetivo, peso) const</code></td><td>mirar con cabeza y cuello</td></tr>
+    <tr><td><code>Value setMaterial(valor, texto) const</code></td><td>material .crmat de un hueco de su MeshRenderer</td></tr>
+    <tr><td><code>Value setNetVar(texto, valor) const</code></td><td>red: variable sincronizada (dueno o servidor)</td></tr>
+    <tr><td><code>Value setSoundEffect(texto, activar, valor) const</code></td><td>lowpass/highpass/echo/reverb/occlusion</td></tr>
+    <tr><td><code>Value setVehicleInput(acelerador, direccion, freno, frenoDeMano) const</code></td><td>conduce su Vehicle</td></tr>
+    <tr><td><code>Value setupCreatureIK(...) const</code></td><td>configura el IK solo (patas, cuello, cola)</td></tr>
+    <tr><td><code>Value setupPhysBones(...) const</code></td><td>detecta pelo, colas, orejas...</td></tr>
+    <tr><td><code>Value setupRagdoll(...) const</code></td><td>genera los huesos del ragdoll</td></tr>
+    <tr><td><code>Value showBones(activar) const</code></td><td>dibuja los huesos en la Escena</td></tr>
+    <tr><td><code>Value soundOcclusion(...) const</code></td><td>paredes que tapan su sonido ahora (-1 = no suena)</td></tr>
+    <tr><td><code>Value speed() const</code></td><td>entity.speed: km/h de su Vehicle</td></tr>
+    <tr><td><code>void setSpeed(const Value&amp; v) const</code></td><td></td></tr>
+    <tr><td><code>Value stopMoving(...) const</code></td><td>se para</td></tr>
+    <tr><td><code>Value stopSound(...) const</code></td><td>para su sonido</td></tr>
+    <tr><td><code>Value text() const</code></td><td>entity.text: texto de su UIText o campo de texto</td></tr>
+    <tr><td><code>void setText(const Value&amp; v) const</code></td><td></td></tr>
+    <tr><td><code>Value texture() const</code></td><td>entity.texture: imagen de su UIImage</td></tr>
+    <tr><td><code>void setTexture(const Value&amp; v) const</code></td><td></td></tr>
+    <tr><td><code>Value translateLocal(vec) const</code></td><td>mueve en sus ejes</td></tr>
+    <tr><td><code>Value uiPosition() const</code></td><td>entity.uiPosition: Vec3 posicion de su RectTransform</td></tr>
+    <tr><td><code>void setUiPosition(const Value&amp; v) const</code></td><td></td></tr>
+    <tr><td><code>Value uiSize() const</code></td><td>entity.uiSize: Vec3 tamano de su RectTransform</td></tr>
+    <tr><td><code>void setUiSize(const Value&amp; v) const</code></td><td></td></tr>
+    <tr><td><code>Value value() const</code></td><td>entity.value: valor de su Slider o Casilla</td></tr>
+    <tr><td><code>void setValue(const Value&amp; v) const</code></td><td></td></tr>
+  </tbody>
+</table>

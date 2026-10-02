@@ -69,7 +69,8 @@ vec3 bladePoint(GrassBlade blade, vec4 info, float t, float side, float seconds,
     across = vec3(-facing.z, 0.0, facing.x);
 
     // Inclinacion: la curvatura propia + el viento + el empuje (horizontal, m).
-    vec2 lean = facing.xz * grass.shape.w * height + windOffset(blade.position.xz, blade.push.w, seconds) * height +
+    float phase = float(blade.look & 255u) / 255.0 * 6.2831853;
+    vec2 lean = facing.xz * grass.shape.w * height + windOffset(blade.position.xz, phase, seconds) * height +
                 blade.push.xz;
     float lean_length = length(lean);
     // Que la brizna no se estire: al inclinarse baja (aprox. de arco).
@@ -130,12 +131,28 @@ void main() {
     // redondeada, no un plano) y algo hacia arriba.
     n = normalize(n + across * side * 0.65 + vec3(0.0, 0.3, 0.0));
 
-    // Color: base oscura, punta clara, variacion por brizna y seca donde
-    // el terreno tiene la capa seca.
+    // Color. La brizna es casi toda de su color (el de la punta); el de la
+    // base solo abajo: lo oscuro del pie ya lo pone la oclusion (antes el
+    // degradado entero, mas la oclusion, dejaba el cesped casi negro).
+    // Variacion como en un prado de verdad (cuanta, "Variacion de color"):
+    //   - por mata, el tono: unas mas amarillas, otras mas azuladas;
+    //   - por manchas del campo: lo frondoso, mas oscuro y verde; lo pobre,
+    //     mas claro y amarillento;
+    //   - por brizna, el brillo, alguna punta seca y alguna muerta (paja).
+    vec4 look = unpackBlade(blade.look);  // x fase, y tono de la mata, z frondosa, w muerta
+    float amount = clamp(grass.base_color.a * 4.0, 0.0, 2.0);  // 1 con la variacion por defecto (0.25)
     float variation = (fract(info.x * 91.7 + info.y * 13.1) - 0.5) * grass.base_color.a;
-    vec3 green = mix(grass.base_color.rgb, grass.tip_color.rgb, smoothstep(0.0, 1.0, t));
+    vec3 green = mix(grass.base_color.rgb, grass.tip_color.rgb, smoothstep(0.0, 0.45, t));
+    float hue = (look.y - 0.5) * 2.0 * amount;
+    green *= hue > 0.0 ? mix(vec3(1.0), vec3(1.12, 1.04, 0.7), min(hue, 1.0) * 0.7)
+                       : mix(vec3(1.0), vec3(0.86, 0.98, 1.12), min(-hue, 1.0) * 0.7);
+    green *= mix(vec3(1.0), mix(vec3(1.14, 1.1, 0.8), vec3(0.86, 0.9, 0.86), look.z), min(amount, 1.0));
     vec3 dry = mix(grass.base_color.rgb * 1.3, grass.dry_color.rgb, smoothstep(0.0, 1.0, t));
-    v_color = clamp(mix(green, dry, info.z) * (1.0 + variation), 0.0, 1.0);
+    vec3 straw = grass.dry_color.rgb * mix(0.7, 1.05, t);
+    float tip_dry = smoothstep(0.75, 1.0, t) * step(0.75, fract(info.y * 37.3 + info.x * 5.1)) * 0.35 * min(amount, 1.0);
+    vec3 color = mix(green, dry, max(info.z, tip_dry));
+    color = mix(color, straw, look.w * min(amount, 1.0));
+    v_color = clamp(color * (1.0 + variation), 0.0, 1.0);
     v_color = mix(v_color, vec3(0.05, 0.045, 0.04), smoothstep(0.0, 0.4, burn.x));
 
     v_world_position = world;

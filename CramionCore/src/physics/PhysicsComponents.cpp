@@ -5,6 +5,7 @@
 
 #include "CramionCore/asset/AssetTypes.h"
 #include "CramionCore/ecs/World.h"
+#include "CramionCore/modeling/EditableMesh.h"
 #include "CramionCore/physics/Particles.h"
 
 #include <array>
@@ -150,6 +151,55 @@ void WheelCollider::reflect(ecs::PropertyVisitor& v) {
     v.entity({"visual", "Rueda visible", "Objeto que gira con la rueda (eje X local)"}, visual);
 }
 
+void CharacterController::reflect(ecs::PropertyVisitor& v) {
+    static constexpr std::array<const char*, 2> kMovements = {"Manual (script)", "Integrado"};
+    const bool all = v.wantsAllFields();
+    v.field({"height", "Altura", "Total, incluidas las semiesferas"}, height, FloatRange{0.1f, 100.0f, 0.01f, "%.2f m"});
+    v.field({"radius", "Radio"}, radius, FloatRange{0.05f, 50.0f, 0.01f, "%.2f m"});
+    v.field({"center", "Centro", "Centro de la capsula respecto a la entidad: (0, altura/2, 0) = la entidad en los pies"},
+            center, Vec3Kind::Position);
+    v.field({"slope_limit", "Pendiente maxima", "Rampas mas empinadas son paredes: resbala y no sube"}, slope_limit,
+            FloatRange{0.0f, 89.0f, 0.5f, "%.1f°", true});
+    v.field({"step_offset", "Altura de escalon", "Sube sola escalones hasta esta altura"}, step_offset,
+            FloatRange{0.0f, 2.0f, 0.01f, "%.2f m"});
+    v.field({"skin_width", "Grosor de piel", "Distancia que guarda a lo que toca (evita quedarse enganchado)"},
+            skin_width, FloatRange{0.001f, 0.2f, 0.001f, "%.3f m"});
+    v.field({"stick_to_floor", "Pegarse al suelo", "Al bajar rampas y escalones sigue en el suelo en vez de saltar"},
+            stick_to_floor);
+    if (v.beginGroup("Empujar", false)) {
+        v.field({"push_rigidbodies", "Empujar Rigidbody"}, push_rigidbodies);
+        v.field({"mass", "Masa"}, mass, FloatRange{1.0f, 10000.0f, 0.5f, "%.1f kg"});
+        v.field({"push_strength", "Fuerza maxima"}, push_strength, FloatRange{0.0f, 100000.0f, 5.0f, "%.0f N"});
+        v.endGroup();
+    }
+    ecs::enumField(v, {"movement", "Movimiento",
+                       "Manual: como Unity, solo move() desde un script. Integrado: como Unreal, con "
+                       "gravedad, salto, correr y agacharse"},
+                   movement, kMovements);
+    if (all || movement == CharacterMovement::Integrated) {
+        v.field({"keyboard", "Mover con teclado",
+                 "WASD/flechas relativo a la camara, Shift correr, Espacio saltar, C o Ctrl agacharse. "
+                 "Sin: entity:setMoveInput() desde un script"},
+                keyboard);
+        v.field({"walk_speed", "Velocidad andando"}, walk_speed, FloatRange{0.0f, 100.0f, 0.05f, "%.2f m/s"});
+        v.field({"run_speed", "Velocidad corriendo"}, run_speed, FloatRange{0.0f, 100.0f, 0.05f, "%.2f m/s"});
+        v.field({"crouch_speed", "Velocidad agachado"}, crouch_speed, FloatRange{0.0f, 100.0f, 0.05f, "%.2f m/s"});
+        v.field({"acceleration", "Aceleracion", "0 = cambia de velocidad al instante"}, acceleration,
+                FloatRange{0.0f, 500.0f, 0.5f, "%.1f m/s2"});
+        v.field({"air_control", "Control en el aire"}, air_control, FloatRange{0.0f, 1.0f, 0.01f, "%.2f", true});
+        v.field({"jump_height", "Altura de salto"}, jump_height, FloatRange{0.0f, 50.0f, 0.05f, "%.2f m"});
+        v.field({"max_jumps", "Saltos seguidos", "2 = doble salto"}, max_jumps, 0, 10);
+        v.field({"coyote_time", "Tiempo coyote", "Segundos tras salir de un borde en que aun puede saltar"},
+                coyote_time, FloatRange{0.0f, 1.0f, 0.01f, "%.2f s"});
+        v.field({"gravity_scale", "Escala de gravedad"}, gravity_scale, FloatRange{-10.0f, 10.0f, 0.01f, "%.2f"});
+        v.field({"crouch_height", "Altura agachado"}, crouch_height, FloatRange{0.1f, 100.0f, 0.01f, "%.2f m"});
+        v.field({"rotate_to_movement", "Girar hacia el movimiento"}, rotate_to_movement);
+        if (all || rotate_to_movement) {
+            v.field({"rotation_speed", "Velocidad de giro"}, rotation_speed, FloatRange{0.0f, 5000.0f, 5.0f, "%.0f°/s"});
+        }
+    }
+}
+
 void registerPhysicsComponents() {
     ecs::ComponentRegistry& registry = ecs::ComponentRegistry::instance();
     registry.registerComponent<Rigidbody>("Rigidbody", "Rigidbody", "Fisica");
@@ -158,16 +208,20 @@ void registerPhysicsComponents() {
     registry.registerComponent<CapsuleCollider>("CapsuleCollider", "Capsule Collider", "Fisica");
     registry.registerComponent<MeshCollider>("MeshCollider", "Mesh Collider", "Fisica");
     registry.registerComponent<PlaneCollider>("PlaneCollider", "Plane Collider", "Fisica");
+    registry.registerComponent<CharacterController>("CharacterController", "Character Controller", "Fisica");
     registry.registerComponent<Vehicle>("Vehicle", "Vehiculo", "Fisica");
     registry.registerComponent<WheelCollider>("WheelCollider", "Wheel Collider", "Fisica");
     registry.registerComponent<Cloth>("Cloth", "Tela (Cloth)", "Fisica");
     registry.registerComponent<SoftBody>("SoftBody", "Cuerpo blando (gelatina)", "Fisica");
     registry.registerComponent<ParticleSystem>("ParticleSystem", "Particle System", "Efectos");
+    // La malla editable (modelado) va con su MeshCollider: se registra aqui
+    // (lo llaman el editor y el reproductor antes de abrir escenas).
+    modeling::registerModelingComponents();
 }
 
 bool hasCollider(const ecs::Entity& entity) {
     return entity.has<BoxCollider>() || entity.has<SphereCollider>() || entity.has<CapsuleCollider>() ||
-           entity.has<MeshCollider>() || entity.has<PlaneCollider>();
+           entity.has<MeshCollider>() || entity.has<PlaneCollider>() || entity.has<CharacterController>();
 }
 
 void addDefaultCollider(ecs::Entity entity) {

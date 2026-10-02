@@ -1,23 +1,32 @@
-<p class="file">CamaraSeguir.lua</p>
-      <pre><code class="language-lua">local CamaraSeguir = {
-    properties = {
-        objetivo = "Jugador",
-        distancia = Vec3(0, 4, 8),  -- detrás y por encima
-        suavizado = 6.0,
-    }
+<p>Va en lateUpdate para moverse después de que el jugador ya se movió en su update. El objetivo se arrastra al Inspector.</p>
+<p class="file">Assets/Scripts/CamaraSeguir.h</p>
+<pre><code class="language-cpp">#pragma once
+#include &lt;cramion/Script.h&gt;
+using namespace cramion;
+
+class CamaraSeguir : public Script {
+public:
+    Property&lt;Entity&gt; objetivo{this, &quot;objetivo&quot;};                   // arrastra el jugador
+    Property&lt;Vec3&gt; distancia{this, &quot;distancia&quot;, Vec3{0, 4, 8}};     // detras y por encima
+    Property&lt;float&gt; suavizado{this, &quot;suavizado&quot;, 6.0f, Range(0, 20)};
+
+    void start() override;
+    void lateUpdate(float dt) override;
+};</code></pre>
+<p class="file">Assets/Scripts/CamaraSeguir.cpp</p>
+<pre><code class="language-cpp">#include &quot;CamaraSeguir.h&quot;
+
+void CamaraSeguir::start() {
+    if (!objetivo.get()) Debug::warning(&quot;CamaraSeguir: arrastra un objetivo en el Inspector&quot;);
 }
 
-function CamaraSeguir:Start()
-    self.target = Scene.find(self.objetivo)
-    if not self.target then Debug.warn("No hay ninguna entidad llamada", self.objetivo) end
-end
+void CamaraSeguir::lateUpdate(float dt) {
+    const Entity jugador = objetivo.get();
+    if (!jugador.valid()) return;
+    const Vec3 destino = jugador.position() + distancia.get();
+    const float t = Mathf::clamp01(suavizado * dt);
+    entity().setPosition(Vec3::lerp(entity().position(), destino, t));
+    entity().lookAt(jugador.position() + Vec3::up());
+}
 
-function CamaraSeguir:LateUpdate(dt)
-    if not (self.target and self.target:valid()) then return end
-    local destino = self.target.position + self.distancia
-    local t = Mathf.clamp01(self.suavizado * dt)
-    self.entity.position = self.entity.position:lerp(destino, t)
-    self.entity:lookAt(self.target.position + Vec3(0, 1, 0))
-end
-
-return CamaraSeguir</code></pre>
+CRAMION_SCRIPT(CamaraSeguir)</code></pre>

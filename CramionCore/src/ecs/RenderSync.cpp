@@ -1,4 +1,6 @@
 #include "CramionCore/ecs/RenderSync.h"
+#include "CramionCore/cvar/CVar.h"
+#include "CramionCore/modeling/EditableMesh.h"
 
 #include "CramionCore/physics/Cloth.h"
 #include "CramionCore/physics/SoftBody.h"
@@ -29,6 +31,31 @@
 #include <unordered_set>
 
 namespace cramion::ecs {
+namespace {
+
+// Streaming de modelos: leerlos en segundo plano (sin congelar el frame al
+// abrir una escena o instanciar) y subirlos a la GPU poco a poco.
+cvar::CVar<bool> g_async_models("render.streaming.AsyncModels", true,
+                                "Leer los modelos en segundo plano: lo nuevo aparece al terminar de leerse, sin "
+                                "congelar el frame (apagado: se esperan, como antes)",
+                                cvar::Saved);
+cvar::CVar<float> g_upload_ms("render.streaming.UploadMs", 4.0f,
+                              "Milisegundos por frame para subir modelos nuevos a la GPU (al menos uno por frame)",
+                              cvar::Saved, 0.5f, 100.0f);
+// Residencia en la GPU: lo que no se ve (mas pequeno que unos pixeles un rato)
+// libera su memoria de video y vuelve solo al acercarse.
+cvar::CVar<bool> g_gpu_residency("render.streaming.GpuResidency", true,
+                                 "Sacar de la memoria de video los modelos que no se ven (mas pequenos que MinPixels "
+                                 "durante IdleSeconds); vuelven solos al acercarse",
+                                 cvar::Saved);
+cvar::CVar<float> g_min_pixels("render.streaming.MinPixels", 0.5f,
+                               "Tamano en pantalla (pixeles) por debajo del cual un modelo no se ve", cvar::Saved, 0.05f,
+                               64.0f);
+cvar::CVar<float> g_idle_seconds("render.streaming.IdleSeconds", 5.0f,
+                                 "Segundos sin verse antes de salir de la memoria de video", cvar::Saved, 0.5f, 600.0f);
+
+}  // namespace
+
 
 using core::Mat4;
 using core::Quat;
@@ -455,7 +482,7 @@ std::uint32_t RenderSync::resolveVariant(std::uint32_t base, const std::vector<a
 }
 
 std::optional<std::uint32_t> RenderSync::resolveRuntimeMesh(const std::shared_ptr<Mesh>& mesh, scene::Scene& scene,
-                                                           gfx::VulkanRenderer& renderer, bool full_upload_pending) {
+                                                           gfx::VulkanRenderer& renderer) {
     auto it = runtime_meshes_.find(mesh.get());
     if (it != runtime_meshes_.end() && it->second.mesh.lock() != mesh) {
         // Otra malla en la misma direccion (la anterior se destruyo): su hueco se reutiliza.
@@ -519,7 +546,7 @@ std::optional<std::uint32_t> RenderSync::resolveRuntimeMesh(const std::shared_pt
     if (model_bounds_.size() <= index) model_bounds_.resize(index + 1);
     model_bounds_[index] = anim::skinnedBounds(stored, bind.boneMatrices());
     // Solo este modelo a la GPU (si no se va a subir la escena entera ya).
-    if (!full_upload_pending) renderer.uploadModel(scene, index);
+    if (index < renderer.uploadedModelCount()) renderer.uploadModel(scene, index);
     // Sus variantes de material (.crmat del MeshRenderer) con la malla nueva.
     for (const Variant& variant : variants_) {
         if (variant.base != index) continue;
@@ -527,7 +554,7 @@ std::optional<std::uint32_t> RenderSync::resolveRuntimeMesh(const std::shared_pt
             scene.replaceModel(variant.index, buildVariant(stored, variant.overrides));
             if (model_bounds_.size() <= variant.index) model_bounds_.resize(variant.index + 1);
             model_bounds_[variant.index] = model_bounds_[index];
-            if (!full_upload_pending) renderer.uploadModel(scene, variant.index);
+            if (variant.index < renderer.uploadedModelCount()) renderer.uploadModel(scene, variant.index);
         } catch (const std::exception& e) {
             std::cerr << "[RenderSync] Material: " << e.what() << "\n";
         }
@@ -536,7 +563,7 @@ std::optional<std::uint32_t> RenderSync::resolveRuntimeMesh(const std::shared_pt
 }
 
 std::optional<std::uint32_t> RenderSync::resolveClothModel(Entity e, const physics::Cloth& cloth, scene::Scene& scene,
-                                                          gfx::VulkanRenderer& renderer, bool full_upload_pending) {
+                                                          gfx::VulkanRenderer& renderer) {
     const std::string layout = cloth.layoutKey();
     auto it = cloth_models_.find(e.handle());
     if (it != cloth_models_.end() && it->second.layout == layout) {
@@ -556,18 +583,18 @@ std::optional<std::uint32_t> RenderSync::resolveClothModel(Entity e, const physi
     } else {
         index = scene.addModel(std::move(data));
     }
-    cloth_models_[e.handle()] = ClothSlot{layout, index, frame_};
+    cloth_models_[e.handle()] = ClothSlot{layout, index, frame_, nullptr};
     const asset::ModelData& stored = *scene.models()[index];
     anim::Animator bind(stored);
     bind.play(-1);
     if (model_bounds_.size() <= index) model_bounds_.resize(index + 1);
     model_bounds_[index] = anim::skinnedBounds(stored, bind.boneMatrices());
-    if (!full_upload_pending) renderer.uploadModel(scene, index);
+    if (index < renderer.uploadedModelCount()) renderer.uploadModel(scene, index);
     return index;
 }
 
 std::optional<std::uint32_t> RenderSync::resolveSoftBodyModel(Entity e, const physics::SoftBody& body, scene::Scene& scene,
-                                                             gfx::VulkanRenderer& renderer, bool full_upload_pending) {
+                                                             gfx::VulkanRenderer& renderer) {
     const std::string layout = "soft/" + body.layoutKey();
     auto it = cloth_models_.find(e.handle());
     if (it != cloth_models_.end() && it->second.layout == layout) {
@@ -594,7 +621,7 @@ std::optional<std::uint32_t> RenderSync::resolveSoftBodyModel(Entity e, const ph
     bind.play(-1);
     if (model_bounds_.size() <= index) model_bounds_.resize(index + 1);
     model_bounds_[index] = anim::skinnedBounds(stored, bind.boneMatrices());
-    if (!full_upload_pending) renderer.uploadModel(scene, index);
+    if (index < renderer.uploadedModelCount()) renderer.uploadModel(scene, index);
     return index;
 }
 
@@ -634,7 +661,7 @@ void RenderSync::releaseRuntimeMeshes() {
     }
 }
 
-void RenderSync::applyMaterialChanges(scene::Scene& scene, gfx::VulkanRenderer& renderer, bool& added) {
+void RenderSync::applyMaterialChanges(scene::Scene& scene, gfx::VulkanRenderer& renderer) {
     if (rebuild_materials_.empty() && live_materials_.empty()) return;
     for (const Variant& variant : variants_) {
         if (variant.base >= scene.models().size()) continue;  // de una malla ya destruida
@@ -645,7 +672,8 @@ void RenderSync::applyMaterialChanges(scene::Scene& scene, gfx::VulkanRenderer& 
         if (rebuild) {
             try {
                 scene.replaceModel(variant.index, buildVariant(*scene.models()[variant.base], variant.overrides));
-                added = true;
+                // Ya en la GPU: se sube de nuevo (si no, la cola la subira).
+                if (variant.index < renderer.uploadedModelCount()) renderer.uploadModel(scene, variant.index);
             } catch (const std::exception& e) {
                 std::cerr << "[RenderSync] Material: " << e.what() << "\n";
             }
@@ -700,8 +728,47 @@ int RenderSync::externalClip(std::uint32_t model, const Uuid& clip, scene::Scene
     if (const auto it = external_clips_.find(key); it != external_clips_.end()) {
         return it->second;
     }
+    // Leyendose en segundo plano: se mira si ya llego, sin esperar.
+    if (auto pending = pending_clips_.find(key); pending != pending_clips_.end()) {
+        if (pending->second.wait_for(std::chrono::seconds(0)) != std::future_status::ready) return -1;
+        std::optional<asset::AnimationClip> loaded = pending->second.get();
+        pending_clips_.erase(pending);
+        int index = -1;
+        if (loaded && model < scene.models().size()) {
+            // Se anade al modelo (el Animator reproduce por indice).
+            asset::ModelData& data = *scene.models()[model];
+            data.animations.push_back(std::move(*loaded));
+            index = static_cast<int>(data.animations.size()) - 1;
+        }
+        external_clips_[key] = index;
+        return index;
+    }
     int index = -1;
     const auto info = assets_.database().find(clip);
+    if (info && info->type == assets::AssetType::AnimationClip && model < scene.models().size() &&
+        g_async_models.get()) {
+        // Streaming de animaciones: el .cranim se lee en otro hilo con una copia
+        // de la jerarquia del modelo (lo unico que hace falta para emparejar las
+        // pistas). Leer y convertir un clip de Mixamo en el hilo principal era
+        // un tiron la primera vez que un estado lo usaba.
+        auto skeleton = std::make_shared<asset::ModelData>();
+        skeleton->nodes = scene.models()[model]->nodes;
+        const std::filesystem::path path = info->path;
+        const std::string name = info->name;
+        pending_clips_.emplace(key, std::async(std::launch::async,
+                                               [skeleton, path, name]() -> std::optional<asset::AnimationClip> {
+                                                   asset::AnimationClip loaded;
+                                                   std::string error;
+                                                   if (loadAnimationClip(path, *skeleton, loaded, &error) &&
+                                                       !loaded.channels.empty()) {
+                                                       return loaded;
+                                                   }
+                                                   std::cerr << "[RenderSync] Clip " << name
+                                                             << " no sirve para este modelo " << error << "\n";
+                                                   return std::nullopt;
+                                               }));
+        return -1;
+    }
     if (info && info->type == assets::AssetType::AnimationClip && model < scene.models().size()) {
         asset::ModelData& data = *scene.models()[model];
         asset::AnimationClip loaded;
@@ -716,6 +783,17 @@ int RenderSync::externalClip(std::uint32_t model, const Uuid& clip, scene::Scene
     }
     external_clips_[key] = index;
     return index;
+}
+
+void RenderSync::prefetchClips(std::uint32_t model, const Uuid& controller_uuid, const AnimatorController& controller,
+                               scene::Scene& scene) {
+    if (!g_async_models.get() || !prefetched_controllers_.insert(ClipKey{model, controller_uuid}).second) return;
+    for (const AnimatorState& state : controller.states) {
+        if (state.clip.valid()) externalClip(model, state.clip.uuid, scene);
+        for (const BlendTreeChild& child : state.children) {
+            if (child.clip.valid()) externalClip(model, child.clip.uuid, scene);
+        }
+    }
 }
 
 const asset::ModelData* RenderSync::actorModelData(Entity entity, const scene::Scene& scene) const {
@@ -758,6 +836,8 @@ void RenderSync::reset(scene::Scene& scene) {
     controllers_.clear();
     failed_controllers_.clear();
     external_clips_.clear();
+    pending_clips_.clear();  // (los futuros esperan a su hilo al destruirse)
+    prefetched_controllers_.clear();
     decal_textures_.clear();
     rivers_.clear();
     actor_entities_.clear();
@@ -786,7 +866,14 @@ std::optional<std::uint32_t> RenderSync::resolveModel(const assets::AssetRef& re
     if (const auto it = loaded_.find(ref.uuid); it != loaded_.end()) {
         asset = it->second;
     } else {
-        asset = assets_.loadModel(ref.uuid);
+        if (g_async_models.get()) {
+            // Streaming: lo lee un hilo de fondo; mientras, esta entidad no se
+            // dibuja (el resto del frame sigue sin esperar).
+            asset = assets_.requestModel(ref.uuid);
+            if (!asset && !assets_.loadFailed(ref.uuid)) return std::nullopt;
+        } else {
+            asset = assets_.loadModel(ref.uuid);
+        }
         if (!asset) {
             failed_.insert(ref.uuid);
             std::cerr << "[RenderSync] No se pudo cargar el modelo " << ref.uuid.toString() << "\n";
@@ -1651,6 +1738,8 @@ void RenderSync::updateRipples(World& world, gfx::VulkanRenderer& renderer, floa
 void RenderSync::sync(World& world, scene::Scene& scene, gfx::VulkanRenderer& renderer,
                       float delta_seconds, const Options& options) {
     renderer_ = &renderer;  // los .crshader se compilan al construir variantes
+    // Mallas editables (modelado) -> su malla del MeshRenderer.
+    modeling::updateEditableMeshes(world);
     // La animacion la lleva el componente Animator, no scene.update().
     scene.setAnimateActors(false);
     syncActors(world, scene, renderer, delta_seconds);
@@ -2008,8 +2097,11 @@ void RenderSync::syncTerrains(World& world, gfx::VulkanRenderer& renderer, const
 void RenderSync::syncActors(World& world, scene::Scene& scene, gfx::VulkanRenderer& renderer,
                             float delta_seconds) {
     bool added = false;
+    // Modelos que terminaron de leer los hilos de fondo (streaming).
+    assets_.pollLoads();
+    renderer.setModelStreaming(g_gpu_residency.get(), g_min_pixels.get(), g_idle_seconds.get());
     // Materiales guardados desde el editor: factores en vivo o variantes rehechas.
-    applyMaterialChanges(scene, renderer, added);
+    applyMaterialChanges(scene, renderer);
     // Los actores se rellenan en su sitio (sin reconstruir el vector ni copiar
     // el animador de lo que no se anima): con cientos de objetos, rehacerlo
     // todo cada frame eran miles de reservas de memoria.
@@ -2041,10 +2133,10 @@ void RenderSync::syncActors(World& world, scene::Scene& scene, gfx::VulkanRender
         const physics::Cloth* cloth = e.tryGet<physics::Cloth>();
         const physics::SoftBody* soft = cloth == nullptr ? e.tryGet<physics::SoftBody>() : nullptr;
         std::optional<std::uint32_t> model =
-            cloth != nullptr ? resolveClothModel(e, *cloth, scene, renderer, added)
-            : soft != nullptr ? resolveSoftBodyModel(e, *soft, scene, renderer, added)
+            cloth != nullptr ? resolveClothModel(e, *cloth, scene, renderer)
+            : soft != nullptr ? resolveSoftBodyModel(e, *soft, scene, renderer)
             : renderer_component->mesh
-                ? resolveRuntimeMesh(renderer_component->mesh, scene, renderer, added)
+                ? resolveRuntimeMesh(renderer_component->mesh, scene, renderer)
                 : resolveModel(renderer_component->model, renderer_component->part, scene, added);
         if (!model) {
             return;
@@ -2083,6 +2175,30 @@ void RenderSync::syncActors(World& world, scene::Scene& scene, gfx::VulkanRender
             const std::shared_ptr<const AnimatorController> controller =
                 animator->controller.valid() ? animatorController(animator->controller.uuid) : nullptr;
             if (controller && !controller->states.empty()) {
+                prefetchClips(*model, animator->controller.uuid, *controller, scene);
+                // El clip del estado actual aun se esta leyendo (streaming): este
+                // frame no se dibuja (mejor que verlo un instante en pose T).
+                {
+                    const int current = std::clamp(animator->runtime.state, 0,
+                                                   static_cast<int>(controller->states.size()) - 1);
+                    const AnimatorState& now = controller->states[static_cast<std::size_t>(current)];
+                    bool waiting = now.clip.valid() && clipPending(*model, now.clip.uuid);
+                    for (const BlendTreeChild& child : now.children) {
+                        waiting = waiting || (child.clip.valid() && clipPending(*model, child.clip.uuid));
+                    }
+                    if (waiting) {
+                        // Mira si ya llegaron (y se quedan en el modelo).
+                        if (now.clip.valid()) externalClip(*model, now.clip.uuid, scene);
+                        for (const BlendTreeChild& child : now.children) {
+                            if (child.clip.valid()) externalClip(*model, child.clip.uuid, scene);
+                        }
+                        waiting = now.clip.valid() && clipPending(*model, now.clip.uuid);
+                        for (const BlendTreeChild& child : now.children) {
+                            waiting = waiting || (child.clip.valid() && clipPending(*model, child.clip.uuid));
+                        }
+                    }
+                    if (waiting) return;
+                }
                 // La maquina de estados elige que suena: un clip o un Blend
                 // Tree (varios clips con pesos y el ciclo sincronizado), con
                 // fundido entre el estado viejo y el nuevo.
@@ -2391,10 +2507,20 @@ void RenderSync::syncActors(World& world, scene::Scene& scene, gfx::VulkanRender
         it = it->second.frame + 2 < frame_ ? shared_poses_.erase(it) : std::next(it);
     }
 
-    if (added) {
-        // Piezas nuevas: el renderizador sube la escena entera (mallas,
-        // texturas y la estructura de los rayos).
-        renderer.uploadModels(scene);
+    // Piezas nuevas a la GPU, en orden y poco a poco: como mucho unos
+    // milisegundos por frame (render.streaming.UploadMs), y al menos una. Antes
+    // se subia la escena ENTERA (todas las mallas y texturas, parando la GPU)
+    // cada vez que aparecia un modelo: instanciar algo en el juego daba un
+    // tiron tanto mayor cuanto mas grande la escena. Lo que aun no se ha subido
+    // simplemente no se dibuja todavia.
+    (void)added;
+    const auto upload_start = std::chrono::steady_clock::now();
+    const float budget_ms = g_upload_ms.get();
+    while (renderer.uploadedModelCount() < scene.models().size()) {
+        renderer.uploadModel(scene, renderer.uploadedModelCount());
+        const float spent =
+            std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - upload_start).count();
+        if (spent >= budget_ms) break;
     }
 }
 

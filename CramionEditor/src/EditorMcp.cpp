@@ -8,6 +8,7 @@
 
 #include <CramionCore/terrain/TerrainGenerator.h>
 #include <CramionCore/environment/Environment.h>
+#include <CramionCore/cvar/CVar.h>
 
 #include "CramionCore/project/DataPack.h"
 
@@ -138,7 +139,7 @@ const std::vector<ToolDef>& toolDefs() {
         d.push_back({"create_project", "Crea un proyecto nuevo desde una plantilla y lo abre.", {{"name", prop("string", "Nombre del proyecto")}, {"folder", prop("string", "Carpeta donde crearlo (por defecto Documentos/Cramion Projects)")}, {"template", prop("string", "Id de la plantilla (ver list_projects); por defecto 'blank'")}}, {"name"}});
         d.push_back({"list_entities", "Arbol de la escena: cada entidad con su UUID, nombre, componentes e hijos.", {{"root", entity}, {"depth", prop("integer", "Profundidad maxima (por defecto 12)")}}, {}});
         d.push_back({"get_entity", "Todo de una entidad: transformacion y cada componente con sus campos (JSON).", {{"entity", entity}}, {"entity"}});
-        d.push_back({"create_entity", "Crea una entidad. type: empty, cube, sphere, plane, cylinder, capsule, directional_light, point_light, spot_light, camera, decal, vehicle, terrain, voxel_world, ocean, lake, river. Opcional: posicion, giro (grados), escala, padre y componentes {\"Tipo\": {campos}}.",
+        d.push_back({"create_entity", "Crea una entidad. type: empty, cube, sphere, plane, cylinder, capsule, directional_light, point_light, spot_light, camera, decal, vehicle, character (Character Controller), terrain, voxel_world, ocean, lake, river. Opcional: posicion, giro (grados), escala, padre y componentes {\"Tipo\": {campos}}.",
                      {{"type", prop("string", "Que crear (por defecto empty)")}, {"name", prop("string", "Nombre")}, {"parent", entity},
                       {"position", vec3Prop("Posicion en el mundo")}, {"rotation", vec3Prop("Giro local en grados (X, Y, Z)")}, {"scale", vec3Prop("Escala local")},
                       {"components", prop("object", "Componentes a anadir/ajustar: {\"Light\": {\"intensity\": 5}, \"Rigidbody\": {}}")}}, {}});
@@ -147,6 +148,49 @@ const std::vector<ToolDef>& toolDefs() {
                       {"parent", prop("string", "Nuevo padre (UUID/nombre; vacio = raiz)")}, {"position", vec3Prop("Posicion en el mundo")},
                       {"local_position", vec3Prop("Posicion local")}, {"rotation", vec3Prop("Giro local en grados")}, {"scale", vec3Prop("Escala local")}}, {"entity"}});
         d.push_back({"delete_entity", "Borra una entidad y sus hijos.", {{"entity", entity}}, {"entity"}});
+        d.push_back({"cvar_list", "Variables de configuracion (CVars) del motor y del juego: nombre, valor, por defecto, tipo, limites y descripcion.",
+                     {{"filter", prop("string", "Solo las que contengan este texto")}}, {}});
+        d.push_back({"cvar_set", "Cambia una CVar (o la vuelve a su valor por defecto con reset). Las 'guardadas' se escriben en ProjectSettings/CVars.json.",
+                     {{"name", prop("string", "Nombre (p. ej. script.cpp.TimeoutMs)")}, {"value", prop("string", "Valor nuevo")},
+                      {"reset", prop("boolean", "Volver al valor por defecto")}}, {"name"}});
+        d.push_back({"cpp_compile", "Scripts de C++ (Assets/**/*.cpp, aislados en un proceso aparte): compila ahora y devuelve los errores (archivo:linea), las clases y los fallos en Play. Con 'create' crea un script nuevo desde la plantilla (y con 'entity' se lo pone).",
+                     {{"create", prop("string", "Nombre de la clase de un script nuevo (Assets/Scripts/<Nombre>.h y .cpp)")}, {"entity", entity},
+                      {"ask_name", prop("boolean", "Abrir la ventana del editor que pide el nombre")}}, {}});
+        d.push_back({"cpp_intellisense", "IntelliSense de C++ (clangd) en el editor: abre el archivo en el editor de codigo (opcionalmente con otro texto, sin guardar), y devuelve el estado de clangd, los errores/avisos y las sugerencias e informacion en una posicion (linea y columna desde 1).",
+                     {{"file", prop("string", "Archivo dentro de Assets (p. ej. Scripts/Jugador.cpp)")}, {"text", prop("string", "Texto a poner en la pestana (sin guardar)")},
+                      {"line", prop("integer", "Linea (desde 1) para sugerencias e informacion")}, {"column", prop("integer", "Columna (desde 1)")},
+                      {"wait", prop("number", "Segundos maximos de espera (20)")},
+                      {"cursor", prop("integer", "Poner el cursor en este caracter (-1 = al final) y activar el campo")},
+                      {"type", prop("string", "Teclear este texto en el campo (un caracter por frame, con las sugerencias de verdad)")},
+                      {"format", prop("boolean", "Formatear con clang-format (el estilo de Configuracion del motor)")},
+                      {"settings", prop("boolean", "Mostrar u ocultar la ventana Configuracion del motor")}}, {"file"}});
+        d.push_back({"modeling_create", "Modelado poligonal (como ProBuilder): crea una malla editable con una forma. shape: cube, plane, cylinder, cone, sphere, icosphere, torus, pipe, prism, wedge (rampa), stairs, curved_stairs, arch, door (pared con hueco), room (interior), capsule. La base queda en y = 0 del objeto, centrada en X/Z.",
+                     {{"shape", prop("string", "Forma")}, {"name", prop("string", "Nombre")}, {"position", vec3Prop("Posicion de la base en el mundo")},
+                      {"size", vec3Prop("Ancho (X), alto (Y), fondo (Z) en metros")}, {"segments", prop("integer", "Lados (cilindros, esferas, arcos...)")},
+                      {"rings", prop("integer", "Anillos (esfera, toro, capsula) o subdivisiones de la icoesfera")},
+                      {"subdivisions", vec3Prop("Cortes por eje (cubo, plano, habitacion)")}, {"steps", prop("integer", "Peldanos (escaleras)")},
+                      {"thickness", prop("number", "Grosor (tubo, arco, losa de escalera) o radio del tubo del toro")},
+                      {"inner_radius", prop("number", "Radio interior (escalera curva)")}, {"angle", prop("number", "Grados (arco, escalera curva)")},
+                      {"solid", prop("boolean", "Escaleras macizas hasta el suelo (por defecto si)")}, {"smooth", prop("boolean", "Lados suaves")},
+                      {"door", prop("array", "Puerta: hueco [fraccion del ancho, fraccion del alto]")}, {"parent", entity},
+                      {"color", vec3Prop("Color del hueco 0 (0..1)")}}, {"shape"}});
+        d.push_back({"modeling_info", "Malla editable de una entidad: vertices, aristas y caras con su indice, centro, normal (en el objeto) y material. Usalo para elegir que caras/aristas editar con modeling_edit.",
+                     {{"entity", entity}, {"max_faces", prop("integer", "Maximo de caras listadas (por defecto 300)")}, {"vertices", prop("boolean", "Listar tambien las posiciones de los vertices")}}, {"entity"}});
+        d.push_back({"modeling_edit", "Opera sobre una malla editable. operation: extrude, inset, bevel, subdivide, connect, insert_loop, subdivide_edges, bridge, fill_holes, merge, delete, flip, triangulate, duplicate, detach, weld, collapse, split, move, rotate, scale, relax, noise, smooth (Catmull-Clark), mirror, conform, center_pivot, material, smoothing, uv, boolean, combine. Caras: indices o un selector 'all', 'up', 'down', 'front' (+Z), 'back', 'left', 'right' (por la normal). Aristas: [[a,b],...] o 'border'. Vertices: indices o 'all'.",
+                     {{"entity", entity}, {"operation", prop("string", "La operacion")},
+                      {"faces", prop("array", "Caras (indices) o un selector en texto")}, {"edges", prop("array", "Aristas [[a,b],...] o 'border'")},
+                      {"vertices", prop("array", "Vertices (indices) o 'all'")},
+                      {"amount", prop("number", "Distancia / cantidad (extruir, inset, bisel, soldar, relajar, ruido)")},
+                      {"individual", prop("boolean", "Extruir/inset cara a cara")}, {"cuts", prop("integer", "Cortes o niveles")},
+                      {"t", prop("number", "Donde corta insert_loop (0..1)")}, {"vector", vec3Prop("move: desplazamiento; rotate: grados XYZ; scale: factores")},
+                      {"axis", prop("string", "Espejo: x, y o z")}, {"keep", prop("boolean", "Espejo: conservar el original y soldar la costura (por defecto si)")},
+                      {"other", entity}, {"op", prop("string", "Booleana: union, subtract, intersect")},
+                      {"material", prop("integer", "Hueco de material")}, {"color", vec3Prop("Color del hueco (material)")},
+                      {"group", prop("integer", "Grupo de suavizado (0 = duro)")},
+                      {"uv", prop("object", "UV: {mode: box|planar, fill: tile|fit|stretch, scale:[u,v], offset:[u,v], rotation, world_space}")},
+                      {"bottom", prop("boolean", "center_pivot: a la base")}}, {"entity", "operation"}});
+        d.push_back({"modeling_convert", "Convierte un objeto con Mesh Renderer (modelo importado o primitiva) en malla editable (suelda vertices y junta triangulos coplanares en quads).",
+                     {{"entity", entity}, {"quad_angle", prop("number", "Grados para juntar triangulos en quads (0 = no juntar; por defecto 2)")}}, {"entity"}});
         d.push_back({"duplicate_entity", "Duplica una entidad con sus hijos.", {{"entity", entity}}, {"entity"}});
         d.push_back({"list_component_types", "Todos los tipos de componente del motor con sus campos y valores por defecto (para set_component).", json::object(), {}});
         d.push_back({"set_component", "Anade un componente (si no lo tiene) y cambia sus campos. Los campos que no se pasen no cambian. Ver list_component_types.",
@@ -185,7 +229,8 @@ const std::vector<ToolDef>& toolDefs() {
         d.push_back({"read_file", "Lee un archivo de texto del proyecto (ruta relativa a Assets, p. ej. Scripts/Jugador.lua).", {{"path", prop("string", "Ruta dentro de Assets")}}, {"path"}});
         d.push_back({"write_file", "Escribe (crea o reemplaza) un archivo de texto en Assets: scripts, shaders, materiales, datos. Se recarga en caliente.",
                      {{"path", prop("string", "Ruta dentro de Assets")}, {"content", prop("string", "Contenido completo")}}, {"path", "content"}});
-        d.push_back({"delete_file", "Borra un archivo o asset de Assets.", {{"path", prop("string", "Ruta dentro de Assets")}}, {"path"}});
+        d.push_back({"delete_file", "Borra un archivo, asset o carpeta (con todo) de Assets: va a la Papelera de reciclaje y se cierran sus pestanas. Con 'ask' muestra la ventana de confirmar del editor.",
+                     {{"path", prop("string", "Ruta dentro de Assets")}, {"ask", prop("boolean", "Preguntar en el editor en vez de borrar ya")}}, {"path"}});
         d.push_back({"create_script", "Crea un script Lua (con la plantilla o con el codigo dado) y opcionalmente lo engancha a una entidad.",
                      {{"name", prop("string", "Nombre (sera Scripts/<name>.lua)")}, {"code", prop("string", "Codigo Lua completo (debe terminar en return <tabla>)")}, {"attach_to", entity}}, {"name"}});
         d.push_back({"create_shader", "Crea un shader de superficie GLSL (.crshader) y lo compila. Devuelve los errores si los hay.",
@@ -376,7 +421,7 @@ Se usan desde un material: create_material con shader = "Shaders/X.crshader".
 
 ## Componentes frecuentes (set_component)
 MeshRenderer, Light (type Directional/Point/Spot, color, intensity, range), Camera, Rigidbody,
-BoxCollider, SphereCollider, CapsuleCollider, MeshCollider, Script (file = "Scripts/X.lua"),
+BoxCollider, SphereCollider, CapsuleCollider, MeshCollider, CharacterController, Script (file = "Scripts/X.lua"),
 AudioSource, Animator, ParticleSystem, NavAgent, Terrain, WaterBody, Decal.
 Nota: primitivas (cube, sphere...) ya traen su collider.
 
@@ -488,6 +533,11 @@ private:
             if (type.name == "EntityInfo" || !type.has(a.world_, e.handle())) continue;
             const std::string text = ecs::componentToJson(a.world_, e, type.name);
             components[type.name] = text.empty() ? json::object() : json::parse(text, nullptr, false);
+            if (type.name == "EditableMesh" && components[type.name].is_object()) {
+                const modeling::PolyMesh& m = e.get<modeling::EditableMesh>().mesh;
+                components[type.name]["data"] = "(" + std::to_string(m.positions.size()) + " vertices, " +
+                                                std::to_string(m.faces.size()) + " caras: usa modeling_info)";
+            }
         }
         j["components"] = components;
         json children = json::array();
@@ -665,7 +715,8 @@ json McpTools::call(const std::string& name, const json& args, bool& image, std:
     if (name == "create_entity") {
         static const std::map<std::string, int> kinds = {
             {"empty", 0}, {"cube", 1}, {"sphere", 2}, {"plane", 3}, {"cylinder", 4}, {"capsule", 5},
-            {"directional_light", 6}, {"point_light", 7}, {"spot_light", 8}, {"camera", 9}, {"decal", 10}, {"vehicle", 17}};
+            {"directional_light", 6}, {"point_light", 7}, {"spot_light", 8}, {"camera", 9}, {"decal", 10}, {"vehicle", 17},
+            {"character", 23}};
         const std::string type = arg(args, "type", "empty");
         const ecs::Entity parent = args.contains("parent") && !arg(args, "parent").empty() ? entity(arg(args, "parent")) : ecs::Entity{};
         ecs::Entity e;
@@ -709,6 +760,376 @@ json McpTools::call(const std::string& name, const json& args, bool& image, std:
         a.clearSelection();
         a.commit();
         return json{{"deleted", n}};
+    }
+    if (name == "cvar_list") {
+        const std::string filter = arg(args, "filter");
+        json list = json::array();
+        for (const cvar::CVarBase* c : cvar::Registry::instance().all()) {
+            if (!filter.empty() && c->name().find(filter) == std::string::npos && c->description().find(filter) == std::string::npos) continue;
+            json j{{"name", c->name()}, {"value", c->toString()}, {"default", c->defaultString()}, {"type", cvar::typeName(c->type())},
+                   {"description", c->description()}, {"saved", (c->flags() & cvar::Saved) != 0}, {"read_only", (c->flags() & cvar::ReadOnly) != 0}};
+            if (c->hasRange()) j["range"] = json::array({c->rangeMin(), c->rangeMax()});
+            list.push_back(j);
+        }
+        return json{{"cvars", list}};
+    }
+    if (name == "cvar_set") {
+        cvar::CVarBase* c = cvar::Registry::instance().find(arg(args, "name"));
+        if (c == nullptr) throw ToolError("no existe la CVar '" + arg(args, "name") + "' (usa cvar_list)");
+        if (args.value("reset", false)) {
+            c->reset();
+        } else {
+            std::string error;
+            const std::string value = args.contains("value") && !args["value"].is_string() ? args["value"].dump() : arg(args, "value");
+            if (!cvar::Registry::instance().set(c->name(), value, &error)) throw ToolError(error);
+        }
+        return json{{"name", c->name()}, {"value", c->toString()}};
+    }
+    if (name == "cpp_compile") {
+        needProject();
+        if (args.value("ask_name", false)) {  // la ventana "Nuevo script C++" del editor
+            a.createCppScriptAsset({}, {});
+            return json{{"asking", true}};
+        }
+        if (args.contains("create") && !arg(args, "create").empty()) {
+            ecs::Entity target = args.contains("entity") && !arg(args, "entity").empty() ? entity(arg(args, "entity")) : ecs::Entity{};
+            const std::string cls = arg(args, "create");
+            const std::filesystem::path file = a.project_.assetsFolder() / "Scripts" / dialogs::fromUtf8(cls + ".cpp");
+            if (std::filesystem::exists(file)) throw ToolError("ya existe " + cls + ".cpp");
+            std::filesystem::create_directories(file.parent_path());
+            std::ofstream(file.parent_path() / dialogs::fromUtf8(cls + ".h"), std::ios::binary) << scripting::cppScriptHeaderTemplate(cls);
+            std::ofstream(file, std::ios::binary) << scripting::cppScriptTemplate(cls);
+            a.refreshDatabase();
+            if (target.valid()) {
+                a.attachScriptFile(target, a.assetRelative(file));
+                a.commit();
+            }
+        }
+        while (a.cpp_scripts_.compiling()) Sleep(20);
+        a.cpp_scripts_.takeCompileResult();
+        const scripting::CppCompileResult r = a.cpp_scripts_.compile();
+        a.cpp_compile_errors_ = r.errors;
+        a.cpp_attempted_ = a.cpp_scripts_.newestSourceTime();
+        a.cpp_status_ = r.nothing_to_compile ? std::string()
+                                             : (r.ok ? "Compilado (MCP)" : "Errores de compilacion: " + std::to_string(r.errors.size()));
+        for (const scripting::ScriptError& e : r.errors) {
+            std::cerr << "[C++] " << (e.file.empty() ? "" : e.file + ":" + std::to_string(e.line) + ": ") << e.message << std::endl;
+        }
+        if (r.ok && !r.dll.empty()) {
+            a.cpp_scripts_.usePrebuilt(r.dll);
+            a.cpp_scripts_.setBuildFolder(a.project_.libraryFolder() / "CppScripts");
+            if (a.playing()) a.cpp_scripts_.reload();
+        }
+        json errors = json::array();
+        for (const scripting::ScriptError& e : r.errors) errors.push_back(json{{"file", e.file}, {"line", e.line}, {"message", e.message}});
+        json runtime = json::array();
+        for (const scripting::ScriptError& e : a.cpp_scripts_.errors()) runtime.push_back(json{{"file", e.file}, {"line", e.line}, {"message", e.message}});
+        return json{{"ok", r.ok}, {"nothing_to_compile", r.nothing_to_compile}, {"compiler", r.compiler}, {"seconds", r.seconds},
+                    {"errors", errors}, {"runtime_errors", runtime}, {"classes", a.cpp_scripts_.classes()},
+                    {"log", r.ok ? std::string() : r.log.substr(0, 4000)}};
+    }
+    if (name == "cpp_intellisense") {
+        needProject();
+        const std::filesystem::path file = a.project_.assetsFolder() / dialogs::fromUtf8(arg(args, "file"));
+        if (!std::filesystem::exists(file)) throw ToolError("no existe " + arg(args, "file"));
+        if (a.scriptTabFor(file) == nullptr) a.openScript(file);  // (abierto: no se vuelve a enfocar la ventana)
+        EditorApp::ScriptTab* tab = a.scriptTabFor(file);
+        if (tab == nullptr) throw ToolError("no se pudo abrir");
+        if (args.contains("text") && args["text"].is_string()) tab->text = args["text"].get<std::string>();
+        if (args.contains("cursor")) {  // -1 = al final; el campo queda activo para escribir
+            const int c = args.value("cursor", -1);
+            tab->set_cursor = c < 0 ? static_cast<int>(tab->text.size()) : std::min(c, static_cast<int>(tab->text.size()));
+            tab->focus = true;
+        }
+        if (args.contains("type") && args["type"].is_string()) a.mcp_type_queue_ += args["type"].get<std::string>();
+        if (args.value("format", false)) a.formatCppTab(*tab);
+        if (args.contains("settings")) a.show_engine_settings_ = args.value("settings", false);
+        a.ensureClangd();
+        a.syncClangd(*tab);
+        const double wait = args.value("wait", 20.0);
+        const bool ask = args.contains("line");
+        const int line = std::max(0, args.value("line", 1) - 1);
+        const int column = std::max(0, args.value("column", 1) - 1);
+        bool got_completion = !ask, got_hover = !ask;
+        json completions = json::array();
+        std::string hover;
+        if (ask && a.clangd_.running()) {
+            a.clangd_.completion(file, line, column, [&](std::vector<ClangdCompletion> items) {
+                for (std::size_t i = 0; i < items.size() && i < 25; ++i) {
+                    completions.push_back(json{{"label", items[i].label}, {"insert", items[i].insert}, {"detail", items[i].detail}, {"kind", items[i].kind}});
+                }
+                got_completion = true;
+            });
+            a.clangd_.hover(file, line, column, [&](std::string text) {
+                hover = std::move(text);
+                got_hover = true;
+            });
+        }
+        const std::uint64_t start_version = a.clangd_.diagnosticsVersion();
+        const auto t0 = std::chrono::steady_clock::now();
+        while (a.clangd_.running() && std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count() < wait) {
+            a.clangd_.poll();
+            if (got_completion && got_hover && a.clangd_.diagnosticsVersion() != start_version) break;
+            Sleep(20);
+        }
+        json diagnostics = json::array();
+        for (const ClangdDiagnostic& d : a.clangd_.diagnostics(file)) {
+            diagnostics.push_back(json{{"line", d.line + 1}, {"column", d.column + 1}, {"severity", d.severity}, {"message", d.message}});
+        }
+        return json{{"running", a.clangd_.running()}, {"status", a.clangd_.status()},
+                    {"clangd", dialogs::utf8(scripting::CppScriptSystem::findClangd())}, {"cpp_tab", tab->cpp},
+                    {"diagnostics", diagnostics}, {"completions", completions}, {"hover", hover},
+                    {"answered", json{{"completion", got_completion}, {"hover", got_hover}}},
+                    {"tab", json{{"cursor", tab->cursor}, {"line", tab->line}, {"column", tab->column}, {"active", tab->was_active},
+                                 {"completion_open", tab->completion_open}, {"completions", tab->completions.size()},
+                                 {"first", tab->completions.empty() ? std::string() : tab->completions.front().label},
+                                 {"signature_open", tab->signature_open}, {"text_size", tab->text.size()},
+                                 {"text_tail", tab->text.substr(tab->text.size() > 400 ? tab->text.size() - 400 : 0)}}}};
+    }
+    if (name == "modeling_create") {
+        needProject();
+        modeling::shapes::Kind kind{};
+        if (!modeling::shapes::kindFromKey(arg(args, "shape", "cube"), kind)) throw ToolError("forma desconocida: " + arg(args, "shape"));
+        modeling::shapes::Params p = modeling::shapes::defaults(kind);
+        p.size = readVec(args, "size", p.size);
+        p.segments = args.value("segments", p.segments);
+        p.rings = args.value("rings", p.rings);
+        const Vec3 sub = readVec(args, "subdivisions", Vec3{static_cast<float>(p.subdivisions_x), static_cast<float>(p.subdivisions_y),
+                                                          static_cast<float>(p.subdivisions_z)});
+        p.subdivisions_x = std::max(1, static_cast<int>(sub.x));
+        p.subdivisions_y = std::max(1, static_cast<int>(sub.y));
+        p.subdivisions_z = std::max(1, static_cast<int>(sub.z));
+        p.steps = args.value("steps", p.steps);
+        p.thickness = args.value("thickness", p.thickness);
+        p.inner_radius = args.value("inner_radius", p.inner_radius);
+        p.angle = args.value("angle", p.angle);
+        p.sides = args.value("solid", p.sides);
+        p.smooth = args.value("smooth", p.smooth);
+        if (args.contains("door") && args["door"].is_array() && args["door"].size() >= 2) {
+            p.door = core::Vec2{args["door"][0].get<float>(), args["door"][1].get<float>()};
+        }
+        ecs::Entity e = a.createModelingShape(kind, p);
+        if (args.contains("parent") && !arg(args, "parent").empty()) e.setParent(entity(arg(args, "parent")), true);
+        if (args.contains("name")) e.setName(arg(args, "name"));
+        if (args.contains("position")) e.setWorldPosition(readVec(args, "position", e.worldPosition()));
+        if (args.contains("color")) e.get<modeling::EditableMesh>().slots[0].color = readVec(args, "color", Vec3{0.8f, 0.8f, 0.8f});
+        e.get<modeling::EditableMesh>().markModified();
+        a.commit();
+        json j = summary(e);
+        j["faces"] = e.get<modeling::EditableMesh>().mesh.faces.size();
+        return j;
+    }
+    if (name == "modeling_convert") {
+        needProject();
+        ecs::Entity e = entity(arg(args, "entity"));
+        if (!a.convertToEditableMesh(e, args.value("quad_angle", 2.0f)).valid()) throw ToolError("no se pudo convertir (sin Mesh Renderer o sin malla cargada)");
+        json j = summary(e);
+        j["faces"] = e.get<modeling::EditableMesh>().mesh.faces.size();
+        return j;
+    }
+    if (name == "modeling_info") {
+        ecs::Entity e = entity(arg(args, "entity"));
+        const modeling::EditableMesh* em = e.tryGet<modeling::EditableMesh>();
+        if (em == nullptr) throw ToolError("no es una malla editable (usa modeling_convert)");
+        const modeling::PolyMesh& m = em->mesh;
+        json faces = json::array();
+        const int max_faces = args.value("max_faces", 300);
+        for (std::size_t fi = 0; fi < m.faces.size() && static_cast<int>(fi) < max_faces; ++fi) {
+            const modeling::Face& f = m.faces[fi];
+            faces.push_back(json{{"index", fi}, {"vertices", f.v}, {"center", vec(m.faceCenter(static_cast<int>(fi)))},
+                                 {"normal", vec(m.faceNormal(static_cast<int>(fi)))}, {"material", f.material}, {"smoothing", f.smoothing}});
+        }
+        Vec3 lo{}, hi{};
+        m.bounds(lo, hi);
+        json j = summary(e);
+        j["vertex_count"] = m.positions.size();
+        j["face_count"] = m.faces.size();
+        j["edge_count"] = m.edges().size();
+        j["border_edges"] = m.borderEdges().size();
+        j["bounds_min"] = vec(lo);
+        j["bounds_max"] = vec(hi);
+        j["faces"] = faces;
+        if (args.value("vertices", false)) {
+            json verts = json::array();
+            for (const Vec3& p : m.positions) verts.push_back(vec(p));
+            j["positions"] = verts;
+        }
+        return j;
+    }
+    if (name == "modeling_edit") {
+        needProject();
+        ecs::Entity e = entity(arg(args, "entity"));
+        modeling::EditableMesh* em = e.tryGet<modeling::EditableMesh>();
+        if (em == nullptr) throw ToolError("no es una malla editable (usa modeling_convert)");
+        modeling::PolyMesh& m = em->mesh;
+        namespace mops = modeling::ops;
+        const std::string op = arg(args, "operation");
+        // Caras: indices o un selector por la normal.
+        const auto faces = [&]() {
+            std::vector<int> out;
+            const auto it = args.find("faces");
+            std::string selector = "all";
+            if (it != args.end() && it->is_array()) {
+                for (const json& v : *it) {
+                    if (v.is_number_integer() && v.get<int>() >= 0 && static_cast<std::size_t>(v.get<int>()) < m.faces.size()) out.push_back(v.get<int>());
+                }
+                return out;
+            }
+            if (it != args.end() && it->is_string()) selector = it->get<std::string>();
+            Vec3 dir{};
+            if (selector == "up") dir = Vec3{0, 1, 0};
+            else if (selector == "down") dir = Vec3{0, -1, 0};
+            else if (selector == "front") dir = Vec3{0, 0, 1};
+            else if (selector == "back") dir = Vec3{0, 0, -1};
+            else if (selector == "right") dir = Vec3{1, 0, 0};
+            else if (selector == "left") dir = Vec3{-1, 0, 0};
+            else if (selector != "all") throw ToolError("selector de caras desconocido: " + selector);
+            for (std::size_t fi = 0; fi < m.faces.size(); ++fi) {
+                if (selector == "all" || core::dot(m.faceNormal(static_cast<int>(fi)), dir) > 0.9f) out.push_back(static_cast<int>(fi));
+            }
+            return out;
+        };
+        const auto edges = [&]() {
+            std::vector<modeling::Edge> out;
+            const auto it = args.find("edges");
+            if (it != args.end() && it->is_string() && it->get<std::string>() == "border") return m.borderEdges();
+            if (it != args.end() && it->is_array()) {
+                for (const json& pair : *it) {
+                    if (pair.is_array() && pair.size() == 2) out.push_back(modeling::Edge(pair[0].get<std::uint32_t>(), pair[1].get<std::uint32_t>()));
+                }
+            }
+            if (out.empty()) throw ToolError("faltan las aristas ([[a,b],...] o 'border'; mira modeling_info)");
+            return out;
+        };
+        const auto vertices = [&]() {
+            std::vector<std::uint32_t> out;
+            const auto it = args.find("vertices");
+            if (it != args.end() && it->is_array()) {
+                for (const json& v : *it) out.push_back(v.get<std::uint32_t>());
+                return out;
+            }
+            if (args.contains("faces")) return mops::verticesOfFaces(m, faces());
+            if (args.contains("edges")) return mops::verticesOfEdges(edges());
+            out.resize(m.positions.size());
+            for (std::size_t i = 0; i < out.size(); ++i) out[i] = static_cast<std::uint32_t>(i);
+            return out;
+        };
+        const float amount = args.value("amount", 0.25f);
+        json result;
+        if (op == "extrude") {
+            result["faces"] = mops::extrudeFaces(m, faces(), amount, args.value("individual", false) ? mops::ExtrudeMode::Individual : mops::ExtrudeMode::Group);
+        } else if (op == "inset") {
+            result["faces"] = mops::insetFaces(m, faces(), amount, args.value("individual", false));
+        } else if (op == "bevel") {
+            result["faces"] = mops::bevelEdges(m, edges(), amount);
+        } else if (op == "subdivide") {
+            result["faces"] = mops::subdivideFaces(m, faces());
+        } else if (op == "connect") {
+            result["edges"] = mops::connectEdges(m, edges()).size();
+        } else if (op == "insert_loop") {
+            result["edges"] = mops::insertEdgeLoop(m, edges().front(), args.value("t", 0.5f)).size();
+        } else if (op == "subdivide_edges") {
+            result["vertices"] = mops::subdivideEdges(m, edges(), args.value("cuts", 1));
+        } else if (op == "bridge") {
+            const std::vector<modeling::Edge> two = edges();
+            if (two.size() != 2) throw ToolError("bridge necesita dos aristas de borde");
+            result["face"] = mops::bridgeEdges(m, two[0], two[1]);
+        } else if (op == "fill_holes") {
+            result["faces"] = mops::fillHoles(m, args.contains("edges") ? edges() : std::vector<modeling::Edge>{});
+        } else if (op == "merge") {
+            result["face"] = mops::mergeFaces(m, faces());
+        } else if (op == "delete") {
+            mops::deleteFaces(m, faces());
+        } else if (op == "flip") {
+            mops::flipFaces(m, faces());
+        } else if (op == "triangulate") {
+            result["faces"] = mops::triangulateFaces(m, faces()).size();
+        } else if (op == "duplicate") {
+            result["faces"] = mops::duplicateFaces(m, faces());
+        } else if (op == "detach") {
+            modeling::PolyMesh piece = mops::detachFaces(m, faces(), true);
+            ecs::Entity copy = modeling::createEditableEntity(a.world_, std::move(piece), e.name() + " (parte)", e.parent());
+            copy.setWorldMatrix(e.worldMatrix());
+            result["new_entity"] = summary(copy);
+        } else if (op == "weld") {
+            result["removed"] = mops::weldVertices(m, args.contains("vertices") || args.contains("faces") ? vertices() : std::vector<std::uint32_t>{}, args.value("amount", 0.01f));
+        } else if (op == "collapse") {
+            result["vertex"] = mops::collapseVertices(m, vertices());
+        } else if (op == "split") {
+            mops::splitVertices(m, vertices());
+        } else if (op == "move" || op == "rotate" || op == "scale") {
+            const std::vector<std::uint32_t> verts = vertices();
+            const Vec3 v = readVec(args, "vector", op == "scale" ? Vec3{1, 1, 1} : Vec3{});
+            Vec3 pivot{};
+            for (const std::uint32_t i : verts) pivot += m.positions[i];
+            if (!verts.empty()) pivot = pivot * (1.0f / static_cast<float>(verts.size()));
+            core::Mat4 matrix = core::translate(v);
+            if (op == "rotate") matrix = core::translate(pivot) * core::composeTrs(Vec3{}, ecs::quatFromEulerDegrees(v), Vec3{1, 1, 1}) * core::translate(-pivot);
+            if (op == "scale") matrix = core::translate(pivot) * core::scale(v) * core::translate(-pivot);
+            mops::transformVertices(m, verts, matrix);
+        } else if (op == "relax") {
+            mops::relax(m, args.contains("vertices") || args.contains("faces") ? vertices() : std::vector<std::uint32_t>{}, args.value("amount", 0.5f), args.value("cuts", 3));
+        } else if (op == "noise") {
+            mops::randomize(m, args.contains("vertices") || args.contains("faces") ? vertices() : std::vector<std::uint32_t>{}, amount, 7);
+        } else if (op == "smooth") {
+            mops::subdivideSmooth(m, args.value("cuts", 1));
+            for (modeling::Face& f : m.faces) f.smoothing = std::max(f.smoothing, 1);
+        } else if (op == "mirror") {
+            const std::string axis = arg(args, "axis", "x");
+            mops::mirror(m, axis == "y" ? 1 : (axis == "z" ? 2 : 0), args.value("keep", true));
+        } else if (op == "conform") {
+            mops::conformNormals(m);
+        } else if (op == "center_pivot") {
+            const Vec3 offset = mops::centerPivot(m, args.value("bottom", false));
+            e.setWorldPosition(ecs::transformPoint(e.worldMatrix(), offset));
+        } else if (op == "material") {
+            const int slot = std::clamp(args.value("material", 0), 0, 63);
+            while (static_cast<int>(em->slots.size()) <= slot) em->slots.push_back(modeling::SlotMaterial{});
+            if (args.contains("color")) em->slots[static_cast<std::size_t>(slot)].color = readVec(args, "color", Vec3{0.8f, 0.8f, 0.8f});
+            for (const int f : faces()) m.faces[static_cast<std::size_t>(f)].material = slot;
+        } else if (op == "smoothing") {
+            for (const int f : faces()) m.faces[static_cast<std::size_t>(f)].smoothing = std::max(args.value("group", 1), 0);
+        } else if (op == "uv") {
+            const json uv = args.value("uv", json::object());
+            for (const int f : faces()) {
+                modeling::FaceUv& u = m.faces[static_cast<std::size_t>(f)].uvs;
+                const std::string mode = uv.value("mode", std::string(u.mode == modeling::UvMode::Planar ? "planar" : "box"));
+                u.mode = mode == "planar" ? modeling::UvMode::Planar : modeling::UvMode::Box;
+                const std::string fill = uv.value("fill", std::string("tile"));
+                u.fill = fill == "fit" ? modeling::UvFill::Fit : (fill == "stretch" ? modeling::UvFill::Stretch : modeling::UvFill::Tile);
+                if (uv.contains("scale") && uv["scale"].is_array() && uv["scale"].size() >= 2) u.scale = core::Vec2{uv["scale"][0].get<float>(), uv["scale"][1].get<float>()};
+                if (uv.contains("offset") && uv["offset"].is_array() && uv["offset"].size() >= 2) u.offset = core::Vec2{uv["offset"][0].get<float>(), uv["offset"][1].get<float>()};
+                u.rotation = uv.value("rotation", u.rotation);
+                u.world_space = uv.value("world_space", u.world_space);
+                m.faces[static_cast<std::size_t>(f)].uv.clear();
+            }
+        } else if (op == "boolean" || op == "combine") {
+            ecs::Entity other = entity(arg(args, "other"));
+            const modeling::EditableMesh* om = other.tryGet<modeling::EditableMesh>();
+            if (om == nullptr) throw ToolError("'other' no es una malla editable");
+            if (op == "combine") {
+                mops::append(m, om->mesh, core::inverse(e.worldMatrix()) * other.worldMatrix());
+                a.world_.destroy(other);
+            } else {
+                const std::string kind = arg(args, "op", "subtract");
+                const mops::BoolOp bop = kind == "union" ? mops::BoolOp::Union : (kind == "intersect" ? mops::BoolOp::Intersect : mops::BoolOp::Subtract);
+                m = mops::boolean(m, e.worldMatrix(), om->mesh, other.worldMatrix(), bop);
+                other.setActive(false);
+            }
+        } else {
+            throw ToolError("operacion desconocida: " + op);
+        }
+        const std::string problem = m.validate();
+        if (!problem.empty()) throw ToolError("la malla quedo invalida: " + problem);
+        em->markModified();
+        a.modelingClearSelection();
+        modeling::updateEditableMeshes(a.world_);
+        a.dirty_ = true;
+        a.commit();
+        result["vertex_count"] = m.positions.size();
+        result["face_count"] = m.faces.size();
+        result["border_edges"] = m.borderEdges().size();
+        return result;
     }
     if (name == "duplicate_entity") {
         const ecs::Entity e = entity(arg(args, "entity"));
@@ -956,14 +1377,17 @@ json McpTools::call(const std::string& name, const json& args, bool& image, std:
         return out;
     }
     if (name == "delete_file") {
-        const std::filesystem::path file = assetPath(arg(args, "path"));
-        if (const auto info = findAsset(arg(args, "path")); info && !info->path.empty()) {
-            a.database_->remove(info->uuid);
-        } else {
-            std::error_code ec;
-            if (!std::filesystem::remove(file, ec)) throw ToolError("no se pudo borrar " + arg(args, "path"));
+        std::filesystem::path file = assetPath(arg(args, "path"));
+        if (const auto info = findAsset(arg(args, "path")); info && !info->path.empty()) file = info->path;
+        std::error_code ec;
+        if (!std::filesystem::exists(file, ec)) throw ToolError("no existe " + arg(args, "path"));
+        if (args.value("ask", false)) {  // la ventana de confirmar del editor (como Supr)
+            a.requestDelete({file});
+            return json{{"asking", arg(args, "path")}};
         }
-        a.refreshDatabase();
+        // Lo mismo que Borrar en el editor: cierra sus pestanas, carpetas con todo, a la Papelera.
+        a.deletePaths({file});
+        if (std::filesystem::exists(file, ec)) throw ToolError("no se pudo borrar " + arg(args, "path"));
         return json{{"deleted", arg(args, "path")}};
     }
     if (name == "create_script") {

@@ -41,6 +41,7 @@ namespace {
 constexpr ImU32 kColliderColor = IM_COL32(145, 244, 139, 255);  // el verde de Unity
 constexpr ImU32 kTriggerColor = IM_COL32(110, 190, 255, 255);
 constexpr ImU32 kSleepingColor = IM_COL32(95, 175, 95, 255);  // dormido: verde mas oscuro
+constexpr ImU32 kCharacterColor = IM_COL32(255, 196, 80, 255);  // Character Controller: ambar
 constexpr ImU32 kEmitterColor = IM_COL32(150, 210, 255, 255);
 constexpr ImU32 kContactColor = IM_COL32(255, 90, 60, 255);
 constexpr ImU32 kVelocityColor = IM_COL32(255, 220, 60, 255);
@@ -190,6 +191,7 @@ void EditorApp::enterPlay() {
         scripts_.setSceneName(std::string(stem.begin(), stem.end()));
     }
     scripts_.start(world_);
+    startCppScripts();  // los de C++, en su proceso aparte
     // VR: el casco marca el ritmo (xrWaitFrame); la ventana sin vsync
     // (play_graphics_ lo devuelve al parar).
     if (renderer_.xrAvailable()) {
@@ -217,6 +219,7 @@ void EditorApp::exitPlay() {
     if (!playing()) return;
     const std::uint64_t steps = physics_.stats().steps;
     scripts_.stop();
+    stopCppScripts();
     scripts_.unmountDataPacks();  // lo montado en Play (DataPack.load) sale del proyecto
     scripts_.shutdownNetwork();  // salir de Play cierra la partida en red
     audio_.stop();
@@ -273,13 +276,27 @@ void EditorApp::updateScriptsAndAudio(float delta_seconds, int physics_steps) {
         physics_.driveVehiclesWithKeyboard(world_, down(dm::Key::W, dm::Key::Up), down(dm::Key::S, dm::Key::Down),
                                            down(dm::Key::A, dm::Key::Left), down(dm::Key::D, dm::Key::Right),
                                            input_->isKeyDown(dm::Key::Space));
+        // Character Controller con "Mover con teclado" (relativo a la camara principal).
+        physics::PhysicsSystem::CharacterKeys keys;
+        keys.forward = down(dm::Key::W, dm::Key::Up);
+        keys.back = down(dm::Key::S, dm::Key::Down);
+        keys.left = down(dm::Key::A, dm::Key::Left);
+        keys.right = down(dm::Key::D, dm::Key::Right);
+        keys.run = down(dm::Key::LeftShift, dm::Key::RightShift);
+        keys.jump = input_->isKeyDown(dm::Key::Space);
+        keys.crouch = down(dm::Key::C, dm::Key::LeftControl);
+        physics_.driveCharactersWithKeyboard(world_, keys);
     }
     scripts_.fixedUpdate(world_, physics_settings_.fixed_step, physics_steps);
     scripts_.update(world_, delta_seconds);
+    cpp_scripts_.setInput(typing || !game_input ? nullptr : game_in);
+    cpp_scripts_.fixedUpdate(world_, physics_settings_.fixed_step, physics_steps);
+    cpp_scripts_.update(world_, delta_seconds);
     // Scene.load(...) en Play: se carga en el mundo de Play (al parar vuelve
     // la escena que estaba abierta). Game.quit() sale de Play.
     if (const std::filesystem::path next = scripts_.takeSceneRequest(); !next.empty()) {
         scripts_.stop();
+        cpp_scripts_.stop();
         audio_.stop();
         ui_.reset();
         physics_.stop();
@@ -303,6 +320,7 @@ void EditorApp::updateScriptsAndAudio(float delta_seconds, int physics_steps) {
         startVoxels();
         audio_.start(world_);
         scripts_.start(world_);
+        cpp_scripts_.start(world_);
         std::cout << "[Scene.load] " << dialogs::utf8(next.filename()) << std::endl;
     }
     if (scripts_.takeQuitRequest()) quit_play_requested_ = true;
@@ -981,6 +999,39 @@ void EditorApp::drawColliderGizmo(ecs::Entity e, bool selected) {
         arc(bottom, u, dir * -1.0f, r, 0.0f, core::kPi, color);
         arc(bottom, v, dir * -1.0f, r, 0.0f, core::kPi, color);
     }
+    if (const physics::CharacterController* cc = e.tryGet<physics::CharacterController>()) {
+        // Siempre vertical (en el mundo), con la escala de la entidad; agachado, mas baja.
+        const ImU32 color = fade(kCharacterColor, alpha);
+        const float r = cc->radius * std::max(f.scale.x, f.scale.z);
+        const float full = std::max(cc->height * f.scale.y, 2.0f * r);
+        const bool crouched = playing() && physics_.characterState(e).crouching;
+        const float height = crouched ? std::clamp(cc->crouch_height * f.scale.y, 2.0f * r, full) : full;
+        Vec3 c = f.origin + Vec3{cc->center.x * f.scale.x, cc->center.y * f.scale.y, cc->center.z * f.scale.z};
+        c.y -= (full - height) * 0.5f;
+        const float half = std::max(height * 0.5f - r, 0.0f);
+        const Vec3 dir{0.0f, 1.0f, 0.0f}, u{1.0f, 0.0f, 0.0f}, v{0.0f, 0.0f, 1.0f};
+        const Vec3 top = c + dir * half;
+        const Vec3 bottom = c - dir * half;
+        overlayCircle(top, u, v, r, color);
+        overlayCircle(bottom, u, v, r, color);
+        for (const Vec3& side : {u, u * -1.0f, v, v * -1.0f}) overlayLine(top + side * r, bottom + side * r, color);
+        arc(top, u, dir, r, 0.0f, core::kPi, color);
+        arc(top, v, dir, r, 0.0f, core::kPi, color);
+        arc(bottom, u, dir * -1.0f, r, 0.0f, core::kPi, color);
+        arc(bottom, v, dir * -1.0f, r, 0.0f, core::kPi, color);
+        // Altura de escalon y hacia donde mira.
+        const Vec3 feet = c - dir * (half + r);
+        overlayCircle(feet + dir * (cc->step_offset * f.scale.y), u, v, r * 1.1f, fade(color, 0.45f));
+        overlayLine(c, c + e.forward() * (r * 1.8f), color);
+        // En Play: la velocidad y el suelo que pisa.
+        if (playing()) {
+            const physics::PhysicsSystem::CharacterState s = physics_.characterState(e);
+            if (s.valid) {
+                overlayLine(c, c + s.velocity * 0.25f, fade(kCharacterColor, 1.0f));
+                if (s.grounded) overlayLine(s.ground_point, s.ground_point + s.ground_normal * 0.5f, fade(kSleepingColor, alpha));
+            }
+        }
+    }
     if (const physics::MeshCollider* mesh = e.tryGet<physics::MeshCollider>()) {
         // La forma que usa Jolt de verdad (malla o envolvente convexa), toda:
         // se guarda por entidad y se rehace si el objeto se mueve o cada
@@ -1075,6 +1126,7 @@ void EditorApp::drawPhysicsGizmos() {
         gather(registry.view<physics::CapsuleCollider>());
         gather(registry.view<physics::MeshCollider>());
         gather(registry.view<physics::PlaneCollider>());
+        gather(registry.view<physics::CharacterController>());
         std::sort(all.begin(), all.end());
         all.erase(std::unique(all.begin(), all.end()), all.end());
         for (const entt::entity h : all) {

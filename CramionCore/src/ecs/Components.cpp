@@ -278,6 +278,7 @@ void blendPostProcess(gfx::PostProcessSettings& o, const gfx::PostProcessSetting
         b(o.depth_of_field, v.depth_of_field);
         b(o.dof_auto_focus, v.dof_auto_focus);
         f(o.dof_focus_distance, v.dof_focus_distance);
+        f(o.dof_focus_speed, v.dof_focus_speed);
         f(o.dof_aperture, v.dof_aperture);
         f(o.dof_focal_length, v.dof_focal_length);
     }
@@ -581,8 +582,8 @@ void PostProcessing::reflect(PropertyVisitor& v) {
 
     if (v.beginGroup("Tonemapping")) {
         override_field(kPostTonemapping, "override_tonemapping");
-        static constexpr std::array<const char*, 3> kTonemappers = {"PBR Neutral", "ACES",
-                                                                     "Ninguno"};
+        // (AgX al final: los indices de las escenas guardadas no cambian.)
+        static constexpr std::array<const char*, 4> kTonemappers = {"PBR Neutral", "ACES", "Ninguno", "AgX"};
         enumField(v, {"tonemapper", "Modo"}, s.tonemapper, kTonemappers);
         v.endGroup();
     }
@@ -665,6 +666,12 @@ void PostProcessing::reflect(PropertyVisitor& v) {
                 s.depth_of_field);
         if (all || s.depth_of_field) {
             v.field({"dof_auto_focus", "Autoenfoque", "Enfoca lo que hay en el centro de la pantalla"}, s.dof_auto_focus);
+            if (all || s.dof_auto_focus) {
+                v.field({"dof_focus_speed", "Velocidad del autoenfoque",
+                         "Lo rapido que el enfoque sigue a lo que hay en el centro, como el motor de una lente "
+                         "(1/s: 3 = ~0.4 s, 1 = lento y cinematografico, 10 = casi al instante)"},
+                        s.dof_focus_speed, FloatRange{0.2f, 20.0f, 0.05f, "%.2f"});
+            }
             if (all || !s.dof_auto_focus) {
                 v.field({"dof_focus_distance", "Distancia de enfoque"}, s.dof_focus_distance,
                         FloatRange{0.1f, 1000.0f, 0.05f, "%.2f m"});
@@ -712,7 +719,8 @@ void PostProcessing::reflect(PropertyVisitor& v) {
         if (all || s.volumetric_light) {
             v.field({"volumetric_density", "Densidad del polvo",
                      "Cuanto polvo hay en el aire (hasta 60 m de la camara). Lo ilumina el sol, las luces y "
-                     "tambien el cielo, asi que se ve en todas direcciones"},
+                     "tambien el cielo, asi que se ve en todas direcciones. 0.004 = dia claro (rayos de sol entre "
+                     "los arboles); 0.015 = bruma; 0.04 = niebla densa"},
                     s.volumetric_density,
                     FloatRange{0.0f, 0.2f, 0.001f, "%.3f /m", true});
             v.field({"volumetric_anisotropy", "Anisotropia", "0 = igual en todas direcciones, "

@@ -120,6 +120,7 @@ bool EditorApp::openProject(const std::filesystem::path& path, bool open_scene) 
     scripts_.setAssetsChangedCallback([this] { refreshDatabase(); });
     scripts_.setPrefsFile(project_.libraryFolder() / "Prefs.txt");  // Prefs en Play
     scripts_.setPhysics(&physics_);
+    setupCppScripts();
     scripts_.setAudio(&audio_);
     scripts_.setNavigation(&nav_);
     scripts_.setVoxels(&voxels_);
@@ -778,6 +779,17 @@ ecs::Entity EditorApp::createEntity(int kind, ecs::Entity parent) {
             }
             break;
         }
+        case 23: {
+            // Personaje: la entidad en los pies con su Character Controller
+            // y una capsula visible de hijo (cambiable por un modelo).
+            created = ecs::createEmpty(world_, parent);
+            created.setName("Personaje");
+            created.add<physics::CharacterController>();
+            ecs::Entity body = ecs::createPrimitive(world_, assets::builtin::kCapsule, "Cuerpo", created);
+            body.setLocalPosition(Vec3{0.0f, 1.0f, 0.0f});
+            body.setLocalScale(Vec3{0.8f, 1.0f, 0.8f});
+            break;
+        }
         default: created = ecs::createEmpty(world_, parent); break;
     }
     // Objetos 3D con su collider, como Unity.
@@ -1031,6 +1043,11 @@ void EditorApp::drawUi(float delta_seconds) {
     drawMenuBar();
     drawWorkspaceBar();
     const WorkspaceKind workspace = activeWorkspaceKind();
+    // C++: respuestas de clangd (IntelliSense) y compilar al guardar, en
+    // cualquier pestana (tambien en la del script, donde se escribe).
+    updateCppScripts();
+    drawEngineSettingsWindow();
+    drawCVarsWindow();
     if (workspace != WorkspaceKind::Scene) {
         const CpuClock::time_point t = CpuClock::now();
         drawWorkspacePanels(delta_seconds);
@@ -1078,6 +1095,7 @@ void EditorApp::drawUi(float delta_seconds) {
         if (show_physics_) drawPhysicsWindow();
         if (show_navigation_window_) drawNavigationWindow();
         drawPaintWindow();
+        drawModelingWindow();
         drawTerrainGeneratorWindow();
         drawHouseGeneratorWindow();
         drawEnvironmentWindow();
@@ -1305,6 +1323,8 @@ void EditorApp::drawMenuBar() {
         ImGui::Separator();
         if (ImGui::MenuItem("Enfocar selección", "F", false, any)) focusSelection();
         ImGui::Separator();
+        ImGui::MenuItem("Configuración del motor...", nullptr, &show_engine_settings_);
+        ImGui::Separator();
         drawXrMenu();
         ImGui::EndMenu();
     }
@@ -1315,6 +1335,16 @@ void EditorApp::drawMenuBar() {
         };
         item("Crear vacío", 0);
         if (ImGui::MenuItem("Crear vacío hijo", nullptr, false, parent.valid())) createEntity(0, parent);
+        if (ImGui::BeginMenu("Malla editable (modelado)")) {
+            for (int k = 0; k < static_cast<int>(modeling::shapes::Kind::Count); ++k) {
+                const auto kind = static_cast<modeling::shapes::Kind>(k);
+                if (ImGui::MenuItem(modeling::shapes::kindName(kind))) {
+                    createModelingShape(kind, modeling::shapes::defaults(kind));
+                    show_modeling_window_ = true;
+                }
+            }
+            ImGui::EndMenu();
+        }
         if (ImGui::BeginMenu("Objeto 3D")) {
             item("Cubo", 1);
             item("Esfera", 2);
@@ -1347,6 +1377,7 @@ void EditorApp::drawMenuBar() {
             item("Esfera con Rigidbody", 14);
             item("Zona trigger", 15);
             item("Vehículo (4 ruedas)", 17);
+            item("Personaje (Character Controller)", 23);
             ImGui::Separator();
             item("Tela: cortina", 18);
             item("Tela: bandera", 19);
@@ -1417,6 +1448,8 @@ void EditorApp::drawMenuBar() {
         ImGui::MenuItem("Física", nullptr, &show_physics_);
         ImGui::MenuItem("Navegación", nullptr, &show_navigation_window_);
         ImGui::MenuItem("Pintar prefabs", nullptr, &show_paint_window_);
+        ImGui::MenuItem("Modelado (ProBuilder)", nullptr, &show_modeling_window_);
+        ImGui::MenuItem("Variables (CVars) y memoria", nullptr, &show_cvars_window_);
         ImGui::MenuItem("Generador de terreno", nullptr, &show_terrain_generator_);
         ImGui::MenuItem("Generador de casas", nullptr, &show_house_generator_);
         ImGui::MenuItem("Ambiente (clima y hora)", nullptr, &show_environment_window_);
@@ -1602,27 +1635,15 @@ void EditorApp::drawModals() {
         ImGui::EndPopup();
     }
 
+    // Un asset pedido por su UUID (atajos viejos): por su archivo.
     if (pending_delete_asset_.valid()) {
-        ImGui::OpenPopup("Borrar asset");
-    }
-    if (ImGui::BeginPopupModal("Borrar asset", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
-        const auto info = database_ ? database_->find(pending_delete_asset_) : std::nullopt;
-        ImGui::Text("¿Borrar \"%s\"? No se puede deshacer.", info ? info->name.c_str() : "?");
-        if (ImGui::Button("Borrar", ImVec2(120.0f, 0.0f))) {
-            if (database_) {
-                if (asset_manager_) asset_manager_->unload(pending_delete_asset_);
-                database_->remove(pending_delete_asset_);
-            }
-            pending_delete_asset_ = {};
-            ImGui::CloseCurrentPopup();
+        if (const auto info = database_ ? database_->find(pending_delete_asset_) : std::nullopt; info && !info->path.empty()) {
+            requestDelete({info->path});
         }
-        ImGui::SameLine();
-        if (ImGui::Button("Cancelar", ImVec2(120.0f, 0.0f))) {
-            pending_delete_asset_ = {};
-            ImGui::CloseCurrentPopup();
-        }
-        ImGui::EndPopup();
+        pending_delete_asset_ = {};
     }
+    drawDeleteModal();
+    drawNewCppScriptModal();
 }
 
 // -----------------------------------------------------------------------------
@@ -1805,6 +1826,7 @@ void EditorApp::drawRenderSettings() {
     }
     toggle("Sonda de reflexión", r.reflectionProbeEnabled(),
            &gfx::VulkanRenderer::setReflectionProbeEnabled);
+    toggle("Oclusión del cielo (sin RT)", r.skyOcclusionEnabled(), &gfx::VulkanRenderer::setSkyOcclusionEnabled);
     ImGui::SeparatorText("Rendimiento");
     toggle("Occlusion culling (GPU)", r.occlusionCullingEnabled(),
            &gfx::VulkanRenderer::setOcclusionCullingEnabled);

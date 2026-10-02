@@ -44,6 +44,7 @@ void EditorLog::add(Level level, std::string text) {
     }
     std::lock_guard lock(mutex_);
     entries_.push_back(Entry{level, std::move(text)});
+    ++total_;
     while (entries_.size() > kMaxEntries) {
         entries_.pop_front();
     }

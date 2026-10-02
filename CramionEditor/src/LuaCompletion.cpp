@@ -1149,13 +1149,32 @@ const LuaCompletion* findDoc(const std::string& callee) {
     if (const auto it = tables().find(owner); it != tables().end()) {
         if (const LuaCompletion* c = search(it->second)) return c;
     }
-    if (const auto it = moreTables().find(owner); it != moreTables().end()) return search(it->second);
+    if (const auto it = moreTables().find(owner); it != moreTables().end()) {
+        if (const LuaCompletion* c = search(it->second)) return c;
+    }
+    if (owner == "Mesh" && callee[sep] == '.') return search(meshMembers('.'));
     return nullptr;
 }
 
 }  // namespace
 
 void setLuaApiReference(const std::map<std::string, std::vector<LuaApiMember>>& reference) { apiReference() = reference; }
+
+bool luaApiDoc(const std::string& callee, std::string& args, std::string& description, bool& function) {
+    const LuaCompletion* doc = findDoc(callee);
+    if (doc == nullptr) return false;
+    args.clear();
+    description = doc->detail;
+    function = doc->kind == 2 || doc->kind == 5;
+    // fn(): "nombre(args)  -  descripcion"
+    const std::size_t open = doc->detail.find('(');
+    const std::size_t dash = doc->detail.find(")  -  ");
+    if (function && open != std::string::npos && dash != std::string::npos && dash > open) {
+        args = doc->detail.substr(open + 1, dash - open - 1);
+        description = doc->detail.substr(dash + 6);
+    }
+    return true;
+}
 
 void setLuaProjectSymbols(LuaProjectSymbols symbols) { project() = std::move(symbols); }
 

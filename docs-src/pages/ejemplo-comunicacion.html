@@ -1,33 +1,60 @@
-<p class="file">Puerta.lua</p>
-      <pre><code class="language-lua">local Puerta = { properties = { altura = 3.0, velocidad = 2.0 } }
+<p><code>entity.script&lt;T&gt;()</code> devuelve el script de C++ de otro objeto (como <code>GetComponent&lt;T&gt;()</code> de Unity): lees sus datos y llamas a sus métodos. Aquí una palanca abre una puerta.</p>
+<p class="file">Assets/Scripts/Puerta.h</p>
+<pre><code class="language-cpp">#pragma once
+#include &lt;cramion/Script.h&gt;
+using namespace cramion;
 
-function Puerta:Start()
-    self.cerrada = self.entity.position
-    self.abierta = self.cerrada + Vec3(0, self.altura, 0)
-    self.abriendo = false
-end
+class Puerta : public Script {
+public:
+    Property&lt;float&gt; altura{this, &quot;altura&quot;, 3.0f};
+    Property&lt;float&gt; velocidad{this, &quot;velocidad&quot;, 2.0f};
+    Property&lt;AudioClip&gt; sonido{this, &quot;sonido&quot;};
 
-function Puerta:Abrir()
-    if not self.abriendo then Audio.playOneShot("Audio/puerta.wav", self.cerrada) end
-    self.abriendo = true
-end
+    void start() override;
+    void update(float dt) override;
+    void abrir();  // la llama la Palanca
 
-function Puerta:Update(dt)
-    local destino = self.abriendo and self.abierta or self.cerrada
-    local p = self.entity.position
-    p.y = Mathf.moveTowards(p.y, destino.y, self.velocidad * dt)
-    self.entity.position = p
-end
+private:
+    Vec3 cerrada, abierta;
+    bool abriendo = false;
+};</code></pre>
+<p class="file">Assets/Scripts/Puerta.cpp</p>
+<pre><code class="language-cpp">#include &quot;Puerta.h&quot;
 
-return Puerta</code></pre>
-      <p class="file">Palanca.lua (en un trigger junto a la puerta)</p>
-      <pre><code class="language-lua">local Palanca = { properties = { puerta = "Puerta" } }
+void Puerta::start() {
+    cerrada = entity().position();
+    abierta = cerrada + Vec3{0.0f, altura, 0.0f};
+}
 
-function Palanca:OnTriggerStay(other)
-    if other.name == "Jugador" and Input.getKeyDown("e") then
-        local puerta = Scene.find(self.puerta)
-        if puerta then puerta:getScript():Abrir() end
-    end
-end
+void Puerta::abrir() {
+    if (!abriendo) Audio::playOneShot(sonido, cerrada);
+    abriendo = true;
+}
 
-return Palanca</code></pre>
+void Puerta::update(float dt) {
+    const Vec3 destino = abriendo ? abierta : cerrada;
+    entity().setPosition(Vec3::moveTowards(entity().position(), destino, velocidad * dt));
+}
+
+CRAMION_SCRIPT(Puerta)</code></pre>
+<p class="file">Assets/Scripts/Palanca.h</p>
+<pre><code class="language-cpp">#pragma once
+#include &lt;cramion/Script.h&gt;
+using namespace cramion;
+
+class Palanca : public Script {
+public:
+    Property&lt;Entity&gt; puerta{this, &quot;puerta&quot;, {}, Tooltip(&quot;El objeto con el script Puerta&quot;)};
+
+    void onTriggerStay(Entity other) override;
+};</code></pre>
+<p class="file">Assets/Scripts/Palanca.cpp</p>
+<pre><code class="language-cpp">#include &quot;Palanca.h&quot;
+#include &quot;Puerta.h&quot;
+
+void Palanca::onTriggerStay(Entity other) {
+    if (other.name() != &quot;Jugador&quot; || !Input::keyDown(&quot;E&quot;)) return;
+    if (Puerta* p = puerta-&gt;script&lt;Puerta&gt;()) p-&gt;abrir();
+}
+
+CRAMION_SCRIPT(Palanca)</code></pre>

@@ -299,8 +299,10 @@ void FoliagePass::buildMeshes() {
             indices.insert(indices.end(), m.indices.begin(), m.indices.end());
             // La esfera del nivel 0 (el mas grande) para el recorte.
             if (l == 0) bounds[s] = core::Vec4{m.center_y, m.radius * 1.05f, m.height, 0.0f};
+            if (l == 1) rt_meshes_[s] = m;
         }
     }
+    ++species_revision_;
     vertices_.destroy();
     indices_.destroy();
     vertices_ = VulkanBuffer::createDeviceLocal(*device_, vertices.data(), vertices.size() * sizeof(FoliageVertex),
@@ -337,6 +339,8 @@ void FoliagePass::createTextures() {
         info.tiling = vk::ImageTiling::eOptimal;
         info.usage = vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eTransferDst;
         info.initialLayout = vk::ImageLayout::eUndefined;
+        // El color (SRGB) tambien se ve como UNORM desde los rayos.
+        if (format == vk::Format::eR8G8B8A8Srgb) info.flags = vk::ImageCreateFlagBits::eMutableFormat;
         texture.image = vk::raii::Image(device.handle(), info);
         const vk::MemoryRequirements requirements = texture.image.getMemoryRequirements();
         vk::MemoryAllocateInfo allocate{};
@@ -396,6 +400,8 @@ void FoliagePass::createTextures() {
         texture.view = vk::raii::ImageView(device.handle(), view);
     };
     upload(albedo_array_, t.albedo, vk::Format::eR8G8B8A8Srgb);
+    albedo_mips_ = t.mips;
+    albedo_layers_ = static_cast<std::uint32_t>(t.albedo.size());
     upload(normal_array_, t.normal, vk::Format::eR8G8B8A8Unorm);
 
     vk::SamplerCreateInfo sampler{};
@@ -434,6 +440,12 @@ void FoliagePass::setInstances(const std::vector<FoliageInstance>& input) {
 
     const std::size_t count = std::min<std::size_t>(input.size(), kMaxInstances);
     instance_count_ = static_cast<std::uint32_t>(count);
+    if (keep_cpu_copy_) {
+        cpu_instances_.assign(input.begin(), input.begin() + static_cast<std::ptrdiff_t>(count));
+    } else {
+        cpu_instances_.clear();
+    }
+    ++instances_revision_;
     if (count == 0) return;
     for (std::size_t i = 0; i < count; ++i) ++species_count_[std::min<std::uint32_t>((input[i].packed >> 18) & 3u, kSpecies - 1)];
 
@@ -562,8 +574,9 @@ void FoliagePass::recordCull(const vk::raii::CommandBuffer& cmd, std::uint32_t f
     CullPush push{};
     push.view_projection = view_projection;
     push.camera = core::Vec4{camera_position.x, camera_position.y, camera_position.z, settings_.max_distance};
-    push.lod = core::Vec4{settings_.lod1_distance, std::max(settings_.lod2_distance, settings_.lod1_distance),
-                          settings_.shadow_distance, settings_.cast_shadows ? 1.0f : 0.0f};
+    const float lod1 = settings_.lod1_distance * lod_scale_;
+    push.lod = core::Vec4{lod1, std::max(settings_.lod2_distance * lod_scale_, lod1), settings_.shadow_distance,
+                          settings_.cast_shadows ? 1.0f : 0.0f};
     push.counts[0] = instance_count_;
     push.offset = core::Vec4{origin_offset_.x, origin_offset_.y, origin_offset_.z, 0.0f};
     cmd.bindPipeline(vk::PipelineBindPoint::eCompute, *cull_pipeline_);

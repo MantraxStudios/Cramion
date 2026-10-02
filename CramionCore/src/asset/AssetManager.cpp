@@ -3,11 +3,152 @@
 #include "CrData.h"
 #include "Primitives.h"
 
+#include <algorithm>
 #include <chrono>
+#include <condition_variable>
+#include <deque>
 #include <fstream>
 #include <iostream>
+#include <mutex>
+#include <thread>
 
 namespace cramion::assets {
+
+// Hilos de fondo de requestModel(): una cola de modelos por leer y lo leido.
+// readModel() es independiente (no toca el AssetManager): los hilos solo leen
+// archivos y devuelven el asset; lo guarda pollLoads() en el hilo principal.
+struct AssetManager::Loader {
+    struct Job {
+        Uuid uuid{};
+        std::filesystem::path path;
+        std::string name;
+        std::uint64_t generation = 0;
+    };
+    struct Done {
+        Uuid uuid{};
+        std::shared_ptr<ModelAsset> asset;  // nullptr = no se pudo leer
+        std::uint64_t generation = 0;
+    };
+    std::mutex mutex;
+    std::condition_variable work;      // hay trabajo (o hay que salir)
+    std::condition_variable finished;  // termino un modelo (loadModel puede estar esperandolo)
+    std::deque<Job> queue;
+    std::unordered_set<Uuid> in_flight;  // en la cola o leyendose
+    std::vector<Done> done;
+    std::vector<std::thread> threads;
+    std::uint64_t generation = 0;  // clear()/unload(): lo que llegue de antes se tira
+    bool stop = false;
+
+    Loader() {
+        // Pocos hilos: el disco y la memoria mandan, y el juego sigue corriendo.
+        const unsigned cores = std::max(2u, std::thread::hardware_concurrency());
+        const unsigned count = std::clamp(cores / 3u, 1u, 4u);
+        for (unsigned i = 0; i < count; ++i) threads.emplace_back([this] { run(); });
+    }
+    ~Loader() {
+        {
+            std::lock_guard lock(mutex);
+            stop = true;
+            queue.clear();
+        }
+        work.notify_all();
+        for (std::thread& t : threads) t.join();
+    }
+    void run() {
+        for (;;) {
+            Job job;
+            {
+                std::unique_lock lock(mutex);
+                work.wait(lock, [&] { return stop || !queue.empty(); });
+                if (stop) return;
+                job = std::move(queue.front());
+                queue.pop_front();
+            }
+            std::shared_ptr<ModelAsset> asset;
+            try {
+                asset = AssetManager::readModel(job.uuid, job.path, job.name);
+            } catch (const std::exception& e) {
+                std::cerr << "[Assets] " << job.name << ": " << e.what() << "\n";
+            }
+            {
+                std::lock_guard lock(mutex);
+                in_flight.erase(job.uuid);
+                done.push_back(Done{job.uuid, std::move(asset), job.generation});
+            }
+            finished.notify_all();
+        }
+    }
+};
+
+AssetManager::AssetManager(AssetDatabase& database) : database_(database) {}
+
+AssetManager::~AssetManager() = default;
+
+std::shared_ptr<const ModelAsset> AssetManager::requestModel(const Uuid& uuid) {
+    if (const auto it = models_.find(uuid); it != models_.end()) return it->second;
+    if (primitives::isBuiltin(uuid)) return loadModel(uuid);  // se generan al momento
+    if (failed_loads_.contains(uuid)) return nullptr;
+    if (!loader_) loader_ = std::make_unique<Loader>();
+    {
+        std::lock_guard lock(loader_->mutex);
+        if (loader_->in_flight.contains(uuid)) return nullptr;
+    }
+    const std::optional<AssetInfo> info = database_.find(uuid);
+    if (!info || info->type != AssetType::Model || info->path.empty()) {
+        std::cerr << "[Assets] No hay ningun modelo con UUID " << uuid.toString() << "\n";
+        failed_loads_.insert(uuid);
+        return nullptr;
+    }
+    {
+        std::lock_guard lock(loader_->mutex);
+        loader_->queue.push_back(Loader::Job{uuid, info->path, info->name, loader_->generation});
+        loader_->in_flight.insert(uuid);
+    }
+    loader_->work.notify_one();
+    return nullptr;
+}
+
+void AssetManager::takeFinished(const Uuid* only) {
+    if (!loader_) return;
+    std::vector<Loader::Done> done;
+    std::uint64_t generation = 0;
+    {
+        std::lock_guard lock(loader_->mutex);
+        generation = loader_->generation;
+        if (only == nullptr) {
+            done.swap(loader_->done);
+        } else {
+            for (auto it = loader_->done.begin(); it != loader_->done.end();) {
+                if (it->uuid == *only) {
+                    done.push_back(std::move(*it));
+                    it = loader_->done.erase(it);
+                } else {
+                    ++it;
+                }
+            }
+        }
+    }
+    for (Loader::Done& d : done) {
+        if (d.generation != generation) continue;  // de antes de un clear()/unload()
+        if (d.asset) {
+            models_.emplace(d.uuid, std::move(d.asset));
+        } else {
+            failed_loads_.insert(d.uuid);
+        }
+    }
+}
+
+std::size_t AssetManager::pollLoads() {
+    const std::size_t before = models_.size();
+    takeFinished(nullptr);
+    return models_.size() >= before ? models_.size() - before : 0;
+}
+
+std::size_t AssetManager::loadsInFlight() const {
+    if (!loader_) return 0;
+    std::lock_guard lock(loader_->mutex);
+    return loader_->in_flight.size() + loader_->done.size();
+}
 
 std::shared_ptr<ModelAsset> AssetManager::readModel(const Uuid& uuid, const std::filesystem::path& file,
                                                    const std::string& name, bool decode_textures) {
@@ -77,6 +218,24 @@ std::shared_ptr<ModelAsset> AssetManager::readModel(const Uuid& uuid, const std:
 std::shared_ptr<const ModelAsset> AssetManager::loadModel(const Uuid& uuid) {
     if (const auto it = models_.find(uuid); it != models_.end()) {
         return it->second;
+    }
+    // Se esta leyendo en segundo plano: se espera a ese hilo (no dos veces).
+    if (loader_) {
+        bool waited = false;
+        {
+            std::unique_lock lock(loader_->mutex);
+            if (loader_->in_flight.contains(uuid)) {
+                loader_->finished.wait(lock, [&] { return !loader_->in_flight.contains(uuid); });
+                waited = true;
+            }
+            waited = waited || std::any_of(loader_->done.begin(), loader_->done.end(),
+                                           [&](const Loader::Done& d) { return d.uuid == uuid; });
+        }
+        if (waited) {
+            takeFinished(&uuid);
+            if (const auto it = models_.find(uuid); it != models_.end()) return it->second;
+            if (failed_loads_.contains(uuid)) return nullptr;
+        }
     }
 
     if (primitives::isBuiltin(uuid)) {
@@ -149,10 +308,27 @@ std::filesystem::path AssetManager::environmentFile(const Uuid& uuid) {
 
 void AssetManager::unload(const Uuid& uuid) {
     models_.erase(uuid);
+    failed_loads_.erase(uuid);
+    if (loader_) {
+        // Lo que se este leyendo de antes ya no vale (p. ej. se reimporto): se
+        // tira al llegar y quien lo necesite lo vuelve a pedir.
+        std::lock_guard lock(loader_->mutex);
+        ++loader_->generation;
+        loader_->queue.clear();
+        loader_->in_flight.clear();
+    }
 }
 
 void AssetManager::clear() {
     models_.clear();
+    failed_loads_.clear();
+    if (loader_) {
+        std::lock_guard lock(loader_->mutex);
+        ++loader_->generation;
+        loader_->queue.clear();
+        loader_->in_flight.clear();
+        loader_->done.clear();
+    }
 }
 
 }  // namespace cramion::assets

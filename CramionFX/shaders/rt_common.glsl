@@ -225,10 +225,17 @@ struct RtHit {
 void fillHit(uint model, uint geometry, uint primitive, vec2 barycentrics, float t, mat4x3 world_to_object,
              vec3 origin, vec3 direction, out RtHit hit);
 
-// Lanza un rayo y devuelve el primer impacto (con recorte por alfa).
-bool traceRay(vec3 origin, vec3 direction, float max_distance, out RtHit hit) {
+// Mascaras de las instancias (RayTracing::kMask*).
+const uint kMaskScenery = 0x01u;
+const uint kMaskTerrain = 0x02u;
+const uint kMaskFoliage = 0x04u;
+const uint kMaskAll = 0xFFu;
+
+// Lanza un rayo y devuelve el primer impacto (con recorte por alfa). `mask`:
+// que instancias ve.
+bool traceRayMask(vec3 origin, vec3 direction, float max_distance, uint mask, out RtHit hit) {
     rayQueryEXT query;
-    rayQueryInitializeEXT(query, scene_tlas, gl_RayFlagsNoneEXT, 0xFF, origin, 0.0, direction,
+    rayQueryInitializeEXT(query, scene_tlas, gl_RayFlagsNoneEXT, mask, origin, 0.0, direction,
                           max_distance);
     while (rayQueryProceedEXT(query)) {
         if (rayQueryGetIntersectionTypeEXT(query, false) ==
@@ -245,6 +252,10 @@ bool traceRay(vec3 origin, vec3 direction, float max_distance, out RtHit hit) {
             rayQueryGetIntersectionTEXT(query, true), rayQueryGetIntersectionWorldToObjectEXT(query, true), origin,
             direction, hit);
     return true;
+}
+
+bool traceRay(vec3 origin, vec3 direction, float max_distance, out RtHit hit) {
+    return traceRayMask(origin, direction, max_distance, kMaskAll, hit);
 }
 
 // El impacto a partir de lo que da el hardware (ray query o hit object de un
@@ -276,9 +287,9 @@ void fillHit(uint model, uint geometry, uint primitive, vec2 barycentrics, float
 }
 
 // true si nada tapa el segmento (rayo de sombra: basta el primer impacto).
-bool unoccluded(vec3 origin, vec3 direction, float max_distance) {
+bool unoccludedMask(vec3 origin, vec3 direction, float max_distance, uint mask) {
     rayQueryEXT query;
-    rayQueryInitializeEXT(query, scene_tlas, gl_RayFlagsTerminateOnFirstHitEXT, 0xFF, origin,
+    rayQueryInitializeEXT(query, scene_tlas, gl_RayFlagsTerminateOnFirstHitEXT, mask, origin,
                           0.0, direction, max_distance);
     while (rayQueryProceedEXT(query)) {
         if (rayQueryGetIntersectionTypeEXT(query, false) ==
@@ -288,6 +299,10 @@ bool unoccluded(vec3 origin, vec3 direction, float max_distance) {
         }
     }
     return rayQueryGetIntersectionTypeEXT(query, true) == gl_RayQueryCommittedIntersectionNoneEXT;
+}
+
+bool unoccluded(vec3 origin, vec3 direction, float max_distance) {
+    return unoccludedMask(origin, direction, max_distance, kMaskAll);
 }
 
 // Luz que sale de un punto de impacto hacia el rayo: emision + sol (con su
@@ -382,6 +397,14 @@ bool cacheLookup(vec3 position, vec3 normal, out vec3 irradiance) {
     }
     irradiance = vec3(0.0);
     return false;
+}
+
+// Numero aleatorio de un punto del mundo y del frame (elegir una luz en un
+// impacto: no hay pixel al que atarlo).
+float hitRandom(vec3 p, uint salt) {
+    uvec3 q = floatBitsToUint(p);
+    uint h = cacheHash(q.x ^ cacheHash(q.y ^ cacheHash(q.z ^ cacheHash(uint(push.params.x) * 0x9E3779B9u + salt))));
+    return float(h) * (1.0 / 4294967296.0);
 }
 
 vec3 hitRadiance(RtHit hit, float lod, bool from_screen) {
@@ -490,32 +513,72 @@ vec3 hitRadiance(RtHit hit, float lod, bool from_screen) {
     radiance += diffuse * (ambient + toLinear(lights.ambient_color.rgb) * lights.sun_color_ambient.a *
                                          (1.0 - lights.sky_sun.w) * 0.25);
 
-    // Luces locales, sin sombra.
-    for (int i = 0; i < min(lights.counts.x, kMaxPointLights); ++i) {
-        vec3 to_point = lights.points[i].position_range.xyz - hit.position;
-        float d = length(to_point);
-        if (d > lights.points[i].position_range.w) {
-            continue;
+    // Luces locales: lo que aporta cada una sin sombra y UNA de ellas, elegida
+    // al azar segun lo que aporta (muestreo por reservorio con un solo numero),
+    // con su rayo de sombra. Su aporte entre su probabilidad estima el de
+    // todas sin sesgo (el ruido lo limpia el filtro de la GI). Antes no habia
+    // rayo: la luz de una bombilla atravesaba las paredes en la luz rebotada
+    // y en los reflejos.
+    float pick = hitRandom(hit.position, 0x51u);
+    float weight_sum = 0.0;
+    vec3 chosen_light = vec3(0.0);
+    float chosen_weight = 0.0;
+    vec3 chosen_position = vec3(0.0);
+    float chosen_reach = 0.0;
+    float chosen_strength = 0.0;
+    int point_count = min(lights.counts.x, kMaxPointLights);
+    int spot_count = min(lights.counts.y, kMaxSpotLights);
+    for (int i = 0; i < point_count + spot_count; ++i) {
+        bool spot = i >= point_count;
+        int index = spot ? i - point_count : i;
+        vec3 position = spot ? lights.spots[index].position_range.xyz : lights.points[index].position_range.xyz;
+        float range = spot ? lights.spots[index].position_range.w : lights.points[index].position_range.w;
+        vec3 to_light = position - hit.position;
+        float d = length(to_light);
+        if (d > range) continue;
+        vec3 l = to_light / max(d, 0.0001);
+        float nl = max(dot(n, l), 0.0);
+        if (nl <= 0.0) continue;
+        vec3 light;
+        float strength;
+        float bulb;
+        if (spot) {
+            float cosine = dot(-l, normalize(lights.spots[index].direction_intensity.xyz));
+            float inner_cos = lights.spots[index].color_inner.a;
+            float outer_cos = lights.spots[index].outer_shadow.x;
+            float cone = clamp((cosine - outer_cos) / max(inner_cos - outer_cos, 0.0001), 0.0, 1.0);
+            light = diffuse * toLinear(lights.spots[index].color_inner.rgb) * lights.spots[index].direction_intensity.w *
+                    cone * cone * attenuation(d, range) * nl;
+            strength = lights.spots[index].outer_shadow.z;
+            bulb = lights.spots[index].outer_shadow.w;
+        } else {
+            light = diffuse * toLinear(lights.points[index].color_intensity.rgb) * lights.points[index].color_intensity.a *
+                    attenuation(d, range) * nl;
+            strength = lights.points[index].shadow.y;
+            bulb = lights.points[index].shadow.z;
         }
-        float nl = max(dot(n, to_point / max(d, 0.0001)), 0.0);
-        radiance += diffuse * toLinear(lights.points[i].color_intensity.rgb) *
-                    lights.points[i].color_intensity.a *
-                    attenuation(d, lights.points[i].position_range.w) * nl;
+        float weight = luminance(light);
+        if (weight <= 0.0) continue;
+        weight_sum += weight;
+        float p = weight / weight_sum;
+        if (pick < p) {
+            chosen_light = light;
+            chosen_weight = weight;
+            chosen_position = position;
+            chosen_reach = max(d - max(0.2, bulb), 0.0);
+            chosen_strength = strength;
+            pick /= p;
+        } else {
+            pick = (pick - p) / max(1.0 - p, 1e-6);
+        }
     }
-    for (int i = 0; i < min(lights.counts.y, kMaxSpotLights); ++i) {
-        vec3 to_spot = lights.spots[i].position_range.xyz - hit.position;
-        float d = length(to_spot);
-        if (d > lights.spots[i].position_range.w) {
-            continue;
+    if (chosen_weight > 0.0) {
+        float visible = 1.0;
+        if (chosen_strength > 0.0 && chosen_reach > 0.0) {
+            vec3 l = normalize(chosen_position - origin);
+            visible = unoccluded(origin, l, chosen_reach) ? 1.0 : 1.0 - chosen_strength;
         }
-        vec3 l = to_spot / max(d, 0.0001);
-        float cosine = dot(-l, normalize(lights.spots[i].direction_intensity.xyz));
-        float inner_cos = lights.spots[i].color_inner.a;
-        float outer_cos = lights.spots[i].outer_shadow.x;
-        float cone = clamp((cosine - outer_cos) / max(inner_cos - outer_cos, 0.0001), 0.0, 1.0);
-        radiance += diffuse * toLinear(lights.spots[i].color_inner.rgb) *
-                    lights.spots[i].direction_intensity.w * cone * cone *
-                    attenuation(d, lights.spots[i].position_range.w) * max(dot(n, l), 0.0);
+        radiance += chosen_light * (weight_sum / chosen_weight) * visible;
     }
 
     // La lamina de agua refleja una parte (Fresnel) y deja pasar el resto.

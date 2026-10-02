@@ -64,6 +64,7 @@ void EditorApp::drawToolbar() {
     if (icon_button("R##scale", Icon::Scale, gizmo_ == GizmoOperation::Scale, "Escalar (R)")) gizmo_ = GizmoOperation::Scale;
     drawStampToolbar();
     drawPaintToolbar();
+    drawModelingToolbar();
     ImGui::SameLine();
     ImGui::TextDisabled("|");
     ImGui::SameLine();
@@ -509,6 +510,7 @@ void EditorApp::drawSceneView() {
         waypoint_drag_ = 0;
     }
     if (activeWorkspaceKind() == WorkspaceKind::Scene) drawNavigationGizmos();
+    drawModelingOverlay();  // contorno y elementos de la malla editable elegida
     if (show_gizmos_) {
         const bool cinematic_handle = drawCinematicGizmos();
         const bool water_handle = drawWaterGizmos();
@@ -523,6 +525,8 @@ void EditorApp::drawSceneView() {
     const bool stamping = drawStampTool() || drawPrefabPaintTool();
     if (!stamping && collider_handle_drag_ == 0 && !(terrain_edit_ && terrain_tool)) drawGizmo();
     handleCameraControls();
+    // Modelado: clic y caja eligen vertices/aristas/caras (no objetos).
+    const bool modeling_click = handleModelingInput();
 
     // Alt + clic: raycast de fisica desde el raton (probador de la ventana
     // Fisica), sin cambiar la seleccion.
@@ -544,7 +548,7 @@ void EditorApp::drawSceneView() {
         finishPick(*result);
     }
     // Seleccionar: clic izquierdo sin arrastrar, fuera del gizmo.
-    if (view_hovered_ && !io.KeyAlt && !light_handle && !collider_handle && !stamping && !free_rotate_hover_ &&
+    if (view_hovered_ && !io.KeyAlt && !light_handle && !collider_handle && !stamping && !modeling_click && !free_rotate_hover_ &&
         ImGui::IsMouseReleased(ImGuiMouseButton_Left) && !ImGuizmo::IsUsing() &&
         !ImGuizmo::IsOver() && ImGui::GetMouseDragDelta(ImGuiMouseButton_Left, 2.0f).x == 0.0f &&
         ImGui::GetMouseDragDelta(ImGuiMouseButton_Left, 2.0f).y == 0.0f) {
@@ -571,8 +575,16 @@ void EditorApp::drawSceneView() {
             }
         }
         if (ImGui::IsKeyPressed(ImGuiKey_F, false)) focusSelection();
-        // Supr con un punto de riel elegido borra el punto, no el objeto.
-        if (ImGui::IsKeyPressed(ImGuiKey_Delete) && !deleteSelectedWaypoint()) deleteSelection();
+        // Supr con un punto de riel elegido borra el punto, no el objeto; en
+        // modelado, los elementos elegidos.
+        if (ImGui::IsKeyPressed(ImGuiKey_Delete) && !modelingDeleteSelection() && !deleteSelectedWaypoint()) deleteSelection();
+        // Modelado: 1 objeto, 2 vertices, 3 aristas, 4 caras.
+        if (!io.KeyCtrl && modelingTarget() != nullptr && !playing()) {
+            if (ImGui::IsKeyPressed(ImGuiKey_1, false)) model_mode_ = ModelMode::Object;
+            if (ImGui::IsKeyPressed(ImGuiKey_2, false)) model_mode_ = ModelMode::Vertex;
+            if (ImGui::IsKeyPressed(ImGuiKey_3, false)) model_mode_ = ModelMode::Edge;
+            if (ImGui::IsKeyPressed(ImGuiKey_4, false)) model_mode_ = ModelMode::Face;
+        }
         if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_D, false)) duplicateSelection();
         if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_C, false)) copySelection();
         if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_V, false)) pasteClipboard();
@@ -712,8 +724,7 @@ void EditorApp::finishPick(const gfx::VulkanRenderer::PickResult& result) {
         // El script va a la raiz del objeto tocado (el modelo entero, como Unity).
         while (target.valid() && target.parent().valid()) target = target.parent();
         if (target.valid()) {
-            scripting::Script& s = target.has<scripting::Script>() ? target.get<scripting::Script>() : target.add<scripting::Script>();
-            s.file = file;
+            attachScriptFile(target, file);
             selectOnly(target.uuid());
             revealInHierarchy(target.uuid());
             commit();
@@ -977,6 +988,8 @@ void EditorApp::drawGizmo() {
 
     // Un punto de un riel seleccionado: el gizmo mueve el punto.
     if (drawWaypointGizmo(view, projection)) return;
+    // Modelado en vertices/aristas/caras: el gizmo mueve lo elegido.
+    if (drawModelingGizmo(view, projection)) return;
 
     ImGuizmo::OPERATION operation = ImGuizmo::TRANSLATE;
     float snap[3] = {snap_translate_, snap_translate_, snap_translate_};

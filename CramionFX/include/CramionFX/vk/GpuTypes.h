@@ -88,6 +88,11 @@ struct GpuLights {
     // mascara de este frame vale. y = vision nocturna, z = destello de un
     // rayo (ambiente), w = niebla en el horizonte del cielo (0..1).
     core::Vec4 rt_shadows{};
+    // Oclusion del cielo vista desde arriba (lighting.frag, bindings 27 y 28):
+    // xy = esquina del mapa (x, z), z = lado (m), w = 1 si vale este frame.
+    core::Vec4 sky_map{};
+    // x = altura del plano desde el que se mira (m), y = profundidad que cubre (m).
+    core::Vec4 sky_map_depth{};
 };
 
 // Constante de push de los modelos con esqueleto (pasada de geometria). Son

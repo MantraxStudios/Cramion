@@ -25,6 +25,7 @@ layout(location = 5) in vec3 v_uv_layer;
 layout(location = 6) in float v_leaf;
 layout(location = 7) in float v_extra;  // corteza: musgo / pie oscuro del abedul; hoja: translucidez
 layout(location = 8) in vec3 v_to_camera;
+layout(location = 9) in float v_young;  // corteza joven (TreeGenerator): lisa; en el pino, anaranjada
 
 #include "gbuffer_surface.glsl"
 
@@ -34,16 +35,18 @@ const int kLayerLeaves = 1;
 const int kLayerNeedles = 2;
 const int kLayerFrond = 3;
 const int kLayerBirchBark = 4;
+const int kLayerPineBark = 5;
 const int kLayerBirchLeaves = 6;
 const int kLayerWillowLeaves = 7;
 const int kLayerFirNeedles = 8;
+const int kLayerPineShoot = 10;
 
 float leafRoughness(int layer) {
     if (layer == kLayerLeaves) return 0.42;        // roble: haz cerosa
     if (layer == kLayerFrond) return 0.38;         // palmera: muy brillante
     if (layer == kLayerBirchLeaves) return 0.48;
     if (layer == kLayerWillowLeaves) return 0.5;
-    if (layer == kLayerNeedles || layer == kLayerFirNeedles) return 0.46;
+    if (layer == kLayerNeedles || layer == kLayerFirNeedles || layer == kLayerPineShoot) return 0.46;
     return 0.5;
 }
 
@@ -96,9 +99,10 @@ void main() {
             roughness = min(roughness + 0.18, 1.0);
         }
         // Translucidez: la del mapa (los nervios y lo seco, menos) por la de la
-        // tarjeta, y mucho menos dentro de la copa (la luz no llega). Moderada:
-        // con mucha, toda la copa brilla igual (plana).
-        float translucency = clamp(maps.a * v_extra * mix(0.25, 1.0, v_color.a) * 0.6, 0.0, 1.0);
+        // tarjeta, y menos dentro de la copa (alli llega menos luz; la sombra de
+        // la cara de atras ya oscurece lo tapado). Con 0.6 y 0.25 dentro, las
+        // copas a contraluz salian casi negras.
+        float translucency = clamp(maps.a * v_extra * mix(0.45, 1.0, v_color.a) * 0.9, 0.0, 1.0);
         // Modelo de Disney 3: hoja fina (g subsurface, b translucidez, a grosor).
         surface_shading = vec4(3.0 / 255.0, 0.25, translucency, 0.1);
     } else {
@@ -111,12 +115,26 @@ void main() {
             roughness = mix(roughness, 0.95, foot);
             occlusion *= mix(1.0, 0.75 + 0.25 * maps.b, foot);
         } else {
+            // Corteza joven: las ramas finas, lisas (sin las placas ni los
+            // surcos del tronco viejo); en el pino, anaranjada y en laminas,
+            // como la parte alta del tronco del pino silvestre.
+            float young = clamp(v_young, 0.0, 1.0);
+            if (young > 0.0) {
+                if (layer == kLayerPineBark) {
+                    float flake = maps.b * 0.6 + texel.r * 0.8;
+                    vec3 orange = vec3(0.6, 0.37, 0.22) * (0.75 + 0.35 * flake) * v_color.rgb;
+                    albedo = mix(albedo, orange, young * 0.85);
+                    roughness = mix(roughness, 0.72, young);
+                }
+                normal = normalize(mix(normal, n, young * 0.65));
+                occlusion = mix(occlusion, v_color.a, young * 0.5);
+            }
             // Musgo: arriba de las ramas y en el pie, primero en los huecos
-            // humedos (oclusion baja) y donde la corteza es mas verdosa.
-            float green = texel.g - max(texel.r, texel.b) * 0.8;
-            float moss = smoothstep(0.35, 0.75, v_extra + (0.55 - maps.b) * 0.35 + green * 2.0);
-            vec3 moss_color = vec3(0.2, 0.27, 0.07) * (0.75 + 0.45 * maps.b);
-            albedo = mix(albedo, moss_color, moss * 0.85);
+            // humedos (oclusion baja). Verde oliva apagado (lima no: el musgo
+            // de un tronco a la sombra es oscuro y poco saturado).
+            float moss = smoothstep(0.4, 0.8, v_extra + (0.55 - maps.b) * 0.45) * (1.0 - young * 0.7);
+            vec3 moss_color = vec3(0.15, 0.19, 0.075) * (0.7 + 0.5 * maps.b);
+            albedo = mix(albedo, moss_color, moss * 0.8);
             roughness = mix(roughness, 0.97, moss);
             // El musgo esponjoso borra el relieve fino.
             normal = normalize(mix(normal, n, moss * 0.5));

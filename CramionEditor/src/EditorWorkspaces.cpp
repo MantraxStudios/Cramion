@@ -47,7 +47,10 @@ std::string lowerText(std::string text) {
     return text;
 }
 
-bool isCodeFile(const std::string& ext) { return ext == ".lua" || ext == ".crshader"; }
+bool isCodeFile(const std::string& ext) {
+    return ext == ".lua" || ext == ".crshader" || ext == ".cpp" || ext == ".cc" || ext == ".cxx" || ext == ".h" || ext == ".hpp" ||
+           ext == ".inl";
+}
 
 // Icono y color de un archivo del arbol por su extension.
 Icon fileIcon(const std::string& ext, ImU32& tint) {
@@ -466,6 +469,7 @@ void EditorApp::closeWorkspace(int id, bool save) {
             if (script_tabs_[i].path != path) continue;
             // Como antes: cerrar con cambios los guarda (sin perder nada).
             if (script_tabs_[i].text != script_tabs_[i].saved) saveScript(script_tabs_[i]);
+            if (script_tabs_[i].cpp) clangd_.close(script_tabs_[i].path);
             script_tabs_.erase(script_tabs_.begin() + static_cast<std::ptrdiff_t>(i));
             break;
         }
@@ -782,7 +786,10 @@ bool EditorApp::drawFileTreeNode(const FileTreeNode& node, const std::filesystem
     if (!node.folder) {
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) ImGui::SetTooltip("%s", relative.c_str());
         // Un clic en un script lo abre; doble clic en un prefab o escena, tambien.
-        if (isCodeFile(ext) && ImGui::IsItemClicked(ImGuiMouseButton_Left) && node.path != active) {
+        if (isCodeFile(ext) && ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+            openScript(node.path);  // doble clic: se abre en su pestana
+            changed = true;
+        } else if (isCodeFile(ext) && ImGui::IsItemClicked(ImGuiMouseButton_Left) && node.path != active) {
             openScript(node.path);
             changed = true;
         } else if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
@@ -793,10 +800,6 @@ bool EditorApp::drawFileTreeNode(const FileTreeNode& node, const std::filesystem
             } else if (ext == ".crscene") {
                 runOrAskToSave(PendingAction::OpenScene, node.path);
                 changed = true;
-            } else if (!isCodeFile(ext)) {
-                current_folder_ = node.path.parent_path();
-                show_project_ = true;
-                requestWorkspace(0);
             }
         }
         // Arrastrar la ruta (p. ej. a un campo del Inspector que acepte scripts).
@@ -808,8 +811,8 @@ bool EditorApp::drawFileTreeNode(const FileTreeNode& node, const std::filesystem
         }
     }
     if (ImGui::BeginPopupContextItem("##menu")) {
-        if (node.folder && ImGui::MenuItem("Nuevo script aqui")) {
-            createScriptAsset(node.path, {});
+        if (node.folder && ImGui::MenuItem("Nuevo script C++ aqui")) {
+            createCppScriptAsset(node.path, {});
             file_tree_time_ = -10.0;
             changed = true;
         }
@@ -818,12 +821,24 @@ bool EditorApp::drawFileTreeNode(const FileTreeNode& node, const std::filesystem
             changed = true;
         }
         if (ImGui::MenuItem("Copiar ruta (dentro de Assets)")) ImGui::SetClipboardText(relative.c_str());
-        if (ImGui::MenuItem("Mostrar en el Proyecto")) {
-            current_folder_ = node.folder ? node.path : node.path.parent_path();
-            show_project_ = true;
-            requestWorkspace(0);
+        if (ImGui::MenuItem(node.folder ? "Buscar esta carpeta en el Proyecto"
+                                         : (isCodeFile(ext) ? "Buscar este script en el Proyecto" : "Buscar en el Proyecto"))) {
+            revealInProject(node.path);
+            changed = true;
+        }
+        if (node.path != project_.assetsFolder()) {
+            ImGui::Separator();
+            if (ImGui::MenuItem("Borrar", "Supr")) {
+                requestDelete({node.path});
+                changed = true;
+            }
         }
         ImGui::EndPopup();
+    }
+    // Supr con el raton encima (o sobre el script abierto).
+    if (node.path != project_.assetsFolder() && ImGui::IsKeyPressed(ImGuiKey_Delete, false) && !ImGui::GetIO().WantTextInput &&
+        ImGui::IsWindowFocused() && (ImGui::IsItemHovered() || (!node.folder && node.path == active && !ImGui::IsAnyItemHovered()))) {
+        requestDelete({node.path});
     }
     if (node.folder && open) {
         for (const FileTreeNode& child : node.children) {

@@ -38,6 +38,7 @@
 #include "ImGuiLayer.h"
 #include "Terminal.h"
 #include "LuaCompletion.h"
+#include "Clangd.h"
 #include "McpServer.h"
 #include "ModelPreviews.h"
 #include "ProfilerOverlay.h"
@@ -45,6 +46,8 @@
 #include <CramionCore/ecs/FloatingOrigin.h>
 #include <CramionCore/xr/XrRig.h>
 #include <CramionCore/fluid/Fluid.h>
+#include <CramionCore/modeling/EditableMesh.h>
+#include <CramionCore/scripting/CppScripts.h>
 #include <CramionCore/ai/StateMachine.h>
 #include <functional>
 #include <CramionCore/asset/ModelMaterials.h>
@@ -461,6 +464,13 @@ private:
         bool focus = false;
         int goto_line = -1;
         int cursor = 0;
+        int set_cursor = -1;  // mover el cursor del campo el proximo frame
+        bool reload_text = false;  // el texto cambio por fuera (formatear) con el campo activo
+        // C++: la ultima lista de clangd sin filtrar (se filtra al momento al teclear,
+        // sin esperar a clangd: la lista no salta) y donde empezaba su palabra.
+        std::vector<LuaCompletion> cpp_raw;
+        std::size_t cpp_raw_start = std::string::npos;
+        float popup_width = 0.0f;  // solo crece mientras esta abierta (no tiembla)
         int line = 1;
         int column = 1;
         // Autocompletado.
@@ -473,7 +483,24 @@ private:
         // Codigo que no es un archivo (el de un estado de una maquina de
         // estados): Ctrl+S llama a esto en lugar de escribir `path`.
         std::function<void()> on_save;
+        // C++ (.cpp, .h): IntelliSense de clangd.
+        bool cpp = false;
+        std::string clangd_synced;          // el texto que tiene clangd
+        std::uint64_t completion_request = 0;
+        std::vector<ClangdSignature> signatures;
+        int signature_active = 0;
+        bool signature_open = false;
+        ImVec2 hover_mouse{};
+        double hover_since = 0.0;
+        int hover_offset = -1;              // donde se pidio la informacion del raton
+        std::string hover_text;
     };
+    // IntelliSense de C++ (Clangd.h): se arranca al abrir el primer .cpp.
+    ClangdClient clangd_;
+    void ensureClangd();
+    void syncClangd(ScriptTab& tab);
+    ScriptTab* scriptTabFor(const std::filesystem::path& file);
+    void goToDefinition(ScriptTab& tab, int offset);
     // IntelliSense: la API del motor y lo del proyecto (EditorLuaSymbols.cpp).
     void refreshLuaSymbols();
     double lua_symbols_time_ = -1.0;
@@ -490,6 +517,31 @@ private:
     void drawScriptEditor();
     void drawCodeEditor(ScriptTab& tab);
     void drawScriptInspector(ecs::Entity entity);
+    void drawCppScriptInspector(ecs::Entity entity, bool header);  // EditorCppScripts.cpp (arriba / abajo)
+    std::vector<std::string> cppClassesOfFile(const std::string& relative);
+    std::string cppSourceFor(const std::string& relative);  // .h -> su .cpp
+    // C++: formatear (clang-format), el .h/.cpp de al lado, su consola y la
+    // ventana Configuracion del motor (EditorCppScripts.cpp).
+    bool formatCppTab(ScriptTab& tab, bool quiet = false);
+    static bool cppFormatOnSave();
+    std::string cppFormatStyle() const;
+    std::filesystem::path cppCounterpart(const std::filesystem::path& file) const;  // .h <-> .cpp
+    void drawCppToolbar(ScriptTab& tab);
+    void drawCppConsole(ScriptTab& tab);
+    void drawEngineSettingsWindow();
+    bool show_engine_settings_ = false;
+    struct CppConsoleLine {
+        int level = 0;  // 0 info, 1 aviso, 2 error
+        std::string text;
+        std::string file;  // dentro de Assets (para ir a la linea)
+        int line = 0;
+    };
+    std::vector<CppConsoleLine> cpp_console_;
+    std::uint64_t cpp_console_read_ = 0;  // entradas de EditorLog ya miradas
+    std::string cpp_console_input_;
+    bool cpp_console_scroll_ = false;
+    float cpp_console_height_ = 150.0f;
+    std::string mcp_type_queue_;  // MCP cpp_intellisense 'type': un caracter por frame (como si se tecleara)
     void drawAudioInspector(ecs::Entity entity);
     void updateScriptsAndAudio(float delta_seconds, int physics_steps);
     const dm::Input* input_ = nullptr;
@@ -1032,6 +1084,101 @@ private:
     bool rigPose(ecs::Entity entity, ecs::RenderSync::SkeletonPose& pose, bool search_up);
     void drawRigInspector(const std::string& type, ecs::Entity entity);
     bool drawRigGizmos();  // true si el raton esta sobre una articulacion
+    // --- Scripts de C++ aislados y CVars (EditorCppScripts.cpp) ---
+    scripting::CppScriptSystem cpp_scripts_;
+    std::vector<scripting::ScriptError> cpp_compile_errors_;
+    std::string cpp_status_;
+    double cpp_last_check_ = 0.0;
+    std::filesystem::file_time_type cpp_attempted_{};  // fuentes de la ultima compilacion intentada
+    bool cpp_has_sources_ = false;
+    bool show_cvars_window_ = false;
+    std::string cvar_filter_;
+    std::uint64_t cvar_saved_generation_ = 0;
+    std::string cvar_saved_text_;
+    double cvar_dirty_time_ = -1.0;
+    void setupCppScripts();    // al abrir un proyecto
+    void updateCppScripts();   // cada frame: compilar al guardar, guardar las CVars
+    void startCppScripts();    // al dar Play
+    void stopCppScripts();
+    // Pide el nombre (ventana) y luego crea Nombre.h + Nombre.cpp.
+    void createCppScriptAsset(const std::filesystem::path& folder, ecs::Entity attach_to);
+    std::filesystem::path createCppScriptFiles(const std::filesystem::path& folder, ecs::Entity attach_to, const std::string& name);
+    std::string cppScriptNameProblem(const std::filesystem::path& folder, const std::string& name) const;  // vacio = valido
+    void drawNewCppScriptModal();
+    struct NewCppScript {
+        bool open = false;
+        std::filesystem::path folder;
+        Uuid entity{};
+        std::string name;
+        bool focus = false;
+    } new_cpp_script_;
+    // Un script (.lua o .cpp) arrastrado o asignado a un objeto.
+    void attachScriptFile(ecs::Entity e, const std::string& relative);
+    void drawCVarsWindow();
+    // --- Modelado poligonal (EditorModeling.cpp), como ProBuilder ---
+    // Con una entidad con EditableMesh activa: modo Objeto (el gizmo de
+    // siempre) o Vertices / Aristas / Caras (seleccion de elementos con
+    // clic, Ctrl/Mayus para sumar y arrastre para caja; el gizmo mueve, gira
+    // o escala lo elegido; Mayus + arrastrar el gizmo extruye).
+    enum class ModelMode : int { Object = 0, Vertex = 1, Edge = 2, Face = 3 };
+    bool show_modeling_window_ = false;
+    ModelMode model_mode_ = ModelMode::Object;
+    Uuid model_target_{};
+    std::uint64_t model_target_revision_ = 0;
+    std::vector<std::uint32_t> model_vertices_;
+    std::vector<modeling::Edge> model_edges_;
+    std::vector<int> model_faces_;
+    bool model_xray_ = false;          // elegir tambien lo de detras
+    bool model_box_ = false;           // arrastrando una caja de seleccion
+    ImVec2 model_box_start_{};
+    bool model_gizmo_using_ = false;
+    modeling::PolyMesh model_drag_mesh_;  // la malla al empezar a arrastrar el gizmo
+    core::Mat4 model_drag_start_{};
+    core::Mat4 model_gizmo_matrix_{};
+    // Lo que hay bajo el raton (resaltado): tipo como ModelMode e indice.
+    int model_hover_kind_ = 0;
+    std::int64_t model_hover_ = -1;
+    modeling::Edge model_hover_edge_{};
+    // Parametros de la ventana.
+    int model_shape_ = 0;
+    modeling::shapes::Params model_params_ = modeling::shapes::defaults(modeling::shapes::Kind::Cube);
+    float model_extrude_ = 0.5f;
+    bool model_extrude_individual_ = false;
+    float model_inset_ = 0.15f;
+    bool model_inset_individual_ = false;
+    float model_bevel_ = 0.1f;
+    int model_cuts_ = 1;
+    float model_loop_t_ = 0.5f;
+    float model_weld_ = 0.01f;
+    float model_relax_ = 0.5f;
+    float model_noise_ = 0.05f;
+    float model_angle_ = 15.0f;
+    int model_smooth_levels_ = 1;
+    int model_mirror_axis_ = 0;
+    int model_boolean_op_ = 1;
+    int model_material_ = 0;
+    int model_smoothing_ = 1;
+    modeling::FaceUv model_uv_{};
+    float model_quad_angle_ = 2.0f;
+    void drawModelingWindow();
+    void drawModelingToolbar();
+    // Contorno, vertices y seleccion en la vista (antes del gizmo).
+    void drawModelingOverlay();
+    // Gizmo de los elementos elegidos (dentro de drawGizmo). true si lo pinta.
+    bool drawModelingGizmo(const core::Mat4& view, const core::Mat4& projection);
+    // Clics y caja de seleccion (despues del gizmo). true si se queda el clic.
+    bool handleModelingInput();
+    // La malla editable de la entidad activa (o nullptr).
+    modeling::EditableMesh* modelingTarget(ecs::Entity* entity = nullptr);
+    bool modelingElementMode();  // vertices / aristas / caras sobre una malla editable
+    void modelingSelectionChanged();
+    void modelingClearSelection();
+    std::vector<std::uint32_t> modelingSelectedVertices(const modeling::PolyMesh& mesh) const;
+    // Tras una operacion: rehace la malla, guarda el paso de deshacer y avisa.
+    void modelingCommit(modeling::EditableMesh& em, const std::string& what);
+    ecs::Entity createModelingShape(modeling::shapes::Kind kind, const modeling::shapes::Params& params);
+    ecs::Entity convertToEditableMesh(ecs::Entity entity, float quad_angle);
+    bool modelingDeleteSelection();
     // --- Pintar prefabs (EditorPrefabPaint.cpp) ---
     struct PaintItem {
         Uuid prefab;
@@ -1172,6 +1319,16 @@ private:
     Uuid renaming_asset_{};
     std::string asset_rename_buffer_;
     Uuid pending_delete_asset_{};
+    // Borrar (Proyecto y explorador de scripts): archivos, assets y carpetas,
+    // a la Papelera de reciclaje (EditorProject.cpp).
+    void requestDelete(std::vector<std::filesystem::path> paths);
+    // Ir al Proyecto con este archivo (o carpeta) seleccionado y a la vista.
+    void revealInProject(const std::filesystem::path& path);
+    std::string browser_reveal_;  // BrowserItem::key() a enseñar en el siguiente dibujo
+    void deletePaths(const std::vector<std::filesystem::path>& paths);
+    void drawDeleteModal();
+    std::vector<std::filesystem::path> pending_delete_paths_;
+    bool delete_companions_ = true;  // el .h de un .cpp (y al reves)
     struct ImportJob {
         std::filesystem::path source;
         std::filesystem::path folder;

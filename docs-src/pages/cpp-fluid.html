@@ -1,0 +1,21 @@
+<p>Líquidos por partículas: emisores, densidad y tipos.</p>
+
+<h3 id="fluid">Fluid</h3>
+<table>
+  <tbody>
+    <tr><td><code>Value clear(...)</code></td><td>borra todo el liquido</td></tr>
+    <tr><td><code>Value count(texto)</code></td><td>particulas (todas o de un tipo)</td></tr>
+    <tr><td><code>Value density(pos, radio)</code></td><td>0 = seco, ~1 = lleno</td></tr>
+    <tr><td><code>Value isActive(...)</code></td><td>hay liquidos en la escena?</td></tr>
+    <tr><td><code>Value isInside(pos)</code></td><td>hay liquido ahi?</td></tr>
+    <tr><td><code>Value restart(entidad)</code></td><td>vuelve a llenar una caja/esfera</td></tr>
+    <tr><td><code>Value setType(entidad, texto)</code></td><td>cambia el liquido del emisor</td></tr>
+    <tr><td><code>Value spawn(pos, cantidad, texto, vel, radio, vida)</code></td><td>crea liquido (bola de particulas)</td></tr>
+    <tr><td><code>Value start(entidad)</code></td><td>el emisor empieza</td></tr>
+    <tr><td><code>Value stats(...)</code></td><td>{particles, capacity, emitters...}</td></tr>
+    <tr><td><code>Value stop(entidad)</code></td><td>el emisor para</td></tr>
+    <tr><td><code>Value surfaceHeight(x, z)</code></td><td>nil o la altura de la superficie</td></tr>
+    <tr><td><code>Value types(...)</code></td><td>lista de tipos</td></tr>
+    <tr><td><code>Value velocity(pos, radio)</code></td><td>velocidad media del liquido (Vec3)</td></tr>
+  </tbody>
+</table>

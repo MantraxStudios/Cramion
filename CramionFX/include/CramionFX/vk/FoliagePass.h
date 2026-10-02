@@ -100,6 +100,27 @@ public:
     // programa dice cada frame donde esta el origen del mundo y los shaders lo
     // restan (desplazar el mundo no obliga a sembrar de nuevo).
     void setOrigin(const core::Vec3& origin) { origin_offset_ = origin; }
+    const core::Vec3& origin() const { return origin_offset_; }
+
+    // Las distancias de los niveles de detalle (lod1/lod2_distance) son las
+    // de 1080p con 60 grados de campo de vision: `scale` las ajusta a la vista
+    // real (menos pixeles o el presupuesto adaptativo: antes cambian de nivel).
+    void setLodScale(float scale) { lod_scale_ = scale; }
+
+    // --- Para el trazado de rayos (los arboles en la escena de rayos) ---
+    // Solo con trazado de rayos (si no, la copia en la CPU sobra: hasta 128 MB).
+    void setKeepCpuCopy(bool keep) { keep_cpu_copy_ = keep; }
+    // Las instancias tal como se subieron y la malla media de cada especie.
+    // Las revisiones cambian cuando se siembra de nuevo / se regeneran las especies.
+    const std::vector<FoliageInstance>& cpuInstances() const { return cpu_instances_; }
+    std::uint64_t instancesRevision() const { return instances_revision_; }
+    const asset::TreeMeshData& rayTracingMesh(std::uint32_t species) const { return rt_meshes_[species]; }
+    std::uint64_t speciesRevision() const { return species_revision_; }
+    // Array de colores de los arboles (SRGB, creado con formato mutable: se
+    // puede ver como UNORM, como leen las texturas los rayos).
+    vk::Image albedoImage() const { return *albedo_array_.image; }
+    std::uint32_t albedoMips() const { return albedo_mips_; }
+    std::uint32_t albedoLayers() const { return albedo_layers_; }
 
 private:
     struct Mesh {
@@ -149,6 +170,14 @@ private:
     vk::raii::Sampler texture_sampler_{nullptr};
     std::array<Mesh, kSpecies * 3> meshes_{};  // especie * 3 + nivel
     std::array<std::uint32_t, kSpecies * 3> triangles_{};
+    std::array<asset::TreeMeshData, kSpecies> rt_meshes_{};  // nivel 1 (trazado de rayos)
+    std::uint64_t species_revision_ = 0;
+    std::uint32_t albedo_mips_ = 1;
+    std::uint32_t albedo_layers_ = 0;
+    std::vector<FoliageInstance> cpu_instances_;
+    bool keep_cpu_copy_ = false;
+    std::uint64_t instances_revision_ = 0;
+    float lod_scale_ = 1.0f;
 
     VulkanBuffer instances_;
     std::vector<VulkanBuffer> visible_;   // por frame: 4 listas por especie

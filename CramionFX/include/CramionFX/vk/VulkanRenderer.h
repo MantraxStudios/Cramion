@@ -166,6 +166,25 @@ public:
     // parar la GPU ni resubir lo demas. Para las mallas creadas por codigo
     // (el trazado de rayos no las ve hasta la siguiente uploadModels).
     void uploadModel(const scene::Scene& scene, std::uint32_t index);
+    // Modelos de la escena que ya estan en la GPU (los primeros N, en orden):
+    // los de despues aun no se dibujan. Para subir lo nuevo poco a poco con
+    // uploadModel(scene, uploadedModelCount()).
+    std::uint32_t uploadedModelCount() const { return static_cast<std::uint32_t>(skinned_models_.size()); }
+
+    // --- Streaming de la memoria de video (residencia de los modelos) ---
+    // Un modelo cuyas instancias llevan `idle_seconds` midiendo menos de
+    // `min_pixels` en pantalla (no se ven) sale de la GPU: sus mallas y
+    // texturas se liberan. Vuelve solo (en segundo plano, un poco cada frame)
+    // en cuanto alguna se acerca. Nada visible desaparece.
+    void setModelStreaming(bool enabled, float min_pixels, float idle_seconds) {
+        model_streaming_ = enabled;
+        streaming_min_pixels_ = std::max(min_pixels, 0.05f);
+        streaming_idle_seconds_ = std::max(idle_seconds, 0.5f);
+    }
+    bool modelResident(std::uint32_t index) const {
+        return index < skinned_models_.size() && (index >= model_evicted_.size() || !model_evicted_[index]);
+    }
+    std::uint32_t evictedModelCount() const;
 
     // Dibuja un frame de la escena indicada.
     // `present` = false: dibuja la vista (a su imagen de vista) sin
@@ -394,6 +413,9 @@ public:
     void setRayTracingEnabled(bool enabled) {
         if (enabled != rt_enabled_) budget_.reset();
         rt_enabled_ = enabled;
+        // Las imagenes del trazado (sombras por rayos, path tracing) solo
+        // ocupan memoria si se usan: otro tamano, destinos nuevos.
+        if (rayTargetsKey() != rt_targets_key_) targets_dirty_ = true;
     }
     bool rayTracingEnabled() const { return rt_enabled_; }
     bool rayTracingSupported() const { return device_.rayTracingSupported(); }
@@ -401,6 +423,9 @@ public:
     bool rayTracingActive() const {
         return rt_enabled_ && device_.rayTracingSupported() && ray_tracing_.ready();
     }
+    // Hace falta la escena de rayos (trazado o path tracing pedidos). Si no,
+    // no se construye nada: ni BLAS, ni TLAS, ni cache.
+    bool rayTracingWanted() const { return (rt_enabled_ || path_tracing_) && device_.rayTracingSupported(); }
 
     // Path tracing (como el de Unreal): la imagen de referencia con luz
     // fisicamente correcta (path_trace.comp). Suma un camino por pixel y
@@ -409,6 +434,7 @@ public:
     void setPathTracingEnabled(bool enabled) {
         if (enabled != path_tracing_) path_tracing_reset_ = true;
         path_tracing_ = enabled;
+        if (rayTargetsKey() != rt_targets_key_) targets_dirty_ = true;
     }
     bool pathTracingEnabled() const { return path_tracing_; }
     bool pathTracingActive() const {
@@ -508,6 +534,11 @@ public:
         probe_enabled_ = enabled;
     }
     bool reflectionProbeEnabled() const { return probe_enabled_; }
+    // Oclusion del cielo vista desde arriba (sin trazado de rayos): el
+    // sotobosque y lo que esta bajo tejados no reciben todo el cielo aunque lo
+    // que los tapa no salga en pantalla.
+    void setSkyOcclusionEnabled(bool enabled) { sky_occlusion_enabled_ = enabled; }
+    bool skyOcclusionEnabled() const { return sky_occlusion_enabled_; }
 
     // Iluminacion global de pantalla (luz rebotada).
     void setGiEnabled(bool enabled) { post_.global_illumination = enabled; }
@@ -762,6 +793,27 @@ private:
 
     // Huesos de todos los actores de este frame, en un solo storage buffer.
     void updateActors(const scene::Scene& scene, std::uint32_t frame_index);
+    // Escena de rayos (VulkanRendererRayScene.cpp): la construye si hace
+    // falta, actualiza el terreno y suma las instancias del terreno y de los
+    // arboles cercanos a `instances`.
+    // Oclusion del cielo desde arriba y autoenfoque suave (VulkanRendererSkyMap.cpp).
+    bool skyMapWanted() const;
+    void createSkyMap();
+    void planSkyMap();  // en updateUniforms: si toca rehacerla y donde
+    void recordSkyMap(const vk::raii::CommandBuffer& cmd, std::uint32_t frame_index);
+    void createDofFocus();
+    void writeDofFocusDescriptors();
+    void readDofFocus(std::uint32_t frame_index);
+    void recordDofFocusMeasure(const vk::raii::CommandBuffer& cmd, std::uint32_t frame_index);
+    float smoothedDofFocus();
+    void buildRayTracingScene(const scene::Scene& scene);
+    void prepareRayTracingScene(const scene::Scene& scene, std::vector<RayTracing::Instance>& instances);
+    // Tamano de las imagenes del trazado: bit 0 = sombras por rayos a
+    // resolucion completa, bit 1 = acumulacion del path tracing.
+    std::uint32_t rayTargetsKey() const {
+        if (!device_.rayTracingSupported()) return 0;
+        return (rayTracingWanted() ? 1u : 0u) | (path_tracing_ ? 2u : 0u);
+    }
     void ensureBoneCapacity(std::uint32_t frame_index, std::size_t bone_count);
     void writeBoneDescriptor(std::uint32_t frame_index);
 
@@ -885,6 +937,7 @@ private:
     // Se decide al preparar las luces del frame (updateUniforms): rayos
     // activos, vista de pantalla y alguna luz local con sombra.
     bool rt_shadows_planned_ = false;
+    std::uint32_t rt_shadow_flags_ = 0;  // 1 = luces locales, 2 = sol
     void recordRtShadowPass(const vk::raii::CommandBuffer& cmd, std::uint32_t frame_index);
     VulkanImage ssr_image_{};
     VulkanImage ssr_history_{};
@@ -992,6 +1045,84 @@ private:
     std::uint32_t ray_traced_models_ = 0;
     std::vector<bool> ray_pinned_;
     std::vector<SkinnedModel> ray_pinned_models_;
+    // Residencia (setModelStreaming): fuera de la GPU, lo grande que se vio cada
+    // modelo este frame (pixeles) y desde cuando no se ve.
+    bool model_streaming_ = true;
+    float streaming_min_pixels_ = 0.5f;
+    float streaming_idle_seconds_ = 5.0f;
+    std::vector<bool> model_evicted_;
+    // Subiendo de vuelta un modelo que salio (no es un cambio: la escena de
+    // rayos conserva su copia) y los que estaban fuera al construirla.
+    bool streaming_restore_ = false;
+    std::vector<bool> rt_scene_evicted_;
+    std::vector<float> model_pixels_;
+    std::vector<std::chrono::steady_clock::time_point> model_last_seen_;
+    void evictModel(std::uint32_t index);
+    void streamModels(const scene::Scene& scene);
+    // --- Oclusion del cielo desde arriba (sin trazado de rayos) ---
+    bool sky_occlusion_enabled_ = true;
+    VulkanImage sky_map_terrain_{};  // profundidad desde arriba: solo el terreno
+    VulkanImage sky_map_scene_{};    // y todo (terreno, escenario, arboles)
+    bool sky_map_drawn_ = false;
+    bool sky_map_redraw_ = false;    // planSkyMap pidio rehacerla este frame
+    core::Vec3 sky_map_center_{};
+    std::uint32_t sky_map_age_ = 0;  // frames desde que se dibujo
+    core::Mat4 sky_map_view_projection_ = core::Mat4::identity();
+    core::Vec4 sky_map_params_{};    // GpuLights::sky_map
+    core::Vec4 sky_map_depth_{};     // GpuLights::sky_map_depth
+    // --- Autoenfoque suave de la profundidad de campo ---
+    ComputePass dof_focus_pass_{};
+    vk::raii::DescriptorPool dof_focus_pool_{nullptr};
+    std::vector<vk::raii::DescriptorSet> dof_focus_sets_;
+    std::vector<VulkanBuffer> dof_focus_buffers_;  // por frame en vuelo (lectura en la CPU)
+    std::vector<bool> dof_focus_pending_;
+    float dof_focus_target_ = 10.0f;   // lo ultimo que midio la GPU (m)
+    float dof_focus_current_ = -1.0f;  // el enfoque suavizado (m; < 0 = sin empezar)
+    // --- Escena de rayos bajo demanda ---
+    bool rt_scene_dirty_ = true;            // hay que (re)construirla antes de trazar
+    bool rt_model_edit_pending_ = false;    // uploadModel cambio un modelo que ven los rayos
+    std::chrono::steady_clock::time_point rt_model_edit_time_{};
+    std::chrono::steady_clock::time_point rt_idle_since_{};  // desde cuando no se usa
+    bool rt_idle_ = false;
+    std::uint32_t rt_targets_key_ = 0;      // rayTargetsKey() con el que se crearon los destinos
+    std::uint32_t rt_extra_base_ = 0;       // indice del primer modelo extra (terreno, arboles)
+    struct RtTerrain {
+        std::uint32_t id = 0;
+        std::uint32_t resolution = 0;
+        std::uint32_t splat_resolution = 0;
+        std::uint32_t cells = 0;
+        std::uint32_t texture_size = 0;
+        std::uint32_t extra = 0;    // malla extra de la escena de rayos
+        std::uint32_t texture = 0;  // textura extra (su color)
+        std::uint64_t height_revision = 0;
+        std::uint64_t look_revision = 0;
+        std::chrono::steady_clock::time_point last_update{};
+        std::chrono::steady_clock::time_point last_texture{};
+    };
+    std::vector<RtTerrain> rt_terrains_;
+    // Malla y color del terreno de la ultima escena de rayos: si no cambio,
+    // reconstruirla no los vuelve a calcular.
+    struct RtTerrainCache {
+        std::uint32_t id = 0;
+        std::uint64_t height_revision = 0;
+        std::uint64_t look_revision = 0;
+        std::uint32_t cells = 0;
+        std::uint32_t texture_size = 0;
+        std::vector<RayTracing::Vertex> vertices;
+        std::vector<std::vector<std::uint8_t>> albedo;
+    };
+    std::vector<RtTerrainCache> rt_terrain_cache_;
+    std::array<std::int32_t, FoliagePass::kSpecies> rt_species_extra_{-1, -1, -1};
+    std::uint64_t rt_species_revision_ = ~0ull;
+    std::unordered_map<std::uint64_t, std::vector<std::uint32_t>> rt_tree_grid_;
+    std::uint64_t rt_tree_grid_revision_ = ~0ull;
+    std::vector<RayTracing::Instance> rt_tree_instances_;
+    core::Vec3 rt_tree_center_{};
+    core::Vec3 rt_tree_origin_{};
+    bool rt_trees_valid_ = false;
+    // Escala de las distancias de detalle de los arboles (resolucion,
+    // campo de vision y presupuesto: ver FoliagePass::setLodScale).
+    float foliage_lod_scale_ = 1.0f;
 
     // Lo que se dibuja de cada actor este frame.
     struct ActorDraw {

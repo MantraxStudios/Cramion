@@ -1,0 +1,117 @@
+<p>Cada script es una clase que hereda de <code>Script</code> y se registra con <code>CRAMION_SCRIPT(Clase)</code>. Ver también <a href="scripts-cpp.html">Scripts en C++</a>.</p>
+
+<h3 id="script-eventos">Script: eventos</h3>
+<table>
+  <tbody>
+    <tr><td><code>Entity entity() const</code></td><td></td></tr>
+    <tr><td><code>Value property(const std::string&amp; name) const</code></td><td></td></tr>
+    <tr><td><code>T property(const std::string&amp; name, T fallback) const</code></td><td></td></tr>
+    <tr><td><code>std::string property(const std::string&amp; name, const char* fallback) const</code></td><td></td></tr>
+    <tr><td><code>void awake()</code></td><td>Al crearse el script (antes de start).</td></tr>
+    <tr><td><code>void start()</code></td><td>Una vez, antes del primer update.</td></tr>
+    <tr><td><code>void update(float )</code></td><td>Cada frame (dt = segundos desde el anterior).</td></tr>
+    <tr><td><code>void fixedUpdate(float )</code></td><td>Cada paso de la fisica.</td></tr>
+    <tr><td><code>void lateUpdate(float )</code></td><td>Cada frame, despues de todos los update (camaras).</td></tr>
+    <tr><td><code>void onDestroy()</code></td><td>Al destruirse el objeto o parar el juego.</td></tr>
+    <tr><td><code>void onCollisionEnter(const Collision&amp;)</code></td><td>Empieza un choque con otro objeto.</td></tr>
+    <tr><td><code>void onCollisionStay(const Collision&amp;)</code></td><td>Sigue el choque.</td></tr>
+    <tr><td><code>void onCollisionExit(const Collision&amp;)</code></td><td>Termina el choque.</td></tr>
+    <tr><td><code>void onTriggerEnter(Entity )</code></td><td>Otro objeto entra en un trigger.</td></tr>
+    <tr><td><code>void onTriggerStay(Entity )</code></td><td>Otro objeto sigue dentro del trigger.</td></tr>
+    <tr><td><code>void onTriggerExit(Entity )</code></td><td>Otro objeto sale del trigger.</td></tr>
+    <tr><td><code>void onMessage(const std::string&amp; name, const Value&amp; value)</code></td><td>Un mensaje por su nombre: los botones (on_click &quot;OnJugar&quot;), sliders, casillas y campos de la UI lo envian al script del objeto. Por defecto llama al de on(...).</td></tr>
+    <tr><td><code>void onOriginShift(const Vec3&amp; )</code></td><td>Mundos grandes: el motor recoloco el origen y todo se movio -offset (resta offset a las posiciones guardadas).</td></tr>
+    <tr><td><code>void onNetVar(const std::string&amp; , const Value&amp; )</code></td><td>Objeto de red: llego un cambio de una variable sincronizada (setNetVar del dueno o del servidor).</td></tr>
+    <tr><td><code>void on(const std::string&amp; name, std::function&lt;void(const Value&amp;)&gt; fn)</code></td><td>Que hacer con un mensaje (en el constructor o en awake): on(&quot;OnJugar&quot;, [this](const Value&amp;) { Scene::load(&quot;Nivel1&quot;); }); on(&quot;OnVolumen&quot;, [this](const Value&amp; v) { Prefs::setFloat(&quot;volumen&quot;, v); });</td></tr>
+  </tbody>
+</table>
+
+<h3 id="property-t">Property&lt;T&gt;</h3>
+<table>
+  <tbody>
+    <tr><td><code>Property(Script* owner, const char* name, T default_value = T{}, ...)</code></td><td></td></tr>
+    <tr><td><code>const T&amp; get() const</code></td><td></td></tr>
+    <tr><td><code>T&amp; get()</code></td><td></td></tr>
+    <tr><td><code>operator const T&amp;() const</code></td><td></td></tr>
+    <tr><td><code>const T* operator-&gt;() const</code></td><td></td></tr>
+    <tr><td><code>T* operator-&gt;()</code></td><td></td></tr>
+    <tr><td><code>::value&gt;&gt; operator Value() const</code></td><td></td></tr>
+    <tr><td><code>Property&amp; operator=(const T&amp; v)</code></td><td></td></tr>
+    <tr><td><code>auto operator[](std::size_t i) const -&gt; decltype(std::declval&lt;const U&amp;&gt;()[i])</code></td><td></td></tr>
+    <tr><td><code>void load(const Value&amp; v)</code></td><td></td></tr>
+    <tr><td><code>detail::PropInfo info() const</code></td><td></td></tr>
+  </tbody>
+</table>
+
+<h3 id="opciones-de-las-propiedades">Opciones de las propiedades</h3>
+<table>
+  <tbody>
+    <tr><td><code>double min, max</code></td><td></td></tr>
+    <tr><td><code>Range(double a, double b)</code></td><td></td></tr>
+    <tr><td><code>const char* text</code></td><td></td></tr>
+    <tr><td><code>Tooltip(const char* t)</code></td><td></td></tr>
+    <tr><td><code>Header(const char* t)</code></td><td></td></tr>
+    <tr><td><code>Label(const char* t)</code></td><td></td></tr>
+    <tr><td><code>std::vector&lt;std::string&gt; names</code></td><td></td></tr>
+    <tr><td><code>Options(std::initializer_list&lt;const char*&gt; list)</code></td><td></td></tr>
+    <tr><td><code>const char* component</code></td><td></td></tr>
+    <tr><td><code>Requires(const char* c)</code></td><td></td></tr>
+  </tbody>
+</table>
+
+<h3 id="assets-y-archivos">Assets y archivos</h3>
+<table>
+  <tbody>
+    <tr><td><code>struct Vec2</code></td><td>Vector 2D (UV, pantalla, entradas de un stick...).</td></tr>
+    <tr><td><code>Vec2 operator*(float s, const Vec2&amp; v)</code></td><td></td></tr>
+    <tr><td><code>struct Vec3</code></td><td>Vector 3D (posiciones, direcciones, escalas...). El &quot;delante&quot; del motor es -Z.</td></tr>
+    <tr><td><code>Vec3 operator*(float s, const Vec3&amp; v)</code></td><td></td></tr>
+    <tr><td><code>struct Quat</code></td><td>Rotacion (cuaternion). Angulos en grados, en el mismo orden que el Inspector.</td></tr>
+    <tr><td><code>struct Color</code></td><td>Color RGBA (0..1).</td></tr>
+    <tr><td><code>class Script</code></td><td></td></tr>
+    <tr><td><code>enum class ForceMode : std::uint32_t { Force, Acceleration, Impulse, VelocityChange }</code></td><td></td></tr>
+    <tr><td><code>Value::Value(const Entity&amp; e) : type_(Type::Entity), id_(e.id())</code></td><td></td></tr>
+    <tr><td><code>Entity Value::asEntity() const</code></td><td></td></tr>
+    <tr><td><code>Value::operator Entity() const</code></td><td></td></tr>
+    <tr><td><code>Value Value::call(std::string_view method, Values args) const</code></td><td></td></tr>
+    <tr><td><code>Value Value::get(std::string_view field) const</code></td><td></td></tr>
+    <tr><td><code>void Value::setField(std::string_view field, const Value&amp; v) const</code></td><td></td></tr>
+    <tr><td><code>std::uint32_t kCollidedSides = 1, kCollidedAbove = 2, kCollidedBelow = 4</code></td><td></td></tr>
+    <tr><td><code>enum class AssetKind : int { Model, Environment, Scene, AnimatorController, AnimationClip, Material, Prefab, RenderTexture, StateMachine }</code></td><td></td></tr>
+    <tr><td><code>using Model = AssetRef&lt;AssetKind::Model&gt;</code></td><td></td></tr>
+    <tr><td><code>using Material = AssetRef&lt;AssetKind::Material&gt;</code></td><td></td></tr>
+    <tr><td><code>using Prefab = AssetRef&lt;AssetKind::Prefab&gt;</code></td><td></td></tr>
+    <tr><td><code>using SceneAsset = AssetRef&lt;AssetKind::Scene&gt;</code></td><td></td></tr>
+    <tr><td><code>using AnimatorController = AssetRef&lt;AssetKind::AnimatorController&gt;</code></td><td></td></tr>
+    <tr><td><code>using AnimationClip = AssetRef&lt;AssetKind::AnimationClip&gt;</code></td><td></td></tr>
+    <tr><td><code>using RenderTexture = AssetRef&lt;AssetKind::RenderTexture&gt;</code></td><td></td></tr>
+    <tr><td><code>using EnvironmentAsset = AssetRef&lt;AssetKind::Environment&gt;</code></td><td></td></tr>
+    <tr><td><code>using StateMachineAsset = AssetRef&lt;AssetKind::StateMachine&gt;</code></td><td></td></tr>
+    <tr><td><code>enum class FileKind : int { Texture, Audio, LuaScript, Shader, Any }</code></td><td></td></tr>
+    <tr><td><code>using Texture = FileRef&lt;FileKind::Texture&gt;</code></td><td></td></tr>
+    <tr><td><code>using AudioClip = FileRef&lt;FileKind::Audio&gt;</code></td><td></td></tr>
+    <tr><td><code>using LuaScript = FileRef&lt;FileKind::LuaScript&gt;</code></td><td></td></tr>
+    <tr><td><code>using ShaderFile = FileRef&lt;FileKind::Shader&gt;</code></td><td></td></tr>
+    <tr><td><code>using AnyFile = FileRef&lt;FileKind::Any&gt;</code></td><td></td></tr>
+    <tr><td><code>enum CVarFlags : std::uint32_t { CVarNone, CVarReadOnly, CVarSaved, CVarCheat }</code></td><td></td></tr>
+    <tr><td><code>T* Entity::script() const</code></td><td></td></tr>
+    <tr><td><code>detail::PropertyBase::PropertyBase(Script* owner, const char* name) : name_(name)</code></td><td></td></tr>
+    <tr><td><code>class Mesh</code></td><td>Malla creada por codigo (Mesh::cube, Mesh::create, entity().mesh()). Cambiala y llama a apply().</td></tr>
+    <tr><td><code>class StateMachine</code></td><td>Maquina de estados de un objeto (entity().getStateMachine()): go, trigger, set/get...</td></tr>
+    <tr><td><code>std::string uuid</code></td><td></td></tr>
+    <tr><td><code>std::string path</code></td><td></td></tr>
+    <tr><td><code>bool valid() const</code></td><td>Existe todavia (no se ha destruido).</td></tr>
+    <tr><td><code>operator bool() const</code></td><td></td></tr>
+    <tr><td><code>operator Value() const</code></td><td></td></tr>
+  </tbody>
+</table>
+
+<h3 id="collision">Collision</h3>
+<table>
+  <tbody>
+    <tr><td><code>Entity other</code></td><td></td></tr>
+    <tr><td><code>Vec3 point</code></td><td></td></tr>
+    <tr><td><code>Vec3 normal</code></td><td></td></tr>
+    <tr><td><code>Vec3 relativeVelocity</code></td><td></td></tr>
+  </tbody>
+</table>

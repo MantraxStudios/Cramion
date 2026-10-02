@@ -44,6 +44,7 @@ std::optional<Icon> componentIcon(const std::string& name) {
     if (name == "BoxCollider") return Icon::ColliderBox;
     if (name == "SphereCollider") return Icon::ColliderSphere;
     if (name == "CapsuleCollider") return Icon::ColliderCapsule;
+    if (name == "CharacterController") return Icon::CharacterController;
     if (name == "MeshCollider" || name == "PlaneCollider") return Icon::ColliderMesh;
     if (name == "ParticleSystem") return Icon::ParticleSystem;
     if (name == "DollyTrack" || name == "DollyCart") return Icon::Waypoint;
@@ -470,6 +471,8 @@ void EditorApp::drawInspector() {
                 }
                 mixed = mixedFields(values);
             }
+            // C++ Script: el archivo (soltar el .cpp) y la clase, encima de sus propiedades.
+            if (type.name == "CppScript") drawCppScriptInspector(entity, true);
             visitor.beginComponent(multi ? &mixed : nullptr);
             if (type.reflect(world_, entity.handle(), visitor)) {
                 dirty_ = true;
@@ -577,6 +580,7 @@ void EditorApp::drawInspector() {
             if (type.name == "Environment") drawEnvironmentInspector(entity);
             if (type.name == "NavMeshBounds") drawNavMeshBoundsInspector(entity);
             if (type.name == "Script") drawScriptInspector(entity);
+            if (type.name == "CppScript") drawCppScriptInspector(entity, false);
             if (type.name == "StateMachine") drawStateMachineInspector(entity);
             if (type.name == "RectTransform") drawRectTransformInspector(entity);
             if (type.name == "AudioSource") drawAudioInspector(entity);
@@ -657,6 +661,15 @@ void EditorApp::drawInspector() {
     if (theme::boldFont() != nullptr) ImGui::PushFont(theme::boldFont(), 0.0f);
     const bool add_pressed = theme::primaryButton("+  Add Component", ImVec2(-1.0f, ImGui::GetFrameHeight() + 8.0f));
     if (theme::boldFont() != nullptr) ImGui::PopFont();
+    // Como en Unity: soltar un script (.lua o .cpp) aqui lo agrega al objeto.
+    if (ImGui::BeginDragDropTarget()) {
+        if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(kScriptPayload)) {
+            const std::string relative = assetRelative(dialogs::fromUtf8(static_cast<const char*>(payload->Data)));
+            for (ecs::Entity e : selected) attachScriptFile(e, relative);
+            commit();
+        }
+        ImGui::EndDragDropTarget();
+    }
     if (add_pressed) {
         ImGui::OpenPopup("add_component");
     }

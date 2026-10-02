@@ -1,37 +1,63 @@
 <p>
-        Los scripts viven en la carpeta <code>Assets</code> del proyecto (por convención, <code>Assets/Scripts/</code>).
-        Desde el editor, crea uno con el menú de assets: se genera con los métodos habituales.
-        Después añade el componente <code>Script</code> a una entidad y elige el archivo.
+        Los scripts de Cramion se escriben en <strong class="text-white">C++</strong>, como los MonoBehaviour de Unity:
+        una clase con <code>start()</code>, <code>update()</code>... y sus propiedades en el Inspector. No hay que instalar
+        nada: el editor trae su compilador (clang) y el IntelliSense (clangd). Corren aislados en otro proceso: si un
+        script falla, el motor sigue y te dice el archivo y la línea.
       </p>
-      <p class="file">Assets/Scripts/Hola.lua</p>
-      <pre><code class="language-lua">local Hola = {
-    properties = {
-        mensaje = "¡Hola, Cramion!",
-    }
+
+      <h3 id="crear">Crear el script</h3>
+      <ol>
+        <li><em>Proyecto &gt; Añadir &gt; Script C++</em> (o el botón <strong>Nuevo script C++</strong> del componente). Escribe el <strong>nombre</strong>: es el de la clase.</li>
+        <li>Se crean <code>Hola.h</code> (la clase y sus propiedades) y <code>Hola.cpp</code> (el código) y se abren en el editor.</li>
+        <li><strong>Arrastra</strong> el <code>.cpp</code> o el <code>.h</code> a un objeto de la escena: se le pone el componente <em>C++ Script</em>.</li>
+        <li>Guarda (<kbd>Ctrl+S</kbd>): se compila solo. Dale a <strong>Play</strong>.</li>
+      </ol>
+      <p class="file">Assets/Scripts/Hola.h</p>
+      <pre><code class="language-cpp">#pragma once
+#include &lt;cramion/Script.h&gt;
+using namespace cramion;
+
+class Hola : public Script {
+public:
+    Property&lt;std::string&gt; mensaje{this, "mensaje", "¡Hola, Cramion!"};
+    Property&lt;float&gt; velocidad{this, "velocidad", 90.0f, Range(0, 360)};
+
+    void start() override;
+    void update(float dt) override;
+};</code></pre>
+      <p class="file">Assets/Scripts/Hola.cpp</p>
+      <pre><code class="language-cpp">#include "Hola.h"
+
+void Hola::start() {
+    Debug::log(mensaje.get() + " desde " + entity().name());
 }
 
-function Hola:Start()
-    Debug.log(self.mensaje, "desde", self.entity.name)
-end
+void Hola::update(float dt) {
+    entity().rotate(Vec3{0.0f, velocidad * dt, 0.0f});
+}
 
-function Hola:Update(dt)
-end
-
-return Hola   -- obligatorio: el script debe devolver su tabla</code></pre>
+CRAMION_SCRIPT(Hola)   // registra la clase (obligatorio)</code></pre>
       <div class="note">
-        <strong class="text-white">Importante:</strong> el archivo tiene que terminar con <code>return &lt;tabla&gt;</code>.
-        Si no, la consola mostrará <em>"el script debe terminar con 'return &lt;su tabla&gt;'"</em>.
+        <strong class="text-white">Importante:</strong> cada clase de script termina con <code>CRAMION_SCRIPT(Clase)</code>
+        en su <code>.cpp</code>. Sin eso el componente no la encuentra.
       </div>
 
-      <h3 id="intellisense">El editor de scripts e IntelliSense</h3>
-      <p>
-        Doble clic en un <code>.lua</code> lo abre en el editor integrado. Mientras escribes (o con <kbd>Ctrl+Espacio</kbd>)
-        sale el autocompletado, con la firma y la descripción de cada función:
-      </p>
+      <h3 id="intellisense">El editor de código e IntelliSense</h3>
+      <p>Doble clic en un <code>.cpp</code> o <code>.h</code> lo abre en el editor integrado (IntelliSense de clangd):</p>
       <ul>
-        <li><strong>Toda la API del motor</strong>: se la pide al propio motor al abrir el editor, así que sale todo lo que existe (<code>Input</code>, <code>XR</code>, <code>Screen</code>, <code>Graphics</code>, <code>Network</code>...).</li>
-        <li><strong>Sabe qué es cada cosa</strong>: <code>self.entity</code>, <code>other</code> o <code>Scene.find(...)</code> son entidades; <code>.position</code> o <code>Vec3(...)</code> un <code>Vec3</code>; <code>Quat.euler(...)</code> un <code>Quat</code>; <code>Physics.raycast(...)</code> un choque con <code>entity</code>, <code>point</code>... Y lo sigue por tus variables: tras <code>local p = self.entity.position</code>, <code>p.</code> ofrece <code>x</code>, <code>y</code>, <code>z</code> y <code>p:</code> <code>normalized</code>, <code>length</code>...</li>
-        <li><strong>Dentro de los textos, lo de tu proyecto</strong>: componentes (<code>addComponent("</code>) y sus campos (<code>getField("Light", "</code>), acciones y contextos de <a href="input-actions.html">Input Actions</a>, teclas, tags, objetos de la escena (<code>Scene.find("</code>), escenas, prefabs, sonidos, materiales y las manos y botones de VR.</li>
-        <li>Tus variables, funciones y propiedades, y los métodos que llama el motor tras <code>function MiScript:</code>.</li>
-        <li><strong>Firma</strong>: dentro de los paréntesis de una llamada se ve encima del cursor, con el argumento que estás escribiendo resaltado.</li>
+        <li><strong>Toda la API del motor</strong>, primero lo del motor (icono naranja): <code>entity().</code>, <code>Scene::</code>, <code>Audio::</code>, <code>Mathf::</code>... con el nombre de cada parámetro y su descripción.</li>
+        <li>Errores y avisos en vivo (subrayados), la firma al abrir <code>(</code>, información al pasar el ratón e <strong>ir a la definición</strong> (F12 / Ctrl+clic).</li>
+        <li>Cierra solos <code>( [ { " '</code>, <strong>Formatear</strong> (Mayús+Alt+F), <strong>Abrir cabecera</strong> (Alt+O), <strong>Compilar</strong> (F7) y la <strong>Consola C++</strong>.</li>
       </ul>
+      <p>
+        Todo lo que hay: <a href="cpp-entity.html">Entity</a>, <a href="cpp-scene.html">Scene</a>,
+        <a href="cpp-input.html">Input</a>, <a href="cpp-matematicas.html">Mathf, Vec3 y Quat</a> y el resto de la
+        <a href="cpp-script.html">API de C++</a>. Más detalles en <a href="scripts-cpp.html">Scripts en C++</a>.
+      </p>
+
+      <h3 id="lua">¿Y Lua?</h3>
+      <p>
+        Lua está <strong>obsoleto</strong>: sigue funcionando para los proyectos que ya lo usan, pero lo nuevo se hace en C++.
+        Su referencia está en <a href="entity.html">Referencia de Lua (obsoleta)</a>. Un script de C++ puede llamar a código
+        Lua que quede con <code>Lua::call("MiTabla.funcion", {...})</code> mientras lo pasas.
+      </p>

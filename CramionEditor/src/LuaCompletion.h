@@ -88,6 +88,11 @@ bool luaSignatureAt(const std::string& text, std::size_t cursor, LuaSignature& s
 // si no se sabe). Para las pruebas.
 std::string luaExpressionType(const std::string& text, const std::string& expression);
 
+// La documentacion a mano de "Tabla.funcion" o "Entity:metodo": los
+// argumentos tal como se escriben en Lua ("desde, hasta") y la descripcion.
+// (cramion_sdkgen la usa para la API de C++.)
+bool luaApiDoc(const std::string& callee, std::string& args, std::string& description, bool& function);
+
 // Tablas y funciones globales del motor (para el resaltado).
 bool luaIsApiName(std::string_view word);
 

@@ -1,0 +1,29 @@
+<p>Realidad virtual: casco, mandos, botones y vibración.</p>
+
+<h3 id="xr">XR</h3>
+<table>
+  <tbody>
+    <tr><td><code>Value getAimRay(texto)</code></td><td>origen, direccion del puntero (para Physics.raycast)</td></tr>
+    <tr><td><code>Value getButton(texto, texto2)</code></td><td>boton mantenido: trigger, grip, thumbstick, primary (a/x), secondary (b/y), menu</td></tr>
+    <tr><td><code>Value getButtonDown(texto, texto2)</code></td><td>boton pulsado este frame</td></tr>
+    <tr><td><code>Value getButtonUp(texto, texto2)</code></td><td>boton soltado este frame</td></tr>
+    <tr><td><code>Value getControllerPosition(texto, texto2)</code></td><td>Vec3 de la mano (grip) o del puntero (aim), o nil</td></tr>
+    <tr><td><code>Value getControllerRotation(texto, texto2)</code></td><td>Quat de la mano o del puntero, o nil</td></tr>
+    <tr><td><code>Value getGrip(texto)</code></td><td>agarre 0..1</td></tr>
+    <tr><td><code>Value getHeadLocalPosition(...)</code></td><td>Vec3 de la cabeza dentro de la habitacion</td></tr>
+    <tr><td><code>Value getHeadPosition(...)</code></td><td>Vec3 de la cabeza en el mundo (o nil)</td></tr>
+    <tr><td><code>Value getHeadRotation(...)</code></td><td>Quat de la cabeza en el mundo (o nil)</td></tr>
+    <tr><td><code>Value getOriginPosition(...)</code></td><td>Vec3 del rig (XR Origin o la camara) en el mundo</td></tr>
+    <tr><td><code>Value getRuntimeName(...)</code></td><td>runtime de OpenXR (SteamVR, Oculus...)</td></tr>
+    <tr><td><code>Value getSystemName(...)</code></td><td>nombre del casco</td></tr>
+    <tr><td><code>Value getThumbstick(texto)</code></td><td>Vec3(x, y, 0) del stick, -1..1</td></tr>
+    <tr><td><code>Value getTrackingOrigin(...)</code></td><td>&quot;floor&quot; o &quot;eyes&quot;</td></tr>
+    <tr><td><code>Value getTrigger(texto)</code></td><td>gatillo 0..1</td></tr>
+    <tr><td><code>Value isAvailable(...)</code></td><td>hay casco y sesion de VR</td></tr>
+    <tr><td><code>Value isControllerActive(texto)</code></td><td>el mando esta encendido y se sigue</td></tr>
+    <tr><td><code>Value isFocused(...)</code></td><td>el juego tiene los mandos (sin el menu del sistema encima)</td></tr>
+    <tr><td><code>Value isRunning(...)</code></td><td>el casco esta mostrando el juego</td></tr>
+    <tr><td><code>Value setTrackingOrigin(texto)</code></td><td>floor (de pie) o eyes (sentado); con XR Origin manda el componente</td></tr>
+    <tr><td><code>Value vibrate(texto, valor, valor2)</code></td><td>vibracion: intensidad 0..1, segundos, hz</td></tr>
+  </tbody>
+</table>

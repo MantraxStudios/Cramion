@@ -113,7 +113,15 @@ void EditorApp::stepProjectLoad() {
             // los modelos ya leidos, solo queda subirlos).
             ecs::RenderSync::Options options;
             options.apply_main_camera = false;
-            sync_->sync(world_, scene_, renderer_, 0.0f, options);
+            // Con el streaming cada sincronizacion sube solo unos milisegundos:
+            // en la pantalla de carga se sigue (en tandas de 250 ms, para que la
+            // pantalla no se congele) hasta que todo este en la GPU.
+            const auto upload_start = std::chrono::steady_clock::now();
+            do {
+                sync_->sync(world_, scene_, renderer_, 0.0f, options);
+            } while (renderer_.uploadedModelCount() < scene_.models().size() &&
+                     std::chrono::steady_clock::now() - upload_start < std::chrono::milliseconds(250));
+            if (renderer_.uploadedModelCount() < scene_.models().size()) break;
             load.stage = Stage::Physics;
             load.frames = 0;
             break;

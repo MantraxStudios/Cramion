@@ -35,8 +35,8 @@ ComponentPreset post(const char* name, const char* description, json fields) {
 std::vector<ComponentPreset> postProcessingPresets() {
     std::vector<ComponentPreset> out;
     out.push_back(post("Por defecto", "Los valores de fabrica del motor", json::object()));
-    out.push_back(post("Realista", "Neutro y fotografico: color fiel, poco efecto, motion blur de camara",
-                       {{"tonemapper", "PBR Neutral"}, {"auto_exposure", true}, {"bloom", true},
+    out.push_back(post("Realista", "Fotografico: respuesta de pelicula (AgX), poco efecto, motion blur de camara",
+                       {{"tonemapper", "AgX"}, {"auto_exposure", true}, {"bloom", true},
                         {"bloom_intensity", 0.04}, {"bloom_threshold", 0.6}, {"contrast", 1.03},
                         {"saturation", 1.0}, {"vibrance", 0.1}, {"vignette", true}, {"vignette_intensity", 0.2},
                         {"film_grain", 0.04}, {"lens_flare", 0.25}, {"motion_blur", true},
@@ -44,7 +44,7 @@ std::vector<ComponentPreset> postProcessingPresets() {
     // Todo prendido con valores de camara real: cada efecto sutil para que
     // sume sin notarse como filtro. Es el mas caro de la lista.
     json ultra = {{"auto_exposure", true}, {"exposure_compensation", 0.0}, {"min_ev", -3.0}, {"max_ev", 2.5},
-                  {"adaptation_speed_up", 2.5}, {"adaptation_speed_down", 0.8}, {"tonemapper", "ACES"},
+                  {"adaptation_speed_up", 2.5}, {"adaptation_speed_down", 0.8}, {"tonemapper", "AgX"},
                   {"bloom", true}, {"bloom_intensity", 0.05}, {"bloom_threshold", 0.8}, {"bloom_scatter", 1.2},
                   {"contrast", 1.05}, {"saturation", 1.0}, {"vibrance", 0.1}, {"vignette", true},
                   {"vignette_intensity", 0.22}, {"vignette_smoothness", 0.6}, {"chromatic_aberration", 0.05},
@@ -54,7 +54,7 @@ std::vector<ComponentPreset> postProcessingPresets() {
                   {"light_shafts", true}, {"light_shaft_intensity", 1.0}, {"fxaa", true},
                   {"ambient_occlusion", true}, {"global_illumination", true}, {"reflections", true},
                   {"contact_shadows", true}, {"contact_shadow_length", 1.0}, {"volumetric_light", true},
-                  {"volumetric_density", 0.025}, {"volumetric_anisotropy", 0.7}, {"fog_density", 0.0008},
+                  {"volumetric_density", 0.006}, {"volumetric_anisotropy", 0.7}, {"fog_density", 0.0008},
                   {"fog_height_falloff", 0.06}, {"lods", true}, {"lod_pixel_error", 0.5},
                   {"override_antialiasing", true}, {"override_performance", true}};
     out.push_back(post("Ultra realista",
@@ -78,7 +78,7 @@ std::vector<ComponentPreset> postProcessingPresets() {
                        {{"tonemapper", "ACES"}, {"temperature", 35.0}, {"tint", 5.0}, {"saturation", 1.1},
                         {"gain", {1.08, 1.0, 0.9}}, {"bloom", true}, {"bloom_intensity", 0.1},
                         {"light_shafts", true}, {"light_shaft_intensity", 1.6}, {"lens_flare", 1.0},
-                        {"volumetric_light", true}, {"volumetric_density", 0.035}, {"vignette", true},
+                        {"volumetric_light", true}, {"volumetric_density", 0.012}, {"vignette", true},
                         {"vignette_intensity", 0.3}}));
     out.push_back(post("Noche de luna", "Azul y apagada, luces que brillan, grano de camara",
                        {{"tonemapper", "ACES"}, {"temperature", -25.0}, {"tint", 5.0}, {"saturation", 0.6},
@@ -90,12 +90,12 @@ std::vector<ComponentPreset> postProcessingPresets() {
                         {"tint", -8.0}, {"exposure_compensation", -0.8}, {"vignette", true},
                         {"vignette_intensity", 0.6}, {"vignette_smoothness", 0.35}, {"film_grain", 0.4},
                         {"chromatic_aberration", 0.35}, {"lens_distortion", 0.12}, {"motion_blur", true},
-                        {"motion_blur_intensity", 0.7}, {"volumetric_light", true}, {"volumetric_density", 0.05},
+                        {"motion_blur_intensity", 0.7}, {"volumetric_light", true}, {"volumetric_density", 0.035},
                         {"fog_density", 0.01}}));
     out.push_back(post("Tormenta", "Gris y frio, contraste duro y aire cargado",
                        {{"tonemapper", "ACES"}, {"saturation", 0.7}, {"contrast", 1.15}, {"temperature", -12.0},
                         {"exposure_compensation", -0.5}, {"fog_density", 0.006}, {"volumetric_light", true},
-                        {"volumetric_density", 0.05}, {"vignette", true}, {"vignette_intensity", 0.4},
+                        {"volumetric_density", 0.025}, {"vignette", true}, {"vignette_intensity", 0.4},
                         {"film_grain", 0.1}}));
     out.push_back(post("Invierno", "Frio y limpio, sombras azuladas, algo de bruma",
                        {{"tonemapper", "PBR Neutral"}, {"temperature", -30.0}, {"saturation", 0.8},

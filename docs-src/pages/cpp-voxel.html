@@ -1,0 +1,32 @@
+<p>Mundo de bloques: leer y poner bloques, mundos guardados.</p>
+
+<h3 id="voxel">Voxel</h3>
+<table>
+  <tbody>
+    <tr><td><code>Value blockColor(texto)</code></td><td>color medio del bloque (Vec3)</td></tr>
+    <tr><td><code>Value blockCount(...)</code></td><td>cuantos tipos de bloque hay</td></tr>
+    <tr><td><code>Value blockId(texto)</code></td><td>numero de un bloque</td></tr>
+    <tr><td><code>Value blockInfo(texto)</code></td><td>{name, label, solid, hardness...}</td></tr>
+    <tr><td><code>Value blockLight(x, y, z)</code></td><td>luz de antorchas 0..15</td></tr>
+    <tr><td><code>Value boxCollides(centro, semiejes)</code></td><td>toca bloques?</td></tr>
+    <tr><td><code>Value deleteWorld(texto)</code></td><td>lo borra</td></tr>
+    <tr><td><code>Value getBlock(x, y, z)</code></td><td>numero del bloque (0 = aire)</td></tr>
+    <tr><td><code>Value getBlockAt(vec)</code></td><td>bloque en ese punto</td></tr>
+    <tr><td><code>Value getMeta(texto, texto2)</code></td><td>lee un dato</td></tr>
+    <tr><td><code>Value inWater(vec)</code></td><td>esta en el agua?</td></tr>
+    <tr><td><code>Value isActive(...)</code></td><td>hay mundo de bloques?</td></tr>
+    <tr><td><code>Value isReady(vec)</code></td><td>ya esta generado?</td></tr>
+    <tr><td><code>Value listWorlds(...)</code></td><td>lista de mundos</td></tr>
+    <tr><td><code>Value loadWorld(texto)</code></td><td>carga un mundo guardado</td></tr>
+    <tr><td><code>Value moveBox(centro, semiejes, delta)</code></td><td>posicion, enSuelo, techo, pared</td></tr>
+    <tr><td><code>Value newWorld(texto, semilla)</code></td><td>mundo nuevo con nombre</td></tr>
+    <tr><td><code>Value raycast(origen, direccion, distancia)</code></td><td>nil o {block, normal, id, point, distance}</td></tr>
+    <tr><td><code>Value saveWorld(...)</code></td><td>guarda</td></tr>
+    <tr><td><code>Value seed(...)</code></td><td>semilla</td></tr>
+    <tr><td><code>Value setBlock(x, y, z, texto)</code></td><td>pone o quita un bloque</td></tr>
+    <tr><td><code>Value setMeta(texto, texto2)</code></td><td>dato guardado con el mundo</td></tr>
+    <tr><td><code>Value skyLight(x, y, z)</code></td><td>luz del cielo 0..15</td></tr>
+    <tr><td><code>Value surfaceHeight(x, z)</code></td><td>altura del terreno</td></tr>
+    <tr><td><code>Value worldName(...)</code></td><td>nombre del mundo</td></tr>
+  </tbody>
+</table>

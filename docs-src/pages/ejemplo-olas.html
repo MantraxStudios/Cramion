@@ -1,18 +1,35 @@
-<pre><code class="language-lua">local Olas = { properties = {} }
+<p>Cambiar los vértices de una malla cada frame.</p>
+<p class="file">Assets/Scripts/Olas.h</p>
+<pre><code class="language-cpp">#pragma once
+#include &lt;cramion/Script.h&gt;
+#include &lt;vector&gt;
+using namespace cramion;
 
-function Olas:Start()
-    self.malla = Mesh.plane(20, 20, 60, 60)
-    self.base = self.malla.vertices
-    self.entity.mesh = self.malla
-end
+class Olas : public Script {
+public:
+    void start() override;
+    void update(float dt) override;
 
-function Olas:Update(dt)
-    local v = {}
-    for i, p in ipairs(self.base) do
-        v[i] = Vec3(p.x, math.sin(p.x * 0.8 + Time.time * 2) * 0.3, p.z)
-    end
-    self.malla.vertices = v
-    self.malla:recalculateNormals()
-end
+private:
+    Mesh malla;
+    std::vector&lt;Vec3&gt; base;
+};</code></pre>
+<p class="file">Assets/Scripts/Olas.cpp</p>
+<pre><code class="language-cpp">#include &quot;Olas.h&quot;
 
-return Olas</code></pre>
+void Olas::start() {
+    malla = Mesh::plane(20.0f, 20.0f, 60, 60);
+    const Value v = malla.vertices();
+    for (std::size_t i = 0; i &lt; v.size(); ++i) base.push_back(v[i]);
+    entity().setMesh(malla);
+}
+
+void Olas::update(float) {
+    Values v;
+    v.reserve(base.size());
+    for (const Vec3&amp; p : base) v.push_back(Vec3{p.x, Mathf::sin(p.x * 0.8f + Time::time() * 2.0f) * 0.3f, p.z});
+    malla.setVertices(v);
+    malla.recalculateNormals();
+}
+
+CRAMION_SCRIPT(Olas)</code></pre>

@@ -18,6 +18,7 @@
 #include "CramionCore/asset/AssetManager.h"
 #include "CramionCore/ecs/Components.h"
 #include "CramionCore/ecs/MathUtil.h"
+#include "CramionCore/modeling/EditableMesh.h"
 #include "CramionCore/physics/Cloth.h"
 #include "CramionCore/physics/Ragdoll.h"
 #include "CramionCore/physics/SoftBody.h"
@@ -37,6 +38,7 @@
 #include <Jolt/Geometry/Plane.h>
 #include <Jolt/Physics/Body/BodyCreationSettings.h>
 #include <Jolt/Physics/Body/BodyLock.h>
+#include <Jolt/Physics/Character/CharacterVirtual.h>
 #include <Jolt/Physics/Collision/CastResult.h>
 #include <Jolt/Physics/Collision/CollideShape.h>
 #include <Jolt/Physics/Collision/CollisionCollectorImpl.h>
@@ -397,6 +399,15 @@ struct PhysicsSystem::Impl {
             if (body1.GetUserData() == body2.GetUserData()) {
                 return JPH::ValidateResult::RejectAllContactsForThisBodyPair;
             }
+            // El inner body de un personaje: triggers y dinamicos (que no lo
+            // atraviesen); con lo quieto ya choca el propio personaje.
+            if (!body1.IsSensor() && !body2.IsSensor()) {
+                const bool inner1 = impl_.isInnerBody(body1.GetID());
+                const bool inner2 = impl_.isInnerBody(body2.GetID());
+                if ((inner1 && !body2.IsDynamic()) || (inner2 && !body1.IsDynamic())) {
+                    return JPH::ValidateResult::RejectAllContactsForThisBodyPair;
+                }
+            }
             return impl_.allowedByOverrides(body1, body2) ? JPH::ValidateResult::AcceptAllContactsForThisBodyPair
                                                           : JPH::ValidateResult::RejectAllContactsForThisBodyPair;
         }
@@ -444,6 +455,11 @@ struct PhysicsSystem::Impl {
             material(body2, manifold.mSubShapeID2, f2, r2);
             settings.mCombinedFriction = 0.5f * (f1 + f2);
             settings.mCombinedRestitution = std::max(r1, r2);
+            // Personaje contra algo solido: sus eventos salen de sus propios contactos.
+            if (!body1.IsSensor() && !body2.IsSensor() &&
+                (impl_.isInnerBody(body1.GetID()) || impl_.isInnerBody(body2.GetID()))) {
+                return;
+            }
 
             RawContact c;
             c.kind = kind;
@@ -512,6 +528,10 @@ struct PhysicsSystem::Impl {
             }
         }
         overrides_dirty = false;
+    }
+
+    bool isInnerBody(const JPH::BodyID& id) const {
+        return !inner_bodies.empty() && inner_bodies.contains(id.GetIndexAndSequenceNumber());
     }
 
     PhysicsSettings settings;
@@ -2169,6 +2189,8 @@ struct PhysicsSystem::Impl {
             // Ragdoll cayendo: su propio collider (la capsula del personaje)
             // sale de la simulacion hasta que se apague.
             if (ragdolls.contains(handle)) continue;
+            // El CharacterController es su collider (los demas se ignoran).
+            if (registry.all_of<CharacterController>(handle)) continue;
             auto it = entries.find(handle);
             if (it != entries.end()) it->second.seen = sync_generation;
             const bool has_mesh = pools.mesh.contains(handle);
@@ -2459,6 +2481,7 @@ struct PhysicsSystem::Impl {
     void stepOnce(ecs::World& w) {
         const float dt = settings.fixed_step;
         moveKinematics(dt);
+        stepCharacters(w, dt);
         preStepCloths(w, dt);
         preStepSoftBodies(w);
         applyBuoyancy(w, dt);
@@ -2473,6 +2496,464 @@ struct PhysicsSystem::Impl {
         (void)w;
     }
 
+    // --- Character Controller (CharacterVirtual de Jolt) ---
+    // El personaje no es un cuerpo: se mueve con barridos de su capsula antes
+    // de cada paso. Su "inner body" (cinematico, con la entidad en su
+    // UserData) es lo que ven los rayos y los triggers; con lo solido solo
+    // empuja a los dinamicos (los eventos de colision salen de los contactos
+    // del propio personaje).
+    struct CharacterTouch {
+        entt::entity other = entt::null;
+        bool touched = false;  // en este paso
+        bool active = false;   // ya dio Enter
+        Vec3 point{};
+        Vec3 normal{};  // del personaje hacia el otro
+        Vec3 velocity{};
+    };
+    struct CharacterEntry {
+        JPH::Ref<JPH::CharacterVirtual> character;
+        JPH::RefConst<JPH::Shape> standing;
+        JPH::RefConst<JPH::Shape> crouched;
+        std::uint64_t key = 0;
+        int layer = 0;
+        Vec3 position{};  // la de la entidad (la ultima leida o escrita)
+        Vec3 previous_position{}, current_position{};
+        float previous_yaw = 0.0f, current_yaw = 0.0f;
+        bool yaw_driven = false;  // hay que escribir el giro
+        Vec3 scale{1.0f, 1.0f, 1.0f};
+        // Entrada
+        Vec3 input{};
+        bool run = false;
+        bool crouch_wanted = false;
+        bool crouching = false;
+        bool jump_held = false;
+        float jump_buffer = 0.0f;  // s que sigue pedido un salto
+        float jump_height = -1.0f;
+        float since_grounded = 0.0f;
+        int jumps_used = 0;
+        Vec3 move_velocity{};      // horizontal, relativa al suelo
+        Vec3 manual_velocity{};    // modo Manual
+        Vec3 pending_velocity{};   // addCharacterVelocity
+        Vec3 velocity{};           // la real del ultimo paso
+        std::uint32_t flags = 0;
+        std::unordered_map<std::uint32_t, CharacterTouch> touches;  // por cuerpo
+        std::uint64_t seen = 0;
+    };
+    std::unordered_map<entt::entity, CharacterEntry> characters;
+    std::unordered_set<std::uint32_t> inner_bodies;  // se leen desde los hilos de Jolt (solo cambian fuera)
+    JPH::CharacterVsCharacterCollisionSimple character_vs_character;
+
+    class CharacterListener final : public JPH::CharacterContactListener {
+    public:
+        explicit CharacterListener(Impl& impl) : impl_(impl) {}
+        void OnContactAdded(const JPH::CharacterVirtual* character, const JPH::BodyID& body, const JPH::SubShapeID&,
+                            JPH::RVec3Arg position, JPH::Vec3Arg normal, JPH::CharacterContactSettings& settings) override {
+            touch(character, body, position, normal, settings);
+        }
+        void OnContactPersisted(const JPH::CharacterVirtual* character, const JPH::BodyID& body, const JPH::SubShapeID&,
+                                JPH::RVec3Arg position, JPH::Vec3Arg normal, JPH::CharacterContactSettings& settings) override {
+            touch(character, body, position, normal, settings);
+        }
+        void OnCharacterContactAdded(const JPH::CharacterVirtual* character, const JPH::CharacterVirtual* other,
+                                     const JPH::SubShapeID&, JPH::RVec3Arg position, JPH::Vec3Arg normal,
+                                     JPH::CharacterContactSettings&) override {
+            touchCharacter(character, other, position, normal);
+        }
+        void OnCharacterContactPersisted(const JPH::CharacterVirtual* character, const JPH::CharacterVirtual* other,
+                                         const JPH::SubShapeID&, JPH::RVec3Arg position, JPH::Vec3Arg normal,
+                                         JPH::CharacterContactSettings&) override {
+            touchCharacter(character, other, position, normal);
+        }
+
+    private:
+        CharacterEntry* entryOf(const JPH::CharacterVirtual* character) const {
+            const auto it = impl_.characters.find(userDataToEntity(character->GetUserData()));
+            return it != impl_.characters.end() ? &it->second : nullptr;
+        }
+        static void store(CharacterTouch& t, entt::entity other, JPH::RVec3Arg position, JPH::Vec3Arg normal) {
+            t.other = other;
+            t.touched = true;
+            t.point = fromJolt(JPH::Vec3(position));
+            t.normal = -fromJolt(normal);  // Jolt: hacia el personaje
+        }
+        void touch(const JPH::CharacterVirtual* character, const JPH::BodyID& body, JPH::RVec3Arg position,
+                   JPH::Vec3Arg normal, JPH::CharacterContactSettings& settings) {
+            CharacterEntry* entry = entryOf(character);
+            if (entry == nullptr) return;
+            ecs::World* w = impl_.world;
+            const entt::entity self = userDataToEntity(character->GetUserData());
+            const CharacterController* cc =
+                w != nullptr && w->valid(self) ? w->registry().try_get<CharacterController>(self) : nullptr;
+            settings.mCanReceiveImpulses = cc == nullptr || cc->push_rigidbodies;
+            const auto it = impl_.body_entities.find(body.GetIndexAndSequenceNumber());
+            if (it == impl_.body_entities.end()) return;  // geometria sin entidad
+            store(entry->touches[body.GetIndexAndSequenceNumber()], it->second, position, normal);
+        }
+        void touchCharacter(const JPH::CharacterVirtual* character, const JPH::CharacterVirtual* other,
+                            JPH::RVec3Arg position, JPH::Vec3Arg normal) {
+            CharacterEntry* entry = entryOf(character);
+            if (entry == nullptr || other->GetInnerBodyID().IsInvalid()) return;
+            store(entry->touches[other->GetInnerBodyID().GetIndexAndSequenceNumber()],
+                  userDataToEntity(other->GetUserData()), position, normal);
+        }
+        Impl& impl_;
+    };
+    CharacterListener character_listener{*this};
+
+    // Filtro de cuerpos del personaje: ni triggers ni lo de su propia entidad.
+    class CharacterBodyFilter final : public JPH::BodyFilter {
+    public:
+        explicit CharacterBodyFilter(std::uint64_t own) : own_(own) {}
+        bool ShouldCollideLocked(const JPH::Body& body) const override {
+            return !body.IsSensor() && body.GetUserData() != own_;
+        }
+
+    private:
+        std::uint64_t own_;
+    };
+
+    static float yawOf(const Quat& q) {
+        // Giro alrededor de Y del -Z local (el "delante" del motor).
+        return std::atan2(2.0f * (q.x * q.z + q.w * q.y), 1.0f - 2.0f * (q.x * q.x + q.y * q.y));
+    }
+    static Quat yawRotation(float yaw) {
+        return Quat{0.0f, std::sin(yaw * 0.5f), 0.0f, std::cos(yaw * 0.5f)};
+    }
+
+    static std::uint64_t characterKey(const CharacterController& cc, const Vec3& scale, int layer) {
+        Signature s;
+        for (const float f : {cc.height, cc.radius, cc.center.x, cc.center.y, cc.center.z, cc.crouch_height, cc.skin_width,
+                              static_cast<float>(layer)}) {
+            s.push_back(f);
+        }
+        // La escala sale de descomponer la matriz (con ruido al girar): redondeada.
+        for (const float f : {scale.x, scale.y, scale.z}) s.push_back(std::round(f * 1000.0f));
+        return s.hash;
+    }
+
+    // Capsula (con su centro) a la escala de la entidad; agachada, con los pies en el mismo sitio.
+    static JPH::RefConst<JPH::Shape> characterShape(const CharacterController& cc, const Vec3& scale, bool crouched) {
+        const float radial = std::max(std::abs(scale.x), std::abs(scale.z));
+        const float radius = std::max(cc.radius * radial, 0.01f);
+        const float full = std::max(cc.height * std::abs(scale.y), 2.0f * radius + 0.01f);
+        const float height = crouched ? std::clamp(cc.crouch_height * std::abs(scale.y), 2.0f * radius + 0.01f, full) : full;
+        Vec3 center{cc.center.x * scale.x, cc.center.y * scale.y, cc.center.z * scale.z};
+        center.y -= (full - height) * 0.5f;
+        const float half_cylinder = std::max(height * 0.5f - radius, 0.005f);
+        JPH::RefConst<JPH::Shape> capsule = new JPH::CapsuleShape(half_cylinder, radius);
+        return JPH::RotatedTranslatedShapeSettings(toJolt(center), JPH::Quat::sIdentity(), capsule).Create().Get();
+    }
+
+    void destroyCharacter(entt::entity handle, CharacterEntry& c) {
+        if (!c.character) return;
+        const JPH::BodyID inner = c.character->GetInnerBodyID();
+        if (!inner.IsInvalid()) {
+            const std::uint32_t key = inner.GetIndexAndSequenceNumber();
+            body_entities.erase(key);
+            inner_bodies.erase(key);
+            for (auto it = pairs.begin(); it != pairs.end();) {
+                if (it->second.body_a == key || it->second.body_b == key) {
+                    emitExit(it->second);
+                    it = pairs.erase(it);
+                } else {
+                    ++it;
+                }
+            }
+        }
+        for (auto& [body, t] : c.touches) {
+            if (t.active) dispatchTouch(handle, t, PhysicsEventType::CollisionExit);
+        }
+        c.touches.clear();
+        character_vs_character.Remove(c.character);
+        c.character = nullptr;  // el destructor quita el inner body
+    }
+
+    void createCharacter(ecs::World& w, entt::entity handle, const CharacterController& cc, CharacterEntry& c) {
+        const ecs::Entity e = w.wrap(handle);
+        Vec3 position{}, scale{};
+        Quat rotation{};
+        ecs::decomposeMatrix(e.worldMatrix(), position, rotation, scale);
+        c.scale = scale;
+        c.layer = layerOf(e);
+        c.key = characterKey(cc, scale, c.layer);
+        c.standing = characterShape(cc, scale, false);
+        c.crouched = characterShape(cc, scale, true);
+        c.crouching = false;
+        c.position = c.previous_position = c.current_position = position;
+        c.previous_yaw = c.current_yaw = yawOf(core::normalize(rotation));
+
+        JPH::Ref<JPH::CharacterVirtualSettings> s = new JPH::CharacterVirtualSettings;
+        s->mShape = c.standing;
+        s->mInnerBodyShape = c.standing;
+        s->mInnerBodyLayer = objectLayer(c.layer, true);
+        s->mMaxSlopeAngle = core::radians(std::clamp(cc.slope_limit, 0.0f, 89.0f));
+        s->mMass = std::max(cc.mass, 1.0f);
+        s->mMaxStrength = cc.push_rigidbodies ? std::max(cc.push_strength, 0.0f) : 0.0f;
+        s->mCharacterPadding = std::clamp(cc.skin_width, 0.001f, 0.2f);
+        s->mBackFaceMode = JPH::EBackFaceMode::CollideWithBackFaces;
+        s->mEnhancedInternalEdgeRemoval = true;
+        // Solo lo que esta por debajo del centro de la semiesfera de abajo sostiene.
+        const float radial = std::max(std::abs(scale.x), std::abs(scale.z));
+        const float feet = cc.center.y * scale.y - std::max(cc.height * std::abs(scale.y), 0.0f) * 0.5f;
+        s->mSupportingVolume = JPH::Plane(JPH::Vec3::sAxisY(), -(feet + cc.radius * radial));
+        c.character = new JPH::CharacterVirtual(s, JPH::RVec3(toJolt(position)), JPH::Quat::sIdentity(),
+                                                entityToUserData(handle), system.get());
+        c.character->SetListener(&character_listener);
+        c.character->SetCharacterVsCharacterCollision(&character_vs_character);
+        character_vs_character.Add(c.character);
+        const JPH::BodyID inner = c.character->GetInnerBodyID();
+        if (!inner.IsInvalid()) {
+            body_entities[inner.GetIndexAndSequenceNumber()] = handle;
+            inner_bodies.insert(inner.GetIndexAndSequenceNumber());
+            // Que lo detecten los triggers quietos.
+            JPH::BodyLockWrite lock(system->GetBodyLockInterface(), inner);
+            if (lock.Succeeded()) lock.GetBody().SetCollideKinematicVsNonDynamic(true);
+        }
+        refreshCharacterContacts(c, handle);
+    }
+
+    void refreshCharacterContacts(CharacterEntry& c, entt::entity handle) {
+        const JPH::ObjectLayer layer = objectLayer(c.layer, true);
+        const CharacterBodyFilter filter(entityToUserData(handle));
+        c.character->RefreshContacts(system->GetDefaultBroadPhaseLayerFilter(layer), system->GetDefaultLayerFilter(layer),
+                                     filter, {}, *temp_allocator);
+    }
+
+    void syncCharacters(ecs::World& w, bool simulate) {
+        auto& registry = w.registry();
+        ++character_generation;
+        if (simulate) {
+            for (const entt::entity h : registry.view<CharacterController>()) {
+                const ecs::Entity e = w.wrap(h);
+                if (!e.activeInHierarchy()) continue;
+                if (ragdolls.contains(h)) continue;  // cayendo como ragdoll: sin capsula
+                const CharacterController& cc = registry.get<CharacterController>(h);
+                const core::Mat4& m = e.worldMatrix();
+                Vec3 position{}, scale{};
+                Quat rotation{};
+                ecs::decomposeMatrix(m, position, rotation, scale);
+                CharacterEntry& c = characters[h];
+                c.seen = character_generation;
+                if (!c.character || c.key != characterKey(cc, scale, layerOf(e))) {
+                    destroyCharacter(h, c);
+                    createCharacter(w, h, cc, c);
+                    continue;
+                }
+                // Movido desde fuera (script, editor): teletransporte.
+                if (!nearlyEqual(c.position, position, 1e-4f)) {
+                    c.character->SetPosition(JPH::RVec3(toJolt(position)));
+                    c.position = c.previous_position = c.current_position = position;
+                    refreshCharacterContacts(c, h);
+                }
+                if (!c.yaw_driven) c.previous_yaw = c.current_yaw = yawOf(core::normalize(rotation));
+                c.character->SetMaxSlopeAngle(core::radians(std::clamp(cc.slope_limit, 0.0f, 89.0f)));
+                c.character->SetMass(std::max(cc.mass, 1.0f));
+                c.character->SetMaxStrength(cc.push_rigidbodies ? std::max(cc.push_strength, 0.0f) : 0.0f);
+            }
+        }
+        for (auto it = characters.begin(); it != characters.end();) {
+            if (it->second.seen != character_generation) {
+                destroyCharacter(it->first, it->second);
+                it = characters.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
+    std::uint64_t character_generation = 0;
+
+    // Lo que toca ahora (las banderas de Unity) a partir de sus contactos.
+    static std::uint32_t contactFlags(const JPH::CharacterVirtual& ch, float slope_cos) {
+        std::uint32_t flags = 0;
+        for (const JPH::CharacterVirtual::Contact& k : ch.GetActiveContacts()) {
+            if (k.mIsSensorB || (!k.mHadCollision && k.mDistance > ch.GetCharacterPadding() * 2.0f)) continue;
+            const float y = k.mContactNormal.GetY();  // hacia el personaje
+            if (y >= std::min(slope_cos, 0.7f) - 1e-3f) {
+                flags |= PhysicsSystem::kCollidedBelow;
+            } else if (y < -0.5f) {
+                flags |= PhysicsSystem::kCollidedAbove;
+            } else {
+                flags |= PhysicsSystem::kCollidedSides;
+            }
+        }
+        return flags;
+    }
+
+    // Un movimiento del personaje: velocidad durante dt, con escalones y pegado al suelo.
+    void advanceCharacter(CharacterEntry& c, entt::entity handle, const CharacterController& cc, const Vec3& velocity,
+                          float dt, const JPH::Vec3& gravity, bool stick) {
+        JPH::CharacterVirtual& ch = *c.character;
+        ch.SetLinearVelocity(toJolt(velocity));
+        JPH::CharacterVirtual::ExtendedUpdateSettings update;
+        update.mStickToFloorStepDown = stick ? JPH::Vec3(0.0f, -std::max(cc.step_offset, 0.25f), 0.0f) : JPH::Vec3::sZero();
+        update.mWalkStairsStepUp = JPH::Vec3(0.0f, std::max(cc.step_offset * std::abs(c.scale.y), 0.0f), 0.0f);
+        const JPH::ObjectLayer layer = objectLayer(c.layer, true);
+        const CharacterBodyFilter filter(entityToUserData(handle));
+        ch.ExtendedUpdate(dt, gravity, update, system->GetDefaultBroadPhaseLayerFilter(layer),
+                          system->GetDefaultLayerFilter(layer), filter, {}, *temp_allocator);
+        c.flags = contactFlags(ch, std::cos(core::radians(std::clamp(cc.slope_limit, 0.0f, 89.0f))));
+    }
+
+    void tryCrouch(CharacterEntry& c, entt::entity handle, bool want) {
+        if (want == c.crouching) return;
+        const JPH::ObjectLayer layer = objectLayer(c.layer, true);
+        const CharacterBodyFilter filter(entityToUserData(handle));
+        // Levantarse solo si cabe de pie.
+        if (c.character->SetShape(want ? c.crouched.GetPtr() : c.standing.GetPtr(), 1.5f * c.character->GetCharacterPadding(),
+                                  system->GetDefaultBroadPhaseLayerFilter(layer), system->GetDefaultLayerFilter(layer),
+                                  filter, {}, *temp_allocator)) {
+            c.character->SetInnerBodyShape(want ? c.crouched.GetPtr() : c.standing.GetPtr());
+            c.crouching = want;
+        }
+    }
+
+    static Vec3 moveTowards(const Vec3& from, const Vec3& to, float max_delta) {
+        const Vec3 d = to - from;
+        const float len = core::length(d);
+        return len <= max_delta || len < 1e-6f ? to : from + d * (max_delta / len);
+    }
+
+    void stepCharacters(ecs::World& w, float dt) {
+        if (characters.empty()) return;
+        auto& registry = w.registry();
+        for (auto& [h, c] : characters) {
+            if (!c.character || !registry.valid(h)) continue;
+            const CharacterController* ccp = registry.try_get<CharacterController>(h);
+            if (ccp == nullptr) continue;
+            const CharacterController& cc = *ccp;
+            JPH::CharacterVirtual& ch = *c.character;
+            const JPH::Vec3 up = JPH::Vec3::sAxisY();
+            const Vec3 before = fromJolt(JPH::Vec3(ch.GetPosition()));
+            c.previous_position = c.current_position;
+            c.previous_yaw = c.current_yaw;
+
+            if (cc.movement == CharacterMovement::Manual) {
+                const Vec3 v = c.manual_velocity + c.pending_velocity;
+                c.pending_velocity = Vec3{};
+                advanceCharacter(c, h, cc, v, dt, system->GetGravity(), false);
+            } else {
+                const JPH::Vec3 gravity = system->GetGravity() * cc.gravity_scale;
+                tryCrouch(c, h, c.crouch_wanted);
+                ch.UpdateGroundVelocity();
+                const bool grounded = ch.GetGroundState() == JPH::CharacterBase::EGroundState::OnGround;
+                const JPH::Vec3 ground_velocity = ch.GetGroundVelocity();
+                const float vertical = ch.GetLinearVelocity().Dot(up);
+                const bool settling = vertical - ground_velocity.Dot(up) < 0.1f;
+                c.since_grounded = grounded ? 0.0f : c.since_grounded + dt;
+                if (grounded && settling) c.jumps_used = 0;
+
+                // Horizontal: hacia la velocidad pedida con aceleracion (menos en el aire).
+                Vec3 input{c.input.x, 0.0f, c.input.z};
+                const float amount = core::length(input);
+                if (amount > 1.0f) input = input * (1.0f / amount);
+                const float speed = c.crouching ? cc.crouch_speed : (c.run ? cc.run_speed : cc.walk_speed);
+                const Vec3 desired = input * speed;
+                const float control = grounded ? 1.0f : std::clamp(cc.air_control, 0.0f, 1.0f);
+                if (cc.acceleration <= 0.0f) {
+                    c.move_velocity = grounded ? desired : core::lerp(c.move_velocity, desired, control);
+                } else {
+                    c.move_velocity = moveTowards(c.move_velocity, desired, cc.acceleration * control * dt);
+                }
+                c.move_velocity = c.move_velocity + Vec3{c.pending_velocity.x, 0.0f, c.pending_velocity.z};
+
+                JPH::Vec3 v = grounded && settling ? ground_velocity : up * vertical;
+                v += JPH::Vec3(0.0f, c.pending_velocity.y, 0.0f);
+                c.pending_velocity = Vec3{};
+                // Salto (pedido hace poco, en el suelo, en tiempo coyote o saltos que quedan).
+                if (c.jump_buffer > 0.0f) {
+                    const bool from_ground = (grounded || c.since_grounded <= cc.coyote_time) && c.jumps_used == 0;
+                    const bool in_air = !from_ground && c.jumps_used > 0 && c.jumps_used < std::max(cc.max_jumps, 1);
+                    const bool first_in_air = !from_ground && c.jumps_used == 0 && cc.max_jumps > 1;  // cayendo sin saltar
+                    if (cc.max_jumps > 0 && (from_ground || in_air || first_in_air)) {
+                        const float h = c.jump_height >= 0.0f ? c.jump_height : cc.jump_height;
+                        const float g = std::max(gravity.Length(), 1e-3f);
+                        const float base = from_ground && grounded ? ground_velocity.Dot(up) : 0.0f;
+                        v = v - up * v.Dot(up) + up * (std::sqrt(2.0f * g * std::max(h, 0.0f)) + base);
+                        c.jumps_used = first_in_air ? 2 : c.jumps_used + 1;
+                        c.jump_buffer = 0.0f;
+                        c.since_grounded = cc.coyote_time + 1.0f;
+                    } else {
+                        c.jump_buffer -= dt;
+                    }
+                }
+                v += toJolt(c.move_velocity) + gravity * dt;
+                const bool jumping = v.Dot(up) - ground_velocity.Dot(up) > 0.5f;
+                advanceCharacter(c, h, cc, fromJolt(v), dt, gravity, cc.stick_to_floor && !jumping);
+                // Contra el techo: no sigue subiendo.
+                const float moved_up = (fromJolt(JPH::Vec3(ch.GetPosition())) - before).y / dt;
+                if ((c.flags & PhysicsSystem::kCollidedAbove) != 0 && v.GetY() > 0.0f && moved_up < v.GetY()) {
+                    ch.SetLinearVelocity(ch.GetLinearVelocity() - up * (ch.GetLinearVelocity().GetY() - std::max(moved_up, 0.0f)));
+                }
+                // Mirar hacia donde anda.
+                if (cc.rotate_to_movement && core::length(c.move_velocity) > 0.2f && amount > 0.05f) {
+                    const float target = std::atan2(-c.move_velocity.x, -c.move_velocity.z);
+                    float delta = std::remainder(target - c.current_yaw, 2.0f * core::kPi);
+                    const float max_turn = core::radians(std::max(cc.rotation_speed, 0.0f)) * dt;
+                    delta = std::clamp(delta, -max_turn, max_turn);
+                    c.current_yaw = std::remainder(c.current_yaw + delta, 2.0f * core::kPi);
+                    c.yaw_driven = true;
+                }
+            }
+            c.current_position = fromJolt(JPH::Vec3(ch.GetPosition()));
+            c.velocity = (c.current_position - before) * (1.0f / dt);
+        }
+        processCharacterTouches();
+    }
+
+    void dispatchTouch(entt::entity self, const CharacterTouch& t, PhysicsEventType type) {
+        if (world == nullptr) return;
+        PhysicsEvent e;
+        e.type = type;
+        e.a = world->wrap(self);
+        e.b = world->wrap(t.other);
+        e.point = t.point;
+        e.normal = t.normal;
+        e.relative_velocity = t.velocity;
+        e.contact_count = 1;
+        e.step = steps;
+        dispatch(e);
+    }
+
+    // Toques de este paso -> Enter / Stay / Exit (por cuerpo tocado).
+    void processCharacterTouches() {
+        for (auto& [h, c] : characters) {
+            for (auto it = c.touches.begin(); it != c.touches.end();) {
+                CharacterTouch& t = it->second;
+                const bool gone = !body_entities.contains(it->first);
+                if (t.touched && !gone) {
+                    t.velocity = -c.velocity;
+                    dispatchTouch(h, t, t.active ? PhysicsEventType::CollisionStay : PhysicsEventType::CollisionEnter);
+                    t.active = true;
+                    t.touched = false;
+                    ++it;
+                    continue;
+                }
+                if (t.active) dispatchTouch(h, t, PhysicsEventType::CollisionExit);
+                it = c.touches.erase(it);
+            }
+        }
+    }
+
+    // Transform suave entre pasos, como los dinamicos.
+    void writeCharacters(ecs::World& w, float alpha) {
+        const float t = std::clamp(alpha, 0.0f, 1.0f);
+        for (auto& [h, c] : characters) {
+            if (!c.character || !w.valid(h)) continue;
+            const Vec3 position = core::lerp(c.previous_position, c.current_position, t);
+            ecs::Entity e = w.wrap(h);
+            if (c.yaw_driven) {
+                const float d = std::remainder(c.current_yaw - c.previous_yaw, 2.0f * core::kPi);
+                Vec3 p{}, scale{};
+                Quat r{};
+                ecs::decomposeMatrix(e.worldMatrix(), p, r, scale);
+                e.setWorldMatrix(core::composeTrs(position, yawRotation(c.previous_yaw + d * t), scale));
+            } else {
+                e.setWorldPosition(position);
+            }
+            c.position = e.worldPosition();
+        }
+    }
+
     // --- Consultas ---
 
     void recordQuery(const QueryDebug& q) const {
@@ -2485,6 +2966,9 @@ struct PhysicsSystem::Impl {
         if (const BodyEntry* entry = entryOf(filter.ignore)) {
             a = entry->solid;
             b = entry->sensor;
+        } else if (filter.ignore.valid()) {
+            const auto it = characters.find(filter.ignore.handle());
+            if (it != characters.end() && it->second.character) a = it->second.character->GetInnerBodyID();
         }
     }
 
@@ -2580,6 +3064,13 @@ void PhysicsSystem::stop() {
     d.soft_bodies.clear();
     for (auto& [handle, vehicle] : d.vehicles) d.removeVehicle(vehicle);
     d.vehicles.clear();
+    d.pairs.clear();  // sin eventos Exit al parar
+    for (auto& [handle, character] : d.characters) {
+        character.touches.clear();
+        d.destroyCharacter(handle, character);
+    }
+    d.characters.clear();
+    d.inner_bodies.clear();
     for (auto& [handle, entry] : d.entries) {
         for (const JPH::BodyID& id : {entry.solid, entry.sensor}) {
             if (id.IsInvalid()) continue;
@@ -2642,6 +3133,13 @@ void PhysicsSystem::shiftOrigin(const core::Vec3& offset) {
         shift_matrix(entry.matrix);
     }
     for (auto& [key, mesh] : d.static_meshes) mesh.origin = mesh.origin - offset;
+    for (auto& [handle, c] : d.characters) {
+        c.position = c.position - offset;
+        c.previous_position = c.previous_position - offset;
+        c.current_position = c.current_position - offset;
+        // Su inner body se mueve con los demas cuerpos (abajo).
+        if (c.character) c.character->SetPosition(c.character->GetPosition() - JPH::RVec3(toJolt(offset)));
+    }
     for (auto& [handle, ragdoll] : d.ragdolls) {
         for (Vec3& p : ragdoll.previous_position) p = p - offset;
         for (Vec3& p : ragdoll.current_position) p = p - offset;
@@ -2691,7 +3189,9 @@ int PhysicsSystem::update(ecs::World& world, float delta_seconds, bool simulate)
     if (!d.system) return 0;
     d.events.clear();
     const auto begin = std::chrono::steady_clock::now();
+    modeling::updateEditableMeshes(world);  // su MeshCollider usa la malla generada
     d.sync(world, simulate);
+    d.syncCharacters(world, simulate);
     d.syncRagdolls(world, simulate);
     d.syncCloths(world, simulate);
     d.syncSoftBodies(world, simulate);
@@ -2708,6 +3208,7 @@ int PhysicsSystem::update(ecs::World& world, float delta_seconds, bool simulate)
         // de acumular retraso.
         d.accumulator = std::min(d.accumulator, step);
         d.writeBack(world, d.accumulator / step);
+        d.writeCharacters(world, d.accumulator / step);
         d.writeRagdolls(world, d.accumulator / step);
         d.writeCloths(d.accumulator / step);
         d.writeSoftBodies(world, d.accumulator / step);
@@ -2724,10 +3225,12 @@ void PhysicsSystem::singleStep(ecs::World& world) {
     if (!d.system) return;
     d.events.clear();
     d.sync(world, true);
+    d.syncCharacters(world, true);
     d.syncCloths(world, true);
     d.syncSoftBodies(world, true);
     d.stepOnce(world);
     d.writeBack(world, 1.0f);
+    d.writeCharacters(world, 1.0f);
     d.writeCloths(1.0f);
     d.writeSoftBodies(world, 1.0f);
 }
@@ -2950,6 +3453,9 @@ void PhysicsSystem::clearRecordedQueries() {
 // --- Rigidbody -----------------------------------------------------------------
 
 Vec3 PhysicsSystem::linearVelocity(ecs::Entity entity) const {
+    if (const auto it = impl_->characters.find(entity.handle()); entity.valid() && it != impl_->characters.end()) {
+        return it->second.velocity;
+    }
     const Impl::BodyEntry* entry = impl_->entryOf(entity);
     if (entry == nullptr || entry->solid.IsInvalid()) return {};
     return fromJolt(impl_->bodies().GetLinearVelocity(entry->solid));
@@ -2999,6 +3505,10 @@ PhysicsSystem::VehicleState PhysicsSystem::vehicleState(ecs::Entity vehicle) con
 }
 
 void PhysicsSystem::setLinearVelocity(ecs::Entity entity, const Vec3& velocity) {
+    if (isCharacter(entity)) {
+        setCharacterVelocity(entity, velocity);
+        return;
+    }
     const Impl::BodyEntry* entry = impl_->entryOf(entity);
     if (entry == nullptr || entry->solid.IsInvalid() || entry->type != BodyType::Dynamic) return;
     impl_->bodies().SetLinearVelocity(entry->solid, toJolt(velocity));
@@ -3095,6 +3605,137 @@ Vec3 PhysicsSystem::centerOfMass(ecs::Entity entity) const {
     const Impl::BodyEntry* entry = impl_->entryOf(entity);
     if (entry == nullptr || entry->solid.IsInvalid()) return entity.valid() ? entity.worldPosition() : Vec3{};
     return fromJolt(JPH::Vec3(impl_->bodies().GetCenterOfMassPosition(entry->solid)));
+}
+
+// --- Character Controller --------------------------------------------------------
+
+bool PhysicsSystem::isCharacter(ecs::Entity entity) const {
+    const auto it = impl_->characters.find(entity.handle());
+    return entity.valid() && it != impl_->characters.end() && it->second.character;
+}
+
+PhysicsSystem::CharacterState PhysicsSystem::characterState(ecs::Entity character) const {
+    CharacterState state;
+    if (!isCharacter(character)) return state;
+    const Impl::CharacterEntry& c = impl_->characters.at(character.handle());
+    const JPH::CharacterVirtual& ch = *c.character;
+    state.valid = true;
+    state.ground_state = static_cast<CharacterGround>(static_cast<int>(ch.GetGroundState()));
+    state.grounded = ch.GetGroundState() == JPH::CharacterBase::EGroundState::OnGround;
+    state.crouching = c.crouching;
+    state.velocity = c.velocity;
+    if (ch.GetGroundState() != JPH::CharacterBase::EGroundState::InAir) {
+        state.ground_normal = fromJolt(ch.GetGroundNormal());
+        state.ground_point = fromJolt(JPH::Vec3(ch.GetGroundPosition()));
+        state.ground_velocity = fromJolt(ch.GetGroundVelocity());
+        state.ground = impl_->entityOfBody(ch.GetGroundBodyID());
+    }
+    state.collision_flags = c.flags;
+    state.jumps_used = c.jumps_used;
+    return state;
+}
+
+std::uint32_t PhysicsSystem::moveCharacter(ecs::World& world, ecs::Entity character, const Vec3& displacement) {
+    Impl& d = *impl_;
+    if (!d.system || !character.valid()) return 0;
+    const CharacterController* cc = character.tryGet<CharacterController>();
+    if (cc == nullptr) return 0;
+    d.world = &world;
+    if (!isCharacter(character)) {
+        // Aun sin capsula (se crea en el siguiente update): solo se desplaza.
+        character.setWorldPosition(character.worldPosition() + displacement);
+        return 0;
+    }
+    Impl::CharacterEntry& c = d.characters.at(character.handle());
+    // Movido desde fuera desde el ultimo paso: teletransporte antes de moverlo.
+    if (const Vec3 now = character.worldPosition(); !nearlyEqual(c.position, now, 1e-4f)) {
+        c.character->SetPosition(JPH::RVec3(toJolt(now)));
+        c.position = now;
+    }
+    const float dt = std::max(d.settings.fixed_step, 1e-4f);
+    const JPH::Vec3 keep = c.character->GetLinearVelocity();
+    d.advanceCharacter(c, character.handle(), *cc, displacement * (1.0f / dt), dt, JPH::Vec3::sZero(), false);
+    c.character->SetLinearVelocity(keep);
+    // Se ve ya donde acaba (sin interpolar desde donde estaba).
+    c.current_position = c.previous_position = fromJolt(JPH::Vec3(c.character->GetPosition()));
+    character.setWorldPosition(c.current_position);
+    c.position = character.worldPosition();
+    return c.flags;
+}
+
+void PhysicsSystem::setCharacterInput(ecs::Entity character, const Vec3& direction, bool run) {
+    const auto it = impl_->characters.find(character.handle());
+    if (it == impl_->characters.end()) return;
+    it->second.input = Vec3{direction.x, 0.0f, direction.z};
+    it->second.run = run;
+}
+
+bool PhysicsSystem::characterJump(ecs::Entity character, float height) {
+    const auto it = impl_->characters.find(character.handle());
+    if (it == impl_->characters.end() || !it->second.character) return false;
+    Impl::CharacterEntry& c = it->second;
+    const CharacterController* cc = character.valid() ? character.tryGet<CharacterController>() : nullptr;
+    if (cc == nullptr || cc->max_jumps <= 0) return false;
+    const bool grounded = c.character->GetGroundState() == JPH::CharacterBase::EGroundState::OnGround;
+    const bool can = grounded || c.since_grounded <= cc->coyote_time || c.jumps_used < cc->max_jumps;
+    // Guardado un momento: si se pulsa justo antes de tocar el suelo, salta al tocarlo.
+    c.jump_buffer = 0.15f;
+    c.jump_height = height;
+    return can;
+}
+
+void PhysicsSystem::setCharacterCrouch(ecs::Entity character, bool crouch) {
+    const auto it = impl_->characters.find(character.handle());
+    if (it != impl_->characters.end()) it->second.crouch_wanted = crouch;
+}
+
+void PhysicsSystem::setCharacterVelocity(ecs::Entity character, const Vec3& velocity) {
+    const auto it = impl_->characters.find(character.handle());
+    if (it == impl_->characters.end() || !it->second.character) return;
+    Impl::CharacterEntry& c = it->second;
+    c.manual_velocity = velocity;
+    c.move_velocity = Vec3{velocity.x, 0.0f, velocity.z};
+    const JPH::Vec3 v = c.character->GetLinearVelocity();
+    c.character->SetLinearVelocity(JPH::Vec3(v.GetX(), velocity.y, v.GetZ()));
+}
+
+void PhysicsSystem::addCharacterVelocity(ecs::Entity character, const Vec3& velocity) {
+    const auto it = impl_->characters.find(character.handle());
+    if (it != impl_->characters.end()) it->second.pending_velocity = it->second.pending_velocity + velocity;
+}
+
+void PhysicsSystem::driveCharactersWithKeyboard(ecs::World& world, const CharacterKeys& keys) {
+    if (impl_->characters.empty()) return;
+    Vec3 look = keys.camera_forward;
+    if (core::length(look) < 1e-6f) {
+        // La camara principal (la marcada como principal, o la primera activa).
+        ecs::Entity main;
+        for (const entt::entity h : world.registry().view<ecs::Camera>()) {
+            const ecs::Entity e = world.wrap(h);
+            if (!e.activeInHierarchy()) continue;
+            const bool is_main = world.registry().get<ecs::Camera>(h).is_main;
+            if (!main.valid() || (is_main && !main.get<ecs::Camera>().is_main)) main = e;
+        }
+        look = main.valid() ? main.forward() : Vec3{0.0f, 0.0f, -1.0f};
+    }
+    Vec3 forward{look.x, 0.0f, look.z};
+    const float len = core::length(forward);
+    forward = len > 1e-4f ? forward * (1.0f / len) : Vec3{0.0f, 0.0f, -1.0f};
+    const Vec3 right{-forward.z, 0.0f, forward.x};
+    Vec3 direction = forward * ((keys.forward ? 1.0f : 0.0f) - (keys.back ? 1.0f : 0.0f)) +
+                     right * ((keys.right ? 1.0f : 0.0f) - (keys.left ? 1.0f : 0.0f));
+    if (const float l = core::length(direction); l > 1.0f) direction = direction * (1.0f / l);
+    for (auto& [handle, c] : impl_->characters) {
+        if (!world.valid(handle)) continue;
+        const CharacterController* cc = world.registry().try_get<CharacterController>(handle);
+        if (cc == nullptr || !cc->keyboard || cc->movement != CharacterMovement::Integrated) continue;
+        c.input = direction;
+        c.run = keys.run;
+        c.crouch_wanted = keys.crouch;
+        // El salto cuenta al pulsar (no mientras se mantiene).
+        if (keys.jump && !c.jump_held) characterJump(world.wrap(handle));
+        c.jump_held = keys.jump;
+    }
 }
 
 // --- Eventos -------------------------------------------------------------------

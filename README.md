@@ -21,6 +21,20 @@ Incluye dos escenas de demostración, iluminadas por una sola luz direccional (e
 
 ---
 
+## Novedades de la 2.0
+
+**Scripts en C++**: el lenguaje del motor (Lua queda obsoleto). Clases con `start`, `update` y colisiones, **propiedades en el Inspector** como en Unity, compilador incluido (no hace falta Visual Studio), **IntelliSense de clangd** y scripts aislados en **otro proceso**: un puntero nulo o un bucle infinito no tumban el editor. Toda la API de Lua está también en C++.
+
+**Luz mucho más realista**: los rayos ven ahora el **terreno y los árboles**, **sombras del sol por rayos**, oclusión del cielo sin RT, luces locales sin fugas, tonemapper **AgX** y **autoenfoque suave**. El RT apagado no cuesta nada y ya no da tirones al moverse algo.
+
+**Árboles y hierba realistas**: copas que **se iluminan a contraluz**, cortezas nuevas de roble y pino, **pinos con brotes de agujas en 3D**, abetos densos y **hierba en matas** con manchas de color, puntas secas y paja.
+
+**Streaming de modelos y animaciones**: se cargan en segundo plano, se suben a la GPU poco a poco y lo que no se ve sale de la memoria de vídeo; instanciar ya no da tirones.
+
+**Modelado poligonal** como ProBuilder (vértices, aristas y caras, extruir, bisel, booleanas, Catmull-Clark...) y un **Character Controller** que sube escalones, respeta pendientes y sigue a las plataformas. Además, **CVars** como las de Unreal y ríos en cuesta que ya no se cortan.
+
+![Lago entre abedules y robles con trazado de rayos y hierba en matas](docs/img/v20-lago.jpg)
+
 ## Novedades de la 1.9
 
 **Ambiente y clima** (como Enviro Sky): clima con transiciones, hora y fecha con el sol y la luna reales, estaciones, viento, rayos con truenos, **lluvia y nieve que caen y se acumulan** y sonido ambiente.
@@ -284,6 +298,8 @@ Incluye dos escenas de demostración, iluminadas por una sola luz direccional (e
 
 ## Índice
 
+- [Novedades de la 2.0](#novedades-de-la-20)
+- [Novedades de la 1.9](#novedades-de-la-19)
 - [Novedades de la 1.8](#novedades-de-la-18)
 - [Novedades de la 1.7](#novedades-de-la-17)
 - [Novedades de la 1.6](#novedades-de-la-16)

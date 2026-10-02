@@ -80,10 +80,39 @@ void main() {
     if (grassHash(cell * 2.91 + 3.3) >= keep) return;
 
     vec3 base = vec3(xz.x, terrain.origin_size.y + heightAt(uv), xz.y);
-    // Matas: las briznas vecinas se parecen (altura), como la hierba real.
-    vec2 clump_cell = floor(xz / 0.6);
+    // Matas, como la hierba real: centros repartidos al azar (uno cada ~0.5 m)
+    // y cada brizna en la del centro mas cercano. Se abre hacia fuera desde
+    // el, es mas alta cerca de el y comparte con su mata la altura, el tono y
+    // la fase del viento (la mata se mece junta).
+    const float kClump = 0.5;
+    vec2 clump_base = floor(xz / kClump);
+    vec2 clump_cell = clump_base;
+    vec2 clump_center = xz;
+    float clump_best = 1e9;
+    for (int oy = -1; oy <= 1; ++oy) {
+        for (int ox = -1; ox <= 1; ++ox) {
+            vec2 c = clump_base + vec2(ox, oy);
+            vec2 center = (c + 0.15 + 0.7 * grassHash2(c * 1.73 + 11.0)) * kClump;
+            vec2 d = xz - center;
+            float d2 = dot(d, d);
+            if (d2 < clump_best) {
+                clump_best = d2;
+                clump_center = center;
+                clump_cell = c;
+            }
+        }
+    }
+    vec2 from_center = xz - clump_center;
+    float clump_distance = sqrt(clump_best) / kClump;  // 0 en el centro, ~0.6 en el borde
     float clump = grassHash(clump_cell * 7.31 + 2.2);
-    float height_scale = 1.0 + ((grassHash(cell * 5.17) * 0.45 + clump * 0.55) - 0.5) * 2.0 * grass.shape.y;
+    // Manchas del campo: zonas mas frondosas y otras mas pobres (mas bajas,
+    // mas claras y amarillentas). Dos escalas (7 y 23 m).
+    float lush = grassNoise(xz / 7.0) * 0.6 + grassNoise(xz / 23.0 + 13.7) * 0.4;
+    lush = smoothstep(0.2, 0.8, lush);
+
+    float height_scale = 1.0 + ((grassHash(cell * 5.17) * 0.4 + clump * 0.6) - 0.5) * 2.0 * grass.shape.y;
+    height_scale *= mix(1.12, 0.78, smoothstep(0.0, 0.6, clump_distance));  // mas alta en el centro de la mata
+    height_scale *= mix(0.8, 1.12, lush);
     // Mas bajas en los bordes de la capa (transicion natural).
     height_scale *= mix(0.45, 1.0, smoothstep(0.0, 0.5, density));
     float height = grass.shape.x * max(height_scale, 0.15);
@@ -119,8 +148,16 @@ void main() {
     float dry = grass.layers.y >= 0 ? layerWeight(uv, grass.layers.y) : 0.0;
     dry = clamp(dry + (grassHash(cell * 9.7) - 0.5) * 0.3, 0.0, 1.0);
     float width_scale = clamp(inversesqrt(max(keep, 0.12)) / 3.0, 0.0, 1.0);  // 1/sqrt(keep), hasta 3x
-    uint bits = packBlade(grassHash(cell * 3.3 + 1.7), clamp(height / (grass.shape.x * 2.5), 0.0, 1.0), dry,
-                          width_scale);
+    // Giro: hacia fuera de la mata (la brizna se curva hacia donde mira), con
+    // algo de azar; en el centro, cualquiera.
+    float away = dot(from_center, from_center) > 1e-10 ? atan(from_center.y, from_center.x) / 6.2831853 : 0.0;
+    float jitter = (grassHash(cell * 3.3 + 1.7) - 0.5) * mix(1.0, 0.3, smoothstep(0.04, 0.3, clump_distance));
+    float yaw = fract(away + jitter);
+    uint bits = packBlade(yaw, clamp(height / (grass.shape.x * 2.5), 0.0, 1.0), dry, width_scale);
+    // Alguna brizna muerta (paja), mas en las zonas pobres.
+    float dead = grassHash(cell * 4.13 + 0.7) < 0.03 + 0.06 * (1.0 - lush) ? 1.0 : 0.0;
+    float phase = fract(grassHash(clump_cell * 3.91 + 5.3) + grassHash(cell * 0.73) * 0.12);
+    uint look = packBlade(phase, grassHash(clump_cell * 2.17 + 9.1), lush, dead);
 
     uint list = distance_xz < near_distance ? 0u : 1u;
     uint index = atomicAdd(args[list].instance_count, 1u);
@@ -131,6 +168,7 @@ void main() {
     }
     GrassBlade blade;
     blade.position = vec4(base, uintBitsToFloat(bits));
-    blade.push = vec4(push, grassHash(cell * 0.73) * 6.2831853);
+    blade.push = push;
+    blade.look = look;
     blades[list * cap + index] = blade;
 }

@@ -587,7 +587,207 @@ void testSoftBody() {
 
 }  // namespace
 
+ecs::Entity makeCharacter(ecs::World& world, const Vec3& feet, bool keyboard = false) {
+    ecs::Entity c = world.create("Personaje");
+    c.setWorldPosition(feet);
+    CharacterController& cc = c.add<CharacterController>();
+    cc.keyboard = keyboard;
+    return c;
+}
+
+ecs::Entity makeStaticBox(ecs::World& world, const char* name, const Vec3& center, const Vec3& size) {
+    ecs::Entity box = world.create(name);
+    box.setWorldPosition(center);
+    box.add<BoxCollider>().size = size;
+    return box;
+}
+
+void testCharacterController() {
+    std::printf("Character Controller\n");
+    {
+        // Cae, se posa, anda, choca con la pared y da sus eventos.
+        ecs::World world;
+        makeFloor(world);
+        ecs::Entity wall = makeStaticBox(world, "Pared", Vec3{6.0f, 2.0f, 0.0f}, Vec3{1.0f, 4.0f, 6.0f});
+        ecs::Entity hero = makeCharacter(world, Vec3{0.0f, 3.0f, 0.0f});
+        PhysicsSystem physics;
+        physics.start(world);
+        std::map<PhysicsEventType, int> counts;
+        bool wall_hit = false;
+        physics.addEntityListener(hero, [&](const PhysicsEvent& e) {
+            if (e.type == PhysicsEventType::CollisionEnter && e.b == wall) wall_hit = true;
+        });
+        run(physics, world, 2.0f, &counts);
+        check(physics.isCharacter(hero), "el CharacterController crea su personaje al simular");
+        check(std::abs(hero.worldPosition().y) < 0.06f, "cae y se posa con los pies en el suelo (y ~ 0)");
+        check(physics.characterState(hero).grounded, "isGrounded en el suelo");
+        check(counts[PhysicsEventType::CollisionEnter] >= 1, "CollisionEnter al tocar el suelo");
+
+        physics.setCharacterInput(hero, Vec3{1.0f, 0.0f, 0.0f});
+        run(physics, world, 1.0f);
+        const float walked = hero.worldPosition().x;
+        check(walked > 3.0f && walked < 4.5f, "anda a su velocidad (4 m/s, con aceleracion)");
+        check(std::abs(physics.linearVelocity(hero).x - 4.0f) < 0.3f, "linearVelocity da la del personaje");
+        run(physics, world, 2.0f);
+        const float stop = 6.0f - 0.5f - 0.4f;  // cara de la pared - radio
+        check(hero.worldPosition().x < stop + 0.01f && hero.worldPosition().x > stop - 0.1f,
+              "la pared lo para (no la atraviesa)");
+        check((physics.characterState(hero).collision_flags & PhysicsSystem::kCollidedSides) != 0,
+              "collision_flags marca Sides contra la pared");
+        check(wall_hit, "CollisionEnter con la pared (a = el personaje)");
+        // Desliza a lo largo de la pared en diagonal.
+        physics.setCharacterInput(hero, Vec3{1.0f, 0.0f, 1.0f});
+        const float z0 = hero.worldPosition().z;
+        run(physics, world, 0.5f);
+        check(hero.worldPosition().z - z0 > 0.8f, "en diagonal contra la pared, desliza por ella");
+
+        // Lo ven los rayos.
+        RaycastHit hit;
+        const Vec3 p = hero.worldPosition();
+        check(physics.raycast(p + Vec3{0.0f, 1.0f, -5.0f}, Vec3{0.0f, 0.0f, 1.0f}, 10.0f, hit) && hit.entity == hero,
+              "un rayo toca al personaje (su inner body)");
+        QueryFilter skip;
+        skip.ignore = hero;
+        check(!physics.raycast(p + Vec3{0.0f, 1.0f, -5.0f}, Vec3{0.0f, 0.0f, 1.0f}, 10.0f, hit, skip) || hit.entity != hero,
+              "QueryFilter::ignore lo salta");
+
+        // Salto: hasta su altura de salto.
+        physics.setCharacterInput(hero, Vec3{});
+        run(physics, world, 0.5f);
+        check(physics.characterJump(hero), "puede saltar en el suelo");
+        float top = 0.0f;
+        for (int i = 0; i < 120; ++i) {
+            physics.update(world, 1.0f / 60.0f);
+            top = std::max(top, hero.worldPosition().y);
+        }
+        check(top > 1.05f && top < 1.35f, "el salto sube su altura de salto (1.2 m)");
+        check(physics.characterState(hero).grounded, "vuelve a posarse tras el salto");
+    }
+    {
+        // Escalones: sube los bajos, no los altos.
+        ecs::World world;
+        makeFloor(world);
+        makeStaticBox(world, "Escalon", Vec3{3.0f, 0.15f, 0.0f}, Vec3{2.0f, 0.3f, 4.0f});
+        makeStaticBox(world, "Muro bajo", Vec3{3.0f, 0.4f, 8.0f}, Vec3{2.0f, 0.8f, 4.0f});
+        ecs::Entity a = makeCharacter(world, Vec3{0.0f, 0.0f, 0.0f});
+        ecs::Entity b = makeCharacter(world, Vec3{0.0f, 0.0f, 8.0f});
+        PhysicsSystem physics;
+        physics.start(world);
+        run(physics, world, 0.3f);
+        physics.setCharacterInput(a, Vec3{1.0f, 0.0f, 0.0f});
+        physics.setCharacterInput(b, Vec3{1.0f, 0.0f, 0.0f});
+        run(physics, world, 0.9f);
+        check(std::abs(a.worldPosition().y - 0.3f) < 0.06f && a.worldPosition().x > 2.2f,
+              "sube solo un escalon de 0.3 m (altura de escalon 0.35)");
+        check(b.worldPosition().x < 2.0f && b.worldPosition().y < 0.1f, "un escalon de 0.8 m lo para");
+        run(physics, world, 1.0f);
+        check(std::abs(a.worldPosition().y) < 0.06f, "al bajar del escalon vuelve al suelo pegado");
+    }
+    {
+        // Rampas: la suave se sube, la empinada no.
+        ecs::World world;
+        makeFloor(world);
+        const auto ramp = [&](const char* name, float degrees, float z) {
+            ecs::Entity r = makeStaticBox(world, name, Vec3{4.0f, 0.0f, z}, Vec3{6.0f, 0.4f, 3.0f});
+            r.setLocalEulerDegrees(Vec3{0.0f, 0.0f, degrees});
+        };
+        ramp("Rampa suave", 25.0f, 0.0f);
+        ramp("Rampa empinada", 60.0f, 8.0f);
+        ecs::Entity soft = makeCharacter(world, Vec3{0.0f, 0.0f, 0.0f});
+        ecs::Entity steep = makeCharacter(world, Vec3{0.0f, 0.0f, 8.0f});
+        PhysicsSystem physics;
+        physics.start(world);
+        run(physics, world, 0.3f);
+        physics.setCharacterInput(soft, Vec3{1.0f, 0.0f, 0.0f});
+        physics.setCharacterInput(steep, Vec3{1.0f, 0.0f, 0.0f});
+        run(physics, world, 1.5f);
+        check(soft.worldPosition().y > 0.6f, "sube la rampa de 25 grados");
+        check(steep.worldPosition().y < 0.6f, "no sube la rampa de 60 grados (pendiente maxima 45)");
+    }
+    {
+        // Empuja Rigidbody, entra en triggers y sigue a una plataforma.
+        ecs::World world;
+        makeFloor(world);
+        ecs::Entity crate = makeBox(world, "Caja", Vec3{2.0f, 0.5f, 0.0f});
+        crate.get<Rigidbody>().mass = 5.0f;
+        ecs::Entity zone = makeStaticBox(world, "Zona", Vec3{0.0f, 1.0f, 6.0f}, Vec3{2.0f, 2.0f, 2.0f});
+        zone.get<BoxCollider>().material.is_trigger = true;
+        ecs::Entity platform = makeBox(world, "Plataforma", Vec3{20.0f, 1.0f, 0.0f}, BodyType::Kinematic);
+        platform.get<BoxCollider>().size = Vec3{4.0f, 0.2f, 4.0f};
+        ecs::Entity pusher = makeCharacter(world, Vec3{0.0f, 0.0f, 0.0f});
+        ecs::Entity walker = makeCharacter(world, Vec3{0.0f, 0.0f, 3.0f});
+        ecs::Entity rider = makeCharacter(world, Vec3{20.0f, 1.2f, 0.0f});
+        PhysicsSystem physics;
+        physics.start(world);
+        bool entered = false;
+        physics.addEntityListener(zone, [&](const PhysicsEvent& e) {
+            if (e.type == PhysicsEventType::TriggerEnter && e.b == walker) entered = true;
+        });
+        run(physics, world, 0.5f);
+        physics.setCharacterInput(pusher, Vec3{1.0f, 0.0f, 0.0f});
+        physics.setCharacterInput(walker, Vec3{0.0f, 0.0f, 1.0f});
+        const float rider_y = rider.worldPosition().y;
+        for (int i = 0; i < 90; ++i) {
+            platform.setWorldPosition(Vec3{20.0f + 3.0f * static_cast<float>(i + 1) / 60.0f, 1.0f, 0.0f});
+            physics.update(world, 1.0f / 60.0f);
+        }
+        check(crate.worldPosition().x > 3.0f, "empuja la caja dinamica");
+        check(entered, "entra en el trigger (TriggerEnter con b = el personaje)");
+        check(rider.worldPosition().x > 23.5f && std::abs(rider.worldPosition().y - rider_y) < 0.1f,
+              "de pie sobre una plataforma cinematica, se mueve con ella");
+    }
+    {
+        // Manual (Move de Unity) y agacharse bajo un techo.
+        ecs::World world;
+        makeFloor(world);
+        makeStaticBox(world, "Pared", Vec3{0.0f, 2.0f, -4.0f}, Vec3{6.0f, 4.0f, 1.0f});
+        makeStaticBox(world, "Techo bajo", Vec3{8.0f, 1.65f, 0.0f}, Vec3{4.0f, 0.3f, 4.0f});
+        ecs::Entity manual = makeCharacter(world, Vec3{0.0f, 0.0f, 0.0f});
+        manual.get<CharacterController>().movement = CharacterMovement::Manual;
+        ecs::Entity crouch = makeCharacter(world, Vec3{4.0f, 0.0f, 0.0f});
+        PhysicsSystem physics;
+        physics.start(world);
+        run(physics, world, 0.2f);
+        const float y0 = manual.worldPosition().y;
+        const std::uint32_t flags = physics.moveCharacter(world, manual, Vec3{0.0f, 0.0f, -10.0f});
+        check(std::abs(manual.worldPosition().z - (-3.5f + 0.4f)) < 0.1f, "move() avanza hasta la pared y se para");
+        check((flags & PhysicsSystem::kCollidedSides) != 0, "move() devuelve Sides");
+        run(physics, world, 0.5f);
+        check(std::abs(manual.worldPosition().y - y0) < 0.01f, "en Manual no hay gravedad propia");
+
+        physics.setCharacterCrouch(crouch, true);
+        physics.setCharacterInput(crouch, Vec3{1.0f, 0.0f, 0.0f});
+        run(physics, world, 2.0f);
+        check(physics.characterState(crouch).crouching, "se agacha");
+        check(crouch.worldPosition().x > 6.5f, "agachado pasa bajo el techo de 1.5 m");
+        physics.setCharacterInput(crouch, Vec3{});
+        physics.setCharacterCrouch(crouch, false);
+        run(physics, world, 0.3f);
+        check(physics.characterState(crouch).crouching, "bajo el techo no puede levantarse");
+    }
+    {
+        // Se guarda y se lee con la escena.
+        ecs::World world;
+        ecs::Entity c = makeCharacter(world, Vec3{1.0f, 2.0f, 3.0f});
+        c.get<CharacterController>().jump_height = 2.5f;
+        c.get<CharacterController>().movement = CharacterMovement::Manual;
+        const std::filesystem::path file = std::filesystem::temp_directory_path() / "cramion_character_test.crscene";
+        std::string error;
+        check(ecs::saveScene(world, file, &error), "guardar escena con CharacterController");
+        ecs::World loaded;
+        check(ecs::loadScene(loaded, file, &error), "leerla");
+        bool found = false;
+        for (const entt::entity h : loaded.registry().view<CharacterController>()) {
+            const CharacterController& cc = loaded.registry().get<CharacterController>(h);
+            found = std::abs(cc.jump_height - 2.5f) < 1e-4f && cc.movement == CharacterMovement::Manual;
+        }
+        check(found, "conserva sus campos");
+        std::filesystem::remove(file);
+    }
+}
+
 int main() {
+    testCharacterController();
     testFallAndRest();
     testInterpolation();
     testTriggers();

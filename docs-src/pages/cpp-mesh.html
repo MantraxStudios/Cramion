@@ -1,0 +1,54 @@
+<p>Mallas creadas por código: <code>Mesh m = Mesh::cube(2.0f);</code>, cambia vértices y llama a <code>apply()</code>.</p>
+
+<h3 id="mesh">Mesh</h3>
+<table>
+  <tbody>
+    <tr><td><code>Value handle</code></td><td></td></tr>
+    <tr><td><code>Mesh() = default</code></td><td></td></tr>
+    <tr><td><code>Mesh(Value v)</code></td><td></td></tr>
+    <tr><td><code>operator Value() const</code></td><td></td></tr>
+    <tr><td><code>operator bool() const</code></td><td></td></tr>
+    <tr><td><code>Value apply(...) const</code></td><td>sube los cambios a la GPU</td></tr>
+    <tr><td><code>Value boundsMax() const</code></td><td>Mesh.boundsMax: Vec3 esquina maxima</td></tr>
+    <tr><td><code>void setBoundsMax(const Value&amp; v) const</code></td><td>Cambia Mesh.boundsMax</td></tr>
+    <tr><td><code>Value boundsMin() const</code></td><td>Mesh.boundsMin: Vec3 esquina minima</td></tr>
+    <tr><td><code>void setBoundsMin(const Value&amp; v) const</code></td><td>Cambia Mesh.boundsMin</td></tr>
+    <tr><td><code>static Mesh capsule(radio, alto, segmentos)</code></td><td>capsula</td></tr>
+    <tr><td><code>Value clear(...) const</code></td><td>la vacia</td></tr>
+    <tr><td><code>Value clone(...) const</code></td><td>copia</td></tr>
+    <tr><td><code>static Mesh cube(tamano)</code></td><td>cubo (numero o Vec3)</td></tr>
+    <tr><td><code>static Mesh cylinder(radio, alto, segmentos)</code></td><td>cilindro</td></tr>
+    <tr><td><code>Value getMaterial(submalla) const</code></td><td>su material</td></tr>
+    <tr><td><code>Value getTriangles(submalla) const</code></td><td>sus indices</td></tr>
+    <tr><td><code>Value getVertex(i) const</code></td><td>Vec3 de un vertice</td></tr>
+    <tr><td><code>Value name() const</code></td><td>Mesh.name: nombre</td></tr>
+    <tr><td><code>void setName(const Value&amp; v) const</code></td><td>Cambia Mesh.name</td></tr>
+    <tr><td><code>static Mesh create(texto)</code></td><td>malla vacia</td></tr>
+    <tr><td><code>Value normals() const</code></td><td>Mesh.normals: lista de Vec3</td></tr>
+    <tr><td><code>void setNormals(const Value&amp; v) const</code></td><td>Cambia Mesh.normals</td></tr>
+    <tr><td><code>static Mesh plane(ancho, fondo, segX, segZ)</code></td><td>plano subdividido</td></tr>
+    <tr><td><code>static Mesh quad(ancho, alto)</code></td><td>cuadrado en XY</td></tr>
+    <tr><td><code>Value recalculateBounds(...) const</code></td><td>caja</td></tr>
+    <tr><td><code>Value recalculateNormals(...) const</code></td><td>normales suaves</td></tr>
+    <tr><td><code>Value recalculateTangents(...) const</code></td><td>tangentes</td></tr>
+    <tr><td><code>Value setMaterial(submalla, tabla) const</code></td><td>material de una submalla</td></tr>
+    <tr><td><code>Value setTriangles(indices, submalla) const</code></td><td>triangulos de una submalla</td></tr>
+    <tr><td><code>Value setVertex(i, vec) const</code></td><td>mueve un vertice (luego apply)</td></tr>
+    <tr><td><code>static Mesh sphere(radio, segmentos, anillos)</code></td><td>esfera</td></tr>
+    <tr><td><code>Value subMeshCount() const</code></td><td>Mesh.subMeshCount: submallas (materiales)</td></tr>
+    <tr><td><code>void setSubMeshCount(const Value&amp; v) const</code></td><td>Cambia Mesh.subMeshCount</td></tr>
+    <tr><td><code>Value tangents() const</code></td><td>Mesh.tangents: lista de Vec3</td></tr>
+    <tr><td><code>void setTangents(const Value&amp; v) const</code></td><td>Cambia Mesh.tangents</td></tr>
+    <tr><td><code>Value triangleCount() const</code></td><td>Mesh.triangleCount: triangulos</td></tr>
+    <tr><td><code>void setTriangleCount(const Value&amp; v) const</code></td><td>Cambia Mesh.triangleCount</td></tr>
+    <tr><td><code>Value triangles() const</code></td><td>Mesh.triangles: indices (submalla 0)</td></tr>
+    <tr><td><code>Value uv() const</code></td><td>Mesh.uv: lista de {x, y}</td></tr>
+    <tr><td><code>void setUv(const Value&amp; v) const</code></td><td>Cambia Mesh.uv</td></tr>
+    <tr><td><code>Value validate(...) const</code></td><td>&quot;&quot; si se puede dibujar; si no, el motivo</td></tr>
+    <tr><td><code>Value vertexCount() const</code></td><td>Mesh.vertexCount: vertices</td></tr>
+    <tr><td><code>void setVertexCount(const Value&amp; v) const</code></td><td>Cambia Mesh.vertexCount</td></tr>
+    <tr><td><code>Value vertices() const</code></td><td>Mesh.vertices: lista de Vec3</td></tr>
+    <tr><td><code>void setVertices(const Value&amp; v) const</code></td><td>Cambia Mesh.vertices</td></tr>
+    <tr><td><code>static Mesh wireCube(tamano, grosor)</code></td><td>aristas de una caja (contornos)</td></tr>
+  </tbody>
+</table>

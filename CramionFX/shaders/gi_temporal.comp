@@ -135,6 +135,36 @@ void main() {
     }
 
     float history_length = valid ? min(previous_moments.z + 1.0, kMaxHistory) : 1.0;
+
+    // --- Antilag: la historia no puede alejarse de lo que se ve ahora ---
+    // Media y desviacion de este frame en la vecindad 3x3. Si la historia cae
+    // fuera de media +- 2.5 desviaciones (la luz cambio de verdad: se apago una
+    // lampara, se abrio una puerta, paso una nube), se acerca a ese rango y su
+    // largo se acorta en proporcion: converge en unos pocos frames en vez de
+    // arrastrar la luz vieja ~33 (estela que seguia brillando en la pared).
+    // Con la luz quieta, el ruido de 4 rayos deja el rango ancho: no toca nada.
+    if (valid) {
+        vec4 sum = vec4(0.0);
+        vec4 sum_squares = vec4(0.0);
+        for (int y = -1; y <= 1; ++y) {
+            for (int x = -1; x <= 1; ++x) {
+                vec4 c = texelFetch(current_gi, clamp(pixel + ivec2(x, y), ivec2(0), size - 1), 0);
+                sum += c;
+                sum_squares += c * c;
+            }
+        }
+        vec4 mean = sum / 9.0;
+        vec4 deviation = sqrt(max(sum_squares / 9.0 - mean * mean, vec4(0.0)));
+        vec4 low = mean - 2.5 * deviation - vec4(vec3(0.01), 0.04);
+        vec4 high = mean + 2.5 * deviation + vec4(vec3(0.01), 0.04);
+        vec4 clamped = clamp(previous_color, low, high);
+        float change = luminance(abs(clamped.rgb - previous_color.rgb)) / max(luminance(previous_color.rgb), 0.02) +
+                       abs(clamped.a - previous_color.a) * 2.0;
+        previous_color = clamped;
+        if (change > 0.02) {
+            history_length = min(history_length, mix(history_length, 3.0, clamp(change * 1.5, 0.0, 1.0)));
+        }
+    }
     float alpha = valid ? max(1.0 / history_length, kMinAlpha) : 1.0;
     float moments_alpha = valid ? max(1.0 / history_length, kMinMomentsAlpha) : 1.0;
 

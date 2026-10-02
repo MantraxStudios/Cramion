@@ -71,6 +71,30 @@
           <tr><td><code>speed</code>, <code>rpm</code>, <code>gear</code></td><td>Estado del vehículo: km/h, revoluciones y marcha.</td></tr>
         </tbody>
       </table>
+      <p>Con un <code>CharacterController</code> (no hace falta Rigidbody):</p>
+      <table>
+        <tbody>
+          <tr><td><code>:move(desplazamiento)</code></td><td>El <em>Move</em> de Unity: mueve ya esos metros chocando y deslizando (sube escalones, sin gravedad). Devuelve los bits de lo tocado: <code>CharacterController.Sides</code>, <code>.Above</code>, <code>.Below</code>.</td></tr>
+          <tr><td><code>:isGrounded()</code>, <code>:isCrouching()</code></td><td>De pie en el suelo (no demasiado empinado) / agachado.</td></tr>
+          <tr><td><code>:setMoveInput(dir, correr)</code></td><td>Movimiento integrado: dirección en el mundo (longitud 0 a 1, la Y se ignora) y si corre. Se mantiene hasta la siguiente llamada.</td></tr>
+          <tr><td><code>:jump(altura)</code></td><td>Salta (altura opcional; si no, la del componente). Respeta el tiempo coyote y los saltos seguidos; si se pide justo antes de tocar el suelo, salta al tocarlo.</td></tr>
+          <tr><td><code>:setCrouch(si)</code></td><td>Agacharse; al levantarse, solo si cabe de pie.</td></tr>
+          <tr><td><code>:addCharacterVelocity(v)</code></td><td>Empujón (retroceso, explosión, trampolín).</td></tr>
+          <tr><td><code>velocity</code></td><td>La velocidad real del personaje (escribirla la cambia).</td></tr>
+          <tr><td><code>:characterState()</code></td><td>Tabla: <code>grounded</code>, <code>groundState</code> (<code>"OnGround"</code>, <code>"OnSteepGround"</code>, <code>"NotSupported"</code>, <code>"InAir"</code>), <code>crouching</code>, <code>velocity</code>, <code>groundNormal</code>, <code>groundPoint</code>, <code>groundVelocity</code>, <code>ground</code> (la entidad que pisa), <code>flags</code> y <code>jumps</code>.</td></tr>
+        </tbody>
+      </table>
+      <pre><code>-- Movimiento a lo Unity (Movimiento = Manual)
+local vy = 0
+function update(self, dt)
+  local dir = Vec3.new(Input.getAxis("Horizontal"), 0, -Input.getAxis("Vertical"))
+  if self.entity:isGrounded() then
+    vy = Input.getKeyDown("Space") and 6 or -1
+  else
+    vy = vy - 9.81 * dt
+  end
+  self.entity:move(dir * (5 * dt) + Vec3.new(0, vy * dt, 0))
+end</code></pre>
 
       <h3 id="sonido-y-animacion">Sonido y animación</h3>
       <table>

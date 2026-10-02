@@ -62,7 +62,7 @@ struct GrassDesc {
     float height_variation = 0.4f;
     float width = 0.028f;        // m (en la base)
     float bend = 0.35f;          // curvatura propia
-    core::Vec3 base_color{0.06f, 0.11f, 0.03f};  // sRGB
+    core::Vec3 base_color{0.1f, 0.16f, 0.045f};  // sRGB
     core::Vec3 tip_color{0.27f, 0.38f, 0.11f};
     core::Vec3 dry_color{0.5f, 0.45f, 0.25f};
     float color_variation = 0.25f;
@@ -141,6 +141,38 @@ public:
     // la camara y hay que redibujarlo.
     std::uint64_t localSignature(const core::Vec3& position, float range) const;
 
+    // --- Para el trazado de rayos: el terreno tambien en la escena de rayos ---
+    // Solo con rayos por hardware: se guarda una copia de las alturas y los
+    // pesos en la CPU (si no, sobra).
+    void setKeepCpuCopy(bool keep) { keep_cpu_copy_ = keep; }
+    struct RayTracingSource {
+        std::uint32_t id = 0;
+        std::uint32_t resolution = 0;
+        std::uint32_t splat_resolution = 0;
+        core::Vec3 origin{};       // esquina (x, z minimas) y altura 0
+        float size = 0.0f;
+        float max_height = 0.0f;
+        bool visible = true;
+        const float* heights = nullptr;        // resolution^2 (0..1)
+        const std::uint8_t* splat0 = nullptr;  // splat_resolution^2 x 4
+        const std::uint8_t* splat1 = nullptr;
+        std::uint32_t layer_count = 0;
+        // Color de cada capa como lo pinta terrain.frag (sRGB): la media de su
+        // textura por el tinte.
+        std::array<core::Vec3, kMaxTerrainLayers> layer_color{};
+        std::uint64_t height_revision = 0;  // cambia al esculpir
+        std::uint64_t look_revision = 0;    // pesos, texturas, tintes o hierba
+        // Hierba de la GPU: donde crece, lo que se ve (y lo que rebota la
+        // luz) es el color de las briznas, no la textura del suelo de debajo.
+        bool grass = false;
+        std::uint32_t grass_layer = 0;
+        std::int32_t grass_dry_layer = -1;
+        float grass_threshold = 0.25f;
+        core::Vec3 grass_color{};      // sRGB: briznas vistas de arriba (base y punta)
+        core::Vec3 grass_dry_color{};  // sRGB
+    };
+    std::vector<RayTracingSource> rayTracingSources() const;
+
 private:
     struct Upload {
         std::uint32_t id = 0;
@@ -181,6 +213,14 @@ private:
         std::vector<vk::raii::DescriptorSet> sets;
         std::vector<Chunk> chunks;
         std::unique_ptr<Grass> grass;
+        // Copia en la CPU para la escena de rayos (setKeepCpuCopy).
+        std::vector<float> cpu_heights;
+        std::vector<std::uint8_t> cpu_splat0;
+        std::vector<std::uint8_t> cpu_splat1;
+        std::array<core::Vec3, kMaxTerrainLayers> layer_average{};  // media de cada textura (sRGB)
+        std::uint64_t height_revision = 0;
+        std::uint64_t look_revision = 0;
+        std::uint64_t look_signature = 0;
     };
 
     void createPipelines(const VulkanDevice& device, std::array<vk::Format, GBuffer::kColorAttachmentCount> gbuffer_formats,
@@ -216,6 +256,7 @@ private:
     core::Vec3 lod_camera_{};
     std::vector<Upload> uploads_;
     std::vector<VulkanBuffer> staging_;  // por frame en vuelo
+    bool keep_cpu_copy_ = false;
 
     // Hierba.
     vk::raii::DescriptorSetLayout grass_set_layout_{nullptr};

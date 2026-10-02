@@ -77,7 +77,9 @@ layout(set = 0, binding = 4) uniform LightBuffer {
     vec4 rain;                     // (rt_common.glsl)
     vec4 flood;
     vec4 cloud_shadow;             // xy = centro del mapa de sombra de las nubes (x, z), z = lado (m; 0 = no), w = fuerza
-    vec4 rt_shadows;               // x = 1 si rt_shadow_mask vale este frame, y = vision nocturna (0..0.9)
+    vec4 rt_shadows;               // x = 1 luces locales + 2 sol si rt_shadow_mask vale, y = vision nocturna (0..0.9)
+    vec4 sky_map;                  // oclusion del cielo desde arriba: xy esquina (x, z), z lado (m), w = 1 si vale
+    vec4 sky_map_depth;            // x = altura desde la que se mira (m), y = profundidad que cubre (m)
 } lights;
 
 // Mapa de sombras en cascada. El muestreador compara por hardware: devuelve
@@ -161,6 +163,11 @@ layout(set = 0, binding = 22) uniform sampler2D volumetric_map;
 layout(set = 0, binding = 23) uniform sampler2D cloud_shadow_map;
 // Modelo de sombreado de Disney: r = modelo, gba = parametros (disney_brdf.glsl).
 layout(set = 0, binding = 26) uniform sampler2D g_shading;
+// Oclusion del cielo vista desde arriba (sin trazado de rayos): profundidad de
+// solo el terreno y de todo (terreno, escenario, arboles), alrededor de la
+// camara.
+layout(set = 0, binding = 27) uniform sampler2D sky_map_terrain;
+layout(set = 0, binding = 28) uniform sampler2D sky_map_scene;
 
 // Luz del sol que dejan pasar las nubes en ese punto: se lleva el punto al
 // suelo a lo largo del rayo del sol (el mapa guarda ese mismo rayo).
@@ -386,13 +393,33 @@ vec2 vogelDisk(int index, int count, float rotation) {
     return vec2(cos(theta), sin(theta)) * r;
 }
 
-float softSunShadow(int cascade, vec2 uv, float depth, float texel_world) {
+float softSunShadow(int cascade, vec2 uv, float depth, float texel_world, vec3 normal) {
     float map_size = shadows.params.x;
     float texel_uv = 1.0 / map_size;
     // Proyeccion ortografica: cuanto cambia la profundidad por metro hacia el sol.
     mat4 m = shadows.light_view_projection[cascade];
-    float depth_per_meter = max(length(vec3(m[0][2], m[1][2], m[2][2])), 1e-6);
+    vec3 row_x = vec3(m[0][0], m[1][0], m[2][0]);
+    vec3 row_y = vec3(m[0][1], m[1][1], m[2][1]);
+    vec3 row_z = vec3(m[0][2], m[1][2], m[2][2]);
+    float depth_per_meter = max(length(row_z), 1e-6);
     float uv_per_meter = 1.0 / max(texel_world * map_size, 1e-6);
+
+    // Plano del receptor: cada muestra del disco se compara con la
+    // profundidad que tiene la superficie EN SU SITIO, no con la del centro.
+    // En una ladera, las muestras de un lado miden su propia superficie mas
+    // cerca del sol: comparadas con el centro "tapaban" y la penumbra de un
+    // arbol o de un tejado salia mas oscura, ancha y a manchas. Con la
+    // proyeccion ortografica M = S R, la normal del plano en el espacio del
+    // mapa es (M n) / s^2 por eje; uv = ndc / 2 + 1/2.
+    vec3 plane = vec3(dot(row_x, normal) / max(dot(row_x, row_x), 1e-12),
+                      dot(row_y, normal) / max(dot(row_y, row_y), 1e-12),
+                      dot(row_z, normal) / max(dot(row_z, row_z), 1e-12));
+    vec2 depth_gradient = abs(plane.z) > 1e-9 ? -2.0 * plane.xy / plane.z : vec2(0.0);
+    // A ras (el plano casi paralelo a los rayos) se limita: como mucho 1 m de
+    // profundidad a lo ancho de la busqueda.
+    float max_gradient = depth_per_meter / max(32.0 * texel_uv, 1e-6);
+    float gradient_length = length(depth_gradient);
+    if (gradient_length > max_gradient) depth_gradient *= max_gradient / gradient_length;
 
     float rotation = 0.0;
     if (lights.environment.w >= 0.0) {
@@ -408,15 +435,17 @@ float softSunShadow(int cascade, vec2 uv, float depth, float texel_world) {
     for (int i = 0; i < kSearch; ++i) {
         vec2 offset = vogelDisk(i, kSearch, rotation) * search_uv;
         float stored = textureLod(shadow_depth, vec3(uv + offset, float(cascade)), 0.0).r;
-        if (stored < depth - 1e-5) {
-            blocker_sum += stored;
+        float receiver = depth + dot(depth_gradient, offset);
+        if (stored < receiver - 1e-5) {
+            // Lo que tapa, medido desde el receptor en ese sitio.
+            blocker_sum += receiver - stored;
             blockers += 1.0;
         }
     }
     if (blockers < 0.5) {
         return 1.0;  // nada tapa: iluminado
     }
-    float blocker_distance = (depth - blocker_sum / blockers) / depth_per_meter;  // metros
+    float blocker_distance = (blocker_sum / blockers) / depth_per_meter;  // metros
     float penumbra_uv = blocker_distance * kSunDiameterTan * uv_per_meter;
     // Penumbra menor que el propio filtro: la sombra dura de siempre.
     if (penumbra_uv < 1.5 * texel_uv) {
@@ -427,9 +456,57 @@ float softSunShadow(int cascade, vec2 uv, float depth, float texel_world) {
     float lit = 0.0;
     for (int i = 0; i < kTaps; ++i) {
         vec2 offset = vogelDisk(i, kTaps, rotation + 1.3) * radius;
-        lit += texture(shadow_map, vec4(uv + offset, float(cascade), depth));
+        lit += texture(shadow_map, vec4(uv + offset, float(cascade), depth + dot(depth_gradient, offset)));
     }
     return lit / float(kTaps);
+}
+
+// --- Oclusion del cielo desde arriba (sin trazado de rayos) ---
+// Lo que tapa el cielo de un punto suele estar ENCIMA: la copa de los arboles,
+// un tejado, un voladizo. La GI de pantalla no lo ve cuando no sale en
+// pantalla (mirando al suelo de un bosque, las copas quedan fuera) y el
+// sotobosque recibia todo el cielo, como un prado. Se buscan alrededor del
+// punto (disco de 8 m) cosas por encima de el que no sean el propio relieve
+// (al menos 1 m sobre el terreno de ahi); cada una pesa mas cerca y segun mire
+// la normal hacia ella (una pared que da la espalda a la casa no la ve).
+float skyMapVisibility(vec3 p, vec3 n) {
+    if (lights.sky_map.w < 0.5) return 1.0;
+    vec2 corner = lights.sky_map.xy;
+    float extent = lights.sky_map.z;
+    float top = lights.sky_map_depth.x;
+    float range = lights.sky_map_depth.y;
+    vec2 uv_center = (p.xz - corner) / extent;
+    float border = min(min(uv_center.x, uv_center.y), min(1.0 - uv_center.x, 1.0 - uv_center.y));
+    float fade = smoothstep(0.04, 0.12, border);
+    if (fade <= 0.0) return 1.0;
+
+    float rotation = 0.0;
+    if (lights.environment.w >= 0.0) {
+        vec2 q = gl_FragCoord.xy + 7.123 * lights.environment.w;
+        rotation = fract(52.9829189 * fract(dot(q, vec2(0.06711056, 0.00583715)))) * 6.2831853;
+    }
+    vec3 origin = p + n * 0.3;
+    const int kTaps = 12;
+    float blocked = 0.0;
+    float total = 0.0;
+    for (int i = 0; i < kTaps; ++i) {
+        vec2 disk = vogelDisk(i, kTaps, rotation);
+        vec2 offset = disk * 8.0;
+        vec2 uv = (origin.xz + offset - corner) / extent;
+        float scene_top = top - textureLod(sky_map_scene, uv, 0.0).r * range;
+        float terrain_depth = textureLod(sky_map_terrain, uv, 0.0).r;
+        float above = scene_top - origin.y;
+        // Sin terreno ahi (suelo de malla): lo que pase de 1 m sobre el punto.
+        bool over_ground = terrain_depth < 0.99999 ? scene_top - (top - terrain_depth * range) > 1.0 : above > 1.0;
+        float weight = 1.0 - 0.5 * length(disk);
+        total += weight;
+        if (above > 0.4 && over_ground) {
+            vec3 to_occluder = normalize(vec3(offset.x, above, offset.y));
+            blocked += weight * clamp(dot(n, to_occluder) * 0.6 + 0.4, 0.0, 1.0);
+        }
+    }
+    float occlusion = blocked / max(total, 1e-4);
+    return 1.0 - 0.85 * occlusion * fade;
 }
 
 // Muestrea una cascada concreta. Devuelve 1 = totalmente iluminado, 0 = en
@@ -470,7 +547,7 @@ float sampleCascade(int cascade, vec3 world_position, vec3 normal, float n_dot_l
     // tienda (con un solo muestreo bilineal las cascadas lejanas dejaban el
     // borde en escalera, y al moverse la camara esa escalera "hervia").
     if (cascade <= 1) {
-        return softSunShadow(cascade, uv, projected.z, texel_world);
+        return softSunShadow(cascade, uv, projected.z, texel_world, normal);
     }
     return optimizedPcf(shadow_map, shadows.params.x, uv, projected.z, float(cascade));
 }
@@ -637,8 +714,11 @@ void loadRtShadowNeighborhood(float center_z, vec3 normal) {
     }
 }
 
-// Visibilidad (0..1) de la luz `id` (puntuales 0..31, focos 32..39), o -1 si
-// no es de las 4 que el pase trazo en este pixel.
+// El sol en la mascara de rt_shadows.comp (despues de las 32 + 8 locales).
+const int kRtSunId = kMaxPointLights + kMaxSpotLights;
+
+// Visibilidad (0..1) de la luz `id` (puntuales 0..31, focos 32..39, sol 40),
+// o -1 si no es de las 4 que el pase trazo en este pixel.
 float rtLocalShadow(int id) {
     float base = float(id + 1) * 32.0;
     vec4 own = rt_neighbor_mask[4];
@@ -1254,6 +1334,9 @@ void main() {
         // interiores de una luz azul plana; ahi la luz es sobre todo la
         // rebotada (calida, de las zonas al sol).
         float sky_visibility = mix(1.0, gi.a, 0.95);
+        // Sin rayos: lo que lo tapa por encima aunque no salga en pantalla
+        // (copas, tejados); se queda la mas oscura de las dos.
+        sky_visibility = min(sky_visibility, skyMapVisibility(world_position, normal));
 
         // Difuso: irradiancia del cielo (armonicos esfericos) en la parte que
         // ve el cielo, mas la luz rebotada. Relleno minimo de noche (luz de
@@ -1277,6 +1360,12 @@ void main() {
                              sky_visibility;
         }
         vec3 diffuse_ibl = diffuse_light * albedo * (1.0 - env_fresnel) * (1.0 - metallic);
+        // Hojas y demas subsurface: la luz del cielo que les llega por detras
+        // tambien las atraviesa (contra el cielo, una copa no se ve negra).
+        if (translucent) {
+            diffuse_ibl += irradianceSh(-normal) * sky_visibility * translucencyColor(surface_model, albedo) *
+                           surface_model.params.y * 0.5 * (1.0 - metallic);
+        }
 
         // Especular: entorno prefiltrado en la direccion del reflejo, al mip
         // de su rugosidad, por la integral de la BRDF.
@@ -1347,6 +1436,14 @@ void main() {
             color = color * (1.0 - coat_fresnel) + coat_light * coat_fresnel * coat_horizon * coat_horizon * specular_ao;
         }
 
+        // --- Sombras por rayos (si el pase corrio): 1 = luces locales, 2 = sol ---
+        int rt_flags = int(lights.rt_shadows.x + 0.5);
+        bool rt_local = (rt_flags & 1) != 0;
+        bool rt_sun = (rt_flags & 2) != 0;
+        if (rt_flags != 0) {
+            loadRtShadowNeighborhood(distance_to_camera_z, normal);
+        }
+
         // --- Luz direccional (sol), con sombras en cascada ---
         float sun_n_dot_l = max(dot(normal, sun_direction), 0.0);
 
@@ -1361,6 +1458,15 @@ void main() {
                 shadow *= contactShadow(viewFromDepth(v_uv, depth), mat3(camera.view) * geometric_normal,
                                         mat3(camera.view) * sun_direction, geometric_n_dot_l,
                                         shadows.texel_world_sizes[cascade_index]);
+            }
+            // Con rayos: la mas oscura de las dos. Los rayos ven el escenario y
+            // el terreno con su forma exacta (sin acne ni sombras despegadas) y
+            // mas alla de las cascadas (montanas que tapan el sol a kilometros);
+            // el mapa, ademas, los personajes, la hierba y los arboles que se
+            // mecen.
+            if (rt_sun) {
+                float traced = rtLocalShadow(kRtSunId);
+                if (traced >= 0.0) shadow = min(shadow, traced);
             }
             shadow = mix(1.0, shadow, shadows.params.y);
         }
@@ -1391,12 +1497,6 @@ void main() {
         // Luz de la luna y del cielo: la ven los bastones de noche. Las luces
         // locales, que se suman despues, conservan su color.
         color = rodVision(color);
-
-        // --- Sombras por rayos de las luces locales (si el pase corrio) ---
-        bool rt_local = lights.rt_shadows.x > 0.5;
-        if (rt_local) {
-            loadRtShadowNeighborhood(distance_to_camera_z, normal);
-        }
 
         // --- Luces puntuales ---
         int point_count = min(lights.counts.x, kMaxPointLights);
@@ -1438,10 +1538,14 @@ void main() {
                 if (rt >= 0.0) point_shadow = min(point_shadow, mix(1.0, rt, lights.points[i].shadow.y));
             }
 
+            // La bombilla tiene tamano (Radio de la fuente): su brillo en una
+            // superficie pulida es un disco que se ensancha al acercarse, no un
+            // punto infinitamente pequeno que parpadea.
+            float point_size = lights.points[i].shadow.z / max(distance_to_light, 0.01);
             color += (from_behind ? radiance * disneyTranslucency(surface_model, normal, view_direction,
                                                                   light_direction, albedo, metallic)
                                   : shade(light_direction, radiance, normal, view_direction, albedo, roughness,
-                                          metallic, f0, energy, 0.0)) *
+                                          metallic, f0, energy, min(point_size, 1.0))) *
                      point_shadow;
         }
 
@@ -1492,10 +1596,11 @@ void main() {
                 if (rt >= 0.0) spot_shadow = min(spot_shadow, mix(1.0, rt, lights.spots[i].outer_shadow.z));
             }
 
+            float spot_size = lights.spots[i].outer_shadow.w / max(distance_to_light, 0.01);
             color += (from_behind ? radiance * disneyTranslucency(surface_model, normal, view_direction,
                                                                   light_direction, albedo, metallic)
                                   : shade(light_direction, radiance, normal, view_direction, albedo, roughness,
-                                          metallic, f0, energy, 0.0)) *
+                                          metallic, f0, energy, min(spot_size, 1.0))) *
                      spot_shadow;
         }
 

@@ -55,6 +55,7 @@ layout(location = 5) out vec3 v_uv_layer;  // xy uv, z capa
 layout(location = 6) out float v_leaf;
 layout(location = 7) out float v_extra;     // corteza: musgo / pie oscuro; hoja: translucidez
 layout(location = 8) out vec3 v_to_camera;
+layout(location = 9) out float v_young;     // corteza joven (lisa; en el pino, anaranjada)
 
 // Giro de `v` alrededor del eje unitario `axis` (Rodrigues).
 vec3 rotateAxis(vec3 v, vec3 axis, float angle) {
@@ -136,6 +137,7 @@ void main() {
     v_uv_layer = vec3(in_uv, in_layer_flutter.x);
     v_leaf = leaf ? 1.0 : 0.0;
     v_extra = in_anim.a;
+    v_young = leaf ? 0.0 : in_anim.b;
 
     vec3 n = in_normal;
     v_normal = vec3(c * n.x + s * n.z, n.y, -s * n.x + c * n.z);

@@ -1,0 +1,14 @@
+<p>Cargar escenas y objetos de un .datapack en marcha.</p>
+
+<h3 id="datapack">DataPack</h3>
+<table>
+  <tbody>
+    <tr><td><code>Value info(texto)</code></td><td>{name, version, scenes, objects, files} sin montar nada (o nil)</td></tr>
+    <tr><td><code>Value instantiate(texto, texto2, posicion, rotacion)</code></td><td>monta el paquete y crea un objeto (prefab) suyo; devuelve la Entity o nil</td></tr>
+    <tr><td><code>Value isLoaded(texto)</code></td><td>esta montado?</td></tr>
+    <tr><td><code>Value list(...)</code></td><td>nombres de los paquetes montados</td></tr>
+    <tr><td><code>Value load(texto)</code></td><td>monta un .datapack (junto al juego, en DataPacks/ o ruta); devuelve {name, scenes, objects, files} o nil</td></tr>
+    <tr><td><code>Value loadScene(texto, texto2)</code></td><td>monta el paquete y carga su escena (la primera si no se dice cual); true/false</td></tr>
+    <tr><td><code>Value unload(texto)</code></td><td>desmonta el paquete (borra lo que extrajo)</td></tr>
+  </tbody>
+</table>

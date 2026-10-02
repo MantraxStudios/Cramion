@@ -202,6 +202,8 @@ target_link_libraries(CramionCoreObjects PUBLIC Cramion::FX EnTT::EnTT nlohmann_
     PRIVATE Jolt cramion_lua cramion_miniaudio RecastNavigation::Recast RecastNavigation::Detour
             RecastNavigation::DetourCrowd)
 target_include_directories(CramionCoreObjects PRIVATE "${sol2_SOURCE_DIR}/include" "${enet_SOURCE_DIR}/include")
+# SDK de los scripts de C++ (cramion/CppProtocol.h lo comparten motor y juegos).
+target_include_directories(CramionCoreObjects PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/sdk")
 target_compile_options(CramionCoreObjects PRIVATE -Wall -Wextra)
 
 # Debug agil: lo que se ejecuta en cada frame con muchos objetos (sync del
@@ -231,7 +233,7 @@ endif()
 
 add_library(CramionCore STATIC $<TARGET_OBJECTS:CramionCoreObjects>)
 add_library(Cramion::Core ALIAS CramionCore)
-target_include_directories(CramionCore PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
+target_include_directories(CramionCore PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include" "${CMAKE_CURRENT_SOURCE_DIR}/sdk")
 target_link_libraries(CramionCore
     PUBLIC Cramion::Assets Cramion::FX EnTT::EnTT nlohmann_json::nlohmann_json
     PRIVATE Jolt cramion_lua cramion_miniaudio RecastNavigation::Recast RecastNavigation::Detour
@@ -363,6 +365,19 @@ add_executable(CramionMeshTests "${CMAKE_CURRENT_SOURCE_DIR}/tests/MeshTests.cpp
 target_link_libraries(CramionMeshTests PRIVATE Cramion::Core)
 target_compile_options(CramionMeshTests PRIVATE -Wall -Wextra)
 
+# --- Pruebas del modelado poligonal (mallas editables, consola) ---
+add_executable(CramionModelingTests "${CMAKE_CURRENT_SOURCE_DIR}/tests/ModelingTests.cpp")
+target_link_libraries(CramionModelingTests PRIVATE Cramion::Core)
+target_compile_options(CramionModelingTests PRIVATE -Wall -Wextra)
+
+# --- Pruebas de las CVars y de los scripts de C++ aislados (consola) ---
+# Compila scripts que fallan a proposito y los ejecuta en CramionScriptHost.
+add_executable(CramionCppScriptTests "${CMAKE_CURRENT_SOURCE_DIR}/tests/CppScriptTests.cpp")
+target_link_libraries(CramionCppScriptTests PRIVATE Cramion::Core)
+target_compile_options(CramionCppScriptTests PRIVATE -Wall -Wextra)
+target_compile_definitions(CramionCppScriptTests PRIVATE
+    CRAMION_SDK_DIR="${CMAKE_CURRENT_SOURCE_DIR}/sdk" CRAMION_BIN_DIR="${CMAKE_BINARY_DIR}")
+
 # --- Pruebas del mundo de bloques (consola) ---
 add_executable(CramionVoxelTests "${CMAKE_CURRENT_SOURCE_DIR}/tests/VoxelTests.cpp")
 target_link_libraries(CramionVoxelTests PRIVATE Cramion::Core)
@@ -375,5 +390,15 @@ target_link_libraries(cramion_minigolf PRIVATE Cramion::Core)
 
 # Referencia de componentes del manual (docs-src/pages/componentes-*.html),
 # generada desde la reflexion: cramion_docgen <carpeta docs-src/pages>.
+# La API de Lua en C++ para los scripts de C++ (sdk/cramion/Api.gen.h): se
+# regenera al compilar (solo cambia el archivo si cambia la API).
+# (con la documentacion de la API de Lua del editor: nombres de argumentos y descripciones)
+add_executable(cramion_sdkgen "${CMAKE_CURRENT_SOURCE_DIR}/tools/SdkGen.cpp" "${CMAKE_SOURCE_DIR}/CramionEditor/src/LuaCompletion.cpp")
+target_include_directories(cramion_sdkgen PRIVATE "${CMAKE_SOURCE_DIR}/CramionEditor/src")
+target_link_libraries(cramion_sdkgen PRIVATE Cramion::Core)
+add_custom_command(TARGET cramion_sdkgen POST_BUILD
+    COMMAND cramion_sdkgen "${CMAKE_CURRENT_SOURCE_DIR}/sdk/cramion"
+    COMMENT "API de Lua para los scripts de C++")
+
 add_executable(cramion_docgen "${CMAKE_CURRENT_SOURCE_DIR}/tools/DocGen.cpp")
 target_link_libraries(cramion_docgen PRIVATE Cramion::Core)

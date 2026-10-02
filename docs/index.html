@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Cramion Engine</title>
-  <meta name="description" content="Cramion: motor de juegos para Windows con renderizador diferido en Vulkan 1.3, editor de escenas, física, terreno, agua y scripting en Lua.">
+  <meta name="description" content="Cramion: motor de juegos para Windows con renderizador diferido en Vulkan 1.3, editor de escenas, física, terreno, agua y scripting en C++.">
   <meta name="theme-color" content="#09090b">
   <link rel="icon" href="img/icon.png">
   <script>
@@ -80,7 +80,7 @@
       </a>
       <div class="hidden gap-6 text-sm text-muted-foreground lg:flex">
         <a href="#motor" class="hover:text-foreground">Características</a>
-        <a href="#scripting" class="hover:text-foreground">Lua</a>
+        <a href="#scripting" class="hover:text-foreground">C++</a>
         <a href="#novedades" class="hover:text-foreground">Novedades</a>
         <a href="manual/index.html" class="hover:text-foreground">Documentación</a>
         <a href="manual/licencia.html" class="hover:text-foreground">Licencia</a>
@@ -108,7 +108,7 @@
     <div id="mobile-menu" class="hidden border-t border-border lg:hidden">
       <div class="mx-auto grid max-w-6xl gap-1 px-4 py-3 text-sm sm:px-6">
         <a href="#motor" class="rounded-md px-3 py-2 hover:bg-accent">Características</a>
-        <a href="#scripting" class="rounded-md px-3 py-2 hover:bg-accent">Lua</a>
+        <a href="#scripting" class="rounded-md px-3 py-2 hover:bg-accent">C++</a>
         <a href="#novedades" class="rounded-md px-3 py-2 hover:bg-accent">Novedades</a>
         <a href="manual/index.html" class="rounded-md px-3 py-2 hover:bg-accent">Documentación</a>
         <a href="manual/licencia.html" class="rounded-md px-3 py-2 hover:bg-accent">Licencia</a>
@@ -125,14 +125,14 @@
       <div class="relative mx-auto grid max-w-6xl gap-12 px-4 py-16 sm:px-6 lg:grid-cols-[1fr_1.1fr] lg:items-center lg:py-24">
         <div class="min-w-0">
           <a href="#novedades" class="badge hover:text-foreground">
-            <span class="font-medium text-foreground">Nuevo en la 1.9</span> Fuego, líquidos, clima e IA
+            <span class="font-medium text-foreground">Nuevo en la 2.0</span> Scripts en C++, luz realista y bosques vivos
             <svg class="size-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
           </a>
           <h1 class="mt-6 text-4xl font-bold leading-[1.08] tracking-tight sm:text-5xl lg:text-6xl">
             Un motor de juegos 3D para Windows, con su editor.
           </h1>
           <p class="mt-6 max-w-xl text-lg text-muted-foreground">
-            Montas la escena en el editor, escribes el juego en Lua y le das a Play. Render en Vulkan 1.3, física con Jolt,
+            Montas la escena en el editor, escribes el juego en C++ y le das a Play. Render en Vulkan 1.3, física con Jolt,
             terreno, agua, navegación, animación con IK y exportación a un <span class="code-inline">.exe</span>.
             Gratis para hacer y vender tus juegos, sin regalías.
           </p>
@@ -142,7 +142,7 @@
             </a>
             <a href="manual/index.html" class="btn btn-outline">Leer la documentación</a>
           </div>
-          <p class="mt-6 font-mono text-xs text-muted-foreground">1.9 · Windows 10/11 x64 · Android · realidad virtual · Vulkan 1.3 · ≈64 MB</p>
+          <p class="mt-6 font-mono text-xs text-muted-foreground">2.0 · Windows 10/11 x64 · Android · realidad virtual · Vulkan 1.3 · ≈ZIPMB MB</p>
         </div>
 
         <figure class="card min-w-0 overflow-hidden shadow-2xl shadow-black/20">
@@ -201,7 +201,7 @@
           </article>
           <article class="card p-6">
             <h3 class="font-semibold">Red</h3>
-            <p class="mt-2 text-sm text-muted-foreground">Multijugador por UDP (ENet) desde Lua: crear partida y unirse por IP, mensajes, objetos y variables sincronizados, entrar tarde. Peticiones HTTPS con el certificado comprobado y JSON.</p>
+            <p class="mt-2 text-sm text-muted-foreground">Multijugador por UDP (ENet) desde los scripts: crear partida y unirse por IP, mensajes, objetos y variables sincronizados, entrar tarde. Peticiones HTTPS con el certificado comprobado y JSON.</p>
           </article>
           <article class="card p-6">
             <h3 class="font-semibold">IA en el editor</h3>
@@ -212,7 +212,7 @@
         <div class="mt-16 grid gap-8 lg:grid-cols-[1fr_2fr]">
           <div>
             <h3 class="text-xl font-semibold tracking-tight">Plantillas</h3>
-            <p class="mt-2 text-sm text-muted-foreground">Todas llevan el juego en Lua, a la vista para leerlo y cambiarlo.</p>
+            <p class="mt-2 text-sm text-muted-foreground">Todas llevan el juego a la vista para leerlo y cambiarlo (de momento en Lua, que sigue funcionando).</p>
           </div>
           <div class="grid gap-3 text-sm sm:grid-cols-2">
             <p class="card p-4"><span class="font-medium">Tercera persona avanzada.</span> <span class="text-muted-foreground">Locomotion Pack de Mixamo con Blend Tree 2D, giros en el sitio, salto sincronizado e IK.</span></p>
@@ -226,50 +226,50 @@
       </div>
     </section>
 
-    <!-- Lua -->
+    <!-- C++ -->
     <section id="scripting" class="scroll-mt-16 border-b border-border">
       <div class="mx-auto grid max-w-6xl gap-12 px-4 py-20 sm:px-6 lg:grid-cols-2 lg:items-center">
         <div class="min-w-0">
           <p class="text-sm font-medium text-brand">Scripting</p>
-          <h2 class="mt-2 text-3xl font-bold tracking-tight sm:text-4xl">El juego se escribe en Lua</h2>
+          <h2 class="mt-2 text-3xl font-bold tracking-tight sm:text-4xl">El juego se escribe en C++</h2>
           <p class="mt-4 text-muted-foreground">
-            Un script es una tabla con <span class="code-inline">Start</span>, <span class="code-inline">Update</span>,
-            <span class="code-inline">OnTriggerEnter</span> y lo que necesites. Sus <span class="code-inline">properties</span>
-            salen en el Inspector y, si guardas el archivo durante el Play, se recarga sin perder el estado.
+            Un script es una clase con <span class="code-inline">start</span>, <span class="code-inline">update</span>,
+            <span class="code-inline">onTriggerEnter</span> y lo que necesites, en su <span class="code-inline">.h</span> y su
+            <span class="code-inline">.cpp</span>. Sus <span class="code-inline">Property&lt;T&gt;</span> salen en el Inspector
+            (números, objetos de la escena, prefabs, sonidos, listas...) y se arrastra al objeto como en Unity.
           </p>
           <p class="mt-4 text-muted-foreground">
-            La API cubre entidades, física, navegación, audio, interfaz, animación e IK, gráficos,
-            <a href="manual/red.html" class="link text-foreground">red</a> y <a href="manual/http.html" class="link text-foreground">HTTPS</a>,
-            con autocompletado en el editor. Corre aislado: sin acceso a tus archivos.
+            El editor trae el compilador y el IntelliSense (clang): no hay que instalar nada. La API cubre entidades, física,
+            navegación, audio, interfaz, animación e IK, gráficos, <a href="manual/cpp-network.html" class="link text-foreground">red</a>
+            y <a href="manual/cpp-http.html" class="link text-foreground">HTTPS</a>. Corre aislado en otro proceso: si un script
+            falla, el motor sigue y te dice el archivo y la línea.
           </p>
-          <a href="manual/index.html" class="btn btn-outline mt-8">Referencia y ejemplos</a>
+          <a href="manual/primer-script.html" class="btn btn-outline mt-8">Tu primer script</a>
+          <a href="manual/cpp-script.html" class="btn btn-outline mt-8 ml-2">API de C++</a>
         </div>
         <div class="min-w-0 overflow-hidden rounded-xl border border-border bg-[#0c0c0e]">
           <div class="flex items-center justify-between border-b border-white/10 px-4 py-2.5 font-mono text-xs text-zinc-400">
-            <span class="truncate">Assets/Scripts/Jugador.lua</span><span>Lua 5.4</span>
+            <span class="truncate">Assets/Scripts/Jugador.cpp</span><span>C++20</span>
           </div>
-          <pre class="overflow-x-auto p-5 text-[13px] leading-relaxed text-zinc-200"><code class="language-lua">local Jugador = {
-    properties = { velocidad = 5.0, salto = 6.0 }
+          <pre class="overflow-x-auto p-5 text-[13px] leading-relaxed text-zinc-200"><code class="language-cpp">#include "Jugador.h"
+
+void Jugador::update(float dt) {
+    const Vec3 mover{Input::axis("Horizontal"), 0.0f,
+                     -Input::axis("Vertical")};
+    entity().translate(mover * (velocidad * dt));
+
+    if (Input::keyDown("Space"))
+        entity().addForce(Vec3::up() * salto.get(), ForceMode::Impulse);
 }
 
-function Jugador:Update(dt)
-    local mover = Vec3(Input.getAxis("Horizontal"), 0,
-                       -Input.getAxis("Vertical"))
-    self.entity:translate(mover * self.velocidad * dt)
+void Jugador::onTriggerEnter(Entity other) {
+    if (other.tag() == "Moneda") {
+        Audio::playOneShot(sonidoMoneda);
+        other.destroy();
+    }
+}
 
-    if Input.getKeyDown("space") then
-        self.entity:addImpulse(Vec3.up * self.salto)
-    end
-end
-
-function Jugador:OnTriggerEnter(other)
-    if other.tag == "Moneda" then
-        Audio.playOneShot("Audio/moneda.wav")
-        other:destroy()
-    end
-end
-
-return Jugador</code></pre>
+CRAMION_SCRIPT(Jugador)</code></pre>
         </div>
       </div>
     </section>
@@ -280,45 +280,65 @@ return Jugador</code></pre>
         <div class="flex flex-wrap items-end justify-between gap-4">
           <div>
             <p class="text-sm font-medium text-brand">Novedades</p>
-            <h2 class="mt-2 text-3xl font-bold tracking-tight sm:text-4xl">Cramion 1.9: fuego, líquidos, clima e IA</h2>
+            <h2 class="mt-2 text-3xl font-bold tracking-tight sm:text-4xl">Cramion 2.0: C++, luz realista y bosques vivos</h2>
           </div>
-          <span class="badge">septiembre de 2026</span>
+          <span class="badge">octubre de 2026</span>
         </div>
 
         <div class="mt-10 grid gap-6 lg:grid-cols-[1.2fr_1fr]">
           <div class="grid min-w-0 gap-4 sm:grid-cols-2">
             <figure class="card overflow-hidden sm:col-span-2">
-              <img src="img/v19-fuego.jpg" alt="Incendio con llamas y una columna de humo volumétrica" class="w-full" loading="lazy">
-              <figcaption class="border-t border-border px-4 py-2 text-xs text-muted-foreground">Incendio que se propaga, con llamas y humo volumétricos</figcaption>
+              <img src="img/v20-lago.jpg" alt="Lago entre abedules y robles con hierba en matas" class="w-full" loading="lazy">
+              <figcaption class="border-t border-border px-4 py-2 text-xs text-muted-foreground">Lago entre abedules y robles: trazado de rayos, cortezas nuevas y hierba en matas</figcaption>
             </figure>
             <figure class="card overflow-hidden">
-              <img src="img/v19-lava.jpg" alt="Lava de partículas cayendo en un tanque de agua" class="w-full" loading="lazy">
-              <figcaption class="border-t border-border px-4 py-2 text-xs text-muted-foreground">Lava sobre agua (líquidos en la GPU)</figcaption>
+              <img src="img/v20-cabana.jpg" alt="Cabaña entre robles con la luz del sol entre los troncos" class="w-full" loading="lazy">
+              <figcaption class="border-t border-border px-4 py-2 text-xs text-muted-foreground">Cabaña en el bosque</figcaption>
             </figure>
             <figure class="card overflow-hidden">
-              <img src="img/v19-oceano.jpg" alt="Océano con oleaje FFT" class="w-full" loading="lazy">
-              <figcaption class="border-t border-border px-4 py-2 text-xs text-muted-foreground">Océano con oleaje FFT</figcaption>
+              <img src="img/v20-especies.jpg" alt="Abetos, sauce y palmeras procedurales" class="w-full" loading="lazy">
+              <figcaption class="border-t border-border px-4 py-2 text-xs text-muted-foreground">Abetos y sauce a contraluz</figcaption>
             </figure>
             <figure class="card overflow-hidden sm:col-span-2">
-              <img src="img/v19-maquina.jpg" alt="Editor de máquinas de estados en su propia pestaña" class="w-full" loading="lazy">
-              <figcaption class="border-t border-border px-4 py-2 text-xs text-muted-foreground">Máquina de estados de un enemigo, en su propia pestaña</figcaption>
+              <img src="img/v20-rio.jpg" alt="Río que baja entre pinos y abedules hacia las montañas" class="w-full" loading="lazy">
+              <figcaption class="border-t border-border px-4 py-2 text-xs text-muted-foreground">Río en cuesta entre pinos con borlas de agujas en 3D</figcaption>
             </figure>
           </div>
           <div class="card min-w-0 p-6">
             <ul class="space-y-4 text-sm">
-              <li><p class="font-medium">Ambiente y clima</p><p class="mt-1 text-muted-foreground">Como Enviro Sky: clima con transiciones, hora y fecha con el sol y la luna reales, estaciones, viento, rayos con truenos, lluvia y nieve que cae y se acumula, y sonido ambiente.</p></li>
-              <li><p class="font-medium">Fuego</p><p class="mt-1 text-muted-foreground">Incendios que se propagan por la hierba y el bosque según el viento y la pendiente, con llamas y humo volumétricos, luces y suelo carbonizado.</p></li>
-              <li><p class="font-medium">Líquidos</p><p class="mt-1 text-muted-foreground">Agua, miel, lava, barro, sangre, aceite y ácido de partículas en la GPU: chocan, salpican, hacen flotar los objetos y se ven como una superficie continua.</p></li>
-              <li><p class="font-medium">Océano FFT</p><p class="mt-1 text-muted-foreground">Oleaje como el de Crest calculado con el viento, mar de fondo, espuma que viaja con la ola, ríos con corriente y una vista bajo el agua nueva.</p></li>
-              <li><p class="font-medium">Máquinas de estados</p><p class="mt-1 text-muted-foreground">IA como los State Graphs de Bolt: estados en un grafo con transiciones y Lua dentro de cada estado, en su propia pestaña y en vivo durante el Play.</p></li>
-              <li><p class="font-medium">Editor renovado</p><p class="mt-1 text-muted-foreground">Tema nuevo y un Inspector con tarjetas, buscador de propiedades y copiar y pegar valores.</p></li>
+              <li><p class="font-medium">Scripts en C++</p><p class="mt-1 text-muted-foreground">El lenguaje del motor: clases con start y update, propiedades en el Inspector como en Unity, compilador incluido, IntelliSense de clangd y scripts aislados en otro proceso (un fallo no tumba el editor).</p></li>
+              <li><p class="font-medium">Luz más realista</p><p class="mt-1 text-muted-foreground">Los rayos ven el terreno y los árboles, sombras del sol por rayos, oclusión del cielo sin RT, luces sin fugas, tonemapper AgX y autoenfoque suave. Y el RT apagado no cuesta nada.</p></li>
+              <li><p class="font-medium">Árboles y hierba realistas</p><p class="mt-1 text-muted-foreground">Copas que se iluminan a contraluz, cortezas nuevas, pinos con brotes en 3D, abetos densos y hierba en matas con manchas de color, puntas secas y paja.</p></li>
+              <li><p class="font-medium">Streaming</p><p class="mt-1 text-muted-foreground">Modelos y animaciones se cargan en segundo plano, se suben a la GPU poco a poco y lo que no se ve sale de la memoria de vídeo: sin tirones al instanciar.</p></li>
+              <li><p class="font-medium">Modelado y personajes</p><p class="mt-1 text-muted-foreground">Mallas editables como ProBuilder (vértices, aristas y caras, bisel, booleanas...) y un Character Controller con escalones, pendientes y plataformas.</p></li>
+              <li><p class="font-medium">Agua</p><p class="mt-1 text-muted-foreground">Los ríos en cuesta ya no se cortan al acercarse y la espuma de las orillas es natural.</p></li>
             </ul>
-            <a href="manual/fuego.html" class="btn btn-outline btn-sm mt-6">Fuego, líquidos y clima en la documentación</a>
+            <a href="manual/render.html" class="btn btn-outline btn-sm mt-6">Iluminación y rayos en la documentación</a>
           </div>
         </div>
 
         <h3 class="mt-16 text-lg font-semibold tracking-tight">Versiones anteriores</h3>
         <div class="mt-4 divide-y divide-border rounded-xl border border-border">
+          <details id="novedades-19" class="group">
+            <summary class="flex cursor-pointer items-center justify-between gap-4 px-5 py-4 hover:bg-accent/50">
+              <span><span class="font-semibold">1.9</span> <span class="ml-2 text-sm text-muted-foreground">Fuego, líquidos, clima e IA</span></span>
+              <svg class="chev size-4 shrink-0 transition-transform" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="m6 9 6 6 6-6"/></svg>
+            </summary>
+            <div class="px-5 pb-5 text-sm text-muted-foreground">
+              <div class="grid gap-3 sm:grid-cols-2">
+                <figure class="card overflow-hidden"><img src="img/v19-fuego.jpg" alt="Incendio con llamas y una columna de humo volumétrica" class="w-full" loading="lazy"><figcaption class="border-t border-border px-3 py-1.5 text-xs">Incendio con llamas y humo volumétricos</figcaption></figure>
+                <figure class="card overflow-hidden"><img src="img/v19-oceano.jpg" alt="Océano con oleaje FFT" class="w-full" loading="lazy"><figcaption class="border-t border-border px-3 py-1.5 text-xs">Océano con oleaje FFT</figcaption></figure>
+              </div>
+              <ul class="mt-4 list-disc space-y-2 pl-5">
+                <li><span class="text-foreground">Ambiente y clima.</span> Como Enviro Sky: clima con transiciones, hora y fecha con el sol y la luna reales, estaciones, viento, rayos con truenos, lluvia y nieve que se acumulan, y sonido ambiente.</li>
+                <li><span class="text-foreground">Fuego.</span> Incendios que se propagan por la hierba y el bosque según el viento y la pendiente, con llamas y humo volumétricos.</li>
+                <li><span class="text-foreground">Líquidos.</span> Agua, miel, lava, barro, sangre, aceite y ácido de partículas en la GPU que chocan, salpican y hacen flotar los objetos.</li>
+                <li><span class="text-foreground">Océano FFT.</span> Oleaje como el de Crest, ríos con corriente y una vista bajo el agua nueva.</li>
+                <li><span class="text-foreground">Máquinas de estados.</span> IA como los State Graphs de Bolt, en su propia pestaña y en vivo durante el Play. Y un editor renovado.</li>
+              </ul>
+              <a href="manual/fuego.html" class="link mt-4 inline-block text-foreground">Fuego, líquidos y clima en la documentación</a>
+            </div>
+          </details>
           <details id="novedades-18" class="group">
             <summary class="flex cursor-pointer items-center justify-between gap-4 px-5 py-4 hover:bg-accent/50">
               <span><span class="font-semibold">1.8</span> <span class="ml-2 text-sm text-muted-foreground">Mundo procedural</span></span>
@@ -432,7 +452,7 @@ return Jugador</code></pre>
             </summary>
             <div class="px-5 pb-5 text-sm text-muted-foreground">
               <ul class="list-disc space-y-2 pl-5">
-                <li><span class="text-foreground">Realidad virtual.</span> OpenXR con cualquier casco de PC: XR Origin con cámara y mandos, botones en Input Actions y la tabla <span class="code-inline">XR</span> en Lua.</li>
+                <li><span class="text-foreground">Realidad virtual.</span> OpenXR con cualquier casco de PC: XR Origin con cámara y mandos, botones en Input Actions y <span class="code-inline">XR::</span> en C++.</li>
                 <li><span class="text-foreground">Input Actions como Unreal.</span> Acciones Bool, float, Vec2 y Vec3 con muchas teclas, contextos, modificadores y triggers.</li>
                 <li><span class="text-foreground">Telas y cuerpos blandos.</span> Cortinas y banderas que ondean con el viento; gelatinas y pelotas de goma.</li>
                 <li><span class="text-foreground">IntelliSense completo.</span> Toda la API, tipos por tus variables y la firma de cada función.</li>
@@ -451,10 +471,10 @@ return Jugador</code></pre>
       <div class="mx-auto grid max-w-6xl gap-6 px-4 py-20 sm:px-6 lg:grid-cols-[1fr_1.2fr]">
         <div class="card min-w-0 p-6 sm:p-8">
           <p class="text-sm font-medium text-brand">Descargar</p>
-          <h2 class="mt-2 text-3xl font-bold tracking-tight">Cramion 1.9 para Windows</h2>
+          <h2 class="mt-2 text-3xl font-bold tracking-tight">Cramion 2.0 para Windows</h2>
           <p class="mt-4 text-muted-foreground">Descomprime y abre <span class="code-inline">CramionEditor.exe</span>. El motor avisa de las versiones nuevas y se actualiza solo.</p>
           <a href="https://github.com/MantraxStudios/Cramion/releases/latest/download/Cramion-win64.zip" class="btn btn-primary mt-6 w-full sm:w-auto">
-            <svg class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v11M7 10l5 5 5-5M5 20h14"/></svg>Cramion-win64.zip · ≈64 MB
+            <svg class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v11M7 10l5 5 5-5M5 20h14"/></svg>Cramion-win64.zip · ≈ZIPMB MB
           </a>
           <div class="mt-6 rounded-lg border border-border bg-muted px-4 py-3 text-sm text-muted-foreground">
             La única descarga oficial es esta, y es gratis. Si alguien te vende Cramion, no es oficial: avisa en el

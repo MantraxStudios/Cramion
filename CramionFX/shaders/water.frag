@@ -523,7 +523,16 @@ void main() {
     float scene_depth = texelFetch(g_depth, ivec2(gl_FragCoord.xy), 0).r;
     bool sky_behind = scene_depth >= 1.0;
     vec3 floor_position = worldFromDepth(screen_uv, scene_depth);
-    float vertical_depth = sky_behind ? 1000.0 : max(v_world_position.y - floor_position.y, 0.0);
+    // Hondura del agua aqui, perpendicular a su superficie: el tramo del rayo
+    // dentro del agua (hasta el fondo que se ve detras) por el coseno con la
+    // normal de la superficie (la del triangulo, sin el rizado). En agua plana
+    // vista desde arriba es la diferencia de alturas de siempre. Con la
+    // diferencia de alturas, un rio en cuesta mirado hacia arriba se cortaba:
+    // el fondo que se ve detras de cada punto esta MAS ALTO que el (la cuesta
+    // sigue subiendo), la hondura salia 0 y el agua se volvia orilla (una
+    // franja de espuma) y despues transparente, como si desapareciera.
+    float path_inside = max(length(floor_position - camera.position.xyz) - surface_distance, 0.0);
+    float vertical_depth = sky_behind ? 1000.0 : path_inside * clamp(dot(view_direction, geometric), 0.0, 1.0);
 
     // Refraccion: desviada por la normal, menos en lo poco profundo y lejos.
     vec2 refract_offset = normal.xz * b.look.y * 0.06 * clamp(vertical_depth, 0.0, 1.0) / (1.0 + surface_distance * 0.05);
@@ -544,7 +553,9 @@ void main() {
     vec3 in_scatter = b.deep.rgb * (sun_radiance * sun_height * shadow * 0.35 + ambient);
     // Causticas en el fondo poco profundo (la luz que las olas concentran).
     if (refract_depth < 1.0 && b.look.z > 0.0) {
-        float floor_depth = max(v_world_position.y - refract_floor.y, 0.0);
+        // Perpendicular a la superficie, como vertical_depth (en cuesta, el
+        // fondo de detras queda mas alto que el punto).
+        float floor_depth = thickness * clamp(dot(view_direction, geometric), 0.0, 1.0);
         vec2 entry = refract_floor.xz + sun_direction.xz / max(sun_direction.y, 0.2) * floor_depth;
         vec2 caustic_uv = river ? river_uv0 : entry - b.origin.xz;
         float c = caustic(caustic_uv, t * 1.3) * b.look.z * shadow * sun_height *
@@ -624,13 +635,27 @@ void main() {
     // Cobertura (donde hay espuma y cuanta) por un lado y su textura (encaje
     // de burbujas) por otro: con poca cobertura solo asoman las partes mas
     // densas, que es como se deshace la espuma de verdad.
-    float shore_width = max(b.look.w, 0.01);
-    float shore = sky_behind ? 0.0 : 1.0 - smoothstep(0.0, shore_width, vertical_depth);
-    // Olas que llegan a la playa: bandas que avanzan hacia la orilla.
+    // Orilla: la profundidad se "ensucia" con ruido grande para que el borde de
+    // la espuma no siga la linea recta de los triangulos del terreno (salia un
+    // poligono blanco), y la cobertura cae con el cuadrado: densa solo donde
+    // el agua lame la arena, encaje que se deshace hacia dentro. En un rio,
+    // solo el contacto con la orilla (si no, un rio poco hondo era espuma de
+    // lado a lado).
+    // En un rio, solo el borde donde el agua lame la orilla (sus orillas son
+    // suaves: con 35 cm salian dos bandas blancas anchas, como nieve).
+    float shore_width = max(river ? min(b.look.w, 0.1) : b.look.w, 0.01);
+    float shore_noise = fbm(v_grid * 0.11 + vec2(t * 0.01, 0.0), footprint * 0.11) - 0.5;
+    float shore_depth = max(vertical_depth + shore_noise * shore_width * 0.9, 0.0);
+    float shore_fade = 1.0 - smoothstep(0.0, shore_width, shore_depth);
+    float shore = sky_behind ? 0.0 : shore_fade * shore_fade;
+    // Olas que llegan a la playa: bandas que avanzan hacia la orilla, rotas
+    // por el ruido (no lineas paralelas perfectas).
     float bands = 0.0;
-    if (b.extra.x > 0.0 && !sky_behind) {
+    if (b.extra.x > 0.0 && !sky_behind && !river) {
         float phase = vertical_depth * 2.2 - t * 1.4 + fbm(v_grid * 0.15, footprint * 0.15) * 3.0;
-        bands = smoothstep(0.55, 1.0, sin(phase)) * (1.0 - smoothstep(0.0, shore_width * 3.0, vertical_depth)) * b.extra.x;
+        float broken = smoothstep(0.35, 0.7, fbm(v_grid * 0.4 - vec2(0.0, t * 0.05), footprint * 0.4));
+        bands = smoothstep(0.6, 1.0, sin(phase)) * (1.0 - smoothstep(0.0, shore_width * 3.0, vertical_depth)) *
+                b.extra.x * mix(0.35, 1.0, broken);
     }
     float crest_foam = 0.0;
     if (fft_ocean) {
@@ -650,13 +675,28 @@ void main() {
     }
     float river_foam = 0.0;
     if (river) {
-        float bank = smoothstep(0.32, 0.5, abs(v_uv.x - 0.5));
+        // Vetas arrastradas por la corriente (dos fases del flow map).
         float streaks = mix(fbm(river_uv0 * 0.8, footprint * 0.8), fbm(river_uv1 * 0.8, footprint * 0.8), flow_weight);
-        river_foam = bank * 0.6 + smoothstep(0.62, 0.85, streaks) * clamp(b.wind.z * 0.25, 0.0, 1.0) + rapids * 0.9;
+        float lines = smoothstep(0.55, 0.85, streaks);
+        // Orilla: solo una franja estrecha y a trozos (antes el 36% de cada
+        // lado era espuma continua: el rio parecia una tabla con bordes).
+        float patches = smoothstep(0.4, 0.7, mix(fbm(river_uv0 * 0.25 + 3.1, footprint * 0.25),
+                                                 fbm(river_uv1 * 0.25 + 3.1, footprint * 0.25), flow_weight));
+        float bank = smoothstep(0.45, 0.5, abs(v_uv.x - 0.5)) * patches * 0.6;
+        // Rapidos: agua blanca EN VETAS con agua oscura entre medias. Antes
+        // sumaban 0.9 de cobertura en todo el ancho y un rio de montana (todo
+        // pendiente) salia blanco entero, como nieve.
+        float rapid_lines = smoothstep(0.42, 0.78, streaks);
+        river_foam = bank * 0.45 + lines * clamp(b.wind.z * 0.2, 0.0, 0.6) + rapids * (0.12 + 0.5 * rapid_lines);
     }
     // Espuma en las crestas fuertes de las olas interactivas (salpicaduras).
     float splash_foam = smoothstep(0.35, 1.2, length(ripple_slope)) * smoothstep(0.01, 0.06, rippleHeight(v_world_position.xz));
-    float coverage = clamp((shore * 0.9 + bands + river_foam + splash_foam) * b.deep.w + crest_foam, 0.0, 1.2);
+    // Saturacion suave: por mucha espuma que se sume siempre queda encaje
+    // (huecos de agua). Solo el borde que lame la orilla llega a ser opaco.
+    float shore_weight = river ? 0.45 : 0.9;
+    float raw_coverage = (shore * shore_weight + bands + river_foam + splash_foam) * b.deep.w + crest_foam;
+    float coverage = 0.9 * (1.0 - exp(-1.6 * max(raw_coverage, 0.0))) + (river ? 0.0 : 0.25 * shore * shore * b.deep.w);
+    coverage = clamp(coverage, 0.0, 1.1);
     float foam = 0.0;
     if (coverage > 0.001) {
         float density;

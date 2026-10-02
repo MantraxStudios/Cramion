@@ -1,46 +1,77 @@
-<p class="file">Moneda.lua</p>
-      <pre><code class="language-lua">local Moneda = { properties = { valor = 1 } }
+<p>Cada moneda tiene un SphereCollider marcado como trigger y la etiqueta Moneda. El marcador es una entidad con un UIText llamada Marcador; la moneda llama a su script con <code>script&lt;Marcador&gt;()</code>.</p>
+<p class="file">Assets/Scripts/Moneda.h</p>
+<pre><code class="language-cpp">#pragma once
+#include &lt;cramion/Script.h&gt;
+using namespace cramion;
 
-function Moneda:Start()
-    self.base = self.entity.position
-end
+class Moneda : public Script {
+public:
+    Property&lt;int&gt; valor{this, &quot;valor&quot;, 1};
+    Property&lt;AudioClip&gt; sonido{this, &quot;sonido&quot;};
 
-function Moneda:Update(dt)
-    -- Flota y gira
-    self.entity:rotate(Vec3(0, 180 * dt, 0))
-    self.entity.position = self.base + Vec3(0, math.sin(Time.time * 3) * 0.15, 0)
-end
+    void start() override;
+    void update(float dt) override;
+    void onTriggerEnter(Entity other) override;
 
-function Moneda:OnTriggerEnter(other)
-    if other.name ~= "Jugador" then return end
-    local marcador = Scene.find("Marcador")
-    if marcador then marcador:getScript():Sumar(self.valor) end
-    Audio.playOneShot("Audio/moneda.wav", self.entity.position)
-    self.entity:destroy()
-end
+private:
+    Vec3 base;
+};</code></pre>
+<p class="file">Assets/Scripts/Moneda.cpp</p>
+<pre><code class="language-cpp">#include &quot;Moneda.h&quot;
+#include &quot;Marcador.h&quot;
 
-return Moneda</code></pre>
-      <p class="file">Marcador.lua</p>
-      <pre><code class="language-lua">local Marcador = { properties = {} }
+void Moneda::start() { base = entity().position(); }
 
-function Marcador:Start()
-    self.puntos = 0
-    self.total = #Scene.findAllWithTag("Moneda")
-    self:pintar()
-end
+void Moneda::update(float dt) {
+    // Flota y gira.
+    entity().rotate(Vec3{0.0f, 180.0f * dt, 0.0f});
+    entity().setPosition(base + Vec3{0.0f, Mathf::sin(Time::time() * 3.0f) * 0.15f, 0.0f});
+}
 
-function Marcador:pintar()
-    self.entity.text = string.format("Monedas: %d / %d", self.puntos, self.total)
-end
+void Moneda::onTriggerEnter(Entity other) {
+    if (other.name() != &quot;Jugador&quot;) return;
+    if (Marcador* marcador = Scene::find(&quot;Marcador&quot;).script&lt;Marcador&gt;()) marcador-&gt;sumar(valor);
+    Audio::playOneShot(sonido, entity().position());
+    entity().destroy();
+}
 
-function Marcador:Sumar(n)
-    self.puntos = self.puntos + n
-    self:pintar()
-    if self.puntos >= self.total then
-        self.entity.color = Vec3(1, 0.85, 0.2)
-        Prefs.setInt("record", math.max(Prefs.getInt("record", 0), self.puntos))
-        Scene.load("Victoria")
-    end
-end
+CRAMION_SCRIPT(Moneda)</code></pre>
+<p class="file">Assets/Scripts/Marcador.h</p>
+<pre><code class="language-cpp">#pragma once
+#include &lt;cramion/Script.h&gt;
+using namespace cramion;
 
-return Marcador</code></pre>
+class Marcador : public Script {
+public:
+    void start() override;
+    void sumar(int n);
+
+private:
+    void pintar();
+    int puntos = 0;
+    int total = 0;
+};</code></pre>
+<p class="file">Assets/Scripts/Marcador.cpp</p>
+<pre><code class="language-cpp">#include &quot;Marcador.h&quot;
+
+#include &lt;algorithm&gt;
+
+void Marcador::start() {
+    total = static_cast&lt;int&gt;(Scene::findAllWithTag(&quot;Moneda&quot;).size());
+    pintar();
+}
+
+void Marcador::pintar() {
+    entity().setText(&quot;Monedas: &quot; + std::to_string(puntos) + &quot; / &quot; + std::to_string(total));
+}
+
+void Marcador::sumar(int n) {
+    puntos += n;
+    pintar();
+    if (puntos &lt; total) return;
+    entity().setColor(Vec3{1.0f, 0.85f, 0.2f});
+    Prefs::setInt(&quot;record&quot;, std::max(Prefs::getInt(&quot;record&quot;, 0).asInt(), puntos));
+    Scene::load(&quot;Victoria&quot;);
+}
+
+CRAMION_SCRIPT(Marcador)</code></pre>

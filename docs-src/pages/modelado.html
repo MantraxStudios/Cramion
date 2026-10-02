@@ -1,0 +1,116 @@
+<p>
+  Modela niveles, edificios y piezas directamente en la vista Escena, como con ProBuilder de Unity: una
+  <strong class="text-white">malla editable</strong> (componente <code>EditableMesh</code>) que se guarda en la escena y se
+  edita por vértices, aristas y caras. Las caras pueden tener cualquier número de lados (no solo triángulos), cada una con
+  su hueco de material, su grupo de suavizado y su proyección de UV. La malla genera la del <em>Mesh Renderer</em> y, con
+  ella, la del <em>Mesh Collider</em>: lo que modelas se ve y se pisa al momento.
+</p>
+
+<h3 id="crear">Crear formas</h3>
+<p>
+  <em>GameObject &gt; Malla editable</em> o la ventana <strong>Modelado</strong> (botón <strong>Modelado</strong> de la barra
+  de la vista, o <em>Ventana &gt; Modelado</em>). La forma aparece sobre el suelo en el centro de la vista, con la base en
+  la posición del objeto.
+</p>
+<table>
+  <thead><tr><th>Forma</th><th>Parámetros</th></tr></thead>
+  <tbody>
+    <tr><td>Cubo, Plano, Habitación (interior)</td><td>Tamaño y cortes por eje. La habitación tiene las caras hacia dentro.</td></tr>
+    <tr><td>Cilindro, Cono, Tubo</td><td>Lados, cortes en altura, tapas, grosor (tubo) y lados suaves.</td></tr>
+    <tr><td>Esfera, Icoesfera, Cápsula, Toro</td><td>Lados y anillos (subdivisiones en la icoesfera); radio del tubo en el toro.</td></tr>
+    <tr><td>Prisma, Rampa (cuña)</td><td>Tamaño.</td></tr>
+    <tr><td>Escalera, Escalera curva</td><td>Peldaños, maciza hasta el suelo o losa con grosor; radio interior y ángulo en la curva (más de 360° = de caracol).</td></tr>
+    <tr><td>Arco, Pared con puerta</td><td>Ángulo, lados y grosor del arco; tamaño del hueco de la puerta.</td></tr>
+  </tbody>
+</table>
+<p>
+  <strong>Convertir selección en editable</strong> pasa un modelo importado, una primitiva o una malla creada por código a
+  malla editable: suelda los vértices iguales y junta en quads los triángulos casi coplanares (el ángulo se elige).
+</p>
+
+<h3 id="modos">Modos y selección</h3>
+<p>Con una malla editable elegida, la barra de la vista muestra los modos (y las teclas <code>1</code>–<code>4</code>):</p>
+<table>
+  <thead><tr><th>Modo</th><th>Qué se elige</th></tr></thead>
+  <tbody>
+    <tr><td>Objeto (1)</td><td>La pieza entera, con el gizmo de siempre. Se ve su contorno.</td></tr>
+    <tr><td>Vértices (2)</td><td>Puntos (cuadraditos).</td></tr>
+    <tr><td>Aristas (3)</td><td>Líneas entre vértices.</td></tr>
+    <tr><td>Caras (4)</td><td>Polígonos (se rellenan en naranja).</td></tr>
+  </tbody>
+</table>
+<p>
+  Clic elige lo que hay bajo el ratón (resaltado en amarillo); <code>Mayús</code>+clic suma, <code>Ctrl</code>+clic
+  alterna y arrastrar dibuja una caja. Por defecto solo se elige lo que se ve; <strong>Rayos X</strong> elige también lo
+  de detrás. <code>Ctrl+A</code> elige todo, <code>Esc</code> suelta la selección (y otra vez, vuelve al modo Objeto),
+  <code>Supr</code> borra las caras elegidas. Un clic en el vacío deja elegir otro objeto.
+</p>
+<p>
+  El gizmo (<code>W</code> mover, <code>E</code> girar, <code>R</code> escalar, con el <em>Snap</em> de la barra) actúa
+  sobre lo elegido, alrededor de su centro. <strong><code>Mayús</code> + arrastrar el gizmo extruye</strong>: caras nuevas
+  desde las elegidas (o desde las aristas de borde) que se mueven con él, como en ProBuilder.
+</p>
+<p>
+  Herramientas de selección: <em>Crecer</em>, <em>Encoger</em>, <em>Conectadas</em>, <em>Mismo plano</em> (caras vecinas
+  con menos de N grados), <em>Mismo material</em>, <em>Bucle</em> y <em>Anillo</em> de aristas (por rejillas de quads),
+  <em>Bordes</em> (las aristas de los agujeros) e <em>Invertir</em>.
+</p>
+
+<h3 id="operaciones">Operaciones</h3>
+<table>
+  <thead><tr><th>Sobre</th><th>Operación</th><th>Qué hace</th></tr></thead>
+  <tbody>
+    <tr><td>Caras</td><td>Extruir</td><td>Saca las caras hacia fuera (o hacia dentro con distancia negativa), en grupo o cada una por separado.</td></tr>
+    <tr><td>Caras</td><td>Inset</td><td>Una cara más pequeña dentro de cada una (marcos de ventanas, paneles); con Extruir hacia dentro, huecos.</td></tr>
+    <tr><td>Caras</td><td>Subdividir</td><td>Cada cara en N quads; las vecinas reciben los puntos nuevos (la malla sigue cerrada).</td></tr>
+    <tr><td>Caras</td><td>Unir en una</td><td>Las caras vecinas pasan a ser un solo polígono.</td></tr>
+    <tr><td>Caras</td><td>Triangular, Voltear normales, Duplicar, Separar en objeto, Borrar</td><td></td></tr>
+    <tr><td>Aristas</td><td>Biselar</td><td>Chaflán: una cara nueva en lugar de la arista. Donde se juntan tres biseles, tapa la esquina.</td></tr>
+    <tr><td>Aristas</td><td>Extruir borde</td><td>Alarga una superficie abierta desde sus aristas de borde.</td></tr>
+    <tr><td>Aristas</td><td>Conectar</td><td>Une los puntos medios de las aristas elegidas dentro de cada cara.</td></tr>
+    <tr><td>Aristas</td><td>Insertar bucle</td><td>Corta todo el anillo de quads de la arista (y elige dónde).</td></tr>
+    <tr><td>Aristas</td><td>Subdividir</td><td>Corta cada arista en varios trozos.</td></tr>
+    <tr><td>Aristas</td><td>Puente</td><td>Una cara entre dos aristas de borde.</td></tr>
+    <tr><td>Aristas</td><td>Rellenar agujero</td><td>Tapa el agujero que toca la arista.</td></tr>
+    <tr><td>Vértices</td><td>Soldar, Colapsar, Separar, Conectar, Ajustar a rejilla</td><td>Soldar junta los que están a menos de una distancia; Colapsar los junta en su centro; Conectar corta caras entre ellos.</td></tr>
+    <tr><td>Toda la malla</td><td>Relajar, Ruido</td><td>Suaviza la forma o le da irregularidad (rocas); sobre lo elegido o todo.</td></tr>
+    <tr><td>Toda la malla</td><td>Suavizar (Catmull-Clark)</td><td>Subdivisión suave (1 a 3 niveles): de cajas a formas orgánicas.</td></tr>
+    <tr><td>Toda la malla</td><td>Espejo / Reflejar</td><td>Simetría por el plano X, Y o Z del pivote (soldando la costura) o darle la vuelta.</td></tr>
+    <tr><td>Toda la malla</td><td>Conformar normales, Soldar todo, Pivote al centro / a la base, Aplicar escala y giro, Exportar OBJ</td><td>El OBJ va a <code>Assets/Modelos</code>.</td></tr>
+    <tr><td>Objetos</td><td>Combinar</td><td>Mete en el activo las mallas de los otros seleccionados.</td></tr>
+    <tr><td>Objetos</td><td>Booleana</td><td>Unión, resta o intersección del activo con los otros seleccionados (que quedan ocultos): agujeros de puertas y ventanas, piezas talladas.</td></tr>
+  </tbody>
+</table>
+<p>Cada operación es un paso de deshacer (<code>Ctrl+Z</code>).</p>
+
+<h3 id="materiales">Materiales, suavizado y UV</h3>
+<p>
+  Cada cara usa un <strong>hueco de material</strong>. El componente guarda un color, metálico y rugosidad por hueco
+  (para bloquear niveles sin crear materiales); un <code>.crmat</code> puesto en ese hueco del <em>Mesh Renderer</em>
+  manda sobre ellos. En la ventana: elige el hueco y <em>Asignar a las caras</em>.
+</p>
+<p>
+  <strong>Suavizado</strong>: las caras del mismo grupo (mayor que 0) se ven suaves entre sí; el grupo 0 deja aristas
+  duras. El <em>Suavizado automático</em> del componente suaviza además las caras vecinas con menos de N grados.
+</p>
+<p>
+  <strong>UV por cara</strong> (se recalculan al mover vértices, la textura no se estira):
+</p>
+<table>
+  <thead><tr><th>Ajuste</th><th>Valores</th></tr></thead>
+  <tbody>
+    <tr><td>Proyección</td><td><em>Caja</em> (por el eje dominante: bloques sin costuras), <em>Plana</em> (en el plano de la cara: rampas y tejados) o <em>Manual</em> (las UV guardadas).</td></tr>
+    <tr><td>Relleno</td><td><em>Repetir</em> (en metros: la escala son los metros por repetición), <em>Encajar</em> (entera, sin deformar) o <em>Estirar</em> (de 0 a 1).</td></tr>
+    <tr><td>Escala, desplazamiento, giro, voltear U/V, cambiar U/V</td><td></td></tr>
+    <tr><td>En el mundo</td><td>Proyecta con la posición en el mundo: las texturas encajan entre piezas distintas.</td></tr>
+  </tbody>
+</table>
+
+<h3 id="ia">Con la IA (MCP)</h3>
+<p>
+  Las herramientas <code>modeling_create</code>, <code>modeling_info</code>, <code>modeling_edit</code> y
+  <code>modeling_convert</code> dejan a Claude modelar: crea formas, lista caras con su centro y su normal, y aplica
+  cualquier operación (con selectores de caras por dirección: <code>up</code>, <code>down</code>, <code>front</code>...).
+  Por ejemplo, una casa: un cubo, <code>inset</code> en la cara <code>front</code> y <code>extrude</code> de
+  <code>-0.2</code> para la puerta, y un prisma encima como tejado.
+</p>

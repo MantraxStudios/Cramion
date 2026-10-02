@@ -1,0 +1,19 @@
+<p>Incendios: encender, apagar y consultar.</p>
+
+<h3 id="fire">Fire</h3>
+<table>
+  <tbody>
+    <tr><td><code>Value burnedAt(posicion)</code></td><td>quemado 0..1</td></tr>
+    <tr><td><code>Value burnedFraction(...)</code></td><td>0..1 de lo que podia arder</td></tr>
+    <tr><td><code>Value burningArea(...)</code></td><td>m2 en llamas</td></tr>
+    <tr><td><code>Value charAt(posicion)</code></td><td>lo mismo que burnedAt</td></tr>
+    <tr><td><code>Value extinguish(posicion, radio)</code></td><td>apaga el fuego en el circulo</td></tr>
+    <tr><td><code>Value extinguishAll(...)</code></td><td>apaga todo</td></tr>
+    <tr><td><code>Value heatAt(posicion)</code></td><td>calor 0..1</td></tr>
+    <tr><td><code>Value ignite(posicion, radio)</code></td><td>enciende fuego en las zonas Fuego que tocan el circulo (devuelve cuantas)</td></tr>
+    <tr><td><code>Value isActive(...)</code></td><td>hay algo ardiendo?</td></tr>
+    <tr><td><code>Value isBurning(posicion)</code></td><td>hay llamas ahi?</td></tr>
+    <tr><td><code>Value reset(...)</code></td><td>vuelve a empezar: nada quemado (y se reenciende si &#x27;Encender al empezar&#x27;)</td></tr>
+    <tr><td><code>Value stats(...)</code></td><td>{burningCells, burnedFraction, burningArea, seconds...}</td></tr>
+  </tbody>
+</table>

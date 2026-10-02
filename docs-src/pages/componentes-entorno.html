@@ -145,7 +145,7 @@
   </tbody>
 </table>
 <h3 id="Foliage">Vegetacion (bosque instanciado) <code>Foliage</code></h3>
-<p>Bosques de <strong>millones de arboles procedurales</strong> (pino, abeto, roble, abedul, palmera o sauce: tres especies por mezcla) sembrados en segundo plano sobre el terreno, evitando los rios, los lagos, las pendientes y los <em>claros</em>. Tronco y ramas de verdad, racimos de hojas translucidos, 3 LODs, culling en la GPU, sombras y viento. Ver <a href="mundo-procedural.html#arboles">Arboles procedurales</a>.</p>
+<p>Bosques de <strong>millones de arboles procedurales</strong> (pino, abeto, roble, abedul, palmera o sauce: tres especies por mezcla) sembrados en segundo plano sobre el terreno, evitando los rios, los lagos, las pendientes y los <em>claros</em>. Tronco y ramas de verdad, cortezas de crestas y de placas, borlas de agujas, racimos de hojas que se iluminan a contraluz, 3 LODs, culling en la GPU, sombras y viento. Ver <a href="mundo-procedural.html#arboles">Arboles procedurales</a>.</p>
 <table>
   <thead><tr><th>Propiedad</th><th>Tipo</th><th>Por defecto</th><th>Valores</th><th>Descripcion</th></tr></thead>
   <tbody>
@@ -182,7 +182,7 @@
   </tbody>
 </table>
 <h3 id="Grass">Hierba (en un terreno) <code>Grass</code></h3>
-<p>Hierba en la GPU sobre la capa del terreno que se elija: millones de briznas alrededor de la camara, sin mallas, con viento, matas y translucidez, que se <strong>apartan y se aplastan</strong> con los Rigidbody que pasan por encima. Va en la misma entidad que el Terrain. Ver <a href="mundo-procedural.html#hierba">Hierba (GPU)</a>.</p>
+<p>Hierba en la GPU sobre la capa del terreno que se elija: millones de briznas alrededor de la camara, sin mallas, en matas que se abren desde su centro, con manchas de color, puntas secas y alguna brizna de paja, viento y translucidez, que se <strong>apartan y se aplastan</strong> con los Rigidbody que pasan por encima. Va en la misma entidad que el Terrain. Ver <a href="mundo-procedural.html#hierba">Hierba (GPU)</a>.</p>
 <table>
   <thead><tr><th>Propiedad</th><th>Tipo</th><th>Por defecto</th><th>Valores</th><th>Descripcion</th></tr></thead>
   <tbody>
@@ -196,10 +196,10 @@
     <tr><td>Variacion de altura<br><code>height_variation</code></td><td>numero</td><td>0,4</td><td>0 a 1</td><td></td></tr>
     <tr><td>Anchura<br><code>width</code></td><td>numero</td><td>0,028</td><td>0,005 a 0,3</td><td></td></tr>
     <tr><td>Curvatura<br><code>bend</code></td><td>numero</td><td>0,35</td><td>0 a 1,5</td><td>Cuanto se doblan solas</td></tr>
-    <tr><td>Color base<br><code>base_color</code></td><td>Color</td><td>(0,06; 0,11; 0,03)</td><td></td><td></td></tr>
+    <tr><td>Color base<br><code>base_color</code></td><td>Color</td><td>(0,1; 0,16; 0,045)</td><td></td><td></td></tr>
     <tr><td>Color de la punta<br><code>tip_color</code></td><td>Color</td><td>(0,27; 0,38; 0,11)</td><td></td><td></td></tr>
     <tr><td>Color seca<br><code>dry_color</code></td><td>Color</td><td>(0,5; 0,45; 0,25)</td><td></td><td></td></tr>
-    <tr><td>Variacion de color<br><code>color_variation</code></td><td>numero</td><td>0,25</td><td>0 a 1</td><td></td></tr>
+    <tr><td>Variacion de color<br><code>color_variation</code></td><td>numero</td><td>0,25</td><td>0 a 1</td><td>Tono de cada mata, manchas del campo (frondosas y pobres), puntas secas y briznas de paja (0 = todas iguales)</td></tr>
     <tr><td>Viento<br><code>wind</code></td><td>numero</td><td>1</td><td>0 a 4</td><td>Cuanto se mece (0 = quieta)</td></tr>
     <tr><td>Direccion del viento<br><code>wind_direction</code></td><td>numero</td><td>30</td><td>0 a 360</td><td></td></tr>
     <tr><td>Interaccion<br><code>interaction</code></td><td>numero</td><td>1</td><td>0 a 3</td><td>Cuanto la apartan y aplastan los objetos fisicos y los personajes</td></tr>

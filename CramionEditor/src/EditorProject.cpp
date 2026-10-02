@@ -162,7 +162,9 @@ void EditorApp::rebuildBrowserCache() {
             if (isDecalImage(entry.path())) current_images_.push_back(entry.path());
             std::string ext = entry.path().extension().string();
             std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-            if (ext == ".lua") current_scripts_.push_back(entry.path());
+            if (ext == ".lua" || ext == ".cpp" || ext == ".cc" || ext == ".cxx" || ext == ".h" || ext == ".hpp") {
+                current_scripts_.push_back(entry.path());
+            }
             if (ext == assets::kSurfaceShaderExtension) current_shaders_.push_back(entry.path());
             if (audio::isAudioFile(entry.path())) current_audio_.push_back(entry.path());
         }
@@ -417,7 +419,10 @@ void EditorApp::buildBrowserItems() {
                 const std::filesystem::path& p = it->path();
                 std::string ext = lower(p.extension().string());
                 if (isDecalImage(p)) browser_all_loose_.push_back(file_item(p, Kind::Image, "Textura"));
-                else if (ext == ".lua") browser_all_loose_.push_back(file_item(p, Kind::Script, "Script Lua"));
+                else if (ext == ".lua") browser_all_loose_.push_back(file_item(p, Kind::Script, "Script Lua (obsoleto)"));
+                else if (ext == ".cpp" || ext == ".cc" || ext == ".cxx" || ext == ".h" || ext == ".hpp") {
+                    browser_all_loose_.push_back(file_item(p, Kind::Script, "Script C++"));
+                }
                 else if (ext == assets::kSurfaceShaderExtension) browser_all_loose_.push_back(file_item(p, Kind::Shader, "Shader"));
                 else if (audio::isAudioFile(p)) browser_all_loose_.push_back(file_item(p, Kind::Audio, "Audio"));
             }
@@ -456,7 +461,9 @@ void EditorApp::buildBrowserItems() {
             if (wanted(item)) browser_items_.push_back(std::move(item));
         }
         for (const std::filesystem::path& p : current_images_) browser_items_.push_back(file_item(p, Kind::Image, "Textura"));
-        for (const std::filesystem::path& p : current_scripts_) browser_items_.push_back(file_item(p, Kind::Script, "Script Lua"));
+        for (const std::filesystem::path& p : current_scripts_) {
+            browser_items_.push_back(file_item(p, Kind::Script, lower(p.extension().string()) == ".lua" ? "Script Lua (obsoleto)" : "Script C++"));
+        }
         for (const std::filesystem::path& p : current_shaders_) browser_items_.push_back(file_item(p, Kind::Shader, "Shader"));
         for (const std::filesystem::path& p : current_audio_) browser_items_.push_back(file_item(p, Kind::Audio, "Audio"));
     }
@@ -628,11 +635,9 @@ void EditorApp::browserItemMenu(const BrowserItem& item) {
             }
             if (ImGui::MenuItem("Nueva carpeta dentro")) createFolderIn(item.path);
             if (ImGui::MenuItem("Mostrar en el Explorador")) show_in_explorer(item.path, false);
-            std::error_code error;
-            if (item.path != project_.assetsFolder() &&
-                ImGui::MenuItem("Borrar (vacía)", nullptr, false, std::filesystem::is_empty(item.path, error))) {
-                std::filesystem::remove(item.path, error);
-                refreshDatabase();
+            if (item.path != project_.assetsFolder()) {
+                ImGui::Separator();
+                if (ImGui::MenuItem("Borrar", "Supr")) requestDelete({item.path});
             }
             return;
         }
@@ -661,8 +666,7 @@ void EditorApp::browserItemMenu(const BrowserItem& item) {
             if (ImGui::MenuItem("Asignar a la selección", nullptr, false, !selection_.empty())) {
                 for (ecs::Entity e : selectedEntities()) {
                     if (is_script) {
-                        scripting::Script& s = e.has<scripting::Script>() ? e.get<scripting::Script>() : e.add<scripting::Script>();
-                        s.file = assetRelative(item.path);
+                        attachScriptFile(e, assetRelative(item.path));
                     } else {
                         audio::AudioSource& a = e.has<audio::AudioSource>() ? e.get<audio::AudioSource>() : e.add<audio::AudioSource>();
                         a.clip = assetRelative(item.path);
@@ -790,7 +794,7 @@ void EditorApp::browserItemMenu(const BrowserItem& item) {
             if (ImGui::MenuItem("Copiar ruta")) ImGui::SetClipboardText(assetRelative(info.path).c_str());
             if (ImGui::MenuItem("Mostrar en el Explorador")) show_in_explorer(info.path, true);
             ImGui::Separator();
-            if (ImGui::MenuItem("Borrar", "Supr")) pending_delete_asset_ = info.uuid;
+            if (ImGui::MenuItem("Borrar", "Supr")) requestDelete({info.path});
             return;
         }
     }
@@ -802,6 +806,8 @@ void EditorApp::browserItemMenu(const BrowserItem& item) {
     }
     if (ImGui::MenuItem("Copiar ruta")) ImGui::SetClipboardText(assetRelative(item.path).c_str());
     if (ImGui::MenuItem("Mostrar en el Explorador")) show_in_explorer(item.path, true);
+    ImGui::Separator();
+    if (ImGui::MenuItem("Borrar", "Supr")) requestDelete({item.path});
 }
 
 void EditorApp::drawProject() {
@@ -833,7 +839,8 @@ void EditorApp::drawProject() {
         if (ImGui::MenuItem("Escena")) createSceneAsset(target_folder);
         if (ImGui::MenuItem("Material")) createMaterialAsset(target_folder);
         if (ImGui::MenuItem("Render Texture")) createRenderTextureAsset(target_folder);
-        if (ImGui::MenuItem("Script Lua")) createScriptAsset(target_folder, {});
+        if (ImGui::MenuItem("Script C++")) createCppScriptAsset(target_folder, {});
+        if (ImGui::MenuItem("Script Lua (obsoleto)")) createScriptAsset(target_folder, {});
         if (ImGui::MenuItem("Shader (GLSL)")) openScript(createShaderAsset(target_folder));
         if (ImGui::MenuItem("Animator")) createAnimatorAsset(target_folder);
         if (ImGui::BeginMenu("Máquina de estados (IA)")) {
@@ -1098,7 +1105,8 @@ void EditorApp::drawProject() {
             draw->AddRectFilled(pos, ImVec2(pos.x + size, pos.y + size), IM_COL32(30, 30, 34, 255), 3.0f);
             const float inner = size * 0.5f;
             imgui_.drawIcon(draw, itemIcon(item), ImVec2(pos.x + (size - inner) * 0.5f, pos.y + (size - inner) * 0.5f), inner, color);
-            const char* tag = item.kind == Kind::Script ? "LUA" : item.kind == Kind::Shader ? "GLSL" : nullptr;
+            const char* tag = item.kind == Kind::Script ? (lower(item.path.extension().string()) == ".lua" ? "LUA" : "C++")
+                              : item.kind == Kind::Shader ? "GLSL" : nullptr;
             if (tag != nullptr) {
                 const ImVec2 t = ImGui::CalcTextSize(tag);
                 draw->AddText(ImVec2(pos.x + (size - t.x) * 0.5f, pos.y + size * 0.78f), color, tag);
@@ -1122,6 +1130,11 @@ void EditorApp::drawProject() {
     };
 
     const auto item_interaction = [&](const Item& item, std::size_t index, bool hovered) {
+        if (!browser_reveal_.empty() && item.key() == browser_reveal_) {
+            ImGui::SetScrollHereY(0.5f);  // "Buscar en el Proyecto": a la vista
+            ImGui::SetWindowFocus();
+            browser_reveal_.clear();
+        }
         if (ImGui::IsItemClicked(ImGuiMouseButton_Left)) {
             browserClick(item, index);
             clicked_item = true;
@@ -1287,7 +1300,8 @@ void EditorApp::drawProject() {
             if (ImGui::MenuItem("Escena")) createSceneAsset(target_folder);
             if (ImGui::MenuItem("Material")) createMaterialAsset(target_folder);
             if (ImGui::MenuItem("Render Texture")) createRenderTextureAsset(target_folder);
-            if (ImGui::MenuItem("Script Lua")) createScriptAsset(target_folder, {});
+            if (ImGui::MenuItem("Script C++")) createCppScriptAsset(target_folder, {});
+            if (ImGui::MenuItem("Script Lua (obsoleto)")) createScriptAsset(target_folder, {});
             if (ImGui::MenuItem("Shader (GLSL)")) openScript(createShaderAsset(target_folder));
             if (ImGui::MenuItem("Animator")) createAnimatorAsset(target_folder);
             if (ImGui::BeginMenu("Máquina de estados (IA)")) {
@@ -1334,8 +1348,14 @@ void EditorApp::drawProject() {
                 asset_rename_buffer_ = dialogs::utf8(single->path.stem());
             }
         }
-        if (single != nullptr && single->kind == Kind::Asset && !single->info.path.empty() && ImGui::IsKeyPressed(ImGuiKey_Delete, false)) {
-            pending_delete_asset_ = single->info.uuid;
+        if (!browser_selection_.empty() && ImGui::IsKeyPressed(ImGuiKey_Delete, false) && !ImGui::GetIO().WantTextInput) {
+            std::vector<std::filesystem::path> paths;
+            for (const Item& item : items) {
+                if (std::find(browser_selection_.begin(), browser_selection_.end(), item.key()) == browser_selection_.end()) continue;
+                const std::filesystem::path p = item.kind == Kind::Asset ? item.info.path : item.path;
+                if (!p.empty() && p != project_.assetsFolder()) paths.push_back(p);
+            }
+            requestDelete(std::move(paths));
         }
         if (ImGui::IsKeyPressed(ImGuiKey_Backspace, false) && can_go_up) navigateTo(current_folder_.parent_path());
         if (ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_A, false)) {
@@ -1354,6 +1374,161 @@ void EditorApp::drawProject() {
     ImGui::TextDisabled("%s", status.c_str());
     (void)style;
     ImGui::End();
+}
+
+// -----------------------------------------------------------------------------
+// Borrar (Proyecto y explorador de scripts): a la Papelera de reciclaje
+// -----------------------------------------------------------------------------
+
+namespace {
+
+bool insidePath(const std::filesystem::path& file, const std::filesystem::path& folder) {
+    if (file == folder) return true;
+    const std::filesystem::path rel = file.lexically_normal().lexically_relative(folder.lexically_normal());
+    return !rel.empty() && rel.native()[0] != L'.';
+}
+
+}  // namespace
+
+void EditorApp::revealInProject(const std::filesystem::path& path) {
+    std::error_code ec;
+    const bool folder = std::filesystem::is_directory(path, ec);
+    // Una carpeta se abre; un archivo se ensena dentro de la suya.
+    if (folder) {
+        navigateTo(path);
+        browser_selection_.clear();
+    } else {
+        navigateTo(path.parent_path());
+        std::string key = path.string();
+        if (database_) {
+            for (const assets::AssetInfo& info : database_->all()) {
+                if (info.path == path && info.uuid.valid()) key = info.uuid.toString();
+            }
+        }
+        browser_selection_ = {key};
+        browser_reveal_ = key;
+    }
+    project_filter_.clear();  // con una busqueda puesta no se veria
+    show_project_ = true;
+    requestWorkspace(0);
+}
+
+void EditorApp::requestDelete(std::vector<std::filesystem::path> paths) {
+    std::vector<std::filesystem::path> clean;
+    for (std::filesystem::path& p : paths) {
+        if (p.empty() || p == project_.assetsFolder()) continue;
+        if (std::find(clean.begin(), clean.end(), p) == clean.end()) clean.push_back(std::move(p));
+    }
+    if (clean.empty()) return;
+    pending_delete_paths_ = std::move(clean);
+    delete_companions_ = true;
+}
+
+void EditorApp::deletePaths(const std::vector<std::filesystem::path>& paths) {
+    if (paths.empty()) return;
+    const auto affected = [&](const std::filesystem::path& file) {
+        return std::any_of(paths.begin(), paths.end(), [&](const std::filesystem::path& p) { return insidePath(file, p); });
+    };
+    // Sus pestanas de script se cierran sin guardar (se borran).
+    for (std::size_t i = script_tabs_.size(); i-- > 0;) {
+        if (!affected(script_tabs_[i].path)) continue;
+        if (script_tabs_[i].cpp) clangd_.close(script_tabs_[i].path);
+        script_tabs_.erase(script_tabs_.begin() + static_cast<std::ptrdiff_t>(i));
+    }
+    active_script_tab_ = std::min(active_script_tab_, static_cast<int>(script_tabs_.size()) - 1);
+    if (script_tabs_.empty()) show_script_editor_ = false;
+    syncScriptWorkspaces();
+    // Los assets cargados se sueltan antes.
+    if (database_ && asset_manager_) {
+        for (const assets::AssetInfo& info : database_->all()) {
+            if (!info.path.empty() && affected(info.path)) asset_manager_->unload(info.uuid);
+        }
+    }
+    // A la Papelera (se puede recuperar); si no se puede, se borra.
+    std::wstring list;
+    for (const std::filesystem::path& p : paths) {
+        list += std::filesystem::absolute(p).wstring();
+        list.push_back(L'\0');
+    }
+    list.push_back(L'\0');
+    SHFILEOPSTRUCTW op{};
+    op.wFunc = FO_DELETE;
+    op.pFrom = list.c_str();
+    op.fFlags = FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_NOERRORUI | FOF_SILENT;
+    const int result = SHFileOperationW(&op);
+    int removed = 0;
+    for (const std::filesystem::path& p : paths) {
+        std::error_code ec;
+        if (result != 0 && std::filesystem::exists(p, ec)) std::filesystem::remove_all(p, ec);
+        if (!std::filesystem::exists(p, ec)) {
+            ++removed;
+            std::cout << "[Editor] Borrado (a la Papelera): " << assetRelative(p) << std::endl;
+        } else {
+            std::cerr << "[Editor] No se pudo borrar " << assetRelative(p) << " (¿abierto en otro programa?)" << std::endl;
+        }
+    }
+    (void)removed;
+    if (!current_folder_.empty() && affected(current_folder_)) current_folder_ = paths.front().parent_path();
+    browser_selection_.clear();
+    file_tree_time_ = -10.0;  // el arbol del explorador de scripts
+    cpp_last_check_ = -10.0;  // si era un .cpp, se compila sin el
+    refreshDatabase();        // el navegador se rehace (antes no se veia el cambio)
+}
+
+void EditorApp::drawDeleteModal() {
+    if (!pending_delete_paths_.empty() && !ImGui::IsPopupOpen("Borrar")) ImGui::OpenPopup("Borrar");
+    if (!ImGui::BeginPopupModal("Borrar", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) return;
+    const std::vector<std::filesystem::path>& paths = pending_delete_paths_;
+    if (paths.size() == 1) {
+        ImGui::Text("¿Borrar \"%s\"?", assetRelative(paths.front()).c_str());
+    } else {
+        ImGui::Text("¿Borrar estos %zu elementos?", paths.size());
+    }
+    std::size_t files_inside = 0;
+    for (std::size_t i = 0; i < paths.size(); ++i) {
+        std::error_code ec;
+        if (std::filesystem::is_directory(paths[i], ec)) {
+            for (std::filesystem::recursive_directory_iterator it(paths[i], ec), end; !ec && it != end; it.increment(ec)) {
+                if (it->is_regular_file(ec)) ++files_inside;
+            }
+        }
+        if (paths.size() > 1 && i < 10) ImGui::BulletText("%s", assetRelative(paths[i]).c_str());
+    }
+    if (paths.size() > 10) ImGui::TextDisabled("... y %zu mas", paths.size() - 10);
+    if (files_inside > 0) ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.35f, 1.0f), "Con %zu archivos dentro.", files_inside);
+    // El .h de un .cpp (o el .cpp de un .h).
+    std::vector<std::filesystem::path> companions;
+    for (const std::filesystem::path& p : paths) {
+        const std::filesystem::path other = cppCounterpart(p);
+        if (!other.empty() && std::find(paths.begin(), paths.end(), other) == paths.end() &&
+            std::find(companions.begin(), companions.end(), other) == companions.end()) {
+            companions.push_back(other);
+        }
+    }
+    if (!companions.empty()) {
+        const std::string label = companions.size() == 1 ? "Borrar también " + dialogs::utf8(companions.front().filename())
+                                                         : "Borrar también sus " + std::to_string(companions.size()) + " .h/.cpp";
+        ImGui::Checkbox(label.c_str(), &delete_companions_);
+    }
+    ImGui::TextDisabled("Va a la Papelera de reciclaje (se puede recuperar).");
+    ImGui::Spacing();
+    ImGui::PushStyleColor(ImGuiCol_Button, IM_COL32(170, 45, 45, 255));
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, IM_COL32(200, 60, 60, 255));
+    const bool confirm = ImGui::Button("Borrar", ImVec2(120.0f, 0.0f)) || ImGui::IsKeyPressed(ImGuiKey_Enter, false);
+    ImGui::PopStyleColor(2);
+    ImGui::SameLine();
+    const bool cancel = ImGui::Button("Cancelar", ImVec2(120.0f, 0.0f)) || ImGui::IsKeyPressed(ImGuiKey_Escape, false);
+    if (confirm) {
+        std::vector<std::filesystem::path> all = paths;
+        if (delete_companions_) all.insert(all.end(), companions.begin(), companions.end());
+        pending_delete_paths_.clear();
+        ImGui::CloseCurrentPopup();
+        deletePaths(all);
+    } else if (cancel) {
+        pending_delete_paths_.clear();
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndPopup();
 }
 
 }  // namespace cramion::editor

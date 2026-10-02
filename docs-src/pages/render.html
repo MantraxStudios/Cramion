@@ -15,8 +15,9 @@
   <tbody>
     <tr><td><code>Sombras</code></td><td>Activa las sombras. <em>Ver cascadas</em> colorea cada cascada del sol para depurar.</td></tr>
     <tr><td><code>Iluminación global</code></td><td>Luz rebotada (el color de las paredes tiñe lo de alrededor).</td></tr>
-    <tr><td><code>Trazado de rayos (RTX)</code></td><td>GI y reflejos con trazado de rayos por hardware (solo en GPU que lo admiten).</td></tr>
+    <tr><td><code>Trazado de rayos (RTX)</code></td><td>GI, reflejos y sombras (sol y luces locales) con trazado de rayos por hardware (solo en GPU que lo admiten). Ver <a href="#escena-rayos">La escena de rayos</a>.</td></tr>
     <tr><td><code>Sonda de reflexión</code></td><td>Captura del entorno para los reflejos de las superficies.</td></tr>
+    <tr><td><code>Oclusión del cielo (sin RT)</code></td><td>Lo que tapa el cielo por encima (copas, tejados, voladizos) aunque no salga en pantalla. Ver <a href="#oclusion-cielo">Oclusión del cielo</a>.</td></tr>
     <tr><td><code>Occlusion culling (GPU)</code></td><td>No dibuja lo que queda tapado por otros objetos.</td></tr>
   </tbody>
 </table>
@@ -75,23 +76,61 @@
   muestras lleva (verde al terminar). Mover la cámara, una luz o un objeto, o cambiar un material, empieza de nuevo.
   Con <strong>clic derecho</strong> en el botón: <em>Rebotes</em> (interiores 4 a 8, exteriores 2 a 4),
   <em>Muestras</em> máximas y <em>Empezar de nuevo</em>. El vidrio, el agua, las partículas y el post-procesado se
-  dibujan encima como siempre. Los rebotes chocan con los modelos de escenario; el terreno, los vóxeles y los
-  personajes animados solo están en el primer punto (lo que ve la cámara).
+  dibujan encima como siempre. Los rebotes chocan con los modelos de escenario, el terreno y los árboles de la
+  Vegetación; los vóxeles, la hierba y los personajes animados solo están en el primer punto (lo que ve la cámara).
 </p>
 
-<h3 id="sombras-rayos">Sombras por rayos de las luces</h3>
+<h3 id="escena-rayos">La escena de rayos</h3>
+<p>
+  Con el <strong>trazado de rayos</strong> (o el path tracing) activado, los rayos de la luz rebotada, los reflejos y las
+  sombras se trazan contra una copia de la escena en la GPU:
+</p>
+<ul>
+  <li><strong>Los modelos de escenario</strong> (los que no tienen esqueleto), con sus materiales y texturas; el follaje
+    recortado por alfa con <em>micromapas de opacidad</em> en las GPU que los tienen.</li>
+  <li><strong>El terreno</strong>: una malla de hasta 512 × 512 celdas sacada de sus alturas, siempre por debajo de la
+    que se dibuja (si quedara por encima en un valle, los rayos que salen del suelo chocarían con ella), con el color de
+    sus capas y de la hierba horneado. Esculpir o pintar la actualiza en su sitio, sin parar la GPU.</li>
+  <li><strong>Los árboles</strong> de la <a href="editor-herramientas.html#vegetacion">Vegetación</a> a menos de 350 m
+    de la cámara (la malla media de cada especie con sus hojas recortadas). Se eligen otra vez al moverse 25 m.</li>
+</ul>
+<p>
+  Sin el terreno y los árboles, en exteriores los rayos atravesaban el suelo y veían cielo por debajo: la luz salía
+  plana y demasiado clara y el sotobosque no se oscurecía bajo las copas. Los personajes animados, la hierba y los
+  vóxeles no están en la escena de rayos: proyectan con los mapas de sombras.
+</p>
+<p>
+  <strong>Con el trazado apagado no cuesta nada</strong>: la escena de rayos se construye al activarlo (la primera vez
+  se compilan sus shaders, cerca de un segundo) y se libera a los 10 s de apagarlo; las imágenes de las sombras por rayos
+  y del path tracing solo ocupan memoria si se usan. Cuando algo se mueve, la TLAS se reconstruye en la GPU dentro del
+  frame, sin pararla.
+</p>
+
+<h3 id="sombras-rayos">Sombras por rayos del sol y de las luces</h3>
 <p>
   Con el <strong>trazado de rayos</strong> activado (GPU con rayos por hardware, calidad Ultra o
-  <code>Graphics.set("ray_tracing", true)</code>), las luces puntuales y los focos proyectan sombras trazadas contra la
-  escena real. Funciona para <strong>todas</strong> las luces locales con <em>Proyecta sombras</em>, no solo para las 8
-  puntuales y 8 focos que tienen mapa de sombras: en cada píxel se trazan las 4 luces que más le aportan.
+  <code>Graphics.set("ray_tracing", true)</code>), el sol, las luces puntuales y los focos proyectan sombras trazadas
+  contra la <a href="#escena-rayos">escena de rayos</a>:
 </p>
+<ul>
+  <li><strong>Sol</strong>: un rayo por píxel hacia un punto de su disco (0,53 grados): sombra nítida al pie de las
+    cosas que se difumina con la distancia, sin acné ni sombras despegadas, y también <strong>más allá de las
+    cascadas</strong> (una montaña que tapa el sol del valle al atardecer, a kilómetros). Se queda la más oscura entre
+    los rayos y las cascadas: las cascadas siguen poniendo la de los personajes, la hierba y los árboles que se mecen.</li>
+  <li><strong>Luces locales</strong>: funciona para <strong>todas</strong> las luces con <em>Proyecta sombras</em>, no
+    solo para las 8 puntuales y 8 focos que tienen mapa de sombras: en cada píxel se trazan las 4 luces que más le
+    aportan (3 si el sol también se traza).</li>
+</ul>
 <ul>
   <li><strong>Radio de la fuente</strong> (<a href="componentes-basicos.html#Light">Light</a>): el tamaño de la
     bombilla. Pequeño (0,05 m) da sombras nítidas; grande (una lámpara, un fluorescente, 0,3 m o más) da un borde suave
     que se ensancha con la distancia, como en la realidad.</li>
-  <li>Los rayos ven el escenario (los modelos). Los personajes animados, el terreno y los vóxeles siguen proyectando con
-    los mapas de sombras: se usa la más oscura de las dos.</li>
+  <li>Los rayos ven el escenario, el terreno y los árboles. Los personajes animados, la hierba y los vóxeles siguen
+    proyectando con los mapas de sombras: se usa la más oscura de las dos.</li>
+  <li>La luz rebotada y los reflejos por rayos también respetan las paredes: en cada impacto se traza un rayo de sombra
+    a una luz elegida según lo que aporta (antes la luz de una bombilla las atravesaba).</li>
+  <li>El brillo de una bombilla en una superficie pulida tiene el tamaño de su <em>Radio de la fuente</em> (un disco
+    que se ensancha al acercarse), con o sin trazado de rayos.</li>
   <li>Cuesta alrededor de medio milisegundo con una docena de luces en pantalla (RTX 4060 Ti, 1080p). Aparece como
     <em>Sombras por rayos</em> en las estadísticas.</li>
 </ul>
@@ -121,6 +160,20 @@
   Cada <a href="componentes-basicos.html#Light">Light</a> tiene <em>Fuerza de la sombra</em> (Strength de Unity):
   1 = sombra completa, 0,5 = a medias, 0 = no oscurece. Vale para el sol, las puntuales y los focos, y la respetan
   también el trazado de rayos y el path tracing.
+</p>
+
+<h3 id="oclusion-cielo">Oclusión del cielo (sin trazado de rayos)</h3>
+<p>
+  Lo que tapa el cielo de un punto suele estar <em>encima</em>: la copa de los árboles, un tejado, un voladizo. La GI de
+  pantalla no lo ve cuando no sale en pantalla (mirando al suelo de un bosque, las copas quedan fuera) y el sotobosque
+  recibía todo el cielo. Para eso el motor dibuja, cada pocos segundos o al moverse la cámara, dos mapas de profundidad
+  <strong>vistos desde arriba</strong> en 160 m alrededor de la cámara (solo el terreno, y todo: terreno, escenario y
+  árboles) y la iluminación busca alrededor de cada punto lo que tiene por encima y no es el propio relieve. Bajo un
+  bosque denso llega la mitad de cielo; dentro de una casa, casi nada.
+</p>
+<p>
+  Se activa en <em>Ajustes de render</em> (<em>Oclusión del cielo (sin RT)</em>) o con
+  <code>Graphics.set("sky_occlusion", false)</code>. Con el trazado de rayos no se usa: la GI de rayos ya lo ve.
 </p>
 
 <h3 id="penumbra">Sombras del sol con penumbra</h3>
@@ -168,7 +221,9 @@
     se mueve delante.</li>
   <li><strong>Profundidad de campo</strong>: bokeh con la fórmula de una lente real: <em>Distancia de enfoque</em>
     (o <em>Autoenfoque</em> en lo que hay en el centro), <em>Apertura</em> (número f: 1,4 desenfoca mucho, 16 casi
-    nada) y <em>Focal</em> en milímetros. Lo de delante desenfocado se esparce sobre lo enfocado; lo de detrás no.</li>
+    nada) y <em>Focal</em> en milímetros. Lo de delante desenfocado se esparce sobre lo enfocado; lo de detrás no. El
+    autoenfoque no salta: viaja de un sitio a otro como el motor de una lente, con la <em>Velocidad del autoenfoque</em>
+    (3 = unos 0,4 s; 1 = lento y cinematográfico; 10 = casi al instante).</li>
   <li><strong>Distorsión</strong> de la lente: más de 0 barril (gran angular), menos de 0 cojín (teleobjetivo).</li>
   <li><strong>Destellos del sol</strong>: fantasmas, halo y estrella cuando el sol está en pantalla; se apagan solos si
     algo lo tapa.</li>
@@ -202,8 +257,10 @@
   por una ventana, el cono de un foco o el halo de una farola, cada uno con su sombra. El polvo recibe la luz del
   <strong>sol</strong> (sobre todo mirando hacia él: <em>Anisotropía</em>), de las <strong>luces locales</strong> y del
   <strong>cielo</strong> desde todas direcciones, así que también se nota de espaldas al sol como una neblina del color del
-  cielo (más tenue a la sombra y en interiores). <em>Densidad del polvo</em> controla cuánto hay: 0,02 es una neblina
-  ligera; por encima de 0,05 el horizonte queda velado. Si el <em>presupuesto adaptativo</em> necesita tiempo, el polvo
+  cielo (más tenue a la sombra y en interiores). <em>Densidad del polvo</em> controla cuánto hay: 0,004 (por defecto)
+  es el aire de un día claro, con los haces del sol entre los árboles; 0,015 una bruma; por encima de 0,04 el horizonte
+  queda velado. Las escenas guardadas con el valor por defecto antiguo (0,02, que lo dejaba todo lechoso) pasan solas a
+  0,004 al abrirlas. Si el <em>presupuesto adaptativo</em> necesita tiempo, el polvo
   no se apaga: se calcula con la mitad de tramos por rayo y sin los rayos de sol de pantalla.
 </p>
 <p>
@@ -221,6 +278,35 @@
 <p>
   Para bosques enteros usa la <a href="editor-herramientas.html#vegetacion">Vegetación</a> en lugar de prefabs sueltos: los
   árboles se recortan y eligen su detalle en la GPU. Si la GPU va justa, baja su distancia máxima y la de sombras.
+  Las distancias de detalle (<em>Detalle medio desde</em>, <em>Detalle bajo desde</em>) son las de 1080p con 60 grados
+  de campo de visión: con menos píxeles (la vista del editor, resolución interna baja) o si el presupuesto adaptativo
+  necesita tiempo, los árboles cambian antes de nivel. Los niveles medio y lejano no tienen ramas más finas que un
+  píxel a esa distancia.
+</p>
+
+<h3 id="streaming">Streaming de modelos y animaciones</h3>
+<p>
+  El motor no se para a cargar: los modelos y las animaciones se leen en <strong>segundo plano</strong> y lo que llega
+  sube a la GPU poco a poco, así que abrir una escena grande o instanciar prefabs durante el juego no congela el frame.
+</p>
+<ul>
+  <li><strong>Modelos</strong>: unos hilos de fondo leen el <code>.crdata</code>, decodifican sus texturas y generan sus
+    LODs. La entidad aparece en cuanto termina (mientras tanto no se dibuja). Lo nuevo se sube a la GPU en orden, unos
+    milisegundos por frame (<code>render.streaming.UploadMs</code>, 4 por defecto); antes cada modelo nuevo hacía subir la
+    escena entera.</li>
+  <li><strong>Animaciones</strong>: los clips sueltos de un <a href="componentes-animacion.html">Animator</a> (los
+    <code>.cranim</code>, p. ej. los de Mixamo) se leen en otro hilo y se precargan todos los de su controlador cuando
+    aparece el personaje. Si el clip del estado actual aún no ha llegado, el personaje espera sin dibujarse (nunca sale en
+    pose T).</li>
+  <li><strong>Memoria de vídeo</strong>: un modelo que lleva <code>render.streaming.IdleSeconds</code> (5) sin verse
+    —todas sus instancias más pequeñas que <code>render.streaming.MinPixels</code> (medio píxel) en pantalla— libera sus
+    mallas y texturas de la GPU y vuelve solo en cuanto se acerca. En un mundo grande, lo que queda lejos no ocupa VRAM.
+    <code>Graphics.get("models_evicted")</code> dice cuántos están fuera.</li>
+</ul>
+<p>
+  Todo se ajusta con las CVars <code>render.streaming.*</code> (<em>Ventana &gt; Variables (CVars) y memoria</em>, la
+  consola o <code>CVar.set</code>): <code>AsyncModels</code> en falso vuelve a la carga de siempre (esperando),
+  <code>GpuResidency</code> en falso deja todo en la GPU.
 </p>
 
 <h3 id="lods">LODs automáticos</h3>

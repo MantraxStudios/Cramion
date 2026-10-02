@@ -651,6 +651,8 @@ void VulkanRenderer::initialize(const EngineInfo& info, NativeWindow window, std
     cloud_shadow_image_.create(device_, vk::Extent2D{kCloudShadowSize, kCloudShadowSize}, vk::Format::eR16Sfloat,
                                vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eSampled,
                                vk::ImageAspectFlagBits::eColor);
+    terrain_pass_.setKeepCpuCopy(device_.rayTracingSupported());
+    foliage_pass_.setKeepCpuCopy(device_.rayTracingSupported());
     if (device_.rayTracingSupported()) {
         ray_tracing_.create(device_);
     }
@@ -693,6 +695,10 @@ void VulkanRenderer::initialize(const EngineInfo& info, NativeWindow window, std
         sampler_info.addressModeW = vk::SamplerAddressMode::eClampToEdge;
         rain_sampler_ = vk::raii::Sampler(device_.handle(), sampler_info);
     }
+
+    // Oclusion del cielo desde arriba y autoenfoque suave.
+    createSkyMap();
+    createDofFocus();
 
     // Decals: textura blanca en las ranuras libres y muestreo con mips.
     {
@@ -900,6 +906,14 @@ void VulkanRenderer::shutdown() {
     rain_sampler_ = nullptr;
     rain_map_.destroy();
     rain_map_ready_ = false;
+    sky_map_terrain_.destroy();
+    sky_map_scene_.destroy();
+    sky_map_drawn_ = false;
+    dof_focus_sets_.clear();
+    dof_focus_pool_ = nullptr;
+    for (VulkanBuffer& buffer : dof_focus_buffers_) buffer.destroy();
+    dof_focus_buffers_.clear();
+    dof_focus_pass_.destroy();
     ray_tracing_.destroy();
     environment_.destroy();
     clouds_image_.destroy();
@@ -1098,7 +1112,8 @@ void VulkanRenderer::createDescriptors() {
     // (+ la luz volumetrica, + la sombra de las nubes.)
     // (+ las cascadas sin comparacion para las sombras suaves.)
     // (+ las sombras por rayos de las luces locales.)
-    pool_sizes[1].descriptorCount = kMaxFramesInFlight * (GBuffer::kColorAttachmentCount + 19);
+    // (+ los dos mapas de la oclusion del cielo vista desde arriba.)
+    pool_sizes[1].descriptorCount = kMaxFramesInFlight * (GBuffer::kColorAttachmentCount + 21);
 
     vk::DescriptorPoolCreateInfo pool_info{};
     pool_info.flags = vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet;
@@ -1380,6 +1395,16 @@ void VulkanRenderer::updateActors(const scene::Scene& scene, std::uint32_t frame
         if (actor.model >= skinned_models_.size()) {
             continue;  // Modelo sin subir a la GPU.
         }
+        // Lo grande que se ve (pixeles): decide si el modelo sigue en la GPU.
+        if (model_streaming_) {
+            if (model_pixels_.size() <= actor.model) model_pixels_.resize(actor.model + 1, 0.0f);
+            const float distance = std::max(core::length(actor.bounds_center - camera_position), 0.01f);
+            const float pixels = actor.bounds_radius * pixels_per_unit / distance;
+            model_pixels_[actor.model] = std::max(model_pixels_[actor.model], pixels);
+        }
+        if (!modelResident(actor.model)) {
+            continue;  // Fuera de la GPU (streaming): vuelve en cuanto se acerque.
+        }
 
         const std::vector<core::Mat4>& bones = actor.animator.boneMatrices();
         ActorDraw draw{};
@@ -1581,16 +1606,47 @@ void VulkanRenderer::updateActors(const scene::Scene& scene, std::uint32_t frame
     gpu_culling_.setClusters(device_, frame_index, gpu_clusters_, group_count, slot_count,
                              camera_buffers_);
 
-    // Los escenarios (rigidos) son las instancias de la TLAS de los rayos.
-    if (device_.rayTracingSupported()) {
+    // Escala de los niveles de detalle de los arboles: sus distancias son
+    // las de 1080p con 60 grados; con menos pixeles (vista del editor,
+    // resolucion interna baja) o si el presupuesto sube el error permitido de
+    // los LODs, cambian antes de nivel.
+    {
+        constexpr float kReferencePixelsPerUnit = 935.3f;  // 1080 / 2 / tan(30)
+        const float error = std::max(post_.lod_pixel_error, 0.05f);
+        foliage_lod_scale_ = std::clamp(pixels_per_unit / kReferencePixelsPerUnit / error, 0.25f, 2.0f);
+        foliage_pass_.setLodScale(foliage_lod_scale_);
+    }
+
+    // La escena de rayos: los escenarios (rigidos) que conoce, el terreno y
+    // los arboles cercanos. Solo si se usa el trazado; si lleva un rato sin
+    // usarse, se libera (su memoria de video).
+    if (rayTracingWanted() && !isolated()) {
+        rt_idle_ = false;
         std::vector<RayTracing::Instance> instances;
         for (const ActorDraw& draw : actor_draws_) {
-            if (draw.per_submesh) {
+            // Los modelos subidos despues de construirla aun no tienen BLAS
+            // (sus indices serian los de las mallas extra).
+            if (draw.per_submesh && draw.model < ray_traced_models_) {
                 instances.push_back(RayTracing::Instance{
-                    draw.model, draw.transform * bone_staging_[draw.bone_offset]});
+                    draw.model, draw.transform * bone_staging_[draw.bone_offset], RayTracing::kMaskScenery});
             }
         }
+        prepareRayTracingScene(scene, instances);
         ray_tracing_.setInstances(device_, instances);
+    } else if (!rayTracingWanted() && ray_tracing_.sceneBuilt()) {
+        const auto now = std::chrono::steady_clock::now();
+        if (!rt_idle_) {
+            rt_idle_ = true;
+            rt_idle_since_ = now;
+        } else if (now - rt_idle_since_ > std::chrono::seconds(10)) {
+            device_.waitIdle();
+            ray_tracing_.releaseScene();
+            ray_pinned_models_.clear();
+            ray_traced_models_ = 0;
+            rt_scene_dirty_ = true;
+            rt_idle_ = false;
+            std::cout << "[Vulkan] Escena de rayos liberada (sin usar)\n";
+        }
     }
 
     // Actores anadidos o quitados: las cascadas guardadas no valen.
@@ -2085,7 +2141,7 @@ void VulkanRenderer::updateLightingDescriptors() {
             environment_hdr_info.imageView = *environment_.view();
         }
 
-        std::array<vk::WriteDescriptorSet, 27> writes{};
+        std::array<vk::WriteDescriptorSet, 29> writes{};
 
         writes[0].dstSet = *lighting_sets_[i];
         writes[0].dstBinding = 0;
@@ -2232,6 +2288,22 @@ void VulkanRenderer::updateLightingDescriptors() {
         writes[26].descriptorType = vk::DescriptorType::eCombinedImageSampler;
         writes[26].setImageInfo(shading_info);
 
+        // Oclusion del cielo vista desde arriba (profundidades, sin filtrar).
+        vk::DescriptorImageInfo sky_terrain_info{};
+        sky_terrain_info.sampler = *rain_sampler_;
+        sky_terrain_info.imageView = *sky_map_terrain_.view();
+        sky_terrain_info.imageLayout = vk::ImageLayout::eDepthReadOnlyOptimal;
+        writes[27].dstSet = *lighting_sets_[i];
+        writes[27].dstBinding = 27;
+        writes[27].descriptorType = vk::DescriptorType::eCombinedImageSampler;
+        writes[27].setImageInfo(sky_terrain_info);
+        vk::DescriptorImageInfo sky_scene_info = sky_terrain_info;
+        sky_scene_info.imageView = *sky_map_scene_.view();
+        writes[28].dstSet = *lighting_sets_[i];
+        writes[28].dstBinding = 28;
+        writes[28].descriptorType = vk::DescriptorType::eCombinedImageSampler;
+        writes[28].setImageInfo(sky_scene_info);
+
         device_.handle().updateDescriptorSets(writes, nullptr);
     }
 
@@ -2309,6 +2381,7 @@ void VulkanRenderer::updateGlassDescriptors() {
 }
 
 void VulkanRenderer::updatePostDescriptors() {
+    writeDofFocusDescriptors();  // el autoenfoque lee la profundidad del G-buffer
     const auto write_texture = [&](const vk::raii::DescriptorSet& set, std::uint32_t binding,
                                    const vk::raii::Sampler& sampler, const VulkanImage& image,
                                    vk::ImageLayout layout) {
@@ -2803,8 +2876,11 @@ void VulkanRenderer::createRenderTargets() {
                         vk::ImageAspectFlagBits::eColor);
     ssr_filter_history_valid_ = false;
 
-    // Sombras por rayos de las luces locales: resolucion completa (bordes nitidos).
-    rt_shadow_mask_.create(device_, extent, vk::Format::eR16G16B16A16Sfloat,
+    // Sombras por rayos (sol y luces locales): resolucion completa (bordes
+    // nitidos). Sin trazado no se usan: 1 x 1 (antes ~30 MB a 1440p siempre).
+    rt_targets_key_ = rayTargetsKey();
+    const vk::Extent2D rt_extent = (rt_targets_key_ & 1u) != 0 ? extent : vk::Extent2D{1, 1};
+    rt_shadow_mask_.create(device_, rt_extent, vk::Format::eR16G16B16A16Sfloat,
                            vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eStorage,
                            vk::ImageAspectFlagBits::eColor);
     device_.submitOneTime([&](const vk::raii::CommandBuffer& cmd) {
@@ -2832,9 +2908,11 @@ void VulkanRenderer::createRenderTargets() {
     clouds_image_.create(device_, bloomLevelExtent(extent, 0), kHdrFormat, target_usage,
                          vk::ImageAspectFlagBits::eColor);
 
-    // Suma de caminos del path tracing (resolucion interna completa).
+    // Suma de caminos del path tracing (resolucion interna completa, 16 bytes
+    // por pixel: solo con el path tracing encendido).
     if (device_.rayTracingSupported()) {
-        path_tracing_accumulation_.create(device_, extent, vk::Format::eR32G32B32A32Sfloat,
+        const vk::Extent2D path_extent = (rt_targets_key_ & 2u) != 0 ? extent : vk::Extent2D{1, 1};
+        path_tracing_accumulation_.create(device_, path_extent, vk::Format::eR32G32B32A32Sfloat,
                                           vk::ImageUsageFlagBits::eStorage, vk::ImageAspectFlagBits::eColor);
         path_tracing_layout_ready_ = false;
         path_tracing_reset_ = true;
@@ -3006,12 +3084,16 @@ void VulkanRenderer::uploadModels(const scene::Scene& scene) {
         models.push_back(model.get());
     }
 
-    // La misma escena para los rayos (estructuras de aceleracion).
-    if (device_.rayTracingSupported()) {
-        ray_tracing_.build(device_, models, skinned_models_, ibl_probe_.irradianceBuffer());
-    }
-    ray_traced_models_ = static_cast<std::uint32_t>(skinned_models_.size());
+    // La escena de los rayos se rehace la proxima vez que se use (con el
+    // trazado apagado no se construye nada). La vieja era de otros modelos.
+    (void)models;
+    if (ray_tracing_.sceneBuilt()) ray_tracing_.releaseScene();
+    rt_scene_dirty_ = true;
+    rt_model_edit_pending_ = false;
+    ray_traced_models_ = 0;
     ray_pinned_.assign(skinned_models_.size(), false);
+    model_evicted_.assign(skinned_models_.size(), false);
+    model_last_seen_.assign(skinned_models_.size(), std::chrono::steady_clock::now());
     frame_timings_.upload_ms +=
         std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - upload_start).count();
 }
@@ -3028,10 +3110,25 @@ void VulkanRenderer::uploadModel(const scene::Scene& scene, std::uint32_t index)
     ++frame_timings_.uploads;
     SkinnedModel fresh;
     fresh.create(device_, *scene.models()[index], skinned_pass_);
+    // Los rayos lo veran cuando se rehaga su escena (al rato, por si se sigue
+    // editando). Volver a la GPU tras el streaming no es un cambio: la escena de
+    // rayos conserva su copia, salvo que se construyera mientras estaba fuera.
+    const bool rt_missing = index < rt_scene_evicted_.size() && rt_scene_evicted_[index];
+    if (ray_tracing_.sceneBuilt() && (!streaming_restore_ || rt_missing)) {
+        rt_model_edit_pending_ = true;
+        rt_model_edit_time_ = std::chrono::steady_clock::now();
+    }
+    if (model_evicted_.size() < skinned_models_.size()) model_evicted_.resize(skinned_models_.size(), false);
+    if (model_last_seen_.size() < skinned_models_.size() + 1) {
+        model_last_seen_.resize(skinned_models_.size() + 1, std::chrono::steady_clock::now());
+    }
+    model_last_seen_[index] = std::chrono::steady_clock::now();
     if (index == skinned_models_.size()) {
         skinned_models_.push_back(std::move(fresh));
+        model_evicted_.push_back(false);
         bindRenderTextures(index);
     } else {
+        model_evicted_[index] = false;
         if (index < ray_traced_models_ && index < ray_pinned_.size() && !ray_pinned_[index]) {
             ray_pinned_[index] = true;
             ray_pinned_models_.push_back(std::move(skinned_models_[index]));
@@ -3180,6 +3277,9 @@ void VulkanRenderer::updateUniforms(const scene::Scene& scene, const scene::Came
     camera_data.inverse_view_projection = core::inverse(camera_data.view_projection);
     camera_data.position = toVec4(camera.position(), 1.0f);
     camera_position_ = camera.position();
+    // La oclusion del cielo desde arriba: si toca rehacerla, donde (antes de
+    // escribir las luces de este frame, que llevan su sitio).
+    planSkyMap();
 
     camera_buffers_[frame_index].write(&camera_data, sizeof(camera_data));
 
@@ -3235,14 +3335,22 @@ void VulkanRenderer::updateUniforms(const scene::Scene& scene, const scene::Came
         ++spot_count;
     }
     light_data.spot_count = spot_count;
-    // Sombras por rayos de las luces locales: con rayos por hardware, en la
-    // vista de pantalla y si alguna luz local proyecta sombra.
+    // Sombras por rayos: con rayos por hardware y en la vista de pantalla, de
+    // las luces locales que proyectan sombra y del sol (si esta sobre el
+    // horizonte y da sombra).
     {
         bool shadowed = false;
         for (std::int32_t i = 0; i < point_count; ++i) shadowed = shadowed || light_data.points[i].shadow.y > 0.0f;
         for (std::int32_t i = 0; i < spot_count; ++i) shadowed = shadowed || light_data.spots[i].outer_shadow.z > 0.0f;
-        const bool planned = shadowed && shadows_enabled_ && rayTracingActive() && !isolated();
-        if (!isolated()) rt_shadows_planned_ = planned;
+        const bool traced = shadows_enabled_ && rayTracingActive() && !isolated();
+        const bool local = shadowed && traced;
+        const bool sun = traced && sunShadows() && sun_shadow_strength_ > 0.0f && lights.sun.intensity > 0.0f &&
+                         core::length(lights.sun.direction) > 1e-6f && core::normalize(lights.sun.direction).y < 0.0f;
+        const bool planned = local || sun;
+        if (!isolated()) {
+            rt_shadows_planned_ = planned;
+            rt_shadow_flags_ = (local ? 1u : 0u) | (sun ? 2u : 0u);
+        }
         // y: vision nocturna para la luz de la luna y el cielo (lighting.frag):
         // de la hora, no de lo que se ve. 0 de dia, 0.9 con noche cerrada.
         const float adaptation = 0.01f + 0.3f * lights.sky.daylight;
@@ -3251,7 +3359,9 @@ void VulkanRenderer::updateUniforms(const scene::Scene& scene, const scene::Came
         const float night = 1.0f - t * t * (3.0f - 2.0f * t);
         // z: destello de un rayo (sistema de ambiente); w: niebla en el
         // horizonte del cielo (0..1).
-        light_data.rt_shadows = Vec4{planned ? 1.0f : 0.0f, night * std::clamp(post_.night_vision, 0.0f, 1.0f) * 0.9f,
+        // x: 1 = sombras por rayos de las luces locales, 2 = del sol (se suman).
+        light_data.rt_shadows = Vec4{planned ? static_cast<float>(rt_shadow_flags_) : 0.0f,
+                                     night * std::clamp(post_.night_vision, 0.0f, 1.0f) * 0.9f,
                                      std::max(precipitation_.flash, 0.0f), std::clamp(precipitation_.sky_fog, 0.0f, 1.0f)};
     }
     {
@@ -3415,6 +3525,9 @@ void VulkanRenderer::updateUniforms(const scene::Scene& scene, const scene::Came
         const bool cloud_shadows = clouds_enabled_ && !environmentActive() && cloud_settings_.shadows &&
                                    cloud_settings_.coverage > 0.0f && cloud_settings_.shadow_strength > 0.0f;
         light_data.cloud_shadow = cloud_shadows ? cloud_shadow_push_.shadow : Vec4{};
+        // Sin trazado de rayos: lo que tapa el cielo desde arriba.
+        light_data.sky_map = sky_map_drawn_ && skyMapWanted() ? sky_map_params_ : Vec4{};
+        light_data.sky_map_depth = sky_map_depth_;
     }
 
     // --- Rayos de luz: el sol proyectado en pantalla ---
@@ -3639,6 +3752,9 @@ void VulkanRenderer::drawFrame(const scene::Scene& scene, bool present) {
         std::erase_if(retired_render_textures_, [](const RetiredRenderTexture& r) { return r.frames_left == 0; });
     }
 
+    // Autoenfoque: lo que midio la GPU la ultima vez que se uso este hueco.
+    readDofFocus(current_frame_);
+
     // Picking que se grabo la ultima vez que se uso este hueco: ya termino.
     if (pick_in_flight_[current_frame_]) {
         pick_in_flight_[current_frame_] = false;
@@ -3690,6 +3806,14 @@ void VulkanRenderer::drawFrame(const scene::Scene& scene, bool present) {
 
     // Huesos de este frame (tambien los usa la captura de la sonda).
     stage = TimingClock::now();
+    // Streaming de la GPU: lo que no se ve sale y lo que se acerca vuelve, con
+    // lo medido desde la ultima vez en todas las vistas (Render Textures, XR,
+    // la vista de juego). ANTES de la lista de dibujo de este frame: si sale
+    // algo despues, este frame intentaria dibujar un modelo ya vaciado.
+    if (render_texture_target_ < 0 && xr_eye_target_ < 0 && present) {
+        streamModels(scene);
+        std::fill(model_pixels_.begin(), model_pixels_.end(), 0.0f);
+    }
     updateActors(scene, current_frame_);
     frame_timings_.actors_ms += since(stage);
 
@@ -4063,6 +4187,9 @@ void VulkanRenderer::recordCommandBuffer(const vk::raii::CommandBuffer& cmd,
         path_tracing_reset_ = true;
     }
     terrain_pass_.prepare(frame_index, camera_position_, camera_view_projection_);
+    // Escena de rayos: terreno esculpido, BLAS rehechas y la TLAS de este
+    // frame (en la GPU, sin pararla).
+    if (ray_tracing_.sceneBuilt()) ray_tracing_.recordUpdates(cmd, frame_index);
     // Hierba: las briznas visibles de este frame (compute). En las capturas
     // aisladas (sondas, Render Textures) no avanza el reloj del viento.
     terrain_pass_.recordGrassCull(cmd, frame_index, camera_position_, camera_view_projection_,
@@ -4093,6 +4220,7 @@ void VulkanRenderer::recordCommandBuffer(const vk::raii::CommandBuffer& cmd,
     recordCloudPass(cmd, frame_index);
     markPass(cmd, frame_index, "Nubes");
     fire_pass_.recordUpload(cmd, frame_index);  // mapa de quemado antes de la geometria
+    if (sky_map_redraw_ && !isolated()) recordSkyMap(cmd, frame_index);
     recordGeometryPass(cmd, frame_index);
     markPass(cmd, frame_index, "Geometria + culling");
     recordSsaoPass(cmd, frame_index);
@@ -4893,7 +5021,8 @@ void VulkanRenderer::recordRtShadowPass(const vk::raii::CommandBuffer& cmd, std:
                   vk::PipelineStageFlagBits2::eComputeShader, vk::AccessFlagBits2::eShaderSampledRead);
     RayTracing::Push push{};
     push.previous_view_projection = previous_view_projection_;
-    push.params = Vec4{static_cast<float>(frame_count_ % 1024), 0.0f, 0.0f, 0.0f};
+    // z: que se traza (1 = luces locales, 2 = sol).
+    push.params = Vec4{static_cast<float>(frame_count_ % 1024), 0.0f, static_cast<float>(rt_shadow_flags_), 0.0f};
     ray_tracing_.record(cmd, frame_index, RayTracing::Pass::Shadows, rt_shadow_mask_.extent(), push);
     pipelineBarrier(cmd, colorBarrier(*rt_shadow_mask_.handle(), vk::ImageLayout::eGeneral,
                                       vk::ImageLayout::eShaderReadOnlyOptimal,
@@ -6995,7 +7124,16 @@ void VulkanRenderer::recordCameraFxPass(const vk::raii::CommandBuffer& cmd) {
     push.reproject = motion_view_projection_ * core::inverse(camera_view_projection_);
     push.params = Vec4{0.0f, std::clamp(p.motion_blur_intensity, 0.0f, 1.0f), std::clamp(p.motion_blur_max, 0.001f, 0.25f),
                        static_cast<float>(frame_count_ % 1024)};
-    push.dof = Vec4{p.dof_auto_focus ? -1.0f : std::max(p.dof_focus_distance, 0.05f), std::max(p.dof_aperture, 0.5f),
+    // Autoenfoque suave: la distancia que midio la GPU (dof_focus.comp) hace
+    // un par de frames, seguida como el motor de una lente (no salta).
+    float focus = std::max(p.dof_focus_distance, 0.05f);
+    if (dof && p.dof_auto_focus) {
+        if (!isolated()) recordDofFocusMeasure(cmd, current_frame_);
+        focus = isolated() && dof_focus_current_ > 0.0f ? dof_focus_current_ : smoothedDofFocus();
+    } else {
+        dof_focus_current_ = -1.0f;  // al volver al autoenfoque empieza donde este
+    }
+    push.dof = Vec4{focus, std::max(p.dof_aperture, 0.5f),
                     std::clamp(p.dof_focal_length, 5.0f, 600.0f), 0.025f};
     push.camera = Vec4{camera_projection_.m[3][2], camera_projection_.m[2][2],
                        static_cast<float>(extent.width) / static_cast<float>(std::max(extent.height, 1u)),

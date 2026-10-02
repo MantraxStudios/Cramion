@@ -273,7 +273,7 @@ void testUltraRealisticPreset() {
           "todos los efectos prendidos");
     check(s.film_grain > 0.0f && s.chromatic_aberration > 0.0f && s.lens_flare > 0.0f && s.fog_density > 0.0f,
           "lente y niebla activas");
-    check(s.tonemapper == gfx::Tonemapper::Aces && s.lod_pixel_error < 1.0f, "ACES y LODs finos");
+    check(s.tonemapper == gfx::Tonemapper::Agx && s.lod_pixel_error < 1.0f, "AgX y LODs finos");
 }
 
 }  // namespace

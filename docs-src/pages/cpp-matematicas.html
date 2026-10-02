@@ -1,0 +1,189 @@
+<p>Tipos y funciones matemáticas. Se calculan dentro del script (no llaman al motor), así que son rápidas.</p>
+
+<h3 id="mathf">Mathf</h3>
+<table>
+  <tbody>
+    <tr><td><code>float pi = 3.14159265358979f</code></td><td></td></tr>
+    <tr><td><code>float tau = 6.28318530717959f</code></td><td></td></tr>
+    <tr><td><code>float deg2rad = pi / 180.0f</code></td><td>Multiplica grados para pasarlos a radianes.</td></tr>
+    <tr><td><code>float rad2deg = 180.0f / pi</code></td><td>Multiplica radianes para pasarlos a grados.</td></tr>
+    <tr><td><code>float epsilon = 1e-6f</code></td><td></td></tr>
+    <tr><td><code>float infinity = std::numeric_limits&lt;float&gt;::infinity()</code></td><td></td></tr>
+    <tr><td><code>float negativeInfinity = -std::numeric_limits&lt;float&gt;::infinity()</code></td><td></td></tr>
+    <tr><td><code>float abs(float v)</code></td><td></td></tr>
+    <tr><td><code>float sign(float v)</code></td><td>1 si v &gt;= 0, si no -1.</td></tr>
+    <tr><td><code>float min(float a, float b)</code></td><td></td></tr>
+    <tr><td><code>float max(float a, float b)</code></td><td></td></tr>
+    <tr><td><code>float clamp(float v, float lo, float hi)</code></td><td></td></tr>
+    <tr><td><code>int clamp(int v, int lo, int hi)</code></td><td></td></tr>
+    <tr><td><code>float clamp01(float v)</code></td><td>v entre 0 y 1.</td></tr>
+    <tr><td><code>float lerp(float a, float b, float t)</code></td><td>De a a b segun t (0..1, recortado).</td></tr>
+    <tr><td><code>float lerpUnclamped(float a, float b, float t)</code></td><td>De a a b segun t sin recortar (t puede salir de 0..1).</td></tr>
+    <tr><td><code>float inverseLerp(float a, float b, float v)</code></td><td>El t que da v entre a y b (0..1).</td></tr>
+    <tr><td><code>float remap(float v, float a1, float b1, float a2, float b2)</code></td><td>Lleva v del rango [a1, b1] al rango [a2, b2].</td></tr>
+    <tr><td><code>float repeat(float t, float length)</code></td><td>t repetido entre 0 y length (como el modulo, tambien con negativos).</td></tr>
+    <tr><td><code>float wrap(float v, float lo, float hi)</code></td><td>v dentro de [lo, hi) dando la vuelta.</td></tr>
+    <tr><td><code>float pingPong(float t, float length)</code></td><td>Va y vuelve entre 0 y length.</td></tr>
+    <tr><td><code>float deltaAngle(float current, float target)</code></td><td>Diferencia mas corta entre dos angulos (grados, -180..180).</td></tr>
+    <tr><td><code>float lerpAngle(float a, float b, float t)</code></td><td>Como lerp pero por el camino corto entre angulos (grados).</td></tr>
+    <tr><td><code>float moveTowards(float current, float target, float maxDelta)</code></td><td>Acerca current a target como mucho maxDelta.</td></tr>
+    <tr><td><code>float moveTowardsAngle(float current, float target, float maxDelta)</code></td><td>moveTowards entre angulos (grados).</td></tr>
+    <tr><td><code>float smoothstep(float from, float to, float t)</code></td><td>Curva suave 0..1 (3t^2 - 2t^3) entre from y to.</td></tr>
+    <tr><td><code>float smootherstep(float from, float to, float t)</code></td><td>Curva aun mas suave (6t^5 - 15t^4 + 10t^3).</td></tr>
+    <tr><td><code>float smoothDamp(float current, float target, float&amp; velocity, float smoothTime, float deltaTime, float maxSpeed = infinity)</code></td><td>Sigue a target con suavidad (muelle amortiguado). velocity se guarda entre frames.</td></tr>
+    <tr><td><code>bool approximately(float a, float b)</code></td><td>a y b casi iguales.</td></tr>
+    <tr><td><code>float round(float v)</code></td><td></td></tr>
+    <tr><td><code>float floor(float v)</code></td><td></td></tr>
+    <tr><td><code>float ceil(float v)</code></td><td></td></tr>
+    <tr><td><code>int roundToInt(float v)</code></td><td></td></tr>
+    <tr><td><code>int floorToInt(float v)</code></td><td></td></tr>
+    <tr><td><code>int ceilToInt(float v)</code></td><td></td></tr>
+    <tr><td><code>float sqrt(float v)</code></td><td></td></tr>
+    <tr><td><code>float pow(float v, float p)</code></td><td></td></tr>
+    <tr><td><code>float exp(float v)</code></td><td></td></tr>
+    <tr><td><code>float log(float v)</code></td><td></td></tr>
+    <tr><td><code>float log10(float v)</code></td><td></td></tr>
+    <tr><td><code>float sin(float r)</code></td><td>Seno (radianes).</td></tr>
+    <tr><td><code>float cos(float r)</code></td><td>Coseno (radianes).</td></tr>
+    <tr><td><code>float tan(float r)</code></td><td></td></tr>
+    <tr><td><code>float asin(float v)</code></td><td></td></tr>
+    <tr><td><code>float acos(float v)</code></td><td></td></tr>
+    <tr><td><code>float atan(float v)</code></td><td></td></tr>
+    <tr><td><code>float atan2(float y, float x)</code></td><td>Angulo (radianes) del punto (x, y).</td></tr>
+    <tr><td><code>bool isPowerOfTwo(int v)</code></td><td></td></tr>
+    <tr><td><code>int nextPowerOfTwo(int v)</code></td><td></td></tr>
+    <tr><td><code>float perlinNoise3(float x, float y, float z)</code></td><td>Ruido de Perlin 3D (-1..1 aprox.).</td></tr>
+    <tr><td><code>float perlinNoise(float x, float y)</code></td><td>Ruido de Perlin 2D en 0..1 (como Mathf.PerlinNoise de Unity).</td></tr>
+    <tr><td><code>float fractalNoise(float x, float y, int octaves = 4, float persistence = 0.5f, float lacunarity = 2.0f)</code></td><td>Suma de varias capas de ruido (montanas, nubes...), en 0..1.</td></tr>
+  </tbody>
+</table>
+
+<h3 id="vec3">Vec3</h3>
+<table>
+  <tbody>
+    <tr><td><code>float x = 0.0f, y = 0.0f, z = 0.0f</code></td><td></td></tr>
+    <tr><td><code>Vec3() = default</code></td><td></td></tr>
+    <tr><td><code>Vec3(float x_, float y_, float z_)</code></td><td></td></tr>
+    <tr><td><code>Vec3 operator+(const Vec3&amp; o) const</code></td><td></td></tr>
+    <tr><td><code>Vec3 operator-(const Vec3&amp; o) const</code></td><td></td></tr>
+    <tr><td><code>Vec3 operator-() const</code></td><td></td></tr>
+    <tr><td><code>Vec3 operator*(float s) const</code></td><td></td></tr>
+    <tr><td><code>Vec3 operator/(float s) const</code></td><td></td></tr>
+    <tr><td><code>bool operator==(const Vec3&amp; o) const</code></td><td></td></tr>
+    <tr><td><code>bool operator!=(const Vec3&amp; o) const</code></td><td></td></tr>
+    <tr><td><code>Vec3&amp; operator+=(const Vec3&amp; o)</code></td><td></td></tr>
+    <tr><td><code>Vec3&amp; operator-=(const Vec3&amp; o)</code></td><td></td></tr>
+    <tr><td><code>Vec3&amp; operator*=(float s)</code></td><td></td></tr>
+    <tr><td><code>Vec3&amp; operator/=(float s)</code></td><td></td></tr>
+    <tr><td><code>float length() const</code></td><td>Largo (magnitud).</td></tr>
+    <tr><td><code>float sqrLength() const</code></td><td>Largo al cuadrado (mas rapido para comparar distancias).</td></tr>
+    <tr><td><code>Vec3 normalized() const</code></td><td>El mismo vector con largo 1 (o cero si es cero).</td></tr>
+    <tr><td><code>static float dot(const Vec3&amp; a, const Vec3&amp; b)</code></td><td></td></tr>
+    <tr><td><code>static Vec3 cross(const Vec3&amp; a, const Vec3&amp; b)</code></td><td></td></tr>
+    <tr><td><code>static Vec3 lerp(const Vec3&amp; a, const Vec3&amp; b, float t)</code></td><td>De a a b segun t (sin recortar, como antes).</td></tr>
+    <tr><td><code>static Vec3 lerpClamped(const Vec3&amp; a, const Vec3&amp; b, float t)</code></td><td></td></tr>
+    <tr><td><code>static float distance(const Vec3&amp; a, const Vec3&amp; b)</code></td><td></td></tr>
+    <tr><td><code>static float sqrDistance(const Vec3&amp; a, const Vec3&amp; b)</code></td><td></td></tr>
+    <tr><td><code>static Vec3 scale(const Vec3&amp; a, const Vec3&amp; b)</code></td><td>Componente a componente (escala no uniforme).</td></tr>
+    <tr><td><code>static Vec3 min(const Vec3&amp; a, const Vec3&amp; b)</code></td><td></td></tr>
+    <tr><td><code>static Vec3 max(const Vec3&amp; a, const Vec3&amp; b)</code></td><td></td></tr>
+    <tr><td><code>static float angle(const Vec3&amp; a, const Vec3&amp; b)</code></td><td>Angulo entre dos direcciones (grados, 0..180).</td></tr>
+    <tr><td><code>static float signedAngle(const Vec3&amp; from, const Vec3&amp; to, const Vec3&amp; axis)</code></td><td>Angulo con signo alrededor de axis (grados, -180..180).</td></tr>
+    <tr><td><code>static Vec3 moveTowards(const Vec3&amp; current, const Vec3&amp; target, float maxDistance)</code></td><td>Acerca current a target como mucho maxDistance.</td></tr>
+    <tr><td><code>static Vec3 project(const Vec3&amp; v, const Vec3&amp; onNormal)</code></td><td>Proyeccion de v sobre una direccion.</td></tr>
+    <tr><td><code>static Vec3 projectOnPlane(const Vec3&amp; v, const Vec3&amp; planeNormal)</code></td><td>v sin la parte de la normal del plano (deslizar por una pared).</td></tr>
+    <tr><td><code>static Vec3 reflect(const Vec3&amp; dir, const Vec3&amp; normal)</code></td><td>Rebote de una direccion en una superficie.</td></tr>
+    <tr><td><code>static Vec3 clampLength(const Vec3&amp; v, float maxLength)</code></td><td>El mismo vector con un largo maximo.</td></tr>
+    <tr><td><code>static Vec3 slerp(const Vec3&amp; a, const Vec3&amp; b, float t)</code></td><td>Interpolacion esferica entre direcciones (gira en vez de cortar camino).</td></tr>
+    <tr><td><code>static Vec3 smoothDamp(const Vec3&amp; current, const Vec3&amp; target, Vec3&amp; velocity, float smoothTime, float deltaTime, float maxSpeed = Mathf::infinity)</code></td><td>Sigue a target con suavidad. velocity se guarda entre frames.</td></tr>
+    <tr><td><code>static bool approximately(const Vec3&amp; a, const Vec3&amp; b)</code></td><td></td></tr>
+    <tr><td><code>Vec3 abs() const</code></td><td></td></tr>
+    <tr><td><code>Vec3 floor() const</code></td><td></td></tr>
+    <tr><td><code>Vec3 ceil() const</code></td><td></td></tr>
+    <tr><td><code>Vec3 round() const</code></td><td></td></tr>
+    <tr><td><code>static Vec3 zero()</code></td><td></td></tr>
+    <tr><td><code>static Vec3 one()</code></td><td></td></tr>
+    <tr><td><code>static Vec3 up()</code></td><td></td></tr>
+    <tr><td><code>static Vec3 down()</code></td><td></td></tr>
+    <tr><td><code>static Vec3 forward()</code></td><td></td></tr>
+    <tr><td><code>static Vec3 back()</code></td><td></td></tr>
+    <tr><td><code>static Vec3 right()</code></td><td></td></tr>
+    <tr><td><code>static Vec3 left()</code></td><td></td></tr>
+  </tbody>
+</table>
+
+<h3 id="vec2">Vec2</h3>
+<table>
+  <tbody>
+    <tr><td><code>float x = 0.0f, y = 0.0f</code></td><td></td></tr>
+    <tr><td><code>Vec2() = default</code></td><td></td></tr>
+    <tr><td><code>Vec2(float x_, float y_)</code></td><td></td></tr>
+    <tr><td><code>Vec2 operator+(const Vec2&amp; o) const</code></td><td></td></tr>
+    <tr><td><code>Vec2 operator-(const Vec2&amp; o) const</code></td><td></td></tr>
+    <tr><td><code>Vec2 operator-() const</code></td><td></td></tr>
+    <tr><td><code>Vec2 operator*(float s) const</code></td><td></td></tr>
+    <tr><td><code>Vec2 operator/(float s) const</code></td><td></td></tr>
+    <tr><td><code>bool operator==(const Vec2&amp; o) const</code></td><td></td></tr>
+    <tr><td><code>Vec2&amp; operator+=(const Vec2&amp; o)</code></td><td></td></tr>
+    <tr><td><code>Vec2&amp; operator-=(const Vec2&amp; o)</code></td><td></td></tr>
+    <tr><td><code>Vec2&amp; operator*=(float s)</code></td><td></td></tr>
+    <tr><td><code>float length() const</code></td><td></td></tr>
+    <tr><td><code>float sqrLength() const</code></td><td></td></tr>
+    <tr><td><code>Vec2 normalized() const</code></td><td></td></tr>
+    <tr><td><code>static float dot(const Vec2&amp; a, const Vec2&amp; b)</code></td><td></td></tr>
+    <tr><td><code>static float distance(const Vec2&amp; a, const Vec2&amp; b)</code></td><td></td></tr>
+    <tr><td><code>static Vec2 lerp(const Vec2&amp; a, const Vec2&amp; b, float t)</code></td><td></td></tr>
+    <tr><td><code>static Vec2 zero()</code></td><td></td></tr>
+    <tr><td><code>static Vec2 one()</code></td><td></td></tr>
+    <tr><td><code>static Vec2 up()</code></td><td></td></tr>
+    <tr><td><code>static Vec2 right()</code></td><td></td></tr>
+  </tbody>
+</table>
+
+<h3 id="quat">Quat</h3>
+<table>
+  <tbody>
+    <tr><td><code>float x = 0.0f, y = 0.0f, z = 0.0f, w = 1.0f</code></td><td></td></tr>
+    <tr><td><code>Quat() = default</code></td><td></td></tr>
+    <tr><td><code>Quat(float x_, float y_, float z_, float w_)</code></td><td></td></tr>
+    <tr><td><code>static Quat identity()</code></td><td>Sin rotacion.</td></tr>
+    <tr><td><code>static Quat euler(const Vec3&amp; degrees)</code></td><td>Desde grados (X, Y, Z), el mismo orden que el Inspector.</td></tr>
+    <tr><td><code>static Quat euler(float x, float y, float z)</code></td><td></td></tr>
+    <tr><td><code>Vec3 toEuler() const</code></td><td>Los grados (X, Y, Z) de esta rotacion (lo contrario de euler).</td></tr>
+    <tr><td><code>static Quat angleAxis(float degrees, const Vec3&amp; axis)</code></td><td>Girar degrees alrededor de un eje.</td></tr>
+    <tr><td><code>static Quat lookRotation(const Vec3&amp; forward, const Vec3&amp; up = Vec3::up())</code></td><td>Mirar hacia forward (el delante del motor es -Z) con up hacia arriba.</td></tr>
+    <tr><td><code>static Quat fromToRotation(const Vec3&amp; from, const Vec3&amp; to)</code></td><td>La rotacion que lleva la direccion from a la direccion to.</td></tr>
+    <tr><td><code>static float dot(const Quat&amp; a, const Quat&amp; b)</code></td><td></td></tr>
+    <tr><td><code>static float angle(const Quat&amp; a, const Quat&amp; b)</code></td><td>Angulo entre dos rotaciones (grados).</td></tr>
+    <tr><td><code>Quat normalized() const</code></td><td></td></tr>
+    <tr><td><code>Quat inverse() const</code></td><td>La rotacion contraria.</td></tr>
+    <tr><td><code>static Quat slerp(const Quat&amp; a, Quat b, float t)</code></td><td>Interpolacion esferica (suave y a velocidad constante).</td></tr>
+    <tr><td><code>static Quat lerp(const Quat&amp; a, const Quat&amp; b, float t)</code></td><td>Interpolacion lineal normalizada (mas rapida que slerp).</td></tr>
+    <tr><td><code>static Quat rotateTowards(const Quat&amp; from, const Quat&amp; to, float maxDegrees)</code></td><td>Gira from hacia to como mucho maxDegrees.</td></tr>
+    <tr><td><code>Quat operator*(const Quat&amp; b) const</code></td><td></td></tr>
+    <tr><td><code>Vec3 operator*(const Vec3&amp; v) const</code></td><td>Gira un vector.</td></tr>
+    <tr><td><code>Vec3 forward() const</code></td><td>Su delante (-Z girado), derecha y arriba.</td></tr>
+    <tr><td><code>Vec3 right() const</code></td><td></td></tr>
+    <tr><td><code>Vec3 up() const</code></td><td></td></tr>
+  </tbody>
+</table>
+
+<h3 id="color">Color</h3>
+<table>
+  <tbody>
+    <tr><td><code>float r = 1.0f, g = 1.0f, b = 1.0f, a = 1.0f</code></td><td></td></tr>
+    <tr><td><code>Color() = default</code></td><td></td></tr>
+    <tr><td><code>Color(float r_, float g_, float b_, float a_ = 1.0f)</code></td><td></td></tr>
+    <tr><td><code>Vec3 rgb() const</code></td><td></td></tr>
+    <tr><td><code>Color operator*(float s) const</code></td><td></td></tr>
+    <tr><td><code>static Color lerp(const Color&amp; x, const Color&amp; y, float t)</code></td><td></td></tr>
+    <tr><td><code>static Color hsv(float h, float s, float v)</code></td><td>Desde tono (0..1), saturacion y valor.</td></tr>
+    <tr><td><code>static Color white()</code></td><td></td></tr>
+    <tr><td><code>static Color black()</code></td><td></td></tr>
+    <tr><td><code>static Color red()</code></td><td></td></tr>
+    <tr><td><code>static Color green()</code></td><td></td></tr>
+    <tr><td><code>static Color blue()</code></td><td></td></tr>
+    <tr><td><code>static Color yellow()</code></td><td></td></tr>
+    <tr><td><code>static Color clear()</code></td><td></td></tr>
+  </tbody>
+</table>

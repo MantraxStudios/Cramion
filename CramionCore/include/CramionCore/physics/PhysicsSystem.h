@@ -261,6 +261,51 @@ public:
     // Centro de masas en el mundo.
     core::Vec3 centerOfMass(ecs::Entity entity) const;
 
+    // --- Character Controller (componente CharacterController) ---
+    // Bits de lo que toco el ultimo movimiento (CollisionFlags de Unity).
+    enum CharacterCollision : std::uint32_t { kCollidedSides = 1, kCollidedAbove = 2, kCollidedBelow = 4 };
+    enum class CharacterGround : int { OnGround = 0, OnSteepGround, NotSupported, InAir };
+    struct CharacterState {
+        bool valid = false;
+        bool grounded = false;      // de pie sobre algo no demasiado empinado
+        CharacterGround ground_state = CharacterGround::InAir;
+        bool crouching = false;
+        core::Vec3 velocity{};       // m/s (la del ultimo paso)
+        core::Vec3 ground_normal{0.0f, 1.0f, 0.0f};
+        core::Vec3 ground_point{};
+        core::Vec3 ground_velocity{};  // la plataforma bajo los pies
+        ecs::Entity ground;         // sobre que esta (vacia si nada o sin entidad)
+        std::uint32_t collision_flags = 0;  // CharacterCollision
+        int jumps_used = 0;
+    };
+    CharacterState characterState(ecs::Entity character) const;
+    bool isCharacter(ecs::Entity entity) const;
+    // Move de Unity: mueve ya `displacement` metros chocando y deslizando
+    // (sube escalones, respeta la pendiente maxima). Sin gravedad. Devuelve
+    // los CharacterCollision tocados.
+    std::uint32_t moveCharacter(ecs::World& world, ecs::Entity character, const core::Vec3& displacement);
+    // Movimiento integrado: direccion deseada en el mundo (longitud 0..1, la
+    // Y se ignora), correr. Hasta que se vuelva a llamar.
+    void setCharacterInput(ecs::Entity character, const core::Vec3& direction, bool run = false);
+    // Salta (con el tiempo coyote y los saltos seguidos del componente).
+    // height < 0: la del componente. false si no puede saltar ahora.
+    bool characterJump(ecs::Entity character, float height = -1.0f);
+    // Agacharse: si no cabe de pie al levantarse, sigue agachado hasta que quepa.
+    void setCharacterCrouch(ecs::Entity character, bool crouch);
+    // Velocidad (en Manual se mantiene; en Integrado es la de partida: la
+    // gravedad y la entrada la cambian). Sirve para empujones y saltos.
+    void setCharacterVelocity(ecs::Entity character, const core::Vec3& velocity);
+    void addCharacterVelocity(ecs::Entity character, const core::Vec3& velocity);
+    // Los que tienen "Mover con teclado": direcciones relativas a la camara
+    // (camera_forward en el mundo, se usa su proyeccion horizontal; (0,0,0) =
+    // la camara principal de la escena).
+    struct CharacterKeys {
+        bool forward = false, back = false, left = false, right = false;
+        bool run = false, jump = false, crouch = false;
+        core::Vec3 camera_forward{};
+    };
+    void driveCharactersWithKeyboard(ecs::World& world, const CharacterKeys& keys);
+
     // --- Eventos ---
     using EventCallback = std::function<void(const PhysicsEvent&)>;
     // Los del ultimo update() (se vacia al empezar cada update).

@@ -1,4 +1,6 @@
 #include "CramionCore/scripting/Scripting.h"
+#include "CramionCore/scripting/CppScripts.h"
+#include "CramionCore/cvar/CVar.h"
 
 #include "CramionCore/project/DataPack.h"
 
@@ -392,10 +394,11 @@ std::string scriptTemplate(const std::string& class_name) {
 void registerScriptComponents() {
     ecs::ComponentRegistry& registry = ecs::ComponentRegistry::instance();
     if (registry.find("Script") == nullptr) {
-        registry.registerComponent<Script>("Script", "Script (Lua)", "Scripting");
+        registry.registerComponent<Script>("Script", "Script Lua (obsoleto)", "Scripting");
     }
     net::registerNetworkComponents();
     ai::registerStateMachineComponents();
+    registerCppScriptComponents();
 }
 
 // -----------------------------------------------------------------------------
@@ -496,6 +499,14 @@ struct ScriptSystem::Impl {
     struct FsmHost;
     std::unique_ptr<FsmHost> fsm;
     void bindStateMachine(sol::state& L, sol::usertype<LuaEntity>& entity);
+    void bindCharacter(sol::state& L, sol::usertype<LuaEntity>& entity);  // CharacterScripting.inl
+    // Puente para los scripts de C++ (BridgeScripting.inl): objetos del motor
+    // que se dieron como handle y a donde van los callbacks.
+    std::vector<sol::object> bridge_handles;
+    std::function<void(std::uint64_t, const std::string&)> bridge_sink;
+    nlohmann::json bridgeToJson(const sol::object& o, int depth);
+    sol::object bridgeFromJson(const nlohmann::json& j, int depth);
+    sol::object bridgeResolve(const std::string& path);
     void fsmEvent(entt::entity target, const char* method, entt::entity other, const sol::table& contact);
     ecs::World* world = nullptr;
     bool running = false;
@@ -777,6 +788,25 @@ struct ScriptSystem::Impl {
         }
     }
 
+    // Lo mismo en JSON con los valores especiales de C++ ({"$v": [x, y, z]}).
+    static nlohmann::json netJson(const net::NetValue& v) {
+        switch (v.type) {
+            case net::NetValue::Type::Bool: return v.flag;
+            case net::NetValue::Type::Number: return v.number;
+            case net::NetValue::Type::String: return v.text;
+            case net::NetValue::Type::Vec3: return nlohmann::json{{"$v", {v.vector.x, v.vector.y, v.vector.z}}};
+            case net::NetValue::Type::Table: {
+                nlohmann::json out = nlohmann::json::object();
+                for (const auto& [k, val] : v.entries) {
+                    out[k.type == net::NetValue::Type::String ? k.text : std::to_string(static_cast<long long>(k.number))] = netJson(val);
+                }
+                return out;
+            }
+            default: return nullptr;
+        }
+    }
+    std::function<void(ecs::Entity, const std::string&, const std::string&)> net_var_listener;
+
     sol::object fromNet(sol::state_view L, const net::NetValue& v) {
         switch (v.type) {
             case net::NetValue::Type::Nil: return sol::lua_nil;
@@ -933,6 +963,7 @@ struct ScriptSystem::Impl {
                     if (const auto it = instances.find(e.handle()); it != instances.end()) {
                         call(it->second, "OnNetVar", ev.text, fromNet(L, ev.value));
                     }
+                    if (net_var_listener) net_var_listener(e, ev.text, netJson(ev.value).dump());
                     break;
                 }
                 case net::NetEvent::Type::Scene:
@@ -2403,8 +2434,64 @@ struct ScriptSystem::Impl {
         sol::table game = L.create_named_table("Game");
         game["quit"] = [this]() { quit_request = true; };
 
+        // CVar: las variables de configuracion del motor y del juego (cvar/CVar.h).
+        sol::table cv = L.create_named_table("CVar");
+        cv["get"] = [this](const std::string& name) -> sol::object {
+            const cvar::CVarBase* c = cvar::Registry::instance().find(name);
+            if (c == nullptr) return sol::lua_nil;
+            const std::string text = c->toString();
+            switch (c->type()) {
+                case cvar::Type::Bool: return sol::make_object(*lua, text == "true");
+                case cvar::Type::Int:
+                case cvar::Type::Float: {
+                    double d = 0.0;
+                    cvar::detail::parseNumber(text, d);
+                    return sol::make_object(*lua, d);
+                }
+                case cvar::Type::String: break;
+            }
+            return sol::make_object(*lua, text);
+        };
+        const auto to_text = [](const sol::object& value) -> std::string {
+            if (value.is<bool>()) return value.as<bool>() ? "true" : "false";
+            if (value.get_type() == sol::type::number) return cvar::detail::formatNumber(value.as<double>(), false);
+            if (value.is<std::string>()) return value.as<std::string>();
+            return {};
+        };
+        cv["set"] = [this, to_text](const std::string& name, const sol::object& value) {
+            std::string error;
+            const bool ok = cvar::Registry::instance().set(name, to_text(value), &error);
+            if (!ok) write(1, "CVar.set: " + error);
+            return ok;
+        };
+        // CVar.register("juego.Vidas", 3, "Vidas al empezar", true) -> el valor actual.
+        cv["register"] = [this, to_text](const std::string& name, const sol::object& value, sol::optional<std::string> description,
+                                         sol::optional<bool> saved) -> sol::object {
+            cvar::Type type = cvar::Type::String;
+            if (value.is<bool>()) type = cvar::Type::Bool;
+            else if (value.get_type() == sol::type::number) type = cvar::Type::Float;
+            const cvar::CVarBase* c = cvar::Registry::instance().createDynamic(name, type, to_text(value), description.value_or(""),
+                                                                               saved.value_or(false) ? cvar::Saved : cvar::None);
+            if (c == nullptr) {
+                write(1, "CVar.register: ya existe '" + name + "' con otro tipo");
+                return sol::lua_nil;
+            }
+            return sol::make_object(*lua, c->toString());
+        };
+        cv["exists"] = [](const std::string& name) { return cvar::Registry::instance().find(name) != nullptr; };
+        cv["list"] = [this](sol::optional<std::string> filter) {
+            sol::table out = lua->create_table();
+            int i = 1;
+            for (const cvar::CVarBase* c : cvar::Registry::instance().all()) {
+                if (filter && c->name().find(*filter) == std::string::npos) continue;
+                out[i++] = c->name();
+            }
+            return out;
+        };
+
         bindNetwork(L, entity);
         bindStateMachine(L, entity);
+        bindCharacter(L, entity);
         bindHttp(L);
 
         // Input
@@ -4003,6 +4090,8 @@ struct ScriptSystem::Impl {
 };
 
 #include "StateMachineScripting.inl"
+#include "CharacterScripting.inl"
+#include "BridgeScripting.inl"
 
 ScriptSystem::ScriptSystem() : impl_(std::make_unique<Impl>()) {
     impl_->buildKeys();
@@ -4203,6 +4292,7 @@ void ScriptSystem::stop() {
     if (d.physics != nullptr && d.listener >= 0) d.physics->removeListener(d.listener);
     d.listener = -1;
     d.fsm.reset();  // sus objetos son del Lua que se va
+    d.bridge_handles.clear();  // tambien (los handles de los scripts de C++)
     d.instances.clear();
     d.classes.clear();
     d.failed_classes.clear();
@@ -4325,6 +4415,10 @@ std::vector<ScriptProperty> ScriptSystem::describe(const std::string& file, std:
     auto result = cache.properties;
     d.described[file] = std::move(cache);
     return result;
+}
+
+void ScriptSystem::setNetVarListener(std::function<void(ecs::Entity, const std::string&, const std::string&)> listener) {
+    impl_->net_var_listener = std::move(listener);
 }
 
 void ScriptSystem::shiftOrigin(const core::Vec3& offset) {

@@ -16,10 +16,19 @@ DOCS = os.path.join(ROOT, "docs")
 OUT = os.path.join(DOCS, "manual")
 DISCORD = "https://discord.gg/zG7rSsUGEz"
 
+# Antes de nada: la referencia de C++ desde las cabeceras del SDK y los ejemplos.
+import sys
+sys.path.insert(0, HERE)
+import gen_cpp_api  # noqa: E402
+import examples_cpp  # noqa: E402
+gen_cpp_api.main()
+examples_cpp.main()
+
 data = json.load(open(os.path.join(HERE, "pages.json"), encoding="utf-8"))
 intro_html = data["intro"]
 examples_intro = data["examples_intro"]
-GROUP_ICONS = {"Primeros pasos": "book", "El editor": "window", "Componentes": "cube", "Referencia de la API": "code", "Gráficos": "paint", "Ejemplos": "spark"}
+LUA_GROUP = "Referencia de Lua (obsoleta)"
+GROUP_ICONS = {"API de C++": "code", LUA_GROUP: "code", "Primeros pasos": "book", "El editor": "window", "Componentes": "cube", "Referencia de la API": "code", "Gráficos": "paint", "Ejemplos": "spark"}
 GROUPS = []
 for g in data["groups"]:
     GROUPS.append((g["group"], GROUP_ICONS.get(g["group"], "book"), g["pages"]))
@@ -69,6 +78,10 @@ old_ids = {p["slug"]: p["slug"] for p in pages}
 search = []
 for p in pages:
     content = p["content"]
+    if p["group"] == LUA_GROUP:
+        content = ('<div class="note"><strong class="text-white">Lua está obsoleto.</strong> Sigue funcionando en los '
+                   'proyectos que lo usan, pero lo nuevo se escribe en C++: ver la <a href="cpp-script.html">API de C++</a> '
+                   'y <a href="primer-script.html">Tu primer script</a>.</div>\n' + content)
 
     # h3 con id (para el indice de la derecha y el buscador).
     def add_id(m):
@@ -168,7 +181,7 @@ HEADER = f"""
         <a href="index.html" data-nav="index">Documentación</a>
         <a href="editor-interfaz.html" data-nav="El editor">Editor</a>
         <a href="componentes.html" data-nav="Componentes">Componentes</a>
-        <a href="entity.html" data-nav="Referencia de la API">API de Lua</a>
+        <a href="cpp-script.html" data-nav="API de C++">API de C++</a>
         <a href="ejemplo-girar.html" data-nav="Ejemplos">Ejemplos</a>
       </nav>
       <div class="header-right">
@@ -493,7 +506,7 @@ hub_main = f"""
           <div class="intro">{intro_html}</div>
           <div class="actions">
             <a href="primer-script.html" class="btn btn-primary">Empezar {icon("arrow")}</a>
-            <a href="entity.html" class="btn btn-outline">Referencia de la API</a>
+            <a href="cpp-script.html" class="btn btn-outline">API de C++</a>
             <button class="btn btn-ghost" onclick="document.getElementById('search-open').click()">{icon("search")}Buscar</button>
           </div>
         </section>

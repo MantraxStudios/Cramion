@@ -162,6 +162,56 @@ struct WheelCollider {
     void reflect(ecs::PropertyVisitor& v);
 };
 
+// Character Controller (el de Unity + el CharacterMovement de Unreal, sobre el
+// CharacterVirtual de Jolt): una capsula vertical que se mueve chocando y
+// deslizando por paredes, sube escalones, no sube rampas mas empinadas que su
+// limite, se pega al suelo al bajar, sigue a las plataformas que se mueven y
+// empuja a los Rigidbody. No la mueve la fisica: la mueve su movimiento.
+//
+//   Manual      como Unity: solo se mueve con move(desplazamiento) desde un
+//               script (sin gravedad propia) o con la velocidad que se le pone.
+//   Integrado   como Unreal: gravedad, salto, andar/correr/agacharse con
+//               aceleracion y control en el aire. Lo dirige el teclado
+//               (WASD/flechas, Shift correr, Espacio saltar, C/Ctrl agacharse,
+//               relativo a la camara principal) o un script (setMoveInput).
+//
+// La entidad es el pie de la capsula si `center` es (0, altura/2, 0). Es
+// collider: la tocan los rayos, entra en los triggers y da eventos Collision
+// con lo que toca. Los otros colliders de la misma entidad se ignoran.
+enum class CharacterMovement : int { Manual = 0, Integrated = 1 };
+
+struct CharacterController {
+    // Forma
+    float height = 2.0f;                 // total, con las semiesferas
+    float radius = 0.4f;
+    core::Vec3 center{0.0f, 1.0f, 0.0f};  // centro de la capsula respecto a la entidad
+    float slope_limit = 45.0f;           // grados: mas empinado = pared
+    float step_offset = 0.35f;           // altura de escalon que sube sola
+    float skin_width = 0.02f;            // distancia que guarda a lo que toca
+    bool stick_to_floor = true;          // al bajar rampas/escalones no sale volando
+    // Empujar
+    float mass = 70.0f;                  // kg (empuje a los Rigidbody)
+    float push_strength = 300.0f;        // N maximos con que empuja
+    bool push_rigidbodies = true;
+    // Movimiento integrado
+    CharacterMovement movement = CharacterMovement::Integrated;
+    bool keyboard = true;                // WASD / Shift / Espacio / C (si no: por script)
+    float walk_speed = 4.0f;             // m/s
+    float run_speed = 7.5f;
+    float crouch_speed = 2.0f;
+    float acceleration = 40.0f;          // m/s2 en el suelo (0 = al instante)
+    float air_control = 0.35f;           // 0..1 de la aceleracion en el aire
+    float jump_height = 1.2f;            // m
+    int max_jumps = 1;                   // 2 = doble salto
+    float coyote_time = 0.12f;           // s tras salir del borde en que aun puede saltar
+    float gravity_scale = 1.0f;
+    float crouch_height = 1.2f;
+    bool rotate_to_movement = true;      // gira la entidad hacia donde anda
+    float rotation_speed = 720.0f;       // grados/s
+
+    void reflect(ecs::PropertyVisitor& v);
+};
+
 void registerPhysicsComponents();
 
 // Collider por defecto para una primitiva integrada (cubo -> caja, esfera ->
@@ -169,7 +219,7 @@ void registerPhysicsComponents();
 // Unity al crear un objeto 3D. No hace nada si ya tiene collider.
 void addDefaultCollider(ecs::Entity entity);
 
-// true si la entidad tiene algun collider.
+// true si la entidad tiene algun collider (el CharacterController cuenta).
 bool hasCollider(const ecs::Entity& entity);
 
 }  // namespace cramion::physics

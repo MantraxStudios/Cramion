@@ -42,7 +42,8 @@
   <li><strong>Luz en las crestas</strong> (<code>scattering</code>): el brillo verde turquesa de las olas a contraluz
     (la luz del sol que atraviesa la cresta).</li>
   <li><strong>Espuma de orilla</strong> y <strong>Olas en la playa</strong>: espuma donde el agua es poco profunda y
-    bandas que avanzan hacia la orilla.</li>
+    bandas que avanzan hacia la orilla. El borde de la espuma se rompe con ruido (no sigue los triángulos del terreno)
+    y solo es opaca donde el agua lame la arena; hacia dentro es encaje que se deshace.</li>
   <li><strong>Cáusticas</strong>: la luz que las olas concentran en el fondo.</li>
   <li><strong>Rugosidad</strong>, <strong>Refracción</strong> y <strong>Ondulación fina</strong>.</li>
 </ul>
@@ -58,8 +59,13 @@
 <p>
   Una cinta que sigue sus <em>Puntos del río</em> (posición y ancho). La corriente (<code>flow_speed</code>) arrastra el
   rizado y la espuma con un <em>flow map</em> en dos fases: va más rápida en el centro que en las orillas y mucho más
-  donde el río baja (<strong>rápidos</strong>, con espuma blanca y agua más revuelta). En las orillas también hay
-  espuma.
+  donde el río baja (<strong>rápidos</strong>: vetas de agua blanca con agua oscura entre medias). En las orillas solo
+  hay un borde fino y roto donde el agua lame la tierra.
+</p>
+<p>
+  En las cuestas el río se ve igual de cerca que de lejos: la hondura del agua se mide perpendicular a su superficie
+  (con la diferencia de alturas, mirando río arriba el fondo de detrás quedaba más alto que el agua y el río se volvía
+  espuma y transparente a pocos metros de la cámara).
 </p>
 
 <h3 id="bajo">Bajo el agua</h3>

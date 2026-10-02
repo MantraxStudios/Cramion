@@ -1,0 +1,14 @@
+<p>Peticiones HTTPS a servidores y webs.</p>
+
+<h3 id="http">Http</h3>
+<table>
+  <tbody>
+    <tr><td><code>Value cancelAll(...)</code></td><td>cancela todas</td></tr>
+    <tr><td><code>Value get(texto, callback, cabeceras)</code></td><td>end, cabeceras) GET; res = {ok, status, body, data, headers, error}</td></tr>
+    <tr><td><code>Value pending(...)</code></td><td>peticiones sin terminar</td></tr>
+    <tr><td><code>Value post(texto, datos, callback, cabeceras)</code></td><td>end, cabeceras) POST; datos texto o tabla (se manda como JSON)</td></tr>
+    <tr><td><code>Value query(tabla)</code></td><td>&quot;page=2&amp;q=hola&quot; (codificado)</td></tr>
+    <tr><td><code>Value request(tabla, callback)</code></td><td>end) cualquier metodo, con tiempo maximo y tamano maximo (maxSize)</td></tr>
+    <tr><td><code>Value urlEncode(texto)</code></td><td>texto seguro para una URL</td></tr>
+  </tbody>
+</table>

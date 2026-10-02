@@ -8,10 +8,12 @@
 
 #include <CramionFX/CramionFX.h>
 
+#include <cstddef>
 #include <filesystem>
 #include <memory>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace cramion::assets {
@@ -42,7 +44,10 @@ struct ModelAsset {
 // vez aunque lo usen muchas entidades.
 class AssetManager {
 public:
-    explicit AssetManager(AssetDatabase& database) : database_(database) {}
+    explicit AssetManager(AssetDatabase& database);
+    ~AssetManager();
+    AssetManager(const AssetManager&) = delete;
+    AssetManager& operator=(const AssetManager&) = delete;
 
     // Carpeta para archivos derivados (p. ej. <proyecto>/Library/Cache).
     void setCacheFolder(const std::filesystem::path& folder) { cache_folder_ = folder; }
@@ -62,6 +67,20 @@ public:
     // extrae una vez a la carpeta de cache. Vacia si no existe.
     std::filesystem::path environmentFile(const Uuid& uuid);
 
+    // --- Carga en segundo plano (streaming) ---
+    // Pide un modelo SIN esperar: si ya esta en memoria lo devuelve; si no, lo
+    // lee un hilo de fondo (leer el .crdata, decodificar las texturas, generar
+    // los LODs) y devuelve nullptr hasta que pollLoads() lo recoja. loadModel()
+    // de algo que ya se esta leyendo espera a ese hilo (no lo lee dos veces).
+    std::shared_ptr<const ModelAsset> requestModel(const Uuid& uuid);
+    // En el hilo principal (cada frame): guarda lo que terminaron los hilos.
+    // Devuelve cuantos modelos llegaron.
+    std::size_t pollLoads();
+    // No se pudo leer en segundo plano (no se vuelve a intentar hasta unload()).
+    bool loadFailed(const Uuid& uuid) const { return failed_loads_.contains(uuid); }
+    // Modelos pedidos que aun no han llegado.
+    std::size_t loadsInFlight() const;
+
     // Olvida lo cargado (p. ej. al reimportar o cerrar el proyecto).
     void unload(const Uuid& uuid);
     void clear();
@@ -69,9 +88,14 @@ public:
     AssetDatabase& database() { return database_; }
 
 private:
+    struct Loader;  // hilos de fondo y sus colas
+    void takeFinished(const Uuid* only);
+
     AssetDatabase& database_;
     std::filesystem::path cache_folder_;
     std::unordered_map<Uuid, std::shared_ptr<ModelAsset>> models_;
+    std::unordered_set<Uuid> failed_loads_;
+    std::unique_ptr<Loader> loader_;
 };
 
 }  // namespace cramion::assets

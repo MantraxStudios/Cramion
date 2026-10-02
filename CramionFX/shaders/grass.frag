@@ -34,8 +34,9 @@ void main() {
     if (dot(n, to_camera) < 0.0) n = normalize(n + to_camera * (0.2 - dot(n, to_camera)));
 
     float occlusion = mix(0.35, 1.0, smoothstep(0.0, 0.7, v_height));
-    // Modelo de Disney 3 (subsurface): poco aplanado, mucha translucidez, hoja fina.
-    surface_shading = vec4(3.0 / 255.0, 0.3, 0.45, 0.0);
+    // Modelo de Disney 3 (subsurface): poco aplanado, mucha translucidez, hoja
+    // fina (mas en la punta, mas fina; abajo la tapan las demas).
+    surface_shading = vec4(3.0 / 255.0, 0.3, mix(0.35, 0.6, v_height), 0.0);
     writeSurface(vec4(v_color, 1.0), n, n, vec3(0.0, 0.0, 1.0), n, 0.0, 0.55, occlusion, vec3(0.0), 0.03,
                  v_world_position);
     writeVelocity(v_current_clip, v_previous_clip);

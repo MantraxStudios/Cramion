@@ -5,7 +5,8 @@ const int kMaxGrassInteractors = 32;
 
 struct GrassBlade {
     vec4 position;  // xyz = base (mundo), w = uintBits: giro, altura, sequedad, anchura (8 bits cada uno)
-    vec4 push;      // xz = empuje de lo que la pisa (m), y = aplastado (0..1), w = fase del viento
+    vec3 push;      // xz = empuje de lo que la pisa (m), y = aplastado (0..1)
+    uint look;      // 8 bits cada uno: fase del viento, tono de la mata, mancha (0 pobre, 1 frondosa), muerta
 };
 
 layout(std140, set = GRASS_SET, binding = 0) uniform GrassParams {
@@ -30,6 +31,18 @@ float grassHash(vec2 p) {
 
 vec2 grassHash2(vec2 p) {
     return vec2(grassHash(p), grassHash(p + vec2(17.13, 31.71)));
+}
+
+// Ruido de valor suave (manchas del campo).
+float grassNoise(vec2 p) {
+    vec2 i = floor(p);
+    vec2 f = fract(p);
+    f = f * f * (3.0 - 2.0 * f);
+    float a = grassHash(i);
+    float b = grassHash(i + vec2(1.0, 0.0));
+    float c = grassHash(i + vec2(0.0, 1.0));
+    float d = grassHash(i + vec2(1.0, 1.0));
+    return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
 }
 
 uint packBlade(float yaw01, float height01, float dry01, float width01) {

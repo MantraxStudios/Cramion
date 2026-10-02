@@ -1,6 +1,13 @@
-<ul>
-        <li>Si guardas un <code>.lua</code> durante el modo Play, se vuelve a leer: las instancias conservan sus datos (<code>self.*</code>) y usan las funciones nuevas.</li>
-        <li>Los errores se muestran en la consola del editor con el archivo y la línea; un script con errores no detiene al resto.</li>
-        <li>La consola del editor ejecuta Lua suelto, por ejemplo <code>Scene.find("Jugador").position = Vec3(0, 5, 0)</code>.</li>
-        <li>Por seguridad, los scripts no pueden usar <code>dofile</code>, <code>loadfile</code>, <code>io</code> ni <code>os.execute</code>/<code>os.remove</code>. Para guardar datos usa <a href="prefs.html" class="text-brand">Prefs</a>.</li>
-      </ul>
+<p>
+        Si guardas un <code>.cpp</code> o un <code>.h</code> durante el modo Play, se compila y la DLL nueva se carga al momento:
+        los scripts se vuelven a crear con los valores del Inspector (los datos que guardaban en sus variables empiezan de nuevo).
+        Con <em>Formatear al guardar</em> activado (Configuración del motor), se formatea antes.
+      </p>
+      <p>
+        Los errores de compilación salen en la <strong>Consola C++</strong> del editor de código (doble clic va a la línea) y
+        subrayados en el código; los fallos en Play, con el archivo y la línea. Un script con errores no detiene al resto.
+      </p>
+      <p>
+        La línea de comandos de la Consola C++ cambia CVars (<code>r.Shadows 0</code>, <code>cvars filtro</code>) y ejecuta
+        código suelto del juego, por ejemplo para mover un objeto mientras pruebas.
+      </p>

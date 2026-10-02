@@ -1,0 +1,20 @@
+<p>Buscar, crear, instanciar y destruir objetos; cambiar de escena.</p>
+
+<h3 id="scene">Scene</h3>
+<table>
+  <tbody>
+    <tr><td><code>Entity find(std::string_view name)</code></td><td>El primer objeto con ese nombre (no valida si no hay).</td></tr>
+    <tr><td><code>Entity findWithTag(std::string_view tag)</code></td><td>El primer objeto con esa etiqueta.</td></tr>
+    <tr><td><code>Entity create(std::string_view name = &quot;Nuevo&quot;)</code></td><td>Crea un objeto vacio.</td></tr>
+    <tr><td><code>std::vector&lt;Vec3&gt; getPositions(const std::vector&lt;Entity&gt;&amp; entities)</code></td><td>Las posiciones de muchos objetos en una llamada (rapido).</td></tr>
+    <tr><td><code>void setPositions(const std::vector&lt;Entity&gt;&amp; entities, const std::vector&lt;Vec3&gt;&amp; positions)</code></td><td>Mueve muchos objetos en una llamada (rapido).</td></tr>
+    <tr><td><code>Value destroy(entity)</code></td><td>lo destruye al final del frame</td></tr>
+    <tr><td><code>Value findAllWithTag(texto)</code></td><td>lista de objetos con ese tag</td></tr>
+    <tr><td><code>Value instantiate(arg, posicion, rotacion)</code></td><td>copia de un objeto (con hijos y componentes) o instancia de un prefab</td></tr>
+    <tr><td><code>Value load(texto)</code></td><td>cambia de escena al terminar el frame (nombre o ruta del .crscene)</td></tr>
+    <tr><td><code>Value name(...)</code></td><td>nombre de la escena actual</td></tr>
+    <tr><td><code>Value origin(...)</code></td><td>x, y, z (doble precision) del origen flotante del mundo</td></tr>
+    <tr><td><code>Value toAbsolute(posicion)</code></td><td>x, y, z absolutos (para guardar posiciones en una partida)</td></tr>
+    <tr><td><code>Value toLocal(x, y, z)</code></td><td>Vec3 local de una posicion absoluta guardada</td></tr>
+  </tbody>
+</table>

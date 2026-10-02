@@ -1,0 +1,20 @@
+<p>Configuración gráfica y post-procesado.</p>
+
+<h3 id="graphics">Graphics</h3>
+<table>
+  <tbody>
+    <tr><td><code>Value get(texto)</code></td><td>valor de una opcion</td></tr>
+    <tr><td><code>Value getAll(...)</code></td><td>tabla clave -&gt; valor</td></tr>
+    <tr><td><code>Value getPost(texto)</code></td><td>campo del post-procesado global</td></tr>
+    <tr><td><code>Value getQuality(...)</code></td><td>la ultima calidad rapida o Personalizada</td></tr>
+    <tr><td><code>Value options(...)</code></td><td>lista {key, value, writable, description, choices} para un menu</td></tr>
+    <tr><td><code>Value post()</code></td><td>Graphics.post: post-procesado global: Graphics.post.bloom = false</td></tr>
+    <tr><td><code>Value postKeys(...)</code></td><td>claves del post-procesado</td></tr>
+    <tr><td><code>Value qualityLevels(...)</code></td><td>lista de calidades</td></tr>
+    <tr><td><code>Value resolutions(...)</code></td><td>resoluciones del monitor {width, height}</td></tr>
+    <tr><td><code>Value save(...)</code></td><td>guarda la configuracion del jugador (juego exportado)</td></tr>
+    <tr><td><code>Value set(texto, activar)</code></td><td>cambia una opcion; o Graphics.set{ clave = valor, ... }</td></tr>
+    <tr><td><code>Value setPost(texto, activar)</code></td><td>cambia el post-procesado global</td></tr>
+    <tr><td><code>Value setQuality(texto)</code></td><td>calidad rapida: Baja, Media, Alta, Ultra (o 0..3)</td></tr>
+  </tbody>
+</table>

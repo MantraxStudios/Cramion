@@ -217,8 +217,16 @@ private:
         }
     };
     // Indice en ModelData::animations de un .cranim (se anade al modelo la
-    // primera vez), o -1.
+    // primera vez), o -1. Con streaming el .cranim se lee en segundo plano:
+    // mientras tanto tambien -1 (clipPending() dice si es eso).
     int externalClip(std::uint32_t model, const Uuid& clip, scene::Scene& scene);
+    bool clipPending(std::uint32_t model, const Uuid& clip) const {
+        return pending_clips_.contains(ClipKey{model, clip});
+    }
+    // Pide en segundo plano todos los clips sueltos de un controlador para un
+    // modelo (al verlo por primera vez): llegan antes de que los necesite.
+    void prefetchClips(std::uint32_t model, const Uuid& controller_uuid, const AnimatorController& controller,
+                       scene::Scene& scene);
 
     std::optional<std::uint32_t> resolveModel(const assets::AssetRef& ref, int part,
                                               scene::Scene& scene, bool& added);
@@ -230,10 +238,10 @@ private:
     // Mallas creadas por codigo (MeshRenderer::mesh): su modelo en la escena,
     // rehecho (y subido solo el) cuando cambia su version.
     std::optional<std::uint32_t> resolveRuntimeMesh(const std::shared_ptr<Mesh>& mesh, scene::Scene& scene,
-                                                    gfx::VulkanRenderer& renderer, bool full_upload_pending);
+                                                    gfx::VulkanRenderer& renderer);
     void forgetVariantsOf(std::uint32_t base);
     void releaseRuntimeMeshes();
-    void applyMaterialChanges(scene::Scene& scene, gfx::VulkanRenderer& renderer, bool& added);
+    void applyMaterialChanges(scene::Scene& scene, gfx::VulkanRenderer& renderer);
     void syncActors(World& world, scene::Scene& scene, gfx::VulkanRenderer& renderer,
                     float delta_seconds);
     void syncLightsAndEnvironment(World& world, scene::Scene& scene,
@@ -404,6 +412,10 @@ private:
     std::unordered_map<Uuid, std::shared_ptr<const AnimatorController>> controllers_;
     std::unordered_set<Uuid> failed_controllers_;
     std::unordered_map<ClipKey, int, ClipKeyHash> external_clips_;
+    // Clips sueltos que se estan leyendo en segundo plano (streaming de
+    // animaciones) y los controladores ya precargados por modelo.
+    std::unordered_map<ClipKey, std::future<std::optional<asset::AnimationClip>>, ClipKeyHash> pending_clips_;
+    std::unordered_set<ClipKey, ClipKeyHash> prefetched_controllers_;
     std::unordered_map<std::string, int> decal_textures_;  // ruta -> ranura del renderizador
     std::vector<entt::entity> actor_entities_;
     std::vector<entt::entity> previous_entities_;  // los del frame anterior (reutilizar actores)
@@ -441,9 +453,9 @@ private:
     };
     std::unordered_map<entt::entity, ClothSlot> cloth_models_;
     std::optional<std::uint32_t> resolveSoftBodyModel(Entity e, const physics::SoftBody& body, scene::Scene& scene,
-                                                      gfx::VulkanRenderer& renderer, bool full_upload_pending);
+                                                      gfx::VulkanRenderer& renderer);
     std::optional<std::uint32_t> resolveClothModel(Entity e, const physics::Cloth& cloth, scene::Scene& scene,
-                                                   gfx::VulkanRenderer& renderer, bool full_upload_pending);
+                                                   gfx::VulkanRenderer& renderer);
     void releaseClothModels();
     std::unordered_set<const Mesh*> warned_meshes_;
     std::unordered_map<std::string, std::uint32_t> variant_lookup_;  // clave -> variants_

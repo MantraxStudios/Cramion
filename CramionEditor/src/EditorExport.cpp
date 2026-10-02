@@ -243,6 +243,27 @@ void EditorApp::startExport(const std::filesystem::path& parent) {
             if (it->is_regular_file(fe) && it->path().extension() == ".dll") add_file(it->path(), target / it->path().filename());
         }
         add_file(source / "player_banner.png", game / "banner.png");
+        // Scripts de C++: el proceso aislado y la DLL (al dia) con sus simbolos.
+        if (cpp_scripts_.hasSources()) {
+            if (!cpp_scripts_.upToDate()) {
+                while (cpp_scripts_.compiling()) Sleep(20);
+                cpp_scripts_.takeCompileResult();
+                const scripting::CppCompileResult built = cpp_scripts_.compile();
+                cpp_compile_errors_ = built.errors;
+                if (!built.ok) {
+                    export_message_ = "Los scripts de C++ no compilan (" + std::to_string(built.errors.size()) +
+                                      " errores): mira la Consola o Ventana > Variables.";
+                    return;
+                }
+                cpp_scripts_.setBuildFolder(project_.libraryFolder() / "CppScripts");
+            }
+            add_file(source / "CramionScriptHost.exe", target / "CramionScriptHost.exe");
+            add_file(cpp_scripts_.dll(), target / "scripts" / "game_scripts.dll");
+            std::filesystem::path pdb = cpp_scripts_.dll();
+            pdb.replace_extension(".pdb");
+            std::error_code pe;
+            if (std::filesystem::exists(pdb, pe)) add_file(pdb, target / "scripts" / pdb.filename());
+        }
     }
 
     // Los assets del juego, comprimidos en un solo archivo .crpack.

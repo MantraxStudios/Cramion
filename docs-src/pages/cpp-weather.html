@@ -1,0 +1,46 @@
+<p>Lo mismo que Environment (otro nombre).</p>
+
+<h3 id="weather">Weather</h3>
+<table>
+  <tbody>
+    <tr><td><code>Value get(...)</code></td><td>clima actual (&quot;Storm&quot;)</td></tr>
+    <tr><td><code>Value getDate(...)</code></td><td>dia, mes</td></tr>
+    <tr><td><code>Value getFog(...)</code></td><td>densidad de la niebla</td></tr>
+    <tr><td><code>Value getLabel(...)</code></td><td>nombre visible (&quot;Tormenta&quot;)</td></tr>
+    <tr><td><code>Value getLatitude(...)</code></td><td>latitud</td></tr>
+    <tr><td><code>Value getRain(...)</code></td><td>lluvia 0..1</td></tr>
+    <tr><td><code>Value getSeason(...)</code></td><td>estacion actual</td></tr>
+    <tr><td><code>Value getSnow(...)</code></td><td>nevada 0..1</td></tr>
+    <tr><td><code>Value getSnowCover(...)</code></td><td>nieve acumulada 0..1</td></tr>
+    <tr><td><code>Value getSunDirection(...)</code></td><td>Vec3 hacia el sol</td></tr>
+    <tr><td><code>Value getTarget(...)</code></td><td>clima al que va la transicion</td></tr>
+    <tr><td><code>Value getTemperature(...)</code></td><td>grados C</td></tr>
+    <tr><td><code>Value getTime(...)</code></td><td>hora del dia</td></tr>
+    <tr><td><code>Value getTimeScale(...)</code></td><td>velocidad del tiempo</td></tr>
+    <tr><td><code>Value getWeather(...)</code></td><td></td></tr>
+    <tr><td><code>Value getWetness(...)</code></td><td>humedad de las superficies 0..1</td></tr>
+    <tr><td><code>Value getWind(...)</code></td><td>Vec3 del viento (m/s)</td></tr>
+    <tr><td><code>Value getWindDirection(...)</code></td><td>grados</td></tr>
+    <tr><td><code>Value getWindSpeed(...)</code></td><td>m/s con rachas</td></tr>
+    <tr><td><code>Value isNight(...)</code></td><td>el sol esta bajo el horizonte?</td></tr>
+    <tr><td><code>Value isTransitioning(...)</code></td><td>esta cambiando?</td></tr>
+    <tr><td><code>Value lightning(valor)</code></td><td>un rayo ya (distancia en m; sin ella al azar)</td></tr>
+    <tr><td><code>Value presets(...)</code></td><td>lista de climas</td></tr>
+    <tr><td><code>Value set(texto, valor)</code></td><td>cambia de clima en N segundos (Clear, Cloudy, Overcast, Foggy, LightRain, Rain, Storm, LightSnow, Snow, Blizzard, Sandstorm)</td></tr>
+    <tr><td><code>Value setAudio(activar, valor)</code></td><td>sonido de lluvia, viento y truenos</td></tr>
+    <tr><td><code>Value setDate(valor, valor2)</code></td><td>dia y mes (mueve el sol y la estacion)</td></tr>
+    <tr><td><code>Value setDayLength(valor)</code></td><td>minutos reales por dia (nil = el tiempo se para)</td></tr>
+    <tr><td><code>Value setLatitude(valor)</code></td><td>latitud en grados</td></tr>
+    <tr><td><code>Value setLightning(activar, valor)</code></td><td>rayos en las tormentas y su frecuencia</td></tr>
+    <tr><td><code>Value setPrecipitationDensity(valor)</code></td><td>menos gotas (rendimiento)</td></tr>
+    <tr><td><code>Value setRandom(activar, valor, valor2)</code></td><td>clima al azar (segundos min y max)</td></tr>
+    <tr><td><code>Value setSeason(texto)</code></td><td>estacion fija (&quot;auto&quot; = por la fecha)</td></tr>
+    <tr><td><code>Value setSnowCover(valor)</code></td><td>nieve acumulada al instante</td></tr>
+    <tr><td><code>Value setTime(valor)</code></td><td>hora del dia (0..24)</td></tr>
+    <tr><td><code>Value setTimeScale(valor)</code></td><td>velocidad del tiempo (1 = real, 0 = parado)</td></tr>
+    <tr><td><code>Value setWeather(texto, valor)</code></td><td>lo mismo que set</td></tr>
+    <tr><td><code>Value setWetness(valor, valor2)</code></td><td>humedad y charcos al instante</td></tr>
+    <tr><td><code>Value setWind(valor, valor2)</code></td><td>direccion (grados) y fuerza del viento</td></tr>
+    <tr><td><code>Value transition(...)</code></td><td>0..1 lo que lleva la transicion</td></tr>
+  </tbody>
+</table>

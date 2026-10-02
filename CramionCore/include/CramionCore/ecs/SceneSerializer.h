@@ -23,7 +23,9 @@
 
 namespace cramion::ecs {
 
-inline constexpr int kSceneFormatVersion = 1;
+// 2: la densidad volumetrica por defecto paso de 0.02 a 0.004 (las escenas
+// de la version 1 con el valor por defecto viejo se pasan al nuevo).
+inline constexpr int kSceneFormatVersion = 2;
 
 // Todo el mundo a texto JSON / de texto JSON (sustituye el contenido).
 std::string serializeWorld(const World& world);

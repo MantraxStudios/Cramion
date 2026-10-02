@@ -445,10 +445,11 @@ static ImportResult importModelTo(const std::filesystem::path& source,
         std::uint32_t missing = 0;
         std::size_t parts_done = 0;
         for (ModelData& part : content.parts) {
+            const std::size_t part_index = parts_done++;
             report(progress,
-                   0.7f + 0.15f * static_cast<float>(parts_done++) /
+                   0.7f + 0.15f * static_cast<float>(part_index) /
                               static_cast<float>(std::max<std::size_t>(content.parts.size(), 1)),
-                   "Incrustando texturas (" + std::to_string(parts_done) + "/" +
+                   "Incrustando texturas (" + std::to_string(part_index + 1) + "/" +
                        std::to_string(content.parts.size()) + ")");
             for (asset::MaterialData& material : part.materials) {
                 material.normal_map_directx = material.normal_map_directx || settings.directx_normals;

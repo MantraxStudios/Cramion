@@ -1,0 +1,171 @@
+<p>
+  Además de Lua, los scripts se pueden escribir en <strong class="text-white">C++</strong>, con
+  <strong class="text-white">toda la API de Lua</strong> disponible. Corren
+  <strong class="text-white">aislados en otro proceso</strong> (<code>CramionScriptHost.exe</code>): si un script falla
+  (puntero nulo, excepción, recursión infinita, memoria agotada, <code>abort()</code> o un bucle sin fin), el motor
+  <strong>no se cae</strong>. La Consola muestra el error con el archivo y la línea, ese script se desactiva hasta el
+  siguiente Play y el proceso arranca de nuevo para los demás.
+</p>
+<p>
+  No hay que instalar nada: el editor trae su propio compilador (<strong>clang++</strong> de llvm-mingw, en
+  <code>toolchain/</code>) y <strong>clangd</strong> para el IntelliSense. Si falta, se usa el LLVM o el Visual Studio
+  del sistema, o la ruta de la CVar <code>script.cpp.Compiler</code>.
+</p>
+
+<h3 id="primer-script">Un script</h3>
+<ol>
+  <li><em>Proyecto &gt; Crear &gt; Script C++</em> (o <strong>Nuevo script C++</strong> en el componente). Se pide el <strong>nombre</strong> (el de la clase) y se crean dos archivos, como en cualquier proyecto de C++: <code>Clase.h</code> (la clase y sus propiedades) y <code>Clase.cpp</code> (el código de sus métodos y <code>CRAMION_SCRIPT</code>). Se abre en el editor de código.</li>
+  <li><strong>Arrastra el <code>.cpp</code> o el <code>.h</code></strong> a un objeto (en la escena, la Jerarquía, el campo <em>Script</em> del componente o el botón <em>Add Component</em> del Inspector). Se pone el componente <strong>C++ Script</strong> con su clase: no se escribe nada. Si el archivo tiene varias clases, se elige en una lista.</li>
+  <li>Guarda (Ctrl+S): se compila solo. Las <code>Property&lt;T&gt;</code> salen en el Inspector con su control, como los campos públicos de Unity. En Play, al guardar se recarga al momento.</li>
+</ol>
+<pre><code>#include &lt;cramion/Script.h&gt;
+using namespace cramion;
+
+static CVar&lt;float&gt; g_salto("juego.Salto", 6.0f, "Altura de salto", CVarSaved);
+
+class Jugador : public Script {
+public:
+    Property&lt;float&gt; velocidad{this, "velocidad", 5.0f, Range(0, 20), Tooltip("Metros por segundo")};
+    Property&lt;Prefab&gt; bala{this, "bala"};                           // arrastrar un prefab
+    Property&lt;Entity&gt; objetivo{this, "objetivo"};                    // arrastrar un objeto de la escena
+    Property&lt;Entity&gt; luz{this, "luz", {}, Requires("Light")};       // solo objetos con Light
+    Property&lt;AudioClip&gt; disparo{this, "disparo", {}, Header("Sonido")};
+    Property&lt;int&gt; modo{this, "modo", 0, Options{"Andar", "Correr", "Volar"}};
+    Property&lt;std::vector&lt;Entity&gt;&gt; puntos{this, "puntos"};          // una lista
+
+    void update(float dt) override {
+        Vec3 mover{Input::axis("Horizontal"), 0.0f, -Input::axis("Vertical")};
+        entity().setMoveInput(mover * velocidad.get());              // Character Controller
+        if (Input::keyDown("Space")) entity().jump(g_salto);
+        if (Input::mouseButton(0, 1)) {
+            Scene::instantiate(bala, entity().position());           // la API de Lua, en C++
+            Audio::playOneShot(disparo);
+        }
+    }
+    void onCollisionEnter(const Collision&amp; c) override { Debug::log("choque con " + c.other.name()); }
+};
+CRAMION_SCRIPT(Jugador)</code></pre>
+
+<h3 id="propiedades">Propiedades en el Inspector</h3>
+<table>
+  <thead><tr><th>Tipo</th><th>Control</th></tr></thead>
+  <tbody>
+    <tr><td><code>bool</code>, <code>int</code>, <code>float</code>, <code>double</code>, <code>std::string</code></td><td>Casilla, número (con <code>Range(a, b)</code>: deslizador) y texto.</td></tr>
+    <tr><td><code>Vec2</code>, <code>Vec3</code>, <code>Color</code></td><td>Campos XY / XYZ y selector de color.</td></tr>
+    <tr><td><code>int</code> con <code>Options{...}</code>, o un <code>enum</code></td><td>Lista desplegable.</td></tr>
+    <tr><td><code>Entity</code> (con <code>Requires("Componente")</code>)</td><td>Soltar un objeto de la escena o la Jerarquía.</td></tr>
+    <tr><td><code>Prefab</code>, <code>Model</code>, <code>Material</code>, <code>SceneAsset</code>, <code>AnimatorController</code>, <code>AnimationClip</code>, <code>RenderTexture</code>, <code>EnvironmentAsset</code>, <code>StateMachineAsset</code></td><td>Soltar el asset desde Proyecto (o elegirlo).</td></tr>
+    <tr><td><code>Texture</code>, <code>AudioClip</code>, <code>LuaScript</code>, <code>ShaderFile</code>, <code>AnyFile</code></td><td>Soltar el archivo (imagen, sonido...) desde Proyecto.</td></tr>
+    <tr><td><code>std::vector&lt;T&gt;</code> de cualquiera de los anteriores</td><td>Lista con añadir, quitar y reordenar.</td></tr>
+  </tbody>
+</table>
+<p>
+  Opciones: <code>Range(min, max)</code>, <code>Tooltip("...")</code>, <code>Header("Grupo")</code>,
+  <code>Label("Nombre visible")</code>, <code>Options{...}</code>, <code>Requires("Light")</code>. Los valores
+  puestos en el Inspector se guardan con la escena y llegan al script antes de <code>awake</code>.
+</p>
+
+<p>Lo mismo separado en <code>.h</code> y <code>.cpp</code> (así lo crea la plantilla):</p>
+<pre><code>// Jugador.h
+#pragma once
+#include &lt;cramion/Script.h&gt;
+using namespace cramion;
+
+class Jugador : public Script {
+public:
+    Property&lt;float&gt; velocidad{this, "velocidad", 5.0f, Range(0, 20)};
+    void update(float dt) override;
+};
+
+// Jugador.cpp
+#include "Jugador.h"
+
+void Jugador::update(float dt) {
+    entity().translate(Vec3{0.0f, 0.0f, velocidad * dt});
+}
+
+CRAMION_SCRIPT(Jugador)</code></pre>
+
+<h3 id="editor">Editor de código e IntelliSense</h3>
+<p>
+  Los <code>.cpp</code> y <code>.h</code> se abren en el editor de código del motor con resaltado de C++ e
+  IntelliSense de <strong>clangd</strong> (el mismo análisis que el compilador):
+</p>
+<ul>
+  <li>Sugerencias al escribir, tras <code>.</code>, <code>-&gt;</code> y <code>::</code>, o con Ctrl+Espacio (Tab/Enter para aceptar).</li>
+  <li>Errores y avisos en vivo, subrayados en rojo/amarillo, sin compilar; el mensaje sale al pasar el ratón.</li>
+  <li>Información del símbolo bajo el ratón (tipo, parámetros, documentación).</li>
+  <li>Firma de la función al abrir <code>(</code> o escribir <code>,</code>, con el parámetro actual resaltado.</li>
+  <li>Ir a la definición: F12 o Ctrl+clic (también en el SDK, <code>cramion/Script.h</code>).</li>
+  <li>Cierra solos <code>(</code> <code>[</code> <code>{</code> <code>"</code> <code>'</code> y el <code>&lt;</code> de plantillas e <code>#include</code>; Enter entre <code>{}</code> deja la llave de cierre en su línea.</li>
+  <li><strong>Abrir cabecera (.h)</strong> / <strong>Abrir .cpp</strong>: el archivo de al lado con el mismo nombre (Alt+O).</li>
+  <li><strong>Formatear</strong> (Mayús+Alt+F) con <strong>clang-format</strong> (incluido), sin mover el cursor de su sitio en el código.</li>
+  <li><strong>Compilar</strong> (F7) y la <strong>Consola C++</strong> debajo: los errores de compilación (doble clic va a la línea), los <code>Debug::log</code> de los scripts, sus fallos en Play y una línea de comandos para CVars o Lua.</li>
+</ul>
+
+<h3 id="formato">Formato (Configuración del motor)</h3>
+<p>
+  En <em>Editar &gt; Configuración del motor &gt; Editor de código C++</em> (o el botón <em>Configuración</em> del
+  editor de C++):
+</p>
+<ul>
+  <li><strong>Formatear al guardar</strong>: activado, cada Ctrl+S deja el archivo con el estilo; desactivado, solo se formatea con el botón.</li>
+  <li><strong>Estilo</strong>: Cramion (el del motor), LLVM, Google, Microsoft, Mozilla, WebKit, Chromium o <em>Archivo</em> (el <code>.clang-format</code> de la carpeta del proyecto, el mismo que usan VS Code o CLion).</li>
+  <li><strong>Sangría</strong> y <strong>largo de línea</strong>, y un botón para guardar el estilo elegido como <code>.clang-format</code> del proyecto.</li>
+  <li>También: reiniciar clangd, el compilador en uso, compilar optimizado y ejecutar los scripts de C++ en Play.</li>
+</ul>
+<p>
+  Se guardan con el proyecto como CVars: <code>editor.cpp.FormatOnSave</code>, <code>editor.cpp.FormatStyle</code>,
+  <code>editor.cpp.IndentWidth</code> y <code>editor.cpp.ColumnLimit</code>.
+</p>
+<p>
+  El editor escribe <code>compile_commands.json</code> en la carpeta del proyecto, así que VS Code, CLion o cualquier
+  editor con clangd también entienden los scripts.
+</p>
+
+<h3 id="api">API</h3>
+<table>
+  <tbody>
+    <tr><td><code>Script</code></td><td><code>awake</code>, <code>start</code>, <code>update(dt)</code>, <code>fixedUpdate(dt)</code>, <code>lateUpdate(dt)</code>, <code>onDestroy</code>, <code>onCollisionEnter/Stay/Exit(Collision)</code>, <code>onTriggerEnter/Stay/Exit(Entity)</code>; <code>entity()</code>.</td></tr>
+    <tr><td><code>Entity</code></td><td><code>name</code>, <code>position/setPosition</code>, <code>rotation</code> (grados), <code>scale</code>, <code>forward/right/up</code>, <code>translate</code>, <code>rotate</code>, <code>lookAt</code>, <code>active/setActive</code>, <code>parent</code>, <code>destroy</code>; componentes: <code>has</code>, <code>add</code>, <code>component</code> (JSON), <code>setComponent</code>, <code>field/setField/getFloat/setFloat</code> ("Light", "intensity"); física: <code>velocity</code>, <code>addForce</code>; Character Controller: <code>move</code>, <code>isGrounded</code>, <code>setMoveInput</code>, <code>jump</code>, <code>setCrouch</code>; y todos los métodos de la entidad de Lua (animación, audio, navegación, IK...).</td></tr>
+    <tr><td>Toda la API de Lua</td><td><code>Audio</code>, <code>Scene</code>, <code>Input</code>, <code>Graphics</code>, <code>Navigation</code>, <code>Network</code>, <code>Http</code>, <code>Prefs</code>, <code>Random</code>, <code>Screen</code>, <code>Environment</code>, <code>Weather</code>, <code>Voxel</code>, <code>Fire</code>, <code>Fluid</code>, <code>DataPack</code>, <code>XR</code>... con los mismos nombres y argumentos (generada desde el motor en <code>cramion/Api.gen.h</code>): cada función lleva el nombre de sus parámetros y su descripción, que el IntelliSense enseña al escribir y al pasar el ratón. Los parámetros que no se pasan son opcionales. Los argumentos y el resultado son <code>Value</code>: números, texto, <code>Vec3</code>, entidades, listas, objetos y funciones (callbacks).</td></tr>
+    <tr><td><code>Mathf</code>, <code>Vec2</code>, <code>Vec3</code>, <code>Quat</code>, <code>Color</code></td><td>Matemáticas como las de Unity, calculadas en el script (sin llamar al motor): <code>Mathf::lerp/clamp/smoothDamp/moveTowards/deltaAngle/perlinNoise/fractalNoise...</code>, <code>Vec3::lerp/slerp/smoothDamp/angle/project/reflect/moveTowards</code>, <code>Vec3::up()/forward()...</code>, <code>Quat::euler/angleAxis/lookRotation/fromToRotation/slerp/rotateTowards</code>, <code>q.toEuler()</code>, <code>q * v</code>, <code>Color::hsv/lerp</code>.</td></tr>
+    <tr><td><code>Mesh</code>, <code>StateMachine</code></td><td>Mallas por código (<code>Mesh::cube(2.0f)</code>, <code>m.setVertex(...)</code>, <code>m.apply()</code>) y máquinas de estados (<code>StateMachine sm = entity().getStateMachine(); sm.go("Correr")</code>).</td></tr>
+    <tr><td><code>Lua::call/get/set/send</code></td><td>Llamar a cualquier función de Lua por su nombre (también las de tus scripts de Lua).</td></tr>
+    <tr><td><code>Physics::raycast</code>, <code>Time</code>, <code>Debug::log/warning/error</code>, <code>Vec2/Vec3/Color</code></td><td>Llamadas propias rápidas (las que no devuelven nada van en lote).</td></tr>
+    <tr><td><code>CVar&lt;T&gt;</code>, <code>CVars::get/set</code></td><td>Variables propias del juego (<code>bool</code>, <code>int</code>, <code>float</code>, <code>double</code>, <code>std::string</code>) y acceso a las del motor.</td></tr>
+  </tbody>
+</table>
+
+<h3 id="aislamiento">Aislamiento y límites</h3>
+<table>
+  <thead><tr><th>CVar</th><th>Qué hace</th></tr></thead>
+  <tbody>
+    <tr><td><code>script.cpp.TimeoutMs</code></td><td>Tiempo máximo de una llamada (2000 ms). Si se pasa (bucle infinito), se corta.</td></tr>
+    <tr><td><code>script.cpp.MemoryLimitMB</code></td><td>Memoria máxima del proceso de los scripts (1024 MB, con un Job Object de Windows). Al pasarse, las reservas fallan (<code>std::bad_alloc</code>).</td></tr>
+    <tr><td><code>script.cpp.MaxRestarts</code></td><td>Veces que se rearranca el proceso en una sesión antes de rendirse.</td></tr>
+    <tr><td><code>script.cpp.Optimize</code>, <code>script.cpp.Compiler</code>, <code>script.cpp.Enabled</code></td><td>Compilar optimizado, qué compilador usar, y apagar los scripts de C++.</td></tr>
+  </tbody>
+</table>
+<p>
+  Cada llamada de un script al motor es un mensaje entre procesos (unos microsegundos): para trabajo pesado conviene
+  calcular en el script y llamar al motor lo justo. Los scripts de C++ funcionan en Windows (en Android no se ejecutan).
+</p>
+
+<h3 id="cvars">Variables (CVars)</h3>
+<p>
+  Las <strong>CVars</strong> son variables de configuración con nombre, como las de Unreal o id Tech: tipo, valor por
+  defecto, límites, descripción y banderas (<em>guardada</em> en <code>ProjectSettings/CVars.json</code>, <em>solo
+  lectura</em>, <em>truco</em>). Las declara el motor (memoria de los scripts, tiempos...), los scripts de C++
+  (<code>CVar&lt;T&gt;</code>) y Lua (<code>CVar.register</code>).
+</p>
+<ul>
+  <li><em>Ventana &gt; Variables (CVars) y memoria</em>: todas, con filtro, para editarlas o volver al valor por defecto, y la memoria del editor, del equipo, de la VRAM y del proceso de scripts.</li>
+  <li>Consola (la línea de comandos de Scripts): <code>nombre</code> muestra el valor, <code>nombre valor</code> lo cambia, <code>reset nombre</code>, <code>cvars filtro</code> lista.</li>
+  <li>Lua: <code>CVar.get(nombre)</code>, <code>CVar.set(nombre, valor)</code>, <code>CVar.register(nombre, defecto, descripcion, guardada)</code>, <code>CVar.list(filtro)</code>, <code>CVar.exists(nombre)</code>.</li>
+  <li>MCP: <code>cvar_list</code>, <code>cvar_set</code> y <code>cpp_compile</code> (compila y devuelve errores; también crea scripts).</li>
+</ul>
+<p>Desde C++ en el motor:</p>
+<pre><code>static cvar::CVar&lt;int&gt; g_pool("mem.PoolMB", 256, "Tamano del pool", cvar::Saved, 16, 4096);
+if (g_pool &gt; 512) ...                 // lectura atomica, desde cualquier hilo
+g_pool.onChanged([](cvar::CVarBase&amp;) { /* reajustar */ });</code></pre>

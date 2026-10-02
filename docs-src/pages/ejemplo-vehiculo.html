@@ -1,30 +1,43 @@
-<p class="file">Coche.lua</p>
-      <pre><code class="language-lua">local Coche = { properties = { respuesta = 3.0 } }
+<p>En una entidad con Rigidbody, Vehicle y ruedas con WheelCollider. Muestra la velocidad en un UIText (arrástralo al Inspector).</p>
+<p class="file">Assets/Scripts/Coche.h</p>
+<pre><code class="language-cpp">#pragma once
+#include &lt;cramion/Script.h&gt;
+using namespace cramion;
 
-function Coche:Start()
-    self.giro = 0
-    self.hud = Scene.find("Velocimetro")
-end
+class Coche : public Script {
+public:
+    Property&lt;float&gt; respuesta{this, &quot;respuesta&quot;, 3.0f, Tooltip(&quot;Lo rapido que gira el volante&quot;)};
+    Property&lt;Entity&gt; velocimetro{this, &quot;velocimetro&quot;, {}, Requires(&quot;UIText&quot;)};
 
-function Coche:Update(dt)
-    local acelerador = Input.getAxis("Vertical")
-    local objetivo = Input.getAxis("Horizontal")
-    -- Volante progresivo: no gira de golpe
-    self.giro = Mathf.moveTowards(self.giro, objetivo, self.respuesta * dt)
+    void update(float dt) override;
 
-    local freno = Input.getKey("s") and self.entity.speed > 5 and 1 or 0
-    local mano = Input.getKey("space") and 1 or 0
-    self.entity:setVehicleInput(acelerador, self.giro, freno, mano)
+private:
+    float giro = 0.0f;
+};</code></pre>
+<p class="file">Assets/Scripts/Coche.cpp</p>
+<pre><code class="language-cpp">#include &quot;Coche.h&quot;
 
-    if self.hud then
-        self.hud.text = string.format("%3d km/h   %4d rpm   marcha %d",
-            math.floor(self.entity.speed), math.floor(self.entity.rpm), self.entity.gear)
-    end
+#include &lt;cstdio&gt;
 
-    if Input.getKeyDown("r") then   -- enderezar
-        self.entity.rotation = Vec3(0, self.entity.rotation.y, 0)
-        self.entity.position = self.entity.position + Vec3(0, 1, 0)
-    end
-end
+void Coche::update(float dt) {
+    const float acelerador = Input::axis(&quot;Vertical&quot;);
+    // Volante progresivo: no gira de golpe.
+    giro = Mathf::moveTowards(giro, Input::axis(&quot;Horizontal&quot;), respuesta * dt);
+    const float velocidad = entity().speed();
+    const float freno = Input::key(&quot;S&quot;) &amp;&amp; velocidad &gt; 5.0f ? 1.0f : 0.0f;
+    const float mano = Input::key(&quot;Space&quot;) ? 1.0f : 0.0f;
+    entity().setVehicleInput(acelerador, giro, freno, mano);
 
-return Coche</code></pre>
+    if (velocimetro.get()) {
+        char texto[96];
+        std::snprintf(texto, sizeof(texto), &quot;%3d km/h   %4d rpm   marcha %d&quot;, static_cast&lt;int&gt;(velocidad),
+                      static_cast&lt;int&gt;(entity().rpm().asFloat()), entity().gear().asInt());
+        velocimetro-&gt;setText(texto);
+    }
+    if (Input::keyDown(&quot;R&quot;)) {  // enderezar
+        entity().setRotation(Vec3{0.0f, entity().rotation().y, 0.0f});
+        entity().translate(Vec3::up());
+    }
+}
+
+CRAMION_SCRIPT(Coche)</code></pre>

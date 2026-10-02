@@ -27,6 +27,7 @@ void EditorApp::applyOriginShift(const Vec3& offset, bool move_world) {
     cinematics_.shiftOrigin(offset);
     audio_.shiftOrigin(offset);
     if (playing()) scripts_.shiftOrigin(offset);
+    if (playing()) cpp_scripts_.shiftOrigin(offset);
     renderer_.shiftOrigin(offset);
     // La camara del editor, con el mundo (misma posicion real).
     scene::Camera& camera = scene_.camera();

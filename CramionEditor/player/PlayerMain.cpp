@@ -22,6 +22,8 @@
 #include "ProfilerOverlay.h"
 #include "UiRenderer.h"
 
+#include <CramionCore/cvar/CVar.h>
+#include <CramionCore/scripting/CppScripts.h>
 #include <CramionCore/CramionCore.h>
 #include <CramionCore/ecs/FloatingOrigin.h>
 #include <CramionCore/project/DataPack.h>
@@ -34,6 +36,7 @@
 #include <CramionFX/CramionFX.h>
 
 #include <imgui.h>
+#include <nlohmann/json.hpp>
 #if defined(_WIN32)
 #include <imgui_impl_win32.h>
 #else
@@ -603,6 +606,31 @@ int runPlayer() {
         scripts.setDataPackJournal(project->libraryFolder() / "DataPacks.journal");
         scripts.setPhysics(&physics);
         scripts.setAudio(&audio);
+        // CVars del proyecto (sin trucos en el juego) y los scripts de C++:
+        // la DLL compilada al exportar, en scripts/ junto al ejecutable.
+        cvar::Registry::instance().setCheatsAllowed(false);
+        cvar::Registry::instance().load(project->settingsFolder() / "CVars.json");
+        scripting::CppScriptSystem cpp_scripts;
+        cpp_scripts.setAssetsRoot(project->assetsFolder());
+        cpp_scripts.setPhysics(&physics);
+        cpp_scripts.setLuaBridge(&scripts);  // toda la API de Lua desde C++
+        cpp_scripts.setAssetPathResolver([&database, &project](const Uuid& uuid) -> std::string {
+            const std::optional<assets::AssetInfo> info = database.find(uuid);
+            if (!info || info->path.empty()) return {};
+            const std::filesystem::path rel =
+                info->path.is_absolute() ? info->path.lexically_relative(project->assetsFolder()) : info->path;
+            const std::u8string text = rel.generic_u8string();
+            return std::string(text.begin(), text.end());
+        });
+#if defined(_WIN32)
+        {
+            wchar_t exe_buffer[MAX_PATH];
+            GetModuleFileNameW(nullptr, exe_buffer, MAX_PATH);
+            const std::filesystem::path game_dll = std::filesystem::path(exe_buffer).parent_path() / "scripts" / "game_scripts.dll";
+            std::error_code dll_error;
+            if (std::filesystem::exists(game_dll, dll_error)) cpp_scripts.usePrebuilt(game_dll);
+        }
+#endif
         // Navegacion: ajustes del proyecto y la misma geometria que la fisica.
         navigation::NavigationSettings nav_settings;
         navigation::loadNavigationSettings(project->settingsFolder() / "Navigation.json", nav_settings);
@@ -770,6 +798,7 @@ int runPlayer() {
                 case Stage::Done: break;
                 case Stage::Scene: {
                     scripts.stop();
+                    cpp_scripts.stop();
                     audio.stop();
                     game_ui.reset();
                     physics.stop();
@@ -824,13 +853,23 @@ int runPlayer() {
                         load.frames = 0;
                     }
                     break;
-                case Stage::Upload:
+                case Stage::Upload: {
                     // Primero un frame con "Subiendo a la GPU" en pantalla.
                     if (load.frames++ == 0) break;
-                    sync.sync(world, scene, renderer, 0.0f, sync_options);
+                    // Con el streaming cada sincronizacion sube unos milisegundos:
+                    // la pantalla de carga sigue (en tandas de 250 ms) hasta que
+                    // todo este en la GPU; despues, lo que se instancie en el
+                    // juego llega poco a poco sin tirones.
+                    const auto upload_start = std::chrono::steady_clock::now();
+                    do {
+                        sync.sync(world, scene, renderer, 0.0f, sync_options);
+                    } while (renderer.uploadedModelCount() < scene.models().size() &&
+                             std::chrono::steady_clock::now() - upload_start < std::chrono::milliseconds(250));
+                    if (renderer.uploadedModelCount() < scene.models().size()) break;
                     load.stage = Stage::Systems;
                     load.frames = 0;
                     break;
+                }
                 case Stage::Systems: {
                     if (load.frames++ == 0) break;
                     physics.start(world);
@@ -845,6 +884,7 @@ int runPlayer() {
                     }
                     audio.start(world);
                     scripts.start(world);
+                    if (!cpp_scripts.dll().empty()) cpp_scripts.start(world);
                     load.stage = Stage::Done;
                     std::cout << "[Juego] Escena lista\n";
                     break;
@@ -1055,9 +1095,21 @@ int runPlayer() {
                     physics.driveVehiclesWithKeyboard(world, down(dm::Key::W, dm::Key::Up), down(dm::Key::S, dm::Key::Down),
                                                       down(dm::Key::A, dm::Key::Left), down(dm::Key::D, dm::Key::Right),
                                                       input.isKeyDown(dm::Key::Space));
+                    physics::PhysicsSystem::CharacterKeys keys;
+                    keys.forward = down(dm::Key::W, dm::Key::Up);
+                    keys.back = down(dm::Key::S, dm::Key::Down);
+                    keys.left = down(dm::Key::A, dm::Key::Left);
+                    keys.right = down(dm::Key::D, dm::Key::Right);
+                    keys.run = down(dm::Key::LeftShift, dm::Key::RightShift);
+                    keys.jump = input.isKeyDown(dm::Key::Space);
+                    keys.crouch = down(dm::Key::C, dm::Key::LeftControl);
+                    physics.driveCharactersWithKeyboard(world, keys);
                 }
                 scripts.fixedUpdate(world, physics_settings.fixed_step, steps);
                 scripts.update(world, dt);
+                cpp_scripts.setInput(game_ui.typing() ? nullptr : &input);
+                cpp_scripts.fixedUpdate(world, physics_settings.fixed_step, steps);
+                cpp_scripts.update(world, dt);
                 cinematics.update(world, dt, true);
                 // Origen flotante: si la camara se alejo mucho del (0,0,0), todo
                 // se desplaza para que vuelva cerca (nada tiembla a 100 km).
@@ -1073,6 +1125,7 @@ int runPlayer() {
                         cinematics.shiftOrigin(*offset);
                         audio.shiftOrigin(*offset);
                         scripts.shiftOrigin(*offset);
+                        cpp_scripts.shiftOrigin(*offset);
                         renderer.shiftOrigin(*offset);
                         orbit.target = orbit.target - *offset;
                         std::cout << "[Juego] Origen del mundo desplazado; origen = (" << world.origin().x << ", "
@@ -1093,6 +1146,13 @@ int runPlayer() {
                         case ui::UiEvent::Kind::Number: scripts.callMethod(e.target, e.method, e.number); break;
                         case ui::UiEvent::Kind::Text: scripts.callMethod(e.target, e.method, e.text); break;
                         case ui::UiEvent::Kind::Bool: scripts.callMethod(e.target, e.method, e.flag); break;
+                    }
+                    // Y al script de C++ del objeto (Script::on("OnJugar", ...) / onMessage).
+                    switch (e.kind) {
+                        case ui::UiEvent::Kind::Click: cpp_scripts.sendMessage(e.target, e.method, cpp_scripts.entityJson(e.source)); break;
+                        case ui::UiEvent::Kind::Number: cpp_scripts.sendMessage(e.target, e.method, nlohmann::json(e.number).dump()); break;
+                        case ui::UiEvent::Kind::Text: cpp_scripts.sendMessage(e.target, e.method, nlohmann::json(e.text).dump()); break;
+                        case ui::UiEvent::Kind::Bool: cpp_scripts.sendMessage(e.target, e.method, e.flag ? "true" : "false"); break;
                     }
                 }
                 editor::drawUiList(ImGui::GetBackgroundDrawList(), ImVec2(0, 0), game_ui.drawList(), imgui, project->assetsFolder());
@@ -1170,6 +1230,7 @@ int runPlayer() {
         // Cerrado a media carga: el hilo de los modelos termina antes de nada.
         if (load.worker.valid()) load.worker.wait();
         scripts.stop();
+        cpp_scripts.stop();
         scripts.unmountDataPacks();  // lo montado con DataPack.load sale de los assets del juego
         scripts.shutdownNetwork();  // avisa a los demas jugadores
         audio.stop();

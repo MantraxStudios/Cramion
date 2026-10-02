@@ -9,6 +9,7 @@
 #include "UiRenderer.h"
 
 #include <imgui.h>
+#include <nlohmann/json.hpp>
 
 #include <algorithm>
 #include <cmath>
@@ -30,6 +31,13 @@ void EditorApp::drawGameUi(ImVec2 origin, ImVec2 size) {
             case ui::UiEvent::Kind::Number: scripts_.callMethod(e.target, e.method, e.number); break;
             case ui::UiEvent::Kind::Text: scripts_.callMethod(e.target, e.method, e.text); break;
             case ui::UiEvent::Kind::Bool: scripts_.callMethod(e.target, e.method, e.flag); break;
+        }
+        // Y al script de C++ del objeto (Script::on("OnJugar", ...) / onMessage).
+        switch (e.kind) {
+            case ui::UiEvent::Kind::Click: cpp_scripts_.sendMessage(e.target, e.method, cpp_scripts_.entityJson(e.source)); break;
+            case ui::UiEvent::Kind::Number: cpp_scripts_.sendMessage(e.target, e.method, nlohmann::json(e.number).dump()); break;
+            case ui::UiEvent::Kind::Text: cpp_scripts_.sendMessage(e.target, e.method, nlohmann::json(e.text).dump()); break;
+            case ui::UiEvent::Kind::Bool: cpp_scripts_.sendMessage(e.target, e.method, e.flag ? "true" : "false"); break;
         }
     }
     ImDrawList* draw = ImGui::GetWindowDrawList();

@@ -1,19 +1,35 @@
-<pre><code class="language-lua">local Terreno = { properties = { tamano = 60.0, altura = 4.0 } }
+<p>Una malla creada por código con su material y un MeshCollider para que los Rigidbody choquen con ella.</p>
+<p class="file">Assets/Scripts/Terreno.h</p>
+<pre><code class="language-cpp">#pragma once
+#include &lt;cramion/Script.h&gt;
+using namespace cramion;
 
-function Terreno:Start()
-    self.malla = Mesh.plane(self.tamano, self.tamano, 80, 80)
-    local v = self.malla.vertices
-    for i = 1, #v do
-        local p = v[i]
-        p.y = (math.sin(p.x * 0.15) + math.cos(p.z * 0.12)) * self.altura * 0.5
-        v[i] = p
-    end
-    self.malla.vertices = v            -- sube la malla
-    self.malla:recalculateNormals()
-    self.malla:recalculateTangents()
-    self.malla:setMaterial(0, { color = Vec3(0.35, 0.6, 0.25), roughness = 0.9 })
-    self.entity.mesh = self.malla
-    self.entity:addComponent("MeshCollider")   -- los Rigidbody chocan con ella
-end
+class Terreno : public Script {
+public:
+    Property&lt;float&gt; tamano{this, &quot;tamano&quot;, 60.0f};
+    Property&lt;float&gt; altura{this, &quot;altura&quot;, 4.0f};
 
-return Terreno</code></pre>
+    void start() override;
+};</code></pre>
+<p class="file">Assets/Scripts/Terreno.cpp</p>
+<pre><code class="language-cpp">#include &quot;Terreno.h&quot;
+
+void Terreno::start() {
+    Mesh malla = Mesh::plane(tamano.get(), tamano.get(), 80, 80);
+    const Value vertices = malla.vertices();
+    Values nuevos;
+    nuevos.reserve(vertices.size());
+    for (std::size_t i = 0; i &lt; vertices.size(); ++i) {
+        Vec3 p = vertices[i];
+        p.y = (Mathf::sin(p.x * 0.15f) + Mathf::cos(p.z * 0.12f)) * altura * 0.5f;
+        nuevos.push_back(p);
+    }
+    malla.setVertices(nuevos);  // sube la malla
+    malla.recalculateNormals();
+    malla.recalculateTangents();
+    malla.setMaterial(0, Value{{&quot;color&quot;, Vec3{0.35f, 0.6f, 0.25f}}, {&quot;roughness&quot;, 0.9f}});
+    entity().setMesh(malla);
+    entity().add(&quot;MeshCollider&quot;);  // los Rigidbody chocan con ella
+}
+
+CRAMION_SCRIPT(Terreno)</code></pre>

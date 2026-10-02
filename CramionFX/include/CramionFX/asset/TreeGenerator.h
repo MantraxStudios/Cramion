@@ -64,7 +64,8 @@ inline constexpr std::uint32_t kTreeLayerBirchLeaves = 6;  // ramita de abedul
 inline constexpr std::uint32_t kTreeLayerWillowLeaves = 7; // cordon colgante de sauce
 inline constexpr std::uint32_t kTreeLayerFirNeedles = 8;   // rama plana de abeto
 inline constexpr std::uint32_t kTreeLayerPalmBark = 9;     // anillos del estipe
-inline constexpr std::uint32_t kTreeLayerCount = 10;
+inline constexpr std::uint32_t kTreeLayerPineShoot = 10;   // brote de pino de lado (borlas de cerca)
+inline constexpr std::uint32_t kTreeLayerCount = 11;
 
 // Vertice de los arboles (64 bytes).
 struct TreeVertex {

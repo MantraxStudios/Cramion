@@ -71,18 +71,29 @@ float fbm(float u, float v, int cells_x, int cells_y, int octaves, std::uint32_t
     return sum / total;
 }
 
-// Voronoi repetible: `x` en [0, nx), `y` en [0, ny). `stretch_y` < 1 encoge la
-// distancia vertical (celdas mas altas que anchas).
-struct VCell {
-    float f1 = 9.0f;
-    float f2 = 9.0f;
+// Voronoi con la distancia al borde de la celda (al bisector con la vecina
+// mas cercana) medida en (u, v), no F2 - F1: con celdas estiradas, F2 - F1
+// hacia los bordes horizontales muy anchos (bandas oscuras borrosas). `edge`
+// en unidades de la textura (la repeticion entera = 1; es cuadrada) y
+// `horizontal`: cuanto mira hacia v el borde mas cercano (1 = borde horizontal).
+struct VEdge {
+    float edge = 1.0f;
+    float horizontal = 0.0f;
     int id = 0;
 };
-VCell voronoi(float x, float y, int nx, int ny, std::uint32_t seed, float stretch_y) {
-    VCell r;
+VEdge voronoiEdge(float x, float y, int nx, int ny, std::uint32_t seed, float stretch_y) {
     const int cx = static_cast<int>(std::floor(x));
     const int cy = static_cast<int>(std::floor(y));
     const int reach_y = stretch_y < 0.6f ? 3 : 2;
+    struct Site {
+        float dx;
+        float dy;
+        int id;
+    };
+    std::array<Site, 35> sites{};
+    int count = 0;
+    int best = 0;
+    float best_d = 1e9f;
     for (int oy = -reach_y; oy <= reach_y; ++oy) {
         for (int ox = -2; ox <= 2; ++ox) {
             const int gx = cx + ox;
@@ -91,18 +102,43 @@ VCell voronoi(float x, float y, int nx, int ny, std::uint32_t seed, float stretc
             const int wy = ((gy % ny) + ny) % ny;
             const float qx = static_cast<float>(gx) + 0.1f + 0.8f * hashF(wx, wy, seed);
             const float qy = static_cast<float>(gy) + 0.1f + 0.8f * hashF(wx, wy, seed + 1U);
-            const float dx = x - qx;
-            const float dy = (y - qy) * stretch_y;
-            const float d = std::sqrt(dx * dx + dy * dy);
-            if (d < r.f1) {
-                r.f2 = r.f1;
-                r.f1 = d;
-                r.id = wy * nx + wx;
-            } else if (d < r.f2) {
-                r.f2 = d;
+            const Site site{qx - x, (qy - y) * stretch_y, wy * nx + wx};
+            const float d = site.dx * site.dx + site.dy * site.dy;
+            if (d < best_d) {
+                best_d = d;
+                best = count;
             }
+            sites[static_cast<std::size_t>(count++)] = site;
         }
     }
+    VEdge r;
+    const Site& closest = sites[static_cast<std::size_t>(best)];
+    r.id = closest.id;
+    // Metrica (x, y * stretch) = (u * nx, v * ny * stretch): un bisector con
+    // normal n tiene en (u, v) la normal (nx n.x, ny stretch n.y).
+    const float sx = static_cast<float>(nx);
+    const float sy = static_cast<float>(ny) * stretch_y;
+    float edge = 1e9f;
+    for (int k = 0; k < count; ++k) {
+        if (k == best) continue;
+        const Site& o = sites[static_cast<std::size_t>(k)];
+        const float ex = o.dx - closest.dx;
+        const float ey = o.dy - closest.dy;
+        const float len = std::sqrt(ex * ex + ey * ey);
+        if (len < 1e-6f) continue;
+        const float mx = (o.dx + closest.dx) * 0.5f;
+        const float my = (o.dy + closest.dy) * 0.5f;
+        const float metric = (mx * ex + my * ey) / len;  // > 0: el punto esta en la celda de `closest`
+        const float gx = sx * ex / len;
+        const float gy = sy * ey / len;
+        const float g = std::sqrt(gx * gx + gy * gy);
+        const float d = metric / std::max(g, 1e-6f);
+        if (d < edge) {
+            edge = d;
+            r.horizontal = std::abs(gy) / std::max(g, 1e-6f);
+        }
+    }
+    r.edge = std::max(edge, 0.0f);
     return r;
 }
 
@@ -152,17 +188,17 @@ KindRules rulesFor(TreeKind kind) {
             r.levels = 2; r.trunk_radius = 0.024f; r.crown_start = 0.56f;
             r.branches = {30, 9, 0}; r.angle = {80.0f, 48.0f, 0.0f}; r.length = {0.27f, 0.45f, 0.0f};
             r.droop = {0.16f, 0.06f, 0.0f}; r.up = {0.12f, 0.4f, 0.0f}; r.gnarl = 0.45f; r.shape = 3; r.whorl = 5;
-            r.style = kPineTufts; r.leaf_size = 0.42f; r.leaf_aspect = 0.75f; r.leaves = 4.6f; r.leaf_start = 0.3f;
+            r.style = kPineTufts; r.leaf_size = 0.55f; r.leaf_aspect = 1.0f; r.leaves = 3.8f; r.leaf_start = 0.22f;
             r.card_curl = 0.06f; r.card_fold = 0.0f;
             r.leaf_layer = kTreeLayerNeedles; r.bark_layer = kTreeLayerPineBark; r.bark_tile = 0.75f;
-            r.flare = 0.35f; r.buttress = 0.3f; r.roots = 4; r.dead = 1.1f; r.moss = 0.08f; r.translucency = 0.45f;
+            r.flare = 0.35f; r.buttress = 0.3f; r.roots = 4; r.dead = 1.1f; r.moss = 0.08f; r.translucency = 0.55f;
             break;
         case TreeKind::Fir:
             r.levels = 2; r.trunk_radius = 0.021f; r.crown_start = 0.06f;
             r.branches = {75, 11, 0}; r.angle = {98.0f, 58.0f, 0.0f}; r.length = {0.31f, 0.32f, 0.0f};
             r.droop = {0.28f, 0.12f, 0.0f}; r.up = {0.07f, 0.1f, 0.0f}; r.gnarl = 0.12f; r.shape = 0; r.whorl = 5;
             r.planar = true;
-            r.style = kFirSprays; r.leaf_size = 0.5f; r.leaf_aspect = 0.8f; r.leaves = 3.4f; r.leaf_start = 0.04f;
+            r.style = kFirSprays; r.leaf_size = 0.58f; r.leaf_aspect = 0.9f; r.leaves = 4.2f; r.leaf_start = 0.04f;
             r.card_curl = 0.12f; r.card_fold = 0.1f;
             r.leaf_layer = kTreeLayerFirNeedles; r.bark_layer = kTreeLayerPineBark; r.bark_tile = 0.6f;
             r.flare = 0.45f; r.buttress = 0.35f; r.roots = 4; r.dead = 0.5f; r.moss = 0.15f; r.translucency = 0.4f;
@@ -257,6 +293,7 @@ struct Card {
     std::uint32_t layer = kTreeLayerLeaves;
     float curl = 0.15f;
     float fold = 0.15f;
+    int detail = 0;  // 0 en todos los niveles; 1 solo de cerca (nivel 0); 2 solo lejos (1 y 2)
 };
 
 struct Builder {
@@ -435,24 +472,38 @@ struct Builder {
 
     // Tubo organico: curva de Catmull-Rom, seccion irregular, ensanche,
     // contrafuertes en el pie del tronco y UV sin estirar.
-    void tube(const Branch& b, int sides, int subdiv) {
-        const std::size_t n = b.points.size();
+    // `stride`: lejos se toma un punto del esqueleto de cada `stride` (la
+    // curva con menos tramos; los extremos siempre).
+    void tube(const Branch& b, int sides, int subdiv, int stride = 1) {
+        std::vector<Vec3> skeleton;
+        std::vector<float> skeleton_radii;
+        const std::size_t total = b.points.size();
+        const auto step = static_cast<std::size_t>(std::max(stride, 1));
+        for (std::size_t i = 0; i < total; i += step) {
+            skeleton.push_back(b.points[i]);
+            skeleton_radii.push_back(b.radii[i]);
+        }
+        if (total > 0 && (total - 1) % step != 0) {
+            skeleton.push_back(b.points.back());
+            skeleton_radii.push_back(b.radii.back());
+        }
+        const std::size_t n = skeleton.size();
         if (n < 2) return;
         std::vector<Vec3> pts;
         std::vector<float> rad;
         for (std::size_t i = 0; i + 1 < n; ++i) {
-            const Vec3& p0 = b.points[i == 0 ? 0 : i - 1];
-            const Vec3& p1 = b.points[i];
-            const Vec3& p2 = b.points[i + 1];
-            const Vec3& p3 = b.points[std::min(i + 2, n - 1)];
+            const Vec3& p0 = skeleton[i == 0 ? 0 : i - 1];
+            const Vec3& p1 = skeleton[i];
+            const Vec3& p2 = skeleton[i + 1];
+            const Vec3& p3 = skeleton[std::min(i + 2, n - 1)];
             for (int s = 0; s < subdiv; ++s) {
                 const float f = static_cast<float>(s) / static_cast<float>(subdiv);
                 pts.push_back(catmull(p0, p1, p2, p3, f));
-                rad.push_back(mixF(b.radii[i], b.radii[i + 1], f));
+                rad.push_back(mixF(skeleton_radii[i], skeleton_radii[i + 1], f));
             }
         }
-        pts.push_back(b.points.back());
-        rad.push_back(b.radii.back());
+        pts.push_back(skeleton.back());
+        rad.push_back(skeleton_radii.back());
         const std::size_t rows = pts.size();
 
         const bool trunk = b.level == 0 && !b.root;
@@ -541,11 +592,26 @@ struct Builder {
                     extra = rules.moss * clamp01(upf * 0.75f + foot * 0.9f) * (b.level >= 3 ? 0.3f : 1.0f);
                 }
                 if (b.dead) extra = std::max(extra, 0.2f);
+                // Corteza joven (0..1): lisa en las ramas finas; en el pino,
+                // ademas, la parte alta del tronco (anaranjada, en laminas).
+                // (El abeto comparte la textura del pino pero no se vuelve
+                // naranja: el shader distingue el pino por esto.)
+                float young = 0.0f;
+                if (species.kind == TreeKind::Fir) {
+                    young = 0.0f;
+                } else if (trunk) {
+                    if (species.kind == TreeKind::Pine) {
+                        young = smoothstepF(rules.crown_start * h * 0.7f, rules.crown_start * h * 1.05f, p.y);
+                    }
+                } else if (!b.root && !b.dead) {
+                    young = 1.0f - smoothstepF(h * 0.0025f, h * 0.0065f, rad[i]);
+                    if (species.kind == TreeKind::Pine) young = std::max(young, 0.6f);
+                }
                 const float wind = windAt(p.y) * (b.root ? 0.0f : 1.0f);
                 const float u = static_cast<float>(k) / static_cast<float>(sides) * static_cast<float>(repeats);
                 mesh.vertices.push_back({p.x, p.y, p.z, nrm.x, nrm.y, nrm.z, pack4(species.bark_color.x * 0.5f, species.bark_color.y * 0.5f, species.bark_color.z * 0.5f, ao),
                                          wind, u, vcoord[i], static_cast<float>(layer), 0.0f, pivot.x, pivot.y, pivot.z,
-                                         pack4(b.phase, flex * 0.6f, 0.0f, extra)});
+                                         pack4(b.phase, flex * 0.6f, young, extra)});
             }
         }
         for (std::uint32_t i = 0; i + 1 < rows; ++i) {
@@ -598,7 +664,7 @@ struct Builder {
             root.root = true;
             root.pivot = -1;
             root.seed = 1000U + static_cast<std::uint32_t>(j) * 77U;
-            tube(root, lod == 0 ? 10 : 5, lod == 0 ? 2 : 1);
+            tube(root, lod == 0 ? 8 : 5, lod == 0 ? 2 : 1);
         }
     }
 
@@ -688,6 +754,65 @@ struct Builder {
         return c;
     }
 
+    // Borla de pino. Lejos (niveles 1 y 2): dos tarjetas cruzadas con el
+    // abanico de brotes (barato; a esa distancia se ve igual). Cerca (nivel
+    // 0): los brotes de verdad, cada uno un cepillo de agujas (dos tarjetas
+    // estrechas cruzadas) que sale en su direccion desde la punta de la
+    // ramita: un volumen, no un abanico plano.
+    void pineTuft(std::mt19937& r, const Vec3& base, const Vec3& dir, float size, float keep, const Branch& b) {
+        const Vec3 up{0.0f, 1.0f, 0.0f};
+        Vec3 x;
+        Vec3 y;
+        perpendiculars(dir, x, y);
+        const float roll = random(r, 0.0f, kPi);
+        for (int q = 0; q < 2; ++q) {
+            const float rr = roll + static_cast<float>(q) * kPi * 0.5f;
+            Card c = makeCard(r, base - dir * (size * 0.08f), dir, x * std::cos(rr) + y * std::sin(rr), size, b);
+            c.keep = keep;
+            c.detail = 2;
+            cards.push_back(c);
+        }
+        // Brotes cortos y gordos (agujas de 5-7 cm en un brote de ~20 cm: un
+        // cilindro esponjoso) que salen a lo largo de la punta de la ramita y
+        // en todas direcciones: juntos son una bola de agujas, no una mano.
+        const int shoots = 7;
+        const float az0 = random(r, 0.0f, 2.0f * kPi);
+        for (int k = 0; k < shoots; ++k) {
+            Vec3 sdir;
+            float length;
+            Vec3 start = base;
+            if (k == 0) {
+                // El brote guia, hacia fuera y algo hacia arriba.
+                sdir = core::normalize(dir + up * 0.25f);
+                length = size * 0.42f;
+                start = base + dir * (size * 0.12f);
+            } else {
+                // Los demas, alrededor (algunos de lado y alguno algo hacia
+                // abajo), curvados hacia la luz.
+                const float az = az0 + static_cast<float>(k - 1) * (2.0f * kPi / static_cast<float>(shoots - 1)) + random(r, -0.35f, 0.35f);
+                const float tilt = random(r, 0.45f, 1.35f);
+                sdir = core::normalize(dir * std::cos(tilt) + (x * std::cos(az) + y * std::sin(az)) * std::sin(tilt) + up * 0.25f);
+                length = size * random(r, 0.28f, 0.36f);
+                start = base + dir * (size * random(r, -0.06f, 0.18f));
+            }
+            Vec3 a;
+            Vec3 bb;
+            perpendiculars(sdir, a, bb);
+            const float shoot_roll = random(r, 0.0f, kPi);
+            for (int q = 0; q < 2; ++q) {
+                const float rr = shoot_roll + static_cast<float>(q) * kPi * 0.5f;
+                Card c = makeCard(r, start, sdir, a * std::cos(rr) + bb * std::sin(rr), length, b);
+                c.layer = kTreeLayerPineShoot;
+                c.aspect = 0.7f;
+                c.curl = 0.0f;
+                c.fold = 0.0f;
+                c.keep = keep;
+                c.detail = 1;
+                cards.push_back(c);
+            }
+        }
+    }
+
     // Todas las tarjetas del arbol (las mismas en los tres niveles: lejos se
     // quedan las de clave mas baja, mas grandes).
     void placeLeaves() {
@@ -758,19 +883,10 @@ struct Builder {
                 const Vec3 around = a * std::cos(az) + bb * std::sin(az);
                 const float size = base_size * random(r, 0.8f, 1.2f);
                 if (rules.style == kPineTufts) {
-                    // Penachos: dos tarjetas cruzadas que contienen la ramita.
-                    const Vec3 dir = core::normalize(d + up * 0.2f + around * 0.25f);
-                    Vec3 x;
-                    Vec3 y;
-                    perpendiculars(dir, x, y);
-                    const float roll = random(r, 0.0f, kPi);
+                    // Borlas que salen de la ramita hacia fuera y hacia arriba.
+                    const Vec3 dir = core::normalize(d * 0.7f + up * 0.35f + around * 0.55f);
                     const float keep = random(r, 0.0f, 1.0f);
-                    for (int q = 0; q < 2; ++q) {
-                        const float rr = roll + static_cast<float>(q) * kPi * 0.5f;
-                        Card c = makeCard(r, p - dir * (size * 0.08f), dir, x * std::cos(rr) + y * std::sin(rr), size, b);
-                        c.keep = keep;
-                        cards.push_back(c);
-                    }
+                    pineTuft(r, p, dir, size, keep, b);
                 } else if (rules.style == kFirSprays) {
                     // Capas planas: la ramita aplanada en horizontal, cayendo un poco.
                     Vec3 dir = core::normalize(d + around * 0.35f + Vec3{0.0f, -0.08f, 0.0f});
@@ -800,15 +916,8 @@ struct Builder {
                 const float size = base_size * random(r, 0.9f, 1.15f);
                 Vec3 face = core::normalize(up * 0.7f + Vec3{random(r, -0.4f, 0.4f), 0.0f, random(r, -0.4f, 0.4f)});
                 if (rules.style == kPineTufts) {
-                    Vec3 x;
-                    Vec3 y;
-                    perpendiculars(d, x, y);
                     const float keep = random(r, 0.0f, 0.5f);
-                    for (int q = 0; q < 2; ++q) {
-                        Card c = makeCard(r, p - d * (size * 0.45f), core::normalize(d + up * 0.3f), q == 0 ? x : y, size, b);
-                        c.keep = keep;
-                        cards.push_back(c);
-                    }
+                    pineTuft(r, p - d * (size * 0.3f), core::normalize(d + up * 0.3f), size, keep, b);
                 } else {
                     Card c = makeCard(r, p - d * (size * 0.15f), d, face, size, b);
                     c.keep *= 0.5f;  // las puntas marcan la silueta: lejos se quedan
@@ -996,7 +1105,7 @@ struct Builder {
                 const float tw = twist * t;
                 const Vec3 sd = core::normalize(side * std::cos(tw) + up_local * std::sin(tw));
                 const Vec3 ul = core::normalize(core::cross(sd, d)) * (core::cross(sd, d).y < 0.0f ? -1.0f : 1.0f);
-                const float width = len * 0.24f * std::pow(std::sin(kPi * std::min(t * 0.95f + 0.05f, 1.0f)), 0.7f) * (dead ? 0.55f : 1.0f);
+                const float width = len * 0.24f * std::pow(std::max(std::sin(kPi * std::min(t * 0.95f + 0.05f, 1.0f)), 0.0f), 0.7f) * (dead ? 0.55f : 1.0f);
                 const float fold = dead ? 0.1f : 0.45f;
                 for (int k = 0; k <= cols; ++k) {
                     const float x = static_cast<float>(k) / static_cast<float>(cols) * 2.0f - 1.0f;
@@ -1042,9 +1151,17 @@ struct Builder {
             computeCrown();
             placeLeaves();
 
-            // Corteza segun el nivel de detalle: lados y ramas finas.
-            const std::array<std::array<int, 4>, 3> sides = {{{26, 12, 7, 5}, {12, 6, 4, 3}, {6, 4, 3, 3}}};
-            const std::array<std::array<int, 4>, 3> subdiv = {{{2, 2, 1, 1}, {1, 1, 1, 1}, {1, 1, 1, 1}}};
+            // Corteza segun el nivel de detalle: lados, tramos y ramas finas.
+            // Lo que mide menos de un pixel donde se usa ese nivel no se
+            // genera: el nivel 1 se ve desde ~120 m (un pixel ~ 13 cm a
+            // 1080p) y el 2 desde ~450 m (~ 48 cm). Antes el pino lejano tenia
+            // 3700 triangulos (3100 de ramas invisibles) y el medio 9300: un
+            // bosque de 8000 arboles eran 40 millones de triangulos por frame.
+            const std::array<std::array<int, 4>, 3> sides = {{{16, 9, 6, 4}, {8, 4, 3, 3}, {5, 3, 3, 3}}};
+            const std::array<std::array<int, 4>, 3> subdiv = {{{2, 1, 1, 1}, {1, 1, 1, 1}, {1, 1, 1, 1}}};
+            const std::array<std::array<int, 4>, 3> stride = {{{1, 1, 1, 1}, {2, 3, 3, 3}, {3, 4, 4, 4}}};
+            // Radio minimo (en la base) de lo que se dibuja, por nivel de detalle.
+            const std::array<float, 3> min_radius = {0.0f, h * 0.0035f, h * 0.014f};
             int deepest = 0;
             for (const Branch& b : branches) deepest = std::max(deepest, b.level);
             const auto l = static_cast<std::size_t>(std::clamp(lod, 0, 2));
@@ -1052,24 +1169,30 @@ struct Builder {
                 if (lod == 1 && b.level >= deepest && b.level > 1) continue;
                 if (lod == 1 && b.dead && b.length < h * 0.03f) continue;
                 if (lod == 2 && (b.level > 1 || b.dead)) continue;
+                if (b.level > 0 && !b.radii.empty() && b.radii.front() < min_radius[l]) continue;
                 const auto lv = static_cast<std::size_t>(std::min(b.level, 3));
-                tube(b, sides[l][lv], subdiv[l][lv]);
+                tube(b, sides[l][lv], subdiv[l][lv], stride[l][lv]);
             }
-            if (lod <= 1 && !root_angles.empty()) buildRoots(branches.front());
+            if (lod == 0 && !root_angles.empty()) buildRoots(branches.front());
             leaf_vertex_start = mesh.vertices.size();
 
             // Hojas: lejos menos tarjetas (las de clave baja) y mas grandes.
-            const float keep = lod == 0 ? 1.0f : (lod == 1 ? 0.3f : 0.085f);
+            // De cerca, 2 filas (la caida de la tarjeta) en vez de 3; el sauce
+            // las conserva (sus cortinas son largas y se curvan).
+            const float keep = lod == 0 ? 1.0f : (lod == 1 ? 0.25f : 0.085f);
             const float grow = 1.0f / std::sqrt(keep);
-            const int rows = lod == 0 ? 3 : (lod == 1 ? 2 : 1);
+            const int rows = lod == 0 ? (rules.style == kWillowCurtain ? 3 : 2) : 1;
             const int cols = lod == 0 ? 2 : 1;
             std::vector<std::pair<Vec3, float>> area;
             for (const Card& c : cards) {
                 if (c.keep > keep) continue;
+                // Borlas de pino: los brotes solo de cerca, el abanico solo lejos.
+                if ((c.detail == 1 && lod != 0) || (c.detail == 2 && lod == 0)) continue;
                 const float scale = rules.style == kWillowCurtain ? std::sqrt(grow) : grow;
                 Card cc = c;
                 if (rules.style == kWillowCurtain) cc.aspect = std::min(c.aspect * std::sqrt(grow), 1.0f);
-                emitCard(cc, scale, rows, cols);
+                // Los brotes son cortos y rectos: un solo tramo.
+                emitCard(cc, scale, c.detail == 1 ? 1 : rows, c.detail == 1 ? 1 : cols);
                 const float len = c.length * scale;
                 area.push_back({c.base + c.dir * (len * 0.5f), len * len * cc.aspect});
             }
@@ -1174,21 +1297,21 @@ void drawStem(Canvas& c, const std::vector<std::array<float, 2>>& pts, float th0
 float leafProfile(int shape, float t, float side, float jitter) {
     switch (shape) {
         case 0: {
-            const float env = std::pow(std::sin(kPi * std::pow(clamp01(t), 0.85f)), 0.75f) * (1.0f - 0.12f * t);
+            const float env = std::pow(std::max(std::sin(kPi * std::pow(clamp01(t), 0.85f)), 0.0f), 0.75f) * (1.0f - 0.12f * t);
             const float lobes = 4.5f + jitter;
             const float ph = side > 0.0f ? 0.0f : 0.22f;
             const float lobe = std::pow(std::abs(std::sin(kPi * (lobes * t + ph))), 0.55f);
             return env * (0.48f + 0.52f * lobe);
         }
         case 1: {
-            float env = t < 0.32f ? std::pow(std::sin(t / 0.32f * kPi * 0.5f), 0.6f) : std::pow(std::max(1.0f - (t - 0.32f) / 0.68f, 0.0f), 0.85f);
+            float env = t < 0.32f ? std::pow(std::max(std::sin(t / 0.32f * kPi * 0.5f), 0.0f), 0.6f) : std::pow(std::max(1.0f - (t - 0.32f) / 0.68f, 0.0f), 0.85f);
             const float s1 = t * 15.0f + (side > 0.0f ? 0.0f : 0.5f);
             const float s2 = t * 30.0f;
             env *= 1.0f - 0.08f * (s1 - std::floor(s1)) - 0.035f * (s2 - std::floor(s2));
             return env;
         }
         case 2: {
-            const float env = std::pow(std::sin(kPi * clamp01(t)), 0.65f) * (1.0f - 0.3f * t);
+            const float env = std::pow(std::max(std::sin(kPi * clamp01(t)), 0.0f), 0.65f) * (1.0f - 0.3f * t);
             const float s = t * 38.0f;
             return env * (1.0f - 0.05f * (s - std::floor(s)));
         }
@@ -1220,7 +1343,6 @@ struct LeafPaint {
 void paintLeaf(Canvas& c, const LeafPaint& L, bool shadow = false) {
     const float ca = std::cos(L.angle);
     const float sa = std::sin(L.angle);
-    const float reach = L.length + L.width + 2.0f;
     const float off_x = shadow ? L.width * 0.25f + 3.0f : 0.0f;
     const float off_y = shadow ? L.width * 0.35f + 4.0f : 0.0f;
     const float pet = L.length * L.petiole;
@@ -1237,7 +1359,13 @@ void paintLeaf(Canvas& c, const LeafPaint& L, bool shadow = false) {
                                                   L.width * (0.08f + 0.12f * hashF(static_cast<int>(L.seed), 30 + k, 96U))};
         }
     }
-    forBox(c, L.x + off_x - reach, L.y + off_y - reach, L.x + off_x + reach, L.y + off_y + reach,
+    // Caja de la hoja: de la base a la punta, mas el medio ancho (y la curva)
+    // hacia los lados (el lado es (-sa, ca)).
+    const float half_w = L.width + std::abs(L.bend) + 2.0f;
+    const float x0 = L.x + off_x - ca, y0 = L.y + off_y - sa;
+    const float x1 = L.x + off_x + ca * (L.length + 1.0f), y1 = L.y + off_y + sa * (L.length + 1.0f);
+    const float side_x = std::abs(sa) * half_w, side_y = std::abs(ca) * half_w;
+    forBox(c, std::min(x0, x1) - side_x, std::min(y0, y1) - side_y, std::max(x0, x1) + side_x, std::max(y0, y1) + side_y,
            [&](int px, int py, float X, float Y, std::size_t i) {
                const float dx = X - L.x - off_x;
                const float dy = Y - L.y - off_y;
@@ -1259,12 +1387,13 @@ void paintLeaf(Canvas& c, const LeafPaint& L, bool shadow = false) {
                    c.ex[i] = mixF(c.ex[i], 0.3f, cov);
                    return;
                }
+               if (std::abs(across) > L.width + 0.6f) return;
                const float t = (along - pet) / blade;
                const float side = across >= 0.0f ? 1.0f : -1.0f;
                const float w = L.width * leafProfile(L.shape, t, side, jitter);
                const float edge = w - std::abs(across);
                float cov = clamp01(edge + 0.5f);
-               if (cov <= 0.0f) return;
+               if (!(cov > 0.0f)) return;  // (tambien si fuera NaN)
                if (shadow) {
                    if (c.a[i] <= 0.0f) return;
                    const float s = 0.38f * cov;
@@ -1355,89 +1484,132 @@ std::vector<std::array<float, 2>> curve(float x0, float y0, float angle, float l
     return pts;
 }
 
+// Las filas de una corteza en varios hilos (cada pixel es independiente y
+// escribe solo el suyo). Las cortezas eran lo mas lento de generar.
+template <typename F>
+void parallelRows(int size, F&& row) {
+    const unsigned workers = std::clamp(std::thread::hardware_concurrency() / 3U, 1U, 4U);
+    std::vector<std::thread> pool;
+    for (unsigned w = 1; w < workers; ++w) {
+        pool.emplace_back([&, w]() {
+            for (int y = static_cast<int>(w); y < size; y += static_cast<int>(workers)) row(y);
+        });
+    }
+    for (int y = 0; y < size; y += static_cast<int>(workers)) row(y);
+    for (std::thread& t : pool) t.join();
+}
+
 // --- Cortezas ---
 
 Canvas oakBark(int size) {
+    // Roble viejo: crestas largas y estrechas, de anchura desigual, que se
+    // separan y se vuelven a juntar; surcos profundos en V; alguna grieta
+    // horizontal que parte una cresta. Gris pardo, la cara de las crestas mas
+    // gris (curtida) y algun liquen gris verdoso apagado. El musgo lo pone el
+    // shader (arriba de las ramas y en el pie), no la textura. Todo periodico:
+    // se repite alrededor del tronco y a lo largo.
     Canvas c(size);
-    for (int y = 0; y < size; ++y) {
+    parallelRows(size, [&](int y) {
         for (int x = 0; x < size; ++x) {
             const float u = (static_cast<float>(x) + 0.5f) / static_cast<float>(size);
             const float v = (static_cast<float>(y) + 0.5f) / static_cast<float>(size);
             const std::size_t i = c.at(x, y);
-            const float wu = (fbm(u, v, 3, 3, 4, 11U) - 0.5f) * 0.1f;
-            const float wv = (fbm(u, v, 3, 3, 4, 12U) - 0.5f) * 0.2f;
-            // Crestas largas que se entrelazan; los bordes de las celdas son los surcos.
-            const VCell ridge = voronoi((u + wu) * 8.0f, (v + wv) * 2.0f, 8, 2, 41U, 0.28f);
-            const float gap = ridge.f2 - ridge.f1;
-            const float rid = smoothstepF(0.02f, 0.2f + 0.1f * hashF(ridge.id, 1, 42U), gap);
-            // Grietas horizontales que parten las crestas en bloques.
-            const VCell blk = voronoi((u + wu * 0.5f) * 14.0f, (v + wv) * 8.0f, 14, 8, 51U, 1.7f);
-            const float crack = (1.0f - smoothstepF(0.0f, 0.06f, blk.f2 - blk.f1)) * smoothstepF(0.42f, 0.62f, fbm(u, v, 5, 5, 3, 52U));
-            const float fibers = valueNoise(u * 230.0f, v * 16.0f, 230, 16, 53U);
-            const float pits = fbm(u, v, 24, 24, 3, 54U);
-            const float block_tone = hashF(blk.id, 2, 55U);
-            float height = std::pow(rid, 0.75f) * 0.78f * (1.0f - 0.65f * crack) + 0.1f * fibers * rid + 0.07f * pits +
-                           0.08f * hashF(ridge.id, 3, 56U) * rid;
-            const Vec3 furrow{0.085f, 0.062f, 0.048f};
-            const Vec3 flank{0.27f, 0.21f, 0.16f};
-            const Vec3 top = Vec3{0.43f, 0.39f, 0.34f} * (0.82f + 0.3f * block_tone);
-            Vec3 col = mixV(furrow, flank, smoothstepF(0.0f, 0.42f, height));
-            col = mixV(col, top, smoothstepF(0.42f, 0.82f, height));
-            col = col * (0.88f + 0.22f * fibers);
-            // Liquenes grises en las crestas y alguno amarillo.
-            const float lichen = smoothstepF(0.6f, 0.68f, fbm(u, v, 5, 5, 5, 57U)) * smoothstepF(0.35f, 0.65f, height);
-            col = mixV(col, Vec3{0.6f, 0.62f, 0.53f} * (0.85f + 0.3f * pits), lichen * 0.8f);
-            const float yellow = smoothstepF(0.74f, 0.79f, fbm(u, v, 7, 7, 4, 58U)) * rid;
-            col = mixV(col, Vec3{0.66f, 0.58f, 0.26f}, yellow * 0.75f);
-            // Musgo en los surcos.
-            const float moss = smoothstepF(0.55f, 0.7f, fbm(u, v, 4, 4, 4, 59U)) * (1.0f - smoothstepF(0.15f, 0.5f, height));
-            col = mixV(col, Vec3{0.17f, 0.23f, 0.06f} * (0.8f + 0.4f * pits), moss * 0.85f);
-            height += lichen * 0.04f + moss * 0.06f;
+            // Los surcos serpentean (curvas largas).
+            const float wu = (fbm(u, v, 2, 3, 4, 11U) - 0.5f) * 0.1f;
+            const float wv = (fbm(u, v, 3, 3, 3, 12U) - 0.5f) * 0.06f;
+            // Crestas: celdas de ~6 x 24 cm (15 x 4 por repeticion de 0.95 m).
+            const VEdge ridge = voronoiEdge((u + wu) * 15.0f, (v + wv) * 4.0f, 15, 4, 41U, 0.2f);
+            // Surcos en V, anchos como media cresta (de 1.5 a 3.5 cm de lado a lado).
+            const float half = 0.008f + 0.011f * hashF(ridge.id, 1, 42U);
+            float crest = std::pow(smoothstepF(0.0f, half, ridge.edge), 0.7f);
+            // Donde una cresta acaba (borde horizontal) el surco es menos hondo.
+            crest = 1.0f - (1.0f - crest) * (1.0f - 0.4f * smoothstepF(0.6f, 0.95f, ridge.horizontal));
+            // Grietas horizontales: pocas, de anchura desigual, a distinta altura en cada cresta.
+            const float cv = (v + wv) * 6.0f + wu * 5.0f + hashF(ridge.id, 2, 43U) * 4.0f;
+            const float cf = cv - std::floor(cv);
+            const int crack_row = ((static_cast<int>(std::floor(cv)) % 6) + 6) % 6;
+            const float row = hashF(ridge.id, crack_row, 44U);
+            const float crack = (1.0f - smoothstepF(0.0f, 0.02f + 0.04f * row, std::abs(cf - 0.5f))) * (row > 0.72f ? 1.0f : 0.0f);
+            // Fibras verticales, escamas y poros.
+            const float fibers = valueNoise(u * 260.0f, v * 14.0f, 260, 14, 53U);
+            const float flakes = fbm(u, v, 16, 8, 3, 54U);
+            const float pits = fbm(u, v, 40, 40, 2, 55U);
+            const float tone = hashF(ridge.id, 3, 56U);
+            float height = crest * (0.62f + 0.26f * flakes) * (1.0f - 0.3f * crack) + 0.07f * fibers * crest + 0.05f * pits;
+            height = std::max(height, 0.0f);
+            const Vec3 furrow{0.12f, 0.095f, 0.075f};
+            const Vec3 wall = Vec3{0.3f, 0.235f, 0.18f} * (0.9f + 0.2f * tone);
+            const Vec3 face = Vec3{0.46f, 0.42f, 0.37f} * (0.84f + 0.26f * tone);
+            Vec3 col = mixV(furrow, wall, smoothstepF(0.0f, 0.35f, height));
+            col = mixV(col, face, smoothstepF(0.45f, 0.8f, height) * (0.7f + 0.3f * flakes));
+            col = col * (0.9f + 0.18f * fibers) * (0.94f + 0.12f * pits);
+            col = mixV(col, wall * 0.8f, crack * 0.35f);
+            // Liquen: manchas pequenas gris verdosas en las caras, poco contraste.
+            const float lichen = smoothstepF(0.67f, 0.72f, fbm(u, v, 6, 6, 5, 57U)) * smoothstepF(0.5f, 0.75f, height);
+            col = mixV(col, Vec3{0.5f, 0.52f, 0.47f} * (0.85f + 0.3f * pits), lichen * 0.35f);
             c.put(i, col);
             c.a[i] = 1.0f;
-            c.h[i] = height;
-            c.ao[i] = 0.22f + 0.78f * smoothstepF(0.0f, 0.55f, height);
-            c.ex[i] = 0.9f - 0.08f * lichen + 0.05f * moss;
+            c.h[i] = height + lichen * 0.02f;
+            c.ao[i] = 0.25f + 0.75f * smoothstepF(0.0f, 0.6f, height);
+            c.ex[i] = 0.92f - 0.06f * lichen - 0.05f * crest;
         }
-    }
+    });
     return c;
 }
 
 Canvas pineBark(int size) {
+    // Pino silvestre (parte baja del tronco): placas gruesas e irregulares,
+    // mas altas que anchas, separadas por fisuras profundas. La cara de las
+    // placas es gris parda (curtida) y se pela en escamas por capas; en las
+    // fisuras y donde salta una escama asoma la corteza interior, rojiza.
     Canvas c(size);
-    for (int y = 0; y < size; ++y) {
+    parallelRows(size, [&](int y) {
         for (int x = 0; x < size; ++x) {
             const float u = (static_cast<float>(x) + 0.5f) / static_cast<float>(size);
             const float v = (static_cast<float>(y) + 0.5f) / static_cast<float>(size);
             const std::size_t i = c.at(x, y);
-            const float wu = (fbm(u, v, 4, 4, 4, 61U) - 0.5f) * 0.12f;
-            const float wv = (fbm(u, v, 4, 4, 4, 62U) - 0.5f) * 0.12f;
-            // Placas irregulares separadas por fisuras profundas.
-            const VCell plate = voronoi((u + wu) * 5.0f, (v + wv) * 4.0f, 5, 4, 63U, 0.75f);
-            const float gap = plate.f2 - plate.f1;
-            const float fissure = 1.0f - smoothstepF(0.02f, 0.13f + 0.05f * hashF(plate.id, 1, 64U), gap);
-            // Escamas en terrazas dentro de cada placa.
-            const float flake = fbm(u + hashF(plate.id, 2, 65U), v, 6, 6, 4, 66U);
-            const float steps = flake * 4.0f;
-            const float terr = (std::floor(steps) + smoothstepF(0.75f, 1.0f, steps - std::floor(steps))) / 4.0f;
-            const float fine = valueNoise(u * 160.0f, v * 90.0f, 160, 90, 67U);
-            const float height = (1.0f - fissure) * (0.5f + 0.38f * terr + 0.06f * fine) + 0.05f * fine;
-            const float tone = hashF(plate.id, 3, 68U);
-            const Vec3 dark{0.07f, 0.05f, 0.04f};
-            Vec3 plate_col = mixV(Vec3{0.38f, 0.23f, 0.15f}, Vec3{0.5f, 0.31f, 0.19f}, tone);
-            // Capas recien expuestas (anaranjadas) y superficie curtida (gris).
-            plate_col = mixV(plate_col, Vec3{0.62f, 0.36f, 0.2f}, smoothstepF(0.55f, 0.85f, 1.0f - terr) * 0.6f);
-            plate_col = mixV(plate_col, Vec3{0.5f, 0.46f, 0.42f}, smoothstepF(0.6f, 0.9f, terr) * smoothstepF(0.45f, 0.65f, fbm(u, v, 3, 3, 3, 69U)));
-            Vec3 col = mixV(dark, plate_col * (0.88f + 0.22f * fine), 1.0f - fissure);
-            const float lichen = smoothstepF(0.66f, 0.72f, fbm(u, v, 5, 5, 5, 70U)) * (1.0f - fissure);
-            col = mixV(col, Vec3{0.55f, 0.57f, 0.5f}, lichen * 0.7f);
+            const float wu = (fbm(u, v, 3, 3, 4, 61U) - 0.5f) * 0.09f;
+            const float wv = (fbm(u, v, 3, 4, 4, 62U) - 0.5f) * 0.1f;
+            // Placas de ~11 x 25 cm (7 x 3 por repeticion de 0.75 m).
+            const VEdge plate = voronoiEdge((u + wu) * 7.0f, (v + wv) * 3.0f, 7, 3, 63U, 0.45f);
+            const float half = 0.016f + 0.016f * hashF(plate.id, 1, 64U);
+            const float fissure = 1.0f - smoothstepF(0.0f, half, plate.edge);  // 1 en el fondo de la fisura
+            // Placas que se parten en otras mas pequenas (grietas poco hondas).
+            const VEdge sub = voronoiEdge((u + wu) * 12.0f, (v + wv) * 7.0f, 12, 7, 71U, 0.6f);
+            const float split = (1.0f - smoothstepF(0.0f, 0.006f, sub.edge)) * (hashF(sub.id, 1, 72U) > 0.6f ? 1.0f : 0.0f);
+            // Escamas por capas: terrazas de ruido dentro de cada placa.
+            const float flake = fbm(u + hashF(plate.id, 2, 65U), v, 7, 5, 4, 66U);
+            const float steps = flake * 3.0f;
+            const float fs = steps - std::floor(steps);
+            const float terrace = (std::floor(steps) + smoothstepF(0.7f, 1.0f, fs)) / 3.0f;
+            const float edge = smoothstepF(0.7f, 0.9f, fs) * (1.0f - smoothstepF(0.97f, 1.0f, fs));  // borde de una escama
+            const float fine = valueNoise(u * 180.0f, v * 70.0f, 180, 70, 67U);
+            const float fibers = valueNoise(u * 300.0f, v * 20.0f, 300, 20, 68U);
+            const float plate_h = 0.5f + 0.35f * terrace + 0.05f * fine;
+            float height = mixF(plate_h * (1.0f - 0.15f * split), 0.02f, std::pow(fissure, 0.8f));
+            height += 0.03f * fibers;
+            const float tone = hashF(plate.id, 3, 69U);
+            // Cara curtida: gris parda (unas placas algo mas rojizas que otras).
+            Vec3 face = mixV(Vec3{0.41f, 0.35f, 0.31f}, Vec3{0.45f, 0.34f, 0.27f}, tone);
+            face = mixV(face, Vec3{0.5f, 0.47f, 0.44f}, smoothstepF(0.55f, 0.85f, terrace) * 0.45f);
+            // Corteza interior (rojiza) en las capas recien expuestas y en los bordes.
+            const Vec3 inner{0.47f, 0.28f, 0.17f};
+            Vec3 col = mixV(face, inner, clamp01((1.0f - terrace) * 0.3f + edge * 0.3f) * 0.5f);
+            col = col * (0.88f + 0.2f * fine) * (0.95f + 0.1f * fibers);
+            // Fisuras: paredes rojizas y fondo pardo oscuro (no negro).
+            const Vec3 bottom{0.13f, 0.08f, 0.06f};
+            col = mixV(col, inner * 0.8f, smoothstepF(0.15f, 0.5f, fissure));
+            col = mixV(col, bottom, smoothstepF(0.55f, 0.95f, fissure));
+            col = mixV(col, inner * 0.8f, split * 0.2f);
+            const float lichen = smoothstepF(0.68f, 0.74f, fbm(u, v, 5, 5, 5, 70U)) * (1.0f - fissure) * smoothstepF(0.6f, 0.8f, height);
+            col = mixV(col, Vec3{0.52f, 0.54f, 0.48f}, lichen * 0.35f);
             c.put(i, col);
             c.a[i] = 1.0f;
             c.h[i] = height;
-            c.ao[i] = 0.2f + 0.8f * smoothstepF(0.0f, 0.5f, height);
-            c.ex[i] = 0.82f + 0.1f * fissure;
+            c.ao[i] = 0.22f + 0.78f * smoothstepF(0.0f, 0.55f, height);
+            c.ex[i] = 0.84f + 0.1f * fissure - 0.06f * edge;
         }
-    }
+    });
     return c;
 }
 
@@ -1453,7 +1625,25 @@ Canvas birchBark(int size) {
     for (int k = 0; k < 340; ++k) {
         dashes.push_back({uni(rng), uni(rng), 0.015f + 0.09f * uni(rng) * uni(rng), 0.0016f + 0.0035f * uni(rng)});
     }
-    for (int y = 0; y < size; ++y) {
+    std::vector<float> lenticels(static_cast<std::size_t>(size) * static_cast<std::size_t>(size), 0.0f);
+    const float fs = static_cast<float>(size);
+    for (const Dash& d : dashes) {
+        const int px0 = static_cast<int>(std::floor((d.x - d.len) * fs)) - 1;
+        const int px1 = static_cast<int>(std::ceil((d.x + d.len) * fs)) + 1;
+        const int py0 = static_cast<int>(std::floor((d.y - d.th * 2.0f) * fs)) - 1;
+        const int py1 = static_cast<int>(std::ceil((d.y + d.th * 2.0f) * fs)) + 1;
+        for (int py = py0; py <= py1; ++py) {
+            for (int px = px0; px <= px1; ++px) {
+                const float dx = (static_cast<float>(px) + 0.5f) / fs - d.x;
+                const float dy = (static_cast<float>(py) + 0.5f) / fs - d.y;
+                if (std::abs(dy) > d.th * 2.0f || std::abs(dx) > d.len) continue;
+                const float shape = d.th * (1.0f - (dx / d.len) * (dx / d.len));
+                float& l = lenticels[c.at(px, py)];
+                l = std::max(l, clamp01((shape - std::abs(dy)) * fs + 0.5f));
+            }
+        }
+    }
+    parallelRows(size, [&](int y) {
         for (int x = 0; x < size; ++x) {
             const float u = (static_cast<float>(x) + 0.5f) / static_cast<float>(size);
             const float v = (static_cast<float>(y) + 0.5f) / static_cast<float>(size);
@@ -1465,16 +1655,7 @@ Canvas birchBark(int size) {
             float height = 0.6f + 0.05f * band + 0.04f * n;
             float rough = 0.55f;
             // Lenticelas.
-            float lent = 0.0f;
-            for (const Dash& d : dashes) {
-                float dx = u - d.x;
-                dx -= std::round(dx);
-                float dy = v - d.y;
-                dy -= std::round(dy);
-                if (std::abs(dy) > d.th * 2.0f || std::abs(dx) > d.len) continue;
-                const float shape = d.th * (1.0f - (dx / d.len) * (dx / d.len));
-                lent = std::max(lent, clamp01((shape - std::abs(dy)) * static_cast<float>(size) + 0.5f));
-            }
+            const float lent = lenticels[i];
             col = mixV(col, Vec3{0.22f, 0.18f, 0.16f}, lent * 0.9f);
             height -= lent * 0.2f;
             // Manchas negras rugosas.
@@ -1494,13 +1675,13 @@ Canvas birchBark(int size) {
             c.ao[i] = 0.6f + 0.4f * smoothstepF(0.2f, 0.65f, height);
             c.ex[i] = rough;
         }
-    }
+    });
     return c;
 }
 
 Canvas palmBark(int size) {
     Canvas c(size);
-    for (int y = 0; y < size; ++y) {
+    parallelRows(size, [&](int y) {
         for (int x = 0; x < size; ++x) {
             const float u = (static_cast<float>(x) + 0.5f) / static_cast<float>(size);
             const float v = (static_cast<float>(y) + 0.5f) / static_cast<float>(size);
@@ -1524,7 +1705,7 @@ Canvas palmBark(int size) {
             c.ao[i] = 0.35f + 0.65f * smoothstepF(0.05f, 0.6f, height);
             c.ex[i] = 0.85f;
         }
-    }
+    });
     return c;
 }
 
@@ -1615,7 +1796,7 @@ Canvas oakLeaves(int size) {
 
 Canvas birchLeaves(int size) {
     Canvas c(size);
-    c.xs = 1.0f / 0.85f;  // tarjeta 0.85 de ancha
+    c.xs = 0.85f;  // tarjeta 0.85 de ancha (xs = ancho fisico de un pixel = aspecto de la tarjeta)
     const float W = static_cast<float>(size) * c.xs;
     const float s = static_cast<float>(size);
     std::mt19937 rng(88U);
@@ -1718,89 +1899,232 @@ Canvas willowLeaves(int size) {
 }
 
 Canvas pineNeedles(int size) {
+    // Borla de pino: brotes que salen en abanico de la punta de una ramita
+    // (abajo en el centro) hacia los lados y hacia arriba; cada brote es un
+    // cepillo de agujas por pares (fasciculos), mas cortas y claras en la
+    // punta (las nuevas) y mas oscuras hacia dentro. La silueta es redonda y
+    // esponjosa (de lejos, una mata de agujas; no una fronda). Las agujas de
+    // atras, mas oscuras (profundidad).
     Canvas c(size);
-    c.xs = 1.0f / 0.75f;
+    c.xs = 1.0f;  // tarjeta cuadrada (KindRules del pino)
     const float W = static_cast<float>(size) * c.xs;
     const float s = static_cast<float>(size);
     std::mt19937 rng(91U);
     std::uniform_real_distribution<float> uni(0.0f, 1.0f);
-    const auto twig = curve(W * 0.5f, s * 0.995f, -kPi * 0.5f, s * 0.9f, 0.08f, 16);
-    drawStem(c, twig, s * 0.011f, s * 0.006f, Vec3{0.36f, 0.24f, 0.15f}, 0.0f, 1.1f);
-    // Yema terminal.
-    const auto& tip = twig.back();
-    drawStem(c, curve(tip[0], tip[1] + s * 0.01f, -kPi * 0.5f, s * 0.04f, 0.0f, 3), s * 0.012f, s * 0.004f, Vec3{0.5f, 0.33f, 0.2f}, 0.1f, 1.2f);
-    // Fasciculos de 2 agujas hacia delante, mas densos y claros en la punta.
+    const Vec3 twig_col{0.42f, 0.29f, 0.18f};
+    const float margin = s * 0.12f;  // lo que sobresalen las agujas de la punta del brote
+    // Acorta un brote hasta que su punta (con las agujas) cabe en el lienzo.
+    const auto fit = [&](float x0, float y0, float angle, float length, float bend, int steps) {
+        std::vector<std::array<float, 2>> pts;
+        for (int it = 0; it < 16; ++it) {
+            pts = curve(x0, y0, angle, length, bend, steps);
+            bool inside = true;
+            for (const auto& p : pts) {
+                if (p[0] < margin || p[0] > W - margin || p[1] < margin) inside = false;
+            }
+            if (inside) break;
+            length *= 0.9f;
+        }
+        return pts;
+    };
+    struct Shoot {
+        std::vector<std::array<float, 2>> pts;
+        float from;  // desde donde tiene agujas (0..1)
+    };
+    std::vector<Shoot> shoots;
+    // La ramita que lleva la borla, y el abanico desde su punta.
+    const auto stalk = curve(W * 0.5f, s * 0.995f, -kPi * 0.5f + 0.03f, s * 0.14f, 0.0f, 4);
+    drawStem(c, stalk, s * 0.011f, s * 0.008f, twig_col, 0.0f, 1.1f);
+    const float hub_x = stalk.back()[0];
+    const float hub_y = stalk.back()[1];
+    const int fan = 9;
+    for (int k = 0; k < fan; ++k) {
+        const float f = static_cast<float>(k) / static_cast<float>(fan - 1) * 2.0f - 1.0f;  // -1..1
+        const float ang = -kPi * 0.5f + f * 1.25f + (uni(rng) - 0.5f) * 0.16f;
+        // El del centro, el mas largo; los de los lados se curvan hacia arriba.
+        const float len = s * (0.72f - 0.22f * std::abs(f)) * (0.88f + 0.2f * uni(rng));
+        const float bend = -f * (0.25f + 0.15f * uni(rng));
+        shoots.push_back({fit(hub_x, hub_y, ang, len, bend, 10), 0.1f});
+    }
+    for (const Shoot& sh : shoots) drawStem(c, sh.pts, s * 0.0065f, s * 0.0035f, twig_col, 0.0f, 1.1f);
     struct Needle {
         std::vector<std::array<float, 2>> pts;
         Vec3 color;
         float depth;
     };
     std::vector<Needle> needles;
-    for (int k = 0; k < 230; ++k) {
-        const float t = 0.04f + 0.95f * std::sqrt(uni(rng));
-        const auto& p = twig[std::min(static_cast<std::size_t>(t * 16.0f), twig.size() - 1)];
-        for (int q = 0; q < 2; ++q) {
-            const float side = uni(rng) < 0.5f ? -1.0f : 1.0f;
-            const float ang = -kPi * 0.5f + side * (0.35f + 0.75f * uni(rng));
-            const float len = s * (0.2f + 0.1f * uni(rng)) * (1.0f - 0.25f * t);
-            Needle n;
-            n.pts = curve(p[0], p[1], ang, len, -side * (0.15f + 0.2f * uni(rng)), 5);
-            const float fresh = smoothstepF(0.6f, 1.0f, t);
-            n.color = jitterColor(rng, mixV(Vec3{0.1f, 0.19f, 0.1f}, Vec3{0.22f, 0.33f, 0.13f}, fresh), 0.15f);
-            if (uni(rng) < 0.03f) n.color = Vec3{0.45f, 0.36f, 0.15f};  // alguna seca
-            n.depth = uni(rng);
-            needles.push_back(n);
+    for (const Shoot& sh : shoots) {
+        const auto& pts = sh.pts;
+        float total = 0.0f;
+        for (std::size_t i = 1; i < pts.size(); ++i) total += std::hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]);
+        const int count = static_cast<int>(total * (1.0f - sh.from) / (s * 0.0045f));
+        const float steps = static_cast<float>(pts.size() - 1);
+        for (int k = 0; k < count; ++k) {
+            const float t = sh.from + (1.0f - sh.from) * (static_cast<float>(k) + uni(rng)) / static_cast<float>(std::max(count, 1));
+            const float fi = t * steps;
+            const auto i0 = std::min(static_cast<std::size_t>(fi), pts.size() - 2);
+            const float f = fi - static_cast<float>(i0);
+            const float px = mixF(pts[i0][0], pts[i0 + 1][0], f);
+            const float py = mixF(pts[i0][1], pts[i0 + 1][1], f);
+            const float dir = std::atan2(pts[i0 + 1][1] - pts[i0][1], pts[i0 + 1][0] - pts[i0][0]);
+            for (int q = 0; q < 2; ++q) {
+                const float side = uni(rng) < 0.5f ? -1.0f : 1.0f;
+                // Hacia delante; en la punta, casi paralelas al brote.
+                const float spread = mixF(0.6f + 0.6f * uni(rng), 0.2f + 0.35f * uni(rng), smoothstepF(0.75f, 1.0f, t));
+                const float ang = dir + side * spread;
+                const float len = s * (0.09f + 0.05f * uni(rng)) * (1.0f - 0.35f * smoothstepF(0.8f, 1.0f, t));
+                Needle n;
+                n.pts = curve(px, py, ang, len, -side * (0.1f + 0.25f * uni(rng)), 4);
+                const float fresh = smoothstepF(0.6f, 1.0f, t);
+                n.color = jitterColor(rng, mixV(Vec3{0.16f, 0.24f, 0.14f}, Vec3{0.28f, 0.37f, 0.17f}, fresh), 0.14f);
+                if (uni(rng) < 0.012f) n.color = Vec3{0.4f, 0.34f, 0.18f};  // alguna seca
+                n.depth = uni(rng);
+                needles.push_back(n);
+            }
         }
+        // Yema terminal.
+        const auto& tip = pts.back();
+        const auto& before = pts[pts.size() - 2];
+        const float tip_dir = std::atan2(tip[1] - before[1], tip[0] - before[0]);
+        drawStem(c, curve(tip[0], tip[1], tip_dir, s * 0.022f, 0.0f, 3), s * 0.007f, s * 0.0025f, Vec3{0.5f, 0.38f, 0.25f}, 0.1f, 1.2f);
     }
     std::sort(needles.begin(), needles.end(), [](const Needle& a, const Needle& b) { return a.depth < b.depth; });
     for (const Needle& n : needles) {
-        // Sombra de contacto: oscurece lo que queda debajo.
-        drawStem(c, n.pts, s * 0.0034f, s * 0.0028f, n.color * (0.55f + 0.45f * n.depth), 0.5f, 0.8f + 0.2f * n.depth, true);
+        drawStem(c, n.pts, s * 0.0032f, s * 0.0026f, n.color * (0.65f + 0.35f * n.depth), 0.5f, 0.8f + 0.2f * n.depth, true);
+    }
+    for (std::size_t i = 0; i < c.ao.size(); ++i) c.ao[i] = c.a[i] > 0.0f ? c.ao[i] * (0.75f + 0.25f * clamp01(c.h[i])) : 1.0f;
+    return c;
+}
+
+Canvas pineShoot(int size) {
+    // Un brote de pino visto de lado (las borlas de cerca): el tallo a lo
+    // largo y los pares de agujas alrededor. Las de los lados se ven enteras;
+    // las de delante y detras, acortadas por la perspectiva y mas claras u
+    // oscuras: la tarjeta parece un cilindro de agujas, no un peine. Mas
+    // cortas y cerradas hacia la punta (las nuevas), con la yema.
+    Canvas c(size);
+    c.xs = 0.7f;  // tarjeta 0.7 de ancha (pineTuft)
+    const float W = static_cast<float>(size) * c.xs;
+    const float s = static_cast<float>(size);
+    std::mt19937 rng(97U);
+    std::uniform_real_distribution<float> uni(0.0f, 1.0f);
+    const auto stem = curve(W * 0.5f, s * 0.995f, -kPi * 0.5f, s * 0.8f, 0.0f, 12);
+    drawStem(c, stem, s * 0.022f, s * 0.011f, Vec3{0.42f, 0.29f, 0.18f}, 0.0f, 1.1f);
+    struct Needle {
+        std::vector<std::array<float, 2>> pts;
+        Vec3 color;
+        float depth;
+    };
+    std::vector<Needle> needles;
+    const int fascicles = 170;
+    const float margin = s * 0.012f;
+    for (int k = 0; k < fascicles; ++k) {
+        const float t = 0.06f + 0.94f * (static_cast<float>(k) + uni(rng)) / static_cast<float>(fascicles);
+        const float fi = t * static_cast<float>(stem.size() - 1);
+        const auto i0 = std::min(static_cast<std::size_t>(fi), stem.size() - 2);
+        const float f = fi - static_cast<float>(i0);
+        const float px = mixF(stem[i0][0], stem[i0 + 1][0], f);
+        const float py = mixF(stem[i0][1], stem[i0 + 1][1], f);
+        const float axis = std::atan2(stem[i0 + 1][1] - stem[i0][1], stem[i0 + 1][0] - stem[i0][0]);
+        const float tip = smoothstepF(0.78f, 1.0f, t);
+        for (int q = 0; q < 2; ++q) {
+            const float phi = uni(rng) * 2.0f * kPi;  // donde esta alrededor del brote
+            const float spread = mixF(0.6f + 0.5f * uni(rng), 0.25f + 0.3f * uni(rng), tip);  // angulo con el brote
+            const float lateral = std::sin(spread) * std::sin(phi);
+            const float forward = std::cos(spread);
+            const float ang = axis + std::atan2(lateral, forward);
+            float length = s * (0.24f + 0.08f * uni(rng)) * (1.0f - 0.4f * tip) * std::sqrt(lateral * lateral + forward * forward);
+            // Que la punta no se salga por los lados.
+            const float reach = std::abs(std::cos(ang)) * length;
+            const float room = std::min(px - margin, W - margin - px);
+            if (reach > room) length *= room / std::max(reach, 1e-3f);
+            Needle n;
+            n.pts = curve(px, py, ang, length, (lateral > 0.0f ? -1.0f : 1.0f) * (0.08f + 0.15f * uni(rng)), 4);
+            const float fresh = smoothstepF(0.55f, 1.0f, t);
+            const float front = 0.5f + 0.5f * std::cos(phi);  // 1 delante, 0 detras
+            n.color = jitterColor(rng, mixV(Vec3{0.16f, 0.24f, 0.14f}, Vec3{0.28f, 0.37f, 0.17f}, fresh), 0.14f) * (0.62f + 0.38f * front);
+            if (uni(rng) < 0.012f) n.color = Vec3{0.4f, 0.34f, 0.18f};  // alguna seca
+            n.depth = front;
+            needles.push_back(n);
+        }
+    }
+    // Yema terminal.
+    const auto& top = stem.back();
+    drawStem(c, curve(top[0], top[1], -kPi * 0.5f, s * 0.04f, 0.0f, 3), s * 0.018f, s * 0.005f, Vec3{0.52f, 0.38f, 0.25f}, 0.1f, 1.2f);
+    std::sort(needles.begin(), needles.end(), [](const Needle& a, const Needle& b) { return a.depth < b.depth; });
+    for (const Needle& n : needles) {
+        drawStem(c, n.pts, s * 0.0068f, s * 0.0055f, n.color, 0.5f, 0.8f + 0.2f * n.depth, true);
     }
     for (std::size_t i = 0; i < c.ao.size(); ++i) c.ao[i] = c.a[i] > 0.0f ? c.ao[i] * (0.75f + 0.25f * clamp01(c.h[i])) : 1.0f;
     return c;
 }
 
 Canvas firNeedles(int size) {
+    // Rama plana de abeto: un eje y ramitas alternas a los dos lados, largas
+    // abajo y cortas arriba (silueta triangular), todas cubiertas de agujas
+    // cortas en peine. Llena la tarjeta (antes un peine estrecho y oscuro: la
+    // copa del abeto se veia rala, como seca).
     Canvas c(size);
-    c.xs = 1.0f / 0.8f;
+    c.xs = 0.9f;  // tarjeta 0.9 de ancha (KindRules del abeto)
     const float W = static_cast<float>(size) * c.xs;
     const float s = static_cast<float>(size);
     std::mt19937 rng(123U);
     std::uniform_real_distribution<float> uni(0.0f, 1.0f);
-    const Vec3 twig_col{0.38f, 0.27f, 0.17f};
+    const Vec3 twig_col{0.4f, 0.29f, 0.18f};
     std::vector<std::vector<std::array<float, 2>>> twigs;
-    const auto main = curve(W * 0.5f, s * 0.995f, -kPi * 0.5f, s * 0.92f, 0.05f, 16);
+    const auto main = curve(W * 0.5f, s * 0.995f, -kPi * 0.5f, s * 0.9f, 0.05f, 18);
     twigs.push_back(main);
-    for (int k = 0; k < 10; ++k) {
-        const float t = 0.12f + 0.08f * static_cast<float>(k);
-        const auto& p = main[static_cast<std::size_t>(t * 16.0f)];
+    const float margin = s * 0.07f;
+    for (int k = 0; k < 14; ++k) {
+        const float t = 0.06f + 0.06f * static_cast<float>(k);
+        const auto& p = main[static_cast<std::size_t>(t * 18.0f)];
         const float side = k % 2 == 0 ? -1.0f : 1.0f;
-        const float len = s * 0.42f * std::sin(kPi * std::min(0.25f + t, 1.0f)) * (0.85f + 0.25f * uni(rng));
-        twigs.push_back(curve(p[0], p[1], -kPi * 0.5f + side * (0.85f + 0.15f * uni(rng)), len, -side * 0.25f, 8));
+        float len = s * 0.5f * (1.0f - 0.78f * t) * (0.88f + 0.2f * uni(rng));
+        const float ang = -kPi * 0.5f + side * (0.95f + 0.18f * uni(rng));
+        std::vector<std::array<float, 2>> tw;
+        for (int it = 0; it < 12; ++it) {
+            tw = curve(p[0], p[1], ang, len, -side * 0.22f, 8);
+            const auto& e = tw.back();
+            if (e[0] > margin && e[0] < W - margin && e[1] > margin) break;
+            len *= 0.9f;
+        }
+        twigs.push_back(tw);
     }
-    for (std::size_t k = 0; k < twigs.size(); ++k) drawStem(c, twigs[k], s * (k == 0 ? 0.008f : 0.004f), s * 0.002f, twig_col, 0.0f);
-    // Agujas cortas y planas en peine a los dos lados de cada ramita.
+    for (std::size_t k = 0; k < twigs.size(); ++k) drawStem(c, twigs[k], s * (k == 0 ? 0.008f : 0.0045f), s * 0.0022f, twig_col, 0.0f);
+    // Agujas cortas en peine a los dos lados de cada ramita.
+    struct Needle {
+        std::vector<std::array<float, 2>> pts;
+        Vec3 color;
+        float depth;
+    };
+    std::vector<Needle> needles;
     for (std::size_t k = 0; k < twigs.size(); ++k) {
         const auto& tw = twigs[k];
         float total = 0.0f;
         for (std::size_t i = 1; i < tw.size(); ++i) total += std::hypot(tw[i][0] - tw[i - 1][0], tw[i][1] - tw[i - 1][1]);
-        const int count = static_cast<int>(total / (s * 0.0045f));
+        const int count = static_cast<int>(total / (s * 0.0036f));
         for (int n = 0; n < count; ++n) {
-            const float t = (static_cast<float>(n) + uni(rng) * 0.5f) / static_cast<float>(count);
+            const float t = (static_cast<float>(n) + uni(rng) * 0.5f) / static_cast<float>(std::max(count, 1));
             const float fi = t * static_cast<float>(tw.size() - 1);
-            const auto i0 = static_cast<std::size_t>(fi);
-            const std::size_t i1 = std::min(i0 + 1, tw.size() - 1);
+            const auto i0 = std::min(static_cast<std::size_t>(fi), tw.size() - 2);
             const float f = fi - static_cast<float>(i0);
-            const float px = mixF(tw[i0][0], tw[i1][0], f), py = mixF(tw[i0][1], tw[i1][1], f);
-            const float dir = std::atan2(tw[i1][1] - tw[i0][1], tw[i1][0] - tw[i0][0] + 1e-6f);
+            const float px = mixF(tw[i0][0], tw[i0 + 1][0], f), py = mixF(tw[i0][1], tw[i0 + 1][1], f);
+            const float dir = std::atan2(tw[i0 + 1][1] - tw[i0][1], tw[i0 + 1][0] - tw[i0][0] + 1e-6f);
             const float side = n % 2 == 0 ? -1.0f : 1.0f;
-            const float ang = dir + side * (1.15f + 0.25f * uni(rng));
-            const float len = s * (0.032f + 0.012f * uni(rng)) * (k == 0 ? 1.15f : 1.0f);
-            const float fresh = smoothstepF(0.72f, 1.0f, t);
-            const Vec3 col = jitterColor(rng, mixV(Vec3{0.07f, 0.16f, 0.08f}, Vec3{0.2f, 0.34f, 0.13f}, fresh), 0.12f);
-            drawStem(c, curve(px, py, ang, len, side * 0.15f, 3), s * 0.0032f, s * 0.0026f, col, 0.45f, 0.9f, true);
+            const float ang = dir + side * (1.0f + 0.3f * uni(rng));
+            // Mas cortas en la punta de cada ramita (las nuevas).
+            const float len = s * (0.04f + 0.02f * uni(rng)) * (k == 0 ? 1.1f : 1.0f) * (1.0f - 0.35f * smoothstepF(0.8f, 1.0f, t));
+            const float fresh = smoothstepF(0.7f, 1.0f, t);
+            Needle nd;
+            nd.pts = curve(px, py, ang, len, side * 0.15f, 3);
+            nd.color = jitterColor(rng, mixV(Vec3{0.1f, 0.19f, 0.1f}, Vec3{0.24f, 0.36f, 0.15f}, fresh), 0.12f);
+            nd.depth = uni(rng);
+            needles.push_back(nd);
         }
+    }
+    std::sort(needles.begin(), needles.end(), [](const Needle& a, const Needle& b) { return a.depth < b.depth; });
+    for (const Needle& n : needles) {
+        drawStem(c, n.pts, s * 0.0042f, s * 0.0032f, n.color * (0.7f + 0.3f * n.depth), 0.45f, 0.85f + 0.15f * n.depth, true);
     }
     return c;
 }
@@ -1855,7 +2179,7 @@ void toLevels(Canvas c, bool alpha_test, float normal_strength, std::vector<std:
     {
         const int n = c.size;
         const float strength = normal_strength * static_cast<float>(n) / 512.0f;
-        for (int y = 0; y < n; ++y) {
+        parallelRows(n, [&](int y) {
             for (int x = 0; x < n; ++x) {
                 const auto hat = [&](int xx, int yy) {
                     if (alpha_test) {
@@ -1871,14 +2195,15 @@ void toLevels(Canvas c, bool alpha_test, float normal_strength, std::vector<std:
                 nx[i] = nn.x;
                 ny[i] = nn.y;
             }
-        }
+        });
     }
     std::vector<float> r = c.r, g = c.g, b = c.b, a = c.a, ao = c.ao, ex = c.ex;
     // Color de las zonas transparentes: el de las hojas cercanas (sin bordes oscuros).
     if (alpha_test) {
         for (int pass = 0; pass < 7; ++pass) {
             std::vector<float> r2 = r, g2 = g, b2 = b, ao2 = ao, ex2 = ex;
-            for (std::uint32_t y = 0; y < size; ++y) {
+            parallelRows(static_cast<int>(size), [&](int row) {
+                const auto y = static_cast<std::uint32_t>(row);
                 for (std::uint32_t x = 0; x < size; ++x) {
                     const std::size_t i = static_cast<std::size_t>(y) * size + x;
                     if (a[i] > 0.01f) continue;
@@ -1906,7 +2231,7 @@ void toLevels(Canvas c, bool alpha_test, float normal_strength, std::vector<std:
                         ex2[i] = sex / w;
                     }
                 }
-            }
+            });
             r = std::move(r2);
             g = std::move(g2);
             b = std::move(b2);
@@ -2075,6 +2400,7 @@ TreeTextures generateTreeTextures(std::uint32_t size) {
         {kTreeLayerWillowLeaves, true, 1.3f},
         {kTreeLayerFirNeedles, true, 1.2f},
         {kTreeLayerPalmBark, false, 3.0f},
+        {kTreeLayerPineShoot, true, 1.2f},
     }};
     const auto run = [&](const Job& job) {
         Canvas c = [&]() {
@@ -2088,12 +2414,13 @@ TreeTextures generateTreeTextures(std::uint32_t size) {
                 case kTreeLayerBirchLeaves: return birchLeaves(n);
                 case kTreeLayerWillowLeaves: return willowLeaves(n);
                 case kTreeLayerFirNeedles: return firNeedles(n);
+                case kTreeLayerPineShoot: return pineShoot(n);
                 default: return palmBark(n);
             }
         }();
         toLevels(std::move(c), job.leaf, job.strength, t.albedo[job.layer], t.normal[job.layer], mips);
     };
-    const unsigned threads = std::clamp(std::thread::hardware_concurrency(), 1u, 5u);
+    const unsigned threads = std::clamp(std::thread::hardware_concurrency(), 1u, static_cast<unsigned>(jobs.size()));
     std::vector<std::thread> pool;
     for (unsigned w = 0; w < threads; ++w) {
         pool.emplace_back([&, w]() {

@@ -1,5 +1,5 @@
 <p>El componente Script y los que usan los prefabs. Referencia completa generada desde el motor.</p>
-<h3 id="Script">Script (Lua) <code>Script</code></h3>
+<h3 id="Script">Script Lua (obsoleto) <code>Script</code></h3>
 <p>Un script de Lua (<code>.lua</code> en Assets) y los valores de sus <code>properties</code> para esta entidad. Ver <a href="primer-script.html">Tu primer script</a>.</p>
 <table>
   <thead><tr><th>Propiedad</th><th>Tipo</th><th>Por defecto</th><th>Valores</th><th>Descripcion</th></tr></thead>
@@ -34,6 +34,19 @@
     <tr><td>&nbsp;&nbsp;&nbsp;Nombre<br><code>name</code></td><td>texto</td><td>(vacio)</td><td></td><td></td></tr>
     <tr><td>&nbsp;&nbsp;&nbsp;Tipo<br><code>type</code></td><td>entero</td><td>2</td><td>0 a 5</td><td></td></tr>
     <tr><td>&nbsp;&nbsp;&nbsp;Valor<br><code>value</code></td><td>texto</td><td>(vacio)</td><td></td><td></td></tr>
+  </tbody>
+</table>
+<h3 id="CppScript">C++ Script <code>CppScript</code></h3>
+<p>Script de C++ (la clase de CRAMION_SCRIPT en un .cpp de Assets). Corre aislado en otro proceso: si falla, el motor sigue y la Consola dice el archivo y la linea. Ver <a href="scripts-cpp.html">Scripts en C++</a>.</p>
+<table>
+  <thead><tr><th>Propiedad</th><th>Tipo</th><th>Por defecto</th><th>Valores</th><th>Descripcion</th></tr></thead>
+  <tbody>
+    <tr><td>Script<br><code>script</code></td><td>texto</td><td>(vacio)</td><td></td><td></td></tr>
+    <tr><td>Clase<br><code>class_name</code></td><td>texto</td><td>(vacio)</td><td></td><td></td></tr>
+    <tr><td>Activo<br><code>enabled</code></td><td>si/no</td><td>si</td><td></td><td></td></tr>
+    <tr><td colspan="5"><strong class="text-white">Valores (lista)</strong> <code>values</code></td></tr>
+    <tr><td>&nbsp;&nbsp;&nbsp;Nombre<br><code>name</code></td><td>texto</td><td>(vacio)</td><td></td><td></td></tr>
+    <tr><td>&nbsp;&nbsp;&nbsp;Valor<br><code>json</code></td><td>texto</td><td>(vacio)</td><td></td><td></td></tr>
   </tbody>
 </table>
 <h3 id="PrefabInstance">Instancia de prefab <code>PrefabInstance</code></h3>
