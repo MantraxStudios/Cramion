@@ -976,6 +976,21 @@ const RenderSync::HumanoidInfo& RenderSync::humanoidInfo(std::uint32_t model, co
     if (info.map.valid) {
         Vec3 right{};
         humanoid::characterAxes(info.map, info.rest, right, info.up, info.forward);
+        // En reposo los dedos de los pies miran hacia delante: si el esqueleto
+        // tiene los lados cambiados, "delante" sale al reves (y el IK doblaria
+        // las rodillas hacia atras).
+        using humanoid::Bone;
+        Vec3 toes{};
+        for (const auto& [foot, toe] : {std::pair{Bone::LeftFoot, Bone::LeftToes}, std::pair{Bone::RightFoot, Bone::RightToes}}) {
+            if (info.map[foot] < 0 || info.map[toe] < 0) continue;
+            const Mat4& a = info.rest[static_cast<std::size_t>(info.map[foot])];
+            const Mat4& b = info.rest[static_cast<std::size_t>(info.map[toe])];
+            toes = toes + Vec3{b.m[3][0] - a.m[3][0], b.m[3][1] - a.m[3][1], b.m[3][2] - a.m[3][2]};
+        }
+        toes = toes - info.up * core::dot(toes, info.up);
+        if (core::length(toes) > 1e-5f && core::dot(core::normalize(toes), info.forward) < -0.3f) {
+            info.forward = info.forward * -1.0f;
+        }
     } else if (info.rig.valid) {
         info.up = info.rig.up;
         info.forward = info.rig.forward;
@@ -992,7 +1007,6 @@ void RenderSync::applyInverseKinematics(World& world, Entity entity, const Inver
     const auto follow = [delta_seconds](float rate) {
         return delta_seconds > 0.0f ? 1.0f - std::exp(-rate * std::min(delta_seconds, 0.1f)) : 1.0f;
     };
-    constexpr float kFootRate = 14.0f;   // pies y cadera (~70 ms)
     constexpr float kLimbRate = 12.0f;   // manos y pies a su objetivo
     constexpr float kLookRate = 5.0f;    // la mirada pasa de un objeto a otro (~0.2 s)
     constexpr float kLookFade = 3.0f;    // peso de la mirada al aparecer o perder el objetivo
@@ -1000,7 +1014,6 @@ void RenderSync::applyInverseKinematics(World& world, Entity entity, const Inver
     const Mat4& world_matrix = entity.worldMatrix();
     const Mat4 to_model = core::inverse(world_matrix);
     const auto point_to_model = [&](const Vec3& p) { return transformPoint(to_model, p); };
-    const auto dir_to_model = [&](const Vec3& d) { return core::normalize(transformDirection(to_model, d)); };
     // Posicion (y giro) de una entidad objetivo en el espacio del modelo.
     const auto target_of = [&](const Uuid& id, Vec3& position, Quat* rotation) {
         if (!id.valid()) return false;
@@ -1025,71 +1038,118 @@ void RenderSync::applyInverseKinematics(World& world, Entity entity, const Inver
     const humanoid::Map& map = human.map;
     using humanoid::Bone;
     const auto node = [&](Bone b) { return map.valid ? map[b] : -1; };
+    const Vec3 up_world{0.0f, 1.0f, 0.0f};
+    // Si la animacion tiene la pierna o el brazo casi recto, la rodilla se
+    // dobla hacia delante y el codo hacia atras y abajo (sin esto se doblaban
+    // hacia cualquier lado: la rodilla hacia dentro, contra la otra pierna).
+    const Vec3 knee_hint = human.forward;
+    const Vec3 elbow_hint = core::normalize(human.forward * -0.8f - human.up * 0.6f);
 
-    // --- Pies en el suelo ---
-    if (ik.foot_grounding && map.valid && ground_query_ && ik.grounding_weight > 0.0f) {
-        const Vec3 up_world{0.0f, 1.0f, 0.0f};
-        const float base_y = world_matrix.m[3][1];  // los pies del personaje, en la animacion
-        struct Foot {
-            Bone upper, lower, foot;
-            bool hit = false;
-            Vec3 world{};
-            float delta = 0.0f;
-            Vec3 normal{0.0f, 1.0f, 0.0f};
-        };
-        Foot feet[2] = {{Bone::LeftUpperLeg, Bone::LeftLowerLeg, Bone::LeftFoot},
-                        {Bone::RightUpperLeg, Bone::RightLowerLeg, Bone::RightFoot}};
-        float lowest = 0.0f;
-        int foot_index = -1;
-        for (Foot& f : feet) {
-            float& smoothed = smooth.feet[++foot_index];
-            f.world = transformPoint(world_matrix, ik::nodePosition(pose, node(f.foot)));
-            const float lift = f.world.y - base_y;  // cuanto levanta el pie la animacion
-            Vec3 ground{};
-            Vec3 normal{};
-            const Vec3 origin{f.world.x, base_y + ik.max_step + 0.05f, f.world.z};
-            if (!ground_query_(origin, up_world * -1.0f, ik.max_step * 2.0f + 0.1f, ground, normal, entity)) {
-                smoothed += (0.0f - smoothed) * follow(kFootRate);
-                continue;
+    // --- Pies y patas en el suelo (anim/FootPlacement.h) ---
+    // Los dos pies del humanoide y las cadenas "Al suelo" de cualquier
+    // esqueleto: cada pie se apoya en lo que tiene debajo (con la punta en
+    // los escalones), la cadera o el cuerpo baja lo que haga falta, en el aire
+    // no se apoya nada y con 3 patas o mas el cuerpo se inclina.
+    bool human_grounded = false;
+    {
+        std::vector<ik::GroundLeg> legs;
+        std::vector<Vec3> poles;
+        poles.reserve(ik.chains.size());
+        if (ground_query_ && ik.grounding_weight > 0.0f) {
+            const Bone sides[2][4] = {{Bone::LeftUpperLeg, Bone::LeftLowerLeg, Bone::LeftFoot, Bone::LeftToes},
+                                      {Bone::RightUpperLeg, Bone::RightLowerLeg, Bone::RightFoot, Bone::RightToes}};
+            if (ik.foot_grounding && map.valid) {
+                for (const auto& side : sides) {
+                    ik::GroundLeg leg;
+                    leg.joints = {node(side[0]), node(side[1]), node(side[2])};
+                    leg.toe = node(side[3]);
+                    leg.bend_hints = {Vec3{}, knee_hint, Vec3{}};
+                    legs.push_back(std::move(leg));
+                }
+                human_grounded = true;
             }
-            f.hit = true;
-            f.normal = normal;
-            const float wanted = std::clamp(ground.y + lift - f.world.y, -ik.max_step, ik.max_step);
-            smoothed += (wanted - smoothed) * follow(kFootRate);
-            f.delta = smoothed;
-            lowest = std::min(lowest, f.delta);
-        }
-        // La cadera baja lo que baje el pie mas bajo (si no, esa pierna no llega).
-        if (lowest < 0.0f) {
-            const Vec3 offset = transformDirection(to_model, up_world * (lowest * ik.grounding_weight));
-            ik::translateGlobal(pose, node(Bone::Hips), offset);
-        }
-        for (const Foot& f : feet) {
-            if (!f.hit) continue;
-            const Vec3 target = point_to_model(Vec3{f.world.x, f.world.y + f.delta, f.world.z});
-            ik::twoBone(pose, node(f.upper), node(f.lower), node(f.foot), target, nullptr, ik.grounding_weight);
-            if (ik.align_feet) {
-                const Quat tilt = ik::rotationBetween(dir_to_model(up_world), dir_to_model(f.normal));
-                ik::rotateGlobal(pose, node(f.foot), core::slerp(Quat{}, tilt, ik.grounding_weight));
+            for (const IKChain& chain : ik.chains) {
+                if (!chain.ground || chain.weight <= 0.0f) continue;
+                ik::GroundLeg leg;
+                leg.joints = ik::chainTo(data.nodes, findBone(data, chain.bone), std::clamp(chain.length, 1, 16));
+                if (leg.joints.size() < 2) continue;
+                leg.weight = chain.weight;
+                // La rodilla de un perro hacia delante y el corvejon hacia atras:
+                // como en su pose de reposo, girada con el cuerpo.
+                leg.bend_hints = ik::restBendHints(pose, human.rest, leg.joints);
+                Vec3 hint{};
+                if (target_of(chain.hint, hint, nullptr)) {
+                    poles.push_back(hint);
+                    leg.pole = &poles.back();
+                }
+                legs.push_back(std::move(leg));
             }
+        }
+        if (!legs.empty()) {
+            // Otras patas (se cambio el componente): se empieza de cero.
+            std::uint64_t key = 1469598103934665603ull;
+            for (const ik::GroundLeg& leg : legs) {
+                for (const int j : leg.joints) key = (key ^ static_cast<std::uint64_t>(j + 1)) * 1099511628211ull;
+                key = (key ^ 0xFFFFu) * 1099511628211ull;
+            }
+            if (key != smooth.ground_key) {
+                smooth.ground = ik::GroundState{};
+                smooth.ground_key = key;
+            }
+            std::vector<int> roots;
+            for (const ik::GroundLeg& leg : legs) roots.push_back(leg.joints.front());
+            // El humanoide baja la cadera (de ella cuelgan la columna y las
+            // piernas); un animal, donde se unen sus patas.
+            const int body = human_grounded && node(Bone::Hips) >= 0 ? node(Bone::Hips)
+                                                                       : procedural::commonAncestor(data.nodes, roots);
+            ik::GroundSettings settings;
+            settings.weight = ik.grounding_weight;
+            settings.max_step = ik.max_step;
+            settings.align_feet = ik.align_feet;
+            settings.align_body = ik.align_body;
+            settings.body_align_weight = ik.body_align_weight;
+            const ik::GroundRay ray = [&](const Vec3& o, const Vec3& d, float max, Vec3& p, Vec3& n) {
+                return ground_query_(o, d, max, p, n, entity);
+            };
+            const int support = support_query_ ? support_query_(entity) : -1;
+            ik::groundLegs(pose, world_matrix, body, legs, human.forward, settings, ray, smooth.ground, delta_seconds,
+                           support > 0 ? ik::Support::Ground : support == 0 ? ik::Support::Air : ik::Support::Unknown);
+        } else if (smooth.ground_key != 0) {
+            smooth.ground = ik::GroundState{};
+            smooth.ground_key = 0;
         }
     }
 
     // --- Pies bloqueados (anti-patinaje) ---
     // Apoyado = el pie esta abajo (cerca de la altura minima que ha tenido) y
     // casi quieto en el mundo. Entonces se clava donde esta; se suelta cuando
-    // la animacion lo levanta o la pierna tendria que estirarse demasiado.
+    // la animacion lo levanta, la pierna tendria que estirarse demasiado, el
+    // personaje gira (las piernas se retorcerian) o el pie clavado quedaria al
+    // otro lado del cuerpo (se cruzarian).
     if (ik.foot_locking && map.valid) {
         const float base_y = world_matrix.m[3][1];
+        Vec3 facing = transformDirection(world_matrix, human.forward);
+        facing.y = 0.0f;
+        facing = core::length(facing) > 1e-5f ? core::normalize(facing) : Vec3{0.0f, 0.0f, 1.0f};
+        const Vec3 right = core::normalize(core::cross(facing, up_world));
+        const Vec3 hips = node(Bone::Hips) >= 0 ? transformPoint(world_matrix, ik::nodePosition(pose, node(Bone::Hips)))
+                                                : transformPoint(world_matrix, Vec3{});
         const Bone legs[2][3] = {{Bone::LeftUpperLeg, Bone::LeftLowerLeg, Bone::LeftFoot},
                                  {Bone::RightUpperLeg, Bone::RightLowerLeg, Bone::RightFoot}};
         for (int i = 0; i < 2; ++i) {
             const int foot = node(legs[i][2]);
-            if (foot < 0 || node(legs[i][0]) < 0 || node(legs[i][1]) < 0) continue;
+            const int upper = node(legs[i][0]);
+            const int lower = node(legs[i][1]);
+            if (foot < 0 || upper < 0 || lower < 0) continue;
             IKSmoothing::FootLock& lock = smooth.lock[i];
             const Vec3 p = transformPoint(world_matrix, ik::nodePosition(pose, foot));
+            const Vec3 hip_joint = transformPoint(world_matrix, ik::nodePosition(pose, upper));
+            const Vec3 knee = transformPoint(world_matrix, ik::nodePosition(pose, lower));
+            const float leg_length = core::length(knee - hip_joint) + core::length(p - knee);
             // Cuanto levanta el pie la animacion (sin lo que lo movio el suelo).
-            const float lift = p.y - base_y - (ik.foot_grounding ? smooth.feet[i] : 0.0f);
+            const float lift = human_grounded && smooth.ground.feet.size() >= 2
+                                   ? smooth.ground.feet[static_cast<std::size_t>(i)].lift
+                                   : p.y - base_y;
             const Vec3 moved = p - lock.last;
             if (!lock.has_last || core::length(moved) > 2.0f) {
                 // Primer frame o teletransporte: se empieza de cero.
@@ -1103,13 +1163,21 @@ void RenderSync::applyInverseKinematics(World& world, Entity entity, const Inver
                                     : 0.0f;
             const bool down = lift < lock.floor + 0.035f;
             const bool planted = lock.has_last && delta_seconds > 0.0f && down && speed < ik.foot_lock_speed;
+            const float max_reach = 0.985f * leg_length;
             if (!lock.locked && planted) {
                 lock.locked = true;
                 lock.position = p;
+                lock.facing = facing;
             } else if (lock.locked) {
                 const float dx = lock.position.x - p.x;
                 const float dz = lock.position.z - p.z;
-                if (lift > lock.floor + 0.06f || std::sqrt(dx * dx + dz * dz) > ik.foot_lock_release) {
+                const float turned = std::acos(std::clamp(core::dot(lock.facing, facing), -1.0f, 1.0f)) * 180.0f / core::kPi;
+                const float side_now = core::dot(p - hips, right);
+                const float side_lock = core::dot(lock.position - hips, right);
+                const bool crossing = side_now * side_lock < 0.0f && std::abs(side_lock - side_now) > 0.04f * leg_length;
+                const bool too_far = core::length(Vec3{lock.position.x, p.y, lock.position.z} - hip_joint) > max_reach;
+                if (lift > lock.floor + 0.06f || std::sqrt(dx * dx + dz * dz) > ik.foot_lock_release || turned > 35.0f ||
+                    crossing || too_far) {
                     lock.locked = false;
                 }
             }
@@ -1119,14 +1187,26 @@ void RenderSync::applyInverseKinematics(World& world, Entity entity, const Inver
             if (lock.weight > 0.001f) {
                 // La altura la manda la animacion (y el suelo); se clava en horizontal.
                 const Vec3 held{lock.position.x, p.y, lock.position.z};
-                const Vec3 goal = p + (held - p) * lock.weight;
-                ik::twoBone(pose, node(legs[i][0]), node(legs[i][1]), foot, point_to_model(goal), nullptr, 1.0f);
+                float amount = lock.weight;
+                // Nunca mas lejos de lo que llega la pierna (se despegaria del
+                // suelo): se acerca a donde la pone la animacion.
+                if (core::length(p - hip_joint) <= max_reach && core::length(p + (held - p) * amount - hip_joint) > max_reach) {
+                    float lo = 0.0f;
+                    float hi = amount;
+                    for (int k = 0; k < 12; ++k) {
+                        const float mid = (lo + hi) * 0.5f;
+                        (core::length(p + (held - p) * mid - hip_joint) > max_reach ? hi : lo) = mid;
+                    }
+                    amount = lo;
+                }
+                const Vec3 goal = p + (held - p) * amount;
+                ik::twoBone(pose, upper, lower, foot, point_to_model(goal), nullptr, 1.0f, &knee_hint);
             }
         }
     }
 
     // --- Manos y pies a sus objetivos ---
-    const auto limb = [&](int index, const IKLimb& l, Bone upper, Bone lower, Bone end) {
+    const auto limb = [&](int index, const IKLimb& l, Bone upper, Bone lower, Bone end, const Vec3& bend) {
         Vec3 target{};
         Quat rotation{};
         if (!map.valid || l.weight <= 0.0f || !goal_of(l.target, l.use_position, l.position, target, &rotation)) {
@@ -1141,7 +1221,7 @@ void RenderSync::applyInverseKinematics(World& world, Entity entity, const Inver
         target = point_to_model(smooth.limb[index]);
         Vec3 hint{};
         const bool has_hint = target_of(l.hint, hint, nullptr);
-        ik::twoBone(pose, node(upper), node(lower), node(end), target, has_hint ? &hint : nullptr, l.weight);
+        ik::twoBone(pose, node(upper), node(lower), node(end), target, has_hint ? &hint : nullptr, l.weight, &bend);
         if (l.match_rotation && !l.use_position) {
             // Objetivo sin girar = el giro de reposo de la mano/el pie.
             const Quat rest = [&] {
@@ -1155,10 +1235,10 @@ void RenderSync::applyInverseKinematics(World& world, Entity entity, const Inver
             ik::setGlobalRotation(pose, node(end), core::slerp(ik::nodeRotation(pose, node(end)), wanted, l.weight));
         }
     };
-    limb(0, ik.left_hand, Bone::LeftUpperArm, Bone::LeftLowerArm, Bone::LeftHand);
-    limb(1, ik.right_hand, Bone::RightUpperArm, Bone::RightLowerArm, Bone::RightHand);
-    limb(2, ik.left_foot, Bone::LeftUpperLeg, Bone::LeftLowerLeg, Bone::LeftFoot);
-    limb(3, ik.right_foot, Bone::RightUpperLeg, Bone::RightLowerLeg, Bone::RightFoot);
+    limb(0, ik.left_hand, Bone::LeftUpperArm, Bone::LeftLowerArm, Bone::LeftHand, elbow_hint);
+    limb(1, ik.right_hand, Bone::RightUpperArm, Bone::RightLowerArm, Bone::RightHand, elbow_hint);
+    limb(2, ik.left_foot, Bone::LeftUpperLeg, Bone::LeftLowerLeg, Bone::LeftFoot, knee_hint);
+    limb(3, ik.right_foot, Bone::RightUpperLeg, Bone::RightLowerLeg, Bone::RightFoot, knee_hint);
 
     // --- Mirar: el giro se reparte entre el cuello y la cabeza ---
     // El hueso que mira: el pedido, la cabeza del humanoide o la del animal.
@@ -1201,113 +1281,6 @@ void RenderSync::applyInverseKinematics(World& world, Entity entity, const Inver
         }
         std::reverse(bones.begin(), bones.end());
         ik::lookChain(pose, bones, facing(look_node), look, smooth.look_weight, ik.look_max_angle);
-    }
-
-    // --- Patas al suelo (cualquier esqueleto: animales) ---
-    // Como los pies del humanoide: cada pie se apoya en lo que tiene debajo, el
-    // cuerpo baja lo que baje el pie mas bajo y, con 3 o mas patas, se inclina
-    // con la pendiente (cuesta arriba, de lado).
-    struct GroundFoot {
-        std::vector<int> joints;
-        const IKChain* chain = nullptr;
-        Vec3 world{};
-        float delta = 0.0f;
-        Vec3 normal{0.0f, 1.0f, 0.0f};
-        bool hit = false;
-    };
-    std::vector<GroundFoot> grounded;
-    if (ground_query_ && ik.grounding_weight > 0.0f) {
-        std::size_t leg_index = 0;
-        const Vec3 up_world{0.0f, 1.0f, 0.0f};
-        const float base_y = world_matrix.m[3][1];
-        for (const IKChain& chain : ik.chains) {
-            if (!chain.ground || chain.weight <= 0.0f) continue;
-            GroundFoot f;
-            f.chain = &chain;
-            f.joints = ik::chainTo(data.nodes, findBone(data, chain.bone), std::clamp(chain.length, 1, 16));
-            if (f.joints.size() < 2) continue;
-            f.world = transformPoint(world_matrix, ik::nodePosition(pose, f.joints.back()));
-            const float lift = f.world.y - base_y;
-            Vec3 ground{};
-            Vec3 normal{};
-            const Vec3 origin{f.world.x, base_y + ik.max_step + 0.05f, f.world.z};
-            if (smooth.legs.size() <= leg_index) smooth.legs.resize(leg_index + 1, 0.0f);
-            float& smoothed = smooth.legs[leg_index++];
-            if (ground_query_(origin, up_world * -1.0f, ik.max_step * 2.0f + 0.1f, ground, normal, entity)) {
-                f.hit = true;
-                f.normal = normal;
-                const float wanted = std::clamp(ground.y + lift - f.world.y, -ik.max_step, ik.max_step);
-                smoothed += (wanted - smoothed) * follow(kFootRate);
-                f.delta = smoothed;
-            } else {
-                smoothed += (0.0f - smoothed) * follow(kFootRate);
-            }
-            grounded.push_back(std::move(f));
-        }
-        std::vector<int> roots;
-        float lowest = 0.0f;
-        float mean = 0.0f;
-        int hits = 0;
-        for (const GroundFoot& f : grounded) {
-            roots.push_back(f.joints.front());
-            if (!f.hit) continue;
-            lowest = std::min(lowest, f.delta);
-            mean += f.delta;
-            ++hits;
-        }
-        mean = hits > 0 ? mean / static_cast<float>(hits) : 0.0f;
-        const int body = procedural::commonAncestor(data.nodes, roots);
-        const bool tilting = ik.align_body && ik.body_align_weight > 0.0f && hits >= 3;
-        if (body >= 0 && !grounded.empty()) {
-            // El cuerpo baja lo que baje la pata mas baja (si no, no llega);
-            // si ademas se inclina, la inclinacion reparte las diferencias y
-            // basta con bajar la media.
-            const float drop = tilting ? std::min(mean, 0.0f) : lowest;
-            if (drop < 0.0f) {
-                ik::translateGlobal(pose, body, transformDirection(to_model, up_world * (drop * ik.grounding_weight)));
-            }
-            // Inclinar con la pendiente bajo las patas (3 o mas apoyadas).
-            if (tilting) {
-                std::vector<Vec3> feet;
-                std::vector<float> heights;
-                for (const GroundFoot& f : grounded) {
-                    if (!f.hit) continue;
-                    feet.push_back(f.world);
-                    heights.push_back(f.delta);
-                }
-                const Vec3 forward = transformDirection(world_matrix, human.forward);
-                const Quat tilt = ik::groundTilt(feet, heights, forward);
-                // El giro del mundo con su eje pasado al modelo.
-                const float w = std::clamp(tilt.w, -1.0f, 1.0f);
-                const float s = std::sqrt(std::max(1.0f - w * w, 0.0f));
-                if (s > 1e-5f) {
-                    const Vec3 axis = core::normalize(transformDirection(to_model, Vec3{tilt.x / s, tilt.y / s, tilt.z / s}));
-                    const float angle = 2.0f * std::acos(w) * ik.body_align_weight * ik.grounding_weight;
-                    const Vec3 a = axis * std::sin(angle * 0.5f);
-                    // Gira alrededor del centro de las caderas y los hombros (no
-                    // de la cadera: el pecho bajaria el doble).
-                    const auto center = [&] {
-                        Vec3 c{};
-                        for (const int r : roots) c = c + ik::nodePosition(pose, r);
-                        return c * (1.0f / static_cast<float>(roots.size()));
-                    };
-                    const Vec3 before = center();
-                    ik::rotateGlobal(pose, body, Quat{a.x, a.y, a.z, std::cos(angle * 0.5f)});
-                    ik::translateGlobal(pose, body, before - center());
-                }
-            }
-        }
-        for (const GroundFoot& f : grounded) {
-            if (!f.hit) continue;
-            const Vec3 target = point_to_model(Vec3{f.world.x, f.world.y + f.delta, f.world.z});
-            Vec3 hint{};
-            const bool has_hint = target_of(f.chain->hint, hint, nullptr);
-            ik::chain(pose, f.joints, target, has_hint ? &hint : nullptr, ik.grounding_weight * f.chain->weight);
-            if (ik.align_feet) {
-                const Quat tilt = ik::rotationBetween(dir_to_model(up_world), dir_to_model(f.normal));
-                ik::rotateGlobal(pose, f.joints.back(), core::slerp(Quat{}, tilt, ik.grounding_weight));
-            }
-        }
     }
 
     // --- Cadenas a un objetivo (cualquier esqueleto) ---

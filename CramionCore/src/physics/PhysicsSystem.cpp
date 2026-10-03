@@ -213,12 +213,55 @@ std::uint64_t entityToUserData(entt::entity entity) {
 bool isFootGround(const ecs::Entity& hit, const ecs::Entity& self) {
     if (!hit.valid()) return true;  // terreno u otra cosa sin entidad
     if (hit == self || self.isAncestorOf(hit) || hit.isAncestorOf(self)) return false;
+    // Lo que cuelga del mismo personaje en otra rama (el modelo en un hijo y
+    // la capsula o un collider de los pies en otro): el antepasado que lo
+    // mueve (Character Controller o Rigidbody que no es estatico) y todo lo suyo.
+    for (ecs::Entity e = self.parent(); e.valid(); e = e.parent()) {
+        const Rigidbody* rb = e.tryGet<Rigidbody>();
+        if (e.has<CharacterController>() || (rb != nullptr && rb->type != BodyType::Static)) {
+            if (e.isAncestorOf(hit)) return false;
+            break;
+        }
+    }
     if (hit.has<ecs::Ragdoll>()) return false;
     if (const Rigidbody* rb = hit.tryGet<Rigidbody>(); rb != nullptr && rb->type == BodyType::Dynamic) return false;
     for (ecs::Entity e = hit; e.valid(); e = e.parent()) {
         if (e.has<CharacterController>()) return false;
     }
     return true;
+}
+
+bool footGroundRaycast(const PhysicsSystem& physics, const Vec3& origin, const Vec3& direction, float max_distance,
+                       Vec3& point, Vec3& normal, const ecs::Entity& self) {
+    const float length = core::length(direction);
+    if (length < 1e-8f) return false;
+    const Vec3 dir = direction * (1.0f / length);
+    QueryFilter filter;
+    filter.triggers = QueryTriggers::Ignore;
+    filter.record = false;
+    float best = max_distance + 1.0f;
+    for (const RaycastHit& hit : physics.raycastAll(origin, dir, max_distance, filter)) {
+        if (hit.trigger || hit.distance >= best) continue;
+        // Empieza dentro de algo (distancia 0, normal inventada): no es suelo.
+        if (hit.distance < 1e-3f) continue;
+        // Pared o techo (o la cara de abajo de una malla): no es suelo.
+        if (core::dot(hit.normal, dir) > -0.5f) continue;
+        if (!isFootGround(hit.entity, self)) continue;
+        best = hit.distance;
+        point = hit.point;
+        normal = hit.normal;
+    }
+    return best <= max_distance;
+}
+
+int characterSupport(const PhysicsSystem& physics, const ecs::Entity& self) {
+    for (ecs::Entity e = self; e.valid(); e = e.parent()) {
+        if (!e.has<CharacterController>()) continue;
+        const PhysicsSystem::CharacterState state = physics.characterState(e);
+        if (!state.valid) return -1;
+        return state.grounded || state.ground_state == PhysicsSystem::CharacterGround::OnSteepGround ? 1 : 0;
+    }
+    return -1;
 }
 
 namespace {

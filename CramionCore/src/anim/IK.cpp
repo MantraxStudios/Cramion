@@ -82,7 +82,8 @@ void setGlobalRotation(const Pose& pose, int node, const Quat& rotation) {
     rotateGlobal(pose, node, ecs::quatMultiply(rotation, ecs::quatConjugate(current)));
 }
 
-bool twoBone(const Pose& pose, int upper, int mid, int end, const Vec3& target, const Vec3* pole, float weight) {
+bool twoBone(const Pose& pose, int upper, int mid, int end, const Vec3& target, const Vec3* pole, float weight,
+             const Vec3* bend_hint) {
     const int n = static_cast<int>(pose.nodes->size());
     if (upper < 0 || mid < 0 || end < 0 || upper >= n || mid >= n || end >= n || weight <= 0.0f) return false;
     const Vec3 a = nodePosition(pose, upper);
@@ -104,20 +105,56 @@ bool twoBone(const Pose& pose, int upper, int mid, int end, const Vec3& target, 
     float distance = core::length(to_goal);
     if (distance < 1e-6f) return false;
     const Vec3 dir = to_goal * (1.0f / distance);
-    // IK blando: el ultimo 8 % del alcance se acerca de forma asintotica (sin
-    // el chasquido del codo/rodilla que se bloquea recto de golpe).
-    const float soft = reach * 0.08f;
-    const float hard = reach - soft;
-    if (distance > hard) distance = hard + soft * (1.0f - std::exp(-(distance - hard) / soft));
-    distance = std::clamp(distance, std::abs(l1 - l2) + 1e-4f, reach * 0.9999f);
+    // IK blando: lo que se estira MAS que en la animacion se acerca al largo
+    // total de forma asintotica (sin el chasquido de la rodilla que se bloquea
+    // recta de golpe). Empieza en el 92 % del alcance o donde ya lo tenia la
+    // animacion: antes empezaba siempre en el 92 % y una pierna casi recta
+    // (andar, de pie) se encogia aunque el objetivo fuera su propio pie, y
+    // el pie se quedaba 2-4 cm en el aire.
+    const float limit = reach * 0.9999f;
+    const float soft_start = std::max(reach * 0.92f, std::min(core::length(c - a), limit));
+    if (distance > soft_start) {
+        const float room = limit - soft_start;
+        distance = room > 1e-6f ? soft_start + room * (1.0f - std::exp(-(distance - soft_start) / room)) : soft_start;
+    }
+    distance = std::clamp(distance, std::abs(l1 - l2) + 1e-4f, limit);
 
     // Hacia donde se dobla: el pole o, sin el, hacia donde ya se doblaba
-    // (el codo respecto a la linea hombro-mano).
-    Vec3 bend = pole != nullptr ? *pole - a : b - (a + c) * 0.5f;
-    bend = bend - dir * core::dot(bend, dir);
+    // (el codo respecto a la linea hombro-mano). Si la animacion lo tiene casi
+    // recto esa direccion es ruido: manda la pista (rodilla hacia delante).
+    const auto across = [&](const Vec3& v) { return v - dir * core::dot(v, dir); };
+    Vec3 bend = pole != nullptr ? across(*pole - a) : Vec3{};
     if (core::length(bend) < 1e-5f) {
-        bend = b - a;
-        bend = bend - dir * core::dot(bend, dir);
+        Vec3 own = b - a;
+        const Vec3 line = c - a;
+        const float line_len2 = core::dot(line, line);
+        if (line_len2 > 1e-12f) own = own - line * (core::dot(own, line) / line_len2);
+        const float bent = core::length(own) / l1;  // seno del angulo en la raiz: 0 = recto
+        own = across(own);
+        bend = own;
+        if (bend_hint != nullptr) {
+            Vec3 hint = across(*bend_hint);
+            if (core::length(hint) > 1e-5f) {
+                hint = core::normalize(hint);
+                const auto smooth01 = [](float e0, float e1, float x) {
+                    const float t = std::clamp((x - e0) / (e1 - e0), 0.0f, 1.0f);
+                    return t * t * (3.0f - 2.0f * t);
+                };
+                float keep = smooth01(0.04f, 0.2f, bent);  // cuanto manda la animacion
+                if (core::length(own) < 1e-6f) {
+                    keep = 0.0f;
+                } else if (core::dot(own, hint) < 0.0f) {
+                    // Doblado al reves: un pelo es una rodilla hiperextendida (se
+                    // corrige); mucho es la animacion que lo quiere asi.
+                    keep *= smooth01(0.2f, 0.45f, bent);
+                }
+                bend = keep > 0.0f ? core::normalize(own) * keep + hint * (1.0f - keep) : hint;
+                if (core::length(bend) < 1e-5f) bend = hint;  // justo opuestos a medias
+            }
+        }
+    }
+    if (core::length(bend) < 1e-5f) {
+        bend = across(b - a);
         if (core::length(bend) < 1e-5f) return false;
     }
     bend = core::normalize(bend);
@@ -129,10 +166,15 @@ bool twoBone(const Pose& pose, int upper, int mid, int end, const Vec3& target, 
     const Vec3 new_end = a + dir * distance;
 
     // 1) el hueso de arriba lleva el codo a su sitio; 2) el del medio, la mano.
+    // La mano o el pie conserva su giro de la animacion (como el Two Bone IK
+    // de Unreal): si girara con la espinilla, al subir el pie a un escalon la
+    // punta se clavaba en el.
+    const Quat end_rotation = nodeRotation(pose, end);
     rotateGlobal(pose, upper, rotationBetween(core::normalize(b - a), core::normalize(new_mid - a)));
     const Vec3 mid_now = nodePosition(pose, mid);
     const Vec3 end_now = nodePosition(pose, end);
     rotateGlobal(pose, mid, rotationBetween(core::normalize(end_now - mid_now), core::normalize(new_end - mid_now)));
+    setGlobalRotation(pose, end, end_rotation);
     return true;
 }
 
@@ -149,15 +191,64 @@ std::vector<int> chainTo(const std::vector<asset::Node>& nodes, int end, int bon
     return joints;
 }
 
+namespace {
+
+// Lo que se aparta `p` de la recta que pasa por `from` y `to` (perpendicular).
+Vec3 offLine(const Vec3& p, const Vec3& from, const Vec3& to) {
+    const Vec3 axis = to - from;
+    const float len2 = core::dot(axis, axis);
+    const Vec3 rel = p - from;
+    return len2 > 1e-12f ? rel - axis * (core::dot(rel, axis) / len2) : rel;
+}
+
+}  // namespace
+
+std::vector<Vec3> restBendHints(const Pose& pose, const std::vector<Mat4>& rest, const std::vector<int>& joints) {
+    std::vector<Vec3> hints(joints.size(), Vec3{});
+    const int n = static_cast<int>(pose.nodes->size());
+    if (joints.size() < 3 || rest.size() != pose.nodes->size()) return hints;
+    for (const int j : joints) {
+        if (j < 0 || j >= n) return hints;
+    }
+    const auto rest_at = [&](int node) {
+        const Mat4& m = rest[static_cast<std::size_t>(node)];
+        return Vec3{m.m[3][0], m.m[3][1], m.m[3][2]};
+    };
+    // Lo que ha girado el padre de la cadena (el cuerpo) desde su reposo.
+    Quat turn{};
+    const int parent = (*pose.nodes)[static_cast<std::size_t>(joints.front())].parent;
+    if (parent >= 0) {
+        Vec3 t{};
+        Quat r{};
+        Vec3 s{};
+        ecs::decomposeMatrix(rest[static_cast<std::size_t>(parent)], t, r, s);
+        turn = core::normalize(ecs::quatMultiply(nodeRotation(pose, parent), ecs::quatConjugate(r)));
+    }
+    for (std::size_t i = 1; i + 1 < joints.size(); ++i) {
+        const Vec3 prev = rest_at(joints[i - 1]);
+        const Vec3 next = rest_at(joints[i + 1]);
+        const Vec3 off = offLine(rest_at(joints[i]), prev, next);
+        // Recta en reposo (menos de ~3 grados): sin pista.
+        const float span = core::length(next - prev);
+        if (span < 1e-6f || core::length(off) < span * 0.025f) continue;
+        hints[i] = ecs::quatRotate(turn, core::normalize(off));
+    }
+    return hints;
+}
+
 bool chain(const Pose& pose, const std::vector<int>& joints, const Vec3& target, const Vec3* pole, float weight,
-           int iterations) {
+           int iterations, const std::vector<Vec3>* bend_hints) {
     const std::size_t count = joints.size();
     const int n = static_cast<int>(pose.nodes->size());
     if (count < 2 || weight <= 0.0f) return false;
     for (const int j : joints) {
         if (j < 0 || j >= n) return false;
     }
-    if (count == 3) return twoBone(pose, joints[0], joints[1], joints[2], target, pole, weight);
+    const bool hinted = bend_hints != nullptr && bend_hints->size() == count;
+    if (count == 3) {
+        const Vec3* hint = hinted && core::length((*bend_hints)[1]) > 1e-6f ? &(*bend_hints)[1] : nullptr;
+        return twoBone(pose, joints[0], joints[1], joints[2], target, pole, weight, hint);
+    }
 
     std::vector<Vec3> p(count);
     std::vector<float> length(count - 1);
@@ -171,13 +262,34 @@ bool chain(const Pose& pose, const std::vector<int>& joints, const Vec3& target,
     const Vec3 root = p[0];
     const Vec3 goal = p.back() + (target - p.back()) * std::clamp(weight, 0.0f, 1.0f);
 
+    // Hacia que lado se dobla cada articulacion de en medio: el de la
+    // animacion si esta bien doblada; si esta casi recta, el de la pista (y
+    // se empieza un poco doblada hacia ella: FABRIK con una cadena recta no
+    // sabe hacia donde doblarla y la dejaba atravesando el suelo o al reves).
+    std::vector<Vec3> side(count, Vec3{});
+    bool seeded = false;
+    for (std::size_t i = 1; i + 1 < count; ++i) {
+        const Vec3 off = offLine(p[i], p[i - 1], p[i + 1]);
+        const float shorter = std::min(length[i - 1], length[i]);
+        const Vec3 hint = hinted ? (*bend_hints)[i] : Vec3{};
+        const bool has_hint = core::length(hint) > 1e-6f;
+        if (core::length(off) > shorter * 0.1f) {
+            side[i] = core::normalize(off);
+        } else if (has_hint) {
+            side[i] = core::normalize(hint);
+            p[i] = p[i] - off + side[i] * (shorter * 0.1f);
+            seeded = true;
+        }
+    }
+
     if (core::length(goal - root) >= total) {
         // No llega: estirada hacia el objetivo.
         const Vec3 dir = core::normalize(goal - root);
         for (std::size_t i = 0; i + 1 < count; ++i) p[i + 1] = p[i] + dir * length[i];
     } else {
         const float tolerance = total * 1e-4f;
-        for (int it = 0; it < iterations && core::length(p.back() - goal) > tolerance; ++it) {
+        // (Con la cadena empezada doblada, al menos una vuelta: los largos.)
+        for (int it = 0; it < iterations && (core::length(p.back() - goal) > tolerance || (seeded && it == 0)); ++it) {
             // Hacia atras: el extremo al objetivo.
             p.back() = goal;
             for (std::size_t i = count - 1; i-- > 0;) {
@@ -211,9 +323,24 @@ bool chain(const Pose& pose, const std::vector<int>& joints, const Vec3& target,
                 const Quat turn = rotationBetween(core::normalize(joint), core::normalize(wanted));
                 p[i] = p[i - 1] + core::dot(p[i] - p[i - 1], axis) * axis + ecs::quatRotate(turn, joint);
             }
+        } else {
+            // Ninguna doblada al reves de su lado: se refleja sobre la recta
+            // entre sus vecinas (los dos largos y el extremo no cambian).
+            for (std::size_t i = 1; i + 1 < count; ++i) {
+                const Vec3 line = p[i + 1] - p[i - 1];
+                if (core::length(side[i]) < 1e-6f || core::length(line) < 1e-6f) continue;
+                const Vec3 axis = core::normalize(line);
+                // El lado, visto desde la recta de ahora (si giro mucho, no se sabe).
+                const Vec3 ref = side[i] - axis * core::dot(side[i], axis);
+                if (core::length(ref) < 0.5f) continue;
+                const Vec3 off = offLine(p[i], p[i - 1], p[i + 1]);
+                if (core::dot(off, ref) < 0.0f) p[i] = p[i] - off * 2.0f;
+            }
         }
     }
-    // Cada hueso apunta a su nueva articulacion (los hijos le siguen).
+    // Cada hueso apunta a su nueva articulacion (los hijos le siguen). El
+    // extremo (el pie, la pezuna) conserva su giro de la animacion.
+    const Quat end_rotation = nodeRotation(pose, joints.back());
     for (std::size_t i = 0; i + 1 < count; ++i) {
         const Vec3 from = nodePosition(pose, joints[i]);
         const Vec3 now = nodePosition(pose, joints[i + 1]) - from;
@@ -221,6 +348,7 @@ bool chain(const Pose& pose, const std::vector<int>& joints, const Vec3& target,
         if (core::length(now) < 1e-6f || core::length(wanted) < 1e-6f) continue;
         rotateGlobal(pose, joints[i], rotationBetween(core::normalize(now), core::normalize(wanted)));
     }
+    setGlobalRotation(pose, joints.back(), end_rotation);
     return true;
 }
 

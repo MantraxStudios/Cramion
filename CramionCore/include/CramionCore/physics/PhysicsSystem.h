@@ -81,10 +81,24 @@ const char* eventTypeName(PhysicsEventType type);
 bool isTriggerEvent(PhysicsEventType type);
 
 // Suelo valido para apoyar los pies con IK: lo estatico o cinematico del
-// escenario. No cuentan el propio personaje, otros personajes (su capsula),
-// los ragdolls ni los objetos dinamicos (una caja que rueda, un cuerpo caido):
-// los pies acababan pisando al rival y el cuerpo subia por el aire.
+// escenario. No cuentan el propio personaje (su capsula, su modelo, sus
+// armas, ni los colliders que cuelgan del mismo Character Controller o
+// Rigidbody aunque esten en otra rama), otros personajes (su capsula), los
+// ragdolls ni los objetos dinamicos (una caja que rueda, un cuerpo caido):
+// los pies acababan pisando al rival o a si mismos y el cuerpo subia por el aire.
 bool isFootGround(const ecs::Entity& hit, const ecs::Entity& self);
+
+class PhysicsSystem;
+// El rayo de los pies (IK): el impacto mas cercano que es suelo para `self`
+// (isFootGround), sin contar los que empiezan dentro de algo (el pie metido en
+// una pared o un escalon mas alto que el rayo: daba un impacto a distancia 0
+// y el pie saltaba hacia arriba) ni paredes o techos (normal casi horizontal).
+bool footGroundRaycast(const PhysicsSystem& physics, const core::Vec3& origin, const core::Vec3& direction,
+                       float max_distance, core::Vec3& point, core::Vec3& normal, const ecs::Entity& self);
+// ¿Pisa suelo el personaje de `self`? (el Character Controller de `self` o
+// de un antepasado): 1 si, 0 en el aire, -1 no se sabe (no tiene o la fisica
+// no esta en marcha). Para el IK de los pies.
+int characterSupport(const PhysicsSystem& physics, const ecs::Entity& self);
 
 struct PhysicsEvent {
     PhysicsEventType type = PhysicsEventType::CollisionEnter;

@@ -1,6 +1,8 @@
 # Cambios
 
-## Sin publicar
+## 2.2.0
+
+Rendimiento con **Insights** (perfilador de CPU con capturas para Perfetto) y presupuestos para animación, partículas y audio; **pies en el suelo rehechos** para humanos y animales (sin pies flotando, escaleras sin tirones, rodillas que siempre se doblan bien) y el audio que **se para de verdad** al dar Stop.
 
 ### Rendimiento
 - **Insights** (*Ventana > Insights*): perfilador de CPU con árbol de zonas (media, propio, p95, máximo, llamadas), resumen del frame (p50/p95/p99, tirones), contadores y capturas **`.crtrace`** que se abren en Perfetto o `chrome://tracing`. Los **tirones se capturan solos** (`prof.HitchMs`) y la consola dice qué zona se comió el frame, también en el juego exportado. API: `CR_PROFILE_SCOPE`, Lua `Profiler.*`, herramienta MCP `profiler`.
@@ -11,6 +13,15 @@
 - Los clips `.cranim` se leen más rápido (sin copiar los arrays de claves).
 
 ### Animación e IK
+- **Pies en el suelo, rehechos** (humanos y patas de animales, un mismo solver `anim/FootPlacement`):
+  - Los pies **ya no flotan** al andar ni de pie: el IK blando encogía la pierna casi recta aunque el objetivo fuera su propio pie (2-4 cm en el aire, más con *Bloquear pies*).
+  - **Escaleras y obstáculos**: cada pie mira el suelo bajo el tobillo y bajo la punta (la punta no se mete en el escalón) y el pie que va por el aire sube antes de llegar a la tabica. El suelo de cada pie se guarda en el mundo: cuando el Character Controller sube o baja un escalón de golpe, el pie apoyado se queda y la cadera ya no pega un salto.
+  - Solo los pies que la animación apoya bajan a buscar el suelo y sujetan la cadera; el que va por el aire sigue a la cadera.
+  - **En el aire** (saltar, caer) el IK se aparta solo: el Character Controller dice si pisa suelo; sin él, por cómo sube o cae. Al despegar ya no hunde la cadera ni estira las piernas hacia el suelo.
+  - **Rodillas**: con la pierna recta en la animación se doblaban hacia cualquier lado (hacia dentro, contra la otra pierna, o hacia atrás al subir un escalón); ahora siempre hacia delante. Los codos, hacia atrás. Las patas de animal se doblan como en su pose de reposo y ninguna articulación queda al revés (FABRIK con la pata recta no sabía hacia dónde doblarla).
+  - El rayo de los pies ya no cuenta lo que empieza **dentro de una pared** o de un escalón alto (el pie saltaba hacia arriba y se giraba de lado), ni paredes o techos, ni colliders del **propio personaje** que cuelgan de su Rigidbody o Character Controller en otra rama.
+  - **Bloquear pies** se suelta al girar, si la pierna ya no llega (antes despegaba el pie del suelo) o si el pie clavado quedaría al otro lado del cuerpo (las piernas se cruzaban).
+- **Patas procedurales**: el pie ya no se sube a cajas o mesas que tiene al lado (el rayo salía ~0.75 m por encima del cuerpo) y el cuerpo se inclina como mucho 35°.
 - **IK blando**: brazos y piernas ya no se bloquean rectos de golpe al llegar a su largo, y un objetivo fuera de alcance deja de tirar del miembro (antes cualquier cosa cercana lo estiraba).
 - **Pies en el suelo** ya no pisan a otros personajes, ragdolls ni objetos dinámicos.
 - **`crossFade(estado, segundos)`** (como `Animator.CrossFade`): saltar a un estado del Animator desde Lua o C++; espera a que su clip esté leído (nunca pose T). `animatorState()` y `animatorStateTime()`.
@@ -21,6 +32,7 @@
 - El **ragdoll** de un personaje no choca con su propia cápsula y los personajes no se suben encima de un cuerpo caído.
 
 ### Arreglos
+- **Audio al parar el Play**: la lluvia, el viento y los truenos del ambiente y la cola de la reverberación seguían sonando en el editor (fuera del Play nadie bajaba sus niveles). Ahora al parar se calla todo, cada sonido se libera y el volumen y el paso bajo del oyente vuelven a lo normal. **Pausar el Play** también pausa el audio (fuentes, sonidos sueltos, ambiente y ecos) y sigue donde iba.
 - Cerrar el editor con scripts de C++ cargados podía colgarse o fallar al salir.
 - El juego exportado siempre se cierra (si algo se atasca al salir, se termina a los 8 s) y deja en el log lo que tardó cada paso del cierre (`CRAMION_TRACE_SHUTDOWN=1`).
 - Lluvia y viento sintetizados más bajos (la lluvia fina sonaba como un aguacero).

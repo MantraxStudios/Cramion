@@ -3,8 +3,8 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Random · Documentación de Cramion</title>
-  <meta name="description" content="Aleatorios con semilla.">
+  <title>Insights y rendimiento · Documentación de Cramion</title>
+  <meta name="description" content="Perfilador de CPU, capturas .crtrace, tirones automáticos y optimizaciones (LOD de animación, presupuestos).">
   <meta name="theme-color" content="#09090b">
   <link rel="icon" href="../img/icon.png">
   <script>
@@ -23,7 +23,7 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/bash.min.js"></script>
   <script src="search.js"></script>
 </head>
-<body data-group="API de C++">
+<body data-group="El editor">
 
   <header class="site-header">
     <div class="header-inner">
@@ -66,8 +66,8 @@
         <div class="sheet-head"><a href="index.html" class="brand"><img src="../img/icon.png" alt=""><span>Cramion</span></a><button id="menu-close" class="icon-btn" aria-label="Cerrar el menú"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12"/></svg></button></div>
         <div class="group"><p class="group-title"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m3 11 9-8 9 8"/><path d="M5 10v10h14V10"/></svg>Inicio</p><a href="index.html">Introducción</a><a href="../index.html">Web de Cramion</a></div>
         <div class="group"><p class="group-title"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5a2 2 0 0 1 2-2h13v16H6a2 2 0 0 0-2 2V5Z"/><path d="M4 19a2 2 0 0 1 2-2h13"/></svg>Primeros pasos</p><a href="primer-script.html">Tu primer script</a><a href="ciclo-de-vida.html">Ciclo de vida</a><a href="propiedades.html">Propiedades</a><a href="recarga.html">Recarga en caliente</a><a href="prefabs.html">Prefabs</a><a href="mcp.html">Conectar una IA (MCP)</a><a href="licencia.html">Licencia</a></div>
-        <div class="group"><p class="group-title"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m8 8-4 4 4 4"/><path d="m16 8 4 4-4 4"/><path d="m14 4-4 16"/></svg>API de C++</p><a href="scripts-cpp.html">Scripts en C++ y CVars</a><a href="cpp-script.html">Script y propiedades</a><a href="cpp-entity.html">Entity</a><a href="cpp-matematicas.html">Mathf, Vec3, Quat y Color</a><a href="cpp-scene.html">Scene</a><a href="cpp-input.html">Input</a><a href="cpp-physics.html">Physics</a><a href="cpp-time.html">Time</a><a href="cpp-debug.html">Debug</a><a href="cpp-lua.html">Lua (puente)</a><a href="cpp-cvars.html">CVars</a><a href="cpp-mesh.html">Mesh (mallas por código)</a><a href="cpp-statemachine.html">StateMachine</a><a href="cpp-assert.html">Assert</a><a href="cpp-audio.html">Audio</a><a href="cpp-behaviortree.html">BehaviorTree</a><a href="cpp-charactercontroller.html">CharacterController</a><a href="cpp-datapack.html">DataPack</a><a href="cpp-dialogue.html">Dialogue</a><a href="cpp-environment.html">Environment</a><a href="cpp-fire.html">Fire</a><a href="cpp-fluid.html">Fluid</a><a href="cpp-game.html">Game</a><a href="cpp-graphics.html">Graphics</a><a href="cpp-http.html">Http</a><a href="cpp-json.html">Json</a><a href="cpp-navigation.html">Navigation</a><a href="cpp-network.html">Network</a><a href="cpp-physics2d.html">Physics2D</a><a href="cpp-prefs.html">Prefs</a><a href="cpp-random.html" class="active" aria-current="page">Random</a><a href="cpp-replay.html">Replay</a><a href="cpp-save.html">Save</a><a href="cpp-screen.html">Screen</a><a href="cpp-steam.html">Steam</a><a href="cpp-test.html">Test</a><a href="cpp-text.html">Text</a><a href="cpp-voxel.html">Voxel</a><a href="cpp-weather.html">Weather</a><a href="cpp-xr.html">XR</a></div>
-        <div class="group"><p class="group-title"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M9 9v11"/></svg>El editor</p><a href="editor-interfaz.html">Interfaz y pestañas</a><a href="editor-tema.html">Tema e Inspector</a><a href="editor-escena.html">Vista Escena y gizmos</a><a href="editor-jerarquia.html">Jerarquía e Inspector</a><a href="editor-proyecto.html">Proyecto e importación</a><a href="editor-play.html">Play, deshacer y escenas</a><a href="insights.html">Insights y rendimiento</a><a href="editor-herramientas.html">Herramientas de mundo</a><a href="modelado.html">Modelado poligonal</a><a href="2d.html">2D</a><a href="mundo-procedural.html">Mundo procedural</a><a href="ambiente.html">Ambiente y clima</a><a href="agua.html">Agua</a><a href="fuego.html">Fuego</a><a href="vfx-graph.html">VFX Graph</a><a href="liquidos.html">Líquidos</a><a href="destruccion.html">Destrucción</a><a href="vehiculos.html">Vehículos</a><a href="motion-matching.html">Motion Matching</a><a href="replays.html">Repeticiones</a><a href="editor-ventanas.html">Ventanas de herramientas</a><a href="maquinas-de-estados.html">Máquinas de estados</a><a href="visual-scripting.html">Visual Scripting</a><a href="behavior-trees.html">Behavior Trees</a><a href="dialogos.html">Diálogos</a><a href="localizacion.html">Localización</a><a href="guardado.html">Partidas guardadas</a><a href="materiales.html">Materiales</a><a href="shader-graph.html">Shader Graph</a><a href="render-textures.html">Render Textures</a><a href="render.html">Render y rendimiento</a><a href="iluminacion-horneada.html">Iluminación horneada</a><a href="exportar.html">Exportar y compilación</a><a href="steam.html">Steam</a><a href="linux.html">Linux</a><a href="git.html">Control de versiones (Git)</a><a href="pruebas.html">Pruebas automáticas</a><a href="datapacks.html">DataPacks (bundles)</a><a href="plantillas.html">Plantillas</a><a href="atajos.html">Atajos de teclado</a><a href="actualizaciones.html">Actualizaciones</a></div>
+        <div class="group"><p class="group-title"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m8 8-4 4 4 4"/><path d="m16 8 4 4-4 4"/><path d="m14 4-4 16"/></svg>API de C++</p><a href="scripts-cpp.html">Scripts en C++ y CVars</a><a href="cpp-script.html">Script y propiedades</a><a href="cpp-entity.html">Entity</a><a href="cpp-matematicas.html">Mathf, Vec3, Quat y Color</a><a href="cpp-scene.html">Scene</a><a href="cpp-input.html">Input</a><a href="cpp-physics.html">Physics</a><a href="cpp-time.html">Time</a><a href="cpp-debug.html">Debug</a><a href="cpp-lua.html">Lua (puente)</a><a href="cpp-cvars.html">CVars</a><a href="cpp-mesh.html">Mesh (mallas por código)</a><a href="cpp-statemachine.html">StateMachine</a><a href="cpp-assert.html">Assert</a><a href="cpp-audio.html">Audio</a><a href="cpp-behaviortree.html">BehaviorTree</a><a href="cpp-charactercontroller.html">CharacterController</a><a href="cpp-datapack.html">DataPack</a><a href="cpp-dialogue.html">Dialogue</a><a href="cpp-environment.html">Environment</a><a href="cpp-fire.html">Fire</a><a href="cpp-fluid.html">Fluid</a><a href="cpp-game.html">Game</a><a href="cpp-graphics.html">Graphics</a><a href="cpp-http.html">Http</a><a href="cpp-json.html">Json</a><a href="cpp-navigation.html">Navigation</a><a href="cpp-network.html">Network</a><a href="cpp-physics2d.html">Physics2D</a><a href="cpp-prefs.html">Prefs</a><a href="cpp-random.html">Random</a><a href="cpp-replay.html">Replay</a><a href="cpp-save.html">Save</a><a href="cpp-screen.html">Screen</a><a href="cpp-steam.html">Steam</a><a href="cpp-test.html">Test</a><a href="cpp-text.html">Text</a><a href="cpp-voxel.html">Voxel</a><a href="cpp-weather.html">Weather</a><a href="cpp-xr.html">XR</a></div>
+        <div class="group"><p class="group-title"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M9 9v11"/></svg>El editor</p><a href="editor-interfaz.html">Interfaz y pestañas</a><a href="editor-tema.html">Tema e Inspector</a><a href="editor-escena.html">Vista Escena y gizmos</a><a href="editor-jerarquia.html">Jerarquía e Inspector</a><a href="editor-proyecto.html">Proyecto e importación</a><a href="editor-play.html">Play, deshacer y escenas</a><a href="insights.html" class="active" aria-current="page">Insights y rendimiento</a><a href="editor-herramientas.html">Herramientas de mundo</a><a href="modelado.html">Modelado poligonal</a><a href="2d.html">2D</a><a href="mundo-procedural.html">Mundo procedural</a><a href="ambiente.html">Ambiente y clima</a><a href="agua.html">Agua</a><a href="fuego.html">Fuego</a><a href="vfx-graph.html">VFX Graph</a><a href="liquidos.html">Líquidos</a><a href="destruccion.html">Destrucción</a><a href="vehiculos.html">Vehículos</a><a href="motion-matching.html">Motion Matching</a><a href="replays.html">Repeticiones</a><a href="editor-ventanas.html">Ventanas de herramientas</a><a href="maquinas-de-estados.html">Máquinas de estados</a><a href="visual-scripting.html">Visual Scripting</a><a href="behavior-trees.html">Behavior Trees</a><a href="dialogos.html">Diálogos</a><a href="localizacion.html">Localización</a><a href="guardado.html">Partidas guardadas</a><a href="materiales.html">Materiales</a><a href="shader-graph.html">Shader Graph</a><a href="render-textures.html">Render Textures</a><a href="render.html">Render y rendimiento</a><a href="iluminacion-horneada.html">Iluminación horneada</a><a href="exportar.html">Exportar y compilación</a><a href="steam.html">Steam</a><a href="linux.html">Linux</a><a href="git.html">Control de versiones (Git)</a><a href="pruebas.html">Pruebas automáticas</a><a href="datapacks.html">DataPacks (bundles)</a><a href="plantillas.html">Plantillas</a><a href="atajos.html">Atajos de teclado</a><a href="actualizaciones.html">Actualizaciones</a></div>
         <div class="group"><p class="group-title"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m12 3 8 4.5v9L12 21l-8-4.5v-9L12 3Z"/><path d="m4 7.5 8 4.5 8-4.5M12 12v9"/></svg>Componentes</p><a href="componentes.html">Todos los componentes</a><a href="componentes-basicos.html">Transform y renderizado</a><a href="componentes-entorno.html">Entorno</a><a href="componentes-fisica.html">Física</a><a href="componentes-efectos.html">Partículas y depuración</a><a href="componentes-animacion.html">Animación</a><a href="componentes-audio.html">Audio</a><a href="componentes-cinematicas.html">Cámaras y cinemáticas</a><a href="componentes-navegacion.html">Navegación</a><a href="componentes-ui.html">Interfaz (UI)</a><a href="componentes-scripting.html">Scripts y prefabs</a><a href="componentes-2d.html">2D</a><a href="componentes-iluminacion.html">Iluminación horneada</a><a href="componentes-vr.html">Realidad virtual</a></div>
         <div class="group"><p class="group-title"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a9 9 0 1 0 0 18c1.1 0 1.5-.8 1.5-1.5 0-.9-.7-1.2-.7-2 0-.8.6-1.5 1.5-1.5H16a5 5 0 0 0 5-5c0-4.4-4-8-9-8Z"/><circle cx="7.5" cy="11" r="1"/><circle cx="10" cy="7" r="1"/><circle cx="15" cy="7.5" r="1"/></svg>Gráficos</p><a href="shaders.html">Shaders propios</a></div>
         <div class="group"><p class="group-title"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v4M12 17v4M3 12h4M17 12h4M6 6l2.5 2.5M15.5 15.5 18 18M6 18l2.5-2.5M15.5 8.5 18 6"/></svg>Ejemplos</p><a href="ejemplo-girar.html">Girar un objeto</a><a href="ejemplo-camara.html">Cámara que sigue al jugador</a><a href="ejemplo-jugador.html">Jugador con física</a><a href="ejemplo-disparo.html">Disparo con raycast</a><a href="ejemplo-monedas.html">Monedas y puntuación</a><a href="ejemplo-spawner.html">Generador de enemigos</a><a href="ejemplo-vehiculo.html">Conducir un vehículo</a><a href="ejemplo-menu.html">Menú, opciones y récord</a><a href="ejemplo-animacion.html">Animación de un personaje</a><a href="ejemplo-comunicacion.html">Scripts que se hablan</a><a href="ejemplo-ia.html">IA: patrullar y perseguir</a><a href="ejemplo-terreno.html">Terreno procedural con colisión</a><a href="ejemplo-efectos.html">Varios materiales y efectos</a><a href="ejemplo-olas.html">Olas: cambiar la malla cada frame</a></div>
@@ -83,32 +83,80 @@
 
     <main class="doc">
       <div class="doc-inner">
-        <nav class="crumbs" aria-label="Ruta"><a href="index.html">Documentación</a><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m9 6 6 6-6 6"/></svg><span>API de C++</span><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m9 6 6 6-6 6"/></svg><span class="here">Random</span></nav>
-        <h1>Random</h1>
-        <p class="lede">Aleatorios con semilla.</p>
+        <nav class="crumbs" aria-label="Ruta"><a href="index.html">Documentación</a><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m9 6 6 6-6 6"/></svg><span>El editor</span><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m9 6 6 6-6 6"/></svg><span class="here">Insights y rendimiento</span></nav>
+        <h1>Insights y rendimiento</h1>
+        <p class="lede">Perfilador de CPU, capturas .crtrace, tirones automáticos y optimizaciones (LOD de animación, presupuestos).</p>
         <details class="toc-inline"><summary>En esta página <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg></summary><nav class="onpage"></nav></details>
         <div class="body">
-<p>Aleatorios con semilla.</p>
-
-<h3 id="random">Random</h3>
+<h3 id="insights">Insights: el perfilador de CPU</h3>
+<p>
+  <strong>Ventana &gt; Insights (perfilador de CPU)</strong> enseña en qué se va cada frame, como el Unreal Insights o el
+  Profiler de Unity: un árbol de <em>zonas</em> (Física, Scripts Lua, Scripts C++, RenderSync, Actores y animación, Render…)
+  con su media, su tiempo <em>propio</em> (sin las zonas de dentro), el p95, el máximo y las llamadas por frame. Arriba,
+  el resumen del frame (media, p50, p95, p99, máximo y tirones) y la gráfica de los últimos frames.
+</p>
 <table>
+  <thead><tr><th>Botón</th><th>Qué hace</th></tr></thead>
   <tbody>
-    <tr><td><code>Value chance(valor)</code></td><td>true con esa probabilidad</td></tr>
-    <tr><td><code>Value insideUnitCircle(...)</code></td><td>punto en el suelo (XZ)</td></tr>
-    <tr><td><code>Value insideUnitSphere(...)</code></td><td>punto dentro de la esfera</td></tr>
-    <tr><td><code>Value int_(min_, max_)</code></td><td>entero (incluye los dos)</td></tr>
-    <tr><td><code>Value onUnitSphere(...)</code></td><td>direccion al azar</td></tr>
-    <tr><td><code>Value pick(lista)</code></td><td>un elemento al azar</td></tr>
-    <tr><td><code>Value range(min_, max_)</code></td><td>decimal</td></tr>
-    <tr><td><code>Value rotation(...)</code></td><td>Quat al azar</td></tr>
-    <tr><td><code>Value seed(n)</code></td><td>fija la semilla</td></tr>
-    <tr><td><code>Value shuffle(lista)</code></td><td>baraja</td></tr>
-    <tr><td><code>Value sign(...)</code></td><td>-1 o 1</td></tr>
-    <tr><td><code>Value value(...)</code></td><td>0..1</td></tr>
+    <tr><td><code>Medir</code></td><td>Enciende o apaga el perfilador (<code>prof.Enabled</code>). Apagado no cuesta nada.</td></tr>
+    <tr><td><code>Congelar</code></td><td>Deja la tabla quieta para leerla.</td></tr>
+    <tr><td><code>Frames</code></td><td>Cuántos frames entran en las medias (10 a 600).</td></tr>
+    <tr><td><code>Capturar .crtrace</code></td><td>Guarda los últimos 600 frames (todas las zonas de todos los hilos y los contadores). Se abre arrastrándolo a <code>ui.perfetto.dev</code> o <code>chrome://tracing</code>.</td></tr>
+    <tr><td><code>Abrir carpeta</code></td><td>La carpeta de capturas: <code>%LOCALAPPDATA%\Cramion\Traces</code>.</td></tr>
   </tbody>
 </table>
+
+<h3 id="tirones">Capturas automáticas de tirones</h3>
+<p>
+  Si un frame tarda más que <code>prof.HitchMs</code> (50 ms por defecto), el motor guarda solo una captura
+  <code>tiron_FECHA_HORA_Nms.crtrace</code> con los frames de antes (<code>prof.HitchFrames</code>) y escribe en la consola
+  qué zona se comió el frame: <code>[Insights] Tiron de 485 ms (sobre todo RenderSync: 478 ms)</code>. También en el
+  juego exportado. Entre capturas pasan al menos <code>prof.HitchCooldown</code> segundos y se guardan como mucho
+  <code>prof.HitchKeep</code> (las viejas se borran).
+</p>
+
+<h3 id="zonas-propias">Zonas propias</h3>
+<p>Desde C++ (o Lua) se mide cualquier trozo del juego y sale en el árbol:</p>
+<pre><code>// C++ del motor (CramionCore): una zona hasta el final del bloque
+CR_PROFILE_SCOPE("Mi sistema");
+CR_PROFILE_COUNTER("Enemigos vivos", enemigos.size());</code></pre>
+<pre><code>-- Lua
+Profiler.begin("IA de los enemigos")
+-- ...
+Profiler.finish()
+Profiler.counter("Balas", #balas)
+local ms = Profiler.frameMs()          -- lo que tardo el ultimo frame
+local archivo = Profiler.capture(300)  -- guarda una captura de 300 frames
+for _, z in ipairs(Profiler.zones(5)) do print(z.name, z.ms, z.self) end</code></pre>
+<p>
+  Cada script de Lua es una zona propia (<code>Scripts/Enemigo.lua:Update</code>) y si uno pasa de <code>lua.BudgetMs</code>
+  (2 ms) en un frame, la consola lo avisa (como mucho una vez cada 5 segundos por script).
+</p>
+<p>
+  Por MCP, la herramienta <code>profiler</code> devuelve el resumen, las zonas y los contadores
+  (<code>action: "stats"</code>) o guarda una captura (<code>action: "capture"</code>).
+</p>
+
+<h3 id="optimizaciones">Optimizaciones automáticas</h3>
+<p>Los ajustes también están abajo en la ventana Insights y en <em>Variables (CVars)</em>.</p>
+<table>
+  <thead><tr><th>CVar</th><th>Por defecto</th><th>Qué hace</th></tr></thead>
+  <tbody>
+    <tr><td><code>anim.lod.Enabled</code></td><td>sí</td><td>LOD de animación: los personajes lejanos se animan menos veces por segundo (cada frame hasta <code>anim.lod.Near</code> m, 1 de 2 hasta <code>Mid</code>, 1 de 4 hasta <code>Far</code>, 1 de 8 más lejos y <code>Offscreen</code> detrás de la cámara). Los que tienen ragdoll, tela o motion matching van siempre a tiempo.</td></tr>
+    <tr><td><code>fx.particles.Budget</code></td><td>30000</td><td>Partículas vivas como mucho en toda la escena: al acercarse al límite los emisores emiten menos, y nunca se pasa.</td></tr>
+    <tr><td><code>fx.particles.CullDistance</code></td><td>120 m</td><td>Más lejos los emisores no emiten.</td></tr>
+    <tr><td><code>fx.particles.CollisionDistance</code></td><td>40 m</td><td>Más lejos (o detrás de la cámara) las partículas no chocan con la física.</td></tr>
+    <tr><td><code>audio.MaxVoices</code></td><td>32</td><td>Sonidos que se mezclan de verdad. Los que menos se oyen pasan a <em>virtuales</em>: siguen "sonando" para el juego (<code>isPlaying</code>) y vuelven por donde tocarían.</td></tr>
+    <tr><td><code>lua.BudgetMs</code></td><td>2 ms</td><td>Aviso por script de Lua que se come el frame.</td></tr>
+    <tr><td><code>prof.HitchMs</code></td><td>50 ms</td><td>Umbral de las capturas automáticas de tirones (0 = sin capturas).</td></tr>
+  </tbody>
+</table>
+<div class="note">
+  Mide siempre con el motor en <strong>Release</strong> (la versión que se descarga). Una compilación Debug del motor es unas
+  diez veces más lenta en animación y scripts y los números no sirven para comparar.
+</div>
         </div>
-        <nav class="pager" aria-label="Paginación"><a href="cpp-prefs.html"><span>← Anterior</span><b>Prefs</b></a><a class="next" href="cpp-replay.html"><span>Siguiente →</span><b>Replay</b></a></nav>
+        <nav class="pager" aria-label="Paginación"><a href="editor-play.html"><span>← Anterior</span><b>Play, deshacer y escenas</b></a><a class="next" href="editor-herramientas.html"><span>Siguiente →</span><b>Herramientas de mundo</b></a></nav>
         <div class="help"><span>¿Algo no queda claro o falta algo? Pregunta en el
           <a href="https://discord.gg/zG7rSsUGEz" target="_blank" rel="noopener">Discord</a>.</span>
           <a href="https://paypal.me/evan2025" target="_blank" rel="noopener" class="btn btn-outline btn-sm"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M19 14c1.5-1.5 3-3.2 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.8 0-3 .5-4.5 2-1.5-1.5-2.7-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4 3 5.5l7 7Z"/></svg>Apoyar el proyecto</a></div>

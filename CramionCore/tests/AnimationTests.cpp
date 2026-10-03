@@ -1,5 +1,6 @@
 // Humanoides (deteccion y retargeting) y cinematica inversa.
 
+#include "CramionCore/anim/FootPlacement.h"
 #include "CramionCore/anim/Inertialization.h"
 #include "CramionCore/anim/Humanoid.h"
 #include "CramionCore/anim/IK.h"
@@ -20,6 +21,7 @@
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
+#include <functional>
 #include <map>
 #include <string>
 #include <vector>
@@ -661,6 +663,342 @@ void testChainAndCreature() {
     check(human_bones.size() == 12, "ragdoll del humanoide: los 12 huesos de siempre");
 }
 
+// --- Pies al suelo (anim/FootPlacement.h) -----------------------------------
+
+namespace {
+
+// Escalera de prueba hacia +Z: 5 escalones de 0.17 x 0.3 m desde z = 2, un
+// rellano de 1.2 m y 5 de bajada.
+float stairsHeight(float z) {
+    constexpr float kH = 0.17f;
+    constexpr float kD = 0.3f;
+    if (z < 2.0f) return 0.0f;
+    if (z < 2.0f + 5.0f * kD) return (std::floor((z - 2.0f) / kD) + 1.0f) * kH;
+    const float down = 2.0f + 5.0f * kD + 1.2f;
+    if (z < down) return 5.0f * kH;
+    if (z < down + 5.0f * kD) return (4.0f - std::floor((z - down) / kD)) * kH;
+    return 0.0f;
+}
+
+// Rayo hacia abajo contra un suelo de alturas (como la fisica del IK: si
+// empieza dentro de algo, no cuenta).
+ik::GroundRay heightRay(const std::function<float(float)>& height) {
+    return [height](const Vec3& o, const Vec3& d, float max, Vec3& p, Vec3& n) {
+        if (d.y >= 0.0f) return false;
+        const float h = height(o.z);
+        if (o.y < h || o.y - h > max) return false;
+        p = Vec3{o.x, h, o.z};
+        n = Vec3{0.0f, 1.0f, 0.0f};
+        return true;
+    };
+}
+
+// Andar sintetico (la "animacion" en el sitio, como un clip de Mixamo): la
+// cadera algo mas baja que en reposo y cada tobillo en su punto del ciclo:
+// apoyado va hacia atras a la velocidad del personaje (quieto en el mundo);
+// en el aire, hacia delante en arco. Las piernas casi rectas en los extremos.
+struct Gait {
+    float speed = 1.2f;  // m/s
+    float half = 0.25f;  // medio tramo apoyado (m)
+    float lift = 0.12f;  // altura del pie en el aire
+    float drop = 0.05f;  // la cadera, mas baja que en reposo
+    float cycle() const { return 2.0f * half / (speed * 0.6f); }
+};
+
+void poseGait(const ik::Pose& pose, const std::vector<asset::Node>& nodes, const humanoid::Map& map,
+              const std::vector<Mat4>& rest, float time, const Gait& g) {
+    using humanoid::Bone;
+    for (std::size_t i = 0; i < nodes.size(); ++i) (*pose.local)[i] = nodes[i].local;
+    ik::recomputeGlobals(pose);
+    ik::translateGlobal(pose, map[Bone::Hips], Vec3{0.0f, -g.drop, 0.0f});
+    const Bone legs[2][3] = {{Bone::LeftUpperLeg, Bone::LeftLowerLeg, Bone::LeftFoot},
+                             {Bone::RightUpperLeg, Bone::RightLowerLeg, Bone::RightFoot}};
+    for (int side = 0; side < 2; ++side) {
+        float phase = time / g.cycle() + (side == 0 ? 0.0f : 0.5f);
+        phase -= std::floor(phase);
+        float z = 0.0f;
+        float y = 0.08f;
+        if (phase < 0.6f) {
+            z = g.half - 2.0f * g.half * (phase / 0.6f);
+        } else {
+            const float s = (phase - 0.6f) / 0.4f;
+            z = -g.half + 2.0f * g.half * (s * s * (3.0f - 2.0f * s));
+            y += g.lift * std::sin(core::kPi * s);
+        }
+        const int foot = map[legs[side][2]];
+        const Vec3 pole = ik::nodePosition(pose, map[legs[side][1]]) + Vec3{0.0f, 0.0f, 1.0f};
+        ik::twoBone(pose, map[legs[side][0]], map[legs[side][1]], foot, Vec3{side == 0 ? 0.1f : -0.1f, y, z}, &pole, 1.0f);
+        Vec3 t{};
+        Quat r{};
+        Vec3 s{};
+        ecs::decomposeMatrix(rest[static_cast<std::size_t>(foot)], t, r, s);
+        ik::setGlobalRotation(pose, foot, r);  // el pie plano
+    }
+}
+
+// Pierna de 3 articulaciones (cadera, rodilla, tobillo) en el modelo.
+struct Leg3 {
+    std::vector<asset::Node> nodes;
+    std::vector<Mat4> local;
+    std::vector<Mat4> global;
+    ik::Pose pose;
+    explicit Leg3(const std::vector<Vec3>& joints) {
+        nodes.push_back({"root", -1, Mat4::identity()});
+        Vec3 parent{};
+        for (std::size_t i = 0; i < joints.size(); ++i) {
+            nodes.push_back({"j" + std::to_string(i), static_cast<int>(i), core::translate(joints[i] - parent)});
+            parent = joints[i];
+        }
+        for (const asset::Node& n : nodes) local.push_back(n.local);
+        global.resize(nodes.size());
+        pose = ik::Pose{&nodes, &local, &global};
+        ik::recomputeGlobals(pose);
+    }
+};
+
+// Lo que se aparta `p` de la recta a-b.
+Vec3 offLine(const Vec3& p, const Vec3& a, const Vec3& b) {
+    const Vec3 axis = b - a;
+    const Vec3 rel = p - a;
+    return rel - axis * (core::dot(rel, axis) / core::dot(axis, axis));
+}
+
+}  // namespace
+
+void testFootPlacement() {
+    std::printf("Pies al suelo (andar, escaleras, saltar)\n");
+    using humanoid::Bone;
+    const Vec3 forward{0.0f, 0.0f, 1.0f};
+
+    // --- twoBone: sin encoger la pierna ni doblar la rodilla hacia atras ---
+    {
+        // Pierna casi recta (99.9 %), el objetivo en su propio tobillo: antes
+        // el IK blando la encogia y el pie subia ~2.5 cm (pies flotando al andar).
+        Leg3 leg({{0.1f, 0.95f, 0.0f}, {0.1f, 0.52f, 0.02f}, {0.1f, 0.08f, 0.0f}});
+        const Vec3 ankle = ik::nodePosition(leg.pose, 3);
+        ik::twoBone(leg.pose, 1, 2, 3, ankle, nullptr, 1.0f, &forward);
+        const float moved = core::length(ik::nodePosition(leg.pose, 3) - ankle);
+        std::printf("    (el tobillo se mueve %.5f m)\n", moved);
+        check(moved < 1e-4f, "objetivo en su propio pie con la pierna casi recta: el pie no sube");
+    }
+    for (const float knee_z : {0.0f, -0.012f}) {
+        // Rodilla recta del todo o un pelo hiperextendida (hacia atras), y el
+        // pie sube 25 cm (un escalon): la rodilla va hacia delante.
+        Leg3 leg({{0.0f, 0.9f, 0.0f}, {0.0f, 0.45f, knee_z}, {0.0f, 0.0f, 0.0f}});
+        const bool solved = ik::twoBone(leg.pose, 1, 2, 3, Vec3{0.0f, 0.25f, 0.0f}, nullptr, 1.0f, &forward);
+        const float knee = ik::nodePosition(leg.pose, 2).z;
+        const float reach = core::length(ik::nodePosition(leg.pose, 3) - Vec3{0.0f, 0.25f, 0.0f});
+        std::printf("    (rodilla en z = %.3f, tobillo a %.4f m del objetivo)\n", knee, reach);
+        check(solved && knee > 0.1f && reach < 1e-3f,
+              knee_z == 0.0f ? "pierna recta del todo: la rodilla se dobla hacia delante"
+                             : "rodilla hiperextendida: al subir el pie se dobla hacia delante, no hacia atras");
+    }
+    {
+        // Pata de 3 huesos recta en la animacion; en reposo, la rodilla hacia
+        // delante y el corvejon hacia atras: al subir el pie se dobla como en
+        // reposo (FABRIK con una cadena recta no sabia hacia donde doblarla).
+        Leg3 rest_leg({{0.0f, 1.0f, 0.0f}, {0.0f, 0.66f, 0.08f}, {0.0f, 0.33f, 0.0f}, {0.0f, 0.0f, 0.0f}});
+        std::vector<Mat4> rest(rest_leg.global);
+        Leg3 leg({{0.0f, 1.0f, 0.0f}, {0.0f, 1.0f - 0.3493f, 0.0f}, {0.0f, 1.0f - 0.6889f, 0.0f}, {0.0f, 1.0f - 1.0189f, 0.0f}});
+        const std::vector<int> joints{1, 2, 3, 4};
+        const std::vector<Vec3> hints = ik::restBendHints(leg.pose, rest, joints);
+        const Vec3 goal = ik::nodePosition(leg.pose, 4) + Vec3{0.0f, 0.2f, 0.0f};
+        ik::chain(leg.pose, joints, goal, nullptr, 1.0f, 12, &hints);
+        const Vec3 p1 = ik::nodePosition(leg.pose, 1);
+        const Vec3 p2 = ik::nodePosition(leg.pose, 2);
+        const Vec3 p3 = ik::nodePosition(leg.pose, 3);
+        const Vec3 p4 = ik::nodePosition(leg.pose, 4);
+        const float error = core::length(p4 - goal);
+        std::printf("    (rodilla z = %.3f, corvejon z = %.3f, error %.4f m)\n", offLine(p2, p1, p3).z, offLine(p3, p2, p4).z, error);
+        check(hints[1].z > 0.9f && hints[2].z < -0.9f, "pistas del reposo: rodilla hacia delante, corvejon hacia atras");
+        check(error < 5e-3f && offLine(p2, p1, p3).z > 0.02f && offLine(p3, p2, p4).z < -0.02f,
+              "pata recta al subir el pie: se dobla como en reposo y llega");
+    }
+
+    // --- Andar con el humanoide ---
+    const std::vector<asset::Node> nodes = makeSkeleton(kMixamo, 0.0f, 1.0f, Mat4::identity(), false);
+    const humanoid::Map map = humanoid::detect(nodes);
+    const std::vector<Mat4> rest = humanoid::restGlobals(nodes);
+    std::vector<Mat4> local(nodes.size());
+    std::vector<Mat4> global(nodes.size());
+    ik::Pose pose{&nodes, &local, &global};
+    std::vector<ik::GroundLeg> legs(2);
+    const Bone sides[2][4] = {{Bone::LeftUpperLeg, Bone::LeftLowerLeg, Bone::LeftFoot, Bone::LeftToes},
+                              {Bone::RightUpperLeg, Bone::RightLowerLeg, Bone::RightFoot, Bone::RightToes}};
+    for (int s = 0; s < 2; ++s) {
+        legs[static_cast<std::size_t>(s)].joints = {map[sides[s][0]], map[sides[s][1]], map[sides[s][2]]};
+        legs[static_cast<std::size_t>(s)].toe = map[sides[s][3]];
+        legs[static_cast<std::size_t>(s)].bend_hints = {Vec3{}, forward, Vec3{}};
+    }
+    const int hips = map[Bone::Hips];
+    ik::GroundSettings settings;
+    settings.max_step = 0.45f;
+    const Gait gait;
+    struct Result {
+        float stance = 0.0f;    // lo que se aparta del suelo un pie apoyado
+        float below = 0.0f;     // lo que se mete en el suelo un tobillo o una punta
+        float pelvis = 0.0f;    // el mayor salto de la cadera en un frame
+        float knee = 0.0f;      // cuanto se dobla una rodilla hacia atras
+        int stance_samples = 0;
+    };
+    // El personaje anda hacia +Z; su base (el Character Controller) va pegada
+    // al suelo bajo su centro: sube y baja cada escalon de golpe en un frame.
+    const auto walk = [&](const std::function<float(float)>& height, float seconds) {
+        Result r;
+        ik::GroundState state;
+        const ik::GroundRay ray = heightRay(height);
+        const float dt = 1.0f / 60.0f;
+        float last_pelvis = 0.0f;
+        Vec3 last_animated[2]{};
+        int quiet_frames[2] = {0, 0};  // frames seguidos apoyado y quieto (se mide tras asentarse 0.1 s)
+        const int frames = static_cast<int>(seconds * 60.0f);
+        for (int f = 0; f < frames; ++f) {
+            const float t = static_cast<float>(f) * dt;
+            const float z = gait.speed * t;
+            const Mat4 world = core::translate(Vec3{0.0f, height(z), z});
+            poseGait(pose, nodes, map, rest, t, gait);
+            Vec3 animated[2];
+            for (std::size_t s = 0; s < 2; ++s) {
+                animated[s] = ecs::transformPoint(world, ik::nodePosition(pose, legs[s].joints[2]));
+            }
+            ik::groundLegs(pose, world, hips, legs, forward, settings, ray, state, dt);
+            const float pelvis = ecs::transformPoint(world, ik::nodePosition(pose, hips)).y;
+            if (f > 30) r.pelvis = std::max(r.pelvis, std::abs(pelvis - last_pelvis));
+            last_pelvis = pelvis;
+            for (std::size_t s = 0; s < 2; ++s) {
+                const Vec3 moved = animated[s] - last_animated[s];
+                const bool quiet = f > 0 && std::sqrt(moved.x * moved.x + moved.z * moved.z) / dt < 0.2f;
+                quiet_frames[s] = state.feet[s].plant > 0.98f && quiet ? quiet_frames[s] + 1 : 0;
+                last_animated[s] = animated[s];
+            }
+            if (f < 60) continue;  // se asienta
+            for (std::size_t s = 0; s < 2; ++s) {
+                const Vec3 a = ecs::transformPoint(world, ik::nodePosition(pose, legs[s].joints[0]));
+                const Vec3 k = ecs::transformPoint(world, ik::nodePosition(pose, legs[s].joints[1]));
+                const Vec3 ankle = ecs::transformPoint(world, ik::nodePosition(pose, legs[s].joints[2]));
+                const Vec3 toe = ecs::transformPoint(world, ik::nodePosition(pose, legs[s].toe));
+                const float support = std::max(height(ankle.z), height(toe.z));
+                if (quiet_frames[s] > 6) {
+                    // A su altura del clip sobre su suelo (ni flota ni se hunde).
+                    r.stance = std::max(r.stance, std::abs(ankle.y - (support + state.feet[s].lift)));
+                    ++r.stance_samples;
+                }
+                r.below = std::max({r.below, height(ankle.z) + 0.08f - ankle.y, height(toe.z) - toe.y});
+                r.knee = std::max(r.knee, -core::dot(offLine(k, a, ankle), forward));
+            }
+        }
+        return r;
+    };
+    const Result flat = walk([](float) { return 0.0f; }, 4.0f);
+    std::printf("    (llano: pie apoyado a %.4f m de su sitio en %d muestras, cadera salta %.4f m)\n", flat.stance,
+                flat.stance_samples, flat.pelvis);
+    check(flat.stance_samples > 50 && flat.stance < 0.003f, "andando en llano el pie apoyado no flota (ni se hunde)");
+    const Result stairs = walk(stairsHeight, 7.0f);
+    std::printf("    (escalera: apoyado %.4f m, se mete %.4f m, cadera salta %.4f m/frame, rodilla atras %.4f m)\n",
+                stairs.stance, stairs.below, stairs.pelvis, stairs.knee);
+    check(stairs.stance_samples > 50 && stairs.stance < 0.015f, "en la escalera el pie apoyado pisa su escalon");
+    check(stairs.below < 0.012f, "ni el tobillo ni la punta se meten en los escalones");
+    check(stairs.pelvis < 0.03f, "subir o bajar un escalon de golpe (el controlador) no da saltos en la cadera");
+    check(stairs.knee < 0.005f && flat.knee < 0.005f, "las rodillas nunca se doblan hacia atras");
+
+    // --- En el aire: los pies se quedan como en la animacion ---
+    {
+        ik::GroundState state;
+        const ik::GroundRay ray = heightRay([](float) { return 0.0f; });
+        const Mat4 world = core::translate(Vec3{0.0f, 0.3f, 0.0f});  // saltando: 30 cm por encima del suelo
+        float moved = 0.0f;
+        for (int f = 0; f < 15; ++f) {
+            poseGait(pose, nodes, map, rest, 0.1f, gait);
+            const Vec3 before = ik::nodePosition(pose, legs[0].joints[2]);
+            ik::groundLegs(pose, world, hips, legs, forward, settings, ray, state, 1.0f / 60.0f, ik::Support::Air);
+            if (f > 10) moved = std::max(moved, core::length(ik::nodePosition(pose, legs[0].joints[2]) - before));
+        }
+        std::printf("    (en el aire el pie se mueve %.4f m)\n", moved);
+        check(moved < 2e-3f, "en el aire (Character Controller) los pies no buscan el suelo");
+    }
+    {
+        // Sin saber si salta: subir deprisa varios frames seguidos tambien es aire.
+        ik::GroundState state;
+        const ik::GroundRay ray = heightRay([](float) { return 0.0f; });
+        for (int f = 0; f < 12; ++f) {
+            const Mat4 world = core::translate(Vec3{0.0f, 4.5f * static_cast<float>(f) / 60.0f, 0.0f});
+            poseGait(pose, nodes, map, rest, 0.1f, gait);
+            ik::groundLegs(pose, world, hips, legs, forward, settings, ray, state, 1.0f / 60.0f);
+        }
+        std::printf("    (saltando, peso del IK %.3f)\n", state.active);
+        check(state.active < 0.3f, "al saltar (subir deprisa) el IK se aparta solo");
+    }
+
+    // --- Un perro con las patas de delante en un escalon ---
+    {
+        std::vector<Mat4> dog_rest;
+        const std::vector<asset::Node> dog = makeDog(&dog_rest);
+        const creature::Rig rig = creature::detect(dog, dog_rest);
+        std::vector<Mat4> dog_local(dog.size());
+        std::vector<Mat4> dog_global(dog.size());
+        ik::Pose dog_pose{&dog, &dog_local, &dog_global};
+        const auto reset = [&] {
+            for (std::size_t i = 0; i < dog.size(); ++i) dog_local[i] = dog[i].local;
+            ik::recomputeGlobals(dog_pose);
+        };
+        reset();
+        std::vector<ik::GroundLeg> dog_legs;
+        for (const creature::Leg& l : rig.legs) {
+            ik::GroundLeg leg;
+            leg.joints = ik::chainTo(dog, l.foot, l.bones);
+            leg.bend_hints = ik::restBendHints(dog_pose, dog_rest, leg.joints);
+            dog_legs.push_back(leg);
+        }
+        ik::GroundSettings dog_settings;
+        dog_settings.max_step = 0.4f;
+        dog_settings.align_body = true;
+        const auto run = [&](const std::function<float(float)>& height) {
+            ik::GroundState state;
+            const ik::GroundRay ray = heightRay(height);
+            for (int f = 0; f < 40; ++f) {
+                reset();
+                ik::groundLegs(dog_pose, Mat4::identity(), rig.body, dog_legs, rig.forward, dog_settings, ray, state,
+                               1.0f / 60.0f);
+            }
+        };
+        run([](float) { return 0.0f; });
+        float still = 0.0f;
+        for (const ik::GroundLeg& leg : dog_legs) {
+            still = std::max(still, core::length(ik::nodePosition(dog_pose, leg.joints.back()) -
+                                                 positionOf(dog_rest[static_cast<std::size_t>(leg.joints.back())])));
+        }
+        check(still < 2e-3f, "perro en llano: las patas se quedan como estan");
+        const Vec3 front_root_before = ik::nodePosition(dog_pose, dog_legs[0].joints.front());
+        run([](float z) { return z > 0.2f ? 0.15f : 0.0f; });
+        float worst = 0.0f;
+        bool sides_kept = true;
+        float front_root_rise = 0.0f;
+        float hind_root_rise = 0.0f;
+        for (std::size_t i = 0; i < dog_legs.size(); ++i) {
+            const std::vector<int>& j = dog_legs[i].joints;
+            const Vec3 paw = ik::nodePosition(dog_pose, j.back());
+            const float wanted = (paw.z > 0.2f ? 0.15f : 0.0f) + 0.08f;
+            worst = std::max(worst, std::abs(paw.y - wanted));
+            for (std::size_t k = 1; k + 1 < j.size(); ++k) {
+                const Vec3 off = offLine(ik::nodePosition(dog_pose, j[k]), ik::nodePosition(dog_pose, j[k - 1]),
+                                         ik::nodePosition(dog_pose, j[k + 1]));
+                const Vec3 off_rest = offLine(positionOf(dog_rest[static_cast<std::size_t>(j[k])]),
+                                              positionOf(dog_rest[static_cast<std::size_t>(j[k - 1])]),
+                                              positionOf(dog_rest[static_cast<std::size_t>(j[k + 1])]));
+                if (core::length(off_rest) > 1e-3f) sides_kept = sides_kept && core::dot(off, off_rest) > 0.0f;
+            }
+            const float rise = ik::nodePosition(dog_pose, j.front()).y - positionOf(dog_rest[static_cast<std::size_t>(j.front())]).y;
+            (paw.z > 0.2f ? front_root_rise : hind_root_rise) = rise;
+        }
+        (void)front_root_before;
+        std::printf("    (perro en el escalon: patas a %.4f m de su sitio, hombros %+.3f, caderas %+.3f)\n", worst,
+                    front_root_rise, hind_root_rise);
+        check(worst < 0.02f, "perro: las patas de delante pisan el escalon y las de atras el suelo");
+        check(front_root_rise - hind_root_rise > 0.05f, "perro: el cuerpo se inclina (morro arriba)");
+        check(sides_kept, "perro: ninguna articulacion de las patas se dobla al reves");
+    }
+}
+
 void testPhysBones() {
     std::printf("Phys Bones\n");
     // Una cola horizontal de 4 huesos de 0.25 m (hacia +X) colgando de la raiz.
@@ -990,6 +1328,7 @@ int main(int argc, char** argv) {
     testSprings();
     testLegs();
     testChainAndCreature();
+    testFootPlacement();
     testPhysBones();
     testRagdollPhysics();
     testGroundTiltAndLook();

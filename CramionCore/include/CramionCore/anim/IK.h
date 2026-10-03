@@ -41,18 +41,35 @@ core::Vec3 nodePosition(const Pose& pose, int node);
 core::Quat nodeRotation(const Pose& pose, int node);
 
 // `weight` 0..1 mezcla entre la pose animada y la resuelta. `pole` opcional.
-// false si los huesos no forman una cadena valida.
+// `bend_hint` (modelo, opcional): hacia donde se dobla la rodilla o el codo
+// cuando la animacion lo tiene casi recto (o doblado un pelo al reves): la
+// rodilla, hacia delante; el codo, hacia atras. Bien doblado manda la
+// animacion. Sin pista ni pole, un miembro recto se doblaba hacia cualquier
+// lado (la rodilla hacia dentro o hacia atras al subir un escalon).
+// Un objetivo justo donde lo pone la animacion deja la pose igual (el IK
+// blando solo frena lo que se estira de mas). false si no es una cadena valida.
 bool twoBone(const Pose& pose, int upper, int mid, int end, const core::Vec3& target, const core::Vec3* pole,
-             float weight);
+             float weight, const core::Vec3* bend_hint = nullptr);
 
 // Cadena de varios huesos (patas de animal de 3 segmentos, cuellos, colas,
 // tentaculos): `joints` va del de arriba al extremo, cada uno hijo del
 // anterior. FABRIK (Aristidou 2011): mueve las articulaciones hacia el
 // objetivo sin cambiar los largos y luego gira cada hueso hacia la nueva.
 // Con `pole`, las articulaciones de en medio se doblan hacia el. Con 3
-// articulaciones es lo mismo que twoBone. false si no es una cadena valida.
+// articulaciones es lo mismo que twoBone. `bend_hints` (opcional, uno por
+// articulacion, modelo; vacio = sin pista): hacia donde se dobla cada una si
+// la animacion la tiene recta; ninguna acaba doblada al reves. false si no es
+// una cadena valida.
 bool chain(const Pose& pose, const std::vector<int>& joints, const core::Vec3& target, const core::Vec3* pole,
-           float weight, int iterations = 12);
+           float weight, int iterations = 12, const std::vector<core::Vec3>* bend_hints = nullptr);
+
+// Hacia donde se doblan las articulaciones de en medio de `joints` en la
+// pose de reposo `rest` (globales), giradas con lo que ha girado ahora el
+// padre de la cadena desde su reposo: pistas para chain() en patas de animal
+// (la rodilla de un perro hacia delante y el corvejon hacia atras). Las
+// puntas y las articulaciones rectas en reposo quedan a cero.
+std::vector<core::Vec3> restBendHints(const Pose& pose, const std::vector<core::Mat4>& rest,
+                                      const std::vector<int>& joints);
 
 // La cadena de `bones` huesos que acaba en `end`: sus `bones` antepasados
 // mas el (de arriba abajo). Vacia si no hay tantos antepasados.

@@ -196,19 +196,10 @@ bool EditorApp::openProject(const std::filesystem::path& path, bool open_scene) 
                             core::Vec3& normal, ecs::Entity self) {
         // Suelo para el IK de los pies: el impacto mas cercano que no sea el
         // propio personaje (su capsula, su modelo, sus armas...).
-        physics::QueryFilter filter;
-        filter.triggers = physics::QueryTriggers::Ignore;
-        filter.record = false;
-        float best = max_distance + 1.0f;
-        for (const physics::RaycastHit& hit : physics_.raycastAll(origin, direction, max_distance, filter)) {
-            if (hit.trigger || hit.distance >= best) continue;
-            if (!physics::isFootGround(hit.entity, self)) continue;
-            best = hit.distance;
-            point = hit.point;
-            normal = hit.normal;
-        }
-        return best <= max_distance;
+        return physics::footGroundRaycast(physics_, origin, direction, max_distance, point, normal, self);
     });
+    // En el aire (Character Controller): los pies no buscan el suelo.
+    sync_->setSupportQuery([this](ecs::Entity self) { return physics::characterSupport(physics_, self); });
     physics_.setTerrainProvider([this](ecs::Entity entity) -> std::shared_ptr<const terrain::TerrainData> {
         const terrain::Terrain* comp = entity.tryGet<terrain::Terrain>();
         return comp != nullptr ? terrain_store_.get(*comp) : nullptr;
@@ -1023,6 +1014,8 @@ void EditorApp::drawUi(float delta_seconds) {
     // gizmos irian un frame por detras de lo que se mueve).
     {
         const CpuClock::time_point physics_start = CpuClock::now();
+        // Play en pausa (boton, punto de ruptura...): el audio tambien.
+        audio_.setPaused(play_state_ == PlayState::Paused);
         updatePhysics(delta_seconds);
         updateNavigation(delta_seconds);
         updateVoxels(delta_seconds);

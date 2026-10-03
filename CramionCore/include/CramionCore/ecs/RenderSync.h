@@ -13,6 +13,7 @@
 //   sync.sync(world, scene, renderer, dt);
 //   renderer.drawFrame(scene);
 
+#include "CramionCore/anim/FootPlacement.h"
 #include "CramionCore/anim/Inertialization.h"
 #include "CramionCore/anim/MotionMatching.h"
 #include "CramionCore/asset/SurfaceShader.h"
@@ -98,6 +99,11 @@ public:
     using GroundQuery = std::function<bool(const core::Vec3& origin, const core::Vec3& direction, float max_distance,
                                            core::Vec3& point, core::Vec3& normal, Entity self)>;
     void setGroundQuery(GroundQuery query) { ground_query_ = std::move(query); }
+    // ¿El personaje de `self` esta en el suelo? (el Character Controller de
+    // un antepasado): 1 si, 0 en el aire, -1 no se sabe. Con ella, al saltar
+    // o caer los pies dejan de buscar el suelo al momento.
+    using SupportQuery = std::function<int(Entity self)>;
+    void setSupportQuery(SupportQuery query) { support_query_ = std::move(query); }
 
     const asset::ModelData* actorModelData(Entity entity, const scene::Scene& scene) const;
 
@@ -180,8 +186,10 @@ private:
         bool look_valid = false;
         core::Vec3 look{};          // punto que se mira (mundo)
         float look_weight = 0.0f;   // peso que se aplica (sube y baja poco a poco)
-        float feet[2] = {0.0f, 0.0f};  // cuanto sube o baja cada pie (humanoide)
-        std::vector<float> legs;       // lo mismo por pata con suelo (animales)
+        // Pies y patas en el suelo (anim/FootPlacement.h): los dos pies del
+        // humanoide primero (si se apoyan) y luego las cadenas con suelo.
+        ik::GroundState ground;
+        std::uint64_t ground_key = 0;  // que patas son (si cambian, se empieza de cero)
         bool limb_valid[4] = {false, false, false, false};
         core::Vec3 limb[4]{};          // objetivo de cada mano y pie (mundo)
         // Pies bloqueados (humanoide).
@@ -191,6 +199,7 @@ private:
             float floor = 0.0f;        // altura del pie apoyado (sobre la base)
             bool locked = false;
             core::Vec3 position{};     // donde se clavo (mundo)
+            core::Vec3 facing{};       // delante del personaje al clavarlo (mundo)
             float weight = 0.0f;       // 0..1, sube y baja rapido
         };
         FootLock lock[2];
@@ -321,6 +330,7 @@ private:
     void applyProceduralSprings(Entity entity, const ProceduralAnimation& proc, anim::Animator& animator,
                                 const asset::ModelData& data, std::uint32_t model, float delta_seconds);
     GroundQuery ground_query_;
+    SupportQuery support_query_;
     const HumanoidInfo& humanoidInfo(std::uint32_t model, const asset::ModelData& data);
     // Esqueletos: que componentes afectan a una pieza (en ella o en un
     // antepasado) y la pose compartida entre las piezas de un mismo modelo.

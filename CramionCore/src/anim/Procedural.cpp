@@ -136,12 +136,26 @@ int updateLegs(const ik::Pose& pose, const Mat4& world, std::vector<Leg>& legs, 
     if (legs.empty()) return 0;
     const Mat4 to_model = core::inverse(world);
     const float base_y = world.m[3][1];
-    const auto snap = [&](Vec3 p, float lift) {
+    // Largo de cada pata (mundo): hasta donde puede subir un pie.
+    std::vector<float> leg_length(legs.size(), 1.0f);
+    for (std::size_t i = 0; i < legs.size(); ++i) {
+        if (legs[i].upper < 0 || legs[i].mid < 0 || legs[i].end < 0) continue;
+        const Vec3 a = ecs::transformPoint(world, ik::nodePosition(pose, legs[i].upper));
+        const Vec3 b = ecs::transformPoint(world, ik::nodePosition(pose, legs[i].mid));
+        const Vec3 c = ecs::transformPoint(world, ik::nodePosition(pose, legs[i].end));
+        leg_length[i] = std::max(core::length(b - a) + core::length(c - b), 0.01f);
+    }
+    const auto snap = [&](Vec3 p, float lift, std::size_t leg) {
         // El pie sobre el suelo que tiene debajo (a su altura de la animacion).
+        // Hacia arriba, como mucho lo que da de si la pata: antes el rayo
+        // salia ~0.75 m por encima del cuerpo y una caja o una mesa al lado
+        // subia el pie encima.
         Vec3 hit{};
         Vec3 normal{};
         const float reach = settings.step_height * 4.0f + 1.0f;
-        if (ground && ground(Vec3{p.x, base_y + reach * 0.5f + lift, p.z}, kUp * -1.0f, reach + lift, hit, normal)) {
+        const float above = std::min(reach * 0.5f, leg_length[leg] * 0.6f);
+        if (ground && ground(Vec3{p.x, base_y + above + lift, p.z}, kUp * -1.0f, above + reach * 0.5f + lift, hit, normal) &&
+            normal.y > 0.5f) {
             p.y = hit.y + lift;
         }
         return p;
@@ -152,7 +166,7 @@ int updateLegs(const ik::Pose& pose, const Mat4& world, std::vector<Leg>& legs, 
     std::vector<Vec3> animated(legs.size());  // sin el suelo: donde lo deja la animacion
     for (std::size_t i = 0; i < legs.size(); ++i) {
         animated[i] = ecs::transformPoint(world, ik::nodePosition(pose, legs[i].end));
-        home[i] = snap(animated[i], std::max(animated[i].y - base_y, 0.0f));
+        home[i] = snap(animated[i], std::max(animated[i].y - base_y, 0.0f), i);
         Leg& leg = legs[i];
         if (!leg.ready || core::length(leg.planted - home[i]) > settings.step_distance * 8.0f) {
             leg.planted = home[i];
@@ -191,8 +205,8 @@ int updateLegs(const ik::Pose& pose, const Mat4& world, std::vector<Leg>& legs, 
             if (other_moving && distance < settings.step_distance * 2.0f) continue;
             leg.from = leg.planted;
             const Vec3 ahead = horizontal(velocity) * (settings.step_duration * settings.overshoot);
-            leg.to = snap(home[i] + ahead, 0.0f);
-            leg.to.y += home[i].y - snap(home[i], 0.0f).y;  // su altura de la animacion
+            leg.to = snap(home[i] + ahead, 0.0f, i);
+            leg.to.y += home[i].y - snap(home[i], 0.0f, i).y;  // su altura de la animacion
             leg.stepping = true;
             leg.t = 0.0f;
             ++started;
@@ -239,14 +253,18 @@ int updateLegs(const ik::Pose& pose, const Mat4& world, std::vector<Leg>& legs, 
                 if (normal.y > 0.3f) {
                     const Vec3 up_model = core::normalize(ecs::transformDirection(to_model, kUp));
                     const Vec3 normal_model = core::normalize(ecs::transformDirection(to_model, normal));
-                    ik::rotateGlobal(pose, body,
-                                     core::slerp(Quat{}, ik::rotationBetween(up_model, normal_model), settings.body_weight));
+                    // Como mucho 35 grados (unos pies en un escalon alto no lo tumban).
+                    Quat tilt = ik::rotationBetween(up_model, normal_model);
+                    const float angle = 2.0f * std::acos(std::clamp(std::abs(tilt.w), 0.0f, 1.0f));
+                    constexpr float kMaxTilt = 35.0f * core::kPi / 180.0f;
+                    if (angle > kMaxTilt) tilt = core::slerp(Quat{}, tilt, kMaxTilt / angle);
+                    ik::rotateGlobal(pose, body, core::slerp(Quat{}, tilt, std::clamp(settings.body_weight, 0.0f, 1.0f)));
                 }
             }
         }
     }
 
-    // Cada pata a su pie.
+    // Cada pata a su pie (doblada como la tenga la animacion).
     for (std::size_t i = 0; i < legs.size(); ++i) {
         ik::twoBone(pose, legs[i].upper, legs[i].mid, legs[i].end, ecs::transformPoint(to_model, foot[i]), nullptr, 1.0f);
     }

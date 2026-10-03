@@ -17,6 +17,7 @@
 #include <nlohmann/json.hpp>
 
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
@@ -233,6 +234,51 @@ void sueloDelIK() {
     check(!physics::isFootGround(otro, modelo), "la capsula del rival no (los pies no lo pisan)");
     check(!physics::isFootGround(otroModelo, modelo), "un ragdoll no");
     check(!physics::isFootGround(caja, modelo), "un objeto dinamico no");
+    // Un collider del mismo personaje en otra rama (el modelo en un hijo y un
+    // collider de los pies en otro): tampoco.
+    ecs::Entity cuerpo = world.create("Cuerpo");
+    cuerpo.add<physics::Rigidbody>().type = physics::BodyType::Kinematic;
+    ecs::Entity pies = world.create("Pies", cuerpo);
+    ecs::Entity modeloCuerpo = world.create("ModeloCuerpo", cuerpo);
+    check(!physics::isFootGround(pies, modeloCuerpo), "un collider del propio personaje en otra rama no");
+    check(physics::isFootGround(plataforma, modeloCuerpo), "el escenario si");
+}
+
+// El rayo de los pies con la fisica de verdad: suelo, una pared alta y un
+// escalon. Si el rayo empieza dentro de la pared o del escalon (el pie metido
+// en ellos) no cuenta: antes daba un impacto a distancia 0 y el pie saltaba.
+using core::Vec3;
+
+void rayoDeLosPies() {
+    std::printf("Rayo de los pies (IK)\n");
+    ecs::World world;
+    ecs::Entity suelo = world.create("Suelo");
+    suelo.add<physics::PlaneCollider>();
+    ecs::Entity pared = world.create("Pared");
+    pared.setWorldPosition(Vec3{2.0f, 1.0f, 0.0f});
+    pared.add<physics::BoxCollider>().size = Vec3{1.0f, 2.0f, 4.0f};
+    ecs::Entity yo = world.create("Yo");
+    yo.add<physics::Rigidbody>().type = physics::BodyType::Kinematic;
+    ecs::Entity modelo = world.create("Modelo", yo);
+    ecs::Entity pies = world.create("Collider de los pies", yo);
+    pies.setWorldPosition(Vec3{-2.0f, 0.1f, 0.0f});
+    pies.add<physics::BoxCollider>().size = Vec3{0.4f, 0.2f, 0.4f};
+    physics::PhysicsSystem physics;
+    physics.start(world);
+    physics.update(world, 0.0f, false);
+    Vec3 point{};
+    Vec3 normal{};
+    const Vec3 down{0.0f, -1.0f, 0.0f};
+    const bool open = physics::footGroundRaycast(physics, Vec3{0.0f, 0.5f, 0.0f}, down, 1.0f, point, normal, modelo);
+    check(open && std::abs(point.y) < 1e-3f && normal.y > 0.99f, "en el suelo libre toca el suelo");
+    // Desde dentro de la pared (su techo esta a 2 m, el rayo sale a 0.5 m).
+    const bool inside = physics::footGroundRaycast(physics, Vec3{2.0f, 0.5f, 0.0f}, down, 1.0f, point, normal, modelo);
+    std::printf("    (desde dentro de la pared: %s, y = %.3f)\n", inside ? "toca" : "nada", inside ? point.y : 0.0f);
+    check(!inside || std::abs(point.y) < 1e-3f, "desde dentro de una pared no la cuenta (ni salta a su techo)");
+    // Encima de su propio collider de los pies: no lo pisa, pisa el suelo.
+    const bool own = physics::footGroundRaycast(physics, Vec3{-2.0f, 0.5f, 0.0f}, down, 1.0f, point, normal, modelo);
+    check(own && std::abs(point.y) < 1e-3f, "no pisa un collider del propio personaje");
+    physics.stop();
 }
 
 }  // namespace
@@ -242,6 +288,7 @@ int main() {
     particles();
     luaProfiler();
     sueloDelIK();
+    rayoDeLosPies();
     std::printf("\n%d comprobaciones, %d fallos\n", checks, failures);
     return failures == 0 ? 0 : 1;
 }

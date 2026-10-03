@@ -590,19 +590,10 @@ int runPlayer() {
         // Suelo para el IK de los pies (el propio personaje no cuenta).
         sync.setGroundQuery([&](const core::Vec3& origin, const core::Vec3& direction, float max_distance, core::Vec3& point,
                                 core::Vec3& normal, ecs::Entity self) {
-            physics::QueryFilter filter;
-            filter.triggers = physics::QueryTriggers::Ignore;
-            filter.record = false;
-            float best = max_distance + 1.0f;
-            for (const physics::RaycastHit& hit : physics.raycastAll(origin, direction, max_distance, filter)) {
-                if (hit.trigger || hit.distance >= best) continue;
-                if (!physics::isFootGround(hit.entity, self)) continue;
-                best = hit.distance;
-                point = hit.point;
-                normal = hit.normal;
-            }
-            return best <= max_distance;
+            return physics::footGroundRaycast(physics, origin, direction, max_distance, point, normal, self);
         });
+        // En el aire (Character Controller): los pies no buscan el suelo.
+        sync.setSupportQuery([&](ecs::Entity self) { return physics::characterSupport(physics, self); });
 
         audio::AudioSystem audio;
         audio.setAssetsRoot(project->assetsFolder());

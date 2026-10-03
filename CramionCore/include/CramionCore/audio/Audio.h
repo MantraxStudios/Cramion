@@ -123,9 +123,15 @@ public:
     // Origen flotante (ecs/FloatingOrigin.h): el mundo se desplazo -offset;
     // la ultima posicion de cada fuente y del oyente (si no, el efecto Doppler veria un salto de un kilometro).
     void shiftOrigin(const core::Vec3& offset);
-    // Fin del Play: silencio.
+    // Fin del Play: silencio. Cada fuente y sonido suelto se para y se libera,
+    // el ambiente (lluvia, viento, truenos) se calla, la reverberacion se
+    // vacia y el volumen y el paso bajo del oyente vuelven a lo normal.
     void stop();
     bool running() const;
+    // Pausa del Play (editor): lo que suena se queda callado donde iba (las
+    // fuentes, los sonidos sueltos y el ambiente) y sigue al quitarla.
+    void setPaused(bool paused);
+    bool paused() const;
 
     void play(ecs::Entity entity);
     void stop(ecs::Entity entity);

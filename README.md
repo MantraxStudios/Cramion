@@ -21,6 +21,16 @@ Incluye dos escenas de demostración, iluminadas por una sola luz direccional (e
 
 ---
 
+## Novedades de la 2.2
+
+**Pies en el suelo, rehechos** (humanos y animales): los pies ya no flotan al andar ni de pie; en escaleras cada pie mira el suelo bajo el tobillo y la punta (no se mete en los escalones), el pie que va por el aire sube antes de llegar a la tabica y la cadera ya no pega un salto cuando el Character Controller sube o baja un escalón. Las rodillas siempre se doblan hacia delante (antes, con la pierna recta, podían doblarse hacia dentro, contra la otra pierna, o hacia atrás), las patas de los animales como en su pose de reposo y en el aire (saltar, caer) el IK se aparta solo.
+
+**Rendimiento**: **Insights**, un perfilador de CPU con árbol de zonas, percentiles del frame, tirones que se capturan solos y capturas `.crtrace` para Perfetto (también en el juego exportado). Y presupuestos automáticos: **LOD de animación**, **presupuesto de partículas** y **voces de audio virtuales**.
+
+**Audio que se para de verdad**: al dar Stop ya no siguen sonando la lluvia, el viento, los truenos ni la reverberación, y pausar el Play pausa el audio.
+
+**Animación**: `crossFade` como el `Animator.CrossFade` de Unity, FBX solo de animación (sin malla) y retargeting de BVH y Motifect sin pies flotando.
+
 ## Novedades de la 2.1
 
 La 2.1 incluye también todo lo de la 2.0 (más abajo), que no se publicó por separado.
@@ -312,6 +322,7 @@ La 2.1 incluye también todo lo de la 2.0 (más abajo), que no se publicó por s
 
 ## Índice
 
+- [Novedades de la 2.2](#novedades-de-la-22)
 - [Novedades de la 2.1](#novedades-de-la-21)
 - [Novedades de la 2.0](#novedades-de-la-20)
 - [Novedades de la 1.9](#novedades-de-la-19)

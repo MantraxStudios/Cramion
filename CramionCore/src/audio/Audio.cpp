@@ -182,6 +182,7 @@ struct VoiceFx {
     std::atomic<float> echo_decay{0.45f};
     std::atomic<float> echo_wet{0.0f};
     std::atomic<float> send{0.0f};
+    std::atomic<bool> paused{false};  // pausa del Play: callado y el eco se queda donde iba
     // Estado del hilo de audio.
     Biquad lp;
     Biquad hp;
@@ -200,6 +201,11 @@ void voiceProcess(ma_node* node, const float** frames_in, ma_uint32* count_in, f
     const float* in = available > 0 ? frames_in[0] : nullptr;
     float* dry = frames_out[0];
     float* wet = frames_out[1];
+    if (fx.paused.load(std::memory_order_relaxed)) {
+        std::fill(dry, dry + static_cast<std::size_t>(frames) * fx.channels, 0.0f);
+        std::fill(wet, wet + static_cast<std::size_t>(frames) * fx.channels, 0.0f);
+        return;
+    }
     const std::size_t ch = std::min<std::size_t>(fx.channels, 8);
 
     const float lp_target = fx.low_pass.load(std::memory_order_relaxed);
@@ -267,6 +273,10 @@ struct ReverbFx {
     std::atomic<float> room{0.5f};
     std::atomic<float> damping{0.5f};
     std::atomic<float> level{0.0f};
+    // Vaciar la cola (fin del Play): lo pide el hilo principal, lo hace el de audio.
+    std::atomic<std::uint32_t> flush{0};
+    std::uint32_t flushed = 0;
+    std::atomic<bool> paused{false};  // pausa del Play: la cola se queda donde iba
     float level_current = 0.0f;
     struct Comb {
         std::vector<float> buffer;
@@ -302,6 +312,24 @@ void reverbProcess(ma_node* node, const float** frames_in, ma_uint32* count_in, 
     const ma_uint32 available = (frames_in != nullptr && frames_in[0] != nullptr && count_in != nullptr) ? *count_in : 0;
     const float* in = available > 0 ? frames_in[0] : nullptr;
     float* out = frames_out[0];
+    if (const std::uint32_t flush = fx.flush.load(std::memory_order_acquire); flush != fx.flushed) {
+        // Sin la cola de lo que sonaba (al volver a dar Play no reaparece).
+        fx.flushed = flush;
+        for (auto& side : fx.combs) {
+            for (ReverbFx::Comb& comb : side) {
+                std::fill(comb.buffer.begin(), comb.buffer.end(), 0.0f);
+                comb.store = 0.0f;
+            }
+        }
+        for (auto& side : fx.allpasses) {
+            for (ReverbFx::AllPass& ap : side) std::fill(ap.buffer.begin(), ap.buffer.end(), 0.0f);
+        }
+        fx.level_current = 0.0f;
+    }
+    if (fx.paused.load(std::memory_order_relaxed)) {
+        std::fill(out, out + static_cast<std::size_t>(frames) * fx.channels, 0.0f);
+        return;
+    }
     const float feedback = std::clamp(fx.room.load(std::memory_order_relaxed), 0.0f, 1.0f) * 0.28f + 0.7f;
     const float damp = std::clamp(fx.damping.load(std::memory_order_relaxed), 0.0f, 1.0f) * 0.4f;
     const float level_target = fx.level.load(std::memory_order_relaxed) * 3.0f;
@@ -388,6 +416,7 @@ struct AudioSystem::Impl {
     ma_engine engine{};
     bool ok = false;
     bool running = false;
+    bool paused = false;
     std::filesystem::path root;
     ma_uint32 channels = 2;
     float rate = 48000.0f;
@@ -425,6 +454,7 @@ struct AudioSystem::Impl {
         double virtual_since = 0.0;
         ma_uint64 virtual_cursor = 0;
         float audible = 0.0f;  // volumen que llega al oyente (este frame)
+        bool held = false;     // parada por la pausa del Play (vuelve al quitarla)
         ~Voice() {
             if (loaded) ma_sound_uninit(&sound);
             if (fx_ok) ma_node_uninit(&fx.base, nullptr);
@@ -825,7 +855,7 @@ void AudioSystem::update(ecs::World& world, float delta_seconds, const Vec3& cam
         ++it;
     }
     d.clock += delta_seconds;
-    d.virtualizeVoices();
+    if (!d.paused) d.virtualizeVoices();  // en pausa (paso a paso) nada vuelve a sonar
     prof::counter("Voces de audio", static_cast<double>(d.real_voices));
     prof::counter("Voces virtuales", static_cast<double>(d.virtual_voices));
     for (auto it = d.one_shots.begin(); it != d.one_shots.end();) {
@@ -855,10 +885,60 @@ void AudioSystem::shiftOrigin(const core::Vec3& offset) {
     }
 }
 
+void AudioSystem::setPaused(bool paused) {
+    Impl& d = *impl_;
+    if (d.paused == paused) return;
+    d.paused = paused;
+    const auto hold = [&](Impl::Voice& v) {
+        if (v.fx_ok) v.fx.paused.store(paused, std::memory_order_relaxed);
+        if (!v.loaded) return;
+        if (paused && ma_sound_is_playing(&v.sound)) {
+            ma_sound_stop(&v.sound);  // se queda donde iba
+            v.held = true;
+        } else if (!paused && v.held) {
+            ma_sound_start(&v.sound);
+            v.held = false;
+        }
+    };
+    for (auto& [handle, v] : d.voices) {
+        if (v) hold(*v);
+    }
+    for (auto& shot : d.one_shots) {
+        if (shot) hold(*shot);
+    }
+    d.weather_audio.setPaused(paused);
+    if (d.reverb_ok) d.reverb.paused.store(paused, std::memory_order_relaxed);
+}
+
+bool AudioSystem::paused() const { return impl_->paused; }
+
 void AudioSystem::stop() {
-    impl_->voices.clear();
-    impl_->one_shots.clear();
-    impl_->running = false;
+    Impl& d = *impl_;
+    // Cada sonido se para y se libera (ma_sound_uninit: su memoria y su
+    // lectura del disco si iba en streaming).
+    d.voices.clear();
+    d.one_shots.clear();
+    d.running = false;
+    d.paused = false;
+    d.weather_audio.setPaused(false);
+    if (d.reverb_ok) d.reverb.paused.store(false, std::memory_order_relaxed);
+    d.clock = 0.0;
+    d.real_voices = d.virtual_voices = 0;
+    d.listener_has_last = false;
+    d.reverb_level = 0.0f;
+    if (!d.ok) return;
+    // Lo que no es una fuente tambien se calla: la lluvia, el viento y los
+    // truenos del ambiente (sintetizados: seguian sonando al parar el Play
+    // porque fuera de Play nadie bajaba sus niveles) y la cola de la
+    // reverberacion. Lo del oyente (volumen general, paso bajo) vuelve a lo
+    // normal para escuchar clips en el editor.
+    d.weather_audio.silence();
+    if (d.reverb_ok) {
+        d.reverb.level.store(0.0f, std::memory_order_relaxed);
+        d.reverb.flush.fetch_add(1, std::memory_order_release);
+    }
+    if (d.master_ok) d.master.low_pass.store(0.0f, std::memory_order_relaxed);
+    ma_engine_set_volume(&d.engine, 1.0f);
 }
 
 void AudioSystem::play(ecs::Entity entity) {

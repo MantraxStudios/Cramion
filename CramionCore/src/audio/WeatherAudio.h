@@ -37,6 +37,11 @@ public:
     void setLevels(float rain, float wind, float gusts, float dust, float volume);
     // Un trueno ahora (volumen 0..1, distancia en m).
     void thunder(float volume, float distance);
+    // Silencio ya (fin del Play): niveles a 0 y fuera las gotas y los truenos
+    // que estaban sonando o en cola (un fundido de unos ms, sin chasquido).
+    void silence();
+    // Pausa: calla y se queda donde iba (los truenos siguen al quitarla).
+    void setPaused(bool paused);
 
     struct Node;  // el nodo de miniaudio (WeatherAudio.cpp)
 

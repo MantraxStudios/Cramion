@@ -38,6 +38,11 @@ struct WeatherAudio::Node {
     std::array<Request, kQueue> queue{};
     std::atomic<std::uint32_t> head{0};  // escribe el hilo principal
     std::atomic<std::uint32_t> tail{0};  // lee el hilo de audio
+    std::atomic<std::uint32_t> cut{0};   // peticiones de silencio (silence())
+    std::atomic<bool> paused{false};
+    std::uint32_t cut_done = 0;          // las ya atendidas (hilo de audio)
+    float fade = 1.0f;                   // ganancia del fundido al silenciar
+    bool fading = false;
 
     // --- Estado del hilo de audio ---
     std::uint32_t seed = 0x1234567u;
@@ -105,13 +110,37 @@ struct WeatherAudio::Node {
         t.pan = 0.25f + 0.5f * uniform();
     }
 
+    // Todo callado y el estado a cero (tras el fundido de silence()).
+    void reset() {
+        for (Drop& d : drops) d = Drop{};
+        for (Thunder& t : thunder) t = Thunder{};
+        rain_level = wind_level = gust_level = dust_level = 0.0f;
+        hiss_lp[0] = hiss_lp[1] = hiss_hp[0] = hiss_hp[1] = 0.0f;
+        brown[0] = brown[1] = wind_lp[0] = wind_lp[1] = 0.0f;
+        whistle_lp = whistle_bp = 0.0f;
+        gust_env = gust_target = 0.0f;
+    }
+
     void process(float* out, ma_uint32 frames) {
+        // En pausa: silencio y todo se queda como estaba.
+        if (paused.load(std::memory_order_relaxed) && cut.load(std::memory_order_acquire) == cut_done) {
+            std::fill(out, out + static_cast<std::size_t>(frames) * channels, 0.0f);
+            return;
+        }
+        // Silencio pedido (fin del Play): los truenos en cola se tiran y lo que
+        // suena se apaga en ~15 ms.
+        const std::uint32_t cuts = cut.load(std::memory_order_acquire);
+        if (cuts != cut_done) {
+            cut_done = cuts;
+            fading = true;
+            tail.store(head.load(std::memory_order_acquire), std::memory_order_release);
+        }
         // Truenos pedidos.
         std::uint32_t h = head.load(std::memory_order_acquire);
         std::uint32_t tl = tail.load(std::memory_order_relaxed);
         while (tl != h) {
             const Request r = queue[tl % kQueue];
-            startThunder(r.volume, r.distance);
+            if (!fading) startThunder(r.volume, r.distance);
             ++tl;
         }
         tail.store(tl, std::memory_order_release);
@@ -244,6 +273,18 @@ struct WeatherAudio::Node {
             // Suave (sin recortes duros) y al volumen general.
             l = std::tanh(l * volume_level);
             r = std::tanh(r * volume_level);
+            if (fading) {
+                fade -= 1.0f / (0.015f * rate);
+                if (fade <= 0.0f) {
+                    reset();
+                    fade = 1.0f;
+                    fading = false;
+                    l = r = 0.0f;
+                } else {
+                    l *= fade;
+                    r *= fade;
+                }
+            }
             float* frame = out + static_cast<std::size_t>(i) * channels;
             frame[0] = l;
             if (channels > 1) frame[1] = r;
@@ -306,6 +347,16 @@ void WeatherAudio::setLevels(float rain, float wind, float gusts, float dust, fl
     node_->gusts.store(std::clamp(gusts, 0.0f, 1.0f), std::memory_order_relaxed);
     node_->dust.store(std::clamp(dust, 0.0f, 1.0f), std::memory_order_relaxed);
     node_->volume.store(std::clamp(volume, 0.0f, 4.0f), std::memory_order_relaxed);
+}
+
+void WeatherAudio::silence() {
+    if (node_ == nullptr) return;
+    setLevels(0.0f, 0.0f, 0.0f, 0.0f, 1.0f);
+    node_->cut.fetch_add(1, std::memory_order_release);
+}
+
+void WeatherAudio::setPaused(bool paused) {
+    if (node_ != nullptr) node_->paused.store(paused, std::memory_order_relaxed);
 }
 
 void WeatherAudio::thunder(float volume, float distance) {

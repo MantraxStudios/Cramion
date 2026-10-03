@@ -1,6 +1,7 @@
 // Pruebas del scripting en Lua y del audio (consola). Devuelve 0 si todo va.
 
 #include "CramionCore/audio/Audio.h"
+#include "CramionCore/environment/Environment.h"
 #include "CramionCore/ecs/Components.h"
 #include "CramionCore/ecs/SceneSerializer.h"
 #include "CramionCore/ecs/World.h"
@@ -364,6 +365,70 @@ void testAudioRendered() {
     system.stop();
 }
 
+// Al parar el Play no queda nada sonando: ni las fuentes, ni la lluvia y el
+// viento sintetizados del ambiente (seguian sonando para siempre: fuera del
+// Play nadie bajaba sus niveles), ni la cola de la reverberacion. Y la pausa
+// del Play calla todo y lo deja seguir.
+void testAudioStop() {
+    std::printf("Audio: parar y pausar el Play\n");
+    writeWav(kRoot / "Audio" / "agudo.wav", 4000.0);
+    ecs::World world;
+    world.create("Camara").add<audio::AudioListener>();
+    ecs::Entity radio = world.create("Radio");
+    audio::AudioSource& source = radio.add<audio::AudioSource>();
+    source.clip = "Audio/agudo.wav";
+    source.loop = true;
+    source.min_distance = 10.0f;
+    environment::Environment& env = world.create("Ambiente").add<environment::Environment>();
+    env.runtime.initialized = true;
+    env.runtime.current.rain = 1.0f;
+    env.runtime.wind_speed = 14.0f;
+    audio::AudioReverbZone& cave = world.create("Cueva").add<audio::AudioReverbZone>();
+    cave.preset = audio::ReverbPreset::Cave;
+    cave.level = 0.9f;
+    audio::AudioSystem system{audio::AudioSystem::Offline{}};
+    system.setAssetsRoot(kRoot);
+    std::vector<float> block(800 * 2);  // 1/60 s a 48 kHz
+    // `update`: como en Play (el editor solo llama a update() en Play).
+    const auto rms = [&](bool update, int blocks) {
+        double sum = 0.0;
+        for (int i = 0; i < blocks; ++i) {
+            if (update) system.update(world, 1.0f / 60.0f, Vec3{}, Vec3{0, 0, -1});
+            system.renderOffline(block.data(), 800);
+            for (const float v : block) sum += static_cast<double>(v) * v;
+        }
+        return std::sqrt(sum / (static_cast<double>(blocks) * block.size()));
+    };
+    system.start(world);
+    rms(true, 60);  // la lluvia y el viento suben en ~0.35 s
+    const double playing = rms(true, 6);
+    source.mute = true;
+    rms(true, 30);
+    const double ambience = rms(true, 6);
+    system.stop();
+    rms(false, 2);  // el fundido (15 ms)
+    const double stopped = rms(false, 60);
+    std::printf("  RMS: en Play %.4f, solo el ambiente %.4f, tras parar %.6f\n", playing, ambience, stopped);
+    check(playing > 0.01 && ambience > 0.005, "en Play suenan la radio, la lluvia y el viento");
+    check(stopped < 1e-4, "al parar no queda nada sonando (fuentes, ambiente ni reverberacion)");
+    check(!system.isPlaying(radio), "la fuente ya no suena (se libero)");
+
+    // Pausa: todo callado; al quitarla sigue sonando.
+    source.mute = false;
+    system.start(world);
+    rms(true, 60);
+    system.setPaused(true);
+    rms(false, 2);
+    const double paused = rms(false, 30);
+    system.setPaused(false);
+    rms(true, 10);
+    const double resumed = rms(true, 6);
+    std::printf("  RMS: en pausa %.6f, al seguir %.4f\n", paused, resumed);
+    check(paused < 1e-4, "en pausa no suena nada");
+    check(resumed > 0.01 && system.isPlaying(radio), "al quitar la pausa sigue sonando");
+    system.stop();
+}
+
 }  // namespace
 
 // Graphics: las opciones van al host; Graphics.post al volumen global.
@@ -531,6 +596,7 @@ int main() {
     testAudio();
     testAudioOcclusion();
     testAudioRendered();
+    testAudioStop();
     testGraphics();
     testRigLua();
     std::filesystem::remove_all(kRoot);

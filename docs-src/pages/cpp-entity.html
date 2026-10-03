@@ -69,6 +69,8 @@
     <tr><td><code>void setAlpha(const Value&amp; v) const</code></td><td></td></tr>
     <tr><td><code>Value angularVelocity2D() const</code></td><td>entity.angularVelocity2D: giro de su Rigidbody2D (grados/s)</td></tr>
     <tr><td><code>void setAngularVelocity2D(const Value&amp; v) const</code></td><td></td></tr>
+    <tr><td><code>Value animatorState(...) const</code></td><td>nombre del estado actual del Animator</td></tr>
+    <tr><td><code>Value animatorStateTime(...) const</code></td><td>segundos en el estado actual del Animator</td></tr>
     <tr><td><code>Value attachToBone(modelo, texto, offset, giro) const</code></td><td>sigue a un hueso (Bone Socket)</td></tr>
     <tr><td><code>Value audioOcclusion(...) const</code></td><td>oclusion de su Audio Listener (true/false)</td></tr>
     <tr><td><code>Value castShadows() const</code></td><td>entity.castShadows: su MeshRenderer proyecta sombra</td></tr>
@@ -77,6 +79,7 @@
     <tr><td><code>Value characterState(...) const</code></td><td></td></tr>
     <tr><td><code>Value color() const</code></td><td>entity.color: Vec3 color de su UIImage/UIText</td></tr>
     <tr><td><code>void setColor(const Value&amp; v) const</code></td><td></td></tr>
+    <tr><td><code>Value crossFade(texto, valor, activar) const</code></td><td>salta a un estado del Animator por su nombre (fundido; true = inercial)</td></tr>
     <tr><td><code>Value damage(cantidad, punto, fuerza) const</code></td><td>Destructible: quita vida (se rompe al llegar a 0)</td></tr>
     <tr><td><code>Value detachFromBone(...) const</code></td><td>deja de seguir al hueso</td></tr>
     <tr><td><code>Value distanceTo(otra) const</code></td><td>distancia a otro objeto</td></tr>
