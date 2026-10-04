@@ -38,12 +38,18 @@ bool hasExtension(const std::vector<vk::ExtensionProperties>& available, const c
 }  // namespace
 
 void VulkanDevice::initialize(const VulkanInstance& instance, const VulkanSurface& surface, VkPhysicalDevice required,
-                              const std::vector<std::string>& extra_extensions) {
+                              const std::vector<std::string>& extra_extensions,
+                              const std::vector<std::string>& optional_extensions) {
     extra_extensions_ = extra_extensions;
+    optional_extensions_ = optional_extensions;
     pickPhysicalDevice(instance, surface, required);
     queue_families_ = findQueueFamilies(physical_device_, surface.handle());
     createLogicalDevice();
     selectDepthFormat();
+}
+
+bool VulkanDevice::extensionAvailable(const std::string& name) const {
+    return hasExtension(physical_device_.enumerateDeviceExtensionProperties(), name.c_str());
 }
 
 // -----------------------------------------------------------------------------
@@ -366,8 +372,15 @@ void VulkanDevice::createLogicalDevice() {
                 extensions.push_back(name.c_str());
             }
         }
+        for (const std::string& name : optional_extensions_) {
+            if (hasExtension(available, name.c_str()) &&
+                std::none_of(extensions.begin(), extensions.end(), [&](const char* e) { return name == e; })) {
+                extensions.push_back(name.c_str());
+            }
+        }
     }
     create_info.setPEnabledExtensionNames(extensions);
+    enabled_extensions_.assign(extensions.begin(), extensions.end());
 
     auto& features13 = chain.get<vk::PhysicalDeviceVulkan13Features>();
     features13.dynamicRendering = VK_TRUE;
@@ -388,6 +401,11 @@ void VulkanDevice::createLogicalDevice() {
     }
     auto& features12 = chain.get<vk::PhysicalDeviceVulkan12Features>();
     features12.drawIndirectCount = indirect_count_supported_ ? VK_TRUE : VK_FALSE;
+    // Semaforos de linea de tiempo (obligatorios desde Vulkan 1.2): SteamVR
+    // los pide (VK_KHR_timeline_semaphore) para sincronizarse con el casco.
+    features12.timelineSemaphore = physical_device_.getFeatures2<vk::PhysicalDeviceFeatures2, vk::PhysicalDeviceVulkan12Features>()
+                                       .get<vk::PhysicalDeviceVulkan12Features>()
+                                       .timelineSemaphore;
     if (!indirect_count_supported_) {
         std::cout << "[Vulkan] Sin drawIndirectCount/multiDrawIndirect (GPU de movil): dibujo indirecto comando a comando\n";
     }

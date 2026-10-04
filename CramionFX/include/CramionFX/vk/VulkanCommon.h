@@ -69,6 +69,14 @@ struct EngineInfo {
     // Realidad virtual (OpenXR): si hay runtime y casco, Vulkan se crea en la
     // GPU del casco con las extensiones que pide. Sin casco, sigue sin VR.
     bool enable_xr = false;
+    // Que runtime de OpenXR probar (xr::RuntimeChoice: 0 automatico, 1 SteamVR,
+    // 2 Meta, 3 el activo de Windows).
+    int xr_runtime = 0;
+    // Con enable_xr: true, la sesion de VR empieza al crear el render (el
+    // juego exportado). false: solo se prepara Vulkan para el casco (su GPU y
+    // sus extensiones) y la sesion se abre despues con connectXrSession (el
+    // editor, al dar Play on VR): abrir el editor no le quita el casco a nadie.
+    bool xr_session = true;
 };
 
 // Indices de las familias de colas que necesita el motor.

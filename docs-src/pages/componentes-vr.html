@@ -4,7 +4,7 @@
   <thead><tr><th>Propiedad</th><th>Tipo</th><th>Por defecto</th><th>Valores</th><th>Descripcion</th></tr></thead>
   <tbody>
     <tr><td>Origen del seguimiento<br><code>tracking</code></td><td>opcion</td><td>De pie</td><td>De pie, Sentado</td><td>De pie: esta entidad es el suelo de la habitacion (room scale). Sentado: la cabeza empieza aqui (mas la altura)</td></tr>
-    <tr><td>Altura de la cabeza<br><code>camera_y_offset</code></td><td>numero</td><td>1,6</td><td>0 a 3</td><td>Sentado: metros de la cabeza sobre el origen</td></tr>
+    <tr><td>Altura de la cabeza<br><code>camera_y_offset</code></td><td>numero</td><td>1,6</td><td>0 a 3</td><td>Sentado: metros de la cabeza sobre el origen. De pie solo se usa si el casco no da el suelo</td></tr>
     <tr><td>Mover la camara con el casco<br><code>drive_camera</code></td><td>si/no</td><td>si</td><td></td><td>La camara principal sigue a la cabeza</td></tr>
   </tbody>
 </table>
@@ -15,5 +15,46 @@
     <tr><td>Mano<br><code>hand</code></td><td>opcion</td><td>Derecha</td><td>Izquierda, Derecha</td><td></td></tr>
     <tr><td>Pose<br><code>pose</code></td><td>opcion</td><td>Mano (grip)</td><td>Mano (grip), Puntero (aim)</td><td>Mano: donde se agarra el mando. Puntero: hacia donde apunta (rayos)</td></tr>
     <tr><td>Ocultar sin mando<br><code>hide_when_untracked</code></td><td>si/no</td><td>si</td><td></td><td>Se desactiva si el mando no se ve o esta apagado</td></tr>
+  </tbody>
+</table>
+<h3 id="XrPlayer">XR Player (primera persona con fisica) <code>XrPlayer</code></h3>
+<table>
+  <thead><tr><th>Propiedad</th><th>Tipo</th><th>Por defecto</th><th>Valores</th><th>Descripcion</th></tr></thead>
+  <tbody>
+    <tr><td>Andar hacia<br><code>direction</code></td><td>opcion</td><td>Cabeza</td><td>Cabeza, Mano izquierda</td><td>El stick izquierdo anda hacia donde mira la cabeza o apunta la mano</td></tr>
+    <tr><td>Girar<br><code>turn</code></td><td>opcion</td><td>Por pasos</td><td>Por pasos, Suave</td><td>Stick derecho. Por pasos marea menos</td></tr>
+    <tr><td>Grados por paso<br><code>snap_angle</code></td><td>numero</td><td>45</td><td>10 a 90</td><td></td></tr>
+    <tr><td>Velocidad de giro<br><code>turn_speed</code></td><td>numero</td><td>120</td><td>30 a 360</td><td>Grados por segundo</td></tr>
+    <tr><td>Zona muerta de los sticks<br><code>dead_zone</code></td><td>numero</td><td>0,15</td><td>0 a 0,6</td><td></td></tr>
+    <tr><td>Correr pulsando el stick<br><code>run_with_stick</code></td><td>si/no</td><td>si</td><td></td><td>Stick izquierdo pulsado: la velocidad de correr</td></tr>
+    <tr><td>Saltar con A<br><code>jump_button</code></td><td>si/no</td><td>si</td><td></td><td>Boton A del mando derecho (salto del CharacterController)</td></tr>
+    <tr><td>Chocar al andar en la habitacion<br><code>room_scale_collisions</code></td><td>si/no</td><td>si</td><td></td><td>Andar de verdad por la habitacion mueve la capsula chocando: no se atraviesan paredes</td></tr>
+    <tr><td>Chocar con lo que se coge<br><code>collide_with_grabbables</code></td><td>si/no</td><td>no</td><td></td><td>Los XR Grabbable chocan con la capsula del jugador. Desactivado: la atraviesan (no golpean el cuerpo al cogerlos ni al andar)</td></tr>
+    <tr><td>Agacharse (de pie)<br><code>crouch_ratio</code></td><td>numero</td><td>0,65</td><td>0 a 0,95</td><td>De pie: agachado si la cabeza baja de esta fraccion de la altura de la capsula (0 = nunca). Sentado: stick derecho abajo</td></tr>
+  </tbody>
+</table>
+<h3 id="XrInteractor">XR Interactor (coger y rayo) <code>XrInteractor</code></h3>
+<table>
+  <thead><tr><th>Propiedad</th><th>Tipo</th><th>Por defecto</th><th>Valores</th><th>Descripcion</th></tr></thead>
+  <tbody>
+    <tr><td>Coger con la mano<br><code>direct</code></td><td>si/no</td><td>si</td><td></td><td>Boton de agarre: lo que toca la mano</td></tr>
+    <tr><td>Radio de la mano<br><code>grab_radius</code></td><td>numero</td><td>0,08</td><td>0,01 a 0,5</td><td></td></tr>
+    <tr><td>Rayo<br><code>ray</code></td><td>si/no</td><td>si</td><td></td><td>UI en el mundo (gatillo = clic) y coger a distancia (agarre)</td></tr>
+    <tr><td>Largo del rayo<br><code>ray_length</code></td><td>numero</td><td>8</td><td>0,5 a 100</td><td></td></tr>
+    <tr><td>Ver el rayo<br><code>show_ray</code></td><td>si/no</td><td>si</td><td></td><td></td></tr>
+    <tr><td>Material del rayo<br><code>ray_material</code></td><td>asset (Material)</td><td>(ninguno)</td><td>arrastrar desde el Proyecto</td><td>Material (.crmat) del laser (vacio = el gris)</td></tr>
+    <tr><td>Vibrar<br><code>haptics</code></td><td>si/no</td><td>si</td><td></td><td>Al coger algo y al pulsar la UI</td></tr>
+  </tbody>
+</table>
+<h3 id="XrGrabbable">XR Grabbable (se coge con las manos) <code>XrGrabbable</code></h3>
+<table>
+  <thead><tr><th>Propiedad</th><th>Tipo</th><th>Por defecto</th><th>Valores</th><th>Descripcion</th></tr></thead>
+  <tbody>
+    <tr><td>Movimiento<br><code>movement</code></td><td>opcion</td><td>Velocidad (fisica)</td><td>Velocidad (fisica), Instantaneo</td><td>Velocidad: sigue a la mano con la fisica (choca con mesas y paredes). Instantaneo: pegado a la mano</td></tr>
+    <tr><td>A la mano por su punto de agarre<br><code>snap_to_hand</code></td><td>si/no</td><td>no</td><td></td><td>Herramientas y pistolas: se colocan en la mano igual siempre. Si no, se cogen por donde se tocan</td></tr>
+    <tr><td>Punto de agarre<br><code>attach_position</code></td><td>Vec3 (metros)</td><td>(0; 0; 0)</td><td></td><td>Posicion respecto a la mano (m)</td></tr>
+    <tr><td>Giro en la mano<br><code>attach_rotation</code></td><td>Vec3 (grados)</td><td>(0; 0; 0)</td><td></td><td>Grados</td></tr>
+    <tr><td>Coger a distancia<br><code>distance_grab</code></td><td>si/no</td><td>si</td><td></td><td>Con el rayo de la mano: viene a la mano</td></tr>
+    <tr><td>Fuerza al lanzar<br><code>throw_scale</code></td><td>numero</td><td>1</td><td>0 a 4</td><td>Velocidad al soltarlo (1 = la de la mano)</td></tr>
   </tbody>
 </table>

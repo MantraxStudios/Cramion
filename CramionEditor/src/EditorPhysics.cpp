@@ -148,7 +148,9 @@ void EditorApp::applyPhysicsSettings() {
 // -----------------------------------------------------------------------------
 
 void EditorApp::enterPlay() {
-    if (!has_project_ || playing()) return;
+    // Buscando el casco (Play on VR) en otro hilo: hasta que acabe, nada de
+    // Play (los scripts leerian el XrSystem a medio crear).
+    if (!has_project_ || playing() || xrConnecting()) return;
     // Se juega la escena: primero se vuelve a su pestana (el frame que viene).
     if (active_workspace_ != 0 || world_workspace_ != 0) {
         pending_workspace_ = 0;
@@ -197,7 +199,7 @@ void EditorApp::enterPlay() {
     startCppScripts();  // los de C++, en su proceso aparte
     // VR: el casco marca el ritmo (xrWaitFrame); la ventana sin vsync
     // (play_graphics_ lo devuelve al parar).
-    if (renderer_.xrAvailable()) {
+    if (play_vr_ && renderer_.xrAvailable()) {
         gfx::GraphicsSettings g = renderer_.graphicsSettings();
         g.vsync = false;
         renderer_.setGraphicsSettings(g);
@@ -220,6 +222,7 @@ void EditorApp::enterPlay() {
 
 void EditorApp::exitPlay() {
     if (!playing()) return;
+    play_vr_ = false;
     const std::uint64_t steps = physics_.stats().steps;
     scripts_.stop();
     stopCppScripts();
@@ -370,6 +373,8 @@ void EditorApp::updatePhysics(float delta_seconds) {
             int steps = 0;
             {
                 CR_PROFILE_SCOPE("Fisica");
+                xr_rig_.setPhysics(&physics_);
+                xr_rig_.updateCollisions(world_);  // el Jugador VR no choca con lo que se coge
                 steps = physics_.update(world_, delta_seconds, true);
             }
             particles_.update(world_, delta_seconds, &physics_);
@@ -458,7 +463,8 @@ void EditorApp::drawPlayControls() {
     const float button = 64.0f;
     const float spacing = ImGui::GetStyle().ItemSpacing.x;
     const float arrow = ImGui::GetFrameHeight();
-    ImGui::SetCursorPosX((ImGui::GetWindowWidth() - (button * 3.0f + arrow + spacing * 3.0f)) * 0.5f);
+    const float vr_button = 96.0f;
+    ImGui::SetCursorPosX((ImGui::GetWindowWidth() - (button * 3.0f + vr_button + arrow + spacing * 4.0f)) * 0.5f);
     // Modo Play/Pausa en amarillo (estado del editor, regla del tema).
     const auto toggle = [&](const char* label, bool active, ImVec4 color) {
         if (active) {
@@ -472,10 +478,21 @@ void EditorApp::drawPlayControls() {
         if (active) ImGui::PopStyleColor(3);
         return pressed;
     };
-    if (toggle(playing() ? "Stop" : "Play", playing(), theme::vec(theme::kYellow))) {
-        playing() ? exitPlay() : enterPlay();
+    ImGui::BeginDisabled(xrConnecting());
+    const bool play_pressed = toggle(playing() && !play_vr_ ? "Stop" : "Play", playing() && !play_vr_, theme::vec(theme::kYellow));
+    ImGui::EndDisabled();
+    if (play_pressed) {
+        if (playing()) {
+            exitPlay();
+        } else {
+            play_vr_ = false;
+            enterPlay();
+        }
     }
     ImGui::SetItemTooltip(playing() ? "Parar y restaurar la escena (Ctrl+P)" : "Simular la fisica (Ctrl+P)");
+    ImGui::SameLine();
+    drawPlayVrButton(vr_button);  // al lado de Play: el juego en el casco (EditorXr.cpp)
+    ImGui::SameLine();
     if (toggle("Pausa", play_state_ == PlayState::Paused, theme::vec(theme::kYellowDeep))) togglePause();
     ImGui::SetItemTooltip("Pausar / seguir (Ctrl+Mayus+P)");
     ImGui::BeginDisabled(play_state_ != PlayState::Paused);

@@ -121,6 +121,9 @@ struct WindowConfig {
     // setCaptionHitTest). Se conservan el borde para redimensionar, el snap,
     // las animaciones y el menu de sistema.
     bool custom_title_bar = false;
+    // false: no se muestra ni quita el foco (herramientas de prueba del
+    // render: la swapchain existe igual).
+    bool visible = true;
 };
 
 // Ventana Win32 que traduce los mensajes del sistema a eventos de CramionDM.

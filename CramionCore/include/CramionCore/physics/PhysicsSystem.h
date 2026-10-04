@@ -317,6 +317,12 @@ public:
     void wakeUp(ecs::Entity entity);
     void sleep(ecs::Entity entity);
     bool hasBody(ecs::Entity entity) const;
+    // Que dos objetos no choquen entre si (Physics.IgnoreCollision de Unity):
+    // el cuerpo de cada uno (la entidad con el Rigidbody o los colliders) y,
+    // si es un Character Controller, su capsula. ignore = false lo deshace.
+    // Se olvida al parar (stop()).
+    void ignoreCollision(ecs::Entity a, ecs::Entity b, bool ignore = true);
+    bool collisionIgnored(ecs::Entity a, ecs::Entity b) const;
     // Centro de masas en el mundo.
     core::Vec3 centerOfMass(ecs::Entity entity) const;
 

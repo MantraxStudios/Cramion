@@ -463,6 +463,11 @@ struct PhysicsSystem::Impl {
             if (body1.GetUserData() == body2.GetUserData()) {
                 return JPH::ValidateResult::RejectAllContactsForThisBodyPair;
             }
+            // Parejas que no chocan (ignoreCollision), tambien con la capsula
+            // de un personaje (su inner body lleva la entidad del personaje).
+            if (impl_.pairIgnored(body1.GetUserData(), body2.GetUserData())) {
+                return JPH::ValidateResult::RejectAllContactsForThisBodyPair;
+            }
             // El ragdoll de un personaje no choca con su propia capsula (el
             // Character Controller esta en un antepasado del modelo).
             if (impl_.ragdollOf(body1.GetUserData(), body2.GetUserData()) ||
@@ -614,6 +619,19 @@ struct PhysicsSystem::Impl {
 
     bool isInnerBody(const JPH::BodyID& id) const {
         return !inner_bodies.empty() && inner_bodies.contains(id.GetIndexAndSequenceNumber());
+    }
+
+    // Parejas que no chocan (ignoreCollision): las dos entidades (datos de
+    // usuario de 32 bits) en una clave, la menor abajo. Se leen desde los
+    // hilos de Jolt; solo cambian fuera del paso de la fisica.
+    std::unordered_set<std::uint64_t> ignored_pairs;
+    static std::uint64_t pairKey(std::uint64_t a, std::uint64_t b) {
+        const std::uint64_t low = std::min(a, b) & 0xFFFFFFFFull;
+        const std::uint64_t high = std::max(a, b) & 0xFFFFFFFFull;
+        return (high << 32) | low;
+    }
+    bool pairIgnored(std::uint64_t a, std::uint64_t b) const {
+        return !ignored_pairs.empty() && ignored_pairs.contains(pairKey(a, b));
     }
 
     PhysicsSettings settings;
@@ -2915,7 +2933,8 @@ struct PhysicsSystem::Impl {
         CharacterBodyFilter(std::uint64_t own, const Impl& impl) : own_(own), impl_(impl) {}
         bool ShouldCollideLocked(const JPH::Body& body) const override {
             return !body.IsSensor() && body.GetUserData() != own_ && !impl_.ragdollOf(body.GetUserData(), own_) &&
-                   !impl_.ragdoll_bodies.contains(body.GetID().GetIndexAndSequenceNumber());
+                   !impl_.ragdoll_bodies.contains(body.GetID().GetIndexAndSequenceNumber()) &&
+                   !impl_.pairIgnored(body.GetUserData(), own_);
         }
 
     private:
@@ -3388,6 +3407,7 @@ void PhysicsSystem::stop() {
     }
     d.characters.clear();
     d.inner_bodies.clear();
+    d.ignored_pairs.clear();
     for (auto& [handle, entry] : d.entries) {
         for (const JPH::BodyID& id : {entry.solid, entry.sensor}) {
             if (id.IsInvalid()) continue;
@@ -4006,6 +4026,31 @@ void PhysicsSystem::wakeUp(ecs::Entity entity) {
     if (entry != nullptr && !entry->solid.IsInvalid()) impl_->bodies().ActivateBody(entry->solid);
 }
 
+void PhysicsSystem::ignoreCollision(ecs::Entity a, ecs::Entity b, bool ignore) {
+    Impl& d = *impl_;
+    if (!a.valid() || !b.valid() || a == b) return;
+    const std::uint64_t key = Impl::pairKey(entityToUserData(a.handle()), entityToUserData(b.handle()));
+    const bool changed = ignore ? d.ignored_pairs.insert(key).second : d.ignored_pairs.erase(key) > 0;
+    if (!changed || !d.system) return;
+    // Lo que ya se tocaba sigue en la cache de contactos (no se vuelve a
+    // validar): se rehace la de los dos.
+    for (const ecs::Entity& e : {a, b}) {
+        if (const Impl::BodyEntry* entry = d.entryOf(e)) {
+            if (!entry->solid.IsInvalid()) d.bodies().InvalidateContactCache(entry->solid);
+        }
+        const auto it = d.characters.find(e.handle());
+        if (it != d.characters.end() && it->second.character) {
+            const JPH::BodyID inner = it->second.character->GetInnerBodyID();
+            if (!inner.IsInvalid()) d.bodies().InvalidateContactCache(inner);
+        }
+    }
+}
+
+bool PhysicsSystem::collisionIgnored(ecs::Entity a, ecs::Entity b) const {
+    if (!a.valid() || !b.valid()) return false;
+    return impl_->pairIgnored(entityToUserData(a.handle()), entityToUserData(b.handle()));
+}
+
 void PhysicsSystem::sleep(ecs::Entity entity) {
     const Impl::BodyEntry* entry = impl_->entryOf(entity);
     if (entry != nullptr && !entry->solid.IsInvalid()) impl_->bodies().DeactivateBody(entry->solid);
@@ -4064,15 +4109,19 @@ std::uint32_t PhysicsSystem::moveCharacter(ecs::World& world, ecs::Entity charac
     // Movido desde fuera desde el ultimo paso: teletransporte antes de moverlo.
     if (const Vec3 now = character.worldPosition(); !nearlyEqual(c.position, now, 1e-4f)) {
         c.character->SetPosition(JPH::RVec3(toJolt(now)));
-        c.position = now;
+        c.position = c.previous_position = c.current_position = now;
     }
+    const Vec3 start = fromJolt(JPH::Vec3(c.character->GetPosition()));
     const float dt = std::max(d.settings.fixed_step, 1e-4f);
     const JPH::Vec3 keep = c.character->GetLinearVelocity();
     d.advanceCharacter(c, character.handle(), *cc, displacement * (1.0f / dt), dt, JPH::Vec3::sZero(), false);
     c.character->SetLinearVelocity(keep);
-    // Se ve ya donde acaba (sin interpolar desde donde estaba).
-    c.current_position = c.previous_position = fromJolt(JPH::Vec3(c.character->GetPosition()));
-    character.setWorldPosition(c.current_position);
+    // Se ve ya donde acaba: lo movido se suma a los dos extremos de la
+    // interpolacion (llamarlo cada frame, como el rig de VR, no la rompe).
+    const Vec3 moved = fromJolt(JPH::Vec3(c.character->GetPosition())) - start;
+    c.current_position = c.current_position + moved;
+    c.previous_position = c.previous_position + moved;
+    character.setWorldPosition(character.worldPosition() + moved);
     c.position = character.worldPosition();
     return c.flags;
 }

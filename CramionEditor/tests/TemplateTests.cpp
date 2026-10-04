@@ -16,6 +16,8 @@
 #include <CramionCore/twod/System2D.h>
 
 #include <CramionCore/CramionCore.h>
+#include <CramionCore/scripting/CppScripts.h>
+#include <CramionCore/xr/XrRig.h>
 #include <CramionDM/Input.h>
 
 #include <chrono>
@@ -146,12 +148,12 @@ int main() {
 
     const std::vector<editor::ProjectTemplate> list = editor::availableTemplates();
     std::printf("Plantillas integradas\n");
-    check(list.size() == 12 && find(list, "blank") && find(list, "third_person") && find(list, "navigation") &&
+    check(list.size() == 13 && find(list, "blank") && find(list, "third_person") && find(list, "navigation") &&
               find(list, "third_person_pro") &&
               find(list, "voxel") && find(list, "mmo") && find(list, "creatures") && find(list, "online") &&
               find(list, "open_world") && find(list, "state_machines") && find(list, "platformer_2d") &&
-              find(list, "cars"),
-          "hay 12 plantillas integradas");
+              find(list, "cars") && find(list, "vr"),
+          "hay 13 plantillas integradas");
 
     // --- Criaturas: modelos con esqueleto generados, IK, phys bones, ragdoll ---
     {
@@ -1063,6 +1065,91 @@ int main() {
         check(last.speed_kmh > 20.0f && last.gear >= 1 && moved > 10.0f, "acelera y avanza con el motor y las marchas");
     }
 
+    // --- Realidad virtual: Jugador VR, objetos que se cogen y panel en el mundo ---
+    {
+        std::printf("Realidad virtual\n");
+        const project::ProjectInfo p = editor::createProjectFromTemplate(*find(list, "vr"), root, "VR");
+        Played r;
+        // Como en el Play del editor: la capsula del jugador no choca con lo
+        // que se coge (XrRig::updateCollisions antes de cada paso).
+        xr::XrRig rig_system;
+        bool ignored = false;
+        play(p, 2.0f, r, [&](ecs::World& w, navigation::NavigationSystem&, float) {
+            if (playing_physics == nullptr) return;
+            rig_system.setPhysics(playing_physics);
+            rig_system.updateCollisions(w);
+            const ecs::Entity player = w.findByName("Jugador VR");
+            const ecs::Entity crate = w.findByName("Caja 0-0");
+            ignored = player.valid() && crate.valid() && playing_physics->collisionIgnored(player, crate);
+        });
+        check(r.loaded, "la escena inicial se abre");
+        check(ignored, "el Jugador VR no choca con lo que se coge (XR Grabbable)");
+        const ecs::Entity rig = r.world.findByName("Jugador VR");
+        const ecs::Entity left = r.world.findByName("Mano izquierda");
+        const ecs::Entity right = r.world.findByName("Mano derecha");
+        check(rig.valid() && rig.has<xr::XrOrigin>() && rig.has<physics::CharacterController>() && rig.has<xr::XrPlayer>() &&
+                  left.valid() && left.has<xr::XrInteractor>() && left.get<xr::XrController>().hand == xr::Hand::Left &&
+                  right.valid() && right.has<xr::XrInteractor>() && right.get<xr::XrController>().hand == xr::Hand::Right &&
+                  right.get<xr::XrInteractor>().ray_material.valid(),
+              "Jugador VR con capsula y dos manos con XR Interactor (y su rayo)");
+        int grabbables = 0;
+        bool all_bodies = true;
+        r.world.forEachDepthFirst([&](ecs::Entity e) {
+            if (!e.has<xr::XrGrabbable>()) return;
+            ++grabbables;
+            all_bodies = all_bodies && e.has<physics::Rigidbody>();
+        });
+        check(grabbables >= 10 && all_bodies, "objetos con XR Grabbable y Rigidbody");
+        // Tras 2 s de fisica siguen en la mesa y la estanteria (no atraviesan nada).
+        const ecs::Entity cube = r.world.findByName("Cubo rojo");
+        const ecs::Entity ball = r.world.findByName("Pelota 1");
+        std::printf("  (cubo a %.3f m, pelota a %.3f m)\n", cube.valid() ? static_cast<double>(cube.worldPosition().y) : -1.0,
+                    ball.valid() ? static_cast<double>(ball.worldPosition().y) : -1.0);
+        check(cube.valid() && std::abs(cube.worldPosition().y - 0.81f) < 0.03f && ball.valid() &&
+                  std::abs(ball.worldPosition().y - 0.955f) < 0.05f,
+              "los objetos se quedan en la mesa y la estanteria");
+        const ecs::Entity panel = r.world.findByName("Panel VR");
+        const scripting::CppScript* menu = panel.valid() ? panel.tryGet<scripting::CppScript>() : nullptr;
+        check(menu != nullptr && menu->class_name == "MenuVR" && menu->value("objetos") != nullptr &&
+                  std::filesystem::exists(p.assetsFolder() / "Scripts" / "MenuVR.h") &&
+                  std::filesystem::exists(p.assetsFolder() / "Scripts" / "MenuVR.cpp"),
+              "el panel lleva su script de C++ (MenuVR.h + MenuVR.cpp)");
+        // El rayo de una mano apunta al boton y el gatillo lo pulsa.
+        ui::UiSystem ui;
+        std::array<ui::UiPointer, ui::UiSystem::kMaxPointers> pointers{};
+        ui.updateWorld(r.world, pointers, true, 0.0f);
+        const bool one_canvas = ui.worldCanvases().size() == 1 && !ui.worldCanvases().front().commands.empty();
+        const ecs::Entity button = r.world.findByName("Reiniciar objetos");
+        bool clicked = false;
+        bool hovered = false;
+        if (one_canvas && button.valid() && panel.valid()) {
+            // Del centro del boton (pixeles del canvas) a un punto del mundo.
+            const ui::WorldCanvasDraw& c = ui.worldCanvases().front();
+            const float px = 40.0f + 170.0f;
+            const float py = 236.0f + 40.0f;
+            Vec3 center{c.transform.m[3][0], c.transform.m[3][1], c.transform.m[3][2]};
+            const Vec3 x_axis{c.transform.m[0][0], c.transform.m[0][1], c.transform.m[0][2]};
+            const Vec3 y_axis{c.transform.m[1][0], c.transform.m[1][1], c.transform.m[1][2]};
+            const Vec3 z_axis{c.transform.m[2][0], c.transform.m[2][1], c.transform.m[2][2]};
+            const Vec3 target = center + x_axis * ((px / c.width - 0.5f) * c.size.x) + y_axis * ((0.5f - py / c.height) * c.size.y);
+            pointers[1].valid = true;
+            pointers[1].origin = target + z_axis * 1.0f;  // un metro delante del panel
+            pointers[1].direction = z_axis * -1.0f;
+            ui.updateWorld(r.world, pointers, true, 0.1f);
+            hovered = ui.pointerHits()[1].hit && ui.pointerHits()[1].over_control &&
+                      std::abs(ui.pointerHits()[1].distance - 1.0f) < 0.01f;
+            pointers[1].down = true;
+            ui.updateWorld(r.world, pointers, true, 0.2f);
+            pointers[1].down = false;
+            ui.updateWorld(r.world, pointers, true, 0.3f);
+            for (const ui::UiEvent& e : ui.takeEvents()) {
+                clicked = clicked || (e.method == "OnReiniciar" && e.target == panel);
+            }
+        }
+        check(one_canvas, "un Canvas en el mundo con su lista de dibujo");
+        check(hovered && clicked, "el rayo apunta al boton y el gatillo lo pulsa (OnReiniciar al script)");
+    }
+
     // --- Del usuario ---
     {
         std::printf("Plantillas del usuario\n");
@@ -1071,7 +1158,7 @@ int main() {
               "guardar un proyecto como plantilla");
         const std::vector<editor::ProjectTemplate> again = editor::availableTemplates();
         const editor::ProjectTemplate* mine = find(again, "user:Mi plataformas");
-        check(again.size() == 13 && mine != nullptr && mine->category == "Mis plantillas" && mine->description == "Prueba",
+        check(again.size() == 14 && mine != nullptr && mine->category == "Mis plantillas" && mine->description == "Prueba",
               "aparece en la lista con su descripcion");
         if (mine != nullptr) {
             const project::ProjectInfo p = editor::createProjectFromTemplate(*mine, root, "Copia");

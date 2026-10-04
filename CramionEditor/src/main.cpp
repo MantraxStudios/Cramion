@@ -65,6 +65,8 @@ int main(int argc, char** argv) {
 #endif
             // Editar > Play en realidad virtual (con casco conectado).
             .enable_xr = editor::xrPlayPreference(),
+            .xr_runtime = editor::xrRuntimePreference(),  // Editar > Runtime de OpenXR
+            .xr_session = false,  // el casco solo se toma al dar Play on VR
         };
         {
             // Logo y % de shaders compilados mientras arranca Vulkan.
@@ -93,7 +95,14 @@ int main(int argc, char** argv) {
             }
             app.startTestRunFromCli(std::filesystem::path(argv[2]), junit);
         } else if (argc >= 2) {
-            app.openProject(std::filesystem::path(argv[1]));
+            // CramionEditor.exe [proyecto] [--play-vr] (boton Play on VR: reabierto con el casco)
+            for (int i = 1; i < argc; ++i) {
+                if (std::string_view(argv[i]) == "--play-vr") {
+                    app.requestVrPlayOnStart();
+                } else {
+                    app.openProject(std::filesystem::path(argv[i]));
+                }
+            }
         }
 
         // Win32 -> ImGui primero; los eventos van a la entrada de la camara,
@@ -205,6 +214,7 @@ int main(int argc, char** argv) {
         }
 
         exit_code = app.exitCode();
+        app.shutdownXr();  // suelta el casco (y espera si se estaba buscando)
         renderer.waitIdle();
         imgui.shutdown();
         renderer.shutdown();

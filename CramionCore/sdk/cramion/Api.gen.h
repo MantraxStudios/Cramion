@@ -1271,6 +1271,15 @@ inline Value stats(Mas&&... mas) {
 }
 }  // namespace Network
 
+namespace Physics {
+/// Physics.ignoreCollision(a, b, true)
+/// a y b no chocan entre si (false lo deshace)
+template <typename T0 = Value, typename T1 = Value, typename T2 = Value>
+inline Value ignoreCollision(const T0& a = {}, const T1& b = {}, const T2& activar = {}) {
+    return detail::lua("Physics.ignoreCollision", Values{Value(a), Value(b), Value(activar)});
+}
+}  // namespace Physics
+
 namespace Physics2D {
 /// Physics2D.getGravity()
 /// Vec3 gravedad 2D

@@ -13,6 +13,7 @@
 #include "LocomotionPack.h"
 #include "TemplateLocomotionScripts.h"
 #include "Template21Scripts.h"
+#include "TemplateVrScripts.h"
 
 #include <CramionCore/ecs/AnimatorController.h>
 #include <CramionCore/twod/System2D.h>
@@ -21,6 +22,8 @@
 #include <CramionCore/net/NetworkObject.h>
 
 #include <CramionCore/CramionCore.h>
+#include <CramionCore/scripting/CppScripts.h>
+#include <CramionCore/xr/XrRig.h>
 
 #include <nlohmann/json.hpp>
 
@@ -3647,6 +3650,219 @@ void buildCars(project::ProjectInfo& project) {
     b.save("Main");
 }
 
+// Realidad virtual (como la VR Template de Unity): el Jugador VR con fisica
+// (andar con el stick, girar, saltar, andar por la habitacion), manos que
+// cogen y lanzan objetos con fisica (XR Interactor + XR Grabbable) y un panel
+// de UI en el mundo que se usa con el rayo y el gatillo, con su script de C++.
+void buildVr(project::ProjectInfo& project) {
+    xr::registerXrComponents();  // (se guardan en la escena por su nombre)
+    Builder b(project);
+    b.world.setSceneUuid(Uuid::generate());
+    ecs::populateDefaultScene(b.world);
+    // La camara la pone el Jugador VR (la de la escena por defecto sobra).
+    if (ecs::Entity old = b.world.findByName("Main Camera"); old.valid()) b.world.destroy(old);
+    b.script("MenuVR.h", template_vr::kMenuHeader);
+    b.script("MenuVR.cpp", template_vr::kMenuSource);
+
+    const assets::AssetRef floor = b.material("Suelo", Vec3{0.55f, 0.57f, 0.6f}, 0.8f);
+    const assets::AssetRef wood = b.material("Madera", Vec3{0.55f, 0.36f, 0.22f}, 0.6f);
+    const assets::AssetRef dark = b.material("Plastico oscuro", Vec3{0.08f, 0.085f, 0.09f}, 0.45f);
+    const assets::AssetRef laser = b.material("Rayo", Vec3{0.2f, 0.6f, 1.0f}, 0.5f, 0.0f, Vec3{0.2f, 0.6f, 1.0f}, 6.0f);
+    const assets::AssetRef red = b.material("Rojo", Vec3{0.85f, 0.18f, 0.15f}, 0.45f);
+    const assets::AssetRef blue = b.material("Azul", Vec3{0.15f, 0.4f, 0.9f}, 0.45f);
+    const assets::AssetRef yellow = b.material("Amarillo", Vec3{0.95f, 0.78f, 0.15f}, 0.45f);
+    const assets::AssetRef green = b.material("Verde", Vec3{0.2f, 0.7f, 0.3f}, 0.45f);
+    const assets::AssetRef metal = b.material("Metal", Vec3{0.75f, 0.76f, 0.78f}, 0.25f, 1.0f);
+    const assets::AssetRef crate = b.material("Caja", Vec3{0.78f, 0.6f, 0.38f}, 0.7f);
+
+    b.box("Suelo", Vec3{0.0f, -0.5f, 0.0f}, Vec3{30.0f, 1.0f, 30.0f}, floor);
+    // Una mesa delante del jugador y una estanteria para las pelotas.
+    b.box("Mesa", Vec3{0.0f, 0.375f, -0.35f}, Vec3{1.4f, 0.75f, 0.7f}, wood);
+    b.box("Estanteria", Vec3{1.25f, 0.45f, -0.6f}, Vec3{0.5f, 0.9f, 0.5f}, wood);
+
+    // Lo que se coge: Rigidbody + collider + XR Grabbable.
+    std::vector<ecs::Entity> grabbables;
+    const auto grabbable = [&](const std::string& name, const Uuid& shape, const Vec3& position, const Vec3& size,
+                               const assets::AssetRef& mat, float mass) {
+        ecs::Entity e = ecs::createPrimitive(b.world, shape, name);
+        e.setLocalPosition(position);
+        e.setLocalScale(size);
+        e.get<ecs::MeshRenderer>().materials = {mat};
+        if (shape == assets::builtin::kSphere) {
+            e.add<physics::SphereCollider>();
+        } else if (shape == assets::builtin::kCylinder) {
+            e.add<physics::BoxCollider>().size = Vec3{1.0f, 2.0f, 1.0f};  // el cilindro mide 2 de alto
+        } else {
+            e.add<physics::BoxCollider>();
+        }
+        physics::Rigidbody& rb = e.add<physics::Rigidbody>();
+        rb.mass = mass;
+        rb.continuous = true;  // al lanzarlo rapido no atraviesa nada
+        e.add<xr::XrGrabbable>();
+        grabbables.push_back(e);
+        return e;
+    };
+    const float top = 0.75f;
+    grabbable("Cubo rojo", assets::builtin::kCube, Vec3{-0.45f, top + 0.06f, -0.3f}, Vec3{0.12f, 0.12f, 0.12f}, red, 0.4f);
+    grabbable("Cubo azul", assets::builtin::kCube, Vec3{-0.25f, top + 0.06f, -0.45f}, Vec3{0.12f, 0.12f, 0.12f}, blue, 0.4f);
+    grabbable("Cubo amarillo", assets::builtin::kCube, Vec3{-0.3f, top + 0.18f, -0.4f}, Vec3{0.12f, 0.12f, 0.12f}, yellow,
+              0.4f);
+    grabbable("Lata", assets::builtin::kCylinder, Vec3{0.05f, top + 0.06f, -0.3f}, Vec3{0.07f, 0.06f, 0.07f}, metal, 0.3f);
+    for (int i = 0; i < 3; ++i) {
+        grabbable("Pelota " + std::to_string(i + 1), assets::builtin::kSphere,
+                  Vec3{1.15f + static_cast<float>(i) * 0.1f, 0.96f, -0.6f}, Vec3{0.11f, 0.11f, 0.11f},
+                  i == 0 ? green : i == 1 ? red : yellow, 0.25f);
+    }
+    // Una linterna: se coge siempre igual (punto de agarre) y alumbra.
+    ecs::Entity torch = grabbable("Linterna", assets::builtin::kCylinder, Vec3{0.35f, top + 0.04f, -0.35f},
+                                  Vec3{0.05f, 0.11f, 0.05f}, dark, 0.35f);
+    torch.setLocalEulerDegrees(Vec3{90.0f, 0.0f, 0.0f});
+    xr::XrGrabbable& torch_grab = torch.get<xr::XrGrabbable>();
+    torch_grab.snap_to_hand = true;
+    torch_grab.attach_rotation = Vec3{-90.0f, 0.0f, 0.0f};  // la punta (+Y) hacia delante, como el mando
+    ecs::Entity torch_light = ecs::createLight(b.world, ecs::LightType::Spot, torch);
+    torch_light.setName("Haz");
+    torch_light.setLocalPosition(Vec3{0.0f, 1.1f, 0.0f});
+    torch_light.setLocalEulerDegrees(Vec3{90.0f, 0.0f, 0.0f});  // hacia la punta (+Y del cilindro)
+    torch_light.get<ecs::Light>().intensity = 6.0f;
+    torch_light.get<ecs::Light>().range = 12.0f;
+    // Un muro de cajas para tirarle las pelotas.
+    for (int row = 0; row < 3; ++row) {
+        for (int col = 0; col < 3 - row; ++col) {
+            ecs::Entity box = b.box("Caja " + std::to_string(row) + "-" + std::to_string(col),
+                                    Vec3{-1.6f + 0.26f * static_cast<float>(col) + 0.13f * static_cast<float>(row),
+                                         0.125f + 0.255f * static_cast<float>(row), -2.4f},
+                                    Vec3{0.25f, 0.25f, 0.25f}, crate);
+            box.add<physics::Rigidbody>().mass = 2.0f;
+            box.add<xr::XrGrabbable>();
+            grabbables.push_back(box);
+        }
+    }
+
+    // El Jugador VR: XR Origin (de pie) con su capsula y XR Player.
+    ecs::Entity rig = b.world.create("Jugador VR");
+    rig.setWorldPosition(Vec3{0.0f, 0.0f, 0.6f});
+    rig.add<xr::XrOrigin>();
+    physics::CharacterController& cc = rig.add<physics::CharacterController>();
+    cc.height = 1.8f;
+    cc.radius = 0.25f;
+    cc.center = Vec3{0.0f, 0.9f, 0.0f};
+    cc.crouch_height = 1.1f;
+    cc.rotate_to_movement = false;  // (sin casco, WASD lo mueve para probar)
+    cc.walk_speed = 2.5f;
+    cc.run_speed = 4.5f;
+    cc.crouch_speed = 1.5f;
+    cc.jump_height = 0.8f;
+    rig.add<xr::XrPlayer>();
+    ecs::Entity camera = ecs::createCamera(b.world, rig);
+    camera.setName("Main Camera");
+    camera.setLocalPosition(Vec3{0.0f, 1.6f, 0.0f});
+    camera.get<ecs::Camera>().is_main = true;
+    camera.get<ecs::Camera>().near_plane = 0.05f;
+    static constexpr const char* kHands[] = {"Mano izquierda", "Mano derecha"};
+    for (int h = 0; h < 2; ++h) {
+        ecs::Entity hand = b.world.create(kHands[h], rig);
+        hand.setLocalPosition(Vec3{h == 0 ? -0.22f : 0.22f, 1.1f, -0.3f});
+        xr::XrController& controller = hand.add<xr::XrController>();
+        controller.hand = static_cast<xr::Hand>(h);
+        xr::XrInteractor& interactor = hand.add<xr::XrInteractor>();
+        interactor.ray_material = laser;
+        // El mando: un cuerpo y un gatillo (cambialo por tu modelo).
+        ecs::Entity body = ecs::createPrimitive(b.world, assets::builtin::kCube, "Mando", hand);
+        body.setLocalScale(Vec3{0.045f, 0.035f, 0.13f});
+        body.get<ecs::MeshRenderer>().materials = {dark};
+        ecs::Entity ring = ecs::createPrimitive(b.world, assets::builtin::kCylinder, "Aro", hand);
+        ring.setLocalPosition(Vec3{0.0f, 0.02f, -0.07f});
+        ring.setLocalScale(Vec3{0.07f, 0.008f, 0.07f});
+        ring.get<ecs::MeshRenderer>().materials = {metal};
+    }
+
+    // El panel: un Canvas en modo Mundo (80 x 56 cm) que mira al jugador.
+    ecs::Entity panel = b.world.create("Panel VR");
+    panel.setLocalPosition(Vec3{-1.1f, 1.35f, -0.35f});
+    panel.setLocalEulerDegrees(Vec3{0.0f, 40.0f, 0.0f});
+    ui::Canvas& canvas = panel.add<ui::Canvas>();
+    canvas.render_mode = ui::RenderMode::WorldSpace;
+    canvas.reference = Vec2{800.0f, 560.0f};
+    canvas.pixels_per_meter = 1000.0f;
+    const auto element = [&](const std::string& name, ecs::Entity parent, const Vec2& position, const Vec2& size) {
+        ecs::Entity e = b.world.create(name, parent);
+        ui::RectTransform& rt = e.add<ui::RectTransform>();
+        rt.anchor_min = rt.anchor_max = Vec2{0.0f, 0.0f};
+        rt.pivot = Vec2{0.0f, 0.0f};
+        rt.position = position;
+        rt.size = size;
+        return e;
+    };
+    const auto label = [&](ecs::Entity parent, const std::string& text, float size, ui::HAlign align) {
+        ecs::Entity e = b.world.create("Texto", parent);
+        ui::RectTransform& rt = e.add<ui::RectTransform>();
+        rt.anchor_min = Vec2{0.0f, 0.0f};
+        rt.anchor_max = Vec2{1.0f, 1.0f};
+        rt.size = Vec2{0.0f, 0.0f};
+        ui::Text& t = e.add<ui::Text>();
+        t.text = text;
+        t.font_size = size;
+        t.h_align = align;
+        t.color = Vec3{1.0f, 1.0f, 1.0f};
+        return e;
+    };
+    ecs::Entity background = element("Fondo", panel, Vec2{0.0f, 0.0f}, Vec2{800.0f, 560.0f});
+    ui::Image& bg = background.add<ui::Image>();
+    bg.color = Vec3{0.07f, 0.08f, 0.1f};
+    bg.alpha = 0.92f;
+    bg.corner_radius = 24.0f;
+    ecs::Entity title = element("Titulo", panel, Vec2{40.0f, 28.0f}, Vec2{720.0f, 70.0f});
+    label(title, "Cramion VR", 54.0f, ui::HAlign::Left);
+    ecs::Entity help = element("Ayuda", panel, Vec2{40.0f, 104.0f}, Vec2{720.0f, 110.0f});
+    ecs::Entity help_text = label(help,
+                                  "Agarre: coger y lanzar (de cerca o con el rayo)\n"
+                                  "Gatillo: pulsar esta pantalla  -  Stick izq.: andar  -  Stick der.: girar  -  A: saltar",
+                                  25.0f, ui::HAlign::Left);
+    help_text.get<ui::Text>().wrap = true;
+    help_text.get<ui::Text>().color = Vec3{0.78f, 0.82f, 0.88f};
+    ecs::Entity reset = element("Reiniciar objetos", panel, Vec2{40.0f, 236.0f}, Vec2{340.0f, 80.0f});
+    ui::Button& reset_button = reset.add<ui::Button>();
+    reset_button.normal = Vec3{0.16f, 0.45f, 0.95f};
+    reset_button.hover = Vec3{0.3f, 0.58f, 1.0f};
+    reset_button.pressed = Vec3{0.1f, 0.32f, 0.75f};
+    reset_button.corner_radius = 16.0f;
+    reset_button.target = panel.uuid();
+    reset_button.on_click = "OnReiniciar";
+    label(reset, "Reiniciar objetos", 30.0f, ui::HAlign::Center);
+    ecs::Entity smooth = element("Giro suave", panel, Vec2{420.0f, 252.0f}, Vec2{48.0f, 48.0f});
+    ui::Toggle& smooth_toggle = smooth.add<ui::Toggle>();
+    smooth_toggle.on = false;
+    smooth_toggle.target = panel.uuid();
+    smooth_toggle.on_change = "OnGiroSuave";
+    ecs::Entity smooth_label = element("Texto giro", panel, Vec2{484.0f, 252.0f}, Vec2{280.0f, 48.0f});
+    label(smooth_label, "Giro suave", 30.0f, ui::HAlign::Left);
+    ecs::Entity speed_label = element("Texto velocidad", panel, Vec2{40.0f, 350.0f}, Vec2{720.0f, 44.0f});
+    label(speed_label, "Velocidad al andar", 28.0f, ui::HAlign::Left);
+    ecs::Entity speed = element("Velocidad", panel, Vec2{40.0f, 400.0f}, Vec2{720.0f, 50.0f});
+    ui::Slider& speed_slider = speed.add<ui::Slider>();
+    speed_slider.min = 1.0f;
+    speed_slider.max = 5.0f;
+    speed_slider.value = cc.walk_speed;
+    speed_slider.target = panel.uuid();
+    speed_slider.on_change = "OnVelocidad";
+    ecs::Entity status = element("Estado", panel, Vec2{40.0f, 480.0f}, Vec2{720.0f, 50.0f});
+    ecs::Entity status_text = label(status, "Coge algo con el boton de agarre", 26.0f, ui::HAlign::Left);
+    status_text.get<ui::Text>().color = Vec3{0.55f, 0.85f, 0.6f};
+
+    // Su script de C++ (MenuVR.h + MenuVR.cpp): los objetos que reinicia, el
+    // jugador y el texto de los avisos.
+    scripting::CppScript& script = panel.add<scripting::CppScript>();
+    script.script = "Scripts/MenuVR.cpp";
+    script.class_name = "MenuVR";
+    nlohmann::json objects = nlohmann::json::array();
+    for (const ecs::Entity& e : grabbables) objects.push_back({{"$uuid", e.uuid().toString()}});
+    script.values = {{"jugador", nlohmann::json{{"$uuid", rig.uuid().toString()}}.dump()},
+                     {"objetos", objects.dump()},
+                     {"estado", nlohmann::json{{"$uuid", status_text.uuid().toString()}}.dump()}};
+    b.save("Main");
+}
+
 std::vector<ProjectTemplate> availableTemplates() {
     std::vector<ProjectTemplate> list;
     list.push_back(ProjectTemplate{
@@ -3732,6 +3948,16 @@ std::vector<ProjectTemplate> availableTemplates() {
          "Monedas con trigger 2D y marcador en el HUD", "Cámara ortográfica que sigue al jugador"},
         rgba(120, 200, 80), TemplateArt::Blank, {}});
     list.push_back(ProjectTemplate{
+        "vr", "Realidad virtual (VR)", "Integradas",
+        "Como la VR Template de Unity: juega con el casco en primera persona, coge y lanza objetos con fisica con las "
+        "manos (de cerca o con el rayo) y usa un panel de UI en el mundo con el gatillo. El panel tiene su script de "
+        "C++ (MenuVR).",
+        {"Jugador VR con fisica: andar, girar por pasos o suave, saltar, de pie o sentado",
+         "Manos con XR Interactor: agarre para coger, rayo para coger a distancia y laser",
+         "Objetos con XR Grabbable: siguen a la mano con fisica y se lanzan; una linterna con punto de agarre",
+         "Panel de UI en el mundo (boton, casilla y slider) que se pulsa con el rayo y el gatillo"},
+        rgba(90, 160, 255), TemplateArt::Blank, {}});
+    list.push_back(ProjectTemplate{
         "cars", "Coches", "Integradas",
         "Un coche que se conduce en una pista con rampas y conos: motor con marchas, suspensión, freno de mano y "
         "cámara de persecución. Hecho con Vehicle y Wheel Collider.",
@@ -3803,6 +4029,8 @@ project::ProjectInfo createProjectFromTemplate(const ProjectTemplate& t, const s
             buildPlatformer2D(info);
         } else if (t.id == "cars") {
             buildCars(info);
+        } else if (t.id == "vr") {
+            buildVr(info);
         } else {
             buildBlank(info);
         }

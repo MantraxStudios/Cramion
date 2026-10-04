@@ -22,8 +22,11 @@ public:
     VulkanInstance& operator=(const VulkanInstance&) = delete;
 
     // Crea la instancia. Lanza std::runtime_error si falta algo obligatorio.
-    // `extra_extensions`: las que pide OpenXR (se anaden si existen).
-    void initialize(const EngineInfo& info, const std::vector<std::string>& extra_extensions = {});
+    // `extra_extensions`: las que pide OpenXR (se anaden si existen; avisa si
+    // no). `optional_extensions`: igual, sin avisar (las de compartir memoria
+    // con un runtime de VR, para poder conectar el casco despues).
+    void initialize(const EngineInfo& info, const std::vector<std::string>& extra_extensions = {},
+                    const std::vector<std::string>& optional_extensions = {});
 
     // Destruye el mensajero y la instancia (en ese orden).
     void shutdown();
@@ -31,11 +34,15 @@ public:
     const vk::raii::Instance& handle() const { return instance_; }
     std::uint32_t apiVersion() const { return api_version_; }
     bool validationEnabled() const { return validation_enabled_; }
+    const std::vector<std::string>& enabledExtensions() const { return enabled_extensions_; }
+    // El sistema la tiene (aunque no se haya activado).
+    bool extensionAvailable(const std::string& name) const;
 
 private:
     // Extensiones de instancia obligatorias (superficie + plataforma) mas las
     // opcionales de depuracion si estan disponibles.
-    std::vector<const char*> selectExtensions(const std::vector<std::string>& extra);
+    std::vector<const char*> selectExtensions(const std::vector<std::string>& extra,
+                                              const std::vector<std::string>& optional);
     std::vector<const char*> selectLayers();
     void createDebugMessenger();
 
@@ -54,6 +61,7 @@ private:
 
     std::uint32_t api_version_ = VK_API_VERSION_1_0;
     bool validation_enabled_ = false;
+    std::vector<std::string> enabled_extensions_;
 };
 
 }  // namespace cramion::gfx

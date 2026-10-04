@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <cfloat>
+#include <cmath>
+#include <cstdint>
 
 namespace cramion::editor {
 
@@ -107,6 +109,52 @@ ui::UiInput uiInputFromImGui(ImVec2 origin, ImVec2 size, bool hovered, bool typi
         input.enter = ImGui::IsKeyPressed(ImGuiKey_Enter, false) || ImGui::IsKeyPressed(ImGuiKey_KeypadEnter, false);
     }
     return input;
+}
+
+std::vector<gfx::WorldUiCanvas> buildWorldUi(const std::vector<ui::WorldCanvasDraw>& canvases, ImGuiLayer& imgui,
+                                             const std::filesystem::path& assets_root) {
+    std::vector<gfx::WorldUiCanvas> out;
+    out.reserve(canvases.size());
+    for (const ui::WorldCanvasDraw& c : canvases) {
+        // Una lista de ImGui propia (como las de las ventanas): las letras del
+        // atlas de fuentes y las imagenes de la UI, a pixeles del canvas.
+        ImDrawList list(ImGui::GetDrawListSharedData());
+        list._ResetForNewFrame();
+        list.PushTexture(ImGui::GetIO().Fonts->TexRef);
+        list.PushClipRect(ImVec2(0.0f, 0.0f), ImVec2(c.width, c.height));
+        drawUiList(&list, ImVec2(0.0f, 0.0f), c.commands, imgui, assets_root);
+
+        gfx::WorldUiCanvas canvas;
+        canvas.id = static_cast<std::uint64_t>(entt::to_integral(c.canvas)) + 1u;
+        canvas.width = static_cast<std::uint32_t>(std::lround(std::clamp(c.width, 1.0f, 4096.0f)));
+        canvas.height = static_cast<std::uint32_t>(std::lround(std::clamp(c.height, 1.0f, 4096.0f)));
+        canvas.transform = c.transform;
+        canvas.size = c.size;
+        canvas.vertices.reserve(static_cast<std::size_t>(list.VtxBuffer.Size));
+        for (const ImDrawVert& v : list.VtxBuffer) {
+            canvas.vertices.push_back(gfx::WorldUiVertex{v.pos.x, v.pos.y, v.uv.x, v.uv.y, v.col});
+        }
+        canvas.indices.reserve(static_cast<std::size_t>(list.IdxBuffer.Size));
+        for (const ImDrawIdx i : list.IdxBuffer) canvas.indices.push_back(static_cast<std::uint32_t>(i));
+        for (const ImDrawCmd& cmd : list.CmdBuffer) {
+            if (cmd.UserCallback != nullptr || cmd.ElemCount == 0) continue;
+            // La textura aun sin subir (letras nuevas: el frame siguiente).
+            const ImTextureID texture = cmd.TexRef._TexData != nullptr ? cmd.TexRef._TexData->TexID : cmd.TexRef._TexID;
+            if (texture == ImTextureID_Invalid) continue;
+            gfx::WorldUiBatch batch;
+            batch.texture = reinterpret_cast<VkDescriptorSet>(static_cast<std::uintptr_t>(texture));
+            batch.first_index = cmd.IdxOffset;
+            batch.index_count = cmd.ElemCount;
+            batch.vertex_offset = cmd.VtxOffset;
+            batch.clip[0] = cmd.ClipRect.x;
+            batch.clip[1] = cmd.ClipRect.y;
+            batch.clip[2] = cmd.ClipRect.z;
+            batch.clip[3] = cmd.ClipRect.w;
+            canvas.batches.push_back(batch);
+        }
+        out.push_back(std::move(canvas));
+    }
+    return out;
 }
 
 }  // namespace cramion::editor

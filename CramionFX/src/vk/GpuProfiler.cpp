@@ -72,14 +72,14 @@ void GpuProfiler::mark(const vk::raii::CommandBuffer& cmd, std::uint32_t frame,
     marks.names.push_back(name);
 }
 
-void GpuProfiler::collect(std::uint32_t frame) {
+bool GpuProfiler::collect(std::uint32_t frame) {
     if (!supported_ || frame >= frames_.size()) {
-        return;
+        return false;
     }
     FrameMarks& marks = frames_[frame];
     const auto count = static_cast<std::uint32_t>(marks.names.size());
     if (!marks.recorded || count < 2) {
-        return;
+        return false;
     }
     marks.recorded = false;
 
@@ -88,7 +88,7 @@ void GpuProfiler::collect(std::uint32_t frame) {
         frame * kMaxMarks, count, count * sizeof(std::uint64_t), sizeof(std::uint64_t),
         vk::QueryResultFlagBits::e64);
     if (result != vk::Result::eSuccess) {
-        return;
+        return false;
     }
 
     // Las pasadas que este frame no se grabaron (el mapa de lluvia, que se
@@ -117,6 +117,8 @@ void GpuProfiler::collect(std::uint32_t frame) {
         }
     }
     total_ms_ = total_ms_ <= 0.0f ? total : total_ms_ + (total - total_ms_) * kSmoothing;
+    last_total_ms_ = total;
+    return true;
 }
 
 }  // namespace cramion::gfx

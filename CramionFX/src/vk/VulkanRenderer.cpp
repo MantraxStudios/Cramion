@@ -1,5 +1,6 @@
 #include "CramionFX/vk/VulkanRenderer.h"
 
+#include "CramionFX/asset/ImageFile.h"
 #include "CramionFX/scene/Scene.h"
 #include "CramionFX/vk/GpuTypes.h"
 
@@ -312,11 +313,32 @@ void VulkanRenderer::initialize(const EngineInfo& info, NativeWindow window, std
     };
     report(0.0f, "Iniciando Vulkan");
     // VR: el runtime de OpenXR dice que extensiones y que GPU (la del casco).
+    xr_app_name_ = info.app_name != nullptr && *info.app_name != '\0' ? info.app_name : "Cramion";
+    xr_runtime_choice_ = info.xr_runtime;
     std::vector<std::string> xr_instance_extensions;
     if (info.enable_xr) {
         report(0.0f, "Buscando el casco de VR");
-        if (xr_.createInstance(info.app_name)) xr_instance_extensions = xr_.requiredInstanceExtensions();
+        if (xr_.createInstance(xr_app_name_.c_str(), static_cast<xr::RuntimeChoice>(info.xr_runtime))) {
+            xr_instance_extensions = xr_.requiredInstanceExtensions();
+        }
     }
+    // Las que piden SteamVR y Meta para compartir las imagenes del casco, si
+    // existen (no cuestan nada): asi el casco se puede conectar despues, al
+    // dar Play en VR, sin crear Vulkan otra vez.
+    std::vector<std::string> xr_optional_instance_extensions;
+    std::vector<std::string> xr_optional_device_extensions;
+#if defined(_WIN32)
+    if (xr::XrSystem::compiled()) {
+        xr_optional_instance_extensions = {"VK_KHR_external_memory_capabilities", "VK_KHR_get_physical_device_properties2",
+                                           "VK_KHR_external_fence_capabilities", "VK_KHR_external_semaphore_capabilities",
+                                           "VK_NV_external_memory_capabilities"};
+        xr_optional_device_extensions = {"VK_KHR_external_memory",           "VK_KHR_external_memory_win32",
+                                         "VK_KHR_external_semaphore",        "VK_KHR_external_semaphore_win32",
+                                         "VK_KHR_external_fence",            "VK_KHR_external_fence_win32",
+                                         "VK_KHR_timeline_semaphore",        "VK_KHR_dedicated_allocation",
+                                         "VK_KHR_get_memory_requirements2",  "VK_KHR_win32_keyed_mutex"};
+    }
+#endif
     // DLSS (NGX) pide sus extensiones (se anaden si existen).
     std::vector<std::string> instance_extensions = xr_instance_extensions;
     for (const std::string& name : DlssUpscaler::instanceExtensions()) {
@@ -324,7 +346,7 @@ void VulkanRenderer::initialize(const EngineInfo& info, NativeWindow window, std
             instance_extensions.push_back(name);
         }
     }
-    instance_.initialize(info, instance_extensions);
+    instance_.initialize(info, instance_extensions, xr_optional_instance_extensions);
     surface_.initialize(instance_, window);
     VkPhysicalDevice xr_gpu = VK_NULL_HANDLE;
     std::vector<std::string> xr_device_extensions;
@@ -338,7 +360,7 @@ void VulkanRenderer::initialize(const EngineInfo& info, NativeWindow window, std
             device_extensions.push_back(name);
         }
     }
-    device_.initialize(instance_, surface_, xr_gpu, device_extensions);
+    device_.initialize(instance_, surface_, xr_gpu, device_extensions, xr_optional_device_extensions);
     {
         // DLSS: solo en GPUs NVIDIA RTX con un controlador que lo tenga.
         std::string dlss_error;
@@ -352,7 +374,13 @@ void VulkanRenderer::initialize(const EngineInfo& info, NativeWindow window, std
             std::cout << "[DLSS] No disponible: " << dlss_error << "\n";
         }
     }
-    if (xr_gpu != VK_NULL_HANDLE) {
+    if (xr_gpu != VK_NULL_HANDLE && !info.xr_session) {
+        // Vulkan ya esta en la GPU del casco y con sus extensiones: la sesion
+        // se abrira con connectXrSession (Play on VR). Se suelta el runtime.
+        std::cout << "[VR] Vulkan preparado para " << xr_.systemName() << " (" << xr_.runtimeName()
+                  << "); la sesion se abre al jugar en VR\n";
+        xr_.shutdown();
+    } else if (xr_gpu != VK_NULL_HANDLE) {
         if (static_cast<VkPhysicalDevice>(*device_.physicalDevice()) != xr_gpu ||
             !xr_.createSession(static_cast<VkInstance>(*instance_.handle()), xr_gpu,
                                static_cast<VkDevice>(*device_.handle()), device_.queueFamilies().graphics, 0)) {
@@ -497,6 +525,8 @@ void VulkanRenderer::initialize(const EngineInfo& info, NativeWindow window, std
         outline_pass_.create(device_, outline);
         // Gizmos del editor en 3D, con prueba contra el depth de la escena.
         overlay_pass_.create(device_, kLdrFormat, gbuffer_.depthFormat(), kMaxFramesInFlight);
+        // UI en el mundo: sus texturas y sus paneles (igual: tras el tono).
+        world_ui_pass_.create(device_, kLdrFormat, gbuffer_.depthFormat(), kMaxFramesInFlight);
         // Particulas: sobre la imagen HDR, antes del bloom.
         particle_pass_.create(device_, kHdrFormat, gbuffer_.depthFormat(), kMaxFramesInFlight);
         // VFX Graph: particulas simuladas en la GPU (igual: sobre la HDR).
@@ -858,6 +888,7 @@ void VulkanRenderer::shutdown() {
     composite_pass_.destroy();
     outline_pass_.destroy();
     overlay_pass_.destroy();
+    world_ui_pass_.destroy();
     particle_pass_.destroy();
     vfx_pass_.destroy();
     sprite_pass_.destroy();
@@ -944,6 +975,10 @@ void VulkanRenderer::shutdown() {
     upscale_target_.destroy();
     upscaled_color_.destroy();
     taa_history_.destroy();
+    xr_eye1_.taa_history.destroy();
+    xr_eye1_.ssr_history.destroy();
+    xr_eye1_.gi_history.destroy();
+    xr_eye1_.gi_moments_history.destroy();
     output_depth_.destroy();
     scene_color_.destroy();
     gbuffer_.destroy();
@@ -1235,20 +1270,20 @@ void VulkanRenderer::createDescriptors() {
     // de luz (2) e histograma (1). Storage: histograma (1), promedio (2) y
     // composicion (1).
     // Y la GI, el SSR y su filtro temporal: camara + 3 texturas por frame
-    // cada uno.
+    // cada uno (el filtro del SSR y el TAA, otra vez para el ojo derecho de VR).
     const std::array<vk::DescriptorPoolSize, 3> post_sizes = {
     // Y las nubes: camara + 2 texturas por frame. Y el filtro de la GI:
     // camara + 3 texturas por frame.
         // (+ la luz volumetrica: 4 buffers y 4 texturas por frame.)
         // (+ la composicion por frame: 3 texturas, su exposicion y sus ajustes.)
-        vk::DescriptorPoolSize{vk::DescriptorType::eUniformBuffer, kMaxFramesInFlight * 11},
+        vk::DescriptorPoolSize{vk::DescriptorType::eUniformBuffer, kMaxFramesInFlight * 12},
         vk::DescriptorPoolSize{vk::DescriptorType::eCombinedImageSampler,
-                               kMaxFramesInFlight * 25 + kBloomSets + 2 + 1 + 1 + 6 + 3},
+                               kMaxFramesInFlight * 28 + kBloomSets + 2 + 1 + 1 + 6 + 3 + 4},
         vk::DescriptorPoolSize{vk::DescriptorType::eStorageBuffer, 3 + kMaxFramesInFlight * 2}};
 
     vk::DescriptorPoolCreateInfo post_pool_info{};
     post_pool_info.flags = vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet;
-    post_pool_info.maxSets = kMaxFramesInFlight * 8 + kBloomSets + 5 + 3 + 1;
+    post_pool_info.maxSets = kMaxFramesInFlight * 9 + kBloomSets + 5 + 3 + 1 + 1;
     post_pool_info.setPoolSizes(post_sizes);
     post_pool_ = vk::raii::DescriptorPool(device_.handle(), post_pool_info);
 
@@ -1266,20 +1301,22 @@ void VulkanRenderer::createDescriptors() {
     composite_sets_ = allocate(composite_pass_, kMaxFramesInFlight);
     light_shaft_sets_ = allocate(light_shaft_pass_, 1);
     camera_fx_sets_ = allocate(camera_fx_pass_, 1);
-    taa_sets_ = allocate(taa_pass_, 1);
+    taa_sets_ = allocate(taa_pass_, 2);  // uno por ojo (VR)
     upscaler_motion_sets_ = allocate(upscaler_motion_pass_, 1);
     easu_sets_ = allocate(easu_pass_, 1);
     rcas_sets_ = allocate(rcas_pass_, 1);
     outline_sets_ = allocate(outline_pass_, 1);
     ssgi_sets_ = allocate(ssgi_pass_, kMaxFramesInFlight);
     ssr_sets_ = allocate(ssr_pass_, kMaxFramesInFlight);
-    ssr_resolve_sets_ = allocate(ssr_resolve_pass_, kMaxFramesInFlight);
+    ssr_resolve_sets_ = allocate(ssr_resolve_pass_, kMaxFramesInFlight * 2);  // por frame y ojo
     clouds_sets_ = allocate(clouds_pass_, kMaxFramesInFlight);
 
     // --- Filtro de la GI ---
     {
-        constexpr std::uint32_t kTemporalSets = kMaxFramesInFlight;
-        constexpr std::uint32_t kAtrousSets = kMaxFramesInFlight * 2 * kGiAtrousIterations;
+        // Por frame: la vista y el ojo derecho de VR (temporal); la vista, las
+        // caras de la sonda y el ojo derecho (cadenas del filtro espacial).
+        constexpr std::uint32_t kTemporalSets = kMaxFramesInFlight * 2;
+        constexpr std::uint32_t kAtrousSets = kMaxFramesInFlight * 3 * kGiAtrousIterations;
         const std::array<vk::DescriptorPoolSize, 3> sizes = {
             vk::DescriptorPoolSize{vk::DescriptorType::eUniformBuffer, kTemporalSets + kAtrousSets},
             vk::DescriptorPoolSize{vk::DescriptorType::eCombinedImageSampler,
@@ -1385,10 +1422,15 @@ void VulkanRenderer::updateActors(const scene::Scene& scene, std::uint32_t frame
 
     // Para los LODs: pixeles de pantalla por unidad del mundo a distancia 1
     // (la proyeccion de Vulkan lleva la Y invertida en m[1][1]).
-    const core::Vec3 camera_position = scene.camera().position();
+    // En VR, la cabeza (la misma para los dos ojos: no cambian de LOD por
+    // separado); la camara de la escena puede ser la del editor, lejos.
+    const scene::Camera& lod_camera = xr_view_frame_ && shadow_camera_override_ != nullptr ? *shadow_camera_override_
+                                      : xr_view_frame_ && camera_override_ != nullptr     ? *camera_override_
+                                                                                          : scene.camera();
+    const core::Vec3 camera_position = lod_camera.position();
     // Con la resolucion interna: si el presupuesto la baja, los LODs tambien
     // pueden ser mas simples (hay menos pixeles que llenar).
-    const float pixels_per_unit = std::abs(scene.camera().projection().m[1][1]) * 0.5f *
+    const float pixels_per_unit = std::abs(lod_camera.projection().m[1][1]) * 0.5f *
                                   static_cast<float>(std::max(render_extent_.height, 1u));
     // Lo que chooseLod() deja desviarse la malla, en metros por metro de
     // distancia (sin LODs, nada).
@@ -2389,6 +2431,21 @@ void VulkanRenderer::updateGlassDescriptors() {
 }
 
 void VulkanRenderer::updatePostDescriptors() {
+    // Los sets de cada ojo con las historias de ese ojo: si llegara a mitad
+    // del ojo derecho, primero se deshace el cambio (y se rehace al salir).
+    struct EyeStateRest {
+        VulkanRenderer& renderer;
+        bool swapped;
+        ~EyeStateRest() {
+            if (swapped) renderer.swapEyeState();
+        }
+    } rest{*this, eye_state_swapped_};
+    if (rest.swapped) swapEyeState();
+    // Las del ojo derecho (sin casco no existen: sus sets apuntan a las del
+    // izquierdo y no se usan).
+    const auto eye_image = [](std::uint32_t eye, const VulkanImage& left, const VulkanImage& right) -> const VulkanImage& {
+        return eye == 1 && right.isValid() ? right : left;
+    };
     writeDofFocusDescriptors();  // el autoenfoque lee la profundidad del G-buffer
     updateBakedGiSets();         // GI horneada: profundidad y normales nuevas
     const auto write_texture = [&](const vk::raii::DescriptorSet& set, std::uint32_t binding,
@@ -2502,14 +2559,18 @@ void VulkanRenderer::updatePostDescriptors() {
         write_texture(ssr_sets_[i], 2, ssr_pass_.sampler(), gbuffer_.normal(), kRead);
         write_texture(ssr_sets_[i], 3, ssr_pass_.sampler(), scene_color_, kRead);
 
-        // Filtro temporal del SSR.
-        vk::WriteDescriptorSet resolve_camera = write;
-        resolve_camera.dstSet = *ssr_resolve_sets_[i];
-        device_.handle().updateDescriptorSets(resolve_camera, nullptr);
-        write_texture(ssr_resolve_sets_[i], 1, ssr_resolve_pass_.sampler(), gbuffer_.depth(),
-                      vk::ImageLayout::eDepthReadOnlyOptimal);
-        write_texture(ssr_resolve_sets_[i], 2, ssr_resolve_pass_.sampler(), ssr_raw_, kRead);
-        write_texture(ssr_resolve_sets_[i], 3, ssr_resolve_pass_.sampler(), ssr_history_, kRead);
+        // Filtro temporal del SSR (cada ojo de VR con su historia).
+        for (std::uint32_t eye = 0; eye < 2; ++eye) {
+            const vk::raii::DescriptorSet& resolve_set = ssr_resolve_sets_[i + eye * kMaxFramesInFlight];
+            vk::WriteDescriptorSet resolve_camera = write;
+            resolve_camera.dstSet = *resolve_set;
+            device_.handle().updateDescriptorSets(resolve_camera, nullptr);
+            write_texture(resolve_set, 1, ssr_resolve_pass_.sampler(), gbuffer_.depth(),
+                          vk::ImageLayout::eDepthReadOnlyOptimal);
+            write_texture(resolve_set, 2, ssr_resolve_pass_.sampler(), ssr_raw_, kRead);
+            write_texture(resolve_set, 3, ssr_resolve_pass_.sampler(),
+                          eye_image(eye, ssr_history_, xr_eye1_.ssr_history), kRead);
+        }
 
         // Trazado de rayos: camara, luces, G-buffer, imagen anterior, salidas
         // y entorno.
@@ -2549,27 +2610,34 @@ void VulkanRenderer::updatePostDescriptors() {
         };
         constexpr vk::ImageLayout kGeneral = vk::ImageLayout::eGeneral;
 
-        // Temporal: raw (este frame) + historia -> acumulada, momentos, varianza.
-        const vk::raii::DescriptorSet& temporal_set = gi_temporal_sets_[i];
-        vk::WriteDescriptorSet temporal_camera = write;
-        temporal_camera.dstSet = *temporal_set;
-        device_.handle().updateDescriptorSets(temporal_camera, nullptr);
+        // Temporal: raw (este frame) + historia -> acumulada, momentos, varianza
+        // (cada ojo de VR con su historia).
         const vk::raii::Sampler& gi_sampler = gi_temporal_pass_.sampler();
-        write_texture(temporal_set, 1, gi_sampler, gbuffer_.depth(),
-                      vk::ImageLayout::eDepthReadOnlyOptimal);
-        write_texture(temporal_set, 2, gi_sampler, gi_raw_, kRead);
-        write_texture(temporal_set, 3, gi_sampler, gi_history_, kGeneral);
-        write_texture(temporal_set, 4, gi_sampler, gi_moments_history_, kGeneral);
-        write_storage_image(temporal_set, 5, gi_temporal_);
-        write_storage_image(temporal_set, 6, gi_moments_);
-        write_storage_image(temporal_set, 7, gi_variance_);
+        for (std::uint32_t eye = 0; eye < 2; ++eye) {
+            const vk::raii::DescriptorSet& temporal_set = gi_temporal_sets_[i + eye * kMaxFramesInFlight];
+            vk::WriteDescriptorSet temporal_camera = write;
+            temporal_camera.dstSet = *temporal_set;
+            device_.handle().updateDescriptorSets(temporal_camera, nullptr);
+            write_texture(temporal_set, 1, gi_sampler, gbuffer_.depth(),
+                          vk::ImageLayout::eDepthReadOnlyOptimal);
+            write_texture(temporal_set, 2, gi_sampler, gi_raw_, kRead);
+            write_texture(temporal_set, 3, gi_sampler, eye_image(eye, gi_history_, xr_eye1_.gi_history), kGeneral);
+            write_texture(temporal_set, 4, gi_sampler,
+                          eye_image(eye, gi_moments_history_, xr_eye1_.gi_moments_history), kGeneral);
+            write_storage_image(temporal_set, 5, gi_temporal_);
+            write_storage_image(temporal_set, 6, gi_moments_);
+            write_storage_image(temporal_set, 7, gi_variance_);
+        }
 
         // A trous: la primera pasada es la historia del color (como en SVGF),
-        // salvo en las caras de la sonda, que no deben tocarla.
-        for (std::uint32_t capture = 0; capture < 2; ++capture) {
+        // salvo en las caras de la sonda, que no deben tocarla. Variantes: 0 la
+        // vista (ojo izquierdo), 1 la sonda, 2 el ojo derecho de VR.
+        for (std::uint32_t variant = 0; variant < 3; ++variant) {
             // Entrada de cada pasada = salida de la anterior: acumulada ->
             // primera salida -> ping-pong entre gi_filter_[1] y [0] -> resultado.
-            const VulkanImage& first_output = capture ? gi_filter_[0] : gi_history_;
+            const VulkanImage& first_output = variant == 1   ? gi_filter_[0]
+                                              : variant == 2 ? eye_image(1, gi_history_, xr_eye1_.gi_history)
+                                                             : gi_history_;
             std::array<const VulkanImage*, kGiAtrousIterations + 1> colors{};
             std::array<const VulkanImage*, kGiAtrousIterations + 1> variances{};
             for (std::uint32_t k = 0; k <= kGiAtrousIterations; ++k) {
@@ -2581,7 +2649,7 @@ void VulkanRenderer::updatePostDescriptors() {
             }
             for (std::uint32_t iteration = 0; iteration < kGiAtrousIterations; ++iteration) {
                 const vk::raii::DescriptorSet& set =
-                    gi_atrous_sets_[(i * 2 + capture) * kGiAtrousIterations + iteration];
+                    gi_atrous_sets_[(i * 3 + variant) * kGiAtrousIterations + iteration];
                 vk::WriteDescriptorSet atrous_camera = write;
                 atrous_camera.dstSet = *set;
                 device_.handle().updateDescriptorSets(atrous_camera, nullptr);
@@ -2666,11 +2734,14 @@ void VulkanRenderer::updatePostDescriptors() {
 
     write_texture(histogram_sets_[0], 0, histogram_pass_.sampler(), postSource(), kRead);
 
-    // Escalado: la escena (interna), su profundidad y movimiento y la historia.
-    write_texture(taa_sets_[0], 0, taa_pass_.sampler(), scene_color_, kRead);
-    write_texture(taa_sets_[0], 1, taa_pass_.sampler(), gbuffer_.depth(), vk::ImageLayout::eDepthReadOnlyOptimal);
-    write_texture(taa_sets_[0], 2, taa_pass_.sampler(), gbuffer_.velocity(), kRead);
-    write_texture(taa_sets_[0], 3, taa_pass_.sampler(), taa_history_, kRead);
+    // Escalado: la escena (interna), su profundidad y movimiento y la historia
+    // (la de cada ojo de VR).
+    for (std::uint32_t eye = 0; eye < 2; ++eye) {
+        write_texture(taa_sets_[eye], 0, taa_pass_.sampler(), scene_color_, kRead);
+        write_texture(taa_sets_[eye], 1, taa_pass_.sampler(), gbuffer_.depth(), vk::ImageLayout::eDepthReadOnlyOptimal);
+        write_texture(taa_sets_[eye], 2, taa_pass_.sampler(), gbuffer_.velocity(), kRead);
+        write_texture(taa_sets_[eye], 3, taa_pass_.sampler(), eye_image(eye, taa_history_, xr_eye1_.taa_history), kRead);
+    }
     write_texture(upscaler_motion_sets_[0], 0, upscaler_motion_pass_.sampler(), gbuffer_.depth(),
                   vk::ImageLayout::eDepthReadOnlyOptimal);
     write_texture(upscaler_motion_sets_[0], 1, upscaler_motion_pass_.sampler(), gbuffer_.velocity(), kRead);
@@ -2683,6 +2754,7 @@ void VulkanRenderer::updatePostDescriptors() {
 }
 
 vk::Extent2D VulkanRenderer::outputExtent() const {
+    if (xr_output_extent_.width > 0 && xr_output_extent_.height > 0) return xr_output_extent_;
     if (view_extent_request_.width > 0 && view_extent_request_.height > 0) return view_extent_request_;
     return swapchain_.extent();
 }
@@ -2755,6 +2827,11 @@ void VulkanRenderer::setGraphicsSettings(const GraphicsSettings& settings) {
 // presupuesto (con FSR 1 si el usuario no tenia escalador).
 void VulkanRenderer::applyEffectiveGraphics() {
     GraphicsSettings settings = user_graphics_;
+    // VR con una camara por ojo: FSR 3 y DLSS guardan la historia de una sola
+    // vista (mezclarian los ojos); el TAA del motor la lleva por ojo.
+    xr_forced_taa_ = ((xr_output_extent_.width > 0 && xr_.stereo()) || stereo_emulation_) &&
+                     (settings.upscaler == Upscaler::Fsr3 || settings.upscaler == Upscaler::Dlss);
+    if (xr_forced_taa_) settings.upscaler = Upscaler::Taa;
     const float budget_scale = budget_.renderScale();
     applied_budget_scale_ = budget_scale;
     if (budget_scale < 0.999f) {
@@ -2770,6 +2847,7 @@ void VulkanRenderer::applyEffectiveGraphics() {
     graphics_ = settings;
     swapchain_.setVsync(settings.vsync);
     taa_history_valid_ = false;
+    xr_eye1_.taa_valid = false;
     jitter_index_ = 0;
     // Destinos de otro tamano (o el post-proceso lee otra imagen): se rehacen
     // al empezar el frame siguiente (applyPendingResize). La swapchain solo
@@ -3017,6 +3095,7 @@ void VulkanRenderer::createRenderTargets() {
                                            vk::AccessFlagBits2::eShaderSampledRead)});
     });
     taa_history_valid_ = false;
+    createXrEyeTargets(extent, output);
     std::cout << "[Vulkan] Resolucion interna " << extent.width << "x" << extent.height << " -> pantalla "
               << output.width << "x" << output.height << "\n";
 
@@ -3247,7 +3326,8 @@ void VulkanRenderer::updateUniforms(const scene::Scene& scene, const scene::Came
     if (temporal && render_extent_.width > 0) {
         const float ratio = static_cast<float>(outputExtent().width) / static_cast<float>(render_extent_.width);
         const auto phases = std::clamp(static_cast<std::uint32_t>(8.0f * ratio * ratio), 8u, 64u);
-        jitter_index_ = jitter_index_ % phases + 1;
+        // Los dos ojos del casco, el mismo jitter (cada uno lleva su historia).
+        if (!xrSecondEye()) jitter_index_ = jitter_index_ % phases + 1;
         const auto halton = [](std::uint32_t index, std::uint32_t base) {
             float f = 1.0f;
             float r = 0.0f;
@@ -3276,6 +3356,7 @@ void VulkanRenderer::updateUniforms(const scene::Scene& scene, const scene::Came
     if (!isolated()) {
         jitter_ndc_ = jitter_ndc;
         taa_reproject_ = motion_view_projection_ * core::inverse(unjittered);
+        history_view_projection_ = motion_view_projection_;
         motion_view_projection_ = unjittered;
     }
     previous_view_projection_ = camera_view_projection_;
@@ -3287,8 +3368,10 @@ void VulkanRenderer::updateUniforms(const scene::Scene& scene, const scene::Came
     camera_data.position = toVec4(camera.position(), 1.0f);
     camera_position_ = camera.position();
     // La oclusion del cielo desde arriba: si toca rehacerla, donde (antes de
-    // escribir las luces de este frame, que llevan su sitio).
-    planSkyMap();
+    // escribir las luces de este frame, que llevan su sitio). Una vez por frame.
+    if (!xrSecondEye()) planSkyMap();
+    // VR: las sombras salen de la camara que cubre los dos ojos.
+    const scene::Camera& shadow_camera = shadow_camera_override_ != nullptr ? *shadow_camera_override_ : camera;
 
     camera_buffers_[frame_index].write(&camera_data, sizeof(camera_data));
 
@@ -3299,8 +3382,8 @@ void VulkanRenderer::updateUniforms(const scene::Scene& scene, const scene::Came
     // Con las sombras apagadas no se toca la cache: al volver a encenderlas
     // solo se redibuja lo que haya cambiado entretanto. Las caras de la sonda
     // usan los mapas tal como estan: su camara no debe decidir los huecos.
-    if (shadows_enabled_ && !isolated()) {
-        local_shadows_.update(camera, lights, LocalShadowMaps::kSpotResolution,
+    if (shadows_enabled_ && !isolated() && !xrSecondEye()) {
+        local_shadows_.update(shadow_camera, lights, LocalShadowMaps::kSpotResolution,
                               LocalShadowMaps::kPointResolution);
     }
 
@@ -3458,7 +3541,7 @@ void VulkanRenderer::updateUniforms(const scene::Scene& scene, const scene::Came
     light_data.environment = Vec4{environmentActive() ? 1.0f : 0.0f,
                                   post_.volumetric_light && !capturing_ ? 1.0f : 0.0f,
                                   post_.contact_shadows && !capturing_ ? std::max(post_.contact_shadow_length, 0.0f) : 0.0f,
-                                  temporal_filter ? static_cast<float>(frame_count_ % 64u) : -1.0f};
+                                  temporal_filter ? static_cast<float>(noise_frame_ % 64u) : -1.0f};
     if (!isolated()) {
         cloud_time_ += frame_delta_seconds_;
         // El viento se acumula (cambiar su direccion no hace saltar las nubes).
@@ -3509,7 +3592,7 @@ void VulkanRenderer::updateUniforms(const scene::Scene& scene, const scene::Came
     // se repite cada 24 km y el de detalle cada 3.5 km, asi que las nubes no
     // saltan al desplazarse el mundo y el numero sigue siendo pequeno.
     constexpr double kCloudPeriod = 168000.0;
-    cloud_push_.params = Vec4{static_cast<float>(frame_count_ % 64), std::max(cloud_settings_.density, 0.0f),
+    cloud_push_.params = Vec4{static_cast<float>(noise_frame_ % 64), std::max(cloud_settings_.density, 0.0f),
                               static_cast<float>(std::fmod(world_origin_[0] - cloud_wind_offset_[0], kCloudPeriod)),
                               static_cast<float>(std::fmod(world_origin_[2] - cloud_wind_offset_[1], kCloudPeriod))};
     {
@@ -3582,89 +3665,93 @@ void VulkanRenderer::updateUniforms(const scene::Scene& scene, const scene::Came
     }
 
     // --- Cascadas de sombra ---
-    // Dependen de la camara y del sol, asi que se recalculan cada frame.
-    cascades_.update(camera, lights.sun, shadow_map_.resolution());
+    // Dependen de la camara y del sol, asi que se recalculan cada frame. En VR,
+    // una vez por frame (el primer ojo, con la camara de los dos): el segundo
+    // usa las mismas cascadas ya dibujadas.
+    if (!xrSecondEye()) {
+        cascades_.update(shadow_camera, lights.sun, shadow_map_.resolution());
 
-    // Actualizacion escalonada (como Unreal y Frostbite): redibujar las cuatro
-    // cascadas cada frame era casi la mitad del frame en Bistro, y las
-    // lejanas, que cubren toda la escena, apenas cambian de un frame a otro.
-    //   cascada 0: cada frame, 1: cada 2, 2 y 3: cada 4 (por turnos).
-    // Se fuerza si la camara se alejo mas del 10% del alcance de la cascada
-    // desde que se dibujo. Una cascada que no se redibuja se sigue leyendo
-    // con la matriz con la que se dibujo (el escenario no se ha movido).
-    // Las caras de la sonda dibujan todas desde su camara y ensucian el
-    // mapa: la siguiente vista de pantalla las rehace todas.
-    // Detalle de sombras (LODs y palanca del presupuesto): si cambia, las
-    // cascadas guardadas ya no son las de ahora.
-    const std::uint32_t detail_key = (post_.lods ? 1u : 0u) | (static_cast<std::uint32_t>(
-                                                                    budget_.level(Lever::ShadowDetail)) << 1);
-    const bool detail_changed = detail_key != cascade_detail_key_;
-    if (!isolated()) cascade_detail_key_ = detail_key;
-    const bool redraw_all =
-        isolated() || !cascades_valid_ || !sunShadows() || actor_set_changed_ || detail_changed;
-    const std::uint64_t far_period = 4ull * budget_.farCascadeInterval();
-    const bool static_cache = shadow_map_.hasStaticCache();
-    if (!isolated()) {
-        ++cascade_frame_;
-    }
-    for (std::uint32_t i = 0; i < scene::kShadowCascadeCount; ++i) {
-        const scene::ShadowCascade& current = cascades_.cascade(i);
-        bool due = redraw_all;
-        if (!due) {
-            const std::uint64_t f = cascade_frame_;
-            due = i == 0 || (i == 1 && f % 2 == 0) || (i == 2 && f % far_period == 1) ||
-                  (i == 3 && f % far_period == 3);
-            const Vec3 moved = camera.position() - rendered_cascade_camera_[i];
-            const float limit = 0.1f * current.split_distance;
-            due = due || core::dot(moved, moved) > limit * limit;
+        // Actualizacion escalonada (como Unreal y Frostbite): redibujar las cuatro
+        // cascadas cada frame era casi la mitad del frame en Bistro, y las
+        // lejanas, que cubren toda la escena, apenas cambian de un frame a otro.
+        //   cascada 0: cada frame, 1: cada 2, 2 y 3: cada 4 (por turnos).
+        // Se fuerza si la camara se alejo mas del 10% del alcance de la cascada
+        // desde que se dibujo. Una cascada que no se redibuja se sigue leyendo
+        // con la matriz con la que se dibujo (el escenario no se ha movido).
+        // Las caras de la sonda dibujan todas desde su camara y ensucian el
+        // mapa: la siguiente vista de pantalla las rehace todas.
+        // Detalle de sombras (LODs y palanca del presupuesto): si cambia, las
+        // cascadas guardadas ya no son las de ahora.
+        const std::uint32_t detail_key = (post_.lods ? 1u : 0u) | (static_cast<std::uint32_t>(
+                                                                        budget_.level(Lever::ShadowDetail)) << 1);
+        const bool detail_changed = detail_key != cascade_detail_key_;
+        if (!isolated()) cascade_detail_key_ = detail_key;
+        const bool redraw_all =
+            isolated() || !cascades_valid_ || !sunShadows() || actor_set_changed_ || detail_changed;
+        const std::uint64_t far_period = 4ull * budget_.farCascadeInterval();
+        const bool static_cache = shadow_map_.hasStaticCache();
+        if (!isolated()) {
+            ++cascade_frame_;
+        }
+        for (std::uint32_t i = 0; i < scene::kShadowCascadeCount; ++i) {
+            const scene::ShadowCascade& current = cascades_.cascade(i);
+            bool due = redraw_all;
+            if (!due) {
+                const std::uint64_t f = cascade_frame_;
+                due = i == 0 || (i == 1 && f % 2 == 0) || (i == 2 && f % far_period == 1) ||
+                      (i == 3 && f % far_period == 3);
+                const Vec3 moved = shadow_camera.position() - rendered_cascade_camera_[i];
+                const float limit = 0.1f * current.split_distance;
+                due = due || core::dot(moved, moved) > limit * limit;
 
-            // Algo se movio dentro de la cascada (donde estaba o donde esta):
-            // su sombra guardada ya no vale. En las lejanas (2 y 3) solo si
-            // es grande para sus texeles: un personaje animado esta siempre
-            // junto a la camara, dentro de las cuatro, y forzaba a redibujar
-            // cada frame las que cubren todo el mapa (en Play, 18 ms de
-            // sombras de 22; ningun escalador podia ayudar). Lo pequeno sigue
-            // su turno (cada 4 frames); de cerca lo dibujan la 0 y la 1.
-            // Con la cache de lo estatico, los animados no cuentan: se dibujan
-            // encima cada frame sin tocar lo demas.
-            const float min_radius = i >= 2 ? 8.0f * current.texel_world_size : 0.0f;
-            if (!due && !moved_spheres_.empty()) {
-                const core::Frustum frustum(current.light_view_projection, /*ignore_near=*/true);
-                for (std::size_t s = 0; s < moved_spheres_.size(); ++s) {
-                    const core::Vec4& sphere = moved_spheres_[s];
-                    if (static_cache && moved_sphere_animated_[s]) continue;
-                    if (sphere.w < min_radius) continue;
-                    const Vec3 r{sphere.w, sphere.w, sphere.w};
-                    const Vec3 c{sphere.x, sphere.y, sphere.z};
-                    if (frustum.intersects(core::Aabb{c - r, c + r})) {
-                        due = true;
+                // Algo se movio dentro de la cascada (donde estaba o donde esta):
+                // su sombra guardada ya no vale. En las lejanas (2 y 3) solo si
+                // es grande para sus texeles: un personaje animado esta siempre
+                // junto a la camara, dentro de las cuatro, y forzaba a redibujar
+                // cada frame las que cubren todo el mapa (en Play, 18 ms de
+                // sombras de 22; ningun escalador podia ayudar). Lo pequeno sigue
+                // su turno (cada 4 frames); de cerca lo dibujan la 0 y la 1.
+                // Con la cache de lo estatico, los animados no cuentan: se dibujan
+                // encima cada frame sin tocar lo demas.
+                const float min_radius = i >= 2 ? 8.0f * current.texel_world_size : 0.0f;
+                if (!due && !moved_spheres_.empty()) {
+                    const core::Frustum frustum(current.light_view_projection, /*ignore_near=*/true);
+                    for (std::size_t s = 0; s < moved_spheres_.size(); ++s) {
+                        const core::Vec4& sphere = moved_spheres_[s];
+                        if (static_cache && moved_sphere_animated_[s]) continue;
+                        if (sphere.w < min_radius) continue;
+                        const Vec3 r{sphere.w, sphere.w, sphere.w};
+                        const Vec3 c{sphere.x, sphere.y, sphere.z};
+                        if (frustum.intersects(core::Aabb{c - r, c + r})) {
+                            due = true;
+                            break;
+                        }
+                    }
+                }
+            }
+            cascade_due_[i] = due;
+            if (due) {
+                rendered_cascades_[i] = current;
+                rendered_cascade_camera_[i] = shadow_camera.position();
+            }
+            // Actores animados dentro de la cascada (con la matriz con la que
+            // se dibujo): se copian la cache y ellos encima.
+            cascade_had_animated_[i] = cascade_animated_[i] && !redraw_all;
+            cascade_animated_[i] = false;
+            if (static_cache && sunShadows()) {
+                const core::Frustum frustum(rendered_cascades_[i].light_view_projection, /*ignore_near=*/true);
+                for (const ActorDraw& draw : actor_draws_) {
+                    if (draw.per_submesh || !draw.cast_shadows) continue;
+                    const Vec3 r{draw.bounds_radius, draw.bounds_radius, draw.bounds_radius};
+                    if (frustum.intersects(core::Aabb{draw.bounds_center - r, draw.bounds_center + r})) {
+                        cascade_animated_[i] = true;
                         break;
                     }
                 }
             }
         }
-        cascade_due_[i] = due;
-        if (due) {
-            rendered_cascades_[i] = current;
-            rendered_cascade_camera_[i] = camera.position();
-        }
-        // Actores animados dentro de la cascada (con la matriz con la que
-        // se dibujo): se copian la cache y ellos encima.
-        cascade_had_animated_[i] = cascade_animated_[i] && !redraw_all;
-        cascade_animated_[i] = false;
-        if (static_cache && sunShadows()) {
-            const core::Frustum frustum(rendered_cascades_[i].light_view_projection, /*ignore_near=*/true);
-            for (const ActorDraw& draw : actor_draws_) {
-                if (draw.per_submesh || !draw.cast_shadows) continue;
-                const Vec3 r{draw.bounds_radius, draw.bounds_radius, draw.bounds_radius};
-                if (frustum.intersects(core::Aabb{draw.bounds_center - r, draw.bounds_center + r})) {
-                    cascade_animated_[i] = true;
-                    break;
-                }
-            }
-        }
+        cascades_valid_ = !isolated() && sunShadows();
     }
-    cascades_valid_ = !isolated() && sunShadows();
 
     GpuShadows shadow_data{};
     std::array<float, scene::kShadowCascadeCount> splits{};
@@ -3730,6 +3817,20 @@ void VulkanRenderer::drawFrame(const scene::Scene& scene, bool present) {
     if (!swapchain_.isValid()) {
         return;
     }
+    // En VR la segunda vista del editor (Escena y Juego a la vez) no se
+    // dibuja: el casco necesita la GPU para llegar a sus Hz.
+    if (!present && xr_eye_target_ < 0 && render_texture_target_ < 0 && xrViewsMode()) {
+        return;
+    }
+    // VR estereo, segundo ojo: su propio estado temporal mientras se dibuja.
+    struct EyeStateScope {
+        VulkanRenderer& renderer;
+        bool active;
+        ~EyeStateScope() {
+            if (active) renderer.swapEyeState();
+        }
+    } eye_scope{*this, xrSecondEye() && xrEyeStateReady()};
+    if (eye_scope.active) swapEyeState();
 
     const vk::raii::Device& device = device_.handle();
     const vk::raii::Fence& fence = in_flight_fences_[current_frame_];
@@ -3780,14 +3881,34 @@ void VulkanRenderer::drawFrame(const scene::Scene& scene, bool present) {
 
     // Resultado del culling en GPU de la ultima vez que se uso este hueco.
     const GpuCulling::Stats culling = gpu_culling_.readStats(current_frame_);
-    gpu_profiler_.collect(current_frame_);
+    // VR con las vistas del casco dibujadas: la ventana solo enseña la ultima
+    // (sin volver a dibujar la escena: costaba lo mismo que el casco y lo
+    // dejaba a la mitad de frames). No mide: deja en su hueco los tiempos del ojo.
+    mirror_only_ = present && xr_views_active_ && xrViewsMode();
+    const bool profiled = !mirror_only_ && gpu_profiler_.collect(current_frame_);
     {
-        const auto now = std::chrono::steady_clock::now();
-        const float dt = last_budget_time_.time_since_epoch().count() == 0
-                             ? 0.0f
-                             : std::chrono::duration<float>(now - last_budget_time_).count();
-        last_budget_time_ = now;
-        if (!budget_suspended_) budget_.update(std::min(dt, 0.5f), gpu_profiler_.totalMilliseconds(), gpu_profiler_.timings());
+        // En VR cuenta el frame entero del casco: los tiempos del ojo derecho
+        // se guardan y, con los del izquierdo del mismo frame (sombras, cielo y
+        // su vista), se mide contra los Hz del casco.
+        bool budget_frame = !xrViewsMode();
+        float gpu_ms = gpu_profiler_.totalMilliseconds();
+        if (xrViewsMode() && profiled) {
+            const int eye = slot_xr_eye_[current_frame_];
+            if (eye == 1) xr_right_eye_gpu_ms_ = gpu_profiler_.lastTotalMilliseconds();
+            if (eye == 0) {
+                budget_frame = true;
+                gpu_ms = gpu_profiler_.lastTotalMilliseconds() +
+                         (xr_.stereo() || stereo_emulation_ ? xr_right_eye_gpu_ms_ : 0.0f);
+            }
+        }
+        if (budget_frame) {
+            const auto now = std::chrono::steady_clock::now();
+            const float dt = last_budget_time_.time_since_epoch().count() == 0
+                                 ? 0.0f
+                                 : std::chrono::duration<float>(now - last_budget_time_).count();
+            last_budget_time_ = now;
+            if (!budget_suspended_) budget_.update(std::min(dt, 0.5f), gpu_ms, gpu_profiler_.timings());
+        }
         post_ = mobilePost(budget_.apply(user_post_));
         if (const SceneDrawMode mode = drawModeNow(); mode == SceneDrawMode::Unlit || mode == SceneDrawMode::Wireframe) {
             post_.auto_exposure = false;
@@ -3808,6 +3929,14 @@ void VulkanRenderer::drawFrame(const scene::Scene& scene, bool present) {
             post_.reflections = false;
             post_.contact_shadows = false;
         }
+        if (xr_view_frame_) {
+            // VR: lo que marea o no tiene sentido pegado a los ojos.
+            post_.motion_blur = false;
+            post_.depth_of_field = false;
+            post_.lens_distortion = 0.0f;
+            post_.chromatic_aberration = 0.0f;
+            post_.film_grain = 0.0f;
+        }
         if (budget_.renderScale() != applied_budget_scale_) applyEffectiveGraphics();
     }
     gpu_visible_submeshes_ = culling.early + culling.late;
@@ -3823,10 +3952,23 @@ void VulkanRenderer::drawFrame(const scene::Scene& scene, bool present) {
         streamModels(scene);
         std::fill(model_pixels_.begin(), model_pixels_.end(), 0.0f);
     }
-    updateActors(scene, current_frame_);
+    if (!mirror_only_) {
+        if (xr_view_frame_ && xr_stereo_view_) {
+            // Los dos ojos ven el mismo movimiento de los objetos (del frame
+            // anterior a este): el segundo parte de los mismos huesos previos.
+            if (xrSecondEye()) {
+                last_world_bones_ = stereo_last_world_bones_;
+                last_bone_ranges_ = stereo_last_bone_ranges_;
+            } else {
+                stereo_last_world_bones_ = last_world_bones_;
+                stereo_last_bone_ranges_ = last_bone_ranges_;
+            }
+        }
+        updateActors(scene, current_frame_);
+    }
     frame_timings_.actors_ms += since(stage);
 
-    if (render_texture_target_ < 0 && xr_eye_target_ < 0 && probeCaptureDue(scene)) {
+    if (render_texture_target_ < 0 && xr_eye_target_ < 0 && !mirror_only_ && probeCaptureDue(scene)) {
         stage = TimingClock::now();
         captureProbeFace(scene);
         frame_timings_.probe_ms += since(stage);
@@ -3863,16 +4005,31 @@ void VulkanRenderer::drawFrame(const scene::Scene& scene, bool present) {
     frame_delta_seconds_ =
         (frame_count_ == 0) ? 0.0f : std::chrono::duration<float>(now - last_frame_time_).count();
     last_frame_time_ = now;
+    if (xr_view_frame_ && !xrSecondEye()) {
+        // La vista del casco avanza el tiempo (nubes, agua, particulas): desde
+        // la anterior del casco, no desde el espejo de la ventana.
+        frame_delta_seconds_ = last_xr_view_time_.time_since_epoch().count() == 0
+                                   ? 0.0f
+                                   : std::min(std::chrono::duration<float>(now - last_xr_view_time_).count(), 0.25f);
+        last_xr_view_time_ = now;
+    }
     if (frame_delta_override_ >= 0.0f) frame_delta_seconds_ = frame_delta_override_;
+    // El segundo ojo es el mismo instante: el tiempo ya avanzo con el primero.
+    if (xrSecondEye()) frame_delta_seconds_ = 0.0f;
+    if (!xrSecondEye()) noise_frame_ = frame_count_;
 
     // Los uniform buffers de este frame no estan en uso: la fence lo garantiza.
     const core::Mat4 saved_view_projection = camera_view_projection_;
     const core::Mat4 saved_previous_view_projection = previous_view_projection_;
     const core::Mat4 saved_view = camera_view_;
     const Vec3 saved_camera_position = camera_position_;
-    secondary_view_ = !present;
+    // Con el casco en una camara, la vista principal es la del casco: la
+    // ventana (el espejo) va como secundaria y no toca historias ni exposicion.
+    secondary_view_ = xr_view_frame_ ? false : (!present || xr_views_active_);
     stage = TimingClock::now();
-    updateUniforms(scene, camera_override_ != nullptr ? *camera_override_ : scene.camera(), current_frame_);
+    if (!mirror_only_) updateUniforms(scene, camera_override_ != nullptr ? *camera_override_ : scene.camera(), current_frame_);
+    if (!mirror_only_) slot_xr_eye_[current_frame_] = xr_view_frame_ ? xr_view_eye_ : -1;
+    if (xr_view_frame_) xr_eye_recorded_ = true;
     frame_timings_.uniforms_ms += since(stage);
 
     device.resetFences(*fence);
@@ -3885,14 +4042,16 @@ void VulkanRenderer::drawFrame(const scene::Scene& scene, bool present) {
     frame_timings_.record_ms += since(stage);
     stage = TimingClock::now();
     presenting_ = true;
-    if (!present) {
-        // La vista principal sigue con su camara del frame anterior.
+    if (!present && !xr_view_frame_) {
+        // La vista principal sigue con su camara del frame anterior (en VR con
+        // una camara, la principal es la del casco: se queda).
         camera_view_projection_ = saved_view_projection;
         previous_view_projection_ = saved_previous_view_projection;
         camera_view_ = saved_view;
         camera_position_ = saved_camera_position;
-        secondary_view_ = false;
     }
+    secondary_view_ = false;
+    if (present) xr_views_active_ = false;  // el siguiente frame lo vuelve a decir
 
     if (!present) {
         vk::SubmitInfo view_submit{};
@@ -4173,9 +4332,23 @@ void VulkanRenderer::markPass(const vk::raii::CommandBuffer& cmd, std::uint32_t 
 void VulkanRenderer::recordCommandBuffer(const vk::raii::CommandBuffer& cmd,
                                          std::uint32_t image_index, std::uint32_t frame_index) {
     cmd.begin(vk::CommandBufferBeginInfo{});
+    if (mirror_only_) {
+        // Espejo de VR: la imagen del casco (sigue en ldr_color_) a la vista y
+        // a la ventana. Sin medir (el hueco guarda los tiempos del ojo).
+        recordViewCopy(cmd);
+        if (presenting_) recordPostProcessPass(cmd, image_index);
+        cmd.end();
+        mirror_only_ = false;
+        return;
+    }
     gpu_profiler_.begin(cmd, frame_index);
     pass_start_ = std::chrono::steady_clock::now();
     output_depth_ready_ = false;
+    // UI en el mundo: sus texturas, una vez por frame (la primera vista).
+    if (world_ui_pass_.needsPaint() && !capturing_) {
+        world_ui_pass_.recordPaint(device_, cmd, frame_index);
+        markPass(cmd, frame_index, "UI en el mundo (texturas)");
+    }
 
     // Los clusteres de escenario los cuenta la GPU (frame reciente); los
     // animados se suman al dibujarlos.
@@ -4211,25 +4384,29 @@ void VulkanRenderer::recordCommandBuffer(const vk::raii::CommandBuffer& cmd,
     water_pass_.prepare(frame_index);
     // Oceano FFT: el oleaje de este frame (compute + mipmaps), una vez por
     // frame; las vistas aisladas usan el ultimo.
-    if (!isolated() && !water_pass_.empty()) water_pass_.recordSimulation(cmd, frame_index);
+    if (!isolated() && !xrSecondEye() && !water_pass_.empty()) water_pass_.recordSimulation(cmd, frame_index);
     // Liquidos: los subpasos de este frame (compute; una vez por frame).
-    if (!isolated()) fluid_pass_.recordSimulate(cmd, frame_index);
+    if (!isolated() && !xrSecondEye()) fluid_pass_.recordSimulate(cmd, frame_index);
 
     if (!rain_map_ready_ && (rainAvailable() || waterAvailable() || precipitation_.needsRainMap()) &&
         !actor_draws_.empty()) {
         recordRainMap(cmd, frame_index);
         markPass(cmd, frame_index, "Mapa de lluvia");
     }
-    recordShadowPass(cmd, frame_index);
-    markPass(cmd, frame_index, "Sombras (cascadas)");
-    recordLocalShadowPass(cmd, frame_index);
-    markPass(cmd, frame_index, "Sombras locales");
-    recordSkyLutPass(cmd);
-    markPass(cmd, frame_index, "Cielo + IBL");
+    // VR, segundo ojo: las sombras, el cielo y el IBL de este frame ya los
+    // dibujo el primero (mismas imagenes, misma cola).
+    if (!xrSecondEye()) {
+        recordShadowPass(cmd, frame_index);
+        markPass(cmd, frame_index, "Sombras (cascadas)");
+        recordLocalShadowPass(cmd, frame_index);
+        markPass(cmd, frame_index, "Sombras locales");
+        recordSkyLutPass(cmd);
+        markPass(cmd, frame_index, "Cielo + IBL");
+    }
     recordCloudPass(cmd, frame_index);
     markPass(cmd, frame_index, "Nubes");
     fire_pass_.recordUpload(cmd, frame_index);  // mapa de quemado antes de la geometria
-    if (sky_map_redraw_ && !isolated()) recordSkyMap(cmd, frame_index);
+    if (sky_map_redraw_ && !isolated() && !xrSecondEye()) recordSkyMap(cmd, frame_index);
     recordGeometryPass(cmd, frame_index);
     markPass(cmd, frame_index, "Geometria + culling");
     recordSsaoPass(cmd, frame_index);
@@ -4296,10 +4473,16 @@ void VulkanRenderer::recordCommandBuffer(const vk::raii::CommandBuffer& cmd,
     markPass(cmd, frame_index, "Bloom");
     recordLightShaftPass(cmd);
     markPass(cmd, frame_index, "Rayos de luz");
-    if (!secondary_view_) recordAutoExposurePass(cmd);  // la exposicion es de la vista principal
+    // La exposicion es de la vista principal (en VR, del primer ojo: la misma
+    // en los dos).
+    if (!secondary_view_ && !xrSecondEye()) recordAutoExposurePass(cmd);
     markPass(cmd, frame_index, "Auto-exposicion");
     recordCompositePass(cmd, frame_index);
     markPass(cmd, frame_index, "Composicion");
+    if (!world_ui_pass_.empty() && !capturing_ && drawModeNow() != SceneDrawMode::Wireframe) {
+        recordWorldUiPass(cmd, frame_index);
+        markPass(cmd, frame_index, "UI en el mundo");
+    }
     if (!outlined_actors_.empty() && editor_helpers_) {
         recordOutlinePass(cmd, frame_index);
         markPass(cmd, frame_index, "Contorno de seleccion");
@@ -5085,7 +5268,7 @@ void VulkanRenderer::recordSsgiPass(const vk::raii::CommandBuffer& cmd,
     push.params = Vec4{scene_history_valid_ && !isolated() ? 1.0f : 0.0f, 1.0f, 0.0f, 0.0f};
     // Rayos distintos cada frame, y la sonda para lo que no esta en pantalla
     // (con el mismo fundido entre cubos que la iluminacion).
-    push.extra.x = static_cast<float>(frame_count_ % 64);
+    push.extra.x = static_cast<float>(noise_frame_ % 64);
     if (probe_enabled_ && probe_ready_ && !capturing_) {
         const std::uint32_t previous = 1 - probe_cube_;
         const float current_weight = probe_fade_;
@@ -5112,7 +5295,7 @@ void VulkanRenderer::recordSsgiPass(const vk::raii::CommandBuffer& cmd,
 
         RayTracing::Push rt_push{};
         rt_push.previous_view_projection = previous_view_projection_;
-        rt_push.params = Vec4{static_cast<float>(frame_count_ % 64),
+        rt_push.params = Vec4{static_cast<float>(noise_frame_ % 64),
                               scene_history_valid_ ? 1.0f : 0.0f, 0.0f, 0.0f};
         ray_tracing_.record(cmd, frame_index, RayTracing::Pass::Gi, gi_raw_.extent(), rt_push);
         // La cache de radiancia en el mundo: las muestras de este frame a su
@@ -5171,13 +5354,17 @@ void VulkanRenderer::recordSsgiPass(const vk::raii::CommandBuffer& cmd,
     };
 
     // Las caras de la sonda no usan la historia (es de la camara de pantalla).
+    // (Su historia es de esta vista: en VR, de este ojo.)
     GiTemporalPush temporal{};
-    temporal.previous_view_projection = previous_view_projection_;
+    temporal.previous_view_projection = history_view_projection_;
     temporal.params = Vec4{gi_filter_history_valid_ && !isolated() ? 1.0f : 0.0f, 0.0f, 0.0f,
                            0.0f};
-    dispatch(gi_temporal_pass_, gi_temporal_sets_[frame_index], temporal);
+    dispatch(gi_temporal_pass_, gi_temporal_sets_[frame_index + eyeSet() * kMaxFramesInFlight], temporal);
 
-    const std::uint32_t chain = (frame_index * 2 + (isolated() ? 1 : 0)) * kGiAtrousIterations;
+    // Cadenas del filtro espacial por hueco de frame: 0 = la vista (ojo
+    // izquierdo), 1 = caras de la sonda (no tocan la historia), 2 = ojo derecho.
+    const std::uint32_t variant = isolated() ? 1u : eye_state_swapped_ ? 2u : 0u;
+    const std::uint32_t chain = (frame_index * 3 + variant) * kGiAtrousIterations;
     for (std::uint32_t iteration = 0; iteration < kGiAtrousIterations; ++iteration) {
         GiAtrousPush atrous{};
         atrous.step = 1 << iteration;
@@ -5225,7 +5412,7 @@ void VulkanRenderer::recordSsrPass(const vk::raii::CommandBuffer& cmd,
                                           vk::AccessFlagBits2::eShaderStorageWrite));
         RayTracing::Push rt_push{};
         rt_push.previous_view_projection = previous_view_projection_;
-        rt_push.params = Vec4{static_cast<float>(frame_count_ % 64),
+        rt_push.params = Vec4{static_cast<float>(noise_frame_ % 64),
                               ssr_history_ready_ ? 1.0f : 0.0f, 0.0f, 0.0f};
         ray_tracing_.record(cmd, frame_index, RayTracing::Pass::Reflections, ssr_raw_.extent(),
                             rt_push);
@@ -5245,7 +5432,7 @@ void VulkanRenderer::recordSsrPass(const vk::raii::CommandBuffer& cmd,
         // z: numero de frame, para que el ruido del primer paso cambie cada
         // frame.
         push.params = Vec4{post_.reflections && ssr_history_ready_ && !isolated() ? 1.0f : 0.0f,
-                           1.0f, static_cast<float>(frame_count_ % 64), 0.0f};
+                           1.0f, static_cast<float>(noise_frame_ % 64), 0.0f};
         drawFullscreen(cmd, ssr_pass_, &ssr_sets_[frame_index], ssr_raw_, &push);
     }
 
@@ -5265,12 +5452,13 @@ void VulkanRenderer::recordSsrPass(const vk::raii::CommandBuffer& cmd,
     pipelineBarrier(cmd, barriers);
 
     // Las caras de la sonda no usan la historia (es de la camara de pantalla).
+    // (Su historia es de esta vista: en VR, de este ojo.)
     GpuSsgiPush resolve{};
-    resolve.previous_view_projection = previous_view_projection_;
+    resolve.previous_view_projection = history_view_projection_;
     resolve.params = Vec4{ssr_filter_history_valid_ && post_.reflections && !isolated() ? 1.0f : 0.0f,
                           kSsrHistoryWeight, 0.0f, 0.0f};
-    drawFullscreen(cmd, ssr_resolve_pass_, &ssr_resolve_sets_[frame_index], ssr_image_,
-                   &resolve);
+    drawFullscreen(cmd, ssr_resolve_pass_, &ssr_resolve_sets_[frame_index + eyeSet() * kMaxFramesInFlight],
+                   ssr_image_, &resolve);
 }
 
 void VulkanRenderer::recordFilterHistoryCopies(const vk::raii::CommandBuffer& cmd) {
@@ -5499,7 +5687,7 @@ void VulkanRenderer::recordWaterPass(const vk::raii::CommandBuffer& cmd, std::ui
 
 void VulkanRenderer::recordPathTracePass(const vk::raii::CommandBuffer& cmd, std::uint32_t frame_index) {
     // Solo la vista principal en Lit: la acumulacion es de una camara.
-    if (!pathTracingActive() || isolated() || drawModeNow() != SceneDrawMode::Lit) {
+    if (!pathTracingActive() || isolated() || xr_view_frame_ || drawModeNow() != SceneDrawMode::Lit) {
         return;
     }
 
@@ -5822,6 +6010,7 @@ void VulkanRenderer::invalidateHistory() {
     ssr_history_ready_ = false;
     ssr_filter_history_valid_ = false;
     gi_filter_history_valid_ = false;
+    xr_eye1_.taa_valid = xr_eye1_.ssr_valid = xr_eye1_.gi_valid = false;  // el otro ojo
 }
 
 // El resultado del frame (imagen compuesta con contorno y gizmos) a la imagen
@@ -6015,6 +6204,65 @@ void VulkanRenderer::createXrStaging() {
     }
 }
 
+bool VulkanRenderer::connectXrSession(std::string* error, bool* needs_restart) {
+    if (needs_restart != nullptr) *needs_restart = false;
+    const auto fail = [&](const std::string& text, bool restart) {
+        if (error != nullptr) *error = text;
+        if (needs_restart != nullptr) *needs_restart = restart;
+        std::cerr << "[VR] " << text << "\n";
+        xr_.shutdown();
+        return false;
+    };
+    if (xr_.available()) return true;
+    if (!initialized_) return fail("El render aun no esta listo", false);
+    const VkInstance instance = static_cast<VkInstance>(*instance_.handle());
+    const VkPhysicalDevice gpu = static_cast<VkPhysicalDevice>(*device_.physicalDevice());
+    const VkPhysicalDevice xr_gpu = xr_.physicalDevice(instance);
+    if (xr_gpu == VK_NULL_HANDLE) {
+        return fail(xr_.error().empty() ? std::string("El runtime de VR no dice en que GPU esta el casco") : xr_.error(), false);
+    }
+    if (xr_gpu != gpu) {
+        return fail("El casco esta en otra GPU (no en " + device_.name() + "): hay que abrir de nuevo con el casco conectado.",
+                    true);
+    }
+    // Lo que pide el runtime: activado, o que este PC no tiene (creando
+    // Vulkan con el casco tampoco se activaria; se avisa y se sigue igual).
+    std::string missing;
+    const auto check = [&](const std::vector<std::string>& wanted, const std::vector<std::string>& enabled,
+                           const auto& available) {
+        for (const std::string& name : wanted) {
+            if (std::find(enabled.begin(), enabled.end(), name) != enabled.end() || !available(name)) continue;
+            missing += (missing.empty() ? "" : ", ") + name;
+        }
+    };
+    check(xr_.requiredInstanceExtensions(), instance_.enabledExtensions(),
+          [&](const std::string& name) { return instance_.extensionAvailable(name); });
+    check(xr_.requiredDeviceExtensions(), device_.enabledExtensions(),
+          [&](const std::string& name) { return device_.extensionAvailable(name); });
+    if (!missing.empty()) {
+        return fail("El casco pide extensiones de Vulkan que no se activaron al abrir (" + missing +
+                        "): hay que abrir de nuevo con el casco conectado.",
+                    true);
+    }
+    device_.waitIdle();
+    if (!xr_.createSession(instance, gpu, static_cast<VkDevice>(*device_.handle()), device_.queueFamilies().graphics, 0)) {
+        return fail("No se pudo empezar la sesion de VR: " + xr_.error(), false);
+    }
+    createXrStaging();
+    std::cout << "[VR] Casco conectado: " << xr_.systemName() << " (" << xr_.runtimeName() << ")" << std::endl;
+    return true;
+}
+
+void VulkanRenderer::stopXr() {
+    const bool had_session = xr_.available();
+    if (had_session && initialized_) device_.waitIdle();  // nada en vuelo con las imagenes del casco
+    xr_.shutdown();
+    xr_views_active_ = false;
+    last_xr_view_time_ = {};
+    if (eye_state_swapped_) swapEyeState();
+    if (had_session) std::cout << "[VR] Casco soltado" << std::endl;
+}
+
 void VulkanRenderer::renderXrEye(const scene::Scene& scene, const scene::Camera& camera, int eye) {
     if (!initialized_ || eye < 0 || eye > 1) return;
     const VkImage image = xr_.acquireEye(eye);
@@ -6032,6 +6280,179 @@ void VulkanRenderer::renderXrEye(const scene::Scene& scene, const scene::Camera&
     editor_helpers_ = helpers;
     if (!xr_copied_) clearXrImage(image);  // no se pudo dibujar (ventana minimizada...)
     xr_.releaseEye(eye);
+}
+
+// El estado temporal del ojo derecho entra (o sale) de los miembros: las
+// pasadas usan taa_history_ & co. sin saber de que ojo son, y los descriptor
+// sets del ojo (eyeSet()) apuntan a sus imagenes.
+void VulkanRenderer::swapEyeState() {
+    std::swap(taa_history_, xr_eye1_.taa_history);
+    std::swap(ssr_history_, xr_eye1_.ssr_history);
+    std::swap(gi_history_, xr_eye1_.gi_history);
+    std::swap(gi_moments_history_, xr_eye1_.gi_moments_history);
+    std::swap(taa_history_valid_, xr_eye1_.taa_valid);
+    std::swap(ssr_filter_history_valid_, xr_eye1_.ssr_valid);
+    std::swap(gi_filter_history_valid_, xr_eye1_.gi_valid);
+    std::swap(motion_view_projection_, xr_eye1_.motion_view_projection);
+    eye_state_swapped_ = !eye_state_swapped_;
+}
+
+bool VulkanRenderer::xrEyeStateReady() const {
+    return xr_eye1_.taa_history.isValid() && xr_eye1_.ssr_history.isValid() && xr_eye1_.gi_history.isValid() &&
+           xr_eye1_.gi_moments_history.isValid();
+}
+
+// VR: las historias del ojo derecho (mismos formatos y tamanos que las del
+// izquierdo). Sin casco no se crean.
+void VulkanRenderer::createXrEyeTargets(vk::Extent2D render, vk::Extent2D output) {
+    if (eye_state_swapped_) swapEyeState();
+    xr_eye1_.taa_valid = xr_eye1_.ssr_valid = xr_eye1_.gi_valid = false;
+    if ((xr_output_extent_.width == 0 || xr_output_extent_.height == 0) && !stereo_emulation_) {
+        xr_eye1_.taa_history.destroy();
+        xr_eye1_.ssr_history.destroy();
+        xr_eye1_.gi_history.destroy();
+        xr_eye1_.gi_moments_history.destroy();
+        return;
+    }
+    xr_eye1_.ssr_history.create(device_, render, kHdrFormat,
+                                vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eTransferDst,
+                                vk::ImageAspectFlagBits::eColor);
+    const vk::ImageUsageFlags filter_usage = vk::ImageUsageFlagBits::eStorage | vk::ImageUsageFlagBits::eSampled |
+                                             vk::ImageUsageFlagBits::eTransferSrc |
+                                             vk::ImageUsageFlagBits::eTransferDst;
+    const vk::Extent2D half = bloomLevelExtent(render, 0);
+    xr_eye1_.gi_history.create(device_, half, kHdrFormat, filter_usage, vk::ImageAspectFlagBits::eColor);
+    xr_eye1_.gi_moments_history.create(device_, half, kHdrFormat, filter_usage, vk::ImageAspectFlagBits::eColor);
+    xr_eye1_.taa_history.create(device_, output, kHdrFormat,
+                                vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eTransferDst,
+                                vk::ImageAspectFlagBits::eColor);
+    // Como las del ojo izquierdo: las de la GI en General y a cero, la del TAA
+    // como textura (la del SSR la prepara su filtro la primera vez).
+    device_.submitOneTime([&](const vk::raii::CommandBuffer& cmd) {
+        std::vector<vk::ImageMemoryBarrier2> barriers;
+        for (const VulkanImage* image : {&xr_eye1_.gi_history, &xr_eye1_.gi_moments_history}) {
+            barriers.push_back(colorBarrier(*image->handle(), vk::ImageLayout::eUndefined, vk::ImageLayout::eGeneral,
+                                            vk::PipelineStageFlagBits2::eTopOfPipe, vk::AccessFlagBits2::eNone,
+                                            vk::PipelineStageFlagBits2::eTransfer,
+                                            vk::AccessFlagBits2::eTransferWrite));
+        }
+        barriers.push_back(colorBarrier(*xr_eye1_.taa_history.handle(), vk::ImageLayout::eUndefined,
+                                        vk::ImageLayout::eShaderReadOnlyOptimal, vk::PipelineStageFlagBits2::eTopOfPipe,
+                                        vk::AccessFlagBits2::eNone, vk::PipelineStageFlagBits2::eFragmentShader,
+                                        vk::AccessFlagBits2::eShaderSampledRead));
+        pipelineBarrier(cmd, barriers);
+        for (const VulkanImage* image : {&xr_eye1_.gi_history, &xr_eye1_.gi_moments_history}) {
+            cmd.clearColorImage(*image->handle(), vk::ImageLayout::eGeneral, vk::ClearColorValue{0.0f, 0.0f, 0.0f, 0.0f},
+                                vk::ImageSubresourceRange{vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1});
+        }
+    });
+}
+
+void VulkanRenderer::renderXrStereo(const scene::Scene& scene, const std::array<scene::Camera, 2>& eyes,
+                                    const scene::Camera& center) {
+    if (!initialized_) return;
+    if (!xrEyeStateReady()) {
+        // Las historias del ojo derecho se crean con los destinos al tamano
+        // del casco (applyPendingResize, al empezar el frame): hasta entonces,
+        // negro (el casco espera cada ojo desde su sitio, no una imagen comun).
+        clearXrEye(0);
+        clearXrEye(1);
+        return;
+    }
+    renderStereoViews(scene, eyes, center, /*headset=*/true);
+}
+
+void VulkanRenderer::setStereoEmulation(bool on) {
+    if (on == stereo_emulation_) return;
+    stereo_emulation_ = on;
+    targets_dirty_ = true;  // las historias del ojo derecho (createXrEyeTargets)
+    applyEffectiveGraphics();
+}
+
+void VulkanRenderer::renderStereoEmulated(const scene::Scene& scene, const std::array<scene::Camera, 2>& eyes,
+                                          const scene::Camera& center) {
+    if (!initialized_ || !stereo_emulation_ || !xrEyeStateReady()) return;
+    renderStereoViews(scene, eyes, center, /*headset=*/false);
+}
+
+// Los dos ojos como vistas principales (con el casco, cada uno a su imagen de
+// OpenXR; emulado, sin imagen: la ventana enseña el ultimo).
+void VulkanRenderer::renderStereoViews(const scene::Scene& scene, const std::array<scene::Camera, 2>& eyes,
+                                       const scene::Camera& center, bool headset) {
+    const bool helpers = editor_helpers_;
+    editor_helpers_ = false;
+    shadow_camera_override_ = &center;
+    xr_stereo_view_ = true;
+    xr_eye_recorded_ = false;
+    for (int eye = 0; eye < 2; ++eye) {
+        VkImage image = VK_NULL_HANDLE;
+        if (headset) {
+            image = xr_.acquireEye(eye);
+            if (image == VK_NULL_HANDLE) continue;
+        }
+        // El segundo ojo usa lo que dibujo el primero (sombras, cielo): si el
+        // primero no se pudo dibujar, este tampoco.
+        if (eye == 1 && !xr_eye_recorded_) {
+            if (headset) {
+                clearXrImage(image);
+                xr_.releaseEye(eye);
+            }
+            continue;
+        }
+        camera_override_ = &eyes[static_cast<std::size_t>(eye)];
+        xr_eye_target_ = eye;
+        xr_target_image_ = image;
+        xr_view_frame_ = true;
+        xr_view_eye_ = eye;
+        xr_copied_ = false;
+        drawFrame(scene, false);
+        xr_view_frame_ = false;
+        xr_eye_target_ = -1;
+        xr_target_image_ = VK_NULL_HANDLE;
+        if (headset) {
+            if (!xr_copied_) clearXrImage(image);  // no se pudo dibujar
+            xr_.releaseEye(eye);
+        }
+    }
+    xr_stereo_view_ = false;
+    xr_view_eye_ = 0;
+    shadow_camera_override_ = nullptr;
+    camera_override_ = nullptr;
+    editor_helpers_ = helpers;
+    xr_views_active_ = xr_eye_recorded_;  // la ventana enseña el ultimo ojo
+}
+
+void VulkanRenderer::renderXrMono(const scene::Scene& scene, const scene::Camera& camera) {
+    if (!initialized_) return;
+    const VkImage left = xr_.acquireEye(0);
+    const VkImage right = xr_.acquireEye(1);
+    if (left == VK_NULL_HANDLE || right == VK_NULL_HANDLE) {
+        if (left != VK_NULL_HANDLE) xr_.releaseEye(0);
+        if (right != VK_NULL_HANDLE) xr_.releaseEye(1);
+        return;
+    }
+    const bool helpers = editor_helpers_;
+    editor_helpers_ = false;
+    camera_override_ = &camera;
+    xr_eye_target_ = 0;
+    xr_target_image_ = left;
+    xr_mono_second_image_ = right;
+    xr_view_frame_ = true;
+    xr_copied_ = false;
+    drawFrame(scene, false);
+    xr_view_frame_ = false;
+    xr_views_active_ = true;
+    xr_eye_target_ = -1;
+    xr_target_image_ = VK_NULL_HANDLE;
+    xr_mono_second_image_ = VK_NULL_HANDLE;
+    camera_override_ = nullptr;
+    editor_helpers_ = helpers;
+    if (!xr_copied_) {
+        clearXrImage(left);
+        clearXrImage(right);
+    }
+    xr_.releaseEye(0);
+    xr_.releaseEye(1);
 }
 
 void VulkanRenderer::clearXrEye(int eye) {
@@ -6101,6 +6522,18 @@ void VulkanRenderer::recordXrEyeCopy(const vk::raii::CommandBuffer& cmd) {
     pipelineBarrier(cmd, colorBarrier(target, vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eColorAttachmentOptimal,
                                       Stage::eCopy, Access::eTransferWrite, Stage::eColorAttachmentOutput,
                                       Access::eColorAttachmentWrite));
+    // Una camara: la misma imagen al otro ojo.
+    if (xr_mono_second_image_ != VK_NULL_HANDLE) {
+        const vk::Image second(xr_mono_second_image_);
+        pipelineBarrier(cmd, colorBarrier(second, vk::ImageLayout::eColorAttachmentOptimal, vk::ImageLayout::eTransferDstOptimal,
+                                          Stage::eColorAttachmentOutput, Access::eColorAttachmentWrite, Stage::eCopy,
+                                          Access::eTransferWrite));
+        cmd.copyImage(*staging.handle(), vk::ImageLayout::eTransferSrcOptimal, second, vk::ImageLayout::eTransferDstOptimal,
+                      copy);
+        pipelineBarrier(cmd, colorBarrier(second, vk::ImageLayout::eTransferDstOptimal,
+                                          vk::ImageLayout::eColorAttachmentOptimal, Stage::eCopy, Access::eTransferWrite,
+                                          Stage::eColorAttachmentOutput, Access::eColorAttachmentWrite));
+    }
     xr_copied_ = true;
 }
 
@@ -6720,6 +7153,60 @@ void VulkanRenderer::recordOverlayPass(const vk::raii::CommandBuffer& cmd,
     pipelineBarrier(cmd, writtenToSampled(*ldr_color_.handle()));
 }
 
+// Paneles de la UI en el mundo sobre la imagen final, con la profundidad de
+// la escena (como los gizmos, pero de esta vista: tambien en el juego y en VR).
+void VulkanRenderer::recordWorldUiPass(const vk::raii::CommandBuffer& cmd, std::uint32_t frame_index) {
+    (void)frame_index;
+    const vk::Extent2D extent = ldr_color_.extent();
+    const bool scaled = render_extent_ != extent;
+    const VulkanImage& depth_image = scaled ? output_depth_ : gbuffer_.depth();
+    if (scaled) recordOutputDepth(cmd);
+
+    vk::ImageMemoryBarrier2 depth_barrier{};
+    depth_barrier.srcStageMask = vk::PipelineStageFlagBits2::eLateFragmentTests |
+                                 vk::PipelineStageFlagBits2::eFragmentShader |
+                                 vk::PipelineStageFlagBits2::eComputeShader;
+    depth_barrier.srcAccessMask = vk::AccessFlagBits2::eDepthStencilAttachmentWrite;
+    depth_barrier.dstStageMask = vk::PipelineStageFlagBits2::eEarlyFragmentTests |
+                                 vk::PipelineStageFlagBits2::eLateFragmentTests;
+    depth_barrier.dstAccessMask = vk::AccessFlagBits2::eDepthStencilAttachmentRead;
+    depth_barrier.oldLayout = vk::ImageLayout::eDepthReadOnlyOptimal;
+    depth_barrier.newLayout = vk::ImageLayout::eDepthReadOnlyOptimal;
+    depth_barrier.image = *depth_image.handle();
+    depth_barrier.subresourceRange = vk::ImageSubresourceRange{vk::ImageAspectFlagBits::eDepth, 0, 1, 0, 1};
+    pipelineBarrier(cmd, {colorBarrier(*ldr_color_.handle(), vk::ImageLayout::eShaderReadOnlyOptimal,
+                                       vk::ImageLayout::eColorAttachmentOptimal,
+                                       vk::PipelineStageFlagBits2::eFragmentShader,
+                                       vk::AccessFlagBits2::eShaderSampledRead,
+                                       vk::PipelineStageFlagBits2::eColorAttachmentOutput,
+                                       vk::AccessFlagBits2::eColorAttachmentRead |
+                                           vk::AccessFlagBits2::eColorAttachmentWrite),
+                          depth_barrier});
+
+    vk::RenderingAttachmentInfo color_attachment{};
+    color_attachment.imageView = *ldr_color_.view();
+    color_attachment.imageLayout = vk::ImageLayout::eColorAttachmentOptimal;
+    color_attachment.loadOp = vk::AttachmentLoadOp::eLoad;
+    color_attachment.storeOp = vk::AttachmentStoreOp::eStore;
+
+    vk::RenderingAttachmentInfo depth_attachment{};
+    depth_attachment.imageView = *depth_image.view();
+    depth_attachment.imageLayout = vk::ImageLayout::eDepthReadOnlyOptimal;
+    depth_attachment.loadOp = vk::AttachmentLoadOp::eLoad;
+    depth_attachment.storeOp = vk::AttachmentStoreOp::eNone;
+
+    vk::RenderingInfo rendering_info{};
+    rendering_info.renderArea = vk::Rect2D{vk::Offset2D{0, 0}, extent};
+    rendering_info.layerCount = 1;
+    rendering_info.setColorAttachments(color_attachment);
+    rendering_info.pDepthAttachment = &depth_attachment;
+
+    cmd.beginRendering(rendering_info);
+    world_ui_pass_.recordQuads(cmd, camera_view_projection_, extent);
+    cmd.endRendering();
+    pipelineBarrier(cmd, writtenToSampled(*ldr_color_.handle()));
+}
+
 // Escalado de la imagen HDR interna a la de pantalla, antes del bloom y la
 // composicion: TAA/TAAU (temporal, con historia) o FSR 1 (EASU, espacial), y
 // despues la nitidez (RCAS) a upscaled_color_, que es lo que lee el resto.
@@ -6799,10 +7286,11 @@ void VulkanRenderer::configureVendorUpscaler() {
             }
         }
     } else {
-        upscaler_status_.clear();
+        upscaler_status_ = xr_forced_taa_ ? "VR (un ojo por camara): TAA del motor con historia por ojo" : "";
     }
     vendor_output_ = output;
     taa_history_valid_ = false;
+    xr_eye1_.taa_valid = false;
 }
 
 void VulkanRenderer::recordVendorUpscale(const vk::raii::CommandBuffer& cmd) {
@@ -6916,7 +7404,7 @@ void VulkanRenderer::recordUpscalePass(const vk::raii::CommandBuffer& cmd) {
                                 1.0f / static_cast<float>(output.width), 1.0f / static_cast<float>(output.height)};
         push.jitter = isolated() ? Vec4{} : Vec4{jitter_ndc_.x * 0.5f, jitter_ndc_.y * 0.5f, taa_history_valid_ ? 1.0f : 0.0f, 0.0f};
         push.reproject = taa_reproject_;
-        drawFullscreen(cmd, taa_pass_, &taa_sets_[0], upscale_target_, &push);
+        drawFullscreen(cmd, taa_pass_, &taa_sets_[eyeSet()], upscale_target_, &push);
         if (isolated()) {
             pipelineBarrier(cmd, writtenToSampled(*upscale_target_.handle()));
         } else {
@@ -7114,12 +7602,16 @@ void VulkanRenderer::recordRainMap(const vk::raii::CommandBuffer& cmd,
 
 void VulkanRenderer::recordCloudPass(const vk::raii::CommandBuffer& cmd,
                                      std::uint32_t frame_index) {
-    // Sombra de las nubes sobre el suelo (antes que la iluminacion).
-    pipelineBarrier(cmd, discardToAttachment(*cloud_shadow_image_.handle()));
-    if (clouds_enabled_ && !environmentActive() && cloud_settings_.shadows && cloud_settings_.coverage > 0.0f) {
-        drawFullscreen(cmd, cloud_shadow_pass_, &clouds_sets_[frame_index], cloud_shadow_image_, &cloud_shadow_push_);
+    // Sombra de las nubes sobre el suelo (antes que la iluminacion). En VR, una
+    // vez por frame: el segundo ojo usa la del primero.
+    if (!xrSecondEye()) {
+        pipelineBarrier(cmd, discardToAttachment(*cloud_shadow_image_.handle()));
+        if (clouds_enabled_ && !environmentActive() && cloud_settings_.shadows && cloud_settings_.coverage > 0.0f) {
+            drawFullscreen(cmd, cloud_shadow_pass_, &clouds_sets_[frame_index], cloud_shadow_image_,
+                           &cloud_shadow_push_);
+        }
+        pipelineBarrier(cmd, writtenToSampled(*cloud_shadow_image_.handle()));
     }
-    pipelineBarrier(cmd, writtenToSampled(*cloud_shadow_image_.handle()));
 
     pipelineBarrier(cmd, discardToAttachment(*clouds_image_.handle()));
     // Apagadas no se dibujan (la iluminacion no las lee), pero la imagen
@@ -7368,6 +7860,31 @@ void VulkanRenderer::recordPostProcessPass(const vk::raii::CommandBuffer& cmd,
 }
 
 bool VulkanRenderer::applyPendingResize() {
+    // VR: con el casco en marcha la escena va a la resolucion de su ojo (la
+    // de la ventana, estirada, se veia borrosa); al soltarlo, la de la vista.
+    if (initialized_) {
+        const VkExtent2D eye = xr_.running() ? xr_.eyeExtent() : VkExtent2D{0, 0};
+        const vk::Extent2D wanted{std::min(eye.width, 8192u), std::min(eye.height, 8192u)};
+        if (wanted != xr_output_extent_) {
+            xr_output_extent_ = wanted;
+            targets_dirty_ = true;
+        }
+        // El casco tiene que ir a su frecuencia (72-120 Hz): si no llega, el
+        // runtime repite frames y al mover la cabeza todo tiembla. En VR el
+        // presupuesto adaptativo va siempre, con los Hz del casco (se mide el
+        // frame entero: los dos ojos).
+        if (xr_.running()) {
+            budget_.setEnabled(true);
+            budget_.setTargetFps(xr_.displayHz());
+            xr_budget_applied_ = true;
+            applyEffectiveGraphics();  // estereo: TAA por ojo en vez de FSR 3 / DLSS
+        } else if (xr_budget_applied_) {
+            xr_budget_applied_ = false;
+            budget_.setEnabled(user_graphics_.adaptive);
+            budget_.setTargetFps(user_graphics_.target_fps);
+            applyEffectiveGraphics();
+        }
+    }
     if (!initialized_ || (!framebuffer_resized_ && !settings_dirty_ && !targets_dirty_ && swapchain_.isValid())) {
         return false;
     }
@@ -7398,6 +7915,39 @@ void VulkanRenderer::waitIdle() const {
     if (initialized_) {
         device_.waitIdle();
     }
+}
+
+bool VulkanRenderer::readSceneImage(asset::ImageRgba8& image) {
+    image = asset::ImageRgba8{};
+    if (!initialized_ || !ldr_color_.isValid()) return false;
+    device_.waitIdle();
+    const vk::Extent2D extent = ldr_color_.extent();
+    const vk::DeviceSize size = static_cast<vk::DeviceSize>(extent.width) * extent.height * 4;
+    VulkanBuffer staging;
+    staging.create(device_, size, vk::BufferUsageFlagBits::eTransferDst,
+                   vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent);
+    constexpr vk::ImageLayout kRead = vk::ImageLayout::eShaderReadOnlyOptimal;
+    device_.submitOneTime([&](const vk::raii::CommandBuffer& cmd) {
+        pipelineBarrier(cmd, colorBarrier(*ldr_color_.handle(), kRead, vk::ImageLayout::eTransferSrcOptimal,
+                                          vk::PipelineStageFlagBits2::eAllCommands, vk::AccessFlagBits2::eMemoryWrite,
+                                          vk::PipelineStageFlagBits2::eCopy, vk::AccessFlagBits2::eTransferRead));
+        vk::BufferImageCopy region{};
+        region.imageSubresource = vk::ImageSubresourceLayers{vk::ImageAspectFlagBits::eColor, 0, 0, 1};
+        region.imageExtent = vk::Extent3D{extent.width, extent.height, 1};
+        cmd.copyImageToBuffer(*ldr_color_.handle(), vk::ImageLayout::eTransferSrcOptimal, *staging.handle(), region);
+        pipelineBarrier(cmd, colorBarrier(*ldr_color_.handle(), vk::ImageLayout::eTransferSrcOptimal, kRead,
+                                          vk::PipelineStageFlagBits2::eCopy, vk::AccessFlagBits2::eTransferRead,
+                                          vk::PipelineStageFlagBits2::eFragmentShader,
+                                          vk::AccessFlagBits2::eShaderSampledRead));
+    });
+    const auto* pixels = static_cast<const std::uint8_t*>(staging.mapped());
+    if (pixels == nullptr) return false;
+    image.width = extent.width;
+    image.height = extent.height;
+    image.pixels.assign(pixels, pixels + size);  // kLdrFormat ya es RGBA8
+    for (std::size_t i = 3; i < image.pixels.size(); i += 4) image.pixels[i] = 255;
+    staging.destroy();
+    return true;
 }
 
 }  // namespace cramion::gfx

@@ -19,7 +19,7 @@ void VulkanRenderer::recordVfxPass(const vk::raii::CommandBuffer& cmd, std::uint
     view.scene_depth = *gbuffer_.depth().view();
     // Las vistas secundarias (vista Juego, sondas) solo dibujan: la
     // simulacion avanza una vez por frame con la vista principal.
-    const bool simulate = !isolated();
+    const bool simulate = !isolated() && !xrSecondEye();  // una vez por frame (en VR, el primer ojo)
     if (!vfx_pass_.prepare(frame_index, view, simulate)) return;
     if (simulate) vfx_pass_.recordSimulate(cmd, frame_index);
 

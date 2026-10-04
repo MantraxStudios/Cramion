@@ -224,6 +224,12 @@ int runPlayer() {
         // Realidad virtual (OpenXR): si hay casco, el juego se ve en el; la
         // ventana queda de espejo. Sin runtime o sin casco, sigue sin VR.
         const bool vr_requested = readIniValue(ini, "vr") == "1";
+        // vr_runtime=auto|steamvr|meta|system (sin la linea: automatico, que
+        // prueba SteamVR si esta abierto, el activo de Windows y Meta).
+        const xr::RuntimeChoice vr_runtime = xr::runtimeChoiceFromKey(readIniValue(ini, "vr_runtime"));
+        // Una camara por ojo (estereo). vr_mono=1: una sola imagen para los dos
+        // ojos (la mitad de coste, sin profundidad).
+        const bool vr_stereo = readIniValue(ini, "vr_mono") != "1";
 
         dm::Window window;
         if (!window.create({.title = widen(title),
@@ -367,7 +373,8 @@ int runPlayer() {
         const gfx::EngineInfo engine_info{.app_name = app_name.c_str(),
                                           .engine_name = "Cramion Engine",
                                           .enable_validation = false,
-                                          .enable_xr = vr_requested};
+                                          .enable_xr = vr_requested,
+                                          .xr_runtime = static_cast<int>(vr_runtime)};
         renderer.setLoadingCallback([&](float fraction, const char* what) { loading->show(fraction, what); });
         renderer.initialize(engine_info, window.handle(), window.width(), window.height());
 #if defined(_WIN32)
@@ -382,6 +389,7 @@ int runPlayer() {
             gfx::GraphicsSettings g = renderer.graphicsSettings();
             g.vsync = false;
             renderer.setGraphicsSettings(g);
+            renderer.xr().setStereo(vr_stereo);
             std::cout << "[VR] " << renderer.xr().systemName() << " (" << renderer.xr().runtimeName() << "), "
                       << renderer.xr().eyeExtent().width << "x" << renderer.xr().eyeExtent().height << " por ojo\n";
         } else if (vr_requested) {
@@ -580,6 +588,7 @@ int runPlayer() {
         ecs::loadTags(project->settingsFolder() / "Tags.json", tags);
         ecs::setProjectTags(tags);
         physics::PhysicsSystem physics;
+        xr_rig.setPhysics(&physics);  // XrPlayer: jugador VR con CharacterController
         physics.setSettings(physics_settings);
         physics.setAssetManager(&asset_manager);
         physics.setTerrainProvider([&](ecs::Entity entity) -> std::shared_ptr<const terrain::TerrainData> {
@@ -1155,6 +1164,7 @@ int runPlayer() {
                 int steps = 0;
                 {
                     CR_PROFILE_SCOPE("Fisica");
+                    xr_rig.updateCollisions(world);  // el Jugador VR no choca con lo que se coge
                     steps = physics.update(world, dt, true);
                 }
                 particles.setViewer(scene.camera().position(), scene.camera().forward());
@@ -1226,6 +1236,10 @@ int runPlayer() {
                 // Interfaz: toda la ventana.
                 const ui::UiInput ui_input = editor::uiInputFromImGui(ImVec2(0, 0), display, true, game_ui.typing());
                 game_ui.update(world, display.x, display.y, ui_input, true, static_cast<float>(ImGui::GetTime()));
+                // UI en el mundo (Canvas en modo Mundo): con los rayos de las
+                // manos en VR; sus paneles los dibuja el render.
+                game_ui.updateWorld(world, xr_rig.uiPointers(), true, static_cast<float>(ImGui::GetTime()));
+                xr_rig.setUiHits(game_ui.pointerHits());
                 for (const ui::UiEvent& e : game_ui.takeEvents()) {
                     switch (e.kind) {
                         case ui::UiEvent::Kind::Click: scripts.callMethod(e.target, e.method, e.source); break;
@@ -1241,6 +1255,7 @@ int runPlayer() {
                         case ui::UiEvent::Kind::Bool: cpp_scripts.sendMessage(e.target, e.method, e.flag ? "true" : "false"); break;
                     }
                 }
+                renderer.setWorldUi(editor::buildWorldUi(game_ui.worldCanvases(), imgui, project->assetsFolder()));
                 editor::drawUiList(ImGui::GetBackgroundDrawList(), ImVec2(0, 0), game_ui.drawList(), imgui, project->assetsFolder());
                 // Sin Camera en la escena: vista orbital por defecto.
                 if (!has_camera()) update_orbit(dt, display);

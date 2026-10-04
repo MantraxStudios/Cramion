@@ -1,11 +1,13 @@
 #include "CramionCore/ui/UI.h"
 
+#include "CramionCore/ecs/MathUtil.h"
 #include "CramionCore/gameplay/DialogueUi.h"
 #include "CramionCore/gameplay/Localization.h"
 
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <limits>
 
 namespace cramion::ui {
 
@@ -28,10 +30,21 @@ Vec4 rgba(const Vec3& c, float a) { return Vec4{c.x, c.y, c.z, a}; }
 }  // namespace
 
 void Canvas::reflect(ecs::PropertyVisitor& v) {
+    static constexpr std::array<const char*, 2> kRender = {"Pantalla", "Mundo (VR)"};
+    ecs::enumField(v, {"render_mode", "Modo",
+                       "Pantalla: encima de la vista. Mundo: un panel en la escena (VR: se usa con el rayo de los mandos)"},
+                   render_mode, kRender);
     v.field({"reference", "Resolucion de referencia"}, reference, 1.0f);
-    static constexpr std::array<const char*, 2> kModes = {"Pixeles constantes", "Escalar con la pantalla"};
-    ecs::enumField(v, {"scale_mode", "Escalado"}, scale_mode, kModes);
-    v.field({"match", "Ajustar a", "0 = ancho, 1 = alto"}, match, FloatRange{0.0f, 1.0f, 0.01f, "%.2f", true});
+    if (v.wantsAllFields() || render_mode == RenderMode::ScreenSpace) {
+        static constexpr std::array<const char*, 2> kModes = {"Pixeles constantes", "Escalar con la pantalla"};
+        ecs::enumField(v, {"scale_mode", "Escalado"}, scale_mode, kModes);
+        v.field({"match", "Ajustar a", "0 = ancho, 1 = alto"}, match, FloatRange{0.0f, 1.0f, 0.01f, "%.2f", true});
+    }
+    if (v.wantsAllFields() || render_mode == RenderMode::WorldSpace) {
+        v.field({"pixels_per_meter", "Pixeles por metro",
+                 "Tamano del panel: resolucion / pixeles por metro (1000: 1920 px = 1,92 m)"},
+                pixels_per_meter, FloatRange{50.0f, 10000.0f, 10.0f, "%.0f"});
+    }
     v.field({"sort_order", "Orden"}, sort_order, -100, 100);
 }
 
@@ -181,10 +194,11 @@ void UiSystem::update(ecs::World& world, float width, float height, const UiInpu
     draw_.clear();
     if (width <= 0.0f || height <= 0.0f) return;
 
-    // Canvas raiz (sin Canvas por encima), por orden.
+    // Canvas raiz (sin Canvas por encima) de la pantalla, por orden.
     std::vector<ecs::Entity> canvases;
     world.forEachDepthFirst([&](ecs::Entity e) {
         if (!e.has<Canvas>() || !e.activeInHierarchy()) return;
+        if (e.get<Canvas>().render_mode == RenderMode::WorldSpace) return;
         for (ecs::Entity p = e.parent(); p.valid(); p = p.parent()) {
             if (p.has<Canvas>()) return;
         }
@@ -193,10 +207,7 @@ void UiSystem::update(ecs::World& world, float width, float height, const UiInpu
     std::stable_sort(canvases.begin(), canvases.end(),
                      [](const ecs::Entity& a, const ecs::Entity& b) { return a.get<Canvas>().sort_order < b.get<Canvas>().sort_order; });
 
-    const auto target_of = [&](ecs::Entity source, const Uuid& target) {
-        const ecs::Entity t = target.valid() ? world.find(target) : ecs::Entity{};
-        return t.valid() ? t : source;
-    };
+    const auto target_of = [&](ecs::Entity source, const Uuid& target) { return targetOf(world, source, target); };
 
     for (const ecs::Entity& canvas_entity : canvases) {
         const Canvas& canvas = canvas_entity.get<Canvas>();
@@ -208,26 +219,7 @@ void UiSystem::update(ecs::World& world, float width, float height, const UiInpu
             scale = std::pow(2.0f, lw + (lh - lw) * std::clamp(canvas.match, 0.0f, 1.0f));
         }
         const UiRect root{0.0f, 0.0f, width / scale, height / scale};
-
-        // Recorrido en profundidad: rectangulo de cada hijo en el de su padre.
-        struct Item {
-            entt::entity entity;
-            UiRect parent;
-        };
-        std::vector<Item> stack;
-        const auto& root_children = canvas_entity.children();
-        for (auto it = root_children.rbegin(); it != root_children.rend(); ++it) stack.push_back(Item{*it, root});
-        while (!stack.empty()) {
-            const Item item = stack.back();
-            stack.pop_back();
-            const ecs::Entity e = world.wrap(item.entity);
-            if (!e.activeSelf()) continue;
-            UiRect r = item.parent;
-            if (const RectTransform* rt = e.tryGet<RectTransform>()) r = layoutRect(*rt, item.parent);
-            laid_.push_back(Laid{item.entity, UiRect{r.x * scale, r.y * scale, r.w * scale, r.h * scale}, item.parent, scale});
-            const auto& children = e.children();
-            for (auto it = children.rbegin(); it != children.rend(); ++it) stack.push_back(Item{*it, r});
-        }
+        layoutCanvas(world, canvas_entity, root, scale, laid_);
     }
 
     // --- Interaccion: el control mas arriba bajo el raton ---
@@ -257,50 +249,16 @@ void UiSystem::update(ecs::World& world, float width, float height, const UiInpu
         // Soltar sobre el mismo control: clic.
         if (input.mouse_released) {
             if (pressed_ != entt::null && pressed_ == hovered && world.registry().valid(pressed_)) {
-                ecs::Entity e = world.wrap(pressed_);
-                if (Button* button = e.tryGet<Button>(); button != nullptr && button->interactable && !button->on_click.empty()) {
-                    UiEvent ev;
-                    ev.source = e;
-                    ev.target = target_of(e, button->target);
-                    ev.method = button->on_click;
-                    events_.push_back(ev);
-                }
-                if (Toggle* toggle = e.tryGet<Toggle>(); toggle != nullptr && toggle->interactable) {
-                    toggle->on = !toggle->on;
-                    if (!toggle->on_change.empty()) {
-                        UiEvent ev;
-                        ev.source = e;
-                        ev.target = target_of(e, toggle->target);
-                        ev.method = toggle->on_change;
-                        ev.kind = UiEvent::Kind::Bool;
-                        ev.flag = toggle->on;
-                        events_.push_back(ev);
-                    }
-                }
+                activate(world, world.wrap(pressed_));
             }
             pressed_ = entt::null;
             dragging_ = entt::null;
         }
         // Arrastrar un slider.
         if (dragging_ != entt::null && world.registry().valid(dragging_) && input.mouse_down) {
-            ecs::Entity e = world.wrap(dragging_);
             UiRect r;
-            if (Slider* slider = e.tryGet<Slider>(); slider != nullptr && rectOf(dragging_, r) && r.w > 1.0f) {
-                const float t = std::clamp((input.mouse_x - r.x) / r.w, 0.0f, 1.0f);
-                float value = slider->min + (slider->max - slider->min) * t;
-                if (slider->whole_numbers) value = std::round(value);
-                if (value != slider->value) {
-                    slider->value = value;
-                    if (!slider->on_change.empty()) {
-                        UiEvent ev;
-                        ev.source = e;
-                        ev.target = target_of(e, slider->target);
-                        ev.method = slider->on_change;
-                        ev.kind = UiEvent::Kind::Number;
-                        ev.number = value;
-                        events_.push_back(ev);
-                    }
-                }
+            if (rectOf(dragging_, r) && r.w > 1.0f) {
+                setSlider(world, world.wrap(dragging_), std::clamp((input.mouse_x - r.x) / r.w, 0.0f, 1.0f));
             }
         }
         // Escribir en el campo con el foco.
@@ -350,8 +308,209 @@ void UiSystem::update(ecs::World& world, float width, float height, const UiInpu
         pressed_ = dragging_ = focused_ = entt::null;
     }
 
-    // --- Lista de dibujo (en el orden de la jerarquia: de atras a delante) ---
-    for (const Laid& l : laid_) {
+    DrawState state;
+    state.hovered[0] = hovered;
+    state.pressed[0] = pressed_;
+    state.focused = focused_;
+    buildDraw(world, laid_, state, input, interactive, time, draw_);
+}
+
+// Rectangulo de cada hijo en el de su padre (recorrido en profundidad).
+void UiSystem::layoutCanvas(ecs::World& world, const ecs::Entity& canvas, const UiRect& root, float scale,
+                            std::vector<Laid>& out) const {
+    struct Item {
+        entt::entity entity;
+        UiRect parent;
+    };
+    std::vector<Item> stack;
+    const auto& root_children = canvas.children();
+    for (auto it = root_children.rbegin(); it != root_children.rend(); ++it) stack.push_back(Item{*it, root});
+    while (!stack.empty()) {
+        const Item item = stack.back();
+        stack.pop_back();
+        const ecs::Entity e = world.wrap(item.entity);
+        if (!e.activeSelf()) continue;
+        UiRect r = item.parent;
+        if (const RectTransform* rt = e.tryGet<RectTransform>()) r = layoutRect(*rt, item.parent);
+        out.push_back(Laid{item.entity, UiRect{r.x * scale, r.y * scale, r.w * scale, r.h * scale}, item.parent, scale});
+        const auto& children = e.children();
+        for (auto it = children.rbegin(); it != children.rend(); ++it) stack.push_back(Item{*it, r});
+    }
+}
+
+ecs::Entity UiSystem::targetOf(ecs::World& world, ecs::Entity source, const Uuid& target) const {
+    const ecs::Entity t = target.valid() ? world.find(target) : ecs::Entity{};
+    return t.valid() ? t : source;
+}
+
+void UiSystem::activate(ecs::World& world, ecs::Entity e) {
+    if (Button* button = e.tryGet<Button>(); button != nullptr && button->interactable && !button->on_click.empty()) {
+        UiEvent ev;
+        ev.source = e;
+        ev.target = targetOf(world, e, button->target);
+        ev.method = button->on_click;
+        events_.push_back(ev);
+    }
+    if (Toggle* toggle = e.tryGet<Toggle>(); toggle != nullptr && toggle->interactable) {
+        toggle->on = !toggle->on;
+        if (!toggle->on_change.empty()) {
+            UiEvent ev;
+            ev.source = e;
+            ev.target = targetOf(world, e, toggle->target);
+            ev.method = toggle->on_change;
+            ev.kind = UiEvent::Kind::Bool;
+            ev.flag = toggle->on;
+            events_.push_back(ev);
+        }
+    }
+}
+
+void UiSystem::setSlider(ecs::World& world, ecs::Entity e, float t) {
+    Slider* slider = e.tryGet<Slider>();
+    if (slider == nullptr || !slider->interactable) return;
+    float value = slider->min + (slider->max - slider->min) * t;
+    if (slider->whole_numbers) value = std::round(value);
+    if (value == slider->value) return;
+    slider->value = value;
+    if (!slider->on_change.empty()) {
+        UiEvent ev;
+        ev.source = e;
+        ev.target = targetOf(world, e, slider->target);
+        ev.method = slider->on_change;
+        ev.kind = UiEvent::Kind::Number;
+        ev.number = value;
+        events_.push_back(ev);
+    }
+}
+
+void UiSystem::updateWorld(ecs::World& world, const std::array<UiPointer, kMaxPointers>& pointers, bool interactive,
+                           float time) {
+    world_canvases_.clear();
+    for (UiPointerHit& h : pointer_hits_) h = UiPointerHit{};
+
+    // Canvas raiz en modo Mundo.
+    std::vector<ecs::Entity> canvases;
+    world.forEachDepthFirst([&](ecs::Entity e) {
+        if (!e.has<Canvas>() || !e.activeInHierarchy()) return;
+        if (e.get<Canvas>().render_mode != RenderMode::WorldSpace) return;
+        for (ecs::Entity p = e.parent(); p.valid(); p = p.parent()) {
+            if (p.has<Canvas>()) return;
+        }
+        canvases.push_back(e);
+    });
+    std::stable_sort(canvases.begin(), canvases.end(),
+                     [](const ecs::Entity& a, const ecs::Entity& b) { return a.get<Canvas>().sort_order < b.get<Canvas>().sort_order; });
+
+    std::vector<std::vector<Laid>> laid(canvases.size());
+    std::vector<core::Quat> rotations(canvases.size());
+    for (std::size_t i = 0; i < canvases.size(); ++i) {
+        const Canvas& canvas = canvases[i].get<Canvas>();
+        WorldCanvasDraw d;
+        d.canvas = canvases[i].handle();
+        d.width = std::max(canvas.reference.x, 1.0f);
+        d.height = std::max(canvas.reference.y, 1.0f);
+        Vec3 position, scale;
+        core::Quat rotation;
+        ecs::decomposeMatrix(canvases[i].worldMatrix(), position, rotation, scale);
+        rotations[i] = core::normalize(rotation);
+        d.transform = core::composeTrs(position, rotations[i], Vec3{1.0f, 1.0f, 1.0f});
+        const float ppm = std::max(canvas.pixels_per_meter, 1.0f);
+        d.size = Vec2{d.width / ppm * std::abs(scale.x), d.height / ppm * std::abs(scale.y)};
+        layoutCanvas(world, canvases[i], UiRect{0.0f, 0.0f, d.width, d.height}, 1.0f, laid[i]);
+        world_canvases_.push_back(std::move(d));
+    }
+
+    // Cada rayo: el panel mas cercano que corta, en pixeles de ese panel.
+    DrawState state;
+    std::array<int, kMaxPointers> hit_canvas{-1, -1};
+    std::array<Vec2, kMaxPointers> hit_pixel{};
+    for (std::size_t p = 0; p < kMaxPointers; ++p) {
+        const UiPointer& pointer = pointers[p];
+        if (!pointer.valid) continue;
+        const Vec3 direction = core::normalize(pointer.direction);
+        float best = std::numeric_limits<float>::max();
+        for (std::size_t i = 0; i < world_canvases_.size(); ++i) {
+            const WorldCanvasDraw& d = world_canvases_[i];
+            const Vec3 center{d.transform.m[3][0], d.transform.m[3][1], d.transform.m[3][2]};
+            const Vec3 normal = ecs::quatRotate(rotations[i], Vec3{0.0f, 0.0f, 1.0f});
+            const float denom = core::dot(direction, normal);
+            if (std::abs(denom) < 1e-5f) continue;
+            const float t = core::dot(center - pointer.origin, normal) / denom;
+            if (t <= 0.0f || t >= best) continue;
+            const Vec3 point = pointer.origin + direction * t;
+            const Vec3 local = ecs::quatRotate(ecs::quatConjugate(rotations[i]), point - center);
+            const float u = local.x / std::max(d.size.x, 1e-5f) + 0.5f;
+            const float v = 0.5f - local.y / std::max(d.size.y, 1e-5f);
+            if (u < 0.0f || u > 1.0f || v < 0.0f || v > 1.0f) continue;
+            best = t;
+            hit_canvas[p] = static_cast<int>(i);
+            hit_pixel[p] = Vec2{u * d.width, v * d.height};
+            pointer_hits_[p] = UiPointerHit{true, t, point, d.canvas, false};
+        }
+        // El control mas arriba bajo el rayo.
+        if (hit_canvas[p] >= 0) {
+            const std::vector<Laid>& items = laid[static_cast<std::size_t>(hit_canvas[p])];
+            for (auto it = items.rbegin(); it != items.rend(); ++it) {
+                const ecs::Entity e = world.wrap(it->entity);
+                const bool control = e.has<Button>() || e.has<Slider>() || e.has<InputField>() || e.has<Toggle>();
+                if (control && it->rect.contains(hit_pixel[p].x, hit_pixel[p].y)) {
+                    state.hovered[p] = it->entity;
+                    pointer_hits_[p].over_control = true;
+                    break;
+                }
+            }
+        }
+    }
+
+    // Gatillo: pulsar y soltar sobre el mismo control es un clic; un Slider
+    // se arrastra mientras se mantiene.
+    for (std::size_t p = 0; p < kMaxPointers; ++p) {
+        PointerState& ps = pointer_states_[p];
+        const bool down = interactive && pointers[p].valid && pointers[p].down;
+        if (!interactive) {
+            ps = PointerState{};
+            continue;
+        }
+        if (down && !ps.was_down) {
+            ps.pressed = state.hovered[p];
+            if (ps.pressed != entt::null && world.wrap(ps.pressed).has<Slider>()) ps.dragging = ps.pressed;
+        }
+        if (!down && ps.was_down) {
+            if (ps.pressed != entt::null && ps.pressed == state.hovered[p] && world.registry().valid(ps.pressed)) {
+                activate(world, world.wrap(ps.pressed));
+            }
+            ps.pressed = ps.dragging = entt::null;
+        }
+        if (down && ps.dragging != entt::null && world.registry().valid(ps.dragging) && hit_canvas[p] >= 0) {
+            for (const Laid& l : laid[static_cast<std::size_t>(hit_canvas[p])]) {
+                if (l.entity != ps.dragging || l.rect.w <= 1.0f) continue;
+                setSlider(world, world.wrap(ps.dragging), std::clamp((hit_pixel[p].x - l.rect.x) / l.rect.w, 0.0f, 1.0f));
+                break;
+            }
+        }
+        ps.was_down = down;
+        state.pressed[p] = ps.pressed;
+    }
+
+    const UiInput no_mouse;
+    for (std::size_t i = 0; i < world_canvases_.size(); ++i) {
+        buildDraw(world, laid[i], state, no_mouse, false, time, world_canvases_[i].commands);
+    }
+}
+
+// Lista de dibujo (en el orden de la jerarquia: de atras a delante).
+void UiSystem::buildDraw(ecs::World& world, const std::vector<Laid>& laid, const DrawState& state, const UiInput& input,
+                         bool interactive, float time, std::vector<UiDrawCommand>& out) {
+    const auto hovered_by_any = [&](entt::entity e) {
+        return std::find(state.hovered.begin(), state.hovered.end(), e) != state.hovered.end();
+    };
+    const auto pressed_by_any = [&](entt::entity e) {
+        for (std::size_t p = 0; p < kMaxPointers; ++p) {
+            if (state.pressed[p] == e && state.hovered[p] == e) return true;
+        }
+        return false;
+    };
+    for (const Laid& l : laid) {
         const ecs::Entity e = world.wrap(l.entity);
         const UiRect& r = l.rect;
         const float s = l.scale;
@@ -362,15 +521,15 @@ void UiSystem::update(ecs::World& world, float width, float height, const UiInpu
             Vec3 color = button->normal;
             if (!button->interactable) {
                 color = button->disabled;
-            } else if (pressed_ == l.entity && hovered == l.entity) {
+            } else if (pressed_by_any(l.entity)) {
                 color = button->pressed;
-            } else if (hovered == l.entity) {
+            } else if (hovered_by_any(l.entity)) {
                 color = button->hover;
             }
             UiDrawCommand c = base;
             c.color = rgba(color, 1.0f);
             c.radius = button->corner_radius * s;
-            draw_.push_back(c);
+            out.push_back(c);
         }
         if (const Image* image = e.tryGet<Image>()) {
             UiDrawCommand c = base;
@@ -380,12 +539,12 @@ void UiSystem::update(ecs::World& world, float width, float height, const UiInpu
             c.radius = image->corner_radius * s;
             c.preserve_aspect = image->preserve_aspect;
             // Con Button, la imagen se tine con el color del estado.
-            if (e.has<Button>() && !draw_.empty() && draw_.back().entity == l.entity && draw_.back().type == UiDrawCommand::Type::Rect) {
-                c.color = Vec4{c.color.x * draw_.back().color.x * 1.6f, c.color.y * draw_.back().color.y * 1.6f,
-                               c.color.z * draw_.back().color.z * 1.6f, c.color.w};
-                draw_.pop_back();
+            if (e.has<Button>() && !out.empty() && out.back().entity == l.entity && out.back().type == UiDrawCommand::Type::Rect) {
+                c.color = Vec4{c.color.x * out.back().color.x * 1.6f, c.color.y * out.back().color.y * 1.6f,
+                               c.color.z * out.back().color.z * 1.6f, c.color.w};
+                out.pop_back();
             }
-            draw_.push_back(c);
+            out.push_back(c);
         }
         if (const Slider* slider = e.tryGet<Slider>()) {
             const float t = slider->max != slider->min ? std::clamp((slider->value - slider->min) / (slider->max - slider->min), 0.0f, 1.0f) : 0.0f;
@@ -394,29 +553,29 @@ void UiSystem::update(ecs::World& world, float width, float height, const UiInpu
             track.rect = UiRect{r.x, r.y + (r.h - bar_h) * 0.5f, r.w, bar_h};
             track.color = rgba(slider->track, 1.0f);
             track.radius = bar_h * 0.5f;
-            draw_.push_back(track);
+            out.push_back(track);
             UiDrawCommand fill = track;
             fill.rect.w = r.w * t;
             fill.color = rgba(slider->fill, 1.0f);
-            draw_.push_back(fill);
+            out.push_back(fill);
             UiDrawCommand handle = base;
             handle.type = UiDrawCommand::Type::Circle;
             const float radius = r.h * 0.42f;
             handle.rect = UiRect{r.x + r.w * t - radius, r.y + r.h * 0.5f - radius, radius * 2.0f, radius * 2.0f};
             handle.color = rgba(slider->handle, slider->interactable ? 1.0f : 0.5f);
-            draw_.push_back(handle);
+            out.push_back(handle);
         }
         if (const InputField* field = e.tryGet<InputField>()) {
             UiDrawCommand bg = base;
             bg.color = rgba(field->background, 1.0f);
             bg.radius = 6.0f * s;
-            draw_.push_back(bg);
-            const bool focused = focused_ == l.entity;
+            out.push_back(bg);
+            const bool focused = state.focused == l.entity;
             if (focused) {
                 UiDrawCommand outline = bg;
                 outline.type = UiDrawCommand::Type::Line;
                 outline.color = Vec4{0.25f, 0.55f, 1.0f, 1.0f};
-                draw_.push_back(outline);
+                out.push_back(outline);
             }
             UiDrawCommand text = base;
             text.type = UiDrawCommand::Type::Text;
@@ -428,7 +587,7 @@ void UiSystem::update(ecs::World& world, float width, float height, const UiInpu
             if (focused && std::fmod(time, 1.0f) < 0.55f) text.text += "|";
             text.color = empty ? Vec4{0.55f, 0.55f, 0.6f, 1.0f} : rgba(field->text_color, 1.0f);
             if (empty && focused) text.text = std::fmod(time, 1.0f) < 0.55f ? "|" : "";
-            draw_.push_back(text);
+            out.push_back(text);
         }
         if (const Toggle* toggle = e.tryGet<Toggle>()) {
             const float side = std::min(r.w, r.h);
@@ -436,14 +595,14 @@ void UiSystem::update(ecs::World& world, float width, float height, const UiInpu
             box.rect = UiRect{r.x, r.y + (r.h - side) * 0.5f, side, side};
             box.color = rgba(toggle->box, 1.0f);
             box.radius = side * 0.2f;
-            draw_.push_back(box);
+            out.push_back(box);
             if (toggle->on) {
                 UiDrawCommand mark = box;
                 const float inset = side * 0.22f;
                 mark.rect = UiRect{box.rect.x + inset, box.rect.y + inset, side - inset * 2.0f, side - inset * 2.0f};
                 mark.color = rgba(toggle->check, 1.0f);
                 mark.radius = side * 0.12f;
-                draw_.push_back(mark);
+                out.push_back(mark);
             }
         }
         if (const Text* text = e.tryGet<Text>()) {
@@ -456,11 +615,11 @@ void UiSystem::update(ecs::World& world, float width, float height, const UiInpu
             c.v_align = static_cast<int>(text->v_align);
             c.wrap = text->wrap;
             c.shadow = text->shadow;
-            draw_.push_back(c);
+            out.push_back(c);
         }
         // Caja de dialogo (gameplay/DialogueUi.cpp): el dialogo que corre.
         if (const gameplay::DialogueBox* box = e.tryGet<gameplay::DialogueBox>()) {
-            if (gameplay::updateDialogueBox(*box, r, s, input, interactive, l.entity, draw_)) capturing_mouse_ = true;
+            if (gameplay::updateDialogueBox(*box, r, s, input, interactive, l.entity, out)) capturing_mouse_ = true;
         }
     }
 }

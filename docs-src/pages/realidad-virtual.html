@@ -8,18 +8,127 @@
 
 <h3 id="activar">Activarla</h3>
 <ul>
+  <li><strong>En el editor</strong>: el botón <strong>Play on VR</strong>, al lado de Play. Conecta el casco, entra en Play y
+    el juego se ve en el casco (la ventana sigue con la vista del editor). <strong>Stop VR</strong> para y suelta el casco
+    (SteamVR o Meta vuelven a su casa). El Play normal nunca toca el casco. No hace falta reabrir el editor; si alguna vez
+    hace falta (el casco en otra GPU, en portátiles con dos), la ventana del error ofrece <em>Guardar y reabrir con el
+    casco</em>.</li>
   <li><strong>Juego exportado</strong>: en <em>Archivo &gt; Configuraciones de compilación</em>, marca
     <strong>Realidad virtual (OpenXR)</strong> (escribe <code>vr=1</code> en <code>game.ini</code>). Al abrir el juego busca el
     casco; si no hay, arranca normal.</li>
-  <li><strong>En el editor</strong>: <em>Editar &gt; Play en realidad virtual (OpenXR)</em>. Se aplica al volver a abrir el
-    editor (Vulkan se crea en la GPU a la que está conectado el casco). Desde entonces, al darle a Play el juego se ve en el
-    casco; fuera de Play el casco no se toca. El tooltip del menú dice qué casco encontró o por qué no.</li>
 </ul>
+
+<h3 id="runtime">Qué runtime de OpenXR se usa</h3>
 <p>
-  Antes de abrir el juego, el runtime tiene que estar en marcha y ser el <em>activo</em> (SteamVR: Ajustes &gt; OpenXR &gt;
-  "Establecer SteamVR como runtime de OpenXR"; Meta: la app de Meta Quest Link con "OpenXR runtime" activo). El registro
-  (<code>%LOCALAPPDATA%/Cramion/Logs</code>) dice <code>[VR] ...</code> con el casco, el runtime y la resolución por ojo, o el
-  motivo si no pudo.
+  Windows tiene <strong>un</strong> runtime de OpenXR activo (el último programa que lo pidió: SteamVR, la app de Meta...), y
+  no tiene por qué ser el que ve el casco. Ejemplo típico: un <strong>Quest por Steam Link o Virtual Desktop</strong> está en
+  SteamVR, pero el runtime activo es el de Meta (lo pone la app de Meta Horizon Link), que solo ve el Quest con Quest Link o
+  Air Link. Los juegos de OpenVR (VRChat...) van siempre a SteamVR y funcionan; los de OpenXR no encontrarían el casco.
+</p>
+<p>Por eso Cramion prueba varios, en este orden (<em>Editar &gt; Runtime de OpenXR (VR)</em>, como el "Play Mode OpenXR Runtime" de Unity):</p>
+<table>
+  <thead><tr><th>Opción</th><th>Qué hace</th></tr></thead>
+  <tbody>
+    <tr><td><strong>Automático</strong> (por defecto)</td><td>SteamVR si está abierto; si no, el activo de Windows; si ese no ve el casco, Meta. Usa el primero que ve un casco.</td></tr>
+    <tr><td>SteamVR</td><td>Solo SteamVR; si está cerrado lo abre y espera al casco (hasta 15 s).</td></tr>
+    <tr><td>Meta Quest Link (Oculus)</td><td>Solo el de Meta (Quest Link por cable o Air Link).</td></tr>
+    <tr><td>El de Windows</td><td>Solo el activo (o el de <code>XR_RUNTIME_JSON</code> si lo pones tú): lo que haría cualquier juego de OpenXR.</td></tr>
+  </tbody>
+</table>
+<p>
+  En el juego exportado se elige con <code>vr_runtime=auto|steamvr|meta|system</code> en <code>game.ini</code> (sin la línea:
+  automático). Si no encuentra el casco, la ventana de Play on VR (y el registro, <code>[VR] ...</code>) dice qué pasó con cada
+  runtime, por ejemplo <em>"Meta: no ve ningún casco (Quest Link o Air Link no está conectado)"</em>.
+</p>
+<div class="note">
+  <strong>Quest por Steam Link / Virtual Desktop</strong>: abre SteamVR con el casco conectado <em>antes</em> de dar a Play on VR
+  (con Automático se usa SteamVR solo si está abierto), o elige el runtime <em>SteamVR</em>. Otra opción, para todos los
+  juegos de OpenXR: en SteamVR, <em>Ajustes &gt; OpenXR &gt; Establecer SteamVR como runtime de OpenXR</em>.
+</div>
+
+<h3 id="camara">Una cámara por ojo</h3>
+<p>
+  Como en Unreal, cada ojo es una cámara: se dibuja desde su sitio (la distancia entre los ojos la da el casco) y con su campo
+  de visión, así que hay <strong>profundidad y tamaño reales</strong>. Los dos ojos son vistas principales del render, con lo
+  mismo que se ve en el motor (TAA, trazado de rayos, SSR, GI, post-proceso, auto-exposición), a la <strong>resolución del
+  casco</strong> (la que recomienda el runtime, por la escala de resolución de <em>Configuración gráfica</em>), y cada ojo
+  lleva <strong>su propia historia temporal</strong> (TAA, reflejos, luz rebotada), como el estado de vista por ojo de Unreal.
+  Lo que es del frame se hace una vez: las sombras (con una cámara que cubre los dos ojos), el cielo, las simulaciones, la
+  exposición. La ventana hace de espejo (el último ojo).
+</p>
+<ul>
+  <li>Con FSR 3 o DLSS elegidos, en VR se escala con el TAA del motor: sus SDK guardan la historia de una sola vista.</li>
+  <li>En VR se quitan el motion blur, la profundidad de campo, la distorsión de lente, la aberración cromática y el grano.</li>
+  <li><em>Editar &gt; VR: una cámara por ojo (estéreo)</em> desactivado, o <code>vr_mono=1</code> en <code>game.ini</code>: una
+    sola imagen para los dos ojos. Cuesta la mitad, pero sin profundidad todo parece lejano y gigante.</li>
+</ul>
+<div class="note">
+  <strong>De pie y el suelo</strong>: <em>De pie</em> usa el suelo de la habitación que da el runtime (STAGE: el Guardian del
+  Quest, la sala de SteamVR). Si el runtime no lo da, la cabeza se pone a la <em>Altura de la cabeza</em> del XR Origin (1,6 m)
+  en vez de quedar a ras del suelo; el registro dice <code>[VR] Suelo del casco: ...</code>.
+</div>
+
+<h3 id="jugador">Jugador VR en primera persona (con física)</h3>
+<p>
+  <em>GameObject &gt; Realidad virtual &gt; Jugador VR</em> crea un XR Origin con un <strong>Character Controller</strong> y el
+  componente <strong>XR Player</strong>: el jugador tiene cápsula, gravedad, sube escalones, choca con las paredes y empuja
+  objetos, como el Character Controller de siempre (velocidades y salto en ese componente).
+</p>
+<table>
+  <thead><tr><th>Mando</th><th>Acción</th></tr></thead>
+  <tbody>
+    <tr><td>Stick izquierdo</td><td>Andar (hacia donde mira la cabeza o apunta la mano izquierda); pulsado, correr</td></tr>
+    <tr><td>Stick derecho</td><td>Girar por pasos (45°) o suave; sentado, abajo para agacharse</td></tr>
+    <tr><td>A (derecho)</td><td>Saltar</td></tr>
+  </tbody>
+</table>
+<p>
+  <strong>De pie</strong> (<em>Origen del seguimiento: De pie</em> en el XR Origin): andar de verdad por la habitación mueve la
+  cápsula chocando (la cámara no atraviesa paredes) y agacharse de verdad agacha la cápsula. <strong>Sentado</strong>: la cabeza
+  va a la <em>Altura de la cabeza</em> del XR Origin sobre la cápsula.
+</p>
+
+<h3 id="coger">Coger y lanzar objetos (XR Interactor y XR Grabbable)</h3>
+<p>
+  Como el XR Interaction Toolkit de Unity. <strong>XR Interactor</strong> va en cada mano (la entidad con XR Controller; el
+  Jugador VR y el XR Origin del menú ya lo traen) y <strong>XR Grabbable</strong> en los objetos, con un
+  <code>Rigidbody</code> y un collider:
+</p>
+<table>
+  <thead><tr><th>Mando</th><th>Qué hace</th></tr></thead>
+  <tbody>
+    <tr><td>Agarre</td><td>Coge lo que toca la mano (<em>Radio de la mano</em>) o, si nada, lo que apunta el rayo (viene a la
+      mano). Al soltarlo sale con la velocidad de la mano: se lanza.</td></tr>
+    <tr><td>Gatillo</td><td>Pulsa la UI en el mundo que apunta el rayo (botones, casillas, sliders).</td></tr>
+  </tbody>
+</table>
+<ul>
+  <li><strong>Movimiento</strong> del objeto mientras se sostiene: <em>Velocidad</em> (por la física: choca con mesas y paredes y
+    empuja lo demás) o <em>Instantáneo</em> (pegado a la mano).</li>
+  <li><strong>A la mano por su punto de agarre</strong>: herramientas y pistolas se colocan siempre igual (posición y giro respecto
+    a la mano); si no, se coge por donde se toca.</li>
+  <li>El <strong>rayo</strong> se ve como un láser hasta lo primero que corta (su material en el XR Interactor). Vibra al coger y
+    al pulsar la UI.</li>
+  <li>Lo que se coge <strong>no choca con el cuerpo del jugador</strong> (la cápsula del XR Player): al acercarlo no te empuja y al
+    andar no lo arrastras. Para que choque, activa <em>Chocar con lo que se coge</em> en el XR Player. Para cualquier otra
+    pareja: <code>Physics.ignoreCollision(a, b)</code> (como <code>Physics.IgnoreCollision</code> de Unity).</li>
+</ul>
+
+<h3 id="ui">UI en el mundo</h3>
+<p>
+  La UI de la pantalla no se ve en el casco. Para VR, pon el <code>Canvas</code> en <strong>Modo: Mundo (VR)</strong>: es un
+  panel en la escena (como World Space en Unity), de <em>Resolución de referencia / Píxeles por metro</em> metros, centrado en
+  su entidad y de cara a su +Z. Se ve en el casco, en la vista Escena y en el juego; se usa con el rayo de las manos y el
+  gatillo, y sus eventos van a los scripts igual que en la pantalla (en C++, <code>on("OnJugar", ...)</code>). Se dibuja
+  después del tono (no le cambian la exposición ni el bloom) y lo de delante lo tapa. Ver <a href="ui.html">Interfaz</a>.
+</p>
+
+<h3 id="plantilla">Plantilla de VR</h3>
+<p>
+  <em>Nuevo proyecto &gt; Realidad virtual (VR)</em> (como la VR Template de Unity): el Jugador VR con física, una mesa con
+  cubos, una lata y una linterna que alumbra (con punto de agarre), pelotas para tirarle a un muro de cajas y un panel de UI en
+  el mundo (reiniciar objetos, giro suave y velocidad) con su script de C++ <code>MenuVR.h</code> + <code>MenuVR.cpp</code>.
+  Sin casco, Play la deja ver desde el jugador y <code>WASD</code> lo mueve.
 </p>
 
 <h3 id="rig">El XR Origin (rig)</h3>
@@ -128,7 +237,9 @@ return Andar</code></pre>
 
 <h3 id="rendimiento">Rendimiento</h3>
 <p>
-  En VR se dibuja la escena tres veces por frame (dos ojos y el espejo) y el casco marca el ritmo (72–144 Hz), así que la
-  ventana va sin vsync. Si va justo, baja la calidad en <em>Configuración gráfica</em> o desde Lua con <code>Graphics</code>
+  En VR la escena se dibuja una vez por ojo (la ventana enseña la imagen del último, sin dibujar otra vez) y el casco marca el
+  ritmo (72–144 Hz), así que la ventana va sin vsync. Si no llega a los Hz del casco, el runtime repite frames y al mover la
+  cabeza todo tiembla: por eso en VR la resolución adaptativa va siempre, con los Hz del casco como objetivo (mide el frame
+  entero: los dos ojos, sombras y cielo incluidos). Si va justo, baja la calidad en <em>Configuración gráfica</em> o desde Lua con <code>Graphics</code>
   (resolución interna, sombras, nubes), y usa LODs. El <code>Profiler</code> sigue funcionando en la ventana.
 </p>

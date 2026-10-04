@@ -14,6 +14,7 @@
 #include "CramionFX/vk/OverlayPass.h"
 #include "CramionFX/vk/ParticlePass.h"
 #include "CramionFX/vk/SpritePass.h"
+#include "CramionFX/vk/WorldUiPass.h"
 #include "CramionFX/vk/FirePass.h"
 #include "CramionFX/vk/PrecipitationPass.h"
 #include "CramionFX/vk/TerrainPass.h"
@@ -63,6 +64,9 @@
 namespace cramion::scene {
 class Camera;
 class Scene;
+}
+namespace cramion::asset {
+struct ImageRgba8;
 }
 namespace cramion::gfx {
 
@@ -601,6 +605,9 @@ public:
     // legible como textura (SHADER_READ_ONLY_OPTIMAL) durante el overlay.
     // Cambia al redimensionar: sceneImageGeneration() avisa de ello.
     VkImageView sceneImageView() const { return *ldr_color_.view(); }
+    // Copia a la CPU la ultima imagen terminada (la de sceneImageView(): con
+    // tono y gamma, RGBA8). Espera a la GPU: para pruebas y capturas.
+    bool readSceneImage(asset::ImageRgba8& image);
 
     // --- Terrenos (TerrainPass.h) ---
     // Mapa de alturas `resolution` x `resolution` (0..1) y pesos de las capas
@@ -710,13 +717,50 @@ public:
 
     // --- Realidad virtual (OpenXR) ---
     // Con EngineInfo::enable_xr y un casco conectado. xr().beginFrame() al
-    // empezar el frame (antes de la logica); luego renderXrEye() por ojo con
-    // la camara de ese ojo (o clearXrEye() si no tiene) y xr().endFrame().
+    // empezar el frame (antes de la logica); luego renderXrStereo() con las
+    // camaras de los dos ojos (o clearXrEye() si no hay) y xr().endFrame().
     xr::XrSystem& xr() { return xr_; }
     const xr::XrSystem& xr() const { return xr_; }
     bool xrAvailable() const { return xr_.available(); }
+    // Conectar el casco con Vulkan ya creado (Play en VR sin reabrir):
+    // xr().createInstance(...) primero (puede ir en otro hilo; tarda si
+    // SteamVR arranca), luego connectXrSession() en el hilo del render. Falla
+    // si el casco pide una GPU o extensiones que este Vulkan no tiene (hay que
+    // crearlo con EngineInfo::enable_xr): `needs_restart` lo dice.
+    bool connectXrSession(std::string* error, bool* needs_restart = nullptr);
+    // Suelta el casco (espera a la GPU y cierra la sesion de VR).
+    void stopXr();
+    const std::string& xrAppName() const { return xr_app_name_; }
+    int xrRuntimeChoice() const { return xr_runtime_choice_; }
+    // Un ojo como vista secundaria aislada (sin historias ni trazado de
+    // rayos). Para vistas sueltas; el casco usa renderXrStereo().
     void renderXrEye(const scene::Scene& scene, const scene::Camera& camera, int eye);
     void clearXrEye(int eye);
+    // Una camara por ojo (como Unreal): los dos ojos son vistas principales
+    // (TAA, trazado de rayos, SSR, GI, post-proceso: lo mismo que en el motor)
+    // a la resolucion del casco, cada una con su propia historia temporal. Lo
+    // que es del frame (sombras, simulaciones, cielo, exposicion, tiempo) lo
+    // hace el primer ojo y el segundo lo reutiliza. `center`: la camara entre
+    // los dos ojos que los cubre a ambos (xr().centerView()): las cascadas de
+    // sombra salen de ella. La ventana pasa a ser el espejo.
+    void renderXrStereo(const scene::Scene& scene, const std::array<scene::Camera, 2>& eyes,
+                        const scene::Camera& center);
+    // Estereo emulado (como -emulatestereo de Unreal): sin casco, los dos ojos
+    // se dibujan igual que con el (estado temporal por ojo, lo del frame una
+    // vez, espejo) pero sin imagenes de OpenXR. Para probar el render en
+    // estereo (cramion_stereo_check). Las historias del ojo derecho se crean
+    // en el siguiente applyPendingResize(); despues, renderStereoEmulated()
+    // con los dos ojos y drawFrame() presenta el ultimo.
+    void setStereoEmulation(bool on);
+    bool stereoEmulation() const { return stereo_emulation_; }
+    void renderStereoEmulated(const scene::Scene& scene, const std::array<scene::Camera, 2>& eyes,
+                              const scene::Camera& center);
+    // Una sola camara para los dos ojos (como la camara del jugador de
+    // Unreal): se dibuja UNA vez, como la vista principal (TAA/DLSS/FSR, RT,
+    // historias, auto-exposicion: lo mismo que se ve en el motor), a la
+    // resolucion del casco, y la imagen va a los dos ojos. La ventana pasa a
+    // ser el espejo (vista secundaria). `camera`: la de xr().centerView().
+    void renderXrMono(const scene::Scene& scene, const scene::Camera& camera);
 
     // --- Escaladores de los fabricantes (TemporalUpscalers.h) ---
     // AMD FSR 3.1 (cualquier GPU; necesita amd_fidelityfx_vk.dll junto al
@@ -727,6 +771,12 @@ public:
     const std::string& upscalerStatus() const { return upscaler_status_; }
     // El que esta escalando de verdad (FSR 3 / DLSS, o TAA si no se pudo).
     Upscaler activeUpscaler() const;
+
+    // --- UI en el mundo (Canvas en modo Mundo, la de VR) ---
+    // Lo que la aplicacion pinta de cada canvas (geometria de ImGui) y donde va
+    // su panel. Se pinta en la siguiente vista y se dibuja en todas (ojos de
+    // VR, vista de juego, Render Textures). Vacio = sin UI en el mundo.
+    void setWorldUi(std::vector<WorldUiCanvas> canvases) { world_ui_pass_.setCanvases(std::move(canvases)); }
 
     // --- Render Textures (como los RenderTexture de Unity) ---
     // Una textura que se rellena con lo que ve una camara (Target Texture) y
@@ -917,6 +967,7 @@ private:
     void recordPickPass(const vk::raii::CommandBuffer& cmd, std::uint32_t frame_index);
     // Gizmos 3D (overlay_geometry_) sobre la imagen compuesta, con profundidad.
     void recordOverlayPass(const vk::raii::CommandBuffer& cmd, std::uint32_t frame_index);
+    void recordWorldUiPass(const vk::raii::CommandBuffer& cmd, std::uint32_t frame_index);
     void recordPostProcessPass(const vk::raii::CommandBuffer& cmd, std::uint32_t image_index);
 
     // Subsistemas, declarados en orden de creacion (se destruyen al reves).
@@ -1251,6 +1302,7 @@ private:
     OverlayCallback overlay_;
     OverlayGeometry overlay_geometry_;
     OverlayPass overlay_pass_{};
+    WorldUiPass world_ui_pass_{};
     // Texturas de la interfaz.
     std::unordered_map<std::uint32_t, VulkanTexture> ui_textures_;
     std::uint32_t next_ui_texture_ = 1;
@@ -1296,6 +1348,8 @@ private:
     // VR: drawFrame dibuja para el ojo xr_eye_target_ (0/1) y copia a esa imagen
     // de la swapchain de OpenXR (pasando por xr_staging_, del tamano del ojo).
     xr::XrSystem xr_;
+    std::string xr_app_name_ = "Cramion";
+    int xr_runtime_choice_ = 0;
     // FSR 3.1 y DLSS 4: sus contextos se rehacen con los destinos (otro
     // tamano, otro escalador). Vectores de movimiento completos (con el cielo)
     // a la resolucion interna.
@@ -1316,6 +1370,67 @@ private:
     void recordVendorUpscale(const vk::raii::CommandBuffer& cmd);
     int xr_eye_target_ = -1;
     VkImage xr_target_image_ = VK_NULL_HANDLE;
+    // Una camara: la misma imagen tambien al otro ojo.
+    VkImage xr_mono_second_image_ = VK_NULL_HANDLE;
+    // xr_view_frame_: este drawFrame es una vista del casco (la principal); en
+    // estereo, del ojo xr_view_eye_. xr_views_active_: se dibujaron las del
+    // casco este frame (la ventana solo enseña la ultima, como espejo).
+    bool xr_view_frame_ = false;
+    bool xr_stereo_view_ = false;
+    int xr_view_eye_ = 0;
+    bool xr_views_active_ = false;
+    bool xr_eye_recorded_ = false;  // el drawFrame del ojo llego a grabarse
+    // El segundo ojo del frame: reutiliza sombras, cielo, simulaciones,
+    // exposicion y el tiempo del primero.
+    bool xrSecondEye() const { return xr_view_frame_ && xr_stereo_view_ && xr_view_eye_ == 1; }
+    // Hay vistas de casco (de verdad o emuladas): la ventana es su espejo.
+    bool stereo_emulation_ = false;
+    bool xrViewsMode() const { return xr_.running() || stereo_emulation_; }
+    void renderStereoViews(const scene::Scene& scene, const std::array<scene::Camera, 2>& eyes,
+                           const scene::Camera& center, bool headset);
+    // Las cascadas de sombra y las luces locales, de la camara que cubre los
+    // dos ojos (no de cada ojo).
+    const scene::Camera* shadow_camera_override_ = nullptr;
+    // Estado temporal del ojo derecho (el FSceneViewState de cada ojo en
+    // Unreal): sus historias del TAA, del SSR y de la GI y su vista-proyeccion
+    // anterior. Mientras se dibuja el ojo derecho esta cambiado con el de los
+    // miembros (swapEyeState) y se usan los descriptor sets del ojo 1.
+    struct XrEyeState {
+        VulkanImage taa_history;
+        VulkanImage ssr_history;
+        VulkanImage gi_history;
+        VulkanImage gi_moments_history;
+        bool taa_valid = false;
+        bool ssr_valid = false;
+        bool gi_valid = false;
+        core::Mat4 motion_view_projection = core::Mat4::identity();
+    };
+    XrEyeState xr_eye1_;
+    bool eye_state_swapped_ = false;
+    void swapEyeState();
+    bool xrEyeStateReady() const;
+    std::uint32_t eyeSet() const { return eye_state_swapped_ ? 1u : 0u; }
+    void createXrEyeTargets(vk::Extent2D render, vk::Extent2D output);
+    // La vista-proyeccion anterior de ESTA vista (los filtros temporales de la
+    // GI y del SSR reproyectan su historia con ella). previous_view_projection_
+    // es la de la ultima vista dibujada (la imagen HDR anterior es de esa).
+    core::Mat4 history_view_projection_ = core::Mat4::identity();
+    // Numero de frame para el ruido que el TAA promedia: el mismo en los dos ojos.
+    std::uint64_t noise_frame_ = 0;
+    // VR estereo con FSR 3 / DLSS elegidos: se escala con el TAA del motor
+    // (su historia es por ojo; la de los SDK, de una sola vista).
+    bool xr_forced_taa_ = false;
+    bool mirror_only_ = false;  // este frame de la ventana solo copia la imagen del casco
+    std::chrono::steady_clock::time_point last_xr_view_time_{};
+    // De que ojo son los tiempos de GPU que guarda cada hueco de frame (-1:
+    // de otra vista). El presupuesto en VR suma los dos ojos del mismo frame
+    // (el primero lleva sombras y cielo); el espejo de la ventana no mide.
+    std::array<int, kMaxFramesInFlight> slot_xr_eye_{-1, -1};
+    float xr_right_eye_gpu_ms_ = 0.0f;
+    bool xr_budget_applied_ = false;
+    // Con el casco en marcha la escena se dibuja al tamano de su ojo (no al de
+    // la ventana): applyPendingResize lo cambia.
+    vk::Extent2D xr_output_extent_{0, 0};
     bool xr_copied_ = false;
     std::array<VulkanImage, 2> xr_staging_{};
     void createXrStaging();
@@ -1619,6 +1734,10 @@ private:
     };
     std::vector<core::Mat4> last_world_bones_;
     std::vector<BoneRange> last_bone_ranges_;
+    // VR estereo: los del frame anterior tambien para el segundo ojo (el
+    // movimiento de los objetos es el mismo en los dos).
+    std::vector<core::Mat4> stereo_last_world_bones_;
+    std::vector<BoneRange> stereo_last_bone_ranges_;
     std::uint32_t motion_offset_ = 0;
     // La imagen que lee el post-proceso: la escalada o la de la escena.
     const VulkanImage& postSource() const { return upscaling_ ? upscaled_color_ : scene_color_; }

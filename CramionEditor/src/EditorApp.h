@@ -82,10 +82,15 @@
 
 namespace cramion::editor {
 
-// Editar > Play en realidad virtual (se guarda para el usuario; lo lee
-// main.cpp antes de crear Vulkan).
+// Editar > Realidad virtual (EditorVR.ini del usuario; main.cpp lo lee antes
+// de crear Vulkan): preparar Vulkan para el casco al abrir, y que runtime de
+// OpenXR usar (xr::RuntimeChoice).
 bool xrPlayPreference();
 void setXrPlayPreference(bool on);
+int xrRuntimePreference();
+void setXrRuntimePreference(int choice);
+bool xrStereoPreference();  // VR con una imagen por ojo (si no, una camara para los dos)
+void setXrStereoPreference(bool on);
 
 class RendererGraphicsHost;
 struct PlatformState;  // EditorPlatform.cpp: Steam, Git, pruebas automaticas y avisos
@@ -488,6 +493,11 @@ private:
     // --- Scripting y audio (EditorScripting.cpp) ---
 public:
     void setInput(const dm::Input* input) { input_ = input; }
+    // --play-vr: al terminar de abrir el proyecto, Play en el casco.
+    void requestVrPlayOnStart() { pending_vr_play_ = true; }
+    // Al cerrar, antes de renderer.shutdown(): espera a la busqueda del casco
+    // (si hay una) y lo suelta.
+    void shutdownXr();
     // Realidad virtual en Play (EditorXr.cpp), desde el bucle de main.cpp:
     // beginXrFrame antes de la interfaz y la logica, renderXrEyes despues de
     // syncWorld y endXrFrame despues de drawFrame.
@@ -741,6 +751,8 @@ private:
 
     // --- Interfaz del juego (EditorUI.cpp) ---
     void drawGameUi(ImVec2 origin, ImVec2 size);
+    void updateWorldUi();     // Canvas en modo Mundo (VR): cada frame
+    void dispatchUiEvents();  // eventos de la UI a los scripts
     ecs::Entity uiParentForNewElement();
     ecs::Entity createUiElement(int kind);  // 0 Canvas, 1 panel, 2 imagen, 3 texto, 4 boton, 5 slider, 6 campo, 7 casilla
     void drawUiCreateMenu();
@@ -1117,10 +1129,29 @@ private:
     ecs::Entity createPostVolume(int shape, ecs::Entity parent);  // 0 global, 1 caja, 2 esfera
     // --- Realidad virtual (EditorXr.cpp) ---
     ecs::Entity createXrOrigin(ecs::Entity parent);
+    ecs::Entity createXrPlayer(ecs::Entity parent);  // XR Origin con CharacterController y XrPlayer
     void drawXrMenu();
     xr::XrRig xr_rig_;
     bool xr_frame_ = false;
     bool xr_play_preference_ = xrPlayPreference();
+    int xr_runtime_preference_ = xrRuntimePreference();  // xr::RuntimeChoice
+    bool xr_stereo_preference_ = xrStereoPreference();
+    bool play_vr_ = false;          // este Play va al casco (boton Play on VR)
+    bool pending_vr_play_ = false;  // reiniciado con --play-vr: Play en VR al cargar
+    // Play on VR conecta el casco en otro hilo (SteamVR puede tardar en
+    // abrir): mientras tanto nadie toca renderer_.xr().
+    std::future<bool> xr_connect_;
+    bool xr_connect_then_play_ = false;
+    std::string xr_status_;                 // por que no se pudo conectar (ventana de Play on VR)
+    bool xr_status_needs_restart_ = false;  // el casco pide otro Vulkan: reabrir
+    bool xr_status_popup_ = false;          // abrir esa ventana en el proximo frame
+    bool xrConnecting() const { return xr_connect_.valid(); }
+    void startXrConnect(bool then_play);
+    void finishXrConnect();
+    void drawXrStatusPopup();
+    void drawPlayVrButton(float height);
+    void enterPlayVr();
+    bool restartForVr();
     void drawPostVolumeGizmos();
     // Audio (EditorAudio.cpp): alcance, zonas de reverberacion y oclusion en Play.
     void drawAudioGizmos();

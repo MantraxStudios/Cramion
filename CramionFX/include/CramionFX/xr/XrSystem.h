@@ -74,6 +74,20 @@ enum class TrackingOrigin : std::uint8_t {
     Eyes,       // sentado: el 0 es donde estaba la cabeza al empezar
 };
 
+// Que runtime de OpenXR se usa (como el "Play Mode OpenXR Runtime" de Unity).
+// Windows tiene UNO activo (el ultimo que lo pidio: SteamVR, Meta...), y no
+// tiene por que ser el que ve el casco: un Quest por Steam Link o Virtual
+// Desktop esta en SteamVR aunque el activo sea el de Meta.
+enum class RuntimeChoice : std::uint8_t {
+    Auto = 0,  // SteamVR si esta abierto; si no, el de Windows; si no ve casco, Meta
+    SteamVR,   // lo abre si hace falta
+    Meta,      // Meta Quest Link / Air Link (Oculus)
+    System,    // el activo de Windows (o XR_RUNTIME_JSON)
+};
+const char* runtimeChoiceKey(RuntimeChoice choice);    // "auto", "steamvr", "meta", "system" (ini)
+const char* runtimeChoiceLabel(RuntimeChoice choice);  // para la interfaz
+RuntimeChoice runtimeChoiceFromKey(const std::string& key);  // desconocido -> Auto
+
 // Utilidades.
 core::Vec3 rotate(const core::Quat& q, const core::Vec3& v);
 core::Quat multiply(const core::Quat& a, const core::Quat& b);
@@ -91,15 +105,23 @@ public:
     // El motor se compilo con OpenXR (CRAMION_XR).
     static bool compiled();
 
-    // Paso 1. false: no hay runtime de OpenXR, no hay casco o no admite
-    // Vulkan (error() dice cual).
-    bool createInstance(const char* app_name);
+    // Paso 1. Prueba los runtimes de `choice` en orden hasta que uno vea un
+    // casco. false: ninguno (error() dice que paso con cada uno). Puede
+    // tardar (SteamVR arrancando): se puede llamar desde otro hilo si nadie
+    // mas usa este XrSystem mientras tanto.
+    bool createInstance(const char* app_name, RuntimeChoice choice = RuntimeChoice::Auto);
+    // El runtime activo de Windows ("Meta", "SteamVR"...; "" si no hay) y si
+    // SteamVR esta abierto: para explicar en la interfaz que se va a usar.
+    static std::string systemRuntimeLabel();
+    static bool steamVrRunning();
     std::vector<std::string> requiredInstanceExtensions() const;
     std::vector<std::string> requiredDeviceExtensions() const;
     VkPhysicalDevice physicalDevice(VkInstance instance) const;
     bool createSession(VkInstance instance, VkPhysicalDevice physical_device, VkDevice device, std::uint32_t queue_family,
                        std::uint32_t queue_index);
-    // Antes de destruir el dispositivo de Vulkan.
+    // Suelta el casco: pide al runtime cerrar la sesion (SteamVR vuelve a su
+    // casa sin quedarse esperando frames) y destruye todo. Con la GPU parada:
+    // antes de destruir el dispositivo de Vulkan o para dejar el casco.
     void shutdown();
 
     const std::string& error() const;
@@ -107,7 +129,7 @@ public:
     bool running() const;    // la sesion esta en marcha (el runtime nos deja dibujar)
     bool focused() const;    // el juego tiene los mandos (no esta el menu del sistema encima)
     bool exitRequested() const;  // el runtime pidio cerrar (se quito la app en el casco)
-    const std::string& runtimeName() const;
+    const std::string& runtimeName() const;  // el que dio el runtime ("SteamVR/OpenXR", "Oculus"...)
     const std::string& systemName() const;
     VkExtent2D eyeExtent() const;
     VkFormat swapchainFormat() const;
@@ -119,6 +141,19 @@ public:
     bool frameBegun() const;
     bool shouldRender() const;
     const EyeView& eye(int index) const;
+    // La vista entre los dos ojos, con el campo de vision de los dos juntos:
+    // la camara de las sombras (cubre los dos ojos) y, sin estereo, la unica.
+    EyeView centerView() const;
+    // Frecuencia de las pantallas del casco (72/90/120 Hz...; 90 si aun no se sabe).
+    float displayHz() const;
+    // Estereo (por defecto): una camara por ojo, como Unreal (cada ojo con su
+    // propia historia temporal). false: una sola imagen para los dos ojos
+    // (mitad de coste, pero sin profundidad: todo parece lejos y grande).
+    void setStereo(bool stereo);
+    bool stereo() const;
+    // El runtime da el suelo de la habitacion (espacio STAGE). Sin el, "de
+    // pie" no sabe la altura de la cabeza: el rig la pone a la del XR Origin.
+    bool floorAvailable() const;
     const Pose& head() const;
     const Controller& controller(Hand hand) const;
 

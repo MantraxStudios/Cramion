@@ -237,7 +237,9 @@ void march(int z, vec3 ro, vec3 rd, float t_start, float t_end, float jitter, in
 
 void main() {
     vec2 ndc = v_uv * 2.0 - 1.0;
-    vec3 view_ray = vec3(ndc.x / camera.projection[0][0], ndc.y / camera.projection[1][1], -1.0);
+    // Con el desplazamiento del centro (ojos de VR asimetricos, jitter del TAA).
+    vec3 view_ray = vec3((ndc.x + camera.projection[2][0]) / camera.projection[0][0],
+                         (ndc.y + camera.projection[2][1]) / camera.projection[1][1], -1.0);
     vec3 ray = transpose(mat3(camera.view)) * view_ray;
     float ray_scale = length(ray);
     vec3 rd = ray / ray_scale;

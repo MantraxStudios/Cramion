@@ -38,11 +38,14 @@ public:
 
     void begin(const vk::raii::CommandBuffer& cmd, std::uint32_t frame);
     void mark(const vk::raii::CommandBuffer& cmd, std::uint32_t frame, const char* name);
-    void collect(std::uint32_t frame);
+    // true si habia resultados nuevos de ese hueco (se grabo con begin()).
+    bool collect(std::uint32_t frame);
 
     // Pasadas en el orden del frame, en milisegundos (medias).
     const std::vector<GpuTiming>& timings() const { return timings_; }
     float totalMilliseconds() const { return total_ms_; }
+    // El total de lo ultimo recogido, sin media (VR: el de un ojo).
+    float lastTotalMilliseconds() const { return last_total_ms_; }
 
 private:
     struct FrameMarks {
@@ -54,6 +57,7 @@ private:
     std::vector<FrameMarks> frames_;
     std::vector<GpuTiming> timings_;
     float total_ms_ = 0.0f;
+    float last_total_ms_ = 0.0f;
     double period_ns_ = 1.0;
     std::uint64_t valid_mask_ = ~0ull;
     bool supported_ = false;

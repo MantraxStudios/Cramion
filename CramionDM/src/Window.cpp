@@ -103,6 +103,14 @@ bool Window::create(const WindowConfig& config) {
                      SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
     }
 
+    if (!config.visible) {
+        // Sin mostrarla no llega WM_SIZE: el tamano, del area cliente.
+        RECT client{};
+        GetClientRect(hwnd_, &client);
+        width_ = static_cast<uint32_t>(client.right - client.left);
+        height_ = static_cast<uint32_t>(client.bottom - client.top);
+        return true;
+    }
     // Maximizada: WM_SIZE (dentro de ShowWindow) ya deja width_/height_ con el
     // tamano real antes de que nadie cree la swapchain.
     ShowWindow(hwnd_, config.maximized && config.resizable ? SW_SHOWMAXIMIZED : SW_SHOW);

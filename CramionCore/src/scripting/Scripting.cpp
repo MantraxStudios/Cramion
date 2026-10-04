@@ -3031,6 +3031,10 @@ struct ScriptSystem::Impl {
             result["distance"] = hit.distance;
             return result;
         };
+        // Que dos objetos no choquen (como Physics.IgnoreCollision de Unity).
+        ph["ignoreCollision"] = [this](const LuaEntity& a, const LuaEntity& b, sol::optional<bool> ignore) {
+            if (physics != nullptr) physics->ignoreCollision(a.get(), b.get(), ignore.value_or(true));
+        };
 
         // Navigation: consultas de la malla.
         sol::table nav = L.create_named_table("Navigation");

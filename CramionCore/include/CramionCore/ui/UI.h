@@ -15,18 +15,26 @@
 // lista de dibujo que pinta el editor (vista Juego) o el juego exportado; los
 // eventos (clic, valor cambiado, texto enviado) llaman a un metodo del script
 // del objeto elegido (o del propio control).
+//
+// Un Canvas en modo Mundo (como World Space de Unity) es un panel en la
+// escena: se ve en VR y en cualquier camara, y se usa con rayos (los mandos
+// de VR con XR Interactor: el gatillo es el clic). updateWorld() da su lista
+// de dibujo a su propia resolucion; la aplicacion la pinta en una textura que
+// el render pone en el mundo.
 
 #include "CramionCore/ecs/Reflection.h"
 #include "CramionCore/ecs/World.h"
 
 #include <CramionFX/core/Math.h>
 
+#include <array>
 #include <string>
 #include <vector>
 
 namespace cramion::ui {
 
 enum class ScaleMode : int { ConstantPixelSize = 0, ScaleWithScreen = 1 };
+enum class RenderMode : int { ScreenSpace = 0, WorldSpace = 1 };
 enum class HAlign : int { Left = 0, Center = 1, Right = 2 };
 enum class VAlign : int { Top = 0, Middle = 1, Bottom = 2 };
 
@@ -35,6 +43,10 @@ struct Canvas {
     ScaleMode scale_mode = ScaleMode::ScaleWithScreen;
     float match = 0.5f;  // 0 = ancho, 1 = alto
     int sort_order = 0;
+    // Mundo: un panel de reference / pixels_per_meter metros (por la escala de
+    // la entidad), centrado en ella y de cara a su +Z (X derecha, Y arriba).
+    RenderMode render_mode = RenderMode::ScreenSpace;
+    float pixels_per_meter = 1000.0f;
     void reflect(ecs::PropertyVisitor& v);
 };
 
@@ -155,6 +167,34 @@ struct UiInput {
     bool enter = false;
 };
 
+// Un rayo que usa la interfaz en el mundo (el de un mando de VR).
+struct UiPointer {
+    bool valid = false;
+    core::Vec3 origin{};
+    core::Vec3 direction{0.0f, 0.0f, -1.0f};
+    bool down = false;  // gatillo pulsado
+};
+
+// Donde corta un rayo a un Canvas en el mundo.
+struct UiPointerHit {
+    bool hit = false;
+    float distance = 0.0f;  // metros por el rayo
+    core::Vec3 point{};
+    entt::entity canvas = entt::null;
+    bool over_control = false;  // sobre un Button, Slider, Toggle o campo
+};
+
+// Lo que hay que pintar de un Canvas en el mundo: su lista de dibujo (en
+// pixeles de su resolucion de referencia) y donde va el panel.
+struct WorldCanvasDraw {
+    entt::entity canvas = entt::null;
+    float width = 0.0f;   // pixeles
+    float height = 0.0f;
+    core::Mat4 transform = core::Mat4::identity();  // centro y giro en el mundo (sin escala)
+    core::Vec2 size{};                              // metros
+    std::vector<UiDrawCommand> commands;
+};
+
 struct UiEvent {
     ecs::Entity source;  // el control
     ecs::Entity target;  // quien tiene el script
@@ -187,6 +227,15 @@ public:
     bool interactiveAt(const ecs::World& world, float x, float y) const;
     void reset();
 
+    // --- Canvas en el mundo (modo Mundo) ---
+    static constexpr std::size_t kMaxPointers = 2;
+    // Rectangulos, interaccion con los rayos (Button, Toggle, Slider) y la
+    // lista de dibujo de cada uno. Los eventos van con los de update().
+    void updateWorld(ecs::World& world, const std::array<UiPointer, kMaxPointers>& pointers, bool interactive,
+                     float time);
+    const std::vector<WorldCanvasDraw>& worldCanvases() const { return world_canvases_; }
+    const std::array<UiPointerHit, kMaxPointers>& pointerHits() const { return pointer_hits_; }
+
 private:
     struct Laid {
         entt::entity entity;
@@ -194,6 +243,21 @@ private:
         UiRect parent;
         float scale;
     };
+    // Que control tiene encima o pulsado cada puntero (el raton es el 0).
+    struct DrawState {
+        std::array<entt::entity, kMaxPointers> hovered{entt::null, entt::null};
+        std::array<entt::entity, kMaxPointers> pressed{entt::null, entt::null};
+        entt::entity focused = entt::null;
+    };
+    void layoutCanvas(ecs::World& world, const ecs::Entity& canvas, const UiRect& root, float scale,
+                      std::vector<Laid>& out) const;
+    void buildDraw(ecs::World& world, const std::vector<Laid>& laid, const DrawState& state, const UiInput& input,
+                   bool interactive, float time, std::vector<UiDrawCommand>& out);
+    ecs::Entity targetOf(ecs::World& world, ecs::Entity source, const Uuid& target) const;
+    // Clic de un Button o un Toggle; el valor de un Slider (t = 0..1 de su barra).
+    void activate(ecs::World& world, ecs::Entity control);
+    void setSlider(ecs::World& world, ecs::Entity control, float t);
+
     std::vector<Laid> laid_;
     std::vector<UiDrawCommand> draw_;
     std::vector<UiEvent> events_;
@@ -201,6 +265,15 @@ private:
     entt::entity dragging_ = entt::null;
     entt::entity focused_ = entt::null;
     bool capturing_mouse_ = false;
+
+    std::vector<WorldCanvasDraw> world_canvases_;
+    std::array<UiPointerHit, kMaxPointers> pointer_hits_{};
+    struct PointerState {
+        bool was_down = false;
+        entt::entity pressed = entt::null;
+        entt::entity dragging = entt::null;
+    };
+    std::array<PointerState, kMaxPointers> pointer_states_{};
 };
 
 // Rectangulo de un RectTransform dentro del de su padre (unidades del Canvas).

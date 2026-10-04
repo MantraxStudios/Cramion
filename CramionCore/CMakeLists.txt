@@ -416,3 +416,9 @@ target_link_libraries(cramion_docgen PRIVATE Cramion::Core)
 # Herramienta: tiempo de carga y conversion de clips (.cranim)
 add_executable(cramion_cliptime "${CMAKE_CURRENT_SOURCE_DIR}/tests/ClipTimingTool.cpp")
 target_link_libraries(cramion_cliptime PRIVATE Cramion::Core)
+
+# Herramienta: el render en estereo de VR sin casco (ventana invisible, capas
+# de validacion si estan). Junto al editor: usa su carpeta shaders/.
+add_executable(cramion_stereo_check "${CMAKE_CURRENT_SOURCE_DIR}/tools/StereoRenderCheck.cpp")
+target_link_libraries(cramion_stereo_check PRIVATE Cramion::Core)
+set_target_properties(cramion_stereo_check PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")

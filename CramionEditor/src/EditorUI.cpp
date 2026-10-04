@@ -20,11 +20,19 @@ namespace {
 constexpr ImU32 kSelection = IM_COL32(255, 160, 40, 255);
 }
 
-void EditorApp::drawGameUi(ImVec2 origin, ImVec2 size) {
-    const bool hovered = ImGui::IsWindowHovered();
+// UI en el mundo (Canvas en modo Mundo): cada frame, se vea o no la vista
+// Juego (sus paneles salen tambien en la vista Escena y en el casco). En Play
+// se usa con los rayos de las manos (XR Interactor).
+void EditorApp::updateWorldUi() {
     const bool running = play_state_ == PlayState::Playing;
-    const ui::UiInput input = uiInputFromImGui(origin, size, hovered && running, running && ui_.typing());
-    ui_.update(world_, size.x, size.y, input, running, static_cast<float>(ImGui::GetTime()));
+    ui_.updateWorld(world_, xr_rig_.uiPointers(), running, static_cast<float>(ImGui::GetTime()));
+    xr_rig_.setUiHits(ui_.pointerHits());
+    dispatchUiEvents();
+    renderer_.setWorldUi(buildWorldUi(ui_.worldCanvases(), imgui_, project_.assetsFolder()));
+}
+
+// Los eventos de la UI (clic, valor...) a los scripts de Lua y de C++.
+void EditorApp::dispatchUiEvents() {
     for (const ui::UiEvent& e : ui_.takeEvents()) {
         switch (e.kind) {
             case ui::UiEvent::Kind::Click: scripts_.callMethod(e.target, e.method, e.source); break;
@@ -40,6 +48,14 @@ void EditorApp::drawGameUi(ImVec2 origin, ImVec2 size) {
             case ui::UiEvent::Kind::Bool: cpp_scripts_.sendMessage(e.target, e.method, e.flag ? "true" : "false"); break;
         }
     }
+}
+
+void EditorApp::drawGameUi(ImVec2 origin, ImVec2 size) {
+    const bool hovered = ImGui::IsWindowHovered();
+    const bool running = play_state_ == PlayState::Playing;
+    const ui::UiInput input = uiInputFromImGui(origin, size, hovered && running, running && ui_.typing());
+    ui_.update(world_, size.x, size.y, input, running, static_cast<float>(ImGui::GetTime()));
+    dispatchUiEvents();
     ImDrawList* draw = ImGui::GetWindowDrawList();
     draw->PushClipRect(origin, ImVec2(origin.x + size.x, origin.y + size.y), true);
     drawUiList(draw, origin, ui_.drawList(), imgui_, project_.assetsFolder());

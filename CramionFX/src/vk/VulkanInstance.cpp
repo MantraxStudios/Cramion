@@ -21,7 +21,8 @@ bool contains(const std::vector<Properties>& list, const char* name, NameGetter 
 
 }  // namespace
 
-void VulkanInstance::initialize(const EngineInfo& info, const std::vector<std::string>& extra_extensions) {
+void VulkanInstance::initialize(const EngineInfo& info, const std::vector<std::string>& extra_extensions,
+                                const std::vector<std::string>& optional_extensions) {
     validation_enabled_ = info.enable_validation;
 
     // 1) Version de la API: se usa la mas alta que soporte el loader, con tope
@@ -35,7 +36,8 @@ void VulkanInstance::initialize(const EngineInfo& info, const std::vector<std::s
 
     // 2) Capas y extensiones.
     const std::vector<const char*> layers = selectLayers();
-    const std::vector<const char*> extensions = selectExtensions(extra_extensions);
+    const std::vector<const char*> extensions = selectExtensions(extra_extensions, optional_extensions);
+    enabled_extensions_.assign(extensions.begin(), extensions.end());
 
     // 3) Descripcion de la aplicacion.
     vk::ApplicationInfo app_info{};
@@ -84,7 +86,13 @@ std::vector<const char*> VulkanInstance::selectLayers() {
     return layers;
 }
 
-std::vector<const char*> VulkanInstance::selectExtensions(const std::vector<std::string>& extra) {
+bool VulkanInstance::extensionAvailable(const std::string& name) const {
+    const auto available = context_.enumerateInstanceExtensionProperties();
+    return contains(available, name.c_str(), [](const vk::ExtensionProperties& p) { return p.extensionName.data(); });
+}
+
+std::vector<const char*> VulkanInstance::selectExtensions(const std::vector<std::string>& extra,
+                                                          const std::vector<std::string>& optional) {
     const auto available = context_.enumerateInstanceExtensionProperties();
     const auto has = [&](const char* name) {
         return contains(available, name,
@@ -123,6 +131,14 @@ std::vector<const char*> VulkanInstance::selectExtensions(const std::vector<std:
             continue;
         }
         if (std::none_of(extensions.begin(), extensions.end(), [&](const char* e) { return name == e; })) {
+            extensions.push_back(name.c_str());
+        }
+    }
+    // Las de compartir imagenes con un runtime de VR, si existen: el casco se
+    // puede conectar despues (Play en VR) sin crear Vulkan otra vez.
+    for (const std::string& name : optional) {
+        if (has(name.c_str()) &&
+            std::none_of(extensions.begin(), extensions.end(), [&](const char* e) { return name == e; })) {
             extensions.push_back(name.c_str());
         }
     }

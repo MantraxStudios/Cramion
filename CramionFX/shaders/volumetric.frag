@@ -140,7 +140,11 @@ float linearDepth(float depth) {
 vec3 viewFromDepth(vec2 uv, float depth) {
     float z = linearDepth(depth);
     vec2 ndc = uv * 2.0 - 1.0;
-    return vec3(ndc.x * z / camera.projection[0][0], ndc.y * z / camera.projection[1][1], -z);
+    // Con el desplazamiento del centro ([2][0], [2][1]): cada ojo de un casco
+    // de VR tiene un campo de vision asimetrico (y el TAA mueve el centro con
+    // su jitter). Sin el, en VR todo salia desplazado y la luz se ennegrecia.
+    return vec3((ndc.x + camera.projection[2][0]) * z / camera.projection[0][0],
+                (ndc.y + camera.projection[2][1]) * z / camera.projection[1][1], -z);
 }
 
 // Matriz de Bayer 4x4: cada pixel de la ventana tiene un desplazamiento

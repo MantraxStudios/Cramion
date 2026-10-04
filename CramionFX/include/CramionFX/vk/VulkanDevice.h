@@ -31,10 +31,16 @@ public:
     VulkanDevice& operator=(const VulkanDevice&) = delete;
 
     // `required`: la GPU que pide OpenXR (la del casco); `extra_extensions`:
-    // las extensiones de dispositivo que pide.
+    // las extensiones de dispositivo que pide. `optional_extensions`: se
+    // activan si la GPU las tiene, sin avisar (compartir memoria con un
+    // runtime de VR: el casco se puede conectar despues).
     void initialize(const VulkanInstance& instance, const VulkanSurface& surface, VkPhysicalDevice required = VK_NULL_HANDLE,
-                    const std::vector<std::string>& extra_extensions = {});
+                    const std::vector<std::string>& extra_extensions = {},
+                    const std::vector<std::string>& optional_extensions = {});
     void shutdown();
+
+    const std::vector<std::string>& enabledExtensions() const { return enabled_extensions_; }
+    bool extensionAvailable(const std::string& name) const;  // la GPU la tiene (activada o no)
 
     const vk::raii::PhysicalDevice& physicalDevice() const { return physical_device_; }
     const vk::raii::Device& handle() const { return device_; }
@@ -137,7 +143,9 @@ private:
     bool memory_budget_supported_ = false;
     std::string device_name_;
     std::uint32_t api_version_ = 0;
-    std::vector<std::string> extra_extensions_;  // OpenXR
+    std::vector<std::string> extra_extensions_;     // OpenXR
+    std::vector<std::string> optional_extensions_;  // compartir memoria con un runtime de VR
+    std::vector<std::string> enabled_extensions_;
 
     vk::raii::PipelineCache pipeline_cache_{nullptr};
     std::filesystem::path pipeline_cache_file_;

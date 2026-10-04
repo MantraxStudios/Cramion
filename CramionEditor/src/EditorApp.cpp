@@ -1026,6 +1026,8 @@ void EditorApp::drawUi(float delta_seconds) {
         }
         // Camaras de cine despues de la fisica (pueden seguir a un cuerpo).
         updateCinematics(delta_seconds);
+        // UI en el mundo (VR): con los objetos donde quedan este frame.
+        if (has_project_) updateWorldUi();
         addCpuSample(kCpuPhysics, millisecondsSince(physics_start));
     }
 
@@ -1424,6 +1426,11 @@ void EditorApp::drawMenuBar() {
         }
         if (ImGui::BeginMenu("Realidad virtual")) {
             if (ImGui::MenuItem("XR Origin (cámara y mandos)")) createXrOrigin(world_.find(active_));
+            if (ImGui::MenuItem("Jugador VR (primera persona con física)")) createXrPlayer(world_.find(active_));
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("XR Origin + Character Controller + XR Player: stick izquierdo anda, derecho gira,\n"
+                                  "A salta; andar por la habitación choca. De pie o sentado en el XR Origin.");
+            }
             ImGui::EndMenu();
         }
         drawNavigationCreateMenu();

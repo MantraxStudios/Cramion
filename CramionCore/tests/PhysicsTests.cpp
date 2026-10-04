@@ -786,7 +786,49 @@ void testCharacterController() {
     }
 }
 
+// Physics.IgnoreCollision: parejas que no chocan (cuerpos y la capsula de
+// un personaje, como el Jugador VR con lo que coge).
+void testIgnoreCollision() {
+    std::printf("Ignorar colisiones\n");
+    {
+        // Una caja cae sobre otra: con la pareja ignorada la atraviesa.
+        ecs::World world;
+        makeFloor(world);
+        ecs::Entity bottom = makeBox(world, "Abajo", Vec3{0.0f, 0.5f, 0.0f}, BodyType::Static);
+        ecs::Entity falling = makeBox(world, "Cae", Vec3{0.0f, 3.0f, 0.0f});
+        ecs::Entity stacked = makeBox(world, "Se apila", Vec3{3.0f, 3.0f, 0.0f});
+        makeBox(world, "Abajo 2", Vec3{3.0f, 0.5f, 0.0f}, BodyType::Static);
+        PhysicsSystem physics;
+        physics.start(world);
+        physics.ignoreCollision(falling, bottom);
+        run(physics, world, 2.0f);
+        check(physics.collisionIgnored(bottom, falling) && falling.worldPosition().y < 0.7f,
+              "con la pareja ignorada cae a traves de la caja (hasta el suelo)");
+        check(stacked.worldPosition().y > 1.3f, "sin ignorar se queda encima");
+    }
+    {
+        // Un Character Controller anda contra una caja dinamica: la atraviesa
+        // sin empujarla; ignorar despues de tocarla tambien la suelta.
+        ecs::World world;
+        makeFloor(world);
+        ecs::Entity crate = makeBox(world, "Caja", Vec3{2.0f, 0.5f, 0.0f});
+        crate.get<Rigidbody>().mass = 5.0f;
+        ecs::Entity walker = makeCharacter(world, Vec3{0.0f, 0.0f, 0.0f});
+        PhysicsSystem physics;
+        physics.start(world);
+        physics.ignoreCollision(walker, crate);
+        run(physics, world, 0.3f);
+        physics.setCharacterInput(walker, Vec3{1.0f, 0.0f, 0.0f});
+        run(physics, world, 1.5f);
+        check(walker.worldPosition().x > 3.0f && std::abs(crate.worldPosition().x - 2.0f) < 0.05f,
+              "el personaje atraviesa la caja sin empujarla");
+        physics.ignoreCollision(walker, crate, false);
+        check(!physics.collisionIgnored(walker, crate), "false lo deshace");
+    }
+}
+
 int main() {
+    testIgnoreCollision();
     testCharacterController();
     testFallAndRest();
     testInterpolation();

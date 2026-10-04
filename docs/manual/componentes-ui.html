@@ -115,9 +115,11 @@
 <table>
   <thead><tr><th>Propiedad</th><th>Tipo</th><th>Por defecto</th><th>Valores</th><th>Descripcion</th></tr></thead>
   <tbody>
+    <tr><td>Modo<br><code>render_mode</code></td><td>opcion</td><td>Pantalla</td><td>Pantalla, Mundo (VR)</td><td>Pantalla: encima de la vista. Mundo: un panel en la escena (VR: se usa con el rayo de los mandos)</td></tr>
     <tr><td>Resolucion de referencia<br><code>reference</code></td><td>Vec2</td><td>(1920; 1080)</td><td></td><td></td></tr>
     <tr><td>Escalado<br><code>scale_mode</code></td><td>opcion</td><td>Escalar con la pantalla</td><td>Pixeles constantes, Escalar con la pantalla</td><td></td></tr>
     <tr><td>Ajustar a<br><code>match</code></td><td>numero</td><td>0,5</td><td>0 a 1</td><td>0 = ancho, 1 = alto</td></tr>
+    <tr><td>Pixeles por metro<br><code>pixels_per_meter</code></td><td>numero</td><td>1000</td><td>50 a 10000</td><td>Tamano del panel: resolucion / pixeles por metro (1000: 1920 px = 1,92 m)</td></tr>
     <tr><td>Orden<br><code>sort_order</code></td><td>entero</td><td>0</td><td>-100 a 100</td><td></td></tr>
   </tbody>
 </table>
