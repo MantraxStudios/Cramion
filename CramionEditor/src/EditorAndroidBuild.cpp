@@ -42,7 +42,9 @@ bool EditorApp::drawAndroidBuildSettings(BuildConfig& c) {
 
     // Lo que falta para compilar (SDK, Java, la libmain.so del motor).
     const std::filesystem::path folder = editorFolder();
-    const bool has_runtime = std::filesystem::exists(folder / "android" / "arm64-v8a" / "libmain.so");
+    const bool has_arm64 = std::filesystem::exists(folder / "android" / "arm64-v8a" / "libmain.so");
+    const bool has_armv7 = std::filesystem::exists(folder / "android" / "armeabi-v7a" / "libmain.so");
+    const bool has_runtime = has_arm64 || has_armv7;
     static AndroidToolchain tools;
     static bool tools_checked = false;
     if (!tools_checked) {
@@ -50,7 +52,8 @@ bool EditorApp::drawAndroidBuildSettings(BuildConfig& c) {
         tools_checked = true;
     }
     if (!has_runtime) {
-        ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.35f, 1.0f), "Falta el runtime de Android (android/arm64-v8a/libmain.so)");
+        ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.35f, 1.0f),
+                           "Falta el runtime de Android (android/arm64-v8a o armeabi-v7a/libmain.so)");
         ImGui::TextWrapped("Compila el motor con el Android NDK instalado (CRAMION_ANDROID=ON) para poder exportar.");
     }
     if (!tools.ok()) {
@@ -107,8 +110,9 @@ bool EditorApp::drawAndroidBuildSettings(BuildConfig& c) {
             }
         };
         level_combo("##min_sdk", a.min_sdk, 26);
-        ImGui::SetItemTooltip("El renderizador necesita Vulkan 1.3: en la practica moviles de 2020 en adelante\n"
-                              "(el manifiesto lo pide y Google Play oculta el juego a los que no lo tienen).");
+        ImGui::SetItemTooltip("Desde Android 8 con Vulkan (cualquier version, 1.0 incluida): en los moviles el\n"
+                              "renderizador va en modo compatible (Mali, Adreno, PowerVR, gama baja incluida).\n"
+                              "El manifiesto pide Vulkan: Google Play oculta el juego a los que no lo tienen.");
         row("Android objetivo");
         level_combo("##target_sdk", a.target_sdk, a.min_sdk);
         if (a.target_sdk < a.min_sdk) a.target_sdk = a.min_sdk;
@@ -129,6 +133,15 @@ bool EditorApp::drawAndroidBuildSettings(BuildConfig& c) {
                               "Desmarcado: todo dentro del APK. El AAB siempre lleva todo dentro.");
         indent();
         const bool has_x86 = std::filesystem::exists(folder / "android" / "x86_64" / "libmain.so");
+        ImGui::BeginDisabled(!has_armv7);
+        changed |= ImGui::Checkbox("Incluir armeabi-v7a (moviles de 32 bits)", &a.armeabi_v7a);
+        ImGui::EndDisabled();
+        if (!has_armv7) {
+            ImGui::SetItemTooltip("No esta compilado el runtime de 32 bits (android/armeabi-v7a/libmain.so).");
+        } else {
+            ImGui::SetItemTooltip("Moviles baratos y Android Go con sistema de 32 bits: sin esto no se pueden instalar.");
+        }
+        indent();
         ImGui::BeginDisabled(!has_x86);
         changed |= ImGui::Checkbox("Incluir x86_64 (emuladores)", &a.x86_64);
         ImGui::EndDisabled();
@@ -209,6 +222,22 @@ bool EditorApp::drawAndroidBuildSettings(BuildConfig& c) {
                               "para llegar a los FPS objetivo. Sin trazado de rayos.");
         row("FPS objetivo");
         if (ImGui::SliderInt("##fps", &a.target_fps, 20, 120)) changed = true;
+        row("Resolucion");
+        static constexpr int kResolutions[] = {0, -1, 480, 540, 720, 900, 1080, 1440};
+        static const char* kResolutionNames[] = {"Segun la calidad (recomendada)", "Nativa de la pantalla", "480p", "540p",
+                                                 "720p", "900p", "1080p", "1440p"};
+        int selected = 0;
+        for (int i = 0; i < 8; ++i) {
+            if (kResolutions[i] == a.resolution) selected = i;
+        }
+        if (ImGui::Combo("##resolution", &selected, kResolutionNames, 8)) {
+            a.resolution = kResolutions[selected];
+            changed = true;
+        }
+        ImGui::SetItemTooltip("Lado corto de la imagen del juego; la pantalla la escala sin coste.\n"
+                              "Un movil de 2400x1080 tiene 2.25 veces mas pixeles que 720p: dibujarlos\n"
+                              "todos es lo que mas FPS quita. Segun la calidad: 720p en Baja, 900p en Media,\n"
+                              "1080p en Alta y la nativa en Ultra.");
     }
 
     ImGui::Separator();

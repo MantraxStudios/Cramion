@@ -26,11 +26,15 @@ void VulkanInstance::initialize(const EngineInfo& info, const std::vector<std::s
     validation_enabled_ = info.enable_validation;
 
     // 1) Version de la API: se usa la mas alta que soporte el loader, con tope
-    //    en Vulkan 1.4.
-    const std::uint32_t loader_version = context_.enumerateInstanceVersion();
+    //    en Vulkan 1.4. Un loader de Vulkan 1.0 (Android 7 y 8) no tiene
+    //    vkEnumerateInstanceVersion y no acepta pedir mas que 1.0: el
+    //    renderizador va entonces por el modo compatible.
+    std::uint32_t loader_version = VK_API_VERSION_1_0;
+    if (context_.getDispatcher()->vkEnumerateInstanceVersion != nullptr) {
+        loader_version = context_.enumerateInstanceVersion();
+    }
     if (loader_version < kMinimumApiVersion) {
-        throw std::runtime_error(
-            "El loader de Vulkan instalado es anterior a 1.3; actualiza los drivers.");
+        throw std::runtime_error("No hay Vulkan en este equipo (o el driver es demasiado antiguo).");
     }
     api_version_ = std::min(loader_version, static_cast<std::uint32_t>(VK_API_VERSION_1_4));
 
@@ -112,6 +116,12 @@ std::vector<const char*> VulkanInstance::selectExtensions(const std::vector<std:
             throw std::runtime_error(std::string("Extension de instancia obligatoria ausente: ") + name);
         }
         extensions.push_back(name);
+    }
+
+    // Con un loader 1.0, las consultas de caracteristicas de 1.1 vienen en
+    // esta extension (si esta).
+    if (api_version_ < VK_API_VERSION_1_1 && has(vk::KHRGetPhysicalDeviceProperties2ExtensionName)) {
+        extensions.push_back(vk::KHRGetPhysicalDeviceProperties2ExtensionName);
     }
 
     // Opcional: mensajes de depuracion legibles.

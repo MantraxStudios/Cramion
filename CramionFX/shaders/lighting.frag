@@ -87,10 +87,15 @@ layout(set = 0, binding = 4) uniform LightBuffer {
 layout(set = 0, binding = 5) uniform sampler2DArrayShadow shadow_map;
 // Las mismas cascadas sin comparar (profundidad guardada): la busqueda de lo
 // que tapa de las sombras suaves (PCSS).
+#ifndef CRAMION_COMPAT
 layout(set = 0, binding = 24) uniform sampler2DArray shadow_depth;
-// Sombras por rayos de las luces locales (rt_shadows.comp): por pixel, las 4
-// luces que mas aportan, cada canal = (luz + 1) * 32 + visibilidad (0..31).
-layout(set = 0, binding = 25) uniform sampler2D rt_shadow_mask;
+#endif
+// Sombras por rayos (rt_shadows.comp, ya acumuladas en el tiempo por
+// rt_shadow_temporal.comp): por pixel, las 4 luces que mas aportan, cada canal
+// = (luz + 1) << 10 | visibilidad (0..1023).
+#ifndef CRAMION_COMPAT
+layout(set = 0, binding = 25) uniform usampler2D rt_shadow_mask;
+#endif
 
 layout(set = 0, binding = 6) uniform ShadowBuffer {
     mat4 light_view_projection[kShadowCascadeCount];
@@ -144,7 +149,9 @@ layout(set = 0, binding = 17) uniform sampler2D ssr_map;
 // lo que se ve en cada direccion. Dos cubos: la captura nueva se funde con la
 // anterior.
 layout(set = 0, binding = 18) uniform samplerCube reflection_probe_0;
+#ifndef CRAMION_COMPAT
 layout(set = 0, binding = 19) uniform samplerCube reflection_probe_1;
+#endif
 
 // Nubes volumetricas (clouds.frag), a media resolucion: rgb = luz dispersada,
 // a = transmitancia (cuanto cielo de detras se ve).
@@ -152,22 +159,41 @@ layout(set = 0, binding = 20) uniform sampler2D clouds_map;
 
 // Mapa de entorno HDR equirectangular (EnvironmentMap), si la escena trae uno:
 // sustituye al cielo fisico. u = atan(z, x) / 2pi + 0.5, v = acos(y) / pi.
+#ifndef CRAMION_COMPAT
 layout(set = 0, binding = 21) uniform sampler2D environment_hdr;
+#endif
 
 // Luz volumetrica (volumetric.frag), a media resolucion: rgb = luz del sol
 // dispersada por el polvo hacia la camara, a = transmitancia.
+#ifndef CRAMION_COMPAT
 layout(set = 0, binding = 22) uniform sampler2D volumetric_map;
+#endif
 
 // Sombra de las nubes (clouds.frag en modo mapa de sombra): r = cuanta luz del
 // sol pasa las nubes, sobre un cuadrado del suelo centrado en la camara.
 layout(set = 0, binding = 23) uniform sampler2D cloud_shadow_map;
 // Modelo de sombreado de Disney: r = modelo, gba = parametros (disney_brdf.glsl).
+#ifndef CRAMION_COMPAT
 layout(set = 0, binding = 26) uniform sampler2D g_shading;
+#endif
 // Oclusion del cielo vista desde arriba (sin trazado de rayos): profundidad de
 // solo el terreno y de todo (terreno, escenario, arboles), alrededor de la
 // camara.
+#ifndef CRAMION_COMPAT
 layout(set = 0, binding = 27) uniform sampler2D sky_map_terrain;
 layout(set = 0, binding = 28) uniform sampler2D sky_map_scene;
+#endif
+
+// Iluminacion ligera: sin las sombras suaves de contacto del sol (PCSS: 28
+// lecturas del mapa por pixel), sin la oclusion del cielo desde arriba (12) y
+// sin sombras de contacto. La usan el modo compatible (moviles) y, en PC, el
+// presupuesto adaptativo de los equipos de gama baja (pipeline aparte con la
+// misma disposicion de descriptores: VulkanRenderer elige uno u otro).
+#ifdef CRAMION_COMPAT
+const bool kLite = true;
+#else
+layout(constant_id = 0) const bool kLite = false;
+#endif
 
 // Luz del sol que dejan pasar las nubes en ese punto: se lleva el punto al
 // suelo a lo largo del rayo del sol (el mapa guarda ese mismo rayo).
@@ -397,6 +423,7 @@ vec2 vogelDisk(int index, int count, float rotation) {
     return vec2(cos(theta), sin(theta)) * r;
 }
 
+#ifndef CRAMION_COMPAT
 float softSunShadow(int cascade, vec2 uv, float depth, float texel_world, vec3 normal) {
     float map_size = shadows.params.x;
     float texel_uv = 1.0 / map_size;
@@ -464,6 +491,7 @@ float softSunShadow(int cascade, vec2 uv, float depth, float texel_world, vec3 n
     }
     return lit / float(kTaps);
 }
+#endif
 
 // --- Oclusion del cielo desde arriba (sin trazado de rayos) ---
 // Lo que tapa el cielo de un punto suele estar ENCIMA: la copa de los arboles,
@@ -474,7 +502,10 @@ float softSunShadow(int cascade, vec2 uv, float depth, float texel_world, vec3 n
 // (al menos 1 m sobre el terreno de ahi); cada una pesa mas cerca y segun mire
 // la normal hacia ella (una pared que da la espalda a la casa no la ve).
 float skyMapVisibility(vec3 p, vec3 n) {
-    if (lights.sky_map.w < 0.5) return 1.0;
+#ifdef CRAMION_COMPAT
+    return 1.0;
+#else
+    if (kLite || lights.sky_map.w < 0.5) return 1.0;
     vec2 corner = lights.sky_map.xy;
     float extent = lights.sky_map.z;
     float top = lights.sky_map_depth.x;
@@ -511,6 +542,7 @@ float skyMapVisibility(vec3 p, vec3 n) {
     }
     float occlusion = blocked / max(total, 1e-4);
     return 1.0 - 0.85 * occlusion * fade;
+#endif
 }
 
 // Muestrea una cascada concreta. Devuelve 1 = totalmente iluminado, 0 = en
@@ -541,18 +573,22 @@ float sampleCascade(int cascade, vec3 world_position, vec3 normal, float n_dot_l
     vec3 projected = light_clip.xyz / light_clip.w;
     vec2 uv = projected.xy * 0.5 + 0.5;
 
-    // Fuera del mapa de la cascada no hay informacion: se considera iluminado.
+    // Fuera del mapa de la cascada no hay informacion: -1 (shadowFactor usa
+    // la siguiente). Pasa cuando la cascada se dibujo unos frames antes con
+    // otro encuadre (se actualizan por turnos) y la camara giro.
     if (projected.z > 1.0 || projected.z < 0.0 ||
         any(lessThan(uv, vec2(0.0))) || any(greaterThan(uv, vec2(1.0)))) {
-        return 1.0;
+        return -1.0;
     }
 
     // Cascadas cercanas: sombra suave de contacto (PCSS). Lejanas: PCF de
     // tienda (con un solo muestreo bilineal las cascadas lejanas dejaban el
     // borde en escalera, y al moverse la camara esa escalera "hervia").
-    if (cascade <= 1) {
+#ifndef CRAMION_COMPAT
+    if (cascade <= 1 && !kLite) {
         return softSunShadow(cascade, uv, projected.z, texel_world, normal);
     }
+#endif
     return optimizedPcf(shadow_map, shadows.params.x, uv, projected.z, float(cascade));
 }
 
@@ -572,12 +608,22 @@ float shadowFactor(vec3 world_position, vec3 normal, float n_dot_l, out int casc
     cascade_index = cascade;
 
     float shadow = sampleCascade(cascade, world_position, normal, n_dot_l);
+    // Fuera de la elegida (dibujada con el encuadre de hace unos frames): la
+    // siguiente, que cubre mas. Antes quedaba iluminado: al girar rapido, una
+    // franja sin sombra en el borde de la cascada.
+    while (shadow < 0.0 && cascade + 1 < kShadowCascadeCount) {
+        ++cascade;
+        shadow = sampleCascade(cascade, world_position, normal, n_dot_l);
+    }
+    if (shadow < 0.0) shadow = 1.0;  // ninguna lo cubre: iluminado
+    cascade_index = cascade;
 
     float split = shadows.split_distances[cascade];
     float band = split * shadows.params.w;
     if (cascade + 1 < kShadowCascadeCount && view_depth > split - band) {
         float blend = clamp((view_depth - (split - band)) / max(band, 0.0001), 0.0, 1.0);
-        shadow = mix(shadow, sampleCascade(cascade + 1, world_position, normal, n_dot_l), blend);
+        float next = sampleCascade(cascade + 1, world_position, normal, n_dot_l);
+        if (next >= 0.0) shadow = mix(shadow, next, blend);
     }
 
     // Al llegar al limite de la ultima cascada las sombras se desvanecen en vez
@@ -693,12 +739,19 @@ vec3 rodVision(vec3 linear_srgb) {
 // --- Sombras por rayos de las luces locales ---
 // Los 3x3 vecinos de la misma superficie (profundidad y normal parecidas) se
 // leen una vez por pixel; cada luz promedia su visibilidad en los que la
-// tienen. Asi el ruido de la penumbra (un rayo por luz y pixel) se suaviza sin
-// que la sombra se corra a otra superficie.
-vec4 rt_neighbor_mask[9];
+// tienen. La mascara ya viene acumulada en el tiempo (rt_shadow_temporal.comp);
+// esta media se lleva el poco ruido que queda sin que la sombra se corra a otra
+// superficie.
+uvec4 rt_neighbor_mask[9];
 bool rt_neighbor_ok[9];
 
 void loadRtShadowNeighborhood(float center_z, vec3 normal) {
+#ifdef CRAMION_COMPAT
+    for (int n = 0; n < 9; ++n) {
+        rt_neighbor_mask[n] = uvec4(0u);
+        rt_neighbor_ok[n] = false;
+    }
+#else
     ivec2 pixel = ivec2(gl_FragCoord.xy);
     ivec2 size = textureSize(rt_shadow_mask, 0);
     int n = 0;
@@ -716,6 +769,7 @@ void loadRtShadowNeighborhood(float center_z, vec3 normal) {
             ++n;
         }
     }
+#endif
 }
 
 // El sol en la mascara de rt_shadows.comp (despues de las 32 + 8 locales).
@@ -724,20 +778,19 @@ const int kRtSunId = kMaxPointLights + kMaxSpotLights;
 // Visibilidad (0..1) de la luz `id` (puntuales 0..31, focos 32..39, sol 40),
 // o -1 si no es de las 4 que el pase trazo en este pixel.
 float rtLocalShadow(int id) {
-    float base = float(id + 1) * 32.0;
-    vec4 own = rt_neighbor_mask[4];
-    vec4 inside = step(vec4(base), own) * (1.0 - step(vec4(base + 32.0), own));
-    if (dot(inside, vec4(1.0)) < 0.5) {
+    uint key = uint(id + 1);
+    uvec4 own = rt_neighbor_mask[4] >> 10u;
+    if (own.x != key && own.y != key && own.z != key && own.w != key) {
         return -1.0;
     }
     float sum = 0.0;
     float count = 0.0;
     for (int n = 0; n < 9; ++n) {
         if (!rt_neighbor_ok[n]) continue;
-        vec4 m = rt_neighbor_mask[n];
+        uvec4 m = rt_neighbor_mask[n];
         for (int c = 0; c < 4; ++c) {
-            if (m[c] >= base && m[c] < base + 32.0) {
-                sum += (m[c] - base) / 31.0;
+            if ((m[c] >> 10u) == key) {
+                sum += float(m[c] & 1023u) / 1023.0;
                 count += 1.0;
             }
         }
@@ -858,9 +911,13 @@ vec3 skyColor(vec3 view_direction, bool celestial) {
     // Para la niebla (sin astros) un mip borroso: el color del aire, no el
     // detalle de la foto.
     if (lights.environment.x > 0.5) {
+#ifdef CRAMION_COMPAT
+        return textureLod(environment_map, view_direction, celestial ? 0.0 : 5.0).rgb;
+#else
         vec2 uv = vec2(atan(view_direction.z, view_direction.x) / (2.0 * kPi) + 0.5,
                        acos(clamp(view_direction.y, -1.0, 1.0)) / kPi);
         return textureLod(environment_hdr, uv, celestial ? 0.0 : 5.0).rgb;
+#endif
     }
 
     vec3 to_sun = lights.sky_sun.xyz;
@@ -930,11 +987,16 @@ float blurredSsao(vec3 normal) {
     float center_depth = texelFetch(ssao_map, center, 0).g;
     float tolerance = center_depth * 0.10 + 0.05;
 
+    // La ventana de 4x4 se desplaza para quedar dentro de la imagen (no se
+    // recorta): asi siempre cubre las 16 rotaciones. Recortando, la ultima fila
+    // y la ultima columna repetian vecinos y les faltaban rotaciones: una linea
+    // de rayas oscuras en el borde de la imagen.
+    ivec2 origin = clamp(center - ivec2(2), ivec2(0), max(size - ivec2(4), ivec2(0)));
     float sum = 0.0;
     float weight_sum = 0.0;
-    for (int y = -2; y <= 1; ++y) {
-        for (int x = -2; x <= 1; ++x) {
-            ivec2 p = clamp(center + ivec2(x, y), ivec2(0), size - 1);
+    for (int y = 0; y < 4; ++y) {
+        for (int x = 0; x < 4; ++x) {
+            ivec2 p = min(origin + ivec2(x, y), size - 1);
             vec2 s = texelFetch(ssao_map, p, 0).rg;
             vec3 n = decodeNormal(texelFetch(g_normal, p, 0).rg);
             float w = (abs(s.g - center_depth) < tolerance && dot(n, normal) > 0.8) ? 1.0 : 0.0;
@@ -967,8 +1029,14 @@ vec3 geometricNormal(float depth, vec3 world_position, vec3 view_direction) {
         float depth_forward = texelFetch(g_depth, forward, 0).r;
         float depth_backward = texelFetch(g_depth, backward, 0).r;
 
-        bool use_forward = abs(linearDepth(depth_forward) - center_z) <=
-                           abs(linearDepth(depth_backward) - center_z);
+        // En el borde de la imagen uno de los dos vecinos es el propio pixel
+        // (recortado): tiene su misma profundidad y siempre ganaba, el eje
+        // salia casi nulo y la normal, ruido. En la primera y la ultima fila
+        // (y columna) quedaban pixeles sueltos en sombra: una linea de rayas
+        // oscuras en el borde. Se usa el vecino que existe.
+        bool use_forward = forward != pixel &&
+                           (backward == pixel || abs(linearDepth(depth_forward) - center_z) <=
+                                                     abs(linearDepth(depth_backward) - center_z));
         ivec2 neighbor = use_forward ? forward : backward;
         float neighbor_depth = use_forward ? depth_forward : depth_backward;
         vec3 neighbor_position =
@@ -1090,6 +1158,9 @@ vec4 upsampledGi(float center_depth, vec3 normal) {
 // se mezclan texeles de profundidad parecida (el cielo con el cielo), para
 // que los rayos no se derramen por las siluetas.
 vec4 upsampledVolume(float center_depth) {
+#ifdef CRAMION_COMPAT
+    return vec4(0.0, 0.0, 0.0, 1.0);
+#else
     ivec2 half_size = textureSize(volumetric_map, 0);
     ivec2 full_size = textureSize(g_depth, 0);
     ivec2 base = ivec2(gl_FragCoord.xy) / 2;
@@ -1112,6 +1183,7 @@ vec4 upsampledVolume(float center_depth) {
     }
     return weight_sum > 0.0 ? sum / weight_sum
                             : texelFetch(volumetric_map, clamp(base, ivec2(0), half_size - 1), 0);
+#endif
 }
 
 // Niebla exponencial por altura integrada a lo largo del rayo camara -> punto.
@@ -1320,7 +1392,11 @@ void main() {
 
         // --- Ambiente: IBL del entorno (cielo + suelo) ---
         // Modelo de Disney de este pixel (y el tinte especular en F0).
+#ifdef CRAMION_COMPAT
+        surface_model = standardShading();
+#else
         surface_model = decodeShading(texture(g_shading, v_uv), normal);
+#endif
         vec3 f0 = disneyF0(surface_model, albedo, reflectance, metallic);
         // Subsurface: lo que atraviesa se mira en la cara de atras, a este grosor.
         bool translucent = surface_model.model == kShadingSubsurface && surface_model.params.y > 0.0;
@@ -1403,11 +1479,13 @@ void main() {
                                         world_position, reflected);
                 probe_light += textureLod(reflection_probe_0, d, lod).rgb * lights.probes[0].w;
             }
+#ifndef CRAMION_COMPAT
             if (lights.probes[1].w > 0.001) {
                 vec3 d = probeDirection(reflection_probe_1, lights.probes[1].xyz,
                                         world_position, reflected);
                 probe_light += textureLod(reflection_probe_1, d, lod).rgb * lights.probes[1].w;
             }
+#endif
             fallback = probe_light / probe_weight;
         }
         vec4 ssr = texelFetch(ssr_map, ivec2(gl_FragCoord.xy), 0);
@@ -1467,10 +1545,15 @@ void main() {
             // el terreno con su forma exacta (sin acne ni sombras despegadas) y
             // mas alla de las cascadas (montanas que tapan el sol a kilometros);
             // el mapa, ademas, los personajes, la hierba y los arboles que se
-            // mecen.
+            // mecen. Casi de canto al sol (el borde entre luz y sombra de un
+            // objeto) la malla de los rayos es de caras planas y se tapa a si
+            // misma a trozos: ahi manda el mapa (y el propio N.L, que ya
+            // oscurece).
             if (rt_sun) {
                 float traced = rtLocalShadow(kRtSunId);
-                if (traced >= 0.0) shadow = min(shadow, traced);
+                if (traced >= 0.0) {
+                    shadow = min(shadow, mix(1.0, traced, smoothstep(0.0, 0.12, geometric_n_dot_l)));
+                }
             }
             shadow = mix(1.0, shadow, shadows.params.y);
         }
@@ -1539,7 +1622,9 @@ void main() {
             // real; el mapa, ademas, los personajes y el terreno).
             if (rt_local && !from_behind) {
                 float rt = rtLocalShadow(i);
-                if (rt >= 0.0) point_shadow = min(point_shadow, mix(1.0, rt, lights.points[i].shadow.y));
+                // Casi de canto a la luz, el mapa y el N.L (ver el sol).
+                float edge = smoothstep(0.0, 0.12, dot(geometric_normal, light_direction));
+                if (rt >= 0.0) point_shadow = min(point_shadow, mix(1.0, rt, lights.points[i].shadow.y * edge));
             }
 
             // La bombilla tiene tamano (Radio de la fuente): su brillo en una
@@ -1597,7 +1682,8 @@ void main() {
             }
             if (rt_local && !from_behind) {
                 float rt = rtLocalShadow(kMaxPointLights + i);
-                if (rt >= 0.0) spot_shadow = min(spot_shadow, mix(1.0, rt, lights.spots[i].outer_shadow.z));
+                float edge = smoothstep(0.0, 0.12, dot(geometric_normal, light_direction));
+                if (rt >= 0.0) spot_shadow = min(spot_shadow, mix(1.0, rt, lights.spots[i].outer_shadow.z * edge));
             }
 
             float spot_size = lights.spots[i].outer_shadow.w / max(distance_to_light, 0.01);

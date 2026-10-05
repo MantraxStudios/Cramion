@@ -1,3 +1,4 @@
+#include "CramionFX/vk/VulkanCompat.h"
 #include "CramionFX/vk/TerrainPass.h"
 #include "CramionFX/vk/GBuffer.h"
 
@@ -54,7 +55,7 @@ void barrier(const vk::raii::CommandBuffer& cmd, vk::Image image, vk::ImageLayou
     b.subresourceRange = vk::ImageSubresourceRange{vk::ImageAspectFlagBits::eColor, base_mip, mips, 0, layers};
     vk::DependencyInfo dependency{};
     dependency.setImageMemoryBarriers(b);
-    cmd.pipelineBarrier2(dependency);
+    compat::pipelineBarrier(cmd, dependency);
 }
 
 // Imagen RGBA8 (cualquier tamano) a kLayerSize x kLayerSize (bilineal).
@@ -241,6 +242,9 @@ void TerrainPass::createPipelines(const VulkanDevice& device, std::array<vk::For
         blend.setAttachments(blends);
         vk::PipelineRenderingCreateInfo rendering{};
         rendering.setColorAttachmentFormats(gbuffer_formats);
+        // Modo compatible: 4 destinos (GBuffer::activeColorAttachments).
+        rendering.colorAttachmentCount = GBuffer::activeColorAttachments();
+        blend.attachmentCount = GBuffer::activeColorAttachments();
         rendering.depthAttachmentFormat = depth_format;
         vk::GraphicsPipelineCreateInfo info{};
         info.pNext = &rendering;
@@ -254,10 +258,10 @@ void TerrainPass::createPipelines(const VulkanDevice& device, std::array<vk::For
         info.pColorBlendState = &blend;
         info.pDynamicState = &dynamic;
         info.layout = *layout_;
-        gbuffer_pipeline_ = vk::raii::Pipeline(device.handle(), device.pipelineCache(), info);
+        gbuffer_pipeline_ = compat::makeGraphicsPipeline(device, info);
         if (device.fillModeNonSolidSupported()) {
             raster.polygonMode = vk::PolygonMode::eLine;
-            gbuffer_wire_pipeline_ = vk::raii::Pipeline(device.handle(), device.pipelineCache(), info);
+            gbuffer_wire_pipeline_ = compat::makeGraphicsPipeline(device, info);
             raster.polygonMode = vk::PolygonMode::eFill;
         }
     }
@@ -291,7 +295,7 @@ void TerrainPass::createPipelines(const VulkanDevice& device, std::array<vk::For
         info.pColorBlendState = &blend;
         info.pDynamicState = &dynamic;
         info.layout = *layout_;
-        shadow_pipeline_ = vk::raii::Pipeline(device.handle(), device.pipelineCache(), info);
+        shadow_pipeline_ = compat::makeGraphicsPipeline(device, info);
     }
 }
 
@@ -413,6 +417,9 @@ void TerrainPass::createGrassPipelines(const VulkanDevice& device, const vk::rai
         dynamic.setDynamicStates(dynamic_states);
         vk::PipelineRenderingCreateInfo rendering{};
         rendering.setColorAttachmentFormats(gbuffer_formats);
+        // Modo compatible: 4 destinos (GBuffer::activeColorAttachments).
+        rendering.colorAttachmentCount = GBuffer::activeColorAttachments();
+        blend.attachmentCount = GBuffer::activeColorAttachments();
         rendering.depthAttachmentFormat = depth_format;
         vk::GraphicsPipelineCreateInfo info{};
         info.pNext = &rendering;
@@ -426,7 +433,7 @@ void TerrainPass::createGrassPipelines(const VulkanDevice& device, const vk::rai
         info.pColorBlendState = &blend;
         info.pDynamicState = &dynamic;
         info.layout = *grass_draw_layout_;
-        grass_pipeline_ = vk::raii::Pipeline(device.handle(), device.pipelineCache(), info);
+        grass_pipeline_ = compat::makeGraphicsPipeline(device, info);
     }
 }
 
@@ -479,6 +486,7 @@ void TerrainPass::setGrassInteractors(const std::vector<core::Vec4>& spheres) {
 void TerrainPass::recordGrassCull(const vk::raii::CommandBuffer& cmd, std::uint32_t frame,
                                   const core::Vec3& camera_position, const core::Mat4& view_projection,
                                   float delta_seconds) {
+    if (device_ != nullptr && !device_->drawIndirectFirstInstanceSupported()) return;  // sin firstInstance (algunos moviles)
     grass_previous_seconds_ = grass_seconds_;
     grass_seconds_ += std::clamp(delta_seconds, 0.0f, 0.1f);
     if (!*grass_cull_pipeline_) return;
@@ -522,7 +530,7 @@ void TerrainPass::recordGrassCull(const vk::raii::CommandBuffer& cmd, std::uint3
         before.srcAccessMask = vk::AccessFlagBits2::eIndirectCommandRead | vk::AccessFlagBits2::eShaderStorageRead;
         before.dstStageMask = vk::PipelineStageFlagBits2::eTransfer | vk::PipelineStageFlagBits2::eComputeShader;
         before.dstAccessMask = vk::AccessFlagBits2::eTransferWrite | vk::AccessFlagBits2::eShaderStorageWrite;
-        cmd.pipelineBarrier2(vk::DependencyInfo{}.setMemoryBarriers(before));
+        compat::pipelineBarrier(cmd, vk::DependencyInfo{}.setMemoryBarriers(before));
         const std::array<DrawIndirect, 2> reset = {{{kNearSegments * 6 + 3, 0, 0, 0},
                                                     {kFarSegments * 6 + 3, 0, 0, grass.capacity}}};
         cmd.updateBuffer<DrawIndirect>(*grass.args.handle(), 0, reset);
@@ -531,7 +539,7 @@ void TerrainPass::recordGrassCull(const vk::raii::CommandBuffer& cmd, std::uint3
         cleared.srcAccessMask = vk::AccessFlagBits2::eTransferWrite;
         cleared.dstStageMask = vk::PipelineStageFlagBits2::eComputeShader;
         cleared.dstAccessMask = vk::AccessFlagBits2::eShaderStorageRead | vk::AccessFlagBits2::eShaderStorageWrite;
-        cmd.pipelineBarrier2(vk::DependencyInfo{}.setMemoryBarriers(cleared));
+        compat::pipelineBarrier(cmd, vk::DependencyInfo{}.setMemoryBarriers(cleared));
 
         cmd.bindPipeline(vk::PipelineBindPoint::eCompute, *grass_cull_pipeline_);
         cmd.bindDescriptorSets(vk::PipelineBindPoint::eCompute, *grass_cull_layout_, 0,
@@ -544,13 +552,14 @@ void TerrainPass::recordGrassCull(const vk::raii::CommandBuffer& cmd, std::uint3
         done.srcAccessMask = vk::AccessFlagBits2::eShaderStorageWrite;
         done.dstStageMask = vk::PipelineStageFlagBits2::eDrawIndirect | vk::PipelineStageFlagBits2::eVertexShader;
         done.dstAccessMask = vk::AccessFlagBits2::eIndirectCommandRead | vk::AccessFlagBits2::eShaderStorageRead;
-        cmd.pipelineBarrier2(vk::DependencyInfo{}.setMemoryBarriers(done));
+        compat::pipelineBarrier(cmd, vk::DependencyInfo{}.setMemoryBarriers(done));
         grass.culled = true;
     }
 }
 
 void TerrainPass::recordGrassGBuffer(const vk::raii::CommandBuffer& cmd, std::uint32_t frame,
                                      const vk::raii::DescriptorSet& frame_set) const {
+    if (device_ != nullptr && !device_->drawIndirectFirstInstanceSupported()) return;  // sin firstInstance (algunos moviles)
     bool bound = false;
     for (const auto& [id, terrain] : terrains_) {
         const Terrain& t = *terrain;

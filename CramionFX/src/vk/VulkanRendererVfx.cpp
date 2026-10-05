@@ -1,6 +1,7 @@
 // VulkanRenderer: el pase del VFX Graph (VfxPass.h). Aparte para no engordar
 // VulkanRenderer.cpp.
 
+#include "CramionFX/vk/VulkanCompat.h"
 #include "CramionFX/vk/VulkanRenderer.h"
 
 namespace cramion::gfx {
@@ -40,14 +41,14 @@ void VulkanRenderer::recordVfxPass(const vk::raii::CommandBuffer& cmd, std::uint
     depth_barrier.dstStageMask = vk::PipelineStageFlagBits2::eEarlyFragmentTests |
                                  vk::PipelineStageFlagBits2::eLateFragmentTests | vk::PipelineStageFlagBits2::eFragmentShader;
     depth_barrier.dstAccessMask = vk::AccessFlagBits2::eDepthStencilAttachmentRead | vk::AccessFlagBits2::eShaderSampledRead;
-    depth_barrier.oldLayout = vk::ImageLayout::eDepthReadOnlyOptimal;
-    depth_barrier.newLayout = vk::ImageLayout::eDepthReadOnlyOptimal;
+    depth_barrier.oldLayout = compat::depthReadOnlyLayout();
+    depth_barrier.newLayout = compat::depthReadOnlyLayout();
     depth_barrier.image = *gbuffer_.depth().handle();
     depth_barrier.subresourceRange = vk::ImageSubresourceRange{vk::ImageAspectFlagBits::eDepth, 0, 1, 0, 1};
     const std::array<vk::ImageMemoryBarrier2, 2> barriers = {color_barrier, depth_barrier};
     vk::DependencyInfo dependency{};
     dependency.setImageMemoryBarriers(barriers);
-    cmd.pipelineBarrier2(dependency);
+    compat::pipelineBarrier(cmd, dependency);
 
     vk::RenderingAttachmentInfo color_attachment{};
     color_attachment.imageView = *scene_color_.view();
@@ -56,7 +57,7 @@ void VulkanRenderer::recordVfxPass(const vk::raii::CommandBuffer& cmd, std::uint
     color_attachment.storeOp = vk::AttachmentStoreOp::eStore;
     vk::RenderingAttachmentInfo depth_attachment{};
     depth_attachment.imageView = *gbuffer_.depth().view();
-    depth_attachment.imageLayout = vk::ImageLayout::eDepthReadOnlyOptimal;
+    depth_attachment.imageLayout = compat::depthReadOnlyLayout();
     depth_attachment.loadOp = vk::AttachmentLoadOp::eLoad;
     depth_attachment.storeOp = vk::AttachmentStoreOp::eNone;
     vk::RenderingInfo rendering_info{};
@@ -64,9 +65,9 @@ void VulkanRenderer::recordVfxPass(const vk::raii::CommandBuffer& cmd, std::uint
     rendering_info.layerCount = 1;
     rendering_info.setColorAttachments(color_attachment);
     rendering_info.pDepthAttachment = &depth_attachment;
-    cmd.beginRendering(rendering_info);
+    compat::beginRendering(cmd, rendering_info);
     vfx_pass_.recordDraw(cmd, frame_index, extent);
-    cmd.endRendering();
+    compat::endRendering(cmd);
 }
 
 }  // namespace cramion::gfx

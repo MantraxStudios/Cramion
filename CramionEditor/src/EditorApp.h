@@ -651,6 +651,7 @@ private:
         AndroidPackageInput android_input;
         AndroidPackageResult android_result;
         std::string android_device;
+        std::string android_notes;  // avisos para el mensaje final (no paran la exportacion)
         std::atomic<float> phase{-1.0f};  // >= 0: progreso del empaquetado (en vez de los bytes)
     };
     void exportGame(bool run_after);

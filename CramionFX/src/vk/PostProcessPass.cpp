@@ -1,3 +1,4 @@
+#include "CramionFX/vk/VulkanCompat.h"
 #include "CramionFX/vk/PostProcessPass.h"
 
 #include "CramionFX/vk/GpuTypes.h"
@@ -109,7 +110,7 @@ void PostProcessPass::create(const VulkanDevice& device, vk::Format color_format
     pipeline_info.pDynamicState = &dynamic_state;
     pipeline_info.layout = *pipeline_layout_;
 
-    pipeline_ = vk::raii::Pipeline(device.handle(), device.pipelineCache(), pipeline_info);
+    pipeline_ = compat::makeGraphicsPipeline(device, pipeline_info);
 
     std::cout << "[Vulkan] Pipeline de post-proceso (FXAA) creado\n";
 }

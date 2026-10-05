@@ -422,3 +422,12 @@ target_link_libraries(cramion_cliptime PRIVATE Cramion::Core)
 add_executable(cramion_stereo_check "${CMAKE_CURRENT_SOURCE_DIR}/tools/StereoRenderCheck.cpp")
 target_link_libraries(cramion_stereo_check PRIVATE Cramion::Core)
 set_target_properties(cramion_stereo_check PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
+
+# Herramienta: banco de pruebas del render (ventana invisible): tiempos de GPU
+# por pasada y ruido temporal con la camara quieta (el "hormigueo" del
+# trazado de rayos). En su propia carpeta (bench/) con sus shaders: compilarla
+# sola no toca los del editor.
+add_executable(cramion_render_bench "${CMAKE_CURRENT_SOURCE_DIR}/tools/RenderBench.cpp")
+target_link_libraries(cramion_render_bench PRIVATE Cramion::FX)
+set_target_properties(cramion_render_bench PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bench")
+cramionfx_deploy(cramion_render_bench)

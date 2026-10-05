@@ -10,7 +10,13 @@
 
 #include "foliage_common.glsl"
 
+// Modo compatible (moviles): 128 hilos por grupo (el minimo de Vulkan;
+// FoliagePass despacha en consecuencia).
+#ifdef CRAMION_COMPAT
+layout(local_size_x = 128) in;
+#else
 layout(local_size_x = 256) in;
+#endif
 
 layout(std430, set = 0, binding = 0) readonly buffer Instances {
     FoliageInstance instances[];

@@ -1,6 +1,7 @@
 // VulkanRenderer: el pase de los liquidos (FluidPass.h). Aparte para no
 // engordar VulkanRenderer.cpp.
 
+#include "CramionFX/vk/VulkanCompat.h"
 #include "CramionFX/vk/VulkanRenderer.h"
 
 namespace cramion::gfx {
@@ -31,9 +32,9 @@ void VulkanRenderer::recordFluidPass(const vk::raii::CommandBuffer& cmd, std::ui
     rendering_info.renderArea = vk::Rect2D{vk::Offset2D{0, 0}, extent};
     rendering_info.layerCount = 1;
     rendering_info.setColorAttachments(color_attachment);
-    cmd.beginRendering(rendering_info);
+    compat::beginRendering(cmd, rendering_info);
     fluid_pass_.recordShade(cmd, frame_index, glass_sets_[frame_index], extent);
-    cmd.endRendering();
+    compat::endRendering(cmd);
 }
 
 }  // namespace cramion::gfx

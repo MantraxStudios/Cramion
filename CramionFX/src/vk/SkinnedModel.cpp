@@ -1,5 +1,6 @@
 #include "CramionFX/vk/SkinnedModel.h"
 
+#include "CramionFX/asset/Dds.h"
 #include "CramionFX/vk/GpuTypes.h"
 #include "CramionFX/vk/SkinnedPass.h"
 #include "CramionFX/vk/VulkanDevice.h"
@@ -11,6 +12,7 @@
 #include <cmath>
 #include <cstring>
 #include <iostream>
+#include <stdexcept>
 #include <unordered_map>
 
 namespace cramion::gfx {
@@ -192,6 +194,13 @@ void SkinnedModel::create(const VulkanDevice& device, const asset::ModelData& mo
         if (texture.format == asset::TextureFormat::Rgba8) {
             textures_.emplace_back().create(device, texture.width, texture.height,
                                             texture.pixels.data());
+        } else if (!device.textureCompressionBcSupported()) {
+            // GPU sin BC (casi todas las de movil): se descomprime aqui (el
+            // nivel 0; los mips los hace la GPU). Antes el modelo entero
+            // fallaba y el juego no arrancaba en esos moviles.
+            const std::vector<std::uint8_t> rgba = asset::decodeBlockCompressed(texture);
+            if (rgba.empty()) throw std::runtime_error("Textura comprimida con datos incompletos: " + texture.name);
+            textures_.emplace_back().create(device, texture.width, texture.height, rgba.data());
         } else {
             textures_.emplace_back().createCompressed(
                 device, texture.width, texture.height, blockFormat(texture.format),
@@ -300,7 +309,9 @@ void SkinnedModel::create(const VulkanDevice& device, const asset::ModelData& mo
             writes[t].descriptorType = vk::DescriptorType::eCombinedImageSampler;
             writes[t].setImageInfo(infos[t]);
         }
-        device.handle().updateDescriptorSets(writes, nullptr);
+        // Modo compatible: el set solo tiene las texturas PBR.
+        device.handle().updateDescriptorSets(
+            vk::ArrayProxy<const vk::WriteDescriptorSet>(SkinnedPass::materialBindingCount(), writes.data()), nullptr);
     }
 
     // --- Grupos de dibujo (un grupo por material con submallas opacas) ---

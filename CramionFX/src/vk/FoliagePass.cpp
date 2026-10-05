@@ -1,3 +1,4 @@
+#include "CramionFX/vk/VulkanCompat.h"
 #include "CramionFX/vk/FoliagePass.h"
 
 #include "CramionFX/asset/TreeGenerator.h"
@@ -52,7 +53,7 @@ void memoryBarrier(const vk::raii::CommandBuffer& cmd, vk::PipelineStageFlags2 s
     barrier.dstAccessMask = dst_access;
     vk::DependencyInfo dependency{};
     dependency.setMemoryBarriers(barrier);
-    cmd.pipelineBarrier2(dependency);
+    compat::pipelineBarrier(cmd, dependency);
 }
 
 }  // namespace
@@ -229,6 +230,9 @@ void FoliagePass::createPipelines(const VulkanDevice& device, std::array<vk::For
         blend.setAttachments(blends);
         vk::PipelineRenderingCreateInfo rendering{};
         rendering.setColorAttachmentFormats(gbuffer_formats);
+        // Modo compatible: 4 destinos (GBuffer::activeColorAttachments).
+        rendering.colorAttachmentCount = GBuffer::activeColorAttachments();
+        blend.attachmentCount = GBuffer::activeColorAttachments();
         rendering.depthAttachmentFormat = depth_format;
         vk::GraphicsPipelineCreateInfo info{};
         info.pNext = &rendering;
@@ -242,10 +246,10 @@ void FoliagePass::createPipelines(const VulkanDevice& device, std::array<vk::For
         info.pColorBlendState = &blend;
         info.pDynamicState = &dynamic;
         info.layout = *draw_layout_;
-        gbuffer_pipeline_ = vk::raii::Pipeline(device.handle(), device.pipelineCache(), info);
+        gbuffer_pipeline_ = compat::makeGraphicsPipeline(device, info);
         if (device.fillModeNonSolidSupported()) {
             raster.polygonMode = vk::PolygonMode::eLine;
-            gbuffer_wire_pipeline_ = vk::raii::Pipeline(device.handle(), device.pipelineCache(), info);
+            gbuffer_wire_pipeline_ = compat::makeGraphicsPipeline(device, info);
             raster.polygonMode = vk::PolygonMode::eFill;
         }
     }
@@ -279,7 +283,7 @@ void FoliagePass::createPipelines(const VulkanDevice& device, std::array<vk::For
         info.pColorBlendState = &blend;
         info.pDynamicState = &dynamic;
         info.layout = *draw_layout_;
-        shadow_pipeline_ = vk::raii::Pipeline(device.handle(), device.pipelineCache(), info);
+        shadow_pipeline_ = compat::makeGraphicsPipeline(device, info);
     }
 }
 
@@ -381,7 +385,7 @@ void FoliagePass::createTextures() {
             to_copy.newLayout = vk::ImageLayout::eTransferDstOptimal;
             to_copy.image = image;
             to_copy.subresourceRange = vk::ImageSubresourceRange{vk::ImageAspectFlagBits::eColor, 0, mips, 0, count};
-            cmd.pipelineBarrier2(vk::DependencyInfo{}.setImageMemoryBarriers(to_copy));
+            compat::pipelineBarrier(cmd, vk::DependencyInfo{}.setImageMemoryBarriers(to_copy));
             cmd.copyBufferToImage(*staging.handle(), image, vk::ImageLayout::eTransferDstOptimal, regions);
             vk::ImageMemoryBarrier2 to_read = to_copy;
             to_read.srcStageMask = vk::PipelineStageFlagBits2::eTransfer;
@@ -390,7 +394,7 @@ void FoliagePass::createTextures() {
             to_read.dstAccessMask = vk::AccessFlagBits2::eShaderSampledRead;
             to_read.oldLayout = vk::ImageLayout::eTransferDstOptimal;
             to_read.newLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
-            cmd.pipelineBarrier2(vk::DependencyInfo{}.setImageMemoryBarriers(to_read));
+            compat::pipelineBarrier(cmd, vk::DependencyInfo{}.setImageMemoryBarriers(to_read));
         });
         vk::ImageViewCreateInfo view{};
         view.image = image;
@@ -422,8 +426,13 @@ void FoliagePass::createTextures() {
 // Instancias
 // -----------------------------------------------------------------------------
 
-void FoliagePass::setInstances(const std::vector<FoliageInstance>& input) {
+void FoliagePass::setInstances(const std::vector<FoliageInstance>& input_all) {
     if (device_ == nullptr) return;
+    // GPU sin firstInstance en los comandos indirectos (algunos moviles): las
+    // listas de cada especie empiezan en otro sitio del buffer y no se pueden
+    // dibujar asi. Sin arboles instanciados (mejor que un render roto).
+    static const std::vector<FoliageInstance> kNone;
+    const std::vector<FoliageInstance>& input = device_->drawIndirectFirstInstanceSupported() ? input_all : kNone;
     device_->waitIdle();
     cull_sets_.clear();
     draw_sets_.clear();
@@ -582,7 +591,8 @@ void FoliagePass::recordCull(const vk::raii::CommandBuffer& cmd, std::uint32_t f
     cmd.bindPipeline(vk::PipelineBindPoint::eCompute, *cull_pipeline_);
     cmd.bindDescriptorSets(vk::PipelineBindPoint::eCompute, *cull_layout_, 0, *cull_sets_[frame], nullptr);
     cmd.pushConstants<CullPush>(*cull_layout_, vk::ShaderStageFlagBits::eCompute, 0, push);
-    cmd.dispatch((instance_count_ + 255) / 256, 1, 1);
+    const std::uint32_t group = compat::lite() ? 128u : 256u;  // foliage_cull.comp
+    cmd.dispatch((instance_count_ + group - 1) / group, 1, 1);
 
     memoryBarrier(cmd, Stage::eComputeShader, Access::eShaderWrite, Stage::eDrawIndirect | Stage::eVertexShader | Stage::eTransfer,
                   Access::eIndirectCommandRead | Access::eShaderRead | Access::eTransferRead);

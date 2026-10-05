@@ -33,6 +33,16 @@ class VulkanDevice;
 //   set 0, binding 19 -> sonda de reflexion de la escena (cubo 1)
 //   set 0, binding 20 -> nubes volumetricas
 //   set 0, binding 21 -> mapa de entorno HDR
+//   (22-28: luz volumetrica, sombra de las nubes, cascadas sin comparar,
+//   sombras por rayos, modelo de Disney y oclusion del cielo desde arriba)
+//
+// En el modo compatible (VulkanCompat.h, moviles) no existen 19, 21, 22, 24,
+// 25, 26, 27 ni 28: el shader se queda en 16 texturas (el minimo de Vulkan).
+// hasBinding() dice cuales hay.
+//
+// Dos pipelines con los mismos descriptores: el completo y el ligero
+// (constante kLite de lighting.frag: sin sombras suaves de contacto del sol
+// ni oclusion del cielo desde arriba), para los PC de gama baja.
 //
 // Escribe HDR lineal: el tono y la gamma van en la composicion final.
 class LightingPass {
@@ -42,6 +52,9 @@ public:
     void destroy();
 
     const vk::raii::Pipeline& pipeline() const { return pipeline_; }
+    const vk::raii::Pipeline& pipeline(bool lite) const { return lite && *lite_pipeline_ ? lite_pipeline_ : pipeline_; }
+    // El binding existe en el layout (en el modo compatible faltan algunos).
+    bool hasBinding(std::uint32_t binding) const;
     const vk::raii::PipelineLayout& layout() const { return pipeline_layout_; }
     const vk::raii::DescriptorSetLayout& descriptorSetLayout() const { return set_layout_; }
 
@@ -53,6 +66,8 @@ private:
     vk::raii::DescriptorSetLayout set_layout_{nullptr};
     vk::raii::PipelineLayout pipeline_layout_{nullptr};
     vk::raii::Pipeline pipeline_{nullptr};
+    vk::raii::Pipeline lite_pipeline_{nullptr};
+    bool compat_ = false;
 };
 
 }  // namespace cramion::gfx

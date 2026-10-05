@@ -43,7 +43,7 @@ struct SteamBuildSettings {
 struct AndroidBuildSettings {
     std::string package;          // vacio = com.cramion.<juego>
     int version_code = 1;         // sube en cada version que se publique
-    int min_sdk = 29;             // Android 10
+    int min_sdk = 26;             // Android 8.0 (Vulkan 1.0+: el modo compatible del renderizador)
     int target_sdk = 35;          // Android 15 (lo que pide Google Play)
     int orientation = 0;          // al abrir: 0 horizontal, 1 vertical, 2 libre, 3 horizontal fija, 4 vertical fija
                                   // (despues, Screen.setOrientation en Lua)
@@ -51,6 +51,7 @@ struct AndroidBuildSettings {
     bool make_aab = false;        // Google Play
     bool split_obb = false;       // los assets en main.<version>.<paquete>.obb
     bool x86_64 = false;          // tambien para emuladores (si esta compilado)
+    bool armeabi_v7a = true;      // moviles de 32 bits (Android Go, gama baja; si esta compilado)
     bool internet = true;
     bool vibrate = true;
     bool record_audio = false;
@@ -64,6 +65,10 @@ struct AndroidBuildSettings {
     // Perfil movil: calidad inicial (0 Baja..3 Ultra) y FPS objetivo.
     int quality = 0;
     int target_fps = 30;
+    // Resolucion de la imagen (lado corto en pixeles; la pantalla la escala):
+    // 0 = segun la calidad (720 Baja, 900 Media, 1080 Alta, nativa en Ultra),
+    // -1 = la nativa de la pantalla.
+    int resolution = 0;
 };
 
 struct BuildConfig {

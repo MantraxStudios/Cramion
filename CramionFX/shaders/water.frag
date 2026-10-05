@@ -66,11 +66,17 @@ layout(set = 2, binding = 3) uniform sampler2DArrayShadow shadow_map;
 layout(set = 2, binding = 4) uniform sampler2D g_depth;
 layout(set = 2, binding = 5) uniform sampler2D scene_color;
 layout(set = 2, binding = 6) uniform samplerCube environment_map;
+// Modo compatible (moviles): sin sondas ni luz volumetrica (texturas por
+// shader dentro del minimo de Vulkan).
+#ifndef CRAMION_COMPAT
 layout(set = 2, binding = 7) uniform samplerCube reflection_probe_0;
 layout(set = 2, binding = 8) uniform samplerCube reflection_probe_1;
+#endif
 // Luz volumetrica (volumetric.frag, media resolucion): rgb = luz dispersada,
 // a = transmitancia, integradas hasta lo opaco (o 60 m).
+#ifndef CRAMION_COMPAT
 layout(set = 2, binding = 9) uniform sampler2D volumetric_map;
+#endif
 
 // Niebla por altura: MISMOS valores que lighting.frag, para que el agua quede
 // dentro de la niebla como todo lo demas (no "por encima").
@@ -596,6 +602,7 @@ void main() {
     // los reflejos rugosos: la direccion se sube con la rugosidad.
     vec3 env_direction = normalize(vec3(reflected.x, max(reflected.y, 0.02 + roughness * 0.4), reflected.z));
     vec3 fallback = textureLod(environment_map, env_direction, lod).rgb;
+#ifndef CRAMION_COMPAT
     float probe_weight = lights.probes[0].w + lights.probes[1].w;
     if (probe_weight > 0.001) {
         vec3 probe = vec3(0.0);
@@ -603,6 +610,7 @@ void main() {
         if (lights.probes[1].w > 0.001) probe += textureLod(reflection_probe_1, reflected, lod).rgb * lights.probes[1].w;
         fallback = mix(fallback, probe / probe_weight, 0.7);
     }
+#endif
     // El cielo de verdad (con nubes) si esa parte se ve en pantalla.
     vec4 sky = screenSky(reflected);
     fallback = mix(fallback, sky.rgb, sky.a * (1.0 - smoothstep(0.1, 0.4, roughness)));
@@ -741,6 +749,7 @@ void main() {
     // --- Luz volumetrica hasta la superficie ---
     // El mapa esta integrado hasta el fondo que hay detras del agua: se usa
     // solo el tramo camara -> superficie.
+#ifndef CRAMION_COMPAT
     if (lights.environment.y > 0.5) {
         vec4 volume = textureLod(volumetric_map, screen_uv, 0.0);
         float behind = sky_behind ? kVolumetricDistance : min(length(floor_position - camera.position.xyz), kVolumetricDistance);
@@ -750,6 +759,7 @@ void main() {
                                           : volume.rgb * fraction;
         color = color * transmittance_part + scattered;
     }
+#endif
 
     // Borde suave donde el agua toca el suelo.
     float alpha = sky_behind ? 1.0 : clamp(vertical_depth / 0.06, 0.0, 1.0);

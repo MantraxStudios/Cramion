@@ -1,3 +1,4 @@
+#include "CramionFX/vk/VulkanCompat.h"
 #include "CramionFX/vk/VoxelPass.h"
 
 #include "CramionFX/core/Frustum.h"
@@ -40,7 +41,7 @@ void imageBarrier(const vk::raii::CommandBuffer& cmd, vk::Image image, vk::Image
     b.subresourceRange = vk::ImageSubresourceRange{vk::ImageAspectFlagBits::eColor, base_mip, mips, 0, layers};
     vk::DependencyInfo dependency{};
     dependency.setImageMemoryBarriers(b);
-    cmd.pipelineBarrier2(dependency);
+    compat::pipelineBarrier(cmd, dependency);
 }
 
 }  // namespace
@@ -178,6 +179,9 @@ void VoxelPass::createPipelines(const VulkanDevice& device, std::array<vk::Forma
         blend.setAttachments(blends);
         vk::PipelineRenderingCreateInfo rendering{};
         rendering.setColorAttachmentFormats(gbuffer_formats);
+        // Modo compatible: 4 destinos (GBuffer::activeColorAttachments).
+        rendering.colorAttachmentCount = GBuffer::activeColorAttachments();
+        blend.attachmentCount = GBuffer::activeColorAttachments();
         rendering.depthAttachmentFormat = depth_format;
         vk::GraphicsPipelineCreateInfo info{};
         info.pNext = &rendering;
@@ -191,10 +195,10 @@ void VoxelPass::createPipelines(const VulkanDevice& device, std::array<vk::Forma
         info.pColorBlendState = &blend;
         info.pDynamicState = &dynamic;
         info.layout = *layout_;
-        gbuffer_pipeline_ = vk::raii::Pipeline(device.handle(), device.pipelineCache(), info);
+        gbuffer_pipeline_ = compat::makeGraphicsPipeline(device, info);
         if (device.fillModeNonSolidSupported()) {
             raster.polygonMode = vk::PolygonMode::eLine;
-            gbuffer_wire_pipeline_ = vk::raii::Pipeline(device.handle(), device.pipelineCache(), info);
+            gbuffer_wire_pipeline_ = compat::makeGraphicsPipeline(device, info);
             raster.polygonMode = vk::PolygonMode::eFill;
         }
     }
@@ -231,7 +235,7 @@ void VoxelPass::createPipelines(const VulkanDevice& device, std::array<vk::Forma
         info.pColorBlendState = &blend;
         info.pDynamicState = &dynamic;
         info.layout = *layout_;
-        shadow_pipeline_ = vk::raii::Pipeline(device.handle(), device.pipelineCache(), info);
+        shadow_pipeline_ = compat::makeGraphicsPipeline(device, info);
     }
 }
 
@@ -507,7 +511,7 @@ bool VoxelPass::recordUploads(const vk::raii::CommandBuffer& cmd, std::uint32_t 
     if (!barriers.empty()) {
         vk::DependencyInfo dependency{};
         dependency.setBufferMemoryBarriers(barriers);
-        cmd.pipelineBarrier2(dependency);
+        compat::pipelineBarrier(cmd, dependency);
     }
     return true;
 }

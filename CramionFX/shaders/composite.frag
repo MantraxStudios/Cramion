@@ -285,7 +285,9 @@ void main() {
     color = mix(color, halo, settings.exposure.y);
 
     // --- Rayos de luz ---
-    color += texture(light_shafts, uv).rgb * settings.tone.x;
+    // Solo si se dibujaron este frame: si no, la imagen puede no tener nada
+    // valido (y basura * 0 puede ser NaN).
+    if (settings.tone.x > 0.0) color += texture(light_shafts, uv).rgb * settings.tone.x;
 
     // --- Destellos del sol en la lente ---
     color += lensFlare(uv) * luminance(textureLod(bloom, settings.lens.zw, 0.0).rgb / kBloomLevels + vec3(4.0));

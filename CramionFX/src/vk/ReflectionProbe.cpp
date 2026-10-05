@@ -1,3 +1,4 @@
+#include "CramionFX/vk/VulkanCompat.h"
 #include "CramionFX/vk/ReflectionProbe.h"
 
 #include "CramionFX/vk/VulkanDevice.h"
@@ -42,7 +43,7 @@ void pipelineBarrier(const vk::raii::CommandBuffer& cmd,
     vk::DependencyInfo dependency{};
     dependency.imageMemoryBarrierCount = barriers.size();
     dependency.pImageMemoryBarriers = barriers.data();
-    cmd.pipelineBarrier2(dependency);
+    compat::pipelineBarrier(cmd, dependency);
 }
 
 }  // namespace

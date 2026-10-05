@@ -17,11 +17,13 @@ class VulkanSurface;
 // dispositivo logico con sus colas.
 //
 // Requisitos que debe cumplir una GPU para ser aceptada:
-//   - API >= 1.3 (dynamic rendering y synchronization2 en el nucleo).
-//   - Extension VK_KHR_swapchain.
+//   - Vulkan (cualquier version) con VK_KHR_swapchain.
 //   - Una familia de colas con graficos y otra capaz de presentar en la
 //     superficie (pueden ser la misma).
 //   - Al menos un formato y un modo de presentacion en la superficie.
+// Con Vulkan 1.3, dynamic rendering, synchronization2 y limites de escritorio
+// va por el camino completo; si no (moviles, GPU antiguas), por el modo
+// compatible (VulkanCompat.h): mismas imagenes con menos recursos por shader.
 class VulkanDevice {
 public:
     VulkanDevice() = default;
@@ -72,11 +74,23 @@ public:
     // vkCmdDrawIndexedIndirectCount y varios comandos por llamada (no en
     // muchas GPU de movil).
     bool indirectCountSupported() const { return indirect_count_supported_; }
+    // firstInstance en los comandos de dibujo indirecto (vegetacion, hierba):
+    // obligatorio en el camino completo; algunos moviles no lo tienen.
+    bool drawIndirectFirstInstanceSupported() const { return draw_indirect_first_instance_; }
     bool textureCompressionBcSupported() const { return texture_compression_bc_supported_; }
     // Poligonos como lineas (vista Wireframe).
     bool fillModeNonSolidSupported() const { return fill_mode_non_solid_supported_; }
     // Shaders de teselacion (materiales con relieve teselado).
     bool tessellationSupported() const { return tessellation_supported_; }
+    // Modo compatible (VulkanCompat.h): moviles y GPU sin lo del camino de
+    // escritorio. Shaders de shaders/compat, recursos por shader dentro de
+    // los minimos de Vulkan, G-buffer de 4 destinos, culling en la CPU.
+    bool compatMode() const { return compat_mode_; }
+    const std::string& compatReason() const { return compat_reason_; }
+    const vk::PhysicalDeviceLimits& limits() const { return limits_; }
+    // Texturas comprimidas de movil (para elegir el formato de las texturas).
+    bool textureCompressionAstcSupported() const { return texture_compression_astc_supported_; }
+    bool textureCompressionEtc2Supported() const { return texture_compression_etc2_supported_; }
 
     // Trazado de rayos por hardware (ray queries + estructuras de
     // aceleracion, con direcciones de buffer y texturas indexadas en los
@@ -113,8 +127,10 @@ private:
     static QueueFamilyIndices findQueueFamilies(const vk::raii::PhysicalDevice& candidate,
                                                 const vk::raii::SurfaceKHR& surface);
     static bool supportsRequiredExtensions(const vk::raii::PhysicalDevice& candidate);
-    static bool supportsRequiredFeatures(const vk::raii::PhysicalDevice& candidate);
     static bool supportsRayTracing(const vk::raii::PhysicalDevice& candidate);
+    // Modo compatible: dispositivo con las extensiones y caracteristicas que
+    // tenga (Vulkan 1.0-1.2, moviles), sin trazado de rayos ni mesh shaders.
+    void createCompatLogicalDevice(const char* reason);
 
     // Primer formato de profundidad de la lista de preferencias que la GPU
     // admita como attachment.
@@ -132,6 +148,7 @@ private:
     vk::Format depth_format_ = vk::Format::eUndefined;
     bool depth_clamp_supported_ = false;
     bool indirect_count_supported_ = true;
+    bool draw_indirect_first_instance_ = true;
     bool texture_compression_bc_supported_ = false;
     bool fill_mode_non_solid_supported_ = false;
     bool tessellation_supported_ = false;
@@ -141,6 +158,11 @@ private:
     bool invocation_reorder_supported_ = false;
     bool mesh_shader_supported_ = false;
     bool memory_budget_supported_ = false;
+    bool compat_mode_ = false;
+    std::string compat_reason_;
+    vk::PhysicalDeviceLimits limits_{};
+    bool texture_compression_astc_supported_ = false;
+    bool texture_compression_etc2_supported_ = false;
     std::string device_name_;
     std::uint32_t api_version_ = 0;
     std::vector<std::string> extra_extensions_;     // OpenXR

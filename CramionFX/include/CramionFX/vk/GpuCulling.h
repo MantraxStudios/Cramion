@@ -58,6 +58,8 @@ public:
 
     void create(const VulkanDevice& device);
     void destroy();
+    // Sin crear (modo compatible: el escenario lo recorta la CPU) no hace nada.
+    bool created() const { return created_; }
 
     // Rehace la piramide Hi-Z con el tamano del depth buffer (al crear la
     // ventana o cambiar su tamano).
@@ -91,6 +93,7 @@ private:
     void writeCullSets(const VulkanDevice& device,
                        const std::vector<VulkanBuffer>& camera_buffers);
 
+    bool created_ = false;
     std::uint32_t cluster_count_ = 0;
     std::uint32_t cluster_capacity_ = 0;
     std::uint32_t group_capacity_ = 0;

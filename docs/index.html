@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Cramion Engine</title>
-  <meta name="description" content="Cramion: motor de juegos para Windows con renderizador diferido en Vulkan 1.3, editor de escenas, física, terreno, agua y scripting en C++.">
+  <meta name="description" content="Cramion: motor de juegos para Windows y Android con renderizador diferido en Vulkan, editor de escenas, física, terreno, agua y scripting en C++.">
   <meta name="theme-color" content="#09090b">
   <link rel="icon" href="img/icon.png">
   <script>
@@ -125,14 +125,14 @@
       <div class="relative mx-auto grid max-w-6xl gap-12 px-4 py-16 sm:px-6 lg:grid-cols-[1fr_1.1fr] lg:items-center lg:py-24">
         <div class="min-w-0">
           <a href="#novedades" class="badge hover:text-foreground">
-            <span class="font-medium text-foreground">Nuevo en la 2.2</span> Pies en el suelo rehechos, Insights y audio
+            <span class="font-medium text-foreground">Nuevo en la 2.3</span> Android en casi todos los móviles, gama baja más rápida y VR
             <svg class="size-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
           </a>
           <h1 class="mt-6 text-4xl font-bold leading-[1.08] tracking-tight sm:text-5xl lg:text-6xl">
             Un motor de juegos 3D para Windows, con su editor.
           </h1>
           <p class="mt-6 max-w-xl text-lg text-muted-foreground">
-            Montas la escena en el editor, escribes el juego en C++ y le das a Play. Render en Vulkan 1.3, física con Jolt,
+            Montas la escena en el editor, escribes el juego en C++ y le das a Play. Render en Vulkan (1.3, o desde 1.0 en Android), física con Jolt,
             terreno, agua, navegación, animación con IK y exportación a un <span class="code-inline">.exe</span>.
             Gratis para hacer y vender tus juegos, sin regalías.
           </p>
@@ -142,7 +142,7 @@
             </a>
             <a href="manual/index.html" class="btn btn-outline">Leer la documentación</a>
           </div>
-          <p class="mt-6 font-mono text-xs text-muted-foreground">2.2 · Windows 10/11 x64 · Android · realidad virtual · Vulkan 1.3 · ≈152 MB</p>
+          <p class="mt-6 font-mono text-xs text-muted-foreground">2.3 · Windows 10/11 x64 · Android (64 y 32 bits) · realidad virtual · Vulkan · ≈161 MB</p>
         </div>
 
         <figure class="card min-w-0 overflow-hidden shadow-2xl shadow-black/20">
@@ -282,45 +282,69 @@ CRAMION_SCRIPT(Jugador)</code></pre>
         <div class="flex flex-wrap items-end justify-between gap-4">
           <div>
             <p class="text-sm font-medium text-brand">Novedades</p>
-            <h2 class="mt-2 text-3xl font-bold tracking-tight sm:text-4xl">Cramion 2.2: pies en el suelo, Insights y audio</h2>
-            <p class="mt-3 max-w-2xl text-muted-foreground">Personajes y animales que pisan de verdad (también en escaleras), un perfilador de CPU para encontrar los tirones y un audio que se para al dar Stop.</p>
+            <h2 class="mt-2 text-3xl font-bold tracking-tight sm:text-4xl">Cramion 2.3: Android en casi todos los móviles</h2>
+            <p class="mt-3 max-w-2xl text-muted-foreground">Un modo compatible del render para cualquier GPU de móvil con Vulkan, móviles de 32 bits, PC de gama baja mucho más rápidos, trazado de rayos sin hormigueo y la realidad virtual como en Unity.</p>
           </div>
           <span class="badge">octubre de 2026</span>
         </div>
 
         <div class="mt-10 grid gap-4 sm:grid-cols-2">
           <div class="card min-w-0 p-6 sm:col-span-2">
-            <p class="text-xs font-medium uppercase tracking-wide text-brand">Animación e IK</p>
-            <p class="mt-2 text-lg font-semibold">Pies en el suelo, rehechos para humanos y animales</p>
+            <p class="text-xs font-medium uppercase tracking-wide text-brand">Android</p>
+            <p class="mt-2 text-lg font-semibold">Funciona en casi todos los móviles</p>
             <ul class="mt-3 grid gap-x-8 gap-y-2 text-sm text-muted-foreground sm:grid-cols-2">
-              <li>Los pies ya no flotan al andar ni de pie: la pierna casi recta ya no se encoge.</li>
-              <li>En escaleras cada pie mira el suelo bajo el tobillo y bajo la punta: no se mete en los escalones ni tropieza con la tabica.</li>
-              <li>Cuando el Character Controller sube o baja un escalón de golpe, el pie apoyado se queda y la cadera no pega un salto.</li>
-              <li>Las rodillas siempre se doblan hacia delante; las patas de los animales, como en su pose de reposo.</li>
-              <li>En el aire (saltar, caer) el IK se aparta solo; y el rayo de los pies ya no se cuela por paredes ni pisa al propio personaje.</li>
-              <li>Además: <span class="code-inline">crossFade</span> como el de Unity, FBX solo de animación y retargeting de BVH sin pies flotando.</li>
+              <li>Modo compatible del render desde Vulkan 1.0: Adreno, Mali, PowerVR y Xclipse. Antes pedía Vulkan 1.3.</li>
+              <li>Móviles de 32 bits (Android Go y gama baja) y Android 8.0 o superior.</li>
+              <li>Las texturas DDS funcionan también en las GPU que no las leen (Mali, PowerVR).</li>
+              <li>Se dibuja a la resolución que el móvil puede mover: 720p en Baja, 900p en Media, 1080p en Alta; la pantalla la escala sin coste.</li>
+              <li>Sombras y texturas a la medida del teléfono, y el presupuesto adaptativo funciona también en GPU sin timestamps.</li>
+              <li>Probado emulando los perfiles Android de Vulkan 2021 y 2022 con las capas de validación: sin errores.</li>
             </ul>
+            <a href="manual/exportar.html" class="btn btn-outline btn-sm mt-4">Exportar a Android en la documentación</a>
           </div>
           <div class="card min-w-0 p-6">
             <p class="text-xs font-medium uppercase tracking-wide text-brand">Rendimiento</p>
-            <p class="mt-2 text-lg font-semibold">Insights</p>
-            <p class="mt-2 text-sm text-muted-foreground">Perfilador de CPU con árbol de zonas, percentiles del frame y los tirones capturados solos, con la zona que se comió el frame. Capturas <span class="code-inline">.crtrace</span> que se abren en Perfetto, también desde el juego exportado.</p>
+            <p class="mt-2 text-lg font-semibold">PC de gama baja mucho más rápidos</p>
+            <p class="mt-2 text-sm text-muted-foreground">Las sombras del sol ya no se redibujan si nada se mueve y en gama baja se intercalan las cascadas; la GI, el SSAO, los reflejos y los rayos de luz apagados ya no cuestan. Bistro con el preset Bajo: de 5,24 a 1,66 ms de GPU.</p>
           </div>
           <div class="card min-w-0 p-6">
-            <p class="text-xs font-medium uppercase tracking-wide text-brand">Rendimiento</p>
-            <p class="mt-2 text-lg font-semibold">Presupuestos automáticos</p>
-            <p class="mt-2 text-sm text-muted-foreground">LOD de animación (lo lejano se anima menos veces), presupuesto de partículas que nunca se pasa y voces de audio virtuales: solo se mezclan las que más se oyen.</p>
+            <p class="text-xs font-medium uppercase tracking-wide text-brand">Trazado de rayos</p>
+            <p class="mt-2 text-lg font-semibold">Sin hormigueo sobre los objetos</p>
+            <p class="mt-2 text-sm text-muted-foreground">Las sombras y los reflejos por rayos se filtran en el tiempo y en el espacio, y sus rayos salen de la cara real del triángulo. Con la imagen quieta, los píxeles que cambian pasan del 0,61 % al 0,03 %.</p>
           </div>
           <div class="card min-w-0 p-6 sm:col-span-2">
-            <p class="text-xs font-medium uppercase tracking-wide text-brand">Arreglos</p>
-            <p class="mt-2 text-lg font-semibold">El audio se para de verdad</p>
-            <p class="mt-2 text-sm text-muted-foreground">Al dar Stop ya no siguen sonando la lluvia, el viento, los truenos ni la reverberación, y pausar el Play pausa el audio. Además, el editor ya no se cuelga al cerrarse con scripts de C++ cargados y el juego exportado siempre se cierra.</p>
-            <a href="manual/esqueletos.html#ik" class="btn btn-outline btn-sm mt-4">IK de pies en la documentación</a>
+            <p class="text-xs font-medium uppercase tracking-wide text-brand">Realidad virtual</p>
+            <p class="mt-2 text-lg font-semibold">VR como en Unity</p>
+            <ul class="mt-3 grid gap-x-8 gap-y-2 text-sm text-muted-foreground sm:grid-cols-2">
+              <li><span class="text-foreground">Play on VR</span> al lado de Play: conecta el casco sin reabrir el editor.</li>
+              <li>Una cámara por ojo a la resolución del casco, con TAA, rayos y reflejos por ojo.</li>
+              <li>Coger y lanzar con las manos: XR Interactor y XR Grabbable con física.</li>
+              <li>UI en el mundo: paneles en la escena que se usan con el rayo y el gatillo.</li>
+              <li>Jugador VR en primera persona con física, de pie o sentado.</li>
+              <li>Plantilla de VR con su script de C++.</li>
+            </ul>
+            <a href="manual/realidad-virtual.html" class="btn btn-outline btn-sm mt-4">Realidad virtual en la documentación</a>
           </div>
         </div>
 
         <h3 class="mt-16 text-lg font-semibold tracking-tight">Versiones anteriores</h3>
         <div class="mt-4 divide-y divide-border rounded-xl border border-border">
+          <details id="novedades-22" class="group">
+            <summary class="flex cursor-pointer items-center justify-between gap-4 px-5 py-4 hover:bg-accent/50">
+              <span><span class="font-semibold">2.2</span> <span class="ml-2 text-sm text-muted-foreground">Pies en el suelo rehechos, Insights y audio</span></span>
+              <svg class="chev size-4 shrink-0 transition-transform" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="m6 9 6 6 6-6"/></svg>
+            </summary>
+            <div class="px-5 pb-5 text-sm text-muted-foreground">
+              <ul class="list-disc space-y-2 pl-5">
+                <li><span class="text-foreground">Pies en el suelo, rehechos.</span> Humanos y animales: los pies ya no flotan, en escaleras no se meten en los escalones, la cadera no salta al subir un escalón, las rodillas siempre se doblan hacia delante y en el aire el IK se aparta solo.</li>
+                <li><span class="text-foreground">Insights.</span> Perfilador de CPU con árbol de zonas, percentiles del frame, tirones capturados solos y capturas <span class="code-inline">.crtrace</span> para Perfetto, también en el juego exportado.</li>
+                <li><span class="text-foreground">Presupuestos automáticos.</span> LOD de animación, presupuesto de partículas y voces de audio virtuales.</li>
+                <li><span class="text-foreground">Audio que se para.</span> Al dar Stop ya no siguen sonando la lluvia, el viento ni la reverberación, y pausar el Play pausa el audio.</li>
+                <li><span class="text-foreground">Animación.</span> <span class="code-inline">crossFade</span> como el de Unity, FBX solo de animación y retargeting de BVH sin pies flotando.</li>
+              </ul>
+              <a href="manual/esqueletos.html#ik" class="link mt-4 inline-block text-foreground">IK de pies en la documentación</a>
+            </div>
+          </details>
           <details id="novedades-21" class="group">
             <summary class="flex cursor-pointer items-center justify-between gap-4 px-5 py-4 hover:bg-accent/50">
               <span><span class="font-semibold">2.1</span> <span class="ml-2 text-sm text-muted-foreground">Grafos de nodos, 2D, scripts en C++ y luz realista (incluye la 2.0)</span></span>
@@ -498,10 +522,10 @@ CRAMION_SCRIPT(Jugador)</code></pre>
       <div class="mx-auto grid max-w-6xl gap-6 px-4 py-20 sm:px-6 lg:grid-cols-[1fr_1.2fr]">
         <div class="card min-w-0 p-6 sm:p-8">
           <p class="text-sm font-medium text-brand">Descargar</p>
-          <h2 class="mt-2 text-3xl font-bold tracking-tight">Cramion 2.2 para Windows</h2>
+          <h2 class="mt-2 text-3xl font-bold tracking-tight">Cramion 2.3 para Windows</h2>
           <p class="mt-4 text-muted-foreground">Descomprime y abre <span class="code-inline">CramionEditor.exe</span>. El motor avisa de las versiones nuevas y se actualiza solo.</p>
           <a href="https://github.com/MantraxStudios/Cramion/releases/latest/download/Cramion-win64.zip" class="btn btn-primary mt-6 w-full sm:w-auto">
-            <svg class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v11M7 10l5 5 5-5M5 20h14"/></svg>Cramion-win64.zip · ≈152 MB
+            <svg class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v11M7 10l5 5 5-5M5 20h14"/></svg>Cramion-win64.zip · ≈161 MB
           </a>
           <div class="mt-6 rounded-lg border border-border bg-muted px-4 py-3 text-sm text-muted-foreground">
             La única descarga oficial es esta, y es gratis. Si alguien te vende Cramion, no es oficial: avisa en el

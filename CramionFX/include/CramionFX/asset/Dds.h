@@ -5,6 +5,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <vector>
 
 namespace cramion::asset {
 
@@ -17,6 +18,12 @@ bool isDds(const std::uint8_t* data, std::size_t size);
 // formatos sin comprimir de 32 bits se convierten a RGBA8 (solo el nivel 0;
 // los mips los genera la GPU). Devuelve false si el formato no se reconoce.
 bool parseDds(const std::uint8_t* data, std::size_t size, TextureData& out);
+
+// Descomprime el nivel 0 de una textura BC (BC1-BC5, BC7) a RGBA8, para las
+// GPU que no las leen (casi todas las de movil: Mali, PowerVR). Lo que el
+// formato no tiene sale como lo daria la GPU: BC4 (r, 0, 0, 1), BC5
+// (r, g, 0, 1). Vacio si no es BC o faltan datos. (BcDecode.cpp)
+std::vector<std::uint8_t> decodeBlockCompressed(const TextureData& texture);
 
 }  // namespace cramion::asset
 

@@ -142,7 +142,7 @@ std::vector<gfx::WorldUiCanvas> buildWorldUi(const std::vector<ui::WorldCanvasDr
             const ImTextureID texture = cmd.TexRef._TexData != nullptr ? cmd.TexRef._TexData->TexID : cmd.TexRef._TexID;
             if (texture == ImTextureID_Invalid) continue;
             gfx::WorldUiBatch batch;
-            batch.texture = reinterpret_cast<VkDescriptorSet>(static_cast<std::uintptr_t>(texture));
+            batch.texture = toDescriptorSet(texture);
             batch.first_index = cmd.IdxOffset;
             batch.index_count = cmd.ElemCount;
             batch.vertex_offset = cmd.VtxOffset;

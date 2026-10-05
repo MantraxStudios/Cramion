@@ -29,7 +29,14 @@ layout(set = 0, binding = 3) uniform WeatherBuffer {
     vec4 fire_zones[4];  // xy = esquina minima (x, z), z = lado (m), w = parte del mapa usada (0 = apagada)
     Decal decals[kMaxDecals];
 } weather;
-layout(set = 0, binding = 4) uniform sampler2D decal_textures[32];  // kMaxDecalTextures (GpuTypes.h)
+#ifdef CRAMION_COMPAT
+// Modo compatible (moviles): 16 texturas por shader como mucho (el minimo de
+// Vulkan), asi que solo 4 de decals (VulkanRenderer::decalTextureSlots).
+const int kDecalTextures = 4;
+#else
+const int kDecalTextures = 32;  // kMaxDecalTextures (GpuTypes.h)
+#endif
+layout(set = 0, binding = 4) uniform sampler2D decal_textures[kDecalTextures];
 // 6 = mapa de quemado de las zonas de fuego.
 #include "fire_burn.glsl"
 
@@ -45,8 +52,12 @@ layout(location = 3) out vec2 out_velocity;  // UV actual - UV anterior (sin jit
 float surface_sun_shadow = 1.0;
 
 // Modelo de sombreado de Disney (disney_brdf.glsl): r = modelo / 255, gba =
-// parametros. 0 = estandar (lo que escriben el terreno, los voxeles...).
+// parametros. 0 = estandar (lo que escriben el terreno, los voxeles...). En
+// el modo compatible el G-buffer tiene 4 destinos (el minimo de Vulkan) y todo
+// es estandar.
+#ifndef CRAMION_COMPAT
 layout(location = 4) out vec4 out_shading;
+#endif
 vec4 surface_shading = vec4(0.0);
 
 // Movimiento en pantalla de este pixel, de las posiciones de recorte (sin
@@ -176,6 +187,7 @@ void writeSurface(vec4 albedo, vec3 n, vec3 normal, vec3 tangent_normal, vec3 aa
         vec2 duvdx = (to_decal * dpdx).xz * vec2(1.0, -1.0);
         vec2 duvdy = (to_decal * dpdy).xz * vec2(1.0, -1.0);
         int texture_index = int(params.y);
+        if (texture_index >= kDecalTextures) texture_index = -1;
         vec4 texel = texture_index >= 0 ? textureGrad(decal_textures[texture_index], uv, duvdx, duvdy)
                                         : vec4(1.0);
         vec4 color = weather.decals[i].color;
@@ -350,5 +362,7 @@ void writeSurface(vec4 albedo, vec3 n, vec3 normal, vec3 tangent_normal, vec3 aa
     // Metalicidad (0..1) + 2 x sombra propia en 8 niveles (0 = nada).
     float self_shadow_level = floor((1.0 - clamp(surface_sun_shadow, 0.0, 1.0)) * 7.0 + 0.5);
     out_material = vec4(emissive, clamp(metallic, 0.0, 1.0) + 2.0 * self_shadow_level);
+#ifndef CRAMION_COMPAT
     out_shading = surface_shading;
+#endif
 }

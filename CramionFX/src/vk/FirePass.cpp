@@ -1,3 +1,4 @@
+#include "CramionFX/vk/VulkanCompat.h"
 #include "CramionFX/vk/FirePass.h"
 
 #include "CramionFX/vk/VulkanDevice.h"
@@ -100,7 +101,7 @@ void FirePass::create(const VulkanDevice& device, vk::Format color_format, std::
             layerBarrier(height_image, vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal,
                          vk::PipelineStageFlagBits2::eTopOfPipe, {}, vk::PipelineStageFlagBits2::eTransfer,
                          vk::AccessFlagBits2::eTransferWrite)};
-        cmd.pipelineBarrier2(vk::DependencyInfo{}.setImageMemoryBarriers(to_clear));
+        compat::pipelineBarrier(cmd, vk::DependencyInfo{}.setImageMemoryBarriers(to_clear));
         const vk::ClearColorValue zero{std::array<float, 4>{0.0f, 0.0f, 0.0f, 0.0f}};
         const vk::ImageSubresourceRange range{vk::ImageAspectFlagBits::eColor, 0, 1, 0, kFireZoneSlots};
         cmd.clearColorImage(map_image, vk::ImageLayout::eTransferDstOptimal, zero, range);
@@ -112,7 +113,7 @@ void FirePass::create(const VulkanDevice& device, vk::Format color_format, std::
             layerBarrier(height_image, vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eShaderReadOnlyOptimal,
                          vk::PipelineStageFlagBits2::eTransfer, vk::AccessFlagBits2::eTransferWrite, kReaders,
                          vk::AccessFlagBits2::eShaderSampledRead)};
-        cmd.pipelineBarrier2(vk::DependencyInfo{}.setImageMemoryBarriers(to_read));
+        compat::pipelineBarrier(cmd, vk::DependencyInfo{}.setImageMemoryBarriers(to_read));
     });
     initialized_layout_ = true;
 
@@ -260,7 +261,7 @@ void FirePass::createPipeline(const VulkanDevice& device, vk::Format color_forma
     pipeline_info.pColorBlendState = &color_blend;
     pipeline_info.pDynamicState = &dynamic_state;
     pipeline_info.layout = *layout_;
-    pipeline_ = vk::raii::Pipeline(device.handle(), device.pipelineCache(), pipeline_info);
+    pipeline_ = compat::makeGraphicsPipeline(device, pipeline_info);
 }
 
 void FirePass::destroy() {
@@ -368,7 +369,7 @@ void FirePass::recordUpload(const vk::raii::CommandBuffer& cmd, std::uint32_t fr
     };
     if (!map_regions.empty()) add(map_image);
     if (!height_regions.empty()) add(height_image);
-    cmd.pipelineBarrier2(vk::DependencyInfo{}.setImageMemoryBarriers(before));
+    compat::pipelineBarrier(cmd, vk::DependencyInfo{}.setImageMemoryBarriers(before));
     if (!map_regions.empty()) {
         cmd.copyBufferToImage(*staging_[frame].handle(), map_image, vk::ImageLayout::eTransferDstOptimal, map_regions);
     }
@@ -376,7 +377,7 @@ void FirePass::recordUpload(const vk::raii::CommandBuffer& cmd, std::uint32_t fr
         cmd.copyBufferToImage(*staging_[frame].handle(), height_image, vk::ImageLayout::eTransferDstOptimal,
                               height_regions);
     }
-    cmd.pipelineBarrier2(vk::DependencyInfo{}.setImageMemoryBarriers(after));
+    compat::pipelineBarrier(cmd, vk::DependencyInfo{}.setImageMemoryBarriers(after));
 }
 
 void FirePass::record(const vk::raii::CommandBuffer& cmd, std::uint32_t frame, vk::Extent2D extent,
@@ -417,7 +418,7 @@ void FirePass::record(const vk::raii::CommandBuffer& cmd, std::uint32_t frame, v
     const vk::DescriptorSet set = *sets_[frame];
     vk::DescriptorBufferInfo camera_info{camera_buffer, 0, camera_size};
     vk::DescriptorBufferInfo fire_info{*uniforms_[frame].handle(), 0, sizeof(GpuFire)};
-    vk::DescriptorImageInfo depth_info{*depth_sampler_, depth_view, vk::ImageLayout::eDepthReadOnlyOptimal};
+    vk::DescriptorImageInfo depth_info{*depth_sampler_, depth_view, compat::depthReadOnlyLayout()};
     vk::DescriptorImageInfo map_info{*map_sampler_, *map_.view(), vk::ImageLayout::eShaderReadOnlyOptimal};
     vk::DescriptorImageInfo height_info{*map_sampler_, *height_.view(), vk::ImageLayout::eShaderReadOnlyOptimal};
     vk::DescriptorImageInfo noise_info{*noise_sampler_, *noise_.view(), vk::ImageLayout::eShaderReadOnlyOptimal};

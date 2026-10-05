@@ -12,6 +12,7 @@
 #include <chrono>
 #include <cstdint>
 #include <array>
+#include <type_traits>
 #include <filesystem>
 #include <future>
 #include <string>
@@ -19,6 +20,25 @@
 #include <vector>
 
 namespace cramion::editor {
+
+// VkDescriptorSet <-> ImTextureID. En 64 bits el handle es un puntero; en 32
+// bits (armeabi-v7a) un uint64_t, y reinterpret_cast no vale para los dos.
+template <typename Handle>
+ImTextureID toTextureId(Handle handle) {
+    if constexpr (std::is_pointer_v<Handle>) {
+        return static_cast<ImTextureID>(reinterpret_cast<std::uintptr_t>(handle));
+    } else {
+        return static_cast<ImTextureID>(handle);
+    }
+}
+template <typename Set = VkDescriptorSet>
+Set toDescriptorSet(ImTextureID id) {
+    if constexpr (std::is_pointer_v<Set>) {
+        return reinterpret_cast<Set>(static_cast<std::uintptr_t>(id));
+    } else {
+        return static_cast<Set>(id);
+    }
+}
 
 // Iconos del editor: los PNG de CramionEditor/assets/gizmos (glifos blancos
 // sobre transparente: se tinen con el color que se quiera). El orden es el de

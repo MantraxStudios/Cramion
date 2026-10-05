@@ -1,0 +1,201 @@
+#version 450
+
+// Acumulacion temporal de los reflejos por rayos (rt_reflections.comp), a
+// resolucion completa (primer paso del filtro; despues rt_reflection_atrous).
+//
+// rt_reflections.comp lanza UN rayo por pixel en una direccion al azar del
+// lobulo de la rugosidad. En un espejo todos los rayos van al mismo sitio (sin
+// ruido); en una superficie satinada cada pixel ve otra cosa cada frame: un
+// grano que bailaba sobre todo lo brillante. Antes solo se mezclaba con un
+// peso fijo (0.88) y un recorte min/max de 3x3 que, con ese ruido, apenas
+// quitaba nada.
+//
+// Como la GI (gi_temporal.comp, SVGF), cada pixel lleva cuantos frames de
+// historia tiene (n) y mezcla con alfa = 1/n hasta un tope que depende de la
+// rugosidad: un espejo guarda pocos frames (su reflejo se mueve con la camara
+// y no tiene ruido que quitar) y lo rugoso hasta ~40. La historia se lee
+// reproyectada (bilineal, solo de texeles de la misma superficie) y se recorta
+// a la media +- gamma desviaciones de la vecindad 3x3 de este frame (mas
+// estricto en lo pulido): lo que cambio de verdad no deja estela. Los puntos
+// sueltos muy brillantes (un rayo que dio en el sol) se recortan antes.
+//
+// Salida: rgb = reflejo acumulado, a = varianza de su luminancia (guia el
+// filtro espacial); y los momentos (E[L], E[L^2], frames, profundidad lineal)
+// que se copian a la historia con el color.
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) uniform CameraBuffer {
+    mat4 view;
+    mat4 projection;
+    mat4 view_projection;
+    mat4 inverse_view_projection;
+    vec4 position;
+} camera;
+
+layout(set = 0, binding = 1) uniform sampler2D g_depth;
+layout(set = 0, binding = 2) uniform sampler2D g_normal;            // rg = normal, b = rugosidad
+layout(set = 0, binding = 3) uniform sampler2D current_reflection;  // rt_reflections.comp (a = confianza)
+layout(set = 0, binding = 4) uniform sampler2D history_color;       // acumulado anterior (a = varianza)
+layout(set = 0, binding = 5) uniform sampler2D history_moments;     // E[L], E[L^2], frames, profundidad
+layout(set = 0, binding = 6, rgba16f) uniform writeonly image2D out_color;
+layout(set = 0, binding = 7, rgba16f) uniform writeonly image2D out_moments;
+
+layout(push_constant) uniform PushConstants {
+    mat4 previous_view_projection;
+    vec4 params;  // x = hay historia valida
+} push;
+
+const float kMaxRadiance = 30.0;  // igual que rt_common.glsl
+
+float luminance(vec3 c) {
+    return dot(c, vec3(0.2126, 0.7152, 0.0722));
+}
+
+float linearDepth(float depth) {
+    return camera.projection[3][2] / (depth + camera.projection[2][2]);
+}
+
+vec3 decodeNormal(vec2 e) {
+    vec3 n = vec3(e.x, 1.0 - abs(e.x) - abs(e.y), e.y);
+    float t = max(-n.y, 0.0);
+    n.x += n.x >= 0.0 ? -t : t;
+    n.z += n.z >= 0.0 ? -t : t;
+    return normalize(n);
+}
+
+// Color comprimido (reversible): un punto HDR extremo no domina las medias
+// de la vecindad.
+vec3 compress(vec3 c) {
+    return c / (1.0 + luminance(c));
+}
+vec3 expand(vec3 c) {
+    return c / max(1.0 - luminance(c), 1e-3);
+}
+
+void main() {
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = imageSize(out_color);
+    if (any(greaterThanEqual(pixel, size))) {
+        return;
+    }
+
+    float depth = texelFetch(g_depth, pixel, 0).r;
+    vec4 current = texelFetch(current_reflection, pixel, 0);
+    vec4 normal_sample = texelFetch(g_normal, pixel, 0);
+    // Cielo o demasiado rugoso (lo pone el IBL): nada que acumular.
+    if (depth >= 1.0 || current.a <= 0.0) {
+        imageStore(out_color, pixel, vec4(clamp(current.rgb, vec3(0.0), vec3(kMaxRadiance)), 0.0));
+        imageStore(out_moments, pixel, vec4(0.0, 0.0, 0.0, depth >= 1.0 ? 0.0 : linearDepth(depth)));
+        return;
+    }
+    float view_depth = linearDepth(depth);
+    vec3 center_normal = decodeNormal(normal_sample.rg);
+    float roughness = normal_sample.b;
+    // 0 = espejo .. 1 = satinado/rugoso.
+    float rough = smoothstep(0.03, 0.45, roughness);
+
+    // --- Vecindad 3x3 de este frame (misma superficie) ---
+    vec3 m1 = vec3(0.0);
+    vec3 m2 = vec3(0.0);
+    vec2 l_moments = vec2(0.0);
+    float count = 0.0;
+    for (int dy = -1; dy <= 1; ++dy) {
+        for (int dx = -1; dx <= 1; ++dx) {
+            ivec2 q = clamp(pixel + ivec2(dx, dy), ivec2(0), size - 1);
+            if (dx != 0 || dy != 0) {
+                float qz = texelFetch(g_depth, q, 0).r;
+                if (qz >= 1.0 || abs(linearDepth(qz) - view_depth) > view_depth * 0.05 + 0.02) continue;
+                vec4 qn = texelFetch(g_normal, q, 0);
+                if (dot(decodeNormal(qn.rg), center_normal) < 0.85 || abs(qn.b - roughness) > 0.2) continue;
+            }
+            vec3 c = clamp(texelFetch(current_reflection, q, 0).rgb, vec3(0.0), vec3(kMaxRadiance));
+            vec3 cc = compress(c);
+            m1 += cc;
+            m2 += cc * cc;
+            float l = luminance(c);
+            l_moments += vec2(l, l * l);
+            count += 1.0;
+        }
+    }
+    vec3 mean = m1 / count;
+    vec3 sigma = sqrt(max(m2 / count - mean * mean, vec3(0.0)));
+
+    // Punto suelto muy brillante (fireflie): al rango de sus vecinos.
+    vec3 current_compressed = compress(clamp(current.rgb, vec3(0.0), vec3(kMaxRadiance)));
+    current_compressed = min(current_compressed, mean + sigma * mix(4.0, 1.5, rough) + 0.02);
+    vec3 current_color = expand(current_compressed);
+
+    // --- Donde estaba este punto de la superficie el frame anterior ---
+    vec2 uv = (vec2(pixel) + 0.5) / vec2(size);
+    vec4 world = camera.inverse_view_projection * vec4(uv * 2.0 - 1.0, depth, 1.0);
+    world /= world.w;
+    vec4 previous_clip = push.previous_view_projection * world;
+    vec2 previous_uv = previous_clip.xy / max(previous_clip.w, 1e-6) * 0.5 + 0.5;
+
+    // Bilineal con prueba de cada texel (misma superficie: su profundidad
+    // guardada coincide con la del punto visto desde la camara anterior).
+    vec4 previous_color = vec4(0.0);
+    vec4 previous_moments = vec4(0.0);
+    float history_weight = 0.0;
+    if (push.params.x > 0.5 && previous_clip.w > 0.0) {
+        vec2 texel = previous_uv * vec2(size) - 0.5;
+        ivec2 base = ivec2(floor(texel));
+        vec2 f = fract(texel);
+        const ivec2 kOffsets[4] = ivec2[](ivec2(0, 0), ivec2(1, 0), ivec2(0, 1), ivec2(1, 1));
+        float bilinear[4] = float[]((1.0 - f.x) * (1.0 - f.y), f.x * (1.0 - f.y), (1.0 - f.x) * f.y, f.x * f.y);
+        for (int i = 0; i < 4; ++i) {
+            ivec2 p = base + kOffsets[i];
+            if (any(lessThan(p, ivec2(0))) || any(greaterThanEqual(p, size)) || bilinear[i] <= 0.0) continue;
+            vec4 moments = texelFetch(history_moments, p, 0);
+            bool same_surface = moments.z > 0.0 && abs(moments.w - previous_clip.w) < 0.04 * previous_clip.w + 0.03;
+            if (same_surface) {
+                previous_color += texelFetch(history_color, p, 0) * bilinear[i];
+                previous_moments += moments * bilinear[i];
+                history_weight += bilinear[i];
+            }
+        }
+    }
+    bool valid = history_weight > 0.05;
+
+    float frames = 1.0;
+    vec3 color = current_color;
+    vec2 moments = vec2(luminance(current_color), luminance(current_color) * luminance(current_color));
+    if (valid) {
+        previous_color /= history_weight;
+        previous_moments /= history_weight;
+
+        // Recorte a la vecindad (mas estricto cuanto mas pulido).
+        vec3 previous_compressed = compress(max(previous_color.rgb, vec3(0.0)));
+        float gamma = mix(1.25, 3.0, rough);
+        vec3 low = mean - sigma * gamma - 0.01;
+        vec3 high = mean + sigma * gamma + 0.01;
+        vec3 clipped = clamp(previous_compressed, low, high);
+        float change = luminance(abs(clipped - previous_compressed)) / max(luminance(previous_compressed), 0.02);
+
+        float max_frames = mix(6.0, 40.0, rough);
+        frames = min(previous_moments.z + 1.0, max_frames);
+        // La luz cambio de verdad (se apago algo, paso un objeto): la
+        // historia se acorta en proporcion y converge en pocos frames.
+        if (change > 0.05) {
+            frames = min(frames, mix(frames, 2.0, clamp(change * 2.0, 0.0, 1.0)));
+        }
+        float alpha = 1.0 / frames;
+        color = mix(expand(clipped), current_color, alpha);
+        moments = mix(previous_moments.xy, moments, max(alpha, 0.2));
+    }
+
+    float variance = max(moments.y - moments.x * moments.x, 0.0);
+    // Poca historia: la varianza de la vecindad (mas prudente).
+    if (frames < 4.0) {
+        vec2 spatial = l_moments / count;
+        variance = max(variance, max(spatial.y - spatial.x * spatial.x, 0.0) * (4.0 / frames));
+    }
+
+    // Al filtro espacial le importa el ruido que le queda a lo ACUMULADO (la
+    // media de `frames` rayos), no el de un rayo suelto: recien destapado es
+    // todo el del rayo y se filtra fuerte; con la historia llena apenas queda
+    // y el filtro no emborrona nada.
+    imageStore(out_color, pixel, vec4(clamp(color, vec3(0.0), vec3(kMaxRadiance)), variance / frames));
+    imageStore(out_moments, pixel, vec4(moments, frames, view_depth));
+}

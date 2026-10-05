@@ -1,3 +1,4 @@
+#include "CramionFX/vk/VulkanCompat.h"
 #include "CramionFX/vk/VulkanRenderer.h"
 
 #include "CramionFX/asset/ImageFile.h"
@@ -118,7 +119,7 @@ void pipelineBarrier(const vk::raii::CommandBuffer& cmd,
     vk::DependencyInfo dependency{};
     dependency.imageMemoryBarrierCount = barriers.size();
     dependency.pImageMemoryBarriers = barriers.data();
-    cmd.pipelineBarrier2(dependency);
+    compat::pipelineBarrier(cmd, dependency);
 }
 
 // Dibuja un triangulo a pantalla completa sobre `target` con el pipeline y el
@@ -140,7 +141,7 @@ void drawFullscreen(const vk::raii::CommandBuffer& cmd, const FullscreenPass& pa
     rendering_info.layerCount = 1;
     rendering_info.setColorAttachments(color_attachment);
 
-    cmd.beginRendering(rendering_info);
+    compat::beginRendering(cmd, rendering_info);
     cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *pass.pipeline());
     cmd.setViewport(0, vk::Viewport{0.0f, 0.0f, static_cast<float>(extent.width),
                                     static_cast<float>(extent.height), 0.0f, 1.0f});
@@ -153,7 +154,7 @@ void drawFullscreen(const vk::raii::CommandBuffer& cmd, const FullscreenPass& pa
         cmd.pushConstants<Push>(*pass.layout(), vk::ShaderStageFlagBits::eFragment, 0, *push);
     }
     cmd.draw(3, 1, 0, 0);
-    cmd.endRendering();
+    compat::endRendering(cmd);
 }
 
 // Barrera de memoria global entre etapas (buffers de la auto-exposicion).
@@ -168,7 +169,7 @@ void memoryBarrier(const vk::raii::CommandBuffer& cmd, vk::PipelineStageFlags2 s
 
     vk::DependencyInfo dependency{};
     dependency.setMemoryBarriers(barrier);
-    cmd.pipelineBarrier2(dependency);
+    compat::pipelineBarrier(cmd, dependency);
 }
 
 // Iluminancia con la que el sol y la luna iluminan la atmosfera. La del sol
@@ -238,6 +239,17 @@ constexpr float kProbeFadeSeconds = 0.35f;
 constexpr float kSsrHistoryWeight = 0.88f;
 // Pasadas del filtro espacial de la luz rebotada (separacion 1, 2, 4, 8, 16).
 constexpr std::uint32_t kGiAtrousIterations = 5;
+// Filtro temporal de las sombras por rayos: peso minimo del rayo nuevo (la
+// penumbra promedia ~10 frames; lo que cambia de verdad lo recorta la
+// vecindad y no espera).
+constexpr float kRtShadowMinAlpha = 0.1f;
+// Pasadas del filtro espacial de los reflejos por rayos (separacion 1 y 2).
+constexpr std::uint32_t kReflectionAtrousIterations = 2;
+struct ReflectionAtrousPush {
+    std::int32_t step = 1;
+    std::int32_t last = 0;  // 1 = ultima pasada (alfa = confianza)
+    std::int32_t pad[2] = {0, 0};
+};
 
 // Constantes de push del filtro de la GI (gi_temporal.comp, gi_atrous.comp).
 struct GiTemporalPush {
@@ -267,7 +279,7 @@ vk::ImageMemoryBarrier2 depthLayersBarrier(vk::Image image, std::uint32_t base_l
                                            std::uint32_t layer_count, vk::ImageLayout old_layout,
                                            vk::ImageLayout new_layout) {
     vk::ImageMemoryBarrier2 barrier{};
-    if (new_layout == vk::ImageLayout::eDepthAttachmentOptimal) {
+    if (new_layout == compat::depthAttachmentLayout()) {
         // Antes la leia la pasada de iluminacion (de este o del frame anterior).
         barrier.srcStageMask = vk::PipelineStageFlagBits2::eFragmentShader;
         barrier.srcAccessMask = vk::AccessFlagBits2::eShaderSampledRead;
@@ -367,7 +379,8 @@ void VulkanRenderer::initialize(const EngineInfo& info, NativeWindow window, std
         const char* local = std::getenv("LOCALAPPDATA");
         const std::filesystem::path logs = local != nullptr ? std::filesystem::path(local) / "Cramion" / "Logs" / "NGX"
                                                             : std::filesystem::temp_directory_path() / "Cramion" / "NGX";
-        if (DlssUpscaler::compiled() &&
+        // (No en el modo compatible: su dispositivo no lleva las extensiones de NGX.)
+        if (DlssUpscaler::compiled() && !device_.compatMode() &&
             !dlss_.initialize(static_cast<VkInstance>(*instance_.handle()),
                               static_cast<VkPhysicalDevice>(*device_.physicalDevice()),
                               static_cast<VkDevice>(*device_.handle()), logs, dlss_error)) {
@@ -414,7 +427,10 @@ void VulkanRenderer::initialize(const EngineInfo& info, NativeWindow window, std
     swapchain_.initialize(device_, surface_, width, height);
     computeRenderExtent();
     gbuffer_.create(device_, render_extent_);
-    gpu_culling_.create(device_);
+    // Modo compatible (moviles): el escenario se recorta en la CPU
+    // (drawCpuActors); cull.comp pide 5 storage buffers y los comandos
+    // indirectos con firstInstance fallan en varios drivers de movil.
+    if (!device_.compatMode()) gpu_culling_.create(device_);
     gpu_profiler_.create(device_, kMaxFramesInFlight);
     createRenderTargets();
     // Perfil de hardware: VRAM (el heap local mas grande) y tipo de GPU.
@@ -432,13 +448,27 @@ void VulkanRenderer::initialize(const EngineInfo& info, NativeWindow window, std
         hardware_.integrated = properties.deviceType == vk::PhysicalDeviceType::eIntegratedGpu;
         hardware_.ray_tracing = device_.rayTracingSupported();
         hardware_.tier = tierFor(hardware_.vram_mb, hardware_.integrated);
+        // Perfil forzado (pruebas de gama baja en un PC potente, o una GPU mal
+        // detectada): CRAMION_HARDWARE_TIER=low|medium|high|ultra.
+        if (const char* forced = std::getenv("CRAMION_HARDWARE_TIER")) {
+            const std::string tier = forced;
+            if (tier == "low") hardware_.tier = HardwareTier::Low;
+            else if (tier == "medium") hardware_.tier = HardwareTier::Medium;
+            else if (tier == "high") hardware_.tier = HardwareTier::High;
+            else if (tier == "ultra") hardware_.tier = HardwareTier::Ultra;
+        }
         budget_.setStartLevels(hardware_.tier);
         asset::setMaxTextureSize(desiredTextureSize());
+        // Sin texturas BC (Mali, PowerVR...): los DDS se descomprimen al cargar.
+        asset::setDecodeBlockCompressed(!device_.textureCompressionBcSupported());
         std::cout << "[Rendimiento] Perfil de hardware: " << tierName(hardware_.tier) << " (" << hardware_.gpu_name
                   << ", " << hardware_.vram_mb << " MB de VRAM" << (hardware_.integrated ? ", integrada" : "")
                   << ")\n";
     }
     shadow_map_.create(device_, desiredShadowResolution());
+    shadow_cache_valid_ = {};
+    shadow_cache_layout_ready_ = false;
+    cascades_clear_ = false;
     local_shadow_maps_.create(device_);
 
     // La iluminacion escribe en HDR; la composicion lo lleva a 8 bits y el
@@ -456,7 +486,20 @@ void VulkanRenderer::initialize(const EngineInfo& info, NativeWindow window, std
     foliage_pass_.create(device_, skinned_pass_.frameSetLayout(), gbuffer_.colorFormats(), gbuffer_.depthFormat(),
                          shadow_map_.format(), kMaxFramesInFlight);
     // Liquidos: sombrean con el set del vidrio (escena detras, cielo, luces).
-    fluid_pass_.create(device_, skinned_pass_.glassSetLayout(), kHdrFormat, kMaxFramesInFlight);
+    // Modo compatible (moviles): lo que no cabe en los limites de la GPU no
+    // se crea (y no se activa nunca). Los liquidos simulan con 21 storage
+    // buffers en un mismo shader y grupos de 256 hilos.
+    const vk::PhysicalDeviceLimits& limits = device_.limits();
+    const bool compat = device_.compatMode();
+    if (!compat || (limits.maxPerStageDescriptorStorageBuffers >= 21 && limits.maxComputeWorkGroupInvocations >= 256)) {
+        fluid_pass_.create(device_, skinned_pass_.glassSetLayout(), kHdrFormat, kMaxFramesInFlight);
+    } else {
+        std::cout << "[Vulkan] Modo compatible: sin liquidos (la GPU no tiene los recursos por shader que piden)\n";
+    }
+    if (compat) {
+        probe_enabled_ = false;          // VulkanRenderer::setReflectionProbeEnabled
+        sky_occlusion_enabled_ = false;  // su iluminacion no la lee
+    }
 
     {
         using Type = vk::DescriptorType;
@@ -530,7 +573,13 @@ void VulkanRenderer::initialize(const EngineInfo& info, NativeWindow window, std
         // Particulas: sobre la imagen HDR, antes del bloom.
         particle_pass_.create(device_, kHdrFormat, gbuffer_.depthFormat(), kMaxFramesInFlight);
         // VFX Graph: particulas simuladas en la GPU (igual: sobre la HDR).
-        vfx_pass_.create(device_, kHdrFormat, gbuffer_.depthFormat(), kMaxFramesInFlight);
+        // VFX Graph: 7 storage buffers y 17 texturas en un mismo shader.
+        if (!compat || (limits.maxPerStageDescriptorStorageBuffers >= 7 && limits.maxPerStageDescriptorSamplers >= 17 &&
+                        limits.maxPerStageDescriptorSampledImages >= 17)) {
+            vfx_pass_.create(device_, kHdrFormat, gbuffer_.depthFormat(), kMaxFramesInFlight);
+        } else {
+            std::cout << "[Vulkan] Modo compatible: sin VFX Graph (la GPU no tiene los recursos por shader que pide)\n";
+        }
         // Sprites y tilemaps 2D: igual, sobre la HDR con el depth de la escena.
         sprite_pass_.create(device_, kHdrFormat, gbuffer_.depthFormat(), kMaxFramesInFlight);
         // Fuego y humo volumetricos (y el mapa de quemado de la geometria).
@@ -596,6 +645,41 @@ void VulkanRenderer::initialize(const EngineInfo& info, NativeWindow window, std
         atrous.bindings = atrous_bindings;
         atrous.push_constant_size = sizeof(GiAtrousPush);
         gi_atrous_pass_.create(device_, atrous);
+
+        // Filtros del trazado de rayos (solo con rayos por hardware): sombras
+        // (camara, profundidad, normales, mascara de este frame, historia ->
+        // acumulada) y reflejos (temporal y a trous).
+        if (device_.rayTracingSupported()) {
+            const std::array<Type, 6> shadow_temporal_bindings = {
+                Type::eUniformBuffer,        Type::eCombinedImageSampler, Type::eCombinedImageSampler,
+                Type::eCombinedImageSampler, Type::eCombinedImageSampler, Type::eStorageImage};
+            ComputePassDesc shadow_temporal{};
+            shadow_temporal.shader = "rt_shadow_temporal.comp.spv";
+            shadow_temporal.bindings = shadow_temporal_bindings;
+            shadow_temporal.push_constant_size = sizeof(GiTemporalPush);
+            rt_shadow_temporal_pass_.create(device_, shadow_temporal);
+
+            // Camara, profundidad, normales, reflejo de este frame, historia
+            // (color y momentos) -> acumulado y momentos.
+            const std::array<Type, 8> reflection_temporal_bindings = {
+                Type::eUniformBuffer,        Type::eCombinedImageSampler, Type::eCombinedImageSampler,
+                Type::eCombinedImageSampler, Type::eCombinedImageSampler, Type::eCombinedImageSampler,
+                Type::eStorageImage,         Type::eStorageImage};
+            ComputePassDesc reflection_temporal{};
+            reflection_temporal.shader = "rt_reflection_temporal.comp.spv";
+            reflection_temporal.bindings = reflection_temporal_bindings;
+            reflection_temporal.push_constant_size = sizeof(GiTemporalPush);
+            rt_reflection_temporal_pass_.create(device_, reflection_temporal);
+
+            const std::array<Type, 5> reflection_atrous_bindings = {
+                Type::eUniformBuffer, Type::eCombinedImageSampler, Type::eCombinedImageSampler,
+                Type::eCombinedImageSampler, Type::eStorageImage};
+            ComputePassDesc reflection_atrous{};
+            reflection_atrous.shader = "rt_reflection_atrous.comp.spv";
+            reflection_atrous.bindings = reflection_atrous_bindings;
+            reflection_atrous.push_constant_size = sizeof(ReflectionAtrousPush);
+            rt_reflection_atrous_pass_.create(device_, reflection_atrous);
+        }
 
         // Nubes: camara + ruido 3D + LUT del cielo (ambiente).
         const std::array<Type, 3> cloud_bindings = {Type::eUniformBuffer,
@@ -717,7 +801,7 @@ void VulkanRenderer::initialize(const EngineInfo& info, NativeWindow window, std
             barrier.dstStageMask = vk::PipelineStageFlagBits2::eFragmentShader;
             barrier.dstAccessMask = vk::AccessFlagBits2::eShaderSampledRead;
             barrier.oldLayout = vk::ImageLayout::eTransferDstOptimal;
-            barrier.newLayout = vk::ImageLayout::eDepthReadOnlyOptimal;
+            barrier.newLayout = compat::depthReadOnlyLayout();
             pipelineBarrier(cmd, barrier);
         });
 
@@ -878,6 +962,13 @@ void VulkanRenderer::shutdown() {
     // Sin esto su pipeline se liberaba en el destructor, con el dispositivo
     // ya destruido: crash en el driver al cerrar el editor o el juego.
     cloud_shadow_pass_.destroy();
+    rt_shadow_temporal_sets_.clear();
+    rt_reflection_temporal_sets_.clear();
+    rt_reflection_atrous_sets_.clear();
+    rt_filter_pool_ = nullptr;
+    rt_shadow_temporal_pass_.destroy();
+    rt_reflection_temporal_pass_.destroy();
+    rt_reflection_atrous_pass_.destroy();
     gi_atrous_pass_.destroy();
     gi_temporal_pass_.destroy();
     ssr_resolve_pass_.destroy();
@@ -929,6 +1020,13 @@ void VulkanRenderer::shutdown() {
     ssr_image_.destroy();
     ssr_raw_.destroy();
     rt_shadow_mask_.destroy();
+    rt_shadow_accum_.destroy();
+    rt_shadow_history_.destroy();
+    rt_reflection_temporal_.destroy();
+    rt_reflection_moments_.destroy();
+    rt_reflection_history_.destroy();
+    rt_reflection_moments_history_.destroy();
+    rt_reflection_filter_.destroy();
     ssr_history_.destroy();
     probe_capture_.destroy();
     for (VulkanBuffer& buffer : weather_buffers_) {
@@ -979,6 +1077,9 @@ void VulkanRenderer::shutdown() {
     xr_eye1_.ssr_history.destroy();
     xr_eye1_.gi_history.destroy();
     xr_eye1_.gi_moments_history.destroy();
+    xr_eye1_.rt_shadow_history.destroy();
+    xr_eye1_.rt_reflection_history.destroy();
+    xr_eye1_.rt_reflection_moments_history.destroy();
     output_depth_.destroy();
     scene_color_.destroy();
     gbuffer_.destroy();
@@ -1075,7 +1176,8 @@ void VulkanRenderer::createUniformBuffers() {
 
 void VulkanRenderer::writeDecalTextureDescriptors() {
     std::array<vk::DescriptorImageInfo, kMaxDecalTextures> infos{};
-    for (std::uint32_t slot = 0; slot < kMaxDecalTextures; ++slot) {
+    const std::uint32_t slots = decalTextureSlots(device_.compatMode());
+    for (std::uint32_t slot = 0; slot < slots; ++slot) {
         const bool loaded = !decal_texture_paths_[slot].empty();
         infos[slot].sampler = *decal_sampler_;
         infos[slot].imageView = loaded ? *decal_textures_[slot].view() : *decal_white_.view();
@@ -1088,6 +1190,7 @@ void VulkanRenderer::writeDecalTextureDescriptors() {
         write.dstArrayElement = 0;
         write.descriptorType = vk::DescriptorType::eCombinedImageSampler;
         write.setImageInfo(infos);
+        write.descriptorCount = slots;
         device_.handle().updateDescriptorSets(write, nullptr);
     }
 }
@@ -1101,10 +1204,11 @@ int VulkanRenderer::loadDecalTexture(const std::filesystem::path& file) {
     for (std::uint32_t slot = 0; slot < kMaxDecalTextures; ++slot) {
         if (decal_texture_paths_[slot] == key) return static_cast<int>(slot);
     }
+    const std::uint32_t slots = decalTextureSlots(device_.compatMode());
     std::uint32_t slot = 0;
-    while (slot < kMaxDecalTextures && !decal_texture_paths_[slot].empty()) ++slot;
-    if (slot == kMaxDecalTextures) {
-        std::cerr << "[Vulkan] Sin ranuras para mas texturas de decal (maximo " << kMaxDecalTextures << ")\n";
+    while (slot < slots && !decal_texture_paths_[slot].empty()) ++slot;
+    if (slot == slots) {
+        std::cerr << "[Vulkan] Sin ranuras para mas texturas de decal (maximo " << slots << ")\n";
         return -1;
     }
     int width = 0;
@@ -1221,7 +1325,7 @@ void VulkanRenderer::createDescriptors() {
         vk::DescriptorImageInfo rain_info{};
         rain_info.sampler = *rain_sampler_;
         rain_info.imageView = *rain_map_.view();
-        rain_info.imageLayout = vk::ImageLayout::eDepthReadOnlyOptimal;
+        rain_info.imageLayout = compat::depthReadOnlyLayout();
         vk::WriteDescriptorSet rain_write{};
         rain_write.dstSet = *skin_sets_[i];
         rain_write.dstBinding = 2;
@@ -1339,6 +1443,34 @@ void VulkanRenderer::createDescriptors() {
         gi_temporal_sets_ = allocate_gi(gi_temporal_pass_, kTemporalSets);
         gi_atrous_sets_ = allocate_gi(gi_atrous_pass_, kAtrousSets);
     }
+
+    // --- Filtros de las sombras y los reflejos por rayos ---
+    // Temporales: por frame y ojo de VR. A trous de los reflejos: por frame y
+    // pasada (la historia ya quedo en la temporal: no hay variantes por ojo).
+    if (device_.rayTracingSupported()) {
+        constexpr std::uint32_t kTemporalSets = kMaxFramesInFlight * 2;
+        constexpr std::uint32_t kAtrousSets = kMaxFramesInFlight * kReflectionAtrousIterations;
+        constexpr std::uint32_t kSets = kTemporalSets * 2 + kAtrousSets;
+        const std::array<vk::DescriptorPoolSize, 3> sizes = {
+            vk::DescriptorPoolSize{vk::DescriptorType::eUniformBuffer, kSets},
+            vk::DescriptorPoolSize{vk::DescriptorType::eCombinedImageSampler, kSets * 5},
+            vk::DescriptorPoolSize{vk::DescriptorType::eStorageImage, kSets * 2}};
+        vk::DescriptorPoolCreateInfo info{};
+        info.flags = vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet;
+        info.maxSets = kSets;
+        info.setPoolSizes(sizes);
+        rt_filter_pool_ = vk::raii::DescriptorPool(device_.handle(), info);
+        const auto allocate_rt = [&](const ComputePass& pass, std::uint32_t count) {
+            const std::vector<vk::DescriptorSetLayout> layouts(count, *pass.descriptorSetLayout());
+            vk::DescriptorSetAllocateInfo alloc{};
+            alloc.descriptorPool = *rt_filter_pool_;
+            alloc.setSetLayouts(layouts);
+            return vk::raii::DescriptorSets(device_.handle(), alloc);
+        };
+        rt_shadow_temporal_sets_ = allocate_rt(rt_shadow_temporal_pass_, kTemporalSets);
+        rt_reflection_temporal_sets_ = allocate_rt(rt_reflection_temporal_pass_, kTemporalSets);
+        rt_reflection_atrous_sets_ = allocate_rt(rt_reflection_atrous_pass_, kAtrousSets);
+    }
     histogram_sets_ = allocate(histogram_pass_, 1);
     exposure_average_sets_ = allocate(exposure_average_pass_, 1);
 
@@ -1404,8 +1536,8 @@ void VulkanRenderer::updateActors(const scene::Scene& scene, std::uint32_t frame
     previous_actor_motion_.resize(actor_draws_.size());
     for (std::size_t i = 0; i < actor_draws_.size(); ++i) {
         previous_actor_motion_[i] =
-            ActorMotion{actor_draws_[i].transform, actor_draws_[i].bounds_center,
-                        actor_draws_[i].bounds_radius, actor_draws_[i].cast_shadows, actor_draws_[i].lod};
+            ActorMotion{actor_draws_[i].transform, actor_draws_[i].bounds_center, actor_draws_[i].bounds_radius,
+                        actor_draws_[i].cast_shadows, actor_draws_[i].lod, actor_draws_[i].model};
     }
     const std::size_t previous_count = actor_draws_.size();
     moved_spheres_.clear();
@@ -1575,7 +1707,9 @@ void VulkanRenderer::updateActors(const scene::Scene& scene, std::uint32_t frame
         const bool animated = !draw.per_submesh;
         if (index < previous_actor_motion_.size()) {
             const ActorMotion& before = previous_actor_motion_[index];
-            if (animated || before.cast_shadows != draw.cast_shadows ||
+            // (Las cascadas ya no se redibujan por turno si su encuadre no
+            // cambia: lo que cambie aqui tiene que llegar como movimiento.)
+            if (animated || before.cast_shadows != draw.cast_shadows || before.model != draw.model ||
                 std::memcmp(&before.transform, &draw.transform, sizeof(core::Mat4)) != 0) {
                 moved_spheres_.push_back(toVec4(before.center, before.radius));
                 moved_spheres_.push_back(toVec4(draw.bounds_center, draw.bounds_radius));
@@ -1653,6 +1787,14 @@ void VulkanRenderer::updateActors(const scene::Scene& scene, std::uint32_t frame
     }
     const auto group_count = static_cast<std::uint32_t>(draw_batches_.size());
 
+    // Modo compatible (moviles): el escenario se dibuja con el culling de la
+    // CPU (drawCpuActors), sin comandos indirectos generados en la GPU: varios
+    // drivers de movil no aplican bien su firstInstance y el culling usa 5
+    // storage buffers (el minimo garantizado es 4).
+    if (device_.compatMode()) {
+        gpu_clusters_.clear();
+        draw_batches_.clear();
+    }
     gpu_culling_.setClusters(device_, frame_index, gpu_clusters_, group_count, slot_count,
                              camera_buffers_);
 
@@ -2100,19 +2242,19 @@ void VulkanRenderer::updateLightingDescriptors() {
         vk::DescriptorImageInfo shadow_map_info{};
         shadow_map_info.sampler = *shadow_map_.sampler();
         shadow_map_info.imageView = *shadow_map_.image().view();
-        shadow_map_info.imageLayout = vk::ImageLayout::eDepthReadOnlyOptimal;
+        shadow_map_info.imageLayout = compat::depthReadOnlyLayout();
 
         // Las sombras locales reutilizan el muestreador de comparacion de las
         // cascadas: mismo filtrado y mismo borde "iluminado".
         vk::DescriptorImageInfo spot_shadow_info{};
         spot_shadow_info.sampler = *shadow_map_.sampler();
         spot_shadow_info.imageView = *local_shadow_maps_.spotImage().view();
-        spot_shadow_info.imageLayout = vk::ImageLayout::eDepthReadOnlyOptimal;
+        spot_shadow_info.imageLayout = compat::depthReadOnlyLayout();
 
         vk::DescriptorImageInfo point_shadow_info{};
         point_shadow_info.sampler = *shadow_map_.sampler();
         point_shadow_info.imageView = *local_shadow_maps_.pointImage().view();
-        point_shadow_info.imageLayout = vk::ImageLayout::eDepthReadOnlyOptimal;
+        point_shadow_info.imageLayout = compat::depthReadOnlyLayout();
 
         vk::DescriptorBufferInfo local_shadows_info{};
         local_shadows_info.buffer = *local_shadow_buffers_[i].handle();
@@ -2131,7 +2273,7 @@ void VulkanRenderer::updateLightingDescriptors() {
 
         image_infos[2].sampler = *lighting_pass_.sampler();
         image_infos[2].imageView = *gbuffer_.depth().view();
-        image_infos[2].imageLayout = vk::ImageLayout::eDepthReadOnlyOptimal;
+        image_infos[2].imageLayout = compat::depthReadOnlyLayout();
 
         vk::DescriptorImageInfo material_info{};
         material_info.sampler = *lighting_pass_.sampler();
@@ -2318,11 +2460,14 @@ void VulkanRenderer::updateLightingDescriptors() {
         writes[24].descriptorType = vk::DescriptorType::eCombinedImageSampler;
         writes[24].setImageInfo(shadow_raw_info);
 
-        // Sombras por rayos de las luces locales (se lee con texelFetch).
+        // Sombras por rayos, ya acumuladas en el tiempo (RGBA16UI, se lee con
+        // texelFetch; vive en General: la escribe y la copia un compute).
+        // (Un formato entero no admite filtro lineal: el muestreador sin
+        // filtro del mapa de lluvia.)
         vk::DescriptorImageInfo rt_shadow_info{};
-        rt_shadow_info.sampler = *lighting_pass_.sampler();
-        rt_shadow_info.imageView = *rt_shadow_mask_.view();
-        rt_shadow_info.imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
+        rt_shadow_info.sampler = *rain_sampler_;
+        rt_shadow_info.imageView = *rt_shadow_accum_.view();
+        rt_shadow_info.imageLayout = vk::ImageLayout::eGeneral;
         writes[25].dstSet = *lighting_sets_[i];
         writes[25].dstBinding = 25;
         writes[25].descriptorType = vk::DescriptorType::eCombinedImageSampler;
@@ -2342,7 +2487,7 @@ void VulkanRenderer::updateLightingDescriptors() {
         vk::DescriptorImageInfo sky_terrain_info{};
         sky_terrain_info.sampler = *rain_sampler_;
         sky_terrain_info.imageView = *sky_map_terrain_.view();
-        sky_terrain_info.imageLayout = vk::ImageLayout::eDepthReadOnlyOptimal;
+        sky_terrain_info.imageLayout = compat::depthReadOnlyLayout();
         writes[27].dstSet = *lighting_sets_[i];
         writes[27].dstBinding = 27;
         writes[27].descriptorType = vk::DescriptorType::eCombinedImageSampler;
@@ -2354,7 +2499,12 @@ void VulkanRenderer::updateLightingDescriptors() {
         writes[28].descriptorType = vk::DescriptorType::eCombinedImageSampler;
         writes[28].setImageInfo(sky_scene_info);
 
-        device_.handle().updateDescriptorSets(writes, nullptr);
+        // Modo compatible: el layout no tiene todos (16 texturas).
+        std::vector<vk::WriteDescriptorSet> used;
+        for (const vk::WriteDescriptorSet& w : writes) {
+            if (lighting_pass_.hasBinding(w.dstBinding)) used.push_back(w);
+        }
+        device_.handle().updateDescriptorSets(used, nullptr);
     }
 
     // Descriptor del FXAA: la imagen ya compuesta en 8 bits.
@@ -2394,9 +2544,9 @@ void VulkanRenderer::updateGlassDescriptors() {
 
         std::array<vk::DescriptorImageInfo, 7> images{};
         images[0] = vk::DescriptorImageInfo{*shadow_map_.sampler(), *shadow_map_.image().view(),
-                                            vk::ImageLayout::eDepthReadOnlyOptimal};
+                                            compat::depthReadOnlyLayout()};
         images[1] = vk::DescriptorImageInfo{*lighting_pass_.sampler(), *gbuffer_.depth().view(),
-                                            vk::ImageLayout::eDepthReadOnlyOptimal};
+                                            compat::depthReadOnlyLayout()};
         images[2] = vk::DescriptorImageInfo{*lighting_pass_.sampler(), *glass_source_.view(),
                                             vk::ImageLayout::eShaderReadOnlyOptimal};
         images[3] = vk::DescriptorImageInfo{*ibl_probe_.sampler(), *ibl_probe_.environmentView(),
@@ -2426,7 +2576,9 @@ void VulkanRenderer::updateGlassDescriptors() {
                 writes[b].pImageInfo = &images[b - 3];
             }
         }
-        device_.handle().updateDescriptorSets(writes, nullptr);
+        // Modo compatible: el set no tiene las sondas ni la luz volumetrica.
+        device_.handle().updateDescriptorSets(
+            vk::ArrayProxy<const vk::WriteDescriptorSet>(SkinnedPass::glassBindingCount(), writes.data()), nullptr);
     }
 }
 
@@ -2480,7 +2632,7 @@ void VulkanRenderer::updatePostDescriptors() {
         device_.handle().updateDescriptorSets(write, nullptr);
 
         write_texture(ssao_sets_[i], 1, ssao_pass_.sampler(), gbuffer_.depth(),
-                      vk::ImageLayout::eDepthReadOnlyOptimal);
+                      compat::depthReadOnlyLayout());
         write_texture(ssao_sets_[i], 2, ssao_pass_.sampler(), gbuffer_.normal(), kRead);
 
         // Luz volumetrica: camara, luces, cascadas, su mapa (con el
@@ -2501,16 +2653,16 @@ void VulkanRenderer::updatePostDescriptors() {
                 device_.handle().updateDescriptorSets(buffer_write, nullptr);
             }
             write_texture(volumetric_sets_[i], 3, shadow_map_.sampler(), shadow_map_.image(),
-                          vk::ImageLayout::eDepthReadOnlyOptimal);
+                          compat::depthReadOnlyLayout());
             write_texture(volumetric_sets_[i], 4, volumetric_pass_.sampler(), gbuffer_.depth(),
-                          vk::ImageLayout::eDepthReadOnlyOptimal);
+                          compat::depthReadOnlyLayout());
 
             // Sombras de las luces locales (el mismo muestreador de
             // comparacion que las cascadas, como en la iluminacion).
             write_texture(volumetric_sets_[i], 5, shadow_map_.sampler(),
-                          local_shadow_maps_.spotImage(), vk::ImageLayout::eDepthReadOnlyOptimal);
+                          local_shadow_maps_.spotImage(), compat::depthReadOnlyLayout());
             write_texture(volumetric_sets_[i], 6, shadow_map_.sampler(),
-                          local_shadow_maps_.pointImage(), vk::ImageLayout::eDepthReadOnlyOptimal);
+                          local_shadow_maps_.pointImage(), compat::depthReadOnlyLayout());
             vk::DescriptorBufferInfo local_info{*local_shadow_buffers_[i].handle(), 0,
                                                 sizeof(GpuLocalShadows)};
             vk::WriteDescriptorSet local_write{};
@@ -2534,7 +2686,7 @@ void VulkanRenderer::updatePostDescriptors() {
         ssgi_camera.dstSet = *ssgi_sets_[i];
         device_.handle().updateDescriptorSets(ssgi_camera, nullptr);
         write_texture(ssgi_sets_[i], 1, ssgi_pass_.sampler(), gbuffer_.depth(),
-                      vk::ImageLayout::eDepthReadOnlyOptimal);
+                      compat::depthReadOnlyLayout());
         write_texture(ssgi_sets_[i], 2, ssgi_pass_.sampler(), gbuffer_.normal(), kRead);
         write_texture(ssgi_sets_[i], 3, ssgi_pass_.sampler(), scene_color_, kRead);
         for (std::uint32_t cube = 0; cube < ReflectionProbe::kCubeCount; ++cube) {
@@ -2555,7 +2707,7 @@ void VulkanRenderer::updatePostDescriptors() {
         ssr_camera.dstSet = *ssr_sets_[i];
         device_.handle().updateDescriptorSets(ssr_camera, nullptr);
         write_texture(ssr_sets_[i], 1, ssr_pass_.sampler(), gbuffer_.depth(),
-                      vk::ImageLayout::eDepthReadOnlyOptimal);
+                      compat::depthReadOnlyLayout());
         write_texture(ssr_sets_[i], 2, ssr_pass_.sampler(), gbuffer_.normal(), kRead);
         write_texture(ssr_sets_[i], 3, ssr_pass_.sampler(), scene_color_, kRead);
 
@@ -2566,7 +2718,7 @@ void VulkanRenderer::updatePostDescriptors() {
             resolve_camera.dstSet = *resolve_set;
             device_.handle().updateDescriptorSets(resolve_camera, nullptr);
             write_texture(resolve_set, 1, ssr_resolve_pass_.sampler(), gbuffer_.depth(),
-                          vk::ImageLayout::eDepthReadOnlyOptimal);
+                          compat::depthReadOnlyLayout());
             write_texture(resolve_set, 2, ssr_resolve_pass_.sampler(), ssr_raw_, kRead);
             write_texture(resolve_set, 3, ssr_resolve_pass_.sampler(),
                           eye_image(eye, ssr_history_, xr_eye1_.ssr_history), kRead);
@@ -2619,7 +2771,7 @@ void VulkanRenderer::updatePostDescriptors() {
             temporal_camera.dstSet = *temporal_set;
             device_.handle().updateDescriptorSets(temporal_camera, nullptr);
             write_texture(temporal_set, 1, gi_sampler, gbuffer_.depth(),
-                          vk::ImageLayout::eDepthReadOnlyOptimal);
+                          compat::depthReadOnlyLayout());
             write_texture(temporal_set, 2, gi_sampler, gi_raw_, kRead);
             write_texture(temporal_set, 3, gi_sampler, eye_image(eye, gi_history_, xr_eye1_.gi_history), kGeneral);
             write_texture(temporal_set, 4, gi_sampler,
@@ -2654,12 +2806,64 @@ void VulkanRenderer::updatePostDescriptors() {
                 atrous_camera.dstSet = *set;
                 device_.handle().updateDescriptorSets(atrous_camera, nullptr);
                 write_texture(set, 1, gi_sampler, gbuffer_.depth(),
-                              vk::ImageLayout::eDepthReadOnlyOptimal);
+                              compat::depthReadOnlyLayout());
                 write_texture(set, 2, gi_sampler, gbuffer_.normal(), kRead);
                 write_texture(set, 3, gi_sampler, *colors[iteration], kGeneral);
                 write_texture(set, 4, gi_sampler, *variances[iteration], kGeneral);
                 write_storage_image(set, 5, *colors[iteration + 1]);
                 write_storage_image(set, 6, *variances[iteration + 1]);
+            }
+        }
+
+        // --- Filtros de las sombras y los reflejos por rayos ---
+        if (device_.rayTracingSupported() && !rt_shadow_temporal_sets_.empty()) {
+            const vk::raii::Sampler& rt_sampler = rt_shadow_temporal_pass_.sampler();
+            for (std::uint32_t eye = 0; eye < 2; ++eye) {
+                // Sombras: mascara de este frame + historia -> acumulada.
+                const vk::raii::DescriptorSet& shadow_set = rt_shadow_temporal_sets_[i + eye * kMaxFramesInFlight];
+                vk::WriteDescriptorSet shadow_camera = write;
+                shadow_camera.dstSet = *shadow_set;
+                device_.handle().updateDescriptorSets(shadow_camera, nullptr);
+                write_texture(shadow_set, 1, rt_sampler, gbuffer_.depth(), compat::depthReadOnlyLayout());
+                write_texture(shadow_set, 2, rt_sampler, gbuffer_.normal(), kRead);
+                write_texture(shadow_set, 3, rt_sampler, rt_shadow_mask_, kRead);
+                // (Entera: sin filtro lineal.)
+                write_texture(shadow_set, 4, rain_sampler_, eye_image(eye, rt_shadow_history_, xr_eye1_.rt_shadow_history),
+                              kGeneral);
+                write_storage_image(shadow_set, 5, rt_shadow_accum_);
+
+                // Reflejos: el de este frame + historia (color y momentos) ->
+                // acumulado y momentos.
+                const vk::raii::DescriptorSet& reflection_set =
+                    rt_reflection_temporal_sets_[i + eye * kMaxFramesInFlight];
+                vk::WriteDescriptorSet reflection_camera = write;
+                reflection_camera.dstSet = *reflection_set;
+                device_.handle().updateDescriptorSets(reflection_camera, nullptr);
+                write_texture(reflection_set, 1, rt_sampler, gbuffer_.depth(), compat::depthReadOnlyLayout());
+                write_texture(reflection_set, 2, rt_sampler, gbuffer_.normal(), kRead);
+                write_texture(reflection_set, 3, rt_sampler, ssr_raw_, kRead);
+                write_texture(reflection_set, 4, rt_sampler,
+                              eye_image(eye, rt_reflection_history_, xr_eye1_.rt_reflection_history), kGeneral);
+                write_texture(reflection_set, 5, rt_sampler,
+                              eye_image(eye, rt_reflection_moments_history_, xr_eye1_.rt_reflection_moments_history),
+                              kGeneral);
+                write_storage_image(reflection_set, 6, rt_reflection_temporal_);
+                write_storage_image(reflection_set, 7, rt_reflection_moments_);
+            }
+            // A trous: acumulado -> rt_reflection_filter_ -> ssr_image_ (lo lee
+            // la iluminacion).
+            static_assert(kReflectionAtrousIterations == 2, "el ping-pong de los reflejos es de dos pasadas");
+            for (std::uint32_t iteration = 0; iteration < kReflectionAtrousIterations; ++iteration) {
+                const vk::raii::DescriptorSet& set = rt_reflection_atrous_sets_[i * kReflectionAtrousIterations + iteration];
+                const VulkanImage& input = iteration == 0 ? rt_reflection_temporal_ : rt_reflection_filter_;
+                const VulkanImage& output = iteration == 0 ? rt_reflection_filter_ : ssr_image_;
+                vk::WriteDescriptorSet atrous_camera = write;
+                atrous_camera.dstSet = *set;
+                device_.handle().updateDescriptorSets(atrous_camera, nullptr);
+                write_texture(set, 1, rt_sampler, gbuffer_.depth(), compat::depthReadOnlyLayout());
+                write_texture(set, 2, rt_sampler, gbuffer_.normal(), kRead);
+                write_texture(set, 3, rt_sampler, input, kGeneral);
+                write_storage_image(set, 4, output);
             }
         }
 
@@ -2725,11 +2929,11 @@ void VulkanRenderer::updatePostDescriptors() {
     write_texture(outline_sets_[0], 0, outline_pass_.sampler(), outline_mask_, kRead);
 
     write_texture(light_shaft_sets_[0], 0, light_shaft_pass_.sampler(), gbuffer_.depth(),
-                  vk::ImageLayout::eDepthReadOnlyOptimal);
+                  compat::depthReadOnlyLayout());
     write_texture(light_shaft_sets_[0], 1, light_shaft_pass_.sampler(), postSource(), kRead);
     write_texture(camera_fx_sets_[0], 0, camera_fx_pass_.sampler(), camera_fx_source_, kRead);
     write_texture(camera_fx_sets_[0], 1, camera_fx_pass_.sampler(), gbuffer_.depth(),
-                  vk::ImageLayout::eDepthReadOnlyOptimal);
+                  compat::depthReadOnlyLayout());
     write_texture(camera_fx_sets_[0], 2, camera_fx_pass_.sampler(), gbuffer_.velocity(), kRead);
 
     write_texture(histogram_sets_[0], 0, histogram_pass_.sampler(), postSource(), kRead);
@@ -2738,12 +2942,12 @@ void VulkanRenderer::updatePostDescriptors() {
     // (la de cada ojo de VR).
     for (std::uint32_t eye = 0; eye < 2; ++eye) {
         write_texture(taa_sets_[eye], 0, taa_pass_.sampler(), scene_color_, kRead);
-        write_texture(taa_sets_[eye], 1, taa_pass_.sampler(), gbuffer_.depth(), vk::ImageLayout::eDepthReadOnlyOptimal);
+        write_texture(taa_sets_[eye], 1, taa_pass_.sampler(), gbuffer_.depth(), compat::depthReadOnlyLayout());
         write_texture(taa_sets_[eye], 2, taa_pass_.sampler(), gbuffer_.velocity(), kRead);
         write_texture(taa_sets_[eye], 3, taa_pass_.sampler(), eye_image(eye, taa_history_, xr_eye1_.taa_history), kRead);
     }
     write_texture(upscaler_motion_sets_[0], 0, upscaler_motion_pass_.sampler(), gbuffer_.depth(),
-                  vk::ImageLayout::eDepthReadOnlyOptimal);
+                  compat::depthReadOnlyLayout());
     write_texture(upscaler_motion_sets_[0], 1, upscaler_motion_pass_.sampler(), gbuffer_.velocity(), kRead);
     write_texture(easu_sets_[0], 0, easu_pass_.sampler(), scene_color_, kRead);
     write_texture(rcas_sets_[0], 0, rcas_pass_.sampler(), upscale_target_, kRead);
@@ -2796,6 +3000,10 @@ std::uint32_t VulkanRenderer::desiredShadowResolution() const {
     if (user_graphics_.shadow_resolution > 0) {
         return static_cast<std::uint32_t>(std::clamp(user_graphics_.shadow_resolution, 512, 8192));
     }
+    // Movil: la imagen del juego es de 720-1080 lineas y cada cascada se
+    // escribe entera en memoria (en una GPU de movil, lo caro): 1024 en Baja
+    // y Media (4 MB por cascada en vez de 9), 1536 en Alta, 2048 en Ultra.
+    if (mobile_level_ >= 0) return mobile_level_ <= 1 ? 1024u : mobile_level_ == 2 ? 1536u : 2048u;
     return shadowResolutionFor(hardware_.tier);
 }
 
@@ -2803,6 +3011,10 @@ std::uint32_t VulkanRenderer::desiredTextureSize() const {
     if (user_graphics_.texture_max_size > 0) {
         return static_cast<std::uint32_t>(std::clamp(user_graphics_.texture_max_size, 256, 16384));
     }
+    // Movil: la memoria es la del telefono entero (2-4 GB en la gama baja) y
+    // sin BC las texturas van sin comprimir. Una de 2048 son 21 MB con mips;
+    // de 1024, 5. En una imagen de 720 lineas apenas se distinguen.
+    if (mobile_level_ >= 0) return mobile_level_ <= 1 ? 1024u : 2048u;
     return textureSizeFor(hardware_.tier);
 }
 
@@ -2946,6 +3158,7 @@ void VulkanRenderer::createRenderTargets() {
     // Los rayos son un desenfoque muy amplio: media resolucion basta.
     light_shafts_.create(device_, bloomLevelExtent(output, 0), kHdrFormat, target_usage,
                          vk::ImageAspectFlagBits::eColor);
+    light_shafts_ready_ = false;
     camera_fx_source_.create(device_, output, kHdrFormat,
                              vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eTransferDst,
                              vk::ImageAspectFlagBits::eColor);
@@ -2955,13 +3168,15 @@ void VulkanRenderer::createRenderTargets() {
     ssr_raw_.create(device_, extent, kHdrFormat,
                     target_usage | vk::ImageUsageFlagBits::eStorage,
                     vk::ImageAspectFlagBits::eColor);
+    // (Storage: con trazado de rayos la escribe la ultima pasada de su filtro.)
     ssr_image_.create(device_, extent, kHdrFormat,
-                      target_usage | vk::ImageUsageFlagBits::eTransferSrc,
+                      target_usage | vk::ImageUsageFlagBits::eTransferSrc | vk::ImageUsageFlagBits::eStorage,
                       vk::ImageAspectFlagBits::eColor);
     ssr_history_.create(device_, extent, kHdrFormat,
                         vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eTransferDst,
                         vk::ImageAspectFlagBits::eColor);
     ssr_filter_history_valid_ = false;
+    ssr_zeroed_ = false;
 
     // Sombras por rayos (sol y luces locales): resolucion completa (bordes
     // nitidos). Sin trazado no se usan: 1 x 1 (antes ~30 MB a 1440p siempre).
@@ -2970,13 +3185,51 @@ void VulkanRenderer::createRenderTargets() {
     rt_shadow_mask_.create(device_, rt_extent, vk::Format::eR16G16B16A16Sfloat,
                            vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eStorage,
                            vk::ImageAspectFlagBits::eColor);
+    // Su filtro temporal y el de los reflejos por rayos (mismo tamano: 1 x 1
+    // sin trazado). Todas viven en General y empiezan a cero.
+    const vk::ImageUsageFlags rt_filter_usage = vk::ImageUsageFlagBits::eStorage | vk::ImageUsageFlagBits::eSampled |
+                                                vk::ImageUsageFlagBits::eTransferSrc |
+                                                vk::ImageUsageFlagBits::eTransferDst;
+    rt_shadow_accum_.create(device_, rt_extent, vk::Format::eR16G16B16A16Uint, rt_filter_usage,
+                            vk::ImageAspectFlagBits::eColor);
+    rt_shadow_history_.create(device_, rt_extent, vk::Format::eR16G16B16A16Uint, rt_filter_usage,
+                              vk::ImageAspectFlagBits::eColor);
+    for (VulkanImage* image : {&rt_reflection_temporal_, &rt_reflection_moments_, &rt_reflection_history_,
+                               &rt_reflection_moments_history_, &rt_reflection_filter_}) {
+        image->create(device_, rt_extent, kHdrFormat, rt_filter_usage, vk::ImageAspectFlagBits::eColor);
+    }
     device_.submitOneTime([&](const vk::raii::CommandBuffer& cmd) {
-        pipelineBarrier(cmd, colorBarrier(*rt_shadow_mask_.handle(), vk::ImageLayout::eUndefined,
-                                          vk::ImageLayout::eShaderReadOnlyOptimal,
-                                          vk::PipelineStageFlagBits2::eTopOfPipe, vk::AccessFlagBits2::eNone,
-                                          vk::PipelineStageFlagBits2::eFragmentShader,
-                                          vk::AccessFlagBits2::eShaderSampledRead));
+        std::vector<vk::ImageMemoryBarrier2> barriers = {
+            colorBarrier(*rt_shadow_mask_.handle(), vk::ImageLayout::eUndefined, vk::ImageLayout::eShaderReadOnlyOptimal,
+                         vk::PipelineStageFlagBits2::eTopOfPipe, vk::AccessFlagBits2::eNone,
+                         vk::PipelineStageFlagBits2::eFragmentShader, vk::AccessFlagBits2::eShaderSampledRead)};
+        const std::array<const VulkanImage*, 7> general = {&rt_shadow_accum_,       &rt_shadow_history_,
+                                                           &rt_reflection_temporal_, &rt_reflection_moments_,
+                                                           &rt_reflection_history_,  &rt_reflection_moments_history_,
+                                                           &rt_reflection_filter_};
+        for (const VulkanImage* image : general) {
+            barriers.push_back(colorBarrier(*image->handle(), vk::ImageLayout::eUndefined, vk::ImageLayout::eGeneral,
+                                            vk::PipelineStageFlagBits2::eTopOfPipe, vk::AccessFlagBits2::eNone,
+                                            vk::PipelineStageFlagBits2::eTransfer, vk::AccessFlagBits2::eTransferWrite));
+        }
+        pipelineBarrier(cmd, barriers);
+        const vk::ImageSubresourceRange range{vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1};
+        for (const VulkanImage* image : general) {
+            if (image == &rt_shadow_accum_ || image == &rt_shadow_history_) {
+                cmd.clearColorImage(*image->handle(), vk::ImageLayout::eGeneral,
+                                    vk::ClearColorValue{std::array<std::uint32_t, 4>{0u, 0u, 0u, 0u}}, range);
+            } else {
+                cmd.clearColorImage(*image->handle(), vk::ImageLayout::eGeneral, vk::ClearColorValue{0.0f, 0.0f, 0.0f, 0.0f},
+                                    range);
+            }
+        }
+        // Lo que lee la iluminacion (la mascara acumulada) desde el primer frame.
+        memoryBarrier(cmd, vk::PipelineStageFlagBits2::eTransfer, vk::AccessFlagBits2::eTransferWrite,
+                      vk::PipelineStageFlagBits2::eFragmentShader | vk::PipelineStageFlagBits2::eComputeShader,
+                      vk::AccessFlagBits2::eShaderSampledRead | vk::AccessFlagBits2::eShaderStorageRead);
     });
+    rt_shadow_history_valid_ = false;
+    rt_reflection_history_valid_ = false;
 
     // La luz volumetrica tambien es suave: media resolucion. Se deja como
     // textura desde el principio (las caras de la sonda no la dibujan).
@@ -3240,6 +3493,7 @@ bool VulkanRenderer::loadEnvironment(const std::filesystem::path& path) {
     }
     ibl_probe_.setEnvironment(device_, *environment_.view(), *environment_.sampler());
     updateLightingDescriptors();
+    ++environment_generation_;  // otra foto: el IBL se rehace
     return true;
 }
 
@@ -3287,6 +3541,9 @@ void VulkanRenderer::recreateSwapchain() {
         shadow_map_.create(device_, desiredShadowResolution());
         shadow_map_dirty_ = false;
         cascades_valid_ = false;  // el mapa nuevo esta vacio
+        shadow_cache_valid_ = {};
+        shadow_cache_layout_ready_ = false;
+        cascades_clear_ = false;
     }
     gbuffer_.create(device_, render_extent_);
     createRenderTargets();
@@ -3686,20 +3943,65 @@ void VulkanRenderer::updateUniforms(const scene::Scene& scene, const scene::Came
                                                                         budget_.level(Lever::ShadowDetail)) << 1);
         const bool detail_changed = detail_key != cascade_detail_key_;
         if (!isolated()) cascade_detail_key_ = detail_key;
+        // Sin sombras del sol basta con dejar el mapa limpio (nada ocluye)
+        // una vez: borrar las cuatro capas cada frame (y antes copiarlas de la
+        // cache) no cambiaba nada.
+        const bool kept_clear = !sunShadows() && cascades_clear_ && !isolated();
         const bool redraw_all =
-            isolated() || !cascades_valid_ || !sunShadows() || actor_set_changed_ || detail_changed;
+            !kept_clear && (isolated() || !cascades_valid_ || !sunShadows() || actor_set_changed_ || detail_changed);
         const std::uint64_t far_period = 4ull * budget_.farCascadeInterval();
         const bool static_cache = shadow_map_.hasStaticCache();
         if (!isolated()) {
             ++cascade_frame_;
         }
+        // Lo que se mueve solo, sin que cambie ningun transform: el viento en
+        // la vegetacion, la hierba y las hojas de los bloques. Con eso en la
+        // escena las cascadas siguen su turno aunque nada mas cambie.
+        const bool self_animated = !foliage_pass_.empty() || !terrain_pass_.empty() || !voxel_pass_.empty();
+        const auto same_framing = [](const scene::ShadowCascade& a, const scene::ShadowCascade& b) {
+            return std::memcmp(&a.light_view_projection, &b.light_view_projection, sizeof(core::Mat4)) == 0 &&
+                   std::memcmp(&a.split_distance, &b.split_distance, sizeof(float)) == 0 &&
+                   std::memcmp(&a.texel_world_size, &b.texel_world_size, sizeof(float)) == 0;
+        };
+        // Actores animados (esqueleto) que proyectan sombra dentro de una cascada.
+        const auto animated_inside = [this](const scene::ShadowCascade& cascade) {
+            const core::Frustum frustum(cascade.light_view_projection, /*ignore_near=*/true);
+            for (const ActorDraw& draw : actor_draws_) {
+                if (draw.per_submesh || !draw.cast_shadows) continue;
+                const Vec3 r{draw.bounds_radius, draw.bounds_radius, draw.bounds_radius};
+                if (frustum.intersects(core::Aabb{draw.bounds_center - r, draw.bounds_center + r})) return true;
+            }
+            return false;
+        };
         for (std::uint32_t i = 0; i < scene::kShadowCascadeCount; ++i) {
             const scene::ShadowCascade& current = cascades_.cascade(i);
             bool due = redraw_all;
-            if (!due) {
+            if (!due && !kept_clear) {
                 const std::uint64_t f = cascade_frame_;
-                due = i == 0 || (i == 1 && f % 2 == 0) || (i == 2 && f % far_period == 1) ||
-                      (i == 3 && f % far_period == 3);
+                if (budget_.level(Lever::ShadowDetail) >= 2) {
+                    // Gama baja: la cercana cada 2 frames y la siguiente cada
+                    // 4, intercaladas con las lejanas (cada frame dibuja una
+                    // sola: ~1 cascada por frame en vez de 2). Con un frame de
+                    // retraso valen igual: se leen con la matriz con la que se
+                    // dibujaron, y donde no lleguen (la camara giro)
+                    // lighting.frag usa la siguiente.
+                    due = (i == 0 && f % 2 == 0) || (i == 1 && f % 4 == 1) || (i == 2 && f % far_period == 3) ||
+                          (i == 3 && f % far_period == 7);
+                } else {
+                    due = i == 0 || (i == 1 && f % 2 == 0) || (i == 2 && f % far_period == 1) ||
+                          (i == 3 && f % far_period == 3);
+                }
+                // Mismo encuadre que el que tiene la capa (camara, sol y escena
+                // quietos) y nada que se mueva solo: la capa ya tiene
+                // exactamente lo que se dibujaria. Redibujarla por turno (y
+                // copiarla de la cache) era la mitad del frame en un PC de gama
+                // baja con la camara quieta (Bistro: 2.8 de 5.2 ms). Sin cache,
+                // los animados de dentro siguen su turno: se deforman sin
+                // cambiar de sitio. Lo que si se mueve lo fuerza mas abajo.
+                if (due && !self_animated && same_framing(current, rendered_cascades_[i]) &&
+                    (static_cache || !animated_inside(current))) {
+                    due = false;
+                }
                 const Vec3 moved = shadow_camera.position() - rendered_cascade_camera_[i];
                 const float limit = 0.1f * current.split_distance;
                 due = due || core::dot(moved, moved) > limit * limit;
@@ -3737,20 +4039,10 @@ void VulkanRenderer::updateUniforms(const scene::Scene& scene, const scene::Came
             // Actores animados dentro de la cascada (con la matriz con la que
             // se dibujo): se copian la cache y ellos encima.
             cascade_had_animated_[i] = cascade_animated_[i] && !redraw_all;
-            cascade_animated_[i] = false;
-            if (static_cache && sunShadows()) {
-                const core::Frustum frustum(rendered_cascades_[i].light_view_projection, /*ignore_near=*/true);
-                for (const ActorDraw& draw : actor_draws_) {
-                    if (draw.per_submesh || !draw.cast_shadows) continue;
-                    const Vec3 r{draw.bounds_radius, draw.bounds_radius, draw.bounds_radius};
-                    if (frustum.intersects(core::Aabb{draw.bounds_center - r, draw.bounds_center + r})) {
-                        cascade_animated_[i] = true;
-                        break;
-                    }
-                }
-            }
+            cascade_animated_[i] = static_cache && sunShadows() && animated_inside(rendered_cascades_[i]);
         }
         cascades_valid_ = !isolated() && sunShadows();
+        cascades_clear_ = !sunShadows();
     }
 
     GpuShadows shadow_data{};
@@ -3907,6 +4199,11 @@ void VulkanRenderer::drawFrame(const scene::Scene& scene, bool present) {
                                  ? 0.0f
                                  : std::chrono::duration<float>(now - last_budget_time_).count();
             last_budget_time_ = now;
+            // Sin timestamps de GPU (algunas de movil, Mali y PowerVR antiguas):
+            // el tiempo del frame entero hace de tiempo de GPU (con VSync no baja
+            // de los Hz, pero si la GPU no llega es lo que tarda). Sin esto el
+            // presupuesto veia 0 ms, creia que sobraba tiempo y lo subia todo.
+            if (!gpu_profiler_.supported()) gpu_ms = std::min(dt, 0.5f) * 1000.0f;
             if (!budget_suspended_) budget_.update(std::min(dt, 0.5f), gpu_ms, gpu_profiler_.timings());
         }
         post_ = mobilePost(budget_.apply(user_post_));
@@ -4535,7 +4832,7 @@ void VulkanRenderer::recordShadowPass(const vk::raii::CommandBuffer& cmd,
         b.subresourceRange = all_cascades;
         vk::DependencyInfo dependency{};
         dependency.setImageMemoryBarriers(b);
-        cmd.pipelineBarrier2(dependency);
+        compat::pipelineBarrier(cmd, dependency);
     };
     const vk::PipelineStageFlags2 depth_stages = Stage::eEarlyFragmentTests | Stage::eLateFragmentTests;
     const vk::AccessFlags2 depth_access =
@@ -4547,7 +4844,7 @@ void VulkanRenderer::recordShadowPass(const vk::raii::CommandBuffer& cmd,
     const auto draw_cascade = [&](const vk::raii::ImageView& view, std::uint32_t cascade, ShadowActors which) {
         vk::RenderingAttachmentInfo depth_attachment{};
         depth_attachment.imageView = *view;
-        depth_attachment.imageLayout = vk::ImageLayout::eDepthAttachmentOptimal;
+        depth_attachment.imageLayout = compat::depthAttachmentLayout();
         depth_attachment.loadOp =
             which == ShadowActors::Animated ? vk::AttachmentLoadOp::eLoad : vk::AttachmentLoadOp::eClear;
         depth_attachment.storeOp = vk::AttachmentStoreOp::eStore;
@@ -4558,7 +4855,7 @@ void VulkanRenderer::recordShadowPass(const vk::raii::CommandBuffer& cmd,
         rendering_info.layerCount = 1;
         rendering_info.pDepthAttachment = &depth_attachment;
 
-        cmd.beginRendering(rendering_info);
+        compat::beginRendering(cmd, rendering_info);
         // Con las sombras apagadas basta con dejar el mapa limpio: todo queda
         // a profundidad maxima, o sea, sin nada que ocluya.
         if (sunShadows()) {
@@ -4574,71 +4871,144 @@ void VulkanRenderer::recordShadowPass(const vk::raii::CommandBuffer& cmd,
                 foliage_pass_.recordShadow(cmd, frame_index, skin_sets_[frame_index], light_view_projection);
             }
         }
-        cmd.endRendering();
+        compat::endRendering(cmd);
+        // Diagnostico (CRAMION_SHADOW_MARKS=1): el tiempo de GPU de cada
+        // cascada por separado en el perfilador.
+        static const bool cascade_marks = std::getenv("CRAMION_SHADOW_MARKS") != nullptr;
+        if (cascade_marks) {
+            static constexpr std::array<const char*, 4> kNames = {"Cascada 0", "Cascada 1", "Cascada 2", "Cascada 3"};
+            markPass(cmd, frame_index, kNames[cascade & 3u]);
+        }
     };
 
     if (!cached) {
+        if (!any_due) return;  // ninguna cambia: el mapa sigue como textura
         // --- Sin cache: las cascadas que tocan, enteras ---
         // El frame anterior las dejo como textura de la pasada de iluminacion.
         // Si alguna no se redibuja, su contenido se conserva (layout
         // anterior); si se redibujan todas, se puede descartar.
-        barrier(map, all_due ? vk::ImageLayout::eUndefined : vk::ImageLayout::eDepthReadOnlyOptimal,
-                vk::ImageLayout::eDepthAttachmentOptimal, Stage::eFragmentShader | Stage::eComputeShader,
+        barrier(map, all_due ? vk::ImageLayout::eUndefined : compat::depthReadOnlyLayout(),
+                compat::depthAttachmentLayout(), Stage::eFragmentShader | Stage::eComputeShader,
                 Access::eShaderSampledRead, depth_stages, depth_access);
         for (std::uint32_t cascade = 0; cascade < scene::kShadowCascadeCount; ++cascade) {
             if (cascade_due_[cascade]) draw_cascade(shadow_map_.cascadeView(cascade), cascade, ShadowActors::All);
         }
-        barrier(map, vk::ImageLayout::eDepthAttachmentOptimal, vk::ImageLayout::eDepthReadOnlyOptimal,
+        barrier(map, compat::depthAttachmentLayout(), compat::depthReadOnlyLayout(),
                 Stage::eLateFragmentTests, Access::eDepthStencilAttachmentWrite, Stage::eFragmentShader,
                 Access::eShaderSampledRead);
         return;
     }
 
     // --- Con cache (como los "cached shadow maps" de Unreal) ---
-    // 1) Lo estatico de las cascadas que tocan, en la cache (entre frames
-    //    esta como origen de copia).
+    // Por cascada:
+    //   - se redibuja y tiene animados: lo estatico a la cache, cache -> mapa
+    //     y los animados encima;
+    //   - se redibuja sin animados: lo estatico directo al mapa, sin cache ni
+    //     copia (una capa de 4096 son 64 MB de ida y 64 de vuelta: medio
+    //     milisegundo por frame en una GPU media, y mas en una integrada, para
+    //     acabar con lo mismo). La capa de la cache queda vieja; si despues
+    //     entra un animado, se rellena desde el mapa, que solo tiene lo estatico;
+    //   - no se redibuja y tiene (o tenia el frame anterior) animados: cache ->
+    //     mapa (borra la silueta de antes) y los animados encima.
+    if (!any_update) return;
     const vk::Image cache = *shadow_map_.staticImage().handle();
-    if (any_due) {
-        barrier(cache, all_due ? vk::ImageLayout::eUndefined : vk::ImageLayout::eTransferSrcOptimal,
-                vk::ImageLayout::eDepthAttachmentOptimal, Stage::eTransfer, Access::eTransferRead, depth_stages,
-                depth_access);
-        for (std::uint32_t cascade = 0; cascade < scene::kShadowCascadeCount; ++cascade) {
-            if (cascade_due_[cascade]) {
-                draw_cascade(shadow_map_.staticCascadeView(cascade), cascade, ShadowActors::Static);
-            }
+    std::array<bool, scene::kShadowCascadeCount> into_cache{};
+    std::array<bool, scene::kShadowCascadeCount> refill{};
+    std::array<bool, scene::kShadowCascadeCount> restore{};
+    bool any_into_cache = false;
+    bool any_refill = false;
+    bool any_restore = false;
+    for (std::uint32_t c = 0; c < scene::kShadowCascadeCount; ++c) {
+        const bool overlay = !cascade_due_[c] && (cascade_animated_[c] || cascade_had_animated_[c]);
+        into_cache[c] = cascade_due_[c] && cascade_animated_[c];
+        refill[c] = overlay && cascade_animated_[c] && !shadow_cache_valid_[c];
+        restore[c] = into_cache[c] || (overlay && shadow_cache_valid_[c]);
+        any_into_cache = any_into_cache || into_cache[c];
+        any_refill = any_refill || refill[c];
+        any_restore = any_restore || restore[c];
+    }
+    const auto layer_copies = [&](const std::array<bool, scene::kShadowCascadeCount>& which) {
+        std::vector<vk::ImageCopy> copies;
+        for (std::uint32_t c = 0; c < scene::kShadowCascadeCount; ++c) {
+            if (!which[c]) continue;
+            vk::ImageCopy region{};
+            region.srcSubresource = vk::ImageSubresourceLayers{vk::ImageAspectFlagBits::eDepth, 0, c, 1};
+            region.dstSubresource = region.srcSubresource;
+            region.extent = vk::Extent3D{extent.width, extent.height, 1};
+            copies.push_back(region);
         }
-        barrier(cache, vk::ImageLayout::eDepthAttachmentOptimal, vk::ImageLayout::eTransferSrcOptimal,
+        return copies;
+    };
+    // Entre frames la cache esta como origen de copia y el mapa como textura.
+    // Si se redibujan todas, lo de antes se puede descartar.
+    vk::ImageLayout cache_layout = shadow_cache_layout_ready_ && !all_due ? vk::ImageLayout::eTransferSrcOptimal
+                                                                          : vk::ImageLayout::eUndefined;
+    vk::ImageLayout map_layout = all_due ? vk::ImageLayout::eUndefined : compat::depthReadOnlyLayout();
+    const vk::PipelineStageFlags2 readers = Stage::eFragmentShader | Stage::eComputeShader;
+
+    // 1) Lo estatico de las que se redibujan con animados, en la cache.
+    if (any_into_cache) {
+        barrier(cache, cache_layout, compat::depthAttachmentLayout(), Stage::eTransfer, Access::eTransferRead,
+                depth_stages, depth_access);
+        for (std::uint32_t c = 0; c < scene::kShadowCascadeCount; ++c) {
+            if (into_cache[c]) draw_cascade(shadow_map_.staticCascadeView(c), c, ShadowActors::Static);
+        }
+        barrier(cache, compat::depthAttachmentLayout(), vk::ImageLayout::eTransferSrcOptimal,
                 Stage::eLateFragmentTests, Access::eDepthStencilAttachmentWrite, Stage::eTransfer,
                 Access::eTransferRead);
+        cache_layout = vk::ImageLayout::eTransferSrcOptimal;
+        shadow_cache_layout_ready_ = true;
     }
-    if (!any_update) return;
 
-    // 2) Cache -> mapa en las que cambian (tambien donde hubo un animado el
-    //    frame anterior: se borra su silueta), y 3) los animados encima.
-    barrier(map, all_due ? vk::ImageLayout::eUndefined : vk::ImageLayout::eDepthReadOnlyOptimal,
-            vk::ImageLayout::eTransferDstOptimal,
-            Stage::eFragmentShader | Stage::eComputeShader, Access::eShaderSampledRead, Stage::eTransfer,
-            Access::eTransferWrite);
-    std::vector<vk::ImageCopy> copies;
-    for (std::uint32_t cascade = 0; cascade < scene::kShadowCascadeCount; ++cascade) {
-        if (!cascade_due_[cascade] && !cascade_animated_[cascade] && !cascade_had_animated_[cascade]) continue;
-        vk::ImageCopy region{};
-        region.srcSubresource = vk::ImageSubresourceLayers{vk::ImageAspectFlagBits::eDepth, 0, cascade, 1};
-        region.dstSubresource = region.srcSubresource;
-        region.extent = vk::Extent3D{extent.width, extent.height, 1};
-        copies.push_back(region);
+    // 2) Animados que entran en una cascada cuya cache es vieja: el mapa solo
+    //    tiene lo estatico (se dibujo directo y nada encima), pasa a la cache.
+    if (any_refill) {
+        barrier(map, map_layout, vk::ImageLayout::eTransferSrcOptimal, readers, Access::eShaderSampledRead,
+                Stage::eTransfer, Access::eTransferRead);
+        barrier(cache, cache_layout, vk::ImageLayout::eTransferDstOptimal, Stage::eTransfer, Access::eTransferRead,
+                Stage::eTransfer, Access::eTransferWrite);
+        cmd.copyImage(map, vk::ImageLayout::eTransferSrcOptimal, cache, vk::ImageLayout::eTransferDstOptimal,
+                      layer_copies(refill));
+        barrier(cache, vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eTransferSrcOptimal, Stage::eTransfer,
+                Access::eTransferWrite, Stage::eTransfer, Access::eTransferRead);
+        cache_layout = vk::ImageLayout::eTransferSrcOptimal;
+        shadow_cache_layout_ready_ = true;
+        map_layout = vk::ImageLayout::eTransferSrcOptimal;
     }
-    cmd.copyImage(cache, vk::ImageLayout::eTransferSrcOptimal, map, vk::ImageLayout::eTransferDstOptimal, copies);
-    barrier(map, vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eDepthAttachmentOptimal, Stage::eTransfer,
-            Access::eTransferWrite, depth_stages, depth_access);
-    for (std::uint32_t cascade = 0; cascade < scene::kShadowCascadeCount; ++cascade) {
-        if (cascade_animated_[cascade]) {
-            draw_cascade(shadow_map_.cascadeView(cascade), cascade, ShadowActors::Animated);
+    const bool map_was_copied = map_layout == vk::ImageLayout::eTransferSrcOptimal;
+    const vk::PipelineStageFlags2 map_src_stage = map_was_copied ? vk::PipelineStageFlags2(Stage::eTransfer) : readers;
+    const vk::AccessFlags2 map_src_access =
+        map_was_copied ? vk::AccessFlags2(Access::eTransferRead) : vk::AccessFlags2(Access::eShaderSampledRead);
+
+    // 3) Cache -> mapa donde hace falta la base estatica, y el mapa listo
+    //    para dibujar.
+    if (any_restore) {
+        barrier(map, map_layout, vk::ImageLayout::eTransferDstOptimal, map_src_stage, map_src_access, Stage::eTransfer,
+                Access::eTransferWrite);
+        cmd.copyImage(cache, vk::ImageLayout::eTransferSrcOptimal, map, vk::ImageLayout::eTransferDstOptimal,
+                      layer_copies(restore));
+        barrier(map, vk::ImageLayout::eTransferDstOptimal, compat::depthAttachmentLayout(), Stage::eTransfer,
+                Access::eTransferWrite, depth_stages, depth_access);
+    } else {
+        barrier(map, map_layout, compat::depthAttachmentLayout(), map_src_stage, map_src_access, depth_stages,
+                depth_access);
+    }
+
+    // 4) Lo estatico directo al mapa (las que se redibujan sin animados) y 5)
+    //    los animados encima.
+    for (std::uint32_t c = 0; c < scene::kShadowCascadeCount; ++c) {
+        if (cascade_due_[c] && !into_cache[c]) {
+            draw_cascade(shadow_map_.cascadeView(c), c, ShadowActors::Static);
+            shadow_cache_valid_[c] = false;
+        } else if (into_cache[c] || refill[c]) {
+            shadow_cache_valid_[c] = true;
         }
     }
-    barrier(map, vk::ImageLayout::eDepthAttachmentOptimal, vk::ImageLayout::eDepthReadOnlyOptimal,
-            Stage::eLateFragmentTests, Access::eDepthStencilAttachmentWrite, Stage::eFragmentShader,
-            Access::eShaderSampledRead);
+    for (std::uint32_t c = 0; c < scene::kShadowCascadeCount; ++c) {
+        if (cascade_animated_[c]) draw_cascade(shadow_map_.cascadeView(c), c, ShadowActors::Animated);
+    }
+    barrier(map, compat::depthAttachmentLayout(), compat::depthReadOnlyLayout(), Stage::eLateFragmentTests,
+            Access::eDepthStencilAttachmentWrite, readers, Access::eShaderSampledRead);
 }
 
 void VulkanRenderer::recordLocalShadowPass(const vk::raii::CommandBuffer& cmd,
@@ -4732,19 +5102,19 @@ void VulkanRenderer::recordLocalShadowPass(const vk::raii::CommandBuffer& cmd,
 
         for (const auto& [image, count] : all_layers) {
             to_attachment.push_back(depthLayersBarrier(image, 0, count, vk::ImageLayout::eUndefined,
-                                                       vk::ImageLayout::eDepthAttachmentOptimal));
+                                                       compat::depthAttachmentLayout()));
             to_read.push_back(depthLayersBarrier(image, 0, count,
-                                                 vk::ImageLayout::eDepthAttachmentOptimal,
-                                                 vk::ImageLayout::eDepthReadOnlyOptimal));
+                                                 compat::depthAttachmentLayout(),
+                                                 compat::depthReadOnlyLayout()));
         }
     } else {
         for (const ShadowJob& job : jobs) {
             to_attachment.push_back(depthLayersBarrier(job.image, job.layer, 1,
-                                                       vk::ImageLayout::eDepthReadOnlyOptimal,
-                                                       vk::ImageLayout::eDepthAttachmentOptimal));
+                                                       compat::depthReadOnlyLayout(),
+                                                       compat::depthAttachmentLayout()));
             to_read.push_back(depthLayersBarrier(job.image, job.layer, 1,
-                                                 vk::ImageLayout::eDepthAttachmentOptimal,
-                                                 vk::ImageLayout::eDepthReadOnlyOptimal));
+                                                 compat::depthAttachmentLayout(),
+                                                 compat::depthReadOnlyLayout()));
         }
     }
 
@@ -4754,13 +5124,13 @@ void VulkanRenderer::recordLocalShadowPass(const vk::raii::CommandBuffer& cmd,
 
     vk::DependencyInfo to_attachment_dependency{};
     to_attachment_dependency.setImageMemoryBarriers(to_attachment);
-    cmd.pipelineBarrier2(to_attachment_dependency);
+    compat::pipelineBarrier(cmd, to_attachment_dependency);
 
     // --- Una pasada por capa ---
     for (const ShadowJob& job : jobs) {
         vk::RenderingAttachmentInfo depth_attachment{};
         depth_attachment.imageView = **job.view;
-        depth_attachment.imageLayout = vk::ImageLayout::eDepthAttachmentOptimal;
+        depth_attachment.imageLayout = compat::depthAttachmentLayout();
         depth_attachment.loadOp = vk::AttachmentLoadOp::eClear;
         depth_attachment.storeOp = vk::AttachmentStoreOp::eStore;
         depth_attachment.clearValue = vk::ClearValue{vk::ClearDepthStencilValue{1.0f, 0}};
@@ -4770,7 +5140,7 @@ void VulkanRenderer::recordLocalShadowPass(const vk::raii::CommandBuffer& cmd,
         rendering_info.layerCount = 1;
         rendering_info.pDepthAttachment = &depth_attachment;
 
-        cmd.beginRendering(rendering_info);
+        compat::beginRendering(cmd, rendering_info);
 
         cmd.setViewport(0, vk::Viewport{0.0f, 0.0f, static_cast<float>(job.extent.width),
                                         static_cast<float>(job.extent.height), 0.0f, 1.0f});
@@ -4783,12 +5153,12 @@ void VulkanRenderer::recordLocalShadowPass(const vk::raii::CommandBuffer& cmd,
                                    /*local=*/true);
         voxel_pass_.recordShadow(cmd, frame_index, skin_sets_[frame_index], job.light_view_projection);
 
-        cmd.endRendering();
+        compat::endRendering(cmd);
     }
 
     vk::DependencyInfo to_read_dependency{};
     to_read_dependency.setImageMemoryBarriers(to_read);
-    cmd.pipelineBarrier2(to_read_dependency);
+    compat::pipelineBarrier(cmd, to_read_dependency);
 
     local_shadow_layout_ready_ = true;
 }
@@ -4808,7 +5178,9 @@ void VulkanRenderer::recordGeometryPass(const vk::raii::CommandBuffer& cmd,
     const bool occlusion = occlusion_culling_enabled_ && !isolated();
 
     // --- Culling en GPU, fase temprana: lo visible el frame anterior ---
-    gpu_culling_.recordCull(cmd, frame_index, 0, occlusion);
+    // (No en el modo compatible: el escenario lo dibuja drawCpuActors.)
+    const bool gpu_scenery = !device_.compatMode() && gpu_culling_.clusterCount() > 0;
+    if (gpu_scenery) gpu_culling_.recordCull(cmd, frame_index, 0, occlusion);
 
     // --- Los tres destinos pasan a destino de color ---
     std::array<vk::ImageMemoryBarrier2, GBuffer::kColorAttachmentCount + 1> barriers{};
@@ -4833,14 +5205,14 @@ void VulkanRenderer::recordGeometryPass(const vk::raii::CommandBuffer& cmd,
     depth_barrier.dstAccessMask = vk::AccessFlagBits2::eDepthStencilAttachmentWrite |
                                   vk::AccessFlagBits2::eDepthStencilAttachmentRead;
     depth_barrier.oldLayout = vk::ImageLayout::eUndefined;
-    depth_barrier.newLayout = vk::ImageLayout::eDepthAttachmentOptimal;
+    depth_barrier.newLayout = compat::depthAttachmentLayout();
     depth_barrier.image = *gbuffer_.depth().handle();
     depth_barrier.subresourceRange =
         vk::ImageSubresourceRange{vk::ImageAspectFlagBits::eDepth, 0, 1, 0, 1};
 
     vk::DependencyInfo dependency{};
     dependency.setImageMemoryBarriers(barriers);
-    cmd.pipelineBarrier2(dependency);
+    compat::pipelineBarrier(cmd, dependency);
 
     // Abre el pase de geometria: limpiando (fase temprana) o conservando lo
     // ya dibujado (fase tardia).
@@ -4860,7 +5232,7 @@ void VulkanRenderer::recordGeometryPass(const vk::raii::CommandBuffer& cmd,
 
         vk::RenderingAttachmentInfo depth_attachment{};
         depth_attachment.imageView = *gbuffer_.depth().view();
-        depth_attachment.imageLayout = vk::ImageLayout::eDepthAttachmentOptimal;
+        depth_attachment.imageLayout = compat::depthAttachmentLayout();
         depth_attachment.loadOp = clear ? vk::AttachmentLoadOp::eClear : vk::AttachmentLoadOp::eLoad;
         depth_attachment.storeOp = vk::AttachmentStoreOp::eStore;
         depth_attachment.clearValue = vk::ClearValue{vk::ClearDepthStencilValue{1.0f, 0}};
@@ -4869,9 +5241,11 @@ void VulkanRenderer::recordGeometryPass(const vk::raii::CommandBuffer& cmd,
         rendering_info.renderArea = vk::Rect2D{vk::Offset2D{0, 0}, extent};
         rendering_info.layerCount = 1;
         rendering_info.setColorAttachments(color_attachments);
+        // Modo compatible: 4 destinos (sin el modelo de sombreado).
+        rendering_info.colorAttachmentCount = GBuffer::activeColorAttachments();
         rendering_info.pDepthAttachment = &depth_attachment;
 
-        cmd.beginRendering(rendering_info);
+        compat::beginRendering(cmd, rendering_info);
         cmd.setViewport(0, vk::Viewport{0.0f, 0.0f, static_cast<float>(extent.width),
                                         static_cast<float>(extent.height), 0.0f, 1.0f});
         cmd.setScissor(0, vk::Rect2D{vk::Offset2D{0, 0}, extent});
@@ -4887,10 +5261,10 @@ void VulkanRenderer::recordGeometryPass(const vk::raii::CommandBuffer& cmd,
     voxel_pass_.recordGBuffer(cmd, frame_index, skin_sets_[frame_index]);
     // Vegetacion: una llamada indirecta por especie (sus 3 niveles).
     foliage_pass_.recordGBuffer(cmd, frame_index, skin_sets_[frame_index]);
-    drawGpuClusters(cmd, frame_index, 0);
-    cmd.endRendering();
+    if (gpu_scenery) drawGpuClusters(cmd, frame_index, 0);
+    compat::endRendering(cmd);
 
-    if (!occlusion || gpu_culling_.clusterCount() == 0) {
+    if (!occlusion || !gpu_scenery) {
         return;
     }
 
@@ -4900,8 +5274,8 @@ void VulkanRenderer::recordGeometryPass(const vk::raii::CommandBuffer& cmd,
     depth_to_read.srcAccessMask = vk::AccessFlagBits2::eDepthStencilAttachmentWrite;
     depth_to_read.dstStageMask = vk::PipelineStageFlagBits2::eComputeShader;
     depth_to_read.dstAccessMask = vk::AccessFlagBits2::eShaderSampledRead;
-    depth_to_read.oldLayout = vk::ImageLayout::eDepthAttachmentOptimal;
-    depth_to_read.newLayout = vk::ImageLayout::eDepthReadOnlyOptimal;
+    depth_to_read.oldLayout = compat::depthAttachmentLayout();
+    depth_to_read.newLayout = compat::depthReadOnlyLayout();
     depth_to_read.image = *gbuffer_.depth().handle();
     depth_to_read.subresourceRange = depth_barrier.subresourceRange;
     pipelineBarrier(cmd, depth_to_read);
@@ -4918,8 +5292,8 @@ void VulkanRenderer::recordGeometryPass(const vk::raii::CommandBuffer& cmd,
                                        vk::PipelineStageFlagBits2::eLateFragmentTests;
     depth_to_attachment.dstAccessMask = vk::AccessFlagBits2::eDepthStencilAttachmentRead |
                                         vk::AccessFlagBits2::eDepthStencilAttachmentWrite;
-    depth_to_attachment.oldLayout = vk::ImageLayout::eDepthReadOnlyOptimal;
-    depth_to_attachment.newLayout = vk::ImageLayout::eDepthAttachmentOptimal;
+    depth_to_attachment.oldLayout = compat::depthReadOnlyLayout();
+    depth_to_attachment.newLayout = compat::depthAttachmentLayout();
     pipelineBarrier(cmd, depth_to_attachment);
 
     // Los destinos de color siguen en su layout: basta con ordenar las
@@ -4932,11 +5306,11 @@ void VulkanRenderer::recordGeometryPass(const vk::raii::CommandBuffer& cmd,
         vk::AccessFlagBits2::eColorAttachmentRead | vk::AccessFlagBits2::eColorAttachmentWrite;
     vk::DependencyInfo color_dependency{};
     color_dependency.setMemoryBarriers(color_order);
-    cmd.pipelineBarrier2(color_dependency);
+    compat::pipelineBarrier(cmd, color_dependency);
 
     begin_rendering(/*clear=*/false);
     drawGpuClusters(cmd, frame_index, 1);
-    cmd.endRendering();
+    compat::endRendering(cmd);
 }
 
 void VulkanRenderer::drawCpuActors(const vk::raii::CommandBuffer& cmd,
@@ -4945,8 +5319,10 @@ void VulkanRenderer::drawCpuActors(const vk::raii::CommandBuffer& cmd,
     std::int32_t bound_shader = -1;
     const core::Frustum frustum(camera_view_projection_);
 
+    // Modo compatible: tambien el escenario (sin culling en GPU).
+    const bool scenery = device_.compatMode();
     for (const ActorDraw& draw : actor_draws_) {
-        if (draw.per_submesh || draw.shadows_only) {
+        if ((draw.per_submesh && !scenery) || draw.shadows_only) {
             continue;  // Escenario (lo dibuja drawGpuClusters) o solo sombras.
         }
         if (!bound) {
@@ -5165,8 +5541,8 @@ void VulkanRenderer::recordSsaoPass(const vk::raii::CommandBuffer& cmd,
     depth_barrier.srcAccessMask = vk::AccessFlagBits2::eDepthStencilAttachmentWrite;
     depth_barrier.dstStageMask = vk::PipelineStageFlagBits2::eFragmentShader;
     depth_barrier.dstAccessMask = vk::AccessFlagBits2::eShaderSampledRead;
-    depth_barrier.oldLayout = vk::ImageLayout::eDepthAttachmentOptimal;
-    depth_barrier.newLayout = vk::ImageLayout::eDepthReadOnlyOptimal;
+    depth_barrier.oldLayout = compat::depthAttachmentLayout();
+    depth_barrier.newLayout = compat::depthReadOnlyLayout();
     depth_barrier.image = *gbuffer_.depth().handle();
     depth_barrier.subresourceRange =
         vk::ImageSubresourceRange{vk::ImageAspectFlagBits::eDepth, 0, 1, 0, 1};
@@ -5176,6 +5552,10 @@ void VulkanRenderer::recordSsaoPass(const vk::raii::CommandBuffer& cmd,
 
     pipelineBarrier(cmd, barriers);
 
+    // Apagado (preset Bajo, presupuesto adaptativo, movil) la iluminacion no
+    // lo lee (lights.counts.z = 0): las barreras de arriba siguen (el G-buffer
+    // pasa a textura aqui), el dibujo no.
+    if (!post_.ambient_occlusion) return;
     drawFullscreen<GpuBloomPush>(cmd, ssao_pass_, &ssao_sets_[frame_index], ssao_image_,
                                  nullptr);
 }
@@ -5207,10 +5587,17 @@ void VulkanRenderer::recordVolumetricPass(const vk::raii::CommandBuffer& cmd,
 // hay luces locales con sombra.
 void VulkanRenderer::recordRtShadowPass(const vk::raii::CommandBuffer& cmd, std::uint32_t frame_index) {
     rt_shadows_this_frame_ = rt_shadows_planned_;
-    if (!rt_shadows_planned_) return;
+    if (!rt_shadows_planned_) {
+        // Lo acumulado se queda viejo (la camara sigue moviendose).
+        if (!isolated()) rt_shadow_history_valid_ = false;
+        return;
+    }
 
+    // (La lee el filtro temporal del frame anterior, en compute.)
     pipelineBarrier(cmd, colorBarrier(*rt_shadow_mask_.handle(), vk::ImageLayout::eShaderReadOnlyOptimal,
-                                      vk::ImageLayout::eGeneral, vk::PipelineStageFlagBits2::eFragmentShader,
+                                      vk::ImageLayout::eGeneral,
+                                      vk::PipelineStageFlagBits2::eFragmentShader |
+                                          vk::PipelineStageFlagBits2::eComputeShader,
                                       vk::AccessFlagBits2::eShaderSampledRead,
                                       vk::PipelineStageFlagBits2::eComputeShader,
                                       vk::AccessFlagBits2::eShaderStorageWrite));
@@ -5221,15 +5608,129 @@ void VulkanRenderer::recordRtShadowPass(const vk::raii::CommandBuffer& cmd, std:
                   vk::PipelineStageFlagBits2::eComputeShader, vk::AccessFlagBits2::eShaderSampledRead);
     RayTracing::Push push{};
     push.previous_view_projection = previous_view_projection_;
-    // z: que se traza (1 = luces locales, 2 = sol).
-    push.params = Vec4{static_cast<float>(frame_count_ % 1024), 0.0f, static_cast<float>(rt_shadow_flags_), 0.0f};
+    // x: numero de frame (el mismo en los dos ojos de VR: la acumulacion es
+    // por ojo); z: que se traza (1 = luces locales, 2 = sol).
+    push.params = Vec4{static_cast<float>(noise_frame_ % 1024), 0.0f, static_cast<float>(rt_shadow_flags_), 0.0f};
     ray_tracing_.record(cmd, frame_index, RayTracing::Pass::Shadows, rt_shadow_mask_.extent(), push);
     pipelineBarrier(cmd, colorBarrier(*rt_shadow_mask_.handle(), vk::ImageLayout::eGeneral,
                                       vk::ImageLayout::eShaderReadOnlyOptimal,
                                       vk::PipelineStageFlagBits2::eComputeShader,
                                       vk::AccessFlagBits2::eShaderStorageWrite,
+                                      vk::PipelineStageFlagBits2::eComputeShader | vk::PipelineStageFlagBits2::eFragmentShader,
+                                      vk::AccessFlagBits2::eShaderSampledRead));
+
+    // --- Acumulacion temporal (rt_shadow_temporal.comp) ---
+    // Lo que leyo la iluminacion del frame anterior (la acumulada) y la copia a
+    // la historia tienen que haber terminado antes de reescribirlas.
+    memoryBarrier(cmd,
+                  vk::PipelineStageFlagBits2::eFragmentShader | vk::PipelineStageFlagBits2::eCopy |
+                      vk::PipelineStageFlagBits2::eComputeShader,
+                  vk::AccessFlagBits2::eShaderSampledRead | vk::AccessFlagBits2::eTransferRead |
+                      vk::AccessFlagBits2::eTransferWrite | vk::AccessFlagBits2::eShaderStorageWrite,
+                  vk::PipelineStageFlagBits2::eComputeShader,
+                  vk::AccessFlagBits2::eShaderSampledRead | vk::AccessFlagBits2::eShaderStorageWrite);
+    GiTemporalPush temporal{};
+    temporal.previous_view_projection = history_view_projection_;
+    temporal.params = Vec4{rt_shadow_history_valid_ ? 1.0f : 0.0f, kRtShadowMinAlpha, 0.0f, 0.0f};
+    const vk::Extent2D extent = rt_shadow_accum_.extent();
+    cmd.bindPipeline(vk::PipelineBindPoint::eCompute, *rt_shadow_temporal_pass_.pipeline());
+    cmd.bindDescriptorSets(vk::PipelineBindPoint::eCompute, *rt_shadow_temporal_pass_.layout(), 0,
+                           *rt_shadow_temporal_sets_[frame_index + eyeSet() * kMaxFramesInFlight], nullptr);
+    cmd.pushConstants<GiTemporalPush>(*rt_shadow_temporal_pass_.layout(), vk::ShaderStageFlagBits::eCompute, 0,
+                                      temporal);
+    cmd.dispatch((extent.width + 7) / 8, (extent.height + 7) / 8, 1);
+
+    // La acumulada es la historia del frame siguiente (las dos en General).
+    memoryBarrier(cmd, vk::PipelineStageFlagBits2::eComputeShader, vk::AccessFlagBits2::eShaderStorageWrite,
+                  vk::PipelineStageFlagBits2::eCopy, vk::AccessFlagBits2::eTransferRead);
+    vk::ImageCopy region{};
+    region.srcSubresource = vk::ImageSubresourceLayers{vk::ImageAspectFlagBits::eColor, 0, 0, 1};
+    region.dstSubresource = region.srcSubresource;
+    region.extent = vk::Extent3D{extent.width, extent.height, 1};
+    cmd.copyImage(*rt_shadow_accum_.handle(), vk::ImageLayout::eGeneral, *rt_shadow_history_.handle(),
+                  vk::ImageLayout::eGeneral, region);
+    // La iluminacion lee la acumulada; el filtro del frame siguiente, la historia.
+    memoryBarrier(cmd, vk::PipelineStageFlagBits2::eComputeShader | vk::PipelineStageFlagBits2::eCopy,
+                  vk::AccessFlagBits2::eShaderStorageWrite | vk::AccessFlagBits2::eTransferWrite,
+                  vk::PipelineStageFlagBits2::eFragmentShader | vk::PipelineStageFlagBits2::eComputeShader,
+                  vk::AccessFlagBits2::eShaderSampledRead);
+    rt_shadow_history_valid_ = true;
+}
+
+// Filtro de los reflejos por rayos: acumulacion temporal con historia por
+// pixel (rt_reflection_temporal.comp) y dos pasadas espaciales a la medida de
+// la rugosidad (rt_reflection_atrous.comp). La ultima escribe ssr_image_ (lo
+// que lee la iluminacion), que queda como textura.
+void VulkanRenderer::recordRtReflectionFilter(const vk::raii::CommandBuffer& cmd, std::uint32_t frame_index) {
+    const vk::Extent2D extent = rt_reflection_temporal_.extent();
+    // ssr_raw_ ya esta como textura; ssr_image_ se sobrescribe entera (lo de
+    // antes no importa) y lo que leyeron/copiaron los frames anteriores tiene
+    // que haber terminado.
+    pipelineBarrier(cmd, colorBarrier(*ssr_image_.handle(), vk::ImageLayout::eUndefined, vk::ImageLayout::eGeneral,
+                                      vk::PipelineStageFlagBits2::eFragmentShader | vk::PipelineStageFlagBits2::eCopy,
+                                      vk::AccessFlagBits2::eShaderSampledRead | vk::AccessFlagBits2::eTransferRead,
+                                      vk::PipelineStageFlagBits2::eComputeShader,
+                                      vk::AccessFlagBits2::eShaderStorageWrite));
+    // La historia del filtro del SSR (recordFilterHistoryCopies copia el
+    // resultado en ella cada frame) recien creada: como textura, igual que la
+    // deja el SSR la primera vez.
+    if (!ssr_filter_history_valid_) {
+        pipelineBarrier(cmd, colorBarrier(*ssr_history_.handle(), vk::ImageLayout::eUndefined,
+                                          vk::ImageLayout::eShaderReadOnlyOptimal, vk::PipelineStageFlagBits2::eTopOfPipe,
+                                          vk::AccessFlagBits2::eNone, vk::PipelineStageFlagBits2::eFragmentShader,
+                                          vk::AccessFlagBits2::eShaderSampledRead));
+    }
+    memoryBarrier(cmd, vk::PipelineStageFlagBits2::eComputeShader | vk::PipelineStageFlagBits2::eCopy,
+                  vk::AccessFlagBits2::eShaderSampledRead | vk::AccessFlagBits2::eShaderStorageWrite |
+                      vk::AccessFlagBits2::eTransferRead | vk::AccessFlagBits2::eTransferWrite,
+                  vk::PipelineStageFlagBits2::eComputeShader,
+                  vk::AccessFlagBits2::eShaderSampledRead | vk::AccessFlagBits2::eShaderStorageWrite);
+    const auto dispatch = [&](const ComputePass& pass, const vk::raii::DescriptorSet& set, const auto& constants) {
+        cmd.bindPipeline(vk::PipelineBindPoint::eCompute, *pass.pipeline());
+        cmd.bindDescriptorSets(vk::PipelineBindPoint::eCompute, *pass.layout(), 0, *set, nullptr);
+        cmd.pushConstants<std::decay_t<decltype(constants)>>(*pass.layout(), vk::ShaderStageFlagBits::eCompute, 0,
+                                                             constants);
+        cmd.dispatch((extent.width + 7) / 8, (extent.height + 7) / 8, 1);
+        memoryBarrier(cmd, vk::PipelineStageFlagBits2::eComputeShader, vk::AccessFlagBits2::eShaderStorageWrite,
+                      vk::PipelineStageFlagBits2::eComputeShader | vk::PipelineStageFlagBits2::eCopy,
+                      vk::AccessFlagBits2::eShaderSampledRead | vk::AccessFlagBits2::eTransferRead);
+    };
+
+    GiTemporalPush temporal{};
+    temporal.previous_view_projection = history_view_projection_;
+    temporal.params = Vec4{rt_reflection_history_valid_ ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f};
+    dispatch(rt_reflection_temporal_pass_, rt_reflection_temporal_sets_[frame_index + eyeSet() * kMaxFramesInFlight],
+             temporal);
+
+    // Lo acumulado (sin el filtro espacial: no se emborrona frame a frame) es
+    // la historia del siguiente.
+    vk::ImageCopy region{};
+    region.srcSubresource = vk::ImageSubresourceLayers{vk::ImageAspectFlagBits::eColor, 0, 0, 1};
+    region.dstSubresource = region.srcSubresource;
+    region.extent = vk::Extent3D{extent.width, extent.height, 1};
+    cmd.copyImage(*rt_reflection_temporal_.handle(), vk::ImageLayout::eGeneral, *rt_reflection_history_.handle(),
+                  vk::ImageLayout::eGeneral, region);
+    cmd.copyImage(*rt_reflection_moments_.handle(), vk::ImageLayout::eGeneral,
+                  *rt_reflection_moments_history_.handle(), vk::ImageLayout::eGeneral, region);
+    rt_reflection_history_valid_ = true;
+
+    for (std::uint32_t iteration = 0; iteration < kReflectionAtrousIterations; ++iteration) {
+        ReflectionAtrousPush atrous{};
+        atrous.step = 1 << iteration;
+        atrous.last = iteration + 1 == kReflectionAtrousIterations ? 1 : 0;
+        dispatch(rt_reflection_atrous_pass_, rt_reflection_atrous_sets_[frame_index * kReflectionAtrousIterations + iteration],
+                 atrous);
+    }
+    // Las copias a la historia, antes del filtro del frame siguiente.
+    memoryBarrier(cmd, vk::PipelineStageFlagBits2::eCopy, vk::AccessFlagBits2::eTransferWrite,
+                  vk::PipelineStageFlagBits2::eComputeShader, vk::AccessFlagBits2::eShaderSampledRead);
+    // ssr_image_ a textura para la iluminacion (recordLightingPass lo sabe).
+    pipelineBarrier(cmd, colorBarrier(*ssr_image_.handle(), vk::ImageLayout::eGeneral,
+                                      vk::ImageLayout::eShaderReadOnlyOptimal, vk::PipelineStageFlagBits2::eComputeShader,
+                                      vk::AccessFlagBits2::eShaderStorageWrite,
                                       vk::PipelineStageFlagBits2::eFragmentShader,
                                       vk::AccessFlagBits2::eShaderSampledRead));
+    ssr_image_from_compute_ = true;
 }
 
 void VulkanRenderer::recordSsgiPass(const vk::raii::CommandBuffer& cmd,
@@ -5237,6 +5738,29 @@ void VulkanRenderer::recordSsgiPass(const vk::raii::CommandBuffer& cmd,
     // GI horneada: las sondas en lugar de los rayos o el SSGI.
     const bool baked = bakedGiActive();
     const bool ray_traced = !baked && rayTracingActive() && !isolated();
+
+    // GI apagada (preset Bajo, presupuesto adaptativo, movil): la iluminacion
+    // no la lee (lights.counts.w = 0) y sus imagenes siguen en General, asi
+    // que no se calcula. Eran 0.7 ms por frame (SSGI + filtro SVGF) para nada,
+    // justo en los PC de gama baja. Con rayos sigue: su cache de radiancia la
+    // leen tambien los reflejos.
+    if (!post_.global_illumination && !baked && !ray_traced) {
+        // El SSR lee la imagen HDR del frame anterior: recien creada, se pasa
+        // a textura como hace la GI.
+        if (!scene_history_valid_ && !isolated()) {
+            pipelineBarrier(cmd, colorBarrier(*scene_color_.handle(), vk::ImageLayout::eUndefined,
+                                              vk::ImageLayout::eShaderReadOnlyOptimal,
+                                              vk::PipelineStageFlagBits2::eTopOfPipe, vk::AccessFlagBits2::eNone,
+                                              vk::PipelineStageFlagBits2::eFragmentShader,
+                                              vk::AccessFlagBits2::eShaderSampledRead));
+        }
+        if (!isolated()) {
+            gi_filter_history_valid_ = false;  // al volver, sin la luz de hace rato
+            ssr_history_ready_ = scene_history_valid_;
+            scene_history_valid_ = true;
+        }
+        return;
+    }
 
     // Con rayos, la imagen la escribe un compute shader (layout General).
     std::vector<vk::ImageMemoryBarrier2> barriers = {
@@ -5402,11 +5926,26 @@ void VulkanRenderer::recordSsrPass(const vk::raii::CommandBuffer& cmd,
     // imagen se deja vacia como con el SSR.
     const bool ray_traced = rayTracingActive() && !isolated() && post_.reflections;
     vk::ImageMemoryBarrier2 raw_to_sampled = writtenToSampled(*ssr_raw_.handle());
+    ssr_image_from_compute_ = false;
+    ssr_skipped_ = false;
+
+    // Reflejos apagados (preset Bajo, presupuesto adaptativo, movil): el SSR
+    // escribe ceros y la iluminacion usa el entorno. Con la imagen ya a ceros
+    // no hace falta repetirlo cada frame: eran dos pasadas a pantalla
+    // completa mas la copia a la historia, en los PC que menos pueden.
+    // (Las vistas aisladas siempre lo escriben con ceros: no lo estropean.)
+    if (!post_.reflections && !isolated() && ssr_zeroed_) {
+        ssr_skipped_ = true;
+        ssr_filter_history_valid_ = false;  // al volver, sin reflejos de hace rato
+        rt_reflection_history_valid_ = false;
+        return;
+    }
 
     if (ray_traced) {
         pipelineBarrier(cmd, colorBarrier(*ssr_raw_.handle(), vk::ImageLayout::eUndefined,
                                           vk::ImageLayout::eGeneral,
-                                          vk::PipelineStageFlagBits2::eFragmentShader,
+                                          vk::PipelineStageFlagBits2::eFragmentShader |
+                                              vk::PipelineStageFlagBits2::eComputeShader,
                                           vk::AccessFlagBits2::eShaderSampledRead,
                                           vk::PipelineStageFlagBits2::eComputeShader,
                                           vk::AccessFlagBits2::eShaderStorageWrite));
@@ -5416,13 +5955,20 @@ void VulkanRenderer::recordSsrPass(const vk::raii::CommandBuffer& cmd,
                               ssr_history_ready_ ? 1.0f : 0.0f, 0.0f, 0.0f};
         ray_tracing_.record(cmd, frame_index, RayTracing::Pass::Reflections, ssr_raw_.extent(),
                             rt_push);
-        raw_to_sampled = colorBarrier(*ssr_raw_.handle(), vk::ImageLayout::eGeneral,
-                                      vk::ImageLayout::eShaderReadOnlyOptimal,
-                                      vk::PipelineStageFlagBits2::eComputeShader,
-                                      vk::AccessFlagBits2::eShaderStorageWrite,
-                                      vk::PipelineStageFlagBits2::eFragmentShader,
-                                      vk::AccessFlagBits2::eShaderSampledRead);
+        // Lo lee su filtro (compute): acumulacion temporal + a trous, que
+        // escriben ssr_image_ directamente (sin el filtro del SSR).
+        pipelineBarrier(cmd, colorBarrier(*ssr_raw_.handle(), vk::ImageLayout::eGeneral,
+                                          vk::ImageLayout::eShaderReadOnlyOptimal,
+                                          vk::PipelineStageFlagBits2::eComputeShader,
+                                          vk::AccessFlagBits2::eShaderStorageWrite,
+                                          vk::PipelineStageFlagBits2::eComputeShader,
+                                          vk::AccessFlagBits2::eShaderSampledRead));
+        recordRtReflectionFilter(cmd, frame_index);
+        ssr_zeroed_ = false;
+        return;
     } else {
+        // Lo acumulado por el filtro de los reflejos por rayos se queda viejo.
+        if (!isolated()) rt_reflection_history_valid_ = false;
         // Va despues de la GI: la imagen HDR ya esta como textura.
         pipelineBarrier(cmd, discardToAttachment(*ssr_raw_.handle()));
 
@@ -5459,10 +6005,13 @@ void VulkanRenderer::recordSsrPass(const vk::raii::CommandBuffer& cmd,
                           kSsrHistoryWeight, 0.0f, 0.0f};
     drawFullscreen(cmd, ssr_resolve_pass_, &ssr_resolve_sets_[frame_index + eyeSet() * kMaxFramesInFlight],
                    ssr_image_, &resolve);
+    // Apagados, las dos pasadas dejan ceros en toda la imagen.
+    if (!isolated()) ssr_zeroed_ = !post_.reflections;
 }
 
 void VulkanRenderer::recordFilterHistoryCopies(const vk::raii::CommandBuffer& cmd) {
     if (isolated()) return;  // la segunda vista no escribe las historias
+    if (ssr_skipped_) return;  // reflejos apagados: nada nuevo que guardar
     // La iluminacion ya leyo los reflejos y la luz rebotada filtrados: se
     // copian a sus historias. Todas quedan como textura al terminar.
     constexpr vk::ImageLayout kRead = vk::ImageLayout::eShaderReadOnlyOptimal;
@@ -5521,10 +6070,13 @@ void VulkanRenderer::recordLightingPass(const vk::raii::CommandBuffer& cmd,
     // El SSAO pasa a textura y el destino a destino de color: la imagen HDR
     // la dejo el frame anterior como textura del bloom y la composicion; la
     // de la sonda, como origen de la copia al cubo.
-    // (La GI la dejo lista su filtro, en compute.)
-    pipelineBarrier(cmd, {writtenToSampled(*ssao_image_.handle()),
-                          writtenToSampled(*ssr_image_.handle()),
-                          colorBarrier(*target.handle(), vk::ImageLayout::eUndefined,
+    // (La GI la dejo lista su filtro, en compute; los reflejos por rayos,
+    // tambien: ssr_image_ ya es textura.)
+    std::vector<vk::ImageMemoryBarrier2> barriers = {writtenToSampled(*ssao_image_.handle())};
+    // (Saltado con los reflejos apagados: sigue como textura del frame anterior.)
+    if (!ssr_image_from_compute_ && !ssr_skipped_) barriers.push_back(writtenToSampled(*ssr_image_.handle()));
+    pipelineBarrier(cmd, barriers);
+    pipelineBarrier(cmd, {colorBarrier(*target.handle(), vk::ImageLayout::eUndefined,
                                        vk::ImageLayout::eColorAttachmentOptimal,
                                        vk::PipelineStageFlagBits2::eFragmentShader |
                                            vk::PipelineStageFlagBits2::eBlit,
@@ -5545,9 +6097,11 @@ void VulkanRenderer::recordLightingPass(const vk::raii::CommandBuffer& cmd,
     rendering_info.layerCount = 1;
     rendering_info.setColorAttachments(color_attachment);
 
-    cmd.beginRendering(rendering_info);
+    compat::beginRendering(cmd, rendering_info);
 
-    cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *lighting_pass_.pipeline());
+    // La ligera en los PC de gama baja (presupuesto) y en el modo compatible
+    // (su shader ya lo es).
+    cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *lighting_pass_.pipeline(liteLighting()));
     cmd.setViewport(0, vk::Viewport{0.0f, 0.0f, static_cast<float>(extent.width),
                                     static_cast<float>(extent.height), 0.0f, 1.0f});
     cmd.setScissor(0, vk::Rect2D{vk::Offset2D{0, 0}, extent});
@@ -5556,7 +6110,7 @@ void VulkanRenderer::recordLightingPass(const vk::raii::CommandBuffer& cmd,
 
     cmd.draw(3, 1, 0, 0);
 
-    cmd.endRendering();
+    compat::endRendering(cmd);
 }
 
 void VulkanRenderer::copySceneForTransparency(const vk::raii::CommandBuffer& cmd) {
@@ -5589,8 +6143,8 @@ void VulkanRenderer::copySceneForTransparency(const vk::raii::CommandBuffer& cmd
     depth_barrier.dstStageMask = vk::PipelineStageFlagBits2::eEarlyFragmentTests |
                                  vk::PipelineStageFlagBits2::eLateFragmentTests;
     depth_barrier.dstAccessMask = vk::AccessFlagBits2::eDepthStencilAttachmentRead;
-    depth_barrier.oldLayout = vk::ImageLayout::eDepthReadOnlyOptimal;
-    depth_barrier.newLayout = vk::ImageLayout::eDepthReadOnlyOptimal;
+    depth_barrier.oldLayout = compat::depthReadOnlyLayout();
+    depth_barrier.newLayout = compat::depthReadOnlyLayout();
     depth_barrier.image = *gbuffer_.depth().handle();
     depth_barrier.subresourceRange =
         vk::ImageSubresourceRange{vk::ImageAspectFlagBits::eDepth, 0, 1, 0, 1};
@@ -5638,7 +6192,7 @@ void VulkanRenderer::recordWaterPass(const vk::raii::CommandBuffer& cmd, std::ui
     using Stage = vk::PipelineStageFlagBits2;
     using Access = vk::AccessFlagBits2;
     const Stage tests = Stage::eEarlyFragmentTests;
-    pipelineBarrier(cmd, {depth_barrier(*gbuffer_.depth().handle(), vk::ImageLayout::eDepthReadOnlyOptimal,
+    pipelineBarrier(cmd, {depth_barrier(*gbuffer_.depth().handle(), compat::depthReadOnlyLayout(),
                                         vk::ImageLayout::eTransferSrcOptimal,
                                         tests | Stage::eLateFragmentTests | Stage::eFragmentShader | Stage::eComputeShader,
                                         Access::eDepthStencilAttachmentRead | Access::eShaderSampledRead,
@@ -5653,11 +6207,11 @@ void VulkanRenderer::recordWaterPass(const vk::raii::CommandBuffer& cmd, std::ui
     cmd.copyImage(*gbuffer_.depth().handle(), vk::ImageLayout::eTransferSrcOptimal, *water_depth_.handle(),
                   vk::ImageLayout::eTransferDstOptimal, depth_region);
     pipelineBarrier(cmd, {depth_barrier(*gbuffer_.depth().handle(), vk::ImageLayout::eTransferSrcOptimal,
-                                        vk::ImageLayout::eDepthReadOnlyOptimal, Stage::eCopy, Access::eTransferRead,
+                                        compat::depthReadOnlyLayout(), Stage::eCopy, Access::eTransferRead,
                                         tests | Stage::eLateFragmentTests | Stage::eFragmentShader | Stage::eComputeShader,
                                         Access::eDepthStencilAttachmentRead | Access::eShaderSampledRead),
                           depth_barrier(*water_depth_.handle(), vk::ImageLayout::eTransferDstOptimal,
-                                        vk::ImageLayout::eDepthAttachmentOptimal, Stage::eCopy, Access::eTransferWrite,
+                                        compat::depthAttachmentLayout(), Stage::eCopy, Access::eTransferWrite,
                                         tests | Stage::eLateFragmentTests,
                                         Access::eDepthStencilAttachmentRead | Access::eDepthStencilAttachmentWrite)});
 
@@ -5668,7 +6222,7 @@ void VulkanRenderer::recordWaterPass(const vk::raii::CommandBuffer& cmd, std::ui
     color_attachment.storeOp = vk::AttachmentStoreOp::eStore;
     vk::RenderingAttachmentInfo depth_attachment{};
     depth_attachment.imageView = *water_depth_.view();
-    depth_attachment.imageLayout = vk::ImageLayout::eDepthAttachmentOptimal;
+    depth_attachment.imageLayout = compat::depthAttachmentLayout();
     depth_attachment.loadOp = vk::AttachmentLoadOp::eLoad;
     depth_attachment.storeOp = vk::AttachmentStoreOp::eDontCare;
     vk::RenderingInfo rendering_info{};
@@ -5677,12 +6231,12 @@ void VulkanRenderer::recordWaterPass(const vk::raii::CommandBuffer& cmd, std::ui
     rendering_info.setColorAttachments(color_attachment);
     rendering_info.pDepthAttachment = &depth_attachment;
 
-    cmd.beginRendering(rendering_info);
+    compat::beginRendering(cmd, rendering_info);
     cmd.setViewport(0, vk::Viewport{0.0f, 0.0f, static_cast<float>(extent.width), static_cast<float>(extent.height),
                                     0.0f, 1.0f});
     cmd.setScissor(0, vk::Rect2D{vk::Offset2D{0, 0}, extent});
     water_pass_.record(cmd, frame_index, skin_sets_[frame_index], glass_sets_[frame_index]);
-    cmd.endRendering();
+    compat::endRendering(cmd);
 }
 
 void VulkanRenderer::recordPathTracePass(const vk::raii::CommandBuffer& cmd, std::uint32_t frame_index) {
@@ -5788,7 +6342,7 @@ void VulkanRenderer::recordGlassPass(const vk::raii::CommandBuffer& cmd,
 
     vk::RenderingAttachmentInfo depth_attachment{};
     depth_attachment.imageView = *gbuffer_.depth().view();
-    depth_attachment.imageLayout = vk::ImageLayout::eDepthReadOnlyOptimal;
+    depth_attachment.imageLayout = compat::depthReadOnlyLayout();
     depth_attachment.loadOp = vk::AttachmentLoadOp::eLoad;
     depth_attachment.storeOp = vk::AttachmentStoreOp::eNone;
 
@@ -5798,7 +6352,7 @@ void VulkanRenderer::recordGlassPass(const vk::raii::CommandBuffer& cmd,
     rendering_info.setColorAttachments(color_attachment);
     rendering_info.pDepthAttachment = &depth_attachment;
 
-    cmd.beginRendering(rendering_info);
+    compat::beginRendering(cmd, rendering_info);
     cmd.setViewport(0, vk::Viewport{0.0f, 0.0f, static_cast<float>(extent.width),
                                     static_cast<float>(extent.height), 0.0f, 1.0f});
     cmd.setScissor(0, vk::Rect2D{vk::Offset2D{0, 0}, extent});
@@ -5840,7 +6394,7 @@ void VulkanRenderer::recordGlassPass(const vk::raii::CommandBuffer& cmd,
         cmd.drawIndexed(submesh.index_count, 1, submesh.first_index, 0, 0);
     }
 
-    cmd.endRendering();
+    compat::endRendering(cmd);
 }
 
 void VulkanRenderer::recordOutlinePass(const vk::raii::CommandBuffer& cmd,
@@ -5875,8 +6429,8 @@ void VulkanRenderer::recordOutlinePass(const vk::raii::CommandBuffer& cmd,
     depth_barrier.dstStageMask = vk::PipelineStageFlagBits2::eEarlyFragmentTests |
                                  vk::PipelineStageFlagBits2::eLateFragmentTests;
     depth_barrier.dstAccessMask = vk::AccessFlagBits2::eDepthStencilAttachmentRead;
-    depth_barrier.oldLayout = vk::ImageLayout::eDepthReadOnlyOptimal;
-    depth_barrier.newLayout = vk::ImageLayout::eDepthReadOnlyOptimal;
+    depth_barrier.oldLayout = compat::depthReadOnlyLayout();
+    depth_barrier.newLayout = compat::depthReadOnlyLayout();
     depth_barrier.image = *depth_image.handle();
     depth_barrier.subresourceRange =
         vk::ImageSubresourceRange{vk::ImageAspectFlagBits::eDepth, 0, 1, 0, 1};
@@ -5892,7 +6446,7 @@ void VulkanRenderer::recordOutlinePass(const vk::raii::CommandBuffer& cmd,
 
     vk::RenderingAttachmentInfo depth_attachment{};
     depth_attachment.imageView = *depth_image.view();
-    depth_attachment.imageLayout = vk::ImageLayout::eDepthReadOnlyOptimal;
+    depth_attachment.imageLayout = compat::depthReadOnlyLayout();
     depth_attachment.loadOp = vk::AttachmentLoadOp::eLoad;
     depth_attachment.storeOp = vk::AttachmentStoreOp::eNone;
 
@@ -5902,7 +6456,7 @@ void VulkanRenderer::recordOutlinePass(const vk::raii::CommandBuffer& cmd,
     rendering_info.setColorAttachments(mask_attachment);
     rendering_info.pDepthAttachment = &depth_attachment;
 
-    cmd.beginRendering(rendering_info);
+    compat::beginRendering(cmd, rendering_info);
     cmd.setViewport(0, vk::Viewport{0.0f, 0.0f, static_cast<float>(extent.width),
                                     static_cast<float>(extent.height), 0.0f, 1.0f});
     cmd.setScissor(0, vk::Rect2D{vk::Offset2D{0, 0}, extent});
@@ -5935,7 +6489,7 @@ void VulkanRenderer::recordOutlinePass(const vk::raii::CommandBuffer& cmd,
             }
         }
     }
-    cmd.endRendering();
+    compat::endRendering(cmd);
 
     // --- 2) Contorno sobre la imagen compuesta ---
     pipelineBarrier(cmd, {writtenToSampled(*outline_mask_.handle()),
@@ -5961,7 +6515,7 @@ std::uint32_t VulkanRenderer::createUiTexture(const std::uint8_t* rgba, std::uin
 
 VkImageView VulkanRenderer::uiTextureView(std::uint32_t id) const {
     const auto it = ui_textures_.find(id);
-    return it != ui_textures_.end() ? *it->second.view() : VK_NULL_HANDLE;
+    return it != ui_textures_.end() ? static_cast<VkImageView>(*it->second.view()) : VK_NULL_HANDLE;
 }
 
 void VulkanRenderer::destroyUiTextures(const std::vector<std::uint32_t>& ids) {
@@ -6010,7 +6564,10 @@ void VulkanRenderer::invalidateHistory() {
     ssr_history_ready_ = false;
     ssr_filter_history_valid_ = false;
     gi_filter_history_valid_ = false;
+    rt_shadow_history_valid_ = false;
+    rt_reflection_history_valid_ = false;
     xr_eye1_.taa_valid = xr_eye1_.ssr_valid = xr_eye1_.gi_valid = false;  // el otro ojo
+    xr_eye1_.rt_shadow_valid = xr_eye1_.rt_reflection_valid = false;
 }
 
 // El resultado del frame (imagen compuesta con contorno y gizmos) a la imagen
@@ -6290,16 +6847,22 @@ void VulkanRenderer::swapEyeState() {
     std::swap(ssr_history_, xr_eye1_.ssr_history);
     std::swap(gi_history_, xr_eye1_.gi_history);
     std::swap(gi_moments_history_, xr_eye1_.gi_moments_history);
+    std::swap(rt_shadow_history_, xr_eye1_.rt_shadow_history);
+    std::swap(rt_reflection_history_, xr_eye1_.rt_reflection_history);
+    std::swap(rt_reflection_moments_history_, xr_eye1_.rt_reflection_moments_history);
     std::swap(taa_history_valid_, xr_eye1_.taa_valid);
     std::swap(ssr_filter_history_valid_, xr_eye1_.ssr_valid);
     std::swap(gi_filter_history_valid_, xr_eye1_.gi_valid);
+    std::swap(rt_shadow_history_valid_, xr_eye1_.rt_shadow_valid);
+    std::swap(rt_reflection_history_valid_, xr_eye1_.rt_reflection_valid);
     std::swap(motion_view_projection_, xr_eye1_.motion_view_projection);
     eye_state_swapped_ = !eye_state_swapped_;
 }
 
 bool VulkanRenderer::xrEyeStateReady() const {
     return xr_eye1_.taa_history.isValid() && xr_eye1_.ssr_history.isValid() && xr_eye1_.gi_history.isValid() &&
-           xr_eye1_.gi_moments_history.isValid();
+           xr_eye1_.gi_moments_history.isValid() && xr_eye1_.rt_shadow_history.isValid() &&
+           xr_eye1_.rt_reflection_history.isValid() && xr_eye1_.rt_reflection_moments_history.isValid();
 }
 
 // VR: las historias del ojo derecho (mismos formatos y tamanos que las del
@@ -6307,11 +6870,15 @@ bool VulkanRenderer::xrEyeStateReady() const {
 void VulkanRenderer::createXrEyeTargets(vk::Extent2D render, vk::Extent2D output) {
     if (eye_state_swapped_) swapEyeState();
     xr_eye1_.taa_valid = xr_eye1_.ssr_valid = xr_eye1_.gi_valid = false;
+    xr_eye1_.rt_shadow_valid = xr_eye1_.rt_reflection_valid = false;
     if ((xr_output_extent_.width == 0 || xr_output_extent_.height == 0) && !stereo_emulation_) {
         xr_eye1_.taa_history.destroy();
         xr_eye1_.ssr_history.destroy();
         xr_eye1_.gi_history.destroy();
         xr_eye1_.gi_moments_history.destroy();
+        xr_eye1_.rt_shadow_history.destroy();
+        xr_eye1_.rt_reflection_history.destroy();
+        xr_eye1_.rt_reflection_moments_history.destroy();
         return;
     }
     xr_eye1_.ssr_history.create(device_, render, kHdrFormat,
@@ -6323,6 +6890,14 @@ void VulkanRenderer::createXrEyeTargets(vk::Extent2D render, vk::Extent2D output
     const vk::Extent2D half = bloomLevelExtent(render, 0);
     xr_eye1_.gi_history.create(device_, half, kHdrFormat, filter_usage, vk::ImageAspectFlagBits::eColor);
     xr_eye1_.gi_moments_history.create(device_, half, kHdrFormat, filter_usage, vk::ImageAspectFlagBits::eColor);
+    // Historias de los filtros del trazado de rayos (como las del izquierdo:
+    // 1 x 1 sin trazado).
+    const vk::Extent2D rt_extent = rt_shadow_history_.isValid() ? rt_shadow_history_.extent() : vk::Extent2D{1, 1};
+    xr_eye1_.rt_shadow_history.create(device_, rt_extent, vk::Format::eR16G16B16A16Uint, filter_usage,
+                                      vk::ImageAspectFlagBits::eColor);
+    xr_eye1_.rt_reflection_history.create(device_, rt_extent, kHdrFormat, filter_usage, vk::ImageAspectFlagBits::eColor);
+    xr_eye1_.rt_reflection_moments_history.create(device_, rt_extent, kHdrFormat, filter_usage,
+                                                  vk::ImageAspectFlagBits::eColor);
     xr_eye1_.taa_history.create(device_, output, kHdrFormat,
                                 vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eTransferDst,
                                 vk::ImageAspectFlagBits::eColor);
@@ -6330,7 +6905,8 @@ void VulkanRenderer::createXrEyeTargets(vk::Extent2D render, vk::Extent2D output
     // como textura (la del SSR la prepara su filtro la primera vez).
     device_.submitOneTime([&](const vk::raii::CommandBuffer& cmd) {
         std::vector<vk::ImageMemoryBarrier2> barriers;
-        for (const VulkanImage* image : {&xr_eye1_.gi_history, &xr_eye1_.gi_moments_history}) {
+        for (const VulkanImage* image : {&xr_eye1_.gi_history, &xr_eye1_.gi_moments_history, &xr_eye1_.rt_shadow_history,
+                                         &xr_eye1_.rt_reflection_history, &xr_eye1_.rt_reflection_moments_history}) {
             barriers.push_back(colorBarrier(*image->handle(), vk::ImageLayout::eUndefined, vk::ImageLayout::eGeneral,
                                             vk::PipelineStageFlagBits2::eTopOfPipe, vk::AccessFlagBits2::eNone,
                                             vk::PipelineStageFlagBits2::eTransfer,
@@ -6341,10 +6917,14 @@ void VulkanRenderer::createXrEyeTargets(vk::Extent2D render, vk::Extent2D output
                                         vk::AccessFlagBits2::eNone, vk::PipelineStageFlagBits2::eFragmentShader,
                                         vk::AccessFlagBits2::eShaderSampledRead));
         pipelineBarrier(cmd, barriers);
-        for (const VulkanImage* image : {&xr_eye1_.gi_history, &xr_eye1_.gi_moments_history}) {
+        for (const VulkanImage* image : {&xr_eye1_.gi_history, &xr_eye1_.gi_moments_history,
+                                         &xr_eye1_.rt_reflection_history, &xr_eye1_.rt_reflection_moments_history}) {
             cmd.clearColorImage(*image->handle(), vk::ImageLayout::eGeneral, vk::ClearColorValue{0.0f, 0.0f, 0.0f, 0.0f},
                                 vk::ImageSubresourceRange{vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1});
         }
+        cmd.clearColorImage(*xr_eye1_.rt_shadow_history.handle(), vk::ImageLayout::eGeneral,
+                            vk::ClearColorValue{std::array<std::uint32_t, 4>{0u, 0u, 0u, 0u}},
+                            vk::ImageSubresourceRange{vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1});
     });
 }
 
@@ -6590,6 +7170,12 @@ void VulkanRenderer::updateModelMaterial(std::uint32_t model, std::uint32_t mate
     }
     SkinnedModel::Material& gpu = skinned_models_[model].materials()[material];
     path_tracing_reset_ = true;  // el material cambia lo que se ve
+    // Lo que cambia la silueta en los mapas de sombra (relieve teselado, su
+    // altura, el alfa del recorte): las sombras guardadas ya no valen. Solo
+    // si cambia de verdad (el Inspector puede mandarlo cada frame).
+    const std::uint32_t shadow_flags_before = gpu.shader_flags;
+    const float height_before = gpu.emissive.w;
+    const float alpha_before = gpu.base_color.w;
     gpu.base_color = data.base_color;
     // El relieve del parallax solo si el material ya tiene mapa de alturas
     // (ponerlo o quitarlo rehace el modelo).
@@ -6604,11 +7190,21 @@ void VulkanRenderer::updateModelMaterial(std::uint32_t model, std::uint32_t mate
     gpu.reflectance = data.reflectance;
     gpu.surface_shader = data.surface_shader;
     gpu.surface_params = data.surface_params;
+    if (gpu.shader_flags != shadow_flags_before || gpu.emissive.w != height_before || gpu.base_color.w != alpha_before) {
+        staticGeometryChanged();
+    }
 }
 
 std::int32_t VulkanRenderer::createSurfaceShader(const std::vector<std::uint32_t>& vertex_spirv,
                                                  const std::vector<std::uint32_t>& fragment_spirv,
                                                  std::string* error) {
+    // Modo compatible (moviles, GPU antiguas): sin shaders de superficie del
+    // usuario (su set de material no tiene sus texturas); el material se ve
+    // con el shader estandar.
+    if (device_.compatMode()) {
+        if (error) *error = "los shaders de superficie propios no estan en el modo compatible";
+        return -1;
+    }
     try {
         surface_pipelines_.push_back(skinned_pass_.createSurfacePipeline(device_, vertex_spirv, fragment_spirv));
     } catch (const std::exception& e) {
@@ -6749,8 +7345,8 @@ void VulkanRenderer::recordPickPass(const vk::raii::CommandBuffer& cmd, std::uin
     depth_barrier.dstStageMask = vk::PipelineStageFlagBits2::eEarlyFragmentTests |
                                  vk::PipelineStageFlagBits2::eLateFragmentTests;
     depth_barrier.dstAccessMask = vk::AccessFlagBits2::eDepthStencilAttachmentRead;
-    depth_barrier.oldLayout = vk::ImageLayout::eDepthReadOnlyOptimal;
-    depth_barrier.newLayout = vk::ImageLayout::eDepthReadOnlyOptimal;
+    depth_barrier.oldLayout = compat::depthReadOnlyLayout();
+    depth_barrier.newLayout = compat::depthReadOnlyLayout();
     depth_barrier.image = *gbuffer_.depth().handle();
     depth_barrier.subresourceRange = vk::ImageSubresourceRange{vk::ImageAspectFlagBits::eDepth, 0, 1, 0, 1};
     pipelineBarrier(cmd, {colorBarrier(*pick_ids_.handle(), vk::ImageLayout::eUndefined,
@@ -6769,7 +7365,7 @@ void VulkanRenderer::recordPickPass(const vk::raii::CommandBuffer& cmd, std::uin
 
     vk::RenderingAttachmentInfo depth_attachment{};
     depth_attachment.imageView = *gbuffer_.depth().view();
-    depth_attachment.imageLayout = vk::ImageLayout::eDepthReadOnlyOptimal;
+    depth_attachment.imageLayout = compat::depthReadOnlyLayout();
     depth_attachment.loadOp = vk::AttachmentLoadOp::eLoad;
     depth_attachment.storeOp = vk::AttachmentStoreOp::eNone;
 
@@ -6779,7 +7375,7 @@ void VulkanRenderer::recordPickPass(const vk::raii::CommandBuffer& cmd, std::uin
     rendering_info.setColorAttachments(id_attachment);
     rendering_info.pDepthAttachment = &depth_attachment;
 
-    cmd.beginRendering(rendering_info);
+    compat::beginRendering(cmd, rendering_info);
     cmd.setViewport(0, vk::Viewport{0.0f, 0.0f, static_cast<float>(extent.width), static_cast<float>(extent.height),
                                     0.0f, 1.0f});
     cmd.setScissor(0, area);
@@ -6812,7 +7408,7 @@ void VulkanRenderer::recordPickPass(const vk::raii::CommandBuffer& cmd, std::uin
             cmd.drawIndexed(submeshes[i].index_count, 1, submeshes[i].first_index, 0, 0);
         }
     }
-    cmd.endRendering();
+    compat::endRendering(cmd);
 
     // El pixel al buffer que lee la CPU cuando la GPU termine este frame.
     pipelineBarrier(cmd, colorBarrier(*pick_ids_.handle(), vk::ImageLayout::eColorAttachmentOptimal,
@@ -6833,7 +7429,7 @@ void VulkanRenderer::recordPickPass(const vk::raii::CommandBuffer& cmd, std::uin
     to_host.dstAccessMask = vk::AccessFlagBits2::eHostRead;
     vk::DependencyInfo dependency{};
     dependency.setMemoryBarriers(to_host);
-    cmd.pipelineBarrier2(dependency);
+    compat::pipelineBarrier(cmd, dependency);
 
     pick_requests_[frame_index] = pick_request_;
     pick_in_flight_[frame_index] = true;
@@ -6861,8 +7457,8 @@ void VulkanRenderer::recordParticlePass(const vk::raii::CommandBuffer& cmd,
     depth_barrier.dstStageMask = vk::PipelineStageFlagBits2::eEarlyFragmentTests |
                                  vk::PipelineStageFlagBits2::eLateFragmentTests;
     depth_barrier.dstAccessMask = vk::AccessFlagBits2::eDepthStencilAttachmentRead;
-    depth_barrier.oldLayout = vk::ImageLayout::eDepthReadOnlyOptimal;
-    depth_barrier.newLayout = vk::ImageLayout::eDepthReadOnlyOptimal;
+    depth_barrier.oldLayout = compat::depthReadOnlyLayout();
+    depth_barrier.newLayout = compat::depthReadOnlyLayout();
     depth_barrier.image = *gbuffer_.depth().handle();
     depth_barrier.subresourceRange =
         vk::ImageSubresourceRange{vk::ImageAspectFlagBits::eDepth, 0, 1, 0, 1};
@@ -6876,7 +7472,7 @@ void VulkanRenderer::recordParticlePass(const vk::raii::CommandBuffer& cmd,
 
     vk::RenderingAttachmentInfo depth_attachment{};
     depth_attachment.imageView = *gbuffer_.depth().view();
-    depth_attachment.imageLayout = vk::ImageLayout::eDepthReadOnlyOptimal;
+    depth_attachment.imageLayout = compat::depthReadOnlyLayout();
     depth_attachment.loadOp = vk::AttachmentLoadOp::eLoad;
     depth_attachment.storeOp = vk::AttachmentStoreOp::eNone;
 
@@ -6886,9 +7482,9 @@ void VulkanRenderer::recordParticlePass(const vk::raii::CommandBuffer& cmd,
     rendering_info.setColorAttachments(color_attachment);
     rendering_info.pDepthAttachment = &depth_attachment;
 
-    cmd.beginRendering(rendering_info);
+    compat::beginRendering(cmd, rendering_info);
     particle_pass_.record(cmd, frame_index, extent);
-    cmd.endRendering();
+    compat::endRendering(cmd);
 }
 
 // Sistema de ambiente: lluvia, nieve, polvo, salpicaduras y el trazo de los
@@ -6923,8 +7519,8 @@ void VulkanRenderer::recordPrecipitationPass(const vk::raii::CommandBuffer& cmd,
     depth_barrier.dstStageMask = vk::PipelineStageFlagBits2::eEarlyFragmentTests |
                                  vk::PipelineStageFlagBits2::eLateFragmentTests | vk::PipelineStageFlagBits2::eVertexShader;
     depth_barrier.dstAccessMask = vk::AccessFlagBits2::eDepthStencilAttachmentRead | vk::AccessFlagBits2::eShaderSampledRead;
-    depth_barrier.oldLayout = vk::ImageLayout::eDepthReadOnlyOptimal;
-    depth_barrier.newLayout = vk::ImageLayout::eDepthReadOnlyOptimal;
+    depth_barrier.oldLayout = compat::depthReadOnlyLayout();
+    depth_barrier.newLayout = compat::depthReadOnlyLayout();
     depth_barrier.image = *gbuffer_.depth().handle();
     depth_barrier.subresourceRange = vk::ImageSubresourceRange{vk::ImageAspectFlagBits::eDepth, 0, 1, 0, 1};
     pipelineBarrier(cmd, {color_barrier, depth_barrier});
@@ -6936,7 +7532,7 @@ void VulkanRenderer::recordPrecipitationPass(const vk::raii::CommandBuffer& cmd,
     color_attachment.storeOp = vk::AttachmentStoreOp::eStore;
     vk::RenderingAttachmentInfo depth_attachment{};
     depth_attachment.imageView = *gbuffer_.depth().view();
-    depth_attachment.imageLayout = vk::ImageLayout::eDepthReadOnlyOptimal;
+    depth_attachment.imageLayout = compat::depthReadOnlyLayout();
     depth_attachment.loadOp = vk::AttachmentLoadOp::eLoad;
     depth_attachment.storeOp = vk::AttachmentStoreOp::eNone;
     vk::RenderingInfo rendering_info{};
@@ -6944,9 +7540,9 @@ void VulkanRenderer::recordPrecipitationPass(const vk::raii::CommandBuffer& cmd,
     rendering_info.layerCount = 1;
     rendering_info.setColorAttachments(color_attachment);
     rendering_info.pDepthAttachment = &depth_attachment;
-    cmd.beginRendering(rendering_info);
+    compat::beginRendering(cmd, rendering_info);
     precipitation_pass_.record(cmd, frame_index, extent);
-    cmd.endRendering();
+    compat::endRendering(cmd);
 }
 
 // Fuego y humo volumetricos (FirePass): sobre la imagen HDR, leyendo el depth
@@ -6963,8 +7559,8 @@ void VulkanRenderer::recordFirePass(const vk::raii::CommandBuffer& cmd, std::uin
     depth_barrier.srcAccessMask = vk::AccessFlagBits2::eDepthStencilAttachmentWrite;
     depth_barrier.dstStageMask = vk::PipelineStageFlagBits2::eFragmentShader;
     depth_barrier.dstAccessMask = vk::AccessFlagBits2::eShaderSampledRead;
-    depth_barrier.oldLayout = vk::ImageLayout::eDepthReadOnlyOptimal;
-    depth_barrier.newLayout = vk::ImageLayout::eDepthReadOnlyOptimal;
+    depth_barrier.oldLayout = compat::depthReadOnlyLayout();
+    depth_barrier.newLayout = compat::depthReadOnlyLayout();
     depth_barrier.image = *gbuffer_.depth().handle();
     depth_barrier.subresourceRange = vk::ImageSubresourceRange{vk::ImageAspectFlagBits::eDepth, 0, 1, 0, 1};
     pipelineBarrier(cmd, {color_barrier, depth_barrier});
@@ -6978,10 +7574,10 @@ void VulkanRenderer::recordFirePass(const vk::raii::CommandBuffer& cmd, std::uin
     rendering_info.renderArea = vk::Rect2D{vk::Offset2D{0, 0}, extent};
     rendering_info.layerCount = 1;
     rendering_info.setColorAttachments(color_attachment);
-    cmd.beginRendering(rendering_info);
+    compat::beginRendering(cmd, rendering_info);
     fire_pass_.record(cmd, frame_index, extent, *camera_buffers_[frame_index].handle(), sizeof(GpuCamera),
                       *gbuffer_.depth().view(), fire_lighting_, weather_time_, static_cast<std::uint32_t>(frame_count_));
-    cmd.endRendering();
+    compat::endRendering(cmd);
 }
 
 // Lit + Wireframe: las lineas de las mallas encima de la imagen iluminada,
@@ -7000,8 +7596,8 @@ void VulkanRenderer::recordWireOverlayPass(const vk::raii::CommandBuffer& cmd, s
     depth_barrier.dstStageMask = vk::PipelineStageFlagBits2::eEarlyFragmentTests |
                                  vk::PipelineStageFlagBits2::eLateFragmentTests;
     depth_barrier.dstAccessMask = vk::AccessFlagBits2::eDepthStencilAttachmentRead;
-    depth_barrier.oldLayout = vk::ImageLayout::eDepthReadOnlyOptimal;
-    depth_barrier.newLayout = vk::ImageLayout::eDepthReadOnlyOptimal;
+    depth_barrier.oldLayout = compat::depthReadOnlyLayout();
+    depth_barrier.newLayout = compat::depthReadOnlyLayout();
     depth_barrier.image = *gbuffer_.depth().handle();
     depth_barrier.subresourceRange = vk::ImageSubresourceRange{vk::ImageAspectFlagBits::eDepth, 0, 1, 0, 1};
     pipelineBarrier(cmd, {color_barrier, depth_barrier});
@@ -7013,7 +7609,7 @@ void VulkanRenderer::recordWireOverlayPass(const vk::raii::CommandBuffer& cmd, s
     color_attachment.storeOp = vk::AttachmentStoreOp::eStore;
     vk::RenderingAttachmentInfo depth_attachment{};
     depth_attachment.imageView = *gbuffer_.depth().view();
-    depth_attachment.imageLayout = vk::ImageLayout::eDepthReadOnlyOptimal;
+    depth_attachment.imageLayout = compat::depthReadOnlyLayout();
     depth_attachment.loadOp = vk::AttachmentLoadOp::eLoad;
     depth_attachment.storeOp = vk::AttachmentStoreOp::eNone;
     vk::RenderingInfo rendering_info{};
@@ -7022,7 +7618,7 @@ void VulkanRenderer::recordWireOverlayPass(const vk::raii::CommandBuffer& cmd, s
     rendering_info.setColorAttachments(color_attachment);
     rendering_info.pDepthAttachment = &depth_attachment;
 
-    cmd.beginRendering(rendering_info);
+    compat::beginRendering(cmd, rendering_info);
     cmd.setViewport(0, vk::Viewport{0.0f, 0.0f, static_cast<float>(extent.width), static_cast<float>(extent.height),
                                     0.0f, 1.0f});
     cmd.setScissor(0, vk::Rect2D{vk::Offset2D{0, 0}, extent});
@@ -7031,7 +7627,7 @@ void VulkanRenderer::recordWireOverlayPass(const vk::raii::CommandBuffer& cmd, s
     drawGpuClusters(cmd, frame_index, 0);
     drawGpuClusters(cmd, frame_index, 1);
     mesh_pipeline_override_ = nullptr;
-    cmd.endRendering();
+    compat::endRendering(cmd);
 }
 
 // Con escalado: la profundidad de la escena copiada (sin filtrar) a la
@@ -7047,7 +7643,7 @@ void VulkanRenderer::recordOutputDepth(const vk::raii::CommandBuffer& cmd) {
     source.srcAccessMask = vk::AccessFlagBits2::eDepthStencilAttachmentWrite;
     source.dstStageMask = vk::PipelineStageFlagBits2::eTransfer;
     source.dstAccessMask = vk::AccessFlagBits2::eTransferRead;
-    source.oldLayout = vk::ImageLayout::eDepthReadOnlyOptimal;
+    source.oldLayout = compat::depthReadOnlyLayout();
     source.newLayout = vk::ImageLayout::eTransferSrcOptimal;
     source.image = *gbuffer_.depth().handle();
     source.subresourceRange = depth_range;
@@ -7081,13 +7677,13 @@ void VulkanRenderer::recordOutputDepth(const vk::raii::CommandBuffer& cmd) {
     source.dstStageMask = vk::PipelineStageFlagBits2::eFragmentShader | vk::PipelineStageFlagBits2::eEarlyFragmentTests;
     source.dstAccessMask = vk::AccessFlagBits2::eShaderSampledRead | vk::AccessFlagBits2::eDepthStencilAttachmentRead;
     source.oldLayout = vk::ImageLayout::eTransferSrcOptimal;
-    source.newLayout = vk::ImageLayout::eDepthReadOnlyOptimal;
+    source.newLayout = compat::depthReadOnlyLayout();
     target.srcStageMask = vk::PipelineStageFlagBits2::eTransfer;
     target.srcAccessMask = vk::AccessFlagBits2::eTransferWrite;
     target.dstStageMask = vk::PipelineStageFlagBits2::eEarlyFragmentTests | vk::PipelineStageFlagBits2::eLateFragmentTests;
     target.dstAccessMask = vk::AccessFlagBits2::eDepthStencilAttachmentRead;
     target.oldLayout = vk::ImageLayout::eTransferDstOptimal;
-    target.newLayout = vk::ImageLayout::eDepthReadOnlyOptimal;
+    target.newLayout = compat::depthReadOnlyLayout();
     pipelineBarrier(cmd, {source, target});
 }
 
@@ -7115,8 +7711,8 @@ void VulkanRenderer::recordOverlayPass(const vk::raii::CommandBuffer& cmd,
     depth_barrier.dstStageMask = vk::PipelineStageFlagBits2::eEarlyFragmentTests |
                                  vk::PipelineStageFlagBits2::eLateFragmentTests;
     depth_barrier.dstAccessMask = vk::AccessFlagBits2::eDepthStencilAttachmentRead;
-    depth_barrier.oldLayout = vk::ImageLayout::eDepthReadOnlyOptimal;
-    depth_barrier.newLayout = vk::ImageLayout::eDepthReadOnlyOptimal;
+    depth_barrier.oldLayout = compat::depthReadOnlyLayout();
+    depth_barrier.newLayout = compat::depthReadOnlyLayout();
     depth_barrier.image = *depth_image.handle();
     depth_barrier.subresourceRange =
         vk::ImageSubresourceRange{vk::ImageAspectFlagBits::eDepth, 0, 1, 0, 1};
@@ -7137,7 +7733,7 @@ void VulkanRenderer::recordOverlayPass(const vk::raii::CommandBuffer& cmd,
 
     vk::RenderingAttachmentInfo depth_attachment{};
     depth_attachment.imageView = *depth_image.view();
-    depth_attachment.imageLayout = vk::ImageLayout::eDepthReadOnlyOptimal;
+    depth_attachment.imageLayout = compat::depthReadOnlyLayout();
     depth_attachment.loadOp = vk::AttachmentLoadOp::eLoad;
     depth_attachment.storeOp = vk::AttachmentStoreOp::eNone;
 
@@ -7147,9 +7743,9 @@ void VulkanRenderer::recordOverlayPass(const vk::raii::CommandBuffer& cmd,
     rendering_info.setColorAttachments(color_attachment);
     rendering_info.pDepthAttachment = &depth_attachment;
 
-    cmd.beginRendering(rendering_info);
+    compat::beginRendering(cmd, rendering_info);
     overlay_pass_.record(cmd, frame_index, extent, overlay_geometry_);
-    cmd.endRendering();
+    compat::endRendering(cmd);
     pipelineBarrier(cmd, writtenToSampled(*ldr_color_.handle()));
 }
 
@@ -7170,8 +7766,8 @@ void VulkanRenderer::recordWorldUiPass(const vk::raii::CommandBuffer& cmd, std::
     depth_barrier.dstStageMask = vk::PipelineStageFlagBits2::eEarlyFragmentTests |
                                  vk::PipelineStageFlagBits2::eLateFragmentTests;
     depth_barrier.dstAccessMask = vk::AccessFlagBits2::eDepthStencilAttachmentRead;
-    depth_barrier.oldLayout = vk::ImageLayout::eDepthReadOnlyOptimal;
-    depth_barrier.newLayout = vk::ImageLayout::eDepthReadOnlyOptimal;
+    depth_barrier.oldLayout = compat::depthReadOnlyLayout();
+    depth_barrier.newLayout = compat::depthReadOnlyLayout();
     depth_barrier.image = *depth_image.handle();
     depth_barrier.subresourceRange = vk::ImageSubresourceRange{vk::ImageAspectFlagBits::eDepth, 0, 1, 0, 1};
     pipelineBarrier(cmd, {colorBarrier(*ldr_color_.handle(), vk::ImageLayout::eShaderReadOnlyOptimal,
@@ -7191,7 +7787,7 @@ void VulkanRenderer::recordWorldUiPass(const vk::raii::CommandBuffer& cmd, std::
 
     vk::RenderingAttachmentInfo depth_attachment{};
     depth_attachment.imageView = *depth_image.view();
-    depth_attachment.imageLayout = vk::ImageLayout::eDepthReadOnlyOptimal;
+    depth_attachment.imageLayout = compat::depthReadOnlyLayout();
     depth_attachment.loadOp = vk::AttachmentLoadOp::eLoad;
     depth_attachment.storeOp = vk::AttachmentStoreOp::eNone;
 
@@ -7201,9 +7797,9 @@ void VulkanRenderer::recordWorldUiPass(const vk::raii::CommandBuffer& cmd, std::
     rendering_info.setColorAttachments(color_attachment);
     rendering_info.pDepthAttachment = &depth_attachment;
 
-    cmd.beginRendering(rendering_info);
+    compat::beginRendering(cmd, rendering_info);
     world_ui_pass_.recordQuads(cmd, camera_view_projection_, extent);
-    cmd.endRendering();
+    compat::endRendering(cmd);
     pipelineBarrier(cmd, writtenToSampled(*ldr_color_.handle()));
 }
 
@@ -7214,7 +7810,7 @@ void VulkanRenderer::recordWorldUiPass(const vk::raii::CommandBuffer& cmd, std::
 // FSR 3.1 y DLSS 4 (TemporalUpscalers.h)
 // -----------------------------------------------------------------------------
 
-bool VulkanRenderer::fsr3Supported() const { return Fsr3Upscaler::supported(); }
+bool VulkanRenderer::fsr3Supported() const { return !device_.compatMode() && Fsr3Upscaler::supported(); }
 
 Upscaler VulkanRenderer::activeUpscaler() const {
     if (!upscaling_) return Upscaler::Off;
@@ -7239,6 +7835,14 @@ void VulkanRenderer::configureVendorUpscaler() {
     if (graphics_.upscaler != Upscaler::Dlss) dlss_.releaseFeature();
     if (graphics_.upscaler != Upscaler::Fsr3) fsr3_.destroy();
     vendor_upscaler_ = false;
+    if (device_.compatMode() && (graphics_.upscaler == Upscaler::Fsr3 || graphics_.upscaler == Upscaler::Dlss)) {
+        // Modo compatible (moviles, GPU antiguas): ni FSR 3 ni DLSS.
+        upscaler_status_ = "FSR 3 y DLSS no estan en el modo compatible: se usa TAA";
+        vendor_output_ = output;
+        taa_history_valid_ = false;
+        xr_eye1_.taa_valid = false;
+        return;
+    }
     if (graphics_.upscaler == Upscaler::Fsr3) {
         if (!fsr3_.ready() || !same_output) {
             if (!fsr3_.create(static_cast<VkInstance>(*instance_.handle()), static_cast<VkDevice>(*device_.handle()),
@@ -7311,7 +7915,7 @@ void VulkanRenderer::recordVendorUpscale(const vk::raii::CommandBuffer& cmd) {
     depth_in.srcAccessMask = Access::eMemoryRead | Access::eMemoryWrite;
     depth_in.dstStageMask = Stage::eAllCommands;
     depth_in.dstAccessMask = Access::eMemoryRead;
-    depth_in.oldLayout = vk::ImageLayout::eDepthReadOnlyOptimal;
+    depth_in.oldLayout = compat::depthReadOnlyLayout();
     depth_in.newLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
     depth_in.image = *gbuffer_.depth().handle();
     depth_in.subresourceRange = depth_range;
@@ -7349,7 +7953,7 @@ void VulkanRenderer::recordVendorUpscale(const vk::raii::CommandBuffer& cmd) {
     // 3) La profundidad vuelve a como la leen los demas; la salida, a textura.
     vk::ImageMemoryBarrier2 depth_back = depth_in;
     depth_back.oldLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
-    depth_back.newLayout = vk::ImageLayout::eDepthReadOnlyOptimal;
+    depth_back.newLayout = compat::depthReadOnlyLayout();
     depth_back.srcAccessMask = Access::eMemoryRead | Access::eMemoryWrite;
     vk::ImageMemoryBarrier2 out_back = colorBarrier(*upscale_target_.handle(), vk::ImageLayout::eGeneral,
                                                     vk::ImageLayout::eShaderReadOnlyOptimal, Stage::eAllCommands,
@@ -7506,6 +8110,26 @@ void VulkanRenderer::recordBloomPass(const vk::raii::CommandBuffer& cmd) {
 }
 
 void VulkanRenderer::recordSkyLutPass(const vk::raii::CommandBuffer& cmd) {
+    // Suelo del entorno mojado: la pelicula de agua de la humedad y los
+    // charcos (mismas cantidades que la pasada de geometria).
+    const bool raining = rain_enabled_ && rainAvailable();
+    const float ground_wet =
+        raining ? std::min(0.25f * wetness_ + 0.45f * puddles_, 0.7f) : 0.0f;
+
+    // Nada cambio (la hora quieta, el mismo cielo): la LUT y el IBL de antes
+    // siguen valiendo y siguen como texturas. Rehacer el IBL prefiltra 6
+    // caras x 6 niveles por compute: en una GPU integrada o de movil eran
+    // milisegundos cada frame para obtener lo mismo.
+    const std::array<float, 16> signature = {
+        sky_push_.sun.x,          sky_push_.sun.y,          sky_push_.sun.z,       sky_push_.sun.w,
+        sky_push_.moon.x,         sky_push_.moon.y,         sky_push_.moon.z,      sky_push_.moon.w,
+        ibl_light_radiance_.x,    ibl_light_radiance_.y,    ibl_light_radiance_.z, ibl_to_light_.x,
+        ibl_to_light_.y,          ibl_to_light_.z,          ground_wet,
+        static_cast<float>(environmentActive() ? environment_generation_ + 1u : 0u)};
+    if (!capturing_ && sky_recorded_once_ && signature == sky_signature_) {
+        return;
+    }
+
     // Movil: el cielo y el IBL cambian despacio; se rehacen 1 de cada 8
     // frames (el resto se usan los de antes, que siguen como texturas).
     if (mobile_level_ >= 0 && mobile_level_ < 3 && !capturing_) {
@@ -7524,12 +8148,11 @@ void VulkanRenderer::recordSkyLutPass(const vk::raii::CommandBuffer& cmd) {
     to_sampled.dstStageMask |= vk::PipelineStageFlagBits2::eComputeShader;
     pipelineBarrier(cmd, to_sampled);
 
-    // Suelo del entorno mojado: la pelicula de agua de la humedad y los
-    // charcos (mismas cantidades que la pasada de geometria).
-    const bool raining = rain_enabled_ && rainAvailable();
-    const float ground_wet =
-        raining ? std::min(0.25f * wetness_ + 0.45f * puddles_, 0.7f) : 0.0f;
     ibl_probe_.record(cmd, ibl_light_radiance_, ibl_to_light_, environmentActive(), ground_wet);
+    if (!capturing_) {
+        sky_signature_ = signature;
+        sky_recorded_once_ = true;
+    }
 }
 
 void VulkanRenderer::recordRainMap(const vk::raii::CommandBuffer& cmd,
@@ -7563,14 +8186,14 @@ void VulkanRenderer::recordRainMap(const vk::raii::CommandBuffer& cmd,
     to_attachment.dstAccessMask = vk::AccessFlagBits2::eDepthStencilAttachmentRead |
                                   vk::AccessFlagBits2::eDepthStencilAttachmentWrite;
     to_attachment.oldLayout = vk::ImageLayout::eUndefined;
-    to_attachment.newLayout = vk::ImageLayout::eDepthAttachmentOptimal;
+    to_attachment.newLayout = compat::depthAttachmentLayout();
     to_attachment.image = *rain_map_.handle();
     to_attachment.subresourceRange = range;
     pipelineBarrier(cmd, to_attachment);
 
     vk::RenderingAttachmentInfo depth_attachment{};
     depth_attachment.imageView = *rain_map_.view();
-    depth_attachment.imageLayout = vk::ImageLayout::eDepthAttachmentOptimal;
+    depth_attachment.imageLayout = compat::depthAttachmentLayout();
     depth_attachment.loadOp = vk::AttachmentLoadOp::eClear;
     depth_attachment.storeOp = vk::AttachmentStoreOp::eStore;
     depth_attachment.clearValue = vk::ClearValue{vk::ClearDepthStencilValue{1.0f, 0}};
@@ -7579,20 +8202,20 @@ void VulkanRenderer::recordRainMap(const vk::raii::CommandBuffer& cmd,
     rendering_info.renderArea = vk::Rect2D{vk::Offset2D{0, 0}, extent};
     rendering_info.layerCount = 1;
     rendering_info.pDepthAttachment = &depth_attachment;
-    cmd.beginRendering(rendering_info);
+    compat::beginRendering(cmd, rendering_info);
     cmd.setViewport(0, vk::Viewport{0.0f, 0.0f, static_cast<float>(kRainMapSize),
                                     static_cast<float>(kRainMapSize), 0.0f, 1.0f});
     cmd.setScissor(0, vk::Rect2D{vk::Offset2D{0, 0}, extent});
     recordActorShadows(cmd, frame_index, rain_view_projection_);
-    cmd.endRendering();
+    compat::endRendering(cmd);
 
     vk::ImageMemoryBarrier2 to_read = to_attachment;
     to_read.srcStageMask = vk::PipelineStageFlagBits2::eLateFragmentTests;
     to_read.srcAccessMask = vk::AccessFlagBits2::eDepthStencilAttachmentWrite;
     to_read.dstStageMask = vk::PipelineStageFlagBits2::eFragmentShader;
     to_read.dstAccessMask = vk::AccessFlagBits2::eShaderSampledRead;
-    to_read.oldLayout = vk::ImageLayout::eDepthAttachmentOptimal;
-    to_read.newLayout = vk::ImageLayout::eDepthReadOnlyOptimal;
+    to_read.oldLayout = compat::depthAttachmentLayout();
+    to_read.newLayout = compat::depthReadOnlyLayout();
     pipelineBarrier(cmd, to_read);
 
     rain_map_ready_ = true;
@@ -7690,6 +8313,23 @@ void VulkanRenderer::recordCameraFxPass(const vk::raii::CommandBuffer& cmd) {
 }
 
 void VulkanRenderer::recordLightShaftPass(const vk::raii::CommandBuffer& cmd) {
+    // Apagados, de noche o con el sol fuera de la vista (intensidad 0) no
+    // hay nada que dibujar: la composicion no los lee (settings.tone.x = 0).
+    // Antes se dibujaba igual una imagen negra cada frame.
+    light_shafts_drawn_ = light_shaft_push_.intensity > 0.0f;
+    if (!light_shafts_drawn_) {
+        if (!light_shafts_ready_) {
+            // Recien creada: a textura una vez, para el descriptor.
+            pipelineBarrier(cmd, colorBarrier(*light_shafts_.handle(), vk::ImageLayout::eUndefined,
+                                              vk::ImageLayout::eShaderReadOnlyOptimal,
+                                              vk::PipelineStageFlagBits2::eTopOfPipe, vk::AccessFlagBits2::eNone,
+                                              vk::PipelineStageFlagBits2::eFragmentShader,
+                                              vk::AccessFlagBits2::eShaderSampledRead));
+            light_shafts_ready_ = true;
+        }
+        return;
+    }
+    light_shafts_ready_ = true;
     pipelineBarrier(cmd, discardToAttachment(*light_shafts_.handle()));
     drawFullscreen(cmd, light_shaft_pass_, &light_shaft_sets_[0], light_shafts_,
                    &light_shaft_push_);
@@ -7757,7 +8397,7 @@ void VulkanRenderer::recordCompositePass(const vk::raii::CommandBuffer& cmd,
     GpuCompositeSettings settings{};
     settings.exposure = Vec4{exposure_ * p.manual_exposure, p.bloom ? p.bloom_intensity : 0.0f,
                              p.auto_exposure ? 1.0f : 0.0f, p.exposure_compensation};
-    settings.tone = Vec4{p.light_shafts ? 0.6f * p.light_shaft_intensity : 0.0f,
+    settings.tone = Vec4{p.light_shafts && light_shafts_drawn_ ? 0.6f * p.light_shaft_intensity : 0.0f,
                          static_cast<float>(static_cast<std::int32_t>(p.tonemapper)),
                          p.saturation, p.contrast};
     settings.look = Vec4{p.vibrance, p.vignette ? p.vignette_intensity : 0.0f,
@@ -7820,7 +8460,7 @@ void VulkanRenderer::recordPostProcessPass(const vk::raii::CommandBuffer& cmd,
     rendering_info.layerCount = 1;
     rendering_info.setColorAttachments(color_attachment);
 
-    cmd.beginRendering(rendering_info);
+    compat::beginRendering(cmd, rendering_info);
 
     cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *post_process_pass_.pipeline());
     cmd.setViewport(0, vk::Viewport{0.0f, 0.0f, static_cast<float>(extent.width),
@@ -7845,7 +8485,7 @@ void VulkanRenderer::recordPostProcessPass(const vk::raii::CommandBuffer& cmd,
         overlay_(*cmd);
     }
 
-    cmd.endRendering();
+    compat::endRendering(cmd);
 
     // --- La imagen queda lista para presentarse ---
     vk::ImageMemoryBarrier2 present_barrier = colorBarrier(
@@ -7856,7 +8496,7 @@ void VulkanRenderer::recordPostProcessPass(const vk::raii::CommandBuffer& cmd,
 
     vk::DependencyInfo present_dependency{};
     present_dependency.setImageMemoryBarriers(present_barrier);
-    cmd.pipelineBarrier2(present_dependency);
+    compat::pipelineBarrier(cmd, present_dependency);
 }
 
 bool VulkanRenderer::applyPendingResize() {

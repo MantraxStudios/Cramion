@@ -1,5 +1,6 @@
 #include "CramionFX/vk/VulkanShader.h"
 
+#include "CramionFX/vk/VulkanCompat.h"
 #include "CramionFX/vk/VulkanDevice.h"
 
 #if defined(_WIN32)
@@ -47,7 +48,14 @@ std::filesystem::path directory() {
 }
 
 vk::raii::ShaderModule loadModule(const VulkanDevice& device, const std::string& file_name) {
-    const std::filesystem::path path = directory() / file_name;
+    // Modo compatible (moviles, GPU antiguas): la version de shaders/compat
+    // (SPIR-V 1.0, sin demote, con los recursos de CRAMION_COMPAT) si existe.
+    std::filesystem::path path = directory() / file_name;
+    if (compat::lite()) {
+        const std::filesystem::path lite = directory() / "compat" / file_name;
+        std::error_code error;
+        if (std::filesystem::exists(lite, error)) path = lite;
+    }
 
     std::ifstream file(path, std::ios::binary | std::ios::ate);
     if (!file) {

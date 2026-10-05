@@ -75,6 +75,7 @@ BuildConfigs loadBuildConfigs(const std::filesystem::path& file) {
                     if (!s.make_apk && !s.make_aab) s.make_apk = true;
                     s.split_obb = a->value("obb", s.split_obb);
                     s.x86_64 = a->value("x86_64", s.x86_64);
+                    s.armeabi_v7a = a->value("armeabi_v7a", s.armeabi_v7a);
                     s.internet = a->value("internet", s.internet);
                     s.vibrate = a->value("vibrate", s.vibrate);
                     s.record_audio = a->value("record_audio", s.record_audio);
@@ -83,6 +84,7 @@ BuildConfigs loadBuildConfigs(const std::filesystem::path& file) {
                     s.key_alias = a->value("key_alias", s.key_alias);
                     s.quality = std::clamp(a->value("quality", s.quality), 0, 3);
                     s.target_fps = std::clamp(a->value("target_fps", s.target_fps), 15, 240);
+                    s.resolution = std::clamp(a->value("resolution", s.resolution), -1, 4320);
                 }
                 out.configs.push_back(std::move(b));
             }
@@ -128,6 +130,7 @@ bool saveBuildConfigs(const std::filesystem::path& file, const BuildConfigs& con
                                   {"aab", s.make_aab},
                                   {"obb", s.split_obb},
                                   {"x86_64", s.x86_64},
+                                  {"armeabi_v7a", s.armeabi_v7a},
                                   {"internet", s.internet},
                                   {"vibrate", s.vibrate},
                                   {"record_audio", s.record_audio},
@@ -135,7 +138,8 @@ bool saveBuildConfigs(const std::filesystem::path& file, const BuildConfigs& con
                                   {"keystore", s.keystore},
                                   {"key_alias", s.key_alias},
                                   {"quality", s.quality},
-                                  {"target_fps", s.target_fps}};
+                                  {"target_fps", s.target_fps},
+                                  {"resolution", s.resolution}};
     }
     const json root = {{"format", "CramionBuildConfigs"}, {"version", 1}, {"active", configs.active}, {"configs", list}};
     std::error_code e;
@@ -165,6 +169,7 @@ std::string buildConfigIni(const BuildConfig& config, const std::string& game_na
         ini << "platform=android\n";
         ini << "android_quality=" << config.android.quality << "\n";
         ini << "android_fps=" << config.android.target_fps << "\n";
+        ini << "android_resolution=" << config.android.resolution << "\n";
     }
     return ini.str();
 }

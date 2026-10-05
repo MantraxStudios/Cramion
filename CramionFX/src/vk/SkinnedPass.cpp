@@ -1,3 +1,4 @@
+#include "CramionFX/vk/VulkanCompat.h"
 #include "CramionFX/vk/SkinnedPass.h"
 
 #include "CramionFX/asset/Model.h"
@@ -97,7 +98,7 @@ void SkinnedPass::create(const VulkanDevice& device, const GBuffer& gbuffer,
     // Texturas de los decals (estampas): 8 ranuras.
     frame_bindings[4].binding = 4;
     frame_bindings[4].descriptorType = vk::DescriptorType::eCombinedImageSampler;
-    frame_bindings[4].descriptorCount = kMaxDecalTextures;
+    frame_bindings[4].descriptorCount = decalTextureSlots(device.compatMode());
     frame_bindings[4].stageFlags = vk::ShaderStageFlagBits::eFragment;
     // Propiedades de los materiales con shader propio (8 vec4 cada uno).
     frame_bindings[5].binding = 5;
@@ -118,7 +119,7 @@ void SkinnedPass::create(const VulkanDevice& device, const GBuffer& gbuffer,
     // --- Set 1: las texturas PBR del material ---
     // Las 4 ultimas son de los shaders del usuario (tambien en vertices).
     std::array<vk::DescriptorSetLayoutBinding, kMaterialBindingCount> material_bindings{};
-    for (std::uint32_t i = 0; i < kMaterialBindingCount; ++i) {
+    for (std::uint32_t i = 0; i < materialBindingCount(); ++i) {
         material_bindings[i].binding = i;
         material_bindings[i].descriptorType = vk::DescriptorType::eCombinedImageSampler;
         material_bindings[i].descriptorCount = 1;
@@ -132,6 +133,7 @@ void SkinnedPass::create(const VulkanDevice& device, const GBuffer& gbuffer,
 
     vk::DescriptorSetLayoutCreateInfo material_layout_info{};
     material_layout_info.setBindings(material_bindings);
+    material_layout_info.bindingCount = materialBindingCount();
     material_set_layout_ = vk::raii::DescriptorSetLayout(device.handle(), material_layout_info);
 
     hdr_format_ = hdr_format;
@@ -231,7 +233,7 @@ void SkinnedPass::createGeometryPipeline(const VulkanDevice& device, const GBuff
     geometry_layout_ = vk::raii::PipelineLayout(device.handle(), layout_info);
 
     const auto formats = gbuffer.colorFormats();
-    gbuffer_color_formats_.assign(formats.begin(), formats.end());
+    gbuffer_color_formats_.assign(formats.begin(), formats.begin() + GBuffer::activeColorAttachments());
     gbuffer_depth_format_ = gbuffer.depthFormat();
 
     const vk::raii::ShaderModule vertex_module = shaders::loadModule(device, "skinned.vert.spv");
@@ -329,6 +331,7 @@ vk::raii::Pipeline SkinnedPass::buildGeometryPipeline(const VulkanDevice& device
 
     vk::PipelineColorBlendStateCreateInfo color_blend{};
     color_blend.setAttachments(blend_attachments);
+    color_blend.attachmentCount = static_cast<std::uint32_t>(gbuffer_color_formats_.size());
     // Encima de la imagen HDR: mezcla por alfa en el color; su alfa (la
     // distancia de la superficie) se queda como estaba.
     vk::PipelineColorBlendAttachmentState overlay_blend = blend_attachment;
@@ -365,7 +368,7 @@ vk::raii::Pipeline SkinnedPass::buildGeometryPipeline(const VulkanDevice& device
     pipeline_info.pDynamicState = &dynamic_state;
     pipeline_info.layout = *geometry_layout_;
 
-    return vk::raii::Pipeline(device.handle(), device.pipelineCache(), pipeline_info);
+    return compat::makeGraphicsPipeline(device, pipeline_info);
 }
 
 void SkinnedPass::createGlassPipeline(const VulkanDevice& device, vk::Format color_format,
@@ -386,6 +389,7 @@ void SkinnedPass::createGlassPipeline(const VulkanDevice& device, vk::Format col
     }
     vk::DescriptorSetLayoutCreateInfo glass_set_info{};
     glass_set_info.setBindings(glass_bindings);
+    glass_set_info.bindingCount = glassBindingCount();
     glass_set_layout_ = vk::raii::DescriptorSetLayout(device.handle(), glass_set_info);
 
     vk::PushConstantRange push_range{};
@@ -473,7 +477,7 @@ void SkinnedPass::createGlassPipeline(const VulkanDevice& device, vk::Format col
     pipeline_info.pDynamicState = &dynamic_state;
     pipeline_info.layout = *glass_layout_;
 
-    glass_pipeline_ = vk::raii::Pipeline(device.handle(), device.pipelineCache(), pipeline_info);
+    glass_pipeline_ = compat::makeGraphicsPipeline(device, pipeline_info);
 }
 
 vk::raii::Pipeline SkinnedPass::createOutlinePipeline(const VulkanDevice& device,
@@ -545,7 +549,7 @@ vk::raii::Pipeline SkinnedPass::createOutlinePipeline(const VulkanDevice& device
     pipeline_info.pDynamicState = &dynamic_state;
     pipeline_info.layout = *geometry_layout_;
 
-    return vk::raii::Pipeline(device.handle(), device.pipelineCache(), pipeline_info);
+    return compat::makeGraphicsPipeline(device, pipeline_info);
 }
 
 vk::raii::Pipeline SkinnedPass::createShadowPipeline(const VulkanDevice& device,
@@ -627,7 +631,7 @@ vk::raii::Pipeline SkinnedPass::createShadowPipeline(const VulkanDevice& device,
     pipeline_info.pDynamicState = &dynamic_state;
     pipeline_info.layout = *shadow_layout_;
 
-    return vk::raii::Pipeline(device.handle(), device.pipelineCache(), pipeline_info);
+    return compat::makeGraphicsPipeline(device, pipeline_info);
 }
 
 vk::raii::Pipeline SkinnedPass::createMeshShadowPipeline(const VulkanDevice& device, vk::Format depth_format,
@@ -679,7 +683,7 @@ vk::raii::Pipeline SkinnedPass::createMeshShadowPipeline(const VulkanDevice& dev
     pipeline_info.pColorBlendState = &color_blend;
     pipeline_info.pDynamicState = &dynamic_state;
     pipeline_info.layout = *mesh_shadow_layout_;
-    return vk::raii::Pipeline(device.handle(), device.pipelineCache(), pipeline_info);
+    return compat::makeGraphicsPipeline(device, pipeline_info);
 }
 
 vk::raii::Pipeline SkinnedPass::createMeshGeometryPipeline(const VulkanDevice& device) const {
@@ -735,7 +739,7 @@ vk::raii::Pipeline SkinnedPass::createMeshGeometryPipeline(const VulkanDevice& d
     pipeline_info.pColorBlendState = &color_blend;
     pipeline_info.pDynamicState = &dynamic_state;
     pipeline_info.layout = *mesh_geometry_layout_;
-    return vk::raii::Pipeline(device.handle(), device.pipelineCache(), pipeline_info);
+    return compat::makeGraphicsPipeline(device, pipeline_info);
 }
 
 void SkinnedPass::destroy() {
@@ -765,6 +769,14 @@ void SkinnedPass::destroy() {
     material_set_layout_ = nullptr;
     frame_set_layout_ = nullptr;
     sampler_ = nullptr;
+}
+
+std::uint32_t SkinnedPass::materialBindingCount() {
+    return compat::lite() ? kMaterialTextureCount : kMaterialBindingCount;
+}
+
+std::uint32_t SkinnedPass::glassBindingCount() {
+    return compat::lite() ? 7u : kGlassBindingCount;
 }
 
 }  // namespace cramion::gfx

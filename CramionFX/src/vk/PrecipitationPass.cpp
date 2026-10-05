@@ -1,3 +1,4 @@
+#include "CramionFX/vk/VulkanCompat.h"
 #include "CramionFX/vk/PrecipitationPass.h"
 
 #include "CramionFX/vk/VulkanDevice.h"
@@ -182,7 +183,7 @@ vk::raii::Pipeline PrecipitationPass::createPipeline(const VulkanDevice& device,
     info.pColorBlendState = &color_blend;
     info.pDynamicState = &dynamic_state;
     info.layout = *layout_;
-    return vk::raii::Pipeline(device.handle(), device.pipelineCache(), info);
+    return compat::makeGraphicsPipeline(device, info);
 }
 
 bool PrecipitationPass::prepare(const VulkanDevice& device, std::uint32_t frame, const PrecipitationSettings& s,
@@ -233,8 +234,8 @@ bool PrecipitationPass::prepare(const VulkanDevice& device, std::uint32_t frame,
     buffers_[frame].write(&data, sizeof(data));
 
     const vk::DescriptorBufferInfo buffer_info{*buffers_[frame].handle(), 0, sizeof(GpuPrecipitation)};
-    const vk::DescriptorImageInfo rain_info{rain_sampler, *rain_map.view(), vk::ImageLayout::eDepthReadOnlyOptimal};
-    const vk::DescriptorImageInfo depth_info{*depth_sampler_, *scene_depth.view(), vk::ImageLayout::eDepthReadOnlyOptimal};
+    const vk::DescriptorImageInfo rain_info{rain_sampler, *rain_map.view(), compat::depthReadOnlyLayout()};
+    const vk::DescriptorImageInfo depth_info{*depth_sampler_, *scene_depth.view(), compat::depthReadOnlyLayout()};
     const std::array<vk::WriteDescriptorSet, 3> writes = {{
         {*sets_[frame], 0, 0, 1, vk::DescriptorType::eUniformBuffer, nullptr, &buffer_info},
         {*sets_[frame], 1, 0, 1, vk::DescriptorType::eCombinedImageSampler, &rain_info},

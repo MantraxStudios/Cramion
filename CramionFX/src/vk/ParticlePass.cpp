@@ -1,3 +1,4 @@
+#include "CramionFX/vk/VulkanCompat.h"
 #include "CramionFX/vk/ParticlePass.h"
 
 #include "CramionFX/vk/VulkanDevice.h"
@@ -113,7 +114,7 @@ vk::raii::Pipeline ParticlePass::createPipeline(const VulkanDevice& device, vk::
     info.pColorBlendState = &color_blend;
     info.pDynamicState = &dynamic_state;
     info.layout = *layout_;
-    return vk::raii::Pipeline(device.handle(), device.pipelineCache(), info);
+    return compat::makeGraphicsPipeline(device, info);
 }
 
 bool ParticlePass::prepare(const VulkanDevice& device, std::uint32_t frame,

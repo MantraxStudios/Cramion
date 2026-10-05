@@ -1,3 +1,4 @@
+#include "CramionFX/vk/VulkanCompat.h"
 #include "CramionFX/vk/OverlayPass.h"
 
 #include "CramionFX/vk/VulkanDevice.h"
@@ -141,7 +142,7 @@ vk::raii::Pipeline OverlayPass::createPipeline(const VulkanDevice& device, vk::F
     info.pColorBlendState = &color_blend;
     info.pDynamicState = &dynamic_state;
     info.layout = *layout_;
-    return vk::raii::Pipeline(device.handle(), device.pipelineCache(), info);
+    return compat::makeGraphicsPipeline(device, info);
 }
 
 void OverlayPass::appendTriangles(const std::vector<OverlayVertex>& triangles,

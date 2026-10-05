@@ -277,10 +277,26 @@ public:
     // mas cuanto mas baja la calidad, aunque la escena los pida.
     void setMobileProfile(int level) {
         mobile_level_ = level;
+        // La resolucion en el movil ya la limitan la pantalla del juego
+        // (Window::setMaxShortSide) y el escalado del preset: el presupuesto
+        // no empieza bajandola mas (con los tres juntos se quedaba en un
+        // tercio, borrosa). Si no llega a los FPS, la baja el.
+        if (level >= 0) budget_.setStartLevel(Lever::RenderScale, 0);
         post_ = mobilePost(budget_.apply(user_post_));
+        // Calidad de texturas del movil (desiredTextureSize): para lo que se
+        // cargue a partir de ahora.
+        asset::setMaxTextureSize(desiredTextureSize());
+        // Otro mapa de sombras (el del movil): se rehace con los destinos.
+        if (initialized_ && desiredShadowResolution() != shadow_map_.resolution()) {
+            shadow_map_dirty_ = true;
+            settings_dirty_ = true;
+        }
     }
     int mobileProfile() const { return mobile_level_; }
     PostProcessSettings mobilePost(PostProcessSettings p) const {
+        // Modo compatible (VulkanCompat.h): su iluminacion no tiene luz
+        // volumetrica (16 texturas por shader), asi que no se calcula.
+        if (device_.compatMode()) p.volumetric_light = false;
         if (mobile_level_ < 0 || mobile_level_ >= 3) return p;
         p.motion_blur = false;
         p.depth_of_field = false;
@@ -303,6 +319,16 @@ public:
     // El usuario toco la calidad (Inspector, presets): el presupuesto
     // adaptativo devuelve lo que habia bajado y vuelve a medir.
     void resetAdaptiveBudget() { budget_.reset(); }
+    // Iluminacion ligera (LightingPass: sin sombras suaves de contacto del sol
+    // ni oclusion del cielo desde arriba): la pide el presupuesto adaptativo
+    // (palanca Lighting, de salida en los PC de gama baja) o se fuerza aqui
+    // (pruebas, preset Baja).
+    void setLiteLightingForced(bool lite) { lite_lighting_forced_ = lite ? 1 : 0; }
+    void clearLiteLightingForced() { lite_lighting_forced_ = -1; }
+    bool liteLighting() const {
+        if (lite_lighting_forced_ >= 0) return lite_lighting_forced_ != 0;
+        return !budget_suspended_ && budget_.enabled() && budget_.level(Lever::Lighting) > 0;
+    }
     // Grabacion (modo cine del editor): tiempo fijo por frame (< 0 = el reloj
     // real) para que el viento, el agua y las nubes avancen igual aunque cada
     // frame tarde en capturarse, y sin presupuesto adaptativo (calidad maxima).
@@ -543,6 +569,9 @@ public:
     // Sonda de reflexion de la escena (si no, lo que el SSR no ve refleja el
     // cielo).
     void setReflectionProbeEnabled(bool enabled) {
+        // Modo compatible: sin sonda (cada cara es otro frame entero y su
+        // iluminacion solo lee una).
+        if (device_.compatMode()) enabled = false;
         if (enabled != probe_enabled_) budget_.reset();
         probe_enabled_ = enabled;
     }
@@ -550,7 +579,7 @@ public:
     // Oclusion del cielo vista desde arriba (sin trazado de rayos): el
     // sotobosque y lo que esta bajo tejados no reciben todo el cielo aunque lo
     // que los tapa no salga en pantalla.
-    void setSkyOcclusionEnabled(bool enabled) { sky_occlusion_enabled_ = enabled; }
+    void setSkyOcclusionEnabled(bool enabled) { sky_occlusion_enabled_ = enabled && !device_.compatMode(); }
     bool skyOcclusionEnabled() const { return sky_occlusion_enabled_; }
 
     // Iluminacion global de pantalla (luz rebotada).
@@ -604,7 +633,7 @@ public:
     // La imagen final de la escena (tono y gamma aplicados, antes del FXAA),
     // legible como textura (SHADER_READ_ONLY_OPTIMAL) durante el overlay.
     // Cambia al redimensionar: sceneImageGeneration() avisa de ello.
-    VkImageView sceneImageView() const { return *ldr_color_.view(); }
+    VkImageView sceneImageView() const { return static_cast<VkImageView>(*ldr_color_.view()); }
     // Copia a la CPU la ultima imagen terminada (la de sceneImageView(): con
     // tono y gamma, RGBA8). Espera a la GPU: para pruebas y capturas.
     bool readSceneImage(asset::ImageRgba8& image);
@@ -796,7 +825,9 @@ public:
     // Veces que se dibujo alguna el ultimo segundo (estadisticas).
     std::uint32_t renderTextureDraws() const { return render_texture_draws_; }
     std::uint32_t viewSlot() const { return view_slot_; }
-    VkImageView viewImageView(std::uint32_t slot) const { return *view_images_[slot < kViewSlots ? slot : 0].view(); }
+    VkImageView viewImageView(std::uint32_t slot) const {
+        return static_cast<VkImageView>(*view_images_[slot < kViewSlots ? slot : 0].view());
+    }
     // Corte de camara (otra vista, un corte de una cinematica): las pasadas
     // temporales (GI, reflejos) no reutilizan el frame anterior.
     void invalidateHistory();
@@ -1012,12 +1043,43 @@ private:
     // Sombras por rayos de las luces locales (rt_shadows.comp): por pixel, las
     // 4 luces que mas aportan, cada canal = (luz + 1) * 32 + visibilidad (0..31).
     VulkanImage rt_shadow_mask_{};
+    // Su acumulacion en el tiempo (rt_shadow_temporal.comp, RGBA16UI: (luz + 1)
+    // << 10 | visibilidad 0..1023): la lee la iluminacion; y la copia que es la
+    // historia del frame siguiente. Las dos viven en General.
+    VulkanImage rt_shadow_accum_{};
+    VulkanImage rt_shadow_history_{};
+    bool rt_shadow_history_valid_ = false;
+    ComputePass rt_shadow_temporal_pass_{};
+    std::vector<vk::raii::DescriptorSet> rt_shadow_temporal_sets_;  // [frame + ojo * kMaxFramesInFlight]
     bool rt_shadows_this_frame_ = false;
     // Se decide al preparar las luces del frame (updateUniforms): rayos
     // activos, vista de pantalla y alguna luz local con sombra.
     bool rt_shadows_planned_ = false;
     std::uint32_t rt_shadow_flags_ = 0;  // 1 = luces locales, 2 = sol
     void recordRtShadowPass(const vk::raii::CommandBuffer& cmd, std::uint32_t frame_index);
+    // Filtro de los reflejos por rayos (rt_reflection_temporal.comp y
+    // kReflectionAtrousIterations pasadas de rt_reflection_atrous.comp): la
+    // acumulada de este frame (rgb + varianza), sus momentos, sus historias
+    // y el ping-pong del filtro espacial. La ultima pasada escribe ssr_image_.
+    VulkanImage rt_reflection_temporal_{};
+    VulkanImage rt_reflection_moments_{};
+    VulkanImage rt_reflection_history_{};
+    VulkanImage rt_reflection_moments_history_{};
+    VulkanImage rt_reflection_filter_{};
+    bool rt_reflection_history_valid_ = false;
+    ComputePass rt_reflection_temporal_pass_{};
+    ComputePass rt_reflection_atrous_pass_{};
+    std::vector<vk::raii::DescriptorSet> rt_reflection_temporal_sets_;  // [frame + ojo * kMaxFramesInFlight]
+    std::vector<vk::raii::DescriptorSet> rt_reflection_atrous_sets_;    // [frame * kIterations + pasada]
+    // Este frame ssr_image_ la escribio el filtro de los reflejos por rayos
+    // (compute, layout General) y no el filtro del SSR (destino de color).
+    bool ssr_image_from_compute_ = false;
+    // Reflejos apagados: ssr_image_ ya tiene ceros (lo que escribe el SSR
+    // apagado) y sigue como textura, asi que este frame no se toca.
+    bool ssr_zeroed_ = false;
+    bool ssr_skipped_ = false;
+    vk::raii::DescriptorPool rt_filter_pool_{nullptr};
+    void recordRtReflectionFilter(const vk::raii::CommandBuffer& cmd, std::uint32_t frame_index);
     VulkanImage ssr_image_{};
     VulkanImage ssr_history_{};
     std::array<VulkanImage, kBloomLevels> bloom_levels_{};
@@ -1277,6 +1339,7 @@ private:
         float radius = 0.0f;
         bool cast_shadows = true;
         std::uint32_t lod = 0;
+        std::uint32_t model = 0;  // otro modelo en el mismo sitio tambien cambia la sombra
     };
     std::vector<ActorMotion> previous_actor_motion_;
     std::vector<core::Aabb> lod_bounds_;
@@ -1400,9 +1463,15 @@ private:
         VulkanImage ssr_history;
         VulkanImage gi_history;
         VulkanImage gi_moments_history;
+        // Filtros de las sombras y los reflejos por rayos.
+        VulkanImage rt_shadow_history;
+        VulkanImage rt_reflection_history;
+        VulkanImage rt_reflection_moments_history;
         bool taa_valid = false;
         bool ssr_valid = false;
         bool gi_valid = false;
+        bool rt_shadow_valid = false;
+        bool rt_reflection_valid = false;
         core::Mat4 motion_view_projection = core::Mat4::identity();
     };
     XrEyeState xr_eye1_;
@@ -1586,7 +1655,15 @@ private:
     // borrar su silueta). cascade_due_ es entonces "redibujar lo estatico".
     std::array<bool, scene::kShadowCascadeCount> cascade_animated_{};
     std::array<bool, scene::kShadowCascadeCount> cascade_had_animated_{};
+    // La capa de la cache tiene lo estatico de rendered_cascades_ (si no, lo
+    // estatico se dibujo directo al mapa y es el mapa quien lo tiene: ningun
+    // animado se ha dibujado encima desde entonces). Y si la cache ya salio
+    // de su layout inicial (si no, se usa como indefinida).
+    std::array<bool, scene::kShadowCascadeCount> shadow_cache_valid_{};
+    bool shadow_cache_layout_ready_ = false;
     bool cascades_valid_ = false;
+    // Sin sombras del sol, el mapa ya esta limpio (nada ocluye).
+    bool cascades_clear_ = false;
     // El terreno o los voxeles cambiaron: los mapas de las luces locales se
     // redibujan (su cache solo vigila a los actores).
     bool local_static_dirty_ = true;
@@ -1658,6 +1735,10 @@ private:
     core::Vec3 ibl_light_radiance_{};
     core::Vec3 ibl_to_light_{0.0f, 1.0f, 0.0f};
     GpuLightShaftPush light_shaft_push_{};
+    // Los rayos de luz se dibujaron este frame (si no, la composicion no los
+    // lee) y su imagen ya es textura (layout valido para el descriptor).
+    bool light_shafts_drawn_ = false;
+    bool light_shafts_ready_ = false;
     GpuCloudPush cloud_push_{};
     // Tiempo que llevan moviendose las nubes con el viento.
     float cloud_time_ = 0.0f;
@@ -1751,8 +1832,13 @@ private:
     bool cascade_debug_ = false;
     bool clouds_enabled_ = true;
     int mobile_level_ = -1;
+    int lite_lighting_forced_ = -1;  // -1 = lo decide el presupuesto
     int sky_frames_skipped_ = 0;
     bool sky_recorded_once_ = false;
+    // Lo que define el cielo y el IBL la ultima vez que se rehicieron (sol,
+    // luna, luz del entorno, foto HDR, suelo mojado): igual = no se rehacen.
+    std::array<float, 16> sky_signature_{};
+    std::uint32_t environment_generation_ = 0;
     bool environment_enabled_ = true;
     bool rt_enabled_ = true;
     bool occlusion_culling_enabled_ = true;

@@ -55,6 +55,13 @@ public:
     static constexpr std::uint32_t kMaterialTextureCount = 5;
     static constexpr std::uint32_t kCustomTextureCount = 4;
     static constexpr std::uint32_t kMaterialBindingCount = kMaterialTextureCount + kCustomTextureCount;
+    // Los que existen de verdad: en el modo compatible (VulkanCompat.h) solo las
+    // 5 texturas PBR (sin shaders de superficie del usuario: 16 texturas por
+    // shader como mucho).
+    static std::uint32_t materialBindingCount();
+    // Bindings del set del vidrio: en el modo compatible, sin las sondas ni la
+    // luz volumetrica (0..6).
+    static std::uint32_t glassBindingCount();
     // Propiedades (vec4) de un material con shader propio.
     static constexpr std::uint32_t kSurfaceParamCount = 8;
 

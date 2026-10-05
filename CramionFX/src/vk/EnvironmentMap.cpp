@@ -1,3 +1,4 @@
+#include "CramionFX/vk/VulkanCompat.h"
 #include "CramionFX/vk/EnvironmentMap.h"
 
 #include "CramionFX/vk/VulkanBuffer.h"
@@ -212,7 +213,7 @@ bool EnvironmentMap::load(const VulkanDevice& device, const std::filesystem::pat
                 vk::ImageSubresourceRange{vk::ImageAspectFlagBits::eColor, mip, count, 0, 1};
             vk::DependencyInfo dependency{};
             dependency.setImageMemoryBarriers(b);
-            cmd.pipelineBarrier2(dependency);
+            compat::pipelineBarrier(cmd, dependency);
         };
         using Stage = vk::PipelineStageFlagBits2;
         using Access = vk::AccessFlagBits2;

@@ -16,7 +16,14 @@
 // Un solo grupo de 256 hilos: carga el histograma, lo deja a cero para el
 // frame siguiente y el hilo 0 hace el recorrido de percentiles.
 
+// Modo compatible (moviles): 128 hilos (el minimo de Vulkan), dos cubos cada uno.
+#ifdef CRAMION_COMPAT
+layout(local_size_x = 128) in;
+const uint kPerThread = 2u;
+#else
 layout(local_size_x = 256) in;
+const uint kPerThread = 1u;
+#endif
 
 layout(set = 0, binding = 0) buffer Histogram {
     uint bins[256];
@@ -54,8 +61,11 @@ shared uint bins[256];
 
 void main() {
     uint index = gl_LocalInvocationIndex;
-    bins[index] = histogram.bins[index];
-    histogram.bins[index] = 0u;
+    for (uint k = 0u; k < kPerThread; ++k) {
+        uint bin = index + k * 128u;
+        bins[bin] = histogram.bins[bin];
+        histogram.bins[bin] = 0u;
+    }
     barrier();
 
     if (index != 0u) {

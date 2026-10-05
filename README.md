@@ -3,7 +3,7 @@
 <img width="1919" height="1027" alt="image" src="https://github.com/user-attachments/assets/b7fa1750-d77f-4293-9c66-b843d8dfd66e" />
 
 
-Motor de render en tiempo real para Windows con **renderizador diferido en Vulkan 1.3** e iluminación física: PBR metal/rugosidad, cielo atmosférico, IBL, sombras en cascada, oclusión ambiental e iluminación global en espacio de pantalla, con post-proceso HDR (bloom, auto-exposición por histograma, rayos de luz, tonemapping).
+Motor de render en tiempo real para Windows con **renderizador diferido en Vulkan 1.3** (y un modo compatible desde Vulkan 1.0 para Android y GPU antiguas) e iluminación física: PBR metal/rugosidad, cielo atmosférico, IBL, sombras en cascada, oclusión ambiental e iluminación global en espacio de pantalla, con post-proceso HDR (bloom, auto-exposición por histograma, rayos de luz, tonemapping).
 
 El motor son dos librerías estáticas propias: **CramionFX**, el renderizador Vulkan con todos sus shaders, y **CramionDM**, la capa de plataforma (ventana, entrada y dispositivo DirectX 12). `cramion.exe` es solo una aplicación de ejemplo que las usa. Todo se compila con **CMake + Clang + Ninja**.
 
@@ -20,6 +20,18 @@ Incluye dos escenas de demostración, iluminadas por una sola luz direccional (e
 **Descarga:** el zip listo para usar (editor, player y documentación) está en <https://cramion.mantraxtools.store>. La lista completa de cambios de cada versión, en [CHANGELOG.md](CHANGELOG.md).
 
 ---
+
+## Novedades de la 2.3
+
+**Android en casi todos los móviles**: el render tiene un **modo compatible** que funciona con la GPU de cualquier móvil con Vulkan 1.0 o superior (Adreno, Mali, PowerVR, Xclipse); antes pedía Vulkan 1.3 y en muchos no arrancaba. El APK lleva también la librería de **32 bits** (Android Go y gama baja), pide **Android 8.0** y las **texturas DDS** funcionan en las GPU que no las leen (Mali, PowerVR). El juego se dibuja a la **resolución que el móvil puede mover** (720p en Baja, 900p en Media, 1080p en Alta; la pantalla la escala sin coste) con sombras y texturas a la medida del teléfono.
+
+**PC de gama baja mucho más rápidos**: las sombras del sol ya no se redibujan si nada se mueve y en gama baja se intercalan las cascadas; la GI, el SSAO, los reflejos y los rayos de luz apagados ya no cuestan, y el cielo solo se rehace si cambia. En Bistro con el preset Bajo, de **5,24 a 1,66 ms** de GPU con la cámara quieta y las sombras de 2,25 a 0,63 ms con la cámara girando.
+
+**Trazado de rayos sin hormigueo**: las sombras y los reflejos por rayos se filtran en el tiempo y en el espacio y sus rayos salen de la cara real del triángulo: con la imagen quieta, los píxeles que cambian de un frame a otro pasan del 0,61 % al 0,03 %.
+
+**Realidad virtual como en Unity**: **Play on VR** sin reabrir el editor, una cámara por ojo a la resolución del casco, **coger y lanzar con las manos** (XR Interactor y XR Grabbable), **UI en el mundo**, el **Jugador VR** con física y la **plantilla de VR** con su script de C++.
+
+**Arreglos**: una línea de rayas oscuras en el borde de abajo de la imagen y un cierre del editor al listar las plantillas si en Descargas había un archivo con un emoji en el nombre.
 
 ## Novedades de la 2.2
 
@@ -322,6 +334,7 @@ La 2.1 incluye también todo lo de la 2.0 (más abajo), que no se publicó por s
 
 ## Índice
 
+- [Novedades de la 2.3](#novedades-de-la-23)
 - [Novedades de la 2.2](#novedades-de-la-22)
 - [Novedades de la 2.1](#novedades-de-la-21)
 - [Novedades de la 2.0](#novedades-de-la-20)

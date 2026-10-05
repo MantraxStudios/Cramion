@@ -1,5 +1,6 @@
 #include "CramionFX/vk/VulkanImage.h"
 
+#include "CramionFX/vk/VulkanCompat.h"
 #include "CramionFX/vk/VulkanDevice.h"
 
 #include <stdexcept>
@@ -48,6 +49,8 @@ void VulkanImage::create(const VulkanDevice& device, vk::Extent2D extent, vk::Fo
     view_info.subresourceRange = vk::ImageSubresourceRange{aspect, 0, 1, 0, layers};
 
     view_ = vk::raii::ImageView(device.handle(), view_info);
+    // Puede ser destino de render (framebuffers del modo compatible).
+    compat::registerView(static_cast<VkImageView>(*view_), view_info.format);
 
     // Una vista por capa: cada cascada de sombras se renderiza por separado.
     layer_views_.reserve(layers);
@@ -59,6 +62,7 @@ void VulkanImage::create(const VulkanDevice& device, vk::Extent2D extent, vk::Fo
         layer_info.subresourceRange = vk::ImageSubresourceRange{aspect, 0, 1, layer, 1};
 
         layer_views_.emplace_back(device.handle(), layer_info);
+        compat::registerView(static_cast<VkImageView>(*layer_views_.back()), layer_info.format);
     }
 
     format_ = format;

@@ -1,3 +1,4 @@
+#include "CramionFX/vk/VulkanCompat.h"
 #include "CramionFX/vk/VulkanTexture.h"
 
 #include "CramionFX/vk/VulkanBuffer.h"
@@ -34,7 +35,7 @@ vk::ImageMemoryBarrier2 mipBarrier(vk::Image image, std::uint32_t level,
 void pipelineBarrier(const vk::raii::CommandBuffer& cmd, const vk::ImageMemoryBarrier2& barrier) {
     vk::DependencyInfo dependency{};
     dependency.setImageMemoryBarriers(barrier);
-    cmd.pipelineBarrier2(dependency);
+    compat::pipelineBarrier(cmd, dependency);
 }
 
 }  // namespace

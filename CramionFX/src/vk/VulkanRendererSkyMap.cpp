@@ -1,6 +1,7 @@
 // VulkanRenderer: la oclusion del cielo vista desde arriba y el autoenfoque
 // suave de la profundidad de campo. Aparte para no engordar VulkanRenderer.cpp.
 
+#include "CramionFX/vk/VulkanCompat.h"
 #include "CramionFX/vk/VulkanRenderer.h"
 
 #include <algorithm>
@@ -20,7 +21,7 @@ namespace {
 void pipelineBarrier(const vk::raii::CommandBuffer& cmd, const vk::ImageMemoryBarrier2& barrier) {
     vk::DependencyInfo dependency{};
     dependency.setImageMemoryBarriers(barrier);
-    cmd.pipelineBarrier2(dependency);
+    compat::pipelineBarrier(cmd, dependency);
 }
 
 void memoryBarrier(const vk::raii::CommandBuffer& cmd, vk::PipelineStageFlags2 src_stage, vk::AccessFlags2 src_access,
@@ -32,7 +33,7 @@ void memoryBarrier(const vk::raii::CommandBuffer& cmd, vk::PipelineStageFlags2 s
     barrier.dstAccessMask = dst_access;
     vk::DependencyInfo dependency{};
     dependency.setMemoryBarriers(barrier);
-    cmd.pipelineBarrier2(dependency);
+    compat::pipelineBarrier(cmd, dependency);
 }
 
 }  // namespace
@@ -88,7 +89,7 @@ void VulkanRenderer::createSkyMap() {
             barrier.dstStageMask = vk::PipelineStageFlagBits2::eFragmentShader;
             barrier.dstAccessMask = vk::AccessFlagBits2::eShaderSampledRead;
             barrier.oldLayout = vk::ImageLayout::eTransferDstOptimal;
-            barrier.newLayout = vk::ImageLayout::eDepthReadOnlyOptimal;
+            barrier.newLayout = compat::depthReadOnlyLayout();
             pipelineBarrier(cmd, barrier);
         });
     }
@@ -137,14 +138,14 @@ void VulkanRenderer::recordSkyMap(const vk::raii::CommandBuffer& cmd, std::uint3
         to_attachment.dstAccessMask =
             vk::AccessFlagBits2::eDepthStencilAttachmentRead | vk::AccessFlagBits2::eDepthStencilAttachmentWrite;
         to_attachment.oldLayout = vk::ImageLayout::eUndefined;
-        to_attachment.newLayout = vk::ImageLayout::eDepthAttachmentOptimal;
+        to_attachment.newLayout = compat::depthAttachmentLayout();
         to_attachment.image = *image.handle();
         to_attachment.subresourceRange = range;
         pipelineBarrier(cmd, to_attachment);
 
         vk::RenderingAttachmentInfo depth_attachment{};
         depth_attachment.imageView = *image.view();
-        depth_attachment.imageLayout = vk::ImageLayout::eDepthAttachmentOptimal;
+        depth_attachment.imageLayout = compat::depthAttachmentLayout();
         depth_attachment.loadOp = vk::AttachmentLoadOp::eClear;
         depth_attachment.storeOp = vk::AttachmentStoreOp::eStore;
         depth_attachment.clearValue = vk::ClearValue{vk::ClearDepthStencilValue{1.0f, 0}};
@@ -152,7 +153,7 @@ void VulkanRenderer::recordSkyMap(const vk::raii::CommandBuffer& cmd, std::uint3
         rendering_info.renderArea = vk::Rect2D{vk::Offset2D{0, 0}, extent};
         rendering_info.layerCount = 1;
         rendering_info.pDepthAttachment = &depth_attachment;
-        cmd.beginRendering(rendering_info);
+        compat::beginRendering(cmd, rendering_info);
         cmd.setViewport(0, vk::Viewport{0.0f, 0.0f, static_cast<float>(extent.width),
                                         static_cast<float>(extent.height), 0.0f, 1.0f});
         cmd.setScissor(0, vk::Rect2D{vk::Offset2D{0, 0}, extent});
@@ -162,15 +163,15 @@ void VulkanRenderer::recordSkyMap(const vk::raii::CommandBuffer& cmd, std::uint3
             foliage_pass_.recordShadow(cmd, frame_index, skin_sets_[frame_index], sky_map_view_projection_);
             recordActorShadows(cmd, frame_index, sky_map_view_projection_);
         }
-        cmd.endRendering();
+        compat::endRendering(cmd);
 
         vk::ImageMemoryBarrier2 to_read = to_attachment;
         to_read.srcStageMask = vk::PipelineStageFlagBits2::eLateFragmentTests;
         to_read.srcAccessMask = vk::AccessFlagBits2::eDepthStencilAttachmentWrite;
         to_read.dstStageMask = vk::PipelineStageFlagBits2::eFragmentShader;
         to_read.dstAccessMask = vk::AccessFlagBits2::eShaderSampledRead;
-        to_read.oldLayout = vk::ImageLayout::eDepthAttachmentOptimal;
-        to_read.newLayout = vk::ImageLayout::eDepthReadOnlyOptimal;
+        to_read.oldLayout = compat::depthAttachmentLayout();
+        to_read.newLayout = compat::depthReadOnlyLayout();
         pipelineBarrier(cmd, to_read);
     };
     draw(sky_map_terrain_, false);
@@ -284,7 +285,7 @@ void VulkanRenderer::writeDofFocusDescriptors() {
     if (dof_focus_sets_.empty()) return;
     for (std::uint32_t i = 0; i < kMaxFramesInFlight; ++i) {
         const vk::DescriptorImageInfo depth{*dof_focus_pass_.sampler(), *gbuffer_.depth().view(),
-                                            vk::ImageLayout::eDepthReadOnlyOptimal};
+                                            compat::depthReadOnlyLayout()};
         const vk::DescriptorBufferInfo focus{*dof_focus_buffers_[i].handle(), 0, sizeof(float)};
         std::array<vk::WriteDescriptorSet, 2> writes{};
         writes[0].dstSet = *dof_focus_sets_[i];

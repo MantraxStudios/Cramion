@@ -1,3 +1,4 @@
+#include "CramionFX/vk/VulkanCompat.h"
 #include "CramionFX/vk/WaterPass.h"
 
 #include "CramionFX/vk/VulkanDevice.h"
@@ -78,7 +79,7 @@ void barriers(const vk::raii::CommandBuffer& cmd, const std::vector<vk::ImageMem
         memory.dstAccessMask = vk::AccessFlagBits2::eShaderStorageRead | vk::AccessFlagBits2::eShaderStorageWrite;
         dependency.setMemoryBarriers(memory);
     }
-    cmd.pipelineBarrier2(dependency);
+    compat::pipelineBarrier(cmd, dependency);
 }
 
 }  // namespace
@@ -233,7 +234,7 @@ void WaterPass::create(const VulkanDevice& device, const vk::raii::DescriptorSet
     info.pColorBlendState = &blend;
     info.pDynamicState = &dynamic;
     info.layout = *layout_;
-    pipeline_ = vk::raii::Pipeline(device.handle(), device.pipelineCache(), info);
+    pipeline_ = compat::makeGraphicsPipeline(device, info);
 
     // --- Bajo el agua: triangulo a pantalla completa, sin profundidad ---
     {
@@ -255,7 +256,7 @@ void WaterPass::create(const VulkanDevice& device, const vk::raii::DescriptorSet
         under_info.pVertexInputState = &no_input;
         under_info.pDepthStencilState = &no_depth;
         under_info.pColorBlendState = &under_blend;
-        underwater_pipeline_ = vk::raii::Pipeline(device.handle(), device.pipelineCache(), under_info);
+        underwater_pipeline_ = compat::makeGraphicsPipeline(device, under_info);
     }
 
     createMeshes(device);

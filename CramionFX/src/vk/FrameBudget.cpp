@@ -12,6 +12,7 @@ constexpr std::array<std::uint8_t, kLeverCount> kMaxLevel = {
     3,  // ShadowDetail
     1,  // Volumetric
     1,  // ContactShadows
+    1,  // Lighting
     1,  // Ssao
     1,  // Reflections
     1,  // Gi
@@ -84,14 +85,26 @@ void FrameBudget::setTargetFps(float fps) {
 void FrameBudget::setStartLevels(HardwareTier tier) {
     start_levels_ = {};
     if (tier == HardwareTier::Low) {
+        // Una GPU integrada o de gama baja empieza ya ligera: si empezaba a
+        // tope tardaba muchos segundos en bajar (y se jugaba a tirones). Lo
+        // que sobre lo vuelve a subir el gobernador.
         start_levels_[static_cast<std::size_t>(Lever::Lod)] = 1;
-        start_levels_[static_cast<std::size_t>(Lever::ShadowDetail)] = 1;
+        start_levels_[static_cast<std::size_t>(Lever::ShadowDetail)] = 2;
         start_levels_[static_cast<std::size_t>(Lever::Volumetric)] = 1;
-        start_levels_[static_cast<std::size_t>(Lever::RenderScale)] = 2;  // 77 %
+        start_levels_[static_cast<std::size_t>(Lever::ContactShadows)] = 1;
+        start_levels_[static_cast<std::size_t>(Lever::Lighting)] = 1;
+        start_levels_[static_cast<std::size_t>(Lever::RenderScale)] = 3;  // 67 %
     } else if (tier == HardwareTier::Medium) {
         start_levels_[static_cast<std::size_t>(Lever::Lod)] = 1;
+        start_levels_[static_cast<std::size_t>(Lever::ShadowDetail)] = 1;
     }
     if (enabled_) levels_ = start_levels_;
+}
+
+void FrameBudget::setStartLevel(Lever lever, std::uint8_t level) {
+    const auto i = static_cast<std::size_t>(lever);
+    start_levels_[i] = std::min(level, kMaxLevel[i]);
+    if (enabled_) levels_[i] = start_levels_[i];
 }
 
 void FrameBudget::reset() {
@@ -116,6 +129,7 @@ const char* FrameBudget::leverName(Lever lever) {
         case Lever::ShadowDetail: return "Detalle de sombras";
         case Lever::Volumetric: return "Luz volumetrica";
         case Lever::ContactShadows: return "Sombras de contacto";
+        case Lever::Lighting: return "Iluminacion ligera";
         case Lever::Ssao: return "Oclusion ambiental";
         case Lever::Reflections: return "Reflejos";
         case Lever::Gi: return "Luz rebotada (GI)";
@@ -138,6 +152,9 @@ float FrameBudget::estimateSaving(Lever lever, std::uint8_t level) const {
         case Lever::ShadowDetail: return 0.35f * (p.shadows + p.local_shadows);
         case Lever::Volumetric: return 0.95f * p.shafts + 0.45f * p.volumetric;
         case Lever::ContactShadows: return 0.25f * p.lighting;
+        // Las sombras suaves del sol (28 lecturas del mapa por pixel) y la
+        // oclusion del cielo (12) son lo mas caro de la iluminacion.
+        case Lever::Lighting: return 0.35f * p.lighting;
         case Lever::Ssao: return 0.95f * p.ssao;
         case Lever::Reflections: return 0.9f * p.reflections;
         case Lever::Gi: return 0.95f * p.gi;
@@ -161,6 +178,7 @@ float FrameBudget::penalty(Lever lever, std::uint8_t level) const {
         case Lever::ShadowDetail: return 1.0f + 0.75f * level;
         case Lever::Volumetric: return 2.0f;
         case Lever::ContactShadows: return 1.5f;
+        case Lever::Lighting: return 1.6f;
         case Lever::Ssao: return 3.0f;
         case Lever::Reflections: return 3.0f;
         case Lever::Gi: return 4.0f;
@@ -173,7 +191,11 @@ float FrameBudget::penalty(Lever lever, std::uint8_t level) const {
 // Lo que tarda un cambio en verse en el tiempo de GPU (los timestamps van un
 // par de frames tarde, la resolucion rehace los destinos y el historial).
 float FrameBudget::settleSeconds(Lever lever) const {
-    return lever == Lever::RenderScale ? 1.5f : 0.5f;
+    // Muy por encima del presupuesto (una GPU de gama baja recien arrancada)
+    // se mide mas deprisa: cada medio segundo a 10 FPS se nota.
+    const bool far_over = has_sample_ && ema_ms_ > targetMilliseconds() * 1.5f;
+    if (lever == Lever::RenderScale) return far_over ? 0.8f : 1.5f;
+    return far_over ? 0.25f : 0.5f;
 }
 
 void FrameBudget::change(Lever lever, std::uint8_t to, const char* verb, float predicted) {
@@ -259,6 +281,20 @@ void FrameBudget::update(float dt, float gpu_ms, const std::vector<GpuTiming>& p
         else if (n == "GI") now.gi += ms;
     }
     now.total = gpu_ms;
+    // Sin tiempos por pasada (GPU sin timestamps: solo el del frame), un
+    // reparto tipico del frame para poder elegir palanca; lo que ahorra cada
+    // una de verdad se aprende al probarla.
+    if (passes.empty() && gpu_ms > 0.0f) {
+        now.geometry = 0.25f * gpu_ms;
+        now.shadows = 0.15f * gpu_ms;
+        now.local_shadows = 0.04f * gpu_ms;
+        now.lighting = 0.2f * gpu_ms;
+        now.ssao = 0.07f * gpu_ms;
+        now.reflections = 0.04f * gpu_ms;
+        now.gi = 0.04f * gpu_ms;
+        now.volumetric = 0.03f * gpu_ms;
+        now.shafts = 0.02f * gpu_ms;
+    }
     const auto blend = [&](float& value, float sample) { value = smooth(value, sample, dt, 0.5f); };
     blend(passes_.geometry, now.geometry);
     blend(passes_.shadows, now.shadows);
@@ -298,7 +334,9 @@ void FrameBudget::update(float dt, float gpu_ms, const std::vector<GpuTiming>& p
     over_seconds_ = ema_ms_ > target ? over_seconds_ + dt : 0.0f;
     under_seconds_ = ema_ms_ < target * 0.8f ? under_seconds_ + dt : 0.0f;
 
-    if (over_seconds_ > 0.3f) {
+    // Muy por encima: se reacciona antes (sin esperar 0.3 s cada vez).
+    const float react = ema_ms_ > target * 1.5f ? 0.1f : 0.3f;
+    if (over_seconds_ > react) {
         // Si se sube algo y en menos de 5 s hay que bajarlo, esa palanca
         // no se vuelve a subir en un rato (y cada vez mas).
         for (std::size_t i = 0; i < kLeverCount; ++i) {

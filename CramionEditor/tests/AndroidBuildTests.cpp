@@ -264,9 +264,12 @@ void testManifest() {
     check(m.find("android.app.lib_name") != std::string::npos && m.find("android:value=\"main\"") != std::string::npos &&
               m.find("hasCode=\"false\"") != std::string::npos,
           "NativeActivity con libmain.so");
+    // Vulkan 1.0.3 (modo compatible en los moviles): no 1.3, que dejaba fuera
+    // a la mayoria de los Mali, Adreno y PowerVR.
     check(m.find("sensorPortrait") != std::string::npos && m.find("VIBRATE") == std::string::npos &&
-              m.find("INTERNET") != std::string::npos && m.find("0x403000") != std::string::npos,
-          "orientacion, permisos y Vulkan 1.3");
+              m.find("INTERNET") != std::string::npos && m.find("0x400003") != std::string::npos &&
+              m.find("0x403000") == std::string::npos,
+          "orientacion, permisos y Vulkan 1.0");
 }
 
 void testRealApk(const std::filesystem::path& so, const std::filesystem::path& icon) {

@@ -820,6 +820,23 @@ void testFrameBudget() {
               "gama baja: el polvo se abarata pero no se apaga (no depende de mirar al sol)");
     }
 
+    // GPU sin timestamps (algunas de movil): solo el tiempo del frame, sin
+    // tiempos por pasada. Tiene que bajar igual, y no solo la resolucion (la
+    // unica palanca cuyo ahorro se podia estimar sin pasadas).
+    {
+        gfx::FrameBudget blind;
+        blind.setTargetFps(30.0f);
+        const std::vector<gfx::GpuTiming> none;
+        for (int frame = 0; frame < 60 * 10; ++frame) blind.update(dt, 60.0f, none);
+        int effects = 0;
+        for (std::size_t i = 0; i < gfx::kLeverCount; ++i) {
+            if (static_cast<Lever>(i) != Lever::RenderScale) effects += blind.level(static_cast<Lever>(i));
+        }
+        std::printf("    sin timestamps: %d pasos de efectos, escala %.2f\n", effects, blind.renderScale());
+        check(effects > 0 && blind.renderScale() < 1.0f,
+              "sin tiempos por pasada (GPU sin timestamps) baja efectos y resolucion");
+    }
+
     // Apagado: nada cambia.
     budget.setEnabled(false);
     gfx::PostProcessSettings user{};

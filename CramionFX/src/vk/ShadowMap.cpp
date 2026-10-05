@@ -11,14 +11,18 @@ void ShadowMap::create(const VulkanDevice& device, std::uint32_t resolution) {
     destroy();
     resolution_ = std::max(resolution, 256u);
 
+    // Destino y origen de copias: la cache rellena el mapa, y el mapa la
+    // cache cuando lo estatico se dibujo directo en el (VulkanRenderer::
+    // recordShadowPass).
     depth_.create(device, extent(), device.depthFormat(),
                   vk::ImageUsageFlagBits::eDepthStencilAttachment | vk::ImageUsageFlagBits::eSampled |
-                      vk::ImageUsageFlagBits::eTransferDst,
+                      vk::ImageUsageFlagBits::eTransferDst | vk::ImageUsageFlagBits::eTransferSrc,
                   vk::ImageAspectFlagBits::eDepth, scene::kShadowCascadeCount);
     // La cache duplica la memoria del mapa: hasta 4096 (256 MB de mas).
     if (resolution_ <= 4096) {
         static_.create(device, extent(), device.depthFormat(),
-                       vk::ImageUsageFlagBits::eDepthStencilAttachment | vk::ImageUsageFlagBits::eTransferSrc,
+                       vk::ImageUsageFlagBits::eDepthStencilAttachment | vk::ImageUsageFlagBits::eTransferSrc |
+                           vk::ImageUsageFlagBits::eTransferDst,
                        vk::ImageAspectFlagBits::eDepth, scene::kShadowCascadeCount);
     }
 

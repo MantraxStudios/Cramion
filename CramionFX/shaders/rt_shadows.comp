@@ -17,7 +17,14 @@
 //
 // Salida (RGBA16F, un canal por luz): (luz + 1) * 32 + visibilidad (0..31);
 // 0 = hueco libre. Las luces se numeran: puntuales 0..31, focos 32..39. Enteros
-// < 2048: exactos en 16 bits.
+// < 2048: exactos en 16 bits. Es un rayo por luz y pixel (0 o 1): la
+// acumula en el tiempo rt_shadow_temporal.comp y la iluminacion lee el
+// resultado (sin eso la penumbra era ruido que cambiaba cada frame).
+//
+// El origen del rayo se separa a lo largo de la normal de la cara real (de la
+// profundidad), no de la del normal map, y una luz que la cara real no ve no se
+// traza (la pone a oscuras el propio N.L): asi el borde de la sombra de una
+// malla de pocos poligonos no se llena de facetas que parpadean.
 
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 
@@ -65,6 +72,7 @@ void main() {
     vec2 uv = (vec2(pixel) + 0.5) / vec2(size);
     vec3 position = worldFromDepth(uv, depth);
     vec3 normal = decodeNormal(texelFetch(g_normal, pixel, 0).rg);
+    vec3 geometric = gbufferGeometricNormal(pixel, position, normal);
     float distance_to_camera = length(camera.position.xyz - position);
 
     // --- Las 4 luces que mas aportan (el sol, si toca, la primera) ---
@@ -72,7 +80,7 @@ void main() {
     int flags = int(push.params.z + 0.5);
     bool want_local = (flags & 1) != 0;
     vec3 to_sun = -normalize(lights.sun_direction_intensity.xyz);
-    bool want_sun = (flags & 2) != 0 && dot(normal, to_sun) > 0.0;
+    bool want_sun = (flags & 2) != 0 && dot(normal, to_sun) > 0.0 && dot(geometric, to_sun) > 0.0;
     int ids[kSlots] = int[](-1, -1, -1, -1);
     float scores[kSlots] = float[](0.0, 0.0, 0.0, 0.0);
     if (want_sun) {
@@ -87,7 +95,7 @@ void main() {
         float range = lights.points[i].position_range.w;
         if (d > range) continue;
         float n_dot_l = dot(normal, to_light / max(d, 1e-4));
-        if (n_dot_l <= 0.0) continue;
+        if (n_dot_l <= 0.0 || dot(geometric, to_light) <= 0.0) continue;
         float score = luminance(toLinear(lights.points[i].color_intensity.rgb)) * lights.points[i].color_intensity.a *
                       attenuation(d, range) * n_dot_l;
         insertLight(i, score, ids, scores);
@@ -101,7 +109,7 @@ void main() {
         if (d > range) continue;
         vec3 l = to_light / max(d, 1e-4);
         float n_dot_l = dot(normal, l);
-        if (n_dot_l <= 0.0) continue;
+        if (n_dot_l <= 0.0 || dot(geometric, l) <= 0.0) continue;
         float cosine = dot(-l, normalize(lights.spots[i].direction_intensity.xyz));
         float inner_cos = lights.spots[i].color_inner.a;
         float outer_cos = lights.spots[i].outer_shadow.x;
@@ -113,7 +121,7 @@ void main() {
     }
 
     // --- Un rayo de sombra por luz ---
-    vec3 origin = position + normal * gbufferRayBias(distance_to_camera, 0.01);
+    vec3 origin = position + geometric * gbufferRayBias(distance_to_camera, 0.01);
     vec4 result = vec4(0.0);
     for (int k = 0; k < kSlots; ++k) {
         int id = ids[k];

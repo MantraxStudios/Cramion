@@ -1,5 +1,6 @@
 #include "CramionFX/vk/GBuffer.h"
 
+#include "CramionFX/vk/VulkanCompat.h"
 #include "CramionFX/vk/VulkanDevice.h"
 
 #include <iostream>
@@ -43,6 +44,10 @@ void GBuffer::destroy() {
     normal_.destroy();
     albedo_.destroy();
     extent_ = vk::Extent2D{0, 0};
+}
+
+std::uint32_t GBuffer::activeColorAttachments() {
+    return compat::lite() ? 4u : static_cast<std::uint32_t>(kColorAttachmentCount);
 }
 
 }  // namespace cramion::gfx

@@ -50,10 +50,11 @@ using NativeWindow = HWND;
 // Numero de frames que la CPU puede preparar por delante de la GPU.
 inline constexpr std::uint32_t kMaxFramesInFlight = 2;
 
-// Version minima de Vulkan exigida al dispositivo fisico. Se pide 1.3 porque
-// el renderizador usa dynamic rendering y synchronization2 como parte del nucleo
-// (sin extensiones).
-inline constexpr std::uint32_t kMinimumApiVersion = VK_API_VERSION_1_3;
+// Version minima de Vulkan del dispositivo fisico. El camino completo (el de
+// escritorio) usa Vulkan 1.3 (dynamic rendering, synchronization2); con menos
+// (la mayoria de los moviles Android, GPU de PC antiguas) el renderizador va
+// por el modo compatible (VulkanCompat.h), que vale desde Vulkan 1.0.
+inline constexpr std::uint32_t kMinimumApiVersion = VK_API_VERSION_1_0;
 
 // Datos identificativos de la aplicacion, usados al crear la instancia.
 struct EngineInfo {

@@ -149,6 +149,12 @@ bool installFromApk(const std::filesystem::path& root, std::string* error) {
     for (const std::string& name : android::assetFolder("shaders")) {
         if (!android::extractAsset("shaders/" + name, root / "shaders" / name, nullptr, error)) return false;
     }
+    // Los del modo compatible (los que usan los moviles).
+    for (const std::string& name : android::assetFolder("shaders/compat")) {
+        if (!android::extractAsset("shaders/compat/" + name, root / "shaders" / "compat" / name, nullptr, error)) {
+            return false;
+        }
+    }
     // Fuentes de los shaders de superficie (shaders/source).
     for (const std::string& name : android::assetFolder("shaders/source")) {
         if (!android::extractAsset("shaders/source/" + name, root / "shaders" / "source" / name, nullptr, error)) return false;
@@ -239,6 +245,20 @@ int runPlayer() {
             showError("No se pudo crear la ventana.");
             return EXIT_FAILURE;
         }
+#if !defined(_WIN32)
+        // Resolucion de la imagen del juego (antes del renderizador y la
+        // interfaz, que la toman de la ventana): el lado corto como mucho el
+        // de la configuracion; 0 = segun la calidad. La pantalla la escala.
+        {
+            const std::string quality = readIniValue(ini, "android_quality");
+            const int level = quality.empty() ? 0 : std::clamp(std::atoi(quality.c_str()), 0, 3);
+            const int resolution = std::atoi(readIniValue(ini, "android_resolution").c_str());
+            static constexpr std::uint32_t kAutomatic[] = {720, 900, 1080, 0};
+            window.setMaxShortSide(resolution > 0   ? static_cast<std::uint32_t>(resolution)
+                                   : resolution < 0 ? 0u
+                                                    : kAutomatic[level]);
+        }
+#endif
 #if defined(_WIN32)
         if (window_mode == 1) {
             // Pantalla completa sin bordes: la ventana ocupa todo el monitor.

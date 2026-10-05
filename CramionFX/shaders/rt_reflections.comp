@@ -7,9 +7,16 @@
 // lo de delante, sin capturas.
 //
 // La direccion sigue el lobulo GGX de la rugosidad (muestreo de importancia,
-// distinto cada frame): con el filtro temporal (ssr_resolve.frag) la media es
-// el reflejo borroso que corresponde, lo mismo que el entorno prefiltrado del
-// IBL. En superficies muy rugosas no se traza: lo pone el IBL.
+// distinto cada frame): con el filtro (rt_reflection_temporal.comp y
+// rt_reflection_atrous.comp) la media es el reflejo borroso que corresponde,
+// lo mismo que el entorno prefiltrado del IBL. En superficies muy rugosas no
+// se traza: lo pone el IBL.
+//
+// Se muestrean las normales VISIBLES desde la camara (Heitz 2018, "Sampling
+// the GGX Distribution of Visible Normals"), no la distribucion entera: no
+// salen direcciones por debajo de la superficie ni las de mucho peso y poca
+// probabilidad que daban puntos sueltos muy brillantes. Con la misma
+// rugosidad, mucho menos ruido por rayo.
 //
 // Salida (igual que ssr.frag): rgb = luz reflejada, a = confianza.
 
@@ -20,16 +27,26 @@ layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 const float kMaxRoughness = 0.65;
 const float kMaxDistance = 1000.0;
 const float kEnvironmentMaxLod = 5.0;  // IblProbe::kEnvironmentMips - 1
+// Se recorta la cola del lobulo (los rayos casi rasantes del borde del
+// disco): apenas cambia el reflejo y quita la mayor parte del ruido.
+const float kLobeTrim = 0.85;
 
-vec3 importanceSampleGgx(vec2 xi, vec3 n, float alpha) {
-    float phi = 2.0 * kPi * xi.x;
-    float cos_theta = sqrt((1.0 - xi.y) / (1.0 + (alpha * alpha - 1.0) * xi.y));
-    float sin_theta = sqrt(1.0 - cos_theta * cos_theta);
-    vec3 h = vec3(sin_theta * cos(phi), sin_theta * sin(phi), cos_theta);
-    vec3 up = abs(n.y) < 0.999 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
-    vec3 tangent = normalize(cross(up, n));
-    vec3 bitangent = cross(n, tangent);
-    return normalize(tangent * h.x + bitangent * h.y + n * h.z);
+// Normal visible de GGX (Heitz 2018) en el espacio de la superficie (z =
+// normal). `view` hacia la camara, `alpha` = rugosidad^2.
+vec3 sampleGgxVisibleNormal(vec3 view, float alpha, vec2 u) {
+    vec3 stretched = normalize(vec3(alpha * view.x, alpha * view.y, view.z));
+    float length_squared = stretched.x * stretched.x + stretched.y * stretched.y;
+    vec3 t1 = length_squared > 0.0 ? vec3(-stretched.y, stretched.x, 0.0) * inversesqrt(length_squared)
+                                   : vec3(1.0, 0.0, 0.0);
+    vec3 t2 = cross(stretched, t1);
+    float r = sqrt(u.x * kLobeTrim);
+    float phi = 2.0 * kPi * u.y;
+    float p1 = r * cos(phi);
+    float p2 = r * sin(phi);
+    float s = 0.5 * (1.0 + stretched.z);
+    p2 = (1.0 - s) * sqrt(max(1.0 - p1 * p1, 0.0)) + s * p2;
+    vec3 h = p1 * t1 + p2 * t2 + sqrt(max(1.0 - p1 * p1 - p2 * p2, 0.0)) * stretched;
+    return normalize(vec3(alpha * h.x, alpha * h.y, max(h.z, 1e-6)));
 }
 
 void main() {
@@ -54,20 +71,33 @@ void main() {
     float distance_to_camera = length(to_camera);
     vec3 view_direction = to_camera / max(distance_to_camera, 0.0001);
 
-    // Direccion reflejada: espejo, o una muestra del lobulo GGX.
+    // Direccion reflejada: espejo, o una muestra del lobulo GGX (normales
+    // visibles, en la base de la normal de sombreado).
     vec3 direction = reflect(-view_direction, normal);
     if (roughness > 0.05) {
+        vec3 up = abs(normal.y) < 0.999 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
+        vec3 tangent = normalize(cross(up, normal));
+        vec3 bitangent = cross(normal, tangent);
+        vec3 local_view = vec3(dot(view_direction, tangent), dot(view_direction, bitangent),
+                               max(dot(view_direction, normal), 1e-4));
         vec2 xi = sampleNoise(vec2(pixel), 0.0);
-        // Sin la cola larga del lobulo: menos ruido, apenas se nota.
-        xi.y *= 0.85;
-        vec3 halfway = importanceSampleGgx(xi, normal, roughness * roughness);
+        vec3 h = sampleGgxVisibleNormal(local_view, roughness * roughness, xi);
+        vec3 halfway = normalize(tangent * h.x + bitangent * h.y + normal * h.z);
         vec3 sampled = reflect(-view_direction, halfway);
         if (dot(sampled, normal) > 0.0) {
             direction = sampled;
         }
     }
 
-    vec3 origin = position + normal * gbufferRayBias(distance_to_camera, 0.01);
+    // El origen, separado a lo largo de la cara real (no del normal map).
+    vec3 geometric = gbufferGeometricNormal(pixel, position, normal);
+    vec3 origin = position + geometric * gbufferRayBias(distance_to_camera, 0.01);
+    // Que el rayo no salga hacia dentro de la cara real (normal map muy
+    // inclinado): se tuerce hasta su plano.
+    float below = dot(direction, geometric);
+    if (below < 0.02) {
+        direction = normalize(direction + geometric * (0.02 - below));
+    }
     RtHit hit;
     vec3 color;
     if (traceRay(origin, direction, kMaxDistance, hit)) {

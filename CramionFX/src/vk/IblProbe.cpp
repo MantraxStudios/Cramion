@@ -1,3 +1,4 @@
+#include "CramionFX/vk/VulkanCompat.h"
 #include "CramionFX/vk/IblProbe.h"
 
 #include "CramionFX/vk/VulkanDevice.h"
@@ -42,7 +43,7 @@ void imageBarrier(const vk::raii::CommandBuffer& cmd, vk::Image image, std::uint
 
     vk::DependencyInfo dependency{};
     dependency.setImageMemoryBarriers(barrier);
-    cmd.pipelineBarrier2(dependency);
+    compat::pipelineBarrier(cmd, dependency);
 }
 
 }  // namespace
@@ -309,7 +310,7 @@ void IblProbe::record(const vk::raii::CommandBuffer& cmd, const core::Vec3& ligh
         barrier.dstAccessMask = Access::eShaderStorageWrite;
         vk::DependencyInfo dependency{};
         dependency.setMemoryBarriers(barrier);
-        cmd.pipelineBarrier2(dependency);
+        compat::pipelineBarrier(cmd, dependency);
     }
 
     IblPush push{};
@@ -352,7 +353,7 @@ void IblProbe::record(const vk::raii::CommandBuffer& cmd, const core::Vec3& ligh
     barrier.dstAccessMask = Access::eShaderStorageRead;
     vk::DependencyInfo dependency{};
     dependency.setMemoryBarriers(barrier);
-    cmd.pipelineBarrier2(dependency);
+    compat::pipelineBarrier(cmd, dependency);
 }
 
 }  // namespace cramion::gfx

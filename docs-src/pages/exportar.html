@@ -56,8 +56,8 @@
   En <em>Configuraciones de compilación</em>, <strong>Plataforma: Android</strong>. Se exporta con las herramientas del
   Android SDK (sin Gradle ni Android Studio abierto): <code>aapt2</code>, <code>zipalign</code>, <code>apksigner</code> y, para
   el AAB, <code>bundletool</code>. El juego es el mismo reproductor compilado para Android
-  (<code>android/arm64-v8a/libmain.so</code> junto al editor) con los mismos sistemas: render Vulkan, física, Lua, audio,
-  interfaz, red.
+  (<code>android/arm64-v8a/libmain.so</code> y, para los móviles de 32 bits, <code>android/armeabi-v7a/libmain.so</code>,
+  junto al editor) con los mismos sistemas: render Vulkan, física, Lua, audio, interfaz, red.
 </p>
 <table>
   <thead><tr><th>Ajuste</th><th>Qué hace</th></tr></thead>
@@ -65,12 +65,12 @@
     <tr><td><code>Paquete</code></td><td>El identificador de la app (<code>com.estudio.juego</code>). Vacío = <code>com.cramion.&lt;juego&gt;</code>. Google Play no deja cambiarlo después.</td></tr>
     <tr><td><code>Código de versión</code></td><td>Entero que sube en cada versión publicada; el nombre de versión es el campo <em>Versión</em>.</td></tr>
     <tr><td><code>Orientación</code></td><td>Al abrir: horizontal o vertical (gira entre las dos), libre, horizontal fija o vertical fija. Desde Lua se cambia en cualquier momento con <a href="input.html#pantalla"><code>Screen.setOrientation</code></a>.</td></tr>
-    <tr><td><code>Android mínimo / objetivo</code></td><td>API mínima (10 por defecto) y la de destino (15, la que pide Google Play).</td></tr>
-    <tr><td><code>Salida</code></td><td><strong>APK</strong> (instalar directamente), <strong>AAB</strong> (subir a Google Play) o ambos. <strong>Assets aparte en un OBB</strong>: el APK queda pequeño y el <code>.crpack</code> va en <code>main.&lt;versión&gt;.&lt;paquete&gt;.obb</code>, que se copia a <code>/sdcard/Android/obb/&lt;paquete&gt;/</code>. <strong>x86_64</strong> añade los emuladores.</td></tr>
+    <tr><td><code>Android mínimo / objetivo</code></td><td>API mínima (26 = Android 8.0 por defecto: el primero con Vulkan en todos los móviles que lo traen) y la de destino (35 = Android 15, la que pide Google Play).</td></tr>
+    <tr><td><code>Salida</code></td><td><strong>APK</strong> (instalar directamente), <strong>AAB</strong> (subir a Google Play) o ambos. <strong>Assets aparte en un OBB</strong>: el APK queda pequeño y el <code>.crpack</code> va en <code>main.&lt;versión&gt;.&lt;paquete&gt;.obb</code>, que se copia a <code>/sdcard/Android/obb/&lt;paquete&gt;/</code>. <strong>armeabi-v7a</strong> (activado por defecto) añade los móviles de 32 bits: Android Go y mucha gama baja. <strong>x86_64</strong> añade los emuladores.</td></tr>
     <tr><td><code>Permisos</code></td><td>Internet (multijugador y <code>Http</code>), vibrar (<code>Input.vibrate</code>) y micrófono.</td></tr>
     <tr><td><code>Icono</code></td><td>PNG/JPG cuadrado; se generan las cinco densidades (48 a 192 px). Vacío = el icono de la configuración o el del motor.</td></tr>
     <tr><td><code>Firma</code></td><td>Un keystore (<code>.jks</code>) con su alias y contraseñas (las contraseñas no se guardan en el proyecto). Sin keystore se firma con una clave de depuración que se crea sola: sirve para probar, no para Google Play.</td></tr>
-    <tr><td><code>Perfil móvil</code></td><td>Calidad inicial (Baja por defecto) y FPS objetivo: el presupuesto adaptativo baja o sube efectos para llegar; sin trazado de rayos.</td></tr>
+    <tr><td><code>Perfil móvil</code></td><td>Calidad inicial (Baja por defecto) y FPS objetivo: el presupuesto adaptativo baja o sube efectos para llegar; sin trazado de rayos. <strong>Resolución</strong>: el lado corto de la imagen del juego (<em>Según la calidad</em>: 720p en Baja, 900p en Media, 1080p en Alta y la nativa en Ultra; o una fija). La pantalla la escala sin coste: un móvil de 2400x1080 tiene 2,25 veces los píxeles de 720p, y dibujarlos todos es lo que más FPS quita.</td></tr>
   </tbody>
 </table>
 <p>
@@ -87,7 +87,10 @@
   main.1.com.estudio.juego.obb     si los assets van aparte</code></pre>
 <p>
   Requisitos: el Android SDK (Android Studio o las command-line tools, con build-tools y una plataforma), Java (el de
-  Android Studio vale) y un móvil con <strong>Vulkan 1.3</strong> (la mayoría desde 2020; el manifiesto lo pide y Google Play
-  oculta el juego a los que no lo tienen). El runtime de Android se compila con el motor si está instalado el Android NDK
+  Android Studio vale) y un móvil con <strong>Vulkan</strong>, cualquier versión desde la 1.0 (el manifiesto lo pide y Google
+  Play oculta el juego a los que no lo tienen). En Android el renderizador usa siempre su <em>modo compatible</em>: sin
+  las funciones de Vulkan 1.3 y dentro de los límites que garantizan todas las GPU de móvil (Adreno, Mali, PowerVR,
+  Xclipse...). Lo que no cabe en esos límites (luz volumétrica, sondas de reflejo, la oclusión del cielo desde arriba)
+  no se dibuja. El runtime de Android se compila con el motor si está instalado el Android NDK
   (<code>CRAMION_ANDROID=ON</code>). En el móvil, los logs van a <code>logcat</code> (etiqueta <code>Cramion</code>).
 </p>

@@ -1,5 +1,6 @@
 #include "CramionFX/vk/GpuCulling.h"
 
+#include "CramionFX/vk/VulkanCompat.h"
 #include "CramionFX/vk/VulkanDevice.h"
 #include "CramionFX/vk/VulkanImage.h"
 
@@ -35,7 +36,7 @@ void memoryBarrier(const vk::raii::CommandBuffer& cmd, vk::PipelineStageFlags2 s
     barrier.dstAccessMask = dst_access;
     vk::DependencyInfo dependency{};
     dependency.setMemoryBarriers(barrier);
-    cmd.pipelineBarrier2(dependency);
+    compat::pipelineBarrier(cmd, dependency);
 }
 
 }  // namespace
@@ -101,9 +102,11 @@ void GpuCulling::create(const VulkanDevice& device) {
                          vk::MemoryPropertyFlagBits::eHostCoherent);
         std::memset(stats.mapped(), 0, sizeof(std::uint32_t) * kStatsCount);
     }
+    created_ = true;
 }
 
 void GpuCulling::destroy() {
+    created_ = false;
     hiz_sets_.clear();
     cull_sets_.clear();
     pool_ = nullptr;
@@ -135,6 +138,7 @@ void GpuCulling::destroy() {
 }
 
 void GpuCulling::resize(const VulkanDevice& device, const VulkanImage& depth) {
+    if (!created_) return;
     hiz_sets_.clear();
     hiz_level_views_.clear();
     hiz_view_ = nullptr;
@@ -205,7 +209,7 @@ void GpuCulling::resize(const VulkanDevice& device, const VulkanImage& depth) {
             vk::ImageSubresourceRange{vk::ImageAspectFlagBits::eColor, 0, levels, 0, 1};
         vk::DependencyInfo dependency{};
         dependency.setImageMemoryBarriers(barrier);
-        cmd.pipelineBarrier2(dependency);
+        compat::pipelineBarrier(cmd, dependency);
         cmd.clearColorImage(image, vk::ImageLayout::eGeneral,
                             vk::ClearColorValue{1.0f, 1.0f, 1.0f, 1.0f},
                             barrier.subresourceRange);
@@ -214,7 +218,7 @@ void GpuCulling::resize(const VulkanDevice& device, const VulkanImage& depth) {
         barrier.dstStageMask = vk::PipelineStageFlagBits2::eComputeShader;
         barrier.dstAccessMask = vk::AccessFlagBits2::eShaderRead;
         barrier.oldLayout = vk::ImageLayout::eGeneral;
-        cmd.pipelineBarrier2(dependency);
+        compat::pipelineBarrier(cmd, dependency);
     });
 
     // --- Sets de la piramide: depth + nivel anterior + este nivel ---
@@ -229,7 +233,7 @@ void GpuCulling::resize(const VulkanDevice& device, const VulkanImage& depth) {
         vk::DescriptorImageInfo depth_info{};
         depth_info.sampler = *hiz_sampler_;
         depth_info.imageView = *depth.view();
-        depth_info.imageLayout = vk::ImageLayout::eDepthReadOnlyOptimal;
+        depth_info.imageLayout = compat::depthReadOnlyLayout();
 
         // El nivel 0 no lee "nivel anterior": se enlaza a si mismo, sin usarlo.
         vk::DescriptorImageInfo source_info{};
@@ -353,6 +357,7 @@ void GpuCulling::setClusters(const VulkanDevice& device, std::uint32_t frame_ind
                              const std::vector<GpuCluster>& clusters, std::uint32_t group_count,
                              std::uint32_t slot_count,
                              const std::vector<VulkanBuffer>& camera_buffers) {
+    if (!created_) return;
     const auto count = static_cast<std::uint32_t>(clusters.size());
     if (count > cluster_capacity_ || group_count > group_capacity_ ||
         slot_count > slot_capacity_) {
@@ -374,6 +379,7 @@ void GpuCulling::setClusters(const VulkanDevice& device, std::uint32_t frame_ind
 
 void GpuCulling::recordCull(const vk::raii::CommandBuffer& cmd, std::uint32_t frame_index,
                             std::uint32_t phase, bool occlusion) const {
+    if (!created_) return;
     using Stage = vk::PipelineStageFlagBits2;
     using Access = vk::AccessFlagBits2;
     if (cluster_count_ == 0) {
@@ -424,6 +430,7 @@ void GpuCulling::recordCull(const vk::raii::CommandBuffer& cmd, std::uint32_t fr
 }
 
 void GpuCulling::recordHiZ(const vk::raii::CommandBuffer& cmd) const {
+    if (!created_) return;
     using Stage = vk::PipelineStageFlagBits2;
     using Access = vk::AccessFlagBits2;
     if (cluster_count_ == 0) {
@@ -454,6 +461,7 @@ void GpuCulling::recordHiZ(const vk::raii::CommandBuffer& cmd) const {
 }
 
 GpuCulling::Stats GpuCulling::readStats(std::uint32_t frame_index) const {
+    if (!created_) return Stats{};
     Stats stats{};
     if (stats_[frame_index].mapped() == nullptr) {
         return stats;

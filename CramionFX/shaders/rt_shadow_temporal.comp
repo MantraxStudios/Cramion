@@ -1,0 +1,191 @@
+#version 450
+
+// Acumulacion temporal de las sombras por rayos (rt_shadows.comp), a
+// resolucion completa.
+//
+// rt_shadows.comp lanza UN rayo por luz y pixel hacia un punto al azar de la
+// bombilla (o del disco del sol): cada pixel de la penumbra sale 0 o 1 y el
+// punto cambia cada frame. La iluminacion leia eso directamente (con una media
+// 3x3): la penumbra y el borde de las sombras eran un ruido que cambiaba cada
+// frame y se veia como un hormigueo sobre los objetos, sobre todo sin TAA.
+//
+// Aqui cada luz de cada pixel (las 4 que trazo rt_shadows.comp) mezcla lo de
+// este frame con lo acumulado, reproyectado a donde estaba este punto el
+// frame anterior (como el TAA, pero por luz):
+//
+//     V = alfa * V_actual + (1 - alfa) * V_anterior
+//
+// Para no dejar estelas cuando algo se mueve, lo acumulado se recorta al rango
+// de visibilidades que tiene esa misma luz en la vecindad 3x3 de este frame
+// (en la misma superficie). Donde todo esta al sol o todo a la sombra ese
+// rango es un solo valor y manda el frame actual (sin retraso); en la penumbra
+// el rango es [0, 1] y se acumula. Una luz sin historia (recien llegada al
+// pixel, algo que se destapa) empieza con la media de sus vecinos.
+//
+// Salida (RGBA16UI, un canal por luz): (luz + 1) << 10 | visibilidad
+// (0..1023); 0 = hueco libre. La lee lighting.frag (binding 25) y se copia a
+// la historia para el frame siguiente.
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) uniform CameraBuffer {
+    mat4 view;
+    mat4 projection;
+    mat4 view_projection;
+    mat4 inverse_view_projection;
+    vec4 position;
+} camera;
+
+layout(set = 0, binding = 1) uniform sampler2D g_depth;
+layout(set = 0, binding = 2) uniform sampler2D g_normal;
+layout(set = 0, binding = 3) uniform sampler2D raw_mask;       // rt_shadows.comp de este frame
+layout(set = 0, binding = 4) uniform usampler2D history_mask;  // lo acumulado hasta el frame anterior
+layout(set = 0, binding = 5, rgba16ui) uniform writeonly uimage2D out_mask;
+
+layout(push_constant) uniform PushConstants {
+    mat4 previous_view_projection;
+    vec4 params;  // x = hay historia valida, y = peso minimo de lo nuevo (alfa)
+} push;
+
+const int kSlots = 4;
+
+float linearDepth(float depth) {
+    return camera.projection[3][2] / (depth + camera.projection[2][2]);
+}
+
+vec3 decodeNormal(vec2 e) {
+    vec3 n = vec3(e.x, 1.0 - abs(e.x) - abs(e.y), e.y);
+    float t = max(-n.y, 0.0);
+    n.x += n.x >= 0.0 ? -t : t;
+    n.z += n.z >= 0.0 ? -t : t;
+    return normalize(n);
+}
+
+// Hueco de rt_shadows.comp: luz (-1 = libre) y visibilidad 0..1.
+void decodeRaw(float encoded, out int id, out float visibility) {
+    uint e = uint(max(encoded, 0.0) + 0.5);
+    id = int(e >> 5u) - 1;
+    visibility = float(e & 31u) / 31.0;
+}
+
+void main() {
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = imageSize(out_mask);
+    if (any(greaterThanEqual(pixel, size))) {
+        return;
+    }
+
+    float depth = texelFetch(g_depth, pixel, 0).r;
+    if (depth >= 1.0) {
+        imageStore(out_mask, pixel, uvec4(0u));
+        return;
+    }
+
+    // --- Las luces de este pixel y lo que da su rayo de este frame ---
+    int ids[kSlots];
+    float current[kSlots];
+    vec4 raw = texelFetch(raw_mask, pixel, 0);
+    for (int k = 0; k < kSlots; ++k) {
+        decodeRaw(raw[k], ids[k], current[k]);
+    }
+    if (ids[0] < 0 && ids[1] < 0 && ids[2] < 0 && ids[3] < 0) {
+        imageStore(out_mask, pixel, uvec4(0u));
+        return;
+    }
+
+    // --- Rango y media de cada luz en la vecindad 3x3 (misma superficie) ---
+    float center_z = linearDepth(depth);
+    vec3 center_normal = decodeNormal(texelFetch(g_normal, pixel, 0).rg);
+    float low[kSlots] = float[](1.0, 1.0, 1.0, 1.0);
+    float high[kSlots] = float[](0.0, 0.0, 0.0, 0.0);
+    float sum[kSlots] = float[](0.0, 0.0, 0.0, 0.0);
+    float count[kSlots] = float[](0.0, 0.0, 0.0, 0.0);
+    for (int dy = -1; dy <= 1; ++dy) {
+        for (int dx = -1; dx <= 1; ++dx) {
+            ivec2 q = clamp(pixel + ivec2(dx, dy), ivec2(0), size - 1);
+            if (dx != 0 || dy != 0) {
+                float qz = texelFetch(g_depth, q, 0).r;
+                if (qz >= 1.0 || abs(linearDepth(qz) - center_z) > center_z * 0.05 + 0.02) continue;
+                if (dot(decodeNormal(texelFetch(g_normal, q, 0).rg), center_normal) < 0.8) continue;
+            }
+            vec4 r = texelFetch(raw_mask, q, 0);
+            for (int c = 0; c < kSlots; ++c) {
+                int id;
+                float v;
+                decodeRaw(r[c], id, v);
+                if (id < 0) continue;
+                for (int k = 0; k < kSlots; ++k) {
+                    if (ids[k] == id) {
+                        low[k] = min(low[k], v);
+                        high[k] = max(high[k], v);
+                        sum[k] += v;
+                        count[k] += 1.0;
+                    }
+                }
+            }
+        }
+    }
+
+    // --- Donde estaba este punto el frame anterior ---
+    vec2 uv = (vec2(pixel) + 0.5) / vec2(size);
+    vec4 world = camera.inverse_view_projection * vec4(uv * 2.0 - 1.0, depth, 1.0);
+    world /= world.w;
+    vec4 previous_clip = push.previous_view_projection * world;
+    bool history = push.params.x > 0.5 && previous_clip.w > 0.0;
+    vec2 previous_uv = previous_clip.xy / max(previous_clip.w, 1e-6) * 0.5 + 0.5;
+    history = history && all(greaterThanEqual(previous_uv, vec2(0.0))) && all(lessThanEqual(previous_uv, vec2(1.0)));
+
+    // Bilineal de la historia, por luz: cada uno de los 4 texeles solo cuenta
+    // si tiene esa misma luz (si no, es de otra superficie u otra zona).
+    float history_sum[kSlots] = float[](0.0, 0.0, 0.0, 0.0);
+    float history_weight[kSlots] = float[](0.0, 0.0, 0.0, 0.0);
+    if (history) {
+        vec2 texel = previous_uv * vec2(size) - 0.5;
+        ivec2 base = ivec2(floor(texel));
+        vec2 f = fract(texel);
+        const ivec2 kOffsets[4] = ivec2[](ivec2(0, 0), ivec2(1, 0), ivec2(0, 1), ivec2(1, 1));
+        float bilinear[4] = float[]((1.0 - f.x) * (1.0 - f.y), f.x * (1.0 - f.y), (1.0 - f.x) * f.y, f.x * f.y);
+        for (int i = 0; i < 4; ++i) {
+            ivec2 p = base + kOffsets[i];
+            if (any(lessThan(p, ivec2(0))) || any(greaterThanEqual(p, size)) || bilinear[i] <= 0.0) continue;
+            uvec4 h = texelFetch(history_mask, p, 0);
+            for (int c = 0; c < kSlots; ++c) {
+                int id = int(h[c] >> 10u) - 1;
+                if (id < 0) continue;
+                float v = float(h[c] & 1023u) / 1023.0;
+                for (int k = 0; k < kSlots; ++k) {
+                    if (ids[k] == id) {
+                        history_sum[k] += v * bilinear[i];
+                        history_weight[k] += bilinear[i];
+                    }
+                }
+            }
+        }
+    }
+
+    // --- Mezcla ---
+    float min_alpha = clamp(push.params.y, 0.02, 1.0);
+    uvec4 result = uvec4(0u);
+    for (int k = 0; k < kSlots; ++k) {
+        if (ids[k] < 0) continue;
+        float spatial = count[k] > 0.0 ? sum[k] / count[k] : current[k];
+        float visibility;
+        if (history_weight[k] > 0.05) {
+            float previous = history_sum[k] / history_weight[k];
+            // Un poco de margen: el recorte estricto devuelve el parpadeo.
+            float margin = (high[k] - low[k]) * 0.1 + 0.02;
+            float clamped = clamp(previous, low[k] - margin, high[k] + margin);
+            // Si el recorte movio mucho la historia (la sombra cambio de
+            // verdad), lo nuevo pesa mas y converge en unos pocos frames.
+            float alpha = mix(min_alpha, 0.6, clamp(abs(clamped - previous) * 4.0, 0.0, 1.0));
+            visibility = mix(clamped, current[k], alpha);
+        } else {
+            // Sin historia: la media de los vecinos (mucho menos ruido que un
+            // solo rayo).
+            visibility = spatial;
+        }
+        uint quantized = uint(clamp(visibility, 0.0, 1.0) * 1023.0 + 0.5);
+        result[k] = (uint(ids[k] + 1) << 10u) | quantized;
+    }
+    imageStore(out_mask, pixel, result);
+}

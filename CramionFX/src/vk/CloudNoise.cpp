@@ -1,3 +1,4 @@
+#include "CramionFX/vk/VulkanCompat.h"
 #include "CramionFX/vk/CloudNoise.h"
 
 #include "CramionFX/vk/ComputePass.h"
@@ -91,7 +92,7 @@ void CloudNoise::create(const VulkanDevice& device) {
         to_general.subresourceRange = view_info.subresourceRange;
         vk::DependencyInfo dependency{};
         dependency.setImageMemoryBarriers(to_general);
-        cmd.pipelineBarrier2(dependency);
+        compat::pipelineBarrier(cmd, dependency);
 
         cmd.bindPipeline(vk::PipelineBindPoint::eCompute, *pass.pipeline());
         cmd.bindDescriptorSets(vk::PipelineBindPoint::eCompute, *pass.layout(), 0, *sets[0],
@@ -107,7 +108,7 @@ void CloudNoise::create(const VulkanDevice& device) {
         to_read.newLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
         vk::DependencyInfo read_dependency{};
         read_dependency.setImageMemoryBarriers(to_read);
-        cmd.pipelineBarrier2(read_dependency);
+        compat::pipelineBarrier(cmd, read_dependency);
     });
 
     sets.clear();

@@ -1,5 +1,6 @@
 #include "CramionFX/vk/VulkanSwapchain.h"
 
+#include "CramionFX/vk/VulkanCompat.h"
 #include "CramionFX/vk/VulkanDevice.h"
 #include "CramionFX/vk/VulkanSurface.h"
 
@@ -58,11 +59,22 @@ void VulkanSwapchain::create(std::uint32_t width, std::uint32_t height) {
     if (capabilities.supportedTransforms & vk::SurfaceTransformFlagBitsKHR::eIdentity) {
         transform = vk::SurfaceTransformFlagBitsKHR::eIdentity;
     }
-    if (width > 0 && height > 0 && capabilities.currentExtent.width != UINT32_MAX &&
-        (capabilities.currentExtent.width > capabilities.currentExtent.height) != (width > height)) {
+    if (width > 0 && height > 0 && capabilities.currentExtent.width != UINT32_MAX) {
+        const vk::Extent2D surface = capabilities.currentExtent;
         // La ventana ya giro y la superficie aun no: manda la ventana.
-        extent = vk::Extent2D{std::clamp(width, capabilities.minImageExtent.width, capabilities.maxImageExtent.width),
-                              std::clamp(height, capabilities.minImageExtent.height, capabilities.maxImageExtent.height)};
+        const bool rotated = (surface.width > surface.height) != (width > height);
+        // La ventana pide menos pixeles que la pantalla (Window::
+        // setMaxShortSide): la swapchain se crea a ese tamano y Android la
+        // escala a la ventana (SCALE_TO_WINDOW, en el compositor: sin coste
+        // para la GPU). Admite cualquier tamano entre minImageExtent (1x1) y
+        // maxImageExtent.
+        const bool reduced = static_cast<std::uint64_t>(width) * height <
+                             static_cast<std::uint64_t>(surface.width) * surface.height;
+        if (rotated || reduced) {
+            extent = vk::Extent2D{
+                std::clamp(width, capabilities.minImageExtent.width, capabilities.maxImageExtent.width),
+                std::clamp(height, capabilities.minImageExtent.height, capabilities.maxImageExtent.height)};
+        }
     }
 #endif
     // Opaco si se puede (Android suele dar solo "heredado").
@@ -140,6 +152,7 @@ void VulkanSwapchain::createImageViews() {
             vk::ImageSubresourceRange{vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1};
 
         image_views_.emplace_back(device_->handle(), create_info);
+        compat::registerView(static_cast<VkImageView>(*image_views_.back()), create_info.format);
     }
 }
 

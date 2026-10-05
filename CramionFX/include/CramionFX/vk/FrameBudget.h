@@ -57,6 +57,7 @@ enum class Lever : std::uint8_t {
     ShadowDetail,    // LOD de las sombras por texel, sombras de objetos diminutos, cascadas lejanas
     Volumetric,      // luz volumetrica y rayos de luz
     ContactShadows,  // sombras de contacto
+    Lighting,        // iluminacion ligera: sin sombras suaves de contacto del sol (PCSS) ni oclusion del cielo desde arriba
     Ssao,            // oclusion ambiental
     Reflections,     // reflejos en pantalla / por rayos
     Gi,              // luz rebotada
@@ -78,6 +79,10 @@ public:
     // Punto de partida segun el hardware (un PC flojo no empieza a tope y
     // tarda segundos en bajar).
     void setStartLevels(HardwareTier tier);
+    // Cambia el nivel de salida de una palanca (el movil: su resolucion ya la
+    // limitan la pantalla del juego y el escalado del preset, asi que la
+    // resolucion interna empieza a tope y solo baja si hace falta).
+    void setStartLevel(Lever lever, std::uint8_t level);
 
     // El usuario cambio la calidad (ajustes graficos, un efecto prendido):
     // se vuelve al punto de partida y se mide de nuevo, sin los bloqueos de

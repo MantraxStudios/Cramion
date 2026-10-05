@@ -1,3 +1,4 @@
+#include "CramionFX/vk/VulkanCompat.h"
 #include "CramionFX/vk/WorldUiPass.h"
 
 #include "CramionFX/vk/VulkanDevice.h"
@@ -43,7 +44,7 @@ vk::ImageMemoryBarrier2 imageBarrier(vk::Image image, vk::ImageLayout from, vk::
 void pipelineBarrier(const vk::raii::CommandBuffer& cmd, const vk::ImageMemoryBarrier2& barrier) {
     vk::DependencyInfo dependency{};
     dependency.setImageMemoryBarriers(barrier);
-    cmd.pipelineBarrier2(dependency);
+    compat::pipelineBarrier(cmd, dependency);
 }
 
 }  // namespace
@@ -238,7 +239,7 @@ vk::raii::Pipeline WorldUiPass::createPipeline(const VulkanDevice& device, bool 
     info.pColorBlendState = &color_blend;
     info.pDynamicState = &dynamic_state;
     info.layout = quad ? *quad_layout_ : *paint_layout_;
-    return vk::raii::Pipeline(device.handle(), nullptr, info);
+    return compat::makeGraphicsPipeline(device, info);
 }
 
 void WorldUiPass::setCanvases(std::vector<WorldUiCanvas> canvases) {
@@ -364,7 +365,7 @@ void WorldUiPass::recordPaint(const VulkanDevice& device, const vk::raii::Comman
         rendering.renderArea = vk::Rect2D{vk::Offset2D{0, 0}, vk::Extent2D{canvas.width, canvas.height}};
         rendering.layerCount = 1;
         rendering.setColorAttachments(color);
-        cmd.beginRendering(rendering);
+        compat::beginRendering(cmd, rendering);
         if (!canvas.indices.empty() && !canvas.batches.empty()) {
             const float w = static_cast<float>(canvas.width);
             const float h = static_cast<float>(canvas.height);
@@ -390,7 +391,7 @@ void WorldUiPass::recordPaint(const VulkanDevice& device, const vk::raii::Comman
                 cmd.drawIndexed(batch.index_count, 1, batch.first_index, static_cast<std::int32_t>(batch.vertex_offset), 0);
             }
         }
-        cmd.endRendering();
+        compat::endRendering(cmd);
         pipelineBarrier(cmd, imageBarrier(image, vk::ImageLayout::eColorAttachmentOptimal,
                                           vk::ImageLayout::eShaderReadOnlyOptimal,
                                           vk::PipelineStageFlagBits2::eColorAttachmentOutput,

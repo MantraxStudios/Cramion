@@ -333,6 +333,11 @@ std::uint32_t embedTextures(ModelData& model);
 void setMaxTextureSize(std::uint32_t size);
 std::uint32_t maxTextureSize();
 
+// Las texturas BC de los DDS se descomprimen a RGBA8 al cargarlas (en
+// paralelo, despues de quitarles los mips que sobran): lo pide el
+// renderizador si la GPU no las lee (casi todas las de movil).
+void setDecodeBlockCompressed(bool decode);
+
 // Decodifica todas las texturas (en paralelo) y comprueba que haya
 // triangulos. Lanza std::runtime_error si el modelo esta vacio. `label` es
 // para los mensajes.

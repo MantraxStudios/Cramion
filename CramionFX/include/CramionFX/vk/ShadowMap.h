@@ -43,9 +43,10 @@ public:
     }
 
     // Cache de lo estatico (como los "cached shadow maps" de Unreal): la
-    // misma cascada sin los actores animados. Cada frame se copia al mapa y
-    // encima se dibujan solo los animados; lo estatico (hierba, terreno) se
-    // redibuja por turnos o cuando algo estatico cambia. Sin ella (mapas de
+    // misma cascada sin los actores animados. Con animados dentro, cada frame
+    // se copia al mapa y encima se dibujan solo ellos; sin animados lo
+    // estatico se dibuja directo al mapa (sin copia). Lo estatico (hierba,
+    // terreno) se redibuja por turnos o cuando algo estatico cambia. Sin ella (mapas de
     // mas de 4096, por la VRAM), un personaje animado obligaba a redibujar
     // todo lo que cubre la cascada cada frame.
     bool hasStaticCache() const { return static_.isValid(); }

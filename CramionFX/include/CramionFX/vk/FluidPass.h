@@ -148,7 +148,9 @@ public:
     // El mundo se desplazo (origen flotante): las particulas tambien.
     void shiftOrigin(const core::Vec3& offset) { pending_shift_ = pending_shift_ + offset; }
     // Activo: hay mundo de liquidos (se dibuja y se simula).
-    void setActive(bool active) { active_ = active; }
+    // (Sin crear, p. ej. en un movil sin los storage buffers que pide la
+    // simulacion, nunca se activa.)
+    void setActive(bool active) { active_ = active && device_ != nullptr; }
     bool active() const { return active_; }
 
     const FluidSnapshot& snapshot() const { return snapshot_; }

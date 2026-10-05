@@ -1,6 +1,7 @@
 // VulkanRenderer: el pase de los sprites y tilemaps 2D (SpritePass.h). Aparte
 // para no engordar VulkanRenderer.cpp.
 
+#include "CramionFX/vk/VulkanCompat.h"
 #include "CramionFX/vk/VulkanRenderer.h"
 
 #include <array>
@@ -30,14 +31,14 @@ void VulkanRenderer::recordSpritePass(const vk::raii::CommandBuffer& cmd, std::u
     depth_barrier.dstStageMask =
         vk::PipelineStageFlagBits2::eEarlyFragmentTests | vk::PipelineStageFlagBits2::eLateFragmentTests;
     depth_barrier.dstAccessMask = vk::AccessFlagBits2::eDepthStencilAttachmentRead;
-    depth_barrier.oldLayout = vk::ImageLayout::eDepthReadOnlyOptimal;
-    depth_barrier.newLayout = vk::ImageLayout::eDepthReadOnlyOptimal;
+    depth_barrier.oldLayout = compat::depthReadOnlyLayout();
+    depth_barrier.newLayout = compat::depthReadOnlyLayout();
     depth_barrier.image = *gbuffer_.depth().handle();
     depth_barrier.subresourceRange = vk::ImageSubresourceRange{vk::ImageAspectFlagBits::eDepth, 0, 1, 0, 1};
     const std::array<vk::ImageMemoryBarrier2, 2> barriers = {color_barrier, depth_barrier};
     vk::DependencyInfo dependency{};
     dependency.setImageMemoryBarriers(barriers);
-    cmd.pipelineBarrier2(dependency);
+    compat::pipelineBarrier(cmd, dependency);
 
     vk::RenderingAttachmentInfo color_attachment{};
     color_attachment.imageView = *scene_color_.view();
@@ -47,7 +48,7 @@ void VulkanRenderer::recordSpritePass(const vk::raii::CommandBuffer& cmd, std::u
 
     vk::RenderingAttachmentInfo depth_attachment{};
     depth_attachment.imageView = *gbuffer_.depth().view();
-    depth_attachment.imageLayout = vk::ImageLayout::eDepthReadOnlyOptimal;
+    depth_attachment.imageLayout = compat::depthReadOnlyLayout();
     depth_attachment.loadOp = vk::AttachmentLoadOp::eLoad;
     depth_attachment.storeOp = vk::AttachmentStoreOp::eNone;
 
@@ -57,9 +58,9 @@ void VulkanRenderer::recordSpritePass(const vk::raii::CommandBuffer& cmd, std::u
     rendering_info.setColorAttachments(color_attachment);
     rendering_info.pDepthAttachment = &depth_attachment;
 
-    cmd.beginRendering(rendering_info);
+    compat::beginRendering(cmd, rendering_info);
     sprite_pass_.record(cmd, frame_index, extent);
-    cmd.endRendering();
+    compat::endRendering(cmd);
 }
 
 }  // namespace cramion::gfx

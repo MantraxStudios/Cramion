@@ -152,6 +152,47 @@ vec3 decodeNormal(vec2 e) {
     return normalize(n);
 }
 
+// Normal de la cara real (la de los triangulos) a partir de la profundidad,
+// sin el normal map. La del G-buffer lleva el relieve del material: separar el
+// origen de un rayo a lo largo de ella lo podia meter por dentro de la
+// superficie (sobre todo en el borde de la sombra de una malla de pocos
+// poligonos, donde la normal suavizada y la de la cara no coinciden) y el rayo
+// chocaba con el propio objeto: motas de sombra que cambiaban cada frame (el
+// "hormigueo" sobre los objetos). Se usa el vecino de cada eje mas parecido en
+// profundidad (no se mezclan dos superficies en un borde). `fallback` si no hay
+// vecinos utiles.
+vec3 gbufferGeometricNormal(ivec2 pixel, vec3 position, vec3 fallback) {
+    ivec2 size = textureSize(g_depth, 0);
+    float center_z = linearDepth(texelFetch(g_depth, pixel, 0).r);
+    vec3 axes[2];
+    for (int axis = 0; axis < 2; ++axis) {
+        ivec2 step_offset = axis == 0 ? ivec2(1, 0) : ivec2(0, 1);
+        ivec2 forward = clamp(pixel + step_offset, ivec2(0), size - 1);
+        ivec2 backward = clamp(pixel - step_offset, ivec2(0), size - 1);
+        float depth_forward = texelFetch(g_depth, forward, 0).r;
+        float depth_backward = texelFetch(g_depth, backward, 0).r;
+        // En el borde de la imagen, el vecino que existe (el otro es el
+        // propio pixel, recortado).
+        bool use_forward = forward != pixel &&
+                           (backward == pixel ||
+                            abs(linearDepth(depth_forward) - center_z) <= abs(linearDepth(depth_backward) - center_z));
+        ivec2 neighbor = use_forward ? forward : backward;
+        float neighbor_depth = use_forward ? depth_forward : depth_backward;
+        if (neighbor_depth >= 1.0 || neighbor == pixel) {
+            return fallback;
+        }
+        vec3 neighbor_position = worldFromDepth((vec2(neighbor) + 0.5) / vec2(size), neighbor_depth);
+        axes[axis] = (neighbor_position - position) * (use_forward ? 1.0 : -1.0);
+    }
+    vec3 n = cross(axes[0], axes[1]);
+    float n_length = length(n);
+    if (n_length < 1e-12) {
+        return fallback;
+    }
+    n /= n_length;
+    return dot(n, camera.position.xyz - position) < 0.0 ? -n : n;
+}
+
 // Numeros aleatorios por pixel para los rayos. El patron en pantalla es fijo
 // (ruido de gradiente entrelazado, Jimenez 2014) y cada pixel avanza en el
 // tiempo por la secuencia R2 (Roberts 2018, la version 2D de la razon

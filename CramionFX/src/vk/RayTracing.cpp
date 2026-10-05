@@ -1,3 +1,4 @@
+#include "CramionFX/vk/VulkanCompat.h"
 #include "CramionFX/vk/RayTracing.h"
 
 #include "CramionFX/asset/Model.h"
@@ -108,7 +109,7 @@ void memoryBarrier(const vk::raii::CommandBuffer& cmd, vk::PipelineStageFlags2 s
     barrier.dstAccessMask = dst_access;
     vk::DependencyInfo dependency{};
     dependency.setMemoryBarriers(barrier);
-    cmd.pipelineBarrier2(dependency);
+    compat::pipelineBarrier(cmd, dependency);
 }
 
 void imageBarrier(const vk::raii::CommandBuffer& cmd, vk::Image image, std::uint32_t mips, vk::ImageLayout from,
@@ -125,7 +126,7 @@ void imageBarrier(const vk::raii::CommandBuffer& cmd, vk::Image image, std::uint
     barrier.subresourceRange = vk::ImageSubresourceRange{vk::ImageAspectFlagBits::eColor, 0, mips, 0, 1};
     vk::DependencyInfo dependency{};
     dependency.setImageMemoryBarriers(barrier);
-    cmd.pipelineBarrier2(dependency);
+    compat::pipelineBarrier(cmd, dependency);
 }
 
 // Etapas que leen la escena de rayos (compute con ray queries y, con SER,
@@ -1450,7 +1451,7 @@ void RayTracing::updateFrameSet(const VulkanDevice& device, std::uint32_t frame_
         const vk::DescriptorBufferInfo camera{*inputs.camera->handle(), 0, VK_WHOLE_SIZE};
         const vk::DescriptorBufferInfo lights{*inputs.lights->handle(), 0, VK_WHOLE_SIZE};
         const vk::DescriptorImageInfo depth{inputs.sampler, inputs.depth,
-                                            vk::ImageLayout::eDepthReadOnlyOptimal};
+                                            compat::depthReadOnlyLayout()};
         const vk::DescriptorImageInfo normal{inputs.sampler, inputs.normal,
                                              vk::ImageLayout::eShaderReadOnlyOptimal};
         const vk::DescriptorImageInfo previous{inputs.sampler, inputs.previous_color,
@@ -1529,7 +1530,7 @@ void RayTracing::record(const vk::raii::CommandBuffer& cmd, std::uint32_t frame_
     cache_barrier.dstAccessMask = vk::AccessFlagBits2::eShaderStorageRead | vk::AccessFlagBits2::eShaderStorageWrite;
     vk::DependencyInfo dependency{};
     dependency.setMemoryBarriers(cache_barrier);
-    cmd.pipelineBarrier2(dependency);
+    compat::pipelineBarrier(cmd, dependency);
 
     Push data = push;
     if (pass == Pass::PathTrace && *r.ser_pipeline != nullptr) {
@@ -1542,7 +1543,7 @@ void RayTracing::record(const vk::raii::CommandBuffer& cmd, std::uint32_t frame_
         to_rays.dstAccessMask = vk::AccessFlagBits2::eMemoryRead | vk::AccessFlagBits2::eMemoryWrite;
         vk::DependencyInfo to_rays_dependency{};
         to_rays_dependency.setMemoryBarriers(to_rays);
-        cmd.pipelineBarrier2(to_rays_dependency);
+        compat::pipelineBarrier(cmd, to_rays_dependency);
         cmd.bindPipeline(vk::PipelineBindPoint::eRayTracingKHR, *r.ser_pipeline);
         const std::array<vk::DescriptorSet, 2> rt_sets = {*r.frame_sets[frame_index * kPassCount + index],
                                                           *r.scene_sets[0]};
@@ -1558,7 +1559,7 @@ void RayTracing::record(const vk::raii::CommandBuffer& cmd, std::uint32_t frame_
         from_rays.dstAccessMask = vk::AccessFlagBits2::eMemoryRead | vk::AccessFlagBits2::eMemoryWrite;
         vk::DependencyInfo from_rays_dependency{};
         from_rays_dependency.setMemoryBarriers(from_rays);
-        cmd.pipelineBarrier2(from_rays_dependency);
+        compat::pipelineBarrier(cmd, from_rays_dependency);
         return;
     }
     if (pass == Pass::CacheResolve) {

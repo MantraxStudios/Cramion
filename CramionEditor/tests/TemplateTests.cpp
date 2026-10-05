@@ -118,6 +118,8 @@ std::string hudText(ecs::World& world) {
 }  // namespace
 
 int main() {
+    // Sin bufer: si algo aborta, lo ultimo que se escribio queda a la vista.
+    std::setvbuf(stdout, nullptr, _IONBF, 0);
     // Solo importar el Locomotion Pack y ver las medidas (desarrollo).
     if (const char* pack = std::getenv("LOCOMOTION_PACK")) {
         const std::filesystem::path out = std::filesystem::temp_directory_path() / "cramion_locomotion_probe";

@@ -1,10 +1,12 @@
 #include "CramionFX/vk/VulkanDevice.h"
 
+#include "CramionFX/vk/VulkanCompat.h"
 #include "CramionFX/vk/VulkanInstance.h"
 #include "CramionFX/vk/VulkanSurface.h"
 
 #include <algorithm>
 #include <array>
+#include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <iostream>
@@ -35,6 +37,56 @@ bool hasExtension(const std::vector<vk::ExtensionProperties>& available, const c
     });
 }
 
+// Version de la instancia (la del loader): con una instancia 1.0/1.1 no se
+// pueden usar funciones de 1.3 aunque la GPU las tenga.
+std::uint32_t g_instance_api = VK_API_VERSION_1_4;
+
+// Modo compatible forzado (pruebas en PC del camino de los moviles):
+// CRAMION_VK_COMPAT=1.
+bool compatForced() {
+    const char* value = std::getenv("CRAMION_VK_COMPAT");
+    return value != nullptr && value[0] != '\0' && value[0] != '0';
+}
+
+// Lo que el camino de escritorio necesita del dispositivo. Sin todo esto (la
+// mayoria de los moviles, GPU de PC antiguas con drivers 1.0-1.2), modo
+// compatible (VulkanCompat.h). `reason` dice que falta.
+bool fullPathSupported(const vk::raii::PhysicalDevice& candidate, const char** reason) {
+    const auto properties = candidate.getProperties();
+    const auto& limits = properties.limits;
+    const auto fail = [&](const char* why) {
+        if (reason != nullptr) *reason = why;
+        return false;
+    };
+#if defined(__ANDROID__)
+    // En los moviles, siempre: descriptores dentro de los minimos, sin
+    // comandos indirectos generados en la GPU (firstInstance da problemas en
+    // varios drivers de Adreno) y el G-buffer ligero.
+    (void)limits;
+    return fail("GPU de movil");
+#else
+    if (compatForced()) return fail("forzado con CRAMION_VK_COMPAT");
+    if (std::min(properties.apiVersion, g_instance_api) < VK_API_VERSION_1_3) return fail("Vulkan anterior a 1.3");
+    const auto chain = candidate.getFeatures2<vk::PhysicalDeviceFeatures2, vk::PhysicalDeviceVulkan12Features,
+                                              vk::PhysicalDeviceVulkan13Features>();
+    const auto& features = chain.template get<vk::PhysicalDeviceFeatures2>().features;
+    const auto& features13 = chain.template get<vk::PhysicalDeviceVulkan13Features>();
+    if (!features13.dynamicRendering || !features13.synchronization2 || !features13.shaderDemoteToHelperInvocation) {
+        return fail("sin dynamic rendering, synchronization2 o demote");
+    }
+    if (!features.drawIndirectFirstInstance) return fail("sin drawIndirectFirstInstance");
+    // Lo que usan los shaders de escritorio (texturas de los decals, la
+    // iluminacion con todos sus mapas, el culling en GPU, el G-buffer).
+    if (limits.maxPerStageDescriptorSamplers < 48 || limits.maxPerStageDescriptorSampledImages < 48) {
+        return fail("pocas texturas por shader");
+    }
+    if (limits.maxPerStageDescriptorStorageBuffers < 8) return fail("pocos storage buffers por shader");
+    if (limits.maxColorAttachments < 5) return fail("menos de 5 destinos de color");
+    if (limits.maxComputeWorkGroupInvocations < 256) return fail("grupos de computo pequenos");
+    return true;
+#endif
+}
+
 }  // namespace
 
 void VulkanDevice::initialize(const VulkanInstance& instance, const VulkanSurface& surface, VkPhysicalDevice required,
@@ -42,6 +94,7 @@ void VulkanDevice::initialize(const VulkanInstance& instance, const VulkanSurfac
                               const std::vector<std::string>& optional_extensions) {
     extra_extensions_ = extra_extensions;
     optional_extensions_ = optional_extensions;
+    g_instance_api = instance.apiVersion();
     pickPhysicalDevice(instance, surface, required);
     queue_families_ = findQueueFamilies(physical_device_, surface.handle());
     createLogicalDevice();
@@ -114,15 +167,16 @@ void VulkanDevice::pickPhysicalDevice(const VulkanInstance& instance, const Vulk
                       << " maxComputeSharedMemory " << p.limits.maxComputeSharedMemorySize << "\n";
         }
         throw std::runtime_error(
-            "Ninguna GPU cumple los requisitos (Vulkan 1.3, VK_KHR_swapchain, "
-            "dynamic rendering, synchronization2 y presentacion en la ventana).");
+            "Ninguna GPU cumple los requisitos (Vulkan, VK_KHR_swapchain y una cola de graficos y computo que "
+            "presente en la ventana).");
     }
 
     physical_device_ = *ranked.rbegin()->second;
 
     const auto properties = physical_device_.getProperties();
     device_name_ = properties.deviceName.data();
-    api_version_ = properties.apiVersion;
+    // La que se puede usar de verdad: la menor entre la GPU y la instancia.
+    api_version_ = std::min(properties.apiVersion, g_instance_api);
 
     std::cout << "[Vulkan] GPU seleccionada: " << device_name_ << " (API "
               << VK_API_VERSION_MAJOR(api_version_) << '.' << VK_API_VERSION_MINOR(api_version_)
@@ -133,13 +187,12 @@ std::uint32_t VulkanDevice::rateDevice(const vk::raii::PhysicalDevice& candidate
                                        const vk::raii::SurfaceKHR& surface) {
     const auto properties = candidate.getProperties();
 
+    // Cualquier Vulkan sirve: sin lo del camino de escritorio (1.3, dynamic
+    // rendering, limites altos) se usa el modo compatible (VulkanCompat.h).
     if (properties.apiVersion < kMinimumApiVersion) {
         return 0;
     }
     if (!supportsRequiredExtensions(candidate)) {
-        return 0;
-    }
-    if (!supportsRequiredFeatures(candidate)) {
         return 0;
     }
     if (!findQueueFamilies(candidate, surface).isComplete()) {
@@ -164,6 +217,8 @@ std::uint32_t VulkanDevice::rateDevice(const vk::raii::PhysicalDevice& candidate
             break;
     }
     score += properties.limits.maxImageDimension2D;
+    // A igualdad de tipo, la que puede ir por el camino completo.
+    if (fullPathSupported(candidate, nullptr)) score += 30000;
     return score;
 }
 
@@ -178,22 +233,6 @@ bool VulkanDevice::supportsRequiredExtensions(const vk::raii::PhysicalDevice& ca
                                    return std::strcmp(property.extensionName.data(), required) == 0;
                                });
         });
-}
-
-bool VulkanDevice::supportsRequiredFeatures(const vk::raii::PhysicalDevice& candidate) {
-    const auto chain =
-        candidate.getFeatures2<vk::PhysicalDeviceFeatures2, vk::PhysicalDeviceVulkan12Features,
-                               vk::PhysicalDeviceVulkan13Features>();
-    const auto& features = chain.template get<vk::PhysicalDeviceFeatures2>().features;
-    const auto& features12 = chain.template get<vk::PhysicalDeviceVulkan12Features>();
-    const auto& features13 = chain.template get<vk::PhysicalDeviceVulkan13Features>();
-
-    // drawIndirectCount y multiDrawIndirect son opcionales: muchas GPU de
-    // movil (Mali, algunas Adreno) no los tienen y el culling en GPU dibuja
-    // entonces comando a comando (indirectCountSupported).
-    (void)features12;
-    return features13.dynamicRendering && features13.synchronization2 &&
-           features13.shaderDemoteToHelperInvocation && features.drawIndirectFirstInstance;
 }
 
 bool VulkanDevice::supportsRayTracing(const vk::raii::PhysicalDevice& candidate) {
@@ -253,6 +292,20 @@ void VulkanDevice::createLogicalDevice() {
     if (!queue_families_.isComplete()) {
         throw std::runtime_error("La GPU seleccionada no expone las familias de colas necesarias.");
     }
+    limits_ = physical_device_.getProperties().limits;
+    {
+        const vk::PhysicalDeviceFeatures base = physical_device_.getFeatures();
+        texture_compression_astc_supported_ = base.textureCompressionASTC_LDR == VK_TRUE;
+        texture_compression_etc2_supported_ = base.textureCompressionETC2 == VK_TRUE;
+    }
+    // Sin lo del camino de escritorio: modo compatible.
+    const char* reason = "";
+    if (!fullPathSupported(physical_device_, &reason)) {
+        createCompatLogicalDevice(reason);
+        return;
+    }
+    compat_mode_ = false;
+    compat_reason_.clear();
 
     // Una DeviceQueueCreateInfo por familia distinta.
     const std::set<std::uint32_t> unique_families = {queue_families_.graphics,
@@ -401,6 +454,9 @@ void VulkanDevice::createLogicalDevice() {
     }
     auto& features12 = chain.get<vk::PhysicalDeviceVulkan12Features>();
     features12.drawIndirectCount = indirect_count_supported_ ? VK_TRUE : VK_FALSE;
+    // Layouts de solo profundidad (DEPTH_ATTACHMENT_OPTIMAL...): obligatorios
+    // en Vulkan 1.3, pero hay que pedirlos.
+    features12.separateDepthStencilLayouts = VK_TRUE;
     // Semaforos de linea de tiempo (obligatorios desde Vulkan 1.2): SteamVR
     // los pide (VK_KHR_timeline_semaphore) para sincronizarse con el casco.
     features12.timelineSemaphore = physical_device_.getFeatures2<vk::PhysicalDeviceFeatures2, vk::PhysicalDeviceVulkan12Features>()
@@ -462,12 +518,184 @@ void VulkanDevice::createLogicalDevice() {
     std::cout << "[Vulkan] Dispositivo logico creado (familia graficos = "
               << queue_families_.graphics << ", presentacion = " << queue_families_.present
               << ")\n";
+
+    compat::Caps caps;
+    caps.api_version = api_version_;
+    caps.dynamic_rendering = true;
+    caps.synchronization2 = true;
+    caps.tessellation = tessellation_supported_;
+    caps.separate_depth_stencil_layouts = true;
+    caps.lite = false;
+    compat::setDevice(device_, caps);
+}
+
+// Modo compatible: lo que la GPU tenga. Dynamic rendering y synchronization2
+// nativos si los tiene (Vulkan 1.3 o sus extensiones KHR); si no, los emula
+// VulkanCompat. Sin trazado de rayos, mesh shaders, teselacion ni comandos
+// indirectos generados en la GPU.
+void VulkanDevice::createCompatLogicalDevice(const char* reason) {
+    compat_mode_ = true;
+    compat_reason_ = reason != nullptr ? reason : "";
+    const std::uint32_t api = api_version_;
+    const auto available = physical_device_.enumerateDeviceExtensionProperties();
+    const auto has = [&](const char* name) { return hasExtension(available, name); };
+
+    const std::set<std::uint32_t> unique_families = {queue_families_.graphics, queue_families_.present};
+    const float priority = 1.0f;
+    std::vector<vk::DeviceQueueCreateInfo> queue_infos;
+    for (const std::uint32_t family : unique_families) {
+        vk::DeviceQueueCreateInfo info{};
+        info.queueFamilyIndex = family;
+        info.queueCount = 1;
+        info.pQueuePriorities = &priority;
+        queue_infos.push_back(info);
+    }
+
+    std::vector<const char*> extensions(kRequiredDeviceExtensions.begin(), kRequiredDeviceExtensions.end());
+    const bool core13 = api >= VK_API_VERSION_1_3;
+    const bool core11 = api >= VK_API_VERSION_1_1;
+    // VK_KHR_dynamic_rendering pide VK_KHR_depth_stencil_resolve (y este
+    // VK_KHR_create_renderpass2), del nucleo desde 1.2.
+    const bool dynamic_extension = !core13 && core11 && has(VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME) &&
+                                   (api >= VK_API_VERSION_1_2 || (has(VK_KHR_DEPTH_STENCIL_RESOLVE_EXTENSION_NAME) &&
+                                                                  has(VK_KHR_CREATE_RENDERPASS_2_EXTENSION_NAME)));
+    const bool sync2_extension = !core13 && core11 && has(VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME);
+
+    // Que tiene de verdad (vkGetPhysicalDeviceFeatures2 desde Vulkan 1.1; las
+    // basicas en la misma consulta).
+    vk::PhysicalDeviceDynamicRenderingFeatures dynamic_query{};
+    vk::PhysicalDeviceSynchronization2Features sync_query{};
+    vk::PhysicalDeviceFeatures base = physical_device_.getFeatures();
+    if (core11) {
+        vk::PhysicalDeviceFeatures2 query{};
+        void* next = nullptr;
+        if (core13 || dynamic_extension) {
+            dynamic_query.pNext = next;
+            next = &dynamic_query;
+        }
+        if (core13 || sync2_extension) {
+            sync_query.pNext = next;
+            next = &sync_query;
+        }
+        query.pNext = next;
+        physical_device_.getDispatcher()->vkGetPhysicalDeviceFeatures2(
+            static_cast<VkPhysicalDevice>(*physical_device_), reinterpret_cast<VkPhysicalDeviceFeatures2*>(&query));
+        base = query.features;
+    }
+    // CRAMION_VK_EMULATE=1: como un movil sin ellos (pruebas en PC de los
+    // render passes y las barreras de Vulkan 1.0 de VulkanCompat).
+    const char* emulate = std::getenv("CRAMION_VK_EMULATE");
+    const bool forced_emulation = emulate != nullptr && emulate[0] != '\0' && emulate[0] != '0';
+    const bool dynamic_rendering = dynamic_query.dynamicRendering == VK_TRUE && !forced_emulation;
+    const bool synchronization2 = sync_query.synchronization2 == VK_TRUE && !forced_emulation;
+
+    // --- Lo que se activa ---
+    vk::PhysicalDeviceFeatures2 enabled2{};
+    vk::PhysicalDeviceFeatures& enabled = enabled2.features;
+    enabled.samplerAnisotropy = base.samplerAnisotropy;
+    enabled.depthClamp = base.depthClamp;
+    enabled.depthBiasClamp = base.depthBiasClamp;
+    enabled.fillModeNonSolid = base.fillModeNonSolid;
+    enabled.independentBlend = base.independentBlend;
+    enabled.fragmentStoresAndAtomics = base.fragmentStoresAndAtomics;
+    enabled.imageCubeArray = base.imageCubeArray;
+    enabled.fullDrawIndexUint32 = base.fullDrawIndexUint32;
+    // Los decals y los VFX indexan sus arrays de texturas con un valor de cada
+    // instancia.
+    enabled.shaderSampledImageArrayDynamicIndexing = base.shaderSampledImageArrayDynamicIndexing;
+    enabled.shaderStorageBufferArrayDynamicIndexing = base.shaderStorageBufferArrayDynamicIndexing;
+    enabled.drawIndirectFirstInstance = base.drawIndirectFirstInstance;
+    draw_indirect_first_instance_ = base.drawIndirectFirstInstance == VK_TRUE;
+    // (ETC2 y ASTC, las de movil, se piden cuando el motor las use.)
+    enabled.textureCompressionBC = base.textureCompressionBC;
+    depth_clamp_supported_ = base.depthClamp == VK_TRUE;
+    texture_compression_bc_supported_ = base.textureCompressionBC == VK_TRUE;
+    fill_mode_non_solid_supported_ = base.fillModeNonSolid == VK_TRUE;
+    tessellation_supported_ = false;
+    indirect_count_supported_ = false;
+    ray_tracing_supported_ = false;
+    opacity_micromap_supported_ = false;
+    ray_tracing_pipeline_supported_ = false;
+    invocation_reorder_supported_ = false;
+    mesh_shader_supported_ = false;
+
+    vk::PhysicalDeviceDynamicRenderingFeatures dynamic_enable{};
+    dynamic_enable.dynamicRendering = VK_TRUE;
+    vk::PhysicalDeviceSynchronization2Features sync_enable{};
+    sync_enable.synchronization2 = VK_TRUE;
+    void* next = nullptr;
+    if (dynamic_rendering) {
+        dynamic_enable.pNext = next;
+        next = &dynamic_enable;
+        if (dynamic_extension) {
+            extensions.push_back(VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME);
+            if (api < VK_API_VERSION_1_2) {
+                extensions.push_back(VK_KHR_DEPTH_STENCIL_RESOLVE_EXTENSION_NAME);
+                extensions.push_back(VK_KHR_CREATE_RENDERPASS_2_EXTENSION_NAME);
+            }
+        }
+    }
+    if (synchronization2) {
+        sync_enable.pNext = next;
+        next = &sync_enable;
+        if (sync2_extension) extensions.push_back(VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME);
+    }
+    if (has(VK_EXT_MEMORY_BUDGET_EXTENSION_NAME) && core11) {
+        memory_budget_supported_ = true;
+        extensions.push_back(VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);
+    }
+    // Si el dispositivo es un subconjunto portable (MoltenVK, capas de
+    // emulacion de perfiles), la especificacion obliga a activarlo.
+    if (has("VK_KHR_portability_subset")) extensions.push_back("VK_KHR_portability_subset");
+
+    vk::DeviceCreateInfo create_info{};
+    create_info.setQueueCreateInfos(queue_infos);
+    create_info.setPEnabledExtensionNames(extensions);
+    if (core11) {
+        enabled2.pNext = next;
+        create_info.pNext = &enabled2;
+    } else {
+        create_info.pEnabledFeatures = &enabled;
+    }
+    enabled_extensions_.assign(extensions.begin(), extensions.end());
+    device_ = vk::raii::Device(physical_device_, create_info);
+
+    graphics_queue_ = vk::raii::Queue(device_, queue_families_.graphics, 0);
+    present_queue_ = vk::raii::Queue(device_, queue_families_.present, 0);
+    vk::CommandPoolCreateInfo pool_info{};
+    pool_info.flags = vk::CommandPoolCreateFlagBits::eTransient;
+    pool_info.queueFamilyIndex = queue_families_.graphics;
+    transient_pool_ = vk::raii::CommandPool(device_, pool_info);
+
+    compat::Caps caps;
+    caps.api_version = api;
+    caps.dynamic_rendering = dynamic_rendering;
+    caps.synchronization2 = synchronization2;
+    caps.tessellation = false;
+    // Los combinados de profundidad y stencil: validos desde Vulkan 1.0.
+    caps.separate_depth_stencil_layouts = false;
+    caps.lite = true;
+    caps.reason = compat_reason_.c_str();
+    compat::setDevice(device_, caps);
+
+    std::cout << "[Vulkan] Modo compatible (" << compat_reason_ << "): Vulkan " << VK_API_VERSION_MAJOR(api) << '.'
+              << VK_API_VERSION_MINOR(api) << ", dynamic rendering " << (dynamic_rendering ? "nativo" : "emulado")
+              << ", synchronization2 " << (synchronization2 ? "nativo" : "emulado") << ", texturas por shader "
+              << limits_.maxPerStageDescriptorSamplers << "/" << limits_.maxPerStageDescriptorSampledImages
+              << ", storage buffers " << limits_.maxPerStageDescriptorStorageBuffers << ", destinos de color "
+              << limits_.maxColorAttachments << "\n";
 }
 
 void VulkanDevice::selectDepthFormat() {
     // De mas a menos preciso; D32 es el habitual en GPU de escritorio.
-    constexpr std::array<vk::Format, 3> kCandidates = {
+    // Primero los que no tienen stencil (el motor no lo usa): sin layouts
+    // separados de profundidad (modo compatible) las barreras de uno con
+    // stencil tendrian que incluir tambien ese aspecto. D16 es obligatorio en
+    // cualquier GPU con Vulkan, asi que siempre hay alguno sin stencil.
+    constexpr std::array<vk::Format, 5> kCandidates = {
         vk::Format::eD32Sfloat,
+        vk::Format::eX8D24UnormPack32,
+        vk::Format::eD16Unorm,
         vk::Format::eD32SfloatS8Uint,
         vk::Format::eD24UnormS8Uint,
     };
@@ -622,6 +850,7 @@ void VulkanDevice::shutdown() {
     waitIdle();
     savePipelineCache();
     pipeline_cache_ = nullptr;
+    compat::shutdown();  // sus render passes y framebuffers, antes que el dispositivo
 
     transient_pool_ = nullptr;
     present_queue_ = nullptr;

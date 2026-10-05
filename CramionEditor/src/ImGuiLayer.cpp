@@ -1,5 +1,7 @@
 #include "ImGuiLayer.h"
 
+#include <CramionFX/vk/VulkanCompat.h>
+
 #include "Theme.h"
 
 #include <CramionFX/asset/ImageFile.h>
@@ -130,12 +132,18 @@ void ImGuiLayer::initialize(HWND hwnd, gfx::VulkanRenderer& renderer) {
     info.DescriptorPoolSize = 1024;
     info.MinImageCount = std::max(2u, handles.image_count);
     info.ImageCount = std::max(2u, handles.image_count);
-    info.UseDynamicRendering = true;
+    // Sin dynamic rendering (moviles con Vulkan 1.0-1.2): el ultimo pase es
+    // un render pass del modo compatible y la interfaz usa uno compatible.
+    info.UseDynamicRendering = gfx::compat::caps().dynamic_rendering;
     info.PipelineInfoMain.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
-    info.PipelineInfoMain.PipelineRenderingCreateInfo.sType =
-        VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO_KHR;
-    info.PipelineInfoMain.PipelineRenderingCreateInfo.colorAttachmentCount = 1;
-    info.PipelineInfoMain.PipelineRenderingCreateInfo.pColorAttachmentFormats = &color_format_;
+    if (info.UseDynamicRendering) {
+        info.PipelineInfoMain.PipelineRenderingCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO_KHR;
+        info.PipelineInfoMain.PipelineRenderingCreateInfo.colorAttachmentCount = 1;
+        info.PipelineInfoMain.PipelineRenderingCreateInfo.pColorAttachmentFormats = &color_format_;
+    } else {
+        info.PipelineInfoMain.RenderPass =
+            gfx::compat::compatibleRenderPass({static_cast<vk::Format>(color_format_)});
+    }
     info.CheckVkResultFn = checkVk;
     if (!ImGui_ImplVulkan_Init(&info)) {
         throw std::runtime_error("No se pudo iniciar el backend de Vulkan de Dear ImGui.");
@@ -168,7 +176,7 @@ void ImGuiLayer::shutdown() {
     // Miniaturas e iconos (la GPU ya esta parada).
     std::vector<std::uint32_t> textures = icon_textures_;
     for (ImTextureID& id : icons_) {
-        if (id != 0) ImGui_ImplVulkan_RemoveTexture(reinterpret_cast<VkDescriptorSet>(static_cast<std::uintptr_t>(id)));
+        if (id != 0) ImGui_ImplVulkan_RemoveTexture(toDescriptorSet(id));
         id = 0;
     }
     for (auto& [path, thumb] : thumbnails_) {
@@ -247,7 +255,7 @@ void ImGuiLayer::loadIcons() {
         icon_textures_.push_back(texture);
         const VkDescriptorSet set =
             ImGui_ImplVulkan_AddTexture(renderer_->uiTextureView(texture), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-        icons_[static_cast<std::size_t>(number - 1)] = static_cast<ImTextureID>(reinterpret_cast<std::uintptr_t>(set));
+        icons_[static_cast<std::size_t>(number - 1)] = toTextureId(set);
         ++loaded;
     }
     std::cout << "[Editor] " << loaded << " iconos cargados de " << folder.string() << "\n";
@@ -265,7 +273,7 @@ void ImGuiLayer::loadIcons() {
         icon_textures_.push_back(texture);
         const VkDescriptorSet set =
             ImGui_ImplVulkan_AddTexture(renderer_->uiTextureView(texture), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-        logo_ = static_cast<ImTextureID>(reinterpret_cast<std::uintptr_t>(set));
+        logo_ = toTextureId(set);
         break;
     }
 
@@ -278,7 +286,7 @@ void ImGuiLayer::loadIcons() {
                 icon_textures_.push_back(texture);
                 const VkDescriptorSet set = ImGui_ImplVulkan_AddTexture(renderer_->uiTextureView(texture),
                                                                         VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-                banner_ = static_cast<ImTextureID>(reinterpret_cast<std::uintptr_t>(set));
+                banner_ = toTextureId(set);
             }
         }
     }
@@ -338,7 +346,7 @@ ImTextureID ImGuiLayer::loadTexture(const std::filesystem::path& file, ImVec2* s
         });
     }
     if (size != nullptr) *size = thumb.size;
-    return thumb.set != VK_NULL_HANDLE ? static_cast<ImTextureID>(reinterpret_cast<std::uintptr_t>(thumb.set)) : 0;
+    return thumb.set != VK_NULL_HANDLE ? toTextureId(thumb.set) : 0;
 }
 
 void ImGuiLayer::updateThumbnails() {
@@ -412,7 +420,7 @@ ImTextureID ImGuiLayer::viewTexture(std::uint32_t slot) {
             image_count_ = image_count;
         }
     }
-    return static_cast<ImTextureID>(reinterpret_cast<std::uintptr_t>(set));
+    return toTextureId(set);
 }
 
 ImTextureID ImGuiLayer::renderTexture(std::int32_t id) {
@@ -428,7 +436,7 @@ ImTextureID ImGuiLayer::renderTexture(std::int32_t id) {
         set = ImGui_ImplVulkan_AddTexture(view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
         registered = generation;
     }
-    return static_cast<ImTextureID>(reinterpret_cast<std::uintptr_t>(set));
+    return toTextureId(set);
 }
 
 // Tema del editor (Theme.h): negros en capas, texto blanco, rojo para lo

@@ -13,6 +13,7 @@
 #include <android_native_app_glue.h>
 #include <jni.h>
 
+#include <algorithm>
 #include <cmath>
 
 namespace cramion::dm {
@@ -166,10 +167,26 @@ void Window::dispatch(Event& event) {
     if (callback_) callback_(event);
 }
 
+void Window::setMaxShortSide(uint32_t pixels) {
+    max_short_side_ = pixels;
+    refreshSize();
+}
+
 void Window::refreshSize() {
     if (window_ == nullptr) return;
-    const uint32_t w = static_cast<uint32_t>(std::max(ANativeWindow_getWidth(window_), 0));
-    const uint32_t h = static_cast<uint32_t>(std::max(ANativeWindow_getHeight(window_), 0));
+    // El de la pantalla (la swapchain fija el de sus imagenes, no este).
+    const uint32_t native_w = static_cast<uint32_t>(std::max(ANativeWindow_getWidth(window_), 0));
+    const uint32_t native_h = static_cast<uint32_t>(std::max(ANativeWindow_getHeight(window_), 0));
+    uint32_t w = native_w;
+    uint32_t h = native_h;
+    const uint32_t short_side = std::min(native_w, native_h);
+    if (max_short_side_ > 0 && short_side > max_short_side_) {
+        const double scale = static_cast<double>(max_short_side_) / static_cast<double>(short_side);
+        // Pares: algunos escaladores de la pantalla los prefieren.
+        w = std::max<uint32_t>(2u, static_cast<uint32_t>(std::lround(native_w * scale)) & ~1u);
+        h = std::max<uint32_t>(2u, static_cast<uint32_t>(std::lround(native_h * scale)) & ~1u);
+    }
+    input_scale_ = native_w > 0 ? static_cast<float>(w) / static_cast<float>(native_w) : 1.0f;
     if (w == width_ && h == height_) return;
     width_ = w;
     height_ = h;
@@ -359,8 +376,9 @@ int32_t Window::handleInput(const void* raw) {
         e.type = kind;
         e.category = EventCategory::Input;
         e.touchId = AMotionEvent_getPointerId(event, index);
-        e.mouseX = AMotionEvent_getX(event, index);
-        e.mouseY = AMotionEvent_getY(event, index);
+        // De pixeles de la pantalla a pixeles de la imagen (setMaxShortSide).
+        e.mouseX = AMotionEvent_getX(event, index) * input_scale_;
+        e.mouseY = AMotionEvent_getY(event, index) * input_scale_;
         dispatch(e);
     };
     const size_t index = static_cast<size_t>((action & AMOTION_EVENT_ACTION_POINTER_INDEX_MASK) >>

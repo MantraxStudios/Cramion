@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(Cramion
-    VERSION 2.2.0
+    VERSION 2.3.0
     DESCRIPTION "Motor con capa de plataforma DirectX 12 (CramionDM) y renderizador Vulkan (CramionFX)"
     LANGUAGES CXX
 )
@@ -119,7 +119,9 @@ else()
 endif()
 option(CRAMION_ANDROID "Compilar el runtime de Android (exportar a APK/AAB); necesita el Android NDK" ${_cramion_android_default})
 set(CRAMION_ANDROID_NDK "${_cramion_ndk}" CACHE PATH "Carpeta del Android NDK")
-set(CRAMION_ANDROID_ABIS "arm64-v8a" CACHE STRING "ABIs de Android (arm64-v8a;x86_64 para emuladores)")
+# arm64-v8a: casi todos los moviles; armeabi-v7a: los de sistema de 32 bits
+# (Android Go, gama baja); x86_64: emuladores.
+set(CRAMION_ANDROID_ABIS "arm64-v8a;armeabi-v7a" CACHE STRING "ABIs de Android (arm64-v8a;armeabi-v7a;x86_64 para emuladores)")
 if(CRAMION_ANDROID)
     if(NOT EXISTS "${CRAMION_ANDROID_NDK}/build/cmake/android.toolchain.cmake")
         message(FATAL_ERROR "CRAMION_ANDROID=ON pero no se encontro el NDK (CRAMION_ANDROID_NDK)")
@@ -145,7 +147,9 @@ if(CRAMION_ANDROID)
             CMAKE_ARGS
                 "-DCMAKE_TOOLCHAIN_FILE=${CRAMION_ANDROID_NDK}/build/cmake/android.toolchain.cmake"
                 "-DANDROID_ABI=${_abi}"
-                -DANDROID_PLATFORM=android-29
+                # Android 8.0 (Vulkan y AAudio): el modo compatible del
+                # renderizador funciona desde Vulkan 1.0.
+                -DANDROID_PLATFORM=android-26
                 -DANDROID_STL=c++_static
                 -DCMAKE_BUILD_TYPE=Release
                 "-DCRAMION_COMPILE_JOBS=${_cramion_android_jobs}"

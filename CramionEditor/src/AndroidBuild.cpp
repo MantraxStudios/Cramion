@@ -548,8 +548,9 @@ std::string androidManifest(const AndroidPackageInput& input) {
       << "    android:versionCode=\"" << input.version_code << "\"\n"
       << "    android:versionName=\"" << xmlEscape(input.version_name) << "\"\n"
       << "    android:installLocation=\"auto\">\n"
-      // El renderizador necesita Vulkan 1.3 (dynamic rendering, synchronization2).
-      << "    <uses-feature android:name=\"android.hardware.vulkan.version\" android:version=\"0x403000\" android:required=\"true\" />\n"
+      // Vulkan 1.0 o mas (0x400003 = 1.0.3, lo que recomienda Google): el
+      // renderizador va en modo compatible en los moviles (VulkanCompat.h).
+      << "    <uses-feature android:name=\"android.hardware.vulkan.version\" android:version=\"0x400003\" android:required=\"true\" />\n"
       << "    <uses-feature android:name=\"android.hardware.touchscreen\" android:required=\"false\" />\n"
       << "    <uses-feature android:name=\"android.hardware.gamepad\" android:required=\"false\" />\n";
     if (input.internet) {

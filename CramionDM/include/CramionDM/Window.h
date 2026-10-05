@@ -50,11 +50,19 @@ public:
 
     bool isOpen() const { return open_; }
     ANativeWindow* handle() const { return window_; }
+    // Tamano en pixeles de la imagen del juego (con setMaxShortSide, menor
+    // que la pantalla: Android la escala sola al mostrarla).
     uint32_t width() const { return width_; }
     uint32_t height() const { return height_; }
-    // Densidad de la pantalla (1 = 160 dpi): para dimensionar en dp.
-    float density() const { return density_; }
+    // Densidad (1 = 160 dpi) en pixeles de la imagen: para dimensionar en dp.
+    float density() const { return density_ * input_scale_; }
     bool focused() const { return focused_; }
+    // Lado corto de la imagen del juego como mucho `pixels` (0 = el de la
+    // pantalla). Un movil de 2400x1080 con 720 dibuja 1600x720: 2.25 veces
+    // menos pixeles en todo (3D, post-proceso, interfaz) y el escalado lo
+    // hace la pantalla sin coste. Los toques llegan en pixeles de la imagen.
+    // Si el tamano cambia llega un WindowResize.
+    void setMaxShortSide(uint32_t pixels);
 
     void setTitle(const std::wstring&) {}
     void setCursorCaptured(bool captured) { cursor_captured_ = captured; }
@@ -84,6 +92,8 @@ private:
     uint32_t width_ = 0;
     uint32_t height_ = 0;
     float density_ = 1.0f;
+    uint32_t max_short_side_ = 0;
+    float input_scale_ = 1.0f;  // pixeles de la imagen por pixel de la pantalla
     bool open_ = false;
     bool focused_ = true;
     bool resumed_ = true;

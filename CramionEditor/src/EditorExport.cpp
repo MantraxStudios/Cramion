@@ -195,25 +195,49 @@ void EditorApp::startExport(const std::filesystem::path& parent) {
         if (icon_ext == ".ico") icon.clear();  // un .ico no sirve en Android: el del motor
         in.icon = icon;
         in.fallback_icon = source / "editor_icons" / "logo.png";
-        for (const char* abi : {"arm64-v8a", "x86_64"}) {
+        // 64 bits (casi todos), 32 bits (Android Go y gama baja) y x86_64
+        // (emuladores): cada movil instala la que le toca.
+        for (const char* abi : {"arm64-v8a", "armeabi-v7a", "x86_64"}) {
             if (std::string(abi) == "x86_64" && !a.x86_64) continue;
+            if (std::string(abi) == "armeabi-v7a" && !a.armeabi_v7a) continue;
             const std::filesystem::path so = source / "android" / abi / "libmain.so";
             if (std::filesystem::exists(so)) in.libraries.emplace_back(abi, so);
         }
-        if (in.libraries.empty() || in.libraries.front().first != "arm64-v8a") {
+        const bool has_arm = std::any_of(in.libraries.begin(), in.libraries.end(),
+                                         [](const auto& l) { return l.first != "x86_64"; });
+        // Avisos que no paran la exportacion: sin la libreria de 32 bits, los
+        // moviles de 32 bits (Android Go, gama baja) no pueden instalarlo; y
+        // los scripts de C++ aun no corren en Android (Lua y visuales si).
+        if (a.armeabi_v7a && !std::filesystem::exists(source / "android" / "armeabi-v7a" / "libmain.so")) {
+            job->android_notes += "\n\nAviso: falta android/armeabi-v7a/libmain.so junto al editor; el juego no se "
+                                  "instalara en moviles de 32 bits. Compila el motor con CRAMION_ANDROID_ABIS="
+                                  "\"arm64-v8a;armeabi-v7a\".";
+        }
+        if (cpp_scripts_.hasSources()) {
+            job->android_notes += "\n\nAviso: los scripts de C++ del proyecto aun no se ejecutan en Android (solo en "
+                                  "Windows). Lo que este en Lua o en scripts visuales si funciona.";
+        }
+        if (!has_arm) {
             export_message_ = "Falta android/arm64-v8a/libmain.so junto al editor: compila el motor con el Android NDK "
                               "(CRAMION_ANDROID=ON) para poder exportar a Android.";
             std::cerr << "[Exportar] " << export_message_ << '\n';
             return;
         }
         // Shaders del motor y Game/ (game.ini y banner) como assets del APK.
+        // En Android el renderizador va siempre en modo compatible (moviles):
+        // solo sus shaders (shaders/compat, SPIR-V 1.0), la mitad de tamano.
         std::error_code se;
-        for (std::filesystem::recursive_directory_iterator it(source / "shaders", se);
-             !se && it != std::filesystem::recursive_directory_iterator(); it.increment(se)) {
+        for (std::filesystem::directory_iterator it(source / "shaders" / "compat", se);
+             !se && it != std::filesystem::directory_iterator(); it.increment(se)) {
             std::error_code fe;
             if (!it->is_regular_file(fe)) continue;
             const std::u8string rel = std::filesystem::relative(it->path(), source, fe).generic_u8string();
             in.assets.emplace_back(std::string(rel.begin(), rel.end()), it->path());
+        }
+        if (in.assets.empty()) {
+            export_message_ = "Faltan los shaders del modo compatible (shaders/compat) junto al editor: recompila el motor.";
+            std::cerr << "[Exportar] " << export_message_ << '\n';
+            return;
         }
         in.assets.emplace_back("Game/banner.png", source / "player_banner.png");
         in.assets.emplace_back("Game/game.ini", game / "game.ini");
@@ -569,6 +593,7 @@ void EditorApp::drawExportProgress() {
                 }
                 if (!j.android_device.empty()) export_message_ += "\n\nInstalado y abierto en " + j.android_device + ".";
                 if (!j.batch_summary.empty()) export_message_ += "\n\nStatic batching:" + j.batch_summary;
+                export_message_ += j.android_notes;
                 if (j.android_device.empty()) {
                     ShellExecuteW(nullptr, L"open", j.target.wstring().c_str(), nullptr, nullptr, SW_SHOWNORMAL);
                 }

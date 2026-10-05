@@ -12,7 +12,16 @@
 // hasta 3 veces mas que los del borde, como el "Metering Mode: Center
 // Weighted" de Unreal. Lo que miras manda sobre lo que queda en la periferia.
 
+// Modo compatible (moviles): grupos de 128 hilos (el minimo que garantiza
+// Vulkan); cada hilo hace dos pixeles (y, y + 8) y dos cubos, asi que cada
+// grupo cubre el mismo cuadro de 16x16 y el despacho no cambia.
+#ifdef CRAMION_COMPAT
+layout(local_size_x = 16, local_size_y = 8) in;
+const uint kRows = 2u;
+#else
 layout(local_size_x = 16, local_size_y = 16) in;
+const uint kRows = 1u;
+#endif
 
 layout(set = 0, binding = 0) uniform sampler2D scene_color;
 layout(set = 0, binding = 1) buffer Histogram {
@@ -37,25 +46,35 @@ uint binFor(float luminance) {
 }
 
 void main() {
-    local_bins[gl_LocalInvocationIndex] = 0u;
-    barrier();
-
-    ivec2 size = textureSize(scene_color, 0);
-    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
-    if (all(lessThan(pixel, size))) {
-        vec3 color = texelFetch(scene_color, pixel, 0).rgb;
-        float luminance = dot(color, vec3(0.2126, 0.7152, 0.0722));
-
-        vec2 centered = (vec2(pixel) + 0.5) / vec2(size) - 0.5;
-        centered.x *= float(size.x) / float(size.y);
-        uint weight = 1u + uint(2.0 * exp(-dot(centered, centered) * 6.0) + 0.5);
-
-        atomicAdd(local_bins[binFor(luminance)], weight);
+    for (uint r = 0u; r < kRows; ++r) {
+        local_bins[gl_LocalInvocationIndex + r * 128u] = 0u;
     }
     barrier();
 
-    uint count = local_bins[gl_LocalInvocationIndex];
-    if (count > 0u) {
-        atomicAdd(histogram.bins[gl_LocalInvocationIndex], count);
+    ivec2 size = textureSize(scene_color, 0);
+    for (uint r = 0u; r < kRows; ++r) {
+        ivec2 pixel = ivec2(gl_WorkGroupID.xy * uvec2(16u, 16u) + gl_LocalInvocationID.xy + uvec2(0u, r * 8u));
+#ifndef CRAMION_COMPAT
+        pixel = ivec2(gl_GlobalInvocationID.xy);
+#endif
+        if (all(lessThan(pixel, size))) {
+            vec3 color = texelFetch(scene_color, pixel, 0).rgb;
+            float luminance = dot(color, vec3(0.2126, 0.7152, 0.0722));
+
+            vec2 centered = (vec2(pixel) + 0.5) / vec2(size) - 0.5;
+            centered.x *= float(size.x) / float(size.y);
+            uint weight = 1u + uint(2.0 * exp(-dot(centered, centered) * 6.0) + 0.5);
+
+            atomicAdd(local_bins[binFor(luminance)], weight);
+        }
+    }
+    barrier();
+
+    for (uint r = 0u; r < kRows; ++r) {
+        uint bin = gl_LocalInvocationIndex + r * 128u;
+        uint count = local_bins[bin];
+        if (count > 0u) {
+            atomicAdd(histogram.bins[bin], count);
+        }
     }
 }

@@ -34,6 +34,12 @@ class GBuffer {
 public:
     // Numero de destinos de color (sin contar la profundidad).
     static constexpr std::size_t kColorAttachmentCount = 5;
+    // Los que se usan de verdad: en el modo compatible (VulkanCompat.h, moviles)
+    // 4, el minimo que garantiza Vulkan: el modelo de sombreado de Disney no se
+    // escribe (todo es estandar). Los pipelines y la pasada de geometria usan
+    // los primeros `activeColorAttachments()` de colorFormats() y
+    // colorAttachments().
+    static std::uint32_t activeColorAttachments();
 
     static constexpr vk::Format kAlbedoFormat = vk::Format::eR8G8B8A8Unorm;
     static constexpr vk::Format kNormalFormat = vk::Format::eR16G16B16A16Sfloat;

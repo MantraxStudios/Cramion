@@ -1,3 +1,4 @@
+#include "CramionFX/vk/VulkanCompat.h"
 #include "CramionFX/vk/SpritePass.h"
 
 #include "CramionFX/asset/ImageFile.h"
@@ -207,7 +208,7 @@ vk::raii::Pipeline SpritePass::createPipeline(const VulkanDevice& device, vk::Fo
     info.pColorBlendState = &color_blend;
     info.pDynamicState = &dynamic_state;
     info.layout = *layout_;
-    return vk::raii::Pipeline(device.handle(), device.pipelineCache(), info);
+    return compat::makeGraphicsPipeline(device, info);
 }
 
 SpritePass::TextureEntry* SpritePass::createEntry(const VulkanDevice& device, const std::uint8_t* rgba,

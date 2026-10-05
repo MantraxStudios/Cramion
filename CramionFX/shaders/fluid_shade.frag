@@ -63,8 +63,12 @@ layout(set = 1, binding = 3) uniform sampler2DArrayShadow shadow_map;
 layout(set = 1, binding = 4) uniform sampler2D g_depth;
 layout(set = 1, binding = 5) uniform sampler2D scene_color;
 layout(set = 1, binding = 6) uniform samplerCube environment_map;
+// Modo compatible (moviles): el set del vidrio tiene 7 texturas y no hay
+// sondas de reflexion (como glass.frag).
+#ifndef CRAMION_COMPAT
 layout(set = 1, binding = 7) uniform samplerCube reflection_probe_0;
 layout(set = 1, binding = 8) uniform samplerCube reflection_probe_1;
+#endif
 
 layout(location = 0) in vec2 v_uv;
 layout(location = 0) out vec4 out_color;
@@ -198,6 +202,7 @@ void main() {
     float lod = roughness * 6.0;
     vec3 env_direction = normalize(vec3(reflected.x, max(reflected.y, 0.02 + roughness * 0.4), reflected.z));
     vec3 reflection = textureLod(environment_map, env_direction, lod).rgb;
+#ifndef CRAMION_COMPAT
     float probe_weight = lights.probes[0].w + lights.probes[1].w;
     if (probe_weight > 0.001) {
         vec3 probe = vec3(0.0);
@@ -205,6 +210,7 @@ void main() {
         if (lights.probes[1].w > 0.001) probe += textureLod(reflection_probe_1, reflected, lod).rgb * lights.probes[1].w;
         reflection = mix(reflection, probe / probe_weight, 0.7);
     }
+#endif
     reflection = min(reflection, vec3(kMaxRadiance));
     float fresnel = 0.02 + 0.98 * pow(1.0 - n_dot_v, 5.0);
     fresnel *= 1.0 - roughness * 0.6;

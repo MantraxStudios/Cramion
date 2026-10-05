@@ -334,6 +334,27 @@ foreach(SHADER_SOURCE IN LISTS CRAMIONFX_SHADER_SOURCES)
     )
 
     list(APPEND CRAMIONFX_SHADER_BINARIES "${SHADER_BINARY}")
+
+    # Version del modo compatible (moviles Android y GPU sin Vulkan 1.3, ver
+    # VulkanCompat.h): SPIR-V 1.0 (lo acepta cualquier driver; `discard` sin
+    # demote) y CRAMION_COMPAT (recursos por shader dentro de los minimos de
+    # Vulkan). Sin los de trazado de rayos, mesh shaders y teselacion, que ese
+    # modo no usa.
+    if(NOT SHADER_NAME MATCHES "^(rt_|path_trace)" AND NOT SHADER_NAME MATCHES "\\.(task|mesh|tesc|tese|rgen|rahit|rmiss)$"
+       AND NOT SHADER_NAME STREQUAL "skinned_shadow_tess.vert")
+        set(SHADER_COMPAT "${CRAMIONFX_SHADER_DIR}/compat/${SHADER_NAME}.spv")
+        add_custom_command(
+            OUTPUT "${SHADER_COMPAT}"
+            COMMAND "${CMAKE_COMMAND}" -E make_directory "${CRAMIONFX_SHADER_DIR}/compat"
+            COMMAND "${GLSLC_EXECUTABLE}" --target-env=vulkan1.0 -O -DCRAMION_COMPAT=1
+                    -I "${fidelityfx_fsr1_SOURCE_DIR}/ffx-fsr"
+                    "${SHADER_SOURCE}" -o "${SHADER_COMPAT}"
+            DEPENDS "${SHADER_SOURCE}" ${CRAMIONFX_SHADER_INCLUDES}
+            COMMENT "CramionFX: compilando shader ${SHADER_NAME} (modo compatible)"
+            VERBATIM
+        )
+        list(APPEND CRAMIONFX_SHADER_BINARIES "${SHADER_COMPAT}")
+    endif()
 endforeach()
 
 # Fuentes de los shaders de superficie del usuario (.crshader): el motor

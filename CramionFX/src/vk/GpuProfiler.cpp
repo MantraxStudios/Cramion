@@ -53,7 +53,10 @@ void GpuProfiler::begin(const vk::raii::CommandBuffer& cmd, std::uint32_t frame)
     marks.names.clear();
     marks.recorded = true;
     cmd.resetQueryPool(*pool_, frame * kMaxMarks, kMaxMarks);
-    cmd.writeTimestamp2(vk::PipelineStageFlagBits2::eAllCommands, *pool_, frame * kMaxMarks);
+    // vkCmdWriteTimestamp de Vulkan 1.0 (sin synchronization2: moviles en
+    // modo compatible). BOTTOM_OF_PIPE = cuando acaba todo lo anterior, como
+    // ALL_COMMANDS en la version 2.
+    cmd.writeTimestamp(vk::PipelineStageFlagBits::eBottomOfPipe, *pool_, frame * kMaxMarks);
     marks.names.push_back(nullptr);
 }
 
@@ -67,8 +70,7 @@ void GpuProfiler::mark(const vk::raii::CommandBuffer& cmd, std::uint32_t frame,
         return;
     }
     const auto index = static_cast<std::uint32_t>(marks.names.size());
-    cmd.writeTimestamp2(vk::PipelineStageFlagBits2::eAllCommands, *pool_,
-                        frame * kMaxMarks + index);
+    cmd.writeTimestamp(vk::PipelineStageFlagBits::eBottomOfPipe, *pool_, frame * kMaxMarks + index);
     marks.names.push_back(name);
 }
 

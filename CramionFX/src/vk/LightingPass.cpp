@@ -1,3 +1,4 @@
+#include "CramionFX/vk/VulkanCompat.h"
 #include "CramionFX/vk/LightingPass.h"
 
 #include "CramionFX/vk/GBuffer.h"
@@ -6,6 +7,7 @@
 
 #include <array>
 #include <iostream>
+#include <vector>
 
 namespace cramion::gfx {
 
@@ -27,6 +29,7 @@ void LightingPass::create(const VulkanDevice& device, vk::Format color_format) {
     sampler_ = vk::raii::Sampler(device.handle(), sampler_info);
 
     // --- Descriptores ---
+    compat_ = device.compatMode();
     std::array<vk::DescriptorSetLayoutBinding, 29> bindings{};
 
     bindings[0].binding = 0;
@@ -130,8 +133,13 @@ void LightingPass::create(const VulkanDevice& device, vk::Format color_format) {
         bindings[binding].stageFlags = vk::ShaderStageFlagBits::eFragment;
     }
 
+    // Modo compatible: sin los que el shader no declara (16 texturas).
+    std::vector<vk::DescriptorSetLayoutBinding> used;
+    for (const vk::DescriptorSetLayoutBinding& binding : bindings) {
+        if (hasBinding(binding.binding)) used.push_back(binding);
+    }
     vk::DescriptorSetLayoutCreateInfo set_layout_info{};
-    set_layout_info.setBindings(bindings);
+    set_layout_info.setBindings(used);
     set_layout_ = vk::raii::DescriptorSetLayout(device.handle(), set_layout_info);
 
     const vk::DescriptorSetLayout raw_set_layout = *set_layout_;
@@ -207,12 +215,35 @@ void LightingPass::create(const VulkanDevice& device, vk::Format color_format) {
     pipeline_info.pDynamicState = &dynamic_state;
     pipeline_info.layout = *pipeline_layout_;
 
-    pipeline_ = vk::raii::Pipeline(device.handle(), device.pipelineCache(), pipeline_info);
+    pipeline_ = compat::makeGraphicsPipeline(device, pipeline_info);
+
+    // La ligera: la misma con kLite = true (en el modo compatible el shader
+    // ya es el ligero).
+    if (!compat_) {
+        const VkBool32 lite = VK_TRUE;
+        const vk::SpecializationMapEntry entry{0, 0, sizeof(VkBool32)};
+        vk::SpecializationInfo specialization{};
+        specialization.setMapEntries(entry);
+        specialization.dataSize = sizeof(VkBool32);
+        specialization.pData = &lite;
+        stages[1].pSpecializationInfo = &specialization;
+        pipeline_info.setStages(stages);
+        lite_pipeline_ = compat::makeGraphicsPipeline(device, pipeline_info);
+    }
 
     std::cout << "[Vulkan] Pipeline de iluminacion creado\n";
 }
 
+bool LightingPass::hasBinding(std::uint32_t binding) const {
+    if (!compat_) return binding <= 28;
+    switch (binding) {
+        case 19: case 21: case 22: case 24: case 25: case 26: case 27: case 28: return false;
+        default: return binding <= 28;
+    }
+}
+
 void LightingPass::destroy() {
+    lite_pipeline_ = nullptr;
     pipeline_ = nullptr;
     pipeline_layout_ = nullptr;
     set_layout_ = nullptr;

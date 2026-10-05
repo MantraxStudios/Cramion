@@ -1,3 +1,4 @@
+#include "CramionFX/vk/VulkanCompat.h"
 #include "CramionFX/vk/FluidPass.h"
 
 #include "CramionFX/vk/VulkanDevice.h"
@@ -102,7 +103,7 @@ void computeBarrier(const vk::raii::CommandBuffer& cmd) {
                             vk::AccessFlagBits2::eIndirectCommandRead;
     vk::DependencyInfo dependency{};
     dependency.setMemoryBarriers(barrier);
-    cmd.pipelineBarrier2(dependency);
+    compat::pipelineBarrier(cmd, dependency);
 }
 
 void memoryBarrier(const vk::raii::CommandBuffer& cmd, vk::PipelineStageFlags2 src_stage, vk::AccessFlags2 src_access,
@@ -114,7 +115,7 @@ void memoryBarrier(const vk::raii::CommandBuffer& cmd, vk::PipelineStageFlags2 s
     barrier.dstAccessMask = dst_access;
     vk::DependencyInfo dependency{};
     dependency.setMemoryBarriers(barrier);
-    cmd.pipelineBarrier2(dependency);
+    compat::pipelineBarrier(cmd, dependency);
 }
 
 vk::ImageMemoryBarrier2 imageBarrier(vk::Image image, vk::ImageAspectFlags aspect, vk::ImageLayout from,
@@ -255,7 +256,7 @@ void FluidPass::create(const VulkanDevice& device, const vk::raii::DescriptorSet
         info.pColorBlendState = &blend;
         info.pDynamicState = &dynamic;
         info.layout = *shade_layout_;
-        shade_pipeline_ = vk::raii::Pipeline(device.handle(), device.pipelineCache(), info);
+        shade_pipeline_ = compat::makeGraphicsPipeline(device, info);
     }
 
     params_.resize(frames_in_flight);
@@ -369,7 +370,7 @@ void FluidPass::createRender(vk::Format color_format) {
         info.pColorBlendState = &blend;
         info.pDynamicState = &dynamic;
         info.layout = *render_layout_;
-        depth_pipeline_ = vk::raii::Pipeline(device.handle(), device.pipelineCache(), info);
+        depth_pipeline_ = compat::makeGraphicsPipeline(device, info);
     }
     // --- Grosor (suma aditiva, media resolucion) ---
     {
@@ -406,7 +407,7 @@ void FluidPass::createRender(vk::Format color_format) {
         info.pColorBlendState = &blend;
         info.pDynamicState = &dynamic;
         info.layout = *render_layout_;
-        thickness_pipeline_ = vk::raii::Pipeline(device.handle(), device.pipelineCache(), info);
+        thickness_pipeline_ = compat::makeGraphicsPipeline(device, info);
     }
 
     vk::SamplerCreateInfo sampler{};
@@ -887,7 +888,7 @@ void FluidPass::writeRenderSets() {
             {*set_a_[1].handle(), 0, VK_WHOLE_SIZE},
             {*set_a_[2].handle(), 0, VK_WHOLE_SIZE},
         }};
-        const vk::DescriptorImageInfo scene_depth{*sampler_, bound_depth_, vk::ImageLayout::eDepthReadOnlyOptimal};
+        const vk::DescriptorImageInfo scene_depth{*sampler_, bound_depth_, compat::depthReadOnlyLayout()};
         const std::array<vk::DescriptorImageInfo, 3> storage = {{
             {nullptr, *depth_raw_.view(), vk::ImageLayout::eGeneral},
             {nullptr, *depth_temp_.view(), vk::ImageLayout::eGeneral},
@@ -951,7 +952,7 @@ void FluidPass::recordPrepare(const vk::raii::CommandBuffer& cmd, std::uint32_t 
                          Stage::eComputeShader, Access::eShaderStorageRead, Stage::eColorAttachmentOutput,
                          Access::eColorAttachmentWrite),
             imageBarrier(*depth_test_.handle(), vk::ImageAspectFlagBits::eDepth, Layout::eUndefined,
-                         Layout::eDepthAttachmentOptimal, Stage::eLateFragmentTests,
+                         compat::depthAttachmentLayout(), Stage::eLateFragmentTests,
                          Access::eDepthStencilAttachmentWrite,
                          Stage::eEarlyFragmentTests | Stage::eLateFragmentTests,
                          Access::eDepthStencilAttachmentRead | Access::eDepthStencilAttachmentWrite),
@@ -961,7 +962,7 @@ void FluidPass::recordPrepare(const vk::raii::CommandBuffer& cmd, std::uint32_t 
                                             Stage::eFragmentShader, Access::eShaderSampledRead,
                                             Stage::eColorAttachmentOutput, Access::eColorAttachmentWrite));
         }
-        cmd.pipelineBarrier2(vk::DependencyInfo{}.setImageMemoryBarriers(barriers));
+        compat::pipelineBarrier(cmd, vk::DependencyInfo{}.setImageMemoryBarriers(barriers));
     }
 
     // --- Profundidad de las esferas ---
@@ -974,7 +975,7 @@ void FluidPass::recordPrepare(const vk::raii::CommandBuffer& cmd, std::uint32_t 
         color_attachment.clearValue.color = vk::ClearColorValue{std::array<float, 4>{0.0f, 0.0f, 0.0f, 0.0f}};
         vk::RenderingAttachmentInfo depth_attachment{};
         depth_attachment.imageView = *depth_test_.view();
-        depth_attachment.imageLayout = Layout::eDepthAttachmentOptimal;
+        depth_attachment.imageLayout = compat::depthAttachmentLayout();
         depth_attachment.loadOp = vk::AttachmentLoadOp::eClear;
         depth_attachment.storeOp = vk::AttachmentStoreOp::eDontCare;
         depth_attachment.clearValue.depthStencil = vk::ClearDepthStencilValue{1.0f, 0};
@@ -983,13 +984,13 @@ void FluidPass::recordPrepare(const vk::raii::CommandBuffer& cmd, std::uint32_t 
         info.layerCount = 1;
         info.setColorAttachments(color_attachment);
         info.pDepthAttachment = &depth_attachment;
-        cmd.beginRendering(info);
+        compat::beginRendering(cmd, info);
         cmd.setViewport(0, vk::Viewport{0.0f, 0.0f, w, h, 0.0f, 1.0f});
         cmd.setScissor(0, vk::Rect2D{vk::Offset2D{0, 0}, view.extent});
         cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *depth_pipeline_);
         cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *render_layout_, 0, *render_sets_[frame], nullptr);
         cmd.drawIndirect(*state_.handle(), 16, 1, 16);
-        cmd.endRendering();
+        compat::endRendering(cmd);
     }
     // --- Grosor y material (media resolucion) ---
     {
@@ -1006,13 +1007,13 @@ void FluidPass::recordPrepare(const vk::raii::CommandBuffer& cmd, std::uint32_t 
         info.renderArea = vk::Rect2D{vk::Offset2D{0, 0}, half};
         info.layerCount = 1;
         info.setColorAttachments(attachments);
-        cmd.beginRendering(info);
+        compat::beginRendering(cmd, info);
         cmd.setViewport(0, vk::Viewport{0.0f, 0.0f, static_cast<float>(half.width), static_cast<float>(half.height), 0.0f, 1.0f});
         cmd.setScissor(0, vk::Rect2D{vk::Offset2D{0, 0}, half});
         cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *thickness_pipeline_);
         cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *render_layout_, 0, *render_sets_[frame], nullptr);
         cmd.drawIndirect(*state_.handle(), 16, 1, 16);
-        cmd.endRendering();
+        compat::endRendering(cmd);
     }
     // --- Suavizado (computo) ---
     {
@@ -1033,7 +1034,7 @@ void FluidPass::recordPrepare(const vk::raii::CommandBuffer& cmd, std::uint32_t 
                                             Access::eColorAttachmentWrite, Stage::eFragmentShader,
                                             Access::eShaderSampledRead));
         }
-        cmd.pipelineBarrier2(vk::DependencyInfo{}.setImageMemoryBarriers(barriers));
+        compat::pipelineBarrier(cmd, vk::DependencyInfo{}.setImageMemoryBarriers(barriers));
         cmd.bindPipeline(vk::PipelineBindPoint::eCompute, *smooth_pipeline_);
         cmd.bindDescriptorSets(vk::PipelineBindPoint::eCompute, *smooth_layout_, 0, *render_sets_[frame], nullptr);
         const std::uint32_t gx = (view.extent.width + 15) / 16;
@@ -1046,14 +1047,14 @@ void FluidPass::recordPrepare(const vk::raii::CommandBuffer& cmd, std::uint32_t 
         between.dstStageMask = Stage::eComputeShader;
         between.dstAccessMask = Access::eShaderStorageRead | Access::eShaderStorageWrite;
         for (std::uint32_t pass = 0; pass < 4; ++pass) {
-            if (pass > 0) cmd.pipelineBarrier2(vk::DependencyInfo{}.setMemoryBarriers(between));
+            if (pass > 0) compat::pipelineBarrier(cmd, vk::DependencyInfo{}.setMemoryBarriers(between));
             cmd.pushConstants<std::uint32_t>(*smooth_layout_, vk::ShaderStageFlagBits::eCompute, 0, pass);
             cmd.dispatch(gx, gy, 1);
         }
         const vk::ImageMemoryBarrier2 smooth_barrier =
             imageBarrier(*depth_smooth_.handle(), color, Layout::eGeneral, Layout::eGeneral, Stage::eComputeShader,
                          Access::eShaderStorageWrite, Stage::eFragmentShader, Access::eShaderStorageRead);
-        cmd.pipelineBarrier2(vk::DependencyInfo{}.setImageMemoryBarriers(smooth_barrier));
+        compat::pipelineBarrier(cmd, vk::DependencyInfo{}.setImageMemoryBarriers(smooth_barrier));
     }
 }
 

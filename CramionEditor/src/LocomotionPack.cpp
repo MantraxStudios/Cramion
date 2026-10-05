@@ -29,6 +29,14 @@ std::string lower(std::string s) {
     return s;
 }
 
+// Nombre en UTF-8. path::string() lo pasa a la pagina de codigos de Windows y
+// lanza si hay caracteres que no estan en ella: un archivo con un emoji en
+// Descargas cerraba el editor al listar las plantillas (findDownloadedPack).
+std::string utf8(const fs::path& path) {
+    const std::u8string text = path.u8string();
+    return std::string(text.begin(), text.end());
+}
+
 // Nombre del archivo del pack -> clave del clip ("" = no es de los conocidos).
 std::string clipKey(const fs::path& file) {
     static const std::map<std::string, std::string> keys = {
@@ -45,7 +53,7 @@ std::string clipKey(const fs::path& file) {
         {"right turn 90", "turn90_right"},
         {"jump", "jump"},
     };
-    const auto it = keys.find(lower(file.stem().string()));
+    const auto it = keys.find(lower(utf8(file.stem())));
     return it != keys.end() ? it->second : std::string();
 }
 
@@ -53,7 +61,7 @@ std::vector<fs::path> fbxFiles(const fs::path& folder) {
     std::vector<fs::path> out;
     std::error_code ec;
     for (fs::recursive_directory_iterator it(folder, ec), end; !ec && it != end; it.increment(ec)) {
-        if (it->is_regular_file(ec) && lower(it->path().extension().string()) == ".fbx") out.push_back(it->path());
+        if (it->is_regular_file(ec) && lower(utf8(it->path().extension())) == ".fbx") out.push_back(it->path());
     }
     std::sort(out.begin(), out.end());
     return out;
@@ -230,7 +238,7 @@ bool looksLikePack(const fs::path& source) {
         }
         return known >= 3;
     }
-    return fs::is_regular_file(source, ec) && lower(source.extension().string()) == ".zip";
+    return fs::is_regular_file(source, ec) && lower(utf8(source.extension())) == ".zip";
 }
 
 fs::path findDownloadedPack() {
@@ -240,7 +248,7 @@ fs::path findDownloadedPack() {
     std::error_code ec;
     fs::path best;
     for (fs::directory_iterator it(downloads, ec), end; !ec && it != end; it.increment(ec)) {
-        const std::string name = lower(it->path().filename().string());
+        const std::string name = lower(utf8(it->path().filename()));
         if (name.find("locomotion") == std::string::npos) continue;
         if (looksLikePack(it->path())) {
             best = it->path();
@@ -274,7 +282,7 @@ PackResult importPack(const fs::path& source, const fs::path& assets_folder,
         report("Descomprimiendo el pack", 0.02f);
         std::string error;
         if (!update::extractZip(source, work / "pack", {}, &error)) {
-            result.error = "No se pudo descomprimir " + source.filename().string() + ": " + error;
+            result.error = "No se pudo descomprimir " + utf8(source.filename()) + ": " + error;
             return result;
         }
         folder = work / "pack";
@@ -350,7 +358,7 @@ PackResult importPack(const fs::path& source, const fs::path& assets_folder,
     result.character = imported.info.uuid;
     result.character_relative = fs::relative(imported.info.path, assets_folder, ec).generic_string();
     result.hips_height = hipsHeight();
-    result.log.push_back("personaje " + character.filename().string() + " -> " + result.character_relative +
+    result.log.push_back("personaje " + utf8(character.filename()) + " -> " + result.character_relative +
                          " (cadera a " + std::to_string(result.hips_height) + " m)");
 
     // --- Las animaciones: clip suelto, medido y en el sitio ---
@@ -359,7 +367,7 @@ PackResult importPack(const fs::path& source, const fs::path& assets_folder,
     for (std::size_t i = 0; i < animations.size(); ++i) {
         const fs::path& file = animations[i];
         const std::string key = clipKey(file);
-        report("Animacion " + file.stem().string(), 0.5f + 0.45f * static_cast<float>(i) / static_cast<float>(animations.size()));
+        report("Animacion " + utf8(file.stem()), 0.5f + 0.45f * static_cast<float>(i) / static_cast<float>(animations.size()));
         std::string error;
         // (Con la misma escala que el personaje: Scale Factor y unidades.)
         std::vector<asset::AnimationClip> loaded =

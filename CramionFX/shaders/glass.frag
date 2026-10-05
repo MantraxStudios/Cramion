@@ -91,8 +91,12 @@ layout(set = 2, binding = 4) uniform sampler2D g_depth;
 // La imagen HDR iluminada de este frame, sin el vidrio.
 layout(set = 2, binding = 5) uniform sampler2D scene_color;
 layout(set = 2, binding = 6) uniform samplerCube environment_map;
+// Modo compatible (moviles): sin sondas de reflexion (16 texturas por shader
+// como mucho entre los tres sets): el entorno del cielo.
+#ifndef CRAMION_COMPAT
 layout(set = 2, binding = 7) uniform samplerCube reflection_probe_0;
 layout(set = 2, binding = 8) uniform samplerCube reflection_probe_1;
+#endif
 
 layout(location = 0) in vec3 v_normal;
 layout(location = 1) in vec2 v_uv;
@@ -318,6 +322,7 @@ void main() {
     // Respaldo: la sonda (la escena alrededor) o, sin ella, el entorno.
     float lod = roughness * 5.0;
     vec3 fallback = textureLod(environment_map, reflected, lod).rgb;
+#ifndef CRAMION_COMPAT
     float probe_weight = lights.probes[0].w + lights.probes[1].w;
     if (probe_weight > 0.001) {
         vec3 probe = vec3(0.0);
@@ -329,6 +334,7 @@ void main() {
         }
         fallback = probe / probe_weight;
     }
+#endif
     vec3 reflection = mix(min(fallback, vec3(kMaxRadiance)), screen.rgb, screen.a);
 
     // --- Brillo del sol en el cristal ---

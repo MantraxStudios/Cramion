@@ -776,6 +776,7 @@ void heightToNormalMap(TextureData& texture) {
 // escenario trae cientos de PNG grandes y, uno detras de otro, tardarian
 // casi un minuto.
 std::atomic<std::uint32_t> g_max_texture_size{0};
+std::atomic<bool> g_decode_block_compressed{false};
 
 // Reduce una textura hasta que su lado mayor no pase de `max_size`: RGBA8 a
 // la mitad con media de 2x2 (varias veces si hace falta); las comprimidas con
@@ -859,6 +860,16 @@ void decodeTextures(ModelData& model) {
                 const std::lock_guard<std::mutex> lock(log_mutex);
                 std::cout << "[Modelo] Textura " << texture.name << " reducida de " << before << " a "
                           << std::max(texture.width, texture.height) << " (calidad de texturas)\n";
+            }
+            // GPU sin texturas BC: el nivel 0 (ya reducido) a RGBA8; los mips
+            // los genera la GPU al subirla.
+            if (texture.format != TextureFormat::Rgba8 && g_decode_block_compressed.load()) {
+                std::vector<std::uint8_t> rgba = decodeBlockCompressed(texture);
+                if (!rgba.empty()) {
+                    texture.pixels = std::move(rgba);
+                    texture.format = TextureFormat::Rgba8;
+                    texture.mip_levels = 1;
+                }
             }
             texture.encoded.clear();
             texture.encoded.shrink_to_fit();
@@ -1111,6 +1122,7 @@ std::uint32_t embedTextures(ModelData& model) {
 }
 
 void setMaxTextureSize(std::uint32_t size) { g_max_texture_size.store(size); }
+void setDecodeBlockCompressed(bool decode) { g_decode_block_compressed.store(decode); }
 std::uint32_t maxTextureSize() { return g_max_texture_size.load(); }
 
 void finalizeModel(ModelData& model, const std::string& label) {

@@ -3,6 +3,7 @@
 // de GI a media resolucion en lugar del SSGI o los rayos; el filtro y la
 // iluminacion no cambian.
 
+#include "CramionFX/vk/VulkanCompat.h"
 #include "CramionFX/vk/VulkanRenderer.h"
 
 #include <algorithm>
@@ -77,7 +78,7 @@ void VulkanRenderer::updateBakedGiSets() {
     for (std::uint32_t i = 0; i < kMaxFramesInFlight && i < baked_gi_sets_.size(); ++i) {
         if (!camera_buffers_[i].isValid()) continue;
         vk::DescriptorBufferInfo camera_info{*camera_buffers_[i].handle(), 0, sizeof(GpuCamera)};
-        vk::DescriptorImageInfo depth_info{*baked_gi_pass_.sampler(), *gbuffer_.depth().view(), vk::ImageLayout::eDepthReadOnlyOptimal};
+        vk::DescriptorImageInfo depth_info{*baked_gi_pass_.sampler(), *gbuffer_.depth().view(), compat::depthReadOnlyLayout()};
         vk::DescriptorImageInfo normal_info{*baked_gi_pass_.sampler(), *gbuffer_.normal().view(),
                                             vk::ImageLayout::eShaderReadOnlyOptimal};
         vk::DescriptorBufferInfo probe_info{*baked_probe_buffer_.handle(), 0, VK_WHOLE_SIZE};

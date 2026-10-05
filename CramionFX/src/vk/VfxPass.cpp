@@ -1,3 +1,4 @@
+#include "CramionFX/vk/VulkanCompat.h"
 #include "CramionFX/vk/VfxPass.h"
 
 #include "CramionFX/asset/ImageFile.h"
@@ -83,7 +84,7 @@ void memoryBarrier(const vk::raii::CommandBuffer& cmd, vk::PipelineStageFlags2 s
     barrier.dstAccessMask = dst_access;
     vk::DependencyInfo dependency{};
     dependency.setMemoryBarriers(barrier);
-    cmd.pipelineBarrier2(dependency);
+    compat::pipelineBarrier(cmd, dependency);
 }
 
 void computeBarrier(const vk::raii::CommandBuffer& cmd) {
@@ -289,7 +290,7 @@ vk::raii::Pipeline VfxPass::createDrawPipeline(vk::Format color_format, vk::Form
     info.pColorBlendState = &color_blend;
     info.pDynamicState = &dynamic;
     info.layout = *layout_;
-    return vk::raii::Pipeline(device.handle(), device.pipelineCache(), info);
+    return compat::makeGraphicsPipeline(device, info);
 }
 
 void VfxPass::destroy() {
@@ -653,7 +654,7 @@ bool VfxPass::prepare(std::uint32_t frame, const VfxView& view, bool simulate) {
         {*point_buf_[frame].handle(), 0, VK_WHOLE_SIZE},
     }};
     const vk::DescriptorImageInfo depth_info =
-        has_depth ? vk::DescriptorImageInfo{*depth_sampler_, view.scene_depth, vk::ImageLayout::eDepthReadOnlyOptimal}
+        has_depth ? vk::DescriptorImageInfo{*depth_sampler_, view.scene_depth, compat::depthReadOnlyLayout()}
                   : vk::DescriptorImageInfo{*depth_sampler_, *white_.view(), vk::ImageLayout::eShaderReadOnlyOptimal};
     std::array<vk::DescriptorImageInfo, kMaxTextures> textures{};
     for (std::uint32_t i = 0; i < kMaxTextures; ++i) {

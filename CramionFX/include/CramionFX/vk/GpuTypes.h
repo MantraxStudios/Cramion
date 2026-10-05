@@ -264,6 +264,10 @@ struct GpuSsgiPush {
 // proyecta a lo largo de su eje Y local.
 inline constexpr std::uint32_t kMaxDecals = 64;
 inline constexpr std::uint32_t kMaxDecalTextures = 32;
+// En el modo compatible (VulkanCompat.h, moviles): 16 texturas por shader como
+// mucho, asi que 4 ranuras (gbuffer_surface.glsl, CRAMION_COMPAT).
+inline constexpr std::uint32_t kCompatDecalTextures = 4;
+inline std::uint32_t decalTextureSlots(bool compat) { return compat ? kCompatDecalTextures : kMaxDecalTextures; }
 
 struct GpuDecal {
     core::Mat4 world_to_decal = core::Mat4::identity();
