@@ -283,6 +283,18 @@ void addDefaultCollider(ecs::Entity entity);
 // true si la entidad tiene algun collider (el CharacterController cuenta).
 bool hasCollider(const ecs::Entity& entity);
 
+// Ajusta los colliders de la entidad a una caja en su espacio local (el AABB
+// de su malla), como hace Unity al anadir un collider a un objeto con malla:
+// caja = esa caja; esfera = centrada, con la mayor media medida de radio;
+// capsula = a lo largo del eje mas largo. Despues la escala del Transform la
+// multiplica igual que a la malla. `only` = solo ese tipo ("BoxCollider",
+// "SphereCollider", "CapsuleCollider"); vacio = los tres. true si cambio
+// alguno. El AABB lo da PhysicsSystem::localMeshBounds.
+bool fitColliderToBounds(ecs::Entity entity, const core::Vec3& min, const core::Vec3& max,
+                         const std::string& only = {});
+// true si `type` es un collider que se ajusta a la malla (caja, esfera, capsula).
+bool isFittableCollider(const std::string& type);
+
 }  // namespace cramion::physics
 
 #endif  // CRAMION_CORE_PHYSICS_COMPONENTS_H

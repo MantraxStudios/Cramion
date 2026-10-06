@@ -11,9 +11,12 @@
 #include "CramionCore/terrain/TerrainTools.h"
 
 #include <CramionFX/asset/HouseGenerator.h>
+#include <CramionFX/asset/MedievalBuildings.h>
+#include <CramionFX/asset/SettlementGenerator.h>
 #include <CramionFX/asset/ImageFile.h>
 #include <CramionFX/asset/TreeGenerator.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -374,6 +377,267 @@ void testGenerator() {
 
 // CRAMION_DUMP_TEXTURES=carpeta: guarda las texturas procedurales de arboles
 // y casas como PNG (para revisarlas a ojo).
+// Aplanar bajo una huella girada, altura de apoyo, parches y caminos.
+void testFootprints() {
+    std::printf("-- Huellas y caminos --\n");
+    Terrain t;
+    t.size = 128.0f;
+    t.height = 40.0f;
+    TerrainData data;
+    data.create(129, 64, 0.0f);
+    const Vec3 origin{0.0f, 0.0f, 0.0f};
+    // Ladera: sube 1 m cada 4 m en X, con ondas.
+    const auto res = static_cast<int>(data.resolution());
+    for (int y = 0; y < res; ++y) {
+        for (int x = 0; x < res; ++x) {
+            const float wx = static_cast<float>(x);
+            const float wz = static_cast<float>(y);
+            data.heights()[static_cast<std::size_t>(y) * res + x] = (5.0f + wx * 0.25f + std::sin(wz * 0.3f) * 1.5f) / t.height;
+        }
+    }
+    Footprint fp;
+    fp.center = Vec3{60.0f, 0.0f, 50.0f};
+    fp.half = core::Vec2{5.0f, 3.5f};
+    fp.yaw_degrees = 30.0f;
+    float lo = 0.0f;
+    float hi = 0.0f;
+    const float h = footprintHeight(data, t, origin, fp, &lo, &hi);
+    check(h >= lo && h <= hi && hi - lo > 1.0f, "altura de apoyo: la mediana entre la mas baja y la mas alta");
+    const TerrainData before = data;
+    const HeightPatch patch = captureFootprint(data, t, origin, fp, 4.0f);
+    check(patch.valid() && !patch.heights.empty(), "se guarda el trozo que se va a tocar");
+    check(flattenFootprint(data, t, origin, fp, h, 4.0f), "aplanar bajo la huella");
+    // Dentro (incluidas las esquinas giradas), plano a la altura pedida.
+    bool flat = true;
+    const float a = fp.yaw_degrees * core::kPi / 180.0f;
+    for (int i = -10; i <= 10; ++i) {
+        for (int j = -10; j <= 10; ++j) {
+            const float lx = fp.half.x * static_cast<float>(i) / 10.0f;
+            const float lz = fp.half.y * static_cast<float>(j) / 10.0f;
+            const float x = fp.center.x + std::cos(a) * lx + std::sin(a) * lz;
+            const float z = fp.center.z - std::sin(a) * lx + std::cos(a) * lz;
+            flat = flat && std::abs(heightAt(data, t, origin, x, z) - h) < 1e-3f;
+        }
+    }
+    check(flat, "toda la huella (girada 30 grados) queda plana, sin asomar entre vertices");
+    const float far_before = heightAt(before, t, origin, fp.center.x + 20.0f, fp.center.z);
+    check(std::abs(heightAt(data, t, origin, fp.center.x + 20.0f, fp.center.z) - far_before) < 1e-5f, "lejos no cambia nada");
+    // El talud: entre medias, ni lo de antes ni lo plano del todo.
+    const float edge_x = fp.center.x + 5.0f * std::cos(a) + 2.0f + 2.0f;
+    const float mid = heightAt(data, t, origin, edge_x, fp.center.z - 5.0f * std::sin(a));
+    const float orig = heightAt(before, t, origin, edge_x, fp.center.z - 5.0f * std::sin(a));
+    check(std::abs(mid - orig) > 1e-3f || std::abs(mid - h) > 1e-3f, "talud suave alrededor");
+    restorePatch(data, patch);
+    check(data.heights() == before.heights(), "restaurar el trozo deja el terreno como estaba");
+    // Pintar tierra bajo la huella.
+    check(paintFootprint(data, t, origin, fp, 2, 1.0f, 1.0f), "pintar una capa bajo la huella");
+    const std::uint32_t sx = static_cast<std::uint32_t>(fp.center.x / t.size * 64.0f);
+    const std::uint32_t sz = static_cast<std::uint32_t>(fp.center.z / t.size * 64.0f);
+    check(data.weight(2, sx, sz) > 240, "debajo queda la capa pintada (la hierba no crece)");
+    // Camino: sigue la altura de sus puntos.
+    const std::vector<Vec3> road = {Vec3{10.0f, 12.0f, 100.0f}, Vec3{60.0f, 14.0f, 100.0f}, Vec3{110.0f, 16.0f, 110.0f}};
+    check(flattenPath(data, t, origin, road, 5.0f, 3.0f), "allanar un camino");
+    check(std::abs(heightAt(data, t, origin, 35.0f, 100.0f) - 13.0f) < 0.05f, "el camino va a la altura de sus puntos (13 m a medio tramo)");
+    check(std::abs(heightAt(data, t, origin, 35.0f, 101.5f) - 13.0f) < 0.05f, "y es plano a lo ancho");
+    check(paintPath(data, t, origin, road, 5.0f, 5, 1.0f, 1.0f), "pintar el camino");
+    check(finite(data), "alturas validas");
+}
+
+// Casas medievales con interior, edificios del pueblo, muralla y vallas.
+void testBuildings() {
+    std::printf("-- Casas y edificios medievales --\n");
+    using namespace cramion::asset;
+    bool all_ok = true;
+    for (int st = 0; st < kHouseStyleCount; ++st) {
+        HouseSettings s = housePreset(static_cast<HouseStyle>(st), 7);
+        s.interior = false;
+        const HouseModel bare = buildHouse(s);
+        s.interior = true;
+        const HouseModel full = buildHouse(s);
+        const bool ok = bare.triangles > 500 && full.triangles > bare.triangles && !full.door.vertices.empty() &&
+                        full.bounds_max.y > 3.0f && (!s.chimney || !full.lights.empty());
+        if (!ok) std::printf("    estilo %s: %zu / %zu triangulos\n", houseStyleName(s.style), bare.triangles, full.triangles);
+        all_ok = all_ok && ok;
+    }
+    check(all_ok, "los 6 estilos: con interior tienen mas geometria, puerta y fuego en el hogar");
+    // Tamanos extremos de la ventana (4 x 3.5 m con 3 plantas, 16 x 12 m) y todos los usos.
+    bool extremes = true;
+    for (int st = 0; st < kHouseStyleCount; ++st) {
+        for (const auto& [w, d] : {std::pair<float, float>{4.0f, 3.5f}, std::pair<float, float>{16.0f, 12.0f}}) {
+            for (int u = 0; u < kHouseUseCount; ++u) {
+                HouseSettings s = housePreset(static_cast<HouseStyle>(st), 5);
+                s.width = w;
+                s.depth = d;
+                s.floors = 3;
+                s.use = static_cast<HouseUse>(u);
+                const HouseModel m = buildHouse(s);
+                bool finite_bounds = std::isfinite(m.bounds_min.x) && std::isfinite(m.bounds_max.y) && m.bounds_max.x > m.bounds_min.x;
+                for (const asset::SkinnedVertex& v : m.house.vertices) {
+                    finite_bounds = finite_bounds && std::isfinite(v.position.x) && std::isfinite(v.position.y) && std::isfinite(v.position.z);
+                }
+                if (!finite_bounds || m.triangles < 500) {
+                    std::printf("    %s %.0fx%.0f uso %d: %zu triangulos\n", houseStyleName(s.style), w, d, u, m.triangles);
+                    extremes = false;
+                }
+            }
+        }
+    }
+    check(extremes, "casas de 4 x 3.5 m y de 16 x 12 m con 3 plantas en todos los estilos y usos");
+    HouseSettings t = housePreset(HouseStyle::HalfTimbered, 3);
+    t.floors = 3;
+    const HouseModel tall = buildHouse(t);
+    check(tall.bounds_max.z > t.depth * 0.5f + t.jetty, "entramado: la planta alta vuela sobre la calle");
+    bool uses = true;
+    for (int u = 0; u < kHouseUseCount; ++u) {
+        t.use = static_cast<HouseUse>(u);
+        t.floors = 2;
+        uses = uses && buildHouse(t).triangles > 2000;
+    }
+    check(uses, "vivienda, taberna, herreria y tienda");
+    bool textures = true;
+    for (int m = kHousePlaster; m <= kHouseBeams; ++m) {
+        HouseTextureSet set;
+        textures = textures && generateHouseTexture(m, 64, 7, set) && set.color.width == 64;
+    }
+    check(textures, "texturas nuevas: enlucido, paja, teja, tela y vigas");
+    bool buildings = true;
+    for (int b = 0; b < kMedievalBuildingCount; ++b) {
+        MedievalSettings ms;
+        ms.type = static_cast<MedievalBuilding>(b);
+        const HouseModel m = buildMedieval(ms);
+        const bool ok = m.triangles > 50 && m.bounds_max.x > m.bounds_min.x;
+        if (!ok) std::printf("    %s: %zu triangulos\n", medievalBuildingName(ms.type), m.triangles);
+        buildings = buildings && ok;
+    }
+    check(buildings, "iglesia, granero, pozo, puesto, torre, puerta, molino y objetos");
+    MedievalSettings mill;
+    mill.type = MedievalBuilding::Windmill;
+    const HouseModel mm = buildMedieval(mill);
+    check(mm.parts.size() == 1 && mm.parts[0].name == "Aspas" && !mm.parts[0].model.vertices.empty(), "el molino lleva las aspas aparte");
+    MedievalSettings church;
+    church.type = MedievalBuilding::Church;
+    check(!buildMedieval(church).door.vertices.empty() && !buildMedieval(church).lights.empty(), "la iglesia tiene puerta y luz en el altar");
+    CityWallSettings ws;
+    for (int i = 0; i < 12; ++i) {
+        const float ang = 2.0f * core::kPi * static_cast<float>(i) / 12.0f;
+        ws.points.push_back(Vec3{std::cos(ang) * 60.0f, std::sin(ang * 2.0f) * 2.0f, std::sin(ang) * 60.0f});
+        ws.towers.push_back(i % 3 != 1);
+        ws.gaps.push_back(i == 4);
+    }
+    const HouseModel wall = buildCityWall(ws);
+    check(wall.triangles > 1000 && wall.bounds_max.x > 58.0f && wall.bounds_min.x < -58.0f, "muralla con torres y un hueco de puerta");
+    const HouseModel fences = buildFences({{Vec3{0, 0, 0}, Vec3{8, 0.5f, 0}}, {Vec3{8, 0.5f, 0}, Vec3{8, 1.0f, 6}}});
+    check(fences.triangles > 50, "vallas");
+}
+
+// Trazado de aldea, pueblo y ciudad sobre un terreno con un lago.
+void testSettlements() {
+    std::printf("-- Pueblos medievales --\n");
+    using namespace cramion::asset;
+    SettlementTerrain T;
+    T.height = [](float x, float z) { return 20.0f + std::sin(x * 0.01f) * 6.0f + std::cos(z * 0.013f) * 5.0f; };
+    T.dry = [](float x, float z, float margin) {
+        const float dx = x - 420.0f;
+        const float dz = z - 300.0f;
+        return std::sqrt(dx * dx + dz * dz) > 40.0f + margin;  // un lago
+    };
+    T.min_x = -600.0f;
+    T.min_z = -600.0f;
+    T.max_x = 600.0f;
+    T.max_z = 600.0f;
+    // Huellas de verdad (los modelos).
+    std::vector<HouseModel> houses;
+    for (int st : {4, 4, 2, 5, 5, 0}) houses.push_back(buildHouse(housePreset(static_cast<HouseStyle>(st), 3U + static_cast<std::uint32_t>(houses.size()))));
+    std::vector<HouseModel> specials;
+    for (int b = 0; b < kMedievalBuildingCount; ++b) {
+        MedievalSettings ms;
+        ms.type = static_cast<MedievalBuilding>(b);
+        specials.push_back(buildMedieval(ms));
+    }
+    HouseSettings tv = housePreset(HouseStyle::HalfTimbered, 9);
+    tv.use = HouseUse::Tavern;
+    tv.width = 11.5f;
+    const HouseModel tavern = buildHouse(tv);
+    HouseSettings sm = housePreset(HouseStyle::StoneCottage, 9);
+    sm.use = HouseUse::Smithy;
+    const HouseModel smithy = buildHouse(sm);
+    const auto fp = [&](const HouseModel& m, core::Vec2& half, core::Vec2& offset) {
+        half = core::Vec2{(m.bounds_max.x - m.bounds_min.x) * 0.5f, (m.bounds_max.z - m.bounds_min.z) * 0.5f};
+        offset = core::Vec2{(m.bounds_min.x + m.bounds_max.x) * 0.5f, (m.bounds_min.z + m.bounds_max.z) * 0.5f};
+    };
+    const SettlementFootprint footprint = [&](LotKind kind, int variant, core::Vec2& half, core::Vec2& offset) {
+        switch (kind) {
+            case LotKind::House: fp(houses[static_cast<std::size_t>(variant >= 0 ? variant : -1 - variant) % houses.size()], half, offset); break;
+            case LotKind::Tavern: fp(tavern, half, offset); break;
+            case LotKind::Smithy: fp(smithy, half, offset); break;
+            case LotKind::Church: fp(specials[static_cast<std::size_t>(MedievalBuilding::Church)], half, offset); break;
+            case LotKind::Barn: fp(specials[static_cast<std::size_t>(MedievalBuilding::Barn)], half, offset); break;
+            case LotKind::Well: fp(specials[static_cast<std::size_t>(MedievalBuilding::Well)], half, offset); break;
+            case LotKind::MarketStall: fp(specials[static_cast<std::size_t>(MedievalBuilding::MarketStall)], half, offset); break;
+            case LotKind::Keep: fp(specials[static_cast<std::size_t>(MedievalBuilding::Keep)], half, offset); break;
+            case LotKind::Gatehouse: fp(specials[static_cast<std::size_t>(MedievalBuilding::Gatehouse)], half, offset); break;
+            case LotKind::Windmill: fp(specials[static_cast<std::size_t>(MedievalBuilding::Windmill)], half, offset); break;
+            case LotKind::Prop: fp(specials[static_cast<std::size_t>(variant) % specials.size()], half, offset); break;
+        }
+    };
+    for (int type = 0; type < kSettlementTypeCount; ++type) {
+        SettlementSettings s;
+        s.type = static_cast<SettlementType>(type);
+        s.seed = 11;
+        s.urban_variants = 3;
+        s.rural_variants = 3;
+        const auto t0 = std::chrono::steady_clock::now();
+        const SettlementLayout L = layoutSettlement(s, T, footprint, Vec3{350.0f, 0.0f, 250.0f}, 200.0f);
+        const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+        const int target = type == 0 ? 10 : (type == 1 ? 28 : 75);
+        char label[200];
+        std::snprintf(label, sizeof(label), "%s: %d casas, %zu lotes, %zu calles, %zu campos (%.0f ms)", settlementTypeName(s.type), L.houses,
+                      L.lots.size(), L.roads.size(), L.fields.size(), ms);
+        check(L.ok && L.houses >= target * 6 / 10, label);
+        // Nada se pisa (salvo objetos y pacas de los campos).
+        bool clean = true;
+        for (std::size_t i = 0; i < L.lots.size() && clean; ++i) {
+            if (L.lots[i].kind == LotKind::Prop) continue;
+            const float ai = L.lots[i].yaw * core::kPi / 180.0f;
+            for (std::size_t j = i + 1; j < L.lots.size() && clean; ++j) {
+                if (L.lots[j].kind == LotKind::Prop) continue;
+                // Separacion por circulos interiores (barato): los centros de las cajas
+                // no pueden estar mas cerca que la menor de las medias medidas.
+                const float aj = L.lots[j].yaw * core::kPi / 180.0f;
+                const float cix = L.lots[i].position.x + std::cos(ai) * L.lots[i].offset.x + std::sin(ai) * L.lots[i].offset.y;
+                const float ciz = L.lots[i].position.z - std::sin(ai) * L.lots[i].offset.x + std::cos(ai) * L.lots[i].offset.y;
+                const float cjx = L.lots[j].position.x + std::cos(aj) * L.lots[j].offset.x + std::sin(aj) * L.lots[j].offset.y;
+                const float cjz = L.lots[j].position.z - std::sin(aj) * L.lots[j].offset.x + std::cos(aj) * L.lots[j].offset.y;
+                const float d = std::hypot(cix - cjx, ciz - cjz);
+                const float ri = std::min(L.lots[i].half.x, L.lots[i].half.y);
+                const float rj = std::min(L.lots[j].half.x, L.lots[j].half.y);
+                if (d < ri + rj - 0.05f) clean = false;
+            }
+        }
+        check(clean, "ningun edificio se mete en otro");
+        bool dry = true;
+        for (const SettlementLot& lot : L.lots) dry = dry && T.dry(lot.position.x, lot.position.z, 0.0f);
+        check(dry, "nada en el lago");
+        int church = 0;
+        int gates = 0;
+        int keep = 0;
+        for (const SettlementLot& lot : L.lots) {
+            church += lot.kind == LotKind::Church ? 1 : 0;
+            gates += lot.kind == LotKind::Gatehouse ? 1 : 0;
+            keep += lot.kind == LotKind::Keep ? 1 : 0;
+        }
+        if (type == 0) check(!L.fields.empty() && !L.fences.empty(), "la aldea tiene campos con vallas");
+        if (type >= 1) check(church == 1, "una iglesia en la plaza");
+        if (type == 2) {
+            check(L.wall.size() >= 10 && gates >= 2 && gates == static_cast<int>(std::count(L.wall_gaps.begin(), L.wall_gaps.end(), true)),
+                  "muralla con una puerta en cada camino que entra");
+            check(keep == 1, "torre del homenaje");
+        }
+        const SettlementLayout again = layoutSettlement(s, T, footprint, Vec3{350.0f, 0.0f, 250.0f}, 200.0f);
+        check(again.lots.size() == L.lots.size() && again.center.x == L.center.x, "misma semilla, mismo pueblo");
+    }
+}
+
 void dumpTextures(const char* folder) {
     namespace fs = std::filesystem;
     fs::create_directories(folder);
@@ -395,6 +659,7 @@ void dumpTextures(const char* folder) {
 }
 
 int main() {
+    std::setvbuf(stdout, nullptr, _IONBF, 0);  // si algo falla, que se vea hasta donde llego
     if (const char* dump = std::getenv("CRAMION_DUMP_TEXTURES")) {
         dumpTextures(dump);
         return 0;
@@ -404,6 +669,9 @@ int main() {
     testTools();
     testSaveLoad();
     testPhysics();
+    testFootprints();
+    testBuildings();
+    testSettlements();
     std::printf("\n%d comprobaciones, %d fallos\n", checks, failures);
     return failures == 0 ? 0 : 1;
 }

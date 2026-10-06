@@ -106,6 +106,8 @@ std::vector<const char*> VulkanInstance::selectExtensions(const std::vector<std:
     // Obligatorias para poder presentar en una ventana Win32.
 #if defined(__ANDROID__)
     const char* required[] = {vk::KHRSurfaceExtensionName, vk::KHRAndroidSurfaceExtensionName};
+#elif defined(__linux__)
+    const char* required[] = {vk::KHRSurfaceExtensionName, "VK_KHR_xlib_surface"};
 #else
     const char* required[] = {vk::KHRSurfaceExtensionName, vk::KHRWin32SurfaceExtensionName};
 #endif

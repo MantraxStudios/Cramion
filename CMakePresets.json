@@ -25,6 +25,23 @@
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release"
       }
+    },
+    {
+      "name": "linux-release",
+      "displayName": "Linux (Clang + Ninja, Release)",
+      "description": "Linux con X11: CramionServer (servidor dedicado) y la capa de plataforma (ventana Xlib, Vulkan). Necesita libx11-dev y el SDK de Vulkan.",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build-linux",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Linux"
+      },
+      "cacheVariables": {
+        "CMAKE_C_COMPILER": "clang",
+        "CMAKE_CXX_COMPILER": "clang++",
+        "CMAKE_BUILD_TYPE": "Release"
+      }
     }
   ],
   "buildPresets": [
@@ -35,6 +52,10 @@
     {
       "name": "clang-ninja-release",
       "configurePreset": "clang-ninja-release"
+    },
+    {
+      "name": "linux-release",
+      "configurePreset": "linux-release"
     }
   ]
 }

@@ -148,6 +148,20 @@ void EditorApp::drawHierarchy() {
         if (ImGui::MenuItem("Vegetación (bosque)")) createFoliageEntity();
         if (ImGui::MenuItem("Mundo de bloques")) createVoxelWorldEntity();
         if (ImGui::MenuItem("Fuego (incendio)")) createFireEntity();
+        if (ImGui::MenuItem("Volumen de niebla")) createFogVolumeEntity();
+        if (ImGui::BeginMenu("Spline")) {
+            if (ImGui::MenuItem("Carretera")) createSplineObject(0);
+            if (ImGui::MenuItem("Camino")) createSplineObject(1);
+            if (ImGui::MenuItem("Río (cauce por spline)")) createSplineObject(2);
+            if (ImGui::MenuItem("Muro")) createSplineObject(3);
+            if (ImGui::MenuItem("Valla")) createSplineObject(4);
+            if (ImGui::MenuItem("Tubería")) createSplineObject(5);
+            if (ImGui::MenuItem("Raíles")) createSplineObject(6);
+            if (ImGui::MenuItem("Cinta")) createSplineObject(7);
+            ImGui::Separator();
+            if (ImGui::MenuItem("Spline vacía (solo la curva)")) createSplineObject(-1);
+            ImGui::EndMenu();
+        }
         if (ImGui::BeginMenu("Agua")) {
             if (ImGui::MenuItem("Océano / playa")) createWaterEntity(0);
             if (ImGui::MenuItem("Lago")) createWaterEntity(1);
@@ -274,6 +288,20 @@ void EditorApp::drawHierarchy() {
         if (ImGui::MenuItem("Vegetación (bosque)")) createFoliageEntity();
         if (ImGui::MenuItem("Mundo de bloques")) createVoxelWorldEntity();
         if (ImGui::MenuItem("Fuego (incendio)")) createFireEntity();
+        if (ImGui::MenuItem("Volumen de niebla")) createFogVolumeEntity();
+        if (ImGui::BeginMenu("Spline")) {
+            if (ImGui::MenuItem("Carretera")) createSplineObject(0);
+            if (ImGui::MenuItem("Camino")) createSplineObject(1);
+            if (ImGui::MenuItem("Río (cauce por spline)")) createSplineObject(2);
+            if (ImGui::MenuItem("Muro")) createSplineObject(3);
+            if (ImGui::MenuItem("Valla")) createSplineObject(4);
+            if (ImGui::MenuItem("Tubería")) createSplineObject(5);
+            if (ImGui::MenuItem("Raíles")) createSplineObject(6);
+            if (ImGui::MenuItem("Cinta")) createSplineObject(7);
+            ImGui::Separator();
+            if (ImGui::MenuItem("Spline vacía (solo la curva)")) createSplineObject(-1);
+            ImGui::EndMenu();
+        }
         if (ImGui::BeginMenu("Agua")) {
             if (ImGui::MenuItem("Océano / playa")) createWaterEntity(0);
             if (ImGui::MenuItem("Lago")) createWaterEntity(1);
@@ -581,6 +609,20 @@ void EditorApp::drawHierarchyRow(const HierarchyRow& row, bool scroll_to) {
         if (ImGui::MenuItem("Terreno")) createTerrainEntity();
         if (ImGui::MenuItem("Mundo de bloques")) createVoxelWorldEntity();
         if (ImGui::MenuItem("Fuego (incendio)")) createFireEntity();
+        if (ImGui::MenuItem("Volumen de niebla")) createFogVolumeEntity();
+        if (ImGui::BeginMenu("Spline")) {
+            if (ImGui::MenuItem("Carretera")) createSplineObject(0);
+            if (ImGui::MenuItem("Camino")) createSplineObject(1);
+            if (ImGui::MenuItem("Río (cauce por spline)")) createSplineObject(2);
+            if (ImGui::MenuItem("Muro")) createSplineObject(3);
+            if (ImGui::MenuItem("Valla")) createSplineObject(4);
+            if (ImGui::MenuItem("Tubería")) createSplineObject(5);
+            if (ImGui::MenuItem("Raíles")) createSplineObject(6);
+            if (ImGui::MenuItem("Cinta")) createSplineObject(7);
+            ImGui::Separator();
+            if (ImGui::MenuItem("Spline vacía (solo la curva)")) createSplineObject(-1);
+            ImGui::EndMenu();
+        }
         if (ImGui::BeginMenu("Agua")) {
             if (ImGui::MenuItem("Océano / playa")) createWaterEntity(0);
             if (ImGui::MenuItem("Lago")) createWaterEntity(1);

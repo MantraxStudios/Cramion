@@ -195,6 +195,12 @@ const std::map<std::string, std::string>& intros() {
                     "su archivo de datos (<code>.crterrain</code> en Assets). La entidad marca la esquina (x, z minimas) y la altura "
                     "0; no gira ni escala. Herramientas del Inspector: esculpir, suavizar, aplanar, rampa, ruido, erosion, "
                     "terrazas, pintar capas y generar un relieve."},
+        {"TerrainFlatten", "Aplana el terreno bajo el objeto: su huella (el AABB de sus mallas en el suelo, girado con el "
+                           "objeto, mas el margen) queda plana a la altura de su origen (o de la base de la malla) con un "
+                           "talud suave alrededor, y debajo se pinta la capa Tierra para que la hierba no atraviese el "
+                           "suelo. Lo llevan las casas y edificios generados. En el editor se rehace al soltar el objeto "
+                           "despues de moverlo o girarlo, y el sitio de antes vuelve a como estaba (tambien al borrarlo). "
+                           "Ver <a href=\"mundo-procedural.html#pueblos\">Pueblos medievales</a>."},
         {"WaterBody", "Agua procedural: <strong>Oceano</strong> (plano infinito hasta el horizonte con oleaje FFT en 4 "
                       "cascadas, viento, fetch y mar de fondo), <strong>Lago</strong> (rectangulo con olas suaves) o "
                       "<strong>Rio</strong> (cinta que sigue sus puntos, con corriente y rapidos). Los Rigidbody flotan, "
@@ -216,11 +222,15 @@ const std::map<std::string, std::string>& intros() {
         {"Rigidbody", "Cuerpo de fisica (Jolt): <strong>Dinamico</strong> (cae, choca, se empuja), <strong>Cinematico</strong> "
                       "(lo mueves tu y empuja a los demas) o <strong>Estatico</strong>. Necesita al menos un collider en la entidad "
                       "o en sus hijos. Desde Lua: <code>velocity</code>, <code>addForce</code>, <code>addImpulse</code>..."},
-        {"BoxCollider", "Colision en forma de caja (el cubo unidad escalado por el Transform, mas su tamano y centro). Sin "
-                        "Rigidbody es un obstaculo estatico. Con <em>Es trigger</em> no choca: avisa "
-                        "(<code>OnTriggerEnter</code>)."},
-        {"SphereCollider", "Colision en forma de esfera (radio y centro)."},
-        {"CapsuleCollider", "Colision en forma de capsula (personajes): radio, altura y eje."},
+        {"BoxCollider", "Colision en forma de caja: su tamano y centro en el espacio del objeto, multiplicados por la escala "
+                        "del Transform. Como en Unity, al anadirlo (Add Component, <code>addComponent</code>, MCP) toma el "
+                        "<strong>AABB de la malla</strong> del objeto o, si no tiene, el de las mallas de sus hijos; "
+                        "<em>Ajustar a la malla</em> (o <em>Restablecer valores</em>) lo vuelve a calcular. Sin Rigidbody es un "
+                        "obstaculo estatico. Con <em>Es trigger</em> no choca: avisa (<code>OnTriggerEnter</code>)."},
+        {"SphereCollider", "Colision en forma de esfera (radio y centro). Al anadirla se centra en el AABB de la malla con la "
+                           "mayor media medida de radio."},
+        {"CapsuleCollider", "Colision en forma de capsula (personajes): radio, altura y eje. Al anadirla toma el AABB de la "
+                            "malla, a lo largo de su eje mas largo."},
         {"MeshCollider", "La geometria de la pieza del MeshRenderer de la misma entidad. Malla de triangulos: solo estatica o "
                          "cinematica; <em>Convexa</em>: vale para cuerpos dinamicos (envolvente convexa)."},
         {"PlaneCollider", "Plano infinito por el origen de la entidad con su +Y como normal (el suelo de una escena). Siempre "
@@ -328,6 +338,33 @@ const std::map<std::string, std::string>& intros() {
         {"PrefabInstance", "Lo pone el editor en la raiz de cada instancia de un prefab: que prefab, en que revision y sus "
                            "cambios propios. No se anade a mano. Ver <a href=\"prefabs.html\">Prefabs</a>."},
         {"PrefabLink", "Lo pone el editor en cada entidad de una instancia: a que entidad del prefab corresponde."},
+        {"Spline", "Curva por puntos de control (Catmull-Rom, Bezier o lineal), abierta o cerrada, con ancho y peralte por "
+                   "punto. En la Escena los puntos se arrastran (Mayus+clic anade, Ctrl+clic quita). Lua: "
+                   "<code>entity:splinePoint(t)</code>, <code>Spline.create(puntos, \"road\")</code>."},
+        {"SplineExtrude", "Genera una malla a lo largo de la Spline: carretera (con lineas), camino, rio (mueve el WaterBody), "
+                          "muro, valla con postes, tuberia, railes con traviesas o cinta. Se pega al terreno y <em>Aplicar al "
+                          "terreno</em> lo allana y pinta debajo."},
+        {"SplineFollower", "Mueve la entidad por una Spline (camaras, vagonetas, patrullas): bucle, ida y vuelta o una vez, "
+                           "mirando hacia delante."},
+        {"WorldPartition", "Divide el mundo en celdas: en Play y en el juego solo estan cargadas las cercanas a las fuentes de "
+                           "carga (o a la camara); lo lejano sale del mundo y vuelve al acercarse. <em>Construir HLOD</em> crea "
+                           "una malla simplificada por celda que se ve de lejos."},
+        {"StreamingSource", "Lo que carga el mundo a su alrededor con World Partition (el jugador)."},
+        {"AlwaysLoaded", "Esta entidad no se descarga nunca con World Partition."},
+        {"HlodProxy", "La malla simplificada de una celda (la crea <em>Construir HLOD</em>): solo se ve cuando su celda esta "
+                      "descargada."},
+        {"FogVolume", "Niebla local (caja o esfera) con su densidad, color, borde suave y ruido, iluminada por el sol, el cielo "
+                      "y las luces con sus sombras. Necesita la luz volumetrica del post-proceso."},
+        {"CrowdSpawner", "Crea en Play muchas copias de un prefab en la navmesh y las mueve (deambular, recorrer puntos, seguir "
+                         "u huir), repartiendo las decisiones entre frames y ocultando las lejanas."},
+        {"CrowdAgent", "Lo pone el Crowd Spawner en cada agente que crea."},
+        {"UIDropdown", "Desplegable: opciones, la elegida y el evento al cambiar (indice desde 1). Lua: "
+                       "<code>entity.dropdownValue</code>, <code>entity:setDropdownOptions{...}</code>."},
+        {"UIScrollView", "Zona con desplazamiento (rueda, arrastre con inercia y barra) que recorta a sus hijos. Con un hijo "
+                         "con Layout Group y <em>Ajustar al contenido</em> crece solo."},
+        {"UILayoutGroup", "Coloca a los hijos en columna, fila o rejilla, con separacion, margen y alineacion; "
+                          "<em>Ajustar al contenido</em> hace crecer el rectangulo."},
+        {"UIMask", "Recorta a los hijos a su rectangulo."},
     };
     return kIntros;
 }
@@ -360,6 +397,9 @@ const std::vector<Page>& pages() {
          "Volumenes de sondas de luz rebotada (ver Iluminacion horneada en el editor)."},
         {"componentes-vr", "Realidad virtual", {"Realidad virtual"},
          "XR Origin (el suelo de la habitacion, con la camara que sigue al casco) y los mandos (XR Controller)."},
+        {"componentes-mundo", "Splines y mundos grandes", {"Splines", "Mundo"},
+         "Splines (carreteras, caminos, rios, muros, vallas, tuberias, railes), World Partition y HLOD."},
+        {"componentes-ia", "Multitudes", {"IA"}, "Multitudes de agentes con navmesh (Crowd Spawner)."},
     };
     return kPages;
 }

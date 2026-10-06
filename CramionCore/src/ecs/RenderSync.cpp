@@ -16,6 +16,9 @@
 #include "CramionCore/ecs/MathUtil.h"
 #include "CramionCore/navigation/Navigation.h"
 #include "CramionCore/physics/PhysicsComponents.h"
+#include "CramionCore/spline/Spline.h"
+#include "CramionCore/gameplay/Accessibility.h"
+#include "CramionCore/environment/FogVolume.h"
 #include "CramionCore/terrain/TerrainTools.h"
 
 #include <CramionFX/asset/ImageFile.h>
@@ -46,6 +49,17 @@ cvar::CVar<float> g_upload_ms("render.streaming.UploadMs", 4.0f,
                               cvar::Saved, 0.5f, 100.0f);
 // Residencia en la GPU: lo que no se ve (mas pequeno que unos pixeles un rato)
 // libera su memoria de video y vuelve solo al acercarse.
+cvar::CVar<bool> g_dynamic_probes("render.gi.DynamicProbes", true,
+                                   "Sondas dinamicas (DDGI): con iluminacion horneada y trazado de rayos, las sondas se "
+                                   "actualizan en tiempo real (hora del dia, luces que se mueven)",
+                                   cvar::Saved);
+cvar::CVar<int> g_probes_per_frame("render.gi.ProbesPerFrame", 256, "Sondas dinamicas que se rehacen cada frame",
+                                   cvar::Saved, 16, 8192);
+cvar::CVar<bool> g_texture_mips("render.streaming.TextureMips", true,
+                                 "Streaming de texturas: cada modelo sube sus texturas al detalle que pide su tamano en pantalla",
+                                 cvar::Saved);
+cvar::CVar<int> g_texture_bias("render.streaming.TextureBias", 0,
+                               "Streaming de texturas: +1 = la mitad de detalle (menos VRAM), -1 = el doble", cvar::Saved, -3, 3);
 cvar::CVar<bool> g_gpu_residency("render.streaming.GpuResidency", true,
                                  "Sacar de la memoria de video los modelos que no se ven (mas pequenos que MinPixels "
                                  "durante IdleSeconds); vuelven solos al acercarse",
@@ -121,6 +135,8 @@ void copyFactors(asset::MaterialData& to, const asset::MaterialData& from) {
     to.subsurface_thickness = from.subsurface_thickness;
     to.anisotropy = from.anisotropy;
     to.anisotropy_rotation = from.anisotropy_rotation;
+    to.hair_shift = from.hair_shift;
+    to.hair_secondary = from.hair_secondary;
     to.ior = from.ior;
     to.transmission_thickness = from.transmission_thickness;
 }
@@ -400,8 +416,29 @@ asset::ModelData RenderSync::buildVariant(const asset::ModelData& base, const st
     };
 
     std::vector<std::uint8_t> transformed(v.vertices.size(), 0);
+    // Huecos que no usa ninguna submalla (la puerta de una casa usa 3 de sus
+    // 14 materiales): sin texturas. Antes se leian, decodificaban y subian las
+    // de todos los huecos en cada pieza (cientos de MB por modelo).
+    std::vector<bool> used(base.materials.size(), false);
+    for (const asset::SubMesh& submesh : base.submeshes) {
+        if (submesh.material < used.size()) used[submesh.material] = true;
+    }
     for (std::size_t m = 0; m < base.materials.size(); ++m) {
         const asset::MaterialData& original = base.materials[m];
+        if (!used[m]) {
+            asset::MaterialData empty = original;
+            empty.albedo_texture = -1;
+            empty.metallic_roughness_texture = -1;
+            empty.normal_texture = -1;
+            empty.occlusion_texture = -1;
+            empty.emissive_texture = -1;
+            empty.surface_textures = {-1, -1, -1, -1};
+            empty.albedo_render_texture = -1;
+            empty.emissive_render_texture = -1;
+            empty.height_scale = 0.0f;
+            v.materials.push_back(empty);
+            continue;
+        }
         std::shared_ptr<const assets::MaterialAsset> mat =
             m < overrides.size() && overrides[m].valid() ? material(overrides[m]) : nullptr;
         if (!mat) {
@@ -1777,11 +1814,14 @@ void RenderSync::sync(World& world, scene::Scene& scene, gfx::VulkanRenderer& re
     renderer_ = &renderer;  // los .crshader se compilan al construir variantes
     // Mallas editables (modelado) -> su malla del MeshRenderer.
     modeling::updateEditableMeshes(world);
+    // Splines con extrusion (carreteras, muros, rios...) -> su malla / su rio.
+    spline::updateSplineMeshes(world, terrain_store_);
     // La animacion la lleva el componente Animator, no scene.update().
     scene.setAnimateActors(false);
     syncActors(world, scene, renderer, delta_seconds);
     environment_delta_ = delta_seconds;
     syncLightsAndEnvironment(world, scene, renderer);
+    environment::syncFogVolumes(world, renderer, scene.camera().position());  // niebla local (FogVolume)
     syncTerrains(world, renderer, scene.camera().position());
     syncFoliage(world, renderer);
     if (options.apply_main_camera) {
@@ -2157,6 +2197,8 @@ void RenderSync::syncActors(World& world, scene::Scene& scene, gfx::VulkanRender
     // Modelos que terminaron de leer los hilos de fondo (streaming).
     assets_.pollLoads();
     renderer.setModelStreaming(g_gpu_residency.get(), g_min_pixels.get(), g_idle_seconds.get());
+    renderer.setTextureStreaming(g_texture_mips.get(), g_texture_bias.get());
+    renderer.setDynamicProbes(g_dynamic_probes.get(), static_cast<std::uint32_t>(g_probes_per_frame.get()));
     // Materiales guardados desde el editor: factores en vivo o variantes rehechas.
     applyMaterialChanges(scene, renderer);
     // Los actores se rellenan en su sitio (sin reconstruir el vector ni copiar
@@ -2924,8 +2966,21 @@ void RenderSync::syncCamera(World& world, scene::Scene& scene) {
     }
     const Camera& camera = main.get<Camera>();
     scene::Camera& view = scene.camera();
-    view.setPosition(main.worldPosition());
-    view.setOrientation(main.forward(), main.up());
+    Vec3 shake_pos{}, shake_rot{};
+    if (gameplay::cameraShakeOffset(environment_delta_, shake_pos, shake_rot)) {
+        // Temblor de camara (Camera.shake): en los ejes de la camara.
+        const Vec3 forward = main.forward();
+        const Vec3 up = main.up();
+        const Vec3 right = core::normalize(core::cross(forward, up));
+        const float pitch = shake_rot.x * kDegToRad, yaw = shake_rot.y * kDegToRad, roll = shake_rot.z * kDegToRad;
+        const Vec3 f = core::normalize(forward + up * pitch + right * yaw);
+        const Vec3 u = core::normalize(up + right * roll);
+        view.setPosition(main.worldPosition() + right * shake_pos.x + up * shake_pos.y);
+        view.setOrientation(f, u);
+    } else {
+        view.setPosition(main.worldPosition());
+        view.setOrientation(main.forward(), main.up());
+    }
     view.setFovY(camera.fov * kDegToRad);
     view.setOrthographic(camera.orthographic, camera.ortho_size);
     // Plano cercano y lejano del componente (lo que queda mas alla del lejano

@@ -276,4 +276,15 @@ void installCrashHandler(const std::string& app_name) {
     for (int signal : {SIGSEGV, SIGABRT, SIGBUS, SIGFPE, SIGILL}) sigaction(signal, &action, &g_previous[signal]);
 }
 
+// En Android el informe es el de onSignal (sin migas ni contexto por ahora).
+void crashBreadcrumb(const std::string&) {}
+void setCrashContext(const std::string&, const std::string&) {}
+void setCrashLogFile(const std::filesystem::path&) {}
+std::filesystem::path pendingCrashReport(const std::string&) { return {}; }
+std::string readCrashReport(const std::filesystem::path&) { return {}; }
+void testCrash(int) {
+    volatile int* p = nullptr;
+    *p = 42;
+}
+
 }  // namespace cramion::editor

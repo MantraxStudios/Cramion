@@ -9,6 +9,7 @@
 
 #include <array>
 #include <cstdint>
+#include <memory>
 #include <vector>
 
 namespace cramion::gfx {
@@ -60,7 +61,10 @@ public:
     };
     static constexpr std::uint32_t kNoGroup = UINT32_MAX;  // transparente: no se dibuja
 
-    void create(const VulkanDevice& device, const asset::ModelData& model, const SkinnedPass& pass);
+    // `texture_lod`: mips grandes que no se suben (0 = todo; 1 = la mitad de
+    // lado, 2 = un cuarto...): streaming de texturas por distancia.
+    void create(const VulkanDevice& device, const asset::ModelData& model, const SkinnedPass& pass, int texture_lod = 0);
+    int textureLod() const { return texture_lod_; }
 
     // Bits del relieve en GpuSkinnedPush::flags (parallax o teselado,
     // auto-sombra y teselacion maxima) sobre `flags`. `has_height`: el
@@ -109,7 +113,7 @@ public:
     std::uint32_t slotCount() const { return slot_count_; }
 
     // Todas las texturas del modelo, con las tres de por defecto al final.
-    const std::vector<VulkanTexture>& textures() const { return textures_; }
+    const std::vector<std::shared_ptr<VulkanTexture>>& textures() const { return textures_; }
 
     // Huecos de material que leen un Render Texture (material, binding, id).
     struct RenderTextureRef {
@@ -158,8 +162,11 @@ private:
 
     // Texturas del modelo; al final, tres texeles por defecto para los mapas
     // que falten (blanco, normal plana y negro), asi el shader no necesita
-    // ramas aparte.
-    std::vector<VulkanTexture> textures_;
+    // ramas aparte. Compartidas: los modelos que usan la misma imagen (las
+    // casas de un pueblo con sus materiales comunes) la tienen una sola vez
+    // en la GPU (cache por contenido en SkinnedModel.cpp).
+    std::vector<std::shared_ptr<VulkanTexture>> textures_;
+    int texture_lod_ = 0;
     std::size_t white_index_ = 0;
     std::size_t black_index_ = 0;
     std::vector<RenderTextureRef> render_texture_refs_;

@@ -147,7 +147,7 @@
     <tr><td><code>T* script() const</code></td><td>El script de C++ de tipo T de este objeto (nullptr si no tiene): como GetComponent&lt;T&gt;() de Unity. auto* marcador = Scene::find(&quot;Marcador&quot;).script&lt;Marcador&gt;();</td></tr>
     <tr><td><code>Value addCharacterVelocity(...) const</code></td><td></td></tr>
     <tr><td><code>Value addClothImpulse(arg) const</code></td><td>) empujon a su tela (m/s a cada particula libre)</td></tr>
-    <tr><td><code>Value addComponent(texto) const</code></td><td>anade un componente por su nombre</td></tr>
+    <tr><td><code>Value addComponent(texto) const</code></td><td>anade un componente por su nombre (caja/esfera/capsula: con la medida de la malla)</td></tr>
     <tr><td><code>Value addForce2D(arg, texto) const</code></td><td>entity:addForce2D(Vec3(0, 5, 0), &quot;impulse&quot;) Rigidbody2D: fuerza (force, impulse, velocity)</td></tr>
     <tr><td><code>Value addForceAtPosition2D(fuerza, punto, texto) const</code></td><td>entity:addForceAtPosition2D(fuerza, punto, &quot;impulse&quot;) fuerza en un punto (tambien gira)</td></tr>
     <tr><td><code>Value addImpulse(vec) const</code></td><td>impulso</td></tr>
@@ -176,6 +176,7 @@
     <tr><td><code>Value effectParticles() const</code></td><td>entity.effectParticles: particulas vivas de su VisualEffect</td></tr>
     <tr><td><code>void setEffectParticles(const Value&amp; v) const</code></td><td></td></tr>
     <tr><td><code>Value find(texto) const</code></td><td>un hijo por nombre</td></tr>
+    <tr><td><code>Value fitColliderToMesh(...) const</code></td><td>ajusta su BoxCollider/SphereCollider/CapsuleCollider al AABB de su malla</td></tr>
     <tr><td><code>Value flipX() const</code></td><td>entity.flipX: voltea su sprite</td></tr>
     <tr><td><code>void setFlipX(const Value&amp; v) const</code></td><td></td></tr>
     <tr><td><code>Value fracture(punto, fuerza) const</code></td><td>Destructible: se rompe ya (fuerza en m/s hacia fuera)</td></tr>

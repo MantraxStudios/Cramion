@@ -523,10 +523,12 @@ void VulkanRenderer::initialize(const EngineInfo& info, NativeWindow window, std
         // las sombras de focos y puntuales + sus matrices, y la irradiancia
         // del cielo (armonicos esfericos: la luz del cielo que dispersa el
         // polvo en todas direcciones).
-        const std::array<Type, 9> volumetric_bindings = {
+        // Binding 9: los volumenes de niebla locales.
+        const std::array<Type, 10> volumetric_bindings = {
             Type::eUniformBuffer,        Type::eUniformBuffer,        Type::eUniformBuffer,
             Type::eCombinedImageSampler, Type::eCombinedImageSampler, Type::eCombinedImageSampler,
-            Type::eCombinedImageSampler, Type::eUniformBuffer,        Type::eStorageBuffer};
+            Type::eCombinedImageSampler, Type::eUniformBuffer,        Type::eStorageBuffer,
+            Type::eUniformBuffer};
         FullscreenPassDesc volumetric{};
         volumetric.fragment_shader = "volumetric.frag.spv";
         volumetric.bindings = volumetric_bindings;
@@ -938,6 +940,10 @@ void VulkanRenderer::shutdown() {
     for (VulkanBuffer& buffer : light_buffers_) {
         buffer.destroy();
     }
+    for (VulkanBuffer& buffer : fog_volume_buffers_) {
+        buffer.destroy();
+    }
+    fog_volume_buffers_.clear();
     for (VulkanBuffer& buffer : camera_buffers_) {
         buffer.destroy();
     }
@@ -1126,6 +1132,12 @@ void VulkanRenderer::createUniformBuffers() {
                                   vk::BufferUsageFlagBits::eUniformBuffer, host_visible);
         local_shadow_buffers_[i].create(device_, sizeof(GpuLocalShadows),
                                         vk::BufferUsageFlagBits::eUniformBuffer, host_visible);
+    }
+    fog_volume_buffers_.resize(kMaxFramesInFlight);
+    for (VulkanBuffer& buffer : fog_volume_buffers_) {
+        buffer.create(device_, sizeof(GpuFogVolumes), vk::BufferUsageFlagBits::eUniformBuffer, host_visible);
+        const GpuFogVolumes none{};
+        buffer.write(&none, sizeof(none));
     }
     weather_buffers_.resize(kMaxFramesInFlight);
     for (VulkanBuffer& buffer : weather_buffers_) {
@@ -1380,7 +1392,7 @@ void VulkanRenderer::createDescriptors() {
     // camara + 3 texturas por frame.
         // (+ la luz volumetrica: 4 buffers y 4 texturas por frame.)
         // (+ la composicion por frame: 3 texturas, su exposicion y sus ajustes.)
-        vk::DescriptorPoolSize{vk::DescriptorType::eUniformBuffer, kMaxFramesInFlight * 12},
+        vk::DescriptorPoolSize{vk::DescriptorType::eUniformBuffer, kMaxFramesInFlight * 13},
         vk::DescriptorPoolSize{vk::DescriptorType::eCombinedImageSampler,
                                kMaxFramesInFlight * 28 + kBloomSets + 2 + 1 + 1 + 6 + 3 + 4},
         vk::DescriptorPoolSize{vk::DescriptorType::eStorageBuffer, 3 + kMaxFramesInFlight * 2}};
@@ -2679,6 +2691,14 @@ void VulkanRenderer::updatePostDescriptors() {
             sky_write.descriptorType = vk::DescriptorType::eStorageBuffer;
             sky_write.setBufferInfo(sky_info);
             device_.handle().updateDescriptorSets(sky_write, nullptr);
+
+            vk::DescriptorBufferInfo fog_info{*fog_volume_buffers_[i].handle(), 0, sizeof(GpuFogVolumes)};
+            vk::WriteDescriptorSet fog_write{};
+            fog_write.dstSet = *volumetric_sets_[i];
+            fog_write.dstBinding = 9;
+            fog_write.descriptorType = vk::DescriptorType::eUniformBuffer;
+            fog_write.setBufferInfo(fog_info);
+            device_.handle().updateDescriptorSets(fog_write, nullptr);
         }
 
         // SSGI: camara + profundidad + normales + imagen del frame anterior.
@@ -3450,7 +3470,7 @@ void VulkanRenderer::uploadModel(const scene::Scene& scene, std::uint32_t index)
     const auto upload_start = std::chrono::steady_clock::now();
     ++frame_timings_.uploads;
     SkinnedModel fresh;
-    fresh.create(device_, *scene.models()[index], skinned_pass_);
+    fresh.create(device_, *scene.models()[index], skinned_pass_, upload_texture_lod_);
     // Los rayos lo veran cuando se rehaga su escena (al rato, por si se sigue
     // editando). Volver a la GPU tras el streaming no es un cambio: la escena de
     // rayos conserva su copia, salvo que se construyera mientras estaba fuera.
@@ -4225,6 +4245,12 @@ void VulkanRenderer::drawFrame(const scene::Scene& scene, bool present) {
             post_.global_illumination = false;
             post_.reflections = false;
             post_.contact_shadows = false;
+        }
+        if (accessibility_.reduce_motion) {
+            // Accesibilidad: sin lo que marea.
+            post_.motion_blur = false;
+            post_.lens_distortion = 0.0f;
+            post_.chromatic_aberration = 0.0f;
         }
         if (xr_view_frame_) {
             // VR: lo que marea o no tiene sentido pegado a los ojos.
@@ -5569,10 +5595,34 @@ void VulkanRenderer::recordVolumetricPass(const vk::raii::CommandBuffer& cmd,
     }
     pipelineBarrier(cmd, discardToAttachment(*volumetric_image_.handle()));
 
+    // Volumenes de niebla locales: mundo -> local y el color en lineal. El
+    // rayo llega hasta el mas lejano (hasta 250 m).
+    GpuFogVolumes fog{};
+    float fog_reach = 0.0f;
+    const Vec3 eye = camera_position_;
+    for (const FogVolume& v : fog_volumes_) {
+        if (fog.count[0] >= kMaxFogVolumes || v.density <= 0.0f) continue;
+        GpuFogVolume& g = fog.volumes[fog.count[0]++];
+        g.to_local = core::inverse(v.world);
+        const auto lin = [](float c) { return std::pow(std::clamp(c, 0.0f, 1.0f), 2.2f); };
+        g.color_density = Vec4{lin(v.color.x), lin(v.color.y), lin(v.color.z), v.density};
+        g.params = Vec4{static_cast<float>(v.shape), std::clamp(v.edge_falloff, 0.0f, 1.0f),
+                        std::clamp(v.noise, 0.0f, 1.0f), std::max(v.noise_scale, 0.001f)};
+        const Vec3 center{v.world.m[3][0], v.world.m[3][1], v.world.m[3][2]};
+        const float extent = 0.87f * std::max({std::sqrt(v.world.m[0][0] * v.world.m[0][0] + v.world.m[0][1] * v.world.m[0][1] + v.world.m[0][2] * v.world.m[0][2]),
+                                               std::sqrt(v.world.m[1][0] * v.world.m[1][0] + v.world.m[1][1] * v.world.m[1][1] + v.world.m[1][2] * v.world.m[1][2]),
+                                               std::sqrt(v.world.m[2][0] * v.world.m[2][0] + v.world.m[2][1] * v.world.m[2][1] + v.world.m[2][2] * v.world.m[2][2])});
+        const Vec3 d{center.x - eye.x, center.y - eye.y, center.z - eye.z};
+        fog_reach = std::max(fog_reach, std::sqrt(d.x * d.x + d.y * d.y + d.z * d.z) + extent);
+    }
+    fog_volume_buffers_[frame_index].write(&fog, sizeof(fog));
+
     GpuVolumetricPush push{};
     // Anisotropia 0.6: polvo y humo finos dispersan sobre todo hacia delante.
-    // 60 m: mas alla el mapa de sombras ya es grueso y el efecto no aporta.
-    push.params = Vec4{post_.volumetric_density, post_.volumetric_anisotropy, weather_time_, 60.0f};
+    // 60 m: mas alla el mapa de sombras ya es grueso y el efecto no aporta
+    // (salvo para llegar a los volumenes de niebla).
+    push.params = Vec4{post_.volumetric_density, post_.volumetric_anisotropy, weather_time_,
+                       std::clamp(fog_reach, 60.0f, 250.0f)};
     push.quality = Vec4{static_cast<float>(std::clamp(post_.volumetric_steps, 8, 32)), 0.0f, 0.0f, 0.0f};
     drawFullscreen(cmd, volumetric_pass_, &volumetric_sets_[frame_index], volumetric_image_,
                    &push);
@@ -5834,6 +5884,15 @@ void VulkanRenderer::recordSsgiPass(const vk::raii::CommandBuffer& cmd,
                                       vk::PipelineStageFlagBits2::eComputeShader,
                                       vk::AccessFlagBits2::eShaderSampledRead);
     } else if (baked) {
+        // Sondas dinamicas (DDGI): unas cuantas se rehacen con rayos antes de usarlas.
+        if (dynamicProbesActive()) {
+            RayTracing::Push probe_push{};
+            const std::uint32_t n = std::min(dynamic_probes_per_frame_, baked_probe_count_);
+            probe_push.params = Vec4{static_cast<float>(frame_count_ % 1024), static_cast<float>(dynamic_probe_cursor_),
+                                     static_cast<float>(n), 0.85f};
+            ray_tracing_.recordProbeUpdate(cmd, frame_index, *probe_update_layout_, *probe_update_sets_[0], probe_push, n);
+            dynamic_probe_cursor_ = (dynamic_probe_cursor_ + n) % std::max(baked_probe_count_, 1u);
+        }
         drawFullscreen(cmd, baked_gi_pass_, &baked_gi_sets_[frame_index], gi_raw_, &push);
         raw_to_sampled.dstStageMask = vk::PipelineStageFlagBits2::eComputeShader;
     } else {
@@ -8406,9 +8465,10 @@ void VulkanRenderer::recordCompositePass(const vk::raii::CommandBuffer& cmd,
                          1.0f / static_cast<float>(std::max(screen.width, 1u)),
                          1.0f / static_cast<float>(std::max(screen.height, 1u))};
     settings.white_balance = toVec4(whiteBalanceLms(p.temperature, p.tint), 0.0f);
-    settings.color_filter = toVec4(p.color_filter, 0.0f);
-    settings.lift = toVec4(p.lift, 0.0f);
-    settings.gamma = toVec4(p.gamma, 0.0f);
+    // w: filtro de daltonismo (modo, fuerza, corregir).
+    settings.color_filter = toVec4(p.color_filter, static_cast<float>(std::clamp(accessibility_.colorblind_mode, 0, 4)));
+    settings.lift = toVec4(p.lift, std::clamp(accessibility_.colorblind_strength, 0.0f, 1.0f));
+    settings.gamma = toVec4(p.gamma, accessibility_.colorblind_correct ? 1.0f : 0.0f);
     settings.gain = toVec4(p.gain, 0.0f);
     settings.vignette_color = toVec4(p.vignette_color, 0.0f);
     settings.bloom_tint = toVec4(p.bloom_tint, 0.0f);

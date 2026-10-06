@@ -16,6 +16,11 @@
 // primera vez (o cuando cambia la compilacion) y el tactil se convierte en
 // raton, teclas y ejes con los controles en pantalla (dm::TouchControls).
 
+#include <CramionCore/spline/Spline.h>
+#include <CramionCore/world/WorldPartition.h>
+#include <CramionCore/gameplay/Accessibility.h>
+#include <CramionCore/project/Mods.h>
+#include <CramionCore/ai/Crowd.h>
 #include <CramionCore/profiling/Profiler.h>
 #include "GraphicsConfig.h"
 #include "ImGuiLayer.h"
@@ -72,6 +77,7 @@
 #include <exception>
 #include <filesystem>
 #include <fstream>
+#include <sstream>
 #include <future>
 #include <iostream>
 #include <memory>
@@ -186,6 +192,7 @@ int runPlayer() {
         // Sin consola: la salida y los crashes van a %LOCALAPPDATA%/Cramion.
         editor::installCrashHandler(game_name);
         static std::ofstream log_file(editor::localDataFolder("Logs") / std::filesystem::path(exe_stem).concat(".log"));
+        editor::setCrashLogFile(editor::localDataFolder("Logs") / std::filesystem::path(exe_stem).concat(".log"));
         if (log_file) {
             std::cout.rdbuf(log_file.rdbuf());
             std::cerr.rdbuf(log_file.rdbuf());
@@ -704,6 +711,40 @@ int runPlayer() {
         scripts.setXr(&renderer.xr(), &xr_rig);
         // Mundos de bloques: texturas del juego y partidas en Saves/<juego>/Worlds.
         voxel::VoxelSystem voxels;
+        worldpart::WorldPartitionSystem partition;  // celdas cerca del jugador (WorldPartition)
+        worldpart::setActivePartition(&partition);
+        ai::CrowdSystem crowds;  // multitudes (CrowdSpawner)
+        crowds.setNavigation(&nav);
+        crowds.setPrefabResolver([&database](const Uuid& uuid) -> std::filesystem::path {
+            const auto info = database.find(uuid);
+            if (!info) return {};
+            return info->path.is_absolute() ? info->path : database.root() / info->path;
+        });
+        ai::setActiveCrowds(&crowds);
+        // Mods (mods=1 en game.ini): Mods/ junto al juego y en los datos del jugador.
+        project::ModManager mods;
+        const bool mods_allowed = readIniValue(game / "game.ini", "mods") == "1";
+        const std::filesystem::path mods_journal = editor::localDataFolder("Games") / std::filesystem::path(exe_stem).concat(".mods.journal");
+        if (mods_allowed) {
+#if defined(_WIN32)
+            wchar_t exe_dir[MAX_PATH] = L"";
+            GetModuleFileNameW(nullptr, exe_dir, MAX_PATH);
+            const std::filesystem::path game_dir = std::filesystem::path(exe_dir).parent_path();
+#else
+            const std::filesystem::path game_dir = root;
+#endif
+            mods.setSearchFolders({game_dir / "Mods", editor::localDataFolder("Mods") / exe_stem});
+            mods.setStateFile(editor::localDataFolder("Saves") / std::filesystem::path(exe_stem) / "mods.json");
+            project::cleanupDataPackJournal(mods_journal, project->assetsFolder());
+            mods.scan();
+            std::vector<std::string> mod_errors;
+            if (mods.mountEnabled(project->assetsFolder(), mods_journal, &mod_errors) > 0) database.refresh();
+            for (const std::string& e : mod_errors) std::cerr << "[Mods] " << e << "\n";
+            project::setActiveMods(&mods);
+        }
+        // Opciones de accesibilidad del jugador (Lua: Accessibility.set / save).
+        gameplay::setAccessibilityFile(editor::localDataFolder("Saves") / std::filesystem::path(exe_stem) / "accessibility.json");
+        gameplay::loadAccessibility();
         voxels.setAssetsRoot(project->assetsFolder());
         voxels.setSaveRoot(editor::localDataFolder("Saves") / std::filesystem::path(exe_stem) / "Worlds");
         scripts.setVoxels(&voxels);
@@ -754,7 +795,8 @@ int runPlayer() {
         vfx_system.setAssetsRoot(project->assetsFolder());
         vfx_system.setGraphResolver([&database](const Uuid& uuid) -> std::filesystem::path {
             const auto info = database.find(uuid);
-            return info ? info->path : std::filesystem::path{};
+            if (!info) return {};
+            return info->path.is_absolute() ? info->path : database.root() / info->path;
         });
         vfx_system.setModelProvider([&asset_manager](const Uuid& uuid) { return asset_manager.loadModel(uuid); });
         twod::System2D twod_system;
@@ -966,10 +1008,17 @@ int runPlayer() {
                 }
                 case Stage::Systems: {
                     if (load.frames++ == 0) break;
+                    {
+                        // World Partition: lo lejano sale del mundo antes de la fisica.
+                        core::Vec3 position, forward;
+                        main_camera(position, forward);
+                        partition.begin(world, position);
+                    }
                     physics.start(world);
                     twod_system.start(world);  // fisica 2D del nivel
                     // La malla lista antes de que empiecen los scripts.
                     nav.waitForBuild(world, 20.0f);
+                    crowds.begin(world);  // las multitudes, con la malla ya lista
                     // Los bloques de alrededor listos antes de empezar (no se cae del mundo).
                     voxels.start(world);
                     if (voxels.active()) {
@@ -980,6 +1029,16 @@ int runPlayer() {
                     audio.start(world);
                     scripts.start(world);
                     if (!cpp_scripts.dll().empty()) cpp_scripts.start(world);
+                    // Los scripts de entrada de los mods, tras los del juego.
+                    for (const project::ModMount& m : mods.mounted()) {
+                        if (m.entry_asset.empty()) continue;
+                        std::ifstream mod_file(project->assetsFolder() / std::filesystem::path(std::u8string(m.entry_asset.begin(), m.entry_asset.end())),
+                                               std::ios::binary);
+                        std::stringstream mod_code;
+                        mod_code << mod_file.rdbuf();
+                        std::string output;
+                        if (!scripts.run(mod_code.str(), &output, &world)) std::cerr << "[Mods] " << m.id << ": " << output << "\n";
+                    }
                     load.stage = Stage::Done;
                     std::cout << "[Juego] Escena lista\n";
                     break;
@@ -1192,6 +1251,13 @@ int runPlayer() {
                 fluids.update(world, dt, true, &physics, renderer);
                 twod_system.update(world, dt, twod::System2D::Mode::Play);
                 fire::updateFires(world, dt, fire::FireMode::Play, &terrains);
+                spline::updateSplineFollowers(world, dt);
+                partition.update(world, scene.camera().position());
+                crowds.update(world, dt, scene.camera().position());
+                {
+                    const gameplay::AccessibilitySettings& a = gameplay::accessibility();
+                    renderer.setAccessibility({a.colorblind_mode, a.colorblind_strength, a.colorblind_correct, a.reduce_motion});
+                }
                 {
                     CR_PROFILE_SCOPE("Navegacion");
                     nav.update(world, dt, true, nav_settings.runtime_generation);
@@ -1382,6 +1448,10 @@ int runPlayer() {
         paso("Lua", [&] { scripts.stop(); });
         paso("C++", [&] { cpp_scripts.stop(); });
         paso("datapacks", [&] { scripts.unmountDataPacks(); });  // lo montado con DataPack.load sale de los assets del juego
+        paso("mods", [&] {
+            mods.unmountAll(project->assetsFolder(), mods_journal);
+            project::setActiveMods(nullptr);
+        });
         paso("red", [&] { scripts.shutdownNetwork(); });  // avisa a los demas jugadores
         paso("audio", [&] { audio.stop(); });
         paso("fisica", [&] { physics.stop(); });

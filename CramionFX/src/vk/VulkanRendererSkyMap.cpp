@@ -229,6 +229,48 @@ void VulkanRenderer::streamModels(const scene::Scene& scene) {
         streaming_restore_ = false;
         if (std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - start).count() > 4.0f) break;
     }
+    // Streaming de texturas por mips: el detalle que pide cada modelo por lo
+    // que mide en pantalla. Mas detalle: ya (los mas grandes antes); menos:
+    // tras 3 s pidiendolo. Uno por frame (cada cambio vuelve a subir el modelo).
+    if (texture_streaming_ && std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - start).count() < 4.0f) {
+        if (model_lod_since_.size() < count) model_lod_since_.resize(count, now);
+        const auto wanted_lod = [&](float pixels) {
+            int lod = pixels >= 400.0f ? 0 : pixels >= 150.0f ? 1 : pixels >= 50.0f ? 2 : 3;
+            return std::clamp(lod + texture_lod_bias_, 0, 3);
+        };
+        int best = -1;
+        float best_pixels = -1.0f;
+        int best_lod = 0;
+        for (std::uint32_t i = 0; i < count; ++i) {
+            if (model_evicted_[i] || skinned_models_[i].submeshes().empty()) continue;
+            const float pixels = i < model_pixels_.size() ? model_pixels_[i] : 0.0f;
+            const int current = skinned_models_[i].textureLod();
+            const int want = wanted_lod(pixels);
+            if (want >= current) {
+                if (want == current) model_lod_since_[i] = now;
+                if (want > current && std::chrono::duration<float>(now - model_lod_since_[i]).count() > 3.0f &&
+                    best < 0) {
+                    best = static_cast<int>(i);
+                    best_lod = want;
+                }
+                continue;
+            }
+            model_lod_since_[i] = now;
+            if (pixels > best_pixels) {  // le falta detalle: el mas grande primero
+                best_pixels = pixels;
+                best = static_cast<int>(i);
+                best_lod = want;
+            }
+        }
+        if (best >= 0) {
+            streaming_restore_ = true;
+            upload_texture_lod_ = best_lod;
+            uploadModel(scene, static_cast<std::uint32_t>(best));
+            upload_texture_lod_ = 0;
+            streaming_restore_ = false;
+            model_lod_since_[static_cast<std::size_t>(best)] = now;
+        }
+    }
     if (!model_streaming_) return;
     // Salen los que llevan un rato sin verse (como mucho 8 por frame).
     std::uint32_t evicted = 0;

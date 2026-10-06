@@ -131,6 +131,10 @@ public:
     ImTextureID thumbnail(const std::filesystem::path& file, ImVec2* size = nullptr);
     // La imagen a su tamano (hasta 4096): la interfaz del juego y el banner.
     ImTextureID image(const std::filesystem::path& file, ImVec2* size = nullptr);
+    // Fuente de la UI del juego desde un .ttf/.otf (Assets): se carga la
+    // primera vez (el atlas dinamico de ImGui la rasteriza a cada tamano, asi
+    // que se ve nitida a cualquier escala). nullptr si no se pudo.
+    ImFont* uiFont(const std::filesystem::path& file);
     // Una vez por frame: sube las miniaturas decodificadas y libera las que
     // hace tiempo que no se usan.
     void updateThumbnails();
@@ -151,6 +155,7 @@ private:
     ImTextureID logo_ = 0;
     ImTextureID banner_ = 0;
     ImFont* mono_font_ = nullptr;
+    std::unordered_map<std::string, ImFont*> ui_fonts_;
     std::vector<std::uint32_t> icon_textures_;
 
     struct Thumbnail {

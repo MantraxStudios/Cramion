@@ -1452,11 +1452,11 @@ void main() {
         // Anisotropo: el reflejo del entorno se estira como el brillo
         // (normal doblada, Filament / McAuley).
         vec3 reflection_normal = normal;
-        if (surface_model.model == kShadingAnisotropic) {
+        if (surface_model.model == kShadingAnisotropic || surface_model.model == kShadingHair) {
             vec3 aniso_direction = surface_model.bitangent;
             vec3 aniso_tangent = cross(aniso_direction, view_direction);
             vec3 aniso_normal = cross(aniso_tangent, aniso_direction);
-            float bend = surface_model.params.x * clamp(5.0 * roughness, 0.0, 1.0);
+            float bend = (surface_model.model == kShadingHair ? 0.8 : surface_model.params.x) * clamp(5.0 * roughness, 0.0, 1.0);
             reflection_normal = normalize(mix(normal, aniso_normal, bend));
         }
         vec3 reflected = reflect(-view_direction, reflection_normal);

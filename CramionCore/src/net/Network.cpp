@@ -2,11 +2,15 @@
 
 #include "CramionCore/net/Network.h"
 
+#include "CramionCore/cvar/CVar.h"
+
 #include <enet/enet.h>
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstring>
+#include <random>
 #include <mutex>
 #include <set>
 
@@ -41,6 +45,8 @@ enum Msg : std::uint8_t {
     kTransform = 7,  // posicion y giro
     kVar = 8,        // variable de red
     kScene = 9,      // cargar escena
+    kCorrect = 10,   // servidor -> dueno: vuelve a esta posicion
+    kVoice = 11,     // voz: quien habla + 20 ms en mu-law
 };
 
 constexpr std::uint8_t kChannelReliable = 0;
@@ -79,6 +85,59 @@ void putQuat(std::string& out, const core::Quat& q) {
     putF(out, q.z);
     putF(out, q.w);
 }
+
+// Giro comprimido (smallest three): el componente mayor se reconstruye; los
+// otros tres van en 10 bits cada uno (+-1/sqrt(2)) y 2 bits dicen cual falta.
+void putQuatPacked(std::string& out, core::Quat q) {
+    const float c[4] = {q.x, q.y, q.z, q.w};
+    int largest = 0;
+    for (int i = 1; i < 4; ++i) {
+        if (std::abs(c[i]) > std::abs(c[largest])) largest = i;
+    }
+    const float sign = c[largest] < 0.0f ? -1.0f : 1.0f;
+    std::uint32_t packed = static_cast<std::uint32_t>(largest) << 30;
+    int shift = 20;
+    for (int i = 0; i < 4; ++i) {
+        if (i == largest) continue;
+        const float v = std::clamp(c[i] * sign * 1.41421356f, -1.0f, 1.0f);  // -1..1
+        const auto bits = static_cast<std::uint32_t>(std::lround((v * 0.5f + 0.5f) * 1023.0f));
+        packed |= (bits & 1023u) << shift;
+        shift -= 10;
+    }
+    put32(out, packed);
+}
+
+core::Quat unpackQuat(std::uint32_t packed) {
+    const int largest = static_cast<int>(packed >> 30);
+    float c[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+    float sum = 0.0f;
+    int shift = 20;
+    for (int i = 0; i < 4; ++i) {
+        if (i == largest) continue;
+        const float v = (static_cast<float>((packed >> shift) & 1023u) / 1023.0f * 2.0f - 1.0f) / 1.41421356f;
+        c[i] = v;
+        sum += v * v;
+        shift -= 10;
+    }
+    c[largest] = std::sqrt(std::max(1.0f - sum, 0.0f));
+    core::Quat q;
+    q.x = c[0];
+    q.y = c[1];
+    q.z = c[2];
+    q.w = c[3];
+    return core::normalize(q);
+}
+
+cvar::CVar<int> g_sim_latency("net.SimLatencyMs", 0, "Simulador de red: retraso anadido a cada paquete (ms)", cvar::None, 0, 5000);
+cvar::CVar<int> g_sim_jitter("net.SimJitterMs", 0, "Simulador de red: variacion aleatoria del retraso (ms)", cvar::None, 0, 2000);
+cvar::CVar<int> g_sim_loss("net.SimLossPercent", 0, "Simulador de red: paquetes no fiables que se pierden (%)", cvar::None, 0, 100);
+
+double sessionClock() {
+    static const auto start = std::chrono::steady_clock::now();
+    return std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+}
+
+constexpr double kHistorySeconds = 1.5;
 
 struct Reader {
     const std::string& data;
@@ -352,6 +411,11 @@ void NetworkSession::close() {
     impl_->server = nullptr;
     impl_->peers.clear();
     impl_->players.clear();
+    history_.clear();
+    focus_.clear();
+    delayed_.clear();
+    send_rate_ = receive_rate_ = 0.0f;
+    rate_time_ = 0.0;
     role_ = NetRole::None;
     local_id_ = 0;
     objects_.clear();
@@ -396,7 +460,19 @@ std::vector<NetEvent> NetworkSession::takeEvents() {
     return out;
 }
 
+// Con el simulador de red los paquetes esperan (y los no fiables se pierden).
 void NetworkSession::sendRaw(std::uint32_t to, const std::string& data, bool reliable) {
+    if (g_sim_latency > 0 || g_sim_jitter > 0 || g_sim_loss > 0) {
+        static std::mt19937 rng{1234u};
+        if (!reliable && static_cast<int>(rng() % 100u) < g_sim_loss) return;
+        const double jitter = g_sim_jitter > 0 ? static_cast<double>(rng() % static_cast<unsigned>(g_sim_jitter + 1)) : 0.0;
+        delayed_.push_back(Delayed{sessionClock() + (g_sim_latency + jitter) / 1000.0, to, false, 0, data, reliable});
+        return;
+    }
+    sendNow(to, data, reliable);
+}
+
+void NetworkSession::sendNow(std::uint32_t to, const std::string& data, bool reliable) {
     ENetPeer* peer = nullptr;
     if (role_ == NetRole::Client) {
         peer = impl_->server;
@@ -409,6 +485,18 @@ void NetworkSession::sendRaw(std::uint32_t to, const std::string& data, bool rel
 }
 
 void NetworkSession::broadcastRaw(const std::string& data, bool reliable, std::uint32_t except) {
+    if (role_ != NetRole::Server) return;
+    if (g_sim_latency > 0 || g_sim_jitter > 0 || g_sim_loss > 0) {
+        static std::mt19937 rng{4321u};
+        if (!reliable && static_cast<int>(rng() % 100u) < g_sim_loss) return;
+        const double jitter = g_sim_jitter > 0 ? static_cast<double>(rng() % static_cast<unsigned>(g_sim_jitter + 1)) : 0.0;
+        delayed_.push_back(Delayed{sessionClock() + (g_sim_latency + jitter) / 1000.0, 0, true, except, data, reliable});
+        return;
+    }
+    broadcastNow(data, reliable, except);
+}
+
+void NetworkSession::broadcastNow(const std::string& data, bool reliable, std::uint32_t except) {
     if (role_ != NetRole::Server) return;
     for (const auto& [id, peer] : impl_->peers) {
         if (id == except) continue;
@@ -469,15 +557,109 @@ void NetworkSession::sendTransform(std::uint32_t net_id, const core::Vec3& posit
     if (it->second.owner != local_id_) return;
     it->second.position = position;
     it->second.rotation = rotation;
+    record(net_id, position, rotation);
     std::string data;
     put8(data, kTransform);
     put32(data, net_id);
+    putF(data, static_cast<float>(time()));
     putVec3(data, position);
-    putQuat(data, rotation);
+    putQuatPacked(data, rotation);
     if (role_ == NetRole::Client) {
         sendRaw(kServerId, data, false);
     } else {
-        broadcastRaw(data, false);
+        if (it->second.owner == local_id_) focus_[local_id_] = position;
+        forwardTransform(data, 0, net_id);
+    }
+}
+
+double NetworkSession::time() const { return sessionClock(); }
+
+void NetworkSession::sendVoice(const std::string& frame) {
+    if (!connected() || frame.empty()) return;
+    std::string data;
+    put8(data, kVoice);
+    put32(data, local_id_);
+    data += frame;
+    if (role_ == NetRole::Client) sendRaw(kServerId, data, false);
+    else broadcastRaw(data, false);
+}
+
+void NetworkSession::setRelevance(std::uint32_t net_id, float meters) {
+    if (const auto it = objects_.find(net_id); it != objects_.end()) it->second.relevance = std::max(meters, 0.0f);
+}
+
+void NetworkSession::setMaxSpeed(std::uint32_t net_id, float meters_per_second) {
+    if (const auto it = objects_.find(net_id); it != objects_.end()) it->second.max_speed = std::max(meters_per_second, 0.0f);
+}
+
+void NetworkSession::record(std::uint32_t net_id, const core::Vec3& position, const core::Quat& rotation) {
+    std::vector<HistorySample>& h = history_[net_id];
+    const double now = time();
+    h.push_back(HistorySample{now, position, rotation});
+    std::size_t drop = 0;
+    while (drop < h.size() && now - h[drop].time > kHistorySeconds) ++drop;
+    if (drop > 0) h.erase(h.begin(), h.begin() + static_cast<std::ptrdiff_t>(drop));
+}
+
+bool NetworkSession::positionAt(std::uint32_t net_id, float seconds_ago, core::Vec3& position, core::Quat& rotation) const {
+    const auto it = history_.find(net_id);
+    if (it == history_.end() || it->second.empty()) {
+        const NetObject* o = object(net_id);
+        if (o == nullptr) return false;
+        position = o->position;
+        rotation = o->rotation;
+        return true;
+    }
+    const std::vector<HistorySample>& h = it->second;
+    const double t = time() - std::max(seconds_ago, 0.0f);
+    if (t <= h.front().time) {
+        position = h.front().position;
+        rotation = h.front().rotation;
+        return true;
+    }
+    for (std::size_t i = 1; i < h.size(); ++i) {
+        if (h[i].time < t) continue;
+        const double span = h[i].time - h[i - 1].time;
+        const float a = span > 1e-6 ? static_cast<float>((t - h[i - 1].time) / span) : 1.0f;
+        position = core::lerp(h[i - 1].position, h[i].position, a);
+        rotation = core::slerp(h[i - 1].rotation, h[i].rotation, a);
+        return true;
+    }
+    position = h.back().position;
+    rotation = h.back().rotation;
+    return true;
+}
+
+float NetworkSession::packetLoss(std::uint32_t player) const {
+    const ENetPeer* peer = nullptr;
+    if (role_ == NetRole::Client) {
+        peer = player == kServerId ? impl_->server : nullptr;
+    } else if (const auto it = impl_->peers.find(player); it != impl_->peers.end()) {
+        peer = it->second;
+    }
+    return peer != nullptr ? static_cast<float>(peer->packetLoss) / static_cast<float>(ENET_PEER_PACKET_LOSS_SCALE) : 0.0f;
+}
+
+bool NetworkSession::relevantTo(const NetObject& o, std::uint32_t player) const {
+    if (o.relevance <= 0.0f || o.owner == player) return true;
+    const auto f = focus_.find(player);
+    if (f == focus_.end()) return true;  // aun no sabemos donde esta
+    const core::Vec3 d = o.position - f->second;
+    return core::dot(d, d) <= o.relevance * o.relevance;
+}
+
+// Servidor: la posicion a cada jugador que la tenga cerca (menos a `from`).
+void NetworkSession::forwardTransform(const std::string& data, std::uint32_t from, std::uint32_t net_id) {
+    const auto it = objects_.find(net_id);
+    if (it == objects_.end()) return;
+    if (it->second.relevance <= 0.0f) {
+        broadcastRaw(data, false, from);
+        return;
+    }
+    for (const auto& [id, peer] : impl_->peers) {
+        (void)peer;
+        if (id == from || !relevantTo(it->second, id)) continue;
+        sendRaw(id, data, false);
     }
 }
 
@@ -618,10 +800,37 @@ void NetworkSession::update() {
                 break;
         }
     }
+    // Simulador de red: lo que ya cumplio su retraso.
+    if (!delayed_.empty() && impl_->host != nullptr) {
+        const double now = time();
+        std::vector<Delayed> keep;
+        for (Delayed& d : delayed_) {
+            if (d.at > now) {
+                keep.push_back(std::move(d));
+                continue;
+            }
+            if (d.broadcast) broadcastNow(d.data, d.reliable, d.except);
+            else sendNow(d.to, d.data, d.reliable);
+        }
+        delayed_.swap(keep);
+    }
     if (impl_->host != nullptr) {
         enet_host_flush(impl_->host);
         bytes_sent_ = impl_->host->totalSentData;
         bytes_received_ = impl_->host->totalReceivedData;
+        const double now = time();
+        if (rate_time_ <= 0.0) {
+            rate_time_ = now;
+            rate_sent_ = bytes_sent_;
+            rate_received_ = bytes_received_;
+        } else if (now - rate_time_ >= 1.0) {
+            const double span = now - rate_time_;
+            send_rate_ = static_cast<float>(static_cast<double>(bytes_sent_ - rate_sent_) / span);
+            receive_rate_ = static_cast<float>(static_cast<double>(bytes_received_ - rate_received_) / span);
+            rate_time_ = now;
+            rate_sent_ = bytes_sent_;
+            rate_received_ = bytes_received_;
+        }
     }
 }
 
@@ -715,17 +924,68 @@ void NetworkSession::handlePacket(std::uint32_t from, const std::string& data) {
             NetEvent e;
             e.type = NetEvent::Type::Transform;
             e.net_id = r.u32();
+            e.time = static_cast<double>(r.f32());
             e.position = r.vec3();
-            e.rotation = r.quat();
+            e.rotation = unpackQuat(r.u32());
             if (!r.ok) return;
             const auto it = objects_.find(e.net_id);
             if (it == objects_.end()) return;
             // El servidor solo acepta la posicion del dueno.
             if (server && it->second.owner != from) return;
             if (it->second.owner == local_id_) return;  // lo mio lo muevo yo
+            if (server && it->second.max_speed > 0.0f) {
+                // Movimiento imposible (trampa o error): se corrige al dueno.
+                const double now = time();
+                const double dt = it->second.last_time < 0.0 ? 1.0 : std::max(now - it->second.last_time, 1.0 / 120.0);
+                const float limit = it->second.max_speed * 1.5f * static_cast<float>(dt) + 1.0f;
+                if (it->second.last_time >= 0.0 && core::length(e.position - it->second.position) > limit) {
+                    std::string fix;
+                    put8(fix, kCorrect);
+                    put32(fix, e.net_id);
+                    putVec3(fix, it->second.position);
+                    putQuat(fix, it->second.rotation);
+                    sendRaw(from, fix, true);
+                    return;
+                }
+                it->second.last_time = now;
+            }
             it->second.position = e.position;
             it->second.rotation = e.rotation;
-            if (server) broadcastRaw(data, false, from);
+            record(e.net_id, e.position, e.rotation);
+            if (server) {
+                if (it->second.owner == from) focus_[from] = e.position;
+                forwardTransform(data, from, e.net_id);
+            }
+            events_.push_back(std::move(e));
+            return;
+        }
+        case kVoice: {
+            NetEvent e;
+            e.type = NetEvent::Type::Voice;
+            e.peer = r.u32();
+            if (!r.ok || data.size() <= r.at) return;
+            if (server) {
+                e.peer = from;  // el servidor sabe quien lo mando de verdad
+                std::string relay = data;
+                std::memcpy(relay.data() + 1, &from, 4);
+                broadcastRaw(relay, false, from);
+            }
+            e.text = data.substr(r.at);
+            events_.push_back(std::move(e));
+            return;
+        }
+        case kCorrect: {
+            if (server) return;
+            NetEvent e;
+            e.type = NetEvent::Type::Correction;
+            e.net_id = r.u32();
+            e.position = r.vec3();
+            e.rotation = r.quat();
+            if (!r.ok) return;
+            if (const auto it = objects_.find(e.net_id); it != objects_.end()) {
+                it->second.position = e.position;
+                it->second.rotation = e.rotation;
+            }
             events_.push_back(std::move(e));
             return;
         }

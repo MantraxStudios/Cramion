@@ -15,6 +15,10 @@
 //                   a = grosor (para la sombra de la cara de atras)
 //   4 Anisotropo    g = anisotropia, b = direccion (0..1 = 0..180 grados
 //                   respecto a la base de la normal), a = tinte especular
+//   6 Pelo          g = desplazamiento de los brillos, b = direccion de la
+//                   hebra (como el anisotropo), a = brillo secundario
+//                   (Kajiya-Kay con los dos lobulos desplazados de
+//                   Scheuermann, "Hair Rendering and Shading", GDC 2004)
 //
 // Las funciones devuelven "BRDF x pi x N.L" (la escala del motor: las luces
 // ya llevan pi, el difuso de Lambert es albedo x N.L).
@@ -26,6 +30,7 @@ const int kShadingSubsurface = 3;
 const int kShadingAnisotropic = 4;
 // 5 = Transmision (vidrio: IOR, grosor, rugosidad): solo en glass.frag.
 const int kShadingTransmission = 5;
+const int kShadingHair = 6;
 
 struct ShadingModel {
     int model;
@@ -61,7 +66,7 @@ ShadingModel decodeShading(vec4 packed, vec3 n) {
     s.params = packed.gba;
     s.tangent = vec3(0.0);
     s.bitangent = vec3(0.0);
-    if (s.model == kShadingAnisotropic) {
+    if (s.model == kShadingAnisotropic || s.model == kShadingHair) {
         vec3 b1;
         vec3 b2;
         shadingBasis(n, b1, b2);
@@ -96,7 +101,7 @@ vec3 disneyTint(vec3 albedo) {
 // del color base (latón barnizado, plasticos de color).
 float shadingSpecularTint(ShadingModel s) {
     if (s.model == kShadingStandard) return s.params.x;
-    if (s.model == kShadingSubsurface) return 0.0;
+    if (s.model == kShadingSubsurface || s.model == kShadingHair) return 0.0;
     return s.params.z;
 }
 
@@ -145,8 +150,39 @@ void disneyAnisoAlphas(float alpha, float anisotropy, out float ax, out float ay
 // especular (disneyF0). `energy`: compensacion de dispersion multiple del
 // especular. `light_size`: tangente del radio angular de la luz (el sol:
 // 0.0047); ensancha el lobulo sin puntos blancos (Karis 2013).
+// Pelo: brillo de Kajiya-Kay alrededor de la hebra `t` (la tangente
+// desplazada hacia la normal: cada lobulo cae en otro sitio).
+float hairStrandSpecular(vec3 t, vec3 h, float exponent) {
+    float t_dot_h = dot(t, h);
+    float sin_th = sqrt(max(1.0 - t_dot_h * t_dot_h, 0.0));
+    float dir_atten = smoothstep(-1.0, 0.0, t_dot_h);
+    return dir_atten * pow(sin_th, exponent);
+}
+
+vec3 hairBrdf(ShadingModel s, vec3 n, vec3 v, vec3 l, vec3 albedo, float roughness, vec3 energy) {
+    float n_dot_l = dot(n, l);
+    // Difuso envolvente: el pelo deja pasar la luz (sin terminador duro).
+    float wrap = clamp(n_dot_l * 0.75 + 0.25, 0.0, 1.0);
+    if (wrap <= 0.0) return vec3(0.0);
+    vec3 h = normalize(l + v);
+    // La hebra va en la bitangente (como el brillo estirado del anisotropo).
+    vec3 strand = s.bitangent;
+    float shift = (s.params.x - 0.5) * 0.6;
+    vec3 t1 = normalize(strand + n * (shift + 0.1));
+    vec3 t2 = normalize(strand + n * (shift - 0.15));
+    float alpha = max(roughness * roughness, 0.01);
+    float e1 = clamp(2.0 / (alpha * alpha) - 2.0, 4.0, 1024.0);
+    float e2 = e1 * 0.25;
+    float spec1 = hairStrandSpecular(t1, h, e1) * (e1 + 2.0) / (8.0 * kPi);
+    float spec2 = hairStrandSpecular(t2, h, e2) * (e2 + 2.0) / (8.0 * kPi) * s.params.z;
+    vec3 specular = (vec3(0.04 * spec1 * 4.0) + albedo * spec2) * kPi * energy;
+    vec3 diffuse = albedo * 0.85;
+    return (diffuse + specular * smoothstep(0.0, 0.2, n_dot_l + 0.1)) * wrap;
+}
+
 vec3 disneyBrdf(ShadingModel s, vec3 n, vec3 v, vec3 l, vec3 albedo, float roughness, float metallic, vec3 f0,
                 vec3 energy, float light_size) {
+    if (s.model == kShadingHair) return hairBrdf(s, n, v, l, albedo, roughness, energy);
     float n_dot_l = dot(n, l);
     if (n_dot_l <= 0.0) return vec3(0.0);
     float n_dot_v = max(dot(n, v), 1e-4);

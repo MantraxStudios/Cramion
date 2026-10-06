@@ -194,30 +194,45 @@
 
 <h3 id="casas">Casas y cabañas</h3>
 <p>
-  <em>Ventana &gt; Generador de casas</em> crea casas procedurales listas para el juego:
+  <em>Ventana &gt; Generador de casas y pueblos</em> (pestaña <strong>Casa</strong>) crea casas procedurales listas para el juego:
   <strong class="text-white">cabaña de troncos</strong> (troncos redondos cruzados en las esquinas), <strong class="text-white">cabaña de tablas</strong>,
-  <strong class="text-white">casita de piedra</strong> y <strong class="text-white">casa de campo</strong> de dos plantas. Se
-  elige el estilo, la semilla (otras medidas y ventanas), ancho, fondo, plantas, altura, pendiente del tejado, alero,
-  ventanas, porche con barandilla, chimenea y contraventanas.
+  <strong class="text-white">casita de piedra</strong>, <strong class="text-white">casa de campo</strong>, <strong class="text-white">casa de entramado</strong>
+  medieval (planta baja de piedra y dos o tres plantas de vigas oscuras y enlucido que vuelan sobre la calle, con tejado de teja)
+  y <strong class="text-white">cabaña de paja</strong> (entramado y un tejado de paja grueso). Se elige el estilo, el
+  <strong>uso</strong> (vivienda, taberna, herrería o tienda), la semilla (otras medidas y ventanas), ancho, fondo, plantas (1 a 3),
+  altura, pendiente del tejado, alero, vuelo de la planta alta, ventanas, porche, chimenea y contraventanas.
 </p>
 <div class="shots">
   <figure><img src="../img/mundo-cabana.jpg" alt="Cabaña de troncos con porche" loading="lazy"><figcaption>Cabaña de troncos</figcaption></figure>
   <figure><img src="../img/mundo-piedra.jpg" alt="Casita de piedra" loading="lazy"><figcaption>Casita de piedra</figcaption></figure>
 </div>
+<p>
+  <strong>Con interior</strong> (<em>Interior amueblado</em>, activado por defecto): hogar de piedra con su fuego (y una luz
+  cálida), mesa con bancos, camas con manta y almohada, arcones, alacenas y estanterías con tarros, barriles y cajas, una
+  alfombra, vigas en el techo y, en las de varias plantas, los forjados con el hueco de la escalera, la escalera y una
+  barandilla. Los muebles se reparten sin pisarse ni tapar la puerta ni las ventanas. La <strong>taberna</strong> lleva barra con
+  barriles tumbados y jarras, varias mesas y cuartos arriba, y fuera un cartel colgado y barriles; la <strong>herrería</strong>, la
+  fragua con su fuego, yunque, pila, banco de trabajo, herramientas y un cobertizo abierto con otro yunque, leña y una muela;
+  la <strong>tienda</strong>, mostrador y estanterías. Todo tiene colisión (el <code>MeshCollider</code> de la casa) y las
+  escaleras se suben andando con el Character Controller. Las ventanas son de vidrio transparente: el interior se ve desde fuera.
+</p>
 <ul>
-  <li><strong>Crear en la escena</strong> la pone delante de la cámara, sobre el suelo. La puerta mira a +Z.</li>
-  <li><strong>Crear aldea en el terreno</strong> (o el apartado <em>Aldea</em> del generador de terreno) busca un sitio llano y seco, fuera de ríos y lagos, reparte las casas alrededor de una plaza con la puerta hacia ella y abre claros en la vegetación.</li>
+  <li><strong>Crear en la escena</strong> la pone delante de la cámara, sobre el suelo, y <strong>aplana el terreno bajo su caja</strong>
+    (ver <a href="#aplanar">Aplanar el terreno</a>). La puerta mira a +Z.</li>
+  <li>La pestaña <strong>Edificio</strong> crea edificios y objetos sueltos: iglesia, granero, pozo, puesto de mercado, torre del
+    homenaje, puerta de muralla, molino, barriles, cajas, carro, pacas de paja, leña y banco.</li>
 </ul>
 <p>
-  <strong>Pensadas para el juego</strong>: entre 1.000 y 6.000 triángulos por casa, con LOD automáticos. Todas comparten 9
-  materiales (<code>Assets/Casas/Materiales</code>: troncos, veta, tablas, revestimiento, piedra, tejado, marcos, vidrio y
-  hierro) con texturas PBR y relieve (parallax) que se crean una sola vez en <code>Assets/Casas/Texturas</code>; las casas
-  iguales son instancias del mismo modelo (<code>Assets/Casas/Modelos</code>). Los materiales se pueden editar y todas las
-  casas cambian.
+  <strong>Pensadas para el juego</strong>: entre 2.000 y 15.000 triángulos por casa (con su interior), con LOD automáticos. Todas
+  comparten 14 materiales (<code>Assets/Casas/Materiales</code>: troncos, veta, tablas, revestimiento, piedra, tejado, marcos,
+  vidrio, hierro, enlucido, paja, teja, tela y vigas) con texturas PBR y relieve (parallax) que se crean una sola vez en
+  <code>Assets/Casas/Texturas</code>; las casas iguales son instancias del mismo modelo (<code>Assets/Casas/Modelos</code>). Los
+  materiales se pueden editar y todas las casas cambian.
 </p>
 <p>
-  Cada casa tiene dos hijos: <strong>Casa</strong>, con <code>MeshCollider</code>, y <strong>Puerta</strong>, con
-  <code>BoxCollider</code> y su origen en la bisagra. Para abrirla desde Lua basta con girarla en Y:
+  Cada casa tiene sus hijos: <strong>Casa</strong>, con <code>MeshCollider</code>, <strong>Puerta</strong>, con un
+  <code>BoxCollider</code> ajustado a su malla y su origen en la bisagra, y un <strong>Fuego</strong> (luz puntual) en cada hogar.
+  Para abrir la puerta desde Lua basta con girarla en Y:
 </p>
 <pre><code class="language-lua">-- Script en la raiz de la casa: E abre y cierra la puerta poco a poco.
 local Casa = {}
@@ -236,10 +251,51 @@ end
 
 return Casa</code></pre>
 <p>
-  Los cristales son opacos y reflejan el cielo (no se ve el interior), para no gastar rendimiento. Por MCP:
-  <code>generate_house</code> (<code>style</code>: <code>log</code>, <code>timber</code>, <code>stone</code> o
-  <code>farm</code>; medidas, <code>position</code>, <code>yaw</code>) o <code>generate_house</code> con
-  <code>village</code> = número de casas para una aldea.
+  Por MCP: <code>generate_house</code> (<code>style</code>: <code>log</code>, <code>timber</code>, <code>stone</code>,
+  <code>farm</code>, <code>halftimbered</code> o <code>thatched</code>; <code>use</code>: <code>home</code>, <code>tavern</code>,
+  <code>smithy</code> o <code>shop</code>; <code>interior</code>, medidas, <code>position</code>, <code>yaw</code>) y
+  <code>generate_building</code> para los demás edificios.
+</p>
+
+<h3 id="pueblos">Pueblos y ciudades medievales</h3>
+<p>
+  La pestaña <strong>Pueblo</strong> del generador (o el apartado <em>Pueblo medieval</em> del generador de terreno) crea un
+  asentamiento completo sobre el terreno, en el sitio más llano y seco (fuera del mar, los ríos y los lagos) o delante de la cámara:
+</p>
+<ul>
+  <li><strong>Aldea</strong>: casas de campo, cabañas de paja y troncos repartidas a lo largo de los caminos, graneros, campos con vallas y, a veces, un molino.</li>
+  <li><strong>Pueblo</strong>: plaza con <strong>pozo</strong> y puestos de <strong>mercado</strong>, <strong>iglesia</strong> con campanario y la
+    <strong>taberna</strong> mirando a la plaza, casas de entramado en el centro y de campo en las afueras, herrería, una tienda, callejas,
+    campos y molino.</li>
+  <li><strong>Ciudad amurallada</strong>: <strong>murallas</strong> con adarve, almenas y torres redondas que siguen el terreno, una
+    <strong>puerta</strong> con torreones y rastrillo donde entra cada camino, <strong>torre del homenaje</strong> en lo más alto, calle de
+    ronda, casas en hilera de dos y tres plantas, dos herrerías, tiendas y, fuera de los muros, campos y molino.</li>
+</ul>
+<p>
+  Las <strong>calles principales</strong> salen de la plaza buscando el camino más llano y siguen por el campo; las callejas salen
+  de ellas hasta tocar otra calle. Las casas se ponen a los dos lados <strong>con la puerta a la calle</strong>, de dentro afuera, sin
+  pisarse entre sí, ni las calles, ni la plaza, ni el agua, ni las murallas (se usa la caja real de cada modelo). El terreno de
+  la plaza, las calles y el pie de las murallas se allana y se pinta (grava o tierra); los campos llevan hierba seca y surcos, y
+  la vegetación se aparta del pueblo, de los campos y de los caminos. Los edificios llevan interior y una luz en cada hogar
+  (opciones <em>Interiores amueblados</em> y <em>Luces de los hogares</em>), y hay objetos sueltos: barriles y carro junto a la
+  taberna, leña en la herrería, pacas en los graneros y los campos, bancos alrededor del pozo, carros en las calles.
+</p>
+<p>
+  Todo queda en un grupo (<em>Aldea</em>, <em>Pueblo</em> o <em>Ciudad amurallada</em>) con <em>Casas</em>, <em>Edificios</em>,
+  <em>Mercado</em>, <em>Muralla</em>, <em>Campos</em> y <em>Objetos</em>. Misma semilla, mismo pueblo; crear otro del mismo tipo
+  reemplaza al anterior y <kbd>Ctrl</kbd>+<kbd>Z</kbd> lo deshace con su terreno. Se elige el número de casas, el radio, las calles
+  principales, la pendiente máxima bajo un edificio y si lleva murallas, campos, mercado, iglesia y objetos. Por MCP:
+  <code>generate_settlement</code> (<code>type</code>: <code>hamlet</code>, <code>village</code> o <code>town</code>).
+</p>
+
+<h3 id="aplanar">Aplanar el terreno bajo los edificios</h3>
+<p>
+  El componente <strong>Aplanar terreno</strong> (<code>TerrainFlatten</code>) deja plano el terreno bajo la <strong>caja (AABB) de las
+  mallas</strong> del objeto, girada con él y con un margen, a la altura de su origen (o de la base de la malla), con un talud suave
+  alrededor; así el terreno nunca tapa el suelo ni las paredes. Debajo pinta la capa <em>Tierra</em> para que la hierba no atraviese
+  el suelo. Lo llevan las casas y edificios generados, y se puede añadir a cualquier objeto (o con <code>flatten_terrain</code> por
+  MCP). En el editor, al <strong>soltar</strong> el objeto después de moverlo o girarlo se vuelve a aplanar en el sitio nuevo y el de antes
+  vuelve a como estaba; al borrarlo (o deshacer), también.
 </p>
         </div>
         <nav class="pager" aria-label="Paginación"><a href="2d.html"><span>← Anterior</span><b>2D</b></a><a class="next" href="ambiente.html"><span>Siguiente →</span><b>Ambiente y clima</b></a></nav>

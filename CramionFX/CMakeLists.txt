@@ -215,6 +215,10 @@ target_include_directories(CramionFX SYSTEM PRIVATE
 if(ANDROID)
     # libvulkan.so del sistema (NDK).
     set(CRAMIONFX_VULKAN_LIB vulkan)
+elseif(UNIX)
+    # Linux: el cargador del sistema (libvulkan.so.1) y Xlib para la superficie.
+    find_package(X11 REQUIRED)
+    set(CRAMIONFX_VULKAN_LIB vulkan X11::X11 dl pthread)
 else()
     set(CRAMIONFX_VULKAN_LIB "${CMAKE_CURRENT_SOURCE_DIR}/vendor/lib/vulkan-1.lib")
 endif()
@@ -246,6 +250,12 @@ endif()
 if(ANDROID)
     target_compile_definitions(CramionFX PUBLIC
         VK_USE_PLATFORM_ANDROID_KHR
+        VULKAN_HPP_HANDLE_ERROR_OUT_OF_DATE_AS_SUCCESS
+    )
+elseif(UNIX)
+    # Linux: VK_USE_PLATFORM_XLIB_KHR solo dentro de VulkanSurface.cpp (las
+    # macros de Xlib chocan con el resto del motor).
+    target_compile_definitions(CramionFX PUBLIC
         VULKAN_HPP_HANDLE_ERROR_OUT_OF_DATE_AS_SUCCESS
     )
 else()

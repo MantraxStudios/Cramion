@@ -1,23 +1,31 @@
 <p>
-  <strong>Linux (x64)</strong>: <em>todavía no se puede exportar a Linux.</em> En <em>Configuraciones de compilación</em> ya se
-  puede elegir la plataforma <strong>Linux (x64)</strong> y guardar sus ajustes (nombre, icono, Steam), pero el reproductor de
-  Linux aún no existe: el motor usa ventanas, entrada y archivos de Windows, y falta la versión para X11/Wayland.
+  <strong>Linux (x64)</strong>: ya hay <strong>servidor dedicado nativo</strong> (<code>CramionServer</code>) y la
+  <strong>capa de plataforma</strong> del motor (ventana X11/XWayland, teclado, ratón con captura y superficie de Vulkan Xlib).
+  El <em>reproductor</em> del juego con ventana todavía es solo de Windows: su pantalla de carga, su interfaz y su arranque usan
+  Win32 y GDI+.
+</p>
+
+<h3 id="compilar">Compilar en Linux</h3>
+<pre><code>sudo apt install clang ninja-build cmake libx11-dev libvulkan-dev
+cmake --preset linux-release
+cmake --build --preset linux-release
+./build-linux/CramionServer --project ~/MiJuego --port 7777</code></pre>
+<p>
+  El preset <code>linux-release</code> compila el motor (Core, el render y la ventana Xlib) y <code>CramionServer</code>: el juego
+  sin ventana ni GPU que simula la escena (física, navegación, multitudes, scripts) y abre la partida en red. Sirve tanto para
+  una carpeta de proyecto como para el <code>Game/</code> de un juego exportado (descomprime su <code>.crpack</code>).
 </p>
 
 <h3 id="estado">Estado</h3>
 <ul>
-  <li>Hecho: la plataforma en las configuraciones de compilación, sus ajustes guardados en el proyecto y los archivos de Steam
-    preparados para un depósito de Linux.</li>
-  <li>Falta: la ventana y la entrada en Linux, la superficie de Vulkan para X11, el <code>main</code> del reproductor y su
-    configuración de CMake. Al pulsar <em>Exportar</em> con Linux elegido, el editor lo avisa y no hace nada.</li>
+  <li>Hecho: <code>CramionDM</code> para Linux (<code>WindowX11.cpp</code>: ventana, teclado con texto por XIM, ratón, rueda,
+    foco, maximizar, captura en primera persona), superficie de Vulkan Xlib y la extensión <code>VK_KHR_xlib_surface</code>,
+    shaders junto al ejecutable (<code>/proc/self/exe</code>), el preset de CMake y el servidor dedicado.</li>
+  <li>Falta: portar el <code>main</code> del reproductor (pantalla de carga, rutas de datos, Steam) y la interfaz de ImGui de
+    Linux. Hasta entonces, el juego para Windows funciona en Linux y Steam Deck con <strong>Proton</strong>.</li>
 </ul>
 
-<h3 id="mientras">Mientras tanto</h3>
-<p>
-  Los juegos exportados para Windows funcionan en Linux y en Steam Deck con <strong>Proton</strong> (Steam) o Wine con DXVK/VKD3D:
-  el render es Vulkan, así que no hay traducción de gráficos. En Steam, marca el juego como compatible con Proton.
-</p>
 <div class="note">
-  Cuando llegue el reproductor nativo, lo que solo existe en Windows (scripts de C++ con su proceso aislado, realidad virtual,
-  DLSS/FSR 3) se desactivará en Linux; Lua, la física, el audio, la red y el render funcionarán igual.
+  En Linux no están los scripts de C++ con su proceso aislado (de Windows), la realidad virtual ni DLSS/FSR 3; Lua, la física,
+  el audio, la red y el render funcionan igual.
 </div>

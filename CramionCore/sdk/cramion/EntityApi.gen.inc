@@ -12,7 +12,7 @@ Value addClothImpulse(const T0& arg = {}) const {
     return call("addClothImpulse", Values{Value(arg)});
 }
 /// entity:addComponent("MeshCollider")
-/// anade un componente por su nombre
+/// anade un componente por su nombre (caja/esfera/capsula: con la medida de la malla)
 template <typename T0 = Value>
 Value addComponent(const T0& texto = {}) const {
     return call("addComponent", Values{Value(texto)});
@@ -46,6 +46,11 @@ Value addRagdollForce(const T0& vec = {}, const T1& texto = {}) const {
 template <typename T0 = Value>
 Value addSoftBodyImpulse(const T0& arg = {}) const {
     return call("addSoftBodyImpulse", Values{Value(arg)});
+}
+/// entity:addSplinePoint(...)
+template <typename... Mas>
+Value addSplinePoint(Mas&&... mas) const {
+    return call("addSplinePoint", Values{Value(std::forward<Mas>(mas))...});
 }
 /// entity:addTorque(Vec3)
 /// par de giro
@@ -103,6 +108,21 @@ template <typename... Mas>
 Value characterState(Mas&&... mas) const {
     return call("characterState", Values{Value(std::forward<Mas>(mas))...});
 }
+/// entity:clearSplinePoints(...)
+template <typename... Mas>
+Value clearSplinePoints(Mas&&... mas) const {
+    return call("clearSplinePoints", Values{Value(std::forward<Mas>(mas))...});
+}
+/// entity:closestSplineDistance(...)
+template <typename... Mas>
+Value closestSplineDistance(Mas&&... mas) const {
+    return call("closestSplineDistance", Values{Value(std::forward<Mas>(mas))...});
+}
+/// entity:closestSplinePoint(...)
+template <typename... Mas>
+Value closestSplinePoint(Mas&&... mas) const {
+    return call("closestSplinePoint", Values{Value(std::forward<Mas>(mas))...});
+}
 /// entity.color: Vec3 color de su UIImage/UIText
 Value color() const { return get("color"); }
 void setColor(const Value& v) const { set("color", v); }
@@ -130,6 +150,16 @@ template <typename T0 = Value>
 Value distanceTo(const T0& otra = {}) const {
     return call("distanceTo", Values{Value(otra)});
 }
+/// entity:dropdownText(...)
+template <typename... Mas>
+Value dropdownText(Mas&&... mas) const {
+    return call("dropdownText", Values{Value(std::forward<Mas>(mas))...});
+}
+/// entity:dropdownValue(...)
+template <typename... Mas>
+Value dropdownValue(Mas&&... mas) const {
+    return call("dropdownValue", Values{Value(std::forward<Mas>(mas))...});
+}
 /// entity.effectParticles: particulas vivas de su VisualEffect
 Value effectParticles() const { return get("effectParticles"); }
 void setEffectParticles(const Value& v) const { set("effectParticles", v); }
@@ -138,6 +168,12 @@ void setEffectParticles(const Value& v) const { set("effectParticles", v); }
 template <typename T0 = Value>
 Value find(const T0& texto = {}) const {
     return call("find", Values{Value(texto)});
+}
+/// entity:fitColliderToMesh()
+/// ajusta su BoxCollider/SphereCollider/CapsuleCollider al AABB de su malla
+template <typename... Mas>
+Value fitColliderToMesh(Mas&&... mas) const {
+    return call("fitColliderToMesh", Values{Value(std::forward<Mas>(mas))...});
 }
 /// entity.flipX: voltea su sprite
 Value flipX() const { return get("flipX"); }
@@ -175,6 +211,11 @@ template <typename... Mas>
 Value getBones(Mas&&... mas) const {
     return call("getBones", Values{Value(std::forward<Mas>(mas))...});
 }
+/// entity:getDropdownOptions(...)
+template <typename... Mas>
+Value getDropdownOptions(Mas&&... mas) const {
+    return call("getDropdownOptions", Values{Value(std::forward<Mas>(mas))...});
+}
 /// entity:getEffectFloat("Rate")
 /// valor actual de un parametro (o nil)
 template <typename T0 = Value>
@@ -204,6 +245,11 @@ Value getNetVar(const T0& texto = {}) const {
 template <typename... Mas>
 Value getScript(Mas&&... mas) const {
     return call("getScript", Values{Value(std::forward<Mas>(mas))...});
+}
+/// entity:getSplineControlPoint(...)
+template <typename... Mas>
+Value getSplineControlPoint(Mas&&... mas) const {
+    return call("getSplineControlPoint", Values{Value(std::forward<Mas>(mas))...});
 }
 /// entity:getStateMachine(...)
 template <typename... Mas>
@@ -325,6 +371,11 @@ template <typename... Mas>
 Value playSound(Mas&&... mas) const {
     return call("playSound", Values{Value(std::forward<Mas>(mas))...});
 }
+/// entity:playSplineFollower(...)
+template <typename... Mas>
+Value playSplineFollower(Mas&&... mas) const {
+    return call("playSplineFollower", Values{Value(std::forward<Mas>(mas))...});
+}
 /// entity:playSpriteAnimation("Correr", reiniciar)
 /// SpriteAnimator: cambia de clip (true si existe)
 template <typename T0 = Value, typename T1 = Value>
@@ -373,6 +424,26 @@ Value resetSoftBody(Mas&&... mas) const {
 /// entity.rpm: rpm del motor del Vehicle
 Value rpm() const { return get("rpm"); }
 void setRpm(const Value& v) const { set("rpm", v); }
+/// entity:scrollContentHeight(...)
+template <typename... Mas>
+Value scrollContentHeight(Mas&&... mas) const {
+    return call("scrollContentHeight", Values{Value(std::forward<Mas>(mas))...});
+}
+/// entity:scrollToFraction(...)
+template <typename... Mas>
+Value scrollToFraction(Mas&&... mas) const {
+    return call("scrollToFraction", Values{Value(std::forward<Mas>(mas))...});
+}
+/// entity:scrollX(...)
+template <typename... Mas>
+Value scrollX(Mas&&... mas) const {
+    return call("scrollX", Values{Value(std::forward<Mas>(mas))...});
+}
+/// entity:scrollY(...)
+template <typename... Mas>
+Value scrollY(Mas&&... mas) const {
+    return call("scrollY", Values{Value(std::forward<Mas>(mas))...});
+}
 /// entity:sendEffectEvent("Explode")
 /// evento del bloque Spawn 'Al recibir un evento'
 template <typename T0 = Value>
@@ -412,6 +483,11 @@ Value setBoneRotation(const T0& texto = {}, const T1& arg = {}) const {
 template <typename T0 = Value, typename T1 = Value>
 Value setBoneScale(const T0& texto = {}, const T1& valor = {}) const {
     return call("setBoneScale", Values{Value(texto), Value(valor)});
+}
+/// entity:setDropdownOptions(...)
+template <typename... Mas>
+Value setDropdownOptions(Mas&&... mas) const {
+    return call("setDropdownOptions", Values{Value(std::forward<Mas>(mas))...});
 }
 /// entity:setEffectBool("Activo", true)
 /// parametro expuesto (bool)
@@ -503,6 +579,11 @@ template <typename T0 = Value, typename T1 = Value, typename T2 = Value>
 Value setSoundEffect(const T0& texto = {}, const T1& activar = {}, const T2& valor = {}) const {
     return call("setSoundEffect", Values{Value(texto), Value(activar), Value(valor)});
 }
+/// entity:setSplineControlPoint(...)
+template <typename... Mas>
+Value setSplineControlPoint(Mas&&... mas) const {
+    return call("setSplineControlPoint", Values{Value(std::forward<Mas>(mas))...});
+}
 /// entity:setTile(x, y, id, capa)
 /// Tilemap: pone una celda (id 0 = vacia, n = celda n-1 del tileset, -k = Rule Tile k)
 template <typename T0 = Value, typename T1 = Value, typename T2 = Value, typename T3 = Value>
@@ -554,6 +635,46 @@ Value soundOcclusion(Mas&&... mas) const {
 /// entity.speed: km/h de su Vehicle
 Value speed() const { return get("speed"); }
 void setSpeed(const Value& v) const { set("speed", v); }
+/// entity:splineDistance(...)
+template <typename... Mas>
+Value splineDistance(Mas&&... mas) const {
+    return call("splineDistance", Values{Value(std::forward<Mas>(mas))...});
+}
+/// entity:splineLength(...)
+template <typename... Mas>
+Value splineLength(Mas&&... mas) const {
+    return call("splineLength", Values{Value(std::forward<Mas>(mas))...});
+}
+/// entity:splinePoint(...)
+template <typename... Mas>
+Value splinePoint(Mas&&... mas) const {
+    return call("splinePoint", Values{Value(std::forward<Mas>(mas))...});
+}
+/// entity:splinePointAt(...)
+template <typename... Mas>
+Value splinePointAt(Mas&&... mas) const {
+    return call("splinePointAt", Values{Value(std::forward<Mas>(mas))...});
+}
+/// entity:splinePointCount(...)
+template <typename... Mas>
+Value splinePointCount(Mas&&... mas) const {
+    return call("splinePointCount", Values{Value(std::forward<Mas>(mas))...});
+}
+/// entity:splineRight(...)
+template <typename... Mas>
+Value splineRight(Mas&&... mas) const {
+    return call("splineRight", Values{Value(std::forward<Mas>(mas))...});
+}
+/// entity:splineSpeed(...)
+template <typename... Mas>
+Value splineSpeed(Mas&&... mas) const {
+    return call("splineSpeed", Values{Value(std::forward<Mas>(mas))...});
+}
+/// entity:splineTangent(...)
+template <typename... Mas>
+Value splineTangent(Mas&&... mas) const {
+    return call("splineTangent", Values{Value(std::forward<Mas>(mas))...});
+}
 /// entity.spriteAnimation: clip que suena en su SpriteAnimator
 Value spriteAnimation() const { return get("spriteAnimation"); }
 void setSpriteAnimation(const Value& v) const { set("spriteAnimation", v); }
@@ -583,6 +704,11 @@ Value stopMoving(Mas&&... mas) const {
 template <typename... Mas>
 Value stopSound(Mas&&... mas) const {
     return call("stopSound", Values{Value(std::forward<Mas>(mas))...});
+}
+/// entity:stopSplineFollower(...)
+template <typename... Mas>
+Value stopSplineFollower(Mas&&... mas) const {
+    return call("stopSplineFollower", Values{Value(std::forward<Mas>(mas))...});
 }
 /// entity.text: texto de su UIText o campo de texto
 Value text() const { return get("text"); }

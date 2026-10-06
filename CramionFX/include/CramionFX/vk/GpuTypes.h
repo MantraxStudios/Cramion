@@ -303,6 +303,19 @@ inline constexpr std::uint32_t kMaxFireZones = 4;
 
 // Constante de push de las nubes volumetricas (clouds.frag).
 // Constante de push de la luz volumetrica (volumetric.frag).
+// Volumenes de niebla locales (volumetric.frag, binding 9). Caja: lo local
+// en [-0.5, 0.5]^3; esfera: radio 0.5 en local.
+inline constexpr int kMaxFogVolumes = 16;
+struct GpuFogVolume {
+    core::Mat4 to_local = core::Mat4::identity();  // mundo -> local del volumen
+    core::Vec4 color_density{1.0f, 1.0f, 1.0f, 0.0f};  // rgb = albedo (lineal), a = densidad (1/m)
+    core::Vec4 params{};  // x = forma (0 caja, 1 esfera), y = borde suave (0..1), z = ruido (0..1), w = escala del ruido (1/m)
+};
+struct GpuFogVolumes {
+    std::int32_t count[4] = {0, 0, 0, 0};
+    GpuFogVolume volumes[kMaxFogVolumes]{};
+};
+
 struct GpuVolumetricPush {
     // x = densidad del polvo (1/m), y = anisotropia (g de Henyey-Greenstein),
     // z = segundos (deriva del polvo), w = distancia maxima del rayo (m).

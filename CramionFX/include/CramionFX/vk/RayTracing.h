@@ -179,6 +179,13 @@ public:
     // flotante se movio: sus celdas estan en las coordenadas viejas).
     void resetCache();
 
+    // Sondas dinamicas (rt_probes.comp): actualiza `probe_count` sondas de
+    // los volumenes horneados. Set 2 = el del renderizador (sondas + volumenes);
+    // push.params: x = frame, y = primera sonda, z = cuantas, w = histeresis.
+    void recordProbeUpdate(const vk::raii::CommandBuffer& cmd, std::uint32_t frame_index,
+                           vk::DescriptorSetLayout probe_layout, vk::DescriptorSet probe_set, const Push& push,
+                           std::uint32_t probe_count);
+
     void record(const vk::raii::CommandBuffer& cmd, std::uint32_t frame_index, Pass pass,
                 vk::Extent2D extent, const Push& push) const;
 

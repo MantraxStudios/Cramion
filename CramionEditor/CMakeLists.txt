@@ -164,6 +164,13 @@ add_executable(CramionAndroidBuildTests "${CMAKE_CURRENT_SOURCE_DIR}/tests/Andro
 target_include_directories(CramionAndroidBuildTests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
 target_link_libraries(CramionAndroidBuildTests PRIVATE Cramion::Core shell32)
 
+# --- CramionServer: servidor dedicado sin ventana ni GPU (consola) ---
+# Simula la escena (fisica, navegacion, scripts) a un ritmo fijo y abre la
+# partida en red. Se copia junto al juego al exportar con "Servidor dedicado".
+add_executable(CramionServer "${CMAKE_CURRENT_SOURCE_DIR}/server/ServerMain.cpp")
+target_link_libraries(CramionServer PRIVATE Cramion::Core)
+set_target_properties(CramionServer PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
+
 # --- CramionPlayer: el juego exportado (Archivo > Exportar juego) ---
 # Banner del motor al abrir, la escena inicial y todos los sistemas del
 # juego (sin el editor). Sin consola.

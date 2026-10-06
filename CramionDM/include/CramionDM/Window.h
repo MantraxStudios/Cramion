@@ -105,6 +105,89 @@ private:
 
 }  // namespace cramion::dm
 
+#elif defined(__linux__)
+
+// Linux (X11 / Xlib; en Wayland va por XWayland): ventana con su teclado,
+// raton (con captura en primera persona por XInput2 relativo... aqui con
+// warp al centro) y redimensionado. La superficie de Vulkan sale de handle().
+
+#include <cstdint>
+#include <functional>
+#include <string>
+
+#include "CramionDM/Event.h"
+
+namespace cramion::dm {
+
+struct WindowConfig {
+    std::wstring title = L"CramionDM";
+    uint32_t width = 1280;
+    uint32_t height = 720;
+    bool resizable = true;
+    bool maximized = false;
+    bool custom_title_bar = false;  // ignorado en Linux
+    bool visible = true;
+};
+
+// Lo que necesita Vulkan (VK_KHR_xlib_surface): la conexion y la ventana.
+struct NativeHandle {
+    void* display = nullptr;    // Display*
+    unsigned long window = 0;   // ::Window
+};
+
+class Window {
+public:
+    Window() = default;
+    ~Window();
+
+    Window(const Window&) = delete;
+    Window& operator=(const Window&) = delete;
+
+    bool create(const WindowConfig& config = {});
+    void destroy();
+    void pumpEvents();
+    void setEventCallback(EventCallback callback) { callback_ = std::move(callback); }
+
+    bool isOpen() const { return open_; }
+    const NativeHandle* handle() const { return &native_; }
+    uint32_t width() const { return width_; }
+    uint32_t height() const { return height_; }
+    float density() const { return 1.0f; }
+    bool focused() const { return focused_; }
+
+    void setTitle(const std::wstring& title);
+    void minimize();
+    void toggleMaximize();
+    bool isMaximized() const { return maximized_; }
+    void requestClose();
+
+    void setCursorCaptured(bool captured);
+    bool cursorCaptured() const { return cursor_captured_; }
+
+private:
+    void dispatch(Event& event);
+    KeyMods currentMods(unsigned int state) const;
+
+    EventCallback callback_;
+    NativeHandle native_{};
+    unsigned long wm_delete_ = 0;   // Atom WM_DELETE_WINDOW
+    void* input_method_ = nullptr;  // XIM
+    void* input_context_ = nullptr; // XIC
+    unsigned long blank_cursor_ = 0;
+    uint32_t width_ = 0;
+    uint32_t height_ = 0;
+    bool open_ = false;
+    bool focused_ = true;
+    bool maximized_ = false;
+    bool cursor_captured_ = false;
+    float last_x_ = 0.0f;
+    float last_y_ = 0.0f;
+    bool have_last_ = false;
+    bool warping_ = false;
+};
+
+}  // namespace cramion::dm
+
 #else
 
 #ifndef WIN32_LEAN_AND_MEAN
@@ -241,4 +324,4 @@ private:
 
 }  // namespace cramion::dm
 
-#endif  // __ANDROID__
+#endif  // __ANDROID__ / __linux__ / Windows

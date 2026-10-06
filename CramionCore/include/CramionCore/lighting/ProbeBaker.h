@@ -67,6 +67,12 @@ struct BakeSettings {
     int threads = 0;          // 0 = todos los nucleos menos uno
     float sky_intensity = 1.0f;
     float max_probes = 200000;  // tope (memoria y tiempo)
+    // Lightmap de superficie (texeles en el mundo pegados a la geometria): 0 =
+    // no; si no, el lado del texel en metros (0.25..2). Da el detalle de un
+    // lightmap a la luz rebotada (rincones, bajo las mesas, junto a paredes).
+    float surface_texel = 0.0f;
+    int surface_rays = 96;
+    std::uint32_t max_surface_texels = 2000000;
 };
 
 struct BakeScene {

@@ -28,8 +28,8 @@ enum class ReliefMode { Parallax, Tessellation };
 
 // Modelo de material de Disney (Burley 2012/2015). Todos llevan el difuso de
 // Burley y el especular GGX; cada uno anade su capa.
-enum class ShadingModel { Standard, Clearcoat, Cloth, Subsurface, Anisotropic, Transmission };
-inline constexpr int kShadingModelCount = 6;
+enum class ShadingModel { Standard, Clearcoat, Cloth, Subsurface, Anisotropic, Transmission, Hair };
+inline constexpr int kShadingModelCount = 7;
 const char* shadingModelKey(ShadingModel model);    // "standard", "clearcoat"...
 ShadingModel shadingModelFromKey(const std::string& key);
 
@@ -69,7 +69,9 @@ struct MaterialAsset {
     float translucency = 0.5f;
     float subsurface_thickness = 0.05f;  // metros (0.01..0.3)
     float anisotropy = 0.8f;             // anisotropo
-    float anisotropy_rotation = 0.0f;    // grados (0..180)
+    float anisotropy_rotation = 0.0f;    // grados (0..180); pelo: direccion de la hebra
+    float hair_shift = 0.6f;             // pelo: desplazamiento de los brillos a lo largo de la hebra (0..1)
+    float hair_secondary = 0.5f;         // pelo: brillo secundario (del color del pelo)
     float ior = 1.5f;                    // transmision (vidrio): 1..2.5
     float transmission_thickness = 0.02f;  // metros (0..0.2)
 

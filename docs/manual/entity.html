@@ -117,7 +117,8 @@
           <tr><td><code>:find(nombre)</code></td><td>Busca entre sus descendientes.</td></tr>
           <tr><td><code>:valid()</code></td><td>Si la entidad todavía existe.</td></tr>
           <tr><td><code>:hasComponent(nombre)</code></td><td>Por ejemplo <code>"Rigidbody"</code>, <code>"Light"</code>, <code>"AudioSource"</code>, <code>"UIButton"</code>.</td></tr>
-          <tr><td><code>:addComponent(nombre)</code></td><td>Añade un componente por su nombre (<code>"MeshCollider"</code>, <code>"Rigidbody"</code>, <code>"BoxCollider"</code>, <code>"Light"</code>…). Devuelve <code>false</code> si no existe.</td></tr>
+          <tr><td><code>:addComponent(nombre)</code></td><td>Añade un componente por su nombre (<code>"MeshCollider"</code>, <code>"Rigidbody"</code>, <code>"BoxCollider"</code>, <code>"Light"</code>…). Devuelve <code>false</code> si no existe. Como en Unity, un <code>BoxCollider</code>, <code>SphereCollider</code> o <code>CapsuleCollider</code> nuevo toma la medida (AABB) de la malla del objeto o, si no tiene, de las de sus hijos.</td></tr>
+          <tr><td><code>:fitColliderToMesh()</code></td><td>Vuelve a ajustar sus colliders de caja, esfera y cápsula al AABB de su malla (después de cambiar el modelo). La escala del Transform los multiplica igual que a la malla.</td></tr>
           <tr><td><code>:removeComponent(nombre)</code></td><td>Lo quita.</td></tr>
           <tr><td><code>:getField(componente, clave)</code></td><td>Cualquier campo de cualquier componente por su clave (las de la <a href="componentes.html">referencia</a>): <code>e:getField("Light", "intensity")</code>. Listas: <code>"chains[1].pull"</code>; <code>"chains#"</code> = cuántos elementos.</td></tr>
           <tr><td><code>:setField(componente, clave, valor)</code></td><td>Lo cambia (añade el componente si falta; <code>[n+1]</code> añade un elemento a una lista). Devuelve si se aplicó.</td></tr>

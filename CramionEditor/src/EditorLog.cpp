@@ -1,4 +1,5 @@
 #include "EditorLog.h"
+#include "LoadingScreen.h"
 
 #include <iostream>
 
@@ -42,6 +43,7 @@ void EditorLog::add(Level level, std::string text) {
     if (text.find("ERROR") != std::string::npos || text.find("Error") != std::string::npos) {
         level = Level::Error;
     }
+    crashBreadcrumb(text);  // las ultimas lineas van al informe de un cierre
     std::lock_guard lock(mutex_);
     entries_.push_back(Entry{level, std::move(text)});
     ++total_;

@@ -46,6 +46,9 @@ std::string componentToJson(World& world, Entity entity, const std::string& comp
 bool componentFromJson(World& world, Entity entity, const std::string& component, const std::string& fields,
                        std::string* error = nullptr);
 Entity pasteEntities(World& world, const std::string& json, Entity parent = {});
+// Como pasteEntities pero con los mismos UUID (recrear lo que se guardo con
+// serializeEntity y se borro: World Partition, deshacer).
+Entity restoreEntities(World& world, const std::string& json, Entity parent = {});
 
 // Lee solo el UUID de un .crscene (para la base de datos de assets).
 Uuid readSceneUuid(const std::filesystem::path& path);

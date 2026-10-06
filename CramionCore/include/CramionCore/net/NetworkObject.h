@@ -12,6 +12,7 @@
 #include <CramionFX/core/Math.h>
 
 #include <cstdint>
+#include <vector>
 
 namespace cramion::net {
 
@@ -24,8 +25,25 @@ struct NetworkObject {
     // esperar a la red (balones, cajas). Apagado: en los demas es cinematico
     // y solo sigue la posicion recibida (personajes).
     bool local_physics = false;
+    // Como siguen los demas lo que manda el dueno: 0 suavizado (persigue la
+    // ultima posicion), 1 interpolacion con bufer (va `interpolation_delay`
+    // por detras y pasa por todas las posiciones recibidas: movimiento
+    // exacto aunque lleguen a saltos), 2 extrapolacion (adelanta con la
+    // velocidad: menos retraso, se pasa en los giros bruscos).
+    int interpolation = 1;
+    float interpolation_delay = 0.1f;  // s (unos 2 envios a 20 Hz)
+    float relevance = 0.0f;            // m: el servidor solo lo manda a quien este cerca (0 = a todos)
+    float max_speed = 0.0f;            // m/s: el servidor rechaza movimientos mas rapidos (0 = no mira)
 
     // En Play (no se guarda).
+    struct Snapshot {
+        double time = 0.0;  // hora local equivalente
+        core::Vec3 position{};
+        core::Quat rotation{};
+    };
+    std::vector<Snapshot> snapshots;  // interpolacion con bufer
+    double clock_offset = 0.0;        // hora local - hora del dueno (estimada)
+    bool has_offset = false;
     std::uint32_t net_id = 0;  // 0 = no creado por Network.spawn
     std::uint32_t owner = 0;
     bool has_target = false;

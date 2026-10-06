@@ -64,8 +64,23 @@ void Terrain::reflect(ecs::PropertyVisitor& v) {
     });
 }
 
+void TerrainFlatten::reflect(ecs::PropertyVisitor& v) {
+    v.field({"enabled", "Activo", "Aplana el terreno bajo el objeto (y lo rehace al moverlo en el editor)"}, enabled);
+    v.field({"margin", "Margen", "Metros alrededor del AABB de sus mallas"}, margin, FloatRange{0.0f, 20.0f, 0.05f, "%.2f m"});
+    v.field({"blend", "Talud", "Metros en que se mezcla con el terreno de alrededor"}, blend,
+            FloatRange{0.0f, 50.0f, 0.1f, "%.1f m"});
+    v.field({"ground_offset", "Altura del suelo", "Altura del terreno respecto al origen del objeto"}, ground_offset,
+            FloatRange{-20.0f, 20.0f, 0.01f, "%.2f m"});
+    v.field({"mesh_bottom", "Suelo en la base de la malla",
+             "El terreno se pone a la altura de la base del AABB (objetos con el origen en el centro)"},
+            mesh_bottom);
+    v.field({"paint_layer", "Capa debajo", "-2 = la capa \"Tierra\" si la hay, -1 = no pintar, 0..7 = esa capa"},
+            paint_layer, -2, kMaxLayers - 1);
+}
+
 void registerTerrainComponents() {
     ecs::ComponentRegistry::instance().registerComponent<Terrain>("Terrain", "Terreno", "Entorno");
+    ecs::ComponentRegistry::instance().registerComponent<TerrainFlatten>("TerrainFlatten", "Aplanar terreno", "Entorno");
 }
 
 // -----------------------------------------------------------------------------

@@ -1,9 +1,12 @@
 #include "UiRenderer.h"
+#include "Theme.h"
 
 #include <algorithm>
 #include <cfloat>
 #include <cmath>
 #include <cstdint>
+#include <string>
+#include <vector>
 
 namespace cramion::editor {
 
@@ -27,6 +30,143 @@ void appendUtf8(std::string& out, unsigned int c) {
     }
 }
 
+// Un trozo de texto con estilo, ya colocado.
+struct Piece {
+    std::string text;
+    ImFont* font = nullptr;
+    float size = 16.0f;
+    ImU32 color = IM_COL32_WHITE;
+    bool fake_bold = false;
+    bool italic = false;
+    bool underline = false;
+    bool strike = false;
+    float x = 0.0f;  // relativo al principio de la linea
+    float width = 0.0f;
+};
+
+struct Line {
+    std::vector<Piece> pieces;
+    float width = 0.0f;
+    float height = 0.0f;
+};
+
+// Inclina los vertices anadidos desde `first` (cursiva).
+void shear(ImDrawList* draw, int first, float baseline, float amount) {
+    for (int v = first; v < draw->VtxBuffer.Size; ++v) {
+        ImDrawVert& vert = draw->VtxBuffer[v];
+        vert.pos.x += (baseline - vert.pos.y) * amount;
+    }
+}
+
+void drawPiece(ImDrawList* draw, const Piece& p, ImVec2 pos, float outline, ImU32 outline_color, bool shadow) {
+    const char* begin = p.text.c_str();
+    const char* end = begin + p.text.size();
+    const float baseline = pos.y + p.size * 0.8f;
+    const auto emit = [&](ImVec2 at, ImU32 col) {
+        const int first = draw->VtxBuffer.Size;
+        draw->AddText(p.font, p.size, at, col, begin, end);
+        if (p.fake_bold) draw->AddText(p.font, p.size, ImVec2(at.x + std::max(p.size * 0.04f, 0.6f), at.y), col, begin, end);
+        if (p.italic) shear(draw, first, baseline + (at.y - pos.y), 0.2f);
+    };
+    if (shadow) emit(ImVec2(pos.x + p.size * 0.06f, pos.y + p.size * 0.06f), IM_COL32(0, 0, 0, 170));
+    if (outline > 0.0f) {
+        const int steps = outline > 2.5f ? 16 : 8;
+        for (int k = 0; k < steps; ++k) {
+            const float a = static_cast<float>(k) / static_cast<float>(steps) * 6.2831853f;
+            emit(ImVec2(pos.x + std::cos(a) * outline, pos.y + std::sin(a) * outline), outline_color);
+        }
+    }
+    emit(pos, p.color);
+    if (p.underline) {
+        const float y = pos.y + p.size * 0.95f;
+        draw->AddLine(ImVec2(pos.x, y), ImVec2(pos.x + p.width, y), p.color, std::max(p.size * 0.06f, 1.0f));
+    }
+    if (p.strike) {
+        const float y = pos.y + p.size * 0.55f;
+        draw->AddLine(ImVec2(pos.x, y), ImVec2(pos.x + p.width, y), p.color, std::max(p.size * 0.06f, 1.0f));
+    }
+}
+
+// Texto (enriquecido o no) con ajuste de lineas, alineacion, contorno y
+// sombra. `regular` y `bold` son las fuentes (bold puede ser nullptr: se
+// simula pintando dos veces).
+void drawText(ImDrawList* draw, const ui::UiDrawCommand& c, ImVec2 min, ImFont* regular, ImFont* bold) {
+    const float base_size = std::max(c.font_size, 1.0f);
+    std::vector<ui::RichRun> runs;
+    if (c.rich) {
+        runs = ui::parseRichText(c.text, c.color, base_size, c.scale, c.bold, c.italic);
+    } else {
+        ui::RichRun r;
+        r.text = c.text;
+        r.color = c.color;
+        r.size = base_size;
+        r.bold = c.bold;
+        r.italic = c.italic;
+        runs.push_back(std::move(r));
+    }
+    const float wrap_width = c.wrap ? c.rect.w : 0.0f;
+    std::vector<Line> lines(1);
+    const auto newLine = [&]() { lines.emplace_back(); };
+    for (const ui::RichRun& run : runs) {
+        ImFont* font = run.bold && bold != nullptr ? bold : regular;
+        const ImU32 color = toColor(run.color);
+        // Trocea en palabras (con su espacio detras) y saltos de linea.
+        std::size_t i = 0;
+        while (i < run.text.size()) {
+            if (run.text[i] == '\n') {
+                lines.back().height = std::max(lines.back().height, run.size);
+                newLine();
+                ++i;
+                continue;
+            }
+            std::size_t j = i;
+            while (j < run.text.size() && run.text[j] != ' ' && run.text[j] != '\n') ++j;
+            while (j < run.text.size() && run.text[j] == ' ') ++j;
+            Piece p;
+            p.text = run.text.substr(i, j - i);
+            p.font = font;
+            p.size = run.size;
+            p.color = color;
+            p.fake_bold = run.bold && bold == nullptr;
+            p.italic = run.italic;
+            p.underline = run.underline;
+            p.strike = run.strike;
+            p.width = font->CalcTextSizeA(p.size, FLT_MAX, 0.0f, p.text.c_str(), p.text.c_str() + p.text.size()).x;
+            Line& line = lines.back();
+            if (wrap_width > 0.0f && !line.pieces.empty() && line.width + p.width > wrap_width + 0.5f) {
+                // Sin los espacios del final al medir la palabra que salta.
+                newLine();
+            }
+            Line& target = lines.back();
+            p.x = target.width;
+            target.width += p.width;
+            target.height = std::max(target.height, p.size);
+            target.pieces.push_back(std::move(p));
+            i = j;
+        }
+    }
+    float total_h = 0.0f;
+    for (Line& line : lines) {
+        if (line.height <= 0.0f) line.height = base_size;
+        total_h += line.height * c.line_spacing;
+    }
+    float y = min.y;
+    if (c.v_align == 1) y += (c.rect.h - total_h) * 0.5f;
+    if (c.v_align == 2) y += c.rect.h - total_h;
+    const ImU32 outline_color = toColor(c.outline_color);
+    for (const Line& line : lines) {
+        float x = min.x;
+        if (c.h_align == 1) x += (c.rect.w - line.width) * 0.5f;
+        if (c.h_align == 2) x += c.rect.w - line.width;
+        for (const Piece& p : line.pieces) {
+            // Las letras mas pequenas de la linea se apoyan en la misma base.
+            const float dy = (line.height - p.size) * 0.8f;
+            drawPiece(draw, p, ImVec2(x + p.x, y + dy), c.outline, outline_color, c.shadow);
+        }
+        y += line.height * c.line_spacing;
+    }
+}
+
 }  // namespace
 
 void drawUiList(ImDrawList* draw, ImVec2 origin, const std::vector<ui::UiDrawCommand>& list, ImGuiLayer& imgui,
@@ -36,7 +176,21 @@ void drawUiList(ImDrawList* draw, ImVec2 origin, const std::vector<ui::UiDrawCom
         const ImVec2 min{origin.x + c.rect.x, origin.y + c.rect.y};
         const ImVec2 max{min.x + c.rect.w, min.y + c.rect.h};
         const ImU32 color = toColor(c.color);
+        if (c.clipped) {
+            if (c.clip.w <= 0.0f || c.clip.h <= 0.0f) continue;
+            draw->PushClipRect(ImVec2(origin.x + c.clip.x, origin.y + c.clip.y),
+                               ImVec2(origin.x + c.clip.x + c.clip.w, origin.y + c.clip.y + c.clip.h), true);
+        }
         switch (c.type) {
+            case ui::UiDrawCommand::Type::Triangle: {
+                // radius 1 = hacia arriba, 0 = hacia abajo.
+                if (c.radius > 0.5f) {
+                    draw->AddTriangleFilled(ImVec2(min.x, max.y), ImVec2(max.x, max.y), ImVec2((min.x + max.x) * 0.5f, min.y), color);
+                } else {
+                    draw->AddTriangleFilled(ImVec2(min.x, min.y), ImVec2((min.x + max.x) * 0.5f, max.y), ImVec2(max.x, min.y), color);
+                }
+                break;
+            }
             case ui::UiDrawCommand::Type::Rect:
                 draw->AddRectFilled(min, max, color, c.radius);
                 break;
@@ -70,23 +224,37 @@ void drawUiList(ImDrawList* draw, ImVec2 origin, const std::vector<ui::UiDrawCom
             }
             case ui::UiDrawCommand::Type::Text: {
                 if (c.text.empty()) break;
-                const float size = std::max(c.font_size, 1.0f);
-                const float wrap = c.wrap ? c.rect.w : 0.0f;
-                const ImVec2 text_size = font->CalcTextSizeA(size, FLT_MAX, wrap, c.text.c_str());
-                float x = min.x;
-                float y = min.y;
-                if (c.h_align == 1) x += (c.rect.w - text_size.x) * 0.5f;
-                if (c.h_align == 2) x += c.rect.w - text_size.x;
-                if (c.v_align == 1) y += (c.rect.h - text_size.y) * 0.5f;
-                if (c.v_align == 2) y += c.rect.h - text_size.y;
-                if (c.shadow) {
-                    draw->AddText(font, size, ImVec2(x + size * 0.06f, y + size * 0.06f), IM_COL32(0, 0, 0, 170),
-                                  c.text.c_str(), nullptr, wrap);
+                ImFont* regular = font;
+                ImFont* bold = theme::boldFont();
+                if (!c.font.empty()) {
+                    if (ImFont* custom = imgui.uiFont(assets_root / std::filesystem::path(std::u8string(c.font.begin(), c.font.end())))) {
+                        regular = custom;
+                        bold = nullptr;  // con fuente propia la negrita se simula
+                    }
                 }
-                draw->AddText(font, size, ImVec2(x, y), color, c.text.c_str(), nullptr, wrap);
+                const bool simple = !c.rich && !c.bold && !c.italic && c.outline <= 0.0f && c.line_spacing == 1.0f;
+                if (simple) {
+                    const float size = std::max(c.font_size, 1.0f);
+                    const float wrap = c.wrap ? c.rect.w : 0.0f;
+                    const ImVec2 text_size = regular->CalcTextSizeA(size, FLT_MAX, wrap, c.text.c_str());
+                    float x = min.x;
+                    float y = min.y;
+                    if (c.h_align == 1) x += (c.rect.w - text_size.x) * 0.5f;
+                    if (c.h_align == 2) x += c.rect.w - text_size.x;
+                    if (c.v_align == 1) y += (c.rect.h - text_size.y) * 0.5f;
+                    if (c.v_align == 2) y += c.rect.h - text_size.y;
+                    if (c.shadow) {
+                        draw->AddText(regular, size, ImVec2(x + size * 0.06f, y + size * 0.06f), IM_COL32(0, 0, 0, 170),
+                                      c.text.c_str(), nullptr, wrap);
+                    }
+                    draw->AddText(regular, size, ImVec2(x, y), color, c.text.c_str(), nullptr, wrap);
+                } else {
+                    drawText(draw, c, min, regular, bold);
+                }
                 break;
             }
         }
+        if (c.clipped) draw->PopClipRect();
     }
 }
 
@@ -102,6 +270,7 @@ ui::UiInput uiInputFromImGui(ImVec2 origin, ImVec2 size, bool hovered, bool typi
     }
     (void)size;
     input.mouse_down = ImGui::IsMouseDown(ImGuiMouseButton_Left);
+    if (hovered) input.wheel = io.MouseWheel;
     input.mouse_released = ImGui::IsMouseReleased(ImGuiMouseButton_Left);
     if (typing) {
         for (const ImWchar c : io.InputQueueCharacters) appendUtf8(input.typed, c);

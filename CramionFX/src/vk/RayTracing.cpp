@@ -224,6 +224,10 @@ struct RayTracing::Resources {
     std::vector<vk::raii::DescriptorSet> scene_sets;  // uno
     vk::raii::PipelineLayout pipeline_layout{nullptr};
     std::array<vk::raii::Pipeline, kPassCount> pipelines{nullptr, nullptr, nullptr, nullptr, nullptr};
+    // Sondas dinamicas (rt_probes.comp): sets frame + escena + el del renderizador.
+    vk::raii::PipelineLayout probe_pipeline_layout{nullptr};
+    vk::raii::Pipeline probe_pipeline{nullptr};
+    VkDescriptorSetLayout probe_set_layout = VK_NULL_HANDLE;
     // Etapas de los layouts: con pipeline de rayos, tambien raygen y any-hit.
     vk::ShaderStageFlags stages = vk::ShaderStageFlagBits::eCompute;
 
@@ -943,10 +947,10 @@ void RayTracing::build(const VulkanDevice& device,
                                         v.normal.y, v.normal.z, v.uv.x, v.uv.y});
         }
 
-        for (const VulkanTexture& texture : gpu.textures()) {
+        for (const std::shared_ptr<VulkanTexture>& texture : gpu.textures()) {
             vk::DescriptorImageInfo info{};
             info.sampler = *r.texture_sampler;
-            info.imageView = *texture.view();
+            info.imageView = *texture->view();
             info.imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
             textures.push_back(info);
         }
@@ -1573,6 +1577,58 @@ void RayTracing::record(const vk::raii::CommandBuffer& cmd, std::uint32_t frame_
     cmd.pushConstants<Push>(*r.pipeline_layout, vk::ShaderStageFlagBits::eCompute, 0, data);
     cmd.dispatch((extent.width + kGroupSize - 1) / kGroupSize,
                  (extent.height + kGroupSize - 1) / kGroupSize, 1);
+}
+
+void RayTracing::recordProbeUpdate(const vk::raii::CommandBuffer& cmd, std::uint32_t frame_index,
+                                   vk::DescriptorSetLayout probe_layout, vk::DescriptorSet probe_set, const Push& push,
+                                   std::uint32_t probe_count) {
+    if (!resources_ || !ready() || probe_count == 0 || resources_->scene_sets.empty() || resources_->frame_sets.empty()) {
+        return;
+    }
+    Resources& r = *resources_;
+    const VulkanDevice& device = *r.device;
+    if (*r.probe_pipeline == nullptr || r.probe_set_layout != static_cast<VkDescriptorSetLayout>(probe_layout)) {
+        const std::array<vk::DescriptorSetLayout, 3> set_layouts = {*r.frame_layout, *r.scene_layout, probe_layout};
+        const vk::PushConstantRange push_range{vk::ShaderStageFlagBits::eCompute, 0, sizeof(Push)};
+        vk::PipelineLayoutCreateInfo layout_info{};
+        layout_info.setSetLayouts(set_layouts);
+        layout_info.setPushConstantRanges(push_range);
+        r.probe_pipeline_layout = vk::raii::PipelineLayout(device.handle(), layout_info);
+        const vk::raii::ShaderModule module = shaders::loadModule(device, "rt_probes.comp.spv");
+        vk::ComputePipelineCreateInfo pipeline_info{};
+        pipeline_info.stage.stage = vk::ShaderStageFlagBits::eCompute;
+        pipeline_info.stage.module = *module;
+        pipeline_info.stage.pName = "main";
+        pipeline_info.layout = *r.probe_pipeline_layout;
+        r.probe_pipeline = vk::raii::Pipeline(device.handle(), device.pipelineCache(), pipeline_info);
+        r.probe_set_layout = static_cast<VkDescriptorSetLayout>(probe_layout);
+    }
+    // Lo que escribio el frame anterior (sondas leidas por la GI) antes de escribir.
+    vk::MemoryBarrier2 before{};
+    before.srcStageMask = vk::PipelineStageFlagBits2::eAllCommands;
+    before.srcAccessMask = vk::AccessFlagBits2::eMemoryWrite | vk::AccessFlagBits2::eMemoryRead;
+    before.dstStageMask = vk::PipelineStageFlagBits2::eComputeShader;
+    before.dstAccessMask = vk::AccessFlagBits2::eShaderStorageRead | vk::AccessFlagBits2::eShaderStorageWrite;
+    vk::DependencyInfo before_dep{};
+    before_dep.setMemoryBarriers(before);
+    compat::pipelineBarrier(cmd, before_dep);
+
+    cmd.bindPipeline(vk::PipelineBindPoint::eCompute, *r.probe_pipeline);
+    const std::array<vk::DescriptorSet, 3> sets = {
+        *r.frame_sets[frame_index * kPassCount + static_cast<std::uint32_t>(Pass::Gi)], *r.scene_sets[0], probe_set};
+    cmd.bindDescriptorSets(vk::PipelineBindPoint::eCompute, *r.probe_pipeline_layout, 0, sets, nullptr);
+    cmd.pushConstants<Push>(*r.probe_pipeline_layout, vk::ShaderStageFlagBits::eCompute, 0, push);
+    cmd.dispatch((probe_count + 63) / 64, 1, 1);
+
+    // Las sondas nuevas las lee la GI horneada (fragment) de este frame.
+    vk::MemoryBarrier2 after{};
+    after.srcStageMask = vk::PipelineStageFlagBits2::eComputeShader;
+    after.srcAccessMask = vk::AccessFlagBits2::eShaderStorageWrite;
+    after.dstStageMask = vk::PipelineStageFlagBits2::eFragmentShader | vk::PipelineStageFlagBits2::eComputeShader;
+    after.dstAccessMask = vk::AccessFlagBits2::eShaderStorageRead;
+    vk::DependencyInfo after_dep{};
+    after_dep.setMemoryBarriers(after);
+    compat::pipelineBarrier(cmd, after_dep);
 }
 
 }  // namespace cramion::gfx

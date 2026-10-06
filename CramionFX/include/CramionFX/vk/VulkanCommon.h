@@ -19,6 +19,9 @@
 #define VK_USE_PLATFORM_ANDROID_KHR
 #endif
 #include <android/native_window.h>
+#elif defined(__linux__)
+// Linux: la superficie Xlib se crea en VulkanSurface.cpp (alli se incluye
+// Xlib, cuyas macros chocan con medio motor); aqui solo el handle opaco.
 #else
 #if !defined(WIN32_LEAN_AND_MEAN)
 #define WIN32_LEAN_AND_MEAN
@@ -40,9 +43,16 @@
 
 namespace cramion::gfx {
 
-// La ventana donde se presenta: HWND en Windows, ANativeWindow en Android.
+// La ventana donde se presenta: HWND en Windows, ANativeWindow en Android,
+// la conexion + ventana de X en Linux (dm::NativeHandle tiene el mismo formato).
 #if defined(__ANDROID__)
 using NativeWindow = ANativeWindow*;
+#elif defined(__linux__)
+struct XlibWindow {
+    void* display = nullptr;   // Display*
+    unsigned long window = 0;  // ::Window
+};
+using NativeWindow = const XlibWindow*;
 #else
 using NativeWindow = HWND;
 #endif

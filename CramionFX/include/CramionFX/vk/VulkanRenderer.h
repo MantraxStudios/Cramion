@@ -188,6 +188,18 @@ public:
         streaming_min_pixels_ = std::max(min_pixels, 0.05f);
         streaming_idle_seconds_ = std::max(idle_seconds, 0.5f);
     }
+    // Streaming de texturas por mips: cada modelo sube sus texturas al
+    // detalle que pide su tamano en pantalla (sube enseguida, baja tras unos
+    // segundos pequeno). `bias` > 0 = menos detalle (memoria), < 0 = mas.
+    void setTextureStreaming(bool enabled, int bias) {
+        texture_streaming_ = enabled;
+        texture_lod_bias_ = std::clamp(bias, -3, 3);
+    }
+    // Texturas no subidas por el streaming (estadistica, MB aprox.).
+    int modelTextureLod(std::uint32_t index) const {
+        return index < skinned_models_.size() ? skinned_models_[index].textureLod() : 0;
+    }
+
     bool modelResident(std::uint32_t index) const {
         return index < skinned_models_.size() && (index >= model_evicted_.size() || !model_evicted_[index]);
     }
@@ -259,6 +271,44 @@ public:
     bool cascadeDebug() const { return cascade_debug_; }
 
     scene::ShadowCascades& shadowCascades() { return cascades_; }
+
+    // --- Accesibilidad (encima del post-proceso de la escena) ---
+    // Filtro de daltonismo: 0 ninguno, 1 protanopia, 2 deuteranopia,
+    // 3 tritanopia, 4 acromatopsia. correct = corrige los colores para quien
+    // lo tiene (daltonizar); false = simula como lo ve (para disenar).
+    // reduce_motion quita motion blur, distorsion de lente y aberracion.
+    struct AccessibilityFilter {
+        int colorblind_mode = 0;
+        float colorblind_strength = 1.0f;
+        bool colorblind_correct = true;
+        bool reduce_motion = false;
+    };
+    void setAccessibility(const AccessibilityFilter& filter) { accessibility_ = filter; }
+    const AccessibilityFilter& accessibility() const { return accessibility_; }
+
+    // --- Volumenes de niebla (como el Local Volumetric Fog de Unity) ---
+    // Cajas o esferas con su densidad y color dentro de la luz volumetrica
+    // (necesita "Luz volumetrica" encendida). Hasta kMaxFogVolumes.
+    struct FogVolume {
+        core::Mat4 world = core::Mat4::identity();  // caja de 1 m (o esfera de 1 m de diametro) escalada
+        core::Vec3 color{1.0f, 1.0f, 1.0f};          // sRGB
+        float density = 0.05f;                       // 1/m
+        int shape = 0;                               // 0 caja, 1 esfera
+        float edge_falloff = 0.3f;                   // 0 = borde duro, 1 = todo degradado
+        float noise = 0.5f;                          // 0 = densidad uniforme
+        float noise_scale = 0.3f;                    // 1/m
+    };
+    void setFogVolumes(std::vector<FogVolume> volumes) { fog_volumes_ = std::move(volumes); }
+
+    // --- Sondas dinamicas (DDGI) ---
+    // Con iluminacion horneada y trazado de rayos: las sondas se actualizan
+    // en tiempo real (`per_frame` cada frame), asi siguen a la hora del dia, a
+    // las luces y a lo que se mueve. Sin rayos se quedan como se hornearon.
+    void setDynamicProbes(bool enabled, std::uint32_t per_frame) {
+        dynamic_probes_ = enabled;
+        dynamic_probes_per_frame_ = std::clamp<std::uint32_t>(per_frame, 16, 8192);
+    }
+    bool dynamicProbesActive() const;
 
     // --- Post-proceso (como el Volume de Unity) ---
     // PostProcessSettings es la unica fuente de verdad: setPostProcess() lo
@@ -1166,6 +1216,18 @@ private:
     BakedLighting baked_;
     LightingMode lighting_mode_ = LightingMode::Realtime;
     std::uint32_t baked_volume_count_ = 0;
+    VulkanBuffer baked_surface_keys_;    // lightmap de superficie: tabla hash
+    VulkanBuffer baked_surface_texels_;
+    std::uint32_t baked_surface_capacity_ = 0;
+    // Sondas dinamicas (DDGI): las de los volumenes horneados se actualizan
+    // con rayos, unas pocas por frame (rt_probes.comp).
+    bool dynamic_probes_ = false;
+    std::uint32_t dynamic_probes_per_frame_ = 256;
+    std::uint32_t dynamic_probe_cursor_ = 0;
+    std::uint32_t baked_probe_count_ = 0;
+    vk::raii::DescriptorSetLayout probe_update_layout_{nullptr};
+    vk::raii::DescriptorPool probe_update_pool_{nullptr};
+    std::vector<vk::raii::DescriptorSet> probe_update_sets_;
     FullscreenPass ssr_pass_{};
     FullscreenPass ssr_resolve_pass_{};
     ComputePass gi_temporal_pass_{};
@@ -1205,6 +1267,10 @@ private:
     bool streaming_restore_ = false;
     std::vector<bool> rt_scene_evicted_;
     std::vector<float> model_pixels_;
+    bool texture_streaming_ = true;
+    int texture_lod_bias_ = 0;
+    int upload_texture_lod_ = 0;  // el detalle de texturas del uploadModel en curso
+    std::vector<std::chrono::steady_clock::time_point> model_lod_since_;  // desde cuando pide menos detalle
     std::vector<std::chrono::steady_clock::time_point> model_last_seen_;
     void evictModel(std::uint32_t index);
     void streamModels(const scene::Scene& scene);
@@ -1542,6 +1608,7 @@ private:
     core::Mat4 camera_view_ = core::Mat4::identity();
     // Post-proceso y efectos de pantalla (unica fuente de verdad).
     PostProcessSettings post_{};
+    AccessibilityFilter accessibility_{};
     // Contorno de seleccion: actores (de la escena) y sus recursos.
     std::vector<std::uint32_t> outlined_actors_;
     VulkanImage outline_mask_{};  // R = silueta entera, G = parte visible
@@ -1749,6 +1816,8 @@ private:
 
     std::vector<VulkanBuffer> camera_buffers_;
     std::vector<VulkanBuffer> light_buffers_;
+    std::vector<VulkanBuffer> fog_volume_buffers_;  // GpuFogVolumes por frame (luz volumetrica)
+    std::vector<FogVolume> fog_volumes_;
     std::vector<VulkanBuffer> shadow_buffers_;
     std::vector<VulkanBuffer> local_shadow_buffers_;
 

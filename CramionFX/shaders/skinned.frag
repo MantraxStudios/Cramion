@@ -168,7 +168,7 @@ void main() {
         int model = int(packed & 0xFu);
         vec3 params = vec3(float((packed >> 8u) & 0xFFu), float((packed >> 16u) & 0xFFu),
                            float((packed >> 24u) & 0xFFu)) / 255.0;
-        if (model == kShadingAnisotropic) {
+        if (model == kShadingAnisotropic || model == kShadingHair) {
             // La direccion del brillo: la tangente de la malla girada lo que
             // diga el material, sobre la normal final; se guarda como angulo.
             vec3 b1;

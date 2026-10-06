@@ -1,5 +1,6 @@
 #include "CramionCore/gameplay/DialogueUi.h"
 
+#include "CramionCore/gameplay/Accessibility.h"
 #include <algorithm>
 #include <cmath>
 #include <string>
@@ -123,7 +124,7 @@ bool updateDialogueBox(const DialogueBox& box, const ui::UiRect& rect, float sca
         name.entity = entity;
         name.rect = ui::UiRect{rect.x + pad, rect.y + pad * 0.7f, rect.w - pad * 2.0f, box.speaker_size * 1.3f * s};
         name.text = line.speaker;
-        name.font_size = box.speaker_size * s;
+        name.font_size = box.speaker_size * s * accessibility().subtitle_scale;
         name.color = rgba(box.speaker_color, 1.0f);
         name.h_align = 0;
         name.v_align = 0;
@@ -137,11 +138,20 @@ bool updateDialogueBox(const DialogueBox& box, const ui::UiRect& rect, float sca
     body.entity = entity;
     body.rect = ui::UiRect{rect.x + pad, text_top, rect.w - pad * 2.0f, std::max(0.0f, rect.y + rect.h - pad - text_top)};
     body.text = utf8Prefix(line.text, visible);
-    body.font_size = box.font_size * s;
+    body.font_size = box.font_size * s * accessibility().subtitle_scale;
     body.color = rgba(box.text_color, 1.0f);
     body.h_align = 0;
     body.v_align = 0;
     body.wrap = true;
+    if (accessibility().subtitle_background) {
+        // Accesibilidad: fondo opaco detras del texto (se lee sobre cualquier imagen).
+        ui::UiDrawCommand back;
+        back.entity = entity;
+        back.rect = ui::UiRect{rect.x + pad * 0.5f, text_top - 4.0f * s, rect.w - pad, body.rect.h + 8.0f * s};
+        back.color = core::Vec4{0.0f, 0.0f, 0.0f, 0.85f};
+        back.radius = 6.0f * s;
+        out.push_back(back);
+    }
     out.push_back(body);
 
     // Indicador de "sigue" (parpadea) cuando la linea esta entera.
@@ -170,7 +180,7 @@ bool updateDialogueBox(const DialogueBox& box, const ui::UiRect& rect, float sca
         label.entity = entity;
         label.rect = ui::UiRect{bg.rect.x + 14.0f * s, bg.rect.y, bg.rect.w - 28.0f * s, bg.rect.h};
         label.text = std::to_string(i + 1) + ".  " + c.text;
-        label.font_size = box.font_size * 0.85f * s;
+        label.font_size = box.font_size * 0.85f * s * accessibility().subtitle_scale;
         label.color = c.enabled ? core::Vec4{1.0f, 1.0f, 1.0f, 1.0f} : core::Vec4{0.7f, 0.7f, 0.72f, 0.8f};
         label.h_align = 0;
         label.v_align = 1;

@@ -3,6 +3,8 @@
 // La definicion de ComponentRegistry::registerComponent<T>.
 #include "CramionCore/ecs/World.h"
 
+#include <array>
+
 namespace cramion::net {
 
 void NetworkObject::reflect(ecs::PropertyVisitor& v) {
@@ -16,6 +18,17 @@ void NetworkObject::reflect(ecs::PropertyVisitor& v) {
              "cualquiera lo puede empujar (balones, cajas). Apagado: en los demás solo sigue la posición recibida "
              "(personajes)"},
             local_physics);
+    static constexpr std::array<const char*, 3> kModes = {"Suavizado", "Interpolación con búfer", "Extrapolación"};
+    v.enumeration({"interpolation", "Seguimiento",
+                   "Cómo siguen los demás lo que manda el dueño. Interpolación: va un poco por detrás y pasa por todas "
+                   "las posiciones (exacto). Extrapolación: adelanta con la velocidad (menos retraso)"},
+                  interpolation, kModes);
+    v.field({"interpolation_delay", "Retraso del búfer", "Segundos por detrás del dueño (unos 2 envíos)"},
+            interpolation_delay, ecs::FloatRange{0.02f, 1.0f, 0.005f, "%.3f s"});
+    v.field({"relevance", "Relevancia", "El servidor solo lo manda a los jugadores a menos de estos metros (0 = a todos)"},
+            relevance, ecs::FloatRange{0.0f, 10000.0f, 1.0f, "%.0f m"});
+    v.field({"max_speed", "Velocidad máxima", "El servidor rechaza (y corrige) movimientos más rápidos: anti-trampas (0 = no)"},
+            max_speed, ecs::FloatRange{0.0f, 1000.0f, 0.5f, "%.1f m/s"});
 }
 
 void registerNetworkComponents() {

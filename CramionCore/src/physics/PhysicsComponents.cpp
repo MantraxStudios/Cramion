@@ -1,4 +1,8 @@
 #include "CramionCore/physics/PhysicsComponents.h"
+#include "CramionCore/spline/Spline.h"
+#include "CramionCore/world/WorldPartition.h"
+#include "CramionCore/environment/FogVolume.h"
+#include "CramionCore/ai/Crowd.h"
 #include "CramionCore/physics/Destruction.h"
 
 #include "CramionCore/physics/Cloth.h"
@@ -9,6 +13,7 @@
 #include "CramionCore/modeling/EditableMesh.h"
 #include "CramionCore/physics/Particles.h"
 
+#include <algorithm>
 #include <array>
 
 namespace cramion::physics {
@@ -321,11 +326,56 @@ void registerPhysicsComponents() {
     // La malla editable (modelado) va con su MeshCollider: se registra aqui
     // (lo llaman el editor y el reproductor antes de abrir escenas).
     modeling::registerModelingComponents();
+    spline::registerSplineComponents();  // Spline, SplineExtrude, SplineFollower
+    worldpart::registerWorldPartitionComponents();  // WorldPartition, StreamingSource, AlwaysLoaded
+    environment::registerFogVolumeComponents();     // FogVolume
+    ai::registerCrowdComponents();                  // CrowdSpawner, CrowdAgent
 }
 
 bool hasCollider(const ecs::Entity& entity) {
     return entity.has<BoxCollider>() || entity.has<SphereCollider>() || entity.has<CapsuleCollider>() ||
            entity.has<MeshCollider>() || entity.has<PlaneCollider>() || entity.has<CharacterController>();
+}
+
+bool isFittableCollider(const std::string& type) {
+    return type == "BoxCollider" || type == "SphereCollider" || type == "CapsuleCollider";
+}
+
+bool fitColliderToBounds(ecs::Entity entity, const core::Vec3& min, const core::Vec3& max, const std::string& only) {
+    if (!entity.valid() || !(max.x >= min.x && max.y >= min.y && max.z >= min.z)) return false;
+    // Las mallas planas (un plano, un cartel) dan una caja fina, no nula.
+    const core::Vec3 size{std::max(max.x - min.x, 0.001f), std::max(max.y - min.y, 0.001f),
+                          std::max(max.z - min.z, 0.001f)};
+    const core::Vec3 center = (min + max) * 0.5f;
+    bool changed = false;
+    if (only.empty() || only == "BoxCollider") {
+        if (BoxCollider* box = entity.tryGet<BoxCollider>()) {
+            box->size = size;
+            box->center = center;
+            changed = true;
+        }
+    }
+    if (only.empty() || only == "SphereCollider") {
+        if (SphereCollider* sphere = entity.tryGet<SphereCollider>()) {
+            sphere->radius = std::max({size.x, size.y, size.z}) * 0.5f;
+            sphere->center = center;
+            changed = true;
+        }
+    }
+    if (only.empty() || only == "CapsuleCollider") {
+        if (CapsuleCollider* capsule = entity.tryGet<CapsuleCollider>()) {
+            int axis = 1;  // vertical salvo que otro eje sea claramente mas largo
+            if (size.x > size.y * 1.05f && size.x >= size.z) axis = 0;
+            else if (size.z > size.y * 1.05f && size.z > size.x) axis = 2;
+            const float along = (&size.x)[axis];
+            capsule->axis = static_cast<CapsuleAxis>(axis);
+            capsule->radius = std::max((&size.x)[(axis + 1) % 3], (&size.x)[(axis + 2) % 3]) * 0.5f;
+            capsule->height = std::max(along, capsule->radius * 2.0f);
+            capsule->center = center;
+            changed = true;
+        }
+    }
+    return changed;
 }
 
 void addDefaultCollider(ecs::Entity entity) {

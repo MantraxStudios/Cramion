@@ -1,0 +1,138 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+
+// Sondas dinamicas (como el DDGI de NVIDIA, "Dynamic Diffuse Global
+// Illumination", Majercik et al. 2019): las sondas de los volumenes horneados
+// se actualizan en tiempo real con trazado de rayos, unas pocas cada frame.
+// Asi la GI por sondas (barata por pixel, estable fuera de pantalla) sigue a
+// la hora del dia, a las luces que se mueven y a lo que cambia en la escena.
+//
+// Un hilo por sonda: kRays rayos en espiral de Fibonacci (girada cada frame);
+// lo que ven (la luz de los impactos, hitRadiance) se proyecta en armonicos
+// esfericos L2, se convoluciona con el coseno y se divide por pi (el formato
+// de BakedGi.h), y la visibilidad del cielo en L1. Se mezcla con lo que tenia
+// la sonda (histeresis): sin ruido aunque cada frame vea pocos rayos.
+// Si muchos rayos chocan con caras de atras, la sonda esta dentro de la
+// geometria: se marca invalida (no se usa).
+
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+#include "rt_common.glsl"
+
+struct Volume {
+    vec4 min_intensity;  // xyz = esquina, w = intensidad
+    vec4 size;
+    uvec4 counts;        // xyz = sondas por eje, w = primera sonda
+};
+
+layout(std430, set = 2, binding = 0) buffer Probes { vec4 probes[]; };
+layout(set = 2, binding = 1) uniform VolumeBuffer {
+    uvec4 info;  // x = volumenes
+    Volume volumes[16];
+} baked;
+
+const int kRays = 48;
+const float kMaxDistance = 60.0;
+const float kMaxLuminance = 6.0;
+
+// Direccion i de n en espiral de Fibonacci (uniforme en la esfera).
+vec3 fibonacciDirection(int i, int n, float rotation) {
+    float golden = 2.39996323;
+    float z = 1.0 - (2.0 * float(i) + 1.0) / float(n);
+    float r = sqrt(max(1.0 - z * z, 0.0));
+    float phi = float(i) * golden + rotation;
+    return vec3(r * cos(phi), r * sin(phi), z);
+}
+
+void shBasis(vec3 d, out float y[9]) {
+    y[0] = 0.282095;
+    y[1] = 0.488603 * d.y;
+    y[2] = 0.488603 * d.z;
+    y[3] = 0.488603 * d.x;
+    y[4] = 1.092548 * d.x * d.y;
+    y[5] = 1.092548 * d.y * d.z;
+    y[6] = 0.315392 * (3.0 * d.z * d.z - 1.0);
+    y[7] = 1.092548 * d.x * d.z;
+    y[8] = 0.546274 * (d.x * d.x - d.y * d.y);
+}
+
+void main() {
+    // push.params: x = frame, y = primera sonda de este frame, z = cuantas, w = histeresis
+    uint local = gl_GlobalInvocationID.x;
+    uint count = uint(push.params.z + 0.5);
+    if (local >= count) return;
+
+    // Total de sondas de todos los volumenes.
+    uint volume_count = min(baked.info.x, 16u);
+    uint total = 0u;
+    for (uint v = 0u; v < volume_count; ++v) {
+        uvec4 c = baked.volumes[v].counts;
+        total = max(total, c.w + c.x * c.y * c.z);
+    }
+    if (total == 0u) return;
+    uint probe = (uint(push.params.y + 0.5) + local) % total;
+
+    // Donde esta la sonda.
+    vec3 position = vec3(0.0);
+    bool found = false;
+    for (uint v = 0u; v < volume_count && !found; ++v) {
+        uvec4 c = baked.volumes[v].counts;
+        uint n = c.x * c.y * c.z;
+        if (probe < c.w || probe >= c.w + n) continue;
+        uint i = probe - c.w;
+        uint ix = i % c.x;
+        uint iy = (i / c.x) % c.y;
+        uint iz = i / (c.x * c.y);
+        vec3 t = vec3(float(ix) / float(max(c.x - 1u, 1u)), float(iy) / float(max(c.y - 1u, 1u)),
+                      float(iz) / float(max(c.z - 1u, 1u)));
+        position = baked.volumes[v].min_intensity.xyz + baked.volumes[v].size.xyz * t;
+        found = true;
+    }
+    if (!found) return;
+
+    vec3 sh[9];
+    for (int k = 0; k < 9; ++k) sh[k] = vec3(0.0);
+    float sky[4] = float[](0.0, 0.0, 0.0, 0.0);
+    int backfaces = 0;
+    float rotation = fract(push.params.x * 0.6180339) * 6.2831853;
+    for (int r = 0; r < kRays; ++r) {
+        vec3 direction = fibonacciDirection(r, kRays, rotation);
+        float y[9];
+        shBasis(direction, y);
+        RtHit hit;
+        if (traceRay(position, direction, kMaxDistance, hit)) {
+            if (dot(hit.normal, direction) > 0.0) ++backfaces;
+            vec3 light = hitRadiance(hit, 4.0, false);
+            light *= min(1.0, kMaxLuminance / max(luminance(light), 1e-4));
+            for (int k = 0; k < 9; ++k) sh[k] += light * y[k];
+        } else {
+            for (int k = 0; k < 4; ++k) sky[k] += y[k];
+        }
+    }
+    // Integral en la esfera (4 pi / N), convolucion con el coseno (A0 = pi,
+    // A1 = 2pi/3, A2 = pi/4) y / pi.
+    float weight = 4.0 * kPi / float(kRays);
+    const float kBand[9] = float[](1.0, 2.0 / 3.0, 2.0 / 3.0, 2.0 / 3.0, 0.25, 0.25, 0.25, 0.25, 0.25);
+    uint base = probe * 8u;
+    float hysteresis = clamp(push.params.w, 0.0, 0.99);
+    bool valid = float(backfaces) < float(kRays) * 0.3;
+    // La sonda era invalida y ahora no: sin mezclar con lo viejo.
+    if (probes[base + 7u].w < 0.5 && valid) hysteresis = 0.0;
+
+    float values[32];
+    for (int k = 0; k < 9; ++k) {
+        vec3 c = sh[k] * (weight * kBand[k]);
+        values[k * 3 + 0] = c.r;
+        values[k * 3 + 1] = c.g;
+        values[k * 3 + 2] = c.b;
+    }
+    for (int k = 0; k < 4; ++k) values[27 + k] = sky[k] * weight * kBand[k];
+    values[31] = valid ? 1.0 : 0.0;
+    for (int q = 0; q < 8; ++q) {
+        vec4 old_value = probes[base + uint(q)];
+        vec4 new_value = vec4(values[q * 4 + 0], values[q * 4 + 1], values[q * 4 + 2], values[q * 4 + 3]);
+        vec4 blended = mix(new_value, old_value, hysteresis);
+        if (q == 7) blended.w = new_value.w;  // validez: la de ahora
+        probes[base + uint(q)] = blended;
+    }
+}

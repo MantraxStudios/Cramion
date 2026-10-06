@@ -44,6 +44,13 @@
 #include "CramionCore/physics/Destruction.h"
 #include "CramionCore/lighting/ProbeBaker.h"
 #include "CramionCore/replay/Replay.h"
+#include "CramionCore/spline/Spline.h"
+#include "CramionCore/world/WorldPartition.h"
+#include "CramionCore/jobs/JobSystem.h"
+#include "CramionCore/gameplay/Accessibility.h"
+#include "CramionCore/project/Mods.h"
+#include "CramionCore/audio/VoiceChat.h"
+#include "CramionCore/ai/Crowd.h"
 
 #include <CramionDM/Input.h>
 #include <CramionDM/TouchControls.h>
@@ -572,6 +579,8 @@ struct ScriptSystem::Impl {
     void bindPlatform(sol::state& L);
     // VFX, 2D, destruccion, repeticiones, Motion Matching y vehiculos (EffectsScripting.inl).
     void bindEffects(sol::state& L, sol::usertype<LuaEntity>& entity);
+    // Splines y lo nuevo de la 2.4 (Features24Scripting.inl).
+    void bindFeatures24(sol::state& L, sol::usertype<LuaEntity>& entity);
     void dispatch2DEvents();     // OnCollisionEnter2D... (System2D del mundo)
     void dispatchBreakEvents();  // OnBreak de los Destructible
     int break_listener = -1;
@@ -996,6 +1005,13 @@ struct ScriptSystem::Impl {
         n.last_position = position;
         n.last_rotation = rotation;
         n.predicted = false;
+        n.snapshots.clear();
+        n.has_offset = false;
+        // El servidor filtra y valida con los ajustes del componente.
+        if (network) {
+            network->setRelevance(net_id, n.relevance);
+            network->setMaxSpeed(net_id, n.max_speed);
+        }
         // La copia de otro la mueve la red: su Rigidbody dinamico pasa a
         // cinematico (sigue la posicion recibida y empuja a los demas), salvo
         // con fisica local: sigue dinamico aqui (se puede empujar) y la red lo
@@ -1056,6 +1072,39 @@ struct ScriptSystem::Impl {
                         n->target_position = ev.position;
                         n->target_rotation = ev.rotation;
                         n->has_target = true;
+                        // Interpolacion con bufer: la hora del dueno pasada a
+                        // la local (el desfase minimo visto = sin el retraso
+                        // de la red; deriva despacio por si los relojes van distintos).
+                        const double now = network->time();
+                        const double offset = now - ev.time;
+                        if (!n->has_offset || offset < n->clock_offset) n->clock_offset = offset;
+                        else n->clock_offset += std::min(offset - n->clock_offset, 0.002);
+                        n->has_offset = true;
+                        const double local_time = ev.time + n->clock_offset;
+                        if (n->snapshots.empty() || local_time > n->snapshots.back().time) {
+                            n->snapshots.push_back(net::NetworkObject::Snapshot{local_time, ev.position, ev.rotation});
+                            if (n->snapshots.size() > 32) n->snapshots.erase(n->snapshots.begin());
+                        }
+                    }
+                    break;
+                }
+                case net::NetEvent::Type::Voice: {
+                    if (audio::VoiceChat* v = audio::activeVoiceChat()) v->receive(ev.peer, ev.text);
+                    break;
+                }
+                case net::NetEvent::Type::Correction: {
+                    // El servidor rechazo un movimiento mio: vuelvo a donde dice.
+                    const ecs::Entity e = netEntity(ev.net_id);
+                    if (e.valid()) {
+                        ecs::Entity m = e;
+                        m.setWorldPosition(ev.position);
+                        m.setLocalRotation(ev.rotation);
+                        if (physics != nullptr) physics->setLinearVelocity(m, Vec3{});
+                        if (net::NetworkObject* n = m.tryGet<net::NetworkObject>()) {
+                            n->last_position = ev.position;
+                            n->last_rotation = ev.rotation;
+                        }
+                        if (const auto it = instances.find(m.handle()); it != instances.end()) call(it->second, "OnNetCorrection", ev.position);
                     }
                     break;
                 }
@@ -1087,11 +1136,39 @@ struct ScriptSystem::Impl {
                 followPredicted(e, *n, dt);
                 continue;
             }
+            if (n->interpolation == 1 && n->snapshots.size() >= 2) {
+                // Interpolacion con bufer: el estado de hace `delay` segundos,
+                // entre las dos posiciones recibidas que lo rodean.
+                const double render_time = network->time() - std::max(n->interpolation_delay, 0.0f);
+                const auto& snaps = n->snapshots;
+                std::size_t k = 1;
+                while (k < snaps.size() && snaps[k].time < render_time) ++k;
+                if (k >= snaps.size()) {
+                    // Sin datos tan nuevos: se queda en la ultima (o adelanta un poco).
+                    const auto& last = snaps.back();
+                    const float ahead = static_cast<float>(std::min(render_time - last.time, 0.1));
+                    e.setWorldPosition(last.position + n->target_velocity * std::max(ahead, 0.0f));
+                    e.setLocalRotation(last.rotation);
+                } else {
+                    const auto& a = snaps[k - 1];
+                    const auto& b = snaps[k];
+                    const double span = b.time - a.time;
+                    const float u = span > 1e-6 ? static_cast<float>(std::clamp((render_time - a.time) / span, 0.0, 1.0)) : 1.0f;
+                    e.setWorldPosition(core::lerp(a.position, b.position, u));
+                    e.setLocalRotation(core::slerp(a.rotation, b.rotation, u));
+                    // Lo ya pasado sobra (deja uno para interpolar).
+                    if (k >= 2) n->snapshots.erase(n->snapshots.begin(), n->snapshots.begin() + static_cast<std::ptrdiff_t>(k - 1));
+                }
+                continue;
+            }
             const Vec3 current = e.worldPosition();
-            const Vec3 delta = n->target_position - current;
+            const Vec3 aim = n->interpolation == 2
+                                 ? n->target_position + n->target_velocity * std::min(n->target_age, 0.25f)
+                                 : n->target_position;
+            const Vec3 delta = aim - current;
             const float t = 1.0f - std::exp(-std::max(n->smoothing, 0.1f) * dt);
             if (core::length(delta) > 10.0f) {
-                e.setWorldPosition(n->target_position);
+                e.setWorldPosition(aim);
                 e.setLocalRotation(n->target_rotation);
             } else {
                 e.setWorldPosition(current + delta * t);
@@ -1128,6 +1205,18 @@ struct ScriptSystem::Impl {
     // Lo mio que se movio sale a la red (a su frecuencia).
     void sendNetworkTransforms(float dt) {
         if (!network || !network->connected()) return;
+        // Chat de voz: lo del microfono sale y cada jugador suena donde esta.
+        if (audio::VoiceChat* v = audio::activeVoiceChat(); v != nullptr && v->running()) {
+            for (const std::string& frame : v->takeOutgoing()) network->sendVoice(frame);
+            for (const auto& [id, handle] : net_entities) {
+                if (world == nullptr || !world->registry().valid(handle)) continue;
+                const ecs::Entity e = world->wrap(handle);
+                const net::NetworkObject* n = e.tryGet<net::NetworkObject>();
+                if (n == nullptr) continue;
+                if (n->owner == network->localId()) v->setListener(e.worldPosition());
+                else v->setSpeakerPosition(n->owner, e.worldPosition());
+            }
+        }
         for (const auto& [id, handle] : net_entities) {
             if (world == nullptr || !world->registry().valid(handle)) continue;
             ecs::Entity e = world->wrap(handle);
@@ -1951,12 +2040,21 @@ struct ScriptSystem::Impl {
                 if (ui::RectTransform* r = x.valid() ? x.tryGet<ui::RectTransform>() : nullptr) r->size = core::Vec2{s.x, s.y};
             });
         // Componentes por su nombre ("MeshCollider", "Rigidbody", "Light"...).
-        entity["addComponent"] = [](LuaEntity& e, const std::string& name) {
+        entity["addComponent"] = [this](LuaEntity& e, const std::string& name) {
             ecs::Entity x = e.get();
             const ecs::ComponentType* type = ecs::ComponentRegistry::instance().find(name);
             if (!x.valid() || type == nullptr || e.world == nullptr) return false;
-            if (!type->has(*e.world, x.handle())) type->add(*e.world, x.handle());
+            if (!type->has(*e.world, x.handle())) {
+                type->add(*e.world, x.handle());
+                // Como Unity: la caja/esfera/capsula nueva toma la medida de la malla.
+                if (physics != nullptr && physics::isFittableCollider(name)) physics->fitColliderToMesh(x, name);
+            }
             return true;
+        };
+        // Ajusta sus colliders (caja, esfera, capsula) al AABB de su malla.
+        entity["fitColliderToMesh"] = [this](LuaEntity& e) {
+            const ecs::Entity x = e.get();
+            return x.valid() && physics != nullptr && physics->fitColliderToMesh(x);
         };
         entity["removeComponent"] = [](LuaEntity& e, const std::string& name) {
             ecs::Entity x = e.get();
@@ -2656,6 +2754,7 @@ struct ScriptSystem::Impl {
         bindHttp(L);
         bindPlatform(L);  // Steam, Test y Assert (PlatformScripting.inl)
         bindEffects(L, entity);  // VFX, 2D, destruccion, Replay... (EffectsScripting.inl)
+        bindFeatures24(L, entity);  // Splines... (Features24Scripting.inl)
 
         // Input
         sol::table in = L.create_named_table("Input");
@@ -4309,6 +4408,7 @@ struct ScriptSystem::Impl {
 #include "BridgeScripting.inl"
 #include "PlatformScripting.inl"
 #include "EffectsScripting.inl"
+#include "Features24Scripting.inl"
 #include "VisualScriptScripting.inl"
 #include "GameplayScripting.inl"
 

@@ -25,7 +25,9 @@
 #include <chrono>
 #include <ctime>
 #include <fstream>
+#include <functional>
 #include <iostream>
+#include <map>
 #include <sstream>
 
 namespace cramion::editor {
@@ -196,8 +198,10 @@ const std::vector<ToolDef>& toolDefs() {
                      {{"entity", entity}, {"quad_angle", prop("number", "Grados para juntar triangulos en quads (0 = no juntar; por defecto 2)")}}, {"entity"}});
         d.push_back({"duplicate_entity", "Duplica una entidad con sus hijos.", {{"entity", entity}}, {"entity"}});
         d.push_back({"list_component_types", "Todos los tipos de componente del motor con sus campos y valores por defecto (para set_component).", json::object(), {}});
-        d.push_back({"set_component", "Anade un componente (si no lo tiene) y cambia sus campos. Los campos que no se pasen no cambian. Ver list_component_types.",
+        d.push_back({"set_component", "Anade un componente (si no lo tiene) y cambia sus campos. Los campos que no se pasen no cambian. Ver list_component_types. Como en Unity, un BoxCollider/SphereCollider/CapsuleCollider nuevo nace con el AABB de la malla del objeto (o de sus hijos).",
                      {{"entity", entity}, {"component", prop("string", "Nombre del tipo, p. ej. Light, Rigidbody, BoxCollider, Script, Camera")}, {"values", prop("object", "Campos a cambiar")}}, {"entity", "component"}});
+        d.push_back({"fit_collider", "Ajusta el BoxCollider/SphereCollider/CapsuleCollider de una entidad al AABB de su malla (o de las de sus hijos), como al anadirlo en Unity. Lo anade si no tiene ninguno (shape: box, sphere o capsule; box por defecto).",
+                     {{"entity", entity}, {"shape", prop("string", "box, sphere o capsule (si hay que anadirlo)")}}, {"entity"}});
         d.push_back({"remove_component", "Quita un componente de una entidad.", {{"entity", entity}, {"component", prop("string", "Nombre del tipo")}}, {"entity", "component"}});
         d.push_back({"select", "Selecciona una entidad en el editor y opcionalmente centra la camara en ella.", {{"entity", entity}, {"focus", prop("boolean", "Centrar la camara")}}, {"entity"}});
         d.push_back({"inspect_asset", "Muestra un asset en el Inspector (material, Render Texture o los ajustes de importacion de un modelo: Scale Factor...), como elegirlo en el Proyecto.", {{"asset", prop("string", "Ruta, nombre o UUID")}}, {"asset"}});
@@ -248,7 +252,7 @@ const std::vector<ToolDef>& toolDefs() {
                       {"relief", prop("string", "Uso del mapa de alturas: parallax (por defecto) o tessellation (la malla sube de verdad: silueta y sombras)")},
                       {"tessellation_density", prop("number", "Teselacion maxima por borde, 1..64 (16 por defecto)")},
                       {"parallax_shadows", prop("boolean", "Auto-sombra del relieve hacia el sol (true por defecto)")},
-                      {"shading", prop("string", "Modelo de Disney: standard, clearcoat (barniz), cloth (tela), subsurface (piel/cera/hojas), anisotropic (metal cepillado), transmission (vidrio con refraccion; con transparent)")},
+                      {"shading", prop("string", "Modelo de Disney: standard, clearcoat (barniz), cloth (tela), subsurface (piel/cera/hojas), anisotropic (metal cepillado), transmission (vidrio con refraccion; con transparent), hair (pelo en hair cards)")},
                       {"specular_tint", prop("number", "0..1: el brillo toma el tono del color")},
                       {"clearcoat", prop("number", "0..1 barniz")}, {"clearcoat_roughness", prop("number", "0..1 rugosidad del barniz")},
                       {"sheen", prop("number", "0..1 brillo de tela")}, {"sheen_tint", prop("number", "0..1 tono del sheen")},
@@ -257,6 +261,8 @@ const std::vector<ToolDef>& toolDefs() {
                       {"anisotropy", prop("number", "0..1")}, {"anisotropy_rotation", prop("number", "Grados 0..180")},
                       {"ior", prop("number", "Indice de refraccion 1..2.5 (transmission)")},
                       {"transmission_thickness", prop("number", "Grosor del vidrio en metros 0..0.2")},
+                      {"hair_shift", prop("number", "Pelo: desplazamiento de los brillos 0..1")},
+                      {"hair_secondary", prop("number", "Pelo: brillo secundario 0..1")},
                       {"roughness_texture", prop("string", "Mapa de rugosidad")}, {"occlusion_texture", prop("string", "Mapa de oclusion (AO)")},
                       {"cavity_texture", prop("string", "Mapa de cavidad")}, {"specular_texture", prop("string", "Mapa specular")}, {"gloss_texture", prop("string", "Mapa de brillo (gloss)")},
                       {"transparent", prop("boolean", "Modo transparente (vidrio)")},
@@ -312,14 +318,36 @@ const std::vector<ToolDef>& toolDefs() {
                       {"all", prop("boolean", "Todas las zonas")}, {"reset", prop("boolean", "Reiniciar las zonas (nada quemado)")}}, {}});
         d.push_back({"fire_state", "Estado de los incendios: por zona celdas en llamas, con brasas, quemadas, area en llamas, fraccion quemada, viento y segundos simulados; con position, calor y quemado en ese punto.",
                      {{"position", vec3Prop("Punto a consultar (opcional)")}}, {}});
-        d.push_back({"generate_house", "Crea una casa o cabana procedural realista (Ventana > Generador de casas): 8 materiales PBR compartidos con relieve, MeshCollider y la puerta aparte (hijo 'Puerta', gira en Y). Con 'village' crea una aldea de N casas en el terreno (reemplaza 'Aldea').",
-                     {{"style", prop("string", "log (troncos), timber (tablas), stone (piedra) o farm (casa de campo de 2 plantas)")},
+        d.push_back({"generate_house", "Crea una casa procedural realista con interior amueblado (Ventana > Generador de casas y pueblos): 14 materiales PBR compartidos con relieve, MeshCollider, la puerta aparte (hijo 'Puerta', gira en Y, BoxCollider ajustado a su malla), luz en el hogar y el terreno aplanado bajo su caja (componente TerrainFlatten). Con 'village' crea una aldea/pueblo de N casas en el terreno (reemplaza 'Aldea').",
+                     {{"style", prop("string", "log (troncos), timber (tablas), stone (piedra), farm (casa de campo), halftimbered (entramado medieval, 2-3 plantas) o thatched (cabana de paja)")},
+                      {"use", prop("string", "home, tavern (taberna), smithy (herreria) o shop (tienda): cambia el interior")},
                       {"seed", prop("integer", "Semilla: otras medidas y ventanas")}, {"width", prop("number", "Ancho en m")},
-                      {"depth", prop("number", "Fondo en m")}, {"floors", prop("integer", "1 o 2")}, {"wall_height", prop("number", "Altura por planta")},
+                      {"depth", prop("number", "Fondo en m")}, {"floors", prop("integer", "1 a 3")}, {"wall_height", prop("number", "Altura por planta")},
                       {"roof_pitch", prop("number", "Grados")}, {"roof_overhang", prop("number", "Alero en m")}, {"windows", prop("integer", "Ventanas delante (-1 auto)")},
                       {"porch", prop("boolean", "Porche")}, {"chimney", prop("boolean", "Chimenea")}, {"shutters", prop("boolean", "Contraventanas")},
+                      {"interior", prop("boolean", "Interior amueblado (true)")}, {"jetty", prop("number", "Entramado: vuelo de la planta alta en m")},
                       {"position", vec3Prop("Donde (la puerta mira a +Z)")}, {"on_ground", prop("boolean", "Posarla en el terreno (true)")},
+                      {"flatten", prop("boolean", "Aplanar el terreno bajo su caja (true)")},
                       {"yaw", prop("number", "Giro en grados")}, {"village", prop("integer", "Aldea de N casas en el terreno")}}, {}});
+        d.push_back({"generate_settlement", "Genera un pueblo o ciudad medieval completo sobre el terreno: calles que siguen el terreno (allanadas y pintadas), plaza con pozo y mercado, casas con interior mirando a la calle, iglesia con campanario, taberna, herrerias, tiendas, graneros, campos con vallas, molino y objetos; las ciudades llevan murallas con torres, puertas donde entran los caminos y torre del homenaje. Cada edificio aplana el terreno bajo su caja (TerrainFlatten). Reemplaza el anterior del mismo tipo.",
+                     {{"type", prop("string", "hamlet (aldea), village (pueblo) o town (ciudad amurallada)")}, {"seed", prop("integer", "Semilla")},
+                      {"houses", prop("integer", "Casas (0 = segun el tipo: 10, 28, 75)")}, {"radius", prop("number", "Radio en m (0 = segun el tipo)")},
+                      {"main_roads", prop("integer", "Calles principales (0 = segun el tipo)")}, {"walls", prop("boolean", "Murallas (ciudad)")},
+                      {"fields", prop("boolean", "Campos y graneros")}, {"market", prop("boolean", "Puestos de mercado")}, {"church", prop("boolean", "Iglesia")},
+                      {"props", prop("boolean", "Objetos (barriles, carros, pacas...)")}, {"interiors", prop("boolean", "Interiores amueblados (true)")},
+                      {"lights", prop("boolean", "Luz en cada hogar (true)")}, {"max_slope", prop("number", "Diferencia de altura maxima bajo un edificio (4 m)")},
+                      {"position", vec3Prop("Centro (sin el: busca el sitio mas llano y seco del terreno)")},
+                      {"search", prop("number", "Radio de busqueda del mejor sitio alrededor de position (0 = justo alli)")}}, {}});
+        d.push_back({"generate_building", "Crea un edificio u objeto medieval suelto: church (iglesia con campanario e interior), barn (granero), well (pozo), stall (puesto de mercado), keep (torre del homenaje con salon), gatehouse (puerta de muralla), windmill (molino, aspas que giran en Play), barrels, crates, cart, hay, woodpile o bench. Los edificios aplanan el terreno bajo su caja.",
+                     {{"type", prop("string", "church, barn, well, stall, keep, gatehouse, windmill, barrels, crates, cart, hay, woodpile o bench")},
+                      {"seed", prop("integer", "Semilla")}, {"scale", prop("number", "Tamano (iglesia/torre: 1)")}, {"interior", prop("boolean", "Interior (true)")},
+                      {"position", vec3Prop("Donde (la entrada mira a +Z)")}, {"yaw", prop("number", "Giro en grados")},
+                      {"flatten", prop("boolean", "Aplanar el terreno bajo su caja (true salvo objetos)")}}, {}});
+        d.push_back({"flatten_terrain", "Aplana el terreno bajo el AABB de un objeto (componente TerrainFlatten: plano a la altura de su origen, o de la base de la malla, con talud suave y tierra pintada debajo). En el editor se rehace solo al moverlo y el sitio de antes vuelve a como estaba.",
+                     {{"entity", entity}, {"margin", prop("number", "Metros alrededor del AABB (0.4)")}, {"blend", prop("number", "Metros de talud (4)")},
+                      {"ground_offset", prop("number", "Altura del suelo respecto al origen (0)")},
+                      {"mesh_bottom", prop("boolean", "Suelo en la base de la malla (objetos con el origen en el centro)")},
+                      {"paint_layer", prop("integer", "-2 = la capa Tierra, -1 = no pintar, 0..7")}}, {"entity"}});
         d.push_back({"generate_terrain", "Genera un mundo completo (como Ventana > Generador de terreno): relieve con erosion, rios, lagos, oceano, capas con texturas y arboles. Reemplaza el grupo 'Mundo generado'. Tarda unos segundos.",
                      {{"shape", prop("string", "island, archipelago, continent, mountains o canyons")}, {"seed", prop("integer", "Semilla")},
                       {"size", prop("number", "Metros por lado (2048)")}, {"height", prop("number", "Altura maxima en metros (420)")}, {"houses", prop("integer", "Casas de la aldea (8; 0 = sin aldea)")},
@@ -452,8 +480,15 @@ Se usan desde un material: create_material con shader = "Shaders/X.crshader".
 ## Componentes frecuentes (set_component)
 MeshRenderer, Light (type Directional/Point/Spot, color, intensity, range), Camera, Rigidbody,
 BoxCollider, SphereCollider, CapsuleCollider, MeshCollider, CharacterController, Script (file = "Scripts/X.lua"),
-AudioSource, Animator, ParticleSystem, NavAgent, Terrain, WaterBody, Decal.
-Nota: primitivas (cube, sphere...) ya traen su collider.
+AudioSource, Animator, ParticleSystem, NavAgent, Terrain, WaterBody, Decal, TerrainFlatten.
+Nota: primitivas (cube, sphere...) ya traen su collider. Un BoxCollider/SphereCollider/CapsuleCollider
+nuevo toma el AABB de la malla (como Unity); fit_collider lo recalcula.
+
+## Pueblos medievales
+generate_settlement (type hamlet/village/town: calles, plaza, mercado, iglesia, taberna, herrerias,
+murallas con puertas, campos, molino; casas con interior), generate_house (style halftimbered/thatched/
+log/timber/stone/farm, use home/tavern/smithy/shop), generate_building (church, keep, windmill...).
+Los edificios llevan TerrainFlatten: el terreno se aplana bajo su AABB (flatten_terrain para otros).
 
 ## Ambiente (clima y hora)
 set_weather (Storm, Snow, Foggy...; seconds = transicion), set_time (hours, day, month, latitude,
@@ -1186,12 +1221,39 @@ json McpTools::call(const std::string& name, const json& args, bool& image, std:
         ecs::Entity e = entity(arg(args, "entity"));
         const std::string component = arg(args, "component");
         std::string error;
+        // Como Unity: un BoxCollider/SphereCollider/CapsuleCollider nuevo nace
+        // con la medida de la malla (los campos pasados mandan despues).
+        if (const ecs::ComponentType* type = ecs::ComponentRegistry::instance().find(component);
+            type != nullptr && physics::isFittableCollider(component) && !type->has(a.world_, e.handle())) {
+            type->add(a.world_, e.handle());
+            a.physics_.fitColliderToMesh(e, component);
+        }
         if (!ecs::componentFromJson(a.world_, e, component, args.contains("values") ? args["values"].dump() : std::string("{}"), &error)) {
             throw ToolError(error);
         }
         a.commit();
         const std::string now = ecs::componentToJson(a.world_, e, component);
         return json{{"entity", e.name()}, {"component", component}, {"values", json::parse(now.empty() ? "{}" : now, nullptr, false)}};
+    }
+    if (name == "fit_collider") {
+        ecs::Entity e = entity(arg(args, "entity"));
+        if (!e.has<physics::BoxCollider>() && !e.has<physics::SphereCollider>() && !e.has<physics::CapsuleCollider>()) {
+            const std::string shape = args.value("shape", std::string("box"));
+            if (shape == "sphere") e.add<physics::SphereCollider>();
+            else if (shape == "capsule") e.add<physics::CapsuleCollider>();
+            else e.add<physics::BoxCollider>();
+        }
+        core::Vec3 lo{};
+        core::Vec3 hi{};
+        if (!a.physics_.localMeshBounds(e, lo, hi)) throw ToolError("la entidad no tiene malla (ni sus hijos)");
+        physics::fitColliderToBounds(e, lo, hi);
+        a.commit();
+        json out{{"entity", e.name()}, {"bounds_min", {lo.x, lo.y, lo.z}}, {"bounds_max", {hi.x, hi.y, hi.z}}};
+        for (const char* c : {"BoxCollider", "SphereCollider", "CapsuleCollider"}) {
+            const std::string now = ecs::componentToJson(a.world_, e, c);
+            if (!now.empty()) out[c] = json::parse(now, nullptr, false);
+        }
+        return out;
     }
     if (name == "remove_component") {
         ecs::Entity e = entity(arg(args, "entity"));
@@ -1506,6 +1568,8 @@ json McpTools::call(const std::string& name, const json& args, bool& image, std:
         unit("anisotropy_rotation", m.anisotropy_rotation, 0.0f, 180.0f);
         unit("ior", m.ior, 1.0f, 2.5f);
         unit("transmission_thickness", m.transmission_thickness, 0.0f, 0.2f);
+        unit("hair_shift", m.hair_shift, 0.0f, 1.0f);
+        unit("hair_secondary", m.hair_secondary, 0.0f, 1.0f);
         if ((!m.roughness_map.empty() || !m.gloss_map.empty()) && !args.contains("roughness")) m.roughness = 1.0f;
         if (args.value("transparent", false)) m.mode = assets::MaterialMode::Transparent;
         if (args.contains("tiling") && args["tiling"].is_array() && args["tiling"].size() >= 2) {
@@ -1991,11 +2055,17 @@ json McpTools::call(const std::string& name, const json& args, bool& image, std:
         if (style_name == "timber" || style_name == "tablas") style = asset::HouseStyle::TimberCabin;
         else if (style_name == "stone" || style_name == "piedra") style = asset::HouseStyle::StoneCottage;
         else if (style_name == "farm" || style_name == "farmhouse" || style_name == "campo") style = asset::HouseStyle::Farmhouse;
+        else if (style_name == "halftimbered" || style_name == "half_timbered" || style_name == "entramado" || style_name == "medieval")
+            style = asset::HouseStyle::HalfTimbered;
+        else if (style_name == "thatched" || style_name == "paja") style = asset::HouseStyle::Thatched;
         const std::uint32_t seed = args.contains("seed") && args["seed"].is_number_integer() ? args["seed"].get<std::uint32_t>() : 1U;
         if (args.contains("village") && args["village"].is_number_integer()) {
-            if (ecs::Entity old = a.world_.findByName("Aldea"); old.valid()) a.world_.destroy(old);
+            if (ecs::Entity old = a.world_.findByName("Aldea"); old.valid()) {
+                a.world_.destroy(old);
+                a.updateTerrainFlatteners();
+            }
             std::string error;
-            const int made = a.placeVillage(std::clamp(args["village"].get<int>(), 1, 60), seed,
+            const int made = a.placeVillage(std::clamp(args["village"].get<int>(), 1, 200), seed,
                                             a.world_.findByName("Mundo generado"), &error);
             if (made == 0) throw ToolError(error);
             a.commit();
@@ -2008,15 +2078,22 @@ json McpTools::call(const std::string& name, const json& args, bool& image, std:
         number("width", s.width, 3.0f, 30.0f);
         number("depth", s.depth, 3.0f, 30.0f);
         number("wall_height", s.wall_height, 2.2f, 4.0f);
-        number("roof_pitch", s.roof_pitch, 10.0f, 60.0f);
+        number("roof_pitch", s.roof_pitch, 10.0f, 62.0f);
         number("roof_overhang", s.roof_overhang, 0.1f, 2.0f);
-        if (args.contains("floors") && args["floors"].is_number_integer()) s.floors = std::clamp(args["floors"].get<int>(), 1, 2);
+        number("jetty", s.jetty, 0.0f, 0.9f);
+        if (args.contains("floors") && args["floors"].is_number_integer()) s.floors = std::clamp(args["floors"].get<int>(), 1, 3);
         if (args.contains("windows") && args["windows"].is_number_integer()) s.windows = std::clamp(args["windows"].get<int>(), -1, 10);
         s.porch = args.value("porch", s.porch);
         s.chimney = args.value("chimney", s.chimney);
         s.shutters = args.value("shutters", s.shutters);
+        s.interior = args.value("interior", true);
+        const std::string use = args.value("use", std::string("home"));
+        if (use == "tavern" || use == "taberna") s.use = asset::HouseUse::Tavern;
+        else if (use == "smithy" || use == "herreria" || use == "blacksmith") s.use = asset::HouseUse::Smithy;
+        else if (use == "shop" || use == "tienda") s.use = asset::HouseUse::Shop;
         std::string error;
-        const Uuid uuid = a.writeHouseModel(s, &error);
+        asset::HouseModel model;
+        const Uuid uuid = a.writeHouseModel(s, &error, &model);
         if (!uuid.valid()) throw ToolError(error);
         core::Vec3 position{};
         position = readVec(args, "position", position);
@@ -2024,11 +2101,130 @@ json McpTools::call(const std::string& name, const json& args, bool& image, std:
             float y = 0.0f;
             if (a.groundAt(position.x, position.z, y)) position.y = y;
         }
-        ecs::Entity house = a.placeHouse(uuid, position, args.value("yaw", 0.0f), {});
+        ecs::Entity house = a.placeHouse(uuid, position, args.value("yaw", 0.0f), {}, args.value("flatten", true), &model.lights);
         if (!house.valid()) throw ToolError("no se pudo instanciar la casa");
         a.commit();
         return json{{"entity", house.name()}, {"uuid", house.uuid().toString()}, {"model", uuid.toString()},
-                    {"position", {position.x, position.y, position.z}}};
+                    {"position", {position.x, position.y, position.z}}, {"triangles", model.triangles},
+                    {"bounds_min", {model.bounds_min.x, model.bounds_min.y, model.bounds_min.z}},
+                    {"bounds_max", {model.bounds_max.x, model.bounds_max.y, model.bounds_max.z}}, {"fires", model.lights.size()}};
+    }
+    if (name == "generate_settlement") {
+        if (a.playing()) throw ToolError("para el modo Play antes de generar");
+        asset::SettlementSettings s;
+        const std::string type = args.value("type", std::string("village"));
+        if (type == "hamlet" || type == "aldea") s.type = asset::SettlementType::Hamlet;
+        else if (type == "town" || type == "city" || type == "ciudad") s.type = asset::SettlementType::Town;
+        else s.type = asset::SettlementType::Village;
+        if (args.contains("seed") && args["seed"].is_number_integer()) s.seed = args["seed"].get<std::uint32_t>();
+        if (args.contains("houses") && args["houses"].is_number_integer()) s.houses = std::clamp(args["houses"].get<int>(), 0, 400);
+        if (args.contains("main_roads") && args["main_roads"].is_number_integer()) s.main_roads = std::clamp(args["main_roads"].get<int>(), 0, 8);
+        if (args.contains("radius") && args["radius"].is_number()) s.radius = std::clamp(args["radius"].get<float>(), 0.0f, 600.0f);
+        if (args.contains("max_slope") && args["max_slope"].is_number()) s.max_slope = std::clamp(args["max_slope"].get<float>(), 0.5f, 20.0f);
+        s.walls = args.value("walls", true);
+        s.fields = args.value("fields", true);
+        s.market = args.value("market", true);
+        s.church = args.value("church", true);
+        s.props = args.value("props", true);
+        a.settlement_interiors_ = args.value("interiors", true);
+        a.settlement_lights_ = args.value("lights", true);
+        core::Vec3 center{};
+        float search = 0.0f;
+        if (args.contains("position")) {
+            center = readVec(args, "position", center);
+            search = args.value("search", 0.0f);
+        } else {
+            a.world_.forEachDepthFirst([&](ecs::Entity e) {
+                if (search > 0.0f || !e.has<terrain::Terrain>()) return;
+                const terrain::Terrain& comp = e.get<terrain::Terrain>();
+                center = e.worldPosition() + core::Vec3{comp.size * 0.5f, 0.0f, comp.size * 0.5f};
+                search = comp.size * 0.42f;
+            });
+        }
+        if (ecs::Entity old = a.world_.findByName(asset::settlementTypeName(s.type)); old.valid()) {
+            a.world_.destroy(old);
+            a.updateTerrainFlatteners();
+        }
+        std::string error;
+        int houses = 0;
+        const auto t0 = std::chrono::steady_clock::now();
+        ecs::Entity group = a.generateSettlement(s, center, search, a.world_.findByName("Mundo generado"), &error, true, &houses);
+        if (!group.valid()) throw ToolError(error);
+        a.commit();
+        const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+        json counts = json::object();
+        std::function<void(ecs::Entity)> count_children = [&](ecs::Entity e) {
+            for (std::size_t i = 0; i < e.childCount(); ++i) {
+                const ecs::Entity c = e.child(i);
+                if (c.has<terrain::TerrainFlatten>() || c.name() == "Muralla" || c.name() == "Vallas" ||
+                    (c.childCount() > 0 && e != group && e.parent() == group)) {
+                    const std::string key = e.name();
+                    counts[key] = counts.value(key, 0) + 1;
+                } else if (c.childCount() > 0 && !c.has<ecs::MeshRenderer>()) {
+                    count_children(c);
+                }
+            }
+        };
+        count_children(group);
+        const core::Vec3 p = group.worldPosition();
+        return json{{"group", group.name()}, {"uuid", group.uuid().toString()}, {"houses", houses}, {"center", {p.x, p.y, p.z}},
+                    {"by_group", counts}, {"seconds", seconds}};
+    }
+    if (name == "generate_building") {
+        static const std::map<std::string, asset::MedievalBuilding> kinds = {
+            {"church", asset::MedievalBuilding::Church},     {"iglesia", asset::MedievalBuilding::Church},
+            {"barn", asset::MedievalBuilding::Barn},         {"granero", asset::MedievalBuilding::Barn},
+            {"well", asset::MedievalBuilding::Well},         {"pozo", asset::MedievalBuilding::Well},
+            {"stall", asset::MedievalBuilding::MarketStall}, {"puesto", asset::MedievalBuilding::MarketStall},
+            {"keep", asset::MedievalBuilding::Keep},         {"torre", asset::MedievalBuilding::Keep},
+            {"gatehouse", asset::MedievalBuilding::Gatehouse}, {"puerta", asset::MedievalBuilding::Gatehouse},
+            {"windmill", asset::MedievalBuilding::Windmill}, {"molino", asset::MedievalBuilding::Windmill},
+            {"barrels", asset::MedievalBuilding::Barrels},   {"crates", asset::MedievalBuilding::Crates},
+            {"cart", asset::MedievalBuilding::Cart},         {"hay", asset::MedievalBuilding::HayBales},
+            {"woodpile", asset::MedievalBuilding::Woodpile}, {"bench", asset::MedievalBuilding::Bench}};
+        const auto it = kinds.find(args.value("type", std::string("church")));
+        if (it == kinds.end()) throw ToolError("tipo desconocido: " + args.value("type", std::string()));
+        asset::MedievalSettings ms;
+        ms.type = it->second;
+        if (args.contains("seed") && args["seed"].is_number_integer()) ms.seed = args["seed"].get<std::uint32_t>();
+        if (args.contains("scale") && args["scale"].is_number()) ms.scale = std::clamp(args["scale"].get<float>(), 0.5f, 2.5f);
+        ms.interior = args.value("interior", true);
+        const asset::HouseModel model = asset::buildMedieval(ms);
+        char key[96];
+        std::snprintf(key, sizeof(key), "%u-%.2f-%d-%.1f", ms.seed, ms.scale, ms.interior ? 1 : 0, ms.wall_height);
+        std::uint32_t h = 2166136261U;
+        for (const char* c = key; *c != 0; ++c) h = (h ^ static_cast<std::uint8_t>(*c)) * 16777619U;
+        char hex[16];
+        std::snprintf(hex, sizeof(hex), "%08x", h);
+        std::string error;
+        const Uuid uuid = a.writeBuildingModel(asset::medievalBuildingName(ms.type), hex, model, &error);
+        if (!uuid.valid()) throw ToolError(error);
+        core::Vec3 position = readVec(args, "position", core::Vec3{});
+        float y = 0.0f;
+        if (a.groundAt(position.x, position.z, y)) position.y = y;
+        const bool prop_kind = static_cast<int>(ms.type) >= static_cast<int>(asset::MedievalBuilding::Barrels);
+        ecs::Entity e = a.placeHouse(uuid, position, args.value("yaw", 0.0f), {}, args.value("flatten", !prop_kind), &model.lights);
+        if (!e.valid()) throw ToolError("no se pudo instanciar");
+        a.commit();
+        return json{{"entity", e.name()}, {"uuid", e.uuid().toString()}, {"triangles", model.triangles},
+                    {"bounds_min", {model.bounds_min.x, model.bounds_min.y, model.bounds_min.z}},
+                    {"bounds_max", {model.bounds_max.x, model.bounds_max.y, model.bounds_max.z}}};
+    }
+    if (name == "flatten_terrain") {
+        ecs::Entity e = entity(arg(args, "entity"));
+        if (!e.has<terrain::TerrainFlatten>()) e.add<terrain::TerrainFlatten>();
+        terrain::TerrainFlatten& f = e.get<terrain::TerrainFlatten>();
+        if (args.contains("margin") && args["margin"].is_number()) f.margin = std::clamp(args["margin"].get<float>(), 0.0f, 20.0f);
+        if (args.contains("blend") && args["blend"].is_number()) f.blend = std::clamp(args["blend"].get<float>(), 0.0f, 50.0f);
+        if (args.contains("ground_offset") && args["ground_offset"].is_number()) f.ground_offset = args["ground_offset"].get<float>();
+        if (args.contains("mesh_bottom")) f.mesh_bottom = args.value("mesh_bottom", false);
+        if (args.contains("paint_layer") && args["paint_layer"].is_number_integer()) f.paint_layer = std::clamp(args["paint_layer"].get<int>(), -2, 7);
+        if (!a.flattenUnder(e)) throw ToolError("no se pudo aplanar: la entidad no tiene malla o no hay terreno debajo");
+        a.commit();
+        const EditorApp::FlattenState& st = a.flatten_states_[e.uuid()];
+        return json{{"entity", e.name()},
+                    {"center", {st.footprint.center.x, st.footprint.center.y, st.footprint.center.z}},
+                    {"half", {st.footprint.half.x, st.footprint.half.y}}, {"yaw", st.footprint.yaw_degrees}};
     }
     if (name == "cinema") {
         const bool on = args.value("enabled", true);

@@ -273,6 +273,12 @@ void EditorApp::startExport(const std::filesystem::path& parent) {
             if (it->is_regular_file(fe) && it->path().extension() == ".dll") add_file(it->path(), target / it->path().filename());
         }
         add_file(source / "player_banner.png", game / "banner.png");
+        // Servidor dedicado: el mismo juego sin ventana (CramionServer).
+        if (config.dedicated_server && std::filesystem::exists(source / "CramionServer.exe")) {
+            std::filesystem::path server_exe = job->exe;
+            server_exe.replace_filename(job->exe.stem().wstring() + L"Server.exe");
+            add_file(source / "CramionServer.exe", server_exe);
+        }
         // Steam: steam_api64.dll y steam_appid.txt (EditorPlatform.cpp).
         for (const auto& [from, to] : platformExportFiles(config, target)) add_file(from, to);
         // Scripts de C++: el proceso aislado y la DLL (al dia) con sus simbolos.

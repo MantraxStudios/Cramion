@@ -27,6 +27,12 @@ std::filesystem::path directory() {
 #if defined(__ANDROID__)
     // Sin setDirectory: el player de Android los saca del APK a su carpeta.
     throw std::runtime_error("Carpeta de shaders sin configurar (shaders::setDirectory).");
+#elif defined(__linux__)
+    // Linux: junto al ejecutable (/proc/self/exe).
+    std::error_code error;
+    const std::filesystem::path exe = std::filesystem::read_symlink("/proc/self/exe", error);
+    if (error) throw std::runtime_error("No se pudo obtener la ruta del ejecutable.");
+    return exe.parent_path() / "shaders";
 #else
     // Se resuelve desde la ruta del ejecutable para que funcione sea cual sea
     // el directorio de trabajo desde el que se lance.

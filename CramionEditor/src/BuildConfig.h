@@ -84,6 +84,8 @@ struct BuildConfig {
     bool static_batching = true;
     bool show_fps = false;      // desarrollo: FPS/CPU/GPU en una esquina
     bool vr = false;            // realidad virtual (OpenXR) si hay casco; solo Windows
+    bool dedicated_server = false;  // copia <Juego>Server.exe (servidor sin ventana) junto al juego
+    bool allow_mods = false;        // el juego carga los mods de Mods/ (mods=1 en game.ini)
     BuildPlatform platform = BuildPlatform::Windows;
     AndroidBuildSettings android;
     SteamBuildSettings steam;

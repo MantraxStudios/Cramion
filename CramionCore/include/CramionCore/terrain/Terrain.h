@@ -61,6 +61,23 @@ struct Terrain {
     void reflect(ecs::PropertyVisitor& v);
 };
 
+// Aplanar el terreno bajo un objeto (casas, edificios, lo que se apoya en el
+// suelo): su huella (el AABB de sus mallas en el suelo, girado con el objeto,
+// mas un margen) queda plana a la altura de su origen (o de la base de la
+// malla) con un talud suave alrededor, y debajo se pinta tierra para que la
+// hierba no atraviese el suelo. En el editor se rehace al soltarlo despues de
+// moverlo o girarlo, y el sitio de antes vuelve a como estaba.
+struct TerrainFlatten {
+    bool enabled = true;
+    float margin = 0.4f;         // m alrededor del AABB
+    float blend = 4.0f;          // m de talud (mezcla con el terreno de alrededor)
+    float ground_offset = 0.0f;  // altura del suelo respecto al origen (m)
+    bool mesh_bottom = false;    // el suelo es la base del AABB (no el origen)
+    int paint_layer = -2;        // capa pintada debajo: -2 = "Tierra" si existe, -1 = ninguna
+
+    void reflect(ecs::PropertyVisitor& v);
+};
+
 // Rectangulo de texeles cambiados (inclusivo).
 struct DirtyRegion {
     int x0 = INT_MAX, y0 = INT_MAX, x1 = -1, y1 = -1;

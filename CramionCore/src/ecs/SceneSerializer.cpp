@@ -270,6 +270,18 @@ Entity pasteEntities(World& world, const std::string& text, Entity parent) {
     return buildEntities(world, *it, /*remap=*/true, parent);
 }
 
+Entity restoreEntities(World& world, const std::string& text, Entity parent) {
+    const json root = json::parse(text, nullptr, false);
+    if (root.is_discarded() || !root.is_object()) {
+        return {};
+    }
+    const auto it = root.find("entities");
+    if (it == root.end() || !it->is_array()) {
+        return {};
+    }
+    return buildEntities(world, *it, /*remap=*/false, parent);
+}
+
 Uuid readSceneUuid(const std::filesystem::path& path) {
     std::ifstream file(path, std::ios::binary);
     if (!file) {

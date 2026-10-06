@@ -103,6 +103,19 @@
     <tr><td>&nbsp;&nbsp;&nbsp;Fuerza del relieve<br><code>normal_strength</code></td><td>numero</td><td>1</td><td>0 a 4</td><td></td></tr>
   </tbody>
 </table>
+<h3 id="TerrainFlatten">Aplanar terreno <code>TerrainFlatten</code></h3>
+<p>Aplana el terreno bajo el objeto: su huella (el AABB de sus mallas en el suelo, girado con el objeto, mas el margen) queda plana a la altura de su origen (o de la base de la malla) con un talud suave alrededor, y debajo se pinta la capa Tierra para que la hierba no atraviese el suelo. Lo llevan las casas y edificios generados. En el editor se rehace al soltar el objeto despues de moverlo o girarlo, y el sitio de antes vuelve a como estaba (tambien al borrarlo). Ver <a href="mundo-procedural.html#pueblos">Pueblos medievales</a>.</p>
+<table>
+  <thead><tr><th>Propiedad</th><th>Tipo</th><th>Por defecto</th><th>Valores</th><th>Descripcion</th></tr></thead>
+  <tbody>
+    <tr><td>Activo<br><code>enabled</code></td><td>si/no</td><td>si</td><td></td><td>Aplana el terreno bajo el objeto (y lo rehace al moverlo en el editor)</td></tr>
+    <tr><td>Margen<br><code>margin</code></td><td>numero</td><td>0,4</td><td>0 a 20</td><td>Metros alrededor del AABB de sus mallas</td></tr>
+    <tr><td>Talud<br><code>blend</code></td><td>numero</td><td>4</td><td>0 a 50</td><td>Metros en que se mezcla con el terreno de alrededor</td></tr>
+    <tr><td>Altura del suelo<br><code>ground_offset</code></td><td>numero</td><td>0</td><td>-20 a 20</td><td>Altura del terreno respecto al origen del objeto</td></tr>
+    <tr><td>Suelo en la base de la malla<br><code>mesh_bottom</code></td><td>si/no</td><td>no</td><td></td><td>El terreno se pone a la altura de la base del AABB (objetos con el origen en el centro)</td></tr>
+    <tr><td>Capa debajo<br><code>paint_layer</code></td><td>entero</td><td>-2</td><td>-2 a 7</td><td>-2 = la capa &quot;Tierra&quot; si la hay, -1 = no pintar, 0..7 = esa capa</td></tr>
+  </tbody>
+</table>
 <h3 id="WaterBody">Agua <code>WaterBody</code></h3>
 <p>Agua procedural: <strong>Oceano</strong> (plano infinito hasta el horizonte con oleaje FFT en 4 cascadas, viento, fetch y mar de fondo), <strong>Lago</strong> (rectangulo con olas suaves) o <strong>Rio</strong> (cinta que sigue sus puntos, con corriente y rapidos). Los Rigidbody flotan, bajo el agua se ven la ventana de Snell, rayos de sol, causticas y particulas, y los cuerpos que se mueven dejan ondas. Ver <a href="agua.html">Agua</a>.</p>
 <table>

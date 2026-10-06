@@ -29,9 +29,13 @@ struct Volume {
 };
 
 layout(set = 0, binding = 4) uniform Volumes {
-    uvec4 info;  // x = cuantos volumenes
+    uvec4 info;  // x = cuantos volumenes, y = huecos del lightmap de superficie, z = lado del texel (bits de float)
     Volume volumes[16];
 } baked;
+
+// Lightmap de superficie (BakedGi.h): tabla hash de texeles en el mundo.
+layout(set = 0, binding = 5) readonly buffer SurfaceKeys { uint keys[]; } surface_keys;
+layout(set = 0, binding = 6) readonly buffer SurfaceTexels { vec4 data[]; } surface_texels;
 
 layout(push_constant) uniform PushConstants {
     mat4 previous_view_projection;
@@ -80,6 +84,76 @@ float probeVisibility(uint p, vec3 n) {
     return clamp(v, 0.0, 1.0);
 }
 
+// El mismo hash que gfx::surfaceCellHash.
+uint surfaceHash(uint lo, uint hi) {
+    uint h = (lo * 0x9E3779B1u) ^ (hi * 0x85EBCA77u);
+    h ^= h >> 15u;
+    h *= 0x2C1B3C6Du;
+    h ^= h >> 12u;
+    return h;
+}
+
+// Hueco del texel (x, y, z), o -1.
+int surfaceSlot(ivec3 c) {
+    uint capacity = baked.info.y;
+    uvec3 b = uvec3(c + ivec3(1 << 20)) & uvec3(0x1FFFFFu);
+    uint lo = b.x | (b.y << 21u);
+    uint hi = (b.y >> 11u) | (b.z << 10u);
+    uint slot = surfaceHash(lo, hi) & (capacity - 1u);
+    for (int i = 0; i < 48; ++i) {
+        uint klo = surface_keys.keys[slot * 2u];
+        uint khi = surface_keys.keys[slot * 2u + 1u];
+        if (klo == 0xFFFFFFFFu && khi == 0xFFFFFFFFu) return -1;
+        if (klo == lo && khi == hi) return int(slot);
+        slot = (slot + 1u) & (capacity - 1u);
+    }
+    return -1;
+}
+
+// Lightmap de superficie en p con normal n: los 8 texeles de alrededor
+// (trilineal), sin los de detras de la superficie. false si no hay ninguno.
+bool surfaceLightmap(vec3 world, vec3 n, out vec4 result) {
+    result = vec4(0.0);
+    if (baked.info.y == 0u) return false;
+    float cell = uintBitsToFloat(baked.info.z);
+    if (cell <= 0.0) return false;
+    vec3 q = (world + n * (cell * 0.25)) / cell - 0.5;
+    ivec3 base = ivec3(floor(q));
+    vec3 f = q - vec3(base);
+    vec3 sum = vec3(0.0);
+    float vis = 0.0;
+    float weight_sum = 0.0;
+    for (int i = 0; i < 8; ++i) {
+        ivec3 o = ivec3(i & 1, (i >> 1) & 1, (i >> 2) & 1);
+        int slot = surfaceSlot(base + o);
+        if (slot < 0) continue;
+        vec3 tri = mix(1.0 - f, f, vec3(o));
+        float w = tri.x * tri.y * tri.z;
+        vec3 center = (vec3(base + o) + 0.5) * cell;
+        vec3 to_cell = center - world;
+        float len = length(to_cell);
+        if (len > 1e-3) w *= mix(0.1, 1.0, smoothstep(-0.5, 0.2, dot(to_cell / len, n)));
+        uint b4 = uint(slot) * 4u;
+        vec4 t0 = surface_texels.data[b4];
+        vec4 t1 = surface_texels.data[b4 + 1u];
+        vec4 t2 = surface_texels.data[b4 + 2u];
+        vec4 t3 = surface_texels.data[b4 + 3u];
+        // floats 0..11 = c0.rgb c1.rgb c2.rgb c3.rgb; 12..15 = cielo L1
+        vec3 c0 = t0.xyz;
+        vec3 c1 = vec3(t0.w, t1.x, t1.y);
+        vec3 c2 = vec3(t1.z, t1.w, t2.x);
+        vec3 c3 = vec3(t2.y, t2.z, t2.w);
+        vec3 irr = c0 * 0.282095 + c1 * 0.488603 * n.y + c2 * 0.488603 * n.z + c3 * 0.488603 * n.x;
+        float sky = t3.x * 0.282095 + t3.y * 0.488603 * n.y + t3.z * 0.488603 * n.z + t3.w * 0.488603 * n.x;
+        sum += max(irr, vec3(0.0)) * w;
+        vis += clamp(sky, 0.0, 1.0) * w;
+        weight_sum += w;
+    }
+    if (weight_sum < 0.02) return false;
+    result = vec4(sum / weight_sum, vis / weight_sum);
+    return true;
+}
+
 void main() {
     float depth = textureLod(g_depth, v_uv, 0.0).r;
     if (depth >= 1.0) {
@@ -89,6 +163,12 @@ void main() {
     vec4 world_h = camera.inverse_view_projection * vec4(v_uv * 2.0 - 1.0, depth, 1.0);
     vec3 world = world_h.xyz / world_h.w;
     vec3 normal = decodeNormal(textureLod(g_normal, v_uv, 0.0).rg);
+    // Lightmap de superficie primero (mas detalle); si no cubre el punto, las sondas.
+    vec4 surface;
+    if (surfaceLightmap(world, normal, surface)) {
+        out_gi = surface;
+        return;
+    }
     // Un poco hacia fuera: el punto no cae justo en la pared.
     vec3 p = world + normal * 0.05;
 

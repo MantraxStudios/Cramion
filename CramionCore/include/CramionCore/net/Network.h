@@ -19,6 +19,14 @@
 //              manda el dueno de verdad. Los que entran tarde reciben todos
 //              los objetos, su ultima posicion y sus variables.
 // Salidas      si un jugador se va, sus objetos desaparecen en todos.
+// Netcode      cada posicion lleva la hora del dueno (interpolacion con
+//              bufer en los demas, como Source/Overwatch) y el giro va
+//              comprimido (smallest three, 4 bytes). El servidor solo reenvia
+//              a cada jugador lo que tiene cerca (relevancia), rechaza
+//              movimientos imposibles (velocidad maxima: corrige al dueno) y
+//              guarda un segundo y medio de historia para la compensacion de
+//              lag (positionAt). CVars net.SimLatencyMs / net.SimJitterMs /
+//              net.SimLossPercent simulan una red mala para probar.
 //
 // La sesion no sabe nada del ECS: da eventos (takeEvents) y el sistema de
 // scripts crea, mueve y borra las entidades.
@@ -74,6 +82,8 @@ struct NetEvent {
         Transform,     // net_id, position, rotation
         Var,           // net_id, text = clave, value
         Scene,         // text = escena que cargan todos
+        Correction,    // net_id, position, rotation: el servidor corrige lo mio
+        Voice,         // peer = quien habla, text = 20 ms de voz (mu-law)
     };
     Type type = Type::Message;
     std::uint32_t peer = 0;
@@ -83,6 +93,7 @@ struct NetEvent {
     NetValue value;
     core::Vec3 position{};
     core::Quat rotation{};
+    double time = 0.0;  // Transform: hora del dueno (s) cuando la mando
 };
 
 // Objeto replicado (lo que sabe la sesion de el).
@@ -92,6 +103,9 @@ struct NetObject {
     core::Vec3 position{};
     core::Quat rotation{};
     std::map<std::string, NetValue> vars;
+    float relevance = 0.0f;  // servidor: solo a jugadores a menos de esto (0 = a todos)
+    float max_speed = 0.0f;  // servidor: m/s maximos del dueno (0 = sin comprobar)
+    double last_time = -1.0; // servidor: hora local del ultimo movimiento aceptado
 };
 
 class NetworkSession {
@@ -147,6 +161,24 @@ public:
     // Soy yo quien manda en este objeto.
     bool owns(std::uint32_t net_id) const;
 
+    // Chat de voz: un trozo (VoiceChat) a todos (sin fiabilidad).
+    void sendVoice(const std::string& frame);
+
+    // --- Netcode ---
+    // Hora de la sesion (s desde que se abrio).
+    double time() const;
+    // Relevancia y velocidad maxima de un objeto (las usa el servidor).
+    void setRelevance(std::uint32_t net_id, float meters);
+    void setMaxSpeed(std::uint32_t net_id, float meters_per_second);
+    // Compensacion de lag: donde estaba el objeto hace `seconds_ago` (en
+    // este equipo; el servidor lo usa con el ping del que dispara).
+    bool positionAt(std::uint32_t net_id, float seconds_ago, core::Vec3& position, core::Quat& rotation) const;
+    // Perdida de paquetes (0..1) con ese jugador.
+    float packetLoss(std::uint32_t player) const;
+    // Bytes por segundo (media del ultimo segundo).
+    float sendRate() const { return send_rate_; }
+    float receiveRate() const { return receive_rate_; }
+
     // Bytes enviados y recibidos desde que se abrio (estadisticas).
     std::uint64_t bytesSent() const { return bytes_sent_; }
     std::uint64_t bytesReceived() const { return bytes_received_; }
@@ -161,6 +193,33 @@ private:
     std::vector<NetEvent> events_;
     std::uint64_t bytes_sent_ = 0;
     std::uint64_t bytes_received_ = 0;
+
+    struct HistorySample {
+        double time = 0.0;
+        core::Vec3 position{};
+        core::Quat rotation{};
+    };
+    std::map<std::uint32_t, std::vector<HistorySample>> history_;
+    std::map<std::uint32_t, core::Vec3> focus_;  // servidor: donde esta cada jugador
+    struct Delayed {
+        double at = 0.0;
+        std::uint32_t to = 0;
+        bool broadcast = false;
+        std::uint32_t except = 0;
+        std::string data;
+        bool reliable = false;
+    };
+    std::vector<Delayed> delayed_;
+    float send_rate_ = 0.0f;
+    float receive_rate_ = 0.0f;
+    double rate_time_ = 0.0;
+    std::uint64_t rate_sent_ = 0;
+    std::uint64_t rate_received_ = 0;
+    void record(std::uint32_t net_id, const core::Vec3& position, const core::Quat& rotation);
+    void forwardTransform(const std::string& data, std::uint32_t from, std::uint32_t net_id);
+    bool relevantTo(const NetObject& o, std::uint32_t player) const;
+    void sendNow(std::uint32_t to, const std::string& data, bool reliable);
+    void broadcastNow(const std::string& data, bool reliable, std::uint32_t except);
 
     void handlePacket(std::uint32_t from, const std::string& data);
     void sendRaw(std::uint32_t to, const std::string& data, bool reliable);

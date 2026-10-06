@@ -138,6 +138,8 @@ bool loadMaterial(const std::filesystem::path& path, MaterialAsset& out, std::st
     m.subsurface_thickness = std::clamp(number(j, "subsurface_thickness", m.subsurface_thickness), 0.01f, 0.3f);
     m.anisotropy = std::clamp(number(j, "anisotropy", m.anisotropy), 0.0f, 1.0f);
     m.anisotropy_rotation = std::clamp(number(j, "anisotropy_rotation", m.anisotropy_rotation), 0.0f, 180.0f);
+    m.hair_shift = std::clamp(number(j, "hair_shift", m.hair_shift), 0.0f, 1.0f);
+    m.hair_secondary = std::clamp(number(j, "hair_secondary", m.hair_secondary), 0.0f, 1.0f);
     m.ior = std::clamp(number(j, "ior", m.ior), 1.0f, 2.5f);
     m.transmission_thickness = std::clamp(number(j, "transmission_thickness", m.transmission_thickness), 0.0f, 0.2f);
     out = std::move(m);
@@ -189,6 +191,8 @@ bool saveMaterial(MaterialAsset& m, const std::filesystem::path& path, std::stri
     j["subsurface_thickness"] = m.subsurface_thickness;
     j["anisotropy"] = m.anisotropy;
     j["anisotropy_rotation"] = m.anisotropy_rotation;
+    j["hair_shift"] = m.hair_shift;
+    j["hair_secondary"] = m.hair_secondary;
     j["ior"] = m.ior;
     j["transmission_thickness"] = m.transmission_thickness;
     if (!m.shader.empty()) {
@@ -240,8 +244,8 @@ std::uint64_t materialStructureHash(const MaterialAsset& m) {
 }
 
 namespace {
-constexpr const char* kShadingKeys[kShadingModelCount] = {"standard",   "clearcoat",   "cloth",
-                                                          "subsurface", "anisotropic", "transmission"};
+constexpr const char* kShadingKeys[kShadingModelCount] = {"standard",    "clearcoat",    "cloth", "subsurface",
+                                                          "anisotropic", "transmission", "hair"};
 }  // namespace
 
 const char* shadingModelKey(ShadingModel model) {
@@ -283,6 +287,8 @@ asset::MaterialData toMaterialData(const MaterialAsset& m, const std::string& na
     d.subsurface_thickness = m.subsurface_thickness;
     d.anisotropy = m.anisotropy;
     d.anisotropy_rotation = m.anisotropy_rotation;
+    d.hair_shift = m.hair_shift;
+    d.hair_secondary = m.hair_secondary;
     d.ior = m.ior;
     d.transmission_thickness = m.transmission_thickness;
     d.specular_map = !m.specular_map.empty();

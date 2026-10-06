@@ -24,6 +24,24 @@ if(ANDROID)
     return()
 endif()
 
+if(UNIX AND NOT APPLE)
+    # Linux: ventana Xlib (X11 o XWayland), sin DirectX.
+    find_package(X11 REQUIRED)
+    add_library(CramionDM STATIC
+        src/Event.cpp
+        src/Input.cpp
+        src/KeyCode.cpp
+        src/TouchControls.cpp
+        src/WindowX11.cpp
+    )
+    add_library(Cramion::DM ALIAS CramionDM)
+    target_include_directories(CramionDM PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    target_compile_features(CramionDM PUBLIC cxx_std_20)
+    target_link_libraries(CramionDM PUBLIC X11::X11)
+    target_compile_options(CramionDM PRIVATE -Wall -Wextra)
+    return()
+endif()
+
 add_library(CramionDM STATIC
     src/Device.cpp
     src/Event.cpp

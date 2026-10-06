@@ -1,4 +1,7 @@
 #include "EditorApp.h"
+#include "LoadingScreen.h"
+
+#include <CramionCore/gameplay/Accessibility.h>
 
 #include <CramionCore/physics/Cloth.h>
 #include <CramionCore/physics/SoftBody.h>
@@ -68,6 +71,17 @@ EditorApp::EditorApp(dm::Window& window, gfx::VulkanRenderer& renderer, scene::S
     ui::registerUiComponents();
     xr::registerXrComponents();
     startMcp();  // servidor MCP para IA (solo este PC)
+    initCrashReporting();  // version y GPU para los informes; el del cierre anterior
+    worldpart::registerWorldPartitionComponents();
+    worldpart::setActivePartition(&world_partition_);
+    ai::setActiveCrowds(&crowds_);
+    crowds_.setNavigation(&nav_);
+    crowds_.setPrefabResolver([this](const Uuid& uuid) -> std::filesystem::path {
+        if (!database_) return {};
+        const auto info = database_->find(uuid);
+        if (!info) return {};
+            return info->path.is_absolute() ? info->path : database_->root() / info->path;
+    });
     registerEditorSettings();  // antes del primer frame: ImGui lee su .ini ahi
     physics_.addListener([this](const physics::PhysicsEvent& event) { onPhysicsEvent(event); });
     const std::filesystem::path documents = dialogs::documentsFolder();
@@ -205,6 +219,9 @@ bool EditorApp::openProject(const std::filesystem::path& path, bool open_scene) 
         return comp != nullptr ? terrain_store_.get(*comp) : nullptr;
     });
     has_project_ = true;
+    // Accesibilidad del jugador al probar en el editor (Lua: Accessibility.save).
+    gameplay::setAccessibilityFile(project_.libraryFolder() / "Accessibility.json");
+    gameplay::loadAccessibility();
     thumbnail_countdown_ = 240;  // ~4 s: la escena ya dibujada para la miniatura del Hub
     // Fisica: ajustes del proyecto y el mundo fisico (en modo edicion).
     loadPhysicsSettings();
@@ -337,6 +354,7 @@ bool EditorApp::openScene(const std::filesystem::path& path) {
     }
     alignOriginAfterLoad(origin_before);
     scene_path_ = path;
+    setCrashContext("Escena", dialogs::utf8(path));
     loadSceneLighting();  // iluminacion horneada de la escena (EditorLighting.cpp)
     clearSelection();
     syncPrefabInstances();  // prefabs que cambiaron con la escena cerrada
@@ -472,6 +490,7 @@ void EditorApp::resetUndo() {
     redo_kinds_.clear();
     terrain_undo_.clear();
     terrain_redo_.clear();
+    flatten_prime_ = true;  // escena nueva: su terreno ya esta aplanado bajo los edificios
     current_state_ = ecs::serializeWorld(world_);
 }
 
@@ -960,6 +979,7 @@ void EditorApp::drawUi(float delta_seconds) {
     pollImports();
     if (has_project_ && thumbnail_countdown_ > 0 && --thumbnail_countdown_ == 0) saveProjectThumbnail();
     updateFloatingOrigin();
+    updateTerrainFlatteners();  // TerrainFlatten: rehace al soltar lo que se movio
     // Material pulsado en el navegador: al Inspector solo si se solto sin
     // arrastrar (arrastrarlo a la Jerarquia o al Inspector no cambia nada).
     if (pending_inspect_material_.valid() && ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
@@ -996,6 +1016,12 @@ void EditorApp::drawUi(float delta_seconds) {
     pollMcp();
     pollUpdates();
     runSelfTestStep();
+    drawCrashReportWindow();  // si la sesion anterior se cerro por un error
+    {
+        // Accesibilidad (daltonismo, reducir movimiento) en el render.
+        const gameplay::AccessibilitySettings& a = gameplay::accessibility();
+        renderer_.setAccessibility({a.colorblind_mode, a.colorblind_strength, a.colorblind_correct, a.reduce_motion});
+    }
     updatePlatform(delta_seconds);  // Steam, pruebas automaticas, Git (EditorPlatform.cpp)
     frame_tasks_ms_ += millisecondsSince(ui_start);
 
@@ -1052,6 +1078,7 @@ void EditorApp::drawUi(float delta_seconds) {
     drawCVarsWindow();
     drawPlatformWindows();  // Git, Pruebas y avisos (en cualquier pestana)
     drawInsightsWindow();   // perfilador de CPU (EditorInsights.cpp)
+    drawAccessibilityWindow();  // daltonismo, texto, movimiento (EditorAccessibility.cpp)
     drawGameplayWindows();  // Localizacion, Partidas y Dialogos (EditorGameplay.cpp)
     drawEffectsWindows();   // VFX Graph y Repeticiones (EditorEffects.cpp)
     drawGraphEditors();     // Shader Graph, Visual Script, Behavior Tree y 2D
@@ -1418,6 +1445,20 @@ void EditorApp::drawMenuBar() {
         if (ImGui::MenuItem("Mundo de bloques")) createVoxelWorldEntity();
         if (ImGui::MenuItem("Ambiente (clima y hora)")) createEnvironmentEntity();
         if (ImGui::MenuItem("Fuego (incendio)")) createFireEntity();
+        if (ImGui::MenuItem("Volumen de niebla")) createFogVolumeEntity();
+        if (ImGui::BeginMenu("Spline")) {
+            if (ImGui::MenuItem("Carretera")) createSplineObject(0);
+            if (ImGui::MenuItem("Camino")) createSplineObject(1);
+            if (ImGui::MenuItem("Río (cauce por spline)")) createSplineObject(2);
+            if (ImGui::MenuItem("Muro")) createSplineObject(3);
+            if (ImGui::MenuItem("Valla")) createSplineObject(4);
+            if (ImGui::MenuItem("Tubería")) createSplineObject(5);
+            if (ImGui::MenuItem("Raíles")) createSplineObject(6);
+            if (ImGui::MenuItem("Cinta")) createSplineObject(7);
+            ImGui::Separator();
+            if (ImGui::MenuItem("Spline vacía (solo la curva)")) createSplineObject(-1);
+            ImGui::EndMenu();
+        }
         if (ImGui::BeginMenu("Agua")) {
             if (ImGui::MenuItem("Océano / playa")) createWaterEntity(0);
             if (ImGui::MenuItem("Lago")) createWaterEntity(1);
@@ -1453,6 +1494,7 @@ void EditorApp::drawMenuBar() {
         ImGui::MenuItem("Proyecto", nullptr, &show_project_);
         ImGui::MenuItem("Estadísticas", nullptr, &show_statistics_);
         ImGui::MenuItem("Insights (perfilador de CPU)", nullptr, &show_insights_);
+        ImGui::MenuItem("Accesibilidad", nullptr, &show_accessibility_);
         ImGui::MenuItem("Consola", nullptr, &show_console_);
         ImGui::MenuItem("Configuración gráfica", nullptr, &show_render_settings_);
         ImGui::MenuItem("Animator", nullptr, &show_animator_);
@@ -1474,7 +1516,7 @@ void EditorApp::drawMenuBar() {
         draw2DWindowMenu();        // Paleta de tiles y capas de orden
         drawPhysicsToolMenu();     // Iluminacion, Fracturar, Asistente de vehiculo
         ImGui::MenuItem("Generador de terreno", nullptr, &show_terrain_generator_);
-        ImGui::MenuItem("Generador de casas", nullptr, &show_house_generator_);
+        ImGui::MenuItem("Generador de casas y pueblos", nullptr, &show_house_generator_);
         ImGui::MenuItem("Ambiente (clima y hora)", nullptr, &show_environment_window_);
         ImGui::MenuItem("Juego", nullptr, &show_game_);
         ImGui::MenuItem("Cinemática", nullptr, &show_cinematic_);

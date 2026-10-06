@@ -9,7 +9,17 @@
 //                  padre, arriba-izquierda = 0,0), pivote, posicion y tamano
 //                  (con anclas separadas, el tamano se suma al hueco entre
 //                  ellas: se estira con el padre).
-//   Image, Text, Button, Slider, InputField, Toggle: los controles.
+//   Image, Text, Button, Slider, InputField, Toggle, Dropdown: los controles.
+//   ScrollView     zona con desplazamiento (rueda, arrastre con inercia,
+//                  barra) que recorta a sus hijos.
+//   LayoutGroup    coloca a los hijos en columna, fila o rejilla (como los
+//                  Layout Group de uGUI), y con "Ajustar al contenido" crece
+//                  con ellos (Content Size Fitter).
+//   Mask           recorta a los hijos a su rectangulo.
+//
+// Texto enriquecido (como TextMeshPro): <b>, <i>, <u>, <s>, <color=#ff8800>,
+// <color=red>, <size=40>, <size=150%>, <br>; fuente propia (.ttf/.otf de
+// Assets), contorno y sombra.
 //
 // UiSystem calcula los rectangulos, la interaccion (raton y teclado) y una
 // lista de dibujo que pinta el editor (vista Juego) o el juego exportado; los
@@ -37,6 +47,7 @@ enum class ScaleMode : int { ConstantPixelSize = 0, ScaleWithScreen = 1 };
 enum class RenderMode : int { ScreenSpace = 0, WorldSpace = 1 };
 enum class HAlign : int { Left = 0, Center = 1, Right = 2 };
 enum class VAlign : int { Top = 0, Middle = 1, Bottom = 2 };
+enum class LayoutType : int { Vertical = 0, Horizontal = 1, Grid = 2 };
 
 struct Canvas {
     core::Vec2 reference{1920.0f, 1080.0f};
@@ -80,6 +91,13 @@ struct Text {
     VAlign v_align = VAlign::Middle;
     bool wrap = false;
     bool shadow = false;
+    bool rich_text = true;   // etiquetas <b>, <color=...>...
+    bool bold = false;
+    bool italic = false;
+    std::string font;        // .ttf / .otf en Assets (vacia = la del motor)
+    float outline = 0.0f;    // grosor del contorno (unidades del Canvas)
+    core::Vec3 outline_color{0.0f, 0.0f, 0.0f};
+    float line_spacing = 1.0f;
     void reflect(ecs::PropertyVisitor& v);
 };
 
@@ -134,6 +152,60 @@ struct Toggle {
     void reflect(ecs::PropertyVisitor& v);
 };
 
+struct Dropdown {
+    bool interactable = true;
+    std::vector<std::string> options{"Opcion A", "Opcion B", "Opcion C"};
+    int value = 0;  // indice de la opcion elegida
+    float font_size = 24.0f;
+    core::Vec3 background{0.14f, 0.14f, 0.17f};
+    core::Vec3 text_color{1.0f, 1.0f, 1.0f};
+    core::Vec3 highlight{0.20f, 0.45f, 0.90f};
+    float corner_radius = 6.0f;
+    int max_visible = 6;  // opciones a la vez en la lista (el resto con la rueda)
+    Uuid target{};
+    std::string on_change;  // function X:OnCalidad(indice)  (desde 1; texto: entity.dropdownText)
+    // En ejecucion
+    bool open = false;
+    float list_scroll = 0.0f;
+    void reflect(ecs::PropertyVisitor& v);
+};
+
+struct ScrollView {
+    bool vertical = true;
+    bool horizontal = false;
+    core::Vec2 scroll{0.0f, 0.0f};  // desplazamiento del contenido (unidades del Canvas)
+    float wheel_speed = 60.0f;
+    bool inertia = true;
+    float deceleration = 6.0f;      // frenado de la inercia (1/s)
+    bool show_scrollbar = true;
+    core::Vec3 background{0.08f, 0.08f, 0.10f};
+    float background_alpha = 0.0f;
+    core::Vec3 scrollbar_color{0.6f, 0.6f, 0.65f};
+    // En ejecucion (lo calcula el sistema)
+    core::Vec2 content{0.0f, 0.0f};   // tamano del contenido
+    core::Vec2 velocity{0.0f, 0.0f};
+    void reflect(ecs::PropertyVisitor& v);
+};
+
+struct LayoutGroup {
+    LayoutType type = LayoutType::Vertical;
+    core::Vec2 spacing{8.0f, 8.0f};
+    core::Vec2 padding{10.0f, 10.0f};  // x = izquierda/derecha, y = arriba/abajo
+    HAlign child_h = HAlign::Left;
+    VAlign child_v = VAlign::Top;
+    bool expand_width = true;    // los hijos ocupan todo el ancho (columna) o el alto (fila)
+    bool expand_height = false;  // reparten el espacio sobrante a lo largo
+    core::Vec2 cell_size{120.0f, 120.0f};  // rejilla
+    int columns = 0;                      // rejilla: 0 = las que quepan
+    bool fit_content = false;  // el rectangulo crece con los hijos (Content Size Fitter)
+    void reflect(ecs::PropertyVisitor& v);
+};
+
+struct Mask {
+    bool enabled = true;
+    void reflect(ecs::PropertyVisitor& v);
+};
+
 // --- Sistema ---
 
 struct UiRect {
@@ -142,7 +214,7 @@ struct UiRect {
 };
 
 struct UiDrawCommand {
-    enum class Type { Rect, Image, Text, Circle, Line } type = Type::Rect;
+    enum class Type { Rect, Image, Text, Circle, Line, Triangle } type = Type::Rect;
     UiRect rect;       // en pixeles de la vista
     core::Vec4 color{1.0f, 1.0f, 1.0f, 1.0f};
     float radius = 0.0f;  // esquinas / circulo
@@ -154,6 +226,18 @@ struct UiDrawCommand {
     bool wrap = false;
     bool shadow = false;
     bool preserve_aspect = false;
+    // Texto
+    bool rich = false;        // con etiquetas <b>, <color=...>...
+    bool bold = false;
+    bool italic = false;
+    std::string font;         // .ttf en Assets
+    float outline = 0.0f;     // pixeles
+    core::Vec4 outline_color{0.0f, 0.0f, 0.0f, 1.0f};
+    float line_spacing = 1.0f;
+    float scale = 1.0f;       // del Canvas (para <size=N>)
+    // Recorte (ScrollView, Mask)
+    bool clipped = false;
+    UiRect clip;
     entt::entity entity = entt::null;
 };
 
@@ -165,6 +249,7 @@ struct UiInput {
     std::string typed;  // caracteres escritos este frame
     bool backspace = false;
     bool enter = false;
+    float wheel = 0.0f;  // rueda del raton (+ = hacia arriba)
 };
 
 // Un rayo que usa la interfaz en el mundo (el de un mando de VR).
@@ -242,6 +327,8 @@ private:
         UiRect rect;
         UiRect parent;
         float scale;
+        bool clipped = false;
+        UiRect clip;  // pixeles
     };
     // Que control tiene encima o pulsado cada puntero (el raton es el 0).
     struct DrawState {
@@ -251,6 +338,18 @@ private:
     };
     void layoutCanvas(ecs::World& world, const ecs::Entity& canvas, const UiRect& root, float scale,
                       std::vector<Laid>& out) const;
+    void layoutNode(ecs::World& world, const ecs::Entity& e, const UiRect& rect, float scale, bool clipped,
+                    const UiRect& clip, std::vector<Laid>& out) const;
+    bool visibleAt(const Laid& l, float x, float y) const {
+        return l.rect.contains(x, y) && (!l.clipped || l.clip.contains(x, y));
+    }
+    // Lista abierta de un Dropdown: rectangulo de la opcion i (pixeles).
+    UiRect dropdownItemRect(const UiRect& box, const Dropdown& d, int i) const;
+    float view_height_ = 0.0f;
+    float last_time_ = -1.0f;
+    entt::entity open_dropdown_ = entt::null;
+    entt::entity scroll_drag_ = entt::null;
+    core::Vec2 scroll_drag_last_{};
     void buildDraw(ecs::World& world, const std::vector<Laid>& laid, const DrawState& state, const UiInput& input,
                    bool interactive, float time, std::vector<UiDrawCommand>& out);
     ecs::Entity targetOf(ecs::World& world, ecs::Entity source, const Uuid& target) const;
@@ -278,6 +377,22 @@ private:
 
 // Rectangulo de un RectTransform dentro del de su padre (unidades del Canvas).
 UiRect layoutRect(const RectTransform& rt, const UiRect& parent);
+
+// Texto enriquecido troceado: cada trozo con su estilo. Lo usan el render de
+// la UI y quien quiera medir.
+struct RichRun {
+    std::string text;  // puede llevar saltos de linea
+    core::Vec4 color{1.0f, 1.0f, 1.0f, 1.0f};
+    float size = 16.0f;
+    bool bold = false;
+    bool italic = false;
+    bool underline = false;
+    bool strike = false;
+};
+std::vector<RichRun> parseRichText(const std::string& text, const core::Vec4& color, float size, float scale,
+                                   bool bold, bool italic);
+// El texto sin etiquetas.
+std::string stripRichText(const std::string& text);
 
 void registerUiComponents();
 

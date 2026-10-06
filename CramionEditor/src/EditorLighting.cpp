@@ -6,6 +6,8 @@
 
 #include "EditorApp.h"
 
+#include <CramionCore/cvar/CVar.h>
+
 #include "Dialogs.h"
 
 #include <CramionCore/lighting/ProbeBaker.h>
@@ -157,12 +159,28 @@ void EditorApp::drawLightingWindow() {
     }
     ImGui::SetItemTooltip("Horneada: casi gratis en el juego (Android, PCs sin rayos). Tiempo real: se adapta a\n"
                           "lo que cambia, pero cuesta mucho más.");
+    if (mode == static_cast<int>(gfx::LightingMode::Baked)) {
+        cvar::Registry& reg = cvar::Registry::instance();
+        bool dynamic = reg.execute("render.gi.DynamicProbes").find("true") != std::string::npos;
+        if (ImGui::Checkbox("Sondas dinámicas (DDGI, con trazado de rayos)", &dynamic)) {
+            reg.execute(std::string("render.gi.DynamicProbes ") + (dynamic ? "true" : "false"));
+        }
+        ImGui::SetItemTooltip("Con trazado de rayos las sondas se rehacen solas unas pocas por frame: siguen a la hora\n"
+                              "del día, a las luces que se mueven y a lo que cambia. Sin rayos, se quedan horneadas.");
+        if (dynamic && !renderer_.rayTracingActive()) ImGui::TextDisabled("(activa el trazado de rayos para que se actualicen)");
+    }
     const gfx::BakedLighting& baked = renderer_.bakedLighting();
     if (baked.empty()) {
         ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.35f, 1.0f), "Esta escena no tiene iluminación horneada.");
     } else {
         ImGui::TextDisabled("%zu volúmenes, %zu sondas (%.1f MB)", baked.volumes.size(), baked.probes.size() / gfx::kBakedProbeVec4,
                             static_cast<double>(baked.probes.size() * sizeof(core::Vec4)) / (1024.0 * 1024.0));
+        if (!baked.surface.empty()) {
+            ImGui::TextDisabled("Lightmap de superficie: %u texeles de %.2f m (%.1f MB)", baked.surface.count,
+                                baked.surface.cell_size,
+                                static_cast<double>(baked.surface.texels.size() * sizeof(core::Vec4) +
+                                                    baked.surface.keys.size() * 4) / (1024.0 * 1024.0));
+        }
         if (renderer_.lightingMode() == gfx::LightingMode::Baked && !renderer_.bakedGiActive()) {
             ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.4f, 1.0f), "Los datos no son válidos: vuelve a hornear.");
         }
@@ -177,6 +195,19 @@ void EditorApp::drawLightingWindow() {
     ImGui::DragFloat("Intensidad del cielo", &st.settings.sky_intensity, 0.01f, 0.0f, 10.0f, "%.2f");
     ImGui::DragFloat("Separación automática (m)", &st.auto_spacing, 0.05f, 0.5f, 20.0f, "%.2f");
     ImGui::SetItemTooltip("Si la escena no tiene Light Probe Volume, uno que cubre todo con esta separación");
+    {
+        bool surface = st.settings.surface_texel > 0.0f;
+        if (ImGui::Checkbox("Lightmap de superficie (texeles en el mundo)", &surface)) {
+            st.settings.surface_texel = surface ? 0.5f : 0.0f;
+        }
+        ImGui::SetItemTooltip("Además de las sondas, un texel de luz rebotada cada pocos centímetros pegado a toda la\n"
+                              "geometría: el detalle de un lightmap (rincones, bajo las mesas, junto a paredes) sin\n"
+                              "UV2, también en el terreno, el follaje y lo que se mueve.");
+        if (surface) {
+            ImGui::DragFloat("Tamaño del texel (m)", &st.settings.surface_texel, 0.01f, 0.1f, 4.0f, "%.2f");
+            ImGui::DragInt("Rayos por texel", &st.settings.surface_rays, 2.0f, 16, 1024);
+        }
+    }
     ImGui::EndDisabled();
     ImGui::TextWrapped("Aportan luz los objetos marcados Static (o, si no hay ninguno, las mallas que no caen con "
                        "física) y el terreno. Las sondas se ponen con el componente Light Probe Volume.");

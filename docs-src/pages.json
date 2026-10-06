@@ -6,6 +6,11 @@
       "group": "Primeros pasos",
       "pages": [
         {
+          "slug": "novedades-24",
+          "title": "Novedades",
+          "desc": "Splines, UI completa, World Partition, HLOD, netcode, servidor dedicado, voz, multitudes, niebla, pelo, DDGI, accesibilidad, mods..."
+        },
+        {
           "slug": "primer-script",
           "title": "Tu primer script",
           "desc": "Crea un script de C++ (.h y .cpp), arrástralo a un objeto y dale a Play."
@@ -529,6 +534,16 @@
           "slug": "componentes-vr",
           "title": "Realidad virtual",
           "desc": "XR Origin (el rig de VR) y XR Controller (una entidad que sigue a un mando)."
+        },
+        {
+          "slug": "componentes-mundo",
+          "title": "Splines y mundos grandes",
+          "desc": "Spline, extrusion (carreteras, rios, muros, vallas...), seguidor, World Partition y HLOD."
+        },
+        {
+          "slug": "componentes-ia",
+          "title": "Multitudes",
+          "desc": "Crowd Spawner: cientos de agentes con navmesh."
         }
       ]
     },

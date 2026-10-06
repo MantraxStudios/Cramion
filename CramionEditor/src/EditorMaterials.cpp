@@ -368,14 +368,16 @@ void EditorApp::drawMaterialEditor(const Uuid& uuid) {
     ImGui::SeparatorText("Modelo (Disney)");
     {
         static constexpr const char* kShadings[] = {"Estándar",    "Barniz (clearcoat)", "Tela (sheen)",
-                                                    "Piel / cera (subsurface)", "Anisótropo", "Transmisión (vidrio)"};
+                                                    "Piel / cera (subsurface)", "Anisótropo", "Transmisión (vidrio)",
+                                                    "Pelo (hair cards)"};
         static constexpr const char* kShadingHelp[] = {
             "Metal/rugosidad con el difuso de Burley (lo rugoso se aclara en los bordes).",
             "Una capa de barniz brillante encima: pintura de coche, madera barnizada, fibra de carbono.",
             "Brillo suave en los bordes: tela, terciopelo, polvo, musgo.",
             "La luz entra y sale por otro punto: piel, cera, hojas, mármol, jade. A contraluz deja pasar la luz.",
             "El brillo se estira en una dirección: metal cepillado, pelo, sartenes, discos.",
-            "Vidrio y líquidos con refracción (índice), grosor y esmerilado (rugosidad). Solo en modo Transparente."};
+            "Vidrio y líquidos con refracción (índice), grosor y esmerilado (rugosidad). Solo en modo Transparente.",
+            "Pelo y pelaje en tarjetas (hair cards): dos brillos a lo largo de la hebra (blanco y del color del pelo) y luz suave."};
         int shading = static_cast<int>(m.shading);
         ImGui::SetNextItemWidth(-90.0f);
         if (ImGui::Combo("Modelo", &shading, kShadings, assets::kShadingModelCount)) {
@@ -412,6 +414,15 @@ void EditorApp::drawMaterialEditor(const Uuid& uuid) {
                 slider("Anisotropía", &m.anisotropy, 0.0f, 1.0f, "%.2f", "Cuánto se estira el brillo.");
                 slider("Dirección (°)", &m.anisotropy_rotation, 0.0f, 180.0f, "%.0f",
                        "Giro del brillo sobre la tangente de la malla (sus UV).");
+                break;
+            case assets::ShadingModel::Hair:
+                slider("Desplazamiento", &m.hair_shift, 0.0f, 1.0f, "%.2f",
+                       "Dónde caen los brillos a lo largo de la hebra (las escamas del pelo los separan).");
+                slider("Brillo secundario", &m.hair_secondary, 0.0f, 1.0f, "%.2f",
+                       "El segundo brillo, del color del pelo (la luz que entra en la hebra y sale).");
+                slider("Dirección de la hebra (°)##hair", &m.anisotropy_rotation, 0.0f, 180.0f, "%.0f",
+                       "90 = la hebra va a lo largo de la V de la textura (lo normal en hair cards).");
+                ImGui::TextDisabled("Las tarjetas de pelo suelen llevar alfa: el color con transparencia recorta.");
                 break;
             case assets::ShadingModel::Transmission:
                 if (m.mode != assets::MaterialMode::Transparent) {

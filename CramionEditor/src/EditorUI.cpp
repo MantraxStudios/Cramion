@@ -172,9 +172,10 @@ ecs::Entity EditorApp::createUiElement(int kind) {
         commit();
         return canvas;
     }
-    static constexpr const char* kNames[] = {"Canvas", "Panel", "Imagen", "Texto", "Boton", "Slider", "Campo de texto", "Casilla"};
+    static constexpr const char* kNames[] = {"Canvas",   "Panel",       "Imagen",  "Texto", "Boton",  "Slider", "Campo de texto",
+                                             "Casilla",  "Desplegable", "Scroll View", "Columna", "Fila", "Rejilla"};
     const ecs::Entity parent = uiParentForNewElement();
-    ecs::Entity e = world_.create(kNames[std::clamp(kind, 0, 7)], parent);
+    ecs::Entity e = world_.create(kNames[std::clamp(kind, 0, 12)], parent);
     ui::RectTransform& rt = e.add<ui::RectTransform>();
     const auto label = [&](const char* text, float font_size, ui::HAlign align) {
         ecs::Entity t = world_.create("Texto", e);
@@ -231,6 +232,64 @@ ecs::Entity EditorApp::createUiElement(int kind) {
             trt.pivot = core::Vec2{0.0f, 0.5f};
             break;
         }
+        case 8:
+            rt.size = core::Vec2{320.0f, 56.0f};
+            e.add<ui::Dropdown>().options = {"Baja", "Media", "Alta", "Ultra"};
+            break;
+        case 9: {  // Scroll View con un Content en columna que crece con los hijos
+            rt.size = core::Vec2{480.0f, 420.0f};
+            e.add<ui::ScrollView>().background_alpha = 0.6f;
+            ecs::Entity content = world_.create("Content", e);
+            ui::RectTransform& crt = content.add<ui::RectTransform>();
+            crt.anchor_min = core::Vec2{0.0f, 0.0f};
+            crt.anchor_max = core::Vec2{1.0f, 0.0f};
+            crt.pivot = core::Vec2{0.5f, 0.0f};
+            crt.size = core::Vec2{0.0f, 0.0f};
+            ui::LayoutGroup& lg = content.add<ui::LayoutGroup>();
+            lg.fit_content = true;
+            for (int i = 1; i <= 12; ++i) {
+                ecs::Entity item = world_.create("Elemento " + std::to_string(i), content);
+                item.add<ui::RectTransform>().size = core::Vec2{0.0f, 56.0f};
+                ui::Image& img = item.add<ui::Image>();
+                img.color = core::Vec3{0.16f, 0.17f, 0.21f};
+                img.corner_radius = 8.0f;
+                ecs::Entity t = world_.create("Texto", item);
+                ui::RectTransform& trt = t.add<ui::RectTransform>();
+                trt.anchor_min = core::Vec2{0.0f, 0.0f};
+                trt.anchor_max = core::Vec2{1.0f, 1.0f};
+                trt.size = core::Vec2{-24.0f, 0.0f};
+                ui::Text& tx = t.add<ui::Text>();
+                tx.text = "<b>Elemento " + std::to_string(i) + "</b>  <color=#9aa0aa>texto enriquecido</color>";
+                tx.font_size = 24.0f;
+                tx.h_align = ui::HAlign::Left;
+            }
+            break;
+        }
+        case 10:
+        case 11:
+        case 12: {  // Columna, fila o rejilla
+            rt.size = kind == 11 ? core::Vec2{640.0f, 120.0f} : core::Vec2{420.0f, 420.0f};
+            ui::Image& bg = e.add<ui::Image>();
+            bg.color = core::Vec3{0.08f, 0.09f, 0.11f};
+            bg.alpha = 0.8f;
+            bg.corner_radius = 10.0f;
+            ui::LayoutGroup& lg = e.add<ui::LayoutGroup>();
+            lg.type = kind == 10 ? ui::LayoutType::Vertical : (kind == 11 ? ui::LayoutType::Horizontal : ui::LayoutType::Grid);
+            lg.expand_width = kind != 12;
+            lg.cell_size = core::Vec2{120.0f, 120.0f};
+            for (int i = 1; i <= (kind == 12 ? 9 : 4); ++i) {
+                ecs::Entity item = world_.create("Boton " + std::to_string(i), e);
+                item.add<ui::RectTransform>().size = kind == 11 ? core::Vec2{140.0f, 0.0f} : core::Vec2{0.0f, 70.0f};
+                item.add<ui::Button>();
+                ecs::Entity t = world_.create("Texto", item);
+                ui::RectTransform& trt = t.add<ui::RectTransform>();
+                trt.anchor_min = core::Vec2{0.0f, 0.0f};
+                trt.anchor_max = core::Vec2{1.0f, 1.0f};
+                trt.size = core::Vec2{0.0f, 0.0f};
+                t.add<ui::Text>().text = std::to_string(i);
+            }
+            break;
+        }
         default:
             break;
     }
@@ -242,8 +301,12 @@ ecs::Entity EditorApp::createUiElement(int kind) {
 
 void EditorApp::drawUiCreateMenu() {
     if (!ImGui::BeginMenu("UI")) return;
-    static constexpr const char* kItems[] = {"Canvas", "Panel", "Imagen", "Texto", "Botón", "Slider", "Campo de texto", "Casilla"};
-    for (int i = 0; i < 8; ++i) {
+    static constexpr const char* kItems[] = {"Canvas",      "Panel",       "Imagen",           "Texto",
+                                             "Botón",       "Slider",      "Campo de texto",   "Casilla",
+                                             "Desplegable", "Scroll View", "Columna (Layout)", "Fila (Layout)",
+                                             "Rejilla (Layout)"};
+    for (int i = 0; i < 13; ++i) {
+        if (i == 8 || i == 10) ImGui::Separator();
         if (ImGui::MenuItem(kItems[i])) createUiElement(i);
     }
     ImGui::EndMenu();

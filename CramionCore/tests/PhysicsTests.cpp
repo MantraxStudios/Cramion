@@ -10,6 +10,7 @@
 #include <CramionFX/asset/Model.h>
 #include "CramionCore/ecs/SceneSerializer.h"
 #include "CramionCore/ecs/World.h"
+#include "CramionCore/ecs/RuntimeMesh.h"
 #include "CramionCore/physics/Cloth.h"
 #include "CramionCore/physics/SoftBody.h"
 #include "CramionCore/physics/Particles.h"
@@ -20,6 +21,7 @@
 #include <cstdio>
 #include <filesystem>
 #include <map>
+#include <memory>
 #include <string>
 
 using namespace cramion;
@@ -827,6 +829,74 @@ void testIgnoreCollision() {
     }
 }
 
+
+// Colliders que se ajustan al AABB de la malla (como al anadirlos en Unity).
+void testFitColliders() {
+    std::printf("-- Ajustar colliders a la malla --\n");
+    ecs::World world;
+    PhysicsSystem physics;
+    // Malla de 4 x 2 x 1 m desplazada (centro en (1, 1.5, -0.5)).
+    const auto make_mesh = [](const Vec3& lo, const Vec3& hi) {
+        auto mesh = std::make_shared<ecs::Mesh>();
+        for (int i = 0; i < 8; ++i) mesh->vertices.push_back(Vec3{(i & 1) ? hi.x : lo.x, (i & 2) ? hi.y : lo.y, (i & 4) ? hi.z : lo.z});
+        return mesh;
+    };
+    ecs::Entity e = world.create("Caja");
+    e.add<ecs::MeshRenderer>().mesh = make_mesh(Vec3{-1.0f, 0.5f, -1.0f}, Vec3{3.0f, 2.5f, 0.0f});
+    e.add<BoxCollider>();
+    check(physics.fitColliderToMesh(e), "fitColliderToMesh con una malla");
+    const BoxCollider& box = e.get<BoxCollider>();
+    check(std::abs(box.size.x - 4.0f) < 1e-4f && std::abs(box.size.y - 2.0f) < 1e-4f && std::abs(box.size.z - 1.0f) < 1e-4f,
+          "la caja mide lo que su malla (4 x 2 x 1)");
+    check(std::abs(box.center.x - 1.0f) < 1e-4f && std::abs(box.center.y - 1.5f) < 1e-4f && std::abs(box.center.z + 0.5f) < 1e-4f,
+          "y esta centrada en ella");
+    // La escala del Transform la multiplica despues (no se mete en el tamano).
+    e.setLocalScale(Vec3{2.0f, 2.0f, 2.0f});
+    physics.fitColliderToMesh(e);
+    check(std::abs(e.get<BoxCollider>().size.x - 4.0f) < 1e-4f, "la escala no cambia el tamano local (la aplica la fisica)");
+    // Esfera y capsula.
+    ecs::Entity s = world.create("Esfera");
+    s.add<ecs::MeshRenderer>().mesh = make_mesh(Vec3{-0.5f, 0.0f, -0.5f}, Vec3{0.5f, 3.0f, 0.5f});
+    s.add<SphereCollider>();
+    s.add<CapsuleCollider>();
+    physics.fitColliderToMesh(s);
+    check(std::abs(s.get<SphereCollider>().radius - 1.5f) < 1e-4f && std::abs(s.get<SphereCollider>().center.y - 1.5f) < 1e-4f,
+          "esfera: la mayor media medida y el centro de la caja");
+    const CapsuleCollider& cap = s.get<CapsuleCollider>();
+    check(cap.axis == CapsuleAxis::Y && std::abs(cap.height - 3.0f) < 1e-4f && std::abs(cap.radius - 0.5f) < 1e-4f,
+          "capsula: a lo largo del eje mas largo (Y, 3 m, radio 0.5)");
+    ecs::Entity log = world.create("Tronco");
+    log.add<ecs::MeshRenderer>().mesh = make_mesh(Vec3{-2.0f, -0.3f, -0.3f}, Vec3{2.0f, 0.3f, 0.3f});
+    log.add<CapsuleCollider>();
+    physics.fitColliderToMesh(log);
+    check(log.get<CapsuleCollider>().axis == CapsuleAxis::X && std::abs(log.get<CapsuleCollider>().height - 4.0f) < 1e-4f,
+          "capsula tumbada: eje X");
+    // Sin malla propia: las de los hijos en el espacio del padre (giro y escala incluidos).
+    ecs::Entity root = world.create("Raiz");
+    root.setWorldPosition(Vec3{10.0f, 0.0f, 0.0f});
+    ecs::Entity child = world.create("Hijo", root);
+    child.setLocalPosition(Vec3{0.0f, 1.0f, 0.0f});
+    child.setLocalEulerDegrees(Vec3{0.0f, 90.0f, 0.0f});
+    child.setLocalScale(Vec3{2.0f, 1.0f, 1.0f});
+    child.add<ecs::MeshRenderer>().mesh = make_mesh(Vec3{-1.0f, 0.0f, -0.25f}, Vec3{1.0f, 1.0f, 0.25f});
+    Vec3 lo{};
+    Vec3 hi{};
+    check(physics.localMeshBounds(root, lo, hi), "localMeshBounds junta las mallas de los hijos");
+    // El hijo mide 4 x 1 x 0.5 (escala 2 en X) y girado 90 grados queda a lo largo de Z.
+    check(std::abs((hi.z - lo.z) - 4.0f) < 1e-3f && std::abs((hi.x - lo.x) - 0.5f) < 1e-3f && std::abs(lo.y - 1.0f) < 1e-3f,
+          "con el giro y la escala del hijo");
+    root.add<BoxCollider>();
+    check(physics.fitColliderToMesh(root, "BoxCollider") && std::abs(root.get<BoxCollider>().size.z - 4.0f) < 1e-3f,
+          "la caja del padre envuelve a los hijos");
+    ecs::Entity empty = world.create("Vacio");
+    empty.add<BoxCollider>();
+    check(!physics.fitColliderToMesh(empty) && std::abs(empty.get<BoxCollider>().size.x - 1.0f) < 1e-6f,
+          "sin malla no cambia nada (caja de 1 m)");
+    // Plano: caja fina, no nula.
+    check(fitColliderToBounds(empty, Vec3{-5.0f, 0.0f, -5.0f}, Vec3{5.0f, 0.0f, 5.0f}) && empty.get<BoxCollider>().size.y > 0.0f,
+          "malla plana: caja fina (no de grosor 0)");
+}
+
 int main() {
     testIgnoreCollision();
     testCharacterController();
@@ -840,6 +910,7 @@ int main() {
     testSerialization();
     testCloth();
     testSoftBody();
+    testFitColliders();
     std::printf("\n%d comprobaciones, %d fallos\n", checks, failures);
     return failures == 0 ? 0 : 1;
 }

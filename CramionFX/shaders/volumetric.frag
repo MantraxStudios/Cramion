@@ -110,6 +110,20 @@ layout(set = 0, binding = 8) readonly buffer Irradiance {
     vec4 coefficients[9];
 } irradiance_sh;
 
+// Volumenes de niebla locales (GpuFogVolumes): cajas o esferas con su
+// densidad, color, borde suave y ruido (niebla de un pantano, humo en una
+// habitacion, vaho en una cueva).
+const int kMaxFogVolumes = 16;
+struct FogVolumeGpu {
+    mat4 to_local;        // mundo -> local (caja [-0.5, 0.5]^3, esfera de radio 0.5)
+    vec4 color_density;   // rgb = albedo lineal, a = densidad (1/m)
+    vec4 params;          // x = forma (0 caja, 1 esfera), y = borde, z = ruido, w = escala del ruido
+};
+layout(set = 0, binding = 9) uniform FogVolumeBuffer {
+    ivec4 count;
+    FogVolumeGpu volumes[kMaxFogVolumes];
+} fog_volumes;
+
 layout(push_constant) uniform PushConstants {
     // x = densidad del polvo (1/m), y = anisotropia (g de Henyey-Greenstein),
     // z = segundos (deriva del polvo), w = distancia maxima (m)
@@ -289,9 +303,37 @@ vec2 sphereSegment(vec3 origin, vec3 direction, vec3 center, float radius, float
     return vec2(max(-b - s, 0.0), min(-b + s, max_t));
 }
 
+// Densidad de los volumenes de niebla en p; `albedo_sigma` suma su color
+// por su densidad (la dispersion con color).
+float fogVolumeDensity(vec3 p, float time, out vec3 albedo_sigma) {
+    albedo_sigma = vec3(0.0);
+    float total = 0.0;
+    int count = min(fog_volumes.count.x, kMaxFogVolumes);
+    for (int i = 0; i < count; ++i) {
+        vec3 local = (fog_volumes.volumes[i].to_local * vec4(p, 1.0)).xyz;
+        vec4 prm = fog_volumes.volumes[i].params;
+        // 0 en el centro, 1 en el borde (caja: el eje mas cercano al borde).
+        float edge = prm.x > 0.5 ? length(local) * 2.0 : max(abs(local.x), max(abs(local.y), abs(local.z))) * 2.0;
+        if (edge >= 1.0) continue;
+        float soft = max(prm.y, 1e-3);
+        float w = clamp((1.0 - edge) / soft, 0.0, 1.0);
+        w = w * w * (3.0 - 2.0 * w);
+        if (prm.z > 0.0) {
+            vec3 drift = vec3(0.11, 0.03, 0.07) * time;
+            float n = valueNoise(p * prm.w + drift) * 0.6 + valueNoise(p * prm.w * 2.7 - drift) * 0.4;
+            w *= mix(1.0, smoothstep(0.25, 0.75, n) * 1.6, prm.z);
+        }
+        float sigma = fog_volumes.volumes[i].color_density.a * w;
+        total += sigma;
+        albedo_sigma += fog_volumes.volumes[i].color_density.rgb * sigma;
+    }
+    return total;
+}
+
 void main() {
     float density = push.params.x;
-    if (density <= 0.0) {
+    bool has_fog_volumes = fog_volumes.count.x > 0;
+    if (density <= 0.0 && !has_fog_volumes) {
         out_volume = vec4(0.0, 0.0, 0.0, 1.0);
         return;
     }
@@ -360,7 +402,13 @@ void main() {
 
         // Polvo sin color (dispersa todas las longitudes de onda igual) y sin
         // absorcion: extincion = dispersion.
-        float sigma = density * dust(p, push.params.z);
+        float sigma_dust = density > 0.0 ? density * dust(p, push.params.z) : 0.0;
+        vec3 fog_albedo_sigma = vec3(0.0);
+        float sigma_fog = has_fog_volumes ? fogVolumeDensity(p, push.params.z, fog_albedo_sigma) : 0.0;
+        float sigma = sigma_dust + sigma_fog;
+        if (sigma <= 1e-7) {
+            continue;
+        }
         float step_transmittance = exp(-sigma * dt);
 
         // Luz que llega a este punto del aire, ya por su fase hacia la camara.
@@ -413,8 +461,9 @@ void main() {
                          attenuation(d, lights.spots[l].position_range.w) * phase * visibility);
         }
 
-        // Integral exacta del tramo con la fuente constante.
-        vec3 source = incoming * sigma;
+        // Integral exacta del tramo con la fuente constante (el polvo sin
+        // color, los volumenes con el suyo).
+        vec3 source = incoming * (vec3(sigma_dust) + fog_albedo_sigma);
         scattered += transmittance * (source - source * step_transmittance) / max(sigma, 1e-6);
         transmittance *= step_transmittance;
     }

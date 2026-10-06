@@ -4276,6 +4276,58 @@ bool PhysicsSystem::bodyTriangles(ecs::Entity entity, std::vector<Vec3>& triangl
     return any;
 }
 
+bool PhysicsSystem::localMeshBounds(ecs::Entity entity, Vec3& min, Vec3& max) const {
+    if (!entity.valid()) return false;
+    // Caja de la malla propia de una entidad (en su espacio local).
+    const auto own = [&](ecs::Entity e, Vec3& lo, Vec3& hi) {
+        lo = Vec3{FLT_MAX, FLT_MAX, FLT_MAX};
+        hi = Vec3{-FLT_MAX, -FLT_MAX, -FLT_MAX};
+        const auto grow = [&](const Vec3& p) {
+            lo = Vec3{std::min(lo.x, p.x), std::min(lo.y, p.y), std::min(lo.z, p.z)};
+            hi = Vec3{std::max(hi.x, p.x), std::max(hi.y, p.y), std::max(hi.z, p.z)};
+        };
+        if (const ecs::Mesh* runtime = Impl::runtimeMeshOf(e)) {
+            for (const Vec3& p : runtime->vertices) grow(p);
+        } else if (const asset::ModelData* data = impl_->meshOf(e)) {
+            for (const asset::SkinnedVertex& v : data->vertices) grow(v.position);
+        }
+        return hi.x >= lo.x;
+    };
+    if (own(entity, min, max)) return true;
+    // Sin malla propia (la raiz de un modelo, un grupo): las de sus
+    // descendientes llevadas a su espacio (las 8 esquinas de cada caja).
+    const core::Mat4 to_local = core::inverse(entity.worldMatrix());
+    min = Vec3{FLT_MAX, FLT_MAX, FLT_MAX};
+    max = Vec3{-FLT_MAX, -FLT_MAX, -FLT_MAX};
+    bool any = false;
+    std::vector<entt::entity> stack(entity.children().begin(), entity.children().end());
+    while (!stack.empty()) {
+        const ecs::Entity e = entity.world()->wrap(stack.back());
+        stack.pop_back();
+        if (!e.valid()) continue;
+        for (const entt::entity child : e.children()) stack.push_back(child);
+        Vec3 lo{};
+        Vec3 hi{};
+        if (!e.activeSelf() || !own(e, lo, hi)) continue;
+        const core::Mat4 m = to_local * e.worldMatrix();
+        for (int i = 0; i < 8; ++i) {
+            const Vec3 corner{(i & 1) ? hi.x : lo.x, (i & 2) ? hi.y : lo.y, (i & 4) ? hi.z : lo.z};
+            const Vec3 p = ecs::transformPoint(m, corner);
+            min = Vec3{std::min(min.x, p.x), std::min(min.y, p.y), std::min(min.z, p.z)};
+            max = Vec3{std::max(max.x, p.x), std::max(max.y, p.y), std::max(max.z, p.z)};
+        }
+        any = true;
+    }
+    return any;
+}
+
+bool PhysicsSystem::fitColliderToMesh(ecs::Entity entity, const std::string& only) const {
+    Vec3 lo{};
+    Vec3 hi{};
+    if (!localMeshBounds(entity, lo, hi)) return false;
+    return fitColliderToBounds(entity, lo, hi, only);
+}
+
 PhysicsStats PhysicsSystem::stats() const {
     PhysicsStats s;
     const Impl& d = *impl_;

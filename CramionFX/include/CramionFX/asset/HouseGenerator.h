@@ -15,12 +15,34 @@
 
 #include <array>
 #include <cstdint>
+#include <string>
+#include <vector>
 
 namespace cramion::asset {
 
-enum class HouseStyle : int { LogCabin = 0, TimberCabin = 1, StoneCottage = 2, Farmhouse = 3 };
-inline constexpr int kHouseStyleCount = 4;
+// Medievales: casa de entramado (planta baja de piedra, alta de entramado de
+// vigas con enlucido que vuela sobre la calle, tejado de teja) y cabana de
+// paja (muros de entramado y tejado de paja grueso).
+enum class HouseStyle : int {
+    LogCabin = 0,
+    TimberCabin = 1,
+    StoneCottage = 2,
+    Farmhouse = 3,
+    HalfTimbered = 4,
+    Thatched = 5
+};
+inline constexpr int kHouseStyleCount = 6;
 const char* houseStyleName(HouseStyle style);  // "Cabana de troncos"...
+
+// Para que sirve la casa (cambia el interior y algun detalle de fuera).
+enum class HouseUse : int {
+    Home = 0,     // vivienda: hogar, mesa, camas, arcon, alacena...
+    Tavern = 1,   // taberna/posada: barra, barriles, mesas, cuartos arriba, cartel
+    Smithy = 2,   // herreria: fragua, yunque, pila, herramientas, cobertizo
+    Shop = 3,     // tienda: mostrador, estanterias, cajas
+};
+inline constexpr int kHouseUseCount = 4;
+const char* houseUseName(HouseUse use);
 
 struct HouseSettings {
     HouseStyle style = HouseStyle::LogCabin;
@@ -35,6 +57,9 @@ struct HouseSettings {
     bool chimney = true;
     bool shutters = true;        // contraventanas (no en la de troncos)
     int windows = -1;            // ventanas en la fachada larga; -1 = segun el ancho
+    bool interior = true;        // muebles, escalera, tabiques, vigas y el fuego del hogar
+    HouseUse use = HouseUse::Home;
+    float jetty = 0.4f;          // entramado: lo que vuela la planta alta (m)
 };
 
 // Preajuste de cada estilo (medidas y detalles tipicos).
@@ -51,6 +76,11 @@ enum HouseMaterial : int {
     kHouseTrim,         // marcos pintados
     kHouseGlass,        // vidrio
     kHouseIron,         // herrajes
+    kHousePlaster,      // enlucido de cal (entramados, colchones)
+    kHouseThatch,       // paja (tejados, heno)
+    kHouseTile,         // teja curva de barro
+    kHouseCloth,        // tela a rayas (toldos, mantas, alfombras)
+    kHouseBeams,        // vigas de roble oscuro (entramado, muebles)
     kHouseMaterialCount
 };
 const char* houseMaterialName(int material);   // "Troncos", "Veta"... (nombre del material)
@@ -58,14 +88,23 @@ const char* houseTextureName(int material);    // base de las imagenes ("" = sin
 // Metros que cubre una repeticion de la textura (U, V) de cada material.
 std::array<float, 2> houseTextureMeters(int material);
 
+// Una pieza movil mas (las aspas de un molino): su origen es el eje.
+struct HousePart {
+    std::string name;
+    ModelData model;
+    core::Vec3 origin{};
+};
+
 struct HouseModel {
     ModelData house;              // todo menos la puerta (origen = centro del suelo, y = 0 el terreno)
-    ModelData door;               // la hoja de la puerta, con la bisagra en su origen
+    ModelData door;               // la hoja de la puerta, con la bisagra en su origen (vacia = sin puerta)
     core::Vec3 door_hinge{};      // donde va la puerta en la casa (gira en Y)
     core::Vec3 door_size{};       // medidas de la hoja (para su BoxCollider; centro = size/2 en X e Y)
     core::Vec3 bounds_min{};
     core::Vec3 bounds_max{};
     std::size_t triangles = 0;
+    std::vector<core::Vec3> lights;   // fuegos (hogar, fragua): una luz calida en cada uno
+    std::vector<HousePart> parts;     // piezas moviles extra
 };
 
 HouseModel buildHouse(const HouseSettings& settings);

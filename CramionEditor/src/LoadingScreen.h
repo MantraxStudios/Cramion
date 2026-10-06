@@ -45,7 +45,23 @@ private:
 
 // Crashes: guarda un minidump y un informe en %LOCALAPPDATA%/Cramion/Crashes
 // y avisa con un mensaje (donde fallo y donde quedo el informe).
+// Tambien std::terminate, abort(), virtuales puras y parametros no validos.
+// El informe lleva la pila con funciones y lineas (si esta el .pdb), el
+// contexto (setCrashContext), la memoria y las ultimas lineas del registro.
 void installCrashHandler(const std::string& app_name);
+// Una linea del registro para el informe (se guardan las ultimas 80).
+void crashBreadcrumb(const std::string& line);
+// Dato del contexto para el informe (version, GPU, escena, proyecto...).
+void setCrashContext(const std::string& key, const std::string& value);
+// Archivo de registro cuyo final va al informe si no hay migas de pan.
+void setCrashLogFile(const std::filesystem::path& file);
+// Informe del cierre anterior de esta aplicacion (vacio si no hubo); lo
+// devuelve una sola vez.
+std::filesystem::path pendingCrashReport(const std::string& app_name);
+std::string readCrashReport(const std::filesystem::path& report);
+// Provoca un cierre para probar el informe: 0 acceso no valido, 1 abort,
+// 2 terminate.
+void testCrash(int kind);
 
 // Carpeta %LOCALAPPDATA%/Cramion/<sub> (creada). En Android, dentro de los
 // datos internos de la app.

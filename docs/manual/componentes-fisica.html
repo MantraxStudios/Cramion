@@ -141,7 +141,7 @@
   </tbody>
 </table>
 <h3 id="BoxCollider">Box Collider <code>BoxCollider</code></h3>
-<p>Colision en forma de caja (el cubo unidad escalado por el Transform, mas su tamano y centro). Sin Rigidbody es un obstaculo estatico. Con <em>Es trigger</em> no choca: avisa (<code>OnTriggerEnter</code>).</p>
+<p>Colision en forma de caja: su tamano y centro en el espacio del objeto, multiplicados por la escala del Transform. Como en Unity, al anadirlo (Add Component, <code>addComponent</code>, MCP) toma el <strong>AABB de la malla</strong> del objeto o, si no tiene, el de las mallas de sus hijos; <em>Ajustar a la malla</em> (o <em>Restablecer valores</em>) lo vuelve a calcular. Sin Rigidbody es un obstaculo estatico. Con <em>Es trigger</em> no choca: avisa (<code>OnTriggerEnter</code>).</p>
 <table>
   <thead><tr><th>Propiedad</th><th>Tipo</th><th>Por defecto</th><th>Valores</th><th>Descripcion</th></tr></thead>
   <tbody>
@@ -156,7 +156,7 @@
   </tbody>
 </table>
 <h3 id="SphereCollider">Sphere Collider <code>SphereCollider</code></h3>
-<p>Colision en forma de esfera (radio y centro).</p>
+<p>Colision en forma de esfera (radio y centro). Al anadirla se centra en el AABB de la malla con la mayor media medida de radio.</p>
 <table>
   <thead><tr><th>Propiedad</th><th>Tipo</th><th>Por defecto</th><th>Valores</th><th>Descripcion</th></tr></thead>
   <tbody>
@@ -171,7 +171,7 @@
   </tbody>
 </table>
 <h3 id="CapsuleCollider">Capsule Collider <code>CapsuleCollider</code></h3>
-<p>Colision en forma de capsula (personajes): radio, altura y eje.</p>
+<p>Colision en forma de capsula (personajes): radio, altura y eje. Al anadirla toma el AABB de la malla, a lo largo de su eje mas largo.</p>
 <table>
   <thead><tr><th>Propiedad</th><th>Tipo</th><th>Por defecto</th><th>Valores</th><th>Descripcion</th></tr></thead>
   <tbody>

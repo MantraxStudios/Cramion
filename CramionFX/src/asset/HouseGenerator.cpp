@@ -1,5 +1,7 @@
 #include "CramionFX/asset/HouseGenerator.h"
 
+#include "HouseGeo.h"
+
 #include <algorithm>
 #include <cmath>
 #include <functional>
@@ -14,16 +16,12 @@ namespace {
 using core::Vec2;
 using core::Vec3;
 using core::Vec4;
-
-constexpr float kPi = 3.14159265f;
-const Vec3 kUp{0.0f, 1.0f, 0.0f};
-
-float smoothstep(float a, float b, float x) {
-    const float t = std::clamp((x - a) / (b - a), 0.0f, 1.0f);
-    return t * t * (3.0f - 2.0f * t);
-}
-float mix(float a, float b, float t) { return a + (b - a) * t; }
-Vec3 mix(const Vec3& a, const Vec3& b, float t) { return a + (b - a) * t; }
+using housegeo::kPi;
+using housegeo::kUp;
+using housegeo::kX;
+using housegeo::kZ;
+using housegeo::mix;
+using housegeo::smoothstep;
 
 // ---------------------------------------------------------------------------
 // Ruido repetible (periodico) para las texturas
@@ -371,253 +369,181 @@ Texel trimTexel(float u, float v, std::uint32_t seed) {
     return t;
 }
 
+
+// --- Enlucido de cal (2 x 2 m): manchas, llana, desconchones y grietas ---
+Texel plasterTexel(float u, float v, std::uint32_t seed) {
+    Texel t;
+    const float big = fbm(u, v, 4, 4, 5, seed);
+    const float fine = valueNoise(u * 256.0f, v * 256.0f, 256, 256, seed + 3U);
+    const float trowel = fbm(u, v, 20, 9, 3, seed + 5U);
+    const float ridge = 1.0f - std::abs(2.0f * fbm(u, v, 6, 6, 4, seed + 7U) - 1.0f);
+    const float crack = smoothstep(0.965f, 0.99f, ridge) * smoothstep(0.5f, 0.7f, fbm(u, v, 3, 3, 2, seed + 9U));
+    const float stain = smoothstep(0.6f, 0.85f, fbm(u, v, 3, 3, 4, seed + 11U));
+    // Desconchones: el enlucido se cayo y asoma el barro de debajo.
+    const float flake = smoothstep(0.78f, 0.8f, fbm(u, v, 5, 5, 5, seed + 13U));
+    const Vec3 base{0.87f, 0.83f, 0.74f};
+    Vec3 col = base * (0.9f + 0.12f * big + (fine - 0.5f) * 0.06f + (trowel - 0.5f) * 0.05f);
+    col = mix(col, Vec3{0.64f, 0.6f, 0.52f}, stain * 0.4f);
+    col = mix(col, Vec3{0.47f, 0.38f, 0.27f} * (0.85f + 0.3f * fine), flake);
+    col = mix(col, Vec3{0.34f, 0.31f, 0.27f}, crack);
+    t.color = col;
+    t.height = 0.6f + (big - 0.5f) * 0.18f + (trowel - 0.5f) * 0.1f + (fine - 0.5f) * 0.05f - crack * 0.4f - flake * 0.18f;
+    t.roughness = 0.9f + 0.05f * fine;
+    t.occlusion = 1.0f - crack * 0.5f - flake * 0.25f;
+    return t;
+}
+
+// --- Paja de los tejados (1.5 x 1.5 m, 5 hiladas; V baja por la pendiente) ---
+Texel thatchTexel(float u, float v, std::uint32_t seed) {
+    Texel t;
+    constexpr int kRows = 5;
+    const float y = v * kRows;
+    const int row = static_cast<int>(std::floor(y));
+    const float shift = hash2(wrap(row, kRows), 1, seed) * 37.0f;
+    // Borde de abajo de cada hilada desflecado.
+    const float ragged = (valueNoise(u * 48.0f + shift, 0.5f, 48, 1, seed + 2U) - 0.5f) * 0.35f;
+    const float local = std::clamp(y - std::floor(y) - ragged * 0.3f, 0.0f, 1.0f);
+    const float strands = valueNoise(u * 420.0f + shift, v * 5.0f, 420, 5, seed + 3U);
+    const float strands2 = valueNoise(u * 160.0f + shift * 0.5f, v * 3.0f, 160, 3, seed + 4U);
+    const float weather = fbm(u, v, 3, 3, 4, seed + 5U);
+    const float moss = smoothstep(0.66f, 0.84f, fbm(u, v, 4, 4, 4, seed + 6U)) * smoothstep(0.2f, 0.9f, local);
+    const float shadow = 1.0f - smoothstep(0.0f, 0.3f, local);
+    const Vec3 straw{0.66f, 0.55f, 0.33f};
+    const Vec3 aged{0.43f, 0.38f, 0.29f};
+    Vec3 col = mix(straw, aged, std::clamp(weather * 1.2f - 0.15f, 0.0f, 1.0f));
+    col = col * (0.62f + 0.42f * strands + (strands2 - 0.5f) * 0.25f);
+    col = mix(col, Vec3{0.27f, 0.31f, 0.16f}, moss * 0.55f);
+    col = col * (1.0f - shadow * 0.5f);
+    t.color = col;
+    t.height = 0.15f + 0.7f * std::pow(local, 0.8f) + (strands - 0.5f) * 0.22f + (strands2 - 0.5f) * 0.1f;
+    t.roughness = 0.95f;
+    t.occlusion = 1.0f - shadow * 0.55f - (1.0f - strands) * 0.15f;
+    return t;
+}
+
+// --- Teja curva de barro (1 x 1 m: 5 hiladas, 6 canales; V baja) ---
+Texel tileTexel(float u, float v, std::uint32_t seed) {
+    Texel t;
+    constexpr int kRows = 5;
+    constexpr int kCols = 6;
+    const float y = v * kRows;
+    const int row = static_cast<int>(std::floor(y));
+    const float local = y - std::floor(y);  // 0 arriba (bajo la hilada anterior), 1 el borde
+    const float x = u * kCols + (row % 2 == 0 ? 0.0f : 0.5f) * 0.0f;
+    const int col_i = static_cast<int>(std::floor(x));
+    const float lx = x - std::floor(x);
+    const int id_x = wrap(col_i, kCols);
+    const int id_y = wrap(row, kRows);
+    const float key = hash2(id_x, id_y, seed);
+    const float key2 = hash2(id_x, id_y, seed + 1U);
+    // Perfil de la teja (media cana) y la junta entre canales.
+    const float profile = std::cos((lx - 0.5f) * kPi);
+    const float gap = 1.0f - smoothstep(0.02f, 0.07f, std::min(lx, 1.0f - lx));
+    const float shadow = 1.0f - smoothstep(0.0f, 0.22f, local);
+    const float lip = smoothstep(0.88f, 1.0f, local);
+    const float grime = fbm(u, v, 3, 3, 4, seed + 3U);
+    const float lichen = smoothstep(0.7f, 0.76f, fbm(u, v, 9, 9, 4, seed + 4U)) * (key2 < 0.5f ? 1.0f : 0.4f);
+    const float speck = valueNoise(u * 300.0f, v * 300.0f, 300, 300, seed + 5U);
+    Vec3 clay = mix(Vec3{0.68f, 0.34f, 0.19f}, Vec3{0.46f, 0.22f, 0.14f}, key);
+    clay = mix(clay, Vec3{0.58f, 0.42f, 0.3f}, key2 * 0.3f);
+    clay = clay * (0.85f + 0.25f * profile + (speck - 0.5f) * 0.12f);
+    clay = mix(clay, Vec3{0.28f, 0.24f, 0.2f}, smoothstep(0.55f, 0.8f, grime) * 0.45f);
+    clay = mix(clay, Vec3{0.78f, 0.76f, 0.62f}, lichen * 0.6f);
+    clay = clay * (1.0f - shadow * 0.55f);
+    clay = mix(clay, Vec3{0.08f, 0.05f, 0.04f}, gap * 0.85f);
+    t.color = clay;
+    t.height = 0.2f + 0.45f * profile * (0.6f + 0.4f * local) + lip * 0.08f - gap * 0.3f + (speck - 0.5f) * 0.04f;
+    t.roughness = 0.75f + 0.15f * grime + lichen * 0.05f;
+    t.occlusion = 1.0f - shadow * 0.6f - gap * 0.5f;
+    return t;
+}
+
+// --- Tela de lana a rayas (1 x 1 m): trama fina y desgaste ---
+Texel clothTexel(float u, float v, std::uint32_t seed) {
+    Texel t;
+    constexpr int kStripes = 8;
+    const float sx = u * kStripes;
+    const int stripe = static_cast<int>(std::floor(sx));
+    const float local = sx - std::floor(sx);
+    const bool red = stripe % 2 == 0;
+    const float line = 1.0f - smoothstep(0.03f, 0.06f, std::abs(local - 0.5f) - 0.4f + 0.06f);
+    const float weave_u = std::sin(u * 2.0f * kPi * 180.0f);
+    const float weave_v = std::sin(v * 2.0f * kPi * 180.0f);
+    const float weave = 0.5f + 0.25f * (weave_u * weave_v);
+    const float wear = fbm(u, v, 4, 4, 4, seed);
+    const float fuzz = valueNoise(u * 128.0f, v * 128.0f, 128, 128, seed + 3U);
+    Vec3 col = red ? Vec3{0.55f, 0.14f, 0.11f} : Vec3{0.8f, 0.72f, 0.55f};
+    col = mix(col, Vec3{0.2f, 0.12f, 0.08f}, line * 0.25f);
+    col = col * (0.82f + 0.25f * weave + (fuzz - 0.5f) * 0.12f);
+    col = mix(col, col * 0.75f + Vec3{0.08f, 0.07f, 0.06f}, smoothstep(0.55f, 0.85f, wear) * 0.6f);
+    t.color = col;
+    t.height = 0.5f + (weave - 0.5f) * 0.4f + (fuzz - 0.5f) * 0.1f;
+    t.roughness = 0.95f;
+    t.occlusion = 0.85f + 0.15f * weave;
+    return t;
+}
+
+// --- Vigas de roble oscuro (U a lo largo 2 m, V 0.5 m): veta y fendas ---
+Texel beamTexel(float u, float v, std::uint32_t seed) {
+    Texel t;
+    const float grain = fbm(u, v, 3, 12, 4, seed);
+    const float fine = valueNoise(u * 14.0f, v * 90.0f, 14, 90, seed + 5U);
+    const float ridge = 1.0f - std::abs(2.0f * fbm(u, v, 2, 6, 3, seed + 11U) - 1.0f);
+    const float crack = smoothstep(0.95f, 0.985f, ridge) * smoothstep(0.4f, 0.6f, valueNoise(u * 5.0f, v * 2.0f, 5, 2, seed + 13U));
+    const float adze = valueNoise(u * 22.0f, v * 4.0f, 22, 4, seed + 17U);  // golpes de azuela
+    const Vec3 dark{0.17f, 0.11f, 0.07f};
+    const Vec3 mid{0.32f, 0.21f, 0.13f};
+    Vec3 col = mix(dark, mid, std::clamp(grain * 1.25f - 0.12f + (fine - 0.5f) * 0.3f, 0.0f, 1.0f));
+    col = col * (0.9f + 0.18f * adze);
+    col = mix(col, Vec3{0.07f, 0.05f, 0.03f}, crack);
+    t.color = col;
+    t.height = 0.6f + (grain - 0.5f) * 0.2f + (fine - 0.5f) * 0.08f + (adze - 0.5f) * 0.12f - crack * 0.5f;
+    t.roughness = 0.72f + 0.12f * (1.0f - grain);
+    t.occlusion = 1.0f - crack * 0.7f;
+    return t;
+}
+
 // ---------------------------------------------------------------------------
 // Geometria
 // ---------------------------------------------------------------------------
 
-struct Geo {
-    std::array<std::vector<SkinnedVertex>, kHouseMaterialCount> vertices;
-    std::array<std::vector<std::uint32_t>, kHouseMaterialCount> indices;
+using housegeo::Frame;
+using housegeo::frameAt;
+using housegeo::Geo;
+using housegeo::Opening;
+using housegeo::Rng;
+using housegeo::Wall;
 
-    std::size_t triangles() const {
-        std::size_t n = 0;
-        for (const auto& i : indices) n += i.size() / 3;
-        return n;
-    }
+// Planta de la casa para repartir los muebles: rectangulos ocupados.
+struct Room {
+    float x0 = 0.0f, x1 = 0.0f, z0 = 0.0f, z1 = 0.0f, y = 0.0f;
+    int floor = 0;
+    std::vector<std::array<float, 4>> used;
 
-    Vec2 uvAt(int m, const Vec3& p, const Vec3& su, const Vec3& sv) const {
-        const std::array<float, 2> meters = houseTextureMeters(m);
-        return Vec2{core::dot(p, su) / meters[0], core::dot(p, sv) / meters[1]};
+    bool free(float ax0, float ax1, float az0, float az1) const {
+        if (ax0 < x0 - 1e-3f || ax1 > x1 + 1e-3f || az0 < z0 - 1e-3f || az1 > z1 + 1e-3f) return false;
+        for (const auto& r : used) {
+            if (ax0 < r[1] - 1e-3f && ax1 > r[0] + 1e-3f && az0 < r[3] - 1e-3f && az1 > r[2] + 1e-3f) return false;
+        }
+        return true;
     }
-
-    // Poligono convexo (abanico) con una normal por vertice; se orienta para
-    // que la cara mire hacia `facing`.
-    void polygon(int m, const std::vector<Vec3>& p, const std::vector<Vec3>& n, const std::vector<Vec2>& uv,
-                 const Vec3& facing) {
-        auto& verts = vertices[static_cast<std::size_t>(m)];
-        auto& idx = indices[static_cast<std::size_t>(m)];
-        const auto base = static_cast<std::uint32_t>(verts.size());
-        for (std::size_t i = 0; i < p.size(); ++i) {
-            SkinnedVertex v;
-            v.position = p[i];
-            v.normal = n[i];
-            v.uv = uv[i];
-            v.weights[0] = 1.0f;
-            verts.push_back(v);
-        }
-        Vec3 area{};
-        for (std::size_t i = 1; i + 1 < p.size(); ++i) area += core::cross(p[i] - p[0], p[i + 1] - p[0]);
-        const bool flip = core::dot(area, facing) < 0.0f;
-        for (std::uint32_t i = 1; i + 1 < p.size(); ++i) {
-            if (flip) {
-                idx.insert(idx.end(), {base, base + i + 1, base + i});
-            } else {
-                idx.insert(idx.end(), {base, base + i, base + i + 1});
-            }
-        }
-    }
-
-    // Cara plana con UV proyectadas en el mundo (su = eje de U, sv = eje de V).
-    void flat(int m, const std::vector<Vec3>& p, const Vec3& normal, const Vec3& su, const Vec3& sv,
-              Vec2 offset = {}) {
-        std::vector<Vec3> n(p.size(), normal);
-        std::vector<Vec2> uv;
-        uv.reserve(p.size());
-        for (const Vec3& q : p) {
-            Vec2 t = uvAt(m, q, su, sv);
-            uv.push_back(Vec2{t.x + offset.x, t.y + offset.y});
-        }
-        polygon(m, p, n, uv, normal);
-    }
-
-    // Caja orientada: centro, medias medidas y ejes (ortonormales). `rotate`
-    // gira la veta 90 grados. `skip`: bits de caras que no se crean
-    // (1 -X, 2 +X, 4 -Y, 8 +Y, 16 -Z, 32 +Z).
-    void box(int m, const Vec3& c, const Vec3& half, const Vec3& ax, const Vec3& ay, const Vec3& az,
-             bool rotate = false, int skip = 0, Vec2 offset = {}) {
-        const Vec3 axes[3] = {ax, ay, az};
-        const float h[3] = {half.x, half.y, half.z};
-        for (int a = 0; a < 3; ++a) {
-            for (int s = 0; s < 2; ++s) {
-                if (skip & (1 << (a * 2 + s))) continue;
-                const Vec3 n = axes[a] * (s == 0 ? -1.0f : 1.0f);
-                const Vec3 e1 = axes[(a + 1) % 3] * h[(a + 1) % 3];
-                const Vec3 e2 = axes[(a + 2) % 3] * h[(a + 2) % 3];
-                const Vec3 fc = c + n * h[a];
-                const std::vector<Vec3> p = {fc - e1 - e2, fc + e1 - e2, fc + e1 + e2, fc - e1 + e2};
-                // Ejes de las UV: en las caras verticales, U horizontal y V hacia
-                // abajo; en las horizontales, los ejes X/Z de la caja.
-                Vec3 su;
-                Vec3 sv;
-                if (std::abs(n.y) > 0.7f) {
-                    su = ax;
-                    sv = az;
-                } else {
-                    Vec3 horizontal = core::normalize(core::cross(kUp, n));
-                    if (!std::isfinite(horizontal.x)) horizontal = ax;
-                    su = horizontal;
-                    sv = core::normalize(core::cross(n, su)) * -1.0f;
-                }
-                if (rotate) std::swap(su, sv);
-                flat(m, p, n, su, sv, offset);
-            }
-        }
-    }
-    void box(int m, const Vec3& c, const Vec3& half, bool rotate = false, int skip = 0, Vec2 offset = {}) {
-        box(m, c, half, Vec3{1.0f, 0.0f, 0.0f}, kUp, Vec3{0.0f, 0.0f, 1.0f}, rotate, skip, offset);
-    }
-    // Caja entre dos esquinas (alineada con los ejes).
-    void boxMinMax(int m, const Vec3& lo, const Vec3& hi, bool rotate = false, int skip = 0) {
-        box(m, (lo + hi) * 0.5f, (hi - lo) * 0.5f, rotate, skip);
-    }
-
-    // Tronco: cilindro de `a` a `b` con testas (caps) opcionales.
-    void log(const Vec3& a, const Vec3& b, float r, int sides, bool cap_a, bool cap_b, float u_offset,
-             float twist) {
-        const Vec3 d = core::normalize(b - a);
-        Vec3 e1 = core::cross(d, kUp);
-        if (core::length(e1) < 1e-3f) e1 = Vec3{1.0f, 0.0f, 0.0f};
-        e1 = core::normalize(e1);
-        const Vec3 e2 = core::cross(e1, d);
-        const float len = core::length(b - a);
-        const std::array<float, 2> meters = houseTextureMeters(kHouseLogs);
-        const float u0 = core::dot(a, d) / meters[0] + u_offset;
-        const float u1 = u0 + len / meters[0];
-        for (int k = 0; k < sides; ++k) {
-            const float a0 = twist + 2.0f * kPi * static_cast<float>(k) / static_cast<float>(sides);
-            const float a1 = twist + 2.0f * kPi * static_cast<float>(k + 1) / static_cast<float>(sides);
-            const Vec3 n0 = e1 * std::cos(a0) + e2 * std::sin(a0);
-            const Vec3 n1 = e1 * std::cos(a1) + e2 * std::sin(a1);
-            const float v0 = static_cast<float>(k) / static_cast<float>(sides);
-            const float v1 = static_cast<float>(k + 1) / static_cast<float>(sides);
-            polygon(kHouseLogs, {a + n0 * r, b + n0 * r, b + n1 * r, a + n1 * r}, {n0, n0, n1, n1},
-                    {Vec2{u0, v0}, Vec2{u1, v0}, Vec2{u1, v1}, Vec2{u0, v1}}, (n0 + n1) * 0.5f);
-        }
-        for (int end = 0; end < 2; ++end) {
-            if ((end == 0 && !cap_a) || (end == 1 && !cap_b)) continue;
-            const Vec3 center = end == 0 ? a : b;
-            const Vec3 n = end == 0 ? d * -1.0f : d;
-            std::vector<Vec3> p;
-            std::vector<Vec2> uv;
-            const float spin = u_offset * 7.0f;
-            for (int k = 0; k < sides; ++k) {
-                const float ang = twist + 2.0f * kPi * static_cast<float>(k) / static_cast<float>(sides);
-                p.push_back(center + (e1 * std::cos(ang) + e2 * std::sin(ang)) * r);
-                uv.push_back(Vec2{0.5f + 0.48f * std::cos(ang + spin), 0.5f + 0.48f * std::sin(ang + spin)});
-            }
-            polygon(kHouseLogEnds, p, std::vector<Vec3>(p.size(), n), uv, n);
-        }
-    }
-
-    void finish(ModelData& model, const std::string& name) const {
-        model.name = name;
-        model.materials.clear();
-        for (int m = 0; m < kHouseMaterialCount; ++m) {
-            MaterialData mat;
-            mat.name = houseMaterialName(m);
-            switch (m) {
-                case kHouseLogs: mat.base_color = Vec4{0.45f, 0.31f, 0.18f, 1.0f}; mat.roughness = 0.85f; break;
-                case kHouseLogEnds: mat.base_color = Vec4{0.55f, 0.42f, 0.27f, 1.0f}; mat.roughness = 0.85f; break;
-                case kHousePlanks: mat.base_color = Vec4{0.42f, 0.36f, 0.3f, 1.0f}; mat.roughness = 0.85f; break;
-                case kHouseSiding: mat.base_color = Vec4{0.8f, 0.79f, 0.75f, 1.0f}; mat.roughness = 0.6f; break;
-                case kHouseStone: mat.base_color = Vec4{0.5f, 0.49f, 0.46f, 1.0f}; mat.roughness = 0.9f; break;
-                case kHouseRoof: mat.base_color = Vec4{0.33f, 0.29f, 0.25f, 1.0f}; mat.roughness = 0.9f; break;
-                case kHouseTrim: mat.base_color = Vec4{0.85f, 0.84f, 0.8f, 1.0f}; mat.roughness = 0.5f; break;
-                case kHouseGlass:
-                    mat.base_color = Vec4{0.02f, 0.025f, 0.03f, 1.0f};
-                    mat.roughness = 0.04f;
-                    mat.reflectance = 0.06f;
-                    break;
-                case kHouseIron: mat.base_color = Vec4{0.1f, 0.1f, 0.1f, 1.0f}; mat.metallic = 1.0f; mat.roughness = 0.6f; break;
-                default: break;
-            }
-            model.materials.push_back(mat);
-        }
-        model.vertices.clear();
-        model.indices.clear();
-        model.submeshes.clear();
-        for (int m = 0; m < kHouseMaterialCount; ++m) {
-            const auto& verts = vertices[static_cast<std::size_t>(m)];
-            const auto& idx = indices[static_cast<std::size_t>(m)];
-            if (idx.empty()) continue;
-            const auto base = static_cast<std::uint32_t>(model.vertices.size());
-            const auto first = static_cast<std::uint32_t>(model.indices.size());
-            // Tangentes (mismo convenio que el lector de OBJ: V hacia abajo).
-            std::vector<Vec3> tangents(verts.size(), Vec3{});
-            std::vector<Vec3> bitangents(verts.size(), Vec3{});
-            for (std::size_t i = 0; i + 2 < idx.size(); i += 3) {
-                const SkinnedVertex& va = verts[idx[i]];
-                const SkinnedVertex& vb = verts[idx[i + 1]];
-                const SkinnedVertex& vc = verts[idx[i + 2]];
-                const Vec3 e1 = vb.position - va.position;
-                const Vec3 e2 = vc.position - va.position;
-                const float du1 = vb.uv.x - va.uv.x;
-                const float dv1 = vb.uv.y - va.uv.y;
-                const float du2 = vc.uv.x - va.uv.x;
-                const float dv2 = vc.uv.y - va.uv.y;
-                const float det = du1 * dv2 - du2 * dv1;
-                if (std::abs(det) < 1e-12f) continue;
-                const float r = 1.0f / det;
-                const Vec3 t = (e1 * dv2 - e2 * dv1) * r;
-                const Vec3 bt = (e2 * du1 - e1 * du2) * r;
-                for (std::uint32_t k : {idx[i], idx[i + 1], idx[i + 2]}) {
-                    tangents[k] += t;
-                    bitangents[k] += bt;
-                }
-            }
-            SubMesh sub;
-            sub.first_index = first;
-            sub.index_count = static_cast<std::uint32_t>(idx.size());
-            sub.material = static_cast<std::uint32_t>(m);
-            sub.bounds_min = Vec3{1e9f, 1e9f, 1e9f};
-            sub.bounds_max = Vec3{-1e9f, -1e9f, -1e9f};
-            for (std::size_t k = 0; k < verts.size(); ++k) {
-                SkinnedVertex v = verts[k];
-                Vec3 t = tangents[k] - v.normal * core::dot(v.normal, tangents[k]);
-                if (core::length(t) < 1e-9f) {
-                    v.tangent = Vec4{1.0f, 0.0f, 0.0f, 1.0f};
-                } else {
-                    t = core::normalize(t);
-                    const float w = core::dot(core::cross(v.normal, t), bitangents[k]) < 0.0f ? -1.0f : 1.0f;
-                    v.tangent = Vec4{t, w};
-                }
-                sub.bounds_min = Vec3{std::min(sub.bounds_min.x, v.position.x), std::min(sub.bounds_min.y, v.position.y),
-                                      std::min(sub.bounds_min.z, v.position.z)};
-                sub.bounds_max = Vec3{std::max(sub.bounds_max.x, v.position.x), std::max(sub.bounds_max.y, v.position.y),
-                                      std::max(sub.bounds_max.z, v.position.z)};
-                model.vertices.push_back(v);
-            }
-            for (std::uint32_t i : idx) model.indices.push_back(base + i);
-            model.submeshes.push_back(sub);
-        }
-        model.nodes = {Node{name, -1, core::Mat4::identity()}};
-        model.bones = {Bone{name, 0, core::Mat4::identity()}};
+    void use(float ax0, float ax1, float az0, float az1) { used.push_back({ax0, ax1, az0, az1}); }
+    bool take(float ax0, float ax1, float az0, float az1) {
+        if (!free(ax0, ax1, az0, az1)) return false;
+        use(ax0, ax1, az0, az1);
+        return true;
     }
 };
 
-// Hueco en una pared: s = a lo largo (desde el centro de la pared), y = alturas.
-struct Opening {
-    int wall = 0;
-    float s0 = 0.0f;
-    float s1 = 0.0f;
-    float y0 = 0.0f;
-    float y1 = 0.0f;
-    bool door = false;
-};
-
-// Una pared: centro de su linea, eje a lo largo y normal hacia fuera.
-struct Wall {
-    Vec3 center{};
-    Vec3 along{};
-    Vec3 out{};
-    float half = 0.0f;  // media longitud de la linea (entre ejes de esquina)
-};
-
-struct Rng {
-    std::mt19937 engine;
-    explicit Rng(std::uint32_t seed) : engine(seed * 2654435761U + 12345U) {}
-    float range(float a, float b) { return std::uniform_real_distribution<float>(a, b)(engine); }
-    bool chance(float p) { return range(0.0f, 1.0f) < p; }
+// Un tramo de escalera: de la planta `floor` a la de arriba.
+struct Flight {
+    int floor = 0;
+    Frame frame;          // pie de la escalera, sube hacia +Z local
+    float rise = 0.0f;
+    float run = 0.0f;
+    float width = 0.85f;
+    std::array<float, 4> foot{};  // lo que ocupa abajo (x0, x1, z0, z1)
+    std::array<float, 4> hole{};  // hueco en el suelo de arriba
 };
 
 class HouseBuilder {
@@ -627,11 +553,12 @@ public:
     HouseModel build() {
         layout();
         foundation();
-        if (s_.style == HouseStyle::LogCabin) {
+        if (logs()) {
             logWalls();
         } else {
             flatWalls();
         }
+        if (framed()) timberFrame();
         for (const Opening& o : openings_) {
             if (o.door) {
                 doorFrame(o);
@@ -639,10 +566,17 @@ public:
                 window(o);
             }
         }
+        upperFloors();
         roof();
-        if (s_.porch) porch();
-        else frontSteps();
+        if (s_.porch && !jettied() && !framed()) {
+            porch();
+        } else {
+            frontSteps();
+        }
         if (s_.chimney) chimney();
+        if (s_.use == HouseUse::Tavern) tavernSign();
+        if (s_.use == HouseUse::Smithy) smithyShed();
+        if (s_.interior) interior();
 
         HouseModel out;
         geo_.finish(out.house, houseStyleName(s_.style));
@@ -651,14 +585,8 @@ public:
         out.triangles += door_geo_.triangles();
         out.door_hinge = door_hinge_;
         out.door_size = door_size_;
-        out.bounds_min = Vec3{1e9f, 1e9f, 1e9f};
-        out.bounds_max = Vec3{-1e9f, -1e9f, -1e9f};
-        for (const SkinnedVertex& v : out.house.vertices) {
-            out.bounds_min = Vec3{std::min(out.bounds_min.x, v.position.x), std::min(out.bounds_min.y, v.position.y),
-                                  std::min(out.bounds_min.z, v.position.z)};
-            out.bounds_max = Vec3{std::max(out.bounds_max.x, v.position.x), std::max(out.bounds_max.y, v.position.y),
-                                  std::max(out.bounds_max.z, v.position.z)};
-        }
+        housegeo::modelBounds(out.house, out.bounds_min, out.bounds_max);
+        out.lights = geo_.lights;
         return out;
     }
 
@@ -669,13 +597,20 @@ private:
     Geo door_geo_;
     std::array<Wall, 4> walls_{};  // 0 delante (+Z), 1 atras, 2 derecha (+X), 3 izquierda
     std::vector<Opening> openings_;
+    std::vector<Flight> flights_;
+    std::vector<Room> rooms_;
     float t_ = 0.2f;        // grosor de las paredes
     float plinth_ = 0.45f;  // altura del zocalo (el suelo de dentro)
     float top_ = 3.0f;      // altura de lo alto de las paredes
+    float storey_ = 2.7f;   // altura de cada planta
+    int floors_ = 1;
+    float jetty_ = 0.0f;    // vuelo de las plantas altas (entramado)
     float tan_ = 0.78f;     // pendiente del tejado
-    float zo_ = 3.0f;       // media profundidad por fuera de las paredes
+    float zo_ = 3.0f;       // media profundidad por fuera de las paredes (las de arriba)
     float xo_ = 4.0f;       // medio ancho por fuera
     float ridge_ = 5.0f;    // cara de abajo del tejado en la cumbrera
+    int roof_m_ = kHouseRoof;
+    float roof_th_ = 0.16f;
     float log_r_ = 0.15f;
     float log_step_ = 0.26f;
     float log_ext_ = 0.35f;
@@ -684,29 +619,57 @@ private:
     Vec3 door_size_{};
 
     bool logs() const { return s_.style == HouseStyle::LogCabin; }
+    bool framed() const { return s_.style == HouseStyle::HalfTimbered || s_.style == HouseStyle::Thatched; }
+    bool jettied() const { return jetty_ > 0.0f; }
+    float upperBase() const { return plinth_ + storey_; }
     int wallMaterial() const {
         switch (s_.style) {
             case HouseStyle::StoneCottage: return kHouseStone;
             case HouseStyle::Farmhouse: return kHouseSiding;
+            case HouseStyle::HalfTimbered: return kHouseStone;
+            case HouseStyle::Thatched: return kHousePlaster;
             default: return kHousePlanks;
         }
     }
-    Vec3 at(const Wall& w, float s, float y, float d) const { return w.center + w.along * s + w.out * d + kUp * y; }
+    // La cara de dentro: encalada en las de piedra y entramado.
+    int innerMaterial() const {
+        switch (s_.style) {
+            case HouseStyle::StoneCottage:
+            case HouseStyle::HalfTimbered:
+            case HouseStyle::Thatched: return kHousePlaster;
+            case HouseStyle::Farmhouse: return kHousePlanks;
+            default: return kHousePlanks;
+        }
+    }
+    int frameMaterial() const { return framed() ? kHouseBeams : kHouseTrim; }
+    // Paredes de las plantas altas: delante y detras vuelan `jetty_`.
+    Wall upperWall(int w) const {
+        Wall wall = walls_[static_cast<std::size_t>(w)];
+        if (jettied() && w < 2) wall.center = wall.center + wall.out * jetty_;
+        return wall;
+    }
+    Wall wallOf(const Opening& o) const {
+        return jettied() && o.y0 >= upperBase() - 1e-3f ? upperWall(o.wall) : walls_[static_cast<std::size_t>(o.wall)];
+    }
+    float innerInset() const { return logs() ? log_r_ : t_ * 0.5f; }
+    Vec3 at(const Wall& w, float s, float y, float d) const { return housegeo::at(w, s, y, d); }
     // Altura de la cara de abajo del tejado a una distancia |z| del centro.
     float roofUnder(float z) const { return top_ + (zo_ - std::abs(z)) * tan_; }
 
     void layout() {
         const float W = s_.width;
         const float D = s_.depth;
-        tan_ = std::tan(std::clamp(s_.roof_pitch, 10.0f, 60.0f) * kPi / 180.0f);
+        tan_ = std::tan(std::clamp(s_.roof_pitch, 10.0f, 62.0f) * kPi / 180.0f);
         switch (s_.style) {
             case HouseStyle::LogCabin: t_ = 2.0f * log_r_; plinth_ = 0.5f; break;
             case HouseStyle::TimberCabin: t_ = 0.16f; plinth_ = 0.45f; break;
             case HouseStyle::StoneCottage: t_ = 0.5f; plinth_ = 0.3f; break;
             case HouseStyle::Farmhouse: t_ = 0.2f; plinth_ = 0.6f; break;
+            case HouseStyle::HalfTimbered: t_ = 0.3f; plinth_ = 0.35f; break;
+            case HouseStyle::Thatched: t_ = 0.25f; plinth_ = 0.25f; break;
         }
-        const int floors = std::clamp(s_.floors, 1, 2);
-        const float wall_h = std::max(s_.wall_height, 2.2f) * static_cast<float>(floors);
+        floors_ = std::clamp(s_.floors, 1, 3);
+        const float wall_h = std::max(s_.wall_height, 2.2f) * static_cast<float>(floors_);
         if (logs()) {
             log_step_ = 2.0f * log_r_ * 0.88f;
             const int courses = std::max(4, static_cast<int>(std::round(wall_h / log_step_)));
@@ -714,13 +677,17 @@ private:
         } else {
             top_ = plinth_ + wall_h;
         }
-        zo_ = D * 0.5f + t_ * 0.5f;
+        storey_ = (top_ - plinth_) / static_cast<float>(floors_);
+        jetty_ = s_.style == HouseStyle::HalfTimbered && floors_ >= 2 ? std::clamp(s_.jetty, 0.0f, 0.9f) : 0.0f;
+        zo_ = D * 0.5f + t_ * 0.5f + jetty_;
         xo_ = W * 0.5f + t_ * 0.5f;
         ridge_ = top_ + zo_ * tan_;
-        walls_[0] = Wall{Vec3{0.0f, 0.0f, D * 0.5f}, Vec3{1.0f, 0.0f, 0.0f}, Vec3{0.0f, 0.0f, 1.0f}, W * 0.5f};
-        walls_[1] = Wall{Vec3{0.0f, 0.0f, -D * 0.5f}, Vec3{-1.0f, 0.0f, 0.0f}, Vec3{0.0f, 0.0f, -1.0f}, W * 0.5f};
-        walls_[2] = Wall{Vec3{W * 0.5f, 0.0f, 0.0f}, Vec3{0.0f, 0.0f, -1.0f}, Vec3{1.0f, 0.0f, 0.0f}, D * 0.5f};
-        walls_[3] = Wall{Vec3{-W * 0.5f, 0.0f, 0.0f}, Vec3{0.0f, 0.0f, 1.0f}, Vec3{-1.0f, 0.0f, 0.0f}, D * 0.5f};
+        switch (s_.style) {
+            case HouseStyle::HalfTimbered: roof_m_ = kHouseTile; roof_th_ = 0.14f; break;
+            case HouseStyle::Thatched: roof_m_ = kHouseThatch; roof_th_ = 0.38f; break;
+            default: roof_m_ = kHouseRoof; roof_th_ = 0.16f; break;
+        }
+        walls_ = housegeo::rectWalls(W, D);
 
         // --- Puertas y ventanas ---
         float win_w = 0.9f;
@@ -730,17 +697,18 @@ private:
             case HouseStyle::LogCabin: win_w = 0.85f; win_h = 1.0f; sill = 0.9f; break;
             case HouseStyle::StoneCottage: win_w = 0.8f; win_h = 1.05f; sill = 0.95f; break;
             case HouseStyle::Farmhouse: win_w = 0.85f; win_h = 1.45f; sill = 0.8f; break;
+            case HouseStyle::HalfTimbered: win_w = 0.8f; win_h = 1.1f; sill = 0.9f; break;
+            case HouseStyle::Thatched: win_w = 0.7f; win_h = 0.9f; sill = 0.9f; break;
             default: break;
         }
-        const float door_w = 1.0f;
+        const float door_w = s_.use == HouseUse::Tavern ? 1.1f : 1.0f;
         const float door_h = 2.1f;
-        const float storey = (top_ - plinth_) / static_cast<float>(floors);
         int slots = s_.windows > 0 ? s_.windows + 1 : std::max(2, static_cast<int>(std::round(W / 2.3f)));
         if (slots % 2 == 0 && s_.windows <= 0) slots += 1;
         const int door_slot = slots / 2;
         const float slot_w = W / static_cast<float>(slots);
-        for (int floor = 0; floor < floors; ++floor) {
-            const float base = plinth_ + storey * static_cast<float>(floor);
+        for (int floor = 0; floor < floors_; ++floor) {
+            const float base = plinth_ + storey_ * static_cast<float>(floor);
             // Delante: la puerta en el centro y ventanas.
             for (int i = 0; i < slots; ++i) {
                 const float s = -W * 0.5f + (static_cast<float>(i) + 0.5f) * slot_w;
@@ -786,6 +754,44 @@ private:
                 }
             }
         }
+
+        // --- Escaleras (una por planta de arriba) ---
+        if (s_.interior && floors_ >= 2) {
+            const float inset = innerInset() + 0.03f;
+            const float gx0 = -W * 0.5f + inset;
+            const float gz0 = -D * 0.5f + inset;
+            const float gx1 = W * 0.5f - inset;
+            const float gz1 = D * 0.5f - inset;
+            for (int f = 0; f + 1 < floors_; ++f) {
+                Flight fl;
+                fl.floor = f;
+                fl.rise = storey_;
+                fl.run = storey_ * 1.05f;
+                fl.width = 0.85f;
+                const float y = plinth_ + storey_ * static_cast<float>(f) + 0.03f;
+                // Casas muy pequenas: la escalera se empina hasta 50 grados; si
+                // ni asi cabe, esa planta queda sin escalera (forjado entero).
+                const float room = f % 2 == 0 ? gx1 - gx0 - 0.35f - 0.6f : gz1 - gz0 - 1.15f - 0.9f;
+                fl.run = std::min(fl.run, room);
+                if (fl.run < storey_ * 0.84f) break;
+                if (f % 2 == 0) {
+                    // Contra la pared de atras, sube hacia +X.
+                    const float x0 = gx0 + 0.35f;
+                    const float zc = gz0 + fl.width * 0.5f + 0.02f;
+                    fl.frame = frameAt(Vec3{x0, y, zc}, 1);
+                    fl.foot = {x0 - 0.3f, x0 + fl.run + 0.1f, gz0, gz0 + fl.width + 0.1f};
+                    fl.hole = {x0 - 0.05f, x0 + fl.run + 0.05f, gz0 - 0.03f, gz0 + fl.width + 0.08f};
+                } else {
+                    // Contra la pared de la izquierda, sube hacia +Z.
+                    const float xc = gx0 + fl.width * 0.5f + 0.02f;
+                    const float z0 = gz0 + 1.15f;
+                    fl.frame = frameAt(Vec3{xc, y, z0}, 0);
+                    fl.foot = {gx0, gx0 + fl.width + 0.1f, z0 - 0.3f, z0 + fl.run + 0.1f};
+                    fl.hole = {gx0, gx0 + fl.width + 0.08f, z0 - 0.05f, z0 + fl.run + 0.05f};
+                }
+                flights_.push_back(fl);
+            }
+        }
     }
 
     void foundation() {
@@ -793,7 +799,7 @@ private:
         const float hx = s_.width * 0.5f + margin;
         const float hz = s_.depth * 0.5f + margin;
         const float top = plinth_;
-        geo_.boxMinMax(kHouseStone, Vec3{-hx, -0.6f, -hz}, Vec3{hx, top, hz}, false, 4);
+        geo_.boxMinMax(kHouseStone, Vec3{-hx, -1.5f, -hz}, Vec3{hx, top, hz}, false, 4);
         // Suelo de tablas por dentro.
         const float in_x = s_.width * 0.5f - (logs() ? log_r_ * 0.7f : t_ * 0.5f);
         const float in_z = s_.depth * 0.5f - (logs() ? log_r_ * 0.7f : t_ * 0.5f);
@@ -859,88 +865,32 @@ private:
         }
     }
 
-    // --- Paredes planas (tablas, piedra, tablas solapadas) ---
-    void flatPanel(int m, const Wall& w, float s0, float s1, float y0, float y1, int wall) {
-        const float h = t_ * 0.5f;
-        std::vector<float> xs = {s0, s1};
-        std::vector<float> ys = {y0, y1};
-        std::vector<const Opening*> holes;
-        for (const Opening& o : openings_) {
-            if (o.wall != wall) continue;
-            holes.push_back(&o);
-            xs.push_back(o.s0);
-            xs.push_back(o.s1);
-            ys.push_back(std::clamp(o.y0, y0, y1));
-            ys.push_back(std::clamp(o.y1, y0, y1));
-        }
-        std::sort(xs.begin(), xs.end());
-        xs.erase(std::unique(xs.begin(), xs.end()), xs.end());
-        std::sort(ys.begin(), ys.end());
-        ys.erase(std::unique(ys.begin(), ys.end()), ys.end());
-        const Vec3 sv = kUp * -1.0f;
-        for (std::size_t i = 0; i + 1 < xs.size(); ++i) {
-            for (std::size_t j = 0; j + 1 < ys.size(); ++j) {
-                const float cx = (xs[i] + xs[i + 1]) * 0.5f;
-                const float cy = (ys[j] + ys[j + 1]) * 0.5f;
-                bool hole = false;
-                for (const Opening* o : holes) hole = hole || (cx > o->s0 && cx < o->s1 && cy > o->y0 && cy < o->y1);
-                if (hole) continue;
-                for (int side = 0; side < 2; ++side) {
-                    const float d = side == 0 ? h : -h;
-                    const Vec3 n = w.out * (side == 0 ? 1.0f : -1.0f);
-                    geo_.flat(m,
-                              {at(w, xs[i], ys[j], d), at(w, xs[i + 1], ys[j], d), at(w, xs[i + 1], ys[j + 1], d),
-                               at(w, xs[i], ys[j + 1], d)},
-                              n, w.along, sv);
-                }
-            }
-        }
-        // Mochetas de los huecos (el grosor de la pared).
-        for (const Opening* o : holes) {
-            const float ya = std::max(o->y0, y0);
-            const float yb = std::min(o->y1, y1);
-            if (yb <= ya) continue;
-            geo_.flat(m, {at(w, o->s0, ya, h), at(w, o->s0, ya, -h), at(w, o->s0, yb, -h), at(w, o->s0, yb, h)}, w.along,
-                      w.out, sv);
-            geo_.flat(m, {at(w, o->s1, ya, h), at(w, o->s1, ya, -h), at(w, o->s1, yb, -h), at(w, o->s1, yb, h)},
-                      w.along * -1.0f, w.out, sv);
-            if (o->y1 <= y1) {
-                geo_.flat(m, {at(w, o->s0, o->y1, h), at(w, o->s1, o->y1, h), at(w, o->s1, o->y1, -h), at(w, o->s0, o->y1, -h)},
-                          kUp * -1.0f, w.along, w.out);
-            }
-            if (o->y0 >= y0 && !o->door) {
-                geo_.flat(m, {at(w, o->s0, o->y0, h), at(w, o->s1, o->y0, h), at(w, o->s1, o->y0, -h), at(w, o->s0, o->y0, -h)},
-                          kUp, w.along, w.out);
-            }
-        }
-        // Remate de arriba y cantos de los extremos.
-        geo_.flat(m, {at(w, s0, y1, h), at(w, s1, y1, h), at(w, s1, y1, -h), at(w, s0, y1, -h)}, kUp, w.along, w.out);
-        geo_.flat(m, {at(w, s0, y0, h), at(w, s0, y0, -h), at(w, s0, y1, -h), at(w, s0, y1, h)}, w.along * -1.0f, w.out, sv);
-        geo_.flat(m, {at(w, s1, y0, h), at(w, s1, y0, -h), at(w, s1, y1, -h), at(w, s1, y1, h)}, w.along, w.out, sv);
-    }
-
+    // --- Paredes planas (tablas, piedra, tablas solapadas, enlucido) ---
     void flatWalls() {
         const int m = wallMaterial();
+        const int im = innerMaterial();
         const float W = s_.width;
         const float D = s_.depth;
         // Delante y atras de esquina a esquina; los lados entre medias.
         for (int w = 0; w < 4; ++w) {
             const Wall& wall = walls_[static_cast<std::size_t>(w)];
             const float half = w < 2 ? W * 0.5f + t_ * 0.5f : D * 0.5f - t_ * 0.5f;
-            flatPanel(m, wall, -half, half, plinth_, top_, w);
-        }
-        // Hastiales (triangulos bajo el tejado) en los lados.
-        for (int w = 2; w < 4; ++w) {
-            const Wall& wall = walls_[static_cast<std::size_t>(w)];
-            for (int side = 0; side < 2; ++side) {
-                const float d = side == 0 ? t_ * 0.5f : -t_ * 0.5f;
-                const Vec3 n = wall.out * (side == 0 ? 1.0f : -1.0f);
-                geo_.flat(m, {at(wall, -zo_, top_, d), at(wall, zo_, top_, d), at(wall, 0.0f, ridge_, d)}, n, wall.along,
-                          kUp * -1.0f);
+            if (jettied()) {
+                // Planta baja de piedra; las de arriba, de entramado, vuelan
+                // delante y detras sobre la calle.
+                housegeo::wallPanel(geo_, kHouseStone, wall, -half, half, plinth_, upperBase(), t_, openings_, w, true, true, im);
+                const float upper_half = w < 2 ? half : D * 0.5f + jetty_ - t_ * 0.5f;
+                housegeo::wallPanel(geo_, kHousePlaster, upperWall(w), -upper_half, upper_half, upperBase(), top_, t_, openings_, w,
+                                    true, true, im);
+            } else {
+                housegeo::wallPanel(geo_, m, wall, -half, half, plinth_, top_, t_, openings_, w, true, true, im);
             }
         }
+        // Hastiales (triangulos bajo el tejado) en los lados.
+        const int gm = framed() ? kHousePlaster : m;
+        for (int w = 2; w < 4; ++w) housegeo::gableWall(geo_, gm, walls_[static_cast<std::size_t>(w)], zo_, top_, ridge_, t_, im);
         // Esquineras (tablas y casa de campo) y la faja entre plantas.
-        if (s_.style != HouseStyle::StoneCottage) {
+        if (s_.style == HouseStyle::TimberCabin || s_.style == HouseStyle::Farmhouse) {
             const int cm = s_.style == HouseStyle::Farmhouse ? kHouseTrim : kHousePlanks;
             const auto span = [](float a, float b) { return std::pair<float, float>{std::min(a, b), std::max(a, b)}; };
             for (float sx : {-1.0f, 1.0f}) {
@@ -954,29 +904,145 @@ private:
                     geo_.boxMinMax(cm, Vec3{x.first, plinth_, z.first}, Vec3{x.second, top_, z.second});
                 }
             }
-            if (s_.floors >= 2) {
-                const float y = plinth_ + (top_ - plinth_) * 0.5f;
+            for (int f = 1; f < floors_; ++f) {
+                const float y = plinth_ + storey_ * static_cast<float>(f);
                 geo_.boxMinMax(cm, Vec3{-xo_ - 0.02f, y - 0.08f, zo_}, Vec3{xo_ + 0.02f, y + 0.08f, zo_ + 0.03f});
                 geo_.boxMinMax(cm, Vec3{-xo_ - 0.02f, y - 0.08f, -zo_ - 0.03f}, Vec3{xo_ + 0.02f, y + 0.08f, -zo_});
                 geo_.boxMinMax(cm, Vec3{xo_, y - 0.08f, -zo_}, Vec3{xo_ + 0.03f, y + 0.08f, zo_});
                 geo_.boxMinMax(cm, Vec3{-xo_ - 0.03f, y - 0.08f, -zo_}, Vec3{-xo_, y + 0.08f, zo_});
-                // Suelo de la planta de arriba.
-                geo_.boxMinMax(kHousePlanks, Vec3{-xo_ + t_, y - 0.1f, -zo_ + t_}, Vec3{xo_ - t_, y + 0.05f, zo_ - t_}, true);
             }
         }
     }
 
-    // Caja en coordenadas de una pared (s, y, d): de lo a hi.
-    void wallBox(Geo& g, int m, const Wall& w, float s0, float s1, float y0, float y1, float d0, float d1,
-                 bool rotate = false) {
-        const Vec3 c = at(w, (s0 + s1) * 0.5f, (y0 + y1) * 0.5f, (d0 + d1) * 0.5f);
-        g.box(m, c, Vec3{std::abs(s1 - s0) * 0.5f, std::abs(y1 - y0) * 0.5f, std::abs(d1 - d0) * 0.5f}, w.along, kUp,
-              w.out, rotate);
+    // --- Entramado: vigas oscuras sobre el enlucido (soleras, postes, pies
+    // derechos junto a los huecos, travesanos y tornapuntas en cruz) ---
+    void timberFrame() {
+        const float d0 = t_ * 0.5f - 0.01f;
+        const float d1 = t_ * 0.5f + 0.035f;
+        const float bw = 0.17f;
+        const int first = jettied() ? 1 : 0;
+        for (int w = 0; w < 4; ++w) {
+            const Wall wall = upperWall(w);
+            const float half = w < 2 ? xo_ : zo_ - t_;
+            for (int f = first; f < floors_; ++f) {
+                const float yb = plinth_ + storey_ * static_cast<float>(f);
+                const float yt = f + 1 == floors_ ? top_ : yb + storey_;
+                // Solera y carrera.
+                housegeo::wallBox(geo_, kHouseBeams, wall, -half, half, yb, yb + bw, d0, d1 + 0.01f);
+                housegeo::wallBox(geo_, kHouseBeams, wall, -half, half, yt - bw, yt, d0, d1 + 0.01f);
+                // Pies derechos: esquinas y a los lados de cada hueco de esta planta.
+                std::vector<const Opening*> holes;
+                for (const Opening& o : openings_) {
+                    if (o.wall == w && o.y0 >= yb - 1e-3f && o.y0 < yt) holes.push_back(&o);
+                }
+                std::vector<float> posts = {-half + bw * 0.5f, half - bw * 0.5f};
+                for (const Opening* o : holes) {
+                    posts.push_back(o->s0 - bw * 0.5f);
+                    posts.push_back(o->s1 + bw * 0.5f);
+                }
+                std::sort(posts.begin(), posts.end());
+                std::vector<float> merged;
+                for (float p : posts) {
+                    if (p < -half + bw * 0.5f - 1e-3f || p > half - bw * 0.5f + 1e-3f) continue;
+                    if (merged.empty() || p - merged.back() > bw * 1.3f) merged.push_back(p);
+                }
+                const auto bay_has_hole = [&](float a, float b) {
+                    for (const Opening* o : holes) {
+                        if (o->s0 < b - 1e-3f && o->s1 > a + 1e-3f) return true;
+                    }
+                    return false;
+                };
+                // Mas pies derechos en los panos anchos sin huecos.
+                std::vector<float> all;
+                for (std::size_t i = 0; i < merged.size(); ++i) {
+                    all.push_back(merged[i]);
+                    if (i + 1 < merged.size() && !bay_has_hole(merged[i], merged[i + 1])) {
+                        const float gap = merged[i + 1] - merged[i];
+                        const int extra = static_cast<int>(std::ceil(gap / 1.25f)) - 1;
+                        for (int k = 1; k <= extra; ++k) all.push_back(merged[i] + gap * static_cast<float>(k) / static_cast<float>(extra + 1));
+                    }
+                }
+                std::sort(all.begin(), all.end());
+                for (float p : all) housegeo::wallBox(geo_, kHouseBeams, wall, p - bw * 0.5f, p + bw * 0.5f, yb + bw, yt - bw, d0, d1);
+                // Panos: tornapuntas en los de las esquinas, travesano en los demas.
+                const float dm = (d0 + d1) * 0.5f;
+                for (std::size_t i = 0; i + 1 < all.size(); ++i) {
+                    const float a = all[i] + bw * 0.5f;
+                    const float b = all[i + 1] - bw * 0.5f;
+                    if (b - a < 0.35f) continue;
+                    if (bay_has_hole(a, b)) {
+                        // Dintel y antepecho del hueco entre sus pies derechos.
+                        for (const Opening* o : holes) {
+                            if (!(o->s0 < b && o->s1 > a)) continue;
+                            if (o->y1 + bw < yt - bw) housegeo::wallBox(geo_, kHouseBeams, wall, a, b, o->y1, o->y1 + bw * 0.8f, d0, d1);
+                            if (!o->door && o->y0 - bw > yb + bw) {
+                                housegeo::wallBox(geo_, kHouseBeams, wall, a, b, o->y0 - bw * 0.8f, o->y0, d0, d1);
+                            }
+                        }
+                        continue;
+                    }
+                    const bool end_bay = i == 0 || i + 2 == all.size();
+                    if (end_bay || rng_.chance(0.35f)) {
+                        const bool rising = (i == 0) != (rng_.chance(0.5f) && !end_bay);
+                        const float ya = yb + bw;
+                        const float yb2 = yt - bw;
+                        const Vec3 p0 = at(wall, rising ? a : b, ya, dm);
+                        const Vec3 p1 = at(wall, rising ? b : a, yb2, dm);
+                        geo_.beam(kHouseBeams, p0, p1, 0.14f, 0.045f, wall.out);
+                    } else {
+                        const float ym = yb + (yt - yb) * 0.5f;
+                        housegeo::wallBox(geo_, kHouseBeams, wall, a, b, ym - bw * 0.4f, ym + bw * 0.4f, d0, d1);
+                    }
+                }
+            }
+        }
+        // Hastiales: pendolon, nudillo y jabalcones.
+        for (int w = 2; w < 4; ++w) {
+            const Wall& wall = walls_[static_cast<std::size_t>(w)];
+            const float rise = ridge_ - top_;
+            housegeo::wallBox(geo_, kHouseBeams, wall, -bw * 0.5f, bw * 0.5f, top_, ridge_ - 0.25f, d0, d1);
+            const float yc = top_ + rise * 0.45f;
+            const float hc = zo_ * (1.0f - 0.45f) - 0.12f;
+            housegeo::wallBox(geo_, kHouseBeams, wall, -hc, hc, yc - bw * 0.4f, yc + bw * 0.4f, d0, d1);
+            const float dm = (d0 + d1) * 0.5f;
+            for (float sx : {-1.0f, 1.0f}) {
+                geo_.beam(kHouseBeams, at(wall, sx * zo_ * 0.62f, top_ + 0.05f, dm), at(wall, sx * 0.12f, yc - 0.05f, dm), 0.13f, 0.045f,
+                          wall.out);
+            }
+        }
+        // Vuelo: cabezas de las vigas del forjado bajo las plantas altas.
+        if (jettied()) {
+            for (int f = 1; f < floors_; ++f) {
+                const float y = plinth_ + storey_ * static_cast<float>(f);
+                for (float side : {1.0f, -1.0f}) {
+                    const float z_in = side * (s_.depth * 0.5f + t_ * 0.5f - 0.05f);
+                    const float z_out = side * (s_.depth * 0.5f + t_ * 0.5f + jetty_ + 0.06f);
+                    for (float x = -s_.width * 0.5f + 0.2f; x <= s_.width * 0.5f - 0.15f; x += 0.55f) {
+                        geo_.boxMinMax(kHouseBeams, Vec3{x - 0.07f, y - 0.2f, std::min(z_in, z_out)}, Vec3{x + 0.07f, y, std::max(z_in, z_out)},
+                                       true);
+                    }
+                    // Viga de borde bajo la pared que vuela.
+                    geo_.boxMinMax(kHouseBeams, Vec3{-xo_, y - 0.22f, std::min(z_out - side * 0.14f, z_out)},
+                                   Vec3{xo_, y - 0.02f, std::max(z_out - side * 0.14f, z_out)});
+                }
+            }
+        }
     }
 
     float outerFace() const { return logs() ? log_r_ : t_ * 0.5f; }
 
+    void wallBox(Geo& g, int m, const Wall& w, float s0, float s1, float y0, float y1, float d0, float d1,
+                 bool rotate = false) {
+        housegeo::wallBox(g, m, w, s0, s1, y0, y1, d0, d1, rotate);
+    }
+
     void window(const Opening& o) {
+        if (framed()) {
+            const Wall w = wallOf(o);
+            const bool stone = jettied() && o.y0 < upperBase();
+            housegeo::windowFrame(geo_, w, o, t_, outerFace(), stone, s_.shutters, kHouseBeams);
+            return;
+        }
         const Wall& w = walls_[static_cast<std::size_t>(o.wall)];
         const float h = t_ * 0.5f;
         const float face = outerFace();
@@ -1037,18 +1103,21 @@ private:
         const float fw = 0.08f;
         const float fd0 = -h - 0.01f;
         const float fd1 = h + 0.02f;
-        wallBox(geo_, kHouseTrim, w, o.s0, o.s0 + fw, o.y0, o.y1, fd0, fd1);
-        wallBox(geo_, kHouseTrim, w, o.s1 - fw, o.s1, o.y0, o.y1, fd0, fd1);
-        wallBox(geo_, kHouseTrim, w, o.s0, o.s1, o.y1 - fw, o.y1, fd0, fd1);
+        const int fm = frameMaterial();
+        const bool stone = s_.style == HouseStyle::StoneCottage || jettied();
+        wallBox(geo_, fm, w, o.s0, o.s0 + fw, o.y0, o.y1, fd0, fd1);
+        wallBox(geo_, fm, w, o.s1 - fw, o.s1, o.y0, o.y1, fd0, fd1);
+        wallBox(geo_, fm, w, o.s0, o.s1, o.y1 - fw, o.y1, fd0, fd1);
         wallBox(geo_, kHousePlanks, w, o.s0, o.s1, o.y0, o.y0 + 0.035f, fd0, face + 0.04f, true);  // umbral
-        if (s_.style == HouseStyle::StoneCottage) {
-            wallBox(geo_, kHousePlanks, w, o.s0 - 0.2f, o.s1 + 0.2f, o.y1, o.y1 + 0.22f, -h + 0.01f, h + 0.01f, true);
+        if (stone) {
+            wallBox(geo_, jettied() ? kHouseBeams : kHousePlanks, w, o.s0 - 0.2f, o.s1 + 0.2f, o.y1, o.y1 + 0.22f, -h + 0.01f,
+                    h + 0.01f, true);
         } else {
             const float cd0 = face - 0.01f;
             const float cd1 = face + 0.03f;
-            wallBox(geo_, kHouseTrim, w, o.s0 - 0.1f, o.s0, o.y0, o.y1, cd0, cd1);
-            wallBox(geo_, kHouseTrim, w, o.s1, o.s1 + 0.1f, o.y0, o.y1, cd0, cd1);
-            wallBox(geo_, kHouseTrim, w, o.s0 - 0.13f, o.s1 + 0.13f, o.y1, o.y1 + 0.14f, cd0, cd1 + 0.01f);
+            wallBox(geo_, fm, w, o.s0 - 0.1f, o.s0, o.y0, o.y1, cd0, cd1);
+            wallBox(geo_, fm, w, o.s1, o.s1 + 0.1f, o.y0, o.y1, cd0, cd1);
+            wallBox(geo_, fm, w, o.s0 - 0.13f, o.s1 + 0.13f, o.y1, o.y1 + 0.14f, cd0, cd1 + 0.01f);
         }
         // La hoja: pieza aparte con la bisagra en su origen (lado izquierdo).
         const float dw = (o.s1 - o.s0) - 2.0f * fw - 0.01f;
@@ -1057,29 +1126,77 @@ private:
         const float hinge_d = h - thick * 0.5f - 0.02f;
         door_hinge_ = at(w, o.s0 + fw + 0.005f, o.y0 + 0.035f, hinge_d);
         door_size_ = Vec3{dw, dh, thick};
-        const Vec3 X{1.0f, 0.0f, 0.0f};
-        const Vec3 Z{0.0f, 0.0f, 1.0f};
-        door_geo_.box(kHousePlanks, Vec3{dw * 0.5f, dh * 0.5f, 0.0f}, Vec3{dw * 0.5f, dh * 0.5f, thick * 0.5f}, X, kUp, Z);
-        // Travesanos por fuera (puerta de tablas) y herrajes.
-        for (float yy : {0.35f, dh - 0.35f}) {
-            door_geo_.box(kHousePlanks, Vec3{dw * 0.5f, yy, thick * 0.5f + 0.012f}, Vec3{dw * 0.5f - 0.03f, 0.07f, 0.012f},
-                          X, kUp, Z, true);
-            door_geo_.box(kHouseIron, Vec3{dw * 0.3f, yy, thick * 0.5f + 0.027f}, Vec3{dw * 0.3f, 0.022f, 0.004f}, X, kUp, Z);
-        }
-        door_geo_.box(kHousePlanks, Vec3{dw * 0.5f, dh * 0.5f, thick * 0.5f + 0.012f}, Vec3{0.07f, dh * 0.5f - 0.42f, 0.012f},
-                      X, kUp, Z);
-        for (float side : {1.0f, -1.0f}) {
-            const float z = side * (thick * 0.5f + 0.03f);
-            door_geo_.box(kHouseIron, Vec3{dw - 0.1f, 1.0f, z}, Vec3{0.012f, 0.09f, 0.012f}, X, kUp, Z);
-            door_geo_.box(kHouseIron, Vec3{dw - 0.1f, 1.0f, z * 0.8f}, Vec3{0.03f, 0.03f, 0.008f}, X, kUp, Z);
+        housegeo::doorLeaf(door_geo_, dw, dh);
+    }
+
+    // --- Forjados de las plantas altas (con el hueco de la escalera) ---
+    void upperFloors() {
+        if (floors_ < 2) return;
+        const float inset = innerInset();
+        const float x0 = -s_.width * 0.5f + inset;
+        const float x1 = -x0;
+        for (int f = 1; f < floors_; ++f) {
+            const float y = plinth_ + storey_ * static_cast<float>(f);
+            const float zz = s_.depth * 0.5f + jetty_ - inset;
+            const float z0 = -zz;
+            const float z1 = zz;
+            const Flight* fl = nullptr;
+            for (const Flight& candidate : flights_) {
+                if (candidate.floor + 1 == f) fl = &candidate;
+            }
+            const auto slab = [&](float ax0, float ax1, float az0, float az1) {
+                if (ax1 - ax0 < 0.02f || az1 - az0 < 0.02f) return;
+                geo_.boxMinMax(kHousePlanks, Vec3{ax0, y - 0.12f, az0}, Vec3{ax1, y + 0.03f, az1}, true);
+            };
+            if (fl == nullptr) {
+                slab(x0, x1, z0, z1);
+            } else {
+                const float hx0 = std::clamp(fl->hole[0], x0, x1);
+                const float hx1 = std::clamp(fl->hole[1], x0, x1);
+                const float hz0 = std::clamp(fl->hole[2], z0, z1);
+                const float hz1 = std::clamp(fl->hole[3], z0, z1);
+                slab(x0, hx0, z0, z1);
+                slab(hx1, x1, z0, z1);
+                slab(hx0, hx1, z0, hz0);
+                slab(hx0, hx1, hz1, z1);
+                // Barandilla alrededor del hueco (menos por donde se llega).
+                const bool along_x = fl->floor % 2 == 0;
+                const float ry = y + 0.03f;
+                const auto rail = [&](const Vec3& a, const Vec3& b) {
+                    geo_.beam(kHouseBeams, a + kUp * (ry + 0.9f), b + kUp * (ry + 0.9f), 0.07f, 0.07f);
+                    const Vec3 d = b - a;
+                    const float len = core::length(d);
+                    const int n = std::max(1, static_cast<int>(len / 0.9f));
+                    for (int i = 0; i <= n; ++i) {
+                        const Vec3 p = a + d * (static_cast<float>(i) / static_cast<float>(n));
+                        geo_.boxMinMax(kHouseBeams, Vec3{p.x - 0.035f, ry, p.z - 0.035f}, Vec3{p.x + 0.035f, ry + 0.9f, p.z + 0.035f});
+                    }
+                };
+                if (along_x) {
+                    rail(Vec3{hx0, 0.0f, hz1 + 0.04f}, Vec3{hx1, 0.0f, hz1 + 0.04f});
+                    rail(Vec3{hx0 - 0.04f, 0.0f, hz0}, Vec3{hx0 - 0.04f, 0.0f, hz1 + 0.04f});
+                } else {
+                    rail(Vec3{hx1 + 0.04f, 0.0f, hz0}, Vec3{hx1 + 0.04f, 0.0f, hz1});
+                    rail(Vec3{hx0, 0.0f, hz0 - 0.04f}, Vec3{hx1 + 0.04f, 0.0f, hz0 - 0.04f});
+                }
+                // La escalera.
+                housegeo::stairs(geo_, fl->frame, fl->rise, fl->run, fl->width);
+            }
+            // Vigas del forjado vistas desde abajo (a lo largo de Z).
+            for (float x = x0 + 0.5f; x < x1 - 0.3f; x += 1.15f) {
+                if (fl != nullptr && x > fl->hole[0] - 0.1f && x < fl->hole[1] + 0.1f) continue;
+                geo_.boxMinMax(kHouseBeams, Vec3{x - 0.08f, y - 0.3f, z0}, Vec3{x + 0.08f, y - 0.12f, z1}, true);
+            }
         }
     }
 
-    // --- Tejado a dos aguas: tablillas, sofito de tablas, frentes y cumbrera ---
+    // --- Tejado a dos aguas: tablillas, teja o paja, sofito, frentes y cumbrera ---
     void roof() {
         const float ov = std::max(s_.roof_overhang, 0.2f);
         const float ovg = logs() ? std::max(ov * 0.7f, 0.45f) + log_ext_ : ov * 0.7f;
-        const float th = 0.16f;
+        const float th = roof_th_;
+        const bool thatch = roof_m_ == kHouseThatch;
+        const int fascia = thatch ? kHouseThatch : kHouseTrim;
         const float x0 = -xo_ - ovg;
         const float x1 = xo_ + ovg;
         const float ze = zo_ + ov;
@@ -1092,36 +1209,44 @@ private:
             const Vec3 e0{x0, ye, ze * side};
             const Vec3 e1{x1, ye, ze * side};
             const Vec3 down = core::normalize(e0 - r0);
-            // Arriba: V baja por la pendiente (las hileras de tablillas en horizontal).
+            // Arriba: V baja por la pendiente (las hileras en horizontal).
             const float slope = core::length(e0 - r0);
-            const std::array<float, 2> rm = houseTextureMeters(kHouseRoof);
+            const std::array<float, 2> rm = houseTextureMeters(roof_m_);
             const float vo = side > 0.0f ? 0.0f : 0.37f;
-            geo_.polygon(kHouseRoof, {r0 + up, r1 + up, e1 + up, e0 + up}, {n, n, n, n},
+            geo_.polygon(roof_m_, {r0 + up, r1 + up, e1 + up, e0 + up}, {n, n, n, n},
                          {Vec2{x0 / rm[0], vo}, Vec2{x1 / rm[0], vo}, Vec2{x1 / rm[0], vo + slope / rm[1]},
                           Vec2{x0 / rm[0], vo + slope / rm[1]}},
                          n);
             // Abajo: tablas del sofito (a lo largo de la pendiente).
-            geo_.flat(kHousePlanks, {r0, r1, e1, e0}, n * -1.0f, Vec3{1.0f, 0.0f, 0.0f}, down, Vec2{0.0f, 0.0f});
+            geo_.flat(kHousePlanks, {r0, r1, e1, e0}, n * -1.0f, kX, down, Vec2{0.0f, 0.0f});
             // Frente del alero y cantos de los hastiales.
             const Vec3 fz{0.0f, 0.0f, side};
-            geo_.flat(kHouseTrim, {e0, e1, e1 + up, e0 + up}, fz, Vec3{1.0f, 0.0f, 0.0f}, kUp * -1.0f);
+            geo_.flat(fascia, {e0, e1, e1 + up, e0 + up}, fz, kX, kUp * -1.0f);
             for (float xs : {-1.0f, 1.0f}) {
                 const float x = xs < 0.0f ? x0 : x1;
                 const Vec3 a{x, ridge_, 0.0f};
                 const Vec3 b{x, ye, ze * side};
-                // Tabla de canto (barge board): un poco mas ancha que el tejado.
-                const Vec3 c = (a + b) * 0.5f + up * 0.5f - n * 0.05f + Vec3{xs * 0.02f, 0.0f, 0.0f};
-                geo_.box(kHouseTrim, c, Vec3{0.025f, th * 0.5f + 0.06f, core::length(b - a) * 0.5f + 0.02f},
-                         Vec3{1.0f, 0.0f, 0.0f}, n, down, true);
+                if (thatch) {
+                    // La paja termina en un canto grueso.
+                    geo_.flat(kHouseThatch, {a, b, b + up, a + up}, Vec3{xs, 0.0f, 0.0f}, kZ, kUp * -1.0f);
+                } else {
+                    // Tabla de canto (barge board): un poco mas ancha que el tejado.
+                    const Vec3 c = (a + b) * 0.5f + up * 0.5f - n * 0.05f + Vec3{xs * 0.02f, 0.0f, 0.0f};
+                    geo_.box(frameMaterial() == kHouseBeams ? kHouseBeams : kHouseTrim, c,
+                             Vec3{0.025f, th * 0.5f + 0.06f, core::length(b - a) * 0.5f + 0.02f}, kX, n, down, true);
+                }
             }
         }
         // Cumbrera.
         const float top = ridge_ + th * std::sqrt(1.0f + tan_ * tan_);
-        const float d = 0.13f;
-        const Vec3 ax{1.0f, 0.0f, 0.0f};
-        const Vec3 ay = core::normalize(Vec3{0.0f, 1.0f, 1.0f});
-        const Vec3 az = core::normalize(Vec3{0.0f, -1.0f, 1.0f});
-        geo_.box(kHouseRoof, Vec3{0.0f, top - d * 0.35f, 0.0f}, Vec3{(x1 - x0) * 0.5f + 0.03f, d, d}, ax, ay, az, false, 0);
+        if (thatch) {
+            geo_.cylinder(kHouseThatch, Vec3{x0 + 0.05f, top - 0.12f, 0.0f}, Vec3{x1 - 0.05f, top - 0.12f, 0.0f}, 0.26f, 10, true, true);
+        } else {
+            const float d = 0.13f;
+            const Vec3 ay = core::normalize(Vec3{0.0f, 1.0f, 1.0f});
+            const Vec3 az = core::normalize(Vec3{0.0f, -1.0f, 1.0f});
+            geo_.box(roof_m_, Vec3{0.0f, top - d * 0.35f, 0.0f}, Vec3{(x1 - x0) * 0.5f + 0.03f, d, d}, kX, ay, az, false, 0);
+        }
     }
 
     void porch() {
@@ -1134,9 +1259,9 @@ private:
         // Tarima (tablas a lo largo) y faldon.
         geo_.boxMinMax(kHousePlanks, Vec3{-hx, deck - 0.08f, z0}, Vec3{hx, deck, z1}, true);
         const int skirt = s_.style == HouseStyle::StoneCottage ? kHouseStone : kHousePlanks;
-        geo_.boxMinMax(skirt, Vec3{-hx + 0.05f, -0.4f, z1 - 0.12f}, Vec3{hx - 0.05f, deck - 0.08f, z1 - 0.06f}, false, 4);
-        geo_.boxMinMax(skirt, Vec3{-hx + 0.05f, -0.4f, z0}, Vec3{-hx + 0.11f, deck - 0.08f, z1 - 0.06f}, false, 4);
-        geo_.boxMinMax(skirt, Vec3{hx - 0.11f, -0.4f, z0}, Vec3{hx - 0.05f, deck - 0.08f, z1 - 0.06f}, false, 4);
+        geo_.boxMinMax(skirt, Vec3{-hx + 0.05f, -1.0f, z1 - 0.12f}, Vec3{hx - 0.05f, deck - 0.08f, z1 - 0.06f}, false, 4);
+        geo_.boxMinMax(skirt, Vec3{-hx + 0.05f, -1.0f, z0}, Vec3{-hx + 0.11f, deck - 0.08f, z1 - 0.06f}, false, 4);
+        geo_.boxMinMax(skirt, Vec3{hx - 0.11f, -1.0f, z0}, Vec3{hx - 0.05f, deck - 0.08f, z1 - 0.06f}, false, 4);
         // Tejadillo: pendiente suave; empieza en la pared o sobre el tejado.
         const float t12 = std::tan(14.0f * kPi / 180.0f);
         const float zp = z1 - 0.15f;
@@ -1146,7 +1271,7 @@ private:
         const auto under = [&](float z) { return under_at_post + (zp - z) * t12; };
         const float th = 0.12f;
         const float sec12 = std::sqrt(1.0f + t12 * t12);
-        const float main_top_ridge = ridge_ + 0.16f * std::sqrt(1.0f + tan_ * tan_);
+        const float main_top_ridge = ridge_ + roof_th_ * std::sqrt(1.0f + tan_ * tan_);
         // Donde la cara de arriba del tejadillo toca la del tejado principal.
         float zs = (main_top_ridge - under_at_post - zp * t12 - th * sec12 + 0.03f) / (tan_ - t12);
         const float main_eave = zo_ + std::max(s_.roof_overhang, 0.2f);
@@ -1170,13 +1295,13 @@ private:
                      {Vec2{x0 / rm[0], 0.1f}, Vec2{x1 / rm[0], 0.1f}, Vec2{x1 / rm[0], 0.1f + slope / rm[1]},
                       Vec2{x0 / rm[0], 0.1f + slope / rm[1]}},
                      n);
-        geo_.flat(kHousePlanks, {a0, a1, b1, b0}, n * -1.0f, Vec3{1.0f, 0.0f, 0.0f}, down);
-        geo_.flat(kHouseTrim, {b0, b1, b1 + up, b0 + up}, Vec3{0.0f, 0.0f, 1.0f}, Vec3{1.0f, 0.0f, 0.0f}, kUp * -1.0f);
+        geo_.flat(kHousePlanks, {a0, a1, b1, b0}, n * -1.0f, kX, down);
+        geo_.flat(kHouseTrim, {b0, b1, b1 + up, b0 + up}, kZ, kX, kUp * -1.0f);
         for (float x : {x0, x1}) {
             const float xs = x < 0.0f ? -1.0f : 1.0f;
             geo_.flat(kHouseTrim, {a0 + Vec3{x - x0, 0.0f, 0.0f}, b0 + Vec3{x - x0, 0.0f, 0.0f}, b0 + up + Vec3{x - x0, 0.0f, 0.0f},
                                    a0 + up + Vec3{x - x0, 0.0f, 0.0f}},
-                      Vec3{xs, 0.0f, 0.0f}, Vec3{0.0f, 0.0f, 1.0f}, kUp * -1.0f);
+                      Vec3{xs, 0.0f, 0.0f}, kZ, kUp * -1.0f);
         }
         // Viga y postes.
         if (logs()) {
@@ -1238,16 +1363,16 @@ private:
     void steps(const Vec3& top, float width) {
         const int count = std::max(1, static_cast<int>(std::ceil(top.y / 0.19f)) - 1);
         const float rise = top.y / static_cast<float>(count + 1);
-        const int m = s_.style == HouseStyle::StoneCottage || s_.style == HouseStyle::Farmhouse ? kHouseStone : kHousePlanks;
+        const int m = s_.style == HouseStyle::TimberCabin || logs() ? kHousePlanks : kHouseStone;
         for (int i = 0; i < count; ++i) {
             const float y1 = top.y - rise * static_cast<float>(i + 1);
             const float z0 = top.z + 0.3f * static_cast<float>(i);
-            geo_.boxMinMax(m, Vec3{top.x - width * 0.5f, -0.3f, z0 - 0.02f}, Vec3{top.x + width * 0.5f, y1, z0 + 0.3f}, true, 4);
+            geo_.boxMinMax(m, Vec3{top.x - width * 0.5f, -1.0f, z0 - 0.02f}, Vec3{top.x + width * 0.5f, y1, z0 + 0.3f}, true, 4);
         }
     }
 
     void frontSteps() {
-        const float z = logs() ? zo_ + 0.05f : zo_;
+        const float z = s_.depth * 0.5f + outerFace() + (logs() ? 0.05f : 0.0f);
         steps(Vec3{door_s_, plinth_, z}, 1.3f);
     }
 
@@ -1259,9 +1384,9 @@ private:
         const float shoulder = top_ - 0.5f;
         const float stack_w = 0.72f;
         const float stack_d = 0.55f;
-        const float stack_top = ridge_ + 0.16f * std::sqrt(1.0f + tan_ * tan_) + 0.9f;
+        const float stack_top = ridge_ + roof_th_ * std::sqrt(1.0f + tan_ * tan_) + 0.9f;
         const float xc = xb + base_d * 0.5f;
-        geo_.boxMinMax(kHouseStone, Vec3{xb, -0.4f, -base_w * 0.5f}, Vec3{xb + base_d, shoulder, base_w * 0.5f}, false, 4);
+        geo_.boxMinMax(kHouseStone, Vec3{xb, -1.2f, -base_w * 0.5f}, Vec3{xb + base_d, shoulder, base_w * 0.5f}, false, 4);
         // Hombros inclinados (se estrecha).
         const float sh = 0.45f;
         geo_.boxMinMax(kHouseStone, Vec3{xc - stack_d * 0.5f - 0.1f, shoulder, -stack_w * 0.5f - 0.12f},
@@ -1275,7 +1400,7 @@ private:
         geo_.flat(kHouseIron,
                   {Vec3{xc - ri, stack_top + 0.1f, -ri * 1.3f}, Vec3{xc + ri, stack_top + 0.1f, -ri * 1.3f},
                    Vec3{xc + ri, stack_top + 0.1f, ri * 1.3f}, Vec3{xc - ri, stack_top + 0.1f, ri * 1.3f}},
-                  kUp, Vec3{1.0f, 0.0f, 0.0f}, Vec3{0.0f, 0.0f, 1.0f});
+                  kUp, kX, kZ);
         std::vector<Vec3> ring = {
             Vec3{xc - stack_d * 0.5f - 0.06f, stack_top + 0.1f, -stack_w * 0.5f - 0.06f},
             Vec3{xc + stack_d * 0.5f + 0.06f, stack_top + 0.1f, -stack_w * 0.5f - 0.06f},
@@ -1283,21 +1408,401 @@ private:
             Vec3{xc - stack_d * 0.5f - 0.06f, stack_top + 0.1f, stack_w * 0.5f + 0.06f},
         };
         // Borde de arriba alrededor de la boca (cuatro franjas).
-        const Vec3 X{1.0f, 0.0f, 0.0f};
-        const Vec3 Z{0.0f, 0.0f, 1.0f};
         const float y = stack_top + 0.1f;
-        geo_.flat(kHouseStone, {ring[0], ring[1], Vec3{ring[1].x, y, -ri * 1.3f}, Vec3{ring[0].x, y, -ri * 1.3f}}, kUp, X, Z);
-        geo_.flat(kHouseStone, {Vec3{ring[3].x, y, ri * 1.3f}, Vec3{ring[2].x, y, ri * 1.3f}, ring[2], ring[3]}, kUp, X, Z);
+        geo_.flat(kHouseStone, {ring[0], ring[1], Vec3{ring[1].x, y, -ri * 1.3f}, Vec3{ring[0].x, y, -ri * 1.3f}}, kUp, kX, kZ);
+        geo_.flat(kHouseStone, {Vec3{ring[3].x, y, ri * 1.3f}, Vec3{ring[2].x, y, ri * 1.3f}, ring[2], ring[3]}, kUp, kX, kZ);
         geo_.flat(kHouseStone, {Vec3{ring[0].x, y, -ri * 1.3f}, Vec3{xc - ri, y, -ri * 1.3f}, Vec3{xc - ri, y, ri * 1.3f},
                                 Vec3{ring[0].x, y, ri * 1.3f}},
-                  kUp, X, Z);
+                  kUp, kX, kZ);
         geo_.flat(kHouseStone, {Vec3{xc + ri, y, -ri * 1.3f}, Vec3{ring[1].x, y, -ri * 1.3f}, Vec3{ring[1].x, y, ri * 1.3f},
                                 Vec3{xc + ri, y, ri * 1.3f}},
-                  kUp, X, Z);
+                  kUp, kX, kZ);
+    }
+
+    // --- Taberna: cartel colgado de una mensula junto a la puerta y barriles ---
+    void tavernSign() {
+        const Wall w = floors_ >= 2 ? upperWall(0) : walls_[0];
+        const float s = door_s_ + 1.25f;
+        const float y = floors_ >= 2 ? upperBase() + 0.35f : top_ - 0.45f;
+        const float face = outerFace();
+        const Vec3 root = at(w, s, y, face);
+        const Vec3 tip = at(w, s, y, face + 1.15f);
+        geo_.beam(kHouseBeams, root, tip, 0.09f, 0.11f);
+        geo_.beam(kHouseBeams, at(w, s, y - 0.6f, face), at(w, s, y - 0.04f, face + 0.7f), 0.07f, 0.07f, w.along);
+        // Cadenas y la tabla (con un marco), colgando de la punta.
+        for (float o : {0.32f, 0.88f}) {
+            geo_.box(kHouseIron, at(w, s, y - 0.2f, face + o), Vec3{0.008f, 0.16f, 0.008f}, w.along, kUp, w.out);
+        }
+        housegeo::wallBox(geo_, kHousePlanks, w, s - 0.03f, s + 0.03f, y - 0.95f, y - 0.36f, face + 0.25f, face + 0.95f, true);
+        housegeo::wallBox(geo_, kHouseBeams, w, s - 0.04f, s + 0.04f, y - 0.4f, y - 0.35f, face + 0.22f, face + 0.98f);
+        housegeo::wallBox(geo_, kHouseBeams, w, s - 0.04f, s + 0.04f, y - 0.98f, y - 0.93f, face + 0.22f, face + 0.98f);
+        // Una jarra pintada (un toque de hierro en la tabla) y barriles en la puerta.
+        housegeo::wallBox(geo_, kHouseIron, w, s - 0.045f, s + 0.045f, y - 0.78f, y - 0.52f, face + 0.5f, face + 0.7f);
+        const Vec3 b0 = at(walls_[0], door_s_ - 1.25f, 0.0f, outerFace() + 0.45f);
+        housegeo::barrel(geo_, Vec3{b0.x, 0.0f, b0.z}, 0.3f, 0.85f, 0.2f);
+        housegeo::barrel(geo_, Vec3{b0.x - 0.7f, 0.0f, b0.z + 0.1f}, 0.28f, 0.8f, 0.7f);
+        housegeo::bench(geo_, frameAt(at(walls_[0], door_s_ + 2.0f, 0.0f, outerFace() + 0.35f), 0), 1.6f);
+    }
+
+    // --- Herreria: cobertizo abierto en el lado izquierdo con yunque y lena ---
+    void smithyShed() {
+        const float x_wall = -xo_;
+        const float depth = 3.4f;
+        const float x_out = x_wall - depth;
+        const float hz = s_.depth * 0.5f;
+        // Por debajo del alero del hastial (no lo atraviesa).
+        const float y_high = std::min(top_ - 0.4f, 3.0f);
+        const float y_low = std::min(2.3f, y_high - 0.3f);
+        // Postes y viga.
+        for (float z : {-hz + 0.2f, 0.0f, hz - 0.2f}) {
+            geo_.boxMinMax(kHouseBeams, Vec3{x_out + 0.15f - 0.08f, 0.0f, z - 0.08f}, Vec3{x_out + 0.15f + 0.08f, y_low, z + 0.08f});
+            geo_.beam(kHouseBeams, Vec3{x_out + 0.15f, y_low - 0.6f, z}, Vec3{x_out + 0.75f, y_low - 0.02f, z}, 0.07f, 0.07f, kZ);
+        }
+        geo_.boxMinMax(kHouseBeams, Vec3{x_out + 0.05f, y_low - 0.02f, -hz - 0.1f}, Vec3{x_out + 0.25f, y_low + 0.16f, hz + 0.1f}, true);
+        // Tejadillo inclinado (tablillas arriba, tablas abajo).
+        const float ov = 0.35f;
+        const Vec3 a0{x_wall + 0.02f, y_high, -hz - 0.3f};
+        const Vec3 a1{x_wall + 0.02f, y_high, hz + 0.3f};
+        const float slope_t = (y_high - y_low - 0.16f) / (x_wall - x_out - 0.15f);
+        const Vec3 b0{x_out - ov, y_low + 0.16f - ov * slope_t, -hz - 0.3f};
+        const Vec3 b1{x_out - ov, y_low + 0.16f - ov * slope_t, hz + 0.3f};
+        const Vec3 n = core::normalize(core::cross(a1 - a0, b0 - a0)) * -1.0f;
+        const Vec3 nn = n.y < 0.0f ? n * -1.0f : n;
+        const Vec3 up = nn * 0.12f;
+        const std::array<float, 2> rm = houseTextureMeters(kHouseRoof);
+        const float slope = core::length(b0 - a0);
+        geo_.polygon(kHouseRoof, {a0 + up, a1 + up, b1 + up, b0 + up}, {nn, nn, nn, nn},
+                     {Vec2{a0.z / rm[0], 0.0f}, Vec2{a1.z / rm[0], 0.0f}, Vec2{a1.z / rm[0], slope / rm[1]}, Vec2{a0.z / rm[0], slope / rm[1]}},
+                     nn);
+        geo_.flat(kHousePlanks, {a0, a1, b1, b0}, nn * -1.0f, kZ, core::normalize(b0 - a0));
+        geo_.flat(kHouseTrim, {b0, b1, b1 + up, b0 + up}, Vec3{-1.0f, 0.0f, 0.0f}, kZ, kUp * -1.0f);
+        // Lo de debajo: yunque, pila de agua, lena y una muela.
+        housegeo::anvil(geo_, frameAt(Vec3{x_wall - 1.6f, 0.0f, -0.6f}, 1));
+        housegeo::barrel(geo_, Vec3{x_wall - 1.0f, 0.0f, -1.5f}, 0.32f, 0.7f, 0.4f);
+        housegeo::woodpile(geo_, frameAt(Vec3{x_wall - 0.4f, 0.0f, 1.2f}, 3), 1.6f, 1.2f, rng_);
+        const Vec3 wheel{x_out + 1.0f, 0.75f, 1.2f};
+        geo_.cylinder(kHouseStone, wheel - kZ * 0.08f, wheel + kZ * 0.08f, 0.45f, 16, true, true);
+        geo_.boxMinMax(kHouseBeams, Vec3{x_out + 0.9f, 0.0f, 1.0f}, Vec3{x_out + 1.1f, 0.75f, 1.08f});
+        geo_.boxMinMax(kHouseBeams, Vec3{x_out + 0.9f, 0.0f, 1.32f}, Vec3{x_out + 1.1f, 0.75f, 1.4f});
+    }
+
+    // ---------------------------------------------------------------------
+    // Interior
+    // ---------------------------------------------------------------------
+
+    // Hay una ventana en la pared `wall` (planta `floor`) entre a y b (x en las
+    // paredes 0/1, z en las 2/3)?
+    bool windowOver(int wall, int floor, float a, float b) const {
+        const float yb = plinth_ + storey_ * static_cast<float>(floor);
+        const float yt = yb + storey_;
+        for (const Opening& o : openings_) {
+            if (o.wall != wall || o.door || o.y0 < yb || o.y0 >= yt) continue;
+            // s -> coordenada del mundo segun la pared.
+            float lo = o.s0;
+            float hi = o.s1;
+            if (wall == 1 || wall == 2) {
+                lo = -o.s1;
+                hi = -o.s0;
+            }
+            if (lo < b + 0.05f && hi > a - 0.05f) return true;
+        }
+        return false;
+    }
+
+    void interior() {
+        const float inset = innerInset() + 0.03f;
+        for (int f = 0; f < floors_; ++f) {
+            Room r;
+            r.floor = f;
+            r.y = plinth_ + storey_ * static_cast<float>(f) + 0.03f;
+            r.x0 = -s_.width * 0.5f + inset;
+            r.x1 = -r.x0;
+            const float extra = f > 0 ? jetty_ : 0.0f;
+            r.z0 = -s_.depth * 0.5f + inset - extra;
+            r.z1 = s_.depth * 0.5f - inset + extra;
+            rooms_.push_back(r);
+        }
+        // Lo que no se puede pisar: la puerta, la escalera y su hueco (y la
+        // llegada arriba).
+        Room& ground = rooms_[0];
+        ground.use(door_s_ - 0.9f, door_s_ + 0.9f, ground.z1 - 1.35f, ground.z1 + 0.5f);
+        for (const Flight& fl : flights_) {
+            Room& below = rooms_[static_cast<std::size_t>(fl.floor)];
+            below.use(fl.foot[0], fl.foot[1], fl.foot[2], fl.foot[3]);
+            Room& above = rooms_[static_cast<std::size_t>(fl.floor + 1)];
+            above.use(fl.hole[0] - 0.15f, fl.hole[1] + 1.0f, fl.hole[2] - 0.1f, fl.hole[3] + 0.9f);
+            // Lo que ocupa la escalera de la planta de arriba en la de abajo no
+            // deja poner un mueble alto: con el pie basta.
+        }
+        switch (s_.use) {
+            case HouseUse::Tavern: tavernInterior(); break;
+            case HouseUse::Smithy: smithyInterior(); break;
+            case HouseUse::Shop: shopInterior(); break;
+            default: homeInterior(); break;
+        }
+        // Vigas de atado bajo el tejado en la planta de arriba del todo.
+        const Room& topf = rooms_.back();
+        const float y = top_ - 0.1f;
+        const float x_hood = s_.chimney ? topf.x1 - 1.05f : 1e9f;
+        for (float x = topf.x0 + 0.8f; x < topf.x1 - 0.4f; x += 2.0f) {
+            if (x > x_hood - 0.2f) continue;
+            if (logs()) {
+                geo_.log(Vec3{x, y, topf.z0 - 0.05f}, Vec3{x, y, topf.z1 + 0.05f}, 0.11f, 8, false, false, x, 0.0f);
+            } else {
+                geo_.boxMinMax(kHouseBeams, Vec3{x - 0.09f, y - 0.11f, topf.z0}, Vec3{x + 0.09f, y + 0.09f, topf.z1}, true);
+            }
+        }
+    }
+
+    float ceilingOf(int floor) const {
+        return floor + 1 >= floors_ ? top_ - 0.05f : plinth_ + storey_ * static_cast<float>(floor + 1) - 0.13f;
+    }
+
+    // Hogar contra la pared de la chimenea (+X), con alfombra, taburetes y lena.
+    void hearth(Room& r) {
+        if (!s_.chimney) return;
+        r.use(r.x1 - 1.05f, r.x1, -0.95f, 0.95f);
+        housegeo::fireplace(geo_, frameAt(Vec3{r.x1 - 0.33f, r.y, 0.0f}, 3), 1.5f, ceilingOf(r.floor));
+        if (r.free(r.x1 - 2.45f, r.x1 - 1.1f, -0.75f, 0.75f)) housegeo::rug(geo_, frameAt(Vec3{r.x1 - 1.75f, r.y, 0.0f}, 3), 1.3f, 1.2f);
+        for (float z : {-0.95f, 0.95f}) {
+            if (r.take(r.x1 - 1.9f, r.x1 - 1.45f, z - 0.22f, z + 0.22f)) housegeo::stool(geo_, frameAt(Vec3{r.x1 - 1.67f, r.y, z}, 3));
+        }
+        if (r.take(r.x1 - 0.5f, r.x1, -2.0f, -1.0f)) housegeo::woodpile(geo_, frameAt(Vec3{r.x1 - 0.27f, r.y, -1.5f}, 3), 0.9f, 0.7f, rng_);
+    }
+
+    // Cama en la primera esquina libre (con su arcon a los pies).
+    bool placeBed(Room& r, float w = 1.0f) {
+        const float l = 2.0f;
+        struct Corner {
+            float cx, cz;
+            int facing;  // hacia donde mira el pie de la cama
+            bool along_x;
+        };
+        const Corner corners[] = {
+            {r.x0 + w * 0.5f + 0.02f, r.z0 + l * 0.5f + 0.02f, 0, false},
+            {r.x1 - w * 0.5f - 0.02f, r.z0 + l * 0.5f + 0.02f, 0, false},
+            {r.x0 + l * 0.5f + 0.02f, r.z1 - w * 0.5f - 0.02f, 1, true},
+            {r.x0 + l * 0.5f + 0.02f, r.z0 + w * 0.5f + 0.02f, 1, true},
+            {r.x1 - l * 0.5f - 0.02f, r.z0 + w * 0.5f + 0.02f, 3, true},
+            {r.x0 + w * 0.5f + 0.02f, r.z1 - l * 0.5f - 0.02f, 2, false},
+        };
+        for (const Corner& c : corners) {
+            const float hx = (c.along_x ? l : w) * 0.5f;
+            const float hz = (c.along_x ? w : l) * 0.5f;
+            if (!r.take(c.cx - hx, c.cx + hx, c.cz - hz, c.cz + hz)) continue;
+            const Frame f = frameAt(Vec3{c.cx, r.y, c.cz}, c.facing);
+            housegeo::bed(geo_, f, w, l);
+            // Arcon a los pies.
+            const Vec3 foot = f.p(0.0f, 0.0f, l * 0.5f + 0.32f);
+            const float ax = c.along_x ? 0.27f : 0.47f;
+            const float az = c.along_x ? 0.47f : 0.27f;
+            if (r.take(foot.x - ax, foot.x + ax, foot.z - az, foot.z + az)) {
+                housegeo::chest(geo_, frameAt(Vec3{foot.x, r.y, foot.z}, c.facing), 0.85f, 0.48f, 0.5f);
+            }
+            return true;
+        }
+        return false;
+    }
+
+    // Mesa con bancos (o taburetes si no cabe) en el primer sitio libre.
+    bool placeTable(Room& r, float w = 1.5f) {
+        const float cx = (r.x0 + r.x1) * 0.5f;
+        const float cz = (r.z0 + r.z1) * 0.5f;
+        std::vector<std::pair<float, float>> spots;
+        for (float dz : {0.0f, -0.6f, 0.6f, -1.2f, 1.2f}) {
+            for (float dx : {-0.25f, -0.9f, 0.4f, -1.6f, 1.1f, -2.4f, 1.8f}) {
+                spots.push_back({cx + dx * (r.x1 - r.x0) * 0.25f, cz + dz * (r.z1 - r.z0) * 0.25f});
+            }
+        }
+        for (const auto& [x, z] : spots) {
+            const float hx = w * 0.5f + 0.15f;
+            if (!r.take(x - hx, x + hx, z - 0.95f, z + 0.95f)) continue;
+            housegeo::table(geo_, frameAt(Vec3{x, r.y, z}, 0), w, 0.8f);
+            housegeo::bench(geo_, frameAt(Vec3{x, r.y, z - 0.62f}, 0), w - 0.1f);
+            housegeo::bench(geo_, frameAt(Vec3{x, r.y, z + 0.62f}, 2), w - 0.1f);
+            return true;
+        }
+        for (const auto& [x, z] : spots) {
+            if (!r.take(x - 0.75f, x + 0.75f, z - 0.75f, z + 0.75f)) continue;
+            housegeo::table(geo_, frameAt(Vec3{x, r.y, z}, 0), 0.9f, 0.7f);
+            housegeo::stool(geo_, frameAt(Vec3{x - 0.6f, r.y, z}, 1));
+            housegeo::stool(geo_, frameAt(Vec3{x + 0.6f, r.y, z}, 3));
+            return true;
+        }
+        return false;
+    }
+
+    // Mueble contra una pared (0 delante, 1 atras, 2 derecha, 3 izquierda): lo
+    // prueba a lo largo de ella; `tall` solo donde no hay ventana.
+    bool placeAgainstWall(Room& r, int wall, float w, float d, bool tall, const std::function<void(const Frame&)>& make) {
+        const float span0 = wall < 2 ? r.x0 : r.z0;
+        const float span1 = wall < 2 ? r.x1 : r.z1;
+        for (float t : {0.75f, 0.25f, 0.5f, 0.9f, 0.1f, 0.62f, 0.38f}) {
+            const float c = span0 + w * 0.5f + (span1 - span0 - w) * t;
+            if (tall && windowOver(wall, r.floor, c - w * 0.5f, c + w * 0.5f)) continue;
+            float x0, x1, z0, z1;
+            int facing = 0;
+            Vec3 o;
+            switch (wall) {
+                case 0: x0 = c - w * 0.5f; x1 = c + w * 0.5f; z0 = r.z1 - d; z1 = r.z1; facing = 2; o = Vec3{c, r.y, r.z1 - d * 0.5f}; break;
+                case 1: x0 = c - w * 0.5f; x1 = c + w * 0.5f; z0 = r.z0; z1 = r.z0 + d; facing = 0; o = Vec3{c, r.y, r.z0 + d * 0.5f}; break;
+                case 2: x0 = r.x1 - d; x1 = r.x1; z0 = c - w * 0.5f; z1 = c + w * 0.5f; facing = 3; o = Vec3{r.x1 - d * 0.5f, r.y, c}; break;
+                default: x0 = r.x0; x1 = r.x0 + d; z0 = c - w * 0.5f; z1 = c + w * 0.5f; facing = 1; o = Vec3{r.x0 + d * 0.5f, r.y, c}; break;
+            }
+            if (!r.take(x0, x1, z0, z1)) continue;
+            make(frameAt(o, facing));
+            return true;
+        }
+        return false;
+    }
+
+    // Barriles y cajas en una esquina libre.
+    void storageCorner(Room& r) {
+        const float pts[4][2] = {{r.x0 + 0.45f, r.z1 - 0.45f}, {r.x1 - 0.45f, r.z1 - 0.45f}, {r.x1 - 0.45f, r.z0 + 0.45f},
+                                 {r.x0 + 0.45f, r.z0 + 0.45f}};
+        for (const auto& p : pts) {
+            if (!r.take(p[0] - 0.42f, p[0] + 0.42f, p[1] - 0.42f, p[1] + 0.42f)) continue;
+            if (rng_.chance(0.6f)) {
+                housegeo::barrel(geo_, Vec3{p[0], r.y, p[1]}, 0.3f, 0.85f, rng_.range(0.0f, 1.0f));
+            } else {
+                housegeo::crate(geo_, frameAt(Vec3{p[0], r.y, p[1]}, rng_.pick(4)), 0.62f);
+                if (rng_.chance(0.5f)) housegeo::crate(geo_, frameAt(Vec3{p[0], r.y, p[1]}, rng_.pick(4)), 0.45f, 0.62f);
+            }
+            return;
+        }
+    }
+
+    void homeInterior() {
+        Room& g = rooms_[0];
+        hearth(g);
+        if (floors_ == 1) placeBed(g, 1.1f);
+        placeTable(g, (g.x1 - g.x0) > 6.0f ? 1.6f : 1.3f);
+        placeAgainstWall(g, 1, 1.2f, 0.45f, true, [&](const Frame& f) { housegeo::shelf(geo_, f, 1.2f, 1.75f, 0.4f, rng_); });
+        placeAgainstWall(g, 3, 1.0f, 0.5f, false, [&](const Frame& f) { housegeo::cupboard(geo_, f, 1.0f, 0.8f, 0.48f); });
+        storageCorner(g);
+        storageCorner(g);
+        if (floors_ == 1 && g.x1 - g.x0 > 6.5f) placeBed(g, 0.9f);
+        // Plantas altas: dormitorios.
+        for (std::size_t f = 1; f < rooms_.size(); ++f) {
+            Room& r = rooms_[f];
+            placeBed(r, 1.2f);
+            placeBed(r, 0.9f);
+            placeAgainstWall(r, 1, 1.0f, 0.45f, true, [&](const Frame& fr) { housegeo::shelf(geo_, fr, 1.0f, 1.6f, 0.38f, rng_); });
+            placeAgainstWall(r, 3, 0.9f, 0.5f, false, [&](const Frame& fr) { housegeo::chest(geo_, fr, 0.9f, 0.48f, 0.52f); });
+            const float cx = (r.x0 + r.x1) * 0.5f;
+            const float cz = (r.z0 + r.z1) * 0.5f;
+            if (r.free(cx - 0.8f, cx + 0.8f, cz - 0.6f, cz + 0.6f)) housegeo::rug(geo_, frameAt(Vec3{cx, r.y, cz}, 0), 1.6f, 1.1f);
+            storageCorner(r);
+        }
+    }
+
+    void tavernInterior() {
+        Room& g = rooms_[0];
+        hearth(g);
+        // Barra contra la pared de atras, con barriles tumbados y baldas detras.
+        float cx0 = g.x0 + 0.6f;
+        for (const Flight& fl : flights_) {
+            if (fl.floor == 0) cx0 = std::max(cx0, fl.foot[1] + 0.3f);
+        }
+        const float cx1 = g.x1 - (s_.chimney ? 1.2f : 0.5f);
+        const float length = std::min(cx1 - cx0, 5.0f);
+        if (length > 1.6f) {
+            const float cxc = cx1 - length * 0.5f;
+            const float cz = g.z0 + 1.35f;
+            if (g.take(cx1 - length - 0.1f, cx1 + 0.05f, g.z0, cz + 0.4f)) {
+                housegeo::counter(geo_, frameAt(Vec3{cxc, g.y, cz}, 0), length);
+                // Estanteria de barriles tumbados (dos alturas) contra la pared.
+                const float rack_z = g.z0 + 0.35f;
+                geo_.boxMinMax(kHouseBeams, Vec3{cxc - length * 0.5f, g.y, rack_z - 0.3f}, Vec3{cxc + length * 0.5f, g.y + 0.12f, rack_z + 0.3f}, true);
+                for (float x = cxc - length * 0.5f + 0.4f; x < cxc + length * 0.5f - 0.3f; x += 0.75f) {
+                    housegeo::barrelLying(geo_, Vec3{x, g.y + 0.42f, rack_z}, kZ, 0.29f, 0.62f);
+                    if (x + 0.37f < cxc + length * 0.5f - 0.3f) housegeo::barrelLying(geo_, Vec3{x + 0.37f, g.y + 0.98f, rack_z}, kZ, 0.26f, 0.58f);
+                }
+                // Jarras en la barra.
+                for (float x = cxc - length * 0.35f; x < cxc + length * 0.4f; x += rng_.range(0.4f, 0.9f)) {
+                    geo_.frustum(kHouseIron, Vec3{x, g.y + 1.08f, cz + 0.05f}, Vec3{x, g.y + 1.22f, cz + 0.05f}, 0.05f, 0.045f, 8, false, true);
+                }
+            }
+        }
+        for (int i = 0; i < 5; ++i) {
+            if (!placeTable(g, 1.4f)) break;
+        }
+        storageCorner(g);
+        storageCorner(g);
+        // Arriba: cuartos con su cama, arcon y un biombo de tablas entre camas.
+        for (std::size_t f = 1; f < rooms_.size(); ++f) {
+            Room& r = rooms_[f];
+            for (int b = 0; b < 4; ++b) {
+                if (!placeBed(r, 0.95f)) break;
+            }
+            placeAgainstWall(r, 3, 0.9f, 0.5f, false, [&](const Frame& fr) { housegeo::chest(geo_, fr, 0.9f, 0.48f, 0.5f); });
+            if (r.x1 - r.x0 > 6.0f) {
+                const float xm = (r.x0 + r.x1) * 0.5f;
+                if (r.take(xm - 0.04f, xm + 0.04f, r.z0, r.z0 + 2.3f)) {
+                    geo_.boxMinMax(kHousePlanks, Vec3{xm - 0.03f, r.y, r.z0}, Vec3{xm + 0.03f, r.y + 1.95f, r.z0 + 2.3f}, true);
+                }
+            }
+            storageCorner(r);
+        }
+    }
+
+    void smithyInterior() {
+        Room& g = rooms_[0];
+        // Fragua contra la pared de la chimenea.
+        if (g.take(g.x1 - 1.3f, g.x1, -0.95f, 0.95f)) {
+            housegeo::forge(geo_, frameAt(Vec3{g.x1 - 0.6f, g.y, 0.0f}, 3), ceilingOf(0));
+        }
+        if (g.take(g.x1 - 2.3f, g.x1 - 1.5f, -0.45f, 0.45f)) housegeo::anvil(geo_, frameAt(Vec3{g.x1 - 1.9f, g.y, 0.0f}, 1));
+        if (g.take(g.x1 - 1.9f, g.x1 - 1.2f, 1.0f, 1.7f)) housegeo::barrel(geo_, Vec3{g.x1 - 1.55f, g.y, 1.35f}, 0.33f, 0.72f, 0.3f);
+        // Banco de trabajo con herramientas y el estante de los martillos.
+        placeAgainstWall(g, 1, 1.8f, 0.75f, false, [&](const Frame& f) {
+            housegeo::table(geo_, frameAt(f.p(0.0f, 0.0f, 0.0f), 0), 1.8f, 0.7f, 0.85f);
+            for (float x = -0.6f; x <= 0.6f; x += 0.3f) {
+                housegeo::fbox(geo_, kHouseIron, f, Vec3{x, 0.88f, rng_.range(-0.15f, 0.15f)}, Vec3{0.1f, 0.02f, 0.03f});
+            }
+        });
+        placeAgainstWall(g, 3, 1.4f, 0.25f, true, [&](const Frame& f) {
+            housegeo::fbox(geo_, kHouseBeams, f, Vec3{0.0f, 1.55f, -0.08f}, Vec3{0.7f, 0.05f, 0.04f});
+            for (float x = -0.55f; x <= 0.56f; x += 0.22f) {
+                housegeo::fbox(geo_, kHouseBeams, f, Vec3{x, 1.3f, 0.0f}, Vec3{0.015f, 0.25f, 0.015f});
+                housegeo::fbox(geo_, kHouseIron, f, Vec3{x, 1.05f, 0.0f}, Vec3{0.06f, 0.035f, 0.03f});
+            }
+        });
+        // Carbon y hierro en bruto.
+        if (g.take(g.x1 - 0.9f, g.x1, -2.0f, -1.1f)) {
+            geo_.boxMinMax(kHouseIron, Vec3{g.x1 - 0.85f, g.y, -1.95f}, Vec3{g.x1 - 0.05f, g.y + 0.3f, -1.15f}, false, 4);
+        }
+        storageCorner(g);
+        storageCorner(g);
+    }
+
+    void shopInterior() {
+        Room& g = rooms_[0];
+        hearth(g);
+        // Mostrador mirando a la puerta y estanterias en las paredes.
+        const float cz = (g.z0 + g.z1) * 0.5f - 0.3f;
+        const float len = std::min(3.0f, (g.x1 - g.x0) * 0.5f);
+        if (g.take(door_s_ - len * 0.5f - 0.1f, door_s_ + len * 0.5f + 0.1f, cz - 0.4f, cz + 0.4f)) {
+            housegeo::counter(geo_, frameAt(Vec3{door_s_, g.y, cz}, 0), len);
+        }
+        for (int i = 0; i < 3; ++i) {
+            placeAgainstWall(g, 1, 1.3f, 0.42f, true, [&](const Frame& f) { housegeo::shelf(geo_, f, 1.3f, 1.8f, 0.4f, rng_); });
+        }
+        placeAgainstWall(g, 3, 1.2f, 0.42f, true, [&](const Frame& f) { housegeo::shelf(geo_, f, 1.2f, 1.8f, 0.4f, rng_); });
+        storageCorner(g);
+        storageCorner(g);
+        storageCorner(g);
+        for (std::size_t f = 1; f < rooms_.size(); ++f) {
+            Room& r = rooms_[f];
+            placeBed(r, 1.2f);
+            placeAgainstWall(r, 3, 0.9f, 0.5f, false, [&](const Frame& fr) { housegeo::chest(geo_, fr, 0.9f, 0.48f, 0.52f); });
+            storageCorner(r);
+        }
     }
 };
 
 }  // namespace
+
 
 const char* houseStyleName(HouseStyle style) {
     switch (style) {
@@ -1305,19 +1810,33 @@ const char* houseStyleName(HouseStyle style) {
         case HouseStyle::TimberCabin: return "Cabana de tablas";
         case HouseStyle::StoneCottage: return "Casita de piedra";
         case HouseStyle::Farmhouse: return "Casa de campo";
+        case HouseStyle::HalfTimbered: return "Casa de entramado";
+        case HouseStyle::Thatched: return "Cabana de paja";
     }
     return "Casa";
 }
 
+const char* houseUseName(HouseUse use) {
+    switch (use) {
+        case HouseUse::Home: return "Vivienda";
+        case HouseUse::Tavern: return "Taberna";
+        case HouseUse::Smithy: return "Herreria";
+        case HouseUse::Shop: return "Tienda";
+    }
+    return "Vivienda";
+}
+
 const char* houseMaterialName(int material) {
-    static const char* const kNames[kHouseMaterialCount] = {"Troncos", "Veta",    "Tablas", "Revestimiento", "Piedra",
-                                                             "Tejado",  "Marcos", "Vidrio", "Hierro"};
+    static const char* const kNames[kHouseMaterialCount] = {"Troncos", "Veta",    "Tablas",  "Revestimiento", "Piedra",
+                                                             "Tejado",  "Marcos",  "Vidrio",  "Hierro",        "Enlucido",
+                                                             "Paja",    "Teja",    "Tela",    "Vigas"};
     return material >= 0 && material < kHouseMaterialCount ? kNames[material] : "";
 }
 
 const char* houseTextureName(int material) {
-    static const char* const kNames[kHouseMaterialCount] = {"Troncos", "Veta", "Tablas", "Revestimiento", "Piedra",
-                                                             "Tejado",  "Marcos", "", ""};
+    static const char* const kNames[kHouseMaterialCount] = {"Troncos", "Veta",   "Tablas", "Revestimiento", "Piedra",
+                                                             "Tejado",  "Marcos", "",       "",              "Enlucido",
+                                                             "Paja",    "Teja",   "Tela",   "Vigas"};
     return material >= 0 && material < kHouseMaterialCount ? kNames[material] : "";
 }
 
@@ -1329,6 +1848,11 @@ std::array<float, 2> houseTextureMeters(int material) {
         case kHouseStone: return {1.5f, 1.5f};
         case kHouseRoof: return {1.0f, 1.0f};
         case kHouseTrim: return {1.0f, 1.0f};
+        case kHousePlaster: return {2.0f, 2.0f};
+        case kHouseThatch: return {1.5f, 1.5f};
+        case kHouseTile: return {1.0f, 1.0f};
+        case kHouseCloth: return {1.0f, 1.0f};
+        case kHouseBeams: return {2.0f, 0.5f};
         default: return {1.0f, 1.0f};
     }
 }
@@ -1337,7 +1861,7 @@ HouseSettings housePreset(HouseStyle style, std::uint32_t seed) {
     HouseSettings s;
     s.style = style;
     s.seed = seed;
-    Rng rng(seed * 31U + static_cast<std::uint32_t>(style));
+    housegeo::Rng rng(seed * 31U + static_cast<std::uint32_t>(style));
     switch (style) {
         case HouseStyle::LogCabin:
             s.width = rng.range(6.5f, 8.5f);
@@ -1371,6 +1895,25 @@ HouseSettings housePreset(HouseStyle style, std::uint32_t seed) {
             s.roof_pitch = rng.range(36.0f, 42.0f);
             s.roof_overhang = 0.5f;
             break;
+        case HouseStyle::HalfTimbered:
+            s.width = rng.range(6.5f, 9.0f);
+            s.depth = rng.range(5.5f, 7.0f);
+            s.floors = rng.chance(0.3f) ? 3 : 2;
+            s.wall_height = 2.6f;
+            s.roof_pitch = rng.range(48.0f, 56.0f);
+            s.roof_overhang = 0.35f;
+            s.porch = false;
+            s.jetty = rng.range(0.3f, 0.5f);
+            break;
+        case HouseStyle::Thatched:
+            s.width = rng.range(6.0f, 8.0f);
+            s.depth = rng.range(4.8f, 5.8f);
+            s.wall_height = 2.35f;
+            s.roof_pitch = rng.range(48.0f, 54.0f);
+            s.roof_overhang = 0.6f;
+            s.porch = false;
+            s.shutters = rng.chance(0.5f);
+            break;
     }
     return s;
 }
@@ -1388,6 +1931,11 @@ bool generateHouseTexture(int material, int size, std::uint32_t seed, HouseTextu
         case kHouseStone: f = [seed](float u, float v) { return stoneTexel(u, v, seed + 4U); }; strength = 4.5f; break;
         case kHouseRoof: f = [seed](float u, float v) { return roofTexel(u, v, seed + 5U); }; strength = 5.0f; break;
         case kHouseTrim: f = [seed](float u, float v) { return trimTexel(u, v, seed + 6U); }; strength = 1.5f; break;
+        case kHousePlaster: f = [seed](float u, float v) { return plasterTexel(u, v, seed + 7U); }; strength = 2.0f; break;
+        case kHouseThatch: f = [seed](float u, float v) { return thatchTexel(u, v, seed + 8U); }; strength = 5.0f; break;
+        case kHouseTile: f = [seed](float u, float v) { return tileTexel(u, v, seed + 9U); }; strength = 5.5f; break;
+        case kHouseCloth: f = [seed](float u, float v) { return clothTexel(u, v, seed + 10U); }; strength = 1.5f; break;
+        case kHouseBeams: f = [seed](float u, float v) { return beamTexel(u, v, seed + 11U); }; strength = 3.0f; break;
         default: return false;
     }
     const int n = std::max(size, 16);

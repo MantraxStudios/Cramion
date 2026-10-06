@@ -112,6 +112,8 @@ struct MaterialData {
     float subsurface_thickness = 0.05f; // subsurface: grosor en metros (0.01..0.3)
     float anisotropy = 0.8f;            // anisotropo: cuanto se estira el brillo
     float anisotropy_rotation = 0.0f;   // anisotropo: grados (0..180) sobre la tangente
+    float hair_shift = 0.6f;            // pelo: desplazamiento de los brillos (0..1)
+    float hair_secondary = 0.5f;        // pelo: brillo secundario (0..1)
     float ior = 1.5f;                   // transmision: indice de refraccion (1..2.5)
     float transmission_thickness = 0.02f;  // transmision: grosor en metros (0..0.2)
     // R de metallic_roughness_texture = reflectancia (0.5 -> F0 0.04). El

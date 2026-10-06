@@ -1789,6 +1789,14 @@ inline Value width(Mas&&... mas) {
 }
 }  // namespace Screen
 
+namespace Spline {
+/// Spline.create(...)
+template <typename... Mas>
+inline Value create(Mas&&... mas) {
+    return detail::lua("Spline.create", Values{Value(std::forward<Mas>(mas))...});
+}
+}  // namespace Spline
+
 namespace Steam {
 /// Steam.achievementProgress("COLECCIONISTA", 5, 10)
 /// muestra el progreso
@@ -2202,6 +2210,11 @@ inline Value removeListener(const T0& id = {}) {
 template <typename T0 = Value>
 inline Value setLanguage(const T0& texto = {}) {
     return detail::lua("Text.setLanguage", Values{Value(texto)});
+}
+/// Text.strip(...)
+template <typename... Mas>
+inline Value strip(Mas&&... mas) {
+    return detail::lua("Text.strip", Values{Value(std::forward<Mas>(mas))...});
 }
 /// Text.systemLanguage()
 /// idioma del sistema

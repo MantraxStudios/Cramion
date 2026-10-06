@@ -1,5 +1,66 @@
 # Cambios
 
+## Próxima versión (en desarrollo)
+
+**Pueblos y ciudades medievales, casas con interior, terreno que se aplana bajo los edificios y colliders que se ajustan a la malla como en Unity.** Y además: splines, interfaz completa, World Partition con HLOD, streaming de texturas, netcode serio con servidor dedicado y chat de voz, multitudes, niebla local, pelo, sondas dinámicas, lightmap de superficie, accesibilidad, mods, informe de cierres, job system y Linux.
+
+> Todo lo de este bloque «2.4» está escrito pero **sin compilar todavía** (el PC no daba para compilar mientras se programaba): hay que compilar y probar antes de publicar.
+
+### Splines
+- **Spline** (curva Catmull-Rom, Bezier o lineal, abierta o cerrada, ancho y peralte por punto), **Extrusión por spline** (carretera con líneas, camino, río que mueve su `WaterBody`, muro, valla con postes, tubería, raíles con traviesas, cinta) pegada al terreno, y **Seguir spline** (bucle, ida y vuelta, una vez). *GameObject > Spline*; puntos arrastrables en la Escena; *Aplicar al terreno* allana y pinta debajo (el río excava su cauce). Lua: `Spline.create`, `entity:splinePoint`, `closestSplineDistance`, `playSplineFollower`...
+
+### Interfaz
+- **Scroll View** (rueda, arrastre con inercia, barra, recorte), **Desplegable**, **Layout Group** (columna, fila, rejilla, ajustar al contenido) y **Máscara**. Nuevos en *GameObject > UI*.
+- **Texto enriquecido** (`<b> <i> <u> <s> <color> <size> <br>`), **fuentes propias** (.ttf/.otf de Assets), contorno, negrita, cursiva e interlineado.
+
+### Mundos grandes
+- **World Partition** (`WorldPartition`, `StreamingSource`, `AlwaysLoaded`): en Play y en el juego solo están cargadas las celdas cercanas; lo lejano sale del mundo y vuelve poco a poco (por frame). Rejilla en la Escena.
+- **HLOD**: *Construir HLOD* junta y simplifica (meshoptimizer) las mallas de cada celda con su color medio; se ven de lejos con la celda descargada.
+- **Streaming de texturas por mips**: cada modelo sube sus texturas al detalle que pide su tamaño en pantalla (`render.streaming.TextureMips`, `TextureBias`).
+- **Job system** (`jobs::schedule`, `jobs::parallelFor`, CVar `jobs.Threads`): el relieve y la pintura del terreno y los lightmaps ya lo usan.
+
+### Multijugador
+- **Netcode**: interpolación con búfer por la hora del dueño, extrapolación, giro comprimido (smallest three), relevancia por distancia, velocidad máxima con corrección del dueño (anti-trampas), historia para la compensación de lag (`Network.lagCompensatedRaycast`, `Network.positionAt`), `Network.stats()` y simulador de latencia y pérdidas (`Network.simulate`).
+- **Servidor dedicado** `CramionServer` / `<Juego>Server.exe` (sin ventana ni GPU, ritmo fijo, `--port --max-players --tick`), opción en *Configuraciones de compilación*; `Network.isDedicated()`.
+- **Chat de voz** (micrófono a 16 kHz, mu-law, búfer anti-saltos, pulsar para hablar o por voz, volumen por distancia): tabla `Voice`.
+
+### IA
+- **Multitudes** (`CrowdSpawner`): cientos de agentes con navmesh que deambulan, recorren puntos, siguen u huyen, con decisiones repartidas entre frames y culling por distancia.
+
+### Render
+- **Volumen de niebla** (`FogVolume`, caja o esfera, dentro de la luz volumétrica con sombras).
+- **Pelo**: modelo de material *Pelo (hair cards)* (Kajiya-Kay con dos brillos desplazados).
+- **Sondas dinámicas (DDGI)**: con iluminación horneada y trazado de rayos las sondas se rehacen solas (`rt_probes.comp`).
+- **Lightmap de superficie**: texeles de luz rebotada en el mundo pegados a la geometría (tabla hash dispersa), con el detalle de un lightmap y sin UV2.
+- **Filtro de daltonismo** en la composición (Machado 2009: corregir o simular).
+
+### Accesibilidad
+- *Ventana > Accesibilidad* y Lua `Accessibility`: daltonismo, tamaño del texto y de los subtítulos, fondo de subtítulos, alto contraste, reducir movimiento y temblor de cámara (`Camera.shake`, nuevo).
+
+### Mods
+- *Permitir mods*: carpetas con `mod.json`, `Assets/` y `main.lua`, o `.datapack`, en `<juego>/Mods` y en los datos del jugador; tabla `Mods`.
+
+### Herramientas
+- **Informe de cierres**: pila con funciones y líneas, contexto (versión, GPU, escena, memoria), últimas líneas del registro, `abort`/`terminate`/virtuales puras, y el aviso con el informe al volver a abrir el editor.
+- **Linux**: capa de plataforma (ventana X11, teclado con XIM, ratón con captura, superficie Vulkan Xlib), preset `linux-release` y servidor dedicado nativo. El reproductor con ventana sigue siendo de Windows.
+
+### Pueblos y ciudades medievales
+- **Generador de pueblos** (*Ventana > Generador de casas y pueblos*, pestaña *Pueblo*; también en el generador de terreno y por MCP con `generate_settlement`): **aldea**, **pueblo** o **ciudad amurallada** sobre el terreno, en el sitio más llano y seco o delante de la cámara. Calles principales que salen de la plaza buscando lo llano y siguen como caminos, callejas, calle de ronda; plaza con **pozo** y **mercado**; **iglesia** con campanario, interior con bancos y altar; **taberna** con barra, barriles y cuartos; **herrerías** con fragua, yunque y cobertizo; tiendas; **graneros** con pajar y cuadras; **campos** con hierba seca, surcos y vallas; **molino** con aspas que giran en Play; y en las ciudades **murallas** con adarve, almenas y torres que siguen el terreno, una **puerta** con torreones y rastrillo en cada camino que entra y la **torre del homenaje** en lo más alto. Las casas se ponen con la puerta a la calle sin pisarse entre sí ni pisar calles, plaza, agua o murallas (con la caja real de cada modelo). Plaza, calles y el pie de la muralla se allanan y se pintan; la vegetación se aparta. Objetos sueltos: barriles, cajas, carros, pacas, leña, bancos. Misma semilla, mismo pueblo; Ctrl+Z lo deshace con su terreno.
+- **Casas con interior**: hogar con fuego y luz, mesa y bancos, camas, arcones, alacenas y estanterías con tarros, barriles, alfombras, vigas y, en las de varias plantas, forjados con hueco de escalera, escalera y barandilla (todo con colisión). Usos: **vivienda, taberna, herrería y tienda**. Las ventanas ahora son de vidrio transparente (el `Vidrio.crmat` sin tocar se actualiza solo).
+- Estilos nuevos: **casa de entramado** (planta baja de piedra, dos o tres plantas de vigas y enlucido que vuelan sobre la calle, tejado de teja) y **cabaña de paja**. Cinco materiales nuevos compartidos: enlucido, paja, teja, tela y vigas.
+- Edificios sueltos (pestaña *Edificio*, MCP `generate_building`): iglesia, granero, pozo, puesto, torre del homenaje, puerta de muralla, molino y objetos.
+
+### Terreno
+- **Aplanar terreno** (`TerrainFlatten`): deja plano el terreno bajo el **AABB** de las mallas del objeto (girado con él), a la altura de su origen o de la base de la malla, con talud suave y tierra pintada debajo, para que el terreno no tape las casas. Lo llevan todas las casas y edificios generados. En el editor se rehace al soltar el objeto tras moverlo y el sitio de antes vuelve a como estaba (también al borrarlo o deshacer). MCP `flatten_terrain`.
+- Nuevas herramientas de terreno en `TerrainTools`: `flattenFootprint`, `footprintHeight`, `paintFootprint`, `flattenPath`, `paintPath` y parches para restaurar.
+
+### Rendimiento
+- **Texturas compartidas entre modelos**: la misma imagen en varios modelos (materiales `.crmat` comunes) se sube **una sola vez** a la GPU (caché por contenido). Antes cada modelo llevaba su copia de todas las texturas: un pueblo con unas decenas de edificios distintos (14 materiales con texturas) pasaba de los 6 GB de VRAM y el PC se trababa.
+- Las piezas de un modelo ya no cargan las texturas de los huecos de material que no usan (la puerta de una casa leía, decodificaba y subía las de los 14 materiales). Menos RAM y crear pueblos tarda menos.
+
+### Física
+- **BoxCollider como en Unity**: al añadirlo (Inspector, Lua `addComponent`, MCP `set_component`) toma el **AABB de la malla** del objeto (o de las de sus hijos, con su giro y escala) y la escala del Transform lo multiplica igual que a la malla. También la esfera (mayor media medida) y la cápsula (a lo largo del eje más largo). Botón *Ajustar a la malla* y *Restablecer valores* lo recalculan; Lua `entity:fitColliderToMesh()`, MCP `fit_collider`, C++ `PhysicsSystem::fitColliderToMesh` / `localMeshBounds`.
+
 ## 2.3.0
 
 **Android en casi todos los móviles, PC de gama baja mucho más rápidos y trazado de rayos sin hormigueo.** El juego exportado a Android ya arranca en móviles con Vulkan 1.0 y 1.1 y en los de 32 bits, se dibuja a la resolución que el móvil puede mover y lee las texturas DDS en cualquier GPU. En un PC de gama baja las sombras del sol y los efectos apagados dejan de costar. Las sombras y los reflejos por rayos ya no hierven sobre los objetos. Y la realidad virtual como en Unity: coger y lanzar con las manos, UI en el mundo y Play on VR.

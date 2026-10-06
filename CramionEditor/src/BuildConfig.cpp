@@ -50,6 +50,8 @@ BuildConfigs loadBuildConfigs(const std::filesystem::path& file) {
                 b.static_batching = c.value("static_batching", b.static_batching);
                 b.show_fps = c.value("show_fps", b.show_fps);
                 b.vr = c.value("vr", b.vr);
+                b.dedicated_server = c.value("dedicated_server", b.dedicated_server);
+                b.allow_mods = c.value("allow_mods", b.allow_mods);
                 {
                     const std::string platform = c.value("platform", std::string("windows"));
                     b.platform = platform == "android" ? BuildPlatform::Android
@@ -112,6 +114,8 @@ bool saveBuildConfigs(const std::filesystem::path& file, const BuildConfigs& con
                         {"static_batching", b.static_batching},
                         {"show_fps", b.show_fps},
                         {"vr", b.vr},
+                        {"dedicated_server", b.dedicated_server},
+                        {"allow_mods", b.allow_mods},
                         {"platform", b.platform == BuildPlatform::Android ? "android"
                                      : b.platform == BuildPlatform::Linux ? "linux"
                                                                           : "windows"}});
@@ -160,6 +164,7 @@ std::string buildConfigIni(const BuildConfig& config, const std::string& game_na
     ini << "width=" << config.width << "\n";
     ini << "height=" << config.height << "\n";
     ini << "show_fps=" << (config.show_fps ? 1 : 0) << "\n";
+    if (config.allow_mods) ini << "mods=1\n";
     if (config.vr && config.platform == BuildPlatform::Windows) ini << "vr=1\n";
     if (config.steam.enabled && config.platform != BuildPlatform::Android) {
         ini << "steam_app_id=" << config.steam.app_id << "\n";

@@ -1,4 +1,7 @@
 #include "ImGuiLayer.h"
+#include <iterator>
+#include <cstring>
+#include <fstream>
 
 #include <CramionFX/vk/VulkanCompat.h>
 
@@ -317,6 +320,29 @@ void ImGuiLayer::image(Icon id, float size, ImU32 tint) const {
 
 ImTextureID ImGuiLayer::thumbnail(const std::filesystem::path& file, ImVec2* size) {
     return loadTexture(file, size, 128);
+}
+
+ImFont* ImGuiLayer::uiFont(const std::filesystem::path& file) {
+    const std::u8string key8 = file.lexically_normal().u8string();
+    const std::string key(key8.begin(), key8.end());
+    if (const auto it = ui_fonts_.find(key); it != ui_fonts_.end()) return it->second;
+    ImFont* font = nullptr;
+    std::error_code ec;
+    if (std::filesystem::is_regular_file(file, ec)) {
+        std::ifstream in(file, std::ios::binary);
+        std::vector<char> bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        if (bytes.size() > 16) {
+            // ImGui se queda con la memoria (FontDataOwnedByAtlas).
+            void* data = IM_ALLOC(bytes.size());
+            std::memcpy(data, bytes.data(), bytes.size());
+            ImFontConfig config;
+            config.FontDataOwnedByAtlas = true;
+            font = ImGui::GetIO().Fonts->AddFontFromMemoryTTF(data, static_cast<int>(bytes.size()), 16.0f, &config);
+            if (font == nullptr) std::cerr << "[UI] No se pudo leer la fuente " << key << "\n";
+        }
+    }
+    ui_fonts_[key] = font;  // tambien los fallos: no se reintenta cada frame
+    return font;
 }
 
 ImTextureID ImGuiLayer::image(const std::filesystem::path& file, ImVec2* size) {

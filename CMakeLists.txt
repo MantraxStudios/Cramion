@@ -68,6 +68,17 @@ if(ANDROID)
     return()
 endif()
 
+# Linux (preset linux-release): el motor (Core, FX, la ventana Xlib) y el
+# servidor dedicado CramionServer. El editor y el reproductor siguen siendo
+# de Windows (usan Win32/GDI+ en su interfaz y carga).
+if(UNIX AND NOT APPLE)
+    add_subdirectory(CramionCore)
+    add_executable(CramionServer CramionEditor/server/ServerMain.cpp)
+    target_link_libraries(CramionServer PRIVATE Cramion::Core)
+    set_target_properties(CramionServer PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
+    return()
+endif()
+
 add_executable(cramion src/main.cpp "${CRAMION_ICON_RC}")
 # En Release, sin consola (como el editor y el player).
 if(CMAKE_BUILD_TYPE STREQUAL "Release")

@@ -174,11 +174,16 @@ void EditorApp::drawTerrainGeneratorWindow() {
             slider("Árboles por hectárea", &terrain_gen_tree_density_, 5.0f, 800.0f, "%.0f", nullptr);
         }
     }
-    if (ImGui::CollapsingHeader("Aldea")) {
+    if (ImGui::CollapsingHeader("Pueblo medieval")) {
         ImGui::SetNextItemWidth(-150.0f);
-        ImGui::SliderInt("Casas", &terrain_gen_houses_, 0, 40);
-        ImGui::SetItemTooltip("Cabañas y casas procedurales en un sitio llano y seco, mirando a la plaza (0 = sin aldea). "
-                              "Ventana > Generador de casas para hacerlas a mano.");
+        ImGui::SliderInt("Casas", &terrain_gen_houses_, 0, 150);
+        ImGui::SetItemTooltip("Pueblo procedural en un sitio llano y seco, con calles, plaza, edificios con interior y el "
+                              "terreno aplanado bajo cada uno (0 = sin pueblo). Ventana > Generador de casas y pueblos "
+                              "para mas opciones.");
+        const char* types[] = {"Según las casas", "Aldea", "Pueblo", "Ciudad amurallada"};
+        int type = terrain_gen_settlement_ + 1;
+        ImGui::SetNextItemWidth(-150.0f);
+        if (ImGui::Combo("Tipo", &type, types, 4)) terrain_gen_settlement_ = type - 1;
     }
     ImGui::EndDisabled();
 
@@ -235,8 +240,10 @@ void EditorApp::applyGeneratedTerrain(terrain::GenResult& result) {
     const terrain::GenSettings& s = terrain_gen_job_ ? terrain_gen_job_->settings : terrain_gen_;
     const bool textures = terrain_gen_job_ ? terrain_gen_job_->textures : terrain_gen_textures_;
 
-    // Reemplazar lo generado antes (el grupo entero).
+    // Reemplazar lo generado antes (el grupo entero). Lo aplanado bajo sus
+    // casas no se devuelve: el terreno entero es nuevo.
     if (ecs::Entity old = world_.findByName(kGroupName); old.valid()) world_.destroy(old);
+    flatten_states_.clear();
     ecs::Entity group = world_.create(kGroupName);
     group.setWorldPosition(Vec3{0.0f, 0.0f, 0.0f});
 
@@ -312,7 +319,7 @@ void EditorApp::applyGeneratedTerrain(terrain::GenResult& result) {
     // --- Aldea (casas procedurales, fuera del agua) ---
     if (terrain_gen_houses_ > 0) {
         std::string error;
-        if (placeVillage(terrain_gen_houses_, s.seed, group, &error) == 0) {
+        if (placeVillage(terrain_gen_houses_, s.seed, group, &error, terrain_gen_settlement_) == 0) {
             std::cerr << "[Generador] Sin aldea: " << error << std::endl;
         }
     }

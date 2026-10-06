@@ -32,6 +32,8 @@
 
 #include <CramionDM/TouchControls.h>
 #include "Dialogs.h"
+#include <CramionCore/world/WorldPartition.h>
+#include <CramionCore/ai/Crowd.h>
 #include <CramionCore/project/Pack.h>
 #include <CramionCore/input/InputActions.h>
 #include <CramionCore/asset/RenderTextureAsset.h>
@@ -55,7 +57,10 @@
 #include <functional>
 #include <CramionCore/asset/ModelMaterials.h>
 #include <CramionCore/terrain/TerrainGenerator.h>
+#include <CramionCore/terrain/TerrainTools.h>
 #include <CramionFX/asset/HouseGenerator.h>
+#include <CramionFX/asset/MedievalBuildings.h>
+#include <CramionFX/asset/SettlementGenerator.h>
 #include <CramionUpdater/Update.h>
 #include "PropertyInspector.h"
 #include "ProjectTemplates.h"
@@ -811,6 +816,36 @@ private:
         float plane_y = 0.0f;
     } water_drag_;
 
+    // --- Informe del cierre anterior (EditorCrashReport.cpp) ---
+    void initCrashReporting();
+    void drawCrashReportWindow();
+    std::filesystem::path crash_report_path_;
+    std::string crash_report_text_;
+    bool crash_report_open_ = false;
+
+    // --- Multitudes (CrowdSpawner) ---
+    ai::CrowdSystem crowds_;
+
+    // --- World Partition (EditorWorldPartition.cpp) ---
+    worldpart::WorldPartitionSystem world_partition_;
+    void drawWorldPartitionInspector(ecs::Entity entity);
+    void drawWorldPartitionGrid();
+    int buildHlods(const worldpart::WorldPartition& wp);  // celdas con HLOD creado
+
+    // --- Splines (EditorSplines.cpp) ---
+    // shape: 0 carretera, 1 camino, 2 rio, 3 muro, 4 valla, 5 tuberia,
+    // 6 railes, 7 cinta, -1 solo la curva.
+    ecs::Entity createSplineObject(int shape);
+    ecs::Entity createFogVolumeEntity();  // niebla local (FogVolume)
+    void drawSplineInspector(ecs::Entity entity);
+    bool drawSplineGizmos();  // true si el raton esta sobre un asa
+    struct SplineDrag {
+        bool active = false;
+        Uuid entity{};
+        int point = -1;
+        float plane_y = 0.0f;
+    } spline_drag_;
+
     // --- Configuracion grafica (ProjectSettings/Graphics.ini) ---
     void loadGraphicsSettings();
     void saveGraphicsSettings() const;
@@ -1312,6 +1347,7 @@ private:
     void startTerrainGeneration();
     void applyGeneratedTerrain(terrain::GenResult& result);
     int terrain_gen_houses_ = 8;  // casas de la aldea (0 = sin aldea)
+    int terrain_gen_settlement_ = -1;  // -1 segun las casas, 0 aldea, 1 pueblo, 2 ciudad amurallada
 
     // --- Modo cine (EditorCinematics.cpp): grabar trailers por MCP ---
     // Solo la imagen de la escena, a toda la ventana y del tamano pedido; el
@@ -1336,20 +1372,69 @@ public:
 private:
     void drawCinemaView();
 
-    // --- Generador de casas (EditorHouseGenerator.cpp) ---
+    // --- Generador de casas y pueblos medievales (EditorHouseGenerator.cpp) ---
     bool show_house_generator_ = false;
     asset::HouseSettings house_gen_ = asset::housePreset(asset::HouseStyle::LogCabin, 1);
     int house_gen_village_ = 8;
+    asset::SettlementSettings settlement_gen_{};
+    bool settlement_interiors_ = true;   // muebles en las casas del pueblo
+    bool settlement_lights_ = true;      // luz en cada hogar y fragua
+    bool settlement_here_ = false;       // delante de la camara (si no, busca el sitio)
+    int building_gen_ = 0;               // edificio suelto (MedievalBuilding)
     void drawHouseGeneratorWindow();
     // Texturas y .crmat compartidos de las casas (se crean si faltan).
     bool ensureHouseMaterials(assets::ModelMaterialMap& map, std::string* error);
     // Modelo de una casa (se reutiliza si ya existe uno igual); uuid invalido si falla.
-    Uuid writeHouseModel(const asset::HouseSettings& settings, std::string* error);
-    // Instancia con sus materiales y colisiones (MeshCollider + la puerta con BoxCollider).
-    ecs::Entity placeHouse(const Uuid& model, const core::Vec3& position, float yaw_degrees, ecs::Entity parent);
-    // Aldea en el terreno de la escena; devuelve cuantas casas puso.
-    int placeVillage(int count, std::uint32_t seed, ecs::Entity parent, std::string* error);
+    // `model` (opcional) recibe la geometria (caja, fuegos) aunque se reutilice.
+    Uuid writeHouseModel(const asset::HouseSettings& settings, std::string* error, asset::HouseModel* model = nullptr,
+                         bool refresh = true);
+    // Cualquier edificio procedural ya construido (iglesia, muralla...) como
+    // .crdata en Casas/Modelos: `key` distingue variantes (mismo key = mismo
+    // archivo). refresh = false en lotes (se refresca la base de datos al final).
+    Uuid writeBuildingModel(const std::string& name, const std::string& key, const asset::HouseModel& model, std::string* error,
+                            bool refresh = true);
+    // Instancia con sus materiales, colisiones (MeshCollider + la puerta con un
+    // BoxCollider ajustado a su malla), una luz en cada fuego y, con
+    // `flatten`, el componente TerrainFlatten (aplana el terreno debajo).
+    ecs::Entity placeHouse(const Uuid& model, const core::Vec3& position, float yaw_degrees, ecs::Entity parent,
+                           bool flatten = true, const std::vector<core::Vec3>* lights = nullptr, bool commit_terrain = true);
+    // Aldea/pueblo en el terreno de la escena; devuelve cuantas casas puso.
+    // type: -1 segun el numero de casas, si no un asset::SettlementType.
+    int placeVillage(int count, std::uint32_t seed, ecs::Entity parent, std::string* error, int type = -1);
+    // Pueblo o ciudad medieval completo (calles, plaza, edificios con interior,
+    // murallas, campos). search_radius > 0: busca el mejor sitio alrededor de
+    // `center`. undo: guarda el terreno de antes para Ctrl+Z.
+    ecs::Entity generateSettlement(const asset::SettlementSettings& settings, const core::Vec3& center, float search_radius,
+                                   ecs::Entity parent, std::string* error, bool undo = true, int* houses = nullptr);
     bool groundAt(float x, float z, float& y);
+    // El terreno bajo (x, z): su entidad y datos. false si no hay.
+    bool terrainAt(float x, float z, ecs::Entity& entity, std::shared_ptr<terrain::TerrainData>& data);
+
+    // --- Aplanar el terreno bajo los objetos (componente TerrainFlatten) ---
+    struct FlattenState {
+        core::Mat4 pose = core::Mat4::identity();
+        ecs::DVec3 origin{};            // origen flotante del mundo al guardar la pose
+        std::uint64_t settings = 0;     // firma de los campos del componente
+        std::string terrain;            // ruta de los datos del terreno
+        terrain::HeightPatch patch;     // alturas de antes (para devolverlas)
+        terrain::Footprint footprint{};
+        float blend = 0.0f;
+        bool applied = false;
+        std::uint64_t order = 0;        // orden de aplanado (se deshace al reves)
+        double retry_at = 0.0;
+    };
+    std::unordered_map<Uuid, FlattenState> flatten_states_;
+    bool flatten_prime_ = true;         // escena nueva: lo que hay ya esta aplanado
+    Uuid flatten_scene_{};
+    std::uint64_t flatten_order_ = 0;
+    // Huella y altura del suelo de una entidad con TerrainFlatten.
+    bool flattenFootprintOf(ecs::Entity entity, terrain::Footprint& footprint, float& ground);
+    // Aplana ya bajo la entidad (anade TerrainFlatten si no lo tiene) y guarda
+    // como estaba. false si no tiene malla o no hay terreno debajo.
+    bool flattenUnder(ecs::Entity entity, bool commit_collision = true);
+    // Cada frame (fuera de Play): rehace los que se movieron al soltarlos y
+    // devuelve el terreno de los borrados.
+    void updateTerrainFlatteners();
     PaintGroup paint_group_;
     int paint_selected_ = -1;
     PaintBrush paint_brush_;
@@ -1955,6 +2040,8 @@ private:
     bool show_statistics_ = true;
     // Ventana > Insights (perfilador de CPU, EditorInsights.cpp).
     bool show_insights_ = false;
+    bool show_accessibility_ = false;  // Ventana > Accesibilidad (EditorAccessibility.cpp)
+    void drawAccessibilityWindow();
     void drawInsightsWindow();
     bool show_console_ = true;
     bool show_render_settings_ = true;

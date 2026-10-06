@@ -12,6 +12,7 @@
 //     asas para editar cajas, esferas y capsulas, emisores de particulas,
 //     contactos, velocidades y consultas (rayos, esferas, cajas).
 
+#include <CramionCore/spline/Spline.h>
 #include <CramionCore/profiling/Profiler.h>
 #include "EditorApp.h"
 
@@ -171,9 +172,12 @@ void EditorApp::enterPlay() {
     particles_.clear();
     fluids_.clear();  // la vista previa del editor no pasa al juego
     fluid_preview_ = false;
+    // World Partition: lo lejano sale del mundo antes de crear la fisica.
+    world_partition_.begin(world_, scene_.camera().position());
     physics_.start(world_);
     effectsEnterPlay();  // VFX, fisica 2D y repeticiones (EditorEffects.cpp)
     nav_.resetAgents();
+    crowds_.begin(world_);  // multitudes (CrowdSpawner) antes de los scripts
     startVoxels();  // antes de los scripts (Voxel.* en Awake)
     // Audio y scripts (despues de la fisica: los scripts la usan en Awake).
     audio_.start(world_);
@@ -241,6 +245,7 @@ void EditorApp::exitPlay() {
     play_state_ = PlayState::Edit;
     xr_rig_.reset();
     collider_handle_drag_ = 0;
+    world_partition_.end(world_, false);  // el mundo entero vuelve con el snapshot
     // El mundo vuelve a como estaba al darle a Play (la seleccion va por UUID).
     const ecs::DVec3 origin_before = world_.origin();
     ecs::deserializeWorld(world_, play_snapshot_);
@@ -418,6 +423,11 @@ void EditorApp::updatePhysics(float delta_seconds) {
                                          : play_state_ == PlayState::Paused ? fire::FireMode::Paused
                                                                             : fire::FireMode::Edit;
         fire::updateFires(world_, delta_seconds, fire_mode, &terrain_store_);
+    }
+    if (play_state_ == PlayState::Playing) {
+        spline::updateSplineFollowers(world_, delta_seconds);
+        world_partition_.update(world_, scene_.camera().position());  // celdas cerca del jugador
+        crowds_.update(world_, delta_seconds, scene_.camera().position());
     }
     if (console_events_skipped_ > 0) {
         std::cout << "[Fisica] ... y " << console_events_skipped_ << " eventos mas en este frame (ventana Fisica > Eventos)\n";

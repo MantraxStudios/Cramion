@@ -400,7 +400,13 @@ void EditorApp::drawInspector() {
                 for (ecs::Entity e : targets) {
                     type.remove(world_, e.handle());
                     type.add(world_, e.handle());
+                    // Como el Reset de Unity: el collider vuelve a la medida de la malla.
+                    if (physics::isFittableCollider(type.name)) physics_.fitColliderToMesh(e, type.name);
                 }
+                commit();
+            }
+            if (physics::isFittableCollider(type.name) && ImGui::MenuItem("Ajustar a la malla (AABB)")) {
+                for (ecs::Entity e : targets) physics_.fitColliderToMesh(e, type.name);
                 commit();
             }
             if (ImGui::MenuItem("Copiar valores")) {
@@ -539,9 +545,22 @@ void EditorApp::drawInspector() {
             // Colliders: editar su forma con asas en la vista (como Unity).
             if (type.category == "Fisica" && type.name.find("Collider") != std::string::npos &&
                 type.name != "MeshCollider" && type.name != "PlaneCollider") {
-                if (ImGui::Button(edit_collider_ ? "Terminar de editar collider" : "Editar collider",
-                                  ImVec2(-1.0f, 0.0f))) {
+                const bool fittable = physics::isFittableCollider(type.name);
+                const float half = (ImGui::GetContentRegionAvail().x - ImGui::GetStyle().ItemSpacing.x) * 0.5f;
+                if (ImGui::Button(edit_collider_ ? "Terminar de editar" : "Editar collider",
+                                  ImVec2(fittable ? half : -1.0f, 0.0f))) {
                     edit_collider_ = !edit_collider_;
+                }
+                if (fittable) {
+                    ImGui::SameLine();
+                    if (ImGui::Button("Ajustar a la malla", ImVec2(-1.0f, 0.0f))) {
+                        int fitted = 0;
+                        for (ecs::Entity e : targets) fitted += physics_.fitColliderToMesh(e, type.name) ? 1 : 0;
+                        if (fitted > 0) commit();
+                        else std::cerr << "[Fisica] " << entity.name() << ": no tiene malla (ni sus hijos) para ajustar el collider" << std::endl;
+                    }
+                    ImGui::SetItemTooltip("Centro y tamano = el AABB de su malla (o el de las mallas de sus hijos), como al "
+                                          "anadirlo en Unity. La escala del Transform lo multiplica igual que a la malla.");
                 }
             }
             // Rigidbody en Play: su estado real en la simulacion.
@@ -576,6 +595,8 @@ void EditorApp::drawInspector() {
             if (type.category == "Cinematicas") drawCinematicInspector(type.name, entity);
             if (type.name == "Terrain") drawTerrainInspector(entity);
             if (type.name == "WaterBody") drawWaterInspector(entity);
+            if (type.name == "Spline") drawSplineInspector(entity);
+            if (type.name == "WorldPartition") drawWorldPartitionInspector(entity);
             if (type.name == "Fire") drawFireInspector(entity);
             if (type.name == "Environment") drawEnvironmentInspector(entity);
             if (type.name == "NavMeshBounds") drawNavMeshBoundsInspector(entity);
@@ -890,7 +911,11 @@ void EditorApp::drawAddComponent(ecs::Entity entity) {
 
     if (chosen != nullptr) {
         for (ecs::Entity e : targets.empty() ? std::vector<ecs::Entity>{entity} : targets) {
-            if (!chosen->has(world_, e.handle())) chosen->add(world_, e.handle());
+            if (!chosen->has(world_, e.handle())) {
+                chosen->add(world_, e.handle());
+                // Como Unity: caja, esfera y capsula nacen con la medida (AABB) de la malla.
+                if (physics::isFittableCollider(chosen->name)) physics_.fitColliderToMesh(e, chosen->name);
+            }
         }
         commit();
         ImGui::CloseCurrentPopup();

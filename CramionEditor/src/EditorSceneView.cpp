@@ -515,7 +515,9 @@ void EditorApp::drawSceneView() {
     if (show_gizmos_) {
         const bool cinematic_handle = drawCinematicGizmos();
         const bool water_handle = drawWaterGizmos();
-        waypoint_handle = cinematic_handle || water_handle;
+        const bool spline_handle = drawSplineGizmos();
+        drawWorldPartitionGrid();
+        waypoint_handle = cinematic_handle || water_handle || spline_handle;
         collider_handle = drawColliderHandles();
     }
     // Fuego: contorno de la zona y encender con clic (se queda el clic).

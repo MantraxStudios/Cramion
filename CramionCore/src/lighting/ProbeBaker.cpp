@@ -4,6 +4,7 @@
 #include "CramionCore/ecs/Components.h"
 #include "CramionCore/ecs/MathUtil.h"
 #include "CramionCore/ecs/RuntimeMesh.h"
+#include "CramionCore/jobs/JobSystem.h"
 #include "CramionCore/physics/PhysicsComponents.h"
 
 #include <CramionFX/asset/Model.h>
@@ -15,6 +16,7 @@
 #include <fstream>
 #include <random>
 #include <thread>
+#include <unordered_map>
 
 namespace cramion::lighting {
 
@@ -352,12 +354,154 @@ void registerLightingComponents() {
     }
 }
 
+// --- Lightmap de superficie --------------------------------------------------------------
+
+// Las celdas que tocan las superficies (dentro de los volumenes, si los hay) y
+// en cada una un mini-horneado L1 desde un punto de su superficie, un poco
+// hacia fuera. Todo en los nucleos (job system).
+static bool bakeSurfaceTexels(const BakeScene& scene, const Tracer& tracer, gfx::SurfaceLightmap& out, BakeProgress* progress,
+                       std::string* error) {
+    const float cell = std::clamp(scene.settings.surface_texel, 0.1f, 8.0f);
+    const float inv = 1.0f / cell;
+    struct CellInfo {
+        Vec3 normal{};
+        Vec3 point{};
+        int samples = 0;
+    };
+    std::unordered_map<std::uint64_t, CellInfo> cells;
+    const auto inside_volumes = [&](const Vec3& p) {
+        if (scene.volumes.empty()) return true;
+        for (const BakeVolume& v : scene.volumes) {
+            if (p.x >= v.min.x && p.y >= v.min.y && p.z >= v.min.z && p.x <= v.min.x + v.size.x &&
+                p.y <= v.min.y + v.size.y && p.z <= v.min.z + v.size.z) {
+                return true;
+            }
+        }
+        return false;
+    };
+    if (progress) progress->setStage("Lightmap de superficie: buscando texeles");
+    for (const BakeTriangle& t : scene.triangles) {
+        Vec3 n = core::cross(t.b - t.a, t.c - t.a);
+        const float area2 = core::length(n);
+        if (area2 < 1e-8f) continue;
+        n = n * (1.0f / area2);
+        const float edge = std::max({core::length(t.b - t.a), core::length(t.c - t.a), core::length(t.c - t.b)});
+        const int steps = std::clamp(static_cast<int>(std::ceil(edge / (cell * 0.5f))), 1, 512);
+        for (int i = 0; i <= steps; ++i) {
+            for (int j = 0; i + j <= steps; ++j) {
+                const float u = static_cast<float>(i) / static_cast<float>(steps);
+                const float w = static_cast<float>(j) / static_cast<float>(steps);
+                const Vec3 p = t.a + (t.b - t.a) * u + (t.c - t.a) * w;
+                if (!inside_volumes(p)) continue;
+                const std::uint64_t key = gfx::surfaceCellKey(static_cast<int>(std::floor(p.x * inv)),
+                                                              static_cast<int>(std::floor(p.y * inv)),
+                                                              static_cast<int>(std::floor(p.z * inv)));
+                CellInfo& c = cells[key];
+                c.normal += n;
+                if (c.samples == 0) c.point = p;
+                ++c.samples;
+            }
+        }
+        if (cells.size() > scene.settings.max_surface_texels) {
+            if (error) *error = "demasiados texeles de lightmap (" + std::to_string(cells.size()) + "): sube el tamano del texel";
+            return false;
+        }
+    }
+    if (cells.empty()) return true;
+    std::vector<std::pair<std::uint64_t, CellInfo>> list(cells.begin(), cells.end());
+    std::vector<Vec4> texels(list.size() * gfx::kSurfaceTexelVec4, Vec4{});
+    std::vector<char> valid(list.size(), 0);
+    const int rays = std::clamp(scene.settings.surface_rays, 8, 4096);
+    const int bounces = std::clamp(scene.settings.bounces, 0, 8);
+    const float weight = 4.0f * kPi / static_cast<float>(rays);
+    std::atomic<std::size_t> done{0};
+    if (progress) progress->setStage("Lightmap de superficie: " + std::to_string(list.size()) + " texeles");
+    jobs::parallelFor(list.size(), 16, [&](std::size_t begin, std::size_t end) {
+        std::mt19937 rng(static_cast<unsigned>(begin * 2654435761u + 7u));
+        std::uniform_real_distribution<float> u01(0.0f, 1.0f);
+        for (std::size_t i = begin; i < end; ++i) {
+            if (progress && progress->cancel.load()) return;
+            const CellInfo& c = list[i].second;
+            const float nl = core::length(c.normal);
+            const Vec3 n = nl > 1e-4f ? c.normal * (1.0f / nl) : Vec3{0.0f, 1.0f, 0.0f};
+            // Un poco hacia fuera de la superficie (dos caras: nl pequeno, menos).
+            const Vec3 origin = c.point + n * (nl / static_cast<float>(c.samples) > 0.5f ? std::min(cell * 0.25f, 0.1f) : 0.02f);
+            Vec3 rgb[4] = {};
+            float vis[4] = {};
+            int backfaces = 0;
+            const float a = u01(rng) * 2.0f * kPi;
+            const float golden = kPi * (3.0f - std::sqrt(5.0f));
+            for (int r = 0; r < rays; ++r) {
+                const float y = 1.0f - (static_cast<float>(r) + 0.5f) / static_cast<float>(rays) * 2.0f;
+                const float rad = std::sqrt(std::max(0.0f, 1.0f - y * y));
+                const float phi = golden * static_cast<float>(r) + a;
+                const Vec3 d{rad * std::cos(phi), y, rad * std::sin(phi)};
+                bool escaped = false;
+                bool backface = false;
+                const Vec3 L = tracer.incoming(origin, d, bounces, rng, escaped, backface);
+                if (backface) ++backfaces;
+                const float sh[4] = {0.282095f, 0.488603f * d.y, 0.488603f * d.z, 0.488603f * d.x};
+                if (escaped) {
+                    for (int k = 0; k < 4; ++k) vis[k] += sh[k] * weight;
+                } else {
+                    for (int k = 0; k < 4; ++k) rgb[k] += L * (sh[k] * weight);
+                }
+            }
+            if (static_cast<float>(backfaces) < static_cast<float>(rays) * 0.4f) {
+                const float band[4] = {1.0f, 2.0f / 3.0f, 2.0f / 3.0f, 2.0f / 3.0f};
+                Vec4* t = &texels[i * gfx::kSurfaceTexelVec4];
+                float f[16];
+                for (int k = 0; k < 4; ++k) {
+                    f[k * 3 + 0] = rgb[k].x * band[k];
+                    f[k * 3 + 1] = rgb[k].y * band[k];
+                    f[k * 3 + 2] = rgb[k].z * band[k];
+                    f[12 + k] = vis[k] * band[k];
+                }
+                for (int q = 0; q < 4; ++q) t[q] = Vec4{f[q * 4], f[q * 4 + 1], f[q * 4 + 2], f[q * 4 + 3]};
+                valid[i] = 1;
+            }
+            const std::size_t finished = ++done;
+            if (progress && (finished & 255u) == 0) {
+                progress->fraction.store(static_cast<float>(finished) / static_cast<float>(list.size()));
+            }
+        }
+    });
+    if (progress && progress->cancel.load()) {
+        if (error) *error = "cancelado";
+        return false;
+    }
+    // Tabla hash (la mitad llena como mucho).
+    std::size_t used = 0;
+    for (const char v : valid) used += v != 0 ? 1u : 0u;
+    std::uint32_t capacity = 16;
+    while (capacity < used * 2 + 1) capacity <<= 1;
+    out = gfx::SurfaceLightmap{};
+    out.cell_size = cell;
+    out.capacity = capacity;
+    out.keys.assign(static_cast<std::size_t>(capacity) * 2, gfx::kSurfaceEmptyKey);
+    out.texels.assign(static_cast<std::size_t>(capacity) * gfx::kSurfaceTexelVec4, Vec4{});
+    for (std::size_t i = 0; i < list.size(); ++i) {
+        if (!valid[i]) continue;
+        const std::uint32_t lo = static_cast<std::uint32_t>(list[i].first & 0xFFFFFFFFull);
+        const std::uint32_t hi = static_cast<std::uint32_t>(list[i].first >> 32);
+        std::uint32_t slot = gfx::surfaceCellHash(lo, hi) & (capacity - 1);
+        while (out.keys[static_cast<std::size_t>(slot) * 2] != gfx::kSurfaceEmptyKey) slot = (slot + 1) & (capacity - 1);
+        out.keys[static_cast<std::size_t>(slot) * 2] = lo;
+        out.keys[static_cast<std::size_t>(slot) * 2 + 1] = hi;
+        for (std::uint32_t q = 0; q < gfx::kSurfaceTexelVec4; ++q) {
+            out.texels[static_cast<std::size_t>(slot) * gfx::kSurfaceTexelVec4 + q] = texels[i * gfx::kSurfaceTexelVec4 + q];
+        }
+        ++out.count;
+    }
+    return true;
+}
+
 // --- Horneado ----------------------------------------------------------------------------
 
 bool bakeProbes(const BakeScene& scene, gfx::BakedLighting& out, BakeProgress* progress, BakeStats* stats, std::string* error) {
     const auto start = std::chrono::steady_clock::now();
     out = gfx::BakedLighting{};
-    if (scene.volumes.empty()) {
+    if (scene.volumes.empty() && scene.settings.surface_texel <= 0.0f) {
         if (error) *error = "no hay volumenes de sondas";
         return false;
     }
@@ -483,6 +627,12 @@ bool bakeProbes(const BakeScene& scene, gfx::BakedLighting& out, BakeProgress* p
         out = gfx::BakedLighting{};
         return false;
     }
+    if (scene.settings.surface_texel > 0.0f) {
+        if (!bakeSurfaceTexels(scene, tracer, out.surface, progress, error)) {
+            out = gfx::BakedLighting{};
+            return false;
+        }
+    }
     if (stats != nullptr) {
         stats->triangles = scene.triangles.size();
         stats->probes = jobs.size();
@@ -604,7 +754,7 @@ BakeVolume volumeAround(const std::vector<BakeTriangle>& triangles, float spacin
 
 namespace {
 constexpr char kMagic[4] = {'C', 'R', 'B', 'K'};
-constexpr std::uint32_t kVersion = 1;
+constexpr std::uint32_t kVersion = 2;  // 2: + lightmap de superficie
 }  // namespace
 
 std::filesystem::path bakedLightingFile(const std::filesystem::path& scene_file) {
@@ -633,6 +783,15 @@ bool saveBakedLighting(const std::filesystem::path& file, const gfx::BakedLighti
         const std::uint64_t count = data.probes.size();
         out.write(reinterpret_cast<const char*>(&count), sizeof(count));
         if (count > 0) out.write(reinterpret_cast<const char*>(data.probes.data()), static_cast<std::streamsize>(count * sizeof(Vec4)));
+        // Lightmap de superficie (version 2).
+        const gfx::SurfaceLightmap& sl = data.surface;
+        const std::uint32_t surface_header[3] = {sl.capacity, sl.count, 0};
+        out.write(reinterpret_cast<const char*>(&sl.cell_size), sizeof(float));
+        out.write(reinterpret_cast<const char*>(surface_header), sizeof(surface_header));
+        if (sl.capacity > 0) {
+            out.write(reinterpret_cast<const char*>(sl.keys.data()), static_cast<std::streamsize>(sl.keys.size() * sizeof(std::uint32_t)));
+            out.write(reinterpret_cast<const char*>(sl.texels.data()), static_cast<std::streamsize>(sl.texels.size() * sizeof(Vec4)));
+        }
         if (!out) {
             if (error) *error = "error escribiendo " + file.string();
             return false;
@@ -657,7 +816,7 @@ bool loadBakedLighting(const std::filesystem::path& file, gfx::BakedLighting& da
     in.read(magic, 4);
     std::uint32_t header[3] = {};
     in.read(reinterpret_cast<char*>(header), sizeof(header));
-    if (!in || std::memcmp(magic, kMagic, 4) != 0 || header[0] != kVersion || header[2] > 1024) {
+    if (!in || std::memcmp(magic, kMagic, 4) != 0 || header[0] < 1 || header[0] > kVersion || header[2] > 1024) {
         if (error) *error = "archivo de iluminacion danado: " + file.string();
         return false;
     }
@@ -689,6 +848,28 @@ bool loadBakedLighting(const std::filesystem::path& file, gfx::BakedLighting& da
     if (!in) {
         if (error) *error = "archivo de iluminacion incompleto: " + file.string();
         return false;
+    }
+    if (header[0] >= 2) {
+        gfx::SurfaceLightmap& sl = result.surface;
+        std::uint32_t surface_header[3] = {};
+        in.read(reinterpret_cast<char*>(&sl.cell_size), sizeof(float));
+        in.read(reinterpret_cast<char*>(surface_header), sizeof(surface_header));
+        if (!in || surface_header[0] > (1u << 26) || (surface_header[0] & (surface_header[0] - 1)) != 0) {
+            if (error) *error = "archivo de iluminacion danado: " + file.string();
+            return false;
+        }
+        sl.capacity = surface_header[0];
+        sl.count = surface_header[1];
+        if (sl.capacity > 0) {
+            sl.keys.resize(static_cast<std::size_t>(sl.capacity) * 2);
+            sl.texels.resize(static_cast<std::size_t>(sl.capacity) * gfx::kSurfaceTexelVec4);
+            in.read(reinterpret_cast<char*>(sl.keys.data()), static_cast<std::streamsize>(sl.keys.size() * sizeof(std::uint32_t)));
+            in.read(reinterpret_cast<char*>(sl.texels.data()), static_cast<std::streamsize>(sl.texels.size() * sizeof(Vec4)));
+            if (!in) {
+                if (error) *error = "archivo de iluminacion incompleto: " + file.string();
+                return false;
+            }
+        }
     }
     data = std::move(result);
     return true;

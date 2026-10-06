@@ -389,6 +389,15 @@ public:
     // (solido y trigger). false si no tiene cuerpo. Tope de triangulos.
     bool bodyTriangles(ecs::Entity entity, std::vector<core::Vec3>& triangles,
                        std::size_t max_triangles = 20000) const;
+
+    // --- Ajustar colliders a la malla (como Unity) ---
+    // AABB en el espacio local de la entidad de la malla de su MeshRenderer
+    // (la pieza del modelo o la malla creada por codigo); si no tiene, el de
+    // las mallas de todos sus descendientes. No necesita el mundo en marcha.
+    bool localMeshBounds(ecs::Entity entity, core::Vec3& min, core::Vec3& max) const;
+    // localMeshBounds + fitColliderToBounds (PhysicsComponents.h). `only`:
+    // solo ese tipo de collider. false si no hay malla o collider ajustable.
+    bool fitColliderToMesh(ecs::Entity entity, const std::string& only = {}) const;
     PhysicsStats stats() const;
     std::uint32_t bodyCount() const;
 

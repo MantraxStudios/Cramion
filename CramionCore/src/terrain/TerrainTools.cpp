@@ -1,4 +1,5 @@
 #include "CramionCore/terrain/TerrainTools.h"
+#include "CramionCore/jobs/JobSystem.h"
 
 #include <algorithm>
 #include <cmath>
@@ -370,11 +371,320 @@ bool applyRamp(TerrainData& data, const Terrain& terrain, const Vec3& origin, co
     return changed;
 }
 
+// -----------------------------------------------------------------------------
+// Huellas y caminos
+// -----------------------------------------------------------------------------
+
+namespace {
+
+// Punto del suelo en los ejes de la huella (x, z locales).
+core::Vec2 footprintLocal(const Footprint& f, float x, float z) {
+    const float a = f.yaw_degrees * core::kPi / 180.0f;
+    const float c = std::cos(a);
+    const float s = std::sin(a);
+    const float dx = x - f.center.x;
+    const float dz = z - f.center.z;
+    return core::Vec2{c * dx - s * dz, s * dx + c * dz};
+}
+
+// Distancia (m) de un punto del suelo a la huella (0 dentro).
+float footprintDistance(const Footprint& f, float x, float z) {
+    const core::Vec2 l = footprintLocal(f, x, z);
+    return std::hypot(std::max(std::abs(l.x) - f.half.x, 0.0f), std::max(std::abs(l.y) - f.half.y, 0.0f));
+}
+
+float footprintRadius(const Footprint& f) { return std::hypot(f.half.x, f.half.y); }
+
+// Peso de una mezcla: 1 hasta `inner`, baja suave hasta `inner + blend`.
+float blendWeight(float distance, float inner, float blend) {
+    if (distance <= inner) return 1.0f;
+    if (blend <= 0.0f || distance >= inner + blend) return 0.0f;
+    const float t = (distance - inner) / blend;
+    return 1.0f - t * t * (3.0f - 2.0f * t);
+}
+
+// Mezcla los pesos de un texel hacia `amount` de la capa `layer` (w = 0..1).
+bool blendSplat(TerrainData& data, std::uint32_t x, std::uint32_t y, int layer, float amount, float w) {
+    float weights[kMaxLayers];
+    float total = 0.0f;
+    for (int l = 0; l < kMaxLayers; ++l) {
+        weights[l] = static_cast<float>(data.weight(l, x, y)) / 255.0f;
+        total += weights[l];
+    }
+    if (total <= 0.0f) {
+        weights[0] = 1.0f;
+        total = 1.0f;
+    }
+    for (float& value : weights) value /= total;
+    const float target = weights[layer] + (std::clamp(amount, 0.0f, 1.0f) - weights[layer]) * std::clamp(w, 0.0f, 1.0f);
+    const float rest = 1.0f - weights[layer];
+    const float new_rest = 1.0f - target;
+    for (int l = 0; l < kMaxLayers; ++l) {
+        if (l == layer) continue;
+        weights[l] = rest > 1e-5f ? weights[l] * new_rest / rest : (l == (layer == 0 ? 1 : 0) ? new_rest : 0.0f);
+    }
+    weights[layer] = target;
+    int sum = 0;
+    int biggest = 0;
+    std::uint8_t bytes[kMaxLayers];
+    for (int l = 0; l < kMaxLayers; ++l) {
+        bytes[l] = static_cast<std::uint8_t>(std::clamp(std::lround(weights[l] * 255.0f), 0L, 255L));
+        sum += bytes[l];
+        if (weights[l] > weights[biggest]) biggest = l;
+    }
+    bytes[biggest] = static_cast<std::uint8_t>(std::clamp(static_cast<int>(bytes[biggest]) + 255 - sum, 0, 255));
+    bool changed = false;
+    for (int l = 0; l < kMaxLayers; ++l) {
+        std::uint8_t* p = data.weightPtr(l, x, y);
+        if (p != nullptr && *p != bytes[l]) {
+            *p = bytes[l];
+            changed = true;
+        }
+    }
+    return changed;
+}
+
+// Texeles de los pesos dentro de un circulo (mundo): rango inclusivo.
+struct SplatSpan {
+    int x0, y0, x1, y1;
+    float cell;
+};
+SplatSpan splatSpan(const TerrainData& data, const Terrain& terrain, const Vec3& origin, float cx, float cz, float radius) {
+    const auto res = static_cast<int>(data.splatResolution());
+    const float cell = terrain.size / static_cast<float>(std::max(res, 1));
+    const float cu = (cx - origin.x) / cell - 0.5f;
+    const float cv = (cz - origin.z) / cell - 0.5f;
+    const float r = radius / cell + 1.0f;
+    return SplatSpan{std::clamp(static_cast<int>(std::floor(cu - r)), 0, res - 1),
+                     std::clamp(static_cast<int>(std::floor(cv - r)), 0, res - 1),
+                     std::clamp(static_cast<int>(std::ceil(cu + r)), 0, res - 1),
+                     std::clamp(static_cast<int>(std::ceil(cv + r)), 0, res - 1), cell};
+}
+
+// Proyeccion de un punto del suelo sobre una polilinea: distancia horizontal
+// y altura del camino alli.
+bool projectOnPath(const std::vector<Vec3>& points, float x, float z, float& distance, float& height) {
+    distance = 1e30f;
+    bool any = false;
+    for (std::size_t i = 0; i + 1 < points.size(); ++i) {
+        const Vec3& a = points[i];
+        const Vec3& b = points[i + 1];
+        const float abx = b.x - a.x;
+        const float abz = b.z - a.z;
+        const float len2 = abx * abx + abz * abz;
+        const float t = len2 > 1e-8f ? std::clamp(((x - a.x) * abx + (z - a.z) * abz) / len2, 0.0f, 1.0f) : 0.0f;
+        const float d = std::hypot(x - (a.x + abx * t), z - (a.z + abz * t));
+        if (d < distance) {
+            distance = d;
+            height = a.y + (b.y - a.y) * t;
+            any = true;
+        }
+    }
+    return any;
+}
+
+}  // namespace
+
+bool flattenFootprint(TerrainData& data, const Terrain& terrain, const Vec3& origin, const Footprint& footprint,
+                      float height, float blend) {
+    if (data.resolution() < 3) return false;
+    const float cell = terrain.size / static_cast<float>(data.resolution() - 1);
+    // Toda celda que toca la huella: sus cuatro vertices (el muestreo
+    // bilineal usa esos) a lo sumo a una diagonal de celda.
+    const float cover = cell * 1.5f;
+    blend = std::max(blend, 0.0f);
+    const Span span = heightSpan(data, terrain, origin, footprint.center.x, footprint.center.z,
+                                 footprintRadius(footprint) + cover + blend);
+    const auto res = static_cast<int>(data.resolution());
+    const float max_height = std::max(terrain.height, 1e-3f);
+    const float target = std::clamp((height - origin.y) / max_height, 0.0f, 1.0f);
+    bool changed = false;
+    for (int y = span.y0; y <= span.y1; ++y) {
+        for (int x = span.x0; x <= span.x1; ++x) {
+            const Vec3 p = texelWorld(data, terrain, origin, x, y);
+            const float w = blendWeight(footprintDistance(footprint, p.x, p.z), cover, blend);
+            if (w <= 0.0f) continue;
+            float& value = data.heights()[static_cast<std::size_t>(y) * res + x];
+            const float next = value + (target - value) * w;
+            if (next != value) {
+                value = next;
+                changed = true;
+            }
+        }
+    }
+    if (changed) data.markHeights(span.x0, span.y0, span.x1, span.y1);
+    return changed;
+}
+
+float footprintHeight(const TerrainData& data, const Terrain& terrain, const Vec3& origin, const Footprint& footprint,
+                      float* min_height, float* max_height) {
+    std::vector<float> samples;
+    constexpr int kSteps = 9;
+    const float a = footprint.yaw_degrees * core::kPi / 180.0f;
+    const float c = std::cos(a);
+    const float s = std::sin(a);
+    for (int i = 0; i < kSteps; ++i) {
+        for (int j = 0; j < kSteps; ++j) {
+            const float lx = (static_cast<float>(i) / (kSteps - 1) * 2.0f - 1.0f) * footprint.half.x;
+            const float lz = (static_cast<float>(j) / (kSteps - 1) * 2.0f - 1.0f) * footprint.half.y;
+            // Local -> mundo (giro en Y).
+            const float x = footprint.center.x + c * lx + s * lz;
+            const float z = footprint.center.z - s * lx + c * lz;
+            if (x < origin.x || z < origin.z || x > origin.x + terrain.size || z > origin.z + terrain.size) continue;
+            samples.push_back(heightAt(data, terrain, origin, x, z));
+        }
+    }
+    if (samples.empty()) {
+        const float h = heightAt(data, terrain, origin, footprint.center.x, footprint.center.z);
+        if (min_height) *min_height = h;
+        if (max_height) *max_height = h;
+        return h;
+    }
+    std::sort(samples.begin(), samples.end());
+    if (min_height) *min_height = samples.front();
+    if (max_height) *max_height = samples.back();
+    return samples[samples.size() / 2];
+}
+
+bool paintFootprint(TerrainData& data, const Terrain& terrain, const Vec3& origin, const Footprint& footprint, int layer,
+                    float blend, float amount) {
+    if (data.splatResolution() == 0 || layer < 0 || layer >= kMaxLayers) return false;
+    blend = std::max(blend, 0.0f);
+    const SplatSpan span = splatSpan(data, terrain, origin, footprint.center.x, footprint.center.z,
+                                     footprintRadius(footprint) + blend);
+    bool changed = false;
+    for (int y = span.y0; y <= span.y1; ++y) {
+        for (int x = span.x0; x <= span.x1; ++x) {
+            const float px = origin.x + (static_cast<float>(x) + 0.5f) * span.cell;
+            const float pz = origin.z + (static_cast<float>(y) + 0.5f) * span.cell;
+            const float w = blendWeight(footprintDistance(footprint, px, pz), span.cell * 0.5f, blend);
+            if (w <= 0.0f) continue;
+            changed = blendSplat(data, static_cast<std::uint32_t>(x), static_cast<std::uint32_t>(y), layer, amount, w) || changed;
+        }
+    }
+    if (changed) data.markSplat(span.x0, span.y0, span.x1, span.y1);
+    return changed;
+}
+
+bool flattenPath(TerrainData& data, const Terrain& terrain, const Vec3& origin, const std::vector<Vec3>& points,
+                 float width, float blend) {
+    if (data.resolution() < 3 || points.size() < 2) return false;
+    const float cell = terrain.size / static_cast<float>(data.resolution() - 1);
+    const float inner = std::max(width * 0.5f, cell * 0.75f);
+    blend = std::max(blend, 0.0f);
+    const auto res = static_cast<int>(data.resolution());
+    const float max_height = std::max(terrain.height, 1e-3f);
+    // Tramo a tramo (cada uno con su caja) para no recorrer todo el terreno.
+    bool changed = false;
+    for (std::size_t i = 0; i + 1 < points.size(); ++i) {
+        const Vec3& a = points[i];
+        const Vec3& b = points[i + 1];
+        const float half_len = std::hypot(b.x - a.x, b.z - a.z) * 0.5f;
+        const Span span = heightSpan(data, terrain, origin, (a.x + b.x) * 0.5f, (a.z + b.z) * 0.5f, half_len + inner + blend);
+        const std::vector<Vec3> segment = {a, b};
+        for (int y = span.y0; y <= span.y1; ++y) {
+            for (int x = span.x0; x <= span.x1; ++x) {
+                const Vec3 p = texelWorld(data, terrain, origin, x, y);
+                float distance = 0.0f;
+                float height = 0.0f;
+                // La distancia a TODO el camino (no solo a este tramo): asi
+                // cada vertice lo decide el tramo mas cercano, sin escalones.
+                if (!projectOnPath(points, p.x, p.z, distance, height)) continue;
+                float seg_distance = 0.0f;
+                float seg_height = 0.0f;
+                projectOnPath(segment, p.x, p.z, seg_distance, seg_height);
+                if (seg_distance > distance + 1e-4f) continue;  // lo hace otro tramo
+                const float w = blendWeight(distance, inner, blend);
+                if (w <= 0.0f) continue;
+                const float target = std::clamp((height - origin.y) / max_height, 0.0f, 1.0f);
+                float& value = data.heights()[static_cast<std::size_t>(y) * res + x];
+                const float next = value + (target - value) * w;
+                if (next != value) {
+                    value = next;
+                    changed = true;
+                }
+            }
+        }
+        if (changed) data.markHeights(span.x0, span.y0, span.x1, span.y1);
+    }
+    return changed;
+}
+
+bool paintPath(TerrainData& data, const Terrain& terrain, const Vec3& origin, const std::vector<Vec3>& points, float width,
+               int layer, float blend, float amount) {
+    if (data.splatResolution() == 0 || points.size() < 2 || layer < 0 || layer >= kMaxLayers) return false;
+    blend = std::max(blend, 0.0f);
+    const float inner = width * 0.5f;
+    bool changed = false;
+    for (std::size_t i = 0; i + 1 < points.size(); ++i) {
+        const Vec3& a = points[i];
+        const Vec3& b = points[i + 1];
+        const float half_len = std::hypot(b.x - a.x, b.z - a.z) * 0.5f;
+        const SplatSpan span = splatSpan(data, terrain, origin, (a.x + b.x) * 0.5f, (a.z + b.z) * 0.5f, half_len + inner + blend);
+        const std::vector<Vec3> segment = {a, b};
+        bool any = false;
+        for (int y = span.y0; y <= span.y1; ++y) {
+            for (int x = span.x0; x <= span.x1; ++x) {
+                const float px = origin.x + (static_cast<float>(x) + 0.5f) * span.cell;
+                const float pz = origin.z + (static_cast<float>(y) + 0.5f) * span.cell;
+                float distance = 0.0f;
+                float height = 0.0f;
+                if (!projectOnPath(points, px, pz, distance, height)) continue;
+                float seg_distance = 0.0f;
+                projectOnPath(segment, px, pz, seg_distance, height);
+                if (seg_distance > distance + 1e-4f) continue;
+                const float w = blendWeight(distance, inner, blend);
+                if (w <= 0.0f) continue;
+                any = blendSplat(data, static_cast<std::uint32_t>(x), static_cast<std::uint32_t>(y), layer, amount, w) || any;
+            }
+        }
+        if (any) data.markSplat(span.x0, span.y0, span.x1, span.y1);
+        changed = changed || any;
+    }
+    return changed;
+}
+
+HeightPatch captureFootprint(const TerrainData& data, const Terrain& terrain, const Vec3& origin, const Footprint& footprint,
+                             float blend) {
+    HeightPatch patch;
+    if (data.resolution() < 3) return patch;
+    const float cell = terrain.size / static_cast<float>(data.resolution() - 1);
+    const Span span = heightSpan(data, terrain, origin, footprint.center.x, footprint.center.z,
+                                 footprintRadius(footprint) + cell * 1.5f + std::max(blend, 0.0f));
+    patch.x0 = span.x0;
+    patch.y0 = span.y0;
+    patch.x1 = span.x1;
+    patch.y1 = span.y1;
+    const auto res = static_cast<int>(data.resolution());
+    patch.heights.reserve(static_cast<std::size_t>(span.x1 - span.x0 + 1) * static_cast<std::size_t>(span.y1 - span.y0 + 1));
+    for (int y = span.y0; y <= span.y1; ++y) {
+        for (int x = span.x0; x <= span.x1; ++x) patch.heights.push_back(data.heights()[static_cast<std::size_t>(y) * res + x]);
+    }
+    return patch;
+}
+
+void restorePatch(TerrainData& data, const HeightPatch& patch) {
+    if (!patch.valid()) return;
+    const auto res = static_cast<int>(data.resolution());
+    if (patch.x1 >= res || patch.y1 >= res) return;
+    const std::size_t w = static_cast<std::size_t>(patch.x1 - patch.x0 + 1);
+    if (patch.heights.size() != w * static_cast<std::size_t>(patch.y1 - patch.y0 + 1)) return;
+    for (int y = patch.y0; y <= patch.y1; ++y) {
+        for (int x = patch.x0; x <= patch.x1; ++x) {
+            data.heights()[static_cast<std::size_t>(y) * res + x] =
+                patch.heights[static_cast<std::size_t>(y - patch.y0) * w + static_cast<std::size_t>(x - patch.x0)];
+        }
+    }
+    data.markHeights(patch.x0, patch.y0, patch.x1, patch.y1);
+}
+
 void generateRelief(TerrainData& data, std::uint32_t seed, float frequency, float roughness, float ridges,
                     float base_height) {
     const auto res = static_cast<int>(data.resolution());
     std::vector<float>& h = data.heights();
-    for (int y = 0; y < res; ++y) {
+    // Filas en paralelo (job system): cada una escribe solo las suyas.
+    jobs::parallelFor(static_cast<std::size_t>(res), 8, [&](std::size_t row0, std::size_t row1) {
+    for (int y = static_cast<int>(row0); y < static_cast<int>(row1); ++y) {
         for (int x = 0; x < res; ++x) {
             const float u = static_cast<float>(x) / static_cast<float>(res - 1) * frequency;
             const float v = static_cast<float>(y) / static_cast<float>(res - 1) * frequency;
@@ -385,6 +695,7 @@ void generateRelief(TerrainData& data, std::uint32_t seed, float frequency, floa
             h[static_cast<std::size_t>(y) * res + x] = std::clamp(base_height + value * (1.0f - base_height), 0.0f, 1.0f);
         }
     }
+    });
     data.markHeights(0, 0, res - 1, res - 1);
     data.commitCollision();
 }
@@ -393,7 +704,8 @@ void paintByRules(TerrainData& data, const Terrain& terrain, int layer, float mi
                   float min_height, float max_height) {
     const auto res = static_cast<int>(data.splatResolution());
     const Vec3 origin{};
-    for (int y = 0; y < res; ++y) {
+    jobs::parallelFor(static_cast<std::size_t>(res), 8, [&](std::size_t row0, std::size_t row1) {
+    for (int y = static_cast<int>(row0); y < static_cast<int>(row1); ++y) {
         for (int x = 0; x < res; ++x) {
             const float u = (static_cast<float>(x) + 0.5f) / static_cast<float>(res);
             const float v = (static_cast<float>(y) + 0.5f) / static_cast<float>(res);
@@ -407,6 +719,7 @@ void paintByRules(TerrainData& data, const Terrain& terrain, int layer, float mi
             }
         }
     }
+    });
     data.markSplat(0, 0, res - 1, res - 1);
 }
 
