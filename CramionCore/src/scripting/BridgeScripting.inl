@@ -152,6 +152,8 @@ std::string ScriptSystem::bridgeCall(const std::string& request_text) {
     if (!d.lua) return json{{"ok", false}, {"error", "el juego no esta en marcha"}}.dump();
     const json request = json::parse(request_text, nullptr, false);
     if (!request.is_object()) return json{{"ok", false}, {"error", "peticion no valida"}}.dump();
+    // Primero la API nativa; lo que aun no se ha migrado lo atiende Lua.
+    if (std::optional<std::string> native_reply = d.native.bridgeCall(request)) return *native_reply;
     const std::string op = request.value("op", std::string("call"));
     const std::string fn = request.value("fn", std::string());
     try {
@@ -217,5 +219,6 @@ std::string ScriptSystem::bridgeCall(const std::string& request_text) {
 }
 
 void ScriptSystem::setBridgeCallbackSink(std::function<void(std::uint64_t id, const std::string& args_json)> sink) {
+    impl_->native.setCallbackSink(sink);
     impl_->bridge_sink = std::move(sink);
 }

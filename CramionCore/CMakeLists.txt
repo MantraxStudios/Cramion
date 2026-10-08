@@ -365,6 +365,11 @@ add_executable(CramionLuaMathTests "${CMAKE_CURRENT_SOURCE_DIR}/tests/LuaMathTes
 target_link_libraries(CramionLuaMathTests PRIVATE Cramion::Core)
 target_compile_options(CramionLuaMathTests PRIVATE -Wall -Wextra)
 
+# --- Pruebas de la API de scripting en C++, sin Lua (consola) ---
+add_executable(CramionNativeApiTests "${CMAKE_CURRENT_SOURCE_DIR}/tests/NativeApiTests.cpp")
+target_link_libraries(CramionNativeApiTests PRIVATE Cramion::Core)
+target_compile_options(CramionNativeApiTests PRIVATE -Wall -Wextra)
+
 # --- Pruebas de los prefabs (consola) ---
 add_executable(CramionPrefabTests "${CMAKE_CURRENT_SOURCE_DIR}/tests/PrefabTests.cpp")
 target_link_libraries(CramionPrefabTests PRIVATE Cramion::Core)

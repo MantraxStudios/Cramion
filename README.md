@@ -7,7 +7,7 @@ Motor de render en tiempo real para Windows con **renderizador diferido en Vulka
 
 El motor son dos librerías estáticas propias: **CramionFX**, el renderizador Vulkan con todos sus shaders, y **CramionDM**, la capa de plataforma (ventana, entrada y dispositivo DirectX 12). `cramion.exe` es solo una aplicación de ejemplo que las usa. Todo se compila con **CMake + Clang + Ninja**.
 
-**Licencia:** el editor es gratis y los juegos que hagas con él son tuyos: los vendes donde quieras, **sin regalías**. **El motor no se puede vender, revender ni resubir.** El **código fuente** solo se entrega con una licencia de código fuente: pídela por correo a **tupapienrakion1234@gmail.com**. La única descarga oficial es la de la web, <https://cramion.mantraxtools.store>; si ves a alguien vendiéndolo, avisa en el Discord. Detalles en [LICENSE](LICENSE).
+**Licencia:** el editor es gratis y los juegos que hagas con él son tuyos: los vendes donde quieras, **sin regalías**. **El motor no se puede vender, revender ni resubir.** El **código fuente** es libre de descargar y modificar a tu gusto, siempre que mantengas el copyright y la licencia. La única descarga oficial es la de la web, <https://cramion.mantraxtools.store>; si ves a alguien vendiéndolo, avisa en el Discord. Detalles en [LICENSE](LICENSE).
 
 **Comunidad:** dudas, ideas y lo que estés creando con Cramion, en el [Discord](https://discord.gg/zG7rSsUGEz).
 
@@ -427,7 +427,7 @@ La primera compilación completa es la que tarda (varios minutos, según el proc
 
 ## Compilar y ejecutar
 
-> **Hace falta una licencia de código fuente.** Compilar, modificar o usar el código de Cramion solo está permitido con la licencia de código fuente que da el autor por escrito (pídela a tupapienrakion1234@gmail.com). Para hacer juegos no hace falta: usa el zip de la web.
+> **El código es tuyo para compilarlo y modificarlo.** Puedes descargarlo, cambiarlo a tu gusto y compartir tus versiones gratis, siempre que mantengas intactos el copyright y el archivo [LICENSE](LICENSE) y aclares que es una versión modificada. Para hacer juegos no hace falta compilar: usa el zip de la web.
 
 ### 1. Las escenas
 
@@ -922,7 +922,7 @@ Las teclas (`KeyCode.h`) siguen los Virtual-Key Codes de Windows. `keyName()` da
 
 ## Créditos y licencias
 
-- **Cramion:** [Licencia del Motor Cramion](LICENSE). Puedes hacer juegos con Cramion y venderlos sin pagar regalías; lo que no puedes es vender, revender o resubir el motor o el editor, ni hacerlo pasar por tuyo. El código fuente solo se usa con una licencia de código fuente del autor (tupapienrakion1234@gmail.com). El nombre y el logo tienen su propia [política de marca](TRADEMARK.md). Desde el 30 de septiembre de 2026 todas las versiones, también la 1.4 y las anteriores, se distribuyen con esta licencia (quien ya tuviera una copia con MIT la conserva mientras mantenga intactos los créditos).
+- **Cramion:** [Licencia del Motor Cramion](LICENSE). Puedes hacer juegos con Cramion y venderlos sin pagar regalías; lo que no puedes es vender, revender o resubir el motor o el editor, ni hacerlo pasar por tuyo. El código fuente se puede descargar, modificar y compartir gratis manteniendo el copyright y la licencia. El nombre y el logo tienen su propia [política de marca](TRADEMARK.md). Desde el 30 de septiembre de 2026 todas las versiones, también la 1.4 y las anteriores, se distribuyen con esta licencia (quien ya tuviera una copia con MIT la conserva mientras mantenga intactos los créditos).
 - **Componentes de terceros:** cada uno con su licencia, en [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 - **Catedral de Šibenik:** de Marko Dabrović ([RNA studio](http://www.rna.hr)). Huecos corregidos por Kenzie Lamar (Vicarious Visions), texturas y mapas de relieve de Morgan McGuire; publicada en [casual-effects.com](https://casual-effects.com/data/). No se redistribuye con este repositorio.
 - **San Miguel:** modelado por Guillermo M. Leal Llaguno (Evolución Visual). Versión 2017 mejorada por Morgan McGuire, Guedis Cárdenas, Michael Mara y Nicholas Hull, publicada en [casual-effects.com](https://casual-effects.com/data/). **Solo para uso educativo y de investigación, con atribución.** No se redistribuye con este repositorio.

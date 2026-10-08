@@ -1,4 +1,4 @@
-LICENCIA DEL MOTOR CRAMION (Cramion Engine License), versión 1.1
+LICENCIA DEL MOTOR CRAMION (Cramion Engine License), versión 1.2
 Copyright (c) 2026 Josin (MantraxStudios). Todos los derechos reservados.
 
 Contacto del Licenciante: tupapienrakion1234@gmail.com
@@ -44,20 +44,25 @@ b) Puedes crear Productos y venderlos, publicarlos o distribuirlos
 c) Puedes incluir el Runtime dentro de tus Productos, en forma
    compilada.
 
-2. CÓDIGO FUENTE: SOLO CON LICENCIA DEL LICENCIANTE
+2. CÓDIGO FUENTE (gratis, con el copyright intacto)
 
-a) Esta licencia NO te da ningún derecho sobre el Código fuente.
-b) El Código fuente solo se entrega bajo una licencia de código fuente
-   que el Licenciante concede por escrito, caso por caso. Para
-   solicitarla, escribe a tupapienrakion1234@gmail.com indicando quién
-   eres y para qué lo necesitas. Las condiciones (precio, si lo hay,
-   usos permitidos y duración) se fijan en esa licencia.
-c) Si tienes el Código fuente sin esa licencia escrita (y sin los
-   derechos del apartado 6), no puedes usarlo, compilarlo, modificarlo,
-   copiarlo ni distribuirlo.
-d) Aunque tengas una licencia de código fuente, no puedes publicar,
-   compartir ni entregar el Código fuente a terceros salvo que esa
-   licencia lo permita expresamente.
+a) Puedes descargar, estudiar, compilar y usar el Código fuente para
+   cualquier fin, personal o comercial.
+b) Puedes modificarlo a tu gusto: corregir, ampliar, recortar o adaptar
+   el Motor a tus necesidades, y usar tu versión modificada para crear
+   Productos con los mismos derechos del apartado 1.
+c) Puedes compartir el Código fuente, original o modificado, de forma
+   gratuita (por ejemplo, en un repositorio público), siempre que:
+   1. mantengas intactos el aviso "Copyright (c) 2026 Josin
+      (MantraxStudios)", este archivo LICENSE y los avisos de copyright
+      de cada archivo;
+   2. lo distribuyas bajo esta misma licencia, sin añadir condiciones
+      que la contradigan;
+   3. indiques de forma clara que es una versión modificada y que no
+      es la versión oficial del Licenciante.
+d) Los cambios que hagas son tuyos, pero el Motor sobre el que se
+   basan sigue siendo obra del Licenciante, que conserva todo el
+   copyright sobre él.
 
 3. LO QUE NADIE PUEDE HACER
 
@@ -70,11 +75,10 @@ a) Vender, alquilar, sublicenciar o cobrar de cualquier forma
 b) Redistribuir los Binarios o el editor fuera de un Producto (por
    ejemplo, resubirlos a otra web, tienda o servidor), salvo el Runtime
    dentro de tus Productos.
-c) Descompilar, desensamblar o aplicar ingeniería inversa a los
-   Binarios para obtener el Código fuente, salvo en la medida en que la
-   ley aplicable lo permita expresamente.
-d) Presentar el Motor, o una versión modificada, como obra propia, ni
-   cambiarle el nombre para ofrecerlo como otro motor o herramienta.
+c) Presentar el Motor, o una versión modificada, como obra propia, ni
+   atribuirte su autoría original.
+d) Ofrecer una versión modificada como si fuera la versión oficial del
+   Motor.
 e) Quitar, ocultar o alterar este aviso de licencia, los avisos de
    copyright o los créditos del Motor.
 f) Usar el nombre "Cramion", sus logotipos o su identidad visual para
@@ -126,8 +130,8 @@ DE SU USO.
 
 9. CONTACTO Y PERMISOS ADICIONALES
 
-Para pedir el Código fuente, una licencia comercial del Motor o
-cualquier permiso no cubierto aquí: tupapienrakion1234@gmail.com.
+Para una licencia comercial del Motor o cualquier permiso no cubierto
+aquí: tupapienrakion1234@gmail.com.
 
 ========================================================================
 ENGLISH
@@ -166,20 +170,24 @@ b) You may create Products and sell, publish or distribute them, for
    royalties to the Licensor.
 c) You may include the Runtime in your Products in compiled form.
 
-2. SOURCE CODE: ONLY UNDER A LICENSE FROM THE LICENSOR
+2. SOURCE CODE (free of charge, copyright kept intact)
 
-a) This license grants you NO rights to the Source Code.
-b) The Source Code is only provided under a source code license that
-   the Licensor grants in writing, case by case. To request one, email
-   tupapienrakion1234@gmail.com stating who you are and what you need
-   it for. The terms (price, if any, permitted uses and duration) are
-   set in that license.
-c) If you hold the Source Code without that written license (and
-   without the rights described in section 6), you may not use,
-   compile, modify, copy or distribute it.
-d) Even with a source code license, you may not publish, share or hand
-   over the Source Code to third parties unless that license expressly
-   allows it.
+a) You may download, study, compile and use the Source Code for any
+   purpose, personal or commercial.
+b) You may modify it as you wish: fix, extend, trim or adapt the Engine
+   to your needs, and use your modified version to create Products with
+   the same rights as in section 1.
+c) You may share the Source Code, original or modified, free of charge
+   (for example, in a public repository), provided that:
+   1. you keep intact the notice "Copyright (c) 2026 Josin
+      (MantraxStudios)", this LICENSE file and the copyright notices in
+      each file;
+   2. you distribute it under this same license, without adding terms
+      that contradict it;
+   3. you clearly state that it is a modified version and not the
+      Licensor's official version.
+d) Your changes are yours, but the Engine they are based on remains the
+   Licensor's work, and the Licensor keeps all copyright over it.
 
 3. WHAT NOBODY MAY DO
 
@@ -191,11 +199,9 @@ a) Sell, rent, sublicense or charge in any way (including mandatory
 b) Redistribute the Binaries or the editor outside a Product (for
    example, re-uploading them to another website, store or server),
    except for the Runtime inside your Products.
-c) Decompile, disassemble or reverse engineer the Binaries to obtain
-   the Source Code, except to the extent applicable law expressly
-   permits it.
-d) Present the Engine, or a modified version of it, as your own work,
-   or rename it to offer it as a different engine or tool.
+c) Present the Engine, or a modified version of it, as your own work,
+   or claim its original authorship.
+d) Offer a modified version as if it were the official Engine.
 e) Remove, hide or alter this license notice, the copyright notices or
    the Engine credits.
 f) Use the name "Cramion", its logos or its visual identity for any
@@ -246,5 +252,5 @@ FROM, OUT OF OR IN CONNECTION WITH THE ENGINE OR ITS USE.
 
 9. CONTACT AND ADDITIONAL PERMISSIONS
 
-To request the Source Code, a commercial Engine license or any
-permission not covered here: tupapienrakion1234@gmail.com.
+For a commercial Engine license or any permission not covered here:
+tupapienrakion1234@gmail.com.

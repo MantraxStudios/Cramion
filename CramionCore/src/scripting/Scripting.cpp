@@ -1,5 +1,6 @@
 #include "CramionCore/scripting/Scripting.h"
 #include "CramionCore/scripting/CppScripts.h"
+#include "CramionCore/scripting/NativeApi.h"
 #include "CramionCore/scripting/VisualScript.h"
 #include "CramionCore/cvar/CVar.h"
 #include "CramionCore/profiling/Profiler.h"
@@ -547,6 +548,17 @@ struct ScriptSystem::Impl {
     // que se dieron como handle y a donde van los callbacks.
     std::vector<sol::object> bridge_handles;
     std::function<void(std::uint64_t, const std::string&)> bridge_sink;
+    // La API nativa (NativeBindings.inl): bridgeCall la mira antes que a Lua.
+    api::NativeApi native;
+    void registerNativeApi();
+    // Mientras haya Lua (NativeLuaAdapter.inl): la API nativa publicada en
+    // Lua y las funciones de Lua que se le dieron (callbacks).
+    std::unordered_map<std::uint64_t, sol::protected_function> lua_callbacks;
+    std::uint64_t next_lua_callback = api::NativeApi::kLocalCallbackBase;
+    api::Value luaToNative(const sol::object& o, int depth);
+    sol::object nativeToLua(sol::state_view L, const api::Value& v, int depth);
+    sol::object callNative(const api::Entry& entry, const api::Value& self, sol::variadic_args va, std::size_t skip);
+    void publishNative(sol::state& L, sol::usertype<LuaEntity>& entity);
     nlohmann::json bridgeToJson(const sol::object& o, int depth);
     sol::object bridgeFromJson(const nlohmann::json& j, int depth);
     sol::object bridgeResolve(const std::string& path);
@@ -3462,23 +3474,8 @@ struct ScriptSystem::Impl {
         };
         au["reverbLevel"] = [this]() { return audio != nullptr ? audio->reverbLevel() : 0.0f; };
 
-        // Debug / print
-        const auto joined = [](sol::variadic_args args, sol::this_state s) {
-            sol::state_view view(s);
-            sol::protected_function tostring = view["tostring"];
-            std::string text;
-            for (auto arg : args) {
-                if (!text.empty()) text += " ";
-                sol::protected_function_result r = tostring(arg.get<sol::object>());
-                text += r.valid() ? r.get<std::string>() : std::string("?");
-            }
-            return text;
-        };
-        sol::table dbg = L.create_named_table("Debug");
-        dbg["log"] = [this, joined](sol::variadic_args a, sol::this_state s) { write(0, joined(a, s)); };
-        dbg["warn"] = [this, joined](sol::variadic_args a, sol::this_state s) { write(1, joined(a, s)); };
-        dbg["error"] = [this, joined](sol::variadic_args a, sol::this_state s) { write(2, joined(a, s)); };
-        L["print"] = [this, joined](sol::variadic_args a, sol::this_state s) { write(0, joined(a, s)); };
+        // Debug y print: API nativa (NativeBindings.inl). Al final: lo nativo manda.
+        publishNative(L, entity);
     }
 
     void lockCursor(bool on) {
@@ -4411,9 +4408,12 @@ struct ScriptSystem::Impl {
 #include "Features24Scripting.inl"
 #include "VisualScriptScripting.inl"
 #include "GameplayScripting.inl"
+#include "NativeLuaAdapter.inl"
+#include "NativeBindings.inl"
 
 ScriptSystem::ScriptSystem() : impl_(std::make_unique<Impl>()) {
     impl_->buildKeys();
+    impl_->registerNativeApi();
     impl_->actions.setSettings(input::defaultInputActions());
 }
 
@@ -4636,6 +4636,8 @@ void ScriptSystem::stop() {
     }
     d.behavior.reset();
     d.bridge_handles.clear();  // tambien (los handles de los scripts de C++)
+    d.native.clearHandles();
+    d.lua_callbacks.clear();  // son del Lua que se va
     d.instances.clear();
     d.classes.clear();
     d.failed_classes.clear();
