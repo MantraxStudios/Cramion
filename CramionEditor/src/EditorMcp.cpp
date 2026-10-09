@@ -273,6 +273,8 @@ const std::vector<ToolDef>& toolDefs() {
         d.push_back({"extract_clips", "Extrae las animaciones de un modelo importado a clips .cranim (los que usan los estados del Animator), como Proyecto > clic derecho > Animaciones > Extraer. Con 'name' el clip se llama asi (si hay varios, name_1, name_2...); sin el, como la animacion.",
                      {{"model", prop("string", "Ruta, nombre o UUID del modelo")}, {"folder", prop("string", "Carpeta dentro de Assets (por defecto la del modelo)")},
                       {"name", prop("string", "Nombre del archivo (opcional)")}}, {"model"}});
+        d.push_back({"create_model_materials", "Crea los materiales (.crmat) de uno o varios modelos con todas sus texturas (las que traen y las que se encuentran en el proyecto por nombre: normal, rugosidad, AO, metal/suavidad...) y los guarda como los materiales del modelo (las instancias nuevas ya salen con ellos), como Proyecto > clic derecho > Crear materiales y asignarlos. 'models': lista de rutas/nombres/UUID, o 'folder': todos los modelos de esa carpeta de Assets (y debajo).",
+                     {{"models", prop("array", "Modelos (ruta, nombre o UUID)")}, {"folder", prop("string", "Carpeta dentro de Assets")}}, {}});
         d.push_back({"reimport_model", "Reimporta un modelo desde su archivo original combinando sus piezas por material (una palmera con cada hoja suelta pasa a tronco + hojas) y rehace sus instancias en la escena. En segundo plano: mira get_console.",
                      {{"asset", prop("string", "Ruta, nombre o UUID del modelo")}}, {"asset"}});
         d.push_back({"graphics_settings", "Lee o cambia la configuracion grafica: presupuesto adaptativo (adaptive, target_fps) y resolucion del mapa de sombras (0 = segun el hardware). Devuelve el estado del presupuesto.",
@@ -1279,6 +1281,7 @@ json McpTools::call(const std::string& name, const json& args, bool& image, std:
         else if (mode == "scale") a.gizmo_ = EditorApp::GizmoOperation::Scale;
         else throw ToolError("mode debe ser none, move, rotate o scale");
         if (args.contains("local")) a.gizmo_local_ = args.value("local", false);
+        if (args.contains("center")) a.gizmo_center_ = args.value("center", false);
         // Iconos, contornos y volumenes de la vista de escena (capturas limpias).
         if (args.contains("show_gizmos")) a.show_gizmos_ = args.value("show_gizmos", true);
         return json{{"ok", true}, {"show_gizmos", a.show_gizmos_}};
@@ -1655,6 +1658,27 @@ json McpTools::call(const std::string& name, const json& args, bool& image, std:
         }
         a.refreshDatabase();
         return json{{"clips", clips}};
+    }
+    if (name == "create_model_materials") {
+        std::vector<Uuid> models;
+        if (args.contains("models") && args["models"].is_array()) {
+            for (const json& m : args["models"]) {
+                const auto info = findAsset(m.is_string() ? m.get<std::string>() : std::string());
+                if (!info || info->type != assets::AssetType::Model) throw ToolError("no existe el modelo " + m.dump());
+                models.push_back(info->uuid);
+            }
+        }
+        if (args.contains("folder")) {
+            const std::filesystem::path folder = (a.project_.assetsFolder() / dialogs::fromUtf8(arg(args, "folder"))).lexically_normal();
+            const std::string prefix = dialogs::utf8(folder);
+            for (const assets::AssetInfo& info : a.database_->all()) {
+                if (info.type != assets::AssetType::Model || info.path.empty()) continue;
+                if (dialogs::utf8(info.path.lexically_normal()).rfind(prefix, 0) == 0) models.push_back(info.uuid);
+            }
+        }
+        if (models.empty()) throw ToolError("ningun modelo (pasa 'models' o 'folder')");
+        a.createModelMaterials(models);
+        return json{{"models", models.size()}, {"note", "el resumen esta en get_console ([Materiales])"}};
     }
     if (name == "reimport_model") {
         const auto info = findAsset(arg(args, "asset"));

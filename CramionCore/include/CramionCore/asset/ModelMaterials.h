@@ -12,7 +12,11 @@
 //     pack con las texturas aparte), se busca en el proyecto por el nombre del
 //     material, de la malla o del modelo con los sufijos habituales
 //     (_BaseColor, _Albedo, _Normal, _Roughness...) y se completa el resto del
-//     juego de mapas con materialFromImage().
+//     juego de mapas con materialFromImage();
+//   - traiga o no su color, los mapas que le falten (normal, rugosidad,
+//     metal, AO...) se buscan junto a la imagen de color original por el
+//     nombre (findCompanionMaps). A los .crmat que ya existian solo se les
+//     rellenan los huecos vacios.
 //
 // El resultado es un mapa nombre de material -> .crmat que el editor guarda
 // por modelo (ProjectSettings/ModelMaterials.json) y aplica a cada instancia:
@@ -36,6 +40,8 @@ struct ExtractMaterialsResult {
     ModelMaterialMap map;
     int created = 0;             // .crmat nuevos
     int reused = 0;              // ya existian (no se sobrescriben: pueden estar editados)
+    int completed = 0;           // de esos, con mapas que les faltaban anadidos
+    int maps_found = 0;          // normal, rugosidad, AO... encontrados junto al albedo
     int textures_extracted = 0;  // imagenes sacadas del .crdata
     int textures_found = 0;      // materiales completados con texturas del proyecto
     std::vector<std::string> without_color;  // materiales sin textura de color

@@ -654,6 +654,14 @@ void EditorApp::drawHierarchyRow(const HierarchyRow& row, bool scroll_to) {
             if (ImGui::MenuItem("Pegar", "Ctrl+V", false, !clipboard_.empty())) pasteClipboard();
             if (ImGui::MenuItem("Enfocar", "F")) focusSelection();
             drawExtractAnimationsMenu(entity);
+            {
+                ecs::RenderSync::SkeletonPose pose;
+                if (rigPose(entity, pose, false)) {
+                    if (ImGui::MenuItem("Huesos como objetos")) createBoneObjects(entity);
+                    ImGui::SetItemTooltip("Un objeto por hueso en la Jerarquia: moverlo mueve esa parte del modelo\n"
+                                          "(una mano, un dedo) sin mover el resto.");
+                }
+            }
             drawPrefabHierarchyMenu(entity);
             if (ImGui::MenuItem("Empaquetar y exportar como DataPack...", nullptr, false, !playing())) {
                 openDataPackExportFor(entity);

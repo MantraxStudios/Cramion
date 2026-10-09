@@ -12,8 +12,8 @@
 
 namespace cramion::editor {
 
-bool EditorApp::applyModelMaterials(ecs::Entity root, const Uuid& model) {
-    if (!root.valid() || !asset_manager_) return false;
+bool EditorApp::applyModelMaterials(ecs::Entity root, const Uuid& model, bool replace) {
+    if (!root.valid() || !asset_manager_ || !database_) return false;
     const assets::ModelMaterialMap map = assets::loadModelMaterialMap(project_.settingsFolder(), model);
     if (map.empty()) return false;
     const std::shared_ptr<const assets::ModelAsset> asset = asset_manager_->loadModel(model);
@@ -30,21 +30,24 @@ bool EditorApp::applyModelMaterials(ecs::Entity root, const Uuid& model) {
                 }
                 for (std::size_t slot = 0; slot < materials.size(); ++slot) {
                     // Solo los huecos vacios: lo que el usuario ya cambio se queda.
-                    if (mr->materials[slot].valid()) continue;
+                    if (!replace && mr->materials[slot].valid() && database_->find(mr->materials[slot].uuid)) continue;
                     const auto it = map.find(assets::modelMaterialKey(materials[slot].name, slot));
-                    if (it == map.end()) continue;
+                    if (it == map.end() || mr->materials[slot].uuid == it->second) continue;
+                    // Un .crmat borrado: mejor el del modelo que uno en blanco.
+                    if (!database_->find(it->second)) continue;
                     mr->materials[slot] = assets::AssetRef{it->second, assets::AssetType::Material};
                     any = true;
                 }
             }
         }
+        if (replace) return;
         for (std::size_t i = 0; i < e.childCount(); ++i) visit(e.child(i));
     };
     visit(root);
     return any;
 }
 
-void EditorApp::createModelMaterials(const std::vector<Uuid>& models) {
+void EditorApp::createModelMaterials(const std::vector<Uuid>& models, const std::vector<ecs::Entity>& replace_in) {
     if (!database_ || models.empty()) return;
     int materials = 0;
     int reused = 0;
@@ -64,6 +67,10 @@ void EditorApp::createModelMaterials(const std::vector<Uuid>& models) {
         // existe en el archivo no estorba).
         assets::ModelMaterialMap map = assets::loadModelMaterialMap(project_.settingsFolder(), uuid);
         for (const auto& [name, material] : result.map) map[name] = material;
+        // Los que apuntan a un .crmat que ya no esta (borrado a mano), fuera.
+        for (auto it = map.begin(); it != map.end();) {
+            it = result.map.count(it->first) == 0 && !database_->find(it->second) ? map.erase(it) : std::next(it);
+        }
         assets::saveModelMaterialMap(project_.settingsFolder(), uuid, map);
 
         materials += result.created;
@@ -72,7 +79,8 @@ void EditorApp::createModelMaterials(const std::vector<Uuid>& models) {
         found += result.textures_found;
         for (const std::string& name : result.without_color) missing.push_back(info->name + "/" + name);
         std::cout << "[Materiales] " << info->name << ": " << result.created << " creados, " << result.reused
-                  << " ya existian, " << result.textures_extracted << " texturas extraidas, " << result.textures_found
+                  << " ya existian (" << result.completed << " completados), " << result.maps_found
+                  << " mapas encontrados junto al color, " << result.textures_extracted << " texturas extraidas, " << result.textures_found
                   << " encontradas en el proyecto -> " << assetRelative(result.material_folder) << "\n";
     }
     // Los .crmat y las imagenes nuevas, a la base de datos antes de usarlos.
@@ -88,6 +96,10 @@ void EditorApp::createModelMaterials(const std::vector<Uuid>& models) {
         for (ecs::Entity e : renderers) {
             if (applyModelMaterials(e, uuid)) ++placed;
         }
+    }
+    for (ecs::Entity e : replace_in) {
+        const ecs::MeshRenderer* mr = e.valid() ? e.tryGet<ecs::MeshRenderer>() : nullptr;
+        if (mr != nullptr && applyModelMaterials(e, mr->model.uuid, true)) ++placed;
     }
     if (placed > 0) commit();
 

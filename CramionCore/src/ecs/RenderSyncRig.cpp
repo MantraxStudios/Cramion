@@ -170,13 +170,22 @@ void RenderSync::applyDriveSockets(World& world, Entity entity, anim::Animator& 
     if (it == drive_sockets_.end() || animator.locals().size() != data.nodes.size()) return;
     ik::Pose pose{&data.nodes, &animator.locals(), &animator.globals()};
     const Mat4 to_model = core::inverse(entity.worldMatrix());
+    // Los padres antes que los hijos (los nodos van en ese orden): mover un
+    // hueso arrastra a sus hijos, y luego cada hijo se pone donde su objeto.
+    std::vector<std::pair<int, entt::entity>> order;
+    order.reserve(it->second.size());
     for (const entt::entity h : it->second) {
         const Entity s = world.wrap(h);
         if (!s.valid() || !s.activeInHierarchy()) continue;
         const BoneSocket* socket = s.tryGet<BoneSocket>();
         if (socket == nullptr || socket->mode != SocketMode::Drive || socket->weight <= 0.0f) continue;
         const int n = findBone(data, socket->bone);
-        if (n < 0) continue;
+        if (n >= 0) order.emplace_back(n, h);
+    }
+    std::stable_sort(order.begin(), order.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
+    for (const auto& [n, h] : order) {
+        const Entity s = world.wrap(h);
+        const BoneSocket* socket = s.tryGet<BoneSocket>();
         const Mat4 offset = core::composeTrs(socket->position, quatFromEulerDegrees(socket->rotation), Vec3{1.0f, 1.0f, 1.0f});
         const Mat4 bone_world = withoutScale(s.worldMatrix()) * core::inverse(offset);
         Vec3 t{};
@@ -471,7 +480,16 @@ Entity RenderSync::skinnedEntity(World& world, Entity e, const std::string* bone
 void RenderSync::updateSockets(World& world, scene::Scene& scene) {
     drive_sockets_.clear();
     std::vector<entt::entity> moved;
+    // Los de arriba en la Jerarquia antes (Huesos como objetos: la mano antes
+    // que sus dedos; si no, los dedos irian un frame por detras de la mano).
+    std::vector<std::pair<int, entt::entity>> sockets;
     for (const entt::entity h : world.registry().view<BoneSocket>()) {
+        int depth = 0;
+        for (Entity a = world.wrap(h).parent(); a.valid(); a = a.parent()) ++depth;
+        sockets.emplace_back(depth, h);
+    }
+    std::stable_sort(sockets.begin(), sockets.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
+    for (const auto& [depth, h] : sockets) {
         Entity s = world.wrap(h);
         if (!s.activeInHierarchy()) continue;
         const BoneSocket& socket = s.get<BoneSocket>();

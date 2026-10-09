@@ -295,58 +295,120 @@ asset::MaterialData toMaterialData(const MaterialAsset& m, const std::string& na
     return d;
 }
 
-MaterialAsset materialFromImage(const std::filesystem::path& assets_root, const std::string& image) {
-    MaterialAsset m;
-    m.albedo = image;
-    const std::filesystem::path file = assets_root / crdata::fromUtf8(image);
-    const std::filesystem::path folder = file.parent_path();
+namespace {
 
-    // Nombre base: sin el sufijo de color (piedra_albedo -> piedra).
-    std::string stem = lower(crdata::utf8(file.stem()));
-    for (const char* suffix : {"_basecolor", "_base_color", "_albedo", "_diffuse", "_color", "_col", "_diff", "_d"}) {
-        const std::string s(suffix);
-        if (stem.size() > s.size() && stem.compare(stem.size() - s.size(), s.size(), s) == 0) {
-            stem.resize(stem.size() - s.size());
+bool isSeparator(char c) { return c == '_' || c == '-' || c == ' ' || c == '.'; }
+
+// Sin mayusculas ni separadores: "Piedra_Base-Color" -> "piedrabasecolor".
+std::string squashed(const std::string& text) {
+    std::string out;
+    for (const char c : lower(text)) {
+        if (!isSeparator(c)) out.push_back(c);
+    }
+    return out;
+}
+
+// `squashed_name` termina en `suffix`; los de una o dos letras solo tras un
+// separador en el nombre tal cual, `raw` ("piedra_n", no "piedran").
+bool endsWithSuffix(const std::string& raw, const std::string& squashed_name, const std::string& suffix) {
+    if (squashed_name.size() <= suffix.size() ||
+        squashed_name.compare(squashed_name.size() - suffix.size(), suffix.size(), suffix) != 0) {
+        return false;
+    }
+    if (suffix.size() > 2) return true;
+    return raw.size() > suffix.size() && isSeparator(raw[raw.size() - suffix.size() - 1]) &&
+           raw.compare(raw.size() - suffix.size(), suffix.size(), suffix) == 0;
+}
+
+}  // namespace
+
+CompanionMaps findCompanionMaps(const std::filesystem::path& color_image) {
+    CompanionMaps maps;
+    const std::filesystem::path folder = color_image.parent_path();
+
+    // Nombre base: sin el sufijo de color (Piedra_BaseColor -> piedra).
+    const std::string raw_stem = lower(crdata::utf8(color_image.stem()));
+    std::string base = squashed(raw_stem);
+    for (const char* suffix : {"basecolor", "albedotransparency", "diffusemap", "albedomap", "colormap", "albedo",
+                               "diffuse", "basemap", "maintex", "colour", "color", "diff", "col", "alb", "bc", "d",
+                               "c"}) {
+        if (endsWithSuffix(raw_stem, base, suffix)) {
+            base.resize(base.size() - std::strlen(suffix));
             break;
         }
     }
+    if (base.empty()) return maps;
 
     struct Slot {
-        std::string* target;
+        std::filesystem::path* target;
         std::initializer_list<const char*> suffixes;
     };
+    std::filesystem::path normal_dx;
+    // Por orden de preferencia dentro de cada hueco.
     const Slot slots[] = {
-        {&m.normal, {"_normal", "_normalgl", "_normal_gl", "_nor_gl", "_nrm", "_nor", "_norm", "_n"}},
-        {&m.roughness_map, {"_roughness", "_rough", "_rgh", "_r"}},
-        {&m.metallic_map, {"_metallic", "_metalness", "_metal", "_met", "_m"}},
-        {&m.occlusion, {"_ao", "_occlusion", "_ambientocclusion", "_ambient_occlusion"}},
-        {&m.emissive_map, {"_emissive", "_emission", "_emit", "_e"}},
-        {&m.height_map, {"_displacement", "_height", "_disp", "_heightmap", "_parallax", "_h"}},
-        {&m.cavity_map, {"_cavity", "_cav"}},
-        {&m.specular_map, {"_specular", "_spec", "_specularlevel"}},
-        {&m.gloss_map, {"_gloss", "_glossiness", "_smoothness"}},
-        {&m.bump_map, {"_bump", "_bumpmap"}},
+        {&maps.normal, {"normal", "normalgl", "normalopengl", "normalmap", "norgl", "nrm", "nor", "norm", "nrml", "n"}},
+        {&normal_dx, {"normaldx", "normaldirectx", "nordx"}},
+        {&maps.roughness, {"roughness", "roughnessmap", "rough", "rgh", "r"}},
+        {&maps.metallic, {"metallic", "metalness", "metallicmap", "metal", "met", "m"}},
+        {&maps.occlusion, {"ao", "occlusion", "ambientocclusion", "aomap", "mixedao", "occ"}},
+        {&maps.emissive, {"emissive", "emission", "emissionmap", "emissivemap", "emit", "glow", "e"}},
+        {&maps.height, {"displacement", "height", "heightmap", "disp", "parallax", "h"}},
+        {&maps.cavity, {"cavity", "cav"}},
+        {&maps.specular, {"specular", "specularlevel", "specularmap", "spec"}},
+        {&maps.gloss, {"gloss", "glossiness", "smoothness"}},
+        {&maps.bump, {"bump", "bumpmap"}},
+        {&maps.metallic_smoothness, {"metallicsmoothness", "metallicsmooth", "metalsmoothness", "metallicgloss"}},
+        {&maps.mask_map, {"maskmap"}},
+        {&maps.orm, {"orm", "occlusionroughnessmetallic", "aorm", "arm"}},
     };
+    std::vector<std::pair<std::filesystem::path, std::string>> files;  // ruta, nombre en minusculas
     std::error_code ec;
     for (std::filesystem::directory_iterator it(folder, ec), end; !ec && it != end; it.increment(ec)) {
-        if (!it->is_regular_file(ec)) continue;
+        std::error_code ec2;
+        if (!it->is_regular_file(ec2)) continue;
         const std::string ext = lower(it->path().extension().string());
         if (ext != ".png" && ext != ".jpg" && ext != ".jpeg" && ext != ".tga" && ext != ".bmp") continue;
-        const std::string name = lower(crdata::utf8(it->path().stem()));
-        if (name.size() <= stem.size() || name.compare(0, stem.size(), stem) != 0) continue;
-        const std::string suffix = name.substr(stem.size());
-        for (const Slot& slot : slots) {
-            if (!slot.target->empty()) continue;
-            if (std::find_if(slot.suffixes.begin(), slot.suffixes.end(),
-                             [&](const char* s) { return suffix == s; }) != slot.suffixes.end()) {
-                *slot.target = crdata::utf8(std::filesystem::relative(it->path(), assets_root, ec));
+        files.emplace_back(it->path(), lower(crdata::utf8(it->path().stem())));
+    }
+    for (const Slot& slot : slots) {
+        for (const char* suffix : slot.suffixes) {
+            for (const auto& [path, raw] : files) {
+                const std::string name = squashed(raw);
+                // El nombre base y justo el sufijo ("piedra2_normal" no es de "piedra").
+                if (name.size() != base.size() + std::strlen(suffix) || name.compare(0, base.size(), base) != 0) continue;
+                if (!endsWithSuffix(raw, name, suffix)) continue;
+                *slot.target = path;
+                break;
             }
-        }
-        if (m.normal.empty() && (suffix == "_normaldx" || suffix == "_normal_dx" || suffix == "_nor_dx")) {
-            m.normal = crdata::utf8(std::filesystem::relative(it->path(), assets_root, ec));
-            m.normal_directx = true;
+            if (!slot.target->empty()) break;
         }
     }
+    if (maps.normal.empty() && !normal_dx.empty()) {
+        maps.normal = normal_dx;
+        maps.normal_directx = true;
+    }
+    return maps;
+}
+
+MaterialAsset materialFromImage(const std::filesystem::path& assets_root, const std::string& image) {
+    MaterialAsset m;
+    m.albedo = image;
+    const CompanionMaps maps = findCompanionMaps(assets_root / crdata::fromUtf8(image));
+    std::error_code ec;
+    const auto rel = [&](const std::filesystem::path& p) {
+        return p.empty() ? std::string{} : crdata::utf8(std::filesystem::relative(p, assets_root, ec));
+    };
+    m.normal = rel(maps.normal);
+    m.normal_directx = maps.normal_directx;
+    m.roughness_map = rel(maps.roughness);
+    m.metallic_map = rel(maps.metallic);
+    m.occlusion = rel(maps.occlusion);
+    m.emissive_map = rel(maps.emissive);
+    m.height_map = rel(maps.height);
+    m.cavity_map = rel(maps.cavity);
+    m.specular_map = rel(maps.specular);
+    m.gloss_map = rel(maps.gloss);
+    m.bump_map = rel(maps.bump);
     for (std::string* path : {&m.albedo, &m.normal, &m.roughness_map, &m.metallic_map, &m.occlusion, &m.emissive_map,
                               &m.height_map, &m.cavity_map, &m.specular_map, &m.gloss_map, &m.bump_map}) {
         std::replace(path->begin(), path->end(), '\\', '/');

@@ -27,7 +27,38 @@ Cramion uses the following libraries, each under its own license. Exported games
 | AMD FidelityFX (FSR) | MIT | https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK |
 | NVIDIA DLSS | NVIDIA RTX SDKs License (ver `licencias/NVIDIA-DLSS-LICENSE.txt`) | https://github.com/NVIDIA/DLSS |
 | bundletool (solo exportación Android) | Apache-2.0 | https://github.com/google/bundletool |
+| WebXR Input Profiles (modelos de los mandos de Meta Quest 3) | MIT | https://github.com/immersive-web/webxr-input-profiles |
 
 Estas licencias se aplican solo a esos componentes. El resto de Cramion se rige por [LICENSE](LICENSE).
 
 These licenses apply only to those components. The rest of Cramion is governed by [LICENSE](LICENSE).
+
+## WebXR Input Profiles
+
+La malla de los mandos de Meta Quest 3 (Touch Plus) integrada en el motor sale de `@webxr-input-profiles/assets` 1.0. La licencia no da permiso para usar las marcas de los fabricantes (Meta, Quest).
+
+The built-in Meta Quest 3 (Touch Plus) controller mesh comes from `@webxr-input-profiles/assets` 1.0. The license does not grant permission to use the manufacturers' trademarks (Meta, Quest).
+
+```
+MIT License
+
+Copyright (c) 2019 Amazon
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is furnished
+to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice (including the next
+paragraph) shall be included in all copies or substantial portions of the
+Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS
+OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY,
+WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF
+OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+```

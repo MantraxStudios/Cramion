@@ -330,19 +330,15 @@ void EditorApp::drawFolderNode(std::size_t index) {
                                             ImGui::GetColorU32(ImGuiCol_Text), index == 0 ? "Assets" : node.name.c_str());
     }
     if (ImGui::IsItemClicked() && !ImGui::IsItemToggledOpen()) navigateTo(node.path);
-    // Soltar un asset en la carpeta: se mueve alli; un objeto: prefab.
+    // Soltar assets o archivos en la carpeta: se mueven alli; un objeto: prefab.
     if (ImGui::BeginDragDropTarget()) {
-        if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(kAssetPayload)) {
-            AssetPayload asset{};
-            std::memcpy(&asset, payload->Data, sizeof(asset));
-            if (const auto info = database_->find(asset.uuid); info && !info->path.empty()) {
-                database_->move(asset.uuid, node.path / info->path.filename());
-                refreshDatabase();
-            }
-        }
+        acceptBrowserMove(node.path);
         if (ImGui::AcceptDragDropPayload(kEntityPayload)) createPrefabsFromSelection(node.path);
         ImGui::EndDragDropTarget();
     }
+    // Con el indice en el ID: si no, las carpetas hermanas comparten el menu
+    // y sale repetido (y ImGui avisa del ID duplicado).
+    ImGui::PushID(static_cast<int>(index));
     if (ImGui::BeginPopupContextItem("folder_tree_menu")) {
         Item folder;
         folder.kind = Kind::Folder;
@@ -351,6 +347,7 @@ void EditorApp::drawFolderNode(std::size_t index) {
         browserItemMenu(folder);
         ImGui::EndPopup();
     }
+    ImGui::PopID();
     if (open) {
         for (const std::size_t child : node.children) drawFolderNode(child);
         ImGui::TreePop();
@@ -578,6 +575,11 @@ bool EditorApp::browserItemHumanoid(const BrowserItem& item) {
 void EditorApp::browserDragSource(const BrowserItem& item) {
     if (!ImGui::BeginDragDropSource()) return;
     switch (item.kind) {
+        case Kind::Folder: {
+            const std::string path = dialogs::utf8(item.path);
+            ImGui::SetDragDropPayload(kFolderPayload, path.c_str(), path.size() + 1);
+            break;
+        }
         case Kind::Asset: {
             const AssetPayload payload{item.info.uuid, item.info.type};
             ImGui::SetDragDropPayload(kAssetPayload, &payload, sizeof(payload));
@@ -601,20 +603,92 @@ void EditorApp::browserDragSource(const BrowserItem& item) {
     ImGui::Dummy(ImVec2(6.0f, 0.0f));
     ImGui::SameLine();
     ImGui::Text("%s", item.name.c_str());
-    ImGui::TextDisabled("%s", item.type.c_str());
+    if (browserSelected(item) && browser_selection_.size() > 1) {
+        ImGui::TextDisabled("y %zu más (suéltalos en una carpeta para moverlos)", browser_selection_.size() - 1);
+    } else {
+        ImGui::TextDisabled("%s", item.type.c_str());
+    }
     ImGui::EndDragDropSource();
+}
+
+bool EditorApp::acceptBrowserMove(const std::filesystem::path& folder) {
+    if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(kAssetPayload)) {
+        AssetPayload asset{};
+        std::memcpy(&asset, payload->Data, sizeof(asset));
+        moveBrowserItems(folder, asset.uuid.toString());
+        return true;
+    }
+    for (const char* type : {kImagePayload, kScriptPayload, kAudioPayload, kFolderPayload}) {
+        if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(type)) {
+            moveBrowserItems(folder, dialogs::fromUtf8(static_cast<const char*>(payload->Data)).string());
+            return true;
+        }
+    }
+    return false;
+}
+
+void EditorApp::moveBrowserItems(const std::filesystem::path& folder, const std::string& dragged_key) {
+    const bool whole_selection =
+        std::find(browser_selection_.begin(), browser_selection_.end(), dragged_key) != browser_selection_.end();
+    std::vector<Item> items;
+    for (const Item& item : browser_items_) {
+        if (whole_selection ? browserSelected(item) : item.key() == dragged_key) items.push_back(item);
+    }
+    const std::string target = folder.lexically_normal().string();
+    int moved = 0;
+    int skipped = 0;
+    for (const Item& item : items) {
+        const std::filesystem::path from = item.kind == Kind::Asset ? item.info.path : item.path;
+        if (from.empty() || from.parent_path() == folder) continue;  // integrado o ya esta ahi
+        const std::filesystem::path to = folder / from.filename();
+        std::error_code error;
+        if (item.kind == Kind::Asset) {
+            if (database_->move(item.info.uuid, to)) ++moved;
+            else ++skipped;
+            continue;
+        }
+        if (item.kind == Kind::Folder) {
+            // Una carpeta no puede ir dentro de si misma.
+            const std::string self = from.lexically_normal().string();
+            if (target == self || (target.size() > self.size() && target.compare(0, self.size(), self) == 0 &&
+                                   (target[self.size()] == '\\' || target[self.size()] == '/'))) {
+                ++skipped;
+                continue;
+            }
+        }
+        if (std::filesystem::exists(to, error)) {
+            std::cerr << "[Proyecto] Ya existe " << dialogs::utf8(to) << "\n";
+            ++skipped;
+            continue;
+        }
+        std::filesystem::rename(from, to, error);
+        if (error) {
+            std::cerr << "[Proyecto] No se pudo mover " << dialogs::utf8(from) << ": " << error.message() << "\n";
+            ++skipped;
+            continue;
+        }
+        // Su .meta al lado, si tiene.
+        std::filesystem::path meta = from;
+        meta += ".meta";
+        if (std::filesystem::exists(meta, error)) {
+            std::filesystem::path meta_to = to;
+            meta_to += ".meta";
+            std::filesystem::rename(meta, meta_to, error);
+        }
+        if (item.kind == Kind::Folder && current_folder_ == from) current_folder_ = to;
+        ++moved;
+    }
+    if (moved == 0 && skipped == 0) return;
+    std::cout << "[Proyecto] " << moved << " movido(s) a " << assetRelative(folder)
+              << (skipped > 0 ? " (" + std::to_string(skipped) + " no se pudieron: ya existian o es la misma carpeta)" : std::string())
+              << "\n";
+    browser_selection_.clear();
+    refreshDatabase();
 }
 
 void EditorApp::browserDropTarget(const BrowserItem& item) {
     if (item.kind != Kind::Folder || !ImGui::BeginDragDropTarget()) return;
-    if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(kAssetPayload)) {
-        AssetPayload asset{};
-        std::memcpy(&asset, payload->Data, sizeof(asset));
-        if (const auto info = database_->find(asset.uuid); info && !info->path.empty()) {
-            database_->move(asset.uuid, item.path / info->path.filename());
-            refreshDatabase();
-        }
-    }
+    acceptBrowserMove(item.path);
     if (ImGui::AcceptDragDropPayload(kEntityPayload)) createPrefabsFromSelection(item.path);
     ImGui::EndDragDropTarget();
 }

@@ -6,6 +6,8 @@
 
 #include "Dialogs.h"
 
+#include <CramionCore/ecs/MathUtil.h>
+
 #include <imgui.h>
 #include <iostream>
 #include <imgui_internal.h>
@@ -72,6 +74,11 @@ void EditorApp::drawToolbar() {
     if (toolButton(gizmo_local_ ? "Local" : "Mundo", false,
                    "Espacio del gizmo: ejes del objeto o del mundo (X)")) {
         gizmo_local_ = !gizmo_local_;
+    }
+    ImGui::SameLine();
+    if (toolButton(gizmo_center_ ? "Centro" : "Pivote", false,
+                   "Donde va el gizmo: en el pivote del objeto o en el centro de la seleccion (Z)")) {
+        gizmo_center_ = !gizmo_center_;
     }
     ImGui::SameLine();
     if (toolButton("Snap", snap_enabled_, "Ajustar a la rejilla (mantener Ctrl invierte)")) {
@@ -565,6 +572,7 @@ void EditorApp::drawSceneView() {
         if (ImGui::IsKeyPressed(ImGuiKey_E, false)) gizmo_ = GizmoOperation::Rotate;
         if (ImGui::IsKeyPressed(ImGuiKey_R, false)) gizmo_ = GizmoOperation::Scale;
         if (ImGui::IsKeyPressed(ImGuiKey_X, false)) gizmo_local_ = !gizmo_local_;
+        if (!io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Z, false)) gizmo_center_ = !gizmo_center_;
         if (!io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_G, false)) show_gizmos_ = !show_gizmos_;
         if (ImGui::IsKeyPressed(ImGuiKey_T, false)) {
             stamp_mode_ = !stamp_mode_;
@@ -1013,28 +1021,64 @@ void EditorApp::drawGizmo() {
         (gizmo_local_ || gizmo_ == GizmoOperation::Scale) ? ImGuizmo::LOCAL : ImGuizmo::WORLD;
     const bool snapping = snap_enabled_ != ImGui::GetIO().KeyCtrl;
 
+    // Centro: el gizmo en el centro de la caja de la seleccion, con los ejes
+    // del objeto activo. Se calcula al no arrastrar; arrastrando se queda
+    // donde empezo (girar o escalar no mueve el punto de giro).
+    if (gizmo_center_ && !gizmo_was_using_ && !free_rotate_drag_) {
+        Vec3 low{};
+        Vec3 high{};
+        const Vec3 center = selectionBounds(low, high) ? (low + high) * 0.5f : target.worldPosition();
+        Vec3 position{};
+        core::Quat rotation{};
+        Vec3 scale{};
+        ecs::decomposeMatrix(target.worldMatrix(), position, rotation, scale);
+        gizmo_handle_ = core::composeTrs(center, rotation, Vec3{1.0f, 1.0f, 1.0f});
+    }
+    const auto handle = [&]() { return gizmo_center_ ? gizmo_handle_ : target.worldMatrix(); };
+
     // Giro libre con la bola central (antes que ImGuizmo: si se agarra la
     // bola, los anillos no reciben el clic).
-    if (gizmo_ == GizmoOperation::Rotate && drawFreeRotateHandle(target)) {
-        drawGizmoGeometry(target.worldMatrix(), mode == ImGuizmo::LOCAL, 1);
+    if (gizmo_ == GizmoOperation::Rotate &&
+        drawFreeRotateHandle(target, Vec3{handle().m[3][0], handle().m[3][1], handle().m[3][2]})) {
+        drawGizmoGeometry(handle(), mode == ImGuizmo::LOCAL, 1);
         return;
     }
 
-    const Mat4 before = target.worldMatrix();
+    const Mat4 before = handle();
     Mat4 matrix = before;
-    if (ImGuizmo::Manipulate(&view.m[0][0], &projection.m[0][0], operation, mode, &matrix.m[0][0],
-                             nullptr, snapping ? snap : nullptr)) {
+    const bool manipulated = ImGuizmo::Manipulate(&view.m[0][0], &projection.m[0][0], operation, mode,
+                                                  &matrix.m[0][0], nullptr, snapping ? snap : nullptr);
+    // Un objeto que sigue a un hueso (Huesos como objetos): al moverlo, pasa a
+    // mover el hueso (si no, el hueso lo devolveria a su sitio).
+    const auto take_bone = [](ecs::Entity e) {
+        if (ecs::BoneSocket* s = e.tryGet<ecs::BoneSocket>();
+            s != nullptr && s->mode == ecs::SocketMode::Follow && s->bone == e.name()) {
+            s->mode = ecs::SocketMode::Drive;
+        }
+    };
+    if (manipulated && gizmo_center_) {
+        // Centro: la misma transformacion (alrededor del centro) a toda la seleccion.
+        const Mat4 delta = matrix * core::inverse(before);
+        for (ecs::Entity e : topLevelSelection()) {
+            take_bone(e);
+            e.setWorldMatrix(delta * e.worldMatrix());
+        }
+        gizmo_handle_ = matrix;
+        dirty_ = true;
+    } else if (manipulated) {
+        take_bone(target);
         target.setWorldMatrix(matrix);
         // El resto de la seleccion: la misma transformacion relativa.
         const Mat4 delta = matrix * core::inverse(before);
         for (ecs::Entity other : topLevelSelection()) {
             if (other == target || other.isAncestorOf(target) || target.isAncestorOf(other)) continue;
+            take_bone(other);
             other.setWorldMatrix(delta * other.worldMatrix());
         }
         dirty_ = true;
     }
-    // El gizmo en 3D (con profundidad) donde esta el objeto ahora.
-    drawGizmoGeometry(target.worldMatrix(), mode == ImGuizmo::LOCAL,
+    // El gizmo en 3D (con profundidad) donde esta el objeto (o el centro) ahora.
+    drawGizmoGeometry(handle(), mode == ImGuizmo::LOCAL,
                       gizmo_ == GizmoOperation::Translate ? 0 : (gizmo_ == GizmoOperation::Rotate ? 1 : 2));
 
     const bool using_now = ImGuizmo::IsUsing();
@@ -1048,10 +1092,9 @@ void EditorApp::drawGizmo() {
 // alrededor de su centro, en ejes de la camara (horizontal = eje arriba de
 // la vista, vertical = eje derecho), como la bola de Blender / Maya. true
 // mientras se arrastra (entonces ImGuizmo no recibe el raton).
-bool EditorApp::drawFreeRotateHandle(ecs::Entity target) {
+bool EditorApp::drawFreeRotateHandle(ecs::Entity target, const Vec3& origin) {
     const ImGuiIO& io = ImGui::GetIO();
     const Mat4 start = target.worldMatrix();
-    const Vec3 origin{start.m[3][0], start.m[3][1], start.m[3][2]};
     free_rotate_hover_ = false;
 
     float cx = 0.0f, cy = 0.0f, ex = 0.0f, ey = 0.0f;

@@ -47,10 +47,11 @@ template <typename T0 = Value>
 Value addSoftBodyImpulse(const T0& arg = {}) const {
     return call("addSoftBodyImpulse", Values{Value(arg)});
 }
-/// entity:addSplinePoint(...)
-template <typename... Mas>
-Value addSplinePoint(Mas&&... mas) const {
-    return call("addSplinePoint", Values{Value(std::forward<Mas>(mas))...});
+/// entity:addSplinePoint(Vec3, ancho)
+/// Spline: anade un punto al final (la crea si no tiene)
+template <typename T0 = Value, typename T1 = Value>
+Value addSplinePoint(const T0& vec = {}, const T1& ancho = {}) const {
+    return call("addSplinePoint", Values{Value(vec), Value(ancho)});
 }
 /// entity:addTorque(Vec3)
 /// par de giro
@@ -108,20 +109,23 @@ template <typename... Mas>
 Value characterState(Mas&&... mas) const {
     return call("characterState", Values{Value(std::forward<Mas>(mas))...});
 }
-/// entity:clearSplinePoints(...)
+/// entity:clearSplinePoints()
+/// Spline: quita todos los puntos
 template <typename... Mas>
 Value clearSplinePoints(Mas&&... mas) const {
     return call("clearSplinePoints", Values{Value(std::forward<Mas>(mas))...});
 }
-/// entity:closestSplineDistance(...)
-template <typename... Mas>
-Value closestSplineDistance(Mas&&... mas) const {
-    return call("closestSplineDistance", Values{Value(std::forward<Mas>(mas))...});
+/// entity:closestSplineDistance(posicion)
+/// Spline: distancia en la curva del punto mas cercano
+template <typename T0 = Value>
+Value closestSplineDistance(const T0& posicion = {}) const {
+    return call("closestSplineDistance", Values{Value(posicion)});
 }
-/// entity:closestSplinePoint(...)
-template <typename... Mas>
-Value closestSplinePoint(Mas&&... mas) const {
-    return call("closestSplinePoint", Values{Value(std::forward<Mas>(mas))...});
+/// entity:closestSplinePoint(posicion)
+/// Spline: el punto de la curva mas cercano
+template <typename T0 = Value>
+Value closestSplinePoint(const T0& posicion = {}) const {
+    return call("closestSplinePoint", Values{Value(posicion)});
 }
 /// entity.color: Vec3 color de su UIImage/UIText
 Value color() const { return get("color"); }
@@ -138,6 +142,12 @@ template <typename T0 = Value, typename T1 = Value, typename T2 = Value>
 Value damage(const T0& cantidad = {}, const T1& punto = {}, const T2& fuerza = {}) const {
     return call("damage", Values{Value(cantidad), Value(punto), Value(fuerza)});
 }
+/// entity:despawnCrowd()
+/// Crowd Spawner: quita su multitud
+template <typename... Mas>
+Value despawnCrowd(Mas&&... mas) const {
+    return call("despawnCrowd", Values{Value(std::forward<Mas>(mas))...});
+}
 /// entity:detachFromBone()
 /// deja de seguir al hueso
 template <typename... Mas>
@@ -150,16 +160,12 @@ template <typename T0 = Value>
 Value distanceTo(const T0& otra = {}) const {
     return call("distanceTo", Values{Value(otra)});
 }
-/// entity:dropdownText(...)
-template <typename... Mas>
-Value dropdownText(Mas&&... mas) const {
-    return call("dropdownText", Values{Value(std::forward<Mas>(mas))...});
-}
-/// entity:dropdownValue(...)
-template <typename... Mas>
-Value dropdownValue(Mas&&... mas) const {
-    return call("dropdownValue", Values{Value(std::forward<Mas>(mas))...});
-}
+/// entity.dropdownText: Desplegable: texto de la elegida
+Value dropdownText() const { return get("dropdownText"); }
+void setDropdownText(const Value& v) const { set("dropdownText", v); }
+/// entity.dropdownValue: Desplegable: la elegida (desde 1)
+Value dropdownValue() const { return get("dropdownValue"); }
+void setDropdownValue(const Value& v) const { set("dropdownValue", v); }
 /// entity.effectParticles: particulas vivas de su VisualEffect
 Value effectParticles() const { return get("effectParticles"); }
 void setEffectParticles(const Value& v) const { set("effectParticles", v); }
@@ -211,7 +217,8 @@ template <typename... Mas>
 Value getBones(Mas&&... mas) const {
     return call("getBones", Values{Value(std::forward<Mas>(mas))...});
 }
-/// entity:getDropdownOptions(...)
+/// entity:getDropdownOptions()
+/// Desplegable: lista de opciones
 template <typename... Mas>
 Value getDropdownOptions(Mas&&... mas) const {
     return call("getDropdownOptions", Values{Value(std::forward<Mas>(mas))...});
@@ -246,10 +253,11 @@ template <typename... Mas>
 Value getScript(Mas&&... mas) const {
     return call("getScript", Values{Value(std::forward<Mas>(mas))...});
 }
-/// entity:getSplineControlPoint(...)
-template <typename... Mas>
-Value getSplineControlPoint(Mas&&... mas) const {
-    return call("getSplineControlPoint", Values{Value(std::forward<Mas>(mas))...});
+/// entity:getSplineControlPoint(1)
+/// Spline: punto de control (mundo) o nil
+template <typename T0 = Value>
+Value getSplineControlPoint(const T0& valor = {}) const {
+    return call("getSplineControlPoint", Values{Value(valor)});
 }
 /// entity:getStateMachine(...)
 template <typename... Mas>
@@ -371,7 +379,8 @@ template <typename... Mas>
 Value playSound(Mas&&... mas) const {
     return call("playSound", Values{Value(std::forward<Mas>(mas))...});
 }
-/// entity:playSplineFollower(...)
+/// entity:playSplineFollower()
+/// SplineFollower: empieza a moverse
 template <typename... Mas>
 Value playSplineFollower(Mas&&... mas) const {
     return call("playSplineFollower", Values{Value(std::forward<Mas>(mas))...});
@@ -424,26 +433,21 @@ Value resetSoftBody(Mas&&... mas) const {
 /// entity.rpm: rpm del motor del Vehicle
 Value rpm() const { return get("rpm"); }
 void setRpm(const Value& v) const { set("rpm", v); }
-/// entity:scrollContentHeight(...)
-template <typename... Mas>
-Value scrollContentHeight(Mas&&... mas) const {
-    return call("scrollContentHeight", Values{Value(std::forward<Mas>(mas))...});
+/// entity.scrollContentHeight: Scroll View: alto del contenido
+Value scrollContentHeight() const { return get("scrollContentHeight"); }
+void setScrollContentHeight(const Value& v) const { set("scrollContentHeight", v); }
+/// entity:scrollToFraction(0)
+/// Scroll View: 0 = arriba, 1 = abajo del todo
+template <typename T0 = Value>
+Value scrollToFraction(const T0& valor = {}) const {
+    return call("scrollToFraction", Values{Value(valor)});
 }
-/// entity:scrollToFraction(...)
-template <typename... Mas>
-Value scrollToFraction(Mas&&... mas) const {
-    return call("scrollToFraction", Values{Value(std::forward<Mas>(mas))...});
-}
-/// entity:scrollX(...)
-template <typename... Mas>
-Value scrollX(Mas&&... mas) const {
-    return call("scrollX", Values{Value(std::forward<Mas>(mas))...});
-}
-/// entity:scrollY(...)
-template <typename... Mas>
-Value scrollY(Mas&&... mas) const {
-    return call("scrollY", Values{Value(std::forward<Mas>(mas))...});
-}
+/// entity.scrollX: Scroll View: desplazamiento horizontal
+Value scrollX() const { return get("scrollX"); }
+void setScrollX(const Value& v) const { set("scrollX", v); }
+/// entity.scrollY: Scroll View: desplazamiento vertical
+Value scrollY() const { return get("scrollY"); }
+void setScrollY(const Value& v) const { set("scrollY", v); }
 /// entity:sendEffectEvent("Explode")
 /// evento del bloque Spawn 'Al recibir un evento'
 template <typename T0 = Value>
@@ -484,10 +488,11 @@ template <typename T0 = Value, typename T1 = Value>
 Value setBoneScale(const T0& texto = {}, const T1& valor = {}) const {
     return call("setBoneScale", Values{Value(texto), Value(valor)});
 }
-/// entity:setDropdownOptions(...)
-template <typename... Mas>
-Value setDropdownOptions(Mas&&... mas) const {
-    return call("setDropdownOptions", Values{Value(std::forward<Mas>(mas))...});
+/// entity:setDropdownOptions({"Baja", "Alta"})
+/// Desplegable: cambia las opciones
+template <typename T0 = Value>
+Value setDropdownOptions(const T0& tabla = {}) const {
+    return call("setDropdownOptions", Values{Value(tabla)});
 }
 /// entity:setEffectBool("Activo", true)
 /// parametro expuesto (bool)
@@ -579,10 +584,11 @@ template <typename T0 = Value, typename T1 = Value, typename T2 = Value>
 Value setSoundEffect(const T0& texto = {}, const T1& activar = {}, const T2& valor = {}) const {
     return call("setSoundEffect", Values{Value(texto), Value(activar), Value(valor)});
 }
-/// entity:setSplineControlPoint(...)
-template <typename... Mas>
-Value setSplineControlPoint(Mas&&... mas) const {
-    return call("setSplineControlPoint", Values{Value(std::forward<Mas>(mas))...});
+/// entity:setSplineControlPoint(1, Vec3)
+/// Spline: mueve un punto de control (mundo)
+template <typename T0 = Value, typename T1 = Value>
+Value setSplineControlPoint(const T0& valor = {}, const T1& vec = {}) const {
+    return call("setSplineControlPoint", Values{Value(valor), Value(vec)});
 }
 /// entity:setTile(x, y, id, capa)
 /// Tilemap: pone una celda (id 0 = vacia, n = celda n-1 del tileset, -k = Rule Tile k)
@@ -632,48 +638,50 @@ template <typename... Mas>
 Value soundOcclusion(Mas&&... mas) const {
     return call("soundOcclusion", Values{Value(std::forward<Mas>(mas))...});
 }
+/// entity:spawnCrowd()
+/// Crowd Spawner: crea (o recrea) la multitud; devuelve cuantos
+template <typename... Mas>
+Value spawnCrowd(Mas&&... mas) const {
+    return call("spawnCrowd", Values{Value(std::forward<Mas>(mas))...});
+}
 /// entity.speed: km/h de su Vehicle
 Value speed() const { return get("speed"); }
 void setSpeed(const Value& v) const { set("speed", v); }
-/// entity:splineDistance(...)
-template <typename... Mas>
-Value splineDistance(Mas&&... mas) const {
-    return call("splineDistance", Values{Value(std::forward<Mas>(mas))...});
+/// entity.splineDistance: SplineFollower: donde va (m)
+Value splineDistance() const { return get("splineDistance"); }
+void setSplineDistance(const Value& v) const { set("splineDistance", v); }
+/// entity.splineLength: metros de su Spline
+Value splineLength() const { return get("splineLength"); }
+void setSplineLength(const Value& v) const { set("splineLength", v); }
+/// entity:splinePoint(0.5)
+/// Spline: punto (mundo) a esa fraccion de la curva
+template <typename T0 = Value>
+Value splinePoint(const T0& valor = {}) const {
+    return call("splinePoint", Values{Value(valor)});
 }
-/// entity:splineLength(...)
-template <typename... Mas>
-Value splineLength(Mas&&... mas) const {
-    return call("splineLength", Values{Value(std::forward<Mas>(mas))...});
+/// entity:splinePointAt(metros)
+/// Spline: punto a esa distancia desde el principio
+template <typename T0 = Value>
+Value splinePointAt(const T0& metros = {}) const {
+    return call("splinePointAt", Values{Value(metros)});
 }
-/// entity:splinePoint(...)
-template <typename... Mas>
-Value splinePoint(Mas&&... mas) const {
-    return call("splinePoint", Values{Value(std::forward<Mas>(mas))...});
+/// entity.splinePointCount: puntos de control de su Spline
+Value splinePointCount() const { return get("splinePointCount"); }
+void setSplinePointCount(const Value& v) const { set("splinePointCount", v); }
+/// entity:splineRight(0.5)
+/// Spline: derecha de la curva ahi (con el peralte)
+template <typename T0 = Value>
+Value splineRight(const T0& valor = {}) const {
+    return call("splineRight", Values{Value(valor)});
 }
-/// entity:splinePointAt(...)
-template <typename... Mas>
-Value splinePointAt(Mas&&... mas) const {
-    return call("splinePointAt", Values{Value(std::forward<Mas>(mas))...});
-}
-/// entity:splinePointCount(...)
-template <typename... Mas>
-Value splinePointCount(Mas&&... mas) const {
-    return call("splinePointCount", Values{Value(std::forward<Mas>(mas))...});
-}
-/// entity:splineRight(...)
-template <typename... Mas>
-Value splineRight(Mas&&... mas) const {
-    return call("splineRight", Values{Value(std::forward<Mas>(mas))...});
-}
-/// entity:splineSpeed(...)
-template <typename... Mas>
-Value splineSpeed(Mas&&... mas) const {
-    return call("splineSpeed", Values{Value(std::forward<Mas>(mas))...});
-}
-/// entity:splineTangent(...)
-template <typename... Mas>
-Value splineTangent(Mas&&... mas) const {
-    return call("splineTangent", Values{Value(std::forward<Mas>(mas))...});
+/// entity.splineSpeed: SplineFollower: m/s
+Value splineSpeed() const { return get("splineSpeed"); }
+void setSplineSpeed(const Value& v) const { set("splineSpeed", v); }
+/// entity:splineTangent(0.5)
+/// Spline: direccion de la curva ahi
+template <typename T0 = Value>
+Value splineTangent(const T0& valor = {}) const {
+    return call("splineTangent", Values{Value(valor)});
 }
 /// entity.spriteAnimation: clip que suena en su SpriteAnimator
 Value spriteAnimation() const { return get("spriteAnimation"); }
@@ -705,7 +713,8 @@ template <typename... Mas>
 Value stopSound(Mas&&... mas) const {
     return call("stopSound", Values{Value(std::forward<Mas>(mas))...});
 }
-/// entity:stopSplineFollower(...)
+/// entity:stopSplineFollower()
+/// SplineFollower: se para
 template <typename... Mas>
 Value stopSplineFollower(Mas&&... mas) const {
     return call("stopSplineFollower", Values{Value(std::forward<Mas>(mas))...});

@@ -6,6 +6,7 @@
 #include "EditorApp.h"
 #include "LoadingScreen.h"
 
+#include <CramionCore/asset/XrControllerModels.h>
 #include <CramionCore/ecs/ModelInstantiation.h>
 #include <CramionCore/physics/PhysicsComponents.h>
 #include <CramionCore/xr/XrRig.h>
@@ -127,13 +128,53 @@ ecs::Entity EditorApp::createXrOrigin(ecs::Entity parent) {
         xr::XrController& controller = hand.add<xr::XrController>();
         controller.hand = static_cast<xr::Hand>(h);
         hand.add<xr::XrInteractor>();  // coger (XR Grabbable) y el rayo de la UI en el mundo
-        ecs::Entity model = ecs::createPrimitive(world_, assets::builtin::kCube, "Modelo", hand);
-        model.setLocalScale(Vec3{0.05f, 0.05f, 0.12f});
+        // El mando de Quest 3 en 0,0,0: coincide con el de verdad (ver donde esta
+        // y ajustar el offset de las manos). Se puede borrar o desactivar.
+        ecs::Entity model = ecs::createPrimitive(world_, assets::builtin::questController(h), "Mando Quest 3", hand);
+        model.get<ecs::MeshRenderer>().cast_shadows = ecs::ShadowCasting::Off;
     }
     selectOnly(origin.uuid());
     revealInHierarchy(origin.uuid());
     commit();
     return origin;
+}
+
+// XR Controller en el Inspector: ver (o quitar) el mando de Quest 3 como hijo
+// en 0,0,0, justo donde esta el de verdad, para colocar las manos a ojo.
+void EditorApp::drawXrControllerInspector(ecs::Entity entity) {
+    const xr::XrController* controller = entity.tryGet<xr::XrController>();
+    if (controller == nullptr) return;
+    const int hand = controller->hand == xr::Hand::Left ? 0 : 1;
+    ecs::Entity model;
+    for (const entt::entity child : entity.children()) {
+        const ecs::Entity c = world_.wrap(child);
+        if (const ecs::MeshRenderer* mr = c.tryGet<ecs::MeshRenderer>();
+            mr != nullptr && (mr->model.uuid == assets::builtin::kQuestControllerLeft ||
+                              mr->model.uuid == assets::builtin::kQuestControllerRight)) {
+            model = c;
+            break;
+        }
+    }
+    // Se cambio de mano: el modelo de la otra.
+    if (model.valid()) {
+        ecs::MeshRenderer& mr = model.get<ecs::MeshRenderer>();
+        if (!(mr.model.uuid == assets::builtin::questController(hand))) {
+            mr.model.uuid = assets::builtin::questController(hand);
+            commit();
+        }
+    }
+    if (!model.valid()) {
+        if (ImGui::Button("Ver el mando (Quest 3)", ImVec2(-1.0f, 0.0f))) {
+            ecs::Entity m = ecs::createPrimitive(world_, assets::builtin::questController(hand), "Mando Quest 3", entity);
+            m.get<ecs::MeshRenderer>().cast_shadows = ecs::ShadowCasting::Off;
+            commit();
+        }
+        ImGui::SetItemTooltip("Pone el modelo del mando como hijo, justo donde esta el de verdad (con Pose = Grip):\n"
+                              "sirve para ver donde queda la mano y ajustar su posicion y giro.");
+    } else if (ImGui::Button("Quitar el mando", ImVec2(-1.0f, 0.0f))) {
+        world_.destroy(model);
+        commit();
+    }
 }
 
 // Jugador VR en primera persona: el XR Origin con su capsula (Character

@@ -1,6 +1,9 @@
 #include "Primitives.h"
 
+#include "CramionCore/asset/XrControllerModels.h"
+
 #include <cmath>
+#include <cstdint>
 
 namespace cramion::assets::primitives {
 
@@ -256,6 +259,33 @@ ModelData cylinder(bool hemispheres) {
     return b.finish("Capsule");
 }
 
+// Mandos de Meta Quest 3 (QuestControllers.inc, generado): la malla horneada
+// en el espacio grip, sin UV. Plastico negro mate como el de verdad.
+#include "QuestControllers.inc"
+
+ModelData questController(const std::int16_t* positions, const std::int8_t* normals, std::size_t vertex_count,
+                          const std::uint16_t* indices, std::size_t index_count, const char* name) {
+    MeshBuilder b;
+    for (std::size_t i = 0; i < vertex_count; ++i) {
+        const Vec3 p{positions[i * 3] * 1e-4f, positions[i * 3 + 1] * 1e-4f, positions[i * 3 + 2] * 1e-4f};
+        const Vec3 n{normals[i * 3] / 127.0f, normals[i * 3 + 1] / 127.0f, normals[i * 3 + 2] / 127.0f};
+        b.vertex(p, n, Vec2{0.0f, 0.0f});
+    }
+    for (std::size_t i = 0; i + 2 < index_count; i += 3) b.triangle(indices[i], indices[i + 1], indices[i + 2]);
+    ModelData data = b.finish(name);
+    data.materials.front().name = "Mando";
+    data.materials.front().base_color = Vec4{0.03f, 0.03f, 0.035f, 1.0f};
+    data.materials.front().roughness = 0.55f;
+    return data;
+}
+
+template <std::size_t P, std::size_t N, std::size_t I>
+ModelData questController(const std::int16_t (&positions)[P], const std::int8_t (&normals)[N],
+                          const std::uint16_t (&indices)[I], const char* name) {
+    static_assert(P == N && P % 3 == 0 && I % 3 == 0, "QuestControllers.inc mal generado");
+    return questController(positions, normals, P / 3, indices, I, name);
+}
+
 struct Builtin {
     Uuid uuid;
     const char* name;
@@ -265,6 +295,8 @@ constexpr Builtin kBuiltins[] = {
     {builtin::kCube, "Cube"},         {builtin::kSphere, "Sphere"},
     {builtin::kPlane, "Plane"},       {builtin::kCylinder, "Cylinder"},
     {builtin::kCapsule, "Capsule"},
+    {builtin::kQuestControllerLeft, "Quest 3 Controller (Left)"},
+    {builtin::kQuestControllerRight, "Quest 3 Controller (Right)"},
 };
 
 }  // namespace
@@ -305,6 +337,10 @@ std::shared_ptr<ModelAsset> make(const Uuid& uuid) {
         data = cylinder(false);
     } else if (uuid == builtin::kCapsule) {
         data = cylinder(true);
+    } else if (uuid == builtin::kQuestControllerLeft) {
+        data = questController(kQuestLeftPositions, kQuestLeftNormals, kQuestLeftIndices, "Quest 3 Controller (Left)");
+    } else if (uuid == builtin::kQuestControllerRight) {
+        data = questController(kQuestRightPositions, kQuestRightNormals, kQuestRightIndices, "Quest 3 Controller (Right)");
     } else {
         return nullptr;
     }

@@ -620,6 +620,39 @@ void EditorApp::drawMeshMaterials(ecs::Entity entity) {
     ImGui::TreePop();
     if (edited) commit();
 
+    // Find And Build: las texturas del modelo (las que trae y las que se
+    // encuentran en el proyecto por nombre) en un .crmat por hueco, puestos
+    // en este objeto y en los demas seleccionados.
+    // Solo modelos importados (los integrados no tienen archivo del que sacarlas).
+    const auto buildable = [&](const ecs::MeshRenderer* r) {
+        if (r == nullptr || r->mesh || !r->model.valid()) return false;
+        const auto info = database_->find(r->model.uuid);
+        return info && info->type == assets::AssetType::Model && !info->path.empty();
+    };
+    std::vector<Uuid> models;
+    std::vector<ecs::Entity> targets;
+    for (ecs::Entity e : selectedEntities()) {
+        const ecs::MeshRenderer* other = e.tryGet<ecs::MeshRenderer>();
+        if (!buildable(other)) continue;
+        targets.push_back(e);
+        if (std::none_of(models.begin(), models.end(), [&](const Uuid& u) { return u == other->model.uuid; })) {
+            models.push_back(other->model.uuid);
+        }
+    }
+    if (targets.empty() && buildable(mr)) {
+        targets.push_back(entity);
+        models.push_back(mr->model.uuid);
+    }
+    ImGui::BeginDisabled(models.empty());
+    if (ImGui::Button("Find And Build", ImVec2(-1.0f, 0.0f))) createModelMaterials(models, targets);
+    ImGui::EndDisabled();
+    ImGui::SetItemTooltip(models.empty()
+                              ? "Solo para piezas de un modelo importado."
+                              : "Busca las texturas del objeto (las que trae el modelo y, si faltan, las del\n"
+                                "proyecto con el nombre del material: _BaseColor, _Normal, _Roughness...)\n"
+                                "y arma un material (.crmat) por hueco con todas ellas, puesto en este objeto\n"
+                                "y en los seleccionados. Los .crmat que ya existian se reutilizan.");
+
     // El material elegido, editable aqui mismo (como en Unity, al pie).
     const bool uses_inline = std::any_of(mr->materials.begin(), mr->materials.end(),
                                          [&](const assets::AssetRef& r) { return r.uuid == inline_material_; });

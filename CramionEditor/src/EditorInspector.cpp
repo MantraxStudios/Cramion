@@ -606,6 +606,7 @@ void EditorApp::drawInspector() {
             if (type.name == "RectTransform") drawRectTransformInspector(entity);
             if (type.name == "AudioSource") drawAudioInspector(entity);
             if (type.name == "MeshRenderer") drawMeshMaterials(entity);
+            if (type.name == "XrController") drawXrControllerInspector(entity);
             if (type.name == "Skeleton" || type.name == "BoneSocket" || type.name == "InverseKinematics" ||
                 type.name == "Ragdoll" || type.name == "PhysBones") {
                 drawRigInspector(type.name, entity);

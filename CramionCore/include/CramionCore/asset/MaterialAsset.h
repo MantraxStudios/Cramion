@@ -114,6 +114,21 @@ asset::MaterialData toMaterialData(const MaterialAsset& material, const std::str
 // resultado son relativas a `assets_root`.
 MaterialAsset materialFromImage(const std::filesystem::path& assets_root, const std::string& image);
 
+// Los mapas que acompanan a una imagen de color en su carpeta, por el nombre
+// (piedra_albedo.png -> piedra_normal.png, Piedra-Rough.png, PiedraAO.png...;
+// da igual '_', '-', ' ' o nada entre el nombre y el sufijo). Rutas absolutas;
+// vacias las que no hay. Sirve tambien fuera de Assets.
+struct CompanionMaps {
+    std::filesystem::path normal;
+    bool normal_directx = false;
+    std::filesystem::path roughness, metallic, occlusion, emissive, height, cavity, specular, gloss, bump;
+    // Empaquetados (se parten por canales al usarlos):
+    std::filesystem::path metallic_smoothness;  // Unity estandar: R metal, A suavidad
+    std::filesystem::path mask_map;             // Unity HDRP: R metal, G oclusion, A suavidad
+    std::filesystem::path orm;                  // R oclusion, G rugosidad, B metal
+};
+CompanionMaps findCompanionMaps(const std::filesystem::path& color_image);
+
 }  // namespace cramion::assets
 
 #endif  // CRAMION_CORE_ASSET_MATERIAL_ASSET_H

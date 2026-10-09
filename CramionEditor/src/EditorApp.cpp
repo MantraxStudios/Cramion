@@ -920,14 +920,14 @@ void EditorApp::assignEnvironment(const Uuid& uuid) {
     commit();
 }
 
-void EditorApp::focusSelection() {
+bool EditorApp::selectionBounds(Vec3& low, Vec3& high) {
     const std::vector<ecs::Entity> targets = topLevelSelection();
     if (targets.empty() || !sync_) {
-        return;
+        return false;
     }
     // Caja de todo lo seleccionado (sus actores), o su posicion.
-    Vec3 low{1e30f, 1e30f, 1e30f};
-    Vec3 high{-1e30f, -1e30f, -1e30f};
+    low = Vec3{1e30f, 1e30f, 1e30f};
+    high = Vec3{-1e30f, -1e30f, -1e30f};
     bool any = false;
     const auto grow = [&](const Vec3& p) {
         low = Vec3{std::min(low.x, p.x), std::min(low.y, p.y), std::min(low.z, p.z)};
@@ -957,6 +957,15 @@ void EditorApp::focusSelection() {
                 for (const entt::entity child : node.children()) stack.push_back(world_.wrap(child));
             }
         }
+    }
+    return any;
+}
+
+void EditorApp::focusSelection() {
+    Vec3 low{};
+    Vec3 high{};
+    if (!selectionBounds(low, high)) {
+        return;
     }
     const Vec3 center = (low + high) * 0.5f;
     const float radius = std::max(core::length(high - low) * 0.5f, 0.5f);

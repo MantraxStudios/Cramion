@@ -6,6 +6,45 @@
 
 namespace cramion {
 
+namespace Accessibility {
+/// Accessibility.colorblindName(2)
+/// nombre del tipo de daltonismo
+template <typename T0 = Value>
+inline Value colorblindName(const T0& valor = {}) {
+    return detail::lua("Accessibility.colorblindName", Values{Value(valor)});
+}
+/// Accessibility.get()
+/// {colorblind, colorblindStrength, colorblindCorrect, textScale, subtitleScale, ...}
+template <typename... Mas>
+inline Value get(Mas&&... mas) {
+    return detail::lua("Accessibility.get", Values{Value(std::forward<Mas>(mas))...});
+}
+/// Accessibility.load()
+/// las vuelve a leer
+template <typename... Mas>
+inline Value load(Mas&&... mas) {
+    return detail::lua("Accessibility.load", Values{Value(std::forward<Mas>(mas))...});
+}
+/// Accessibility.reset()
+/// por defecto
+template <typename... Mas>
+inline Value reset(Mas&&... mas) {
+    return detail::lua("Accessibility.reset", Values{Value(std::forward<Mas>(mas))...});
+}
+/// Accessibility.save()
+/// las guarda (por jugador)
+template <typename... Mas>
+inline Value save(Mas&&... mas) {
+    return detail::lua("Accessibility.save", Values{Value(std::forward<Mas>(mas))...});
+}
+/// Accessibility.set({colorblind = 2, textScale = 1.3, reduceMotion = true})
+/// cambia opciones (las que vengan)
+template <typename T0 = Value>
+inline Value set(const T0& tabla = {}) {
+    return detail::lua("Accessibility.set", Values{Value(tabla)});
+}
+}  // namespace Accessibility
+
 namespace Assert {
 /// Assert.approx(real, esperado, tolerancia, mensaje)
 /// numeros o Vec3
@@ -121,6 +160,21 @@ inline Value setOcclusion(const T0& activar = {}) {
 }
 }  // namespace Audio
 
+namespace Camera {
+/// Camera.shake(0.6, 0.4, 18)
+/// temblor de camara (intensidad 0..1, segundos, Hz)
+template <typename T0 = Value, typename T1 = Value, typename T2 = Value>
+inline Value shake(const T0& valor = {}, const T1& valor2 = {}, const T2& valor3 = {}) {
+    return detail::lua("Camera.shake", Values{Value(valor), Value(valor2), Value(valor3)});
+}
+/// Camera.stopShake()
+/// lo para
+template <typename... Mas>
+inline Value stopShake(Mas&&... mas) {
+    return detail::lua("Camera.stopShake", Values{Value(std::forward<Mas>(mas))...});
+}
+}  // namespace Camera
+
 namespace CharacterController {
 /// CharacterController.Above: campo
 inline Value Above() { return detail::luaGet("CharacterController.Above"); }
@@ -129,6 +183,15 @@ inline Value Below() { return detail::luaGet("CharacterController.Below"); }
 /// CharacterController.Sides: campo
 inline Value Sides() { return detail::luaGet("CharacterController.Sides"); }
 }  // namespace CharacterController
+
+namespace Crowd {
+/// Crowd.stats()
+/// {agents, visible, spawners}
+template <typename... Mas>
+inline Value stats(Mas&&... mas) {
+    return detail::lua("Crowd.stats", Values{Value(std::forward<Mas>(mas))...});
+}
+}  // namespace Crowd
 
 namespace DataPack {
 /// DataPack.info("Nivel2")
@@ -1068,6 +1131,21 @@ inline Value wasActionStarted(const T0& texto = {}) {
 }
 }  // namespace Input
 
+namespace Jobs {
+/// Jobs.executed()
+/// tareas ejecutadas
+template <typename... Mas>
+inline Value executed(Mas&&... mas) {
+    return detail::lua("Jobs.executed", Values{Value(std::forward<Mas>(mas))...});
+}
+/// Jobs.workers()
+/// hilos del job system
+template <typename... Mas>
+inline Value workers(Mas&&... mas) {
+    return detail::lua("Jobs.workers", Values{Value(std::forward<Mas>(mas))...});
+}
+}  // namespace Jobs
+
 namespace Json {
 /// Json.decode(texto)
 /// texto JSON -> tabla (nil + error si no es JSON)
@@ -1082,6 +1160,32 @@ inline Value encode(const T0& tabla = {}, const T1& bonito = {}) {
     return detail::lua("Json.encode", Values{Value(tabla), Value(bonito)});
 }
 }  // namespace Json
+
+namespace Mods {
+/// Mods.enabled()
+/// el juego carga mods?
+template <typename... Mas>
+inline Value enabled(Mas&&... mas) {
+    return detail::lua("Mods.enabled", Values{Value(std::forward<Mas>(mas))...});
+}
+/// Mods.isLoaded(id)
+template <typename T0 = Value>
+inline Value isLoaded(const T0& id = {}) {
+    return detail::lua("Mods.isLoaded", Values{Value(id)});
+}
+/// Mods.list()
+/// {id, name, version, author, description, enabled, loaded}
+template <typename... Mas>
+inline Value list(Mas&&... mas) {
+    return detail::lua("Mods.list", Values{Value(std::forward<Mas>(mas))...});
+}
+/// Mods.setEnabled(id, false)
+/// activa o desactiva (al volver a abrir)
+template <typename T0 = Value, typename T1 = Value>
+inline Value setEnabled(const T0& id = {}, const T1& activar = {}) {
+    return detail::lua("Mods.setEnabled", Values{Value(id), Value(activar)});
+}
+}  // namespace Mods
 
 namespace Navigation {
 /// Navigation.findPath(desde, hasta)
@@ -1173,11 +1277,21 @@ template <typename... Mas>
 inline Value isConnecting(Mas&&... mas) {
     return detail::lua("Network.isConnecting", Values{Value(std::forward<Mas>(mas))...});
 }
+/// Network.isDedicated(...)
+template <typename... Mas>
+inline Value isDedicated(Mas&&... mas) {
+    return detail::lua("Network.isDedicated", Values{Value(std::forward<Mas>(mas))...});
+}
 /// Network.isServer()
 /// eres el servidor?
 template <typename... Mas>
 inline Value isServer(Mas&&... mas) {
     return detail::lua("Network.isServer", Values{Value(std::forward<Mas>(mas))...});
+}
+/// Network.lagCompensatedRaycast(...)
+template <typename... Mas>
+inline Value lagCompensatedRaycast(Mas&&... mas) {
+    return detail::lua("Network.lagCompensatedRaycast", Values{Value(std::forward<Mas>(mas))...});
 }
 /// Network.loadScene("Nivel2")
 /// todos cargan la escena (solo el servidor)
@@ -1251,11 +1365,21 @@ template <typename... Mas>
 inline Value players(Mas&&... mas) {
     return detail::lua("Network.players", Values{Value(std::forward<Mas>(mas))...});
 }
+/// Network.positionAt(...)
+template <typename... Mas>
+inline Value positionAt(Mas&&... mas) {
+    return detail::lua("Network.positionAt", Values{Value(std::forward<Mas>(mas))...});
+}
 /// Network.send("chat", datos, destino)
 /// mensaje (destino: nil = todos, "server" o un id)
 template <typename T0 = Value, typename T1 = Value, typename T2 = Value>
 inline Value send(const T0& texto = {}, const T1& datos = {}, const T2& destino = {}) {
     return detail::lua("Network.send", Values{Value(texto), Value(datos), Value(destino)});
+}
+/// Network.simulate(...)
+template <typename... Mas>
+inline Value simulate(Mas&&... mas) {
+    return detail::lua("Network.simulate", Values{Value(std::forward<Mas>(mas))...});
 }
 /// Network.spawn("Prefabs/Jugador", posicion, dueno)
 /// crea un objeto de red en todos (solo el servidor)
@@ -1790,10 +1914,11 @@ inline Value width(Mas&&... mas) {
 }  // namespace Screen
 
 namespace Spline {
-/// Spline.create(...)
-template <typename... Mas>
-inline Value create(Mas&&... mas) {
-    return detail::lua("Spline.create", Values{Value(std::forward<Mas>(mas))...});
+/// Spline.create({Vec3(0,0,0), Vec3(0,0,20)}, "road", "Camino", cerrada)
+/// crea una spline (road, path, river, wall, fence, pipe, rails, ribbon o nada)
+template <typename T0 = Value, typename T1 = Value, typename T2 = Value, typename T3 = Value>
+inline Value create(const T0& tabla = {}, const T1& texto = {}, const T2& texto2 = {}, const T3& cerrada = {}) {
+    return detail::lua("Spline.create", Values{Value(tabla), Value(texto), Value(texto2), Value(cerrada)});
 }
 }  // namespace Spline
 
@@ -2211,10 +2336,11 @@ template <typename T0 = Value>
 inline Value setLanguage(const T0& texto = {}) {
     return detail::lua("Text.setLanguage", Values{Value(texto)});
 }
-/// Text.strip(...)
-template <typename... Mas>
-inline Value strip(Mas&&... mas) {
-    return detail::lua("Text.strip", Values{Value(std::forward<Mas>(mas))...});
+/// Text.strip("<b>Hola</b>")
+/// el texto sin las etiquetas del texto enriquecido
+template <typename T0 = Value>
+inline Value strip(const T0& texto = {}) {
+    return detail::lua("Text.strip", Values{Value(texto)});
 }
 /// Text.systemLanguage()
 /// idioma del sistema
@@ -2223,6 +2349,80 @@ inline Value systemLanguage(Mas&&... mas) {
     return detail::lua("Text.systemLanguage", Values{Value(std::forward<Mas>(mas))...});
 }
 }  // namespace Text
+
+namespace Voice {
+/// Voice.isMuted(id)
+template <typename T0 = Value>
+inline Value isMuted(const T0& id = {}) {
+    return detail::lua("Voice.isMuted", Values{Value(id)});
+}
+/// Voice.isSpeaking(id)
+/// habla ahora? (sin id = yo)
+template <typename T0 = Value>
+inline Value isSpeaking(const T0& id = {}) {
+    return detail::lua("Voice.isSpeaking", Values{Value(id)});
+}
+/// Voice.micLevel()
+/// 0..1 del microfono
+template <typename... Mas>
+inline Value micLevel(Mas&&... mas) {
+    return detail::lua("Voice.micLevel", Values{Value(std::forward<Mas>(mas))...});
+}
+/// Voice.setMicGain(1)
+/// ganancia del microfono
+template <typename T0 = Value>
+inline Value setMicGain(const T0& valor = {}) {
+    return detail::lua("Voice.setMicGain", Values{Value(valor)});
+}
+/// Voice.setMode("push")
+/// push (pulsar para hablar), open (por voz) u off
+template <typename T0 = Value>
+inline Value setMode(const T0& texto = {}) {
+    return detail::lua("Voice.setMode", Values{Value(texto)});
+}
+/// Voice.setMuted(id, true)
+/// silenciar a un jugador
+template <typename T0 = Value, typename T1 = Value>
+inline Value setMuted(const T0& id = {}, const T1& activar = {}) {
+    return detail::lua("Voice.setMuted", Values{Value(id), Value(activar)});
+}
+/// Voice.setProximity(30)
+/// volumen por distancia (0 = todos igual)
+template <typename T0 = Value>
+inline Value setProximity(const T0& valor = {}) {
+    return detail::lua("Voice.setProximity", Values{Value(valor)});
+}
+/// Voice.setTalking(true)
+/// modo push: hablando
+template <typename T0 = Value>
+inline Value setTalking(const T0& activar = {}) {
+    return detail::lua("Voice.setTalking", Values{Value(activar)});
+}
+/// Voice.setThreshold(0.02)
+/// modo open: volumen minimo
+template <typename T0 = Value>
+inline Value setThreshold(const T0& valor = {}) {
+    return detail::lua("Voice.setThreshold", Values{Value(valor)});
+}
+/// Voice.setVolume(1)
+/// volumen de los demas
+template <typename T0 = Value>
+inline Value setVolume(const T0& valor = {}) {
+    return detail::lua("Voice.setVolume", Values{Value(valor)});
+}
+/// Voice.start()
+/// abre el microfono y la salida
+template <typename... Mas>
+inline Value start(Mas&&... mas) {
+    return detail::lua("Voice.start", Values{Value(std::forward<Mas>(mas))...});
+}
+/// Voice.stop()
+/// los cierra
+template <typename... Mas>
+inline Value stop(Mas&&... mas) {
+    return detail::lua("Voice.stop", Values{Value(std::forward<Mas>(mas))...});
+}
+}  // namespace Voice
 
 namespace Voxel {
 /// Voxel.blockColor("stone")
@@ -2612,6 +2812,33 @@ inline Value transition(Mas&&... mas) {
     return detail::lua("Weather.transition", Values{Value(std::forward<Mas>(mas))...});
 }
 }  // namespace Weather
+
+namespace WorldPartition {
+/// WorldPartition.active()
+/// esta repartiendo el mundo en celdas?
+template <typename... Mas>
+inline Value active(Mas&&... mas) {
+    return detail::lua("WorldPartition.active", Values{Value(std::forward<Mas>(mas))...});
+}
+/// WorldPartition.isLoaded(posicion)
+/// la celda de ese punto esta cargada?
+template <typename T0 = Value>
+inline Value isLoaded(const T0& posicion = {}) {
+    return detail::lua("WorldPartition.isLoaded", Values{Value(posicion)});
+}
+/// WorldPartition.loadAll()
+/// carga todas las celdas ya
+template <typename... Mas>
+inline Value loadAll(Mas&&... mas) {
+    return detail::lua("WorldPartition.loadAll", Values{Value(std::forward<Mas>(mas))...});
+}
+/// WorldPartition.stats()
+/// {cells, loadedCells, objects, unloadedObjects, storedBytes}
+template <typename... Mas>
+inline Value stats(Mas&&... mas) {
+    return detail::lua("WorldPartition.stats", Values{Value(std::forward<Mas>(mas))...});
+}
+}  // namespace WorldPartition
 
 namespace XR {
 /// XR.getAimRay("right")

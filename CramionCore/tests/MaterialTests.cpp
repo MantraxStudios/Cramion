@@ -261,6 +261,28 @@ void testModelMaterialsEmbedded() {
           "color, normal, rugosidad, metal, emision y oclusion en archivos de Assets");
 }
 
+// Nombres de packs de Unity y otros: separadores distintos y mapas empaquetados.
+void testCompanionNames() {
+    std::printf("Companeras por nombre (packs de Unity)\n");
+    const std::filesystem::path dir = std::filesystem::temp_directory_path() / "cramion_companions";
+    std::filesystem::remove_all(dir);
+    std::filesystem::create_directories(dir);
+    for (const char* name : {"low_door_mat_AlbedoTransparency.png", "low_door_mat_Normal.png",
+                             "low_door_mat_Occlusion.png", "low_door_mat_MetallicSmoothness.png",
+                             "low_door2_mat_Normal.png", "Rock-BaseColor.png", "RockNormalGL.png", "Rock-ORM.png",
+                             "Rockn.png"}) {
+        std::ofstream(dir / name) << "x";
+    }
+    const assets::CompanionMaps door = assets::findCompanionMaps(dir / "low_door_mat_AlbedoTransparency.png");
+    check(door.normal.filename() == "low_door_mat_Normal.png" && door.occlusion.filename() == "low_door_mat_Occlusion.png" &&
+              door.metallic_smoothness.filename() == "low_door_mat_MetallicSmoothness.png" && door.metallic.empty(),
+          "AlbedoTransparency: su Normal, Occlusion y MetallicSmoothness (no los de door2)");
+    const assets::CompanionMaps rock = assets::findCompanionMaps(dir / "Rock-BaseColor.png");
+    check(rock.normal.filename() == "RockNormalGL.png" && rock.orm.filename() == "Rock-ORM.png",
+          "sin separador o con '-': NormalGL y ORM");
+    std::filesystem::remove_all(dir);
+}
+
 }  // namespace
 
 int main() {
@@ -269,6 +291,7 @@ int main() {
     testRenderTexture();
     testModelMaterialsSearch();
     testModelMaterialsEmbedded();
+    testCompanionNames();
     std::printf("\n%d comprobaciones, %d fallos\n", checks, failures);
     return failures == 0 ? 0 : 1;
 }

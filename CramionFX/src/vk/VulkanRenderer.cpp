@@ -3072,6 +3072,21 @@ void VulkanRenderer::applyEffectiveGraphics() {
         settings.quality = UpscaleQuality::Custom;
         settings.custom_scale = std::clamp(scale, 0.25f, 1.0f);
     }
+    // VR: el ojo del casco (2528x2704 en Quest 3) son 3,3 veces los pixeles de
+    // 1080p y cada destino (G-buffer, GI, reflejos, historias por ojo) va a ese
+    // tamano: con 8 GB la escena ya no cabia (ErrorOutOfDeviceMemory al subir
+    // sus texturas). Con menos de 12 GB, como mucho ~1,5 veces 1080p por ojo.
+    if (xr_output_extent_.width > 0 && xr_output_extent_.height > 0 && hardware_.vram_mb > 0 &&
+        hardware_.vram_mb < 12 * 1024) {
+        constexpr double kMaxEyePixels = 1920.0 * 1080.0 * 1.5;
+        const double eye_pixels = static_cast<double>(xr_output_extent_.width) * xr_output_extent_.height;
+        const float cap = static_cast<float>(std::sqrt(std::min(1.0, kMaxEyePixels / eye_pixels)));
+        if (renderScale(settings) > cap + 0.001f) {
+            if (settings.upscaler == Upscaler::Off) settings.upscaler = Upscaler::Fsr1;
+            settings.quality = UpscaleQuality::Custom;
+            settings.custom_scale = std::clamp(cap, 0.25f, 1.0f);
+        }
+    }
     if (settings == graphics_) return;
     const bool vsync_changed = settings.vsync != graphics_.vsync;
     const bool rebuild = renderScale(settings) != renderScale(graphics_) || settings.upscaler != graphics_.upscaler ||

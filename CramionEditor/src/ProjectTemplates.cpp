@@ -22,6 +22,7 @@
 #include <CramionCore/net/NetworkObject.h>
 
 #include <CramionCore/CramionCore.h>
+#include <CramionCore/asset/XrControllerModels.h>
 #include <CramionCore/scripting/CppScripts.h>
 #include <CramionCore/xr/XrRig.h>
 
@@ -3767,14 +3768,9 @@ void buildVr(project::ProjectInfo& project) {
         controller.hand = static_cast<xr::Hand>(h);
         xr::XrInteractor& interactor = hand.add<xr::XrInteractor>();
         interactor.ray_material = laser;
-        // El mando: un cuerpo y un gatillo (cambialo por tu modelo).
-        ecs::Entity body = ecs::createPrimitive(b.world, assets::builtin::kCube, "Mando", hand);
-        body.setLocalScale(Vec3{0.045f, 0.035f, 0.13f});
-        body.get<ecs::MeshRenderer>().materials = {dark};
-        ecs::Entity ring = ecs::createPrimitive(b.world, assets::builtin::kCylinder, "Aro", hand);
-        ring.setLocalPosition(Vec3{0.0f, 0.02f, -0.07f});
-        ring.setLocalScale(Vec3{0.07f, 0.008f, 0.07f});
-        ring.get<ecs::MeshRenderer>().materials = {metal};
+        // El mando de Quest 3, justo donde esta el de verdad (cambialo por tus manos).
+        ecs::Entity model = ecs::createPrimitive(b.world, assets::builtin::questController(h), "Mando Quest 3", hand);
+        model.get<ecs::MeshRenderer>().cast_shadows = ecs::ShadowCasting::Off;
     }
 
     // El panel: un Canvas en modo Mundo (80 x 56 cm) que mira al jugador.

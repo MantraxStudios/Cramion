@@ -119,6 +119,8 @@ inline std::vector<Uuid>::iterator findUuid(std::vector<Uuid>& list, const Uuid&
 
 // Imagen de Assets/ arrastrada desde el Proyecto (ruta UTF-8 terminada en 0).
 inline constexpr const char* kImagePayload = "CRAMION_IMAGE";
+// Carpeta del Proyecto arrastrada (ruta UTF-8): se mueve a otra.
+inline constexpr const char* kFolderPayload = "CRAMION_FOLDER";
 inline constexpr const char* kScriptPayload = "CRAMION_SCRIPT";  // ruta (utf8) de un .lua
 inline constexpr const char* kAudioPayload = "CRAMION_AUDIO";    // ruta (utf8) de un audio
 
@@ -873,10 +875,13 @@ private:
     // Clic derecho en uno o varios modelos del Proyecto: un .crmat por
     // material con sus texturas (EditorModelMaterials.cpp), guardado como
     // los materiales del modelo y puesto en sus instancias de la escena.
-    void createModelMaterials(const std::vector<Uuid>& models);
+    // `replace_in` (Find And Build del Mesh Renderer): en esos objetos se
+    // cambian todos los huecos, no solo los vacios.
+    void createModelMaterials(const std::vector<Uuid>& models, const std::vector<ecs::Entity>& replace_in = {});
     // Los .crmat guardados del modelo en los huecos vacios de `root` y sus
-    // hijos (al ponerlo en la escena). true si puso alguno.
-    bool applyModelMaterials(ecs::Entity root, const Uuid& model);
+    // hijos (al ponerlo en la escena). `replace`: solo `root`, y tambien los
+    // huecos que ya tienen material. true si puso alguno.
+    bool applyModelMaterials(ecs::Entity root, const Uuid& model, bool replace = false);
     bool materialTextureSlot(const char* label, std::string& path);
     void flushMaterialEdit(bool force_structure);
     void drawMaterialEditor(const Uuid& uuid);
@@ -1094,6 +1099,13 @@ private:
     POINT fly_cursor_restore_{};
     GizmoOperation gizmo_ = GizmoOperation::Translate;
     bool gizmo_local_ = false;
+    // Pivote (el origen del objeto activo) o Centro (el de la caja de toda la
+    // seleccion, con sus hijos), como el boton Pivot/Center de Unity (Z).
+    bool gizmo_center_ = false;
+    core::Mat4 gizmo_handle_ = core::Mat4::identity();  // donde esta el gizmo en modo Centro (fijo al arrastrar)
+    // Caja de lo seleccionado (sus actores y los de sus hijos; sin actores,
+    // las posiciones). false si no hay seleccion. La usan F y el modo Centro.
+    bool selectionBounds(core::Vec3& low, core::Vec3& high);
     bool gizmo_was_using_ = false;
     // Iconos y ayudas de la vista (luces, camaras, fisica...); el gizmo de
     // mover/rotar/escalar se queda siempre, como el boton Gizmos de Unity.
@@ -1113,7 +1125,7 @@ private:
     static constexpr float kFreeRotateRadius = 0.45f;
     bool free_rotate_hover_ = false;
     bool free_rotate_drag_ = false;
-    bool drawFreeRotateHandle(ecs::Entity target);
+    bool drawFreeRotateHandle(ecs::Entity target, const core::Vec3& origin);
     // Triangulos de los Mesh Collider (caros de sacar de Jolt): se guardan
     // por entidad y se rehacen si se mueve o cada cierto tiempo.
     struct ColliderWire {
@@ -1165,7 +1177,8 @@ private:
     ecs::Entity createPostVolume(int shape, ecs::Entity parent);  // 0 global, 1 caja, 2 esfera
     // --- Realidad virtual (EditorXr.cpp) ---
     ecs::Entity createXrOrigin(ecs::Entity parent);
-    ecs::Entity createXrPlayer(ecs::Entity parent);  // XR Origin con CharacterController y XrPlayer
+    ecs::Entity createXrPlayer(ecs::Entity parent);
+    void drawXrControllerInspector(ecs::Entity entity);  // ver/quitar el mando de Quest 3  // XR Origin con CharacterController y XrPlayer
     void drawXrMenu();
     xr::XrRig xr_rig_;
     bool xr_frame_ = false;
@@ -1194,6 +1207,10 @@ private:
     // Esqueletos, IK de animales, ragdoll y phys bones (EditorRigging.cpp).
     bool rigPose(ecs::Entity entity, ecs::RenderSync::SkeletonPose& pose, bool search_up);
     void drawRigInspector(const std::string& type, ecs::Entity entity);
+    // Huesos como objetos: una entidad por hueso (con su jerarquia) que mueve
+    // el hueso (BoneSocket en modo Mover), para posar con el gizmo o desde la
+    // Jerarquia (las manos de un modelo de RV). Devuelve cuantas creo.
+    int createBoneObjects(ecs::Entity entity);
     bool drawRigGizmos();  // true si el raton esta sobre una articulacion
     // --- Scripts de C++ aislados y CVars (EditorCppScripts.cpp) ---
     scripting::CppScriptSystem cpp_scripts_;
@@ -1570,6 +1587,11 @@ private:
     void browserDragSource(const BrowserItem& item);
     bool browserItemHumanoid(const BrowserItem& item);
     void browserDropTarget(const BrowserItem& item);
+    // Lo soltado en una carpeta (arbol o contenido): se mueve alli. Si lo
+    // arrastrado esta seleccionado, toda la seleccion (tambien con filtros o
+    // busqueda, desde varias carpetas). true si se solto algo.
+    bool acceptBrowserMove(const std::filesystem::path& folder);
+    void moveBrowserItems(const std::filesystem::path& folder, const std::string& dragged_key);
     bool browserSelected(const BrowserItem& item) const;
     void browserClick(const BrowserItem& item, std::size_t index);
     void loadBrowserFavorites();

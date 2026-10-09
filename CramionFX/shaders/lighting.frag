@@ -434,6 +434,13 @@ float softSunShadow(int cascade, vec2 uv, float depth, float texel_world, vec3 n
     vec3 row_z = vec3(m[0][2], m[1][2], m[2][2]);
     float depth_per_meter = max(length(row_z), 1e-6);
     float uv_per_meter = 1.0 / max(texel_world * map_size, 1e-6);
+    // Radio maximo de la busqueda y de la penumbra, en texeles: 32 hasta 2048
+    // y menos por encima. Las muestras son fijas: con 4096 u 8192 la misma
+    // penumbra ocupaba 2-4 veces mas texeles, las 16 muestras quedaban con
+    // huecos de 10-15 texeles entre ellas y el borde salia punteado y
+    // parpadeaba (mas resolucion se veia peor). Por encima de 2048 la sombra
+    // es mas nitida en vez de mas ruidosa.
+    float max_texels = 32.0 * min(1.0, 2048.0 / map_size);
 
     // Plano del receptor: cada muestra del disco se compara con la
     // profundidad que tiene la superficie EN SU SITIO, no con la del centro.
@@ -448,7 +455,7 @@ float softSunShadow(int cascade, vec2 uv, float depth, float texel_world, vec3 n
     vec2 depth_gradient = abs(plane.z) > 1e-9 ? -2.0 * plane.xy / plane.z : vec2(0.0);
     // A ras (el plano casi paralelo a los rayos) se limita: como mucho 1 m de
     // profundidad a lo ancho de la busqueda.
-    float max_gradient = depth_per_meter / max(32.0 * texel_uv, 1e-6);
+    float max_gradient = depth_per_meter / max(max_texels * texel_uv, 1e-6);
     float gradient_length = length(depth_gradient);
     if (gradient_length > max_gradient) depth_gradient *= max_gradient / gradient_length;
 
@@ -459,7 +466,7 @@ float softSunShadow(int cascade, vec2 uv, float depth, float texel_world, vec3 n
     }
 
     // 1. Lo que tapa: hasta ~40 m por encima (penumbra de ~37 cm).
-    float search_uv = clamp(40.0 * kSunDiameterTan * uv_per_meter, 2.0 * texel_uv, 32.0 * texel_uv);
+    float search_uv = clamp(40.0 * kSunDiameterTan * uv_per_meter, 2.0 * texel_uv, max_texels * texel_uv);
     float blocker_sum = 0.0;
     float blockers = 0.0;
     const int kSearch = 12;
@@ -482,14 +489,17 @@ float softSunShadow(int cascade, vec2 uv, float depth, float texel_world, vec3 n
     if (penumbra_uv < 1.5 * texel_uv) {
         return optimizedPcf(shadow_map, map_size, uv, depth, float(cascade));
     }
-    float radius = min(penumbra_uv, 32.0 * texel_uv);
-    const int kTaps = 16;
+    float radius = min(penumbra_uv, max_texels * texel_uv);
+    // Mas muestras cuanto mas texeles cubre el disco (16 hasta ~5.5 texeles de
+    // radio, 32 como mucho): sin huecos entre las muestras bilineales.
+    float radius_texels = radius / texel_uv;
+    int taps = clamp(int(radius_texels * radius_texels * 0.5), 16, 32);
     float lit = 0.0;
-    for (int i = 0; i < kTaps; ++i) {
-        vec2 offset = vogelDisk(i, kTaps, rotation + 1.3) * radius;
+    for (int i = 0; i < taps; ++i) {
+        vec2 offset = vogelDisk(i, taps, rotation + 1.3) * radius;
         lit += texture(shadow_map, vec4(uv + offset, float(cascade), depth + dot(depth_gradient, offset)));
     }
-    return lit / float(kTaps);
+    return lit / float(taps);
 }
 #endif
 
