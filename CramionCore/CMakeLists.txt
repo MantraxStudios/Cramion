@@ -375,6 +375,11 @@ add_executable(CramionPrefabTests "${CMAKE_CURRENT_SOURCE_DIR}/tests/PrefabTests
 target_link_libraries(CramionPrefabTests PRIVATE Cramion::Core)
 target_compile_options(CramionPrefabTests PRIVATE -Wall -Wextra)
 
+# --- Pruebas del World Partition (consola) ---
+add_executable(CramionWorldPartitionTests "${CMAKE_CURRENT_SOURCE_DIR}/tests/WorldPartitionTests.cpp")
+target_link_libraries(CramionWorldPartitionTests PRIVATE Cramion::Core)
+target_compile_options(CramionWorldPartitionTests PRIVATE -Wall -Wextra)
+
 # --- Pruebas de las mallas creadas por codigo (consola) ---
 add_executable(CramionMeshTests "${CMAKE_CURRENT_SOURCE_DIR}/tests/MeshTests.cpp")
 target_link_libraries(CramionMeshTests PRIVATE Cramion::Core)

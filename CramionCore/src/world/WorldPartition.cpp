@@ -35,6 +35,8 @@ void WorldPartition::reflect(ecs::PropertyVisitor& v) {
             unload_margin, ecs::FloatRange{0.0f, 2000.0f, 1.0f, "%.0f m"});
     v.field({"loads_per_frame", "Celdas por frame", "Celdas que se recrean cada frame (menos = sin tirones)"},
             loads_per_frame, 1, 64);
+    v.field({"unloads_per_frame", "Descargas por frame", "Celdas que se guardan y quitan cada frame (menos = sin tirones)"},
+            unloads_per_frame, 1, 64);
     v.field({"show_grid", "Mostrar la rejilla"}, show_grid);
 }
 
@@ -115,9 +117,43 @@ std::vector<std::pair<Vec3, float>> WorldPartitionSystem::sources(ecs::World& wo
     return out;
 }
 
+void WorldPartitionSystem::track(entt::entity root, const CellCoord& c) {
+    tracked_[root] = c;
+    cells_[c].roots.push_back(root);
+}
+
+void WorldPartitionSystem::untrack(entt::entity root) { tracked_.erase(root); }
+
+void WorldPartitionSystem::rescan(ecs::World& world) {
+    // De vez en cuando se vuelven a mirar las rechazadas (les pusieron malla).
+    if (++rescans_ % 64 == 0) rejected_.clear();
+    std::unordered_map<entt::entity, CellCoord> next;
+    next.reserve(tracked_.size() + 16);
+    for (const entt::entity h : world.roots()) {
+        if (tracked_.find(h) == tracked_.end()) {
+            if (rejected_.count(h) != 0) continue;
+            if (!streamable(world.wrap(h))) {
+                rejected_.insert(h);
+                continue;
+            }
+        }
+        next.emplace(h, cellOf(world.wrap(h).worldPosition()));
+    }
+    tracked_ = std::move(next);
+    for (auto& [coord, cell] : cells_) cell.roots.clear();
+    for (const auto& [h, c] : tracked_) cells_[c].roots.push_back(h);
+    for (auto& [coord, cell] : cells_) {
+        if (cell.loaded) cell.entities = static_cast<int>(cell.roots.size());
+    }
+}
+
 void WorldPartitionSystem::begin(ecs::World& world, const Vec3& viewer) {
     registerWorldPartitionComponents();
     cells_.clear();
+    tracked_.clear();
+    rejected_.clear();
+    frame_ = 0;
+    rescans_ = 0;
     stats_ = PartitionStats{};
     active_ = false;
     bool found = false;
@@ -132,15 +168,8 @@ void WorldPartitionSystem::begin(ecs::World& world, const Vec3& viewer) {
     if (!found) return;
     active_ = true;
     // Raices que se pueden descargar, por celda.
-    std::vector<ecs::Entity> roots;
-    world.forEachDepthFirst([&](ecs::Entity e) {
-        if (!e.parent().valid() && streamable(e)) roots.push_back(e);
-    });
-    for (const ecs::Entity& r : roots) {
-        Cell& cell = cells_[cellOf(r.worldPosition())];
-        ++cell.entities;
-        ++stats_.streamed_entities;
-    }
+    rescan(world);
+    stats_.streamed_entities = static_cast<int>(tracked_.size());
     // Descarga ya lo que queda lejos (memoria libre desde el primer frame).
     const auto srcs = sources(world, viewer);
     for (auto& [coord, cell] : cells_) {
@@ -149,6 +178,7 @@ void WorldPartitionSystem::begin(ecs::World& world, const Vec3& viewer) {
         if (!in_range) unloadCell(world, coord, cell);
     }
     updateProxies(world);
+    proxies_dirty_ = false;
     refreshStats();
     std::cout << "[WorldPartition] " << stats_.cells << " celdas de " << settings_.cell_size << " m, "
               << stats_.streamed_entities << " objetos; descargados " << stats_.unloaded_entities << "\n";
@@ -156,61 +186,88 @@ void WorldPartitionSystem::begin(ecs::World& world, const Vec3& viewer) {
 
 void WorldPartitionSystem::unloadCell(ecs::World& world, const CellCoord& c, Cell& cell) {
     if (!cell.loaded) return;
-    std::vector<ecs::Entity> roots;
-    world.forEachDepthFirst([&](ecs::Entity e) {
-        if (!e.parent().valid() && streamable(e) && cellOf(e.worldPosition()) == c) roots.push_back(e);
-    });
     cell.stored.clear();
     cell.bytes = 0;
-    for (ecs::Entity& r : roots) {
+    for (const entt::entity h : cell.roots) {
+        if (!world.valid(h)) {
+            untrack(h);
+            continue;
+        }
+        ecs::Entity r = world.wrap(h);
+        // Se movio a otra celda o ya es hijo de algo: el proximo repaso la pone
+        // en su sitio.
+        if (r.parent().valid() || !(cellOf(r.worldPosition()) == c)) continue;
+        // Le pusieron algo que no se descarga (una camara, un objeto de red).
+        if (!streamable(r)) {
+            untrack(h);
+            rejected_.insert(h);
+            continue;
+        }
         std::string text = ecs::serializeEntity(world, r);
         cell.bytes += text.size();
         cell.stored.push_back(std::move(text));
+        untrack(h);
         world.destroy(r);
     }
-    cell.entities = static_cast<int>(roots.size());
+    cell.roots.clear();
+    cell.entities = static_cast<int>(cell.stored.size());
     cell.loaded = false;
+    proxies_dirty_ = true;
     ++stats_.unloads;
 }
 
 void WorldPartitionSystem::loadCell(ecs::World& world, Cell& cell) {
     if (cell.loaded) return;
-    for (const std::string& text : cell.stored) ecs::restoreEntities(world, text);
+    cell.loaded = true;
+    const std::vector<std::string> stored = std::move(cell.stored);
     cell.stored.clear();
     cell.bytes = 0;
-    cell.loaded = true;
+    // track() puede crear celdas: el map no mueve las que ya hay (`cell` vale).
+    for (const std::string& text : stored) {
+        const ecs::Entity r = ecs::restoreEntities(world, text);
+        if (r.valid() && !r.parent().valid()) track(r.handle(), cellOf(r.worldPosition()));
+    }
+    proxies_dirty_ = true;
     ++stats_.loads;
 }
 
 void WorldPartitionSystem::update(ecs::World& world, const Vec3& viewer) {
     if (!active_) return;
+    ++frame_;
+    // Lo creado, borrado o movido en Play: cada pocos frames y solo las raices
+    // (antes, el arbol entero con cada hijo en cada frame).
+    const bool rescanned = frame_ % 10 == 0;
+    if (rescanned) rescan(world);
     const auto srcs = sources(world, viewer);
-    // Lo que entra: las mas cercanas primero, con presupuesto por frame.
+    // Lo que entra (las mas cercanas primero) y lo que sale (las mas lejanas
+    // primero), cada cosa con su presupuesto por frame.
     std::vector<std::pair<float, CellCoord>> to_load;
-    for (auto& [coord, cell] : cells_) {
+    std::vector<std::pair<float, CellCoord>> to_unload;
+    for (const auto& [coord, cell] : cells_) {
         float best = 1e30f;
-        float range = settings_.load_range;
-        for (const auto& [pos, r] : srcs) {
-            const float d = distanceToCell(pos, coord) - r;
-            if (d < best) {
-                best = d;
-                range = r;
-            }
-        }
-        (void)range;
+        for (const auto& [pos, r] : srcs) best = std::min(best, distanceToCell(pos, coord) - r);
         if (!cell.loaded && best <= 0.0f) to_load.emplace_back(best, coord);
-        if (cell.loaded && best > settings_.unload_margin) unloadCell(world, coord, cell);
+        if (cell.loaded && best > settings_.unload_margin) to_unload.emplace_back(best, coord);
+    }
+    if (!to_unload.empty()) {
+        // Antes de guardar: que lo que se movio a estas celdas tambien salga.
+        if (!rescanned) rescan(world);
+        std::sort(to_unload.begin(), to_unload.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
+        const int budget = std::max(settings_.unloads_per_frame, 1);
+        for (int i = 0; i < static_cast<int>(to_unload.size()) && i < budget; ++i) {
+            const CellCoord c = to_unload[static_cast<std::size_t>(i)].second;
+            unloadCell(world, c, cells_[c]);
+        }
     }
     std::sort(to_load.begin(), to_load.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
     const int budget = std::max(settings_.loads_per_frame, 1);
-    for (int i = 0; i < static_cast<int>(to_load.size()) && i < budget; ++i) loadCell(world, cells_[to_load[i].second]);
-    updateProxies(world);
-    // Objetos que se movieron a celdas nuevas (lo que se mueve en Play).
-    world.forEachDepthFirst([&](ecs::Entity e) {
-        if (e.parent().valid() || !streamable(e)) return;
-        const CellCoord c = cellOf(e.worldPosition());
-        if (cells_.find(c) == cells_.end()) cells_[c].entities = 1;
-    });
+    for (int i = 0; i < static_cast<int>(to_load.size()) && i < budget; ++i) {
+        loadCell(world, cells_[to_load[static_cast<std::size_t>(i)].second]);
+    }
+    if (proxies_dirty_) {
+        updateProxies(world);
+        proxies_dirty_ = false;
+    }
     refreshStats();
 }
 
@@ -231,12 +288,18 @@ void WorldPartitionSystem::updateProxies(ecs::World& world) const {
 
 void WorldPartitionSystem::loadAll(ecs::World& world) {
     for (auto& [coord, cell] : cells_) loadCell(world, cell);
+    if (proxies_dirty_) {
+        updateProxies(world);
+        proxies_dirty_ = false;
+    }
     refreshStats();
 }
 
 void WorldPartitionSystem::end(ecs::World& world, bool restore) {
     if (active_ && restore) loadAll(world);
     cells_.clear();
+    tracked_.clear();
+    rejected_.clear();
     active_ = false;
     stats_ = PartitionStats{};
 }

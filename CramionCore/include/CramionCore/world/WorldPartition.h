@@ -23,9 +23,13 @@
 
 #include <CramionFX/core/Math.h>
 
+#include <entt/entity/entity.hpp>
+
 #include <cstdint>
 #include <map>
 #include <string>
+#include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -42,6 +46,7 @@ struct WorldPartition {
     float load_range = 384.0f;    // metros desde cada fuente
     float unload_margin = 64.0f;  // histeresis: se descarga a load_range + esto
     int loads_per_frame = 2;      // celdas que se recrean por frame (sin tirones)
+    int unloads_per_frame = 4;    // celdas que se guardan y quitan por frame
     bool show_grid = true;        // rejilla en la vista de escena
     void reflect(ecs::PropertyVisitor& v);
 };
@@ -115,6 +120,7 @@ public:
 private:
     struct Cell {
         bool loaded = true;
+        std::vector<entt::entity> roots;  // raices cargadas que viven aqui
         std::vector<std::string> stored;  // entidades guardadas (una raiz por texto)
         std::size_t bytes = 0;
         int entities = 0;  // raices que viven en esta celda
@@ -123,10 +129,24 @@ private:
     void loadCell(ecs::World& world, Cell& cell);
     std::vector<std::pair<core::Vec3, float>> sources(ecs::World& world, const core::Vec3& viewer) const;
     float distanceToCell(const core::Vec3& p, const CellCoord& c) const;
+    void track(entt::entity root, const CellCoord& c);
+    void untrack(entt::entity root);
+    // Raices nuevas (creadas en Play), borradas o que cambiaron de celda. Solo
+    // mira las raices (no los hijos) y solo comprueba las nuevas a fondo.
+    void rescan(ecs::World& world);
     void refreshStats();
 
     WorldPartition settings_{};
     std::map<CellCoord, Cell> cells_;
+    // Raiz cargada que se puede descargar -> su celda. Con esto cada frame no
+    // recorre el mundo entero (antes: todo el arbol y cada hijo, cada frame).
+    std::unordered_map<entt::entity, CellCoord> tracked_;
+    // Raices ya vistas que no se pueden descargar (no se miran en cada
+    // repaso; se olvidan de vez en cuando por si les ponen una malla).
+    std::unordered_set<entt::entity> rejected_;
+    int frame_ = 0;
+    int rescans_ = 0;
+    bool proxies_dirty_ = true;  // una celda cambio: los HLOD se actualizan
     bool active_ = false;
     PartitionStats stats_{};
 };
