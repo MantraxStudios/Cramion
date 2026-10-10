@@ -438,7 +438,7 @@ void EditorApp::beginXrFrame(dm::Input& input) {
         finishXrConnect();
     }
     // Reabierto con --play-vr: Play en el casco en cuanto el proyecto carga.
-    if (pending_vr_play_ && has_project_ && !projectLoading() && !playing()) {
+    if (pending_vr_play_ && has_project_ && !projectLoading() && !sceneLoading() && !playing()) {
         pending_vr_play_ = false;
         enterPlayVr();
         if (xr_connect_.valid()) {

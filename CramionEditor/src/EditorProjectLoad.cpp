@@ -12,6 +12,13 @@
 //
 // Mientras dura, el editor no sincroniza el render ni atiende al MCP ni a
 // los cambios de archivos: nadie mas toca el AssetManager.
+//
+// Otra escena con el proyecto ya abierto (beginOpenScene) NO tapa el editor:
+//
+//   Scene    leer la escena (un frame)
+//   Stream   el editor sigue funcionando y los modelos llegan solos por el
+//            streaming de RenderSync (hilos de fondo y subida en hilos); en
+//            la barra de estado, una barra de carga hasta que esta todo
 
 #include "EditorApp.h"
 
@@ -116,6 +123,8 @@ std::string EditorApp::textureImportStatus() {
 
 void EditorApp::beginOpenScene(const std::filesystem::path& path) {
     if (projectLoading()) return;
+    // Si ya se estaba abriendo otra escena, se cambia a esta (no hay hilos
+    // que esperar: los modelos los trae el streaming).
     ProjectLoad& load = project_load_;
     load.reset();
     load.scene_only = true;
@@ -148,6 +157,7 @@ void EditorApp::stepProjectLoad() {
             if (load.scene_only) {
                 if (!openScene(load.scene_path)) {  // (el error va a la consola)
                     load.stage = Stage::Idle;
+                    load.scene_only = false;
                     return;
                 }
             } else {
@@ -161,6 +171,14 @@ void EditorApp::stepProjectLoad() {
                 if (seen.insert(r->model.uuid).second) load.models.push_back(r->model.uuid);
             });
             std::cout << "[Editor] Cargando la escena: " << load.models.size() << " modelos\n";
+            if (load.scene_only) {
+                // El editor sigue a la vista: nada de hilos que usen el
+                // AssetManager por su cuenta. RenderSync pide los modelos
+                // (requestModel) y los sube en hilos; aqui solo se mira.
+                load.stage = Stage::Stream;
+                load.frames = 0;
+                break;
+            }
             assets::AssetManager* manager = asset_manager_.get();
             assets::AssetDatabase* database = database_.get();
             load.worker = std::async(std::launch::async, [&load, manager, database] {
@@ -215,6 +233,21 @@ void EditorApp::stepProjectLoad() {
             load.frames = 0;
             break;
         }
+        case Stage::Stream: {
+            // Primero RenderSync tiene que haber pedido los modelos (lo hace
+            // en syncWorld, despues de este paso): unos frames de margen.
+            if (load.frames < 3) break;
+            const bool pending = asset_manager_->loadsInFlight() > 0 ||
+                                 renderer_.uploadedModelCount() < scene_.models().size() ||
+                                 sync_->materialVariantsPending();
+            const float elapsed =
+                std::chrono::duration<float>(std::chrono::steady_clock::now() - load.started).count();
+            if (pending && elapsed < 600.0f) break;  // (por si algo no llega nunca)
+            load.stage = Stage::Done;
+            load.time = 0.0f;
+            std::cout << "[Editor] Escena lista en " << elapsed << " s\n";
+            break;
+        }
         case Stage::Physics:
             // Colliders (tambien los Mesh Collider, que usan los modelos) y
             // navegacion, antes del primer frame del editor.
@@ -238,8 +271,8 @@ void EditorApp::projectLoadProgress(float& fraction, std::string& text) {
             text = "Abriendo el proyecto";
             break;
         case Stage::Scene:
-            fraction = load.scene_only ? 0.04f : 0.1f;
-            text = "Leyendo la escena";
+            fraction = load.scene_only ? 0.03f : 0.1f;
+            text = load.scene_only ? "Abriendo " + load.project_name : std::string("Leyendo la escena");
             break;
         case Stage::Models: {
             const std::size_t total = std::max<std::size_t>(load.models.size(), 1);
@@ -261,6 +294,26 @@ void EditorApp::projectLoadProgress(float& fraction, std::string& text) {
             fraction = 0.94f;
             text = "Preparando física y navegación";
             break;
+        case Stage::Stream: {
+            // Modelos que ya estan en memoria y piezas ya en la GPU.
+            const std::size_t total = std::max<std::size_t>(load.models.size(), 1);
+            std::size_t arrived = 0;
+            for (const Uuid& id : load.models) {
+                if (asset_manager_->isLoaded(id) || asset_manager_->loadFailed(id)) ++arrived;
+            }
+            if (load.models.empty()) arrived = 1;
+            const float a = static_cast<float>(arrived) / static_cast<float>(total);
+            const std::size_t parts = scene_.models().size();
+            const float u = parts == 0 ? 1.0f
+                                       : static_cast<float>(std::min<std::size_t>(renderer_.uploadedModelCount(), parts)) /
+                                             static_cast<float>(parts);
+            fraction = 0.06f + 0.62f * a + 0.3f * a * u;
+            text = "Abriendo " + load.project_name;
+            if (!load.models.empty()) {
+                text += " (" + std::to_string(std::min(arrived, total)) + "/" + std::to_string(total) + " modelos)";
+            }
+            break;
+        }
         default:
             fraction = 1.0f;
             text = "Listo";
@@ -383,6 +436,44 @@ void EditorApp::drawProjectLoading(float delta_seconds) {
         captureEditorWindow(window_.handle(), std::filesystem::temp_directory_path() /
                                                   ("cramion_loading_" + std::to_string(load.captured_stage) + ".png"));
     }
+}
+
+// Otra escena del proyecto: la barra avanza suave hacia el progreso real
+// (sin retroceder) y, ya completa, se queda un momento y desaparece.
+void EditorApp::updateSceneLoading(float delta_seconds) {
+    ProjectLoad& load = project_load_;
+    float fraction = 0.0f;
+    std::string text;
+    projectLoadProgress(fraction, text);
+    load.target = std::max(load.target, fraction);
+    load.shown += (load.target - load.shown) * std::min(1.0f, delta_seconds * 8.0f);
+    if (load.stage == ProjectLoad::Stage::Done) {
+        load.time += delta_seconds;
+        load.shown = std::min(1.0f, load.shown + delta_seconds * 3.0f);
+        if (load.time > 0.45f) load.reset();
+    }
+}
+
+void EditorApp::drawSceneLoadingBar(float width) {
+    if (!sceneLoading()) return;
+    ProjectLoad& load = project_load_;
+    float fraction = 0.0f;
+    std::string text;
+    projectLoadProgress(fraction, text);
+    const float shown = std::clamp(load.shown, 0.0f, 1.0f);
+    ImGui::TextUnformatted(text.c_str());
+    ImGui::SameLine();
+    const float h = std::max(6.0f, std::floor(ImGui::GetFontSize() * 0.55f));
+    const ImVec2 p = ImGui::GetCursorScreenPos();
+    const float line = ImGui::GetTextLineHeight();
+    const ImVec2 a(p.x, p.y + std::floor((line - h) * 0.5f) + 1.0f);
+    const ImVec2 b(a.x + width, a.y + h);
+    ImDrawList* draw = ImGui::GetWindowDrawList();
+    draw->AddRectFilled(a, b, theme::kBg3, h * 0.5f);
+    if (shown > 0.0f) draw->AddRectFilled(a, ImVec2(a.x + std::max(width * shown, h), b.y), kAccent, h * 0.5f);
+    ImGui::Dummy(ImVec2(width, line));
+    ImGui::SameLine();
+    ImGui::Text("%d %%", static_cast<int>(shown * 100.0f + 0.5f));
 }
 
 }  // namespace cramion::editor

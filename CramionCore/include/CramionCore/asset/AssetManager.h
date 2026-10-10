@@ -80,6 +80,8 @@ public:
     bool loadFailed(const Uuid& uuid) const { return failed_loads_.contains(uuid); }
     // Modelos pedidos que aun no han llegado.
     std::size_t loadsInFlight() const;
+    // Ya en memoria (sin pedirlo ni esperar): el progreso de una carga.
+    bool isLoaded(const Uuid& uuid) const { return models_.contains(uuid); }
 
     // Olvida lo cargado (p. ej. al reimportar o cerrar el proyecto).
     void unload(const Uuid& uuid);

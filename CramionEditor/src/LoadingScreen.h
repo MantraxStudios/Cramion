@@ -1,10 +1,12 @@
 #ifndef CRAMION_EDITOR_LOADING_SCREEN_H
 #define CRAMION_EDITOR_LOADING_SCREEN_H
 
-// Pantalla de carga del arranque (editor y juego exportado): la imagen del
-// motor, una barra y el porcentaje de shaders compilados. Se pinta con GDI+
-// porque se muestra mientras Vulkan todavia se esta creando; ademas atiende
-// los mensajes de la ventana para que Windows no la marque "No responde".
+// Pantalla de carga del arranque: en el editor, el logo, una barra y el
+// porcentaje de shaders compilados; en el juego exportado (banner_only), solo
+// el banner del motor a toda la ventana, igual que lo sigue pintando despues
+// el juego con Vulkan (una sola intro, sin saltos). Se pinta con GDI+ porque
+// se muestra mientras Vulkan todavia se esta creando; ademas atiende los
+// mensajes de la ventana para que Windows no la marque "No responde".
 
 #include "PlatformWindow.h"
 
@@ -20,9 +22,13 @@ class Bitmap;
 
 namespace cramion::editor {
 
+// Fondo del banner del motor (player_banner.png): el mismo en la pantalla de
+// GDI, en el juego y en el dialogo de carga del editor.
+inline constexpr unsigned char kBannerBackground[3] = {12, 14, 17};
+
 class LoadingScreen {
 public:
-    LoadingScreen(HWND window, const std::filesystem::path& image);
+    LoadingScreen(HWND window, const std::filesystem::path& image, bool banner_only = false);
     ~LoadingScreen();
 
     LoadingScreen(const LoadingScreen&) = delete;
@@ -35,6 +41,9 @@ private:
     void paint(float fraction, const std::wstring& text);
 
     HWND window_ = nullptr;
+    bool banner_only_ = false;
+    int painted_width_ = 0;
+    int painted_height_ = 0;
 #if defined(_WIN32)
     ULONG_PTR gdiplus_token_ = 0;
     std::unique_ptr<Gdiplus::Bitmap> image_;

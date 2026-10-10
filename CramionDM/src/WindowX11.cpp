@@ -195,7 +195,7 @@ void Window::dispatch(Event& event) {
 }
 
 KeyMods Window::currentMods(unsigned int state) const {
-    KeyMods mods = KeyMods::None;
+    KeyMods mods{};  // (KeyMods::None choca con la macro None de Xlib)
     if (state & ShiftMask) mods |= KeyMods::Shift;
     if (state & ControlMask) mods |= KeyMods::Control;
     if (state & Mod1Mask) mods |= KeyMods::Alt;

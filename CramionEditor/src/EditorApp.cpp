@@ -272,6 +272,7 @@ void EditorApp::closeProject() {
     if (!has_project_) {
         return;
     }
+    if (sceneLoading()) project_load_.reset();  // la barra de otra escena, fuera
     if (playing()) exitPlay();
     physics_.stop();
     physics_.setMeshProvider({});
@@ -331,6 +332,7 @@ void EditorApp::closeProject() {
 }
 
 void EditorApp::newScene() {
+    if (sceneLoading()) project_load_.reset();  // ya no se abre la otra escena
     if (world_workspace_ != 0) returnToSceneWorkspace();
     nav_.clear();
     stopVoxels();
@@ -1026,6 +1028,11 @@ void EditorApp::drawUi(float delta_seconds) {
             return;
         }
         // Fallo al abrir: vuelve el Hub con el error.
+    } else if (sceneLoading()) {
+        // Otra escena: el editor sigue a la vista y respondiendo; solo la
+        // barra de carga de la barra de estado.
+        stepProjectLoad();
+        updateSceneLoading(delta_seconds);
     }
     profiler_overlay_.update(delta_seconds, renderer_);
     watchAssets();
@@ -1620,6 +1627,10 @@ void EditorApp::drawStatusBar() {
         }
         if (const std::string import = textureImportStatus(); !import.empty()) left += "   |   " + import;
         ImGui::TextDisabled("%s", left.c_str());
+        if (sceneLoading()) {
+            ImGui::SameLine(0.0f, 24.0f);
+            drawSceneLoadingBar(std::clamp(ImGui::GetWindowWidth() * 0.16f, 120.0f, 260.0f));
+        }
         char right[200];
         std::snprintf(right, sizeof(right), "Objetos %zu   |   %.0f FPS   |   GPU %.2f ms   |   Cramion %s",
                       world_.entityCount(), ImGui::GetIO().Framerate,

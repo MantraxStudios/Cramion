@@ -245,7 +245,8 @@ void onSignal(int signal, siginfo_t* info, void* context) {
 
 void setLoadingPainter(std::function<void(float fraction, const char* status)> p) { painter() = std::move(p); }
 
-LoadingScreen::LoadingScreen(HWND window, const std::filesystem::path&) : window_(window) {}
+LoadingScreen::LoadingScreen(HWND window, const std::filesystem::path&, bool banner_only)
+    : window_(window), banner_only_(banner_only) {}
 LoadingScreen::~LoadingScreen() = default;
 
 void LoadingScreen::show(float fraction, const char* status) {

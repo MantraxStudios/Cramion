@@ -39,7 +39,8 @@ std::wstring widen(const char* text) {
 
 }  // namespace
 
-LoadingScreen::LoadingScreen(HWND window, const std::filesystem::path& image) : window_(window) {
+LoadingScreen::LoadingScreen(HWND window, const std::filesystem::path& image, bool banner_only)
+    : window_(window), banner_only_(banner_only) {
     Gdiplus::GdiplusStartupInput input;
     if (Gdiplus::GdiplusStartup(&gdiplus_token_, &input, nullptr) != Gdiplus::Ok) {
         gdiplus_token_ = 0;
@@ -70,6 +71,16 @@ void LoadingScreen::show(float fraction, const char* status) {
     }
     const auto now = std::chrono::steady_clock::now();
     if (painted_ && fraction < 1.0f && now - last_paint_ < std::chrono::milliseconds(16)) return;
+    if (banner_only_ && painted_) {
+        // El banner no cambia con el progreso: solo se repinta si la ventana
+        // cambio de tamano (o de vez en cuando, por si algo la tapo).
+        RECT client{};
+        GetClientRect(window_, &client);
+        if (client.right - client.left == painted_width_ && client.bottom - client.top == painted_height_ &&
+            now - last_paint_ < std::chrono::milliseconds(500)) {
+            return;
+        }
+    }
     last_paint_ = now;
     painted_ = true;
     fraction = std::clamp(fraction, 0.0f, 1.0f);
@@ -85,6 +96,8 @@ void LoadingScreen::paint(float fraction, const std::wstring& text) {
     const int w = client.right - client.left;
     const int h = client.bottom - client.top;
     if (w <= 0 || h <= 0) return;
+    painted_width_ = w;
+    painted_height_ = h;
 
     HDC dc = GetDC(window_);
     HDC memory = CreateCompatibleDC(dc);
@@ -95,39 +108,53 @@ void LoadingScreen::paint(float fraction, const std::wstring& text) {
         g.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
         g.SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBicubic);
         g.SetTextRenderingHint(Gdiplus::TextRenderingHintClearTypeGridFit);
-        g.Clear(Gdiplus::Color(255, 10, 11, 14));
+        if (banner_only_) {
+            // Juego exportado: solo el banner, ajustado a la ventana sobre su
+            // mismo fondo (como lo pinta luego el juego: no se nota el cambio).
+            g.Clear(Gdiplus::Color(255, kBannerBackground[0], kBannerBackground[1], kBannerBackground[2]));
+            if (image_) {
+                const float iw = static_cast<float>(image_->GetWidth());
+                const float ih = static_cast<float>(image_->GetHeight());
+                const float scale = std::min(w / iw, h / ih);
+                const float dw = iw * scale;
+                const float dh = ih * scale;
+                g.DrawImage(image_.get(), Gdiplus::RectF((w - dw) * 0.5f, (h - dh) * 0.5f, dw, dh));
+            }
+        } else {
+            g.Clear(Gdiplus::Color(255, 10, 11, 14));
 
-        // Imagen centrada (hasta el 60 % del ancho y el 55 % del alto).
-        float bottom = h * 0.5f;
-        if (image_) {
-            const float iw = static_cast<float>(image_->GetWidth());
-            const float ih = static_cast<float>(image_->GetHeight());
-            const float scale = std::min({w * 0.6f / iw, h * 0.55f / ih, 1.0f});
-            const float dw = iw * scale;
-            const float dh = ih * scale;
-            const float x = (w - dw) * 0.5f;
-            const float y = (h - dh) * 0.45f;
-            g.DrawImage(image_.get(), Gdiplus::RectF(x, y, dw, dh));
-            bottom = y + dh;
+            // Imagen centrada (hasta el 60 % del ancho y el 55 % del alto).
+            float bottom = h * 0.5f;
+            if (image_) {
+                const float iw = static_cast<float>(image_->GetWidth());
+                const float ih = static_cast<float>(image_->GetHeight());
+                const float scale = std::min({w * 0.6f / iw, h * 0.55f / ih, 1.0f});
+                const float dw = iw * scale;
+                const float dh = ih * scale;
+                const float x = (w - dw) * 0.5f;
+                const float y = (h - dh) * 0.45f;
+                g.DrawImage(image_.get(), Gdiplus::RectF(x, y, dw, dh));
+                bottom = y + dh;
+            }
+
+            // Barra de progreso.
+            const float bar_w = std::min(w * 0.4f, 560.0f);
+            const float bar_h = 6.0f;
+            const float bx = (w - bar_w) * 0.5f;
+            const float by = bottom + 36.0f;
+            Gdiplus::SolidBrush track(Gdiplus::Color(255, 38, 40, 48));
+            Gdiplus::SolidBrush fill(Gdiplus::Color(255, 0, 143, 242));
+            g.FillRectangle(&track, bx, by, bar_w, bar_h);
+            g.FillRectangle(&fill, bx, by, bar_w * fraction, bar_h);
+
+            // Texto: "Compilando shaders   42 %".
+            Gdiplus::FontFamily family(L"Segoe UI");
+            Gdiplus::Font font(&family, 15.0f, Gdiplus::FontStyleRegular, Gdiplus::UnitPixel);
+            Gdiplus::SolidBrush ink(Gdiplus::Color(255, 170, 174, 186));
+            Gdiplus::StringFormat format;
+            format.SetAlignment(Gdiplus::StringAlignmentCenter);
+            g.DrawString(text.c_str(), -1, &font, Gdiplus::RectF(0.0f, by + 16.0f, static_cast<float>(w), 30.0f), &format, &ink);
         }
-
-        // Barra de progreso.
-        const float bar_w = std::min(w * 0.4f, 560.0f);
-        const float bar_h = 6.0f;
-        const float bx = (w - bar_w) * 0.5f;
-        const float by = bottom + 36.0f;
-        Gdiplus::SolidBrush track(Gdiplus::Color(255, 38, 40, 48));
-        Gdiplus::SolidBrush fill(Gdiplus::Color(255, 0, 143, 242));
-        g.FillRectangle(&track, bx, by, bar_w, bar_h);
-        g.FillRectangle(&fill, bx, by, bar_w * fraction, bar_h);
-
-        // Texto: "Compilando shaders   42 %".
-        Gdiplus::FontFamily family(L"Segoe UI");
-        Gdiplus::Font font(&family, 15.0f, Gdiplus::FontStyleRegular, Gdiplus::UnitPixel);
-        Gdiplus::SolidBrush ink(Gdiplus::Color(255, 170, 174, 186));
-        Gdiplus::StringFormat format;
-        format.SetAlignment(Gdiplus::StringAlignmentCenter);
-        g.DrawString(text.c_str(), -1, &font, Gdiplus::RectF(0.0f, by + 16.0f, static_cast<float>(w), 30.0f), &format, &ink);
     }
     BitBlt(dc, 0, 0, w, h, memory, 0, 0, SRCCOPY);
     SelectObject(memory, old);

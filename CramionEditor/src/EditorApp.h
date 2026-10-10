@@ -148,12 +148,18 @@ public:
     // Abre el proyecto por etapas con el dialogo de carga (Hub): la ventana
     // no se congela y los modelos se leen en otro hilo.
     void beginOpenProject(const std::filesystem::path& path);
-    // Otra escena del proyecto con la misma ventana de carga (sin congelar el
-    // editor): leer la escena, los modelos en otro hilo, la GPU y la fisica.
+    // Otra escena del proyecto sin tapar el editor: se lee la escena y los
+    // modelos llegan por streaming (hilos de fondo y subida en hilos)
+    // mientras la interfaz sigue a la vista y responde; solo sale una barra
+    // de carga en la barra de estado.
     void beginOpenScene(const std::filesystem::path& path);
+    // Abriendo un proyecto (dialogo de carga a toda la ventana).
     bool projectLoading() const {
-        return project_load_.stage != ProjectLoad::Stage::Idle && project_load_.stage != ProjectLoad::Stage::Done;
+        return !project_load_.scene_only && project_load_.stage != ProjectLoad::Stage::Idle &&
+               project_load_.stage != ProjectLoad::Stage::Done;
     }
+    // Abriendo otra escena del proyecto (barra de carga, sin bloquear).
+    bool sceneLoading() const { return project_load_.scene_only && project_load_.stage != ProjectLoad::Stage::Idle; }
 
     // La interfaz de un frame (entre ImGuiLayer::beginFrame y endFrame).
     void drawUi(float delta_seconds);
@@ -1168,7 +1174,9 @@ private:
     std::unordered_map<std::string, bool> clip_humanoid_;
     // --- Carga del proyecto por etapas (EditorProjectLoad.cpp) ---
     struct ProjectLoad {
-        enum class Stage { Idle, Open, Scene, Models, Upload, Physics, Done };
+        // Proyecto: Open, Scene, Models, Upload, Physics. Escena (scene_only):
+        // Scene y Stream (los modelos llegan con el editor funcionando).
+        enum class Stage { Idle, Open, Scene, Models, Upload, Physics, Stream, Done };
         Stage stage = Stage::Idle;
         std::filesystem::path path;
         std::string project_name;
@@ -1181,6 +1189,7 @@ private:
         std::string current;  // modelo que lee el hilo
         int frames = 0;       // frames en la etapa (el texto se ve antes de bloquear)
         float shown = 0.0f;   // progreso dibujado (va suave hacia el real)
+        float target = 0.0f;  // progreso real (no retrocede)
         float time = 0.0f;
         int captured_stage = -1;  // pruebas (CRAMION_CAPTURE_LOADING)
         std::chrono::steady_clock::time_point started{};
@@ -1197,6 +1206,7 @@ private:
             current.clear();
             frames = 0;
             shown = 0.0f;
+            target = 0.0f;
             time = 0.0f;
             captured_stage = -1;
         }
@@ -1206,6 +1216,10 @@ private:
     void stepProjectLoad();
     void projectLoadProgress(float& fraction, std::string& text);
     void drawProjectLoading(float delta_seconds);
+    // La barra de carga de otra escena (barra de estado): avanza `shown` y
+    // termina la carga un momento despues de llegar al 100 %.
+    void updateSceneLoading(float delta_seconds);
+    void drawSceneLoadingBar(float width);
     // --- Volumenes de post-proceso (EditorPostVolumes.cpp) ---
     ecs::Entity createPostVolume(int shape, ecs::Entity parent);  // 0 global, 1 caja, 2 esfera
     // --- Realidad virtual (EditorXr.cpp) ---

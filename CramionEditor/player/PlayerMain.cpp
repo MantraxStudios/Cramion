@@ -6,8 +6,8 @@
 //     Game/            el proyecto (Assets, ProjectSettings, .crproj),
 //                      game.ini (escena inicial) y banner.png
 //
-// Al abrir muestra el banner del motor mientras carga la escena inicial y
-// despues juega: render, fisica (Jolt), scripts Lua, audio, cinematicas,
+// Al abrir muestra el banner del motor (la unica intro: desde el primer
+// momento hasta que la escena inicial esta cargada) y despues juega: render, fisica (Jolt), scripts Lua, audio, cinematicas,
 // particulas e interfaz (Canvas).
 //
 // Android (libmain.so en un APK, NativeActivity): el mismo juego. El APK
@@ -279,9 +279,13 @@ int runPlayer() {
             window.pumpEvents();
         }
 #endif
-        // El banner del motor desde el primer momento: descomprimir los
-        // assets y compilar los shaders llevan su porcentaje.
-        auto loading = std::make_unique<editor::LoadingScreen>(window.handle(), game / "banner.png");
+        // El banner del motor desde el primer momento (descomprimir los
+        // assets, compilar los shaders y cargar la escena inicial): es la
+        // unica intro del juego. Primero lo pinta GDI+ (Vulkan aun no existe)
+        // y despues el bucle del juego, igual, hasta que se funde con el juego.
+        const std::filesystem::path banner = game / "banner.png";
+        const auto launch_time = std::chrono::steady_clock::now();
+        auto loading = std::make_unique<editor::LoadingScreen>(window.handle(), banner, true);
         loading->show(0.0f, "Cargando");
 
         // Assets: Game/<Juego>.crpack se descomprime una vez en
@@ -433,7 +437,40 @@ int runPlayer() {
 #endif
         imgui.initialize(window.handle(), renderer);
 
-        // Pantalla de carga (encima de todo).
+        // El banner del motor (encima de todo): ajustado a la pantalla sobre
+        // su fondo, como lo pinta LoadingScreen. `progress` >= 0 dibuja una
+        // linea fina abajo (solo si la carga dura mas que el banner).
+        const auto draw_banner = [&](const ImVec2& display, float alpha, float progress) {
+            ImDrawList* fg = ImGui::GetForegroundDrawList();
+            const int a8 = static_cast<int>(std::clamp(alpha, 0.0f, 1.0f) * 255.0f);
+            fg->AddRectFilled(ImVec2(0, 0), display,
+                              IM_COL32(editor::kBannerBackground[0], editor::kBannerBackground[1], editor::kBannerBackground[2], a8));
+            ImVec2 image_size{};
+            if (const ImTextureID texture = imgui.image(banner, &image_size); texture != 0 && image_size.y > 0.0f) {
+                const float scale = std::min(display.x / image_size.x, display.y / std::max(image_size.y, 1.0f));
+                const ImVec2 fit{image_size.x * scale, image_size.y * scale};
+                const ImVec2 p{(display.x - fit.x) * 0.5f, (display.y - fit.y) * 0.5f};
+                fg->AddImage(texture, p, ImVec2(p.x + fit.x, p.y + fit.y), ImVec2(0, 0), ImVec2(1, 1), IM_COL32(255, 255, 255, a8));
+            }
+            if (progress >= 0.0f) {
+                const float h = std::max(3.0f, std::round(display.y * 0.003f));
+                fg->AddRectFilled(ImVec2(0.0f, display.y - h), ImVec2(display.x * std::clamp(progress, 0.0f, 1.0f), display.y),
+                                  IM_COL32(90, 150, 255, a8 * 3 / 4));
+            }
+        };
+        // El banner ya en la GPU antes del primer frame: la ventana pasa del
+        // que pinto GDI+ al de Vulkan sin un frame vacio en medio.
+        {
+            std::error_code banner_error;
+            const bool has_banner = std::filesystem::is_regular_file(banner, banner_error);
+            const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+            while (has_banner && imgui.image(banner) == 0 && std::chrono::steady_clock::now() < until) {
+                imgui.updateThumbnails();
+                std::this_thread::sleep_for(std::chrono::milliseconds(2));
+            }
+        }
+
+        // Pantalla de carga de los cambios de escena dentro del juego (encima de todo).
         const auto draw_loading = [&](const ImVec2& display, float fraction, const std::string& text) {
             ImDrawList* fg = ImGui::GetForegroundDrawList();
             fg->AddRectFilled(ImVec2(0, 0), display, IM_COL32(13, 15, 20, 255));
@@ -542,12 +579,14 @@ int runPlayer() {
         });
 
 #if !defined(_WIN32)
-        // Con el renderizador listo, la pantalla de carga se pinta con el.
-        editor::setLoadingPainter([&](float fraction, const char* status) {
+        // Con el renderizador listo, el banner se pinta con el mientras se
+        // preparan los assets (la misma intro que despues, sin textos).
+        editor::setLoadingPainter([&](float, const char*) {
             window.pumpEvents();
             renderer.applyPendingResize();
             imgui.beginFrame();
-            draw_loading(ImGui::GetIO().DisplaySize, fraction, status);
+            imgui.updateThumbnails();
+            draw_banner(ImGui::GetIO().DisplaySize, 1.0f, -1.0f);
             imgui.endFrame();
             renderer.drawFrame(scene);
         });
@@ -1166,11 +1205,16 @@ int runPlayer() {
             }
         };
 
-        // --- Banner mientras carga ---
-        const std::filesystem::path banner = game / "banner.png";
-        constexpr float kBannerSeconds = 3.0f;
-        float banner_time = 0.0f;
-        float banner_wait = 0.0f;
+        // --- Banner del motor mientras carga la escena inicial ---
+        // Sigue el mismo que se ve desde que se abrio la ventana (sin fundido
+        // de entrada ni pantalla de titulo): al menos kBannerMinSeconds desde
+        // el arranque y hasta que la escena esta cargada; despues se funde
+        // con el juego, que ya corre debajo.
+        constexpr float kBannerMinSeconds = 2.5f;
+        constexpr float kBannerFadeSeconds = 0.6f;
+        float banner_fade = 0.0f;
+        bool banner_done = false;
+        int banner_frames = 0;
         bool loaded = false;
         const dm::Input idle_input;
         core::Clock clock;
@@ -1200,40 +1244,33 @@ int runPlayer() {
             imgui.updateThumbnails();  // sube las imagenes ya decodificadas (banner, UI)
             const ImVec2 display = ImGui::GetIO().DisplaySize;
 
-            const bool showing_banner = banner_time < kBannerSeconds;
-            if (showing_banner) {
-                ImVec2 probe{};
-                if (imgui.image(banner, &probe) != 0 || banner_wait > 1.0f) {
-                    banner_time += dt;
-                } else {
-                    banner_wait += dt;
-                }
-                ImDrawList* fg = ImGui::GetForegroundDrawList();
-                fg->AddRectFilled(ImVec2(0, 0), display, IM_COL32(13, 15, 20, 255));  // el fondo del banner
-                ImVec2 image_size{};
-                if (const ImTextureID texture = imgui.image(banner, &image_size); texture != 0 && image_size.y > 0) {
-                    const float fade_in = std::clamp(banner_time / 0.5f, 0.0f, 1.0f);
-                    const float fade_out = std::clamp((kBannerSeconds - banner_time) / 0.6f, 0.0f, 1.0f);
-                    const float alpha = std::min(fade_in, fade_out);
-                    const float aspect = image_size.x / image_size.y;
-                    ImVec2 fit = display;
-                    if (display.x / std::max(display.y, 1.0f) > aspect) fit.x = display.y * aspect;
-                    else fit.y = display.x / aspect;
-                    const ImVec2 a{(display.x - fit.x) * 0.5f, (display.y - fit.y) * 0.5f};
-                    fg->AddImage(texture, a, ImVec2(a.x + fit.x, a.y + fit.y), ImVec2(0, 0), ImVec2(1, 1),
-                                 IM_COL32(255, 255, 255, static_cast<int>(alpha * 255.0f)));
-                }
-            }
             // Se empieza a cargar con el banner ya en pantalla (segundo frame).
-            if (!loaded && banner_time > 0.05f) {
+            if (!loaded && banner_frames++ > 0) {
                 loaded = true;
                 begin_load(scene_file);
             }
             float load_fraction = 1.0f;
             std::string load_text;
             if (scene_loading()) step_load(load_fraction, load_text);
-            if (scene_loading() && !showing_banner) draw_loading(display, load_fraction, load_text);
-            const bool running = loaded && !scene_loading() && !showing_banner;
+            // El banner se dibuja al final del frame (encima de la interfaz
+            // del juego y de los controles mientras se funde).
+            float banner_alpha = 0.0f;
+            float banner_progress = -1.0f;
+            if (!banner_done) {
+                const float since_launch =
+                    std::chrono::duration<float>(std::chrono::steady_clock::now() - launch_time).count();
+                if (loaded && !scene_loading() && since_launch >= kBannerMinSeconds) banner_fade += dt;
+                if (banner_fade >= kBannerFadeSeconds) {
+                    banner_done = true;
+                } else {
+                    banner_alpha = 1.0f - banner_fade / kBannerFadeSeconds;
+                    if (scene_loading() && since_launch >= kBannerMinSeconds) banner_progress = load_fraction;
+                }
+            } else if (scene_loading()) {
+                draw_loading(display, load_fraction, load_text);  // cambio de escena desde el juego
+            }
+            // El juego corre en cuanto el banner empieza a fundirse.
+            const bool running = loaded && !scene_loading() && (banner_done || banner_fade > 0.0f);
             if (running && vr) {
                 xr_rig.update(world, renderer.xr());  // camara y mandos antes de la logica
             } else {
@@ -1359,6 +1396,7 @@ int runPlayer() {
                 if (const std::filesystem::path next = scripts.takeSceneRequest(); !next.empty()) begin_load(next);
                 if (scripts.takeQuitRequest()) quit = true;
             }
+            if (banner_alpha > 0.0f) draw_banner(display, banner_alpha, banner_progress);
             imgui.endFrame();
 
             scene.update(idle_input, dt);
