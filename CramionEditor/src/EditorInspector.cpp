@@ -108,21 +108,21 @@ void EditorApp::drawInspector() {
         ImGui::SetNextWindowFocus();
         focus_inspector_ = false;
     }
-    if (!ImGui::Begin(panelTitle("Inspector").c_str(), &show_inspector_)) {
-        ImGui::End();
+    if (!beginArea(AreaEditor::Inspector, &show_inspector_)) {
+        endArea();
         return;
     }
     // Una Render Texture elegida en el Proyecto: su tamano y lo que tiene.
     if (inspected_render_texture_.valid()) {
         drawRenderTextureEditor(inspected_render_texture_);
-        ImGui::End();
+        endArea();
         return;
     }
     // Un material elegido en el Proyecto: su editor (como Unity).
     if (inspected_material_.valid()) {
         if (database_->find(inspected_material_)) {
             drawMaterialEditor(inspected_material_);
-            ImGui::End();
+            endArea();
             return;
         }
         inspected_material_ = {};
@@ -132,7 +132,7 @@ void EditorApp::drawInspector() {
     if (inspected_model_.valid()) {
         if (active_ == inspected_model_active_ && database_ && database_->find(inspected_model_)) {
             drawModelImportSettings(inspected_model_);
-            ImGui::End();
+            endArea();
             return;
         }
         inspected_model_ = {};
@@ -144,7 +144,7 @@ void EditorApp::drawInspector() {
     }
     if (!entity.valid()) {
         ImGui::TextDisabled("Selecciona un objeto en la Jerarquía o en la Escena.");
-        ImGui::End();
+        endArea();
         return;
     }
 
@@ -708,7 +708,7 @@ void EditorApp::drawInspector() {
         ImGui::SetNextWindowSizeConstraints(ImVec2(300.0f, 240.0f), ImVec2(1200.0f, 1000.0f));
     }
     drawAddComponent(entity);
-    ImGui::End();
+    endArea();
 }
 
 void EditorApp::drawComponentPresets(const std::string& component, const std::vector<ecs::Entity>& targets) {

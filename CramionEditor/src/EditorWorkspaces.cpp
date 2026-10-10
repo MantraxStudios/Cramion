@@ -33,15 +33,6 @@ using core::Vec3;
 
 namespace {
 
-constexpr ImU32 kPrefabTab = IM_COL32(60, 110, 185, 255);
-constexpr ImU32 kPrefabTabActive = IM_COL32(75, 140, 230, 255);
-constexpr ImU32 kScriptTab = IM_COL32(70, 120, 80, 255);
-constexpr ImU32 kScriptTabActive = IM_COL32(90, 160, 100, 255);
-constexpr ImU32 kMachineTab = IM_COL32(110, 80, 160, 255);
-constexpr ImU32 kMachineTabActive = IM_COL32(140, 105, 205, 255);
-constexpr ImU32 kGraphTab = IM_COL32(170, 95, 45, 255);
-constexpr ImU32 kGraphTabActive = IM_COL32(215, 125, 60, 255);
-
 const char* workspaceSuffix(int kind) {
     return kind == 1 ? "@prefab" : (kind == 3 ? "@fsm" : (kind == 4 ? "@graph" : "@script"));
 }
@@ -616,102 +607,15 @@ void EditorApp::closeWorkspace(int id, bool save) {
 // Interfaz
 // -----------------------------------------------------------------------------
 
+// Las pestanas de los espacios de trabajo van en la barra superior, junto a
+// los menus (drawWorkspaceTabs, EditorAreas.cpp); aqui queda la pregunta al
+// cerrar un prefab con cambios.
 void EditorApp::drawWorkspaceBar() {
     if (workspaces_.empty()) resetWorkspaces();
-    syncScriptWorkspaces();
-    syncGraphWorkspaces();
     ImGuiViewport* viewport = ImGui::GetMainViewport();
-    const float height = ImGui::GetFrameHeight() + 6.0f;
-    const ImGuiWindowFlags flags = ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse |
-                                   ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoDocking;
-    // Como las pestanas de espacios de trabajo de Blender: sobre la barra
-    // oscura, la activa con el gris de las areas y las demas solo texto.
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(6.0f, 4.0f));
-    ImGui::PushStyleColor(ImGuiCol_WindowBg, theme::kBg0);
-    int clicked = -1;
-    int close = -1;
-    const bool open_bar = ImGui::BeginViewportSideBar("##workspaces", viewport, ImGuiDir_Up, height, flags);
-    ImGui::PopStyleColor();
-    ImGui::PopStyleVar();
-    if (open_bar && ImGui::BeginTabBar("##workspace_tabs", ImGuiTabBarFlags_FittingPolicyScroll)) {
-        for (const Workspace& ws : workspaces_) {
-            const bool loaded = ws.id == world_workspace_;
-            bool dirty = false;
-            std::string name = ws.name;
-            const char* prefix = "Escena: ";
-            if (ws.kind == WorkspaceKind::Scene) {
-                dirty = loaded ? dirty_ : ws.dirty;
-                if (loaded) name = world_.sceneName();
-            } else if (ws.kind == WorkspaceKind::Prefab) {
-                dirty = loaded ? dirty_ : ws.dirty;
-                prefix = "Prefab: ";
-            } else if (ws.kind == WorkspaceKind::StateMachine) {
-                prefix = "Máquina: ";
-                dirty = fsm_dirty_;
-            } else if (ws.kind == WorkspaceKind::Graph) {
-                static const char* const kPrefixes[] = {"VFX: ", "Shader Graph: ", "Visual Script: ",
-                                                        "Behavior Tree: ", "Diálogo: ", "Animator: "};
-                prefix = kPrefixes[static_cast<int>(ws.graph)];
-                dirty = graphDoc(ws.graph).dirty;
-            } else {
-                prefix = "Script: ";
-                for (const ScriptTab& tab : script_tabs_) {
-                    if (tab.path == ws.path) dirty = tab.text != tab.saved;
-                }
-            }
-            const std::string label = prefix + name + "###workspace" + std::to_string(ws.id);
-            ImGuiTabItemFlags tab_flags = dirty ? ImGuiTabItemFlags_UnsavedDocument : 0;
-            // La pestana que se ve es siempre la activa: solo cambia con un clic
-            // (si ImGui elige otra sola, p. ej. al cerrar una, no cuenta).
-            if (ws.id == active_workspace_) tab_flags |= ImGuiTabItemFlags_SetSelected;
-            int colors = 0;
-            if (ws.kind != WorkspaceKind::Scene) {
-                const bool prefab = ws.kind == WorkspaceKind::Prefab;
-                const bool machine = ws.kind == WorkspaceKind::StateMachine;
-                const bool graph = ws.kind == WorkspaceKind::Graph;
-                const ImU32 tab = prefab ? kPrefabTab : (machine ? kMachineTab : (graph ? kGraphTab : kScriptTab));
-                const ImU32 tab_active =
-                    prefab ? kPrefabTabActive : (machine ? kMachineTabActive : (graph ? kGraphTabActive : kScriptTabActive));
-                ImGui::PushStyleColor(ImGuiCol_Tab, tab);
-                ImGui::PushStyleColor(ImGuiCol_TabDimmed, tab);
-                ImGui::PushStyleColor(ImGuiCol_TabHovered, tab_active);
-                ImGui::PushStyleColor(ImGuiCol_TabSelected, tab_active);
-                ImGui::PushStyleColor(ImGuiCol_TabDimmedSelected, tab_active);
-                colors = 5;
-            }
-            bool open = true;
-            const bool selected = ImGui::BeginTabItem(label.c_str(), ws.kind == WorkspaceKind::Scene ? nullptr : &open, tab_flags);
-            ImGui::PopStyleColor(colors);
-            if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) {
-                if (ws.kind == WorkspaceKind::Scene) {
-                    ImGui::SetTooltip("La escena abierta (todo el editor)");
-                } else {
-                    ImGui::SetTooltip("%s", dialogs::utf8(ws.path).c_str());
-                }
-            }
-            const bool pressed = ImGui::IsItemClicked(ImGuiMouseButton_Left);
-            if (selected) ImGui::EndTabItem();
-            if (!open) {
-                close = ws.id;
-            } else if (pressed && ws.id != active_workspace_) {
-                clicked = ws.id;
-            }
-        }
-        ImGui::EndTabBar();
-    }
-    ImGui::End();
-
-    if (clicked >= 0) requestWorkspace(clicked);
-    if (close >= 0) {
-        const Workspace* ws = findWorkspace(close);
-        const bool dirty = ws != nullptr && ws->kind == WorkspaceKind::Prefab &&
-                           (close == world_workspace_ ? dirty_ : ws->dirty);
-        if (dirty) {
-            workspace_close_ask_ = close;
-            ImGui::OpenPopup("Guardar el prefab##workspace_close");
-        } else {
-            closeWorkspace(close, false);
-        }
+    if (workspace_close_popup_) {
+        workspace_close_popup_ = false;
+        ImGui::OpenPopup("Guardar el prefab##workspace_close");
     }
     ImGui::SetNextWindowPos(viewport->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
     if (ImGui::BeginPopupModal("Guardar el prefab##workspace_close", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
@@ -751,15 +655,17 @@ void EditorApp::buildPrefabLayout(unsigned int dockspace_id) {
     ImGui::DockBuilderRemoveNode(dockspace_id);
     ImGui::DockBuilderAddNode(dockspace_id, ImGuiDockNodeFlags_DockSpace);
     ImGui::DockBuilderSetNodeSize(dockspace_id, viewport->WorkSize);
-    // Como el de la escena (Blender): Jerarquia e Inspector a la derecha.
+    // Como el de la escena (Blender, un editor por area): Jerarquia y
+    // Propiedades a la derecha; Proyecto y Consola abajo.
     ImGuiID center = dockspace_id;
     ImGuiID right = ImGui::DockBuilderSplitNode(center, ImGuiDir_Right, 0.25f, nullptr, &center);
-    const ImGuiID outliner = ImGui::DockBuilderSplitNode(right, ImGuiDir_Up, 0.34f, nullptr, &right);
-    const ImGuiID bottom = ImGui::DockBuilderSplitNode(center, ImGuiDir_Down, 0.26f, nullptr, &center);
+    const ImGuiID outliner = ImGui::DockBuilderSplitNode(right, ImGuiDir_Up, 0.38f, nullptr, &right);
+    ImGuiID bottom = ImGui::DockBuilderSplitNode(center, ImGuiDir_Down, 0.27f, nullptr, &center);
+    const ImGuiID console = ImGui::DockBuilderSplitNode(bottom, ImGuiDir_Right, 0.36f, nullptr, &bottom);
     ImGui::DockBuilderDockWindow(panelTitle("Jerarquía").c_str(), outliner);
     ImGui::DockBuilderDockWindow(panelTitle("Inspector").c_str(), right);
     ImGui::DockBuilderDockWindow(panelTitle("Proyecto").c_str(), bottom);
-    ImGui::DockBuilderDockWindow(panelTitle("Consola").c_str(), bottom);
+    ImGui::DockBuilderDockWindow(panelTitle("Consola").c_str(), console);
     ImGui::DockBuilderDockWindow(panelTitle("Escena").c_str(), center);
     ImGui::DockBuilderFinish(dockspace_id);
 }
@@ -769,7 +675,7 @@ void EditorApp::drawWorkspacePanels(float delta_seconds) {
     const ImGuiViewport* viewport = ImGui::GetMainViewport();
     game_view_visible_ = false;
     if (activeWorkspaceKind() == WorkspaceKind::Prefab) {
-        const ImGuiID dock = ImHashStr("CramionPrefabDockspaceBlender");
+        const ImGuiID dock = ImHashStr("CramionPrefabDockspaceBlenderAreas");
         if (ImGui::DockBuilderGetNode(dock) == nullptr) buildPrefabLayout(dock);
         ImGui::PushStyleColor(ImGuiCol_WindowBg, theme::kGap);
         ImGui::DockSpaceOverViewport(dock, viewport);
@@ -818,6 +724,7 @@ void EditorApp::drawWorkspacePanels(float delta_seconds) {
     drawExportProgress();
     drawImportProgress();
     drawModals();
+    promoteFocusedArea();
 }
 
 // Arriba de la Jerarquia y en el Inspector de la raiz.

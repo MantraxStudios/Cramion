@@ -898,8 +898,8 @@ void EditorApp::browserItemMenu(const BrowserItem& item) {
 }
 
 void EditorApp::drawProject() {
-    if (!ImGui::Begin(panelTitle("Proyecto").c_str(), &show_project_)) {
-        ImGui::End();
+    if (!beginArea(AreaEditor::Project, &show_project_)) {
+        endArea();
         return;
     }
     if (current_folder_.empty() && has_project_ && cached_version_ == ~0ull) current_folder_ = project_.assetsFolder();
@@ -1472,7 +1472,7 @@ void EditorApp::drawProject() {
     if (!project_filter_.empty() || (browser_filter_ != 0 && !current_folder_.empty())) status += "  ·  en todo el proyecto";
     ImGui::TextDisabled("%s", status.c_str());
     (void)style;
-    ImGui::End();
+    endArea();
 }
 
 // -----------------------------------------------------------------------------

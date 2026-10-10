@@ -16,6 +16,8 @@
 #include <CramionCore/profiling/Profiler.h>
 #include "EditorApp.h"
 
+#include "BlenderUi.h"
+
 #include <CramionDM/Input.h>
 
 #include <imgui.h>
@@ -215,6 +217,7 @@ void EditorApp::enterPlay() {
     if (show_game_ && play_focus_game_) {
         focus_game_ = true;
         preferred_view_ = kGameSlot;
+        play_switched_view_ = true;  // al parar, vuelve la Escena
     }
     play_state_ = PlayState::Playing;
     play_time_ = 0.0f;
@@ -227,6 +230,10 @@ void EditorApp::enterPlay() {
 void EditorApp::exitPlay() {
     if (!playing()) return;
     play_vr_ = false;
+    if (play_switched_view_) {
+        play_switched_view_ = false;
+        focus_scene_ = true;
+    }
     const std::uint64_t steps = physics_.stats().steps;
     scripts_.stop();
     stopCppScripts();
@@ -470,27 +477,34 @@ void EditorApp::onPhysicsEvent(const physics::PhysicsEvent& event) {
 
 void EditorApp::drawPlayControls() {
     if (!has_project_) return;
-    const float button = 64.0f;
+    namespace bl = blender;
+    const float h = ImGui::GetFrameHeight();
+    const float button = std::floor(h * 1.25f);
     const float spacing = ImGui::GetStyle().ItemSpacing.x;
-    const float arrow = ImGui::GetFrameHeight();
     const float vr_button = 96.0f;
-    ImGui::SetCursorPosX((ImGui::GetWindowWidth() - (button * 3.0f + vr_button + arrow + spacing * 4.0f)) * 0.5f);
-    // Modo Play/Pausa en amarillo (estado del editor, regla del tema).
-    const auto toggle = [&](const char* label, bool active, ImVec4 color) {
-        if (active) {
-            ImGui::PushStyleColor(ImGuiCol_Button, color);
-            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(std::min(color.x * 1.08f, 1.0f),
-                                                                 std::min(color.y * 1.08f, 1.0f),
-                                                                 std::min(color.z * 1.08f, 1.0f), 1.0f));
-            ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(14, 14, 16, 255));
-        }
-        const bool pressed = ImGui::Button(label, ImVec2(button, 0.0f));
-        if (active) ImGui::PopStyleColor(3);
+    ImGui::SetCursorPosX((ImGui::GetWindowWidth() - (button * 3.0f + vr_button + h + spacing * 3.0f)) * 0.5f);
+    // Play, pausa y paso unidos, como los de la linea de tiempo de Blender;
+    // el modo Play/Pausa en naranja (estado del editor, regla del tema).
+    ImDrawList* draw = ImGui::GetWindowDrawList();
+    const auto play_button = [&](const char* id, bl::Glyph glyph, bool active, ImU32 color, ImDrawFlags corners,
+                                 bool enabled) {
+        const ImVec2 min = ImGui::GetCursorScreenPos();
+        ImGui::BeginDisabled(!enabled);
+        const bool pressed = ImGui::InvisibleButton(id, ImVec2(button, h));
+        ImGui::EndDisabled();
+        const bool hovered = ImGui::IsItemHovered() && enabled;
+        const ImVec2 max(min.x + button, min.y + h);
+        ImU32 bg = hovered ? theme::kBg4 : theme::kBg3;
+        if (active) bg = color;
+        draw->AddRectFilled(min, max, bg, 4.0f, corners);
+        const ImU32 ink = !enabled ? theme::kTextFaint : (active ? IM_COL32(14, 14, 16, 255) : IM_COL32(235, 235, 235, 255));
+        bl::drawGlyph(draw, glyph, ImVec2((min.x + max.x) * 0.5f, (min.y + max.y) * 0.5f), h * 0.55f, ink);
         return pressed;
     };
-    ImGui::BeginDisabled(xrConnecting());
-    const bool play_pressed = toggle(playing() && !play_vr_ ? "Stop" : "Play", playing() && !play_vr_, theme::vec(theme::kYellow));
-    ImGui::EndDisabled();
+    const bool playing_flat = playing() && !play_vr_;
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(1.0f, ImGui::GetStyle().ItemSpacing.y));
+    const bool play_pressed = play_button("##play", playing_flat ? bl::Glyph::Stop : bl::Glyph::Play, playing_flat,
+                                          theme::kYellow, ImDrawFlags_RoundCornersLeft, !xrConnecting());
     if (play_pressed) {
         if (playing()) {
             exitPlay();
@@ -499,16 +513,22 @@ void EditorApp::drawPlayControls() {
             enterPlay();
         }
     }
-    ImGui::SetItemTooltip(playing() ? "Parar y restaurar la escena (Ctrl+P)" : "Simular la fisica (Ctrl+P)");
+    ImGui::SetItemTooltip(playing() ? "Parar y restaurar la escena (Ctrl+P)" : "Play (Ctrl+P)");
+    ImGui::SameLine();
+    if (play_button("##pause", bl::Glyph::Pause, play_state_ == PlayState::Paused, theme::kYellowDeep,
+                    ImDrawFlags_RoundCornersNone, true)) {
+        togglePause();
+    }
+    ImGui::SetItemTooltip("Pausar / seguir (Ctrl+Mayus+P)");
+    ImGui::SameLine();
+    if (play_button("##step", bl::Glyph::StepForward, false, 0, ImDrawFlags_RoundCornersRight,
+                    play_state_ == PlayState::Paused)) {
+        ++step_requests_;
+    }
+    ImGui::SetItemTooltip("Un paso fijo de fisica (en pausa)");
+    ImGui::PopStyleVar();
     ImGui::SameLine();
     drawPlayVrButton(vr_button);  // al lado de Play: el juego en el casco (EditorXr.cpp)
-    ImGui::SameLine();
-    if (toggle("Pausa", play_state_ == PlayState::Paused, theme::vec(theme::kYellowDeep))) togglePause();
-    ImGui::SetItemTooltip("Pausar / seguir (Ctrl+Mayus+P)");
-    ImGui::BeginDisabled(play_state_ != PlayState::Paused);
-    if (ImGui::Button("Paso", ImVec2(button, 0.0f))) ++step_requests_;
-    ImGui::EndDisabled();
-    ImGui::SetItemTooltip("Un paso fijo de fisica (en pausa)");
 
     // Como el desplegable de Play de Unity (Play Focused / Unfocused).
     ImGui::SameLine();
@@ -617,8 +637,8 @@ bool EditorApp::layerMaskCombo(const char* label, std::uint32_t& mask) {
 void EditorApp::drawPhysicsWindow() {
     // La primera vez, junto a la Consola (si no, flotaria encima de la Escena).
     if (console_dock_id_ != 0) ImGui::SetNextWindowDockID(console_dock_id_, ImGuiCond_FirstUseEver);
-    if (!ImGui::Begin("Física", &show_physics_)) {
-        ImGui::End();
+    if (!beginArea(AreaEditor::Physics, &show_physics_)) {
+        endArea();
         return;
     }
     bool settings_changed = false;
@@ -855,7 +875,7 @@ void EditorApp::drawPhysicsWindow() {
     if (settings_finished && physics_settings_dirty_) {
         savePhysicsSettings();
     }
-    ImGui::End();
+    endArea();
 }
 
 // -----------------------------------------------------------------------------

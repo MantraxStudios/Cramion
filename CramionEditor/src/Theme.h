@@ -32,6 +32,7 @@ namespace cramion::editor::theme {
 
 // --- Paleta ---------------------------------------------------------------
 constexpr ImU32 kGap = IM_COL32(22, 22, 22, 255);         // #161616 huecos entre areas
+constexpr ImU32 kAreaHeader = IM_COL32(43, 43, 43, 255);  // #2b2b2b cabecera de cada area (tipo de editor y menus)
 constexpr ImU32 kBg0 = IM_COL32(35, 35, 35, 255);         // #232323 barra superior, pestanas
 constexpr ImU32 kBg1 = IM_COL32(48, 48, 48, 255);         // #303030 fondo de las areas
 constexpr ImU32 kBg2 = IM_COL32(61, 61, 61, 255);         // #3d3d3d paneles (tarjetas)
@@ -112,7 +113,7 @@ inline void applyStyle(ImGuiStyle& style) {
     style.SeparatorTextBorderSize = 1.0f;
     style.SeparatorTextPadding = ImVec2(10.0f, 4.0f);
     style.SeparatorTextAlign = ImVec2(0.0f, 0.5f);
-    style.DockingSeparatorSize = 3.0f;
+    style.DockingSeparatorSize = 4.0f;  // los huecos oscuros entre areas
     style.WindowMenuButtonPosition = ImGuiDir_None;
     style.WindowTitleAlign = ImVec2(0.0f, 0.5f);
     style.TabCloseButtonMinWidthUnselected = 0.0f;
@@ -133,7 +134,9 @@ inline void applyStyle(ImGuiStyle& style) {
     c[ImGuiCol_TitleBg] = vec(kBg0);
     c[ImGuiCol_TitleBgActive] = vec(kBg0);
     c[ImGuiCol_TitleBgCollapsed] = vec(kBg0);
-    c[ImGuiCol_MenuBarBg] = vec(kBg0);
+    // Las cabeceras de las areas son barras de menu de su ventana (la barra
+    // superior pone kBg0 por su cuenta).
+    c[ImGuiCol_MenuBarBg] = vec(kAreaHeader);
     c[ImGuiCol_ScrollbarBg] = ImVec4(0.0f, 0.0f, 0.0f, 0.0f);
     c[ImGuiCol_ScrollbarGrab] = vec(kBg3, 0.8f);
     c[ImGuiCol_ScrollbarGrabHovered] = vec(kBg4);

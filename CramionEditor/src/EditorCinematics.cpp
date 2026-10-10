@@ -128,12 +128,13 @@ void EditorApp::drawGameView() {
         focus_game_ = false;
     }
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
-    const bool open = ImGui::Begin("Juego", &show_game_, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+    const bool open = beginArea(AreaEditor::Game, &show_game_, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse,
+                                [&] { drawGameHeader(); });
     ImGui::PopStyleVar();
     game_view_visible_ = open && show_game_;
     game_view_focused_ = false;
     if (!open) {
-        ImGui::End();
+        endArea();
         return;
     }
     game_view_focused_ = ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
@@ -142,41 +143,7 @@ void EditorApp::drawGameView() {
         preferred_view_ = kGameSlot;
     }
 
-    // Barra: que camara se ve.
-    ImGui::SetCursorPos(ImVec2(8.0f, ImGui::GetCursorPosY() + 4.0f));
-    const ecs::Entity brain = cinematics_.brain();
-    ecs::Entity main_camera = brain;
-    if (!main_camera.valid()) {
-        for (const entt::entity h : world_.registry().view<ecs::Camera>()) {
-            const ecs::Entity e = world_.wrap(h);
-            if (e.activeInHierarchy() && (!main_camera.valid() || e.get<ecs::Camera>().is_main)) main_camera = e;
-        }
-    }
-    if (main_camera.valid()) {
-        ImGui::Text("Cámara: %s", main_camera.name().c_str());
-        const ecs::Entity live = cinematics_.liveCamera();
-        if (brain.valid() && live.valid()) {
-            ImGui::SameLine();
-            ImGui::TextDisabled("|");
-            ImGui::SameLine();
-            if (cinematics_.blending() && cinematics_.previousCamera().valid()) {
-                ImGui::Text("Mezclando %s -> %s (%.0f %%)", cinematics_.previousCamera().name().c_str(),
-                            live.name().c_str(), cinematics_.blendProgress() * 100.0f);
-            } else {
-                ImGui::Text("Virtual: %s%s", live.name().c_str(), cinematics_.solo().valid() ? " (solo)" : "");
-            }
-        }
-    } else {
-        ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.3f, 1.0f), "No hay ninguna Camera en la escena");
-    }
-    ImGui::SameLine(std::max(ImGui::GetWindowWidth() - 370.0f, 0.0f));
-    ImGui::Checkbox("Táctil", &touch_simulate_);
-    ImGui::SetItemTooltip("En Play: los controles tactiles del proyecto sobre la vista, con el raton como dedo.\n"
-                          "Se disenan en Archivo > Controles tactiles.");
-    ImGui::SameLine();
-    drawAspectMenu(kGameSlot);
-    ImGui::SameLine();
-    ImGui::Checkbox("Tercios", &game_guides_);
+    // (La camara que se ve y las opciones van en la cabecera: drawGameHeader.)
 
     // La imagen: todo el panel (Free Aspect) o la proporcion elegida (como la
     // pantalla del juego).
@@ -209,7 +176,7 @@ void EditorApp::drawGameView() {
     if (const ecs::Profiler* profiler = findProfiler(world_)) {
         profiler_overlay_.draw(draw, origin, size, *profiler, renderer_.device().name());
     }
-    ImGui::End();
+    endArea();
 }
 
 // -----------------------------------------------------------------------------
@@ -706,8 +673,8 @@ void EditorApp::drawCinematicInspector(const std::string& type_name, ecs::Entity
 
 void EditorApp::drawCinematicWindow() {
     if (console_dock_id_ != 0) ImGui::SetNextWindowDockID(console_dock_id_, ImGuiCond_FirstUseEver);
-    if (!ImGui::Begin("Cinemática", &show_cinematic_)) {
-        ImGui::End();
+    if (!beginArea(AreaEditor::Cinematic, &show_cinematic_)) {
+        endArea();
         return;
     }
     // Que secuencia: la seleccionada si tiene una.
@@ -729,7 +696,7 @@ void EditorApp::drawCinematicWindow() {
     if (!seq_entity.valid()) {
         ImGui::TextDisabled("No hay ninguna Cinematic Sequence en la escena.");
         if (ImGui::Button("Crear una cinemática con las cámaras virtuales")) createCinematic(5);
-        ImGui::End();
+        endArea();
         return;
     }
     cinema::CinematicSequence& seq = seq_entity.get<cinema::CinematicSequence>();
@@ -1010,7 +977,7 @@ void EditorApp::drawCinematicWindow() {
     draw->AddTriangleFilled(ImVec2(xp - 6.0f, canvas_pos.y), ImVec2(xp + 6.0f, canvas_pos.y),
                             ImVec2(xp, canvas_pos.y + 9.0f), IM_COL32(255, 80, 80, 255));
     draw->PopClipRect();
-    ImGui::End();
+    endArea();
 }
 
 }  // namespace cramion::editor

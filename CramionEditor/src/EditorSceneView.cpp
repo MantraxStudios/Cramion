@@ -4,6 +4,8 @@
 
 #include "EditorApp.h"
 
+#include "BlenderUi.h"
+
 #include "Dialogs.h"
 
 #include <CramionCore/ecs/MathUtil.h>
@@ -39,90 +41,6 @@ bool toolButton(const char* label, bool active, const char* tooltip) {
 }
 
 }  // namespace
-
-void EditorApp::drawToolbar() {
-    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(4.0f, 4.0f));
-    ImGui::SetCursorPos(ImVec2(6.0f, ImGui::GetCursorPosY() + 4.0f));
-    if (toolButton("Q", gizmo_ == GizmoOperation::None, "Sin gizmo (Q)")) gizmo_ = GizmoOperation::None;
-    ImGui::SameLine();
-    const auto icon_button = [&](const char* id, Icon icon, bool active, const char* tooltip) {
-        if (active) ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_Header));
-        const float size = ImGui::GetFrameHeight() - ImGui::GetStyle().FramePadding.y * 2.0f;
-        bool pressed = false;
-        if (imgui_.icon(icon) != 0) {
-            pressed = ImGui::ImageButton(id, imgui_.icon(icon), ImVec2(size, size), ImVec2(0, 0), ImVec2(1, 1),
-                                         ImVec4(0, 0, 0, 0), ImVec4(1, 1, 1, active ? 1.0f : 0.75f));
-        } else {
-            pressed = ImGui::Button(id);
-        }
-        if (active) ImGui::PopStyleColor();
-        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) ImGui::SetTooltip("%s", tooltip);
-        return pressed;
-    };
-    if (icon_button("W##move", Icon::Move, gizmo_ == GizmoOperation::Translate, "Mover (W)")) gizmo_ = GizmoOperation::Translate;
-    ImGui::SameLine();
-    if (icon_button("E##rotate", Icon::Rotate, gizmo_ == GizmoOperation::Rotate, "Rotar (E)")) gizmo_ = GizmoOperation::Rotate;
-    ImGui::SameLine();
-    if (icon_button("R##scale", Icon::Scale, gizmo_ == GizmoOperation::Scale, "Escalar (R)")) gizmo_ = GizmoOperation::Scale;
-    drawStampToolbar();
-    drawPaintToolbar();
-    drawModelingToolbar();
-    draw2DViewToggle();  // vista 2D (Editor2D.cpp)
-    ImGui::SameLine();
-    ImGui::TextDisabled("|");
-    ImGui::SameLine();
-    if (toolButton(gizmo_local_ ? "Local" : "Mundo", false,
-                   "Espacio del gizmo: ejes del objeto o del mundo (X)")) {
-        gizmo_local_ = !gizmo_local_;
-    }
-    ImGui::SameLine();
-    if (toolButton(gizmo_center_ ? "Centro" : "Pivote", false,
-                   "Donde va el gizmo: en el pivote del objeto o en el centro de la seleccion (Z)")) {
-        gizmo_center_ = !gizmo_center_;
-    }
-    ImGui::SameLine();
-    if (toolButton("Snap", snap_enabled_, "Ajustar a la rejilla (mantener Ctrl invierte)")) {
-        snap_enabled_ = !snap_enabled_;
-    }
-    ImGui::SameLine();
-    ImGui::SetNextItemWidth(62.0f);
-    ImGui::DragFloat("##snap_t", &snap_translate_, 0.01f, 0.01f, 100.0f, "%.2f m");
-    ImGui::SetItemTooltip("Paso al mover");
-    ImGui::SameLine();
-    ImGui::SetNextItemWidth(52.0f);
-    ImGui::DragFloat("##snap_r", &snap_rotate_, 0.5f, 1.0f, 180.0f, "%.0f°");
-    ImGui::SetItemTooltip("Paso al rotar");
-    ImGui::SameLine();
-    ImGui::SetNextItemWidth(52.0f);
-    ImGui::DragFloat("##snap_s", &snap_scale_, 0.005f, 0.01f, 10.0f, "%.2f");
-    ImGui::SetItemTooltip("Paso al escalar");
-    ImGui::SameLine();
-    ImGui::TextDisabled("|");
-    ImGui::SameLine();
-    if (toolButton("Nav", show_navigation_, "Mostrar la navegación (P), como en Unreal")) {
-        show_navigation_ = !show_navigation_;
-    }
-    ImGui::SameLine();
-    if (toolButton("Gizmos", show_gizmos_,
-                   "Mostrar los iconos y ayudas de la escena: luces, cámaras, decals, física, cinemáticas y agua (G)")) {
-        show_gizmos_ = !show_gizmos_;
-    }
-    ImGui::SameLine();
-    drawSceneDrawModeMenu();
-    ImGui::SameLine();
-    drawPathTracingButton();
-    ImGui::SameLine();
-    drawAspectMenu(kSceneSlot);
-    // En Play con red: servidor o cliente y cuantos jugadores.
-    if (const std::string net = scripts_.networkStatus(); !net.empty()) {
-        ImGui::SameLine();
-        ImGui::TextDisabled("|");
-        ImGui::SameLine();
-        ImGui::TextColored(ImVec4(0.35f, 0.85f, 0.55f, 1.0f), "Red: %s", net.c_str());
-        ImGui::SetItemTooltip("Partida en red de los scripts (tabla Network). Salir de Play la cierra.");
-    }
-    ImGui::PopStyleVar();
-}
 
 // -----------------------------------------------------------------------------
 // Proporcion de las vistas (como el menu del Game view de Unity)
@@ -252,28 +170,32 @@ void EditorApp::drawAspectMenu(std::uint32_t slot) {
     ImGui::PopID();
 }
 
+// Como los botones de sombreado de Blender: alambre, solido (sin luz), con
+// luz y alambre encima, y con luz (el render).
 void EditorApp::drawSceneDrawModeMenu() {
-    static constexpr const char* kModes[] = {"Lit", "Unlit", "Wireframe", "Lit + Wireframe"};
-    static constexpr const char* kHelp[] = {
-        "Con luz, sombras y efectos (como se vera el juego)",
-        "Solo el color de los materiales: sin luz, sombras ni niebla",
-        "Solo las lineas de la geometria (mallas, terreno, voxeles, vegetacion)",
-        "Con luz y las lineas de las mallas encima"};
+    namespace bl = blender;
+    // Orden de Blender -> modo del renderizador (SceneDrawMode).
+    static constexpr int kModes[4] = {2, 1, 3, 0};
+    static const bl::Glyph kGlyphs[4] = {bl::Glyph::Wireframe, bl::Glyph::Solid, bl::Glyph::Material, bl::Glyph::Rendered};
+    static const char* const kTips[4] = {
+        "Alambre: solo las lineas de la geometria (mallas, terreno, voxeles, vegetacion)",
+        "Solido: el color de los materiales, sin luz, sombras ni niebla",
+        "Con luz y las lineas de las mallas encima",
+        "Render: con luz, sombras y efectos (como se vera el juego)"};
     const bool lines = renderer_.wireframeSupported();
     scene_draw_mode_ = std::clamp(scene_draw_mode_, 0, 3);
-    ImGui::SetNextItemWidth(ImGui::CalcTextSize("Lit + Wireframe").x + 34.0f);
-    if (ImGui::BeginCombo("##draw_mode", kModes[scene_draw_mode_])) {
-        for (int i = 0; i < 4; ++i) {
-            const bool needs_lines = i >= 2;
-            if (ImGui::Selectable(kModes[i], scene_draw_mode_ == i, needs_lines && !lines ? ImGuiSelectableFlags_Disabled : 0)) {
-                scene_draw_mode_ = i;
-                saveViewSettings();
-            }
-            ImGui::SetItemTooltip("%s%s", kHelp[i], needs_lines && !lines ? " (tu GPU no dibuja lineas)" : "");
-        }
-        ImGui::EndCombo();
+    int active = 0;
+    for (int i = 0; i < 4; ++i) {
+        if (kModes[i] == scene_draw_mode_) active = i;
     }
-    ImGui::SetItemTooltip("Modo de dibujo de la vista Escena (la vista Juego siempre con luz)");
+    const int clicked = bl::segmented("##shading", nullptr, kGlyphs, 4, active, kTips);
+    if (clicked >= 0) {
+        const int mode = kModes[clicked];
+        if (mode < 2 || lines) {
+            scene_draw_mode_ = mode;
+            saveViewSettings();
+        }
+    }
 }
 
 // Path tracing (como el de Unreal): un boton que lo enciende y lo apaga. Con
@@ -374,8 +296,8 @@ void EditorApp::drawSceneView() {
         preferred_view_ = kSceneSlot;
     }
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
-    const bool open = ImGui::Begin(panelTitle("Escena").c_str(), nullptr,
-                                   ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+    const bool open = beginArea(AreaEditor::Scene, nullptr, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse,
+                                [&] { drawSceneHeader(); });
     ImGui::PopStyleVar();
     if (activeWorkspaceKind() == WorkspaceKind::Scene) scene_dock_id_ = ImGui::GetWindowDockID();
     scene_view_visible_ = open;
@@ -383,14 +305,15 @@ void EditorApp::drawSceneView() {
     if (!open) {
         flying_ = false;
         flushOverlay();  // vista oculta: sin gizmos
-        ImGui::End();
+        endArea();
         return;
     }
     view_focused_ = ImGui::IsWindowFocused();
     if (view_focused_ || (ImGui::IsWindowHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Left))) {
         preferred_view_ = kSceneSlot;
     }
-    drawToolbar();
+    // (Las herramientas y opciones van en la cabecera y en el estante de la
+    // izquierda, como en Blender: drawSceneHeader / drawViewportShelf.)
 
     // La imagen: todo el panel (Free Aspect) o la proporcion elegida.
     ImVec2 origin;
@@ -402,6 +325,10 @@ void EditorApp::drawSceneView() {
     view_w_ = size.x;
     view_h_ = size.y;
     view_hovered_ = ImGui::IsItemHovered();
+    // Encima de la imagen: estante, gizmo de navegacion y sus botones. Con el
+    // raton sobre ellos no se selecciona ni se mueve la camara.
+    layoutViewportOverlays(origin, size);
+    if (view_hovered_ && viewportOverlayHit(ImGui::GetMousePos()) && !flying_) view_hovered_ = false;
     // En Play (o en pausa) un marco de color, como el tinte de Unity.
     if (playing()) {
         const ImU32 frame = play_state_ == PlayState::Paused ? theme::withAlpha(theme::kYellowDeep, 150)
@@ -601,13 +528,13 @@ void EditorApp::drawSceneView() {
         if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_V, false)) pasteClipboard();
     }
 
-    // Ayuda discreta.
-    ImGui::SetCursorScreenPos(ImVec2(origin.x + 10.0f, origin.y + size.y - 24.0f));
-    ImGui::TextColored(ImVec4(1.0f, 1.0f, 1.0f, 0.5f),
-                       "Clic: seleccionar  |  Botón derecho + WASD: volar  |  Rueda: acercar  |  "
-                       "Botón central: desplazar  |  F: enfocar  |  Alt+clic: raycast");
     flushOverlay();
-    ImGui::End();
+    // Como Blender: el estante, el gizmo de navegacion y el texto de la vista
+    // (la ayuda del raton va en la barra de estado).
+    drawViewportInfo();
+    drawViewportShelf();
+    drawNavigationGizmo();
+    endArea();
 }
 
 // Volar con el boton derecho: el cursor capturado (oculto, fijo en el centro

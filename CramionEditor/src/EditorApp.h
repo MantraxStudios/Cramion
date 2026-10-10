@@ -104,6 +104,22 @@ struct EffectsEditorState;   // EditorEffects.cpp: VFX Graph, 2D y repeticiones
 struct GraphEditorState;     // EditorGraphs.cpp: Shader Graph y Visual Scripting
 struct BtEditorState;        // EditorBehaviorTree.cpp
 struct TwoDEditorState;      // Editor2D.cpp: tilesets, paleta y sprites
+
+// Los editores que viven en un area al estilo de Blender (EditorAreas.cpp).
+enum class AreaEditor {
+    Scene,
+    Game,
+    Hierarchy,
+    Inspector,
+    Project,
+    Console,
+    Statistics,
+    RenderSettings,
+    Physics,
+    Cinematic,
+    Environment,
+    Count
+};
 struct LightingEditorState;  // EditorLighting.cpp: horneado de la luz rebotada
 struct MotionEditorState;    // EditorMotion.cpp: bases de Motion Matching
 struct PhysicsToolsState;    // EditorDestruction.cpp: fracturar y asistente de vehiculo
@@ -412,8 +428,78 @@ private:
     void createProjectFromHub();
     void drawSaveTemplateDialog();
     void drawMenuBar();
+    void drawAddMenuItems();
     void drawStatusBar();
-    void drawToolbar();
+
+    // --- Areas al estilo de Blender (EditorAreas.cpp) ---
+    // Cada area muestra un solo editor (sin pestanas) con su cabecera: el
+    // boton del tipo de editor y lo que el editor anada. Cambiar el tipo
+    // trae ese editor al area (el de antes queda detras). Los
+    // editores de Propiedades (Objeto, Render, Mundo, Fisica) comparten area
+    // y se cambian con las pestanas verticales de la izquierda.
+    std::string areaTitle(AreaEditor editor) const;
+    // ImGui::Begin del editor en su area (con la cabecera). `header` dibuja lo
+    // que el editor pone en su cabecera despues del tipo. Llamar siempre a
+    // endArea (tambien si devuelve false, como ImGui::End).
+    bool beginArea(AreaEditor editor, bool* p_open, ImGuiWindowFlags flags = 0,
+                   const std::function<void()>& header = {});
+    void endArea();
+    // Pone `to` en el area de `from` (desde el boton del tipo de editor).
+    void switchArea(AreaEditor from, AreaEditor to);
+    // Trae un editor al frente de su area el proximo frame.
+    void showAreaEditor(AreaEditor editor);
+    struct AreaFrame {
+        AreaEditor editor = AreaEditor::Scene;
+        bool child = false;  // contenido en un hijo (pestanas de Propiedades)
+    };
+    std::vector<AreaFrame> area_stack_;
+    std::unordered_map<ImGuiID, ImGuiID> area_front_;  // ventana -> area donde ponerla delante (0: la suya)
+    void drawAreaTypeButton(AreaEditor editor);
+    // Una ventana que recibe el foco (Ventana > ..., Play, soltada en un
+    // area) pasa a ser la que se ve en su area.
+    void promoteFocusedArea();
+    ImGuiID last_focused_window_ = 0;
+    void drawPropertiesTabs(AreaEditor editor);
+    // Barra superior: las pestanas de los espacios de trabajo (Escena,
+    // prefabs, scripts, grafos) junto a los menus, como en Blender.
+    void drawWorkspaceTabs(float right_limit);
+    // Barra de estado: lo que hacen los botones del raton aqui (Blender).
+    void drawStatusHints();
+    // Al dar Play se paso la vista a Juego: al parar vuelve a la Escena.
+    bool play_switched_view_ = false;
+    // Estante de herramientas, gizmo de navegacion y texto de la vista 3D.
+    void drawViewportShelf();
+    void drawNavigationGizmo();
+    void drawViewportInfo();
+    // La cabecera de la vista 3D (Vista, Seleccionar, Anadir, Objeto y las
+    // opciones a la derecha) y la de la vista Juego.
+    void drawSceneHeader();
+    void drawGameHeader();
+    // Orbita de la vista 3D (gizmo de navegacion): alrededor de la seleccion
+    // o de un punto delante de la camara.
+    core::Vec3 viewPivot();
+    void alignView(int axis);
+    void orbitView(float dx, float dy);
+    // Donde va lo que se dibuja encima de la vista 3D (estante, gizmo de
+    // navegacion y sus botones): con el raton encima no se selecciona ni se
+    // mueve la camara.
+    struct ViewportOverlays {
+        ImVec2 shelf{};
+        float tool = 0.0f;
+        int tools = 0;
+        ImVec2 gizmo{};
+        float gizmo_radius = 0.0f;
+        float button_radius = 0.0f;
+        bool navigation = false;
+    };
+    ViewportOverlays viewport_overlays_;
+    void layoutViewportOverlays(ImVec2 origin, ImVec2 size);
+    bool viewportOverlayHit(ImVec2 point) const;
+    // Ancho de lo alineado a la derecha en las cabeceras (medido el frame anterior).
+    float scene_header_right_w_ = 0.0f;
+    float game_header_right_w_ = 0.0f;
+    // Vista 2D activa (Editor2D.cpp): sin gizmo de navegacion.
+    bool view2DActive();
     void drawHierarchy();
     // Jerarquia recortada: filas aplanadas (solo nodos abiertos) y se dibujan
     // solo las que se ven.
@@ -1771,6 +1857,7 @@ private:
     int pending_workspace_ = -1;
     bool pending_play_ = false;
     int workspace_close_ask_ = -1;       // prefab con cambios: preguntar al cerrar
+    bool workspace_close_popup_ = false;  // abrir esa pregunta (desde la barra superior)
     int workspace_focus_frames_ = 0;     // enfocar el prefab cuando ya tiene actores
     unsigned int script_workspace_dock_ = 0;  // dockspace de las pestanas de script
     Workspace* findWorkspace(int id);

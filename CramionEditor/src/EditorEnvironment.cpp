@@ -125,8 +125,8 @@ void EditorApp::drawEnvironmentInspector(ecs::Entity entity) {
 void EditorApp::drawEnvironmentWindow() {
     if (!show_environment_window_) return;
     ImGui::SetNextWindowSize(ImVec2(380.0f, 470.0f), ImGuiCond_FirstUseEver);
-    if (!ImGui::Begin("Ambiente", &show_environment_window_)) {
-        ImGui::End();
+    if (!beginArea(AreaEditor::Environment, &show_environment_window_)) {
+        endArea();
         return;
     }
     envns::Environment* env = envns::findEnvironment(world_);
@@ -149,7 +149,7 @@ void EditorApp::drawEnvironmentWindow() {
         }
         ImGui::TextDisabled("Lluvia y nieve dibujadas: %u", renderer_.precipitationParticles());
     }
-    ImGui::End();
+    endArea();
 }
 
 }  // namespace cramion::editor

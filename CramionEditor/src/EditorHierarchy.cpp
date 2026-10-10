@@ -4,6 +4,8 @@
 
 #include "EditorApp.h"
 
+#include "BlenderUi.h"
+
 #include "Dialogs.h"
 
 #include <imgui.h>
@@ -109,19 +111,22 @@ Icon EditorApp::entityIcon(const ecs::Entity& e, ImU32& tint) const {
 }
 
 void EditorApp::drawHierarchy() {
-    if (!ImGui::Begin(panelTitle("Jerarquía").c_str(), &show_hierarchy_)) {
-        ImGui::End();
+    // Como el Outliner de Blender: buscar y crear en la cabecera del area.
+    bool open_create = false;
+    const auto header = [&] {
+        const float button = ImGui::GetFrameHeight();
+        theme::searchBox("buscar", hierarchy_filter_, "Buscar...",
+                         std::max(ImGui::GetContentRegionAvail().x - button - 10.0f, 60.0f));
+        ImGui::SameLine(0.0f, 4.0f);
+        if (blender::iconButton("##crear", blender::Glyph::Plus, false, "Crear objeto")) open_create = true;
+    };
+    if (!beginArea(AreaEditor::Hierarchy, &show_hierarchy_, 0, header)) {
+        endArea();
         return;
     }
     drawPrefabStageBanner();  // solo en la pestana de un prefab
 
-    // Barra: crear y buscar.
-    if (ImGui::Button("+")) {
-        ImGui::OpenPopup("crear_menu");
-    }
-    ImGui::SetItemTooltip("Crear objeto");
-    ImGui::SameLine();
-    theme::searchBox("buscar", hierarchy_filter_, "Buscar...");
+    if (open_create) ImGui::OpenPopup("crear_menu");
     if (ImGui::BeginPopup("crear_menu")) {
         const ecs::Entity parent = world_.find(active_);
         const auto item = [&](const char* label, int kind) {
@@ -340,7 +345,7 @@ void EditorApp::drawHierarchy() {
         }
         if (ImGui::IsKeyPressed(ImGuiKey_F, false)) focusSelection();
     }
-    ImGui::End();
+    endArea();
 }
 
 // Filas del arbol en orden (padre antes que hijos) bajando solo por los

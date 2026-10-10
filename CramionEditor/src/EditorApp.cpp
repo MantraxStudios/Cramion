@@ -1118,8 +1118,9 @@ void EditorApp::drawUi(float delta_seconds) {
         addCpuSample(kCpuPanels, millisecondsSince(t));
     } else {
         const ImGuiViewport* viewport = ImGui::GetMainViewport();
-        // Id nuevo con el diseno de Blender: el de antes (Unity) se rehace una vez.
-        const ImGuiID dockspace_id = ImGui::GetID("CramionDockspaceBlender");
+        // Id nuevo con las areas de Blender (un editor por area): los disenos
+        // de antes se rehacen una vez.
+        const ImGuiID dockspace_id = ImGui::GetID("CramionDockspaceBlenderAreas");
         if (reset_layout_ || ImGui::DockBuilderGetNode(dockspace_id) == nullptr) {
             buildDefaultLayout(dockspace_id);
             reset_layout_ = false;
@@ -1201,6 +1202,7 @@ void EditorApp::drawUi(float delta_seconds) {
             }
         }
     }
+    promoteFocusedArea();
     flushCommit();
     chooseRenderView();
     updateViewExtent(delta_seconds);
@@ -1301,9 +1303,12 @@ void EditorApp::syncWorld(float delta_seconds, bool secondary) {
     renderer_.setOutlinedActors(std::move(outlined));
 }
 
-// Blender (espacio "Layout"): Escena grande en el centro; a la derecha, de
-// arriba abajo, la Jerarquia (Outliner) y el Inspector (Propiedades); abajo,
-// bajo la Escena, Proyecto y Consola (donde Blender pone la linea de tiempo).
+// Blender (espacio "Layout"), un editor por area: la Vista 3D grande en el
+// centro (con el Juego detras: Escena | Juego en su cabecera); a la derecha
+// la Jerarquia (Outliner) y debajo las Propiedades (Objeto, con Render,
+// Mundo y Fisica en sus pestanas verticales); abajo, el Proyecto (con
+// Estadisticas y Cinematica detras) y la Consola. El orden en cada area es
+// el de dibujo: el primero es el que se ve.
 void EditorApp::buildDefaultLayout(unsigned int dockspace_id) {
     const ImGuiViewport* viewport = ImGui::GetMainViewport();
     ImGui::DockBuilderRemoveNode(dockspace_id);
@@ -1311,22 +1316,24 @@ void EditorApp::buildDefaultLayout(unsigned int dockspace_id) {
     ImGui::DockBuilderSetNodeSize(dockspace_id, viewport->WorkSize);
 
     ImGuiID center = dockspace_id;
-    ImGuiID right = ImGui::DockBuilderSplitNode(center, ImGuiDir_Right, 0.23f, nullptr, &center);
-    const ImGuiID outliner = ImGui::DockBuilderSplitNode(right, ImGuiDir_Up, 0.34f, nullptr, &right);
-    const ImGuiID bottom = ImGui::DockBuilderSplitNode(center, ImGuiDir_Down, 0.26f, nullptr, &center);
+    ImGuiID right = ImGui::DockBuilderSplitNode(center, ImGuiDir_Right, 0.24f, nullptr, &center);
+    const ImGuiID outliner = ImGui::DockBuilderSplitNode(right, ImGuiDir_Up, 0.38f, nullptr, &right);
+    ImGuiID bottom = ImGui::DockBuilderSplitNode(center, ImGuiDir_Down, 0.27f, nullptr, &center);
+    const ImGuiID console = ImGui::DockBuilderSplitNode(bottom, ImGuiDir_Right, 0.36f, nullptr, &bottom);
 
-    ImGui::DockBuilderDockWindow("Jerarquía", outliner);
-    ImGui::DockBuilderDockWindow("Inspector", right);
-    ImGui::DockBuilderDockWindow("Ajustes de render", right);
-    ImGui::DockBuilderDockWindow("Proyecto", bottom);
-    ImGui::DockBuilderDockWindow("Consola", bottom);
-    ImGui::DockBuilderDockWindow("Estadísticas", bottom);
-    ImGui::DockBuilderDockWindow("Física", bottom);
-    ImGui::DockBuilderDockWindow("Escena", center);
-    ImGui::DockBuilderDockWindow("Juego", center);
-    ImGui::DockBuilderDockWindow("Cinemática", bottom);
-    ImGui::DockBuilderDockWindow("Animator", center);
+    ImGui::DockBuilderDockWindow(areaTitle(AreaEditor::Scene).c_str(), center);
+    ImGui::DockBuilderDockWindow(areaTitle(AreaEditor::Game).c_str(), center);
+    ImGui::DockBuilderDockWindow(areaTitle(AreaEditor::Hierarchy).c_str(), outliner);
+    ImGui::DockBuilderDockWindow(areaTitle(AreaEditor::Inspector).c_str(), right);
+    ImGui::DockBuilderDockWindow(areaTitle(AreaEditor::RenderSettings).c_str(), right);
+    ImGui::DockBuilderDockWindow(areaTitle(AreaEditor::Environment).c_str(), right);
+    ImGui::DockBuilderDockWindow(areaTitle(AreaEditor::Physics).c_str(), right);
+    ImGui::DockBuilderDockWindow(areaTitle(AreaEditor::Project).c_str(), bottom);
+    ImGui::DockBuilderDockWindow(areaTitle(AreaEditor::Statistics).c_str(), bottom);
+    ImGui::DockBuilderDockWindow(areaTitle(AreaEditor::Cinematic).c_str(), bottom);
+    ImGui::DockBuilderDockWindow(areaTitle(AreaEditor::Console).c_str(), console);
     ImGui::DockBuilderFinish(dockspace_id);
+    area_front_.clear();
 }
 
 // -----------------------------------------------------------------------------
@@ -1334,9 +1341,14 @@ void EditorApp::buildDefaultLayout(unsigned int dockspace_id) {
 // -----------------------------------------------------------------------------
 
 void EditorApp::drawMenuBar() {
-    // La barra de menus es tambien la barra de titulo: algo mas alta.
+    // La barra de menus es tambien la barra de titulo: algo mas alta. Como la
+    // barra superior de Blender: menus, espacios de trabajo, Play en el centro
+    // y la escena a la derecha.
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(ImGui::GetStyle().FramePadding.x, 7.0f));
-    if (!ImGui::BeginMainMenuBar()) {
+    ImGui::PushStyleColor(ImGuiCol_MenuBarBg, theme::kBg0);
+    const bool menu_open = ImGui::BeginMainMenuBar();
+    ImGui::PopStyleColor();
+    if (!menu_open) {
         ImGui::PopStyleVar();
         return;
     }
@@ -1401,125 +1413,8 @@ void EditorApp::drawMenuBar() {
         drawXrMenu();
         ImGui::EndMenu();
     }
-    if (ImGui::BeginMenu("GameObject")) {
-        const ecs::Entity parent = world_.find(active_);
-        const auto item = [&](const char* label, int kind) {
-            if (ImGui::MenuItem(label)) createEntity(kind, {});
-        };
-        item("Crear vacío", 0);
-        if (ImGui::MenuItem("Crear vacío hijo", nullptr, false, parent.valid())) createEntity(0, parent);
-        if (ImGui::BeginMenu("Malla editable (modelado)")) {
-            for (int k = 0; k < static_cast<int>(modeling::shapes::Kind::Count); ++k) {
-                const auto kind = static_cast<modeling::shapes::Kind>(k);
-                if (ImGui::MenuItem(modeling::shapes::kindName(kind))) {
-                    createModelingShape(kind, modeling::shapes::defaults(kind));
-                    show_modeling_window_ = true;
-                }
-            }
-            ImGui::EndMenu();
-        }
-        if (ImGui::BeginMenu("Objeto 3D")) {
-            item("Cubo", 1);
-            item("Esfera", 2);
-            item("Plano", 3);
-            item("Cilindro", 4);
-            item("Cápsula", 5);
-            ImGui::EndMenu();
-        }
-        if (ImGui::BeginMenu("Luz")) {
-            item("Luz direccional", 6);
-            item("Luz puntual", 7);
-            item("Foco", 8);
-            ImGui::EndMenu();
-        }
-        item("Cámara", 9);
-        ImGui::Separator();
-        item("Decal (estampa)", 10);
-        item("Charco", 11);
-        item("Humedad", 12);
-        ImGui::Separator();
-        if (ImGui::BeginMenu("Volumen de post-procesado")) {
-            if (ImGui::MenuItem("Global")) createPostVolume(0, {});
-            if (ImGui::MenuItem("Caja")) createPostVolume(1, {});
-            if (ImGui::MenuItem("Esfera")) createPostVolume(2, {});
-            ImGui::EndMenu();
-        }
-        ImGui::Separator();
-        if (ImGui::BeginMenu("Física")) {
-            item("Cubo con Rigidbody", 13);
-            item("Esfera con Rigidbody", 14);
-            item("Zona trigger", 15);
-            item("Vehículo (4 ruedas)", 17);
-            item("Personaje (Character Controller)", 23);
-            ImGui::Separator();
-            item("Tela: cortina", 18);
-            item("Tela: bandera", 19);
-            item("Tela: sábana que cae", 20);
-            item("Cuerpo blando: gelatina (cubo)", 21);
-            item("Cuerpo blando: pelota", 22);
-            ImGui::EndMenu();
-        }
-        if (ImGui::BeginMenu("Efectos")) {
-            item("Sistema de partículas", 16);
-            ImGui::EndMenu();
-        }
-        if (ImGui::BeginMenu("Líquidos")) {
-            if (ImGui::MenuItem("Grifo de agua (emisor)")) createFluidEntity(0);
-            if (ImGui::MenuItem("Bloque de agua (cae y salpica)")) createFluidEntity(1);
-            if (ImGui::MenuItem("Chorro de miel")) createFluidEntity(2);
-            if (ImGui::MenuItem("Chorro de lava")) createFluidEntity(3);
-            ImGui::Separator();
-            if (ImGui::MenuItem("Mundo de líquidos (ajustes)")) createFluidEntity(4);
-            if (ImGui::MenuItem("Desagüe")) createFluidEntity(5);
-            if (ImGui::MenuItem("Tanque de demostración")) createFluidEntity(6);
-            ImGui::EndMenu();
-        }
-        if (ImGui::MenuItem("Terreno")) createTerrainEntity();
-        if (ImGui::MenuItem("Vegetación (bosque)")) createFoliageEntity();
-        if (ImGui::MenuItem("Mundo de bloques")) createVoxelWorldEntity();
-        if (ImGui::MenuItem("Ambiente (clima y hora)")) createEnvironmentEntity();
-        if (ImGui::MenuItem("Fuego (incendio)")) createFireEntity();
-        if (ImGui::MenuItem("Volumen de niebla")) createFogVolumeEntity();
-        if (ImGui::BeginMenu("Spline")) {
-            if (ImGui::MenuItem("Carretera")) createSplineObject(0);
-            if (ImGui::MenuItem("Camino")) createSplineObject(1);
-            if (ImGui::MenuItem("Río (cauce por spline)")) createSplineObject(2);
-            if (ImGui::MenuItem("Muro")) createSplineObject(3);
-            if (ImGui::MenuItem("Valla")) createSplineObject(4);
-            if (ImGui::MenuItem("Tubería")) createSplineObject(5);
-            if (ImGui::MenuItem("Raíles")) createSplineObject(6);
-            if (ImGui::MenuItem("Cinta")) createSplineObject(7);
-            ImGui::Separator();
-            if (ImGui::MenuItem("Spline vacía (solo la curva)")) createSplineObject(-1);
-            ImGui::EndMenu();
-        }
-        if (ImGui::BeginMenu("Agua")) {
-            if (ImGui::MenuItem("Océano / playa")) createWaterEntity(0);
-            if (ImGui::MenuItem("Lago")) createWaterEntity(1);
-            if (ImGui::MenuItem("Río")) createWaterEntity(2);
-            ImGui::EndMenu();
-        }
-        if (ImGui::BeginMenu("Realidad virtual")) {
-            if (ImGui::MenuItem("XR Origin (cámara y mandos)")) createXrOrigin(world_.find(active_));
-            if (ImGui::MenuItem("Jugador VR (primera persona con física)")) createXrPlayer(world_.find(active_));
-            if (ImGui::IsItemHovered()) {
-                ImGui::SetTooltip("XR Origin + Character Controller + XR Player: stick izquierdo anda, derecho gira,\n"
-                                  "A salta; andar por la habitación choca. De pie o sentado en el XR Origin.");
-            }
-            ImGui::EndMenu();
-        }
-        drawNavigationCreateMenu();
-        drawUiCreateMenu();
-        if (ImGui::BeginMenu("Cinemática")) {
-            if (ImGui::MenuItem("Cámara virtual (desde la vista)")) createCinematic(0);
-            if (ImGui::MenuItem("Cámara que sigue a la selección")) createCinematic(1);
-            if (ImGui::MenuItem("Riel (Dolly Track)")) createCinematic(2);
-            if (ImGui::MenuItem("Cámara en riel (Dolly)")) createCinematic(3);
-            if (ImGui::MenuItem("Carro en riel (Dolly Cart)")) createCinematic(4);
-            ImGui::Separator();
-            if (ImGui::MenuItem("Secuencia cinemática (Timeline)")) createCinematic(5);
-            ImGui::EndMenu();
-        }
+    if (ImGui::BeginMenu("Añadir")) {
+        drawAddMenuItems();
         ImGui::EndMenu();
     }
     if (ImGui::BeginMenu("Ventana")) {
@@ -1588,21 +1483,187 @@ void EditorApp::drawMenuBar() {
     // Hasta aqui (logo y menus) no se arrastra la ventana.
     caption_blockers_.push_back(ImVec4(0.0f, 0.0f, ImGui::GetCursorScreenPos().x, caption_height_));
 
+    // Espacios de trabajo (Escena, prefabs, scripts, grafos) como las
+    // pestanas de Blender, hasta donde empieza el Play del centro.
+    const float window_width = ImGui::GetWindowWidth();
+    const float play_left = ImGui::GetWindowPos().x + window_width * 0.5f - 190.0f;
+    {
+        ImGui::SameLine(0.0f, 14.0f);
+        const float tabs_start = ImGui::GetCursorScreenPos().x;
+        ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 3.0f);
+        drawWorkspaceTabs(play_left - 8.0f);
+        caption_blockers_.push_back(ImVec4(tabs_start, 0.0f, ImGui::GetCursorScreenPos().x, caption_height_));
+    }
+
+    ImGui::SetCursorPosY(0.0f);
     ImGui::BeginGroup();
     drawPlayControls();
     ImGui::EndGroup();
     caption_blockers_.push_back(ImVec4(ImGui::GetItemRectMin().x, 0.0f, ImGui::GetItemRectMax().x, caption_height_));
 
-    // Como la barra superior de Blender: a la derecha, la escena abierta.
-    char status[260];
-    std::snprintf(status, sizeof(status), "%s  /  %s%s", project_.name.c_str(), world_.sceneName().c_str(),
-                  dirty_ ? " *" : "");
-    const float controls = 46.0f * 3.0f;
-    ImGui::SameLine(ImGui::GetWindowWidth() - controls - ImGui::CalcTextSize(status).x - 16.0f);
-    ImGui::TextDisabled("%s", status);
+    // Como la barra superior de Blender: a la derecha, la escena (para
+    // cambiar a otra del proyecto).
+    {
+        const float controls = 46.0f * 3.0f;
+        const float combo_width = std::clamp(window_width * 0.14f, 140.0f, 240.0f);
+        ImGui::SameLine(window_width - controls - combo_width - 16.0f);
+        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(ImGui::GetStyle().FramePadding.x, 4.0f));
+        ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 3.0f);
+        const std::string current = world_.sceneName() + (dirty_ ? " *" : "");
+        ImGui::SetNextItemWidth(combo_width);
+        const float combo_left = ImGui::GetCursorScreenPos().x;
+        if (ImGui::BeginCombo("##scene_selector", current.c_str(), ImGuiComboFlags_HeightLarge)) {
+            ImGui::TextDisabled("Escenas de %s", project_.name.c_str());
+            ImGui::Separator();
+            std::vector<assets::AssetInfo> scenes;
+            if (database_) {
+                for (const assets::AssetInfo& asset : database_->all()) {
+                    if (asset.type == assets::AssetType::Scene) scenes.push_back(asset);
+                }
+            }
+            std::sort(scenes.begin(), scenes.end(),
+                      [](const assets::AssetInfo& a, const assets::AssetInfo& b) { return a.name < b.name; });
+            for (const assets::AssetInfo& scene : scenes) {
+                const bool selected = scene.path == scene_path_;
+                if (ImGui::Selectable(scene.name.c_str(), selected) && !selected) {
+                    runOrAskToSave(PendingAction::OpenScene, scene.path);
+                }
+            }
+            if (scenes.empty()) ImGui::TextDisabled("(ninguna guardada)");
+            ImGui::Separator();
+            if (ImGui::Selectable("Nueva escena")) runOrAskToSave(PendingAction::NewScene);
+            ImGui::EndCombo();
+        }
+        ImGui::SetItemTooltip("Escena abierta (%s). Clic: cambiar a otra del proyecto", project_.name.c_str());
+        caption_blockers_.push_back(ImVec4(combo_left, 0.0f, combo_left + combo_width, caption_height_));
+        ImGui::PopStyleVar();
+    }
     drawWindowControls();
     ImGui::EndMainMenuBar();
     ImGui::PopStyleVar();
+}
+
+// Lo que se puede crear (menu Anadir de la barra superior y de la cabecera
+// de la vista 3D, como el Shift+A de Blender).
+void EditorApp::drawAddMenuItems() {
+    const ecs::Entity parent = world_.find(active_);
+    const auto item = [&](const char* label, int kind) {
+        if (ImGui::MenuItem(label)) createEntity(kind, {});
+    };
+    item("Crear vacío", 0);
+    if (ImGui::MenuItem("Crear vacío hijo", nullptr, false, parent.valid())) createEntity(0, parent);
+    if (ImGui::BeginMenu("Malla editable (modelado)")) {
+        for (int k = 0; k < static_cast<int>(modeling::shapes::Kind::Count); ++k) {
+            const auto kind = static_cast<modeling::shapes::Kind>(k);
+            if (ImGui::MenuItem(modeling::shapes::kindName(kind))) {
+                createModelingShape(kind, modeling::shapes::defaults(kind));
+                show_modeling_window_ = true;
+            }
+        }
+        ImGui::EndMenu();
+    }
+    if (ImGui::BeginMenu("Objeto 3D")) {
+        item("Cubo", 1);
+        item("Esfera", 2);
+        item("Plano", 3);
+        item("Cilindro", 4);
+        item("Cápsula", 5);
+        ImGui::EndMenu();
+    }
+    if (ImGui::BeginMenu("Luz")) {
+        item("Luz direccional", 6);
+        item("Luz puntual", 7);
+        item("Foco", 8);
+        ImGui::EndMenu();
+    }
+    item("Cámara", 9);
+    ImGui::Separator();
+    item("Decal (estampa)", 10);
+    item("Charco", 11);
+    item("Humedad", 12);
+    ImGui::Separator();
+    if (ImGui::BeginMenu("Volumen de post-procesado")) {
+        if (ImGui::MenuItem("Global")) createPostVolume(0, {});
+        if (ImGui::MenuItem("Caja")) createPostVolume(1, {});
+        if (ImGui::MenuItem("Esfera")) createPostVolume(2, {});
+        ImGui::EndMenu();
+    }
+    ImGui::Separator();
+    if (ImGui::BeginMenu("Física")) {
+        item("Cubo con Rigidbody", 13);
+        item("Esfera con Rigidbody", 14);
+        item("Zona trigger", 15);
+        item("Vehículo (4 ruedas)", 17);
+        item("Personaje (Character Controller)", 23);
+        ImGui::Separator();
+        item("Tela: cortina", 18);
+        item("Tela: bandera", 19);
+        item("Tela: sábana que cae", 20);
+        item("Cuerpo blando: gelatina (cubo)", 21);
+        item("Cuerpo blando: pelota", 22);
+        ImGui::EndMenu();
+    }
+    if (ImGui::BeginMenu("Efectos")) {
+        item("Sistema de partículas", 16);
+        ImGui::EndMenu();
+    }
+    if (ImGui::BeginMenu("Líquidos")) {
+        if (ImGui::MenuItem("Grifo de agua (emisor)")) createFluidEntity(0);
+        if (ImGui::MenuItem("Bloque de agua (cae y salpica)")) createFluidEntity(1);
+        if (ImGui::MenuItem("Chorro de miel")) createFluidEntity(2);
+        if (ImGui::MenuItem("Chorro de lava")) createFluidEntity(3);
+        ImGui::Separator();
+        if (ImGui::MenuItem("Mundo de líquidos (ajustes)")) createFluidEntity(4);
+        if (ImGui::MenuItem("Desagüe")) createFluidEntity(5);
+        if (ImGui::MenuItem("Tanque de demostración")) createFluidEntity(6);
+        ImGui::EndMenu();
+    }
+    if (ImGui::MenuItem("Terreno")) createTerrainEntity();
+    if (ImGui::MenuItem("Vegetación (bosque)")) createFoliageEntity();
+    if (ImGui::MenuItem("Mundo de bloques")) createVoxelWorldEntity();
+    if (ImGui::MenuItem("Ambiente (clima y hora)")) createEnvironmentEntity();
+    if (ImGui::MenuItem("Fuego (incendio)")) createFireEntity();
+    if (ImGui::MenuItem("Volumen de niebla")) createFogVolumeEntity();
+    if (ImGui::BeginMenu("Spline")) {
+        if (ImGui::MenuItem("Carretera")) createSplineObject(0);
+        if (ImGui::MenuItem("Camino")) createSplineObject(1);
+        if (ImGui::MenuItem("Río (cauce por spline)")) createSplineObject(2);
+        if (ImGui::MenuItem("Muro")) createSplineObject(3);
+        if (ImGui::MenuItem("Valla")) createSplineObject(4);
+        if (ImGui::MenuItem("Tubería")) createSplineObject(5);
+        if (ImGui::MenuItem("Raíles")) createSplineObject(6);
+        if (ImGui::MenuItem("Cinta")) createSplineObject(7);
+        ImGui::Separator();
+        if (ImGui::MenuItem("Spline vacía (solo la curva)")) createSplineObject(-1);
+        ImGui::EndMenu();
+    }
+    if (ImGui::BeginMenu("Agua")) {
+        if (ImGui::MenuItem("Océano / playa")) createWaterEntity(0);
+        if (ImGui::MenuItem("Lago")) createWaterEntity(1);
+        if (ImGui::MenuItem("Río")) createWaterEntity(2);
+        ImGui::EndMenu();
+    }
+    if (ImGui::BeginMenu("Realidad virtual")) {
+        if (ImGui::MenuItem("XR Origin (cámara y mandos)")) createXrOrigin(world_.find(active_));
+        if (ImGui::MenuItem("Jugador VR (primera persona con física)")) createXrPlayer(world_.find(active_));
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("XR Origin + Character Controller + XR Player: stick izquierdo anda, derecho gira,\n"
+                              "A salta; andar por la habitación choca. De pie o sentado en el XR Origin.");
+        }
+        ImGui::EndMenu();
+    }
+    drawNavigationCreateMenu();
+    drawUiCreateMenu();
+    if (ImGui::BeginMenu("Cinemática")) {
+        if (ImGui::MenuItem("Cámara virtual (desde la vista)")) createCinematic(0);
+        if (ImGui::MenuItem("Cámara que sigue a la selección")) createCinematic(1);
+        if (ImGui::MenuItem("Riel (Dolly Track)")) createCinematic(2);
+        if (ImGui::MenuItem("Cámara en riel (Dolly)")) createCinematic(3);
+        if (ImGui::MenuItem("Carro en riel (Dolly Cart)")) createCinematic(4);
+        ImGui::Separator();
+        if (ImGui::MenuItem("Secuencia cinemática (Timeline)")) createCinematic(5);
+        ImGui::EndMenu();
+    }
 }
 
 // Barra de estado abajo (Blender): la seleccion a la izquierda; el
@@ -1620,6 +1681,9 @@ void EditorApp::drawStatusBar() {
     ImGui::PopStyleVar();
     if (open) {
         ImGui::PushFont(nullptr, theme::smallFontSize());
+        // Como Blender: lo que hacen los botones del raton donde esta.
+        drawStatusHints();
+        ImGui::SameLine(0.0f, 28.0f);
         std::string left;
         if (playing()) left = play_state_ == PlayState::Paused ? "En pausa" : "Jugando";
         const ecs::Entity active = active_ ? world_.find(active_) : ecs::Entity{};
@@ -1730,7 +1794,10 @@ bool EditorApp::isCaptionDragArea(int x, int y) const {
 // En el Hub (sin menus): logo, titulo y los botones de la ventana.
 void EditorApp::drawHubTitleBar() {
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(ImGui::GetStyle().FramePadding.x, 7.0f));
-    if (!ImGui::BeginMainMenuBar()) {
+    ImGui::PushStyleColor(ImGuiCol_MenuBarBg, theme::kBg0);
+    const bool menu_open = ImGui::BeginMainMenuBar();
+    ImGui::PopStyleColor();
+    if (!menu_open) {
         ImGui::PopStyleVar();
         return;
     }
@@ -1795,8 +1862,8 @@ void EditorApp::drawModals() {
 void EditorApp::drawStatistics(float delta_seconds) {
     frame_history_[frame_history_head_] = delta_seconds * 1000.0f;
     frame_history_head_ = (frame_history_head_ + 1) % frame_history_.size();
-    if (!ImGui::Begin("Estadísticas", &show_statistics_)) {
-        ImGui::End();
+    if (!beginArea(AreaEditor::Statistics, &show_statistics_)) {
+        endArea();
         return;
     }
     const ImGuiIO& io = ImGui::GetIO();
@@ -1860,12 +1927,12 @@ void EditorApp::drawStatistics(float delta_seconds) {
         }
         ImGui::EndTable();
     }
-    ImGui::End();
+    endArea();
 }
 
 void EditorApp::drawConsole() {
-    if (!ImGui::Begin(panelTitle("Consola").c_str(), &show_console_)) {
-        ImGui::End();
+    if (!beginArea(AreaEditor::Console, &show_console_)) {
+        endArea();
         return;
     }
     if (activeWorkspaceKind() == WorkspaceKind::Scene) console_dock_id_ = ImGui::GetWindowDockID();
@@ -1939,7 +2006,7 @@ void EditorApp::drawConsole() {
         ImGui::SetScrollHereY(1.0f);
     }
     ImGui::EndChild();
-    ImGui::End();
+    endArea();
 }
 
 namespace {
@@ -2011,8 +2078,8 @@ void cvarSection(const char* title, const char* prefix,
 
 // Lo global del renderizador que no esta en el componente PostProcessing.
 void EditorApp::drawRenderSettings() {
-    if (!ImGui::Begin("Ajustes de render", &show_render_settings_)) {
-        ImGui::End();
+    if (!beginArea(AreaEditor::RenderSettings, &show_render_settings_)) {
+        endArea();
         return;
     }
     gfx::VulkanRenderer& r = renderer_;
@@ -2078,7 +2145,7 @@ void EditorApp::drawRenderSettings() {
     ImGui::Spacing();
     ImGui::TextDisabled("Exposición, tono, bloom, color, viñeta, SSAO, GI,\n"
                         "reflejos y luz volumétrica: componente PostProcessing.");
-    ImGui::End();
+    endArea();
 }
 
 // Escalado (TAA, FSR, DLSS), calidad, nitidez, vsync y calidades rapidas.

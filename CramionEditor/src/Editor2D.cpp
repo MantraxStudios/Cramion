@@ -98,6 +98,8 @@ TwoDEditorState& EditorApp::twodEditor() {
 
 // --- Vista 2D -----------------------------------------------------------------------------
 
+bool EditorApp::view2DActive() { return twodEditor().view_2d; }
+
 void EditorApp::draw2DViewToggle() {
     TwoDEditorState& st = twodEditor();
     ImGui::SameLine();
@@ -114,7 +116,7 @@ void EditorApp::draw2DViewToggle() {
         } else {
             camera.setOrthographic(false);
             camera.setPosition(st.saved_position);
-            camera.setOrientation(st.saved_forward, st.saved_up);
+            camera.lookAt(camera.position() + st.saved_forward);  // (vuelve a girar con el raton)
         }
     }
     if (st.view_2d || st.show_palette) {

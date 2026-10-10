@@ -15,15 +15,20 @@ namespace {
 constexpr float kMaxPitch = core::kPi * 0.5f - 0.01f;
 }  // namespace
 
+// Las dos vuelven a la orientacion por yaw/pitch: antes, despues de un
+// setOrientation (la vista 2D del editor) la camara se quedaba con la
+// orientacion libre y ya no giraba con el raton.
 void Camera::setRotation(float yaw_radians, float pitch_radians) {
+    free_orientation_ = false;
     yaw_ = yaw_radians;
     pitch_ = std::clamp(pitch_radians, -kMaxPitch, kMaxPitch);
 }
 
 void Camera::lookAt(const Vec3& target) {
+    free_orientation_ = false;
     const Vec3 direction = core::normalize(target - position_);
     yaw_ = std::atan2(direction.z, direction.x);
-    pitch_ = std::clamp(std::asin(direction.y), -kMaxPitch, kMaxPitch);
+    pitch_ = std::clamp(std::asin(std::clamp(direction.y, -1.0f, 1.0f)), -kMaxPitch, kMaxPitch);
 }
 
 void Camera::setOrientation(const Vec3& forward, const Vec3& up) {
@@ -53,6 +58,12 @@ Vec3 Camera::up() const {
 void Camera::update(const dm::Input& input, float delta_seconds) {
     // --- Mirar: solo mientras se mantiene el boton derecho ---
     if (input.isMouseButtonDown(dm::MouseButton::Right)) {
+        if (free_orientation_) {
+            // Sigue desde donde mira ahora (con yaw/pitch).
+            yaw_ = std::atan2(free_forward_.z, free_forward_.x);
+            pitch_ = std::clamp(std::asin(std::clamp(free_forward_.y, -1.0f, 1.0f)), -kMaxPitch, kMaxPitch);
+            free_orientation_ = false;
+        }
         yaw_ += input.mouseDeltaX() * mouse_sensitivity_;
         pitch_ -= input.mouseDeltaY() * mouse_sensitivity_;
         pitch_ = std::clamp(pitch_, -kMaxPitch, kMaxPitch);
