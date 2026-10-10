@@ -8,6 +8,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
@@ -113,9 +114,17 @@ public:
     // Cambia los datos de un modelo ya anadido (mismo indice: los actores que
     // lo usan siguen valiendo). Hay que volver a subir los modelos.
     void replaceModel(std::uint32_t index, asset::ModelData model);
-    // Los materiales de un modelo, para cambiar sus factores en vivo.
+    // Los materiales de un modelo, para cambiar sus factores en vivo (o
+    // anadirle clips). Para cambiar un modelo, siempre por aqui o por
+    // replaceModel: avisan antes a los hilos que lo estan leyendo.
     asset::ModelData* modelData(std::uint32_t index) {
+        beforeModelWrite(index, index + 1);
         return index < models_.size() ? models_[index].get() : nullptr;
+    }
+    // Lo llama la escena antes de cambiar o quitar los modelos [first, last):
+    // el renderizador espera ahi a sus hilos de subida que los esten leyendo.
+    void setModelWriteHook(std::function<void(std::uint32_t first, std::uint32_t last)> hook) const {
+        model_write_hook_ = std::move(hook);
     }
     const std::vector<Actor>& actors() const { return actors_; }
     // Editable (editor): el renderizador lee el transform de cada actor en
@@ -169,6 +178,10 @@ private:
     // unique_ptr: los Animator guardan un puntero a su modelo, que no debe
     // moverse al crecer el vector.
     std::vector<std::unique_ptr<asset::ModelData>> models_;
+    mutable std::function<void(std::uint32_t, std::uint32_t)> model_write_hook_;
+    void beforeModelWrite(std::uint32_t first = 0, std::uint32_t last = UINT32_MAX) const {
+        if (model_write_hook_) model_write_hook_(first, last);
+    }
     std::vector<Actor> actors_;
 
     float time_seconds_ = 0.0f;

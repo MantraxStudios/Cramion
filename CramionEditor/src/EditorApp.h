@@ -148,6 +148,9 @@ public:
     // Abre el proyecto por etapas con el dialogo de carga (Hub): la ventana
     // no se congela y los modelos se leen en otro hilo.
     void beginOpenProject(const std::filesystem::path& path);
+    // Otra escena del proyecto con la misma ventana de carga (sin congelar el
+    // editor): leer la escena, los modelos en otro hilo, la GPU y la fisica.
+    void beginOpenScene(const std::filesystem::path& path);
     bool projectLoading() const {
         return project_load_.stage != ProjectLoad::Stage::Idle && project_load_.stage != ProjectLoad::Stage::Done;
     }
@@ -1143,6 +1146,8 @@ private:
         Stage stage = Stage::Idle;
         std::filesystem::path path;
         std::string project_name;
+        bool scene_only = false;           // solo una escena (beginOpenScene)
+        std::filesystem::path scene_path;  // la escena que se abre
         std::vector<Uuid> models;
         std::future<void> worker;
         std::atomic<std::size_t> models_done{0};
@@ -1158,6 +1163,8 @@ private:
             stage = Stage::Idle;
             path.clear();
             project_name.clear();
+            scene_only = false;
+            scene_path.clear();
             models.clear();
             worker = {};
             models_done = 0;

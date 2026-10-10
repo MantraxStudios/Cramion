@@ -12,6 +12,7 @@
 #include <iostream>
 #include <string_view>
 #include <map>
+#include <optional>
 #include <set>
 #include <stdexcept>
 #include <vector>
@@ -744,8 +745,12 @@ void VulkanDevice::submitOneTime(
     allocate_info.level = vk::CommandBufferLevel::ePrimary;
     allocate_info.commandBufferCount = 1;
 
-    vk::raii::CommandBuffers buffers(device_, allocate_info);
-    const vk::raii::CommandBuffer& cmd = buffers.front();
+    // El pool y la cola se comparten entre hilos: el pool mientras se graba
+    // (y al liberar), la cola solo al enviar. La espera, sin nada puesto.
+    std::unique_lock pool_lock(transient_mutex_);
+    std::optional<vk::raii::CommandBuffers> buffers;
+    buffers.emplace(device_, allocate_info);
+    const vk::raii::CommandBuffer& cmd = buffers->front();
 
     vk::CommandBufferBeginInfo begin_info{};
     begin_info.flags = vk::CommandBufferUsageFlagBits::eOneTimeSubmit;
@@ -754,6 +759,7 @@ void VulkanDevice::submitOneTime(
     record(cmd);
 
     cmd.end();
+    pool_lock.unlock();
 
     const vk::CommandBuffer raw = *cmd;
     vk::SubmitInfo submit_info{};
@@ -762,15 +768,23 @@ void VulkanDevice::submitOneTime(
 
     // Una fence propia evita bloquear toda la cola con un waitIdle.
     vk::raii::Fence fence(device_, vk::FenceCreateInfo{});
-    graphics_queue_.submit(submit_info, *fence);
+    {
+        const std::lock_guard queue_lock(queue_mutex_);
+        graphics_queue_.submit(submit_info, *fence);
+    }
 
-    if (device_.waitForFences(*fence, VK_TRUE, UINT64_MAX) != vk::Result::eSuccess) {
+    const vk::Result waited = device_.waitForFences(*fence, VK_TRUE, UINT64_MAX);
+    pool_lock.lock();
+    buffers.reset();
+    pool_lock.unlock();
+    if (waited != vk::Result::eSuccess) {
         throw std::runtime_error("Tiempo agotado esperando un comando de un solo uso.");
     }
 }
 
 void VulkanDevice::waitIdle() const {
     if (*device_ != VK_NULL_HANDLE) {
+        const std::lock_guard lock(queue_mutex_);
         device_.waitIdle();
     }
 }

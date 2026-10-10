@@ -270,7 +270,7 @@ bool SpritePass::prepare(const VulkanDevice& device, std::uint32_t frame, const 
     ++frame_counter_;
     if (reload_requested_) {
         // Las imagenes cambiaron en disco: todas fuera (rara vez; se espera a la GPU).
-        device.handle().waitIdle();
+        device.waitIdle();
         textures_.clear();
         reload_requested_ = false;
     }

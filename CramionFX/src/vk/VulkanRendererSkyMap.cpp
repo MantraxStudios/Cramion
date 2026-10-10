@@ -7,6 +7,8 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <memory>
+#include <future>
 #include <utility>
 #include <vector>
 
@@ -180,15 +182,6 @@ void VulkanRenderer::recordSkyMap(const vk::raii::CommandBuffer& cmd, std::uint3
     sky_map_drawn_ = true;
 }
 
-// --- Streaming de la memoria de video (residencia de los modelos) ---
-//
-// Cada frame updateActors mide lo grande que se ve cada modelo (la mayor de
-// sus instancias, en pixeles). Si lleva `streaming_idle_seconds_` por debajo de
-// `streaming_min_pixels_` (no se distingue: el recorte por tamano ya ni lo
-// dibujaba), sus mallas y texturas salen de la GPU; en cuanto una instancia
-// se acerca, vuelve a subirse desde la copia de la CPU, poco a poco (unos
-// milisegundos por frame).
-
 std::uint32_t VulkanRenderer::evictedModelCount() const {
     return static_cast<std::uint32_t>(std::count(model_evicted_.begin(), model_evicted_.end(), true));
 }
@@ -205,44 +198,146 @@ void VulkanRenderer::evictModel(std::uint32_t index) {
     }
     skinned_models_[index] = SkinnedModel{};
     model_evicted_[index] = true;
-    // (La escena de rayos no se rehace: conserva su copia del modelo.)
-    staticGeometryChanged();
+    // (La escena de rayos no se rehace: conserva su copia del modelo. Las
+    // sombras cacheadas tampoco: no se veia, y rehacerlas todas era un tiron.)
 }
+
+bool VulkanRenderer::modelJobPending(std::uint32_t index) const {
+    return std::any_of(model_jobs_.begin(), model_jobs_.end(), [&](const ModelJob& job) { return job.index == index; });
+}
+
+void VulkanRenderer::launchModelJob(const scene::Scene& scene, std::uint32_t index, int texture_lod, bool restore,
+                                    bool append) {
+    if (index >= scene.models().size()) return;
+    // Antes de que la escena cambie o quite un modelo, el hilo que lo lee
+    // termina (y lo suyo se tira). weak_ptr: la escena puede durar mas que el
+    // renderizador.
+    scene.setModelWriteHook([this, alive = std::weak_ptr<bool>(model_jobs_alive_)](std::uint32_t first,
+                                                                                   std::uint32_t last) {
+        if (alive.lock()) finishModelJobs(first, last);
+    });
+    const asset::ModelData* data = scene.models()[index].get();
+    ModelJob job;
+    job.index = index;
+    job.texture_lod = texture_lod;
+    job.restore = restore;
+    job.append = append;
+    // Lo lento (leer y convertir texturas, copiarlas, esperar a la GPU) va en
+    // este hilo; VulkanDevice::submitOneTime se puede usar desde cualquiera.
+    job.result = std::async(std::launch::async, [this, data, texture_lod]() -> std::unique_ptr<SkinnedModel> {
+        try {
+            auto model = std::make_unique<SkinnedModel>();
+            model->create(device_, *data, skinned_pass_, texture_lod);
+            return model;
+        } catch (const std::exception& e) {
+            std::cerr << "[Streaming] No se pudo subir un modelo: " << e.what() << "\n";
+            return nullptr;
+        }
+    });
+    model_jobs_.push_back(std::move(job));
+}
+
+void VulkanRenderer::finishModelJobs(std::uint32_t first, std::uint32_t last) {
+    for (auto it = model_jobs_.begin(); it != model_jobs_.end();) {
+        if (it->index < first || it->index >= last) {
+            ++it;
+            continue;
+        }
+        if (it->result.valid()) it->result.get();  // se libera aqui (la GPU nunca lo uso)
+        it = model_jobs_.erase(it);
+    }
+}
+
+// --- Streaming de la memoria de video (residencia de los modelos) ---
+//
+// Cada frame updateActors mide lo grande que se ve cada modelo (la mayor de
+// sus instancias, en pixeles). Si lleva `streaming_idle_seconds_` por debajo de
+// `streaming_min_pixels_` (no se distingue: el recorte por tamano ya ni lo
+// dibujaba), sus mallas y texturas salen de la GPU; en cuanto una instancia
+// se acerca, vuelve a subirse desde la copia de la CPU en otro hilo y entra
+// cuando esta lista. El detalle de las texturas cambia igual: el modelo se
+// rehace en otro hilo y mientras tanto se ve el de antes.
 
 void VulkanRenderer::streamModels(const scene::Scene& scene) {
     const auto now = std::chrono::steady_clock::now();
+    // Diagnostico (cada 2 s, solo si hubo algo): que sube el streaming y
+    // cuanta VRAM queda. La VRAM se mira cada medio segundo (no es gratis).
+    static auto report_at = now;
+    static auto vram_at = now - std::chrono::seconds(1);
+    static std::uint64_t vram_used = 0, vram_budget = 0;
+    static int restores = 0, texture_uploads = 0, evictions = 0;
+    if (now - vram_at > std::chrono::milliseconds(500)) {
+        vram_at = now;
+        if (!device_.videoMemory(vram_used, vram_budget)) vram_used = vram_budget = 0;
+    }
+    // Casi sin VRAM: el streaming de texturas no sube detalle (solo baja).
+    const bool vram_full = vram_budget > 0 && vram_used > vram_budget / 100 * 85;
+    if (now - report_at > std::chrono::seconds(2)) {
+        if (restores + texture_uploads + evictions > 0) {
+            std::cout << "[Streaming] 2 s: " << restores << " modelos vueltos, " << texture_uploads
+                      << " cambios de detalle de texturas, " << evictions << " fuera; en hilos " << model_jobs_.size()
+                      << ", retirados " << retired_models_.size() << ", fijados por RT " << ray_pinned_models_.size()
+                      << "; VRAM " << vram_used / (1024 * 1024) << " de " << vram_budget / (1024 * 1024) << " MB"
+                      << (vram_full ? " (LLENA: no se sube detalle)" : "") << "\n";
+        }
+        report_at = now;
+        restores = texture_uploads = evictions = 0;
+    }
+
     const std::uint32_t count = std::min(static_cast<std::uint32_t>(scene.models().size()), uploadedModelCount());
     if (model_last_seen_.size() < count) model_last_seen_.resize(count, now);
     if (model_evicted_.size() < count) model_evicted_.resize(count, false);
-    // Vuelven los que se ven (unos milisegundos por frame, los mas grandes antes).
+    if (model_lod_since_.size() < count) model_lod_since_.resize(count, now);
+
+    // Lo que terminaron los hilos entra ya (solo mover punteros: sin esperas).
+    for (auto it = model_jobs_.begin(); it != model_jobs_.end();) {
+        // (Los nuevos los mete uploadNewModels, en orden.)
+        if (it->append || it->result.wait_for(std::chrono::seconds(0)) != std::future_status::ready) {
+            ++it;
+            continue;
+        }
+        std::unique_ptr<SkinnedModel> fresh = it->result.get();
+        const std::uint32_t index = it->index;
+        const bool restore = it->restore;
+        it = model_jobs_.erase(it);
+        if (!fresh || index >= count) continue;
+        installModel(scene, index, std::move(*fresh), true);
+        model_lod_since_[index] = now;
+        ++(restore ? restores : texture_uploads);
+    }
+
+    const auto wanted_lod = [&](float pixels) {
+        const int lod = pixels >= 400.0f ? 0 : pixels >= 150.0f ? 1 : pixels >= 50.0f ? 2 : 3;
+        return std::clamp(lod + texture_lod_bias_, 0, 3);
+    };
+    // Dos hilos a la vez como mucho: el resto espera su turno (los mas
+    // grandes en pantalla antes).
+    constexpr std::size_t kMaxJobs = 2;
+
+    // Vuelven los que se ven, con el detalle de texturas que ya piden.
     std::vector<std::pair<float, std::uint32_t>> wanted;
     for (std::uint32_t i = 0; i < count; ++i) {
         const float pixels = i < model_pixels_.size() ? model_pixels_[i] : 0.0f;
         if (pixels >= streaming_min_pixels_) model_last_seen_[i] = now;
-        if (model_evicted_[i] && (pixels >= streaming_min_pixels_ || !model_streaming_)) wanted.emplace_back(pixels, i);
+        if (model_evicted_[i] && (pixels >= streaming_min_pixels_ || !model_streaming_) && !modelJobPending(i)) {
+            wanted.emplace_back(pixels, i);
+        }
     }
     std::sort(wanted.begin(), wanted.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
-    const auto start = std::chrono::steady_clock::now();
     for (const auto& [pixels, index] : wanted) {
-        streaming_restore_ = true;
-        uploadModel(scene, index);  // sale de la lista de fuera (model_evicted_ = false)
-        streaming_restore_ = false;
-        if (std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - start).count() > 4.0f) break;
+        if (model_jobs_.size() >= kMaxJobs) break;
+        launchModelJob(scene, index, texture_streaming_ ? wanted_lod(pixels) : 0, true);
     }
+
     // Streaming de texturas por mips: el detalle que pide cada modelo por lo
     // que mide en pantalla. Mas detalle: ya (los mas grandes antes); menos:
-    // tras 3 s pidiendolo. Uno por frame (cada cambio vuelve a subir el modelo).
-    if (texture_streaming_ && std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - start).count() < 4.0f) {
-        if (model_lod_since_.size() < count) model_lod_since_.resize(count, now);
-        const auto wanted_lod = [&](float pixels) {
-            int lod = pixels >= 400.0f ? 0 : pixels >= 150.0f ? 1 : pixels >= 50.0f ? 2 : 3;
-            return std::clamp(lod + texture_lod_bias_, 0, 3);
-        };
+    // tras 3 s pidiendolo.
+    if (texture_streaming_ && model_jobs_.size() < kMaxJobs) {
         int best = -1;
         float best_pixels = -1.0f;
         int best_lod = 0;
         for (std::uint32_t i = 0; i < count; ++i) {
-            if (model_evicted_[i] || skinned_models_[i].submeshes().empty()) continue;
+            if (model_evicted_[i] || skinned_models_[i].submeshes().empty() || modelJobPending(i)) continue;
             const float pixels = i < model_pixels_.size() ? model_pixels_[i] : 0.0f;
             const int current = skinned_models_[i].textureLod();
             const int want = wanted_lod(pixels);
@@ -256,6 +351,7 @@ void VulkanRenderer::streamModels(const scene::Scene& scene) {
                 continue;
             }
             model_lod_since_[i] = now;
+            if (vram_full) continue;
             if (pixels > best_pixels) {  // le falta detalle: el mas grande primero
                 best_pixels = pixels;
                 best = static_cast<int>(i);
@@ -263,11 +359,7 @@ void VulkanRenderer::streamModels(const scene::Scene& scene) {
             }
         }
         if (best >= 0) {
-            streaming_restore_ = true;
-            upload_texture_lod_ = best_lod;
-            uploadModel(scene, static_cast<std::uint32_t>(best));
-            upload_texture_lod_ = 0;
-            streaming_restore_ = false;
+            launchModelJob(scene, static_cast<std::uint32_t>(best), best_lod, false);
             model_lod_since_[static_cast<std::size_t>(best)] = now;
         }
     }
@@ -275,10 +367,11 @@ void VulkanRenderer::streamModels(const scene::Scene& scene) {
     // Salen los que llevan un rato sin verse (como mucho 8 por frame).
     std::uint32_t evicted = 0;
     for (std::uint32_t i = 0; i < count && evicted < 8; ++i) {
-        if (model_evicted_[i] || skinned_models_[i].submeshes().empty()) continue;
+        if (model_evicted_[i] || skinned_models_[i].submeshes().empty() || modelJobPending(i)) continue;
         if (std::chrono::duration<float>(now - model_last_seen_[i]).count() < streaming_idle_seconds_) continue;
         evictModel(i);
         ++evicted;
+        ++evictions;
     }
 }
 

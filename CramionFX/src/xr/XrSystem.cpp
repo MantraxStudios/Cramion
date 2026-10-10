@@ -33,6 +33,19 @@
 
 namespace cramion::xr {
 
+namespace {
+std::mutex* g_queue_mutex = nullptr;
+// Llama a `f` con la cola de Vulkan para este hilo (ver setQueueMutex).
+template <typename F>
+auto queueLocked(F&& f) {
+    std::unique_lock<std::mutex> lock;
+    if (g_queue_mutex != nullptr) lock = std::unique_lock<std::mutex>(*g_queue_mutex);
+    return f();
+}
+}  // namespace
+
+void XrSystem::setQueueMutex(std::mutex* mutex) { g_queue_mutex = mutex; }
+
 using core::Quat;
 using core::Vec3;
 
@@ -757,7 +770,7 @@ struct XrSystem::Impl {
         for (EyeSwapchain& e : eyes_sc) {
             if (e.holding) {
                 XrSwapchainImageReleaseInfo release{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
-                xrReleaseSwapchainImage(e.handle, &release);
+                queueLocked([&] { return xrReleaseSwapchainImage(e.handle, &release); });
                 e.holding = false;
             }
         }
@@ -790,7 +803,7 @@ struct XrSystem::Impl {
         end.environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
         end.layerCount = drawn ? 1 : 0;
         end.layers = drawn ? layers : nullptr;
-        ok(xrEndFrame(session, &end), "xrEndFrame");
+        ok(queueLocked([&] { return xrEndFrame(session, &end); }), "xrEndFrame");
     }
 
     // Salida ordenada: se pide cerrar y se dan frames vacios hasta STOPPING
@@ -806,11 +819,11 @@ struct XrSystem::Impl {
             XrFrameWaitInfo wait{XR_TYPE_FRAME_WAIT_INFO};
             if (XR_FAILED(xrWaitFrame(session, &wait, &frame))) break;
             XrFrameBeginInfo begin{XR_TYPE_FRAME_BEGIN_INFO};
-            if (XR_FAILED(xrBeginFrame(session, &begin))) break;
+            if (XR_FAILED(queueLocked([&] { return xrBeginFrame(session, &begin); }))) break;
             XrFrameEndInfo end{XR_TYPE_FRAME_END_INFO};
             end.displayTime = frame.predictedDisplayTime;
             end.environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
-            if (XR_FAILED(xrEndFrame(session, &end))) break;
+            if (XR_FAILED(queueLocked([&] { return xrEndFrame(session, &end); }))) break;
         }
     }
 
@@ -1144,7 +1157,7 @@ bool XrSystem::beginFrame() {
     XrFrameWaitInfo wait{XR_TYPE_FRAME_WAIT_INFO};
     if (!d.ok(xrWaitFrame(d.session, &wait, &d.frame_state), "xrWaitFrame")) return false;
     XrFrameBeginInfo begin{XR_TYPE_FRAME_BEGIN_INFO};
-    if (!d.ok(xrBeginFrame(d.session, &begin), "xrBeginFrame")) return false;
+    if (!d.ok(queueLocked([&] { return xrBeginFrame(d.session, &begin); }), "xrBeginFrame")) return false;
     d.frame_begun = true;
     d.frame_space = d.appSpace();
 
@@ -1176,12 +1189,12 @@ VkImage XrSystem::acquireEye(int eye) {
     Impl::EyeSwapchain& sc = d.eyes_sc[static_cast<std::size_t>(eye)];
     if (sc.handle == XR_NULL_HANDLE || sc.holding) return VK_NULL_HANDLE;
     XrSwapchainImageAcquireInfo acquire{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
-    if (!d.ok(xrAcquireSwapchainImage(sc.handle, &acquire, &sc.acquired), "xrAcquireSwapchainImage")) return VK_NULL_HANDLE;
+    if (!d.ok(queueLocked([&] { return xrAcquireSwapchainImage(sc.handle, &acquire, &sc.acquired); }), "xrAcquireSwapchainImage")) return VK_NULL_HANDLE;
     XrSwapchainImageWaitInfo wait{XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};
     wait.timeout = XR_INFINITE_DURATION;
     if (!d.ok(xrWaitSwapchainImage(sc.handle, &wait), "xrWaitSwapchainImage")) {
         XrSwapchainImageReleaseInfo release{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
-        xrReleaseSwapchainImage(sc.handle, &release);
+        queueLocked([&] { return xrReleaseSwapchainImage(sc.handle, &release); });
         return VK_NULL_HANDLE;
     }
     sc.holding = true;
@@ -1194,7 +1207,7 @@ void XrSystem::releaseEye(int eye) {
     Impl::EyeSwapchain& sc = d.eyes_sc[static_cast<std::size_t>(eye)];
     if (!sc.holding) return;
     XrSwapchainImageReleaseInfo release{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
-    d.ok(xrReleaseSwapchainImage(sc.handle, &release), "xrReleaseSwapchainImage");
+    d.ok(queueLocked([&] { return xrReleaseSwapchainImage(sc.handle, &release); }), "xrReleaseSwapchainImage");
     sc.holding = false;
     sc.drawn = true;
 }

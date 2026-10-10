@@ -5,6 +5,7 @@
 
 #include <filesystem>
 #include <functional>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -49,6 +50,9 @@ public:
     const vk::raii::Queue& graphicsQueue() const { return graphics_queue_; }
     const vk::raii::Queue& presentQueue() const { return present_queue_; }
     const QueueFamilyIndices& queueFamilies() const { return queue_families_; }
+    // La cola se usa desde varios hilos (las subidas del streaming): todo lo
+    // que la toque (submit, present, waitIdle, OpenXR, ImGui) con esto puesto.
+    std::mutex& queueMutex() const { return queue_mutex_; }
 
     const std::string& name() const { return device_name_; }
     std::uint32_t apiVersion() const { return api_version_; }
@@ -63,6 +67,7 @@ public:
 
     // Graba y ejecuta un command buffer de usar y tirar, y espera a que
     // termine. Para copias de staging y transiciones puntuales de layout.
+    // Se puede llamar desde cualquier hilo.
     void submitOneTime(const std::function<void(const vk::raii::CommandBuffer&)>& record) const;
 
     // Formato de profundidad soportado por la GPU, elegido al inicializar.
@@ -143,6 +148,8 @@ private:
 
     // Pool aparte para los comandos de usar y tirar (copias de staging).
     vk::raii::CommandPool transient_pool_{nullptr};
+    mutable std::mutex transient_mutex_;
+    mutable std::mutex queue_mutex_;
 
     QueueFamilyIndices queue_families_{};
     vk::Format depth_format_ = vk::Format::eUndefined;

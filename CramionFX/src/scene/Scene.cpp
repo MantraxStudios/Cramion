@@ -18,6 +18,7 @@ void Scene::initialize() {
 std::uint32_t Scene::overrideMaterial(std::uint32_t model, const std::string& name,
                                      float roughness, float metallic, float reflectance,
                                      float albedo_scale, const Vec3& base_color) {
+    beforeModelWrite(model, model + 1);
     std::uint32_t changed = 0;
     for (asset::MaterialData& material : models_.at(model)->materials) {
         if (material.name == name) {
@@ -39,6 +40,7 @@ std::uint32_t Scene::overrideMaterial(std::uint32_t model, const std::string& na
 }
 
 void Scene::setDirectXNormalMaps(std::uint32_t model, bool directx) {
+    beforeModelWrite(model, model + 1);
     for (asset::MaterialData& material : models_.at(model)->materials) {
         material.normal_map_directx = directx;
     }
@@ -97,12 +99,14 @@ std::uint32_t Scene::addModel(asset::ModelData model) {
 }
 
 void Scene::replaceModel(std::uint32_t index, asset::ModelData model) {
+    beforeModelWrite(index, index + 1);
     if (index < models_.size()) {
         *models_[index] = std::move(model);
     }
 }
 
 void Scene::truncateModels(std::size_t count) {
+    beforeModelWrite(static_cast<std::uint32_t>(count));
     if (count < models_.size()) {
         models_.resize(count);
     }
@@ -180,6 +184,7 @@ void Scene::setTimeOfDayHours(float hours) {
 }
 
 void Scene::clear() {
+    beforeModelWrite();
     actors_.clear();
     models_.clear();
     fixed_sun_.reset();

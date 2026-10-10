@@ -1,5 +1,6 @@
 #include "ImGuiLayer.h"
 #include <iterator>
+#include <mutex>
 #include <cstring>
 #include <fstream>
 
@@ -155,8 +156,12 @@ void ImGuiLayer::initialize(HWND hwnd, gfx::VulkanRenderer& renderer) {
     loadIcons();
 
     // ImGui dibuja dentro del ultimo pase del renderizador, encima de todo.
-    renderer.setOverlayCallback([](VkCommandBuffer cmd) {
+    // (Con la cola puesta: las texturas de ImGui 1.92 se suben con un submit
+    // propio, y el streaming de modelos la usa desde otros hilos.)
+    std::mutex* queue_mutex = &renderer.device().queueMutex();
+    renderer.setOverlayCallback([queue_mutex](VkCommandBuffer cmd) {
         if (ImDrawData* draw_data = ImGui::GetDrawData()) {
+            const std::lock_guard lock(*queue_mutex);
             ImGui_ImplVulkan_RenderDrawData(draw_data, cmd);
         }
     });
@@ -442,6 +447,7 @@ ImTextureID ImGuiLayer::viewTexture(std::uint32_t slot) {
         // La swapchain nueva puede tener otro numero de imagenes.
         const std::uint32_t image_count = renderer_->nativeHandles().image_count;
         if (image_count != image_count_ && image_count >= 2) {
+            const std::lock_guard lock(renderer_->device().queueMutex());  // hace vkDeviceWaitIdle
             ImGui_ImplVulkan_SetMinImageCount(image_count);
             image_count_ = image_count;
         }

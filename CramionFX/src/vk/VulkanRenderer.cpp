@@ -373,6 +373,7 @@ void VulkanRenderer::initialize(const EngineInfo& info, NativeWindow window, std
         }
     }
     device_.initialize(instance_, surface_, xr_gpu, device_extensions, xr_optional_device_extensions);
+    xr::XrSystem::setQueueMutex(&device_.queueMutex());
     {
         // DLSS: solo en GPUs NVIDIA RTX con un controlador que lo tenga.
         std::string dlss_error;
@@ -857,6 +858,7 @@ void VulkanRenderer::shutdown() {
         return;
     }
 
+    finishModelJobs();
     device_.waitIdle();
 
     // VR: la sesion usa el dispositivo; se cierra antes.
@@ -1091,6 +1093,7 @@ void VulkanRenderer::shutdown() {
     gbuffer_.destroy();
 
     swapchain_.shutdown();
+    xr::XrSystem::setQueueMutex(nullptr);
     device_.shutdown();
     surface_.shutdown();
     instance_.shutdown();
@@ -3432,6 +3435,31 @@ void VulkanRenderer::createSyncObjects() {
 // Swapchain
 // -----------------------------------------------------------------------------
 
+void VulkanRenderer::clearModels() {
+    finishModelJobs();
+    device_.waitIdle();
+    skinned_models_.clear();
+    retired_models_.clear();
+    ray_pinned_models_.clear();
+
+    // Lo que dependia de la escena anterior se rehace: el mapa de lluvia
+    // (se dibuja una vez), las cascadas guardadas y las sombras locales.
+    rain_map_ready_ = false;
+    cascades_valid_ = false;
+    local_shadows_.invalidate();
+    triangle_count_ = 0;
+
+    // La escena de los rayos se rehace la proxima vez que se use (con el
+    // trazado apagado no se construye nada). La vieja era de otros modelos.
+    if (ray_tracing_.sceneBuilt()) ray_tracing_.releaseScene();
+    rt_scene_dirty_ = true;
+    rt_model_edit_pending_ = false;
+    ray_traced_models_ = 0;
+    ray_pinned_.clear();
+    model_evicted_.clear();
+    model_last_seen_.clear();
+}
+
 void VulkanRenderer::uploadModels(const scene::Scene& scene) {
     if (!initialized_) {
         throw std::runtime_error("uploadModels() antes de inicializar el renderizador.");
@@ -3439,34 +3467,13 @@ void VulkanRenderer::uploadModels(const scene::Scene& scene) {
     const auto upload_start = std::chrono::steady_clock::now();
     ++frame_timings_.uploads;
 
-    device_.waitIdle();
-    skinned_models_.clear();
-    retired_models_.clear();
-    ray_pinned_models_.clear();
+    clearModels();
     skinned_models_.reserve(scene.models().size());
-
-    // Lo que dependia de la escena anterior se rehace: el mapa de lluvia
-    // (se dibuja una vez), las cascadas guardadas y las sombras locales.
-    rain_map_ready_ = false;
-    cascades_valid_ = false;
-    local_shadows_.invalidate();
-
-    triangle_count_ = 0;
-    std::vector<const asset::ModelData*> models;
     for (const auto& model : scene.models()) {
         skinned_models_.emplace_back().create(device_, *model, skinned_pass_);
         bindRenderTextures(static_cast<std::uint32_t>(skinned_models_.size() - 1));
         triangle_count_ += model->indices.size() / 3;
-        models.push_back(model.get());
     }
-
-    // La escena de los rayos se rehace la proxima vez que se use (con el
-    // trazado apagado no se construye nada). La vieja era de otros modelos.
-    (void)models;
-    if (ray_tracing_.sceneBuilt()) ray_tracing_.releaseScene();
-    rt_scene_dirty_ = true;
-    rt_model_edit_pending_ = false;
-    ray_traced_models_ = 0;
     ray_pinned_.assign(skinned_models_.size(), false);
     model_evicted_.assign(skinned_models_.size(), false);
     model_last_seen_.assign(skinned_models_.size(), std::chrono::steady_clock::now());
@@ -3474,8 +3481,44 @@ void VulkanRenderer::uploadModels(const scene::Scene& scene) {
         std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - upload_start).count();
 }
 
+void VulkanRenderer::uploadNewModels(const scene::Scene& scene) {
+    if (!initialized_) return;
+    // Menos modelos que los subidos: se vacio la escena (se abrio otra). Se
+    // suelta lo de antes (sin subir nada: lo nuevo va por los hilos).
+    if (skinned_models_.size() > scene.models().size()) clearModels();
+
+    // Lo que ya esta listo entra, en orden (los indices son los de la escena).
+    for (;;) {
+        const auto next = static_cast<std::uint32_t>(skinned_models_.size());
+        const auto it = std::find_if(model_jobs_.begin(), model_jobs_.end(),
+                                     [&](const ModelJob& job) { return job.append && job.index == next; });
+        if (it == model_jobs_.end() ||
+            it->result.wait_for(std::chrono::seconds(0)) != std::future_status::ready) {
+            break;
+        }
+        std::unique_ptr<SkinnedModel> fresh = it->result.get();
+        model_jobs_.erase(it);
+        // Si fallo, un hueco vacio (no se dibuja) para no frenar a los demas.
+        installModel(scene, next, fresh ? std::move(*fresh) : SkinnedModel{}, false);
+    }
+
+    // Los siguientes, a los hilos (unos pocos a la vez: cada uno es un modelo
+    // entero en memoria).
+    constexpr std::size_t kMaxAppendJobs = 3;
+    std::size_t in_flight = static_cast<std::size_t>(
+        std::count_if(model_jobs_.begin(), model_jobs_.end(), [](const ModelJob& job) { return job.append; }));
+    const auto total = static_cast<std::uint32_t>(scene.models().size());
+    for (auto i = static_cast<std::uint32_t>(skinned_models_.size()); i < total && in_flight < kMaxAppendJobs; ++i) {
+        if (modelJobPending(i)) continue;
+        launchModelJob(scene, i, 0, false, true);
+        ++in_flight;
+    }
+}
+
 void VulkanRenderer::uploadModel(const scene::Scene& scene, std::uint32_t index) {
     if (!initialized_ || index >= scene.models().size()) return;
+    // Un hilo subia este mismo modelo: lo que traiga ya no vale.
+    if (modelJobPending(index)) finishModelJobs(index, index + 1);
     // Faltan otros antes que el, o lo subido es de otra escena (se vacio y
     // se empezo otra): todo de nuevo.
     if (index > skinned_models_.size() || skinned_models_.size() > scene.models().size()) {
@@ -3486,11 +3529,18 @@ void VulkanRenderer::uploadModel(const scene::Scene& scene, std::uint32_t index)
     ++frame_timings_.uploads;
     SkinnedModel fresh;
     fresh.create(device_, *scene.models()[index], skinned_pass_, upload_texture_lod_);
+    installModel(scene, index, std::move(fresh), streaming_restore_);
+    frame_timings_.upload_ms +=
+        std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - upload_start).count();
+}
+
+void VulkanRenderer::installModel(const scene::Scene& scene, std::uint32_t index, SkinnedModel fresh, bool restore) {
+    if (index > skinned_models_.size()) return;
     // Los rayos lo veran cuando se rehaga su escena (al rato, por si se sigue
     // editando). Volver a la GPU tras el streaming no es un cambio: la escena de
     // rayos conserva su copia, salvo que se construyera mientras estaba fuera.
     const bool rt_missing = index < rt_scene_evicted_.size() && rt_scene_evicted_[index];
-    if (ray_tracing_.sceneBuilt() && (!streaming_restore_ || rt_missing)) {
+    if (ray_tracing_.sceneBuilt() && (!restore || rt_missing)) {
         rt_model_edit_pending_ = true;
         rt_model_edit_time_ = std::chrono::steady_clock::now();
     }
@@ -3516,9 +3566,9 @@ void VulkanRenderer::uploadModel(const scene::Scene& scene, std::uint32_t index)
     }
     triangle_count_ = 0;
     for (const auto& model : scene.models()) triangle_count_ += model->indices.size() / 3;
-    staticGeometryChanged();  // sombras cacheadas
-    frame_timings_.upload_ms +=
-        std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - upload_start).count();
+    // Sombras cacheadas: solo si cambio de verdad (el streaming sube la misma
+    // malla; rehacer todas las sombras por eso era otro tiron).
+    if (!restore) staticGeometryChanged();
 }
 
 bool VulkanRenderer::loadEnvironment(const std::filesystem::path& path) {
@@ -4396,7 +4446,10 @@ void VulkanRenderer::drawFrame(const scene::Scene& scene, bool present) {
         const vk::CommandBuffer view_command = *cmd;
         view_submit.commandBufferCount = 1;
         view_submit.pCommandBuffers = &view_command;
-        device_.graphicsQueue().submit(view_submit, *fence);
+        {
+            const std::lock_guard queue_lock(device_.queueMutex());
+            device_.graphicsQueue().submit(view_submit, *fence);
+        }
         frame_timings_.submit_ms += since(stage);
         current_frame_ = (current_frame_ + 1) % kMaxFramesInFlight;
         ++frame_count_;
@@ -4417,7 +4470,10 @@ void VulkanRenderer::drawFrame(const scene::Scene& scene, bool present) {
     submit_info.signalSemaphoreCount = 1;
     submit_info.pSignalSemaphores = &signal_semaphore;
 
-    device_.graphicsQueue().submit(submit_info, *fence);
+    {
+        const std::lock_guard queue_lock(device_.queueMutex());
+        device_.graphicsQueue().submit(submit_info, *fence);
+    }
 
     const vk::SwapchainKHR swapchain = *swapchain_.handle();
 
@@ -4428,7 +4484,10 @@ void VulkanRenderer::drawFrame(const scene::Scene& scene, bool present) {
     present_info.pSwapchains = &swapchain;
     present_info.pImageIndices = &image_index;
 
-    const vk::Result present_result = device_.presentQueue().presentKHR(present_info);
+    const vk::Result present_result = [&] {
+        const std::lock_guard queue_lock(device_.queueMutex());
+        return device_.presentQueue().presentKHR(present_info);
+    }();
 
 #if defined(__ANDROID__)
     // Android devuelve "suboptimo" siempre que la pantalla esta girada y la
@@ -4623,7 +4682,10 @@ void VulkanRenderer::captureProbeFace(const scene::Scene& scene) {
     vk::SubmitInfo submit_info{};
     submit_info.commandBufferCount = 1;
     submit_info.pCommandBuffers = &command_buffer;
-    device_.graphicsQueue().submit(submit_info, *fence);
+    {
+        const std::lock_guard queue_lock(device_.queueMutex());
+        device_.graphicsQueue().submit(submit_info, *fence);
+    }
 
     if (device_.handle().waitForFences(*fence, VK_TRUE,
                                        std::numeric_limits<std::uint64_t>::max()) !=
@@ -7298,7 +7360,7 @@ bool VulkanRenderer::updateSurfaceShader(std::int32_t id, const std::vector<std:
         vk::raii::Pipeline pipeline = skinned_pass_.createSurfacePipeline(device_, vertex_spirv, fragment_spirv);
         // La anterior puede estar en un frame en vuelo: se espera a la GPU (solo
         // pasa al guardar un .crshader).
-        device_.handle().waitIdle();
+        device_.waitIdle();
         surface_pipelines_[static_cast<std::size_t>(id)] = std::move(pipeline);
     } catch (const std::exception& e) {
         if (error) *error = e.what();

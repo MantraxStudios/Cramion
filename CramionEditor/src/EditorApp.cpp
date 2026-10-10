@@ -11,6 +11,7 @@
 #include "EditorLog.h"
 
 #include "CramionCore/project/DataPack.h"
+#include "CramionCore/cvar/CVar.h"
 
 #include <shellapi.h>
 
@@ -449,7 +450,7 @@ void EditorApp::performPending() {
             newScene();
             break;
         case PendingAction::OpenScene:
-            openScene(pending_scene_);
+            beginOpenScene(pending_scene_);  // con la ventana de carga (sin congelar)
             break;
         case PendingAction::BackToHub:
             closeProject();
@@ -1874,6 +1875,73 @@ void EditorApp::drawConsole() {
     ImGui::End();
 }
 
+namespace {
+
+// Una CVar con su etiqueta (la descripcion, de ayuda). Las guardadas se
+// escriben solas en ProjectSettings/CVars.json (se mira cada poco).
+void cvarField(cvar::CVarBase& c, const char* label) {
+    cvar::Registry& reg = cvar::Registry::instance();
+    ImGui::PushID(c.name().c_str());
+    std::string error;
+    switch (c.type()) {
+        case cvar::Type::Bool: {
+            bool v = c.toString() == "true";
+            if (ImGui::Checkbox(label, &v)) reg.set(c.name(), v ? "true" : "false", &error);
+            break;
+        }
+        case cvar::Type::Int:
+        case cvar::Type::Float: {
+            double v = 0.0;
+            cvar::detail::parseNumber(c.toString(), v);
+            const bool integer = c.type() == cvar::Type::Int;
+            ImGui::SetNextItemWidth(-150.0f);
+            bool edited = false;
+            if (c.hasRange()) {
+                double lo = c.rangeMin(), hi = c.rangeMax();
+                edited = ImGui::DragScalar(label, ImGuiDataType_Double, &v, integer ? 1.0f : 0.01f, &lo, &hi,
+                                           integer ? "%.0f" : "%.3g", ImGuiSliderFlags_AlwaysClamp);
+            } else {
+                edited = ImGui::InputDouble(label, &v, 0.0, 0.0, integer ? "%.0f" : "%.4g");
+            }
+            if (edited) reg.set(c.name(), cvar::detail::formatNumber(v, integer), &error);
+            break;
+        }
+        case cvar::Type::String: {
+            std::string v = c.toString();
+            ImGui::SetNextItemWidth(-150.0f);
+            if (ImGui::InputText(label, &v, ImGuiInputTextFlags_EnterReturnsTrue)) reg.set(c.name(), v, &error);
+            break;
+        }
+    }
+    ImGui::SetItemTooltip("%s\n%s\nPor defecto: %s", c.description().c_str(), c.name().c_str(),
+                          c.defaultString().c_str());
+    if (!error.empty()) std::cerr << "[CVar] " << error << std::endl;
+    ImGui::PopID();
+}
+
+// Las CVars de una seccion, con etiquetas en castellano; las que empiezan por
+// `prefix` y no estan en la lista salen tambien (con su nombre), para que lo
+// nuevo aparezca sin tocar el panel.
+void cvarSection(const char* title, const char* prefix,
+                 std::initializer_list<std::pair<const char*, const char*>> labeled) {
+    cvar::Registry& reg = cvar::Registry::instance();
+    std::vector<std::pair<cvar::CVarBase*, std::string>> rows;
+    for (const auto& [name, label] : labeled) {
+        if (cvar::CVarBase* c = reg.find(name)) rows.emplace_back(c, label);
+    }
+    const std::string pre = prefix;
+    for (cvar::CVarBase* c : reg.all()) {
+        if (c->name().compare(0, pre.size(), pre) != 0) continue;
+        const bool listed = std::any_of(rows.begin(), rows.end(), [&](const auto& r) { return r.first == c; });
+        if (!listed) rows.emplace_back(c, c->name().substr(pre.size()));
+    }
+    if (rows.empty()) return;
+    ImGui::SeparatorText(title);
+    for (auto& [c, label] : rows) cvarField(*c, label.c_str());
+}
+
+}  // namespace
+
 // Lo global del renderizador que no esta en el componente PostProcessing.
 void EditorApp::drawRenderSettings() {
     if (!ImGui::Begin("Ajustes de render", &show_render_settings_)) {
@@ -1904,6 +1972,42 @@ void EditorApp::drawRenderSettings() {
     ImGui::SeparatorText("Rendimiento");
     toggle("Occlusion culling (GPU)", r.occlusionCullingEnabled(),
            &gfx::VulkanRenderer::setOcclusionCullingEnabled);
+    cvarSection("Streaming (memoria de video)", "render.streaming.",
+                {{"render.streaming.GpuResidency", "Sacar de la VRAM lo que no se ve"},
+                 {"render.streaming.MinPixels", "Tamaño mínimo (px)"},
+                 {"render.streaming.IdleSeconds", "Segundos sin verse"},
+                 {"render.streaming.TextureMips", "Streaming de texturas (mips)"},
+                 {"render.streaming.TextureBias", "Detalle de texturas (+ = menos)"},
+                 {"render.streaming.AsyncModels", "Cargar modelos en segundo plano"},
+                 {"render.streaming.UploadMs", "Subida por frame (ms)"}});
+    ImGui::TextDisabled("Si hay tirones al acercarte o alejarte de objetos,\n"
+                        "prueba a desactivar el streaming de texturas y la VRAM.");
+    cvarSection("Sondas dinámicas (DDGI)", "render.gi.",
+                {{"render.gi.DynamicProbes", "Sondas dinámicas"}, {"render.gi.ProbesPerFrame", "Sondas por frame"}});
+    cvarSection("Animación lejana (LOD)", "anim.lod.",
+                {{"anim.lod.Enabled", "Animar menos lo lejano"},
+                 {"anim.lod.Near", "Cada frame hasta (m)"},
+                 {"anim.lod.Mid", "1 de cada 2 hasta (m)"},
+                 {"anim.lod.Far", "1 de cada 4 hasta (m)"},
+                 {"anim.lod.Offscreen", "Fuera de pantalla (frames)"}});
+    cvarSection("Partículas", "fx.particles.",
+                {{"fx.particles.Budget", "Máximo de partículas"},
+                 {"fx.particles.CullDistance", "Distancia de dibujo (m)"},
+                 {"fx.particles.CollisionDistance", "Distancia de colisión (m)"}});
+    // Cualquier otra CVar de render que se anada (sin seccion propia).
+    {
+        std::vector<cvar::CVarBase*> other;
+        for (cvar::CVarBase* c : cvar::Registry::instance().all()) {
+            const std::string& n = c->name();
+            if (n.rfind("render.", 0) == 0 && n.rfind("render.streaming.", 0) != 0 && n.rfind("render.gi.", 0) != 0) {
+                other.push_back(c);
+            }
+        }
+        if (!other.empty()) {
+            ImGui::SeparatorText("Otros");
+            for (cvar::CVarBase* c : other) cvarField(*c, c->name().c_str() + 7);
+        }
+    }
     ImGui::Spacing();
     ImGui::TextDisabled("Exposición, tono, bloom, color, viñeta, SSAO, GI,\n"
                         "reflejos y luz volumétrica: componente PostProcessing.");

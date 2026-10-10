@@ -24,6 +24,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <iostream>
+#include <thread>
 #include <unordered_set>
 
 namespace cramion::editor {
@@ -50,6 +51,17 @@ void EditorApp::beginOpenProject(const std::filesystem::path& path) {
     load.project_name = dialogs::utf8(name);
 }
 
+void EditorApp::beginOpenScene(const std::filesystem::path& path) {
+    if (projectLoading()) return;
+    ProjectLoad& load = project_load_;
+    load.reset();
+    load.scene_only = true;
+    load.scene_path = path;
+    load.project_name = dialogs::utf8(path.stem());
+    load.stage = ProjectLoad::Stage::Scene;
+    load.started = std::chrono::steady_clock::now();
+}
+
 void EditorApp::stepProjectLoad() {
     using Stage = ProjectLoad::Stage;
     ProjectLoad& load = project_load_;
@@ -70,7 +82,14 @@ void EditorApp::stepProjectLoad() {
             break;
         }
         case Stage::Scene: {
-            openStartupScene();
+            if (load.scene_only) {
+                if (!openScene(load.scene_path)) {  // (el error va a la consola)
+                    load.stage = Stage::Idle;
+                    return;
+                }
+            } else {
+                openStartupScene();
+            }
             // Los modelos que se van a dibujar, una vez cada uno.
             std::unordered_set<Uuid> seen;
             world_.forEachDepthFirst([&](ecs::Entity e) {
@@ -117,8 +136,13 @@ void EditorApp::stepProjectLoad() {
             // en la pantalla de carga se sigue (en tandas de 250 ms, para que la
             // pantalla no se congele) hasta que todo este en la GPU.
             const auto upload_start = std::chrono::steady_clock::now();
+            // (Con la subida en hilos cada sincronizacion vuelve enseguida: un
+            // respiro entre una y otra deja la CPU a esos hilos.)
             do {
                 sync_->sync(world_, scene_, renderer_, 0.0f, options);
+                if (renderer_.uploadedModelCount() < scene_.models().size()) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+                }
             } while (renderer_.uploadedModelCount() < scene_.models().size() &&
                      std::chrono::steady_clock::now() - upload_start < std::chrono::milliseconds(250));
             if (renderer_.uploadedModelCount() < scene_.models().size()) break;
@@ -132,7 +156,7 @@ void EditorApp::stepProjectLoad() {
             updatePhysics(0.0f);
             updateNavigation(0.0f);
             load.stage = Stage::Done;
-            std::cout << "[Editor] Proyecto listo en "
+            std::cout << (load.scene_only ? "[Editor] Escena lista en " : "[Editor] Proyecto listo en ")
                       << std::chrono::duration<float>(std::chrono::steady_clock::now() - load.started).count()
                       << " s\n";
             break;
@@ -149,7 +173,7 @@ void EditorApp::projectLoadProgress(float& fraction, std::string& text) {
             text = "Abriendo el proyecto";
             break;
         case Stage::Scene:
-            fraction = 0.1f;
+            fraction = load.scene_only ? 0.04f : 0.1f;
             text = "Leyendo la escena";
             break;
         case Stage::Models: {
@@ -161,10 +185,13 @@ void EditorApp::projectLoadProgress(float& fraction, std::string& text) {
             if (!load.current.empty()) text += ": " + load.current;
             break;
         }
-        case Stage::Upload:
-            fraction = 0.84f;
-            text = "Subiendo modelos y texturas a la GPU";
+        case Stage::Upload: {
+            const std::size_t total = std::max<std::size_t>(scene_.models().size(), 1);
+            const std::size_t done = std::min<std::size_t>(renderer_.uploadedModelCount(), total);
+            fraction = 0.8f + 0.12f * static_cast<float>(done) / static_cast<float>(total);
+            text = "Subiendo modelos y texturas a la GPU (" + std::to_string(done) + "/" + std::to_string(total) + ")";
             break;
+        }
         case Stage::Physics:
             fraction = 0.94f;
             text = "Preparando física y navegación";

@@ -161,7 +161,7 @@ void VulkanRenderer::updateBakedGiSets() {
 void VulkanRenderer::setBakedLighting(BakedLighting data) {
     // Los frames en vuelo leen los buffers viejos: se espera (pasa al abrir
     // una escena o al terminar un horneado, no cada frame).
-    device_.handle().waitIdle();
+    device_.waitIdle();
     baked_ = std::move(data);
     if (baked_.volumes.size() > kMaxBakedVolumes) baked_.volumes.resize(kMaxBakedVolumes);
     if (static_cast<VkPipeline>(*baked_gi_pass_.pipeline()) == VK_NULL_HANDLE) return;

@@ -27,6 +27,7 @@
 #include <array>
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -104,6 +105,10 @@ public:
 
     // El motor se compilo con OpenXR (CRAMION_XR).
     static bool compiled();
+    // El mutex de la cola de Vulkan (VulkanDevice::queueMutex): xrBeginFrame,
+    // xrEndFrame y las imagenes de los ojos usan la cola, y las subidas del
+    // streaming la usan desde otros hilos.
+    static void setQueueMutex(std::mutex* mutex);
 
     // Paso 1. Prueba los runtimes de `choice` en orden hasta que uno vea un
     // casco. false: ninguno (error() dice que paso con cada uno). Puede

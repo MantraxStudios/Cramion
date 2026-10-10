@@ -57,6 +57,8 @@
 #include <filesystem>
 #include <functional>
 #include <cstdint>
+#include <future>
+#include <memory>
 #include <optional>
 #include <unordered_map>
 #include <vector>
@@ -173,6 +175,11 @@ public:
     // parar la GPU ni resubir lo demas. Para las mallas creadas por codigo
     // (el trazado de rayos no las ve hasta la siguiente uploadModels).
     void uploadModel(const scene::Scene& scene, std::uint32_t index);
+    // Lo nuevo de la escena (de uploadedModelCount() en adelante) a la GPU en
+    // hilos aparte: cada llamada mete en orden lo que ya esta listo y lanza lo
+    // siguiente, sin esperar nunca. Si la escena se vacio (otra escena), suelta
+    // lo de la anterior. Para cargar escenas sin congelar el editor.
+    void uploadNewModels(const scene::Scene& scene);
     // Modelos de la escena que ya estan en la GPU (los primeros N, en orden):
     // los de despues aun no se dibujan. Para subir lo nuevo poco a poco con
     // uploadModel(scene, uploadedModelCount()).
@@ -1274,6 +1281,28 @@ private:
     std::vector<std::chrono::steady_clock::time_point> model_last_seen_;
     void evictModel(std::uint32_t index);
     void streamModels(const scene::Scene& scene);
+    // Subidas del streaming en hilos aparte (volver a la GPU, cambiar el
+    // detalle de las texturas): el modelo se crea entero en otro hilo y el
+    // principal solo lo pone en su sitio al terminar (sin esperar a la GPU).
+    struct ModelJob {
+        std::uint32_t index = 0;
+        int texture_lod = 0;
+        bool restore = false;  // volvia de fuera de la GPU
+        bool append = false;   // modelo nuevo (uploadNewModels): entra en orden
+        std::future<std::unique_ptr<SkinnedModel>> result;
+    };
+    std::vector<ModelJob> model_jobs_;
+    // La escena va a cambiar un modelo (Scene::setModelWriteHook): los hilos
+    // terminan y lo que traian se tira (seria de los datos de antes).
+    std::shared_ptr<bool> model_jobs_alive_ = std::make_shared<bool>(true);
+    bool modelJobPending(std::uint32_t index) const;
+    void launchModelJob(const scene::Scene& scene, std::uint32_t index, int texture_lod, bool restore,
+                        bool append = false);
+    // Espera a los hilos de los modelos [first, last) y tira lo que traian.
+    void finishModelJobs(std::uint32_t first = 0, std::uint32_t last = UINT32_MAX);
+    // Suelta todos los modelos de la GPU (otra escena).
+    void clearModels();
+    void installModel(const scene::Scene& scene, std::uint32_t index, SkinnedModel fresh, bool restore);
     // --- Oclusion del cielo desde arriba (sin trazado de rayos) ---
     bool sky_occlusion_enabled_ = true;
     VulkanImage sky_map_terrain_{};  // profundidad desde arriba: solo el terreno

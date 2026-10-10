@@ -793,7 +793,7 @@ int RenderSync::externalClip(std::uint32_t model, const Uuid& clip, scene::Scene
         int index = -1;
         if (loaded && model < scene.models().size()) {
             // Se anade al modelo (el Animator reproduce por indice).
-            asset::ModelData& data = *scene.models()[model];
+            asset::ModelData& data = *scene.modelData(model);  // (avisa al streaming)
             data.animations.push_back(std::move(*loaded));
             index = static_cast<int>(data.animations.size()) - 1;
         }
@@ -834,7 +834,7 @@ int RenderSync::externalClip(std::uint32_t model, const Uuid& clip, scene::Scene
         return -1;
     }
     if (info && info->type == assets::AssetType::AnimationClip && model < scene.models().size()) {
-        asset::ModelData& data = *scene.models()[model];
+        asset::ModelData& data = *scene.modelData(model);  // (avisa al streaming)
         asset::AnimationClip loaded;
         std::string error;
         if (loadAnimationClip(info->path, data, loaded, &error) && !loaded.channels.empty()) {
@@ -2701,6 +2701,13 @@ void RenderSync::syncActors(World& world, scene::Scene& scene, gfx::VulkanRender
     // tiron tanto mayor cuanto mas grande la escena. Lo que aun no se ha subido
     // simplemente no se dibuja todavia.
     (void)added;
+    // Con la carga en segundo plano, tambien la subida va en hilos: el frame
+    // nunca espera (antes, al abrir otra escena, el primer modelo nuevo
+    // subia la escena entera parando la GPU: segundos congelado).
+    if (g_async_models.get()) {
+        renderer.uploadNewModels(scene);
+        return;
+    }
     const auto upload_start = std::chrono::steady_clock::now();
     const float budget_ms = g_upload_ms.get();
     while (renderer.uploadedModelCount() < scene.models().size()) {
