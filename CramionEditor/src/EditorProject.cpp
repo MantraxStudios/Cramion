@@ -199,7 +199,7 @@ void EditorApp::createSceneAsset(const std::filesystem::path& folder) {
 
 namespace {
 
-constexpr ImU32 kBrand = theme::kRed;  // seleccion (tema)
+constexpr ImU32 kBrand = theme::kAccent;  // seleccion (tema)
 
 // Filtros por tipo (bits de browser_filter_).
 enum BrowserFilter : std::uint32_t {

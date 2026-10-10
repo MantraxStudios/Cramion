@@ -278,7 +278,12 @@ void VulkanRenderer::streamModels(const scene::Scene& scene) {
                       << " cambios de detalle de texturas, " << evictions << " fuera; en hilos " << model_jobs_.size()
                       << ", retirados " << retired_models_.size() << ", fijados por RT " << ray_pinned_models_.size()
                       << "; VRAM " << vram_used / (1024 * 1024) << " de " << vram_budget / (1024 * 1024) << " MB"
-                      << (vram_full ? " (LLENA: no se sube detalle)" : "") << "\n";
+                      << (vram_full ? " (LLENA: no se sube detalle)" : "")
+                      << " [texturas " << gpuMemoryBytes(GpuMemoryKind::Texture) / (1024 * 1024) << " MB, imagenes "
+                      << gpuMemoryBytes(GpuMemoryKind::Image) / (1024 * 1024) << " MB, buffers "
+                      << gpuMemoryBytes(GpuMemoryKind::Buffer) / (1024 * 1024) << " MB, CPU-visibles "
+                      << gpuMemoryBytes(GpuMemoryKind::Staging) / (1024 * 1024) << " MB; " << skinned_models_.size()
+                      << " modelos]\n";
         }
         report_at = now;
         restores = texture_uploads = evictions = 0;

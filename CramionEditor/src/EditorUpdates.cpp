@@ -25,7 +25,7 @@ namespace cramion::editor {
 
 namespace {
 
-constexpr ImU32 kAccent = theme::kRed;  // tema: rojo para la accion principal
+constexpr ImU32 kAccent = theme::kAccent;  // tema: azul para la accion principal
 constexpr ImU32 kGreen = theme::kOk;
 
 bool updateCheckDisabledByEnvironment() {
@@ -272,7 +272,7 @@ void EditorApp::drawUpdateToast() {
         if (ImGui::Button("Ver novedades", ImVec2(150.0f, 0.0f))) show_update_dialog_ = true;
         ImGui::SameLine();
         ImGui::PushStyleColor(ImGuiCol_Button, ImGui::ColorConvertU32ToFloat4(kAccent));
-        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, theme::vec(theme::kRedHover));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, theme::vec(theme::kAccentHover));
         if (ImGui::Button("Actualizar...", ImVec2(-1.0f, 0.0f))) {
             show_update_dialog_ = true;
             update_confirm_ = true;
@@ -340,7 +340,7 @@ void EditorApp::drawUpdateDialog() {
     if (available) {
         ImGui::BeginDisabled(update_release_.zip_url.empty());
         ImGui::PushStyleColor(ImGuiCol_Button, ImGui::ColorConvertU32ToFloat4(kAccent));
-        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, theme::vec(theme::kRedHover));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, theme::vec(theme::kAccentHover));
         if (ImGui::Button("Guardar todo y actualizar", ImVec2(220.0f, 32.0f))) {
             beginUpdateInstall();
             if (quit_) ImGui::CloseCurrentPopup();

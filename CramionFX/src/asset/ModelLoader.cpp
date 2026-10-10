@@ -2,6 +2,7 @@
 #include "CramionFX/asset/Dds.h"
 #include "CramionFX/asset/ModelCache.h"
 #include "CramionFX/asset/ObjLoader.h"
+#include "CramionFX/asset/TextureCompression.h"
 
 #include <assimp/Importer.hpp>
 #include <assimp/ProgressHandler.hpp>
@@ -818,6 +819,113 @@ bool limitTextureSize(TextureData& texture, std::uint32_t max_size) {
     return true;
 }
 
+// La ruta de `source_path`: en UTF-8 (la de las variantes de material) o, si
+// asi no existe, tal cual (la de los importadores).
+std::filesystem::path sourceFilePath(const std::string& source) {
+    std::filesystem::path path(std::u8string(source.begin(), source.end()));
+    std::error_code ec;
+    if (!std::filesystem::exists(path, ec)) path = std::filesystem::path(source);
+    return path;
+}
+
+// Decodifica una textura en su sitio (lee su archivo si solo tenia ruta).
+// Con la compresion activa (TextureCompression.h), las imagenes salen en BC7
+// con sus mips: de la cache si ya se comprimieron, si no se comprimen aqui
+// (una vez) y se guardan. Devuelve false si no se pudo (queda un texel
+// blanco).
+bool decodeTexture(TextureData& texture, std::mutex& log_mutex) {
+    bool ok = true;
+    // Con su archivo: la clave de la cache sale de su ruta, tamano y fecha,
+    // y si ya esta comprimida ni se lee la imagen.
+    std::uint64_t file_key = 0;
+    if (texture.encoded.empty() && texture.pixels.empty() && !texture.source_path.empty() &&
+        textureCompressionEnabled() && !g_decode_block_compressed.load()) {
+        file_key = lazyTextureKey(texture);
+        if (file_key != 0 && loadCachedTexture(file_key, texture)) {
+            limitTextureSize(texture, g_max_texture_size.load());
+            return true;
+        }
+    }
+    if (texture.encoded.empty() && !texture.source_path.empty()) {
+        readFile(sourceFilePath(texture.source_path), texture.encoded);
+    }
+    if (texture.encoded.empty()) {
+        if (texture.pixels.empty()) {
+            // Archivo que ya no existe: texel blanco.
+            texture.width = 1;
+            texture.height = 1;
+            texture.pixels = {255, 255, 255, 255};
+            ok = false;
+        }
+        return ok;  // Ya venia descomprimida.
+    }
+    const bool dds = isDds(texture.encoded.data(), texture.encoded.size());
+    // Las GPU sin BC (movil) no la leerian: alli se queda en RGBA8.
+    const bool compress = !dds && textureCompressionEnabled() && !g_decode_block_compressed.load();
+    std::uint64_t key = 0;
+    bool cached = false;
+    bool owner = false;  // esta llamada comprime (endTextureCompression al final)
+    if (compress) {
+        key = file_key != 0 ? file_key
+                            : textureCacheKey(texture.encoded.data(), texture.encoded.size(), texture.height_map);
+        cached = file_key == 0 && loadCachedTexture(key, texture);
+        // Otro hilo la esta comprimiendo: se espera y se lee de la cache.
+        if (!cached) {
+            owner = beginTextureCompression(key);
+            if (!owner) cached = loadCachedTexture(key, texture);
+        }
+    }
+    if (!cached) {
+        const bool decoded = dds ? parseDds(texture.encoded.data(), texture.encoded.size(), texture)
+                                 : decodeImage(texture.encoded.data(), texture.encoded.size(), texture);
+        if (!decoded) {
+            // Imagen danada: un texel blanco para que el material siga
+            // siendo valido.
+            texture.width = 1;
+            texture.height = 1;
+            texture.pixels = {255, 255, 255, 255};
+            ok = false;
+        } else {
+            if (texture.height_map && texture.format == TextureFormat::Rgba8) heightToNormalMap(texture);
+            // A BC7 con sus mips, a tamano completo (la cache vale para
+            // cualquier calidad de texturas: abajo se quitan los mips que
+            // sobren).
+            if (owner && std::max(texture.width, texture.height) >= 64) {
+                const auto start = std::chrono::steady_clock::now();
+                const std::uint32_t w = texture.width, h = texture.height;
+                if (compressTextureBc7(texture, key)) {
+                    const std::lock_guard<std::mutex> lock(log_mutex);
+                    std::cout << "[Texturas] " << texture.name << " comprimida a BC7 (" << w << "x" << h << ") en "
+                              << std::chrono::duration<float>(std::chrono::steady_clock::now() - start).count()
+                              << " s\n";
+                }
+            }
+        }
+    }
+    if (owner) endTextureCompression(key);
+    // Calidad de texturas (perfil de hardware): una de 16K sin
+    // comprimir son 1.3 GB de VRAM con sus mips.
+    const std::uint32_t before = std::max(texture.width, texture.height);
+    if (limitTextureSize(texture, g_max_texture_size.load())) {
+        const std::lock_guard<std::mutex> lock(log_mutex);
+        std::cout << "[Modelo] Textura " << texture.name << " reducida de " << before << " a "
+                  << std::max(texture.width, texture.height) << " (calidad de texturas)\n";
+    }
+    // GPU sin texturas BC: el nivel 0 (ya reducido) a RGBA8; los mips
+    // los genera la GPU al subirla.
+    if (texture.format != TextureFormat::Rgba8 && g_decode_block_compressed.load()) {
+        std::vector<std::uint8_t> rgba = decodeBlockCompressed(texture);
+        if (!rgba.empty()) {
+            texture.pixels = std::move(rgba);
+            texture.format = TextureFormat::Rgba8;
+            texture.mip_levels = 1;
+        }
+    }
+    texture.encoded.clear();
+    texture.encoded.shrink_to_fit();
+    return ok;
+}
+
 void decodeTextures(ModelData& model) {
     std::atomic<std::size_t> next{0};
     std::atomic<std::uint32_t> failed{0};
@@ -825,59 +933,14 @@ void decodeTextures(ModelData& model) {
 
     const auto worker = [&]() {
         for (std::size_t i = next++; i < model.textures.size(); i = next++) {
-            TextureData& texture = model.textures[i];
-            if (texture.encoded.empty() && !texture.source_path.empty()) {
-                readFile(std::filesystem::path(texture.source_path), texture.encoded);
-            }
-            if (texture.encoded.empty()) {
-                if (texture.pixels.empty()) {
-                    // Archivo que ya no existe: texel blanco.
-                    texture.width = 1;
-                    texture.height = 1;
-                    texture.pixels = {255, 255, 255, 255};
-                    ++failed;
-                }
-                continue;  // Ya venia descomprimida.
-            }
-            const bool decoded =
-                isDds(texture.encoded.data(), texture.encoded.size())
-                    ? parseDds(texture.encoded.data(), texture.encoded.size(), texture)
-                    : decodeImage(texture.encoded.data(), texture.encoded.size(), texture);
-            if (!decoded) {
-                // Imagen danada: un texel blanco para que el material siga
-                // siendo valido.
-                texture.width = 1;
-                texture.height = 1;
-                texture.pixels = {255, 255, 255, 255};
-                ++failed;
-            } else if (texture.height_map && texture.format == TextureFormat::Rgba8) {
-                heightToNormalMap(texture);
-            }
-            // Calidad de texturas (perfil de hardware): una de 16K sin
-            // comprimir son 1.3 GB de VRAM con sus mips.
-            const std::uint32_t before = std::max(texture.width, texture.height);
-            if (limitTextureSize(texture, g_max_texture_size.load())) {
-                const std::lock_guard<std::mutex> lock(log_mutex);
-                std::cout << "[Modelo] Textura " << texture.name << " reducida de " << before << " a "
-                          << std::max(texture.width, texture.height) << " (calidad de texturas)\n";
-            }
-            // GPU sin texturas BC: el nivel 0 (ya reducido) a RGBA8; los mips
-            // los genera la GPU al subirla.
-            if (texture.format != TextureFormat::Rgba8 && g_decode_block_compressed.load()) {
-                std::vector<std::uint8_t> rgba = decodeBlockCompressed(texture);
-                if (!rgba.empty()) {
-                    texture.pixels = std::move(rgba);
-                    texture.format = TextureFormat::Rgba8;
-                    texture.mip_levels = 1;
-                }
-            }
-            texture.encoded.clear();
-            texture.encoded.shrink_to_fit();
+            if (!decodeTexture(model.textures[i], log_mutex)) ++failed;
         }
     };
 
-    const unsigned int thread_count =
-        std::clamp(std::thread::hardware_concurrency(), 1u, 16u);
+    // (No mas hilos que texturas: una variante de material con dos texturas
+    // lanzaba 16.)
+    const auto thread_count = static_cast<unsigned int>(std::clamp<std::size_t>(
+        std::min<std::size_t>(std::thread::hardware_concurrency(), model.textures.size()), 1, 16));
     std::vector<std::thread> threads;
     threads.reserve(thread_count);
     for (unsigned int t = 0; t < thread_count; ++t) {
@@ -1130,6 +1193,81 @@ void finalizeModel(ModelData& model, const std::string& label) {
     if (model.indices.empty()) {
         throw std::runtime_error("El modelo " + label + " no tiene triangulos.");
     }
+}
+
+namespace {
+std::mutex g_resolver_mutex;
+TextureResolver g_texture_resolver;
+TextureKeyResolver g_texture_key_resolver;
+}  // namespace
+
+void setTextureKeyResolver(TextureKeyResolver resolver) {
+    const std::lock_guard<std::mutex> lock(g_resolver_mutex);
+    g_texture_key_resolver = std::move(resolver);
+}
+
+std::uint64_t resolveTextureKey(const std::string& source) {
+    TextureKeyResolver resolver;
+    {
+        const std::lock_guard<std::mutex> lock(g_resolver_mutex);
+        resolver = g_texture_key_resolver;
+    }
+    return resolver ? resolver(source) : 0;
+}
+
+bool isLazyTexture(const TextureData& texture) {
+    return texture.pixels.empty() && texture.encoded.empty() && !texture.source_path.empty();
+}
+
+void setTextureResolver(TextureResolver resolver) {
+    const std::lock_guard<std::mutex> lock(g_resolver_mutex);
+    g_texture_resolver = std::move(resolver);
+}
+
+bool resolveLazyTexture(const TextureData& lazy, TextureData& out) {
+    out = TextureData{};
+    out.name = lazy.name;
+    out.height_map = lazy.height_map;
+    TextureResolver resolver;
+    {
+        const std::lock_guard<std::mutex> lock(g_resolver_mutex);
+        resolver = g_texture_resolver;
+    }
+    std::mutex log_mutex;
+    const bool compress = textureCompressionEnabled() && !g_decode_block_compressed.load();
+    // Una receta con clave (de las fechas de sus archivos): de la cache sin
+    // hacerla.
+    const std::uint64_t recipe_key = compress ? resolveTextureKey(lazy.source_path) : 0;
+    if (recipe_key != 0 && loadCachedTexture(recipe_key, out)) {
+        out.name = lazy.name;
+        limitTextureSize(out, g_max_texture_size.load());
+        return true;
+    }
+    if (resolver && resolver(lazy.source_path, out)) {
+        // Hecha por el resolvedor (ya decodificada): a BC7 como las demas y
+        // el tamano maximo.
+        if (compress && out.format == TextureFormat::Rgba8 && std::max(out.width, out.height) >= 64) {
+            const std::uint64_t key =
+                recipe_key != 0 ? recipe_key : textureCacheKey(out.pixels.data(), out.pixels.size(), false);
+            if (recipe_key != 0 || !loadCachedTexture(key, out)) {
+                if (beginTextureCompression(key)) {
+                    compressTextureBc7(out, key);
+                    endTextureCompression(key);
+                } else if (!loadCachedTexture(key, out)) {
+                    compressTextureBc7(out, key);  // (el otro hilo no pudo)
+                }
+            }
+        }
+        limitTextureSize(out, g_max_texture_size.load());
+        return !out.pixels.empty();
+    }
+    // Un archivo: decodeTexture mira la cache por su ruta y fecha (sin leerlo)
+    // y si no esta lo lee, lo comprime y lo guarda.
+    out.source_path = lazy.source_path;
+    if (!std::filesystem::exists(sourceFilePath(lazy.source_path))) return false;
+    const bool ok = decodeTexture(out, log_mutex);
+    out.source_path.clear();
+    return ok;
 }
 
 float fileUnitScale(const std::filesystem::path& path) {

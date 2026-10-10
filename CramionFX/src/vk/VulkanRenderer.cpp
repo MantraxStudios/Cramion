@@ -3503,14 +3503,18 @@ void VulkanRenderer::uploadNewModels(const scene::Scene& scene) {
     }
 
     // Los siguientes, a los hilos (unos pocos a la vez: cada uno es un modelo
-    // entero en memoria).
+    // entero en memoria). Con streaming de texturas entran con un cuarto de
+    // lado (lod 2) y el streaming sube el detalle de lo que se ve grande
+    // mientras quede VRAM: subirlo todo a tope llenaba la GPU (una casa con
+    // 240 texturas de 4K son 21 GB sin comprimir) y fallaban las subidas.
     constexpr std::size_t kMaxAppendJobs = 3;
+    const int first_lod = texture_streaming_ ? 2 : 0;
     std::size_t in_flight = static_cast<std::size_t>(
         std::count_if(model_jobs_.begin(), model_jobs_.end(), [](const ModelJob& job) { return job.append; }));
     const auto total = static_cast<std::uint32_t>(scene.models().size());
     for (auto i = static_cast<std::uint32_t>(skinned_models_.size()); i < total && in_flight < kMaxAppendJobs; ++i) {
         if (modelJobPending(i)) continue;
-        launchModelJob(scene, i, 0, false, true);
+        launchModelJob(scene, i, first_lod, false, true);
         ++in_flight;
     }
 }

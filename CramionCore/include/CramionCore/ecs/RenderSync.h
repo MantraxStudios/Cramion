@@ -106,6 +106,12 @@ public:
     void setSupportQuery(SupportQuery query) { support_query_ = std::move(query); }
 
     const asset::ModelData* actorModelData(Entity entity, const scene::Scene& scene) const;
+    // Las texturas (perezosas: ruta o receta) de todos los materiales del
+    // proyecto, como las usarian: para comprimirlas al abrir el proyecto.
+    std::vector<asset::TextureData> materialTextureSources();
+    // Quedan variantes de material por hacer (unas pocas por frame): la
+    // pantalla de carga espera a que terminen.
+    bool materialVariantsPending() const { return variant_waiting_; }
 
     // Animator Controllers (.cranimator) en uso: se leen una vez; el editor
     // llama a reload... al guardarlos para que el cambio se vea al momento.
@@ -471,6 +477,9 @@ private:
         std::vector<Uuid> overrides;
     };
     std::vector<Variant> variants_;
+    // Variantes nuevas: unos milisegundos por frame (las demas esperan turno).
+    bool variant_waiting_ = false;    // alguna variante espera turno
+    float variant_build_ms_ = 0.0f;   // gastado este frame en hacer variantes
     struct RuntimeSlot {
         std::weak_ptr<Mesh> mesh;
         std::uint64_t version = 0;

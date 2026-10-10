@@ -44,7 +44,7 @@ namespace {
 constexpr const char* kDonateUrl = "https://paypal.me/evan2025";
 
 // Colores del tema (Theme.h): rojo de acento sobre negros.
-constexpr ImU32 kAccent = theme::kRed;
+constexpr ImU32 kAccent = theme::kAccent;
 constexpr ImU32 kCard = theme::kBg2;
 constexpr ImU32 kCardHover = theme::kBg3;
 constexpr ImU32 kCardBorder = theme::kBorder;
@@ -612,7 +612,7 @@ void EditorApp::drawHubProjects() {
     ImGui::InputTextWithHint("##buscar", "Buscar proyecto...", &hub_search_);
     ImGui::SameLine();
     ImGui::PushStyleColor(ImGuiCol_Button, ImGui::ColorConvertU32ToFloat4(kAccent));
-    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, theme::vec(theme::kRedHover));
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, theme::vec(theme::kAccentHover));
     if (ImGui::Button("+  Nuevo proyecto", ImVec2(170.0f, 0.0f))) hub_page_ = 1;
     ImGui::PopStyleColor(2);
     ImGui::Dummy(ImVec2(0.0f, 6.0f));
@@ -629,7 +629,7 @@ void EditorApp::drawHubProjects() {
         ImGui::SameLine(ImGui::GetContentRegionMax().x - 176.0f);
         const auto toggle = [&](const char* label, bool list) {
             const bool active = hub_list_view_ == list;
-            if (active) ImGui::PushStyleColor(ImGuiCol_Button, theme::vec(theme::kRed, 0.45f));
+            if (active) ImGui::PushStyleColor(ImGuiCol_Button, theme::vec(theme::kAccent, 0.45f));
             if (ImGui::Button(label, ImVec2(84.0f, 0.0f))) hub_list_view_ = list;
             if (active) ImGui::PopStyleColor();
         };
@@ -815,7 +815,7 @@ void EditorApp::drawHubNewProject() {
     for (int i = 0; i < 3; ++i) {
         if (i > 0) ImGui::SameLine();
         const bool active = hub_category_ == i;
-        if (active) ImGui::PushStyleColor(ImGuiCol_Button, theme::vec(theme::kRed, 0.45f));
+        if (active) ImGui::PushStyleColor(ImGuiCol_Button, theme::vec(theme::kAccent, 0.45f));
         if (ImGui::Button(kCategories[i], ImVec2(0.0f, 28.0f))) hub_category_ = i;
         if (active) ImGui::PopStyleColor();
     }
@@ -964,7 +964,7 @@ void EditorApp::drawHubNewProject() {
     ImGui::Dummy(ImVec2(0.0f, 6.0f));
     ImGui::BeginDisabled(new_project_name_.empty() || taken || hub_templates_.empty());
     ImGui::PushStyleColor(ImGuiCol_Button, ImGui::ColorConvertU32ToFloat4(kAccent));
-    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, theme::vec(theme::kRedHover));
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, theme::vec(theme::kAccentHover));
     if (ImGui::Button("Crear proyecto", ImVec2(-1.0f, 40.0f))) createProjectFromHub();
     ImGui::PopStyleColor(2);
     ImGui::EndDisabled();
@@ -1010,7 +1010,7 @@ void EditorApp::drawHubUpdateBanner() {
     if (ImGui::Button("Ver novedades", ImVec2(130.0f, 0.0f))) hub_page_ = 2;
     ImGui::SameLine(0.0f, 8.0f);
     ImGui::PushStyleColor(ImGuiCol_Button, ImGui::ColorConvertU32ToFloat4(kAccent));
-    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, theme::vec(theme::kRedHover));
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, theme::vec(theme::kAccentHover));
     ImGui::BeginDisabled(update_release_.zip_url.empty());
     if (ImGui::Button("Actualizar", ImVec2(126.0f, 0.0f))) beginUpdateInstall();
     ImGui::EndDisabled();
@@ -1095,7 +1095,7 @@ void EditorApp::drawHubUpdates() {
     ImGui::Spacing();
     if (newer) {
         ImGui::PushStyleColor(ImGuiCol_Button, ImGui::ColorConvertU32ToFloat4(kAccent));
-        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, theme::vec(theme::kRedHover));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, theme::vec(theme::kAccentHover));
         ImGui::BeginDisabled(update_release_.zip_url.empty());
         if (ImGui::Button("Actualizar ahora", ImVec2(170.0f, 34.0f))) beginUpdateInstall();
         ImGui::EndDisabled();

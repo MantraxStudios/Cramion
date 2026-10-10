@@ -12,6 +12,7 @@
 
 #include "CramionCore/project/DataPack.h"
 #include "CramionCore/cvar/CVar.h"
+#include <CramionFX/asset/TextureCompression.h>
 
 #include <shellapi.h>
 
@@ -130,6 +131,8 @@ bool EditorApp::openProject(const std::filesystem::path& path, bool open_scene) 
     database_->open(project_.assetsFolder());
     asset_manager_ = std::make_unique<assets::AssetManager>(*database_);
     asset_manager_->setCacheFolder(project_.libraryFolder() / "Cache");
+    // Texturas comprimidas a BC7 (como Unity): una vez por imagen, aqui.
+    asset::setTextureCacheFolder(project_.libraryFolder() / "Cache" / "Textures");
     model_previews_.start(project_.libraryFolder() / "Thumbnails");
     scripts_.setAssetsRoot(project_.assetsFolder());
     // DataPacks montados en Play: se apuntan en Library y se quitan al parar;
@@ -247,6 +250,7 @@ bool EditorApp::openProject(const std::filesystem::path& path, bool open_scene) 
     std::cout << "[Editor] Proyecto abierto: " << project_.name << " ("
               << dialogs::utf8(project_.folder) << ")\n";
 
+    startTextureImport();  // (en segundo plano; la escena no lo espera)
     if (open_scene) openStartupScene();
     return true;
 }
@@ -303,8 +307,10 @@ void EditorApp::closeProject() {
         sync_->reset(scene_);
     }
     sync_.reset();
+    stopTextureImport();
     asset_manager_.reset();
     database_.reset();
+    asset::setTextureCacheFolder({});
     if (assets_watch_ != nullptr) {
         FindCloseChangeNotification(assets_watch_);
         assets_watch_ = nullptr;
@@ -1080,6 +1086,7 @@ void EditorApp::drawUi(float delta_seconds) {
 
     drawMenuBar();
     drawWorkspaceBar();
+    drawStatusBar();
     const WorkspaceKind workspace = activeWorkspaceKind();
     // C++: respuestas de clangd (IntelliSense) y compilar al guardar, en
     // cualquier pestana (tambien en la del script, donde se escribe).
@@ -1099,12 +1106,16 @@ void EditorApp::drawUi(float delta_seconds) {
         addCpuSample(kCpuPanels, millisecondsSince(t));
     } else {
         const ImGuiViewport* viewport = ImGui::GetMainViewport();
-        const ImGuiID dockspace_id = ImGui::GetID("CramionDockspace");
+        // Id nuevo con el diseno de Blender: el de antes (Unity) se rehace una vez.
+        const ImGuiID dockspace_id = ImGui::GetID("CramionDockspaceBlender");
         if (reset_layout_ || ImGui::DockBuilderGetNode(dockspace_id) == nullptr) {
             buildDefaultLayout(dockspace_id);
             reset_layout_ = false;
         }
+        // El fondo del dockspace se ve entre las areas: los huecos oscuros de Blender.
+        ImGui::PushStyleColor(ImGuiCol_WindowBg, theme::kGap);
         ImGui::DockSpaceOverViewport(dockspace_id, viewport);
+        ImGui::PopStyleColor();
 
         CpuClock::time_point t = CpuClock::now();
         drawSceneView();
@@ -1278,8 +1289,9 @@ void EditorApp::syncWorld(float delta_seconds, bool secondary) {
     renderer_.setOutlinedActors(std::move(outlined));
 }
 
-// Unity: Jerarquia a la izquierda; Escena en el centro; Inspector a la
-// derecha; Proyecto y Consola abajo.
+// Blender (espacio "Layout"): Escena grande en el centro; a la derecha, de
+// arriba abajo, la Jerarquia (Outliner) y el Inspector (Propiedades); abajo,
+// bajo la Escena, Proyecto y Consola (donde Blender pone la linea de tiempo).
 void EditorApp::buildDefaultLayout(unsigned int dockspace_id) {
     const ImGuiViewport* viewport = ImGui::GetMainViewport();
     ImGui::DockBuilderRemoveNode(dockspace_id);
@@ -1287,11 +1299,11 @@ void EditorApp::buildDefaultLayout(unsigned int dockspace_id) {
     ImGui::DockBuilderSetNodeSize(dockspace_id, viewport->WorkSize);
 
     ImGuiID center = dockspace_id;
-    const ImGuiID right = ImGui::DockBuilderSplitNode(center, ImGuiDir_Right, 0.24f, nullptr, &center);
-    const ImGuiID bottom = ImGui::DockBuilderSplitNode(center, ImGuiDir_Down, 0.30f, nullptr, &center);
-    const ImGuiID left = ImGui::DockBuilderSplitNode(center, ImGuiDir_Left, 0.20f, nullptr, &center);
+    ImGuiID right = ImGui::DockBuilderSplitNode(center, ImGuiDir_Right, 0.23f, nullptr, &center);
+    const ImGuiID outliner = ImGui::DockBuilderSplitNode(right, ImGuiDir_Up, 0.34f, nullptr, &right);
+    const ImGuiID bottom = ImGui::DockBuilderSplitNode(center, ImGuiDir_Down, 0.26f, nullptr, &center);
 
-    ImGui::DockBuilderDockWindow("Jerarquía", left);
+    ImGui::DockBuilderDockWindow("Jerarquía", outliner);
     ImGui::DockBuilderDockWindow("Inspector", right);
     ImGui::DockBuilderDockWindow("Ajustes de render", right);
     ImGui::DockBuilderDockWindow("Proyecto", bottom);
@@ -1569,16 +1581,55 @@ void EditorApp::drawMenuBar() {
     ImGui::EndGroup();
     caption_blockers_.push_back(ImVec4(ImGui::GetItemRectMin().x, 0.0f, ImGui::GetItemRectMax().x, caption_height_));
 
+    // Como la barra superior de Blender: a la derecha, la escena abierta.
     char status[260];
-    std::snprintf(status, sizeof(status), "%s - %s%s   |   %.0f FPS   |   GPU %.2f ms", project_.name.c_str(),
-                  world_.sceneName().c_str(), dirty_ ? " *" : "", ImGui::GetIO().Framerate,
-                  renderer_.gpuProfiler().totalMilliseconds());
+    std::snprintf(status, sizeof(status), "%s  /  %s%s", project_.name.c_str(), world_.sceneName().c_str(),
+                  dirty_ ? " *" : "");
     const float controls = 46.0f * 3.0f;
     ImGui::SameLine(ImGui::GetWindowWidth() - controls - ImGui::CalcTextSize(status).x - 16.0f);
     ImGui::TextDisabled("%s", status);
     drawWindowControls();
     ImGui::EndMainMenuBar();
     ImGui::PopStyleVar();
+}
+
+// Barra de estado abajo (Blender): la seleccion a la izquierda; el
+// rendimiento y la version a la derecha.
+void EditorApp::drawStatusBar() {
+    ImGuiViewport* viewport = ImGui::GetMainViewport();
+    const float height = ImGui::GetFontSize() + 8.0f;
+    const ImGuiWindowFlags flags = ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse |
+                                   ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoDocking |
+                                   ImGuiWindowFlags_NoNavFocus;
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(10.0f, 4.0f));
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, theme::kBg0);
+    const bool open = ImGui::BeginViewportSideBar("##statusbar", viewport, ImGuiDir_Down, height, flags);
+    ImGui::PopStyleColor();
+    ImGui::PopStyleVar();
+    if (open) {
+        ImGui::PushFont(nullptr, theme::smallFontSize());
+        std::string left;
+        if (playing()) left = play_state_ == PlayState::Paused ? "En pausa" : "Jugando";
+        const ecs::Entity active = active_ ? world_.find(active_) : ecs::Entity{};
+        if (active.valid()) {
+            if (!left.empty()) left += "   |   ";
+            left += active.name();
+            if (selection_.size() > 1) left += "  (+" + std::to_string(selection_.size() - 1) + ")";
+        } else if (left.empty()) {
+            left = "Nada seleccionado";
+        }
+        if (const std::string import = textureImportStatus(); !import.empty()) left += "   |   " + import;
+        ImGui::TextDisabled("%s", left.c_str());
+        char right[200];
+        std::snprintf(right, sizeof(right), "Objetos %zu   |   %.0f FPS   |   GPU %.2f ms   |   Cramion %s",
+                      world_.entityCount(), ImGui::GetIO().Framerate,
+                      renderer_.gpuProfiler().totalMilliseconds(), update::currentVersion().str().c_str());
+        ImGui::SameLine(std::max(ImGui::GetWindowWidth() - ImGui::CalcTextSize(right).x - 12.0f,
+                                 ImGui::GetCursorPosX() + 20.0f));
+        ImGui::TextDisabled("%s", right);
+        ImGui::PopFont();
+    }
+    ImGui::End();
 }
 
 // Logo del motor al principio de la barra (como Unity/Unreal). Clic: el menu

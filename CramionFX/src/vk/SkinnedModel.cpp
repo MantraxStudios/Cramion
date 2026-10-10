@@ -108,6 +108,17 @@ void createRgbaLod(VulkanTexture& out, const VulkanDevice& device, std::uint32_t
     out.create(device, w, h, src);
 }
 
+// Si las texturas perezosas (que no guardan pixeles) tienen alfa recortado:
+// se mira al decodificarlas, una vez por textura.
+std::mutex g_lazy_alpha_mutex;
+std::unordered_map<std::uint64_t, bool> g_lazy_alpha;
+
+std::uint64_t lazyTextureKey(const asset::TextureData& texture, const void* device) {
+    std::uint64_t key = murmur64(reinterpret_cast<const std::uint8_t*>(texture.source_path.data()), texture.source_path.size(), 0x1a2e5eedULL);
+    key = mix64(key, (texture.height_map ? 1ULL : 0ULL) | (static_cast<std::uint64_t>(asset::maxTextureSize()) << 1));
+    return mix64(key, reinterpret_cast<std::uintptr_t>(device));
+}
+
 std::shared_ptr<VulkanTexture> sharedTexture(std::uint64_t key, const std::function<void(VulkanTexture&)>& make) {
     static std::mutex mutex;
     static std::unordered_map<std::uint64_t, std::weak_ptr<VulkanTexture>> cache;
@@ -207,6 +218,7 @@ vk::Format blockFormat(asset::TextureFormat format) {
 // alfa < 0.5). DXT1 se toma como opaco; DXT3/5 y BC7 casi siempre llevan alfa
 // cuando se eligen; RGBA8 se comprueba.
 bool hasAlpha(const asset::TextureData& texture) {
+    if (texture.alpha >= 0) return texture.alpha == 1;  // lo midio la compresion
     switch (texture.format) {
         case asset::TextureFormat::Rgba8:
             for (std::size_t i = 3; i < texture.pixels.size(); i += 4) {
@@ -307,9 +319,27 @@ void SkinnedModel::create(const VulkanDevice& device, const asset::ModelData& mo
     // se llenaba (decenas de modelos x cientos de MB).
     textures_.reserve(model.textures.size() + 3);
     const int lod = texture_lod_;
-    for (const asset::TextureData& texture : model.textures) {
-        const std::uint64_t key = mix64(textureKey(texture, &device), 0x10D0000ull + static_cast<std::uint64_t>(lod));
+    std::vector<bool> lazy_alpha(model.textures.size(), false);
+    for (std::size_t t = 0; t < model.textures.size(); ++t) {
+        const asset::TextureData& stored = model.textures[t];
+        const bool lazy = asset::isLazyTexture(stored);
+        const std::uint64_t key = mix64(lazy ? lazyTextureKey(stored, &device) : textureKey(stored, &device),
+                                        0x10D0000ull + static_cast<std::uint64_t>(lod));
         textures_.push_back(sharedTexture(key, [&](VulkanTexture& out) {
+            // Perezosa: se decodifica aqui (este hilo) y se tira al subirla.
+            asset::TextureData decoded;
+            if (lazy) {
+                if (!asset::resolveLazyTexture(stored, decoded)) {
+                    std::cerr << "[Vulkan] No se pudo leer la textura " << stored.name << "\n";
+                    decoded.width = decoded.height = 1;
+                    decoded.format = asset::TextureFormat::Rgba8;
+                    decoded.pixels = {255, 255, 255, 255};
+                }
+                const bool alpha = hasAlpha(decoded);
+                const std::lock_guard<std::mutex> lock(g_lazy_alpha_mutex);
+                g_lazy_alpha[key] = alpha;
+            }
+            const asset::TextureData& texture = lazy ? decoded : stored;
             if (texture.format == asset::TextureFormat::Rgba8) {
                 createRgbaLod(out, device, texture.width, texture.height, texture.pixels.data(), lod);
             } else if (!device.textureCompressionBcSupported()) {
@@ -343,6 +373,11 @@ void SkinnedModel::create(const VulkanDevice& device, const asset::ModelData& mo
                                      texture.pixels.data() + offset, texture.pixels.size() - offset);
             }
         }));
+        if (lazy) {
+            const std::lock_guard<std::mutex> lock(g_lazy_alpha_mutex);
+            const auto it = g_lazy_alpha.find(key);
+            lazy_alpha[t] = it != g_lazy_alpha.end() && it->second;
+        }
     }
     const auto add_texel = [&](std::uint8_t r, std::uint8_t g, std::uint8_t b) {
         const std::array<std::uint8_t, 4> texel = {r, g, b, 255};
@@ -426,8 +461,10 @@ void SkinnedModel::create(const VulkanDevice& device, const asset::ModelData& mo
         gpu.metallic_roughness_texture = static_cast<std::uint32_t>(textures[1]);
         gpu.emissive_texture = static_cast<std::uint32_t>(textures[4]);
         if (material.albedo_texture >= 0) {
-            gpu.alpha_masked =
-                hasAlpha(model.textures[static_cast<std::size_t>(material.albedo_texture)]);
+            const auto albedo = static_cast<std::size_t>(material.albedo_texture);
+            gpu.alpha_masked = albedo < lazy_alpha.size() && asset::isLazyTexture(model.textures[albedo])
+                                   ? lazy_alpha[albedo]
+                                   : hasAlpha(model.textures[albedo]);
         }
         materials_.push_back(gpu);
         if (material.albedo_render_texture >= 0) render_texture_refs_.push_back({m, 0, material.albedo_render_texture});

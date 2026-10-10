@@ -406,6 +406,7 @@ private:
     void createProjectFromHub();
     void drawSaveTemplateDialog();
     void drawMenuBar();
+    void drawStatusBar();
     void drawToolbar();
     void drawHierarchy();
     // Jerarquia recortada: filas aplanadas (solo nodos abiertos) y se dibujan
@@ -1059,6 +1060,31 @@ private:
     std::unique_ptr<assets::AssetDatabase> database_;
     std::unique_ptr<assets::AssetManager> asset_manager_;
     std::unique_ptr<ecs::RenderSync> sync_;
+    // Importacion de texturas (como Unity): al abrir el proyecto, en segundo
+    // plano, se comprimen a BC7 las imagenes y las texturas de los materiales
+    // que no esten ya en Library/Cache/Textures. Al abrir una escena ya solo
+    // se leen. (EditorProjectLoad.cpp)
+    struct TextureImport {
+        std::vector<asset::TextureData> items;
+        std::vector<std::thread> threads;
+        std::atomic<bool> stop{false};
+        std::atomic<std::size_t> next{0};
+        std::atomic<std::size_t> done{0};
+        std::atomic<std::size_t> compressed{0};
+        std::chrono::steady_clock::time_point started;
+        bool reported = false;
+        ~TextureImport() {
+            stop = true;
+            for (std::thread& thread : threads) {
+                if (thread.joinable()) thread.join();
+            }
+        }
+    };
+    std::unique_ptr<TextureImport> texture_import_;
+    void startTextureImport();
+    void stopTextureImport() { texture_import_.reset(); }
+    // Texto de la barra de estado mientras se importa ("" si no).
+    std::string textureImportStatus();
     ecs::World world_;
     std::filesystem::path scene_path_;  // vacia = escena sin guardar
     bool dirty_ = false;

@@ -40,6 +40,7 @@ void VulkanImage::create(const VulkanDevice& device, vk::Extent2D extent, vk::Fo
         requirements.memoryTypeBits, vk::MemoryPropertyFlagBits::eDeviceLocal);
 
     memory_ = vk::raii::DeviceMemory(device.handle(), allocate_info);
+    memory_ticket_ = GpuMemoryTicket(GpuMemoryKind::Image, requirements.size);
     image_.bindMemory(*memory_, 0);
 
     vk::ImageViewCreateInfo view_info{};
@@ -76,6 +77,7 @@ void VulkanImage::destroy() {
     view_ = nullptr;
     image_ = nullptr;
     memory_ = nullptr;
+    memory_ticket_.release();
 
     format_ = vk::Format::eUndefined;
     extent_ = vk::Extent2D{0, 0};

@@ -29,6 +29,9 @@ void VulkanBuffer::create(const VulkanDevice& device, vk::DeviceSize size,
     allocate_info.memoryTypeIndex = device.findMemoryType(requirements.memoryTypeBits, properties);
 
     memory_ = vk::raii::DeviceMemory(device.handle(), allocate_info);
+    memory_ticket_ = GpuMemoryTicket((properties & vk::MemoryPropertyFlagBits::eHostVisible) ? GpuMemoryKind::Staging
+                                                                                           : GpuMemoryKind::Buffer,
+                                     requirements.size);
     buffer_.bindMemory(*memory_, 0);
 
     size_ = size;
@@ -81,6 +84,7 @@ void VulkanBuffer::destroy() {
 
     buffer_ = nullptr;
     memory_ = nullptr;
+    memory_ticket_.release();
     size_ = 0;
 }
 

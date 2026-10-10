@@ -663,19 +663,19 @@ void EditorApp::drawAnimatorGraph(ecs::Entity preview) {
     };
     if (state_count > 0) {
         arrow(nodeCenter(kEntryNode), nodeCenter(std::clamp(c.default_state, 0, state_count - 1)),
-              theme::kRed, 2.0f);  // entrada -> estado por defecto (rojo, tema)
+              theme::kAccent, 2.0f);  // entrada -> estado por defecto (acento del tema)
     }
     int hovered_transition = -1;
     for (std::size_t i = 0; i < c.transitions.size(); ++i) {
         const ecs::AnimatorTransition& t = c.transitions[i];
         const bool selected = static_cast<int>(i) == animator_selected_transition_;
         const auto [a, b] = arrow(nodeCenter(t.from), nodeCenter(t.to),
-                                  selected ? theme::kRed : theme::withAlpha(theme::kLabel, 220),
+                                  selected ? theme::kAccent : theme::withAlpha(theme::kLabel, 220),
                                   selected ? 3.0f : 2.0f);
         if (hovered && distanceToSegment(io.MousePos, a, b) < 6.0f) hovered_transition = static_cast<int>(i);
     }
     if (animator_link_from_ != -2) {
-        draw->AddLine(nodeCenter(animator_link_from_), io.MousePos, theme::kRed, 2.0f);
+        draw->AddLine(nodeCenter(animator_link_from_), io.MousePos, theme::kAccent, 2.0f);
     }
 
     // --- Nodos ---
@@ -942,7 +942,7 @@ void EditorApp::drawBlendTreeEditor(ecs::AnimatorState& st, const asset::ModelDa
             for (std::size_t k = 0; k < st.children.size(); ++k) {
                 const float x = toX(st.children[k].threshold);
                 const float r = 4.0f + 7.0f * weights[k];
-                draw->AddCircleFilled(ImVec2(x, mid), r, theme::withAlpha(theme::kRed, static_cast<int>(90 + 165 * weights[k])));
+                draw->AddCircleFilled(ImVec2(x, mid), r, theme::withAlpha(theme::kAccent, static_cast<int>(90 + 165 * weights[k])));
                 const std::string tag = std::to_string(k + 1);
                 draw->AddText(ImVec2(x - 3.0f, a.y + 3.0f), IM_COL32(200, 204, 212, 255), tag.c_str());
             }
@@ -963,7 +963,7 @@ void EditorApp::drawBlendTreeEditor(ecs::AnimatorState& st, const asset::ModelDa
             draw->AddLine(ImVec2(center.x, center.y - half), ImVec2(center.x, center.y + half), IM_COL32(60, 62, 70, 255));
             for (std::size_t k = 0; k < st.children.size(); ++k) {
                 const ImVec2 p = toScreen(st.children[k].position);
-                draw->AddCircleFilled(p, 4.0f + 9.0f * weights[k], theme::withAlpha(theme::kRed, static_cast<int>(90 + 165 * weights[k])));
+                draw->AddCircleFilled(p, 4.0f + 9.0f * weights[k], theme::withAlpha(theme::kAccent, static_cast<int>(90 + 165 * weights[k])));
                 const std::string tag = std::to_string(k + 1);
                 draw->AddText(ImVec2(p.x + 6.0f, p.y - 16.0f), IM_COL32(200, 204, 212, 255), tag.c_str());
             }

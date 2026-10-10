@@ -25,6 +25,7 @@
 #include <cstdlib>
 #include <iostream>
 #include <thread>
+#include <CramionFX/asset/TextureCompression.h>
 #include <unordered_set>
 
 namespace cramion::editor {
@@ -33,7 +34,7 @@ std::vector<std::uint8_t> captureEditorWindow(HWND hwnd, const std::filesystem::
 
 namespace {
 
-constexpr ImU32 kAccent = theme::kRed;  // acento del tema
+constexpr ImU32 kAccent = theme::kAccent;  // acento del tema
 constexpr ImU32 kCardBg = IM_COL32(12, 14, 17, 255);   // el fondo del banner (igual: sin recuadro)
 
 }  // namespace
@@ -49,6 +50,68 @@ void EditorApp::beginOpenProject(const std::filesystem::path& path) {
     // Nombre para el dialogo antes de abrirlo (la carpeta o el .crproj).
     const std::filesystem::path name = path.extension() == ".crproj" ? path.stem() : path.filename();
     load.project_name = dialogs::utf8(name);
+}
+
+void EditorApp::startTextureImport() {
+    stopTextureImport();
+    if (!sync_ || !asset::textureCompressionEnabled()) return;
+    auto import = std::make_unique<TextureImport>();
+    // Primero las de los materiales (las que piden las escenas), despues
+    // cualquier otra imagen de Assets.
+    import->items = sync_->materialTextureSources();
+    std::unordered_set<std::string> seen;
+    for (const asset::TextureData& texture : import->items) seen.insert(texture.source_path);
+    std::error_code ec;
+    for (auto it = std::filesystem::recursive_directory_iterator(
+             project_.assetsFolder(), std::filesystem::directory_options::skip_permission_denied, ec);
+         !ec && it != std::filesystem::recursive_directory_iterator(); it.increment(ec)) {
+        if (!it->is_regular_file(ec)) continue;
+        std::string ext = it->path().extension().string();
+        std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        if (ext != ".png" && ext != ".jpg" && ext != ".jpeg" && ext != ".tga" && ext != ".bmp" && ext != ".tif" &&
+            ext != ".tiff" && ext != ".psd") {
+            continue;
+        }
+        asset::TextureData texture;
+        texture.name = dialogs::utf8(it->path().filename());
+        texture.source_path = dialogs::utf8(it->path());
+        if (seen.insert(texture.source_path).second) import->items.push_back(std::move(texture));
+    }
+    if (import->items.empty()) return;
+    import->started = std::chrono::steady_clock::now();
+    std::cout << "[Texturas] Importando " << import->items.size() << " texturas (BC7, Library/Cache/Textures)\n";
+    TextureImport* state = import.get();
+    // Dos a la vez: cada compresion ya usa varios nucleos.
+    for (int t = 0; t < 2; ++t) {
+        import->threads.emplace_back([state] {
+            for (std::size_t i = state->next++; i < state->items.size() && !state->stop; i = state->next++) {
+                try {
+                    if (!asset::prepareLazyTexture(state->items[i])) ++state->compressed;
+                } catch (const std::exception& e) {
+                    std::cerr << "[Texturas] " << state->items[i].name << ": " << e.what() << "\n";
+                }
+                ++state->done;
+            }
+        });
+    }
+    texture_import_ = std::move(import);
+}
+
+std::string EditorApp::textureImportStatus() {
+    if (!texture_import_) return {};
+    TextureImport& import = *texture_import_;
+    const std::size_t total = import.items.size();
+    const std::size_t done = import.done.load();
+    if (done < total) {
+        return "Optimizando texturas " + std::to_string(done) + "/" + std::to_string(total);
+    }
+    if (!import.reported) {
+        import.reported = true;
+        std::cout << "[Texturas] Importacion lista: " << import.compressed.load() << " comprimidas, "
+                  << total - import.compressed.load() << " ya estaban, en "
+                  << std::chrono::duration<float>(std::chrono::steady_clock::now() - import.started).count() << " s\n";
+    }
+    return {};
 }
 
 void EditorApp::beginOpenScene(const std::filesystem::path& path) {
@@ -136,16 +199,18 @@ void EditorApp::stepProjectLoad() {
             // en la pantalla de carga se sigue (en tandas de 250 ms, para que la
             // pantalla no se congele) hasta que todo este en la GPU.
             const auto upload_start = std::chrono::steady_clock::now();
+            // Falta algo: modelos sin subir o variantes de material esperando
+            // a sus texturas (se leen en hilos).
+            const auto busy = [&] {
+                return renderer_.uploadedModelCount() < scene_.models().size() || sync_->materialVariantsPending();
+            };
             // (Con la subida en hilos cada sincronizacion vuelve enseguida: un
             // respiro entre una y otra deja la CPU a esos hilos.)
             do {
                 sync_->sync(world_, scene_, renderer_, 0.0f, options);
-                if (renderer_.uploadedModelCount() < scene_.models().size()) {
-                    std::this_thread::sleep_for(std::chrono::milliseconds(2));
-                }
-            } while (renderer_.uploadedModelCount() < scene_.models().size() &&
-                     std::chrono::steady_clock::now() - upload_start < std::chrono::milliseconds(250));
-            if (renderer_.uploadedModelCount() < scene_.models().size()) break;
+                if (busy()) std::this_thread::sleep_for(std::chrono::milliseconds(2));
+            } while (busy() && std::chrono::steady_clock::now() - upload_start < std::chrono::milliseconds(250));
+            if (busy()) break;
             load.stage = Stage::Physics;
             load.frames = 0;
             break;

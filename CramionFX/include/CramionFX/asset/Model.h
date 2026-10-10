@@ -68,6 +68,10 @@ struct TextureData {
     // Mapa de alturas en escala de grises (el "bump" de los OBJ): al
     // decodificarlo se convierte en un normal map en espacio tangente.
     bool height_map = false;
+    // Si tiene recortes por alfa (texeles por debajo de la mitad): -1 sin
+    // saber (se mira en los pixeles), 0 no, 1 si. Lo pone la compresion BC7,
+    // que no se puede mirar sin descomprimir.
+    std::int8_t alpha = -1;
 };
 
 // Material PBR metal/rugosidad (el de glTF 2.0 y Unreal).
@@ -344,6 +348,24 @@ void setDecodeBlockCompressed(bool decode);
 // triangulos. Lanza std::runtime_error si el modelo esta vacio. `label` es
 // para los mensajes.
 void finalizeModel(ModelData& model, const std::string& label);
+
+// Texturas "perezosas": sin pixeles ni bytes, solo `source_path` (un archivo
+// o algo que entiende el resolvedor). No ocupan RAM: se decodifican al
+// subirlas a la GPU (en el hilo de la subida) y se tiran. Las usan las
+// variantes de material: 94 objetos con materiales propios eran 30 GB de
+// copias decodificadas de las mismas texturas.
+bool isLazyTexture(const TextureData& texture);
+// `source` -> textura ya decodificada (RGBA8). false si no es suya.
+using TextureResolver = std::function<bool(const std::string& source, TextureData& out)>;
+void setTextureResolver(TextureResolver resolver);
+// Clave de cache de una receta sin hacerla (de las fechas de sus archivos):
+// 0 si no es suya. Con ella la textura comprimida sale de la cache.
+using TextureKeyResolver = std::function<std::uint64_t(const std::string& source)>;
+void setTextureKeyResolver(TextureKeyResolver resolver);
+std::uint64_t resolveTextureKey(const std::string& source);
+// Decodifica una textura perezosa en `out` (con el tamano maximo). Se puede
+// llamar desde cualquier hilo.
+bool resolveLazyTexture(const TextureData& lazy, TextureData& out);
 
 }  // namespace cramion::asset
 

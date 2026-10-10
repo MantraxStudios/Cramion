@@ -18,10 +18,10 @@
 namespace cramion::editor::theme {
 
 bool primaryButton(const char* label, const ImVec2& size) {
-    ImGui::PushStyleColor(ImGuiCol_Button, kRed);
-    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, kRedHover);
-    ImGui::PushStyleColor(ImGuiCol_ButtonActive, kRedActive);
-    ImGui::PushStyleColor(ImGuiCol_Border, withAlpha(kRedHover, 140));
+    ImGui::PushStyleColor(ImGuiCol_Button, kAccent);
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, kAccentHover);
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive, kAccentActive);
+    ImGui::PushStyleColor(ImGuiCol_Border, withAlpha(kAccentHover, 140));
     ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(255, 255, 255, 255));
     const bool pressed = ImGui::Button(label, size);
     ImGui::PopStyleColor(5);
@@ -102,7 +102,7 @@ bool searchBox(const char* id, std::string& text, const char* hint, float width)
     draw->AddCircle(c, r, glass, 16, 1.5f);
     draw->AddLine(ImVec2(c.x + r * 0.7f, c.y + r * 0.7f), ImVec2(c.x + r * 1.7f, c.y + r * 1.7f), glass, 1.6f);
     if (focused) {
-        draw->AddRect(p, ImVec2(p.x + w, p.y + h), withAlpha(kRed, 200), ImGui::GetStyle().FrameRounding, 0, 1.0f);
+        draw->AddRect(p, ImVec2(p.x + w, p.y + h), withAlpha(kAccent, 220), ImGui::GetStyle().FrameRounding, 0, 1.0f);
     }
     bool cleared = false;
     if (!text.empty()) {

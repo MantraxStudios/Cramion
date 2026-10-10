@@ -1,6 +1,7 @@
 #ifndef CRAMION_VK_VULKAN_TEXTURE_H
 #define CRAMION_VK_VULKAN_TEXTURE_H
 
+#include "CramionFX/vk/GpuMemoryStats.h"
 #include "CramionFX/vk/VulkanCommon.h"
 
 #include <cstddef>
@@ -42,6 +43,7 @@ public:
     std::uint32_t mipLevels() const { return mip_levels_; }
 
 private:
+    GpuMemoryTicket memory_ticket_;  // cuenta de VRAM (GpuMemoryStats.h)
     vk::raii::DeviceMemory memory_{nullptr};
     vk::raii::Image image_{nullptr};
     vk::raii::ImageView view_{nullptr};

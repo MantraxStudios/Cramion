@@ -624,10 +624,14 @@ void EditorApp::drawWorkspaceBar() {
     const float height = ImGui::GetFrameHeight() + 6.0f;
     const ImGuiWindowFlags flags = ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse |
                                    ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoDocking;
+    // Como las pestanas de espacios de trabajo de Blender: sobre la barra
+    // oscura, la activa con el gris de las areas y las demas solo texto.
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(6.0f, 4.0f));
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, theme::kBg0);
     int clicked = -1;
     int close = -1;
     const bool open_bar = ImGui::BeginViewportSideBar("##workspaces", viewport, ImGuiDir_Up, height, flags);
+    ImGui::PopStyleColor();
     ImGui::PopStyleVar();
     if (open_bar && ImGui::BeginTabBar("##workspace_tabs", ImGuiTabBarFlags_FittingPolicyScroll)) {
         for (const Workspace& ws : workspaces_) {
@@ -747,11 +751,12 @@ void EditorApp::buildPrefabLayout(unsigned int dockspace_id) {
     ImGui::DockBuilderRemoveNode(dockspace_id);
     ImGui::DockBuilderAddNode(dockspace_id, ImGuiDockNodeFlags_DockSpace);
     ImGui::DockBuilderSetNodeSize(dockspace_id, viewport->WorkSize);
+    // Como el de la escena (Blender): Jerarquia e Inspector a la derecha.
     ImGuiID center = dockspace_id;
-    const ImGuiID right = ImGui::DockBuilderSplitNode(center, ImGuiDir_Right, 0.26f, nullptr, &center);
-    const ImGuiID left = ImGui::DockBuilderSplitNode(center, ImGuiDir_Left, 0.24f, nullptr, &center);
-    const ImGuiID bottom = ImGui::DockBuilderSplitNode(center, ImGuiDir_Down, 0.28f, nullptr, &center);
-    ImGui::DockBuilderDockWindow(panelTitle("Jerarquía").c_str(), left);
+    ImGuiID right = ImGui::DockBuilderSplitNode(center, ImGuiDir_Right, 0.25f, nullptr, &center);
+    const ImGuiID outliner = ImGui::DockBuilderSplitNode(right, ImGuiDir_Up, 0.34f, nullptr, &right);
+    const ImGuiID bottom = ImGui::DockBuilderSplitNode(center, ImGuiDir_Down, 0.26f, nullptr, &center);
+    ImGui::DockBuilderDockWindow(panelTitle("Jerarquía").c_str(), outliner);
     ImGui::DockBuilderDockWindow(panelTitle("Inspector").c_str(), right);
     ImGui::DockBuilderDockWindow(panelTitle("Proyecto").c_str(), bottom);
     ImGui::DockBuilderDockWindow(panelTitle("Consola").c_str(), bottom);
@@ -764,9 +769,11 @@ void EditorApp::drawWorkspacePanels(float delta_seconds) {
     const ImGuiViewport* viewport = ImGui::GetMainViewport();
     game_view_visible_ = false;
     if (activeWorkspaceKind() == WorkspaceKind::Prefab) {
-        const ImGuiID dock = ImHashStr("CramionPrefabDockspace");
+        const ImGuiID dock = ImHashStr("CramionPrefabDockspaceBlender");
         if (ImGui::DockBuilderGetNode(dock) == nullptr) buildPrefabLayout(dock);
+        ImGui::PushStyleColor(ImGuiCol_WindowBg, theme::kGap);
         ImGui::DockSpaceOverViewport(dock, viewport);
+        ImGui::PopStyleColor();
         if (workspace_focus_frames_ > 0 && --workspace_focus_frames_ == 0) {
             if (const ecs::Entity root = prefabStageRoot(); root.valid()) {
                 selectOnly(root.uuid());
@@ -792,7 +799,9 @@ void EditorApp::drawWorkspacePanels(float delta_seconds) {
         const ImGuiID dock = ImHashStr("CramionScriptDockspace");
         const ImGuiDockNode* node = ImGui::DockBuilderGetNode(dock);
         if (node == nullptr || node->IsLeafNode()) buildScriptLayout(dock);
+        ImGui::PushStyleColor(ImGuiCol_WindowBg, theme::kGap);
         ImGui::DockSpaceOverViewport(dock, viewport, ImGuiDockNodeFlags_AutoHideTabBar);
+        ImGui::PopStyleColor();
         const ImGuiDockNode* central = ImGui::DockBuilderGetCentralNode(dock);
         script_workspace_dock_ = central != nullptr ? central->ID : dock;
         scene_view_visible_ = false;

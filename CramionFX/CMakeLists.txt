@@ -197,6 +197,14 @@ file(GLOB_RECURSE CRAMIONFX_HEADERS CONFIGURE_DEPENDS
 add_library(CramionFX STATIC ${CRAMIONFX_SOURCES} ${CRAMIONFX_HEADERS})
 add_library(Cramion::FX ALIAS CramionFX)
 
+# Compresor BC7 (bc7enc de Rich Geldreich, MIT): las texturas se comprimen al
+# importarlas (TextureCompression.cpp). Codigo de terceros: sin avisos y
+# siempre optimizado (comprimir en Debug sin optimizar seria eterno).
+target_sources(CramionFX PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/vendor/bc7enc/bc7enc.cpp")
+set_source_files_properties("${CMAKE_CURRENT_SOURCE_DIR}/vendor/bc7enc/bc7enc.cpp"
+    PROPERTIES COMPILE_OPTIONS "-O2;-w")
+target_include_directories(CramionFX SYSTEM PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/vendor/bc7enc")
+
 target_compile_features(CramionFX PUBLIC cxx_std_20)
 
 # Publico: #include <CramionFX/...>. Las cabeceras de Vulkan tambien, porque
@@ -281,6 +289,7 @@ set_source_files_properties(
     "${CMAKE_CURRENT_SOURCE_DIR}/src/asset/ModelCache.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/asset/ModelLoader.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/asset/StbImage.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/asset/TextureCompression.cpp"
     PROPERTIES COMPILE_OPTIONS "-O2"
 )
 

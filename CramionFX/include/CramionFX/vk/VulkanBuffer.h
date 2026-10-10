@@ -1,6 +1,7 @@
 #ifndef CRAMION_VK_VULKAN_BUFFER_H
 #define CRAMION_VK_VULKAN_BUFFER_H
 
+#include "CramionFX/vk/GpuMemoryStats.h"
 #include "CramionFX/vk/VulkanCommon.h"
 
 namespace cramion::gfx {
@@ -44,6 +45,7 @@ public:
     bool isValid() const { return *buffer_ != VK_NULL_HANDLE; }
 
 private:
+    GpuMemoryTicket memory_ticket_;  // cuenta de VRAM (GpuMemoryStats.h)
     // Orden de declaracion inverso al de destruccion: el buffer debe destruirse
     // antes de liberar la memoria a la que esta enlazado.
     vk::raii::DeviceMemory memory_{nullptr};

@@ -16,6 +16,7 @@ Cramion uses the following libraries, each under its own license. Exported games
 | ENet | MIT | https://github.com/lsalzman/enet |
 | Recast & Detour | zlib | https://github.com/recastnavigation/recastnavigation |
 | meshoptimizer | MIT | https://github.com/zeux/meshoptimizer |
+| bc7enc (compresión de texturas BC7, `CramionFX/vendor/bc7enc`) | MIT o dominio público (Unlicense) | https://github.com/richgel999/bc7enc_rdo |
 | zstd | BSD-3-Clause | https://github.com/facebook/zstd |
 | nlohmann/json | MIT | https://github.com/nlohmann/json |
 | assimp | BSD-3-Clause | https://github.com/assimp/assimp |

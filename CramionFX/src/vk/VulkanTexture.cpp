@@ -73,6 +73,7 @@ void VulkanTexture::create(const VulkanDevice& device, std::uint32_t width, std:
     allocate_info.memoryTypeIndex = device.findMemoryType(
         requirements.memoryTypeBits, vk::MemoryPropertyFlagBits::eDeviceLocal);
     memory_ = vk::raii::DeviceMemory(device.handle(), allocate_info);
+    memory_ticket_ = GpuMemoryTicket(GpuMemoryKind::Texture, requirements.size);
     image_.bindMemory(*memory_, 0);
 
     // --- Subida del nivel 0 y generacion de los demas ---
@@ -187,6 +188,7 @@ void VulkanTexture::createCompressed(const VulkanDevice& device, std::uint32_t w
     allocate_info.memoryTypeIndex = device.findMemoryType(
         requirements.memoryTypeBits, vk::MemoryPropertyFlagBits::eDeviceLocal);
     memory_ = vk::raii::DeviceMemory(device.handle(), allocate_info);
+    memory_ticket_ = GpuMemoryTicket(GpuMemoryKind::Texture, requirements.size);
     image_.bindMemory(*memory_, 0);
 
     VulkanBuffer staging;
@@ -249,6 +251,7 @@ void VulkanTexture::destroy() {
     view_ = nullptr;
     image_ = nullptr;
     memory_ = nullptr;
+    memory_ticket_.release();
     mip_levels_ = 1;
 }
 

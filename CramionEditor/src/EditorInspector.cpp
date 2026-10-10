@@ -870,7 +870,7 @@ void EditorApp::drawAddComponent(ecs::Entity entity) {
             const ImVec2 p1(p0.x + tile_w, p0.y + kTileH);
             // Fondo, borde y la barra de color de la categoria.
             draw->AddRectFilled(p0, p1, held ? theme::kBg5 : (hovered ? theme::kBg4 : theme::kBg3), 4.0f);
-            draw->AddRect(p0, p1, hovered ? theme::kRed : theme::kBorder, 4.0f, 0, hovered ? 1.5f : 1.0f);
+            draw->AddRect(p0, p1, hovered ? theme::kAccent : theme::kBorder, 4.0f, 0, hovered ? 1.5f : 1.0f);
             draw->AddRectFilled(ImVec2(p0.x + 10.0f, p0.y + 1.0f), ImVec2(p1.x - 10.0f, p0.y + 3.0f),
                                 theme::withAlpha(accent, hovered ? 255 : 170), 1.0f);
             // Icono (o la inicial en un circulo).

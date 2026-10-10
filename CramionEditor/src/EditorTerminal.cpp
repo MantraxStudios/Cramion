@@ -459,7 +459,7 @@ void EditorApp::drawTerminalSession(TerminalSession& session) {
             for (int x = 0; x < cols; ++x) {
                 if (selected(index, x)) {
                     draw->AddRectFilled(ImVec2(origin.x + x * cell_w, y), ImVec2(origin.x + (x + 1) * cell_w, y + cell_h),
-                                        theme::withAlpha(theme::kRed, 90));
+                                        theme::withAlpha(theme::kAccent, 90));
                 }
             }
         }

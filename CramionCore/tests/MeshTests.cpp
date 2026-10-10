@@ -4,6 +4,9 @@
 // addComponent) y el MeshCollider con Jolt (tambien al cambiar la malla).
 // Devuelve 0 si todo va.
 
+#include <iostream>
+#include <CramionFX/asset/Dds.h>
+#include <CramionFX/asset/TextureCompression.h>
 #include "CramionCore/ecs/Components.h"
 #include "CramionCore/ecs/RuntimeMesh.h"
 #include "CramionCore/ecs/SceneSerializer.h"
@@ -673,6 +676,70 @@ void testLods() {
               "con limite 64 la textura de 256 queda en 64x64");
         check(full.width == 256, "sin limite queda en 256");
         std::filesystem::remove(png);
+    }
+
+    // Compresion BC7 con cache (como Unity): la imagen sale en BC7 con todos
+    // sus mips, casi igual a la original, opaca; la segunda vez se lee de la
+    // cache; y una con recortes se marca con alfa.
+    {
+        const std::filesystem::path folder = std::filesystem::temp_directory_path() / "cramion_bc7_cache";
+        std::filesystem::remove_all(folder);
+        asset::ImageRgba8 image{};
+        image.width = image.height = 256;
+        image.pixels.assign(256u * 256u * 4u, 255);
+        for (std::uint32_t y = 0; y < 256; ++y) {
+            for (std::uint32_t x = 0; x < 256; ++x) {
+                std::uint8_t* p = &image.pixels[(static_cast<std::size_t>(y) * 256 + x) * 4];
+                p[0] = static_cast<std::uint8_t>(x);
+                p[1] = static_cast<std::uint8_t>(y);
+                p[2] = static_cast<std::uint8_t>((x * 7 + y * 13) % 256);
+            }
+        }
+        const std::filesystem::path png = std::filesystem::temp_directory_path() / "cramion_bc7.png";
+        check(asset::saveImagePng(png, image), "escribe la imagen para BC7");
+        const auto decode = [&] {
+            asset::ModelData textured{};
+            textured.indices = {0, 1, 2};
+            textured.vertices.resize(3);
+            asset::TextureData texture{};
+            texture.name = "bc7";
+            texture.source_path = png.string();
+            textured.textures.push_back(texture);
+            asset::finalizeModel(textured, "bc7");
+            return textured.textures[0];
+        };
+        asset::setTextureCacheFolder(folder);
+        const asset::TextureData first = decode();
+        check(first.format == asset::TextureFormat::Bc7 && first.mip_levels == 9, "BC7 con sus 9 mips");
+        check(first.alpha == 0, "la imagen opaca no se marca con alfa");
+        const std::vector<std::uint8_t> back = asset::decodeBlockCompressed(first);
+        double error = 0.0;
+        for (std::size_t i = 0; i < back.size() && i < image.pixels.size(); ++i) {
+            const double d = static_cast<double>(back[i]) - image.pixels[i];
+            error += d * d;
+        }
+        const double mse = error / static_cast<double>(image.pixels.size());
+        const double psnr = mse > 0.0 ? 10.0 * std::log10(255.0 * 255.0 / mse) : 99.0;
+        std::cout << "  BC7: PSNR " << psnr << " dB, " << first.pixels.size() << " bytes (RGBA8: "
+                  << image.pixels.size() << ")\n";
+        check(back.size() == image.pixels.size() && psnr > 40.0, "BC7 casi igual a la original (PSNR > 40 dB)");
+        std::size_t cached_files = 0;
+        for (const auto& entry : std::filesystem::directory_iterator(folder)) {
+            cached_files += entry.path().extension() == ".dds" ? 1 : 0;
+        }
+        check(cached_files == 1, "queda un .dds en la cache");
+        const asset::TextureData second = decode();
+        check(second.format == asset::TextureFormat::Bc7 && second.pixels == first.pixels && second.alpha == 0,
+              "la segunda vez sale igual de la cache");
+
+        for (std::size_t i = 3; i < image.pixels.size(); i += 4 * 64) image.pixels[i] = 0;
+        check(asset::saveImagePng(png, image), "escribe la imagen con recortes");
+        check(decode().alpha == 1, "la imagen con recortes se marca con alfa");
+
+        asset::setTextureCacheFolder({});
+        check(decode().format == asset::TextureFormat::Rgba8, "sin carpeta de cache no se comprime");
+        std::filesystem::remove(png);
+        std::filesystem::remove_all(folder);
     }
 
     // Un modelo animado (o pequeno) no tiene LODs.

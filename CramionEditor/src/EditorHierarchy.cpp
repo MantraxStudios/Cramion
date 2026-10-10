@@ -449,11 +449,11 @@ void EditorApp::drawHierarchyRow(const HierarchyRow& row, bool scroll_to) {
         const float name_x = label_x + icon_size + 4.0f;
         {
             ImDrawList* draw = ImGui::GetWindowDrawList();
-            // Seleccionada: barra roja al borde izquierdo (la del objeto activo, entera).
+            // Seleccionada: barra azul al borde izquierdo (la del objeto activo, entera).
             if (selected) {
                 const bool is_active = active_ == uuid;
                 draw->AddRectFilled(ImVec2(row_min.x, row_min.y + 1.0f), ImVec2(row_min.x + 2.0f, row_max.y - 1.0f),
-                                    is_active ? theme::kRed : theme::withAlpha(theme::kRed, 140));
+                                    is_active ? theme::kAccent : theme::withAlpha(theme::kAccent, 140));
             }
             ImU32 tint = IM_COL32_WHITE;
             const Icon icon = entityIcon(entity, tint);

@@ -1,10 +1,42 @@
 # Cambios
 
-## Próxima versión (en desarrollo)
+## 2.9.0
 
-**Pueblos y ciudades medievales, casas con interior, terreno que se aplana bajo los edificios y colliders que se ajustan a la malla como en Unity.** Y además: splines, interfaz completa, World Partition con HLOD, streaming de texturas, netcode serio con servidor dedicado y chat de voz, multitudes, niebla local, pelo, sondas dinámicas, lightmap de superficie, accesibilidad, mods, informe de cierres, job system y Linux.
+**Interfaz como Blender, texturas comprimidas como Unity y escenas grandes que abren sin congelarse.** El editor estrena el aspecto y la distribución de Blender; las texturas se comprimen a BC7 al abrir el proyecto (cuatro veces menos memoria de vídeo, a la vista igual) y una casa con cientos de texturas de 4K ya no deja el editor un minuto colgado ni lo cierra por falta de memoria. Además: pueblos y ciudades medievales, casas con interior, terreno que se aplana bajo los edificios, splines, interfaz completa, World Partition con HLOD y carga en hilos, netcode con servidor dedicado y chat de voz, multitudes, accesibilidad, mods, informe de cierres, el código fuente abierto y Linux.
 
-> Todo lo de este bloque «2.4» está escrito pero **sin compilar todavía** (el PC no daba para compilar mientras se programaba): hay que compilar y probar antes de publicar.
+### Editor con la interfaz de Blender
+- **Tema de Blender 4** («Blender Dark»): áreas grises separadas por huecos oscuros, campos y botones redondeados en gris medio, y el **azul de Blender** para lo seleccionado (selección de la Jerarquía como el Outliner, pestaña con foco, deslizadores, botón principal). El rojo queda para los errores y el naranja de Blender para avisos, Play y el objeto activo. Ejes X/Y/Z con los colores de Blender.
+- **Distribución del espacio «Layout»**: la Escena grande en el centro; a la derecha la Jerarquía (Outliner) arriba y el Inspector (Propiedades) debajo; abajo, bajo la Escena, Proyecto y Consola (donde Blender pone la línea de tiempo). Se aplica sola la primera vez; *Restablecer diseño* vuelve a ella. La pestaña de prefabs usa la misma.
+- **Barra de estado abajo** (como la de Blender): el objeto activo y cuántos más hay seleccionados, Play/Pausa, el número de objetos, los FPS, el tiempo de GPU y la versión. Mientras se importan texturas, el progreso.
+- Barra de pestañas de los espacios de trabajo como la de Blender (la activa con el gris de las áreas).
+
+### Texturas comprimidas (como Unity)
+- **Compresión BC7 al importar**: las imágenes (PNG, JPG, TGA, BMP, TIF, PSD) se comprimen a BC7 con todos sus mipmaps, el formato «High Quality» de Unity. Una textura de 4K pasa de **85 a 21 MB** de VRAM y de RAM, y a la vista es igual (46 dB de PSNR en las pruebas). También las texturas que el motor junta de varios mapas (rugosidad, metal, oclusión, cavidad) y los normal maps hechos de un bump.
+- **Importación al abrir el proyecto**: en segundo plano, el editor comprime lo que no esté ya hecho y lo guarda en `Library/Cache/Textures` (un `.dds` por textura). La clave es la ruta, el tamaño y la fecha del archivo, así que mirar la caché no lee la imagen, y si cambias una imagen se vuelve a comprimir sola. Al abrir una escena ya solo se leen los `.dds`: cargar es más rápido que decodificar los PNG.
+- La misma textura pedida por dos modelos a la vez se comprime una sola vez.
+- La compresión anota si la textura tiene recortes por alfa (los materiales opacos no pasan a «recortados»).
+- En las GPU sin BC (casi todos los móviles) las texturas siguen como antes.
+- Compresor: bc7enc (MIT), en `CramionFX/vendor/bc7enc`.
+
+### Escenas grandes sin congelarse
+- **Variantes de material en hilos y sin copias**: un objeto con materiales propios hacía en el hilo principal una copia del modelo y leía, decodificaba y guardaba **todas** sus texturas, en el mismo frame. Una casa con 94 de esos objetos y 240 texturas de 4K dejaba el editor **67 segundos congelado**, llegaba a **21 GB de RAM** y se cerraba por falta de memoria de vídeo. Ahora la variante solo apunta las rutas de sus texturas (las texturas juntadas, una receta); se leen y decodifican al subirlas a la GPU, en su hilo y una vez por textura. Se hacen unos milisegundos por frame y la pantalla de carga espera a que estén todas. La misma casa: el peor frame pasa de 67,8 s a menos de 1 s y el editor pasa de 21 GB de RAM a unos 0,8 GB durante la carga.
+- **Subida de modelos en hilos**: los modelos y texturas nuevos se crean en hilos aparte y el hilo principal solo los pone en su sitio, en orden, sin esperar nunca a la GPU. La cola de Vulkan se comparte con un cerrojo (render, ImGui, OpenXR y las subidas).
+- Con el **streaming de texturas** activo, los modelos nuevos entran con un cuarto de lado y el streaming sube el detalle de lo que se ve grande mientras quede VRAM.
+- **Cuenta de la memoria de vídeo** en el informe del streaming: cuánto ocupan texturas, destinos de render, mallas y buffers visibles por la CPU.
+- Más marcas del perfilador dentro de la sincronización de actores (modelos nuevos, variantes, subidas, sockets), para que una captura de tirón diga qué tardó.
+
+### Realidad virtual
+- **Modelos de los mandos de Meta Quest 3** (Touch Plus) integrados, en la pose de agarre: hijos de un XR Controller coinciden con el mando de verdad, para ver dónde está y ajustar las manos a ojo.
+
+### Materiales y rigging
+- **Find And Build**: las texturas de un modelo importado (las que trae y las que encuentra en el proyecto por nombre: `piedra_albedo.png` → `piedra_normal.png`, `Piedra-Rough.png`, `PiedraAO.png`...) en un `.crmat` por hueco, puestos en el objeto y en los demás seleccionados. Entiende los empaquetados de Unity (Metallic-Smoothness, Mask Map de HDRP) y ORM.
+- **Huesos como objetos**: el esqueleto de un modelo como jerarquía de objetos (cada hueso colgando de su padre) que siguen la animación.
+
+### Scripting
+- **Empieza la retirada de Lua**: API nativa de C++ (las llamadas van primero al registro nativo y, si no está, a Lua, así que todo sigue funcionando mientras se migra). El plan, en `PLAN-SIN-LUA.md`.
+
+### Licencia
+- **Licencia del Motor Cramion 1.2**: el **código fuente** se puede descargar, compilar, modificar y compartir gratis, manteniendo el copyright y la licencia y diciendo que es una versión modificada. Sigue sin poderse vender, revender ni resubir el motor, y los juegos siguen siendo tuyos, sin regalías.
 
 ### Splines
 - **Spline** (curva Catmull-Rom, Bezier o lineal, abierta o cerrada, ancho y peralte por punto), **Extrusión por spline** (carretera con líneas, camino, río que mueve su `WaterBody`, muro, valla con postes, tubería, raíles con traviesas, cinta) pegada al terreno, y **Seguir spline** (bucle, ida y vuelta, una vez). *GameObject > Spline*; puntos arrastrables en la Escena; *Aplicar al terreno* allana y pinta debajo (el río excava su cauce). Lua: `Spline.create`, `entity:splinePoint`, `closestSplineDistance`, `playSplineFollower`...
@@ -18,6 +50,7 @@
 - **HLOD**: *Construir HLOD* junta y simplifica (meshoptimizer) las mallas de cada celda con su color medio; se ven de lejos con la celda descargada.
 - **Streaming de texturas por mips**: cada modelo sube sus texturas al detalle que pide su tamaño en pantalla (`render.streaming.TextureMips`, `TextureBias`).
 - **Job system** (`jobs::schedule`, `jobs::parallelFor`, CVar `jobs.Threads`): el relieve y la pintura del terreno y los lightmaps ya lo usan.
+- **World Partition más rápido**: cada repaso solo mira las raíces nuevas, borradas o que cambiaron de celda (antes recorría el mundo entero, cada hijo y cada frame) y descarga unas pocas celdas por frame.
 
 ### Multijugador
 - **Netcode**: interpolación con búfer por la hora del dueño, extrapolación, giro comprimido (smallest three), relevancia por distancia, velocidad máxima con corrección del dueño (anti-trampas), historia para la compensación de lag (`Network.lagCompensatedRaycast`, `Network.positionAt`), `Network.stats()` y simulador de latencia y pérdidas (`Network.simulate`).

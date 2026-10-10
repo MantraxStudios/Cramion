@@ -1,6 +1,7 @@
 #ifndef CRAMION_VK_VULKAN_IMAGE_H
 #define CRAMION_VK_VULKAN_IMAGE_H
 
+#include "CramionFX/vk/GpuMemoryStats.h"
 #include "CramionFX/vk/VulkanCommon.h"
 
 #include <vector>
@@ -51,6 +52,7 @@ public:
     bool isValid() const { return *image_ != VK_NULL_HANDLE; }
 
 private:
+    GpuMemoryTicket memory_ticket_;  // cuenta de VRAM (GpuMemoryStats.h)
     // La vista se destruye antes que la imagen, y la imagen antes que su
     // memoria: de ahi este orden de declaracion.
     vk::raii::DeviceMemory memory_{nullptr};

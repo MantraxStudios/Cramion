@@ -22,6 +22,7 @@
 #include "CramionCore/terrain/TerrainTools.h"
 
 #include <CramionFX/asset/ImageFile.h>
+#include <CramionFX/asset/TextureCompression.h>
 #include <CramionFX/vk/ShaderCompiler.h>
 
 #include <algorithm>
@@ -33,6 +34,9 @@
 #include <cstdlib>
 #include <iostream>
 #include <string>
+#include <stdexcept>
+#include <string_view>
+#include <mutex>
 #include <unordered_set>
 
 namespace cramion::ecs {
@@ -275,15 +279,158 @@ void RenderSync::applySurface(asset::MaterialData& data, const assets::MaterialA
     }
 }
 
+namespace {
+
+std::string utf8Path(const std::filesystem::path& path) {
+    const std::u8string text = path.u8string();
+    return std::string(text.begin(), text.end());
+}
+
+// Texturas juntadas de las variantes (mapas grises sueltos en una RGBA8):
+// la receta se apunta aqui y la textura se hace al subirla a la GPU, en el
+// hilo de la subida (asset::setTextureResolver). Hacerlas al crear la
+// variante era decodificar y guardar en RAM imagenes de 4K por cada objeto.
+constexpr std::string_view kPackPrefix = "crpack:";
+struct PackChannel {
+    std::string path;
+    std::uint8_t fill = 255;
+    bool invert = false;     // brillo -> rugosidad
+    float strength = 1.0f;   // mezcla con `fill` (fuerza de la cavidad)
+};
+struct PackRecipe {
+    std::filesystem::path root;
+    std::array<PackChannel, 4> channels;
+};
+std::mutex g_pack_mutex;
+std::unordered_map<std::string, PackRecipe> g_packs;
+
+// Cada canal de un archivo, remuestreado al tamano del mayor. Canal sin
+// archivo = `fill`.
+bool buildPack(const PackRecipe& recipe, const std::string& name, asset::TextureData& texture) {
+    const std::array<PackChannel, 4>& channels = recipe.channels;
+    std::array<asset::ImageRgba8, 4> images;
+    std::array<bool, 4> loaded{};
+    std::uint32_t width = 0;
+    std::uint32_t height = 0;
+    for (std::size_t c = 0; c < 4; ++c) {
+        const std::string& path = channels[c].path;
+        if (path.empty()) continue;
+        // El mismo archivo en dos canales se lee una vez.
+        for (std::size_t p = 0; p < c && !loaded[c]; ++p) {
+            if (loaded[p] && channels[p].path == path) {
+                images[c] = images[p];
+                loaded[c] = true;
+            }
+        }
+        if (!loaded[c]) {
+            loaded[c] = asset::loadImageRgba8(recipe.root / fromUtf8(path), images[c]);
+            if (!loaded[c]) std::cerr << "[RenderSync] Falta la textura " << path << "\n";
+        }
+        if (loaded[c] && images[c].width * images[c].height > width * height) {
+            width = images[c].width;
+            height = images[c].height;
+        }
+    }
+    if (width == 0) return false;
+    texture.name = name;
+    texture.format = asset::TextureFormat::Rgba8;
+    texture.width = width;
+    texture.height = height;
+    texture.pixels.resize(static_cast<std::size_t>(width) * height * 4);
+    for (std::size_t c = 0; c < 4; ++c) {
+        const PackChannel& channel = channels[c];
+        const asset::ImageRgba8& img = images[c];
+        const float strength = std::clamp(channel.strength, 0.0f, 1.0f);
+        for (std::uint32_t y = 0; y < height; ++y) {
+            const std::uint32_t sy = loaded[c] ? static_cast<std::uint32_t>(static_cast<std::uint64_t>(y) * img.height / height) : 0;
+            for (std::uint32_t x = 0; x < width; ++x) {
+                std::uint8_t value = channel.fill;
+                if (loaded[c]) {
+                    const std::uint32_t sx = static_cast<std::uint32_t>(static_cast<std::uint64_t>(x) * img.width / width);
+                    std::uint8_t g = img.pixels[(static_cast<std::size_t>(sy) * img.width + sx) * 4];
+                    if (channel.invert) g = static_cast<std::uint8_t>(255 - g);
+                    value = static_cast<std::uint8_t>(channel.fill + (static_cast<float>(g) - channel.fill) * strength + 0.5f);
+                }
+                texture.pixels[(static_cast<std::size_t>(y) * width + x) * 4 + c] = value;
+            }
+        }
+    }
+    return true;
+}
+
+// Clave de cache de una receta sin hacerla: su texto y el tamano y la fecha
+// de cada archivo (cambia uno y se rehace).
+std::uint64_t packKey(const std::string& source) {
+    PackRecipe recipe;
+    {
+        const std::lock_guard<std::mutex> lock(g_pack_mutex);
+        const auto it = g_packs.find(source);
+        if (it == g_packs.end()) return 0;
+        recipe = it->second;
+    }
+    std::uint64_t key = asset::textureCacheKey(reinterpret_cast<const std::uint8_t*>(source.data()), source.size(), false);
+    for (const PackChannel& channel : recipe.channels) {
+        if (channel.path.empty()) continue;
+        key ^= asset::textureFileKey(recipe.root / fromUtf8(channel.path), false) * 0x9e3779b97f4a7c15ULL;
+        key = asset::textureCacheKey(reinterpret_cast<const std::uint8_t*>(&key), sizeof(key), false);
+    }
+    return key;
+}
+
+void registerPackResolver() {
+    static std::once_flag once;
+    std::call_once(once, [] {
+        asset::setTextureKeyResolver([](const std::string& source) -> std::uint64_t {
+            return source.rfind(kPackPrefix, 0) == 0 ? packKey(source) : 0;
+        });
+        asset::setTextureResolver([](const std::string& source, asset::TextureData& out) {
+            if (source.rfind(kPackPrefix, 0) != 0) return false;
+            PackRecipe recipe;
+            {
+                const std::lock_guard<std::mutex> lock(g_pack_mutex);
+                const auto it = g_packs.find(source);
+                if (it == g_packs.end()) return false;
+                recipe = it->second;
+            }
+            return buildPack(recipe, out.name, out);
+        });
+    });
+}
+
+}  // namespace
+
+std::vector<asset::TextureData> RenderSync::materialTextureSources() {
+    // Las mismas que pondria una variante: la de un triangulo con cada
+    // material (buildVariant no lee ninguna imagen, solo apunta rutas y recetas).
+    asset::ModelData probe;
+    probe.name = "materiales";
+    probe.vertices.resize(3);
+    probe.indices = {0, 1, 2};
+    probe.submeshes = {asset::SubMesh{0, 3, 0}};
+    probe.materials.resize(1);
+    std::vector<asset::TextureData> out;
+    std::unordered_set<std::string> seen;
+    for (const assets::AssetInfo& info : assets_.database().all()) {
+        if (info.type != assets::AssetType::Material) continue;
+        try {
+            const asset::ModelData variant = buildVariant(probe, {info.uuid});
+            for (const asset::TextureData& texture : variant.textures) {
+                if (!asset::isLazyTexture(texture)) continue;
+                if (seen.insert(texture.source_path + (texture.height_map ? "#h" : "")).second) out.push_back(texture);
+            }
+        } catch (const std::exception& e) {
+            std::cerr << "[Texturas] Material " << info.name << ": " << e.what() << "\n";
+        }
+    }
+    return out;
+}
+
 asset::ModelData RenderSync::buildVariant(const asset::ModelData& base, const std::vector<Uuid>& overrides) {
+    registerPackResolver();
+    // Primero los materiales; la malla se copia al final (con el tiling).
     asset::ModelData v;
     v.name = base.name;
-    v.vertices = base.vertices;
-    v.indices = base.indices;
     v.submeshes = base.submeshes;
-    v.nodes = base.nodes;
-    v.bones = base.bones;
-    v.animations = base.animations;
 
     // Texturas del modelo que siguen usandose (las de los huecos sustituidos
     // no se copian) y las de los materiales, una vez por archivo.
@@ -298,85 +445,51 @@ asset::ModelData RenderSync::buildVariant(const asset::ModelData& base, const st
     };
     const std::filesystem::path& root = assets_.database().root();
     std::unordered_map<std::string, std::int32_t> files;
-    const auto file = [&](const std::string& relative) -> std::int32_t {
-        if (relative.empty()) return -1;
-        if (const auto it = files.find(relative); it != files.end()) return it->second;
-        asset::TextureData texture;
-        texture.name = relative;
-        if (!readBytes(root / fromUtf8(relative), texture.encoded)) {
-            std::cerr << "[RenderSync] Falta la textura " << relative << "\n";
-            files[relative] = -1;
-            return -1;
-        }
-        const auto index = static_cast<std::int32_t>(v.textures.size());
-        v.textures.push_back(std::move(texture));
-        files[relative] = index;
-        return index;
+    const auto exists = [&](const std::string& relative) {
+        std::error_code ec;
+        return !relative.empty() && std::filesystem::exists(root / fromUtf8(relative), ec);
     };
-    // Mapas grises sueltos juntados en una textura RGBA8 (cada canal de un
-    // archivo, remuestreado al tamano del mayor). Canal sin archivo = `fill`.
-    struct Channel {
-        const std::string* path = nullptr;
-        std::uint8_t fill = 255;
-        bool invert = false;     // brillo -> rugosidad
-        float strength = 1.0f;   // mezcla con `fill` (fuerza de la cavidad)
-    };
-    const auto pack = [&](const std::string& key, const std::array<Channel, 4>& channels) -> std::int32_t {
-        if (const auto it = files.find(key); it != files.end()) return it->second;
-        std::array<asset::ImageRgba8, 4> images;
-        std::array<bool, 4> loaded{};
-        std::uint32_t width = 0;
-        std::uint32_t height = 0;
-        for (std::size_t c = 0; c < 4; ++c) {
-            const std::string* path = channels[c].path;
-            if (path == nullptr || path->empty()) continue;
-            // El mismo archivo en dos canales se lee una vez.
-            for (std::size_t p = 0; p < c && !loaded[c]; ++p) {
-                if (loaded[p] && *channels[p].path == *path) {
-                    images[c] = images[p];
-                    loaded[c] = true;
-                }
-            }
-            if (!loaded[c]) {
-                loaded[c] = asset::loadImageRgba8(root / fromUtf8(*path), images[c]);
-                if (!loaded[c]) std::cerr << "[RenderSync] Falta la textura " << *path << "\n";
-            }
-            if (loaded[c] && images[c].width * images[c].height > width * height) {
-                width = images[c].width;
-                height = images[c].height;
-            }
-        }
-        if (width == 0) {
-            files[key] = -1;
-            return -1;
-        }
+    // Las texturas de los materiales van "perezosas" (asset::isLazyTexture):
+    // solo la ruta o la receta. Se leen y decodifican al subirlas a la GPU, en
+    // su hilo y una vez por textura (la GPU las comparte entre modelos); la
+    // variante no guarda pixeles. Antes cada variante decodificaba aqui (hilo
+    // principal) todas sus texturas y se quedaba con su copia: una casa con
+    // 94 variantes y 240 texturas de 4K eran un minuto congelado y 30 GB.
+    const auto lazy = [&](const std::string& key, const std::string& name, std::string source,
+                          bool height_map) -> std::int32_t {
         asset::TextureData texture;
-        texture.name = key;
-        texture.width = width;
-        texture.height = height;
-        texture.pixels.resize(static_cast<std::size_t>(width) * height * 4);
-        for (std::size_t c = 0; c < 4; ++c) {
-            const Channel& channel = channels[c];
-            const asset::ImageRgba8& img = images[c];
-            const float strength = std::clamp(channel.strength, 0.0f, 1.0f);
-            for (std::uint32_t y = 0; y < height; ++y) {
-                const std::uint32_t sy = loaded[c] ? static_cast<std::uint32_t>(static_cast<std::uint64_t>(y) * img.height / height) : 0;
-                for (std::uint32_t x = 0; x < width; ++x) {
-                    std::uint8_t value = channel.fill;
-                    if (loaded[c]) {
-                        const std::uint32_t sx = static_cast<std::uint32_t>(static_cast<std::uint64_t>(x) * img.width / width);
-                        std::uint8_t g = img.pixels[(static_cast<std::size_t>(sy) * img.width + sx) * 4];
-                        if (channel.invert) g = static_cast<std::uint8_t>(255 - g);
-                        value = static_cast<std::uint8_t>(channel.fill + (static_cast<float>(g) - channel.fill) * strength + 0.5f);
-                    }
-                    texture.pixels[(static_cast<std::size_t>(y) * width + x) * 4 + c] = value;
-                }
-            }
-        }
+        texture.name = name;
+        texture.source_path = std::move(source);
+        texture.height_map = height_map;
         const auto index = static_cast<std::int32_t>(v.textures.size());
         v.textures.push_back(std::move(texture));
         files[key] = index;
         return index;
+    };
+    const auto file = [&](const std::string& relative) -> std::int32_t {
+        if (relative.empty()) return -1;
+        if (const auto it = files.find(relative); it != files.end()) return it->second;
+        if (!exists(relative)) {
+            std::cerr << "[RenderSync] Falta la textura " << relative << "\n";
+            files[relative] = -1;
+            return -1;
+        }
+        return lazy(relative, relative, utf8Path(root / fromUtf8(relative)), false);
+    };
+    using Channel = PackChannel;
+    const auto pack = [&](const std::string& key, const std::array<Channel, 4>& channels) -> std::int32_t {
+        if (const auto it = files.find(key); it != files.end()) return it->second;
+        if (std::none_of(channels.begin(), channels.end(), [&](const Channel& c) { return exists(c.path); })) {
+            files[key] = -1;
+            return -1;
+        }
+        // La ruta del proyecto en la clave: la GPU comparte por ella.
+        const std::string source = std::string(kPackPrefix) + utf8Path(root) + "|" + key;
+        {
+            const std::lock_guard<std::mutex> lock(g_pack_mutex);
+            g_packs.try_emplace(source, PackRecipe{root, channels});
+        }
+        return lazy(key, key, source, false);
     };
     // R = reflectancia (specular), G = rugosidad (o 1 - brillo), B = metal
     // (como glTF) y A = cavidad.
@@ -385,16 +498,16 @@ asset::ModelData RenderSync::buildVariant(const asset::ModelData& base, const st
         if (mat.metallic_map.empty() && rough.empty() && mat.specular_map.empty() && mat.cavity_map.empty()) return -1;
         const std::string key = "mr:" + mat.metallic_map + "|" + rough + "|" + mat.specular_map + "|" + mat.cavity_map +
                                 "|" + std::to_string(mat.cavity_strength);
-        return pack(key, {Channel{&mat.specular_map, 128},
-                          Channel{&rough, 255, mat.roughness_map.empty()},
-                          Channel{&mat.metallic_map, 255},
-                          Channel{&mat.cavity_map, 255, false, mat.cavity_strength}});
+        return pack(key, {Channel{mat.specular_map, 128},
+                          Channel{rough, 255, mat.roughness_map.empty()},
+                          Channel{mat.metallic_map, 255},
+                          Channel{mat.cavity_map, 255, false, mat.cavity_strength}});
     };
     // R = oclusion, G = altura (parallax). Sin altura, la oclusion tal cual.
     const auto packedOcclusion = [&](const assets::MaterialAsset& mat) -> std::int32_t {
         if (mat.height_map.empty()) return file(mat.occlusion);
         return pack("ao:" + mat.occlusion + "|" + mat.height_map,
-                    {Channel{&mat.occlusion, 255}, Channel{&mat.height_map, 255}, Channel{}, Channel{}});
+                    {Channel{mat.occlusion, 255}, Channel{mat.height_map, 255}, Channel{}, Channel{}});
     };
     // Bump (gris) como normal map si no hay uno de verdad: se convierte al
     // decodificarlo (TextureData::height_map).
@@ -402,20 +515,20 @@ asset::ModelData RenderSync::buildVariant(const asset::ModelData& base, const st
         if (relative.empty()) return -1;
         const std::string key = relative + "#bump";
         if (const auto it = files.find(key); it != files.end()) return it->second;
-        asset::TextureData texture;
-        texture.name = relative;
-        texture.height_map = true;
-        if (!readBytes(root / fromUtf8(relative), texture.encoded)) {
+        if (!exists(relative)) {
             files[key] = -1;
             return -1;
         }
-        const auto index = static_cast<std::int32_t>(v.textures.size());
-        v.textures.push_back(std::move(texture));
-        files[key] = index;
-        return index;
+        return lazy(key, relative, utf8Path(root / fromUtf8(relative)), true);
     };
 
-    std::vector<std::uint8_t> transformed(v.vertices.size(), 0);
+    // Tiling y desplazamiento de cada hueco: se hornean en las UV al final.
+    struct Tiling {
+        std::size_t material = 0;
+        core::Vec2 scale;
+        core::Vec2 offset;
+    };
+    std::vector<Tiling> tiled;
     // Huecos que no usa ninguna submalla (la puerta de una casa usa 3 de sus
     // 14 materiales): sin texturas. Antes se leian, decodificaban y subian las
     // de todos los huecos en cada pieza (cientos de MB por modelo).
@@ -486,19 +599,30 @@ asset::ModelData RenderSync::buildVariant(const asset::ModelData& base, const st
         // Tiling y desplazamiento: se hornean en las UV de sus submallas.
         const bool identity = mat->tiling.x == 1.0f && mat->tiling.y == 1.0f && mat->offset.x == 0.0f &&
                               mat->offset.y == 0.0f;
-        if (identity) continue;
+        if (!identity) tiled.push_back(Tiling{m, mat->tiling, mat->offset});
+    }
+
+    v.vertices = base.vertices;
+    v.indices = base.indices;
+    v.nodes = base.nodes;
+    v.bones = base.bones;
+    v.animations = base.animations;
+    std::vector<std::uint8_t> transformed(v.vertices.size(), 0);
+    for (const Tiling& t : tiled) {
         for (const asset::SubMesh& submesh : v.submeshes) {
-            if (submesh.material != m) continue;
+            if (submesh.material != t.material) continue;
             for (std::uint32_t i = 0; i < submesh.index_count; ++i) {
                 const std::uint32_t vertex = v.indices[submesh.first_index + i];
                 if (vertex >= v.vertices.size() || transformed[vertex]) continue;
                 transformed[vertex] = 1;
                 core::Vec2& uv = v.vertices[vertex].uv;
-                uv = core::Vec2{uv.x * mat->tiling.x + mat->offset.x, uv.y * mat->tiling.y + mat->offset.y};
+                uv = core::Vec2{uv.x * t.scale.x + t.offset.x, uv.y * t.scale.y + t.offset.y};
             }
         }
     }
-    asset::finalizeModel(v, v.name);
+    // (Sin finalizeModel: decodificaria las texturas perezosas aqui. Las que
+    // vienen del modelo base ya estan decodificadas.)
+    if (v.indices.empty()) throw std::runtime_error("El modelo " + v.name + " no tiene triangulos.");
     return v;
 }
 
@@ -521,6 +645,17 @@ std::uint32_t RenderSync::resolveVariant(std::uint32_t base, const std::vector<a
         return variants_[it->second].index;
     }
 
+    // Con la carga en hilos: unos milisegundos por frame como mucho (copiar
+    // mallas); lo que espera turno se dibuja mientras con los materiales del
+    // modelo.
+    const bool async = g_async_models.get();
+    constexpr float kVariantBudgetMs = 8.0f;
+    if (async && variant_build_ms_ >= kVariantBudgetMs) {
+        variant_waiting_ = true;
+        return base;
+    }
+    CR_PROFILE_SCOPE("Variante de material (nueva)");
+    const auto build_start = std::chrono::steady_clock::now();
     asset::ModelData variant;
     try {
         variant = buildVariant(data, slots);
@@ -528,6 +663,8 @@ std::uint32_t RenderSync::resolveVariant(std::uint32_t base, const std::vector<a
         std::cerr << "[RenderSync] Material: " << e.what() << "\n";
         return base;
     }
+    variant_build_ms_ +=
+        std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - build_start).count();
     const std::uint32_t index = scene.addModel(std::move(variant));
     if (model_bounds_.size() <= index) model_bounds_.resize(index + 1);
     model_bounds_[index] = model_bounds_[base];
@@ -903,6 +1040,7 @@ void RenderSync::reset(scene::Scene& scene) {
     failed_materials_.clear();
     marca("variants_");
     variants_.clear();
+    variant_waiting_ = false;
     marca("variant_lookup_");
     variant_lookup_.clear();
     marca("runtime_meshes_");
@@ -966,6 +1104,7 @@ std::optional<std::uint32_t> RenderSync::resolveModel(const assets::AssetRef& re
     if (const auto it = loaded_.find(ref.uuid); it != loaded_.end()) {
         asset = it->second;
     } else {
+        CR_PROFILE_SCOPE("Pedir modelo");
         if (g_async_models.get()) {
             // Streaming: lo lee un hilo de fondo; mientras, esta entidad no se
             // dibuja (el resto del frame sigue sin esperar).
@@ -988,6 +1127,7 @@ std::optional<std::uint32_t> RenderSync::resolveModel(const assets::AssetRef& re
 
     // La pieza pasa a la escena UNA vez (sin copiar gigas de mallas): el
     // AssetManager se queda con un ModelData vacio de esa pieza.
+    CR_PROFILE_SCOPE("Modelo nuevo en la escena");
     const std::uint32_t index = scene.addModel(std::move(*asset->parts[part]));
     const asset::ModelData& data = *scene.models()[index];
     anim::Animator bind(data);
@@ -2193,14 +2333,22 @@ void RenderSync::syncActors(World& world, scene::Scene& scene, gfx::VulkanRender
                             float delta_seconds) {
     CR_PROFILE_SCOPE("Actores y animacion");
     anim_lod_evaluated_ = anim_lod_skipped_ = 0;
+    variant_waiting_ = false;
+    variant_build_ms_ = 0.0f;
     bool added = false;
     // Modelos que terminaron de leer los hilos de fondo (streaming).
-    assets_.pollLoads();
+    {
+        CR_PROFILE_SCOPE("Modelos leidos (recoger)");
+        assets_.pollLoads();
+    }
     renderer.setModelStreaming(g_gpu_residency.get(), g_min_pixels.get(), g_idle_seconds.get());
     renderer.setTextureStreaming(g_texture_mips.get(), g_texture_bias.get());
     renderer.setDynamicProbes(g_dynamic_probes.get(), static_cast<std::uint32_t>(g_probes_per_frame.get()));
     // Materiales guardados desde el editor: factores en vivo o variantes rehechas.
-    applyMaterialChanges(scene, renderer);
+    if (!rebuild_materials_.empty() || !live_materials_.empty()) {
+        CR_PROFILE_SCOPE("Cambios de materiales");
+        applyMaterialChanges(scene, renderer);
+    }
     // Los actores se rellenan en su sitio (sin reconstruir el vector ni copiar
     // el animador de lo que no se anima): con cientos de objetos, rehacerlo
     // todo cada frame eran miles de reservas de memoria.
@@ -2213,6 +2361,8 @@ void RenderSync::syncActors(World& world, scene::Scene& scene, gfx::VulkanRender
 
     // En profundidad: el orden de los actores sigue al de la Jerarquia (estable
     // entre frames, lo que agradecen las cascadas de sombra).
+    std::optional<prof::Scope> walk_scope;
+    walk_scope.emplace("Recorrer entidades");
     world.forEachDepthFirst([&](Entity e) {
         const MeshRenderer* renderer_component = e.tryGet<MeshRenderer>();
         // Una tela se dibuja aunque no tenga Mesh Renderer (con su color).
@@ -2660,12 +2810,16 @@ void RenderSync::syncActors(World& world, scene::Scene& scene, gfx::VulkanRender
         actor_models_.push_back(*model);
         ++count;
     });
+    walk_scope.reset();
     actors.resize(count);
     prof::counter("Animaciones evaluadas", static_cast<double>(anim_lod_evaluated_));
     prof::counter("Animaciones saltadas (LOD)", static_cast<double>(anim_lod_skipped_));
     // Bone Sockets: lo enganchado a un hueso va con el (y los que mueven
     // huesos se apuntan para el frame que viene).
-    updateSockets(world, scene);
+    {
+        CR_PROFILE_SCOPE("Bone Sockets");
+        updateSockets(world, scene);
+    }
 
     // El indice entidad -> actor solo se rehace si la lista cambio.
     if (actor_entities_ != previous_entities_) {
@@ -2705,6 +2859,7 @@ void RenderSync::syncActors(World& world, scene::Scene& scene, gfx::VulkanRender
     // nunca espera (antes, al abrir otra escena, el primer modelo nuevo
     // subia la escena entera parando la GPU: segundos congelado).
     if (g_async_models.get()) {
+        CR_PROFILE_SCOPE("Subir modelos nuevos (hilos)");
         renderer.uploadNewModels(scene);
         return;
     }
