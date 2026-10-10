@@ -3615,6 +3615,56 @@ void VulkanRenderer::replaceWindow(NativeWindow window, std::uint32_t width, std
     framebuffer_resized_ = true;  // el siguiente frame rehace swapchain y destinos
 }
 
+// Los arrays de sombra de focos y puntuales, a tamano completo solo mientras
+// hay luces de ese tipo con sombra: crecen al frame siguiente de aparecer una
+// y se sueltan tras unos segundos sin ninguna (sin rehacerlos cada vez que
+// una luz se apaga un momento).
+void VulkanRenderer::requestLocalShadowMaps() {
+    bool spots = false;
+    bool points = false;
+    for (const scene::SpotShadow& spot : local_shadows_.spots()) spots = spots || spot.active;
+    for (const scene::PointShadow& point : local_shadows_.points()) points = points || point.active();
+    if (spots) spot_shadow_maps_used_frame_ = frame_count_;
+    if (points) point_shadow_maps_used_frame_ = frame_count_;
+    constexpr std::uint64_t kReleaseFrames = 600;
+    const bool keep_spots = spots || (local_shadow_maps_.spotsAllocated() &&
+                                      frame_count_ - spot_shadow_maps_used_frame_ < kReleaseFrames);
+    const bool keep_points = points || (local_shadow_maps_.pointsAllocated() &&
+                                        frame_count_ - point_shadow_maps_used_frame_ < kReleaseFrames);
+    if (keep_spots != local_shadow_maps_.spotsAllocated() || keep_points != local_shadow_maps_.pointsAllocated()) {
+        want_spot_shadow_maps_ = keep_spots;
+        want_point_shadow_maps_ = keep_points;
+        local_shadow_maps_dirty_ = true;
+    }
+}
+
+void VulkanRenderer::applyLocalShadowMaps() {
+    local_shadow_maps_dirty_ = false;
+    device_.waitIdle();
+    local_shadow_maps_.create(device_, want_spot_shadow_maps_, want_point_shadow_maps_);
+    // Mapas nuevos: vacios y en layout indefinido; todo se redibuja.
+    local_shadow_layout_ready_ = false;
+    local_shadows_.invalidate();
+    local_static_dirty_ = true;
+    updateLightingDescriptors();
+    updatePostDescriptors();
+}
+
+void VulkanRenderer::applyShadowCache() {
+    shadow_cache_dirty_ = false;
+    device_.waitIdle();
+    if (want_shadow_cache_) {
+        shadow_map_.createStaticCache(device_);
+    } else {
+        shadow_map_.destroyStaticCache();
+    }
+    // Cache nueva (o ninguna): vacia y sin layout; las cascadas se rehacen.
+    shadow_cache_valid_ = {};
+    shadow_cache_layout_ready_ = false;
+    cascades_valid_ = false;
+    cascades_clear_ = false;
+}
+
 void VulkanRenderer::recreateSwapchain() {
     framebuffer_resized_ = false;
 
@@ -3731,6 +3781,7 @@ void VulkanRenderer::updateUniforms(const scene::Scene& scene, const scene::Came
     if (shadows_enabled_ && !isolated() && !xrSecondEye()) {
         local_shadows_.update(shadow_camera, lights, LocalShadowMaps::kSpotResolution,
                               LocalShadowMaps::kPointResolution);
+        requestLocalShadowMaps();
     }
 
     GpuLights light_data{};
@@ -4039,6 +4090,20 @@ void VulkanRenderer::updateUniforms(const scene::Scene& scene, const scene::Came
         const bool redraw_all =
             !kept_clear && (isolated() || !cascades_valid_ || !sunShadows() || actor_set_changed_ || detail_changed);
         const std::uint64_t far_period = 4ull * budget_.farCascadeInterval();
+        // La cache de lo estatico solo con animados que proyectan sombra (se
+        // crea al frame siguiente; se suelta tras ~10 s sin ninguno).
+        if (!isolated() && !xrSecondEye()) {
+            const bool animated = sunShadows() && std::any_of(actor_draws_.begin(), actor_draws_.end(), [](const ActorDraw& d) {
+                return !d.per_submesh && d.cast_shadows;
+            });
+            if (animated) shadow_cache_used_frame_ = frame_count_;
+            const bool want = shadow_map_.canCacheStatic() &&
+                              (animated || (shadow_map_.hasStaticCache() && frame_count_ - shadow_cache_used_frame_ < 600));
+            if (want != shadow_map_.hasStaticCache()) {
+                want_shadow_cache_ = want;
+                shadow_cache_dirty_ = true;
+            }
+        }
         const bool static_cache = shadow_map_.hasStaticCache();
         if (!isolated()) {
             ++cascade_frame_;
@@ -4198,6 +4263,8 @@ void VulkanRenderer::drawFrame(const scene::Scene& scene, bool present) {
     if (!swapchain_.isValid()) {
         return;
     }
+    if (local_shadow_maps_dirty_) applyLocalShadowMaps();
+    if (shadow_cache_dirty_) applyShadowCache();
     // En VR la segunda vista del editor (Escena y Juego a la vez) no se
     // dibuja: el casco necesita la GPU para llegar a sus Hz.
     if (!present && xr_eye_target_ < 0 && render_texture_target_ < 0 && xrViewsMode()) {

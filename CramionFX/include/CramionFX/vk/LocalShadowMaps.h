@@ -21,6 +21,10 @@ class VulkanDevice;
 //
 // Se muestrean con el sampler de comparacion de ShadowMap, que tiene justo la
 // configuracion necesaria (borde blanco = iluminado).
+//
+// Cada array se crea a su resolucion completa solo cuando hay alguna luz de
+// ese tipo con sombra; mientras no, ocupa 1x1 por capa (antes eran 320 MB
+// de VRAM siempre, aunque la escena no tuviera ni una luz local).
 class LocalShadowMaps {
 public:
     // 8 focos x 2048^2 x 4 bytes = 128 MB; 8 luces x 6 caras x 1024^2 x 4 = 192 MB.
@@ -33,8 +37,12 @@ public:
     static constexpr std::uint32_t kPointLayerCount =
         scene::kMaxShadowedPointLights * scene::kPointShadowFaceCount;
 
-    void create(const VulkanDevice& device);
+    // `spots` / `points`: a tamano completo (si no, 1x1 por capa).
+    void create(const VulkanDevice& device, bool spots = false, bool points = false);
     void destroy();
+
+    bool spotsAllocated() const { return spot_depth_.extent().width >= kSpotResolution; }
+    bool pointsAllocated() const { return point_depth_.extent().width >= kPointResolution; }
 
     const VulkanImage& spotImage() const { return spot_depth_; }
     const VulkanImage& pointImage() const { return point_depth_; }
@@ -47,8 +55,8 @@ public:
     }
 
     vk::Format format() const { return spot_depth_.format(); }
-    vk::Extent2D spotExtent() const { return vk::Extent2D{kSpotResolution, kSpotResolution}; }
-    vk::Extent2D pointExtent() const { return vk::Extent2D{kPointResolution, kPointResolution}; }
+    vk::Extent2D spotExtent() const { return spot_depth_.extent(); }
+    vk::Extent2D pointExtent() const { return point_depth_.extent(); }
 
 private:
     VulkanImage spot_depth_;

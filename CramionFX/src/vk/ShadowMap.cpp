@@ -18,13 +18,8 @@ void ShadowMap::create(const VulkanDevice& device, std::uint32_t resolution) {
                   vk::ImageUsageFlagBits::eDepthStencilAttachment | vk::ImageUsageFlagBits::eSampled |
                       vk::ImageUsageFlagBits::eTransferDst | vk::ImageUsageFlagBits::eTransferSrc,
                   vk::ImageAspectFlagBits::eDepth, scene::kShadowCascadeCount);
-    // La cache duplica la memoria del mapa: hasta 4096 (256 MB de mas).
-    if (resolution_ <= 4096) {
-        static_.create(device, extent(), device.depthFormat(),
-                       vk::ImageUsageFlagBits::eDepthStencilAttachment | vk::ImageUsageFlagBits::eTransferSrc |
-                           vk::ImageUsageFlagBits::eTransferDst,
-                       vk::ImageAspectFlagBits::eDepth, scene::kShadowCascadeCount);
-    }
+    // La cache de lo estatico, aparte y solo cuando hace falta
+    // (createStaticCache).
 
     vk::SamplerCreateInfo sampler_info{};
     // Filtrado lineal + comparacion = PCF de 2x2 hecho por la GPU.
@@ -53,6 +48,15 @@ void ShadowMap::create(const VulkanDevice& device, std::uint32_t resolution) {
     std::cout << "[Vulkan] Mapa de sombras creado: " << scene::kShadowCascadeCount
               << " cascadas de " << resolution_ << "x" << resolution_ << " ("
               << vk::to_string(depth_.format()) << ")\n";
+}
+
+void ShadowMap::createStaticCache(const VulkanDevice& device) {
+    // Duplica la memoria del mapa: hasta 4096 (256 MB de mas).
+    if (!canCacheStatic() || !depth_.isValid()) return;
+    static_.create(device, extent(), device.depthFormat(),
+                   vk::ImageUsageFlagBits::eDepthStencilAttachment | vk::ImageUsageFlagBits::eTransferSrc |
+                       vk::ImageUsageFlagBits::eTransferDst,
+                   vk::ImageAspectFlagBits::eDepth, scene::kShadowCascadeCount);
 }
 
 void ShadowMap::destroy() {

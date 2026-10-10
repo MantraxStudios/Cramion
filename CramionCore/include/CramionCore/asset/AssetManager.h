@@ -61,6 +61,9 @@ public:
     // estan en el .crdata (para reescribirlas, p. ej. el lote estatico).
     static std::shared_ptr<ModelAsset> readModel(const Uuid& uuid, const std::filesystem::path& file,
                                                  const std::string& name, bool decode_textures = true);
+    // Las texturas incrustadas de un .crdata tal como estan (sin decodificar,
+    // con su uso: TextureData::usage), sin las mallas: exportar el juego.
+    static std::vector<asset::TextureData> readModelTextures(const std::filesystem::path& file);
 
     // Ruta de un .hdr en disco para el renderizador
     // (VulkanRenderer::loadEnvironment): el HDR incrustado en el .crdata se

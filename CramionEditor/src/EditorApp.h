@@ -661,6 +661,11 @@ private:
         std::filesystem::path batch_cache;
         std::string batch_summary;
         std::filesystem::path icon;  // imagen o .ico de la configuracion (vacia = el del motor)
+        // Texturas ya comprimidas (BC1/BC7) al paquete, en TextureCache/: el
+        // juego no las comprime y sin ellas irian en RGBA8 (4 a 8 veces mas
+        // VRAM). Las de los materiales; las de los modelos salen de sus .crdata.
+        bool compress_textures = false;
+        std::vector<asset::TextureData> material_textures;
         // Android: tras el paquete, el APK/AAB (AndroidBuild) y, si se pidio,
         // instalar y abrir en el dispositivo elegido.
         bool android = false;

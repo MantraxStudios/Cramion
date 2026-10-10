@@ -129,7 +129,7 @@ public:
     // se rehace.
     // `size` (opcional) recibe su tamano en pixeles (para no deformarla).
     ImTextureID thumbnail(const std::filesystem::path& file, ImVec2* size = nullptr);
-    // La imagen a su tamano (hasta 4096): la interfaz del juego y el banner.
+    // La imagen a su tamano (hasta 2048): la interfaz del juego y el banner.
     ImTextureID image(const std::filesystem::path& file, ImVec2* size = nullptr);
     // Fuente de la UI del juego desde un .ttf/.otf (Assets): se carga la
     // primera vez (el atlas dinamico de ImGui la rasteriza a cada tamano, asi

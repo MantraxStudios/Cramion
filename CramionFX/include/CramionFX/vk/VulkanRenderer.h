@@ -1943,6 +1943,21 @@ private:
     // Los mapas locales se conservan entre frames (cache), asi que solo el
     // primero parte de un layout indefinido.
     bool local_shadow_layout_ready_ = false;
+    // Mapas de sombra locales a demanda (LocalShadowMaps): que arrays hacen
+    // falta y desde que frame no se usa cada uno (se sueltan tras un rato).
+    bool local_shadow_maps_dirty_ = false;
+    bool want_spot_shadow_maps_ = false;
+    bool want_point_shadow_maps_ = false;
+    std::uint64_t spot_shadow_maps_used_frame_ = 0;
+    std::uint64_t point_shadow_maps_used_frame_ = 0;
+    void requestLocalShadowMaps();
+    void applyLocalShadowMaps();
+    // La cache estatica de las cascadas (ShadowMap::createStaticCache), solo
+    // con personajes animados que proyectan sombra.
+    bool shadow_cache_dirty_ = false;
+    bool want_shadow_cache_ = false;
+    std::uint64_t shadow_cache_used_frame_ = 0;
+    void applyShadowCache();
 };
 
 }  // namespace cramion::gfx

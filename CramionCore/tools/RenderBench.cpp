@@ -480,8 +480,15 @@ int main(int argc, char** argv) {
         gfx::EngineInfo info;
         info.app_name = "cramion_render_bench";
         info.enable_validation = options.validation;
+#if defined(__linux__) && !defined(__ANDROID__)
+        // Linux: la conexion y la ventana de Xlib (vive mas que el renderizador).
+        const gfx::XlibWindow xlib{window.handle()->display, window.handle()->window};
+        const gfx::NativeWindow native = &xlib;
+#else
+        const gfx::NativeWindow native = window.handle();
+#endif
         gfx::VulkanRenderer renderer;
-        renderer.initialize(info, window.handle(), window.width(), window.height());
+        renderer.initialize(info, native, window.width(), window.height());
         renderer.setEditorHelpersEnabled(false);
         if (options.bc_test) return runBcTest(renderer.device());
 

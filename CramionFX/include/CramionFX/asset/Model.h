@@ -50,6 +50,12 @@ std::uint32_t blockBytes(TextureFormat format);
 // Bytes de un nivel de mip de `width` x `height`.
 std::size_t mipByteSize(TextureFormat format, std::uint32_t width, std::uint32_t height);
 
+// Para que sirve una textura: elige su formato al comprimirla (como Unity y
+// Unreal). Color (albedo, emisivo) y datos (metal, rugosidad, oclusion)
+// opacos van a BC1 (4 bits por pixel); los normal maps, lo que tiene alfa,
+// los datos finos (la altura del parallax) y lo que no se sabe, a BC7 (8).
+enum class TextureUsage : std::uint8_t { Unknown, Color, Normal, Data, PreciseData };
+
 // Imagen del modelo. Mientras se carga guarda el archivo tal cual (`encoded`,
 // PNG/JPG/TGA/DDS) o solo su ruta (`source_path`); al final todas se leen y
 // decodifican en paralelo y `encoded` queda vacio.
@@ -72,6 +78,8 @@ struct TextureData {
     // saber (se mira en los pixeles), 0 no, 1 si. Lo pone la compresion BC7,
     // que no se puede mirar sin descomprimir.
     std::int8_t alpha = -1;
+    // Para que la usan los materiales (assignTextureUsage).
+    TextureUsage usage = TextureUsage::Unknown;
 };
 
 // Material PBR metal/rugosidad (el de glTF 2.0 y Unreal).
@@ -348,6 +356,10 @@ void setDecodeBlockCompressed(bool decode);
 // triangulos. Lanza std::runtime_error si el modelo esta vacio. `label` es
 // para los mensajes.
 void finalizeModel(ModelData& model, const std::string& label);
+// Marca cada textura con su uso segun los huecos de material que la usan
+// (TextureData::usage). La misma textura en dos papeles distintos queda en
+// el mas exigente (normal map o datos finos: BC7).
+void assignTextureUsage(ModelData& model);
 
 // Texturas "perezosas": sin pixeles ni bytes, solo `source_path` (un archivo
 // o algo que entiende el resolvedor). No ocupan RAM: se decodifican al
@@ -360,9 +372,12 @@ using TextureResolver = std::function<bool(const std::string& source, TextureDat
 void setTextureResolver(TextureResolver resolver);
 // Clave de cache de una receta sin hacerla (de las fechas de sus archivos):
 // 0 si no es suya. Con ella la textura comprimida sale de la cache.
-using TextureKeyResolver = std::function<std::uint64_t(const std::string& source)>;
+// `portable_root` no vacia: la clave portable (rutas dentro de esa carpeta,
+// sin fechas; la del juego exportado) en vez de la de rutas y fechas.
+using TextureKeyResolver =
+    std::function<std::uint64_t(const std::string& source, const std::filesystem::path& portable_root)>;
 void setTextureKeyResolver(TextureKeyResolver resolver);
-std::uint64_t resolveTextureKey(const std::string& source);
+std::uint64_t resolveTextureKey(const std::string& source, const std::filesystem::path& portable_root = {});
 // Decodifica una textura perezosa en `out` (con el tamano maximo). Se puede
 // llamar desde cualquier hilo.
 bool resolveLazyTexture(const TextureData& lazy, TextureData& out);

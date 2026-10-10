@@ -867,10 +867,12 @@ bool decodeTexture(TextureData& texture, std::mutex& log_mutex) {
     bool owner = false;  // esta llamada comprime (endTextureCompression al final)
     if (compress) {
         key = file_key != 0 ? file_key
-                            : textureCacheKey(texture.encoded.data(), texture.encoded.size(), texture.height_map);
+                            : textureCacheKey(texture.encoded.data(), texture.encoded.size(), texture.height_map,
+                                              texture.usage);
         cached = file_key == 0 && loadCachedTexture(key, texture);
-        // Otro hilo la esta comprimiendo: se espera y se lee de la cache.
-        if (!cached) {
+        // Otro hilo la esta comprimiendo: se espera y se lee de la cache. En
+        // el juego (cache de solo lectura) lo que no esta no se comprime.
+        if (!cached && textureCacheWritable()) {
             owner = beginTextureCompression(key);
             if (!owner) cached = loadCachedTexture(key, texture);
         }
@@ -887,16 +889,17 @@ bool decodeTexture(TextureData& texture, std::mutex& log_mutex) {
             ok = false;
         } else {
             if (texture.height_map && texture.format == TextureFormat::Rgba8) heightToNormalMap(texture);
-            // A BC7 con sus mips, a tamano completo (la cache vale para
+            // A BC1/BC7 con sus mips, a tamano completo (la cache vale para
             // cualquier calidad de texturas: abajo se quitan los mips que
             // sobren).
             if (owner && std::max(texture.width, texture.height) >= 64) {
                 const auto start = std::chrono::steady_clock::now();
                 const std::uint32_t w = texture.width, h = texture.height;
-                if (compressTextureBc7(texture, key)) {
+                if (compressTexture(texture, key)) {
                     const std::lock_guard<std::mutex> lock(log_mutex);
-                    std::cout << "[Texturas] " << texture.name << " comprimida a BC7 (" << w << "x" << h << ") en "
-                              << std::chrono::duration<float>(std::chrono::steady_clock::now() - start).count()
+                    std::cout << "[Texturas] " << texture.name << " comprimida a "
+                              << (texture.format == TextureFormat::Bc1 ? "BC1" : "BC7") << " (" << w << "x" << h
+                              << ") en " << std::chrono::duration<float>(std::chrono::steady_clock::now() - start).count()
                               << " s\n";
                 }
             }
@@ -1188,7 +1191,55 @@ void setMaxTextureSize(std::uint32_t size) { g_max_texture_size.store(size); }
 void setDecodeBlockCompressed(bool decode) { g_decode_block_compressed.store(decode); }
 std::uint32_t maxTextureSize() { return g_max_texture_size.load(); }
 
+std::uint64_t prepareExportTexture(const TextureData& texture, const std::filesystem::path& assets_root,
+                                   std::filesystem::path& dds) {
+    dds.clear();
+    if (!textureCacheWritable() || g_decode_block_compressed.load()) return 0;
+    std::uint64_t editor_key = 0;
+    std::uint64_t portable_key = 0;
+    if (isLazyTexture(texture)) {
+        prepareLazyTexture(texture);  // la comprime si aun no lo esta
+        editor_key = lazyTextureKey(texture, std::filesystem::path());
+        portable_key = lazyTextureKey(texture, assets_root);
+    } else if (!texture.encoded.empty()) {
+        if (isDds(texture.encoded.data(), texture.encoded.size())) return 0;
+        editor_key = portable_key =
+            textureCacheKey(texture.encoded.data(), texture.encoded.size(), texture.height_map, texture.usage);
+        if (!isTextureCached(editor_key)) {
+            TextureData copy = texture;
+            std::mutex log_mutex;
+            decodeTexture(copy, log_mutex);  // la comprime y la guarda
+        }
+    }
+    if (editor_key == 0 || portable_key == 0 || !isTextureCached(editor_key)) return 0;
+    dds = cachedTexturePath(editor_key);
+    return portable_key;
+}
+
+void assignTextureUsage(ModelData& model) {
+    const auto set = [&](std::int32_t index, TextureUsage usage) {
+        if (index < 0 || static_cast<std::size_t>(index) >= model.textures.size()) return;
+        TextureUsage& current = model.textures[static_cast<std::size_t>(index)].usage;
+        if (current == TextureUsage::Unknown || current == usage) {
+            current = usage;
+        } else if (current == TextureUsage::Normal || usage == TextureUsage::Normal) {
+            current = TextureUsage::Normal;
+        } else {
+            current = TextureUsage::PreciseData;  // color y datos a la vez: BC7
+        }
+    };
+    for (const MaterialData& material : model.materials) {
+        set(material.albedo_texture, TextureUsage::Color);
+        set(material.emissive_texture, TextureUsage::Color);
+        set(material.normal_texture, TextureUsage::Normal);
+        set(material.metallic_roughness_texture, TextureUsage::Data);
+        // Con parallax, la altura va en el G de la oclusion: BC1 la escalona.
+        set(material.occlusion_texture, material.height_scale > 0.0f ? TextureUsage::PreciseData : TextureUsage::Data);
+    }
+}
+
 void finalizeModel(ModelData& model, const std::string& label) {
+    assignTextureUsage(model);
     decodeTextures(model);
     if (model.indices.empty()) {
         throw std::runtime_error("El modelo " + label + " no tiene triangulos.");
@@ -1206,13 +1257,13 @@ void setTextureKeyResolver(TextureKeyResolver resolver) {
     g_texture_key_resolver = std::move(resolver);
 }
 
-std::uint64_t resolveTextureKey(const std::string& source) {
+std::uint64_t resolveTextureKey(const std::string& source, const std::filesystem::path& portable_root) {
     TextureKeyResolver resolver;
     {
         const std::lock_guard<std::mutex> lock(g_resolver_mutex);
         resolver = g_texture_key_resolver;
     }
-    return resolver ? resolver(source) : 0;
+    return resolver ? resolver(source, portable_root) : 0;
 }
 
 bool isLazyTexture(const TextureData& texture) {
@@ -1228,6 +1279,7 @@ bool resolveLazyTexture(const TextureData& lazy, TextureData& out) {
     out = TextureData{};
     out.name = lazy.name;
     out.height_map = lazy.height_map;
+    out.usage = lazy.usage;
     TextureResolver resolver;
     {
         const std::lock_guard<std::mutex> lock(g_resolver_mutex);
@@ -1237,24 +1289,28 @@ bool resolveLazyTexture(const TextureData& lazy, TextureData& out) {
     const bool compress = textureCompressionEnabled() && !g_decode_block_compressed.load();
     // Una receta con clave (de las fechas de sus archivos): de la cache sin
     // hacerla.
-    const std::uint64_t recipe_key = compress ? resolveTextureKey(lazy.source_path) : 0;
+    const std::uint64_t recipe_key =
+        compress ? textureKeyWithUsage(resolveTextureKey(lazy.source_path, texturePortableRoot()), lazy.usage) : 0;
     if (recipe_key != 0 && loadCachedTexture(recipe_key, out)) {
         out.name = lazy.name;
+        out.usage = lazy.usage;
         limitTextureSize(out, g_max_texture_size.load());
         return true;
     }
     if (resolver && resolver(lazy.source_path, out)) {
-        // Hecha por el resolvedor (ya decodificada): a BC7 como las demas y
-        // el tamano maximo.
-        if (compress && out.format == TextureFormat::Rgba8 && std::max(out.width, out.height) >= 64) {
+        out.usage = lazy.usage;
+        // Hecha por el resolvedor (ya decodificada): comprimida como las
+        // demas y con el tamano maximo (en el juego, solo si ya venia hecha).
+        if (compress && textureCacheWritable() && out.format == TextureFormat::Rgba8 &&
+            std::max(out.width, out.height) >= 64) {
             const std::uint64_t key =
-                recipe_key != 0 ? recipe_key : textureCacheKey(out.pixels.data(), out.pixels.size(), false);
+                recipe_key != 0 ? recipe_key : textureCacheKey(out.pixels.data(), out.pixels.size(), false, out.usage);
             if (recipe_key != 0 || !loadCachedTexture(key, out)) {
                 if (beginTextureCompression(key)) {
-                    compressTextureBc7(out, key);
+                    compressTexture(out, key);
                     endTextureCompression(key);
                 } else if (!loadCachedTexture(key, out)) {
-                    compressTextureBc7(out, key);  // (el otro hilo no pudo)
+                    compressTexture(out, key);  // (el otro hilo no pudo)
                 }
             }
         }
@@ -1385,6 +1441,7 @@ ModelData loadModel(const std::filesystem::path& path, bool force_static) {
         }
     }
 
+    assignTextureUsage(model);
     decodeTextures(model);
     timer.lap("lectura y decodificacion de texturas");
 

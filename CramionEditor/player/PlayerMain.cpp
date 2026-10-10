@@ -22,6 +22,7 @@
 #include <CramionCore/project/Mods.h>
 #include <CramionCore/ai/Crowd.h>
 #include <CramionCore/profiling/Profiler.h>
+#include <CramionFX/asset/TextureCompression.h>
 #include "GraphicsConfig.h"
 #include "ImGuiLayer.h"
 #include "LoadingScreen.h"
@@ -412,6 +413,17 @@ int runPlayer() {
         loading.reset();
         editor::loadGraphicsIni(project->settingsFolder() / "Graphics.ini", renderer);
         editor::loadGraphicsIni(player_graphics, renderer);  // la del jugador, encima
+        // Texturas ya comprimidas por la exportacion (BC1/BC7, TextureCache/
+        // del paquete): se leen tal cual, sin decodificar los PNG, y ocupan
+        // de 4 a 8 veces menos VRAM. El juego no comprime nada (solo lectura).
+        {
+            const std::filesystem::path textures = project->folder / "TextureCache";
+            std::error_code e;
+            if (std::filesystem::is_directory(textures, e)) {
+                asset::setTextureCacheFolder(textures);
+                asset::setTexturePortableKeys(project->assetsFolder());
+            }
+        }
 #endif
         renderer.setEditorHelpersEnabled(false);
         const bool vr = renderer.xrAvailable();

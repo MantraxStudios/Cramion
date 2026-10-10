@@ -105,8 +105,14 @@ int main(int argc, char** argv) {
         gfx::EngineInfo info;
         info.app_name = "cramion_stereo_check";
         info.enable_validation = true;
+#if defined(__linux__) && !defined(__ANDROID__)
+        const gfx::XlibWindow xlib{window.handle()->display, window.handle()->window};
+        const gfx::NativeWindow native = &xlib;
+#else
+        const gfx::NativeWindow native = window.handle();
+#endif
         gfx::VulkanRenderer renderer;
-        renderer.initialize(info, window.handle(), window.width(), window.height());
+        renderer.initialize(info, native, window.width(), window.height());
 
         // Lo que tiene historia en el tiempo: TAA, SSR, GI, AO, sombras de contacto.
         gfx::GraphicsSettings graphics = renderer.graphicsSettings();

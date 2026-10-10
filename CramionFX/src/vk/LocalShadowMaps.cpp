@@ -6,21 +6,24 @@
 
 namespace cramion::gfx {
 
-void LocalShadowMaps::create(const VulkanDevice& device) {
+void LocalShadowMaps::create(const VulkanDevice& device, bool spots, bool points) {
     destroy();
 
     const vk::ImageUsageFlags usage =
         vk::ImageUsageFlagBits::eDepthStencilAttachment | vk::ImageUsageFlagBits::eSampled;
 
-    spot_depth_.create(device, spotExtent(), device.depthFormat(), usage,
+    const std::uint32_t spot_size = spots ? kSpotResolution : 1u;
+    const std::uint32_t point_size = points ? kPointResolution : 1u;
+    spot_depth_.create(device, vk::Extent2D{spot_size, spot_size}, device.depthFormat(), usage,
                        vk::ImageAspectFlagBits::eDepth, kSpotLayerCount);
-    point_depth_.create(device, pointExtent(), device.depthFormat(), usage,
+    point_depth_.create(device, vk::Extent2D{point_size, point_size}, device.depthFormat(), usage,
                         vk::ImageAspectFlagBits::eDepth, kPointLayerCount);
 
-    std::cout << "[Vulkan] Mapas de sombra locales creados: " << kSpotLayerCount << " focos de "
-              << kSpotResolution << "x" << kSpotResolution << ", "
-              << scene::kMaxShadowedPointLights << " luces puntuales x 6 caras de "
-              << kPointResolution << "x" << kPointResolution << "\n";
+    if (spots || points) {
+        std::cout << "[Vulkan] Mapas de sombra locales: " << kSpotLayerCount << " focos de " << spot_size << "x"
+                  << spot_size << ", " << scene::kMaxShadowedPointLights << " luces puntuales x 6 caras de "
+                  << point_size << "x" << point_size << "\n";
+    }
 }
 
 void LocalShadowMaps::destroy() {

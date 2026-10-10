@@ -45,24 +45,30 @@ const char* tierName(HardwareTier tier) {
     return "?";
 }
 
+// Cuatro cascadas D32: 3072 son 144 MB (y otros tantos de cache estatica si
+// hay personajes animados); 4096, 256 MB. Antes Alto era 4096 y Ultra 6144
+// (576 MB): con las cascadas bien ajustadas no se distingue de 4096 y era la
+// mitad de la VRAM de una escena pequena. (Unreal usa 2048 por cascada.)
 std::uint32_t shadowResolutionFor(HardwareTier tier) {
     switch (tier) {
         case HardwareTier::Low: return 1536;
         case HardwareTier::Medium: return 2048;
-        case HardwareTier::High: return 4096;
-        case HardwareTier::Ultra: return 6144;
+        case HardwareTier::High: return 3072;
+        case HardwareTier::Ultra: return 4096;
     }
-    return 4096;
+    return 3072;
 }
 
+// Lado maximo de las texturas: 8K solo en Ultra (una de 8K son 43 MB aun en
+// BC1); sin tope, una de 16K se comia la VRAM de una escena entera.
 std::uint32_t textureSizeFor(HardwareTier tier) {
     switch (tier) {
         case HardwareTier::Low: return 2048;
         case HardwareTier::Medium: return 4096;
-        case HardwareTier::High: return 8192;
-        case HardwareTier::Ultra: return 0;
+        case HardwareTier::High: return 4096;
+        case HardwareTier::Ultra: return 8192;
     }
-    return 8192;
+    return 4096;
 }
 
 FrameBudget::FrameBudget() {

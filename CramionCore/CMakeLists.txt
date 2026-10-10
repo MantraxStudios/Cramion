@@ -433,6 +433,11 @@ add_executable(cramion_stereo_check "${CMAKE_CURRENT_SOURCE_DIR}/tools/StereoRen
 target_link_libraries(cramion_stereo_check PRIVATE Cramion::Core)
 set_target_properties(cramion_stereo_check PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
 
+# Prueba de la compresion de texturas (BC1/BC7 por uso, claves portables del
+# juego exportado): solo CramionFX, sin GPU.
+add_executable(CramionTextureTests "${CMAKE_CURRENT_SOURCE_DIR}/tests/TextureCompressionTests.cpp")
+target_link_libraries(CramionTextureTests PRIVATE Cramion::FX)
+
 # Herramienta: banco de pruebas del render (ventana invisible): tiempos de GPU
 # por pasada y ruido temporal con la camara quieta (el "hormigueo" del
 # trazado de rayos). En su propia carpeta (bench/) con sus shaders: compilarla

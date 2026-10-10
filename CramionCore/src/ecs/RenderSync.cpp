@@ -358,9 +358,11 @@ bool buildPack(const PackRecipe& recipe, const std::string& name, asset::Texture
     return true;
 }
 
-// Clave de cache de una receta sin hacerla: su texto y el tamano y la fecha
-// de cada archivo (cambia uno y se rehace).
-std::uint64_t packKey(const std::string& source) {
+// Clave de cache de una receta sin hacerla: su texto (sin la carpeta del
+// proyecto) y el tamano y la fecha de cada archivo (cambia uno y se rehace).
+// Con `portable_root`, las rutas de los archivos dentro de esa carpeta en vez
+// de sus fechas (el juego exportado: la misma clave en cualquier PC).
+std::uint64_t packKey(const std::string& source, const std::filesystem::path& portable_root) {
     PackRecipe recipe;
     {
         const std::lock_guard<std::mutex> lock(g_pack_mutex);
@@ -368,10 +370,17 @@ std::uint64_t packKey(const std::string& source) {
         if (it == g_packs.end()) return 0;
         recipe = it->second;
     }
-    std::uint64_t key = asset::textureCacheKey(reinterpret_cast<const std::uint8_t*>(source.data()), source.size(), false);
+    const std::size_t bar = source.find('|');
+    const std::string_view recipe_text =
+        bar == std::string::npos ? std::string_view(source) : std::string_view(source).substr(bar + 1);
+    std::uint64_t key =
+        asset::textureCacheKey(reinterpret_cast<const std::uint8_t*>(recipe_text.data()), recipe_text.size(), false);
     for (const PackChannel& channel : recipe.channels) {
         if (channel.path.empty()) continue;
-        key ^= asset::textureFileKey(recipe.root / fromUtf8(channel.path), false) * 0x9e3779b97f4a7c15ULL;
+        const std::filesystem::path file = recipe.root / fromUtf8(channel.path);
+        const std::uint64_t file_key = !portable_root.empty() ? asset::texturePortableFileKey(file, portable_root, false)
+                                                              : asset::textureFileKey(file, false);
+        key ^= file_key * 0x9e3779b97f4a7c15ULL;
         key = asset::textureCacheKey(reinterpret_cast<const std::uint8_t*>(&key), sizeof(key), false);
     }
     return key;
@@ -380,9 +389,10 @@ std::uint64_t packKey(const std::string& source) {
 void registerPackResolver() {
     static std::once_flag once;
     std::call_once(once, [] {
-        asset::setTextureKeyResolver([](const std::string& source) -> std::uint64_t {
-            return source.rfind(kPackPrefix, 0) == 0 ? packKey(source) : 0;
-        });
+        asset::setTextureKeyResolver(
+            [](const std::string& source, const std::filesystem::path& portable_root) -> std::uint64_t {
+                return source.rfind(kPackPrefix, 0) == 0 ? packKey(source, portable_root) : 0;
+            });
         asset::setTextureResolver([](const std::string& source, asset::TextureData& out) {
             if (source.rfind(kPackPrefix, 0) != 0) return false;
             PackRecipe recipe;
@@ -416,7 +426,9 @@ std::vector<asset::TextureData> RenderSync::materialTextureSources() {
             const asset::ModelData variant = buildVariant(probe, {info.uuid});
             for (const asset::TextureData& texture : variant.textures) {
                 if (!asset::isLazyTexture(texture)) continue;
-                if (seen.insert(texture.source_path + (texture.height_map ? "#h" : "")).second) out.push_back(texture);
+                const std::string id = texture.source_path + (texture.height_map ? "#h" : "") + "#" +
+                                       std::to_string(static_cast<int>(texture.usage));
+                if (seen.insert(id).second) out.push_back(texture);
             }
         } catch (const std::exception& e) {
             std::cerr << "[Texturas] Material " << info.name << ": " << e.what() << "\n";
@@ -621,7 +633,9 @@ asset::ModelData RenderSync::buildVariant(const asset::ModelData& base, const st
         }
     }
     // (Sin finalizeModel: decodificaria las texturas perezosas aqui. Las que
-    // vienen del modelo base ya estan decodificadas.)
+    // vienen del modelo base ya estan decodificadas.) El uso de cada textura
+    // elige su formato al comprimirla (BC1 o BC7).
+    asset::assignTextureUsage(v);
     if (v.indices.empty()) throw std::runtime_error("El modelo " + v.name + " no tiene triangulos.");
     return v;
 }

@@ -150,6 +150,18 @@ std::size_t AssetManager::loadsInFlight() const {
     return loader_->in_flight.size() + loader_->done.size();
 }
 
+std::vector<asset::TextureData> AssetManager::readModelTextures(const std::filesystem::path& file) {
+    std::vector<asset::TextureData> textures;
+    crdata::Header header{};
+    crdata::ModelContent content{};
+    if (!crdata::readModel(file, header, content)) return textures;
+    for (asset::ModelData& part : content.parts) {
+        asset::assignTextureUsage(part);
+        for (asset::TextureData& texture : part.textures) textures.push_back(std::move(texture));
+    }
+    return textures;
+}
+
 std::shared_ptr<ModelAsset> AssetManager::readModel(const Uuid& uuid, const std::filesystem::path& file,
                                                    const std::string& name, bool decode_textures) {
     if (primitives::isBuiltin(uuid)) {

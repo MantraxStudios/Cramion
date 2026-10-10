@@ -362,6 +362,11 @@ bool EditorApp::openScene(const std::filesystem::path& path) {
         return false;
     }
     alignOriginAfterLoad(origin_before);
+    // Los modelos y texturas de la escena anterior, fuera de la GPU y de la
+    // RAM (antes se quedaban: las dos escenas a la vez en la VRAM hasta que
+    // el streaming los echaba, y sin streaming nunca). Lo que use la nueva
+    // vuelve a llegar por el streaming.
+    if (sync_) sync_->reset(scene_);
     scene_path_ = path;
     setCrashContext("Escena", dialogs::utf8(path));
     loadSceneLighting();  // iluminacion horneada de la escena (EditorLighting.cpp)

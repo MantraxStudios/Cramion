@@ -49,6 +49,14 @@ public:
     // terreno) se redibuja por turnos o cuando algo estatico cambia. Sin ella (mapas de
     // mas de 4096, por la VRAM), un personaje animado obligaba a redibujar
     // todo lo que cubre la cascada cada frame.
+    //
+    // Solo existe mientras hace falta (VulkanRenderer la crea cuando hay
+    // personajes animados que proyectan sombra y la suelta tras un rato sin
+    // ninguno): en una escena estatica no sirve de nada y duplicaba la
+    // memoria del mapa.
+    bool canCacheStatic() const { return resolution_ <= 4096; }
+    void createStaticCache(const VulkanDevice& device);
+    void destroyStaticCache() { static_.destroy(); }
     bool hasStaticCache() const { return static_.isValid(); }
     const VulkanImage& staticImage() const { return static_; }
     const vk::raii::ImageView& staticCascadeView(std::uint32_t cascade) const { return static_.layerView(cascade); }

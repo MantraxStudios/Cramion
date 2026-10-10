@@ -22,6 +22,7 @@
 #include <CramionCore/ecs/SceneSerializer.h>
 #include <CramionCore/asset/SurfaceShader.h>
 #include <CramionCore/ecs/StaticBatching.h>
+#include <CramionFX/asset/TextureCompression.h>
 
 #include <imgui.h>
 #include <imgui_stdlib.h>
@@ -345,6 +346,11 @@ void EditorApp::startExport(const std::filesystem::path& parent) {
     job->static_batching = export_static_batching_;
     job->assets_root = project_.assetsFolder();
     job->batch_cache = project_.libraryFolder() / "ExportCache" / "StaticBatches";
+    // Las texturas van comprimidas en el paquete (no a Android: casi ningun
+    // movil lee BC). Las recetas de los materiales se apuntan aqui (hilo
+    // principal); comprimir lo que falte, en el hilo de la exportacion.
+    job->compress_textures = !android && sync_ && asset::textureCacheWritable();
+    if (job->compress_textures) job->material_textures = sync_->materialTextureSources();
 
     // --- El hilo que copia ---
     ExportJob* j = job.get();
@@ -446,6 +452,49 @@ void EditorApp::startExport(const std::filesystem::path& parent) {
                 std::cout << "[Exportar] Static batching en " << scene_name << ": " << report.message << '\n';
                 j->batch_summary += "\n" + scene_name + ": " + report.message;
             }
+        }
+        // Texturas comprimidas (BC1/BC7, las de la cache del editor) en
+        // TextureCache/ con la clave que buscara el juego: sus rutas dentro de
+        // Assets (las de los materiales) o sus bytes (las de los modelos).
+        if (j->compress_textures && !j->cancel && j->error.empty()) {
+            std::unordered_set<std::uint64_t> added;
+            std::uint64_t bytes = 0;
+            const auto add = [&](const asset::TextureData& texture) {
+                std::filesystem::path dds;
+                const std::uint64_t key = asset::prepareExportTexture(texture, j->assets_root, dds);
+                if (key == 0 || !added.insert(key).second) return;
+                std::error_code e;
+                const auto size = std::filesystem::file_size(dds, e);
+                if (e) return;
+                char name[48];
+                std::snprintf(name, sizeof(name), "TextureCache/%016llx.dds", static_cast<unsigned long long>(key));
+                j->pack.push_back(project::PackInput{dds, name});
+                j->total += size;
+                bytes += size;
+            };
+            for (std::size_t i = 0; i < j->material_textures.size() && !j->cancel; ++i) {
+                {
+                    std::lock_guard lock(j->mutex);
+                    j->current = "Comprimiendo texturas (" + std::to_string(i + 1) + "/" +
+                                 std::to_string(j->material_textures.size()) + "): " + j->material_textures[i].name;
+                }
+                add(j->material_textures[i]);
+            }
+            const std::size_t count = j->pack.size();
+            for (std::size_t i = 0; i < count && !j->cancel; ++i) {
+                std::string extension = dialogs::utf8(j->pack[i].source.extension());
+                std::transform(extension.begin(), extension.end(), extension.begin(),
+                               [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+                if (extension != ".crdata") continue;
+                {
+                    std::lock_guard lock(j->mutex);
+                    j->current = "Comprimiendo texturas: " + dialogs::utf8(j->pack[i].source.stem());
+                }
+                for (const asset::TextureData& texture : assets::AssetManager::readModelTextures(j->pack[i].source)) {
+                    add(texture);
+                }
+            }
+            std::cout << "[Exportar] Texturas comprimidas: " << added.size() << " (" << (bytes >> 20) << " MB)\n";
         }
         // Android no tiene compilador de shaders: cada .crshader va al paquete
         // tambien compilado (<archivo>.vert.spv / .frag.spv al lado).

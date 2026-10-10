@@ -137,7 +137,9 @@ void FoliagePass::create(const VulkanDevice& device, const vk::raii::DescriptorS
     pool_ = vk::raii::DescriptorPool(device.handle(), pool_info);
 
     createPipelines(device, gbuffer_formats, depth_format, shadow_format);
-    createTextures();
+    // Las texturas de los arboles (11 capas de 1024 x 2, ~117 MB de VRAM y su
+    // tiempo de generarlas) se hacen con los primeros arboles (setInstances):
+    // antes ocupaban memoria en cualquier escena, sin un arbol.
     species_ = {asset::treePreset(asset::TreeKind::Pine), asset::treePreset(asset::TreeKind::Oak),
                 asset::treePreset(asset::TreeKind::Birch)};
     bounds_.create(device, sizeof(core::Vec4) * kSpecies, vk::BufferUsageFlagBits::eStorageBuffer,
@@ -161,6 +163,7 @@ void FoliagePass::destroy() {
     bounds_.destroy();
     albedo_array_ = TextureArray{};
     normal_array_ = TextureArray{};
+    albedo_layers_ = 0;
     texture_sampler_ = nullptr;
     gbuffer_pipeline_ = nullptr;
     gbuffer_wire_pipeline_ = nullptr;
@@ -456,6 +459,10 @@ void FoliagePass::setInstances(const std::vector<FoliageInstance>& input_all) {
     }
     ++instances_revision_;
     if (count == 0) return;
+    if (albedo_layers_ == 0) {
+        createTextures();
+        ++species_revision_;  // la escena de rayos las incluye al rehacerse
+    }
     for (std::size_t i = 0; i < count; ++i) ++species_count_[std::min<std::uint32_t>((input[i].packed >> 18) & 3u, kSpecies - 1)];
 
     instances_ = VulkanBuffer::createDeviceLocal(*device_, input.data(), count * sizeof(FoliageInstance),

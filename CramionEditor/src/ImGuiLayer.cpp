@@ -351,7 +351,9 @@ ImFont* ImGuiLayer::uiFont(const std::filesystem::path& file) {
 }
 
 ImTextureID ImGuiLayer::image(const std::filesystem::path& file, ImVec2* size) {
-    return loadTexture(file, size, 4096);
+    // Hasta 2048 de lado: la interfaz no necesita mas y una de 4096 en RGBA8
+    // con sus mips eran 85 MB de VRAM.
+    return loadTexture(file, size, 2048);
 }
 
 ImTextureID ImGuiLayer::loadTexture(const std::filesystem::path& file, ImVec2* size, std::uint32_t max_size) {
