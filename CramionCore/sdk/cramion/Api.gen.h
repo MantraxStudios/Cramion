@@ -2107,6 +2107,366 @@ inline Value create(const T0& tabla = {}, const T1& texto = {}, const T2& texto2
 }
 }  // namespace Spline
 
+namespace Steam {
+/// Steam.achievementProgress("COLECCIONISTA", 5, 10)
+/// muestra el progreso
+/// Devuelve: bool
+template <typename T0 = Value, typename T1 = Value, typename T2 = Value>
+inline Value achievementProgress(const T0& texto = {}, const T1& valor = {}, const T2& valor2 = {}) {
+    return detail::api("Steam.achievementProgress", Values{Value(texto), Value(valor), Value(valor2)});
+}
+/// Steam.appId()
+/// AppID
+/// Devuelve: numero
+template <typename... Mas>
+inline Value appId(Mas&&... mas) {
+    return detail::api("Steam.appId", Values{Value(std::forward<Mas>(mas))...});
+}
+/// Steam.available()
+/// Steam esta abierto y la DLL cargada
+/// Devuelve: bool
+template <typename... Mas>
+inline Value available(Mas&&... mas) {
+    return detail::api("Steam.available", Values{Value(std::forward<Mas>(mas))...});
+}
+/// Steam.clearAchievement("PRIMERA_SANGRE")
+/// lo vuelve a bloquear (pruebas)
+/// Devuelve: bool
+template <typename T0 = Value>
+inline Value clearAchievement(const T0& texto = {}) {
+    return detail::api("Steam.clearAchievement", Values{Value(texto)});
+}
+/// Steam.clearRichPresence()
+/// lo borra
+template <typename... Mas>
+inline Value clearRichPresence(Mas&&... mas) {
+    return detail::api("Steam.clearRichPresence", Values{Value(std::forward<Mas>(mas))...});
+}
+/// Steam.cloudDelete("partida.json")
+/// lo borra
+/// Devuelve: bool
+template <typename T0 = Value>
+inline Value cloudDelete(const T0& texto = {}) {
+    return detail::api("Steam.cloudDelete", Values{Value(texto)});
+}
+/// Steam.cloudEnabled()
+/// Steam Cloud activo?
+/// Devuelve: bool
+template <typename... Mas>
+inline Value cloudEnabled(Mas&&... mas) {
+    return detail::api("Steam.cloudEnabled", Values{Value(std::forward<Mas>(mas))...});
+}
+/// Steam.cloudExists("partida.json")
+/// existe?
+/// Devuelve: bool
+template <typename T0 = Value>
+inline Value cloudExists(const T0& texto = {}) {
+    return detail::api("Steam.cloudExists", Values{Value(texto)});
+}
+/// Steam.cloudFiles()
+/// {name, size} de cada archivo
+/// Devuelve: lista de objetos
+template <typename... Mas>
+inline Value cloudFiles(Mas&&... mas) {
+    return detail::api("Steam.cloudFiles", Values{Value(std::forward<Mas>(mas))...});
+}
+/// Steam.cloudRead("partida.json")
+/// lee de la nube (o nil)
+/// Devuelve: texto
+template <typename T0 = Value>
+inline Value cloudRead(const T0& texto = {}) {
+    return detail::api("Steam.cloudRead", Values{Value(texto)});
+}
+/// Steam.cloudWrite("partida.json", texto)
+/// guarda en la nube
+/// Devuelve: bool
+template <typename T0 = Value, typename T1 = Value>
+inline Value cloudWrite(const T0& texto = {}, const T1& texto2 = {}) {
+    return detail::api("Steam.cloudWrite", Values{Value(texto), Value(texto2)});
+}
+/// Steam.createLobby("public", 4, function(ok, sala) end)
+/// crea una sala
+template <typename T0 = Value, typename T1 = Value, typename T2 = Value>
+inline Value createLobby(const T0& texto = {}, const T1& valor = {}, const T2& callback = {}) {
+    return detail::api("Steam.createLobby", Values{Value(texto), Value(valor), Value(callback)});
+}
+/// Steam.downloadScores("Puntos", "global", 1, 10, function(ok, filas) end)
+/// lee el marcador
+template <typename T0 = Value, typename T1 = Value, typename T2 = Value, typename T3 = Value, typename T4 = Value>
+inline Value downloadScores(const T0& texto = {}, const T1& texto2 = {}, const T2& valor = {}, const T3& valor2 = {}, const T4& callback = {}) {
+    return detail::api("Steam.downloadScores", Values{Value(texto), Value(texto2), Value(valor), Value(valor2), Value(callback)});
+}
+/// Steam.error()
+/// por que no lo esta
+/// Devuelve: texto
+template <typename... Mas>
+inline Value error(Mas&&... mas) {
+    return detail::api("Steam.error", Values{Value(std::forward<Mas>(mas))...});
+}
+/// Steam.findLobbies({modo = "coop"}, 20, function(ok, salas) end)
+/// busca salas
+template <typename T0 = Value, typename T1 = Value, typename T2 = Value>
+inline Value findLobbies(const T0& tabla = {}, const T1& valor = {}, const T2& callback = {}) {
+    return detail::api("Steam.findLobbies", Values{Value(tabla), Value(valor), Value(callback)});
+}
+/// Steam.friendName(id)
+/// nombre de un amigo
+/// Devuelve: texto
+template <typename T0 = Value>
+inline Value friendName(const T0& id = {}) {
+    return detail::api("Steam.friendName", Values{Value(id)});
+}
+/// Steam.getLobbyData(sala, "ip")
+/// lo lee
+/// Devuelve: texto
+template <typename T0 = Value, typename T1 = Value>
+inline Value getLobbyData(const T0& sala = {}, const T1& texto = {}) {
+    return detail::api("Steam.getLobbyData", Values{Value(sala), Value(texto)});
+}
+/// Steam.getStatFloat("km")
+/// lee una estadistica (nil si no hay)
+/// Devuelve: numero
+template <typename T0 = Value>
+inline Value getStatFloat(const T0& texto = {}) {
+    return detail::api("Steam.getStatFloat", Values{Value(texto)});
+}
+/// Steam.getStatInt("partidas")
+/// lee una estadistica (nil si no hay)
+/// Devuelve: numero
+template <typename T0 = Value>
+inline Value getStatInt(const T0& texto = {}) {
+    return detail::api("Steam.getStatInt", Values{Value(texto)});
+}
+/// Steam.inviteToLobby(sala)
+/// dialogo de invitar del overlay
+template <typename T0 = Value>
+inline Value inviteToLobby(const T0& sala = {}) {
+    return detail::api("Steam.inviteToLobby", Values{Value(sala)});
+}
+/// Steam.isAchievementUnlocked("PRIMERA_SANGRE")
+/// esta desbloqueado?
+/// Devuelve: bool
+template <typename T0 = Value>
+inline Value isAchievementUnlocked(const T0& texto = {}) {
+    return detail::api("Steam.isAchievementUnlocked", Values{Value(texto)});
+}
+/// Steam.isDlcInstalled(appId)
+/// tiene el DLC?
+/// Devuelve: bool
+template <typename T0 = Value>
+inline Value isDlcInstalled(const T0& appId = {}) {
+    return detail::api("Steam.isDlcInstalled", Values{Value(appId)});
+}
+/// Steam.isSteamDeck()
+/// corre en una Steam Deck?
+/// Devuelve: bool
+template <typename... Mas>
+inline Value isSteamDeck(Mas&&... mas) {
+    return detail::api("Steam.isSteamDeck", Values{Value(std::forward<Mas>(mas))...});
+}
+/// Steam.joinLobby(sala, function(ok, sala) end)
+/// entra en una sala
+template <typename T0 = Value, typename T1 = Value>
+inline Value joinLobby(const T0& sala = {}, const T1& callback = {}) {
+    return detail::api("Steam.joinLobby", Values{Value(sala), Value(callback)});
+}
+/// Steam.language()
+/// idioma de Steam
+/// Devuelve: texto
+template <typename... Mas>
+inline Value language(Mas&&... mas) {
+    return detail::api("Steam.language", Values{Value(std::forward<Mas>(mas))...});
+}
+/// Steam.leaveLobby(sala)
+/// sale
+template <typename T0 = Value>
+inline Value leaveLobby(const T0& sala = {}) {
+    return detail::api("Steam.leaveLobby", Values{Value(sala)});
+}
+/// Steam.lobbyMembers(sala)
+/// {id, name} de cada jugador
+/// Devuelve: lista de objetos
+template <typename T0 = Value>
+inline Value lobbyMembers(const T0& sala = {}) {
+    return detail::api("Steam.lobbyMembers", Values{Value(sala)});
+}
+/// Steam.lobbyOwner(sala)
+/// SteamID del dueno
+/// Devuelve: texto
+template <typename T0 = Value>
+inline Value lobbyOwner(const T0& sala = {}) {
+    return detail::api("Steam.lobbyOwner", Values{Value(sala)});
+}
+/// Steam.onLobbyJoinRequested(function(sala) end)
+/// un amigo invito y el jugador acepto
+template <typename T0 = Value>
+inline Value onLobbyJoinRequested(const T0& callback = {}) {
+    return detail::api("Steam.onLobbyJoinRequested", Values{Value(callback)});
+}
+/// Steam.onOverlay(function(abierto) end)
+/// se abrio o cerro el overlay (pausar)
+template <typename T0 = Value>
+inline Value onOverlay(const T0& callback = {}) {
+    return detail::api("Steam.onOverlay", Values{Value(callback)});
+}
+/// Steam.openOverlay("friends")
+/// abre el overlay
+template <typename T0 = Value>
+inline Value openOverlay(const T0& texto = {}) {
+    return detail::api("Steam.openOverlay", Values{Value(texto)});
+}
+/// Steam.openOverlayUrl("https://...")
+/// web en el overlay
+template <typename T0 = Value>
+inline Value openOverlayUrl(const T0& texto = {}) {
+    return detail::api("Steam.openOverlayUrl", Values{Value(texto)});
+}
+/// Steam.openStore()
+/// la pagina de la tienda
+template <typename... Mas>
+inline Value openStore(Mas&&... mas) {
+    return detail::api("Steam.openStore", Values{Value(std::forward<Mas>(mas))...});
+}
+/// Steam.overlayActive()
+/// esta abierto ahora?
+/// Devuelve: bool
+template <typename... Mas>
+inline Value overlayActive(Mas&&... mas) {
+    return detail::api("Steam.overlayActive", Values{Value(std::forward<Mas>(mas))...});
+}
+/// Steam.overlayEnabled()
+/// el overlay funciona?
+/// Devuelve: bool
+template <typename... Mas>
+inline Value overlayEnabled(Mas&&... mas) {
+    return detail::api("Steam.overlayEnabled", Values{Value(std::forward<Mas>(mas))...});
+}
+/// Steam.setLobbyData(sala, "ip", "1.2.3.4:7777")
+/// dato de la sala
+/// Devuelve: bool
+template <typename T0 = Value, typename T1 = Value, typename T2 = Value>
+inline Value setLobbyData(const T0& sala = {}, const T1& texto = {}, const T2& texto2 = {}) {
+    return detail::api("Steam.setLobbyData", Values{Value(sala), Value(texto), Value(texto2)});
+}
+/// Steam.setRichPresence("steam_display", "#Jugando")
+/// estado que ven los amigos
+/// Devuelve: bool
+template <typename T0 = Value, typename T1 = Value>
+inline Value setRichPresence(const T0& texto = {}, const T1& texto2 = {}) {
+    return detail::api("Steam.setRichPresence", Values{Value(texto), Value(texto2)});
+}
+/// Steam.setStatFloat("km", 4.5)
+/// estadistica decimal
+/// Devuelve: bool
+template <typename T0 = Value, typename T1 = Value>
+inline Value setStatFloat(const T0& texto = {}, const T1& valor = {}) {
+    return detail::api("Steam.setStatFloat", Values{Value(texto), Value(valor)});
+}
+/// Steam.setStatInt("partidas", 3)
+/// estadistica entera
+/// Devuelve: bool
+template <typename T0 = Value, typename T1 = Value>
+inline Value setStatInt(const T0& texto = {}, const T1& valor = {}) {
+    return detail::api("Steam.setStatInt", Values{Value(texto), Value(valor)});
+}
+/// Steam.storeStats()
+/// envia logros y estadisticas a Steam
+/// Devuelve: bool
+template <typename... Mas>
+inline Value storeStats(Mas&&... mas) {
+    return detail::api("Steam.storeStats", Values{Value(std::forward<Mas>(mas))...});
+}
+/// Steam.unlockAchievement("PRIMERA_SANGRE")
+/// desbloquea un logro
+/// Devuelve: bool
+template <typename T0 = Value>
+inline Value unlockAchievement(const T0& texto = {}) {
+    return detail::api("Steam.unlockAchievement", Values{Value(texto)});
+}
+/// Steam.uploadScore("Puntos", 1200, function(ok, puesto) end)
+/// sube una puntuacion al marcador
+template <typename T0 = Value, typename T1 = Value, typename T2 = Value>
+inline Value uploadScore(const T0& texto = {}, const T1& valor = {}, const T2& callback = {}) {
+    return detail::api("Steam.uploadScore", Values{Value(texto), Value(valor), Value(callback)});
+}
+/// Steam.userId()
+/// SteamID del jugador
+/// Devuelve: texto
+template <typename... Mas>
+inline Value userId(Mas&&... mas) {
+    return detail::api("Steam.userId", Values{Value(std::forward<Mas>(mas))...});
+}
+/// Steam.userName()
+/// nombre del jugador
+/// Devuelve: texto
+template <typename... Mas>
+inline Value userName(Mas&&... mas) {
+    return detail::api("Steam.userName", Values{Value(std::forward<Mas>(mas))...});
+}
+/// Steam.workshopItems()
+/// objetos del Workshop suscritos
+/// Devuelve: lista de objetos
+template <typename... Mas>
+inline Value workshopItems(Mas&&... mas) {
+    return detail::api("Steam.workshopItems", Values{Value(std::forward<Mas>(mas))...});
+}
+/// Steam.workshopProgress()
+/// 0..1 de la subida (-1 si no hay)
+/// Devuelve: numero
+template <typename... Mas>
+inline Value workshopProgress(Mas&&... mas) {
+    return detail::api("Steam.workshopProgress", Values{Value(std::forward<Mas>(mas))...});
+}
+/// Steam.workshopUpload({title, description, folder, preview, tags}, function(ok, id) end)
+/// sube al Workshop
+template <typename T0 = Value, typename T1 = Value>
+inline Value workshopUpload(const T0& tabla = {}, const T1& callback = {}) {
+    return detail::api("Steam.workshopUpload", Values{Value(tabla), Value(callback)});
+}
+}  // namespace Steam
+
+namespace Test {
+/// Test.begin("nombre", archivo)
+/// empieza un caso de prueba (termina el anterior)
+template <typename T0 = Value, typename T1 = Value>
+inline Value begin(const T0& texto = {}, const T1& archivo = {}) {
+    return detail::api("Test.begin", Values{Value(texto), Value(archivo)});
+}
+/// Test.check(ok, "mensaje")
+/// una comprobacion del caso (false = fallo con ese mensaje)
+/// Devuelve: bool
+template <typename T0 = Value, typename T1 = Value>
+inline Value check(const T0& ok = {}, const T1& texto = {}) {
+    return detail::api("Test.check", Values{Value(ok), Value(texto)});
+}
+/// Test.done()
+/// ya terminaron todos los casos
+template <typename... Mas>
+inline Value done(Mas&&... mas) {
+    return detail::api("Test.done", Values{Value(std::forward<Mas>(mas))...});
+}
+/// Test.finish()
+/// termina el caso (true si fue bien)
+/// Devuelve: bool
+template <typename... Mas>
+inline Value finish(Mas&&... mas) {
+    return detail::api("Test.finish", Values{Value(std::forward<Mas>(mas))...});
+}
+/// Test.log("texto")
+/// una linea en la salida del caso
+template <typename T0 = Value>
+inline Value log(const T0& texto = {}) {
+    return detail::api("Test.log", Values{Value(texto)});
+}
+/// Test.results()
+/// {done, passed, failed, cases = {name, passed, assertions, failures, messages, seconds}}
+/// Devuelve: objeto
+template <typename... Mas>
+inline Value results(Mas&&... mas) {
+    return detail::api("Test.results", Values{Value(std::forward<Mas>(mas))...});
+}
+}  // namespace Test
+
 namespace Text {
 /// Text.format("Hola {0}", nombre)
 /// sustituye {0}, {1}, {nombre}
@@ -3070,6 +3430,224 @@ public:
     static Mesh wireCube(const T0& tamano = {}, const T1& grosor = {}) {
         return Mesh(detail::api("Mesh.wireCube", Values{Value(tamano), Value(grosor)}));
     }
+};
+
+/// Maquina de estados de un objeto (entity().getStateMachine()): go, trigger, set/get...
+class StateMachine {
+public:
+    Value handle;
+    StateMachine() = default;
+    StateMachine(Value v) : handle(std::move(v)) {}
+    operator Value() const { return handle; }
+    explicit operator bool() const { return handle.truthy(); }
+    /// StateMachine.broadcast("trigger")
+    /// Activa un trigger en todas las maquinas
+    /// Devuelve: numero
+    template <typename T0 = Value>
+    static Value broadcast(const T0& texto = {}) {
+        return detail::api("StateMachine.broadcast", Values{Value(texto)});
+    }
+    /// StateMachine:changeState("Estado")
+    /// Como go
+    /// Devuelve: bool
+    template <typename T0 = Value>
+    Value changeState(const T0& texto = {}) const {
+        return handle.call("changeState", Values{Value(texto)});
+    }
+    /// StateMachine.changes: Cambios de estado desde que empezo (numero)
+    Value changes() const { return handle.get("changes"); }
+    /// StateMachine.entity: El objeto de la maquina (Entity)
+    Value entity() const { return handle.get("entity"); }
+    /// StateMachine:get("variable")
+    /// Valor de una variable (o nil)
+    /// Devuelve: valor
+    template <typename T0 = Value>
+    Value get(const T0& texto = {}) const {
+        return handle.call("get", Values{Value(texto)});
+    }
+    /// StateMachine:go("Estado")
+    /// Cambia a ese estado (antes que las transiciones)
+    /// Devuelve: bool
+    template <typename T0 = Value>
+    Value go(const T0& texto = {}) const {
+        return handle.call("go", Values{Value(texto)});
+    }
+    /// StateMachine:has("variable")
+    /// Existe esa variable?
+    /// Devuelve: bool
+    template <typename T0 = Value>
+    Value has(const T0& texto = {}) const {
+        return handle.call("has", Values{Value(texto)});
+    }
+    /// StateMachine:isIn("Estado")
+    /// Esta en ese estado?
+    /// Devuelve: bool
+    template <typename T0 = Value>
+    Value isIn(const T0& texto = {}) const {
+        return handle.call("isIn", Values{Value(texto)});
+    }
+    /// StateMachine.of(entity)
+    /// La maquina de estados de un objeto (o nil)
+    /// Devuelve: StateMachine
+    template <typename T0 = Value>
+    static StateMachine of(const T0& entity = {}) {
+        return StateMachine(detail::api("StateMachine.of", Values{Value(entity)}));
+    }
+    /// StateMachine.previous: Nombre del estado anterior (o nil) (texto)
+    Value previous() const { return handle.get("previous"); }
+    /// StateMachine:restart()
+    /// Vuelve a la entrada con las variables iniciales
+    template <typename... Mas>
+    Value restart(Mas&&... mas) const {
+        return handle.call("restart", Values{Value(std::forward<Mas>(mas))...});
+    }
+    /// StateMachine.running: Esta en marcha (no parada con stop) (bool)
+    Value running() const { return handle.get("running"); }
+    /// StateMachine:set("variable", valor)
+    /// Cambia una variable (o la crea con el tipo del valor)
+    template <typename T0 = Value, typename T1 = Value>
+    Value set(const T0& texto = {}, const T1& valor = {}) const {
+        return handle.call("set", Values{Value(texto), Value(valor)});
+    }
+    /// StateMachine:start()
+    /// La pone en marcha (o sigue)
+    template <typename... Mas>
+    Value start(Mas&&... mas) const {
+        return handle.call("start", Values{Value(std::forward<Mas>(mas))...});
+    }
+    /// StateMachine.state: Nombre del estado actual (nil si no ha empezado) (texto)
+    Value state() const { return handle.get("state"); }
+    /// StateMachine.stateTime: Segundos en el estado actual (numero)
+    Value stateTime() const { return handle.get("stateTime"); }
+    /// StateMachine:states()
+    /// Nombres de los estados
+    /// Devuelve: lista de texto
+    template <typename... Mas>
+    Value states(Mas&&... mas) const {
+        return handle.call("states", Values{Value(std::forward<Mas>(mas))...});
+    }
+    /// StateMachine:stop()
+    /// La para (se queda en su estado)
+    template <typename... Mas>
+    Value stop(Mas&&... mas) const {
+        return handle.call("stop", Values{Value(std::forward<Mas>(mas))...});
+    }
+    /// StateMachine.time: Segundos desde que empezo la maquina (numero)
+    Value time() const { return handle.get("time"); }
+    /// StateMachine:trigger("nombre")
+    /// Activa un trigger (vale hasta que se miran las transiciones)
+    template <typename T0 = Value>
+    Value trigger(const T0& texto = {}) const {
+        return handle.call("trigger", Values{Value(texto)});
+    }
+    /// StateMachine.vars: Las variables (copia: {nombre = valor}); para cambiarlas, set (objeto)
+    Value vars() const { return handle.get("vars"); }
+};
+
+/// Behavior Tree de un objeto (entity().getBehaviorTree()): get/set de la pizarra, start/stop, finishTask...
+class BehaviorTree {
+public:
+    Value handle;
+    BehaviorTree() = default;
+    BehaviorTree(Value v) : handle(std::move(v)) {}
+    operator Value() const { return handle; }
+    explicit operator bool() const { return handle.truthy(); }
+    /// BehaviorTree.activeTask: Nombre de la tarea que corre (o nil) (texto)
+    Value activeTask() const { return handle.get("activeTask"); }
+    /// BehaviorTree.broadcast("clave", valor)
+    /// cambia una clave en todos los arboles
+    /// Devuelve: numero
+    template <typename T0 = Value, typename T1 = Value>
+    static Value broadcast(const T0& texto = {}, const T1& valor = {}) {
+        return detail::api("BehaviorTree.broadcast", Values{Value(texto), Value(valor)});
+    }
+    /// BehaviorTree:clear("clave")
+    /// Vacia una clave (false, 0, "", sin objeto)
+    template <typename T0 = Value>
+    Value clear(const T0& texto = {}) const {
+        return handle.call("clear", Values{Value(texto)});
+    }
+    /// BehaviorTree.cycles: Veces que la raiz termino (numero)
+    Value cycles() const { return handle.get("cycles"); }
+    /// BehaviorTree.entity: El objeto del arbol (Entity)
+    Value entity() const { return handle.get("entity"); }
+    /// BehaviorTree.finishTask(entity, true)
+    /// Termina la tarea Run Script del objeto (true = bien, false = fallo)
+    template <typename T0 = Value, typename T1 = Value>
+    static BehaviorTree finishTask(const T0& entity = {}, const T1& activar = {}) {
+        return BehaviorTree(detail::api("BehaviorTree.finishTask", Values{Value(entity), Value(activar)}));
+    }
+    /// BehaviorTree:get("clave")
+    /// Valor de una clave de la pizarra (o nil)
+    /// Devuelve: valor
+    template <typename T0 = Value>
+    Value get(const T0& texto = {}) const {
+        return handle.call("get", Values{Value(texto)});
+    }
+    /// BehaviorTree:has("clave")
+    /// Existe esa clave?
+    /// Devuelve: bool
+    template <typename T0 = Value>
+    Value has(const T0& texto = {}) const {
+        return handle.call("has", Values{Value(texto)});
+    }
+    /// BehaviorTree:isActive("Nodo")
+    /// Ese nodo esta en la rama que corre?
+    /// Devuelve: bool
+    template <typename T0 = Value>
+    Value isActive(const T0& texto = {}) const {
+        return handle.call("isActive", Values{Value(texto)});
+    }
+    /// BehaviorTree.of(entity)
+    /// el arbol de un objeto (o nil)
+    /// Devuelve: BehaviorTree
+    template <typename T0 = Value>
+    static BehaviorTree of(const T0& entity = {}) {
+        return BehaviorTree(detail::api("BehaviorTree.of", Values{Value(entity)}));
+    }
+    /// BehaviorTree.registerTask("Atacar", funcion(bt, primera) o {start, update, abort})
+    /// tarea Run Script: se llama cada tick mientras corre; termina con bt.finishTask(true/false)
+    /// Devuelve: bool
+    template <typename T0 = Value, typename T1 = Value>
+    static Value registerTask(const T0& texto = {}, const T1& arg = {}) {
+        return detail::api("BehaviorTree.registerTask", Values{Value(texto), Value(arg)});
+    }
+    /// BehaviorTree.reportNoise(posicion, radio, quien)
+    /// ruido que oye el servicio Hearing
+    template <typename T0 = Value, typename T1 = Value, typename T2 = Value>
+    static BehaviorTree reportNoise(const T0& posicion = {}, const T1& radio = {}, const T2& quien = {}) {
+        return BehaviorTree(detail::api("BehaviorTree.reportNoise", Values{Value(posicion), Value(radio), Value(quien)}));
+    }
+    /// BehaviorTree:restart()
+    /// Corta todo y empieza con la pizarra inicial
+    template <typename... Mas>
+    Value restart(Mas&&... mas) const {
+        return handle.call("restart", Values{Value(std::forward<Mas>(mas))...});
+    }
+    /// BehaviorTree.running: Esta en marcha (bool)
+    Value running() const { return handle.get("running"); }
+    /// BehaviorTree:set("clave", valor)
+    /// Cambia una clave (o la crea con el tipo del valor)
+    template <typename T0 = Value, typename T1 = Value>
+    Value set(const T0& texto = {}, const T1& valor = {}) const {
+        return handle.call("set", Values{Value(texto), Value(valor)});
+    }
+    /// BehaviorTree:start()
+    /// Lo pone en marcha
+    template <typename... Mas>
+    Value start(Mas&&... mas) const {
+        return handle.call("start", Values{Value(std::forward<Mas>(mas))...});
+    }
+    /// BehaviorTree:stop()
+    /// Corta lo que corre y lo para
+    template <typename... Mas>
+    Value stop(Mas&&... mas) const {
+        return handle.call("stop", Values{Value(std::forward<Mas>(mas))...});
+    }
+    /// BehaviorTree.time: Segundos desde que empezo (numero)
+    Value time() const { return handle.get("time"); }
+    /// BehaviorTree.vars: La pizarra (copia: {clave = valor}); para cambiarla, set (objeto)
+    Value vars() const { return handle.get("vars"); }
 };
 
 }  // namespace cramion

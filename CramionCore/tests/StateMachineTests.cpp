@@ -1,18 +1,21 @@
 // Pruebas de las maquinas de estados de IA (consola): pizarra, condiciones,
 // prioridades, triggers, temporizadores, sm:go, el JSON del .crfsm y la
-// ejecucion en Lua (OnEnter/OnUpdate/OnExit, Cualquier estado, expresiones,
-// errores con estado y linea, recarga en caliente). Devuelve 0 si todo va.
+// ejecucion en Play (mensajes OnStateEnter/OnStateUpdate/OnStateExit para los
+// scripts de C++, expresiones, la API StateMachine y la recarga en caliente).
+// Devuelve 0 si todo va.
 
 #include "CramionCore/ai/StateMachine.h"
 #include "CramionCore/ecs/Components.h"
 #include "CramionCore/ecs/SceneSerializer.h"
 #include "CramionCore/ecs/World.h"
+#include "CramionCore/scripting/NativeApi.h"
 #include "CramionCore/scripting/Scripting.h"
+
+#include <nlohmann/json.hpp>
 
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
-#include <fstream>
 #include <string>
 #include <vector>
 
@@ -85,7 +88,7 @@ void testValues() {
     ai::resetRuntime(m, rt, {{"vision", 2, "20"}, {"vida", 1, "40"}, {"no_existe", 2, "1"}});
     check(rt.find("vision")->n == 20.0 && rt.find("vida")->n == 40.0 && rt.find("no_existe") == nullptr,
           "valores del Inspector por objeto (los que no existen se ignoran)");
-    const auto holds = [&](const ai::Condition& c) { return ai::conditionHolds(m, rt, c, 0, 0, {}); };
+    const auto holds = [&](const ai::Condition& c) { return ai::conditionHolds(m, rt, c); };
     check(holds(variable("distancia", ai::Compare::Greater, "$vision")), "comparar con otra variable ($vision)");
     check(holds(variable("distancia", ai::Compare::Equal, "50")) && !holds(variable("distancia", ai::Compare::NotEqual, "50")),
           "igual / distinto");
@@ -154,19 +157,22 @@ void testTransitions() {
     check(r.changed && r.transition == -2 && rt.state == 0 && rt.previous == 2, "sm:go manda sobre las transiciones");
     check(!rt.history.empty() && rt.history.back().find("(codigo)") != std::string::npos, "historial para el editor");
 
-    // Expresiones Lua (aqui una funcion de prueba).
-    ai::Condition lua;
-    lua.kind = ai::ConditionKind::Lua;
-    lua.expression = "vida < 50";
-    m.transitions.push_back(ai::Transition{0, 1, 0, false, {lua}});
+    // Expresiones (ai/Expression.h) con la pizarra.
+    ai::Condition expr;
+    expr.kind = ai::ConditionKind::Expression;
+    expr.expression = "vida < 50 and not alerta";
+    m.transitions.push_back(ai::Transition{0, 1, 0, false, {expr}});
     rt.find("vida")->n = 100.0;
     m.transitions[2].conditions[0].value = "0";
-    int asked = 0;
-    ai::stepStateMachine(m, rt, 0.1f, [&](int t, int k, const std::string& e) {
-        ++asked;
-        return t == 4 && k == 0 && e == "vida < 50";
-    });
-    check(asked == 1 && rt.state == 1, "condicion Lua evaluada por quien tiene Lua");
+    ai::stepStateMachine(m, rt, 0.1f);
+    check(rt.state == 0, "expresion falsa: sigue");
+    rt.find("vida")->n = 40.0;
+    ai::stepStateMachine(m, rt, 0.1f);
+    check(rt.state == 1 && rt.last_transition == 4, "expresion verdadera (vida < 50 and not alerta)");
+    ai::Condition broken;
+    broken.kind = ai::ConditionKind::Expression;
+    broken.expression = "self.entity:distanceTo(x) < 3";
+    check(!ai::conditionHolds(m, rt, broken), "expresion que no se puede leer: no se cumple");
 
     rt.running = false;
     check(!ai::stepStateMachine(m, rt, 0.1f).changed, "parada (sm:stop) no avanza");
@@ -188,14 +194,14 @@ void testJson() {
     ai::StateMachineAsset back;
     check(ai::stateMachineFromJson(text, back), "se vuelve a leer");
     check(back.uuid == m.uuid && back.states.size() == m.states.size() && back.transitions.size() == m.transitions.size() &&
-              back.variables.size() == m.variables.size() && back.states[2].code == m.states[2].code &&
-              back.any_code == m.any_code,
-          "mismos estados, transiciones, variables y codigo");
+              back.variables.size() == m.variables.size() && back.states[2].send_update == m.states[2].send_update,
+          "mismos estados, transiciones, variables y OnStateUpdate");
     check(back.transitions[5].from == ai::kAnyState && back.transitions[5].priority == 10 &&
               back.transitions[3].conditions.size() == 2 &&
               back.transitions[3].conditions[1].kind == ai::ConditionKind::Timer &&
-              back.transitions[6].conditions[0].kind == ai::ConditionKind::Lua,
-          "Cualquier estado, prioridad, temporizador y expresion Lua");
+              back.transitions[6].conditions[0].kind == ai::ConditionKind::Expression &&
+              back.transitions[6].conditions[0].expression == "vida >= 60",
+          "Cualquier estado, prioridad, temporizador y expresion");
     check(back.findVariable("casa")->value.type == ai::VarType::Vector &&
               back.findVariable("objetivo")->value.type == ai::VarType::Entity &&
               back.findVariable("objetivo")->value.s == "Jugador",
@@ -227,54 +233,32 @@ void testJson() {
     check(ai::saveStateMachine(m, file) && ai::loadStateMachine(file, back) && back.states.size() == 5, "guardar y cargar");
 }
 
-void writeFile(const std::filesystem::path& file, const std::string& text) {
-    std::filesystem::create_directories(file.parent_path());
-    std::ofstream(file, std::ios::binary) << text;
-}
+struct Message {
+    std::string entity;
+    std::string method;
+    nlohmann::json value;
+};
 
-ai::StateMachineAsset luaMachine(const char* broken_code) {
+ai::StateMachineAsset playMachine() {
     ai::StateMachineAsset m;
     m.uuid = Uuid{0x1234ull, 0x5678ull};
     m.variables = {{"n", ai::Value::parse(ai::VarType::Int, "0")},
                    {"listo", ai::Value::parse(ai::VarType::Bool, "false")},
                    {"objetivo", ai::Value::parse(ai::VarType::Entity, "Jugador")},
                    {"dist", ai::Value::parse(ai::VarType::Float, "100")}};
-    m.any_code = R"(
-function OnEnter(self, sm) self.arranques = (self.arranques or 0) + 1 end
-function OnUpdate(self, dt)
-    local o = self.vars.objetivo
-    self.vars.dist = o and self.entity:distanceTo(o) or 999
-end
-function ayuda(self) return "compartida" end
-)";
     ai::State idle;
     idle.name = "Idle";
-    idle.code = R"(
-function OnEnter(self, sm) self.entradas = (self.entradas or 0) + 1; self.ayudo = self:ayuda() end
-function OnUpdate(self, dt) self.vars.n = self.vars.n + 1 end
-function OnExit(self) self.salidas = (self.salidas or 0) + 1 end
-)";
+    idle.send_update = true;
     ai::State chase;
     chase.name = "Chase";
-    chase.code = R"(
-function OnEnter(self, sm) Scene.create("entro_chase"); self.sm_ok = (sm.state == "Chase") end
-function OnUpdate(self, dt) if self.vars.n > 100 then self.sm:go("Idle") end end
-function OnTriggerEnter(self, other) end
-)";
     ai::State done;
     done.name = "Done";
-    done.code = R"(
-local S = {}
-function S:OnEnter(sm) self.vars.listo = true end
-return S
-)";
-    ai::State broken;
-    broken.name = "Broken";
-    broken.code = broken_code;
-    m.states = {idle, chase, done, broken};
+    ai::State alarm;
+    alarm.name = "Alarma";
+    m.states = {idle, chase, done, alarm};
     ai::Condition expr;
-    expr.kind = ai::ConditionKind::Lua;
-    expr.expression = "n >= 1000 and entity ~= nil and sm.state ~= nil";
+    expr.kind = ai::ConditionKind::Expression;
+    expr.expression = "n >= 1000 and objetivo ~= nil";
     m.transitions.push_back(ai::Transition{0, 1, 0, false, {variable("dist", ai::Compare::Less, "5")}});
     m.transitions.push_back(ai::Transition{1, 2, 0, false, {trigger("fin")}});
     m.transitions.push_back(ai::Transition{2, 0, 0, false, {timer(0.25f)}});
@@ -282,17 +266,16 @@ return S
     return m;
 }
 
-void testLua() {
-    std::printf("Lua\n");
+void testRuntime() {
+    std::printf("Play (mensajes y API)\n");
     std::filesystem::create_directories(kRoot / "IA");
     const std::filesystem::path file = kRoot / "IA" / "Prueba.crfsm";
-    ai::StateMachineAsset m = luaMachine("function OnUpdate(self, dt)\n    local x = nil + 1\nend\n");
+    ai::StateMachineAsset m = playMachine();
     check(ai::saveStateMachine(m, file), "asset en disco");
 
     scripting::registerScriptComponents();
     ecs::World world;
     ecs::Entity player = world.create("Jugador");
-    player.setWorldPosition(core::Vec3{50.0f, 0.0f, 0.0f});
     ecs::Entity enemy = world.create("Enemigo");
     ai::StateMachine& sm = enemy.add<ai::StateMachine>();
     sm.machine = assets::AssetRef{m.uuid, assets::AssetType::StateMachine};
@@ -307,82 +290,96 @@ void testLua() {
     system.setAssetsRoot(kRoot);
     std::vector<std::string> log;
     system.setLog([&](int, const std::string& message) { log.push_back(message); });
+
+    // El "script de C++" del enemigo: recibe los mensajes y usa la API como
+    // lo haria Script::onMessage (en Idle suma 1 a n cada frame).
+    scripting::api::NativeApi& api = system.nativeApi();
+    std::vector<Message> messages;
+    system.setMessageListener([&](ecs::Entity e, const std::string& method, const std::string& value) {
+        messages.push_back({e.name(), method, nlohmann::json::parse(value, nullptr, false)});
+        if (method == "OnStateUpdate") {
+            const scripting::api::Value self = api.call("StateMachine.of", {scripting::api::Value::entity(e.handle())});
+            const double n = api.call("StateMachine:get", {scripting::api::Value("n")}, self).asNumber();
+            api.call("StateMachine:set", {scripting::api::Value("n"), scripting::api::Value(n + 1.0)}, self);
+        }
+    });
+    const auto count = [&](const char* method, const char* state) {
+        int c = 0;
+        for (const Message& msg : messages) {
+            if (msg.method == method && msg.value.value("state", "") == state) ++c;
+        }
+        return c;
+    };
+
     system.start(world);
     system.update(world, 0.1f);
     const ai::Runtime& rt = enemy.get<ai::StateMachine>().runtime;
     check(rt.started && rt.state == 0, "empieza en Idle");
-    check(rt.find("n")->n == 11.0, "OnUpdate cambia la pizarra (empezando en el valor del Inspector)");
-    check(std::abs(rt.find("dist")->n - 50.0) < 1e-3, "Cualquier estado calcula sensores (objetivo por nombre)");
+    check(count("OnStateEnter", "Idle") == 1 && messages.front().value["machine"] == "Prueba" &&
+              messages.front().value["from"].is_null(),
+          "OnStateEnter {machine, state, from = nil} al entrar");
+    check(count("OnStateUpdate", "Idle") == 1 && rt.find("n")->n == 11.0,
+          "OnStateUpdate: el script cambia la pizarra (empezando en el valor del Inspector)");
+    check(rt.find("objetivo")->entity != ai::kNoEntity, "variable entity resuelta por nombre");
+
+    const scripting::api::Value handle = api.call("Entity:getStateMachine", {}, scripting::api::Value::entity(enemy.handle()));
+    check(api.get("StateMachine:state", handle).asString() == "Idle", "entity:getStateMachine().state");
+    check(api.call("StateMachine:get", {scripting::api::Value("n")}, handle).asNumber() == 11.0, "sm:get");
     std::string out;
     check(system.run("return Scene.find('Enemigo'):getStateMachine().state", &out) && out == "Idle",
-          "entity:getStateMachine().state");
-    check(system.run("local sm = Scene.find('Enemigo'):getStateMachine(); return sm:get('n') + 0", &out) && out == "11",
-          "sm:get");
+          "consola: Scene.find(...):getStateMachine().state");
 
-    player.setWorldPosition(core::Vec3{2.0f, 0.0f, 0.0f});
+    api.call("StateMachine:set", {scripting::api::Value("dist"), scripting::api::Value(2.0)}, handle);
     system.update(world, 0.1f);
-    check(rt.state == 1 && world.findByName("entro_chase").valid(), "transicion por variable: OnEnter del nuevo estado");
-    check(system.run("return Scene.find('Enemigo'):getStateMachine():isIn('Chase')", &out) && out == "true", "sm:isIn");
+    check(rt.state == 1 && count("OnStateExit", "Idle") == 1 && count("OnStateEnter", "Chase") == 1,
+          "transicion por variable: OnStateExit del viejo y OnStateEnter del nuevo");
+    check(count("OnStateUpdate", "Chase") == 0, "sin send_update no hay OnStateUpdate");
+    check(api.call("StateMachine:isIn", {scripting::api::Value("Chase")}, handle).truthy(), "sm:isIn");
 
-    check(system.run("Scene.find('Enemigo'):getStateMachine():trigger('fin')", &out), "sm:trigger desde otro script");
+    api.call("StateMachine:trigger", {scripting::api::Value("fin")}, handle);
     system.update(world, 0.1f);
-    check(rt.state == 2 && rt.find("listo")->b, "trigger -> Done (estado escrito como tabla, self.vars)");
+    check(rt.state == 2, "sm:trigger -> Done");
     for (int i = 0; i < 3; ++i) system.update(world, 0.1f);
     check(rt.state == 0 || rt.state == 1, "temporizador de 0.25 s: vuelve a Idle");
-    check(system.run("local e = Scene.find('Enemigo'); return 1", &out), "consola");
 
-    // self es el mismo en todos los estados y ve lo de Cualquier estado.
-    system.run("local sm = StateMachine.of(Scene.find('Enemigo')); sm:set('n', 200)", &out);
-    system.update(world, 0.1f);
+    // sm:go desde un mensaje: se aplica en el mismo frame.
+    api.call("StateMachine:set", {scripting::api::Value("dist"), scripting::api::Value(100.0)}, handle);
+    api.call("StateMachine:go", {scripting::api::Value("Done")}, handle);
     system.update(world, 0.1f);
     bool from_code = false;
     for (const std::string& h : rt.history) from_code = from_code || h.find("(codigo)") != std::string::npos;
-    check(from_code, "sm:go desde OnUpdate (cambio por codigo)");
+    check(rt.state == 2 && from_code, "sm:go (cambio por codigo)");
+    check(!api.call("StateMachine:go", {scripting::api::Value("NoExiste")}, handle).truthy(), "sm:go a un estado que no existe");
 
-    // Expresion Lua -> Broken -> error con estado y linea.
-    system.run("Scene.find('Enemigo'):getStateMachine():set('n', 1000)", &out);
+    // Expresion -> Alarma (Cualquier estado).
+    api.call("StateMachine:set", {scripting::api::Value("n"), scripting::api::Value(1000.0)}, handle);
     system.update(world, 0.1f);
-    system.update(world, 0.1f);
-    check(rt.state == 3, "condicion con expresion Lua (ve variables, entity y sm)");
-    bool located = false;
-    for (const scripting::ScriptError& e : system.errors()) {
-        located = located || (e.file == "IA/Prueba.crfsm#Broken" && e.line == 2);
-    }
-    if (!located) {
-        for (const scripting::ScriptError& e : system.errors()) {
-            std::printf("    error: %s:%d %s\n", e.file.c_str(), e.line, e.message.c_str());
-        }
-    }
-    check(located, "error de un estado: archivo#estado y linea");
-    const std::size_t errors = system.errors().size();
-    system.update(world, 0.1f);
-    check(system.errors().size() == errors, "el estado con error no repite el error cada frame");
+    check(rt.state == 3, "condicion con expresion (ve las variables)");
 
     // Recarga en caliente: sigue en su estado y con sus variables.
-    m = luaMachine("function OnUpdate(self, dt) self.vars.listo = false end\n");
     m.variables.push_back({"nueva", ai::Value::parse(ai::VarType::Float, "7")});
     ai::saveStateMachine(m, file);
-    system.clearErrors();
     system.reloadFile("IA/Prueba.crfsm");
     system.update(world, 0.1f);
-    check(rt.state == 3 && system.errors().empty() && !rt.find("listo")->b && rt.find("n")->n >= 1000.0 &&
-              rt.find("nueva") != nullptr,
-          "recarga en caliente: mismo estado, codigo nuevo, variables conservadas y las nuevas");
+    check(rt.state == 3 && rt.find("n")->n >= 1000.0 && rt.find("nueva") != nullptr,
+          "recarga en caliente: mismo estado, variables conservadas y las nuevas");
 
-    player.setWorldPosition(core::Vec3{50.0f, 0.0f, 0.0f});
-    check(system.run("local e = Scene.find('Enemigo'); local sm = e:getStateMachine(); sm:restart(); return sm.running", &out) &&
-              out == "true",
-          "sm:restart");
+    api.call("StateMachine:restart", {}, handle);
+    check(api.get("StateMachine:running", handle).truthy(), "sm:restart la pone en marcha");
     system.update(world, 0.1f);
-    check(rt.state == 0 && rt.find("n")->n >= 10.0 && rt.find("n")->n < 20.0, "restart vuelve a la entrada con la pizarra inicial");
-    check(system.run("return StateMachine.broadcast('fin')", &out) && out == "1", "StateMachine.broadcast");
-    check(system.run("local e = Scene.find('Jugador'); return e:getStateMachine() == nil", &out) && out == "true",
+    check(rt.state == 0 && rt.find("n")->n >= 10.0 && rt.find("n")->n < 20.0,
+          "restart vuelve a la entrada con la pizarra inicial");
+    check(api.call("StateMachine.broadcast", {scripting::api::Value("fin")}).asNumber() == 1.0, "StateMachine.broadcast");
+    check(api.call("Entity:getStateMachine", {}, scripting::api::Value::entity(player.handle())).isNil(),
           "getStateMachine sin componente -> nil");
+    api.call("StateMachine:stop", {}, handle);
+    const std::size_t before = messages.size();
+    system.update(world, 0.1f);
+    check(messages.size() == before, "sm:stop: ni transiciones ni OnStateUpdate");
 
-    // Orden fijo entre varias maquinas y API para el autocompletado.
-    const auto api = scripting::ScriptSystem::apiReference();
+    const auto reference = scripting::ScriptSystem::apiReference();
     bool has_go = false;
-    if (const auto it = api.find("StateMachine:"); it != api.end()) {
+    if (const auto it = reference.find("StateMachine:"); it != reference.end()) {
         for (const auto& member : it->second) has_go = has_go || member.name == "go";
     }
     check(has_go, "apiReference tiene los metodos de StateMachine");
@@ -395,7 +392,7 @@ int main() {
     testValues();
     testTransitions();
     testJson();
-    testLua();
+    testRuntime();
     std::filesystem::remove_all(kRoot);
     std::printf("\n%d comprobaciones, %d fallos\n", checks, failures);
     return failures == 0 ? 0 : 1;

@@ -33,7 +33,10 @@
 - **Huesos como objetos**: el esqueleto de un modelo como jerarquía de objetos (cada hueso colgando de su padre) que siguen la animación.
 
 ### Scripting
-- **Empieza la retirada de Lua**: API nativa de C++ (las llamadas van primero al registro nativo y, si no está, a Lua, así que todo sigue funcionando mientras se migra). El plan, en `PLAN-SIN-LUA.md`.
+- **Retirada de Lua** (en curso): la API del motor es nativa de C++ y los scripts de C++ la usan con `Api::call`, `Api::get` y `Api::set` (`Lua::` queda como alias obsoleto). El plan, en `PLAN-SIN-LUA.md`; lo que falta, en `PENDIENTES.md`.
+- **Visual Scripts sin Lua**: un intérprete en C++ ejecuta los `.crgraph` directamente (cadenas de ejecución, nodos puros, variables por objeto, Delay que sigue donde iba, temporizadores, Custom Event y Send Event, choques, acciones de entrada, depuración con puntos de parada y recarga en caliente).
+- **Máquinas de estados sin Lua**: las condiciones son expresiones (`vida < 50 and not alerta`) y los estados mandan `OnStateEnter`, `OnStateUpdate` y `OnStateExit` a los scripts de C++ del objeto. En el editor, la casilla *Enviar OnStateUpdate* sustituye al código de cada estado; el código Lua de los proyectos antiguos se ve (solo lectura) y se puede borrar.
+- **Scripts de C++ en Linux**: se compilan con clang++ o g++ a `.so` y corren aislados en `CramionScriptHost` (memoria compartida y un socket), con el mismo trato de fallos que en Windows (puntero nulo, excepción, bucle infinito, pila llena, memoria agotada, `abort()`). `clang-format` y `clangd` también se buscan en Linux. El servidor dedicado de Linux vuelve a tener scripts.
 
 ### Licencia
 - **Licencia del Motor Cramion 1.2**: el **código fuente** se puede descargar, compilar, modificar y compartir gratis, manteniendo el copyright y la licencia y diciendo que es una versión modificada. Sigue sin poderse vender, revender ni resubir el motor, y los juegos siguen siendo tuyos, sin regalías.

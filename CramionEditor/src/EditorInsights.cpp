@@ -2,7 +2,7 @@
 // Arbol de zonas con media, propio, p95, maximo y llamadas; grafica de los
 // frames; contadores; capturas .crtrace (Perfetto / chrome://tracing) y los
 // ajustes de las optimizaciones (LOD de animacion, presupuesto de particulas,
-// voces de audio, presupuesto de Lua y umbral de tirones).
+// voces de audio, presupuesto de los scripts y umbral de tirones).
 
 #include "EditorApp.h"
 
@@ -191,7 +191,7 @@ void EditorApp::drawInsightsWindow() {
         cvarInt("fx.particles.Budget", "Particulas como mucho", 100, 2000000);
         cvarFloat("fx.particles.CollisionDistance", "Choques hasta (m)", 0.5f, 0.0f, 10000.0f, "%.0f");
         cvarInt("audio.MaxVoices", "Voces de audio reales", 1, 512);
-        cvarFloat("lua.BudgetMs", "Presupuesto por script (ms)", 0.05f, 0.0f, 100.0f, "%.2f");
+        cvarFloat("scripts.BudgetMs", "Presupuesto de los scripts por frame (ms)", 0.05f, 0.0f, 100.0f, "%.2f");
         cvarFloat("prof.HitchMs", "Tiron a partir de (ms)", 1.0f, 0.0f, 10000.0f, "%.0f");
         ImGui::EndTable();
     }

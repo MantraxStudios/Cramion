@@ -8,7 +8,9 @@
 #include "CramionCore/cvar/CVar.h"
 #include "CramionCore/ecs/World.h"
 #include "CramionCore/ecs/Components.h"
+#include "CramionCore/gameplay/Localization.h"
 #include "CramionCore/scripting/CppScripts.h"
+#include "CramionCore/scripting/NativeApi.h"
 #include "CramionCore/scripting/Scripting.h"
 
 #include <chrono>
@@ -115,8 +117,10 @@ void testCppScripts() {
         return;
     }
     std::printf("  compilador: %s (%s)\n", kind.c_str(), compiler.c_str());
+#if defined(_WIN32)
     check(kind == "clang (incluido)", "usa el compilador incluido con el motor (toolchain/)");
-    {
+#endif
+    if (!scripting::CppScriptSystem::findClangFormat().empty()) {
         // Formatear (clang-format incluido) conservando el cursor.
         const std::string messy = "class A{public:\nint  f( int x ){return x*2;}\n};\n";
         int cursor = static_cast<int>(messy.find("return"));
@@ -171,11 +175,11 @@ public:
     void start() override {
         Debug::log("Mover empieza en " + entity().name());
         if (objetivo.get()) objetivo->setName("visto por Mover");
-        // Toda la API de Lua: un global con un callback y una malla (un objeto del motor).
-        Lua::set("cppCallback", Value([this](const Values& args) { entity().setName("callback " + args[0].asString()); }));
-        Value mesh = Lua::call("Mesh.cube", {1.0f});
+        // Toda la API del motor: un aviso con un callback y una malla (un objeto del motor).
+        Api::call("Text.onLanguageChanged", {Value([this](const Values& args) { entity().setName("callback " + args[0].asString()); })});
+        Value mesh = Api::call("Mesh.cube", {1.0f});
         entity().set("mesh", mesh);
-        Lua::set("desdeCpp", static_cast<double>(pesos->size()) + modo);
+        Api::call("Debug.log", {"desdeCpp " + std::to_string(static_cast<int>(pesos->size()) + modo)});
     }
     void update(float) override {
         ++frames;
@@ -249,7 +253,11 @@ CRAMION_SCRIPT(Aborta)
     cpp.setAssetsRoot(assets);
     cpp.setBuildFolder(root / "Library" / "CppScripts");
     cpp.setSdkFolder(CRAMION_SDK_DIR);
+    #if defined(_WIN32)
     cpp.setHostExecutable(std::filesystem::path(CRAMION_BIN_DIR) / "CramionScriptHost.exe");
+#else
+    cpp.setHostExecutable(std::filesystem::path(CRAMION_BIN_DIR) / "CramionScriptHost");
+#endif
     check(cpp.hasSources() && !cpp.upToDate(), "hay fuentes y la DLL no esta al dia");
     cpp.compileAsync();
     while (cpp.compiling()) std::this_thread::sleep_for(std::chrono::milliseconds(20));
@@ -335,10 +343,12 @@ CRAMION_SCRIPT(Aborta)
     ecs::Entity preguntador = make("Preguntador", "Preguntador");
     for (const char* cls : {"PunteroNulo", "Lanza", "Bucle", "Recursion", "Memoria", "Aborta", "NoExiste"}) make(cls, cls);
 
-    // El Lua del juego (toda la API para los scripts de C++).
-    scripting::ScriptSystem lua;
-    lua.start(world);
-    cpp.setScriptSystem(&lua);
+    // Los scripts del juego (toda la API para los scripts de C++).
+    scripting::ScriptSystem scripts;
+    std::vector<std::string> logs;
+    scripts.setLog([&logs](int, const std::string& message) { logs.push_back(message); });
+    scripts.start(world);
+    cpp.setScriptSystem(&scripts);
 
     cvar::Registry::instance().set("script.cpp.TimeoutMs", "1500");
     cvar::Registry::instance().set("script.cpp.MemoryLimitMB", "256");
@@ -362,7 +372,7 @@ CRAMION_SCRIPT(Aborta)
     check(has("Lanza", "algo salio mal"), "excepcion de C++: su mensaje");
     check(has("Bucle", "bucle infinito"), "bucle infinito: cortado por tiempo");
     check(has("Recursion", "desbordamiento de pila"), "recursion infinita: pila llena atrapada");
-    check(has("Memoria", "bad") || has("Memoria", "memoria") || has("Memoria", "excepcion"), "memoria agotada (tope del Job Object)");
+    check(has("Memoria", "bad") || has("Memoria", "memoria") || has("Memoria", "excepcion"), "memoria agotada (tope de memoria del proceso)");
     check(has("Aborta", "abort"), "abort(): el proceso cae y se informa");
     check(has("NoExiste", "no hay ninguna clase"), "clase que no existe: aviso con las que hay");
     const float x = mover.worldPosition().x;
@@ -370,16 +380,17 @@ CRAMION_SCRIPT(Aborta)
     check(lampara.name() == "visto por Mover", "Property<Entity>: la referencia del Inspector llega como entidad");
     check(mover.get<ecs::Light>().intensity > 3.0f, "setField cambia un componente del motor");
     check(cvar::Registry::instance().find("prueba.Paso") != nullptr, "la CVar del script esta en el registro");
-    // Puente a Lua: global con el valor calculado y una malla del motor puesta en la entidad.
-    std::string out;
-    lua.run("return desdeCpp", &out);
-    check(out == "4" || out == "4.0", "Lua::set desde C++ (3 pesos de la lista + modo 1 = " + out + ")");
+    // Puente con la API: un valor calculado en C++ y una malla del motor puesta en la entidad.
+    bool logged = false;
+    for (const std::string& l : logs) logged = logged || l == "desdeCpp 4";
+    check(logged, "Api::call desde C++ (3 pesos de la lista + modo 1 = 4)");
     check(mover.has<ecs::MeshRenderer>() && mover.get<ecs::MeshRenderer>().mesh != nullptr,
           "un objeto del motor (Mesh.cube) como handle, puesto en entity.mesh");
-    // Un callback del script llamado desde Lua.
-    lua.run("cppCallback(42)", &out);
+    // Un callback del script llamado por el motor (cambio de idioma).
+    gameplay::localization().languages.push_back({"xx", "Prueba"});
+    scripts.nativeApi().call("Text.setLanguage", {scripting::api::Value("xx")});
     cpp.update(world, 1.0f / 60.0f);
-    check(mover.name() == "callback 42", "callback de C++ llamado desde Lua (" + mover.name() + ")");
+    check(mover.name() == "callback xx", "callback de C++ llamado por el motor (" + mover.name() + ")");
     // Lote: muchas posiciones en un mensaje.
     check(cajas[0].worldPosition().y > 5.0f && cajas[2].worldPosition().y > 5.0f, "getPositions/setPositions en lote");
     // Un boton de la UI (on_click "OnMover") llega al script de C++.
@@ -400,7 +411,7 @@ CRAMION_SCRIPT(Aborta)
     cpp.update(world, 1.0f / 60.0f);
     check(mover.worldPosition().x - before > 9.0f, "la CVar se cambia desde el motor y el script la ve");
     cpp.stop();
-    lua.stop();
+    scripts.stop();
     check(!cpp.running(), "parar cierra el proceso");
     cvar::Registry::instance().clearDynamic();
     cvar::Registry::instance().find("script.cpp.TimeoutMs")->reset();

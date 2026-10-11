@@ -1763,7 +1763,6 @@ private:
     void drawStateMachineVariables(ecs::Entity live);
     void drawStateMachineDetails(ecs::Entity live);
     void drawStateMachineInspector(ecs::Entity entity);
-    void selectStateMachineCode(int state);  // -1 = Cualquier estado, -2 = ninguno
     // Objeto que usa la maquina abierta (la seleccion o el primero): depuracion en vivo.
     ecs::Entity stateMachineLiveEntity();
     // El asset de una maquina (la abierta o leida del disco, con cache).
@@ -1783,8 +1782,6 @@ private:
     int fsm_link_from_ = -3;            // -3 = no se crea transicion; -1 = desde Cualquier estado
     int fsm_drag_ = -4;                 // nodo arrastrado (-1 Any, -2 Entrada, -4 nada)
     float fsm_right_width_ = 470.0f;    // panel del codigo
-    int fsm_code_state_ = -2;           // estado cuyo codigo esta en fsm_code_tab_
-    ScriptTab fsm_code_tab_;
     struct FsmAssetCache {
         ai::StateMachineAsset machine;
         std::filesystem::file_time_type time{};

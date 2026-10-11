@@ -1,10 +1,9 @@
 // Ventana "Maquina de estados" (como los State Graphs de Bolt / Visual
-// Scripting de Unity): edita un .crfsm como un grafo. Cada estado tiene su
-// propio codigo Lua (OnEnter / OnUpdate / OnExit...) que se escribe en el
-// panel de la derecha con el mismo editor de los scripts (colores,
-// autocompletado, errores con su linea). Las flechas son transiciones con
-// condiciones: variables de la pizarra, triggers, temporizadores o una
-// expresion Lua. En Play, el objeto seleccionado que usa la maquina se ve en
+// Scripting de Unity): edita un .crfsm como un grafo. La logica de cada
+// estado va en un script de C++ del objeto, que recibe los mensajes
+// OnStateEnter / OnStateUpdate / OnStateExit (ai/StateMachine.h). Las flechas
+// son transiciones con condiciones: variables de la pizarra, triggers,
+// temporizadores o una expresion (ai/Expression.h). En Play, el objeto seleccionado que usa la maquina se ve en
 // vivo: estado activo, ultima transicion, variables y el historial.
 //
 //   Clic derecho en el fondo   crear estado (vacio o con una plantilla)
@@ -43,7 +42,7 @@ constexpr int kEntryNode = -2;
 constexpr int kNoNode = -3;   // ni estado, ni Entrada, ni Cualquier estado
 constexpr int kNoDrag = -4;
 
-const char* const kConditionKindNames[] = {"Variable", "Trigger", "Temporizador", "Expresión Lua"};
+const char* const kConditionKindNames[] = {"Variable", "Trigger", "Temporizador", "Expresión"};
 
 std::string safeFileName(std::string name) {
     for (char& c : name) {
@@ -81,147 +80,23 @@ ImU32 colorOf(const core::Vec3& c, float scale = 1.0f, int alpha = 255) {
     return IM_COL32(channel(c.x), channel(c.y), channel(c.z), alpha);
 }
 
-// Codigo nuevo de un estado.
-std::string stateTemplate(const std::string& name) {
-    return "-- " + name +
-           "\n"
-           "-- self.entity: el objeto  |  self.vars.x: la pizarra  |  self.sm:go(\"Estado\")\n"
-           "\n"
-           "function OnEnter(self, sm)\n"
-           "end\n"
-           "\n"
-           "function OnUpdate(self, dt)\n"
-           "end\n"
-           "\n"
-           "function OnExit(self)\n"
-           "end\n";
-}
-
-constexpr const char* kAnyStateTemplate = R"lua(-- Cualquier estado: corre SIEMPRE, antes de mirar las transiciones.
--- Aqui van los "sensores" que calculan las variables de las condiciones.
--- Sus funciones sirven en todos los estados (self:miFuncion()).
-
-function OnEnter(self, sm)
-end
-
-function OnUpdate(self, dt)
-end
-)lua";
-
-// Plantillas del menu "Crear estado" (codigo de partida tipico de una IA).
+// Plantillas del menu "Crear estado de IA" (nombre y color tipicos).
 struct StateRecipe {
     const char* name;
     core::Vec3 color;
-    const char* code;
 };
 
 const StateRecipe kRecipes[] = {
-    {"Esperar", {0.30f, 0.30f, 0.33f}, R"lua(-- Esperar: quieto unos segundos (usa una transicion con temporizador para salir).
-
-function OnEnter(self, sm)
-    self.entity:stopMoving()
-end
-
-function OnUpdate(self, dt)
-end
-)lua"},
-    {"Patrullar", {0.20f, 0.45f, 0.25f}, R"lua(-- Patrullar: puntos de ruta con el tag "Waypoint" (en orden de nombre).
-
-function OnEnter(self, sm)
-    self.ruta = Scene.findAllWithTag("Waypoint")
-    table.sort(self.ruta, function(a, b) return a.name < b.name end)
-    self.punto = self.punto or 0
-    self:siguientePunto()
-end
-
-function siguientePunto(self)
-    if #self.ruta == 0 then return end
-    self.punto = self.punto % #self.ruta + 1
-    self.entity:moveTo(self.ruta[self.punto].position)
-end
-
-function OnUpdate(self, dt)
-    if not self.entity.isMoving then self:siguientePunto() end
-end
-
-function OnExit(self)
-    self.entity:stopMoving()
-end
-)lua"},
-    {"Perseguir", {0.62f, 0.45f, 0.12f}, R"lua(-- Perseguir: va hacia self.vars.objetivo (una variable entity).
-
-function OnEnter(self, sm)
-    self.recalcular = 0
-end
-
-function OnUpdate(self, dt)
-    self.recalcular = self.recalcular - dt
-    local objetivo = self.vars.objetivo
-    if objetivo and self.recalcular <= 0 then
-        self.entity:moveTo(objetivo.position)
-        self.recalcular = 0.25
-    end
-end
-
-function OnExit(self)
-    self.entity:stopMoving()
-end
-)lua"},
-    {"Atacar", {0.62f, 0.18f, 0.18f}, R"lua(-- Atacar: mira al objetivo y golpea cada segundo.
-
-function OnEnter(self, sm)
-    self.golpe = 0
-end
-
-function OnUpdate(self, dt)
-    local objetivo = self.vars.objetivo
-    if not objetivo then return end
-    local p = objetivo.position
-    self.entity:lookAt(Vec3(p.x, self.entity.position.y, p.z))
-    self.golpe = self.golpe - dt
-    if self.golpe <= 0 then
-        self.golpe = 1.0
-        Debug.log(self.entity.name .. " ataca")
-    end
-end
-)lua"},
-    {"Huir", {0.45f, 0.25f, 0.60f}, R"lua(-- Huir: se aleja del objetivo por la NavMesh.
-
-function OnEnter(self, sm)
-    self:alejarse()
-end
-
-function alejarse(self)
-    local objetivo = self.vars.objetivo
-    if not objetivo then return end
-    local lejos = self.entity.position + (self.entity.position - objetivo.position):normalized() * 12
-    local p = Navigation.projectPoint(lejos, 8) or Navigation.randomPoint(self.entity.position, 12)
-    if p then self.entity:moveTo(p) end
-end
-
-function OnUpdate(self, dt)
-    if not self.entity.isMoving then self:alejarse() end
-end
-
-function OnExit(self)
-    self.entity:stopMoving()
-end
-)lua"},
+    {"Esperar", {0.30f, 0.30f, 0.33f}},  {"Patrullar", {0.20f, 0.45f, 0.25f}}, {"Perseguir", {0.62f, 0.45f, 0.12f}},
+    {"Atacar", {0.62f, 0.18f, 0.18f}},   {"Huir", {0.45f, 0.25f, 0.60f}},
 };
 
-// Lo escrito en el editor de codigo, al asset. true si cambio algo.
-bool syncCode(ai::StateMachineAsset& m, int state, const std::string& text) {
-    if (state == ai::kAnyState) {
-        if (m.any_code == text) return false;
-        m.any_code = text;
-        return true;
-    }
-    if (state < 0 || state >= static_cast<int>(m.states.size())) return false;
-    ai::State& s = m.states[state];
-    if (!s.script.empty() || s.code == text) return false;
-    s.code = text;
-    return true;
-}
+// Lo que recibe el script de C++ del objeto (para la nota del panel).
+constexpr const char* kCppExample =
+    "void onMessage(const std::string& method, const Value& v) override {\n"
+    "    if (method == \"OnStateEnter\" && v[\"state\"].asString() == \"Perseguir\") { ... }\n"
+    "    if (method == \"OnStateUpdate\") { ... }  // con \"Enviar OnStateUpdate\"\n"
+    "}";
 
 // Objeto por nombre, tag o UUID (como las variables entity en Play).
 std::uint32_t resolveEntity(const ecs::World& world, const std::string& text) {
@@ -320,7 +195,7 @@ std::string conditionText(const ai::Condition& c) {
             std::snprintf(text, sizeof(text), "%.2g s en el estado", static_cast<double>(c.seconds));
             return text;
         }
-        case ai::ConditionKind::Lua: return "lua: " + c.expression;
+        case ai::ConditionKind::Expression: return "si " + c.expression;
     }
     return {};
 }
@@ -365,9 +240,7 @@ Uuid EditorApp::createStateMachineAsset(const std::filesystem::path& folder, boo
     if (!example) {
         ai::State first;
         first.name = "Inicio";
-        first.code = stateTemplate(first.name);
         m.states.push_back(std::move(first));
-        m.any_code = kAnyStateTemplate;
     }
     std::error_code ec;
     std::filesystem::create_directories(folder, ec);
@@ -406,8 +279,6 @@ bool EditorApp::loadStateMachineEditor(const Uuid& uuid) {
     fsm_selected_transition_ = -1;
     fsm_link_from_ = kNoNode;
     fsm_drag_ = kNoDrag;
-    fsm_code_state_ = -2;
-    fsm_code_tab_ = ScriptTab{};
     fsm_selected_state_ = fsm_.states.empty() ? kNoNode : std::clamp(fsm_.entry_state, 0, static_cast<int>(fsm_.states.size()) - 1);
     show_state_machine_ = true;
     fsm_focus_ = true;
@@ -416,14 +287,12 @@ bool EditorApp::loadStateMachineEditor(const Uuid& uuid) {
 
 void EditorApp::saveStateMachineEditor() {
     if (fsm_path_.empty()) return;
-    syncCode(fsm_, fsm_code_state_, fsm_code_tab_.text);
     std::string error;
     if (!ai::saveStateMachine(fsm_, fsm_path_, &error)) {
         std::cerr << "[Editor] No se pudo guardar la maquina de estados: " << error << "\n";
         return;
     }
     fsm_dirty_ = false;
-    fsm_code_tab_.saved = fsm_code_tab_.text;
     fsm_cache_.erase(fsm_uuid_);
     // En Play: se recompila y cada objeto sigue en su estado.
     scripts_.clearErrors();
@@ -472,23 +341,6 @@ const ai::StateMachineAsset* EditorApp::stateMachineAsset(const Uuid& uuid) {
     if (!ai::loadStateMachine(info->path, entry.machine, nullptr)) return nullptr;
     entry.time = time;
     return &(fsm_cache_[uuid] = std::move(entry)).machine;
-}
-
-void EditorApp::selectStateMachineCode(int state) {
-    if (state == fsm_code_state_) return;
-    // Lo escrito en el anterior ya esta en el asset (se copia cada frame).
-    syncCode(fsm_, fsm_code_state_, fsm_code_tab_.text);
-    fsm_code_tab_ = ScriptTab{};
-    fsm_code_state_ = state;
-    const int count = static_cast<int>(fsm_.states.size());
-    if (state != ai::kAnyState && (state < 0 || state >= count)) {
-        fsm_code_state_ = -2;
-        return;
-    }
-    fsm_code_tab_.path = fsm_path_;
-    fsm_code_tab_.text = state == ai::kAnyState ? fsm_.any_code : fsm_.states[state].code;
-    fsm_code_tab_.saved = fsm_code_tab_.text;
-    fsm_code_tab_.on_save = [this] { saveStateMachineEditor(); };
 }
 
 // --- Ventana --------------------------------------------------------------------
@@ -968,7 +820,6 @@ void EditorApp::drawStateMachineGraph(ecs::Entity live) {
     }
     const auto deleteSelected = [&] {
         if (fsm_selected_state_ >= 0 && fsm_selected_state_ < state_count) {
-            selectStateMachineCode(-2);  // el codigo abierto es de ese estado (o los indices cambian)
             m.removeState(fsm_selected_state_);
             fsm_selected_state_ = kNoNode;
             fsm_selected_transition_ = -1;
@@ -991,21 +842,20 @@ void EditorApp::drawStateMachineGraph(ecs::Entity live) {
         return name;
     };
     if (ImGui::BeginPopup("canvas_menu")) {
-        const auto addState = [&](const std::string& base, const core::Vec3& color, const std::string& code) {
+        const auto addState = [&](const std::string& base, const core::Vec3& color) {
             ai::State st;
             st.name = uniqueStateName(base);
             st.position = context_position;
             st.color = color;
-            st.code = code.empty() ? stateTemplate(st.name) : code;
             m.states.push_back(std::move(st));
             fsm_selected_state_ = static_cast<int>(m.states.size()) - 1;
             fsm_selected_transition_ = -1;
             fsm_dirty_ = true;
         };
-        if (ImGui::MenuItem("Crear estado")) addState("Estado", core::Vec3{0.30f, 0.30f, 0.33f}, "");
+        if (ImGui::MenuItem("Crear estado")) addState("Estado", core::Vec3{0.30f, 0.30f, 0.33f});
         if (ImGui::BeginMenu("Crear estado de IA")) {
             for (const StateRecipe& r : kRecipes) {
-                if (ImGui::MenuItem(r.name)) addState(r.name, r.color, r.code);
+                if (ImGui::MenuItem(r.name)) addState(r.name, r.color);
             }
             ImGui::EndMenu();
         }
@@ -1064,7 +914,6 @@ void EditorApp::drawStateMachineDetails(ecs::Entity live) {
 
     // --- Transicion seleccionada ---
     if (fsm_selected_transition_ >= 0 && fsm_selected_transition_ < static_cast<int>(m.transitions.size())) {
-        selectStateMachineCode(-2);
         const int index = fsm_selected_transition_;
         ai::Transition& t = m.transitions[index];
         ImGui::SeparatorText("Transición");
@@ -1086,8 +935,8 @@ void EditorApp::drawStateMachineDetails(ecs::Entity live) {
             ai::Condition& c = t.conditions[k];
             ImGui::PushID(static_cast<int>(k) + 1000);
             ImGui::Separator();
-            if (running && c.kind != ai::ConditionKind::Lua) {
-                const bool holds = ai::conditionHolds(m, sm->runtime, c, index, static_cast<int>(k), {});
+            if (running) {
+                const bool holds = ai::conditionHolds(m, sm->runtime, c);
                 ImGui::TextColored(holds ? ImVec4(0.4f, 1.0f, 0.5f, 1.0f) : ImVec4(1.0f, 0.45f, 0.4f, 1.0f), "●");
                 ImGui::SameLine();
             }
@@ -1098,7 +947,7 @@ void EditorApp::drawStateMachineDetails(ecs::Entity live) {
                 if (c.kind == ai::ConditionKind::Variable && c.variable.empty() && !m.variables.empty()) {
                     c.variable = m.variables.front().name;
                 }
-                if (c.kind == ai::ConditionKind::Lua && c.expression.empty()) c.expression = "true";
+                if (c.kind == ai::ConditionKind::Expression && c.expression.empty()) c.expression = "true";
                 fsm_dirty_ = true;
             }
             ImGui::SameLine();
@@ -1160,12 +1009,16 @@ void EditorApp::drawStateMachineDetails(ecs::Entity live) {
                     ImGui::DragFloat("##seconds", &c.seconds, 0.05f, 0.0f, 3600.0f, "después de %.2f s");
                     if (ImGui::IsItemDeactivatedAfterEdit()) fsm_dirty_ = true;
                     break;
-                case ai::ConditionKind::Lua:
+                case ai::ConditionKind::Expression: {
                     ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - 24.0f);
-                    ImGui::InputTextWithHint("##expr", "vida < 30 and not entity.isMoving", &c.expression);
+                    ImGui::InputTextWithHint("##expr", "vida < 30 and not alerta", &c.expression);
                     if (ImGui::IsItemDeactivatedAfterEdit()) fsm_dirty_ = true;
-                    ImGui::SetItemTooltip("Expresión Lua: ve las variables por su nombre, entity, sm, self y las globales");
+                    ImGui::SetItemTooltip("Expresión con las variables por su nombre: números, textos, + - * / %%,\n"
+                                          "== != < <= > >=, and / or / not (o && || !) y paréntesis");
+                    const ai::Expression& e = c.compiled.get(c.expression);
+                    if (!e.valid()) ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.4f, 1.0f), "No se puede leer: %s", e.error().c_str());
                     break;
+                }
             }
             ImGui::SameLine();
             if (ImGui::SmallButton("x")) remove = static_cast<int>(k);
@@ -1201,23 +1054,34 @@ void EditorApp::drawStateMachineDetails(ecs::Entity live) {
     // --- Estado seleccionado (o Cualquier estado) ---
     const int selected = fsm_selected_state_;
     if (selected != ai::kAnyState && (selected < 0 || selected >= count)) {
-        selectStateMachineCode(-2);
         ImGui::SeparatorText("Máquina de estados");
         ImGui::TextWrapped(
-            "Cada estado tiene su código Lua: OnEnter(self, sm) al entrar, OnUpdate(self, dt) cada frame y "
-            "OnExit(self) al salir (también OnFixedUpdate, OnLateUpdate, OnCollisionEnter, OnTriggerEnter... "
-            "mientras está activo).");
+            "La lógica de cada estado va en un script de C++ del objeto: recibe en onMessage \"OnStateEnter\" "
+            "{machine, state, from} al entrar, \"OnStateExit\" {machine, state, to} al salir y, si el estado tiene "
+            "\"Enviar OnStateUpdate\", \"OnStateUpdate\" {machine, state, dt, time} cada frame.");
         ImGui::Spacing();
-        ImGui::TextWrapped("En el código: self.entity (el objeto), self.vars.x (las variables), "
-                           "self.sm:go(\"Estado\"), self.sm:trigger(\"nombre\"), self.sm.stateTime.");
+        ImGui::TextWrapped("Desde el script: entity.getStateMachine() y sm.get / sm.set (las variables), "
+                           "sm.go(\"Estado\"), sm.trigger(\"nombre\"). Los sensores (distancia, vista...) los calcula "
+                           "el script y los guarda con sm.set.");
         ImGui::Spacing();
-        ImGui::TextWrapped("Selecciona un estado para editar su código, o una flecha para editar sus condiciones. "
-                           "\"Cualquier estado\" corre siempre: ahí van los sensores (distancia, vista...).");
+        ImGui::TextWrapped("Selecciona un estado para verlo, o una flecha para editar sus condiciones.");
         return;
     }
     if (selected == ai::kAnyState) {
         ImGui::SeparatorText("Cualquier estado");
-        ImGui::TextDisabled("Corre siempre, antes de mirar las transiciones. Sus funciones sirven en todos los estados.");
+        ImGui::TextWrapped("Sus transiciones salen de cualquier estado (morir, huir...). Los sensores que usan sus "
+                           "condiciones los calcula un script de C++ del objeto y los guarda con sm.set.");
+        if (ai::hasLuaCode(m.any_code)) {
+            ImGui::Spacing();
+            ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.35f, 1.0f), "Tiene código Lua de antes: ya no se ejecuta.");
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Borrar el código Lua##any")) {
+                m.any_code.clear();
+                fsm_dirty_ = true;
+            }
+            ImGui::InputTextMultiline("##any_lua", &m.any_code, ImVec2(-1.0f, 160.0f), ImGuiInputTextFlags_ReadOnly);
+        }
+        return;
     } else {
         ai::State& st = m.states[selected];
         ImGui::SeparatorText("Estado");
@@ -1263,57 +1127,27 @@ void EditorApp::drawStateMachineDetails(ecs::Entity live) {
             ImGui::SetItemTooltip("%s", transitionText(m, t).c_str());
             ImGui::PopID();
         }
-        // Script de Assets en lugar del codigo.
-        {
-            static const std::vector<std::string> kLua = {".lua"};
-            std::string picked = st.script;
-            if (assetFilePicker("fsm_script", project_.assetsFolder(), kLua, "script .lua", picked) && picked != st.script) {
-                st.script = picked;
-                selectStateMachineCode(-2);
-                fsm_dirty_ = true;
-            }
-        }
-        ImGui::SameLine(0.0f, ImGui::GetStyle().ItemInnerSpacing.x);
-        ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - 90.0f);
-        std::string script = st.script;
-        if (ImGui::InputTextWithHint("##script", "o un .lua de Assets (arrastrar aquí)", &script,
-                                     ImGuiInputTextFlags_EnterReturnsTrue) ||
-            (ImGui::IsItemDeactivatedAfterEdit() && script != st.script)) {
-            st.script = script;
-            selectStateMachineCode(-2);
-            fsm_dirty_ = true;
-        }
-        if (ImGui::BeginDragDropTarget()) {
-            if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(kScriptPayload)) {
-                st.script = assetRelative(dialogs::fromUtf8(static_cast<const char*>(payload->Data)));
-                selectStateMachineCode(-2);
-                fsm_dirty_ = true;
-            }
-            ImGui::EndDragDropTarget();
-        }
-        ImGui::SetItemTooltip("Un script normal (return tabla) con OnEnter / OnUpdate / OnExit:\n"
-                              "manda sobre el código de aquí.");
-        if (!st.script.empty()) {
+        ImGui::Spacing();
+        if (ImGui::Checkbox("Enviar OnStateUpdate", &st.send_update)) fsm_dirty_ = true;
+        ImGui::SetItemTooltip("Cada frame en este estado, \"OnStateUpdate\" {machine, state, dt, time} a los scripts de C++ del objeto");
+        ImGui::Spacing();
+        ImGui::TextWrapped("La lógica de \"%s\" va en un script de C++ del objeto (onMessage):", st.name.c_str());
+        ImGui::TextDisabled("%s", kCppExample);
+        if (ai::hasLuaCode(st.code) || !st.script.empty()) {
+            ImGui::Spacing();
+            ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.35f, 1.0f), "Este estado tiene %s de antes: ya no se ejecuta.",
+                               st.script.empty() ? "código Lua" : st.script.c_str());
             ImGui::SameLine();
-            if (ImGui::SmallButton("Abrir")) openScript(project_.assetsFolder() / dialogs::fromUtf8(st.script));
-            ImGui::SameLine();
-            if (ImGui::SmallButton("Quitar")) {
+            if (ImGui::SmallButton("Quitarlo")) {
+                st.code.clear();
                 st.script.clear();
                 fsm_dirty_ = true;
             }
-            ImGui::TextDisabled("Este estado usa %s.", st.script.c_str());
-            return;
+            if (ai::hasLuaCode(st.code)) {
+                ImGui::InputTextMultiline("##state_lua", &st.code, ImVec2(-1.0f, 160.0f), ImGuiInputTextFlags_ReadOnly);
+            }
         }
     }
-
-    // --- Codigo del estado ---
-    selectStateMachineCode(selected);
-    if (fsm_code_state_ != selected) return;
-    const std::string rel = assetRelative(fsm_path_);
-    fsm_code_tab_.relative = rel + "#" + (selected == ai::kAnyState ? std::string("Cualquier estado") : m.states[selected].name);
-    ImGui::TextDisabled("OnEnter(self, sm) · OnUpdate(self, dt) · OnExit(self) · self.vars.x · self.sm:go(\"Estado\")");
-    drawCodeEditor(fsm_code_tab_);
-    if (syncCode(m, fsm_code_state_, fsm_code_tab_.text)) fsm_dirty_ = true;
 }
 
 // --- Inspector del componente ---------------------------------------------------------
@@ -1497,9 +1331,7 @@ std::string EditorApp::stateMachineMcpTool(const std::string& name, const std::s
         } else {
             ai::State first;
             first.name = "Inicio";
-            first.code = stateTemplate(first.name);
             m.states.push_back(std::move(first));
-            m.any_code = kAnyStateTemplate;
         }
         // Si ya existe, se reemplaza conservando su UUID (las escenas la siguen usando).
         ai::StateMachineAsset old;
@@ -1562,18 +1394,17 @@ std::string EditorApp::stateMachineMcpTool(const std::string& name, const std::s
             m = std::move(fresh);
         }
         m.uuid = uuid;
-        // ...y/o el codigo de algunos estados: {"Patrullar": "function OnEnter..."}.
-        if (args.contains("state_code") && args["state_code"].is_object()) {
-            for (const auto& [state, code] : args["state_code"].items()) {
+        // ...y/o que estados mandan OnStateUpdate: {"Patrullar": true}.
+        if (args.contains("send_update") && args["send_update"].is_object()) {
+            for (const auto& [state, on] : args["send_update"].items()) {
                 const int index = m.findState(state);
                 if (index < 0) {
                     error = "no hay un estado \"" + state + "\"";
                     return {};
                 }
-                m.states[index].code = code.is_string() ? code.get<std::string>() : std::string{};
+                m.states[index].send_update = on.is_boolean() ? on.get<bool>() : true;
             }
         }
-        if (args.contains("any_code") && args["any_code"].is_string()) m.any_code = args["any_code"].get<std::string>();
         if (args.contains("entry") && args["entry"].is_string()) {
             const int index = m.findState(args["entry"].get<std::string>());
             if (index >= 0) m.entry_state = index;

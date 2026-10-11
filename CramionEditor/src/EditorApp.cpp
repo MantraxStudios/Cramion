@@ -297,8 +297,6 @@ void EditorApp::closeProject() {
     fsm_uuid_ = {};
     fsm_path_.clear();
     fsm_ = {};
-    fsm_code_state_ = -2;
-    fsm_code_tab_ = ScriptTab{};
     fsm_cache_.clear();
     show_state_machine_ = false;
     renderer_.waitIdle();

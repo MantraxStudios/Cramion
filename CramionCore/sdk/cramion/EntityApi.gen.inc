@@ -212,6 +212,13 @@ Value fracture(const T0& punto = {}, const T1& fuerza = {}) const {
 }
 /// entity.gear: marcha del Vehicle (numero)
 Value gear() const { return get("gear"); }
+/// entity:getBehaviorTree()
+/// su BehaviorTree (bt:get/set/start/stop/finishTask) o nil
+/// Devuelve: BehaviorTree
+template <typename... Mas>
+Value getBehaviorTree(Mas&&... mas) const {
+    return call("getBehaviorTree", Values{Value(std::forward<Mas>(mas))...});
+}
 /// entity:getBonePosition("Head")
 /// Posicion del hueso en el mundo
 /// Devuelve: Vec3 o nil
@@ -274,6 +281,13 @@ Value getNetVar(const T0& texto = {}) const {
 template <typename T0 = Value>
 Value getSplineControlPoint(const T0& valor = {}) const {
     return call("getSplineControlPoint", Values{Value(valor)});
+}
+/// entity:getStateMachine()
+/// su StateMachine (sm.go/trigger/get/set) o nil
+/// Devuelve: StateMachine
+template <typename... Mas>
+Value getStateMachine(Mas&&... mas) const {
+    return call("getStateMachine", Values{Value(std::forward<Mas>(mas))...});
 }
 /// entity:getTile(x, y, capa)
 /// Tilemap: lo que hay en una celda
