@@ -1146,6 +1146,7 @@ void vertex(inout Vertex v) {
             std::error_code error;
             std::filesystem::create_directories(script.parent_path(), error);
             std::ofstream(script) << scripting::cppScriptTemplate("Pestana");
+            std::ofstream(std::filesystem::path(script).replace_extension(".h")) << scripting::cppScriptHeaderTemplate("Pestana");
             openScript(script);
             check(activeWorkspaceKind() == WorkspaceKind::Script, "un script abre su pestana", f);
             self_test_wait_ = 12;

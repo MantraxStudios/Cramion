@@ -273,6 +273,11 @@ int main(int argc, char** argv) {
         if (std::filesystem::exists(game_dll, dll_error)) cpp_scripts.usePrebuilt(game_dll);
     }
 #endif
+    if (cpp_scripts.dll().empty() && cpp_scripts.hasSources()) {
+        // Fuera de Windows el servidor no compila ni trae la DLL de los scripts
+        std::cerr << "[Servidor] El proyecto tiene scripts de C++, pero este servidor no los ejecuta "
+                     "(solo el servidor de Windows, con scripts/game_scripts.dll)\n";
+    }
     {
         std::string loc_error;
         gameplay::localization().load(project->settingsFolder() / "Localization", &loc_error);
