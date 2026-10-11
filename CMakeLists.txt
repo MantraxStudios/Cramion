@@ -90,6 +90,7 @@ if(UNIX AND NOT APPLE)
     add_dependencies(CramionScriptHost cramion_sdk_copy)
     add_dependencies(CramionServer CramionScriptHost)
     add_dependencies(CramionCppScriptTests CramionScriptHost)
+    add_dependencies(cramion_minigolf CramionScriptHost)
     return()
 endif()
 

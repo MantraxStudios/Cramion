@@ -148,6 +148,9 @@ add_executable(CramionTemplateTests "${CMAKE_CURRENT_SOURCE_DIR}/tests/TemplateT
                                     "${CMAKE_CURRENT_SOURCE_DIR}/src/LocomotionPack.cpp")
 target_include_directories(CramionTemplateTests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
 target_link_libraries(CramionTemplateTests PRIVATE Cramion::Core cramion_update)
+# Las plantillas se juegan con sus scripts de C++ compilados de verdad.
+target_compile_definitions(CramionTemplateTests PRIVATE
+    CRAMION_SDK_DIR="${CMAKE_SOURCE_DIR}/CramionCore/sdk" CRAMION_BIN_DIR="${CMAKE_BINARY_DIR}")
 
 # Prueba de las configuraciones de compilacion (consola): perfiles, game.ini
 # y el icono escrito dentro de una copia del reproductor.
@@ -225,6 +228,8 @@ add_dependencies(CramionScriptHost cramion_sdk_copy)
 add_dependencies(CramionEditor CramionScriptHost)
 add_dependencies(CramionPlayer CramionScriptHost)
 add_dependencies(CramionCppScriptTests CramionScriptHost)
+add_dependencies(CramionTemplateTests CramionScriptHost)
+add_dependencies(cramion_minigolf CramionScriptHost)
 
 # --- Compilador incluido para los scripts de C++ y su IntelliSense ---
 # llvm-mingw (LLVM/clang + lld + libc++ + cabeceras de mingw-w64, todo

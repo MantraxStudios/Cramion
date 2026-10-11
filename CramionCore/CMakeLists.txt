@@ -393,6 +393,8 @@ target_compile_options(CramionVoxelTests PRIVATE -Wall -Wextra)
 # sin ventana (cramion_minigolf <kit> tools/minigolf <destino> --probar).
 add_executable(cramion_minigolf "${CMAKE_CURRENT_SOURCE_DIR}/tools/MiniGolfDemo.cpp")
 target_link_libraries(cramion_minigolf PRIVATE Cramion::Core)
+target_compile_definitions(cramion_minigolf PRIVATE
+    CRAMION_SDK_DIR="${CMAKE_CURRENT_SOURCE_DIR}/sdk" CRAMION_BIN_DIR="${CMAKE_BINARY_DIR}")
 
 # Referencia de componentes del manual (docs-src/pages/componentes-*.html),
 # generada desde la reflexion: cramion_docgen <carpeta docs-src/pages>.
