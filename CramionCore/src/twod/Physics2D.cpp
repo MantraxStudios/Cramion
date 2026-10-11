@@ -828,6 +828,12 @@ struct Physics2DWorld::Impl {
             const float t = b.interpolate ? std::clamp(alpha, 0.0f, 1.0f) : 1.0f;
             const V2 pos = b.prev_pos + (b.pos - b.prev_pos) * t;
             const float angle = b.prev_angle + (b.angle - b.prev_angle) * t;
+            // Dormido o quieto: lo mismo que ya escribio (sync() detecta si
+            // otro lo movio). Reescribirlo marcaba la jerarquia como sucia y
+            // le cambiaba la version al render en cada frame.
+            if (b.has_written && pos.x == b.written_pos.x && pos.y == b.written_pos.y && angle == b.written_angle) {
+                continue;
+            }
             e.setWorldMatrix(core::composeTrs(core::Vec3{pos.x, pos.y, b.z}, quatZ(angle), b.scale));
             b.written_pos = pos;
             b.written_angle = angle;

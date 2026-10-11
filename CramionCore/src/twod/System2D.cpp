@@ -165,14 +165,16 @@ bool System2D::spriteBounds(ecs::Entity e, core::Vec2& min, core::Vec2& max) {
 gfx::SpriteDrawList System2D::drawList(ecs::World& world, const core::Vec3& camera_position,
                                        const core::Vec3& camera_forward) {
     gfx::SpriteDrawList list;
-    std::map<std::pair<std::string, bool>, std::uint32_t> texture_index;
-    const auto textureFor = [&](const std::filesystem::path& file, bool point) -> std::uint32_t {
-        const auto key = std::make_pair(file.generic_string(), point);
-        const auto it = texture_index.find(key);
-        if (it != texture_index.end()) return it->second;
+    // Por la ruta relativa (como esta en el componente) y el filtro: la ruta
+    // absoluta (y su texto) solo para las texturas nuevas. Antes se montaba
+    // para cada sprite en cada frame (varios ms con unos miles).
+    std::unordered_map<std::string, std::uint32_t> texture_index[2];
+    const auto textureFor = [&](const std::string& relative, bool point) -> std::uint32_t {
+        auto& index_of = texture_index[point ? 1 : 0];
+        if (const auto it = index_of.find(relative); it != index_of.end()) return it->second;
         const std::uint32_t index = static_cast<std::uint32_t>(list.textures.size());
-        list.textures.push_back(gfx::SpriteTexture{file, point});
-        texture_index.emplace(key, index);
+        list.textures.push_back(gfx::SpriteTexture{sprites_.absolute(relative), point});
+        index_of.emplace(relative, index);
         return index;
     };
     const core::Vec3 forward = core::length(camera_forward) > 1e-6f ? core::normalize(camera_forward) : core::Vec3{0.0f, 0.0f, -1.0f};
@@ -200,7 +202,7 @@ gfx::SpriteDrawList System2D::drawList(ecs::World& world, const core::Vec3& came
         float v1 = static_cast<float>(f.y + f.h) / static_cast<float>(sheet->height);  // abajo
         if (r.flip_x) std::swap(u0, u1);
         if (r.flip_y) std::swap(v0, v1);
-        const std::uint32_t texture = textureFor(sprites_.absolute(r.sprite), sheet->filter == SpriteFilter::Point);
+        const std::uint32_t texture = textureFor(r.sprite, sheet->filter == SpriteFilter::Point);
         const core::Vec3 tint = linearColor(r.color);
         const core::Mat4& m = e.worldMatrix();
         Batch batch;
@@ -259,7 +261,7 @@ gfx::SpriteDrawList System2D::drawList(ecs::World& world, const core::Vec3& came
         if (tileset == nullptr || tileset->image.empty() || tileset->image_width <= 0) continue;
         buildTilemapMeshes(map, *tileset);
         if (!map.runtime.ptr) continue;
-        const std::uint32_t texture = textureFor(sprites_.absolute(tileset->image), tileset->filter == SpriteFilter::Point);
+        const std::uint32_t texture = textureFor(tileset->image, tileset->filter == SpriteFilter::Point);
         const core::Mat4& m = e.worldMatrix();
         const int layer_index = sortingLayerIndex(map.sorting_layer);
         const float depth = depthOf(e.worldPosition());

@@ -254,6 +254,7 @@ private:
         Function set;
     };
     std::unordered_map<std::string, Dynamic> dynamic_;
+    const Dynamic* dynamicFor(const std::string& full, std::string& key) const;
     std::uint64_t next_handle_ = kHandleBase;
     std::function<void(std::uint64_t, const std::string&)> sink_;
     std::function<void(std::uint64_t, const Value::Array&)> local_;

@@ -135,6 +135,14 @@ void testRegistry() {
     check(r["ok"] == true && options["sombras"] == 3.0, "escribir una propiedad dinamica");
     r = call(a, {{"op", "get"}, {"fn", "Graphics.vsync"}});
     check(r["result"] == 1.0, "leer una propiedad dinamica");
+    // El duenio mas largo: "Graphics.post" con una clave que lleva puntos.
+    std::string post_key;
+    a.dynamicProperties("Graphics.post", [&post_key](api::Call& c) {
+        post_key = c.string(0);
+        return api::Value(7);
+    });
+    check(a.get("Graphics.post.capas[1].peso").asNumber() == 7.0 && post_key == "capas[1].peso",
+          "propiedad dinamica de una subtabla con puntos en la clave");
 
     // Handles internados: el mismo objeto, el mismo id.
     int engine_object = 0;

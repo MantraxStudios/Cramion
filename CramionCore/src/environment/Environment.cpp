@@ -789,10 +789,15 @@ EnvironmentFrame applyEnvironment(ecs::World& world, scene::Scene& scene, gfx::V
     EnvironmentFrame frame;
     Environment* env = nullptr;
     ecs::Sky* sky = nullptr;
+    // El primero de cada uno (en el orden de la jerarquia). Los componentes
+    // antes que subir por la jerarquia; y con los dos encontrados ya no se mira.
     world.forEachDepthFirst([&](ecs::Entity e) {
-        if (!e.activeInHierarchy()) return;
-        if (env == nullptr) env = e.tryGet<Environment>();
-        if (sky == nullptr) sky = e.tryGet<ecs::Sky>();
+        if (env != nullptr && sky != nullptr) return;
+        Environment* found_env = env == nullptr ? e.tryGet<Environment>() : nullptr;
+        ecs::Sky* found_sky = sky == nullptr ? e.tryGet<ecs::Sky>() : nullptr;
+        if ((found_env == nullptr && found_sky == nullptr) || !e.activeInHierarchy()) return;
+        if (found_env != nullptr) env = found_env;
+        if (found_sky != nullptr) sky = found_sky;
     });
     if (env == nullptr) {
         if (scene.celestialSet()) scene.setCelestial(std::nullopt);

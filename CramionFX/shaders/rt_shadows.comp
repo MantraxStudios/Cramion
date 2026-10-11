@@ -72,14 +72,36 @@ void main() {
     vec2 uv = (vec2(pixel) + 0.5) / vec2(size);
     vec3 position = worldFromDepth(uv, depth);
     vec3 normal = decodeNormal(texelFetch(g_normal, pixel, 0).rg);
-    vec3 geometric = gbufferGeometricNormal(pixel, position, normal);
-    float distance_to_camera = length(camera.position.xyz - position);
 
     // --- Las 4 luces que mas aportan (el sol, si toca, la primera) ---
     // push.params.z: 1 = luces locales, 2 = sol (se pueden sumar).
     int flags = int(push.params.z + 0.5);
     bool want_local = (flags & 1) != 0;
     vec3 to_sun = -normalize(lights.sun_direction_intensity.xyz);
+
+    // Ninguna luz le da de cara (el sol por detras y ninguna local cerca): nada
+    // que trazar, y la normal de la cara real (5 lecturas de profundidad) no
+    // hace falta. Es la mitad de la escena con solo el sol.
+    bool any_candidate = (flags & 2) != 0 && dot(normal, to_sun) > 0.0;
+    for (int i = 0; want_local && !any_candidate && i < min(lights.counts.x, kMaxPointLights); ++i) {
+        vec3 to_light = lights.points[i].position_range.xyz - position;
+        any_candidate = lights.points[i].shadow.y > 0.0 &&
+                        dot(to_light, to_light) <= lights.points[i].position_range.w * lights.points[i].position_range.w &&
+                        dot(normal, to_light) > 0.0;
+    }
+    for (int i = 0; want_local && !any_candidate && i < min(lights.counts.y, kMaxSpotLights); ++i) {
+        vec3 to_light = lights.spots[i].position_range.xyz - position;
+        any_candidate = lights.spots[i].outer_shadow.z > 0.0 &&
+                        dot(to_light, to_light) <= lights.spots[i].position_range.w * lights.spots[i].position_range.w &&
+                        dot(normal, to_light) > 0.0;
+    }
+    if (!any_candidate) {
+        imageStore(output_image, pixel, vec4(0.0));
+        return;
+    }
+
+    vec3 geometric = gbufferGeometricNormal(pixel, position, normal);
+    float distance_to_camera = length(camera.position.xyz - position);
     bool want_sun = (flags & 2) != 0 && dot(normal, to_sun) > 0.0 && dot(geometric, to_sun) > 0.0;
     int ids[kSlots] = int[](-1, -1, -1, -1);
     float scores[kSlots] = float[](0.0, 0.0, 0.0, 0.0);
@@ -96,7 +118,7 @@ void main() {
         if (d > range) continue;
         float n_dot_l = dot(normal, to_light / max(d, 1e-4));
         if (n_dot_l <= 0.0 || dot(geometric, to_light) <= 0.0) continue;
-        float score = luminance(toLinear(lights.points[i].color_intensity.rgb)) * lights.points[i].color_intensity.a *
+        float score = luminance(lights.points[i].color_intensity.rgb) * lights.points[i].color_intensity.a *
                       attenuation(d, range) * n_dot_l;
         insertLight(i, score, ids, scores);
     }
@@ -115,7 +137,7 @@ void main() {
         float outer_cos = lights.spots[i].outer_shadow.x;
         float cone = clamp((cosine - outer_cos) / max(inner_cos - outer_cos, 1e-4), 0.0, 1.0);
         if (cone <= 0.0) continue;
-        float score = luminance(toLinear(lights.spots[i].color_inner.rgb)) * lights.spots[i].direction_intensity.w *
+        float score = luminance(lights.spots[i].color_inner.rgb) * lights.spots[i].direction_intensity.w *
                       cone * cone * attenuation(d, range) * n_dot_l;
         insertLight(kMaxPointLights + i, score, ids, scores);
     }

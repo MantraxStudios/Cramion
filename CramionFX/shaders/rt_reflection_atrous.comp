@@ -140,7 +140,14 @@ void main() {
             float kernel = kKernel[abs(x)] * kKernel[abs(y)] / (kKernel[0] * kKernel[0]);
             float w_depth = exp(-abs(center_depth - linearDepth(raw)) /
                                 (depth_gradient * length(vec2(x, y)) * float(push.step) + 1e-3));
-            float w_normal = pow(max(dot(center_normal, decodeNormal(sample_normal.rg)), 0.0), 64.0);
+            // pow(c, 64) con seis cuadrados (sin log2/exp2 por muestra).
+            float w_normal = max(dot(center_normal, decodeNormal(sample_normal.rg)), 0.0);
+            w_normal *= w_normal;
+            w_normal *= w_normal;
+            w_normal *= w_normal;
+            w_normal *= w_normal;
+            w_normal *= w_normal;
+            w_normal *= w_normal;
             float w_roughness = exp(-abs(sample_normal.b - roughness) * 16.0);
             float w_luminance = exp(-abs(center_luminance - luminance(sample_color.rgb)) / luminance_scale);
             float w = kernel * spatial * w_depth * w_normal * w_roughness * w_luminance;

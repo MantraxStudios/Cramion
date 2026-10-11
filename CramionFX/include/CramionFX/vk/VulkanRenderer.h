@@ -536,6 +536,20 @@ public:
     bool pathTracingActive() const {
         return path_tracing_ && device_.rayTracingSupported() && ray_tracing_.ready();
     }
+    // Esta vista la pinta entera el path tracing (todo lo que no es cielo): el
+    // SSAO, la GI, los reflejos y las sombras por rayos se sobrescribirian, asi
+    // que no se calculan.
+    // La luz volumetrica tiene algo que dibujar: encendida y con polvo
+    // (densidad) o algun volumen de niebla. Si no, el shader devolveria vacio
+    // en toda la imagen (y la iluminacion y el agua la ampliarian igual).
+    bool volumetricActive() const {
+        if (!post_.volumetric_light || capturing_) return false;
+        if (post_.volumetric_density > 0.0f) return true;
+        return std::any_of(fog_volumes_.begin(), fog_volumes_.end(), [](const FogVolume& v) { return v.density > 0.0f; });
+    }
+    bool pathTraceReplacesLighting() const {
+        return pathTracingActive() && !isolated() && !xr_view_frame_ && drawModeNow() == SceneDrawMode::Lit;
+    }
     // Caminos sumados por pixel hasta ahora y tope (al llegar deja de trazar).
     std::uint32_t pathTracingSamples() const { return path_tracing_samples_; }
     std::uint32_t pathTracingMaxSamples() const { return path_tracing_max_samples_; }
@@ -1380,6 +1394,9 @@ private:
         // Los animados se descartan enteros por su esfera.
         bool per_submesh = false;
         std::uint32_t first_bounds = 0;
+        // La union de esas cajas (y las del LOD): si la luz no la toca, ninguna
+        // submalla (una prueba en vez de una por submalla).
+        core::Aabb world_box{};
         // Indice del actor en scene.actors() (para el contorno de seleccion).
         std::uint32_t scene_actor = 0;
         bool cast_shadows = true;
@@ -1913,6 +1930,11 @@ private:
     };
     std::vector<core::Mat4> last_world_bones_;
     std::vector<BoneRange> last_bone_ranges_;
+    // Los de este frame (se intercambian con los de arriba): sin reservar
+    // y liberar cientos de KB en cada frame.
+    std::vector<core::Mat4> world_bones_now_;
+    std::vector<std::uint8_t> glass_models_;  // recordGlassPass: 1 = el modelo tiene vidrio
+    std::vector<BoneRange> bone_ranges_now_;
     // VR estereo: los del frame anterior tambien para el segundo ojo (el
     // movimiento de los objetos es el mismo en los dos).
     std::vector<core::Mat4> stereo_last_world_bones_;

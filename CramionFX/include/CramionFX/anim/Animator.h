@@ -59,6 +59,9 @@ public:
 
     // Una matriz por hueso de asset::ModelData::bones, en espacio del modelo.
     const std::vector<core::Mat4>& boneMatrices() const { return bone_matrices_; }
+    // Solo las matrices de los huesos de otro animador del mismo modelo (lo que
+    // lee el render): sin copiar los clips, la pose local y la global.
+    void copyBonesFrom(const Animator& other) { bone_matrices_ = other.bone_matrices_; }
 
     // Pose de cada nodo (espacio del padre y del modelo) tras evaluate(): la
     // cinematica inversa la retoca y luego rehace las matrices con

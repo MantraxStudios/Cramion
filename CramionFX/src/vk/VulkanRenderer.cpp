@@ -1632,9 +1632,22 @@ void VulkanRenderer::updateActors(const scene::Scene& scene, std::uint32_t frame
             draw.per_submesh = true;
             draw.first_bounds = static_cast<std::uint32_t>(submesh_bounds_.size());
             const core::Mat4 to_world = actor.transform * bones[0];
+            bool first_box = true;
+            const auto grow_world_box = [&](const core::Aabb& box) {
+                if (first_box) {
+                    draw.world_box = box;
+                    first_box = false;
+                } else {
+                    draw.world_box.min = Vec3{std::min(draw.world_box.min.x, box.min.x), std::min(draw.world_box.min.y, box.min.y),
+                                              std::min(draw.world_box.min.z, box.min.z)};
+                    draw.world_box.max = Vec3{std::max(draw.world_box.max.x, box.max.x), std::max(draw.world_box.max.y, box.max.y),
+                                              std::max(draw.world_box.max.z, box.max.z)};
+                }
+            };
             for (const asset::SubMesh& submesh : model.submeshes()) {
                 submesh_bounds_.push_back(core::transformAabb(
                     to_world, core::Aabb{submesh.bounds_min, submesh.bounds_max}));
+                grow_world_box(submesh_bounds_.back());
             }
 
             draw.max_scale = std::max({core::length(Vec3{to_world.m[0][0], to_world.m[0][1], to_world.m[0][2]}),
@@ -1656,6 +1669,7 @@ void VulkanRenderer::updateActors(const scene::Scene& scene, std::uint32_t frame
                 for (const asset::SubMesh& submesh : lod_submeshes) {
                     lod_bounds_.push_back(core::transformAabb(
                         to_world, core::Aabb{submesh.bounds_min, submesh.bounds_max}));
+                    grow_world_box(lod_bounds_.back());
                 }
             }
             for (const asset::SubMesh& submesh : lod_submeshes) lod_triangles_ += submesh.index_count / 3;
@@ -1747,8 +1761,10 @@ void VulkanRenderer::updateActors(const scene::Scene& scene, std::uint32_t frame
     // actor nuevo (o con otro modelo) no se movio: usa las de ahora.
     {
         const std::size_t count = bone_staging_.size();
-        std::vector<core::Mat4> world_now(count);
-        std::vector<BoneRange> ranges_now(actor_draws_.size());
+        std::vector<core::Mat4>& world_now = world_bones_now_;
+        std::vector<BoneRange>& ranges_now = bone_ranges_now_;
+        world_now.resize(count);  // todo se escribe abajo: no hace falta ponerlo a cero
+        ranges_now.resize(actor_draws_.size());
         for (std::size_t i = 0; i < actor_draws_.size(); ++i) {
             const ActorDraw& draw = actor_draws_[i];
             const std::uint32_t bones_only = draw.bone_entries - (draw.per_submesh ? 1u : 0u);
@@ -1770,8 +1786,8 @@ void VulkanRenderer::updateActors(const scene::Scene& scene, std::uint32_t frame
                     same ? last_world_bones_[last_bone_ranges_[i].start + k] : world_now[now.start + k];
             }
         }
-        last_world_bones_ = std::move(world_now);
-        last_bone_ranges_ = std::move(ranges_now);
+        std::swap(last_world_bones_, world_bones_now_);
+        std::swap(last_bone_ranges_, bone_ranges_now_);
         motion_offset_ = static_cast<std::uint32_t>(count);
     }
 
@@ -1934,6 +1950,10 @@ std::uint32_t VulkanRenderer::forEachVisibleSubmesh(const ActorDraw& actor,
         if (!frustum.intersects(core::Aabb{actor.bounds_center - r, actor.bounds_center + r})) {
             return 0;
         }
+    } else if (!frustum.intersects(actor.world_box)) {
+        // Escenario: la caja de todas sus submallas primero (la mayoria de los
+        // objetos quedan fuera de cada cascada o cara de una luz).
+        return 0;
     }
 
     std::uint32_t drawn = 0;
@@ -1986,6 +2006,12 @@ void VulkanRenderer::recordActorShadows(const vk::raii::CommandBuffer& cmd,
     const vk::Pipeline masked_pipeline =
         local ? *skinned_pass_.localShadowPipeline(true) : *skinned_pass_.shadowPipeline(true);
     vk::Pipeline bound_pipeline{};
+    // El de los meshlets (cascadas) y su set de cada modelo: se enlazan solo al
+    // cambiar (antes, en cada actor: dos sets y dos pipelines por objeto).
+    bool mesh_pipeline_bound = false;
+    vk::DescriptorSet bound_meshlet_set{};
+    // Buffers de vertices e indices: solo al cambiar de modelo.
+    std::uint32_t bound_buffers_model = UINT32_MAX;
     const auto bind = [&](vk::Pipeline pipeline) {
         if (bound_pipeline == pipeline) {
             return;
@@ -1996,6 +2022,7 @@ void VulkanRenderer::recordActorShadows(const vk::raii::CommandBuffer& cmd,
                                    0, *skin_sets_[frame_index], nullptr);
         }
         bound_pipeline = pipeline;
+        mesh_pipeline_bound = false;
     };
 
     std::vector<std::uint32_t>& visible = shadow_scratch_;
@@ -2075,6 +2102,8 @@ void VulkanRenderer::recordActorShadows(const vk::raii::CommandBuffer& cmd,
             continue;
         }
 
+        const core::Mat4 light_model_view_projection = light_view_projection * draw.transform;
+
         // --- Mesh shaders: lo opaco de los escenarios en las cascadas ---
         // Por meshlets (shadow_meshlet.task/.mesh): la GPU descarta los que
         // caen fuera de la cascada y, en mallas cerradas, los que miran en
@@ -2102,24 +2131,27 @@ void VulkanRenderer::recordActorShadows(const vk::raii::CommandBuffer& cmd,
             const Vec3 local_travel = core::normalize(
                 Vec3{core::dot(columns[0], travel), core::dot(columns[1], travel), core::dot(columns[2], travel)});
             GpuMeshletShadowPush mesh_push{};
-            mesh_push.light_model_view_projection = light_view_projection * draw.transform;
+            mesh_push.light_model_view_projection = light_model_view_projection;
             mesh_push.bone_offset = draw.bone_offset;
             mesh_push.flags = model.closed(lod) && uniform ? 1u : 0u;
             mesh_push.light_direction = toVec4(local_travel, 0.0f);
 
-            bool mesh_bound = false;
             std::uint32_t run_first = 0;
             std::uint32_t run_count = 0;
             const auto flush_meshlets = [&]() {
                 if (run_count == 0) return;
-                if (!mesh_bound) {
+                if (!mesh_pipeline_bound) {
                     cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *skinned_pass_.meshShadowPipeline());
                     cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *skinned_pass_.meshShadowLayout(), 0,
                                            *skin_sets_[frame_index], nullptr);
+                    mesh_pipeline_bound = true;
+                    bound_meshlet_set = vk::DescriptorSet{};
+                    bound_pipeline = vk::Pipeline{};  // el pipeline de siempre vuelve a enlazar sus sets
+                }
+                if (bound_meshlet_set != *model.meshletSet()) {
                     cmd.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, *skinned_pass_.meshShadowLayout(), 1,
                                            *model.meshletSet(), nullptr);
-                    mesh_bound = true;
-                    bound_pipeline = vk::Pipeline{};  // el pipeline de siempre vuelve a enlazar sus sets
+                    bound_meshlet_set = *model.meshletSet();
                 }
                 mesh_push.first_meshlet = run_first;
                 mesh_push.meshlet_count = run_count;
@@ -2145,18 +2177,29 @@ void VulkanRenderer::recordActorShadows(const vk::raii::CommandBuffer& cmd,
                 }
             }
             flush_meshlets();
+            // Si los meshlets ya dibujaron todo (nada recortado ni teselado),
+            // el pipeline de siempre no tiene nada que hacer con este actor.
+            bool raster_left = false;
+            for (const std::uint32_t i : visible) {
+                const SkinnedModel::Material& material = model.materials()[lod_submeshes[i].material];
+                raster_left = raster_left || material.alpha_masked || tessellatedMaterial(material);
+            }
+            if (!raster_left) continue;
         }
 
         bind(bound_pipeline ? bound_pipeline : opaque_pipeline);
 
         GpuSkinnedShadowPush push{};
-        push.light_model_view_projection = light_view_projection * draw.transform;
+        push.light_model_view_projection = light_model_view_projection;
         push.bone_offset = draw.bone_offset;
         cmd.pushConstants<GpuSkinnedShadowPush>(*skinned_pass_.shadowLayout(), skinned_pass_.shadowPushStages(), 0,
                                                 push);
 
-        cmd.bindVertexBuffers(0, *model.vertices().handle(), {0});
-        cmd.bindIndexBuffer(*model.indices().handle(), 0, vk::IndexType::eUint32);
+        if (draw.model != bound_buffers_model) {
+            cmd.bindVertexBuffers(0, *model.vertices().handle(), {0});
+            cmd.bindIndexBuffer(*model.indices().handle(), 0, vk::IndexType::eUint32);
+            bound_buffers_model = draw.model;
+        }
 
         // Primero todo lo opaco con el pipeline de solo profundidad (sin
         // material: no lee texturas). Luego lo recortado por alfa: la textura
@@ -3788,17 +3831,26 @@ void VulkanRenderer::updateUniforms(const scene::Scene& scene, const scene::Came
     light_data.sun_direction_intensity =
         toVec4(core::normalize(lights.sun.direction), lights.sun.intensity);
     light_data.sun_color_ambient = toVec4(lights.sun.color, lights.ambient.intensity);
-    // w: fuerza de la sombra del sol para los rayos (rt_common.glsl).
-    light_data.ambient_color = toVec4(lights.ambient.color, sunShadows() ? sun_shadow_strength_ : 0.0f);
+    // w: fuerza de la sombra del sol para los rayos (rt_common.glsl). Sin sol
+    // (la luna bajo el horizonte) 0: su rayo de sombra en cada impacto de la
+    // GI y los reflejos no cambiaria nada (su luz ya es 0).
+    light_data.ambient_color = toVec4(lights.ambient.color,
+                                      sunShadows() && lights.sun.intensity > 0.0f ? sun_shadow_strength_ : 0.0f);
     light_data.sky_sun = toVec4(lights.sky.to_sun, lights.sky.daylight);
     light_data.sky_moon = toVec4(lights.sky.to_moon, lights.sky.twilight);
 
+    // El color de las luces locales va ya en lineal: los shaders lo usaban
+    // con pow(c, 2.2) por luz y por pixel (y por paso de la volumetrica).
+    const auto linear_color = [](const Vec3& c) {
+        return Vec3{std::pow(std::max(c.x, 0.0f), 2.2f), std::pow(std::max(c.y, 0.0f), 2.2f),
+                    std::pow(std::max(c.z, 0.0f), 2.2f)};
+    };
     const auto point_count = static_cast<std::int32_t>(
         std::min<std::size_t>(lights.points.size(), scene::kMaxPointLights));
     for (std::int32_t i = 0; i < point_count; ++i) {
         const scene::PointLight& light = lights.points[static_cast<std::size_t>(i)];
         light_data.points[i].position_range = toVec4(light.position, light.range);
-        light_data.points[i].color_intensity = toVec4(light.color, light.intensity);
+        light_data.points[i].color_intensity = toVec4(linear_color(light.color), light.intensity);
         light_data.points[i].shadow = Vec4{
             static_cast<float>(local_shadows_.pointSlot(static_cast<std::size_t>(i))),
             light.cast_shadows ? light.shadow_strength : 0.0f, std::max(light.source_radius, 0.0f), 0.0f};
@@ -3816,7 +3868,7 @@ void VulkanRenderer::updateUniforms(const scene::Scene& scene, const scene::Came
         GpuSpotLight& gpu = light_data.spots[spot_count];
         gpu.position_range = toVec4(light.position, light.range);
         gpu.direction_intensity = toVec4(core::normalize(light.direction), light.intensity);
-        gpu.color_inner = toVec4(light.color, std::cos(light.inner_angle));
+        gpu.color_inner = toVec4(linear_color(light.color), std::cos(light.inner_angle));
         gpu.outer_shadow = Vec4{std::cos(light.outer_angle),
                                 static_cast<float>(local_shadows_.spotSlot(index)),
                                 light.cast_shadows ? light.shadow_strength : 0.0f,
@@ -3831,7 +3883,7 @@ void VulkanRenderer::updateUniforms(const scene::Scene& scene, const scene::Came
         bool shadowed = false;
         for (std::int32_t i = 0; i < point_count; ++i) shadowed = shadowed || light_data.points[i].shadow.y > 0.0f;
         for (std::int32_t i = 0; i < spot_count; ++i) shadowed = shadowed || light_data.spots[i].outer_shadow.z > 0.0f;
-        const bool traced = shadows_enabled_ && rayTracingActive() && !isolated();
+        const bool traced = shadows_enabled_ && rayTracingActive() && !isolated() && !pathTraceReplacesLighting();
         const bool local = shadowed && traced;
         const bool sun = traced && sunShadows() && sun_shadow_strength_ > 0.0f && lights.sun.intensity > 0.0f &&
                          core::length(lights.sun.direction) > 1e-6f && core::normalize(lights.sun.direction).y < 0.0f;
@@ -3864,8 +3916,10 @@ void VulkanRenderer::updateUniforms(const scene::Scene& scene, const scene::Came
                                Vec3{0.30f, 0.33f, 0.38f} * (lights.sky.daylight * (1.0f - 0.45f * covered)) +
                                amb * (lights.ambient.intensity * 0.3f);
     }
-    light_data.ssao_enabled = post_.ambient_occlusion ? 1 : 0;
-    light_data.gi_enabled = post_.global_illumination || bakedGiActive() ? 1 : 0;
+    // Con el path tracing pintando la vista no se calculan (ver pathTraceReplacesLighting).
+    const bool path_traced = pathTraceReplacesLighting();
+    light_data.ssao_enabled = post_.ambient_occlusion && !path_traced ? 1 : 0;
+    light_data.gi_enabled = (post_.global_illumination || bakedGiActive()) && !path_traced ? 1 : 0;
     // --- Lluvia ---
     if (!isolated()) {
         weather_time_ += frame_delta_seconds_;
@@ -3936,7 +3990,7 @@ void VulkanRenderer::updateUniforms(const scene::Scene& scene, const scene::Came
     // contacto); -1 sin filtro temporal (entonces el shader no usa ruido).
     const bool temporal_filter = upscaling_ && graphics_.upscaler != Upscaler::Fsr1 && !isolated();
     light_data.environment = Vec4{environmentActive() ? 1.0f : 0.0f,
-                                  post_.volumetric_light && !capturing_ ? 1.0f : 0.0f,
+                                  volumetricActive() ? 1.0f : 0.0f,
                                   post_.contact_shadows && !capturing_ ? std::max(post_.contact_shadow_length, 0.0f) : 0.0f,
                                   temporal_filter ? static_cast<float>(noise_frame_ % 64u) : -1.0f};
     if (!isolated()) {
@@ -5731,7 +5785,7 @@ void VulkanRenderer::recordSsaoPass(const vk::raii::CommandBuffer& cmd,
     // Apagado (preset Bajo, presupuesto adaptativo, movil) la iluminacion no
     // lo lee (lights.counts.z = 0): las barreras de arriba siguen (el G-buffer
     // pasa a textura aqui), el dibujo no.
-    if (!post_.ambient_occlusion) return;
+    if (!post_.ambient_occlusion || pathTraceReplacesLighting()) return;
     drawFullscreen<GpuBloomPush>(cmd, ssao_pass_, &ssao_sets_[frame_index], ssao_image_,
                                  nullptr);
 }
@@ -5739,8 +5793,9 @@ void VulkanRenderer::recordSsaoPass(const vk::raii::CommandBuffer& cmd,
 void VulkanRenderer::recordVolumetricPass(const vk::raii::CommandBuffer& cmd,
                                           std::uint32_t frame_index) {
     // Va despues del SSAO: la profundidad y las cascadas ya son texturas. Con
-    // la luz volumetrica apagada no se dibuja (lighting.frag no la lee).
-    if (!post_.volumetric_light || capturing_) {
+    // la luz volumetrica apagada, o sin polvo ni volumenes de niebla, no se
+    // dibuja (lighting.frag y el agua no la leen: environment.y = 0).
+    if (!volumetricActive()) {
         return;
     }
     pipelineBarrier(cmd, discardToAttachment(*volumetric_image_.handle()));
@@ -5944,7 +5999,8 @@ void VulkanRenderer::recordSsgiPass(const vk::raii::CommandBuffer& cmd,
     // que no se calcula. Eran 0.7 ms por frame (SSGI + filtro SVGF) para nada,
     // justo en los PC de gama baja. Con rayos sigue: su cache de radiancia la
     // leen tambien los reflejos.
-    if (!post_.global_illumination && !baked && !ray_traced) {
+    // Con el path tracing pintando la vista, tampoco (se sobrescribiria).
+    if ((!post_.global_illumination && !baked && !ray_traced) || pathTraceReplacesLighting()) {
         // El SSR lee la imagen HDR del frame anterior: recien creada, se pasa
         // a textura como hace la GI.
         if (!scene_history_valid_ && !isolated()) {
@@ -6033,6 +6089,19 @@ void VulkanRenderer::recordSsgiPass(const vk::raii::CommandBuffer& cmd,
                                       vk::AccessFlagBits2::eShaderStorageWrite,
                                       vk::PipelineStageFlagBits2::eComputeShader,
                                       vk::AccessFlagBits2::eShaderSampledRead);
+        // GI apagada con rayos: los rayos corren solo por la cache de
+        // radiancia (la leen los reflejos); la iluminacion no lee la GI, asi
+        // que el filtro SVGF (temporal, cinco a trous y la copia de los
+        // momentos) sobra.
+        if (!post_.global_illumination) {
+            pipelineBarrier(cmd, raw_to_sampled);
+            if (!isolated()) {
+                gi_filter_history_valid_ = false;
+                ssr_history_ready_ = scene_history_valid_;
+                scene_history_valid_ = true;
+            }
+            return;
+        }
     } else if (baked) {
         // Sondas dinamicas (DDGI): unas cuantas se rehacen con rayos antes de usarlas.
         if (dynamicProbesActive()) {
@@ -6132,8 +6201,10 @@ void VulkanRenderer::recordSsgiPass(const vk::raii::CommandBuffer& cmd,
 void VulkanRenderer::recordSsrPass(const vk::raii::CommandBuffer& cmd,
                                    std::uint32_t frame_index) {
     // Con los reflejos apagados tampoco se trazan: el compute no corre y la
-    // imagen se deja vacia como con el SSR.
-    const bool ray_traced = rayTracingActive() && !isolated() && post_.reflections;
+    // imagen se deja vacia como con el SSR. Con el path tracing pintando la
+    // vista, como apagados (se sobrescribirian).
+    const bool reflections = post_.reflections && !pathTraceReplacesLighting();
+    const bool ray_traced = rayTracingActive() && !isolated() && reflections;
     vk::ImageMemoryBarrier2 raw_to_sampled = writtenToSampled(*ssr_raw_.handle());
     ssr_image_from_compute_ = false;
     ssr_skipped_ = false;
@@ -6143,7 +6214,7 @@ void VulkanRenderer::recordSsrPass(const vk::raii::CommandBuffer& cmd,
     // no hace falta repetirlo cada frame: eran dos pasadas a pantalla
     // completa mas la copia a la historia, en los PC que menos pueden.
     // (Las vistas aisladas siempre lo escriben con ceros: no lo estropean.)
-    if (!post_.reflections && !isolated() && ssr_zeroed_) {
+    if (!reflections && !isolated() && ssr_zeroed_) {
         ssr_skipped_ = true;
         ssr_filter_history_valid_ = false;  // al volver, sin reflejos de hace rato
         rt_reflection_history_valid_ = false;
@@ -6186,7 +6257,7 @@ void VulkanRenderer::recordSsrPass(const vk::raii::CommandBuffer& cmd,
         // Sin frame anterior o con el SSR apagado, el shader no refleja nada.
         // z: numero de frame, para que el ruido del primer paso cambie cada
         // frame.
-        push.params = Vec4{post_.reflections && ssr_history_ready_ && !isolated() ? 1.0f : 0.0f,
+        push.params = Vec4{reflections && ssr_history_ready_ && !isolated() ? 1.0f : 0.0f,
                            1.0f, static_cast<float>(noise_frame_ % 64), 0.0f};
         drawFullscreen(cmd, ssr_pass_, &ssr_sets_[frame_index], ssr_raw_, &push);
     }
@@ -6210,17 +6281,24 @@ void VulkanRenderer::recordSsrPass(const vk::raii::CommandBuffer& cmd,
     // (Su historia es de esta vista: en VR, de este ojo.)
     GpuSsgiPush resolve{};
     resolve.previous_view_projection = history_view_projection_;
-    resolve.params = Vec4{ssr_filter_history_valid_ && post_.reflections && !isolated() ? 1.0f : 0.0f,
+    resolve.params = Vec4{ssr_filter_history_valid_ && reflections && !isolated() ? 1.0f : 0.0f,
                           kSsrHistoryWeight, 0.0f, 0.0f};
     drawFullscreen(cmd, ssr_resolve_pass_, &ssr_resolve_sets_[frame_index + eyeSet() * kMaxFramesInFlight],
                    ssr_image_, &resolve);
     // Apagados, las dos pasadas dejan ceros en toda la imagen.
-    if (!isolated()) ssr_zeroed_ = !post_.reflections;
+    if (!isolated()) ssr_zeroed_ = !reflections;
 }
 
 void VulkanRenderer::recordFilterHistoryCopies(const vk::raii::CommandBuffer& cmd) {
     if (isolated()) return;  // la segunda vista no escribe las historias
     if (ssr_skipped_) return;  // reflejos apagados: nada nuevo que guardar
+    // Reflejos por rayos: su filtro tiene su propia historia; esta solo la lee
+    // el filtro del SSR (ssr_resolve), que no ha corrido. Al volver al SSR
+    // empieza sin historia.
+    if (ssr_image_from_compute_) {
+        ssr_filter_history_valid_ = false;
+        return;
+    }
     // La iluminacion ya leyo los reflejos y la luz rebotada filtrados: se
     // copian a sus historias. Todas quedan como textura al terminar.
     constexpr vk::ImageLayout kRead = vk::ImageLayout::eShaderReadOnlyOptimal;
@@ -6518,8 +6596,20 @@ void VulkanRenderer::recordGlassPass(const vk::raii::CommandBuffer& cmd,
         std::uint32_t submesh;
     };
     std::vector<GlassDraw> visible;
+    // Que modelos tienen algo transparente (una vez por modelo y frame, no
+    // por objeto): casi ninguno, y asi la mayoria de objetos no se recorren.
+    glass_models_.assign(skinned_models_.size(), 0);
+    for (std::size_t m = 0; m < skinned_models_.size(); ++m) {
+        const SkinnedModel& model = skinned_models_[m];
+        for (const asset::SubMesh& submesh : model.submeshes()) {
+            if (model.materials()[submesh.material].transparent) {
+                glass_models_[m] = 1;
+                break;
+            }
+        }
+    }
     for (const ActorDraw& draw : actor_draws_) {
-        if (draw.shadows_only) {
+        if (draw.shadows_only || draw.model >= glass_models_.size() || glass_models_[draw.model] == 0) {
             continue;
         }
         const SkinnedModel& model = skinned_models_[draw.model];

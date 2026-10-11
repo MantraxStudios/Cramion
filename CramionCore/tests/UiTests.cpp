@@ -1,15 +1,21 @@
-// Pruebas de la interfaz del juego (consola): anclas, escalado, controles y
-// eventos hacia los scripts Lua. Devuelve 0 si todo va.
+// Pruebas de la interfaz del juego (consola): anclas, escalado, controles,
+// eventos hacia los scripts (ScriptSystem::callMethod: llegan como mensajes
+// a los scripts de C++ y a los Visual Scripts) y las propiedades de la
+// interfaz de la API (Entity:text, value...). Devuelve 0 si todo va.
 #include "CramionCore/ecs/World.h"
+#include "CramionCore/scripting/NativeApi.h"
 #include "CramionCore/scripting/Scripting.h"
 #include "CramionCore/ui/UI.h"
 
+#include <nlohmann/json.hpp>
+
 #include <cmath>
 #include <cstdio>
-#include <filesystem>
-#include <fstream>
+#include <string>
+#include <vector>
 
 using namespace cramion;
+using scripting::api::Value;
 
 int failures = 0;
 void check(bool ok, const char* what) {
@@ -17,6 +23,13 @@ void check(bool ok, const char* what) {
     if (!ok) ++failures;
 }
 bool near(float a, float b) { return std::abs(a - b) < 0.01f; }
+
+// Un mensaje que llego a los scripts del objeto (setMessageListener).
+struct Message {
+    ecs::Entity target;
+    std::string method;
+    nlohmann::json arg;
+};
 
 int main() {
     std::printf("Anclas\n");
@@ -40,22 +53,12 @@ int main() {
     check(near(r.x, 890) && near(r.y, 10), "anclado arriba a la derecha");
 
     std::printf("Controles y eventos\n");
-    const std::filesystem::path root = std::filesystem::temp_directory_path() / "cramion_ui_assets";
-    std::filesystem::create_directories(root / "Scripts");
-    std::ofstream(root / "Scripts" / "Menu.lua") << R"(
-local M = {}
-function M:OnJugar(boton) self.entity.name = "Pulsado:" .. boton.name end
-function M:OnVolumen(v) self.volumen = v end
-function M:OnEnviar(t) self.enviado = t end
-return M
-)";
     ui::registerUiComponents();
     scripting::registerScriptComponents();
     ecs::World world;
     ecs::Entity canvas = world.create("Canvas");
     canvas.add<ui::Canvas>().reference = core::Vec2{1920, 1080};
     ecs::Entity menu = world.create("Menu");
-    menu.add<scripting::Script>().file = "Scripts/Menu.lua";
     ecs::Entity button = world.create("Jugar", canvas);
     button.add<ui::RectTransform>().size = core::Vec2{400, 100};
     ui::Button& b = button.add<ui::Button>();
@@ -75,9 +78,18 @@ return M
     ui::InputField& f = field.add<ui::InputField>();
     f.target = menu.uuid();
     f.on_submit = "OnEnviar";
+    ecs::Entity toggle = world.create("Musica", canvas);
+    ui::RectTransform& trt = toggle.add<ui::RectTransform>();
+    trt.size = core::Vec2{100, 100};
+    trt.position = core::Vec2{600, 0};
+    ui::Toggle& tg = toggle.add<ui::Toggle>();
+    tg.on_change = "OnMusica";  // sin destino: a su propio objeto
 
     scripting::ScriptSystem scripts;
-    scripts.setAssetsRoot(root);
+    std::vector<Message> messages;
+    scripts.setMessageListener([&](ecs::Entity target, const std::string& method, const std::string& arg) {
+        messages.push_back(Message{target, method, nlohmann::json::parse(arg, nullptr, false)});
+    });
     scripts.start(world);
     ui::UiSystem system;
     const auto dispatch = [&] {
@@ -85,7 +97,13 @@ return M
             if (e.kind == ui::UiEvent::Kind::Click) scripts.callMethod(e.target, e.method, e.source);
             if (e.kind == ui::UiEvent::Kind::Number) scripts.callMethod(e.target, e.method, e.number);
             if (e.kind == ui::UiEvent::Kind::Text) scripts.callMethod(e.target, e.method, e.text);
+            if (e.kind == ui::UiEvent::Kind::Bool) scripts.callMethod(e.target, e.method, e.flag);
         }
+    };
+    // El ultimo mensaje si es `method` para `target`.
+    const auto last = [&](ecs::Entity target, const char* method) -> const Message* {
+        if (messages.empty() || messages.back().target != target || messages.back().method != method) return nullptr;
+        return &messages.back();
     };
     // Vista a la mitad de la referencia: todo escala 0.5.
     ui::UiInput in;
@@ -97,7 +115,9 @@ return M
     in.mouse_pressed = false; in.mouse_down = false; in.mouse_released = true;
     system.update(world, 960, 540, in, true, 0.0f);
     dispatch();
-    check(menu.name() == "Pulsado:Jugar", "clic en el boton llama a Menu:OnJugar(boton)");
+    const std::uint64_t button_id = static_cast<std::uint64_t>(entt::to_integral(button.handle())) + 1;
+    const Message* m = last(menu, "OnJugar");
+    check(m != nullptr && m->arg == nlohmann::json{{"$e", button_id}}, "clic en el boton: OnJugar(boton) al Menu");
     // Slider: arrastrar al 75 %.
     ui::UiRect sr;
     system.rectOf(slider.handle(), sr);
@@ -105,9 +125,9 @@ return M
     in.mouse_x = sr.x + sr.w * 0.75f; in.mouse_y = sr.y + sr.h * 0.5f; in.mouse_pressed = true; in.mouse_down = true;
     system.update(world, 960, 540, in, true, 0.0f);
     dispatch();
-    std::string out;
-    check(near(s.value, 0.75f) && scripts.run("return Scene.find('Pulsado:Jugar'):getScript().volumen", &out) &&
-              std::abs(std::stof(out) - 0.75f) < 0.01f, "slider: valor y OnVolumen(valor)");
+    m = last(menu, "OnVolumen");
+    check(near(s.value, 0.75f) && m != nullptr && m->arg.is_number() && near(m->arg.get<float>(), 0.75f),
+          "slider: valor y OnVolumen(valor)");
     // Campo de texto: clic, escribir, Enter.
     ui::UiRect fr;
     system.rectOf(field.handle(), fr);
@@ -121,12 +141,65 @@ return M
     in.enter = true;
     system.update(world, 960, 540, in, true, 0.0f);
     dispatch();
-    check(f.text == "Hola" && scripts.run("return Scene.find('Pulsado:Jugar'):getScript().enviado", &out) && out == "Hola",
-          "campo de texto: escribir y OnEnviar(texto)");
-    check(scripts.run("local e = Scene.find('Volumen'); e.value = 0.2; return e.value", &out) && std::abs(std::stof(out) - 0.2f) < 0.01f,
-          "Lua: entity.value del slider");
+    m = last(menu, "OnEnviar");
+    check(f.text == "Hola" && m != nullptr && m->arg == "Hola", "campo de texto: escribir y OnEnviar(texto)");
+    // Casilla sin destino: el mensaje va a su propio objeto.
+    ui::UiRect tr;
+    system.rectOf(toggle.handle(), tr);
+    in = ui::UiInput{};
+    in.mouse_x = tr.x + tr.w * 0.5f; in.mouse_y = tr.y + tr.h * 0.5f; in.mouse_pressed = true; in.mouse_down = true;
+    system.update(world, 960, 540, in, true, 0.0f);
+    in.mouse_pressed = false; in.mouse_down = false; in.mouse_released = true;
+    system.update(world, 960, 540, in, true, 0.0f);
+    dispatch();
+    m = last(toggle, "OnMusica");
+    check(tg.on && m != nullptr && m->arg == true, "casilla: OnMusica(true) a su objeto");
+    // Un objeto que ya no existe no recibe nada.
+    const std::size_t before = messages.size();
+    scripts.callMethod(ecs::Entity{}, "OnNada", 1.0f);
+    check(messages.size() == before, "callMethod sin objeto no envia nada");
+
+    std::printf("API de la interfaz\n");
+    scripting::api::NativeApi& api = scripts.nativeApi();
+    for (const char* name : {"Entity:text", "Entity:value", "Entity:interactable", "Entity:color", "Entity:texture",
+                             "Entity:alpha", "Entity:uiPosition", "Entity:uiSize"}) {
+        const scripting::api::Entry* e = api.find(name);
+        if (e == nullptr || e->kind != scripting::api::Entry::Kind::Property || !e->assign) {
+            std::printf("  (falta %s)\n", name);
+            check(false, "propiedad de la interfaz registrada");
+        }
+    }
+    const Value vslider = Value::entity(slider.handle());
+    api.set("Entity:value", Value(0.2), vslider);
+    check(near(s.value, 0.2f) && near(static_cast<float>(api.get("Entity:value", vslider).asNumber()), 0.2f),
+          "Entity:value del slider");
+    api.set("value", Value(0), Value::entity(toggle.handle()));
+    check(!tg.on, "Entity:value de la casilla");
+    api.set("text", Value("Ana"), Value::entity(field.handle()));
+    check(f.text == "Ana" && api.get("text", Value::entity(field.handle())).asString() == "Ana", "Entity:text del campo");
+    api.set("interactable", Value(false), Value::entity(button.handle()));
+    check(!b.interactable && !api.get("interactable", Value::entity(button.handle())).truthy(), "Entity:interactable del boton");
+    api.set("uiPosition", Value(core::Vec3{50, 60, 0}), Value::entity(button.handle()));
+    check(near(button.get<ui::RectTransform>().position.x, 50) && near(button.get<ui::RectTransform>().position.y, 60),
+          "Entity:uiPosition");
+    // Un boton que no responde no envia el clic.
+    messages.clear();
+    system.update(world, 960, 540, ui::UiInput{}, true, 0.0f);
+    system.rectOf(button.handle(), br);
+    in = ui::UiInput{};
+    in.mouse_x = br.x + br.w * 0.5f; in.mouse_y = br.y + br.h * 0.5f; in.mouse_pressed = true; in.mouse_down = true;
+    system.update(world, 960, 540, in, true, 0.0f);
+    in.mouse_pressed = false; in.mouse_down = false; in.mouse_released = true;
+    system.update(world, 960, 540, in, true, 0.0f);
+    dispatch();
+    check(messages.empty(), "interactable = false: sin OnJugar");
+    // Por el puente de los scripts de C++ (el mismo JSON que el SDK).
+    const nlohmann::json request = {{"op", "get"},
+                                    {"self", {{"$e", static_cast<std::uint64_t>(entt::to_integral(field.handle())) + 1}}},
+                                    {"key", "text"}};
+    const nlohmann::json reply = nlohmann::json::parse(scripts.bridgeCall(request.dump()));
+    check(reply["ok"] == true && reply["result"] == "Ana", "puente: Entity:text");
     scripts.stop();
-    std::filesystem::remove_all(root);
     std::printf("\n%d fallos\n", failures);
     return failures == 0 ? 0 : 1;
 }

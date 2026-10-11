@@ -316,6 +316,23 @@ void NativeApi::dynamicProperties(std::string owner, Function get, Function set)
     dynamic_[std::move(owner)] = Dynamic{std::move(get), std::move(set)};
 }
 
+// El duenio dinamico mas largo que es prefijo del nombre: "Graphics.post.x[1].y"
+// es de "Graphics.post" con la clave "x[1].y" (no de "Graphics").
+const NativeApi::Dynamic* NativeApi::dynamicFor(const std::string& full, std::string& key) const {
+    const Dynamic* best = nullptr;
+    std::size_t best_length = 0;
+    for (const auto& [owner, dynamic] : dynamic_) {
+        if (owner.size() >= full.size() || owner.size() <= best_length) continue;
+        if (full.compare(0, owner.size(), owner) != 0) continue;
+        const char separator = full[owner.size()];
+        if (separator != '.' && separator != ':') continue;
+        best = &dynamic;
+        best_length = owner.size();
+    }
+    if (best != nullptr) key = full.substr(best_length + 1);
+    return best;
+}
+
 // El duenio de un metodo o propiedad de un objeto: "Entity" o el tipo del handle.
 namespace {
 std::string ownerOf(const Value& self) {
@@ -353,14 +370,11 @@ Value NativeApi::get(std::string_view key, const Value& self) {
         return entry->call(c);
     }
     if (entry == nullptr) {
-        const std::size_t cut = full.find_last_of(".:");
-        if (cut != std::string::npos) {
-            const auto dyn = dynamic_.find(full.substr(0, cut));
-            if (dyn != dynamic_.end() && dyn->second.get) {
-                const Value::Array args{Value(full.substr(cut + 1))};
-                Call c(self, args);
-                return dyn->second.get(c);
-            }
+        std::string key;
+        if (const Dynamic* dyn = dynamicFor(full, key); dyn != nullptr && dyn->get) {
+            const Value::Array args{Value(key)};
+            Call c(self, args);
+            return dyn->get(c);
         }
     }
     throw Error(entry == nullptr ? "no existe " + full : full + " no es una propiedad");
@@ -377,15 +391,12 @@ void NativeApi::set(std::string_view key, const Value& value, const Value& self)
         return;
     }
     if (entry == nullptr) {
-        const std::size_t cut = full.find_last_of(".:");
-        if (cut != std::string::npos) {
-            const auto dyn = dynamic_.find(full.substr(0, cut));
-            if (dyn != dynamic_.end() && dyn->second.set) {
-                const Value::Array args{Value(full.substr(cut + 1)), value};
-                Call c(self, args);
-                dyn->second.set(c);
-                return;
-            }
+        std::string key;
+        if (const Dynamic* dyn = dynamicFor(full, key); dyn != nullptr && dyn->set) {
+            const Value::Array args{Value(key), value};
+            Call c(self, args);
+            dyn->set(c);
+            return;
         }
     }
     throw Error(entry == nullptr ? "no existe " + full : full + " no es una propiedad");

@@ -51,14 +51,14 @@ const int kPointShadowFaceCount = 6;
 
 struct PointLightGpu {
     vec4 position_range;    // xyz = posicion, w = alcance
-    vec4 color_intensity;   // rgb = color,    a = intensidad
+    vec4 color_intensity;   // rgb = color (lineal), a = intensidad
     vec4 shadow;            // x   = hueco de sombra (-1 = sin sombra)
 };
 
 struct SpotLightGpu {
     vec4 position_range;       // xyz = posicion,  w = alcance
     vec4 direction_intensity;  // xyz = direccion, w = intensidad
-    vec4 color_inner;          // rgb = color,     a = cos del angulo interior
+    vec4 color_inner;          // rgb = color (lineal), a = cos del angulo interior
     vec4 outer_shadow;         // x   = cos del angulo exterior, y = hueco de sombra
 };
 
@@ -220,8 +220,26 @@ float dust(vec3 p, float time) {
 
 // 1 si al punto le llega el sol, 0 si esta en sombra. Fuera de las cascadas,
 // iluminado (como en lighting.frag).
-float sunVisibility(vec3 world_position) {
-    float view_depth = -(camera.view * vec4(world_position, 1.0)).z;
+//
+// A lo largo del rayo la profundidad de vista y el clip de cada cascada son
+// lineales en t: se calculan una vez antes de la marcha (sunRayStart) y en
+// cada paso solo se suman (antes, una matriz por paso con indice dinamico).
+float ray_view_depth0;
+float ray_view_depth_step;
+vec4 ray_light_clip0[kShadowCascadeCount];
+vec4 ray_light_clip_step[kShadowCascadeCount];
+
+void sunRayStart(vec3 origin, vec3 direction) {
+    ray_view_depth0 = -(camera.view * vec4(origin, 1.0)).z;
+    ray_view_depth_step = -(mat3(camera.view) * direction).z;
+    for (int i = 0; i < kShadowCascadeCount; ++i) {
+        ray_light_clip0[i] = shadows.light_view_projection[i] * vec4(origin, 1.0);
+        ray_light_clip_step[i] = shadows.light_view_projection[i] * vec4(direction, 0.0);
+    }
+}
+
+float sunVisibility(float t) {
+    float view_depth = ray_view_depth0 + ray_view_depth_step * t;
     int cascade = kShadowCascadeCount - 1;
     for (int i = 0; i < kShadowCascadeCount; ++i) {
         if (view_depth < shadows.split_distances[i]) {
@@ -229,7 +247,7 @@ float sunVisibility(vec3 world_position) {
             break;
         }
     }
-    vec4 light_clip = shadows.light_view_projection[cascade] * vec4(world_position, 1.0);
+    vec4 light_clip = ray_light_clip0[cascade] + ray_light_clip_step[cascade] * t;
     vec3 projected = light_clip.xyz / light_clip.w;
     vec2 uv = projected.xy * 0.5 + 0.5;
     if (projected.z > 1.0 || projected.z < 0.0 || any(lessThan(uv, vec2(0.0))) ||
@@ -398,6 +416,8 @@ void main() {
     float dt = march_distance / float(steps);
     float jitter = bayer4(half_pixel);
 
+    if (has_sun) sunRayStart(ray_origin, direction);
+
     vec3 scattered = vec3(0.0);
     float transmittance = 1.0;
     for (int i = 0; i < kSteps; ++i) {
@@ -419,7 +439,7 @@ void main() {
         float step_transmittance = exp(-sigma * dt);
 
         // Luz que llega a este punto del aire, ya por su fase hacia la camara.
-        float sun_visible = has_sun ? sunVisibility(p) : 1.0;
+        float sun_visible = has_sun ? sunVisibility(t) : 1.0;
         vec3 incoming = has_sun ? sun_source * sun_visible : vec3(0.0);
         incoming += sky_source * mix(0.35, 1.0, sun_visible);
 
@@ -436,7 +456,7 @@ void main() {
             if (slot >= 0 && local_shadows.params.z > 0.0) {
                 visibility = pointVisibility(slot, lights.points[l].position_range.xyz, p);
             }
-            incoming += toLinear(lights.points[l].color_intensity.rgb) *
+            incoming += lights.points[l].color_intensity.rgb *
                         (lights.points[l].color_intensity.a *
                          attenuation(d, lights.points[l].position_range.w) * phase * visibility);
         }
@@ -463,7 +483,7 @@ void main() {
             if (slot >= 0 && local_shadows.params.z > 0.0) {
                 visibility = spotVisibility(slot, p);
             }
-            incoming += toLinear(lights.spots[l].color_inner.rgb) *
+            incoming += lights.spots[l].color_inner.rgb *
                         (lights.spots[l].direction_intensity.w * cone * cone *
                          attenuation(d, lights.spots[l].position_range.w) * phase * visibility);
         }

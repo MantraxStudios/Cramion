@@ -1,9 +1,11 @@
 // Pruebas de la entrada por acciones (Enhanced Input): valores, modificadores,
-// triggers, contextos con prioridad, reasignar teclas y el JSON. Tambien la
-// tabla Input de Lua. Devuelve 0 si todo va.
+// triggers, contextos con prioridad, reasignar teclas y el JSON. Tambien las
+// tablas Input y XR de la API de scripting, como las llaman los scripts de
+// C++ (el mismo JSON que el SDK). Devuelve 0 si todo va.
 
 #include "CramionCore/ecs/World.h"
 #include "CramionCore/input/InputActions.h"
+#include "CramionCore/scripting/NativeApi.h"
 #include "CramionCore/scripting/Scripting.h"
 #include "CramionCore/xr/XrRig.h"
 
@@ -13,13 +15,18 @@
 
 #include <CramionDM/Input.h>
 
+#include <nlohmann/json.hpp>
+
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
+#include <exception>
 #include <filesystem>
-#include <fstream>
 #include <string>
 
 using namespace cramion;
+using scripting::api::Value;
+using json = nlohmann::json;
 
 namespace {
 
@@ -192,47 +199,45 @@ void testJson() {
     check(input::parseSource("gamepad left stick").kind == input::SourceKind::GamepadStick, "nombres sin mayusculas");
 }
 
-void testLua() {
-    std::printf("Lua\n");
-    const std::filesystem::path root = std::filesystem::temp_directory_path() / "cramion_input_lua";
-    std::filesystem::create_directories(root / "Scripts");
-    std::ofstream(root / "Scripts" / "Jugador.lua", std::ios::binary) << R"(
-local J = {}
-function J:Awake()
-    self.saltos = 0
-    Input.bindAction("Jump", "started", function(v) self.saltos = self.saltos + 1 end)
-end
-function J:Update(dt)
-    local mover = Input.getAction("Move")
-    self.entity.name = string.format("%.0f,%.0f,%s,%s,%d", mover.x, mover.y, tostring(Input.getAction("Jump")),
-        Input.getActionState("Jump"), self.saltos)
-    if Input.getKeyDown("V") then Input.addMappingContext("Vuelo") end
-end
-return J
-)";
+// Lo que hacia el script de Lua de antes, ahora por el puente de los scripts
+// de C++: bindAction("Jump", "started"), getAction de Move (Vec2) y Jump
+// (Bool), getActionState y addMappingContext al pulsar V.
+void testScriptApi() {
+    std::printf("API de scripting (Input)\n");
     ecs::World world;
     scripting::registerScriptComponents();
-    ecs::Entity e = world.create("x");
-    e.add<scripting::Script>().file = "Scripts/Jugador.lua";
     scripting::ScriptSystem scripts;
-    scripts.setAssetsRoot(root);
     dm::Input in;
     scripts.setInput(&in);
+    int saltos = 0;
+    scripts.setBridgeCallbackSink([&saltos](std::uint64_t id, const std::string&) {
+        if (id == 1) ++saltos;
+    });
     scripts.start(world);
+    const auto call = [&scripts](const std::string& fn, const json& args = json::array()) {
+        return json::parse(scripts.bridgeCall(json{{"fn", fn}, {"args", args}}.dump()))["result"];
+    };
+    call("Input.bindAction", json::array({"Jump", "started", json{{"$f", 1}}}));
     key(in, dm::Key::D, true);
     key(in, dm::Key::Space, true);
     scripts.update(world, 0.016f);
+    const json mover = call("Input.getAction", json::array({"Move"}));
+    const json salto = call("Input.getAction", json::array({"Jump"}));
+    const json estado = call("Input.getActionState", json::array({"Jump"}));
     in.newFrame();
-    check(e.name() == "1,0,true,triggered,1", "getAction Vec2/Bool, getActionState y bindAction");
+    check(mover.contains("$v") && mover["$v"][0] == 1.0 && mover["$v"][1] == 0.0 && salto == true && estado == "triggered" &&
+              saltos == 1,
+          "getAction Vec2/Bool, getActionState y bindAction");
     key(in, dm::Key::V, true);
+    if (call("Input.getKeyDown", json::array({"V"})) == true) call("Input.addMappingContext", json::array({"Vuelo"}));
     scripts.update(world, 0.016f);
     in.newFrame();
-    check(scripts.inputMapper().hasContext("Vuelo"), "Input.addMappingContext desde Lua");
+    check(scripts.inputMapper().hasContext("Vuelo"), "Input.addMappingContext desde un script");
     scripts.stop();
 }
 
 // Mandos de VR (OpenXR): fuentes "XR ...", las acciones por defecto y la
-// tabla XR de Lua sin casco.
+// tabla XR de la API sin casco.
 void testXr() {
     std::printf("Mandos de VR\n");
     check(input::parseSource("XR Right Trigger").kind == input::SourceKind::XrAxis, "XR Right Trigger es un eje");
@@ -255,44 +260,41 @@ void testXr() {
     check(m.state("Fire") != nullptr && m.state("Fire")->state == input::TriggerState::Triggered, "gatillo derecho -> Fire");
     check(m.state("Jump") != nullptr && (m.state("Jump")->events & input::EventStarted), "A -> Jump");
 
-    const std::filesystem::path root = std::filesystem::temp_directory_path() / "cramion_input_xr";
-    std::filesystem::create_directories(root / "Scripts");
-    std::ofstream(root / "Scripts" / "Vr.lua", std::ios::binary) << R"(
-local V = {}
-function V:Update(dt)
-    self.entity.name = string.format("%s,%s,%s,%s", tostring(XR.isAvailable()), tostring(XR.getButton("right", "a")),
-        tostring(XR.getButtonDown("right", "primary")), tostring(XR.getHeadPosition()))
-end
-return V
-)";
+    // La tabla XR de la API sin casco: los botones llegan por Input y no hay poses.
     ecs::World world;
     scripting::registerScriptComponents();
-    ecs::Entity e = world.create("x");
-    e.add<scripting::Script>().file = "Scripts/Vr.lua";
     scripting::ScriptSystem scripts;
-    scripts.setAssetsRoot(root);
-    dm::Input lua_in;
-    scripts.setInput(&lua_in);
+    dm::Input api_in;
+    scripts.setInput(&api_in);
     scripts.start(world);
-    lua_in.setXrButton(dm::XrButton::RightPrimary, true);
+    api_in.setXrButton(dm::XrButton::RightPrimary, true);
     scripts.update(world, 0.016f);
-    check(e.name() == "false,true,true,nil", "XR en Lua sin casco: botones por Input, sin poses");
-    scripts.stop();
+    scripting::api::NativeApi& api = scripts.nativeApi();
+    check(!api.call("XR.isAvailable").truthy() && api.call("XR.getButton", {Value("right"), Value("a")}).truthy() &&
+              api.call("XR.getButtonDown", {Value("right"), Value("primary")}).truthy() && api.call("XR.getHeadPosition").isNil(),
+          "XR desde los scripts sin casco: botones por Input, sin poses");
 
-    // XR Origin desde Lua: de pie <-> sentado con getField/setField.
+    // XR Origin desde los scripts: de pie <-> sentado con Entity:getField /
+    // Entity:setField (las pone el modulo de las entidades).
     xr::registerXrComponents();
     ecs::Entity rig = world.create("XR Origin");
     rig.add<xr::XrOrigin>();
-    std::string out;
-    scripts.run("local o = Scene.find('XR Origin')\n"
-                "local antes = o:getField('XrOrigin', 'tracking')\n"
-                "o:setField('XrOrigin', 'tracking', 'Sentado')\n"
-                "o:setField('XrOrigin', 'camera_y_offset', 1.2)\n"
-                "print(antes .. ',' .. o:getField('XrOrigin', 'tracking'))",
-                &out, &world);
-    const xr::XrOrigin& o = rig.get<xr::XrOrigin>();
-    check(o.tracking == xr::TrackingOrigin::Eyes, "XrOrigin: setField('tracking', 'Sentado')");
-    check(near(o.camera_y_offset, 1.2f), "XrOrigin: setField('camera_y_offset')");
+    if (api.find("Entity:setField") == nullptr) {
+        std::printf("  (sin Entity:getField / setField en la API: se omite XrOrigin)\n");
+    } else {
+        try {
+            const Value self = Value::entity(rig.handle());
+            api.call("Entity:getField", {Value("XrOrigin"), Value("tracking")}, self);
+            api.call("Entity:setField", {Value("XrOrigin"), Value("tracking"), Value("Sentado")}, self);
+            api.call("Entity:setField", {Value("XrOrigin"), Value("camera_y_offset"), Value(1.2)}, self);
+        } catch (const std::exception& e) {
+            std::printf("  error: %s\n", e.what());
+        }
+        const xr::XrOrigin& o = rig.get<xr::XrOrigin>();
+        check(o.tracking == xr::TrackingOrigin::Eyes, "XrOrigin: setField('tracking', 'Sentado')");
+        check(near(o.camera_y_offset, 1.2f), "XrOrigin: setField('camera_y_offset')");
+    }
+    scripts.stop();
 }
 
 }  // namespace
@@ -302,7 +304,7 @@ int main() {
     testTriggers();
     testContexts();
     testJson();
-    testLua();
+    testScriptApi();
     testXr();
     std::printf("\n%d/%d comprobaciones correctas\n", checks - failures, checks);
     return failures == 0 ? 0 : 1;

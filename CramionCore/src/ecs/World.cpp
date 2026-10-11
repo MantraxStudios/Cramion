@@ -344,7 +344,8 @@ Entity World::find(const Uuid& uuid) const {
 Entity World::findWithTag(std::string_view tag) const {
     Entity found;
     forEachDepthFirst([&](Entity e) {
-        if (!found.valid() && e.activeInHierarchy() && e.compareTag(tag)) found = e;
+        // La etiqueta antes que subir por la jerarquia (casi nadie la tiene).
+        if (!found.valid() && e.compareTag(tag) && e.activeInHierarchy()) found = e;
     });
     return found;
 }
@@ -352,7 +353,7 @@ Entity World::findWithTag(std::string_view tag) const {
 std::vector<Entity> World::findAllWithTag(std::string_view tag) const {
     std::vector<Entity> found;
     forEachDepthFirst([&](Entity e) {
-        if (e.activeInHierarchy() && e.compareTag(tag)) found.push_back(e);
+        if (e.compareTag(tag) && e.activeInHierarchy()) found.push_back(e);
     });
     return found;
 }

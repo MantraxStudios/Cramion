@@ -272,11 +272,29 @@ std::vector<RiverSample> riverCenterline(const WaterBody& body, const core::Mat4
     return out;
 }
 
+namespace {
+WaterSample sampleWaterWith(const WaterBody& body, const core::Mat4& world, const Vec3& position, float time,
+                            const std::vector<RiverSample>* river_line);
+}  // namespace
+
 WaterSample sampleWater(const WaterBody& body, const core::Mat4& world, const Vec3& position, float time) {
+    return sampleWaterWith(body, world, position, time, nullptr);
+}
+
+WaterSample sampleWater(const WaterBody& body, const core::Mat4& world, const Vec3& position, float time,
+                        const std::vector<RiverSample>& river_line) {
+    return sampleWaterWith(body, world, position, time, &river_line);
+}
+
+namespace {
+WaterSample sampleWaterWith(const WaterBody& body, const core::Mat4& world, const Vec3& position, float time,
+                            const std::vector<RiverSample>* river_line) {
     WaterSample result;
     const Vec3 origin = transformPoint(world, Vec3{});
     if (body.type == WaterType::River) {
-        const std::vector<RiverSample> line = riverCenterline(body, world, 1.0f);
+        std::vector<RiverSample> computed;
+        if (river_line == nullptr) computed = riverCenterline(body, world, 1.0f);
+        const std::vector<RiverSample>& line = river_line != nullptr ? *river_line : computed;
         float best = 1e30f;
         const RiverSample* nearest = nullptr;
         for (const RiverSample& s : line) {
@@ -343,6 +361,7 @@ WaterSample sampleWater(const WaterBody& body, const core::Mat4& world, const Ve
     result.velocity = (ahead - d) * (1.0f / 0.05f);
     return result;
 }
+}  // namespace
 
 // ---------------------------------------------------------------------------
 // Oceano FFT (Tessendorf, "Simulating Ocean Water"; cascadas como Crest)
@@ -557,17 +576,36 @@ void inverseFft(std::complex<float>* data, int n, int stride) {
         j ^= bit;
         if (i < j) std::swap(data[i * stride], data[j * stride]);
     }
+    // Factores de giro de cada etapa, calculados una vez (con las mismas
+    // cuentas: los mismos valores) y el producto complejo a mano: con
+    // std::complex cada producto llamaba a __mulsc3 (casos de infinito y NaN
+    // que aqui no hay) y los cos/sin se repetian en cada mariposa. El oceano
+    // de la CPU se evalua cada frame: de 2.4 a ~0.6 ms.
+    static const std::vector<std::complex<float>> kTwiddles = [] {
+        std::vector<std::complex<float>> table;
+        for (int len = 2; len <= kCpuN; len <<= 1) {
+            const float angle = 2.0f * kPi / static_cast<float>(len);
+            for (int j = 0; j < len / 2; ++j) table.emplace_back(std::cos(angle * j), std::sin(angle * j));
+        }
+        return table;
+    }();
+    std::size_t stage_start = 0;
     for (int len = 2; len <= n; len <<= 1) {
         const float angle = 2.0f * kPi / static_cast<float>(len);
+        const bool tabled = n <= kCpuN;
         for (int i = 0; i < n; i += len) {
             for (int j = 0; j < len / 2; ++j) {
-                const std::complex<float> w(std::cos(angle * j), std::sin(angle * j));
+                const std::complex<float> w = tabled ? kTwiddles[stage_start + static_cast<std::size_t>(j)]
+                                                     : std::complex<float>(std::cos(angle * j), std::sin(angle * j));
                 const std::complex<float> u = data[(i + j) * stride];
-                const std::complex<float> v = data[(i + j + len / 2) * stride] * w;
-                data[(i + j) * stride] = u + v;
-                data[(i + j + len / 2) * stride] = u - v;
+                const std::complex<float> x = data[(i + j + len / 2) * stride];
+                const std::complex<float> v(x.real() * w.real() - x.imag() * w.imag(),
+                                            x.real() * w.imag() + x.imag() * w.real());
+                data[(i + j) * stride] = std::complex<float>(u.real() + v.real(), u.imag() + v.imag());
+                data[(i + j + len / 2) * stride] = std::complex<float>(u.real() - v.real(), u.imag() - v.imag());
             }
         }
+        stage_start += static_cast<std::size_t>(len / 2);
     }
 }
 

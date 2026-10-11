@@ -2773,12 +2773,17 @@ struct PhysicsSystem::Impl {
         struct Water {
             const water::WaterBody* body;
             core::Mat4 matrix;
+            // Rio: su linea central una vez por paso (antes, una por cuerpo).
+            std::vector<water::RiverSample> river_line;
         };
         std::vector<Water> waters;
         for (const entt::entity handle : view) {
             const ecs::Entity e = w.wrap(handle);
             const water::WaterBody& body = view.get<water::WaterBody>(handle);
-            if (body.buoyancy && e.activeInHierarchy()) waters.push_back(Water{&body, e.worldMatrix()});
+            if (!body.buoyancy || !e.activeInHierarchy()) continue;
+            Water water_body{&body, e.worldMatrix(), {}};
+            if (body.type == water::WaterType::River) water_body.river_line = water::riverCenterline(body, water_body.matrix, 1.0f);
+            waters.push_back(std::move(water_body));
         }
         if (waters.empty()) return;
         const float time = water::waterTime();
@@ -2793,8 +2798,11 @@ struct PhysicsSystem::Impl {
             }
             const JPH::Vec3 center = box.GetCenter();
             for (const Water& water_body : waters) {
-                const water::WaterSample sample = water::sampleWater(
-                    *water_body.body, water_body.matrix, Vec3{center.GetX(), center.GetY(), center.GetZ()}, time);
+                const Vec3 at{center.GetX(), center.GetY(), center.GetZ()};
+                const water::WaterSample sample =
+                    water_body.body->type == water::WaterType::River
+                        ? water::sampleWater(*water_body.body, water_body.matrix, at, time, water_body.river_line)
+                        : water::sampleWater(*water_body.body, water_body.matrix, at, time);
                 if (!sample.inside || box.mMin.GetY() >= sample.height) continue;
                 bodies.ApplyBuoyancyImpulse(entry.solid, JPH::RVec3(center.GetX(), sample.height, center.GetZ()),
                                             toJolt(sample.normal), water_body.body->density * 1.4f,
@@ -3278,7 +3286,10 @@ struct PhysicsSystem::Impl {
                 ecs::decomposeMatrix(e.worldMatrix(), p, r, scale);
                 e.setWorldMatrix(core::composeTrs(position, yawRotation(c.previous_yaw + d * t), scale));
             } else {
-                e.setWorldPosition(position);
+                // Quieto: la misma posicion no se reescribe (marcaria sucia toda
+                // su jerarquia cada paso).
+                const Vec3 now = e.worldPosition();
+                if (position.x != now.x || position.y != now.y || position.z != now.z) e.setWorldPosition(position);
             }
             c.position = e.worldPosition();
         }

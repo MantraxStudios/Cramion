@@ -8,12 +8,14 @@
 #include "CramionCore/navigation/Navigation.h"
 #include "CramionCore/physics/PhysicsComponents.h"
 #include "CramionCore/physics/PhysicsSystem.h"
+#include "CramionCore/scripting/NativeApi.h"
 #include "CramionCore/scripting/Scripting.h"
+
+#include <nlohmann/json.hpp>
 
 #include <chrono>
 #include <cmath>
 #include <cstdio>
-#include <fstream>
 
 using namespace cramion;
 using namespace cramion::navigation;
@@ -249,31 +251,12 @@ void testRigidbodyAgent() {
     check(std::abs(p.z - 10.0f) < 1.0f && std::abs(p.x + 8.0f) < 1.0f, "se mueve por velocidad y llega");
 }
 
+// La API de scripting (lo que usan los scripts de C++ y los Visual Scripts):
+// entity:moveTo, entity.isMoving... y la tabla Navigation.
 void testScripting() {
     std::printf("Scripting\n");
-    const std::filesystem::path root = std::filesystem::temp_directory_path() / "cramion_nav_test";
-    std::filesystem::create_directories(root / "Scripts");
-    {
-        std::ofstream(root / "Scripts" / "Patrulla.lua") << R"(
-local Patrulla = { properties = {} }
-function Patrulla:Start()
-    self.ok = self.entity:moveTo(Vec3(8, 0, 0))
-    local path = Navigation.findPath(Vec3(-8, 0, 0), Vec3(8, 0, 0))
-    self.puntos = path and #path or 0
-    local p = Navigation.projectPoint(Vec3(3, 2, 3))
-    self.proyectado = p ~= nil and math.abs(p.y) < 0.3
-    self.azar = Navigation.randomPoint(Vec3(0, 0, -18), 2) ~= nil
-    self.listo = Navigation.isReady()
-end
-function Patrulla:Update(dt)
-    if not self.entity.isMoving and not self.llego then
-        self.llego = true
-        self.restante = self.entity.remainingDistance
-    end
-end
-return Patrulla
-)";
-    }
+    using scripting::api::Value;
+    using json = nlohmann::json;
     Level level;
     NavigationSystem nav;
     nav.setSettings(testSettings());
@@ -281,33 +264,54 @@ return Patrulla
     ecs::Entity agent = level.world.create("Guardia");
     agent.setWorldPosition(Vec3{-8.0f, 0.0f, 0.0f});
     agent.add<NavAgent>().speed = 8.0f;
-    agent.add<scripting::Script>().file = "Scripts/Patrulla.lua";
 
     scripting::ScriptSystem scripts;
-    scripts.setAssetsRoot(root);
     scripts.setNavigation(&nav);
     scripts.start(level.world);
+    scripting::api::NativeApi& api = scripts.nativeApi();
+    // Como un script de C++: el mismo JSON que el SDK.
+    const auto bridge = [&](const json& request) { return json::parse(scripts.bridgeCall(request.dump())); };
+    const auto vec = [](float x, float y, float z) { return json{{"$v", {x, y, z}}}; };
+    const Value self = Value::entity(agent.handle());
+    const json guard = api.toJson(self);
+
+    // Lo que hacia el Start del script.
+    const json moved = bridge({{"fn", "moveTo"}, {"self", guard}, {"args", json::array({vec(8, 0, 0)})}});
+    check(moved["ok"] == true && moved["result"] == true, "entity:moveTo devuelve true");
+    const bool moving = api.get("isMoving", self).truthy();
+    const json path = bridge({{"fn", "Navigation.findPath"}, {"args", json::array({vec(-8, 0, 0), vec(8, 0, 0)})}});
+    check(path["ok"] == true && path["result"].is_array() && path["result"].size() >= 3 &&
+              path["result"][0].contains("$v"),
+          "Navigation.findPath da los puntos de giro");
+    const Value p = api.call("Navigation.projectPoint", {Value(Vec3{3.0f, 2.0f, 3.0f})});
+    const bool projected = p.isVec3() && std::abs(p.asVec3().y) < 0.3f;
+    const bool random_point = api.call("Navigation.randomPoint", {Value(Vec3{0.0f, 0.0f, -18.0f}), Value(2)}).isVec3();
+    const bool ready = api.call("Navigation.isReady").truthy();
+    check(projected && random_point && ready, "projectPoint, randomPoint e isReady");
+    const Value ray = api.call("Navigation.raycast", {Value(Vec3{-8.0f, 0.0f, 0.0f}), Value(Vec3{8.0f, 0.0f, 0.0f})});
+    check(ray.isArray() && ray.size() == 2 && !ray[0].truthy() && ray[1].isVec3() && ray[1].asVec3().x < 0.0f &&
+              ray[1].asVec3().x > -3.0f,
+          "Navigation.raycast contra el muro da [false, punto del choque]");
+
+    // Lo que hacia su Update: mirar cuando llega.
+    bool arrived = false;
+    float remaining = -1.0f;
     for (int i = 0; i < 60 * 15; ++i) {
         nav.update(level.world, 1.0f / 60.0f, true);
         scripts.update(level.world, 1.0f / 60.0f);
+        if (!arrived && !api.get("isMoving", self).truthy()) {
+            arrived = true;
+            remaining = static_cast<float>(api.get("remainingDistance", self).asNumber());
+        }
     }
-    std::string out;
-    const auto value = [&](const char* expr) {
-        out.clear();
-        scripts.run(std::string("local g = Scene.find('Guardia'):getScript(); return ") + expr, &out);
-        return out;
-    };
-    check(value("g.ok") == "true", "entity:moveTo devuelve true");
-    check(std::atoi(value("g.puntos").c_str()) >= 3, "Navigation.findPath da los puntos de giro");
-    check(value("g.proyectado") == "true" && value("g.azar") == "true" && value("g.listo") == "true",
-          "projectPoint, randomPoint e isReady");
-    check(value("g.llego") == "true", "entity.isMoving pasa a false al llegar");
+    check(moving && arrived, "entity.isMoving pasa a false al llegar");
+    check(remaining >= 0.0f && remaining < 0.6f, "entity.remainingDistance al llegar");
+    const json still = bridge({{"op", "get"}, {"fn", "isMoving"}, {"self", guard}});
+    check(still["ok"] == true && still["result"] == false, "isMoving por el puente");
     std::printf("  (guardia en (%.2f, %.2f, %.2f))\n", agent.worldPosition().x, agent.worldPosition().y,
                 agent.worldPosition().z);
     check(core::length(agent.worldPosition() - Vec3{8, 0, 0}) < 0.6f, "el script mueve al agente");
     scripts.stop();
-    std::error_code ec;
-    std::filesystem::remove_all(root, ec);
 }
 
 void testSettingsAndScene() {

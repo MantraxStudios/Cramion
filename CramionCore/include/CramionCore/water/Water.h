@@ -111,6 +111,11 @@ struct RiverSample {
     float distance = 0.0f;  // a lo largo del rio (m)
 };
 std::vector<RiverSample> riverCenterline(const WaterBody& body, const core::Mat4& world, float step = 1.0f);
+// sampleWater con la linea central del rio ya calculada (riverCenterline con
+// paso 1 m): para muchas consultas al mismo rio en el mismo instante (la
+// flotacion de cada cuerpo en cada paso de la fisica).
+WaterSample sampleWater(const WaterBody& body, const core::Mat4& world, const core::Vec3& position, float time,
+                        const std::vector<RiverSample>& river_line);
 
 // --- Oceano FFT ---
 // Cuatro cascadas de 128 x 128 modos (cada una 3.7 veces mas pequena que la

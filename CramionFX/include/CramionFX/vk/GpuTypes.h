@@ -38,7 +38,7 @@ struct GpuCamera {
 
 struct GpuPointLight {
     core::Vec4 position_range{};   // xyz = posicion, w = alcance
-    core::Vec4 color_intensity{};  // rgb = color, a = intensidad
+    core::Vec4 color_intensity{};  // rgb = color (lineal), a = intensidad
     // x = hueco de sombra (-1 = sin sombra), y = fuerza, z = radio de la fuente (m)
     core::Vec4 shadow{-1.0f, 0.0f, 0.0f, 0.0f};
 };
@@ -46,7 +46,7 @@ struct GpuPointLight {
 struct GpuSpotLight {
     core::Vec4 position_range{};       // xyz = posicion, w = alcance
     core::Vec4 direction_intensity{};  // xyz = direccion, w = intensidad
-    core::Vec4 color_inner{};          // rgb = color, a = cos(angulo interior)
+    core::Vec4 color_inner{};          // rgb = color (lineal), a = cos(angulo interior)
     core::Vec4 outer_shadow{};         // x = cos(angulo exterior), y = hueco de sombra (-1 = sin),
                                        // z = fuerza, w = radio de la fuente (m)
 };

@@ -1464,7 +1464,12 @@ struct NavigationSystem::Impl {
                 physics->setLinearVelocity(e, Vec3{vel.x, current.y, vel.z});
                 agent.written = toNav(e.worldPosition() - Vec3{0.0f, comp.base_offset, 0.0f});
             } else {
-                e.setWorldPosition(fromNav(pos) + Vec3{0.0f, comp.base_offset, 0.0f});
+                // Solo si cambio: escribir la misma posicion marcaba como sucia
+                // toda la jerarquia del modelo (cientos de huesos por agente)
+                // aunque el agente estuviera quieto.
+                const Vec3 want = fromNav(pos) + Vec3{0.0f, comp.base_offset, 0.0f};
+                const Vec3 now = e.worldPosition();
+                if (want.x != now.x || want.y != now.y || want.z != now.z) e.setWorldPosition(want);
                 agent.written = pos;
             }
             agent.written_valid = true;

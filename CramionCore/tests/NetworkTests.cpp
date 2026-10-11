@@ -1,28 +1,34 @@
 // Multijugador: un servidor y dos clientes en el mismo proceso (127.0.0.1).
 // Valores, conexion, mensajes (y su reenvio), objetos replicados (spawn,
 // posicion solo del dueno, variables), jugadores que entran tarde, salidas y
-// cambio de escena.
+// cambio de escena. Al final, dos juegos (servidor y cliente) con la API de
+// scripting (Network.*, Entity:isMine...) como la usan los scripts de C++.
 
 #include "CramionCore/ecs/Prefab.h"
 #include "CramionCore/ecs/World.h"
 #include "CramionCore/net/Network.h"
 #include "CramionCore/net/NetworkObject.h"
+#include "CramionCore/scripting/NativeApi.h"
 #include "CramionCore/scripting/Scripting.h"
+
+#include <nlohmann/json.hpp>
 
 #include <algorithm>
 #include <cstdlib>
 #include <chrono>
 #include <cstdio>
 #include <filesystem>
-#include <fstream>
 #include <functional>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 using namespace cramion;
 using net::NetEvent;
 using net::NetValue;
+using scripting::api::Value;
+using json = nlohmann::json;
 
 namespace {
 
@@ -61,110 +67,240 @@ bool until(std::vector<Peer*> peers, const std::function<bool()>& done) {
 }
 
 
-void writeFile(const std::filesystem::path& path, const std::string& text) {
-    std::filesystem::create_directories(path.parent_path());
-    std::ofstream(path, std::ios::binary) << text;
-}
-
 bool hasLog(const std::vector<std::string>& log, const std::string& text) {
     return std::any_of(log.begin(), log.end(), [&](const std::string& l) { return l.find(text) != std::string::npos; });
 }
 
-// Dos juegos en el mismo proceso (servidor y cliente), todo desde Lua.
-void testLua() {
-    std::printf("\nLua: Network\n");
-    const std::filesystem::path root = std::filesystem::temp_directory_path() / "cramion_net_lua";
+// Un juego con su escena y su ScriptSystem, usado como lo usa un script de
+// C++: llamadas a la API (directas o con el JSON del puente) y los callbacks
+// que le llegan (id, argumentos), que la prueba atiende como lo haria el script.
+struct Game {
+    ecs::World world;
+    scripting::ScriptSystem scripts;
+    std::vector<std::string> log;                            // consola y lo que hacen los "scripts"
+    std::vector<std::pair<std::uint64_t, json>> callbacks;   // pendientes de atender
+    std::vector<std::string> messages;                       // mensajes a los scripts (OnNetCorrection...)
+    bool sent_var = false;
+
+    explicit Game(const std::filesystem::path& root) {
+        scripts.setAssetsRoot(root);
+        scripts.setLog([this](int, const std::string& m) { log.push_back(m); });
+        scripts.setBridgeCallbackSink([this](std::uint64_t id, const std::string& args) {
+            callbacks.emplace_back(id, json::parse(args, nullptr, false));
+        });
+        // Lo que reciben los scripts de C++ del objeto (onNetVar / onMessage).
+        scripts.setNetVarListener([this](ecs::Entity, const std::string& key, const std::string& value) {
+            const json v = json::parse(value, nullptr, false);
+            log.push_back("var " + key + "=" + (v.is_string() ? v.get<std::string>() : v.dump()));
+        });
+        scripts.setMessageListener([this](ecs::Entity, const std::string& name, const std::string& value) {
+            messages.push_back(name + " " + value);
+        });
+    }
+
+    Value call(const std::string& key, const Value::Array& args = {}, const Value& self = Value::nil()) {
+        return scripts.nativeApi().call(key, args, self);
+    }
+    Value get(const std::string& key, const Value& self) { return scripts.nativeApi().get(key, self); }
+    json bridge(const json& request) { return json::parse(scripts.bridgeCall(request.dump())); }
+    Value value(const json& j) { return scripts.nativeApi().fromJson(j); }
+    void frame() { scripts.update(world, 0.016f); }
+    std::vector<std::pair<std::uint64_t, json>> take() { return std::exchange(callbacks, {}); }
+
+    ecs::Entity ball() {
+        ecs::Entity found;
+        for (const auto h : world.registry().view<net::NetworkObject>()) found = world.wrap(h);
+        return found;
+    }
+
+    // El script de la bola: el dueno la mueve y pone una variable de red.
+    void updateBall(float dt) {
+        ecs::Entity b = ball();
+        if (!b.valid()) return;
+        const Value self = Value::entity(b.handle());
+        if (!call("Entity:isMine", {}, self).truthy()) return;
+        b.setWorldPosition(b.worldPosition() + core::Vec3{2.0f, 0.0f, 0.0f} * dt);
+        if (!sent_var) {
+            call("Entity:setNetVar", {Value("color"), Value("rojo")}, self);
+            sent_var = true;
+        }
+    }
+};
+
+// Callbacks (ids que elige el "script").
+enum : std::uint64_t { kJoined = 1, kChat, kLeft, kConnected = 11, kHello, kDisconnected };
+
+// Dos juegos en el mismo proceso (servidor y cliente), todo con la API de scripting.
+void testScripts() {
+    std::printf("\nScripts: Network\n");
+    const std::filesystem::path root = std::filesystem::temp_directory_path() / "cramion_net_scripts";
     std::filesystem::remove_all(root);
-    writeFile(root / "Scripts" / "Bola.lua", R"(
-local B = {}
-function B:Update(dt)
-    if self.entity:isMine() then
-        self.entity.position = self.entity.position + Vec3(2, 0, 0) * dt
-        if not self.enviado then self.entity:setNetVar("color", "rojo"); self.enviado = true end
-    end
-end
-function B:OnNetVar(clave, valor) Debug.log("var " .. clave .. "=" .. tostring(valor)) end
-return B
-)");
-    writeFile(root / "Scripts" / "Servidor.lua", R"(
-local S = {}
-function S:Start()
-    local ok, err = Network.host(27781, 4)
-    Debug.log("host " .. tostring(ok))
-    Network.onPlayerJoined(function(id)
-        Debug.log("entra " .. id)
-        Network.spawn("Prefabs/Bola", Vec3(0, 1, 0), id)
-        Network.send("hola", { texto = "bienvenido", n = id, pos = Vec3(1, 2, 3) }, id)
-    end)
-    Network.on("chat", function(d, de) Debug.log("chat de " .. de .. ": " .. d.texto) end)
-end
-return S
-)");
-    writeFile(root / "Scripts" / "Cliente.lua", R"(
-local C = {}
-function C:Start()
-    Network.connect("127.0.0.1", 27781)
-    Network.onConnected(function(id)
-        Debug.log("dentro " .. id .. " servidor=" .. tostring(Network.isServer()))
-        Network.send("chat", { texto = "hola a todos" })
-    end)
-    Network.on("hola", function(d, de) Debug.log("hola de " .. de .. ": " .. d.texto .. " " .. d.n .. " y=" .. d.pos.y) end)
-end
-return C
-)");
     scripting::registerScriptComponents();
     {
-        // El prefab de red: un script y un NetworkObject rapido.
+        // El prefab de red: un NetworkObject rapido (y que no se teletransporte).
         ecs::World maker;
         ecs::Entity bola = maker.create("Bola");
-        bola.add<scripting::Script>().file = "Scripts/Bola.lua";
-        bola.add<net::NetworkObject>().send_rate = 60.0f;
+        net::NetworkObject& n = bola.add<net::NetworkObject>();
+        n.send_rate = 60.0f;
+        n.max_speed = 20.0f;
         std::string error;
         check(ecs::createPrefab(maker, bola, root / "Prefabs" / "Bola.crprefab", &error), "crear el prefab de red");
     }
 
-    ecs::World server_world, client_world;
-    server_world.create("Servidor").add<scripting::Script>().file = "Scripts/Servidor.lua";
-    client_world.create("Cliente").add<scripting::Script>().file = "Scripts/Cliente.lua";
-    scripting::ScriptSystem server, client;
-    std::vector<std::string> server_log, client_log;
-    server.setAssetsRoot(root);
-    client.setAssetsRoot(root);
-    server.setLog([&](int, const std::string& m) { server_log.push_back(m); });
-    client.setLog([&](int, const std::string& m) { client_log.push_back(m); });
-    server.start(server_world);
-    client.start(client_world);
+    Game server(root), client(root);
+    server.world.create("Servidor");
+    client.world.create("Cliente");
+    server.scripts.start(server.world);
+    client.scripts.start(client.world);
+
+    // Start del servidor y del cliente.
+    const json hosted = server.bridge({{"fn", "Network.host"}, {"args", {27781, 4}}});
+    server.log.push_back("host " + std::string(hosted["ok"] == true && hosted["result"][0] == true ? "true" : "false"));
+    server.call("Network.onPlayerJoined", {Value::function(kJoined)});
+    server.call("Network.onPlayerLeft", {Value::function(kLeft)});
+    server.call("Network.on", {Value("chat"), Value::function(kChat)});
+    client.call("Network.connect", {Value("127.0.0.1"), Value(27781)});
+    client.call("Network.onConnected", {Value::function(kConnected)});
+    client.call("Network.on", {Value("hola"), Value::function(kHello)});
+    check(client.call("Network.isConnecting").truthy(), "el cliente esta conectando");
+
+    // Lo que hace cada script con sus callbacks.
+    const auto serverScript = [&] {
+        for (const auto& [id, args] : server.take()) {
+            if (id == kJoined) {
+                const int player = args[0].get<int>();
+                server.log.push_back("entra " + std::to_string(player));
+                server.call("Network.spawn", {Value("Prefabs/Bola"), Value(core::Vec3{0, 1, 0}), Value(player)});
+                server.bridge({{"fn", "Network.send"},
+                               {"args", {"hola", {{"texto", "bienvenido"}, {"n", player}, {"pos", {{"$v", {1, 2, 3}}}}}, player}}});
+            } else if (id == kChat) {
+                const Value d = server.value(args[0]);
+                server.log.push_back("chat de " + std::to_string(args[1].get<int>()) + ": " + d["texto"].asString());
+            } else if (id == kLeft) {
+                server.log.push_back("sale " + std::to_string(args[0].get<int>()));
+            }
+        }
+    };
+    const auto clientScript = [&] {
+        for (const auto& [id, args] : client.take()) {
+            if (id == kConnected) {
+                client.log.push_back("dentro " + std::to_string(args[0].get<int>()) +
+                                     " servidor=" + (client.call("Network.isServer").truthy() ? "true" : "false"));
+                Value chat = Value::object();
+                chat.set("texto", "hola a todos");
+                client.call("Network.send", {Value("chat"), chat});
+            } else if (id == kHello) {
+                const Value d = client.value(args[0]);
+                char line[160];
+                std::snprintf(line, sizeof(line), "hola de %d: %s %s y=%.1f", args[1].get<int>(), d["texto"].asString().c_str(),
+                              d["n"].asString().c_str(), d["pos"].asVec3().y);
+                client.log.push_back(line);
+            } else if (id == kDisconnected) {
+                client.log.push_back("fuera: " + args[0].get<std::string>());
+            }
+        }
+    };
+    const auto step = [&] {
+        server.frame();
+        client.frame();
+        serverScript();
+        clientScript();
+        server.updateBall(0.016f);
+        client.updateBall(0.016f);
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    };
+
     ecs::Entity client_ball, server_ball;
     for (int i = 0; i < 300; ++i) {
-        server.update(server_world, 0.016f);
-        client.update(client_world, 0.016f);
-        std::this_thread::sleep_for(std::chrono::milliseconds(5));
-        for (const auto h : client_world.registry().view<net::NetworkObject>()) client_ball = client_world.wrap(h);
-        for (const auto h : server_world.registry().view<net::NetworkObject>()) server_ball = server_world.wrap(h);
-        if (client_ball.valid() && server_ball.valid() && server_ball.worldPosition().x > 0.5f && hasLog(server_log, "var color")) break;
+        step();
+        client_ball = client.ball();
+        server_ball = server.ball();
+        if (client_ball.valid() && server_ball.valid() && server_ball.worldPosition().x > 0.5f && hasLog(server.log, "var color")) break;
     }
-    if (std::getenv("NET_LOG")) { for (auto& l : server_log) std::printf("S: %s\n", l.c_str()); for (auto& l : client_log) std::printf("C: %s\n", l.c_str()); }
-    check(hasLog(server_log, "host true"), "Network.host desde Lua");
-    check(hasLog(client_log, "dentro 2 servidor=false"), "onConnected con mi id");
-    check(hasLog(server_log, "entra 2"), "onPlayerJoined en el servidor");
-    check(hasLog(server_log, "chat de 2: hola a todos"), "Network.send / Network.on con una tabla (y quien la manda)");
-    check(hasLog(client_log, "hola de 1: bienvenido 2 y=2.0"), "mensaje del servidor a un jugador, con numeros y un Vec3");
+    if (std::getenv("NET_LOG")) {
+        for (auto& l : server.log) std::printf("S: %s\n", l.c_str());
+        for (auto& l : client.log) std::printf("C: %s\n", l.c_str());
+    }
+    check(hasLog(server.log, "host true"), "Network.host (puente)");
+    check(hasLog(client.log, "dentro 2 servidor=false"), "onConnected con mi id");
+    check(hasLog(server.log, "entra 2"), "onPlayerJoined en el servidor");
+    check(hasLog(server.log, "chat de 2: hola a todos"), "Network.send / Network.on con un objeto (y quien lo manda)");
+    check(hasLog(client.log, "hola de 1: bienvenido 2 y=2.0"), "mensaje del servidor a un jugador, con numeros y un Vec3");
     check(client_ball.valid() && client_ball.get<net::NetworkObject>().owner == 2, "Network.spawn crea el prefab en el cliente, suyo");
+    check(client_ball.valid() && client.get("Entity:netOwner", Value::entity(client_ball.handle())).asNumber() == 2.0 &&
+              client.call("Network.find", {client.get("Entity:netId", Value::entity(client_ball.handle()))}).asEntity() ==
+                  client_ball.handle(),
+          "netId / netOwner / Network.find en el cliente");
     check(client_ball.valid() && client_ball.worldPosition().x > 0.5f, "el cliente mueve su objeto (isMine)");
     check(server_ball.valid() && server_ball.worldPosition().x > 0.3f, "y el servidor lo ve moverse (sincronizado y suavizado)");
-    check(hasLog(server_log, "var color=rojo"), "setNetVar del dueno llega como OnNetVar");
-    check(client.networkStatus().rfind("Cliente 2", 0) == 0 && server.networkStatus().find("2 jugador") != std::string::npos,
+    check(server_ball.valid() && !server.call("Entity:isMine", {}, Value::entity(server_ball.handle())).truthy(),
+          "en el servidor no es suyo (isMine false)");
+    check(hasLog(server.log, "var color=rojo"), "setNetVar del dueno llega como OnNetVar");
+    check(server_ball.valid() &&
+              server.call("Entity:getNetVar", {Value("color")}, Value::entity(server_ball.handle())).asString() == "rojo",
+          "y getNetVar la lee en el servidor");
+    const Value players = client.call("Network.players");
+    check(players.size() == 2 && client.call("Network.playerCount").asNumber() == 2.0, "el cliente conoce a los 2 jugadores");
+    check(client.call("Network.stats")["ping"].isNumber() && server.call("Network.stats")["objects"].asNumber() == 1.0,
+          "Network.stats en los dos");
+    check(client.scripts.networkStatus().rfind("Cliente 2", 0) == 0 &&
+              server.scripts.networkStatus().find("2 jugador") != std::string::npos,
           "estado de la red para el editor");
 
+    // Un movimiento imposible (max_speed): el servidor lo corrige.
+    ecs::Entity cheat = client_ball;
+    if (cheat.valid()) cheat.setWorldPosition(core::Vec3{500.0f, 1.0f, 0.0f});
+    bool corrected = false;
+    for (int i = 0; i < 200 && !corrected; ++i) {
+        step();
+        corrected = hasLog(client.messages, "OnNetCorrection");
+    }
+    check(corrected, "el servidor corrige un movimiento imposible (OnNetCorrection al script)");
+    check(cheat.valid() && cheat.worldPosition().x < 100.0f, "y el objeto vuelve a donde dice el servidor");
+
     // Cambio de escena: la sesion sigue viva tras stop()/start().
-    client.stop();
-    client.start(client_world);
-    check(client.networkStatus().rfind("Cliente 2", 0) == 0, "stop()/start() (Scene.load) no desconecta");
-    client.shutdownNetwork();
-    server.shutdownNetwork();
-    check(client.networkStatus().empty() && server.networkStatus().empty(), "shutdownNetwork cierra la sesion");
-    server.stop();
-    client.stop();
+    client.scripts.stop();
+    // La escena nueva ya no tiene los objetos de red de la anterior.
+    std::vector<entt::entity> old_objects;
+    for (const auto h : client.world.registry().view<net::NetworkObject>()) old_objects.push_back(h);
+    for (const entt::entity h : old_objects) client.world.destroy(client.world.wrap(h));
+    client.scripts.start(client.world);
+    check(client.scripts.networkStatus().rfind("Cliente 2", 0) == 0, "stop()/start() (Scene.load) no desconecta");
+
+    // El cliente sale: el servidor lo ve y su objeto desaparece.
+    client.call("Network.disconnect");
+    check(client.scripts.networkStatus().empty() && !client.call("Network.isActive").truthy(), "Network.disconnect");
+    bool left = false;
+    for (int i = 0; i < 300 && !(left && !server.ball().valid()); ++i) {
+        step();
+        left = hasLog(server.log, "sale 2");
+    }
+    check(left, "onPlayerLeft en el servidor");
+    check(!server.ball().valid() && server.call("Network.objects").size() == 0, "y el objeto del que sale desaparece");
+
+    // Vuelve a entrar y el servidor cierra: onDisconnected.
+    client.call("Network.onConnected", {Value::function(kConnected)});
+    client.call("Network.onDisconnected", {Value::function(kDisconnected)});
+    const Value again = client.call("Network.connect", {Value(), Value(27781)});
+    check(again.isArray() && again[0].truthy(), "Network.connect devuelve {ok, error} (127.0.0.1 por defecto)");
+    bool inside = false;
+    for (int i = 0; i < 300 && !inside; ++i) {
+        step();
+        inside = hasLog(client.log, "dentro 3");
+    }
+    check(inside, "vuelve a entrar (jugador 3)");
+    server.scripts.shutdownNetwork();
+    check(server.scripts.networkStatus().empty(), "shutdownNetwork cierra la sesion");
+    bool out = false;
+    for (int i = 0; i < 300 && !out; ++i) {
+        step();
+        out = hasLog(client.log, "fuera");
+    }
+    check(out, "al cerrar el servidor, onDisconnected en el cliente");
+    check(!client.call("Network.isConnected").truthy() && !client.ball().valid(), "desconectado y sin objetos de red");
+    client.scripts.shutdownNetwork();
+    server.scripts.stop();
+    client.scripts.stop();
     std::filesystem::remove_all(root);
 }
 }  // namespace
@@ -279,7 +415,7 @@ int main() {
     }
     check(gave_up, "...acaba en Disconnected (no se queda colgado)");
 
-    testLua();
+    testScripts();
     std::printf("\n%d comprobaciones, %d fallos\n", checks, failures);
     return failures == 0 ? 0 : 1;
 }

@@ -185,14 +185,14 @@ vec3 directLight(Surface s, vec3 v) {
         if (pick < points) {
             position = lights.points[pick].position_range.xyz;
             range = lights.points[pick].position_range.w;
-            radiance = toLinear(lights.points[pick].color_intensity.rgb) * lights.points[pick].color_intensity.a;
+            radiance = lights.points[pick].color_intensity.rgb * lights.points[pick].color_intensity.a;
             // y = fuerza de la sombra (0 si la luz no proyecta).
             strength = lights.points[pick].shadow.y;
         } else {
             int i = pick - points;
             position = lights.spots[i].position_range.xyz;
             range = lights.spots[i].position_range.w;
-            radiance = toLinear(lights.spots[i].color_inner.rgb) * lights.spots[i].direction_intensity.w;
+            radiance = lights.spots[i].color_inner.rgb * lights.spots[i].direction_intensity.w;
             strength = lights.spots[i].outer_shadow.z;
             vec3 dir = normalize(position - s.position);
             float cosine = dot(-dir, normalize(lights.spots[i].direction_intensity.xyz));
@@ -229,8 +229,11 @@ Surface hitSurface(RtHit hit, float lod) {
     s.roughness = clamp(material.params.y * mr.g, 0.04, 1.0);
     s.reflectance = 0.04;
     s.model = standardShading();
-    s.emission = toLinear(textureLod(rt_textures[nonuniformEXT(material.emissive_texture)], hit.uv, lod).rgb) *
-                 material.emissive.rgb * kEmissiveIntensity;
+    s.emission = vec3(0.0);
+    if (any(greaterThan(material.emissive.rgb, vec3(0.0)))) {  // sin emision, la textura no importa
+        s.emission = toLinear(textureLod(rt_textures[nonuniformEXT(material.emissive_texture)], hit.uv, lod).rgb) *
+                     material.emissive.rgb * kEmissiveIntensity;
+    }
     return s;
 }
 

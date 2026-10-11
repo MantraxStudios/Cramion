@@ -38,14 +38,14 @@ const int kPointShadowFaceCount = 6;
 
 struct PointLightGpu {
     vec4 position_range;    // xyz = posicion, w = alcance
-    vec4 color_intensity;   // rgb = color,    a = intensidad
+    vec4 color_intensity;   // rgb = color (lineal), a = intensidad
     vec4 shadow;            // x   = hueco de sombra (-1 = sin sombra), y = fuerza (0..1)
 };
 
 struct SpotLightGpu {
     vec4 position_range;       // xyz = posicion,  w = alcance
     vec4 direction_intensity;  // xyz = direccion, w = intensidad
-    vec4 color_inner;          // rgb = color,     a = cos del angulo interior
+    vec4 color_inner;          // rgb = color (lineal), a = cos del angulo interior
     vec4 outer_shadow;         // x   = cos del angulo exterior, y = hueco de sombra (-1 = sin), z = fuerza
 };
 
@@ -1167,12 +1167,15 @@ vec4 upsampledGi(float center_depth, vec3 normal) {
     float weight_sum = 0.0;
     for (int y = -1; y <= 2; ++y) {
         for (int x = -1; x <= 2; ++x) {
+            // La tienda primero: en los pixeles pares la fila o columna +2
+            // pesa 0 (hasta 7 de las 16 lecturas no servian para nada).
+            vec2 offset = abs(vec2(base + ivec2(x, y)) - center);
+            float tent = max(1.0 - offset.x * 0.5, 0.0) * max(1.0 - offset.y * 0.5, 0.0);
+            if (tent <= 0.0) continue;
             ivec2 p = clamp(base + ivec2(x, y), ivec2(0), half_size - 1);
             ivec2 source = min(p * 2, full_size - 1);
             float depth = linearDepth(texelFetch(g_depth, source, 0).r);
             vec3 n = decodeNormal(texelFetch(g_normal, source, 0).rg);
-            vec2 offset = abs(vec2(base + ivec2(x, y)) - center);
-            float tent = max(1.0 - offset.x * 0.5, 0.0) * max(1.0 - offset.y * 0.5, 0.0);
             float w = (abs(depth - center_depth) < tolerance ? 1.0 : 0.0) *
                       max(dot(n, normal), 0.0) * tent;
             sum += texelFetch(gi_map, p, 0) * w;
@@ -1354,7 +1357,10 @@ float contactShadow(vec3 view_position, vec3 view_normal, vec3 view_to_light, fl
 }
 
 void main() {
-    float depth = texture(g_depth, v_uv).r;
+    // El G-buffer se lee por pixel (texelFetch): es del mismo tamano que esta
+    // imagen, y con texture() el muestreador lineal mezclaba 4 texeles.
+    const ivec2 frag_pixel = ivec2(gl_FragCoord.xy);
+    float depth = texelFetch(g_depth, frag_pixel, 0).r;
 
     // El depth se limpia a 1.0: ese valor significa "aqui no hay geometria".
     vec3 world_position = worldFromDepth(v_uv, depth);
@@ -1389,14 +1395,14 @@ void main() {
             color = shadows.params.z > 2.5 ? vec3(0.03, 0.035, 0.045) : vec3(0.32, 0.38, 0.46);
         }
     } else {
-        vec4 normal_sample = texture(g_normal, v_uv);
-        vec4 albedo_sample = texture(g_albedo, v_uv);
+        vec4 normal_sample = texelFetch(g_normal, frag_pixel, 0);
+        vec4 albedo_sample = texelFetch(g_albedo, frag_pixel, 0);
 
         vec3 normal = decodeNormal(normal_sample.rg);
         float roughness = clamp(normal_sample.b, 0.04, 1.0);
         // F0 de la parte no metalica (0.04 casi siempre; el marmol pulido, mas).
         float reflectance = normal_sample.a;
-        vec4 material_sample = texture(g_material, v_uv);
+        vec4 material_sample = texelFetch(g_material, frag_pixel, 0);
         vec3 emission = material_sample.rgb;
         // Alfa = metalicidad + 2 x sombra propia del relieve (gbuffer_surface.glsl).
         float self_shadow_level = floor(material_sample.a * 0.5);
@@ -1429,7 +1435,7 @@ void main() {
 #ifdef CRAMION_COMPAT
         surface_model = standardShading();
 #else
-        surface_model = decodeShading(texture(g_shading, v_uv), normal);
+        surface_model = decodeShading(texelFetch(g_shading, frag_pixel, 0), normal);
 #endif
         vec3 f0 = disneyF0(surface_model, albedo, reflectance, metallic);
         // Subsurface: lo que atraviesa se mira en la cara de atras, a este grosor.
@@ -1494,36 +1500,38 @@ void main() {
             reflection_normal = normalize(mix(normal, aniso_normal, bend));
         }
         vec3 reflected = reflect(-view_direction, reflection_normal);
-        vec3 prefiltered = textureLod(environment_map, reflected,
-                                      roughness * kEnvironmentMaxLod).rgb;
         vec2 brdf = texture(brdf_lut, vec2(n_dot_v, roughness)).rg;
         vec3 energy = energyCompensation(brdf, f0);
         // Donde el SSR encontro algo, refleja la escena. Donde no (lo que
         // queda fuera de la pantalla o detras de la camara), la sonda de
         // reflexion, que es la escena vista desde cerca; sin sonda, el cielo
         // del IBL, que en un interior solo se ve por donde se ve el cielo
-        // (visibilidad de la GI).
-        vec3 fallback = prefiltered * sky_visibility;
-        float probe_weight = lights.probes[0].w + lights.probes[1].w;
-        if (probe_weight > 0.001) {
-            float lod = roughness * kEnvironmentMaxLod;
-            vec3 probe_light = vec3(0.0);
-            if (lights.probes[0].w > 0.001) {
-                vec3 d = probeDirection(reflection_probe_0, lights.probes[0].xyz,
-                                        world_position, reflected);
-                probe_light += textureLod(reflection_probe_0, d, lod).rgb * lights.probes[0].w;
-            }
-#ifndef CRAMION_COMPAT
-            if (lights.probes[1].w > 0.001) {
-                vec3 d = probeDirection(reflection_probe_1, lights.probes[1].xyz,
-                                        world_position, reflected);
-                probe_light += textureLod(reflection_probe_1, d, lod).rgb * lights.probes[1].w;
-            }
-#endif
-            fallback = probe_light / probe_weight;
-        }
+        // (visibilidad de la GI). Con el reflejo entero (ssr.a = 1: los rayos
+        // en lo poco rugoso) el respaldo no se calcula: no aporta nada.
         vec4 ssr = texelFetch(ssr_map, ivec2(gl_FragCoord.xy), 0);
-        vec3 reflected_light = mix(fallback, ssr.rgb, ssr.a);
+        vec3 reflected_light = ssr.rgb;
+        if (ssr.a < 1.0) {
+            vec3 fallback = textureLod(environment_map, reflected, roughness * kEnvironmentMaxLod).rgb * sky_visibility;
+            float probe_weight = lights.probes[0].w + lights.probes[1].w;
+            if (probe_weight > 0.001) {
+                float lod = roughness * kEnvironmentMaxLod;
+                vec3 probe_light = vec3(0.0);
+                if (lights.probes[0].w > 0.001) {
+                    vec3 d = probeDirection(reflection_probe_0, lights.probes[0].xyz,
+                                            world_position, reflected);
+                    probe_light += textureLod(reflection_probe_0, d, lod).rgb * lights.probes[0].w;
+                }
+#ifndef CRAMION_COMPAT
+                if (lights.probes[1].w > 0.001) {
+                    vec3 d = probeDirection(reflection_probe_1, lights.probes[1].xyz,
+                                            world_position, reflected);
+                    probe_light += textureLod(reflection_probe_1, d, lod).rgb * lights.probes[1].w;
+                }
+#endif
+                fallback = probe_light / probe_weight;
+            }
+            reflected_light = mix(fallback, ssr.rgb, ssr.a);
+        }
         vec3 specular_ibl = reflected_light * (f0 * brdf.x + brdf.y) * energy;
         // Oclusion del horizonte: con normal maps, el reflejo puede apuntar por
         // debajo de la superficie real y traer luz que alli no llega.
@@ -1572,14 +1580,6 @@ void main() {
                        (surface_model.model == kShadingHair && dot(normal, sun_direction) > -0.34);
         if (sun_lit) {
             float geometric_n_dot_l = max(dot(geometric_normal, sun_direction), 0.0);
-            shadow = shadowFactor(world_position, geometric_normal, geometric_n_dot_l,
-                                  cascade_index);
-            // Detalle cercano que la cascada no resuelve.
-            if (shadow > 0.02) {
-                shadow *= contactShadow(viewFromDepth(v_uv, depth), mat3(camera.view) * geometric_normal,
-                                        mat3(camera.view) * sun_direction, geometric_n_dot_l,
-                                        shadows.texel_world_sizes[cascade_index]);
-            }
             // Con rayos: la mas oscura de las dos. Los rayos ven el escenario y
             // el terreno con su forma exacta (sin acne ni sombras despegadas) y
             // mas alla de las cascadas (montanas que tapan el sol a kilometros);
@@ -1588,11 +1588,29 @@ void main() {
             // objeto) la malla de los rayos es de caras planas y se tapa a si
             // misma a trozos: ahi manda el mapa (y el propio N.L, que ya
             // oscurece).
+            float traced_term = 1.0;
             if (rt_sun) {
                 float traced = rtLocalShadow(kRtSunId);
                 if (traced >= 0.0) {
-                    shadow = min(shadow, mix(1.0, traced, smoothstep(0.0, 0.12, geometric_n_dot_l)));
+                    traced_term = mix(1.0, traced, smoothstep(0.0, 0.12, geometric_n_dot_l));
                 }
+            }
+            // Los rayos ya dicen sombra completa: el mapa no puede aclararla
+            // (es el minimo), asi que no se lee (PCSS y sombras de contacto son
+            // lo mas caro del sol). Salvo en la vista de cascadas, que las pinta.
+            bool cascade_view = shadows.params.z > 0.5 && shadows.params.z < 1.5;
+            if (traced_term <= 0.0 && !cascade_view) {
+                shadow = 0.0;
+            } else {
+                shadow = shadowFactor(world_position, geometric_normal, geometric_n_dot_l,
+                                      cascade_index);
+                // Detalle cercano que la cascada no resuelve.
+                if (shadow > 0.02) {
+                    shadow *= contactShadow(viewFromDepth(v_uv, depth), mat3(camera.view) * geometric_normal,
+                                            mat3(camera.view) * sun_direction, geometric_n_dot_l,
+                                            shadows.texel_world_sizes[cascade_index]);
+                }
+                shadow = min(shadow, traced_term);
             }
             shadow = mix(1.0, shadow, shadows.params.y);
         }
@@ -1603,9 +1621,11 @@ void main() {
 
         // El sol mide 0.53 grados: tangente de su radio angular.
         const float kSunSize = 0.00465;
-        color += shade(sun_direction, sun_radiance, normal, view_direction, albedo, roughness,
-                       metallic, f0, energy, kSunSize) *
-                 shadow;
+        if (shadow > 0.0) {
+            color += shade(sun_direction, sun_radiance, normal, view_direction, albedo, roughness,
+                           metallic, f0, energy, kSunSize) *
+                     shadow;
+        }
         // Subsurface: el sol que atraviesa la hoja, la oreja o la cera. La
         // sombra es la de la cara de atras (un poco hacia dentro): una hoja fina
         // la tiene iluminada; un muro, no, y no deja pasar nada.
@@ -1643,7 +1663,7 @@ void main() {
             vec3 shadow_position = from_behind ? world_position - geometric_normal * translucent_thickness : world_position;
             vec3 shadow_normal = from_behind ? -geometric_normal : geometric_normal;
 
-            vec3 radiance = toLinear(lights.points[i].color_intensity.rgb) *
+            vec3 radiance = lights.points[i].color_intensity.rgb *
                             lights.points[i].color_intensity.a *
                             attenuation(distance_to_light, lights.points[i].position_range.w);
 
@@ -1699,7 +1719,7 @@ void main() {
                 continue;
             }
 
-            vec3 radiance = toLinear(lights.spots[i].color_inner.rgb) *
+            vec3 radiance = lights.spots[i].color_inner.rgb *
                             lights.spots[i].direction_intensity.w * cone * cone *
                             attenuation(distance_to_light, lights.spots[i].position_range.w);
 

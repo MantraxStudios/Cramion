@@ -504,6 +504,10 @@ private:
     void releaseClothModels();
     std::unordered_set<const Mesh*> warned_meshes_;
     std::unordered_map<std::string, std::uint32_t> variant_lookup_;  // clave -> variants_
+    // Para no reservar memoria cada frame al buscar la variante de cada objeto.
+    std::string variant_key_;
+    bool grass_interactors_sent_ = false;  // el render tiene esferas que apartan la hierba
+    std::vector<Uuid> variant_slots_;
     std::unordered_set<Uuid> rebuild_materials_;  // cambio de texturas/tiling/modo
     struct SurfaceShaderEntry {
         std::int32_t id = -1;  // en el renderizador

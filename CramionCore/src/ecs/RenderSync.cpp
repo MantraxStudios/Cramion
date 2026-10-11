@@ -643,21 +643,28 @@ asset::ModelData RenderSync::buildVariant(const asset::ModelData& base, const st
 std::uint32_t RenderSync::resolveVariant(std::uint32_t base, const std::vector<assets::AssetRef>& overrides,
                                          scene::Scene& scene, bool& added) {
     const asset::ModelData& data = *scene.models()[base];
-    std::vector<Uuid> slots(std::min(overrides.size(), data.materials.size()));
+    // Clave binaria (el modelo y los 16 bytes de cada Uuid), en buffers que se
+    // reutilizan: se busca para cada objeto con materiales propios en cada
+    // frame, y con texto (toString por hueco) eran varios milisegundos con
+    // unos miles de objetos.
+    const std::size_t count = std::min(overrides.size(), data.materials.size());
+    variant_slots_.assign(count, Uuid{});
+    variant_key_.assign(reinterpret_cast<const char*>(&base), sizeof(base));
     bool any = false;
-    std::string key = std::to_string(base);
-    for (std::size_t i = 0; i < slots.size(); ++i) {
+    for (std::size_t i = 0; i < count; ++i) {
         if (overrides[i].valid() && material(overrides[i].uuid)) {
-            slots[i] = overrides[i].uuid;
+            variant_slots_[i] = overrides[i].uuid;
             any = true;
         }
-        key += ':';
-        key += slots[i].valid() ? slots[i].toString() : std::string{};
+        variant_key_.append(reinterpret_cast<const char*>(&variant_slots_[i].high), sizeof(std::uint64_t));
+        variant_key_.append(reinterpret_cast<const char*>(&variant_slots_[i].low), sizeof(std::uint64_t));
     }
     if (!any) return base;
-    if (const auto it = variant_lookup_.find(key); it != variant_lookup_.end()) {
+    if (const auto it = variant_lookup_.find(variant_key_); it != variant_lookup_.end()) {
         return variants_[it->second].index;
     }
+    const std::string key = variant_key_;
+    std::vector<Uuid> slots = variant_slots_;
 
     // Con la carga en hilos: unos milisegundos por frame como mucho (copiar
     // mallas); lo que espera turno se dibuja mientras con los materiales del
@@ -2303,15 +2310,21 @@ void RenderSync::syncTerrains(World& world, gfx::VulkanRenderer& renderer, const
     }
     // Lo que aparta la hierba: los cuerpos fisicos que se mueven y los
     // personajes cerca de la camara (hasta 32, los mas cercanos).
-    {
+    // Sin terreno no hay hierba que apartar: ni se buscan. Y solo se miran los
+    // cuerpos fisicos (antes, toda la escena subiendo por la jerarquia de cada
+    // objeto para saber si estaba activo).
+    if (alive.empty()) {
+        if (grass_interactors_sent_) renderer.setGrassInteractors({});
+        grass_interactors_sent_ = false;
+    } else {
         std::vector<core::Vec4> spheres;
         const core::Vec3 eye = grass_eye_;
-        world.forEachDepthFirst([&](Entity e) {
-            if (!e.activeInHierarchy()) return;
+        for (const entt::entity handle : world.registry().view<physics::Rigidbody>()) {
+            const Entity e = world.wrap(handle);
             // Cuerpos que se mueven (dinamicos y cinematicos: jugadores,
             // vehiculos...), con el tamano de su collider.
             const physics::Rigidbody* body = e.tryGet<physics::Rigidbody>();
-            if (body == nullptr || body->type == physics::BodyType::Static) return;
+            if (body == nullptr || body->type == physics::BodyType::Static || !e.activeInHierarchy()) continue;
             const core::Vec3 s = e.localScale();
             const float scale = std::max(std::abs(s.x), std::max(std::abs(s.y), std::abs(s.z)));
             float radius = 0.5f * scale;
@@ -2322,9 +2335,9 @@ void RenderSync::syncTerrains(World& world, gfx::VulkanRenderer& renderer, const
             }
             radius = std::clamp(radius, 0.15f, 5.0f);
             const core::Vec3 p = e.worldPosition();
-            if (core::length(p - eye) > 120.0f) return;
+            if (core::length(p - eye) > 120.0f) continue;
             spheres.push_back(core::Vec4{p.x, p.y, p.z, radius});
-        });
+        }
         std::sort(spheres.begin(), spheres.end(), [&](const core::Vec4& a, const core::Vec4& b) {
             const core::Vec3 da{a.x - eye.x, a.y - eye.y, a.z - eye.z};
             const core::Vec3 db{b.x - eye.x, b.y - eye.y, b.z - eye.z};
@@ -2332,6 +2345,7 @@ void RenderSync::syncTerrains(World& world, gfx::VulkanRenderer& renderer, const
         });
         if (spheres.size() > 32) spheres.resize(32);
         renderer.setGrassInteractors(spheres);
+        grass_interactors_sent_ = true;
     }
     for (auto it = terrains_.begin(); it != terrains_.end();) {
         if (alive.count(it->first) == 0) {
@@ -2732,7 +2746,11 @@ void RenderSync::syncActors(World& world, scene::Scene& scene, gfx::VulkanRender
         // la primera pieza calcula la pose y las demas la copian.
         // Orden: animacion -> huesos movidos y sockets -> procedural (capas y
         // patas) -> IK -> muelles -> phys bones -> ragdoll.
-        const RigComponents rig = gatherRig(e);
+        // Los modelos rigidos (un hueso) no tienen esqueleto que tocar: buscar
+        // sus componentes (subiendo por la jerarquia) era trabajo de cada
+        // objeto en cada frame para nada.
+        const bool skeletal = data.nodes.size() > 1 && data.bones.size() > 1;
+        const RigComponents rig = skeletal ? gatherRig(e) : RigComponents{};
         const ProceduralAnimation* proc = rig.proc;
         const bool use_ik = rig.ik != nullptr && rig.ik->enabled;
         const bool use_proc = proc != nullptr && proc->enabled;
@@ -2765,8 +2783,8 @@ void RenderSync::syncActors(World& world, scene::Scene& scene, gfx::VulkanRender
                 animating = true;
             }
         }
-        if (proc == nullptr) procedural_.erase(e.handle());
-        if (rig.physbones == nullptr) physbones_.erase(e.handle());
+        if (proc == nullptr && !procedural_.empty()) procedural_.erase(e.handle());
+        if (rig.physbones == nullptr && !physbones_.empty()) physbones_.erase(e.handle());
         // Tela simulada: cada hueso es una particula (en la pose de reposo si
         // no hay simulacion, fuera de Play).
         const std::vector<Vec3>* cloth_positions = nullptr;
@@ -2801,7 +2819,15 @@ void RenderSync::syncActors(World& world, scene::Scene& scene, gfx::VulkanRender
                                actor.model == *model;
         actor.model = *model;
         actor.transform = world_matrix;
-        if (!same_slot || animating || state.animated) actor.animator = state.animator;
+        // Si ya estaba (mismo hueco y modelo) y se anima, basta con sus huesos:
+        // el render solo lee boneMatrices() (la animacion propia de la escena
+        // esta apagada). Copiar el animador entero eran decenas de KB por
+        // personaje y frame.
+        if (!same_slot) {
+            actor.animator = state.animator;
+        } else if (animating || state.animated) {
+            actor.animator.copyBonesFrom(state.animator);
+        }
         state.animated = animating;
         const anim::Aabb& box = model_bounds_[*model];
         const Vec3 center = (box.min + box.max) * 0.5f;
@@ -2903,6 +2929,12 @@ void RenderSync::syncLightsAndEnvironment(World& world, scene::Scene& scene,
     std::vector<Volume> volumes;
 
     world.forEachDepthFirst([&](Entity e) {
+        // Primero si tiene algo que interese (casi ningun objeto): subir por la
+        // jerarquia para saber si esta activo cuesta mas que mirar sus componentes.
+        if (!e.has<Light>() && !e.has<PostProcessing>() && (sky_entity.valid() || !e.has<Sky>()) &&
+            (weather_entity.valid() || !e.has<Weather>())) {
+            return;
+        }
         if (!e.activeInHierarchy()) {
             return;
         }

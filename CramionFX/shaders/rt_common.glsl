@@ -500,20 +500,23 @@ vec3 hitRadiance(RtHit hit, float lod, bool from_screen) {
     vec3 albedo = toLinear(textureLod(rt_textures[nonuniformEXT(material.albedo_texture)],
                                       hit.uv, lod).rgb) *
                   material.base_color.rgb;
-    float metallic = clamp(material.params.x *
-                               textureLod(rt_textures[nonuniformEXT(
-                                              material.metallic_roughness_texture)],
-                                          hit.uv, lod).b,
-                           0.0, 1.0);
     vec3 n = hit.normal;
     vec3 origin = hit.position + n * 0.02;
+    // Metalicidad y rugosidad de una sola lectura, y ninguna si el material
+    // no es metalico y no hay agua (la rugosidad solo la usa la lluvia): con
+    // factor 0 la textura no cambia nada.
+    bool wet_surface = (lights.rain.x > 0.0 || lights.rain.y > 0.0 || lights.flood.z > 0.0) && n.y > 0.3;
+    vec4 metal_rough = material.params.x > 0.0 || wet_surface
+                           ? textureLod(rt_textures[nonuniformEXT(material.metallic_roughness_texture)], hit.uv, lod)
+                           : vec4(1.0);
+    float metallic = clamp(material.params.x * metal_rough.b, 0.0, 1.0);
 
     // --- Lluvia: el mismo agua que pinta skinned.frag (rain_common.glsl) ---
     // Un reflejo que cae en un charco fuera de pantalla ve el charco: lo de
     // debajo, oscurecido, y encima el espejo del agua reflejando el cielo.
     float water_fresnel = 0.0;
     vec3 water_reflection = vec3(0.0);
-    if ((lights.rain.x > 0.0 || lights.rain.y > 0.0 || lights.flood.z > 0.0) && n.y > 0.3) {
+    if (wet_surface) {
         float puddle = puddleLevel(hit.position.xz, lights.rain.y);
         float flood = floodLevel(hit.position.xz, lights.flood);
         // A la intemperie: aqui no hay mapa de lluvia, se pregunta con un
@@ -537,11 +540,7 @@ vec3 hitRadiance(RtHit hit, float lod, bool from_screen) {
         float wet = max(lights.rain.x * exposed * mix(0.25, 1.0, facing_up),
                         clamp(level * 3.0, 0.0, 1.0));
 
-        float roughness =
-            clamp(material.params.y *
-                      textureLod(rt_textures[nonuniformEXT(material.metallic_roughness_texture)],
-                                 hit.uv, lod).g,
-                  0.04, 1.0);
+        float roughness = clamp(material.params.y * metal_rough.g, 0.04, 1.0);
         albedo *= wetFactors(roughness, metallic, wet).x;
         albedo *= mix(vec3(1.0), exp(-kPuddleAbsorption * 2.0 * waterDepth(level, height)), water);
         if (water > 0.0) {
@@ -555,9 +554,12 @@ vec3 hitRadiance(RtHit hit, float lod, bool from_screen) {
     // color (sin trazar otro rayo).
     vec3 diffuse = albedo * (1.0 - metallic) + albedo * metallic * 0.25;
 
-    vec3 radiance = toLinear(textureLod(rt_textures[nonuniformEXT(material.emissive_texture)],
-                                        hit.uv, lod).rgb) *
-                    material.emissive.rgb * kEmissiveIntensity;
+    // La emision solo si el material emite (factor 0: la textura no importa).
+    vec3 radiance = vec3(0.0);
+    if (any(greaterThan(material.emissive.rgb, vec3(0.0)))) {
+        radiance = toLinear(textureLod(rt_textures[nonuniformEXT(material.emissive_texture)], hit.uv, lod).rgb) *
+                   material.emissive.rgb * kEmissiveIntensity;
+    }
 
     // Sol (o luna), con sombra.
     vec3 to_light = -normalize(lights.sun_direction_intensity.xyz);
@@ -614,12 +616,12 @@ vec3 hitRadiance(RtHit hit, float lod, bool from_screen) {
             float inner_cos = lights.spots[index].color_inner.a;
             float outer_cos = lights.spots[index].outer_shadow.x;
             float cone = clamp((cosine - outer_cos) / max(inner_cos - outer_cos, 0.0001), 0.0, 1.0);
-            light = diffuse * toLinear(lights.spots[index].color_inner.rgb) * lights.spots[index].direction_intensity.w *
+            light = diffuse * lights.spots[index].color_inner.rgb * lights.spots[index].direction_intensity.w *
                     cone * cone * attenuation(d, range) * nl;
             strength = lights.spots[index].outer_shadow.z;
             bulb = lights.spots[index].outer_shadow.w;
         } else {
-            light = diffuse * toLinear(lights.points[index].color_intensity.rgb) * lights.points[index].color_intensity.a *
+            light = diffuse * lights.points[index].color_intensity.rgb * lights.points[index].color_intensity.a *
                     attenuation(d, range) * nl;
             strength = lights.points[index].shadow.y;
             bulb = lights.points[index].shadow.z;

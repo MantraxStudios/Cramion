@@ -1799,7 +1799,7 @@ private:
                 float best_distance = kNotFound;
                 if (!p.text.empty()) {
                     for (const ecs::Entity& e : ctx_.world->findAllWithTag(p.text)) {
-                        if (e == me || !e.activeInHierarchy()) continue;
+                        if (e == me) continue;  // findAllWithTag ya da solo las activas
                         const float d = core::length(e.worldPosition() - position);
                         if (p.number > 0.0f && d > p.number) continue;
                         if (d < best_distance) {
@@ -1832,7 +1832,7 @@ private:
                 core::Vec3 best_position{};
                 if (!p.text.empty()) {
                     for (const ecs::Entity& e : ctx_.world->findAllWithTag(p.text)) {
-                        if (e == me || !e.activeInHierarchy()) continue;
+                        if (e == me) continue;  // findAllWithTag ya da solo las activas
                         const core::Vec3 target = e.worldPosition() + core::Vec3{0.0f, std::min(p.number3, 1.0f), 0.0f};
                         const core::Vec3 to = target - eye;
                         const float d = core::length(to);
@@ -1880,7 +1880,7 @@ private:
                 }
                 if (!p.text.empty() && p.number2 > 0.0f) {
                     for (const ecs::Entity& e : ctx_.world->findAllWithTag(p.text)) {
-                        if (e == me || !e.activeInHierarchy()) continue;
+                        if (e == me) continue;  // findAllWithTag ya da solo las activas
                         const float d = core::length(e.worldPosition() - position);
                         if (d > p.number2 || d >= best) continue;
                         heard = true;

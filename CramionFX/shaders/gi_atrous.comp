@@ -40,7 +40,7 @@ layout(push_constant) uniform PushConstants {
 const float kSigmaDepth = 1.0;
 // Mas suave que el 128 de SVGF: las normales llevan el normal map, y de lejos
 // las de los adoquines cambian mucho entre pixeles vecinos (la luz difusa no).
-const float kSigmaNormal = 32.0;
+// Peso de la normal: dot(n, n_vecino)^32 (en el bucle, con cuadrados).
 const float kSigmaLuminance = 4.0;
 
 float luminance(vec3 c) {
@@ -146,7 +146,13 @@ void main() {
             float w_depth = exp(-abs(center_depth - sample_depth) /
                                 (kSigmaDepth * depth_gradient * length(vec2(x, y)) *
                                      float(push.step) + 1e-3));
-            float w_normal = pow(max(dot(center_normal, sample_normal), 0.0), kSigmaNormal);
+            // pow(c, 32) con cinco cuadrados (sin log2/exp2 por muestra).
+            float w_normal = max(dot(center_normal, sample_normal), 0.0);
+            w_normal *= w_normal;
+            w_normal *= w_normal;
+            w_normal *= w_normal;
+            w_normal *= w_normal;
+            w_normal *= w_normal;
             float w_luminance =
                 exp(-abs(center_luminance - giLuminance(sample_color)) / luminance_scale);
             float w = kernel * w_depth * w_normal * w_luminance;
