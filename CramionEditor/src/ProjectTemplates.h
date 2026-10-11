@@ -3,10 +3,10 @@
 
 // Plantillas de proyecto del Hub (como las de Unreal y Unity):
 //
-//   - Integradas: se generan por codigo (escena, materiales, scripts de Lua,
+//   - Integradas: se generan por codigo (escena, materiales, scripts de C++,
 //     interfaz y ajustes). Vacia, Tercera persona, IA con navegacion y
 //     Mundo de bloques (primera persona, romper y construir) y MMO RPG
-//     (pueblo, misiones, enemigos, otros jugadores; todo el juego en Lua) y
+//     (pueblo, misiones, enemigos, otros jugadores; todo el juego en C++) y
 //     Online (multijugador por red: arena, chat, marcador, objetos sincronizados)
 //     y Mundo abierto (isla de 8 km con 2 millones de arboles: rendimiento) y
 //     Tercera persona avanzada (el Locomotion Pack de Mixamo del usuario,

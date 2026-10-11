@@ -47,6 +47,7 @@
 #include <sys/mman.h>
 #include <sys/resource.h>
 #include <sys/socket.h>
+#include <sys/syscall.h>
 #include <sys/wait.h>
 #include <unistd.h>
 #include <cerrno>
@@ -234,6 +235,13 @@ int highFd(int fd) {
 
 // Ejecuta un programa (sin shell) y devuelve su salida (stdout + stderr) y su codigo.
 int runProcess(const std::vector<std::string>& args, std::string& output, int timeout_ms = 300000) {
+#if defined(__ANDROID__) && __ANDROID_API__ < 28
+    // En el movil no se compila nada (posix_spawn llega con Android 9): la
+    // biblioteca de los scripts viene ya compilada en el APK.
+    (void)timeout_ms;
+    output = "no se pueden ejecutar programas en Android (" + (args.empty() ? std::string() : args[0]) + ")";
+    return -1;
+#else
     int pipe_fds[2] = {-1, -1};
     if (args.empty() || pipe(pipe_fds) != 0) return -1;
     const int read_end = highFd(pipe_fds[0]);
@@ -275,6 +283,7 @@ int runProcess(const std::vector<std::string>& args, std::string& output, int ti
     }
     if (WIFEXITED(status)) return WEXITSTATUS(status);
     return WIFSIGNALED(status) ? 128 + WTERMSIG(status) : -1;
+#endif
 }
 
 // Un programa en el PATH (vacio si no esta).
@@ -949,7 +958,10 @@ struct HostProcess {
         }
         // El bloque: memoria anonima compartida que el proceso hereda.
         int memory = -1;
-#if defined(__linux__)
+#if defined(__ANDROID__)
+        // memfd_create llega a la libc con Android 11; la llamada al sistema esta antes.
+        memory = static_cast<int>(syscall(__NR_memfd_create, "cramion_scripts", MFD_CLOEXEC));
+#elif defined(__linux__)
         memory = memfd_create("cramion_scripts", MFD_CLOEXEC);
 #else
         {
@@ -1054,7 +1066,7 @@ struct CppScriptSystem::Impl {
     physics::PhysicsSystem* physics = nullptr;
     int physics_listener = -1;
     const dm::Input* input = nullptr;
-    ScriptSystem* lua = nullptr;
+    ScriptSystem* api = nullptr;
     std::function<std::string(const Uuid&)> asset_path;
     std::vector<ScriptError> errors;
     std::vector<std::string> classes;
@@ -1099,7 +1111,7 @@ struct CppScriptSystem::Impl {
     float fixed_step = 1.0f / 60.0f;
     int memory_listener = -1;
     // Vivo mientras exista este sistema: el sumidero de callbacks que se da a
-    // Lua lo mira (Lua puede durar mas o menos que nosotros).
+    // ScriptSystem lo mira (puede durar mas o menos que nosotros).
     std::shared_ptr<int> alive = std::make_shared<int>(0);
 
     void error(const std::string& file, int line, const std::string& message) {
@@ -1324,7 +1336,7 @@ struct CppScriptSystem::Impl {
             case proto::Rpc::Api:
             case proto::Rpc::ApiSend: {
                 const std::string request = r.str();
-                const std::string reply = lua != nullptr ? lua->bridgeCall(request)
+                const std::string reply = api != nullptr ? api->bridgeCall(request)
                                                          : std::string(R"j({"ok":false,"error":"sin API: el juego no esta en marcha"})j");
                 if (op == proto::Rpc::Api) {
                     out.str(reply);
@@ -1755,7 +1767,7 @@ struct CppScriptSystem::Impl {
         }
     }
 
-    // Los callbacks que la API de Lua llamo (botones, red, acciones...).
+    // Los callbacks que la API llamo (botones, red, acciones...).
     void dispatchCallbacks() {
         std::vector<std::pair<std::uint64_t, std::string>> list;
         list.swap(callbacks);
@@ -1861,7 +1873,7 @@ CppScriptSystem::~CppScriptSystem() {
     if (impl_->compile_thread.joinable()) impl_->compile_thread.join();
     g_memory_mb.removeCallback(impl_->memory_listener);
     setPhysics(nullptr);
-    impl_->lua = nullptr;  // sin tocarlo: puede que ya no exista (el sumidero mira `alive`)
+    impl_->api = nullptr;  // sin tocarlo: puede que ya no exista (el sumidero mira `alive`)
 }
 
 void CppScriptSystem::setAssetsRoot(const std::filesystem::path& folder) { impl_->assets_root = folder; }
@@ -1909,20 +1921,20 @@ void CppScriptSystem::setPhysics(physics::PhysicsSystem* physics) {
     }
 }
 
-void CppScriptSystem::setScriptSystem(ScriptSystem* lua) {
-    impl_->lua = lua;
-    if (lua != nullptr) {
+void CppScriptSystem::setScriptSystem(ScriptSystem* scripts) {
+    impl_->api = scripts;
+    if (scripts != nullptr) {
         std::weak_ptr<int> alive = impl_->alive;
         Impl* d = impl_.get();
-        lua->setBridgeCallbackSink([alive, d](std::uint64_t id, const std::string& args) {
+        scripts->setBridgeCallbackSink([alive, d](std::uint64_t id, const std::string& args) {
             if (!alive.expired()) d->callbacks.emplace_back(id, args);
         });
         // Variables de red (OnNetVar): se guardan y se entregan en el siguiente update.
-        lua->setNetVarListener([alive, d](ecs::Entity e, const std::string& key, const std::string& value) {
+        scripts->setNetVarListener([alive, d](ecs::Entity e, const std::string& key, const std::string& value) {
             if (!alive.expired()) d->net_vars.emplace_back(e.handle(), key, value);
         });
         // Mensajes de los Behavior Trees (Send Message / Run Script): onMessage.
-        lua->setMessageListener([alive, d](ecs::Entity e, const std::string& method, const std::string& value) {
+        scripts->setMessageListener([alive, d](ecs::Entity e, const std::string& method, const std::string& value) {
             if (!alive.expired()) d->bt_messages.emplace_back(e.handle(), method, value);
         });
     }
@@ -2120,6 +2132,12 @@ void CppScriptSystem::writeCompileCommands() const {
 }
 
 bool CppScriptSystem::hasSources() const { return !impl_->assets_root.empty() && !sourcesIn(impl_->assets_root, false).empty(); }
+
+std::vector<std::filesystem::path> CppScriptSystem::sources() const {
+    return impl_->assets_root.empty() ? std::vector<std::filesystem::path>{} : sourcesIn(impl_->assets_root, false);
+}
+
+const std::filesystem::path& CppScriptSystem::sdkFolder() const { return impl_->sdk_folder; }
 
 std::filesystem::file_time_type CppScriptSystem::newestSourceTime() const {
     std::filesystem::file_time_type newest{};

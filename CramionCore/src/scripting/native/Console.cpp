@@ -1,5 +1,5 @@
 // La consola (ScriptSystem::run): llamadas a la API escritas a mano en la
-// Consola del editor (y por el MCP), sin Lua. Un interprete pequeno que solo
+// Consola del editor (y por el MCP). Un interprete pequeno que solo
 // llama a la API por su nombre (rt.native.call / get / set), asi que sirve
 // para todo lo que registran los modulos, tambien lo que se anada despues.
 //
@@ -18,7 +18,7 @@
 //               | expr                          (una llamada o una lectura)
 //   expr       := ['-'] sufijo                  ('-' solo con numeros y Vec3)
 //   sufijo     := primario { '.' nombre | ':' nombre args | args | '[' expr ']' }
-//   args       := '(' [expr {',' expr}] ')' | objeto | texto     (f{...} y f'x' como en Lua)
+//   args       := '(' [expr {',' expr}] ')' | objeto | texto     (f{...} y f'x': un solo argumento)
 //   primario   := numero | texto | true | false | nil | lista | objeto | '(' expr ')'
 //               | Vec3 '(' x, y, z ')' | Quat '(' x, y, z, w ')' | nombre
 //   lista      := '[' [expr {',' expr}] ']'
@@ -45,6 +45,8 @@
 // se lee todo: con un error de sintaxis no se ejecuta nada.
 
 #include "Modules.h"
+
+#include <CramionFX/core/Chars.h>
 
 #include <algorithm>
 #include <cctype>
@@ -79,9 +81,9 @@ bool isNameStart(char c) { return std::isalpha(static_cast<unsigned char>(c)) ||
 bool isNameChar(char c) { return std::isalnum(static_cast<unsigned char>(c)) || c == '_'; }
 bool isDigit(char c) { return std::isdigit(static_cast<unsigned char>(c)) != 0; }
 
-// Las palabras de Lua que la consola no tiene (un mensaje claro en vez de
-// un error de sintaxis raro).
-bool luaKeyword(const std::string& name) {
+// Las palabras de otros lenguajes que la consola no tiene (un mensaje claro
+// en vez de un error de sintaxis raro).
+bool foreignKeyword(const std::string& name) {
     static const char* const kWords[] = {"and",      "break", "do",    "else", "elseif", "end",    "for",
                                          "function", "goto",  "if",    "in",   "not",    "or",     "repeat",
                                          "then",     "until", "while"};
@@ -125,7 +127,7 @@ std::vector<Token> tokenize(const std::string& code) {
                 }
             }
             double value = 0.0;
-            const auto r = std::from_chars(code.data() + i, code.data() + end, value);
+            const auto r = core::parseFloat(code.data() + i, code.data() + end, value);
             if (r.ec != std::errc{} || r.ptr != code.data() + end || (end < n && isNameChar(code[end]))) {
                 std::size_t stop = end;
                 while (stop < n && isNameChar(code[stop])) ++stop;
@@ -161,7 +163,7 @@ std::vector<Token> tokenize(const std::string& code) {
             add(Token::Kind::String, std::move(text));
             i = j + 1;
         } else if (std::string_view("()[]{},;.:=-").find(c) != std::string_view::npos) {
-            // Operadores de Lua que la consola no tiene.
+            // Operadores que la consola no tiene.
             const char next = i + 1 < n ? code[i + 1] : '\0';
             if ((c == '.' && next == '.') || (c == '=' && next == '=')) {
                 fail(std::string("la consola no tiene operadores ('") + c + next +
@@ -330,7 +332,7 @@ private:
         }
         if (acceptName("local")) {
             const std::string name = expectName();
-            if (luaKeyword(name) || name == "return" || name == "local" || name == "true" || name == "false" || name == "nil") {
+            if (foreignKeyword(name) || name == "return" || name == "local" || name == "true" || name == "false" || name == "nil") {
                 syntax("'" + name + "' no vale como nombre de variable");
             }
             expectSymbol("=");
@@ -442,7 +444,7 @@ private:
                     return valueRef(api::Value{});
                 }
                 if (name == "return" || name == "local") syntax("'" + name + "' solo vale al principio de una sentencia");
-                if (luaKeyword(name)) {
+                if (foreignKeyword(name)) {
                     syntax("la consola no tiene '" + name + "' (solo llamadas, lecturas y asignaciones)");
                 }
                 if ((name == "Vec3" || name == "Quat") && isSymbol(peek(1), "(") && !isVariable(name)) {

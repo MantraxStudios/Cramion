@@ -83,38 +83,38 @@
     respetando la profundidad de la escena.</li>
 </ul>
 
-<h3 id="lua">Lua: Fluid</h3>
-<pre><code class="language-lua">-- Una bola de 2000 particulas de miel que cae
-Fluid.spawn(Vec3(0, 3, 0), 2000, "honey")
--- Lanzar agua hacia delante (velocidad), que dure 5 s
-Fluid.spawn(self.entity.position, 500, "water", self.entity.forward * 6, 0, 5)
+<h3 id="script">Desde un script: Fluid</h3>
+<pre><code class="language-cpp">// Una bola de 2000 particulas de miel que cae
+Fluid::spawn(Vec3{0, 3, 0}, 2000, "honey");
+// Lanzar agua hacia delante (velocidad), que dure 5 s
+Fluid::spawn(entity().position(), 500, "water", entity().forward() * 6.0f, 0, 5);
 
--- Consultas (los datos llegan de la GPU con 1-2 frames de retraso)
-if Fluid.isInside(jugador.position) then Debug.log("Te mojas") end
-local d = Fluid.density(Vec3(0, 0.5, 0))        -- 0 = seco, ~1 = lleno
-local v = Fluid.velocity(Vec3(0, 0.5, 0))       -- corriente (Vec3)
-local h = Fluid.surfaceHeight(0, 0)             -- nil si no hay liquido
-Debug.log(Fluid.count(), Fluid.count("lava"))
+// Consultas (los datos llegan de la GPU con 1-2 frames de retraso)
+if (Fluid::isInside(jugador.position()).asBool()) Debug::log("Te mojas");
+float d = Fluid::density(Vec3{0, 0.5f, 0}).asFloat();   // 0 = seco, ~1 = lleno
+Vec3 v = Fluid::velocity(Vec3{0, 0.5f, 0}).asVec3();    // corriente
+Value h = Fluid::surfaceHeight(0, 0);                   // nil si no hay liquido
+Debug::log(std::to_string(Fluid::count().asInt()) + " / " + std::to_string(Fluid::count("lava").asInt()));
 
--- Emisores
-local grifo = Scene.find("Grifo de agua")
-Fluid.stop(grifo)
-Fluid.setType(grifo, "lava")
-Fluid.start(grifo)
-Fluid.restart(Scene.find("Bloque de agua"))     -- vuelve a llenar
-Fluid.clear()                                    -- borra todo</code></pre>
+// Emisores
+Entity grifo = Scene::find("Grifo de agua");
+Fluid::stop(grifo);
+Fluid::setType(grifo, "lava");
+Fluid::start(grifo);
+Fluid::restart(Scene::find("Bloque de agua"));         // vuelve a llenar
+Fluid::clear();                                         // borra todo</code></pre>
 <table>
   <tr><th>Función</th><th>Qué hace</th></tr>
-  <tr><td><code>Fluid.spawn(pos, cantidad, tipo, vel, radio, vida)</code></td><td>Bola de partículas (tipo por clave, nombre o número).</td></tr>
-  <tr><td><code>Fluid.clear()</code></td><td>Borra todas las partículas.</td></tr>
-  <tr><td><code>Fluid.count(tipo)</code></td><td>Partículas vivas (todas o de un tipo).</td></tr>
-  <tr><td><code>Fluid.density(pos, radio)</code> / <code>Fluid.isInside(pos)</code></td><td>Cuánto líquido hay en un punto.</td></tr>
-  <tr><td><code>Fluid.velocity(pos, radio)</code></td><td>Velocidad media del líquido.</td></tr>
-  <tr><td><code>Fluid.surfaceHeight(x, z)</code></td><td>Altura de la superficie, o nil.</td></tr>
-  <tr><td><code>Fluid.start/stop/restart(entidad)</code>, <code>Fluid.setType(entidad, tipo)</code></td><td>Controlar un FluidEmitter.</td></tr>
-  <tr><td><code>Fluid.types()</code>, <code>Fluid.stats()</code>, <code>Fluid.isActive()</code></td><td>Tipos, estadísticas (particles, capacity, emitters, floatingBodies, memoryMB...).</td></tr>
+  <tr><td><code>Fluid::spawn(pos, cantidad, tipo, vel, radio, vida)</code></td><td>Bola de partículas (tipo por clave, nombre o número).</td></tr>
+  <tr><td><code>Fluid::clear()</code></td><td>Borra todas las partículas.</td></tr>
+  <tr><td><code>Fluid::count(tipo)</code></td><td>Partículas vivas (todas o de un tipo).</td></tr>
+  <tr><td><code>Fluid::density(pos, radio)</code> / <code>Fluid::isInside(pos)</code></td><td>Cuánto líquido hay en un punto.</td></tr>
+  <tr><td><code>Fluid::velocity(pos, radio)</code></td><td>Velocidad media del líquido.</td></tr>
+  <tr><td><code>Fluid::surfaceHeight(x, z)</code></td><td>Altura de la superficie, o nil.</td></tr>
+  <tr><td><code>Fluid::start/stop/restart(entidad)</code>, <code>Fluid::setType(entidad, tipo)</code></td><td>Controlar un FluidEmitter.</td></tr>
+  <tr><td><code>Fluid::types()</code>, <code>Fluid::stats()</code>, <code>Fluid::isActive()</code></td><td>Tipos, estadísticas (particles, capacity, emitters, floatingBodies, memoryMB...).</td></tr>
 </table>
-<p>Los campos de los componentes también se cambian con <code>entity:setField("FluidEmitter", "speed", 4)</code>.</p>
+<p>Los campos de los componentes también se cambian con <code>entity().setField("FluidEmitter", "speed", 4)</code>.</p>
 
 <h3 id="mcp">MCP (IA)</h3>
 <ul>
@@ -134,6 +134,6 @@ Fluid.clear()                                    -- borra todo</code></pre>
   <li>El dominio es una caja sin giro; todo lo que esté fuera no existe para el líquido. Mantenlo ajustado: la rejilla
     tiene como mucho 2 millones de celdas.</li>
   <li>Hasta 256 formas de choque cerca del dominio y 16 desagües.</li>
-  <li>Las consultas desde Lua y la flotación usan una copia de la GPU con 1-2 frames de retraso.</li>
+  <li>Las consultas desde los scripts y la flotación usan una copia de la GPU con 1-2 frames de retraso.</li>
   <li>Un solo FluidWorld activo por escena; todos los tipos de líquido se mezclan en la misma simulación.</li>
 </ul>

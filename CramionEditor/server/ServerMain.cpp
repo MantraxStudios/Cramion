@@ -7,9 +7,9 @@
 // Sin --project usa la carpeta Game/ junto al ejecutable (el juego exportado:
 // si lleva un .crpack se descomprime en %LOCALAPPDATA%/Cramion/Servers). Carga
 // la escena (la de game.ini o la inicial del proyecto), simula la fisica, la
-// navegacion y los scripts (Lua y visuales) a un ritmo fijo, y abre la
-// partida en el puerto (Network.host). Los scripts saben que son el servidor
-// dedicado con Network.isDedicated(); Network.loadScene cambia de escena.
+// navegacion y los scripts (de C++ y visuales) a un ritmo fijo, y abre la
+// partida en el puerto (Network::host). Los scripts saben que son el servidor
+// dedicado con Network::isDedicated(); Network::loadScene cambia de escena.
 // Ctrl+C lo cierra ordenadamente (avisa a los jugadores).
 
 #include <CramionCore/ai/Crowd.h>
@@ -34,6 +34,7 @@
 #include <CramionCore/physics/PhysicsSystem.h>
 #include <CramionCore/project/Pack.h>
 #include <CramionCore/project/Project.h>
+#include <CramionCore/scripting/CppScripts.h>
 #include <CramionCore/scripting/NativeApi.h>
 #include <CramionCore/scripting/Scripting.h>
 #include <CramionCore/spline/Spline.h>
@@ -249,9 +250,29 @@ int main(int argc, char** argv) {
     scripts.setNavigation(&nav);
     scripts.setPrefsFile(dataFolder("Servers") / (project->name + ".prefs"));
     scripts.setLog([](int level, const std::string& text) {
-        (level >= 2 ? std::cerr : std::cout) << (level >= 2 ? "[Lua ERROR] " : level == 1 ? "[Lua aviso] " : "[Lua] ") << text
-                                             << "\n";
+        (level >= 2 ? std::cerr : std::cout) << (level >= 2 ? "[Script ERROR] " : level == 1 ? "[Script aviso] " : "[Script] ")
+                                             << text << "\n";
     });
+    // Los scripts de C++ del juego: la DLL que el editor exporta junto al servidor.
+    scripting::CppScriptSystem cpp_scripts;
+    cpp_scripts.setAssetsRoot(project->assetsFolder());
+    cpp_scripts.setPhysics(&physics);
+    cpp_scripts.setScriptSystem(&scripts);  // toda la API desde C++
+    cpp_scripts.setAssetPathResolver([&database, &project](const Uuid& uuid) -> std::string {
+        const std::optional<assets::AssetInfo> info = database.find(uuid);
+        if (!info || info->path.empty()) return {};
+        const std::filesystem::path rel =
+            info->path.is_absolute() ? info->path.lexically_relative(project->assetsFolder()) : info->path;
+        const std::u8string text = rel.generic_u8string();
+        return std::string(text.begin(), text.end());
+    });
+#if defined(_WIN32)
+    {
+        const std::filesystem::path game_dll = exeFolder() / "scripts" / "game_scripts.dll";
+        std::error_code dll_error;
+        if (std::filesystem::exists(game_dll, dll_error)) cpp_scripts.usePrebuilt(game_dll);
+    }
+#endif
     {
         std::string loc_error;
         gameplay::localization().load(project->settingsFolder() / "Localization", &loc_error);
@@ -286,6 +307,7 @@ int main(int argc, char** argv) {
     bool hosted = false;
     const auto load = [&](const std::filesystem::path& file) -> bool {
         if (scripts.running()) scripts.stop();
+        cpp_scripts.stop();
         physics.stop();
         partition.end(world, false);
         std::string error;
@@ -300,6 +322,7 @@ int main(int argc, char** argv) {
         nav.waitForBuild(world, 30.0f);
         crowds.begin(world);
         scripts.start(world);
+        if (!cpp_scripts.dll().empty()) cpp_scripts.start(world);
         // Marca de servidor dedicado y la partida abierta (si el script no la abrio).
         scripting::api::NativeApi& api = scripts.nativeApi();
         api.set("Network.dedicated", scripting::api::Value(true));
@@ -333,7 +356,9 @@ int main(int argc, char** argv) {
         partition.update(world, core::Vec3{});
         crowds.update(world, dt, core::Vec3{});
         scripts.fixedUpdate(world, physics_settings.fixed_step, steps);
+        cpp_scripts.fixedUpdate(world, physics_settings.fixed_step, steps);
         scripts.update(world, dt);
+        cpp_scripts.update(world, dt);
         if (const std::filesystem::path next = scripts.takeSceneRequest(); !next.empty()) load(next);
         if (scripts.takeQuitRequest()) break;
         ++ticks;
@@ -350,6 +375,7 @@ int main(int argc, char** argv) {
     }
     std::cout << "[Servidor] Cerrando...\n";
     scripts.shutdownNetwork();
+    cpp_scripts.stop();
     scripts.stop();
     physics.stop();
     jobs::shutdown();

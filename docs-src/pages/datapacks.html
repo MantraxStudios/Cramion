@@ -33,47 +33,48 @@
 <p>
   Las dependencias se buscan solas desde las escenas y prefabs elegidos, recursivamente: por los <strong>UUID</strong> de los
   assets (modelos, materiales, prefabs, cielos, controladores de animación...) y por las <strong>rutas entre comillas</strong>
-  que existen en <code>Assets</code> (scripts de los componentes, sonidos, texturas de interfaz, y lo que nombran los scripts
-  Lua: <code>"Sonidos/disparo.wav"</code>, <code>Scene.load("Nivel2")</code>,
-  <code>Scene.instantiate("Prefabs/Enemigo")</code>...). Lo que no se usa no entra.
+  que existen en <code>Assets</code> y aparecen en las escenas, prefabs, materiales, interfaces y demás archivos de texto
+  del motor (sonidos, texturas de interfaz...). Lo que no se usa no entra.
 </p>
 <div class="note">
-  Una referencia que se arma en tiempo de ejecución (<code>"Nivel" .. n</code>) no se puede adivinar: pon ese asset en el
-  paquete a mano (por ejemplo, marca también esa escena) o escríbelo completo en algún script.
+  En los scripts de C++ y los Visual Scripts que entran en el paquete también se buscan las rutas entre comillas
+  completas (<code>"Assets/Sonidos/salto.wav"</code>). Las que se arman en tiempo de ejecución
+  (<code>"Nivel" + std::to_string(n)</code>) no se pueden encontrar: pon ese asset en el paquete a mano (por ejemplo,
+  marca también esa escena).
 </div>
 
-<h3 id="lua">Cargarlo desde Lua</h3>
-<pre><code class="language-lua">-- Una escena entera del paquete (la primera, o por nombre)
-DataPack.loadScene("Nivel2")                -- busca Nivel2.datapack
-DataPack.loadScene("Expansion", "Castillo") -- la escena "Castillo" del paquete Expansion
+<h3 id="script">Cargarlo desde un script</h3>
+<pre><code class="language-cpp">// Una escena entera del paquete (la primera, o por nombre)
+DataPack::loadScene("Nivel2");                // busca Nivel2.datapack
+DataPack::loadScene("Expansion", "Castillo"); // la escena "Castillo" del paquete Expansion
 
--- Un objeto (prefab) del paquete en la escena actual
-local coche = DataPack.instantiate("Vehiculos", "Deportivo", Vec3(0, 1, 5))
-local skin  = DataPack.instantiate("Skins")   -- el primero del paquete
+// Un objeto (prefab) del paquete en la escena actual
+Entity coche = DataPack::instantiate("Vehiculos", "Deportivo", Vec3{0, 1, 5});
+Entity skin  = DataPack::instantiate("Skins");   // el primero del paquete
 
--- Solo montarlo (sus assets quedan disponibles para Scene.load / Scene.instantiate)
-local info = DataPack.load("Expansion")
-if info then
-  for _, escena in ipairs(info.scenes) do Debug.log("escena: " .. escena) end
-  for _, objeto in ipairs(info.objects) do Debug.log("objeto: " .. objeto) end
-end
+// Solo montarlo (sus assets quedan disponibles para Scene::load / Scene::instantiate)
+Value info = DataPack::load("Expansion");
+if (!info.isNil()) {
+    for (const Value&amp; escena : info["scenes"].items()) Debug::log("escena: " + escena.asString());
+    for (const Value&amp; objeto : info["objects"].items()) Debug::log("objeto: " + objeto.asString());
+}
 
--- Mirar lo que trae sin montarlo
-local i = DataPack.info("Expansion")        -- {name, version, scenes, objects, files}
+// Mirar lo que trae sin montarlo
+Value i = DataPack::info("Expansion");        // {name, version, scenes, objects, files}
 
-DataPack.isLoaded("Expansion")              -- true / false
-DataPack.list()                             -- nombres montados
-DataPack.unload("Expansion")                -- lo quita</code></pre>
+DataPack::isLoaded("Expansion");              // true / false
+DataPack::list();                             // nombres montados
+DataPack::unload("Expansion");                // lo quita</code></pre>
 <table>
   <thead><tr><th>Función</th><th>Devuelve</th><th>Qué hace</th></tr></thead>
   <tbody>
-    <tr><td><code>DataPack.load(archivo)</code></td><td>tabla o <code>nil</code></td><td>Monta el paquete: <code>{name, scenes, objects, files}</code>.</td></tr>
-    <tr><td><code>DataPack.loadScene(archivo, escena?)</code></td><td><code>true</code>/<code>false</code></td><td>Monta y cambia a una escena suya al terminar el frame.</td></tr>
-    <tr><td><code>DataPack.instantiate(archivo, objeto?, posicion?, rotacion?)</code></td><td>Entity o <code>nil</code></td><td>Monta y crea un objeto (prefab) suyo en la escena.</td></tr>
-    <tr><td><code>DataPack.info(archivo)</code></td><td>tabla o <code>nil</code></td><td>El manifiesto sin montar nada (también <code>version</code>).</td></tr>
-    <tr><td><code>DataPack.isLoaded(archivo)</code></td><td>booleano</td><td>¿Está montado?</td></tr>
-    <tr><td><code>DataPack.list()</code></td><td>lista</td><td>Nombres de los paquetes montados.</td></tr>
-    <tr><td><code>DataPack.unload(archivo)</code></td><td>booleano</td><td>Desmonta: borra lo que extrajo.</td></tr>
+    <tr><td><code>DataPack::load(archivo)</code></td><td>objeto o <code>nil</code></td><td>Monta el paquete: <code>{name, scenes, objects, files}</code>.</td></tr>
+    <tr><td><code>DataPack::loadScene(archivo, escena?)</code></td><td><code>true</code>/<code>false</code></td><td>Monta y cambia a una escena suya al terminar el frame.</td></tr>
+    <tr><td><code>DataPack::instantiate(archivo, objeto?, posicion?, rotacion?)</code></td><td>Entity o <code>nil</code></td><td>Monta y crea un objeto (prefab) suyo en la escena.</td></tr>
+    <tr><td><code>DataPack::info(archivo)</code></td><td>objeto o <code>nil</code></td><td>El manifiesto sin montar nada (también <code>version</code>).</td></tr>
+    <tr><td><code>DataPack::isLoaded(archivo)</code></td><td>booleano</td><td>¿Está montado?</td></tr>
+    <tr><td><code>DataPack::list()</code></td><td>lista</td><td>Nombres de los paquetes montados.</td></tr>
+    <tr><td><code>DataPack::unload(archivo)</code></td><td>booleano</td><td>Desmonta: borra lo que extrajo.</td></tr>
   </tbody>
 </table>
 <p>

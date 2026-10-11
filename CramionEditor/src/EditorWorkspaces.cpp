@@ -7,7 +7,7 @@
 //            Consola abajo. Guardar escribe el .crprefab y todas sus
 //            instancias de la escena se ponen al dia (respetando sus
 //            cambios propios).
-//   Script   el editor de un .lua / .crshader a toda la ventana
+//   Script   el editor de un .cpp / .crshader a toda la ventana
 //   Maquina  el editor de la maquina de estados (.crfsm) a toda la ventana
 //
 // Solo hay un ecs::World (y un renderizador): el mundo de la pestana que no
@@ -43,7 +43,7 @@ std::string lowerText(std::string text) {
 }
 
 bool isCodeFile(const std::string& ext) {
-    return ext == ".lua" || ext == ".crshader" || ext == ".cpp" || ext == ".cc" || ext == ".cxx" || ext == ".h" || ext == ".hpp" ||
+    return ext == ".crshader" || ext == ".cpp" || ext == ".cc" || ext == ".cxx" || ext == ".h" || ext == ".hpp" ||
            ext == ".inl";
 }
 

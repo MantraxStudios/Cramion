@@ -19,21 +19,24 @@
 </ul>
 
 <h3 id="scripts">Desde los scripts</h3>
-<pre><code class="language-lua">function Partido:Start()
-    Replay.start({ rate = 30, maxSeconds = 10 })   -- siempre los ultimos 10 s
-end
+<pre><code class="language-cpp">class Partido : public Script {
+public:
+    void start() override {
+        Replay::start(Value{{"rate", 30}, {"maxSeconds", 10}});   // siempre los ultimos 10 s
+        on("OnGol", [](const Value&amp;) {
+            Replay::mark("Gol");
+            Replay::play(-6, 0.5f);       // los ultimos 6 segundos a camara lenta
+            Replay::setFreeCamera(false);
+        });
+    }
 
-function Partido:OnGol()
-    Replay.mark("Gol")
-    Replay.play(-6, 0.5)          -- los ultimos 6 segundos a camara lenta
-    Replay.setFreeCamera(false)
-end
-
-function Partido:Update(dt)
-    if Replay.isPlaying() and Replay.time() >= Replay.duration() then
-        Replay.stopPlayback()
-        Replay.start({ rate = 30, maxSeconds = 10 })
-    end
-end</code></pre>
-<p>También: <code>Replay.seek</code>, <code>pause</code>, <code>setSpeed</code>, <code>setLoop</code>, <code>save</code>,
+    void update(float dt) override {
+        if (Replay::isPlaying().asBool() &amp;&amp; Replay::time().asFloat() &gt;= Replay::duration().asFloat()) {
+            Replay::stopPlayback();
+            Replay::start(Value{{"rate", 30}, {"maxSeconds", 10}});
+        }
+    }
+};
+CRAMION_SCRIPT(Partido)</code></pre>
+<p>También: <code>Replay::seek</code>, <code>pause</code>, <code>setSpeed</code>, <code>setLoop</code>, <code>save</code>,
   <code>load</code> y <code>list</code>.</p>

@@ -394,9 +394,9 @@ void registerNavigation(Runtime& rt) {
 
 // --- Character Controller -------------------------------------------------------------
 //
-//   flags = entity:move(Vec3(0, 0, -speed * dt))   -- Move de Unity
-//   entity:isGrounded() / entity:setMoveInput(dir, corriendo) / entity:jump()
-//   entity:characterState()                       -- grounded, velocity, ground...
+//   flags = entity().move(Vec3(0, 0, -speed * dt));  // Move de Unity
+//   entity().isGrounded() / entity().setMoveInput(dir, corriendo) / entity().jump()
+//   entity().characterState()                       // grounded, velocity, ground...
 //
 // CharacterController.Sides / Above / Below: bits de lo que devuelve move()
 // (y de characterState().flags).

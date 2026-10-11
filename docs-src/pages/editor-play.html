@@ -24,7 +24,7 @@
   caliente sin perder el estado (ver <a href="recarga.html">Recarga en caliente</a>).
 </div>
 <p>
-  Si el juego captura el ratón (<code>Input.lockCursor()</code>), <code>Escape</code> lo suelta. Los errores de Lua salen en
+  Si el juego captura el ratón (<code>Input::lockCursor(true)</code>), <code>Escape</code> lo suelta. Los errores de los scripts salen en
   la Consola con el archivo y la línea.
 </p>
 
@@ -40,7 +40,7 @@
   <li><strong>Guardar</strong>: <code>Ctrl+S</code> (<code>Ctrl+Mayús+S</code> guardar como). Las escenas son <code>.crscene</code> (JSON) en <code>Assets/Scenes</code>. El título de la ventana lleva un <code>*</code> si hay cambios sin guardar.</li>
   <li><strong>Nueva</strong>: <code>Ctrl+N</code> (cámara, luz y entorno). <strong>Abrir</strong>: doble clic en el Proyecto o <em>Archivo &gt; Abrir escena</em>. Si hay cambios sin guardar, pregunta.</li>
   <li><strong>Escena inicial</strong>: <em>Archivo &gt; Usar como escena inicial</em>. Es la que abre el proyecto y la que empieza el juego exportado.</li>
-  <li>Los scripts cambian de escena con <code>Scene.load("Nivel2")</code> (ver <a href="scene.html">Scene</a>).</li>
+  <li>Los scripts cambian de escena con <code>Scene::load("Nivel2")</code> (ver <a href="cpp-scene.html">Scene</a>).</li>
 </ul>
 <p>
   Los terrenos guardan sus alturas aparte (<code>.crterrain</code>) al guardar la escena. Al guardar, el editor también

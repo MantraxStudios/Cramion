@@ -39,7 +39,7 @@
 #include <CramionCore/asset/RenderTextureAsset.h>
 #include "ImGuiLayer.h"
 #include "Terminal.h"
-#include "LuaCompletion.h"
+#include "CodeCompletion.h"
 #include "Clangd.h"
 #include "McpServer.h"
 #include "ModelPreviews.h"
@@ -137,7 +137,7 @@ inline std::vector<Uuid>::iterator findUuid(std::vector<Uuid>& list, const Uuid&
 inline constexpr const char* kImagePayload = "CRAMION_IMAGE";
 // Carpeta del Proyecto arrastrada (ruta UTF-8): se mueve a otra.
 inline constexpr const char* kFolderPayload = "CRAMION_FOLDER";
-inline constexpr const char* kScriptPayload = "CRAMION_SCRIPT";  // ruta (utf8) de un .lua
+inline constexpr const char* kScriptPayload = "CRAMION_SCRIPT";  // ruta (utf8) de un .cpp o .h
 inline constexpr const char* kAudioPayload = "CRAMION_AUDIO";    // ruta (utf8) de un audio
 
 // Archivos de la 2.1 que se ven como los shaders en el Proyecto (extension en minusculas).
@@ -625,7 +625,7 @@ private:
         bool reload_text = false;  // el texto cambio por fuera (formatear) con el campo activo
         // C++: la ultima lista de clangd sin filtrar (se filtra al momento al teclear,
         // sin esperar a clangd: la lista no salta) y donde empezaba su palabra.
-        std::vector<LuaCompletion> cpp_raw;
+        std::vector<CodeCompletion> cpp_raw;
         std::size_t cpp_raw_start = std::string::npos;
         float popup_width = 0.0f;  // solo crece mientras esta abierta (no tiembla)
         int line = 1;
@@ -633,8 +633,8 @@ private:
         // Autocompletado.
         bool completion_open = false;
         int completion_selected = 0;
-        std::vector<LuaCompletion> completions;
-        LuaCompletionContext completion_context;
+        std::vector<CodeCompletion> completions;
+        CodeCompletionContext completion_context;
         bool was_active = false;
         double last_edit = -10.0;  // el cursor no parpadea mientras se escribe
         // Codigo que no es un archivo (el de un estado de una maquina de
@@ -658,11 +658,7 @@ private:
     void syncClangd(ScriptTab& tab);
     ScriptTab* scriptTabFor(const std::filesystem::path& file);
     void goToDefinition(ScriptTab& tab, int offset);
-    // IntelliSense: la API del motor y lo del proyecto (EditorLuaSymbols.cpp).
-    void refreshLuaSymbols();
-    double lua_symbols_time_ = -1.0;
     std::string assetRelative(const std::filesystem::path& file) const;
-    void createScriptAsset(const std::filesystem::path& folder, ecs::Entity attach_to);
     // --- Shaders de superficie (EditorShaders.cpp) ---
     std::filesystem::path createShaderAsset(const std::filesystem::path& folder);
     const std::vector<std::string>& projectShaderFiles();
@@ -673,7 +669,6 @@ private:
     bool saveScript(ScriptTab& tab);
     void drawScriptEditor();
     void drawCodeEditor(ScriptTab& tab);
-    void drawScriptInspector(ecs::Entity entity);
     void drawCppScriptInspector(ecs::Entity entity, bool header);  // EditorCppScripts.cpp (arriba / abajo)
     std::vector<std::string> cppClassesOfFile(const std::string& relative);
     std::string cppSourceFor(const std::string& relative);  // .h -> su .cpp
@@ -710,9 +705,9 @@ private:
     bool focus_script_editor_ = false;
     unsigned int script_dock_id_ = 0;  // donde se acoplan los scripts nuevos (junto a los abiertos)
     void drawScriptToolbar(ScriptTab* tab);
-    void drawLuaConsole();
-    std::string lua_console_;
-    std::vector<std::filesystem::path> current_scripts_;  // .lua de la carpeta
+    void drawApiConsole();
+    std::string api_console_;
+    std::vector<std::filesystem::path> current_scripts_;  // .cpp y .h de la carpeta
     std::vector<std::filesystem::path> current_shaders_;  // .crshader de la carpeta
     std::vector<std::filesystem::path> current_audio_;    // audios de la carpeta
 
@@ -827,7 +822,7 @@ private:
     std::filesystem::path touch_layout_file_;
     bool touch_preview_portrait_ = false;
     bool touch_simulate_ = false;
-    dm::TouchControls touch_game_;       // la del juego en Play (Lua la cambia)
+    dm::TouchControls touch_game_;       // la del juego en Play (los scripts la cambian)
     dm::Input touch_sim_input_;          // teclado real + lo que sale del tactil
     std::vector<dm::Event> touch_pending_;
     bool touch_sim_down_ = false;
@@ -1378,7 +1373,7 @@ private:
         std::string name;
         bool focus = false;
     } new_cpp_script_;
-    // Un script (.lua o .cpp) arrastrado o asignado a un objeto.
+    // Un script (.cpp o .h) arrastrado o asignado a un objeto.
     void attachScriptFile(ecs::Entity e, const std::string& relative);
     void drawCVarsWindow();
     // --- Modelado poligonal (EditorModeling.cpp), como ProBuilder ---
@@ -2010,7 +2005,7 @@ private:
     PlayState play_state_ = PlayState::Edit;
     std::string play_snapshot_;     // el mundo al darle a Play
     bool play_dirty_before_ = false;
-    // Graphics (Lua) y lo grafico al darle a Play (se restaura al parar).
+    // Graphics (la API) y lo grafico al darle a Play (se restaura al parar).
     std::unique_ptr<RendererGraphicsHost> graphics_host_;
     struct PlayGraphics {
         gfx::GraphicsSettings settings;

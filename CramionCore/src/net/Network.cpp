@@ -39,7 +39,7 @@ enum Msg : std::uint8_t {
     kWelcome = 1,    // servidor -> nuevo: tu id y los jugadores
     kJoin = 2,       // servidor -> todos: entra un jugador
     kLeave = 3,      // servidor -> todos: sale un jugador
-    kUser = 4,       // mensaje de Lua (from, target, nombre, valor)
+    kUser = 4,       // mensaje de un script (from, target, nombre, valor)
     kSpawn = 5,      // objeto nuevo
     kDespawn = 6,    // objeto borrado
     kTransform = 7,  // posicion y giro

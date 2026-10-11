@@ -2,7 +2,7 @@
   Todo lo que se hace con los huesos de un modelo: <strong>verlos y moverlos</strong>, <strong>enganchar</strong> cosas a
   ellos, <strong>IK</strong> para humanos y animales (patas, cabeza, cuello, cola), <strong>Phys Bones</strong> (pelo,
   colas, orejas, ropa) y <strong>ragdoll</strong>. Cada cosa es un componente que se configura en el Inspector y se
-  maneja desde Lua. La plantilla <a href="plantillas.html#criaturas">Criaturas</a> los usa todos.
+  maneja desde C++. La plantilla <a href="plantillas.html#criaturas">Criaturas</a> los usa todos.
 </p>
 
 <div class="note">
@@ -48,11 +48,12 @@
   igual los cambios de clip (<em>Suavizado</em>).
 </p>
 <p>
-  <strong>Desde el código</strong>, como el <code>Animator.CrossFade</code> de Unity: <code>entity:crossFade("Golpe", 0.1)</code>
+  <strong>Desde el código</strong>, como el <code>Animator.CrossFade</code> de Unity: <code>entity().crossFade("Golpe", 0.1f)</code>
   salta a un estado por su nombre sin necesitar una transición (tercer argumento: <code>true</code> inercial, por defecto;
   <code>false</code>, fundido cruzado). El mismo estado vuelve a empezar. Si el clip de ese estado aún se está leyendo,
-  espera con la pose actual (nunca la pose T). <code>entity:animatorState()</code> devuelve el estado que suena y
-  <code>entity:animatorStateTime()</code> los segundos que lleva. En C++: <code>modelo.crossFade("jab_right", 0.08f, true)</code>.
+  espera con la pose actual (nunca la pose T). <code>entity().animatorState()</code> devuelve el estado que suena y
+  <code>entity().animatorStateTime()</code> los segundos que lleva (los dos como <code>Value</code>: <code>.asString()</code>,
+  <code>.asNumber()</code>).
 </p>
 <p>
   <strong>Bloquear pies</strong> (componente IK): el pie que la animación apoya se queda clavado en el suelo hasta que
@@ -146,48 +147,53 @@
 <p>
   El ragdoll de un personaje con <strong>Character Controller</strong> (en un antepasado del modelo) no choca con su propia
   cápsula, y los personajes no se suben encima de un cuerpo caído: pasan empujándolo. Para lanzar un cuerpo de forma
-  creíble, <code>entity:addRagdollForce(impulso, "Hueso")</code> recibe un impulso en N·s: la velocidad que quieres darle
+  creíble, <code>entity().addRagdollForce(impulso, "Hueso")</code> recibe un impulso en N·s: la velocidad que quieres darle
   por la masa de ese hueso (la cabeza pesa unos 5 kg, la cadera unos 12).
 </p>
 
-<h3 id="lua">Desde Lua</h3>
-<pre><code class="language-lua">-- Huesos
-local cabeza = perro:getBonePosition("Head")         -- Vec3 en el mundo (nil si no hay)
-local giro = perro:getBoneRotation("Head")           -- Quat en el mundo
-for _, nombre in ipairs(perro:getBones()) do Debug.log(nombre) end
-perro:setBoneRotation("Tail1", Vec3(0, 40, 0))       -- grados (o un Quat), encima de la animacion
-perro:setBoneOffset("Body", Vec3(0, 0.05, 0))
-perro:setBoneScale("Head", 1.3)
-perro:resetBone("Tail1"); perro:resetBones()
-perro:showBones(true)
-
--- Enganchar
-espada:attachToBone(personaje, "RightHand", Vec3(0, 0.1, 0), Vec3(0, 90, 0))
-espada:detachFromBone()
-
--- IK (a una entidad, a un punto o nil para soltar)
-personaje:setIKTarget("left_hand", pomo)              -- left_hand, right_hand, left_foot, right_foot
-perro:setIKTarget("FrontFoot_L", Vec3(1, 0.3, 2), 3)  -- cualquier hueso: cadena de 3
-perro:setIKHint("FrontFoot_L", rodilla)
-perro:setIKWeight("FrontFoot_L", 0.5)                 -- tambien "look" y "feet"
-perro:setLookAt(pelota, 0.8)
-perro:setFootGrounding(true)
-perro:setupCreatureIK()                               -- configuracion automatica
-
--- Ragdoll
-perro.ragdoll = true                                  -- cae (false: se levanta mezclando)
-perro:addRagdollForce(Vec3(60, 20, 0), "Chest")       -- en un hueso, en un punto (Vec3) o en la raiz
-perro:setupRagdoll()                                  -- rellena la lista de huesos
-
--- Phys Bones y cualquier campo de cualquier componente
-perro:setupPhysBones()
-perro:setField("PhysBones", "chains[1].gravity", 0.5)   -- listas desde 1; [n+1] anade
-perro:setField("PhysBones", "enabled", false)
-local n = perro:getField("PhysBones", "chains#")         -- cuantos elementos tiene la lista
-for clave, valor in pairs(perro:getFields("Ragdoll")) do Debug.log(clave, valor) end</code></pre>
+<h3 id="cpp">Desde C++</h3>
 <p>
-  <code>getField</code>, <code>setField</code> y <code>getFields</code> valen para <strong>cualquier componente</strong>
+  Todo son métodos de <code>Entity</code> (<code>perro</code>, <code>espada</code>... son entidades, por ejemplo
+  <code>Scene::find("Perro")</code>). Los que leen algo devuelven un <code>Value</code>.
+</p>
+<pre><code class="language-cpp">// Huesos
+const Value cabeza = perro.getBonePosition("Head");     // Vec3 en el mundo (nil si no hay)
+const Quat giro = perro.getBoneRotation("Head").asQuat(); // en el mundo
+for (const Value&amp; nombre : perro.getBones().items()) Debug::log(nombre.asString());
+perro.setBoneRotation("Tail1", Vec3{0, 40, 0});          // grados (o un Quat), encima de la animacion
+perro.setBoneOffset("Body", Vec3{0, 0.05f, 0});
+perro.setBoneScale("Head", 1.3f);
+perro.resetBone("Tail1");
+perro.resetBones();
+perro.showBones(true);
+
+// Enganchar
+espada.attachToBone(personaje, "RightHand", Vec3{0, 0.1f, 0}, Vec3{0, 90, 0});
+espada.detachFromBone();
+
+// IK (a una entidad, a un punto o Value() para soltar)
+personaje.setIKTarget("left_hand", pomo);                 // left_hand, right_hand, left_foot, right_foot
+perro.setIKTarget("FrontFoot_L", Vec3{1, 0.3f, 2}, 3);    // cualquier hueso: cadena de 3
+perro.setIKHint("FrontFoot_L", rodilla);
+perro.setIKWeight("FrontFoot_L", 0.5f);                   // tambien "look" y "feet"
+perro.setLookAt(pelota, 0.8f);
+perro.setFootGrounding(true);
+perro.setupCreatureIK();                                  // configuracion automatica
+
+// Ragdoll
+perro.setRagdoll(true);                                   // cae (false: se levanta mezclando)
+perro.addRagdollForce(Vec3{60, 20, 0}, "Chest");          // en un hueso, en un punto (Vec3) o en la raiz
+perro.setupRagdoll();                                     // rellena la lista de huesos
+
+// Phys Bones y cualquier campo de cualquier componente
+perro.setupPhysBones();
+perro.setField("PhysBones", "chains[1].gravity", 0.5f);  // listas desde 1; [n+1] anade
+perro.setField("PhysBones", "enabled", false);
+const int n = perro.field("PhysBones", "chains#").asInt(); // cuantos elementos tiene la lista
+for (const auto&amp; [clave, valor] : perro.component("Ragdoll").fields()) Debug::log(clave + " = " + valor.asString());</code></pre>
+<p>
+  <code>field</code>, <code>setField</code> y <code>component</code> valen para <strong>cualquier componente</strong>
   (<code>"Light"</code>, <code>"Rigidbody"</code>, <code>"Camera"</code>...): las claves son las de la
   <a href="componentes.html">referencia de componentes</a>. <code>setField</code> añade el componente si no lo tiene y
-  avisa en la Consola si la clave no existe.
+  avisa en la Consola si la clave no existe. Ver <a href="cpp-entity.html">Entity</a>.
 </p>

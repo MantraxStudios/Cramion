@@ -1,6 +1,6 @@
 <p>
   Al crear un proyecto en el Hub se elige una <strong class="text-white">plantilla</strong>. Todas crean su escena, sus
-  materiales y sus scripts; el juego de cada una está en Lua, así que se puede leer y cambiar.
+  materiales y sus scripts; el juego de cada una está en scripts de C++, así que se puede leer y cambiar.
 </p>
 
 <h3 id="integradas">Plantillas integradas</h3>
@@ -16,7 +16,7 @@
     <tr><td><code>Criaturas</code></td><td>IK de animales, Phys Bones y ragdoll con un perro y un maniquí. Ver abajo.</td></tr>
     <tr><td><code>Online (multijugador)</code></td><td>Una arena por red: crear partida o unirse por IP, chat, marcador, monedas, balón con porterías y eventos. Ver abajo.</td></tr>
     <tr><td><code>Mundo abierto (rendimiento)</code></td><td>Isla de 8 × 8 km con océano y unos 2 millones de árboles para medir el rendimiento. Ver abajo.</td></tr>
-    <tr><td><code>IA con máquinas de estados</code></td><td>Enemigos con la máquina <code>Enemigo.crfsm</code> (patrullar, perseguir, atacar, huir y volver), cada estado con su código Lua. <code>F</code> para golpear.</td></tr>
+    <tr><td><code>IA con máquinas de estados</code></td><td>Enemigos con la máquina <code>Enemigo.crfsm</code> (patrullar, perseguir, atacar, huir y volver); el script de C++ <code>Enemigo.cpp</code> hace cada estado. <code>F</code> para golpear.</td></tr>
     <tr><td><code>Plataformas 2D</code></td><td>Pixel art: tilemap con Rule Tiles y Tilemap Collider 2D, jugador con Rigidbody 2D y Sprite Animator, 7 monedas con trigger 2D y cámara ortográfica que lo sigue. <code>A</code>/<code>D</code> o flechas y <code>Espacio</code>. Ver <a href="2d.html">2D</a>.</td></tr>
     <tr><td><code>Realidad virtual (VR)</code></td><td>Como la VR Template de Unity: el Jugador VR con física, objetos que se cogen y se lanzan con las manos (XR Grabbable), una linterna con punto de agarre y un panel de UI en el mundo que se usa con el rayo y el gatillo, con su script de C++ (<code>MenuVR</code>). Ver <a href="realidad-virtual.html#plantilla">Realidad virtual</a>.</td></tr>
     <tr><td><code>Coches</code></td><td>Un coche con Vehicle y 4 Wheel Collider en una pista con rampas y conos: motor con cambio automático, tracción trasera, cámara de persecución y velocímetro. <code>W</code>/<code>S</code>, <code>A</code>/<code>D</code>, <code>Espacio</code> freno de mano, <code>R</code> volver a la salida. Ver <a href="vehiculos.html">Vehículos</a>.</td></tr>
@@ -38,9 +38,9 @@
 <table>
   <thead><tr><th>Script</th><th>Contiene</th></tr></thead>
   <tbody>
-    <tr><td><code>Personaje.lua</code></td><td>El controlador: WASD relativo a la cámara, correr con energía, <strong>escalones</strong> y rampas sin saltar, pegado al suelo al bajar, salto que despega en el fotograma de la animación y dura lo que dure la física, <strong>apuntar</strong> (clic derecho: el cuerpo sigue a la cámara y se mueve de lado o de espaldas), <strong>giros de 90 y 180 grados en el sitio</strong>, IK de <strong>pies</strong>, <strong>mirada</strong> (a lo interesante o a donde apuntas) y <strong>mano</strong> (E en una palanca: la agarra y la baja).</td></tr>
-    <tr><td><code>CamaraOrbital.lua</code></td><td>Cámara con brazo de muelle que no atraviesa paredes, al hombro al apuntar y con el campo de visión según corras o apuntes. Clic captura el ratón y Esc lo suelta.</td></tr>
-    <tr><td><code>Palanca.lua</code>, <code>Cristal.lua</code>, <code>Interfaz.lua</code></td><td>Palancas que abren compuertas, 7 cristales que recoger, energía, avisos y la depuración (F1: estado y los valores X/Y del Animator).</td></tr>
+    <tr><td><code>Personaje.cpp</code>, <code>.h</code></td><td>El controlador: WASD relativo a la cámara, correr con energía, <strong>escalones</strong> y rampas sin saltar, pegado al suelo al bajar, salto que despega en el fotograma de la animación y dura lo que dure la física, <strong>apuntar</strong> (clic derecho: el cuerpo sigue a la cámara y se mueve de lado o de espaldas), <strong>giros de 90 y 180 grados en el sitio</strong>, IK de <strong>pies</strong>, <strong>mirada</strong> (a lo interesante o a donde apuntas) y <strong>mano</strong> (E en una palanca: la agarra y la baja).</td></tr>
+    <tr><td><code>CamaraOrbital.cpp</code>, <code>.h</code></td><td>Cámara con brazo de muelle que no atraviesa paredes, al hombro al apuntar y con el campo de visión según corras o apuntes. Clic captura el ratón y Esc lo suelta.</td></tr>
+    <tr><td><code>Palanca.cpp</code>, <code>Cristal.cpp</code>, <code>Interfaz.cpp</code></td><td>Palancas que abren compuertas, 7 cristales que recoger, energía, avisos y la depuración (F1: estado y los valores X/Y del Animator).</td></tr>
   </tbody>
 </table>
 <p>
@@ -51,15 +51,15 @@
 <h3 id="mmo">MMO RPG</h3>
 <p>
   Un pueblo (Villa Alba) con misiones y tienda, el Bosque Gris con lobos, un campamento goblin con chamanes y la guarida
-  del <strong>Rey Goblin</strong>. <strong>Todos los sistemas son scripts de Lua</strong> en <code>Assets/Scripts</code>:
+  del <strong>Rey Goblin</strong>. <strong>Todos los sistemas son scripts de C++</strong> en <code>Assets/Scripts</code>:
 </p>
 <table>
   <thead><tr><th>Script</th><th>Contiene</th></tr></thead>
   <tbody>
-    <tr><td><code>Heroe.lua</code></td><td>Movimiento, estadísticas y 10 niveles, objetivo, habilidades, inventario, equipo, tienda, 5 misiones con diálogos, botín, chat, minimapa, muerte y guardado. Las tablas <code>ITEMS</code>, <code>MISIONES</code> y <code>HABILIDADES</code> del principio son los datos del juego: añade objetos, misiones o habilidades ahí.</td></tr>
-    <tr><td><code>Enemigo.lua</code></td><td>La IA (patrulla, aggro, leash, ataque a distancia del chamán, pisotón en área del jefe), muerte, botín y reaparición. Tabla <code>TIPOS</code> con sus estadísticas.</td></tr>
-    <tr><td><code>Bot.lua</code></td><td>Otros "jugadores" simulados: pasean, cazan, mueren, reaparecen y hablan por el chat.</td></tr>
-    <tr><td><code>NPC.lua</code></td><td>Personajes del pueblo: miran al jugador y muestran su marca (amarilla = misión nueva, azul = para entregar).</td></tr>
+    <tr><td><code>Heroe.cpp</code>, <code>.h</code></td><td>Movimiento, estadísticas y 10 niveles, objetivo, habilidades, inventario, equipo, tienda, 5 misiones con diálogos, botín, chat, minimapa, muerte y guardado. Las tablas <code>kItems</code>, <code>kMisiones</code> y <code>kHabilidades</code> del principio son los datos del juego: añade objetos, misiones o habilidades ahí.</td></tr>
+    <tr><td><code>Enemigo.cpp</code>, <code>.h</code></td><td>La IA (patrulla, aggro, leash, ataque a distancia del chamán, pisotón en área del jefe), muerte, botín y reaparición. Tabla <code>kTipos</code> con sus estadísticas.</td></tr>
+    <tr><td><code>Bot.cpp</code>, <code>.h</code></td><td>Otros "jugadores" simulados: pasean, cazan, mueren, reaparecen y hablan por el chat.</td></tr>
+    <tr><td><code>NPC.cpp</code>, <code>.h</code></td><td>Personajes del pueblo: miran al jugador y muestran su marca (amarilla = misión nueva, azul = para entregar).</td></tr>
   </tbody>
 </table>
 <table>
@@ -94,17 +94,17 @@
     <tr><td><code>I</code> / <code>P</code></td><td>Encender y apagar el IK y los Phys Bones para comparar.</td></tr>
   </tbody>
 </table>
-<p>Scripts: <code>Perro.lua</code>, <code>Maniqui.lua</code>, <code>Pelota.lua</code> y <code>Controles.lua</code>.</p>
+<p>Scripts: <code>Perro.cpp</code>, <code>Maniqui.cpp</code>, <code>Pelota.cpp</code> y <code>Controles.cpp</code>.</p>
 
 <h3 id="online">Online (multijugador)</h3>
 <p>
-  Un juego multijugador completo, <strong>todo en Lua</strong> con la API <a href="red.html">Network</a>. Al darle a Play sale
+  Un juego multijugador completo, <strong>todo en C++</strong> con la API <a href="red.html">Network</a>. Al darle a Play sale
   un menú: escribe tu nombre y pulsa <em>Crear partida</em> (eres el servidor y también juegas) o escribe la IP de quien la
   creó y pulsa <em>Unirse</em>. Para probarlo en un solo PC: crea la partida en el editor y únete a <code>127.0.0.1</code>
   desde el juego exportado o desde otro editor.
 </p>
 <ul>
-  <li><strong>Jugadores sincronizados</strong>: el servidor crea el personaje de cada uno con <code>Network.spawn</code> y un color propio; cada uno mueve el suyo (<code>isMine</code>) y ve a los demás moverse suavizados. Quien entra tarde ve todo como está.</li>
+  <li><strong>Jugadores sincronizados</strong>: el servidor crea el personaje de cada uno con <code>Network::spawn</code> y un color propio; cada uno mueve el suyo (<code>entity().isMine()</code>) y ve a los demás moverse suavizados. Quien entra tarde ve todo como está.</li>
   <li><strong>Chat</strong> (escribe en el campo del chat y pulsa Enter) con el nombre de cada jugador y avisos de quién entra y sale.</li>
   <li><strong>Marcador</strong> con puntos y ping; gana la ronda quien llega antes a los puntos para ganar y empieza otra.</li>
   <li><strong>Objetos del servidor</strong>: monedas, un balón y cajas con física que simula el servidor. <code>F</code> patea lo que tengas cerca; meter el balón en una portería da puntos.</li>
@@ -114,9 +114,9 @@
 <table>
   <thead><tr><th>Script</th><th>Contiene</th></tr></thead>
   <tbody>
-    <tr><td><code>Red.lua</code></td><td>El juego: menú, partida, jugadores, chat, marcador, monedas, balón, goles y eventos. Sus propiedades (puerto, jugadores máximos, puntos para ganar, monedas, segundos entre eventos) se cambian en el Inspector.</td></tr>
-    <tr><td><code>JugadorRed.lua</code></td><td>El personaje: lo mueve su dueño (<code>WASD</code>, <code>Shift</code>, <code>Espacio</code>) y la cámara le sigue.</td></tr>
-    <tr><td><code>MonedaRed.lua</code></td><td>Las monedas: giran en cada pantalla y el servidor decide quién las coge.</td></tr>
+    <tr><td><code>Red.cpp</code></td><td>El juego: menú, partida, jugadores, chat, marcador, monedas, balón, goles y eventos. Sus propiedades (puerto, jugadores máximos, puntos para ganar, monedas, segundos entre eventos) se cambian en el Inspector.</td></tr>
+    <tr><td><code>JugadorRed.cpp</code></td><td>El personaje: lo mueve su dueño (<code>WASD</code>, <code>Shift</code>, <code>Espacio</code>) y la cámara le sigue.</td></tr>
+    <tr><td><code>MonedaRed.cpp</code></td><td>Las monedas: giran en cada pantalla y el servidor decide quién las coge.</td></tr>
   </tbody>
 </table>
 
@@ -140,7 +140,7 @@
     <tr><td><code>H</code></td><td>Ocultar o mostrar el panel.</td></tr>
   </tbody>
 </table>
-<p>Scripts: <code>Jugador.lua</code>, <code>CamaraTercera.lua</code> y <code>Rendimiento.lua</code>. La niebla de la escena es la de mundo abierto (ver <a href="render.html#mundo-abierto">Render</a>).</p>
+<p>Scripts: <code>Jugador.cpp</code>, <code>CamaraTercera.cpp</code> y <code>Rendimiento.cpp</code>. La niebla de la escena es la de mundo abierto (ver <a href="render.html#mundo-abierto">Render</a>).</p>
 
 <h3 id="usuario">Tus plantillas</h3>
 <p>

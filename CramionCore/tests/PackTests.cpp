@@ -39,14 +39,14 @@ int main() {
     std::ofstream(src / "Assets" / "escena.crscene", std::ios::binary) << text;
     std::ofstream(src / "Assets" / "Modelos" / "ruido.bin", std::ios::binary) << noise;
     std::ofstream(src / "Assets" / "vacio.txt", std::ios::binary);
-    const std::filesystem::path accented = src / "Assets" / std::filesystem::path(u8"canción.lua");
+    const std::filesystem::path accented = src / "Assets" / std::filesystem::path(u8"canción.txt");
     std::ofstream(accented, std::ios::binary) << "print('hola')";
 
     std::vector<project::PackInput> inputs = {
         {src / "Assets" / "escena.crscene", "Assets/escena.crscene"},
         {src / "Assets" / "Modelos" / "ruido.bin", "Assets/Modelos/ruido.bin"},
         {src / "Assets" / "vacio.txt", "Assets/vacio.txt"},
-        {accented, reinterpret_cast<const char*>(u8"Assets/canción.lua")},
+        {accented, reinterpret_cast<const char*>(u8"Assets/canción.txt")},
     };
     const std::filesystem::path pack = root / "Juego.crpack";
     std::uint64_t last_progress = 0;
@@ -72,7 +72,7 @@ int main() {
     check(readAll(out / "Assets" / "Modelos" / "ruido.bin") == noise, "binario identico (varios bloques)");
     check(std::filesystem::exists(out / "Assets" / "vacio.txt") && std::filesystem::file_size(out / "Assets" / "vacio.txt") == 0,
           "archivo vacio");
-    check(readAll(out / "Assets" / std::filesystem::path(u8"canción.lua")) == "print('hola')", "ruta con acentos");
+    check(readAll(out / "Assets" / std::filesystem::path(u8"canción.txt")) == "print('hola')", "ruta con acentos");
 
     const std::string id = project::packId(pack);
     check(!id.empty() && id == project::packId(pack), "identificador estable");
@@ -107,8 +107,8 @@ int main() {
             std::ofstream(f, std::ios::binary) << text;
         };
         write(game / "Escenas" / "Nivel1.crscene",
-              "{\"entities\":[{\"Script\":{\"file\":\"Scripts/Jugador.lua\"}},{\"AudioSource\":{\"clip\":\"Sonidos/viento.wav\"}}]}");
-        write(game / "Scripts" / "Jugador.lua", "-- jugador\nAudio.play('Sonidos/disparo.wav')\nScene.load(\"Nivel2\")\n");
+              "{\"entities\":[{\"CppScript\":{\"script\":\"Scripts/Jugador.cpp\"}},{\"AudioSource\":{\"clip\":\"Sonidos/viento.wav\"}}]}");
+        write(game / "Scripts" / "Jugador.cpp", "// jugador\nAudio::playOneShot(\"Sonidos/disparo.wav\");\nScene::load(\"Nivel2\");\n");
         write(game / "Sonidos" / "viento.wav", "RIFFviento");
         write(game / "Sonidos" / "disparo.wav", "RIFFdisparo");
         write(game / "Escenas" / "Nivel2.crscene", "{\"entities\":[]}");
@@ -124,7 +124,7 @@ int main() {
             }
             return false;
         };
-        check(deps.files.size() == 5 && has("Nivel1.crscene") && has("Jugador.lua") && has("viento.wav") &&
+        check(deps.files.size() == 5 && has("Nivel1.crscene") && has("Jugador.cpp") && has("viento.wav") &&
                   has("disparo.wav") && has("Nivel2.crscene") && !has("grande.png"),
               "DataPack: dependencias de la escena (script, sonidos, escena por nombre) y nada mas");
 
@@ -150,7 +150,7 @@ int main() {
         std::ifstream kept(other / "Sonidos" / "viento.wav", std::ios::binary);
         std::string kept_text((std::istreambuf_iterator<char>(kept)), std::istreambuf_iterator<char>());
         kept.close();
-        check(kept_text == "DEL JUEGO" && std::filesystem::exists(other / "Scripts" / "Jugador.lua"),
+        check(kept_text == "DEL JUEGO" && std::filesystem::exists(other / "Scripts" / "Jugador.cpp"),
               "DataPack: el archivo del juego queda intacto");
         project::unmountDataPack(mount, other, journal);
         check(!std::filesystem::exists(other / "Scripts") && std::filesystem::exists(other / "Sonidos" / "viento.wav"),
@@ -163,7 +163,7 @@ int main() {
               "DataPack: el diario limpia montajes olvidados");
 
         // Objetos: un prefab (con su script) en vez de una escena.
-        write(game / "Prefabs" / "Coche.crprefab", "{\"entities\":[{\"Script\":{\"file\":\"Scripts/Jugador.lua\"}}]}");
+        write(game / "Prefabs" / "Coche.crprefab", "{\"entities\":[{\"CppScript\":{\"script\":\"Scripts/Jugador.cpp\"}}]}");
         database.refresh();
         const project::DataPackCollection object_deps =
             project::collectDependencies({game / "Prefabs" / "Coche.crprefab"}, game, database);

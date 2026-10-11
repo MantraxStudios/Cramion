@@ -46,7 +46,7 @@ namespace cramion::fluid {
 enum class FluidType : int { Water = 0, Oil, Honey, Lava, Mud, Blood, Acid, Custom, Count };
 enum class EmitterShape : int { Nozzle = 0, Box = 1, Sphere = 2 };
 
-// Nombres visibles (Agua, Aceite, Miel...) y claves para Lua/MCP (water, oil...).
+// Nombres visibles (Agua, Aceite, Miel...) y claves para scripts/MCP (water, oil...).
 const std::array<const char*, static_cast<std::size_t>(FluidType::Count)>& fluidTypeNames();
 const std::array<const char*, static_cast<std::size_t>(FluidType::Count)>& fluidTypeKeys();
 // Por nombre o clave (sin acentos ni mayusculas); -1 si no existe.
@@ -158,7 +158,7 @@ public:
     void clear();
     void shiftOrigin(const core::Vec3& offset);
 
-    // --- API (Lua, MCP) ---
+    // --- API (scripts, MCP) ---
     // `count` particulas en una esfera alrededor de `position` (se reparten
     // en una red); `radius` <= 0: el justo para que quepan.
     void spawn(const core::Vec3& position, int count, FluidType type, const core::Vec3& velocity = {},
@@ -234,13 +234,13 @@ private:
     mutable bool grid_dirty_ = true;
     std::array<std::uint32_t, static_cast<std::size_t>(FluidType::Count)> type_counts_{};
     float custom_density_ = 1000.0f;
-    // Sin FluidWorld: el dominio se centra en el primer emisor o en lo ultimo creado desde Lua.
+    // Sin FluidWorld: el dominio se centra en el primer emisor o en lo ultimo creado desde un script.
     core::Vec3 fallback_center_{0.0f, 2.0f, 0.0f};
     bool has_fallback_ = false;
     bool was_active_ = false;
 };
 
-// El sistema activo (el del editor o el juego): lo usan Lua y las consultas.
+// El sistema activo (el del editor o el juego): lo usan los scripts y las consultas.
 FluidSystem* activeSystem();
 void setActiveSystem(FluidSystem* system);
 

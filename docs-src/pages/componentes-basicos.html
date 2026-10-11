@@ -1,6 +1,6 @@
 <p>Lo que tiene toda entidad (Transform) y lo que se dibuja: mallas, luces, camaras, decals y post-procesado. Referencia completa generada desde el motor.</p>
 <h3 id="Transform">Transform <code>Transform</code></h3>
-<p>Posicion, giro y escala <strong>locales</strong> (respecto al padre en la Jerarquia). Lo tienen todas las entidades. Desde Lua: <code>entity.position</code> (mundo), <code>localPosition</code>, <code>rotation</code> (grados), <code>quaternion</code> y <code>scale</code>.</p>
+<p>Posicion, giro y escala <strong>locales</strong> (respecto al padre en la Jerarquia). Lo tienen todas las entidades. Desde un script: <code>entity().position()</code> (mundo), <code>localPosition()</code>, <code>rotation()</code> (grados), <code>quaternion()</code> y <code>scale()</code>.</p>
 <table>
   <thead><tr><th>Propiedad</th><th>Tipo</th><th>Por defecto</th><th>Valores</th><th>Descripcion</th></tr></thead>
   <tbody>
@@ -10,7 +10,7 @@
   </tbody>
 </table>
 <h3 id="MeshRenderer">Mesh Renderer <code>MeshRenderer</code></h3>
-<p>Dibuja una pieza de un modelo importado (<code>.crdata</code>) o una primitiva integrada (cubo, esfera, plano, cilindro, capsula) con sus materiales (<code>.crmat</code>), uno por submalla. Tambien puede dibujar una malla creada por codigo (<code>entity.mesh</code>, ver <a href="mallas.html">Mallas por codigo</a>). <em>Static</em> (casilla del Inspector) lo prepara para el static batching y las sondas.</p>
+<p>Dibuja una pieza de un modelo importado (<code>.crdata</code>) o una primitiva integrada (cubo, esfera, plano, cilindro, capsula) con sus materiales (<code>.crmat</code>), uno por submalla. Tambien puede dibujar una malla creada por codigo (<code>entity().setMesh(malla)</code>, ver <a href="mallas.html">Mallas por codigo</a>). <em>Static</em> (casilla del Inspector) lo prepara para el static batching y las sondas.</p>
 <table>
   <thead><tr><th>Propiedad</th><th>Tipo</th><th>Por defecto</th><th>Valores</th><th>Descripcion</th></tr></thead>
   <tbody>

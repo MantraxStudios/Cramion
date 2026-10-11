@@ -1,7 +1,7 @@
 <p>
   Integración con <strong>Steam</strong> (Steamworks): logros, estadísticas, marcadores, Rich Presence, overlay, Steam Cloud,
   Workshop y salas (lobbies). El motor carga <code>steam_api64.dll</code> al arrancar si está; <strong>sin Steam el juego
-  funciona igual</strong> (<code>Steam.available()</code> = false y las llamadas no hacen nada).
+  funciona igual</strong> (<code>Steam::available()</code> = false y las llamadas no hacen nada).
 </p>
 
 <h3 id="configurar">Configurar</h3>
@@ -22,12 +22,14 @@
 Steam::achievementProgress("COLECCIONISTA", 5, 10);
 Steam::setStatInt("partidas", 3);
 Steam::storeStats();                       // envia todo a Steam</code></pre>
-<pre><code class="language-lua">Steam.uploadScore("Puntos", 1200, function(ok, puesto)
-    if ok then Debug.log("Puesto " .. puesto) end
-end)
-Steam.downloadScores("Puntos", "global", 1, 10, function(ok, filas)
-    for _, f in ipairs(filas) do Debug.log(f.rank .. ". " .. f.name .. " " .. f.score) end
-end)</code></pre>
+<pre><code class="language-cpp">Steam::uploadScore("Puntos", 1200, [](const Values&amp; a) {          // a[0] = ok, a[1] = puesto
+    if (a[0].asBool()) Debug::log("Puesto " + std::to_string(a[1].asInt()));
+});
+Steam::downloadScores("Puntos", "global", 1, 10, [](const Values&amp; a) {  // a[0] = ok, a[1] = filas
+    for (const Value&amp; f : a[1].items()) {
+        Debug::log(std::to_string(f["rank"].asInt()) + ". " + f["name"].asString() + " " + std::to_string(f["score"].asInt()));
+    }
+});</code></pre>
 
 <h3 id="mas">Más</h3>
 <table>

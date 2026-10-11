@@ -31,8 +31,8 @@
 </ul>
 
 <h3 id="scripts">Desde los scripts</h3>
-<pre><code class="language-lua">-- Modo Script: la velocidad que quiere el jugador
-local dir = Vec3(Input.getAxis("Horizontal"), 0, Input.getAxis("Vertical"))
-self.modelo:setMotionVelocity(dir * (Input.getKey("LeftShift") and 5.5 or 2))
-self.modelo:setMotionTags(Input.getKey("C") and "agachado" or "")
-Debug.log(self.modelo.motionClip)</code></pre>
+<pre><code class="language-cpp">// Modo Script: la velocidad que quiere el jugador (modelo es una Property&lt;Entity&gt;)
+Vec3 dir{Input::axis("Horizontal"), 0.0f, -Input::axis("Vertical")};
+modelo-&gt;setMotionVelocity(dir * (Input::key("LeftShift") ? 5.5f : 2.0f));
+modelo-&gt;setMotionTags(Input::key("C") ? "agachado" : "");
+Debug::log(modelo-&gt;motionClip().asString());</code></pre>

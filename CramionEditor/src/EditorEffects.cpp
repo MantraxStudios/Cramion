@@ -400,7 +400,7 @@ void EditorApp::drawVfxEditor() {
     ImGui::SetItemTooltip("Al empezar ya hay partículas (lluvia, nieve, luciérnagas)");
 
     ImGui::SeparatorText("Parámetros expuestos");
-    ImGui::TextDisabled("Salen en el Inspector del objeto y\nlos cambian los scripts:\nentity:setEffectFloat(\"Rate\", 200)");
+    ImGui::TextDisabled("Salen en el Inspector del objeto y\nlos cambian los scripts:\nentity().setEffectFloat(\"Rate\", 200)");
     int remove_param = -1;
     for (std::size_t i = 0; i < g.params.size(); ++i) {
         vfx::ExposedParam& p = g.params[i];
@@ -613,7 +613,7 @@ void EditorApp::drawReplayWindow() {
     if (!playing()) {
         ImGui::TextWrapped("Da Play para grabar. Se graban los objetos que se mueven (o los de una etiqueta), sus "
                            "animaciones y los sonidos; luego se reproducen con la línea de tiempo, a cámara lenta o "
-                           "con cámara libre. En Lua: Replay.start(), Replay.play(-5), Replay.save(\"gol\").");
+                           "con cámara libre. Desde un script: Replay::start(), Replay::play(-5), Replay::save(\"gol\").");
     }
     ImGui::BeginDisabled(!playing());
     if (!r.recording()) {

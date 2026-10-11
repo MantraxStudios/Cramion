@@ -1054,7 +1054,9 @@ void vertex(inout Vertex v) {
             std::error_code error;
             for (const char* folder : {"Personajes", "Niveles", "Texturas"}) std::filesystem::create_directories(assets / folder, error);
             createMaterialAsset(assets);
-            std::ofstream(assets / "Scripts" / "Jugador.lua") << scripting::scriptTemplate("Jugador");
+            std::filesystem::create_directories(assets / "Scripts", error);
+            std::ofstream(assets / "Scripts" / "Jugador.h") << scripting::cppScriptHeaderTemplate("Jugador");
+            std::ofstream(assets / "Scripts" / "Jugador.cpp") << scripting::cppScriptTemplate("Jugador");
             std::filesystem::create_directories(assets / "Shaders", error);
             std::ofstream(assets / "Shaders" / "Brillo.crshader") << assets::surfaceShaderTemplate("Brillo");
             refreshDatabase();
@@ -1140,10 +1142,10 @@ void vertex(inout Vertex v) {
             check(instances.size() == 2 && updated == 2, "las dos instancias de la escena tienen la esfera nueva", f);
             captureWindow(window_.handle(), std::filesystem::temp_directory_path() / "cramion_selftest_prefab_escena.png");
             // Un script: su propia pestana.
-            const std::filesystem::path script = project_.assetsFolder() / "Scripts" / "Pestana.lua";
+            const std::filesystem::path script = project_.assetsFolder() / "Scripts" / "Pestana.cpp";
             std::error_code error;
             std::filesystem::create_directories(script.parent_path(), error);
-            std::ofstream(script) << scripting::scriptTemplate("Pestana");
+            std::ofstream(script) << scripting::cppScriptTemplate("Pestana");
             openScript(script);
             check(activeWorkspaceKind() == WorkspaceKind::Script, "un script abre su pestana", f);
             self_test_wait_ = 12;
@@ -1152,7 +1154,7 @@ void vertex(inout Vertex v) {
         case 62: {
             captureWindow(window_.handle(), std::filesystem::temp_directory_path() / "cramion_selftest_script_pestana.png");
             const auto has_script = [&](const auto& self, const FileTreeNode& n) -> bool {
-                if (n.name == "Pestana.lua") return true;
+                if (n.name == "Pestana.cpp") return true;
                 return std::any_of(n.children.begin(), n.children.end(), [&](const FileTreeNode& c) { return self(self, c); });
             };
             check(has_script(has_script, file_tree_), "el arbol de Archivos muestra las carpetas y el script", f);
@@ -1197,34 +1199,41 @@ void vertex(inout Vertex v) {
             break;
         }
         case 65: {
-            std::string out;
-            const bool ok = scripts_.run(R"(
-                local H = Scene.find('Jugador'):getScript()
-                local w = Scene.find('Lobo 2')
-                H.entity.position = w.position + Vec3(3, 0.6, 2)
-                H.objetivo = w
-                H:aceptarMision(1); H:aceptarMision(2)
-                H:dar('piel_lobo', 2); H:dar('espada_hierro', 1)
-                H:Chat('[General] Kraven: ¿alguien para el Rey Goblin?')
-                H:usarHabilidad(1)
-            )", &out);
-            check(ok && scripts_.errors().empty(), "el MMO corre en el editor sin errores", f);
+            // El heroe junto a un lobo y la primera habilidad (el boton de la barra).
+            const ecs::Entity wolf = world_.findByName("Lobo 2");
+            const ecs::Entity hero = world_.findByName("Jugador");
+            const ecs::Entity skill = world_.findByName("UI_Hab 1");
+            if (wolf.valid() && hero.valid()) {
+                const Vec3 p = wolf.worldPosition() + Vec3{3.0f, 0.6f, 2.0f};
+                char code[160];
+                std::snprintf(code, sizeof(code), "Scene.find('Jugador').position = Vec3(%.2f, %.2f, %.2f)", static_cast<double>(p.x),
+                              static_cast<double>(p.y), static_cast<double>(p.z));
+                std::string out;
+                scripts_.run(code, &out);
+                if (skill.valid()) cpp_scripts_.sendMessage(hero, "OnHabilidad", cpp_scripts_.entityJson(skill));
+            }
+            check(hero.valid() && wolf.valid() && cpp_scripts_.errors().empty() && scripts_.errors().empty(),
+                  "el MMO corre en el editor sin errores", f);
             self_test_wait_ = 90;
             break;
         }
         case 66: {
             captureWindow(window_.handle(), std::filesystem::temp_directory_path() / "cramion_selftest_mmo_combate.png");
-            std::string out;
-            scripts_.run(R"(
-                local H = Scene.find('Jugador'):getScript()
-                H:abrirTienda(Scene.find('Mercader Tomas'))
-            )", &out);
+            // Junto al mercader (la tienda se abre con E).
+            if (const ecs::Entity merchant = world_.findByName("Mercader Tomas"); merchant.valid()) {
+                const Vec3 p = merchant.worldPosition() + Vec3{0.0f, 0.2f, 2.0f};
+                char code[160];
+                std::snprintf(code, sizeof(code), "Scene.find('Jugador').position = Vec3(%.2f, %.2f, %.2f)", static_cast<double>(p.x),
+                              static_cast<double>(p.y), static_cast<double>(p.z));
+                std::string out;
+                scripts_.run(code, &out);
+            }
             self_test_wait_ = 20;
             break;
         }
         case 67: {
             captureWindow(window_.handle(), std::filesystem::temp_directory_path() / "cramion_selftest_mmo_tienda.png");
-            check(scripts_.errors().empty(), "sin errores de Lua con la tienda y el inventario", f);
+            check(scripts_.errors().empty() && cpp_scripts_.errors().empty(), "sin errores en los scripts junto a la tienda", f);
             exitPlay();
             self_test_wait_ = 5;
             break;

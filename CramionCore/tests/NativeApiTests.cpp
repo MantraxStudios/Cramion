@@ -1,4 +1,4 @@
-// Pruebas de la API de scripting en C++ (NativeApi.h), sin Lua (consola).
+// Pruebas de la API de scripting en C++ (NativeApi.h) y de la consola.
 // Devuelve 0 si todo va.
 
 #include "CramionCore/scripting/NativeApi.h"
@@ -49,7 +49,7 @@ void testValues() {
     check(a.toJson(v["e"]) == json{{"$e", 5}}, "la entidad vuelve con el mismo id");
     check(a.toJson(v["v"]) == json{{"$v", {1.0f, 2.0f, 3.0f}}}, "el Vec3 vuelve igual");
     check(api::Value(3.0).asString() == "3" && api::Value(0.5).asString() == "0.5", "numeros como texto");
-    check(!api::Value().truthy() && !api::Value(false).truthy() && api::Value(0).truthy(), "verdad como en Lua");
+    check(!api::Value().truthy() && !api::Value(false).truthy() && api::Value(0).truthy(), "solo nil y false son falsos");
 }
 
 void testRegistry() {

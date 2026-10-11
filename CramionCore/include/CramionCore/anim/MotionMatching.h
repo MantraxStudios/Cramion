@@ -205,7 +205,7 @@ float springPredictYaw(float yaw, float goal, float halflife, float time);
 
 enum class MotionInputMode : int {
     ObjectMovement = 0,  // sigue como se mueve el objeto (script, Character Controller, NavAgent)
-    Script = 1,          // lo pide el juego: entity:setMotionVelocity / setMotionFacing
+    Script = 1,          // lo pide el juego: entity().setMotionVelocity / setMotionFacing
 };
 
 // Estado en el juego (no se guarda en la escena).
@@ -214,7 +214,7 @@ struct MotionMatchingRuntime {
     // donde se mueve).
     core::Vec3 desired_velocity{};
     core::Vec3 desired_facing{};
-    std::string extra_tags;  // entity:setMotionTags (se suman a las del componente)
+    std::string extra_tags;  // entity().setMotionTags (se suman a las del componente)
     // Repeticiones (replay/Replay.h): entry y time los pone la repeticion; no
     // se busca ni se avanza.
     bool replay_control = false;

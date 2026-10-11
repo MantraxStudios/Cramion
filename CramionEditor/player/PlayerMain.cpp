@@ -7,7 +7,7 @@
 //                      game.ini (escena inicial) y banner.png
 //
 // Al abrir muestra el banner del motor (la unica intro: desde el primer
-// momento hasta que la escena inicial esta cargada) y despues juega: render, fisica (Jolt), scripts Lua, audio, cinematicas,
+// momento hasta que la escena inicial esta cargada) y despues juega: render, fisica (Jolt), scripts de C++ y visuales, audio, cinematicas,
 // particulas e interfaz (Canvas).
 //
 // Android (libmain.so en un APK, NativeActivity): el mismo juego. El APK
@@ -31,6 +31,7 @@
 
 #include <CramionCore/cvar/CVar.h>
 #include <CramionCore/scripting/CppScripts.h>
+#include <CramionCore/scripting/ModEntry.h>
 #include <CramionCore/CramionCore.h>
 #include <CramionCore/ecs/FloatingOrigin.h>
 #include <CramionCore/project/DataPack.h>
@@ -61,6 +62,7 @@
 
 #include <cstdio>
 #include <cstring>
+#include <dlfcn.h>
 #include <unistd.h>
 #endif
 
@@ -224,8 +226,8 @@ int runPlayer() {
         int window_mode = window_setting.empty() ? 0 : std::clamp(std::atoi(window_setting.c_str()), 0, 2);
         int window_width = std::clamp(std::atoi(readIniValue(ini, "width").c_str()), 0, 16384);
         int window_height = std::clamp(std::atoi(readIniValue(ini, "height").c_str()), 0, 16384);
-        // Lo que el jugador eligio y guardo desde el juego (Graphics.save()
-        // en Lua) manda sobre la configuracion de compilacion.
+        // Lo que el jugador eligio y guardo desde el juego (Graphics::save()
+        // desde un script) manda sobre la configuracion de compilacion.
         const std::filesystem::path player_graphics =
             editor::localDataFolder("Saves") / std::filesystem::path(exe_stem).concat(".graphics.ini");
         {
@@ -556,7 +558,7 @@ int runPlayer() {
                 case dm::EventType::TouchBegan:
                 case dm::EventType::TouchMoved:
                 case dm::EventType::TouchEnded:
-                    input.onEvent(e);  // Input.getTouch en Lua
+                    input.onEvent(e);  // Input::getTouch en los scripts
                     synthesized.clear();
                     touch.onEvent(e, touch_time, synthesized);
                     for (dm::Event& s : synthesized) feed(s);
@@ -719,6 +721,23 @@ int runPlayer() {
             std::error_code dll_error;
             if (std::filesystem::exists(game_dll, dll_error)) cpp_scripts.usePrebuilt(game_dll);
         }
+#else
+        // Android: los scripts (libgame_scripts.so) y su proceso aislado
+        // (libcramion_scripthost.so) van en nativeLibraryDir, junto a esta
+        // libmain.so (el APK los extrae al instalar).
+        {
+            static const int marker = 0;
+            Dl_info self{};
+            if (dladdr(&marker, &self) != 0 && self.dli_fname != nullptr) {
+                const std::filesystem::path libs = std::filesystem::path(self.dli_fname).parent_path();
+                std::error_code dll_error;
+                if (std::filesystem::exists(libs / "libgame_scripts.so", dll_error) &&
+                    std::filesystem::exists(libs / "libcramion_scripthost.so", dll_error)) {
+                    cpp_scripts.setHostExecutable(libs / "libcramion_scripthost.so");
+                    cpp_scripts.usePrebuilt(libs / "libgame_scripts.so");
+                }
+            }
+        }
 #endif
         // Navegacion: ajustes del proyecto y la misma geometria que la fisica.
         navigation::NavigationSettings nav_settings;
@@ -793,13 +812,13 @@ int runPlayer() {
             for (const std::string& e : mod_errors) std::cerr << "[Mods] " << e << "\n";
             project::setActiveMods(&mods);
         }
-        // Opciones de accesibilidad del jugador (Lua: Accessibility.set / save).
+        // Opciones de accesibilidad del jugador (Accessibility::set / save desde los scripts).
         gameplay::setAccessibilityFile(editor::localDataFolder("Saves") / std::filesystem::path(exe_stem) / "accessibility.json");
         gameplay::loadAccessibility();
         voxels.setAssetsRoot(project->assetsFolder());
         voxels.setSaveRoot(editor::localDataFolder("Saves") / std::filesystem::path(exe_stem) / "Worlds");
         scripts.setVoxels(&voxels);
-        // Lua: huesos, IK y ragdoll leen la pose de cada frame del RenderSync.
+        // Los scripts: huesos, IK y ragdoll leen la pose de cada frame del RenderSync.
         scripts.setSkeletonHost(scripting::ScriptSystem::SkeletonHost{
         [&sync](ecs::Entity e, const std::string& bone, core::Mat4& m) {
             return e.world() != nullptr && sync.boneWorld(*e.world(), e, bone, m);
@@ -813,7 +832,7 @@ int runPlayer() {
         [&sync](ecs::Entity e, float* scale) -> const asset::ModelData* {
             return e.world() != nullptr ? sync.skeletonData(*e.world(), e, scale) : nullptr;
         }});
-        // Graphics (Lua): menu de opciones del juego. Graphics.save() lo
+        // Graphics (scripts): menu de opciones del juego. Graphics::save() lo
         // guarda para el jugador (se lee al volver a abrir el juego).
         editor::RendererGraphicsHost graphics_host(renderer, window.handle(), nullptr);
         graphics_host.setWindowState(static_cast<editor::WindowMode>(window_mode), window_width, window_height);
@@ -832,7 +851,7 @@ int runPlayer() {
         voxels.setPhysics(&physics);
         cinema::CinematicSystem cinematics;
         physics::ParticleWorld particles;
-        // Liquidos (fluid::FluidSystem): Lua los usa con Fluid.*.
+        // Liquidos (fluid::FluidSystem): los scripts los usan con Fluid::*.
         fluid::FluidSystem fluids;
         fluid::setActiveSystem(&fluids);
         fluids.setTerrainStore(&terrains);
@@ -1080,15 +1099,11 @@ int runPlayer() {
                     audio.start(world);
                     scripts.start(world);
                     if (!cpp_scripts.dll().empty()) cpp_scripts.start(world);
-                    // Los scripts de entrada de los mods, tras los del juego.
+                    // La entrada de cada mod (Visual Script o prefab), tras los scripts del juego.
                     for (const project::ModMount& m : mods.mounted()) {
-                        if (m.entry_asset.empty()) continue;
-                        std::ifstream mod_file(project->assetsFolder() / std::filesystem::path(std::u8string(m.entry_asset.begin(), m.entry_asset.end())),
-                                               std::ios::binary);
-                        std::stringstream mod_code;
-                        mod_code << mod_file.rdbuf();
-                        std::string output;
-                        if (!scripts.run(mod_code.str(), &output, &world)) std::cerr << "[Mods] " << m.id << ": " << output << "\n";
+                        std::string error;
+                        if (!m.entry_asset.empty() && !project::startModEntry(world, project->assetsFolder(), m, &error))
+                            std::cerr << "[Mods] " << m.id << ": " << error << "\n";
                     }
                     load.stage = Stage::Done;
                     std::cout << "[Juego] Escena lista\n";
@@ -1239,7 +1254,7 @@ int runPlayer() {
             const float dt = std::min(clock_dt, 0.1f);
             touch_time += clock_dt;
             window.pumpEvents();
-            // Lo que Lua apago con un dedo encima se suelta.
+            // Lo que un script apago con un dedo encima se suelta.
             synthesized.clear();
             touch.update(synthesized);
             for (dm::Event& s : synthesized) feed(s);
@@ -1328,7 +1343,7 @@ int runPlayer() {
                     physics.driveCharactersWithKeyboard(world, keys);
                 }
                 {
-                    CR_PROFILE_SCOPE("Scripts Lua");
+                    CR_PROFILE_SCOPE("Scripts");
                     scripts.fixedUpdate(world, physics_settings.fixed_step, steps);
                     scripts.update(world, dt);
                 }
@@ -1404,7 +1419,7 @@ int runPlayer() {
                     profiler_overlay.draw(ImGui::GetForegroundDrawList(), ImVec2(0, 0), display, *p,
                                           renderer.device().name());
                 }
-                // Scene.load(...) y Game.quit() desde Lua.
+                // Scene::load(...) y Game::quit() desde los scripts.
                 if (const std::filesystem::path next = scripts.takeSceneRequest(); !next.empty()) begin_load(next);
                 if (scripts.takeQuitRequest()) quit = true;
             }
@@ -1495,7 +1510,7 @@ int runPlayer() {
         };
         // Cerrado a media carga: el hilo de los modelos termina antes de nada.
         paso("carga", [&] { if (load.worker.valid()) load.worker.wait(); });
-        paso("Lua", [&] { scripts.stop(); });
+        paso("scripts", [&] { scripts.stop(); });
         paso("C++", [&] { cpp_scripts.stop(); });
         paso("datapacks", [&] { scripts.unmountDataPacks(); });  // lo montado con DataPack.load sale de los assets del juego
         paso("mods", [&] {

@@ -578,7 +578,7 @@ struct Host final : VisualScriptDebugHost {
         if (k == "math.mod") {
             const double p = num(0);
             const double q = num(1);
-            return api::Value(p - std::floor(p / q) * q);  // como % de Lua
+            return api::Value(p - std::floor(p / q) * q);  // con el signo del divisor
         }
         if (k == "math.pow") return api::Value(std::pow(num(0), num(1)));
         if (k == "math.min") return api::Value(std::min(num(0), num(1)));

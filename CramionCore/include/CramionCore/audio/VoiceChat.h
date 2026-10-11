@@ -80,7 +80,7 @@ private:
     core::Vec3 listener_{};
 };
 
-// La del juego (Lua Voice.*). nullptr si no se ha creado.
+// La del juego (Voice:: en los scripts). nullptr si no se ha creado.
 VoiceChat* activeVoiceChat();
 void setActiveVoiceChat(VoiceChat* voice);
 

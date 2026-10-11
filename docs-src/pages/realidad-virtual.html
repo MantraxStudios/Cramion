@@ -111,7 +111,7 @@
     al pulsar la UI.</li>
   <li>Lo que se coge <strong>no choca con el cuerpo del jugador</strong> (la cápsula del XR Player): al acercarlo no te empuja y al
     andar no lo arrastras. Para que choque, activa <em>Chocar con lo que se coge</em> en el XR Player. Para cualquier otra
-    pareja: <code>Physics.ignoreCollision(a, b)</code> (como <code>Physics.IgnoreCollision</code> de Unity).</li>
+    pareja: <code>Physics::ignoreCollision(a, b, true)</code> (como <code>Physics.IgnoreCollision</code> de Unity).</li>
 </ul>
 
 <h3 id="ui">UI en el mundo</h3>
@@ -120,7 +120,7 @@
   panel en la escena (como World Space en Unity), de <em>Resolución de referencia / Píxeles por metro</em> metros, centrado en
   su entidad y de cara a su +Z. Se ve en el casco, en la vista Escena y en el juego; se usa con el rayo de las manos y el
   gatillo, y sus eventos van a los scripts igual que en la pantalla (en C++, <code>on("OnJugar", ...)</code>). Se dibuja
-  después del tono (no le cambian la exposición ni el bloom) y lo de delante lo tapa. Ver <a href="ui.html">Interfaz</a>.
+  después del tono (no le cambian la exposición ni el bloom) y lo de delante lo tapa. Ver <a href="componentes-ui.html">Interfaz</a>.
 </p>
 
 <h3 id="plantilla">Plantilla de VR</h3>
@@ -164,82 +164,106 @@
   Windows Mixed Reality y el genérico <code>khr/simple_controller</code>.
 </p>
 
-<h3 id="lua">La tabla XR (Lua)</h3>
-<p>Manos: <code>"left"</code> / <code>"right"</code>. Las posiciones y giros salen en el <strong>mundo</strong> (con el rig ya aplicado).</p>
+<h3 id="cpp">El namespace XR (C++)</h3>
+<p>
+  Manos: <code>"left"</code> / <code>"right"</code>. Las posiciones y giros salen en el <strong>mundo</strong> (con el rig ya
+  aplicado). Todas devuelven un <code>Value</code>: léelo con <code>.asBool()</code>, <code>.asNumber()</code>,
+  <code>.asString()</code>, <code>.asVec3()</code> o <code>.asQuat()</code>, y <code>.isNil()</code> dice si no hay dato.
+  Ver <a href="cpp-xr.html">XR</a>.
+</p>
 <table>
   <thead><tr><th>Función</th><th>Devuelve</th></tr></thead>
   <tbody>
-    <tr><td><code>XR.isAvailable()</code></td><td>Hay casco y sesión de VR.</td></tr>
-    <tr><td><code>XR.isRunning()</code> / <code>XR.isFocused()</code></td><td>El casco está mostrando el juego / el juego tiene los mandos (no está el menú del sistema encima).</td></tr>
-    <tr><td><code>XR.getSystemName()</code> / <code>XR.getRuntimeName()</code></td><td>El casco (<code>"Oculus Quest2"</code>...) y el runtime (<code>"SteamVR/OpenXR"</code>...).</td></tr>
-    <tr><td><code>XR.getHeadPosition()</code> / <code>XR.getHeadRotation()</code></td><td><code>Vec3</code> / <code>Quat</code> de la cabeza, o <code>nil</code> sin seguimiento.</td></tr>
-    <tr><td><code>XR.getHeadLocalPosition()</code></td><td>La cabeza dentro de la habitación (metros desde el origen).</td></tr>
-    <tr><td><code>XR.isControllerActive(mano)</code></td><td>El mando está encendido y se sigue.</td></tr>
-    <tr><td><code>XR.getControllerPosition(mano [, "grip"|"aim"])</code></td><td><code>Vec3</code> de la mano (<code>grip</code>) o del puntero (<code>aim</code>), o <code>nil</code>.</td></tr>
-    <tr><td><code>XR.getControllerRotation(mano [, pose])</code></td><td><code>Quat</code>, o <code>nil</code>.</td></tr>
-    <tr><td><code>XR.getAimRay(mano)</code></td><td>Origen y dirección del puntero (dos <code>Vec3</code>) para <code>Physics.raycast</code>.</td></tr>
-    <tr><td><code>XR.getTrigger(mano)</code> / <code>XR.getGrip(mano)</code></td><td>0..1.</td></tr>
-    <tr><td><code>XR.getThumbstick(mano)</code></td><td><code>Vec3(x, y, 0)</code> en −1..1 (Y arriba).</td></tr>
-    <tr><td><code>XR.getButton(mano, boton)</code>, <code>XR.getButtonDown</code>, <code>XR.getButtonUp</code></td><td>Botones: <code>trigger</code>, <code>grip</code>, <code>thumbstick</code>, <code>primary</code> (A/X, también <code>"a"</code>/<code>"x"</code>), <code>secondary</code> (B/Y), <code>menu</code>. Gatillo y agarre cuentan como pulsados a partir de la mitad.</td></tr>
-    <tr><td><code>XR.vibrate(mano [, intensidad, segundos, hz])</code></td><td>Vibración (por defecto 0.5 durante 0.1 s).</td></tr>
-    <tr><td><code>XR.setTrackingOrigin("floor"|"eyes")</code>, <code>XR.getTrackingOrigin()</code></td><td>Origen sin XR Origin (con él manda el componente).</td></tr>
-    <tr><td><code>XR.getOriginPosition()</code></td><td>Dónde está el rig en el mundo.</td></tr>
+    <tr><td><code>XR::isAvailable()</code></td><td>Hay casco y sesión de VR.</td></tr>
+    <tr><td><code>XR::isRunning()</code> / <code>XR::isFocused()</code></td><td>El casco está mostrando el juego / el juego tiene los mandos (no está el menú del sistema encima).</td></tr>
+    <tr><td><code>XR::getSystemName()</code> / <code>XR::getRuntimeName()</code></td><td>El casco (<code>"Oculus Quest2"</code>...) y el runtime (<code>"SteamVR/OpenXR"</code>...).</td></tr>
+    <tr><td><code>XR::getHeadPosition()</code> / <code>XR::getHeadRotation()</code></td><td><code>Vec3</code> / <code>Quat</code> de la cabeza, o nil sin seguimiento.</td></tr>
+    <tr><td><code>XR::getHeadLocalPosition()</code></td><td>La cabeza dentro de la habitación (metros desde el origen).</td></tr>
+    <tr><td><code>XR::isControllerActive(mano)</code></td><td>El mando está encendido y se sigue.</td></tr>
+    <tr><td><code>XR::getControllerPosition(mano, "grip"|"aim")</code></td><td><code>Vec3</code> de la mano (<code>grip</code>) o del puntero (<code>aim</code>), o nil.</td></tr>
+    <tr><td><code>XR::getControllerRotation(mano, pose)</code></td><td><code>Quat</code>, o nil.</td></tr>
+    <tr><td><code>XR::getAimRay(mano)</code></td><td>Lista con el origen y la dirección del puntero (<code>[0]</code> y <code>[1]</code>, dos <code>Vec3</code>) para <code>Physics::raycast</code>.</td></tr>
+    <tr><td><code>XR::getTrigger(mano)</code> / <code>XR::getGrip(mano)</code></td><td>0..1.</td></tr>
+    <tr><td><code>XR::getThumbstick(mano)</code></td><td><code>Vec3(x, y, 0)</code> en −1..1 (Y arriba).</td></tr>
+    <tr><td><code>XR::getButton(mano, boton)</code>, <code>XR::getButtonDown</code>, <code>XR::getButtonUp</code></td><td>Botones: <code>trigger</code>, <code>grip</code>, <code>thumbstick</code>, <code>primary</code> (A/X, también <code>"a"</code>/<code>"x"</code>), <code>secondary</code> (B/Y), <code>menu</code>. Gatillo y agarre cuentan como pulsados a partir de la mitad.</td></tr>
+    <tr><td><code>XR::vibrate(mano, intensidad, segundos)</code></td><td>Vibración (por defecto 0.5 durante 0.1 s).</td></tr>
+    <tr><td><code>XR::setTrackingOrigin("floor"|"eyes")</code>, <code>XR::getTrackingOrigin()</code></td><td>Origen sin XR Origin (con él manda el componente).</td></tr>
+    <tr><td><code>XR::getOriginPosition()</code></td><td>Dónde está el rig en el mundo.</td></tr>
   </tbody>
 </table>
 
 <h3 id="ejemplo">Ejemplo: disparar con el puntero</h3>
-<pre><code class="language-lua">local Pistola = {}
+<pre><code class="language-cpp">#include &lt;cramion/Script.h&gt;
 
-function Pistola:Update(dt)
-    if not XR.isRunning() then return end
-    if XR.getButtonDown("right", "trigger") then
-        local origen, dir = XR.getAimRay("right")
-        if origen then
-            local hit = Physics.raycast(origen, dir, 100)
-            if hit then
-                Debug.log("Tocado: " .. hit.entity.name)
-                XR.vibrate("right", 0.8, 0.08)
-            end
-        end
-    end
-end
+using namespace cramion;
 
-return Pistola</code></pre>
+class Pistola : public Script {
+public:
+    void update(float) override {
+        if (!XR::isRunning().asBool()) return;
+        if (XR::getButtonDown("right", "trigger").asBool()) {
+            const Value rayo = XR::getAimRay("right");
+            if (rayo.size() == 2) {
+                RaycastHit hit;
+                if (Physics::raycast(rayo[0].asVec3(), rayo[1].asVec3(), 100.0f, &amp;hit)) {
+                    Debug::log("Tocado: " + hit.entity.name());
+                    XR::vibrate("right", 0.8, 0.08);
+                }
+            }
+        }
+    }
+};
+
+CRAMION_SCRIPT(Pistola)</code></pre>
 
 <h3 id="rig-mover">Ejemplo: andar y girar a saltos</h3>
-<pre><code class="language-lua">-- En la entidad "XR Origin".
-local Andar = { properties = { velocidad = 2.0, giro = 30 } }
+<pre><code class="language-cpp">// En la entidad "XR Origin".
+#include &lt;cramion/Script.h&gt;
 
-function Andar:Start() self.listo = true end
+#include &lt;cmath&gt;
 
-function Andar:Update(dt)
-    local stick = XR.getThumbstick("left")
-    local cabeza = XR.getHeadRotation()
-    if cabeza and (math.abs(stick.x) > 0.2 or math.abs(stick.y) > 0.2) then
-        -- Hacia donde mira la cabeza, en horizontal.
-        local adelante = cabeza * Vec3(0, 0, -1); adelante.y = 0
-        local derecha = cabeza * Vec3(1, 0, 0); derecha.y = 0
-        local mover = adelante:normalized() * stick.y + derecha:normalized() * stick.x
-        self.entity.position = self.entity.position + mover * self.velocidad * dt
-    end
-    -- Giro a saltos con el stick derecho (marea menos que girar suave).
-    local x = XR.getThumbstick("right").x
-    if self.listo and math.abs(x) > 0.7 then
-        local r = self.entity.rotation
-        self.entity.rotation = Vec3(r.x, r.y - self.giro * (x > 0 and 1 or -1), r.z)
-        self.listo = false
-    elseif math.abs(x) < 0.3 then
-        self.listo = true
-    end
-end
+using namespace cramion;
 
-return Andar</code></pre>
+class Andar : public Script {
+public:
+    Property&lt;float&gt; velocidad{this, "velocidad", 2.0f, Tooltip("m/s")};
+    Property&lt;float&gt; giro{this, "giro", 30.0f, Tooltip("Grados de cada salto")};
+
+    void update(float dt) override {
+        const Vec3 stick = XR::getThumbstick("left").asVec3();
+        const Value cabeza = XR::getHeadRotation();
+        if (!cabeza.isNil() &amp;&amp; (std::fabs(stick.x) &gt; 0.2f || std::fabs(stick.y) &gt; 0.2f)) {
+            // Hacia donde mira la cabeza, en horizontal.
+            const Quat q = cabeza.asQuat();
+            Vec3 adelante = q * Vec3::forward();
+            adelante.y = 0;
+            Vec3 derecha = q * Vec3::right();
+            derecha.y = 0;
+            const Vec3 mover = adelante.normalized() * stick.y + derecha.normalized() * stick.x;
+            entity().setPosition(entity().position() + mover * (velocidad * dt));
+        }
+        // Giro a saltos con el stick derecho (marea menos que girar suave).
+        const float x = XR::getThumbstick("right").asVec3().x;
+        if (listo_ &amp;&amp; std::fabs(x) &gt; 0.7f) {
+            const Vec3 r = entity().rotation();
+            entity().setRotation(Vec3{r.x, r.y - giro * (x &gt; 0 ? 1.0f : -1.0f), r.z});
+            listo_ = false;
+        } else if (std::fabs(x) &lt; 0.3f) {
+            listo_ = true;
+        }
+    }
+
+private:
+    bool listo_ = true;
+};
+
+CRAMION_SCRIPT(Andar)</code></pre>
 
 <h3 id="rendimiento">Rendimiento</h3>
 <p>
   En VR la escena se dibuja una vez por ojo (la ventana enseña la imagen del último, sin dibujar otra vez) y el casco marca el
   ritmo (72–144 Hz), así que la ventana va sin vsync. Si no llega a los Hz del casco, el runtime repite frames y al mover la
   cabeza todo tiembla: por eso en VR la resolución adaptativa va siempre, con los Hz del casco como objetivo (mide el frame
-  entero: los dos ojos, sombras y cielo incluidos). Si va justo, baja la calidad en <em>Configuración gráfica</em> o desde Lua con <code>Graphics</code>
+  entero: los dos ojos, sombras y cielo incluidos). Si va justo, baja la calidad en <em>Configuración gráfica</em> o desde C++ con <code>Graphics::set(...)</code>
   (resolución interna, sombras, nubes), y usa LODs. El <code>Profiler</code> sigue funcionando en la ventana.
 </p>

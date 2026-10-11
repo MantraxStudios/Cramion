@@ -12,7 +12,7 @@
 //                     capa de orden (Sorting Layer) y orden en la capa,
 //                     iluminado o no, modo Simple o Mosaico.
 //   SpriteAnimator    clips de fotogramas ("0-5, 8") a N fps con bucle; el
-//                     juego elige el clip (Lua: entity:playSpriteAnimation).
+//                     juego elige el clip (entity().playSpriteAnimation).
 //   Light2D           luz 2D puntual (circulo) o global (la luz ambiente de
 //                     los sprites iluminados).
 //

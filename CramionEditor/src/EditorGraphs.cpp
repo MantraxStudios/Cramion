@@ -18,7 +18,7 @@
 #include "EditorApp.h"
 
 #include "Dialogs.h"
-#include "LuaCompletion.h"
+#include "CodeCompletion.h"
 #include "NodeGraph.h"
 
 #include <CramionCore/asset/ShaderGraph.h>
@@ -733,7 +733,7 @@ void EditorApp::drawVisualScriptEditor() {
                 const std::string callee = owner + (method ? (m.function ? ":" : ".") : ".") + m.name;
                 std::string args, description;
                 bool function = m.function;
-                luaApiDoc(callee, args, description, function);
+                apiDoc(callee, args, description, function);
                 const std::string category = "API: " + owner;
                 if (m.function) {
                     st.vs_items.push_back(nodegraph::SearchItem{category, callee, m.name, description, static_cast<int>(st.vs_item_nodes.size())});

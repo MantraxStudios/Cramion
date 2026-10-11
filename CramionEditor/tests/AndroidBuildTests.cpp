@@ -13,6 +13,7 @@
 #include <CramionCore/project/TouchInterface.h>
 #include <CramionDM/TouchControls.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <fstream>
@@ -121,7 +122,7 @@ void testTouchControls() {
     t.apply(input);
     check(!input.isKeyDown(dm::Key::Space) && input.virtualStickY() == 0.0f, "releaseAll suelta todo");
 
-    // Lua oculta un boton o los controles con un dedo encima: se suelta.
+    // Un script oculta un boton o los controles con un dedo encima: se suelta.
     {
         dm::TouchControls lt;
         lt.setLayout(layout);
@@ -160,7 +161,7 @@ void testTouchControls() {
     check(input.isMouseButtonDown(dm::MouseButton::Left) && std::fabs(input.mouseX() - 100.0f) < 0.01f,
           "sin controles el dedo hace de raton");
 
-    // Input guarda los dedos para Lua.
+    // Input guarda los dedos para los scripts.
     dm::Input raw;
     raw.onEvent(touch(dm::EventType::TouchBegan, 7, 10.0f, 20.0f));
     raw.onEvent(touch(dm::EventType::TouchMoved, 7, 15.0f, 25.0f));
@@ -270,6 +271,24 @@ void testManifest() {
               m.find("INTERNET") != std::string::npos && m.find("0x400003") != std::string::npos &&
               m.find("0x403000") == std::string::npos,
           "orientacion, permisos y Vulkan 1.0");
+    check(m.find("extractNativeLibs=\"false\"") != std::string::npos, "sin scripts de C++: las .so sin extraer");
+
+    // Scripts de C++: el proceso de los scripts se ejecuta desde nativeLibraryDir.
+    in.min_sdk = 26;
+    in.cpp_scripts.sdk = "C:/Cramion/sdk";
+    in.cpp_scripts.assets_root = "C:/Juego/Assets";
+    in.cpp_scripts.sources = {"C:/Juego/Assets/Scripts/Jugador.cpp"};
+    check(androidManifest(in).find("extractNativeLibs=\"true\"") != std::string::npos, "con scripts de C++: las .so se extraen");
+    check(androidClangTarget("arm64-v8a", 26) == "aarch64-linux-android26" &&
+              androidClangTarget("armeabi-v7a", 26) == "armv7a-linux-androideabi26" &&
+              androidClangTarget("x86_64", 29) == "x86_64-linux-android29",
+          "--target del NDK por ABI");
+    const std::vector<std::string> args = androidScriptCompileArgs(in, "armeabi-v7a", "C:/out/libgame_scripts.so");
+    const auto has = [&](const std::string& a) { return std::find(args.begin(), args.end(), a) != args.end(); };
+    check(has("--target=armv7a-linux-androideabi26") && has("-shared") && has("-static-libstdc++") && has("-DCRAMION_CPP_SCRIPT") &&
+              has("C:/Juego/Assets/Scripts/Jugador.cpp") && has("C:/Cramion/sdk/cramion/ScriptMain.cpp") && args.back() == "C:/out/libgame_scripts.so",
+          "argumentos de clang++ para los scripts de C++");
+    check(androidNdkClang("C:/ndk").generic_string() == "C:/ndk/toolchains/llvm/prebuilt/windows-x86_64/bin/clang++.exe", "clang++ del NDK");
 }
 
 void testRealApk(const std::filesystem::path& so, const std::filesystem::path& icon) {

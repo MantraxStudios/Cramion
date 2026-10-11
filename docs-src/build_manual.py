@@ -27,8 +27,7 @@ examples_cpp.main()
 data = json.load(open(os.path.join(HERE, "pages.json"), encoding="utf-8"))
 intro_html = data["intro"]
 examples_intro = data["examples_intro"]
-LUA_GROUP = "Referencia de Lua (obsoleta)"
-GROUP_ICONS = {"API de C++": "code", LUA_GROUP: "code", "Primeros pasos": "book", "El editor": "window", "Componentes": "cube", "Referencia de la API": "code", "Gráficos": "paint", "Ejemplos": "spark"}
+GROUP_ICONS = {"API de C++": "code", "Guías de scripting": "code", "Primeros pasos": "book", "El editor": "window", "Componentes": "cube", "Referencia de la API": "code", "Gráficos": "paint", "Ejemplos": "spark"}
 GROUPS = []
 for g in data["groups"]:
     GROUPS.append((g["group"], GROUP_ICONS.get(g["group"], "book"), g["pages"]))
@@ -78,10 +77,6 @@ old_ids = {p["slug"]: p["slug"] for p in pages}
 search = []
 for p in pages:
     content = p["content"]
-    if p["group"] == LUA_GROUP:
-        content = ('<div class="note"><strong class="text-white">Lua está obsoleto.</strong> Sigue funcionando en los '
-                   'proyectos que lo usan, pero lo nuevo se escribe en C++: ver la <a href="cpp-script.html">API de C++</a> '
-                   'y <a href="primer-script.html">Tu primer script</a>.</div>\n' + content)
 
     # h3 con id (para el indice de la derecha y el buscador).
     def add_id(m):
@@ -163,7 +158,6 @@ HEAD = """<!doctype html>
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/base16/tomorrow-night.min.css">
   <link rel="stylesheet" href="manual.css">
   <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/lua.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/glsl.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/json.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/bash.min.js"></script>
@@ -473,8 +467,8 @@ group_notes = {
     "Primeros pasos": "Cómo funciona un script y cómo se trabaja con él en el editor.",
     "El editor": "Paneles, herramientas, materiales, render y exportar el juego.",
     "Componentes": "Cada componente con todas sus propiedades.",
-    "Referencia de la API": "Todo lo que se puede usar desde Lua, por tema.",
-    "Gráficos": "Shaders propios: el aspecto de las superficies en GLSL.",
+    "Guías de scripting": "Sistemas grandes desde C++: entrada, red, HTTP, realidad virtual, esqueletos y mallas.",
+    "Gráficos": "Shaders propios y las opciones gráficas del juego.",
     "Ejemplos": strip(examples_intro),
 }
 cards_html = ""
@@ -514,9 +508,9 @@ hub_main = f"""
         <h2 class="section-title">Empieza aquí</h2>
         <p class="section-sub">Tu primer script en tres pasos.</p>
         <ol class="steps">
-          <li><div><strong>Crea un script.</strong> Proyecto &gt; Crear &gt; <em>Script Lua</em>, o <em>Nuevo script</em> en el Inspector.</div></li>
-          <li><div><strong>Engánchalo a un objeto.</strong> Arrastra el <code>.lua</code> a un objeto de la Jerarquía o de la Escena.</div></li>
-          <li><div><strong>Dale a Play.</strong> El motor llama a <code>Start</code>, <code>Update(dt)</code>... Guarda con Ctrl+S y se recarga en caliente (<a href="ciclo-de-vida.html">ciclo de vida</a>).</div></li>
+          <li><div><strong>Crea un script.</strong> Proyecto &gt; Crear &gt; <em>Script C++</em>: una clase que hereda de <code>Script</code>.</div></li>
+          <li><div><strong>Engánchalo a un objeto.</strong> Arrastra el <code>.cpp</code> a un objeto de la Jerarquía o de la Escena.</div></li>
+          <li><div><strong>Dale a Play.</strong> El motor llama a <code>start()</code>, <code>update(dt)</code>... Guarda con Ctrl+S: se compila y se recarga en caliente (<a href="ciclo-de-vida.html">ciclo de vida</a>).</div></li>
         </ol>
 
         <h2 class="section-title">Todo el manual</h2>
@@ -529,11 +523,11 @@ hub_main = f"""
           <a href="{DONATE}" target="_blank" rel="noopener" class="btn btn-donate">{icon("heart")}Donar con PayPal</a>
         </section>
 
-        <div class="help"><span>La referencia completa del código está en <code>CramionCore/include/CramionCore/scripting/Scripting.h</code>.
+        <div class="help"><span>La referencia completa del código está en el SDK: <code>CramionCore/sdk/cramion/Script.h</code>.
           ¿Dudas? Pregunta en el <a href="{DISCORD}" target="_blank" rel="noopener">Discord</a>.</span></div>
       </div>
     </main>"""
-write("index.html", "Documentación de Cramion", "Documentación de Cramion: el editor, los componentes, la API de Lua y ejemplos.",
+write("index.html", "Documentación de Cramion", "Documentación de Cramion: el editor, los componentes, la API de C++ y ejemplos.",
       layout("index", hub_main, with_onpage=False))
 
 

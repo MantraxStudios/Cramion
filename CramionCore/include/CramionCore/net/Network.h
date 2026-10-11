@@ -10,7 +10,7 @@
 // demas (y dice quien lo mando). Asi los clientes no necesitan verse entre
 // si y el servidor puede comprobar lo que llega.
 //
-// Mensajes     nombre + un valor de Lua (nil, bool, numero, texto, Vec3 o una
+// Mensajes     nombre + un valor (nil, bool, numero, texto, Vec3 o una
 //              tabla de ellos), fiables y en orden.
 // Objetos      el servidor crea (spawn) un prefab en todos con un id de red y
 //              un dueno (un jugador o el servidor). El dueno manda su posicion
@@ -42,7 +42,7 @@
 
 namespace cramion::net {
 
-// Un valor de Lua que viaja por la red.
+// Un valor de los scripts que viaja por la red.
 struct NetValue {
     enum class Type : std::uint8_t { Nil = 0, Bool = 1, Number = 2, String = 3, Vec3 = 4, Table = 5 };
     Type type = Type::Nil;

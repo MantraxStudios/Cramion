@@ -43,8 +43,8 @@ namespace {
 bool nameStart(char c) { return std::isalpha(static_cast<unsigned char>(c)) != 0 || c == '_'; }
 bool nameChar(char c) { return std::isalnum(static_cast<unsigned char>(c)) != 0 || c == '_'; }
 
-// Palabras de Lua que no son de una expresion.
-bool luaKeyword(const std::string& s) {
+// Palabras de sentencias (if, for, function...) que no son de una expresion.
+bool statementKeyword(const std::string& s) {
     static const char* const kWords[] = {"function", "return", "if",     "then", "else", "elseif", "end",  "local",
                                          "for",      "while",  "do",     "repeat", "until", "in",   "break", "goto"};
     for (const char* w : kWords) {
@@ -53,7 +53,7 @@ bool luaKeyword(const std::string& s) {
     return false;
 }
 
-// Un texto como numero (como Lua: "10" + 1 = 11).
+// Un texto como numero ("10" + 1 = 11).
 bool toNumber(const ExprValue& v, double& out) {
     if (v.type == ExprValue::Type::Number) {
         out = v.number;
@@ -217,7 +217,7 @@ private:
         for (const char* pair : kPairs) {
             if (c == pair[0] && d == pair[1]) {
                 if (c == '.' && pos_ + 2 < s_.size() && s_[pos_ + 2] == '.') {
-                    fail("'...' es de Lua");
+                    fail("'...' no se puede usar");
                     return;
                 }
                 text_ = pair;
@@ -275,7 +275,7 @@ private:
     }
 
     // Los operadores de precedencia >= min (or 1, and 2, comparaciones 3, .. 4,
-    // + - 5, * / // % 6, not y - unarios 7, ^ 8), como en Lua.
+    // + - 5, * / // % 6, not y - unarios 7, ^ 8; .. y ^ por la derecha).
     int parse(int min) {
         if (++depth_ > 200) return fail("expresion demasiado larga");
         int left = unary();
@@ -353,7 +353,7 @@ private:
                     next();
                     return inner;
                 }
-                if (text_ == "{" || text_ == "[" || text_ == "#") return fail("'" + text_ + "' (tablas de Lua) no se puede usar");
+                if (text_ == "{" || text_ == "[" || text_ == "#") return fail("'" + text_ + "' (tablas) no se puede usar");
                 return fail("falta un valor antes de '" + text_ + "'");
             case Tok::Name: break;
         }
@@ -362,7 +362,7 @@ private:
         if (name == "false") return constant(ExprValue::boolean(false));
         if (name == "nil") return constant(ExprValue{});
         if (name == "and" || name == "or") return fail("falta un valor antes de '" + name + "'");
-        if (luaKeyword(name)) return fail("'" + name + "' es de Lua (aqui solo va una expresion)");
+        if (statementKeyword(name)) return fail("'" + name + "' no se puede usar (aqui solo va una expresion)");
         if (name == "vars") return varsField();
         if (name == "self") {
             // self.vars.x (como en el codigo de los estados); lo demas de self, no.
@@ -371,15 +371,15 @@ private:
                 next();
                 if (kind_ == Tok::Name && text_ == "vars") return varsField();
             }
-            return fail("self (Lua) no se puede usar: escribe la variable por su nombre");
+            return fail("self no se puede usar: escribe la variable por su nombre");
         }
         if (name == "entity" || name == "sm" || name == "bt") {
-            return fail(name + " (Lua) no se puede usar: calcula el valor en un script de C++ y guardalo en una variable");
+            return fail(name + " no se puede usar: calcula el valor en un script de C++ y guardalo en una variable");
         }
         next();
         if (kind_ == Tok::Op && text_ == "(") return fail("llamada a una funcion (" + name + "): solo variables, numeros y comparaciones");
         if (kind_ == Tok::Op && (text_ == "." || text_ == ":" || text_ == "[")) {
-            return fail("campos de Lua (" + name + text_ + "...): solo variables, numeros y comparaciones");
+            return fail("campos (" + name + text_ + "...): solo variables, numeros y comparaciones");
         }
         return variable(name);
     }
@@ -441,7 +441,7 @@ ExprValue Expression::eval(int index, const ExprLookup& lookup, bool& ok) const 
                 const int c = a.text.compare(b.text);
                 order = c < 0 ? -1 : (c > 0 ? 1 : 0);
             } else {
-                ok = false;  // Lua: "attempt to compare"
+                ok = false;  // distinto tipo: no se puede comparar
                 return {};
             }
             if (n.op == '<') return ExprValue::boolean(order < 0);
@@ -468,7 +468,7 @@ ExprValue Expression::eval(int index, const ExprLookup& lookup, bool& ok) const 
     double x = 0.0;
     double y = 0.0;
     if (!toNumber(a, x) || !toNumber(b, y)) {
-        ok = false;  // Lua: "attempt to perform arithmetic"
+        ok = false;  // no son numeros: no hay cuenta
         return {};
     }
     switch (n.op) {
@@ -479,7 +479,7 @@ ExprValue Expression::eval(int index, const ExprLookup& lookup, bool& ok) const 
         case 'f': return ExprValue::num(std::floor(x / y));
         case '%': {
             double m = std::fmod(x, y);
-            if (m != 0.0 && ((m < 0.0) != (y < 0.0))) m += y;  // como Lua: el signo del divisor
+            if (m != 0.0 && ((m < 0.0) != (y < 0.0))) m += y;  // con el signo del divisor
             return ExprValue::num(m);
         }
         case '^': return ExprValue::num(std::pow(x, y));

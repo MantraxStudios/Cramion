@@ -252,7 +252,7 @@ void testRigidbodyAgent() {
 }
 
 // La API de scripting (lo que usan los scripts de C++ y los Visual Scripts):
-// entity:moveTo, entity.isMoving... y la tabla Navigation.
+// entity().moveTo, entity.isMoving... y la tabla Navigation.
 void testScripting() {
     std::printf("Scripting\n");
     using scripting::api::Value;
@@ -277,7 +277,7 @@ void testScripting() {
 
     // Lo que hacia el Start del script.
     const json moved = bridge({{"fn", "moveTo"}, {"self", guard}, {"args", json::array({vec(8, 0, 0)})}});
-    check(moved["ok"] == true && moved["result"] == true, "entity:moveTo devuelve true");
+    check(moved["ok"] == true && moved["result"] == true, "entity().moveTo devuelve true");
     const bool moving = api.get("isMoving", self).truthy();
     const json path = bridge({{"fn", "Navigation.findPath"}, {"args", json::array({vec(-8, 0, 0), vec(8, 0, 0)})}});
     check(path["ok"] == true && path["result"].is_array() && path["result"].size() >= 3 &&

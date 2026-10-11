@@ -140,8 +140,8 @@ struct IKLimb {
     Uuid hint;            // hacia donde apunta el codo o la rodilla (opcional)
     float weight = 1.0f;  // 0 = la animacion, 1 = el objetivo
     bool match_rotation = false;  // la mano/el pie copia el giro del objetivo
-    // Objetivo como un punto del mundo en vez de una entidad (Lua:
-    // entity:setIKTarget("left_hand", Vec3(...))).
+    // Objetivo como un punto del mundo en vez de una entidad (scripts:
+    // entity().setIKTarget("left_hand", Vec3(...))).
     bool use_position = false;
     core::Vec3 position{};
 };
@@ -321,7 +321,7 @@ struct PhysBoneCollider {
 // --- Ragdoll ---------------------------------------------------------------
 // Muneco de trapo con la fisica (Jolt): una capsula por hueso unidas por
 // articulaciones con limites. Apagado sigue a la animacion; al activarlo
-// (Lua: entity.ragdoll = true, al morir) cae con la velocidad que llevaba.
+// (entity().setRagdoll(true), al morir) cae con la velocidad que llevaba.
 // Sin huesos en la lista se eligen solos (humanoides y animales).
 struct RagdollRuntime;  // physics/Ragdoll.h
 struct RagdollRuntimeRef {

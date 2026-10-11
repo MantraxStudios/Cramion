@@ -15,6 +15,7 @@
 
 #include <charconv>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <functional>
 #include <initializer_list>
@@ -33,6 +34,21 @@ using Callback = std::function<void(const Values&)>;
 
 namespace detail {
 std::uint64_t registerCallback(const std::shared_ptr<Callback>& fn);
+
+// Un numero desde texto como std::from_chars (la libc++ del Android NDK, antes
+// de LLVM 20, no lo trae para double: alli strtod sobre una copia).
+inline const char* parseNumber(const char* first, const char* last, double& value) {
+#if defined(__cpp_lib_to_chars)
+    return std::from_chars(first, last, value).ptr;
+#else
+    const std::string text(first, last);
+    char* end = nullptr;
+    const double d = std::strtod(text.c_str(), &end);
+    if (end == text.c_str()) return first;
+    value = d;
+    return first + (end - text.c_str());
+#endif
+}
 }
 
 class Value {
@@ -106,7 +122,7 @@ public:
         if (type_ == Type::Number || type_ == Type::Bool) return number_;
         if (type_ == Type::String) {
             double d = fallback;
-            std::from_chars(text_.data(), text_.data() + text_.size(), d);
+            detail::parseNumber(text_.data(), text_.data() + text_.size(), d);
             return d;
         }
         return fallback;
@@ -167,8 +183,12 @@ public:
         }
         object_->emplace_back(std::string(key), std::move(v));
     }
-    const Values& items() const { return type_ == Type::Array ? *array_ : emptyArray(); }
-    const Object& fields() const { return type_ == Type::Object ? *object_ : emptyObject(); }
+    const Values& items() const& { return type_ == Type::Array ? *array_ : emptyArray(); }
+    const Object& fields() const& { return type_ == Type::Object ? *object_ : emptyObject(); }
+    // De un valor temporal, una copia: `for (const Value& e : Scene::findAllWithTag("X").items())`
+    // no se queda con una referencia a una lista que ya no existe.
+    Values items() && { return type_ == Type::Array ? *array_ : Values{}; }
+    Object fields() && { return type_ == Type::Object ? *object_ : Object{}; }
 
     // Objetos del motor (Handle) y entidades: metodos y campos (Script.h).
     Value call(std::string_view method, Values args = {}) const;
@@ -396,7 +416,7 @@ private:
             ++end;
         }
         double d = 0.0;
-        std::from_chars(s.data() + i, s.data() + end, d);
+        detail::parseNumber(s.data() + i, s.data() + end, d);
         i = end == i ? i + 1 : end;
         return Value(d);
     }

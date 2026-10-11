@@ -19,7 +19,7 @@
 // Inspector del componente "C++ Script" las muestra con su control (como los
 // campos publicos de Unity) y sus valores llegan al script al crearlo.
 //
-// Los scripts tienen toda la API de Lua a traves de un puente
+// Los scripts tienen toda la API del motor a traves de un puente
 // (ScriptSystem::bridgeCall) y llamadas propias rapidas (transformaciones,
 // fisica, entrada...) que se envian en lote.
 //
@@ -71,7 +71,7 @@ struct CppPropertyInfo {
     std::string name, label, tooltip, header;
     std::string kind;     // bool, int, float, string, vec2, vec3, color, entity, asset, file, enum, list
     std::string element;  // listas: el tipo de cada elemento
-    std::string type;     // asset: AssetType (numero); file: 0 imagen, 1 audio, 2 Lua, 3 shader, 4 cualquiera; entity: componente requerido
+    std::string type;     // asset: AssetType (numero); file: 0 imagen, 1 audio, 2 codigo, 3 shader, 4 cualquiera; entity: componente requerido
     bool has_range = false;
     double min = 0.0, max = 0.0;
     std::vector<std::string> options;
@@ -143,6 +143,9 @@ public:
     // Escribe <proyecto>/compile_commands.json con todos los .cpp de Assets.
     void writeCompileCommands() const;
     bool hasSources() const;
+    // Los .cpp de Assets (lo que se compila) y la carpeta del SDK.
+    std::vector<std::filesystem::path> sources() const;
+    const std::filesystem::path& sdkFolder() const;
     bool upToDate() const;  // la DLL es mas nueva que todas las fuentes
     // La fecha del .cpp/.h cambiado mas tarde (para no recompilar lo que ya fallo igual).
     std::filesystem::file_time_type newestSourceTime() const;

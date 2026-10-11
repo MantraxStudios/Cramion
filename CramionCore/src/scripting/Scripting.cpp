@@ -1,4 +1,4 @@
-// ScriptSystem sin Lua: el estado del juego en marcha (ScriptRuntime.h), las
+// ScriptSystem: el estado del juego en marcha (ScriptRuntime.h), las
 // fases del frame y el puente con los scripts de C++. La API la ponen los
 // modulos de native/ (Modules.h).
 
@@ -93,28 +93,10 @@ std::string vec3Text(const Vec3& v) {
 // Componentes
 // -----------------------------------------------------------------------------
 
-void Script::reflect(ecs::PropertyVisitor& v) {
-    v.field({"file", "Script", "Archivo .lua en Assets (obsoleto: ya no se ejecuta)"}, file);
-    v.field({"enabled", "Activo"}, enabled);
-    if (v.wantsAllFields()) {
-        ecs::listField(v, {"properties", "Propiedades"}, properties, [](ScriptProperty& p, ecs::PropertyVisitor& item) {
-            item.field({"name", "Nombre"}, p.name);
-            int type = static_cast<int>(p.type);
-            item.field({"type", "Tipo"}, type, 0, 3);
-            p.type = static_cast<PropertyType>(std::clamp(type, 0, 3));
-            item.field({"value", "Valor"}, p.value);
-        });
-    }
-}
-
 std::string scriptTemplate(const std::string& class_name) { return cppScriptTemplate(class_name); }
 
 void registerScriptComponents() {
     ecs::ComponentRegistry& registry = ecs::ComponentRegistry::instance();
-    // Escenas de antes de la 2.9: el componente se lee (y se guarda) igual.
-    if (registry.find("Script") == nullptr) {
-        registry.registerComponent<Script>("Script", "Script Lua (obsoleto)", "Scripting");
-    }
     net::registerNetworkComponents();
     ai::registerStateMachineComponents();
     ai::registerBehaviorTreeComponents();
@@ -501,19 +483,6 @@ void ScriptSystem::start(ecs::World& world) {
     if (d.physics != nullptr) {
         d.physics_listener = d.physics->addListener([&d](const physics::PhysicsEvent& event) { d.events.push_back(event); });
     }
-    // Escenas antiguas: sus scripts de Lua ya no corren.
-    if (!d.warned_lua) {
-        std::size_t lua_scripts = 0;
-        for (const entt::entity handle : world.registry().view<Script>()) {
-            if (!world.registry().get<Script>(handle).file.empty()) ++lua_scripts;
-        }
-        if (lua_scripts > 0) {
-            d.warned_lua = true;
-            d.write(1, std::to_string(lua_scripts) +
-                           " objeto(s) tienen un script de Lua (componente Script): Cramion ya no ejecuta Lua. "
-                           "Conviertelos a scripts de C++ (Assets > Crear > Script de C++) o a Visual Scripts.");
-        }
-    }
     for (const auto& fn : d.hooks.start) fn();
 }
 
@@ -610,15 +579,6 @@ void ScriptSystem::reloadFile(const std::string& file) {
     for (const auto& fn : d.hooks.reload) {
         if (fn(file)) return;
     }
-}
-
-std::vector<ScriptProperty> ScriptSystem::describe(const std::string& file, std::string* error) {
-    if (error != nullptr) {
-        *error = std::filesystem::path(file).extension() == ".lua"
-                     ? "Los scripts de Lua ya no se ejecutan (Cramion 2.9): conviertelo a un script de C++."
-                     : std::string{};
-    }
-    return {};
 }
 
 void ScriptSystem::setNetVarListener(std::function<void(ecs::Entity, const std::string&, const std::string&)> listener) {

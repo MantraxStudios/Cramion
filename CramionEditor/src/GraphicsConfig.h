@@ -6,9 +6,9 @@
 //   - Graphics.ini (clave=valor): escalado, calidad, nitidez, VSync,
 //     presupuesto adaptativo, sombras, texturas y los interruptores del
 //     render. El del proyecto lo escribe el editor; el juego exportado
-//     guarda encima el del jugador (Graphics.save() desde Lua).
+//     guarda encima el del jugador (Graphics::save() desde un script).
 //   - Las calidades rapidas (Baja, Media, Alta, Ultra).
-//   - RendererGraphicsHost: la tabla Graphics de Lua sobre el renderizador y
+//   - RendererGraphicsHost: la API Graphics de los scripts sobre el renderizador y
 //     la ventana (modo y tamano, solo en el juego exportado).
 
 #include <CramionCore/scripting/Scripting.h>

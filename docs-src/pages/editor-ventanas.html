@@ -19,7 +19,7 @@
   escalón máximo, pendiente máxima), la <strong>malla</strong> (tamaño y altura de celda, celdas por baldosa, área mínima,
   detalle de altura) y la <strong>ejecución</strong> (coste de las zonas Evitar, agentes máximos, generación en tiempo real en
   el juego, hilos). <em>Mostrar en la escena (P)</em> y <em>Reconstruir todo</em>. La malla sale de los colliders; ver
-  <a href="navegacion.html">Navegación</a> para usarla desde Lua.
+  <a href="cpp-navigation.html">Navigation</a> para usarla desde un script.
 </p>
 
 <h3 id="animator">Animator</h3>
@@ -36,12 +36,12 @@
     con <code>Velocidad</code>); <em>Blend Tree 2D</em> mezcla por dos (<code>MoverX</code> y <code>MoverY</code>) con una
     <em>posición</em> por clip, para moverse en 8 direcciones (<em>Plantilla 8 direcciones</em> las crea). Los pasos de los
     clips van sincronizados para que los pies no patinen. El gráfico del Inspector muestra el valor actual (naranja) y el peso
-    de cada clip. Clic derecho en el fondo: <em>Crear Blend Tree 1D / 2D</em>. Desde Lua se mueven con
-    <code>setAnimatorFloat</code>.</li>
+    de cada clip. Clic derecho en el fondo: <em>Crear Blend Tree 1D / 2D</em>. Desde un script se mueven con
+    <code>entity().setAnimatorFloat</code>.</li>
   <li><strong>Transiciones</strong>: una flecha de un estado a otro con <em>Exit time</em> (salir al llegar a una parte del clip),
     <strong>Fundido</strong> (segundos en que la pose pasa del estado viejo al nuevo; 0 = cambio seco) y
     <strong>condiciones</strong> sobre parámetros (todas deben cumplirse).</li>
-  <li><strong>Parámetros</strong>: Float, Int, Bool y Trigger. Desde Lua: <code>setAnimatorFloat</code>, <code>setAnimatorBool</code>,
+  <li><strong>Parámetros</strong>: Float, Int, Bool y Trigger. Desde un script: <code>setAnimatorFloat</code>, <code>setAnimatorBool</code>,
     <code>setAnimatorTrigger</code>.</li>
   <li><strong>En vivo</strong>: con un objeto seleccionado que usa este Animator, se ve el estado activo y se pueden cambiar los parámetros
     (y disparar triggers) para probarlo.</li>
@@ -67,10 +67,10 @@
 
 <h3 id="consola">Consola</h3>
 <p>
-  Todo lo que escriben el motor y los scripts: <code>print</code>, <code>Debug.log</code>, <code>Debug.warn</code>,
-  <code>Debug.error</code> y los errores de Lua (con el archivo y la línea; en la pestaña del script, clic en el error va a la línea). Filtro de texto, <em>Limpiar</em> y
-  <em>Auto-desplazar</em>. En la pestaña de un script hay además una <strong>consola de Lua</strong>: una línea que se ejecuta
-  (en Play, dentro del juego).
+  Todo lo que escriben el motor y los scripts: <code>Debug::log</code>, <code>Debug::warning</code>,
+  <code>Debug::error</code> y los fallos de los scripts (con el archivo y la línea). Filtro de texto, <em>Limpiar</em> y
+  <em>Auto-desplazar</em>. En la pestaña de un script hay además la <strong>Consola C++</strong>: los errores de compilación (doble
+  clic va a la línea) y una línea de comandos para CVars o llamadas a la API (en Play, dentro del juego).
 </p>
 
 <h3 id="estadisticas">Estadísticas</h3>

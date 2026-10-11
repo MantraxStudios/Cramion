@@ -9,15 +9,23 @@
 // es una carpeta con:
 //
 //   mod.json     {"name": "Mas coches", "version": "1.2", "author": "...",
-//                 "description": "...", "entry": "main.lua", "load_order": 10}
-//   Assets/      modelos, texturas, prefabs, escenas, scripts... (se montan en
-//                Assets/Mods/<carpeta>/ sin pisar nada del juego)
-//   main.lua     se ejecuta tras empezar la escena (puede crear objetos,
-//                escuchar eventos, anadir menus...)
+//                 "description": "...", "entry": "main.crgraph", "load_order": 10}
+//   Assets/      modelos, texturas, prefabs, escenas, Visual Scripts... (se
+//                montan en Assets/Mods/<carpeta>/ sin pisar nada del juego)
+//   main.crgraph la entrada: un Visual Script que corre en un objeto nuevo
+//                ("Mod <nombre>") de cada escena, tras los scripts del juego
+//                (puede crear objetos, escuchar eventos, anadir menus...).
+//                Tambien vale un prefab (main.crprefab): se instancia en cada
+//                escena con sus Visual Scripts, maquinas de estados...
+//
+// Los mods no llevan scripts de C++: serian codigo nativo de cualquiera
+// corriendo en el juego. Los Visual Scripts se interpretan y solo llegan a la
+// API. Los main.lua de antes de la 2.9 ya no se ejecutan (se avisa).
+// startModEntry (scripting/ModEntry.h) pone la entrada en la escena.
 //
 // o un .datapack suelto (DataPack exportado desde el editor). Se cargan por
 // load_order (y por nombre). El jugador activa o desactiva cada uno con
-// Mods.setEnabled (se guarda en mods.json de sus datos).
+// Mods::setEnabled (se guarda en mods.json de sus datos).
 
 #include <cstdint>
 #include <filesystem>
@@ -34,7 +42,7 @@ struct ModInfo {
     std::string version = "1.0";
     std::string author;
     std::string description;
-    std::string entry;        // script de Lua dentro del mod (relativo a la carpeta)
+    std::string entry;        // .crgraph o .crprefab de entrada (relativo a la carpeta)
     int load_order = 0;
     bool enabled = true;
     std::filesystem::path folder;    // carpeta del mod (vacia si es un .datapack suelto)
@@ -45,7 +53,7 @@ struct ModInfo {
 struct ModMount {
     std::string id;
     std::vector<std::filesystem::path> written;  // lo copiado (se borra al desmontar)
-    std::string entry_asset;  // el script de entrada dentro de Assets ("Mods/X/main.lua"), vacio si no hay
+    std::string entry_asset;  // la entrada dentro de Assets ("Mods/X/main.crgraph"), vacio si no hay
 };
 
 class ModManager {
@@ -67,7 +75,7 @@ public:
     void unmountAll(const std::filesystem::path& assets_root, const std::filesystem::path& journal);
     const std::vector<ModMount>& mounted() const { return mounts_; }
 
-    // Crea la plantilla de un mod (mod.json, Assets/ y main.lua de ejemplo).
+    // Crea la plantilla de un mod (mod.json, Assets/ y un main.crgraph de ejemplo).
     static bool createTemplate(const std::filesystem::path& folder, const std::string& name, std::string* error = nullptr);
 
 private:
@@ -78,7 +86,7 @@ private:
     std::vector<std::filesystem::path> datapack_written_;
 };
 
-// El gestor del juego (Lua: Mods.list...). nullptr si el juego no usa mods.
+// El gestor del juego (Mods::list... desde los scripts). nullptr si el juego no usa mods.
 ModManager* activeMods();
 void setActiveMods(ModManager* manager);
 

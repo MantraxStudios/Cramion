@@ -57,6 +57,16 @@ if(ANDROID)
     # La glue exporta ANativeActivity_onCreate: que el enlazador no la quite.
     target_link_options(main PRIVATE "-u" "ANativeActivity_onCreate")
     target_compile_options(main PRIVATE -Wall -Wextra)
+    # El proceso aislado de los scripts de C++ (host/ScriptHost.cpp): un
+    # ejecutable con nombre de .so para que Android lo deje en nativeLibraryDir,
+    # el unico sitio desde el que una app puede ejecutar algo. El juego carga
+    # alli lib/<abi>/libgame_scripts.so (los scripts compilados al exportar).
+    add_executable(cramion_scripthost "${CMAKE_CURRENT_SOURCE_DIR}/host/ScriptHost.cpp")
+    target_include_directories(cramion_scripthost PRIVATE "${CMAKE_SOURCE_DIR}/CramionCore/include" "${CMAKE_SOURCE_DIR}/CramionCore/sdk")
+    target_link_libraries(cramion_scripthost PRIVATE dl)
+    target_link_options(cramion_scripthost PRIVATE "-Wl,-z,max-page-size=16384")
+    target_compile_options(cramion_scripthost PRIVATE -Wall -Wextra)
+    set_target_properties(cramion_scripthost PROPERTIES OUTPUT_NAME "libcramion_scripthost" SUFFIX ".so")
     return()
 endif()
 
@@ -129,9 +139,9 @@ add_executable(CramionTerminalTests "${CMAKE_CURRENT_SOURCE_DIR}/tests/TerminalT
                                     "${CMAKE_CURRENT_SOURCE_DIR}/src/Terminal.cpp")
 target_include_directories(CramionTerminalTests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
 
-# Prueba del autocompletado de Lua (consola).
+# Prueba del autocompletado del editor de codigo (consola).
 add_executable(CramionCompletionTests "${CMAKE_CURRENT_SOURCE_DIR}/tests/CompletionTests.cpp"
-                                      "${CMAKE_CURRENT_SOURCE_DIR}/src/LuaCompletion.cpp")
+                                      "${CMAKE_CURRENT_SOURCE_DIR}/src/CodeCompletion.cpp")
 target_link_libraries(CramionCompletionTests PRIVATE Cramion::Core)
 
 # Prueba de la edicion multiple del Inspector (consola).
@@ -148,6 +158,9 @@ add_executable(CramionTemplateTests "${CMAKE_CURRENT_SOURCE_DIR}/tests/TemplateT
                                     "${CMAKE_CURRENT_SOURCE_DIR}/src/LocomotionPack.cpp")
 target_include_directories(CramionTemplateTests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
 target_link_libraries(CramionTemplateTests PRIVATE Cramion::Core cramion_update)
+# Las plantillas se juegan con sus scripts de C++ compilados de verdad.
+target_compile_definitions(CramionTemplateTests PRIVATE
+    CRAMION_SDK_DIR="${CMAKE_SOURCE_DIR}/CramionCore/sdk" CRAMION_BIN_DIR="${CMAKE_BINARY_DIR}")
 
 # Prueba de las configuraciones de compilacion (consola): perfiles, game.ini
 # y el icono escrito dentro de una copia del reproductor.
@@ -225,6 +238,8 @@ add_dependencies(CramionScriptHost cramion_sdk_copy)
 add_dependencies(CramionEditor CramionScriptHost)
 add_dependencies(CramionPlayer CramionScriptHost)
 add_dependencies(CramionCppScriptTests CramionScriptHost)
+add_dependencies(CramionTemplateTests CramionScriptHost)
+add_dependencies(cramion_minigolf CramionScriptHost)
 
 # --- Compilador incluido para los scripts de C++ y su IntelliSense ---
 # llvm-mingw (LLVM/clang + lld + libc++ + cabeceras de mingw-w64, todo

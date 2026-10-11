@@ -1,123 +1,162 @@
 #ifndef CRAMION_EDITOR_TEMPLATE21_SCRIPTS_H
 #define CRAMION_EDITOR_TEMPLATE21_SCRIPTS_H
 
-// Scripts de las plantillas de la 2.1: "Plataformas 2D" y "Coches".
+// Scripts de C++ de las plantillas de la 2.1: "Plataformas 2D" y "Coches".
+
+#include "TemplateScripts.h"
 
 namespace cramion::editor::template21 {
 
-// --- Plataformas 2D ---------------------------------------------------------------
+// Plataformas 2D: jugador (fisica 2D y animaciones) y camara.
+inline constexpr TemplateFile kPlatformer2D[] = {
+    {"Camara2D.cpp",
+R"CPP(// Camara2D.cpp: camara 2D que sigue al jugador con suavidad (y un poco por
+// encima).
+#include <cramion/Script.h>
 
-inline constexpr const char* kPlayer2D = R"lua(-- Jugador de plataformas: A/D o flechas para moverse, Espacio para saltar.
--- Fisica 2D (Rigidbody2D + Box Collider 2D) y animaciones del Sprite Animator.
-local Jugador = {
-    properties = { velocidad = 6, salto = 12.5 },
-}
+using namespace cramion;
 
-function Jugador:Start()
-    self.monedas = 0
-    self.inicio = self.entity.position
-end
+class Camara2D : public Script {
+public:
+    Property<float> suavidad{this, "suavidad", 5.0f};
+    Property<float> altura{this, "altura", 1.5f};
 
-function Jugador:Update(dt)
-    local v = self.entity.velocity2D
-    local eje = 0
-    if Input.getKey("a") or Input.getKey("left") then eje = eje - 1 end
-    if Input.getKey("d") or Input.getKey("right") then eje = eje + 1 end
-    v.x = eje * self.velocidad
+    void lateUpdate(float dt) override {
+        const Entity jugador = Scene::find("Jugador");
+        if (!jugador) return;
+        const Vec3 p = entity().position();
+        const Vec3 t = jugador.position();
+        const float k = std::min(1.0f, dt * suavidad);
+        entity().setPosition(Vec3{p.x + (t.x - p.x) * k, p.y + (t.y + altura - p.y) * k, p.z});
+    }
+};
 
-    -- En el suelo: un rayo corto desde los pies.
-    local pies = self.entity.position + Vec3(0, -0.5, 0)
-    local suelo = Physics2D.raycast(pies, Vec3(0, -1, 0), 0.12) ~= nil
-    if suelo and (Input.getKeyDown("space") or Input.getKeyDown("w") or Input.getKeyDown("up")) then
-        v.y = self.salto
-    end
-    self.entity.velocity2D = v
+CRAMION_SCRIPT(Camara2D)
+)CPP"},
+    {"Jugador2D.cpp",
+R"CPP(// Jugador2D.cpp: jugador de plataformas. A/D o flechas para moverse, Espacio
+// para saltar. Fisica 2D (Rigidbody2D + Box Collider 2D) y animaciones del
+// Sprite Animator.
+#include <cramion/Script.h>
 
-    if eje ~= 0 then self.entity.flipX = eje < 0 end
-    if not suelo then
-        self.entity:playSpriteAnimation("Saltar")
-    elseif eje ~= 0 then
-        self.entity:playSpriteAnimation("Correr")
-    else
-        self.entity:playSpriteAnimation("Quieto")
-    end
+#include <string>
 
-    -- Se cae por un agujero: vuelve al principio.
-    if self.entity.position.y < -12 then
-        self.entity:movePosition2D(self.inicio)
-        self.entity.velocity2D = Vec3(0, 0, 0)
-    end
-end
+using namespace cramion;
 
-function Jugador:OnTriggerEnter2D(otro, contacto)
-    if otro.tag == "Moneda" then
-        otro:destroy()
-        self.monedas = self.monedas + 1
-        local marcador = Scene.find("Marcador")
-        if marcador then marcador.text = "Monedas: " .. self.monedas end
-    end
-end
+class Jugador2D : public Script {
+public:
+    Property<float> velocidad{this, "velocidad", 6.0f};
+    Property<float> salto{this, "salto", 12.5f};
 
-return Jugador
-)lua";
+    void start() override {
+        monedas_ = 0;
+        inicio_ = entity().position();
+        // Las monedas son triggers 2D: el mensaje trae {other, point, normal...}.
+        on("OnTriggerEnter2D", [this](const Value& contacto) {
+            const Entity otro = contacto["other"].asEntity();
+            if (otro.tag() != "Moneda") return;
+            otro.destroy();
+            ++monedas_;
+            if (const Entity marcador = Scene::find("Marcador")) marcador.set("text", "Monedas: " + std::to_string(monedas_));
+        });
+    }
 
-inline constexpr const char* kCamera2D = R"lua(-- Camara 2D que sigue al jugador con suavidad (y un poco por delante).
-local Camara = {
-    properties = { suavidad = 5, altura = 1.5 },
-}
+    void update(float) override {
+        Vec3 v = entity().velocity2D().asVec3();
+        float eje = 0.0f;
+        if (Input::key("a") || Input::key("left")) eje -= 1.0f;
+        if (Input::key("d") || Input::key("right")) eje += 1.0f;
+        v.x = eje * velocidad;
 
-function Camara:LateUpdate(dt)
-    local jugador = Scene.find("Jugador")
-    if not jugador then return end
-    local p = self.entity.position
-    local t = jugador.position
-    local k = math.min(1, dt * self.suavidad)
-    self.entity.position = Vec3(p.x + (t.x - p.x) * k, p.y + (t.y + self.altura - p.y) * k, p.z)
-end
+        // En el suelo: un rayo corto desde los pies.
+        const Vec3 pies = entity().position() + Vec3{0, -0.5f, 0};
+        const bool suelo = !Physics2D::raycast(pies, Vec3{0, -1, 0}, 0.12f).isNil();
+        if (suelo && (Input::keyDown("space") || Input::keyDown("w") || Input::keyDown("up"))) v.y = salto;
+        entity().setVelocity2D(v);
 
-return Camara
-)lua";
+        if (eje != 0.0f) entity().setFlipX(eje < 0.0f);
+        if (!suelo) entity().playSpriteAnimation("Saltar");
+        else if (eje != 0.0f) entity().playSpriteAnimation("Correr");
+        else entity().playSpriteAnimation("Quieto");
 
-// --- Coches ---------------------------------------------------------------------------
+        // Se cae por un agujero: vuelve al principio.
+        if (entity().position().y < -12.0f) {
+            entity().movePosition2D(inicio_);
+            entity().setVelocity2D(Vec3{});
+        }
+    }
 
-inline constexpr const char* kChaseCamera = R"lua(-- Camara de persecucion: detras del coche y un poco por encima, con muelle.
-local Camara = {
-    properties = { distancia = 8, altura = 3, suavidad = 4 },
-}
+private:
+    int monedas_ = 0;
+    Vec3 inicio_;
+};
 
-function Camara:LateUpdate(dt)
-    local coche = Scene.find("Coche")
-    if not coche then return end
-    local destino = coche.position - coche.forward * self.distancia + Vec3(0, self.altura, 0)
-    local k = math.min(1, dt * self.suavidad)
-    self.entity.position = self.entity.position + (destino - self.entity.position) * k
-    self.entity:lookAt(coche.position + Vec3(0, 1, 0))
-end
+CRAMION_SCRIPT(Jugador2D)
+)CPP"},
+};
 
-return Camara
-)lua";
+// Coches: camara de persecucion y velocimetro.
+inline constexpr TemplateFile kCars[] = {
+    {"CamaraCoche.cpp",
+R"CPP(// CamaraCoche.cpp: camara de persecucion. Detras del coche y un poco por
+// encima, con muelle.
+#include <cramion/Script.h>
 
-inline constexpr const char* kSpeedometer = R"lua(-- Velocimetro: km/h, marcha y rpm del coche (Vehicle) en el HUD.
-local Velocimetro = {}
+using namespace cramion;
 
-function Velocimetro:Update(dt)
-    local coche = Scene.find("Coche")
-    if not coche then return end
-    local estado = coche:vehicleState()
-    if not estado then return end
-    local marcha = estado.gear == -1 and "R" or (estado.gear == 0 and "N" or tostring(estado.gear))
-    self.entity.text = string.format("%3d km/h   marcha %s   %4d rpm", math.floor(estado.speed + 0.5), marcha,
-                                     math.floor(estado.rpm))
-    -- R: volver a la salida (si vuelca).
-    if Input.getKeyDown("r") then
-        coche.position = Vec3(0, 1.5, 0)
-        coche.rotation = Vec3(0, 0, 0)
-        coche.velocity = Vec3(0, 0, 0)
-    end
-end
+class CamaraCoche : public Script {
+public:
+    Property<float> distancia{this, "distancia", 8.0f};
+    Property<float> altura{this, "altura", 3.0f};
+    Property<float> suavidad{this, "suavidad", 4.0f};
 
-return Velocimetro
-)lua";
+    void lateUpdate(float dt) override {
+        const Entity coche = Scene::find("Coche");
+        if (!coche) return;
+        const Vec3 destino = coche.position() - coche.forward() * distancia + Vec3{0, altura, 0};
+        const float k = std::min(1.0f, dt * suavidad);
+        entity().setPosition(entity().position() + (destino - entity().position()) * k);
+        entity().lookAt(coche.position() + Vec3{0, 1, 0});
+    }
+};
+
+CRAMION_SCRIPT(CamaraCoche)
+)CPP"},
+    {"Velocimetro.cpp",
+R"CPP(// Velocimetro.cpp: km/h, marcha y rpm del coche (Vehicle) en el HUD. R vuelve
+// a la salida (si vuelca).
+#include <cramion/Script.h>
+
+#include <cmath>
+#include <cstdio>
+#include <string>
+
+using namespace cramion;
+
+class Velocimetro : public Script {
+public:
+    void update(float) override {
+        const Entity coche = Scene::find("Coche");
+        if (!coche) return;
+        const Value estado = coche.vehicleState();
+        if (estado.isNil()) return;
+        const int gear = estado["gear"].asInt();
+        const std::string marcha = gear == -1 ? "R" : (gear == 0 ? "N" : std::to_string(gear));
+        char texto[96];
+        std::snprintf(texto, sizeof(texto), "%3d km/h   marcha %s   %4d rpm", static_cast<int>(std::floor(estado["speed"].asFloat() + 0.5f)),
+                      marcha.c_str(), static_cast<int>(std::floor(estado["rpm"].asFloat())));
+        entity().set("text", texto);
+        if (Input::keyDown("r")) {
+            coche.setPosition(Vec3{0, 1.5f, 0});
+            coche.setRotation(Vec3{});
+            coche.setVelocity(Vec3{});
+        }
+    }
+};
+
+CRAMION_SCRIPT(Velocimetro)
+)CPP"},
+};
 
 }  // namespace cramion::editor::template21
 

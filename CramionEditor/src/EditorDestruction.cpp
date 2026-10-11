@@ -141,7 +141,7 @@ void EditorApp::drawFractureWindow() {
     }
     ImGui::EndDisabled();
     if (!st.status.empty()) ImGui::TextWrapped("%s", st.status.c_str());
-    ImGui::TextDisabled("En Play: se rompe con golpes fuertes o con self.entity:fracture(punto, fuerza).");
+    ImGui::TextDisabled("En Play: se rompe con golpes fuertes o con entity().fracture(punto, fuerza).");
     ImGui::End();
 }
 

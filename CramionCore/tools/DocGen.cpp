@@ -167,11 +167,11 @@ private:
 const std::map<std::string, std::string>& intros() {
     static const std::map<std::string, std::string> kIntros = {
         {"Transform", "Posicion, giro y escala <strong>locales</strong> (respecto al padre en la Jerarquia). Lo tienen todas las "
-                      "entidades. Desde Lua: <code>entity.position</code> (mundo), <code>localPosition</code>, "
-                      "<code>rotation</code> (grados), <code>quaternion</code> y <code>scale</code>."},
+                      "entidades. Desde un script: <code>entity().position()</code> (mundo), <code>localPosition()</code>, "
+                      "<code>rotation()</code> (grados), <code>quaternion()</code> y <code>scale()</code>."},
         {"MeshRenderer", "Dibuja una pieza de un modelo importado (<code>.crdata</code>) o una primitiva integrada (cubo, esfera, "
                          "plano, cilindro, capsula) con sus materiales (<code>.crmat</code>), uno por submalla. Tambien puede dibujar "
-                         "una malla creada por codigo (<code>entity.mesh</code>, ver <a href=\"mallas.html\">Mallas por codigo</a>). "
+                         "una malla creada por codigo (<code>entity().setMesh(malla)</code>, ver <a href=\"mallas.html\">Mallas por codigo</a>). "
                          "<em>Static</em> (casilla del Inspector) lo prepara para el static batching y las sondas."},
         {"Light", "Luz direccional (el sol: su eje hacia delante es la direccion de los rayos), puntual o foco. Las direccionales "
                   "usan sombras en cascada; las puntuales y los focos pueden tener sombras propias (con un tope por escena). "
@@ -218,10 +218,10 @@ const std::map<std::string, std::string>& intros() {
                   "<a href=\"mundo-procedural.html#hierba\">Hierba (GPU)</a>."},
         {"VoxelWorld", "Un mundo de bloques infinito como Minecraft: biomas, cuevas, minerales, arboles, agua y luz por bloques. "
                        "Se genera y se malla en hilos de fondo; en el editor, con <em>Vista previa</em>. Ver "
-                       "<a href=\"voxel.html\">Mundo de bloques</a> para la API de Lua."},
+                       "<a href=\"cpp-voxel.html\">Voxel</a> para la API de C++."},
         {"Rigidbody", "Cuerpo de fisica (Jolt): <strong>Dinamico</strong> (cae, choca, se empuja), <strong>Cinematico</strong> "
                       "(lo mueves tu y empuja a los demas) o <strong>Estatico</strong>. Necesita al menos un collider en la entidad "
-                      "o en sus hijos. Desde Lua: <code>velocity</code>, <code>addForce</code>, <code>addImpulse</code>..."},
+                      "o en sus hijos. Desde un script: <code>velocity()</code>, <code>addForce()</code>, <code>addImpulse()</code>..."},
         {"BoxCollider", "Colision en forma de caja: su tamano y centro en el espacio del objeto, multiplicados por la escala "
                         "del Transform. Como en Unity, al anadirlo (Add Component, <code>addComponent</code>, MCP) toma el "
                         "<strong>AABB de la malla</strong> del objeto o, si no tiene, el de las mallas de sus hijos; "
@@ -237,7 +237,7 @@ const std::map<std::string, std::string>& intros() {
                           "estatico."},
         {"Vehicle", "Vehiculo con ruedas (el de Jolt): en el objeto con Rigidbody dinamico; sus ruedas son los "
                     "<code>WheelCollider</code> de los hijos. Motor, cambio automatico y diferenciales. Se conduce con "
-                    "<code>entity:setVehicleInput(acelerador, direccion, freno, freno de mano)</code> o con el teclado."},
+                    "<code>entity().setVehicleInput(acelerador, direccion, freno, freno de mano)</code> o con el teclado."},
         {"CppScript",
          "Script de C++ (la clase de CRAMION_SCRIPT en un .cpp de Assets). Corre aislado en otro proceso: si falla, el "
          "motor sigue y la Consola dice el archivo y la linea. Ver <a href=\"scripts-cpp.html\">Scripts en C++</a>."},
@@ -250,11 +250,11 @@ const std::map<std::string, std::string>& intros() {
          "Unreal, sobre el CharacterVirtual de Jolt): capsula vertical que sube escalones, no sube rampas mas "
          "empinadas que su limite, se pega al suelo al bajar, sigue a las plataformas que se mueven y empuja a los "
          "Rigidbody. Es collider: la tocan los rayos, entra en los triggers y da eventos Collision. "
-         "<em>Manual</em>: solo <code>entity:move(desplazamiento)</code> desde un script (sin gravedad, como Unity). "
+         "<em>Manual</em>: solo <code>entity().move(desplazamiento)</code> desde un script (sin gravedad, como Unity). "
          "<em>Integrado</em>: gravedad, salto (con tiempo coyote y doble salto), andar/correr/agacharse con "
          "aceleracion; con el teclado (WASD relativo a la camara principal, Shift, Espacio, C/Ctrl) o con "
-         "<code>entity:setMoveInput(dir, correr)</code>, <code>entity:jump()</code> y "
-         "<code>entity:setCrouch(true)</code>. Crear uno listo: GameObject &gt; Fisica &gt; Personaje."},
+         "<code>entity().setMoveInput(dir, correr)</code>, <code>entity().jump()</code> y "
+         "<code>entity().setCrouch(true)</code>. Crear uno listo: GameObject &gt; Fisica &gt; Personaje."},
         {"WheelCollider","Una rueda de un <code>Vehicle</code>: suspension por raycast, direccion, traccion y frenos. "
                           "<em>Visual</em> es el objeto que gira con ella."},
         {"ParticleSystem", "Emisor de particulas como el de Unity: emision continua y rafagas, forma, velocidad, tamano y color "
@@ -263,7 +263,7 @@ const std::map<std::string, std::string>& intros() {
         {"Animator", "Reproduce las animaciones de un modelo con esqueleto (en la entidad del MeshRenderer animado). Con un "
                      "<strong>Animator Controller</strong> (<code>.cranimator</code>, editor visual en la ventana Animator) su "
                      "maquina de estados elige clip, velocidad y bucle segun sus parametros; sin el mandan Clip / Nombre del "
-                     "clip. Desde Lua: <code>setAnimatorFloat</code>, <code>setAnimatorBool</code>, "
+                     "clip. Desde un script: <code>setAnimatorFloat</code>, <code>setAnimatorBool</code>, "
                      "<code>setAnimatorTrigger</code>, <code>playAnimation</code>."},
         {"InverseKinematics", "Cinematica inversa sobre la pose animada de humanos y animales: manos y pies que llegan a un "
                               "objetivo (una entidad o un punto), la cabeza que mira a algo repartiendo el giro por el cuello, "
@@ -277,7 +277,7 @@ const std::map<std::string, std::string>& intros() {
                      "<a href=\"esqueletos.html\">Esqueletos</a>."},
         {"BoneSocket", "Engancha una entidad a un hueso del modelo de un antepasado: Seguir al hueso (una espada en la mano, "
                        "un sombrero, un collider en la cabeza) o Mover el hueso (el hueso sigue a la entidad: posar con el "
-                       "gizmo). Lua: <code>espada:attachToBone(personaje, \"RightHand\")</code>."},
+                       "gizmo). Desde un script: <code>espada.attachToBone(personaje, \"RightHand\")</code>."},
         {"PhysBones", "Huesos que se mueven solos con inercia, gravedad y choques, como los PhysBone de VRChat: pelo, "
                       "coletas, colas, orejas, faldas, capas. Cada cadena parte de un hueso raiz con pull, spring, stiffness, "
                       "gravedad, immobile, angulo maximo y radio. \"Detectar pelo, colas, orejas...\" las crea por el nombre "
@@ -292,7 +292,7 @@ const std::map<std::string, std::string>& intros() {
                                 "(aranas, robots) y capas de respirar, inclinarse y ruido. Con o sin Animator."},
         {"AudioSource", "Un sonido en una entidad: clip (WAV, MP3, FLAC, OGG), volumen, tono, bucle, 2D o 3D con atenuacion y "
                         "Doppler, y efectos: paso bajo, paso alto, eco y envio a reverberacion. Ver "
-                        "<a href=\"audio.html\">Audio</a>."},
+                        "<a href=\"cpp-audio.html\">Audio</a>."},
         {"AudioListener", "Los oidos (normalmente en la camara). Activa la <strong>oclusion</strong>: sonidos con paredes en "
                           "medio se oyen tapados. Tambien un paso bajo general y el volumen general."},
         {"AudioReverbZone", "Esfera de reverberacion (habitacion, bano, sala, cueva, estadio, bosque, bajo el agua): con el "
@@ -312,19 +312,17 @@ const std::map<std::string, std::string>& intros() {
                           "Escena la muestra."},
         {"NavModifier", "Caja que quita la navegacion de su interior (<strong>Bloquear</strong>) o la encarece "
                         "(<strong>Evitar</strong>: los caminos la rodean si pueden)."},
-        {"NavAgent", "Lo que se mueve por la malla (Character Movement + AIController de Unreal): <code>entity:moveTo</code>, "
-                     "velocidad, aceleracion y esquivar a los demas agentes. Ver <a href=\"navegacion.html\">Navegacion</a>."},
-        {"Script", "Un script de Lua (<code>.lua</code> en Assets) y los valores de sus <code>properties</code> para esta "
-                   "entidad. Ver <a href=\"primer-script.html\">Tu primer script</a>."},
+        {"NavAgent", "Lo que se mueve por la malla (Character Movement + AIController de Unreal): <code>entity().moveTo(destino)</code>, "
+                     "velocidad, aceleracion y esquivar a los demas agentes. Ver <a href=\"cpp-navigation.html\">Navigation</a>."},
         {"NetworkObject", "Un objeto que existe en todos los jugadores de una partida en red (lo crea "
-                          "<code>Network.spawn</code>). Su dueno manda la posicion y el giro; los demas lo siguen suavizado. "
+                          "<code>Network::spawn</code>). Su dueno manda la posicion y el giro; los demas lo siguen suavizado. "
                           "En un prefab ajusta la frecuencia y el suavizado; si no lo lleva, se anade solo. Ver "
                           "<a href=\"red.html#objetos\">Network</a>."},
         {"UICanvas", "La raiz de una interfaz: todo lo que cuelga de el se dibuja encima del juego. <em>Referencia</em> es la "
                      "resolucion de diseno (1920x1080) y se escala con la pantalla."},
         {"RectTransform", "Rectangulo de un elemento de interfaz: anclas (0..1 del padre), pivote, posicion desde el ancla y "
-                          "tamano. Anclas separadas estiran el elemento con su padre. Desde Lua: <code>uiPosition</code> y "
-                          "<code>uiSize</code>."},
+                          "tamano. Anclas separadas estiran el elemento con su padre. Desde un script: <code>uiPosition()</code> y "
+                          "<code>uiSize()</code>."},
         {"UIImage", "Rectangulo de color o con imagen (<code>entity.texture</code>, <code>color</code>, <code>alpha</code>), con "
                     "esquinas redondeadas."},
         {"UIText", "Texto (<code>entity.text</code>), tamano, color, alineacion, ajuste de linea y sombra."},
@@ -339,8 +337,8 @@ const std::map<std::string, std::string>& intros() {
                            "cambios propios. No se anade a mano. Ver <a href=\"prefabs.html\">Prefabs</a>."},
         {"PrefabLink", "Lo pone el editor en cada entidad de una instancia: a que entidad del prefab corresponde."},
         {"Spline", "Curva por puntos de control (Catmull-Rom, Bezier o lineal), abierta o cerrada, con ancho y peralte por "
-                   "punto. En la Escena los puntos se arrastran (Mayus+clic anade, Ctrl+clic quita). Lua: "
-                   "<code>entity:splinePoint(t)</code>, <code>Spline.create(puntos, \"road\")</code>."},
+                   "punto. En la Escena los puntos se arrastran (Mayus+clic anade, Ctrl+clic quita). Desde un script: "
+                   "<code>entity().splinePoint(t)</code>, <code>Spline::create(puntos, \"road\")</code>."},
         {"SplineExtrude", "Genera una malla a lo largo de la Spline: carretera (con lineas), camino, rio (mueve el WaterBody), "
                           "muro, valla con postes, tuberia, railes con traviesas o cinta. Se pega al terreno y <em>Aplicar al "
                           "terreno</em> lo allana y pinta debajo."},
@@ -358,8 +356,8 @@ const std::map<std::string, std::string>& intros() {
         {"CrowdSpawner", "Crea en Play muchas copias de un prefab en la navmesh y las mueve (deambular, recorrer puntos, seguir "
                          "u huir), repartiendo las decisiones entre frames y ocultando las lejanas."},
         {"CrowdAgent", "Lo pone el Crowd Spawner en cada agente que crea."},
-        {"UIDropdown", "Desplegable: opciones, la elegida y el evento al cambiar (indice desde 1). Lua: "
-                       "<code>entity.dropdownValue</code>, <code>entity:setDropdownOptions{...}</code>."},
+        {"UIDropdown", "Desplegable: opciones, la elegida y el evento al cambiar (indice desde 1). Desde un script: "
+                       "<code>dropdownValue()</code>, <code>setDropdownOptions(...)</code>."},
         {"UIScrollView", "Zona con desplazamiento (rueda, arrastre con inercia y barra) que recorta a sus hijos. Con un hijo "
                          "con Layout Group y <em>Ajustar al contenido</em> crece solo."},
         {"UILayoutGroup", "Coloca a los hijos en columna, fila o rejilla, con separacion, margen y alineacion; "
@@ -471,7 +469,7 @@ int main(int argc, char** argv) {
              "ves en el Inspector, la clave con la que se guarda en la escena, el tipo, el valor por defecto, el rango u "
              "opciones y la ayuda. Esta referencia se genera desde el propio motor (<code>cramion_docgen</code>), asi que "
              "siempre esta al dia.\n</p>\n<p>En el editor se anaden con <strong class=\"text-white\">Add Component</strong> "
-             "en el Inspector; desde Lua con <code>entity:addComponent(\"Rigidbody\")</code> (la clave de la tabla).</p>\n";
+             "en el Inspector; desde un script con <code>entity().addComponent(\"Rigidbody\")</code> (la clave de la tabla).</p>\n";
     int documented = 0;
     for (const Page& page : pages()) {
         index << "<h3 id=\"" << page.slug << "\"><a href=\"" << page.slug << ".html\">" << html(page.title) << "</a></h3>\n<ul>\n";

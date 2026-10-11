@@ -247,7 +247,7 @@ private:
     std::filesystem::path folder_;
 };
 
-// El sistema de la partida en curso (Lua: Replay.*). nullptr fuera de Play.
+// El sistema de la partida en curso (Replay:: en los scripts). nullptr fuera de Play.
 ReplaySystem* activeSystem();
 void setActiveSystem(ReplaySystem* system);
 

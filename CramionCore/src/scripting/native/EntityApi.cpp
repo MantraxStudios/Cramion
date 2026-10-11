@@ -105,7 +105,7 @@ bool fieldFromValue(const Runtime& rt, const api::Value& value, PostValue& out) 
 void registerTransform(Runtime& rt) {
     method(rt, "valid", [&rt](api::Call& c) -> api::Value { return rt.entity(c.selfEntity()).valid(); },
            {"", "sigue existiendo?", "bool"});
-    // Lo que en Lua eran == y tostring(e).
+    // Comparar dos entidades y escribirlas como texto.
     method(rt, "equals", [](api::Call& c) -> api::Value { return c.selfEntity() == c.entity(0); },
            {"otra", "es la misma entidad?", "bool"});
     method(rt, "toString",

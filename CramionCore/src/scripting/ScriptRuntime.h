@@ -9,7 +9,7 @@
 // del frame. Su estado propio lo guarda en un shared_ptr que capturan sus
 // lambdas (asi no hace falta tocar este archivo para anadir un modulo).
 //
-// Orden de un frame (ScriptSystem::update), como en las versiones con Lua:
+// Orden de un frame (ScriptSystem::update), el mismo de siempre:
 //   Begin     la red (lo que llego) y las respuestas HTTP
 //   Gameplay  partida pendiente, autoguardado, eventos de dialogo
 //   Input     acciones (Enhanced Input) y sus enlaces
@@ -119,7 +119,6 @@ struct ScriptSystem::Impl {
     std::vector<physics::PhysicsEvent> events;        // los que llegan de la fisica
     std::vector<physics::PhysicsEvent> frame_events;  // los de este frame (fase Events)
     std::vector<entt::entity> pending_destroy;
-    bool warned_lua = false;
     bool warned_budget = false;  // scripts.BudgetMs (una vez por Play)
 
     // --- Sobreviven a stop()/start() (cambios de escena) ---

@@ -6,8 +6,8 @@
 // nada), manda lo mio que se movio al final (fase End) y da la API.
 //
 // Los valores viajan como net::NetValue: nil, bool, numero, texto, Vec3 y
-// tablas de ellos. Una lista sale como tabla con claves 1..n (como las
-// tablas de Lua) y vuelve como lista; un objeto, con sus claves de texto.
+// tablas de ellos. Una lista sale como tabla con claves 1..n y vuelve
+// como lista; un objeto, con sus claves de texto.
 // Una entidad viaja como su id de red (0 si no es de red).
 
 #include "Modules.h"
@@ -74,7 +74,7 @@ NetValue toNet(const Runtime& rt, const api::Value& v, int depth = 0) {
             t.type = NetValue::Type::Table;
             if (depth > 12) return t;
             for (const auto& [key, item] : v.fields()) {
-                if (item.isNil()) continue;  // como en una tabla de Lua: sin la clave
+                if (item.isNil()) continue;  // nil: sin la clave
                 t.entries.emplace_back(NetValue::str(key), toNet(rt, item, depth + 1));
             }
             return t;

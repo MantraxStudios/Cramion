@@ -3,7 +3,7 @@
 //
 // Fase Ai de cada frame (despues de los Update, como antes): primero las
 // maquinas de estados y despues los arboles, cada uno en orden de entidad.
-// Los estados ya no tienen codigo Lua: lo que pasa llega a los scripts de C++
+// Los estados ya no tienen codigo: lo que pasa llega a los scripts de C++
 // del objeto como mensajes (Script::onMessage):
 //   "OnStateEnter"  {machine, state, from}     al entrar (from nil = entrada)
 //   "OnStateExit"   {machine, state, to}       al salir
@@ -302,7 +302,7 @@ struct FsmHost {
             files.missing.insert(uuid);
             return nullptr;
         }
-        // Una vez al cargarla: expresiones que no se pueden leer, codigo Lua de antes...
+        // Una vez al cargarla: expresiones que no se pueden leer, codigo de antes...
         problems(m);
         return &(machines[uuid] = std::move(m));
     }

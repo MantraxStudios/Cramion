@@ -40,3 +40,4 @@ assets/
 
 # Descargas del navegador a medias
 *.crdownload
+__pycache__/

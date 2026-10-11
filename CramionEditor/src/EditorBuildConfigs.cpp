@@ -248,7 +248,7 @@ void EditorApp::drawBuildConfigsWindow() {
     changed |= ImGui::Checkbox("Servidor dedicado (<Juego>Server.exe)", &c.dedicated_server);
     changed |= ImGui::Checkbox("Permitir mods", &c.allow_mods);
     ImGui::SetItemTooltip("El juego carga los mods de <juego>/Mods y %%LOCALAPPDATA%%/Cramion/Mods/<juego>:\n"
-                          "carpetas con mod.json, Assets/ y main.lua, o archivos .datapack. Lua: Mods.list()");
+                          "carpetas con mod.json, y Assets/, o archivos .datapack. Desde un script: Mods::list()");
     ImGui::SetItemTooltip("Copia tambien un servidor sin ventana ni GPU para multijugador: <Juego>Server.exe --port 7777\n"
                           "Simula la escena y abre la partida; los scripts lo saben con Network.isDedicated().");
     if (c.platform == BuildPlatform::Windows) {

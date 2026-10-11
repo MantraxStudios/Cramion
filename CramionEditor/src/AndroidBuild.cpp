@@ -21,6 +21,7 @@
 #include <iostream>
 #include <map>
 #include <sstream>
+#include <tuple>
 
 namespace cramion::editor {
 
@@ -563,7 +564,9 @@ std::string androidManifest(const AndroidPackageInput& input) {
       << "        android:label=\"@string/app_name\"\n"
       << "        android:icon=\"@mipmap/ic_launcher\"\n"
       << "        android:hasCode=\"false\"\n"
-      << "        android:extractNativeLibs=\"false\"\n"
+      // Con scripts de C++ las .so se extraen: el proceso de los scripts se
+      // ejecuta desde nativeLibraryDir.
+      << "        android:extractNativeLibs=\"" << (input.cpp_scripts.sources.empty() ? "false" : "true") << "\"\n"
       << "        android:isGame=\"true\"\n"
       << "        android:appCategory=\"game\"\n"
       << "        android:allowBackup=\"true\"\n"
@@ -652,6 +655,30 @@ AndroidToolchain findAndroidToolchain(const fs::path& editor_folder, int target_
             break;
         }
     }
+    // El NDK (solo para los scripts de C++): ANDROID_NDK_HOME, ANDROID_NDK_ROOT
+    // o el mas nuevo del SDK Manager (ndk/<version>).
+    std::vector<fs::path> ndks;
+    for (const char* name : {"ANDROID_NDK_HOME", "ANDROID_NDK_ROOT"}) {
+        if (const std::string v = env(name); !v.empty()) ndks.push_back(fromUtf8(v));
+    }
+    std::vector<int> best_ndk;
+    fs::path newest_ndk;
+    for (fs::directory_iterator it(t.sdk / "ndk", e); !e && it != fs::directory_iterator(); it.increment(e)) {
+        const std::vector<int> v = versionNumbers(utf8(it->path().filename()));
+        if (fileExists(androidNdkClang(it->path())) && (newest_ndk.empty() || v > best_ndk)) {
+            best_ndk = v;
+            newest_ndk = it->path();
+        }
+    }
+    e.clear();
+    if (!newest_ndk.empty()) ndks.push_back(newest_ndk);
+    ndks.push_back(t.sdk / "ndk-bundle");
+    for (const fs::path& n : ndks) {
+        if (fileExists(androidNdkClang(n))) {
+            t.ndk = n;
+            break;
+        }
+    }
     if (t.build_tools.empty()) {
         t.error = "Faltan las build-tools del Android SDK (aapt2, zipalign, apksigner): instalalas desde el SDK Manager.";
     } else if (t.android_jar.empty()) {
@@ -660,6 +687,42 @@ AndroidToolchain findAndroidToolchain(const fs::path& editor_folder, int target_
         t.error = "No se encontro Java (keytool/apksigner lo necesitan): instala Android Studio o define JAVA_HOME.";
     }
     return t;
+}
+
+fs::path androidNdkClang(const fs::path& ndk) {
+    return ndk / "toolchains" / "llvm" / "prebuilt" / "windows-x86_64" / "bin" / "clang++.exe";
+}
+
+std::string androidClangTarget(const std::string& abi, int min_sdk) {
+    const std::string level = std::to_string(std::max(min_sdk, 21));
+    if (abi == "armeabi-v7a") return "armv7a-linux-androideabi" + level;
+    if (abi == "x86_64") return "x86_64-linux-android" + level;
+    if (abi == "x86") return "i686-linux-android" + level;
+    return "aarch64-linux-android" + level;
+}
+
+std::vector<std::string> androidScriptCompileArgs(const AndroidPackageInput& input, const std::string& abi, const fs::path& out) {
+    // Como en Windows (CppScripts.cpp), sin depuracion y con libc++ dentro
+    // de la .so; paginas de 16 KB (Android 15).
+    std::vector<std::string> args = {"--target=" + androidClangTarget(abi, input.min_sdk),
+                                     "-std=c++20",
+                                     "-O2",
+                                     "-fPIC",
+                                     "-shared",
+                                     "-static-libstdc++",
+                                     "-s",
+                                     "-Wl,-z,max-page-size=16384",
+                                     "-DCRAMION_CPP_SCRIPT",
+                                     "-Wall",
+                                     "-Wno-unused-parameter",
+                                     "-Wno-unused-private-field",
+                                     "-I" + utf8(input.cpp_scripts.sdk),
+                                     "-I" + utf8(input.cpp_scripts.assets_root)};
+    for (const fs::path& source : input.cpp_scripts.sources) args.push_back(utf8(source));
+    args.push_back(utf8(input.cpp_scripts.sdk / "cramion" / "ScriptMain.cpp"));
+    args.push_back("-o");
+    args.push_back(utf8(out));
+    return args;
 }
 
 bool buildAndroidPackage(const AndroidToolchain& tools, const AndroidPackageInput& input, const AndroidProgress& progress,
@@ -741,6 +804,31 @@ bool buildAndroidPackage(const AndroidToolchain& tools, const AndroidPackageInpu
         }
     }
 
+    // --- 1b. Scripts de C++ (clang++ del NDK, una .so por ABI) ---
+    // (abi, archivo dentro de lib/<abi>/, archivo)
+    std::vector<std::tuple<std::string, std::string, fs::path>> script_libraries;
+    if (!input.cpp_scripts.sources.empty()) {
+        if (tools.ndk.empty()) {
+            return fail("Los scripts de C++ necesitan el Android NDK: instalalo desde el SDK Manager de Android Studio "
+                        "(SDK Tools > NDK) o define ANDROID_NDK_HOME.");
+        }
+        for (const auto& [abi, so] : input.libraries) {
+            const fs::path host = input.cpp_scripts.host_folder / abi / "libcramion_scripthost.so";
+            if (!fileExists(host)) {
+                return fail("Falta android/" + abi + "/libcramion_scripthost.so junto al editor (el proceso de los scripts de C++): "
+                            "recompila el motor con el NDK.");
+            }
+            if (!step(0.03f, "Compilando los scripts de C++ (" + abi + ")")) return fail("Cancelado");
+            const fs::path out = work / "scripts" / abi / "libgame_scripts.so";
+            fs::create_directories(out.parent_path(), ec);
+            if (!tool(androidNdkClang(tools.ndk), androidScriptCompileArgs(input, abi, out), "Los scripts de C++ (" + abi + ")")) {
+                return false;
+            }
+            script_libraries.emplace_back(abi, "libgame_scripts.so", out);
+            script_libraries.emplace_back(abi, "libcramion_scripthost.so", host);
+        }
+    }
+
     // --- 2. Recursos (aapt2) ---
     const fs::path aapt2 = tools.build_tools / "aapt2.exe";
     if (!step(0.06f, "Compilando recursos (aapt2)")) return fail("Cancelado");
@@ -756,7 +844,7 @@ bool buildAndroidPackage(const AndroidToolchain& tools, const AndroidPackageInpu
     // Lo que va en el APK/AAB ademas de los recursos.
     const bool pack_inside = !input.pack.empty() && !(input.split_obb && !input.make_aab);
     const auto add_payload = [&](ZipWriter& zip, float from, float to) {
-        const std::size_t total = input.libraries.size() + input.assets.size() + (pack_inside ? 1 : 0);
+        const std::size_t total = input.libraries.size() + script_libraries.size() + input.assets.size() + (pack_inside ? 1 : 0);
         std::size_t done = 0;
         const auto tick = [&](const std::string& what) {
             ++done;
@@ -765,6 +853,10 @@ bool buildAndroidPackage(const AndroidToolchain& tools, const AndroidPackageInpu
         for (const auto& [abi, so] : input.libraries) {
             if (!zip.addFile("lib/" + abi + "/libmain.so", so, error)) return false;
             if (!tick("libmain.so (" + abi + ")")) return fail("Cancelado");
+        }
+        for (const auto& [abi, name, file] : script_libraries) {
+            if (!zip.addFile("lib/" + abi + "/" + name, file, error)) return false;
+            if (!tick(name + " (" + abi + ")")) return fail("Cancelado");
         }
         for (const auto& [name, file] : input.assets) {
             if (!zip.addFile("assets/" + name, file, error)) return false;
@@ -853,9 +945,11 @@ bool buildAndroidPackage(const AndroidToolchain& tools, const AndroidPackageInpu
         if (!copied) return false;
         if (!add_payload(zip, 0.54f, 0.78f)) return false;
         if (!zip.close(error)) return false;
-        // Los assets y las .so sin comprimir (el .crpack ya va comprimido).
+        // Los assets y las .so sin comprimir (el .crpack ya va comprimido). Con
+        // scripts de C++ las .so se extraen al instalar (extractNativeLibs).
         std::ofstream(work / "BundleConfig.json")
-            << "{\"compression\":{\"uncompressedGlob\":[\"assets/**\"]},\"optimizations\":{\"uncompressNativeLibraries\":{\"enabled\":true}}}";
+            << "{\"compression\":{\"uncompressedGlob\":[\"assets/**\"]},\"optimizations\":{\"uncompressNativeLibraries\":{\"enabled\":"
+            << (script_libraries.empty() ? "true" : "false") << "}}}";
         if (!step(0.8f, "Construyendo el bundle (bundletool)")) return fail("Cancelado");
         result.aab = input.output_folder / fromUtf8(input.file_stem + ".aab");
         fs::remove(result.aab, ec);

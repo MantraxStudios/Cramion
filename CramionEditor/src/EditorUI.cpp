@@ -31,7 +31,7 @@ void EditorApp::updateWorldUi() {
     renderer_.setWorldUi(buildWorldUi(ui_.worldCanvases(), imgui_, project_.assetsFolder()));
 }
 
-// Los eventos de la UI (clic, valor...) a los scripts de Lua y de C++.
+// Los eventos de la UI (clic, valor...) a los scripts de C++.
 void EditorApp::dispatchUiEvents() {
     for (const ui::UiEvent& e : ui_.takeEvents()) {
         switch (e.kind) {

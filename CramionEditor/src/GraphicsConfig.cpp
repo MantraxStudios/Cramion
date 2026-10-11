@@ -26,7 +26,7 @@ std::string lower(std::string s) {
     return s;
 }
 
-// Nombres de Lua de los enums (en el orden del enum).
+// Nombres de los enums en la API (en el orden del enum).
 constexpr std::array<const char*, 5> kUpscalerNames = {"off", "taa", "fsr1", "fsr3", "dlss"};
 constexpr std::array<const char*, 6> kResolutionNames = {"native", "quality", "balanced",
                                                          "performance", "ultra_performance", "custom"};
@@ -274,7 +274,7 @@ void applyWindowMode(HWND hwnd, WindowMode mode, int width, int height) {
 #endif
 
 // -----------------------------------------------------------------------------
-// Graphics (Lua)
+// Graphics (API de los scripts)
 // -----------------------------------------------------------------------------
 
 RendererGraphicsHost::RendererGraphicsHost(gfx::VulkanRenderer& renderer, HWND window, Saver saver)

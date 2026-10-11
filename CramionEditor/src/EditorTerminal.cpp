@@ -106,7 +106,7 @@ void EditorApp::openTerminal(TerminalKind kind) {
             }
             const std::string prompt =
                 "Estas dentro del editor del motor de juegos Cramion. Usa las herramientas MCP del servidor cramion "
-                "(empieza por la herramienta help) para ver y cambiar la escena, crear objetos, scripts Lua, "
+                "(empieza por la herramienta help) para ver y cambiar la escena, crear objetos, scripts de C++, "
                 "materiales y shaders, dar Play y hacer capturas. Responde en el idioma del usuario.";
             command = std::string("powershell.exe -NoLogo -NoExit -Command \"") + kRefreshPath +
                       "if (Get-Command claude -ErrorAction SilentlyContinue) { claude --mcp-config '" +

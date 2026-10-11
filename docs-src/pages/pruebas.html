@@ -1,42 +1,52 @@
 <p>
-  <strong>Pruebas automáticas</strong> (como el Test Runner de Unity): scripts de prueba con <code>Test.case</code> y
-  <code>Assert</code> que se ejecutan en el editor o desde la línea de comandos (integración continua). Hay pruebas de
-  <strong>edición</strong> (corren de golpe) y de <strong>Play</strong> (corren frame a frame en la escena: pueden esperar
-  segundos o a que pase algo).
+  <strong>Pruebas automáticas</strong> (como el Test Runner de Unity): pruebas de C++ con <code>CRAMION_TEST</code> y
+  <code>Assert</code> que se ejecutan en el editor o desde la línea de comandos (integración continua). Corren en
+  <strong>Play</strong>, una detrás de otra y frame a frame en la escena: pueden esperar frames, segundos o a que pase algo.
 </p>
 
 <h3 id="escribir">Escribir pruebas</h3>
 <p>
-  Son archivos <code>*.test.lua</code> en cualquier carpeta de Assets (o cualquier <code>.lua</code> dentro de
-  <code>Assets/Tests</code>). <em>Ventana &gt; Pruebas &gt; Nueva prueba</em> crea uno de ejemplo.
+  Son archivos <code>.cpp</code> dentro de <code>Assets/Tests</code> (o cualquier <code>.cpp</code> de Assets que use
+  <code>CRAMION_TEST</code>) que incluyen <code>&lt;cramion/Test.h&gt;</code>; se compilan con los demás scripts de C++.
+  <em>Ventana &gt; Pruebas &gt; Nueva prueba</em> crea uno de ejemplo.
 </p>
-<pre><code class="language-lua">Test.case("las matematicas funcionan", function()
-    Assert.equal(2 + 2, 4)
-    Assert.approx(math.sqrt(2), 1.41421, 0.0001)
-end)
+<pre><code class="language-cpp">#include &lt;cramion/Test.h&gt;
+#include &lt;cmath&gt;
+using namespace cramion;
 
-Test.case("el jugador cae al suelo", {play = true, timeout = 10}, function()
-    local jugador = Scene.find("Jugador")
-    Assert.notNil(jugador, "no hay jugador")
-    Test.waitSeconds(2)
-    Assert.less(jugador.position.y, 1.5)
-end)
+CRAMION_TEST(LasMatematicasFuncionan) {
+    Assert::equal(2 + 2, 4);
+    Assert::approx(std::sqrt(2.0), 1.41421, 0.0001);
+}
 
-Test.case("la puerta se abre", {play = true}, function()
-    local puerta = Scene.find("Puerta")
-    puerta:sendMessage("Abrir")
-    Test.waitUntil(function() return puerta.rotation.y > 80 end, 5, "la puerta no se abrio")
-end)</code></pre>
+CRAMION_TEST_TIMEOUT(ElJugadorCaeAlSuelo, 10.0f) {
+    Entity jugador = Scene::find("Jugador");
+    Assert::notNull(jugador, "no hay jugador");
+    co_await Test::waitSeconds(2.0f);
+    Assert::less(jugador.position().y, 1.5f);
+}
+
+CRAMION_TEST(ElJugadorSalta) {
+    Entity jugador = Scene::find("Jugador");
+    const float antes = jugador.position().y;
+    jugador.jump(2.0f);
+    co_await Test::waitSeconds(0.3f);
+    Assert::greater(jugador.position().y, antes, "no subio");
+    co_await Test::waitUntil([=] { return jugador.isGrounded(); }, 5.0f, "no volvio al suelo");
+}</code></pre>
 <p>
-  Esperas: <code>Test.wait(frames)</code>, <code>Test.waitSeconds(s)</code>, <code>Test.waitUntil(funcion, limite)</code>.
-  Comprobaciones: <code>Assert.isTrue/isFalse/equal/notEqual/approx/isNil/notNil/greater/less/atLeast/atMost/contains/throws/noError/fail</code>.
-  Una prueba falla en la primera comprobación que no se cumple (con su mensaje) o al pasar su tiempo máximo.
+  Esperas (con <code>co_await</code>): <code>Test::waitFrames(n)</code>, <code>Test::waitSeconds(s)</code>,
+  <code>Test::waitUntil(condicion, limite, mensaje)</code>; una prueba que espera sale antes con <code>co_return</code>.
+  Comprobaciones: <code>Assert::isTrue/isFalse/equal/notEqual/near/approx/isNull/notNull/greater/less/atLeast/atMost/throws/fail</code>.
+  Una prueba falla en la primera comprobación que no se cumple (con su mensaje), con una excepción o al pasar su tiempo
+  máximo (30 s, o el de <code>CRAMION_TEST_TIMEOUT</code>).
 </p>
 
 <h3 id="runner">Test Runner</h3>
 <p>
-  <em>Ventana &gt; Pruebas (Test Runner)</em>: <strong>Ejecutar todas</strong>, <em>Solo edición</em> o <em>Solo Play</em>.
-  Entra en Play en la escena abierta, ejecuta y vuelve a Edición. Los resultados salen agrupados por archivo (✔ bien, ✖ mal,
+  <em>Ventana &gt; Pruebas (Test Runner)</em>: <strong>Ejecutar todas</strong>, <em>Parar</em> y <em>Nueva prueba</em>.
+  Entra en Play en la escena abierta, pone un objeto <em>Pruebas</em> con el script <code>CramionTests</code> (el que las
+  ejecuta en orden), ejecuta y vuelve a Edición. Los resultados salen agrupados por archivo (✔ bien, ✖ mal,
   – saltada) con el mensaje, el tiempo y las comprobaciones.
 </p>
 

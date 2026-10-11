@@ -33,7 +33,7 @@ struct TouchButton {
     float x = 0.88f;   // centro, fraccion del ancho de la pantalla
     float y = 0.72f;   // centro, fraccion del alto
     float size = 1.0f; // multiplica el radio
-    bool visible = true; // al empezar (Lua: Input.setTouchButton(etiqueta, visible))
+    bool visible = true; // al empezar (Input::setTouchButton(etiqueta, visible))
 };
 
 struct TouchLayout {
@@ -64,7 +64,7 @@ public:
     void setLayout(const TouchLayout& layout);
     const TouchLayout& layout() const { return layout_; }
 
-    // Cambios en el juego (Lua). Lo que se apaga con un dedo encima se suelta
+    // Cambios en el juego (scripts). Lo que se apaga con un dedo encima se suelta
     // en el siguiente update().
     void setEnabled(bool enabled);
     void setJoystick(bool enabled);

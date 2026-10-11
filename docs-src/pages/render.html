@@ -5,7 +5,7 @@
   (exposición, bloom, color...) está en el componente <a href="componentes-basicos.html#PostProcessing">PostProcessing</a>.
 </p>
 <p>
-  Todo esto se puede cambiar también desde un script (un menú de opciones del juego) con la tabla
+  Todo esto se puede cambiar también desde un script (un menú de opciones del juego) con el namespace
   <a href="graphics.html">Graphics</a>.
 </p>
 
@@ -109,7 +109,7 @@
 <h3 id="sombras-rayos">Sombras por rayos del sol y de las luces</h3>
 <p>
   Con el <strong>trazado de rayos</strong> activado (GPU con rayos por hardware, calidad Ultra o
-  <code>Graphics.set("ray_tracing", true)</code>), el sol, las luces puntuales y los focos proyectan sombras trazadas
+  <code>Graphics::set("ray_tracing", true)</code>), el sol, las luces puntuales y los focos proyectan sombras trazadas
   contra la <a href="#escena-rayos">escena de rayos</a>:
 </p>
 <ul>
@@ -173,7 +173,7 @@
 </p>
 <p>
   Se activa en <em>Ajustes de render</em> (<em>Oclusión del cielo (sin RT)</em>) o con
-  <code>Graphics.set("sky_occlusion", false)</code>. Con el trazado de rayos no se usa: la GI de rayos ya lo ve.
+  <code>Graphics::set("sky_occlusion", false)</code>. Con el trazado de rayos no se usa: la GI de rayos ya lo ve.
 </p>
 
 <h3 id="penumbra">Sombras del sol con penumbra</h3>
@@ -273,7 +273,7 @@
   La <strong>niebla por altura</strong> se ajusta en el <a href="componentes-basicos.html#PostProcessing">post-procesado</a>:
   <em>Niebla</em> (densidad a nivel 0; 0,0018 por defecto, pensada para escenarios pequeños) y <em>Caída con la
   altura</em> (más = solo a ras de suelo). En un mundo de kilómetros baja la densidad a unos 0,0002 para ver lejos; con 0
-  no hay niebla. Afecta también al agua. Desde Lua: <code>Graphics.post.fog_density = 0.0002</code>.
+  no hay niebla. Afecta también al agua. Desde un script: <code>Graphics::setPost("fog_density", 0.0002)</code>.
 </p>
 <p>
   Para bosques enteros usa la <a href="editor-herramientas.html#vegetacion">Vegetación</a> en lugar de prefabs sueltos: los
@@ -301,7 +301,7 @@
   <li><strong>Memoria de vídeo</strong>: un modelo que lleva <code>render.streaming.IdleSeconds</code> (5) sin verse
     —todas sus instancias más pequeñas que <code>render.streaming.MinPixels</code> (medio píxel) en pantalla— libera sus
     mallas y texturas de la GPU y vuelve solo en cuanto se acerca. En un mundo grande, lo que queda lejos no ocupa VRAM.
-    <code>Graphics.get("models_evicted")</code> dice cuántos están fuera.</li>
+    <code>Graphics::get("models_evicted")</code> dice cuántos están fuera.</li>
 </ul>
 <p>
   Todo se ajusta con las CVars <code>render.streaming.*</code> (<em>Ventana &gt; Variables (CVars) y memoria</em>, la

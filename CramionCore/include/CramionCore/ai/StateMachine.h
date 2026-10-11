@@ -16,8 +16,8 @@
 //                  "OnStateUpdate" {machine, state, dt, time}  cada frame
 //                    mientras esta en el estado, solo si el estado tiene
 //                    "Enviar OnStateUpdate" (send_update; time = segundos en
-//                    el estado). Los .crfsm de antes que tienen codigo Lua en
-//                    un estado lo tienen puesto al leerlos.
+//                    el estado). Los .crfsm de antes que tienen codigo en un
+//                    estado lo tienen puesto al leerlos.
 //                (machine = nombre del .crfsm sin extension; from es nil al
 //                entrar en el estado de entrada.)
 //   Cualquier estado  sus transiciones salen de cualquier estado (morir,
@@ -29,8 +29,9 @@
 //                ("despues de N segundos en el estado") o una expresion
 //                ("vida < 30 and not alerta", ver ai/Expression.h).
 //                Mayor prioridad primero; a igual prioridad, el orden.
-//   El codigo Lua de los estados de antes (code, script, any_code) se lee y
-//   se guarda, pero ya no se ejecuta (validateStateMachine lo avisa).
+//   Los estados de antes de la 2.9 guardan su codigo (Lua) en code, script y
+//   any_code: se lee y se guarda, pero ya no se ejecuta (validateStateMachine
+//   lo avisa).
 //
 // En Play cada objeto con el componente StateMachine tiene su maquina. Desde
 // los scripts: entity.getStateMachine() -> sm.get/set, sm.go("Perseguir"),
@@ -88,7 +89,8 @@ struct Variable {
 
 // --- Asset ---------------------------------------------------------------------
 
-// Expression era "Lua" (el mismo valor; en el archivo, "lua" se lee igual).
+// Expression tiene el valor de la condicion de codigo de antes (en el
+// archivo, "lua" se lee igual).
 enum class ConditionKind : int { Variable = 0, Trigger = 1, Timer = 2, Expression = 3 };
 inline constexpr int kConditionKindCount = 4;
 
@@ -133,7 +135,7 @@ struct State {
     core::Vec2 position{};
     core::Vec3 color{0.30f, 0.30f, 0.33f};
     bool send_update = false;  // "OnStateUpdate" cada frame a los scripts del objeto
-    // De antes (Lua): se leen y se guardan, pero no se ejecutan.
+    // De antes de la 2.9: se leen y se guardan, pero no se ejecutan.
     std::string code;
     std::string script;
 };
@@ -144,7 +146,7 @@ struct StateMachineAsset {
     std::vector<State> states;
     std::vector<Transition> transitions;
     int entry_state = 0;
-    std::string any_code;  // codigo Lua de "Cualquier estado" (de antes; no se ejecuta)
+    std::string any_code;  // codigo de "Cualquier estado" (de antes; no se ejecuta)
     core::Vec2 entry_position{-280.0f, 0.0f};
     core::Vec2 any_state_position{-280.0f, 140.0f};
 
@@ -169,12 +171,12 @@ bool saveStateMachine(const StateMachineAsset& machine, const std::filesystem::p
 
 // Problemas que impiden o estropean la ejecucion (estado de entrada fuera de
 // rango, transicion a un estado que no existe, variable que no existe,
-// expresion que no se puede leer, codigo Lua de antes que ya no corre...).
+// expresion que no se puede leer, codigo de antes que ya no corre...).
 std::vector<std::string> validateStateMachine(const StateMachineAsset& machine);
 
-// El texto tiene codigo Lua de verdad (no solo comentarios ni las funciones
-// vacias de las plantillas del editor).
-bool hasLuaCode(const std::string& code);
+// El codigo de antes de un estado tiene algo de verdad (no solo comentarios
+// ni las funciones vacias de las plantillas del editor).
+bool hasLegacyCode(const std::string& code);
 
 // Maquina de ejemplo para enemigos: Patrullar -> Perseguir -> Atacar, Huir
 // con poca vida y Volver a casa. Sus variables (distancia, vida...) las pone

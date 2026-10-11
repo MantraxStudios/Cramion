@@ -90,6 +90,7 @@ if(UNIX AND NOT APPLE)
     add_dependencies(CramionScriptHost cramion_sdk_copy)
     add_dependencies(CramionServer CramionScriptHost)
     add_dependencies(CramionCppScriptTests CramionScriptHost)
+    add_dependencies(cramion_minigolf CramionScriptHost)
     return()
 endif()
 
@@ -178,12 +179,15 @@ if(CRAMION_ANDROID)
                 -DANDROID_STL=c++_static
                 -DCMAKE_BUILD_TYPE=Release
                 "-DCRAMION_COMPILE_JOBS=${_cramion_android_jobs}"
-            BUILD_COMMAND "${CMAKE_COMMAND}" --build "${_dir}" --target main
+            BUILD_COMMAND "${CMAKE_COMMAND}" --build "${_dir}" --target main cramion_scripthost
             # Sin simbolos (la de la carpeta de compilacion los conserva para
             # llvm-symbolizer): de ~250 MB a ~25 MB dentro del APK.
             INSTALL_COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_BINARY_DIR}/android/${_abi}"
                     COMMAND "${_cramion_strip}" --strip-unneeded "${_dir}/CramionEditor/libmain.so"
                             -o "${CMAKE_BINARY_DIR}/android/${_abi}/libmain.so"
+                    # El proceso de los scripts de C++ (un ejecutable, ver CramionEditor).
+                    COMMAND "${_cramion_strip}" --strip-unneeded "${_dir}/CramionEditor/libcramion_scripthost.so"
+                            -o "${CMAKE_BINARY_DIR}/android/${_abi}/libcramion_scripthost.so"
             BUILD_ALWAYS TRUE
             USES_TERMINAL_BUILD TRUE)
         add_dependencies(cramion_android_${_abi} CramionEditor)

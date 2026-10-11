@@ -181,7 +181,7 @@ const ComponentPreset* findPreset(const std::vector<ComponentPreset>& presets, c
     for (const ComponentPreset& p : presets) {
         if (p.name == name) return &p;
     }
-    // Sin distinguir mayusculas (MCP, Lua).
+    // Sin distinguir mayusculas (MCP, scripts).
     const auto lower = [](std::string s) {
         std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
         return s;

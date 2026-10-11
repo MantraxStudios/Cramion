@@ -1,5 +1,5 @@
 // Time, Scene, Prefs, Game, Profiler, CVar, Physics, Audio y Random: lo basico
-// del juego (lo mismo que tenian las tablas de Lua con esos nombres).
+// del juego (con los mismos nombres de siempre).
 
 #include "Modules.h"
 
@@ -22,7 +22,7 @@ using core::Vec3;
 
 constexpr float kPi = 3.14159265358979323846f;
 
-// Una entidad encontrada, o nil si no hay (como devolvia Lua).
+// Una entidad encontrada, o nil si no hay.
 api::Value foundEntity(const Runtime& rt, const ecs::Entity& e) { return e.valid() ? rt.entityValue(e) : api::Value{}; }
 
 // --- Time --------------------------------------------------------------------------
@@ -114,7 +114,7 @@ void registerScene(Runtime& rt) {
     // Origen flotante: la posicion real (doble precision) del (0,0,0) del
     // mundo, y conversiones. Para guardar posiciones en una partida:
     // Scene.toAbsolute al guardar y Scene.toLocal al cargar (el origen puede
-    // ser otro). Lua devolvia x, y, z: ahora una lista de tres numeros.
+    // ser otro). Devuelve una lista de tres numeros (x, y, z).
     rt.native.function("Scene.origin", [&rt](api::Call&) {
         if (rt.world == nullptr) return api::Value(api::Value::Array{0.0, 0.0, 0.0});
         const ecs::DVec3& o = rt.world->origin();
@@ -430,8 +430,8 @@ void registerRandom(Runtime& rt) {
         if (list.empty()) return api::Value{};
         return list[static_cast<std::size_t>(rng->integer(1, static_cast<int>(list.size())) - 1)];
     }, {"lista", "Un elemento al azar", "valor"});
-    // Lua barajaba la tabla que se le pasaba (y la devolvia); ahora devuelve
-    // la lista barajada (la del script no cambia: llega por copia).
+    // Devuelve la lista barajada (la del script no cambia: llega por
+    // copia).
     rt.native.function("Random.shuffle", [rng](api::Call& c) {
         api::Value::Array list = c.list(0).items();
         for (int i = static_cast<int>(list.size()); i > 1; --i) {

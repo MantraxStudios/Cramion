@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Input Actions · Documentación de Cramion</title>
-  <meta name="description" content="(Lua, obsoleto) Entrada como el Enhanced Input de Unreal: acciones Bool/float/Vec2/Vec3, varios contextos, muchas teclas por acción, modificadores y triggers.">
+  <meta name="description" content="Entrada como el Enhanced Input de Unreal: acciones Bool/float/Vec2/Vec3, varios contextos, muchas teclas por acción, modificadores y triggers.">
   <meta name="theme-color" content="#09090b">
   <link rel="icon" href="../img/icon.png">
   <script>
@@ -17,13 +17,12 @@
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/base16/tomorrow-night.min.css">
   <link rel="stylesheet" href="manual.css">
   <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/lua.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/glsl.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/json.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/bash.min.js"></script>
   <script src="search.js"></script>
 </head>
-<body data-group="Referencia de Lua (obsoleta)">
+<body data-group="Guías de scripting">
 
   <header class="site-header">
     <div class="header-inner">
@@ -65,13 +64,13 @@
       <nav>
         <div class="sheet-head"><a href="index.html" class="brand"><img src="../img/icon.png" alt=""><span>Cramion</span></a><button id="menu-close" class="icon-btn" aria-label="Cerrar el menú"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12"/></svg></button></div>
         <div class="group"><p class="group-title"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m3 11 9-8 9 8"/><path d="M5 10v10h14V10"/></svg>Inicio</p><a href="index.html">Introducción</a><a href="../index.html">Web de Cramion</a></div>
-        <div class="group"><p class="group-title"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5a2 2 0 0 1 2-2h13v16H6a2 2 0 0 0-2 2V5Z"/><path d="M4 19a2 2 0 0 1 2-2h13"/></svg>Primeros pasos</p><a href="primer-script.html">Tu primer script</a><a href="ciclo-de-vida.html">Ciclo de vida</a><a href="propiedades.html">Propiedades</a><a href="recarga.html">Recarga en caliente</a><a href="prefabs.html">Prefabs</a><a href="mcp.html">Conectar una IA (MCP)</a><a href="licencia.html">Licencia</a></div>
-        <div class="group"><p class="group-title"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m8 8-4 4 4 4"/><path d="m16 8 4 4-4 4"/><path d="m14 4-4 16"/></svg>API de C++</p><a href="scripts-cpp.html">Scripts en C++ y CVars</a><a href="cpp-script.html">Script y propiedades</a><a href="cpp-entity.html">Entity</a><a href="cpp-matematicas.html">Mathf, Vec3, Quat y Color</a><a href="cpp-scene.html">Scene</a><a href="cpp-input.html">Input</a><a href="cpp-physics.html">Physics</a><a href="cpp-time.html">Time</a><a href="cpp-debug.html">Debug</a><a href="cpp-lua.html">Lua (puente)</a><a href="cpp-cvars.html">CVars</a><a href="cpp-mesh.html">Mesh (mallas por código)</a><a href="cpp-statemachine.html">StateMachine</a><a href="cpp-assert.html">Assert</a><a href="cpp-audio.html">Audio</a><a href="cpp-behaviortree.html">BehaviorTree</a><a href="cpp-charactercontroller.html">CharacterController</a><a href="cpp-datapack.html">DataPack</a><a href="cpp-dialogue.html">Dialogue</a><a href="cpp-environment.html">Environment</a><a href="cpp-fire.html">Fire</a><a href="cpp-fluid.html">Fluid</a><a href="cpp-game.html">Game</a><a href="cpp-graphics.html">Graphics</a><a href="cpp-http.html">Http</a><a href="cpp-json.html">Json</a><a href="cpp-navigation.html">Navigation</a><a href="cpp-network.html">Network</a><a href="cpp-physics2d.html">Physics2D</a><a href="cpp-prefs.html">Prefs</a><a href="cpp-random.html">Random</a><a href="cpp-replay.html">Replay</a><a href="cpp-save.html">Save</a><a href="cpp-screen.html">Screen</a><a href="cpp-steam.html">Steam</a><a href="cpp-test.html">Test</a><a href="cpp-text.html">Text</a><a href="cpp-voxel.html">Voxel</a><a href="cpp-weather.html">Weather</a><a href="cpp-xr.html">XR</a></div>
+        <div class="group"><p class="group-title"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5a2 2 0 0 1 2-2h13v16H6a2 2 0 0 0-2 2V5Z"/><path d="M4 19a2 2 0 0 1 2-2h13"/></svg>Primeros pasos</p><a href="novedades-24.html">Novedades</a><a href="primer-script.html">Tu primer script</a><a href="ciclo-de-vida.html">Ciclo de vida</a><a href="propiedades.html">Propiedades</a><a href="recarga.html">Recarga en caliente</a><a href="prefabs.html">Prefabs</a><a href="mcp.html">Conectar una IA (MCP)</a><a href="licencia.html">Licencia</a></div>
+        <div class="group"><p class="group-title"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m8 8-4 4 4 4"/><path d="m16 8 4 4-4 4"/><path d="m14 4-4 16"/></svg>API de C++</p><a href="scripts-cpp.html">Scripts en C++ y CVars</a><a href="cpp-script.html">Script y propiedades</a><a href="cpp-entity.html">Entity</a><a href="cpp-matematicas.html">Mathf, Vec3, Quat y Color</a><a href="cpp-scene.html">Scene</a><a href="cpp-input.html">Input</a><a href="cpp-physics.html">Physics</a><a href="cpp-time.html">Time</a><a href="cpp-debug.html">Debug</a><a href="cpp-api.html">Api (por nombre)</a><a href="cpp-cvars.html">CVars</a><a href="cpp-mesh.html">Mesh (mallas por código)</a><a href="cpp-statemachine.html">StateMachine</a><a href="cpp-assert.html">Assert</a><a href="cpp-audio.html">Audio</a><a href="cpp-behaviortree.html">BehaviorTree</a><a href="cpp-charactercontroller.html">CharacterController</a><a href="cpp-datapack.html">DataPack</a><a href="cpp-dialogue.html">Dialogue</a><a href="cpp-environment.html">Environment</a><a href="cpp-fire.html">Fire</a><a href="cpp-fluid.html">Fluid</a><a href="cpp-game.html">Game</a><a href="cpp-graphics.html">Graphics</a><a href="cpp-http.html">Http</a><a href="cpp-json.html">Json</a><a href="cpp-navigation.html">Navigation</a><a href="cpp-network.html">Network</a><a href="cpp-physics2d.html">Physics2D</a><a href="cpp-prefs.html">Prefs</a><a href="cpp-random.html">Random</a><a href="cpp-replay.html">Replay</a><a href="cpp-save.html">Save</a><a href="cpp-screen.html">Screen</a><a href="cpp-steam.html">Steam</a><a href="cpp-test.html">Test</a><a href="cpp-text.html">Text</a><a href="cpp-voxel.html">Voxel</a><a href="cpp-weather.html">Weather</a><a href="cpp-xr.html">XR</a></div>
         <div class="group"><p class="group-title"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M9 9v11"/></svg>El editor</p><a href="editor-interfaz.html">Interfaz y pestañas</a><a href="editor-tema.html">Tema e Inspector</a><a href="editor-escena.html">Vista Escena y gizmos</a><a href="editor-jerarquia.html">Jerarquía e Inspector</a><a href="editor-proyecto.html">Proyecto e importación</a><a href="editor-play.html">Play, deshacer y escenas</a><a href="insights.html">Insights y rendimiento</a><a href="editor-herramientas.html">Herramientas de mundo</a><a href="modelado.html">Modelado poligonal</a><a href="2d.html">2D</a><a href="mundo-procedural.html">Mundo procedural</a><a href="ambiente.html">Ambiente y clima</a><a href="agua.html">Agua</a><a href="fuego.html">Fuego</a><a href="vfx-graph.html">VFX Graph</a><a href="liquidos.html">Líquidos</a><a href="destruccion.html">Destrucción</a><a href="vehiculos.html">Vehículos</a><a href="motion-matching.html">Motion Matching</a><a href="replays.html">Repeticiones</a><a href="editor-ventanas.html">Ventanas de herramientas</a><a href="maquinas-de-estados.html">Máquinas de estados</a><a href="visual-scripting.html">Visual Scripting</a><a href="behavior-trees.html">Behavior Trees</a><a href="dialogos.html">Diálogos</a><a href="localizacion.html">Localización</a><a href="guardado.html">Partidas guardadas</a><a href="materiales.html">Materiales</a><a href="shader-graph.html">Shader Graph</a><a href="render-textures.html">Render Textures</a><a href="render.html">Render y rendimiento</a><a href="iluminacion-horneada.html">Iluminación horneada</a><a href="exportar.html">Exportar y compilación</a><a href="steam.html">Steam</a><a href="linux.html">Linux</a><a href="git.html">Control de versiones (Git)</a><a href="pruebas.html">Pruebas automáticas</a><a href="datapacks.html">DataPacks (bundles)</a><a href="plantillas.html">Plantillas</a><a href="atajos.html">Atajos de teclado</a><a href="actualizaciones.html">Actualizaciones</a></div>
-        <div class="group"><p class="group-title"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m12 3 8 4.5v9L12 21l-8-4.5v-9L12 3Z"/><path d="m4 7.5 8 4.5 8-4.5M12 12v9"/></svg>Componentes</p><a href="componentes.html">Todos los componentes</a><a href="componentes-basicos.html">Transform y renderizado</a><a href="componentes-entorno.html">Entorno</a><a href="componentes-fisica.html">Física</a><a href="componentes-efectos.html">Partículas y depuración</a><a href="componentes-animacion.html">Animación</a><a href="componentes-audio.html">Audio</a><a href="componentes-cinematicas.html">Cámaras y cinemáticas</a><a href="componentes-navegacion.html">Navegación</a><a href="componentes-ui.html">Interfaz (UI)</a><a href="componentes-scripting.html">Scripts y prefabs</a><a href="componentes-2d.html">2D</a><a href="componentes-iluminacion.html">Iluminación horneada</a><a href="componentes-vr.html">Realidad virtual</a></div>
-        <div class="group"><p class="group-title"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a9 9 0 1 0 0 18c1.1 0 1.5-.8 1.5-1.5 0-.9-.7-1.2-.7-2 0-.8.6-1.5 1.5-1.5H16a5 5 0 0 0 5-5c0-4.4-4-8-9-8Z"/><circle cx="7.5" cy="11" r="1"/><circle cx="10" cy="7" r="1"/><circle cx="15" cy="7.5" r="1"/></svg>Gráficos</p><a href="shaders.html">Shaders propios</a></div>
+        <div class="group"><p class="group-title"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m12 3 8 4.5v9L12 21l-8-4.5v-9L12 3Z"/><path d="m4 7.5 8 4.5 8-4.5M12 12v9"/></svg>Componentes</p><a href="componentes.html">Todos los componentes</a><a href="componentes-basicos.html">Transform y renderizado</a><a href="componentes-entorno.html">Entorno</a><a href="componentes-fisica.html">Física</a><a href="componentes-efectos.html">Partículas y depuración</a><a href="componentes-animacion.html">Animación</a><a href="componentes-audio.html">Audio</a><a href="componentes-cinematicas.html">Cámaras y cinemáticas</a><a href="componentes-navegacion.html">Navegación</a><a href="componentes-ui.html">Interfaz (UI)</a><a href="componentes-scripting.html">Scripts y prefabs</a><a href="componentes-2d.html">2D</a><a href="componentes-iluminacion.html">Iluminación horneada</a><a href="componentes-vr.html">Realidad virtual</a><a href="componentes-mundo.html">Splines y mundos grandes</a><a href="componentes-ia.html">Multitudes</a></div>
+        <div class="group"><p class="group-title"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m8 8-4 4 4 4"/><path d="m16 8 4 4-4 4"/><path d="m14 4-4 16"/></svg>Guías de scripting</p><a href="input-actions.html" class="active" aria-current="page">Input Actions</a><a href="red.html">Network (multijugador)</a><a href="http.html">Http y Json</a><a href="realidad-virtual.html">Realidad virtual (XR)</a><a href="esqueletos.html">Esqueletos: IK, ragdoll y phys bones</a><a href="mallas.html">Mallas por código</a></div>
+        <div class="group"><p class="group-title"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a9 9 0 1 0 0 18c1.1 0 1.5-.8 1.5-1.5 0-.9-.7-1.2-.7-2 0-.8.6-1.5 1.5-1.5H16a5 5 0 0 0 5-5c0-4.4-4-8-9-8Z"/><circle cx="7.5" cy="11" r="1"/><circle cx="10" cy="7" r="1"/><circle cx="15" cy="7.5" r="1"/></svg>Gráficos</p><a href="shaders.html">Shaders propios</a><a href="graphics.html">Graphics (opciones gráficas)</a></div>
         <div class="group"><p class="group-title"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v4M12 17v4M3 12h4M17 12h4M6 6l2.5 2.5M15.5 15.5 18 18M6 18l2.5-2.5M15.5 8.5 18 6"/></svg>Ejemplos</p><a href="ejemplo-girar.html">Girar un objeto</a><a href="ejemplo-camara.html">Cámara que sigue al jugador</a><a href="ejemplo-jugador.html">Jugador con física</a><a href="ejemplo-disparo.html">Disparo con raycast</a><a href="ejemplo-monedas.html">Monedas y puntuación</a><a href="ejemplo-spawner.html">Generador de enemigos</a><a href="ejemplo-vehiculo.html">Conducir un vehículo</a><a href="ejemplo-menu.html">Menú, opciones y récord</a><a href="ejemplo-animacion.html">Animación de un personaje</a><a href="ejemplo-comunicacion.html">Scripts que se hablan</a><a href="ejemplo-ia.html">IA: patrullar y perseguir</a><a href="ejemplo-terreno.html">Terreno procedural con colisión</a><a href="ejemplo-efectos.html">Varios materiales y efectos</a><a href="ejemplo-olas.html">Olas: cambiar la malla cada frame</a></div>
-        <div class="group"><p class="group-title"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m8 8-4 4 4 4"/><path d="m16 8 4 4-4 4"/><path d="m14 4-4 16"/></svg>Referencia de Lua (obsoleta)</p><a href="vec3.html">Vec3</a><a href="quat.html">Quat (rotaciones)</a><a href="mathf.html">Mathf</a><a href="random.html">Random</a><a href="entity.html">Entity</a><a href="scene.html">Scene</a><a href="input.html">Input</a><a href="input-actions.html" class="active" aria-current="page">Input Actions</a><a href="realidad-virtual.html">Realidad virtual (XR)</a><a href="time.html">Time</a><a href="physics.html">Physics</a><a href="navegacion.html">Navegación</a><a href="mallas.html">Mallas por código</a><a href="voxel.html">Mundo de bloques</a><a href="audio.html">Audio</a><a href="ui.html">Interfaz (UI)</a><a href="esqueletos.html">Esqueletos: IK, ragdoll y phys bones</a><a href="graphics.html">Graphics</a><a href="red.html">Network (multijugador)</a><a href="http.html">Http y Json</a><a href="prefs.html">Prefs y Game</a><a href="debug.html">Debug</a></div>
         
       <div class="donate-card side-donate">
         <div class="t"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M19 14c1.5-1.5 3-3.2 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.8 0-3 .5-4.5 2-1.5-1.5-2.7-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4 3 5.5l7 7Z"/></svg>Apoya Cramion</div>
@@ -83,17 +82,16 @@
 
     <main class="doc">
       <div class="doc-inner">
-        <nav class="crumbs" aria-label="Ruta"><a href="index.html">Documentación</a><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m9 6 6 6-6 6"/></svg><span>Referencia de Lua (obsoleta)</span><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m9 6 6 6-6 6"/></svg><span class="here">Input Actions</span></nav>
+        <nav class="crumbs" aria-label="Ruta"><a href="index.html">Documentación</a><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m9 6 6 6-6 6"/></svg><span>Guías de scripting</span><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m9 6 6 6-6 6"/></svg><span class="here">Input Actions</span></nav>
         <h1>Input Actions</h1>
-        <p class="lede">(Lua, obsoleto) Entrada como el Enhanced Input de Unreal: acciones Bool/float/Vec2/Vec3, varios contextos, muchas teclas por acción, modificadores y triggers.</p>
+        <p class="lede">Entrada como el Enhanced Input de Unreal: acciones Bool/float/Vec2/Vec3, varios contextos, muchas teclas por acción, modificadores y triggers.</p>
         <details class="toc-inline"><summary>En esta página <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg></summary><nav class="onpage"></nav></details>
         <div class="body">
-<div class="note"><strong class="text-white">Lua está obsoleto.</strong> Sigue funcionando en los proyectos que lo usan, pero lo nuevo se escribe en C++: ver la <a href="cpp-script.html">API de C++</a> y <a href="primer-script.html">Tu primer script</a>.</div>
 <p>
         Como el <em>Enhanced Input</em> de Unreal: en vez de preguntar por teclas sueltas, el juego define
         <strong>acciones</strong> (lo que hace el jugador) y <strong>contextos</strong> (qué teclas, botones o ejes las
         activan). Una acción puede tener muchas teclas a la vez (teclado, ratón, mando y joystick táctil), y puedes tener
-        varias configuraciones (a pie, vehículo, vuelo, menú...) y activarlas o desactivarlas desde Lua.
+        varias configuraciones (a pie, vehículo, vuelo, menú...) y activarlas o desactivarlas desde C++.
       </p>
       <h3 id="editor">Dónde se configura</h3>
       <p>
@@ -111,7 +109,7 @@
         <thead><tr><th>Acción</th><th>Tipo</th><th>Teclas (contexto <code>Default</code>)</th></tr></thead>
         <tbody>
           <tr><td><code>Move</code></td><td>Axis2D (Vec2)</td><td>W/A/S/D, flechas, stick izquierdo, cruceta, joystick táctil, stick izquierdo de VR. <code>x</code> derecha, <code>y</code> adelante.</td></tr>
-          <tr><td><code>Look</code></td><td>Axis2D (Vec2)</td><td>Ratón (o arrastrar el dedo), stick derecho y stick derecho de VR (solo girar). Misma escala que <code>getAxis("Mouse X")</code>.</td></tr>
+          <tr><td><code>Look</code></td><td>Axis2D (Vec2)</td><td>Ratón (o arrastrar el dedo), stick derecho y stick derecho de VR (solo girar). Misma escala que <code>Input::axis("Mouse X")</code>.</td></tr>
           <tr><td><code>Jump</code></td><td>Bool</td><td>Space, mando A, VR A (derecha).</td></tr>
           <tr><td><code>Sprint</code></td><td>Bool</td><td>LeftShift, mando LS, pulsar el stick izquierdo de VR.</td></tr>
           <tr><td><code>Fire</code></td><td>Bool</td><td>Clic izquierdo, gatillo RT, gatillo derecho de VR.</td></tr>
@@ -124,12 +122,12 @@
 
       <h3 id="tipos">Tipos de valor</h3>
       <table>
-        <thead><tr><th>Tipo</th><th>En Lua (<code>Input.getAction</code>)</th><th>Ejemplo</th></tr></thead>
+        <thead><tr><th>Tipo</th><th>En C++ (<code>Input::getAction</code>, un <code>Value</code>)</th><th>Ejemplo</th></tr></thead>
         <tbody>
-          <tr><td>Bool (digital)</td><td><code>true</code> / <code>false</code></td><td>Saltar, disparar, usar.</td></tr>
-          <tr><td>Axis1D (float)</td><td>número</td><td>Acelerador, zoom, girar un volante.</td></tr>
-          <tr><td>Axis2D (Vec2)</td><td><code>Vec3</code> con <code>x</code>, <code>y</code> (<code>z</code> = 0)</td><td>Andar, mirar.</td></tr>
-          <tr><td>Axis3D (Vec3)</td><td><code>Vec3</code></td><td>Volar, nadar, cámara libre.</td></tr>
+          <tr><td>Bool (digital)</td><td><code>.asBool()</code></td><td>Saltar, disparar, usar.</td></tr>
+          <tr><td>Axis1D (float)</td><td><code>.asNumber()</code></td><td>Acelerador, zoom, girar un volante.</td></tr>
+          <tr><td>Axis2D (Vec2)</td><td><code>.asVec3()</code> con <code>x</code>, <code>y</code> (<code>z</code> = 0)</td><td>Andar, mirar.</td></tr>
+          <tr><td>Axis3D (Vec3)</td><td><code>.asVec3()</code></td><td>Volar, nadar, cámara libre.</td></tr>
         </tbody>
       </table>
       <p>
@@ -199,105 +197,116 @@
         <code>Fly</code> y no <code>Move</code>; al quitarlo, vuelve a <code>Move</code>.
       </p>
 
-      <h3 id="api">API de Lua</h3>
+      <h3 id="api">API de C++</h3>
+      <p>Están en el namespace <code>Input</code> y devuelven un <code>Value</code> (<code>.asBool()</code>, <code>.asNumber()</code>, <code>.asVec3()</code>, <code>.asString()</code>, <code>.isNil()</code>). Ver <a href="cpp-input.html">Input</a>.</p>
       <table>
         <tbody>
-          <tr><td><code>Input.getAction(accion)</code></td><td>Valor según su tipo: <code>true</code>/<code>false</code>, número o <code>Vec3</code>. <code>nil</code> (y un aviso) si no existe.</td></tr>
-          <tr><td><code>Input.getActionValue(accion)</code></td><td>Siempre un <code>Vec3</code>.</td></tr>
-          <tr><td><code>Input.getActionState(accion)</code></td><td><code>"none"</code>, <code>"ongoing"</code> o <code>"triggered"</code>.</td></tr>
-          <tr><td><code>Input.isActionTriggered(accion)</code></td><td>Disparada este frame (respeta los triggers: con Pressed, solo el frame de la pulsación).</td></tr>
-          <tr><td><code>Input.isActionOngoing(accion)</code></td><td>En curso sin disparar.</td></tr>
-          <tr><td><code>Input.wasActionStarted(accion)</code>, <code>…Completed</code>, <code>…Canceled</code></td><td>Ese evento pasó este frame.</td></tr>
-          <tr><td><code>Input.getActionElapsed(accion)</code></td><td>Segundos desde que empezó (cuánto se lleva manteniendo).</td></tr>
-          <tr><td><code>Input.bindAction(accion, evento, funcion)</code></td><td>Llama a <code>funcion(valor, segundos)</code> cuando pasa el evento (<code>"started"</code>, <code>"ongoing"</code>, <code>"triggered"</code>, <code>"completed"</code>, <code>"canceled"</code>), antes de los <code>Update</code>. Devuelve un id. Se quitan solas al parar el juego o cambiar de escena.</td></tr>
-          <tr><td><code>Input.unbindAction(id)</code></td><td>Quita un <code>bindAction</code>.</td></tr>
-          <tr><td><code>Input.getActions()</code></td><td>Lista con los nombres de las acciones.</td></tr>
-          <tr><td><code>Input.addMappingContext(nombre [, prioridad])</code></td><td>Activa un contexto (con su prioridad o la que se pase). <code>false</code> si no existe.</td></tr>
-          <tr><td><code>Input.removeMappingContext(nombre)</code></td><td>Lo desactiva.</td></tr>
-          <tr><td><code>Input.hasMappingContext(nombre)</code></td><td>Si está activo.</td></tr>
-          <tr><td><code>Input.clearMappingContexts()</code></td><td>Desactiva todos (nada responde hasta añadir uno).</td></tr>
-          <tr><td><code>Input.getMappingContexts()</code></td><td>Los activos, de más a menos prioridad.</td></tr>
-          <tr><td><code>Input.getBindings(accion)</code></td><td>Lista de <code>{context=, key=}</code> con sus teclas en todos los contextos.</td></tr>
-          <tr><td><code>Input.rebind(contexto, accion, n, tecla)</code></td><td>Cambia la tecla número <code>n</code> (1 = la primera) de esa acción en ese contexto. <code>false</code> si no existe, la tecla no es válida o la tecla no es <em>cambiable por el jugador</em>.</td></tr>
-          <tr><td><code>Input.saveBindings()</code></td><td>Guarda las teclas cambiadas (con los <code>Prefs</code> del juego): se cargan solas en la próxima partida.</td></tr>
-          <tr><td><code>Input.resetBindings()</code></td><td>Vuelve a las teclas del proyecto y borra las guardadas.</td></tr>
-          <tr><td><code>Input.anyKeyPressed()</code></td><td>La tecla o botón pulsado este frame (<code>"W"</code>, <code>"Mouse Left"</code>, <code>"Gamepad A"</code>) o <code>nil</code>. Para menús de "pulsa una tecla".</td></tr>
-          <tr><td><code>Input.getAxis(accion)</code></td><td>También vale con el nombre de una acción: su <code>x</code>.</td></tr>
+          <tr><td><code>Input::getAction(accion)</code></td><td>Valor según su tipo: bool, número o <code>Vec3</code>. Nil (y un aviso) si no existe.</td></tr>
+          <tr><td><code>Input::getActionValue(accion)</code></td><td>Siempre un <code>Vec3</code>.</td></tr>
+          <tr><td><code>Input::getActionState(accion)</code></td><td><code>"none"</code>, <code>"ongoing"</code> o <code>"triggered"</code>.</td></tr>
+          <tr><td><code>Input::isActionTriggered(accion)</code></td><td>Disparada este frame (respeta los triggers: con Pressed, solo el frame de la pulsación).</td></tr>
+          <tr><td><code>Input::isActionOngoing(accion)</code></td><td>En curso sin disparar.</td></tr>
+          <tr><td><code>Input::wasActionStarted(accion)</code>, <code>…Completed</code>, <code>…Canceled</code></td><td>Ese evento pasó este frame.</td></tr>
+          <tr><td><code>Input::getActionElapsed(accion)</code></td><td>Segundos desde que empezó (cuánto se lleva manteniendo).</td></tr>
+          <tr><td><code>Input::bindAction(accion, evento, funcion)</code></td><td>Llama a <code>funcion</code> (una lambda <code>[this](const Values&amp; a)</code>: <code>a[0]</code> es el valor y <code>a[1]</code> los segundos) cuando pasa el evento (<code>"started"</code>, <code>"ongoing"</code>, <code>"triggered"</code>, <code>"completed"</code>, <code>"canceled"</code>). Devuelve un id. Se quitan solas al parar el juego o cambiar de escena.</td></tr>
+          <tr><td><code>Input::unbindAction(id)</code></td><td>Quita un <code>bindAction</code>.</td></tr>
+          <tr><td><code>Input::getActions()</code></td><td>Lista con los nombres de las acciones.</td></tr>
+          <tr><td><code>Input::addMappingContext(nombre, prioridad)</code></td><td>Activa un contexto (con su prioridad o la que se pase; la prioridad es opcional). <code>false</code> si no existe.</td></tr>
+          <tr><td><code>Input::removeMappingContext(nombre)</code></td><td>Lo desactiva.</td></tr>
+          <tr><td><code>Input::hasMappingContext(nombre)</code></td><td>Si está activo.</td></tr>
+          <tr><td><code>Input::clearMappingContexts()</code></td><td>Desactiva todos (nada responde hasta añadir uno).</td></tr>
+          <tr><td><code>Input::getMappingContexts()</code></td><td>Los activos, de más a menos prioridad.</td></tr>
+          <tr><td><code>Input::getBindings(accion)</code></td><td>Lista de objetos <code>{context, key}</code> con sus teclas en todos los contextos.</td></tr>
+          <tr><td><code>Input::rebind(contexto, accion, n, tecla)</code></td><td>Cambia la tecla número <code>n</code> (1 = la primera) de esa acción en ese contexto. <code>false</code> si no existe, la tecla no es válida o la tecla no es <em>cambiable por el jugador</em>.</td></tr>
+          <tr><td><code>Input::saveBindings()</code></td><td>Guarda las teclas cambiadas (con los <code>Prefs</code> del juego): se cargan solas en la próxima partida.</td></tr>
+          <tr><td><code>Input::resetBindings()</code></td><td>Vuelve a las teclas del proyecto y borra las guardadas.</td></tr>
+          <tr><td><code>Input::anyKeyPressed()</code></td><td>La tecla o botón pulsado este frame (<code>"W"</code>, <code>"Mouse Left"</code>, <code>"Gamepad A"</code>) o nil. Para menús de "pulsa una tecla".</td></tr>
+          <tr><td><code>Input::getAxis(accion)</code></td><td>También vale con el nombre de una acción: su <code>x</code>.</td></tr>
         </tbody>
       </table>
 
       <h3 id="ejemplos">Ejemplos</h3>
       <p>Personaje con <code>Move</code> (Vec2), <code>Look</code> (Vec2), <code>Jump</code> (Bool) y <code>Zoom</code> (float):</p>
-      <pre><code>local Jugador = { properties = { velocidad = 5.0, sensibilidad = 2.0 } }
+      <pre><code class="language-cpp">#include &lt;cramion/Script.h&gt;
 
-function Jugador:Awake()
-    self.yaw = 0
-    -- Evento: una vez al pulsar (vale cualquier tecla de Jump: Space, mando A, boton tactil)
-    Input.bindAction("Jump", "started", function()
-        self.entity:addImpulse(Vec3(0, 5, 0))
-    end)
-end
+using namespace cramion;
 
-function Jugador:Update(dt)
-    local mover = Input.getAction("Move")      -- Vec3: x derecha, y adelante
-    local mirar = Input.getAction("Look")      -- Vec3: x girar, y arriba
-    local zoom  = Input.getAction("Zoom")      -- numero
-    local rapidez = self.velocidad
-    if Input.getAction("Sprint") then rapidez = rapidez * 2 end  -- Bool
+class Jugador : public Script {
+public:
+    Property&lt;float&gt; velocidad{this, "velocidad", 5.0f};
+    Property&lt;float&gt; sensibilidad{this, "sensibilidad", 2.0f};
 
-    self.yaw = self.yaw - mirar.x * self.sensibilidad
-    self.entity.rotation = Vec3(0, self.yaw, 0)
-    local dir = self.entity.right * mover.x + self.entity.forward * mover.y
-    self.entity:translate(dir * rapidez * dt)
-end
+    void awake() override {
+        // Evento: una vez al pulsar (vale cualquier tecla de Jump: Space, mando A, boton tactil)
+        Input::bindAction("Jump", "started", [this](const Values&amp;) {
+            entity().addImpulse(Vec3{0, 5, 0});
+        });
+    }
 
-return Jugador</code></pre>
+    void update(float dt) override {
+        const Vec3 mover = Input::getAction("Move").asVec3();     // x derecha, y adelante
+        const Vec3 mirar = Input::getAction("Look").asVec3();     // x girar, y arriba
+        const float zoom = Input::getAction("Zoom").asFloat();    // numero
+        float rapidez = velocidad;
+        if (Input::getAction("Sprint").asBool()) rapidez *= 2.0f; // Bool
+
+        yaw_ -= mirar.x * sensibilidad;
+        entity().setRotation(Vec3{0, yaw_, 0});
+        const Vec3 dir = entity().right() * mover.x + entity().forward() * mover.y;
+        entity().translate(dir * (rapidez * dt));
+    }
+
+private:
+    float yaw_ = 0.0f;
+};
+
+CRAMION_SCRIPT(Jugador)</code></pre>
       <p>Cambiar de configuración: subir a un vehículo o ponerse a volar (Vec3):</p>
-      <pre><code>function Jugador:Update(dt)
-    if Input.isActionTriggered("Interact") then          -- trigger Pressed: una vez
-        if Input.hasMappingContext("Vuelo") then
-            Input.removeMappingContext("Vuelo")
-        else
-            Input.addMappingContext("Vuelo")             -- prioridad 1: se queda W/A/S/D/E/Q
-        end
-    end
-    if Input.hasMappingContext("Vuelo") then
-        local v = Input.getAction("Fly")                 -- Vec3: x derecha, y arriba, z adelante
-        self.entity:translate(Vec3(v.x, v.y, v.z) * 8 * dt)
-    end
-end</code></pre>
+      <pre><code class="language-cpp">void Jugador::update(float dt) {
+    if (Input::isActionTriggered("Interact").asBool()) {       // trigger Pressed: una vez
+        if (Input::hasMappingContext("Vuelo").asBool()) {
+            Input::removeMappingContext("Vuelo");
+        } else {
+            Input::addMappingContext("Vuelo");                 // prioridad 1: se queda W/A/S/D/E/Q
+        }
+    }
+    if (Input::hasMappingContext("Vuelo").asBool()) {
+        const Vec3 v = Input::getAction("Fly").asVec3();       // x derecha, y arriba, z adelante
+        entity().translate(v * (8.0f * dt));
+    }
+}</code></pre>
       <p>Mantener para cargar (trigger <em>Hold And Release</em> de 0.6 s en la acción <code>Fire</code>):</p>
-      <pre><code>Input.bindAction("Fire", "ongoing", function(v, t)
-    Debug.log("cargando " .. string.format("%.1f", t))
-end)
-Input.bindAction("Fire", "triggered", function() self:dispararFuerte() end)
-Input.bindAction("Fire", "canceled", function() self:dispararNormal() end)</code></pre>
+      <pre><code class="language-cpp">Input::bindAction("Fire", "ongoing", [](const Values&amp; a) {
+    Debug::log("cargando " + a[1].asString());
+});
+Input::bindAction("Fire", "triggered", [this](const Values&amp;) { dispararFuerte(); });
+Input::bindAction("Fire", "canceled", [this](const Values&amp;) { dispararNormal(); });</code></pre>
       <p>Menú de opciones: "pulsa una tecla" para cambiar el salto y guardarlo:</p>
-      <pre><code>function Opciones:Update(dt)
-    if self.esperando then
-        local tecla = Input.anyKeyPressed()
-        if tecla == "Escape" then
-            self.esperando = false
-        elseif tecla then
-            if Input.rebind("Default", "Jump", 1, tecla) then
-                Input.saveBindings()
-            end
-            self.esperando = false
-        end
-    end
-end
+      <pre><code class="language-cpp">void Opciones::update(float dt) {
+    if (esperando_) {
+        const Value tecla = Input::anyKeyPressed();
+        if (tecla.asString() == "Escape") {
+            esperando_ = false;
+        } else if (!tecla.isNil()) {
+            if (Input::rebind("Default", "Jump", 1, tecla).asBool()) {
+                Input::saveBindings();
+            }
+            esperando_ = false;
+        }
+    }
+}
 
-function Opciones:mostrarTeclas()
-    for _, b in ipairs(Input.getBindings("Jump")) do
-        Debug.log(b.context .. ": " .. b.key)
-    end
-end</code></pre>
+void Opciones::mostrarTeclas() {
+    for (const Value&amp; b : Input::getBindings("Jump").items()) {
+        Debug::log(b["context"].asString() + ": " + b["key"].asString());
+    }
+}</code></pre>
       <p>
-        Las funciones de siempre (<code>Input.getKey</code>, <code>getAxis("Horizontal")</code>...) siguen funcionando;
+        Las funciones de siempre (<code>Input::key</code>, <code>Input::axis("Horizontal")</code>...) siguen funcionando;
         se pueden mezclar con las acciones.
       </p>
         </div>
-        <nav class="pager" aria-label="Paginación"><a href="input.html"><span>← Anterior</span><b>Input</b></a><a class="next" href="realidad-virtual.html"><span>Siguiente →</span><b>Realidad virtual (XR)</b></a></nav>
+        <nav class="pager" aria-label="Paginación"><a href="componentes-ia.html"><span>← Anterior</span><b>Multitudes</b></a><a class="next" href="red.html"><span>Siguiente →</span><b>Network (multijugador)</b></a></nav>
         <div class="help"><span>¿Algo no queda claro o falta algo? Pregunta en el
           <a href="https://discord.gg/zG7rSsUGEz" target="_blank" rel="noopener">Discord</a>.</span>
           <a href="https://paypal.me/evan2025" target="_blank" rel="noopener" class="btn btn-outline btn-sm"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M19 14c1.5-1.5 3-3.2 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.8 0-3 .5-4.5 2-1.5-1.5-2.7-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4 3 5.5l7 7Z"/></svg>Apoyar el proyecto</a></div>
@@ -319,7 +328,7 @@ end</code></pre>
 
   <footer class="site-footer">
     <div class="footer-inner">
-      <span>Cramion Engine · manual de la 2.3. Gratis para hacer y vender tus juegos.</span>
+      <span>Cramion Engine · manual de la 2.9. Gratis para hacer y vender tus juegos.</span>
       <nav>
         <a href="../index.html">Web</a>
         <a href="licencia.html">Licencia</a>

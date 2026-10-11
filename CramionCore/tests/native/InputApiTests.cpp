@@ -397,7 +397,7 @@ void testDocs() {
         ++count;
         if (e.doc.description.empty()) ++missing;
     }
-    check(count == 47 + 5 + 22, "47 de Input, 5 de Screen y 22 de XR (como la API de Lua)");
+    check(count == 47 + 5 + 22, "47 de Input, 5 de Screen y 22 de XR");
     check(missing == 0, "todas con descripcion");
 }
 

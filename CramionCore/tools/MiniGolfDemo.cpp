@@ -3,10 +3,10 @@
 //
 //   cramion_minigolf <kit/Models/FBX format> <tools/minigolf> <carpeta destino> [--probar]
 //
-// <tools/minigolf> tiene Scripts/*.lua y Audio/*.wav (golf_audio.py). Con
-// --probar, ademas juega cada hoyo sin ventana (fisica + scripts) con un
-// piloto automatico: la pelota tiene que acabar en el hoyo y el nivel pedir la
-// escena siguiente.
+// <tools/minigolf> tiene Scripts/ (scripts de C++) y Audio/*.wav
+// (golf_audio.py). Con --probar, ademas compila los scripts y juega cada hoyo
+// sin ventana (fisica + scripts) con un piloto automatico: la pelota tiene que
+// acabar en el hoyo y el nivel pedir la escena siguiente.
 
 #include "CramionCore/asset/AssetDatabase.h"
 #include "CramionCore/asset/AssetManager.h"
@@ -20,8 +20,11 @@
 #include "CramionCore/physics/PhysicsComponents.h"
 #include "CramionCore/physics/PhysicsSystem.h"
 #include "CramionCore/project/Project.h"
+#include "CramionCore/scripting/CppScripts.h"
 #include "CramionCore/scripting/Scripting.h"
 #include "CramionCore/ui/UI.h"
+
+#include <nlohmann/json.hpp>
 
 #include <algorithm>
 #include <cctype>
@@ -111,6 +114,17 @@ struct Builder {
     std::map<std::string, Uuid> models;
     std::map<std::string, Uuid> materials;
 
+    // Un script de C++ de Assets/Scripts (la clase se llama como el archivo).
+    static void script(ecs::Entity e, const std::string& name, const std::vector<scripting::CppScriptValue>& values = {}) {
+        scripting::CppScript& s = e.add<scripting::CppScript>();
+        s.script = "Scripts/" + name + ".cpp";
+        s.class_name = name;
+        for (const auto& v : values) s.setValue(v.name, v.json);
+    }
+    static std::string text(const std::string& value) { return nlohmann::json(value).dump(); }
+    static std::string num(double value) { return nlohmann::json(value).dump(); }
+    static std::string vec3(Vec3 v) { return nlohmann::json{{"$v", {v.x, v.y, v.z}}}.dump(); }
+
     ecs::Entity model(ecs::World& world, const std::string& name, ecs::Entity parent = {}) {
         const auto asset = manager.loadModel(models.at(name));
         if (!asset) throw std::runtime_error("no se pudo cargar " + name);
@@ -177,9 +191,7 @@ struct Builder {
                                                            lower.find("top") != std::string::npos);
                 if (blades) {
                     if (!decorative) {
-                        scripting::Script& s = e.add<scripting::Script>();
-                        s.file = "Scripts/Girar.lua";
-                        s.properties = {{"eje", scripting::PropertyType::Vector, "0 0 1"}, {"velocidad", scripting::PropertyType::Number, "70"}};
+                        script(e, "Girar", {{"eje", vec3(Vec3{0, 0, 1})}, {"velocidad", "70"}});
                     }
                     return;
                 }
@@ -209,8 +221,7 @@ struct Builder {
         flag.setName("Bandera");
         flag.setLocalPosition(c.hole);
         if (!decorative) {
-            scripting::Script& s = flag.add<scripting::Script>();
-            s.file = "Scripts/Bandera.lua";
+            script(flag, "Bandera");
         }
         return c;
     }
@@ -299,9 +310,7 @@ struct Builder {
         rb.allow_sleep = false;
         ecs::Entity visual = model(world, "ball-red", ball);
         visual.setName("Modelo");
-        scripting::Script& bs = ball.add<scripting::Script>();
-        bs.file = "Scripts/Pelota.lua";
-        bs.properties = {{"yawInicial", scripting::PropertyType::Number, std::to_string(c.tee_yaw)}};
+        script(ball, "Pelota", {{"yawInicial", num(c.tee_yaw)}});
 
         // Mira: puntos blancos delante de la pelota.
         for (int i = 1; i <= 8; ++i) {
@@ -319,18 +328,14 @@ struct Builder {
         if (ecs::Entity cam = world.findByName("Main Camera"); cam.valid()) {
             const float r = c.tee_yaw * 3.14159265f / 180.0f;
             cam.setLocalPosition(c.tee + Vec3{std::sin(r) * 3.2f, 1.7f, std::cos(r) * 3.2f});
-            scripting::Script& s = cam.add<scripting::Script>();
-            s.file = "Scripts/CamaraGolf.lua";
+            script(cam, "CamaraGolf");
         }
 
         // Nivel: marcador, musica y paso al siguiente.
         ecs::Entity manager = world.create("Nivel");
-        scripting::Script& ns = manager.add<scripting::Script>();
-        ns.file = "Scripts/Nivel.lua";
-        ns.properties = {{"numero", scripting::PropertyType::Number, std::to_string(number)},
-                         {"nombre", scripting::PropertyType::Text, level.name},
-                         {"par", scripting::PropertyType::Number, std::to_string(level.par)},
-                         {"siguiente", scripting::PropertyType::Text, level.next}};
+        script(manager, "Nivel",
+               {{"numero", std::to_string(number)}, {"nombre", text(level.name)}, {"par", std::to_string(level.par)},
+                {"siguiente", text(level.next)}});
         music(world, manager, "Audio/nivel.wav", 0.35f);
 
         ecs::Entity canvas = world.create("HUD");
@@ -368,15 +373,10 @@ struct Builder {
         environment(world);
         const Course c = course(world, kLevels[4], true);
         if (ecs::Entity cam = world.findByName("Main Camera"); cam.valid()) {
-            scripting::Script& s = cam.add<scripting::Script>();
-            s.file = "Scripts/Orbita.lua";
-            char centro[96];
-            std::snprintf(centro, sizeof(centro), "%.2f 0.5 %.2f", c.center.x, c.center.z);
-            s.properties = {{"centro", scripting::PropertyType::Vector, centro}, {"radio", scripting::PropertyType::Number, "11"},
-                            {"altura", scripting::PropertyType::Number, "6"}};
+            script(cam, "Orbita", {{"centro", vec3(Vec3{c.center.x, 0.5f, c.center.z})}, {"radio", "11"}, {"altura", "6"}});
         }
         ecs::Entity manager = world.create("Menu");
-        manager.add<scripting::Script>().file = "Scripts/Menu.lua";
+        script(manager, "Menu");
         music(world, manager, "Audio/menu.wav", 0.5f);
 
         ecs::Entity canvas = world.create("Interfaz");
@@ -396,14 +396,10 @@ struct Builder {
         environment(world);
         const Course c = course(world, kLevels[0], true);
         if (ecs::Entity cam = world.findByName("Main Camera"); cam.valid()) {
-            scripting::Script& s = cam.add<scripting::Script>();
-            s.file = "Scripts/Orbita.lua";
-            char centro[96];
-            std::snprintf(centro, sizeof(centro), "%.2f 0.5 %.2f", c.center.x, c.center.z);
-            s.properties = {{"centro", scripting::PropertyType::Vector, centro}, {"radio", scripting::PropertyType::Number, "8"}};
+            script(cam, "Orbita", {{"centro", vec3(Vec3{c.center.x, 0.5f, c.center.z})}, {"radio", "8"}});
         }
         ecs::Entity manager = world.create("Resultados");
-        manager.add<scripting::Script>().file = "Scripts/Resultados.lua";
+        script(manager, "Resultados");
         music(world, manager, "Audio/menu.wav", 0.4f);
 
         ecs::Entity canvas = world.create("Interfaz");
@@ -440,7 +436,78 @@ std::optional<assets::AssetInfo> findByPath(const assets::AssetDatabase& db, con
 }
 
 // --- Prueba sin ventana: un piloto automatico juega cada hoyo ---
+fs::path scriptHost() {
+#if defined(_WIN32)
+    return fs::path(CRAMION_BIN_DIR) / "CramionScriptHost.exe";
+#else
+    return fs::path(CRAMION_BIN_DIR) / "CramionScriptHost";
+#endif
+}
+
+// Los sistemas de scripts de una escena: la API (ScriptSystem) y los scripts
+// de C++ ya compilados (CppScriptSystem).
+struct Scripts {
+    scripting::ScriptSystem api;
+    scripting::CppScriptSystem cpp;
+    std::vector<std::string> errors;
+
+    Scripts(const project::ProjectInfo& project, const fs::path& dll, physics::PhysicsSystem* physics) {
+        api.setAssetsRoot(project.assetsFolder());
+        api.setPhysics(physics);
+        api.setPrefsFile(fs::temp_directory_path() / "cramion_minigolf_test.prefs");
+        api.setLog([this](int lvl, const std::string& m) {
+            if (lvl >= 2) errors.push_back(m);
+        });
+        cpp.setAssetsRoot(project.assetsFolder());
+        cpp.setBuildFolder(project.libraryFolder() / "CppScripts");
+        cpp.setSdkFolder(CRAMION_SDK_DIR);
+        cpp.setHostExecutable(scriptHost());
+        cpp.setPhysics(physics);
+        cpp.setScriptSystem(&api);
+        cpp.usePrebuilt(dll);
+    }
+    void start(ecs::World& world) {
+        api.start(world);
+        cpp.start(world);
+    }
+    void step(ecs::World& world, float dt, int steps) {
+        api.fixedUpdate(world, dt, steps);
+        cpp.fixedUpdate(world, dt, steps);
+        api.update(world, dt);
+        cpp.update(world, dt);
+    }
+    // Los errores del log y los de los scripts de C++ (sin repetir).
+    std::vector<std::string> allErrors() const {
+        std::vector<std::string> out = errors;
+        for (const scripting::ScriptError& e : cpp.errors()) out.push_back(e.file + ":" + std::to_string(e.line) + " " + e.message);
+        return out;
+    }
+    void stop() {
+        cpp.stop();
+        api.stop();
+    }
+};
+
 int playTest(const project::ProjectInfo& project, assets::AssetDatabase& database, assets::AssetManager& manager) {
+    // Los scripts de C++ del proyecto, compilados una vez.
+    scripting::CppScriptSystem::setToolchainRoot(fs::path(CRAMION_BIN_DIR) / "toolchain");
+    fs::path dll;
+    {
+        scripting::CppScriptSystem cpp;
+        cpp.setAssetsRoot(project.assetsFolder());
+        cpp.setBuildFolder(project.libraryFolder() / "CppScripts");
+        cpp.setSdkFolder(CRAMION_SDK_DIR);
+        cpp.setHostExecutable(scriptHost());
+        const scripting::CppCompileResult built = cpp.compile();
+        std::printf("  scripts de C++ compilados en %.1f s (%s)\n", built.seconds, built.compiler.c_str());
+        for (const scripting::ScriptError& e : built.errors) std::printf("        %s:%d %s\n", e.file.c_str(), e.line, e.message.c_str());
+        if (!built.ok) {
+            std::printf("  FALLO no compilan los scripts de C++\n");
+            return 1;
+        }
+        dll = built.dll;
+    }
+
     int failures = 0;
     for (std::size_t n = 0; n < kLevels.size(); ++n) {
         const Level& level = kLevels[n];
@@ -453,14 +520,7 @@ int playTest(const project::ProjectInfo& project, assets::AssetDatabase& databas
         }
         physics::PhysicsSystem physics;
         physics.setAssetManager(&manager);
-        scripting::ScriptSystem scripts;
-        scripts.setAssetsRoot(project.assetsFolder());
-        scripts.setPhysics(&physics);
-        scripts.setPrefsFile(fs::temp_directory_path() / "cramion_minigolf_test.prefs");
-        std::vector<std::string> lua_errors;
-        scripts.setLog([&](int lvl, const std::string& m) {
-            if (lvl >= 2) lua_errors.push_back(m);
-        });
+        Scripts scripts(project, dll, &physics);
         physics.start(world);
         scripts.start(world);
         ecs::Entity ball = world.findByName("Pelota");
@@ -479,9 +539,8 @@ int playTest(const project::ProjectInfo& project, assets::AssetDatabase& databas
         Vec3 last_shot = ball.worldPosition();
         for (int frame = 0; frame < 60 * 240 && next_scene.empty(); ++frame) {
             const int steps = physics.update(world, dt, true);
-            scripts.fixedUpdate(world, 1.0f / 60.0f, steps);
-            scripts.update(world, dt);
-            if (const fs::path req = scripts.takeSceneRequest(); !req.empty()) next_scene = req.stem().string();
+            scripts.step(world, dt, steps);
+            if (const fs::path req = scripts.api.takeSceneRequest(); !req.empty()) next_scene = req.stem().string();
             if (!ball.valid()) break;
             const Vec3 p = ball.worldPosition();
             const float speed = core::length(physics.linearVelocity(ball));
@@ -521,11 +580,12 @@ int playTest(const project::ProjectInfo& project, assets::AssetDatabase& databas
                 still = 0.0f;
             }
         }
-        const bool ok = next_scene == level.next && lua_errors.empty();
+        const std::vector<std::string> errors = scripts.allErrors();
+        const bool ok = next_scene == level.next && errors.empty();
         std::printf("  %s %-8s %-13s par %d: %2d tiros del piloto, escena siguiente \"%s\"%s\n", ok ? "OK   " : "FALLO",
                     level.scene.c_str(), level.name.c_str(), level.par, shots, next_scene.c_str(),
                     resets > 0 ? " (se salio alguna vez)" : "");
-        for (const std::string& m : lua_errors) std::printf("        Lua: %s\n", m.c_str());
+        for (const std::string& m : errors) std::printf("        %s\n", m.c_str());
         if (!ok) ++failures;
         scripts.stop();
         physics.stop();
@@ -535,15 +595,10 @@ int playTest(const project::ProjectInfo& project, assets::AssetDatabase& databas
         ecs::World world;
         std::string error;
         ecs::loadScene(world, project.assetsFolder() / "Escenas" / (std::string(name) + ".crscene"), &error);
-        scripting::ScriptSystem scripts;
-        scripts.setAssetsRoot(project.assetsFolder());
-        scripts.setPrefsFile(fs::temp_directory_path() / "cramion_minigolf_test.prefs");
-        std::vector<std::string> lua_errors;
-        scripts.setLog([&](int lvl, const std::string& m) {
-            if (lvl >= 2) lua_errors.push_back(m);
-        });
+        Scripts scripts(project, dll, nullptr);
         scripts.start(world);
-        for (int i = 0; i < 30; ++i) scripts.update(world, 1.0f / 60.0f);
+        for (int i = 0; i < 30; ++i) scripts.step(world, 1.0f / 60.0f, 0);
+        const std::vector<std::string> errors = scripts.allErrors();
         std::string extra;
         if (std::string(name) == "Resultados") {
             const ecs::Entity total = world.findByName("Res_Total");
@@ -552,9 +607,9 @@ int playTest(const project::ProjectInfo& project, assets::AssetDatabase& databas
             const ecs::Entity record = world.findByName("Menu_Record");
             extra = record.valid() ? record.get<ui::Text>().text : "";
         }
-        std::printf("  %s %-10s \"%s\"\n", lua_errors.empty() ? "OK   " : "FALLO", name, extra.c_str());
-        for (const std::string& m : lua_errors) std::printf("        Lua: %s\n", m.c_str());
-        if (!lua_errors.empty()) ++failures;
+        std::printf("  %s %-10s \"%s\"\n", errors.empty() ? "OK   " : "FALLO", name, extra.c_str());
+        for (const std::string& m : errors) std::printf("        %s\n", m.c_str());
+        if (!errors.empty()) ++failures;
         scripts.stop();
     }
     (void)database;
@@ -575,6 +630,7 @@ int main(int argc, char** argv) {
     try {
         physics::registerPhysicsComponents();
         scripting::registerScriptComponents();
+        scripting::registerCppScriptComponents();
         ui::registerUiComponents();
         audio::registerAudioComponents();
 

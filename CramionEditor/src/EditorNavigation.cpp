@@ -376,7 +376,7 @@ void EditorApp::drawNavigationWindow() {
         "La malla sale de la geometría de colisión (como en Unreal): colliders de caja, esfera, cápsula, malla y "
         "plano, y terrenos con colisión. No cuentan los triggers, los Rigidbody dinámicos ni los agentes. "
         "Crea un volumen con Crear > Navegación y añade el componente Agente de navegación a lo que tenga que "
-        "moverse (en Lua: self.entity:moveTo(destino)).");
+        "moverse (desde un script: entity().moveTo(destino)).");
     ImGui::End();
 }
 

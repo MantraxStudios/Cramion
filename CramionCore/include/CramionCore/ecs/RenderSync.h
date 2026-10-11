@@ -153,7 +153,7 @@ public:
     // Caja en el espacio del modelo de un actor (para seleccionar con rayos).
     bool actorLocalBounds(std::uint32_t actor, core::Vec3& min, core::Vec3& max) const;
 
-    // --- Esqueletos (Lua y el editor) ---
+    // --- Esqueletos (scripts y el editor) ---
     // La entidad con esqueleto de `e`: ella o su primer descendiente animado
     // (que tenga `bone`, si se pide).
     Entity skinnedEntity(World& world, Entity e, const std::string* bone);

@@ -388,10 +388,8 @@ using RenderTexture = AssetRef<AssetKind::RenderTexture>;
 using EnvironmentAsset = AssetRef<AssetKind::Environment>;
 using StateMachineAsset = AssetRef<AssetKind::StateMachine>;
 
-// Archivos sueltos de Assets (imagenes, sonidos, shaders...).
-// LuaScript (2) queda solo por los proyectos antiguos (Property<LuaScript>): el
-// motor ya no ejecuta Lua. Obsoleto: no lo uses en scripts nuevos.
-enum class FileKind : int { Texture = 0, Audio = 1, LuaScript = 2, Shader = 3, Any = 4 };
+// Archivos sueltos de Assets (imagenes, sonidos, codigo, shaders...).
+enum class FileKind : int { Texture = 0, Audio = 1, Source = 2, Shader = 3, Any = 4 };
 template <FileKind K>
 struct FileRef {
     std::string path;
@@ -402,7 +400,7 @@ struct FileRef {
 };
 using Texture = FileRef<FileKind::Texture>;
 using AudioClip = FileRef<FileKind::Audio>;
-using LuaScript = FileRef<FileKind::LuaScript>;  // obsoleto (proyectos antiguos)
+using SourceFile = FileRef<FileKind::Source>;  // un .cpp / .h del proyecto
 using ShaderFile = FileRef<FileKind::Shader>;
 using AnyFile = FileRef<FileKind::Any>;
 
@@ -808,14 +806,6 @@ inline void set(std::string_view path, const Value& v) { detail::apiSet(path, v)
 /// Como call, sin esperar la respuesta (va en el lote: mas rapido).
 void send(std::string_view fn, Values args = {});
 }  // namespace Api
-
-// Obsoleto (se quitara en la proxima version): el motor ya no tiene Lua. Usa Api::.
-namespace [[deprecated("Lua:: ya no existe: usa Api::call, Api::get y Api::set")]] Lua {
-inline Value call(std::string_view fn, Values args = {}) { return Api::call(fn, std::move(args)); }
-inline Value get(std::string_view path) { return Api::get(path); }
-inline void set(std::string_view path, const Value& v) { Api::set(path, v); }
-inline void send(std::string_view fn, Values args = {}) { Api::send(fn, std::move(args)); }
-}  // namespace Lua
 
 // --- CVars ---
 namespace detail {

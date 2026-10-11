@@ -23,9 +23,9 @@
 // Triggered, Completed, Canceled.
 //
 // Se guarda en el proyecto: ProjectSettings/InputActions.json (Archivo >
-// Entrada del proyecto). En Lua: Input.getAction("Move"),
-// Input.bindAction("Jump", "triggered", fn), Input.addMappingContext(...),
-// Input.rebind(...).
+// Entrada del proyecto). En los scripts: Input::getAction("Move"),
+// Input::bindAction("Jump", "triggered", fn), Input::addMappingContext(...),
+// Input::rebind(...).
 
 #include <CramionDM/Input.h>
 

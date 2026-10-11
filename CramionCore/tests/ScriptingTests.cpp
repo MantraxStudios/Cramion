@@ -2,8 +2,8 @@
 //
 // La API (Graphics, huesos, IK, ragdoll, getField/setField...) tiene sus
 // pruebas en tests/native (una por modulo). Aqui: las escenas de antes de la
-// 2.9 con scripts de Lua (se cargan, avisan y no se ejecutan), la plantilla de
-// script nuevo y el audio.
+// 2.9 con el componente Script (se abren sin el), la plantilla de script nuevo
+// y el audio.
 
 #include "CramionCore/audio/Audio.h"
 #include "CramionCore/environment/Environment.h"
@@ -15,6 +15,7 @@
 #include "CramionCore/scripting/Scripting.h"
 
 #include <CramionDM/Input.h>
+#include <nlohmann/json.hpp>
 
 #include <cmath>
 #include <cstdint>
@@ -42,44 +43,24 @@ void check(bool condition, const char* what) {
 const std::filesystem::path kRoot = std::filesystem::temp_directory_path() / "cramion_script_assets";
 
 void testScripts() {
-    std::printf("Scripts: escenas con Lua (obsoleto) y plantilla\n");
+    std::printf("Scripts: escenas de antes de la 2.9 y plantilla\n");
     scripting::registerScriptComponents();
+    // Una escena con el componente Script de antes (ya no existe): se abre
+    // igual, sin el componente y con lo demas.
     ecs::World world;
-    ecs::Entity mover = world.create("Mover");
-    scripting::Script& script = mover.add<scripting::Script>();
-    script.file = "Scripts/Mover.lua";
-    script.properties.push_back({"velocidad", scripting::PropertyType::Number, "10"});
-    world.create("Otro").add<scripting::Script>().file = "Scripts/Otro.lua";
-
-    scripting::ScriptSystem system;
-    system.setAssetsRoot(kRoot);
-    std::vector<std::string> log;
-    system.setLog([&](int, const std::string& m) { log.push_back(m); });
-    const auto warnings = [&] {
-        int n = 0;
-        for (const std::string& m : log) n += m.find("ya no ejecuta Lua") != std::string::npos ? 1 : 0;
-        return n;
-    };
-    system.start(world);
-    const Vec3 before = mover.worldPosition();
-    for (int i = 0; i < 10; ++i) system.update(world, 0.1f);
-    check(warnings() == 1 && log.front().find("2 objeto(s)") != std::string::npos,
-          "una escena con scripts de Lua avisa una vez (cuantos objetos)");
-    check(core::length(mover.worldPosition() - before) < 1e-6f && system.errors().empty(),
-          "el script de Lua no se ejecuta (ni da errores)");
-    system.stop();
-    system.start(world);
-    system.update(world, 0.1f);
-    check(warnings() == 1, "al volver a darle a Play no se repite el aviso");
-    system.stop();
-
-    // El componente (y sus valores) se conserva en la escena para convertirlo.
+    world.create("Mover").setLocalPosition(Vec3{1, 2, 3});
+    nlohmann::json scene = nlohmann::json::parse(ecs::serializeWorld(world));
+    bool injected = false;
+    for (auto& record : scene["entities"]) {
+        if (record.value("name", std::string()) != "Mover") continue;
+        record["components"]["Script"] = {{"file", "Scripts/Mover.script"}, {"enabled", true}};
+        injected = true;
+    }
     ecs::World copy;
-    ecs::deserializeWorld(copy, ecs::serializeWorld(world));
+    const bool loaded = ecs::deserializeWorld(copy, scene.dump());
     const ecs::Entity c = copy.findByName("Mover");
-    check(c.valid() && c.has<scripting::Script>() && c.get<scripting::Script>().file == "Scripts/Mover.lua" &&
-              c.get<scripting::Script>().properties.size() == 1 && c.get<scripting::Script>().properties[0].value == "10",
-          "el Script de Lua (y sus valores) se conserva en la escena");
+    check(injected && loaded && c.valid() && core::length(c.worldPosition() - Vec3{1, 2, 3}) < 1e-4f,
+          "una escena con el componente Script de antes se abre (sin el)");
     check(scripting::scriptTemplate("MiJugador").find("void MiJugador::update(float dt)") != std::string::npos,
           "plantilla de script nuevo (C++)");
 }

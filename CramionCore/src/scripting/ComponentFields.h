@@ -25,7 +25,7 @@ inline std::string lower(std::string s) {
 }  // namespace fields_detail
 
 
-// --- Campos de componentes por su clave (Graphics.post, entity:getField) ---
+// --- Campos de componentes por su clave (Graphics.post, entity().getField) ---
 // Recorre la reflexion de un componente (la misma del Inspector y de los
 // .crscene) para leer o cambiar un campo por su clave ("bloom",
 // "look_weight", "chains[2].pull"...). Las listas se nombran con [indice]

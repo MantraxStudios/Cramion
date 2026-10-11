@@ -8,6 +8,8 @@
 #include "CramionCore/audio/VoiceChat.h"
 #include "CramionCore/gameplay/Accessibility.h"
 #include "CramionCore/project/Mods.h"
+#include "CramionCore/scripting/ModEntry.h"
+#include "CramionCore/scripting/VisualScript.h"
 #include "CramionCore/spline/Spline.h"
 #include "CramionCore/ui/UI.h"
 #include "CramionCore/world/WorldPartition.h"
@@ -391,6 +393,38 @@ void testCrowdModsJobs(ApiFixture& t) {
     check(!t.call("Mods.setEnabled", {Value("NoExiste"), Value(true)}).truthy(), "Mods.setEnabled de un mod que no existe");
     check(!t.call("Mods.isLoaded", {Value("MasCoches")}).truthy(), "Mods.isLoaded (sin montar)");
     project::setActiveMods(nullptr);
+
+    // La entrada de un mod: la plantilla trae un main.crgraph que corre en un
+    // objeto de la escena; un main.lua de antes se avisa y no corre.
+    fs::remove_all(base / "Mods", ec);
+    std::string template_error;
+    check(project::ModManager::createTemplate(base / "Mods" / "Saludo", "Saludo", &template_error) &&
+              fs::exists(base / "Mods" / "Saludo" / "main.crgraph"),
+          "plantilla de mod con main.crgraph");
+    fs::create_directories(base / "Mods" / "Viejo", ec);
+    std::ofstream(base / "Mods" / "Viejo" / "main.lua") << "print('hola')\n";
+    project::ModManager entry_mods;
+    entry_mods.setSearchFolders({base / "Mods"});
+    entry_mods.setStateFile(base / "mods_state2.json");
+    entry_mods.scan();
+    const fs::path assets = base / "Assets";
+    fs::create_directories(assets, ec);
+    std::vector<std::string> mount_errors;
+    entry_mods.mountEnabled(assets, base / "journal.txt", &mount_errors);
+    bool lua_warned = false;
+    for (const std::string& e : mount_errors) lua_warned = lua_warned || e.find("Lua") != std::string::npos;
+    check(lua_warned, "un main.lua de antes: aviso al montar");
+    ecs::World mod_world;
+    int started = 0;
+    for (const project::ModMount& m : entry_mods.mounted()) {
+        std::string error;
+        const ecs::Entity e = project::startModEntry(mod_world, assets, m, &error);
+        if (e && e.has<vscript::VisualScript>() && e.get<vscript::VisualScript>().graph == "Mods/Saludo/main.crgraph") ++started;
+    }
+    vscript::Graph graph;
+    check(started == 1 && vscript::loadGraph(assets / "Mods" / "Saludo" / "main.crgraph", graph) && graph.nodes.size() == 3 && graph.links.size() == 1,
+          "startModEntry: un objeto con el Visual Script del mod");
+    entry_mods.unmountAll(assets, base / "journal.txt");
     fs::remove_all(base, ec);
 
     check(t.call("Jobs.workers").isNumber() && t.call("Jobs.workers").asNumber() >= 0, "Jobs.workers");

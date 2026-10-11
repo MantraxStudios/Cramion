@@ -25,7 +25,7 @@
 //   iluminacion, respetando la profundidad de la escena.
 //
 //   Lectura: posiciones y velocidades vuelven a la CPU un par de frames
-//   tarde (flotacion de los Rigidbody, consultas de densidad, Lua).
+//   tarde (flotacion de los Rigidbody, consultas de densidad, scripts).
 
 #include "CramionFX/core/Math.h"
 #include "CramionFX/vk/VulkanBuffer.h"

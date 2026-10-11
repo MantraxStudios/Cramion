@@ -21,7 +21,7 @@
 // manual de Steamworks (SteamAPI_ManualDispatch_*): sin hilos.
 //
 // Los identificadores de Steam (usuarios, salas, items) son de 64 bits: van
-// como texto ("76561198000000000") para que Lua no pierda precision.
+// como texto ("76561198000000000") para no perder precision en un double.
 
 #include <cstdint>
 #include <filesystem>

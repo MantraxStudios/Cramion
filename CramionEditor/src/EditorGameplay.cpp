@@ -274,7 +274,7 @@ void EditorApp::drawLocalizationWindow() {
         st.loc_new_key.clear();
         st.localization_dirty = true;
     }
-    ImGui::TextDisabled("Argumentos: {0}, {nombre}. Plurales: clave#one / clave#other ({n}). En Lua: Text.get(\"clave\", ...).");
+    ImGui::TextDisabled("Argumentos: {0}, {nombre}. Plurales: clave#one / clave#other ({n}). Desde un script: Text::get(\"clave\", ...).");
 
     const int columns = 2 + static_cast<int>(loc.languages.size());
     if (ImGui::BeginTable("loc_table", columns,
@@ -352,7 +352,7 @@ void EditorApp::drawSavesWindow() {
     gameplay::SaveSystem& saves = scripts_.saveSystem();
     ImGui::TextDisabled("Carpeta: %s", dialogs::utf8(saves.folder()).c_str());
     ImGui::TextWrapped("En el editor las partidas van a Library/Saves; en el juego exportado a %%APPDATA%%/<juego>/saves. "
-                       "Marca los objetos con el componente Saveable. En Lua: Save.save(\"slot1\"), Save.load(\"slot1\").");
+                       "Marca los objetos con el componente Saveable. Desde un script: Save::save(\"slot1\"), Save::load(\"slot1\").");
     if (playing()) {
         ImGui::SetNextItemWidth(160.0f);
         ImGui::InputText("##slot", &st.save_slot);

@@ -52,7 +52,7 @@ const api::Value& firstFunction(const api::Call& c, std::size_t from) {
 }
 
 // Los argumentos (desde `from`) que no son funciones, en orden: asi el
-// callback puede ir donde lo ponia Lua o al final, como en la documentacion.
+// callback puede ir en medio de los argumentos o al final, como en la documentacion.
 std::vector<api::Value> rest(const api::Call& c, std::size_t from) {
     std::vector<api::Value> out;
     for (std::size_t i = from; i < c.count(); ++i) {
@@ -158,7 +158,7 @@ void registerSteamApi(Runtime& rt) {
                        },
                        {"\"Puntos\", 1200, function(ok, puesto) end", "sube una puntuacion al marcador"});
     // downloadScores(marcador, modo = "global", desde, hasta, callback(ok, filas)); el
-    // callback tambien puede ir segundo (como en Lua).
+    // callback tambien puede ir segundo.
     rt.native.function("Steam.downloadScores",
                        [state, &steam](api::Call& c) {
                            const Fire fire = keep(state, firstFunction(c, 1));

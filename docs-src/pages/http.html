@@ -2,22 +2,26 @@
   <code>Http</code> manda y recibe datos de <strong>servidores y webs por HTTPS</strong>: tu propia API, un marcador de
   puntuaciones online, cuentas de jugador, noticias del juego o telemetría. Las peticiones van en <strong>segundo
   plano</strong> (el juego no se para) y la respuesta llega a una función que se llama en el hilo del juego, como un
-  <code>Update</code> más. <code>Json</code> convierte entre tablas de Lua y texto JSON.
+  <code>update</code> más. <code>Json</code> convierte entre un <code>Value</code> y texto JSON.
 </p>
 
-<pre><code class="language-lua">-- Leer
-Http.get("https://api.mijuego.com/noticias", function(res)
-    if not res.ok then
-        print("No se pudo: " .. res.error)
-        return
-    end
-    for _, n in ipairs(res.data.noticias) do print(n.titulo) end   -- res.data = JSON ya decodificado
-end)
+<pre><code class="language-cpp">// Leer
+Http::get("https://api.mijuego.com/noticias", [](const Values&amp; a) {
+    const Value&amp; res = a[0];
+    if (!res["ok"].asBool()) {
+        Debug::log("No se pudo: " + res["error"].asString());
+        return;
+    }
+    for (const Value&amp; n : res["data"]["noticias"].items())   // res["data"] = JSON ya decodificado
+        Debug::log(n["titulo"].asString());
+});
 
--- Enviar una tabla (va como JSON)
-Http.post("https://api.mijuego.com/puntos", { jugador = "Ana", puntos = 1200 }, function(res)
-    print(res.status)          -- 201
-end, { Authorization = "Bearer " .. token })</code></pre>
+// Enviar un objeto (va como JSON)
+Http::post("https://api.mijuego.com/puntos", Value{{"jugador", "Ana"}, {"puntos", 1200}},
+    [](const Values&amp; a) {
+        Debug::log(a[0]["status"].asString());   // 201
+    },
+    Value{{"Authorization", "Bearer " + token}});</code></pre>
 
 <h3 id="seguridad">Seguridad</h3>
 <ul>
@@ -39,64 +43,74 @@ end, { Authorization = "Bearer " .. token })</code></pre>
 <table>
   <thead><tr><th>Función</th><th>Qué hace</th></tr></thead>
   <tbody>
-    <tr><td><code>Http.get(url, funcion, cabeceras)</code></td><td>Petición GET. <code>cabeceras</code> (opcional) es una tabla <code>{ Nombre = "valor" }</code>. Devuelve el id de la petición, o <code>nil, motivo</code> si la dirección no vale (por ejemplo <code>http://</code> a Internet).</td></tr>
-    <tr><td><code>Http.post(url, datos, funcion, cabeceras)</code></td><td>Petición POST. <code>datos</code>: un texto (se manda tal cual, <code>text/plain</code>) o una tabla (se manda como JSON, <code>application/json</code>). Una <code>Content-Type</code> propia en las cabeceras manda sobre esas.</td></tr>
-    <tr><td><code>Http.request(opciones, funcion)</code></td><td>Cualquier método: <code>{ url, method = "PUT"/"PATCH"/"DELETE"..., headers, body, timeout = 20 (segundos), maxSize = bytes }</code>.</td></tr>
-    <tr><td><code>Http.pending()</code></td><td>Peticiones sin terminar.</td></tr>
-    <tr><td><code>Http.cancelAll()</code></td><td>Cancela todas (sus funciones ya no se llaman).</td></tr>
-    <tr><td><code>Http.urlEncode(texto)</code></td><td>Texto seguro para meterlo en una URL: <code>"hola mundo"</code> → <code>"hola%20mundo"</code>.</td></tr>
-    <tr><td><code>Http.query(tabla)</code></td><td>Parámetros de consulta: <code>Http.query{ q = "ana", page = 2 }</code> → <code>"page=2&amp;q=ana"</code>.</td></tr>
-    <tr><td><code>Json.encode(valor, bonito)</code></td><td>Tabla → texto JSON. Una tabla con claves 1..n es una lista; si no, un objeto. <code>Vec3</code> sale como <code>{x, y, z}</code>. <code>bonito = true</code> lo sangra. Devuelve <code>nil, motivo</code> si hay algo que no se puede pasar (funciones).</td></tr>
-    <tr><td><code>Json.decode(texto)</code></td><td>Texto JSON → tabla (las listas desde 1; <code>null</code> pasa a <code>nil</code>). <code>nil, motivo</code> si no es JSON.</td></tr>
+    <tr><td><code>Http::get(url, funcion, cabeceras)</code></td><td>Petición GET. <code>funcion</code> es una lambda <code>[](const Values&amp; a) {}</code> que recibe la respuesta en <code>a[0]</code>. <code>cabeceras</code> (opcional) es un objeto <code>Value{{"Nombre", "valor"}}</code>. Devuelve el id de la petición, o un valor vacío (<code>isNil()</code>) si la dirección no vale (por ejemplo <code>http://</code> a Internet).</td></tr>
+    <tr><td><code>Http::post(url, datos, funcion, cabeceras)</code></td><td>Petición POST. <code>datos</code>: un texto (se manda tal cual, <code>text/plain</code>) o un objeto o lista (se manda como JSON, <code>application/json</code>). Una <code>Content-Type</code> propia en las cabeceras manda sobre esas.</td></tr>
+    <tr><td><code>Http::request(opciones, funcion)</code></td><td>Cualquier método. <code>opciones</code> es un objeto con <code>url</code>, <code>method</code> (<code>"PUT"</code>, <code>"PATCH"</code>, <code>"DELETE"</code>...), <code>headers</code>, <code>body</code>, <code>timeout</code> (segundos, 20) y <code>maxSize</code> (bytes): <code>Value{{"url", url}, {"method", "DELETE"}}</code>.</td></tr>
+    <tr><td><code>Http::pending()</code></td><td>Peticiones sin terminar.</td></tr>
+    <tr><td><code>Http::cancelAll()</code></td><td>Cancela todas (sus funciones ya no se llaman).</td></tr>
+    <tr><td><code>Http::urlEncode(texto)</code></td><td>Texto seguro para meterlo en una URL: <code>"hola mundo"</code> → <code>"hola%20mundo"</code>.</td></tr>
+    <tr><td><code>Http::query(objeto)</code></td><td>Parámetros de consulta: <code>Http::query(Value{{"q", "ana"}, {"page", 2}})</code> → <code>"page=2&amp;q=ana"</code>.</td></tr>
+    <tr><td><code>Json::encode(valor, bonito)</code></td><td><code>Value</code> → texto JSON. Una lista sale como lista y un objeto como objeto. <code>Vec3</code> sale como <code>{x, y, z}</code>. <code>bonito = true</code> lo sangra. Si hay algo que no se puede pasar (funciones), devuelve un valor vacío y avisa en la Consola.</td></tr>
+    <tr><td><code>Json::decode(texto)</code></td><td>Texto JSON → <code>Value</code> (las listas desde 0, con <code>[i]</code> o <code>.items()</code>; <code>null</code> pasa a vacío). Si no es JSON, un valor vacío y un aviso en la Consola.</td></tr>
   </tbody>
 </table>
 
 <h3 id="respuesta">La respuesta</h3>
 <table>
-  <thead><tr><th>Campo</th><th>Qué es</th></tr></thead>
+  <thead><tr><th>Campo (de <code>res = a[0]</code>)</th><th>Qué es</th></tr></thead>
   <tbody>
-    <tr><td><code>res.ok</code></td><td><code>true</code> si llegó respuesta con estado 2xx.</td></tr>
-    <tr><td><code>res.status</code></td><td>Estado HTTP (200, 201, 404, 500...). <code>0</code> si no hubo respuesta (sin Internet, certificado malo, tiempo agotado).</td></tr>
-    <tr><td><code>res.body</code></td><td>El cuerpo como texto.</td></tr>
-    <tr><td><code>res.data</code></td><td>Si la respuesta es JSON, ya decodificada en tablas.</td></tr>
-    <tr><td><code>res.headers</code></td><td>Cabeceras de la respuesta, con el nombre en minúsculas: <code>res.headers["content-type"]</code>.</td></tr>
-    <tr><td><code>res.error</code></td><td>Por qué falló (texto), si no es <code>ok</code>.</td></tr>
-    <tr><td><code>res.time</code></td><td>Segundos que tardó.</td></tr>
+    <tr><td><code>res["ok"]</code></td><td><code>true</code> (<code>.asBool()</code>) si llegó respuesta con estado 2xx.</td></tr>
+    <tr><td><code>res["status"]</code></td><td>Estado HTTP (200, 201, 404, 500...). <code>0</code> si no hubo respuesta (sin Internet, certificado malo, tiempo agotado).</td></tr>
+    <tr><td><code>res["body"]</code></td><td>El cuerpo como texto.</td></tr>
+    <tr><td><code>res["data"]</code></td><td>Si la respuesta es JSON, ya decodificada (objetos y listas).</td></tr>
+    <tr><td><code>res["headers"]</code></td><td>Cabeceras de la respuesta, con el nombre en minúsculas: <code>res["headers"]["content-type"]</code>.</td></tr>
+    <tr><td><code>res["error"]</code></td><td>Por qué falló (texto), si no es <code>ok</code>.</td></tr>
+    <tr><td><code>res["time"]</code></td><td>Segundos que tardó.</td></tr>
   </tbody>
 </table>
 
 <h3 id="ejemplo">Ejemplo: marcador online</h3>
-<pre><code class="language-lua">local Marcador = {
-    properties = { servidor = "https://api.mijuego.com" }
-}
+<pre><code class="language-cpp">#include &lt;cramion/Script.h&gt;
+using namespace cramion;
 
-function Marcador:Start()
-    self.texto = Scene.find("UI_Marcador")
-    self:cargar()
-end
+class Marcador : public Script {
+public:
+    Property&lt;std::string&gt; servidor{this, "servidor", "https://api.mijuego.com"};
 
-function Marcador:cargar()
-    local url = self.servidor .. "/puntos?" .. Http.query{ nivel = 1, limite = 10 }
-    Http.get(url, function(res)
-        if not res.ok then
-            self.texto.text = "Sin conexion (" .. res.error .. ")"
-            return
-        end
-        local lineas = {}
-        for i, fila in ipairs(res.data) do
-            lineas[#lineas + 1] = i .. ". " .. fila.nombre .. "  " .. fila.puntos
-        end
-        self.texto.text = table.concat(lineas, "\n")
-    end)
-end
+    void start() override {
+        texto_ = Scene::find("UI_Marcador");
+        cargar();
+    }
 
-function Marcador:enviar(nombre, puntos)
-    Http.post(self.servidor .. "/puntos", { nombre = nombre, puntos = puntos }, function(res)
-        if res.ok then self:cargar() end
-    end, { Authorization = "Bearer " .. Prefs.getString("token", "") })
-end
+    void cargar() {
+        const std::string url = servidor.get() + "/puntos?" + Http::query(Value{{"nivel", 1}, {"limite", 10}}).asString();
+        Http::get(url, [this](const Values&amp; a) {
+            const Value&amp; res = a[0];
+            if (!res["ok"].asBool()) {
+                texto_.setText("Sin conexión (" + res["error"].asString() + ")");
+                return;
+            }
+            std::string lineas;
+            int i = 1;
+            for (const Value&amp; fila : res["data"].items())
+                lineas += std::to_string(i++) + ". " + fila["nombre"].asString() + "  " + fila["puntos"].asString() + "\n";
+            texto_.setText(lineas);
+        });
+    }
 
-return Marcador</code></pre>
+    void enviar(const std::string&amp; nombre, int puntos) {
+        Http::post(servidor.get() + "/puntos", Value{{"nombre", nombre}, {"puntos", puntos}},
+            [this](const Values&amp; a) {
+                if (a[0]["ok"].asBool()) cargar();
+            },
+            Value{{"Authorization", "Bearer " + Prefs::getString("token", "").asString()}});
+    }
+
+private:
+    Entity texto_;
+};
+
+CRAMION_SCRIPT(Marcador)</code></pre>
 
 <h3 id="probar">Probar con un servidor en tu PC</h3>
 <p>

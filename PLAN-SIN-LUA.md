@@ -1,7 +1,9 @@
 # Plan: quitar Lua de Cramion (empezado el 2026-10-07)
 
-> **Estado actual y lo que falta: ver `PENDIENTES.md`** (2026-10-11). Las fases 1, 2 y 9 (la CMake sin Lua) están
-> hechas; la 3, 5 y 6 a medias; la 4 (intérprete de Visual Scripts), la 7 (Android) y la 8 (contenido) sin terminar.
+> **Terminado el 2026-10-11.** Todas las fases están hechas y Lua ya no está en el motor (ver el CHANGELOG 2.9.0,
+> «Scripting»). Este archivo queda como historia del plan. Una diferencia con lo decidido: en Android los scripts
+> de C++ no corren en el proceso del juego, sino en un proceso aparte, como en Windows y Linux
+> (`libcramion_scripthost.so` dentro del APK), para que un script que se cuelga o falla no tire el juego.
 
 Decisiones del usuario:
 - **La API pasa a C++ nativo.** Cada función (`Audio.playOneShot`, `Entity:translate`...) se escribe en C++ en el motor. Los scripts de C++ la llaman sin pasar por Lua.
@@ -23,15 +25,15 @@ La API nativa (`scripting/NativeApi.h`: `api::Value`, `api::Registry`) se consul
 migrar tabla a tabla, comprobando en cada paso que todo sigue funcionando.
 
 ## Fases
-1. [ ] **Núcleo de la API nativa**: Value, Registry (funciones, métodos de Entity y de los handles, propiedades), handles y callbacks; `bridgeCall` mira primero la nativa. Con pruebas.
-2. [ ] **Migrar la API, tabla a tabla** (de sol2 a la Registry): Debug, Time, Game, Prefs, CVar, Input, Screen, Physics, Audio, Scene, Entity, Navigation, Graphics, Voxel, Fluid, Mesh, Http/Json, Network, DataPack, Profiler, XR, Fire/Weather y los `.inl` (Gameplay, Platform, Effects, Features24, Character, StateMachine, BehaviorTree).
-3. [ ] **`cramion_sdkgen` lee la Registry** (nombres, argumentos y documentación). `Api.gen.h` deja de usar `detail::lua` y el RPC pasa a llamarse `Api`.
-4. [ ] **Visual Scripting**: un intérprete de grafos en C++ (sustituye a `compileGraph`→Lua; los Delay pasan a ser estado del intérprete, no corrutinas).
-5. [ ] **StateMachine / BehaviorTree**: estados con una clase de C++ (`Script`) y condiciones con variables, triggers, temporizadores y expresiones simples evaluadas en C++.
-6. [ ] **Pruebas del juego**: Test/Assert pasan a C++ (`CRAMION_TEST`), en lugar de `.test.lua`.
-7. [ ] **Android**: compilar los scripts de C++ con el NDK al exportar y ejecutarlos en el mismo proceso (sin CramionScriptHost).
-8. [ ] **Contenido**: las plantillas (`Template*Scripts.h`, `ProjectTemplates.cpp`), el minigolf, el autocompletado (LuaCompletion → C++) y el manual (`cpp-lua.html`).
-9. [ ] **Borrar Lua**: el componente `Script`, sol2, `cramion_lua`, LuaMath, `lua.BudgetMs` y la CMake. Actualizar el CHANGELOG y el README.
+1. [x] **Núcleo de la API nativa**: Value, Registry (funciones, métodos de Entity y de los handles, propiedades), handles y callbacks; `bridgeCall` mira primero la nativa. Con pruebas.
+2. [x] **Migrar la API, tabla a tabla** (de sol2 a la Registry): Debug, Time, Game, Prefs, CVar, Input, Screen, Physics, Audio, Scene, Entity, Navigation, Graphics, Voxel, Fluid, Mesh, Http/Json, Network, DataPack, Profiler, XR, Fire/Weather y los `.inl` (Gameplay, Platform, Effects, Features24, Character, StateMachine, BehaviorTree).
+3. [x] **`cramion_sdkgen` lee la Registry** (nombres, argumentos y documentación). `Api.gen.h` deja de usar `detail::lua` y el RPC pasa a llamarse `Api`.
+4. [x] **Visual Scripting**: un intérprete de grafos en C++ (sustituye a `compileGraph`→Lua; los Delay pasan a ser estado del intérprete, no corrutinas).
+5. [x] **StateMachine / BehaviorTree**: estados con una clase de C++ (`Script`) y condiciones con variables, triggers, temporizadores y expresiones simples evaluadas en C++.
+6. [x] **Pruebas del juego**: Test/Assert pasan a C++ (`CRAMION_TEST`), en lugar de `.test.lua`.
+7. [x] **Android**: compilar los scripts de C++ con el NDK al exportar y ejecutarlos en el mismo proceso (sin CramionScriptHost).
+8. [x] **Contenido**: las plantillas (`Template*Scripts.h`, `ProjectTemplates.cpp`), el minigolf, el autocompletado (LuaCompletion → C++) y el manual (`cpp-lua.html`).
+9. [x] **Borrar Lua**: el componente `Script`, sol2, `cramion_lua`, LuaMath, `lua.BudgetMs` y la CMake. Actualizar el CHANGELOG y el README.
 
 ## Reglas (16 GB de RAM)
 - Una sola compilación a la vez: `cmake --build build -j 4 -- -k 0`.

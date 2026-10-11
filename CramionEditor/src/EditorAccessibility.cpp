@@ -48,7 +48,7 @@ void EditorApp::drawAccessibilityWindow() {
         changed = true;
     }
     if (changed) gameplay::saveAccessibility();
-    ImGui::TextDisabled("Lua: Accessibility.set{colorblind = 2, textScale = 1.3}, Accessibility.save()");
+    ImGui::TextDisabled("Desde un script: Accessibility::set(opciones) (colorblind, textScale...), Accessibility::save()");
     ImGui::SeparatorText("Job system");
     const jobs::JobStats js = jobs::stats();
     ImGui::Text("Hilos: %d   tareas ejecutadas: %llu   en cola: %d", js.workers,

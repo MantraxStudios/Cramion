@@ -1,6 +1,6 @@
 <p>
   <strong>Diálogos ramificados</strong> (como Yarn Spinner o los Dialogue Trees de Unreal): un asset <code>.crdialog</code> es
-  un grafo de nodos que se edita en el editor de diálogos y se ejecuta con <code>Dialogue.start("Mercader")</code>. La caja de
+  un grafo de nodos que se edita en el editor de diálogos y se ejecuta con <code>Dialogue::start("Mercader")</code>. La caja de
   diálogo de la UI lo muestra sin escribir código.
 </p>
 
@@ -23,7 +23,7 @@
     <tr><td>Opciones</td><td>El jugador elige. Cada opción puede tener una condición (oculta o deshabilitada si no se cumple)</td></tr>
     <tr><td>Condición</td><td>Va por "Sí" o por "No" según las variables (<code>oro &gt;= 10</code>; <code>$otra</code> compara con otra variable)</td></tr>
     <tr><td>Variable</td><td>Cambia una variable: <code>=</code>, <code>+=</code>, <code>-=</code> o alternar</td></tr>
-    <tr><td>Evento</td><td>Avisa a los scripts (<code>Dialogue.onEvent</code>) y/o llama a un método del script de un objeto</td></tr>
+    <tr><td>Evento</td><td>Avisa a los scripts (<code>Dialogue::onEvent</code>) y/o llama a un método del script de un objeto</td></tr>
     <tr><td>Saltar</td><td>A otro nodo o a otro diálogo</td></tr>
     <tr><td>Fin</td><td>Termina</td></tr>
   </tbody>
@@ -37,15 +37,17 @@
 </p>
 
 <h3 id="api">Desde los scripts</h3>
-<pre><code class="language-lua">function OnTriggerEnter(self, otro)
-    if otro.tag == "Player" then Dialogue.start("Mercader") end
-end
+<pre><code class="language-cpp">void onTriggerEnter(Entity otro) override {
+    if (otro.tag() == "Player") Dialogue::start("Mercader");
+}
 
-Dialogue.onEvent(function(nombre, argumento)
-    if nombre == "Vender" then Save.setValue("oro", Save.getValue("oro", 0) + 10) end
-end)</code></pre>
+void start() override {
+    Dialogue::onEvent([](const Values&amp; a) {   // a[0] = nombre, a[1] = argumento
+        if (a[0].asString() == "Vender") Save::setValue("oro", Save::getValue("oro", 0).asInt() + 10);
+    });
+}</code></pre>
 <p>
-  También: <code>Dialogue.next()</code>, <code>Dialogue.choose(1)</code>, <code>Dialogue.currentLine()</code>,
-  <code>Dialogue.choices()</code>, <code>Dialogue.setVar</code>/<code>getVar</code> y los avisos <code>onStart</code>,
+  También: <code>Dialogue::next()</code>, <code>Dialogue::choose(1)</code>, <code>Dialogue::currentLine()</code>,
+  <code>Dialogue::choices()</code>, <code>Dialogue::setVar</code>/<code>getVar</code> y los avisos <code>onStart</code>,
   <code>onLine</code>, <code>onChoices</code> y <code>onEnd</code> (para hacer tu propia interfaz).
 </p>

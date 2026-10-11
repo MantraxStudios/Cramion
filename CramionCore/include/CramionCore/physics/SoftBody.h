@@ -17,8 +17,8 @@
 //     GPU, con el .crmat del Mesh Renderer o con `color`.
 //   - Dos cuerpos blandos no chocan entre si (Jolt), si con todo lo demas.
 //
-// En Lua: entity:resetSoftBody(), entity:addSoftBodyImpulse(Vec3) y los
-// campos con getField/setField("SoftBody", ...).
+// En los scripts: entity().resetSoftBody(), entity().addSoftBodyImpulse(Vec3)
+// y los campos con getField/setField("SoftBody", ...).
 
 #include "CramionCore/ecs/Reflection.h"
 #include "CramionCore/physics/Cloth.h"  // ClothRuntime: el mismo estado compartido

@@ -8,7 +8,7 @@
 // para el parallax). Pocos triangulos (2-6k), 8 materiales compartidos por
 // todas las casas del proyecto (una llamada de dibujo por material; las
 // texturas se escriben una vez) y la puerta como pieza aparte con la bisagra
-// en su origen (se abre girandola en Y, p. ej. desde Lua).
+// en su origen (se abre girandola en Y, p. ej. desde un script).
 
 #include "CramionFX/asset/ImageFile.h"
 #include "CramionFX/asset/Model.h"

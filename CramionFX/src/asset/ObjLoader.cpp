@@ -1,5 +1,7 @@
 #include "CramionFX/asset/ObjLoader.h"
 
+#include "CramionFX/core/Chars.h"
+
 #include <algorithm>
 #include <atomic>
 #include <cctype>
@@ -74,7 +76,7 @@ struct LineReader {
     float number() {
         skipSpaces();
         float value = 0.0f;
-        const auto result = std::from_chars(p, end, value);
+        const auto result = core::parseFloat(p, end, value);
         p = result.ptr;
         return value;
     }
