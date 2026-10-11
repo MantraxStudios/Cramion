@@ -16,7 +16,7 @@ using core::Vec3;
 
 namespace {
 
-bool near(double a, double b) { return std::fabs(a - b) < 1e-4; }
+bool approx(double a, double b) { return std::fabs(a - b) < 1e-4; }
 
 bool throws(ApiFixture& t, const std::string& key, const Value::Array& args = {}) {
     try {
@@ -45,14 +45,14 @@ void testFire() {
     check(t.call("Fire.ignite", {Value(Vec3{1, 0, 1}), Value(1.0)}).asNumber() == 1, "Fire.ignite dentro de la zona: 1");
     check(t.call("Fire.ignite", {Value(Vec3{500, 0, 500})}).asNumber() == 0, "Fire.ignite fuera de la zona: 0");
     check(t.call("Fire.extinguish", {Value(Vec3{0, 0, 0})}).asNumber() == 1, "Fire.extinguish en la zona");
-    check(near(t.call("Fire.heatAt", {Value(Vec3{0, 0, 0})}).asNumber(), 0.0), "Fire.heatAt sin simular: 0");
+    check(approx(t.call("Fire.heatAt", {Value(Vec3{0, 0, 0})}).asNumber(), 0.0), "Fire.heatAt sin simular: 0");
     check(!t.call("Fire.isBurning", {Value(Vec3{0, 0, 0})}).truthy(), "Fire.isBurning sin simular: false");
     check(t.call("Fire.burnedAt", {Value(Vec3{0, 0, 0})}).asNumber() ==
               t.call("Fire.charAt", {Value(Vec3{0, 0, 0})}).asNumber(),
           "Fire.charAt es lo mismo que burnedAt");
     t.call("Fire.extinguishAll");
     t.call("Fire.reset");
-    check(near(t.call("Fire.burnedFraction").asNumber(), 0.0) && near(t.call("Fire.burningArea").asNumber(), 0.0),
+    check(approx(t.call("Fire.burnedFraction").asNumber(), 0.0) && approx(t.call("Fire.burningArea").asNumber(), 0.0),
           "Fire.burnedFraction y burningArea");
     const json r = t.bridge({{"fn", "Fire.ignite"}, {"args", {json{{"$v", {0, 0, 0}}}, 2}}});
     check(r["ok"] == true && r["result"] == 1, "Fire.ignite por el puente");
@@ -66,7 +66,7 @@ void testWeather() {
     check(date.isArray() && date.size() == 2 && date[0].asNumber() == 21 && date[1].asNumber() == 6,
           "Weather.getDate sin Ambiente: {21, 6}");
     check(t.call("Weather.get").asString() == "Clear", "Weather.get sin Ambiente: Clear");
-    check(near(t.call("Environment.getTime").asNumber(), 12.0), "Environment.getTime sin Ambiente: 12");
+    check(approx(t.call("Environment.getTime").asNumber(), 12.0), "Environment.getTime sin Ambiente: 12");
     check(t.call("Weather.getSeason").asString() == "Summer", "Weather.getSeason sin Ambiente: Summer");
     check(t.call("Weather.getSunDirection").asVec3().y == 1.0f, "Weather.getSunDirection sin Ambiente");
     check(t.world.registry().view<environment::Environment>().size() == 0, "las lecturas no crean el Ambiente");
@@ -99,18 +99,18 @@ void testWeather() {
           "Environment.presets");
 
     t.call("Weather.setTime", {Value(25.5)});
-    check(near(t.call("Weather.getTime").asNumber(), 1.5), "Weather.setTime da la vuelta a las 24 h");
+    check(approx(t.call("Weather.getTime").asNumber(), 1.5), "Weather.setTime da la vuelta a las 24 h");
     t.call("Environment.setTime", {Value(-1)});
-    check(near(t.call("Weather.getTime").asNumber(), 23.0), "Environment.setTime con horas negativas");
+    check(approx(t.call("Weather.getTime").asNumber(), 23.0), "Environment.setTime con horas negativas");
     t.call("Weather.setDate", {Value(40), Value(13)});
     const Value clamped = t.call("Environment.getDate");
     check(clamped[0].asNumber() == 31 && clamped[1].asNumber() == 12, "Weather.setDate limita dia y mes");
     t.call("Weather.setLatitude", {Value(100)});
-    check(near(t.call("Weather.getLatitude").asNumber(), 89.0), "Weather.setLatitude limita a 89");
+    check(approx(t.call("Weather.getLatitude").asNumber(), 89.0), "Weather.setLatitude limita a 89");
     t.call("Weather.setTimeScale", {Value(60)});
-    check(near(t.call("Weather.getTimeScale").asNumber(), 60.0), "Weather.setTimeScale / getTimeScale");
+    check(approx(t.call("Weather.getTimeScale").asNumber(), 60.0), "Weather.setTimeScale / getTimeScale");
     t.call("Weather.setDayLength");
-    check(near(t.call("Weather.getTimeScale").asNumber(), 0.0), "Weather.setDayLength(nil) para el tiempo");
+    check(approx(t.call("Weather.getTimeScale").asNumber(), 0.0), "Weather.setDayLength(nil) para el tiempo");
     t.call("Weather.setSeason", {Value("Winter")});
     check(t.call("Weather.getSeason").asString() == "Winter", "Weather.setSeason fija la estacion");
     t.call("Weather.setSeason", {Value("Monzon")});
@@ -122,19 +122,19 @@ void testWeather() {
     t.call("Weather.setLightning", {Value(false), Value(-3)});
     t.call("Weather.setAudio", {Value(false), Value(0.5)});
     t.call("Weather.setPrecipitationDensity", {Value(9)});
-    check(env != nullptr && near(env->wind_direction, 90.0) && near(env->wind_strength, 2.5),
+    check(env != nullptr && approx(env->wind_direction, 90.0) && approx(env->wind_strength, 2.5),
           "Weather.setWind: direccion y fuerza");
-    check(env != nullptr && env->random_weather && near(env->min_duration, 5.0) && near(env->max_duration, 30.0),
+    check(env != nullptr && env->random_weather && approx(env->min_duration, 5.0) && approx(env->max_duration, 30.0),
           "Weather.setRandom: minimo de 5 s");
-    check(env != nullptr && !env->lightning && near(env->lightning_frequency, 0.0), "Weather.setLightning");
-    check(env != nullptr && !env->ambient_audio && near(env->audio_volume, 0.5), "Weather.setAudio");
-    check(env != nullptr && near(env->precipitation_density, 3.0), "Weather.setPrecipitationDensity limita a 3");
+    check(env != nullptr && !env->lightning && approx(env->lightning_frequency, 0.0), "Weather.setLightning");
+    check(env != nullptr && !env->ambient_audio && approx(env->audio_volume, 0.5), "Weather.setAudio");
+    check(env != nullptr && approx(env->precipitation_density, 3.0), "Weather.setPrecipitationDensity limita a 3");
     t.call("Weather.setSnowCover", {Value(1)});
     t.call("Weather.setWetness", {Value(1), Value(0.5)});
-    check(near(t.call("Weather.getSnowCover").asNumber(), 1.0) && near(t.call("Weather.getWetness").asNumber(), 1.0),
+    check(approx(t.call("Weather.getSnowCover").asNumber(), 1.0) && approx(t.call("Weather.getWetness").asNumber(), 1.0),
           "Weather.setSnowCover y setWetness");
     t.call("Environment.lightning", {Value(500)});
-    check(!t.call("Weather.isNight").truthy() && near(t.call("Weather.transition").asNumber(), 1.0),
+    check(!t.call("Weather.isNight").truthy() && approx(t.call("Weather.transition").asNumber(), 1.0),
           "Weather.isNight y transition sin simular");
 
     const json r = t.bridge({{"fn", "Environment.getDate"}});

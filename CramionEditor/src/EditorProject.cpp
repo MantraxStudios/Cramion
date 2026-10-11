@@ -333,7 +333,7 @@ void EditorApp::drawFolderNode(std::size_t index) {
     // Soltar assets o archivos en la carpeta: se mueven alli; un objeto: prefab.
     if (ImGui::BeginDragDropTarget()) {
         acceptBrowserMove(node.path);
-        if (ImGui::AcceptDragDropPayload(kEntityPayload)) createPrefabsFromSelection(node.path);
+        if (ImGui::AcceptDragDropPayload(kEntityPayload)) createPrefabs(draggedEntities(), node.path);
         ImGui::EndDragDropTarget();
     }
     // Con el indice en el ID: si no, las carpetas hermanas comparten el menu
@@ -688,7 +688,7 @@ void EditorApp::moveBrowserItems(const std::filesystem::path& folder, const std:
 void EditorApp::browserDropTarget(const BrowserItem& item) {
     if (item.kind != Kind::Folder || !ImGui::BeginDragDropTarget()) return;
     acceptBrowserMove(item.path);
-    if (ImGui::AcceptDragDropPayload(kEntityPayload)) createPrefabsFromSelection(item.path);
+    if (ImGui::AcceptDragDropPayload(kEntityPayload)) createPrefabs(draggedEntities(), item.path);
     ImGui::EndDragDropTarget();
 }
 
@@ -1378,7 +1378,7 @@ void EditorApp::drawProject() {
 
     // Fondo: soltar un objeto de la Jerarquia = prefab aqui; clic = deseleccionar.
     if (ImGui::BeginDragDropTargetCustom(ImGui::GetCurrentWindow()->InnerRect, ImGui::GetID("##content_drop"))) {
-        if (ImGui::AcceptDragDropPayload(kEntityPayload)) createPrefabsFromSelection(target_folder);
+        if (ImGui::AcceptDragDropPayload(kEntityPayload)) createPrefabs(draggedEntities(), target_folder);
         ImGui::EndDragDropTarget();
     }
     if (ImGui::IsWindowHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Left) && !clicked_item && !ImGui::IsAnyItemHovered()) {

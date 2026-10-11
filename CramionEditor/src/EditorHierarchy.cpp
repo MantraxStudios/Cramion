@@ -258,7 +258,7 @@ void EditorApp::drawHierarchy() {
     if (ImGui::BeginDragDropTarget()) {
         if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(kEntityPayload)) {
             (void)payload;
-            for (ecs::Entity e : topLevelSelection()) {
+            for (ecs::Entity e : draggedEntities()) {
                 e.setParent({}, true, -1);
             }
             commit();
@@ -495,10 +495,10 @@ void EditorApp::drawHierarchyRow(const HierarchyRow& row, bool scroll_to) {
                 } else {
                     toggleSelection(uuid);
                 }
-            } else if (selected && selection_.size() > 1) {
-                pending_select_only_ = uuid;  // al soltar, si no se arrastra
             } else {
-                selectOnly(uuid);
+                // Al soltar, si no se arrastra: asi arrastrar otra fila no
+                // cambia la seleccion (p. ej. a un campo del Inspector).
+                pending_select_only_ = uuid;
             }
         }
         if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left) &&
@@ -507,13 +507,15 @@ void EditorApp::drawHierarchyRow(const HierarchyRow& row, bool scroll_to) {
             focusSelection();
         }
 
-        // Arrastrar: la seleccion (si la fila esta seleccionada) o solo esta.
+        // Arrastrar: la seleccion (si la fila esta seleccionada) o solo esta,
+        // sin tocar la seleccion.
         if (ImGui::BeginDragDropSource()) {
-            if (!selected) selectOnly(uuid);
+            drag_single_ = selected ? Uuid{} : uuid;
             ImGui::SetDragDropPayload(kEntityPayload, &uuid, sizeof(Uuid));
             ImGui::Text("%s%s", entity.name().c_str(),
-                        selection_.size() > 1 ? (" (+" + std::to_string(selection_.size() - 1) + ")").c_str()
-                                              : "");
+                        selected && selection_.size() > 1
+                            ? (" (+" + std::to_string(selection_.size() - 1) + ")").c_str()
+                            : "");
             ImGui::EndDragDropSource();
         }
         if (pending_select_only_ == uuid) {
@@ -538,7 +540,7 @@ void EditorApp::drawHierarchyRow(const HierarchyRow& row, bool scroll_to) {
                 else if (zone == DropZone::After) draw->AddLine(ImVec2(min.x, max.y), ImVec2(max.x, max.y), accent, 2.0f);
                 else draw->AddRect(min, max, accent, 3.0f, 0, 1.5f);
                 if (payload->IsDelivery()) {
-                    const std::vector<ecs::Entity> moving = topLevelSelection();
+                    const std::vector<ecs::Entity> moving = draggedEntities();
                     const ecs::Entity parent = entity.parent();
                     for (ecs::Entity m : moving) {
                         if (m == entity || m.isAncestorOf(entity)) continue;  // no dentro de si mismo

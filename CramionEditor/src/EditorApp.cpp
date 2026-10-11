@@ -682,6 +682,13 @@ std::vector<ecs::Entity> EditorApp::topLevelSelection() const {
     return result;
 }
 
+std::vector<ecs::Entity> EditorApp::draggedEntities() const {
+    if (!drag_single_.valid()) return topLevelSelection();
+    const ecs::Entity e = world_.find(drag_single_);
+    if (!e.valid()) return {};
+    return {e};
+}
+
 void EditorApp::revealInHierarchy(const Uuid& uuid) {
     reveal_ = uuid;
 }

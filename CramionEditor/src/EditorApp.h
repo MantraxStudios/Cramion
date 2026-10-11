@@ -280,6 +280,9 @@ private:
     // Sin los que ya estan dentro de otro seleccionado (para mover, borrar,
     // duplicar sin hacerlo dos veces).
     std::vector<ecs::Entity> topLevelSelection() const;
+    // Lo que se arrastra desde la Jerarquia: la seleccion, o solo la fila
+    // arrastrada si no estaba seleccionada (sin cambiar la seleccion).
+    std::vector<ecs::Entity> draggedEntities() const;
     void revealInHierarchy(const Uuid& uuid);
 
     // --- Acciones sobre entidades ---
@@ -324,6 +327,7 @@ private:
     // Guarda cada objeto de arriba de la seleccion como prefab en `folder`
     // (Assets/Prefabs si esta vacia); los objetos pasan a ser sus instancias.
     void createPrefabsFromSelection(const std::filesystem::path& folder = {});
+    void createPrefabs(const std::vector<ecs::Entity>& entities, const std::filesystem::path& folder = {});
     ecs::Entity instantiatePrefabAsset(const Uuid& uuid, ecs::Entity parent,
                                        const std::optional<core::Vec3>& world_position);
     void applyPrefab(ecs::Entity root);
@@ -1187,6 +1191,8 @@ private:
     // deja solo esa al soltar (si no se arrastro), como Unity; asi se puede
     // arrastrar toda la seleccion.
     Uuid pending_select_only_{};
+    // Fila no seleccionada que se esta arrastrando (vacio: se arrastra la seleccion).
+    Uuid drag_single_{};
     bool quit_play_requested_ = false;
     Uuid active_{};
     Uuid reveal_{};

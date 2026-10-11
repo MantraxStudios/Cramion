@@ -28,7 +28,7 @@ using core::Vec3;
 
 namespace {
 
-bool near(const Vec3& a, const Vec3& b, float eps = 1e-3f) { return core::length(a - b) < eps; }
+bool approx(const Vec3& a, const Vec3& b, float eps = 1e-3f) { return core::length(a - b) < eps; }
 
 std::uint64_t entityId(const ecs::Entity& e) { return static_cast<std::uint64_t>(entt::to_integral(e.handle())) + 1; }
 
@@ -100,15 +100,15 @@ void testPhysics2D() {
     const Value self = ApiFixture::entity(box);
 
     // Sin System2D: valores por defecto.
-    check(near(t.get("velocity2D", self).asVec3(), Vec3{}) && t.call("Physics2D.raycast", {Value(Vec3{0, 5, 0}), Value(Vec3{0, -1, 0})}).isNil() &&
+    check(approx(t.get("velocity2D", self).asVec3(), Vec3{}) && t.call("Physics2D.raycast", {Value(Vec3{0, 5, 0}), Value(Vec3{0, -1, 0})}).isNil() &&
               t.call("Physics2D.overlapPoint", {Value(Vec3{})}).size() == 0 &&
-              near(t.call("Physics2D.getGravity").asVec3(), Vec3{0, -9.81f, 0}),
+              approx(t.call("Physics2D.getGravity").asVec3(), Vec3{0, -9.81f, 0}),
           "sin fisica 2D: cero, nil y listas vacias");
 
     twod::System2D system;
     system.start(t.world);
     t.set("velocity2D", Value(Vec3{3, 0, 0}), self);
-    check(near(t.get("velocity2D", self).asVec3(), Vec3{3, 0, 0}), "velocity2D");
+    check(approx(t.get("velocity2D", self).asVec3(), Vec3{3, 0, 0}), "velocity2D");
     t.set("angularVelocity2D", Value(90), self);
     check(std::abs(t.get("angularVelocity2D", self).asNumber() - 90.0) < 0.01, "angularVelocity2D en grados/s");
     t.set("velocity2D", Value(Vec3{}), self);
@@ -124,7 +124,7 @@ void testPhysics2D() {
     t.set("angularVelocity2D", Value(0), self);
     check(!t.call("Entity:isSleeping2D", {}, self).truthy(), "isSleeping2D");
     t.call("Physics2D.setGravity", {Value(Vec3{0, -20, 0})});
-    check(near(t.call("Physics2D.getGravity").asVec3(), Vec3{0, -20, 0}), "setGravity / getGravity");
+    check(approx(t.call("Physics2D.getGravity").asVec3(), Vec3{0, -20, 0}), "setGravity / getGravity");
     t.call("Physics2D.setGravity", {Value(Vec3{0, -9.81f, 0})});
 
     // Cae sobre el suelo: OnCollisionEnter2D a los dos (fase Events).
@@ -150,7 +150,7 @@ void testPhysics2D() {
     // Consultas.
     const Value hit = t.call("Physics2D.raycast", {Value(Vec3{3, 5, 0}), Value(Vec3{0, -1, 0}), Value(20)});
     check(hit.isObject() && hit["entity"].asEntity() == ground.handle() && std::abs(hit["point"].asVec3().y - 0.5f) < 0.05f &&
-              near(hit["normal"].asVec3(), Vec3{0, 1, 0}, 0.01f) && hit["distance"].asNumber() > 4.0,
+              approx(hit["normal"].asVec3(), Vec3{0, 1, 0}, 0.01f) && hit["distance"].asNumber() > 4.0,
           "Physics2D.raycast {entity, point, normal, distance, fraction}");
     check(t.call("Physics2D.raycast", {Value(Vec3{3, 5, 0}), Value(Vec3{0, 1, 0}), Value(20)}).isNil(), "raycast sin choque: nil");
     check(t.call("Physics2D.raycast", {Value(Vec3{3, 5, 0}), Value(Vec3{0, -1, 0}), Value(20), Value(0)}).isNil(),
@@ -176,7 +176,7 @@ void testSprites() {
     ecs::Entity e = t.world.create("Heroe");
     const Value self = ApiFixture::entity(e);
     check(t.get("spriteFrame", self).asNumber() == 0 && !t.get("flipX", self).truthy() &&
-              near(t.get("spriteColor", self).asVec3(), Vec3{1, 1, 1}) && t.get("spriteAnimation", self).asString().empty() &&
+              approx(t.get("spriteColor", self).asVec3(), Vec3{1, 1, 1}) && t.get("spriteAnimation", self).asString().empty() &&
               !t.call("Entity:playSpriteAnimation", {Value("Correr")}, self).truthy(),
           "sin sprite: valores por defecto");
     e.add<twod::SpriteRenderer>();
@@ -193,7 +193,7 @@ void testSprites() {
     t.set("flipX", Value(true), self);
     t.set("spriteColor", Value(Vec3{1, 0, 0}), self);
     const twod::SpriteRenderer& r = e.get<twod::SpriteRenderer>();
-    check(r.frame == 4 && r.flip_x && near(r.color, Vec3{1, 0, 0}) && t.get("flipX", self).truthy(), "spriteFrame, flipX y spriteColor");
+    check(r.frame == 4 && r.flip_x && approx(r.color, Vec3{1, 0, 0}) && t.get("flipX", self).truthy(), "spriteFrame, flipX y spriteColor");
 
     ecs::Entity grid = t.world.create("Mapa");
     grid.setWorldPosition(Vec3{10, 0, 0});
@@ -309,7 +309,7 @@ void testMotionMatching() {
     t.call("Entity:setMotionFacing", {Value(Vec3{1, 0, 0})}, self);
     t.call("Entity:setMotionTags", {Value("agachado")}, self);
     mm.runtime.clip_label = "Andar";
-    check(near(mm.runtime.desired_velocity, Vec3{0, 0, 4}) && near(mm.runtime.desired_facing, Vec3{1, 0, 0}) &&
+    check(approx(mm.runtime.desired_velocity, Vec3{0, 0, 4}) && approx(mm.runtime.desired_facing, Vec3{1, 0, 0}) &&
               mm.runtime.extra_tags == "agachado" && t.get("motionClip", self).asString() == "Andar",
           "setMotionVelocity, setMotionFacing, setMotionTags y motionClip");
     // Una entidad destruida: error claro.

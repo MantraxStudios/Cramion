@@ -83,6 +83,10 @@ std::filesystem::path EditorApp::prefabPath(const Uuid& uuid) const {
 }
 
 void EditorApp::createPrefabsFromSelection(const std::filesystem::path& target_folder) {
+    createPrefabs(topLevelSelection(), target_folder);
+}
+
+void EditorApp::createPrefabs(const std::vector<ecs::Entity>& entities, const std::filesystem::path& target_folder) {
     if (!has_project_) return;
     if (playing()) {
         std::cerr << "[Prefab] Sal del modo Play para crear prefabs\n";
@@ -90,7 +94,7 @@ void EditorApp::createPrefabsFromSelection(const std::filesystem::path& target_f
     }
     const std::filesystem::path folder = target_folder.empty() ? project_.assetsFolder() / "Prefabs" : target_folder;
     int created = 0;
-    for (ecs::Entity e : topLevelSelection()) {
+    for (ecs::Entity e : entities) {
         const std::string name = fileSafe(e.name());
         std::filesystem::path path = folder / dialogs::fromUtf8(name + ecs::kPrefabExtension);
         for (int i = 2; std::filesystem::exists(path); ++i) {

@@ -19,12 +19,12 @@ using namespace cramion::apitest;
 
 namespace {
 
-bool near(double a, double b) { return std::fabs(a - b) < 1e-3; }
+bool approx(double a, double b) { return std::fabs(a - b) < 1e-3; }
 
 bool nearVec(const Value& v, float x, float y, float z) {
     if (!v.isVec3()) return false;
     const core::Vec3 p = v.asVec3();
-    return near(p.x, x) && near(p.y, y) && near(p.z, z);
+    return approx(p.x, x) && approx(p.y, y) && approx(p.z, z);
 }
 
 void send(dm::Input& in, dm::Event e) { in.onEvent(e); }
@@ -66,8 +66,8 @@ void testKeysAndMouse() {
     check(t.call("Input.getKeyDown", {Value("W")}).truthy(), "getKeyDown el frame de la pulsacion");
     check(!t.call("Input.getKeyUp", {Value("W")}).truthy(), "getKeyUp false mientras se mantiene");
     check(!t.call("Input.getKey", {Value("noesunatecla")}).truthy(), "tecla desconocida: false");
-    check(near(t.call("Input.getAxis", {Value("Horizontal")}).asNumber(), 1.0) &&
-              near(t.call("Input.getAxis", {Value("vertical")}).asNumber(), 1.0),
+    check(approx(t.call("Input.getAxis", {Value("Horizontal")}).asNumber(), 1.0) &&
+              approx(t.call("Input.getAxis", {Value("vertical")}).asNumber(), 1.0),
           "getAxis Horizontal / Vertical con D y W");
     check(t.call("Input.anyKeyPressed").isString(), "anyKeyPressed: la tecla de este frame");
     in.newFrame();
@@ -153,7 +153,7 @@ void testTouchAndGamepad() {
     axis.gamepadAxis = dm::GamepadAxis::LeftTrigger;
     axis.value = 0.7f;
     send(in, axis);
-    check(near(t.call("Input.getGamepadAxis", {Value("LT")}).asNumber(), 0.7) &&
+    check(approx(t.call("Input.getGamepadAxis", {Value("LT")}).asNumber(), 0.7) &&
               t.call("Input.getGamepadAxis", {Value("nada")}).asNumber() == 0.0,
           "getGamepadAxis por nombre");
 
