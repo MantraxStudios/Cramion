@@ -1,5 +1,8 @@
 # Plan: quitar Lua de Cramion (empezado el 2026-10-07)
 
+> **Estado actual y lo que falta: ver `PENDIENTES.md`** (2026-10-11). Las fases 1, 2 y 9 (la CMake sin Lua) están
+> hechas; la 3, 5 y 6 a medias; la 4 (intérprete de Visual Scripts), la 7 (Android) y la 8 (contenido) sin terminar.
+
 Decisiones del usuario:
 - **La API pasa a C++ nativo.** Cada función (`Audio.playOneShot`, `Entity:translate`...) se escribe en C++ en el motor. Los scripts de C++ la llaman sin pasar por Lua.
 - **En Android, los scripts de C++ van dentro del APK** (se compilan con el NDK al exportar y corren en el mismo proceso).
