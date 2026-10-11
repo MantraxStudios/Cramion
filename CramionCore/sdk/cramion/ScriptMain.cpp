@@ -104,7 +104,7 @@ std::uint64_t registerCallback(const std::shared_ptr<Callback>& fn) {
 Value luaRequest(const Value& request) {
     cppproto::Writer w;
     w.str(request.toJson());
-    auto r = rpc(cppproto::Rpc::Lua, w);
+    auto r = rpc(cppproto::Rpc::Api, w);
     const Value reply = Value::parse(r.str());
     if (!reply["ok"].asBool()) {
         const std::string fn = request["fn"].asString();
@@ -120,7 +120,7 @@ namespace Lua {
 void send(std::string_view fn, Values args) {
     cppproto::Writer w;
     w.str(Value{{"op", "call"}, {"fn", fn}, {"args", Value(std::move(args))}}.toJson());
-    detail::queue(cppproto::Rpc::LuaSend, w);
+    detail::queue(cppproto::Rpc::ApiSend, w);
 }
 }  // namespace Lua
 

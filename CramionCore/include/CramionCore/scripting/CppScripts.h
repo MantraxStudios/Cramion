@@ -118,8 +118,8 @@ public:
     void setHostExecutable(const std::filesystem::path& exe);  // CramionScriptHost.exe
     void setPhysics(physics::PhysicsSystem* physics);
     void setInput(const dm::Input* input);
-    // Toda la API de Lua para los scripts (el ScriptSystem del juego, en Play).
-    void setLuaBridge(ScriptSystem* lua);
+    // Toda la API para los scripts (el ScriptSystem del juego, en Play).
+    void setScriptSystem(ScriptSystem* scripts);
     // Ruta (dentro de Assets) de un asset por su UUID (las propiedades de tipo asset).
     void setAssetPathResolver(std::function<std::string(const Uuid&)> resolver);
 

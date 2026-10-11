@@ -338,7 +338,7 @@ CRAMION_SCRIPT(Aborta)
     // El Lua del juego (toda la API para los scripts de C++).
     scripting::ScriptSystem lua;
     lua.start(world);
-    cpp.setLuaBridge(&lua);
+    cpp.setScriptSystem(&lua);
 
     cvar::Registry::instance().set("script.cpp.TimeoutMs", "1500");
     cvar::Registry::instance().set("script.cpp.MemoryLimitMB", "256");

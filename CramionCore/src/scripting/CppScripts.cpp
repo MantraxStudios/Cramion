@@ -991,15 +991,15 @@ struct CppScriptSystem::Impl {
                 --calls;
                 break;
             }
-            case proto::Rpc::Lua:
-            case proto::Rpc::LuaSend: {
+            case proto::Rpc::Api:
+            case proto::Rpc::ApiSend: {
                 const std::string request = r.str();
                 const std::string reply = lua != nullptr ? lua->bridgeCall(request)
-                                                         : std::string(R"j({"ok":false,"error":"sin Lua: el juego no esta en marcha"})j");
-                if (op == proto::Rpc::Lua) {
+                                                         : std::string(R"j({"ok":false,"error":"sin API: el juego no esta en marcha"})j");
+                if (op == proto::Rpc::Api) {
                     out.str(reply);
                 } else if (reply.find("\"ok\":false") != std::string::npos) {
-                    std::cerr << "[C++] Lua::send: " << reply << std::endl;
+                    std::cerr << "[C++] Api::send: " << reply << std::endl;
                 }
                 break;
             }
@@ -1475,7 +1475,7 @@ struct CppScriptSystem::Impl {
             if (op == proto::Rpc::Log) {
                 r.u32();
                 std::cout << "[C++] " << r.str() << std::endl;
-            } else if (op == proto::Rpc::Lua) {
+            } else if (op == proto::Rpc::Api) {
                 reply.str(R"({"ok":false,"error":"el juego no esta en marcha"})");
             }
         };
@@ -1579,7 +1579,7 @@ void CppScriptSystem::setPhysics(physics::PhysicsSystem* physics) {
     }
 }
 
-void CppScriptSystem::setLuaBridge(ScriptSystem* lua) {
+void CppScriptSystem::setScriptSystem(ScriptSystem* lua) {
     impl_->lua = lua;
     if (lua != nullptr) {
         std::weak_ptr<int> alive = impl_->alive;

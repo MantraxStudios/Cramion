@@ -702,7 +702,7 @@ int runPlayer() {
         scripting::CppScriptSystem cpp_scripts;
         cpp_scripts.setAssetsRoot(project->assetsFolder());
         cpp_scripts.setPhysics(&physics);
-        cpp_scripts.setLuaBridge(&scripts);  // toda la API de Lua desde C++
+        cpp_scripts.setScriptSystem(&scripts);  // toda la API desde C++
         cpp_scripts.setAssetPathResolver([&database, &project](const Uuid& uuid) -> std::string {
             const std::optional<assets::AssetInfo> info = database.find(uuid);
             if (!info || info->path.empty()) return {};

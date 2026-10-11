@@ -67,8 +67,8 @@ enum class Rpc : std::uint32_t {
     CVarSet,          // str str -> u32 ok, str error
     CVarRegister,     // str nombre, u32 tipo (0 bool,1 int,2 float,3 texto), str defecto, str descripcion, u32 banderas -> u32 ok
     AddForce,         // u64 vec3 u32 modo (0 fuerza, 1 aceleracion, 2 impulso, 3 cambio de velocidad)
-    Lua,              // str JSON {"op":"call|get|set","fn":"Audio.playOneShot","self":v,"key":"k","args":[...],"value":v} -> str JSON {"ok","result"|"error"}
-    LuaSend,          // igual sin respuesta (va en lote)
+    Api,              // str JSON {"op":"call|get|set","fn":"Audio.playOneShot","self":v,"key":"k","args":[...],"value":v} -> str JSON {"ok","result"|"error"}
+    ApiSend,          // igual sin respuesta (va en lote)
     Batch,            // u32 n, (u32 rpc, u32 tamano, datos) x n: llamadas sin respuesta juntas
     GetPositions,     // u32 n, u64 x n -> vec3 x n (posicion en el mundo)
     SetPositions,     // u32 n, (u64, vec3) x n

@@ -48,7 +48,7 @@ void EditorApp::setupCppScripts() {
     cpp_scripts_.setAssetsRoot(project_.assetsFolder());
     cpp_scripts_.setBuildFolder(project_.libraryFolder() / "CppScripts");
     cpp_scripts_.setPhysics(&physics_);
-    cpp_scripts_.setLuaBridge(&scripts_);  // toda la API de Lua desde C++
+    cpp_scripts_.setScriptSystem(&scripts_);  // toda la API desde C++
     cpp_scripts_.setAssetPathResolver([this](const Uuid& uuid) -> std::string {
         if (!database_) return {};
         const std::optional<assets::AssetInfo> info = database_->find(uuid);
