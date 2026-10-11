@@ -346,6 +346,16 @@ add_executable(CramionNativeApiTests "${CMAKE_CURRENT_SOURCE_DIR}/tests/NativeAp
 target_link_libraries(CramionNativeApiTests PRIVATE Cramion::Core)
 target_compile_options(CramionNativeApiTests PRIVATE -Wall -Wextra)
 
+# --- Pruebas de cada modulo de la API de scripting (tests/native, consola) ---
+# Una por modulo (src/scripting/native): <Modulo>Tests.cpp -> CramionApi<Modulo>Tests.
+file(GLOB CRAMION_API_TESTS CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/tests/native/*Tests.cpp")
+foreach(test_source IN LISTS CRAMION_API_TESTS)
+    get_filename_component(test_name "${test_source}" NAME_WE)
+    add_executable(CramionApi${test_name} "${test_source}")
+    target_link_libraries(CramionApi${test_name} PRIVATE Cramion::Core)
+    target_compile_options(CramionApi${test_name} PRIVATE -Wall -Wextra)
+endforeach()
+
 # --- Pruebas de los prefabs (consola) ---
 add_executable(CramionPrefabTests "${CMAKE_CURRENT_SOURCE_DIR}/tests/PrefabTests.cpp")
 target_link_libraries(CramionPrefabTests PRIVATE Cramion::Core)

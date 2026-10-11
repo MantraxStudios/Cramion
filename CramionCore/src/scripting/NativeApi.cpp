@@ -263,7 +263,8 @@ const Value& Call::function(std::size_t i) const {
 // --- NativeApi -----------------------------------------------------------------------
 
 void NativeApi::add(Entry e) {
-    const std::string key = e.owner + (e.member() ? ":" : ".") + e.name;
+    // Las funciones globales (print) van solo con su nombre.
+    const std::string key = e.owner.empty() ? e.name : e.owner + (e.member() ? ":" : ".") + e.name;
     const auto found = index_.find(key);
     if (found != index_.end()) {
         entries_[found->second] = std::move(e);  // registrar otra vez la sustituye
