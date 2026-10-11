@@ -1,7 +1,7 @@
 // HTTPS desde el motor: direcciones permitidas, cabeceras, peticiones contra
 // un servidor HTTP de prueba en 127.0.0.1 (GET, POST, estados, limites de
-// tamano y de tiempo, redirecciones), el cliente asincrono y la API de Lua
-// (Http y Json). Con --online tambien contra servidores reales: GitHub
+// tamano y de tiempo, redirecciones) y el cliente asincrono (la API Http y
+// Json se prueba en tests/native). Con --online tambien contra servidores reales: GitHub
 // (https valido) y badssl.com (certificados malos: deben fallar).
 
 #ifndef WIN32_LEAN_AND_MEAN
@@ -15,7 +15,6 @@
 
 #include "CramionCore/ecs/World.h"
 #include "CramionCore/net/Http.h"
-#include "CramionCore/scripting/Scripting.h"
 
 #include <algorithm>
 #include <atomic>
@@ -170,13 +169,6 @@ std::string headerOf(const net::HttpResponse& r, const std::string& name) {
     return {};
 }
 
-bool hasLog(const std::vector<std::string>& log, const std::string& text) {
-    for (const std::string& l : log) {
-        if (l.find(text) != std::string::npos) return true;
-    }
-    return false;
-}
-
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -305,76 +297,6 @@ int main(int argc, char** argv) {
         client.cancelAll();
         std::this_thread::sleep_for(std::chrono::milliseconds(3000));
         check(client.poll().empty(), "cancelAll: lo pendiente ya no se entrega");
-    }
-
-    std::printf("Lua: Http y Json\n");
-    {
-        const std::filesystem::path root = std::filesystem::temp_directory_path() / "cramion_http_tests";
-        std::filesystem::remove_all(root);
-        std::filesystem::create_directories(root / "Scripts");
-        std::ofstream(root / "Scripts" / "Web.lua") << R"lua(local Web = {}
-function Web:Start()
-    local base = "http://127.0.0.1:" .. PORT
-    Http.get(base .. "/hola", function(r) print("get " .. tostring(r.ok) .. " " .. r.status .. " " .. r.body) end)
-    Http.post(base .. "/eco", { nombre = "Ana", puntos = 42, lista = {1, 2, 3} }, function(r)
-        local e = r.data
-        print("post " .. e.method .. " " .. e.type .. " prueba=" .. e.prueba)
-        local b = Json.decode(e.body)
-        print("cuerpo " .. b.nombre .. " " .. b.puntos .. " " .. #b.lista)
-        print("data " .. #e.lista .. " " .. e.lista[3] .. " " .. e.sub.a .. " " .. r.headers["x-servidor"])
-    end, { ["X-Prueba"] = "desde lua" })
-    Http.request({ url = base .. "/nada", method = "delete" }, function(r)
-        print("404 " .. tostring(r.ok) .. " " .. r.status .. " " .. r.error)
-    end)
-    local id, err = Http.get("http://ejemplo.com/", function() print("no deberia") end)
-    print("inseguro " .. tostring(id) .. " " .. tostring(err ~= nil))
-    local s = Json.encode({ a = 1, b = { true, "x" }, v = Vec3(1, 2, 3) })
-    local t = Json.decode(s)
-    print("json " .. t.a .. " " .. tostring(t.b[1]) .. " " .. t.b[2] .. " " .. t.v.y)
-    print("malo " .. tostring(select(2, Json.decode("{mal"))))
-    print("query " .. Http.query({ q = "hola mundo", page = 2 }))
-    Http.get(base .. "/lento", function() print("lento llego") end)
-    print("pendientes " .. tostring(Http.pending() >= 1))
-end
-return Web
-)lua";
-        ecs::World world;
-        world.create("Web").add<scripting::Script>().file = "Scripts/Web.lua";
-        scripting::ScriptSystem scripts;
-        std::vector<std::string> log;
-        scripts.setAssetsRoot(root);
-        const bool live = std::getenv("HTTP_LOG") != nullptr;
-        scripts.setLog([&](int, const std::string& m) {
-            log.push_back(m);
-            if (live) std::printf("    [lua] %s\n", m.c_str());
-        });
-        scripts.start(world);
-        std::string out;
-        scripts.run("PORT = " + std::to_string(server.port()), &out);
-        // Http.get sin cuerpo ni callback (cerraba el programa).
-        check(scripts.run("return Http.get('http://127.0.0.1:1/')", &out), "Http.get sin funcion ni cabeceras");
-        // El Start corre en el primer update: PORT ya esta.
-        for (int i = 0; i < 400 && !(hasLog(log, "get ") && hasLog(log, "data ") && hasLog(log, "404 ")); ++i) {
-            scripts.update(world, 0.016f);
-            std::this_thread::sleep_for(std::chrono::milliseconds(5));
-        }
-        if (std::getenv("HTTP_LOG")) {
-            for (const auto& l : log) std::printf("    %s\n", l.c_str());
-        }
-        check(hasLog(log, "get true 200 hola"), "Http.get y su funcion con la respuesta");
-        check(hasLog(log, "post POST application/json prueba=desde lua"), "Http.post con una tabla: JSON y cabeceras propias");
-        check(hasLog(log, "cuerpo Ana 42 3"), "la tabla llega como JSON al servidor");
-        check(hasLog(log, "data 4 tres 1 prueba"), "res.data: la respuesta JSON ya decodificada (null = nil); res.headers");
-        check(hasLog(log, "404 false 404 El servidor respondio 404"), "Http.request con otro metodo; error con el estado");
-        check(hasLog(log, "inseguro nil true") && !hasLog(log, "no deberia"), "http a Internet: nil y el motivo");
-        check(hasLog(log, "json 1 true x 2"), "Json.encode / Json.decode (con Vec3)");
-        check(hasLog(log, "malo Json.decode"), "Json.decode de algo que no es JSON: nil y el motivo");
-        check(hasLog(log, "query page=2&q=hola%20mundo"), "Http.query");
-        check(hasLog(log, "pendientes true"), "Http.pending");
-        scripts.stop();
-        std::this_thread::sleep_for(std::chrono::milliseconds(3000));
-        check(!hasLog(log, "lento llego"), "al parar (salir de Play) lo pendiente se cancela");
-        std::filesystem::remove_all(root);
     }
 
     if (online) {

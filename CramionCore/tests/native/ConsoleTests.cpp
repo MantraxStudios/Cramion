@@ -1,4 +1,4 @@
-// Pruebas de native/Console.cpp: la consola (ScriptSystem::run) sin Lua.
+// Pruebas de native/Console.cpp: la consola (ScriptSystem::run).
 // Usa funciones de prueba propias (Prueba.*, un handle Contador) y las de la
 // API que haya (Scene, Time; Entity:name / position / translate si estan, y
 // si no unas de prueba con el mismo nombre).
@@ -180,7 +180,7 @@ int main() {
     check(error("Time.time = 3").find("Time.time es de solo lectura") != std::string::npos, "propiedad de solo lectura");
     check(error("return 1 + 2").find("operadores") != std::string::npos && error("return 'a' .. 'b'").find("operadores") != std::string::npos,
           "sin operadores");
-    check(error("for i = 1, 3 do print(i) end").find("no tiene 'for'") != std::string::npos, "sin bucles de Lua");
+    check(error("for i = 1, 3 do print(i) end").find("no tiene 'for'") != std::string::npos, "sin bucles");
     check(error("print('hola)").find("texto sin cerrar") != std::string::npos, "texto sin cerrar");
     check(error("return 1; print(2)").find("'return' tiene que ser lo ultimo") != std::string::npos, "return al final");
     check(error("return Prueba.sumar").find("es una funcion") != std::string::npos, "una funcion sin ()");

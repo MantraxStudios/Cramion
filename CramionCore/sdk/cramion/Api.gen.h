@@ -3257,7 +3257,7 @@ public:
     Mesh(Value v) : handle(std::move(v)) {}
     operator Value() const { return handle; }
     explicit operator bool() const { return handle.truthy(); }
-    /// Mesh:apply()
+    /// Mesh.apply()
     /// sube los cambios a la GPU
     template <typename... Mas>
     Value apply(Mas&&... mas) const {
@@ -3274,13 +3274,13 @@ public:
     static Mesh capsule(const T0& radio = {}, const T1& alto = {}, const T2& segmentos = {}) {
         return Mesh(detail::api("Mesh.capsule", Values{Value(radio), Value(alto), Value(segmentos)}));
     }
-    /// Mesh:clear()
+    /// Mesh.clear()
     /// la vacia
     template <typename... Mas>
     Value clear(Mas&&... mas) const {
         return handle.call("clear", Values{Value(std::forward<Mas>(mas))...});
     }
-    /// Mesh:clone()
+    /// Mesh.clone()
     /// copia
     /// Devuelve: Mesh
     template <typename... Mas>
@@ -3301,21 +3301,21 @@ public:
     static Mesh cylinder(const T0& radio = {}, const T1& alto = {}, const T2& segmentos = {}) {
         return Mesh(detail::api("Mesh.cylinder", Values{Value(radio), Value(alto), Value(segmentos)}));
     }
-    /// Mesh:getMaterial(submalla)
+    /// Mesh.getMaterial(submalla)
     /// su material
     /// Devuelve: objeto
     template <typename T0 = Value>
     Value getMaterial(const T0& submalla = {}) const {
         return handle.call("getMaterial", Values{Value(submalla)});
     }
-    /// Mesh:getTriangles(submalla)
+    /// Mesh.getTriangles(submalla)
     /// sus indices
     /// Devuelve: lista de numeros
     template <typename T0 = Value>
     Value getTriangles(const T0& submalla = {}) const {
         return handle.call("getTriangles", Values{Value(submalla)});
     }
-    /// Mesh:getVertex(i)
+    /// Mesh.getVertex(i)
     /// Vec3 de un vertice
     /// Devuelve: Vec3
     template <typename T0 = Value>
@@ -3351,37 +3351,37 @@ public:
     static Mesh quad(const T0& ancho = {}, const T1& alto = {}) {
         return Mesh(detail::api("Mesh.quad", Values{Value(ancho), Value(alto)}));
     }
-    /// Mesh:recalculateBounds()
+    /// Mesh.recalculateBounds()
     /// caja
     template <typename... Mas>
     Value recalculateBounds(Mas&&... mas) const {
         return handle.call("recalculateBounds", Values{Value(std::forward<Mas>(mas))...});
     }
-    /// Mesh:recalculateNormals()
+    /// Mesh.recalculateNormals()
     /// normales suaves
     template <typename... Mas>
     Value recalculateNormals(Mas&&... mas) const {
         return handle.call("recalculateNormals", Values{Value(std::forward<Mas>(mas))...});
     }
-    /// Mesh:recalculateTangents()
+    /// Mesh.recalculateTangents()
     /// tangentes
     template <typename... Mas>
     Value recalculateTangents(Mas&&... mas) const {
         return handle.call("recalculateTangents", Values{Value(std::forward<Mas>(mas))...});
     }
-    /// Mesh:setMaterial(submalla, {color, metallic, roughness...})
+    /// Mesh.setMaterial(submalla, {color, metallic, roughness...})
     /// material de una submalla
     template <typename T0 = Value, typename T1 = Value>
     Value setMaterial(const T0& submalla = {}, const T1& tabla = {}) const {
         return handle.call("setMaterial", Values{Value(submalla), Value(tabla)});
     }
-    /// Mesh:setTriangles(indices, submalla)
+    /// Mesh.setTriangles(indices, submalla)
     /// triangulos de una submalla
     template <typename T0 = Value, typename T1 = Value>
     Value setTriangles(const T0& indices = {}, const T1& submalla = {}) const {
         return handle.call("setTriangles", Values{Value(indices), Value(submalla)});
     }
-    /// Mesh:setVertex(i, Vec3)
+    /// Mesh.setVertex(i, Vec3)
     /// mueve un vertice (luego apply)
     template <typename T0 = Value, typename T1 = Value>
     Value setVertex(const T0& i = {}, const T1& vec = {}) const {
@@ -3410,7 +3410,7 @@ public:
     Value uv() const { return handle.get("uv"); }
     /// Cambia Mesh.uv
     void setUv(const Value& v) const { handle.setField("uv", v); }
-    /// Mesh:validate()
+    /// Mesh.validate()
     /// "" si se puede dibujar; si no, el motivo
     /// Devuelve: texto
     template <typename... Mas>
@@ -3447,7 +3447,7 @@ public:
     static Value broadcast(const T0& texto = {}) {
         return detail::api("StateMachine.broadcast", Values{Value(texto)});
     }
-    /// StateMachine:changeState("Estado")
+    /// StateMachine.changeState("Estado")
     /// Como go
     /// Devuelve: bool
     template <typename T0 = Value>
@@ -3458,28 +3458,28 @@ public:
     Value changes() const { return handle.get("changes"); }
     /// StateMachine.entity: El objeto de la maquina (Entity)
     Value entity() const { return handle.get("entity"); }
-    /// StateMachine:get("variable")
+    /// StateMachine.get("variable")
     /// Valor de una variable (o nil)
     /// Devuelve: valor
     template <typename T0 = Value>
     Value get(const T0& texto = {}) const {
         return handle.call("get", Values{Value(texto)});
     }
-    /// StateMachine:go("Estado")
+    /// StateMachine.go("Estado")
     /// Cambia a ese estado (antes que las transiciones)
     /// Devuelve: bool
     template <typename T0 = Value>
     Value go(const T0& texto = {}) const {
         return handle.call("go", Values{Value(texto)});
     }
-    /// StateMachine:has("variable")
+    /// StateMachine.has("variable")
     /// Existe esa variable?
     /// Devuelve: bool
     template <typename T0 = Value>
     Value has(const T0& texto = {}) const {
         return handle.call("has", Values{Value(texto)});
     }
-    /// StateMachine:isIn("Estado")
+    /// StateMachine.isIn("Estado")
     /// Esta en ese estado?
     /// Devuelve: bool
     template <typename T0 = Value>
@@ -3495,7 +3495,7 @@ public:
     }
     /// StateMachine.previous: Nombre del estado anterior (o nil) (texto)
     Value previous() const { return handle.get("previous"); }
-    /// StateMachine:restart()
+    /// StateMachine.restart()
     /// Vuelve a la entrada con las variables iniciales
     template <typename... Mas>
     Value restart(Mas&&... mas) const {
@@ -3503,13 +3503,13 @@ public:
     }
     /// StateMachine.running: Esta en marcha (no parada con stop) (bool)
     Value running() const { return handle.get("running"); }
-    /// StateMachine:set("variable", valor)
+    /// StateMachine.set("variable", valor)
     /// Cambia una variable (o la crea con el tipo del valor)
     template <typename T0 = Value, typename T1 = Value>
     Value set(const T0& texto = {}, const T1& valor = {}) const {
         return handle.call("set", Values{Value(texto), Value(valor)});
     }
-    /// StateMachine:start()
+    /// StateMachine.start()
     /// La pone en marcha (o sigue)
     template <typename... Mas>
     Value start(Mas&&... mas) const {
@@ -3519,14 +3519,14 @@ public:
     Value state() const { return handle.get("state"); }
     /// StateMachine.stateTime: Segundos en el estado actual (numero)
     Value stateTime() const { return handle.get("stateTime"); }
-    /// StateMachine:states()
+    /// StateMachine.states()
     /// Nombres de los estados
     /// Devuelve: lista de texto
     template <typename... Mas>
     Value states(Mas&&... mas) const {
         return handle.call("states", Values{Value(std::forward<Mas>(mas))...});
     }
-    /// StateMachine:stop()
+    /// StateMachine.stop()
     /// La para (se queda en su estado)
     template <typename... Mas>
     Value stop(Mas&&... mas) const {
@@ -3534,7 +3534,7 @@ public:
     }
     /// StateMachine.time: Segundos desde que empezo la maquina (numero)
     Value time() const { return handle.get("time"); }
-    /// StateMachine:trigger("nombre")
+    /// StateMachine.trigger("nombre")
     /// Activa un trigger (vale hasta que se miran las transiciones)
     template <typename T0 = Value>
     Value trigger(const T0& texto = {}) const {
@@ -3561,7 +3561,7 @@ public:
     static Value broadcast(const T0& texto = {}, const T1& valor = {}) {
         return detail::api("BehaviorTree.broadcast", Values{Value(texto), Value(valor)});
     }
-    /// BehaviorTree:clear("clave")
+    /// BehaviorTree.clear("clave")
     /// Vacia una clave (false, 0, "", sin objeto)
     template <typename T0 = Value>
     Value clear(const T0& texto = {}) const {
@@ -3577,21 +3577,21 @@ public:
     static BehaviorTree finishTask(const T0& entity = {}, const T1& activar = {}) {
         return BehaviorTree(detail::api("BehaviorTree.finishTask", Values{Value(entity), Value(activar)}));
     }
-    /// BehaviorTree:get("clave")
+    /// BehaviorTree.get("clave")
     /// Valor de una clave de la pizarra (o nil)
     /// Devuelve: valor
     template <typename T0 = Value>
     Value get(const T0& texto = {}) const {
         return handle.call("get", Values{Value(texto)});
     }
-    /// BehaviorTree:has("clave")
+    /// BehaviorTree.has("clave")
     /// Existe esa clave?
     /// Devuelve: bool
     template <typename T0 = Value>
     Value has(const T0& texto = {}) const {
         return handle.call("has", Values{Value(texto)});
     }
-    /// BehaviorTree:isActive("Nodo")
+    /// BehaviorTree.isActive("Nodo")
     /// Ese nodo esta en la rama que corre?
     /// Devuelve: bool
     template <typename T0 = Value>
@@ -3618,7 +3618,7 @@ public:
     static BehaviorTree reportNoise(const T0& posicion = {}, const T1& radio = {}, const T2& quien = {}) {
         return BehaviorTree(detail::api("BehaviorTree.reportNoise", Values{Value(posicion), Value(radio), Value(quien)}));
     }
-    /// BehaviorTree:restart()
+    /// BehaviorTree.restart()
     /// Corta todo y empieza con la pizarra inicial
     template <typename... Mas>
     Value restart(Mas&&... mas) const {
@@ -3626,19 +3626,19 @@ public:
     }
     /// BehaviorTree.running: Esta en marcha (bool)
     Value running() const { return handle.get("running"); }
-    /// BehaviorTree:set("clave", valor)
+    /// BehaviorTree.set("clave", valor)
     /// Cambia una clave (o la crea con el tipo del valor)
     template <typename T0 = Value, typename T1 = Value>
     Value set(const T0& texto = {}, const T1& valor = {}) const {
         return handle.call("set", Values{Value(texto), Value(valor)});
     }
-    /// BehaviorTree:start()
+    /// BehaviorTree.start()
     /// Lo pone en marcha
     template <typename... Mas>
     Value start(Mas&&... mas) const {
         return handle.call("start", Values{Value(std::forward<Mas>(mas))...});
     }
-    /// BehaviorTree:stop()
+    /// BehaviorTree.stop()
     /// Corta lo que corre y lo para
     template <typename... Mas>
     Value stop(Mas&&... mas) const {

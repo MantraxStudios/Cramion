@@ -3,17 +3,18 @@
 
 // Expresiones de las condiciones de la IA (transiciones "Expresion" de las
 // maquinas de estados y el decorador Script Condition de los Behavior
-// Trees), sin Lua. Lo que se puede escribir:
+// Trees). Lo que se puede escribir:
 //   numeros (5, 2.5, 1e3, 0x10), true / false / nil, textos ("a" o 'a'),
 //   variables de la pizarra por su nombre (vida; tambien vars.vida y
-//   self.vars.vida, como se escribia en Lua), + - * / // % ^ y .. (unir
-//   textos), comparaciones (== ~= != < <= > >=), and / or / not (tambien
-//   && || !) y parentesis.
-// Sigue las reglas de Lua: `a and b` / `a or b` devuelven uno de los dos
-// valores, solo nil y false son falsos, 1 == "1" es falso y comparar con
-// < o > cosas de distinto tipo es un error. Un error al evaluar (p. ej. una
-// variable que no existe comparada con <) hace la condicion falsa.
-// Lo demas de Lua (llamadas a funciones, self.entity, entity.position,
+//   self.vars.vida, como en las maquinas de antes), + - * / // % ^ y ..
+//   (unir textos), comparaciones (== ~= != < <= > >=), and / or / not
+//   (tambien && || !) y parentesis. `..` y `~=` son de la sintaxis de las
+//   expresiones de antes.
+// Reglas: `a and b` / `a or b` devuelven uno de los dos valores (el
+// primero si decide), solo nil y false son falsos, 1 == "1" es falso y
+// comparar con < o > cosas de distinto tipo es un error. Un error al evaluar
+// (p. ej. una variable que no existe comparada con <) hace la condicion falsa.
+// Lo demas (llamadas a funciones, self.entity, entity.position,
 // sm.state...) no se puede leer: la condicion es falsa y validar la maquina
 // (o el arbol) lo avisa una vez.
 //

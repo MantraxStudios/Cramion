@@ -854,7 +854,7 @@ struct PhysicsSystem::Impl {
             if (!rt || !rt->pose_ready || rt->bones.empty()) continue;
             createRagdoll(w, h, rag, rt);
         }
-        // Empujones pedidos desde Lua.
+        // Empujones pedidos desde los scripts.
         for (auto& [h, r] : ragdolls) {
             if (!r.runtime) continue;
             for (const ecs::RagdollRuntime::Push& push : r.runtime->pushes) {

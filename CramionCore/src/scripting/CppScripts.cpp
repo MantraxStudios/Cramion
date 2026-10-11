@@ -1066,7 +1066,7 @@ struct CppScriptSystem::Impl {
     physics::PhysicsSystem* physics = nullptr;
     int physics_listener = -1;
     const dm::Input* input = nullptr;
-    ScriptSystem* lua = nullptr;
+    ScriptSystem* api = nullptr;
     std::function<std::string(const Uuid&)> asset_path;
     std::vector<ScriptError> errors;
     std::vector<std::string> classes;
@@ -1111,7 +1111,7 @@ struct CppScriptSystem::Impl {
     float fixed_step = 1.0f / 60.0f;
     int memory_listener = -1;
     // Vivo mientras exista este sistema: el sumidero de callbacks que se da a
-    // Lua lo mira (Lua puede durar mas o menos que nosotros).
+    // ScriptSystem lo mira (puede durar mas o menos que nosotros).
     std::shared_ptr<int> alive = std::make_shared<int>(0);
 
     void error(const std::string& file, int line, const std::string& message) {
@@ -1336,7 +1336,7 @@ struct CppScriptSystem::Impl {
             case proto::Rpc::Api:
             case proto::Rpc::ApiSend: {
                 const std::string request = r.str();
-                const std::string reply = lua != nullptr ? lua->bridgeCall(request)
+                const std::string reply = api != nullptr ? api->bridgeCall(request)
                                                          : std::string(R"j({"ok":false,"error":"sin API: el juego no esta en marcha"})j");
                 if (op == proto::Rpc::Api) {
                     out.str(reply);
@@ -1767,7 +1767,7 @@ struct CppScriptSystem::Impl {
         }
     }
 
-    // Los callbacks que la API de Lua llamo (botones, red, acciones...).
+    // Los callbacks que la API llamo (botones, red, acciones...).
     void dispatchCallbacks() {
         std::vector<std::pair<std::uint64_t, std::string>> list;
         list.swap(callbacks);
@@ -1873,7 +1873,7 @@ CppScriptSystem::~CppScriptSystem() {
     if (impl_->compile_thread.joinable()) impl_->compile_thread.join();
     g_memory_mb.removeCallback(impl_->memory_listener);
     setPhysics(nullptr);
-    impl_->lua = nullptr;  // sin tocarlo: puede que ya no exista (el sumidero mira `alive`)
+    impl_->api = nullptr;  // sin tocarlo: puede que ya no exista (el sumidero mira `alive`)
 }
 
 void CppScriptSystem::setAssetsRoot(const std::filesystem::path& folder) { impl_->assets_root = folder; }
@@ -1921,20 +1921,20 @@ void CppScriptSystem::setPhysics(physics::PhysicsSystem* physics) {
     }
 }
 
-void CppScriptSystem::setScriptSystem(ScriptSystem* lua) {
-    impl_->lua = lua;
-    if (lua != nullptr) {
+void CppScriptSystem::setScriptSystem(ScriptSystem* scripts) {
+    impl_->api = scripts;
+    if (scripts != nullptr) {
         std::weak_ptr<int> alive = impl_->alive;
         Impl* d = impl_.get();
-        lua->setBridgeCallbackSink([alive, d](std::uint64_t id, const std::string& args) {
+        scripts->setBridgeCallbackSink([alive, d](std::uint64_t id, const std::string& args) {
             if (!alive.expired()) d->callbacks.emplace_back(id, args);
         });
         // Variables de red (OnNetVar): se guardan y se entregan en el siguiente update.
-        lua->setNetVarListener([alive, d](ecs::Entity e, const std::string& key, const std::string& value) {
+        scripts->setNetVarListener([alive, d](ecs::Entity e, const std::string& key, const std::string& value) {
             if (!alive.expired()) d->net_vars.emplace_back(e.handle(), key, value);
         });
         // Mensajes de los Behavior Trees (Send Message / Run Script): onMessage.
-        lua->setMessageListener([alive, d](ecs::Entity e, const std::string& method, const std::string& value) {
+        scripts->setMessageListener([alive, d](ecs::Entity e, const std::string& method, const std::string& value) {
             if (!alive.expired()) d->bt_messages.emplace_back(e.handle(), method, value);
         });
     }

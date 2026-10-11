@@ -137,7 +137,7 @@ Requisitos
 
 No separes los .exe de las carpetas shaders/ y editor_icons/.
 
-Documentacion: docs/manual/index.html (como programar en Lua: API completa y
+Documentacion: docs/manual/index.html (como programar en C++: API completa y
 ejemplos) y docs/index.html. Para empezar, crea un proyecto desde el Hub con
 una plantilla (Tercera persona, IA y navegacion o Mundo de bloques) y dale a
 Play.

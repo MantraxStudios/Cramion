@@ -323,7 +323,7 @@ void testRuntime() {
     check(rt.find("objetivo")->entity != ai::kNoEntity, "variable entity resuelta por nombre");
 
     const scripting::api::Value handle = api.call("Entity:getStateMachine", {}, scripting::api::Value::entity(enemy.handle()));
-    check(api.get("StateMachine:state", handle).asString() == "Idle", "entity:getStateMachine().state");
+    check(api.get("StateMachine:state", handle).asString() == "Idle", "entity().getStateMachine().state");
     check(api.call("StateMachine:get", {scripting::api::Value("n")}, handle).asNumber() == 11.0, "sm:get");
     std::string out;
     check(system.run("return Scene.find('Enemigo'):getStateMachine().state", &out) && out == "Idle",

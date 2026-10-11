@@ -147,7 +147,7 @@ struct AnimatorRuntime {
     // Repeticiones (replay/Replay.h): el estado y el tiempo los pone la
     // repeticion; la maquina no avanza ni cambia de estado sola.
     bool replay_control = false;
-    // CrossFade del juego (entity:crossFade("Golpe", 0.1)): salta a ese estado
+    // CrossFade del juego (entity().crossFade("Golpe", 0.1)): salta a ese estado
     // por su nombre sin transicion, con fundido o inercializacion. Se consume
     // al aplicarse; el mismo estado vuelve a empezar.
     std::string cross_fade;

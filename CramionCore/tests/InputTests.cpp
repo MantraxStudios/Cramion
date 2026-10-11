@@ -199,7 +199,7 @@ void testJson() {
     check(input::parseSource("gamepad left stick").kind == input::SourceKind::GamepadStick, "nombres sin mayusculas");
 }
 
-// Lo que hacia el script de Lua de antes, ahora por el puente de los scripts
+// La API de entrada por el puente de los scripts
 // de C++: bindAction("Jump", "started"), getAction de Move (Vec2) y Jump
 // (Bool), getActionState y addMappingContext al pulsar V.
 void testScriptApi() {

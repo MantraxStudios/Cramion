@@ -24,7 +24,7 @@ std::string formatNumber(double d) {
     return buffer;
 }
 
-// Igual que el SDK y el puente de Lua: la entidad viaja como su handle + 1 (0 = ninguna).
+// Igual que el SDK y el puente de los scripts: la entidad viaja como su handle + 1 (0 = ninguna).
 std::uint64_t entityId(entt::entity e) {
     return e == entt::null ? 0 : static_cast<std::uint64_t>(entt::to_integral(e)) + 1;
 }

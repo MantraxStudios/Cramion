@@ -561,7 +561,7 @@ InputActionSettings defaultInputActions() {
     map(def, "Zoom", "Gamepad LB", {negate()});
     s.contexts.push_back(def);
 
-    // Vuelo (Vec3): encima de Default (se queda W/A/S/D/E); se activa desde Lua.
+    // Vuelo (Vec3): encima de Default (se queda W/A/S/D/E); se activa desde un script.
     MappingContext fly;
     fly.name = "Vuelo";
     fly.description = "Volar libre (Input.addMappingContext(\"Vuelo\"))";

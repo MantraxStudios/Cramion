@@ -78,7 +78,7 @@ void testCVars() {
     reg.execute("reset test.Texto");
     check(t_text.get() == "hola", "consola: reset");
     reg.execute("print(1)", &handled);
-    check(!handled, "lo que no es de CVars no se queda (va a Lua)");
+    check(!handled, "lo que no es de CVars no se queda (va a la consola)");
 
     // Guardar y leer: solo las Saved que no estan por defecto.
     t_int = 42;

@@ -3,7 +3,7 @@
 
 // Variables de configuracion con nombre (CVars, como las console variables
 // de Unreal o de id Tech): se declaran donde se usan, se cambian desde la
-// consola, la ventana Variables, Lua, los scripts de C++ o el MCP, y las
+// consola, la ventana Variables, los scripts de C++ o el MCP, y las
 // marcadas Saved se guardan en ProjectSettings/CVars.json.
 //
 //   static cvar::CVar<int> g_host_memory("script.cpp.MemoryLimitMB", 1024,
@@ -36,7 +36,7 @@ enum Flags : std::uint32_t {
     Saved = 1 << 1,            // se guarda en ProjectSettings/CVars.json
     Cheat = 1 << 2,            // solo con trucos permitidos (editor / desarrollo)
     RequiresRestart = 1 << 3,  // tiene efecto al reiniciar (Play o el juego)
-    Script = 1 << 4,           // la creo un script (Lua o C++)
+    Script = 1 << 4,           // la creo un script
 };
 
 enum class Type : int { Bool = 0, Int = 1, Float = 2, String = 3 };
@@ -237,7 +237,7 @@ public:
     std::string saveJson() const;
 
     // Una linea de consola. `handled` = false si no era un comando de CVars
-    // (para pasarla a Lua).
+    // (para pasarla a la consola de scripts).
     std::string execute(const std::string& line, bool* handled = nullptr);
 
     // Cambia cada vez que se registra, se quita o cambia alguna (para la UI).

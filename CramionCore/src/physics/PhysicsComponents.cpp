@@ -187,7 +187,7 @@ void Vehicle::reflect(ecs::PropertyVisitor& v) {
         v.endGroup();
     }
     if (v.beginGroup("Entrada", true)) {
-        v.field({"keyboard", "Lo conduce el jugador", "Teclado/mando (sin: entity:setVehicleInput desde un script)"},
+        v.field({"keyboard", "Lo conduce el jugador", "Teclado/mando (sin: entity().setVehicleInput desde un script)"},
                 keyboard);
         if (all || keyboard) {
             v.field({"use_input_actions", "Usar Input Actions",
@@ -287,7 +287,7 @@ void CharacterController::reflect(ecs::PropertyVisitor& v) {
     if (all || movement == CharacterMovement::Integrated) {
         v.field({"keyboard", "Mover con teclado",
                  "WASD/flechas relativo a la camara, Shift correr, Espacio saltar, C o Ctrl agacharse. "
-                 "Sin: entity:setMoveInput() desde un script"},
+                 "Sin: entity().setMoveInput() desde un script"},
                 keyboard);
         v.field({"walk_speed", "Velocidad andando"}, walk_speed, FloatRange{0.0f, 100.0f, 0.05f, "%.2f m/s"});
         v.field({"run_speed", "Velocidad corriendo"}, run_speed, FloatRange{0.0f, 100.0f, 0.05f, "%.2f m/s"});

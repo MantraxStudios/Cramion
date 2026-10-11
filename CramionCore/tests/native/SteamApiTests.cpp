@@ -32,7 +32,7 @@ int main() {
     std::map<std::uint64_t, json> calls;  // callback -> sus argumentos
     t.scripts.setBridgeCallbackSink([&](std::uint64_t id, const std::string& args) { calls[id] = json::parse(args); });
 
-    // --- Todos los nombres de la API de Lua ---
+    // --- Todos los nombres de la API ---
     const char* names[] = {"available", "error", "appId", "userId", "userName", "friendName", "language", "isDlcInstalled",
                            "isSteamDeck", "unlockAchievement", "clearAchievement", "isAchievementUnlocked",
                            "achievementProgress", "setStatInt", "setStatFloat", "getStatInt", "getStatFloat", "storeStats",
@@ -92,7 +92,7 @@ int main() {
     check(calls.count(1) && calls[1] == json::parse("[false,0,false]"), "uploadScore -> (false, 0, false)");
     t.call("Steam.uploadScore", {Value("Puntos"), Value(1200), Value(false), fn(2)});
     check(calls.count(2) && calls[2][0] == false, "uploadScore con keep_best antes del callback");
-    t.call("Steam.downloadScores", {Value("Puntos"), fn(3)});  // como en Lua
+    t.call("Steam.downloadScores", {Value("Puntos"), fn(3)});  // callback segundo
     check(calls.count(3) && calls[3] == json::parse("[false,[]]"), "downloadScores(marcador, callback) -> (false, {})");
     t.call("Steam.downloadScores", {Value("Puntos"), Value("around"), Value(-3), Value(3), fn(4)});  // como en la documentacion
     check(calls.count(4) && calls[4] == json::parse("[false,[]]"), "downloadScores(marcador, modo, desde, hasta, callback)");

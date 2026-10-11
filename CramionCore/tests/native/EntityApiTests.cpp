@@ -477,7 +477,7 @@ void testRegistry() {
     check(parent != nullptr && parent->kind == scripting::api::Entry::Kind::Property && !parent->assign,
           "Entity:parent es una propiedad de solo lectura");
     check(translate != nullptr && translate->kind == scripting::api::Entry::Kind::Method, "Entity:translate es un metodo");
-    check(t.api().find("Entity:getScript") == nullptr, "getScript no se porta (era solo de Lua)");
+    check(t.api().find("Entity:getScript") == nullptr, "getScript no existe");
 }
 
 }  // namespace

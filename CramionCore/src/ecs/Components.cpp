@@ -371,7 +371,7 @@ void InverseKinematics::reflect(PropertyVisitor& v) {
         v.entity({(k + "_hint").c_str(), "Codo / rodilla hacia", "Entidad hacia la que se dobla (opcional)"}, l.hint);
         v.field({(k + "_weight").c_str(), "Peso"}, l.weight, FloatRange{0.0f, 1.0f, 0.01f, "%.2f", true});
         v.field({(k + "_rotation").c_str(), "Copiar giro", "La mano o el pie gira como el objetivo"}, l.match_rotation);
-        v.field({(k + "_use_position").c_str(), "Usar un punto", "El objetivo es un punto del mundo (Lua: setIKTarget con un Vec3)"},
+        v.field({(k + "_use_position").c_str(), "Usar un punto", "El objetivo es un punto del mundo (scripts: setIKTarget con un Vec3)"},
                 l.use_position);
         if (v.wantsAllFields() || l.use_position) {
             v.field({(k + "_position").c_str(), "Punto"}, l.position, Vec3Kind::Position);
@@ -503,7 +503,7 @@ void PhysBoneCollider::reflect(PropertyVisitor& v) {
 }
 
 void Ragdoll::reflect(PropertyVisitor& v) {
-    v.field({"active", "Activo", "Simulando: cae con la fisica (Lua: entity.ragdoll = true)"}, active);
+    v.field({"active", "Activo", "Simulando: cae con la fisica (scripts: entity().setRagdoll(true))"}, active);
     v.field({"mass", "Masa total"}, mass, FloatRange{0.1f, 100000.0f, 0.5f, "%.1f kg"});
     v.field({"blend", "Peso", "Cuanto manda la fisica mientras esta activo"}, blend, FloatRange{0.0f, 1.0f, 0.01f, "%.2f", true});
     v.field({"blend_out", "Volver a la animacion", "Segundos de mezcla al apagarlo"}, blend_out,

@@ -316,7 +316,7 @@ public:
     void clear();
     void shiftOrigin(const core::Vec3& offset);
 
-    // --- API (Lua, MCP, Inspector) ---
+    // --- API (scripts, MCP, Inspector) ---
     void play(ecs::Entity entity);                         // reinicia y emite
     void stop(ecs::Entity entity, bool clear_particles = false);  // deja de emitir
     void pause(ecs::Entity entity, bool paused);
@@ -375,7 +375,7 @@ private:
     gfx::VulkanRenderer* renderer_ = nullptr;
 };
 
-// El sistema activo (el del editor o el juego): lo usan Lua y el MCP.
+// El sistema activo (el del editor o el juego): lo usan los scripts y el MCP.
 VfxSystem* activeSystem();
 void setActiveSystem(VfxSystem* system);
 

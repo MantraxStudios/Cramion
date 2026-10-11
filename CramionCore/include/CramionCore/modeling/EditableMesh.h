@@ -178,7 +178,7 @@ enum class Kind : int {
     Arch, Door, Room, Capsule, Count
 };
 const char* kindName(Kind kind);      // en espanol, para la interfaz
-const char* kindKey(Kind kind);       // "cube", "stairs"... (MCP, Lua)
+const char* kindKey(Kind kind);       // "cube", "stairs"... (MCP, scripts)
 bool kindFromKey(const std::string& key, Kind& kind);
 
 struct Params {

@@ -17,8 +17,8 @@
 //     como con un personaje.
 //   - Fuera de Play se ve estirada (la pose de reposo).
 //
-// En Lua: entity:resetCloth(), entity:addClothImpulse(Vec3) y los campos
-// con getField/setField("Cloth", "wind", Vec3(...)).
+// En los scripts: entity().resetCloth(), entity().addClothImpulse(Vec3) y los
+// campos con getField/setField("Cloth", "wind", Vec3(...)).
 
 #include "CramionCore/ecs/Reflection.h"
 
@@ -44,12 +44,12 @@ enum class ClothPin : int {
     Center = 5,       // mantel sobre un poste
 };
 
-// Lo que la simulacion comparte con el render y con Lua (no se guarda).
+// Lo que la simulacion comparte con el render y los scripts (no se guarda).
 struct ClothRuntime {
     std::vector<core::Vec3> positions;  // una por particula, en el mundo (interpolada)
     bool simulated = false;             // hay posiciones de la fisica
     std::uint64_t version = 0;          // sube con cada frame simulado
-    // Pedidos desde Lua (la fisica los recoge en el siguiente paso).
+    // Pedidos desde los scripts (la fisica los recoge en el siguiente paso).
     bool reset_requested = false;
     core::Vec3 pending_velocity{};      // cambio de velocidad para todas las particulas libres
 };

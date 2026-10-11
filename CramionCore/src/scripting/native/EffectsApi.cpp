@@ -1,12 +1,12 @@
 // VFX Graph, 2D, destruccion, repeticiones, Motion Matching y vehiculos.
 //
-//   entity:playEffect()                       VisualEffect
-//   entity:sendEffectEvent("Explode")
+//   entity().playEffect()                       VisualEffect
+//   entity().sendEffectEvent("Explode")
 //   entity.velocity2D = Vec3(3, 0, 0)         Rigidbody2D
 //   Physics2D.raycast(posicion, Vec3(0, -1, 0), 1.2)
-//   entity:fracture(punto, 6)                 Destructible
+//   entity().fracture(punto, 6)                 Destructible
 //   Replay.start()  Replay.play(-5)  Replay.save("gol")
-//   entity:setMotionVelocity(dir * 4)         Motion Matching (modo Script)
+//   entity().setMotionVelocity(dir * 4)         Motion Matching (modo Script)
 //
 // Eventos para los scripts de C++ (mensajes, fase Events):
 //   OnCollisionEnter2D/Stay2D/Exit2D y OnTriggerEnter2D/Stay2D/Exit2D

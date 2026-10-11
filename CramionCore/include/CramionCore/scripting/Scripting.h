@@ -1,7 +1,7 @@
 #ifndef CRAMION_CORE_SCRIPTING_H
 #define CRAMION_CORE_SCRIPTING_H
 
-// El sistema de scripting del juego (sin Lua desde la 2.9): la API del motor
+// El sistema de scripting del juego: la API del motor
 // en C++ (NativeApi.h: Audio.playOneShot, Entity:translate, Time.deltaTime...)
 // que usan los scripts de C++ (CppScripts.h, el SDK de sdk/cramion), los
 // Visual Scripts (.crgraph), las maquinas de estados y los Behavior Trees, y
@@ -11,9 +11,6 @@
 //
 // Cada parte de la API es un modulo (src/scripting/native/*.cpp) que registra
 // sus funciones y se engancha a las fases del frame (ScriptRuntime.h).
-//
-// El componente Script (archivos .lua) se conserva solo para poder abrir
-// escenas antiguas: ya no se ejecuta (avisa una vez al darle a Play).
 
 #include "CramionCore/ecs/Reflection.h"
 #include "CramionCore/ecs/World.h"
@@ -72,15 +69,6 @@ struct ScriptProperty {
     std::string name;
     PropertyType type = PropertyType::Number;
     std::string value;  // "5.0", "true", "hola", "1 2 3"
-};
-
-// Obsoleto: un script de Lua de una escena de antes de la 2.9 (no se ejecuta).
-struct Script {
-    std::string file;  // ruta del .lua dentro de Assets
-    bool enabled = true;
-    std::vector<ScriptProperty> properties;
-
-    void reflect(ecs::PropertyVisitor& v);
 };
 
 // --- Graphics ---
@@ -150,7 +138,7 @@ public:
     const input::InputMapper& inputMapper() const;
     void setPhysics(physics::PhysicsSystem* physics);
     void setAudio(audio::AudioSystem* audio);
-    // entity:moveTo, isMoving... y la tabla Navigation (NavAgent y la malla).
+    // entity().moveTo, isMoving... y la tabla Navigation (NavAgent y la malla).
     void setNavigation(navigation::NavigationSystem* navigation);
     // La tabla Voxel (el mundo de bloques de la escena).
     void setVoxels(voxel::VoxelSystem* voxels);
@@ -221,10 +209,6 @@ public:
     // Vuelve a leer un archivo (ruta en Assets: .crgraph, .crfsm, .crbt): en
     // Play, las instancias siguen con sus datos.
     void reloadFile(const std::string& file);
-
-    // Propiedades de un script de Lua antiguo: ya no se leen (vacio y el
-    // error que lo explica). Los scripts de C++ las describe CppScriptSystem.
-    std::vector<ScriptProperty> describe(const std::string& file, std::string* error = nullptr);
 
     // Ultimos errores (archivo, linea, mensaje).
     const std::vector<ScriptError>& errors() const;

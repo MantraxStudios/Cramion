@@ -4,7 +4,7 @@
 // DataPacks (como los AssetBundles de Unity): una o varias escenas y/o objetos
 // (prefabs) con TODO lo que usan (modelos, materiales, texturas, prefabs, scripts, sonidos, cielos,
 // shaders...) en un solo archivo .datapack, sin el ejecutable. El juego los
-// carga en marcha (Lua: DataPack.load / DataPack.loadScene / DataPack.instantiate):
+// carga en marcha (DataPack::load / DataPack::loadScene / DataPack::instantiate):
 // niveles descargables, DLC, mods, skins o contenido que se reparte aparte.
 //
 // Formato: un paquete .crpack (Pack.h: zstd con checksum por archivo) con las
@@ -14,8 +14,8 @@
 // Dependencias (collectDependencies): desde las escenas, recursivo, por los
 // UUID de assets que aparecen en escenas, prefabs, materiales, animators... y
 // por las rutas entre comillas que existen en Assets (componentes: scripts,
-// sonidos, texturas de interfaz; scripts Lua: "Sonidos/disparo.wav",
-// Scene.load("Nivel2"), Scene.instantiate("Prefabs/Enemigo")...).
+// sonidos, texturas de interfaz; archivos de texto: "Sonidos/disparo.wav",
+// "Nivel2", "Prefabs/Enemigo"...).
 //
 // Montar (mountDataPack): se extrae en Assets/ con sus mismas rutas (las
 // referencias por ruta siguen valiendo) SIN sobrescribir nunca lo que ya

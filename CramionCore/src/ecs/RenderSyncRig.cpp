@@ -540,7 +540,7 @@ void RenderSync::updateSockets(World& world, scene::Scene& scene) {
     }
 }
 
-// --- Consultas (Lua, editor) -------------------------------------------------------
+// --- Consultas (scripts, editor) ---------------------------------------------------
 
 bool RenderSync::boneWorld(World& world, Entity e, const std::string& bone, Mat4& out) {
     const Entity source = skinnedEntity(world, e, &bone);

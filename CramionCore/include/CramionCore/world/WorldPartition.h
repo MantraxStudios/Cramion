@@ -151,7 +151,7 @@ private:
     PartitionStats stats_{};
 };
 
-// El sistema activo del mundo (Lua, MCP, Inspector). nullptr si no hay.
+// El sistema activo del mundo (scripts, MCP, Inspector). nullptr si no hay.
 WorldPartitionSystem* activePartition();
 void setActivePartition(WorldPartitionSystem* system);
 

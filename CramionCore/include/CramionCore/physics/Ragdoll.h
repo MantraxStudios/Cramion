@@ -51,7 +51,7 @@ struct RagdollRuntime {
     float blend_out = 0.0f;       // segundos que faltan para volver a la animacion
     float blend_out_total = 0.0f;
 
-    // Empujones pedidos (Lua: entity:addRagdollForce): la fisica los aplica.
+    // Empujones pedidos (entity().addRagdollForce): la fisica los aplica.
     struct Push {
         int bone = -1;            // -1 = el mas cercano a `point` o la raiz
         core::Vec3 impulse{};

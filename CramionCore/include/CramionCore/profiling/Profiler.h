@@ -10,7 +10,7 @@
 // Cada frame (beginFrame/endFrame en el hilo principal) se guardan las zonas
 // con su anidamiento (arbol) y su hilo. Se puede:
 //   - ver el arbol con media, p95, maximo y llamadas de los ultimos frames
-//     (ventana Insights del editor, MCP `profiler`, Lua `Profiler.*`);
+//     (ventana Insights del editor, MCP `profiler`, scripts `Profiler::`);
 //   - capturar los ultimos N frames a un .crtrace (formato Chrome Trace
 //     Event: se abre en ui.perfetto.dev o chrome://tracing);
 //   - capturar solos los tirones: si un frame pasa de prof.HitchMs, se

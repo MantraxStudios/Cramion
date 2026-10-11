@@ -49,7 +49,7 @@ const std::set<std::string> kKeywords = {
 // Nombres de tipos y espacios del SDK: una tabla con ese nombre no se genera
 // (chocaria). Assert y Api los da el SDK a mano (Test.h, Script.h).
 const std::set<std::string> kSkipTables = {"",       "Vec3",    "Quat",   "Vec2",    "Color",   "Entity",   "CVar",
-                                           "CVars",  "Lua",     "Api",    "Assert",  "Value",   "Values",   "Script",
+                                           "CVars",  "Api",     "Assert",  "Value",   "Values",   "Script",
                                            "Property", "Range", "Model",  "Prefab",  "Material", "Texture", "Callback",
                                            "Collision", "Options", "Header", "Label", "Tooltip", "Requires", "ForceMode",
                                            "Mathf",  "string",  "table",  "math",    "os",      "io",       "coroutine",
@@ -357,7 +357,7 @@ std::string typeClass(const std::string& tname, const std::string& doc, const Me
             const std::string key = tname + "." + e.name;
             body = propertyDoc(key, e.doc) + "static Value " + name + "() { return detail::apiGet(\"" + key + "\"); }\n";
         } else if (e.kind == api::Entry::Kind::Method) {
-            body = function(tname + ":" + e.name, name, e.doc, "", "Value", "handle.call(\"" + e.name + "\", ", " const");
+            body = function(tname + "." + e.name, name, e.doc, "", "Value", "handle.call(\"" + e.name + "\", ", " const");
         } else {
             body = propertyDoc(tname + "." + e.name, e.doc) + "Value " + name + "() const { return handle.get(\"" + e.name + "\"); }\n";
             const std::string setter = "set" + capital(e.name);
@@ -435,7 +435,7 @@ int main(int argc, char** argv) {
         const std::string name = cppName(m->name);
         taken.insert(m->name);
         if (m->kind == api::Entry::Kind::Method) {
-            e << function("entity:" + m->name, name, m->doc, "", "Value", "call(\"" + m->name + "\", ", " const");
+            e << function("entity()." + m->name, name, m->doc, "", "Value", "call(\"" + m->name + "\", ", " const");
         } else {
             e << propertyDoc("entity." + m->name, m->doc) << "Value " << name << "() const { return get(\"" << m->name << "\"); }\n";
             const std::string setter = "set" + capital(m->name);

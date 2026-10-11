@@ -2,7 +2,7 @@
 #define CRAMION_CORE_ECS_RIGGING_H
 
 // Configuracion automatica a partir del esqueleto de un modelo (botones del
-// Inspector y funciones de Lua): huesos del ragdoll, IK de animales (patas al
+// Inspector y la API de scripts): huesos del ragdoll, IK de animales (patas al
 // suelo, cabeza y cuello) y phys bones (pelo, colas, orejas, faldas).
 
 #include "CramionCore/ecs/Components.h"

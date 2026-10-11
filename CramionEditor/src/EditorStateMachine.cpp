@@ -1071,15 +1071,15 @@ void EditorApp::drawStateMachineDetails(ecs::Entity live) {
         ImGui::SeparatorText("Cualquier estado");
         ImGui::TextWrapped("Sus transiciones salen de cualquier estado (morir, huir...). Los sensores que usan sus "
                            "condiciones los calcula un script de C++ del objeto y los guarda con sm.set.");
-        if (ai::hasLuaCode(m.any_code)) {
+        if (ai::hasLegacyCode(m.any_code)) {
             ImGui::Spacing();
-            ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.35f, 1.0f), "Tiene código Lua de antes: ya no se ejecuta.");
+            ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.35f, 1.0f), "Tiene código de antes de la 2.9 (Lua): ya no se ejecuta.");
             ImGui::SameLine();
-            if (ImGui::SmallButton("Borrar el código Lua##any")) {
+            if (ImGui::SmallButton("Borrar el código##any")) {
                 m.any_code.clear();
                 fsm_dirty_ = true;
             }
-            ImGui::InputTextMultiline("##any_lua", &m.any_code, ImVec2(-1.0f, 160.0f), ImGuiInputTextFlags_ReadOnly);
+            ImGui::InputTextMultiline("##any_code", &m.any_code, ImVec2(-1.0f, 160.0f), ImGuiInputTextFlags_ReadOnly);
         }
         return;
     } else {
@@ -1133,18 +1133,18 @@ void EditorApp::drawStateMachineDetails(ecs::Entity live) {
         ImGui::Spacing();
         ImGui::TextWrapped("La lógica de \"%s\" va en un script de C++ del objeto (onMessage):", st.name.c_str());
         ImGui::TextDisabled("%s", kCppExample);
-        if (ai::hasLuaCode(st.code) || !st.script.empty()) {
+        if (ai::hasLegacyCode(st.code) || !st.script.empty()) {
             ImGui::Spacing();
-            ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.35f, 1.0f), "Este estado tiene %s de antes: ya no se ejecuta.",
-                               st.script.empty() ? "código Lua" : st.script.c_str());
+            ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.35f, 1.0f), "Este estado tiene %s de antes de la 2.9: ya no se ejecuta.",
+                               st.script.empty() ? "código (Lua)" : st.script.c_str());
             ImGui::SameLine();
             if (ImGui::SmallButton("Quitarlo")) {
                 st.code.clear();
                 st.script.clear();
                 fsm_dirty_ = true;
             }
-            if (ai::hasLuaCode(st.code)) {
-                ImGui::InputTextMultiline("##state_lua", &st.code, ImVec2(-1.0f, 160.0f), ImGuiInputTextFlags_ReadOnly);
+            if (ai::hasLegacyCode(st.code)) {
+                ImGui::InputTextMultiline("##state_code", &st.code, ImVec2(-1.0f, 160.0f), ImGuiInputTextFlags_ReadOnly);
             }
         }
     }

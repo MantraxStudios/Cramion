@@ -315,7 +315,7 @@ void testMaterials() {
     const ecs::MeshRenderer& r = e.get<ecs::MeshRenderer>();
     check(set.truthy() && r.materials.size() == 2 && r.materials[1].uuid == glow.uuid && !r.materials[0].valid() &&
               r.cast_shadows == ecs::ShadowCasting::Off,
-          "entity:setMaterial pone un .crmat en un hueco; castShadows");
+          "entity().setMaterial pone un .crmat en un hueco; castShadows");
     // Interfaz: imagen, transparencia, posicion y tamano.
     ecs::Entity icon = world.create("Icono");
     icon.add<ui::RectTransform>();

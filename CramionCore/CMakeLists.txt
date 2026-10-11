@@ -73,8 +73,7 @@ target_compile_options(Jolt PRIVATE -O2 -w)
 
 # --- Audio (miniaudio) ---------------------------------------------------------
 # miniaudio: audio 2D/3D (WAV, MP3, FLAC y OGG con stb_vorbis). Sin su
-# CMakeLists (SOURCE_SUBDIR inexistente). El scripting es C++ (sin Lua desde
-# la 2.9).
+# CMakeLists (SOURCE_SUBDIR inexistente).
 FetchContent_Declare(miniaudio
     GIT_REPOSITORY https://github.com/mackron/miniaudio.git
     GIT_TAG 0.11.25
@@ -399,9 +398,8 @@ target_compile_definitions(cramion_minigolf PRIVATE
 # Referencia de componentes del manual (docs-src/pages/componentes-*.html),
 # generada desde la reflexion: cramion_docgen <carpeta docs-src/pages>.
 # La API para los scripts de C++ (sdk/cramion/Api.gen.h), generada desde el
-# registro de la API (ScriptSystem::apiRegistry). Mientras se porta la API de
-# la version con Lua no se regenera al compilar: se ejecuta a mano
-# (cramion_sdkgen sdk/cramion) cuando el registro este completo.
+# registro de la API (ScriptSystem::apiRegistry). No se regenera al compilar:
+# se ejecuta a mano (cramion_sdkgen sdk/cramion) cuando cambia el registro.
 add_executable(cramion_sdkgen "${CMAKE_CURRENT_SOURCE_DIR}/tools/SdkGen.cpp")
 target_link_libraries(cramion_sdkgen PRIVATE Cramion::Core)
 

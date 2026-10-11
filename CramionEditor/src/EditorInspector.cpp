@@ -600,7 +600,6 @@ void EditorApp::drawInspector() {
             if (type.name == "Fire") drawFireInspector(entity);
             if (type.name == "Environment") drawEnvironmentInspector(entity);
             if (type.name == "NavMeshBounds") drawNavMeshBoundsInspector(entity);
-            if (type.name == "Script") drawScriptInspector(entity);
             if (type.name == "CppScript") drawCppScriptInspector(entity, false);
             if (type.name == "StateMachine") drawStateMachineInspector(entity);
             if (type.name == "RectTransform") drawRectTransformInspector(entity);

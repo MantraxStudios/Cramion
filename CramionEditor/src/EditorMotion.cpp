@@ -138,7 +138,7 @@ void EditorApp::drawMotionDatabaseEditor() {
         ImGui::SeparatorText("Clip");
         changed |= ImGui::InputTextWithHint("Nombre en el modelo", "si no hay .cranim", &c.clip_name);
         changed |= ImGui::InputTextWithHint("Etiquetas", "agachado, combate", &c.tags);
-        ImGui::SetItemTooltip("Con entity:setMotionTags(\"agachado\") solo se buscan los fotogramas con esa etiqueta");
+        ImGui::SetItemTooltip("Con entity().setMotionTags(\"agachado\") solo se buscan los fotogramas con esa etiqueta");
         changed |= ImGui::Checkbox("Bucle", &c.loop);
         changed |= ImGui::DragFloat3("Velocidad (m/s)", &c.velocity.x, 0.01f);
         ImGui::SetItemTooltip("Clips en el sitio (Mixamo In Place): lo que avanzaría el personaje (+Z delante)");

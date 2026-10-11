@@ -358,8 +358,8 @@ bool stateMachineFromJson(const std::string& text, StateMachineAsset& out, std::
             if (const auto c = j.find("color"); c != j.end()) s.color = readVec3(*c, s.color);
             s.code = j.value("code", std::string{});
             s.script = j.value("script", std::string{});
-            // Los de antes con codigo Lua: su script de C++ necesita OnStateUpdate.
-            s.send_update = j.value("send_update", hasLuaCode(s.code) || !s.script.empty());
+            // Los de antes con codigo: su script de C++ necesita OnStateUpdate.
+            s.send_update = j.value("send_update", hasLegacyCode(s.code) || !s.script.empty());
             m.states.push_back(std::move(s));
             ++index;
         }
@@ -488,22 +488,22 @@ std::vector<std::string> validateStateMachine(const StateMachineAsset& m) {
             }
         }
     }
-    // Codigo Lua de antes: ya no corre (un aviso para toda la maquina).
+    // Codigo de antes: ya no corre (un aviso para toda la maquina).
     std::string with_code;
     for (const State& s : m.states) {
-        if (!hasLuaCode(s.code) && s.script.empty()) continue;
+        if (!hasLegacyCode(s.code) && s.script.empty()) continue;
         with_code += (with_code.empty() ? "" : ", ") + s.name;
     }
-    if (hasLuaCode(m.any_code)) with_code += (with_code.empty() ? "" : ", ") + std::string("Cualquier estado");
+    if (hasLegacyCode(m.any_code)) with_code += (with_code.empty() ? "" : ", ") + std::string("Cualquier estado");
     if (!with_code.empty()) {
-        problems.push_back("Codigo Lua en " + with_code +
+        problems.push_back("Codigo de antes de la 2.9 (Lua) en " + with_code +
                            ": ya no se ejecuta; convierte el codigo del estado a un script de C++ (OnStateEnter / "
                            "OnStateUpdate / OnStateExit en onMessage)");
     }
     return problems;
 }
 
-bool hasLuaCode(const std::string& code) {
+bool hasLegacyCode(const std::string& code) {
     // Cada linea sin comentarios: vacia, "end" o "function Nombre(...)" no cuentan.
     std::istringstream in(code);
     std::string line;

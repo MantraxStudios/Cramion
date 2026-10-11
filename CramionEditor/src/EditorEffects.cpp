@@ -400,7 +400,7 @@ void EditorApp::drawVfxEditor() {
     ImGui::SetItemTooltip("Al empezar ya hay partículas (lluvia, nieve, luciérnagas)");
 
     ImGui::SeparatorText("Parámetros expuestos");
-    ImGui::TextDisabled("Salen en el Inspector del objeto y\nlos cambian los scripts:\nentity:setEffectFloat(\"Rate\", 200)");
+    ImGui::TextDisabled("Salen en el Inspector del objeto y\nlos cambian los scripts:\nentity().setEffectFloat(\"Rate\", 200)");
     int remove_param = -1;
     for (std::size_t i = 0; i < g.params.size(); ++i) {
         vfx::ExposedParam& p = g.params[i];

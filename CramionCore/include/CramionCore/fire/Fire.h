@@ -96,7 +96,7 @@ struct Fire {
     void reflect(ecs::PropertyVisitor& v);
 };
 
-// Lo que expone la simulacion de una zona (para Lua, MCP y el editor).
+// Lo que expone la simulacion de una zona (para scripts, MCP y el editor).
 struct FireStats {
     bool active = false;           // hay rejilla en marcha
     int resolution = 0;
@@ -124,7 +124,7 @@ void updateFires(ecs::World& world, float delta_seconds, FireMode mode, terrain:
 void collectFireRender(ecs::World& world, float seconds, std::vector<gfx::FireZone>& zones,
                        std::vector<scene::PointLight>& lights);
 
-// --- Acciones (Lua, MCP, el editor). Posiciones en el mundo. ---
+// --- Acciones (scripts, MCP, el editor). Posiciones en el mundo. ---
 // Enciende las celdas con combustible en el circulo de las zonas que lo
 // tocan. Devuelve cuantas zonas lo recibieron.
 int ignite(ecs::World& world, const core::Vec3& position, float radius);

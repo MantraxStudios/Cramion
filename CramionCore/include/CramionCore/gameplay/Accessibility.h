@@ -3,7 +3,7 @@
 
 // Opciones de accesibilidad del jugador (como las de The Last of Us / las
 // Xbox Accessibility Guidelines). Son globales, las cambia el menu de
-// opciones del juego (Lua: Accessibility.set{...}) y se guardan por jugador:
+// opciones del juego (Accessibility::set({...})) y se guardan por jugador:
 //
 //   - Daltonismo: corrige (o simula) protanopia, deuteranopia, tritanopia y
 //     acromatopsia en la imagen final.
@@ -11,8 +11,8 @@
 //     fondo opaco opcional detras de los subtitulos.
 //   - Reducir movimiento: sin motion blur, distorsion de lente ni aberracion,
 //     y el temblor de camara escalado.
-//   - Controles: la reasignacion la guardan las Input Actions (Lua:
-//     Input.rebind / Input.saveBindings).
+//   - Controles: la reasignacion la guardan las Input Actions
+//     (Input::rebind / Input::saveBindings).
 
 #include <CramionFX/core/Math.h>
 
@@ -45,7 +45,7 @@ bool saveAccessibility();
 // --- Temblor de camara (como el Impulse de Cinemachine) ---
 // Suma "trauma" (0..1): la camara principal tiembla con ruido suave y se
 // calma en `duration` segundos. Lo escala camera_shake (0 = nada) y
-// reduce_motion (a la mitad). Lua: Camera.shake(0.5, 0.4).
+// reduce_motion (a la mitad). Scripts: Camera::shake(0.5, 0.4).
 void addCameraShake(float intensity, float duration = 0.5f, float frequency = 18.0f);
 void clearCameraShake();
 // Avanza el tiempo y da el desplazamiento de este frame: posicion (m, en

@@ -1,9 +1,8 @@
 // Scripting en el editor: el editor de codigo integrado para los scripts de
 // C++ y los shaders (pestanas, resaltado de sintaxis, numeros de linea,
 // sangria automatica, autocompletado con clangd, Ctrl+S guarda y compila,
-// errores marcados en su linea), la consola de la API, el aviso del
-// componente Script de Lua (obsoleto) y el Inspector del AudioSource
-// (arrastrar un clip, escucharlo).
+// errores marcados en su linea), la consola de la API y el Inspector del
+// AudioSource (arrastrar un clip, escucharlo).
 
 #include "EditorApp.h"
 
@@ -1079,19 +1078,6 @@ void EditorApp::drawScriptEditor() {
         active_script_tab_ = std::min(active_script_tab_, static_cast<int>(script_tabs_.size()) - 1);
         if (script_tabs_.empty()) show_script_editor_ = false;
     }
-}
-
-// Inspector del componente Script: un script de Lua de una escena de antes
-// de la 2.9. Ya no se ejecuta: se avisa.
-void EditorApp::drawScriptInspector(ecs::Entity entity) {
-    const scripting::Script* script = entity.tryGet<scripting::Script>();
-    if (script == nullptr) return;
-    ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(255, 190, 90, 255));
-    ImGui::TextWrapped("Script de Lua (obsoleto): %s. Desde la 2.9 los scripts son de C++ y este ya no se ejecuta.",
-                       script->file.empty() ? "sin archivo" : script->file.c_str());
-    ImGui::PopStyleColor();
-    ImGui::TextDisabled("Se quita con el menu del componente (clic derecho en su cabecera).");
-    if (ImGui::Button("Nuevo script C++ para este objeto")) createCppScriptAsset({}, entity);
 }
 
 // Inspector del AudioSource: soltar un clip y escucharlo sin Play.

@@ -19,8 +19,8 @@
 // cambian cada frame (brillos que laten, fundidos de color). No se guardan en
 // la escena (como las de Unity creadas por codigo).
 //
-// En Lua: Mesh.new(), Mesh.cube/plane/sphere/cylinder/capsule/quad y
-// entity.mesh (ver docs/scripting.html).
+// En los scripts: Mesh::create(), Mesh::cube/plane/sphere/cylinder/capsule/quad
+// y entity().setMesh (ver docs/scripting.html).
 
 #include <CramionFX/core/Math.h>
 

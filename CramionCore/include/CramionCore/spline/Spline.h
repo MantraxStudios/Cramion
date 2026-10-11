@@ -10,7 +10,7 @@
 //   SplineExtrude   genera una malla a lo largo de la curva: carretera,
 //                   camino, rio (el WaterBody de la entidad sigue la curva),
 //                   muro, valla con postes, tuberia o railes. Se puede pegar
-//                   al terreno y, desde el editor/Lua/MCP, allanar y pintar el
+//                   al terreno y, desde el editor/scripts/MCP, allanar y pintar el
 //                   terreno debajo.
 //   SplineFollower  mueve una entidad por una spline (camaras, vagonetas,
 //                   patrullas, plataformas).
@@ -125,7 +125,7 @@ struct SplineExtrude {
     core::Vec3 color{0.32f, 0.32f, 0.33f};  // sin .crmat
     float roughness = 0.85f;
 
-    // Terreno (se aplica con applyToTerrain: editor, Lua o MCP)
+    // Terreno (se aplica con applyToTerrain: editor, scripts o MCP)
     float terrain_blend = 4.0f;  // metros de talud a cada lado
     int paint_layer = -2;        // -2 = "Tierra"/"Camino" si existe, -1 = no pintar
 

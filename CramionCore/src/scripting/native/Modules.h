@@ -7,8 +7,8 @@
 // el orden dentro de cada fase del frame).
 //
 // Reglas para escribir un modulo:
-//   - Los nombres son los de siempre (los mismos que tenia la API de Lua y
-//     que usa el SDK de C++): "Audio.playOneShot", "Entity:translate"...
+//   - Los nombres son los de siempre (los que usa el SDK de C++):
+//     "Audio.playOneShot", "Entity:translate"...
 //   - Argumentos opcionales con los de c.number(i, por_defecto)...; las
 //     entidades con rt.entityArg / rt.selfEntity; un error, throw api::Error.
 //   - Varios resultados: una lista (api::Value::Array), como antes.

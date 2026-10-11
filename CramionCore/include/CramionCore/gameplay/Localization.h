@@ -16,7 +16,7 @@
 // regla de cada idioma elige la forma.
 //
 // Hay una tabla global (localization()) que usan la UI (Texto con clave), los
-// dialogos y Lua (Text.get).
+// dialogos y los scripts (Text::get).
 
 #include <cstdint>
 #include <filesystem>
@@ -90,7 +90,7 @@ public:
     std::uint64_t revision() const { return revision_; }
     void touch() { ++revision_; }
 
-    // Oyentes del cambio de idioma (Lua: Text.onLanguageChanged).
+    // Oyentes del cambio de idioma (Text::onLanguageChanged).
     int addListener(std::function<void(const std::string& language)> fn);
     void removeListener(int id);
 

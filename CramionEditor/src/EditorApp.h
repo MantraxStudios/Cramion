@@ -669,7 +669,6 @@ private:
     bool saveScript(ScriptTab& tab);
     void drawScriptEditor();
     void drawCodeEditor(ScriptTab& tab);
-    void drawScriptInspector(ecs::Entity entity);
     void drawCppScriptInspector(ecs::Entity entity, bool header);  // EditorCppScripts.cpp (arriba / abajo)
     std::vector<std::string> cppClassesOfFile(const std::string& relative);
     std::string cppSourceFor(const std::string& relative);  // .h -> su .cpp

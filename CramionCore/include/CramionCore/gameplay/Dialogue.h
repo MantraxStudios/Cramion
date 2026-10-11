@@ -16,7 +16,7 @@
 //   Fin
 //
 // DialogueSystem ejecuta uno a la vez: emite eventos (linea, opciones, fin...)
-// que leen Lua (Dialogue.onLine...) y la caja de dialogo de la UI
+// que leen los scripts (Dialogue::onLine...) y la caja de dialogo de la UI
 // (componente DialogueBox). Las variables del dialogo se guardan con las
 // partidas (SaveGame). En los textos, {$oro} pone el valor de una variable.
 
@@ -133,7 +133,7 @@ struct DialogueLine {
 };
 
 struct DialogueChoice {
-    int index = 0;  // 0..n-1 (en Lua 1..n)
+    int index = 0;  // 0..n-1
     std::string text;
     bool enabled = true;
 };

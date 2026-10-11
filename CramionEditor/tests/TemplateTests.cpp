@@ -376,16 +376,16 @@ int main(int argc, char** argv) {
               find(list, "cars") && find(list, "vr"),
           "hay 13 plantillas integradas");
 
-    // Ninguna plantilla escribe Lua: todo son scripts de C++ con su clase.
+    // Todos los scripts de las plantillas son de C++ con su clase.
     {
-        bool no_lua = true;
+        bool only_cpp = true;
         bool classes_ok = true;
         for (const editor::ProjectTemplate& t : list) {
             if (t.id == "third_person_pro" || t.id == "open_world") continue;  // necesitan el pack / tardan: se miran abajo
-            const project::ProjectInfo p = editor::createProjectFromTemplate(t, root, "Lua_" + t.id);
+            const project::ProjectInfo p = editor::createProjectFromTemplate(t, root, "Cpp_" + t.id);
             for (const auto& f : std::filesystem::recursive_directory_iterator(p.assetsFolder(), ec)) {
-                if (f.path().extension() == ".lua") {
-                    no_lua = false;
+                if (f.path().extension() == ".lua") {  // los scripts de antes de la 2.9
+                    only_cpp = false;
                     std::printf("  (%s: %s)\n", t.id.c_str(), f.path().filename().string().c_str());
                 }
             }
@@ -393,7 +393,6 @@ int main(int argc, char** argv) {
             std::string error;
             if (!ecs::loadScene(w, p.assetsFolder() / "Scenes" / "Main.crscene", &error)) continue;
             w.forEachDepthFirst([&](ecs::Entity e) {
-                if (e.has<scripting::Script>()) no_lua = false;
                 const scripting::CppScript* s = e.tryGet<scripting::CppScript>();
                 if (s == nullptr) return;
                 const bool ok = std::filesystem::exists(p.assetsFolder() / s->script) &&
@@ -402,7 +401,7 @@ int main(int argc, char** argv) {
                 classes_ok = classes_ok && ok;
             });
         }
-        check(no_lua, "ninguna plantilla escribe scripts de Lua ni usa el componente Script");
+        check(only_cpp, "las plantillas solo escriben scripts de C++");
         check(classes_ok, "cada CppScript apunta a su .cpp y a su clase");
     }
 

@@ -10,8 +10,6 @@ Cramion uses the following libraries, each under its own license. Exported games
 | ImGuizmo | MIT | https://github.com/CedricGuillemet/ImGuizmo |
 | EnTT | MIT | https://github.com/skypjack/entt |
 | Jolt Physics | MIT | https://github.com/jrouwe/JoltPhysics |
-| Lua 5.4 | MIT | https://www.lua.org |
-| sol2 | MIT | https://github.com/ThePhD/sol2 |
 | miniaudio | Dominio público (Unlicense) o MIT-0 | https://github.com/mackron/miniaudio |
 | ENet | MIT | https://github.com/lsalzman/enet |
 | Recast & Detour | zlib | https://github.com/recastnavigation/recastnavigation |

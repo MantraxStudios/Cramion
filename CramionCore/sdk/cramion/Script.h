@@ -807,14 +807,6 @@ inline void set(std::string_view path, const Value& v) { detail::apiSet(path, v)
 void send(std::string_view fn, Values args = {});
 }  // namespace Api
 
-// Obsoleto (se quitara en la proxima version): el motor ya no tiene Lua. Usa Api::.
-namespace [[deprecated("Lua:: ya no existe: usa Api::call, Api::get y Api::set")]] Lua {
-inline Value call(std::string_view fn, Values args = {}) { return Api::call(fn, std::move(args)); }
-inline Value get(std::string_view path) { return Api::get(path); }
-inline void set(std::string_view path, const Value& v) { Api::set(path, v); }
-inline void send(std::string_view fn, Values args = {}) { Api::send(fn, std::move(args)); }
-}  // namespace Lua
-
 // --- CVars ---
 namespace detail {
 struct CVarDecl {

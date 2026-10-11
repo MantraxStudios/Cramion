@@ -37,7 +37,7 @@ std::string lower(std::string text) {
 // Formatos de texto del motor en los que se buscan referencias.
 bool isTextAsset(const std::string& extension) {
     static const std::set<std::string> kText = {".crscene", ".crprefab", ".crmat", ".crrt",  ".crpaint", ".crshader",
-                                                ".lua",     ".json",     ".txt",   ".ini",   ".crcontroller",
+                                                ".cpp", ".h", ".crgraph", ".json",     ".txt",   ".ini",   ".crcontroller",
                                                 ".cranim",  ".crterrain", ".crui", ".csv",  ".crfsm",
                                                 ".crmmdb"};
     return kText.count(extension) != 0;

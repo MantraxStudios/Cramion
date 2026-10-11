@@ -5,8 +5,8 @@
 // Unreal): joystick, zona para mirar y botones en pantalla que el juego usa
 // en moviles. Se disena una vez en el editor (Archivo > Controles tactiles),
 // se guarda en ProjectSettings/TouchInterface.json y el juego la carga sola;
-// en Lua se muestra, oculta o cambia (Input.setTouchControls,
-// Input.setTouchButton...).
+// desde los scripts se muestra, oculta o cambia (Input::setTouchControls,
+// Input::setTouchButton...).
 
 #include <CramionDM/TouchControls.h>
 

@@ -1224,7 +1224,7 @@ void RenderSync::applyInverseKinematics(World& world, Entity entity, const Inver
         if (rotation != nullptr) *rotation = r;
         return true;
     };
-    // Objetivo como entidad o como punto del mundo (Lua).
+    // Objetivo como entidad o como punto del mundo (scripts).
     const auto goal_of = [&](const Uuid& id, bool use_position, const Vec3& position, Vec3& out, Quat* rotation) {
         if (use_position) {
             out = point_to_model(position);
