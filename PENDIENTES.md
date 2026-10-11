@@ -1,8 +1,8 @@
 # Pendientes (para el siguiente agente)
 
-Estado al 2026-10-11, rama `claude/terminar-pendientes`. Las partes del port sin Lua que quedaron a medias ya
-están terminadas (sección 1); lo que queda es la sección 2 (pequeño, necesita Windows) y la 3 (sin empezar).
-El plan general sigue en `PLAN-SIN-LUA.md`.
+Estado al 2026-10-11, rama `claude/pendientes-seccion-3`. El port sin Lua está terminado (secciones 1 y 3):
+Lua ya no está en el motor. Lo que queda es probar en Windows y Android (sección 2) y el rendimiento (sección 4).
+`PLAN-SIN-LUA.md` queda como historia del plan.
 
 ## 0. Compilar y probar
 
@@ -72,33 +72,24 @@ que usa cabeceras de Android, y `host/ScriptHost.cpp`, que usa `__except` de MSV
 - El código Lua viejo está en `CramionCore/legacy_lua/` **solo como referencia** (no se compila). Se borra al final.
 
 ## 2. Falta (pequeño)
+- **Probar en Windows** lo de la sección 3: crear un proyecto de cada plantilla y darle a Play, la demo del
+  minigolf, el autocompletado y la consola de C++, un mod con `main.crgraph`, `<Juego>Server.exe` con scripts, y
+  exportar a Android con el NDK instalado (un proyecto con scripts de C++ en un móvil; el `.so` de los scripts y
+  `libcramion_scripthost.so` deben ir en `lib/<abi>/`). Desde Linux solo se pudo comprobar la sintaxis de Android
+  con las cabeceras de bionic, sin el NDK.
 - **Probar en Windows** lo de la sección 1 que solo se pudo compilar desde Linux con MinGW: el editor de máquinas
   de estados, la consola de C++ y `CppScriptTests` con el compilador incluido (allí comprueba que el tipo es
   «clang (incluido)»).
 - `--run-tests` en `CramionEditor/player/PlayerMain.cpp`: el reproductor **nunca tuvo** pruebas (solo el editor:
   `CramionEditor/src/main.cpp` y `EditorPlatform.cpp`). Añadirlo es una función nueva: decidir si hace falta.
 
-## 3. Sin empezar
-1. **Plantillas de proyecto en C++**: `CramionEditor/src/ProjectTemplates.cpp` y `Template21Scripts.h`,
-   `TemplateCreatureScripts.h`, `TemplateLocomotionScripts.h`, `TemplateOnlineScripts.h`,
-   `TemplateOpenWorldScripts.h`, `TemplateMmoScripts.h` (son Lua). El modelo es `TemplateVrScripts.h`, que ya es
-   C++. Pruebas: `CramionEditor/tests/TemplateTests.cpp` (usa `getScript()`, que ya no existe).
-2. **Demo del minigolf**: `CramionCore/tools/minigolf/Scripts/*.lua` (8) y `tools/MiniGolfDemo.cpp`, a C++.
-3. **Editor**: el autocompletado (`LuaCompletion.cpp/.h` → generado desde `ScriptSystem::apiRegistry()`),
-   `EditorLuaSymbols.cpp`, el editor y la consola de Lua de `EditorScripting.cpp`, el inspector del componente
-   Script (Lua, obsoleto), `EditorMcp.cpp` (`run_lua`, `create_script` en Lua), `EditorHouseGenerator.cpp`,
-   `EditorWorkspaces.cpp`, `EditorMcp21.cpp`, `EditorProject.cpp`, `EditorHub.cpp` y
-   `CramionEditor/tests/CompletionTests.cpp`.
-4. **Mods** (`CramionCore/src/project/Mods.cpp`, `main.lua`) y `PlayerMain.cpp` (mods, nombres «Lua» en el
-   perfilador y en los pasos de cierre).
-5. **Android**: los scripts de C++ dentro del APK (compilados con el NDK al exportar y cargados en el mismo
-   proceso). Hoy `EditorExport.cpp` avisa de que solo van en Windows.
-6. **Manual** (`docs-src/`): `cpp-lua.html` → `cpp-api.html`, el grupo «Referencia de Lua (obsoleta)» de
-   `pages.json`, `build_manual.py` y `gen_cpp_api.py`. Actualizar `README.md`.
-7. **Borrar Lua**: `CramionCore/legacy_lua/`, el componente `Script` cuando ya no haga falta leer escenas viejas
-   (hoy se carga y avisa), y comprobar que no queda nada: `git grep -nP '[Ll]ua(?![a-z])|\bsol::'`. Muchas
-   menciones que quedan son solo comentarios («desde Lua» → «desde los scripts»).
-8. CHANGELOG (2.9.0, sección «Scripting»: hoy dice «Empieza la retirada de Lua») y `PLAN-SIN-LUA.md`.
+## 3. Hecho: Lua retirado (2026-10-11)
+Las plantillas de proyecto y el minigolf son C++; el editor (autocompletado, consola, MCP, textos) no usa Lua;
+los mods arrancan con un `main.crgraph` o `main.crprefab` (`scripting/ModEntry.cpp`); el servidor dedicado ejecuta
+scripts de C++; los scripts de C++ se compilan con el NDK al exportar a Android; el manual está reescrito en C++;
+y se borraron `legacy_lua/`, el componente `Script` y el alias `Lua::`. Lo que queda de «Lua» en el código es a
+propósito: leer proyectos viejos (el código Lua de las máquinas de estados, `main.lua` de los mods, la extensión
+`.lua` en `TemplateTests.cpp`) y la historia del CHANGELOG y del README.
 
 ## 4. Rendimiento: lo que queda
 - **Volver a medir** con la máquina libre: `build-linux/bench/cramion_render_bench` con Lavapipe bajo Xvfb y las

@@ -1,6 +1,6 @@
 <p>Animator, cinematica inversa y animacion procedural. Referencia completa generada desde el motor.</p>
 <h3 id="Animator">Animator <code>Animator</code></h3>
-<p>Reproduce las animaciones de un modelo con esqueleto (en la entidad del MeshRenderer animado). Con un <strong>Animator Controller</strong> (<code>.cranimator</code>, editor visual en la ventana Animator) su maquina de estados elige clip, velocidad y bucle segun sus parametros; sin el mandan Clip / Nombre del clip. Desde Lua: <code>setAnimatorFloat</code>, <code>setAnimatorBool</code>, <code>setAnimatorTrigger</code>, <code>playAnimation</code>.</p>
+<p>Reproduce las animaciones de un modelo con esqueleto (en la entidad del MeshRenderer animado). Con un <strong>Animator Controller</strong> (<code>.cranimator</code>, editor visual en la ventana Animator) su maquina de estados elige clip, velocidad y bucle segun sus parametros; sin el mandan Clip / Nombre del clip. Desde un script: <code>setAnimatorFloat</code>, <code>setAnimatorBool</code>, <code>setAnimatorTrigger</code>, <code>playAnimation</code>.</p>
 <table>
   <thead><tr><th>Propiedad</th><th>Tipo</th><th>Por defecto</th><th>Valores</th><th>Descripcion</th></tr></thead>
   <tbody>
@@ -25,28 +25,28 @@
     <tr><td>Codo / rodilla hacia<br><code>left_hand_hint</code></td><td>entidad</td><td>(ninguna)</td><td>arrastrar desde la Jerarquia</td><td>Entidad hacia la que se dobla (opcional)</td></tr>
     <tr><td>Peso<br><code>left_hand_weight</code></td><td>numero</td><td>1</td><td>0 a 1</td><td></td></tr>
     <tr><td>Copiar giro<br><code>left_hand_rotation</code></td><td>si/no</td><td>no</td><td></td><td>La mano o el pie gira como el objetivo</td></tr>
-    <tr><td>Usar un punto<br><code>left_hand_use_position</code></td><td>si/no</td><td>no</td><td></td><td>El objetivo es un punto del mundo (Lua: setIKTarget con un Vec3)</td></tr>
+    <tr><td>Usar un punto<br><code>left_hand_use_position</code></td><td>si/no</td><td>no</td><td></td><td>El objetivo es un punto del mundo (scripts: setIKTarget con un Vec3)</td></tr>
     <tr><td>Punto<br><code>left_hand_position</code></td><td>Vec3 (metros)</td><td>(0; 0; 0)</td><td></td><td></td></tr>
     <tr><td colspan="5"><strong class="text-white">Mano derecha</strong></td></tr>
     <tr><td>Objetivo<br><code>right_hand_target</code></td><td>entidad</td><td>(ninguna)</td><td>arrastrar desde la Jerarquia</td><td>Entidad a la que llega (arrastrala desde la Jerarquia)</td></tr>
     <tr><td>Codo / rodilla hacia<br><code>right_hand_hint</code></td><td>entidad</td><td>(ninguna)</td><td>arrastrar desde la Jerarquia</td><td>Entidad hacia la que se dobla (opcional)</td></tr>
     <tr><td>Peso<br><code>right_hand_weight</code></td><td>numero</td><td>1</td><td>0 a 1</td><td></td></tr>
     <tr><td>Copiar giro<br><code>right_hand_rotation</code></td><td>si/no</td><td>no</td><td></td><td>La mano o el pie gira como el objetivo</td></tr>
-    <tr><td>Usar un punto<br><code>right_hand_use_position</code></td><td>si/no</td><td>no</td><td></td><td>El objetivo es un punto del mundo (Lua: setIKTarget con un Vec3)</td></tr>
+    <tr><td>Usar un punto<br><code>right_hand_use_position</code></td><td>si/no</td><td>no</td><td></td><td>El objetivo es un punto del mundo (scripts: setIKTarget con un Vec3)</td></tr>
     <tr><td>Punto<br><code>right_hand_position</code></td><td>Vec3 (metros)</td><td>(0; 0; 0)</td><td></td><td></td></tr>
     <tr><td colspan="5"><strong class="text-white">Pie izquierdo</strong></td></tr>
     <tr><td>Objetivo<br><code>left_foot_target</code></td><td>entidad</td><td>(ninguna)</td><td>arrastrar desde la Jerarquia</td><td>Entidad a la que llega (arrastrala desde la Jerarquia)</td></tr>
     <tr><td>Codo / rodilla hacia<br><code>left_foot_hint</code></td><td>entidad</td><td>(ninguna)</td><td>arrastrar desde la Jerarquia</td><td>Entidad hacia la que se dobla (opcional)</td></tr>
     <tr><td>Peso<br><code>left_foot_weight</code></td><td>numero</td><td>1</td><td>0 a 1</td><td></td></tr>
     <tr><td>Copiar giro<br><code>left_foot_rotation</code></td><td>si/no</td><td>no</td><td></td><td>La mano o el pie gira como el objetivo</td></tr>
-    <tr><td>Usar un punto<br><code>left_foot_use_position</code></td><td>si/no</td><td>no</td><td></td><td>El objetivo es un punto del mundo (Lua: setIKTarget con un Vec3)</td></tr>
+    <tr><td>Usar un punto<br><code>left_foot_use_position</code></td><td>si/no</td><td>no</td><td></td><td>El objetivo es un punto del mundo (scripts: setIKTarget con un Vec3)</td></tr>
     <tr><td>Punto<br><code>left_foot_position</code></td><td>Vec3 (metros)</td><td>(0; 0; 0)</td><td></td><td></td></tr>
     <tr><td colspan="5"><strong class="text-white">Pie derecho</strong></td></tr>
     <tr><td>Objetivo<br><code>right_foot_target</code></td><td>entidad</td><td>(ninguna)</td><td>arrastrar desde la Jerarquia</td><td>Entidad a la que llega (arrastrala desde la Jerarquia)</td></tr>
     <tr><td>Codo / rodilla hacia<br><code>right_foot_hint</code></td><td>entidad</td><td>(ninguna)</td><td>arrastrar desde la Jerarquia</td><td>Entidad hacia la que se dobla (opcional)</td></tr>
     <tr><td>Peso<br><code>right_foot_weight</code></td><td>numero</td><td>1</td><td>0 a 1</td><td></td></tr>
     <tr><td>Copiar giro<br><code>right_foot_rotation</code></td><td>si/no</td><td>no</td><td></td><td>La mano o el pie gira como el objetivo</td></tr>
-    <tr><td>Usar un punto<br><code>right_foot_use_position</code></td><td>si/no</td><td>no</td><td></td><td>El objetivo es un punto del mundo (Lua: setIKTarget con un Vec3)</td></tr>
+    <tr><td>Usar un punto<br><code>right_foot_use_position</code></td><td>si/no</td><td>no</td><td></td><td>El objetivo es un punto del mundo (scripts: setIKTarget con un Vec3)</td></tr>
     <tr><td>Punto<br><code>right_foot_position</code></td><td>Vec3 (metros)</td><td>(0; 0; 0)</td><td></td><td></td></tr>
     <tr><td colspan="5"><strong class="text-white">Mirar</strong></td></tr>
     <tr><td>Mirar a<br><code>look_at</code></td><td>entidad</td><td>(ninguna)</td><td>arrastrar desde la Jerarquia</td><td>La cabeza sigue a esta entidad</td></tr>
@@ -132,7 +132,7 @@
   </tbody>
 </table>
 <h3 id="BoneSocket">Bone Socket <code>BoneSocket</code></h3>
-<p>Engancha una entidad a un hueso del modelo de un antepasado: Seguir al hueso (una espada en la mano, un sombrero, un collider en la cabeza) o Mover el hueso (el hueso sigue a la entidad: posar con el gizmo). Lua: <code>espada:attachToBone(personaje, "RightHand")</code>.</p>
+<p>Engancha una entidad a un hueso del modelo de un antepasado: Seguir al hueso (una espada en la mano, un sombrero, un collider en la cabeza) o Mover el hueso (el hueso sigue a la entidad: posar con el gizmo). Desde un script: <code>espada.attachToBone(personaje, "RightHand")</code>.</p>
 <table>
   <thead><tr><th>Propiedad</th><th>Tipo</th><th>Por defecto</th><th>Valores</th><th>Descripcion</th></tr></thead>
   <tbody>

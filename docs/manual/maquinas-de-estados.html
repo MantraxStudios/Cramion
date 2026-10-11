@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Máquinas de estados · Documentación de Cramion</title>
-  <meta name="description" content="IA como Bolt: estados con código Lua, transiciones y depuración en vivo.">
+  <meta name="description" content="IA como Bolt: estados que avisan a los scripts de C++, condiciones con expresiones, transiciones y depuración en vivo.">
   <meta name="theme-color" content="#09090b">
   <link rel="icon" href="../img/icon.png">
   <script>
@@ -17,7 +17,6 @@
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/base16/tomorrow-night.min.css">
   <link rel="stylesheet" href="manual.css">
   <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/lua.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/glsl.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/json.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/bash.min.js"></script>
@@ -65,13 +64,13 @@
       <nav>
         <div class="sheet-head"><a href="index.html" class="brand"><img src="../img/icon.png" alt=""><span>Cramion</span></a><button id="menu-close" class="icon-btn" aria-label="Cerrar el menú"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12"/></svg></button></div>
         <div class="group"><p class="group-title"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m3 11 9-8 9 8"/><path d="M5 10v10h14V10"/></svg>Inicio</p><a href="index.html">Introducción</a><a href="../index.html">Web de Cramion</a></div>
-        <div class="group"><p class="group-title"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5a2 2 0 0 1 2-2h13v16H6a2 2 0 0 0-2 2V5Z"/><path d="M4 19a2 2 0 0 1 2-2h13"/></svg>Primeros pasos</p><a href="primer-script.html">Tu primer script</a><a href="ciclo-de-vida.html">Ciclo de vida</a><a href="propiedades.html">Propiedades</a><a href="recarga.html">Recarga en caliente</a><a href="prefabs.html">Prefabs</a><a href="mcp.html">Conectar una IA (MCP)</a><a href="licencia.html">Licencia</a></div>
-        <div class="group"><p class="group-title"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m8 8-4 4 4 4"/><path d="m16 8 4 4-4 4"/><path d="m14 4-4 16"/></svg>API de C++</p><a href="scripts-cpp.html">Scripts en C++ y CVars</a><a href="cpp-script.html">Script y propiedades</a><a href="cpp-entity.html">Entity</a><a href="cpp-matematicas.html">Mathf, Vec3, Quat y Color</a><a href="cpp-scene.html">Scene</a><a href="cpp-input.html">Input</a><a href="cpp-physics.html">Physics</a><a href="cpp-time.html">Time</a><a href="cpp-debug.html">Debug</a><a href="cpp-lua.html">Lua (puente)</a><a href="cpp-cvars.html">CVars</a><a href="cpp-mesh.html">Mesh (mallas por código)</a><a href="cpp-statemachine.html">StateMachine</a><a href="cpp-assert.html">Assert</a><a href="cpp-audio.html">Audio</a><a href="cpp-behaviortree.html">BehaviorTree</a><a href="cpp-charactercontroller.html">CharacterController</a><a href="cpp-datapack.html">DataPack</a><a href="cpp-dialogue.html">Dialogue</a><a href="cpp-environment.html">Environment</a><a href="cpp-fire.html">Fire</a><a href="cpp-fluid.html">Fluid</a><a href="cpp-game.html">Game</a><a href="cpp-graphics.html">Graphics</a><a href="cpp-http.html">Http</a><a href="cpp-json.html">Json</a><a href="cpp-navigation.html">Navigation</a><a href="cpp-network.html">Network</a><a href="cpp-physics2d.html">Physics2D</a><a href="cpp-prefs.html">Prefs</a><a href="cpp-random.html">Random</a><a href="cpp-replay.html">Replay</a><a href="cpp-save.html">Save</a><a href="cpp-screen.html">Screen</a><a href="cpp-steam.html">Steam</a><a href="cpp-test.html">Test</a><a href="cpp-text.html">Text</a><a href="cpp-voxel.html">Voxel</a><a href="cpp-weather.html">Weather</a><a href="cpp-xr.html">XR</a></div>
+        <div class="group"><p class="group-title"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5a2 2 0 0 1 2-2h13v16H6a2 2 0 0 0-2 2V5Z"/><path d="M4 19a2 2 0 0 1 2-2h13"/></svg>Primeros pasos</p><a href="novedades-24.html">Novedades</a><a href="primer-script.html">Tu primer script</a><a href="ciclo-de-vida.html">Ciclo de vida</a><a href="propiedades.html">Propiedades</a><a href="recarga.html">Recarga en caliente</a><a href="prefabs.html">Prefabs</a><a href="mcp.html">Conectar una IA (MCP)</a><a href="licencia.html">Licencia</a></div>
+        <div class="group"><p class="group-title"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m8 8-4 4 4 4"/><path d="m16 8 4 4-4 4"/><path d="m14 4-4 16"/></svg>API de C++</p><a href="scripts-cpp.html">Scripts en C++ y CVars</a><a href="cpp-script.html">Script y propiedades</a><a href="cpp-entity.html">Entity</a><a href="cpp-matematicas.html">Mathf, Vec3, Quat y Color</a><a href="cpp-scene.html">Scene</a><a href="cpp-input.html">Input</a><a href="cpp-physics.html">Physics</a><a href="cpp-time.html">Time</a><a href="cpp-debug.html">Debug</a><a href="cpp-api.html">Api (por nombre)</a><a href="cpp-cvars.html">CVars</a><a href="cpp-mesh.html">Mesh (mallas por código)</a><a href="cpp-statemachine.html">StateMachine</a><a href="cpp-assert.html">Assert</a><a href="cpp-audio.html">Audio</a><a href="cpp-behaviortree.html">BehaviorTree</a><a href="cpp-charactercontroller.html">CharacterController</a><a href="cpp-datapack.html">DataPack</a><a href="cpp-dialogue.html">Dialogue</a><a href="cpp-environment.html">Environment</a><a href="cpp-fire.html">Fire</a><a href="cpp-fluid.html">Fluid</a><a href="cpp-game.html">Game</a><a href="cpp-graphics.html">Graphics</a><a href="cpp-http.html">Http</a><a href="cpp-json.html">Json</a><a href="cpp-navigation.html">Navigation</a><a href="cpp-network.html">Network</a><a href="cpp-physics2d.html">Physics2D</a><a href="cpp-prefs.html">Prefs</a><a href="cpp-random.html">Random</a><a href="cpp-replay.html">Replay</a><a href="cpp-save.html">Save</a><a href="cpp-screen.html">Screen</a><a href="cpp-steam.html">Steam</a><a href="cpp-test.html">Test</a><a href="cpp-text.html">Text</a><a href="cpp-voxel.html">Voxel</a><a href="cpp-weather.html">Weather</a><a href="cpp-xr.html">XR</a></div>
         <div class="group"><p class="group-title"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M9 9v11"/></svg>El editor</p><a href="editor-interfaz.html">Interfaz y pestañas</a><a href="editor-tema.html">Tema e Inspector</a><a href="editor-escena.html">Vista Escena y gizmos</a><a href="editor-jerarquia.html">Jerarquía e Inspector</a><a href="editor-proyecto.html">Proyecto e importación</a><a href="editor-play.html">Play, deshacer y escenas</a><a href="insights.html">Insights y rendimiento</a><a href="editor-herramientas.html">Herramientas de mundo</a><a href="modelado.html">Modelado poligonal</a><a href="2d.html">2D</a><a href="mundo-procedural.html">Mundo procedural</a><a href="ambiente.html">Ambiente y clima</a><a href="agua.html">Agua</a><a href="fuego.html">Fuego</a><a href="vfx-graph.html">VFX Graph</a><a href="liquidos.html">Líquidos</a><a href="destruccion.html">Destrucción</a><a href="vehiculos.html">Vehículos</a><a href="motion-matching.html">Motion Matching</a><a href="replays.html">Repeticiones</a><a href="editor-ventanas.html">Ventanas de herramientas</a><a href="maquinas-de-estados.html" class="active" aria-current="page">Máquinas de estados</a><a href="visual-scripting.html">Visual Scripting</a><a href="behavior-trees.html">Behavior Trees</a><a href="dialogos.html">Diálogos</a><a href="localizacion.html">Localización</a><a href="guardado.html">Partidas guardadas</a><a href="materiales.html">Materiales</a><a href="shader-graph.html">Shader Graph</a><a href="render-textures.html">Render Textures</a><a href="render.html">Render y rendimiento</a><a href="iluminacion-horneada.html">Iluminación horneada</a><a href="exportar.html">Exportar y compilación</a><a href="steam.html">Steam</a><a href="linux.html">Linux</a><a href="git.html">Control de versiones (Git)</a><a href="pruebas.html">Pruebas automáticas</a><a href="datapacks.html">DataPacks (bundles)</a><a href="plantillas.html">Plantillas</a><a href="atajos.html">Atajos de teclado</a><a href="actualizaciones.html">Actualizaciones</a></div>
-        <div class="group"><p class="group-title"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m12 3 8 4.5v9L12 21l-8-4.5v-9L12 3Z"/><path d="m4 7.5 8 4.5 8-4.5M12 12v9"/></svg>Componentes</p><a href="componentes.html">Todos los componentes</a><a href="componentes-basicos.html">Transform y renderizado</a><a href="componentes-entorno.html">Entorno</a><a href="componentes-fisica.html">Física</a><a href="componentes-efectos.html">Partículas y depuración</a><a href="componentes-animacion.html">Animación</a><a href="componentes-audio.html">Audio</a><a href="componentes-cinematicas.html">Cámaras y cinemáticas</a><a href="componentes-navegacion.html">Navegación</a><a href="componentes-ui.html">Interfaz (UI)</a><a href="componentes-scripting.html">Scripts y prefabs</a><a href="componentes-2d.html">2D</a><a href="componentes-iluminacion.html">Iluminación horneada</a><a href="componentes-vr.html">Realidad virtual</a></div>
-        <div class="group"><p class="group-title"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a9 9 0 1 0 0 18c1.1 0 1.5-.8 1.5-1.5 0-.9-.7-1.2-.7-2 0-.8.6-1.5 1.5-1.5H16a5 5 0 0 0 5-5c0-4.4-4-8-9-8Z"/><circle cx="7.5" cy="11" r="1"/><circle cx="10" cy="7" r="1"/><circle cx="15" cy="7.5" r="1"/></svg>Gráficos</p><a href="shaders.html">Shaders propios</a></div>
+        <div class="group"><p class="group-title"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m12 3 8 4.5v9L12 21l-8-4.5v-9L12 3Z"/><path d="m4 7.5 8 4.5 8-4.5M12 12v9"/></svg>Componentes</p><a href="componentes.html">Todos los componentes</a><a href="componentes-basicos.html">Transform y renderizado</a><a href="componentes-entorno.html">Entorno</a><a href="componentes-fisica.html">Física</a><a href="componentes-efectos.html">Partículas y depuración</a><a href="componentes-animacion.html">Animación</a><a href="componentes-audio.html">Audio</a><a href="componentes-cinematicas.html">Cámaras y cinemáticas</a><a href="componentes-navegacion.html">Navegación</a><a href="componentes-ui.html">Interfaz (UI)</a><a href="componentes-scripting.html">Scripts y prefabs</a><a href="componentes-2d.html">2D</a><a href="componentes-iluminacion.html">Iluminación horneada</a><a href="componentes-vr.html">Realidad virtual</a><a href="componentes-mundo.html">Splines y mundos grandes</a><a href="componentes-ia.html">Multitudes</a></div>
+        <div class="group"><p class="group-title"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m8 8-4 4 4 4"/><path d="m16 8 4 4-4 4"/><path d="m14 4-4 16"/></svg>Guías de scripting</p><a href="input-actions.html">Input Actions</a><a href="red.html">Network (multijugador)</a><a href="http.html">Http y Json</a><a href="realidad-virtual.html">Realidad virtual (XR)</a><a href="esqueletos.html">Esqueletos: IK, ragdoll y phys bones</a><a href="mallas.html">Mallas por código</a></div>
+        <div class="group"><p class="group-title"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a9 9 0 1 0 0 18c1.1 0 1.5-.8 1.5-1.5 0-.9-.7-1.2-.7-2 0-.8.6-1.5 1.5-1.5H16a5 5 0 0 0 5-5c0-4.4-4-8-9-8Z"/><circle cx="7.5" cy="11" r="1"/><circle cx="10" cy="7" r="1"/><circle cx="15" cy="7.5" r="1"/></svg>Gráficos</p><a href="shaders.html">Shaders propios</a><a href="graphics.html">Graphics (opciones gráficas)</a></div>
         <div class="group"><p class="group-title"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v4M12 17v4M3 12h4M17 12h4M6 6l2.5 2.5M15.5 15.5 18 18M6 18l2.5-2.5M15.5 8.5 18 6"/></svg>Ejemplos</p><a href="ejemplo-girar.html">Girar un objeto</a><a href="ejemplo-camara.html">Cámara que sigue al jugador</a><a href="ejemplo-jugador.html">Jugador con física</a><a href="ejemplo-disparo.html">Disparo con raycast</a><a href="ejemplo-monedas.html">Monedas y puntuación</a><a href="ejemplo-spawner.html">Generador de enemigos</a><a href="ejemplo-vehiculo.html">Conducir un vehículo</a><a href="ejemplo-menu.html">Menú, opciones y récord</a><a href="ejemplo-animacion.html">Animación de un personaje</a><a href="ejemplo-comunicacion.html">Scripts que se hablan</a><a href="ejemplo-ia.html">IA: patrullar y perseguir</a><a href="ejemplo-terreno.html">Terreno procedural con colisión</a><a href="ejemplo-efectos.html">Varios materiales y efectos</a><a href="ejemplo-olas.html">Olas: cambiar la malla cada frame</a></div>
-        <div class="group"><p class="group-title"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m8 8-4 4 4 4"/><path d="m16 8 4 4-4 4"/><path d="m14 4-4 16"/></svg>Referencia de Lua (obsoleta)</p><a href="vec3.html">Vec3</a><a href="quat.html">Quat (rotaciones)</a><a href="mathf.html">Mathf</a><a href="random.html">Random</a><a href="entity.html">Entity</a><a href="scene.html">Scene</a><a href="input.html">Input</a><a href="input-actions.html">Input Actions</a><a href="realidad-virtual.html">Realidad virtual (XR)</a><a href="time.html">Time</a><a href="physics.html">Physics</a><a href="navegacion.html">Navegación</a><a href="mallas.html">Mallas por código</a><a href="voxel.html">Mundo de bloques</a><a href="audio.html">Audio</a><a href="ui.html">Interfaz (UI)</a><a href="esqueletos.html">Esqueletos: IK, ragdoll y phys bones</a><a href="graphics.html">Graphics</a><a href="red.html">Network (multijugador)</a><a href="http.html">Http y Json</a><a href="prefs.html">Prefs y Game</a><a href="debug.html">Debug</a></div>
         
       <div class="donate-card side-donate">
         <div class="t"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M19 14c1.5-1.5 3-3.2 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.8 0-3 .5-4.5 2-1.5-1.5-2.7-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4 3 5.5l7 7Z"/></svg>Apoya Cramion</div>
@@ -85,15 +84,15 @@
       <div class="doc-inner">
         <nav class="crumbs" aria-label="Ruta"><a href="index.html">Documentación</a><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m9 6 6 6-6 6"/></svg><span>El editor</span><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m9 6 6 6-6 6"/></svg><span class="here">Máquinas de estados</span></nav>
         <h1>Máquinas de estados</h1>
-        <p class="lede">IA como Bolt: estados con código Lua, transiciones y depuración en vivo.</p>
+        <p class="lede">IA como Bolt: estados que avisan a los scripts de C++, condiciones con expresiones, transiciones y depuración en vivo.</p>
         <details class="toc-inline"><summary>En esta página <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg></summary><nav class="onpage"></nav></details>
         <div class="body">
 <p>
         Como los <strong class="text-white">State Graphs de Bolt</strong> (Visual Scripting de Unity): la IA de un objeto se dibuja como
         un grafo de <strong class="text-white">estados</strong> (Patrullar, Perseguir, Atacar...) unidos por
-        <strong class="text-white">transiciones</strong> con condiciones. Dentro de cada estado se programa en Lua solo lo que hace
-        mientras está en él. Las variables de la IA viven en una <strong class="text-white">pizarra</strong> (blackboard) con tipo, que
-        leen las condiciones y el código, y cada objeto puede tener sus propios valores.
+        <strong class="text-white">transiciones</strong> con condiciones. Lo que hace el objeto en cada estado lo programa un script de C++ del objeto, que recibe un mensaje
+        al entrar, al salir y cada frame. Las variables de la IA viven en una <strong class="text-white">pizarra</strong> (blackboard) con tipo, que
+        leen las condiciones y los scripts, y cada objeto puede tener sus propios valores.
       </p>
       <div class="note">
         Para verlo funcionando, crea un proyecto con la plantilla <strong class="text-white">IA con máquinas de estados</strong>:
@@ -120,12 +119,12 @@
       <table>
         <tbody>
           <tr><td>Izquierda</td><td>Las <strong class="text-white">variables</strong> (pizarra): nombre, tipo y valor inicial. En Play, los valores en vivo del objeto seleccionado (se pueden cambiar para probar), los triggers a mano y el historial de cambios de estado.</td></tr>
-          <tr><td>Centro</td><td>El <strong class="text-white">grafo</strong>. Clic derecho en el fondo: crear un estado (vacío o con una plantilla de IA: Esperar, Patrullar, Perseguir, Atacar, Huir). Arrastrar desde el punto de la derecha de un estado hasta otro: crear una transición (o clic derecho &gt; Crear transición). Arrastrar: mover. Rueda: zoom. Botón central o Alt+arrastrar: desplazar. <code>Supr</code>: borrar.</td></tr>
-          <tr><td>Derecha</td><td>El <strong class="text-white">código del estado</strong> seleccionado, con el mismo editor de los scripts (colores, autocompletado, errores con su línea), o las <strong class="text-white">condiciones</strong> de la transición seleccionada.</td></tr>
+          <tr><td>Centro</td><td>El <strong class="text-white">grafo</strong>. Clic derecho en el fondo: crear un estado (vacío o de IA, con su nombre y color: Esperar, Patrullar, Perseguir, Atacar, Huir). Arrastrar desde el punto de la derecha de un estado hasta otro: crear una transición (o clic derecho &gt; Crear transición). Arrastrar: mover. Rueda: zoom. Botón central o Alt+arrastrar: desplazar. <code>Supr</code>: borrar.</td></tr>
+          <tr><td>Derecha</td><td>El <strong class="text-white">estado</strong> seleccionado (nombre, color, hacerlo de entrada, las transiciones que salen de él y la casilla <em>Enviar OnStateUpdate</em>) o las <strong class="text-white">condiciones</strong> de la transición seleccionada.</td></tr>
         </tbody>
       </table>
       <p>
-        Se guarda sola al terminar cada cambio (y con <code>Ctrl+S</code> en el código). En Play, guardar recarga la máquina en caliente:
+        Se guarda sola al terminar cada cambio. En Play, guardar recarga la máquina en caliente:
         cada objeto sigue en su estado y con sus variables. El estado activo del objeto seleccionado se ilumina, la barra azul
         cuenta el tiempo en el estado y la última transición tomada parpadea en naranja. En la transición seleccionada, un punto
         verde o rojo dice si cada condición se cumple ahora.
@@ -135,59 +134,53 @@
       <table>
         <tbody>
           <tr><td><strong class="text-white">Entrada</strong></td><td>Apunta al estado en el que empieza la máquina (clic derecho en un estado &gt; Estado de entrada).</td></tr>
-          <tr><td><strong class="text-white">Cualquier estado</strong></td><td>Su código corre <strong class="text-white">siempre</strong>, antes de mirar las transiciones: es el sitio de los "sensores" (calcular la distancia al jugador, si lo ve...). Sus funciones sirven en todos los estados (<code>self:miFuncion()</code>). Las transiciones que salen de él se pueden tomar desde cualquier estado (morir, huir...).</td></tr>
+          <tr><td><strong class="text-white">Cualquier estado</strong></td><td>Las transiciones que salen de él se pueden tomar desde cualquier estado (morir, huir...). Los "sensores" que miran sus condiciones (la distancia al jugador, si lo ve...) los calcula el script de C++ del objeto y los guarda en la pizarra con <code>sm.set</code>.</td></tr>
         </tbody>
       </table>
 
-      <h3 id="codigo">El código de un estado</h3>
+      <h3 id="codigo">La lógica de los estados</h3>
       <p>
-        Cada estado define funciones globales (o devuelve una tabla con ellas, como un script). Solo se llaman mientras el estado está activo:
+        Los estados no llevan código: lo que pasa llega a los scripts de C++ del objeto como mensajes (<code>onMessage</code>, o
+        <code>on("OnStateEnter", ...)</code> en <code>start</code>). Cada mensaje trae un objeto con <code>machine</code> (el nombre del
+        <code>.crfsm</code>) y <code>state</code>:
       </p>
       <table>
         <tbody>
-          <tr><td><code>OnEnter(self, sm)</code></td><td>Al entrar en el estado.</td></tr>
-          <tr><td><code>OnUpdate(self, dt)</code></td><td>Cada frame.</td></tr>
-          <tr><td><code>OnExit(self)</code></td><td>Al salir.</td></tr>
-          <tr><td><code>OnLateUpdate</code>, <code>OnFixedUpdate</code></td><td>Como en los scripts.</td></tr>
-          <tr><td><code>OnCollisionEnter/Stay/Exit</code>, <code>OnTriggerEnter/Stay/Exit</code></td><td><code>(self, otro, contacto)</code>, mientras el estado está activo (y siempre en Cualquier estado).</td></tr>
+          <tr><td><code>"OnStateEnter"</code></td><td>Al entrar en el estado. <code>from</code>: el estado de antes (nil al entrar en el de entrada).</td></tr>
+          <tr><td><code>"OnStateExit"</code></td><td>Al salir. <code>to</code>: el estado al que va.</td></tr>
+          <tr><td><code>"OnStateUpdate"</code></td><td>Cada frame mientras está en el estado, solo si el estado tiene marcada <em>Enviar OnStateUpdate</em>. <code>dt</code> y <code>time</code> (segundos en el estado).</td></tr>
         </tbody>
       </table>
+      <pre><code class="language-cpp">void start() override {
+    on("OnStateEnter", [this](const Value&amp; v) {
+        if (v["state"].asString() == "Perseguir") entity().moveTo(Scene::find("Jugador").position());
+    });
+    on("OnStateExit", [this](const Value&amp;) { entity().stopMoving(); });
+}</code></pre>
       <p>
-        <code>self</code> es la misma tabla en todos los estados del objeto: lo que guardes en ella (<code>self.punto = 3</code>) sigue ahí al cambiar de estado.
-      </p>
-      <table>
-        <tbody>
-          <tr><td><code>self.entity</code></td><td>El objeto.</td></tr>
-          <tr><td><code>self.vars.nombre</code></td><td>Una variable de la pizarra (leer y escribir; el tipo se respeta).</td></tr>
-          <tr><td><code>self.sm</code></td><td>La máquina (ver abajo).</td></tr>
-          <tr><td><code>self.state</code></td><td>Nombre del estado actual.</td></tr>
-        </tbody>
-      </table>
-      <p>
-        Un estado también puede usar un <code>.lua</code> de Assets en lugar de su código (arrástralo al campo del estado): un script normal
-        que devuelve una tabla con <code>OnEnter</code>, <code>OnUpdate</code>, <code>OnExit</code>. Los errores salen en la Consola con la máquina,
-        el estado y la línea (<code>Maquina IA/Enemigo.crfsm (estado Atacar, linea 12): ...</code>) y la línea se marca en rojo en el editor.
+        Lo que el script guarda en sus variables sigue ahí al cambiar de estado. Si un <code>.crfsm</code> antiguo tiene código Lua en un estado
+        (o en Cualquier estado), el panel lo enseña de solo lectura con un aviso y el botón para quitarlo: ya no se ejecuta.
       </p>
 
       <h3 id="transiciones">Transiciones y condiciones</h3>
       <p>
         Una transición se toma cuando se cumplen <strong class="text-white">todas</strong> sus condiciones (sin condiciones, enseguida). Se miran
-        una vez por frame, después del código de Cualquier estado. Si varias se cumplen, gana la de mayor <strong class="text-white">prioridad</strong>;
+        una vez por frame, después de los <code>update</code> de los scripts. Si varias se cumplen, gana la de mayor <strong class="text-white">prioridad</strong>;
         a igual prioridad, las de Cualquier estado y después el orden de la lista.
       </p>
       <table>
         <tbody>
           <tr><td>Variable</td><td>Compara una variable con un valor (<code>distancia &lt; 10</code>) o con otra variable escribiendo <code>$nombre</code> (<code>distancia &lt; $rangoVision</code>). Bool, string y entity: igual, distinto, verdadero, falso. Los <code>vec3</code> comparan su longitud.</td></tr>
-          <tr><td>Trigger</td><td>Se cumple el frame siguiente a <code>sm:trigger("nombre")</code> (los triggers se consumen al mirarlos).</td></tr>
+          <tr><td>Trigger</td><td>Se cumple el frame siguiente a <code>sm.trigger("nombre")</code> (los triggers se consumen al mirarlos).</td></tr>
           <tr><td>Temporizador</td><td>Después de N segundos en el estado.</td></tr>
-          <tr><td>Expresión Lua</td><td>Cualquier expresión: ve las variables por su nombre, <code>entity</code>, <code>sm</code>, <code>self</code> y las globales (<code>vida &lt; 30 and not entity.isMoving</code>).</td></tr>
+          <tr><td>Expresión</td><td>Una expresión con las variables por su nombre: números, textos, <code>+ - * / %</code>, <code>== != &lt; &lt;= &gt; &gt;=</code>, <code>and</code> / <code>or</code> / <code>not</code> (o <code>&amp;&amp; || !</code>) y paréntesis (<code>vida &lt; 30 and not alerta</code>). Las llamadas a funciones no se pueden escribir.</td></tr>
         </tbody>
       </table>
 
       <h3 id="variables">Variables (pizarra)</h3>
       <p>
         Tipos: <code>bool</code>, <code>int</code>, <code>float</code>, <code>string</code>, <code>entity</code> (un objeto: se escribe su nombre, tag o UUID,
-        o se arrastra desde la Jerarquía; en Lua es el objeto) y <code>vec3</code>. En el Inspector del componente <code>StateMachine</code>, la casilla de
+        o se arrastra desde la Jerarquía; desde un script, <code>sm.get("objetivo").asEntity()</code>) y <code>vec3</code>. En el Inspector del componente <code>StateMachine</code>, la casilla de
         cada variable le da a ese objeto su propio valor inicial (un enemigo que ve más lejos que otro). En Play el Inspector muestra el estado actual,
         permite saltar a otro y cambiar las variables en vivo.
       </p>
@@ -196,7 +189,7 @@
       <table>
         <tbody>
           <tr><td>Máquina de estados</td><td>El <code>.crfsm</code>.</td></tr>
-          <tr><td>Empieza activa</td><td>Si no, espera a <code>sm:start()</code>.</td></tr>
+          <tr><td>Empieza activa</td><td>Si no, espera a <code>sm.start()</code>.</td></tr>
           <tr><td>Depurar</td><td>Cada cambio de estado sale en la Consola con la transición que lo causó.</td></tr>
           <tr><td>Variables</td><td>Los valores propios de este objeto.</td></tr>
         </tbody>
@@ -205,140 +198,138 @@
         Las máquinas corren en Play y en los juegos exportados (Windows y Android). Se actualizan en orden fijo, así el resultado es el mismo cada vez.
       </p>
 
-      <h3 id="lua">API Lua</h3>
-      <p>Desde el código de un estado (<code>sm</code> o <code>self.sm</code>) o desde cualquier script (<code>entity:getStateMachine()</code>):</p>
+      <h3 id="api">API desde C++</h3>
+      <p>Desde cualquier script: <code>StateMachine sm = entity().getStateMachine();</code> (o <code>StateMachine::of(otro)</code>). Referencia completa en <a href="cpp-statemachine.html">StateMachine</a>.</p>
       <table>
         <tbody>
-          <tr><td><code>entity:getStateMachine()</code></td><td>La máquina del objeto, o <code>nil</code>. También <code>StateMachine.of(entity)</code>.</td></tr>
-          <tr><td><code>sm.state</code>, <code>sm.previous</code></td><td>Nombre del estado actual y del anterior.</td></tr>
-          <tr><td><code>sm.stateTime</code>, <code>sm.time</code></td><td>Segundos en el estado actual y desde que empezó.</td></tr>
-          <tr><td><code>sm.changes</code>, <code>sm.running</code></td><td>Cambios de estado hasta ahora; si está en marcha.</td></tr>
-          <tr><td><code>sm:go("Estado")</code></td><td>Cambia de estado por código (se aplica enseguida, con OnExit y OnEnter). También <code>sm:changeState</code>.</td></tr>
-          <tr><td><code>sm:isIn("Estado")</code></td><td>Si está en ese estado.</td></tr>
-          <tr><td><code>sm:trigger("nombre")</code></td><td>Dispara un trigger para las transiciones. <code>StateMachine.broadcast("nombre")</code> lo dispara en todas las máquinas.</td></tr>
-          <tr><td><code>sm:get("var")</code>, <code>sm:set("var", valor)</code>, <code>sm:has("var")</code></td><td>Variables de la pizarra (también <code>sm.vars.var</code>). <code>set</code> de una variable que no existe la crea.</td></tr>
-          <tr><td><code>sm:states()</code></td><td>Lista con los nombres de los estados.</td></tr>
-          <tr><td><code>sm:start()</code>, <code>sm:stop()</code>, <code>sm:restart()</code></td><td>Reanudar, pausar o empezar de nuevo desde la entrada con las variables iniciales.</td></tr>
+          <tr><td><code>entity().getStateMachine()</code></td><td>La máquina del objeto (comprueba con <code>if (sm)</code>). También <code>StateMachine::of(entidad)</code>.</td></tr>
+          <tr><td><code>sm.state()</code>, <code>sm.previous()</code></td><td>Nombre del estado actual y del anterior.</td></tr>
+          <tr><td><code>sm.stateTime()</code>, <code>sm.time()</code></td><td>Segundos en el estado actual y desde que empezó.</td></tr>
+          <tr><td><code>sm.changes()</code>, <code>sm.running()</code></td><td>Cambios de estado hasta ahora; si está en marcha.</td></tr>
+          <tr><td><code>sm.go("Estado")</code></td><td>Cambia de estado por código (se aplica enseguida, con OnStateExit y OnStateEnter). También <code>sm.changeState</code>.</td></tr>
+          <tr><td><code>sm.isIn("Estado")</code></td><td>Si está en ese estado.</td></tr>
+          <tr><td><code>sm.trigger("nombre")</code></td><td>Dispara un trigger para las transiciones. <code>StateMachine::broadcast("nombre")</code> lo dispara en todas las máquinas.</td></tr>
+          <tr><td><code>sm.get("var")</code>, <code>sm.set("var", valor)</code>, <code>sm.has("var")</code></td><td>Variables de la pizarra (también <code>sm.vars()</code>, una copia). <code>set</code> de una variable que no existe la crea.</td></tr>
+          <tr><td><code>sm.states()</code></td><td>Lista con los nombres de los estados.</td></tr>
+          <tr><td><code>sm.start()</code>, <code>sm.stop()</code>, <code>sm.restart()</code></td><td>Reanudar, pausar o empezar de nuevo desde la entrada con las variables iniciales.</td></tr>
         </tbody>
       </table>
+      <p>Los valores llegan como <code>Value</code>: <code>sm.get("vida").asNumber()</code>, <code>sm.state().asString()</code>...</p>
 
       <h3 id="ejemplo">Ejemplo: enemigo completo</h3>
       <p>
-        Es la máquina <em>Enemigo de ejemplo</em>. Necesita un <code>NavAgent</code> en el enemigo, una NavMesh y un objeto llamado <code>Jugador</code>.
+        Es la máquina <em>Enemigo de ejemplo</em> (todos sus estados con <em>Enviar OnStateUpdate</em>) y un script de C++ en el enemigo que
+        hace cada estado; la plantilla <em>IA con máquinas de estados</em> trae uno parecido (<code>Enemigo.cpp</code>).
+        Necesita un <code>NavAgent</code> en el enemigo, una NavMesh y un objeto llamado <code>Jugador</code>.
         Variables: <code>objetivo</code> (entity = Jugador), <code>distancia</code>, <code>rangoVision</code> (10), <code>rangoAtaque</code> (2),
         <code>rangoPerder</code> (16), <code>vida</code> (100), <code>danio</code>, <code>radioPatrulla</code> y <code>casa</code> (vec3).
       </p>
-      <p class="file">Cualquier estado (sensores)</p>
-      <pre><code class="language-lua">function OnEnter(self, sm)
-    self.vars.casa = self.entity.position
-end
+      <p class="file">Assets/Scripts/Enemigo.cpp</p>
+      <pre><code class="language-cpp">#include &lt;cramion/Script.h&gt;
 
-function OnUpdate(self, dt)
-    local objetivo = self.vars.objetivo
-    if objetivo and objetivo:valid() then
-        self.vars.distancia = self.entity:distanceTo(objetivo)
-    else
-        self.vars.distancia = 9999
-    end
-end</code></pre>
-      <p class="file">Patrullar (estado de entrada)</p>
-      <pre><code class="language-lua">-- De un punto de ruta a otro (objetos con tag "Waypoint"); sin ruta,
--- puntos al azar de la NavMesh alrededor de casa.
-function OnEnter(self, sm)
-    self.ruta = Scene.findAllWithTag("Waypoint")
-    table.sort(self.ruta, function(a, b) return a.name &lt; b.name end)
-    self.punto = self.punto or 0
-    self.espera = 0
-    self:siguientePunto()
-end
+#include &lt;algorithm&gt;
+#include &lt;string&gt;
+#include &lt;vector&gt;
 
-function siguientePunto(self)
-    if #self.ruta &gt; 0 then
-        self.punto = self.punto % #self.ruta + 1
-        self.entity:moveTo(self.ruta[self.punto].position)
-    else
-        local p = Navigation.randomPoint(self.vars.casa, self.vars.radioPatrulla)
-        if p then self.entity:moveTo(p) end
-    end
-end
+using namespace cramion;
 
-function OnUpdate(self, dt)
-    if not self.entity.isMoving then
-        self.espera = self.espera + dt
-        if self.espera &gt; 1.5 then
-            self.espera = 0
-            self:siguientePunto()
-        end
-    end
-end
+class Enemigo : public Script {
+public:
+    void start() override {
+        sm_ = entity().getStateMachine();
+        casa_ = entity().position();
+        sm_.set("casa", casa_);
+        jugador_ = sm_.get("objetivo").asEntity();
+        // Puntos de ruta: objetos con tag "Waypoint", en orden de nombre.
+        for (const Value&amp; w : Scene::findAllWithTag("Waypoint").items()) ruta_.push_back(w.asEntity());
+        std::sort(ruta_.begin(), ruta_.end(), [](const Entity&amp; a, const Entity&amp; b) { return a.name() &lt; b.name(); });
 
-function OnExit(self)
-    self.entity:stopMoving()
-end</code></pre>
-      <p class="file">Perseguir</p>
-      <pre><code class="language-lua">function OnEnter(self, sm)
-    self.recalcular = 0
-end
+        on("OnStateEnter", [this](const Value&amp; v) { entrar(v["state"].asString()); });
+        on("OnStateUpdate", [this](const Value&amp; v) { cadaFrame(v["state"].asString(), v["dt"].asFloat()); });
+        on("OnStateExit", [this](const Value&amp; v) {
+            const std::string estado = v["state"].asString();
+            if (estado == "Patrullar" || estado == "Perseguir") entity().stopMoving();
+        });
+    }
 
-function OnUpdate(self, dt)
-    self.recalcular = self.recalcular - dt
-    local objetivo = self.vars.objetivo
-    if objetivo and self.recalcular &lt;= 0 then
-        self.entity:moveTo(objetivo.position)
-        self.recalcular = 0.25
-    end
-end
+    // Los sensores: la distancia al jugador, cada frame, para las transiciones.
+    void update(float) override {
+        if (!sm_ || !jugador_) return;
+        sm_.set("distancia", Vec3::distance(entity().position(), jugador_.position()));
+    }
 
-function OnExit(self)
-    self.entity:stopMoving()
-end</code></pre>
-      <p class="file">Atacar</p>
-      <pre><code class="language-lua">function OnEnter(self, sm)
-    self.golpe = 0
-end
+private:
+    void entrar(const std::string&amp; estado) {
+        if (estado == "Patrullar") { espera_ = 0.0f; siguientePunto(); }
+        else if (estado == "Perseguir") recalcular_ = 0.0f;
+        else if (estado == "Atacar") golpe_ = 0.0f;
+        else if (estado == "Huir") alejarse();
+        else if (estado == "Volver") entity().moveTo(casa_);
+    }
 
-function OnUpdate(self, dt)
-    local objetivo = self.vars.objetivo
-    if not objetivo then return end
-    local p = objetivo.position
-    self.entity:lookAt(Vec3(p.x, self.entity.position.y, p.z))
-    self.golpe = self.golpe - dt
-    if self.golpe &lt;= 0 then
-        self.golpe = 1.0
-        Debug.log(self.entity.name .. " ataca (" .. self.vars.danio .. " de danio)")
-        local otra = objetivo:getStateMachine()
-        if otra then otra:trigger("golpeado") end
-    end
-end</code></pre>
-      <p class="file">Huir y Volver</p>
-      <pre><code class="language-lua">-- Huir: se aleja y se cura poco a poco.
-function OnEnter(self, sm)
-    self:alejarse()
-end
+    void cadaFrame(const std::string&amp; estado, float dt) {
+        if (estado == "Patrullar") {
+            // Al llegar a un punto, espera un poco y va al siguiente.
+            if (!entity().isMoving().truthy() &amp;&amp; (espera_ += dt) &gt; 1.5f) {
+                espera_ = 0.0f;
+                siguientePunto();
+            }
+        } else if (estado == "Perseguir") {
+            recalcular_ -= dt;
+            if (recalcular_ &lt;= 0.0f) {
+                entity().moveTo(jugador_.position());
+                recalcular_ = 0.25f;
+            }
+        } else if (estado == "Atacar") {
+            const Vec3 p = jugador_.position();
+            entity().lookAt(Vec3{p.x, entity().position().y, p.z});
+            golpe_ -= dt;
+            if (golpe_ &lt;= 0.0f) {
+                golpe_ = 1.0f;
+                Debug::log(entity().name() + " ataca (" + std::to_string(sm_.get("danio").asInt()) + " de danio)");
+                if (StateMachine otra = jugador_.getStateMachine()) otra.trigger("golpeado");
+            }
+        } else if (estado == "Huir") {
+            // Se aleja y se cura poco a poco.
+            sm_.set("vida", std::min(100.0, sm_.get("vida").asNumber() + 8.0 * dt));
+            if (!entity().isMoving().truthy()) alejarse();
+        } else if (estado == "Volver") {
+            // A casa y, al llegar, a patrullar por código.
+            if (sm_.stateTime().asFloat() &gt; 0.5f &amp;&amp;
+                (!entity().isMoving().truthy() || entity().remainingDistance().asFloat() &lt; 0.6f)) {
+                sm_.go("Patrullar");
+            }
+        }
+    }
 
-function alejarse(self)
-    local objetivo = self.vars.objetivo
-    local desde = objetivo and objetivo.position or self.vars.casa
-    local lejos = self.entity.position + (self.entity.position - desde):normalized() * 12
-    local p = Navigation.projectPoint(lejos, 8) or Navigation.randomPoint(self.entity.position, 12)
-    if p then self.entity:moveTo(p) end
-end
+    // De un punto de ruta a otro; sin ruta, puntos al azar de la NavMesh alrededor de casa.
+    void siguientePunto() {
+        if (!ruta_.empty()) {
+            punto_ = (punto_ + 1) % ruta_.size();
+            entity().moveTo(ruta_[punto_].position());
+        } else {
+            const Value p = Navigation::randomPoint(casa_, sm_.get("radioPatrulla"));
+            if (!p.isNil()) entity().moveTo(p.asVec3());
+        }
+    }
 
-function OnUpdate(self, dt)
-    self.vars.vida = math.min(100, self.vars.vida + 8 * dt)
-    if not self.entity.isMoving then self:alejarse() end
-end
+    void alejarse() {
+        const Vec3 yo = entity().position();
+        const Vec3 lejos = yo + (yo - jugador_.position()).normalized() * 12.0f;
+        Value p = Navigation::projectPoint(lejos, 8.0f);
+        if (p.isNil()) p = Navigation::randomPoint(yo, 12.0f);
+        if (!p.isNil()) entity().moveTo(p.asVec3());
+    }
 
--- Volver (otro estado): a casa y, al llegar, a patrullar por codigo.
-function OnEnter(self, sm)
-    self.entity:moveTo(self.vars.casa)
-end
+    StateMachine sm_;
+    Entity jugador_;
+    Vec3 casa_;
+    std::vector&lt;Entity&gt; ruta_;
+    std::size_t punto_ = static_cast&lt;std::size_t&gt;(-1);  // el primero es el 0
+    float espera_ = 0.0f, recalcular_ = 0.0f, golpe_ = 0.0f;
+};
 
-function OnUpdate(self, dt)
-    if self.sm.stateTime &gt; 0.5 and (not self.entity.isMoving or self.entity.remainingDistance &lt; 0.6) then
-        self.sm:go("Patrullar")
-    end
-end</code></pre>
+CRAMION_SCRIPT(Enemigo)</code></pre>
       <p>Transiciones:</p>
       <table>
         <tbody>
@@ -347,18 +338,19 @@ end</code></pre>
           <tr><td>Atacar → Perseguir</td><td><code>distancia &gt; $rangoAtaque</code> y 0.5 s en el estado</td></tr>
           <tr><td>Perseguir → Volver</td><td><code>distancia &gt; $rangoPerder</code></td></tr>
           <tr><td>Cualquier estado → Huir</td><td><code>vida &lt; 30</code>, prioridad 10</td></tr>
-          <tr><td>Huir → Volver</td><td>Expresión Lua <code>vida &gt;= 60</code></td></tr>
+          <tr><td>Huir → Volver</td><td>Expresión <code>vida &gt;= 60</code></td></tr>
           <tr><td>Volver → Perseguir</td><td><code>distancia &lt; $rangoVision</code></td></tr>
         </tbody>
       </table>
       <p>Desde otro script (por ejemplo, el arma del jugador):</p>
-      <pre><code class="language-lua">for _, e in ipairs(Scene.findAllWithTag("Enemigo")) do
-    local sm = e:getStateMachine()
-    if sm and self.entity:distanceTo(e) &lt; 3 then
-        sm:set("vida", sm:get("vida") - 35)
-    end
-end
-StateMachine.broadcast("ruido")  -- todos los enemigos lo oyen</code></pre>
+      <pre><code class="language-cpp">for (const Value&amp; item : Scene::findAllWithTag("Enemigo").items()) {
+    const Entity e = item.asEntity();
+    StateMachine sm = e.getStateMachine();
+    if (sm &amp;&amp; entity().distanceTo(e).asFloat() &lt; 3.0f) {
+        sm.set("vida", sm.get("vida").asNumber() - 35);
+    }
+}
+StateMachine::broadcast("ruido");  // todos los enemigos lo oyen</code></pre>
 
       <h3 id="archivo">Formato .crfsm</h3>
       <p>
@@ -368,12 +360,11 @@ StateMachine.broadcast("ruido")  -- todos los enemigos lo oyen</code></pre>
       <pre><code class="language-json">{
   "uuid": "…",
   "entry": "Patrullar",
-  "any_code": "function OnUpdate(self, dt) … end",
   "variables": [ { "name": "distancia", "type": "float", "value": 9999 } ],
-  "states": [ { "name": "Patrullar", "position": [0, 0], "color": [0.2, 0.45, 0.25], "code": "function OnEnter(self, sm) … end" } ],
+  "states": [ { "name": "Patrullar", "position": [0, 0], "color": [0.2, 0.45, 0.25], "send_update": true } ],
   "transitions": [
     { "from": "Patrullar", "to": "Perseguir", "conditions": [ { "type": "variable", "variable": "distancia", "compare": "&lt;", "value": "$rangoVision" } ] },
-    { "from": "any", "to": "Huir", "priority": 10, "conditions": [ { "type": "lua", "expression": "vida &lt; 30" } ] }
+    { "from": "any", "to": "Huir", "priority": 10, "conditions": [ { "type": "expression", "expression": "vida &lt; 30" } ] }
   ]
 }</code></pre>
 
@@ -382,7 +373,7 @@ StateMachine.broadcast("ruido")  -- todos los enemigos lo oyen</code></pre>
         <tbody>
           <tr><td><code>create_state_machine</code></td><td>Crea o reemplaza un <code>.crfsm</code> desde su JSON (o el de ejemplo) y opcionalmente lo pone en una entidad.</td></tr>
           <tr><td><code>get_state_machine</code></td><td>Su JSON completo y los problemas que tenga.</td></tr>
-          <tr><td><code>update_state_machine</code></td><td>Reemplazarla o cambiar el código de algunos estados (se recarga en Play).</td></tr>
+          <tr><td><code>update_state_machine</code></td><td>Reemplazarla, cambiar qué estados envían <code>OnStateUpdate</code> o el de entrada (se recarga en Play).</td></tr>
           <tr><td><code>assign_state_machine</code></td><td>Componente StateMachine en una entidad con valores propios.</td></tr>
           <tr><td><code>state_machine_debug</code></td><td>En Play: estado actual, variables e historial; y <code>go</code>, <code>trigger</code>, <code>set</code> para probar.</td></tr>
         </tbody>
@@ -410,7 +401,7 @@ StateMachine.broadcast("ruido")  -- todos los enemigos lo oyen</code></pre>
 
   <footer class="site-footer">
     <div class="footer-inner">
-      <span>Cramion Engine · manual de la 2.3. Gratis para hacer y vender tus juegos.</span>
+      <span>Cramion Engine · manual de la 2.9. Gratis para hacer y vender tus juegos.</span>
       <nav>
         <a href="../index.html">Web</a>
         <a href="licencia.html">Licencia</a>

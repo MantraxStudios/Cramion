@@ -3,20 +3,19 @@
 <h3 id="assert">Assert</h3>
 <table>
   <tbody>
-    <tr><td><code>Value approx(real, esperado, tolerancia, mensaje)</code></td><td>numeros o Vec3</td></tr>
-    <tr><td><code>Value atLeast(a, b, mensaje)</code></td><td>Argumentos: a, b, mensaje</td></tr>
-    <tr><td><code>Value atMost(a, b, mensaje)</code></td><td>Argumentos: a, b, mensaje</td></tr>
-    <tr><td><code>Value contains(listaOTexto, valor, mensaje)</code></td><td>Argumentos: lista o texto, valor, mensaje</td></tr>
-    <tr><td><code>Value equal(real, esperado, mensaje)</code></td><td>Argumentos: real, esperado, mensaje</td></tr>
-    <tr><td><code>Value fail(mensaje)</code></td><td>falla siempre</td></tr>
-    <tr><td><code>Value greater(a, b, mensaje)</code></td><td>Argumentos: a, b, mensaje</td></tr>
-    <tr><td><code>Value isFalse(valor, mensaje)</code></td><td>Argumentos: valor, mensaje</td></tr>
-    <tr><td><code>Value isNil(valor, mensaje)</code></td><td>Argumentos: valor, mensaje</td></tr>
-    <tr><td><code>Value isTrue(valor, mensaje)</code></td><td>Argumentos: valor, mensaje</td></tr>
-    <tr><td><code>Value less(a, b, mensaje)</code></td><td>Argumentos: a, b, mensaje</td></tr>
-    <tr><td><code>Value noError(funcion, mensaje)</code></td><td>no tiene que fallar</td></tr>
-    <tr><td><code>Value notEqual(a, b, mensaje)</code></td><td>Argumentos: a, b, mensaje</td></tr>
-    <tr><td><code>Value notNil(valor, mensaje)</code></td><td>Argumentos: valor, mensaje</td></tr>
-    <tr><td><code>Value throws(funcion, mensaje)</code></td><td>la funcion tiene que fallar</td></tr>
+    <tr><td><code>void isTrue(const T&amp; v, std::string_view message = {})</code></td><td>Es verdadero (bool, Value, Entity valida, puntero...).</td></tr>
+    <tr><td><code>void isFalse(const T&amp; v, std::string_view message = {})</code></td><td>Es falso.</td></tr>
+    <tr><td><code>void equal(const A&amp; actual, const E&amp; expected, std::string_view message = {})</code></td><td>actual == expected (numeros, texto, Vec3, Value, entidades...).</td></tr>
+    <tr><td><code>void notEqual(const A&amp; actual, const E&amp; other, std::string_view message = {})</code></td><td>actual != other.</td></tr>
+    <tr><td><code>void near(const A&amp; actual, const E&amp; expected, double tolerance = 1e-4, std::string_view message = {})</code></td><td>|actual - expected| &lt;= tolerance (numeros, Vec2, Vec3, Quat, Color: cada componente).</td></tr>
+    <tr><td><code>void approx(const A&amp; actual, const E&amp; expected, double tolerance = 1e-4, std::string_view message = {})</code></td><td>Como near (el nombre de antes; sirve tambien con &lt;windows.h&gt;, que define near).</td></tr>
+    <tr><td><code>void greater(const A&amp; a, const B&amp; b, std::string_view message = {})</code></td><td>a &gt; b.</td></tr>
+    <tr><td><code>void less(const A&amp; a, const B&amp; b, std::string_view message = {})</code></td><td>a &lt; b.</td></tr>
+    <tr><td><code>void atLeast(const A&amp; a, const B&amp; b, std::string_view message = {})</code></td><td>a &gt;= b.</td></tr>
+    <tr><td><code>void atMost(const A&amp; a, const B&amp; b, std::string_view message = {})</code></td><td>a &lt;= b.</td></tr>
+    <tr><td><code>void isNull(const T&amp; v, std::string_view message = {})</code></td><td>Es nulo: Value nil, Entity nula o destruida, nullptr, optional vacio, asset sin poner.</td></tr>
+    <tr><td><code>void notNull(const T&amp; v, std::string_view message = {})</code></td><td>No es nulo.</td></tr>
+    <tr><td><code>void throws(F&amp;&amp; fn, std::string_view message = {})</code></td><td>fn() lanza una excepcion.</td></tr>
+    <tr><td><code>void fail(std::string_view message = {})</code></td><td>Falla siempre (y termina la prueba).</td></tr>
   </tbody>
 </table>

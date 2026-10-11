@@ -88,53 +88,55 @@
   <li>Hasta <strong>4 zonas</strong> a la vez se dibujan (las primeras activas).</li>
 </ul>
 
-<h3 id="lua">Desde Lua</h3>
-<p>La tabla <code>Fire</code> actúa sobre todas las zonas que tocan el punto (posiciones del mundo, radios en metros):</p>
+<h3 id="script">Desde un script</h3>
+<p>El namespace <code>Fire</code> (ver <a href="cpp-fire.html">C++</a>) actúa sobre todas las zonas que tocan el punto (posiciones del mundo, radios en metros):</p>
 <table>
   <thead><tr><th>Función</th><th>Qué hace</th></tr></thead>
   <tbody>
-    <tr><td><code>Fire.ignite(pos, radio)</code></td><td>Enciende un círculo. Devuelve cuántas zonas lo recibieron (0 = fuera de toda zona).</td></tr>
-    <tr><td><code>Fire.extinguish(pos, radio)</code></td><td>Apaga el fuego en el círculo (lo quemado se queda).</td></tr>
-    <tr><td><code>Fire.extinguishAll()</code></td><td>Apaga todo.</td></tr>
-    <tr><td><code>Fire.reset()</code></td><td>Vuelve a empezar (nada quemado; se reenciende si <em>Encender al empezar</em>).</td></tr>
-    <tr><td><code>Fire.isBurning(pos)</code></td><td>¿Hay llamas ahí?</td></tr>
-    <tr><td><code>Fire.heatAt(pos)</code></td><td>Calor 0..1.</td></tr>
-    <tr><td><code>Fire.burnedAt(pos)</code> / <code>Fire.charAt(pos)</code></td><td>Quemado 0..1.</td></tr>
-    <tr><td><code>Fire.burnedFraction()</code></td><td>0..1 de lo que podía arder.</td></tr>
-    <tr><td><code>Fire.burningArea()</code></td><td>m² en llamas ahora.</td></tr>
-    <tr><td><code>Fire.isActive()</code></td><td>¿Arde algo?</td></tr>
-    <tr><td><code>Fire.stats()</code></td><td>Tabla <code>{burningCells, smolderingCells, burnedCells, burnableCells, burningArea, burnedFraction, size, seconds, windX, windZ}</code>.</td></tr>
+    <tr><td><code>Fire::ignite(pos, radio)</code></td><td>Enciende un círculo. Devuelve cuántas zonas lo recibieron (0 = fuera de toda zona).</td></tr>
+    <tr><td><code>Fire::extinguish(pos, radio)</code></td><td>Apaga el fuego en el círculo (lo quemado se queda).</td></tr>
+    <tr><td><code>Fire::extinguishAll()</code></td><td>Apaga todo.</td></tr>
+    <tr><td><code>Fire::reset()</code></td><td>Vuelve a empezar (nada quemado; se reenciende si <em>Encender al empezar</em>).</td></tr>
+    <tr><td><code>Fire::isBurning(pos)</code></td><td>¿Hay llamas ahí?</td></tr>
+    <tr><td><code>Fire::heatAt(pos)</code></td><td>Calor 0..1.</td></tr>
+    <tr><td><code>Fire::burnedAt(pos)</code> / <code>Fire::charAt(pos)</code></td><td>Quemado 0..1.</td></tr>
+    <tr><td><code>Fire::burnedFraction()</code></td><td>0..1 de lo que podía arder.</td></tr>
+    <tr><td><code>Fire::burningArea()</code></td><td>m² en llamas ahora.</td></tr>
+    <tr><td><code>Fire::isActive()</code></td><td>¿Arde algo?</td></tr>
+    <tr><td><code>Fire::stats()</code></td><td>Objeto <code>{burningCells, smolderingCells, burnedCells, burnableCells, burningArea, burnedFraction, size, seconds, windX, windZ}</code>.</td></tr>
   </tbody>
 </table>
-<pre><code class="language-lua">-- Antorcha: al pulsar E enciende el suelo delante del jugador
-local Antorcha = { properties = { vida = 100 } }
+<pre><code class="language-cpp">// Antorcha: al pulsar E enciende el suelo delante del jugador
+class Antorcha : public Script {
+public:
+    Property&lt;float&gt; vida{this, "vida", 100.0f};
 
-function Antorcha:Update(dt)
-    if Input.getKeyDown("E") then
-        local p = self.entity.position + self.entity.forward * 2
-        if Fire.ignite(p, 1.5) == 0 then
-            Debug.log("Aqui no hay zona de fuego")
-        end
-    end
-    -- Se quema si pisa llamas
-    if Fire.isBurning(self.entity.position) then
-        self.vida = self.vida - 20 * dt
-    end
-end
+    void update(float dt) override {
+        if (Input::keyDown("E")) {
+            const Vec3 p = entity().position() + entity().forward() * 2.0f;
+            if (Fire::ignite(p, 1.5f).asInt() == 0) Debug::log("Aqui no hay zona de fuego");
+        }
+        // Se quema si pisa llamas
+        if (Fire::isBurning(entity().position()).asBool()) vida = vida - 20.0f * dt;
+    }
+};
+CRAMION_SCRIPT(Antorcha)</code></pre>
+<pre><code class="language-cpp">// Hidroavion: apaga lo que tiene debajo y avisa cuando se acaba
+class Hidroavion : public Script {
+public:
+    void update(float dt) override {
+        Fire::extinguish(entity().position(), 12);
+        if (!avisado_ &amp;&amp; !Fire::isActive().asBool()) {
+            avisado_ = true;
+            const int quemado = static_cast&lt;int&gt;(Fire::burnedFraction().asFloat() * 100.0f);
+            Debug::log("Incendio controlado: " + std::to_string(quemado) + "% quemado");
+        }
+    }
 
-return Antorcha</code></pre>
-<pre><code class="language-lua">-- Hidroavion: apaga lo que tiene debajo y avisa cuando se acaba
-local Hidroavion = {}
-
-function Hidroavion:Update(dt)
-    Fire.extinguish(self.entity.position, 12)
-    if not self.avisado and not Fire.isActive() then
-        self.avisado = true
-        Debug.log(string.format("Incendio controlado: %.0f%% quemado", Fire.burnedFraction() * 100))
-    end
-end
-
-return Hidroavion</code></pre>
+private:
+    bool avisado_ = false;
+};
+CRAMION_SCRIPT(Hidroavion)</code></pre>
 
 <h3 id="mcp">Desde la IA (MCP)</h3>
 <table>

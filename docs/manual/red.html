@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Network (multijugador) · Documentación de Cramion</title>
-  <meta name="description" content="(Lua, obsoleto) Partidas por red: crear y unirse, mensajes, objetos y variables sincronizados.">
+  <meta name="description" content="Partidas por red: crear y unirse, mensajes, objetos y variables sincronizados.">
   <meta name="theme-color" content="#09090b">
   <link rel="icon" href="../img/icon.png">
   <script>
@@ -17,13 +17,12 @@
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/base16/tomorrow-night.min.css">
   <link rel="stylesheet" href="manual.css">
   <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/lua.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/glsl.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/json.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/bash.min.js"></script>
   <script src="search.js"></script>
 </head>
-<body data-group="Referencia de Lua (obsoleta)">
+<body data-group="Guías de scripting">
 
   <header class="site-header">
     <div class="header-inner">
@@ -65,13 +64,13 @@
       <nav>
         <div class="sheet-head"><a href="index.html" class="brand"><img src="../img/icon.png" alt=""><span>Cramion</span></a><button id="menu-close" class="icon-btn" aria-label="Cerrar el menú"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12"/></svg></button></div>
         <div class="group"><p class="group-title"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m3 11 9-8 9 8"/><path d="M5 10v10h14V10"/></svg>Inicio</p><a href="index.html">Introducción</a><a href="../index.html">Web de Cramion</a></div>
-        <div class="group"><p class="group-title"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5a2 2 0 0 1 2-2h13v16H6a2 2 0 0 0-2 2V5Z"/><path d="M4 19a2 2 0 0 1 2-2h13"/></svg>Primeros pasos</p><a href="primer-script.html">Tu primer script</a><a href="ciclo-de-vida.html">Ciclo de vida</a><a href="propiedades.html">Propiedades</a><a href="recarga.html">Recarga en caliente</a><a href="prefabs.html">Prefabs</a><a href="mcp.html">Conectar una IA (MCP)</a><a href="licencia.html">Licencia</a></div>
-        <div class="group"><p class="group-title"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m8 8-4 4 4 4"/><path d="m16 8 4 4-4 4"/><path d="m14 4-4 16"/></svg>API de C++</p><a href="scripts-cpp.html">Scripts en C++ y CVars</a><a href="cpp-script.html">Script y propiedades</a><a href="cpp-entity.html">Entity</a><a href="cpp-matematicas.html">Mathf, Vec3, Quat y Color</a><a href="cpp-scene.html">Scene</a><a href="cpp-input.html">Input</a><a href="cpp-physics.html">Physics</a><a href="cpp-time.html">Time</a><a href="cpp-debug.html">Debug</a><a href="cpp-lua.html">Lua (puente)</a><a href="cpp-cvars.html">CVars</a><a href="cpp-mesh.html">Mesh (mallas por código)</a><a href="cpp-statemachine.html">StateMachine</a><a href="cpp-assert.html">Assert</a><a href="cpp-audio.html">Audio</a><a href="cpp-behaviortree.html">BehaviorTree</a><a href="cpp-charactercontroller.html">CharacterController</a><a href="cpp-datapack.html">DataPack</a><a href="cpp-dialogue.html">Dialogue</a><a href="cpp-environment.html">Environment</a><a href="cpp-fire.html">Fire</a><a href="cpp-fluid.html">Fluid</a><a href="cpp-game.html">Game</a><a href="cpp-graphics.html">Graphics</a><a href="cpp-http.html">Http</a><a href="cpp-json.html">Json</a><a href="cpp-navigation.html">Navigation</a><a href="cpp-network.html">Network</a><a href="cpp-physics2d.html">Physics2D</a><a href="cpp-prefs.html">Prefs</a><a href="cpp-random.html">Random</a><a href="cpp-replay.html">Replay</a><a href="cpp-save.html">Save</a><a href="cpp-screen.html">Screen</a><a href="cpp-steam.html">Steam</a><a href="cpp-test.html">Test</a><a href="cpp-text.html">Text</a><a href="cpp-voxel.html">Voxel</a><a href="cpp-weather.html">Weather</a><a href="cpp-xr.html">XR</a></div>
+        <div class="group"><p class="group-title"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5a2 2 0 0 1 2-2h13v16H6a2 2 0 0 0-2 2V5Z"/><path d="M4 19a2 2 0 0 1 2-2h13"/></svg>Primeros pasos</p><a href="novedades-24.html">Novedades</a><a href="primer-script.html">Tu primer script</a><a href="ciclo-de-vida.html">Ciclo de vida</a><a href="propiedades.html">Propiedades</a><a href="recarga.html">Recarga en caliente</a><a href="prefabs.html">Prefabs</a><a href="mcp.html">Conectar una IA (MCP)</a><a href="licencia.html">Licencia</a></div>
+        <div class="group"><p class="group-title"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m8 8-4 4 4 4"/><path d="m16 8 4 4-4 4"/><path d="m14 4-4 16"/></svg>API de C++</p><a href="scripts-cpp.html">Scripts en C++ y CVars</a><a href="cpp-script.html">Script y propiedades</a><a href="cpp-entity.html">Entity</a><a href="cpp-matematicas.html">Mathf, Vec3, Quat y Color</a><a href="cpp-scene.html">Scene</a><a href="cpp-input.html">Input</a><a href="cpp-physics.html">Physics</a><a href="cpp-time.html">Time</a><a href="cpp-debug.html">Debug</a><a href="cpp-api.html">Api (por nombre)</a><a href="cpp-cvars.html">CVars</a><a href="cpp-mesh.html">Mesh (mallas por código)</a><a href="cpp-statemachine.html">StateMachine</a><a href="cpp-assert.html">Assert</a><a href="cpp-audio.html">Audio</a><a href="cpp-behaviortree.html">BehaviorTree</a><a href="cpp-charactercontroller.html">CharacterController</a><a href="cpp-datapack.html">DataPack</a><a href="cpp-dialogue.html">Dialogue</a><a href="cpp-environment.html">Environment</a><a href="cpp-fire.html">Fire</a><a href="cpp-fluid.html">Fluid</a><a href="cpp-game.html">Game</a><a href="cpp-graphics.html">Graphics</a><a href="cpp-http.html">Http</a><a href="cpp-json.html">Json</a><a href="cpp-navigation.html">Navigation</a><a href="cpp-network.html">Network</a><a href="cpp-physics2d.html">Physics2D</a><a href="cpp-prefs.html">Prefs</a><a href="cpp-random.html">Random</a><a href="cpp-replay.html">Replay</a><a href="cpp-save.html">Save</a><a href="cpp-screen.html">Screen</a><a href="cpp-steam.html">Steam</a><a href="cpp-test.html">Test</a><a href="cpp-text.html">Text</a><a href="cpp-voxel.html">Voxel</a><a href="cpp-weather.html">Weather</a><a href="cpp-xr.html">XR</a></div>
         <div class="group"><p class="group-title"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M9 9v11"/></svg>El editor</p><a href="editor-interfaz.html">Interfaz y pestañas</a><a href="editor-tema.html">Tema e Inspector</a><a href="editor-escena.html">Vista Escena y gizmos</a><a href="editor-jerarquia.html">Jerarquía e Inspector</a><a href="editor-proyecto.html">Proyecto e importación</a><a href="editor-play.html">Play, deshacer y escenas</a><a href="insights.html">Insights y rendimiento</a><a href="editor-herramientas.html">Herramientas de mundo</a><a href="modelado.html">Modelado poligonal</a><a href="2d.html">2D</a><a href="mundo-procedural.html">Mundo procedural</a><a href="ambiente.html">Ambiente y clima</a><a href="agua.html">Agua</a><a href="fuego.html">Fuego</a><a href="vfx-graph.html">VFX Graph</a><a href="liquidos.html">Líquidos</a><a href="destruccion.html">Destrucción</a><a href="vehiculos.html">Vehículos</a><a href="motion-matching.html">Motion Matching</a><a href="replays.html">Repeticiones</a><a href="editor-ventanas.html">Ventanas de herramientas</a><a href="maquinas-de-estados.html">Máquinas de estados</a><a href="visual-scripting.html">Visual Scripting</a><a href="behavior-trees.html">Behavior Trees</a><a href="dialogos.html">Diálogos</a><a href="localizacion.html">Localización</a><a href="guardado.html">Partidas guardadas</a><a href="materiales.html">Materiales</a><a href="shader-graph.html">Shader Graph</a><a href="render-textures.html">Render Textures</a><a href="render.html">Render y rendimiento</a><a href="iluminacion-horneada.html">Iluminación horneada</a><a href="exportar.html">Exportar y compilación</a><a href="steam.html">Steam</a><a href="linux.html">Linux</a><a href="git.html">Control de versiones (Git)</a><a href="pruebas.html">Pruebas automáticas</a><a href="datapacks.html">DataPacks (bundles)</a><a href="plantillas.html">Plantillas</a><a href="atajos.html">Atajos de teclado</a><a href="actualizaciones.html">Actualizaciones</a></div>
-        <div class="group"><p class="group-title"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m12 3 8 4.5v9L12 21l-8-4.5v-9L12 3Z"/><path d="m4 7.5 8 4.5 8-4.5M12 12v9"/></svg>Componentes</p><a href="componentes.html">Todos los componentes</a><a href="componentes-basicos.html">Transform y renderizado</a><a href="componentes-entorno.html">Entorno</a><a href="componentes-fisica.html">Física</a><a href="componentes-efectos.html">Partículas y depuración</a><a href="componentes-animacion.html">Animación</a><a href="componentes-audio.html">Audio</a><a href="componentes-cinematicas.html">Cámaras y cinemáticas</a><a href="componentes-navegacion.html">Navegación</a><a href="componentes-ui.html">Interfaz (UI)</a><a href="componentes-scripting.html">Scripts y prefabs</a><a href="componentes-2d.html">2D</a><a href="componentes-iluminacion.html">Iluminación horneada</a><a href="componentes-vr.html">Realidad virtual</a></div>
-        <div class="group"><p class="group-title"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a9 9 0 1 0 0 18c1.1 0 1.5-.8 1.5-1.5 0-.9-.7-1.2-.7-2 0-.8.6-1.5 1.5-1.5H16a5 5 0 0 0 5-5c0-4.4-4-8-9-8Z"/><circle cx="7.5" cy="11" r="1"/><circle cx="10" cy="7" r="1"/><circle cx="15" cy="7.5" r="1"/></svg>Gráficos</p><a href="shaders.html">Shaders propios</a></div>
+        <div class="group"><p class="group-title"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m12 3 8 4.5v9L12 21l-8-4.5v-9L12 3Z"/><path d="m4 7.5 8 4.5 8-4.5M12 12v9"/></svg>Componentes</p><a href="componentes.html">Todos los componentes</a><a href="componentes-basicos.html">Transform y renderizado</a><a href="componentes-entorno.html">Entorno</a><a href="componentes-fisica.html">Física</a><a href="componentes-efectos.html">Partículas y depuración</a><a href="componentes-animacion.html">Animación</a><a href="componentes-audio.html">Audio</a><a href="componentes-cinematicas.html">Cámaras y cinemáticas</a><a href="componentes-navegacion.html">Navegación</a><a href="componentes-ui.html">Interfaz (UI)</a><a href="componentes-scripting.html">Scripts y prefabs</a><a href="componentes-2d.html">2D</a><a href="componentes-iluminacion.html">Iluminación horneada</a><a href="componentes-vr.html">Realidad virtual</a><a href="componentes-mundo.html">Splines y mundos grandes</a><a href="componentes-ia.html">Multitudes</a></div>
+        <div class="group"><p class="group-title"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m8 8-4 4 4 4"/><path d="m16 8 4 4-4 4"/><path d="m14 4-4 16"/></svg>Guías de scripting</p><a href="input-actions.html">Input Actions</a><a href="red.html" class="active" aria-current="page">Network (multijugador)</a><a href="http.html">Http y Json</a><a href="realidad-virtual.html">Realidad virtual (XR)</a><a href="esqueletos.html">Esqueletos: IK, ragdoll y phys bones</a><a href="mallas.html">Mallas por código</a></div>
+        <div class="group"><p class="group-title"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a9 9 0 1 0 0 18c1.1 0 1.5-.8 1.5-1.5 0-.9-.7-1.2-.7-2 0-.8.6-1.5 1.5-1.5H16a5 5 0 0 0 5-5c0-4.4-4-8-9-8Z"/><circle cx="7.5" cy="11" r="1"/><circle cx="10" cy="7" r="1"/><circle cx="15" cy="7.5" r="1"/></svg>Gráficos</p><a href="shaders.html">Shaders propios</a><a href="graphics.html">Graphics (opciones gráficas)</a></div>
         <div class="group"><p class="group-title"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v4M12 17v4M3 12h4M17 12h4M6 6l2.5 2.5M15.5 15.5 18 18M6 18l2.5-2.5M15.5 8.5 18 6"/></svg>Ejemplos</p><a href="ejemplo-girar.html">Girar un objeto</a><a href="ejemplo-camara.html">Cámara que sigue al jugador</a><a href="ejemplo-jugador.html">Jugador con física</a><a href="ejemplo-disparo.html">Disparo con raycast</a><a href="ejemplo-monedas.html">Monedas y puntuación</a><a href="ejemplo-spawner.html">Generador de enemigos</a><a href="ejemplo-vehiculo.html">Conducir un vehículo</a><a href="ejemplo-menu.html">Menú, opciones y récord</a><a href="ejemplo-animacion.html">Animación de un personaje</a><a href="ejemplo-comunicacion.html">Scripts que se hablan</a><a href="ejemplo-ia.html">IA: patrullar y perseguir</a><a href="ejemplo-terreno.html">Terreno procedural con colisión</a><a href="ejemplo-efectos.html">Varios materiales y efectos</a><a href="ejemplo-olas.html">Olas: cambiar la malla cada frame</a></div>
-        <div class="group"><p class="group-title"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m8 8-4 4 4 4"/><path d="m16 8 4 4-4 4"/><path d="m14 4-4 16"/></svg>Referencia de Lua (obsoleta)</p><a href="vec3.html">Vec3</a><a href="quat.html">Quat (rotaciones)</a><a href="mathf.html">Mathf</a><a href="random.html">Random</a><a href="entity.html">Entity</a><a href="scene.html">Scene</a><a href="input.html">Input</a><a href="input-actions.html">Input Actions</a><a href="realidad-virtual.html">Realidad virtual (XR)</a><a href="time.html">Time</a><a href="physics.html">Physics</a><a href="navegacion.html">Navegación</a><a href="mallas.html">Mallas por código</a><a href="voxel.html">Mundo de bloques</a><a href="audio.html">Audio</a><a href="ui.html">Interfaz (UI)</a><a href="esqueletos.html">Esqueletos: IK, ragdoll y phys bones</a><a href="graphics.html">Graphics</a><a href="red.html" class="active" aria-current="page">Network (multijugador)</a><a href="http.html">Http y Json</a><a href="prefs.html">Prefs y Game</a><a href="debug.html">Debug</a></div>
         
       <div class="donate-card side-donate">
         <div class="t"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M19 14c1.5-1.5 3-3.2 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.8 0-3 .5-4.5 2-1.5-1.5-2.7-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4 3 5.5l7 7Z"/></svg>Apoya Cramion</div>
@@ -83,41 +82,41 @@
 
     <main class="doc">
       <div class="doc-inner">
-        <nav class="crumbs" aria-label="Ruta"><a href="index.html">Documentación</a><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m9 6 6 6-6 6"/></svg><span>Referencia de Lua (obsoleta)</span><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m9 6 6 6-6 6"/></svg><span class="here">Network (multijugador)</span></nav>
+        <nav class="crumbs" aria-label="Ruta"><a href="index.html">Documentación</a><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m9 6 6 6-6 6"/></svg><span>Guías de scripting</span><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m9 6 6 6-6 6"/></svg><span class="here">Network (multijugador)</span></nav>
         <h1>Network (multijugador)</h1>
-        <p class="lede">(Lua, obsoleto) Partidas por red: crear y unirse, mensajes, objetos y variables sincronizados.</p>
+        <p class="lede">Partidas por red: crear y unirse, mensajes, objetos y variables sincronizados.</p>
         <details class="toc-inline"><summary>En esta página <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg></summary><nav class="onpage"></nav></details>
         <div class="body">
-<div class="note"><strong class="text-white">Lua está obsoleto.</strong> Sigue funcionando en los proyectos que lo usan, pero lo nuevo se escribe en C++: ver la <a href="cpp-script.html">API de C++</a> y <a href="primer-script.html">Tu primer script</a>.</div>
 <p>
-  <code>Network</code> hace juegos <strong>multijugador por red</strong> (UDP con ENet) desde Lua. Un jugador
+  <code>Network</code> hace juegos <strong>multijugador por red</strong> (UDP con ENet) desde C++. Un jugador
   <strong>crea la partida</strong> (es el servidor y además juega) y los demás <strong>se unen</strong> con su IP. Todo pasa
   por el servidor: un cliente manda al servidor y este lo reenvía a los demás, así que el servidor puede comprobar lo que
   llega (por ejemplo, que nadie se dé puntos a sí mismo). La plantilla <a href="plantillas.html#online">Online</a> es un
   juego completo hecho así.
 </p>
 
-<pre><code class="language-lua">-- Servidor (también juega: es el jugador 1)
-local ok, err = Network.host(7777, 8)       -- puerto, jugadores como máximo
+<pre><code class="language-cpp">// Servidor (también juega: es el jugador 1)
+const Value r = Network::host(7777, 8);      // puerto, jugadores como máximo
+if (!r[0].asBool()) Debug::log("No se pudo: " + r[1].asString());
 
--- Cliente
-Network.connect("192.168.1.20", 7777)
-Network.onConnected(function(miId) print("dentro como", miId) end)
-Network.onDisconnected(function(motivo) print("fuera:", motivo) end)</code></pre>
+// Cliente
+Network::connect("192.168.1.20", 7777);
+Network::onConnected([](const Values&amp; a) { Debug::log("dentro como " + a[0].asString()); });
+Network::onDisconnected([](const Values&amp; a) { Debug::log("fuera: " + a[0].asString()); });</code></pre>
 
 <h3 id="sesion">Partida</h3>
 <table>
   <thead><tr><th>Función</th><th>Qué hace</th></tr></thead>
   <tbody>
-    <tr><td><code>Network.host(puerto, max)</code></td><td>Crea la partida en <code>puerto</code> (7777 por defecto) para <code>max</code> jugadores contándote (16). Devuelve <code>ok, error</code>.</td></tr>
-    <tr><td><code>Network.connect(ip, puerto)</code></td><td>Se une a una partida (<code>"127.0.0.1"</code> y 7777 por defecto). Conecta en segundo plano: llega <code>onConnected</code> o, si nadie responde en 6 s, <code>onDisconnected</code>.</td></tr>
-    <tr><td><code>Network.disconnect()</code></td><td>Sale de la partida avisando a los demás (el servidor la cierra para todos). Los objetos de red recibidos se borran de la escena. Salir de Play o cerrar el juego también la cierra.</td></tr>
-    <tr><td><code>Network.isServer()</code>, <code>isClient()</code></td><td>Qué papel tienes.</td></tr>
-    <tr><td><code>Network.isConnected()</code>, <code>isConnecting()</code>, <code>isActive()</code></td><td>En partida (servidor abierto o cliente dentro), cliente esperando respuesta, hay alguna sesión.</td></tr>
-    <tr><td><code>Network.myId()</code></td><td>Tu id de jugador: el servidor es <code>1</code> (<code>Network.SERVER</code>) y los clientes 2, 3...</td></tr>
-    <tr><td><code>Network.players()</code>, <code>playerCount()</code></td><td>Lista de ids de todos los jugadores (tú incluido) y cuántos son.</td></tr>
-    <tr><td><code>Network.ping(id)</code></td><td>Ida y vuelta en milisegundos con ese jugador (un cliente solo conoce la del servidor).</td></tr>
-    <tr><td><code>Network.stats()</code></td><td><code>{ sent, received, objects }</code>: bytes enviados y recibidos y objetos de red.</td></tr>
+    <tr><td><code>Network::host(puerto, max)</code></td><td>Crea la partida en <code>puerto</code> (7777 por defecto) para <code>max</code> jugadores contándote (16). Devuelve la lista <code>{ok, error}</code>: <code>r[0].asBool()</code> y <code>r[1].asString()</code>.</td></tr>
+    <tr><td><code>Network::connect(ip, puerto)</code></td><td>Se une a una partida (<code>"127.0.0.1"</code> y 7777 por defecto). Devuelve <code>{ok, error}</code> como <code>host</code>. Conecta en segundo plano: llega <code>onConnected</code> o, si nadie responde en 6 s, <code>onDisconnected</code>.</td></tr>
+    <tr><td><code>Network::disconnect()</code></td><td>Sale de la partida avisando a los demás (el servidor la cierra para todos). Los objetos de red recibidos se borran de la escena. Salir de Play o cerrar el juego también la cierra.</td></tr>
+    <tr><td><code>Network::isServer()</code>, <code>isClient()</code></td><td>Qué papel tienes (<code>.asBool()</code>).</td></tr>
+    <tr><td><code>Network::isConnected()</code>, <code>isConnecting()</code>, <code>isActive()</code></td><td>En partida (servidor abierto o cliente dentro), cliente esperando respuesta, hay alguna sesión.</td></tr>
+    <tr><td><code>Network::myId()</code></td><td>Tu id de jugador (<code>.asInt()</code>): el servidor es <code>1</code> (<code>Network::SERVER()</code>) y los clientes 2, 3...</td></tr>
+    <tr><td><code>Network::players()</code>, <code>playerCount()</code></td><td>Lista de ids de todos los jugadores (tú incluido; recórrela con <code>.items()</code>) y cuántos son.</td></tr>
+    <tr><td><code>Network::ping(id)</code></td><td>Ida y vuelta en milisegundos con ese jugador (un cliente solo conoce la del servidor).</td></tr>
+    <tr><td><code>Network::stats()</code></td><td>Objeto con <code>sent</code>, <code>received</code> y <code>objects</code>: bytes enviados y recibidos y objetos de red (<code>s["sent"].asNumber()</code>).</td></tr>
   </tbody>
 </table>
 
@@ -125,32 +124,33 @@ Network.onDisconnected(function(motivo) print("fuera:", motivo) end)</code></pre
 <table>
   <thead><tr><th>Función</th><th>Cuándo se llama</th></tr></thead>
   <tbody>
-    <tr><td><code>Network.onConnected(function(id) end)</code></td><td>Cliente: ya estás dentro, con tu id.</td></tr>
-    <tr><td><code>Network.onDisconnected(function(motivo) end)</code></td><td>Fuera de la partida: el servidor la cerró, se perdió la conexión o no respondió.</td></tr>
-    <tr><td><code>Network.onPlayerJoined(function(id) end)</code></td><td>Entra un jugador (en todos).</td></tr>
-    <tr><td><code>Network.onPlayerLeft(function(id) end)</code></td><td>Sale un jugador. Sus objetos de red desaparecen solos en todos.</td></tr>
+    <tr><td><code>Network::onConnected([](const Values&amp; a) {})</code></td><td>Cliente: ya estás dentro, con tu id (<code>a[0]</code>).</td></tr>
+    <tr><td><code>Network::onDisconnected([](const Values&amp; a) {})</code></td><td>Fuera de la partida: el servidor la cerró, se perdió la conexión o no respondió (el motivo en <code>a[0]</code>).</td></tr>
+    <tr><td><code>Network::onPlayerJoined([](const Values&amp; a) {})</code></td><td>Entra un jugador (en todos); su id en <code>a[0]</code>.</td></tr>
+    <tr><td><code>Network::onPlayerLeft([](const Values&amp; a) {})</code></td><td>Sale un jugador (<code>a[0]</code>). Sus objetos de red desaparecen solos en todos.</td></tr>
   </tbody>
 </table>
 
 <h3 id="mensajes">Mensajes</h3>
 <p>
-  Un mensaje tiene un nombre y un valor de Lua: <code>nil</code>, booleano, número, texto, <code>Vec3</code> o una tabla
-  de ellos (también tablas dentro de tablas). Llegan <strong>siempre y en orden</strong>.
+  Un mensaje tiene un nombre y un <code>Value</code>: nada, booleano, número, texto, <code>Vec3</code>, una lista
+  (<code>Values{...}</code>) o un objeto (<code>Value{{"clave", valor}, ...}</code>), también unos dentro de otros. Llegan
+  <strong>siempre y en orden</strong>.
 </p>
-<pre><code class="language-lua">-- Todos reciben el chat; la función recibe los datos y quién lo mandó.
-Network.on("chat", function(datos, de)
-    print(de, datos.texto)
-end)
+<pre><code class="language-cpp">// Todos reciben el chat; a[0] son los datos y a[1] quién lo mandó.
+Network::on("chat", [](const Values&amp; a) {
+    Debug::log(a[1].asString() + ": " + a[0]["texto"].asString());
+});
 
-Network.send("chat", { texto = "hola" })            -- a todos (menos a mí)
-Network.send("decir", { texto = "hola" }, "server") -- solo al servidor
-Network.send("privado", { texto = "psst" }, 3)      -- solo al jugador 3</code></pre>
+Network::send("chat", Value{{"texto", "hola"}});              // a todos (menos a mí)
+Network::send("decir", Value{{"texto", "hola"}}, "server");   // solo al servidor
+Network::send("privado", Value{{"texto", "psst"}}, 3);        // solo al jugador 3</code></pre>
 <table>
   <thead><tr><th>Función</th><th>Qué hace</th></tr></thead>
   <tbody>
-    <tr><td><code>Network.send(nombre, datos, destino)</code></td><td>Destino: <code>nil</code> = todos menos tú, <code>"server"</code> (o <code>Network.SERVER</code>) = el servidor, o el id de un jugador. Un cliente lo manda al servidor y este lo reenvía.</td></tr>
-    <tr><td><code>Network.on(nombre, function(datos, de) end)</code></td><td>Recibe los mensajes con ese nombre. <code>de</code> es el id de quien lo mandó.</td></tr>
-    <tr><td><code>Network.off(nombre)</code></td><td>Deja de recibirlos.</td></tr>
+    <tr><td><code>Network::send(nombre, datos, destino)</code></td><td>Destino: sin destino = todos menos tú, <code>"server"</code> (o <code>Network::SERVER()</code>) = el servidor, o el id de un jugador. Un cliente lo manda al servidor y este lo reenvía.</td></tr>
+    <tr><td><code>Network::on(nombre, [](const Values&amp; a) {})</code></td><td>Recibe los mensajes con ese nombre: <code>a[0]</code> son los datos y <code>a[1]</code> el id de quien lo mandó.</td></tr>
+    <tr><td><code>Network::off(nombre)</code></td><td>Deja de recibirlos.</td></tr>
   </tbody>
 </table>
 <p>
@@ -160,40 +160,40 @@ Network.send("privado", { texto = "psst" }, 3)      -- solo al jugador 3</code><
 
 <h3 id="objetos">Objetos de red</h3>
 <p>
-  <code>Network.spawn</code> crea un <a href="prefabs.html">prefab</a> en <strong>todos</strong> los jugadores con el mismo
+  <code>Network::spawn</code> crea un <a href="prefabs.html">prefab</a> en <strong>todos</strong> los jugadores con el mismo
   id de red y un <strong>dueño</strong>. Solo el dueño lo mueve: su posición y su giro se mandan solos (20 veces por segundo
   si se movió) y los demás lo siguen suavizado; su <code>Rigidbody</code> pasa a cinemático en los demás para que no
   simulen su propia física. Quien entra tarde recibe todos los objetos con su última posición y sus variables. Si el dueño
   sale, sus objetos desaparecen.
 </p>
-<pre><code class="language-lua">-- Servidor: un personaje para cada jugador que entra, controlado por él.
-Network.onPlayerJoined(function(id)
-    Network.spawn("Prefabs/Jugador", Vec3(0, 1, 0), id)
-end)
+<pre><code class="language-cpp">// Servidor: un personaje para cada jugador que entra, controlado por él.
+Network::onPlayerJoined([](const Values&amp; a) {
+    Network::spawn("Prefabs/Jugador", Vec3{0, 1, 0}, a[0]);
+});
 
--- En el script del prefab: solo el dueño lee el teclado.
-function Jugador:Update(dt)
-    if not self.entity:isMine() then return end
-    -- mover con Input...
-end</code></pre>
+// En el script del prefab: solo el dueño lee el teclado.
+void Jugador::update(float dt) {
+    if (!entity().isMine().asBool()) return;
+    // mover con Input...
+}</code></pre>
 <table>
   <thead><tr><th>Función</th><th>Qué hace</th></tr></thead>
   <tbody>
-    <tr><td><code>Network.spawn(prefab, posicion, dueño, giro)</code></td><td>Solo el servidor. Dueño: el id de un jugador o <code>Network.SERVER</code> (por defecto). Giro en grados (<code>Vec3</code>). Devuelve la entidad.</td></tr>
-    <tr><td><code>Network.destroy(entity)</code></td><td>Solo el servidor: lo borra en todos.</td></tr>
-    <tr><td><code>Network.objects()</code></td><td>Lista de todas las entidades de red de la escena.</td></tr>
-    <tr><td><code>Network.find(netId)</code></td><td>La entidad con ese id de red (o <code>nil</code>).</td></tr>
-    <tr><td><code>Network.loadScene(nombre)</code></td><td>Solo el servidor: todos cargan esa escena. La partida sigue abierta; los objetos de red se olvidan.</td></tr>
-    <tr><td><code>entity:isMine()</code></td><td>Lo controlas tú. Sin red, o en un objeto que no es de red, siempre <code>true</code>: el mismo script sirve para jugar solo.</td></tr>
-    <tr><td><code>entity.netId</code>, <code>entity.netOwner</code></td><td>Id de red (0 = no es de red) e id del jugador dueño.</td></tr>
-    <tr><td><code>entity:setNetVar(clave, valor)</code></td><td>Variable sincronizada (vida, nombre, color...). La puede cambiar el dueño o el servidor; llega a todos y a los que entren más tarde.</td></tr>
-    <tr><td><code>entity:getNetVar(clave)</code></td><td>Su último valor (o <code>nil</code>).</td></tr>
-    <tr><td><code>function Script:OnNetVar(clave, valor)</code></td><td>En los scripts del objeto: se llama en los demás jugadores cuando llega un cambio de una de sus variables (por ejemplo, para cambiar el color o la barra de vida).</td></tr>
+    <tr><td><code>Network::spawn(prefab, posicion, dueño, giro)</code></td><td>Solo el servidor. Dueño: el id de un jugador o <code>Network::SERVER()</code> (por defecto). Giro en grados (<code>Vec3</code>). Devuelve la entidad (<code>.asEntity()</code>).</td></tr>
+    <tr><td><code>Network::destroy(entity)</code></td><td>Solo el servidor: lo borra en todos.</td></tr>
+    <tr><td><code>Network::objects()</code></td><td>Lista de todas las entidades de red de la escena (<code>.items()</code>).</td></tr>
+    <tr><td><code>Network::find(netId)</code></td><td>La entidad con ese id de red (<code>.asEntity()</code>; vacía si no hay).</td></tr>
+    <tr><td><code>Network::loadScene(nombre)</code></td><td>Solo el servidor: todos cargan esa escena. La partida sigue abierta; los objetos de red se olvidan.</td></tr>
+    <tr><td><code>entity().isMine()</code></td><td>Lo controlas tú (<code>.asBool()</code>). Sin red, o en un objeto que no es de red, siempre <code>true</code>: el mismo script sirve para jugar solo.</td></tr>
+    <tr><td><code>entity().netId()</code>, <code>entity().netOwner()</code></td><td>Id de red (0 = no es de red) e id del jugador dueño.</td></tr>
+    <tr><td><code>entity().setNetVar(clave, valor)</code></td><td>Variable sincronizada (vida, nombre, color...). La puede cambiar el dueño o el servidor; llega a todos y a los que entren más tarde.</td></tr>
+    <tr><td><code>entity().getNetVar(clave)</code></td><td>Su último valor (vacío, <code>isNil()</code>, si no tiene).</td></tr>
+    <tr><td><code>void onNetVar(const std::string&amp; clave, const Value&amp; valor) override</code></td><td>En los scripts del objeto: se llama en los demás jugadores cuando llega un cambio de una de sus variables (por ejemplo, para cambiar el color o la barra de vida).</td></tr>
   </tbody>
 </table>
 <p>
   El componente <a href="componentes-scripting.html#NetworkObject">Objeto de red</a> (<code>NetworkObject</code>) en el
-  prefab ajusta cuántas veces por segundo se manda la posición y el suavizado; si no lo lleva, <code>Network.spawn</code>
+  prefab ajusta cuántas veces por segundo se manda la posición y el suavizado; si no lo lleva, <code>Network::spawn</code>
   lo añade con los valores por defecto.
 </p>
 <p>
@@ -212,7 +212,7 @@ end</code></pre>
   <li>El Firewall de Windows pregunta la primera vez si el editor o el juego pueden usar la red: acéptalo.</li>
 </ul>
         </div>
-        <nav class="pager" aria-label="Paginación"><a href="graphics.html"><span>← Anterior</span><b>Graphics</b></a><a class="next" href="http.html"><span>Siguiente →</span><b>Http y Json</b></a></nav>
+        <nav class="pager" aria-label="Paginación"><a href="input-actions.html"><span>← Anterior</span><b>Input Actions</b></a><a class="next" href="http.html"><span>Siguiente →</span><b>Http y Json</b></a></nav>
         <div class="help"><span>¿Algo no queda claro o falta algo? Pregunta en el
           <a href="https://discord.gg/zG7rSsUGEz" target="_blank" rel="noopener">Discord</a>.</span>
           <a href="https://paypal.me/evan2025" target="_blank" rel="noopener" class="btn btn-outline btn-sm"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M19 14c1.5-1.5 3-3.2 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.8 0-3 .5-4.5 2-1.5-1.5-2.7-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4 3 5.5l7 7Z"/></svg>Apoyar el proyecto</a></div>
@@ -234,7 +234,7 @@ end</code></pre>
 
   <footer class="site-footer">
     <div class="footer-inner">
-      <span>Cramion Engine · manual de la 2.3. Gratis para hacer y vender tus juegos.</span>
+      <span>Cramion Engine · manual de la 2.9. Gratis para hacer y vender tus juegos.</span>
       <nav>
         <a href="../index.html">Web</a>
         <a href="licencia.html">Licencia</a>

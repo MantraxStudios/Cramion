@@ -1,7 +1,7 @@
 <p>
   Todos los componentes del motor, con <strong class="text-white">todas sus propiedades</strong>: el nombre que ves en el Inspector, la clave con la que se guarda en la escena, el tipo, el valor por defecto, el rango u opciones y la ayuda. Esta referencia se genera desde el propio motor (<code>cramion_docgen</code>), asi que siempre esta al dia.
 </p>
-<p>En el editor se anaden con <strong class="text-white">Add Component</strong> en el Inspector; desde Lua con <code>entity:addComponent("Rigidbody")</code> (la clave de la tabla).</p>
+<p>En el editor se anaden con <strong class="text-white">Add Component</strong> en el Inspector; desde un script con <code>entity().addComponent("Rigidbody")</code> (la clave de la tabla).</p>
 <h3 id="componentes-basicos"><a href="componentes-basicos.html">Transform y renderizado</a></h3>
 <ul>
   <li><a href="componentes-basicos.html#Transform">Transform</a> <code>Transform</code></li>
@@ -17,6 +17,7 @@
   <li><a href="componentes-entorno.html#Sky">Cielo</a> <code>Sky</code></li>
   <li><a href="componentes-entorno.html#Weather">Clima</a> <code>Weather</code></li>
   <li><a href="componentes-entorno.html#Environment">Ambiente (clima y hora)</a> <code>Environment</code></li>
+  <li><a href="componentes-entorno.html#FogVolume">Volumen de niebla</a> <code>FogVolume</code></li>
   <li><a href="componentes-entorno.html#Terrain">Terreno</a> <code>Terrain</code></li>
   <li><a href="componentes-entorno.html#TerrainFlatten">Aplanar terreno</a> <code>TerrainFlatten</code></li>
   <li><a href="componentes-entorno.html#WaterBody">Agua</a> <code>WaterBody</code></li>
@@ -92,10 +93,13 @@
   <li><a href="componentes-ui.html#UISlider">Slider</a> <code>UISlider</code></li>
   <li><a href="componentes-ui.html#UIInputField">Campo de texto</a> <code>UIInputField</code></li>
   <li><a href="componentes-ui.html#UIToggle">Casilla</a> <code>UIToggle</code></li>
+  <li><a href="componentes-ui.html#UIDropdown">Desplegable (Dropdown)</a> <code>UIDropdown</code></li>
+  <li><a href="componentes-ui.html#UIScrollView">Scroll View</a> <code>UIScrollView</code></li>
+  <li><a href="componentes-ui.html#UILayoutGroup">Layout Group</a> <code>UILayoutGroup</code></li>
+  <li><a href="componentes-ui.html#UIMask">Mascara (recorte)</a> <code>UIMask</code></li>
 </ul>
 <h3 id="componentes-scripting"><a href="componentes-scripting.html">Scripts y prefabs</a></h3>
 <ul>
-  <li><a href="componentes-scripting.html#Script">Script Lua (obsoleto)</a> <code>Script</code></li>
   <li><a href="componentes-scripting.html#NetworkObject">Objeto de red</a> <code>NetworkObject</code></li>
   <li><a href="componentes-scripting.html#StateMachine">Maquina de estados (IA)</a> <code>StateMachine</code></li>
   <li><a href="componentes-scripting.html#BehaviorTree">Behavior Tree (IA)</a> <code>BehaviorTree</code></li>
@@ -129,4 +133,19 @@
   <li><a href="componentes-vr.html#XrPlayer">XR Player (primera persona con fisica)</a> <code>XrPlayer</code></li>
   <li><a href="componentes-vr.html#XrInteractor">XR Interactor (coger y rayo)</a> <code>XrInteractor</code></li>
   <li><a href="componentes-vr.html#XrGrabbable">XR Grabbable (se coge con las manos)</a> <code>XrGrabbable</code></li>
+</ul>
+<h3 id="componentes-mundo"><a href="componentes-mundo.html">Splines y mundos grandes</a></h3>
+<ul>
+  <li><a href="componentes-mundo.html#Spline">Spline</a> <code>Spline</code></li>
+  <li><a href="componentes-mundo.html#SplineExtrude">Extrusion por spline (carretera, rio, muro...)</a> <code>SplineExtrude</code></li>
+  <li><a href="componentes-mundo.html#SplineFollower">Seguir spline</a> <code>SplineFollower</code></li>
+  <li><a href="componentes-mundo.html#WorldPartition">World Partition</a> <code>WorldPartition</code></li>
+  <li><a href="componentes-mundo.html#StreamingSource">Fuente de carga (World Partition)</a> <code>StreamingSource</code></li>
+  <li><a href="componentes-mundo.html#AlwaysLoaded">Siempre cargado (World Partition)</a> <code>AlwaysLoaded</code></li>
+  <li><a href="componentes-mundo.html#HlodProxy">HLOD de una celda</a> <code>HlodProxy</code></li>
+</ul>
+<h3 id="componentes-ia"><a href="componentes-ia.html">Multitudes</a></h3>
+<ul>
+  <li><a href="componentes-ia.html#CrowdSpawner">Multitud (Crowd Spawner)</a> <code>CrowdSpawner</code></li>
+  <li><a href="componentes-ia.html#CrowdAgent">Agente de multitud</a> <code>CrowdAgent</code></li>
 </ul>

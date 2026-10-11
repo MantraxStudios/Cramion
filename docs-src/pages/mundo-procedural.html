@@ -142,24 +142,28 @@
 <p>
   Cada casa tiene sus hijos: <strong>Casa</strong>, con <code>MeshCollider</code>, <strong>Puerta</strong>, con un
   <code>BoxCollider</code> ajustado a su malla y su origen en la bisagra, y un <strong>Fuego</strong> (luz puntual) en cada hogar.
-  Para abrir la puerta desde Lua basta con girarla en Y:
+  Para abrir la puerta desde un script basta con girarla en Y:
 </p>
-<pre><code class="language-lua">-- Script en la raiz de la casa: E abre y cierra la puerta poco a poco.
-local Casa = {}
+<pre><code class="language-cpp">// Script en la raiz de la casa: E abre y cierra la puerta poco a poco.
+class Casa : public Script {
+public:
+    void start() override {
+        puerta_ = entity().find("Puerta").asEntity();
+    }
 
-function Casa:Start()
-    self.puerta = self.entity:find("Puerta")
-    self.angulo = 0
-end
+    void update(float dt) override {
+        if (Input::keyDown("e")) abierta_ = !abierta_;
+        const float objetivo = abierta_ ? -100.0f : 0.0f;
+        angulo_ += (objetivo - angulo_) * std::min(dt * 6.0f, 1.0f);
+        puerta_.setRotation(Vec3{0, angulo_, 0});  // giro local en grados
+    }
 
-function Casa:Update(dt)
-    if Input.getKeyDown("e") then self.abierta = not self.abierta end
-    local objetivo = self.abierta and -100 or 0
-    self.angulo = self.angulo + (objetivo - self.angulo) * math.min(dt * 6, 1)
-    self.puerta.rotation = Vec3(0, self.angulo, 0)  -- giro local en grados
-end
-
-return Casa</code></pre>
+private:
+    Entity puerta_;
+    float angulo_ = 0.0f;
+    bool abierta_ = false;
+};
+CRAMION_SCRIPT(Casa)</code></pre>
 <p>
   Por MCP: <code>generate_house</code> (<code>style</code>: <code>log</code>, <code>timber</code>, <code>stone</code>,
   <code>farm</code>, <code>halftimbered</code> o <code>thatched</code>; <code>use</code>: <code>home</code>, <code>tavern</code>,

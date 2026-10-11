@@ -1,0 +1,11 @@
+<p>Llamar a cualquier función o propiedad de la API por su nombre.</p>
+
+<h3 id="api">Api</h3>
+<table>
+  <tbody>
+    <tr><td><code>Value call(std::string_view fn, Values args = {})</code></td><td>Llama a cualquier funcion de la API por su nombre: Api::call(&quot;Audio.playOneShot&quot;, {&quot;x.wav&quot;}).</td></tr>
+    <tr><td><code>Value get(std::string_view path)</code></td><td>Lee cualquier propiedad de la API (&quot;Time.timeScale&quot;, &quot;Network.isServer&quot;).</td></tr>
+    <tr><td><code>void set(std::string_view path, const Value&amp; v)</code></td><td>Cambia una propiedad de la API: Api::set(&quot;Graphics.vsync&quot;, false).</td></tr>
+    <tr><td><code>void send(std::string_view fn, Values args = {})</code></td><td>Como call, sin esperar la respuesta (va en el lote: mas rapido).</td></tr>
+  </tbody>
+</table>

@@ -90,10 +90,10 @@
     <tr><td><code>using RenderTexture = AssetRef&lt;AssetKind::RenderTexture&gt;</code></td><td></td></tr>
     <tr><td><code>using EnvironmentAsset = AssetRef&lt;AssetKind::Environment&gt;</code></td><td></td></tr>
     <tr><td><code>using StateMachineAsset = AssetRef&lt;AssetKind::StateMachine&gt;</code></td><td></td></tr>
-    <tr><td><code>enum class FileKind : int { Texture, Audio, LuaScript, Shader, Any }</code></td><td></td></tr>
+    <tr><td><code>enum class FileKind : int { Texture, Audio, Source, Shader, Any }</code></td><td></td></tr>
     <tr><td><code>using Texture = FileRef&lt;FileKind::Texture&gt;</code></td><td></td></tr>
     <tr><td><code>using AudioClip = FileRef&lt;FileKind::Audio&gt;</code></td><td></td></tr>
-    <tr><td><code>using LuaScript = FileRef&lt;FileKind::LuaScript&gt;</code></td><td></td></tr>
+    <tr><td><code>using SourceFile = FileRef&lt;FileKind::Source&gt;</code></td><td></td></tr>
     <tr><td><code>using ShaderFile = FileRef&lt;FileKind::Shader&gt;</code></td><td></td></tr>
     <tr><td><code>using AnyFile = FileRef&lt;FileKind::Any&gt;</code></td><td></td></tr>
     <tr><td><code>enum CVarFlags : std::uint32_t { CVarNone, CVarReadOnly, CVarSaved, CVarCheat }</code></td><td></td></tr>

@@ -38,22 +38,23 @@
   exportado). Si borras el <code>.crprefab</code>, sus instancias siguen funcionando y salen en rojo en la Jerarquía.
 </div>
 
-<h3 id="lua">Desde Lua</h3>
-<p>Crea instancias en el juego por la ruta del prefab dentro de <code>Assets</code>:</p>
-<pre><code class="language-lua">local Generador = { properties = { cada = 2.0 } }
+<h3 id="script">Desde un script</h3>
+<p>Crea instancias en el juego por la ruta del prefab dentro de <code>Assets</code> (o con una <code>Property&lt;Prefab&gt;</code> arrastrada en el Inspector):</p>
+<pre><code class="language-cpp">class Generador : public Script {
+public:
+    Property&lt;float&gt; cada{this, "cada", 2.0f};
 
-function Generador:Start()
-    self.t = 0
-end
+    void update(float dt) override {
+        t_ += dt;
+        if (t_ &gt;= cada) {
+            t_ = 0.0f;
+            // ruta dentro de Assets, con o sin .crprefab; posicion y giro (grados) opcionales
+            Entity enemigo = Scene::instantiate("Prefabs/Enemigo", entity().position(), Vec3{0, 180, 0}).asEntity();
+            if (!enemigo) Debug::log("No existe Prefabs/Enemigo");
+        }
+    }
 
-function Generador:Update(dt)
-    self.t = self.t + dt
-    if self.t &gt;= self.cada then
-        self.t = 0
-        -- ruta dentro de Assets, con o sin .crprefab; posicion y giro (grados) opcionales
-        local enemigo = Scene.instantiate("Prefabs/Enemigo", self.entity.position, Vec3(0, 180, 0))
-        if enemigo == nil then Debug.log("No existe Prefabs/Enemigo") end
-    end
-end
-
-return Generador</code></pre>
+private:
+    float t_ = 0.0f;
+};
+CRAMION_SCRIPT(Generador)</code></pre>

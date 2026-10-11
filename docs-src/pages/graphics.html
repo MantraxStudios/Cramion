@@ -3,30 +3,30 @@
   <em>Screen</em> de Unity juntos: calidad rápida, escalado y resolución, nitidez, VSync, FPS objetivo, sombras, texturas,
   trazado de rayos, ventana y el <strong>post-procesado</strong> de la escena. Todo lo que hay en
   <a href="render.html">Ajustes de render</a> y en el componente <a href="componentes-basicos.html#PostProcessing">PostProcessing</a>
-  se puede tocar desde Lua; sirve para montar el menú de opciones del juego.
+  se puede tocar desde C++; sirve para montar el menú de opciones del juego.
 </p>
 
-<pre><code class="language-lua">Graphics.setQuality("Alta")           -- Baja, Media, Alta, Ultra (o 0..3)
-Graphics.vsync = true                  -- cualquier opción por su nombre
-Graphics.texture_quality = "high"
-Graphics.set{ shadow_quality = "ultra", target_fps = 144 }   -- varias a la vez
-Graphics.post.bloom = false            -- post-procesado de la escena
-Graphics.save()                        -- el juego lo recuerda la próxima vez</code></pre>
+<pre><code class="language-cpp">Graphics::setQuality("Alta");           // Baja, Media, Alta, Ultra (o 0..3)
+Graphics::set("vsync", true);           // cualquier opción por su nombre
+Graphics::set("texture_quality", "high");
+Graphics::set(Value{{"shadow_quality", "ultra"}, {"target_fps", 144}});   // varias a la vez
+Graphics::setPost("bloom", false);      // post-procesado de la escena
+Graphics::save();                       // el juego lo recuerda la próxima vez</code></pre>
 
 <h3 id="funciones">Funciones</h3>
 <table>
   <thead><tr><th>Función</th><th>Qué hace</th></tr></thead>
   <tbody>
-    <tr><td><code>Graphics.setQuality(nivel)</code></td><td>Calidad rápida: <code>"Baja"</code>, <code>"Media"</code>, <code>"Alta"</code>, <code>"Ultra"</code> (también <code>"low"</code>... o un número 0..3). Ajusta escalado, resolución, nitidez, sombras, sonda de reflexión y trazado de rayos a la vez, igual que los botones del editor.</td></tr>
-    <tr><td><code>Graphics.getQuality()</code></td><td>La última calidad rápida aplicada, o <code>"Personalizada"</code> si luego se cambió algo suelto.</td></tr>
-    <tr><td><code>Graphics.qualityLevels()</code></td><td>Lista de calidades (para un desplegable).</td></tr>
-    <tr><td><code>Graphics.set(clave, valor)</code><br><code>Graphics.set{ clave = valor, ... }</code></td><td>Cambia una o varias opciones. Devuelve <code>true</code> si se aplicaron; si no, avisa en la Consola por qué (clave que no existe, de solo lectura, valor fuera de la lista).</td></tr>
-    <tr><td><code>Graphics.get(clave)</code></td><td>El valor actual (o <code>nil</code>).</td></tr>
-    <tr><td><code>Graphics.clave</code> / <code>Graphics.clave = valor</code></td><td>Lo mismo con la sintaxis de propiedad: <code>Graphics.vsync</code>, <code>Graphics.upscaler = "fsr1"</code>.</td></tr>
-    <tr><td><code>Graphics.getAll()</code></td><td>Tabla <code>clave → valor</code> con todo.</td></tr>
-    <tr><td><code>Graphics.options()</code></td><td>Lista para construir un menú: cada elemento tiene <code>key</code>, <code>value</code>, <code>writable</code>, <code>description</code> y, si es de una lista, <code>choices</code>.</td></tr>
-    <tr><td><code>Graphics.resolutions()</code></td><td>Resoluciones del monitor, de mayor a menor: <code>{ {width = 1920, height = 1080}, ... }</code>.</td></tr>
-    <tr><td><code>Graphics.save()</code></td><td>En el juego exportado guarda la configuración del jugador (incluida la ventana) en <code>%LOCALAPPDATA%/Cramion/Saves/&lt;juego&gt;.graphics.ini</code>. Al volver a abrir el juego se aplica encima de la de <em>ProjectSettings/Graphics.ini</em>. En el editor no guarda nada.</td></tr>
+    <tr><td><code>Graphics::setQuality(nivel)</code></td><td>Calidad rápida: <code>"Baja"</code>, <code>"Media"</code>, <code>"Alta"</code>, <code>"Ultra"</code> (también <code>"low"</code>... o un número 0..3). Ajusta escalado, resolución, nitidez, sombras, sonda de reflexión y trazado de rayos a la vez, igual que los botones del editor.</td></tr>
+    <tr><td><code>Graphics::getQuality()</code></td><td>La última calidad rápida aplicada (<code>.asString()</code>), o <code>"Personalizada"</code> si luego se cambió algo suelto.</td></tr>
+    <tr><td><code>Graphics::qualityLevels()</code></td><td>Lista de calidades (para un desplegable; <code>.items()</code>).</td></tr>
+    <tr><td><code>Graphics::set(clave, valor)</code><br><code>Graphics::set(Value{{"clave", valor}, ...})</code></td><td>Cambia una o varias opciones. Devuelve <code>true</code> (<code>.asBool()</code>) si se aplicaron; si no, avisa en la Consola por qué (clave que no existe, de solo lectura, valor fuera de la lista).</td></tr>
+    <tr><td><code>Graphics::get(clave)</code></td><td>El valor actual (<code>.asBool()</code>, <code>.asNumber()</code> o <code>.asString()</code>; vacío si la clave no existe).</td></tr>
+    <tr><td><code>Api::get("Graphics.clave")</code> / <code>Api::set("Graphics.clave", valor)</code></td><td>Lo mismo por su ruta: <code>Api::get("Graphics.vsync")</code>, <code>Api::set("Graphics.upscaler", "fsr1")</code>.</td></tr>
+    <tr><td><code>Graphics::getAll()</code></td><td>Objeto <code>clave → valor</code> con todo.</td></tr>
+    <tr><td><code>Graphics::options()</code></td><td>Lista para construir un menú: cada elemento tiene <code>key</code>, <code>value</code>, <code>writable</code>, <code>description</code> y, si es de una lista, <code>choices</code>.</td></tr>
+    <tr><td><code>Graphics::resolutions()</code></td><td>Resoluciones del monitor, de mayor a menor: una lista de objetos con <code>width</code> y <code>height</code> (<code>r["width"].asInt()</code>).</td></tr>
+    <tr><td><code>Graphics::save()</code></td><td>En el juego exportado guarda la configuración del jugador (incluida la ventana) en <code>%LOCALAPPDATA%/Cramion/Saves/&lt;juego&gt;.graphics.ini</code>. Al volver a abrir el juego se aplica encima de la de <em>ProjectSettings/Graphics.ini</em>. En el editor no guarda nada.</td></tr>
   </tbody>
 </table>
 
@@ -63,57 +63,64 @@ Graphics.save()                        -- el juego lo recuerda la próxima vez</
 
 <div class="note">
   <strong>Texturas:</strong> <code>texture_quality</code> se aplica a los modelos que se cargan después. En un menú de
-  opciones, vuelve a cargar la escena para verlo: <code>Scene.load(Scene.name())</code>.<br>
-  <strong>Presupuesto adaptativo:</strong> con <code>adaptive = true</code> el motor puede bajar sombras, efectos o resolución
+  opciones, vuelve a cargar la escena para verlo: <code>Scene::load(Scene::name())</code>.<br>
+  <strong>Presupuesto adaptativo:</strong> con <code>adaptive</code> activado el motor puede bajar sombras, efectos o resolución
   por su cuenta si no llega a los FPS; para que se quede exactamente lo que elige el jugador, desactívalo.<br>
   <strong>En el editor:</strong> lo que cambien los scripts en Play se deshace al parar; la ventana no se toca.
 </div>
 
-<h3 id="post">Post-procesado: Graphics.post</h3>
+<h3 id="post">Post-procesado: Graphics::setPost</h3>
 <p>
-  <code>Graphics.post</code> lee y cambia el <strong>volumen de post-procesado global</strong> de la escena (el de mayor prioridad;
+  <code>Graphics::getPost</code> y <code>Graphics::setPost</code> leen y cambian el <strong>volumen de post-procesado global</strong> de la escena (el de mayor prioridad;
   si la escena no tiene, se crea uno). Las claves son las del componente
   <a href="componentes-basicos.html#PostProcessing">PostProcessing</a>: exposición, tonemapping, color, bloom, viñeta, lente,
-  rayos de sol, SSAO, GI, reflejos, sombras de contacto, luz volumétrica, LODs, FXAA... <code>Graphics.postKeys()</code> devuelve
+  rayos de sol, SSAO, GI, reflejos, sombras de contacto, luz volumétrica, LODs, FXAA... <code>Graphics::postKeys()</code> devuelve
   la lista completa.
 </p>
-<pre><code class="language-lua">Graphics.post.bloom = false
-Graphics.post.exposure_compensation = 0.5
-Graphics.post.tonemapper = "ACES"                -- enums por su nombre (o su número)
-Graphics.post.vignette_color = Vec3(0.2, 0, 0)   -- colores con Vec3
-Graphics.post.contact_shadows = Graphics.getQuality() ~= "Baja"
+<pre><code class="language-cpp">Graphics::setPost("bloom", false);
+Graphics::setPost("exposure_compensation", 0.5);
+Graphics::setPost("tonemapper", "ACES");                  // enums por su nombre (o su número)
+Graphics::setPost("vignette_color", Vec3{0.2f, 0, 0});    // colores con Vec3
+Graphics::setPost("contact_shadows", Graphics::getQuality().asString() != "Baja");
+Graphics::setPost("volumetric_density", 0.05);
 
-Graphics.setPost("volumetric_density", 0.05)     -- igual, con funciones
-Debug.log(Graphics.getPost("fxaa"))
-for _, key in ipairs(Graphics.postKeys()) do Debug.log(key) end</code></pre>
+Debug::log(Graphics::getPost("fxaa").asString());
+for (const Value&amp; key : Graphics::postKeys().items()) Debug::log(key.asString());</code></pre>
 <p>Los cambios de la escena se deshacen al parar el Play en el editor, como cualquier otro cambio del juego.</p>
 
 <h3 id="menu">Ejemplo: menú de opciones</h3>
-<pre><code class="language-lua">local Opciones = {}
+<pre><code class="language-cpp">#include &lt;cramion/Script.h&gt;
+using namespace cramion;
 
-function Opciones:Start()
-    -- Lo guardado ya se aplico al abrir el juego; solo se muestra.
-    Debug.log("Calidad: " .. Graphics.getQuality() .. " en " .. Graphics.gpu)
-end
+class Opciones : public Script {
+public:
+    void awake() override {
+        // Mensajes de los botones y casillas de la UI (on_click "OnCalidadBaja"...).
+        on("OnCalidadBaja", [](const Value&amp;) { Graphics::setQuality("Baja"); });
+        on("OnCalidadUltra", [](const Value&amp;) { Graphics::setQuality("Ultra"); });
+        on("OnPantallaCompleta", [](const Value&amp; activa) {
+            Graphics::set("window_mode", activa.asBool() ? "fullscreen" : "maximized");
+        });
+        on("OnVSync", [](const Value&amp; activo) { Graphics::set("vsync", activo.asBool()); });
+        on("OnTexturas", [](const Value&amp; nivel) {   // "low", "medium", "high"...
+            Graphics::set("texture_quality", nivel);
+            Scene::load(Scene::name());                // recargar para ver las texturas nuevas
+        });
+        on("OnGuardar", [](const Value&amp;) { Graphics::save(); });
+    }
 
--- Conectados a botones y casillas de la UI (eventos que llaman a metodos).
-function Opciones:CalidadBaja()  Graphics.setQuality("Baja")  end
-function Opciones:CalidadUltra() Graphics.setQuality("Ultra") end
-function Opciones:PantallaCompleta(activa)
-    Graphics.window_mode = activa and "fullscreen" or "maximized"
-end
-function Opciones:VSync(activo) Graphics.vsync = activo end
-function Opciones:Texturas(nivel)          -- "low", "medium", "high"...
-    Graphics.texture_quality = nivel
-    Scene.load(Scene.name())               -- recargar para ver las texturas nuevas
-end
-function Opciones:Guardar() Graphics.save() end
+    void start() override {
+        // Lo guardado ya se aplicó al abrir el juego; solo se muestra.
+        Debug::log("Calidad: " + Graphics::getQuality().asString() + " en " + Graphics::get("gpu").asString());
+    }
 
--- Todas las opciones con su descripcion (para un menu generado).
-function Opciones:Listar()
-    for _, o in ipairs(Graphics.options()) do
-        if o.writable then Debug.log(o.key .. " = " .. tostring(o.value) .. "  -- " .. o.description) end
-    end
-end
+    // Todas las opciones con su descripción (para un menú generado).
+    void listar() {
+        for (const Value&amp; o : Graphics::options().items()) {
+            if (o["writable"].asBool())
+                Debug::log(o["key"].asString() + " = " + o["value"].asString() + "  // " + o["description"].asString());
+        }
+    }
+};
 
-return Opciones</code></pre>
+CRAMION_SCRIPT(Opciones)</code></pre>

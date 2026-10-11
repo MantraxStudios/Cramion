@@ -45,6 +45,7 @@
   <li>Los errores de compilación salen en el nodo (borde rojo) y en la lista de la izquierda.</li>
 </ul>
 <div class="note">
-  El grafo se traduce a Lua y corre en el mismo estado que los scripts: lo que hace un script lo puede hacer un grafo, y los
-  eventos propios se llaman como cualquier método (un botón de la UI con <em>Al pulsar</em> = el nombre del evento).
+  El grafo lo ejecuta el motor directamente (sin compilar nada) y sus nodos llaman a la misma API que los scripts de C++: lo
+  que hace un script lo puede hacer un grafo, y los eventos propios se lanzan como cualquier mensaje (un botón de la UI con
+  <em>Al pulsar</em> = el nombre del evento).
 </div>

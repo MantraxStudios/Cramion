@@ -11,7 +11,7 @@
   (recientes con su miniatura, en tarjetas o en lista, ordenados por fecha o nombre; abrir uno de disco),
   <strong class="text-white">Nuevo proyecto</strong> (nombre, carpeta y <a href="plantillas.html">plantilla</a>),
   <strong class="text-white">Actualizaciones</strong> (versión instalada y publicada, novedades, actualizar y reinstalar;
-  ver <a href="actualizaciones.html">Actualizaciones</a>) y <strong class="text-white">Aprender</strong> (manual, Lua,
+  ver <a href="actualizaciones.html">Actualizaciones</a>) y <strong class="text-white">Aprender</strong> (manual, primer script en C++,
   shaders, Discord y la licencia). Abajo, la tarjeta de la versión dice si estás al día. Al abrir un proyecto se ve una pantalla de carga por etapas (base de datos
   de assets, escena, modelos, texturas, física y navegación).
 </p>
@@ -25,7 +25,7 @@
     <tr><td><code>Jerarquía</code></td><td>Las entidades de la escena en árbol. Ver <a href="editor-jerarquia.html">Jerarquía e Inspector</a>.</td></tr>
     <tr><td><code>Inspector</code></td><td>Los componentes del objeto elegido (o de varios a la vez) y el editor de materiales.</td></tr>
     <tr><td><code>Proyecto</code></td><td>Las carpetas y assets de <code>Assets/</code>. Ver <a href="editor-proyecto.html">Proyecto e importación</a>.</td></tr>
-    <tr><td><code>Consola</code></td><td>Mensajes del motor y de los scripts (<code>print</code>, <code>Debug.log</code>), con filtro, errores en rojo y auto-desplazamiento.</td></tr>
+    <tr><td><code>Consola</code></td><td>Mensajes del motor y de los scripts (<code>Debug::log</code>), con filtro, errores en rojo y auto-desplazamiento.</td></tr>
     <tr><td><code>Estadísticas</code></td><td>FPS, tiempos de CPU por parte (física, scripts, render...), GPU por pasada, triángulos, actores y VRAM.</td></tr>
     <tr><td><code>Ajustes de render</code> / <code>Configuración gráfica</code></td><td>Sombras, GI, trazado de rayos, escalado, calidad y el presupuesto adaptativo. Ver <a href="render.html">Render y rendimiento</a>.</td></tr>
     <tr><td><code>Física</code>, <code>Navegación</code>, <code>Animator</code>, <code>Cinemática</code>, <code>Pintar prefabs</code>, <code>MCP (IA)</code></td><td>Ventanas de herramientas, en el menú <em>Ventana</em>. Ver <a href="editor-ventanas.html">Ventanas de herramientas</a>.</td></tr>
@@ -45,7 +45,7 @@
     lo que crees o sueltes entra dentro de su raíz y tiene su propio deshacer. <strong class="text-white">Guardar</strong>
     (Ctrl+S o el botón de la banda azul) escribe el prefab y, al volver a la Escena, <strong class="text-white">todas sus
     instancias se actualizan</strong> respetando sus cambios propios.</li>
-  <li><strong class="text-white">Script</strong> (verde): cada <code>.lua</code> o <code>.crshader</code> abierto tiene su pestaña con el
+  <li><strong class="text-white">Script</strong> (verde): cada <code>.cpp</code>, <code>.h</code> o <code>.crshader</code> abierto tiene su pestaña con el
     código a toda la ventana y, a la derecha, el <strong class="text-white">árbol de Archivos</strong> (carpetas y assets, con buscador:
     clic en un script lo abre, doble clic en un prefab o una escena la abre, menú con <em>Nuevo script aquí</em>, <em>Copiar ruta</em> y
     <em>Mostrar en el Proyecto</em>).</li>

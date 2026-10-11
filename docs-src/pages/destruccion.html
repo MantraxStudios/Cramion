@@ -29,10 +29,11 @@
 entity().fracture(punto, 8.0f);      // punto del golpe y fuerza (m/s)
 otro.damage(25.0f, punto);           // quita vida; se rompe al llegar a 0
 float vida = otro.health();</code></pre>
-<pre><code class="language-lua">function Muro:OnBreak(trozos, punto)
-    Audio.playOneShot("Audio/derrumbe.wav", punto)
-    Debug.log(#trozos .. " trozos")
-end</code></pre>
+<pre><code class="language-cpp">// En el script del objeto que se rompe: el mensaje OnBreak trae {pieces, point}
+on("OnBreak", [](const Value&amp; rotura) {
+    Audio::playOneShot("Audio/derrumbe.wav", rotura["point"]);
+    Debug::log(std::to_string(rotura["pieces"].size()) + " trozos");
+});</code></pre>
 <div class="note">
   El objeto roto se desactiva (los scripts que lo tengan guardado no fallan) y sus trozos son objetos nuevos con
   MeshRenderer, Rigidbody y Mesh Collider convexo. Funciona en el juego exportado.

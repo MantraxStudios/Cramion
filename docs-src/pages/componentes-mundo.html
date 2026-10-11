@@ -1,0 +1,91 @@
+<p>Splines (carreteras, caminos, rios, muros, vallas, tuberias, railes), World Partition y HLOD. Referencia completa generada desde el motor.</p>
+<h3 id="Spline">Spline <code>Spline</code></h3>
+<p>Curva por puntos de control (Catmull-Rom, Bezier o lineal), abierta o cerrada, con ancho y peralte por punto. En la Escena los puntos se arrastran (Mayus+clic anade, Ctrl+clic quita). Desde un script: <code>entity().splinePoint(t)</code>, <code>Spline::create(puntos, "road")</code>.</p>
+<table>
+  <thead><tr><th>Propiedad</th><th>Tipo</th><th>Por defecto</th><th>Valores</th><th>Descripcion</th></tr></thead>
+  <tbody>
+    <tr><td colspan="5"><strong class="text-white">Puntos (lista)</strong> <code>points</code> — Puntos de control (locales a la entidad)</td></tr>
+    <tr><td>&nbsp;&nbsp;&nbsp;Posicion<br><code>position</code></td><td>Vec3 (metros)</td><td>(0; 0; 0)</td><td></td><td></td></tr>
+    <tr><td>&nbsp;&nbsp;&nbsp;Ancho<br><code>width</code></td><td>numero</td><td>1</td><td>0 a 20</td><td>Multiplica el ancho de lo extruido</td></tr>
+    <tr><td>&nbsp;&nbsp;&nbsp;Giro<br><code>roll</code></td><td>numero</td><td>0</td><td>-90 a 90</td><td>Grados alrededor de la curva (peralte)</td></tr>
+    <tr><td>Tipo<br><code>type</code></td><td>opcion</td><td>Catmull-Rom (pasa por los puntos)</td><td>Catmull-Rom (pasa por los puntos), Bezier (suave), Lineal</td><td></td></tr>
+    <tr><td>Cerrada<br><code>closed</code></td><td>si/no</td><td>no</td><td></td><td>Une el ultimo punto con el primero</td></tr>
+    <tr><td>Tension<br><code>tension</code></td><td>numero</td><td>0,5</td><td>0 a 1</td><td>0 = rectas entre puntos, 1 = muy curva</td></tr>
+    <tr><td>Resolucion<br><code>resolution</code></td><td>numero</td><td>1</td><td>0,05 a 20</td><td>Metros entre muestras de la curva</td></tr>
+    <tr><td>Mostrar en la escena<br><code>show_gizmo</code></td><td>si/no</td><td>si</td><td></td><td></td></tr>
+  </tbody>
+</table>
+<h3 id="SplineExtrude">Extrusion por spline (carretera, rio, muro...) <code>SplineExtrude</code></h3>
+<p>Genera una malla a lo largo de la Spline: carretera (con lineas), camino, rio (mueve el WaterBody), muro, valla con postes, tuberia, railes con traviesas o cinta. Se pega al terreno y <em>Aplicar al terreno</em> lo allana y pinta debajo.</p>
+<table>
+  <thead><tr><th>Propiedad</th><th>Tipo</th><th>Por defecto</th><th>Valores</th><th>Descripcion</th></tr></thead>
+  <tbody>
+    <tr><td>Forma<br><code>shape</code></td><td>opcion</td><td>Carretera</td><td>Carretera, Camino, Rio, Muro, Valla, Tuberia, Railes, Cinta</td><td></td></tr>
+    <tr><td>Ancho<br><code>width</code></td><td>numero</td><td>6</td><td>0,01 a 200</td><td>Metros (muro/valla: grosor; tuberia: diametro; railes: ancho de via)</td></tr>
+    <tr><td>Alto<br><code>height</code></td><td>numero</td><td>0,15</td><td>0 a 50</td><td>Grosor de la calzada, alto del muro o valla, profundidad del rio</td></tr>
+    <tr><td>Metros por textura<br><code>uv_meters</code></td><td>numero</td><td>6</td><td>0,05 a 500</td><td>Repeticion de la textura a lo largo</td></tr>
+    <tr><td>Pegar al terreno<br><code>conform_to_terrain</code></td><td>si/no</td><td>si</td><td></td><td></td></tr>
+    <tr><td>Altura sobre el terreno<br><code>ground_offset</code></td><td>numero</td><td>0,05</td><td>-10 a 10</td><td></td></tr>
+    <tr><td>Separacion de postes<br><code>post_spacing</code></td><td>numero</td><td>2,5</td><td>0,1 a 50</td><td>Valla: postes; railes: traviesas</td></tr>
+    <tr><td>Collider<br><code>collider</code></td><td>si/no</td><td>si</td><td></td><td>Anade un Mesh Collider con la malla</td></tr>
+    <tr><td>Color<br><code>color</code></td><td>Color</td><td>(0,32; 0,32; 0,33)</td><td></td><td>Sin material .crmat en el Mesh Renderer</td></tr>
+    <tr><td>Rugosidad<br><code>roughness</code></td><td>numero</td><td>0,85</td><td>0 a 1</td><td></td></tr>
+    <tr><td>Talud en el terreno<br><code>terrain_blend</code></td><td>numero</td><td>4</td><td>0 a 50</td><td>Metros de mezcla a cada lado al aplicar al terreno</td></tr>
+    <tr><td>Capa pintada<br><code>paint_layer</code></td><td>entero</td><td>-2</td><td>-2 a 7</td><td>-2 = automatica (camino/tierra/arena), -1 = no pintar</td></tr>
+  </tbody>
+</table>
+<h3 id="SplineFollower">Seguir spline <code>SplineFollower</code></h3>
+<p>Mueve la entidad por una Spline (camaras, vagonetas, patrullas): bucle, ida y vuelta o una vez, mirando hacia delante.</p>
+<table>
+  <thead><tr><th>Propiedad</th><th>Tipo</th><th>Por defecto</th><th>Valores</th><th>Descripcion</th></tr></thead>
+  <tbody>
+    <tr><td>Spline<br><code>spline</code></td><td>entidad</td><td>(ninguna)</td><td>arrastrar desde la Jerarquia</td><td>Entidad con Spline (vacio = la del padre)</td></tr>
+    <tr><td>Velocidad<br><code>speed</code></td><td>numero</td><td>5</td><td>-500 a 500</td><td></td></tr>
+    <tr><td>Distancia<br><code>distance</code></td><td>numero</td><td>0</td><td></td><td>Posicion actual en la curva</td></tr>
+    <tr><td>Modo<br><code>mode</code></td><td>opcion</td><td>Bucle</td><td>Bucle, Ida y vuelta, Una vez</td><td></td></tr>
+    <tr><td>Mirar hacia delante<br><code>orient</code></td><td>si/no</td><td>si</td><td></td><td></td></tr>
+    <tr><td>Al empezar<br><code>play_on_start</code></td><td>si/no</td><td>si</td><td></td><td></td></tr>
+    <tr><td>Desplazamiento lateral<br><code>offset_side</code></td><td>numero</td><td>0</td><td>-100 a 100</td><td></td></tr>
+    <tr><td>Desplazamiento vertical<br><code>offset_up</code></td><td>numero</td><td>0</td><td>-100 a 100</td><td></td></tr>
+  </tbody>
+</table>
+<h3 id="WorldPartition">World Partition <code>WorldPartition</code></h3>
+<p>Divide el mundo en celdas: en Play y en el juego solo estan cargadas las cercanas a las fuentes de carga (o a la camara); lo lejano sale del mundo y vuelve al acercarse. <em>Construir HLOD</em> crea una malla simplificada por celda que se ve de lejos.</p>
+<table>
+  <thead><tr><th>Propiedad</th><th>Tipo</th><th>Por defecto</th><th>Valores</th><th>Descripcion</th></tr></thead>
+  <tbody>
+    <tr><td>Activo<br><code>enabled</code></td><td>si/no</td><td>si</td><td></td><td>En Play y en el juego solo se cargan las celdas cerca del jugador</td></tr>
+    <tr><td>Tamano de celda<br><code>cell_size</code></td><td>numero</td><td>128</td><td>16 a 4096</td><td></td></tr>
+    <tr><td>Distancia de carga<br><code>load_range</code></td><td>numero</td><td>384</td><td>16 a 20000</td><td></td></tr>
+    <tr><td>Margen de descarga<br><code>unload_margin</code></td><td>numero</td><td>64</td><td>0 a 2000</td><td>Se descarga a la distancia de carga mas esto (sin parpadeos)</td></tr>
+    <tr><td>Celdas por frame<br><code>loads_per_frame</code></td><td>entero</td><td>2</td><td>1 a 64</td><td>Celdas que se recrean cada frame (menos = sin tirones)</td></tr>
+    <tr><td>Descargas por frame<br><code>unloads_per_frame</code></td><td>entero</td><td>4</td><td>1 a 64</td><td>Celdas que se guardan y quitan cada frame (menos = sin tirones)</td></tr>
+    <tr><td>Mostrar la rejilla<br><code>show_grid</code></td><td>si/no</td><td>si</td><td></td><td></td></tr>
+  </tbody>
+</table>
+<h3 id="StreamingSource">Fuente de carga (World Partition) <code>StreamingSource</code></h3>
+<p>Lo que carga el mundo a su alrededor con World Partition (el jugador).</p>
+<table>
+  <thead><tr><th>Propiedad</th><th>Tipo</th><th>Por defecto</th><th>Valores</th><th>Descripcion</th></tr></thead>
+  <tbody>
+    <tr><td>Activa<br><code>enabled</code></td><td>si/no</td><td>si</td><td></td><td></td></tr>
+    <tr><td>Escala de la distancia<br><code>range_scale</code></td><td>numero</td><td>1</td><td>0,1 a 10</td><td></td></tr>
+  </tbody>
+</table>
+<h3 id="AlwaysLoaded">Siempre cargado (World Partition) <code>AlwaysLoaded</code></h3>
+<p>Esta entidad no se descarga nunca con World Partition.</p>
+<table>
+  <thead><tr><th>Propiedad</th><th>Tipo</th><th>Por defecto</th><th>Valores</th><th>Descripcion</th></tr></thead>
+  <tbody>
+    <tr><td>Siempre cargado<br><code>enabled</code></td><td>si/no</td><td>si</td><td></td><td></td></tr>
+  </tbody>
+</table>
+<h3 id="HlodProxy">HLOD de una celda <code>HlodProxy</code></h3>
+<p>La malla simplificada de una celda (la crea <em>Construir HLOD</em>): solo se ve cuando su celda esta descargada.</p>
+<table>
+  <thead><tr><th>Propiedad</th><th>Tipo</th><th>Por defecto</th><th>Valores</th><th>Descripcion</th></tr></thead>
+  <tbody>
+    <tr><td>Celda X<br><code>cell_x</code></td><td>entero</td><td>0</td><td>-100000 a 100000</td><td></td></tr>
+    <tr><td>Celda Z<br><code>cell_z</code></td><td>entero</td><td>0</td><td>-100000 a 100000</td><td></td></tr>
+  </tbody>
+</table>

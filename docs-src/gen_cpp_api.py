@@ -191,7 +191,7 @@ def describe(doc):
     # Las generadas: "Tabla.fn(args) descripcion". Se ensena la descripcion.
     m = re.match(r"^([A-Za-z]+[.:][A-Za-z_]+)\((.*?)\)\s*(.*)$", doc)
     if m:
-        lua, args, text = m.groups()
+        _, args, text = m.groups()
         return text if text else (f"Argumentos: {args}" if args and args != "..." else "")
     return doc
 
@@ -253,6 +253,8 @@ def main():
         parsed, _ = parse(text)
         for k, v in parsed.items():
             scopes.setdefault(k, []).extend(v)
+    # Assert lo da el SDK a mano, en Test.h (no esta en Api.gen.h)
+    scopes.setdefault("Assert", []).extend(parse(read("Test.h"))[0].get("Assert", []))
 
     def page(slug, title, desc, intro, sections):
         body = [f"<p>{intro}</p>\n"]
@@ -285,7 +287,7 @@ def main():
                               ("Physics", "Physics", "Raycasts."),
                               ("Time", "Time", "Tiempo del frame y del juego."),
                               ("Debug", "Debug", "Mensajes en la Consola."),
-                              ("Lua", "Lua (puente)", "Llamar a código Lua desde C++ (proyectos antiguos)."),
+                              ("Api", "Api (por nombre)", "Llamar a cualquier función o propiedad de la API por su nombre."),
                               ("CVars", "CVars", "Variables de configuración del motor y del juego.")):
         extra = {"Input": ["Input::MouseState", "MouseState"], "Physics": ["RaycastHit"]}.get(name, [])
         pages.append(page("cpp-" + name.lower(), title, desc, desc, [(name, [name] + extra)]))
@@ -295,7 +297,7 @@ def main():
     pages.append(page("cpp-statemachine", "StateMachine", "Máquinas de estados desde C++.",
                       "La máquina de estados de un objeto: <code>StateMachine sm = entity().getStateMachine();</code>",
                       [("StateMachine", ["StateMachine"])]))
-    done = {"Scene", "Input", "Physics", "Time", "Debug", "Lua", "CVars", "Mesh", "StateMachine", "Entity", "Mathf", "Vec2",
+    done = {"Scene", "Input", "Physics", "Time", "Debug", "Api", "CVars", "Mesh", "StateMachine", "Entity", "Mathf", "Vec2",
             "Vec3", "Quat", "Color", "Script", "Property"}
     for name in sorted(k for k in scopes if "::" not in k and k not in done and k != "cramion" and k in TITLES):
         pages.append(page("cpp-" + name.lower(), name, TITLES[name], TITLES[name], [(name, [name])]))

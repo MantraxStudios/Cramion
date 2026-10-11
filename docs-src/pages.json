@@ -1,5 +1,5 @@
 {
-  "intro": "<p>\n        El manual de Cramion: cómo se usa el <strong class=\"text-white\">editor</strong> (paneles, herramientas, materiales, render y exportar), la referencia de <strong class=\"text-white\">todos los componentes</strong> con cada propiedad, y la <strong class=\"text-white\">API de C++</strong> para programar el juego: cada script es una clase que hereda de <code>Script</code>, sus <code>Property&lt;T&gt;</code> salen en el Inspector y el motor llama a sus métodos (<code>start</code>, <code>update</code>, colisiones...) durante el modo Play. Lua sigue funcionando pero está obsoleto.\n      </p>",
+  "intro": "<p>\n        El manual de Cramion: cómo se usa el <strong class=\"text-white\">editor</strong> (paneles, herramientas, materiales, render y exportar), la referencia de <strong class=\"text-white\">todos los componentes</strong> con cada propiedad, y la <strong class=\"text-white\">API de C++</strong> para programar el juego: cada script es una clase que hereda de <code>Script</code>, sus <code>Property&lt;T&gt;</code> salen en el Inspector y el motor llama a sus métodos (<code>start</code>, <code>update</code>, colisiones...) durante el modo Play.\n      </p>",
   "examples_intro": "Scripts completos de C++ (su <code>.h</code> y su <code>.cpp</code>) listos para copiar a <code>Assets/Scripts/</code>. Todos se compilan con el SDK antes de publicar el manual.",
   "groups": [
     {
@@ -96,9 +96,9 @@
           "desc": "Mensajes en la Consola."
         },
         {
-          "slug": "cpp-lua",
-          "title": "Lua (puente)",
-          "desc": "Llamar a código Lua desde C++ (proyectos antiguos)."
+          "slug": "cpp-api",
+          "title": "Api (por nombre)",
+          "desc": "Llamar a cualquier función o propiedad de la API por su nombre."
         },
         {
           "slug": "cpp-cvars",
@@ -363,7 +363,7 @@
         {
           "slug": "maquinas-de-estados",
           "title": "Máquinas de estados",
-          "desc": "IA como Bolt: estados con código Lua, transiciones y depuración en vivo."
+          "desc": "IA como Bolt: estados que avisan a los scripts de C++, condiciones con expresiones, transiciones y depuración en vivo."
         },
         {
           "slug": "visual-scripting",
@@ -548,12 +548,52 @@
       ]
     },
     {
+      "group": "Guías de scripting",
+      "pages": [
+        {
+          "slug": "input-actions",
+          "title": "Input Actions",
+          "desc": "Entrada como el Enhanced Input de Unreal: acciones Bool/float/Vec2/Vec3, varios contextos, muchas teclas por acción, modificadores y triggers."
+        },
+        {
+          "slug": "red",
+          "title": "Network (multijugador)",
+          "desc": "Partidas por red: crear y unirse, mensajes, objetos y variables sincronizados."
+        },
+        {
+          "slug": "http",
+          "title": "Http y Json",
+          "desc": "Enviar y recibir datos de servidores y webs por HTTPS, de forma segura; JSON a valores."
+        },
+        {
+          "slug": "realidad-virtual",
+          "title": "Realidad virtual (XR)",
+          "desc": "OpenXR: jugar con casco (SteamVR, Meta Quest Link, WMR...), XR Origin, mandos y vibración."
+        },
+        {
+          "slug": "esqueletos",
+          "title": "Esqueletos: IK, ragdoll y phys bones",
+          "desc": "Ver y mover huesos, sockets, IK de humanos y animales, Phys Bones, ragdoll y campos de componentes desde C++."
+        },
+        {
+          "slug": "mallas",
+          "title": "Mallas por código",
+          "desc": "Crea y modifica mallas con varios materiales desde C++."
+        }
+      ]
+    },
+    {
       "group": "Gráficos",
       "pages": [
         {
           "slug": "shaders",
           "title": "Shaders propios",
           "desc": "Escribe en GLSL cómo se ve una superficie: brillos, hologramas, disolver, agua que se mueve."
+        },
+        {
+          "slug": "graphics",
+          "title": "Graphics (opciones gráficas)",
+          "desc": "Configuración gráfica y post-procesado desde C++: calidad, resolución, sombras, texturas, ventana."
         }
       ]
     },
@@ -608,7 +648,7 @@
         {
           "slug": "ejemplo-comunicacion",
           "title": "Scripts que se hablan",
-          "desc": "entity:getScript() devuelve la instancia del script de otra entidad: puedes leer sus datos y llamar a sus métodos.\n        Así, un gestor de nivel puede coordinar a los demás."
+          "desc": "entity.script<T>() devuelve el script de C++ de otro objeto: puedes leer sus datos y llamar a sus métodos. Aquí una palanca abre una puerta."
         },
         {
           "slug": "ejemplo-ia",
@@ -629,121 +669,6 @@
           "slug": "ejemplo-olas",
           "title": "Olas: cambiar la malla cada frame",
           "desc": "Script de C++ completo (.h y .cpp)."
-        }
-      ]
-    },
-    {
-      "group": "Referencia de Lua (obsoleta)",
-      "pages": [
-        {
-          "slug": "vec3",
-          "title": "Vec3",
-          "desc": "(Lua, obsoleto) Vectores 3D: operaciones, ángulos, interpolación, suavizado y proyecciones."
-        },
-        {
-          "slug": "quat",
-          "title": "Quat (rotaciones)",
-          "desc": "(Lua, obsoleto) Rotaciones sin bloqueo de cardán: mirar hacia, girar con velocidad fija, interpolar."
-        },
-        {
-          "slug": "mathf",
-          "title": "Mathf",
-          "desc": "(Lua, obsoleto) Limitar, interpolar, suavizar, ángulos, trigonometría y ruido Perlin."
-        },
-        {
-          "slug": "random",
-          "title": "Random",
-          "desc": "(Lua, obsoleto) Aleatorios con semilla: rangos, probabilidades, direcciones, listas."
-        },
-        {
-          "slug": "entity",
-          "title": "Entity",
-          "desc": "(Lua, obsoleto) Transformación, jerarquía, física, sonido, animación e interfaz de un objeto."
-        },
-        {
-          "slug": "scene",
-          "title": "Scene",
-          "desc": "(Lua, obsoleto) Buscar, crear, instanciar y destruir objetos; cambiar de escena."
-        },
-        {
-          "slug": "input",
-          "title": "Input",
-          "desc": "(Lua, obsoleto) Teclado, ratón, ejes y mando."
-        },
-        {
-          "slug": "input-actions",
-          "title": "Input Actions",
-          "desc": "(Lua, obsoleto) Entrada como el Enhanced Input de Unreal: acciones Bool/float/Vec2/Vec3, varios contextos, muchas teclas por acción, modificadores y triggers."
-        },
-        {
-          "slug": "realidad-virtual",
-          "title": "Realidad virtual (XR)",
-          "desc": "(Lua, obsoleto) OpenXR: jugar con casco (SteamVR, Meta Quest Link, WMR...), XR Origin, mandos, vibración y la tabla XR."
-        },
-        {
-          "slug": "time",
-          "title": "Time",
-          "desc": "(Lua, obsoleto) Tiempo del frame, tiempo total y escala de tiempo."
-        },
-        {
-          "slug": "physics",
-          "title": "Physics",
-          "desc": "(Lua, obsoleto) Raycasts y consultas a la física."
-        },
-        {
-          "slug": "navegacion",
-          "title": "Navegación",
-          "desc": "(Lua, obsoleto) NavMesh: agentes que buscan el camino."
-        },
-        {
-          "slug": "mallas",
-          "title": "Mallas por código",
-          "desc": "(Lua, obsoleto) Crea y modifica mallas con varios materiales desde Lua."
-        },
-        {
-          "slug": "voxel",
-          "title": "Mundo de bloques",
-          "desc": "(Lua, obsoleto) Leer y cambiar bloques de un mundo voxel."
-        },
-        {
-          "slug": "audio",
-          "title": "Audio",
-          "desc": "(Lua, obsoleto) Sonidos, efectos, oclusion por paredes y zonas de reverberacion."
-        },
-        {
-          "slug": "ui",
-          "title": "Interfaz (UI)",
-          "desc": "(Lua, obsoleto) Textos, botones e imágenes en pantalla."
-        },
-        {
-          "slug": "esqueletos",
-          "title": "Esqueletos: IK, ragdoll y phys bones",
-          "desc": "(Lua, obsoleto) Ver y mover huesos, sockets, IK de humanos y animales, Phys Bones, ragdoll y campos de componentes desde Lua."
-        },
-        {
-          "slug": "graphics",
-          "title": "Graphics",
-          "desc": "(Lua, obsoleto) Configuración gráfica y post-procesado desde Lua: calidad, resolución, sombras, texturas, ventana."
-        },
-        {
-          "slug": "red",
-          "title": "Network (multijugador)",
-          "desc": "(Lua, obsoleto) Partidas por red: crear y unirse, mensajes, objetos y variables sincronizados."
-        },
-        {
-          "slug": "http",
-          "title": "Http y Json",
-          "desc": "(Lua, obsoleto) Enviar y recibir datos de servidores y webs por HTTPS, de forma segura; JSON a tablas."
-        },
-        {
-          "slug": "prefs",
-          "title": "Prefs y Game",
-          "desc": "(Lua, obsoleto) Datos guardados entre partidas y salir del juego."
-        },
-        {
-          "slug": "debug",
-          "title": "Debug",
-          "desc": "(Lua, obsoleto) Mensajes, avisos y errores en la consola del editor."
         }
       ]
     }

@@ -33,7 +33,11 @@
 - **Huesos como objetos**: el esqueleto de un modelo como jerarquía de objetos (cada hueso colgando de su padre) que siguen la animación.
 
 ### Scripting
-- **Retirada de Lua** (en curso): la API del motor es nativa de C++ y los scripts de C++ la usan con `Api::call`, `Api::get` y `Api::set` (`Lua::` queda como alias obsoleto). El plan, en `PLAN-SIN-LUA.md`; lo que falta, en `PENDIENTES.md`.
+- **Lua retirado del motor**: los scripts de juego son de C++ (o Visual Scripts). La API del motor es nativa de C++ y los scripts la usan con sus espacios de nombres (`Physics::`, `Audio::`...) o por nombre con `Api::call`, `Api::get` y `Api::set`. Se quitan sol2, el intérprete de Lua, el alias `Lua::` y el componente *Script* de Lua: las escenas antiguas que lo tengan se abren sin él (con un aviso en la consola).
+- **Editor sin Lua**: el autocompletado y la ayuda de la API, la consola y los textos del editor hablan en C++ (*Desde un script: `Physics::raycast`*). Las plantillas de proyecto y la demo de minigolf traen sus scripts en C++.
+- **Scripts de C++ en el servidor dedicado**: `cramion_server` carga `scripts/game_scripts.dll` y ejecuta los scripts como el player.
+- **Scripts de C++ en Android**: al exportar, los scripts se compilan con el `clang++` del NDK (`ANDROID_NDK_HOME`, `ANDROID_NDK_ROOT` o el NDK del SDK de Android) en un `lib/<abi>/libgame_scripts.so` por arquitectura, y el APK lleva el proceso que los ejecuta. Sin NDK, un proyecto con scripts de C++ no se exporta y lo dice. Arreglado de paso lo que no compilaba para Android con API 26 (`memfd_create`, `posix_spawn`, `backtrace` y `from_chars` de decimales).
+- **Manual reescrito en C++**: las páginas de la API de Lua dan paso a la referencia de C++ generada del SDK, y todos los ejemplos del manual son scripts de C++.
 - **Visual Scripts sin Lua**: un intérprete en C++ ejecuta los `.crgraph` directamente (cadenas de ejecución, nodos puros, variables por objeto, Delay que sigue donde iba, temporizadores, Custom Event y Send Event, choques, acciones de entrada, depuración con puntos de parada y recarga en caliente).
 - **Máquinas de estados sin Lua**: las condiciones son expresiones (`vida < 50 and not alerta`) y los estados mandan `OnStateEnter`, `OnStateUpdate` y `OnStateExit` a los scripts de C++ del objeto. En el editor, la casilla *Enviar OnStateUpdate* sustituye al código de cada estado; el código Lua de los proyectos antiguos se ve (solo lectura) y se puede borrar.
 - **Scripts de C++ en Linux**: se compilan con clang++ o g++ a `.so` y corren aislados en `CramionScriptHost` (memoria compartida y un socket), con el mismo trato de fallos que en Windows (puntero nulo, excepción, bucle infinito, pila llena, memoria agotada, `abort()`). `clang-format` y `clangd` también se buscan en Linux. El servidor dedicado de Linux vuelve a tener scripts.
@@ -42,7 +46,7 @@
 - **Licencia del Motor Cramion 1.2**: el **código fuente** se puede descargar, compilar, modificar y compartir gratis, manteniendo el copyright y la licencia y diciendo que es una versión modificada. Sigue sin poderse vender, revender ni resubir el motor, y los juegos siguen siendo tuyos, sin regalías.
 
 ### Splines
-- **Spline** (curva Catmull-Rom, Bezier o lineal, abierta o cerrada, ancho y peralte por punto), **Extrusión por spline** (carretera con líneas, camino, río que mueve su `WaterBody`, muro, valla con postes, tubería, raíles con traviesas, cinta) pegada al terreno, y **Seguir spline** (bucle, ida y vuelta, una vez). *GameObject > Spline*; puntos arrastrables en la Escena; *Aplicar al terreno* allana y pinta debajo (el río excava su cauce). Lua: `Spline.create`, `entity:splinePoint`, `closestSplineDistance`, `playSplineFollower`...
+- **Spline** (curva Catmull-Rom, Bezier o lineal, abierta o cerrada, ancho y peralte por punto), **Extrusión por spline** (carretera con líneas, camino, río que mueve su `WaterBody`, muro, valla con postes, tubería, raíles con traviesas, cinta) pegada al terreno, y **Seguir spline** (bucle, ida y vuelta, una vez). *GameObject > Spline*; puntos arrastrables en la Escena; *Aplicar al terreno* allana y pinta debajo (el río excava su cauce). C++: `Spline::create`, `entity().splinePoint`, `closestSplineDistance`, `playSplineFollower`...
 
 ### Interfaz
 - **Scroll View** (rueda, arrastre con inercia, barra, recorte), **Desplegable**, **Layout Group** (columna, fila, rejilla, ajustar al contenido) y **Máscara**. Nuevos en *GameObject > UI*.
@@ -56,9 +60,9 @@
 - **World Partition más rápido**: cada repaso solo mira las raíces nuevas, borradas o que cambiaron de celda (antes recorría el mundo entero, cada hijo y cada frame) y descarga unas pocas celdas por frame.
 
 ### Multijugador
-- **Netcode**: interpolación con búfer por la hora del dueño, extrapolación, giro comprimido (smallest three), relevancia por distancia, velocidad máxima con corrección del dueño (anti-trampas), historia para la compensación de lag (`Network.lagCompensatedRaycast`, `Network.positionAt`), `Network.stats()` y simulador de latencia y pérdidas (`Network.simulate`).
-- **Servidor dedicado** `CramionServer` / `<Juego>Server.exe` (sin ventana ni GPU, ritmo fijo, `--port --max-players --tick`), opción en *Configuraciones de compilación*; `Network.isDedicated()`.
-- **Chat de voz** (micrófono a 16 kHz, mu-law, búfer anti-saltos, pulsar para hablar o por voz, volumen por distancia): tabla `Voice`.
+- **Netcode**: interpolación con búfer por la hora del dueño, extrapolación, giro comprimido (smallest three), relevancia por distancia, velocidad máxima con corrección del dueño (anti-trampas), historia para la compensación de lag (`Network::lagCompensatedRaycast`, `Network::positionAt`), `Network::stats()` y simulador de latencia y pérdidas (`Network::simulate`).
+- **Servidor dedicado** `CramionServer` / `<Juego>Server.exe` (sin ventana ni GPU, ritmo fijo, `--port --max-players --tick`), opción en *Configuraciones de compilación*; `Network::isDedicated()`.
+- **Chat de voz** (micrófono a 16 kHz, mu-law, búfer anti-saltos, pulsar para hablar o por voz, volumen por distancia): `Voice::` en C++.
 
 ### IA
 - **Multitudes** (`CrowdSpawner`): cientos de agentes con navmesh que deambulan, recorren puntos, siguen u huyen, con decisiones repartidas entre frames y culling por distancia.
@@ -79,10 +83,10 @@ Auditoría de todos los shaders (con las capas de validación de Vulkan en nueve
 - **Agua y efectos**: olas del océano con el «chop» hacia el lado correcto (crestas afiladas, valles anchos: prueba nueva), lagos girados que flotan bien, cáusticas del río sin saltos, vorticidad de los fluidos, partículas VFX en espacio lineal y premultiplicadas, flipbooks por fotogramas enteros, zonas de fuego ordenadas por profundidad y vóxeles con el tiempo del frame anterior.
 
 ### Accesibilidad
-- *Ventana > Accesibilidad* y Lua `Accessibility`: daltonismo, tamaño del texto y de los subtítulos, fondo de subtítulos, alto contraste, reducir movimiento y temblor de cámara (`Camera.shake`, nuevo).
+- *Ventana > Accesibilidad* y `Accessibility::` en C++: daltonismo, tamaño del texto y de los subtítulos, fondo de subtítulos, alto contraste, reducir movimiento y temblor de cámara (`Camera::shake`, nuevo).
 
 ### Mods
-- *Permitir mods*: carpetas con `mod.json`, `Assets/` y `main.lua`, o `.datapack`, en `<juego>/Mods` y en los datos del jugador; tabla `Mods`.
+- *Permitir mods*: carpetas con `mod.json`, `Assets/` y un `main.crgraph` (Visual Script) o `main.crprefab`, o `.datapack`, en `<juego>/Mods` y en los datos del jugador; `Mods::` en C++. Un mod con `main.lua` se monta pero avisa de que su código ya no se ejecuta.
 
 ### Herramientas
 - **Informe de cierres**: pila con funciones y líneas, contexto (versión, GPU, escena, memoria), últimas líneas del registro, `abort`/`terminate`/virtuales puras, y el aviso con el informe al volver a abrir el editor.
@@ -109,7 +113,7 @@ Auditoría de todos los shaders (con las capas de validación de Vulkan en nueve
 - El perfilador de GPU da también los tiempos crudos del último frame (`lastTimings`), para medir sin el suavizado.
 
 ### Física
-- **BoxCollider como en Unity**: al añadirlo (Inspector, Lua `addComponent`, MCP `set_component`) toma el **AABB de la malla** del objeto (o de las de sus hijos, con su giro y escala) y la escala del Transform lo multiplica igual que a la malla. También la esfera (mayor media medida) y la cápsula (a lo largo del eje más largo). Botón *Ajustar a la malla* y *Restablecer valores* lo recalculan; Lua `entity:fitColliderToMesh()`, MCP `fit_collider`, C++ `PhysicsSystem::fitColliderToMesh` / `localMeshBounds`.
+- **BoxCollider como en Unity**: al añadirlo (Inspector, `entity().addComponent`, MCP `set_component`) toma el **AABB de la malla** del objeto (o de las de sus hijos, con su giro y escala) y la escala del Transform lo multiplica igual que a la malla. También la esfera (mayor media medida) y la cápsula (a lo largo del eje más largo). Botón *Ajustar a la malla* y *Restablecer valores* lo recalculan; `entity().fitColliderToMesh()`, MCP `fit_collider`, C++ `PhysicsSystem::fitColliderToMesh` / `localMeshBounds`.
 
 ## 2.3.0
 

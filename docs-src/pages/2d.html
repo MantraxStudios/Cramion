@@ -21,7 +21,7 @@
     <strong>automático</strong> (islas de píxeles opacos). Píxeles por unidad, pivote y filtro <em>Point</em> para pixel art.
     Los ajustes van en <code>&lt;imagen&gt;.crsprite</code>.</li>
   <li><strong>Sprite Animator</strong>: clips de fotogramas (<code>"0-5, 8"</code>) a N fps con bucle. En los scripts:
-    <code>entity:playSpriteAnimation("Correr")</code>.</li>
+    <code>entity().playSpriteAnimation("Correr")</code>.</li>
   <li><strong>Luz 2D</strong>: puntual (radio y caída) o global (la luz ambiente de los sprites iluminados).</li>
   <li><em>Ventana &gt; 2D &gt; Capas de orden</em>: las Sorting Layers del proyecto, de atrás adelante.</li>
 </ul>
@@ -44,21 +44,29 @@
   celdas sólidas unidas en rectángulos, sin costuras al deslizar) y <strong>Composite Collider 2D</strong>. Los colliders tienen
   fricción, rebote, trigger y <em>Un sentido</em> (plataformas que se atraviesan saltando desde abajo).
 </p>
-<pre><code class="language-lua">function Jugador:Update(dt)
-    local v = self.entity.velocity2D
-    v.x = Input.getAxis("Horizontal") * 6
-    if Input.getKeyDown("Space") and Physics2D.raycast(self.entity.position, Vec3(0, -1, 0), 0.6) then
-        v.y = 12
-    end
-    self.entity.velocity2D = v
-    self.entity.flipX = v.x &lt; 0
-end
+<pre><code class="language-cpp">class Jugador : public Script {
+public:
+    void start() override {
+        // Los eventos 2D llegan como mensajes con {other, point, normal, relativeVelocity}.
+        on("OnCollisionEnter2D", [](const Value&amp; contacto) {
+            const Entity otro = contacto["other"].asEntity();
+            if (otro.tag() == "Moneda") otro.destroy();
+        });
+    }
 
-function Jugador:OnCollisionEnter2D(otro, contacto)
-    if otro.tag == "Moneda" then otro:destroy() end
-end</code></pre>
+    void update(float dt) override {
+        Vec3 v = entity().velocity2D().asVec3();
+        v.x = Input::axis("Horizontal") * 6.0f;
+        if (Input::keyDown("Space") &amp;&amp; !Physics2D::raycast(entity().position(), Vec3{0, -1, 0}, 0.6f).isNil()) {
+            v.y = 12.0f;
+        }
+        entity().setVelocity2D(v);
+        entity().setFlipX(v.x &lt; 0.0f);
+    }
+};
+CRAMION_SCRIPT(Jugador)</code></pre>
 <p>
-  También <code>OnCollisionStay2D/Exit2D</code>, <code>OnTriggerEnter2D/Stay2D/Exit2D</code>, <code>addForce2D</code>,
-  <code>Physics2D.overlapCircle/overlapBox/overlapPoint</code> y en los Tilemap <code>setTile</code>, <code>getTile</code>,
+  También <code>OnCollisionStay2D/Exit2D</code>, <code>OnTriggerEnter2D/Stay2D/Exit2D</code> (con <code>on(...)</code>), <code>addForce2D</code>,
+  <code>Physics2D::overlapCircle/overlapBox/overlapPoint</code> y en los Tilemap <code>setTile</code>, <code>getTile</code>,
   <code>worldToCell</code> y <code>cellToWorld</code>.
 </p>

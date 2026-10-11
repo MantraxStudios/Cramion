@@ -34,7 +34,7 @@
   </tbody>
 </table>
 <h3 id="RectTransform">Rect Transform <code>RectTransform</code></h3>
-<p>Rectangulo de un elemento de interfaz: anclas (0..1 del padre), pivote, posicion desde el ancla y tamano. Anclas separadas estiran el elemento con su padre. Desde Lua: <code>uiPosition</code> y <code>uiSize</code>.</p>
+<p>Rectangulo de un elemento de interfaz: anclas (0..1 del padre), pivote, posicion desde el ancla y tamano. Anclas separadas estiran el elemento con su padre. Desde un script: <code>uiPosition()</code> y <code>uiSize()</code>.</p>
 <table>
   <thead><tr><th>Propiedad</th><th>Tipo</th><th>Por defecto</th><th>Valores</th><th>Descripcion</th></tr></thead>
   <tbody>
@@ -71,6 +71,13 @@
     <tr><td>Vertical<br><code>v_align</code></td><td>opcion</td><td>Medio</td><td>Arriba, Medio, Abajo</td><td></td></tr>
     <tr><td>Ajustar lineas<br><code>wrap</code></td><td>si/no</td><td>no</td><td></td><td></td></tr>
     <tr><td>Sombra<br><code>shadow</code></td><td>si/no</td><td>no</td><td></td><td></td></tr>
+    <tr><td>Texto enriquecido<br><code>rich_text</code></td><td>si/no</td><td>si</td><td></td><td>&lt;b&gt; &lt;i&gt; &lt;u&gt; &lt;s&gt; &lt;color=#ff8800&gt; &lt;size=40&gt; &lt;br&gt;</td></tr>
+    <tr><td>Negrita<br><code>bold</code></td><td>si/no</td><td>no</td><td></td><td></td></tr>
+    <tr><td>Cursiva<br><code>italic</code></td><td>si/no</td><td>no</td><td></td><td></td></tr>
+    <tr><td>Fuente<br><code>font</code></td><td>texto</td><td>(vacio)</td><td></td><td>Archivo .ttf u .otf de Assets (vacio = la del motor)</td></tr>
+    <tr><td>Contorno<br><code>outline</code></td><td>numero</td><td>0</td><td>0 a 20</td><td></td></tr>
+    <tr><td>Color del contorno<br><code>outline_color</code></td><td>Color</td><td>(0; 0; 0)</td><td></td><td></td></tr>
+    <tr><td>Interlineado<br><code>line_spacing</code></td><td>numero</td><td>1</td><td>0,5 a 3</td><td></td></tr>
   </tbody>
 </table>
 <h3 id="UIButton">Boton <code>UIButton</code></h3>
@@ -134,5 +141,66 @@
     <tr><td>Marca<br><code>check</code></td><td>Color</td><td>(0,2; 0,6; 1)</td><td></td><td></td></tr>
     <tr><td>Objeto del script<br><code>target</code></td><td>entidad</td><td>(ninguna)</td><td>arrastrar desde la Jerarquia</td><td>Quien recibe el evento (vacio = este objeto)</td></tr>
     <tr><td>Al cambiar<br><code>on_change</code></td><td>texto</td><td>(vacio)</td><td></td><td>function X:OnCasilla(activa)</td></tr>
+  </tbody>
+</table>
+<h3 id="UIDropdown">Desplegable (Dropdown) <code>UIDropdown</code></h3>
+<p>Desplegable: opciones, la elegida y el evento al cambiar (indice desde 1). Desde un script: <code>dropdownValue()</code>, <code>setDropdownOptions(...)</code>.</p>
+<table>
+  <thead><tr><th>Propiedad</th><th>Tipo</th><th>Por defecto</th><th>Valores</th><th>Descripcion</th></tr></thead>
+  <tbody>
+    <tr><td>Interactivo<br><code>interactable</code></td><td>si/no</td><td>si</td><td></td><td></td></tr>
+    <tr><td colspan="5"><strong class="text-white">Opciones (lista)</strong> <code>options</code></td></tr>
+    <tr><td>&nbsp;&nbsp;&nbsp;Texto<br><code>text</code></td><td>texto</td><td>&quot;Opcion A&quot;</td><td></td><td></td></tr>
+    <tr><td>Elegida<br><code>value</code></td><td>entero</td><td>0</td><td>0 a 2</td><td>Indice de la opcion (0 = la primera)</td></tr>
+    <tr><td>Tamano del texto<br><code>font_size</code></td><td>numero</td><td>24</td><td>4 a 200</td><td></td></tr>
+    <tr><td>Fondo<br><code>background</code></td><td>Color</td><td>(0,14; 0,14; 0,17)</td><td></td><td></td></tr>
+    <tr><td>Color del texto<br><code>text_color</code></td><td>Color</td><td>(1; 1; 1)</td><td></td><td></td></tr>
+    <tr><td>Resaltado<br><code>highlight</code></td><td>Color</td><td>(0,2; 0,45; 0,9)</td><td></td><td></td></tr>
+    <tr><td>Esquinas<br><code>corner_radius</code></td><td>numero</td><td>6</td><td>0 a 100</td><td></td></tr>
+    <tr><td>Opciones visibles<br><code>max_visible</code></td><td>entero</td><td>6</td><td>1 a 50</td><td></td></tr>
+    <tr><td>Objeto del script<br><code>target</code></td><td>entidad</td><td>(ninguna)</td><td>arrastrar desde la Jerarquia</td><td>Quien recibe el evento (vacio = este objeto)</td></tr>
+    <tr><td>Al cambiar<br><code>on_change</code></td><td>texto</td><td>(vacio)</td><td></td><td>function X:OnCalidad(indice) (desde 1; el texto en self.entity.dropdownText)</td></tr>
+  </tbody>
+</table>
+<h3 id="UIScrollView">Scroll View <code>UIScrollView</code></h3>
+<p>Zona con desplazamiento (rueda, arrastre con inercia y barra) que recorta a sus hijos. Con un hijo con Layout Group y <em>Ajustar al contenido</em> crece solo.</p>
+<table>
+  <thead><tr><th>Propiedad</th><th>Tipo</th><th>Por defecto</th><th>Valores</th><th>Descripcion</th></tr></thead>
+  <tbody>
+    <tr><td>Vertical<br><code>vertical</code></td><td>si/no</td><td>si</td><td></td><td></td></tr>
+    <tr><td>Horizontal<br><code>horizontal</code></td><td>si/no</td><td>no</td><td></td><td></td></tr>
+    <tr><td>Desplazamiento<br><code>scroll</code></td><td>Vec2</td><td>(0; 0)</td><td></td><td></td></tr>
+    <tr><td>Velocidad de la rueda<br><code>wheel_speed</code></td><td>numero</td><td>60</td><td>1 a 1000</td><td></td></tr>
+    <tr><td>Inercia<br><code>inertia</code></td><td>si/no</td><td>si</td><td></td><td></td></tr>
+    <tr><td>Frenado<br><code>deceleration</code></td><td>numero</td><td>6</td><td>0,1 a 50</td><td></td></tr>
+    <tr><td>Barra de desplazamiento<br><code>show_scrollbar</code></td><td>si/no</td><td>si</td><td></td><td></td></tr>
+    <tr><td>Fondo<br><code>background</code></td><td>Color</td><td>(0,08; 0,08; 0,1)</td><td></td><td></td></tr>
+    <tr><td>Opacidad del fondo<br><code>background_alpha</code></td><td>numero</td><td>0</td><td>0 a 1</td><td></td></tr>
+    <tr><td>Color de la barra<br><code>scrollbar_color</code></td><td>Color</td><td>(0,6; 0,6; 0,65)</td><td></td><td></td></tr>
+  </tbody>
+</table>
+<h3 id="UILayoutGroup">Layout Group <code>UILayoutGroup</code></h3>
+<p>Coloca a los hijos en columna, fila o rejilla, con separacion, margen y alineacion; <em>Ajustar al contenido</em> hace crecer el rectangulo.</p>
+<table>
+  <thead><tr><th>Propiedad</th><th>Tipo</th><th>Por defecto</th><th>Valores</th><th>Descripcion</th></tr></thead>
+  <tbody>
+    <tr><td>Tipo<br><code>type</code></td><td>opcion</td><td>Columna (vertical)</td><td>Columna (vertical), Fila (horizontal), Rejilla</td><td></td></tr>
+    <tr><td>Separacion<br><code>spacing</code></td><td>Vec2</td><td>(8; 8)</td><td></td><td></td></tr>
+    <tr><td>Margen<br><code>padding</code></td><td>Vec2</td><td>(10; 10)</td><td></td><td>x = izquierda y derecha, y = arriba y abajo</td></tr>
+    <tr><td>Alinear (horizontal)<br><code>child_h</code></td><td>opcion</td><td>Izquierda</td><td>Izquierda, Centro, Derecha</td><td></td></tr>
+    <tr><td>Alinear (vertical)<br><code>child_v</code></td><td>opcion</td><td>Arriba</td><td>Arriba, Medio, Abajo</td><td></td></tr>
+    <tr><td>Ocupar el ancho<br><code>expand_width</code></td><td>si/no</td><td>si</td><td></td><td>Columna: los hijos ocupan todo el ancho; fila: todo el alto</td></tr>
+    <tr><td>Repartir el sobrante<br><code>expand_height</code></td><td>si/no</td><td>no</td><td></td><td>Los hijos se estiran para llenar el espacio a lo largo</td></tr>
+    <tr><td>Celda (rejilla)<br><code>cell_size</code></td><td>Vec2</td><td>(120; 120)</td><td></td><td></td></tr>
+    <tr><td>Columnas (rejilla)<br><code>columns</code></td><td>entero</td><td>0</td><td>0 a 64</td><td>0 = las que quepan</td></tr>
+    <tr><td>Ajustar al contenido<br><code>fit_content</code></td><td>si/no</td><td>no</td><td></td><td>El rectangulo crece con los hijos (Content Size Fitter)</td></tr>
+  </tbody>
+</table>
+<h3 id="UIMask">Mascara (recorte) <code>UIMask</code></h3>
+<p>Recorta a los hijos a su rectangulo.</p>
+<table>
+  <thead><tr><th>Propiedad</th><th>Tipo</th><th>Por defecto</th><th>Valores</th><th>Descripcion</th></tr></thead>
+  <tbody>
+    <tr><td>Recortar a los hijos<br><code>enabled</code></td><td>si/no</td><td>si</td><td></td><td></td></tr>
   </tbody>
 </table>

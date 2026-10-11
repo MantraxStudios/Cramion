@@ -3,31 +3,37 @@
 <h3 id="network">Network</h3>
 <table>
   <tbody>
-    <tr><td><code>Value SERVER()</code></td><td>Network.SERVER: id del servidor (1)</td></tr>
-    <tr><td><code>Value connect(texto, valor)</code></td><td>se une a una partida (llega onConnected u onDisconnected)</td></tr>
+    <tr><td><code>Value SERVER()</code></td><td>Network.SERVER: id del servidor (1) (numero)</td></tr>
+    <tr><td><code>Value connect(texto, valor)</code></td><td>se une a una partida (llega onConnected u onDisconnected) Devuelve: lista {ok, error}</td></tr>
+    <tr><td><code>Value dedicated()</code></td><td>Network.dedicated: true en un servidor dedicado (lo pone CramionServer) (bool)</td></tr>
+    <tr><td><code>void setDedicated(const Value&amp; v)</code></td><td>Cambia Network.dedicated</td></tr>
     <tr><td><code>Value destroy(entity)</code></td><td>lo borra en todos (solo el servidor)</td></tr>
     <tr><td><code>Value disconnect(...)</code></td><td>sale de la partida (o la cierra si eres el servidor)</td></tr>
-    <tr><td><code>Value find(netId)</code></td><td>entidad por su id de red</td></tr>
-    <tr><td><code>Value host(valor, valor2)</code></td><td>crea la partida (eres el servidor y juegas); devuelve ok, error</td></tr>
-    <tr><td><code>Value isActive(...)</code></td><td>hay sesion de red</td></tr>
-    <tr><td><code>Value isClient(...)</code></td><td>eres un cliente?</td></tr>
-    <tr><td><code>Value isConnected(...)</code></td><td>en partida (servidor abierto o cliente dentro)</td></tr>
-    <tr><td><code>Value isConnecting(...)</code></td><td>cliente esperando respuesta</td></tr>
-    <tr><td><code>Value isServer(...)</code></td><td>eres el servidor?</td></tr>
+    <tr><td><code>Value find(netId)</code></td><td>entidad por su id de red Devuelve: Entity</td></tr>
+    <tr><td><code>Value host(valor, valor2)</code></td><td>crea la partida (eres el servidor y juegas); devuelve ok, error Devuelve: lista {ok, error}</td></tr>
+    <tr><td><code>Value isActive(...)</code></td><td>hay sesion de red Devuelve: bool</td></tr>
+    <tr><td><code>Value isClient(...)</code></td><td>eres un cliente? Devuelve: bool</td></tr>
+    <tr><td><code>Value isConnected(...)</code></td><td>en partida (servidor abierto o cliente dentro) Devuelve: bool</td></tr>
+    <tr><td><code>Value isConnecting(...)</code></td><td>cliente esperando respuesta Devuelve: bool</td></tr>
+    <tr><td><code>Value isDedicated(...)</code></td><td>true en CramionServer (servidor dedicado sin ventana) Devuelve: bool</td></tr>
+    <tr><td><code>Value isServer(...)</code></td><td>eres el servidor? Devuelve: bool</td></tr>
+    <tr><td><code>Value lagCompensatedRaycast(origen, direccion, distancia, jugador, radio, altura)</code></td><td>servidor: disparo de un jugador contra donde el veia a los demas (compensacion de lag) Devuelve: {netId, point, distance} o nil</td></tr>
     <tr><td><code>Value loadScene(texto)</code></td><td>todos cargan la escena (solo el servidor)</td></tr>
-    <tr><td><code>Value myId(...)</code></td><td>tu id de jugador (el servidor es 1)</td></tr>
-    <tr><td><code>Value objects(...)</code></td><td>todas las entidades de red</td></tr>
+    <tr><td><code>Value myId(...)</code></td><td>tu id de jugador (el servidor es 1) Devuelve: numero</td></tr>
+    <tr><td><code>Value objects(...)</code></td><td>todas las entidades de red Devuelve: lista de Entity</td></tr>
     <tr><td><code>Value off(texto)</code></td><td>deja de recibirlo</td></tr>
     <tr><td><code>Value on(texto, callback)</code></td><td>end) recibe un mensaje</td></tr>
     <tr><td><code>Value onConnected(callback)</code></td><td>end) cliente: ya estas dentro</td></tr>
     <tr><td><code>Value onDisconnected(callback)</code></td><td>end) fuera de la partida</td></tr>
     <tr><td><code>Value onPlayerJoined(callback)</code></td><td>end) entra un jugador</td></tr>
     <tr><td><code>Value onPlayerLeft(callback)</code></td><td>end) sale un jugador</td></tr>
-    <tr><td><code>Value ping(id)</code></td><td>ida y vuelta en ms</td></tr>
-    <tr><td><code>Value playerCount(...)</code></td><td>cuantos jugadores</td></tr>
-    <tr><td><code>Value players(...)</code></td><td>lista de ids de jugadores</td></tr>
-    <tr><td><code>Value send(texto, datos, destino)</code></td><td>mensaje (destino: nil = todos, &quot;server&quot; o un id)</td></tr>
-    <tr><td><code>Value spawn(texto, posicion, dueno)</code></td><td>crea un objeto de red en todos (solo el servidor)</td></tr>
-    <tr><td><code>Value stats(...)</code></td><td>{sent, received, objects}</td></tr>
+    <tr><td><code>Value ping(id)</code></td><td>ida y vuelta en ms Devuelve: numero</td></tr>
+    <tr><td><code>Value playerCount(...)</code></td><td>cuantos jugadores Devuelve: numero</td></tr>
+    <tr><td><code>Value players(...)</code></td><td>lista de ids de jugadores Devuelve: lista de numeros</td></tr>
+    <tr><td><code>Value positionAt(netId, segundos)</code></td><td>donde estaba un objeto de red hace unos segundos (historia de 1,5 s) Devuelve: Vec3</td></tr>
+    <tr><td><code>Value send(texto, datos, destino)</code></td><td>mensaje (destino: nil = todos, &quot;server&quot; o un id) Devuelve: bool</td></tr>
+    <tr><td><code>Value simulate(tabla)</code></td><td>simula una red mala (ms de retraso, variacion y % de perdida; 0 = normal)</td></tr>
+    <tr><td><code>Value spawn(texto, posicion, dueno, giro)</code></td><td>crea un objeto de red en todos (solo el servidor) Devuelve: Entity</td></tr>
+    <tr><td><code>Value stats(...)</code></td><td>{sent, received, objects, sendRate, receiveRate, bytesSent, bytesReceived, ping, packetLoss} Devuelve: objeto</td></tr>
   </tbody>
 </table>

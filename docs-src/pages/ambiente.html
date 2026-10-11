@@ -29,7 +29,7 @@
 
 <h3 id="climas">Climas</h3>
 <table>
-  <thead><tr><th>Clima</th><th>Nombre (Lua / MCP)</th><th>Qué hace</th></tr></thead>
+  <thead><tr><th>Clima</th><th>Nombre (C++ / MCP)</th><th>Qué hace</th></tr></thead>
   <tbody>
     <tr><td>Despejado</td><td><code>Clear</code></td><td>Pocas nubes, brisa suave.</td></tr>
     <tr><td>Nubes</td><td><code>Cloudy</code></td><td>Cúmulos a medias, algo más de viento.</td></tr>
@@ -88,8 +88,8 @@
 <h3 id="viento">Viento</h3>
 <p>
   Un viento global (<em>Dirección</em>, <em>Fuerza</em> y <em>Vaivén</em>) con rachas según el clima. Mueve las nubes
-  (más rápido en altura), la hierba, los árboles de la vegetación, la lluvia, la nieve y el polvo. Desde Lua:
-  <code>Weather.getWind()</code>.
+  (más rápido en altura), la hierba, los árboles de la vegetación, la lluvia, la nieve y el polvo. Desde un script:
+  <code>Weather::getWind()</code>.
 </p>
 
 <h3 id="audio">Sonido ambiente</h3>
@@ -99,28 +99,29 @@
   <em>Volumen</em> y <em>Volumen de los truenos</em> en el grupo <em>Niebla y audio</em>.
 </p>
 
-<h3 id="lua">Desde Lua</h3>
-<p>La tabla <code>Weather</code> (también <code>Environment</code>). Si la escena no tiene ambiente, los cambios lo crean.</p>
-<pre><code class="language-lua">Weather.set("Storm", 20)          -- a tormenta en 20 segundos
-Weather.set("Clear", 0)           -- despejado al instante (tambien se seca)
-print(Weather.get())              -- "Storm" (o el anterior si la transicion va por menos de la mitad)
-if Weather.isTransitioning() then print(Weather.transition()) end
+<h3 id="script">Desde un script</h3>
+<p>El namespace <code>Weather</code> (también <code>Environment</code>), en <a href="cpp-weather.html">C++</a>. Si la escena no tiene ambiente, los cambios lo crean.</p>
+<pre><code class="language-cpp">Weather::set("Storm", 20);           // a tormenta en 20 segundos
+Weather::set("Clear", 0);            // despejado al instante (tambien se seca)
+Debug::log(Weather::get().asString()); // "Storm" (o el anterior si la transicion va por menos de la mitad)
+if (Weather::isTransitioning().asBool()) Debug::log(Weather::transition().toJson());
 
-Weather.setTime(19.5)             -- 19:30
-Weather.setDate(21, 12)           -- 21 de diciembre
-Weather.setLatitude(-34)          -- hemisferio sur
-Weather.setTimeScale(60)          -- un dia dura 24 minutos (0 = parado)
-Weather.setSeason("Winter")       -- o "auto" (por la fecha)
+Weather::setTime(19.5f);             // 19:30
+Weather::setDate(21, 12);            // 21 de diciembre
+Weather::setLatitude(-34);           // hemisferio sur
+Weather::setTimeScale(60);           // un dia dura 24 minutos (0 = parado)
+Weather::setSeason("Winter");        // o "auto" (por la fecha)
 
-Weather.setWind(90, 2)            -- direccion en grados y fuerza
-local v = Weather.getWind()       -- Vec3 en m/s
-Weather.lightning(600)            -- un rayo a 600 m
-Weather.setSnowCover(1)           -- todo nevado ya
-Weather.setWetness(1, 0.6)        -- mojado y con charcos
-Weather.setRandom(true, 120, 300) -- clima al azar
+Weather::setWind(90, 2);             // direccion en grados y fuerza
+Vec3 v = Weather::getWind().asVec3(); // m/s
+Weather::lightning(600);             // un rayo a 600 m
+Weather::setSnowCover(1);            // todo nevado ya
+Weather::setWetness(1, 0.6f);        // mojado y con charcos
+Weather::setRandom(true, 120, 300);  // clima al azar
 
-if Weather.isNight() then ... end
-print(Weather.getTemperature(), Weather.getRain(), Weather.getSnow())</code></pre>
+if (Weather::isNight().asBool()) { /* ... */ }
+float temperatura = Weather::getTemperature().asFloat(), lluvia = Weather::getRain().asFloat(),
+      nieve = Weather::getSnow().asFloat();</code></pre>
 <p>
   Otras: <code>getTarget</code>, <code>getLabel</code>, <code>presets</code>, <code>getTime</code>, <code>getDate</code>,
   <code>getLatitude</code>, <code>setDayLength</code>, <code>getTimeScale</code>, <code>getSeason</code>,

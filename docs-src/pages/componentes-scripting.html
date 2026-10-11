@@ -1,19 +1,6 @@
 <p>El componente Script y los que usan los prefabs. Referencia completa generada desde el motor.</p>
-<h3 id="Script">Script Lua (obsoleto) <code>Script</code></h3>
-<p>Un script de Lua (<code>.lua</code> en Assets) y los valores de sus <code>properties</code> para esta entidad. Ver <a href="primer-script.html">Tu primer script</a>.</p>
-<table>
-  <thead><tr><th>Propiedad</th><th>Tipo</th><th>Por defecto</th><th>Valores</th><th>Descripcion</th></tr></thead>
-  <tbody>
-    <tr><td>Script<br><code>file</code></td><td>texto</td><td>(vacio)</td><td></td><td>Archivo .lua en Assets</td></tr>
-    <tr><td>Activo<br><code>enabled</code></td><td>si/no</td><td>si</td><td></td><td></td></tr>
-    <tr><td colspan="5"><strong class="text-white">Propiedades (lista)</strong> <code>properties</code></td></tr>
-    <tr><td>&nbsp;&nbsp;&nbsp;Nombre<br><code>name</code></td><td>texto</td><td>(vacio)</td><td></td><td></td></tr>
-    <tr><td>&nbsp;&nbsp;&nbsp;Tipo<br><code>type</code></td><td>entero</td><td>0</td><td>0 a 3</td><td></td></tr>
-    <tr><td>&nbsp;&nbsp;&nbsp;Valor<br><code>value</code></td><td>texto</td><td>(vacio)</td><td></td><td></td></tr>
-  </tbody>
-</table>
 <h3 id="NetworkObject">Objeto de red <code>NetworkObject</code></h3>
-<p>Un objeto que existe en todos los jugadores de una partida en red (lo crea <code>Network.spawn</code>). Su dueno manda la posicion y el giro; los demas lo siguen suavizado. En un prefab ajusta la frecuencia y el suavizado; si no lo lleva, se anade solo. Ver <a href="red.html#objetos">Network</a>.</p>
+<p>Un objeto que existe en todos los jugadores de una partida en red (lo crea <code>Network::spawn</code>). Su dueno manda la posicion y el giro; los demas lo siguen suavizado. En un prefab ajusta la frecuencia y el suavizado; si no lo lleva, se anade solo. Ver <a href="red.html#objetos">Network</a>.</p>
 <table>
   <thead><tr><th>Propiedad</th><th>Tipo</th><th>Por defecto</th><th>Valores</th><th>Descripcion</th></tr></thead>
   <tbody>
@@ -21,13 +8,17 @@
     <tr><td>Envíos por segundo<br><code>send_rate</code></td><td>numero</td><td>20</td><td>1 a 60</td><td>Cuántas veces por segundo se manda (solo si se movió)</td></tr>
     <tr><td>Suavizado<br><code>smoothing</code></td><td>numero</td><td>15</td><td>1 a 60</td><td>Lo rápido que los demás alcanzan la posición recibida (más = más pegado, menos = más suave)</td></tr>
     <tr><td>Física local en los demás<br><code>local_physics</code></td><td>si/no</td><td>no</td><td></td><td>Con Rigidbody dinámico: los demás jugadores también lo simulan y lo que manda el dueño lo corrige, así cualquiera lo puede empujar (balones, cajas). Apagado: en los demás solo sigue la posición recibida (personajes)</td></tr>
+    <tr><td>Seguimiento<br><code>interpolation</code></td><td>opcion</td><td>Interpolación con búfer</td><td>Suavizado, Interpolación con búfer, Extrapolación</td><td>Cómo siguen los demás lo que manda el dueño. Interpolación: va un poco por detrás y pasa por todas las posiciones (exacto). Extrapolación: adelanta con la velocidad (menos retraso)</td></tr>
+    <tr><td>Retraso del búfer<br><code>interpolation_delay</code></td><td>numero</td><td>0,1</td><td>0,02 a 1</td><td>Segundos por detrás del dueño (unos 2 envíos)</td></tr>
+    <tr><td>Relevancia<br><code>relevance</code></td><td>numero</td><td>0</td><td>0 a 10000</td><td>El servidor solo lo manda a los jugadores a menos de estos metros (0 = a todos)</td></tr>
+    <tr><td>Velocidad máxima<br><code>max_speed</code></td><td>numero</td><td>0</td><td>0 a 1000</td><td>El servidor rechaza (y corrige) movimientos más rápidos: anti-trampas (0 = no)</td></tr>
   </tbody>
 </table>
 <h3 id="StateMachine">Maquina de estados (IA) <code>StateMachine</code></h3>
 <table>
   <thead><tr><th>Propiedad</th><th>Tipo</th><th>Por defecto</th><th>Valores</th><th>Descripcion</th></tr></thead>
   <tbody>
-    <tr><td>Maquina de estados<br><code>machine</code></td><td>asset (Maquina de estados)</td><td>(ninguno)</td><td>arrastrar desde el Proyecto</td><td>Asset .crfsm: estados con su codigo Lua y transiciones</td></tr>
+    <tr><td>Maquina de estados<br><code>machine</code></td><td>asset (Maquina de estados)</td><td>(ninguno)</td><td>arrastrar desde el Proyecto</td><td>Asset .crfsm: estados y transiciones (la logica, en un script de C++)</td></tr>
     <tr><td>Empieza activa<br><code>start_active</code></td><td>si/no</td><td>si</td><td></td><td>Si no, espera a sm:start() desde un script</td></tr>
     <tr><td>Depurar<br><code>debug</code></td><td>si/no</td><td>no</td><td></td><td>Cada cambio de estado sale en la Consola</td></tr>
     <tr><td colspan="5"><strong class="text-white">Variables (lista)</strong> <code>variables</code></td></tr>

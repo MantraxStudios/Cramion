@@ -8,27 +8,26 @@
     <tr><td><code>StateMachine(Value v)</code></td><td></td></tr>
     <tr><td><code>operator Value() const</code></td><td></td></tr>
     <tr><td><code>operator bool() const</code></td><td></td></tr>
-    <tr><td><code>Value broadcast(...) const</code></td><td></td></tr>
-    <tr><td><code>Value changeState(...) const</code></td><td></td></tr>
-    <tr><td><code>Value changes(...) const</code></td><td></td></tr>
-    <tr><td><code>Value entity(...) const</code></td><td></td></tr>
-    <tr><td><code>Value get(...) const</code></td><td></td></tr>
-    <tr><td><code>Value go(...) const</code></td><td></td></tr>
-    <tr><td><code>Value has(...) const</code></td><td></td></tr>
-    <tr><td><code>Value isIn(...) const</code></td><td></td></tr>
-    <tr><td><code>static StateMachine create(...)</code></td><td></td></tr>
-    <tr><td><code>static StateMachine of(...)</code></td><td></td></tr>
-    <tr><td><code>Value previous(...) const</code></td><td></td></tr>
-    <tr><td><code>Value restart(...) const</code></td><td></td></tr>
-    <tr><td><code>Value running(...) const</code></td><td></td></tr>
-    <tr><td><code>Value set(...) const</code></td><td></td></tr>
-    <tr><td><code>Value start(...) const</code></td><td></td></tr>
-    <tr><td><code>Value state(...) const</code></td><td></td></tr>
-    <tr><td><code>Value stateTime(...) const</code></td><td></td></tr>
-    <tr><td><code>Value states(...) const</code></td><td></td></tr>
-    <tr><td><code>Value stop(...) const</code></td><td></td></tr>
-    <tr><td><code>Value time(...) const</code></td><td></td></tr>
-    <tr><td><code>Value trigger(...) const</code></td><td></td></tr>
-    <tr><td><code>Value vars(...) const</code></td><td></td></tr>
+    <tr><td><code>static Value broadcast(texto)</code></td><td>Activa un trigger en todas las maquinas Devuelve: numero</td></tr>
+    <tr><td><code>Value changeState(texto) const</code></td><td>Como go Devuelve: bool</td></tr>
+    <tr><td><code>Value changes() const</code></td><td>StateMachine.changes: Cambios de estado desde que empezo (numero)</td></tr>
+    <tr><td><code>Value entity() const</code></td><td>StateMachine.entity: El objeto de la maquina (Entity)</td></tr>
+    <tr><td><code>Value get(texto) const</code></td><td>Valor de una variable (o nil) Devuelve: valor</td></tr>
+    <tr><td><code>Value go(texto) const</code></td><td>Cambia a ese estado (antes que las transiciones) Devuelve: bool</td></tr>
+    <tr><td><code>Value has(texto) const</code></td><td>Existe esa variable? Devuelve: bool</td></tr>
+    <tr><td><code>Value isIn(texto) const</code></td><td>Esta en ese estado? Devuelve: bool</td></tr>
+    <tr><td><code>static StateMachine of(entity)</code></td><td>La maquina de estados de un objeto (o nil) Devuelve: StateMachine</td></tr>
+    <tr><td><code>Value previous() const</code></td><td>StateMachine.previous: Nombre del estado anterior (o nil) (texto)</td></tr>
+    <tr><td><code>Value restart(...) const</code></td><td>Vuelve a la entrada con las variables iniciales</td></tr>
+    <tr><td><code>Value running() const</code></td><td>StateMachine.running: Esta en marcha (no parada con stop) (bool)</td></tr>
+    <tr><td><code>Value set(texto, valor) const</code></td><td>Cambia una variable (o la crea con el tipo del valor)</td></tr>
+    <tr><td><code>Value start(...) const</code></td><td>La pone en marcha (o sigue)</td></tr>
+    <tr><td><code>Value state() const</code></td><td>StateMachine.state: Nombre del estado actual (nil si no ha empezado) (texto)</td></tr>
+    <tr><td><code>Value stateTime() const</code></td><td>StateMachine.stateTime: Segundos en el estado actual (numero)</td></tr>
+    <tr><td><code>Value states(...) const</code></td><td>Nombres de los estados Devuelve: lista de texto</td></tr>
+    <tr><td><code>Value stop(...) const</code></td><td>La para (se queda en su estado)</td></tr>
+    <tr><td><code>Value time() const</code></td><td>StateMachine.time: Segundos desde que empezo la maquina (numero)</td></tr>
+    <tr><td><code>Value trigger(texto) const</code></td><td>Activa un trigger (vale hasta que se miran las transiciones)</td></tr>
+    <tr><td><code>Value vars() const</code></td><td>StateMachine.vars: Las variables (copia: {nombre = valor}); para cambiarlas, set (objeto)</td></tr>
   </tbody>
 </table>

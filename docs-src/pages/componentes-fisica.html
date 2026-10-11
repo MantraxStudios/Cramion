@@ -4,7 +4,7 @@
 <table>
   <thead><tr><th>Propiedad</th><th>Tipo</th><th>Por defecto</th><th>Valores</th><th>Descripcion</th></tr></thead>
   <tbody>
-    <tr><td>Activo<br><code>active</code></td><td>si/no</td><td>no</td><td></td><td>Simulando: cae con la fisica (Lua: entity.ragdoll = true)</td></tr>
+    <tr><td>Activo<br><code>active</code></td><td>si/no</td><td>no</td><td></td><td>Simulando: cae con la fisica (scripts: entity().setRagdoll(true))</td></tr>
     <tr><td>Masa total<br><code>mass</code></td><td>numero</td><td>70</td><td>0,1 a 100000</td><td></td></tr>
     <tr><td>Peso<br><code>blend</code></td><td>numero</td><td>1</td><td>0 a 1</td><td>Cuanto manda la fisica mientras esta activo</td></tr>
     <tr><td>Volver a la animacion<br><code>blend_out</code></td><td>numero</td><td>0,35</td><td>0 a 5</td><td>Segundos de mezcla al apagarlo</td></tr>
@@ -23,7 +23,7 @@
   </tbody>
 </table>
 <h3 id="Rigidbody">Rigidbody <code>Rigidbody</code></h3>
-<p>Cuerpo de fisica (Jolt): <strong>Dinamico</strong> (cae, choca, se empuja), <strong>Cinematico</strong> (lo mueves tu y empuja a los demas) o <strong>Estatico</strong>. Necesita al menos un collider en la entidad o en sus hijos. Desde Lua: <code>velocity</code>, <code>addForce</code>, <code>addImpulse</code>...</p>
+<p>Cuerpo de fisica (Jolt): <strong>Dinamico</strong> (cae, choca, se empuja), <strong>Cinematico</strong> (lo mueves tu y empuja a los demas) o <strong>Estatico</strong>. Necesita al menos un collider en la entidad o en sus hijos. Desde un script: <code>velocity()</code>, <code>addForce()</code>, <code>addImpulse()</code>...</p>
 <table>
   <thead><tr><th>Propiedad</th><th>Tipo</th><th>Por defecto</th><th>Valores</th><th>Descripcion</th></tr></thead>
   <tbody>
@@ -125,7 +125,7 @@
   </tbody>
 </table>
 <h3 id="CharacterController">Character Controller <code>CharacterController</code></h3>
-<p>Personaje que se mueve chocando y deslizando (el CharacterController de Unity y el CharacterMovement de Unreal, sobre el CharacterVirtual de Jolt): capsula vertical que sube escalones, no sube rampas mas empinadas que su limite, se pega al suelo al bajar, sigue a las plataformas que se mueven y empuja a los Rigidbody. Es collider: la tocan los rayos, entra en los triggers y da eventos Collision. <em>Manual</em>: solo <code>entity:move(desplazamiento)</code> desde un script (sin gravedad, como Unity). <em>Integrado</em>: gravedad, salto (con tiempo coyote y doble salto), andar/correr/agacharse con aceleracion; con el teclado (WASD relativo a la camara principal, Shift, Espacio, C/Ctrl) o con <code>entity:setMoveInput(dir, correr)</code>, <code>entity:jump()</code> y <code>entity:setCrouch(true)</code>. Crear uno listo: GameObject &gt; Fisica &gt; Personaje.</p>
+<p>Personaje que se mueve chocando y deslizando (el CharacterController de Unity y el CharacterMovement de Unreal, sobre el CharacterVirtual de Jolt): capsula vertical que sube escalones, no sube rampas mas empinadas que su limite, se pega al suelo al bajar, sigue a las plataformas que se mueven y empuja a los Rigidbody. Es collider: la tocan los rayos, entra en los triggers y da eventos Collision. <em>Manual</em>: solo <code>entity().move(desplazamiento)</code> desde un script (sin gravedad, como Unity). <em>Integrado</em>: gravedad, salto (con tiempo coyote y doble salto), andar/correr/agacharse con aceleracion; con el teclado (WASD relativo a la camara principal, Shift, Espacio, C/Ctrl) o con <code>entity().setMoveInput(dir, correr)</code>, <code>entity().jump()</code> y <code>entity().setCrouch(true)</code>. Crear uno listo: GameObject &gt; Fisica &gt; Personaje.</p>
 <table>
   <thead><tr><th>Propiedad</th><th>Tipo</th><th>Por defecto</th><th>Valores</th><th>Descripcion</th></tr></thead>
   <tbody>
@@ -141,7 +141,7 @@
     <tr><td>Masa<br><code>mass</code></td><td>numero</td><td>70</td><td>1 a 10000</td><td></td></tr>
     <tr><td>Fuerza maxima<br><code>push_strength</code></td><td>numero</td><td>300</td><td>0 a 100000</td><td></td></tr>
     <tr><td>Movimiento<br><code>movement</code></td><td>opcion</td><td>Integrado</td><td>Manual (script), Integrado</td><td>Manual: como Unity, solo move() desde un script. Integrado: como Unreal, con gravedad, salto, correr y agacharse</td></tr>
-    <tr><td>Mover con teclado<br><code>keyboard</code></td><td>si/no</td><td>si</td><td></td><td>WASD/flechas relativo a la camara, Shift correr, Espacio saltar, C o Ctrl agacharse. Sin: entity:setMoveInput() desde un script</td></tr>
+    <tr><td>Mover con teclado<br><code>keyboard</code></td><td>si/no</td><td>si</td><td></td><td>WASD/flechas relativo a la camara, Shift correr, Espacio saltar, C o Ctrl agacharse. Sin: entity().setMoveInput() desde un script</td></tr>
     <tr><td>Velocidad andando<br><code>walk_speed</code></td><td>numero</td><td>4</td><td>0 a 100</td><td></td></tr>
     <tr><td>Velocidad corriendo<br><code>run_speed</code></td><td>numero</td><td>7,5</td><td>0 a 100</td><td></td></tr>
     <tr><td>Velocidad agachado<br><code>crouch_speed</code></td><td>numero</td><td>2</td><td>0 a 100</td><td></td></tr>
@@ -157,7 +157,7 @@
   </tbody>
 </table>
 <h3 id="Vehicle">Vehiculo <code>Vehicle</code></h3>
-<p>Vehiculo con ruedas (el de Jolt): en el objeto con Rigidbody dinamico; sus ruedas son los <code>WheelCollider</code> de los hijos. Motor, cambio automatico y diferenciales. Se conduce con <code>entity:setVehicleInput(acelerador, direccion, freno, freno de mano)</code> o con el teclado.</p>
+<p>Vehiculo con ruedas (el de Jolt): en el objeto con Rigidbody dinamico; sus ruedas son los <code>WheelCollider</code> de los hijos. Motor, cambio automatico y diferenciales. Se conduce con <code>entity().setVehicleInput(acelerador, direccion, freno, freno de mano)</code> o con el teclado.</p>
 <table>
   <thead><tr><th>Propiedad</th><th>Tipo</th><th>Por defecto</th><th>Valores</th><th>Descripcion</th></tr></thead>
   <tbody>
@@ -189,7 +189,7 @@
     <tr><td>Rigidez de las barras<br><code>anti_roll_stiffness</code></td><td>numero</td><td>1500</td><td>0 a 100000</td><td></td></tr>
     <tr><td>Centro de masas<br><code>center_of_mass_offset</code></td><td>Vec3 (metros)</td><td>(0; 0; 0)</td><td></td><td>Desplazamiento del centro de masas (mas bajo = vuelca menos)</td></tr>
     <tr><td colspan="5"><strong class="text-white">Entrada</strong></td></tr>
-    <tr><td>Lo conduce el jugador<br><code>keyboard</code></td><td>si/no</td><td>si</td><td></td><td>Teclado/mando (sin: entity:setVehicleInput desde un script)</td></tr>
+    <tr><td>Lo conduce el jugador<br><code>keyboard</code></td><td>si/no</td><td>si</td><td></td><td>Teclado/mando (sin: entity().setVehicleInput desde un script)</td></tr>
     <tr><td>Usar Input Actions<br><code>use_input_actions</code></td><td>si/no</td><td>si</td><td></td><td>Lee las acciones del proyecto (teclado, mando y tactil). Sin: W/S, A/D y Espacio</td></tr>
     <tr><td>Accion conducir<br><code>drive_action</code></td><td>texto</td><td>&quot;Move&quot;</td><td></td><td>Vec2: Y acelerar/atras, X girar (Move por defecto)</td></tr>
     <tr><td>Accion freno de mano<br><code>handbrake_action</code></td><td>texto</td><td>&quot;Jump&quot;</td><td></td><td></td></tr>
