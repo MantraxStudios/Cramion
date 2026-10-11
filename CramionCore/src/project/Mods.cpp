@@ -1,5 +1,6 @@
 #include "CramionCore/project/Mods.h"
 
+#include "CramionCore/Uuid.h"
 #include "CramionCore/project/DataPack.h"
 
 #include <nlohmann/json.hpp>
@@ -78,7 +79,9 @@ const std::vector<ModInfo>& ModManager::scan() {
                         std::cerr << "[Mods] " << m.id << ": mod.json no es valido\n";
                     }
                 }
-                if (m.entry.empty() && std::filesystem::exists(p / "main.lua", ec)) m.entry = "main.lua";
+                for (const char* main : {"main.crgraph", "main.crprefab", "main.lua"}) {
+                    if (m.entry.empty() && std::filesystem::exists(p / main, ec)) m.entry = main;
+                }
                 m.has_assets = std::filesystem::is_directory(p / "Assets", ec);
                 for (std::filesystem::directory_iterator f(p, ec); !ec && f != std::filesystem::directory_iterator(); f.increment(ec)) {
                     if (f->path().extension() == kDataPackExtension) m.datapack = f->path();
@@ -154,8 +157,11 @@ int ModManager::mountEnabled(const std::filesystem::path& assets_root, const std
                 }
             }
         }
-        // El script de entrada va con los assets (asi lo encuentra Lua).
-        if (!m.folder.empty() && !m.entry.empty()) {
+        // La entrada va con los assets (asi la encuentran el Visual Script y
+        // el prefab). Los main.lua de antes de la 2.9 ya no corren.
+        if (!m.folder.empty() && path8(m.entry).extension() == ".lua") {
+            if (errors != nullptr) errors->push_back(m.name + ": " + m.entry + " es de Lua y ya no se ejecuta (usa un main.crgraph)");
+        } else if (!m.folder.empty() && !m.entry.empty()) {
             const std::filesystem::path src = m.folder / path8(m.entry);
             const std::filesystem::path dst = target / path8(m.entry);
             if (std::filesystem::exists(src, ec)) {
@@ -222,13 +228,21 @@ bool ModManager::createTemplate(const std::filesystem::path& folder, const std::
     j["version"] = "1.0";
     j["author"] = "";
     j["description"] = "Mi mod";
-    j["entry"] = "main.lua";
+    j["entry"] = "main.crgraph";
     j["load_order"] = 0;
     std::ofstream(folder / kModManifest, std::ios::binary) << j.dump(2);
-    std::ofstream(folder / "main.lua", std::ios::binary)
-        << "-- Se ejecuta al empezar cada escena (los assets del mod estan en Assets/Mods/<carpeta>/).\n"
-           "print(\"Mod cargado: " << name << "\")\n"
-           "-- local coche = Scene.instantiate(\"Mods/MiMod/Coche.crprefab\", Vec3(0, 1, 0))\n";
+    // Un Visual Script que corre al empezar cada escena: Start -> Print (el
+    // formato corto de .crgraph: los pines salen del catalogo de nodos).
+    nlohmann::json g;
+    g["uuid"] = Uuid::generate().toString();
+    g["nodes"] = nlohmann::json::array({
+        {{"id", 1}, {"kind", "event.start"}, {"x", 0}, {"y", 0}},
+        {{"id", 2}, {"kind", "debug.print"}, {"x", 260}, {"y", 0}, {"values", {{"Texto", "Mod cargado: " + name}}}},
+        {{"id", 3}, {"kind", "comment"}, {"x", -30}, {"y", 130}, {"w", 420}, {"h", 80},
+         {"comment", "Los assets del mod estan en Assets/Mods/<carpeta>/: Scene.instantiate(\"Mods/<carpeta>/Coche.crprefab\")"}},
+    });
+    g["links"] = nlohmann::json::array({{{"from", 1}, {"to", 2}}});
+    std::ofstream(folder / "main.crgraph", std::ios::binary) << g.dump(2);
     return true;
 }
 
