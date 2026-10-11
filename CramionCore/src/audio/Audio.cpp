@@ -636,7 +636,10 @@ struct AudioSystem::Impl {
     // Oclusion y efectos del sonido (el nodo los lee en el hilo de audio).
     void applyEffects(Voice& voice, const AudioSource& source, const Vec3& position, float dt, ecs::Entity entity) {
         if (!voice.fx_ok) return;
-        const bool occlude = listener.occlusion && source.occlusion && source.spatial && occlusion_query;
+        // Sin rayos para los que no se oyen (parados o virtuales): al volver a
+        // sonar se mira enseguida (queried = false), sin fundido.
+        const bool occlude = listener.occlusion && source.occlusion && source.spatial && occlusion_query &&
+                             !voice.virtual_voice && ma_sound_is_playing(&voice.sound);
         if (occlude) {
             voice.query_timer -= dt;
             if (voice.query_timer <= 0.0f || !voice.queried) {

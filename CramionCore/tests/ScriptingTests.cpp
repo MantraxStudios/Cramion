@@ -1,4 +1,9 @@
-// Pruebas del scripting en Lua y del audio (consola). Devuelve 0 si todo va.
+// Pruebas del sistema de scripts y del audio (consola). Devuelve 0 si todo va.
+//
+// La API (Graphics, huesos, IK, ragdoll, getField/setField...) tiene sus
+// pruebas en tests/native (una por modulo). Aqui: las escenas de antes de la
+// 2.9 con scripts de Lua (se cargan, avisan y no se ejecutan), la plantilla de
+// script nuevo y el audio.
 
 #include "CramionCore/audio/Audio.h"
 #include "CramionCore/environment/Environment.h"
@@ -34,145 +39,49 @@ void check(bool condition, const char* what) {
     if (!condition) ++failures;
 }
 
-void writeFile(const std::filesystem::path& file, const std::string& text) {
-    std::filesystem::create_directories(file.parent_path());
-    std::ofstream(file, std::ios::binary) << text;
-}
-
 const std::filesystem::path kRoot = std::filesystem::temp_directory_path() / "cramion_script_assets";
 
 void testScripts() {
-    std::printf("Scripts (Lua)\n");
-    writeFile(kRoot / "Scripts" / "Mover.lua", R"(
-local Mover = { properties = { velocidad = 2.0, activo = true, nombre = "x", destino = Vec3(1, 2, 3) } }
-function Mover:Awake() self.contador = 0 end
-function Mover:Start() self.empezo = true end
-function Mover:Update(dt)
-    self.contador = self.contador + 1
-    self.entity:translate(Vec3(1, 0, 0) * self.velocidad * dt)
-    if Input.getKey("W") then self.entity.name = "PulsoW" end
-    if Input.getAxis("Horizontal") > 0 then Debug.log("derecha") end
-end
-return Mover
-)");
-    writeFile(kRoot / "Scripts" / "Roto.lua", "local R = {}\nfunction R:Update(dt)\n  local x = nil + 1\nend\nreturn R\n");
-    writeFile(kRoot / "Scripts" / "Choque.lua", R"(
-local C = {}
-function C:OnCollisionEnter(other, contact) Scene.create("choco_con_" .. other.name) end
-return C
-)");
-    writeFile(kRoot / "Scripts" / "Borrar.lua", R"(
-local B = {}
-function B:Update(dt)
-    self.n = (self.n or 0) + 1
-    if self.n == 3 then
-        local copia = Scene.instantiate(self.entity, Vec3(0, 5, 0))
-        copia.name = "Copia"
-        self.entity:destroy()
-    end
-end
-return B
-)");
-
+    std::printf("Scripts: escenas con Lua (obsoleto) y plantilla\n");
     scripting::registerScriptComponents();
     ecs::World world;
     ecs::Entity mover = world.create("Mover");
-    scripting::Script& s = mover.add<scripting::Script>();
-    s.file = "Scripts/Mover.lua";
-    s.properties.push_back(scripting::ScriptProperty{"velocidad", scripting::PropertyType::Number, "10"});
-
-    ecs::Entity broken = world.create("Roto");
-    broken.add<scripting::Script>().file = "Scripts/Roto.lua";
+    scripting::Script& script = mover.add<scripting::Script>();
+    script.file = "Scripts/Mover.lua";
+    script.properties.push_back({"velocidad", scripting::PropertyType::Number, "10"});
+    world.create("Otro").add<scripting::Script>().file = "Scripts/Otro.lua";
 
     scripting::ScriptSystem system;
     system.setAssetsRoot(kRoot);
     std::vector<std::string> log;
-    system.setLog([&](int, const std::string& message) { log.push_back(message); });
-
-    const std::vector<scripting::ScriptProperty> described = system.describe("Scripts/Mover.lua");
-    check(described.size() == 4 && described[0].name == "activo" && described[1].name == "destino" &&
-              described[1].type == scripting::PropertyType::Vector && described[3].value == "2",
-          "describe lee las propiedades del script (con su tipo)");
-
-    dm::Input input;
-    system.setInput(&input);
+    system.setLog([&](int, const std::string& m) { log.push_back(m); });
+    const auto warnings = [&] {
+        int n = 0;
+        for (const std::string& m : log) n += m.find("ya no ejecuta Lua") != std::string::npos ? 1 : 0;
+        return n;
+    };
     system.start(world);
+    const Vec3 before = mover.worldPosition();
     for (int i = 0; i < 10; ++i) system.update(world, 0.1f);
-    check(std::abs(mover.worldPosition().x - 10.0f) < 1e-3f,
-          "Update mueve el objeto con la propiedad del Inspector (10 m/s x 1 s)");
-
-    dm::Event press;
-    press.type = dm::EventType::KeyPressed;
-    press.category = dm::EventCategory::Keyboard;
-    press.key = dm::Key::W;
-    input.onEvent(press);
-    press.key = dm::Key::D;
-    input.onEvent(press);
+    check(warnings() == 1 && log.front().find("2 objeto(s)") != std::string::npos,
+          "una escena con scripts de Lua avisa una vez (cuantos objetos)");
+    check(core::length(mover.worldPosition() - before) < 1e-6f && system.errors().empty(),
+          "el script de Lua no se ejecuta (ni da errores)");
+    system.stop();
+    system.start(world);
     system.update(world, 0.1f);
-    check(mover.name() == "PulsoW", "Input.getKey(\"W\") y cambiar el nombre desde Lua");
-    check(!log.empty() && log.back() == "derecha", "Input.getAxis y Debug.log");
-
-    check(!system.errors().empty() && system.errors().front().file == "Scripts/Roto.lua" &&
-              system.errors().front().line == 3,
-          "un error en tiempo de ejecucion da archivo y linea");
-    const std::size_t error_count = system.errors().size();
-    system.update(world, 0.1f);
-    check(system.errors().size() == error_count, "el script que fallo no repite el error cada frame");
-
-    // Recarga en caliente: mismas instancias (el contador sigue), funciones nuevas.
-    writeFile(kRoot / "Scripts" / "Mover.lua", R"(
-local Mover = { properties = { velocidad = 2.0 } }
-function Mover:Update(dt) self.contador = self.contador + 100 end
-return Mover
-)");
-    system.reloadFile("Scripts/Mover.lua");
-    const float x_before = mover.worldPosition().x;
-    system.update(world, 0.1f);
-    std::string out;
-    check(system.run("return Scene.find('PulsoW'):getScript().contador", &out) && std::stoi(out) > 100,
-          "recarga en caliente conserva el estado");
-    check(std::abs(mover.worldPosition().x - x_before) < 1e-5f, "y usa las funciones nuevas");
-
-    // Crear, duplicar y destruir desde Lua.
-    ecs::Entity destroyer = world.create("Borrador");
-    destroyer.add<scripting::Script>().file = "Scripts/Borrar.lua";
-    for (int i = 0; i < 4; ++i) system.update(world, 0.1f);
-    check(!world.findByName("Borrador").valid() && world.findByName("Copia").valid() &&
-              std::abs(world.findByName("Copia").worldPosition().y - 5.0f) < 1e-4f,
-          "Scene.instantiate y entity:destroy");
+    check(warnings() == 1, "al volver a darle a Play no se repite el aviso");
     system.stop();
 
-    // Choques: OnCollisionEnter con el otro objeto.
-    ecs::World physics_world;
-    ecs::Entity ground = physics_world.create("Suelo");
-    ground.add<physics::BoxCollider>().size = Vec3{20.0f, 1.0f, 20.0f};
-    ecs::Entity box = physics_world.create("Caja");
-    box.setWorldPosition(Vec3{0.0f, 3.0f, 0.0f});
-    box.add<physics::BoxCollider>();
-    box.add<physics::Rigidbody>();
-    box.add<scripting::Script>().file = "Scripts/Choque.lua";
-    physics::PhysicsSystem physics;
-    physics.start(physics_world);
-    scripting::ScriptSystem scripts;
-    scripts.setAssetsRoot(kRoot);
-    scripts.setPhysics(&physics);
-    scripts.start(physics_world);
-    for (int i = 0; i < 120; ++i) {
-        physics.update(physics_world, 1.0f / 60.0f);
-        scripts.update(physics_world, 1.0f / 60.0f);
-    }
-    check(physics_world.findByName("choco_con_Suelo").valid(), "OnCollisionEnter(other) desde la fisica");
-    scripts.stop();
-
-    // Componente en la escena.
+    // El componente (y sus valores) se conserva en la escena para convertirlo.
     ecs::World copy;
     ecs::deserializeWorld(copy, ecs::serializeWorld(world));
-    const ecs::Entity c = copy.findByName("PulsoW");
-    check(c.valid() && c.has<scripting::Script>() && c.get<scripting::Script>().properties.size() == 1 &&
-              c.get<scripting::Script>().properties[0].value == "10",
-          "el Script (y sus valores) en la escena");
-    check(scripting::scriptTemplate("Mi Jugador").find("local MiJugador = {") != std::string::npos,
-          "plantilla de script nuevo");
+    const ecs::Entity c = copy.findByName("Mover");
+    check(c.valid() && c.has<scripting::Script>() && c.get<scripting::Script>().file == "Scripts/Mover.lua" &&
+              c.get<scripting::Script>().properties.size() == 1 && c.get<scripting::Script>().properties[0].value == "10",
+          "el Script de Lua (y sus valores) se conserva en la escena");
+    check(scripting::scriptTemplate("MiJugador").find("void MiJugador::update(float dt)") != std::string::npos,
+          "plantilla de script nuevo (C++)");
 }
 
 // WAV de 0.5 s (seno 440 Hz, 16 bits mono).
@@ -473,132 +382,12 @@ public:
     }
 };
 
-void testGraphics() {
-    std::printf("Graphics\n");
-    ecs::World world;
-    ecs::Entity volume = world.create("Volumen");
-    volume.add<ecs::PostProcessing>();
-    FakeGraphics host;
-    scripting::ScriptSystem scripts;
-    scripts.setAssetsRoot(kRoot);
-    scripts.setGraphics(&host);
-    scripts.start(world);
-    std::string out;
-    bool ok = scripts.run(R"(
-        Graphics.vsync = true
-        Graphics.set{ texture_quality = "high", target_fps = 144 }
-        local bad = Graphics.set("gpu", "otra")
-        Graphics.setQuality(2)
-        local n = 0
-        for _, o in ipairs(Graphics.options()) do n = n + 1 end
-        Graphics.post.bloom = false
-        Graphics.post.bloom_intensity = 0.5
-        Graphics.post.tonemapper = "ACES"
-        Graphics.save()
-        return tostring(Graphics.vsync) .. "|" .. Graphics.get("texture_quality") .. "|" .. Graphics.target_fps ..
-               "|" .. tostring(bad) .. "|" .. Graphics.getQuality() .. "|" .. n .. "|" .. #Graphics.resolutions() ..
-               "|" .. tostring(Graphics.post.bloom) .. "|" .. Graphics.post.bloom_intensity .. "|" ..
-               Graphics.post.tonemapper .. "|" .. tostring(Graphics.post.no_existe) .. "|" .. #Graphics.postKeys()
-    )", &out);
-    std::printf("    %s\n", out.c_str());
-    check(ok, "la tabla Graphics desde Lua sin errores");
-    check(out.rfind("true|high|144", 0) == 0, "Graphics.vsync = true, Graphics.set{...} y Graphics.get");
-    check(out.find("|false|Alta|4|2|") != std::string::npos,
-          "solo lectura rechazada, setQuality(2) = Alta, options() y resolutions()");
-    const gfx::PostProcessSettings& s = volume.get<ecs::PostProcessing>().settings;
-    check(!s.bloom && std::abs(s.bloom_intensity - 0.5f) < 1e-4f, "Graphics.post cambia el volumen global de la escena");
-    check(out.find("|false|0.5|ACES|nil|") != std::string::npos, "Graphics.post lee campos y enums; clave desconocida = nil");
-    check(host.saves == 1, "Graphics.save() llega al programa");
-    scripts.stop();
-
-    // Sin volumen global, Graphics.post crea uno.
-    ecs::World empty;
-    scripting::ScriptSystem scripts2;
-    scripts2.setAssetsRoot(kRoot);
-    scripts2.start(empty);
-    ok = scripts2.run("Graphics.post.vignette = false; return Graphics.get('vsync') == nil", &out);
-    bool created = false;
-    for (const entt::entity h : empty.registry().view<ecs::PostProcessing>()) {
-        created = !empty.registry().get<ecs::PostProcessing>(h).settings.vignette;
-    }
-    check(ok && created && out == "true", "sin volumen global lo crea; sin host las opciones son nil");
-    scripts2.stop();
-}
-
-// Esqueletos desde Lua: campos de cualquier componente, IK, ragdoll y huesos.
-void testRigLua() {
-    std::printf("Lua: huesos, IK, ragdoll y campos de componentes\n");
-    ecs::World world;
-    ecs::Entity dog = world.create("Perro");
-    ecs::Entity ball = world.create("Pelota");
-    ball.setLocalPosition(Vec3{1.0f, 0.0f, 2.0f});
-    scripting::ScriptSystem scripts;
-    scripts.setAssetsRoot(kRoot);
-    // Un "esqueleto" de mentira: la pose de un hueso y sus nombres.
-    scripting::ScriptSystem::SkeletonHost host;
-    host.bone_world = [](ecs::Entity, const std::string& bone, core::Mat4& m) {
-        if (bone != "Head") return false;
-        m = core::translate(Vec3{0.0f, 1.7f, 0.9f});
-        return true;
-    };
-    host.bone_names = [](ecs::Entity) { return std::vector<std::string>{"Body", "Head", "Tail1"}; };
-    scripts.setSkeletonHost(host);
-    scripts.start(world);
-    std::string out;
-    const bool ok = scripts.run(R"(
-        local dog = Scene.find('Perro')
-        local ball = Scene.find('Pelota')
-        dog:setField('PhysBones', 'chains[1].bone', 'Tail1')
-        dog:setField('PhysBones', 'chains[1].gravity', 0.5)
-        dog:setField('PhysBones', 'chains[2].bone', 'Ear_L')
-        dog:setIKTarget('FrontFoot_L', ball, 3)
-        dog:setIKTarget('left_hand', Vec3(1, 2, 3))
-        dog:setLookAt(ball, 0.8)
-        dog:setBoneRotation('Head', Vec3(0, 30, 0))
-        dog.ragdoll = true
-        local head = dog:getBonePosition('Head')
-        return dog:getField('PhysBones', 'chains#') .. '|' .. dog:getField('PhysBones', 'chains[1].gravity') .. '|' ..
-               tostring(dog.ragdoll) .. '|' .. #dog:getBones() .. '|' .. string.format('%.1f', head.y) .. '|' ..
-               tostring(dog:getBonePosition('Nada')) .. '|' .. dog:getField('InverseKinematics', 'chains[1].length') .. '|' ..
-               tostring(dog:setField('Light', 'no_existe', 1))
-    )", &out);
-    std::printf("    %s\n", out.c_str());
-    check(ok, "sin errores de Lua");
-    check(out == "2|0.5|true|3|1.7|nil|3|false",
-          "setField/getField con listas, ragdoll, getBones, getBonePosition y claves que no existen");
-    const ecs::PhysBones* pb = dog.tryGet<ecs::PhysBones>();
-    check(pb != nullptr && pb->chains.size() == 2 && pb->chains[0].bone == "Tail1" && std::abs(pb->chains[0].gravity - 0.5f) < 1e-5f,
-          "setField anade el componente y los elementos de la lista");
-    const ecs::InverseKinematics* ik = dog.tryGet<ecs::InverseKinematics>();
-    check(ik != nullptr && ik->chains.size() == 1 && ik->chains[0].target == ball.uuid() && ik->chains[0].length == 3 &&
-              ik->left_hand.use_position && ik->look_at == ball.uuid() && std::abs(ik->look_weight - 0.8f) < 1e-5f,
-          "setIKTarget (entidad o punto), longitud de la cadena y setLookAt");
-    const ecs::Skeleton* sk = dog.tryGet<ecs::Skeleton>();
-    check(sk != nullptr && sk->bones.size() == 1 && std::abs(sk->bones[0].rotation.y - 30.0f) < 1e-4f, "setBoneRotation");
-    check(dog.has<ecs::Ragdoll>() && dog.get<ecs::Ragdoll>().active, "entity.ragdoll = true");
-
-    // Referencias a assets por su UUID (Target Texture de una camara).
-    const std::string rt = Uuid::generate().toString();
-    std::string asset_out;
-    scripts.run("local d = Scene.find('Perro')\n"
-                "d:setField('Camera', 'target_texture', '" + rt + "')\n"
-                "local a = d:getField('Camera', 'target_texture')\n"
-                "local bad = d:setField('Camera', 'target_texture', 'no-es-un-uuid')\n"
-                "return a .. '|' .. tostring(bad)",
-                &asset_out);
-    check(asset_out == rt + "|false" && dog.has<ecs::Camera>() && dog.get<ecs::Camera>().target_texture.uuid.toString() == rt,
-          "setField/getField de una referencia a asset (UUID como texto)");
-    scripts.stop();
-}
-
 int main() {
     testScripts();
     testAudio();
     testAudioOcclusion();
     testAudioRendered();
     testAudioStop();
-    testGraphics();
-    testRigLua();
     std::filesystem::remove_all(kRoot);
     std::printf("\n%d comprobaciones, %d fallos\n", checks, failures);
     return failures == 0 ? 0 : 1;

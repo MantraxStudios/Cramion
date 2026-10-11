@@ -18,11 +18,31 @@ const Mat4& parentGlobal(const Pose& pose, int node, const Mat4& identity) {
     return parent >= 0 ? (*pose.global)[static_cast<std::size_t>(parent)] : identity;
 }
 
+// Las globales de `node` y sus descendientes (los demas no cambian). Los
+// nodos van con el padre antes que los hijos: basta con mirar los de despues.
+void recomputeSubtree(const Pose& pose, int node) {
+    const std::vector<asset::Node>& nodes = *pose.nodes;
+    std::vector<Mat4>& local = *pose.local;
+    std::vector<Mat4>& global = *pose.global;
+    thread_local std::vector<unsigned char> inside;
+    inside.assign(nodes.size(), 0);
+    const auto first = static_cast<std::size_t>(node);
+    inside[first] = 1;
+    const int root_parent = nodes[first].parent;
+    global[first] = root_parent >= 0 ? global[static_cast<std::size_t>(root_parent)] * local[first] : local[first];
+    for (std::size_t i = first + 1; i < nodes.size(); ++i) {
+        const int parent = nodes[i].parent;
+        if (parent < 0 || !inside[static_cast<std::size_t>(parent)]) continue;
+        inside[i] = 1;
+        global[i] = global[static_cast<std::size_t>(parent)] * local[i];
+    }
+}
+
 // Cambia la global de `node` y deja su local de acuerdo (hijos incluidos).
 void setGlobal(const Pose& pose, int node, const Mat4& global) {
     const Mat4 identity = Mat4::identity();
     (*pose.local)[static_cast<std::size_t>(node)] = core::inverse(parentGlobal(pose, node, identity)) * global;
-    recomputeGlobals(pose, node);
+    recomputeSubtree(pose, node);
 }
 
 Quat scaledRotation(const Quat& q, float weight) {
