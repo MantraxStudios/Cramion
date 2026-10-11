@@ -496,7 +496,7 @@ std::vector<std::string> validateStateMachine(const StateMachineAsset& m) {
     }
     if (hasLegacyCode(m.any_code)) with_code += (with_code.empty() ? "" : ", ") + std::string("Cualquier estado");
     if (!with_code.empty()) {
-        problems.push_back("Codigo de antes de la 2.9 (Lua) en " + with_code +
+        problems.push_back("Codigo de antes de la 2.4.5 (Lua) en " + with_code +
                            ": ya no se ejecuta; convierte el codigo del estado a un script de C++ (OnStateEnter / "
                            "OnStateUpdate / OnStateExit en onMessage)");
     }

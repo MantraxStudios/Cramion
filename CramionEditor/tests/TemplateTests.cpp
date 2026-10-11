@@ -384,7 +384,7 @@ int main(int argc, char** argv) {
             if (t.id == "third_person_pro" || t.id == "open_world") continue;  // necesitan el pack / tardan: se miran abajo
             const project::ProjectInfo p = editor::createProjectFromTemplate(t, root, "Cpp_" + t.id);
             for (const auto& f : std::filesystem::recursive_directory_iterator(p.assetsFolder(), ec)) {
-                if (f.path().extension() == ".lua") {  // los scripts de antes de la 2.9
+                if (f.path().extension() == ".lua") {  // los scripts de antes de la 2.4.5
                     only_cpp = false;
                     std::printf("  (%s: %s)\n", t.id.c_str(), f.path().filename().string().c_str());
                 }

@@ -43,7 +43,7 @@ void check(bool condition, const char* what) {
 const std::filesystem::path kRoot = std::filesystem::temp_directory_path() / "cramion_script_assets";
 
 void testScripts() {
-    std::printf("Scripts: escenas de antes de la 2.9 y plantilla\n");
+    std::printf("Scripts: escenas de antes de la 2.4.5 y plantilla\n");
     scripting::registerScriptComponents();
     // Una escena con el componente Script de antes (ya no existe): se abre
     // igual, sin el componente y con lo demas.

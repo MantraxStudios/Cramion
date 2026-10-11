@@ -1073,7 +1073,7 @@ void EditorApp::drawStateMachineDetails(ecs::Entity live) {
                            "condiciones los calcula un script de C++ del objeto y los guarda con sm.set.");
         if (ai::hasLegacyCode(m.any_code)) {
             ImGui::Spacing();
-            ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.35f, 1.0f), "Tiene código de antes de la 2.9 (Lua): ya no se ejecuta.");
+            ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.35f, 1.0f), "Tiene código de antes de la 2.4.5 (Lua): ya no se ejecuta.");
             ImGui::SameLine();
             if (ImGui::SmallButton("Borrar el código##any")) {
                 m.any_code.clear();
@@ -1135,7 +1135,7 @@ void EditorApp::drawStateMachineDetails(ecs::Entity live) {
         ImGui::TextDisabled("%s", kCppExample);
         if (ai::hasLegacyCode(st.code) || !st.script.empty()) {
             ImGui::Spacing();
-            ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.35f, 1.0f), "Este estado tiene %s de antes de la 2.9: ya no se ejecuta.",
+            ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.35f, 1.0f), "Este estado tiene %s de antes de la 2.4.5: ya no se ejecuta.",
                                st.script.empty() ? "código (Lua)" : st.script.c_str());
             ImGui::SameLine();
             if (ImGui::SmallButton("Quitarlo")) {

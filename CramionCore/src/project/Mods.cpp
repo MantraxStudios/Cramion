@@ -158,7 +158,7 @@ int ModManager::mountEnabled(const std::filesystem::path& assets_root, const std
             }
         }
         // La entrada va con los assets (asi la encuentran el Visual Script y
-        // el prefab). Los main.lua de antes de la 2.9 ya no corren.
+        // el prefab). Los main.lua de antes de la 2.4.5 ya no corren.
         if (!m.folder.empty() && path8(m.entry).extension() == ".lua") {
             if (errors != nullptr) errors->push_back(m.name + ": " + m.entry + " es de Lua y ya no se ejecuta (usa un main.crgraph)");
         } else if (!m.folder.empty() && !m.entry.empty()) {

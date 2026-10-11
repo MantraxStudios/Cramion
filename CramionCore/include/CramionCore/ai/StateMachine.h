@@ -29,7 +29,7 @@
 //                ("despues de N segundos en el estado") o una expresion
 //                ("vida < 30 and not alerta", ver ai/Expression.h).
 //                Mayor prioridad primero; a igual prioridad, el orden.
-//   Los estados de antes de la 2.9 guardan su codigo (Lua) en code, script y
+//   Los estados de antes de la 2.4.5 guardan su codigo (Lua) en code, script y
 //   any_code: se lee y se guarda, pero ya no se ejecuta (validateStateMachine
 //   lo avisa).
 //
@@ -135,7 +135,7 @@ struct State {
     core::Vec2 position{};
     core::Vec3 color{0.30f, 0.30f, 0.33f};
     bool send_update = false;  // "OnStateUpdate" cada frame a los scripts del objeto
-    // De antes de la 2.9: se leen y se guardan, pero no se ejecutan.
+    // De antes de la 2.4.5: se leen y se guardan, pero no se ejecutan.
     std::string code;
     std::string script;
 };

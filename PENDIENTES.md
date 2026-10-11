@@ -26,7 +26,7 @@ falta Dear ImGui `v1.92.9-docking` y ImGuizmo `18cef5e0` en una carpeta (`git cl
 
 ```bash
 x86_64-w64-mingw32-g++-posix -std=c++20 -fsyntax-only -w -DNOMINMAX -DWIN32_LEAN_AND_MEAN -DUNICODE -D_UNICODE \
-  -DCRAMION_XR=1 -DDT_POLYREF64 -DVK_USE_PLATFORM_WIN32_KHR -DCRAMION_VERSION_STRING=\"2.9.0\" \
+  -DCRAMION_XR=1 -DDT_POLYREF64 -DVK_USE_PLATFORM_WIN32_KHR -DCRAMION_VERSION_STRING=\"2.4.5\" \
   -ICramionEditor/src -ICramionEditor -ICramionCore/include -ICramionCore/sdk -ICramionFX/include \
   -ICramionDM/include -ICramionUpdater/include -Ibuild-linux/_deps/entt-src/src \
   -Ibuild-linux/_deps/nlohmann_json-src/include -Ibuild-linux/_deps/enet-src/include -Ibuild-linux/_deps/miniaudio-src \
@@ -40,7 +40,7 @@ Hoy pasan todos los `.cpp` de `CramionEditor/src` y `CramionEditor/player` (meno
 que usa cabeceras de Android, y `host/ScriptHost.cpp`, que usa `__except` de MSVC).
 
 ## 1. Hecho y verificado (no tocar salvo errores)
-- Auditoría de shaders (40 errores) y optimizaciones de CPU/GPU: en el CHANGELOG (2.9.0, «Gráficos» y «Rendimiento»).
+- Auditoría de shaders (40 errores) y optimizaciones de CPU/GPU: en el CHANGELOG (2.4.5, «Gráficos» y «Rendimiento»).
 - Runtime de scripts sin Lua: `CramionCore/src/scripting/Scripting.cpp`, `ScriptRuntime.h` (fases del frame y
   ganchos) y los módulos de la API en `src/scripting/native/` con sus pruebas en `tests/native/`: Debug, Core,
   Console, Entity, Rig, Input, Network, Http/Json, World, Graphics, Mesh, Effects, Features24, Gameplay, DataPack,

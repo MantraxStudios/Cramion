@@ -185,7 +185,7 @@ struct Entry {
 
 class NativeApi {
 public:
-    // Primer id de los handles (los ids de antes de 2.9 iban por debajo).
+    // Primer id de los handles (los ids de antes de 2.4.5 iban por debajo).
     static constexpr std::uint64_t kHandleBase = std::uint64_t(1) << 40;
     // Primer id de los callbacks del mismo proceso (Visual Scripts y, en
     // Android, los scripts de C++): van al invocador local, no al sumidero.

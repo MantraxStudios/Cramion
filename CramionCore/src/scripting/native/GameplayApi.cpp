@@ -233,7 +233,7 @@ void gameplayStart(Runtime& rt, GameplayState& s) {
         },
         [&rt](ecs::Entity e, const json& state) {
             if (!state.is_object() || !e.has<CppScript>()) return;
-            // Lo que devolvio OnSave() en las partidas de antes de la 2.9.
+            // Lo que devolvio OnSave() en las partidas de antes de la 2.4.5.
             api::Value data;
             if (const auto it = state.find("data"); it != state.end()) data = saveValueFromJson(rt, *it);
             sendMessage(rt, e, "OnLoad", data);

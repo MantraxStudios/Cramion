@@ -495,7 +495,7 @@ hub_main = f"""
     <main class="doc">
       <div class="doc-inner" style="max-width: 1040px">
         <section class="hero">
-          <a class="badge" href="exportar.html"><b>Nuevo en la {VERSION}</b> Android en casi todos los móviles, gama baja más rápida y VR {icon("arrow")}</a>
+          <a class="badge" href="editor-interfaz.html"><b>Nuevo en la {VERSION}</b> Interfaz como Blender, texturas comprimidas y scripts en C++ {icon("arrow")}</a>
           <h1>Documentación de Cramion</h1>
           <div class="intro">{intro_html}</div>
           <div class="actions">

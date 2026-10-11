@@ -1,6 +1,6 @@
 # Cambios
 
-## 2.9.0
+## 2.4.5
 
 **Interfaz como Blender, texturas comprimidas como Unity y escenas grandes que abren sin congelarse.** El editor estrena el aspecto y la distribución de Blender; las texturas se comprimen a BC7 al abrir el proyecto (cuatro veces menos memoria de vídeo, a la vista igual) y una casa con cientos de texturas de 4K ya no deja el editor un minuto colgado ni lo cierra por falta de memoria. Además: pueblos y ciudades medievales, casas con interior, terreno que se aplana bajo los edificios, splines, interfaz completa, World Partition con HLOD y carga en hilos, netcode con servidor dedicado y chat de voz, multitudes, accesibilidad, mods, informe de cierres, el código fuente abierto y Linux.
 
@@ -9,6 +9,9 @@
 - **Distribución del espacio «Layout»**: la Escena grande en el centro; a la derecha la Jerarquía (Outliner) arriba y el Inspector (Propiedades) debajo; abajo, bajo la Escena, Proyecto y Consola (donde Blender pone la línea de tiempo). Se aplica sola la primera vez; *Restablecer diseño* vuelve a ella. La pestaña de prefabs usa la misma.
 - **Barra de estado abajo** (como la de Blender): el objeto activo y cuántos más hay seleccionados, Play/Pausa, el número de objetos, los FPS, el tiempo de GPU y la versión. Mientras se importan texturas, el progreso.
 - Barra de pestañas de los espacios de trabajo como la de Blender (la activa con el gris de las áreas).
+- **Botones de Play rehechos**: Play, Pausa, Paso, *Play on VR* y el desplegable de Play tienen el mismo alto, el mismo estilo y un margen dentro de la barra de título (antes iban pegados a los bordes y parecían cortados). *Play on VR* tiene sitio para *Conectando...* y no cambia de tamaño.
+- **Arrastrar en la Jerarquía sin perder la selección** (como Unity): arrastrar un objeto que no está seleccionado mueve solo ese y la selección no cambia, así que se puede soltar en un campo del Inspector del objeto seleccionado. Un clic selecciona al soltar el botón, si no se arrastró.
+- **10 FPS en segundo plano**: con el editor minimizado o con otra aplicación delante, el editor baja a 10 FPS y deja de gastar GPU y CPU. No se limita jugando con el casco (*Play on VR*), en el modo cine (MCP) ni en las pruebas automáticas.
 
 ### Texturas comprimidas (como Unity)
 - **Compresión BC7 al importar**: las imágenes (PNG, JPG, TGA, BMP, TIF, PSD) se comprimen a BC7 con todos sus mipmaps, el formato «High Quality» de Unity. Una textura de 4K pasa de **85 a 21 MB** de VRAM y de RAM, y a la vista es igual (46 dB de PSNR en las pruebas). También las texturas que el motor junta de varios mapas (rugosidad, metal, oclusión, cavidad) y los normal maps hechos de un bump.

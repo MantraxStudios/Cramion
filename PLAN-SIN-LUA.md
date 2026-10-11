@@ -1,6 +1,6 @@
 # Plan: quitar Lua de Cramion (empezado el 2026-10-07)
 
-> **Terminado el 2026-10-11.** Todas las fases están hechas y Lua ya no está en el motor (ver el CHANGELOG 2.9.0,
+> **Terminado el 2026-10-11.** Todas las fases están hechas y Lua ya no está en el motor (ver el CHANGELOG 2.4.5,
 > «Scripting»). Este archivo queda como historia del plan. Una diferencia con lo decidido: en Android los scripts
 > de C++ no corren en el proceso del juego, sino en un proceso aparte, como en Windows y Linux
 > (`libcramion_scripthost.so` dentro del APK), para que un script que se cuelga o falla no tire el juego.

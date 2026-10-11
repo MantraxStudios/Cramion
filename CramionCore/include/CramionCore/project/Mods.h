@@ -20,7 +20,7 @@
 //
 // Los mods no llevan scripts de C++: serian codigo nativo de cualquiera
 // corriendo en el juego. Los Visual Scripts se interpretan y solo llegan a la
-// API. Los main.lua de antes de la 2.9 ya no se ejecutan (se avisa).
+// API. Los main.lua de antes de la 2.4.5 ya no se ejecutan (se avisa).
 // startModEntry (scripting/ModEntry.h) pone la entrada en la escena.
 //
 // o un .datapack suelto (DataPack exportado desde el editor). Se cargan por
