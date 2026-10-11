@@ -27,6 +27,24 @@
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hwnd, UINT msg, WPARAM wparam,
                                                              LPARAM lparam);
 
+namespace {
+
+// En segundo plano (otra aplicacion delante o minimizado) el editor va a
+// 10 fps: no gasta GPU ni CPU mientras no se usa. Las ventanas del propio
+// editor (dialogos, ventanas sueltas de ImGui) cuentan como primer plano.
+constexpr float kBackgroundFrameMs = 100.0f;
+
+bool inBackground(HWND main_window) {
+    if (IsIconic(main_window)) return true;
+    const HWND foreground = GetForegroundWindow();
+    if (foreground == nullptr) return true;
+    DWORD process = 0;
+    GetWindowThreadProcessId(foreground, &process);
+    return process != GetCurrentProcessId();
+}
+
+}  // namespace
+
 int main(int argc, char** argv) {
     using namespace cramion;
     editor::EditorLog::instance().install();
@@ -211,6 +229,14 @@ int main(int argc, char** argv) {
             app.endInputFrame();
             app.reportFrame(msSince(frame_start), window_ms, imgui_ms, scene_ms);
             cramion::prof::endFrame();
+
+            // Limite en segundo plano. No con el casco (al ponertelo la ventana
+            // pierde el foco y el casco necesita su ritmo), en modo cine (MCP)
+            // ni en pruebas automaticas.
+            if (app.backgroundThrottleAllowed() && inBackground(window.handle())) {
+                const float wait_ms = kBackgroundFrameMs - msSince(frame_start);
+                if (wait_ms > 0.0f) Sleep(static_cast<DWORD>(wait_ms));
+            }
         }
 
         exit_code = app.exitCode();

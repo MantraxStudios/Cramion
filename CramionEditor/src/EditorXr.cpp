@@ -338,24 +338,42 @@ bool EditorApp::restartForVr() {
     return true;
 }
 
+// Ancho fijo para la etiqueta mas larga: el boton no cambia de tamano (ni
+// mueve la barra) al pasar de "Play on VR" a "Conectando..." o "Stop VR".
+float EditorApp::playVrButtonWidth() const {
+    float text = 0.0f;
+    for (const char* label : {"Play on VR", "Conectando...", "Stop VR"}) {
+        text = std::max(text, ImGui::CalcTextSize(label).x);
+    }
+    return std::floor(text + 20.0f);
+}
+
 // Al lado de Play: "Play on VR" (o "Stop VR" mientras se juega en el casco).
-void EditorApp::drawPlayVrButton(float width) {
+// Dibujado como los botones de Play (mismo alto, fondo y esquinas).
+void EditorApp::drawPlayVrButton(const ImVec2& size) {
     const bool vr_playing = playing() && play_vr_;
     const bool connecting = xrConnecting();
     const bool compiled = xr::XrSystem::compiled();
     const auto choice = static_cast<xr::RuntimeChoice>(xr_runtime_preference_);
-    ImGui::BeginDisabled(!compiled || connecting || (playing() && !play_vr_));
-    if (vr_playing) {
-        const ImVec4 color = theme::vec(theme::kYellow);
-        ImGui::PushStyleColor(ImGuiCol_Button, color);
-        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(std::min(color.x * 1.08f, 1.0f), std::min(color.y * 1.08f, 1.0f),
-                                                             std::min(color.z * 1.08f, 1.0f), 1.0f));
-        ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(14, 14, 16, 255));
-    }
+    const bool enabled = compiled && !connecting && !(playing() && !play_vr_);
     const char* label = vr_playing ? "Stop VR" : connecting ? "Conectando..." : "Play on VR";
-    const bool pressed = ImGui::Button(label, ImVec2(width, 0.0f));
-    if (vr_playing) ImGui::PopStyleColor(3);
+    const ImVec2 min = ImGui::GetCursorScreenPos();
+    ImGui::BeginDisabled(!enabled);
+    const bool pressed = ImGui::InvisibleButton("##play_vr", size);
     ImGui::EndDisabled();
+    {
+        const bool hovered = ImGui::IsItemHovered() && enabled;
+        const ImVec2 max(min.x + size.x, min.y + size.y);
+        ImU32 bg = hovered ? theme::kBg4 : theme::kBg3;
+        if (vr_playing) bg = theme::kYellow;
+        ImDrawList* draw = ImGui::GetWindowDrawList();
+        draw->AddRectFilled(min, max, bg, 4.0f);
+        const ImU32 ink = vr_playing ? IM_COL32(14, 14, 16, 255)
+                                     : (enabled || connecting ? IM_COL32(235, 235, 235, 255) : theme::kTextFaint);
+        const ImVec2 text = ImGui::CalcTextSize(label);
+        draw->AddText(ImVec2(std::floor((min.x + max.x - text.x) * 0.5f), std::floor((min.y + max.y - text.y) * 0.5f)),
+                      ink, label);
+    }
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
         std::string tip;
         if (!compiled) {

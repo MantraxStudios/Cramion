@@ -478,11 +478,16 @@ void EditorApp::onPhysicsEvent(const physics::PhysicsEvent& event) {
 void EditorApp::drawPlayControls() {
     if (!has_project_) return;
     namespace bl = blender;
-    const float h = ImGui::GetFrameHeight();
-    const float button = std::floor(h * 1.25f);
-    const float spacing = ImGui::GetStyle().ItemSpacing.x;
-    const float vr_button = 96.0f;
-    ImGui::SetCursorPosX((ImGui::GetWindowWidth() - (button * 3.0f + vr_button + h + spacing * 3.0f)) * 0.5f);
+    // Mas bajos que la barra de titulo y centrados en ella: si ocupan toda
+    // la altura quedan pegados a los bordes y parecen cortados.
+    const float bar = caption_height_ > 0.0f ? caption_height_ : ImGui::GetFrameHeight();
+    const float h = std::floor(std::max(bar - 8.0f, ImGui::GetFontSize() + 6.0f));
+    const float button = std::floor(h * 1.3f);
+    const float gap = 6.0f;  // entre grupos
+    const float vr_width = playVrButtonWidth();
+    const float options_width = std::floor(h * 0.8f);
+    const float total = button * 3.0f + 2.0f + gap + vr_width + gap + options_width;
+    ImGui::SetCursorPos(ImVec2(std::floor((ImGui::GetWindowWidth() - total) * 0.5f), std::floor((bar - h) * 0.5f)));
     // Play, pausa y paso unidos, como los de la linea de tiempo de Blender;
     // el modo Play/Pausa en naranja (estado del editor, regla del tema).
     ImDrawList* draw = ImGui::GetWindowDrawList();
@@ -498,7 +503,7 @@ void EditorApp::drawPlayControls() {
         if (active) bg = color;
         draw->AddRectFilled(min, max, bg, 4.0f, corners);
         const ImU32 ink = !enabled ? theme::kTextFaint : (active ? IM_COL32(14, 14, 16, 255) : IM_COL32(235, 235, 235, 255));
-        bl::drawGlyph(draw, glyph, ImVec2((min.x + max.x) * 0.5f, (min.y + max.y) * 0.5f), h * 0.55f, ink);
+        bl::drawGlyph(draw, glyph, ImVec2((min.x + max.x) * 0.5f, (min.y + max.y) * 0.5f), h * 0.5f, ink);
         return pressed;
     };
     const bool playing_flat = playing() && !play_vr_;
@@ -527,12 +532,22 @@ void EditorApp::drawPlayControls() {
     }
     ImGui::SetItemTooltip("Un paso fijo de fisica (en pausa)");
     ImGui::PopStyleVar();
-    ImGui::SameLine();
-    drawPlayVrButton(vr_button);  // al lado de Play: el juego en el casco (EditorXr.cpp)
+    ImGui::SameLine(0.0f, gap);
+    drawPlayVrButton(ImVec2(vr_width, h));  // al lado de Play: el juego en el casco (EditorXr.cpp)
 
     // Como el desplegable de Play de Unity (Play Focused / Unfocused).
-    ImGui::SameLine();
-    if (ImGui::ArrowButton("##play_options", ImGuiDir_Down)) ImGui::OpenPopup("##play_options_menu");
+    ImGui::SameLine(0.0f, gap);
+    {
+        const ImVec2 min = ImGui::GetCursorScreenPos();
+        const bool pressed = ImGui::InvisibleButton("##play_options", ImVec2(options_width, h));
+        const ImVec2 max(min.x + options_width, min.y + h);
+        draw->AddRectFilled(min, max, ImGui::IsItemHovered() ? theme::kBg4 : theme::kBg3, 4.0f);
+        const ImVec2 c(std::floor((min.x + max.x) * 0.5f) + 0.5f, std::floor((min.y + max.y) * 0.5f) + 0.5f);
+        const float s = std::floor(h * 0.14f) + 1.0f;
+        draw->AddTriangleFilled(ImVec2(c.x - s, c.y - s * 0.5f), ImVec2(c.x + s, c.y - s * 0.5f),
+                                ImVec2(c.x, c.y + s * 0.6f), IM_COL32(235, 235, 235, 255));
+        if (pressed) ImGui::OpenPopup("##play_options_menu");
+    }
     ImGui::SetItemTooltip(play_focus_game_ ? "Al dar Play: ir a la pestana Juego" : "Al dar Play: quedarse en la vista actual");
     if (ImGui::BeginPopup("##play_options_menu")) {
         ImGui::TextDisabled("Al dar Play");

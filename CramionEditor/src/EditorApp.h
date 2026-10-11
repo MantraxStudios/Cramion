@@ -1337,7 +1337,8 @@ private:
     void startXrConnect(bool then_play);
     void finishXrConnect();
     void drawXrStatusPopup();
-    void drawPlayVrButton(float height);
+    void drawPlayVrButton(const ImVec2& size);
+    float playVrButtonWidth() const;
     void enterPlayVr();
     bool restartForVr();
     void drawPostVolumeGizmos();
@@ -1512,6 +1513,11 @@ private:
 public:
     float cinemaDelta(float real_seconds);
     bool cinemaActive() const { return cinema_; }
+    // main.cpp: si puede bajar a 10 fps en segundo plano (no con el casco en
+    // Play o conectandose, en modo cine ni en pruebas automaticas).
+    bool backgroundThrottleAllowed() const {
+        return !(playing() && play_vr_) && !xrConnecting() && !cinema_ && self_test_step_ <= 0 && !testRunActive();
+    }
 private:
     bool cinema_ = false;
     float cinema_dt_ = 1.0f / 30.0f;
