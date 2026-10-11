@@ -46,6 +46,10 @@ public:
     float totalMilliseconds() const { return total_ms_; }
     // El total de lo ultimo recogido, sin media (VR: el de un ojo).
     float lastTotalMilliseconds() const { return last_total_ms_; }
+    // Las pasadas de lo ultimo recogido, sin media (solo las que se grabaron
+    // ese frame). Para medir: la media tarda cientos de frames en olvidar lo
+    // caro de los primeros (cascadas, rayos que se construyen...).
+    const std::vector<GpuTiming>& lastTimings() const { return last_timings_; }
 
 private:
     struct FrameMarks {
@@ -56,6 +60,7 @@ private:
     vk::raii::QueryPool pool_{nullptr};
     std::vector<FrameMarks> frames_;
     std::vector<GpuTiming> timings_;
+    std::vector<GpuTiming> last_timings_;
     float total_ms_ = 0.0f;
     float last_total_ms_ = 0.0f;
     double period_ns_ = 1.0;

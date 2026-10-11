@@ -104,10 +104,12 @@ bool GpuProfiler::collect(std::uint32_t frame) {
     }
 
     float total = 0.0f;
+    last_timings_.clear();
     for (std::uint32_t i = 1; i < count; ++i) {
         const std::uint64_t delta = (stamps[i] - stamps[i - 1]) & valid_mask_;
         const float ms = static_cast<float>(static_cast<double>(delta) * period_ns_ * 1e-6);
         total += ms;
+        last_timings_.push_back(GpuTiming{marks.names[i], ms});
 
         const char* name = marks.names[i];
         auto it = std::find_if(timings_.begin(), timings_.end(),

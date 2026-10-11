@@ -218,6 +218,30 @@ core::Vec3 Call::vec3(std::size_t i) const {
 
 core::Vec3 Call::vec3(std::size_t i, const core::Vec3& fallback) const { return has(i) ? vec3(i) : fallback; }
 
+long long Call::integer(std::size_t i) const { return std::llround(number(i)); }
+
+long long Call::integer(std::size_t i, long long fallback) const { return has(i) ? integer(i) : fallback; }
+
+core::Quat Call::quat(std::size_t i) const {
+    const Value& v = arg(i);
+    if (v.type() != Value::Type::Quat) wrong(i, "un Quat");
+    return v.asQuat();
+}
+
+core::Quat Call::quat(std::size_t i, const core::Quat& fallback) const { return has(i) ? quat(i) : fallback; }
+
+const Value& Call::object(std::size_t i) const {
+    const Value& v = arg(i);
+    if (!v.isNil() && v.type() != Value::Type::Object) wrong(i, "un objeto {clave = valor}");
+    return v;
+}
+
+const Value& Call::list(std::size_t i) const {
+    const Value& v = arg(i);
+    if (!v.isNil() && v.type() != Value::Type::Array) wrong(i, "una lista");
+    return v;
+}
+
 entt::entity Call::entity(std::size_t i) const {
     const Value& v = arg(i);
     if (v.isNil()) return entt::null;
@@ -287,6 +311,85 @@ const Entry* NativeApi::find(std::string_view key) const {
     return found == index_.end() ? nullptr : &entries_[found->second];
 }
 
+void NativeApi::dynamicProperties(std::string owner, Function get, Function set) {
+    dynamic_[std::move(owner)] = Dynamic{std::move(get), std::move(set)};
+}
+
+// El duenio de un metodo o propiedad de un objeto: "Entity" o el tipo del handle.
+namespace {
+std::string ownerOf(const Value& self) {
+    if (self.type() == Value::Type::Entity) return "Entity";
+    if (self.type() == Value::Type::Handle) return std::string(self.asHandle()->typeName());
+    return {};
+}
+}  // namespace
+
+const Entry* NativeApi::resolve(std::string_view key, const Value& self, std::string& full) const {
+    full = std::string(key);
+    if (!self.isNil() && full.find(':') == std::string::npos) {
+        const std::string owner = ownerOf(self);
+        if (owner.empty()) throw Error("el objeto ya no existe");
+        full = owner + ":" + full;
+    }
+    return find(full);
+}
+
+Value NativeApi::call(std::string_view key, const Value::Array& args, const Value& self) {
+    std::string full;
+    const Entry* entry = resolve(key, self, full);
+    if (entry == nullptr) throw Error("no existe " + full);
+    if (entry->kind == Entry::Kind::Property) throw Error(full + " no es una funcion");
+    Call c(self, args);
+    return entry->call(c);
+}
+
+Value NativeApi::get(std::string_view key, const Value& self) {
+    std::string full;
+    const Entry* entry = resolve(key, self, full);
+    const Value::Array no_args;
+    if (entry != nullptr && entry->kind == Entry::Kind::Property) {
+        Call c(self, no_args);
+        return entry->call(c);
+    }
+    if (entry == nullptr) {
+        const std::size_t cut = full.find_last_of(".:");
+        if (cut != std::string::npos) {
+            const auto dyn = dynamic_.find(full.substr(0, cut));
+            if (dyn != dynamic_.end() && dyn->second.get) {
+                const Value::Array args{Value(full.substr(cut + 1))};
+                Call c(self, args);
+                return dyn->second.get(c);
+            }
+        }
+    }
+    throw Error(entry == nullptr ? "no existe " + full : full + " no es una propiedad");
+}
+
+void NativeApi::set(std::string_view key, const Value& value, const Value& self) {
+    std::string full;
+    const Entry* entry = resolve(key, self, full);
+    if (entry != nullptr && entry->kind == Entry::Kind::Property) {
+        if (!entry->assign) throw Error(full + " es de solo lectura");
+        const Value::Array args{value};
+        Call c(self, args);
+        entry->assign(c);
+        return;
+    }
+    if (entry == nullptr) {
+        const std::size_t cut = full.find_last_of(".:");
+        if (cut != std::string::npos) {
+            const auto dyn = dynamic_.find(full.substr(0, cut));
+            if (dyn != dynamic_.end() && dyn->second.set) {
+                const Value::Array args{Value(full.substr(cut + 1)), value};
+                Call c(self, args);
+                dyn->second.set(c);
+                return;
+            }
+        }
+    }
+    throw Error(entry == nullptr ? "no existe " + full : full + " no es una propiedad");
+}
+
 std::uint64_t NativeApi::handleId(const std::shared_ptr<Handle>& h) {
     if (!h) return 0;
     const auto found = handle_ids_.find(h.get());
@@ -305,6 +408,7 @@ std::shared_ptr<Handle> NativeApi::handle(std::uint64_t id) const {
 void NativeApi::clearHandles() {
     handles_.clear();
     handle_ids_.clear();
+    interned_.clear();
 }
 
 nlohmann::json NativeApi::toJson(const Value& v, int depth) {
@@ -388,63 +492,39 @@ void NativeApi::invoke(const Value& fn, const Value::Array& args) {
     sink_(fn.callbackId(), list.dump());
 }
 
-std::optional<std::string> NativeApi::bridgeCall(const nlohmann::json& request) {
+std::string NativeApi::bridgeCall(const nlohmann::json& request) {
     using json = nlohmann::json;
     const std::string op = request.value("op", std::string("call"));
     const std::string fn = request.value("fn", std::string());
-    const bool has_self = request.contains("self");
-
-    // El duenio de la entrada: la tabla del nombre ("Audio.playOneShot") o el tipo de `self`.
-    Value self;
-    std::string key;
-    if (has_self) {
-        const json& s = request["self"];
-        // Un handle de Lua (por debajo de kHandleBase): no es de aqui.
-        if (s.is_object() && s.contains("$h") && s["$h"].is_number() && s["$h"].get<std::uint64_t>() < kHandleBase) {
-            return std::nullopt;
-        }
-        self = fromJson(s);
-        std::string owner;
-        if (self.type() == Value::Type::Entity) {
-            owner = "Entity";
-        } else if (self.type() == Value::Type::Handle) {
-            owner = std::string(self.asHandle()->typeName());
-        } else if (s.is_object() && s.contains("$h")) {
-            return json{{"ok", false}, {"error", "el objeto ya no existe"}}.dump();
-        } else {
-            return std::nullopt;
-        }
-        key = owner + ":" + (op == "call" ? fn : request.value("key", fn));
-    } else {
-        key = fn;
-    }
-
-    const Entry* entry = find(key);
-    if (entry == nullptr) return std::nullopt;
     try {
-        if (op == "get") {
-            if (entry->kind != Entry::Kind::Property) return std::nullopt;  // una funcion como valor: Lua
-            const Value::Array no_args;
-            Call call(self, no_args);
-            return json{{"ok", true}, {"result", toJson(entry->call(call))}}.dump();
+        Value self;
+        if (request.contains("self")) {
+            const json& s = request["self"];
+            self = fromJson(s);
+            // Un handle que ya se solto (al parar el juego) o una entidad nula.
+            if (self.isNil() || (self.isEntity() && self.asEntity() == entt::null)) {
+                return json{{"ok", false}, {"error", "el objeto ya no existe"}}.dump();
+            }
+            if (!self.isEntity() && !self.isHandle()) {
+                return json{{"ok", false}, {"error", fn + ": el objeto no es del motor"}}.dump();
+            }
         }
+        const std::string key = op == "call" ? fn : request.value("key", fn);
+        if (op == "get") return json{{"ok", true}, {"result", toJson(get(key, self))}}.dump();
         if (op == "set") {
-            if (entry->kind != Entry::Kind::Property) return std::nullopt;
-            if (!entry->assign) return json{{"ok", false}, {"error", key + " es de solo lectura"}}.dump();
-            const Value::Array args{fromJson(request.contains("value") ? request["value"] : json())};
-            Call call(self, args);
-            entry->assign(call);
+            set(key, fromJson(request.contains("value") ? request["value"] : json()), self);
             return json{{"ok", true}, {"result", nullptr}}.dump();
         }
-        if (entry->kind == Entry::Kind::Property) return json{{"ok", false}, {"error", key + " no es una funcion"}}.dump();
         Value::Array args;
         if (request.contains("args") && request["args"].is_array()) {
             for (const json& a : request["args"]) args.push_back(fromJson(a));
         }
-        Call call(self, args);
-        return json{{"ok", true}, {"result", toJson(entry->call(call))}}.dump();
+        return json{{"ok", true}, {"result", toJson(call(key, args, self))}}.dump();
     } catch (const std::exception& e) {
-        return json{{"ok", false}, {"error", key + ": " + e.what()}}.dump();
+        const std::string what = e.what();
+        // El nombre delante, salvo que el error ya lo lleve ("no existe X").
+        const bool named = what.find(fn) != std::string::npos;
+        return json{{"ok", false}, {"error", named ? what : fn + ": " + what}}.dump();
     }
 }
 

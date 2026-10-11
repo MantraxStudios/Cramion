@@ -18,7 +18,7 @@ endif()
 if(WIN32)
     enable_language(RC)
 endif()
-# C: Lua y miniaudio (scripting y audio de CramionCore).
+# C: miniaudio (el audio de CramionCore) y zstd.
 enable_language(C)
 set(CRAMION_ICON_RC "${CMAKE_CURRENT_SOURCE_DIR}/assets/cramion.rc")
 
@@ -29,7 +29,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 # Compilaciones a la vez segun la RAM: Ninja lanza una por nucleo + 2 y los
-# archivos pesados (sol2 en Scripting.cpp) llegan a ~1,5 GB cada uno; con 16
+# archivos pesados (VulkanRenderer.cpp, RenderSync.cpp) llegan a ~1,5 GB; con 16
 # nucleos y 16 GB eso agota la memoria y congela el PC. Se reservan 4 GB para
 # el sistema y se cuentan 1,5 GB por compilacion. -DCRAMION_COMPILE_JOBS=N lo fija
 # a mano; enlazar va de 2 en 2 (el editor y el player enlazan a la vez).

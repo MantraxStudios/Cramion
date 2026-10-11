@@ -635,13 +635,16 @@ int main(int argc, char** argv) {
         const auto start = std::chrono::steady_clock::now();
         for (int i = 0; i < options.frames; ++i) {
             frame();
-            const auto& timings = renderer.gpuProfiler().timings();
+            // Sin la media del perfilador (olvida muy despacio lo caro de los
+            // primeros frames): lo de cada frame medido, y una pasada que ese
+            // frame no se grabo cuenta 0.
+            const auto& timings = renderer.gpuProfiler().lastTimings();
             if (!timings.empty()) {
                 for (const gfx::GpuTiming& t : timings) {
                     if (!pass_ms.count(t.name)) order.push_back(t.name);
                     pass_ms[t.name] += t.milliseconds;
                 }
-                gpu_total += renderer.gpuProfiler().totalMilliseconds();
+                gpu_total += renderer.gpuProfiler().lastTotalMilliseconds();
                 ++gpu_samples;
             }
         }

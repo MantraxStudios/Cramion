@@ -6,6 +6,7 @@
 #include <nlohmann/json.hpp>
 
 #include <cstdio>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -30,8 +31,7 @@ struct Counter final : api::Handle {
 };
 
 json call(api::NativeApi& a, const json& request) {
-    const std::optional<std::string> reply = a.bridgeCall(request);
-    return reply ? json::parse(*reply) : json();
+    return json::parse(a.bridgeCall(request));
 }
 
 void testValues() {
@@ -105,8 +105,42 @@ void testRegistry() {
     r = call(a, {{"fn", "add"}, {"self", handle}, {"args", {1}}});
     check(r["ok"] == false, "un handle soltado ya no existe");
 
-    check(!a.bridgeCall({{"fn", "Audio.playOneShot"}}).has_value(), "lo que no es nativo va a Lua");
-    check(!a.bridgeCall({{"fn", "x"}, {"self", {{"$h", 3}}}}).has_value(), "un handle de Lua va a Lua");
+    r = call(a, {{"fn", "Audio.playOneShot"}});
+    check(r["ok"] == false && r["error"].get<std::string>().find("no existe") != std::string::npos,
+          "lo que no existe es un error claro");
+    r = call(a, {{"fn", "x"}, {"self", {{"$h", 3}}}});
+    check(r["ok"] == false, "un handle desconocido es un error");
+
+    // Llamadas directas (consola, Visual Scripts).
+    check(a.call("Audio.add", {api::Value(1), api::Value(2)}).asNumber() == 3.0, "call directo");
+    a.set("Audio.volume", api::Value(0.75));
+    check(a.get("Audio.volume").asNumber() == 0.75, "get y set directos");
+    bool threw = false;
+    try {
+        a.call("Nada.de.nada");
+    } catch (const api::Error&) {
+        threw = true;
+    }
+    check(threw, "call directo de algo que no existe lanza api::Error");
+
+    // Propiedades con nombre libre (Graphics.vsync...).
+    std::map<std::string, double> options{{"vsync", 1.0}};
+    a.dynamicProperties(
+        "Graphics", [&options](api::Call& c) { return api::Value(options[c.string(0)]); },
+        [&options](api::Call& c) {
+            options[c.string(0)] = c.number(1);
+            return api::Value{};
+        });
+    r = call(a, {{"op", "set"}, {"fn", "Graphics.sombras"}, {"value", 3}});
+    check(r["ok"] == true && options["sombras"] == 3.0, "escribir una propiedad dinamica");
+    r = call(a, {{"op", "get"}, {"fn", "Graphics.vsync"}});
+    check(r["result"] == 1.0, "leer una propiedad dinamica");
+
+    // Handles internados: el mismo objeto, el mismo id.
+    int engine_object = 0;
+    auto h1 = a.intern<Counter>(&engine_object, [] { return std::make_shared<Counter>(); });
+    auto h2 = a.intern<Counter>(&engine_object, [] { return std::make_shared<Counter>(); });
+    check(h1 == h2 && a.handleId(h1) == a.handleId(h2), "el mismo handle para el mismo objeto");
 }
 
 void testCallbacks() {

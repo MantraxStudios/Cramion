@@ -1,45 +1,19 @@
 #ifndef CRAMION_CORE_SCRIPTING_H
 #define CRAMION_CORE_SCRIPTING_H
 
-// Scripts en Lua 5.4, como los MonoBehaviour de Unity:
+// El sistema de scripting del juego (sin Lua desde la 2.9): la API del motor
+// en C++ (NativeApi.h: Audio.playOneShot, Entity:translate, Time.deltaTime...)
+// que usan los scripts de C++ (CppScripts.h, el SDK de sdk/cramion), los
+// Visual Scripts (.crgraph), las maquinas de estados y los Behavior Trees, y
+// lo que vive mientras corre el juego aunque cambie la escena: la red
+// (Network), HTTP, Prefs, las partidas guardadas, los dialogos, las acciones
+// de entrada (Enhanced Input), los DataPacks y la configuracion grafica.
 //
-//   -- Assets/Scripts/Jugador.lua
-//   local Jugador = { properties = { velocidad = 5.0 } }   -- editables en el Inspector
-//   function Jugador:Start() end
-//   function Jugador:Update(dt)
-//       local mover = Vec3(Input.getAxis("Horizontal"), 0, Input.getAxis("Vertical"))
-//       self.entity:translate(mover * self.velocidad * dt)
-//   end
-//   function Jugador:OnCollisionEnter(other, contact) Debug.log("choque con " .. other.name) end
-//   return Jugador
+// Cada parte de la API es un modulo (src/scripting/native/*.cpp) que registra
+// sus funciones y se engancha a las fases del frame (ScriptRuntime.h).
 //
-// Componente Script: el archivo y los valores de sus propiedades. En Play
-// cada entidad tiene su instancia (self) con `self.entity`; se llaman Awake,
-// Start, Update, LateUpdate, FixedUpdate, OnCollisionEnter/Stay/Exit,
-// OnTriggerEnter/Stay/Exit y OnDestroy. Al guardar un script en Play se
-// recarga sin perder el estado de las instancias.
-//
-// API: Vec3, Entity (posicion, giro, escala, translate, rotate, lookAt,
-// fisica, sonido, animacion, destroy...), Scene (find, findWithTag,
-// instantiate, create, load), Input (getKey, getKeyDown, getAxis, raton),
-// Time, Physics.raycast, Audio.playOneShot, Prefs (datos guardados, como el
-// PlayerPrefs de Unity), Game.quit, Debug.log, Mathf. Navegacion:
-// entity:moveTo(destino), stopMoving, isMoving, remainingDistance y la tabla
-// Navigation (findPath, projectPoint, randomPoint, raycast, isReady).
-// Mundos de bloques: la tabla Voxel (bloques, rayo, colision de una caja,
-// mundos guardados). Input.lockCursor(true) captura el raton (primera persona).
-// Mallas por codigo: Mesh.new/cube/plane/sphere..., entity.mesh y
-// entity:addComponent("MeshCollider") (como el Mesh de Unity).
-// Esqueletos: entity:getBonePosition/setBoneRotation, IK (setIKTarget,
-// setLookAt, setupCreatureIK), ragdoll (entity.ragdoll, addRagdollForce),
-// Bone Sockets (attachToBone) y cualquier campo de cualquier componente con
-// entity:getField / entity:setField ("PhysBones", "chains[1].pull").
-// Configuracion grafica: la tabla Graphics (calidad, escalado, resolucion,
-// sombras, texturas, VSync, ventana, efectos de render y el post-procesado
-// global en Graphics.post), como QualitySettings + Screen de Unity.
-// Multijugador: la tabla Network (host, connect, send/on, spawn de prefabs
-// replicados, jugadores, cambiar de escena todos a la vez) y en las entidades
-// isMine, netId, netOwner, setNetVar/getNetVar y el metodo OnNetVar.
+// El componente Script (archivos .lua) se conserva solo para poder abrir
+// escenas antiguas: ya no se ejecuta (avisa una vez al darle a Play).
 
 #include "CramionCore/ecs/Reflection.h"
 #include "CramionCore/ecs/World.h"
@@ -88,6 +62,10 @@ struct ModelData;
 
 namespace cramion::scripting {
 
+namespace api {
+class NativeApi;
+}
+
 enum class PropertyType : int { Number = 0, Bool = 1, Text = 2, Vector = 3 };
 
 struct ScriptProperty {
@@ -96,6 +74,7 @@ struct ScriptProperty {
     std::string value;  // "5.0", "true", "hola", "1 2 3"
 };
 
+// Obsoleto: un script de Lua de una escena de antes de la 2.9 (no se ejecuta).
 struct Script {
     std::string file;  // ruta del .lua dentro de Assets
     bool enabled = true;
@@ -104,7 +83,7 @@ struct Script {
     void reflect(ecs::PropertyVisitor& v);
 };
 
-// --- Graphics (Lua) ---
+// --- Graphics ---
 // La configuracion grafica es del programa que ejecuta los scripts (el
 // editor en Play o el juego exportado), no del motor de scripts: este solo ve
 // opciones por clave y el host las aplica al renderizador y a la ventana.
@@ -151,7 +130,7 @@ public:
 
     void setAssetsRoot(const std::filesystem::path& root);
 
-    // --- DataPacks (Lua: DataPack.load / loadScene / unload / list / info) ---
+    // --- DataPacks (DataPack.load / loadScene / unload / list / info) ---
     // Siguen montados entre escenas. `callback`: se llama al montar o
     // desmontar (el programa vuelve a leer la base de assets). `journal`:
     // diario de lo escrito, para limpiarlo si el programa se cierra sin
@@ -216,15 +195,17 @@ public:
     using LogCallback = std::function<void(int level, const std::string& message)>;  // 0 info, 1 aviso, 2 error
     void setLog(LogCallback log);
 
-    // Play: estado de Lua nuevo, instancias, Awake.
+    // Play: los modulos empiezan (Visual Scripts, maquinas de estados,
+    // partidas...). Los scripts de C++ los lleva CppScriptSystem.
     void start(ecs::World& world);
-    // Cada frame (despues de la fisica): eventos de colision, Start de las
-    // nuevas, Update y LateUpdate, destrucciones pendientes.
+    // Cada frame (despues de la fisica), por fases (ScriptRuntime.h): red,
+    // partidas, acciones, eventos de colision, Visual Scripts, IA, envio de
+    // red y destrucciones pendientes.
     void update(ecs::World& world, float delta_seconds);
     // Tantas veces como pasos dio la fisica este frame.
     void fixedUpdate(ecs::World& world, float step, int steps);
     // Origen flotante (ecs/FloatingOrigin.h): el mundo se desplazo -offset.
-    // Llama a OnOriginShift(offset) en todos los scripts: los que guardan
+    // Llama a OnOriginShift(offset) en los Visual Scripts: los que guardan
     // posiciones del mundo en variables (un destino, un punto de spawn) les
     // restan `offset`. Las posiciones que se leen cada frame ya vienen bien.
     void shiftOrigin(const core::Vec3& offset);
@@ -237,27 +218,30 @@ public:
     // Estado de la red para el editor ("Servidor: 3 jugadores", "Cliente 2"...).
     std::string networkStatus() const;
 
-    // Vuelve a leer un script (ruta en Assets): en Play, las instancias siguen
-    // con sus datos y las funciones nuevas.
+    // Vuelve a leer un archivo (ruta en Assets: .crgraph, .crfsm, .crbt): en
+    // Play, las instancias siguen con sus datos.
     void reloadFile(const std::string& file);
 
-    // Propiedades que declara un script (su tabla `properties`), para el
-    // Inspector. Vacio si no se puede leer.
+    // Propiedades de un script de Lua antiguo: ya no se leen (vacio y el
+    // error que lo explica). Los scripts de C++ las describe CppScriptSystem.
     std::vector<ScriptProperty> describe(const std::string& file, std::string* error = nullptr);
 
     // Ultimos errores (archivo, linea, mensaje).
     const std::vector<ScriptError>& errors() const;
     void clearErrors();
 
-    // Llama a target:method(...) (eventos de la interfaz): con el control que
-    // lo lanzo, o con su valor (numero, texto o si/no).
+    // Eventos de la interfaz: el Custom Event `method` del Visual Script de
+    // `target` (con el control que lo lanzo o con su valor) y el mensaje para
+    // sus scripts de C++ (setMessageListener).
     void callMethod(ecs::Entity target, const std::string& method, ecs::Entity source);
     void callMethod(ecs::Entity target, const std::string& method, float value);
     void callMethod(ecs::Entity target, const std::string& method, const std::string& value);
     void callMethod(ecs::Entity target, const std::string& method, bool value);
 
-    // Ejecuta codigo suelto (consola). Devuelve false si hay error. Fuera de
-    // Play usa un estado de Lua temporal sobre `world` (la escena del editor).
+    // Consola: llamadas a la API ("Audio.playOneShot('clic.wav')",
+    // "Time.timeScale = 0.5", "Scene.find('Jugador'):translate(Vec3(0,1,0))").
+    // Devuelve false si hay error. Fuera de Play trabaja sobre `world` (la
+    // escena del editor).
     bool run(const std::string& code, std::string* output = nullptr, ecs::World* world = nullptr);
 
     // Scene.load("Nivel2"): la escena pedida (ruta del .crscene) o vacio. El
@@ -267,7 +251,7 @@ public:
     std::filesystem::path takeSceneRequest();
     // Game.quit(): el juego quiere cerrarse (en el editor, salir de Play).
     bool takeQuitRequest();
-    // Nombre de la escena actual (Scene.name en Lua).
+    // Nombre de la escena actual (Scene.name).
     void setSceneName(const std::string& name);
 
     // Prefs: se conservan al cambiar de escena y, con archivo, entre partidas.
@@ -279,21 +263,24 @@ public:
     // El dialogo que corre (tabla Dialogue y caja de dialogo de la UI).
     gameplay::DialogueSystem& dialogueSystem();
 
-    // La API de Lua tal como la ve un script (para el autocompletado del
-    // editor): cada tabla global ("Input", "XR", "math"...) y cada tipo
-    // ("Entity:", "Vec3:", "Quat:", "Mesh:": los miembros de sus objetos) con sus
-    // miembros. "" = funciones globales. Se saca de un estado de Lua con
-    // todos los bindings, asi que siempre esta al dia.
+    // La API tal como la ve un script (autocompletado, paleta de los Visual
+    // Scripts): cada tabla ("Input", "XR"...) y cada tipo ("Entity:", "Mesh:":
+    // los miembros de sus objetos) con sus miembros. "" = funciones globales.
+    // Sale del registro (apiRegistry), asi que siempre esta al dia.
     struct ApiMember {
         std::string name;
         bool function = false;
     };
     static std::map<std::string, std::vector<ApiMember>> apiReference();
+    // Todas las entradas con su documentacion (cramion_sdkgen genera el SDK).
+    static const api::NativeApi& apiRegistry();
+    // La de este sistema (consola, pruebas).
+    api::NativeApi& nativeApi();
 
-    // Puente para los scripts de C++: una llamada a la API de Lua en JSON
+    // Puente para los scripts de C++: una llamada a la API en JSON
     // ({"op":"call|get|set","fn":"Audio.playOneShot","self":valor,"key":"x",
     // "args":[...],"value":v}); devuelve {"ok":true,"result":...} o
-    // {"ok":false,"error":"..."}. Ver BridgeScripting.inl.
+    // {"ok":false,"error":"..."}. Ver NativeApi::bridgeCall.
     std::string bridgeCall(const std::string& request_json);
     // Donde van los callbacks que los scripts de C++ dieron a la API.
     void setBridgeCallbackSink(std::function<void(std::uint64_t id, const std::string& args_json)> sink);
@@ -303,11 +290,11 @@ public:
     // los Behavior Trees): Script::onMessage(method, value).
     void setMessageListener(std::function<void(ecs::Entity e, const std::string& method, const std::string& value_json)> listener);
 
-    // --- Visual Scripting: depuracion del editor (VisualScriptScripting.inl) ---
+    // --- Visual Scripting: depuracion del editor (VisualScriptRuntime.cpp) ---
     struct VisualScriptDebug {
         std::string graph;                               // .crgraph de la instancia
         bool failed = false;                             // no compilo o fallo en marcha
-        double now = 0.0;                                // Time.time de Lua
+        double now = 0.0;                                // Time.time
         std::map<int, double> executed;                  // nodo -> ultima vez que corrio (Time.time)
         std::map<std::string, std::string> values;       // "nodo:pin" -> ultimo valor (texto)
         std::map<std::string, std::string> variables;    // variables del grafo
@@ -322,23 +309,25 @@ public:
     // Objetos que ejecutan un .crgraph (vacio = todos).
     std::vector<entt::entity> visualScriptObjects(const std::string& graph) const;
 
-    // --- Pruebas automaticas (Test / Assert, PlatformScripting.inl) ---
-    // Ejecuta un archivo de pruebas (.test.lua) en el estado de Play: sus
-    // Test.case(...) quedan registrados. false (y el error) si falla.
+    // --- Pruebas automaticas del juego (native/TestApi.cpp) ---
+    // Las pruebas son scripts de C++ (CRAMION_TEST, sdk/cramion/Test.h).
+    // loadTestFile: un archivo de pruebas (false y el error si no vale).
     bool loadTestFile(const std::string& file, std::string* error = nullptr);
-    // Llama a una funcion interna de la biblioteca de pruebas
-    // (__cramion_test_list, __cramion_test_run_edit, __cramion_test_begin,
-    // __cramion_test_step, __cramion_test_abort, __cramion_test_reset_cases)
-    // y devuelve su resultado como texto (JSON). Vacio si no hay Play.
+    // Operaciones del ejecutor de pruebas del editor ("list", "run_edit",
+    // "begin", "abort", "reset"; los nombres __cramion_test_* de antes
+    // tambien valen) con su resultado como texto (JSON). Vacio si no hay Play.
     std::string testCall(const std::string& function, const std::string& arg = {});
     std::string testStep(float delta_seconds);
 
-private:
+    // El estado del sistema (src/scripting/ScriptRuntime.h): lo usan los
+    // modulos de la API. Opaco fuera de src/scripting.
     struct Impl;
+
+private:
     std::unique_ptr<Impl> impl_;
 };
 
-// Script nuevo con los metodos de siempre.
+// Script nuevo (de C++) con los metodos de siempre: cppScriptTemplate.
 std::string scriptTemplate(const std::string& class_name);
 
 void registerScriptComponents();

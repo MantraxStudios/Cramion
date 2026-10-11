@@ -71,29 +71,17 @@ set_target_properties(Jolt PROPERTIES SYSTEM TRUE)
 # muy lenta y no hace falta depurar su interior.
 target_compile_options(Jolt PRIVATE -O2 -w)
 
-# --- Scripting (Lua 5.4 + sol2) y audio (miniaudio) ---------------------------
-# Lua: el interprete compilado como biblioteca C (sin el lua.exe). sol2: solo
-# cabeceras (el enlace C++ <-> Lua). miniaudio: audio 2D/3D (WAV, MP3, FLAC y
-# OGG con stb_vorbis). Sin sus CMakeLists (SOURCE_SUBDIR inexistente).
-FetchContent_Declare(lua
-    GIT_REPOSITORY https://github.com/lua/lua.git
-    GIT_TAG v5.4.8
-    GIT_SHALLOW TRUE
-    SOURCE_SUBDIR _sin_cmake
-)
-FetchContent_Declare(sol2
-    GIT_REPOSITORY https://github.com/ThePhD/sol2.git
-    GIT_TAG v3.5.0
-    GIT_SHALLOW TRUE
-    SOURCE_SUBDIR _sin_cmake
-)
+# --- Audio (miniaudio) ---------------------------------------------------------
+# miniaudio: audio 2D/3D (WAV, MP3, FLAC y OGG con stb_vorbis). Sin su
+# CMakeLists (SOURCE_SUBDIR inexistente). El scripting es C++ (sin Lua desde
+# la 2.9).
 FetchContent_Declare(miniaudio
     GIT_REPOSITORY https://github.com/mackron/miniaudio.git
     GIT_TAG 0.11.25
     GIT_SHALLOW TRUE
     SOURCE_SUBDIR _sin_cmake
 )
-FetchContent_MakeAvailable(lua sol2 miniaudio)
+FetchContent_MakeAvailable(miniaudio)
 
 # Recast/Detour: la navegacion (la misma biblioteca que usa Unreal). Recast
 # genera la malla, Detour la consulta y DetourCrowd mueve a los agentes.
@@ -120,17 +108,6 @@ foreach(target Recast Detour DetourCrowd DetourTileCache DebugUtils)
         target_compile_options(${target} PRIVATE -O2 -w)
     endif()
 endforeach()
-
-set(CRAMION_LUA_FILES lapi lauxlib lbaselib lcode lcorolib lctype ldblib ldebug ldo ldump lfunc lgc linit
-    liolib llex lmathlib lmem loadlib lobject lopcodes loslib lparser lstate lstring lstrlib ltable ltablib
-    ltm lundump lutf8lib lvm lzio)
-set(CRAMION_LUA_SOURCES "")
-foreach(name IN LISTS CRAMION_LUA_FILES)
-    list(APPEND CRAMION_LUA_SOURCES "${lua_SOURCE_DIR}/${name}.c")
-endforeach()
-add_library(cramion_lua STATIC ${CRAMION_LUA_SOURCES})
-target_include_directories(cramion_lua PUBLIC "${lua_SOURCE_DIR}")
-target_compile_options(cramion_lua PRIVATE -O2 -w)
 
 add_library(cramion_miniaudio STATIC "${CMAKE_CURRENT_SOURCE_DIR}/src/audio/miniaudio_impl.c")
 target_include_directories(cramion_miniaudio PUBLIC "${miniaudio_SOURCE_DIR}")
@@ -199,9 +176,9 @@ list(FILTER CRAMION_CORE_SOURCES EXCLUDE REGEX "/src/(asset|project)/")
 add_library(CramionCoreObjects OBJECT ${CRAMION_CORE_SOURCES})
 target_include_directories(CramionCoreObjects PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
 target_link_libraries(CramionCoreObjects PUBLIC Cramion::FX EnTT::EnTT nlohmann_json::nlohmann_json
-    PRIVATE Jolt cramion_lua cramion_miniaudio RecastNavigation::Recast RecastNavigation::Detour
+    PRIVATE Jolt cramion_miniaudio RecastNavigation::Recast RecastNavigation::Detour
             RecastNavigation::DetourCrowd)
-target_include_directories(CramionCoreObjects PRIVATE "${sol2_SOURCE_DIR}/include" "${enet_SOURCE_DIR}/include")
+target_include_directories(CramionCoreObjects PRIVATE "${enet_SOURCE_DIR}/include")
 # SDK de los scripts de C++ (cramion/CppProtocol.h lo comparten motor y juegos).
 target_include_directories(CramionCoreObjects PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/sdk")
 target_compile_options(CramionCoreObjects PRIVATE -Wall -Wextra)
@@ -236,7 +213,7 @@ add_library(Cramion::Core ALIAS CramionCore)
 target_include_directories(CramionCore PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include" "${CMAKE_CURRENT_SOURCE_DIR}/sdk")
 target_link_libraries(CramionCore
     PUBLIC Cramion::Assets Cramion::FX EnTT::EnTT nlohmann_json::nlohmann_json
-    PRIVATE Jolt cramion_lua cramion_miniaudio RecastNavigation::Recast RecastNavigation::Detour
+    PRIVATE Jolt cramion_miniaudio RecastNavigation::Recast RecastNavigation::Detour
             RecastNavigation::DetourCrowd enet
 )
 
@@ -283,7 +260,7 @@ add_executable(CramionFeatures21Tests "${CMAKE_CURRENT_SOURCE_DIR}/tests/Feature
 target_link_libraries(CramionFeatures21Tests PRIVATE Cramion::Core)
 target_compile_options(CramionFeatures21Tests PRIVATE -Wall -Wextra)
 
-# --- Pruebas de las optimizaciones del roadmap (Insights, particulas, Lua) ---
+# --- Pruebas de las optimizaciones del roadmap (Insights, particulas, scripting) ---
 add_executable(CramionOptimizationTests "${CMAKE_CURRENT_SOURCE_DIR}/tests/OptimizationTests.cpp")
 target_link_libraries(CramionOptimizationTests PRIVATE Cramion::Core)
 target_compile_options(CramionOptimizationTests PRIVATE -Wall -Wextra)
@@ -308,21 +285,24 @@ add_executable(CramionWaterTests "${CMAKE_CURRENT_SOURCE_DIR}/tests/WaterTests.c
 target_link_libraries(CramionWaterTests PRIVATE Cramion::Core)
 target_compile_options(CramionWaterTests PRIVATE -Wall -Wextra)
 
-# --- Pruebas del scripting (Lua) y del audio (consola) ---
+# --- Pruebas del scripting y del audio (consola) ---
 # Multijugador: servidor y clientes en el mismo proceso por 127.0.0.1.
 add_executable(CramionNetworkTests "${CMAKE_CURRENT_SOURCE_DIR}/tests/NetworkTests.cpp")
 target_link_libraries(CramionNetworkTests PRIVATE Cramion::Core)
 target_compile_options(CramionNetworkTests PRIVATE -Wall -Wextra)
 
-add_executable(CramionHttpTests "${CMAKE_CURRENT_SOURCE_DIR}/tests/HttpTests.cpp")
-target_link_libraries(CramionHttpTests PRIVATE Cramion::Core ws2_32)
-target_compile_options(CramionHttpTests PRIVATE -Wall -Wextra)
+# HTTP: un servidor local con winsock (solo Windows).
+if(WIN32)
+    add_executable(CramionHttpTests "${CMAKE_CURRENT_SOURCE_DIR}/tests/HttpTests.cpp")
+    target_link_libraries(CramionHttpTests PRIVATE Cramion::Core ws2_32)
+    target_compile_options(CramionHttpTests PRIVATE -Wall -Wextra)
+endif()
 
 add_executable(CramionScriptingTests "${CMAKE_CURRENT_SOURCE_DIR}/tests/ScriptingTests.cpp")
 target_link_libraries(CramionScriptingTests PRIVATE Cramion::Core)
 target_compile_options(CramionScriptingTests PRIVATE -Wall -Wextra)
 
-# --- Pruebas de la entrada por acciones (Enhanced Input) y su tabla de Lua ---
+# --- Pruebas de la entrada por acciones (Enhanced Input) y su API ---
 add_executable(CramionInputTests "${CMAKE_CURRENT_SOURCE_DIR}/tests/InputTests.cpp")
 target_link_libraries(CramionInputTests PRIVATE Cramion::Core)
 target_compile_options(CramionInputTests PRIVATE -Wall -Wextra)
@@ -351,7 +331,7 @@ target_link_libraries(CramionShaderTests PRIVATE Cramion::Core)
 target_compile_options(CramionShaderTests PRIVATE -Wall -Wextra)
 cramionfx_deploy(CramionShaderTests)
 
-# --- Pruebas de la libreria matematica de Lua (consola) ---
+# --- Pruebas de la animacion (consola) ---
 add_executable(CramionAnimationTests "${CMAKE_CURRENT_SOURCE_DIR}/tests/AnimationTests.cpp")
 target_link_libraries(CramionAnimationTests PRIVATE Cramion::Core)
 target_compile_options(CramionAnimationTests PRIVATE -Wall -Wextra)
@@ -361,11 +341,7 @@ add_executable(CramionStateMachineTests "${CMAKE_CURRENT_SOURCE_DIR}/tests/State
 target_link_libraries(CramionStateMachineTests PRIVATE Cramion::Core)
 target_compile_options(CramionStateMachineTests PRIVATE -Wall -Wextra)
 
-add_executable(CramionLuaMathTests "${CMAKE_CURRENT_SOURCE_DIR}/tests/LuaMathTests.cpp")
-target_link_libraries(CramionLuaMathTests PRIVATE Cramion::Core)
-target_compile_options(CramionLuaMathTests PRIVATE -Wall -Wextra)
-
-# --- Pruebas de la API de scripting en C++, sin Lua (consola) ---
+# --- Pruebas de la API de scripting en C++ (consola) ---
 add_executable(CramionNativeApiTests "${CMAKE_CURRENT_SOURCE_DIR}/tests/NativeApiTests.cpp")
 target_link_libraries(CramionNativeApiTests PRIVATE Cramion::Core)
 target_compile_options(CramionNativeApiTests PRIVATE -Wall -Wextra)
@@ -410,15 +386,13 @@ target_link_libraries(cramion_minigolf PRIVATE Cramion::Core)
 
 # Referencia de componentes del manual (docs-src/pages/componentes-*.html),
 # generada desde la reflexion: cramion_docgen <carpeta docs-src/pages>.
-# La API de Lua en C++ para los scripts de C++ (sdk/cramion/Api.gen.h): se
-# regenera al compilar (solo cambia el archivo si cambia la API).
-# (con la documentacion de la API de Lua del editor: nombres de argumentos y descripciones)
+# La API para los scripts de C++ (sdk/cramion/Api.gen.h), generada desde el
+# registro de la API (ScriptSystem::apiRegistry). Mientras se porta la API de
+# la version con Lua no se regenera al compilar: se ejecuta a mano
+# (cramion_sdkgen sdk/cramion) cuando el registro este completo.
 add_executable(cramion_sdkgen "${CMAKE_CURRENT_SOURCE_DIR}/tools/SdkGen.cpp" "${CMAKE_SOURCE_DIR}/CramionEditor/src/LuaCompletion.cpp")
 target_include_directories(cramion_sdkgen PRIVATE "${CMAKE_SOURCE_DIR}/CramionEditor/src")
 target_link_libraries(cramion_sdkgen PRIVATE Cramion::Core)
-add_custom_command(TARGET cramion_sdkgen POST_BUILD
-    COMMAND cramion_sdkgen "${CMAKE_CURRENT_SOURCE_DIR}/sdk/cramion"
-    COMMENT "API de Lua para los scripts de C++")
 
 add_executable(cramion_docgen "${CMAKE_CURRENT_SOURCE_DIR}/tools/DocGen.cpp")
 target_link_libraries(cramion_docgen PRIVATE Cramion::Core)
