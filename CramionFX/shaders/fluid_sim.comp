@@ -471,7 +471,9 @@ void main() {
                 FluidMaterialGpu mj = materialOf(pj.w);
                 visc += vij * wij * 0.5 * (mi.absorb_visc.a + mj.absorb_visc.a);
                 weight += wij;
-                w += cross(vij, spikyGrad(r, len)) * inv_rest;
+                // Rotacional (Macklin y Muller): v_ij x grad_pj W = grad_pi W x v_ij.
+                // Al reves daba -w y el confinamiento frenaba los remolinos.
+                w += cross(spikyGrad(r, len), vij) * inv_rest;
                 // Cohesion: 0 al tocarse, maxima a media distancia, 0 en h.
                 if (len > r_rest * 0.8) {
                     float t = (len - r_rest * 0.8) / max(h - r_rest * 0.8, 1e-5);

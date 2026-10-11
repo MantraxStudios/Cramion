@@ -248,6 +248,9 @@ struct GpuCameraFxPush {
     // x, y = proyeccion [3][2] y [2][2] (profundidad lineal), z = ancho / alto,
     // w = 1 / alto de la imagen
     core::Vec4 camera{};
+    // x, y = proyeccion [2][3] y [3][3]: con ellos la profundidad lineal vale
+    // tambien con la camara ortografica (-1, 0 en perspectiva; 0, 1 en orto).
+    core::Vec4 projection_w{-1.0f, 0.0f, 0.0f, 0.0f};
 };
 
 // Constante de push de la iluminacion global de pantalla (ssgi.frag).
@@ -374,7 +377,7 @@ struct GpuExposureState {
 static_assert(sizeof(GpuCompositeSettings) == 13 * 16,
               "GpuCompositeSettings debe coincidir con composite.frag (std140)");
 static_assert(sizeof(GpuExposurePush) == 32, "GpuExposurePush debe coincidir con exposure_average.comp");
-static_assert(sizeof(GpuCameraFxPush) == 112, "GpuCameraFxPush debe coincidir con camera_fx.frag");
+static_assert(sizeof(GpuCameraFxPush) == 128, "GpuCameraFxPush debe coincidir con camera_fx.frag");
 
 // Datos de las cascadas para el shader de iluminacion.
 struct GpuShadows {

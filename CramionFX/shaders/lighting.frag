@@ -257,14 +257,15 @@ vec3 toLinear(vec3 color) {
 }
 
 // Profundidad lineal (distancia de vista) a partir del depth, deshaciendo solo
-// la proyeccion: z = P[3][2] / (depth + P[2][2]).
+// la proyeccion: z = (P[3][2] - d P[3][3]) / (P[2][2] - d P[2][3]) (en
+// perspectiva, P[3][2] / (d + P[2][2]); asi vale tambien la ortografica).
 //
 // Hacerlo con la inversa completa de view-projection sumaba el error de
 // redondeo de la matriz al del propio depth: a 100 bloques la posicion salia
 // desplazada varios centimetros, mas que los umbrales del SSAO, y las caras
 // superiores lejanas se "tapaban a si mismas" con un ruido de puntos negros.
 float linearDepth(float depth) {
-    return camera.projection[3][2] / (depth + camera.projection[2][2]);
+    return (camera.projection[3][2] - depth * camera.projection[3][3]) / (camera.projection[2][2] - depth * camera.projection[2][3]);
 }
 
 // Posicion en espacio de vista.
@@ -274,8 +275,11 @@ vec3 viewFromDepth(vec2 uv, float depth) {
     // Con el desplazamiento del centro ([2][0], [2][1]): cada ojo de un casco
     // de VR tiene un campo de vision asimetrico (y el TAA mueve el centro con
     // su jitter). Sin el, en VR todo salia desplazado y la luz se ennegrecia.
-    return vec3((ndc.x + camera.projection[2][0]) * z / camera.projection[0][0],
-                (ndc.y + camera.projection[2][1]) * z / camera.projection[1][1], -z);
+    // Forma general (perspectiva y ortografica): w del clip = P[2][3] z_v +
+    // P[3][3] con z_v = -z. En perspectiva es lo de siempre, (ndc + P[2][.]) z / P[.][.].
+    float w = camera.projection[3][3] - camera.projection[2][3] * z;
+    return vec3((ndc.x * w + camera.projection[2][0] * z - camera.projection[3][0]) / camera.projection[0][0],
+                (ndc.y * w + camera.projection[2][1] * z - camera.projection[3][1]) / camera.projection[1][1], -z);
 }
 
 // De coordenadas de pantalla + depth a mundo. La vista es una rotacion y una
@@ -844,7 +848,7 @@ vec3 starLayer(vec3 view_direction, float density, float chance_min, float stren
     if (chance < chance_min) return vec3(0.0);
     // Posicion dentro de la celda (no todas en el centro).
     vec3 center = cell + 0.25 + 0.5 * vec3(hash13(cell + 7.1), hash13(cell + 3.3), hash13(cell + 5.7));
-    float falloff = smoothstep(0.32, 0.0, length(grid - center));
+    float falloff = (1.0 - smoothstep(0.0, 0.32, length(grid - center)));
     float magnitude = (chance - chance_min) / (1.0 - chance_min);
     float brightness = magnitude * magnitude * magnitude * strength;
     float temperature = hash13(cell + 11.0);
@@ -900,14 +904,31 @@ vec3 moonDisk(vec3 view_direction, vec3 to_moon) {
 
 // Coordenadas de una direccion en la LUT del cielo (ver sky_lut.frag).
 vec2 skyLutUv(vec3 direction) {
-    float azimuth = atan(direction.z, direction.x);
+    // atan(0, 0) no esta definido (algun driver da NaN): mirando justo arriba
+    // o abajo el acimut no importa.
+    float azimuth = abs(direction.x) + abs(direction.z) > 1e-7 ? atan(direction.z, direction.x) : 0.0;
     float elevation = asin(clamp(direction.y, -1.0, 1.0));
     float v = 0.5 + 0.5 * sign(elevation) * sqrt(abs(elevation) / (0.5 * kPi));
     return vec2(azimuth / (2.0 * kPi) + 0.5, v);
 }
 
+// La LUT da la vuelta en u (acimut -pi..pi), pero su muestreador recorta al
+// borde: a menos de medio texel del corte se mezclan a mano el ultimo y el
+// primer texel (si no, una linea vertical en el halo del sol hacia -X).
+vec3 skyLutFetch(vec2 uv) {
+    float width = float(textureSize(sky_lut, 0).x);
+    float x = uv.x * width - 0.5;
+    if (x < 0.0 || x > width - 1.0) {
+        float t = x < 0.0 ? x + 1.0 : x - (width - 1.0);  // 0 = ultimo texel, 1 = primero
+        vec3 last = textureLod(sky_lut, vec2((width - 0.5) / width, uv.y), 0.0).rgb;
+        vec3 first = textureLod(sky_lut, vec2(0.5 / width, uv.y), 0.0).rgb;
+        return mix(last, first, clamp(t, 0.0, 1.0));
+    }
+    return textureLod(sky_lut, uv, 0.0).rgb;
+}
+
 vec3 skyRadiance(vec3 direction) {
-    return texture(sky_lut, skyLutUv(direction)).rgb;
+    return skyLutFetch(skyLutUv(direction));
 }
 
 // Cielo con ciclo dia/noche. El color de fondo (azul, horizonte blanquecino,
@@ -924,7 +945,10 @@ vec3 skyColor(vec3 view_direction, bool celestial) {
 #ifdef CRAMION_COMPAT
         return textureLod(environment_map, view_direction, celestial ? 0.0 : 5.0).rgb;
 #else
-        vec2 uv = vec2(atan(view_direction.z, view_direction.x) / (2.0 * kPi) + 0.5,
+        float azimuth = abs(view_direction.x) + abs(view_direction.z) > 1e-7
+                            ? atan(view_direction.z, view_direction.x)
+                            : 0.0;
+        vec2 uv = vec2(azimuth / (2.0 * kPi) + 0.5,
                        acos(clamp(view_direction.y, -1.0, 1.0)) / kPi);
         return textureLod(environment_hdr, uv, celestial ? 0.0 : 5.0).rgb;
 #endif
@@ -1321,7 +1345,7 @@ float contactShadow(vec3 view_position, vec3 view_normal, vec3 view_to_light, fl
             // Entra suave (sin corte duro en el sesgo) y sale suave al
             // acercarse al grosor; lejos del origen, mas debil (penumbra).
             float soft = smoothstep(0.0, bias + pixel_size, penetration) *
-                         smoothstep(1.0, 0.5, penetration / thickness);
+                         (1.0 - smoothstep(0.5, 1.0, penetration / thickness));
             occlusion = max(occlusion, soft * (1.0 - s * s) * edge_fade);
             if (occlusion > 0.98) break;
         }
@@ -1351,7 +1375,7 @@ void main() {
         // ventisca, arena) y el destello de un rayo en todo el cielo.
         if (lights.rt_shadows.w > 0.0 || lights.rt_shadows.z > 0.0) {
             vec3 sky_direction = normalize(world_position - camera.position.xyz);
-            vec3 haze = max(irradiance_sh.coefficients[0].rgb * 0.282095, vec3(0.0)) * (1.0 / 3.14159265) +
+            vec3 haze = max(irradiance_sh.coefficients[0].rgb * 0.282095, vec3(0.0)) +
                         vec3(0.75, 0.8, 1.0) * lights.rt_shadows.z * 0.25;
             float horizon = 1.0 - smoothstep(-0.05, 0.45, sky_direction.y);
             color = mix(color, haze, clamp(lights.rt_shadows.w * mix(0.55, 1.0, horizon), 0.0, 1.0));
@@ -1541,7 +1565,12 @@ void main() {
 
         int cascade_index = 0;
         float shadow = 1.0;
-        if (sun_n_dot_l > 0.0) {
+        // El pelo recibe luz envolvente (hairBrdf) hasta N.L = -1/3: ahi
+        // tambien hace falta la sombra, o el pelo de espaldas al sol brilla
+        // aunque el personaje este a la sombra de un edificio.
+        bool sun_lit = sun_n_dot_l > 0.0 ||
+                       (surface_model.model == kShadingHair && dot(normal, sun_direction) > -0.34);
+        if (sun_lit) {
             float geometric_n_dot_l = max(dot(geometric_normal, sun_direction), 0.0);
             shadow = shadowFactor(world_position, geometric_normal, geometric_n_dot_l,
                                   cascade_index);
@@ -1730,9 +1759,12 @@ void main() {
         // El color es la luz MEDIA del cielo (el termino constante de su
         // irradiancia), no el cielo de esa direccion: con el cielo la niebla
         // "reflejaba" el skybox (su degradado, las nubes, la luna) sobre las
-        // paredes. Mas el halo hacia el sol y un minimo nocturno.
+        // paredes. Mas el halo hacia el sol y un minimo nocturno. Los
+        // armonicos ya estan divididos por pi: c0 * Y00 es esa radiancia
+        // media (dividir otra vez por pi oscurecia la niebla tres veces y el
+        // horizonte quedaba como una franja gris oscura).
         vec3 ray_direction = -view_direction;
-        vec3 fog_color = max(irradiance_sh.coefficients[0].rgb * 0.282095, vec3(0.0)) * (1.0 / 3.14159265);
+        vec3 fog_color = max(irradiance_sh.coefficients[0].rgb * 0.282095, vec3(0.0));
         float sun_alignment = max(dot(ray_direction, lights.sky_sun.xyz), 0.0);
         fog_color += toLinear(lights.sun_color_ambient.rgb) * lights.sun_direction_intensity.w *
                      pow(sun_alignment, 10.0) * 0.35 * smoothstep(-0.05, 0.1, lights.sky_sun.y);

@@ -106,9 +106,14 @@ void main() {
         Meshlet m = meshlets[first + k];
         mat4 skin = bones[command.instance + vertexJoints(meshlet_vertices[m.vertex_offset]).x];
         vec3 center = (skin * vec4(m.center_radius.xyz, 1.0)).xyz;
-        float scale = length(skin[0].xyz);
+        // La escala del actor va en los huesos y puede no ser uniforme: la
+        // esfera con la mayor. Con escala no uniforme el cono de normales no
+        // vale (el angulo cambia): sin el, como en las sombras.
+        vec3 axis_scale = vec3(length(skin[0].xyz), length(skin[1].xyz), length(skin[2].xyz));
+        float scale = max(axis_scale.x, max(axis_scale.y, axis_scale.z));
+        bool uniform_scale = scale - min(axis_scale.x, min(axis_scale.y, axis_scale.z)) <= 0.01 * scale;
         bool keep = sphereInFrustum(center, m.center_radius.w * scale);
-        if (keep && push.batch.w != 0u && m.cone_axis_cutoff.w < 1.0) {
+        if (keep && push.batch.w != 0u && uniform_scale && m.cone_axis_cutoff.w < 1.0) {
             vec3 apex = (skin * vec4(m.cone_apex.xyz, 1.0)).xyz;
             vec3 axis = normalize(mat3(skin) * m.cone_axis_cutoff.xyz);
             keep = dot(normalize(apex - camera.position.xyz), axis) < m.cone_axis_cutoff.w;

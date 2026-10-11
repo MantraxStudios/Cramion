@@ -9,8 +9,10 @@
 #include "CramionCore/water/Ripples.h"
 #include "CramionCore/water/Water.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <vector>
 
 using namespace cramion;
 using namespace cramion::water;
@@ -249,8 +251,69 @@ void testRippleObstacles() {
 
 }  // namespace
 
+// Oceano FFT: las olas avanzan con el viento y las crestas son afiladas
+// (desplazamiento horizontal hacia ellas), como las de Gerstner.
+void testOceanShape() {
+    std::printf("Oceano FFT: forma y direccion\n");
+    WaterBody ocean = oceanPreset();
+    ocean.wind_direction = 0.0f;  // hacia +X
+    ocean.wind_spread = 15.0f;
+    // Direccion: el perfil a lo largo del viento un momento despues es el de
+    // antes desplazado hacia +X.
+    constexpr int kSamples = 1600;
+    constexpr float kStep = 0.25f;
+    std::vector<float> before(kSamples);
+    std::vector<float> after(kSamples);
+    for (int i = 0; i < kSamples; ++i) {
+        before[i] = oceanDisplacement(ocean, static_cast<float>(i) * kStep, 3.0f, 10.0f).y;
+        after[i] = oceanDisplacement(ocean, static_cast<float>(i) * kStep, 3.0f, 10.4f).y;
+    }
+    int best_shift = 0;
+    double best_error = 1e30;
+    for (int shift = -40; shift <= 40; ++shift) {
+        double error = 0.0;
+        for (int i = 60; i < kSamples - 60; ++i) {
+            const double d = after[i] - before[i - shift];
+            error += d * d;
+        }
+        if (error < best_error) {
+            best_error = error;
+            best_shift = shift;
+        }
+    }
+    std::printf("  desplazamiento del perfil en 0.4 s: %.2f m\n", best_shift * kStep);
+    check(best_shift > 0, "las olas avanzan a favor del viento");
+
+    // Forma: el desplazamiento horizontal junta los puntos en las crestas
+    // (afiladas) y los separa en los valles (anchos): dX/dx < 1 arriba y > 1
+    // abajo. Con el signo al reves salia justo lo contrario.
+    double crest = 0.0;
+    double trough = 0.0;
+    int crests = 0;
+    int troughs = 0;
+    for (int i = 0; i < 4000; ++i) {
+        const float x = static_cast<float>(i) * 0.37f;
+        const Vec3 d = oceanDisplacement(ocean, x, 5.0f, 9.0f);
+        const Vec3 d0 = oceanDisplacement(ocean, x - 0.05f, 5.0f, 9.0f);
+        const Vec3 d1 = oceanDisplacement(ocean, x + 0.05f, 5.0f, 9.0f);
+        const double stretch = 1.0 + (d1.x - d0.x) / 0.1;
+        if (d.y > ocean.wave_height * 0.45f) {
+            crest += stretch;
+            ++crests;
+        } else if (d.y < -ocean.wave_height * 0.45f) {
+            trough += stretch;
+            ++troughs;
+        }
+    }
+    crest /= std::max(crests, 1);
+    trough /= std::max(troughs, 1);
+    std::printf("  dX/dx en las crestas %.3f, en los valles %.3f\n", crest, trough);
+    check(crests > 0 && troughs > 0 && crest < 1.0 && trough > 1.0, "crestas afiladas y valles anchos");
+}
+
 int main() {
     testWaves();
+    testOceanShape();
     testLakeAndRiver();
     testScene();
     testBuoyancy();

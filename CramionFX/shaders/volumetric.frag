@@ -148,7 +148,7 @@ vec3 toLinear(vec3 color) {
 }
 
 float linearDepth(float depth) {
-    return camera.projection[3][2] / (depth + camera.projection[2][2]);
+    return (camera.projection[3][2] - depth * camera.projection[3][3]) / (camera.projection[2][2] - depth * camera.projection[2][3]);
 }
 
 vec3 viewFromDepth(vec2 uv, float depth) {
@@ -157,8 +157,11 @@ vec3 viewFromDepth(vec2 uv, float depth) {
     // Con el desplazamiento del centro ([2][0], [2][1]): cada ojo de un casco
     // de VR tiene un campo de vision asimetrico (y el TAA mueve el centro con
     // su jitter). Sin el, en VR todo salia desplazado y la luz se ennegrecia.
-    return vec3((ndc.x + camera.projection[2][0]) * z / camera.projection[0][0],
-                (ndc.y + camera.projection[2][1]) * z / camera.projection[1][1], -z);
+    // Forma general (perspectiva y ortografica): w del clip = P[2][3] z_v +
+    // P[3][3] con z_v = -z. En perspectiva es lo de siempre, (ndc + P[2][.]) z / P[.][.].
+    float w = camera.projection[3][3] - camera.projection[2][3] * z;
+    return vec3((ndc.x * w + camera.projection[2][0] * z - camera.projection[3][0]) / camera.projection[0][0],
+                (ndc.y * w + camera.projection[2][1] * z - camera.projection[3][1]) / camera.projection[1][1], -z);
 }
 
 // Matriz de Bayer 4x4: cada pixel de la ventana tiene un desplazamiento
@@ -349,10 +352,14 @@ void main() {
     // Rayo en el mundo hasta la superficie (o hasta la distancia maxima, en
     // el cielo).
     vec3 view_position = viewFromDepth(uv, min(depth, 0.999999));
-    vec3 direction = transpose(mat3(camera.view)) * normalize(view_position);
+    // Perspectiva: desde la camara. Ortografica (P[2][3] = 0): rayos
+    // paralelos (-Z de la vista) desde el plano cercano de cada pixel.
+    vec3 view_origin = camera.projection[2][3] == 0.0 ? viewFromDepth(uv, 0.0) : vec3(0.0);
+    vec3 ray_origin = camera.position.xyz + transpose(mat3(camera.view)) * view_origin;
+    vec3 direction = transpose(mat3(camera.view)) * normalize(view_position - view_origin);
     float max_distance = push.params.w;
     float march_distance =
-        depth >= 1.0 ? max_distance : min(length(view_position), max_distance);
+        depth >= 1.0 ? max_distance : min(length(view_position - view_origin), max_distance);
 
     // --- Sol: la fase es la misma en todo el rayo ---
     vec3 sun_radiance = toLinear(lights.sun_color_ambient.rgb) * lights.sun_direction_intensity.w;
@@ -367,13 +374,13 @@ void main() {
     vec2 spot_segments[kMaxSpotLights];
     bool any_local = false;
     for (int i = 0; i < point_count; ++i) {
-        point_segments[i] = sphereSegment(camera.position.xyz, direction,
+        point_segments[i] = sphereSegment(ray_origin, direction,
                                           lights.points[i].position_range.xyz,
                                           lights.points[i].position_range.w, march_distance);
         any_local = any_local || point_segments[i].x < point_segments[i].y;
     }
     for (int i = 0; i < spot_count; ++i) {
-        spot_segments[i] = sphereSegment(camera.position.xyz, direction,
+        spot_segments[i] = sphereSegment(ray_origin, direction,
                                          lights.spots[i].position_range.xyz,
                                          lights.spots[i].position_range.w, march_distance);
         any_local = any_local || spot_segments[i].x < spot_segments[i].y;
@@ -398,7 +405,7 @@ void main() {
             break;
         }
         float t = (float(i) + jitter) * dt;
-        vec3 p = camera.position.xyz + direction * t;
+        vec3 p = ray_origin + direction * t;
 
         // Polvo sin color (dispersa todas las longitudes de onda igual) y sin
         // absorcion: extincion = dispersion.

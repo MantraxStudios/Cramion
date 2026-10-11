@@ -162,6 +162,8 @@ private:
     std::vector<VulkanBuffer> staging_;
     std::uint64_t frame_counter_ = 0;
     float time_ = 0.0f;
+    float prepared_time_ = 0.0f;  // el de prepare() de este frame
+    float previous_time_ = 0.0f;  // el del frame anterior
     bool visible_ = true;
 
     std::vector<std::uint64_t> visible_keys_;

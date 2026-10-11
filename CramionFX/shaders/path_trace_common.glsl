@@ -38,6 +38,10 @@ float random01() {
 struct Surface {
     vec3 position;
     vec3 normal;
+    // La cara real (sin normal map): para separar el origen de los rayos y
+    // que los rebotes no entren en la propia superficie (ver
+    // gbufferGeometricNormal en rt_common.glsl).
+    vec3 geometric;
     vec3 albedo;
     vec3 emission;
     float metallic;
@@ -149,7 +153,7 @@ float shadowVisibility(vec3 origin, vec3 direction, float distance, float streng
 // tracing vea lo mismo que el raster. El cielo si es radiancia fisica.
 vec3 directLight(Surface s, vec3 v) {
     vec3 result = vec3(0.0);
-    vec3 origin = s.position + s.normal * (0.01 + (0.0005 + lights.rain.w * 1.5) * length(s.position - camera.position.xyz));
+    vec3 origin = s.position + s.geometric * (0.01 + (0.0005 + lights.rain.w * 1.5) * length(s.position - camera.position.xyz));
 
     // --- Sol: una direccion dentro de su disco ---
     vec3 to_sun = -normalize(lights.sun_direction_intensity.xyz);
@@ -217,6 +221,7 @@ Surface hitSurface(RtHit hit, float lod) {
     Surface s;
     s.position = hit.position;
     s.normal = hit.normal;
+    s.geometric = hit.normal;
     s.albedo = toLinear(textureLod(rt_textures[nonuniformEXT(material.albedo_texture)], hit.uv, lod).rgb) *
                material.base_color.rgb;
     vec4 mr = textureLod(rt_textures[nonuniformEXT(material.metallic_roughness_texture)], hit.uv, lod);
@@ -272,7 +277,10 @@ void pathTracePixel(ivec2 pixel, ivec2 size) {
     vec4 accumulated = push.params.y > 0.5 ? imageLoad(accumulation, pixel) : vec4(0.0);
 
     if (push.params.w > 0.5) {
-        rng_state = uint(pixel.x) * 1973u + uint(pixel.y) * 9277u + uint(push.params.x) * 26699u;
+        // Semilla con un hash de cada entrada: con una suma lineal, pixeles y
+        // frames distintos (1973 dx + 9277 dy + 26699 df = 0) repetian la
+        // misma secuencia y el ruido formaba una reticula.
+        rng_state = cacheHash(uint(pixel.x) ^ cacheHash(uint(pixel.y) ^ cacheHash(uint(push.params.x))));
         pcgNext();
 
         // --- Primer punto: el G-buffer ---
@@ -288,6 +296,7 @@ void pathTracePixel(ivec2 pixel, ivec2 size) {
         s.metallic = material_sample.a - 2.0 * floor(material_sample.a * 0.5);
         s.emission = material_sample.rgb;
         s.model = decodeShading(texelFetch(g_shading, pixel, 0), s.normal);
+        s.geometric = gbufferGeometricNormal(pixel, position, s.normal);
 
         vec3 v = normalize(camera.position.xyz - position);
         // La normal del normal map puede mirar de espaldas a la camara.
@@ -319,6 +328,13 @@ void pathTracePixel(ivec2 pixel, ivec2 size) {
                 break;
             }
             throughput *= weight;
+            // Una direccion por debajo de la cara real (el normal map la
+            // inclina) chocaria con la propia superficie: se dobla justo por
+            // encima, como en rt_gi.comp.
+            float below = dot(direction, s.geometric);
+            if (below < 0.02) {
+                direction = normalize(direction + s.geometric * (0.02 - below));
+            }
 
             // Ruleta rusa desde el tercer rebote.
             if (bounce >= 2) {
@@ -329,7 +345,7 @@ void pathTracePixel(ivec2 pixel, ivec2 size) {
                 throughput /= survive;
             }
 
-            vec3 origin = s.position + s.normal * (0.01 + (0.0005 + lights.rain.w * 1.5) * length(s.position - camera.position.xyz));
+            vec3 origin = s.position + s.geometric * (0.01 + (0.0005 + lights.rain.w * 1.5) * length(s.position - camera.position.xyz));
             RtHit hit;
             if (!traceBounce(origin, direction, kMaxDistance, hit)) {
                 if (bounce == 0) sky_visibility = 1.0;

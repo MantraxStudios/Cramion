@@ -71,7 +71,7 @@ const float kProbeSkyDistance = 2500.0;
 const float kTwoPi = 6.28318531;
 
 float linearDepth(float depth) {
-    return camera.projection[3][2] / (depth + camera.projection[2][2]);
+    return (camera.projection[3][2] - depth * camera.projection[3][3]) / (camera.projection[2][2] - depth * camera.projection[2][3]);
 }
 
 vec3 viewFromDepth(vec2 uv, float depth) {
@@ -80,8 +80,11 @@ vec3 viewFromDepth(vec2 uv, float depth) {
     // Con el desplazamiento del centro ([2][0], [2][1]): cada ojo de un casco
     // de VR tiene un campo de vision asimetrico (y el TAA mueve el centro con
     // su jitter). Sin el, en VR todo salia desplazado y la luz se ennegrecia.
-    return vec3((ndc.x + camera.projection[2][0]) * z / camera.projection[0][0],
-                (ndc.y + camera.projection[2][1]) * z / camera.projection[1][1], -z);
+    // Forma general (perspectiva y ortografica): w del clip = P[2][3] z_v +
+    // P[3][3] con z_v = -z. En perspectiva es lo de siempre, (ndc + P[2][.]) z / P[.][.].
+    float w = camera.projection[3][3] - camera.projection[2][3] * z;
+    return vec3((ndc.x * w + camera.projection[2][0] * z - camera.projection[3][0]) / camera.projection[0][0],
+                (ndc.y * w + camera.projection[2][1] * z - camera.projection[3][1]) / camera.projection[1][1], -z);
 }
 
 vec3 decodeNormal(vec2 e) {
@@ -103,7 +106,9 @@ float luminance(vec3 c) {
 }
 
 vec3 capLuminance(vec3 light) {
-    light = max(light, vec3(0.0));
+    // NaN e infinito fuera (las particulas y el fuego se suman despues del
+    // tope de la iluminacion): Inf * 0 daba NaN y se quedaba en la historia.
+    light = clamp(mix(light, vec3(0.0), isnan(light)), vec3(0.0), vec3(65504.0));
     return light * min(1.0, kMaxLuminance / max(luminance(light), 0.0001));
 }
 

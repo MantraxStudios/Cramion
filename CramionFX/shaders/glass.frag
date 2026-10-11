@@ -128,7 +128,7 @@ vec3 toLinear(vec3 color) {
 }
 
 float linearDepth(float depth) {
-    return camera.projection[3][2] / (depth + camera.projection[2][2]);
+    return (camera.projection[3][2] - depth * camera.projection[3][3]) / (camera.projection[2][2] - depth * camera.projection[2][3]);
 }
 
 bool project(vec3 view_position, out vec2 uv) {

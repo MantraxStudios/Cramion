@@ -136,7 +136,7 @@ float rainExposure(vec3 world_position) {
             ivec2 p = clamp(base + ivec2(x - 1, y - 1), ivec2(0), size - 1);
             float above = texelFetch(rain_map, p, 0).r;
             // Margen: ~15 cm (el propio suelo tambien sale en el mapa).
-            exposed += smoothstep(0.004, 0.0015, rain.z - above) * wx[x] * wy[y];
+            exposed += (1.0 - smoothstep(0.0015, 0.004, rain.z - above)) * wx[x] * wy[y];
         }
     }
     return exposed;

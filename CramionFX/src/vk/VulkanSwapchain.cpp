@@ -162,12 +162,24 @@ vk::SurfaceFormatKHR VulkanSwapchain::chooseSurfaceFormat(
         throw std::runtime_error("La superficie no expone ningun formato de color.");
     }
 
-    // Preferencia: BGRA8 en espacio sRGB no lineal (el habitual en Windows).
-    for (const auto& format : available) {
-        if (format.format == vk::Format::eB8G8R8A8Unorm &&
-            format.colorSpace == vk::ColorSpaceKHR::eSrgbNonlinear) {
-            return format;
+    // Un formato UNORM: la composicion ya aplica la curva sRGB a mano. Uno
+    // _SRGB la aplicaria otra vez (imagen lavada). Preferencia: BGRA8 (el
+    // habitual en Windows), luego RGBA8 (Android) y luego el de 10 bits.
+    const std::array<vk::Format, 4> preferred = {vk::Format::eB8G8R8A8Unorm, vk::Format::eR8G8B8A8Unorm,
+                                                 vk::Format::eA2B10G10R10UnormPack32,
+                                                 vk::Format::eA2R10G10B10UnormPack32};
+    for (const vk::Format wanted : preferred) {
+        for (const auto& format : available) {
+            if (format.format == wanted && format.colorSpace == vk::ColorSpaceKHR::eSrgbNonlinear) {
+                return format;
+            }
         }
+    }
+    // Como ultimo recurso cualquiera que no sea _SRGB.
+    for (const auto& format : available) {
+        const bool srgb = format.format == vk::Format::eB8G8R8A8Srgb || format.format == vk::Format::eR8G8B8A8Srgb ||
+                          format.format == vk::Format::eA8B8G8R8SrgbPack32;
+        if (!srgb && format.colorSpace == vk::ColorSpaceKHR::eSrgbNonlinear) return format;
     }
     return available.front();
 }

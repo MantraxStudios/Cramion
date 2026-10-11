@@ -155,14 +155,20 @@ bool surfaceLightmap(vec3 world, vec3 n, out vec4 result) {
 }
 
 void main() {
-    float depth = textureLod(g_depth, v_uv, 0.0).r;
+    // El texel h de media resolucion representa al pixel completo 2h (como
+    // ssgi.frag; lighting.frag lo reconstruye asi). Con v_uv el centro caia
+    // justo entre los pixeles 2h y 2h + 1 y el muestreador elegia uno u otro.
+    ivec2 full_size = textureSize(g_depth, 0);
+    ivec2 pixel = min(ivec2(gl_FragCoord.xy) * 2, full_size - 1);
+    float depth = texelFetch(g_depth, pixel, 0).r;
     if (depth >= 1.0) {
         out_gi = vec4(0.0, 0.0, 0.0, 1.0);
         return;
     }
-    vec4 world_h = camera.inverse_view_projection * vec4(v_uv * 2.0 - 1.0, depth, 1.0);
+    vec2 uv = (vec2(pixel) + 0.5) / vec2(full_size);
+    vec4 world_h = camera.inverse_view_projection * vec4(uv * 2.0 - 1.0, depth, 1.0);
     vec3 world = world_h.xyz / world_h.w;
-    vec3 normal = decodeNormal(textureLod(g_normal, v_uv, 0.0).rg);
+    vec3 normal = decodeNormal(texelFetch(g_normal, pixel, 0).rg);
     // Lightmap de superficie primero (mas detalle); si no cubre el punto, las sondas.
     vec4 surface;
     if (surfaceLightmap(world, normal, surface)) {

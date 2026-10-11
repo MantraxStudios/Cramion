@@ -8,6 +8,7 @@ layout(push_constant) uniform VoxelPush {
     vec4 origin_time;  // xyz esquina de la seccion, w segundos
     mat4 light_view_projection;
     uint shadow;
+    float previous_time;  // segundos del frame anterior (vectores de movimiento)
 } push;
 
 const vec3 kFaceNormal[7] = vec3[](vec3(1.0, 0.0, 0.0), vec3(-1.0, 0.0, 0.0), vec3(0.0, 1.0, 0.0), vec3(0.0, -1.0, 0.0),

@@ -53,7 +53,7 @@ const int kMaxSteps = 120;
 const float kPi = 3.14159265;
 
 float linearDepth(float depth) {
-    return camera.projection[3][2] / (depth + camera.projection[2][2]);
+    return (camera.projection[3][2] - depth * camera.projection[3][3]) / (camera.projection[2][2] - depth * camera.projection[2][3]);
 }
 
 // Ruido de valor 3D con dos lecturas de una textura 2D (capas desplazadas
@@ -240,10 +240,18 @@ void main() {
     // Con el desplazamiento del centro (ojos de VR asimetricos, jitter del TAA).
     vec3 view_ray = vec3((ndc.x + camera.projection[2][0]) / camera.projection[0][0],
                          (ndc.y + camera.projection[2][1]) / camera.projection[1][1], -1.0);
+    vec3 view_origin = vec3(0.0);
+    if (camera.projection[2][3] == 0.0) {
+        // Ortografica: rayos paralelos (-Z) desde el punto del pixel en el
+        // plano de la camara.
+        view_origin = vec3((ndc.x - camera.projection[3][0]) / camera.projection[0][0],
+                           (ndc.y - camera.projection[3][1]) / camera.projection[1][1], 0.0);
+        view_ray = vec3(0.0, 0.0, -1.0);
+    }
     vec3 ray = transpose(mat3(camera.view)) * view_ray;
     float ray_scale = length(ray);
     vec3 rd = ray / ray_scale;
-    vec3 ro = camera.position.xyz;
+    vec3 ro = camera.position.xyz + transpose(mat3(camera.view)) * view_origin;
     float depth = textureLod(g_depth, v_uv, 0.0).r;
     float scene_t = depth >= 0.999999 ? 1e9 : linearDepth(depth) * ray_scale;
 
@@ -251,6 +259,14 @@ void main() {
     float transmittance = 1.0;
     float jitter = interleavedGradientNoise(gl_FragCoord.xy, fire.params.y);
     vec3 inv = 1.0 / mix(rd, vec3(1e-6), lessThan(abs(rd), vec3(1e-6)));
+    // Las zonas que cruza el rayo, de delante atras: march() acumula con la
+    // transmitancia de lo que ya recorrio, asi que en el orden de los indices
+    // un fuego lejano se sumaba entero aunque delante hubiera una columna de
+    // humo.
+    float zone_enter[4];
+    float zone_leave[4];
+    int zone_order[4];
+    int zones = 0;
     for (int z = 0; z < 4; ++z) {
         if (fire.box_min[z].w < 0.5) {
             continue;
@@ -264,7 +280,21 @@ void main() {
         if (leave <= enter) {
             continue;
         }
-        march(z, ro, rd, enter, leave, jitter, radiance, transmittance);
+        // Insercion ordenada por la entrada (4 como mucho).
+        int at = zones;
+        while (at > 0 && zone_enter[at - 1] > enter) {
+            zone_enter[at] = zone_enter[at - 1];
+            zone_leave[at] = zone_leave[at - 1];
+            zone_order[at] = zone_order[at - 1];
+            --at;
+        }
+        zone_enter[at] = enter;
+        zone_leave[at] = leave;
+        zone_order[at] = z;
+        ++zones;
+    }
+    for (int k = 0; k < zones; ++k) {
+        march(zone_order[k], ro, rd, zone_enter[k], zone_leave[k], jitter, radiance, transmittance);
     }
     out_color = vec4(radiance, transmittance);
 }

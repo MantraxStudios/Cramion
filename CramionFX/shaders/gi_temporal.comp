@@ -61,7 +61,14 @@ float giLuminance(vec4 gi) {
 }
 
 float linearDepth(float depth) {
-    return camera.projection[3][2] / (depth + camera.projection[2][2]);
+    return (camera.projection[3][2] - depth * camera.projection[3][3]) / (camera.projection[2][2] - depth * camera.projection[2][3]);
+}
+
+// La GI de este frame sin NaN ni infinitos (un pixel malo se quedaria en la
+// historia para siempre).
+vec4 currentGi(ivec2 p) {
+    vec4 c = texelFetch(current_gi, p, 0);
+    return any(isnan(c)) || any(isinf(c)) ? vec4(0.0, 0.0, 0.0, 1.0) : c;
 }
 
 void main() {
@@ -74,7 +81,7 @@ void main() {
     ivec2 full_size = textureSize(g_depth, 0);
     ivec2 full_pixel = min(pixel * 2, full_size - 1);
     float depth = texelFetch(g_depth, full_pixel, 0).r;
-    vec4 current = texelFetch(current_gi, pixel, 0);
+    vec4 current = currentGi(pixel);
     if (depth >= 1.0) {
         imageStore(out_color, pixel, vec4(0.0, 0.0, 0.0, 1.0));
         imageStore(out_moments, pixel, vec4(0.0, 0.0, 0.0, 0.0));
@@ -117,10 +124,13 @@ void main() {
                 continue;
             }
             vec4 moments = texelFetch(history_moments, p, 0);
+            vec4 history = texelFetch(history_gi, p, 0);
             bool same_surface = moments.z > 0.0 &&
                                 abs(moments.w - previous_clip.w) < 0.05 * previous_clip.w + 0.05;
-            if (same_surface && bilinear[i] > 0.0) {
-                previous_color += texelFetch(history_gi, p, 0) * bilinear[i];
+            // Un NaN guardado no se iria nunca (mix con NaN es NaN).
+            bool finite = !any(isnan(history)) && !any(isinf(history)) && !any(isnan(moments));
+            if (same_surface && finite && bilinear[i] > 0.0) {
+                previous_color += history * bilinear[i];
                 previous_moments += moments * bilinear[i];
                 history_weight += bilinear[i];
             }
@@ -148,7 +158,7 @@ void main() {
         vec4 sum_squares = vec4(0.0);
         for (int y = -1; y <= 1; ++y) {
             for (int x = -1; x <= 1; ++x) {
-                vec4 c = texelFetch(current_gi, clamp(pixel + ivec2(x, y), ivec2(0), size - 1), 0);
+                vec4 c = currentGi(clamp(pixel + ivec2(x, y), ivec2(0), size - 1));
                 sum += c;
                 sum_squares += c * c;
             }
@@ -182,7 +192,7 @@ void main() {
         for (int y = -1; y <= 1; ++y) {
             for (int x = -1; x <= 1; ++x) {
                 ivec2 p = clamp(pixel + ivec2(x, y), ivec2(0), size - 1);
-                float l = giLuminance(texelFetch(current_gi, p, 0));
+                float l = giLuminance(currentGi(p));
                 spatial += vec2(l, l * l);
             }
         }
@@ -190,6 +200,13 @@ void main() {
         variance = max(spatial.y - spatial.x * spatial.x, 0.0) * (4.0 / history_length);
     }
 
+    // Ultima defensa: nada que no sea finito entra en la historia.
+    if (any(isnan(color)) || any(isinf(color)) || any(isnan(moments)) || any(isinf(moments))) {
+        color = current;
+        moments = vec2(current_luminance, current_luminance * current_luminance);
+        history_length = 1.0;
+        variance = 0.0;
+    }
     imageStore(out_color, pixel, color);
     imageStore(out_moments, pixel, vec4(moments, history_length, view_depth));
     imageStore(out_variance, pixel, vec4(variance));

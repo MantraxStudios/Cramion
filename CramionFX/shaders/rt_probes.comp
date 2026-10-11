@@ -101,7 +101,7 @@ void main() {
         shBasis(direction, y);
         RtHit hit;
         if (traceRay(position, direction, kMaxDistance, hit)) {
-            if (dot(hit.normal, direction) > 0.0) ++backfaces;
+            if (!hit.front_face) ++backfaces;
             vec3 light = hitRadiance(hit, 4.0, false);
             light *= min(1.0, kMaxLuminance / max(luminance(light), 1e-4));
             for (int k = 0; k < 9; ++k) sh[k] += light * y[k];

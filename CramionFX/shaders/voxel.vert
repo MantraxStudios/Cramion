@@ -21,6 +21,12 @@ layout(set = 0, binding = 0) uniform CameraBuffer {
 
 layout(location = 0) in uvec2 in_packed;
 
+// Desplazamiento del viento en el instante `t`.
+vec3 windSway(float t, float phase, float weight) {
+    vec2 sway = vec2(sin(t * 1.6 + phase), cos(t * 1.25 + phase * 1.31)) * 0.055;
+    return vec3(sway.x, sin(t * 2.1 + phase * 1.7) * 0.012, sway.y) * weight;
+}
+
 layout(location = 0) out vec3 v_world_position;
 layout(location = 1) out vec2 v_uv;
 layout(location = 2) flat out uvec2 v_face_layer;  // x cara, y capa
@@ -44,14 +50,15 @@ void main() {
     vec3 tint = vec3(float((b >> 18u) & 15u), float((b >> 22u) & 15u), float((b >> 26u) & 15u)) / 15.0;
 
     vec3 world = push.origin_time.xyz + local;
+    vec3 previous_world = world;
     if (waves) {
         // Viento: las plantas se mueven por arriba (v = 0), las hojas enteras y poco.
-        float t = push.origin_time.w;
         float phase = dot(world.xz, vec2(0.37, 0.29)) + world.y * 0.21;
-        vec2 sway = vec2(sin(t * 1.6 + phase), cos(t * 1.25 + phase * 1.31)) * 0.055;
         float weight = face == 6u ? (1.0 - uv.y) * 1.6 : 0.45;
-        world.xz += sway * weight;
-        world.y += sin(t * 2.1 + phase * 1.7) * 0.012 * weight;
+        world += windSway(push.origin_time.w, phase, weight);
+        // Donde estaba el frame anterior: sin esto el vector de movimiento
+        // solo veia la camara y el TAA emborronaba las hojas al mecerse.
+        previous_world += windSway(push.previous_time, phase, weight);
     }
 
     v_world_position = world;
@@ -61,7 +68,7 @@ void main() {
     v_tint = tint;
     v_to_camera = camera.position.xyz - world;
     v_current_clip = camera.unjittered_view_projection * vec4(world, 1.0);
-    v_previous_clip = camera.previous_view_projection * vec4(world, 1.0);
+    v_previous_clip = camera.previous_view_projection * vec4(previous_world, 1.0);
     gl_Position = push.shadow != 0u ? push.light_view_projection * vec4(world, 1.0)
                                     : camera.view_projection * vec4(world, 1.0);
 }

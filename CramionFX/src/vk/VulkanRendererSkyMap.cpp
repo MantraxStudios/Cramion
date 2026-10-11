@@ -395,7 +395,7 @@ void VulkanRenderer::createDofFocus() {
     ComputePassDesc desc{};
     desc.shader = "dof_focus.comp.spv";
     desc.bindings = bindings;
-    desc.push_constant_size = sizeof(core::Vec4);
+    desc.push_constant_size = 2 * sizeof(core::Vec4);  // ver recordDofFocusMeasure
     dof_focus_pass_.create(device_, desc);
 
     const std::array<vk::DescriptorPoolSize, 2> sizes = {
@@ -453,11 +453,15 @@ void VulkanRenderer::recordDofFocusMeasure(const vk::raii::CommandBuffer& cmd, s
     cmd.bindPipeline(vk::PipelineBindPoint::eCompute, *dof_focus_pass_.pipeline());
     cmd.bindDescriptorSets(vk::PipelineBindPoint::eCompute, *dof_focus_pass_.layout(), 0, *dof_focus_sets_[frame_index],
                            nullptr);
-    const core::Vec4 camera{camera_projection_.m[3][2], camera_projection_.m[2][2],
-                            static_cast<float>(render_extent_.width) /
-                                static_cast<float>(std::max(render_extent_.height, 1u)),
-                            0.0f};
-    cmd.pushConstants<core::Vec4>(*dof_focus_pass_.layout(), vk::ShaderStageFlagBits::eCompute, 0, camera);
+    // camera: [3][2], [2][2] y ancho / alto; projection_w: [2][3] y [3][3]
+    // (la profundidad lineal tambien con la camara ortografica).
+    const std::array<core::Vec4, 2> push{
+        core::Vec4{camera_projection_.m[3][2], camera_projection_.m[2][2],
+                   static_cast<float>(render_extent_.width) / static_cast<float>(std::max(render_extent_.height, 1u)),
+                   0.0f},
+        core::Vec4{camera_projection_.m[2][3], camera_projection_.m[3][3], 0.0f, 0.0f}};
+    cmd.pushConstants<std::array<core::Vec4, 2>>(*dof_focus_pass_.layout(), vk::ShaderStageFlagBits::eCompute, 0,
+                                                 push);
     cmd.dispatch(1, 1, 1);
     // La lee la CPU cuando vuelva a tocar este hueco (despues de su fence).
     memoryBarrier(cmd, vk::PipelineStageFlagBits2::eComputeShader, vk::AccessFlagBits2::eShaderStorageWrite,

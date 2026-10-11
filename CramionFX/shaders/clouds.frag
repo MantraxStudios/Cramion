@@ -60,8 +60,11 @@ const int kMaxSteps = 128;
 const int kLightSteps = 6;
 const float kShapeScale = 1.0 / 24000.0;   // una repeticion del ruido de forma cada 24 km
 const float kDetailScale = 1.0 / 3500.0;
-const float kFineScale = 1.0 / 900.0;      // segunda erosion (bordes nitidos de cerca)
-const float kWeatherScale = 1.0 / 60000.0; // mapa de clima: manchas de decenas de km
+// Todas dividen exactamente los 168 km a los que la CPU devuelve el viento y
+// el origen del mundo (VulkanRenderer: kCloudPeriod): si no, al dar la vuelta
+// todas las nubes cambiaban de golpe (900 m y 60 km no dividian).
+const float kFineScale = 1.0 / 875.0;      // segunda erosion (bordes nitidos de cerca); 192 por periodo
+const float kWeatherScale = 1.0 / 56000.0; // mapa de clima: manchas de decenas de km; 3 por periodo
 const float kExtinction = 0.045;           // por metro, con densidad 1
 
 float cloudBottom() { return push.layer.x; }

@@ -165,10 +165,14 @@ void main() {
         vec2 center_bary = (p0 + p1 + p2) / 3.0;
         vec2 center_uv = uv_a * (1.0 - center_bary.x - center_bary.y) + uv_b * center_bary.x + uv_c * center_bary.y;
         float center = textureLod(rt_textures[nonuniformEXT(texture_index)], center_uv, 0.0).a * alpha_factor;
+        // En un mip la media de 4^lod texeles esconde un agujero de uno solo
+        // (8x8 con un texel transparente da 0.984): el margen se estrecha con
+        // lo que promedia cada muestra para que "seguro" lo sea de verdad.
+        float slack = 0.2 / exp2(2.0 * lod);
         uint state;
-        if (lowest >= 0.95) {
+        if (lowest >= max(0.95, 1.0 - slack)) {
             state = 1u;  // opaco seguro
-        } else if (highest <= 0.05) {
+        } else if (highest <= min(0.05, slack)) {
             state = 0u;  // transparente seguro
         } else {
             state = center >= 0.5 ? 3u : 2u;  // desconocido (lo decide el shader)

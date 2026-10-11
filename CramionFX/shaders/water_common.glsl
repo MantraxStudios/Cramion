@@ -168,7 +168,8 @@ bool insideLake(WaterBody b, vec2 xz, float margin) {
     float c = cos(b.origin.w);
     float s = sin(b.origin.w);
     vec2 d = xz - b.origin.xz;
-    vec2 local = vec2(d.x * c + d.y * s, -d.x * s + d.y * c);
+    // La inversa del giro de water.vert (local -> mundo = (c x + s y, -s x + c y)).
+    vec2 local = vec2(d.x * c - d.y * s, d.x * s + d.y * c);
     return all(lessThanEqual(abs(local), b.extent.xy + vec2(margin)));
 }
 
@@ -180,7 +181,13 @@ float waterSurfaceHeight(WaterBody b, vec2 xz, float t) {
     if (type == 0 && oceanAvailable()) return b.origin.y + oceanHeight(xz - b.origin.xz, 0.1);
     vec3 n;
     float j;
-    return b.origin.y + gerstnerWaves(b, xz - b.origin.xz, t, 0.0, n, j).y;
+    // La ola tambien desplaza en horizontal: se busca el punto que acaba
+    // bajo `xz` (como sampleWater en la CPU). Con la altura del punto sin
+    // desplazar la linea del agua no coincidia con la superficie que se ve.
+    vec2 p = xz - b.origin.xz;
+    vec2 q = p;
+    for (int i = 0; i < 4; ++i) q = p - gerstnerWaves(b, q, t, 0.0, n, j).xz;
+    return b.origin.y + gerstnerWaves(b, q, t, 0.0, n, j).y;
 }
 
 // --- Luz bajo el agua (comun a la superficie vista desde abajo y al volumen) ---

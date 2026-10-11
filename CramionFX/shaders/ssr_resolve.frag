@@ -48,6 +48,22 @@ vec4 premultiply(vec4 reflection) {
     return vec4(rgb / (1.0 + luminance(rgb)) * reflection.a, reflection.a);
 }
 
+// La historia en ese punto, bilineal a mano premultiplicando cada texel: la
+// historia guarda el color sin premultiplicar (0 donde no hay reflejo) y
+// premultiplicar el bilineal ya mezclado contaba la confianza dos veces
+// (borde oscuro en los reflejos al moverse).
+vec4 historyPremultiplied(vec2 uv) {
+    ivec2 size = textureSize(history, 0);
+    vec2 texel = uv * vec2(size) - 0.5;
+    ivec2 base = ivec2(floor(texel));
+    vec2 f = texel - vec2(base);
+    vec4 a = premultiply(texelFetch(history, clamp(base, ivec2(0), size - 1), 0));
+    vec4 b = premultiply(texelFetch(history, clamp(base + ivec2(1, 0), ivec2(0), size - 1), 0));
+    vec4 c = premultiply(texelFetch(history, clamp(base + ivec2(0, 1), ivec2(0), size - 1), 0));
+    vec4 d = premultiply(texelFetch(history, clamp(base + ivec2(1, 1), ivec2(0), size - 1), 0));
+    return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+}
+
 void main() {
     ivec2 size = textureSize(current_reflection, 0);
     ivec2 pixel = ivec2(gl_FragCoord.xy);
@@ -81,7 +97,7 @@ void main() {
     vec4 result = current;
     if (previous_clip.w > 0.0 && all(greaterThanEqual(previous_uv, vec2(0.0))) &&
         all(lessThanEqual(previous_uv, vec2(1.0)))) {
-        vec4 previous = premultiply(textureLod(history, previous_uv, 0.0));
+        vec4 previous = historyPremultiplied(previous_uv);
         // Un poco de margen sobre el rango: el recorte estricto devuelve el
         // parpadeo que se quiere quitar.
         vec4 margin = (high - low) * 0.25 + vec4(0.002);

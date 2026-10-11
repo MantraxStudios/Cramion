@@ -65,8 +65,14 @@ void main() {
     vec4 w0 = texture(splat0, v_uv);
     vec4 w1 = texture(splat1, v_uv);
     float weights[8] = float[](w0.r, w0.g, w0.b, w0.a, w1.r, w1.g, w1.b, w1.a);
+    int layers = int(terrain.info.w);
+    // Solo cuentan las capas que existen: el peso que quede en el canal de una
+    // capa borrada no debe oscurecer el resto (ni dejar el punto sin normal).
     float total = 0.0;
-    for (int i = 0; i < 8; ++i) total += weights[i];
+    for (int i = 0; i < 8; ++i) {
+        if (i >= layers) weights[i] = 0.0;
+        total += weights[i];
+    }
     if (total < 1e-4) {
         weights[0] = 1.0;
         total = 1.0;
@@ -79,7 +85,6 @@ void main() {
     vec3 tangent_normal = vec3(0.0);
     float roughness = 0.0;
     float metallic = 0.0;
-    int layers = int(terrain.info.w);
     // Derivadas del patron FUERA del bucle: dentro, las capas que se saltan
     // (peso casi 0) dejan a los vecinos del cuadro 2x2 sin derivadas y el mip
     // de texture() salia indefinido justo en la mezcla entre capas (brillos y
@@ -116,7 +121,8 @@ void main() {
         roughness += p.y * w;
         metallic += p.z * w;
     }
-    tangent_normal = normalize(tangent_normal);
+    // Sin ninguna capa (terreno recien creado) la suma es 0: normal plana.
+    tangent_normal = dot(tangent_normal, tangent_normal) > 1e-8 ? normalize(tangent_normal) : vec3(0.0, 0.0, 1.0);
     vec3 normal = normalize(mat3(t, b, n) * vec3(tangent_normal.x, -tangent_normal.y, tangent_normal.z));
 
     writeSurface(vec4(clamp(albedo, 0.0, 1.0), 1.0), n, normal, tangent_normal, n, clamp(metallic, 0.0, 1.0),

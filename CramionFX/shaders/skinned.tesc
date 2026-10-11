@@ -54,13 +54,13 @@ float maxFactor() {
 
 float edgeFactor(vec3 a, vec3 b) {
     float distance_to_camera = max(length(0.5 * (a + b) - camera.position.xyz), 0.05);
-    float pixels = length(a - b) * camera.projection[1][1] * 0.5 * max(camera.jitter.w, 1.0) / distance_to_camera;
+    float pixels = length(a - b) * abs(camera.projection[1][1]) * 0.5 * max(camera.jitter.w, 1.0) / distance_to_camera;
     return clamp(pixels / kTargetPixels, 1.0, maxFactor());
 }
 
 // Fuera de la vista (con margen por el relieve): no se dibuja.
 bool outsideView() {
-    float slack = push.emissive.w * max(camera.projection[0][0], camera.projection[1][1]);
+    float slack = push.emissive.w * max(abs(camera.projection[0][0]), abs(camera.projection[1][1]));
     vec4 c0 = camera.view_projection * vec4(in_world_position[0], 1.0);
     vec4 c1 = camera.view_projection * vec4(in_world_position[1], 1.0);
     vec4 c2 = camera.view_projection * vec4(in_world_position[2], 1.0);

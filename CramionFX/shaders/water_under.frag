@@ -234,7 +234,7 @@ void main() {
                 float off_ray = length(to_center - ray * along);
                 float radius = 0.004 * along + 0.002;
                 float twinkle = 0.6 + 0.4 * sin(t * (1.0 + h.y * 2.0) + h.z * 6.283);
-                motes += smoothstep(radius, radius * 0.3, off_ray) * twinkle * exp(-along * 0.15);
+                motes += (1.0 - smoothstep(radius * 0.3, radius, off_ray)) * twinkle * exp(-along * 0.15);
             }
             cell *= 2.0;
         }

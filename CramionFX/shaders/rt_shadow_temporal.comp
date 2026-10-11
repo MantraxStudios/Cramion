@@ -50,7 +50,7 @@ layout(push_constant) uniform PushConstants {
 const int kSlots = 4;
 
 float linearDepth(float depth) {
-    return camera.projection[3][2] / (depth + camera.projection[2][2]);
+    return (camera.projection[3][2] - depth * camera.projection[3][3]) / (camera.projection[2][2] - depth * camera.projection[2][3]);
 }
 
 vec3 decodeNormal(vec2 e) {

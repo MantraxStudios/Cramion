@@ -45,7 +45,7 @@ const float kTargetPixels = 10.0;
 float edgeFactor(vec3 a, vec3 b) {
     vec3 s = push.model_scale.xyz;
     float distance_to_camera = max(length((0.5 * (a + b) - push.camera_model.xyz) * s), 0.05);
-    float pixels = length((a - b) * s) * camera.projection[1][1] * 0.5 * max(camera.jitter.w, 1.0) / distance_to_camera;
+    float pixels = length((a - b) * s) * abs(camera.projection[1][1]) * 0.5 * max(camera.jitter.w, 1.0) / distance_to_camera;
     return clamp(pixels / kTargetPixels, 1.0, clamp(push.max_factor, 1.0, 64.0));
 }
 

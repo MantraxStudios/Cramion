@@ -25,6 +25,9 @@ vec3 sanitize(vec3 c) {
     return clamp(mix(c, vec3(0.0), isnan(c)), vec3(0.0), vec3(65504.0));
 }
 AF4 FsrRcasLoadF(ASU2 p) {
+    // RCAS lee los vecinos (p +- 1): en el borde de la imagen, fuera sin
+    // robustez es indefinido. Se recorta al borde.
+    p = clamp(p, ASU2(0), ASU2(textureSize(source, 0)) - ASU2(1));
     vec3 c = sanitize(texelFetch(source, p, 0).rgb);
     return vec4(c / (1.0 + c), 1.0);
 }

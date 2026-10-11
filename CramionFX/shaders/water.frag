@@ -220,7 +220,7 @@ vec3 oceanNormal(vec2 p, float footprint, out float jacobian, out float foam, ou
 }
 
 // --- Pantalla ---
-float linearDepth(float depth) { return camera.projection[3][2] / (depth + camera.projection[2][2]); }
+float linearDepth(float depth) { return (camera.projection[3][2] - depth * camera.projection[3][3]) / (camera.projection[2][2] - depth * camera.projection[2][3]); }
 
 vec3 worldFromDepth(vec2 uv, float depth) {
     vec4 clip = vec4(uv * 2.0 - 1.0, depth, 1.0);
@@ -563,8 +563,11 @@ void main() {
         // fondo de detras queda mas alto que el punto).
         float floor_depth = thickness * clamp(dot(view_direction, geometric), 0.0, 1.0);
         vec2 entry = refract_floor.xz + sun_direction.xz / max(sun_direction.y, 0.2) * floor_depth;
-        vec2 caustic_uv = river ? river_uv0 : entry - b.origin.xz;
-        float c = caustic(caustic_uv, t * 1.3) * b.look.z * shadow * sun_height *
+        // En el rio las dos fases de la corriente mezcladas, como el resto de
+        // lo que arrastra: con una sola el dibujo saltaba en cada ciclo.
+        float pattern = river ? mix(caustic(river_uv0, t * 1.3), caustic(river_uv1, t * 1.3), flow_weight)
+                              : caustic(entry - b.origin.xz, t * 1.3);
+        float c = pattern * b.look.z * shadow * sun_height *
                   smoothstep(0.0, 0.4, floor_depth) * exp(-floor_depth * 0.35);
         refracted *= 1.0 + c;
     }
@@ -670,14 +673,14 @@ void main() {
         // Borreguitos del FFT: la espuma que deja cada ola al romper
         // (jacobiano) y que se va deshaciendo (water_fft.comp), mas la que
         // se forma ahora en las crestas comprimidas.
-        crest_foam = fft_foam * 1.2 + smoothstep(0.55, 0.1, jacobian) * 0.6 * clamp(b.deep.w, 0.0, 1.0);
+        crest_foam = fft_foam * 1.2 + (1.0 - smoothstep(0.1, 0.55, jacobian)) * 0.6 * clamp(b.deep.w, 0.0, 1.0);
     } else {
-        crest_foam = smoothstep(0.35, -0.1, jacobian) * smoothstep(0.35, 0.8, crest) * b.deep.w;
+        crest_foam = (1.0 - smoothstep(-0.1, 0.35, jacobian)) * smoothstep(0.35, 0.8, crest) * b.deep.w;
         if (!river) {
             float sea_state = smoothstep(0.3, 1.5, b.waves.x);
             float patches = smoothstep(0.45, 0.75, fbm(v_grid * 0.035 + vec2(t * 0.03, -t * 0.02), footprint * 0.035));
-            float breaking = smoothstep(0.55, 0.95, crest) * smoothstep(0.95, 0.6, jacobian);
-            float trailing = smoothstep(0.25, 0.6, crest) * smoothstep(0.9, 0.75, jacobian) * 0.35;
+            float breaking = smoothstep(0.55, 0.95, crest) * (1.0 - smoothstep(0.6, 0.95, jacobian));
+            float trailing = smoothstep(0.25, 0.6, crest) * (1.0 - smoothstep(0.75, 0.9, jacobian)) * 0.35;
             crest_foam = max(crest_foam, (breaking + trailing) * patches * sea_state * b.deep.w);
         }
     }

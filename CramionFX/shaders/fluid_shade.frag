@@ -112,7 +112,7 @@ void sampleThickness(vec2 uv, float z, out vec4 absorb, out vec4 scatter, out ve
     absorb = textureLod(thick_absorb, uv, 0.0);
     scatter = textureLod(thick_scatter, uv, 0.0);
     emission = textureLod(thick_emission, uv, 0.0);
-    float pixels = fr.params.z * fr.projection[1][1] * 0.5 * fr.viewport.y / max(z, 1e-3);
+    float pixels = fr.params.z * abs(fr.projection[1][1]) * 0.5 * fr.viewport.y / max(z, 1e-3);
     pixels = min(pixels, 48.0);
     if (pixels < 1.5) return;
     vec2 r = pixels * fr.viewport.zw;

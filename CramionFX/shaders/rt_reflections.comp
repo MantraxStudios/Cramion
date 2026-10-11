@@ -105,8 +105,12 @@ void main() {
         float lod = clamp(log2(1.0 + hit.distance * (0.05 + roughness)), 0.0, 6.0);
         color = hitRadiance(hit, lod, true);
     } else {
-        // Cielo (y suelo lejano) del IBL, a la rugosidad de la superficie.
-        color = textureLod(environment_map, direction, roughness * kEnvironmentMaxLod).rgb;
+        // Cielo (y suelo lejano) del IBL. La direccion ya es una muestra del
+        // lobulo (GGX) y los filtros la promedian: el mip de la rugosidad
+        // entera emborronaba dos veces (reflejos mas borrosos que el IBL con
+        // el que se mezclan). Un desenfoque de un tercio de la rugosidad
+        // quita ruido y ensancha el lobulo apenas un 6 %.
+        color = textureLod(environment_map, direction, roughness * kEnvironmentMaxLod * 0.35).rgb;
     }
 
     // Entre kMaxRoughness * 0.75 y kMaxRoughness pasa suavemente al IBL.

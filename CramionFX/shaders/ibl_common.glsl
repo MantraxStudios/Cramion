@@ -16,14 +16,31 @@ const float kGroundAlbedo = 0.18;
 
 // Debe coincidir con skyLutUv() de lighting.frag y con sky_lut.frag.
 vec2 skyLutUv(vec3 direction) {
-    float azimuth = atan(direction.z, direction.x);
+    // atan(0, 0) no esta definido (algun driver da NaN): mirando justo arriba
+    // o abajo el acimut no importa.
+    float azimuth = abs(direction.x) + abs(direction.z) > 1e-7 ? atan(direction.z, direction.x) : 0.0;
     float elevation = asin(clamp(direction.y, -1.0, 1.0));
     float v = 0.5 + 0.5 * sign(elevation) * sqrt(abs(elevation) / (0.5 * kPi));
     return vec2(azimuth / (2.0 * kPi) + 0.5, v);
 }
 
+// La LUT da la vuelta en u (acimut -pi..pi), pero su muestreador recorta al
+// borde: a menos de medio texel del corte se mezclan a mano el ultimo y el
+// primer texel (si no, una linea vertical en el halo del sol hacia -X).
+vec3 skyLutFetch(vec2 uv) {
+    float width = float(textureSize(sky_lut, 0).x);
+    float x = uv.x * width - 0.5;
+    if (x < 0.0 || x > width - 1.0) {
+        float t = x < 0.0 ? x + 1.0 : x - (width - 1.0);  // 0 = ultimo texel, 1 = primero
+        vec3 last = textureLod(sky_lut, vec2((width - 0.5) / width, uv.y), 0.0).rgb;
+        vec3 first = textureLod(sky_lut, vec2(0.5 / width, uv.y), 0.0).rgb;
+        return mix(last, first, clamp(t, 0.0, 1.0));
+    }
+    return textureLod(sky_lut, uv, 0.0).rgb;
+}
+
 vec3 skySample(vec3 direction) {
-    return textureLod(sky_lut, skyLutUv(direction), 0.0).rgb;
+    return skyLutFetch(skyLutUv(direction));
 }
 
 // Radiancia media del hemisferio superior (cenit + anillo a 30 grados).

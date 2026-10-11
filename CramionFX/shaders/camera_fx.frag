@@ -23,6 +23,7 @@ layout(push_constant) uniform Push {
     vec4 params;     // x = modo, y = intensidad del motion blur, z = rastro maximo, w = frame
     vec4 dof;        // x = enfoque (m, < 0 = auto), y = numero f, z = focal (mm), w = desenfoque maximo
     vec4 camera;     // x, y = proyeccion [3][2] y [2][2], z = ancho / alto, w = 1 / alto
+    vec4 projection_w;  // x, y = proyeccion [2][3] y [3][3] (perspectiva -1, 0; ortografica 0, 1)
 } push;
 
 layout(location = 0) in vec2 v_uv;
@@ -32,7 +33,7 @@ const float kSensorHeight = 0.024;  // metros (35 mm de fotografia)
 const float kGoldenAngle = 2.39996323;
 
 float linearDepth(float depth) {
-    return push.camera.x / (depth + push.camera.y);
+    return (push.camera.x - depth * push.projection_w.y) / (push.camera.y - depth * push.projection_w.x);
 }
 
 float sceneDepth(vec2 uv) {
@@ -71,8 +72,10 @@ vec3 depthOfField() {
     vec3 center = textureLod(source, v_uv, 0.0).rgb;
 
     // Radio del disco: el mayor desenfoque posible (lo de delante puede
-    // esparcirse sobre este pixel aunque este enfocado).
-    float radius = push.dof.w;
+    // esparcirse sobre este pixel aunque este enfocado). El circulo de
+    // confusion es un diametro: el radio es la mitad (con el diametro entero
+    // el desenfoque salia el doble de lo que dicen la focal y el diafragma).
+    float radius = 0.5 * push.dof.w;
     const int kSamples = 64;
     float rotation = interleavedGradientNoise(gl_FragCoord.xy) * 6.2831853;
     float pixel = push.camera.w;  // un pixel en fraccion del alto
@@ -96,7 +99,7 @@ vec3 depthOfField() {
         float z = sceneDepth(uv);
         float coc = circleOfConfusion(z, focus);
         // Lo de detras no puede esparcirse sobre algo de delante mas nitido.
-        float reach = z > center_z ? min(abs(coc), abs(center_coc)) : abs(coc);
+        float reach = 0.5 * (z > center_z ? min(abs(coc), abs(center_coc)) : abs(coc));
         // Cuenta si su circulo llega hasta aqui (borde suave de un pixel).
         float w = clamp((reach - r) / pixel + 1.0, 0.0, 1.0);
         // Energia: un circulo grande reparte su luz en mas pixeles; los

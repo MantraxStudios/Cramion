@@ -26,7 +26,7 @@ void main() {
         vec2 p = vec2(v_uv.x, v_uv.y * 0.5 + 0.5);  // y: 0 suelo .. 1 arriba
         float crown = abs(p.x) * 0.9;
         float ring = 1.0 - smoothstep(0.0, 0.22, abs(p.y - (1.0 - crown * crown) * (0.4 + 0.6 * v_age)));
-        float rim = smoothstep(1.0, 0.75, abs(p.x));
+        float rim = (1.0 - smoothstep(0.75, 1.0, abs(p.x)));
         alpha = ring * rim * smoothstep(0.0, 0.08, p.y + 0.02);
     } else {
         // Rayo: nucleo brillante con un halo.

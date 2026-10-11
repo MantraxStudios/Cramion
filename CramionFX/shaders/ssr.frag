@@ -42,7 +42,7 @@ const float kMaxRoughness = 0.5;      // mas rugoso: solo IBL
 const float kMaxRadiance = 30.0;
 
 float linearDepth(float depth) {
-    return camera.projection[3][2] / (depth + camera.projection[2][2]);
+    return (camera.projection[3][2] - depth * camera.projection[3][3]) / (camera.projection[2][2] - depth * camera.projection[2][3]);
 }
 
 vec3 viewFromDepth(vec2 uv, float depth) {
@@ -51,8 +51,11 @@ vec3 viewFromDepth(vec2 uv, float depth) {
     // Con el desplazamiento del centro ([2][0], [2][1]): cada ojo de un casco
     // de VR tiene un campo de vision asimetrico (y el TAA mueve el centro con
     // su jitter). Sin el, en VR todo salia desplazado y la luz se ennegrecia.
-    return vec3((ndc.x + camera.projection[2][0]) * z / camera.projection[0][0],
-                (ndc.y + camera.projection[2][1]) * z / camera.projection[1][1], -z);
+    // Forma general (perspectiva y ortografica): w del clip = P[2][3] z_v +
+    // P[3][3] con z_v = -z. En perspectiva es lo de siempre, (ndc + P[2][.]) z / P[.][.].
+    float w = camera.projection[3][3] - camera.projection[2][3] * z;
+    return vec3((ndc.x * w + camera.projection[2][0] * z - camera.projection[3][0]) / camera.projection[0][0],
+                (ndc.y * w + camera.projection[2][1] * z - camera.projection[3][1]) / camera.projection[1][1], -z);
 }
 
 vec3 decodeNormal(vec2 e) {
@@ -92,7 +95,8 @@ void main() {
 
     vec3 position = viewFromDepth(v_uv, depth);
     vec3 normal = normalize(mat3(camera.view) * decodeNormal(normal_sample.rg));
-    vec3 view_direction = normalize(position);
+    // Ortografica (P[2][3] = 0): todos los rayos de la camara van por -Z.
+    vec3 view_direction = camera.projection[2][3] == 0.0 ? vec3(0.0, 0.0, -1.0) : normalize(position);
     vec3 ray = normalize(reflect(view_direction, normal));
 
     // Los rayos que vuelven hacia la camara salen enseguida del depth buffer

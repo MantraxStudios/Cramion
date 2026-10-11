@@ -136,7 +136,7 @@ vec3 toLinear(vec3 color) {
 }
 
 float linearDepth(float depth) {
-    return camera.projection[3][2] / (depth + camera.projection[2][2]);
+    return (camera.projection[3][2] - depth * camera.projection[3][3]) / (camera.projection[2][2] - depth * camera.projection[2][3]);
 }
 
 vec3 worldFromDepth(vec2 uv, float depth) {
@@ -261,6 +261,7 @@ struct RtHit {
     uint material;
     float distance;
     vec3 direction;  // del rayo que llego
+    bool front_face;  // el rayo llego por delante (antes de girar la normal hacia el)
 };
 
 void fillHit(uint model, uint geometry, uint primitive, vec2 barycentrics, float t, mat4x3 world_to_object,
@@ -319,8 +320,11 @@ void fillHit(uint model, uint geometry, uint primitive, vec2 barycentrics, float
     hit.direction = direction;
     hit.position = origin + direction * hit.distance;
     hit.normal = normalize(normal * mat3(world_to_object));
-    // Mallas de una cara vistas por detras: la normal mira al rayo.
-    if (dot(hit.normal, direction) > 0.0) {
+    // Mallas de una cara vistas por detras: la normal mira al rayo. Antes se
+    // apunta de que lado llego (las sondas cuentan las caras de atras para
+    // saber si estan dentro de una pared).
+    hit.front_face = dot(hit.normal, direction) <= 0.0;
+    if (!hit.front_face) {
         hit.normal = -hit.normal;
     }
     hit.uv = vec2(a.u, a.v) * w.x + vec2(b.u, b.v) * w.y + vec2(c.u, c.v) * w.z;
@@ -397,6 +401,8 @@ void cacheCell(vec3 position, vec3 normal, out uint slot, out uint check) {
     check = cacheHash(h ^ 0x9E3779B9u) | 1u;
 }
 
+float hitRandom(vec3 p, uint salt);
+
 // Suma una estimacion de irradiancia (/ pi) a la celda del punto.
 void cacheAdd(vec3 position, vec3 normal, vec3 irradiance) {
     if (any(isnan(irradiance)) || any(isinf(irradiance))) {
@@ -405,8 +411,29 @@ void cacheAdd(vec3 position, vec3 normal, vec3 irradiance) {
     uint slot;
     uint check;
     cacheCell(position, normal, slot, check);
-    uvec3 value = uvec3(min(irradiance, vec3(kMaxRadiance)) * kCacheFixed + 0.5);
+    // Redondeo con ruido (sin sesgo): con "+ 0.5" lo que no llegaba a medio
+    // paso (1/512: el cielo de noche, un interior oscuro) se quedaba en 0 en
+    // cada muestra y la celda salia negra. Asi la media de muchas muestras es
+    // la de verdad.
+    uvec3 value = uvec3(min(irradiance, vec3(kMaxRadiance)) * kCacheFixed + hitRandom(position, 0xCAC4Eu));
+    // La clave puede estar mas alla de un hueco vacio (una entrada caducada
+    // en medio de su cadena se borra): se busca en todos los huecos y solo si
+    // no esta se ocupa el primero libre. Si no, la celda se duplicaba y su
+    // historia volvia a empezar.
+    uint first_free = kCacheProbes;
     for (uint i = 0u; i < kCacheProbes; ++i) {
+        uint index = (slot + i) & (kCacheSize - 1u);
+        uint key = cache_keys[index];
+        if (key == check) {
+            atomicAdd(cache_accum[index].r, value.r);
+            atomicAdd(cache_accum[index].g, value.g);
+            atomicAdd(cache_accum[index].b, value.b);
+            atomicAdd(cache_accum[index].count, 1u);
+            return;
+        }
+        if (key == 0u && first_free == kCacheProbes) first_free = i;
+    }
+    for (uint i = first_free; i < kCacheProbes; ++i) {
         uint index = (slot + i) & (kCacheSize - 1u);
         uint previous = atomicCompSwap(cache_keys[index], 0u, check);
         if (previous == 0u || previous == check) {
@@ -427,13 +454,12 @@ bool cacheLookup(vec3 position, vec3 normal, out vec3 irradiance) {
     for (uint i = 0u; i < kCacheProbes; ++i) {
         uint index = (slot + i) & (kCacheSize - 1u);
         uint key = cache_keys[index];
+        // Sin parar en el primer hueco vacio: puede ser una entrada caducada
+        // en medio de la cadena (ver cacheAdd).
         if (key == check) {
             vec4 resolved = cache_resolved[index];
             irradiance = resolved.rgb;
             return resolved.w > 0.0;
-        }
-        if (key == 0u) {
-            break;
         }
     }
     irradiance = vec3(0.0);

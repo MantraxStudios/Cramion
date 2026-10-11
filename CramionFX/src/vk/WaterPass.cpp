@@ -678,7 +678,10 @@ void WaterPass::record(const vk::raii::CommandBuffer& cmd, std::uint32_t frame,
         cmd.bindPipeline(vk::PipelineBindPoint::eGraphics, *underwater_pipeline_);
         GpuWaterPush push{};
         push.body = static_cast<std::uint32_t>(underwater_);
-        push.mesh = static_cast<std::uint32_t>(bodies_[static_cast<std::size_t>(underwater_)].params.extent.z + 0.5f);
+        // Mismo codigo que la superficie (0 lago, 1 oceano, 2 rio); el tipo del
+        // cuerpo va al reves (0 oceano, 1 lago).
+        const float type = bodies_[static_cast<std::size_t>(underwater_)].params.extent.z;
+        push.mesh = type < 0.5f ? 1u : (type < 1.5f ? 0u : 2u);
         cmd.pushConstants<GpuWaterPush>(*layout_, stages, 0, push);
         cmd.draw(3, 1, 0, 0);
     }

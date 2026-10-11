@@ -52,7 +52,8 @@ vec3 decodeNormal(vec2 e) {
 }
 
 // Profundidad lineal (distancia de vista) a partir del depth, deshaciendo solo
-// la proyeccion: z = P[3][2] / (depth + P[2][2]).
+// la proyeccion: z = (P[3][2] - d P[3][3]) / (P[2][2] - d P[2][3]) (en
+// perspectiva, P[3][2] / (d + P[2][2]); asi vale tambien la ortografica).
 //
 // Hacerlo con la inversa completa de view-projection sumaba el error de
 // redondeo de la matriz al del propio depth: a 100 bloques la posicion salia
@@ -60,7 +61,7 @@ vec3 decodeNormal(vec2 e) {
 // sombras de contacto, y las caras superiores lejanas se "tapaban a si
 // mismas" con un ruido de puntos negros.
 float linearDepth(float depth) {
-    return camera.projection[3][2] / (depth + camera.projection[2][2]);
+    return (camera.projection[3][2] - depth * camera.projection[3][3]) / (camera.projection[2][2] - depth * camera.projection[2][3]);
 }
 
 // Posicion en espacio de vista.
@@ -70,8 +71,11 @@ vec3 viewFromDepth(vec2 uv, float depth) {
     // Con el desplazamiento del centro ([2][0], [2][1]): cada ojo de un casco
     // de VR tiene un campo de vision asimetrico (y el TAA mueve el centro con
     // su jitter). Sin el, en VR todo salia desplazado y la luz se ennegrecia.
-    return vec3((ndc.x + camera.projection[2][0]) * z / camera.projection[0][0],
-                (ndc.y + camera.projection[2][1]) * z / camera.projection[1][1], -z);
+    // Forma general (perspectiva y ortografica): w del clip = P[2][3] z_v +
+    // P[3][3] con z_v = -z. En perspectiva es lo de siempre, (ndc + P[2][.]) z / P[.][.].
+    float w = camera.projection[3][3] - camera.projection[2][3] * z;
+    return vec3((ndc.x * w + camera.projection[2][0] * z - camera.projection[3][0]) / camera.projection[0][0],
+                (ndc.y * w + camera.projection[2][1] * z - camera.projection[3][1]) / camera.projection[1][1], -z);
 }
 
 // Matriz de Bayer 4x4 normalizada: cada pixel de la ventana tiene un valor

@@ -18,9 +18,18 @@ layout(location = 0) out vec4 out_color;
 void main() {
     uint slot = push.slot;
     vec4 color = v_color;
+    // Alfa de la textura aparte: en la mezcla premultiplicada su color ya la
+    // lleva y no se vuelve a multiplicar.
+    float texture_alpha = 1.0;
     uint texture_slot = instances[slot].flags.w;
     if (texture_slot != VFX_NO_TEXTURE && texture_slot < 16u) {
-        color *= texture(vfx_textures[texture_slot], v_uv);
+        // Las texturas de los efectos son RGBA8 UNORM (sRGB sin convertir):
+        // a lineal, como en sprite.frag. Sin esto el humo y el fuego salian
+        // lavados y demasiado claros en la imagen HDR.
+        vec4 texel = texture(vfx_textures[texture_slot], v_uv);
+        texel.rgb = pow(texel.rgb, vec3(2.2));
+        texture_alpha = texel.a;
+        color *= texel;
     } else {
         float r2 = dot(v_corner, v_corner);
         if (r2 >= 1.0) discard;
@@ -48,8 +57,11 @@ void main() {
         // Aditiva: suma color * opacidad.
         out_color = vec4(rgb * color.a, 0.0);
     } else if (blend == 2u) {
-        // Premultiplicada: el color ya lleva la opacidad.
-        out_color = vec4(rgb * color.a, color.a);
+        // Premultiplicada: el color de la textura ya lleva su opacidad; solo
+        // se aplica el resto (la de la particula y la de las suaves). Antes
+        // salia igual que la de alfa, con el alfa de la textura dos veces
+        // (bordes oscuros).
+        out_color = vec4(rgb * (color.a / max(texture_alpha, 1e-4)), color.a);
     } else {
         out_color = vec4(rgb, color.a);
     }

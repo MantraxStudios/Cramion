@@ -75,7 +75,8 @@ void main() {
     uint i = gl_GlobalInvocationID.x;
     if (i >= push.counts.x) return;
     FoliageInstance inst = instances[i];
-    uint species = foliageSpecies(inst.packed);
+    // 2 bits pero solo 3 especies (las listas tienen kSpecies x 4): como en la CPU.
+    uint species = min(foliageSpecies(inst.packed), 2u);
     float scale = foliageScale(inst.packed);
     vec3 base = inst.position - push.offset.xyz;
     vec3 center = base + vec3(0.0, species_bounds[species].x * scale, 0.0);

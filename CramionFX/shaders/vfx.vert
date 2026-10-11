@@ -86,7 +86,12 @@ void main() {
     if (frames > 1.0) {
         float fps = instances[slot].output1.w;
         float f = fps > 0.0 ? mod(P3.w + floor(P0.w * fps), frames) : min(floor(P3.w + t * frames), frames - 1.0);
-        vec2 cell = vec2(mod(f, cols), floor(f / cols));
+        // Con enteros: f / cols en coma flotante puede quedarse justo por
+        // debajo en los multiplos exactos (una fila menos y la columna "cols":
+        // un cuadro equivocado).
+        uint frame_index = uint(f + 0.5) % uint(frames + 0.5);
+        uint column_count = uint(cols + 0.5);
+        vec2 cell = vec2(float(frame_index % column_count), float(frame_index / column_count));
         uv = (cell + uv) / vec2(cols, rows);
     }
     v_uv = uv;

@@ -595,14 +595,16 @@ void evaluate(const OceanSpectrum& spectrum, OceanCpuState& state, float time) {
                 const float kx = o[5];
                 const float kz = o[6];
                 const float k = std::sqrt(kx * kx + kz * kz);
-                const std::complex<float> e(std::cos(o[4] * t), std::sin(o[4] * t));
+                // e^(-i w t), como water_fft.comp: la ola avanza a favor del viento.
+                const std::complex<float> e(std::cos(o[4] * t), -std::sin(o[4] * t));
                 const std::complex<float> h0(o[0], o[1]);
                 const std::complex<float> h0m(o[2], o[3]);
                 const std::complex<float> h = h0 * e + h0m * std::conj(e);
-                const std::complex<float> dh = i_unit * o[4] * (h0 * e - h0m * std::conj(e));
+                const std::complex<float> dh = -i_unit * o[4] * (h0 * e - h0m * std::conj(e));
                 const float ix = k > 0.0f ? kx / k : 0.0f;
                 const float iz = k > 0.0f ? kz / k : 0.0f;
-                // Desplazamiento horizontal: -i k/|k| h (hacia las crestas).
+                // Desplazamiento horizontal: -i k/|k| h, por -choppiness (abajo)
+                // para que vaya hacia las crestas.
                 const std::complex<float> dx = -i_unit * ix * h;
                 const std::complex<float> dz = -i_unit * iz * h;
                 const std::complex<float> vx = -i_unit * ix * dh;
@@ -618,7 +620,9 @@ void evaluate(const OceanSpectrum& spectrum, OceanCpuState& state, float time) {
         inverseFft2d(c);
         auto& f = state.fields[cascade];
         for (auto& v : f) v.resize(kCpuN * kCpuN);
-        const float chop = spectrum.choppiness;
+        // Negativo: con la FFT inversa e^(+i k x), -i k/|k| h aleja los puntos
+        // de las crestas (ver water_fft.comp).
+        const float chop = -spectrum.choppiness;
         for (int i = 0; i < kCpuN * kCpuN; ++i) {
             f[0][i] = a[i].real() * chop;
             f[2][i] = a[i].imag() * chop;

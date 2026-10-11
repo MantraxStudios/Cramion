@@ -4025,7 +4025,9 @@ void VulkanRenderer::updateUniforms(const scene::Scene& scene, const scene::Came
     const vk::Extent2D extent = outputExtent();
     light_shaft_push_.aspect =
         static_cast<float>(extent.width) / static_cast<float>(std::max(extent.height, 1u));
-    const Vec4 sun_clip = camera_data.view_projection * toVec4(lights.sky.to_sun, 0.0f);
+    // Sin el jitter del TAA: los rayos de luz y los destellos se aplican a la
+    // imagen ya resuelta; con el, el sol temblaba medio pixel cada frame.
+    const Vec4 sun_clip = camera_data.unjittered_view_projection * toVec4(lights.sky.to_sun, 0.0f);
     // El sol en pantalla tambien para los destellos de la lente.
     sun_screen_weight_ = 0.0f;
     if (sun_clip.w > 0.0f) {
@@ -8465,7 +8467,10 @@ void VulkanRenderer::recordCameraFxPass(const vk::raii::CommandBuffer& cmd) {
 
     GpuCameraFxPush push{};
     // Reproyeccion del cielo: del clip de este frame (sin jitter) al anterior.
-    push.reproject = motion_view_projection_ * core::inverse(camera_view_projection_);
+    // La de TAA: al grabar, motion_view_projection_ y camera_view_projection_
+    // ya son los dos los de este frame (la identidad: el cielo nunca se
+    // emborronaba y lo que pasaba por delante quedaba con el borde nitido).
+    push.reproject = taa_reproject_;
     push.params = Vec4{0.0f, std::clamp(p.motion_blur_intensity, 0.0f, 1.0f), std::clamp(p.motion_blur_max, 0.001f, 0.25f),
                        static_cast<float>(frame_count_ % 1024)};
     // Autoenfoque suave: la distancia que midio la GPU (dof_focus.comp) hace
@@ -8482,6 +8487,7 @@ void VulkanRenderer::recordCameraFxPass(const vk::raii::CommandBuffer& cmd) {
     push.camera = Vec4{camera_projection_.m[3][2], camera_projection_.m[2][2],
                        static_cast<float>(extent.width) / static_cast<float>(std::max(extent.height, 1u)),
                        1.0f / static_cast<float>(std::max(extent.height, 1u))};
+    push.projection_w = Vec4{camera_projection_.m[2][3], camera_projection_.m[3][3], 0.0f, 0.0f};
 
     const auto run = [&](float mode) {
         // Copia de lo que hay (la lee el shader) y se dibuja encima.

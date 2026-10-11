@@ -24,7 +24,8 @@ struct GpuVoxelPush {
     core::Vec4 origin_time;  // xyz esquina de la seccion, w segundos
     core::Mat4 light_view_projection;
     std::uint32_t shadow = 0;
-    std::uint32_t pad[3] = {0, 0, 0};
+    float previous_time = 0.0f;  // segundos del frame anterior (vectores de movimiento del viento)
+    std::uint32_t pad[2] = {0, 0};
 };
 
 void imageBarrier(const vk::raii::CommandBuffer& cmd, vk::Image image, vk::ImageLayout from, vk::ImageLayout to,
@@ -517,6 +518,10 @@ bool VoxelPass::recordUploads(const vk::raii::CommandBuffer& cmd, std::uint32_t 
 }
 
 void VoxelPass::prepare(std::uint32_t /*frame*/, const core::Vec3& camera_position, const core::Mat4& view_projection) {
+    // El tiempo con el que se dibujo el frame anterior: el viento de las
+    // hojas se evalua tambien entonces para su vector de movimiento.
+    previous_time_ = prepared_time_;
+    prepared_time_ = time_;
     visible_keys_.clear();
     all_keys_.clear();
     if (!visible_ || layer_count_ == 0) return;
@@ -554,6 +559,7 @@ void VoxelPass::drawSections(const vk::raii::CommandBuffer& cmd, const std::vect
         }
         GpuVoxelPush push{};
         push.origin_time = core::Vec4{s.origin.x, s.origin.y, s.origin.z, time_};
+        push.previous_time = previous_time_;
         if (light_view_projection != nullptr) {
             push.light_view_projection = *light_view_projection;
             push.shadow = 1;

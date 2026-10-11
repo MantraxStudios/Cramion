@@ -203,9 +203,11 @@ vec3 disneyBrdf(ShadingModel s, vec3 n, vec3 v, vec3 l, vec3 albedo, float rough
     }
     vec3 diffuse = albedo * fd * (1.0 - metallic);
     // Sheen (tela): brillo suave de los bordes, con el tono del color base.
+    // En el modelo de Disney el sheen no lleva 1/pi (el difuso si): en la
+    // escala del motor (BRDF x pi) va por pi.
     if (s.model == kShadingCloth) {
         vec3 sheen_color = mix(vec3(1.0), disneyTint(albedo), s.params.y);
-        diffuse += s.params.x * sheen_color * schlickWeight(l_dot_h) * (1.0 - metallic);
+        diffuse += s.params.x * sheen_color * schlickWeight(l_dot_h) * (1.0 - metallic) * kPi;
     }
 
     // --- Especular ---

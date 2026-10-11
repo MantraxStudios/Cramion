@@ -28,7 +28,8 @@ layout(push_constant) uniform PushConstants {
 // Mapa de entorno HDR (EnvironmentMap), si la escena trae uno (push.hdr).
 // Convencion equirectangular: u = atan(z, x) / 2pi + 0.5, v = acos(y) / pi.
 vec2 environmentUv(vec3 d) {
-    return vec2(atan(d.z, d.x) / (2.0 * kPi) + 0.5, acos(clamp(d.y, -1.0, 1.0)) / kPi);
+    float azimuth = abs(d.x) + abs(d.z) > 1e-7 ? atan(d.z, d.x) : 0.0;  // atan(0, 0): sin definir
+    return vec2(azimuth / (2.0 * kPi) + 0.5, acos(clamp(d.y, -1.0, 1.0)) / kPi);
 }
 
 // Radiancia del entorno en una direccion: el cielo fisico o el mapa HDR (al

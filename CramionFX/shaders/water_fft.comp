@@ -89,7 +89,11 @@ void main() {
         float omega = b.x;
         vec2 k = b.yz;
         float len = length(k);
-        vec2 e = vec2(cos(omega * push.time), sin(omega * push.time));
+        // h0(k) e^(-i w t): con la FFT inversa (e^(+i k x)) la fase es
+        // k x - w t y la ola avanza hacia +k, con el viento (el espectro
+        // pone la energia en k a favor del viento; las olas de Gerstner y las
+        // ondulaciones finas tambien van asi). Con e^(+i w t) iba contra el.
+        vec2 e = vec2(cos(omega * push.time), -sin(omega * push.time));
         vec2 h = cmul(a.xy, e) + cmul(a.zw, vec2(e.x, -e.y));
         vec2 kn = len > 1e-6 ? k / len : vec2(0.0);
         // Campos (reales en el espacio): Dx, Dz = -i k/|k| h; Dy = h;
@@ -125,7 +129,11 @@ void main() {
     uint cascade = layer;
     vec4 p = imageLoad(fft_image, ivec3(x, y, cascade * 2u));
     vec4 q = imageLoad(fft_image, ivec3(x, y, cascade * 2u + 1u));
-    float lambda = push.chop;
+    // D = -i k/|k| h con la FFT inversa e^(+i k x) da, para h = A cos(k x),
+    // D = A sin(k x): con lambda positivo los puntos se alejaban de las
+    // crestas (crestas anchas, valles afilados y la espuma en los valles).
+    // Negativo, van hacia ellas, como las olas de Gerstner.
+    float lambda = -push.chop;
     vec3 offset = vec3(p.x * lambda, p.z, p.y * lambda);
     float dxdz = p.w * lambda;
     float dydx = q.x;

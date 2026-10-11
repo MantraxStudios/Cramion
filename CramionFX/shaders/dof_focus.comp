@@ -13,7 +13,8 @@ layout(std430, set = 0, binding = 1) writeonly buffer Focus {
 } focus;
 
 layout(push_constant) uniform Push {
-    vec4 camera;  // x, y = proyeccion [3][2] y [2][2]; z = ancho / alto
+    vec4 camera;        // x, y = proyeccion [3][2] y [2][2]; z = ancho / alto
+    vec4 projection_w;  // x, y = proyeccion [2][3] y [3][3] (perspectiva -1, 0; ortografica 0, 1)
 } push;
 
 void main() {
@@ -22,7 +23,10 @@ void main() {
         for (int x = -2; x <= 2; ++x) {
             vec2 uv = vec2(0.5) + vec2(float(x) / push.camera.z, float(y)) * 0.012;
             float depth = textureLod(depth_map, uv, 0.0).r;
-            if (depth < 1.0) nearest = min(nearest, push.camera.x / (depth + push.camera.y));
+            if (depth < 1.0) {
+                float z = (push.camera.x - depth * push.projection_w.y) / (push.camera.y - depth * push.projection_w.x);
+                nearest = min(nearest, z);
+            }
         }
     }
     focus.distance_m = nearest;
