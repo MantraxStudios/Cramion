@@ -1,6 +1,6 @@
 // Pruebas de las mallas creadas por codigo (consola, sin GPU): primitivas con
 // las caras hacia fuera, normales y tangentes, validacion, conversion al
-// formato del renderizador, la API de Lua (Mesh, entity.mesh,
+// formato del renderizador, la API de los scripts (Mesh, entity.mesh,
 // addComponent) y el MeshCollider con Jolt (tambien al cambiar la malla).
 // Devuelve 0 si todo va.
 
@@ -17,6 +17,7 @@
 #include "CramionCore/ecs/World.h"
 #include "CramionCore/physics/PhysicsComponents.h"
 #include "CramionCore/physics/PhysicsSystem.h"
+#include "CramionCore/scripting/NativeApi.h"
 #include "CramionCore/scripting/Scripting.h"
 #include "CramionCore/asset/Importer.h"
 #include "CramionCore/asset/MaterialAsset.h"
@@ -126,8 +127,9 @@ void testEditing() {
           "las normales que faltan se calculan (sin tocar la malla)");
 }
 
-void testLuaAndPhysics() {
-    std::printf("Lua y MeshCollider\n");
+void testApiAndPhysics() {
+    std::printf("API de los scripts y MeshCollider\n");
+    using scripting::api::Value;
     physics::registerPhysicsComponents();
     ecs::World world;
     physics::PhysicsSystem physics;
@@ -135,79 +137,101 @@ void testLuaAndPhysics() {
     scripting::ScriptSystem scripts;
     scripts.setPhysics(&physics);
     scripts.start(world);
-    std::string out;
-    const bool ok = scripts.run(R"(
-        local suelo = Scene.create("Suelo", Vec3(0, 0, 0))
-        local m = Mesh.new("Rampa")
-        m.vertices = { Vec3(-5, 0, -5), Vec3(5, 0, -5), Vec3(5, 0, 5), Vec3(-5, 0, 5) }
-        m.uv = { Vec3(0, 0, 0), Vec3(1, 0, 0), Vec3(1, 1, 0), Vec3(0, 1, 0) }
-        m.triangles = { 0, 2, 1, 0, 3, 2 }
-        m:recalculateNormals()
-        m:setMaterial(0, { color = Vec3(0.2, 0.8, 0.3), roughness = 0.4 })
-        suelo.mesh = m
-        suelo:addComponent("MeshCollider")
-        local e = Scene.create("Bola", Vec3(0, 3, 0))
-        e.mesh = Mesh.sphere(0.5)
-        e:addComponent("SphereCollider")
-        e:addComponent("Rigidbody")
-        return tostring(m) .. " n=" .. tostring(m.normals[1]) .. " tri=" .. #m.triangles
-    )", &out);
-    std::printf("  (%s)\n", out.c_str());
-    check(ok && out.find("4 vertices, 2 triangulos") != std::string::npos && out.find("1.000") != std::string::npos,
-          "Mesh.new, vertices, uv, triangles y recalculateNormals desde Lua");
+    scripting::api::NativeApi& api = scripts.nativeApi();
+    const auto vec3s = [](std::initializer_list<Vec3> list) {
+        Value::Array out;
+        for (const Vec3& v : list) out.emplace_back(v);
+        return Value(std::move(out));
+    };
+    const auto ints = [](std::initializer_list<int> list) {
+        Value::Array out;
+        for (const int i : list) out.emplace_back(i);
+        return Value(std::move(out));
+    };
+    const auto material = [](Vec3 color, double roughness) {
+        Value m = Value::object();
+        m.set("color", Value(color));
+        m.set("roughness", Value(roughness));
+        return m;
+    };
+
+    const Value suelo = api.call("Scene.create", {Value("Suelo"), Value(Vec3{0, 0, 0})});
+    const Value m = api.call("Mesh.new", {Value("Rampa")});
+    api.set("vertices", vec3s({{-5, 0, -5}, {5, 0, -5}, {5, 0, 5}, {-5, 0, 5}}), m);
+    api.set("uv", vec3s({{0, 0, 0}, {1, 0, 0}, {1, 1, 0}, {0, 1, 0}}), m);
+    api.set("triangles", ints({0, 2, 1, 0, 3, 2}), m);
+    api.call("recalculateNormals", {}, m);
+    api.call("setMaterial", {Value(0), material({0.2f, 0.8f, 0.3f}, 0.4)}, m);
+    api.set("mesh", m, suelo);
+    api.call("Entity:addComponent", {Value("MeshCollider")}, suelo);
+    const Value e = api.call("Scene.create", {Value("Bola"), Value(Vec3{0, 3, 0})});
+    api.set("mesh", api.call("Mesh.sphere", {Value(0.5)}), e);
+    api.call("Entity:addComponent", {Value("SphereCollider")}, e);
+    api.call("Entity:addComponent", {Value("Rigidbody")}, e);
+    const Value normals = api.get("normals", m);
+    const double vertices = api.get("vertexCount", m).asNumber();
+    const double triangles = api.get("triangleCount", m).asNumber();
+    std::printf("  (%g vertices, %g triangulos)\n", vertices, triangles);
+    check(vertices == 4 && triangles == 2 && normals.isArray() && std::abs(normals[0].asVec3().y - 1.0f) < 1e-4f,
+          "Mesh.new, vertices, uv, triangles y recalculateNormals desde la API");
     const ecs::Entity floor = world.findByName("Suelo");
     const ecs::Entity ball = world.findByName("Bola");
     check(floor.valid() && floor.has<ecs::MeshRenderer>() && floor.get<ecs::MeshRenderer>().mesh &&
               floor.get<ecs::MeshRenderer>().mesh->materials.size() == 1 && floor.has<physics::MeshCollider>(),
           "entity.mesh anade el MeshRenderer y addComponent el MeshCollider");
     check(ball.valid() && ball.get<ecs::MeshRenderer>().mesh && ball.get<ecs::MeshRenderer>().mesh->vertices.size() > 100,
-          "Mesh.sphere desde Lua");
+          "Mesh.sphere desde la API");
     // La bola cae sobre la malla y se para en ella.
     ball.get<physics::Rigidbody>().interpolate = false;
     for (int i = 0; i < 180; ++i) physics.update(world, 1.0f / 60.0f);
     const float rest = ball.worldPosition().y;
     std::printf("  (la bola reposa en y = %.2f)\n", static_cast<double>(rest));
     check(std::abs(rest - 0.5f) < 0.08f, "un Rigidbody choca con la malla creada por codigo");
-    // Bajar la malla 2 m desde Lua: el MeshCollider se rehace y la bola cae hasta ella.
-    const bool moved = scripts.run(R"(
-        local m = Scene.find("Suelo").mesh
-        local v = m.vertices
-        for i = 1, #v do v[i] = v[i] - Vec3(0, 2, 0) end
-        m.vertices = v
-    )", &out);
+    // Bajar la malla 2 m: el MeshCollider se rehace y la bola cae hasta ella.
+    {
+        const Value floor_mesh = api.get("mesh", api.call("Scene.find", {Value("Suelo")}));
+        const Value v = api.get("vertices", floor_mesh);
+        Value::Array moved;
+        for (std::size_t i = 0; i < v.size(); ++i) moved.emplace_back(v[i].asVec3() - Vec3{0, 2, 0});
+        api.set("vertices", Value(std::move(moved)), floor_mesh);
+    }
     for (int i = 0; i < 120; ++i) physics.update(world, 1.0f / 60.0f);
     std::printf("  (tras bajar la malla, y = %.2f)\n", static_cast<double>(ball.worldPosition().y));
-    check(moved && std::abs(ball.worldPosition().y + 1.5f) < 0.15f, "al cambiar la malla se rehace su MeshCollider");
+    check(std::abs(ball.worldPosition().y + 1.5f) < 0.15f, "al cambiar la malla se rehace su MeshCollider");
     // Errores claros.
-    const bool bad = scripts.run(R"(
-        local m = Mesh.new()
-        m.vertices = { Vec3(0, 0, 0) }
-        m.triangles = { 0, 1, 2 }
-        return m:validate()
-    )", &out);
-    check(bad && out.find("vertice 1") != std::string::npos, "mesh:validate() explica que falla");
-    // El ejemplo "Terreno procedural" del manual (docs/manual/ejemplo-terreno.html), tal cual.
-    const bool example = scripts.run(R"(
-        local self = { entity = Scene.create("Terreno"), tamano = 60.0, altura = 4.0 }
-        self.malla = Mesh.plane(self.tamano, self.tamano, 80, 80)
-        local v = self.malla.vertices
-        for i = 1, #v do
-            local p = v[i]
-            p.y = (math.sin(p.x * 0.15) + math.cos(p.z * 0.12)) * self.altura * 0.5
-            v[i] = p
-        end
-        self.malla.vertices = v
-        self.malla:recalculateNormals()
-        self.malla:recalculateTangents()
-        self.malla:setMaterial(0, { color = Vec3(0.35, 0.6, 0.25), roughness = 0.9 })
-        self.entity.mesh = self.malla
-        self.entity:addComponent("MeshCollider")
-        return self.malla.vertexCount .. " " .. self.malla.triangleCount .. " " .. self.malla:validate()
-    )", &out);
-    std::printf("  (terreno de la doc: %s)\n", out.c_str());
-    check(example && out == "6561 12800 " && world.findByName("Terreno").has<physics::MeshCollider>(),
-          "el ejemplo de terreno procedural de la documentacion funciona");
-    check(scripts.errors().empty(), "sin errores de Lua");
+    {
+        const Value bad = api.call("Mesh.new");
+        api.set("vertices", vec3s({{0, 0, 0}}), bad);
+        api.set("triangles", ints({0, 1, 2}), bad);
+        check(api.call("validate", {}, bad).asString().find("vertice 1") != std::string::npos,
+              "mesh:validate() explica que falla");
+    }
+    // El ejemplo "Terreno procedural" del manual (docs/manual/ejemplo-terreno.html).
+    {
+        const Value terreno = api.call("Scene.create", {Value("Terreno")});
+        const float tamano = 60.0f, altura = 4.0f;
+        const Value malla = api.call("Mesh.plane", {Value(tamano), Value(tamano), Value(80), Value(80)});
+        const Value v = api.get("vertices", malla);
+        Value::Array out;
+        for (std::size_t i = 0; i < v.size(); ++i) {
+            Vec3 p = v[i].asVec3();
+            p.y = (std::sin(p.x * 0.15f) + std::cos(p.z * 0.12f)) * altura * 0.5f;
+            out.emplace_back(p);
+        }
+        api.set("vertices", Value(std::move(out)), malla);
+        api.call("recalculateNormals", {}, malla);
+        api.call("recalculateTangents", {}, malla);
+        api.call("setMaterial", {Value(0), material({0.35f, 0.6f, 0.25f}, 0.9)}, malla);
+        api.set("mesh", malla, terreno);
+        api.call("Entity:addComponent", {Value("MeshCollider")}, terreno);
+        const std::string summary = std::to_string(static_cast<int>(api.get("vertexCount", malla).asNumber())) + " " +
+                                    std::to_string(static_cast<int>(api.get("triangleCount", malla).asNumber())) + " " +
+                                    api.call("validate", {}, malla).asString();
+        std::printf("  (terreno de la doc: %s)\n", summary.c_str());
+        check(summary == "6561 12800 " && world.findByName("Terreno").has<physics::MeshCollider>(),
+              "el ejemplo de terreno procedural de la documentacion funciona");
+    }
+    check(scripts.errors().empty(), "sin errores de los scripts");
     scripts.stop();
     physics.stop();
 }
@@ -246,7 +270,13 @@ void testMaterials() {
     asset::finalizeModel(data, "prueba");
     check(data.textures[0].width == 4 && !data.textures[0].pixels.empty(), "se decodifican al subirla");
 
-    // Lua: solo factores = actualizacion en vivo; texturas = resubir.
+    // Desde los scripts: solo factores = actualizacion en vivo; texturas = resubir.
+    using scripting::api::Value;
+    const auto obj = [](std::initializer_list<std::pair<const char*, Value>> fields) {
+        Value o = Value::object();
+        for (const auto& [key, value] : fields) o.set(key, value);
+        return o;
+    };
     physics::registerPhysicsComponents();
     ui::registerUiComponents();
     assets::MaterialAsset glow;
@@ -258,77 +288,77 @@ void testMaterials() {
     scripting::ScriptSystem scripts;
     scripts.setAssetsRoot(root);
     scripts.start(world);
-    std::string out;
-    scripts.run(R"(
-        local e = Scene.create("Efectos")
-        e.mesh = Mesh.cube(1)
-        MALLA = e.mesh
-        V0, M0 = 0, 0
-    )", &out);
+    scripting::api::NativeApi& api = scripts.nativeApi();
+    const Value efectos = api.call("Scene.create", {Value("Efectos")});
+    api.set("mesh", api.call("Mesh.cube", {Value(1)}), efectos);
+    const Value malla = api.get("mesh", efectos);
     const ecs::Entity e = world.findByName("Efectos");
     ecs::Mesh& mesh = *e.get<ecs::MeshRenderer>().mesh;
-    const std::uint64_t v0 = mesh.version(), mv0 = mesh.materialVersion();
-    scripts.run("MALLA:setMaterial(0, { color = Vec3(1, 0, 0), emission = Vec3(1, 1, 0), emissionIntensity = 3 })", &out);
+    api.call("setMaterial",
+             {Value(0), obj({{"color", Value(Vec3{1, 0, 0})}, {"emission", Value(Vec3{1, 1, 0})}, {"emissionIntensity", Value(3)}})},
+             malla);
     const std::uint64_t v1 = mesh.version(), mv1 = mesh.materialVersion();
-    scripts.run("MALLA:setMaterial(0, { emissionIntensity = 5 })", &out);  // mismo hueco ya creado
+    api.call("setMaterial", {Value(0), obj({{"emissionIntensity", Value(5)}})}, malla);  // mismo hueco ya creado
     const std::uint64_t v2 = mesh.version(), mv2 = mesh.materialVersion();
     check(v2 == v1 && mv2 > mv1 && mesh.materials[0].emission_intensity == 5.0f,
           "cambiar el brillo o el color no vuelve a subir la malla (efectos por frame)");
-    scripts.run("MALLA:setMaterial(0, { texture = 'Textures/rejilla.png', tiling = Vec3(4, 4, 0) })", &out);
+    api.call("setMaterial", {Value(0), obj({{"texture", Value("Textures/rejilla.png")}, {"tiling", Value(Vec3{4, 4, 0})}})}, malla);
     check(mesh.version() > v2 && mesh.materials[0].texture == "Textures/rejilla.png" && mesh.materials[0].tiling.x == 4.0f,
           "cambiar la textura o la repeticion si la vuelve a subir");
-    (void)v0;
-    (void)mv0;
-    const bool got = scripts.run("local t = MALLA:getMaterial(0); return t.texture .. ' ' .. tostring(t.emissionIntensity)", &out);
-    check(got && out == "Textures/rejilla.png 5.0", "getMaterial devuelve el material");
+    const Value got = api.call("getMaterial", {Value(0)}, malla);
+    check(got["texture"].asString() == "Textures/rejilla.png" && got["emissionIntensity"].asNumber() == 5.0,
+          "getMaterial devuelve el material");
     // Un .crmat en el hueco 1 del MeshRenderer, y sin sombras.
-    const bool set = scripts.run("local e = Scene.find('Efectos'); e.castShadows = false; return e:setMaterial(1, 'Materials/Brillo')", &out);
+    const Value found = api.call("Scene.find", {Value("Efectos")});
+    api.set("castShadows", Value(false), found);
+    const Value set = api.call("Entity:setMaterial", {Value(1), Value("Materials/Brillo")}, found);
     const ecs::MeshRenderer& r = e.get<ecs::MeshRenderer>();
-    check(set && out == "true" && r.materials.size() == 2 && r.materials[1].uuid == glow.uuid && !r.materials[0].valid() &&
+    check(set.truthy() && r.materials.size() == 2 && r.materials[1].uuid == glow.uuid && !r.materials[0].valid() &&
               r.cast_shadows == ecs::ShadowCasting::Off,
           "entity:setMaterial pone un .crmat en un hueco; castShadows");
-    // Interfaz desde Lua: imagen, transparencia, posicion y tamano.
+    // Interfaz: imagen, transparencia, posicion y tamano.
     ecs::Entity icon = world.create("Icono");
     icon.add<ui::RectTransform>();
     icon.add<ui::Image>();
-    scripts.run(R"(
-        local i = Scene.find("Icono")
-        i.texture = "Voxel/Iconos/stone.png"
-        i.alpha = 0.5
-        i.uiPosition = Vec3(10, -20, 0)
-        i.uiSize = Vec3(64, 32, 0)
-    )", &out);
+    const Value i = api.call("Scene.find", {Value("Icono")});
+    api.set("texture", Value("Voxel/Iconos/stone.png"), i);
+    api.set("alpha", Value(0.5), i);
+    api.set("uiPosition", Value(Vec3{10, -20, 0}), i);
+    api.set("uiSize", Value(Vec3{64, 32, 0}), i);
     check(icon.get<ui::Image>().texture == "Voxel/Iconos/stone.png" && icon.get<ui::Image>().alpha == 0.5f &&
               icon.get<ui::RectTransform>().position.y == -20.0f && icon.get<ui::RectTransform>().size.x == 64.0f,
           "texture, alpha, uiPosition y uiSize de la interfaz");
     // El ejemplo "Varios materiales y efectos" del manual (docs/manual/ejemplo-efectos.html).
-    const bool doc = scripts.run(R"(
-        local self = { entity = Scene.create("Cristal") }
-        self.malla = Mesh.cube(1)
-        local tris = self.malla.triangles
-        local lados, tapas = {}, {}
-        for i = 1, #tris, 3 do
-            local destino = (i > 12 and i <= 24) and tapas or lados
-            table.insert(destino, tris[i]); table.insert(destino, tris[i + 1]); table.insert(destino, tris[i + 2])
-        end
-        self.malla:setTriangles(lados, 0)
-        self.malla:setTriangles(tapas, 1)
-        self.malla:setMaterial(0, { texture = "Textures/piedra.png", normalMap = "Textures/piedra_n.png", tiling = Vec3(2, 2, 0) })
-        self.malla:setMaterial(1, { color = Vec3(0.2, 0.6, 1), emission = Vec3(0.2, 0.6, 1), emissionIntensity = 4 })
-        self.entity.mesh = self.malla
-        CRISTAL = self.malla
-        return #self.malla:getTriangles(0) .. " " .. #self.malla:getTriangles(1)
-    )", &out);
+    const Value cristal = api.call("Scene.create", {Value("Cristal")});
+    const Value cubo = api.call("Mesh.cube", {Value(1)});
+    const Value tris = api.get("triangles", cubo);
+    Value::Array lados, tapas;
+    for (std::size_t t = 0; t < tris.size(); t += 3) {
+        Value::Array& destino = (t >= 12 && t < 24) ? tapas : lados;
+        for (std::size_t k = 0; k < 3; ++k) destino.push_back(tris[t + k]);
+    }
+    api.call("setTriangles", {Value(std::move(lados)), Value(0)}, cubo);
+    api.call("setTriangles", {Value(std::move(tapas)), Value(1)}, cubo);
+    api.call("setMaterial",
+             {Value(0), obj({{"texture", Value("Textures/piedra.png")}, {"normalMap", Value("Textures/piedra_n.png")},
+                             {"tiling", Value(Vec3{2, 2, 0})}})},
+             cubo);
+    api.call("setMaterial",
+             {Value(1), obj({{"color", Value(Vec3{0.2f, 0.6f, 1})}, {"emission", Value(Vec3{0.2f, 0.6f, 1})},
+                             {"emissionIntensity", Value(4)}})},
+             cubo);
+    api.set("mesh", cubo, cristal);
+    const bool doc = api.call("getTriangles", {Value(0)}, cubo).size() == 24 && api.call("getTriangles", {Value(1)}, cubo).size() == 12;
     ecs::Mesh& crystal = *world.findByName("Cristal").get<ecs::MeshRenderer>().mesh;
     const std::uint64_t before_pulse = crystal.version();
-    scripts.run("CRISTAL:setMaterial(1, { emissionIntensity = 3 + math.sin(1.3 * 4) * 2 })", &out);
+    api.call("setMaterial", {Value(1), obj({{"emissionIntensity", Value(3.0 + std::sin(1.3 * 4) * 2)}})}, cubo);
     // Todo lo de la submalla 1 esta en +Y o -Y.
     bool caps = true;
-    for (const std::uint32_t i : crystal.triangles(1)) caps = caps && std::abs(std::abs(crystal.vertices[i].y) - 0.5f) < 1e-5f;
+    for (const std::uint32_t k : crystal.triangles(1)) caps = caps && std::abs(std::abs(crystal.vertices[k].y) - 0.5f) < 1e-5f;
     check(doc && crystal.subMeshCount() == 2 && crystal.triangles(0).size() == 24 && crystal.triangles(1).size() == 12 && caps &&
               crystal.version() == before_pulse,
           "el ejemplo de varios materiales y efectos de la documentacion funciona");
-    check(scripts.errors().empty(), "sin errores de Lua");
+    check(scripts.errors().empty(), "sin errores de los scripts");
     scripts.stop();
     std::filesystem::remove_all(root, ec);
 }
@@ -921,7 +951,7 @@ int main() {
     testLods();
     testPrimitives();
     testEditing();
-    testLuaAndPhysics();
+    testApiAndPhysics();
     testMaterials();
     testClusters();
     testImportProgress();

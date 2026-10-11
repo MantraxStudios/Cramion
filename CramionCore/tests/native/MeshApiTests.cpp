@@ -185,7 +185,7 @@ void testHandles() {
     check(a["ok"] == true && a["result"].contains("$h") && a["result"] == b["result"], "por el puente: el mismo $h");
     const json count = t.bridge({{"op", "get"}, {"self", a["result"]}, {"key", "vertexCount"}});
     check(count["ok"] == true && count["result"].get<double>() > 100, "metodos del handle por el puente");
-    const json created = t.bridge({{"fn", "Mesh.cube"}, {"args", {2}}});
+    const json created = t.bridge({{"fn", "Mesh.new"}, {"args", json::array()}});
     const json set = t.bridge({{"op", "set"},
                                {"self", created["result"]},
                                {"key", "vertices"},

@@ -2,13 +2,15 @@
 // entidad, instanciarlo, cambios propios de cada instancia, aplicar una
 // instancia al prefab y actualizar las demas, hijos anadidos y borrados,
 // componentes anadidos, revertir, desempaquetar, guardar la escena y
-// Scene.instantiate("Prefabs/...") desde Lua. Devuelve 0 si todo va.
+// Scene.instantiate("Prefabs/...") desde la API de los scripts. Devuelve 0 si
+// todo va.
 
 #include "CramionCore/ecs/Components.h"
 #include "CramionCore/ecs/Prefab.h"
 #include "CramionCore/ecs/SceneSerializer.h"
 #include "CramionCore/ecs/World.h"
 #include "CramionCore/physics/PhysicsComponents.h"
+#include "CramionCore/scripting/NativeApi.h"
 #include "CramionCore/scripting/Scripting.h"
 
 #include <cmath>
@@ -137,7 +139,7 @@ int main() {
               ecs::prefabInstances(world, ecs::prefabUuid(v3)).size() == 2,
           "desempaquetar: entidades normales");
 
-    std::printf("Escenas y Lua\n");
+    std::printf("Escenas y la API de los scripts\n");
     child(a, "Bombilla").get<ecs::Light>().intensity = 40.0f;
     ecs::recordOverrides(world, a, v3);
     const std::string scene = ecs::serializeWorld(world);
@@ -161,17 +163,18 @@ int main() {
     scripting::ScriptSystem scripts;
     scripts.setAssetsRoot(root);
     scripts.start(world);
-    std::string out;
-    const bool ok = scripts.run(R"(
-        local f = Scene.instantiate("Prefabs/Farola", Vec3(1, 2, 3), Vec3(0, 90, 0))
-        local g = Scene.instantiate("Prefabs/Farola.crprefab")
-        local nada = Scene.instantiate("Prefabs/NoExiste")
-        return f.name .. " " .. tostring(f.position.y) .. " " .. tostring(f:find("Bombilla") ~= nil) .. " " ..
-               tostring(g ~= nil) .. " " .. tostring(nada == nil)
-    )", &out);
-    std::printf("  (%s)\n", out.c_str());
-    check(ok && out == "Farola 2.0 true true true" && ecs::prefabInstances(world, ecs::prefabUuid(v4)).size() == 4,
-          "Scene.instantiate(\"Prefabs/Farola\", posicion, giro) desde Lua");
+    using scripting::api::Value;
+    scripting::api::NativeApi& api = scripts.nativeApi();
+    const Value f = api.call("Scene.instantiate", {Value("Prefabs/Farola"), Value(core::Vec3{1, 2, 3}), Value(core::Vec3{0, 90, 0})});
+    const Value g = api.call("Scene.instantiate", {Value("Prefabs/Farola.crprefab")});
+    const Value nada = api.call("Scene.instantiate", {Value("Prefabs/NoExiste")});
+    const ecs::Entity farola = world.wrap(f.asEntity());
+    const bool found = farola.valid() && api.call("Entity:find", {Value("Bombilla")}, f).asEntity() != entt::entity{entt::null};
+    std::printf("  (%s %.1f)\n", farola.valid() ? farola.name().c_str() : "-", farola.valid() ? farola.worldPosition().y : 0.0f);
+    check(farola.valid() && farola.name() == "Farola" && std::abs(farola.worldPosition().y - 2.0f) < 1e-4f && found &&
+              world.wrap(g.asEntity()).valid() && nada.asEntity() == entt::entity{entt::null} &&
+              ecs::prefabInstances(world, ecs::prefabUuid(v4)).size() == 4,
+          "Scene.instantiate(\"Prefabs/Farola\", posicion, giro) desde la API");
     scripts.stop();
 
     std::filesystem::remove_all(root, ec);

@@ -3,7 +3,8 @@
 //     capturas .crtrace (JSON valido) y captura automatica de tirones.
 //   - Presupuesto de particulas: emision escalada al pasarse, emisores lejanos
 //     sin emitir.
-//   - Lua profiler: zona por script y aviso al pasarse de lua.BudgetMs.
+//   - Perfilador de los scripts: zona por fase, contador y aviso al pasarse
+//     de scripts.BudgetMs.
 // Devuelve 0 si todo va.
 
 #include "CramionCore/cvar/CVar.h"
@@ -170,47 +171,43 @@ void particles() {
     cvar::Registry::instance().set("fx.particles.Budget", "30000");
 }
 
-void luaProfiler() {
-    std::printf("Lua profiler y presupuesto\n");
-    const std::filesystem::path root = std::filesystem::temp_directory_path() / "cramion_opt_lua";
-    std::filesystem::create_directories(root / "Scripts");
-    std::ofstream(root / "Scripts" / "Lento.lua") << "local L = {}\n"
-                                                     "function L:Update(dt)\n"
-                                                     "  local x = 0\n"
-                                                     "  for i = 1, 3000000 do x = x + i end\n"
-                                                     "end\n"
-                                                     "return L\n";
-    scripting::registerScriptComponents();
+void scriptsProfiler() {
+    std::printf("Perfilador de los scripts y presupuesto\n");
     ecs::World world;
-    ecs::Entity e = world.create("Lento");
-    e.add<scripting::Script>().file = "Scripts/Lento.lua";
+    world.create("Algo");
     scripting::ScriptSystem system;
-    system.setAssetsRoot(root);
     std::vector<std::string> log;
     system.setLog([&](int, const std::string& m) { log.push_back(m); });
-    cvar::Registry::instance().set("lua.BudgetMs", "0.5");
+    // Un presupuesto que cualquier frame supera (1 ns): el aviso tiene que
+    // salir una sola vez aunque todos los frames se pasen.
+    cvar::Registry::instance().set("scripts.BudgetMs", "0.000001");
     prof::reset();
     system.start(world);
     for (int f = 0; f < 8; ++f) {
         prof::beginFrame();
         system.update(world, 1.0f / 60.0f);
         prof::endFrame();
-        if (f == 0) std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
     const std::vector<prof::ZoneStats> z = prof::stats(8);
-    const prof::ZoneStats* zone = find(z, "Scripts/Lento.lua:Update");
-    if (zone) std::printf("  (Scripts/Lento.lua:Update %.2f ms por frame)\n", zone->avg_ms);
-    check(zone != nullptr && zone->avg_ms > 0.5, "cada script es una zona con su tiempo");
-    bool warned = false;
-    for (const std::string& m : log) warned = warned || m.find("Lento.lua va lento") != std::string::npos;
+    const prof::ZoneStats* zone = find(z, "Scripts");
+    const prof::ZoneStats* input = find(z, "Scripts/Entrada");
+    check(zone != nullptr && input != nullptr && input->depth == zone->depth + 1,
+          "zona Scripts con una subzona por fase (Scripts/Entrada)");
     int warnings = 0;
-    for (const std::string& m : log) warnings += m.find("Lento.lua va lento") != std::string::npos ? 1 : 0;
-    check(warned && warnings == 1, "aviso al pasarse de lua.BudgetMs (una vez, no cada frame)");
+    for (const std::string& m : log) warnings += m.find("Los scripts van lentos") != std::string::npos ? 1 : 0;
+    check(warnings == 1, "aviso al pasarse de scripts.BudgetMs (una vez, no cada frame)");
     bool counter = false;
-    for (const auto& c : prof::counters(8)) counter = counter || c.name == "Lua (ms)";
-    check(counter, "contador Lua (ms) por frame");
+    for (const auto& c : prof::counters(8)) counter = counter || c.name == "Scripts (ms)";
+    check(counter, "contador Scripts (ms) por frame");
+    // Otro Play: puede volver a avisar.
     system.stop();
-    cvar::Registry::instance().set("lua.BudgetMs", "2");
+    system.start(world);
+    system.update(world, 1.0f / 60.0f);
+    warnings = 0;
+    for (const std::string& m : log) warnings += m.find("Los scripts van lentos") != std::string::npos ? 1 : 0;
+    check(warnings == 2, "en el siguiente Play vuelve a avisar");
+    system.stop();
+    cvar::Registry::instance().set("scripts.BudgetMs", "2");
 }
 
 void sueloDelIK() {
@@ -286,7 +283,7 @@ void rayoDeLosPies() {
 int main() {
     profiler();
     particles();
-    luaProfiler();
+    scriptsProfiler();
     sueloDelIK();
     rayoDeLosPies();
     std::printf("\n%d comprobaciones, %d fallos\n", checks, failures);
