@@ -224,7 +224,7 @@ void testBehaviorTree() {
 void testGraphs() {
     std::printf("Visual Scripting y Shader Graph\n");
     const vscript::CompileResult compiled = vscript::compileGraph(vscript::exampleGraph(), "Ejemplo.crgraph");
-    check(compiled.ok && compiled.lua.find("return") != std::string::npos, "el grafo de ejemplo compila a Lua");
+    check(compiled.ok && compiled.errors.empty(), "el grafo de ejemplo es valido");
     namespace sg = assets::shadergraph;
     sg::GenerateResult result;
     const sg::Graph graph = sg::makeDefault();

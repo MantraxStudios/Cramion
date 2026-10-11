@@ -366,7 +366,7 @@ void EditorApp::drawCppScriptInspector(ecs::Entity entity, bool header) {
                     script = entity.tryGet<scripting::CppScript>();
                     commit();
                 } else {
-                    std::cerr << "[C++] Suelta un .cpp (los .lua van en el componente Script)" << std::endl;
+                    std::cerr << "[C++] Suelta un .cpp con CRAMION_SCRIPT" << std::endl;
                 }
             }
             ImGui::EndDragDropTarget();
@@ -422,7 +422,7 @@ void EditorApp::drawCppScriptInspector(ecs::Entity entity, bool header) {
         ImGui::PopID();
         return;
     }
-    // Abajo: las Property de archivos (imagen, sonido, Lua, shader): se sueltan.
+    // Abajo: las Property de archivos (imagen, sonido, shader...): se sueltan.
     const scripting::CppClassInfo* info = scripting::findCppScriptClass(script->class_name);
     if (info != nullptr) {
         for (const scripting::CppPropertyInfo& p : info->properties) {
@@ -431,7 +431,7 @@ void EditorApp::drawCppScriptInspector(ecs::Entity entity, bool header) {
             const scripting::CppScriptValue* stored = script->value(p.name);
             nlohmann::json current = nlohmann::json::parse(stored != nullptr ? stored->json : p.default_json, nullptr, false);
             const std::string path = current.is_string() ? current.get<std::string>() : std::string();
-            static const char* kinds[] = {"imagen", "sonido", "script Lua", "shader", "archivo"};
+            static const char* kinds[] = {"imagen", "sonido", "script Lua (obsoleto)", "shader", "archivo"};
             ImGui::PushID(p.name.c_str());
             ImGui::AlignTextToFramePadding();
             ImGui::TextUnformatted((p.label.empty() ? p.name : p.label).c_str());
@@ -937,9 +937,9 @@ void EditorApp::drawCppConsole(ScriptTab& tab) {
     ImGui::EndChild();
     ImGui::PopStyleColor();
 
-    // Linea de comandos: CVars ("nombre valor", "cvars filtro") o Lua.
+    // Linea de comandos: CVars ("nombre valor", "cvars filtro") o una llamada a la API.
     ImGui::SetNextItemWidth(-1.0f);
-    if (ImGui::InputTextWithHint("##cpp_console_input", "C++> CVar (nombre valor, cvars filtro, reset nombre) o Lua. Enter ejecuta",
+    if (ImGui::InputTextWithHint("##cpp_console_input", "C++> CVar (nombre valor, cvars filtro, reset nombre) o API (Scene.find('X').name). Enter ejecuta",
                                  &cpp_console_input_, ImGuiInputTextFlags_EnterReturnsTrue)) {
         if (!cpp_console_input_.empty()) {
             bool handled = false;
@@ -949,7 +949,7 @@ void EditorApp::drawCppConsole(ScriptTab& tab) {
             } else {
                 std::string result;
                 const bool ok = scripts_.run(cpp_console_input_, &result, &world_);
-                (ok ? std::cout : std::cerr) << "[C++] Lua> " << cpp_console_input_ << (result.empty() ? "" : "  ->  ") << result << std::endl;
+                (ok ? std::cout : std::cerr) << "[C++] API> " << cpp_console_input_ << (result.empty() ? "" : "  ->  ") << result << std::endl;
             }
         }
         cpp_console_input_.clear();

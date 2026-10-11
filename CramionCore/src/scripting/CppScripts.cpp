@@ -50,6 +50,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 #include <cerrno>
+#include <csignal>
 extern char** environ;
 #endif
 
@@ -597,6 +598,14 @@ struct HostProcess {
     HANDLE to_engine = nullptr;
     HANDLE job = nullptr;
     HANDLE process = nullptr;
+#else
+    // El bloque (memfd heredado como descriptor 4) y un socket (el 3 en el
+    // proceso): un byte despierta al otro lado; cerrado = el otro se fue.
+    ipc::Block* block = nullptr;
+    int channel = -1;
+    mutable pid_t pid = -1;
+    mutable bool reaped = false;
+    mutable int status = 0;
 #endif
     std::uint32_t serial = 0;
     std::uint64_t rpcs = 0;
@@ -605,9 +614,53 @@ struct HostProcess {
 #if defined(_WIN32)
         return process != nullptr && WaitForSingleObject(process, 0) == WAIT_TIMEOUT;
 #else
-        return false;
+        if (pid <= 0 || reaped) return false;
+        int st = 0;
+        const pid_t r = waitpid(pid, &st, WNOHANG);
+        if (r == pid) {
+            reaped = true;
+            status = st;
+            return false;
+        }
+        return r == 0;
 #endif
     }
+
+#if !defined(_WIN32)
+    void wake() const {
+        const char byte = 1;
+        if (channel >= 0) ::send(channel, &byte, 1, MSG_DONTWAIT | MSG_NOSIGNAL);
+    }
+
+    // Espera a que el proceso escriba (como mucho `ms`); vacia los bytes del canal.
+    void waitSignal(int ms) const {
+        if (channel < 0) return;
+        pollfd p{channel, POLLIN, 0};
+        if (poll(&p, 1, ms) <= 0) return;
+        char buffer[64];
+        while (recv(channel, buffer, sizeof(buffer), MSG_DONTWAIT) > 0) {
+        }
+    }
+
+    static rlimit memoryLimit() {
+        const rlim_t bytes = static_cast<rlim_t>(std::max(g_memory_mb.get(), 32)) << 20;
+        return rlimit{bytes, bytes};
+    }
+
+    // Por que murio el proceso (el texto que dejo en el bloque y la senal).
+    std::string deathMessage() const {
+        std::string message = block != nullptr && block->crash[0] != 0 ? std::string(block->crash) : "el proceso de scripts se cerro";
+        if (reaped && WIFSIGNALED(status)) {
+            const int sig = WTERMSIG(status);
+            if (sig == SIGABRT && (block == nullptr || block->crash[0] == 0)) message = "abort() o std::terminate (fallo grave del script)";
+            const char* name = strsignal(sig);
+            message += " [senal " + std::to_string(sig) + (name != nullptr ? std::string(": ") + name : std::string()) + "]";
+        } else if (reaped && WIFEXITED(status)) {
+            message += " [codigo " + std::to_string(WEXITSTATUS(status)) + "]";
+        }
+        return message;
+    }
+#endif
 
     void close() {
 #if defined(_WIN32)
@@ -631,6 +684,22 @@ struct HostProcess {
                 *h = nullptr;
             }
         }
+#else
+        if (pid > 0 && !reaped) {
+            kill(pid, SIGKILL);
+            while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {
+            }
+            reaped = true;
+        }
+        pid = -1;
+        if (block != nullptr) {
+            munmap(block, sizeof(ipc::Block));
+            block = nullptr;
+        }
+        if (channel >= 0) {
+            ::close(channel);
+            channel = -1;
+        }
 #endif
     }
 
@@ -642,6 +711,11 @@ struct HostProcess {
             JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_PROCESS_MEMORY | JOB_OBJECT_LIMIT_DIE_ON_UNHANDLED_EXCEPTION;
         limits.ProcessMemoryLimit = static_cast<SIZE_T>(std::max(g_memory_mb.get(), 32)) << 20;
         SetInformationJobObject(job, JobObjectExtendedLimitInformation, &limits, sizeof(limits));
+#elif defined(__linux__)
+        // El tope (RLIMIT_DATA) se pone al arrancar; si cambia en marcha, tambien.
+        if (!running()) return;
+        const rlimit limit = memoryLimit();
+        prlimit(pid, RLIMIT_DATA, &limit, nullptr);
 #endif
     }
 
@@ -650,6 +724,14 @@ struct HostProcess {
         PROCESS_MEMORY_COUNTERS_EX counters{};
         if (running() && GetProcessMemoryInfo(process, reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&counters), sizeof(counters))) {
             return counters.PrivateUsage;
+        }
+#elif defined(__linux__)
+        // /proc/<pid>/statm: el sexto numero son las paginas de datos (+ pila).
+        if (running()) {
+            std::ifstream in("/proc/" + std::to_string(pid) + "/statm");
+            std::uint64_t values[6] = {};
+            for (std::uint64_t& v : values) in >> v;
+            if (in) return values[5] * static_cast<std::uint64_t>(sysconf(_SC_PAGESIZE));
         }
 #endif
         return 0;
@@ -731,13 +813,70 @@ struct HostProcess {
             }
         }
 #else
-        (void)op;
-        (void)w;
-        (void)payload;
-        (void)timeout_ms;
-        (void)handler;
-        message = "los scripts de C++ solo funcionan en Windows";
-        return Outcome::HostDied;
+        if (block == nullptr || !running()) {
+            message = "el proceso de scripts no esta en marcha";
+            return Outcome::HostDied;
+        }
+        const std::size_t size = std::min<std::size_t>(w.bytes.size(), ipc::kDataSize);
+        if (size > 0) std::memcpy(block->data, w.bytes.data(), size);
+        block->op = static_cast<std::uint32_t>(op);
+        block->size = static_cast<std::uint32_t>(size);
+        block->turn.store(1, std::memory_order_release);
+        wake();
+        const auto start = std::chrono::steady_clock::now();
+        const int budget = timeout_ms > 0 ? timeout_ms : g_timeout_ms.get();
+        const auto limit = std::chrono::milliseconds(std::max(budget, 20));
+        int spin = 0;
+        while (true) {
+            if (block->turn.load(std::memory_order_acquire) == 2) {
+                spin = 0;
+                const auto reply_op = static_cast<ipc::Op>(block->op);
+                if (reply_op == ipc::Op::Rpc) {
+                    const std::vector<std::uint8_t> in(block->data, block->data + block->size);
+                    proto::Reader r(in.data(), in.size());
+                    const auto rpc_op = static_cast<proto::Rpc>(r.u32());
+                    proto::Writer reply;
+                    if (handler) handler(rpc_op, r, reply);
+                    ++rpcs;
+                    const std::size_t n = std::min<std::size_t>(reply.bytes.size(), ipc::kDataSize);
+                    if (n > 0) std::memcpy(block->data, reply.bytes.data(), n);
+                    block->op = static_cast<std::uint32_t>(ipc::Op::RpcReply);
+                    block->size = static_cast<std::uint32_t>(n);
+                    block->turn.store(1, std::memory_order_release);
+                    wake();
+                    continue;
+                }
+                if (reply_op == ipc::Op::Done) {
+                    proto::Reader r(block->data, block->size);
+                    const auto st = static_cast<ipc::Status>(r.u32());
+                    message = r.str();
+                    if (payload != nullptr) {
+                        const std::size_t used = block->size - r.remaining();
+                        payload->assign(block->data + used, block->data + block->size);
+                    }
+                    block->turn.store(0, std::memory_order_release);
+                    switch (st) {
+                        case ipc::Status::Ok: return Outcome::Ok;
+                        case ipc::Status::Missing: return Outcome::Missing;
+                        default: return Outcome::ScriptError;
+                    }
+                }
+            }
+            if (++spin < 3000) {
+                std::this_thread::yield();
+            } else {
+                waitSignal(1);
+                if (!running()) {
+                    message = deathMessage();
+                    return Outcome::HostDied;
+                }
+            }
+            if (std::chrono::steady_clock::now() - start > limit) {
+                kill(pid, SIGKILL);
+                message = "tardo mas de " + std::to_string(budget) + " ms (bucle infinito?): se corto (script.cpp.TimeoutMs)";
+                return Outcome::Timeout;
+            }
+        }
 #endif
     }
 
@@ -794,6 +933,91 @@ struct HostProcess {
             }
             WaitForSingleObject(to_engine, 5);
         }
+#else
+        close();
+        serial = new_serial;
+        reaped = false;
+        status = 0;
+        std::error_code ec;
+        if (dll.empty() || !std::filesystem::exists(dll, ec)) {
+            error = "no hay biblioteca de scripts de C++ compilada";
+            return false;
+        }
+        if (!std::filesystem::exists(host_exe, ec)) {
+            error = "falta " + utf8(host_exe.filename()) + " junto al ejecutable";
+            return false;
+        }
+        // El bloque: memoria anonima compartida que el proceso hereda.
+        int memory = -1;
+#if defined(__linux__)
+        memory = memfd_create("cramion_scripts", MFD_CLOEXEC);
+#else
+        {
+            const std::string shm = "/cramion_" + std::to_string(getpid()) + "_" + std::to_string(serial);
+            memory = shm_open(shm.c_str(), O_RDWR | O_CREAT | O_EXCL, 0600);
+            if (memory >= 0) shm_unlink(shm.c_str());
+        }
+#endif
+        int pair[2] = {-1, -1};
+        if (memory < 0 || ftruncate(memory, sizeof(ipc::Block)) != 0 || socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, pair) != 0) {
+            if (memory >= 0) ::close(memory);
+            error = "no se pudo crear el canal con el proceso de scripts";
+            return false;
+        }
+        void* mapped = mmap(nullptr, sizeof(ipc::Block), PROT_READ | PROT_WRITE, MAP_SHARED, memory, 0);
+        if (mapped == MAP_FAILED) {
+            ::close(memory);
+            ::close(pair[0]);
+            ::close(pair[1]);
+            error = "no se pudo crear el canal con el proceso de scripts";
+            return false;
+        }
+        block = static_cast<ipc::Block*>(mapped);
+        block->turn.store(0);
+        block->host_ready = 0;
+        block->crash[0] = 0;
+        channel = pair[0];
+        // En el hijo solo hay llamadas seguras despues de fork (el motor tiene hilos).
+        const int child_channel = highFd(pair[1]);
+        const int child_memory = highFd(memory);
+        const std::string exe = utf8(host_exe);
+        const std::string folder = utf8(dll.parent_path());
+        std::string arg_name = ipc::blockName(static_cast<std::uint32_t>(getpid()), serial);
+        std::string arg_pid = std::to_string(getpid());
+        std::string arg_exe = exe;
+        char* argv[] = {arg_exe.data(), arg_name.data(), arg_pid.data(), nullptr};
+        const rlimit limit = memoryLimit();
+        const pid_t child = fork();
+        if (child == 0) {
+            const int dev_null = open("/dev/null", O_RDONLY);
+            if (dev_null >= 0) dup2(dev_null, 0);
+            if (dup2(child_channel, 3) < 0 || dup2(child_memory, 4) < 0) _exit(126);
+            if (chdir(folder.c_str()) != 0) {
+                // sigue en la carpeta del motor
+            }
+            setrlimit(RLIMIT_DATA, &limit);
+            execv(exe.c_str(), argv);
+            _exit(127);
+        }
+        ::close(child_channel);
+        ::close(child_memory);
+        if (child < 0) {
+            error = "no se pudo arrancar " + utf8(host_exe.filename()) + " (" + std::strerror(errno) + ")";
+            close();
+            return false;
+        }
+        pid = child;
+        const auto t0 = std::chrono::steady_clock::now();
+        while (block->host_ready == 0) {
+            if (!running() || std::chrono::steady_clock::now() - t0 > std::chrono::seconds(10)) {
+                error = "el proceso de scripts no arranco";
+                if (reaped && WIFEXITED(status) && WEXITSTATUS(status) == 127) error += " (no se pudo ejecutar " + exe + ")";
+                close();
+                return false;
+            }
+            waitSignal(5);
+        }
+#endif
         proto::Writer w;
         w.str(utf8(dll)).u32(serial);
         std::vector<std::uint8_t> payload;
@@ -809,15 +1033,6 @@ struct HostProcess {
         classes.clear();
         for (std::uint32_t i = 0; i < n && r.ok(); ++i) classes.push_back(r.str());
         return true;
-#else
-        (void)host_exe;
-        (void)dll;
-        (void)new_serial;
-        (void)classes;
-        (void)handler;
-        error = "los scripts de C++ solo funcionan en Windows";
-        return false;
-#endif
     }
 };
 
@@ -1636,7 +1851,7 @@ struct CppScriptSystem::Impl {
 
 CppScriptSystem::CppScriptSystem() : impl_(std::make_unique<Impl>()) {
     registerCppScriptComponents();
-    impl_->host_exe = exeFolder() / "CramionScriptHost.exe";
+    impl_->host_exe = exeFolder() / kHostName;
     impl_->sdk_folder = exeFolder() / "sdk";
     impl_->memory_listener = g_memory_mb.onChanged([this](cvar::CVarBase&) { impl_->host.applyMemoryLimit(); });
 }
@@ -1658,7 +1873,7 @@ void CppScriptSystem::setBuildFolder(const std::filesystem::path& folder) {
     std::filesystem::file_time_type newest{};
     impl_->dll_path.clear();
     for (std::filesystem::directory_iterator it(folder, ec), end; !ec && it != end; it.increment(ec)) {
-        if (it->path().extension() != ".dll") continue;
+        if (it->path().extension() != kLibraryExt) continue;
         const auto t = it->last_write_time(ec);
         if (impl_->dll_path.empty() || t > newest) {
             newest = t;
@@ -1746,7 +1961,31 @@ std::string CppScriptSystem::findCompiler(std::string* kind) {
         return utf8(vcvars);
     }
 #else
-    (void)kind;
+    const std::string chosen = g_compiler.get();
+    if (!chosen.empty()) {
+        if (kind != nullptr) *kind = lower(chosen).find("g++") != std::string::npos ? "g++" : "clang++";
+        return chosen;
+    }
+    std::error_code ec;
+    const std::filesystem::path bundled = toolchainRoot() / "bin" / "clang++";
+    if (std::filesystem::exists(bundled, ec)) {
+        if (kind != nullptr) *kind = "clang (incluido)";
+        return utf8(bundled);
+    }
+    if (const char* env = std::getenv("CRAMION_CXX"); env != nullptr && *env != '\0') {
+        if (kind != nullptr) *kind = std::string(env).find("g++") != std::string::npos ? "g++" : "clang++";
+        return env;
+    }
+    const std::filesystem::path clang = searchLlvmTool("clang++");
+    if (!clang.empty()) {
+        if (kind != nullptr) *kind = "clang++";
+        return utf8(clang);
+    }
+    const std::filesystem::path gcc = searchPath("g++");
+    if (!gcc.empty()) {
+        if (kind != nullptr) *kind = "g++";
+        return utf8(gcc);
+    }
 #endif
     return {};
 }
@@ -1760,7 +1999,10 @@ std::filesystem::path CppScriptSystem::findClangd() {
     if (found.empty() && std::filesystem::exists("C:/Program Files/LLVM/bin/clangd.exe", ec)) found = "C:/Program Files/LLVM/bin/clangd.exe";
     return found;
 #else
-    return {};
+    std::error_code ec;
+    const std::filesystem::path bundled = toolchainRoot() / "bin" / "clangd";
+    if (std::filesystem::exists(bundled, ec)) return bundled;
+    return searchLlvmTool("clangd");
 #endif
 }
 
@@ -1773,35 +2015,49 @@ std::filesystem::path CppScriptSystem::findClangFormat() {
     if (found.empty() && std::filesystem::exists("C:/Program Files/LLVM/bin/clang-format.exe", ec)) found = "C:/Program Files/LLVM/bin/clang-format.exe";
     return found;
 #else
-    return {};
+    std::error_code ec;
+    const std::filesystem::path bundled = toolchainRoot() / "bin" / "clang-format";
+    if (std::filesystem::exists(bundled, ec)) return bundled;
+    return searchLlvmTool("clang-format");
 #endif
 }
 
 bool CppScriptSystem::formatSource(const std::string& text, const std::filesystem::path& file, const std::string& style,
                                    std::string& out, int* cursor, std::string* error) {
-#if defined(_WIN32)
     const std::filesystem::path exe = findClangFormat();
     if (exe.empty()) {
-        if (error != nullptr) *error = "no hay clang-format (falta toolchain/bin/clang-format.exe)";
+        if (error != nullptr) *error = std::string("no hay clang-format (falta toolchain/bin/clang-format") + kExeExt + ")";
         return false;
     }
     // El texto va por un archivo temporal (la salida es el texto formateado).
     std::error_code ec;
     static std::atomic<int> counter{0};
+#if defined(_WIN32)
+    const unsigned long pid = GetCurrentProcessId();
+#else
+    const unsigned long pid = static_cast<unsigned long>(getpid());
+#endif
     const std::filesystem::path temp = std::filesystem::temp_directory_path(ec) /
-                                       ("cramion_format_" + std::to_string(GetCurrentProcessId()) + "_" + std::to_string(counter++) + ".cpp");
+                                       ("cramion_format_" + std::to_string(pid) + "_" + std::to_string(counter++) + ".cpp");
     {
         std::ofstream o(temp, std::ios::binary);
         o << text;
     }
+    std::string output;
+#if defined(_WIN32)
     std::wstring style_arg;
     for (const char c : style) style_arg += (c == '"') ? L'\'' : static_cast<wchar_t>(static_cast<unsigned char>(c));
     std::wstring cmd = L"\"" + exe.wstring() + L"\" --style=\"" + style_arg + L"\" --fallback-style=LLVM --assume-filename=\"" +
                        file.wstring() + L"\"";
     if (cursor != nullptr) cmd += L" --cursor=" + std::to_wstring(std::max(*cursor, 0));
     cmd += L" \"" + temp.wstring() + L"\"";
-    std::string output;
     const int code = runProcess(cmd, output, 20000);
+#else
+    std::vector<std::string> cmd{utf8(exe), "--style=" + style, "--fallback-style=LLVM", "--assume-filename=" + utf8(file)};
+    if (cursor != nullptr) cmd.push_back("--cursor=" + std::to_string(std::max(*cursor, 0)));
+    cmd.push_back(utf8(temp));
+    const int code = runProcess(cmd, output, 20000);
+#endif
     std::filesystem::remove(temp, ec);
     if (code != 0) {
         if (error != nullptr) *error = output.substr(0, 2000);
@@ -1820,11 +2076,6 @@ bool CppScriptSystem::formatSource(const std::string& text, const std::filesyste
     }
     out = std::move(output);
     return true;
-#else
-    (void)text; (void)file; (void)style; (void)out; (void)cursor;
-    if (error != nullptr) *error = "solo en Windows";
-    return false;
-#endif
 }
 
 std::vector<std::string> CppScriptSystem::compileArguments(const std::filesystem::path& source) const {
@@ -1835,7 +2086,9 @@ std::vector<std::string> CppScriptSystem::compileArguments(const std::filesystem
         compiler = "clang++";
     }
     std::vector<std::string> args{generic(fromUtf8(compiler))};
+#if defined(_WIN32)
     if (kind == "clang (incluido)") args.push_back("--target=x86_64-w64-mingw32");
+#endif
     args.insert(args.end(), {"-std=c++20", "-DCRAMION_CPP_SCRIPT", "-I" + generic(impl_->sdk_folder), "-I" + generic(impl_->assets_root)});
     // Las cabeceras (.h) son de C++ (clang las tomaria por C).
     const std::string ext = lower(utf8(source.extension()));
@@ -1975,6 +2228,64 @@ CppCompileResult CppScriptSystem::compile() {
             result.errors.push_back({generic(inside ? relative : file.filename()), std::stoi(m[2]), m[3]});
         } else if (line.find("lld-link: error") != std::string::npos || line.find("ld.lld: error") != std::string::npos ||
                    line.find("LINK : fatal error") != std::string::npos || line.find("error LNK") != std::string::npos) {
+            result.errors.push_back({{}, 0, line});
+        }
+    }
+    result.ok = code == 0 && std::filesystem::exists(out, ec);
+    if (!result.ok && result.errors.empty()) {
+        result.errors.push_back({{}, 0, "el compilador fallo (codigo " + std::to_string(code) + "): " + result.log.substr(0, 600)});
+    }
+    if (result.ok) {
+        result.dll = out;
+        // Las clases y sus propiedades (para el Inspector).
+        std::string message;
+        if (!d.describe(out, result.classes, message) && !message.empty()) {
+            result.errors.push_back({{}, 0, "describir los scripts: " + message});
+        }
+        d.saveSchema(result.classes);
+    }
+#else
+    std::string kind;
+    const std::string compiler = findCompiler(&kind);
+    result.compiler = kind;
+    if (compiler.empty()) {
+        result.errors.push_back({{}, 0,
+                                 "no hay compilador de C++: falta toolchain/ junto al editor (o instala clang++ o g++, "
+                                 "o pon la ruta en la CVar script.cpp.Compiler)"});
+        return result;
+    }
+    std::error_code ec;
+    std::filesystem::create_directories(d.build_folder, ec);
+    for (std::filesystem::directory_iterator it(d.build_folder, ec), end; !ec && it != end; it.increment(ec)) {
+        if (it->path().extension() == kLibraryExt && it->path() != d.dll_path) {
+            std::error_code rm;
+            std::filesystem::remove(it->path(), rm);
+        }
+    }
+    const auto stamp = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+    const std::filesystem::path out = d.build_folder / ("scripts_" + std::to_string(stamp) + kLibraryExt);
+    std::vector<std::string> command{compiler, "-std=c++20", g_optimize.get() ? "-O2" : "-O0", "-g", "-fPIC", "-shared", "-pthread",
+                                     "-DCRAMION_CPP_SCRIPT", "-Wall", "-Wno-unused-parameter"};
+    if (kind != "g++") command.push_back("-Wno-unused-private-field");
+    command.push_back("-I" + utf8(d.sdk_folder));
+    command.push_back("-I" + utf8(d.assets_root));
+    for (const auto& s : sources) command.push_back(utf8(s));
+    command.push_back(utf8(d.sdk_folder / "cramion" / "ScriptMain.cpp"));
+    command.insert(command.end(), {"-o", utf8(out)});
+    const int code = runProcess(command, result.log);
+    static const std::regex clang_error(R"(^(.*?):(\d+):\d+: (?:fatal )?error: (.*)$)");
+    std::istringstream lines(result.log);
+    std::string line;
+    while (std::getline(lines, line)) {
+        std::smatch m;
+        if (std::regex_match(line, m, clang_error)) {
+            std::filesystem::path file = fromUtf8(m[1]);
+            std::error_code rel;
+            const std::filesystem::path relative = std::filesystem::relative(file, d.assets_root, rel);
+            const bool inside = !rel && !relative.empty() && utf8(relative).rfind("..", 0) != 0;
+            result.errors.push_back({generic(inside ? relative : file.filename()), std::stoi(m[2]), m[3]});
+        } else if (line.find("ld: error") != std::string::npos || line.find("ld.lld: error") != std::string::npos ||
+                   line.find("undefined reference") != std::string::npos || line.find("collect2: error") != std::string::npos) {
             result.errors.push_back({{}, 0, line});
         }
     }
