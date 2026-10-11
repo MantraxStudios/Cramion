@@ -163,7 +163,7 @@ void EditorApp::rebuildBrowserCache() {
             if (isDecalImage(entry.path())) current_images_.push_back(entry.path());
             std::string ext = entry.path().extension().string();
             std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-            if (ext == ".lua" || ext == ".cpp" || ext == ".cc" || ext == ".cxx" || ext == ".h" || ext == ".hpp") {
+            if (ext == ".cpp" || ext == ".cc" || ext == ".cxx" || ext == ".h" || ext == ".hpp") {
                 current_scripts_.push_back(entry.path());
             }
             if (ext == assets::kSurfaceShaderExtension || isGraphFileExtension(ext)) current_shaders_.push_back(entry.path());
@@ -418,7 +418,6 @@ void EditorApp::buildBrowserItems() {
                 const std::filesystem::path& p = it->path();
                 std::string ext = lower(p.extension().string());
                 if (isDecalImage(p)) browser_all_loose_.push_back(file_item(p, Kind::Image, "Textura"));
-                else if (ext == ".lua") browser_all_loose_.push_back(file_item(p, Kind::Script, "Script Lua (obsoleto)"));
                 else if (ext == ".cpp" || ext == ".cc" || ext == ".cxx" || ext == ".h" || ext == ".hpp") {
                     browser_all_loose_.push_back(file_item(p, Kind::Script, "Script C++"));
                 }
@@ -463,7 +462,7 @@ void EditorApp::buildBrowserItems() {
         }
         for (const std::filesystem::path& p : current_images_) browser_items_.push_back(file_item(p, Kind::Image, "Textura"));
         for (const std::filesystem::path& p : current_scripts_) {
-            browser_items_.push_back(file_item(p, Kind::Script, lower(p.extension().string()) == ".lua" ? "Script Lua (obsoleto)" : "Script C++"));
+            browser_items_.push_back(file_item(p, Kind::Script, "Script C++"));
         }
         for (const std::filesystem::path& p : current_shaders_) {
             browser_items_.push_back(file_item(p, Kind::Shader, graphFileLabel(lower(p.extension().string()))));
@@ -927,7 +926,6 @@ void EditorApp::drawProject() {
         if (ImGui::MenuItem("Material")) createMaterialAsset(target_folder);
         if (ImGui::MenuItem("Render Texture")) createRenderTextureAsset(target_folder);
         if (ImGui::MenuItem("Script C++")) createCppScriptAsset(target_folder, {});
-        if (ImGui::MenuItem("Script Lua (obsoleto)")) createScriptAsset(target_folder, {});
         if (ImGui::MenuItem("Shader (GLSL)")) openScript(createShaderAsset(target_folder));
         if (ImGui::MenuItem("Animator")) createAnimatorAsset(target_folder);
         if (ImGui::BeginMenu("Máquina de estados (IA)")) {
@@ -1198,7 +1196,7 @@ void EditorApp::drawProject() {
             draw->AddRectFilled(pos, ImVec2(pos.x + size, pos.y + size), IM_COL32(30, 30, 34, 255), 3.0f);
             const float inner = size * 0.5f;
             imgui_.drawIcon(draw, itemIcon(item), ImVec2(pos.x + (size - inner) * 0.5f, pos.y + (size - inner) * 0.5f), inner, color);
-            const char* tag = item.kind == Kind::Script ? (lower(item.path.extension().string()) == ".lua" ? "LUA" : "C++")
+            const char* tag = item.kind == Kind::Script ? "C++"
                               : item.kind == Kind::Shader ? "GLSL" : nullptr;
             if (tag != nullptr) {
                 const ImVec2 t = ImGui::CalcTextSize(tag);
@@ -1394,7 +1392,6 @@ void EditorApp::drawProject() {
             if (ImGui::MenuItem("Material")) createMaterialAsset(target_folder);
             if (ImGui::MenuItem("Render Texture")) createRenderTextureAsset(target_folder);
             if (ImGui::MenuItem("Script C++")) createCppScriptAsset(target_folder, {});
-            if (ImGui::MenuItem("Script Lua (obsoleto)")) createScriptAsset(target_folder, {});
             if (ImGui::MenuItem("Shader (GLSL)")) openScript(createShaderAsset(target_folder));
             if (ImGui::MenuItem("Animator")) createAnimatorAsset(target_folder);
             if (ImGui::BeginMenu("Máquina de estados (IA)")) {

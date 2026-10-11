@@ -613,7 +613,7 @@ void EditorApp::drawReplayWindow() {
     if (!playing()) {
         ImGui::TextWrapped("Da Play para grabar. Se graban los objetos que se mueven (o los de una etiqueta), sus "
                            "animaciones y los sonidos; luego se reproducen con la línea de tiempo, a cámara lenta o "
-                           "con cámara libre. En Lua: Replay.start(), Replay.play(-5), Replay.save(\"gol\").");
+                           "con cámara libre. Desde un script: Replay::start(), Replay::play(-5), Replay::save(\"gol\").");
     }
     ImGui::BeginDisabled(!playing());
     if (!r.recording()) {

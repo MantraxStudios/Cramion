@@ -132,7 +132,7 @@ PathField pathFieldOf(const ecs::Meta& meta) {
     } else if ((key == "clip" && tip.find("audio") != std::string::npos) || key == "audio") {
         f = {true, kAudio, "Audio (WAV, OGG, MP3, FLAC)"};
     } else if (key == "file" || key == "script") {
-        f = {true, {".lua", ".crgraph"}, "Script (.lua) o Visual Script (.crgraph)"};
+        f = {true, {".cpp", ".crgraph"}, "Script de C++ (.cpp) o Visual Script (.crgraph)"};
     } else if (tip.find("assets") != std::string::npos && tip.find("archivo") != std::string::npos) {
         f.is_path = true;
     }

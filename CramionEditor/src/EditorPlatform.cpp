@@ -4,7 +4,7 @@
 //                    solas (recarga de C++, pruebas, Git, Steam...).
 //   Steam            al dar Play, si la configuracion de compilacion activa
 //                    usa Steam, se carga steam_api64.dll (logros, marcadores,
-//                    overlay... desde Lua/C++ con Steam.*).
+//                    overlay... desde un script con Steam::*).
 //   Control de versiones (Git)
 //                    estado, diferencias, preparar/quitar, commit, push/pull,
 //                    ramas e historial con el git del sistema. Inicializa un
@@ -171,7 +171,6 @@ constexpr const char* kGitAttributes = R"(# Cramion: binarios grandes con Git LF
 *.crscene text eol=lf
 *.crprefab text eol=lf
 *.crmat text eol=lf
-*.lua text eol=lf
 )";
 
 }  // namespace

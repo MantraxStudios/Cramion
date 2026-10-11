@@ -184,7 +184,7 @@ void EditorApp::enterPlay() {
     // Audio y scripts (despues de la fisica: los scripts la usan en Awake).
     audio_.start(world_);
     scripts_.clearErrors();
-    // Interfaz tactil del proyecto (Lua: Input.setTouchControls...).
+    // Interfaz tactil del proyecto (Input::setTouchControls... desde un script).
     touch_layout_file_.clear();
     loadTouchInterface();
     touch_game_.setLayout(touch_layout_);
@@ -307,7 +307,7 @@ void EditorApp::updateScriptsAndAudio(float delta_seconds, int physics_steps) {
         physics_.driveCharactersWithKeyboard(world_, keys);
     }
     {
-        CR_PROFILE_SCOPE("Scripts Lua");
+        CR_PROFILE_SCOPE("Scripts");
         scripts_.fixedUpdate(world_, physics_settings_.fixed_step, physics_steps);
         scripts_.update(world_, delta_seconds);
     }

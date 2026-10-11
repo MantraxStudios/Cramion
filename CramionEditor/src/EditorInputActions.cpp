@@ -9,7 +9,7 @@
 //   Depurar    en Play: valor y estado de cada accion y los contextos activos.
 //
 // Se guarda en ProjectSettings/InputActions.json al cambiar algo; en Play se
-// aplica al momento. Lua: Input.getAction("Move"), Input.bindAction(...),
+// aplica al momento. Desde un script: Input::getAction("Move"), Input::bindAction(...),
 // Input.addMappingContext("Vuelo")...
 
 #include "EditorApp.h"
@@ -392,7 +392,7 @@ void EditorApp::drawInputActionsWindow() {
                     }
                     ImGui::EndCombo();
                 }
-                ImGui::SetItemTooltip("Lua: Input.getAction devuelve true/false (Bool), un numero (Axis1D) o un Vec3 (Axis2D/3D).");
+                ImGui::SetItemTooltip("Input::getAction devuelve true/false (Bool), un numero (Axis1D) o un Vec3 (Axis2D/3D).");
                 ImGui::SetNextItemWidth(-1.0f);
                 changed |= ImGui::InputTextWithHint("##desc", "Descripcion", &a.description);
                 int acc = a.accumulate ? 1 : 0;
@@ -448,7 +448,7 @@ void EditorApp::drawInputActionsWindow() {
                     changed = true;
                 }
                 ImGui::SameLine();
-                ImGui::TextDisabled("Lua: Input.getAction(\"%s\")", old_name.c_str());
+                ImGui::TextDisabled("Desde un script: Input::getAction(\"%s\")", old_name.c_str());
             }
             ImGui::EndChild();
             ImGui::EndTabItem();
@@ -493,7 +493,7 @@ void EditorApp::drawInputActionsWindow() {
                 ImGui::SetItemTooltip("Con varios contextos activos, el de mas prioridad se queda las teclas que comparten.");
                 ImGui::SameLine();
                 changed |= ImGui::Checkbox("Activo al empezar", &c.active_at_start);
-                ImGui::SetItemTooltip("Si no, se activa desde Lua: Input.addMappingContext(\"%s\")", c.name.c_str());
+                ImGui::SetItemTooltip("Si no, se activa desde un script: Input::addMappingContext(\"%s\")", c.name.c_str());
                 ImGui::SetNextItemWidth(-1.0f);
                 changed |= ImGui::InputTextWithHint("##cdesc", "Descripcion", &c.description);
 

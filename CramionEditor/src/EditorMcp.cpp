@@ -1,6 +1,6 @@
 // MCP (Model Context Protocol) del editor: las herramientas con las que una IA
 // trabaja en el motor (escenas, objetos, componentes, scripts, shaders,
-// materiales, modelos, prefabs, Play, Lua, consola y capturas). El transporte
+// materiales, modelos, prefabs, Play, scripts de C++, consola y capturas). El transporte
 // esta en McpServer; aqui el JSON-RPC y cada herramienta, siempre en el hilo
 // principal y con deshacer como si lo hiciera el usuario.
 
@@ -137,7 +137,7 @@ const std::vector<ToolDef>& toolDefs() {
     static const std::vector<ToolDef> defs = [] {
         const json entity = prop("string", "La entidad: su UUID, su nombre o una ruta Padre/Hijo");
         std::vector<ToolDef> d;
-        d.push_back({"help", "Guia rapida del motor Cramion para la IA: convenciones, formatos (.lua, .crshader, .crmat) y flujo de trabajo recomendado. Llamala primero.", json::object(), {}});
+        d.push_back({"help", "Guia rapida del motor Cramion para la IA: convenciones, formatos (.cpp, .crshader, .crmat) y flujo de trabajo recomendado. Llamala primero.", json::object(), {}});
         d.push_back({"editor_state", "Estado del editor: proyecto abierto, escena, si hay cambios sin guardar, modo Play, seleccion y camara.", json::object(), {}});
         d.push_back({"list_projects", "Proyectos recientes y plantillas disponibles para crear uno.", json::object(), {}});
         d.push_back({"open_project", "Abre un proyecto (.crproj o su carpeta).", {{"path", prop("string", "Ruta del .crproj o de la carpeta del proyecto")}, {"force", prop("boolean", "Descartar cambios sin guardar")}, {"show_loading", prop("boolean", "Abrir como el Hub, con el dialogo de carga (vuelve enseguida)")}}, {"path"}});
@@ -231,15 +231,15 @@ const std::vector<ToolDef>& toolDefs() {
         d.push_back({"lightning_strike", "Ambiente: lanza un rayo ahora (destello, trazo y trueno con el retraso de la distancia).",
                      {{"distance", prop("number", "Distancia en metros (sin ella, al azar)")}}, {}});
         d.push_back({"get_environment", "Ambiente: estado actual (clima, transicion, hora, fecha, estacion, temperatura, viento, lluvia, nieve, humedad, particulas dibujadas).", json::object(), {}});
-        d.push_back({"list_assets", "Assets del proyecto (modelos, materiales, escenas, prefabs, cielos...) y archivos sueltos (scripts .lua, shaders .crshader, imagenes, audio).",
+        d.push_back({"list_assets", "Assets del proyecto (modelos, materiales, escenas, prefabs, cielos...) y archivos sueltos (scripts .cpp/.h, shaders .crshader, imagenes, audio).",
                      {{"folder", prop("string", "Subcarpeta de Assets (opcional)")}, {"type", prop("string", "Filtro: Model, Material, Scene, Prefab, Environment...")}}, {}});
-        d.push_back({"read_file", "Lee un archivo de texto del proyecto (ruta relativa a Assets, p. ej. Scripts/Jugador.lua).", {{"path", prop("string", "Ruta dentro de Assets")}}, {"path"}});
+        d.push_back({"read_file", "Lee un archivo de texto del proyecto (ruta relativa a Assets, p. ej. Scripts/Jugador.cpp).", {{"path", prop("string", "Ruta dentro de Assets")}}, {"path"}});
         d.push_back({"write_file", "Escribe (crea o reemplaza) un archivo de texto en Assets: scripts, shaders, materiales, datos. Se recarga en caliente.",
                      {{"path", prop("string", "Ruta dentro de Assets")}, {"content", prop("string", "Contenido completo")}}, {"path", "content"}});
         d.push_back({"delete_file", "Borra un archivo, asset o carpeta (con todo) de Assets: va a la Papelera de reciclaje y se cierran sus pestanas. Con 'ask' muestra la ventana de confirmar del editor.",
                      {{"path", prop("string", "Ruta dentro de Assets")}, {"ask", prop("boolean", "Preguntar en el editor en vez de borrar ya")}}, {"path"}});
-        d.push_back({"create_script", "Crea un script Lua (con la plantilla o con el codigo dado) y opcionalmente lo engancha a una entidad.",
-                     {{"name", prop("string", "Nombre (sera Scripts/<name>.lua)")}, {"code", prop("string", "Codigo Lua completo (debe terminar en return <tabla>)")}, {"attach_to", entity}}, {"name"}});
+        d.push_back({"create_script", "Crea un script de C++ (con la plantilla, Scripts/<name>.h y .cpp, o solo el .cpp con el codigo dado) y opcionalmente lo engancha a una entidad. Compilalo con cpp_compile.",
+                     {{"name", prop("string", "Nombre de la clase (sera Scripts/<name>.cpp)")}, {"code", prop("string", "Codigo C++ completo del .cpp (con CRAMION_SCRIPT(<name>) al final)")}, {"attach_to", entity}}, {"name"}});
         d.push_back({"create_shader", "Crea un shader de superficie GLSL (.crshader) y lo compila. Devuelve los errores si los hay.",
                      {{"name", prop("string", "Nombre (sera Shaders/<name>.crshader)")}, {"code", prop("string", "Codigo del shader (ver help)")}}, {"name"}});
         d.push_back({"create_material", "Crea un material (.crmat): color, metalico, rugosidad, emision, texturas y opcionalmente un shader propio con sus valores.",
@@ -289,7 +289,7 @@ const std::vector<ToolDef>& toolDefs() {
                       {"path_tracing_samples", prop("number", "Muestras maximas por pixel del path tracing")}}, {}});
         d.push_back({"performance_stats", "Rendimiento del ultimo frame: FPS, ms de CPU y GPU, tiempo de GPU por pase, actores, triangulos, lotes y llamadas de sombras.",
                      json::object(), {}});
-        d.push_back({"profiler", "Insights (perfilador de CPU): percentiles del frame (p50/p95/p99, tirones), las zonas que mas cuestan (media, propio, p95, max, llamadas) y los contadores (animaciones evaluadas/saltadas por LOD, voces de audio, Lua...). action=capture guarda un .crtrace (Perfetto/chrome://tracing).",
+        d.push_back({"profiler", "Insights (perfilador de CPU): percentiles del frame (p50/p95/p99, tirones), las zonas que mas cuestan (media, propio, p95, max, llamadas) y los contadores (animaciones evaluadas/saltadas por LOD, voces de audio, scripts...). action=capture guarda un .crtrace (Perfetto/chrome://tracing).",
                      {{"action", prop("string", "stats (por defecto) o capture")},
                       {"frames", prop("integer", "Frames que se miran o se capturan (120 / 600)")},
                       {"top", prop("integer", "Cuantas zonas devolver (20)")}}, {}});
@@ -388,8 +388,8 @@ const std::vector<ToolDef>& toolDefs() {
         d.push_back({"export_status", "Progreso de la exportacion en curso o el resultado de la ultima.", json::object(), {}});
         d.push_back({"stop", "Sale del modo Play (la escena vuelve a como estaba).", json::object(), {}});
         d.push_back({"pause", "Pausa o reanuda el modo Play.", json::object(), {}});
-        d.push_back({"run_lua", "Ejecuta codigo Lua en el motor (en Play, dentro del juego). Devuelve lo que retorne el codigo.",
-                     {{"code", prop("string", "Codigo Lua; usa return para obtener un valor")}}, {"code"}});
+        d.push_back({"run_console", "Ejecuta una linea de la consola de la API (en Play, dentro del juego; fuera, sobre la escena del editor): llamadas y asignaciones como Scene.find('Jugador').position = Vec3(0, 2, 0) o return Prefs.getInt('record'). Devuelve el resultado.",
+                     {{"code", prop("string", "Llamadas a la API separadas por ';' (return para obtener un valor)")}}, {"code"}});
         d.push_back({"get_console", "Ultimas lineas de la consola del editor (logs, avisos, errores de scripts y shaders).",
                      {{"lines", prop("integer", "Cuantas (por defecto 60)")}, {"level", prop("string", "all, warnings o errors")}}, {}});
         d.push_back({"screenshot", "Captura del editor (imagen PNG) para ver el resultado. Con 'path' la guarda en ese archivo y no devuelve la imagen (para grabar frames).",
@@ -418,7 +418,7 @@ const std::vector<ToolDef>& toolDefs() {
                          {{"entity", entity}, {"go", prop("string", "Ir a este estado")}, {"trigger", prop("string", "Disparar este trigger")}, {"set", prop("object", "{variable: valor}")}}, {"entity"}});
         }
         // --- 2.1: pruebas, iluminacion horneada, VFX, Visual Script, Shader Graph, Behavior Trees (EditorMcp21.cpp) ---
-        d.push_back({"run_tests", "Ejecuta las pruebas automaticas del proyecto (*.test.lua y Assets/Tests): entra en Play, corre las de edicion y las de Play y vuelve. Mira el resultado con test_results.",
+        d.push_back({"run_tests", "Ejecuta las pruebas automaticas del proyecto (CRAMION_TEST en los scripts de C++): entra en Play, corre las de edicion y las de Play y vuelve. Mira el resultado con test_results.",
                      {{"mode", prop("string", "all (por defecto), edit o play")}}, {}});
         d.push_back({"test_results", "Resultado de la ultima ejecucion de pruebas: running y cada prueba (file, name, mode, status passed/failed/skipped, message, seconds, assertions).", json::object(), {}});
         d.push_back({"bake_lighting", "Hornea la luz rebotada de la escena abierta en volumenes de sondas (Light Probe Volume; si no hay, uno automatico) y la activa. Corre en segundo plano: mira lighting_state.",
@@ -453,21 +453,27 @@ giros en grados (Euler, orden YXZ como Unity).
 1. editor_state (hay proyecto abierto?). Si no: list_projects y open_project / create_project.
 2. list_entities para ver la escena; get_entity para los detalles.
 3. Crea/cambia con create_entity, modify_entity, set_component (list_component_types da los campos).
-4. Logica: create_script (Lua) y engancharlo (attach_to). Aspecto: create_material / create_shader.
+4. Logica: create_script (C++) y engancharlo (attach_to); cpp_compile da los errores. Aspecto: create_material / create_shader.
 5. Prueba con play, get_console (errores), screenshot; stop. Guarda con save_scene.
 
-## Scripts Lua (Assets/Scripts/*.lua)
-local Jugador = { properties = { velocidad = 5.0 } }   -- se editan en el Inspector
-function Jugador:Start() end
-function Jugador:Update(dt)
-    local x = Input.getAxis("Horizontal"); local z = Input.getAxis("Vertical")
-    self.entity:translate(Vec3(x, 0, -z) * self.velocidad * dt)
-end
-function Jugador:OnCollisionEnter(other, contact) end
-return Jugador   -- obligatorio
-API: Vec3, Quat, Mathf, Random, Entity (position, rotation, scale, forward, velocity, addForce,
-lookAt, find, getScript, destroy...), Scene (find, create, instantiate("Prefabs/X"), load), Input,
-Time, Physics.raycast, Audio, UI, Prefs, Game, Debug.log, Navigation, Mesh, Voxel, Graphics (calidad, resolucion, sombras, texturas, ventana y Graphics.post para el post-procesado).
+## Scripts de C++ (Assets/Scripts/*.cpp; la clase se llama como el archivo)
+#include <cramion/Script.h>
+using namespace cramion;
+class Jugador : public Script {
+public:
+    Property<float> velocidad{this, "velocidad", 5.0f};   // se edita en el Inspector
+    void start() override {}
+    void update(float dt) override {
+        const float x = Input::axis("Horizontal"), z = Input::axis("Vertical");
+        entity().translate(Vec3{x, 0, -z} * (velocidad * dt));
+    }
+    void onCollisionEnter(const Collision& c) override {}
+};
+CRAMION_SCRIPT(Jugador)   // obligatorio
+API: Vec3, Quat, Mathf, Entity (position, setPosition, rotate, lookAt, velocity, addForce, find,
+script<T>, destroy...), Scene (find, create, instantiate, load), Input, Time, Physics::raycast,
+Audio, Prefs, Game, Debug::log, Navigation, Mesh, Voxel, Graphics. Mensajes de la UI y de otros
+scripts: on("OnJugar", [](const Value& v) {...}) en awake().
 Manual completo: https://cramion.mantraxtools.store/manual/index.html
 
 ## Shaders de superficie (Assets/Shaders/*.crshader, GLSL)
@@ -481,7 +487,7 @@ Se usan desde un material: create_material con shader = "Shaders/X.crshader".
 
 ## Componentes frecuentes (set_component)
 MeshRenderer, Light (type Directional/Point/Spot, color, intensity, range), Camera, Rigidbody,
-BoxCollider, SphereCollider, CapsuleCollider, MeshCollider, CharacterController, Script (file = "Scripts/X.lua"),
+BoxCollider, SphereCollider, CapsuleCollider, MeshCollider, CharacterController, CppScript (script = "Scripts/X.cpp", class_name = "X"),
 AudioSource, Animator, ParticleSystem, NavAgent, Terrain, WaterBody, Decal, TerrainFlatten.
 Nota: primitivas (cube, sphere...) ya traen su collider. Un BoxCollider/SphereCollider/CapsuleCollider
 nuevo toma el AABB de la malla (como Unity); fit_collider lo recalcula.
@@ -494,7 +500,7 @@ Los edificios llevan TerrainFlatten: el terreno se aplana bajo su AABB (flatten_
 
 ## Ambiente (clima y hora)
 set_weather (Storm, Snow, Foggy...; seconds = transicion), set_time (hours, day, month, latitude,
-day_length, season), set_wind, lightning_strike, get_environment. En Lua: Weather.set("Rain", 5).
+day_length, season), set_wind, lightning_strike, get_environment. Desde un script: Weather::set("Rain", 5).
 )";
 
 }  // namespace
@@ -663,7 +669,6 @@ private:
         a.refreshDatabase();
         const std::string rel = a.assetRelative(file);
         const std::string ext = file.extension().string();
-        if (ext == ".lua") a.scripts_.reloadFile(rel);
         if (ext == ai::kStateMachineExtension) {  // maquina de estados: Play y la ventana abierta
             a.fsm_cache_.clear();
             a.scripts_.reloadFile(rel);
@@ -1487,23 +1492,26 @@ json McpTools::call(const std::string& name, const json& args, bool& image, std:
         return json{{"deleted", arg(args, "path")}};
     }
     if (name == "create_script") {
+        needProject();
         const std::string script = safeName(arg(args, "name"));
-        const std::filesystem::path file = a.project_.assetsFolder() / "Scripts" / dialogs::fromUtf8(script + ".lua");
+        const std::filesystem::path file = a.project_.assetsFolder() / "Scripts" / dialogs::fromUtf8(script + ".cpp");
         std::filesystem::create_directories(file.parent_path());
-        const std::string code = args.contains("code") ? arg(args, "code") : scripting::scriptTemplate(script);
-        std::ofstream(file, std::ios::binary | std::ios::trunc) << code;
+        if (args.contains("code")) {
+            std::ofstream(file, std::ios::binary | std::ios::trunc) << arg(args, "code");
+        } else {
+            std::ofstream(file.parent_path() / dialogs::fromUtf8(script + ".h"), std::ios::binary | std::ios::trunc)
+                << scripting::cppScriptHeaderTemplate(script);
+            std::ofstream(file, std::ios::binary | std::ios::trunc) << scripting::cppScriptTemplate(script);
+        }
         afterWrite(file);
+        a.cpp_last_check_ = -10.0;  // el editor lo compila ya
         json out{{"path", a.assetRelative(file)}};
         if (args.contains("attach_to")) {
             ecs::Entity e = entity(arg(args, "attach_to"));
-            scripting::Script& s = e.has<scripting::Script>() ? e.get<scripting::Script>() : e.add<scripting::Script>();
-            s.file = a.assetRelative(file);
+            a.attachScriptFile(e, a.assetRelative(file));
             a.commit();
             out["attached_to"] = e.name();
         }
-        std::string error;
-        a.scripts_.describe(a.assetRelative(file), &error);
-        if (!error.empty()) out["error"] = error;
         return out;
     }
     if (name == "create_shader") {
@@ -2476,10 +2484,10 @@ json McpTools::call(const std::string& name, const json& args, bool& image, std:
         if (!error.empty()) throw ToolError(error);
         return json::parse(out, nullptr, false);
     }
-    if (name == "run_lua") {
+    if (name == "run_console") {
         std::string out;
         const bool ok = a.scripts_.run(arg(args, "code"), &out, &a.world_);
-        if (!ok) throw ToolError("error de Lua: " + out);
+        if (!ok) throw ToolError("error: " + out);
         return json{{"result", out}};
     }
     if (name == "get_console") {

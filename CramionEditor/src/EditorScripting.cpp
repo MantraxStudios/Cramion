@@ -1,8 +1,9 @@
-// Scripting en el editor: el editor de scripts Lua integrado (pestanas,
-// resaltado de sintaxis, numeros de linea, sangria automatica, Ctrl+S guarda
-// y recarga en caliente, errores marcados en su linea), la consola de Lua, el
-// Inspector del componente Script (propiedades del script con su control) y
-// el del AudioSource (arrastrar un clip, escucharlo).
+// Scripting en el editor: el editor de codigo integrado para los scripts de
+// C++ y los shaders (pestanas, resaltado de sintaxis, numeros de linea,
+// sangria automatica, autocompletado con clangd, Ctrl+S guarda y compila,
+// errores marcados en su linea), la consola de la API, el aviso del
+// componente Script de Lua (obsoleto) y el Inspector del AudioSource
+// (arrastrar un clip, escucharlo).
 
 #include "EditorApp.h"
 
@@ -27,7 +28,7 @@ using core::Vec3;
 
 namespace {
 
-// --- Resaltado de Lua ---
+// --- Resaltado ---
 enum class Token { Text, Keyword, Api, Number, String, Comment, Function };
 
 ImU32 tokenColor(Token t) {
@@ -41,20 +42,6 @@ ImU32 tokenColor(Token t) {
         default: return IM_COL32(212, 212, 212, 255);
     }
 }
-
-bool isKeyword(std::string_view w) {
-    static constexpr const char* kWords[] = {"and",   "break", "do",    "else", "elseif", "end",    "false",
-                                             "for",   "function", "goto", "if",   "in",     "local",  "nil",
-                                             "not",   "or",    "repeat", "return", "then", "true",   "until",
-                                             "while"};
-    for (const char* k : kWords) {
-        if (w == k) return true;
-    }
-    return false;
-}
-
-// Tablas y funciones globales del motor (la lista la da el propio motor).
-bool isApi(std::string_view w) { return luaIsApiName(w); }
 
 // --- Resaltado de GLSL (shaders de superficie, .crshader) ---
 bool isGlslKeyword(std::string_view w) {
@@ -99,7 +86,7 @@ bool isCppApi(std::string_view w) {
     static constexpr const char* kNames[] = {
         "cramion", "Script", "Entity", "Vec2", "Vec3", "Quat", "Color", "Value", "Values", "Property", "Range", "Tooltip",
         "Header", "Label", "Options", "Requires", "Prefab", "Model", "Material", "Texture", "AudioClip", "SceneAsset",
-        "Collision", "RaycastHit", "Debug", "Input", "Physics", "Scene", "Time", "Lua", "CVar", "CVars", "Audio", "UI",
+        "Collision", "RaycastHit", "Debug", "Input", "Physics", "Scene", "Time", "CVar", "CVars", "Audio", "UI",
         "Network", "Navigation", "Graphics", "Prefs", "Voxel", "Http", "Random", "Screen", "Game", "XR", "Weather", "Fire",
         "Fluid", "Environment", "DataPack", "CRAMION_SCRIPT", "CR_PROPERTY", "std", "string", "vector", "uint32_t",
         "uint64_t", "size_t"};
@@ -110,19 +97,17 @@ bool isCppApi(std::string_view w) {
 }
 
 // Tokens de una linea. `in_block_comment` sigue de una linea a la siguiente.
-// `glsl`: comentarios // y /* */ y las palabras de GLSL (o de C++ con `cpp`).
+// Comentarios // y /* */; las palabras de C++ (`cpp`) o de GLSL (el resto).
 void tokenizeLine(std::string_view line, bool& in_block_comment,
-                  std::vector<std::pair<std::string_view, Token>>& out, bool glsl = false, bool cpp = false) {
-    if (cpp) glsl = true;  // mismos comentarios y textos
+                  std::vector<std::pair<std::string_view, Token>>& out, bool cpp) {
     out.clear();
     std::size_t i = 0;
     const auto push = [&](std::size_t from, std::size_t to, Token t) {
         if (to > from) out.emplace_back(line.substr(from, to - from), t);
     };
-    bool after_function = false;
     while (i < line.size()) {
         if (in_block_comment) {
-            const std::size_t end = line.find(glsl ? "*/" : "]]", i);
+            const std::size_t end = line.find("*/", i);
             const std::size_t stop = end == std::string_view::npos ? line.size() : end + 2;
             push(i, stop, Token::Comment);
             if (end != std::string_view::npos) in_block_comment = false;
@@ -130,16 +115,8 @@ void tokenizeLine(std::string_view line, bool& in_block_comment,
             continue;
         }
         const char c = line[i];
-        if (glsl && c == '/' && i + 1 < line.size() && (line[i + 1] == '/' || line[i + 1] == '*')) {
+        if (c == '/' && i + 1 < line.size() && (line[i + 1] == '/' || line[i + 1] == '*')) {
             if (line[i + 1] == '*') {
-                in_block_comment = true;
-                continue;
-            }
-            push(i, line.size(), Token::Comment);
-            break;
-        }
-        if (!glsl && c == '-' && i + 1 < line.size() && line[i + 1] == '-') {
-            if (line.substr(i, 4) == "--[[") {
                 in_block_comment = true;
                 continue;
             }
@@ -166,23 +143,20 @@ void tokenizeLine(std::string_view line, bool& in_block_comment,
             while (j < line.size() && (std::isalnum(static_cast<unsigned char>(line[j])) || line[j] == '_')) ++j;
             const std::string_view word = line.substr(i, j - i);
             Token t = Token::Text;
-            if (cpp ? isCppKeyword(word) : (glsl ? isGlslKeyword(word) : isKeyword(word))) {
+            if (cpp ? isCppKeyword(word) : isGlslKeyword(word)) {
                 t = Token::Keyword;
-            } else if (cpp ? isCppApi(word) : (glsl && isGlslApi(word))) {
+            } else if (cpp ? isCppApi(word) : isGlslApi(word)) {
                 t = Token::Api;
-            } else if (after_function || (j < line.size() && line[j] == '(')) {
+            } else if (j < line.size() && line[j] == '(') {
                 t = Token::Function;
-            } else if (!glsl && isApi(word)) {
-                t = Token::Api;
             }
-            after_function = word == "function" || (after_function && (line.substr(j, 1) == ":" || line.substr(j, 1) == "."));
             push(i, j, t);
             i = j;
             continue;
         }
         std::size_t j = i + 1;
         while (j < line.size() && !std::isalnum(static_cast<unsigned char>(line[j])) && line[j] != '_' &&
-               line[j] != '"' && line[j] != '\'' && line[j] != (glsl ? '/' : '-')) {
+               line[j] != '"' && line[j] != '\'' && line[j] != '/') {
             ++j;
         }
         push(i, j, Token::Text);
@@ -220,23 +194,6 @@ char closerFor(char c) {
 }
 
 bool isWordChar(char c) { return std::isalnum(static_cast<unsigned char>(c)) || c == '_'; }
-
-// C++: la lista de clangd filtrada por lo escrito (empiezan por eso primero).
-std::vector<LuaCompletion> filterCppCompletions(const std::vector<LuaCompletion>& raw, const std::string& prefix) {
-    std::string low = prefix;
-    for (char& ch : low) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
-    std::vector<LuaCompletion> first, second;
-    for (const LuaCompletion& c : raw) {
-        std::string lower_label = c.label;
-        for (char& ch : lower_label) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
-        const std::size_t at = lower_label.find(low);
-        if (!low.empty() && at == std::string::npos) continue;
-        (at == 0 ? first : second).push_back(c);
-    }
-    first.insert(first.end(), second.begin(), second.end());
-    if (first.size() > 200) first.resize(200);
-    return first;
-}
 
 int editCallback(ImGuiInputTextCallbackData* data) {
     auto* state = static_cast<EditState*>(data->UserData);
@@ -317,7 +274,7 @@ int editCallback(ImGuiInputTextCallbackData* data) {
         }
         if (state->newline) {
             state->newline = false;
-            // Sangria automatica: la de la linea anterior (+4 tras then/do/function/{).
+            // Sangria automatica: la de la linea anterior (+4 tras {).
             const int line_end = data->CursorPos - 1;
             int line_start = line_end;
             while (line_start > 0 && data->Buf[line_start - 1] != '\n') --line_start;
@@ -331,10 +288,7 @@ int editCallback(ImGuiInputTextCallbackData* data) {
             };
             const int base_indent = indent;
             const bool brace = ends("{");
-            if (ends("then") || ends("do") || ends("{") || ends("else") || ends("repeat") ||
-                previous.find("function") != std::string::npos && ends(")")) {
-                indent += 4;
-            }
+            if (brace) indent += 4;
             if (indent > 0) data->InsertChars(data->CursorPos, std::string(static_cast<std::size_t>(indent), ' ').c_str());
             if (brace && data->CursorPos < data->BufTextLen && data->Buf[data->CursorPos] == '}') {
                 const int keep = data->CursorPos;
@@ -354,20 +308,6 @@ std::string readAll(const std::filesystem::path& file) {
     return ss.str();
 }
 
-std::string safeClassName(std::string name) {
-    std::string out;
-    bool upper = true;
-    for (char c : name) {
-        if (std::isalnum(static_cast<unsigned char>(c))) {
-            out += upper ? static_cast<char>(std::toupper(static_cast<unsigned char>(c))) : c;
-            upper = false;
-        } else {
-            upper = true;
-        }
-    }
-    return out.empty() ? std::string("Script") : out;
-}
-
 }  // namespace
 
 // Ruta dentro de Assets (con /) de un archivo del proyecto.
@@ -377,25 +317,6 @@ std::string EditorApp::assetRelative(const std::filesystem::path& file) const {
     std::string text = dialogs::utf8(error ? file.filename() : relative);
     std::replace(text.begin(), text.end(), '\\', '/');
     return text;
-}
-
-void EditorApp::createScriptAsset(const std::filesystem::path& folder, ecs::Entity attach_to) {
-    const std::filesystem::path target_folder = folder.empty() ? project_.assetsFolder() / "Scripts" : folder;
-    std::error_code error;
-    std::filesystem::create_directories(target_folder, error);
-    const std::string base = safeClassName(attach_to.valid() ? attach_to.name() : std::string("NuevoScript"));
-    std::filesystem::path path = target_folder / dialogs::fromUtf8(base + ".lua");
-    for (int i = 2; std::filesystem::exists(path); ++i) path = target_folder / dialogs::fromUtf8(base + std::to_string(i) + ".lua");
-    std::ofstream(path, std::ios::binary) << scripting::scriptTemplate(dialogs::utf8(path.stem()));
-    refreshDatabase();
-    std::cout << "[Editor] Script creado: " << dialogs::utf8(path.filename()) << "\n";
-    if (attach_to.valid()) {
-        scripting::Script& script = attach_to.has<scripting::Script>() ? attach_to.get<scripting::Script>()
-                                                                      : attach_to.add<scripting::Script>();
-        script.file = assetRelative(path);
-        commit();
-    }
-    openScript(path);
 }
 
 void EditorApp::openScript(const std::filesystem::path& file) {
@@ -446,16 +367,13 @@ bool EditorApp::saveScript(ScriptTab& tab) {
         return true;
     }
     // C++: se compila ya (y en Play se recarga con la DLL nueva).
-    if (tab.path.extension() != ".lua") {
+    if (tab.cpp) {
         std::cout << "[Editor] Script C++ guardado: " << tab.relative << " (compilando...)\n";
         cpp_compile_errors_.clear();
         cpp_last_check_ = -10.0;
         return true;
     }
-    scripts_.clearErrors();
-    // En Play: recarga en caliente (las instancias conservan sus datos).
-    scripts_.reloadFile(tab.relative);
-    std::cout << "[Editor] Script guardado: " << tab.relative << "\n";
+    std::cout << "[Editor] Guardado: " << tab.relative << "\n";
     return true;
 }
 
@@ -626,10 +544,6 @@ void EditorApp::drawCodeEditor(ScriptTab& tab) {
     if (state.typed || !accepted.empty()) tab.last_edit = ImGui::GetTime();
     const ImVec2 text_origin{ImGui::GetItemRectMin().x + padding.x, ImGui::GetItemRectMin().y + padding.y};
     if (active) {
-        const bool typed_ident = state.typed && accepted.empty() &&
-                                 (std::isalnum(static_cast<unsigned char>(state.last_char)) || state.last_char == '_' ||
-                                  state.last_char == '.' || state.last_char == ':' || state.last_char == '"' ||
-                                  state.last_char == '\'' || state.last_char == '/' || state.last_char == ' ');
         const bool forced = io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Space, false);
         const bool edited_while_open = tab.completion_open && state.cursor != tab.cursor;
         if (cpp) {
@@ -663,7 +577,7 @@ void EditorApp::drawCodeEditor(ScriptTab& tab) {
                         const std::string selected = tab.completion_open && !tab.completions.empty()
                                                          ? tab.completions[std::clamp(tab.completion_selected, 0, static_cast<int>(tab.completions.size()) - 1)].label
                                                          : std::string();
-                        tab.completions = filterCppCompletions(tab.cpp_raw, prefix);
+                        tab.completions = filterCompletions(tab.cpp_raw, prefix);
                         tab.completion_context.prefix_start = static_cast<std::size_t>(word);
                         tab.completion_context.prefix = prefix;
                         tab.completion_open = !tab.completions.empty();
@@ -696,7 +610,7 @@ void EditorApp::drawCodeEditor(ScriptTab& tab) {
                         }
                         // Primero lo del motor (From "cramion/..."), luego lo del script, y al final
                         // la biblioteca de C/C++ (atan2f, alloca...: si no, tapaba la API del motor).
-                        std::vector<LuaCompletion> raw;
+                        std::vector<CodeCompletion> raw;
                         std::vector<int> rank;
                         raw.reserve(items.size());
                         for (const ClangdCompletion& item : items) {
@@ -707,7 +621,7 @@ void EditorApp::drawCodeEditor(ScriptTab& tab) {
                             // "getFloat(std::string_view c, ...) const": el nombre en la lista y la firma al lado.
                             const std::size_t paren = item.label.find('(');
                             std::string label = paren == std::string::npos ? item.label : item.label.substr(0, paren);
-                            LuaCompletion c;
+                            CodeCompletion c;
                             c.label = label;
                             c.insert = item.insert.empty() ? label : item.insert;
                             c.detail = paren == std::string::npos ? item.detail : item.detail + " " + item.label;
@@ -743,7 +657,7 @@ void EditorApp::drawCodeEditor(ScriptTab& tab) {
                             std::vector<std::size_t> order(raw.size());
                             for (std::size_t k = 0; k < order.size(); ++k) order[k] = k;
                             std::stable_sort(order.begin(), order.end(), [&](std::size_t a, std::size_t b) { return rank[a] < rank[b]; });
-                            std::vector<LuaCompletion> sorted;
+                            std::vector<CodeCompletion> sorted;
                             sorted.reserve(raw.size());
                             for (const std::size_t k : order) sorted.push_back(std::move(raw[k]));
                             raw = std::move(sorted);
@@ -754,8 +668,8 @@ void EditorApp::drawCodeEditor(ScriptTab& tab) {
                                                          : std::string();
                         t->cpp_raw = std::move(raw);
                         t->cpp_raw_start = static_cast<std::size_t>(start);
-                        t->completions = filterCppCompletions(t->cpp_raw, prefix);
-                        t->completion_context = LuaCompletionContext{};
+                        t->completions = filterCompletions(t->cpp_raw, prefix);
+                        t->completion_context = CodeCompletionContext{};
                         t->completion_context.prefix_start = static_cast<std::size_t>(start);
                         t->completion_context.prefix = prefix;
                         t->completion_open = !t->completions.empty();
@@ -791,18 +705,6 @@ void EditorApp::drawCodeEditor(ScriptTab& tab) {
             }
             // Ir a la definicion: F12.
             if (ImGui::IsKeyPressed(ImGuiKey_F12, false)) goToDefinition(tab, state.cursor);
-        } else if (!glsl && (typed_ident || forced || edited_while_open)) {
-            refreshLuaSymbols();
-            LuaCompletionContext context;
-            if (luaCompletionContext(tab.text, static_cast<std::size_t>(state.cursor), context) &&
-                (forced || !context.prefix.empty() || context.accessor != 0 || context.in_string)) {
-                tab.completion_context = context;
-                tab.completions = luaCompletions(tab.text, context);
-                tab.completion_open = !tab.completions.empty();
-                tab.completion_selected = 0;
-            } else {
-                tab.completion_open = false;
-            }
         } else if (state.typed || (state.cursor != tab.cursor && state.restore_cursor < 0)) {
             tab.completion_open = false;  // otro caracter o el cursor se fue a otro sitio
         }
@@ -829,7 +731,7 @@ void EditorApp::drawCodeEditor(ScriptTab& tab) {
     bool block_comment = false;
     std::vector<std::pair<std::string_view, Token>> tokens;
     for (int i = 0; i < static_cast<int>(lines.size()); ++i) {
-        tokenizeLine(lines[i], block_comment, tokens, glsl, cpp);  // (las anteriores cuentan para --[[ ]] y /* */)
+        tokenizeLine(lines[i], block_comment, tokens, cpp);  // (las anteriores cuentan para /* */)
         if (i < first_visible || i >= last_visible) continue;
         float x = text_origin.x;
         const float y = text_origin.y + static_cast<float>(i) * line_height;
@@ -971,7 +873,7 @@ void EditorApp::drawCodeEditor(ScriptTab& tab) {
                                                    IM_COL32(180, 180, 180, 255), IM_COL32(255, 180, 90, 255)};
             static constexpr const char* kKindLetter[] = {"k", "T", "f", "p", "l", "e"};
             for (int i = 0; i < visible; ++i) {
-                const LuaCompletion& item = tab.completions[first + i];
+                const CodeCompletion& item = tab.completions[first + i];
                 const float y = min.y + row * static_cast<float>(i);
                 if (first + i == tab.completion_selected) {
                     fg->AddRectFilled(ImVec2(min.x + 2, y + 1), ImVec2(max.x - 2, y + row - 1), IM_COL32(4, 57, 94, 255), 4.0f);
@@ -1013,41 +915,6 @@ void EditorApp::drawCodeEditor(ScriptTab& tab) {
                 const float x0 = ImGui::CalcTextSize(sig.label.c_str(), sig.label.c_str() + sig.parameter_start).x;
                 fg->AddText(ImVec2(min.x + 8 + x0, min.y + 4), IM_COL32(255, 200, 90, 255), sig.label.c_str() + sig.parameter_start,
                             sig.label.c_str() + sig.parameter_end);
-            }
-        } else if (!glsl && !cpp) {
-            // Firma de la funcion que se esta llamando, con el argumento actual.
-            LuaSignature signature;
-            if (luaSignatureAt(tab.text, static_cast<std::size_t>(state.cursor), signature)) {
-                ImDrawList* fg = ImGui::GetForegroundDrawList();
-                std::string line = signature.label;
-                if (!signature.detail.empty()) line += "   " + signature.detail;
-                const ImVec2 text_size = ImGui::CalcTextSize(line.c_str());
-                ImVec2 min{cx, cy - text_size.y - 10.0f};
-                const ImVec2 display = ImGui::GetIO().DisplaySize;
-                if (min.y < 0.0f) min.y = cy + line_height + 4.0f;
-                min.x = std::clamp(min.x, 0.0f, std::max(0.0f, display.x - text_size.x - 16.0f));
-                const ImVec2 max{min.x + text_size.x + 16.0f, min.y + text_size.y + 8.0f};
-                fg->AddRectFilled(min, max, IM_COL32(37, 37, 42, 245), 4.0f);
-                fg->AddRect(min, max, IM_COL32(70, 90, 120, 255), 4.0f);
-                // El argumento que se esta escribiendo, resaltado.
-                const std::size_t open = signature.label.find('(');
-                std::size_t arg_start = open == std::string::npos ? 0 : open + 1;
-                for (int k = 0; k < signature.argument && arg_start < signature.label.size(); ++k) {
-                    const std::size_t comma = signature.label.find(',', arg_start);
-                    if (comma == std::string::npos) {
-                        arg_start = std::string::npos;
-                        break;
-                    }
-                    arg_start = comma + 1;
-                }
-                fg->AddText(ImVec2(min.x + 8, min.y + 4), IM_COL32(200, 205, 215, 255), line.c_str());
-                if (open != std::string::npos && arg_start != std::string::npos && arg_start < signature.label.size()) {
-                    std::size_t arg_end = signature.label.find_first_of(",)", arg_start);
-                    if (arg_end == std::string::npos) arg_end = signature.label.size();
-                    const float x0 = ImGui::CalcTextSize(signature.label.c_str(), signature.label.c_str() + arg_start).x;
-                    fg->AddText(ImVec2(min.x + 8 + x0, min.y + 4), IM_COL32(255, 200, 90, 255),
-                                signature.label.c_str() + arg_start, signature.label.c_str() + arg_end);
-                }
             }
         }
         // Que el cursor no se salga de la vista.
@@ -1126,22 +993,23 @@ void EditorApp::drawScriptToolbar(ScriptTab* tab) {
     ImGui::TextDisabled(playing() ? "En Play: guardar recarga el script sin perder el estado" : "");
 }
 
-// Consola de Lua: una linea que se ejecuta (en Play, dentro del juego).
-void EditorApp::drawLuaConsole() {
+// Consola: una linea con una llamada a la API (en Play, dentro del juego;
+// fuera, sobre la escena del editor) o una CVar.
+void EditorApp::drawApiConsole() {
     ImGui::SetNextItemWidth(-1.0f);
-    if (ImGui::InputTextWithHint("##lua_console", "Lua> o CVar (nombre valor, cvars filtro). Enter ejecuta", &lua_console_,
-                                 ImGuiInputTextFlags_EnterReturnsTrue)) {
-        // Primero las CVars ("nombre valor", "cvars filtro", "reset nombre"); si no, Lua.
+    if (ImGui::InputTextWithHint("##api_console", "API> (Scene.find('Jugador').position = Vec3(0, 2, 0)) o CVar (nombre valor). Enter ejecuta",
+                                 &api_console_, ImGuiInputTextFlags_EnterReturnsTrue)) {
+        // Primero las CVars ("nombre valor", "cvars filtro", "reset nombre"); si no, la API.
         bool handled = false;
-        const std::string cvar_output = cvar::Registry::instance().execute(lua_console_, &handled);
+        const std::string cvar_output = cvar::Registry::instance().execute(api_console_, &handled);
         if (handled) {
-            std::cout << "[CVar] > " << lua_console_ << "\n" << cvar_output << "\n";
+            std::cout << "[CVar] > " << api_console_ << "\n" << cvar_output << "\n";
         } else {
             std::string output;
-            const bool ok = scripts_.run(lua_console_, &output, &world_);
-            (ok ? std::cout : std::cerr) << "[Lua] > " << lua_console_ << (output.empty() ? "" : "  ->  ") << output << "\n";
+            const bool ok = scripts_.run(api_console_, &output, &world_);
+            (ok ? std::cout : std::cerr) << "[API] > " << api_console_ << (output.empty() ? "" : "  ->  ") << output << "\n";
         }
-        lua_console_.clear();
+        api_console_.clear();
         ImGui::SetKeyboardFocusHere(-1);
     }
 }
@@ -1158,9 +1026,9 @@ void EditorApp::drawScriptEditor() {
         if (ImGui::Begin("Scripts", &show_script_editor_)) {
             drawScriptToolbar(nullptr);
             ImGui::Spacing();
-            ImGui::TextDisabled("Sin scripts abiertos. Doble clic en un .lua del Proyecto, o Nuevo.");
+            ImGui::TextDisabled("Sin scripts abiertos. Doble clic en un .cpp del Proyecto, o Nuevo script C++.");
             ImGui::TextDisabled("Cada script se abre en su ventana: arrastra su pestana para ver varios a la vez.");
-            drawLuaConsole();
+            drawApiConsole();
         }
         ImGui::End();
         return;
@@ -1197,7 +1065,7 @@ void EditorApp::drawScriptEditor() {
             } else {
                 drawScriptToolbar(&tab);
                 drawCodeEditor(tab);  // deja sitio debajo para la consola
-                drawLuaConsole();
+                drawApiConsole();
             }
         }
         ImGui::End();
@@ -1213,101 +1081,17 @@ void EditorApp::drawScriptEditor() {
     }
 }
 
-// Inspector del componente Script: el archivo (soltar un .lua), editar, crear
-// y las propiedades que declara el script con su control.
+// Inspector del componente Script: un script de Lua de una escena de antes
+// de la 2.9. Ya no se ejecuta: se avisa.
 void EditorApp::drawScriptInspector(ecs::Entity entity) {
-    scripting::Script* script = entity.tryGet<scripting::Script>();
+    const scripting::Script* script = entity.tryGet<scripting::Script>();
     if (script == nullptr) return;
-    const float w = ImGui::GetContentRegionAvail().x;
-    ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_FrameBg));
-    ImGui::Button(script->file.empty() ? "Suelta aqui un script (.lua)" : script->file.c_str(), ImVec2(w, 0.0f));
+    ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(255, 190, 90, 255));
+    ImGui::TextWrapped("Script de Lua (obsoleto): %s. Desde la 2.9 los scripts son de C++ y este ya no se ejecuta.",
+                       script->file.empty() ? "sin archivo" : script->file.c_str());
     ImGui::PopStyleColor();
-    if (ImGui::BeginDragDropTarget()) {
-        if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(kScriptPayload)) {
-            script->file = assetRelative(dialogs::fromUtf8(static_cast<const char*>(payload->Data)));
-            commit();
-        }
-        ImGui::EndDragDropTarget();
-    }
-    const float half = (w - ImGui::GetStyle().ItemSpacing.x) * 0.5f;
-    ImGui::BeginDisabled(script->file.empty());
-    if (ImGui::Button("Editar", ImVec2(half, 0.0f))) openScript(project_.assetsFolder() / dialogs::fromUtf8(script->file));
-    ImGui::EndDisabled();
-    ImGui::SameLine();
-    if (ImGui::Button("Nuevo script", ImVec2(half, 0.0f))) createScriptAsset({}, entity);
-
-    if (script->file.empty()) return;
-    std::string error;
-    const std::vector<scripting::ScriptProperty> declared = scripts_.describe(script->file, &error);
-    if (!error.empty()) {
-        ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(255, 110, 110, 255));
-        ImGui::TextWrapped("%s", error.c_str());
-        ImGui::PopStyleColor();
-    }
-    bool edited = false;
-    for (const scripting::ScriptProperty& decl : declared) {
-        // El valor del Inspector (si se cambio) o el del script.
-        auto it = std::find_if(script->properties.begin(), script->properties.end(),
-                               [&](const scripting::ScriptProperty& p) { return p.name == decl.name; });
-        scripting::ScriptProperty current = it != script->properties.end() && it->type == decl.type ? *it : decl;
-        bool changed = false;
-        ImGui::PushID(decl.name.c_str());
-        ImGui::SetNextItemWidth(-110.0f);
-        switch (decl.type) {
-            case scripting::PropertyType::Number: {
-                float v = std::strtof(current.value.c_str(), nullptr);
-                if (ImGui::DragFloat(decl.name.c_str(), &v, 0.05f)) {
-                    char buffer[64];
-                    std::snprintf(buffer, sizeof(buffer), "%g", v);
-                    current.value = buffer;
-                    changed = true;
-                }
-                break;
-            }
-            case scripting::PropertyType::Bool: {
-                bool v = current.value == "true";
-                if (ImGui::Checkbox(decl.name.c_str(), &v)) {
-                    current.value = v ? "true" : "false";
-                    changed = true;
-                }
-                break;
-            }
-            case scripting::PropertyType::Text:
-                changed = ImGui::InputText(decl.name.c_str(), &current.value);
-                break;
-            case scripting::PropertyType::Vector: {
-                float v[3] = {0.0f, 0.0f, 0.0f};
-                std::sscanf(current.value.c_str(), "%f %f %f", &v[0], &v[1], &v[2]);
-                if (ImGui::DragFloat3(decl.name.c_str(), v, 0.05f)) {
-                    char buffer[96];
-                    std::snprintf(buffer, sizeof(buffer), "%g %g %g", v[0], v[1], v[2]);
-                    current.value = buffer;
-                    changed = true;
-                }
-                break;
-            }
-        }
-        if (ImGui::IsItemDeactivatedAfterEdit()) edited = true;
-        ImGui::PopID();
-        if (changed) {
-            if (it != script->properties.end()) {
-                *it = current;
-            } else {
-                script->properties.push_back(current);
-            }
-            if (decl.type == scripting::PropertyType::Bool) edited = true;
-        }
-    }
-    if (declared.empty() && error.empty()) {
-        ImGui::TextDisabled("El script no declara 'properties' editables.");
-    }
-    if (edited) commit();
-    for (const scripting::ScriptError& e : scripts_.errors()) {
-        if (e.file != script->file) continue;
-        ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(255, 110, 110, 255));
-        ImGui::TextWrapped("%s", e.message.c_str());
-        ImGui::PopStyleColor();
-    }
+    ImGui::TextDisabled("Se quita con el menu del componente (clic derecho en su cabecera).");
+    if (ImGui::Button("Nuevo script C++ para este objeto")) createCppScriptAsset({}, entity);
 }
 
 // Inspector del AudioSource: soltar un clip y escucharlo sin Play.

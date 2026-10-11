@@ -87,7 +87,7 @@ void EditorApp::drawTouchInterfaceWindow() {
                        "\"Tactil\" en la vista Juego para probarlos con el raton.");
     ImGui::Separator();
     changed |= ImGui::Checkbox("Controles en pantalla", &t.enabled);
-    ImGui::SetItemTooltip("Apagado: el dedo hace de raton (toque = clic). Lua: Input.setTouchControls(true/false)");
+    ImGui::SetItemTooltip("Apagado: el dedo hace de raton (toque = clic). Desde un script: Input::setTouchControls(true/false)");
     ImGui::BeginDisabled(!t.enabled);
     ImGui::SameLine();
     changed |= ImGui::Checkbox("Joystick (mover)", &t.joystick);
@@ -141,7 +141,7 @@ void EditorApp::drawTouchInterfaceWindow() {
     // Botones.
     int remove = -1;
     if (ImGui::BeginTable("##touch_buttons", 5, ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_BordersInnerH)) {
-        ImGui::TableSetupColumn("Texto (nombre en Lua)", ImGuiTableColumnFlags_WidthStretch, 1.0f);
+        ImGui::TableSetupColumn("Texto (nombre en los scripts)", ImGuiTableColumnFlags_WidthStretch, 1.0f);
         ImGui::TableSetupColumn("Accion", ImGuiTableColumnFlags_WidthStretch, 1.0f);
         ImGui::TableSetupColumn("Tamano", ImGuiTableColumnFlags_WidthFixed, 90.0f);
         ImGui::TableSetupColumn("Visible", ImGuiTableColumnFlags_WidthFixed, 50.0f);
@@ -178,7 +178,7 @@ void EditorApp::drawTouchInterfaceWindow() {
             changed |= ImGui::SliderFloat("##size", &b.size, 0.5f, 2.0f, "%.2f");
             ImGui::TableNextColumn();
             changed |= ImGui::Checkbox("##visible", &b.visible);
-            ImGui::SetItemTooltip("Visible al empezar. Lua: Input.setTouchButton(\"%s\", true/false)", b.label.c_str());
+            ImGui::SetItemTooltip("Visible al empezar. Desde un script: Input::setTouchButton(\"%s\", true/false)", b.label.c_str());
             ImGui::TableNextColumn();
             if (ImGui::SmallButton("x")) remove = i;
             ImGui::PopID();
@@ -205,7 +205,7 @@ void EditorApp::drawTouchInterfaceWindow() {
         changed = true;
     }
     ImGui::Separator();
-    ImGui::TextDisabled("Lua: Input.setTouchControls(on)  Input.setTouchButton(\"Saltar\", on)  Input.setTouchJoystick(on)\n"
+    ImGui::TextDisabled("Desde un script: Input::setTouchControls(on)  Input::setTouchButton(\"Saltar\", on)  Input::setTouchJoystick(on)\n"
                         "     Input.setTouchLook(on)  Screen.setOrientation(\"auto\" | \"landscape\" | \"portrait\" | ...)");
     if (changed) {
         if (!project::saveTouchInterface(touch_layout_file_, t)) {
@@ -230,7 +230,7 @@ void EditorApp::drawTouchSimulation(const ImVec2& origin, const ImVec2& size) {
         e.touchId = 0;
         e.mouseX = std::clamp(local.x, 0.0f, size.x);
         e.mouseY = std::clamp(local.y, 0.0f, size.y);
-        touch_pending_.push_back(e);  // Input.getTouch en Lua
+        touch_pending_.push_back(e);  // Input::getTouch en los scripts
         touch_game_.onEvent(e, time, touch_pending_);
     };
     if (!touch_sim_down_ && inside && ImGui::IsWindowHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {

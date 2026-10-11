@@ -121,7 +121,7 @@ void testTouchControls() {
     t.apply(input);
     check(!input.isKeyDown(dm::Key::Space) && input.virtualStickY() == 0.0f, "releaseAll suelta todo");
 
-    // Lua oculta un boton o los controles con un dedo encima: se suelta.
+    // Un script oculta un boton o los controles con un dedo encima: se suelta.
     {
         dm::TouchControls lt;
         lt.setLayout(layout);
@@ -160,7 +160,7 @@ void testTouchControls() {
     check(input.isMouseButtonDown(dm::MouseButton::Left) && std::fabs(input.mouseX() - 100.0f) < 0.01f,
           "sin controles el dedo hace de raton");
 
-    // Input guarda los dedos para Lua.
+    // Input guarda los dedos para los scripts.
     dm::Input raw;
     raw.onEvent(touch(dm::EventType::TouchBegan, 7, 10.0f, 20.0f));
     raw.onEvent(touch(dm::EventType::TouchMoved, 7, 15.0f, 25.0f));

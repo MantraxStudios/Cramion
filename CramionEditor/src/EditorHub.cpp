@@ -9,7 +9,7 @@
 //   - Actualizaciones: version instalada y publicada, novedades, buscar,
 //     actualizar (abre CramionUpdater.exe, que instala y vuelve a abrir el
 //     Hub) y las opciones del actualizador.
-//   - Aprender: manual, primeros pasos con Lua, shaders, Discord y GitHub.
+//   - Aprender: manual, primeros pasos con C++, shaders, Discord y GitHub.
 //   - Nuevo proyecto: galeria de plantillas (integradas y del usuario) con
 //     miniaturas dibujadas, y a la derecha sus detalles, nombre, ubicacion y
 //     Crear.
@@ -1181,7 +1181,7 @@ void EditorApp::drawHubLearn() {
     ImGui::SetWindowFontScale(1.55f);
     ImGui::TextUnformatted("Aprender");
     ImGui::SetWindowFontScale(1.0f);
-    ImGui::TextDisabled("El manual, la referencia de Lua y la comunidad.");
+    ImGui::TextDisabled("El manual, la referencia de la API de C++ y la comunidad.");
     ImGui::Dummy(ImVec2(0.0f, 10.0f));
 
     // El manual va con el motor (docs/); si no esta, el de la web.
@@ -1197,7 +1197,7 @@ void EditorApp::drawHubLearn() {
     const Item items[] = {
         {"Manual", offline ? "Todo el motor, paso a paso (sin conexión)." : "Todo el motor, paso a paso.",
          offline ? dialogs::utf8(local_manual) : web + "index.html", kAccent},
-        {"Tu primer script", "Lua: mover objetos, entrada, física y UI.", web + "primer-script.html", IM_COL32(242, 140, 40, 255)},
+        {"Tu primer script", "C++: mover objetos, entrada, física y UI.", web + "primer-script.html", IM_COL32(242, 140, 40, 255)},
         {"Shaders propios", "Superficies .crshader con recarga en caliente.", web + "shaders.html", IM_COL32(160, 90, 240, 255)},
         {"Novedades", "Qué trae cada versión.", std::string(update::kReleasesPage), IM_COL32(46, 204, 113, 255)},
         {"Discord", "Pregunta, enseña tu juego y habla con el equipo.", "https://discord.gg/zG7rSsUGEz", IM_COL32(88, 101, 242, 255)},

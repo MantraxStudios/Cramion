@@ -65,7 +65,7 @@ EditorApp::EditorApp(dm::Window& window, gfx::VulkanRenderer& renderer, scene::S
     foliage::registerFoliageComponents();
     fire::registerFireComponents();
     fluid::registerFluidComponents();
-    fluid::setActiveSystem(&fluids_);  // Lua (Fluid.*) y las consultas
+    fluid::setActiveSystem(&fluids_);  // la API (Fluid.*) y las consultas
     navigation::registerNavigationComponents();
     voxel::registerVoxelComponents();
     audio::registerAudioComponents();
@@ -172,7 +172,7 @@ bool EditorApp::openProject(const std::filesystem::path& path, bool open_scene) 
     voxels_.setPhysics(&physics_);  // los Rigidbody chocan con los bloques
     loadGraphicsSettings();
     loadViewSettings();
-    // Graphics (Lua): el editor no cambia su ventana ni guarda desde Play;
+    // Graphics (la API): el editor no cambia su ventana ni guarda desde Play;
     // lo que cambien los scripts se deshace al parar (exitPlay).
     if (!graphics_host_) {
         graphics_host_ = std::make_unique<RendererGraphicsHost>(renderer_, nullptr, [](std::string& error) {
@@ -182,7 +182,7 @@ bool EditorApp::openProject(const std::filesystem::path& path, bool open_scene) 
     }
     scripts_.setGraphics(graphics_host_.get());
     sync_ = std::make_unique<ecs::RenderSync>(*asset_manager_);
-    // Lua: huesos, IK y ragdoll leen la pose de cada frame del RenderSync.
+    // Scripts: huesos, IK y ragdoll leen la pose de cada frame del RenderSync.
     scripts_.setSkeletonHost(scripting::ScriptSystem::SkeletonHost{
         [this](ecs::Entity e, const std::string& bone, core::Mat4& m) {
             return sync_ && e.world() != nullptr && (*sync_).boneWorld(*e.world(), e, bone, m);
@@ -223,7 +223,7 @@ bool EditorApp::openProject(const std::filesystem::path& path, bool open_scene) 
         return comp != nullptr ? terrain_store_.get(*comp) : nullptr;
     });
     has_project_ = true;
-    // Accesibilidad del jugador al probar en el editor (Lua: Accessibility.save).
+    // Accesibilidad del jugador al probar en el editor (Accessibility.save).
     gameplay::setAccessibilityFile(project_.libraryFolder() / "Accessibility.json");
     gameplay::loadAccessibility();
     thumbnail_countdown_ = 240;  // ~4 s: la escena ya dibujada para la miniatura del Hub
@@ -1429,7 +1429,7 @@ void EditorApp::drawMenuBar() {
             show_state_machine_ = true;
             openStateMachineWorkspace();
         }
-        ImGui::MenuItem("Scripts (Lua)", nullptr, &show_script_editor_);
+        ImGui::MenuItem("Scripts (C++)", nullptr, &show_script_editor_);
         ImGui::MenuItem("Terminal (IA)", nullptr, &show_terminal_);
         ImGui::MenuItem("MCP (IA)", nullptr, &show_mcp_);
         ImGui::MenuItem("Física", nullptr, &show_physics_);
@@ -1459,7 +1459,7 @@ void EditorApp::drawMenuBar() {
     if (ImGui::BeginMenu("Ayuda")) {
         const auto open = [](const wchar_t* url) { ShellExecuteW(nullptr, L"open", url, nullptr, nullptr, SW_SHOWNORMAL); };
         if (ImGui::MenuItem("Documentación", "F1")) open(L"https://cramion.mantraxtools.store/manual/index.html");
-        if (ImGui::MenuItem("Scripting en Lua")) open(L"https://cramion.mantraxtools.store/manual/primer-script.html");
+        if (ImGui::MenuItem("Scripting en C++")) open(L"https://cramion.mantraxtools.store/manual/primer-script.html");
         if (ImGui::MenuItem("Shaders propios")) open(L"https://cramion.mantraxtools.store/manual/shaders.html");
         ImGui::Separator();
         if (ImGui::MenuItem("Web de Cramion")) open(L"https://cramion.mantraxtools.store");
@@ -2403,7 +2403,7 @@ void EditorApp::startImport(const std::vector<std::filesystem::path>& files,
         std::string import_ext = file.extension().string();
         std::transform(import_ext.begin(), import_ext.end(), import_ext.begin(),
                        [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-        if (isDecalImage(file) || import_ext == ".lua" || audio::isAudioFile(file)) {
+        if (isDecalImage(file) || audio::isAudioFile(file)) {
             std::error_code error;
             std::filesystem::path target = folder / file.filename();
             if (!std::filesystem::exists(target)) std::filesystem::copy_file(file, target, error);

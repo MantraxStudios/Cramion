@@ -683,7 +683,7 @@ void EditorApp::drawInspector() {
     if (theme::boldFont() != nullptr) ImGui::PushFont(theme::boldFont(), 0.0f);
     const bool add_pressed = theme::primaryButton("+  Add Component", ImVec2(-1.0f, ImGui::GetFrameHeight() + 8.0f));
     if (theme::boldFont() != nullptr) ImGui::PopFont();
-    // Como en Unity: soltar un script (.lua o .cpp) aqui lo agrega al objeto.
+    // Como en Unity: soltar un script (.cpp) aqui lo agrega al objeto.
     if (ImGui::BeginDragDropTarget()) {
         if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(kScriptPayload)) {
             const std::string relative = assetRelative(dialogs::fromUtf8(static_cast<const char*>(payload->Data)));

@@ -402,8 +402,7 @@ target_compile_definitions(cramion_minigolf PRIVATE
 # registro de la API (ScriptSystem::apiRegistry). Mientras se porta la API de
 # la version con Lua no se regenera al compilar: se ejecuta a mano
 # (cramion_sdkgen sdk/cramion) cuando el registro este completo.
-add_executable(cramion_sdkgen "${CMAKE_CURRENT_SOURCE_DIR}/tools/SdkGen.cpp" "${CMAKE_SOURCE_DIR}/CramionEditor/src/LuaCompletion.cpp")
-target_include_directories(cramion_sdkgen PRIVATE "${CMAKE_SOURCE_DIR}/CramionEditor/src")
+add_executable(cramion_sdkgen "${CMAKE_CURRENT_SOURCE_DIR}/tools/SdkGen.cpp")
 target_link_libraries(cramion_sdkgen PRIVATE Cramion::Core)
 
 add_executable(cramion_docgen "${CMAKE_CURRENT_SOURCE_DIR}/tools/DocGen.cpp")

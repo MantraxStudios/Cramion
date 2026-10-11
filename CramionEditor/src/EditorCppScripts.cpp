@@ -185,7 +185,7 @@ std::string EditorApp::cppScriptNameProblem(const std::filesystem::path& folder,
     static const char* reserved[] = {"Script", "Entity", "Scene", "Input", "Physics", "Time", "Debug", "Vec2", "Vec3", "Quat", "Color",
                                      "Value", "Values", "Property", "Collision", "Audio", "Graphics", "Navigation", "Network", "Http",
                                      "Prefs", "Random", "Screen", "Environment", "Weather", "Voxel", "Fire", "Fluid", "DataPack", "XR",
-                                     "Lua", "CVars", "CVar", "Json", "Game", "CharacterController", "Range", "Tooltip", "Header", "Label",
+                                     "CVars", "CVar", "Json", "Game", "CharacterController", "Range", "Tooltip", "Header", "Label",
                                      "Options", "Requires", "Model", "Material", "Prefab", "Texture", "AudioClip", "class", "struct",
                                      "int", "float", "double", "bool", "void", "auto", "return", "new", "delete", "this", "namespace",
                                      "template", "public", "private", "const", "static", "main", "std"};
@@ -304,10 +304,7 @@ void EditorApp::attachScriptFile(ecs::Entity e, const std::string& dropped) {
         }
         ext = lowerExt(relative);
     }
-    if (ext == ".lua") {
-        scripting::Script& s = e.has<scripting::Script>() ? e.get<scripting::Script>() : e.add<scripting::Script>();
-        s.file = relative;
-    } else if (ext == ".cpp" || ext == ".cc" || ext == ".cxx") {
+    if (ext == ".cpp" || ext == ".cc" || ext == ".cxx") {
         // Como en Unity: el archivo y su clase (la de CRAMION_SCRIPT del archivo).
         scripting::CppScript& s = e.has<scripting::CppScript>() ? e.get<scripting::CppScript>() : e.add<scripting::CppScript>();
         if (s.script != relative) s.values.clear();
@@ -431,7 +428,7 @@ void EditorApp::drawCppScriptInspector(ecs::Entity entity, bool header) {
             const scripting::CppScriptValue* stored = script->value(p.name);
             nlohmann::json current = nlohmann::json::parse(stored != nullptr ? stored->json : p.default_json, nullptr, false);
             const std::string path = current.is_string() ? current.get<std::string>() : std::string();
-            static const char* kinds[] = {"imagen", "sonido", "script Lua (obsoleto)", "shader", "archivo"};
+            static const char* kinds[] = {"imagen", "sonido", "codigo (.cpp/.h)", "shader", "archivo"};
             ImGui::PushID(p.name.c_str());
             ImGui::AlignTextToFramePadding();
             ImGui::TextUnformatted((p.label.empty() ? p.name : p.label).c_str());
@@ -467,7 +464,7 @@ void EditorApp::drawCppScriptInspector(ecs::Entity entity, bool header) {
                 static const std::vector<std::string> kExts[5] = {
                     {".png", ".jpg", ".jpeg", ".tga", ".bmp", ".hdr"},
                     {".wav", ".ogg", ".mp3", ".flac"},
-                    {".lua"},
+                    {".cpp", ".h", ".hpp"},
                     {".crshader"},
                     {}};
                 const int k = std::clamp(file_kind, 0, 4);

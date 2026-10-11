@@ -46,7 +46,7 @@ struct AndroidBuildSettings {
     int min_sdk = 26;             // Android 8.0 (Vulkan 1.0+: el modo compatible del renderizador)
     int target_sdk = 35;          // Android 15 (lo que pide Google Play)
     int orientation = 0;          // al abrir: 0 horizontal, 1 vertical, 2 libre, 3 horizontal fija, 4 vertical fija
-                                  // (despues, Screen.setOrientation en Lua)
+                                  // (despues, Screen::setOrientation desde un script)
     bool make_apk = true;
     bool make_aab = false;        // Google Play
     bool split_obb = false;       // los assets en main.<version>.<paquete>.obb

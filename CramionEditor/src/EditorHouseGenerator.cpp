@@ -30,7 +30,7 @@
 #include <CramionCore/ecs/ModelInstantiation.h>
 #include <CramionCore/foliage/Foliage.h>
 #include <CramionCore/physics/PhysicsComponents.h>
-#include <CramionCore/scripting/Scripting.h>
+#include <CramionCore/scripting/CppScripts.h>
 #include <CramionCore/terrain/TerrainTools.h>
 #include <CramionCore/water/Water.h>
 #include <CramionFX/asset/HouseGenerator.h>
@@ -61,7 +61,7 @@ namespace {
 constexpr const char* kHouseTextures = "Casas/Texturas";
 constexpr const char* kHouseMaterials = "Casas/Materiales";
 constexpr const char* kHouseModels = "Casas/Modelos";
-constexpr const char* kSailsScript = "Casas/Scripts/Aspas.lua";
+constexpr const char* kSailsScript = "Casas/Scripts/Aspas.cpp";
 constexpr const char* kHouseTextureVersion = "cramion-house-textures-4";
 constexpr const char* kVillageName = "Aldea";
 
@@ -417,14 +417,20 @@ ecs::Entity EditorApp::placeHouse(const Uuid& model_uuid, const Vec3& position, 
                 std::error_code ec;
                 std::filesystem::create_directories(script.parent_path(), ec);
                 std::ofstream(script, std::ios::binary)
-                    << "-- Aspas del molino: giran sin parar alrededor de su eje (Z local).\n"
-                       "-- Cambia speed (grados por segundo) en el Inspector.\n"
-                       "speed = 24\n\n"
-                       "function update(self, dt)\n"
-                       "  self.entity:rotate(Vec3.new(0, 0, (self.speed or speed) * dt))\n"
-                       "end\n";
+                    << "// Aspas.cpp: las aspas del molino giran sin parar alrededor de su eje (Z local).\n"
+                       "#include <cramion/Script.h>\n\n"
+                       "using namespace cramion;\n\n"
+                       "class Aspas : public Script {\n"
+                       "public:\n"
+                       "    Property<float> velocidad{this, \"velocidad\", 24.0f, Tooltip(\"Grados por segundo\")};\n\n"
+                       "    void update(float dt) override { entity().rotate(Vec3{0, 0, velocidad * dt}); }\n"
+                       "};\n\n"
+                       "CRAMION_SCRIPT(Aspas)\n";
+                cpp_last_check_ = -10.0;  // se compila ya
             }
-            child.add<scripting::Script>().file = kSailsScript;
+            scripting::CppScript& sails = child.add<scripting::CppScript>();
+            sails.script = kSailsScript;
+            sails.class_name = "Aspas";
         }
     }
     // Una luz calida en cada fuego (hogar, fragua): sin sombras, corta.

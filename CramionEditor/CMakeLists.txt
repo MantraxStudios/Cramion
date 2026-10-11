@@ -129,9 +129,9 @@ add_executable(CramionTerminalTests "${CMAKE_CURRENT_SOURCE_DIR}/tests/TerminalT
                                     "${CMAKE_CURRENT_SOURCE_DIR}/src/Terminal.cpp")
 target_include_directories(CramionTerminalTests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
 
-# Prueba del autocompletado de Lua (consola).
+# Prueba del autocompletado del editor de codigo (consola).
 add_executable(CramionCompletionTests "${CMAKE_CURRENT_SOURCE_DIR}/tests/CompletionTests.cpp"
-                                      "${CMAKE_CURRENT_SOURCE_DIR}/src/LuaCompletion.cpp")
+                                      "${CMAKE_CURRENT_SOURCE_DIR}/src/CodeCompletion.cpp")
 target_link_libraries(CramionCompletionTests PRIVATE Cramion::Core)
 
 # Prueba de la edicion multiple del Inspector (consola).

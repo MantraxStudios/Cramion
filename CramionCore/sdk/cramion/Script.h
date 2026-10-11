@@ -388,10 +388,8 @@ using RenderTexture = AssetRef<AssetKind::RenderTexture>;
 using EnvironmentAsset = AssetRef<AssetKind::Environment>;
 using StateMachineAsset = AssetRef<AssetKind::StateMachine>;
 
-// Archivos sueltos de Assets (imagenes, sonidos, shaders...).
-// LuaScript (2) queda solo por los proyectos antiguos (Property<LuaScript>): el
-// motor ya no ejecuta Lua. Obsoleto: no lo uses en scripts nuevos.
-enum class FileKind : int { Texture = 0, Audio = 1, LuaScript = 2, Shader = 3, Any = 4 };
+// Archivos sueltos de Assets (imagenes, sonidos, codigo, shaders...).
+enum class FileKind : int { Texture = 0, Audio = 1, Source = 2, Shader = 3, Any = 4 };
 template <FileKind K>
 struct FileRef {
     std::string path;
@@ -402,7 +400,7 @@ struct FileRef {
 };
 using Texture = FileRef<FileKind::Texture>;
 using AudioClip = FileRef<FileKind::Audio>;
-using LuaScript = FileRef<FileKind::LuaScript>;  // obsoleto (proyectos antiguos)
+using SourceFile = FileRef<FileKind::Source>;  // un .cpp / .h del proyecto
 using ShaderFile = FileRef<FileKind::Shader>;
 using AnyFile = FileRef<FileKind::Any>;
 

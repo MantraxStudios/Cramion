@@ -86,8 +86,8 @@ bool EditorApp::drawAndroidBuildSettings(BuildConfig& c) {
         static const char* kOrientations[] = {"Horizontal (gira entre las dos)", "Vertical (gira entre las dos)",
                                               "Libre (gira a cualquier lado)", "Horizontal fija", "Vertical fija"};
         changed |= ImGui::Combo("##orientation", &a.orientation, kOrientations, 5);
-        ImGui::SetItemTooltip("Al abrir el juego. Desde Lua se cambia cuando se quiera:\n"
-                              "Screen.setOrientation(\"auto\" | \"landscape\" | \"portrait\" | \"landscape_fixed\" | \"portrait_fixed\")");
+        ImGui::SetItemTooltip("Al abrir el juego. Desde un script se cambia cuando se quiera:\n"
+                              "Screen::setOrientation(\"auto\" | \"landscape\" | \"portrait\" | \"landscape_fixed\" | \"portrait_fixed\")");
         row("Android minimo");
         static const int kLevels[] = {26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36};
         static const char* kLevelNames[] = {"8.0 (API 26)",  "8.1 (API 27)",  "9 (API 28)",   "10 (API 29)",
