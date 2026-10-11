@@ -47,6 +47,7 @@
 #include <sys/mman.h>
 #include <sys/resource.h>
 #include <sys/socket.h>
+#include <sys/syscall.h>
 #include <sys/wait.h>
 #include <unistd.h>
 #include <cerrno>
@@ -234,6 +235,13 @@ int highFd(int fd) {
 
 // Ejecuta un programa (sin shell) y devuelve su salida (stdout + stderr) y su codigo.
 int runProcess(const std::vector<std::string>& args, std::string& output, int timeout_ms = 300000) {
+#if defined(__ANDROID__) && __ANDROID_API__ < 28
+    // En el movil no se compila nada (posix_spawn llega con Android 9): la
+    // biblioteca de los scripts viene ya compilada en el APK.
+    (void)timeout_ms;
+    output = "no se pueden ejecutar programas en Android (" + (args.empty() ? std::string() : args[0]) + ")";
+    return -1;
+#else
     int pipe_fds[2] = {-1, -1};
     if (args.empty() || pipe(pipe_fds) != 0) return -1;
     const int read_end = highFd(pipe_fds[0]);
@@ -275,6 +283,7 @@ int runProcess(const std::vector<std::string>& args, std::string& output, int ti
     }
     if (WIFEXITED(status)) return WEXITSTATUS(status);
     return WIFSIGNALED(status) ? 128 + WTERMSIG(status) : -1;
+#endif
 }
 
 // Un programa en el PATH (vacio si no esta).
@@ -949,7 +958,10 @@ struct HostProcess {
         }
         // El bloque: memoria anonima compartida que el proceso hereda.
         int memory = -1;
-#if defined(__linux__)
+#if defined(__ANDROID__)
+        // memfd_create llega a la libc con Android 11; la llamada al sistema esta antes.
+        memory = static_cast<int>(syscall(__NR_memfd_create, "cramion_scripts", MFD_CLOEXEC));
+#elif defined(__linux__)
         memory = memfd_create("cramion_scripts", MFD_CLOEXEC);
 #else
         {
@@ -2120,6 +2132,12 @@ void CppScriptSystem::writeCompileCommands() const {
 }
 
 bool CppScriptSystem::hasSources() const { return !impl_->assets_root.empty() && !sourcesIn(impl_->assets_root, false).empty(); }
+
+std::vector<std::filesystem::path> CppScriptSystem::sources() const {
+    return impl_->assets_root.empty() ? std::vector<std::filesystem::path>{} : sourcesIn(impl_->assets_root, false);
+}
+
+const std::filesystem::path& CppScriptSystem::sdkFolder() const { return impl_->sdk_folder; }
 
 std::filesystem::file_time_type CppScriptSystem::newestSourceTime() const {
     std::filesystem::file_time_type newest{};

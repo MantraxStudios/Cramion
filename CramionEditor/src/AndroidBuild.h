@@ -13,6 +13,12 @@
 //   4. zipalign (16 KB para las .so) y apksigner (v2/v3) con la clave.
 //   AAB (Google Play): aapt2 --proto-format + bundletool build-bundle y
 //   jarsigner. OBB: el .crpack tal cual como main.<version>.<paquete>.obb.
+//
+// Scripts de C++: se compilan con el clang++ del Android NDK para cada ABI
+// (lib/<abi>/libgame_scripts.so) y van con su proceso aislado
+// (lib/<abi>/libcramion_scripthost.so: un ejecutable con nombre de .so para
+// que Android lo deje en nativeLibraryDir, el unico sitio desde el que una
+// app puede ejecutar algo). Por eso entonces extractNativeLibs="true".
 
 #include <atomic>
 #include <cstdint>
@@ -33,6 +39,7 @@ struct AndroidToolchain {
     std::filesystem::path java_bin;      // carpeta con java/keytool/jarsigner
     std::filesystem::path adb;
     std::filesystem::path bundletool;    // bundletool.jar (solo AAB)
+    std::filesystem::path ndk;           // Android NDK (solo los scripts de C++; vacio si no esta)
     std::string error;                   // que falta (vacio = todo bien para APK)
 
     bool ok() const { return error.empty(); }
@@ -66,6 +73,15 @@ struct AndroidPackageInput {
     std::vector<std::pair<std::string, std::filesystem::path>> libraries;
     // (ruta dentro de assets/, archivo): "shaders/pbr.frag.spv"...
     std::vector<std::pair<std::string, std::filesystem::path>> assets;
+    // Scripts de C++ del juego (sources vacio = sin scripts): se compilan para
+    // cada ABI de `libraries` y el proceso aislado sale de
+    // host_folder/<abi>/libcramion_scripthost.so.
+    struct CppScripts {
+        std::filesystem::path sdk;          // la carpeta con cramion/Script.h
+        std::filesystem::path assets_root;  // Assets del proyecto (para los #include)
+        std::vector<std::filesystem::path> sources;
+        std::filesystem::path host_folder;  // android/ junto al editor
+    } cpp_scripts;
     std::filesystem::path pack;  // el .crpack del juego
     std::string pack_name;       // "Juego.crpack" (dentro de assets/Game/)
     bool split_obb = false;      // el .crpack como .obb aparte (solo APK)
@@ -95,6 +111,13 @@ std::string defaultAndroidPackage(const std::string& game_name);
 
 // El manifiesto (se usa tambien en las pruebas).
 std::string androidManifest(const AndroidPackageInput& input);
+
+// Scripts de C++: el clang++ del NDK, su --target para una ABI
+// ("aarch64-linux-android26") y los argumentos para compilar los de una ABI.
+std::filesystem::path androidNdkClang(const std::filesystem::path& ndk);
+std::string androidClangTarget(const std::string& abi, int min_sdk);
+std::vector<std::string> androidScriptCompileArgs(const AndroidPackageInput& input, const std::string& abi,
+                                                  const std::filesystem::path& out);
 
 bool buildAndroidPackage(const AndroidToolchain& tools, const AndroidPackageInput& input, const AndroidProgress& progress,
                          const std::atomic<bool>* cancel, AndroidPackageResult& result, std::string* error);

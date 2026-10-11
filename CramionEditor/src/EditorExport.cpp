@@ -206,17 +206,25 @@ void EditorApp::startExport(const std::filesystem::path& parent) {
         }
         const bool has_arm = std::any_of(in.libraries.begin(), in.libraries.end(),
                                          [](const auto& l) { return l.first != "x86_64"; });
-        // Avisos que no paran la exportacion: sin la libreria de 32 bits, los
-        // moviles de 32 bits (Android Go, gama baja) no pueden instalarlo; y
-        // los scripts de C++ aun no corren en Android (Lua y visuales si).
+        // Aviso que no para la exportacion: sin la libreria de 32 bits, los
+        // moviles de 32 bits (Android Go, gama baja) no pueden instalarlo.
         if (a.armeabi_v7a && !std::filesystem::exists(source / "android" / "armeabi-v7a" / "libmain.so")) {
             job->android_notes += "\n\nAviso: falta android/armeabi-v7a/libmain.so junto al editor; el juego no se "
                                   "instalara en moviles de 32 bits. Compila el motor con CRAMION_ANDROID_ABIS="
                                   "\"arm64-v8a;armeabi-v7a\".";
         }
+        // Scripts de C++: se compilan con el NDK para cada ABI al empaquetar.
         if (cpp_scripts_.hasSources()) {
-            job->android_notes += "\n\nAviso: los scripts de C++ del proyecto aun no se ejecutan en Android (solo en "
-                                  "Windows). Lo que este en Lua o en scripts visuales si funciona.";
+            if (job->android_tools.ndk.empty()) {
+                export_message_ = "Los scripts de C++ necesitan el Android NDK: instalalo desde el SDK Manager de Android "
+                                  "Studio (SDK Tools > NDK) o define ANDROID_NDK_HOME.";
+                std::cerr << "[Exportar] " << export_message_ << '\n';
+                return;
+            }
+            in.cpp_scripts.sdk = cpp_scripts_.sdkFolder();
+            in.cpp_scripts.assets_root = project_.assetsFolder();
+            in.cpp_scripts.sources = cpp_scripts_.sources();
+            in.cpp_scripts.host_folder = source / "android";
         }
         if (!has_arm) {
             export_message_ = "Falta android/arm64-v8a/libmain.so junto al editor: compila el motor con el Android NDK "

@@ -57,6 +57,16 @@ if(ANDROID)
     # La glue exporta ANativeActivity_onCreate: que el enlazador no la quite.
     target_link_options(main PRIVATE "-u" "ANativeActivity_onCreate")
     target_compile_options(main PRIVATE -Wall -Wextra)
+    # El proceso aislado de los scripts de C++ (host/ScriptHost.cpp): un
+    # ejecutable con nombre de .so para que Android lo deje en nativeLibraryDir,
+    # el unico sitio desde el que una app puede ejecutar algo. El juego carga
+    # alli lib/<abi>/libgame_scripts.so (los scripts compilados al exportar).
+    add_executable(cramion_scripthost "${CMAKE_CURRENT_SOURCE_DIR}/host/ScriptHost.cpp")
+    target_include_directories(cramion_scripthost PRIVATE "${CMAKE_SOURCE_DIR}/CramionCore/include" "${CMAKE_SOURCE_DIR}/CramionCore/sdk")
+    target_link_libraries(cramion_scripthost PRIVATE dl)
+    target_link_options(cramion_scripthost PRIVATE "-Wl,-z,max-page-size=16384")
+    target_compile_options(cramion_scripthost PRIVATE -Wall -Wextra)
+    set_target_properties(cramion_scripthost PROPERTIES OUTPUT_NAME "libcramion_scripthost" SUFFIX ".so")
     return()
 endif()
 

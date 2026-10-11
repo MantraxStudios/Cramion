@@ -62,6 +62,7 @@
 
 #include <cstdio>
 #include <cstring>
+#include <dlfcn.h>
 #include <unistd.h>
 #endif
 
@@ -719,6 +720,23 @@ int runPlayer() {
             const std::filesystem::path game_dll = std::filesystem::path(exe_buffer).parent_path() / "scripts" / "game_scripts.dll";
             std::error_code dll_error;
             if (std::filesystem::exists(game_dll, dll_error)) cpp_scripts.usePrebuilt(game_dll);
+        }
+#else
+        // Android: los scripts (libgame_scripts.so) y su proceso aislado
+        // (libcramion_scripthost.so) van en nativeLibraryDir, junto a esta
+        // libmain.so (el APK los extrae al instalar).
+        {
+            static const int marker = 0;
+            Dl_info self{};
+            if (dladdr(&marker, &self) != 0 && self.dli_fname != nullptr) {
+                const std::filesystem::path libs = std::filesystem::path(self.dli_fname).parent_path();
+                std::error_code dll_error;
+                if (std::filesystem::exists(libs / "libgame_scripts.so", dll_error) &&
+                    std::filesystem::exists(libs / "libcramion_scripthost.so", dll_error)) {
+                    cpp_scripts.setHostExecutable(libs / "libcramion_scripthost.so");
+                    cpp_scripts.usePrebuilt(libs / "libgame_scripts.so");
+                }
+            }
         }
 #endif
         // Navegacion: ajustes del proyecto y la misma geometria que la fisica.

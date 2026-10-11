@@ -4,7 +4,7 @@
 #     CramionEditor.exe, CramionPlayer.exe, cramion.exe, CramionMcp.exe (puente MCP),
 #     CramionUpdater.exe (actualizador)
 #     shaders/ (con source/ de los .crshader), editor_icons/, player_banner.png
-#     android/ (libmain.so por ABI: Exportar a Android)
+#     android/ (libmain.so y libcramion_scripthost.so por ABI: Exportar a Android)
 #     shaderc_shared.dll                  (compila los shaders propios)
 #     msvcp140.dll, vcruntime140*.dll   (runtime de C++, si se encuentra)
 #     LICENSE, TRADEMARK.md, THIRD_PARTY_NOTICES.md, README.md, CHANGELOG.md, LEEME.txt, docs/ (web y referencia de scripting)

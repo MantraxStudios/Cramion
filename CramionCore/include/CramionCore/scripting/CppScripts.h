@@ -143,6 +143,9 @@ public:
     // Escribe <proyecto>/compile_commands.json con todos los .cpp de Assets.
     void writeCompileCommands() const;
     bool hasSources() const;
+    // Los .cpp de Assets (lo que se compila) y la carpeta del SDK.
+    std::vector<std::filesystem::path> sources() const;
+    const std::filesystem::path& sdkFolder() const;
     bool upToDate() const;  // la DLL es mas nueva que todas las fuentes
     // La fecha del .cpp/.h cambiado mas tarde (para no recompilar lo que ya fallo igual).
     std::filesystem::file_time_type newestSourceTime() const;

@@ -1,5 +1,6 @@
 #include "CramionCore/scripting/NativeApi.h"
 
+#include <CramionFX/core/Chars.h>
 #include <entt/entity/entity.hpp>
 #include <nlohmann/json.hpp>
 
@@ -87,7 +88,7 @@ double Value::asNumber(double fallback) const {
     if (type_ == Type::Number || type_ == Type::Bool) return number_;
     if (type_ == Type::String) {
         double d = fallback;
-        std::from_chars(text_.data(), text_.data() + text_.size(), d);
+        core::parseFloat(text_.data(), text_.data() + text_.size(), d);
         return d;
     }
     return fallback;

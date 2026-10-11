@@ -32,6 +32,9 @@
 #include <cxxabi.h>
 #include <dlfcn.h>
 #include <execinfo.h>
+#if defined(__ANDROID__) && __ANDROID_API__ < 33
+#include <unwind.h>
+#endif
 #include <fcntl.h>
 #include <poll.h>
 #include <pthread.h>
@@ -323,6 +326,32 @@ std::uintptr_t g_stack_low = 0;       // la pila del hilo (para reconocer la pil
 std::uintptr_t g_stack_high = 0;
 alignas(16) char g_alt_stack[1 << 16];  // donde corre el manejador (con la pila llena no hay otra)
 
+// La pila de llamadas (backtrace() llega a Android con la 13: antes, el
+// desenrollador del NDK).
+#if defined(__ANDROID__) && __ANDROID_API__ < 33
+struct UnwindState {
+    void** frames;
+    int count;
+    int max;
+};
+_Unwind_Reason_Code unwindFrame(_Unwind_Context* context, void* arg) {
+    auto* state = static_cast<UnwindState*>(arg);
+    const std::uintptr_t pc = _Unwind_GetIP(context);
+    if (pc != 0) {
+        if (state->count >= state->max) return _URC_END_OF_STACK;
+        state->frames[state->count++] = reinterpret_cast<void*>(pc);
+    }
+    return _URC_NO_REASON;
+}
+int stackTrace(void** frames, int max) {
+    UnwindState state{frames, 0, max};
+    _Unwind_Backtrace(unwindFrame, &state);
+    return state.count;
+}
+#else
+int stackTrace(void** frames, int max) { return backtrace(frames, max); }
+#endif
+
 const char* signalName(int sig) {
     switch (sig) {
         case SIGSEGV: return "SIGSEGV";
@@ -395,7 +424,7 @@ void onFault(int sig, siginfo_t* info, void* context) {
     g_fault.overflow = sig == SIGSEGV && g_stack_high != 0 && g_fault.address < g_stack_high &&
                        g_fault.address + (std::uintptr_t(1) << 20) >= g_stack_low;
     // La pila desde el fallo (no con la pila llena: no queda sitio).
-    if (!g_fault.overflow) g_fault.frame_count = backtrace(g_fault.frames, 16);
+    if (!g_fault.overflow) g_fault.frame_count = stackTrace(g_fault.frames, 16);
     siglongjmp(g_jump, 1);
 }
 
@@ -409,6 +438,12 @@ std::string baseName(const char* path) {
 
 // Ejecuta una herramienta (el simbolizador) y devuelve su salida; false si no esta o falla.
 bool runTool(const std::vector<std::string>& args, std::string& output) {
+#if defined(__ANDROID__) && __ANDROID_API__ < 28
+    // En el movil no hay simbolizador (ni posix_spawn antes de Android 9).
+    (void)args;
+    (void)output;
+    return false;
+#else
     int out[2];
     if (pipe(out) != 0) return false;
     fcntl(out[0], F_SETFD, FD_CLOEXEC);
@@ -456,6 +491,7 @@ bool runTool(const std::vector<std::string>& args, std::string& output) {
     while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {
     }
     return WIFEXITED(status) && WEXITSTATUS(status) == 0 && !output.empty();
+#endif
 }
 
 // Funcion y " (archivo:linea)" de cada desplazamiento dentro de la .so de los
@@ -1005,7 +1041,7 @@ int main(int argc, char** argv) {
         pthread_attr_destroy(&attr);
     }
     void* warm[4];
-    backtrace(warm, 4);
+    stackTrace(warm, 4);
     g_block->host_ready = 1;
     wake();
 #endif

@@ -46,6 +46,8 @@
 
 #include "Modules.h"
 
+#include <CramionFX/core/Chars.h>
+
 #include <algorithm>
 #include <cctype>
 #include <charconv>
@@ -125,7 +127,7 @@ std::vector<Token> tokenize(const std::string& code) {
                 }
             }
             double value = 0.0;
-            const auto r = std::from_chars(code.data() + i, code.data() + end, value);
+            const auto r = core::parseFloat(code.data() + i, code.data() + end, value);
             if (r.ec != std::errc{} || r.ptr != code.data() + end || (end < n && isNameChar(code[end]))) {
                 std::size_t stop = end;
                 while (stop < n && isNameChar(code[stop])) ++stop;
