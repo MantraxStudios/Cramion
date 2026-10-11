@@ -67,6 +67,14 @@
 - **Lightmap de superficie**: texeles de luz rebotada en el mundo pegados a la geometría (tabla hash dispersa), con el detalle de un lightmap y sin UV2.
 - **Filtro de daltonismo** en la composición (Machado 2009: corregir o simular).
 
+### Gráficos: 40 errores de los shaders corregidos
+Auditoría de todos los shaders (con las capas de validación de Vulkan en nueve configuraciones del banco de render: sin errores):
+- **Normales y escalas**: objetos con escala no uniforme o negativa (espejo) se iluminaban mal en mallas animadas, superficies y meshlets (matriz de cofactores y signo del determinante). La esfera de culling de los meshlets usa la mayor escala y el cono solo con escala uniforme. Teselado y fluidos con la proyección invertida (`abs`).
+- **Iluminación**: pelo iluminado por el sol con su sombra, niebla sin el `/π` que la oscurecía, la LUT del cielo sin costura, `linearDepth` correcto en cámaras ortográficas (también en SSR, volumétrica y fuego), GI horneada con `texelFetch` exacto, brillo de terciopelo (sheen) ×π, pesos del terreno solo de las capas que existen y sin normales NaN.
+- **Trazado de rayos**: cara delantera/trasera en los impactos (las sondas ya no ven el interior de las paredes), caché de radiancia sin carreras al añadir, semilla aleatoria con hash (sin patrones), superficies con la normal geométrica, reflejos con el LOD de textura correcto y OMM con márgenes seguros.
+- **Posproceso**: motion blur con la reproyección de TAA, DOF con el radio correcto, foco con 2 Vec4, RCAS limitado, historial de SSR premultiplicado, SSGI sin valores infinitos y swapchain en formato UNORM (antes, sRGB doble en algunas GPU).
+- **Agua y efectos**: olas del océano con el «chop» hacia el lado correcto (crestas afiladas, valles anchos: prueba nueva), lagos girados que flotan bien, cáusticas del río sin saltos, vorticidad de los fluidos, partículas VFX en espacio lineal y premultiplicadas, flipbooks por fotogramas enteros, zonas de fuego ordenadas por profundidad y vóxeles con el tiempo del frame anterior.
+
 ### Accesibilidad
 - *Ventana > Accesibilidad* y Lua `Accessibility`: daltonismo, tamaño del texto y de los subtítulos, fondo de subtítulos, alto contraste, reducir movimiento y temblor de cámara (`Camera.shake`, nuevo).
 
@@ -90,6 +98,12 @@
 ### Rendimiento
 - **Texturas compartidas entre modelos**: la misma imagen en varios modelos (materiales `.crmat` comunes) se sube **una sola vez** a la GPU (caché por contenido). Antes cada modelo llevaba su copia de todas las texturas: un pueblo con unas decenas de edificios distintos (14 materiales con texturas) pasaba de los 6 GB de VRAM y el PC se trababa.
 - Las piezas de un modelo ya no cargan las texturas de los huecos de material que no usan (la puerta de una casa leía, decodificaba y subía las de los 14 materiales). Menos RAM y crear pueblos tarda menos.
+- **GPU: no se calcula lo que no se ve**. Con el trazado de rutas activo, la GI, los reflejos, las sombras RT y el SSAO (que el trazado sustituye) ya no se calculan. Con la GI apagada y RT encendido, no corre su filtro (SVGF). La luz volumétrica sin densidad ni volúmenes de niebla no se dibuja.
+- **Shader de iluminación más barato**: primero el término de sombra RT y, si el píxel ya está en sombra, sin mapa de sombras, sombra de contacto ni BRDF; lectura del G-buffer con `texelFetch`; colores de las luces ya en lineal desde la CPU (antes, `pow` por luz y píxel en diez shaders); el reflejo de reserva solo donde falta SSR. Menos pasos en los filtros à-trous (potencias con multiplicaciones) y en la volumétrica (transformación de cascada precalculada).
+- **Sombras en cascada**: menos cambios de pipeline, descriptores y buffers (antes por cada objeto), una caja por actor para descartar antes y la matriz luz×objeto una sola vez.
+- **CPU del render**: clave binaria para las variantes de material (antes, texto con el UUID por objeto y frame), rig solo en las mallas con esqueleto, los huesos se intercambian en vez de copiar el Animator entero y la lista de cristales se guarda por modelo.
+- **Sistemas del juego**: océano con tabla de giros en la FFT (de 2,4 a 0,6 ms por frame), la línea del río una vez por paso de física (no por cuerpo), sprites 2D con su textura por ruta (de 3,6 a 0,13 ms con 5000), navegación, física 2D y Character Controllers que no reescriben lo que no cambió, IK que recalcula solo los huesos afectados y el audio sin rayos de oclusión para los sonidos parados.
+- El perfilador de GPU da también los tiempos crudos del último frame (`lastTimings`), para medir sin el suavizado.
 
 ### Física
 - **BoxCollider como en Unity**: al añadirlo (Inspector, Lua `addComponent`, MCP `set_component`) toma el **AABB de la malla** del objeto (o de las de sus hijos, con su giro y escala) y la escala del Transform lo multiplica igual que a la malla. También la esfera (mayor media medida) y la cápsula (a lo largo del eje más largo). Botón *Ajustar a la malla* y *Restablecer valores* lo recalculan; Lua `entity:fitColliderToMesh()`, MCP `fit_collider`, C++ `PhysicsSystem::fitColliderToMesh` / `localMeshBounds`.
