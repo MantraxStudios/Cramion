@@ -167,8 +167,12 @@ public:
         }
         object_->emplace_back(std::string(key), std::move(v));
     }
-    const Values& items() const { return type_ == Type::Array ? *array_ : emptyArray(); }
-    const Object& fields() const { return type_ == Type::Object ? *object_ : emptyObject(); }
+    const Values& items() const& { return type_ == Type::Array ? *array_ : emptyArray(); }
+    const Object& fields() const& { return type_ == Type::Object ? *object_ : emptyObject(); }
+    // De un valor temporal, una copia: `for (const Value& e : Scene::findAllWithTag("X").items())`
+    // no se queda con una referencia a una lista que ya no existe.
+    Values items() && { return type_ == Type::Array ? *array_ : Values{}; }
+    Object fields() && { return type_ == Type::Object ? *object_ : Object{}; }
 
     // Objetos del motor (Handle) y entidades: metodos y campos (Script.h).
     Value call(std::string_view method, Values args = {}) const;
