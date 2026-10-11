@@ -52,6 +52,15 @@ struct NetValue {
     core::Vec3 vector{};
     std::vector<std::pair<NetValue, NetValue>> entries;  // tabla: clave -> valor
 
+    // Fuera de linea (en Network.cpp): el par de la tabla necesita el tipo
+    // completo y libstdc++ lo comprueba al generar los implicitos aqui dentro.
+    NetValue();
+    NetValue(const NetValue& other);
+    NetValue(NetValue&& other) noexcept;
+    NetValue& operator=(const NetValue& other);
+    NetValue& operator=(NetValue&& other) noexcept;
+    ~NetValue();
+
     static NetValue boolean(bool b);
     static NetValue num(double n);
     static NetValue str(std::string s);

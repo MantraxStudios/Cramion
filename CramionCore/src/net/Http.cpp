@@ -9,7 +9,7 @@
 #endif
 #include <windows.h>
 #include <winhttp.h>
-#else
+#elif defined(__ANDROID__)
 #include <jni.h>
 #endif
 
@@ -383,6 +383,24 @@ HttpResponse httpRequest(const HttpRequest& request, const std::atomic<bool>* ca
     }
     response.ok = response.status >= 200 && response.status < 300;
     response.seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+    return response;
+}
+#elif !defined(__ANDROID__)
+// Escritorio sin WinHTTP (Linux, las pruebas): sin red. La peticion se valida
+// igual y vuelve con un error claro.
+void setJavaVM(void*) {}
+
+HttpResponse httpRequest(const HttpRequest& request, const std::atomic<bool>*) {
+    HttpResponse response;
+    UrlParts url;
+    std::string error;
+    if (!crack(request.url, url, &error)) {
+        response.error = error;
+    } else if (!validMethod(request.method.empty() ? std::string("GET") : request.method)) {
+        response.error = "Metodo no valido: " + request.method;
+    } else {
+        response.error = "HTTP no disponible en esta plataforma";
+    }
     return response;
 }
 #else

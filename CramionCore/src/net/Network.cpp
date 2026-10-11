@@ -223,6 +223,13 @@ std::uint32_t peerId(const ENetPeer* peer) {
 
 // --- Valores -----------------------------------------------------------------------
 
+NetValue::NetValue() = default;
+NetValue::NetValue(const NetValue& other) = default;
+NetValue::NetValue(NetValue&& other) noexcept = default;
+NetValue& NetValue::operator=(const NetValue& other) = default;
+NetValue& NetValue::operator=(NetValue&& other) noexcept = default;
+NetValue::~NetValue() = default;
+
 NetValue NetValue::boolean(bool b) {
     NetValue v;
     v.type = Type::Bool;
