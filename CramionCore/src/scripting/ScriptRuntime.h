@@ -120,6 +120,7 @@ struct ScriptSystem::Impl {
     std::vector<physics::PhysicsEvent> frame_events;  // los de este frame (fase Events)
     std::vector<entt::entity> pending_destroy;
     bool warned_lua = false;
+    bool warned_budget = false;  // scripts.BudgetMs (una vez por Play)
 
     // --- Sobreviven a stop()/start() (cambios de escena) ---
     // DataPacks montados (DataPack.load).

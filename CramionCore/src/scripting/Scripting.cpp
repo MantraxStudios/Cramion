@@ -10,12 +10,14 @@
 #include "CramionCore/ai/BehaviorTree.h"
 #include "CramionCore/ai/StateMachine.h"
 #include "CramionCore/anim/MotionMatching.h"
+#include "CramionCore/cvar/CVar.h"
 #include "CramionCore/ecs/Components.h"
 #include "CramionCore/ecs/Prefab.h"
 #include "CramionCore/gameplay/Dialogue.h"
 #include "CramionCore/gameplay/SaveGame.h"
 #include "CramionCore/lighting/ProbeBaker.h"
 #include "CramionCore/net/NetworkObject.h"
+#include "CramionCore/profiling/Profiler.h"
 #include "CramionCore/scripting/CppScripts.h"
 #include "CramionCore/scripting/VisualScript.h"
 #include "CramionCore/twod/System2D.h"
@@ -27,6 +29,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
@@ -46,6 +49,21 @@
 namespace cramion::scripting {
 
 using core::Vec3;
+
+namespace {
+
+// Presupuesto de los scripts por frame: si un frame se pasa, un aviso (una
+// vez por Play) con la fase que mas tardo. 0 = sin aviso.
+cvar::CVar<float> g_scripts_budget("scripts.BudgetMs", 2.0f,
+                                   "Tiempo maximo de los scripts por frame (ms) antes de avisar (0 = sin aviso)",
+                                   cvar::Saved, 0.0f, 100.0f);
+
+// Zonas del perfilador (dentro de "Scripts"), una por fase del frame.
+constexpr std::array<const char*, kPhaseCount> kPhaseZones = {
+    "Red y HTTP", "Gameplay", "Entrada", "Eventos", "Visual Scripts", "IA", "LateUpdate", "Envio de red",
+};
+
+}  // namespace
 
 std::string lowerText(std::string s) {
     std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
@@ -474,6 +492,7 @@ void ScriptSystem::start(ecs::World& world) {
     d.time = 0.0f;
     d.delta = 0.0f;
     d.frame = 0;
+    d.warned_budget = false;
     // Contextos del principio y las teclas que el jugador guardo.
     if (const auto saved = d.prefs.find(Impl::kBindingsPref); saved != d.prefs.end()) {
         d.actions.applyOverridesJson(saved->second);
@@ -507,10 +526,37 @@ void ScriptSystem::update(ecs::World& world, float delta_seconds) {
     ++d.frame;
     d.frame_events.clear();
     d.frame_events.swap(d.events);
-    for (std::size_t phase = 0; phase < kPhaseCount; ++phase) {
-        for (const auto& fn : d.hooks.frame[phase]) fn(delta_seconds);
+    using Clock = std::chrono::steady_clock;
+    const Clock::time_point begin = Clock::now();
+    double slowest_ms = 0.0;
+    std::size_t slowest = 0;
+    {
+        prof::Scope zone("Scripts");
+        for (std::size_t phase = 0; phase < kPhaseCount; ++phase) {
+            const auto& hooks = d.hooks.frame[phase];
+            if (hooks.empty()) continue;
+            const Clock::time_point phase_begin = Clock::now();
+            prof::Scope phase_zone(kPhaseZones[phase]);
+            for (const auto& fn : hooks) fn(delta_seconds);
+            const double ms = std::chrono::duration<double, std::milli>(Clock::now() - phase_begin).count();
+            if (ms > slowest_ms) {
+                slowest_ms = ms;
+                slowest = phase;
+            }
+        }
+        d.flushDestroys();
     }
-    d.flushDestroys();
+    const double total_ms = std::chrono::duration<double, std::milli>(Clock::now() - begin).count();
+    CR_PROFILE_COUNTER("Scripts (ms)", total_ms);
+    const float budget = g_scripts_budget.get();
+    if (budget > 0.0f && total_ms > budget && !d.warned_budget) {
+        d.warned_budget = true;
+        char text[256];
+        std::snprintf(text, sizeof(text),
+                      "Los scripts van lentos: %.2f ms en un frame (scripts.BudgetMs = %.2f). La fase que mas tardo: %s (%.2f ms).",
+                      total_ms, budget, kPhaseZones[slowest], slowest_ms);
+        d.write(1, text);
+    }
 }
 
 void ScriptSystem::fixedUpdate(ecs::World& world, float step, int steps) {

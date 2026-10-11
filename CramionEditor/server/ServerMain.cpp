@@ -34,6 +34,7 @@
 #include <CramionCore/physics/PhysicsSystem.h>
 #include <CramionCore/project/Pack.h>
 #include <CramionCore/project/Project.h>
+#include <CramionCore/scripting/NativeApi.h>
 #include <CramionCore/scripting/Scripting.h>
 #include <CramionCore/spline/Spline.h>
 #include <CramionCore/terrain/Terrain.h>
@@ -300,12 +301,11 @@ int main(int argc, char** argv) {
         crowds.begin(world);
         scripts.start(world);
         // Marca de servidor dedicado y la partida abierta (si el script no la abrio).
-        scripts.run("Network.dedicated = true", nullptr, &world);
+        scripting::api::NativeApi& api = scripts.nativeApi();
+        api.set("Network.dedicated", scripting::api::Value(true));
         if (!hosted) {
-            std::string out;
-            scripts.run("if not Network.isServer() then Network.host(" + std::to_string(port) + ", " +
-                            std::to_string(max_players) + ") end",
-                        &out, &world);
+            if (!api.call("Network.isServer").truthy())
+                api.call("Network.host", {scripting::api::Value(port), scripting::api::Value(max_players)});
             hosted = true;
         }
         std::cout << "[Servidor] Escena " << file.filename().string() << " lista (" << world.entityCount() << " objetos)\n";

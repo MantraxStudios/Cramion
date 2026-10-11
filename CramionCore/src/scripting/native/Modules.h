@@ -26,6 +26,10 @@ namespace cramion::scripting::native {
 
 using Runtime = ScriptSystem::Impl;
 
+// Mesh (MeshApi.cpp): la malla como handle "Mesh" y al reves (Entity.mesh).
+api::Value meshValue(Runtime& rt, std::shared_ptr<ecs::Mesh> mesh);
+std::shared_ptr<ecs::Mesh> meshOf(const api::Value& v);
+
 void registerDebugApi(Runtime& rt);          // Debug.*, print
 void registerCoreApi(Runtime& rt);           // Time, Scene, Prefs, Game, Profiler, CVar, Physics, Audio, Random
 void registerConsole(Runtime& rt);           // ScriptSystem::run (consola)

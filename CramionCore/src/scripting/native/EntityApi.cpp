@@ -26,11 +26,6 @@
 
 namespace cramion::scripting::native {
 
-// Del modulo Mesh (MeshApi.cpp): la malla como handle "Mesh" (nil si no hay)
-// y al reves (nullptr si el valor no es un Mesh).
-api::Value meshValue(Runtime& rt, std::shared_ptr<ecs::Mesh> mesh);
-std::shared_ptr<ecs::Mesh> meshOf(const api::Value& v);
-
 namespace {
 
 using core::Vec3;
