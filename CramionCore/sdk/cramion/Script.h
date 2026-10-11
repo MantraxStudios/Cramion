@@ -20,7 +20,7 @@
 //           Vec3 mover{Input::axis("Horizontal"), 0.0f, -Input::axis("Vertical")};
 //           entity().translate(mover * (velocidad * dt));
 //           if (Input::keyDown("Space")) Scene::instantiate(bala, entity().position());
-//           Audio::playOneShot(disparo);                       // toda la API de Lua, en C++
+//           Audio::playOneShot(disparo);                       // toda la API del motor, en C++
 //       }
 //   };
 //   CRAMION_SCRIPT(Jugador)
@@ -30,9 +30,10 @@
 // sigue, muestra el error con el archivo y la linea y desactiva ese script.
 //
 // API: lo escrito aqui (Entity, Scene, Input, Physics, Time, Debug, CVars)
-// mas TODA la API de Lua generada en Api.gen.h (Audio, UI, Navigation,
+// mas TODA la API del motor generada en Api.gen.h (Audio, UI, Navigation,
 // Network, Graphics, Prefs, Voxel, Mesh, Animator...), con Value como tipo
-// de los argumentos y del resultado.
+// de los argumentos y del resultado. Api::call llama a cualquier cosa de la
+// API por su nombre. Pruebas automaticas: cramion/Test.h.
 #pragma once
 
 #include "CppProtocol.h"
@@ -70,27 +71,34 @@ inline cppproto::Reader rpc(cppproto::Rpc op, const cppproto::Writer& w = {}) {
     return cppproto::Reader(reply, reply != nullptr ? size : 0);
 }
 
-// Puente a la API de Lua (Api.gen.h la usa).
-Value luaRequest(const Value& request);
+// Puente a la API del motor (Api.gen.h la usa): la peticion en JSON
+// ({"op":"call|get|set","fn":"Audio.playOneShot","self":v,"key":"x","args":[...],"value":v})
+// y su resultado (nil si fallo: el error sale en la Consola).
+Value apiRequest(const Value& request);
 // Los argumentos opcionales que no se pasan llegan como nil: los del final no se envian.
 inline Values trimNils(Values args) {
     while (!args.empty() && args.back().isNil()) args.pop_back();
     return args;
 }
-inline Value lua(std::string_view fn, Values args) {
+// Una funcion de la API ("Audio.playOneShot").
+inline Value api(std::string_view fn, Values args) {
     args = trimNils(std::move(args));
-    return luaRequest(Value{{"op", "call"}, {"fn", fn}, {"args", Value(std::move(args))}});
+    return apiRequest(Value{{"op", "call"}, {"fn", fn}, {"args", Value(std::move(args))}});
 }
-inline Value luaMethod(const Value& self, std::string_view fn, Values args) {
+// Un metodo de un objeto del motor (entidad o handle: "translate", "apply").
+inline Value apiMethod(const Value& self, std::string_view fn, Values args) {
     args = trimNils(std::move(args));
-    return luaRequest(Value{{"op", "call"}, {"fn", fn}, {"self", self}, {"args", Value(std::move(args))}});
+    return apiRequest(Value{{"op", "call"}, {"fn", fn}, {"self", self}, {"args", Value(std::move(args))}});
 }
-inline Value luaGet(std::string_view fn) { return luaRequest(Value{{"op", "get"}, {"fn", fn}}); }
-inline Value luaGetField(const Value& self, std::string_view key) {
-    return luaRequest(Value{{"op", "get"}, {"self", self}, {"key", key}});
+// Una propiedad de una tabla ("Time.timeScale").
+inline Value apiGet(std::string_view fn) { return apiRequest(Value{{"op", "get"}, {"fn", fn}}); }
+inline void apiSet(std::string_view fn, const Value& v) { apiRequest(Value{{"op", "set"}, {"fn", fn}, {"value", v}}); }
+// Una propiedad de un objeto del motor.
+inline Value apiGetField(const Value& self, std::string_view key) {
+    return apiRequest(Value{{"op", "get"}, {"self", self}, {"key", key}});
 }
-inline void luaSetField(const Value& self, std::string_view key, const Value& v) {
-    luaRequest(Value{{"op", "set"}, {"self", self}, {"key", key}, {"value", v}});
+inline void apiSetField(const Value& self, std::string_view key, const Value& v) {
+    apiRequest(Value{{"op", "set"}, {"self", self}, {"key", key}, {"value", v}});
 }
 }  // namespace detail
 
@@ -289,20 +297,20 @@ public:
         detail::queue(cppproto::Rpc::CharCrouch, w);
     }
 
-    // Cualquier metodo o campo de la entidad en Lua (entity:metodo(...), entity.campo).
-    /// Cualquier metodo de Lua de la entidad: call("playSound", {"Audio/x.wav"}).
-    Value call(std::string_view method, Values args = {}) const { return detail::luaMethod(Value(*this), method, std::move(args)); }
-    /// Cualquier campo de Lua de la entidad.
-    Value get(std::string_view field_name) const { return detail::luaGetField(Value(*this), field_name); }
-    /// Cambia un campo de Lua de la entidad.
-    void set(std::string_view field_name, const Value& v) const { detail::luaSetField(Value(*this), field_name, v); }
+    // Cualquier metodo o propiedad de la entidad en la API (Entity:metodo, Entity.campo).
+    /// Cualquier metodo de la API de la entidad: call("playSound", {"Audio/x.wav"}).
+    Value call(std::string_view method, Values args = {}) const { return detail::apiMethod(Value(*this), method, std::move(args)); }
+    /// Cualquier propiedad de la API de la entidad.
+    Value get(std::string_view field_name) const { return detail::apiGetField(Value(*this), field_name); }
+    /// Cambia una propiedad de la API de la entidad.
+    void set(std::string_view field_name, const Value& v) const { detail::apiSetField(Value(*this), field_name, v); }
 
     /// El script de C++ de tipo T de este objeto (nullptr si no tiene): como GetComponent<T>() de Unity.
     /// auto* marcador = Scene::find("Marcador").script<Marcador>();
     template <class T>
     T* script() const;
 
-    // Metodos de Lua generados (entity:playSound(...), entity:moveTo(...)...).
+    // Metodos y propiedades de la API generados (entity().playSound(...), entity().moveTo(...)...).
 #include "EntityApi.gen.inc"
 
 private:
@@ -344,9 +352,9 @@ private:
 inline Value::Value(const Entity& e) : type_(Type::Entity), id_(e.id()) {}
 inline Entity Value::asEntity() const { return Entity(type_ == Type::Entity ? id_ : 0); }
 inline Value::operator Entity() const { return asEntity(); }
-inline Value Value::call(std::string_view method, Values args) const { return detail::luaMethod(*this, method, std::move(args)); }
-inline Value Value::get(std::string_view field) const { return detail::luaGetField(*this, field); }
-inline void Value::setField(std::string_view field, const Value& v) const { detail::luaSetField(*this, field, v); }
+inline Value Value::call(std::string_view method, Values args) const { return detail::apiMethod(*this, method, std::move(args)); }
+inline Value Value::get(std::string_view field) const { return detail::apiGetField(*this, field); }
+inline void Value::setField(std::string_view field, const Value& v) const { detail::apiSetField(*this, field, v); }
 
 // Bits de Entity::move (lo que toco).
 constexpr std::uint32_t kCollidedSides = 1, kCollidedAbove = 2, kCollidedBelow = 4;
@@ -368,7 +376,7 @@ struct AssetRef {
     /// Existe todavia (no se ha destruido).
     bool valid() const { return !uuid.empty() || !path.empty(); }
     explicit operator bool() const { return valid(); }
-    operator Value() const { return Value(path.empty() ? uuid : path); }  // lo que aceptan las funciones de Lua
+    operator Value() const { return Value(path.empty() ? uuid : path); }  // lo que aceptan las funciones de la API
 };
 using Model = AssetRef<AssetKind::Model>;
 using Material = AssetRef<AssetKind::Material>;
@@ -380,7 +388,9 @@ using RenderTexture = AssetRef<AssetKind::RenderTexture>;
 using EnvironmentAsset = AssetRef<AssetKind::Environment>;
 using StateMachineAsset = AssetRef<AssetKind::StateMachine>;
 
-// Archivos sueltos de Assets (imagenes, sonidos, scripts de Lua, shaders).
+// Archivos sueltos de Assets (imagenes, sonidos, shaders...).
+// LuaScript (2) queda solo por los proyectos antiguos (Property<LuaScript>): el
+// motor ya no ejecuta Lua. Obsoleto: no lo uses en scripts nuevos.
 enum class FileKind : int { Texture = 0, Audio = 1, LuaScript = 2, Shader = 3, Any = 4 };
 template <FileKind K>
 struct FileRef {
@@ -392,7 +402,7 @@ struct FileRef {
 };
 using Texture = FileRef<FileKind::Texture>;
 using AudioClip = FileRef<FileKind::Audio>;
-using LuaScript = FileRef<FileKind::LuaScript>;
+using LuaScript = FileRef<FileKind::LuaScript>;  // obsoleto (proyectos antiguos)
 using ShaderFile = FileRef<FileKind::Shader>;
 using AnyFile = FileRef<FileKind::Any>;
 
@@ -787,16 +797,24 @@ inline float fixedDeltaTime() { return detail::g_event.fixed_delta; }
 inline std::uint64_t frameCount() { return detail::g_event.frame; }
 }  // namespace Time
 
-// --- Lua: cualquier cosa de la API por su nombre ---
-namespace Lua {
-/// Llama a cualquier funcion de Lua por su nombre: Lua::call("Audio.playOneShot", {"x.wav"}).
-inline Value call(std::string_view fn, Values args = {}) { return detail::lua(fn, std::move(args)); }
-/// Lee cualquier valor de Lua ("Time.time", "MiTabla.valor").
-inline Value get(std::string_view path) { return detail::luaGet(path); }
-/// Cambia un valor global de Lua.
-inline void set(std::string_view path, const Value& v) { detail::luaRequest(Value{{"op", "set"}, {"fn", path}, {"value", v}}); }
-// Sin esperar la respuesta (va en el lote: mas rapido).
+// --- Api: cualquier cosa de la API del motor por su nombre ---
+namespace Api {
+/// Llama a cualquier funcion de la API por su nombre: Api::call("Audio.playOneShot", {"x.wav"}).
+inline Value call(std::string_view fn, Values args = {}) { return detail::api(fn, std::move(args)); }
+/// Lee cualquier propiedad de la API ("Time.timeScale", "Network.isServer").
+inline Value get(std::string_view path) { return detail::apiGet(path); }
+/// Cambia una propiedad de la API: Api::set("Graphics.vsync", false).
+inline void set(std::string_view path, const Value& v) { detail::apiSet(path, v); }
+/// Como call, sin esperar la respuesta (va en el lote: mas rapido).
 void send(std::string_view fn, Values args = {});
+}  // namespace Api
+
+// Obsoleto (se quitara en la proxima version): el motor ya no tiene Lua. Usa Api::.
+namespace [[deprecated("Lua:: ya no existe: usa Api::call, Api::get y Api::set")]] Lua {
+inline Value call(std::string_view fn, Values args = {}) { return Api::call(fn, std::move(args)); }
+inline Value get(std::string_view path) { return Api::get(path); }
+inline void set(std::string_view path, const Value& v) { Api::set(path, v); }
+inline void send(std::string_view fn, Values args = {}) { Api::send(fn, std::move(args)); }
 }  // namespace Lua
 
 // --- CVars ---
@@ -996,5 +1014,5 @@ struct Registrar {
 // Una por clase, en su .cpp: la hace visible al componente "C++ Script".
 #define CRAMION_SCRIPT(Class) static ::cramion::detail::Registrar<Class> cramion_registrar_##Class(#Class, __FILE__);
 
-// Toda la API de Lua (Audio, UI, Navigation, Network...) en C++.
+// Toda la API del motor (Audio, UI, Navigation, Network...) en C++.
 #include "Api.gen.h"

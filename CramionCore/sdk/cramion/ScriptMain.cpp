@@ -101,14 +101,14 @@ std::uint64_t registerCallback(const std::shared_ptr<Callback>& fn) {
     return id;
 }
 
-Value luaRequest(const Value& request) {
+Value apiRequest(const Value& request) {
     cppproto::Writer w;
     w.str(request.toJson());
     auto r = rpc(cppproto::Rpc::Api, w);
     const Value reply = Value::parse(r.str());
     if (!reply["ok"].asBool()) {
         const std::string fn = request["fn"].asString();
-        Debug::error("Lua " + (fn.empty() ? request["key"].asString() : fn) + ": " + reply["error"].asString());
+        Debug::error("API " + (fn.empty() ? request["key"].asString() : fn) + ": " + reply["error"].asString());
         return {};
     }
     return reply["result"];
@@ -116,13 +116,13 @@ Value luaRequest(const Value& request) {
 
 }  // namespace detail
 
-namespace Lua {
+namespace Api {
 void send(std::string_view fn, Values args) {
     cppproto::Writer w;
     w.str(Value{{"op", "call"}, {"fn", fn}, {"args", Value(std::move(args))}}.toJson());
     detail::queue(cppproto::Rpc::ApiSend, w);
 }
-}  // namespace Lua
+}  // namespace Api
 
 }  // namespace cramion
 

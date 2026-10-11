@@ -1,4 +1,4 @@
-// Cramion C++ scripting: Value, un valor dinamico (como los de Lua) para la
+// Cramion C++ scripting: Value, un valor dinamico (como los de JSON) para la
 // API generada (Api.gen.h): nil, bool, numero, texto, Vec3, Quat, entidad,
 // lista, objeto, funcion (callback) u objeto del motor (Handle: una malla, una
 // maquina de estados...). Se convierte solo a los tipos de C++:
@@ -8,7 +8,7 @@
 //   if (hit) Debug::log(hit["entity"].name());
 //   UI::onClick(boton, [](const Values&) { Debug::log("pulsado"); });
 //
-// Las listas y objetos se comparten al copiar (como las tablas de Lua).
+// Las listas y objetos se comparten al copiar (como un shared_ptr).
 #pragma once
 
 #include "Types.h"
@@ -99,7 +99,7 @@ public:
     bool isObject() const { return type_ == Type::Object; }
     bool isHandle() const { return type_ == Type::Handle; }
 
-    // Como en Lua: nil y false son falso; lo demas, verdadero.
+    // nil y false son falso; lo demas (tambien 0 y ""), verdadero.
     bool truthy() const { return type_ != Type::Nil && !(type_ == Type::Bool && number_ == 0.0); }
     bool asBool(bool fallback = false) const { return type_ == Type::Bool ? number_ != 0.0 : (type_ == Type::Nil ? fallback : truthy()); }
     double asNumber(double fallback = 0.0) const {
