@@ -188,8 +188,8 @@ def skip(decl):
 
 
 def describe(doc):
-    # Las generadas: "Tabla.fn(args) descripcion". Se ensena la descripcion.
-    m = re.match(r"^([A-Za-z]+[.:][A-Za-z_]+)\((.*?)\)\s*(.*)$", doc)
+    # Las generadas: "Tabla.fn(args) descripcion" (o "entity().fn(args)"). Se ensena la descripcion.
+    m = re.match(r"^([A-Za-z]+(?:\(\))?[.:][A-Za-z_]+)\((.*?)\)\s*(.*)$", doc)
     if m:
         _, args, text = m.groups()
         return text if text else (f"Argumentos: {args}" if args and args != "..." else "")

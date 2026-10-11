@@ -22,6 +22,7 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <cstdint>
 #include <cstring>
 #include <fstream>
 #include <iostream>
@@ -50,6 +51,9 @@
 #include <sys/syscall.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#if defined(__ANDROID__)
+#include <android/sharedmem.h>
+#endif
 #include <cerrno>
 #include <csignal>
 extern char** environ;
@@ -652,8 +656,10 @@ struct HostProcess {
     }
 
     static rlimit memoryLimit() {
-        const rlim_t bytes = static_cast<rlim_t>(std::max(g_memory_mb.get(), 32)) << 20;
-        return rlimit{bytes, bytes};
+        // En 64 bits (rlim_t de 32 bits en armeabi-v7a: no dar la vuelta)
+        const std::uint64_t bytes = static_cast<std::uint64_t>(std::max(g_memory_mb.get(), 32)) << 20;
+        const rlim_t limit = bytes >= static_cast<std::uint64_t>(RLIM_INFINITY) ? RLIM_INFINITY : static_cast<rlim_t>(bytes);
+        return rlimit{limit, limit};
     }
 
     // Por que murio el proceso (el texto que dejo en el bloque y la senal).
@@ -958,9 +964,16 @@ struct HostProcess {
         }
         // El bloque: memoria anonima compartida que el proceso hereda.
         int memory = -1;
+        bool sized = false;  // ya tiene el tamano del bloque (ashmem no admite ftruncate)
 #if defined(__ANDROID__)
-        // memfd_create llega a la libc con Android 11; la llamada al sistema esta antes.
+        // memfd_create llega a la libc con Android 11; la llamada al sistema esta antes,
+        // pero los kernels viejos no la tienen y el seccomp de Android 8/9 puede negarla:
+        // entonces ashmem (API 26).
         memory = static_cast<int>(syscall(__NR_memfd_create, "cramion_scripts", MFD_CLOEXEC));
+        if (memory < 0) {
+            memory = ASharedMemory_create("cramion_scripts", sizeof(ipc::Block));
+            sized = memory >= 0;
+        }
 #elif defined(__linux__)
         memory = memfd_create("cramion_scripts", MFD_CLOEXEC);
 #else
@@ -971,7 +984,7 @@ struct HostProcess {
         }
 #endif
         int pair[2] = {-1, -1};
-        if (memory < 0 || ftruncate(memory, sizeof(ipc::Block)) != 0 || socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, pair) != 0) {
+        if (memory < 0 || (!sized && ftruncate(memory, sizeof(ipc::Block)) != 0) || socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, pair) != 0) {
             if (memory >= 0) ::close(memory);
             error = "no se pudo crear el canal con el proceso de scripts";
             return false;

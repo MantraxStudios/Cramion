@@ -821,9 +821,18 @@ bool buildAndroidPackage(const AndroidToolchain& tools, const AndroidPackageInpu
             if (!step(0.03f, "Compilando los scripts de C++ (" + abi + ")")) return fail("Cancelado");
             const fs::path out = work / "scripts" / abi / "libgame_scripts.so";
             fs::create_directories(out.parent_path(), ec);
-            if (!tool(androidNdkClang(tools.ndk), androidScriptCompileArgs(input, abi, out), "Los scripts de C++ (" + abi + ")")) {
-                return false;
+            // En un archivo de respuesta, como en Windows: con muchos scripts la
+            // linea de comandos pasaria de 32767 caracteres.
+            const fs::path rsp = work / "scripts" / (abi + ".rsp");
+            {
+                std::ofstream f(rsp, std::ios::binary);
+                for (std::string arg : androidScriptCompileArgs(input, abi, out)) {
+                    std::replace(arg.begin(), arg.end(), '\\', '/');
+                    f << '"' << arg << "\"\n";
+                }
+                if (!f) return fail("No se pudo escribir " + utf8(rsp));
             }
+            if (!tool(androidNdkClang(tools.ndk), {"@" + utf8(rsp)}, "Los scripts de C++ (" + abi + ")")) return false;
             script_libraries.emplace_back(abi, "libgame_scripts.so", out);
             script_libraries.emplace_back(abi, "libcramion_scripthost.so", host);
         }

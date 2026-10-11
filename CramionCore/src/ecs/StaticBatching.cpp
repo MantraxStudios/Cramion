@@ -89,7 +89,7 @@ bool hasComponent(World& world, Entity e, const char* name) {
 
 // Algo que puede mover el objeto en el juego.
 bool movable(World& world, Entity e) {
-    if (e.has<Animator>() || hasComponent(world, e, "Script")) return true;
+    if (e.has<Animator>() || hasComponent(world, e, "CppScript") || hasComponent(world, e, "VisualScript")) return true;
     for (Entity p = e; p.valid(); p = p.parent()) {
         if (const auto* body = p.tryGet<physics::Rigidbody>(); body != nullptr && body->type != physics::BodyType::Static) {
             return true;
