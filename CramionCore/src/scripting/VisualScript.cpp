@@ -74,31 +74,6 @@ std::vector<double> numbersIn(const std::string& text) {
     return out;
 }
 
-// Texto como literal de Lua ("...").
-std::string luaQuote(const std::string& s) {
-    std::string out = "\"";
-    for (const char ch : s) {
-        const unsigned char c = static_cast<unsigned char>(ch);
-        switch (c) {
-            case '\\': out += "\\\\"; break;
-            case '"': out += "\\\""; break;
-            case '\n': out += "\\n"; break;
-            case '\r': out += "\\r"; break;
-            case '\t': out += "\\t"; break;
-            default:
-                if (c < 32 || c == 127) {
-                    char b[8];
-                    std::snprintf(b, sizeof(b), "\\%03d", static_cast<int>(c));
-                    out += b;
-                } else {
-                    out += ch;
-                }
-        }
-    }
-    out += "\"";
-    return out;
-}
-
 bool isIdentifier(const std::string& s) {
     if (s.empty() || std::isdigit(static_cast<unsigned char>(s[0]))) return false;
     return std::all_of(s.begin(), s.end(), [](char c) { return std::isalnum(static_cast<unsigned char>(c)) || c == '_'; });
@@ -1091,116 +1066,143 @@ Graph exampleGraph() {
     return g;
 }
 
-// --- Compilar ---------------------------------------------------------------------------
+// --- Validar ----------------------------------------------------------------------------
 
-int CompileResult::nodeAtLine(int line) const {
-    if (line <= 0 || line > static_cast<int>(line_nodes.size())) return 0;
-    return line_nodes[line - 1];
+PinType nodePinType(const Graph& graph, const Node& node, bool output, int index) {
+    const std::vector<Pin>& pins = output ? node.outputs : node.inputs;
+    if (index < 0 || index >= static_cast<int>(pins.size())) return PinType::Any;
+    const PinType t = pins[static_cast<std::size_t>(index)].type;
+    if ((node.kind == "var.get" || node.kind == "var.set") && t != PinType::Exec) {
+        if (const Variable* v = graph.findVariable(node.fn)) return v->type;
+    }
+    return t;
+}
+
+bool isPureNode(const Node& node) {
+    if (node.kind == "call") return node.pure;
+    if (node.kind == "call.get" || node.kind == "comment") return true;
+    if (node.kind == "call.set") return false;
+    const NodeInfo* info = findNodeInfo(node.kind);
+    return info != nullptr && info->pure;
+}
+
+Literal parseLiteral(const std::string& text, PinType type, bool* ok) {
+    if (ok != nullptr) *ok = true;
+    Literal out;
+    const std::string v = trim(text);
+    double number = 0.0;
+    switch (type) {
+        case PinType::Exec: return out;
+        case PinType::Bool: {
+            const std::string l = lower(v);
+            out.kind = Literal::Kind::Bool;
+            out.boolean = l == "true" || l == "1" || l == "si" || l == "yes";
+            return out;
+        }
+        case PinType::Int:
+        case PinType::Float:
+            out.kind = Literal::Kind::Number;
+            if (v.empty()) return out;
+            if (!parseNumber(v, number)) {
+                if (ok != nullptr) *ok = false;
+                return out;
+            }
+            out.number = type == PinType::Int ? std::round(number) : number;
+            return out;
+        case PinType::String:
+            out.kind = Literal::Kind::Text;
+            out.text = text;
+            return out;
+        case PinType::Vector: {
+            out.kind = Literal::Kind::Vector;
+            const std::vector<double> c = numbersIn(v);
+            if (c.size() == 3) out.vector = core::Vec3{static_cast<float>(c[0]), static_cast<float>(c[1]), static_cast<float>(c[2])};
+            if (c.size() == 1) out.vector = core::Vec3{static_cast<float>(c[0])};
+            return out;
+        }
+        case PinType::Entity:
+            out.kind = v.empty() ? Literal::Kind::Self : Literal::Kind::Find;
+            out.text = v;
+            return out;
+        case PinType::Any: {
+            if (v.empty()) return out;
+            if (parseNumber(v, number)) {
+                out.kind = Literal::Kind::Number;
+                out.number = number;
+                return out;
+            }
+            const std::string l = lower(v);
+            if (l == "true" || l == "false") {
+                out.kind = Literal::Kind::Bool;
+                out.boolean = l == "true";
+                return out;
+            }
+            if (l == "nil") return out;
+            const std::vector<double> c = numbersIn(v);
+            if (c.size() == 3 && v.find_first_not_of("0123456789.-+eE ,()Vvec") == std::string::npos) {
+                out.kind = Literal::Kind::Vector;
+                out.vector = core::Vec3{static_cast<float>(c[0]), static_cast<float>(c[1]), static_cast<float>(c[2])};
+                return out;
+            }
+            out.kind = Literal::Kind::Text;
+            out.text = text;
+            return out;
+        }
+    }
+    return out;
 }
 
 namespace {
 
-class Compiler {
+class Validator {
 public:
-    Compiler(const Graph& graph, const std::string& chunk) : g_(graph), chunk_(chunk) {}
+    explicit Validator(const Graph& graph) : g_(graph) {}
 
-    CompileResult run() {
-        index();
-        validate();
-        latent_ = false;
-        timers_ = false;
-        for (const Node& n : g_.nodes) {
-            const NodeInfo* info = findNodeInfo(n.kind);
-            if (info != nullptr && info->latent) latent_ = true;
-            if (n.kind == "flow.set_timer") timers_ = true;
-        }
-        prelude();
-        for (const Node& n : g_.nodes) {
-            if (n.kind == "comment" || isPure(n)) continue;
-            if (isEventKind(n.kind)) {
-                eventFunction(n);
-                continue;
-            }
-            for (std::size_t i = 0; i < n.inputs.size(); ++i) {
-                if (n.inputs[i].type == PinType::Exec) execFunction(n, static_cast<int>(i));
-            }
-        }
-        methods();
-        current_ = 0;
-        emit("return G");
-
-        CompileResult r;
-        r.errors = std::move(errors_);
-        r.ok = r.errors.empty();
-        std::string text;
-        for (const std::string& line : lines_) {
-            text += line;
-            text += '\n';
-        }
-        r.lua = std::move(text);
-        r.line_nodes = std::move(line_nodes_);
-        return r;
-    }
-
-private:
-    const Graph& g_;
-    std::string chunk_;
-    std::vector<std::string> lines_;
-    std::vector<int> line_nodes_;
-    std::vector<NodeError> errors_;
-    std::map<int, const Node*> by_id_;
-    std::map<std::pair<int, int>, std::vector<const Link*>> in_links_;   // (nodo, entrada)
-    std::map<std::pair<int, int>, std::vector<const Link*>> out_links_;  // (nodo, salida)
-    std::set<int> visiting_;
-    std::set<std::pair<int, std::string>> reported_;
-    int current_ = 0;
-    int depth_ = 0;
-    bool latent_ = false;
-    bool timers_ = false;
-
-    void emit(const std::string& line) {
-        lines_.push_back(std::string(static_cast<std::size_t>(depth_) * 2, ' ') + line);
-        line_nodes_.push_back(current_);
-    }
-    void emitBlock(const char* text) {
-        std::istringstream in(text);
-        for (std::string line; std::getline(in, line);) {
-            lines_.push_back(line);
-            line_nodes_.push_back(current_);
-        }
-    }
-    void error(int node, const std::string& message) {
-        if (!reported_.insert({node, message}).second) return;
-        errors_.push_back(NodeError{node, message});
-    }
-
-    void index() {
+    std::vector<NodeError> run() {
         for (const Node& n : g_.nodes) by_id_[n.id] = &n;
         for (const Link& l : g_.links) {
             in_links_[{l.to_node, l.to_pin}].push_back(&l);
             out_links_[{l.from_node, l.from_pin}].push_back(&l);
         }
+        structure();
+        literals();
+        cycles();
+        return std::move(errors_);
     }
 
-    static bool isPure(const Node& n) {
-        if (n.kind == "call") return n.pure;
-        if (n.kind == "call.get" || n.kind == "comment") return true;
-        if (n.kind == "call.set") return false;
-        const NodeInfo* info = findNodeInfo(n.kind);
-        return info != nullptr && info->pure;
+private:
+    const Graph& g_;
+    std::vector<NodeError> errors_;
+    std::map<int, const Node*> by_id_;
+    std::map<std::pair<int, int>, std::vector<const Link*>> in_links_;   // (nodo, entrada)
+    std::map<std::pair<int, int>, std::vector<const Link*>> out_links_;  // (nodo, salida)
+    std::set<std::pair<int, std::string>> reported_;
+
+    void error(int node, const std::string& message) {
+        if (!reported_.insert({node, message}).second) return;
+        errors_.push_back(NodeError{node, message});
     }
 
-    PinType pinType(const Node& n, bool output, int index) const {
-        const std::vector<Pin>& pins = output ? n.outputs : n.inputs;
-        if (index < 0 || index >= static_cast<int>(pins.size())) return PinType::Any;
-        const PinType t = pins[index].type;
-        if ((n.kind == "var.get" || n.kind == "var.set") && t != PinType::Exec) {
-            if (const Variable* v = g_.findVariable(n.fn)) return v->type;
+    PinType pinType(const Node& n, bool output, int index) const { return nodePinType(g_, n, output, index); }
+
+    static bool validCallee(const std::string& fn) {
+        if (fn.empty()) return false;
+        std::string part;
+        int separators = 0;
+        for (const char c : fn) {
+            if (c == '.' || c == ':') {
+                if (!isIdentifier(part)) return false;
+                part.clear();
+                ++separators;
+            } else {
+                part += c;
+            }
         }
-        return t;
+        return isIdentifier(part) && separators <= 2;
     }
 
-    void validate() {
+    // Variables, nodos, eventos y enlaces.
+    void structure() {
         std::set<std::string> names;
         for (const Variable& v : g_.variables) {
             if (v.name.empty()) error(0, "Una variable no tiene nombre");
@@ -1259,7 +1261,7 @@ private:
                 error(l.to_node, "Enlace de ejecucion con un pin de datos");
             } else if (!pinTypesCompatible(from, to)) {
                 error(l.to_node, std::string("No se puede enlazar ") + pinTypeLabel(from) + " con " + pinTypeLabel(to) + " (" +
-                                     b->second->inputs[l.to_pin].name + ")");
+                                     b->second->inputs[static_cast<std::size_t>(l.to_pin)].name + ")");
             }
         }
         for (const auto& [key, list] : out_links_) {
@@ -1278,690 +1280,58 @@ private:
         }
     }
 
-    static bool validCallee(const std::string& fn) {
-        if (fn.empty()) return false;
-        std::string part;
-        int separators = 0;
-        for (const char c : fn) {
-            if (c == '.' || c == ':') {
-                if (!isIdentifier(part)) return false;
-                part.clear();
-                ++separators;
-            } else {
-                part += c;
-            }
-        }
-        return isIdentifier(part) && separators <= 2;
-    }
-
-    // --- Expresiones ---
-    std::string slot(int node, int pin) const {
-        return "self.__o[\"" + std::to_string(node) + ":" + std::to_string(pin) + "\"]";
-    }
-
-    std::string literal(const Node& n, const Pin& pin, PinType type) {
-        const std::string v = trim(pin.value);
-        double number = 0.0;
-        switch (type) {
-            case PinType::Exec: return "nil";
-            case PinType::Bool: {
-                const std::string l = lower(v);
-                return l == "true" || l == "1" || l == "si" || l == "yes" ? "true" : "false";
-            }
-            case PinType::Int:
-                if (v.empty()) return "0";
-                if (!parseNumber(v, number)) {
-                    error(n.id, "\"" + pin.name + "\": \"" + v + "\" no es un numero");
-                    return "0";
-                }
-                return formatNumber(std::round(number));
-            case PinType::Float:
-                if (v.empty()) return "0";
-                if (!parseNumber(v, number)) {
-                    error(n.id, "\"" + pin.name + "\": \"" + v + "\" no es un numero");
-                    return "0";
-                }
-                return formatNumber(number);
-            case PinType::String: return luaQuote(pin.value);
-            case PinType::Vector: {
-                const std::vector<double> c = numbersIn(v);
-                if (c.size() == 3) return "Vec3(" + formatNumber(c[0]) + ", " + formatNumber(c[1]) + ", " + formatNumber(c[2]) + ")";
-                if (c.size() == 1) return "Vec3(" + formatNumber(c[0]) + ", " + formatNumber(c[0]) + ", " + formatNumber(c[0]) + ")";
-                return "Vec3(0, 0, 0)";
-            }
-            case PinType::Entity: return v.empty() ? std::string("self.entity") : "Scene.find(" + luaQuote(v) + ")";
-            case PinType::Any: {
-                if (v.empty()) return "nil";
-                if (parseNumber(v, number)) return formatNumber(number);
-                const std::string l = lower(v);
-                if (l == "true" || l == "false") return l;
-                if (l == "nil") return "nil";
-                const std::vector<double> c = numbersIn(v);
-                if (c.size() == 3 && v.find_first_not_of("0123456789.-+eE ,()Vvec") == std::string::npos) {
-                    return "Vec3(" + formatNumber(c[0]) + ", " + formatNumber(c[1]) + ", " + formatNumber(c[2]) + ")";
-                }
-                return luaQuote(pin.value);
-            }
-        }
-        return "nil";
-    }
-
-    // Expresion de una entrada de datos de `n`.
-    std::string in(const Node& n, int index) {
-        if (index < 0 || index >= static_cast<int>(n.inputs.size())) return "nil";
-        const PinType want = pinType(n, false, index);
-        const auto it = in_links_.find({n.id, index});
-        if (it == in_links_.end() || it->second.empty()) return literal(n, n.inputs[index], want);
-        const Link* l = it->second.front();
-        const auto src = by_id_.find(l->from_node);
-        if (src == by_id_.end() || l->from_pin < 0 || l->from_pin >= static_cast<int>(src->second->outputs.size())) return "nil";
-        std::string e = output(*src->second, l->from_pin);
-        const PinType have = pinType(*src->second, true, l->from_pin);
-        if (want == PinType::String && have != PinType::String && have != PinType::Any) e = "STR(" + e + ")";
-        return e;
-    }
-
-    std::string output(const Node& n, int pin) {
-        if (!isPure(n)) return slot(n.id, pin);
-        if (visiting_.contains(n.id)) {
-            error(n.id, "Ciclo entre nodos de datos (un valor depende de si mismo)");
-            return "nil";
-        }
-        visiting_.insert(n.id);
-        std::string e = pure(n, pin);
-        visiting_.erase(n.id);
-        return "W(self, \"" + std::to_string(n.id) + ":" + std::to_string(pin) + "\", " + e + ")";
-    }
-
-    std::string callArgs(const Node& n, const std::vector<int>& data, std::size_t first) {
-        std::vector<std::string> args;
-        for (std::size_t k = first; k < data.size(); ++k) args.push_back(in(n, data[k]));
-        while (!args.empty() && args.back() == "nil") args.pop_back();
-        std::string out;
-        for (std::size_t k = 0; k < args.size(); ++k) out += (k ? ", " : "") + args[k];
-        return out;
-    }
-
-    std::vector<int> dataInputs(const Node& n) const {
-        std::vector<int> data;
-        for (std::size_t i = 0; i < n.inputs.size(); ++i) {
-            if (n.inputs[i].type != PinType::Exec) data.push_back(static_cast<int>(i));
-        }
-        return data;
-    }
-
-    std::string callExpr(const Node& n) {
-        const std::vector<int> data = dataInputs(n);
-        const std::size_t colon = n.fn.find(':');
-        if (colon != std::string::npos) {
-            const std::string target = data.empty() ? std::string("self.entity") : in(n, data[0]);
-            return "(" + target + "):" + n.fn.substr(colon + 1) + "(" + callArgs(n, data, data.empty() ? 0 : 1) + ")";
-        }
-        return n.fn + "(" + callArgs(n, data, 0) + ")";
-    }
-
-    std::string propertyTarget(const Node& n, std::string& member) {
-        const std::size_t colon = n.fn.find(':');
-        if (colon == std::string::npos) {
-            member.clear();
-            return n.fn;
-        }
-        member = n.fn.substr(colon + 1);
-        const std::vector<int> data = dataInputs(n);
-        return data.empty() ? std::string("self.entity") : in(n, data[0]);
-    }
-
-    std::string pure(const Node& n, int pin) {
-        const std::string& k = n.kind;
-        const auto a = [&](int i) { return in(n, i); };
-        if (k == "var.get") return "self[" + luaQuote(n.fn) + "]";
-        if (k == "call") return callExpr(n);
-        if (k == "call.get") {
-            std::string member;
-            const std::string target = propertyTarget(n, member);
-            return member.empty() ? target : "(" + target + ")." + member;
-        }
-        if (k == "math.add") return "(" + a(0) + " + " + a(1) + ")";
-        if (k == "math.sub") return "(" + a(0) + " - " + a(1) + ")";
-        if (k == "math.mul") return "(" + a(0) + " * " + a(1) + ")";
-        if (k == "math.div") return "(" + a(0) + " / " + a(1) + ")";
-        if (k == "math.mod") return "(" + a(0) + " % " + a(1) + ")";
-        if (k == "math.pow") return "(" + a(0) + " ^ " + a(1) + ")";
-        if (k == "math.min") return "math.min(" + a(0) + ", " + a(1) + ")";
-        if (k == "math.max") return "math.max(" + a(0) + ", " + a(1) + ")";
-        if (k == "math.clamp") return "math.min(math.max(" + a(0) + ", " + a(1) + "), " + a(2) + ")";
-        if (k == "math.lerp") return "LERP(" + a(0) + ", " + a(1) + ", " + a(2) + ")";
-        if (k == "math.map_range") {
-            return "MAP(" + a(0) + ", " + a(1) + ", " + a(2) + ", " + a(3) + ", " + a(4) + ")";
-        }
-        if (k == "math.abs") return "math.abs(" + a(0) + ")";
-        if (k == "math.sqrt") return "math.sqrt(" + a(0) + ")";
-        if (k == "math.floor") return "math.floor(" + a(0) + ")";
-        if (k == "math.ceil") return "math.ceil(" + a(0) + ")";
-        if (k == "math.round") return "math.floor(" + a(0) + " + 0.5)";
-        if (k == "math.sin") return "math.sin(" + a(0) + ")";
-        if (k == "math.cos") return "math.cos(" + a(0) + ")";
-        if (k == "math.tan") return "math.tan(" + a(0) + ")";
-        if (k == "math.negate") return "(-" + a(0) + ")";
-        if (k == "math.atan2") return "math.atan(" + a(0) + ", " + a(1) + ")";
-        if (k == "math.random_float") return "RANDF(" + a(0) + ", " + a(1) + ")";
-        if (k == "math.random_int") return "RANDI(" + a(0) + ", " + a(1) + ")";
-        if (k == "math.pi") return "math.pi";
-        if (k == "logic.and") return "(" + a(0) + " and " + a(1) + ")";
-        if (k == "logic.or") return "(" + a(0) + " or " + a(1) + ")";
-        if (k == "logic.xor") return "((not " + a(0) + ") ~= (not " + a(1) + "))";
-        if (k == "logic.not") return "(not " + a(0) + ")";
-        if (k == "logic.equal") return "(" + a(0) + " == " + a(1) + ")";
-        if (k == "logic.not_equal") return "(" + a(0) + " ~= " + a(1) + ")";
-        if (k == "logic.greater") return "(" + a(0) + " > " + a(1) + ")";
-        if (k == "logic.less") return "(" + a(0) + " < " + a(1) + ")";
-        if (k == "logic.greater_equal") return "(" + a(0) + " >= " + a(1) + ")";
-        if (k == "logic.less_equal") return "(" + a(0) + " <= " + a(1) + ")";
-        if (k == "logic.select") return "SEL(" + a(0) + ", " + a(1) + ", " + a(2) + ")";
-        if (k == "vec.make") return "Vec3(" + a(0) + ", " + a(1) + ", " + a(2) + ")";
-        if (k == "vec.break") return "(" + a(0) + ")." + std::string(pin == 0 ? "x" : (pin == 1 ? "y" : "z"));
-        if (k == "vec.length") return "(" + a(0) + "):length()";
-        if (k == "vec.normalize") return "(" + a(0) + "):normalized()";
-        if (k == "vec.distance") return "Vec3.distance(" + a(0) + ", " + a(1) + ")";
-        if (k == "vec.dot") return "Vec3.dot(" + a(0) + ", " + a(1) + ")";
-        if (k == "vec.cross") return "Vec3.cross(" + a(0) + ", " + a(1) + ")";
-        if (k == "vec.lerp") return "Vec3.lerp(" + a(0) + ", " + a(1) + ", " + a(2) + ")";
-        if (k == "str.append") return "(STR(" + a(0) + ") .. STR(" + a(1) + "))";
-        if (k == "str.to_string") return "STR(" + a(0) + ")";
-        if (k == "str.to_number") return "(tonumber(" + a(0) + ") or 0)";
-        if (k == "str.length") return "#STR(" + a(0) + ")";
-        if (k == "str.contains") return "(string.find(STR(" + a(0) + "), STR(" + a(1) + "), 1, true) ~= nil)";
-        if (k == "entity.self") return "self.entity";
-        if (k == "entity.find") return "Scene.find(" + a(0) + ")";
-        if (k == "entity.find_tag") return "Scene.findWithTag(" + a(0) + ")";
-        if (k == "entity.get_position") return "(" + a(0) + ").position";
-        if (k == "entity.get_rotation") return "(" + a(0) + ").rotation";
-        if (k == "entity.get_scale") return "(" + a(0) + ").scale";
-        if (k == "entity.get_forward") return "(" + a(0) + ").forward";
-        if (k == "entity.get_name") return "(" + a(0) + ").name";
-        if (k == "entity.is_valid") return "VALID(" + a(0) + ")";
-        if (k == "entity.distance") return "(" + a(0) + "):distanceTo(" + a(1) + ")";
-        if (k == "entity.get_field") return "(" + a(0) + "):getField(" + a(1) + ", " + a(2) + ")";
-        if (k == "input.key") return "Input.getKey(" + a(0) + ")";
-        if (k == "input.key_down") return "Input.getKeyDown(" + a(0) + ")";
-        if (k == "input.key_up") return "Input.getKeyUp(" + a(0) + ")";
-        if (k == "input.axis") return "Input.getAxis(" + a(0) + ")";
-        if (k == "input.mouse_button") return "Input.getMouseButton(" + a(0) + ")";
-        if (k == "input.action") return "Input.getAction(" + a(0) + ")";
-        if (k == "time.delta") return "(Time.deltaTime or 0)";
-        if (k == "time.time") return "(Time.time or 0)";
-        if (k == "time.frame") return "(Time.frameCount or 0)";
-        if (k == "util.reroute") return a(0);
-        error(n.id, "El nodo " + nodeTitle(n) + " no da valores");
-        return "nil";
-    }
-
-    // --- Ejecucion ---
-    // Sentencia que sigue por la salida exec `out` (vacia si no hay enlace).
-    std::string next(const Node& n, int out, bool tail) {
-        const auto it = out_links_.find({n.id, out});
-        if (it == out_links_.end() || it->second.empty()) return {};
-        const Link* l = it->second.front();
-        const auto target = by_id_.find(l->to_node);
-        if (target == by_id_.end()) return {};
-        const std::string call = "N[\"" + std::to_string(l->to_node) + "_" + std::to_string(l->to_pin) + "\"](self)";
-        return tail ? "return " + call : call;
-    }
-    void emitNext(const Node& n, int out, bool tail) {
-        const std::string s = next(n, out, tail);
-        if (!s.empty()) emit(s);
-    }
-
-    void eventFunction(const Node& n) {
-        current_ = n.id;
-        emit("N[\"" + std::to_string(n.id) + "_e\"] = function(self, a, b)");
-        ++depth_;
-        emit("T(self, " + std::to_string(n.id) + ")");
-        const std::string& k = n.kind;
-        if (n.outputs.size() > 1 && k.rfind("event.collision", 0) == 0) {
-            emit(slot(n.id, 1) + " = a");
-            emit(slot(n.id, 2) + " = b and b.point");
-            emit(slot(n.id, 3) + " = b and b.normal");
-            emit(slot(n.id, 4) + " = b and b.relativeVelocity");
-        } else if (n.outputs.size() > 1) {
-            emit(slot(n.id, 1) + " = a");
-        }
-        emitNext(n, 0, true);
-        --depth_;
-        emit("end");
-    }
-
-    void execFunction(const Node& n, int input) {
-        current_ = n.id;
-        const std::string id = std::to_string(n.id);
-        emit("N[\"" + id + "_" + std::to_string(input) + "\"] = function(self)");
-        ++depth_;
-        emit("T(self, " + id + ")");
-        const std::string& k = n.kind;
-        const std::string state = "self.__s[" + id + "]";
-        if (k == "flow.branch") {
-            emit("if " + in(n, 1) + " then");
-            ++depth_;
-            emitNext(n, 0, true);
-            --depth_;
-            emit("else");
-            ++depth_;
-            emitNext(n, 1, true);
-            --depth_;
-            emit("end");
-        } else if (k == "flow.sequence") {
-            for (std::size_t o = 0; o < n.outputs.size(); ++o) emitNext(n, static_cast<int>(o), o + 1 == n.outputs.size());
-        } else if (k == "flow.for") {
-            emit("local first, last = math.floor(tonumber(" + in(n, 1) + ") or 0), math.floor(tonumber(" + in(n, 2) + ") or 0)");
-            emit("for i = first, last do");
-            ++depth_;
-            emit(slot(n.id, 1) + " = i");
-            emitNext(n, 0, false);
-            --depth_;
-            emit("end");
-            emitNext(n, 2, true);
-        } else if (k == "flow.foreach") {
-            emit("local list = " + in(n, 1));
-            emit("if list ~= nil then");
-            ++depth_;
-            emit("for i = 1, #list do");
-            ++depth_;
-            emit(slot(n.id, 1) + " = list[i]");
-            emit(slot(n.id, 2) + " = i");
-            emitNext(n, 0, false);
-            --depth_;
-            emit("end");
-            --depth_;
-            emit("end");
-            emitNext(n, 3, true);
-        } else if (k == "flow.while") {
-            emit("local limit = tonumber(" + in(n, 2) + ") or 10000");
-            emit("local count = 0");
-            emit("while " + in(n, 1) + " do");
-            ++depth_;
-            emit("count = count + 1");
-            emit("if count > limit then error(\"While Loop: mas de \" .. limit .. \" vueltas (bucle infinito?)\") end");
-            emitNext(n, 0, false);
-            --depth_;
-            emit("end");
-            emitNext(n, 1, true);
-        } else if (k == "flow.delay") {
-            emit("coroutine.yield(tonumber(" + in(n, 1) + ") or 0)");
-            emitNext(n, 0, true);
-        } else if (k == "flow.do_once") {
-            if (input == 0) {
-                emit("if " + state + " then return end");
-                emit(state + " = true");
-                emitNext(n, 0, true);
-            } else {
-                emit(state + " = nil");
-            }
-        } else if (k == "flow.do_n") {
-            if (input == 0) {
-                emit("local count = " + state + " or 0");
-                emit("if count >= (tonumber(" + in(n, 2) + ") or 0) then return end");
-                emit("count = count + 1");
-                emit(state + " = count");
-                emit(slot(n.id, 1) + " = count");
-                emitNext(n, 0, true);
-            } else {
-                emit(state + " = 0");
-            }
-        } else if (k == "flow.flip_flop") {
-            emit("local isA = not " + state);
-            emit(state + " = isA");
-            emit(slot(n.id, 2) + " = isA");
-            emit("if isA then");
-            ++depth_;
-            emitNext(n, 0, true);
-            --depth_;
-            emit("else");
-            ++depth_;
-            emitNext(n, 1, true);
-            --depth_;
-            emit("end");
-        } else if (k == "flow.gate") {
-            if (input == 0) {
-                emit("if " + state + " then");
-                ++depth_;
-                emitNext(n, 0, true);
-                --depth_;
-                emit("end");
-            } else if (input == 1) {
-                emit(state + " = true");
-            } else if (input == 2) {
-                emit(state + " = false");
-            } else {
-                emit(state + " = not " + state);
-            }
-        } else if (k == "flow.set_timer") {
-            emit("local seconds = tonumber(" + in(n, 2) + ") or 0");
-            emit("self.__tm[STR(" + in(n, 1) + ")] = {t = seconds, every = (" + in(n, 3) + ") and seconds or nil}");
-            emitNext(n, 0, true);
-        } else if (k == "flow.clear_timer") {
-            emit("self.__tm[STR(" + in(n, 1) + ")] = nil");
-            emitNext(n, 0, true);
-        } else if (k == "flow.call_event") {
-            emit("local name = STR(" + in(n, 1) + ")");
-            emit("local f = G[name]");
-            emit("if f == nil then error(\"Call Event: no existe el evento \" .. name) end");
-            emit("f(self, " + in(n, 2) + ")");
-            emitNext(n, 0, true);
-        } else if (k == "flow.send_event") {
-            emit("local target = " + in(n, 1));
-            emit("if target ~= nil and __VS_SEND ~= nil then __VS_SEND(target, STR(" + in(n, 2) + "), " + in(n, 3) + ") end");
-            emitNext(n, 0, true);
-        } else if (k == "var.set") {
-            const std::string key = "self[" + luaQuote(n.fn) + "]";
-            emit(key + " = " + in(n, 1));
-            emit(slot(n.id, 1) + " = " + key);
-            emitNext(n, 0, true);
-        } else if (k == "debug.print" || k == "debug.warn") {
-            emit(std::string(k == "debug.print" ? "Debug.log" : "Debug.warn") + "(STR(" + in(n, 1) + "))");
-            emitNext(n, 0, true);
-        } else if (k == "entity.set_position" || k == "entity.set_rotation" || k == "entity.set_scale" || k == "entity.set_active") {
-            const char* field = k == "entity.set_position" ? "position"
-                                : k == "entity.set_rotation" ? "rotation"
-                                : k == "entity.set_scale"    ? "scale"
-                                                             : "active";
-            emit("local o = " + in(n, 1));
-            emit("if o ~= nil then o." + std::string(field) + " = " + in(n, 2) + " end");
-            emitNext(n, 0, true);
-        } else if (k == "entity.translate" || k == "entity.rotate" || k == "entity.look_at") {
-            const char* method = k == "entity.translate" ? "translate" : (k == "entity.rotate" ? "rotate" : "lookAt");
-            emit("local o = " + in(n, 1));
-            emit("if o ~= nil then o:" + std::string(method) + "(" + in(n, 2) + ") end");
-            emitNext(n, 0, true);
-        } else if (k == "entity.add_force") {
-            emit("local o = " + in(n, 1));
-            emit("if o ~= nil then o:addForce(" + in(n, 2) + ", " + in(n, 3) + ") end");
-            emitNext(n, 0, true);
-        } else if (k == "entity.spawn") {
-            emit(slot(n.id, 1) + " = Scene.instantiate(" + in(n, 1) + ", " + in(n, 2) + ", " + in(n, 3) + ")");
-            emitNext(n, 0, true);
-        } else if (k == "entity.destroy") {
-            emit("local o = " + in(n, 1));
-            emit("if o ~= nil then o:destroy() end");
-            emitNext(n, 0, true);
-        } else if (k == "entity.set_field") {
-            emit("local o = " + in(n, 1));
-            emit("if o ~= nil then o:setField(" + in(n, 2) + ", " + in(n, 3) + ", " + in(n, 4) + ") end");
-            emitNext(n, 0, true);
-        } else if (k == "call") {
-            const int result = n.output("Resultado");
-            emit((result >= 0 ? slot(n.id, result) : std::string("local _")) + " = " + callExpr(n));
-            emitNext(n, 0, true);
-        } else if (k == "call.set") {
-            std::string member;
-            const std::string target = propertyTarget(n, member);
-            const std::vector<int> data = dataInputs(n);
-            const std::string value = data.empty() ? std::string("nil") : in(n, data.back());
-            if (member.empty()) {
-                emit(target + " = " + value);
-            } else {
-                emit("local o = " + target);
-                emit("if o ~= nil then o." + member + " = " + value + " end");
-            }
-            emitNext(n, 0, true);
-        } else {
-            error(n.id, "El nodo " + nodeTitle(n) + " no se puede ejecutar");
-        }
-        --depth_;
-        emit("end");
-    }
-
-    std::vector<const Node*> eventsOf(const char* kind) const {
-        std::vector<const Node*> out;
-        for (const Node& n : g_.nodes) {
-            if (n.kind == kind) out.push_back(&n);
-        }
-        return out;
-    }
-
-    std::string eventCall(const Node& n, const std::string& args) const {
-        return "RUN(self, N[\"" + std::to_string(n.id) + "_e\"]" + (args.empty() ? std::string() : ", " + args) + ")";
-    }
-
-    void methods() {
-        // __vsinit (Awake y al recargar el grafo en Play): estado, variables y
-        // nodos con estado inicial. Solo rellena lo que falta: al recargar,
-        // las instancias siguen con sus datos.
-        current_ = 0;
-        emit("G.__vsinit = function(self)");
-        ++depth_;
-        emit("self.__o = self.__o or {}");
-        emit("self.__t = self.__t or {}");
-        emit("self.__s = self.__s or {}");
-        emit("self.__p = self.__p or {}");
-        emit("self.__tm = self.__tm or {}");
-        emit("self.__b = self.__b or {}");
+    // Numeros escritos en las entradas sin enlace y en las variables.
+    void literals() {
         for (const Variable& v : g_.variables) {
-            if (v.name.empty()) continue;
-            const std::string key = "self[" + luaQuote(v.name) + "]";
-            if (v.type == PinType::Entity) {
-                if (!trim(v.value).empty()) emit("if " + key + " == nil then " + key + " = " + luaQuote(trim(v.value)) + " end");
-                emit("if type(" + key + ") == \"string\" then");
-                ++depth_;
-                emit("local name = " + key);
-                emit(key + " = name ~= \"\" and Scene.find(name) or nil");
-                --depth_;
-                emit("end");
-            } else {
-                Node dummy;
-                Pin pin{v.name, v.type, v.value};
-                emit("if " + key + " == nil then " + key + " = " + literal(dummy, pin, v.type) + " end");
-            }
+            if (v.name.empty() || (v.type != PinType::Int && v.type != PinType::Float)) continue;
+            bool ok = true;
+            parseLiteral(v.value, v.type, &ok);
+            if (!ok) error(0, "\"" + v.name + "\": \"" + trim(v.value) + "\" no es un numero");
         }
         for (const Node& n : g_.nodes) {
-            current_ = n.id;
-            const std::string state = "self.__s[" + std::to_string(n.id) + "]";
-            if (n.kind == "flow.do_once") emit("if " + state + " == nil and " + in(n, 2) + " then " + state + " = true end");
-            if (n.kind == "flow.gate") emit("if " + state + " == nil then " + state + " = not (" + in(n, 4) + ") end");
+            if (n.kind == "comment") continue;
+            for (std::size_t i = 0; i < n.inputs.size(); ++i) {
+                const PinType t = pinType(n, false, static_cast<int>(i));
+                if ((t != PinType::Int && t != PinType::Float) || in_links_.contains({n.id, static_cast<int>(i)})) continue;
+                bool ok = true;
+                parseLiteral(n.inputs[i].value, t, &ok);
+                if (!ok) error(n.id, "\"" + n.inputs[i].name + "\": \"" + trim(n.inputs[i].value) + "\" no es un numero");
+            }
         }
-        current_ = 0;
-        --depth_;
-        emit("end");
-        emit("G.Awake = G.__vsinit");
-
-        // Start: acciones de entrada y los Event Start.
-        const auto actions = eventsOf("event.input_action");
-        const auto starts = eventsOf("event.start");
-        if (!actions.empty() || !starts.empty()) {
-            emit("G.Start = function(self)");
-            ++depth_;
-            for (const Node* n : actions) {
-                current_ = n->id;
-                const std::string action = n->inputs.size() > 0 ? n->inputs[0].value : std::string("Jump");
-                const std::string when = n->inputs.size() > 1 && !trim(n->inputs[1].value).empty() ? trim(n->inputs[1].value) : "triggered";
-                emit("self.__b[#self.__b + 1] = Input.bindAction(" + luaQuote(action) + ", " + luaQuote(when) +
-                     ", function(value) " + eventCall(*n, "value") + " end)");
-            }
-            for (const Node* n : starts) {
-                current_ = n->id;
-                emit(eventCall(*n, {}));
-            }
-            current_ = 0;
-            --depth_;
-            emit("end");
-        }
-
-        // Update: esperas, temporizadores, teclas y los Event Update.
-        const auto keys = eventsOf("event.key");
-        const auto updates = eventsOf("event.update");
-        if (latent_ || timers_ || !keys.empty() || !updates.empty()) {
-            emit("G.Update = function(self, dt)");
-            ++depth_;
-            if (latent_ || timers_) emit("TICK(self, dt)");
-            for (const Node* n : keys) {
-                current_ = n->id;
-                const std::string key = n->inputs.size() > 0 ? n->inputs[0].value : std::string("Space");
-                const std::string when = n->inputs.size() > 1 ? lower(trim(n->inputs[1].value)) : std::string("pulsada");
-                const char* fn = when == "soltada" || when == "released" || when == "up" ? "Input.getKeyUp"
-                                 : when == "mantenida" || when == "held" || when == "down"  ? "Input.getKey"
-                                                                                            : "Input.getKeyDown";
-                emit("if " + std::string(fn) + "(" + luaQuote(key) + ") then " + eventCall(*n, {}) + " end");
-            }
-            for (const Node* n : updates) {
-                current_ = n->id;
-                emit(eventCall(*n, "dt"));
-            }
-            current_ = 0;
-            --depth_;
-            emit("end");
-        }
-        const auto simple = [&](const char* kind, const char* method, const char* params, const char* args) {
-            const auto list = eventsOf(kind);
-            if (list.empty()) return;
-            emit(std::string("G.") + method + " = function(self" + params + ")");
-            ++depth_;
-            for (const Node* n : list) {
-                current_ = n->id;
-                emit(eventCall(*n, args));
-            }
-            current_ = 0;
-            --depth_;
-            emit("end");
-        };
-        simple("event.late_update", "LateUpdate", ", dt", "dt");
-        simple("event.fixed_update", "FixedUpdate", ", step", "step");
-        simple("event.collision_enter", "OnCollisionEnter", ", other, contact", "other, contact");
-        simple("event.collision_stay", "OnCollisionStay", ", other, contact", "other, contact");
-        simple("event.collision_exit", "OnCollisionExit", ", other, contact", "other, contact");
-        simple("event.trigger_enter", "OnTriggerEnter", ", other, contact", "other, contact");
-        simple("event.trigger_stay", "OnTriggerStay", ", other, contact", "other, contact");
-        simple("event.trigger_exit", "OnTriggerExit", ", other, contact", "other, contact");
-
-        // OnDestroy: suelta las acciones y los Event Destroy.
-        const auto destroys = eventsOf("event.destroy");
-        if (!actions.empty() || !destroys.empty()) {
-            emit("G.OnDestroy = function(self)");
-            ++depth_;
-            if (!actions.empty()) emit("for _, id in ipairs(self.__b or {}) do Input.unbindAction(id) end");
-            for (const Node* n : destroys) {
-                current_ = n->id;
-                emit(eventCall(*n, {}));
-            }
-            current_ = 0;
-            --depth_;
-            emit("end");
-        }
-
-        // Custom Events: metodos con su nombre (la interfaz, Send Event y los scripts los llaman).
-        for (const Node* n : eventsOf("event.custom")) {
-            current_ = n->id;
-            const std::string name = n->inputs.empty() ? std::string() : trim(n->inputs[0].value);
-            if (name.empty() || reservedMethod(name)) continue;
-            emit("G[" + luaQuote(name) + "] = function(self, value) " + eventCall(*n, "value") + " end");
-        }
-        current_ = 0;
     }
 
-    void prelude() {
-        current_ = 0;
-        emit("-- Generado por Cramion desde " + chunk_ + " (Visual Scripting). No editar: se rehace al guardar el grafo.");
-        emit("local G = {}");
-        emit("local N = {}");
-        emit("local FILE = " + luaQuote(chunk_));
-        emitBlock(R"(local function T(self, id)
-  self.__t[id] = Time.time or 0
-  local all = __VS_BP
-  if all ~= nil then
-    local bp = all[FILE]
-    if bp ~= nil and bp[id] then __VS_BREAK(FILE, id, self.entity) end
-  end
-end
-local function W(self, k, v)
-  self.__o[k] = v
-  return v
-end
-local function SEL(c, a, b)
-  if c then return a end
-  return b
-end
-local function STR(v)
-  if v == nil then return "" end
-  return tostring(v)
-end
-local function VALID(o)
-  return o ~= nil and o:valid()
-end
-local function LERP(a, b, t)
-  return a + (b - a) * t
-end
-local function MAP(v, a, b, c, d)
-  if b == a then return c end
-  return c + (v - a) / (b - a) * (d - c)
-end
-local function RANDF(a, b)
-  return a + math.random() * (b - a)
-end
-local function RANDI(a, b)
-  a, b = math.floor(a), math.floor(b)
-  if b < a then a, b = b, a end
-  return math.random(a, b)
-end)");
-        if (latent_) {
-            emitBlock(R"(local function RUN(self, f, ...)
-  local co = coroutine.create(f)
-  local ok, wait = coroutine.resume(co, self, ...)
-  if not ok then error(wait, 0) end
-  if coroutine.status(co) ~= "dead" then
-    local p = self.__p
-    p[#p + 1] = {co = co, t = tonumber(wait) or 0}
-  end
-end)");
-        } else {
-            emitBlock(R"(local function RUN(self, f, ...)
-  return f(self, ...)
-end)");
+    // Un nodo de datos (puro) no puede depender de si mismo.
+    void cycles() {
+        std::map<int, int> mark;  // 1 visitando, 2 hecho
+        for (const Node& n : g_.nodes) {
+            if (isPureNode(n)) visit(n, mark);
         }
-        emitBlock(R"(local function TICK(self, dt)
-  local pending = self.__p
-  if #pending > 0 then
-    self.__p = {}
-    for i = 1, #pending do
-      local w = pending[i]
-      w.t = w.t - dt
-      if w.t > 0 then
-        self.__p[#self.__p + 1] = w
-      else
-        local ok, wait = coroutine.resume(w.co)
-        if not ok then error(wait, 0) end
-        if coroutine.status(w.co) ~= "dead" then
-          w.t = tonumber(wait) or 0
-          self.__p[#self.__p + 1] = w
-        end
-      end
-    end
-  end
-  local fired = nil
-  for name, tm in pairs(self.__tm) do
-    tm.t = tm.t - dt
-    if tm.t <= 0 then
-      fired = fired or {}
-      fired[#fired + 1] = name
-      if tm.every ~= nil and tm.every > 0 then
-        tm.t = tm.t + tm.every
-      else
-        self.__tm[name] = nil
-      end
-    end
-  end
-  if fired ~= nil then
-    for _, name in ipairs(fired) do
-      local f = G[name]
-      if f ~= nil then f(self) end
-    end
-  end
-end)");
+    }
+    void visit(const Node& n, std::map<int, int>& mark) {
+        int& m = mark[n.id];
+        if (m == 2) return;
+        if (m == 1) {
+            error(n.id, "Ciclo entre nodos de datos (un valor depende de si mismo)");
+            return;
+        }
+        m = 1;
+        for (std::size_t i = 0; i < n.inputs.size(); ++i) {
+            const auto it = in_links_.find({n.id, static_cast<int>(i)});
+            if (it == in_links_.end() || it->second.empty()) continue;
+            const auto src = by_id_.find(it->second.front()->from_node);
+            if (src != by_id_.end() && isPureNode(*src->second)) visit(*src->second, mark);
+        }
+        mark[n.id] = 2;
     }
 };
 
 }  // namespace
 
-CompileResult compileGraph(const Graph& graph, const std::string& chunk) {
-    Compiler compiler(graph, chunk);
-    return compiler.run();
+CompileResult compileGraph(const Graph& graph, const std::string& /*chunk*/) {
+    CompileResult r;
+    r.errors = Validator(graph).run();
+    r.ok = r.errors.empty();
+    return r;
 }
 
 scripting::PropertyType propertyTypeOf(PinType type) {

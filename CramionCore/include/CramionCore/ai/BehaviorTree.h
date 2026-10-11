@@ -19,8 +19,9 @@
 //              Random Selector (en orden aleatorio).
 // Tareas       Move To (NavMesh), Wait, Play Animation, Set Animator Param,
 //              Rotate To Face, Set Blackboard, Find Random Point, Run Script
-//              (Lua o C++), Send Message y Log.
-// Decoradores  Blackboard (comparar una clave), Script Condition, Is At
+//              (un script de C++), Send Message y Log.
+// Decoradores  Blackboard (comparar una clave), Script Condition (una
+//              expresion sobre la pizarra, ai/Expression.h), Is At
 //              Location, Cooldown, Loop, Time Limit, Inverter, Force Success,
 //              Force Failure. Los de condicion pueden abortar ("observer
 //              aborts"): Self (su rama, si deja de cumplirse) y Lower Priority
@@ -30,12 +31,17 @@
 //              Script.
 //
 // En Play cada objeto con el componente BehaviorTree ejecuta su arbol (lo
-// lleva ScriptSystem, despues de los Update). Desde Lua:
-// entity:getBehaviorTree() -> bt:get/set, bt:start/stop/restart,
-// bt:finishTask(true), BehaviorTree.registerTask("Nombre", fn),
-// BehaviorTree.reportNoise(posicion, radio, quien) (ver Scripting.h).
+// lleva ScriptSystem, despues de los Update). Run Script envia a los scripts
+// de C++ del objeto (onMessage) "OnBtTask" {node, function, first} cada tick
+// mientras corre (o llama a la tarea de BehaviorTree.registerTask) y sigue
+// Running hasta BehaviorTree.finishTask(entity, true/false); si se corta,
+// "OnBtAbort" {node, function}. El servicio Run Script envia "OnBtService"
+// {node, function}. Desde los scripts: entity.getBehaviorTree() ->
+// bt.get/set, bt.start/stop/restart, bt.finishTask(true),
+// BehaviorTree.reportNoise(posicion, radio, quien) (ver native/AiApi.cpp).
 
 #include "CramionCore/Uuid.h"
+#include "CramionCore/ai/Expression.h"
 #include "CramionCore/ai/StateMachine.h"
 #include "CramionCore/asset/AssetTypes.h"
 
@@ -189,6 +195,7 @@ struct BtDecorator {
     BtDecoratorKind kind = BtDecoratorKind::Blackboard;
     BtAbort abort = BtAbort::None;
     BtParams params;
+    ExpressionCache expression;  // Script Condition: params.text leido (una vez)
 };
 
 struct BtService {
@@ -294,7 +301,7 @@ struct BtRuntime {
     std::vector<BtNodeState> nodes;
     std::vector<int> active_path;  // raiz .. tarea activa (para el editor)
     int active_task = -1;
-    BtStatus pending_finish = BtStatus::Idle;  // bt:finishTask() para Run Script
+    BtStatus pending_finish = BtStatus::Idle;  // BehaviorTree.finishTask() para Run Script
     std::vector<std::string> history;          // ultimos eventos (abortos, fallos)
     std::mt19937 rng{1234u};
 
@@ -315,10 +322,11 @@ struct BtContext {
     bool debug = false;
 
     // Run Script (tarea): first = acaba de entrar. Devuelve Running, Success
-    // o Failure (Idle = la funcion no existe).
+    // o Failure (Idle = la tarea no existe). Termina antes si alguien pone
+    // BtRuntime::pending_finish. (Script Condition no necesita a nadie: es una
+    // expresion sobre la pizarra.)
     std::function<BtStatus(int node, const std::string& function, bool first)> script_task;
     std::function<void(int node, const std::string& function)> script_abort;
-    std::function<bool(int node, int decorator, const std::string& expression)> script_condition;
     std::function<void(int node, int service, const std::string& function)> script_service;
     std::function<void(std::uint32_t target, const std::string& message, const std::string& value)> send_message;
     std::function<void(int level, const std::string& text)> log;

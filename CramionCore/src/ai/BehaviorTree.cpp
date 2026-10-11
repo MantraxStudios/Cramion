@@ -35,11 +35,6 @@ constexpr int kEntityKey = 1 << static_cast<int>(VarType::Entity);
 constexpr int kVectorKey = 1 << static_cast<int>(VarType::Vector);
 constexpr int kPlaceKey = kEntityKey | kVectorKey;
 
-std::string lower(std::string s) {
-    std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-    return s;
-}
-
 // "Move To", "move_to", "moveto" -> "moveto" (para leer lo que escriba una persona o una IA).
 std::string normalized(const std::string& s) {
     std::string out;
@@ -144,8 +139,8 @@ const NodeType kNodeTypes[] = {
     {BtNodeKind::FindRandomPoint, "find_random_point", "Find Random Point",
      "Busca un punto al azar de la malla de navegación alrededor del objeto (o de una clave)"},
     {BtNodeKind::RunScript, "run_script", "Run Script",
-     "Llama a una tarea de script: BehaviorTree.registerTask(\"Nombre\", fn) en Lua, o una función global; "
-     "devuelve \"success\", \"failure\" o \"running\" (o true/false). Los scripts de C++ terminan con bt:finishTask()"},
+     "Una tarea del script de C++ del objeto: recibe el mensaje OnBtTask {node, function, first} cada tick "
+     "(o la llama BehaviorTree.registerTask) y sigue corriendo hasta BehaviorTree.finishTask(entity, true/false)"},
     {BtNodeKind::SendMessage, "send_message", "Send Message",
      "Envía un mensaje a los scripts del objeto (o de otro): OnMessage / Script::onMessage en C++"},
     {BtNodeKind::Log, "log", "Log", "Escribe en la Consola ({clave} pone el valor de la pizarra)"},
@@ -161,7 +156,7 @@ struct DecoratorType {
 const DecoratorType kDecoratorTypes[] = {
     {BtDecoratorKind::Blackboard, "blackboard", "Blackboard", "Entra solo si una clave cumple la comparación"},
     {BtDecoratorKind::ScriptCondition, "script_condition", "Script Condition",
-     "Entra solo si una expresión Lua es verdadera (ve las claves por su nombre, self y entity)"},
+     "Entra solo si una expresión es verdadera (las claves por su nombre: distancia < 5 and not alerta)"},
     {BtDecoratorKind::IsAtLocation, "is_at_location", "Is At Location",
      "Entra solo si el objeto está cerca (o lejos) de una clave"},
     {BtDecoratorKind::Cooldown, "cooldown", "Cooldown", "Después de terminar, no deja volver a entrar durante unos segundos"},
@@ -187,7 +182,8 @@ const ServiceType kServiceTypes[] = {
      "Percepción: el objeto con el tag más cercano dentro del cono de visión y sin paredes en medio (rayo)"},
     {BtServiceKind::Hearing, "hearing", "Hearing (oído)",
      "Percepción: ruidos (BehaviorTree.reportNoise) y objetos con el tag muy cerca"},
-    {BtServiceKind::RunScript, "run_script", "Run Script", "Llama a una función de script cada intervalo (sensores propios)"},
+    {BtServiceKind::RunScript, "run_script", "Run Script",
+     "Envía OnBtService {node, function} al script de C++ del objeto cada intervalo (sensores propios)"},
 };
 
 constexpr const char* kAbortKeys[] = {"none", "self", "lower_priority", "both"};
@@ -338,7 +334,8 @@ const std::vector<BtParamInfo>& btParamsOf(BtNodeKind kind) {
           P{BtField::Number, "radius", "Radio", "Metros alrededor del centro", 10.0f},
           P{BtField::Key2, "center", "Centro (opcional)", "Clave entity o vec3; vacío = el propio objeto", 0.0f, nullptr, kPlaceKey}}},
         {BtNodeKind::RunScript,
-         {P{BtField::Text, "function", "Tarea / función", "Nombre registrado con BehaviorTree.registerTask o una función global"}}},
+         {P{BtField::Text, "function", "Tarea / función",
+            "Nombre de la tarea: llega en el mensaje OnBtTask (o la de BehaviorTree.registerTask)"}}},
         {BtNodeKind::SendMessage,
          {P{BtField::Text, "message", "Mensaje", "Nombre del mensaje (OnMessage / onMessage)"},
           P{BtField::Value, "value", "Valor", "Texto que acompaña al mensaje ($clave = el de la pizarra)"},
@@ -358,7 +355,8 @@ const std::vector<BtParamInfo>& btParamsOf(BtDecoratorKind kind) {
           P{BtField::Option, "compare", "Condición", "", static_cast<float>(Compare::IsTrue), kCompareOptions},
           P{BtField::Value, "value", "Valor", "Con el tipo de la clave; $otra = otra clave"}}},
         {BtDecoratorKind::ScriptCondition,
-         {P{BtField::Text, "expression", "Expresión Lua", "p. ej. distancia < 5 and vida > 20"}}},
+         {P{BtField::Text, "expression", "Expresión",
+            "Claves por su nombre, números, comparaciones y and / or / not: distancia < 5 and vida > 20"}}},
         {BtDecoratorKind::IsAtLocation,
          {P{BtField::Key, "target", "Lugar", "Clave entity o vec3", 0.0f, nullptr, kPlaceKey},
           P{BtField::Number, "radius", "Radio", "Metros", 1.5f},
@@ -399,7 +397,7 @@ const std::vector<BtParamInfo>& btParamsOf(BtServiceKind kind) {
           P{BtField::Key2, "position", "Dónde", "Clave vec3 (opcional)", 0.0f, nullptr, kVectorKey},
           P{BtField::Key3, "heard", "Oyó algo", "Clave bool (opcional)", 0.0f, nullptr, kBoolKey}}},
         {BtServiceKind::RunScript,
-         {P{BtField::Text, "function", "Función", "Se llama con (self, bt) cada intervalo"}}},
+         {P{BtField::Text, "function", "Función", "Llega en el mensaje OnBtService cada intervalo"}}},
     };
     const auto it = table.find(kind);
     return it != table.end() ? it->second : noParams();
@@ -954,7 +952,14 @@ std::vector<std::string> validateBehaviorTree(const BehaviorTreeAsset& t) {
         if (n.kind == BtNodeKind::RunScript && n.params.text.empty()) problems.push_back(where + ": falta la tarea");
         if (n.kind == BtNodeKind::MoveTo && n.params.key.empty()) problems.push_back(where + ": falta el destino");
         checkParams(where, n.params, btParamsOf(n.kind));
-        for (const BtDecorator& d : n.decorators) checkParams(where + " / " + btDecoratorLabel(d.kind), d.params, btParamsOf(d.kind));
+        for (const BtDecorator& d : n.decorators) {
+            checkParams(where + " / " + btDecoratorLabel(d.kind), d.params, btParamsOf(d.kind));
+            if (d.kind != BtDecoratorKind::ScriptCondition) continue;
+            if (const Expression& e = d.expression.get(d.params.text); !e.valid()) {
+                problems.push_back(where + " / Script Condition: la expresion \"" + d.params.text + "\" no se puede evaluar (" +
+                                   e.error() + "); sera falsa");
+            }
+        }
         for (const BtService& s : n.services) checkParams(where + " / " + btServiceLabel(s.kind), s.params, btParamsOf(s.kind));
     }
     return problems;
@@ -1437,8 +1442,7 @@ private:
             case BtDecoratorKind::Blackboard:
                 return btCompare(rt_.vars, d.params.key, static_cast<Compare>(std::clamp(d.params.option, 0, kCompareCount - 1)),
                                  d.params.value);
-            case BtDecoratorKind::ScriptCondition:
-                return ctx_.script_condition ? ctx_.script_condition(n, k, d.params.text) : false;
+            case BtDecoratorKind::ScriptCondition: return d.expression.get(d.params.text).test(rt_.vars);
             case BtDecoratorKind::IsAtLocation: {
                 const ecs::Entity me = self();
                 core::Vec3 target{};

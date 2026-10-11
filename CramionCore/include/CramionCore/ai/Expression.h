@@ -64,18 +64,17 @@ public:
     // Con las variables de una pizarra (maquina de estados o Behavior Tree).
     bool test(const std::vector<Variable>& vars) const;
 
+private:
+    friend class ExpressionParser;
     struct Node {
         enum class Kind : std::uint8_t { Constant, Variable, Not, Negate, Binary, And, Or };
         Kind kind = Kind::Constant;
-        char op = 0;  // Binary: + - * / f(//) % ^ c(..) = (==) ! (~=) < l(<=) > g(>=)
+        char op = 0;  // Binary: + - * / f (//) % ^ c (..) = (==) ! (~=) < l (<=) > g (>=)
         int a = -1;
         int b = -1;
         ExprValue value;   // Constant
         std::string name;  // Variable
     };
-
-private:
-    friend class ExpressionParser;
     ExprValue eval(int node, const ExprLookup& lookup, bool& ok) const;
     std::vector<Node> nodes_;
     int root_ = -1;

@@ -25,7 +25,7 @@ constexpr const char* kVarLabels[] = {"Bool", "Int", "Float", "String", "Entity"
 constexpr const char* kCompareKeys[] = {"==", "!=", ">", "<", ">=", "<=", "true", "false"};
 constexpr const char* kCompareLabels[] = {"igual a", "distinto de", "mayor que", "menor que",
                                           "mayor o igual que", "menor o igual que", "es verdadero", "es falso"};
-constexpr const char* kConditionKeys[] = {"variable", "trigger", "timer", "lua"};
+constexpr const char* kConditionKeys[] = {"variable", "trigger", "timer", "expression"};
 constexpr std::size_t kHistory = 12;
 
 std::string lower(std::string s) {
@@ -269,14 +269,15 @@ std::string stateMachineToJson(const StateMachineAsset& m) {
     root["entry"] = stateRef(std::clamp(m.entry_state, 0, std::max(0, static_cast<int>(m.states.size()) - 1)));
     root["entry_position"] = vec2(m.entry_position);
     root["any_state_position"] = vec2(m.any_state_position);
-    root["any_code"] = m.any_code;
+    if (!m.any_code.empty()) root["any_code"] = m.any_code;
     json& variables = root["variables"] = json::array();
     for (const Variable& v : m.variables) {
         variables.push_back({{"name", v.name}, {"type", varTypeKey(v.value.type)}, {"value", valueJson(v.value)}});
     }
     json& states = root["states"] = json::array();
     for (const State& s : m.states) {
-        json state = {{"name", s.name}, {"position", vec2(s.position)}, {"color", vec3(s.color)}, {"code", s.code}};
+        json state = {{"name", s.name}, {"position", vec2(s.position)}, {"color", vec3(s.color)}, {"send_update", s.send_update}};
+        if (!s.code.empty()) state["code"] = s.code;
         if (!s.script.empty()) state["script"] = s.script;
         states.push_back(std::move(state));
     }
@@ -293,7 +294,7 @@ std::string stateMachineToJson(const StateMachineAsset& m) {
                     break;
                 case ConditionKind::Trigger: k["trigger"] = c.variable; break;
                 case ConditionKind::Timer: k["seconds"] = c.seconds; break;
-                case ConditionKind::Lua: k["expression"] = c.expression; break;
+                case ConditionKind::Expression: k["expression"] = c.expression; break;
             }
             conditions.push_back(std::move(k));
         }
@@ -357,6 +358,8 @@ bool stateMachineFromJson(const std::string& text, StateMachineAsset& out, std::
             if (const auto c = j.find("color"); c != j.end()) s.color = readVec3(*c, s.color);
             s.code = j.value("code", std::string{});
             s.script = j.value("script", std::string{});
+            // Los de antes con codigo Lua: su script de C++ necesita OnStateUpdate.
+            s.send_update = j.value("send_update", hasLuaCode(s.code) || !s.script.empty());
             m.states.push_back(std::move(s));
             ++index;
         }
@@ -405,7 +408,9 @@ bool stateMachineFromJson(const std::string& text, StateMachineAsset& out, std::
                     }
                     if (kind == "event" || kind == "trigger") c.kind = ConditionKind::Trigger;
                     if (kind == "time" || kind == "after" || kind == "wait") c.kind = ConditionKind::Timer;
-                    if (kind == "expression" || kind == "code") c.kind = ConditionKind::Lua;
+                    if (kind == "lua" || kind == "expression" || kind == "expr" || kind == "code") {
+                        c.kind = ConditionKind::Expression;
+                    }
                     switch (c.kind) {
                         case ConditionKind::Variable:
                             c.variable = jc.value("variable", std::string{});
@@ -416,7 +421,7 @@ bool stateMachineFromJson(const std::string& text, StateMachineAsset& out, std::
                             c.variable = jc.value("trigger", jc.value("variable", std::string{}));
                             break;
                         case ConditionKind::Timer: c.seconds = std::max(0.0f, jc.value("seconds", 1.0f)); break;
-                        case ConditionKind::Lua: c.expression = jc.value("expression", std::string{"true"}); break;
+                        case ConditionKind::Expression: c.expression = jc.value("expression", std::string{"true"}); break;
                     }
                     t.conditions.push_back(std::move(c));
                 }
@@ -474,12 +479,54 @@ std::vector<std::string> validateStateMachine(const StateMachineAsset& m) {
                 }
             } else if (c.kind == ConditionKind::Trigger && c.variable.empty()) {
                 problems.push_back(where + ": trigger sin nombre");
-            } else if (c.kind == ConditionKind::Lua && c.expression.empty()) {
-                problems.push_back(where + ": expresion Lua vacia");
+            } else if (c.kind == ConditionKind::Expression) {
+                const Expression& e = c.compiled.get(c.expression);
+                if (!e.valid()) {
+                    problems.push_back(where + ": la expresion \"" + c.expression + "\" no se puede evaluar (" + e.error() +
+                                       "); la condicion sera falsa");
+                }
             }
         }
     }
+    // Codigo Lua de antes: ya no corre (un aviso para toda la maquina).
+    std::string with_code;
+    for (const State& s : m.states) {
+        if (!hasLuaCode(s.code) && s.script.empty()) continue;
+        with_code += (with_code.empty() ? "" : ", ") + s.name;
+    }
+    if (hasLuaCode(m.any_code)) with_code += (with_code.empty() ? "" : ", ") + std::string("Cualquier estado");
+    if (!with_code.empty()) {
+        problems.push_back("Codigo Lua en " + with_code +
+                           ": ya no se ejecuta; convierte el codigo del estado a un script de C++ (OnStateEnter / "
+                           "OnStateUpdate / OnStateExit en onMessage)");
+    }
     return problems;
+}
+
+bool hasLuaCode(const std::string& code) {
+    // Cada linea sin comentarios: vacia, "end" o "function Nombre(...)" no cuentan.
+    std::istringstream in(code);
+    std::string line;
+    bool block = false;  // --[[ ... ]]
+    while (std::getline(in, line)) {
+        if (block) {
+            const std::size_t close = line.find("]]");
+            if (close == std::string::npos) continue;
+            line = line.substr(close + 2);
+            block = false;
+        }
+        if (const std::size_t dash = line.find("--"); dash != std::string::npos) {
+            block = line.compare(dash, 4, "--[[") == 0 && line.find("]]", dash + 4) == std::string::npos;
+            line.erase(dash);
+        }
+        const std::size_t first = line.find_first_not_of(" \t\r");
+        if (first == std::string::npos) continue;
+        line = line.substr(first, line.find_last_not_of(" \t\r") - first + 1);
+        if (line == "end") continue;
+        if (line.rfind("function ", 0) == 0 && line.back() == ')') continue;
+        return true;
+    }
+    return false;
 }
 
 // --- Ejecucion -----------------------------------------------------------------
@@ -508,13 +555,12 @@ void resetRuntime(const StateMachineAsset& machine, Runtime& runtime, const std:
     }
 }
 
-bool conditionHolds(const StateMachineAsset& /*machine*/, const Runtime& runtime, const Condition& c, int transition,
-                    int index, const LuaConditionFn& lua) {
+bool conditionHolds(const StateMachineAsset& /*machine*/, const Runtime& runtime, const Condition& c) {
     switch (c.kind) {
         case ConditionKind::Trigger:
             return std::find(runtime.triggers.begin(), runtime.triggers.end(), c.variable) != runtime.triggers.end();
         case ConditionKind::Timer: return runtime.state_time >= c.seconds;
-        case ConditionKind::Lua: return lua ? lua(transition, index, c.expression) : false;
+        case ConditionKind::Expression: return c.compiled.get(c.expression).test(runtime.vars);
         case ConditionKind::Variable: break;
     }
     const Value* left = runtime.find(c.variable);
@@ -582,7 +628,7 @@ bool conditionHolds(const StateMachineAsset& /*machine*/, const Runtime& runtime
     }
 }
 
-int pickTransition(const StateMachineAsset& machine, const Runtime& runtime, const LuaConditionFn& lua) {
+int pickTransition(const StateMachineAsset& machine, const Runtime& runtime) {
     const int count = static_cast<int>(machine.states.size());
     // Candidatas en orden: prioridad mayor, luego Cualquier estado, luego la lista.
     std::vector<int> order;
@@ -606,7 +652,7 @@ int pickTransition(const StateMachineAsset& machine, const Runtime& runtime, con
         const Transition& t = machine.transitions[i];
         bool ok = true;
         for (std::size_t k = 0; k < t.conditions.size() && ok; ++k) {
-            ok = conditionHolds(machine, runtime, t.conditions[k], i, static_cast<int>(k), lua);
+            ok = conditionHolds(machine, runtime, t.conditions[k]);
         }
         if (ok) return i;
     }
@@ -656,7 +702,7 @@ StepResult applyRequestedState(const StateMachineAsset& machine, Runtime& runtim
     return r;
 }
 
-StepResult stepStateMachine(const StateMachineAsset& machine, Runtime& runtime, float dt, const LuaConditionFn& lua) {
+StepResult stepStateMachine(const StateMachineAsset& machine, Runtime& runtime, float dt) {
     StepResult r;
     if (!runtime.started || !runtime.running || machine.states.empty()) return r;
     runtime.time += dt;
@@ -664,7 +710,7 @@ StepResult stepStateMachine(const StateMachineAsset& machine, Runtime& runtime, 
     if (runtime.requested >= 0) {
         r = applyRequestedState(machine, runtime);
     } else {
-        const int t = pickTransition(machine, runtime, lua);
+        const int t = pickTransition(machine, runtime);
         if (t >= 0) {
             r.changed = true;
             r.from = runtime.state;
@@ -695,162 +741,22 @@ StateMachineAsset exampleEnemyStateMachine() {
     var("radioPatrulla", VarType::Float, "8");
     var("casa", VarType::Vector, "0 0 0");
 
-    m.any_code = R"lua(-- Cualquier estado: corre SIEMPRE, antes de mirar las transiciones.
--- Aqui van los "sensores": calculan las variables que usan las condiciones.
-
--- Una vez, al arrancar la maquina.
-function OnEnter(self, sm)
-    self.vars.casa = self.entity.position
-end
-
--- Cada frame, este en el estado que este.
-function OnUpdate(self, dt)
-    local objetivo = self.vars.objetivo
-    if objetivo and objetivo:valid() then
-        self.vars.distancia = self.entity:distanceTo(objetivo)
-    else
-        self.vars.distancia = 9999
-    end
-end
-)lua";
-
-    State patrol;
-    patrol.name = "Patrullar";
-    patrol.position = core::Vec2{0.0f, 0.0f};
-    patrol.color = core::Vec3{0.20f, 0.45f, 0.25f};
-    patrol.code = R"lua(-- Patrullar: de un punto de ruta a otro (objetos con tag "Waypoint", por
--- nombre); sin ruta, puntos al azar de la NavMesh alrededor de casa.
-
-function OnEnter(self, sm)
-    self.ruta = Scene.findAllWithTag("Waypoint")
-    table.sort(self.ruta, function(a, b) return a.name < b.name end)
-    self.punto = self.punto or 0
-    self.espera = 0
-    self:siguientePunto()
-end
-
-function siguientePunto(self)
-    if #self.ruta > 0 then
-        self.punto = self.punto % #self.ruta + 1
-        self.entity:moveTo(self.ruta[self.punto].position)
-    else
-        local p = Navigation.randomPoint(self.vars.casa, self.vars.radioPatrulla)
-        if p then self.entity:moveTo(p) end
-    end
-end
-
-function OnUpdate(self, dt)
-    -- Al llegar espera un poco y va al siguiente.
-    if not self.entity.isMoving then
-        self.espera = self.espera + dt
-        if self.espera > 1.5 then
-            self.espera = 0
-            self:siguientePunto()
-        end
-    end
-end
-
-function OnExit(self)
-    self.entity:stopMoving()
-end
-)lua";
-
-    State chase;
-    chase.name = "Perseguir";
-    chase.position = core::Vec2{260.0f, 0.0f};
-    chase.color = core::Vec3{0.62f, 0.45f, 0.12f};
-    chase.code = R"lua(-- Perseguir: va hacia el objetivo (recalcula el camino 4 veces por segundo).
-
-function OnEnter(self, sm)
-    Debug.log(self.entity.name .. ": te veo")
-    self.recalcular = 0
-end
-
-function OnUpdate(self, dt)
-    self.recalcular = self.recalcular - dt
-    local objetivo = self.vars.objetivo
-    if objetivo and self.recalcular <= 0 then
-        self.entity:moveTo(objetivo.position)
-        self.recalcular = 0.25
-    end
-end
-
-function OnExit(self)
-    self.entity:stopMoving()
-end
-)lua";
-
-    State attack;
-    attack.name = "Atacar";
-    attack.position = core::Vec2{520.0f, 0.0f};
-    attack.color = core::Vec3{0.62f, 0.18f, 0.18f};
-    attack.code = R"lua(-- Atacar: quieto, mirando al objetivo, un golpe por segundo.
-
-function OnEnter(self, sm)
-    self.golpe = 0
-end
-
-function OnUpdate(self, dt)
-    local objetivo = self.vars.objetivo
-    if not objetivo then return end
-    local p = objetivo.position
-    self.entity:lookAt(Vec3(p.x, self.entity.position.y, p.z))
-    self.golpe = self.golpe - dt
-    if self.golpe <= 0 then
-        self.golpe = 1.0
-        Debug.log(self.entity.name .. " ataca (" .. self.vars.danio .. " de danio)")
-        -- Si el objetivo tiene su propia maquina, se entera.
-        local otra = objetivo:getStateMachine()
-        if otra then otra:trigger("golpeado") end
-    end
-end
-)lua";
-
-    State flee;
-    flee.name = "Huir";
-    flee.position = core::Vec2{260.0f, 200.0f};
-    flee.color = core::Vec3{0.45f, 0.25f, 0.60f};
-    flee.code = R"lua(-- Huir: con poca vida se aleja del objetivo y se cura poco a poco.
-
-function OnEnter(self, sm)
-    Debug.log(self.entity.name .. " huye")
-    self:alejarse()
-end
-
-function alejarse(self)
-    local objetivo = self.vars.objetivo
-    local desde = objetivo and objetivo.position or self.vars.casa
-    local lejos = self.entity.position + (self.entity.position - desde):normalized() * 12
-    local p = Navigation.projectPoint(lejos, 8) or Navigation.randomPoint(self.entity.position, 12)
-    if p then self.entity:moveTo(p) end
-end
-
-function OnUpdate(self, dt)
-    self.vars.vida = math.min(100, self.vars.vida + 8 * dt)
-    if not self.entity.isMoving then self:alejarse() end
-end
-
-function OnExit(self)
-    self.entity:stopMoving()
-end
-)lua";
-
-    State back;
-    back.name = "Volver";
-    back.position = core::Vec2{0.0f, 200.0f};
-    back.color = core::Vec3{0.20f, 0.38f, 0.60f};
-    back.code = R"lua(-- Volver: regresa a casa y, al llegar, vuelve a patrullar (cambio por codigo).
-
-function OnEnter(self, sm)
-    self.entity:moveTo(self.vars.casa)
-end
-
-function OnUpdate(self, dt)
-    if self.sm.stateTime > 0.5 and (not self.entity.isMoving or self.entity.remainingDistance < 0.6) then
-        self.sm:go("Patrullar")
-    end
-end
-)lua";
+    // Cada estado lo hace el script de C++ del enemigo (onMessage): moverse
+    // en OnStateEnter, perseguir y golpear en OnStateUpdate, pararse en
+    // OnStateExit. El script tambien calcula `distancia` cada frame (sm.set).
+    const auto state = [](const char* name, core::Vec2 position, core::Vec3 color, bool update) {
+        State s;
+        s.name = name;
+        s.position = position;
+        s.color = color;
+        s.send_update = update;
+        return s;
+    };
+    const State patrol = state("Patrullar", {0.0f, 0.0f}, {0.20f, 0.45f, 0.25f}, true);
+    const State chase = state("Perseguir", {260.0f, 0.0f}, {0.62f, 0.45f, 0.12f}, true);
+    const State attack = state("Atacar", {520.0f, 0.0f}, {0.62f, 0.18f, 0.18f}, true);
+    const State flee = state("Huir", {260.0f, 200.0f}, {0.45f, 0.25f, 0.60f}, true);
+    const State back = state("Volver", {0.0f, 200.0f}, {0.20f, 0.38f, 0.60f}, true);
 
     m.states = {patrol, chase, attack, flee, back};
     m.entry_state = 0;
@@ -869,7 +775,7 @@ end
     settle.kind = ConditionKind::Timer;
     settle.seconds = 0.5f;
     Condition healed;
-    healed.kind = ConditionKind::Lua;
+    healed.kind = ConditionKind::Expression;
     healed.expression = "vida >= 60";
 
     m.transitions.push_back(Transition{0, 1, 0, false, {compare("distancia", Compare::Less, "$rangoVision")}});
@@ -886,7 +792,7 @@ end
 // --- Componente ------------------------------------------------------------------
 
 void StateMachine::reflect(ecs::PropertyVisitor& v) {
-    v.asset({"machine", "Maquina de estados", "Asset .crfsm: estados con su codigo Lua y transiciones"}, machine,
+    v.asset({"machine", "Maquina de estados", "Asset .crfsm: estados y transiciones (la logica, en un script de C++)"}, machine,
             assets::AssetType::StateMachine);
     v.field({"start_active", "Empieza activa", "Si no, espera a sm:start() desde un script"}, start_active);
     v.field({"debug", "Depurar", "Cada cambio de estado sale en la Consola"}, debug);

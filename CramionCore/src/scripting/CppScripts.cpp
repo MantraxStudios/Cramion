@@ -39,6 +39,18 @@
 #endif
 #include <windows.h>
 #include <psapi.h>
+#else
+#include <fcntl.h>
+#include <poll.h>
+#include <signal.h>
+#include <spawn.h>
+#include <sys/mman.h>
+#include <sys/resource.h>
+#include <sys/socket.h>
+#include <sys/wait.h>
+#include <unistd.h>
+#include <cerrno>
+extern char** environ;
 #endif
 
 namespace cramion::scripting {
@@ -124,9 +136,21 @@ std::filesystem::path exeFolder() {
     GetModuleFileNameW(nullptr, exe, MAX_PATH);
     return std::filesystem::path(exe).parent_path();
 #else
-    return {};
+    std::error_code ec;
+    const std::filesystem::path exe = std::filesystem::read_symlink("/proc/self/exe", ec);
+    return ec ? std::filesystem::path{} : exe.parent_path();
 #endif
 }
+
+#if defined(_WIN32)
+constexpr const char* kHostName = "CramionScriptHost.exe";
+constexpr const char* kLibraryExt = ".dll";
+constexpr const char* kExeExt = ".exe";
+#else
+constexpr const char* kHostName = "CramionScriptHost";
+constexpr const char* kLibraryExt = ".so";
+constexpr const char* kExeExt = "";
+#endif
 
 std::filesystem::path toolchainRoot() {
     return !g_toolchain_override.empty() ? g_toolchain_override : exeFolder() / "toolchain";
@@ -196,6 +220,97 @@ std::filesystem::path findVcVars() {
     if (out.empty()) return {};
     const std::filesystem::path bat = fromUtf8(out) / "VC" / "Auxiliary" / "Build" / "vcvars64.bat";
     return std::filesystem::exists(bat, ec) ? bat : std::filesystem::path{};
+}
+#else
+// Un descriptor por encima de 10 y que no pasa a otros programas: el hijo lo
+// pone en su sitio (dup2) sin pisar otro.
+int highFd(int fd) {
+    if (fd < 0) return fd;
+    const int moved = fcntl(fd, F_DUPFD_CLOEXEC, 10);
+    ::close(fd);
+    return moved;
+}
+
+// Ejecuta un programa (sin shell) y devuelve su salida (stdout + stderr) y su codigo.
+int runProcess(const std::vector<std::string>& args, std::string& output, int timeout_ms = 300000) {
+    int pipe_fds[2] = {-1, -1};
+    if (args.empty() || pipe(pipe_fds) != 0) return -1;
+    const int read_end = highFd(pipe_fds[0]);
+    const int write_end = highFd(pipe_fds[1]);
+    posix_spawn_file_actions_t actions;
+    posix_spawn_file_actions_init(&actions);
+    posix_spawn_file_actions_addopen(&actions, 0, "/dev/null", O_RDONLY, 0);
+    posix_spawn_file_actions_adddup2(&actions, write_end, 1);
+    posix_spawn_file_actions_adddup2(&actions, write_end, 2);
+    std::vector<std::string> copy = args;
+    std::vector<char*> argv;
+    for (std::string& a : copy) argv.push_back(a.data());
+    argv.push_back(nullptr);
+    pid_t pid = -1;
+    const int rc = posix_spawnp(&pid, argv[0], &actions, nullptr, argv.data(), environ);
+    posix_spawn_file_actions_destroy(&actions);
+    ::close(write_end);
+    if (rc != 0) {
+        ::close(read_end);
+        output = "no se pudo ejecutar " + args[0] + " (" + std::strerror(rc) + ")";
+        return -1;
+    }
+    const auto start = std::chrono::steady_clock::now();
+    char buffer[4096];
+    while (true) {
+        if (std::chrono::steady_clock::now() - start > std::chrono::milliseconds(timeout_ms)) {
+            kill(pid, SIGKILL);
+            break;
+        }
+        pollfd p{read_end, POLLIN, 0};
+        if (poll(&p, 1, 100) == 0) continue;
+        const ssize_t n = read(read_end, buffer, sizeof(buffer));
+        if (n > 0) output.append(buffer, static_cast<std::size_t>(n));
+        else if (n == 0 || errno != EINTR) break;
+    }
+    ::close(read_end);
+    int status = 0;
+    while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {
+    }
+    if (WIFEXITED(status)) return WEXITSTATUS(status);
+    return WIFSIGNALED(status) ? 128 + WTERMSIG(status) : -1;
+}
+
+// Un programa en el PATH (vacio si no esta).
+std::filesystem::path searchPath(const std::string& exe) {
+    const char* path = std::getenv("PATH");
+    std::string list = path != nullptr ? path : "/usr/local/bin:/usr/bin:/bin";
+    std::size_t start = 0;
+    while (start <= list.size()) {
+        std::size_t end = list.find(':', start);
+        if (end == std::string::npos) end = list.size();
+        const std::string folder = list.substr(start, end - start);
+        if (!folder.empty()) {
+            const std::filesystem::path candidate = std::filesystem::path(folder) / exe;
+            if (access(candidate.c_str(), X_OK) == 0) return candidate;
+        }
+        start = end + 1;
+    }
+    return {};
+}
+
+// Una herramienta de LLVM: en el PATH o en /usr/lib/llvm-N/bin (la version mas alta).
+std::filesystem::path searchLlvmTool(const std::string& exe) {
+    std::filesystem::path found = searchPath(exe);
+    if (!found.empty()) return found;
+    std::error_code ec;
+    int best = -1;
+    for (std::filesystem::directory_iterator it("/usr/lib", ec), end; !ec && it != end; it.increment(ec)) {
+        const std::string name = utf8(it->path().filename());
+        if (name.rfind("llvm-", 0) != 0) continue;
+        const int version = std::atoi(name.c_str() + 5);
+        const std::filesystem::path candidate = it->path() / "bin" / exe;
+        if (version > best && access(candidate.c_str(), X_OK) == 0) {
+            best = version;
+            found = candidate;
+        }
+    }
+    return found;
 }
 #endif
 

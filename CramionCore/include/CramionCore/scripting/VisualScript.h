@@ -18,13 +18,15 @@
 //              llevan el orden de ejecucion; los de datos se calculan al
 //              usarse (perezosos), como en Unreal.
 //
-// Ejecucion: el grafo se compila a Lua (compileGraph) y corre en el mismo
-// estado que los scripts, asi que llega a toda la API del motor. El
-// componente VisualScript lo pone en un objeto: en Play (editor) y en el
-// juego exportado cada objeto tiene su instancia con sus variables. Los
-// nodos latentes (Delay) usan corrutinas. Para depurar, cada nodo que se
-// ejecuta deja su hora y los pines su ultimo valor (el editor los ilumina y
-// los ensena al pasar el raton), y los puntos de ruptura pausan el Play.
+// Ejecucion: un interprete de C++ (scripting/native/VisualScriptRuntime.cpp)
+// lee el grafo una vez (compileGraph lo valida) y lo ejecuta; los nodos de
+// la API llaman a sus funciones por nombre, asi que llega a toda la API del
+// motor. El componente VisualScript lo pone en un objeto: en Play (editor) y
+// en el juego exportado cada objeto tiene su instancia con sus variables.
+// Los nodos latentes (Delay) guardan por donde iban y siguen en otro frame.
+// Para depurar, cada nodo que se ejecuta deja su hora y los pines su ultimo
+// valor (el editor los ilumina y los ensena al pasar el raton), y los puntos
+// de ruptura pausan el Play.
 
 #include "CramionCore/Uuid.h"
 #include "CramionCore/scripting/Scripting.h"
@@ -125,7 +127,7 @@ struct NodeInfo {
     std::string keywords;     // para la busqueda ("if si condicion")
     bool event = false;       // sin entrada exec; empieza una cadena
     bool pure = false;        // sin pines exec
-    bool latent = false;      // espera (Delay): usa corrutinas
+    bool latent = false;      // espera (Delay): sigue en otro frame
     std::vector<Pin> inputs;
     std::vector<Pin> outputs;
 };
@@ -162,7 +164,7 @@ bool saveGraph(const Graph& graph, const std::filesystem::path& path, std::strin
 // Grafo de ejemplo de un archivo nuevo: Start -> "Hola" y Update que gira.
 Graph exampleGraph();
 
-// --- Compilar ------------------------------------------------------------------
+// --- Validar -------------------------------------------------------------------
 struct NodeError {
     int node = 0;  // 0 = del grafo entero
     std::string message;
@@ -170,13 +172,30 @@ struct NodeError {
 
 struct CompileResult {
     bool ok = false;
-    std::string lua;                    // clase Lua (como un script: return G)
     std::vector<NodeError> errors;
-    std::vector<int> line_nodes;        // line_nodes[linea - 1] = nodo de esa linea del Lua (0 = ninguno)
-    int nodeAtLine(int line) const;
 };
-// `chunk`: la ruta relativa del .crgraph (sale en los errores de Lua).
-CompileResult compileGraph(const Graph& graph, const std::string& chunk);
+// Comprueba el grafo (tipos de nodo, variables, enlaces, numeros, ciclos):
+// el editor ensena los errores sobre sus nodos y un grafo con errores no se
+// ejecuta. `chunk`: la ruta relativa del .crgraph (no hace falta).
+CompileResult compileGraph(const Graph& graph, const std::string& chunk = {});
+
+// Tipo real de un pin (los de Get/Set de una variable tienen el de ella).
+PinType nodePinType(const Graph& graph, const Node& node, bool output, int index);
+// Nodo sin pines de ejecucion: se calcula cuando alguien usa su valor.
+bool isPureNode(const Node& node);
+
+// El valor escrito en una entrada sin enlace (o en una variable) con el tipo
+// del pin: "5", "true", "1 2 3", un texto o un objeto (vacio = este objeto;
+// si no, el primero con ese nombre). `ok` = false si un numero no lo es.
+struct Literal {
+    enum class Kind : int { Nil, Bool, Number, Text, Vector, Self, Find };
+    Kind kind = Kind::Nil;
+    bool boolean = false;
+    double number = 0.0;
+    std::string text;  // Text; Find: el nombre del objeto
+    core::Vec3 vector{};
+};
+Literal parseLiteral(const std::string& text, PinType type, bool* ok = nullptr);
 
 // Variables que salen en el Inspector, como propiedades de script.
 std::vector<scripting::ScriptProperty> exposedProperties(const Graph& graph);

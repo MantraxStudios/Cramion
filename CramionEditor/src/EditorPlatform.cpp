@@ -11,9 +11,11 @@
 //                    repositorio con un .gitignore (Library/, Builds/) y un
 //                    .gitattributes con Git LFS para los binarios grandes.
 //   Pruebas (Test Runner)
-//                    ejecuta los *.test.lua (y Assets/Tests/*.lua): las
-//                    pruebas de edicion de golpe y las de Play frame a frame
-//                    (Test.wait, Test.waitSeconds, Test.waitUntil...). Tambien
+//                    las pruebas son C++ (CRAMION_TEST en Assets/Tests/*.cpp,
+//                    sdk/cramion/Test.h): en Play pone un objeto "Pruebas" con
+//                    el script CramionTests, que las ejecuta en orden, y lee
+//                    lo que cuentan (Test.results, native/TestApi.cpp) hasta
+//                    que terminan. Tambien
 //                    CramionEditor.exe --run-tests <proyecto> [--junit x.xml]
 //                    para integracion continua (codigo de salida 0 = todo bien)
 //                    y la herramienta MCP run_tests.
@@ -33,12 +35,14 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cctype>
 #include <chrono>
 #include <fstream>
 #include <iostream>
 #include <mutex>
 #include <sstream>
 #include <thread>
+#include <utility>
 
 namespace cramion::editor {
 
@@ -213,7 +217,7 @@ struct PlatformState {
 
     // Pruebas
     bool show_tests = false;
-    enum class Phase { Idle, EnteringPlay, Loading, Edit, Play, Finish } phase = Phase::Idle;
+    enum class Phase { Idle, EnteringPlay, Loading, Play, Finish } phase = Phase::Idle;
     struct TestResult {
         std::string file;
         std::string name;
@@ -230,8 +234,13 @@ struct PlatformState {
     int run_mode = 0;
     bool started_play = false;
     int wait_frames = 0;
-    std::size_t current = 0;
     float current_time = 0.0f;
+    // El objeto "Pruebas" (con el script de la clase test_class) y el avance
+    // (casos, comprobaciones) para el tiempo agotado.
+    entt::entity test_entity = entt::null;
+    std::string test_class;
+    std::pair<int, int> progress{-1, -1};
+    float stall_time = 0.0f;
     std::chrono::steady_clock::time_point run_started{};
     double run_seconds = 0.0;
     bool cli = false;
@@ -661,23 +670,76 @@ void EditorApp::drawGitWindow() {
 
 namespace {
 
+// Cada prueba tiene su limite (CRAMION_TEST_TIMEOUT, lo vigila el SDK). Aqui
+// solo se corta si ninguna empieza o si el script deja de avanzar (ni casos
+// nuevos ni comprobaciones) mucho mas que eso.
+constexpr float kTestStartSeconds = 30.0f;
+constexpr float kTestStallSeconds = 600.0f;
+
+bool isCppSource(const std::filesystem::path& file) {
+    std::string ext = dialogs::utf8(file.extension());
+    for (char& c : ext) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return ext == ".cpp" || ext == ".cc" || ext == ".cxx";
+}
+
+bool usesCramionTest(const std::filesystem::path& file) {
+    std::ifstream in(file, std::ios::binary);
+    std::stringstream text;
+    text << in.rdbuf();
+    return text.str().find("CRAMION_TEST") != std::string::npos;
+}
+
+// Las fuentes de las pruebas: los .cpp de Assets/Tests y los que usan CRAMION_TEST.
 std::vector<std::filesystem::path> findTestFiles(const std::filesystem::path& assets) {
     std::vector<std::filesystem::path> files;
     std::error_code e;
     for (std::filesystem::recursive_directory_iterator it(assets, std::filesystem::directory_options::skip_permission_denied, e);
          !e && it != std::filesystem::recursive_directory_iterator(); it.increment(e)) {
         std::error_code fe;
-        if (!it->is_regular_file(fe)) continue;
-        const std::string name = dialogs::utf8(it->path().filename());
-        const bool test_lua = name.size() > 9 && name.substr(name.size() - 9) == ".test.lua";
+        if (!it->is_regular_file(fe) || !isCppSource(it->path())) continue;
         bool in_tests = false;
         for (const auto& part : std::filesystem::relative(it->path(), assets, fe)) {
             if (dialogs::utf8(part) == "Tests") in_tests = true;
         }
-        if (test_lua || (in_tests && it->path().extension() == ".lua")) files.push_back(it->path());
+        if (in_tests || usesCramionTest(it->path())) files.push_back(it->path());
     }
     std::sort(files.begin(), files.end());
     return files;
+}
+
+// Un fallo de la ejecucion entera (no compila, no responde...).
+void addRunFailure(PlatformState& p, const std::string& name, const std::string& message) {
+    PlatformState::TestResult r;
+    r.file = p.test_class;
+    r.name = name;
+    r.play = true;
+    r.status = 3;
+    r.message = message;
+    p.results.push_back(r);
+}
+
+// Los casos de testStep (Test.results) a la lista; el ultimo, en marcha
+// mientras no hayan terminado todos.
+void applyTestCases(PlatformState& p, const json& status, bool running, const std::string& fallback_file) {
+    if (!status.contains("cases") || !status["cases"].is_array()) return;
+    const json& cases = status["cases"];
+    p.results.resize(cases.size());
+    for (std::size_t i = 0; i < cases.size(); ++i) {
+        const json& c = cases[i];
+        PlatformState::TestResult& r = p.results[i];
+        r.file = c.value("file", std::string());
+        if (r.file.empty()) r.file = fallback_file;
+        r.name = c.value("name", std::string("?"));
+        r.play = true;
+        r.assertions = c.value("assertions", 0);
+        r.seconds = c.value("seconds", 0.0);
+        r.status = running && i + 1 == cases.size() ? 1 : (c.value("passed", false) ? 2 : 3);
+        r.message = c.value("failure", std::string());
+        r.log.clear();
+        if (c.contains("messages") && c["messages"].is_array()) {
+            for (const json& l : c["messages"]) r.log.push_back(l.is_string() ? l.get<std::string>() : l.dump());
+        }
+    }
 }
 
 }  // namespace
@@ -688,37 +750,35 @@ void EditorApp::startTestRun(int mode) {
     PlatformState& p = platform();
     if (p.phase != PlatformState::Phase::Idle || !has_project_) return;
     p.test_files = findTestFiles(project_.assetsFolder());
-    if (p.test_files.empty()) {
-        pushToast("No hay pruebas", "Crea un archivo *.test.lua (Proyecto > Crear > Prueba) o pon scripts en Assets/Tests", 2);
+    // Las pruebas de C++ se ejecutan todas en Play: "solo edicion" no tiene ninguna.
+    if (p.test_files.empty() || mode == 1) {
+        if (p.test_files.empty()) {
+            pushToast("No hay pruebas", "Crea una con Nueva prueba (Assets/Tests/*.cpp con CRAMION_TEST)", 2);
+        } else {
+            pushToast("No hay pruebas de edicion", "Las pruebas de C++ (CRAMION_TEST) se ejecutan en Play", 2);
+        }
         if (p.cli) {
             exit_code_ = 2;
             requestQuit();
         }
         return;
     }
-    // Las que fallaron: se recuerdan para filtrar.
-    std::vector<std::string> failed;
-    if (mode == 3) {
-        for (const PlatformState::TestResult& r : p.results) {
-            if (r.status == 3) failed.push_back(r.name);
-        }
-    }
     p.run_mode = mode;
     p.results.clear();
-    p.current = 0;
     p.selected_result = -1;
     p.run_started = std::chrono::steady_clock::now();
+    p.test_entity = entt::null;
+    p.test_class.clear();
     p.started_play = !playing();
     if (p.started_play) enterPlay();
     p.phase = PlatformState::Phase::EnteringPlay;
     p.wait_frames = 2;
-    (void)failed;
 }
 
 void EditorApp::stopTestRun() {
     PlatformState& p = platform();
     if (p.phase == PlatformState::Phase::Idle) return;
-    scripts_.testCall("__cramion_test_abort");
+    scripts_.testCall("abort");
     for (PlatformState::TestResult& r : p.results) {
         if (r.status <= 1) {
             r.status = 4;
@@ -762,108 +822,84 @@ void EditorApp::updateTestRunner(float delta_seconds) {
             [[fallthrough]];
         }
         case Phase::Loading: {
-            scripts_.testCall("__cramion_test_reset_cases");
-            std::size_t listed = 0;  // casos de la lista ya repartidos (la lista es acumulada)
-            for (const std::filesystem::path& file : p.test_files) {
-                std::string error;
-                const std::string rel = assetRelative(file);
-                const std::size_t before = p.results.size();
-                if (!scripts_.loadTestFile(dialogs::utf8(file), &error)) {
-                    PlatformState::TestResult r;
-                    r.file = rel;
-                    r.name = dialogs::utf8(file.filename());
-                    r.status = 3;
-                    r.message = "No carga: " + error;
-                    p.results.push_back(r);
-                    continue;
-                }
-                // Las que registro este archivo: las nuevas de la lista.
-                const json list = json::parse(scripts_.testCall("__cramion_test_list"), nullptr, false);
-                if (!list.is_array()) continue;
-                for (std::size_t i = listed; i < list.size(); ++i) {
-                    PlatformState::TestResult r;
-                    r.file = rel;
-                    r.name = list[i].value("name", std::string("?"));
-                    r.play = list[i].value("play", false);
-                    if (list[i].contains("timeout") && list[i]["timeout"].is_number()) r.timeout = list[i]["timeout"].get<float>();
-                    if ((p.run_mode == 1 && r.play) || (p.run_mode == 2 && !r.play)) r.status = 4;
-                    p.results.push_back(r);
-                }
-                listed = list.size();
-                (void)before;
-            }
-            p.phase = Phase::Edit;
-            return;
-        }
-        case Phase::Edit: {
-            // Todas las de edicion de golpe.
-            const bool any_edit = std::any_of(p.results.begin(), p.results.end(),
-                                              [](const PlatformState::TestResult& r) { return !r.play && r.status == 0; });
-            if (any_edit) {
-                const json results = json::parse(scripts_.testCall("__cramion_test_run_edit", ""), nullptr, false);
-                if (results.is_array()) {
-                    for (const json& j : results) {
-                        const std::string name = j.value("name", std::string());
-                        for (PlatformState::TestResult& r : p.results) {
-                            if (r.play || r.name != name || r.status != 0) continue;
-                            r.status = j.value("ok", false) ? 2 : 3;
-                            r.message = j.value("message", std::string());
-                            r.seconds = j.value("seconds", 0.0);
-                            r.assertions = j.value("assertions", 0);
-                            if (j.contains("log") && j["log"].is_array()) {
-                                for (const json& l : j["log"]) r.log.push_back(l.is_string() ? l.get<std::string>() : l.dump());
-                            }
-                            break;
-                        }
-                    }
-                }
-            }
-            p.phase = Phase::Play;
-            p.current = 0;
-            p.current_time = -1.0f;
-            return;
-        }
-        case Phase::Play: {
-            while (p.current < p.results.size() && (!p.results[p.current].play || p.results[p.current].status != 0)) ++p.current;
-            if (p.current >= p.results.size()) {
+            // Las pruebas ya se compilaron con los scripts de C++ al dar Play:
+            // el script CramionTests (sdk/cramion/Test.h) las ejecuta todas.
+            std::string error;
+            if (!scripts_.loadTestFile("", &error)) {
+                addRunFailure(p, "Pruebas", "No se pudieron preparar: " + error);
                 p.phase = Phase::Finish;
                 return;
             }
-            PlatformState::TestResult& r = p.results[p.current];
-            if (p.current_time < 0.0f) {
-                if (scripts_.testCall("__cramion_test_begin", r.name) != "ok") {
-                    r.status = 3;
-                    r.message = "no se encontro la prueba";
-                    ++p.current;
-                    return;
-                }
-                r.status = 1;
-                p.current_time = 0.0f;
+            p.test_class = scripts_.testCall("class");
+            if (p.test_class.empty()) p.test_class = "CramionTests";
+            const std::vector<std::string> classes = cpp_scripts_.classes();
+            if (std::find(classes.begin(), classes.end(), p.test_class) == classes.end()) {
+                addRunFailure(p, p.test_class,
+                              "Los scripts de C++ no tienen la clase " + p.test_class +
+                                  ": no compilan (ventana Scripts C++) o las pruebas no incluyen <cramion/Test.h>");
+                p.phase = Phase::Finish;
                 return;
             }
+            // Si la escena ya tiene un objeto que las ejecuta, se leen las suyas.
+            bool in_scene = false;
+            for (const entt::entity h : world_.registry().view<scripting::CppScript>()) {
+                const scripting::CppScript& s = world_.registry().get<scripting::CppScript>(h);
+                in_scene = in_scene || (s.enabled && s.class_name == p.test_class);
+            }
+            if (!in_scene) {
+                scripts_.testCall("begin");  // sin resultados de antes
+                ecs::Entity e = world_.create("Pruebas");
+                e.add<scripting::CppScript>().class_name = p.test_class;
+                p.test_entity = e.handle();
+            }
+            p.current_time = 0.0f;
+            p.stall_time = 0.0f;
+            p.progress = {-1, -1};
+            p.phase = Phase::Play;
+            return;
+        }
+        case Phase::Play: {
             p.current_time += delta_seconds;
             const json status = json::parse(scripts_.testStep(delta_seconds), nullptr, false);
-            const std::string state = status.is_object() ? status.value("state", std::string("failed")) : std::string("failed");
-            if (state == "running" && p.current_time < r.timeout) return;
-            if (state == "running") {
-                scripts_.testCall("__cramion_test_abort");
-                r.status = 3;
-                r.message = "tiempo agotado (" + std::to_string(static_cast<int>(r.timeout)) + " s)";
+            if (!status.is_object()) {
+                addRunFailure(p, p.test_class, "Las pruebas no responden (se paro Play?)");
+                p.phase = Phase::Finish;
+                return;
+            }
+            const std::string state = status.value("state", std::string("failed"));
+            const std::string fallback_file = p.test_files.size() == 1 ? assetRelative(p.test_files.front()) : p.test_class;
+            applyTestCases(p, status, state == "running", fallback_file);
+            // Avanza mientras haya casos nuevos o comprobaciones.
+            const std::pair<int, int> progress{static_cast<int>(p.results.size()), status.value("assertions", 0)};
+            if (progress != p.progress) {
+                p.progress = progress;
+                p.stall_time = 0.0f;
             } else {
-                r.status = state == "passed" ? 2 : 3;
-                r.message = status.value("message", std::string());
+                p.stall_time += delta_seconds;
             }
-            r.seconds = p.current_time;
-            r.assertions = status.is_object() ? status.value("assertions", 0) : 0;
-            if (status.is_object() && status.contains("log") && status["log"].is_array()) {
-                for (const json& l : status["log"]) r.log.push_back(l.is_string() ? l.get<std::string>() : l.dump());
+            const float limit = p.results.empty() ? kTestStartSeconds : kTestStallSeconds;
+            if (state == "running" && p.stall_time < limit) return;
+            if (state == "running") {
+                scripts_.testCall("abort");
+                const std::string why = "tiempo agotado (" + std::to_string(static_cast<int>(limit)) + " s sin avanzar)";
+                if (!p.results.empty() && p.results.back().status == 1) {
+                    p.results.back().status = 3;
+                    p.results.back().message = why;
+                } else {
+                    addRunFailure(p, p.test_class,
+                                  p.results.empty() ? why + ": ninguna prueba empezo (mira los errores de los scripts de C++)" : why);
+                }
+            } else if (p.results.empty() && state == "failed") {
+                addRunFailure(p, p.test_class, status.value("message", std::string("fallo")));
             }
-            ++p.current;
-            p.current_time = -1.0f;
+            p.phase = Phase::Finish;
             return;
         }
         case Phase::Finish: {
             p.run_seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - p.run_started).count();
+            // El objeto "Pruebas" se va (si se entro en Play para las pruebas, se sale igual).
+            if (p.test_entity != entt::null && world_.valid(p.test_entity)) world_.destroy(world_.wrap(p.test_entity));
+            p.test_entity = entt::null;
             if (p.started_play && playing()) exitPlay();
             int passed = 0, failed = 0, skipped = 0;
             for (const PlatformState::TestResult& r : p.results) {
@@ -929,10 +965,6 @@ void EditorApp::drawTestRunnerWindow() {
     const bool running = p.phase != PlatformState::Phase::Idle;
     ImGui::BeginDisabled(running);
     if (ImGui::Button("Ejecutar todas")) startTestRun(0);
-    ImGui::SameLine();
-    if (ImGui::Button("Solo edición")) startTestRun(1);
-    ImGui::SameLine();
-    if (ImGui::Button("Solo Play")) startTestRun(2);
     ImGui::EndDisabled();
     ImGui::SameLine();
     ImGui::BeginDisabled(!running);
@@ -943,24 +975,25 @@ void EditorApp::drawTestRunnerWindow() {
         const std::filesystem::path folder = project_.assetsFolder() / "Tests";
         std::error_code e;
         std::filesystem::create_directories(folder, e);
-        std::filesystem::path file = folder / "Ejemplo.test.lua";
-        for (int i = 2; std::filesystem::exists(file); ++i) file = folder / ("Ejemplo" + std::to_string(i) + ".test.lua");
-        std::ofstream(file, std::ios::binary) << R"lua(-- Pruebas automaticas (Ventana > Pruebas, o CramionEditor.exe --run-tests <proyecto>)
--- Test.case(nombre, funcion)               se ejecuta de golpe
--- Test.case(nombre, {play = true}, funcion) en Play, frame a frame:
---     Test.wait(frames), Test.waitSeconds(s), Test.waitUntil(funcion, limite)
+        std::filesystem::path file = folder / "Ejemplo.cpp";
+        for (int i = 2; std::filesystem::exists(file); ++i) file = folder / ("Ejemplo" + std::to_string(i) + ".cpp");
+        std::ofstream(file, std::ios::binary) << R"cpp(// Pruebas automaticas (Ventana > Pruebas, o CramionEditor.exe --run-tests <proyecto>).
+// Cada CRAMION_TEST es un caso (sdk/cramion/Test.h): se compilan con los
+// scripts del proyecto y, en Play, el script CramionTests las ejecuta en orden.
+// Con co_await esperan frames o segundos del juego.
+#include <cramion/Test.h>
+using namespace cramion;
 
-Test.case("las matematicas funcionan", function()
-    Assert.equal(2 + 2, 4)
-    Assert.approx(math.sqrt(2), 1.41421, 0.0001)
-end)
+CRAMION_TEST(LasMatematicasFuncionan) {
+    Assert::equal(2 + 2, 4, "la suma");
+}
 
-Test.case("la escena tiene una camara", {play = true, timeout = 10}, function()
-    Test.wait(2)
-    local camara = Scene.findWithTag("MainCamera") or Scene.find("Main Camera")
-    Assert.notNil(camara, "no hay camara principal")
-end)
-)lua";
+CRAMION_TEST_TIMEOUT(LaEscenaTieneUnaCamara, 10.0f) {
+    co_await Test::waitFrames(2);
+    Entity camara = Scene::findWithTag("MainCamera");
+    Assert::notNull(camara, "no hay camara principal");
+}
+)cpp";
         refreshDatabase();
         pushToast("Prueba creada", assetRelative(file), 1);
     }
@@ -973,7 +1006,7 @@ end)
     ImGui::SameLine();
     if (running) ImGui::TextColored(ImVec4(0.45f, 0.75f, 1.0f, 1.0f), "Ejecutando...");
     else if (!p.results.empty()) ImGui::Text("%d bien · %d mal · %d saltadas  (%.1f s)", passed, failed, skipped, p.run_seconds);
-    ImGui::TextDisabled("Archivos *.test.lua o scripts en Assets/Tests. Línea de comandos: CramionEditor.exe --run-tests <proyecto> [--junit resultados.xml]");
+    ImGui::TextDisabled("Archivos .cpp con CRAMION_TEST (Assets/Tests). Línea de comandos: CramionEditor.exe --run-tests <proyecto> [--junit resultados.xml]");
 
     ImGui::BeginChild("tests_list", ImVec2(ImGui::GetContentRegionAvail().x * 0.55f, 0.0f), ImGuiChildFlags_Borders);
     std::string last_file;

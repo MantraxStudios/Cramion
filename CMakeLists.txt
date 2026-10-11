@@ -76,6 +76,20 @@ if(UNIX AND NOT APPLE)
     add_executable(CramionServer CramionEditor/server/ServerMain.cpp)
     target_link_libraries(CramionServer PRIVATE Cramion::Core)
     set_target_properties(CramionServer PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
+    # El proceso aislado de los scripts de C++ (dlopen de la .so del juego) y
+    # el SDK junto a los ejecutables (sdk/), como en Windows.
+    add_executable(CramionScriptHost CramionEditor/host/ScriptHost.cpp)
+    target_include_directories(CramionScriptHost PRIVATE "${CMAKE_SOURCE_DIR}/CramionCore/include" "${CMAKE_SOURCE_DIR}/CramionCore/sdk")
+    target_link_libraries(CramionScriptHost PRIVATE ${CMAKE_DL_LIBS})
+    target_compile_options(CramionScriptHost PRIVATE -Wall -Wextra)
+    set_target_properties(CramionScriptHost PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
+    add_custom_target(cramion_sdk_copy ALL
+        COMMAND ${CMAKE_COMMAND} -E copy_directory_if_different
+                "${CMAKE_SOURCE_DIR}/CramionCore/sdk" "${CMAKE_BINARY_DIR}/sdk"
+        COMMENT "SDK de los scripts de C++")
+    add_dependencies(CramionScriptHost cramion_sdk_copy)
+    add_dependencies(CramionServer CramionScriptHost)
+    add_dependencies(CramionCppScriptTests CramionScriptHost)
     return()
 endif()
 

@@ -13,7 +13,12 @@
 #include <unordered_map>
 #include <vector>
 
+// Lo que exporta la biblioteca de los scripts (DLL en Windows, .so en Linux).
+#if defined(_WIN32)
 #define CRAMION_EXPORT extern "C" __declspec(dllexport)
+#else
+#define CRAMION_EXPORT extern "C" __attribute__((visibility("default")))
+#endif
 
 namespace cramion {
 

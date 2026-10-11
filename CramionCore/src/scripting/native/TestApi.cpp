@@ -10,7 +10,8 @@
 //   Test.finish()                termina el caso
 //   Test.done()                  ya no hay mas casos
 //   Test.results()               {done, passed, failed, cases = {{name, passed,
-//                                 assertions, failures, messages, seconds}...}}
+//                                 assertions, failures, messages, seconds,
+//                                 failure (el primer fallo), file}...}}
 //
 // Los resultados se borran al empezar Play. El ejecutor de pruebas del editor
 // (y --run-tests) los lee con ScriptSystem::loadTestFile/testCall/testStep
@@ -37,6 +38,7 @@ struct TestCase {
     int assertions = 0;
     int failures = 0;
     std::vector<std::string> messages;  // fallos y Test.log, en orden
+    std::string failure;                // el primer fallo
     float start = 0.0f;                 // Time.time al empezar
     float seconds = 0.0f;
     bool open = false;
@@ -93,7 +95,7 @@ struct TestState {
     // El primer fallo ("caso: mensaje"), vacio si no hay.
     std::string firstFailure() const {
         for (const TestCase& c : cases) {
-            if (c.failures > 0) return c.name + ": " + (c.messages.empty() ? std::string("fallo") : c.messages.front());
+            if (c.failures > 0) return c.name + ": " + c.failure;
         }
         return {};
     }
@@ -109,6 +111,7 @@ struct TestState {
         for (const std::string& m : c.messages) messages.emplace_back(m);
         v.set("messages", api::Value(std::move(messages)));
         v.set("seconds", c.open ? rt->time - c.start : c.seconds);
+        v.set("failure", c.failure);
         return v;
     }
     api::Value casesValue() const {
@@ -273,7 +276,7 @@ void registerTestApi(Runtime& rt) {
                            if (!ok) {
                                std::string message = joinArgs(c, 1);
                                if (message.empty()) message = "comprobacion fallida";
-                               ++t.failures;
+                               if (t.failures++ == 0) t.failure = message;
                                t.messages.push_back(message);
                                rt.write(1, "[Test] " + t.name + ": " + message);
                            }
