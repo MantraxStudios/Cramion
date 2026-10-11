@@ -1,51 +1,114 @@
+```bat
 @echo off
-rem Compila Cramion (Clang + Ninja).
-rem   compilar.bat            -> Release con 4 hilos
-rem   compilar.bat 2          -> Release con 2 hilos (si el PC se traba)
-rem   compilar.bat 4 limpio   -> borra lo compilado y compila todo de nuevo
-rem 16 GB de RAM: no pasar de -j 4 ni compilar dos cosas a la vez.
+rem ============================================================
+rem Cramion Engine - Compilacion con Clang + Ninja
+rem
+rem compilar.bat            -> Usa todos los procesadores logicos
+rem compilar.bat 4          -> Usa 4 hilos
+rem compilar.bat 2          -> Usa 2 hilos
+rem compilar.bat limpio     -> Limpia y recompila con todos
+rem compilar.bat 4 limpio   -> Limpia y recompila con 4 hilos
+rem
+rem Muestra la salida en consola y guarda el log completo.
+rem ============================================================
 
 setlocal
 cd /d "%~dp0"
 
-set JOBS=%1
-if "%JOBS%"=="" set JOBS=4
-set BUILD_DIR=build-release
-set PRESET=clang-ninja-release
+set "JOBS=%~1"
+set "CLEAN=%~2"
+set "BUILD_DIR=build-release"
+set "PRESET=clang-ninja-release"
+set "LOG_FILE=%BUILD_DIR%\compilar.log"
 
-where cmake >nul 2>nul || (echo [ERROR] No se encuentra cmake en el PATH. & goto fin_error)
-
-if /i "%2"=="limpio" (
-    echo Limpiando %BUILD_DIR%...
-    cmake --build %BUILD_DIR% --target clean
+rem Si el primer argumento es "limpio", activar limpieza.
+if /i "%~1"=="limpio" (
+    set "CLEAN=limpio"
+    set "JOBS="
 )
 
-rem Sin cache (o de otra carpeta): se configura con el preset.
-if not exist "%BUILD_DIR%\CMakeCache.txt" (
-    echo Configurando %PRESET%...
-    cmake --preset %PRESET% || goto fin_error
+rem Sin numero de hilos, detectar todos los procesadores logicos.
+if "%JOBS%"=="" (
+    for /f %%C in ('powershell -NoProfile -Command "[Environment]::ProcessorCount"') do set "JOBS=%%C"
 )
 
-echo Compilando %BUILD_DIR% con %JOBS% hilos...
-echo Registro: %BUILD_DIR%\compilar.log
-set START=%TIME%
-cmake --build %BUILD_DIR% -j %JOBS% -- -k 0 > "%BUILD_DIR%\compilar.log" 2>&1
-set RESULT=%ERRORLEVEL%
+if "%JOBS%"=="" set "JOBS=4"
 
-if not "%RESULT%"=="0" (
-    echo.
-    echo ===== ERRORES =====
-    findstr /n /i /c:"error" /c:"FAILED" "%BUILD_DIR%\compilar.log"
-    echo.
-    echo [ERROR] La compilacion fallo. Registro completo: %BUILD_DIR%\compilar.log
+rem Comprobar CMake.
+where cmake >nul 2>nul
+if errorlevel 1 (
+    echo [ERROR] No se encuentra CMake en el PATH.
     goto fin_error
 )
 
+rem Comprobar PowerShell.
+where powershell >nul 2>nul
+if errorlevel 1 (
+    echo [ERROR] No se encuentra PowerShell en el PATH.
+    goto fin_error
+)
+
+rem Configurar el proyecto si no existe la caché.
+if not exist "%BUILD_DIR%\CMakeCache.txt" (
+    echo.
+    echo [CONFIGURACION] Aplicando preset %PRESET%...
+    cmake --preset "%PRESET%"
+    if errorlevel 1 goto fin_error
+)
+
+rem Crear directorio si hace falta.
+if not exist "%BUILD_DIR%" mkdir "%BUILD_DIR%"
+
+rem Limpiar si se solicita.
+if /i "%CLEAN%"=="limpio" (
+    echo.
+    echo [LIMPIEZA] Eliminando archivos compilados...
+    cmake --build "%BUILD_DIR%" --target clean
+    if errorlevel 1 goto fin_error
+)
+
 echo.
-echo [OK] Compilado. Empezo %START%, termino %TIME%.
+echo ============================================================
+echo                 CRAMION ENGINE
+echo ============================================================
+echo Directorio : %BUILD_DIR%
+echo Procesadores/hilos: %JOBS%
+echo Registro   : %LOG_FILE%
+echo ============================================================
+echo.
+
+set "START=%TIME%"
+
+rem Compilar, mostrar la salida y guardar el registro completo.
+powershell -NoProfile -ExecutionPolicy Bypass -Command ^
+  "& { $ErrorActionPreference = 'Continue'; & cmake --build '%BUILD_DIR%' --parallel %JOBS% -- '-k 0' 2>&1 | Tee-Object -FilePath '%LOG_FILE%'; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE } }"
+
+set "RESULT=%ERRORLEVEL%"
+
+echo.
+echo ============================================================
+
+if not "%RESULT%"=="0" (
+    echo [ERROR] LA COMPILACION FALLO.
+    echo.
+    echo ===== ERRORES DETECTADOS =====
+    findstr /n /i /c:"error:" /c:"FAILED:" "%LOG_FILE%"
+    echo.
+    echo Registro completo: %LOG_FILE%
+    goto fin_error
+)
+
+echo [OK] COMPILACION COMPLETADA.
+echo Inicio: %START%
+echo Fin:    %TIME%
+echo Registro: %LOG_FILE%
+echo ============================================================
 pause
 exit /b 0
 
 :fin_error
+echo.
+echo [ERROR] Proceso terminado con errores.
 pause
 exit /b 1
+```
